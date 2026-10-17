@@ -136,7 +136,7 @@ The full table, with the reasons, is in [`kit/project/AGENTS.md`](../kit/project
 8. Squash merge. One pull request, one purpose; small polish goes in one batch.
 9. Review and test the exact commit that merges.
 10. No folder holds more than 7 entries.
-11. Nothing in the repo, or in what yokoten prints, points at a person.
+11. Nothing in the repo, or in what yokoten prints, points at a person or holds a secret.
 12. Decisions are written down once and kept. Facts are replaced. Times are UTC.
 
 ## Managing agents like a team
@@ -167,6 +167,10 @@ on every commit. On your own machine it also reads `~/.config/yokoten/private-ma
 your name, your city, your domains, your server names. That file stays outside the
 repo, because a list of what must not be published can't itself be published. A hit
 is reported by file and line; the mark itself is never printed.
+
+The same check catches secrets: GitHub, npm, Slack, Stripe, Google, OpenAI and
+Anthropic tokens, AWS access key ids, and PEM private keys. A hit names the kind of
+secret, never the secret. Deleting it is not enough, since git keeps it: rotate it.
 
 A commit also records the time it was made, with your time zone, and a time zone
 narrows down where you live. So the commit check asks for UTC: `init` sets `TZ=UTC` for

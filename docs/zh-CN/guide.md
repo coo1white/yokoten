@@ -128,7 +128,7 @@ node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看还缺什么
 8. 用 squash 合并。一个 PR 只做一件事；零碎的小改动攒成一批再提。
 9. 审查和测试的，必须是最终合并的那个提交。
 10. 每个文件夹最多 7 项。
-11. 仓库里，以及 yokoten 打印出来的内容里，都不能有任何能指向某个人的信息。
+11. 仓库里，以及 yokoten 打印出来的内容里，都不能有任何能指向某个人的信息，也不能有密钥。
 12. 决定只写一次并保留下来；事实直接替换；时间一律用 UTC。
 
 ## 像带团队一样管 agent
@@ -155,6 +155,10 @@ node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看还缺什么
 `~/.config/yokoten/private-marks`，里面是你的名字、所在城市、域名、服务器名。这个文件放在
 仓库外面，因为「不能公开的东西」这张清单本身也不能公开。查到问题时只报文件和行号，不会把
 词表里的词打印出来。
+
+这个检查也会查密钥：GitHub、npm、Slack、Stripe、Google、OpenAI 和 Anthropic 的 token，
+AWS 的 access key id，还有 PEM 私钥。查到了只说是哪一种密钥，不会把密钥本身打印出来。光删掉
+不够，git 历史里还留着，得去把它作废，换一个新的。
 
 每个提交还会记下提交时间和你的时区，而时区能大致看出你住在哪里。所以提交检查要求用 UTC：
 `init` 会给 agent 会话设好 `TZ=UTC`，你自己提交时，它会告诉你怎么设。
