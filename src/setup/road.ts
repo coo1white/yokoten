@@ -8,7 +8,9 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import type { Env } from '../rules/config.ts';
+import { type Env, loadConfig } from '../rules/config.ts';
+import { matcher } from '../rules/glob.ts';
+import { BUILD_DIRS, isBuildOutput } from '../rules/layout.ts';
 import { hasProjectHook } from '../agents/claude-code.ts';
 import { runs } from '../run/cli.ts';
 import { hasBot } from '../host/github.ts';
@@ -108,6 +110,23 @@ const ciRunsTests = (root: string) => {
   return RUNNERS.test(ci) || (script !== '' && (RUNS_SCRIPT.test(ci) || ci.includes(script)));
 };
 
+/** Tracked build output, as yokoten.json lets it through; null outside a git repo. */
+const builtFiles = (root: string): string[] | null => {
+  let files: string[];
+  try {
+    files = execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 1 << 30 }).split('\0').filter(Boolean);
+  } catch {
+    return null;
+  }
+  let allow: (path: string) => boolean = () => false;
+  try {
+    allow = matcher(loadConfig(root).allowBuild);
+  } catch {
+    // a broken yokoten.json: the commit check names it; here, nothing is allowed
+  }
+  return files.filter((f) => isBuildOutput(f, allow));
+};
+
 const SECURITY_FILES: [string, string[]][] = [
   ['security policy (SECURITY.md)', ['.github/SECURITY.md', 'SECURITY.md']],
   ['Dependabot config', ['.github/dependabot.yml', '.github/dependabot.yaml']],
@@ -182,6 +201,19 @@ export const ROAD: Step[] = [
       return `no ${lacking.join(' and no ')} in .github; \`yokoten init\` adds them`;
     },
     why: 'a template asks for what a reviewer needs, so nothing is forgotten',
+  },
+  {
+    stage: 2,
+    key: 'no-build-output',
+    check: (root) => {
+      const built = builtFiles(root);
+      return built && built.length === 0;
+    },
+    what: (root) => {
+      const built = builtFiles(root) ?? [];
+      return `build output in the repo (${built.slice(0, 3).join(', ')}${built.length > 3 ? `, and ${built.length - 3} more` : ''}); remove it with \`git rm --cached\` and add ${BUILD_DIRS.map((d) => `${d}/`).join(', ')} to .gitignore`;
+    },
+    why: 'a build makes these files again from the source, and a reviewer can\'t read a binary',
   },
   {
     stage: 3,

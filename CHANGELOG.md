@@ -17,6 +17,11 @@ All notable changes are listed here. The format follows
 
 ### Added
 
+- The commit check refuses build output (a file in a `dist/`, `build/` or `out/`
+  folder) and binary files. Images and fonts pass, and `allowBuild` in `yokoten.json`
+  lets other paths through. A new `no-build-output` step in stage 2 of the road looks
+  for such files already in the repo. Kit change: every project gets this check on its
+  next `init` (#56).
 - A `tests` step in stage 1 of the road: the project has a test command (a `test`
   script in package.json, or a test runner such as `node --test` or `go test`), and a
   workflow in `.github/workflows` runs it (#55).

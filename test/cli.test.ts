@@ -154,6 +154,35 @@ test('check --staged: stops a commit with a personal email or a private mark', (
   assert.ok(!/mycity/i.test(r.stderr));
 });
 
+test('check --staged: stops build output and binaries, lets images and allowed paths through (#56)', () => {
+  const s = sandbox();
+  s.write('dist/app.js', 'console.log(1);\n');
+  writeFileSync(join(s.repo, 'tool'), Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0, 1, 2, 0]));
+  writeFileSync(join(s.repo, 'logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0]));
+  s.git('add', '.');
+  let r = s.run(['check', '--staged']);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /dist\/app\.js: build output, in a dist\/ folder\./);
+  assert.match(r.stderr, /tool: a binary file\. A reviewer can't read it/);
+  assert.ok(!r.stderr.includes('logo.png'), 'an image is fine');
+  s.write('yokoten.json', JSON.stringify({ allowBuild: ['dist/**', 'tool'] }));
+  s.git('add', '.');
+  r = s.run(['check', '--staged']);
+  assert.equal(r.status, 0, r.stderr);
+});
+
+test('doctor: the no-build-output step looks at the tracked files (#56)', () => {
+  const s = sandbox();
+  const line = () => s.run(['doctor']).stdout.split('\n').find((l) => / no-build-output/.test(l)) ?? '';
+  assert.match(line(), /^ +done +no-build-output/);
+  s.write('build/a.js', 'x\n');
+  s.write('lib/x.so', 'x\n');
+  s.git('add', '.');
+  assert.match(line(), /^ +to do +no-build-output: build output in the repo \(build\/a\.js, lib\/x\.so\)/);
+  s.write('yokoten.json', JSON.stringify({ allowBuild: ['build/**', 'lib/**'] }));
+  assert.match(line(), /^ +done +no-build-output/);
+});
+
 test('check --staged: stops a commit whose time carries a time zone, never printing it (#40)', () => {
   const s = sandbox();
   s.write('a.md', 'fine\n');
