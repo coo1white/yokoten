@@ -60,6 +60,18 @@ yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
   syntax it can erase (`erasableSyntaxOnly`): no `enum`, no `namespace`, no
   parameter properties. Imports name the `.ts` file. No Python, no shell beyond the
   one-line git hook.
+- **Layers.** `src/` has four, lowest first; a module imports only from its own
+  layer or a lower one (`test/architecture.test.ts` holds this):
+  - `rules/`: what is allowed, as plain functions (guards, privacy, layout, config).
+  - `run/`: the checks at work: the tool-call hook, the commit and CI check.
+  - `agents/`: one adapter per AI runtime. Only `claude-code.ts` today: its tool-call
+    shape, its settings and hooks, where its skills and agents go. Nothing else in
+    `src/` names a runtime.
+  - `setup/`: `install`, `init` and `doctor`, writing yokoten into a machine or a
+    project.
+- **Docs live in the repo.** No wiki: a wiki page is not reviewed and agents do not read
+  it. Decisions go in `docs/records/`; what went wrong and what check now holds it goes
+  in an issue labelled `incident`, and the rule's "why" in `AGENTS.md` points to it.
 - **`kit/` is what other projects get.** A change there changes every project on its
   next `init` or `install`. Say so in the pull request.
 - **Every new check gets a positive control**: a test (and, for doctor, a self-test

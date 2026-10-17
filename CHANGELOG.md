@@ -6,6 +6,13 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Internal
+
+- Claude Code's formats (tool-call input, settings and hooks, skill and agent paths)
+  live in one adapter, `src/agents/claude-code.ts`, so another runtime is one sibling
+  file. A test holds the module layers, another keeps the repo's `AGENTS.md` equal to
+  the kit's, and CI also runs the tests on the oldest supported Node, 22.18.0 (#17).
+
 ### Changed
 
 - yokoten is written in TypeScript, and Node runs it as it is: no build step, still no
