@@ -3,13 +3,13 @@
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { DEFAULTS, loadConfig } from '../src/rules/config.mjs';
-import { check, checkHistory, gitRoot } from '../src/run/check.mjs';
-import { judge } from '../src/run/hook.mjs';
-import { doctor } from '../src/setup/doctor.mjs';
-import { VERSION } from '../src/setup/files.mjs';
-import { init } from '../src/setup/init.mjs';
-import { install } from '../src/setup/install.mjs';
+import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
+import { check, checkHistory, gitRoot } from '../src/run/check.ts';
+import { judge, type ToolCall } from '../src/run/hook.ts';
+import { doctor } from '../src/setup/doctor.ts';
+import { VERSION } from '../src/setup/files.ts';
+import { init } from '../src/setup/init.ts';
+import { install } from '../src/setup/install.ts';
 
 const HELP = `yokoten ${VERSION}
 
@@ -22,10 +22,10 @@ const HELP = `yokoten ${VERSION}
 `;
 
 const [cmd, ...args] = process.argv.slice(2);
-const flag = (name) => args.includes(name);
+const flag = (name: string) => args.includes(name);
 const env = process.env;
 
-const rootOf = (dir) => {
+const rootOf = (dir: string): string | null => {
   try {
     return gitRoot(dir);
   } catch {
@@ -33,14 +33,14 @@ const rootOf = (dir) => {
   }
 };
 
-function print(lines, stream = process.stdout) {
+function print(lines: string[], stream: NodeJS.WritableStream = process.stdout): void {
   if (lines.length) stream.write(`${lines.join('\n')}\n`);
 }
 
-function main() {
+function main(): number {
   switch (cmd) {
     case 'hook': {
-      let input;
+      let input: ToolCall;
       try {
         input = JSON.parse(readFileSync(0, 'utf8'));
       } catch {
@@ -99,6 +99,6 @@ try {
   process.exitCode = main();
 } catch (err) {
   // Exit 1, not 2: a broken guard should be seen, not block every tool call.
-  process.stderr.write(`yokoten ${cmd}: ${err.message}\n`);
+  process.stderr.write(`yokoten ${cmd}: ${(err as Error).message}\n`);
   process.exitCode = 1;
 }

@@ -5,28 +5,29 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { matcher } from '../rules/glob.mjs';
-import { checkEdit } from '../rules/guards.mjs';
-import { checkLayout } from '../rules/layout.mjs';
-import { loadMarks, scanText } from '../rules/privacy.mjs';
+import type { Config, Env } from '../rules/config.ts';
+import { matcher } from '../rules/glob.ts';
+import { checkEdit } from '../rules/guards.ts';
+import { checkLayout } from '../rules/layout.ts';
+import { loadMarks, scanText } from '../rules/privacy.ts';
 
-const git = (cwd, args, input) =>
-  // With `input` the output is a Buffer: blobs may not be text.
-  execFileSync('git', args, { cwd, input, encoding: input === undefined ? 'utf8' : undefined, maxBuffer: 1 << 30 });
-const list = (out) => out.split('\0').filter(Boolean);
+const git = (cwd: string, args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 1 << 30 });
+// Bytes, not text: a blob may be binary.
+const gitBytes = (cwd: string, args: string[], input = '') => execFileSync('git', args, { cwd, input, maxBuffer: 1 << 30 });
+const list = (out: string) => out.split('\0').filter(Boolean);
 
-export const gitRoot = (cwd) => git(cwd, ['rev-parse', '--show-toplevel']).trim();
+export const gitRoot = (cwd: string): string => git(cwd, ['rev-parse', '--show-toplevel']).trim();
 
 /** The files in the index: what the next commit (or, in CI, the checkout) holds. */
-export const indexFiles = (root) => list(git(root, ['ls-files', '-z']));
+export const indexFiles = (root: string): string[] => list(git(root, ['ls-files', '-z']));
 
 /** The files the next commit adds, changes, moves or deletes (a move by its new name). */
-const stagedChanges = (root) => list(git(root, ['diff', '--cached', '--name-status', '--diff-filter=ACDMR', '-z']));
+const stagedChanges = (root: string) => list(git(root, ['diff', '--cached', '--name-status', '--diff-filter=ACDMR', '-z']));
 
-function stagedFiles(root) {
+function stagedFiles(root: string): { status: string; path: string }[] {
   // -z --name-status gives: status, path (and for R/C, old path then new path).
   const out = stagedChanges(root);
-  const files = [];
+  const files: { status: string; path: string }[] = [];
   for (let i = 0; i < out.length; ) {
     const status = out[i];
     if (status.startsWith('R') || status.startsWith('C')) {
@@ -40,14 +41,14 @@ function stagedFiles(root) {
   return files;
 }
 
-const isBinary = (buf) => buf.includes(0);
+const isBinary = (buf: Buffer) => buf.includes(0);
 
 /** Problems for the whole tree, or with `staged`, for the commit about to be made. */
-export function check(root, { config, env, staged = false }) {
-  const problems = [];
+export function check(root: string, { config, env, staged = false }: { config: Config; env: Env; staged?: boolean }): string[] {
+  const problems: string[] = [];
   const marks = loadMarks(env);
   const skip = matcher(config.privacy.skip);
-  const privacy = (path, buf) => {
+  const privacy = (path: string, buf: Buffer) => {
     if (skip(path) || isBinary(buf)) return;
     problems.push(...scanText(buf.toString('utf8'), { file: path, marks, allow: config.privacy.allow }));
   };
@@ -55,11 +56,11 @@ export function check(root, { config, env, staged = false }) {
     for (const { status, path } of stagedFiles(root)) {
       const reason = checkEdit(path, { config, env });
       if (reason) problems.push(reason);
-      if (status !== 'D') privacy(path, git(root, ['show', `:${path}`], ''));
+      if (status !== 'D') privacy(path, gitBytes(root, ['show', `:${path}`]));
     }
   } else {
     for (const path of indexFiles(root)) {
-      let buf;
+      let buf: Buffer;
       try {
         buf = readFileSync(join(root, path));
       } catch {
@@ -77,8 +78,8 @@ export function check(root, { config, env, staged = false }) {
  * author and committer emails and commit messages. Run it before a private repo goes
  * public; a file deleted later is still in the history.
  */
-export function checkHistory(root, { config, env }) {
-  const problems = new Set();
+export function checkHistory(root: string, { config, env }: { config: Config; env: Env }): string[] {
+  const problems = new Set<string>();
   const marks = loadMarks(env);
   const skip = matcher(config.privacy.skip);
   const opts = { marks, allow: config.privacy.allow };
@@ -93,17 +94,17 @@ export function checkHistory(root, { config, env }) {
 
   // Every blob ever committed, with the first path it was seen at.
   const objects = git(root, ['rev-list', '--all', '--objects']).split('\n');
-  const blobs = new Map();
+  const blobs = new Map<string, string>();
   for (const line of objects) {
     const [sha, ...rest] = line.split(' ');
     if (sha && rest.length) blobs.set(sha, rest.join(' '));
   }
-  const types = git(root, ['cat-file', '--batch-check=%(objectname) %(objecttype)'], [...blobs.keys()].join('\n') + '\n')
+  const types = gitBytes(root, ['cat-file', '--batch-check=%(objectname) %(objecttype)'], [...blobs.keys()].join('\n') + '\n')
     .toString('utf8')
     .split('\n');
-  const wanted = types.filter((l) => l.endsWith(' blob')).map((l) => l.split(' ')[0]).filter((sha) => !skip(blobs.get(sha)));
+  const wanted = types.filter((l) => l.endsWith(' blob')).map((l) => l.split(' ')[0]).filter((sha) => !skip(blobs.get(sha) ?? ''));
   if (wanted.length === 0) return [...problems];
-  const batch = git(root, ['cat-file', '--batch'], wanted.join('\n') + '\n');
+  const batch = gitBytes(root, ['cat-file', '--batch'], wanted.join('\n') + '\n');
   let at = 0;
   while (at < batch.length) {
     const nl = batch.indexOf(10, at);

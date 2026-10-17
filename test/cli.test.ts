@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'yokoten.mjs');
+const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'yokoten.ts');
 const at = '@';
 
 function sandbox() {
@@ -18,12 +18,12 @@ function sandbox() {
   mkdirSync(repo);
   // A clean environment: no real HOME, no real marks, no role.
   const env = { PATH: process.env.PATH, HOME: home, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig') };
-  const git = (...args) => spawnSync('git', args, { cwd: repo, env, encoding: 'utf8' });
+  const git = (...args: string[]) => spawnSync('git', args, { cwd: repo, env, encoding: 'utf8' });
   git('init', '-q', '-b', 'main');
   git('config', 'user.name', 'Test');
   git('config', 'user.email', `1+test${at}users.noreply.github.com`);
-  const run = (args, { input, cwd = repo, extra = {} } = {}) => spawnSync('node', [CLI, ...args], { cwd, env: { ...env, ...extra }, input, encoding: 'utf8' });
-  const write = (path, text) => {
+  const run = (args: string[], { input, cwd = repo, extra = {} }: { input?: string; cwd?: string; extra?: Record<string, string> } = {}) => spawnSync('node', [CLI, ...args], { cwd, env: { ...env, ...extra }, input, encoding: 'utf8' });
+  const write = (path: string, text: string) => {
     mkdirSync(dirname(join(repo, path)), { recursive: true });
     writeFileSync(join(repo, path), text);
   };
@@ -32,7 +32,7 @@ function sandbox() {
 
 test('hook: blocks with exit 2 and a reason, allows with exit 0', () => {
   const s = sandbox();
-  const call = (tool_input, extra) => s.run(['hook'], { input: JSON.stringify({ cwd: s.repo, tool_input }), extra });
+  const call = (tool_input: object, extra?: Record<string, string>) => s.run(['hook'], { input: JSON.stringify({ cwd: s.repo, tool_input }), extra });
   let r = call({ command: 'git push --tags' });
   assert.equal(r.status, 2);
   assert.match(r.stderr, /owner decides when to release/);
@@ -54,7 +54,7 @@ test('hook: a repo reached through a symlink gets the same file rules (#1)', () 
   const s = sandbox();
   const link = join(s.home, 'link');
   symlinkSync(s.repo, link);
-  const call = (file_path) => s.run(['hook'], { input: JSON.stringify({ cwd: link, tool_input: { file_path } }), extra: { YOKOTEN_ROLE: 'worker' } });
+  const call = (file_path: string) => s.run(['hook'], { input: JSON.stringify({ cwd: link, tool_input: { file_path } }), extra: { YOKOTEN_ROLE: 'worker' } });
   assert.equal(call(join(link, 'AGENTS.md')).status, 2, 'absolute path through the link');
   assert.equal(call('AGENTS.md').status, 2, 'relative to a cwd through the link');
   assert.equal(call(join(link, '.github', 'new', 'x.yml')).status, 2, 'a file in a folder that does not exist yet');
@@ -101,7 +101,7 @@ test('init: adds the practices, keeps what is there, and doctor then finds nothi
   assert.match(r.stdout, /wrote \.githooks\/pre-commit/);
   assert.equal(readFileSync(join(s.repo, 'AGENTS.md'), 'utf8'), '# our own rules\n');
   assert.ok(statSync(join(s.repo, '.githooks', 'pre-commit')).mode & 0o100);
-  assert.match(readFileSync(join(s.repo, '.github/workflows/yokoten.yml'), 'utf8'), /node \.yokoten\/bin\/yokoten\.mjs check/);
+  assert.match(readFileSync(join(s.repo, '.github/workflows/yokoten.yml'), 'utf8'), /node \.yokoten\/bin\/yokoten\.ts check/);
   assert.ok(existsSync(join(s.repo, '.yokoten', 'VERSION')));
   assert.equal(s.git('config', 'core.hooksPath').stdout.trim(), '.githooks');
   // Again: nothing changes.
@@ -158,7 +158,7 @@ test('install: skills, agents and hooks once, the user\'s own files untouched', 
   assert.equal(settings.hooks.SessionStart.length, 1);
   assert.equal(settings.hooks.PreToolUse.length, 2);
   // The installed copy runs on its own.
-  const doctor = spawnSync('node', [join(s.home, '.local/share/yokoten/bin/yokoten.mjs'), 'doctor', '--session'], { cwd: s.repo, env: s.env, encoding: 'utf8' });
+  const doctor = spawnSync('node', [join(s.home, '.local/share/yokoten/bin/yokoten.ts'), 'doctor', '--session'], { cwd: s.repo, env: s.env, encoding: 'utf8' });
   assert.equal(doctor.status, 0, doctor.stderr);
   assert.match(doctor.stdout, /private-marks is missing or empty/);
 });

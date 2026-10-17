@@ -3,7 +3,27 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-export const DEFAULTS = {
+export interface Config {
+  layout: { maxEntries: number; exempt: string[] };
+  tests: string[];
+  leadOnly: string[];
+  privacy: { allow: string[]; skip: string[] };
+  notNow: Record<string, string>;
+}
+
+/** What yokoten.json may hold: any key, or part of one. */
+interface ConfigFile {
+  layout?: Partial<Config['layout']>;
+  tests?: string[];
+  leadOnly?: string[];
+  privacy?: Partial<Config['privacy']>;
+  notNow?: Record<string, string>;
+}
+
+/** The guard's own environment (process.env, or a test's stand-in). */
+export type Env = Record<string, string | undefined>;
+
+export const DEFAULTS: Config = {
   // At most this many entries in a folder. The root is never counted: tools expect their
   // files there. A folder in `exempt` is a log (records, root-cause reports) and may grow.
   layout: { maxEntries: 7, exempt: [] },
@@ -20,12 +40,12 @@ export const DEFAULTS = {
   notNow: {},
 };
 
-export function loadConfig(root) {
-  let file = {};
+export function loadConfig(root: string): Config {
+  let file: ConfigFile = {};
   try {
     file = JSON.parse(readFileSync(join(root, 'yokoten.json'), 'utf8'));
   } catch (err) {
-    if (err.code !== 'ENOENT') throw new Error(`yokoten.json: ${err.message}`);
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(`yokoten.json: ${(err as Error).message}`);
   }
   return {
     layout: { ...DEFAULTS.layout, ...file.layout },

@@ -6,6 +6,12 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- yokoten is written in TypeScript, and Node runs it as it is: no build step, still no
+  runtime dependencies. It needs Node 22.18 or later. Hooks, the vendored runtime and
+  the machine copy run `bin/yokoten.ts`; `tsc` checks the types in CI (#9).
+
 ### Fixed
 
 - The tool-call hook now applies file rules when the repo path goes through a symlink

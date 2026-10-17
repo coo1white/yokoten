@@ -1,6 +1,6 @@
 # 0001 Why yokoten exists, and what goes in it
 
-Status: accepted
+Status: accepted; point 6 changed by [0002](0002-typescript.md)
 Date: 2026-10-18 (UTC)
 
 ## Context

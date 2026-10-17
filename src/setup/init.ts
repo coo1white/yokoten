@@ -5,20 +5,20 @@
 import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { addHook, copyRuntime, HOME_DIR, KIT, render, writeNew } from './files.mjs';
+import { addHook, copyRuntime, HOME_DIR, KIT, render, writeNew } from './files.ts';
 
 /** yokoten's own repo runs its own bin; every other project runs a vendored copy. */
-export const isSelf = (root) => {
+export const isSelf = (root: string): boolean => {
   try {
-    return JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).name === 'yokoten' && existsSync(join(root, 'bin', 'yokoten.mjs'));
+    return JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).name === 'yokoten' && existsSync(join(root, 'bin', 'yokoten.ts'));
   } catch {
     return false;
   }
 };
 
-export const cliPath = (root) => (isSelf(root) ? 'bin/yokoten.mjs' : '.yokoten/bin/yokoten.mjs');
+export const cliPath = (root: string): string => (isSelf(root) ? 'bin/yokoten.ts' : '.yokoten/bin/yokoten.ts');
 
-function walk(dir) {
+function walk(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const full = join(dir, name);
     return statSync(full).isDirectory() ? walk(full) : [full];
@@ -26,8 +26,8 @@ function walk(dir) {
 }
 
 /** Returns one line per thing done or kept. */
-export function init(root) {
-  const report = [];
+export function init(root: string): string[] {
+  const report: string[] = [];
   const cli = cliPath(root);
   if (!isSelf(root) && root !== HOME_DIR) {
     copyRuntime(join(root, '.yokoten'));

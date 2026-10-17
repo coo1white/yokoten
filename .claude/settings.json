@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/bin/yokoten.mjs\" hook"
+            "command": "node \"$CLAUDE_PROJECT_DIR/bin/yokoten.ts\" hook"
           }
         ],
         "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit"

@@ -10,10 +10,11 @@
 // command built up in pieces gets past it. The lock is on the server: branch protection,
 // CODEOWNERS, and a release token the agents do not hold.
 
-import { matcher } from './glob.mjs';
+import type { Config, Env } from './config.ts';
+import { matcher } from './glob.ts';
 
 /** A file edit, by path relative to the repo root. */
-export function checkEdit(path, { config, env }) {
+export function checkEdit(path: string, { config, env }: { config: Config; env: Env }): string | null {
   if (env.YOKOTEN_FIX_TASK === '1' && matcher(config.tests)(path)) {
     return `${path} is a test file, and this is a fix task (YOKOTEN_FIX_TASK=1). A fix task changes the code until the test passes, never the test. If the test is wrong, stop and say so in your report.`;
   }
@@ -24,7 +25,7 @@ export function checkEdit(path, { config, env }) {
 }
 
 /** A shell command, as the agent wrote it. */
-export function checkCommand(command, { env }) {
+export function checkCommand(command: string, { env }: { env: Env }): string | null {
   for (const words of segments(command)) {
     const reason = checkGit(words, env) ?? checkPublish(words, env);
     if (reason) return reason;
@@ -36,7 +37,7 @@ const RELEASE = 'Only the owner decides when to release. If the owner asked for 
 
 // Quotes become spaces, so `bash -c 'git push --tags'` reads like the plain command. Then
 // the text is cut at ; | & ( ) and line ends, and each piece is split into words.
-function segments(command) {
+function segments(command: string): string[][] {
   return command
     .replace(/['"`]/g, ' ')
     .split(/[;|&()\r\n]+/)
@@ -44,14 +45,14 @@ function segments(command) {
     .filter((words) => words.length > 0);
 }
 
-const isGit = (word) => /(^|[/\\])git(\.exe)?$/.test(word);
+const isGit = (word: string) => /(^|[/\\])git(\.exe)?$/.test(word);
 // Git options that take the next word as their value.
 const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace']);
 
-function checkGit(words, env) {
+function checkGit(words: string[], env: Env): string | null {
   const start = words.findIndex(isGit);
   if (start === -1) return null;
-  const settings = [];
+  const settings: string[] = [];
   let i = start + 1;
   while (i < words.length && words[i].startsWith('-')) {
     if (words[i] === '-c') settings.push(words[i + 1] ?? '');
@@ -85,7 +86,7 @@ function checkGit(words, env) {
   return null;
 }
 
-function checkPublish(words, env) {
+function checkPublish(words: string[], env: Env): string | null {
   if (env.YOKOTEN_RELEASE_APPROVAL) return null;
   const line = words.join(' ');
   if (/(^|\s)gh release (create|upload|edit)(\s|$)/.test(line)) return `gh release publishes a release. ${RELEASE}`;

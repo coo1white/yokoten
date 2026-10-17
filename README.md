@@ -67,14 +67,15 @@ and when to look again). "Not now" goes into `yokoten.json`, and `doctor` stops 
 
 ## Quick start
 
-Requires Node 22 or later. No dependencies.
+Requires Node 22.18 or later, which runs TypeScript as it is. No build step, no
+dependencies.
 
 ```sh
 git clone https://github.com/coo1white/yokoten
-node yokoten/bin/yokoten.mjs install      # this machine: skills, agents, hooks
+node yokoten/bin/yokoten.ts install      # this machine: skills, agents, hooks
 cd your-project
-node ~/.local/share/yokoten/bin/yokoten.mjs init     # this project: adds files, never overwrites
-node ~/.local/share/yokoten/bin/yokoten.mjs doctor   # what's still missing
+node ~/.local/share/yokoten/bin/yokoten.ts init     # this project: adds files, never overwrites
+node ~/.local/share/yokoten/bin/yokoten.ts doctor   # what's still missing
 ```
 
 `init` copies the runtime into `.yokoten/` in your project. Commit it: the hooks and CI
