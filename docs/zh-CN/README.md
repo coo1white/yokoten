@@ -1,20 +1,24 @@
 <div align="center">
 
-# yokoten · 横展
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../assets/banner-zh-dark.svg">
+  <img src="../assets/banner-zh-light.svg" width="100%" alt="yokoten · 横展。带你上路，替你守桥。一条路穿过群山，经过标着 1 到 5 的五关，通到一座桥，桥头有一盏灯守着。">
+</picture>
 
-[![ci](https://github.com/coo1white/yokoten/actions/workflows/yokoten.yml/badge.svg)](https://github.com/coo1white/yokoten/actions/workflows/yokoten.yml)
-[![TypeScript](https://img.shields.io/badge/TypeScript-no%20build-3178C6?logo=typescript&logoColor=white)](../records/0002-typescript.md)
-[![Node](https://img.shields.io/badge/Node-%E2%89%A522.18-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
-[![dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](../../package.json)
-[![license](https://img.shields.io/badge/license-MIT-blue)](../../LICENSE)
-[![Claude Code](https://img.shields.io/badge/for-Claude%20Code-D97757?logo=claude&logoColor=white)](https://claude.com/claude-code)
-
-**带你上路，替你守桥。**
+<br/>
 
 一个人 + AI，也按专业团队的标准开发。<br/>
 yokoten 自己就是这样做出来的，这个仓库就是示范。
 
-[English](../../README.md) | 中文
+**[yokoten.app](https://yokoten.app)** &nbsp;·&nbsp; [English](../../README.md) | 中文
+
+<br/>
+
+[![ci](https://img.shields.io/github/actions/workflow/status/coo1white/yokoten/yokoten.yml?branch=main&label=ci&style=flat&labelColor=1f2328&color=9e3620)](https://github.com/coo1white/yokoten/actions/workflows/yokoten.yml)
+[![works with 3 agents](https://img.shields.io/badge/works%20with-3%20agents-9e3620?style=flat&labelColor=1f2328)](guide.md#安装和命令 "Claude Code、Codex、Gemini CLI")
+[![dependencies 0](https://img.shields.io/badge/dependencies-0-9e3620?style=flat&labelColor=1f2328)](../../package.json)
+[![TypeScript, no build](https://img.shields.io/badge/TypeScript-no%20build-9e3620?style=flat&logo=typescript&logoColor=f0f6fc&labelColor=1f2328)](../records/0002-typescript.md)
+[![license MIT](https://img.shields.io/badge/license-MIT-9e3620?style=flat&labelColor=1f2328)](../../LICENSE)
 
 </div>
 
@@ -85,4 +89,4 @@ node ~/.local/share/yokoten/bin/yokoten.ts init      # 每个项目一次
 
 ---
 
-MIT · 由 [coolwhite](https://coolwhite.us/) 制作，带着在工厂车间里学到的东西。
+<p align="center"><sub>MIT · 由 <a href="https://coolwhite.us/">coolwhite</a> 制作，带着在工厂车间里学到的东西。</sub></p>
