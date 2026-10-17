@@ -161,4 +161,7 @@ test('install: skills, agents and hooks once, the user\'s own files untouched', 
   const doctor = spawnSync('node', [join(s.home, '.local/share/yokoten/bin/yokoten.ts'), 'doctor', '--session'], { cwd: s.repo, env: s.env, encoding: 'utf8' });
   assert.equal(doctor.status, 0, doctor.stderr);
   assert.match(doctor.stdout, /private-marks is missing or empty/);
+  // The home folder names the machine's user; it never shows (#25).
+  for (const out of [r.stdout, doctor.stdout]) assert.ok(!out.includes(s.home), 'output shows the home path');
+  assert.match(doctor.stdout, /~\/\.config\/yokoten\/private-marks/);
 });

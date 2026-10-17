@@ -78,6 +78,15 @@ export function scanText(text: string, { file, marks = [], allow = [] }: { file:
 }
 
 /**
+ * Text as yokoten may show it: the home folder, which names the machine's user, becomes
+ * `~`. Everything yokoten prints passes through this.
+ */
+export function hideHome(text: string, env: Env): string {
+  const home = (env.HOME || homedir()).replace(/[\\/]+$/, '');
+  return home.length > 1 ? text.split(home).join('~') : text;
+}
+
+/**
  * A known-bad sample, so a check can prove it still catches what it should. It is built
  * from pieces so this file does not fail its own check.
  */

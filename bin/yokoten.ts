@@ -8,6 +8,7 @@ import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
 import { botConfig, botEnv, installationToken, repoOf } from '../src/github/bot.ts';
 import { check, checkHistory, gitRoot } from '../src/run/check.ts';
 import { readToolCall } from '../src/agents/claude-code.ts';
+import { hideHome } from '../src/rules/privacy.ts';
 import { judge } from '../src/run/hook.ts';
 import { doctor } from '../src/setup/doctor.ts';
 import { VERSION } from '../src/setup/files.ts';
@@ -37,8 +38,13 @@ const rootOf = (dir: string): string | null => {
   }
 };
 
+// Everything yokoten prints goes through here or `say`, never straight to a stream: the
+// output lands in transcripts and CI logs, so the home folder is shown as ~ (core rule 11).
 function print(lines: string[], stream: NodeJS.WritableStream = process.stdout): void {
-  if (lines.length) stream.write(`${lines.join('\n')}\n`);
+  if (lines.length) say(`${lines.join('\n')}\n`, stream);
+}
+function say(text: string, stream: NodeJS.WritableStream): void {
+  stream.write(hideHome(text, env));
 }
 
 async function bot(command: string[]): Promise<number> {
@@ -76,7 +82,7 @@ function main(): number | Promise<number> {
       const config = root ? loadConfig(root) : DEFAULTS;
       const reason = judge(action, { root, config, env, commandsOnly: flag('--commands-only') });
       if (!reason) return 0;
-      process.stderr.write(`yokoten: ${reason}\n`);
+      say(`yokoten: ${reason}\n`, process.stderr);
       return 2;
     }
     case 'check': {
@@ -131,7 +137,7 @@ Promise.resolve()
       process.exitCode = code;
     },
     (err: Error) => {
-      process.stderr.write(`yokoten ${cmd}: ${err.message}\n`);
+      say(`yokoten ${cmd}: ${err.message}\n`, process.stderr);
       process.exitCode = 1;
     },
   );
