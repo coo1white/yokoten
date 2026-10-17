@@ -14,6 +14,8 @@ All notable changes are listed here. The format follows
 
 ### Internal
 
+- Code is `.ts` only: a test fails on any `.js`, `.mjs`, `.cjs` or `.tsx` under `bin/`,
+  `src/` or `test/`, since Node runs `.ts` with no build (#43).
 - Claude Code's formats (tool-call input, settings and hooks, skill and agent paths)
   live in one adapter, `src/agents/claude-code.ts`, so another runtime is one sibling
   file. A test holds the module layers, another keeps the repo's `AGENTS.md` equal to
