@@ -101,7 +101,9 @@ test('init: adds the practices, keeps what is there, and doctor then finds nothi
   assert.match(r.stdout, /wrote \.githooks\/pre-commit/);
   assert.equal(readFileSync(join(s.repo, 'AGENTS.md'), 'utf8'), '# our own rules\n');
   assert.ok(statSync(join(s.repo, '.githooks', 'pre-commit')).mode & 0o100);
-  assert.match(readFileSync(join(s.repo, '.github/workflows/yokoten.yml'), 'utf8'), /node \.yokoten\/bin\/yokoten\.ts check/);
+  const workflow = readFileSync(join(s.repo, '.github/workflows/yokoten.yml'), 'utf8');
+  assert.match(workflow, /node \.yokoten\/bin\/yokoten\.ts check/);
+  assert.match(workflow, /persist-credentials: false/, 'the hardened workflow (#36)');
   assert.ok(existsSync(join(s.repo, '.yokoten', 'VERSION')));
   assert.equal(s.git('config', 'core.hooksPath').stdout.trim(), '.githooks');
   // Again: nothing changes.

@@ -1,12 +1,15 @@
 # Monthly, one grouped pull request per kind, so updates don't each cost a review
 # (core rule 8). yokoten has no runtime dependencies: these are the type checker and
-# the actions CI runs.
+# the actions CI runs. A release is taken only once it is a week old, so one pulled
+# for being bad never reaches us.
 version: 2
 updates:
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
     groups:
       dev:
         patterns: ['*']
@@ -19,9 +22,12 @@ updates:
       - dependency-name: '@types/node'
         update-types: ['version-update:semver-major']
   - package-ecosystem: github-actions
-    directory: /
+    # The repo's own workflows, and the kit's, which every project gets from `init`.
+    directories: [/, /kit/project]
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
     groups:
       actions:
         patterns: ['*']
