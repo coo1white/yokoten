@@ -43,7 +43,7 @@ const read = (path: string) => {
   }
 };
 
-const gitConfig = (root: string, key: string) => {
+export const gitConfig = (root: string, key: string) => {
   try {
     return execFileSync('git', ['config', '--get', key], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch {
@@ -65,13 +65,13 @@ const listed = (dir: string): string[] => {
     return [];
   }
 };
-const todoFiles = (root: string) => TODO_FILES.filter((p) => listed(join(root, dirname(p))).includes(basename(p)));
+export const todoFiles = (root: string) => TODO_FILES.filter((p) => listed(join(root, dirname(p))).includes(basename(p)));
 
-const hasIssueTemplate = (root: string) => {
+export const hasIssueTemplate = (root: string) => {
   const dir = join(root, '.github', 'ISSUE_TEMPLATE');
   return existsSync(dir) && readdirSync(dir).some((f) => /\.(ya?ml|md)$/i.test(f));
 };
-const hasPrTemplate = (root: string) => ['pull_request_template.md', 'PULL_REQUEST_TEMPLATE.md'].some((f) => existsSync(join(root, '.github', f)));
+export const hasPrTemplate = (root: string) => ['pull_request_template.md', 'PULL_REQUEST_TEMPLATE.md'].some((f) => existsSync(join(root, '.github', f)));
 
 /**
  * The kit's skills not yet in every skills folder, as "folder (names)"; empty when all are
@@ -93,7 +93,7 @@ const SECURITY_FILES: [string, string[]][] = [
   ['Dependabot config', ['.github/dependabot.yml', '.github/dependabot.yaml']],
   ['license file', ['LICENSE', 'LICENSE.md', 'LICENSE.txt', 'COPYING']],
 ];
-const securityLacking = (root: string) => SECURITY_FILES.filter(([, paths]) => !paths.some((p) => existsSync(join(root, p)))).map(([name]) => name);
+export const securityLacking = (root: string) => SECURITY_FILES.filter(([, paths]) => !paths.some((p) => existsSync(join(root, p)))).map(([name]) => name);
 
 /** The road, in order. Step names never change: they are the keys for "not now". */
 export const ROAD: Step[] = [

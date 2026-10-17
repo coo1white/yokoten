@@ -112,6 +112,24 @@ An old project isn't a blank slate. Some of its habits are better than ours. So 
 decision: **as-is**, **lighter** (and what's left out), or **not now** (with the reason
 and when to look again). "Not now" goes into `yokoten.json`, and `doctor` stops asking.
 
+### A first draft of the table
+
+`yokoten adopt` drafts that table before the talk starts. It reads the project's files
+and says what the project does today for each step: **done**, **missing** or
+**partial**. Partial means the project has its own way, such as husky hooks, or a CI
+that doesn't run yokoten. A model then proposes a decision and a one-sentence reason
+for each row.
+
+- The model gets only those short facts. It never gets file contents.
+- yokoten runs its privacy check on the request first. On a hit, it sends nothing.
+- With no key, a failed call or a bad answer, rules draft the table instead: done or
+  missing is as-is, partial is lighter. The output says which one drafted it.
+- `adopt` never writes a file. You still decide every row.
+
+The model runs on Meta's model API (the Llama API), through its OpenAI-compatible
+endpoint. Set `LLAMA_API_KEY` to your key. `LLAMA_API_BASE` and `LLAMA_MODEL` point it at any
+other OpenAI-compatible endpoint and model.
+
 ## Install and commands
 
 Requires Node 22.18 or later, which runs TypeScript as it is. No build step, no
@@ -142,6 +160,7 @@ then run with no network and no global install.
 | `install` | Skills into `~/.claude/skills` and `~/.agents/skills`, agents into `~/.claude/agents`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file |
 | `init [dir]` | Puts the practices into a project. Adds files; keeps any that are already there and says so |
 | `doctor [--session]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session |
+| `adopt [--json]` | A draft of the adoption table for an old project: what it does today, and a proposed decision for each step. `--json` prints the rows. Writes nothing |
 | `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit |
 | `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, changelog line, milestone and labels. Long sentences in changed Markdown, and a diff over 400 changed lines, are notes |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public |

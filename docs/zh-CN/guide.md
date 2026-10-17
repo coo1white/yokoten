@@ -104,6 +104,21 @@ yokoten: git push --tags pushes tags. Only the owner decides when to release. If
 做法都要定下来：**照搬**、**减量**（说明去掉了哪部分），或者**暂不**（写明原因，以及什么
 时候再看）。「暂不」会写进 `yokoten.json`，`doctor` 就不再追问。
 
+### 先拿一份草稿
+
+`yokoten adopt` 会在你们开始过之前先把这张表填个初稿。它读项目里的文件，逐条写出项目现在的
+情况：**已有**、**没有**，或者**部分有**（项目有自己的做法，比如用 husky 管提交 hook，或者
+有 CI 但没跑 yokoten）。然后让模型给每一条提一个建议，附一句理由。
+
+- 模型只拿到这些简短的情况说明，拿不到文件内容。
+- 发出去之前，yokoten 先对要发的内容做一遍隐私检查。查到问题就什么都不发。
+- 没有 key、调用失败、或者模型的回答不合格式时，改用固定规则出草稿：已有或没有的，照搬；
+  部分有的，减量。输出会写明是谁出的草稿。
+- `adopt` 不改任何文件。每一条最后还是你来定。
+
+用的是 Meta 的模型 API（原来叫 Llama API），走它兼容 OpenAI 的接口。把 key 设到
+`LLAMA_API_KEY` 里。想换成别家兼容 OpenAI 的接口和模型，设 `LLAMA_API_BASE` 和 `LLAMA_MODEL`。
+
 ## 安装和命令
 
 需要 Node 22.18 或更高版本：它能直接运行 TypeScript，不用先编译。没有任何依赖。
@@ -132,6 +147,7 @@ node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看走到哪一关，�
 | `install` | 把技能装进 `~/.claude/skills` 和 `~/.agents/skills`，agent 装进 `~/.claude/agents`，加上会话开头的 `doctor` hook 和用户级命令守卫，再建一个空的私有词表 |
 | `init [dir]` | 把这套做法放进一个项目。只加文件；已有的文件保留，并告诉你保留了哪些 |
 | `doctor [--session]` | 整条路：每一关、每一步，加上这台电脑还缺什么。`--session` 只说下一步，会话开头用 |
+| `adopt [--json]` | 给老项目的采用表出一份草稿：项目现在做到了哪些，每一步建议怎么定。`--json` 输出每一行的数据。不改任何文件 |
 | `check [--staged]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交 |
 | `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的 CHANGELOG、milestone 和标签。改动的文档里句子太长、改动超过 400 行，都只提醒，不算失败 |
 | `check --history` | 对所有分支的每一个提交做隐私检查。私有仓库公开之前跑一遍 |

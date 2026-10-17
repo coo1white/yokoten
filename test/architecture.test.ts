@@ -11,8 +11,9 @@ const SRC = join(ROOT, 'src');
 
 // Lowest first. A module may import from its own layer or a lower one, never a higher.
 // rules: what is allowed, as pure functions. run: the checks at work (hook, commit, CI).
-// agents: one adapter per AI runtime. host: one adapter per code host (the bot, a CI
-// run's pull request). setup: writing yokoten into a machine or a project.
+// agents: one adapter per AI runtime, and llama.ts, the model API that adopt calls.
+// host: one adapter per code host (the bot, a CI run's pull request). setup: writing
+// yokoten into a machine or a project.
 const LAYERS = ['rules', 'run', 'agents', 'host', 'setup'];
 
 test('layers: no module imports from a layer above its own', () => {

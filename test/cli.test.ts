@@ -458,3 +458,21 @@ test('check --pr: a large pull request gets a note, never a failure; lock files 
   assert.match(r.stdout, /note: this pull request changes 500 lines, over 400\. Smaller pull requests are easier to review/);
   assert.match(r.stdout, /check --pr: ok/);
 });
+
+test('adopt: with no key, the rule-based draft and how to set the key; it changes no file (#6)', () => {
+  const s = sandbox();
+  s.write('CLAUDE.md', '# rules\n');
+  s.write('package.json', JSON.stringify({ scripts: { test: 'node --test' } }));
+  const before = s.git('status', '--porcelain', '--ignored').stdout;
+  const r = s.run(['adopt']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^\| Practice \| The project today \| Draft \| Why \|/);
+  assert.match(r.stdout, /\| rules \| partial: no AGENTS\.md, but CLAUDE\.md \| lighter \|/);
+  assert.match(r.stdout, /set LLAMA_API_KEY/);
+  assert.match(r.stdout, /You decide every row/);
+  const j = s.run(['adopt', '--json']);
+  const rows = JSON.parse(j.stdout) as { key: string; decision: string }[];
+  assert.equal(rows.find((row) => row.key === 'tests')?.decision, 'as-is');
+  assert.match(j.stderr, /drafted by rules/);
+  assert.equal(s.git('status', '--porcelain', '--ignored').stdout, before, 'adopt writes nothing');
+});

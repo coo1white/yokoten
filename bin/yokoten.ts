@@ -13,6 +13,7 @@ import * as gemini from '../src/agents/gemini.ts';
 import { changedLines, checkPullRequest, largeDiff, longSentences } from '../src/rules/pr.ts';
 import { hideHome } from '../src/rules/privacy.ts';
 import { type Action, judge } from '../src/run/hook.ts';
+import { draft, facts, table } from '../src/setup/adopt.ts';
 import { doctor } from '../src/setup/doctor.ts';
 import { VERSION } from '../src/setup/files.ts';
 import { init } from '../src/setup/init.ts';
@@ -24,6 +25,8 @@ const HELP = `yokoten ${VERSION}
   yokoten init [dir]         put the practices into a project (adds only, never overwrites)
   yokoten doctor [--session] the road: where this project is and its next step (--session:
                              only the next step), and what this machine is missing
+  yokoten adopt [--json]     a draft of the adoption table for an old project: what it does
+                             today, and as-is, lighter or not now for each step
   yokoten check [--staged]   layout, privacy and lead-only files (--staged: the next commit)
   yokoten check --history    the privacy check over every commit; run before going public
   yokoten check --pr         the pull request of this CI run: title, tier, sections, issue, changelog
@@ -155,6 +158,17 @@ function main(): number | Promise<number> {
       print(lines);
       // A session must start even when a project has steps left.
       return flag('--session') || ok ? 0 : 1;
+    }
+    case 'adopt': {
+      // Reads files and asks the model; never writes a file or changes config.
+      const root = gitRoot(process.cwd());
+      return draft(facts(root, env), { env }).then((d) => {
+        if (flag('--json')) {
+          print([JSON.stringify(d.rows.map(({ key, status, evidence, decision, reason }) => ({ key, status, evidence, decision, reason })), null, 2)]);
+          print([`yokoten adopt: drafted by ${d.by}${d.note ? `, because ${d.note}` : ''}. You decide every row.`], process.stderr);
+        } else print(table(d));
+        return 0;
+      });
     }
     case 'init': {
       const dir = resolve(args.find((a) => !a.startsWith('-')) ?? '.');
