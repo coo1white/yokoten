@@ -1,9 +1,19 @@
+tier: B
 Closes #
 
-## What changes, and why
+<!-- Title: `type(area): summary` or `type: summary`, at most 72 characters, no full stop, no #N.
+     Type: feat, fix, docs, test, refactor, chore, ci, perf, build, style, revert.
+     tier (first line): how hard a mistake is to take back.
+       A: secrets, data, the install and update path, releases. Needs a test that fails without the change, and the owner's review.
+       B: other code. Needs tests for the change.
+       C: docs, wording, styles.
+     Set a milestone and labels (a type and a tier). `yokoten check --pr` checks all of this in CI. -->
 
-## How it was checked
+## Why
 
-<!-- The commands run and what they printed. "Tests pass" is not enough: which tests, and the output. -->
+## What changed
 
-## What a reviewer should look at first
+## How tested
+
+<!-- The commands you ran and what they printed. "Tests pass" is not enough: which tests, and the output.
+     A change to what the project does adds a line to CHANGELOG.md, or says `No changelog: <reason>`. -->

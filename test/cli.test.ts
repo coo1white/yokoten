@@ -138,6 +138,7 @@ test('init: adds the practices, keeps what is there, and doctor then finds nothi
   const workflow = readFileSync(join(s.repo, '.github/workflows/yokoten.yml'), 'utf8');
   assert.match(workflow, /node \.yokoten\/bin\/yokoten\.ts check/);
   assert.match(workflow, /persist-credentials: false/, 'the hardened workflow (#36)');
+  assert.match(readFileSync(join(s.repo, '.github/workflows/pr.yml'), 'utf8'), /node \.yokoten\/bin\/yokoten\.ts check --pr/, 'the pull request check (#47)');
   assert.ok(existsSync(join(s.repo, '.yokoten', 'VERSION')));
   assert.equal(s.git('config', 'core.hooksPath').stdout.trim(), '.githooks');
   // Again: nothing changes.
@@ -243,4 +244,34 @@ test('install: skills, agents and hooks once, the user\'s own files untouched', 
   assert.match(skillsLine(), /^\s+ok\s+skills/);
   rmSync(join(shared, 'skills', 'inspect'), { recursive: true });
   assert.match(skillsLine(), /MISSING skills: not in ~\/\.agents\/skills \(inspect\)/);
+});
+
+test('check --pr: reads the CI event, lists the changed files from git, notes long prose (#47)', () => {
+  const s = sandbox();
+  s.write('README.md', 'Short.\n');
+  s.git('add', '.');
+  s.git('commit', '-qm', 'base');
+  const base = s.git('rev-parse', 'HEAD').stdout.trim();
+  s.write('src/a.ts', 'export const a = 1;\n');
+  s.write('README.md', `Short.\n${Array.from({ length: 30 }, (_, i) => `w${i}`).join(' ')}.\n`);
+  s.git('add', '.');
+  s.git('commit', '-qm', 'head');
+  const head = s.git('rev-parse', 'HEAD').stdout.trim();
+  const event = (body: string) => {
+    const file = join(s.home, 'event.json');
+    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
+    return { GITHUB_EVENT_PATH: file };
+  };
+  const body = 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\n';
+  let r = s.run(['check', '--pr'], { extra: event(body) });
+  assert.equal(r.status, 1, 'src/a.ts changed with no changelog line');
+  assert.match(r.stderr, /changelog: 1 changed file/);
+  assert.match(r.stdout, /note: 1 long sentence\(s\)\n- README\.md:2: a sentence of 30 words/);
+  r = s.run(['check', '--pr'], { extra: event(`${body}No changelog: a test\n`) });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /check --pr: ok/);
+  // Outside a pull request run, there is nothing to check.
+  r = s.run(['check', '--pr']);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /no pull request in this run/);
 });

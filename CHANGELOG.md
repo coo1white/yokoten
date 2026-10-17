@@ -8,6 +8,13 @@ All notable changes are listed here. The format follows
 
 ### Added
 
+- A pull request standard, checked in CI by `yokoten check --pr` (its own `pr` workflow,
+  so editing the title or labels reruns it): a commit-form title of at most 72
+  characters, a `tier: A/B/C` first line (how hard a mistake is to take back), Why /
+  What changed / How tested, a linked issue, a changelog line when behaviour changes,
+  a milestone and labels. Long sentences in changed Markdown are notes, never failures
+  (plain English, record 0005). Kit change: projects get the workflow and the new
+  template on their next `init`, and `AGENTS.md` gains a Writing section (#47, #49).
 - `yokoten bot -- <command>` runs one command (`gh`, `git push`) as the bot GitHub App,
   with a one-hour token made from the App's key. The token is never printed, and git
   cannot fall back to the owner's login. The dispatch skill now uses it (#4).

@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
 import { matcher } from '../src/rules/glob.ts';
 import { checkLayout } from '../src/rules/layout.ts';
+import { checkPullRequest, longSentences, type PullRequest } from '../src/rules/pr.ts';
 
 test('glob: a slash anchors at the root, no slash matches in any folder', () => {
   const m = (g: string, p: string) => matcher([g])(p);
@@ -46,4 +47,52 @@ test('config: missing file means defaults, a key overrides, bad JSON says where'
   assert.deepEqual(c.tests, DEFAULTS.tests);
   writeFileSync(join(dir, 'yokoten.json'), '{ nope');
   assert.throws(() => loadConfig(dir), /^Error: yokoten\.json:/);
+});
+
+const goodPr = (): PullRequest => ({
+  title: 'feat(kit): a pull request standard, checked in CI',
+  body: 'tier: B\nCloses #47\n\n## Why\nNothing checks it.\n\n## What changed\n- a rule\n\n## How tested\n`node --test`: 50 pass.\n',
+  files: ['src/rules/pr.ts', 'CHANGELOG.md'],
+  labels: ['feat', 'tier B'],
+  milestone: 'M0 pre-hackathon',
+});
+
+test('pull request: a good one passes (#47)', () => {
+  assert.deepEqual(checkPullRequest(goodPr(), DEFAULTS), []);
+  assert.deepEqual(checkPullRequest({ ...goodPr(), title: 'fix!: drop the old flag' }, DEFAULTS), [], 'no area, breaking mark');
+});
+
+test('pull request: each missing part fails with what to do (#47)', () => {
+  const one = (change: Partial<PullRequest>, pattern: RegExp) => {
+    const problems = checkPullRequest({ ...goodPr(), ...change }, DEFAULTS);
+    assert.equal(problems.length, 1, `${JSON.stringify(change)} -> ${problems.join(' | ')}`);
+    assert.match(problems[0], pattern);
+  };
+  one({ title: 'Added a pull request check' }, /^title: use `type\(area\): summary`/);
+  one({ title: 'feat: a pull request standard.' }, /full stop/);
+  one({ title: 'feat: a pull request standard (#47)' }, /issue number/);
+  one({ title: `feat: ${'a'.repeat(80)}` }, /over 72/);
+  one({ body: goodPr().body.replace('tier: B\n', '') }, /`tier: A`/);
+  one({ body: goodPr().body.replace('## How tested\n`node --test`: 50 pass.\n', '') }, /add a `## How tested`/);
+  one({ body: goodPr().body.replace('Nothing checks it.', '<!-- say why -->') }, /`## Why` section is empty/);
+  one({ body: goodPr().body.replace('Closes #47', 'Closes #') }, /Closes #N/);
+  one({ files: ['src/rules/pr.ts'] }, /^changelog:/);
+  one({ milestone: null }, /^milestone:/);
+  one({ labels: [] }, /^labels:/);
+  one({ files: ['kit/project/AGENTS.md', 'CHANGELOG.md'] }, /changes `kit\/`/);
+});
+
+test('pull request: docs, tests and CI need no changelog line; a reason lets code through (#47)', () => {
+  assert.deepEqual(checkPullRequest({ ...goodPr(), files: ['docs/guide.md', 'test/a.test.ts', '.github/workflows/pr.yml'] }, DEFAULTS), []);
+  assert.deepEqual(checkPullRequest({ ...goodPr(), files: ['src/a.ts'], body: `${goodPr().body}No changelog: a comment only\n` }, DEFAULTS), []);
+});
+
+test('plain English: long sentences are found; code, tables and comments are not (#49)', () => {
+  const long = Array.from({ length: 30 }, (_, i) => `word${i}`).join(' ') + '.';
+  const text = ['# A heading that is not prose', '', 'Short one. Another short one.', long, '', '```', long, '```', `| ${long} |`, `<!-- ${long} -->`, '- a list item.', `- ${long}`].join('\n');
+  assert.deepEqual(longSentences(text), [
+    { line: 4, words: 30 },
+    { line: 12, words: 30 },
+  ]);
+  assert.deepEqual(longSentences(`A [link with many words in its text](https://example.com/${'x'.repeat(50)}) is short.`), []);
 });
