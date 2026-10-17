@@ -1,0 +1,46 @@
+import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import { loadMarks, POSITIVE_CONTROL, scanText } from '../src/rules/privacy.mjs';
+
+// Samples are built from pieces so this file passes its own check.
+const at = '@';
+const ip = (...n) => n.join('.');
+
+test('positive control: the known-bad sample is caught', () => {
+  assert.equal(scanText(POSITIVE_CONTROL, { file: 'x' }).length, 2);
+});
+
+test('emails: personal ones are caught, noreply and examples are fine', () => {
+  assert.equal(scanText(`me${at}gmail.com`, { file: 'a' }).length, 1);
+  assert.match(scanText(`x\nmail me${at}mydomain.dev`, { file: 'a.md' })[0], /^a\.md:2: an email/);
+  for (const ok of [`1+me${at}users.noreply.github.com`, `noreply${at}anthropic.com`, `you${at}example.com`, `a${at}host.test`]) {
+    assert.deepEqual(scanText(ok, { file: 'a' }), [], ok);
+  }
+  assert.deepEqual(scanText(`help${at}company.com`, { file: 'a', allow: [`help${at}company.com`] }), []);
+});
+
+test('IPs: real ones are caught, documentation ranges and versions are not', () => {
+  for (const bad of [ip(100, 64, 1, 2), ip(10, 0, 0, 5), ip(8, 8, 8, 8), `host=${ip(203, 0, 114, 9)}:22`]) {
+    assert.equal(scanText(bad, { file: 'a' }).length, 1, bad);
+  }
+  for (const ok of [ip(127, 0, 0, 1), ip(192, 0, 2, 10), ip(198, 51, 100, 1), ip(0, 0, 0, 0), ip(999, 1, 1, 1), 'v1.2.3', '1.2.3.4.5']) {
+    assert.deepEqual(scanText(ok, { file: 'a' }), [], ok);
+  }
+});
+
+test('private marks: matched without case, never echoed', () => {
+  const problems = scanText('Deploy to Secret-Box tonight', { file: 'a', marks: ['secret-box'] });
+  assert.equal(problems.length, 1);
+  assert.ok(!/secret-box/i.test(problems[0]), 'the mark must not appear in the output');
+});
+
+test('private marks file: comments and blanks skipped, missing file is empty', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const file = join(dir, 'marks');
+  writeFileSync(file, '# header\n\nMyCity\n  myserver  \n');
+  assert.deepEqual(loadMarks({ YOKOTEN_PRIVATE_MARKS: file }), ['mycity', 'myserver']);
+  assert.deepEqual(loadMarks({ YOKOTEN_PRIVATE_MARKS: join(dir, 'none') }), []);
+});

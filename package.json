@@ -1,0 +1,14 @@
+{
+  "name": "yokoten",
+  "version": "0.1.0",
+  "description": "Carry what one project learned into every project: rules, guards and skills for AI coding agents.",
+  "license": "MIT",
+  "type": "module",
+  "bin": { "yokoten": "bin/yokoten.mjs" },
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test",
+    "check": "node bin/yokoten.mjs check"
+  },
+  "files": ["bin", "src", "kit"]
+}

@@ -1,0 +1,21 @@
+name: Incident
+description: Something went wrong in how we work. The rca skill turns it into a check.
+labels: [incident]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Facts only, in order, with times in UTC.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it got through
+      description: Which check should have caught it, and why it did not (or that there was none).
+  - type: textarea
+    id: spread
+    attributes:
+      label: Other places it can happen
+      description: Other projects or paths with the same gap (yokoten).

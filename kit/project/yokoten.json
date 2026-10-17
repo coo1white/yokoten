@@ -1,0 +1,4 @@
+{
+  "layout": { "maxEntries": 7, "exempt": ["docs/records"] },
+  "notNow": {}
+}
