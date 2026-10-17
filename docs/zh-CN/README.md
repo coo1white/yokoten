@@ -49,6 +49,19 @@ yokoten: git push --tags pushes tags. Only the owner decides when to release.
 | **4 · 带一支 AI 团队** | bot、worker、审查；你始终是老板 | [使用指南](guide.md#像带团队一样管-agent) |
 | **5 · 公开** | 检查全部历史里的隐私、安全设置、分支保护 | [安全说明](../../.github/SECURITY.md) |
 
+## 往哪里去
+
+**梦想：人人都能像好团队那样做软件。** 编程新手从第一天就走在对的路上，有 AI agent 陪着，也不会摔跤。
+软件开发是一整个循环（SDLC：计划、开发、测试、审查、发版、维护）。yokoten 不讲大道理，带你一步一步亲手走一遍。
+
+| 什么时候 | 做什么 | 在这里看 |
+|---|---|---|
+| **现在，2026 年 10 月 26 日前** | `doctor` 带你一关一关走；发版流程；检查 GitHub 设置；`npx yokoten`；Codex 和 Gemini CLI 也能拦住危险操作 | [M0](https://github.com/coo1white/yokoten/milestone/1) |
+| **Meta 黑客松，10 月 26 日 – 11 月 3 日** | 一个能读懂老项目、起草接入方案的 agent；支持 Muse Code | [M1](https://github.com/coo1white/yokoten/milestone/2) |
+| **之后** | Gitea 等其他代码托管平台；大改动前先写一份简短的方案；拿 OpenSSF Best Practices 徽章，公开证明做到了 | [issue](https://github.com/coo1white/yokoten/issues) |
+
+每一步都公开规划。[看板](https://github.com/users/coo1white/projects/1)上能看到今天在做什么。
+
 ## 快速开始
 
 只需要 [Node](https://nodejs.org/) 22.18 或更高版本，别的都不用装。
