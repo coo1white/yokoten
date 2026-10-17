@@ -1,2 +1,5 @@
 * text=auto eol=lf
 *.png binary
+# The git hooks are three-line launchers that git runs as shell; the code they start is TypeScript.
+.githooks/pre-commit linguist-detectable=false
+kit/project/.githooks/pre-commit linguist-detectable=false
