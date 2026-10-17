@@ -8,6 +8,15 @@ All notable changes are listed here. The format follows
 
 ### Changed
 
+- Every message has three parts: what happened, why it matters, and the fix. Most
+  lines keep their words and gain the missing part. Some are reworded. A full folder
+  reads `docs/: 9 entries, over the cap of 7: ...` (was `docs/ has 9 entries ...`). A
+  pull request problem reads `title: not in the commit form. ... Use ...`. The force push
+  message names the flag, and a long-sentence note gains its fix (#42).
+- An unknown option to `check`, `doctor`, `hook` or `explain` is refused with exit 1;
+  it used to be ignored. So are two of `--staged`, `--history` and `--pr` together,
+  where one used to win quietly. Exit codes are unchanged: 0 ok, 1 problems or a usage
+  error, 2 the hook blocked (#42).
 - `doctor` is a guide along the road in five stages (record 0004). A session hears
   three lines: the stage, the one next step, and why. Full `doctor` shows every stage
   and step as done, next, to do, not now or can't check. The stage is worked out each
@@ -17,6 +26,12 @@ All notable changes are listed here. The format follows
 
 ### Added
 
+- `--json` on `check`, `doctor`, `hook` and `explain`: pure JSON on stdout, for an
+  agent or a script. Each finding has `id`, `what`, `why`, `fix`, and `file` and
+  `line` when it is in a file; no field holds a private value. The guide's new "Exit
+  codes" section writes the codes down once (#42).
+- `yokoten explain <id>`: a rule or a step on the road, its reason and how it is
+  checked. An unknown id exits 1 with the list of ids (#42).
 - Full `doctor` names the outside standard each step meets, when there is one: OpenSSF
   Scorecard, the Best Practices badge, OSPS Baseline, Conventional Commits, for example
   `ci (Scorecard: CI-Tests)`. The session message stays three lines (#58).

@@ -1,5 +1,5 @@
 // The tool-call hook. Before an agent runs a command or edits a file, its runtime asks
-// the hook; a reason stops the action, null lets it go.
+// the hook; a finding stops the action, null lets it go.
 //
 // The hook knows nothing about any one runtime. An adapter in src/agents/ turns the
 // runtime's own call into an `Action` first.
@@ -8,6 +8,7 @@ import { realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import type { Config, Env } from '../rules/config.ts';
 import { checkCommand, checkEdit } from '../rules/guards.ts';
+import type { Finding } from '../rules/message.ts';
 
 /** What an agent is about to do, in no runtime's terms. */
 export interface Action {
@@ -21,7 +22,7 @@ export interface Action {
 }
 
 /**
- * The reason to stop the action, or null. `root` is the repo root, or null outside a repo.
+ * Why to stop the action (what, why, fix), or null. `root` is the repo root, or null outside a repo.
  * `commandsOnly` is the user-level hook: it runs in every repo, so it keeps to the rules
  * that hold everywhere (no tag pushes, no force pushes, no skipped checks) and leaves file
  * rules to each project's own hook.
@@ -29,7 +30,7 @@ export interface Action {
 export function judge(
   action: Action,
   { root, config, env, commandsOnly = false }: { root: string | null; config: Config; env: Env; commandsOnly?: boolean },
-): string | null {
+): Finding | null {
   if (action.command !== undefined) return checkCommand(action.command, { env });
   if (commandsOnly || !root) return null;
   if (action.worker) env = { ...env, YOKOTEN_ROLE: 'worker' };

@@ -12,6 +12,9 @@
 - **规则集（ruleset）**：GitHub 上保护分支或 tag 的设置，比如「没有审查不能合并」。
 - **主人、lead、worker**：你；和你对话的那个 agent 会话；lead 为单个任务启动的会话。详见
   [像带团队一样管 agent](#像带团队一样管-agent)。
+- **退出码**：命令结束时交回的一个数字。0 表示一切正常。脚本和 agent 靠它判断结果。
+  详见[退出码](#退出码)。
+- **JSON**：一种给程序读的纯文本数据格式。加上 `--json` 就输出这种格式。
 
 ## 名字的来历
 
@@ -94,6 +97,20 @@ yokoten: git push --tags pushes tags. Only the owner decides when to release. If
 
 （提示是英文的，因为 agent 读英文最稳。）
 
+每条提示都是同样的三段：**出了什么事**（what）、**为什么要紧**（why）、**怎么改**（fix，
+一条命令或者一处改动）。如果问题出在某个文件里，开头会先写位置：`文件:行号:`。查到了
+东西，只说是哪一类，不说内容本身：密钥、私有词表里的词，都不会打印出来。
+
+想知道某条规则为什么存在，就跑 `yokoten explain <id>`。id 就是规则或步骤的名字，比如
+`secret`、`commit-check`。不写 id，或者写了一个不存在的，它会把所有 id 列出来。
+
+```
+$ yokoten explain force-push
+force-push: no plain force push (core rule 7).
+Why: a plain force push can throw away work that someone else pushed.
+Check: the tool-call guard stops `git push --force`, `-f` and a `+ref`; `--force-with-lease` passes; a branch ruleset on the server is the lock.
+```
+
 ## 四层
 
 | 层 | 管什么 | 怎么装 |
@@ -139,7 +156,36 @@ node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看走到哪一关，�
 | `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的 CHANGELOG、milestone 和标签。改动的文档里句子太长、改动超过 400 行，都只提醒，不算失败 |
 | `check --history` | 对所有分支的每一个提交做隐私检查。私有仓库公开之前跑一遍 |
 | `hook [--agent <name>] [--commands-only]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool |
+| `explain [<id>]` | 讲一条规则或者路上的一步：它是什么、为什么要有、yokoten 怎么检查 |
 | `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。设置方法见 [server.md](../server.md#3-the-bot-a-github-app) |
+
+`check`、`doctor`、`hook`、`explain` 都可以加 `--json`。加了以后，标准输出里只有 JSON，
+别的什么都没有，方便 agent 和脚本读。每条结果的字段都一样：`id`、`what`、`why`、`fix`；
+问题出在文件里的，再加 `file` 和 `line`。拿 `id` 去跑 `yokoten explain` 就能看到详细说明。
+任何字段里都不会有隐私内容。
+
+- `check --json`：`{ check, ok, findings, notes }`。`check` 是 `tree`、`staged`、`history`
+  或 `pr`，说明查的是哪一种。`notes` 只是提醒，不会让检查失败。
+- `doctor --json`：`{ version, ok, selfTest, repo, stage, stages, next, findings, steps,
+  notes, server }`。加 `--session` 时只给下一步，以及私有词表缺失的提醒。
+- `hook --json`：在标准输出给出 `{ blocked, finding }`。AI 工具本身不用它：它们按各自的
+  hook 协议，看退出码，再从标准错误读原因。
+- `explain --json`：`{ found, id, kind, what, why, check, stage, standard }`；找不到时是
+  `{ found: false, ids }`。
+
+输出的规矩只有一条：结果写到标准输出（stdout），问题、拒绝和出错写到标准错误（stderr）。
+不认识的选项会直接拒绝，不会悄悄忽略。
+
+### 退出码
+
+| 退出码 | 意思 |
+|------|------|
+| 0 | 一切正常。`doctor --session` 永远是 0，保证会话总能开始 |
+| 1 | 查出了问题（`check`、`doctor`）、id 不存在（`explain`）、命令用法不对，或者 yokoten 自己出错 |
+| 2 | hook 拦下了这次工具调用，原因在标准错误里 |
+
+这几个数字定下来就不改。守卫自己坏了会给 1，不给 2：这样你看得到它坏了，它也不会把每次
+工具调用都拦住。
 
 提交检查不让你提交 `dist/`、`build/`、`out/` 文件夹里的文件，也不让你提交二进制文件。
 这些文件构建一次就会重新生成，二进制文件审查的人也看不懂。图片和字体（`png`、`jpg`、`gif`、

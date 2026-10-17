@@ -14,6 +14,9 @@ The [README](../README.md) is the short version. This is everything else: why yo
   without review".
 - **Owner, lead, worker**: you; the agent session you talk to; a session the lead starts
   for one task. See [Managing agents like a team](#managing-agents-like-a-team).
+- **Exit code**: a number a command gives back when it ends. 0 means all is well. A
+  script or an agent reads it. See [Exit codes](#exit-codes).
+- **JSON**: a plain text format for data that programs read. `--json` prints it.
 
 ## The name
 
@@ -101,6 +104,21 @@ And when an agent tries to push a release tag:
 yokoten: git push --tags pushes tags. Only the owner decides when to release. If the owner asked for this, they start the session with YOKOTEN_RELEASE_APPROVAL set.
 ```
 
+Every message has the same three parts: **what** happened, **why** it matters, and the
+**fix**, a command or an edit. A problem in a file starts with its place, `file:line:`.
+A hit names the kind of thing it found, never the thing: a secret or a private mark
+is never printed.
+
+To ask why a rule exists, run `yokoten explain <id>`. The id is the rule or step name,
+such as `secret` or `commit-check`. With no id, or an unknown one, it lists every id.
+
+```
+$ yokoten explain force-push
+force-push: no plain force push (core rule 7).
+Why: a plain force push can throw away work that someone else pushed.
+Check: the tool-call guard stops `git push --force`, `-f` and a `+ref`; `--force-with-lease` passes; a branch ruleset on the server is the lock.
+```
+
 ## Four layers
 
 | Layer | What | How |
@@ -149,7 +167,36 @@ then run with no network and no global install.
 | `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, changelog line, milestone and labels. Long sentences in changed Markdown, and a diff over 400 changed lines, are notes |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public |
 | `hook [--agent <name>] [--commands-only]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini` |
+| `explain [<id>]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Setup: [server.md](server.md#3-the-bot-a-github-app) |
+
+`check`, `doctor`, `hook` and `explain` take `--json`. Then stdout holds JSON and
+nothing else, for an agent or a script. Each finding has the same fields: `id`, `what`,
+`why`, `fix`, and `file` and `line` when it is in a file. `yokoten explain <id>` takes
+the `id`. No field holds a private value.
+
+- `check --json`: `{ check, ok, findings, notes }`. `check` is `tree`, `staged`,
+  `history` or `pr`. A note never fails the check.
+- `doctor --json`: `{ version, ok, selfTest, repo, stage, stages, next, findings, steps,
+  notes, server }`. With `--session`, only the next step and the private-marks finding.
+- `hook --json`: `{ blocked, finding }` on stdout. The runtimes do not use it: they read
+  the exit code and the reason on stderr, as their hook protocols say.
+- `explain --json`: `{ found, id, kind, what, why, check, stage, standard }`, or
+  `{ found: false, ids }`.
+
+Output for people follows one rule. Results go to stdout. Problems, refusals and errors
+go to stderr. An unknown option is refused, never ignored.
+
+### Exit codes
+
+| Code | Means |
+|------|-------|
+| 0 | All is well. `doctor --session` always gives 0, so a session always starts |
+| 1 | Problems found (`check`, `doctor`), an unknown id (`explain`), a usage error, or an error in yokoten itself |
+| 2 | The hook blocked the tool call. The reason is on stderr |
+
+These codes do not change. A broken guard gives 1, not 2: you see it, and it does not
+block every tool call.
 
 The commit check refuses a file in a `dist/`, `build/` or `out/` folder, and a binary file.
 A build makes such files again, and a reviewer can't read a binary. Images and fonts
