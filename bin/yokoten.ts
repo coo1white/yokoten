@@ -8,10 +8,12 @@ import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
 import { botConfig, botEnv, installationToken, repoOf } from '../src/github/bot.ts';
 import { readPullRequest } from '../src/github/pr.ts';
 import { check, checkHistory, gitRoot, historyTimeZones } from '../src/run/check.ts';
-import { readToolCall } from '../src/agents/claude-code.ts';
+import * as claudeCode from '../src/agents/claude-code.ts';
+import * as codex from '../src/agents/codex.ts';
+import * as gemini from '../src/agents/gemini.ts';
 import { checkPullRequest, longSentences } from '../src/rules/pr.ts';
 import { hideHome } from '../src/rules/privacy.ts';
-import { judge } from '../src/run/hook.ts';
+import { type Action, judge } from '../src/run/hook.ts';
 import { doctor } from '../src/setup/doctor.ts';
 import { VERSION } from '../src/setup/files.ts';
 import { init } from '../src/setup/init.ts';
@@ -25,12 +27,15 @@ const HELP = `yokoten ${VERSION}
   yokoten check [--staged]   layout, privacy and lead-only files (--staged: the next commit)
   yokoten check --history    the privacy check over every commit; run before going public
   yokoten check --pr         the pull request of this CI run: title, tier, sections, issue, changelog
-  yokoten hook [--commands-only]  the tool-call guard (reads a PreToolUse call on stdin)
+  yokoten hook [--agent <name>] [--commands-only]
+                             the tool-call guard: reads one tool call on stdin; <name> is
+                             claude-code (the default), codex or gemini
   yokoten bot -- <command>   run one command as the bot (gh, git push); the token is never printed
 `;
 
 const [cmd, ...args] = process.argv.slice(2);
 const flag = (name: string) => args.includes(name);
+const option = (name: string) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
 const env = process.env;
 
 const rootOf = (dir: string): string | null => {
@@ -71,16 +76,29 @@ async function bot(command: string[]): Promise<number> {
   return spawnSync(file, rest, { stdio: 'inherit', env: botEnv(env, token) }).status ?? 1;
 }
 
+// Each runtime sends its tool call in its own shape; its adapter turns it into an Action.
+const READERS: Record<string, (input: unknown) => Action> = {
+  'claude-code': claudeCode.readToolCall,
+  codex: codex.readToolCall,
+  gemini: gemini.readToolCall,
+};
+
 function main(): number | Promise<number> {
   switch (cmd) {
     case 'hook': {
+      const agent = option('--agent') ?? 'claude-code';
+      const read = Object.hasOwn(READERS, agent) ? READERS[agent] : undefined;
+      if (!read) {
+        print([`yokoten hook: unknown --agent ${agent}; use one of: ${Object.keys(READERS).join(', ')}`], process.stderr);
+        return 1;
+      }
       let input: unknown;
       try {
         input = JSON.parse(readFileSync(0, 'utf8'));
       } catch {
         return 0; // not a tool call; nothing to judge
       }
-      const action = readToolCall(input);
+      const action = read(input);
       const root = rootOf(action.cwd ?? process.cwd());
       const config = root ? loadConfig(root) : DEFAULTS;
       const reason = judge(action, { root, config, env, commandsOnly: flag('--commands-only') });

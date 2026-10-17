@@ -18,6 +18,8 @@ import { loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
 import { hasProjectHook, hasSessionDoctor } from '../agents/claude-code.ts';
+import * as codex from '../agents/codex.ts';
+import * as gemini from '../agents/gemini.ts';
 import { runs } from '../run/cli.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
 import { isSelf } from './init.ts';
@@ -87,6 +89,18 @@ export function projectChecks(root: string): Practice[] {
   ];
 }
 
+/**
+ * The other agents' tool-call hooks. Reported, but not a missing practice yet: no real
+ * Codex or Gemini CLI run has been seen to block through them (#30), and a project that
+ * uses neither should not fail doctor over them.
+ */
+export function agentHooks(root: string): Practice[] {
+  return [
+    { name: 'codex-hook', ok: codex.hasProjectHook(root), fix: 'no tool-call guard in .codex/hooks.json; `yokoten init` adds it' },
+    { name: 'gemini-hook', ok: gemini.hasProjectHook(root), fix: 'no tool-call guard in .gemini/settings.json; `yokoten init` adds it' },
+  ];
+}
+
 /** Machine checks: the skills, the user-level hooks, the private marks. */
 export function machineChecks(env: Env): Practice[] {
   const p = paths(env);
@@ -145,6 +159,7 @@ export function doctor(root: string | null, { env, config, session = false }: { 
   lines.push(`yokoten ${VERSION}, self-test ${broken.length ? 'FAILED' : 'ok'}`);
   lines.push('project:');
   for (const c of projectChecks(root)) lines.push(`  ${c.ok ? 'ok     ' : config.notNow[c.name] ? 'not now' : 'MISSING'} ${c.name}${c.ok ? '' : `: ${config.notNow[c.name] ?? c.fix}`}`);
+  for (const c of agentHooks(root)) lines.push(`  ${c.ok ? 'ok     ' : 'note   '} ${c.name}${c.ok ? '' : `: ${c.fix}`}`);
   const problems = check(root, { config, env });
   lines.push(`  ${problems.length ? 'MISSING' : 'ok     '} tree: ${problems.length ? `${problems.length} problem(s), run \`yokoten check\`` : 'layout and privacy clean'}`);
   lines.push('machine:');
