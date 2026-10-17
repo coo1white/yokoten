@@ -81,6 +81,9 @@ not now（暂不，后面跟着你给的原因）或者 can't check（这里查�
 | **4 · 带一支 AI 团队** | `codeowners`、`bot`、`skills` |
 | **5 · 公开** | `security-files`（安全说明、Dependabot、许可证） |
 
+如果某一步对应外部的标准，`yokoten doctor` 会在步骤名后面写出来，比如 `ci (Scorecard: CI-Tests)`。
+会话开头那三行不写。
+
 为什么这样分，见[决策记录 0004](../records/0004-the-road.md)。
 
 agent 想推送发版 tag 的时候：

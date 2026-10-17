@@ -129,7 +129,7 @@ export function doctor(root: string | null, { env, config, session = false }: { 
     lines.push(`  ${i + 1}. ${name}`);
     for (const { step, mark } of where.steps.filter((w) => w.step.stage === i + 1)) {
       const note = mark === 'done' ? '' : mark === 'not now' ? config.notNow[step.key] : mark === "can't check" ? '' : step.what(root, env);
-      lines.push(`    ${mark.padEnd(11)} ${step.key}${note ? `: ${note}` : ''}`);
+      lines.push(`    ${mark.padEnd(11)} ${step.key}${step.standard ? ` (${step.standard})` : ''}${note ? `: ${note}` : ''}`);
     }
   });
   lines.push('project:');

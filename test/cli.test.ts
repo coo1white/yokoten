@@ -178,7 +178,7 @@ test('doctor: the no-build-output step looks at the tracked files (#56)', () => 
   s.write('build/a.js', 'x\n');
   s.write('lib/x.so', 'x\n');
   s.git('add', '.');
-  assert.match(line(), /^ +to do +no-build-output: build output in the repo \(build\/a\.js, lib\/x\.so\)/);
+  assert.match(line(), /^ +to do +no-build-output \(Scorecard: Binary-Artifacts\): build output in the repo \(build\/a\.js, lib\/x\.so\)/);
   s.write('yokoten.json', JSON.stringify({ allowBuild: ['build/**', 'lib/**'] }));
   assert.match(line(), /^ +done +no-build-output/);
 });
@@ -339,10 +339,10 @@ test('doctor --session: "not now" skips a step, by the names yokoten.json alread
   s.write('yokoten.json', JSON.stringify({ notNow: { rules: 'a', 'tool-hook': 'b', 'commit-check': 'c', runtime: 'd', tests: 'e', ci: 'no remote yet', issues: 'f' } }));
   assert.match(next(), /stage 2 of 5, issues and pull requests\. Next: no issue templates and no pull request template/);
   const full = s.run(['doctor']).stdout;
-  assert.match(full, /^ +not now +ci: no remote yet$/m, 'the full map shows the reason');
-  assert.match(full, /^ +next +templates: /m);
-  assert.match(full, /^ +to do +changelog: /m);
-  assert.match(full, /^ +to do +titles: CI does not check pull requests/m);
+  assert.match(full, /^ +not now +ci \(Scorecard: CI-Tests\): no remote yet$/m, 'the full map shows the reason');
+  assert.match(full, /^ +next +templates \(GitHub community profile\): /m);
+  assert.match(full, /^ +to do +changelog \(Best Practices: release_notes\): /m);
+  assert.match(full, /^ +to do +titles \(Conventional Commits 1\.0\.0\): CI does not check pull requests/m);
 });
 
 test('doctor: each stage boundary, from a fresh repo to the end of the road', () => {
@@ -381,23 +381,23 @@ test('doctor: each stage boundary, from a fresh repo to the end of the road', ()
   // The order is advice, not a gate: a later step done early counts as done.
   rmSync(join(s.repo, 'AGENTS.md'));
   assert.match(next(bot), /stage 1 of 5, safety net\. Next: no AGENTS\.md/);
-  assert.match(s.run(['doctor'], { extra: { ...extra, ...bot } }).stdout, /^ +done +security-files$/m);
+  assert.match(s.run(['doctor'], { extra: { ...extra, ...bot } }).stdout, /^ +done +security-files \(Scorecard: Security-Policy · OSPS-VM-02\.01\)$/m, 'full doctor names the outside standard (#58)');
 });
 
 test('doctor: the tests step wants a test command and a CI step that runs it (#55)', () => {
   const s = sandbox();
   const line = () => s.run(['doctor']).stdout.split('\n').find((l) => / tests\b/.test(l)) ?? '';
-  assert.match(line(), /^ +to do +tests: no test command/);
+  assert.match(line(), /^ +to do +tests \(Best Practices: test\): no test command/);
   // npm's placeholder script only fails: it is no test command.
   s.write('package.json', JSON.stringify({ scripts: { test: 'echo "Error: no test specified" && exit 1' } }));
-  assert.match(line(), /^ +to do +tests: no test command/);
+  assert.match(line(), /^ +to do +tests \(Best Practices: test\): no test command/);
   s.write('package.json', JSON.stringify({ scripts: { test: 'vitest run' } }));
-  assert.match(line(), /^ +to do +tests: CI does not run the tests/);
+  assert.match(line(), /^ +to do +tests \(Best Practices: test\): CI does not run the tests/);
   s.write('.github/workflows/ci.yml', 'jobs:\n  t:\n    steps:\n      - run: npm run test\n');
   assert.match(line(), /^ +done +tests/);
   // A project with no package.json: CI that runs a test runner is enough.
   rmSync(join(s.repo, 'package.json'));
-  assert.match(line(), /^ +to do +tests: no test command/);
+  assert.match(line(), /^ +to do +tests \(Best Practices: test\): no test command/);
   s.write('.github/workflows/ci.yml', 'jobs:\n  t:\n    steps:\n      - run: go test ./...\n');
   assert.match(line(), /^ +done +tests/);
 });

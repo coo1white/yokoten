@@ -90,6 +90,9 @@ listed:
 | **4 · A team of agents** | `codeowners`, `bot`, `skills` |
 | **5 · Going public** | `security-files` (a security policy, Dependabot, a license) |
 
+After a step, `yokoten doctor` names the outside standard it meets, when there is one,
+for example `ci (Scorecard: CI-Tests)`. The session message leaves it out.
+
 [Record 0004](records/0004-the-road.md) says why the road looks like this.
 
 And when an agent tries to push a release tag:

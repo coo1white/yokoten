@@ -17,6 +17,9 @@ All notable changes are listed here. The format follows
 
 ### Added
 
+- Full `doctor` names the outside standard each step meets, when there is one: OpenSSF
+  Scorecard, the Best Practices badge, OSPS Baseline, Conventional Commits, for example
+  `ci (Scorecard: CI-Tests)`. The session message stays three lines (#58).
 - The commit check refuses build output (a file in a `dist/`, `build/` or `out/`
   folder) and binary files. Images and fonts pass, and `allowBuild` in `yokoten.json`
   lets other paths through. A new `no-build-output` step in stage 2 of the road looks
