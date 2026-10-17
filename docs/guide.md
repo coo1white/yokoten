@@ -191,7 +191,8 @@ These came from the same projects and worked there, but cost more than they save
 a general kit: a check that every commit's type matches the files it touches; byte-level
 replay of merges in the queue; a folder taxonomy for todo files; a 978-line rules file;
 signed release verdicts committed to the repo; a controlled-English style standard as a
-hard rule. A practice earns a place by paying for itself in more than one project.
+hard rule (a light version came back as guidance with a soft check:
+[record 0005](records/0005-plain-english.md)). A practice earns a place by paying for itself in more than one project.
 
 
 ## Status
