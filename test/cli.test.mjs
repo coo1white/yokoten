@@ -1,7 +1,7 @@
 // End to end: the CLI in throwaway git repos, the way a hook or CI runs it.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -48,6 +48,17 @@ test('hook: blocks with exit 2 and a reason, allows with exit 0', () => {
   r = s.run(['hook', '--commands-only'], { input: JSON.stringify({ cwd: s.repo, tool_input: { file_path: 'CLAUDE.md' } }), extra: { YOKOTEN_ROLE: 'worker' } });
   assert.equal(r.status, 0);
   assert.equal(s.run(['hook'], { input: 'not json' }).status, 0);
+});
+
+test('hook: a repo reached through a symlink gets the same file rules (#1)', () => {
+  const s = sandbox();
+  const link = join(s.home, 'link');
+  symlinkSync(s.repo, link);
+  const call = (file_path) => s.run(['hook'], { input: JSON.stringify({ cwd: link, tool_input: { file_path } }), extra: { YOKOTEN_ROLE: 'worker' } });
+  assert.equal(call(join(link, 'AGENTS.md')).status, 2, 'absolute path through the link');
+  assert.equal(call('AGENTS.md').status, 2, 'relative to a cwd through the link');
+  assert.equal(call(join(link, '.github', 'new', 'x.yml')).status, 2, 'a file in a folder that does not exist yet');
+  assert.equal(call(join(s.home, 'elsewhere.md')).status, 0, 'outside the repo');
 });
 
 test('check --staged: stops a commit with a personal email or a private mark', () => {
