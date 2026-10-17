@@ -75,7 +75,12 @@ jobs:
           curl -fsSL -o "$RUNNER_TEMP/$tarball" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$tarball"
           echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" actionlint
-          "$RUNNER_TEMP/actionlint" -color .github/workflows/*.yml kit/project/.github/workflows/*.yml
+          # The kit's workflow is linted as `init` writes it: the {{cli}} placeholder filled in.
+          mkdir -p "$RUNNER_TEMP/kit"
+          for f in kit/project/.github/workflows/*.yml; do
+            sed "s|{{cli}}|.yokoten/bin/yokoten.ts|g" "$f" > "$RUNNER_TEMP/kit/$(basename "$f")"
+          done
+          "$RUNNER_TEMP/actionlint" -color .github/workflows/*.yml "$RUNNER_TEMP"/kit/*.yml
       # Findings fail the job here, as annotations; no upload to code scanning.
       - uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
         with:
