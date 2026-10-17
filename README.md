@@ -48,6 +48,22 @@ can see it working:
 | **4 · A team of agents** | a bot, workers, a reviewer; you stay the boss | [the guide](docs/guide.md#managing-agents-like-a-team) |
 | **5 · Going public** | a privacy check over all history, security settings, protected branches | [security policy](.github/SECURITY.md) |
 
+## Where this is going
+
+**The dream: everyone can build software the way good teams do.** Someone new to
+programming should start on the right road on day one and walk it safely with AI agents.
+Software development has a full cycle (the SDLC: plan, build, test, review, release,
+maintain). yokoten teaches that cycle by doing it, one step at a time.
+
+| When | What | Track it |
+|---|---|---|
+| **Now, before 26 Oct 2026** | `doctor` walks you along the road; a release flow; checks on GitHub settings; `npx yokoten`; the same guard in Codex and Gemini CLI | [M0](https://github.com/coo1white/yokoten/milestone/1) |
+| **Meta hackathon, 26 Oct – 3 Nov** | an agent that reads an old project and drafts how to adopt yokoten; Muse Code support | [M1](https://github.com/coo1white/yokoten/milestone/2) |
+| **Next** | Gitea and other code hosts; a short spec before larger changes; the OpenSSF Best Practices badge as public proof | [issues](https://github.com/coo1white/yokoten/issues) |
+
+Every step is planned in the open. The [board](https://github.com/users/coo1white/projects/1)
+shows what is being built today.
+
 ## Quick start
 
 You need [Node](https://nodejs.org/) 22.18 or later. Nothing else.
