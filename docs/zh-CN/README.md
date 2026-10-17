@@ -60,7 +60,7 @@ cd your-project
 node ~/.local/share/yokoten/bin/yokoten.ts init      # 每个项目一次
 ```
 
-然后用 Claude Code 打开这个项目，它会告诉你还缺什么。
+然后用 Claude Code 打开这个项目，它会告诉你走到了哪一关，下一步做什么。
 
 ## 了解更多
 

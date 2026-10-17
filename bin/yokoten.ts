@@ -5,8 +5,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
-import { botConfig, botEnv, installationToken, repoOf } from '../src/github/bot.ts';
-import { readPullRequest } from '../src/github/pr.ts';
+import { botConfig, botEnv, installationToken, readPullRequest, repoOf } from '../src/host/github.ts';
 import { check, checkHistory, gitRoot, historyTimeZones } from '../src/run/check.ts';
 import * as claudeCode from '../src/agents/claude-code.ts';
 import * as codex from '../src/agents/codex.ts';
@@ -23,7 +22,8 @@ const HELP = `yokoten ${VERSION}
 
   yokoten install            skills, agents and user-level hooks for this machine
   yokoten init [dir]         put the practices into a project (adds only, never overwrites)
-  yokoten doctor [--session] what this project and machine are missing
+  yokoten doctor [--session] the road: where this project is and its next step (--session:
+                             only the next step), and what this machine is missing
   yokoten check [--staged]   layout, privacy and lead-only files (--staged: the next commit)
   yokoten check --history    the privacy check over every commit; run before going public
   yokoten check --pr         the pull request of this CI run: title, tier, sections, issue, changelog
@@ -153,7 +153,7 @@ function main(): number | Promise<number> {
       const config = root ? loadConfig(root) : DEFAULTS;
       const { ok, lines } = doctor(root, { env, config, session: flag('--session') });
       print(lines);
-      // A session must start even when a project is missing practices.
+      // A session must start even when a project has steps left.
       return flag('--session') || ok ? 0 : 1;
     }
     case 'init': {

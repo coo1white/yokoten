@@ -11,9 +11,9 @@ const SRC = join(ROOT, 'src');
 
 // Lowest first. A module may import from its own layer or a lower one, never a higher.
 // rules: what is allowed, as pure functions. run: the checks at work (hook, commit, CI).
-// agents: one adapter per AI runtime. github: the code host's API (the bot).
-// setup: writing yokoten into a machine or a project.
-const LAYERS = ['rules', 'run', 'agents', 'github', 'setup'];
+// agents: one adapter per AI runtime. host: one adapter per code host (the bot, a CI
+// run's pull request). setup: writing yokoten into a machine or a project.
+const LAYERS = ['rules', 'run', 'agents', 'host', 'setup'];
 
 test('layers: no module imports from a layer above its own', () => {
   const found = new Set<string>();
@@ -29,6 +29,19 @@ test('layers: no module imports from a layer above its own', () => {
     }
   }
   assert.ok(found.size > 0, 'the import scan found nothing; the pattern is broken');
+});
+
+// A step names what it needs in host-neutral words; only src/host/ talks to a host's API
+// (record 0004). Then adding a host (Gitea) means one new adapter, not a change in each step.
+const HOST_API = /api\.github\.com|\bgh api\b|GITHUB_EVENT_PATH/;
+const namesHostApi = (files: Record<string, string>) => Object.keys(files).filter((p) => !p.startsWith('src/host/') && HOST_API.test(files[p]));
+
+test('host: nothing outside src/host/ names a GitHub API (#33)', () => {
+  assert.deepEqual(namesHostApi({ 'src/setup/a.ts': 'run gh api repos/x', 'src/rules/b.ts': 'env.GITHUB_EVENT_PATH', 'bin/c.ts': 'https://api.github.com', 'src/host/github.ts': 'https://api.github.com', 'src/run/d.ts': 'gh pr view' }), ['src/setup/a.ts', 'src/rules/b.ts', 'bin/c.ts']);
+  const files: Record<string, string> = {};
+  for (const path of execFileSync('git', ['ls-files', 'bin', 'src'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter(Boolean)) files[path] = readFileSync(join(ROOT, path), 'utf8');
+  assert.ok(Object.keys(files).some((p) => p.startsWith('src/host/') && HOST_API.test(files[p])), 'src/host/ names no API; the scan is broken');
+  assert.deepEqual(namesHostApi(files), [], 'move the host call into an adapter in src/host/');
 });
 
 test('AGENTS.md: the core rules here are the kit\'s, word for word', () => {

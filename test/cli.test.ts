@@ -193,7 +193,7 @@ test('check --history: finds what a later commit deleted, and a personal author 
   assert.match(r.stderr, /\(author\/committer\):1: an email/);
 });
 
-test('init: adds the practices, keeps what is there, and doctor then finds nothing missing', () => {
+test('init: adds the practices, keeps what is there, and doctor goes on to stage 3', () => {
   const s = sandbox();
   s.write('AGENTS.md', '# our own rules\n');
   s.write('.github/SECURITY.md', '# email us\n');
@@ -256,9 +256,10 @@ test('init: adds the practices, keeps what is there, and doctor then finds nothi
   assert.notEqual(secret.status, 0, 'a secret is refused too (#8)');
   assert.match(secret.stderr, /leak\.md:1: a secret \(AWS access key id\)/);
   s.git('reset', '-q', 'leak.md');
+  // init does all of stages 1 and 2, so the road goes on to stage 3.
   r = s.run(['doctor', '--session']);
   assert.equal(r.status, 0);
-  assert.doesNotMatch(r.stdout, /missing \d+ practice/);
+  assert.match(r.stdout, /^yokoten: stage 3 of 5, release\. Next: no CHANGELOG\.md/);
 });
 
 test('init: safe defaults, Dependabot and a security policy; doctor lists the security switches (#35)', () => {
@@ -275,19 +276,75 @@ test('init: safe defaults, Dependabot and a security policy; doctor lists the se
   for (const sw of [/private vulnerability reporting/, /secret scanning with push protection/, /Dependabot alerts/]) assert.match(doctor.stdout, sw);
 });
 
-test('doctor --session: names what is missing, and respects notNow', () => {
+// The road (record 0004). A session hears three lines about one step; the marks file is
+// set so that the private-marks note does not add a fourth.
+test('doctor --session: exactly three lines, about the first step of the first stage not done', () => {
   const s = sandbox();
-  let r = s.run(['doctor', '--session']);
+  const marks = join(s.home, 'marks');
+  writeFileSync(marks, 'placeholder-mark\n');
+  const r = s.run(['doctor', '--session'], { extra: { YOKOTEN_PRIVATE_MARKS: marks } });
   assert.equal(r.status, 0, 'a session always starts');
-  assert.match(r.stdout, /missing 5 practice\(s\)/);
-  assert.match(r.stdout, /yokoten skill/);
-  s.write('yokoten.json', JSON.stringify({ notNow: { ci: 'no remote yet' } }));
-  r = s.run(['doctor', '--session']);
-  assert.match(r.stdout, /missing 4 practice\(s\)/);
-  assert.doesNotMatch(r.stdout, /- ci:/);
+  assert.deepEqual(r.stdout.trimEnd().split('\n'), [
+    'yokoten: stage 1 of 5, safety net. Next: no AGENTS.md, so the agents have no written rules here; `yokoten init` adds one.',
+    'Why: an agent follows the rules it can read, and only those.',
+    'Tell the user in plain words, one step at a time, and offer to do it (as-is, lighter, or not now with a reason).',
+  ]);
   // Outside a repo it says nothing (unless yokoten itself is broken).
-  r = s.run(['doctor', '--session'], { cwd: s.home });
-  assert.equal(r.stdout, '');
+  assert.equal(s.run(['doctor', '--session'], { cwd: s.home }).stdout, '');
+});
+
+test('doctor --session: "not now" skips a step, by the names yokoten.json already uses', () => {
+  const s = sandbox();
+  const next = () => s.run(['doctor', '--session']).stdout.split('\n')[0];
+  s.write('yokoten.json', JSON.stringify({ notNow: { rules: 'our rules live in the wiki for now' } }));
+  assert.match(next(), /stage 1 of 5, safety net\. Next: no tool-call guard/);
+  s.write('yokoten.json', JSON.stringify({ notNow: { rules: 'a', 'tool-hook': 'b', 'commit-check': 'c', runtime: 'd' } }));
+  assert.match(next(), /stage 2 of 5, issues and pull requests\. Next: CI does not run/, 'a stage with every step not now is passed');
+  s.write('yokoten.json', JSON.stringify({ notNow: { rules: 'a', 'tool-hook': 'b', 'commit-check': 'c', runtime: 'd', ci: 'no remote yet', issues: 'f' } }));
+  assert.match(next(), /stage 2 of 5, issues and pull requests\. Next: no issue templates and no pull request template/);
+  const full = s.run(['doctor']).stdout;
+  assert.match(full, /^ +not now +ci: no remote yet$/m, 'the full map shows the reason');
+  assert.match(full, /^ +next +templates: /m);
+  assert.match(full, /^ +to do +changelog: /m);
+  assert.match(full, /^ +to do +titles: CI does not check pull requests/m);
+});
+
+test('doctor: each stage boundary, from a fresh repo to the end of the road', () => {
+  const s = sandbox();
+  const marks = join(s.home, 'marks');
+  writeFileSync(marks, 'placeholder-mark\n');
+  const key = join(s.home, 'bot.pem');
+  const extra = { YOKOTEN_PRIVATE_MARKS: marks };
+  const session = (more: Record<string, string> = {}) => s.run(['doctor', '--session'], { extra: { ...extra, ...more } }).stdout.trimEnd().split('\n');
+  const next = (more?: Record<string, string>) => session(more)[0];
+  assert.match(next(), /stage 1 of 5, safety net\. Next: no AGENTS\.md/);
+  // Stage 1 done, stage 2 not: init without its CI workflow.
+  assert.equal(s.run(['init']).status, 0);
+  rmSync(join(s.repo, '.github', 'workflows', 'yokoten.yml'));
+  assert.match(next(), /stage 2 of 5, issues and pull requests\. Next: CI does not run `yokoten check`/, 'the pull request check alone is not the CI check');
+  s.write('TODO.md', '- one\n');
+  s.run(['init']);
+  assert.match(next(), /stage 2 of 5, issues and pull requests\. Next: a todo file \(TODO\.md\)/);
+  rmSync(join(s.repo, 'TODO.md'));
+  // Stage 2 done.
+  assert.match(next(), /stage 3 of 5, release\. Next: no CHANGELOG\.md/);
+  s.write('CHANGELOG.md', '# Changelog\n\n## [Unreleased]\n');
+  // Stage 3 done.
+  assert.match(next(), /stage 4 of 5, a team of agents\. Next: no CODEOWNERS file/);
+  s.write('.github/CODEOWNERS', '* @placeholder\n');
+  assert.match(next(), /stage 4 of 5, a team of agents\. Next: no bot on this machine/);
+  writeFileSync(key, 'not a real key\n');
+  const bot = { YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key };
+  assert.match(next(bot), /stage 4 of 5, a team of agents\. Next: the yokoten skills are not in/);
+  assert.equal(s.run(['install']).status, 0);
+  // Stage 4 done. init writes a security policy and Dependabot; the license is the owner's choice.
+  assert.match(next(bot), /stage 5 of 5, going public\. Next: no license file; /);
+  s.write('LICENSE', 'placeholder license\n');
+  assert.deepEqual(session(bot), ['yokoten: every step yokoten can check is done, or marked not now.']);
+  // The order is advice, not a gate: a later step done early counts as done.
+  rmSync(join(s.repo, 'AGENTS.md'));
+  assert.match(next(bot), /stage 1 of 5, safety net\. Next: no AGENTS\.md/);
+  assert.match(s.run(['doctor'], { extra: { ...extra, ...bot } }).stdout, /^ +done +security-files$/m);
 });
 
 test('install: skills, agents and hooks once, the user\'s own files untouched', () => {
@@ -333,10 +390,11 @@ test('install: skills, agents and hooks once, the user\'s own files untouched', 
   for (const out of [r.stdout, doctor.stdout]) assert.ok(!out.includes(s.home), 'output shows the home path');
   assert.match(doctor.stdout, /~\/\.config\/yokoten\/private-marks/);
   // The skills check wants every skill in both folders, and names what is missing.
+  // Skills are a step on the road, stage 4.
   const skillsLine = () => s.run(['doctor']).stdout.split('\n').find((l) => / skills/.test(l)) ?? '';
-  assert.match(skillsLine(), /^\s+ok\s+skills/);
+  assert.match(skillsLine(), /^\s+done\s+skills$/);
   rmSync(join(shared, 'skills', 'inspect'), { recursive: true });
-  assert.match(skillsLine(), /MISSING skills: not in ~\/\.agents\/skills \(inspect\)/);
+  assert.match(skillsLine(), /^\s+(next|to do)\s+skills: the yokoten skills are not in ~\/\.agents\/skills \(inspect\); run `yokoten install`$/);
 });
 
 test('check --pr: reads the CI event, lists the changed files from git, notes long prose (#47)', () => {

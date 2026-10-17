@@ -59,7 +59,8 @@ cd your-project
 node ~/.local/share/yokoten/bin/yokoten.ts init      # once per project
 ```
 
-Then open the project in Claude Code. It tells you what's still missing.
+Then open the project in Claude Code. It tells you which stage you are at, and the one
+next step.
 
 ## Learn more
 
