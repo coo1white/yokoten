@@ -16,6 +16,14 @@ All notable changes are listed here. The format follows
   privately). It keeps a project's own copies. `doctor` adds the security switches to
   the owner's last server step: private vulnerability reporting, secret scanning with
   push protection, and Dependabot alerts (#35).
+- The privacy check (commit, CI and `check --history`) also catches secrets: GitHub,
+  npm, Slack, Stripe live, Google, OpenAI and Anthropic tokens, AWS access key ids,
+  and PEM private keys. A hit names the kind, never the secret, and doctor's self-test
+  feeds it a sample (#8).
+- `install` also writes every skill to `~/.agents/skills`, the open Agent Skills folder
+  that Codex, Gemini CLI, Copilot, Cursor and others read, next to `~/.claude/skills`.
+  `doctor` wants each skill in both and names what is missing. Agents stay Claude-only
+  (#29).
 
 ### Internal
 

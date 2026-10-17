@@ -122,7 +122,7 @@ then run with no network and no global install.
 
 | Command | What it does |
 |---------|--------------|
-| `install` | Skills and agents into `~/.claude`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file |
+| `install` | Skills into `~/.claude/skills` and `~/.agents/skills`, agents into `~/.claude/agents`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file |
 | `init [dir]` | Puts the practices into a project. Adds files; keeps any that are already there and says so |
 | `doctor [--session]` | What this project and machine are missing. `--session` is the short form for the start of a session |
 | `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit |
@@ -145,7 +145,7 @@ The full table, with the reasons, is in [`kit/project/AGENTS.md`](../kit/project
 8. Squash merge. One pull request, one purpose; small polish goes in one batch.
 9. Review and test the exact commit that merges.
 10. No folder holds more than 7 entries.
-11. Nothing in the repo, or in what yokoten prints, points at a person.
+11. Nothing in the repo, or in what yokoten prints, points at a person or holds a secret.
 12. Decisions are written down once and kept. Facts are replaced. Times are UTC.
 
 ## Managing agents like a team
@@ -177,6 +177,10 @@ your name, your city, your domains, your server names. That file stays outside t
 repo, because a list of what must not be published can't itself be published. A hit
 is reported by file and line; the mark itself is never printed.
 
+The same check catches secrets: GitHub, npm, Slack, Stripe, Google, OpenAI and
+Anthropic tokens, AWS access key ids, and PEM private keys. A hit names the kind of
+secret, never the secret. Deleting it is not enough, since git keeps it: rotate it.
+
 A commit also records the time it was made, with your time zone, and a time zone
 narrows down where you live. So the commit check asks for UTC: `init` sets `TZ=UTC` for
 agent sessions, and for your own commits it tells you how.
@@ -190,9 +194,11 @@ Honest limits:
   protection, code owners, and a bot without the rights to release or change CI.
 - **Server settings aren't checked yet.** `doctor` lists the three steps for the owner.
   Checking them through the API is planned.
-- **Claude Code first.** Hooks, skills and agents follow Claude Code's formats. The rules
-  are plain `AGENTS.md`, which Claude Code reads when a project has no `CLAUDE.md`, and
-  so do most other agents. Muse Code's skills and hooks are planned.
+- **Claude Code first.** Hooks and agents follow Claude Code's formats. Skills are the
+  open SKILL.md format, so `install` also puts them in `~/.agents/skills`, where Codex,
+  Gemini CLI, Copilot, Cursor and other agents find them. The rules are plain
+  `AGENTS.md`, which Claude Code reads when a project has no `CLAUDE.md`, and so do
+  most other agents. Muse Code's skills and hooks are planned.
 
 ## What was left out on purpose
 

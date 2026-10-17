@@ -33,7 +33,7 @@ skill: find the cause, add or fix the check, then carry the fix to the other pro
 | 8 | Squash merge. One pull request, one purpose; small polish goes in one batch. | Incident: the owner was asked to review a +3 −2 pull request on its own and said small changes should not each cost a review. | Repo settings (squash only) |
 | 9 | Review and test the exact commit that merges. The reviewer only reads; the verifier runs it. | Incident: two pull requests, each green on its own, broke `main` together, twice. | `inspect` skill; merge queue where the host has one |
 | 10 | No folder holds more than 7 entries (the root is not counted). | Risk: a flat folder grows until nobody can find anything. Set as a standard by the owner. | Commit check (layout) |
-| 11 | Nothing in the repo, or in what yokoten prints, points at a person: no personal email, IP, name, city or private domain. A hit is reported by place, never by content; the home folder shows as `~`. | Incident: the old check read only the live docs, and server names and addresses were still in 56 tracked files. | Commit check and CI (privacy); `check --history` before going public |
+| 11 | Nothing in the repo, or in what yokoten prints, points at a person or opens their accounts: no personal email, IP, name, city or private domain, and no secret (token or private key). A hit is reported by place, never by content; the home folder shows as `~`. | Incident: the old check read only the live docs, and server names and addresses were still in 56 tracked files. | Commit check and CI (privacy and secrets); `check --history` before going public |
 | 12 | Decisions are written down once and kept. A changed decision gets a new entry that points back. Facts are replaced, not added to. Times are UTC, commit times included. | Risk: a decision that lives only in a chat gets argued again. Incident: every commit recorded the owner's time zone (#40). | `record` skill; commit check (commit time) |
 
 ## Where to look
@@ -65,8 +65,9 @@ yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
   layer or a lower one (`test/architecture.test.ts` holds this):
   - `rules/`: what is allowed, as plain functions (guards, privacy, layout, config).
   - `run/`: the checks at work: the tool-call hook, the commit and CI check.
-  - `agents/`: one adapter per AI runtime. Only `claude-code.ts` today: its tool-call
-    shape, its settings and hooks, where its skills and agents go. Nothing else in
+  - `agents/`: one adapter per AI runtime, plus `agent-skills.ts` for the shared
+    `.agents/skills` folder. `claude-code.ts`: its tool-call shape, its settings and
+    hooks, where its skills and agents go. Nothing else in
     `src/` names a runtime.
   - `github/`: the GitHub API, today the bot's token. Becoming `host/`, one adapter
     per code host (#33).
