@@ -1,8 +1,19 @@
-# yokoten
+<div align="center">
+
+# yokoten · 横展
+
+[![test](https://github.com/coo1white/yokoten/actions/workflows/test.yml/badge.svg)](https://github.com/coo1white/yokoten/actions/workflows/test.yml)
+[![TypeScript](https://img.shields.io/badge/TypeScript-no%20build-3178C6?logo=typescript&logoColor=white)](docs/records/0002-typescript.md)
+[![Node](https://img.shields.io/badge/Node-%E2%89%A522.18-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](package.json)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Claude Code](https://img.shields.io/badge/for-Claude%20Code-D97757?logo=claude&logoColor=white)](https://claude.com/claude-code)
 
 **Carry what one project learned into every project.**
 
-[中文说明](README.zh-CN.md)
+English | [中文](README.zh-CN.md)
+
+</div>
 
 *Yokoten* (横展) is a word from Toyota's shop floors. When one line finds a fix for a
 defect, the fix is rolled out to every line that could have the same defect, not just
@@ -30,6 +41,23 @@ yokoten turns those lessons into something that checks itself:
 - **A reminder you don't have to remember.** Every session starts with `doctor`, which
   tells the agent what this project is missing. The agent brings it up, so you don't
   have to.
+
+## Three checks and a lock
+
+```mermaid
+flowchart LR
+  A["agent runs a command<br/>or edits a file"] --> H{{"1 · tool-call hook"}}
+  H --> C["commit"] --> K{{"2 · commit check"}}
+  K --> P["pull request"] --> I{{"3 · CI"}}
+  I --> R{{"lock · your review"}} --> M["main"]
+```
+
+| | Runs | Stops |
+|-|------|-------|
+| **1** | before each tool call | tag pushes, force pushes, skipped checks; test edits in a fix task; a worker editing the rules |
+| **2** | on every commit | what the hook can't see: files changed by `sed` or a script, personal data, an overfull folder |
+| **3** | on every pull request | a commit made with the hook off |
+| **lock** | on the server | a merge without your review, a push to `main`, a release tag that isn't yours |
 
 ## What a session sees
 
@@ -81,6 +109,9 @@ node ~/.local/share/yokoten/bin/yokoten.ts doctor   # what's still missing
 `init` copies the runtime into `.yokoten/` in your project. Commit it: the hooks and CI
 then run with no network and no global install.
 
+<details>
+<summary>All commands</summary>
+
 | Command | What it does |
 |---------|--------------|
 | `install` | Skills and agents into `~/.claude`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file |
@@ -89,6 +120,8 @@ then run with no network and no global install.
 | `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public |
 | `hook [--commands-only]` | The tool-call guard. Reads a Claude Code PreToolUse call on stdin |
+
+</details>
 
 ## The core rules
 
@@ -148,13 +181,16 @@ Honest limits:
 - **Claude Code first.** Hooks, skills and agents follow Claude Code's formats. Muse
   Code reads `AGENTS.md`, so the rules carry over; its skills and hooks are planned.
 
-## What was left out on purpose
+<details>
+<summary><b>What was left out on purpose</b></summary>
 
 These came from the same projects and worked there, but cost more than they saved for
 a general kit: a check that every commit's type matches the files it touches; byte-level
 replay of merges in the queue; a folder taxonomy for todo files; a 978-line rules file;
 signed release verdicts committed to the repo; a controlled-English style standard as a
 hard rule. A practice earns a place by paying for itself in more than one project.
+
+</details>
 
 ## Status
 

@@ -1,8 +1,19 @@
-# yokoten
+<div align="center">
+
+# yokoten · 横展
+
+[![test](https://github.com/coo1white/yokoten/actions/workflows/test.yml/badge.svg)](https://github.com/coo1white/yokoten/actions/workflows/test.yml)
+[![TypeScript](https://img.shields.io/badge/TypeScript-no%20build-3178C6?logo=typescript&logoColor=white)](docs/records/0002-typescript.md)
+[![Node](https://img.shields.io/badge/Node-%E2%89%A522.18-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](package.json)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Claude Code](https://img.shields.io/badge/for-Claude%20Code-D97757?logo=claude&logoColor=white)](https://claude.com/claude-code)
 
 **把一个项目里学到的东西，带到每一个项目里去。**
 
-[English](README.md)
+[English](README.md) | 中文
+
+</div>
 
 「横展」（yokoten）是丰田车间里的说法：一条产线找到了某个缺陷的对策，不光这条线改，
 所有可能出同样问题的产线都要跟着改。这个仓库把同样的做法用在 AI agent 写的软件上。
@@ -24,6 +35,23 @@ yokoten 把这些经验做成会自己检查的东西：
   CI 再跑一遍同样的检查，兜住绕过前两道的提交。
 - **不用你记着提醒。** 每次会话开头先跑 `doctor`，告诉 agent 这个项目还缺哪些做法。由
   agent 主动提出来，你不用记。
+
+## 三道检查，一把锁
+
+```mermaid
+flowchart LR
+  A["agent 执行命令<br/>或改文件"] --> H{{"1 · 工具调用 hook"}}
+  H --> C["提交"] --> K{{"2 · 提交检查"}}
+  K --> P["PR"] --> I{{"3 · CI"}}
+  I --> R{{"锁 · 你的审查"}} --> M["main"]
+```
+
+| | 什么时候跑 | 拦下什么 |
+|-|-----------|---------|
+| **1** | 每次工具调用之前 | 推 tag、强制推送、跳过检查；修复任务里改测试；worker 改规则 |
+| **2** | 每次提交 | hook 看不到的：用 `sed` 或脚本改的文件、个人信息、超过 7 项的文件夹 |
+| **3** | 每个 PR | 关掉 hook 做出来的提交 |
+| **锁** | 服务器上 | 没经过你审查的合并、直接推 `main`、不是你打的发版 tag |
 
 ## 会话里看到的是什么
 
@@ -75,6 +103,9 @@ node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看还缺什么
 `init` 会把运行时复制到项目的 `.yokoten/` 里。把它一起提交：这样 hook 和 CI 不联网、
 不用全局安装也能跑。
 
+<details>
+<summary>全部命令</summary>
+
 | 命令 | 做什么 |
 |------|--------|
 | `install` | 把技能和 agent 装进 `~/.claude`，加上会话开头的 `doctor` hook 和用户级命令守卫，再建一个空的私有词表 |
@@ -83,6 +114,8 @@ node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看还缺什么
 | `check [--staged]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交 |
 | `check --history` | 对所有分支的每一个提交做隐私检查。私有仓库公开之前跑一遍 |
 | `hook [--commands-only]` | 工具调用守卫，从标准输入读 Claude Code 的 PreToolUse 调用 |
+
+</details>
 
 ## 核心规则
 
@@ -136,12 +169,15 @@ node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看还缺什么
 - **先支持 Claude Code。** hook、技能和 agent 都按 Claude Code 的格式写。Muse Code 会读
   `AGENTS.md`，所以规则能沿用；它的技能和 hook 还在计划中。
 
-## 故意没带过来的
+<details>
+<summary><b>故意没带过来的</b></summary>
 
 这些做法来自同样的项目，在那里也管用，但放进一套通用工具里，成本比收益高：检查每个提交的
 类型是否和改动的文件对得上；在合并队列里逐字节重放合并；给 todo 文件分门别类的目录；
 978 行的规则文件；把签过名的发版结论提交进仓库；把受控英语写作规范当硬性规则。一条做法
 要在不止一个项目里证明值得，才配进来。
+
+</details>
 
 ## 现状
 
