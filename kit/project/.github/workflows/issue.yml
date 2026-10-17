@@ -1,0 +1,26 @@
+# The issue title standard: `area: verb phrase` for a task, `area: symptom` for an
+# incident, 60 characters at most. It runs when an issue is opened or its title changes.
+# It only reads: it never comments on the issue, labels it or renames it.
+name: issue
+on:
+  issues:
+    types: [opened, edited]
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.issue.number }}
+  cancel-in-progress: true
+jobs:
+  issue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # The checkout gives the check its yokoten.json (the list of areas).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      # The title is read from the event file, never pasted into this shell line.
+      - run: node {{cli}} check --issue

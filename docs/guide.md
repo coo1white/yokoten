@@ -147,6 +147,7 @@ then run with no network and no global install.
 | `doctor [--session]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session |
 | `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries |
 | `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, changelog line, milestone and labels. Long sentences in changed Markdown, and a diff over 400 changed lines, are notes |
+| `check --issue` | In CI: the issue's title. See [Issue titles](#issue-titles) |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public |
 | `hook [--agent <name>] [--commands-only]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini` |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Setup: [server.md](server.md#3-the-bot-a-github-app) |
@@ -155,6 +156,25 @@ The commit check refuses a file in a `dist/`, `build/` or `out/` folder, and a b
 A build makes such files again, and a reviewer can't read a binary. Images and fonts
 (`png`, `jpg`, `gif`, `webp`, `svg`, `ico`, `woff`, `woff2`) pass. To keep a file
 anyway, list it in `yokoten.json` as a glob: `"allowBuild": ["docs/manual.pdf"]`.
+
+### Issue titles
+
+An issue title names the area, then the work. A list of issues then reads like a list of
+commits to come.
+
+- A task: `area: verb phrase`, for example `doctor: add the review step`.
+- An incident: `area: symptom`, for example `check: misses a key in a JSON file`. Name
+  what you saw, not the fix.
+- At most 60 characters. No full stop at the end. No `#N`: link other issues in the body.
+- The area is one lowercase word, or words joined by hyphens.
+
+`init` adds `.github/workflows/issue.yml`. It runs `check --issue` when an issue is
+opened or edited. It only reads: it never comments on the issue or renames it. A red run
+tells the author to fix the title.
+
+Any lowercase area passes. To limit the areas, list them in `yokoten.json`:
+`"areas": ["doctor", "check", "docs"]`. Pull request titles then use the same list in
+`type(area): summary`.
 
 
 ## The core rules

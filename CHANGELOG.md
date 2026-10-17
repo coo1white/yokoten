@@ -17,6 +17,12 @@ All notable changes are listed here. The format follows
 
 ### Added
 
+- Issue titles have a standard: `area: verb phrase` for a task, `area: symptom` for an
+  incident, at most 60 characters, no full stop and no `#N`. `check --issue` checks it
+  in CI, and the new `issue` workflow runs it when an issue is opened or edited; it only
+  reads. The issue templates start the title with `area: `. `"areas"` in
+  `yokoten.json` limits the areas, for issue titles and for pull request titles. Kit
+  change: every project gets the workflow and the templates on its next `init`.
 - Full `doctor` names the outside standard each step meets, when there is one: OpenSSF
   Scorecard, the Best Practices badge, OSPS Baseline, Conventional Commits, for example
   `ci (Scorecard: CI-Tests)`. The session message stays three lines (#58).

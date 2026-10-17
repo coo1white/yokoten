@@ -34,12 +34,14 @@ function section(body: string, name: string): string | null {
 }
 
 /** Problems with a pull request. An empty list means it meets the standard. */
-export function checkPullRequest(pr: PullRequest, config: Pick<Config, 'tests'>): string[] {
+export function checkPullRequest(pr: PullRequest, config: Pick<Config, 'tests'> & Partial<Pick<Config, 'areas'>>): string[] {
   const problems: string[] = [];
   const title = pr.title.trim();
   if (!TITLE.test(title)) {
     problems.push(`title: use \`type(area): summary\` or \`type: summary\`, with a type from ${TYPES.join(', ')}. The title becomes the commit on main.`);
   }
+  const area = TITLE.exec(title)?.[2]?.slice(1, -1);
+  if (area && config.areas?.length && !config.areas.includes(area)) problems.push(`title: the area \`${area}\` is not in yokoten.json "areas". Use one of: ${config.areas.join(', ')}.`);
   if (title.length > 72) problems.push(`title: ${title.length} characters, over 72. Shorten it; the details go in the body.`);
   if (/\.$/.test(title)) problems.push('title: remove the full stop at the end.');
   if (/#\d/.test(title)) problems.push('title: remove the issue number; put `Closes #N` in the body.');
@@ -146,3 +148,50 @@ export function largeDiff(lines: number, max = 400): string | null {
   if (lines <= max) return null;
   return `this pull request changes ${lines} lines, over ${max}. Smaller pull requests are easier to review; split it if you can.`;
 }
+
+// The issue rule. An issue title names its area and then the work: `doctor: add the
+// review step` for a task, `check: misses a key in a JSON file` for an incident (the
+// symptom, not the fix). The same areas as the pull request titles, so a list of issues
+// reads like a list of commits to come.
+
+/** One problem with a title: what is wrong, why it matters, and the fix. */
+export interface TitleProblem {
+  what: string;
+  why: string;
+  fix: string;
+}
+
+const AREA = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
+const ISSUE_MAX = 60;
+
+/**
+ * Problems with an issue title. An empty list means it meets the standard. `labels` say
+ * what kind of issue it is: an `incident` describes a symptom, anything else a task.
+ */
+export function checkIssueTitle(title: string, config: Partial<Pick<Config, 'areas'>>, labels: string[] = []): TitleProblem[] {
+  const problems: TitleProblem[] = [];
+  const t = title.trim();
+  const incident = labels.some((l) => l.toLowerCase() === 'incident');
+  const form = incident ? '`area: symptom`, for example `check: misses a key in a JSON file`' : '`area: verb phrase`, for example `doctor: add the review step`';
+  const areas = config.areas ?? [];
+  const m = /^([^\s:]+): +(\S.*)$/.exec(t);
+  if (!m) {
+    problems.push({ what: 'the title does not start with an area', why: 'the area tells a reader which part of the project the issue is about', fix: `write it as ${form}` });
+  } else if (!AREA.test(m[1])) {
+    problems.push({ what: 'the area is not one lowercase word', why: 'one form for every area keeps the list easy to scan and search', fix: `use a lowercase word, or words joined by hyphens, as in ${form}` });
+  } else if (m[1] === "area") {
+    problems.push({ what: 'the title still starts with the placeholder `area`', why: 'the template puts it there for you to replace', fix: `replace it with the part of the project, as in ${form}` });
+  } else if (areas.length && !areas.includes(m[1])) {
+    problems.push({ what: 'the area is not in yokoten.json "areas"', why: 'issues and pull requests share one list of areas', fix: `use one of: ${areas.join(', ')}` });
+  }
+  if (t.length > ISSUE_MAX) problems.push({ what: `the title has ${t.length} characters, over ${ISSUE_MAX}`, why: 'a long title is cut off in lists and boards', fix: 'shorten it; put the details in the body' });
+  if (/[.。]$/.test(t)) problems.push({ what: 'the title ends with a full stop', why: 'a title is a name, not a sentence', fix: 'remove the full stop' });
+  if (/#\d/.test(t)) problems.push({ what: 'the title holds an issue number', why: 'the host links issues from the body, not from the title', fix: 'remove the number; name the other issue in the body' });
+  return problems;
+}
+
+/** The text form of a title problem: `what. Why. Fix.` */
+export const formatTitleProblem = (p: TitleProblem): string => {
+  const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+  return `${p.what}. ${cap(p.why)}. ${cap(p.fix)}.`;
+};

@@ -5,12 +5,12 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
-import { botConfig, botEnv, installationToken, readPullRequest, repoOf } from '../src/host/github.ts';
+import { botConfig, botEnv, installationToken, readIssue, readPullRequest, repoOf } from '../src/host/github.ts';
 import { check, checkHistory, gitRoot, historyTimeZones } from '../src/run/check.ts';
 import * as claudeCode from '../src/agents/claude-code.ts';
 import * as codex from '../src/agents/codex.ts';
 import * as gemini from '../src/agents/gemini.ts';
-import { changedLines, checkPullRequest, largeDiff, longSentences } from '../src/rules/pr.ts';
+import { changedLines, checkIssueTitle, checkPullRequest, formatTitleProblem, largeDiff, longSentences } from '../src/rules/pr.ts';
 import { hideHome } from '../src/rules/privacy.ts';
 import { type Action, judge } from '../src/run/hook.ts';
 import { doctor } from '../src/setup/doctor.ts';
@@ -27,6 +27,7 @@ const HELP = `yokoten ${VERSION}
   yokoten check [--staged]   layout, privacy and lead-only files (--staged: the next commit)
   yokoten check --history    the privacy check over every commit; run before going public
   yokoten check --pr         the pull request of this CI run: title, tier, sections, issue, changelog
+  yokoten check --issue      the issue of this CI run: a title of \`area: summary\`, 60 characters at most
   yokoten hook [--agent <name>] [--commands-only]
                              the tool-call guard: reads one tool call on stdin; <name> is
                              claude-code (the default), codex or gemini
@@ -109,6 +110,20 @@ function main(): number | Promise<number> {
     case 'check': {
       const root = gitRoot(process.cwd());
       const config = loadConfig(root);
+      if (flag('--issue')) {
+        const issue = readIssue(env);
+        if (!issue) {
+          print(['yokoten check --issue: no issue in this run (it reads the CI event); nothing to check']);
+          return 0;
+        }
+        const problems = checkIssueTitle(issue.title, config, issue.labels);
+        if (!problems.length) {
+          print(['yokoten check --issue: ok']);
+          return 0;
+        }
+        print([`yokoten check --issue: ${problems.length} problem(s)`, ...problems.map((p) => `- title: ${formatTitleProblem(p)}`)], process.stderr);
+        return 1;
+      }
       if (flag('--pr')) {
         const pr = readPullRequest(root, env);
         if (!pr) {

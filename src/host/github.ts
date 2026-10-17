@@ -133,3 +133,16 @@ export function readPullRequest(root: string, env: Env): (PullRequest & { head: 
     numstat,
   };
 }
+
+// An issue as GitHub Actions describes it: the event file of an `issues` run. The rule
+// that judges its title (checkIssueTitle in src/rules/pr.ts) knows no host.
+
+/** The issue of this run (its title and label names), or null when the run is not for one. */
+export function readIssue(env: Env): { title: string; labels: string[] } | null {
+  if (!env.GITHUB_EVENT_PATH) return null;
+  const event: { issue?: { title?: string; labels?: { name?: string }[]; pull_request?: unknown } } = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, 'utf8'));
+  const issue = event.issue;
+  // A comment on a pull request carries it as an `issue` too; that title follows the pull request rule.
+  if (!issue || issue.pull_request) return null;
+  return { title: issue.title ?? '', labels: (issue.labels ?? []).map((l) => l.name ?? '').filter(Boolean) };
+}

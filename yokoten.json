@@ -1,4 +1,5 @@
 {
   "layout": { "maxEntries": 7, "exempt": ["docs/records"] },
+  "areas": ["doctor", "check", "hook", "init", "install", "agents", "host", "kit", "adopt", "pr", "secrets", "privacy", "site", "docs", "ci", "release", "repo", "owner"],
   "notNow": {}
 }

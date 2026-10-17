@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
 import { matcher } from '../src/rules/glob.ts';
 import { checkBuildOutput, checkLayout, isBuildOutput } from '../src/rules/layout.ts';
-import { changedLines, checkPullRequest, largeDiff, longSentences, type PullRequest } from '../src/rules/pr.ts';
+import { changedLines, checkIssueTitle, checkPullRequest, formatTitleProblem, largeDiff, longSentences, type PullRequest } from '../src/rules/pr.ts';
 
 test('glob: a slash anchors at the root, no slash matches in any folder', () => {
   const m = (g: string, p: string) => matcher([g])(p);
@@ -124,4 +124,46 @@ test('large pull request: lines added and deleted; binary files and lock files d
   const numstat = ['3\t2\tsrc/a.ts', '-\t-\tlogo.png', '900\t40\tpackage-lock.json', '5\t0\tweb/yarn.lock', '1\t1\t', 'old name.ts', 'new\tname.ts', ''].join('\0');
   assert.equal(changedLines(numstat), 7);
   assert.equal(changedLines(''), 0);
+});
+
+const AREAS = { areas: ['doctor', 'check', 'kit'] };
+
+test('issue title: `area: verb phrase` or `area: symptom` passes', () => {
+  assert.deepEqual(checkIssueTitle('doctor: add the review step', AREAS), []);
+  assert.deepEqual(checkIssueTitle('check: misses a key in a JSON file', AREAS, ['incident']), []);
+  assert.deepEqual(checkIssueTitle('dev-env: set up the container', {}), [], 'no list: any lowercase word, hyphens allowed');
+  assert.deepEqual(checkIssueTitle(`kit: ${'a'.repeat(55)}`, AREAS), [], '60 characters is the most');
+});
+
+test('issue title: each break fails with what, why and the fix', () => {
+  const one = (title: string, pattern: RegExp, config: { areas?: string[] } = AREAS, labels: string[] = []) => {
+    const problems = checkIssueTitle(title, config, labels);
+    assert.equal(problems.length, 1, `${title} -> ${problems.map(formatTitleProblem).join(' | ')}`);
+    for (const key of ['what', 'why', 'fix'] as const) assert.ok(problems[0][key], `${title}: no ${key}`);
+    assert.match(formatTitleProblem(problems[0]), pattern);
+  };
+  one(`doctor: ${'a'.repeat(60)}`, /^the title has 68 characters, over 60\. .+\. Shorten it/);
+  one('doctor: add the review step.', /full stop/);
+  one('doctor: add the review step (#59)', /issue number/);
+  one('Add the review step to doctor', /does not start with an area\. .+`area: verb phrase`/);
+  one('A crash when the file is empty', /`area: symptom`/, AREAS, ['incident']);
+  one('Doctor: add the review step', /not one lowercase word/);
+  one('doctor check: add a step', /does not start with an area/);
+  one('area: add the review step', /placeholder `area`/, {});
+  one('site: turn off analytics', /not in yokoten\.json "areas"\. .+Use one of: doctor, check, kit\.$/);
+});
+
+test('pull request: an area outside the configured list fails; no list lets any through', () => {
+  assert.deepEqual(checkPullRequest(goodPr(), { ...DEFAULTS, areas: ['kit'] }), []);
+  assert.deepEqual(checkPullRequest({ ...goodPr(), title: 'feat: no area' }, { ...DEFAULTS, areas: ['kit'] }), []);
+  const problems = checkPullRequest({ ...goodPr(), title: 'feat(site): a page' }, { ...DEFAULTS, areas: ['kit'] });
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /the area `site` is not in yokoten\.json "areas"/);
+  assert.deepEqual(checkPullRequest({ ...goodPr(), title: 'feat(site): a page' }, DEFAULTS), []);
+});
+
+test('config: yokoten\'s own areas cover its open work', () => {
+  const own = loadConfig(join(import.meta.dirname, '..'));
+  assert.ok(own.areas.includes('doctor') && own.areas.includes('owner'));
+  assert.deepEqual(DEFAULTS.areas, []);
 });
