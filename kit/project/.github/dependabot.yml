@@ -1,0 +1,22 @@
+# Monthly, one grouped pull request, so updates don't each cost a review (core rule 8).
+# A release is taken only once it is a week old, so one pulled for being bad never
+# reaches you. yokoten doesn't know your stack, so only the actions CI runs are on.
+#
+# To add your own packages (npm, pip, gomod, cargo, ...), copy the block below. Change
+# package-ecosystem, the group name, and the commit-message prefix (to chore). Keep the
+# schedule, cooldown and groups: then they come the same way, monthly, in one pull
+# request, a week old. The ecosystem names:
+# https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ['*']
+    commit-message:
+      prefix: ci

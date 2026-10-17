@@ -125,11 +125,15 @@ test('check --history: finds what a later commit deleted, and a personal author 
 test('init: adds the practices, keeps what is there, and doctor then finds nothing missing', () => {
   const s = sandbox();
   s.write('AGENTS.md', '# our own rules\n');
+  s.write('.github/SECURITY.md', '# email us\n');
   let r = s.run(['init']);
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /kept AGENTS\.md/);
   assert.match(r.stdout, /wrote \.githooks\/pre-commit/);
   assert.equal(readFileSync(join(s.repo, 'AGENTS.md'), 'utf8'), '# our own rules\n');
+  assert.match(r.stdout, /kept \.github\/SECURITY\.md/);
+  assert.equal(readFileSync(join(s.repo, '.github/SECURITY.md'), 'utf8'), '# email us\n', 'the project\'s own policy stays');
+  assert.match(r.stdout, /wrote \.github\/dependabot\.yml/);
   assert.ok(statSync(join(s.repo, '.githooks', 'pre-commit')).mode & 0o100);
   const workflow = readFileSync(join(s.repo, '.github/workflows/yokoten.yml'), 'utf8');
   assert.match(workflow, /node \.yokoten\/bin\/yokoten\.ts check/);
@@ -138,6 +142,8 @@ test('init: adds the practices, keeps what is there, and doctor then finds nothi
   assert.equal(s.git('config', 'core.hooksPath').stdout.trim(), '.githooks');
   // Again: nothing changes.
   r = s.run(['init']);
+  assert.match(r.stdout, /kept \.github\/SECURITY\.md/);
+  assert.match(r.stdout, /kept \.github\/dependabot\.yml/);
   assert.match(r.stdout, /same the tool-call hook/);
   assert.match(r.stdout, /same TZ=UTC for agent sessions/);
   const settings = JSON.parse(readFileSync(join(s.repo, '.claude', 'settings.json'), 'utf8'));
@@ -159,6 +165,20 @@ test('init: adds the practices, keeps what is there, and doctor then finds nothi
   r = s.run(['doctor', '--session']);
   assert.equal(r.status, 0);
   assert.doesNotMatch(r.stdout, /missing \d+ practice/);
+});
+
+test('init: safe defaults, Dependabot and a security policy; doctor lists the security switches (#35)', () => {
+  const s = sandbox();
+  const r = s.run(['init']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /wrote \.github\/SECURITY\.md/);
+  assert.match(r.stdout, /wrote \.github\/dependabot\.yml/);
+  const dependabot = readFileSync(join(s.repo, '.github/dependabot.yml'), 'utf8');
+  for (const line of [/package-ecosystem: github-actions/, /interval: monthly/, /default-days: 7/, /patterns: \['\*'\]/, /prefix: ci/]) assert.match(dependabot, line);
+  assert.equal([...dependabot.matchAll(/^\s*- package-ecosystem:/gm)].length, 1, 'actions only, since the stack is unknown');
+  assert.match(readFileSync(join(s.repo, '.github/SECURITY.md'), 'utf8'), /\*\*Report a vulnerability\*\*/);
+  const doctor = s.run(['doctor']);
+  for (const sw of [/private vulnerability reporting/, /secret scanning with push protection/, /Dependabot alerts/]) assert.match(doctor.stdout, sw);
 });
 
 test('doctor --session: names what is missing, and respects notNow', () => {

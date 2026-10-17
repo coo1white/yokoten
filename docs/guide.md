@@ -86,8 +86,8 @@ yokoten: git push --tags pushes tags. Only the owner decides when to release. If
 | Layer | What | How |
 |-------|------|-----|
 | **Machine** | Skills, agents, and two user-level hooks, the same on every computer | `yokoten install` |
-| **Project** | Rules, the commit check, the tool-call hook, CI, issue and PR templates | `yokoten init`, then the `yokoten` skill for an old project |
-| **Server** | Branch and tag rulesets, squash merge, code owners, a bot with limited rights | Set once by the owner; `doctor` lists the steps |
+| **Project** | Rules, the commit check, the tool-call hook, CI, issue and PR templates, Dependabot (monthly, one pull request), a security policy | `yokoten init`, then the `yokoten` skill for an old project |
+| **Server** | Branch and tag rulesets, squash merge, code owners, a bot with limited rights, the security switches | Set once by the owner; `doctor` lists the steps |
 | **Rules** | `AGENTS.md`: twelve core rules, plus the project's own | Every rule names its check |
 
 An old project isn't a blank slate. Some of its habits are better than ours. So the
@@ -110,6 +110,15 @@ node ~/.local/share/yokoten/bin/yokoten.ts doctor   # what's still missing
 
 `init` copies the runtime into `.yokoten/` in your project. Commit it: the hooks and CI
 then run with no network and no global install.
+
+`init` also puts two safe defaults in `.github/`:
+
+- `dependabot.yml` updates the actions that CI runs. It opens one pull request a month,
+  and takes a release only when it is a week old. A comment in the file shows how to
+  add your own packages (npm, pip, Go) the same way.
+- `SECURITY.md` asks people to report a vulnerability privately, not in a public issue.
+  For this, turn on private vulnerability reporting. `doctor` lists it with the other
+  security switches.
 
 | Command | What it does |
 |---------|--------------|

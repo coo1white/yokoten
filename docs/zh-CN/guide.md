@@ -80,8 +80,8 @@ yokoten: git push --tags pushes tags. Only the owner decides when to release. If
 | 层 | 管什么 | 怎么装 |
 |----|--------|--------|
 | **机器** | 技能、agent 定义、两个用户级 hook，每台电脑都一样 | `yokoten install` |
-| **项目** | 规则、提交检查、工具调用 hook、CI、issue 和 PR 模板 | `yokoten init`；老项目再用 `yokoten` 技能 |
-| **服务器** | 分支和 tag 规则集、squash 合并、代码负责人、权限受限的 bot | 由仓库主人设置一次；`doctor` 会列出步骤 |
+| **项目** | 规则、提交检查、工具调用 hook、CI、issue 和 PR 模板、Dependabot（每月一个 PR）、安全说明 | `yokoten init`；老项目再用 `yokoten` 技能 |
+| **服务器** | 分支和 tag 规则集、squash 合并、代码负责人、权限受限的 bot、几个安全开关 | 由仓库主人设置一次；`doctor` 会列出步骤 |
 | **规则** | `AGENTS.md`：12 条核心规则，加上项目自己的规则 | 每条规则都写明由哪项检查守着 |
 
 老项目不是一张白纸，它有些习惯比我们的还好。所以 `yokoten` 技能会和你一条一条过，每条
@@ -102,6 +102,14 @@ node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看还缺什么
 
 `init` 会把运行时复制到项目的 `.yokoten/` 里。把它一起提交：这样 hook 和 CI 不联网、
 不用全局安装也能跑。
+
+`init` 还会在 `.github/` 里放两个默认就安全的文件：
+
+- `dependabot.yml`：自动更新 CI 用到的 action。一个月只开一个 PR，所有更新都在里面；
+  新版本发布满一周才会用。文件里的注释写了怎么用同样的方式加上你自己的包（npm、pip、Go 等）。
+- `SECURITY.md`：告诉别人发现漏洞要私下报告，不要发公开 issue。要让私下报告能用，得在仓库
+  设置里打开 private vulnerability reporting（私下报告漏洞）。`doctor` 会把它和其他安全开关
+  一起列出来。
 
 | 命令 | 做什么 |
 |------|--------|

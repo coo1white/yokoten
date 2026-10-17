@@ -108,11 +108,12 @@ export function machineChecks(env: Env): Practice[] {
   ];
 }
 
-// What doctor cannot see yet and the owner sets once per repo, on the server. Kept to three.
+// What doctor cannot see yet and the owner sets once per repo, on the server. Kept to three
+// (record 0001), so the security switches (#35) share the last step with the bot.
 const OWNER_STEPS = [
   'main: a ruleset with pull request required, the CI check required, no force push, no deletion; squash merge only, delete branch on merge',
   'tags: a ruleset on v* so only you create, move or delete a release tag',
-  'the bot: a collaborator (or GitHub App) with write access and no Workflows permission; CODEOWNERS with you, and code owner review required',
+  'the bot and security: a collaborator (or GitHub App) with write access and no Workflows permission; CODEOWNERS with you, and code owner review required; in Settings, Advanced Security, turn on private vulnerability reporting, secret scanning with push protection, and Dependabot alerts',
 ];
 
 /** The report, and whether everything is in place. */
