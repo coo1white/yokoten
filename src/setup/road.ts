@@ -8,7 +8,9 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import type { Env } from '../rules/config.ts';
+import { type Env, loadConfig } from '../rules/config.ts';
+import { matcher } from '../rules/glob.ts';
+import { BUILD_DIRS, isBuildOutput } from '../rules/layout.ts';
 import { hasProjectHook } from '../agents/claude-code.ts';
 import { runs } from '../run/cli.ts';
 import { hasBot } from '../host/github.ts';
@@ -31,7 +33,11 @@ export interface Step {
   what: (root: string, env: Env) => string;
   /** Why the step matters, in one plain sentence. No full stop at the end. */
   why: string;
-  /** The outside standard the step meets, when there is one (#58). */
+  /**
+   * The outside standard the step meets, when there is one (#58): "<standard>: <item>",
+   * or an item id alone (OSPS-BR-07.01). Several are joined by " · ". Only a standard we
+   * have read is named.
+   */
   standard?: string;
 }
 
@@ -88,6 +94,43 @@ export function skillsLacking(env: Env): string[] | null {
   return [...lacking].map(([dir, names]) => `${dir} (${names.join(', ')})`);
 }
 
+// The test command, from package.json. npm's placeholder script, which only fails, is no command.
+const NPM_PLACEHOLDER = 'echo "Error: no test specified" && exit 1';
+const testScript = (root: string): string => {
+  try {
+    const script = JSON.parse(read(join(root, 'package.json')) || '{}')?.scripts?.test;
+    return typeof script === 'string' && script.trim() && script.trim() !== NPM_PLACEHOLDER ? script.trim() : '';
+  } catch {
+    return '';
+  }
+};
+// A command that runs the package.json script, and runners that need no script.
+const RUNS_SCRIPT = /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|t)\b/;
+const RUNNERS = /\b(?:node\s+--test|deno\s+test|go\s+test|cargo\s+test|pytest|mvn\s+test|gradle\s+test)\b/;
+/** Whether CI runs the tests: the package.json script, or a test runner named outright. */
+const ciRunsTests = (root: string) => {
+  const ci = ciText(root);
+  const script = testScript(root);
+  return RUNNERS.test(ci) || (script !== '' && (RUNS_SCRIPT.test(ci) || ci.includes(script)));
+};
+
+/** Tracked build output, as yokoten.json lets it through; null outside a git repo. */
+const builtFiles = (root: string): string[] | null => {
+  let files: string[];
+  try {
+    files = execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 1 << 30 }).split('\0').filter(Boolean);
+  } catch {
+    return null;
+  }
+  let allow: (path: string) => boolean = () => false;
+  try {
+    allow = matcher(loadConfig(root).allowBuild);
+  } catch {
+    // a broken yokoten.json: the commit check names it; here, nothing is allowed
+  }
+  return files.filter((f) => isBuildOutput(f, allow));
+};
+
 const SECURITY_FILES: [string, string[]][] = [
   ['security policy (SECURITY.md)', ['.github/SECURITY.md', 'SECURITY.md']],
   ['Dependabot config', ['.github/dependabot.yml', '.github/dependabot.yaml']],
@@ -103,6 +146,7 @@ export const ROAD: Step[] = [
     check: (root) => existsSync(join(root, 'AGENTS.md')),
     what: () => 'no AGENTS.md, so the agents have no written rules here; `yokoten init` adds one',
     why: 'an agent follows the rules it can read, and only those',
+    standard: 'OpenSSF: AI code assistant instructions',
   },
   {
     stage: 1,
@@ -117,6 +161,7 @@ export const ROAD: Step[] = [
     check: (root) => gitConfig(root, 'core.hooksPath') === '.githooks' && runs('check').test(read(join(root, '.githooks', 'pre-commit'))),
     what: () => 'commits are not checked: core.hooksPath is not .githooks, or .githooks/pre-commit does not run yokoten; `yokoten init` sets both',
     why: 'a secret or a personal email is hard to take back once a commit is pushed',
+    standard: 'OSPS-BR-07.01',
   },
   {
     stage: 1,
@@ -129,12 +174,24 @@ export const ROAD: Step[] = [
     why: 'the hooks and CI run this copy, so they work with no network and no global install',
   },
   {
+    stage: 1,
+    key: 'tests',
+    check: (root) => ciRunsTests(root),
+    what: (root) =>
+      testScript(root)
+        ? 'CI does not run the tests; add a step that runs `npm test` (or your test command) to a workflow in .github/workflows'
+        : 'no test command: no "test" script in package.json, and no workflow runs a test runner; add tests and a CI step that runs them',
+    why: 'tests that run on every push catch a broken change before it reaches main',
+    standard: 'Best Practices: test',
+  },
+  {
     stage: 2,
     key: 'ci',
     // `check --pr` is the titles step; this one wants the tree check itself.
     check: (root) => runs('check(?!\\s+--pr)').test(ciText(root)),
     what: () => 'CI does not run `yokoten check`; `yokoten init` adds .github/workflows/yokoten.yml',
     why: 'a commit made with the hook off would reach main unchecked',
+    standard: 'Scorecard: CI-Tests',
   },
   {
     stage: 2,
@@ -142,6 +199,7 @@ export const ROAD: Step[] = [
     check: (root) => todoFiles(root).length === 0,
     what: (root) => `a todo file (${todoFiles(root).join(', ')}): move each item to an issue, then delete it`,
     why: 'an issue has an owner, a state and a history; a todo file has none',
+    standard: 'OSPS-GV-02.01',
   },
   {
     stage: 2,
@@ -152,6 +210,21 @@ export const ROAD: Step[] = [
       return `no ${lacking.join(' and no ')} in .github; \`yokoten init\` adds them`;
     },
     why: 'a template asks for what a reviewer needs, so nothing is forgotten',
+    standard: 'GitHub community profile',
+  },
+  {
+    stage: 2,
+    key: 'no-build-output',
+    check: (root) => {
+      const built = builtFiles(root);
+      return built && built.length === 0;
+    },
+    what: (root) => {
+      const built = builtFiles(root) ?? [];
+      return `build output in the repo (${built.slice(0, 3).join(', ')}${built.length > 3 ? `, and ${built.length - 3} more` : ''}); remove it with \`git rm --cached\` and add ${BUILD_DIRS.map((d) => `${d}/`).join(', ')} to .gitignore`;
+    },
+    why: 'a build makes these files again from the source, and a reviewer can\'t read a binary',
+    standard: 'Scorecard: Binary-Artifacts',
   },
   {
     stage: 3,
@@ -159,6 +232,7 @@ export const ROAD: Step[] = [
     check: (root) => /^#+\s*\[?Unreleased\]?/im.test(read(join(root, 'CHANGELOG.md'))),
     what: () => 'no CHANGELOG.md with an "Unreleased" section; add one, with a line for each change that users notice',
     why: 'each pull request adds its line as it goes, so a release needs no digging',
+    standard: 'Best Practices: release_notes',
   },
   {
     stage: 3,
@@ -166,6 +240,7 @@ export const ROAD: Step[] = [
     check: (root) => runs('check --pr').test(ciText(root)),
     what: () => 'CI does not check pull requests (`yokoten check --pr`); `yokoten init` adds .github/workflows/pr.yml',
     why: 'a pull request title becomes the commit on main, so it must say what changed and why',
+    standard: 'Conventional Commits 1.0.0',
   },
   {
     stage: 4,
@@ -173,6 +248,7 @@ export const ROAD: Step[] = [
     check: (root) => ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'].some((p) => existsSync(join(root, p))),
     what: () => 'no CODEOWNERS file; add .github/CODEOWNERS with the line `* @<your account>`',
     why: 'the host then asks you to review every pull request an agent opens',
+    standard: 'Scorecard: Branch-Protection',
   },
   {
     stage: 4,
@@ -197,6 +273,7 @@ export const ROAD: Step[] = [
     check: (root) => securityLacking(root).length === 0,
     what: (root) => `no ${securityLacking(root).join(', no ')}; \`yokoten init\` adds the security policy and Dependabot, and you choose the license`,
     why: 'people can then report a hole in private, old dependencies get updates, and others know how they may use the code',
+    standard: 'Scorecard: Security-Policy · OSPS-VM-02.01',
   },
 ];
 

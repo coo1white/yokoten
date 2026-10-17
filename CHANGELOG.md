@@ -17,6 +17,17 @@ All notable changes are listed here. The format follows
 
 ### Added
 
+- Full `doctor` names the outside standard each step meets, when there is one: OpenSSF
+  Scorecard, the Best Practices badge, OSPS Baseline, Conventional Commits, for example
+  `ci (Scorecard: CI-Tests)`. The session message stays three lines (#58).
+- The commit check refuses build output (a file in a `dist/`, `build/` or `out/`
+  folder) and binary files. Images and fonts pass, and `allowBuild` in `yokoten.json`
+  lets other paths through. A new `no-build-output` step in stage 2 of the road looks
+  for such files already in the repo. Kit change: every project gets this check on its
+  next `init` (#56).
+- A `tests` step in stage 1 of the road: the project has a test command (a `test`
+  script in package.json, or a test runner such as `node --test` or `go test`), and a
+  workflow in `.github/workflows` runs it (#55).
 - `check --pr` notes a pull request that changes more than 400 lines (added plus
   deleted; binary and lock files not counted): smaller pull requests are easier to
   review. A note, never a failure (record 0004, #57).

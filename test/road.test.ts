@@ -46,3 +46,14 @@ test('road: five stages, each step in one of them, each key once, each why a sen
   for (const key of ['rules', 'commit-check', 'tool-hook', 'ci', 'runtime', 'issues']) assert.ok(ROAD.some((s) => s.key === key), key);
   for (const s of ROAD) assert.ok(!/[.]$/.test(s.why) && s.why.split(' ').length <= 25, `${s.key}: a why has no full stop and at most 25 words`);
 });
+
+test('road: every outside standard has the form "<standard>: <item>" or an item id, joined by " · " (#58)', () => {
+  const named = ROAD.filter((s) => s.standard);
+  assert.ok(named.length >= 10, 'most steps name a standard');
+  for (const { key, standard } of named) {
+    for (const part of (standard ?? '').split(' · ')) {
+      assert.match(part, /^[A-Za-z][\w .-]*(?:: \S(?:.*\S)?)?$/, `${key}: "${part}"`);
+      if (part.startsWith('OSPS')) assert.match(part, /^OSPS-[A-Z]{2}-\d{2}\.\d{2}$/, `${key}: an OSPS Baseline id`);
+    }
+  }
+});

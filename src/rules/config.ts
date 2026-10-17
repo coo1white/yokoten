@@ -9,6 +9,7 @@ export interface Config {
   leadOnly: string[];
   privacy: { allow: string[]; skip: string[]; utc: boolean };
   notNow: Record<string, string>;
+  allowBuild: string[];
 }
 
 /** What yokoten.json may hold: any key, or part of one. */
@@ -18,6 +19,7 @@ interface ConfigFile {
   leadOnly?: string[];
   privacy?: Partial<Config['privacy']>;
   notNow?: Record<string, string>;
+  allowBuild?: string[];
 }
 
 /** The guard's own environment (process.env, or a test's stand-in). */
@@ -39,6 +41,8 @@ export const DEFAULTS: Config = {
   // Practices this project has decided not to take up yet, by doctor's name for them, each
   // with the reason and when to look again: { "ci": "no remote yet; revisit on first push" }.
   notNow: {},
+  // Build output and binaries the commit check lets through, as globs: ["dist/**", "*.pdf"].
+  allowBuild: [],
 };
 
 export function loadConfig(root: string): Config {
@@ -54,5 +58,6 @@ export function loadConfig(root: string): Config {
     leadOnly: file.leadOnly ?? DEFAULTS.leadOnly,
     privacy: { ...DEFAULTS.privacy, ...file.privacy },
     notNow: file.notNow ?? {},
+    allowBuild: file.allowBuild ?? DEFAULTS.allowBuild,
   };
 }
