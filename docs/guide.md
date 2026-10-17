@@ -136,7 +136,7 @@ The full table, with the reasons, is in [`kit/project/AGENTS.md`](../kit/project
 8. Squash merge. One pull request, one purpose; small polish goes in one batch.
 9. Review and test the exact commit that merges.
 10. No folder holds more than 7 entries.
-11. Nothing in the repo points at a person.
+11. Nothing in the repo, or in what yokoten prints, points at a person.
 12. Decisions are written down once and kept. Facts are replaced. Times are UTC.
 
 ## Managing agents like a team

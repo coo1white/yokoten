@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { loadMarks, POSITIVE_CONTROL, scanText } from '../src/rules/privacy.ts';
+import { hideHome, loadMarks, POSITIVE_CONTROL, scanText } from '../src/rules/privacy.ts';
 
 // Samples are built from pieces so this file passes its own check.
 const at = '@';
@@ -60,4 +60,10 @@ test('private marks file: comments and blanks skipped, missing file is empty', (
   writeFileSync(file, '# header\n\nMyCity\n  myserver  \n');
   assert.deepEqual(loadMarks({ YOKOTEN_PRIVATE_MARKS: file }), ['mycity', 'myserver']);
   assert.deepEqual(loadMarks({ YOKOTEN_PRIVATE_MARKS: join(dir, 'none') }), []);
+});
+
+test('output: the home folder shows as ~ (#25)', () => {
+  assert.equal(hideHome('wrote /home/someone/.local/share/yokoten', { HOME: '/home/someone' }), 'wrote ~/.local/share/yokoten');
+  assert.equal(hideHome('a /home/someone/ b /home/someone', { HOME: '/home/someone/' }), 'a ~/ b ~');
+  assert.equal(hideHome('/x', { HOME: '/' }), '/x', 'a root home hides nothing');
 });

@@ -27,6 +27,9 @@ All notable changes are listed here. The format follows
 
 ### Fixed
 
+- Nothing yokoten prints shows the home folder, which names the machine's user:
+  `install`, `doctor`, hook reasons and errors show it as `~`. Core rule 11 now covers
+  output as well as the repo (#25).
 - The privacy check no longer flags addresses that point at no person: role inboxes at
   public services (`support@github.com`), SSH remotes at public forges
   (`git@gitlab.com:owner/repo`), GitLab noreply addresses and `.local` names. A personal
