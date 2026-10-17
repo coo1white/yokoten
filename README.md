@@ -43,11 +43,10 @@ can see it working:
 | Stage | You learn | See it here |
 |---|---|---|
 | **1 · Safety net** | rules the agents read, checks that stop them | [AGENTS.md](AGENTS.md) |
-| **2 · Issues and pull requests** | every change has a reason; CI passes before it merges | [issues](https://github.com/coo1white/yokoten/issues?q=is%3Aissue), [pull requests](https://github.com/coo1white/yokoten/pulls?q=is%3Apr) |
-| **3 · Plan** | labels, milestones, a board | [the board](https://github.com/users/coo1white/projects/1) |
-| **4 · Release** | clear commit messages, a changelog, version numbers | [CHANGELOG.md](CHANGELOG.md) |
-| **5 · A team of agents** | a bot, workers, a reviewer; you stay the boss | [the guide](docs/guide.md#managing-agents-like-a-team) |
-| **6 · Going public** | a privacy check over all history, security settings, protected branches | [security policy](.github/SECURITY.md) |
+| **2 · Issues and pull requests** | every change has a reason; CI passes before it merges; labels, milestones, a board | [issues](https://github.com/coo1white/yokoten/issues?q=is%3Aissue), [pull requests](https://github.com/coo1white/yokoten/pulls?q=is%3Apr), [the board](https://github.com/users/coo1white/projects/1) |
+| **3 · Release** | clear commit messages, a changelog, version numbers | [CHANGELOG.md](CHANGELOG.md) |
+| **4 · A team of agents** | a bot, workers, a reviewer; you stay the boss | [the guide](docs/guide.md#managing-agents-like-a-team) |
+| **5 · Going public** | a privacy check over all history, security settings, protected branches | [security policy](.github/SECURITY.md) |
 
 ## Quick start
 
