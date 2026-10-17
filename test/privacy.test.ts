@@ -22,6 +22,23 @@ test('emails: personal ones are caught, noreply and examples are fine', () => {
   assert.deepEqual(scanText(`help${at}company.com`, { file: 'a', allow: [`help${at}company.com`] }), []);
 });
 
+test('emails: role addresses, forge SSH remotes and .local point at no person (#11)', () => {
+  for (const ok of [
+    `contact support${at}github.com`,
+    `security${at}gitlab.com`,
+    `remote: git${at}gitlab.com:owner/repo.git`,
+    `git clone git${at}github.com:owner/repo`,
+    `conf${at}test.local`,
+    `1-me${at}users.noreply.gitlab.com`,
+  ]) {
+    assert.deepEqual(scanText(ok, { file: 'a' }), [], ok);
+  }
+  // Still caught: a person at the same domains, and an SSH remote that names a private host.
+  for (const bad of [`someone${at}gmail.com`, `someone${at}github.com`, `git${at}code.my-company.dev:team/app.git`]) {
+    assert.equal(scanText(bad, { file: 'a' }).length, 1, bad);
+  }
+});
+
 test('IPs: real ones are caught, documentation ranges and versions are not', () => {
   for (const bad of [ip(100, 64, 1, 2), ip(10, 0, 0, 5), ip(8, 8, 8, 8), `host=${ip(203, 0, 114, 9)}:22`]) {
     assert.equal(scanText(bad, { file: 'a' }).length, 1, bad);
