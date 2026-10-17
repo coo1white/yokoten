@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { checkCommand, checkEdit } from '../rules/guards.ts';
 import { type Config, DEFAULTS, type Env } from '../rules/config.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
+import { type Finding, finding, formatFinding, type RuleId } from '../rules/message.ts';
 import { loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
@@ -24,14 +25,16 @@ import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
 import { runtimeVersion, VERSION } from './files.ts';
 import { paths } from './install.ts';
-import { road, STAGES, walk } from './road.ts';
+import { type Mark, road, STAGES, stepFinding, stepText, walk } from './road.ts';
 
-/** One check outside the road: its name, whether it is in place, and the fix. */
+/** One check outside the road: its name in the report, whether it is in place, and the finding when it is not. */
 interface Practice {
   name: string;
   ok: boolean;
-  fix: string;
+  finding: Finding;
 }
+
+const practice = (name: string, id: RuleId, ok: boolean, what: string, fix: string): Practice => ({ name, ok, finding: finding(id, what, fix) });
 
 /** The checks that must catch a known-bad input. Returns the names of any that did not. */
 export function selfTest(): string[] {
@@ -56,8 +59,8 @@ export function selfTest(): string[] {
  */
 export function agentHooks(root: string): Practice[] {
   return [
-    { name: 'codex-hook', ok: codex.hasProjectHook(root), fix: 'no tool-call guard in .codex/hooks.json; `yokoten init` adds it' },
-    { name: 'gemini-hook', ok: gemini.hasProjectHook(root), fix: 'no tool-call guard in .gemini/settings.json; `yokoten init` adds it' },
+    practice('codex-hook', 'codex-hook', codex.hasProjectHook(root), 'no tool-call guard in .codex/hooks.json', '`yokoten init` adds it'),
+    practice('gemini-hook', 'gemini-hook', gemini.hasProjectHook(root), 'no tool-call guard in .gemini/settings.json', '`yokoten init` adds it'),
   ];
 }
 
@@ -66,9 +69,10 @@ export function machineChecks(env: Env): Practice[] {
   const p = paths(env);
   const runtime = runtimeVersion(p.runtime);
   return [
-    { name: 'session-doctor', ok: hasSessionDoctor(env), fix: 'sessions do not start with doctor' },
-    { name: 'runtime', ok: runtime === VERSION, fix: runtime ? `the installed runtime is ${runtime}, this yokoten is ${VERSION}` : 'no runtime installed' },
-    { name: 'private-marks', ok: loadMarks(env).length > 0, fix: `${p.marks} is missing or empty, so the privacy check only knows emails and IPs` },
+    practice('session-doctor', 'session-doctor', hasSessionDoctor(env), 'sessions do not start with doctor', 'run `yokoten install`'),
+    // 'runtime' in the text, as before; the id differs from the road's runtime step.
+    practice('runtime', 'machine-runtime', runtime === VERSION, runtime ? `the installed runtime is ${runtime}, this yokoten is ${VERSION}` : 'no runtime installed', 'run `yokoten install` from this copy of yokoten'),
+    practice('private-marks', 'private-marks', loadMarks(env).length > 0, `${p.marks} is missing or empty`, 'add your name, city, domain and server names to it, one per line'),
   ];
 }
 
@@ -102,42 +106,104 @@ export const ROAD_DONE = 'yokoten: every step yokoten can check is done, or mark
 /** The last of a session's three lines: what the agent does with the step. */
 export const OFFER = 'Tell the user in plain words, one step at a time, and offer to do it (as-is, lighter, or not now with a reason).';
 
-/** The report, and whether everything is in place. */
-export function doctor(root: string | null, { env, config, session = false }: { env: Env; config: Config; session?: boolean }): { ok: boolean; lines: string[] } {
+/** One step in the JSON map: its mark, its outside standard, and the reason for "not now". */
+export interface StepState {
+  id: string;
+  stage: number;
+  mark: Mark;
+  standard?: string;
+  reason?: string;
+}
+
+/**
+ * What `doctor --json` prints. `findings` is everything to do, each with what, why and
+ * fix; `notes` never fail doctor. A session (`--session`) gets the next step and the
+ * private-marks finding only, as its three lines do.
+ */
+export interface DoctorReport {
+  version: string;
+  ok: boolean;
+  selfTest: { ok: boolean; failed: string[] };
+  /** False outside a git repo: then there is no road to walk. */
+  repo: boolean;
+  stage: number | null;
+  stages: string[];
+  next: Finding | null;
+  findings: Finding[];
+  steps?: StepState[];
+  notes?: Finding[];
+  server?: string[];
+}
+
+/** The report, as text lines and as data, and whether everything is in place. */
+export function doctor(
+  root: string | null,
+  { env, config, session = false }: { env: Env; config: Config; session?: boolean },
+): { ok: boolean; lines: string[]; report: DoctorReport } {
   const lines: string[] = [];
-  const broken = selfTest();
-  if (broken.length) lines.push(`yokoten is BROKEN: ${broken.join(', ')} let a known-bad input through. Do not trust any check until this is fixed.`);
-  if (!root) return { ok: broken.length === 0, lines };
+  const failed = selfTest();
+  const findings: Finding[] = [];
+  if (failed.length) {
+    lines.push(`yokoten is BROKEN: ${failed.join(', ')} let a known-bad input through. Do not trust any check until this is fixed.`);
+    findings.push(finding('self-test', `${failed.join(', ')} let a known-bad input through`, 'do not trust any check until this is fixed; run `yokoten install` again, or report it in an issue'));
+  }
+  const base = { version: VERSION, selfTest: { ok: !failed.length, failed }, stages: STAGES };
+  if (!root) return { ok: !failed.length, lines, report: { ...base, ok: !failed.length, repo: false, stage: null, next: null, findings } };
 
   const where = walk(road(root, env), config.notNow);
   const machine = machineChecks(env);
+  const next = where.next ? stepFinding(where.next, root, env) : null;
 
   // A session reads files only, never the network, so it starts fast and works offline.
   if (session) {
-    const { stage, next } = where;
-    if (stage && next) lines.push(`yokoten: stage ${stage} of ${STAGES.length}, ${STAGES[stage - 1]}. Next: ${next.what(root, env)}.`, `Why: ${next.why}.`, OFFER);
+    const { stage } = where;
+    if (stage && next) lines.push(`yokoten: stage ${stage} of ${STAGES.length}, ${STAGES[stage - 1]}. Next: ${stepText(next)}.`, `Why: ${next.why}.`, OFFER);
     else lines.push(ROAD_DONE);
+    if (next) findings.push(next);
     // Not a step on the road, but the privacy check is weaker until it is fixed.
     const marks = machine.find((c) => c.name === 'private-marks' && !c.ok);
-    if (marks) lines.push(`yokoten: ${marks.fix}.`);
-    return { ok: !broken.length && !where.next, lines };
+    if (marks) {
+      lines.push(`yokoten: ${formatFinding(marks.finding)}`);
+      findings.push(marks.finding);
+    }
+    const ok = !failed.length && !next;
+    return { ok, lines, report: { ...base, ok, repo: true, stage, next, findings } };
   }
 
-  lines.push(`yokoten ${VERSION}, self-test ${broken.length ? 'FAILED' : 'ok'}`);
+  lines.push(`yokoten ${VERSION}, self-test ${failed.length ? 'FAILED' : 'ok'}`);
   lines.push(where.stage ? `the road: stage ${where.stage} of ${STAGES.length}, ${STAGES[where.stage - 1]}` : `the road: ${ROAD_DONE.replace(/^yokoten: /, '')}`);
+  const steps: StepState[] = [];
   STAGES.forEach((name, i) => {
     lines.push(`  ${i + 1}. ${name}`);
     for (const { step, mark } of where.steps.filter((w) => w.step.stage === i + 1)) {
-      const note = mark === 'done' ? '' : mark === 'not now' ? config.notNow[step.key] : mark === "can't check" ? '' : step.what(root, env);
+      const state: StepState = { id: step.key, stage: step.stage, mark };
+      if (step.standard) state.standard = step.standard;
+      let note = '';
+      if (mark === 'not now') note = state.reason = config.notNow[step.key];
+      else if (mark === 'next' || mark === 'to do') {
+        const f = stepFinding(step, root, env);
+        findings.push(f);
+        note = stepText(f);
+      }
+      steps.push(state);
       lines.push(`    ${mark.padEnd(11)} ${step.key}${step.standard ? ` (${step.standard})` : ''}${note ? `: ${note}` : ''}`);
     }
   });
   lines.push('project:');
-  for (const c of agentHooks(root)) lines.push(`  ${c.ok ? 'ok     ' : 'note   '} ${c.name}${c.ok ? '' : `: ${c.fix}`}`);
+  const notes: Finding[] = [];
+  for (const c of agentHooks(root)) {
+    lines.push(`  ${c.ok ? 'ok     ' : 'note   '} ${c.name}${c.ok ? '' : `: ${stepText(c.finding)}`}`);
+    if (!c.ok) notes.push(c.finding);
+  }
   const problems = check(root, { config, env });
+  findings.push(...problems);
   lines.push(`  ${problems.length ? 'MISSING' : 'ok     '} tree: ${problems.length ? `${problems.length} problem(s), run \`yokoten check\`` : 'layout and privacy clean'}`);
   lines.push('machine:');
-  for (const c of machine) lines.push(`  ${c.ok ? 'ok     ' : 'MISSING'} ${c.name}${c.ok ? '' : `: ${c.fix}`}`);
+  for (const c of machine) {
+    lines.push(`  ${c.ok ? 'ok     ' : 'MISSING'} ${c.name}${c.ok ? '' : `: ${stepText(c.finding)}`}`);
+    if (!c.ok) findings.push(c.finding);
+  }
   lines.push('server (not checked yet; set once per repo by the owner):', ...OWNER_STEPS.map((s, i) => `  ${i + 1}. ${s}`));
-  return { ok: !broken.length && !where.next && !problems.length && machine.every((c) => c.ok), lines };
+  const ok = !failed.length && !where.next && !problems.length && machine.every((c) => c.ok);
+  return { ok, lines, report: { ...base, ok, repo: true, stage: where.stage, next, findings, steps, notes, server: OWNER_STEPS } };
 }

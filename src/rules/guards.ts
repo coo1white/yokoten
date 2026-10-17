@@ -1,5 +1,5 @@
-// The rules an agent works under. Each check returns null to let the action go on, or the
-// reason it stops, written so the agent knows what to do next.
+// The rules an agent works under. Each check returns null to let the action go on, or a
+// finding: what it stops, why, and what the agent does instead.
 //
 // `env` is the guard's own environment, which the session sets and the agent cannot change.
 // The command text is never read for it: `YOKOTEN_FIX_TASK=0 git commit` inside a command
@@ -11,21 +11,22 @@
 // CODEOWNERS, and a release token the agents do not hold.
 
 import type { Config, Env } from './config.ts';
-import { matcher } from './glob.ts';
+import { matcher } from './config.ts';
+import { type Finding, finding } from './message.ts';
 
 /** A file edit, by path relative to the repo root. */
-export function checkEdit(path: string, { config, env }: { config: Config; env: Env }): string | null {
+export function checkEdit(path: string, { config, env }: { config: Config; env: Env }): Finding | null {
   if (env.YOKOTEN_FIX_TASK === '1' && matcher(config.tests)(path)) {
-    return `${path} is a test file, and this is a fix task (YOKOTEN_FIX_TASK=1). A fix task changes the code until the test passes, never the test. If the test is wrong, stop and say so in your report.`;
+    return finding('test-file', `${path} is a test file, and this is a fix task (YOKOTEN_FIX_TASK=1)`, 'if the test is wrong, stop and say so in your report');
   }
   if (env.YOKOTEN_ROLE === 'worker' && matcher(config.leadOnly)(path)) {
-    return `${path} is lead-only (yokoten.json "leadOnly"). Stop and hand the change to the lead.`;
+    return finding('lead-only', `${path} is lead-only (yokoten.json "leadOnly")`, 'stop and hand the change to the lead');
   }
   return null;
 }
 
 /** A shell command, as the agent wrote it. */
-export function checkCommand(command: string, { env }: { env: Env }): string | null {
+export function checkCommand(command: string, { env }: { env: Env }): Finding | null {
   for (const words of segments(command)) {
     const reason = checkGit(words, env) ?? checkPublish(words, env);
     if (reason) return reason;
@@ -33,7 +34,8 @@ export function checkCommand(command: string, { env }: { env: Env }): string | n
   return null;
 }
 
-const RELEASE = 'Only the owner decides when to release. If the owner asked for this, they start the session with YOKOTEN_RELEASE_APPROVAL set.';
+const RELEASE_FIX = 'if the owner asked for this, they start the session with YOKOTEN_RELEASE_APPROVAL set';
+const release = (what: string) => finding('release', what, RELEASE_FIX);
 
 // Quotes become spaces, so `bash -c 'git push --tags'` reads like the plain command. Then
 // the text is cut at ; | & ( ) and line ends, and each piece is split into words.
@@ -49,7 +51,7 @@ const isGit = (word: string) => /(^|[/\\])git(\.exe)?$/.test(word);
 // Git options that take the next word as their value.
 const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace']);
 
-function checkGit(words: string[], env: Env): string | null {
+function checkGit(words: string[], env: Env): Finding | null {
   const start = words.findIndex(isGit);
   if (start === -1) return null;
   const settings: string[] = [];
@@ -63,33 +65,31 @@ function checkGit(words: string[], env: Env): string | null {
   const lower = args.map((a) => a.toLowerCase());
 
   if (settings.some((s) => /^push\.followtags/i.test(s)) && !env.YOKOTEN_RELEASE_APPROVAL) {
-    return `git -c push.followTags pushes tags. ${RELEASE}`;
+    return release('git -c push.followTags pushes tags');
   }
   if (sub === 'push') {
     if (!env.YOKOTEN_RELEASE_APPROVAL) {
       const tagFlag = args.find((a) => ['--tags', '--follow-tags', '--mirror'].includes(a));
-      if (tagFlag) return `git push ${tagFlag} pushes tags. ${RELEASE}`;
+      if (tagFlag) return release(`git push ${tagFlag} pushes tags`);
       const tagRef = args.find((a) => /(^|[:+])(refs\/tags\/|v\d)/.test(a));
-      if (tagRef) return `git push ${tagRef} pushes a release tag. ${RELEASE}`;
+      if (tagRef) return release(`git push ${tagRef} pushes a release tag`);
     }
-    if (args.some((a) => a === '--force' || /^-[a-z]*f[a-z]*$/i.test(a) || a.startsWith('+'))) {
-      return 'A plain force push can throw away work that someone else pushed. Use --force-with-lease.';
-    }
+    const force = args.find((a) => a === '--force' || /^-[a-z]*f[a-z]*$/i.test(a) || a.startsWith('+'));
+    if (force) return finding('force-push', `git push ${force} forces the push`, 'use --force-with-lease, which stops when the remote has work you have not seen');
   }
-  if (args.includes('--no-verify') || (sub === 'commit' && args.some((a) => /^-[a-z]*n[a-z]*$/i.test(a)))) {
-    return '--no-verify skips the commit check, which is the inspection step. Fix what the check reports instead.';
-  }
+  const skip = args.includes('--no-verify') ? '--no-verify' : sub === 'commit' ? args.find((a) => /^-[a-z]*n[a-z]*$/i.test(a)) : undefined;
+  if (skip) return finding('skip-check', `git ${sub} ${skip} skips the commit check`, 'fix what the check reports instead');
   if (sub === 'config' && lower.includes('core.hookspath')) {
     const value = args[lower.indexOf('core.hookspath') + 1];
-    if (value !== '.githooks') return 'Changing core.hooksPath turns off the commit check. Only the owner changes it.';
+    if (value !== '.githooks') return finding('hooks-path', 'changing core.hooksPath turns off the commit check', 'leave it at .githooks; only the owner changes it');
   }
   return null;
 }
 
-function checkPublish(words: string[], env: Env): string | null {
+function checkPublish(words: string[], env: Env): Finding | null {
   if (env.YOKOTEN_RELEASE_APPROVAL) return null;
   const line = words.join(' ');
-  if (/(^|\s)gh release (create|upload|edit)(\s|$)/.test(line)) return `gh release publishes a release. ${RELEASE}`;
-  if (/(^|\s)(npm|pnpm|yarn)( npm)? publish(\s|$)/.test(line)) return `This publishes a package. ${RELEASE}`;
+  if (/(^|\s)gh release (create|upload|edit)(\s|$)/.test(line)) return release('gh release publishes a release');
+  if (/(^|\s)(npm|pnpm|yarn)( npm)? publish(\s|$)/.test(line)) return release('this publishes a package');
   return null;
 }

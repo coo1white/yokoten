@@ -6,9 +6,10 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Config, Env } from '../rules/config.ts';
-import { matcher } from '../rules/glob.ts';
+import { matcher } from '../rules/config.ts';
 import { checkEdit } from '../rules/guards.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
+import { type Finding, finding } from '../rules/message.ts';
 import { loadMarks, notUtc, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
 
 const git = (cwd: string, args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 1 << 30 });
@@ -62,8 +63,8 @@ function stagedBinary(root: string): { path: string; binary: boolean }[] {
 }
 
 /** Problems for the whole tree, or with `staged`, for the commit about to be made. */
-export function check(root: string, { config, env, staged = false }: { config: Config; env: Env; staged?: boolean }): string[] {
-  const problems: string[] = [];
+export function check(root: string, { config, env, staged = false }: { config: Config; env: Env; staged?: boolean }): Finding[] {
+  const problems: Finding[] = [];
   const marks = loadMarks(env);
   const skip = matcher(config.privacy.skip);
   const privacy = (path: string, buf: Buffer) => {
@@ -73,7 +74,7 @@ export function check(root: string, { config, env, staged = false }: { config: C
   if (staged) {
     // The commit about to be made: git var gives its author and committer, time included.
     if (config.privacy.utc && ['GIT_AUTHOR_IDENT', 'GIT_COMMITTER_IDENT'].some((v) => notUtc(git(root, ['var', v])))) {
-      problems.push(`this commit's time carries your time zone, which narrows down where you are: ${TIME_ZONE_FIX}.`);
+      problems.push(finding('time-zone', "this commit's time carries your time zone", TIME_ZONE_FIX));
     }
     for (const { status, path } of stagedFiles(root)) {
       const reason = checkEdit(path, { config, env });
@@ -112,8 +113,12 @@ export function historyTimeZones(root: string): number {
  * author and committer emails and commit messages. Run it before a private repo goes
  * public; a file deleted later is still in the history.
  */
-export function checkHistory(root: string, { config, env }: { config: Config; env: Env }): string[] {
-  const problems = new Set<string>();
+export function checkHistory(root: string, { config, env }: { config: Config; env: Env }): Finding[] {
+  // The same hit in several commits is reported once.
+  const problems = new Map<string, Finding>();
+  const add = (found: Finding[]) => {
+    for (const f of found) problems.set(JSON.stringify(f), f);
+  };
   const marks = loadMarks(env);
   const skip = matcher(config.privacy.skip);
   const opts = { marks, allow: config.privacy.allow };
@@ -122,8 +127,8 @@ export function checkHistory(root: string, { config, env }: { config: Config; en
   for (const entry of log.split('\x1e')) {
     const [hash, author, committer, message] = entry.replace(/^\n/, '').split('\0');
     if (!hash) continue;
-    for (const p of scanText(`${author}\n${committer}`, { file: `commit ${hash} (author/committer)`, ...opts })) problems.add(p);
-    for (const p of scanText(message ?? '', { file: `commit ${hash} (message)`, ...opts })) problems.add(p);
+    add(scanText(`${author}\n${committer}`, { file: `commit ${hash} (author/committer)`, ...opts }));
+    add(scanText(message ?? '', { file: `commit ${hash} (message)`, ...opts }));
   }
 
   // Every blob ever committed, with the first path it was seen at.
@@ -137,7 +142,7 @@ export function checkHistory(root: string, { config, env }: { config: Config; en
     .toString('utf8')
     .split('\n');
   const wanted = types.filter((l) => l.endsWith(' blob')).map((l) => l.split(' ')[0]).filter((sha) => !skip(blobs.get(sha) ?? ''));
-  if (wanted.length === 0) return [...problems];
+  if (wanted.length === 0) return [...problems.values()];
   const batch = gitBytes(root, ['cat-file', '--batch'], wanted.join('\n') + '\n');
   let at = 0;
   while (at < batch.length) {
@@ -146,7 +151,11 @@ export function checkHistory(root: string, { config, env }: { config: Config; en
     const body = batch.subarray(nl + 1, nl + 1 + Number(size));
     at = nl + 1 + Number(size) + 1;
     if (isBinary(body)) continue;
-    for (const p of scanText(body.toString('utf8'), { file: `${blobs.get(sha)} @ blob ${sha.slice(0, 8)}`, ...opts })) problems.add(p);
+    add(scanText(body.toString('utf8'), { file: `${blobs.get(sha)} @ blob ${sha.slice(0, 8)}`, ...opts }));
   }
-  return [...problems];
+  return [...problems.values()];
 }
+
+/** The history's time zone count (`historyTimeZones`), as a note. */
+export const timeZoneNote = (commits: number): Finding =>
+  finding('time-zone', `${commits} commit(s) record a time zone other than UTC`, "leave them unless the owner decides to rewrite history; new commits are checked");

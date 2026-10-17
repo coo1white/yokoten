@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { type Found, ROAD, STAGES, type Step, walk } from '../src/setup/road.ts';
 
-const step = (stage: number, key: string): Step => ({ stage, key, check: () => false, what: () => key, why: key });
+const step = (stage: number, key: string): Step => ({ stage, key, check: () => false, what: () => key, fix: () => key, why: key, how: key });
 const steps = [step(1, 'a'), step(1, 'b'), step(2, 'c'), step(3, 'd')];
 const at = (found: Found[], notNow: Record<string, string> = {}) => walk(steps.map((s, i) => ({ step: s, found: found[i] })), notNow);
 const marks = (found: Found[], notNow: Record<string, string> = {}) => at(found, notNow).steps.map((w) => w.mark);
@@ -45,6 +45,7 @@ test('road: five stages, each step in one of them, each key once, each why a sen
   // The keys a project may already have in yokoten.json "notNow" keep working.
   for (const key of ['rules', 'commit-check', 'tool-hook', 'ci', 'runtime', 'issues']) assert.ok(ROAD.some((s) => s.key === key), key);
   for (const s of ROAD) assert.ok(!/[.]$/.test(s.why) && s.why.split(' ').length <= 25, `${s.key}: a why has no full stop and at most 25 words`);
+  for (const s of ROAD) assert.ok(s.how && !/[.]$/.test(s.how), `${s.key}: says how it is checked, with no full stop`);
 });
 
 test('road: every outside standard has the form "<standard>: <item>" or an item id, joined by " · " (#58)', () => {

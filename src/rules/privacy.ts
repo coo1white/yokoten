@@ -15,7 +15,8 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Env } from './config.ts';
-import { findSecrets, secretProblem } from './secrets.ts';
+import { type Finding, finding } from './message.ts';
+import { findSecrets } from './secrets.ts';
 
 export const marksFile = (env: Env): string => env.YOKOTEN_PRIVATE_MARKS || join(env.HOME || homedir(), '.config', 'yokoten', 'private-marks');
 
@@ -57,28 +58,28 @@ const OK_IP = [/^127\./, /^0\.0\.0\.0$/, /^192\.0\.2\./, /^198\.51\.100\./, /^20
  * Problems in one file's text. `allow` holds literal strings the project has said are
  * fine (yokoten.json "privacy.allow"), such as a public support address.
  */
-export function scanText(text: string, { file, marks = [], allow = [] }: { file: string; marks?: string[]; allow?: string[] }): string[] {
-  const problems: string[] = [];
+export function scanText(text: string, { file, marks = [], allow = [] }: { file: string; marks?: string[]; allow?: string[] }): Finding[] {
+  const problems: Finding[] = [];
   const lines = text.split('\n');
   const secrets = findSecrets(lines, allow);
   lines.forEach((line, i) => {
-    const where = `${file}:${i + 1}`;
+    const where = { file, line: i + 1 };
     // The secret itself is never printed either, only its kind.
-    for (const [at, kind] of secrets) if (at === i) problems.push(secretProblem(where, kind));
+    for (const [at, kind] of secrets) if (at === i) problems.push(finding('secret', `a secret (${kind})`, 'remove it, rotate it, and keep it outside the repo', where));
     for (const [hit] of line.matchAll(EMAIL)) {
       if (!OK_EMAIL.some((re) => re.test(hit)) && !allow.includes(hit)) {
-        problems.push(`${where}: an email address. Use your GitHub noreply address, or a placeholder at example.com.`);
+        problems.push(finding('email', 'an email address', 'use your GitHub noreply address, or a placeholder at example.com', where));
       }
     }
     for (const [hit] of line.matchAll(IPV4)) {
       const octets = hit.split('.').map(Number);
       if (octets.some((n) => n > 255) || OK_IP.some((re) => re.test(hit)) || allow.includes(hit)) continue;
-      problems.push(`${where}: an IP address. Use a placeholder from 192.0.2.0/24.`);
+      problems.push(finding('ip', 'an IP address', 'use a placeholder from 192.0.2.0/24', where));
     }
     const lower = line.toLowerCase();
     for (const mark of marks) {
       // The mark itself is never printed: the output may land in a CI log or a chat.
-      if (lower.includes(mark)) problems.push(`${where}: matches a line of your private-marks file.`);
+      if (lower.includes(mark)) problems.push(finding('private-mark', 'matches a line of your private-marks file', 'remove it or reword the line; the mark itself is never printed', where));
     }
   });
   return problems;
