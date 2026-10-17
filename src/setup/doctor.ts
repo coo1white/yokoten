@@ -16,7 +16,9 @@ import { type Config, DEFAULTS, type Env } from '../rules/config.ts';
 import { checkLayout } from '../rules/layout.ts';
 import { loadMarks, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
 import { check } from '../run/check.ts';
-import { hasHook, KIT, runs, runtimeVersion, VERSION } from './files.ts';
+import { hasProjectHook, hasSessionDoctor, skillFile } from '../agents/claude-code.ts';
+import { runs } from '../run/cli.ts';
+import { KIT, runtimeVersion, VERSION } from './files.ts';
 import { isSelf } from './init.ts';
 import { paths } from './install.ts';
 
@@ -67,7 +69,7 @@ export function projectChecks(root: string): Practice[] {
       ok: gitConfig(root, 'core.hooksPath') === '.githooks' && runs('check').test(read(join(root, '.githooks', 'pre-commit'))),
       fix: 'commits are not checked (core.hooksPath is not .githooks, or .githooks/pre-commit does not run yokoten)',
     },
-    { name: 'tool-hook', ok: hasHook(join(root, '.claude', 'settings.json'), 'PreToolUse', 'hook'), fix: 'no tool-call guard in .claude/settings.json' },
+    { name: 'tool-hook', ok: hasProjectHook(root), fix: 'no tool-call guard in .claude/settings.json' },
     { name: 'ci', ok: runs('check').test(ciText), fix: 'CI does not run `yokoten check`, so a commit made without the hook gets through' },
     {
       name: 'runtime',
@@ -88,11 +90,10 @@ export function machineChecks(env: Env): Practice[] {
   const kitSkills = join(KIT, 'user', 'skills');
   // A vendored project copy has no kit; the machine copy and the source do.
   const skills = existsSync(kitSkills) ? readdirSync(kitSkills) : [];
-  const settings = join(p.claude, 'settings.json');
   const runtime = runtimeVersion(p.runtime);
   return [
-    { name: 'skills', ok: skills.length > 0 && skills.every((s) => existsSync(join(p.claude, 'skills', s, 'SKILL.md'))), fix: 'the yokoten skills are not installed' },
-    { name: 'session-doctor', ok: hasHook(settings, 'SessionStart', 'doctor'), fix: 'sessions do not start with doctor' },
+    { name: 'skills', ok: skills.length > 0 && skills.every((s) => existsSync(skillFile(env, s))), fix: 'the yokoten skills are not installed' },
+    { name: 'session-doctor', ok: hasSessionDoctor(env), fix: 'sessions do not start with doctor' },
     { name: 'runtime', ok: runtime === VERSION, fix: runtime ? `the installed runtime is ${runtime}, this yokoten is ${VERSION}` : 'no runtime installed' },
     { name: 'private-marks', ok: loadMarks(env).length > 0, fix: `${p.marks} is missing or empty, so the privacy check only knows emails and IPs` },
   ];

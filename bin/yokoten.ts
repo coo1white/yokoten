@@ -5,7 +5,8 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
 import { check, checkHistory, gitRoot } from '../src/run/check.ts';
-import { judge, type ToolCall } from '../src/run/hook.ts';
+import { readToolCall } from '../src/agents/claude-code.ts';
+import { judge } from '../src/run/hook.ts';
 import { doctor } from '../src/setup/doctor.ts';
 import { VERSION } from '../src/setup/files.ts';
 import { init } from '../src/setup/init.ts';
@@ -40,15 +41,16 @@ function print(lines: string[], stream: NodeJS.WritableStream = process.stdout):
 function main(): number {
   switch (cmd) {
     case 'hook': {
-      let input: ToolCall;
+      let input: unknown;
       try {
         input = JSON.parse(readFileSync(0, 'utf8'));
       } catch {
         return 0; // not a tool call; nothing to judge
       }
-      const root = rootOf(input.cwd ?? process.cwd());
+      const action = readToolCall(input);
+      const root = rootOf(action.cwd ?? process.cwd());
       const config = root ? loadConfig(root) : DEFAULTS;
-      const reason = judge(input, { root, config, env, commandsOnly: flag('--commands-only') });
+      const reason = judge(action, { root, config, env, commandsOnly: flag('--commands-only') });
       if (!reason) return 0;
       process.stderr.write(`yokoten: ${reason}\n`);
       return 2;

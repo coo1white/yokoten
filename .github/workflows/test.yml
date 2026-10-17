@@ -10,12 +10,14 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
+        # The oldest Node that runs .ts as it is (package.json "engines"), and the current 22.
+        node: ['22.18.0', '22']
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
       - run: node --test
   # Types are checked here and nowhere else: Node runs the .ts files without them.
   typecheck:

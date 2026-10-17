@@ -5,7 +5,8 @@
 import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { addHook, copyRuntime, HOME_DIR, KIT, render, writeNew } from './files.ts';
+import { addProjectHook } from '../agents/claude-code.ts';
+import { copyRuntime, HOME_DIR, KIT, render, writeNew } from './files.ts';
 
 /** yokoten's own repo runs its own bin; every other project runs a vendored copy. */
 export const isSelf = (root: string): boolean => {
@@ -40,7 +41,7 @@ export function init(root: string): string[] {
     report.push(`${result} ${rel}`);
   }
   chmodSync(join(root, '.githooks', 'pre-commit'), 0o755);
-  const hook = addHook(join(root, '.claude', 'settings.json'), 'PreToolUse', 'Bash|Edit|Write|MultiEdit|NotebookEdit', `node "$CLAUDE_PROJECT_DIR/${cli}" hook`);
+  const hook = addProjectHook(root, cli);
   report.push(`${hook} the tool-call hook in .claude/settings.json`);
   try {
     execFileSync('git', ['config', 'core.hooksPath', '.githooks'], { cwd: root, stdio: 'pipe' });
