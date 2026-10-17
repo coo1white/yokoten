@@ -6,7 +6,8 @@
 // at the fields, not the tool's name, so a runtime that names its tools differently
 // still gets checked as long as it uses those fields.
 
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { checkCommand, checkEdit } from '../rules/guards.mjs';
 
 /**
@@ -23,11 +24,23 @@ export function judge(input, { root, config, env, commandsOnly = false }) {
   if (/worker/i.test(input?.agent_type ?? '')) env = { ...env, YOKOTEN_ROLE: 'worker' };
   for (const p of [tool.file_path, tool.path, tool.notebook_path]) {
     if (typeof p !== 'string' || p === '') continue;
-    const rel = relative(root, resolve(input.cwd ?? root, p));
+    const rel = relative(real(root), real(resolve(input.cwd ?? root, p)));
     // A file outside the repo is not this repo's business.
     if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) continue;
     const reason = checkEdit(rel.split(sep).join('/'), { config, env });
     if (reason) return reason;
   }
   return null;
+}
+
+// The real path, through symlinks. git reports the repo root's real path, and a tool may
+// send a path through a symlink (on macOS, /var is /private/var). A file that does not
+// exist yet takes the real path of its nearest existing folder.
+function real(path) {
+  try {
+    return realpathSync(path);
+  } catch {
+    const parent = dirname(path);
+    return parent === path ? path : resolve(real(parent), basename(path));
+  }
 }

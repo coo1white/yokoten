@@ -6,6 +6,12 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The tool-call hook now applies file rules when the repo path goes through a symlink
+  (on macOS, every path under `/var`). Before, such an edit was treated as outside the
+  repo and let through (#1).
+
 ## [0.1.0] - 2026-10-18
 
 ### Added
