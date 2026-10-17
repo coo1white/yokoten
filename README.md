@@ -59,14 +59,26 @@ programming should start on the right road on day one and walk it safely with AI
 Software development has a full cycle (the SDLC: plan, build, test, review, release,
 maintain). yokoten teaches that cycle by doing it, one step at a time.
 
-| When | What | Track it |
-|---|---|---|
-| **Now, before 26 Oct 2026** | `doctor` walks you along the road; a release flow; checks on GitHub settings; `npx yokoten`; the same guard in Codex and Gemini CLI | [M0](https://github.com/coo1white/yokoten/milestone/1) |
-| **Meta hackathon, 26 Oct – 3 Nov** | an agent that reads an old project and drafts how to adopt yokoten; Muse Code support | [M1](https://github.com/coo1white/yokoten/milestone/2) |
-| **Next** | Gitea and other code hosts; a short spec before larger changes; the OpenSSF Best Practices badge as public proof | [issues](https://github.com/coo1white/yokoten/issues) |
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/road-dark.svg">
+  <img src="docs/assets/road-light.svg" width="100%" alt="Five stations on one road. The first is done, the second is where we are now, and three are ahead. From the last one, the road branches out.">
+</picture>
+</p>
 
-Every step is planned in the open. The [board](https://github.com/users/coo1white/projects/1)
-shows what is being built today.
+| Stage | Name | What it means | Now |
+|---|---|---|---|
+| 1 | **Guard** | AI agents are stopped before a dangerous action: a force push, a test edited to pass, a private detail leaked | ✅ done |
+| 2 | **Guide** | a beginner walks the five stages with `doctor`, one thing at a time; an agent reads an old project and drafts how to adopt yokoten | 🚧 now, around the hackathon |
+| 3 | **Any tool, any host** | Claude Code, Codex, Gemini CLI and Muse Code keep the same rules; GitHub, Gitea and GitLab all work | next |
+| 4 | **The whole cycle** | from a short spec to build, test, review, release and maintenance, the full SDLC has a guide | later |
+| 5 | **Yokoten** | a lesson one project learns becomes a check, and the check spreads to every project. What one person learns, everyone gets | the goal |
+
+The word *yokoten* (横展) comes from Toyota's factories. A lesson learned on one line is
+spread across every line. That is where the name comes from.
+
+The near steps are in [M0](https://github.com/coo1white/yokoten/milestone/1) and
+[M1](https://github.com/coo1white/yokoten/milestone/2); the [board](https://github.com/users/coo1white/projects/1) shows what is being built today.
 
 ## Quick start
 
@@ -87,8 +99,6 @@ next step.
 - **[The guide](docs/guide.md)**: the twelve rules, every command, how it works, and what it can't do.
 - **[Server setup](docs/server.md)**: protect `main` and release tags on GitHub.
 - **[Decisions](docs/records/)**: why it's built this way.
-
-*Yokoten* (横展) is Toyota's word for rolling one line's fix out to every line.
 
 ---
 

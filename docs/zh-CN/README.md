@@ -58,13 +58,24 @@ yokoten: git push --tags pushes tags. Only the owner decides when to release.
 **梦想：人人都能像好团队那样做软件。** 编程新手从第一天就走在对的路上，有 AI agent 陪着，也不会摔跤。
 软件开发是一整个循环（SDLC：计划、开发、测试、审查、发版、维护）。yokoten 不讲大道理，带你一步一步亲手走一遍。
 
-| 什么时候 | 做什么 | 在这里看 |
-|---|---|---|
-| **现在，2026 年 10 月 26 日前** | `doctor` 带你一关一关走；发版流程；检查 GitHub 设置；`npx yokoten`；Codex 和 Gemini CLI 也能拦住危险操作 | [M0](https://github.com/coo1white/yokoten/milestone/1) |
-| **Meta 黑客松，10 月 26 日 – 11 月 3 日** | 一个能读懂老项目、起草接入方案的 agent；支持 Muse Code | [M1](https://github.com/coo1white/yokoten/milestone/2) |
-| **之后** | Gitea 等其他代码托管平台；大改动前先写一份简短的方案；拿 OpenSSF Best Practices 徽章，公开证明做到了 | [issue](https://github.com/coo1white/yokoten/issues) |
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../assets/road-dark.svg">
+  <img src="../assets/road-light.svg" width="100%" alt="一条路上的五站：第一站已经走完，第二站是现在的位置，后面还有三站。最后一站之后，路分成好几条。">
+</picture>
+</p>
 
-每一步都公开规划。[看板](https://github.com/users/coo1white/projects/1)上能看到今天在做什么。
+| 阶段 | 名字 | 意思 | 现在 |
+|---|---|---|---|
+| 1 | **守桥** | AI agent 做危险操作之前就被拦下：force push、改测试让它通过、泄露隐私 | ✅ 已完成 |
+| 2 | **带路** | 新手跟着 `doctor` 走完五关，一次只做一件事；agent 读懂老项目，起草接入 yokoten 的方案 | 🚧 正在做，黑客松前后 |
+| 3 | **任何工具，任何平台** | Claude Code、Codex、Gemini CLI 和 Muse Code 守同一套规则；GitHub、Gitea、GitLab 都能用 | 下一步 |
+| 4 | **完整的循环** | 从一份简短的方案开始，到开发、测试、审查、发版、维护，整个 SDLC 每一步都有人带路 | 之后 |
+| 5 | **横展** | 一个项目学到的教训，变成一条检查；这条检查推广到所有项目。一个人学到的，大家都能用上 | 目标 |
+
+「横展」这个词来自丰田的工厂：一条产线学到的教训，推广到所有产线。yokoten 的名字就是从这里来的。
+
+近期要做的事在 [M0](https://github.com/coo1white/yokoten/milestone/1) 和 [M1](https://github.com/coo1white/yokoten/milestone/2) 里，[看板](https://github.com/users/coo1white/projects/1)上能看到今天在做什么。
 
 ## 快速开始
 
@@ -84,8 +95,6 @@ node ~/.local/share/yokoten/bin/yokoten.ts init      # 每个项目一次
 - **[使用指南](guide.md)**：12 条规则、全部命令、工作原理，以及它做不到的事。
 - **[服务器设置](../server.md)**：在 GitHub 上保护 `main` 和发版 tag（英文）。
 - **[决定记录](../records/)**：为什么这样设计（英文）。
-
-「横展」是丰田的说法：一条产线找到的对策，推广到所有产线。
 
 ---
 
