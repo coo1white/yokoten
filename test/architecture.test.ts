@@ -1,5 +1,6 @@
 // The shape of the code, checked. A rule about structure that no test holds drifts.
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { test } from 'node:test';
@@ -54,4 +55,15 @@ test('workflows: every action is pinned to a commit, the version in a comment', 
     }
   }
   assert.ok(seen > 0, 'no `uses:` found; the scan is broken');
+});
+
+// Node runs .ts as it is, so no other code file is needed; one appearing means someone
+// reached for a build-era habit (AGENTS.md, "This project").
+const strayCode = (paths: string[]) => paths.filter((p) => /^(bin|src|test)\//.test(p) && /\.(js|mjs|cjs|jsx|tsx|mts|cts)$/.test(p));
+
+test('code is .ts only: no .js, .mjs, .cjs or .tsx under bin, src or test (#43)', () => {
+  assert.deepEqual(strayCode(['src/a.ts', 'src/b.mjs', 'test/c.tsx', 'bin/d.js', 'kit/e.js', 'docs/f.md']), ['src/b.mjs', 'test/c.tsx', 'bin/d.js']);
+  const files = execFileSync('git', ['ls-files', 'bin', 'src', 'test'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter(Boolean);
+  assert.ok(files.some((f) => f.endsWith('.ts')), 'no .ts found; the scan is broken');
+  assert.deepEqual(strayCode(files), [], 'write it as .ts: Node runs it with no build');
 });

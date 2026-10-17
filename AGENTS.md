@@ -58,15 +58,18 @@ yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
   `@types/node` are dev dependencies, for `tsc` alone.
 - **TypeScript that Node runs as it is.** No build: Node strips the types. So only
   syntax it can erase (`erasableSyntaxOnly`): no `enum`, no `namespace`, no
-  parameter properties. Imports name the `.ts` file. No Python, no shell beyond the
-  one-line git hook.
-- **Layers.** `src/` has four, lowest first; a module imports only from its own
+  parameter properties. Imports name the `.ts` file. Code is `.ts` only: no `.js`,
+  `.mjs`, `.cjs` or `.tsx` (`test/architecture.test.ts` holds this). No Python, no
+  shell beyond the one-line git hook.
+- **Layers.** `src/` has five, lowest first; a module imports only from its own
   layer or a lower one (`test/architecture.test.ts` holds this):
   - `rules/`: what is allowed, as plain functions (guards, privacy, layout, config).
   - `run/`: the checks at work: the tool-call hook, the commit and CI check.
   - `agents/`: one adapter per AI runtime. Only `claude-code.ts` today: its tool-call
     shape, its settings and hooks, where its skills and agents go. Nothing else in
     `src/` names a runtime.
+  - `github/`: the GitHub API, today the bot's token. Becoming `host/`, one adapter
+    per code host (#33).
   - `setup/`: `install`, `init` and `doctor`, writing yokoten into a machine or a
     project.
 - **Docs live in the repo.** No wiki: a wiki page is not reviewed and agents do not read
