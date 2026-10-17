@@ -9,53 +9,46 @@
 [![license](https://img.shields.io/badge/license-MIT-blue)](../../LICENSE)
 [![Claude Code](https://img.shields.io/badge/for-Claude%20Code-D97757?logo=claude&logoColor=white)](https://claude.com/claude-code)
 
-**把一个项目里学到的东西，带到每一个项目里去。**
+**带你上路，替你守桥。**
+
+一个人 + AI，也按专业团队的标准开发。<br/>
+yokoten 自己就是这样做出来的，这个仓库就是示范。
 
 [English](../../README.md) | 中文
 
 </div>
 
-AI 编程助手不会把一个项目里学到的教训带到下一个项目。你在一个项目里教会它「别为了让测试通过
-去改测试」「不要推发版 tag」「个人信息别进仓库」，换一个项目，又得从头说一遍。漏说一条，它就
-永远不知道。
+## 装上的第一天，有什么不同
 
-yokoten 把这些教训写成规则，在每个项目里自动检查。（「横展」是丰田的说法：一条产线找到的
-对策，推广到所有产线。）
+| AI 想做的事 | 没有 yokoten | 有 yokoten |
+|---|---|---|
+| force push，或者自己打 tag 发版 | 直接执行 | 执行前被拦下，并告诉它原因 |
+| 测试不过，就去改测试 | 测试"绿了"，bug 还在 | 修 bug 时不准改测试 |
+| 提交时带上你的邮箱、服务器 IP、城市 | 公开出去 | 提交被拦下；报告只说哪个文件第几行，不把内容打出来 |
+| 开 PR | 用你的账号，权限和你一样大 | 用 bot 开，没有你同意合不进去 |
+| 换到另一个项目 | 从零开始 | 先知道这个项目缺什么，并主动帮你补上 |
 
-## 你会看到什么
-
-每次会话开始，agent 会先知道这个项目还缺什么，并主动提出帮你补上：
-
-```
-yokoten: this project is missing 2 practice(s):
-- rules: no AGENTS.md: the agents have no written rules here
-- ci: CI does not run `yokoten check`, so a commit made without the hook gets through
-```
-
-agent 想做只有你才能决定的事时，命令还没执行就被拦下：
+被拦下时，AI 看到的是原因，不只是一句"不行"：
 
 ```
 yokoten: git push --tags pushes tags. Only the owner decides when to release.
 ```
 
-（提示是英文的，因为 agent 读英文最稳。）
+（提示是英文的，因为 AI 读英文最稳。）
 
-## 它怎么保护你
+## 一路往前走
 
-```mermaid
-flowchart LR
-  A["agent 执行命令<br/>或改文件"] --> H{{"1 · hook"}}
-  H --> C["提交"] --> K{{"2 · 提交检查"}}
-  K --> P["PR"] --> I{{"3 · CI"}}
-  I --> R{{"锁 · 你的审查"}} --> M["main"]
-```
+软件团队的工作是一个循环：计划、开发、检查、审查、发版。yokoten 带你一关一关走。每一关这个
+仓库都已经在用，你可以直接看到它是怎么运转的：
 
-| 检查 | 什么时候 | 拦下什么 |
-|------|---------|---------|
-| **1 · hook** | agent 动手之前 | 危险的 git 命令；为了让测试通过而改测试 |
-| **2 · 提交检查** | 每次提交 | 个人信息；hook 没看到的改动 |
-| **3 · CI** | 每个 PR | 绕过了前两道的一切 |
-| **锁** | 合并之前 | 没经过你同意的一切 |
+| 关卡 | 学会什么 | 在这里看 |
+|---|---|---|
+| **1 · 安全网** | AI 要读的规则，能拦住它的检查 | [AGENTS.md](../../AGENTS.md) |
+| **2 · 先开 issue，再走 PR** | 每次改动都有原因；CI 通过才合并 | [issue](https://github.com/coo1white/yokoten/issues?q=is%3Aissue)、[PR](https://github.com/coo1white/yokoten/pulls?q=is%3Apr) |
+| **3 · 计划** | 标签、milestone、看板 | [看板](https://github.com/users/coo1white/projects/1) |
+| **4 · 发版** | 清楚的提交信息、CHANGELOG、版本号 | [CHANGELOG.md](../../CHANGELOG.md) |
+| **5 · 带一支 AI 团队** | bot、worker、审查；你始终是老板 | [使用指南](guide.md#像带团队一样管-agent) |
+| **6 · 公开** | 检查全部历史里的隐私、安全设置、分支保护 | [安全说明](../../.github/SECURITY.md) |
 
 ## 快速开始
 
@@ -75,6 +68,8 @@ node ~/.local/share/yokoten/bin/yokoten.ts init      # 每个项目一次
 - **[使用指南](guide.md)**：12 条规则、全部命令、工作原理，以及它做不到的事。
 - **[服务器设置](../server.md)**：在 GitHub 上保护 `main` 和发版 tag（英文）。
 - **[决定记录](../records/)**：为什么这样设计（英文）。
+
+「横展」是丰田的说法：一条产线找到的对策，推广到所有产线。
 
 ---
 

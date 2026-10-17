@@ -31,6 +31,9 @@ All notable changes are listed here. The format follows
   to a commit with the version in a comment, a 10-minute time limit, no token left
   after checkout, and a new push to a pull request cancels its old run. Run `init`
   after deleting the old file to get it (#36).
+- The README opens with what yokoten is for: one person and a few AI agents, building
+  to a professional team's standard. It shows what changes on day one, and the road a
+  project takes, stage by stage, with this repo as the example (#32).
 - `init` no longer adds `CLAUDE.md`. Claude Code reads `AGENTS.md` when a project has
   none, so the one-line import was only clutter; a project that has one keeps it (#27).
 - The repo root holds only files a tool looks for there. The Chinese README and guide
