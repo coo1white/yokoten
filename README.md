@@ -72,4 +72,4 @@ Then open the project in Claude Code. It tells you what's still missing.
 
 ---
 
-MIT · Built by [coolwhite](https://coolwhite.us/): factory discipline for software built by AI.
+MIT · Built by [coolwhite](https://coolwhite.us/), with lessons from the factory floor.
