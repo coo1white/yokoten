@@ -111,6 +111,7 @@ node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看还缺什么
 | `check [--staged]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交 |
 | `check --history` | 对所有分支的每一个提交做隐私检查。私有仓库公开之前跑一遍 |
 | `hook [--commands-only]` | 工具调用守卫，从标准输入读 Claude Code 的 PreToolUse 调用 |
+| `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。设置方法见 [server.md](server.md#3-the-bot-a-github-app) |
 
 
 ## 核心规则
