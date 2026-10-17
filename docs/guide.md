@@ -20,9 +20,10 @@ The [README](../README.md) is the short version. This is everything else: why yo
 
 ## The name
 
-*Yokoten* (横展) is a word from Toyota's shop floors. When one line finds a fix for a
-defect, the fix is rolled out to every line that could have the same defect, not just
-the line that found it. This repo does that for software built with AI coding agents.
+*Yokoten* (横展) is a word from Toyota's shop floors. When one production line finds a
+fix for a defect, the fix goes to every line that could have the same defect, not just
+the line that found it. yokoten does that for your projects: a lesson one project learns
+is offered to the rest.
 
 ## The problem
 
