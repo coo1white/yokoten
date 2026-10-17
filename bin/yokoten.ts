@@ -6,14 +6,16 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
 import { botConfig, botEnv, installationToken, readPullRequest, repoOf } from '../src/host/github.ts';
-import { check, checkHistory, gitRoot, historyTimeZones } from '../src/run/check.ts';
+import { check, checkHistory, gitRoot, historyTimeZones, timeZoneNote } from '../src/run/check.ts';
 import * as claudeCode from '../src/agents/claude-code.ts';
 import * as codex from '../src/agents/codex.ts';
 import * as gemini from '../src/agents/gemini.ts';
-import { changedLines, checkPullRequest, largeDiff, longSentences } from '../src/rules/pr.ts';
+import { type Finding, formatFinding } from '../src/rules/message.ts';
+import { changedLines, checkPullRequest, largeDiff, longSentenceNote, longSentences } from '../src/rules/pr.ts';
 import { hideHome } from '../src/rules/privacy.ts';
 import { type Action, judge } from '../src/run/hook.ts';
 import { doctor } from '../src/setup/doctor.ts';
+import { explain, explainLines, ids } from '../src/setup/explain.ts';
 import { VERSION } from '../src/setup/files.ts';
 import { init } from '../src/setup/init.ts';
 import { install } from '../src/setup/install.ts';
@@ -30,13 +32,43 @@ const HELP = `yokoten ${VERSION}
   yokoten hook [--agent <name>] [--commands-only]
                              the tool-call guard: reads one tool call on stdin; <name> is
                              claude-code (the default), codex or gemini
+  yokoten explain [<id>]     a rule or a step: what it is, why, and how it is checked
   yokoten bot -- <command>   run one command as the bot (gh, git push); the token is never printed
+
+  --json on check, doctor, hook and explain: data on stdout, for an agent or a script.
+  Exit codes: 0 ok, 1 problems found or a usage error, 2 the hook blocked the tool call.
 `;
 
 const [cmd, ...args] = process.argv.slice(2);
-const flag = (name: string) => args.includes(name);
-const option = (name: string) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
 const env = process.env;
+
+/** The command line, read strictly: an unknown option is refused, never ignored. */
+interface Parsed {
+  flags: Set<string>;
+  values: Record<string, string>;
+  positional: string[];
+}
+function parse(known: { flags: string[]; values?: string[]; positional?: number }): Parsed | string {
+  const parsed: Parsed = { flags: new Set(), values: {}, positional: [] };
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (known.values?.includes(a)) {
+      const value = args[++i];
+      if (value === undefined || value.startsWith('--')) return `${a} needs a value`;
+      parsed.values[a] = value;
+    } else if (known.flags.includes(a)) parsed.flags.add(a);
+    else if (a.startsWith('-')) return `unknown option ${a}`;
+    else parsed.positional.push(a);
+  }
+  if (parsed.positional.length > (known.positional ?? 0)) return `unexpected argument ${parsed.positional[known.positional ?? 0]}`;
+  return parsed;
+}
+
+/** A usage error: said on stderr, exit 1, as for an unknown command. */
+function usage(error: string): number {
+  print([`yokoten ${cmd}: ${error}. Run \`yokoten help\`.`], process.stderr);
+  return 1;
+}
 
 const rootOf = (dir: string): string | null => {
   try {
@@ -54,6 +86,16 @@ function print(lines: string[], stream: NodeJS.WritableStream = process.stdout):
 function say(text: string, stream: NodeJS.WritableStream): void {
   stream.write(hideHome(text, env));
 }
+
+// --json: stdout holds the JSON and nothing else. The home folder is hidden in every
+// string before it is encoded, as in the text form.
+function printJson(data: unknown): void {
+  const hide = (v: unknown): unknown =>
+    typeof v === 'string' ? hideHome(v, env) : Array.isArray(v) ? v.map(hide) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, hide(x)])) : v;
+  process.stdout.write(`${JSON.stringify(hide(data), null, 2)}\n`);
+}
+
+const bullets = (findings: Finding[]) => findings.map((f) => `- ${formatFinding(f)}`);
 
 async function bot(command: string[]): Promise<number> {
   const config = botConfig(env);
@@ -86,7 +128,10 @@ const READERS: Record<string, (input: unknown) => Action> = {
 function main(): number | Promise<number> {
   switch (cmd) {
     case 'hook': {
-      const agent = option('--agent') ?? 'claude-code';
+      const a = parse({ flags: ['--commands-only', '--json'], values: ['--agent'] });
+      if (typeof a === 'string') return usage(a);
+      const json = a.flags.has('--json');
+      const agent = a.values['--agent'] ?? 'claude-code';
       const read = Object.hasOwn(READERS, agent) ? READERS[agent] : undefined;
       if (!read) {
         print([`yokoten hook: unknown --agent ${agent}; use one of: ${Object.keys(READERS).join(', ')}`], process.stderr);
@@ -96,27 +141,43 @@ function main(): number | Promise<number> {
       try {
         input = JSON.parse(readFileSync(0, 'utf8'));
       } catch {
-        return 0; // not a tool call; nothing to judge
+        // Not a tool call; nothing to judge. A runtime never sends one, and blocking here
+        // would stop every tool call the day a runtime changes its input.
+        if (json) printJson({ blocked: false, toolCall: false });
+        return 0;
       }
       const action = read(input);
       const root = rootOf(action.cwd ?? process.cwd());
       const config = root ? loadConfig(root) : DEFAULTS;
-      const reason = judge(action, { root, config, env, commandsOnly: flag('--commands-only') });
-      if (!reason) return 0;
-      say(`yokoten: ${reason}\n`, process.stderr);
+      const found = judge(action, { root, config, env, commandsOnly: a.flags.has('--commands-only') });
+      if (json) printJson(found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
+      if (!found) return 0;
+      // The runtimes read the reason from stderr when the hook exits 2.
+      say(`yokoten: ${formatFinding(found)}\n`, process.stderr);
       return 2;
     }
     case 'check': {
+      const a = parse({ flags: ['--staged', '--history', '--pr', '--json'] });
+      if (typeof a === 'string') return usage(a);
+      const modes = ['--staged', '--history', '--pr'].filter((m) => a.flags.has(m));
+      if (modes.length > 1) return usage(`${modes.join(' and ')} can't be used together`);
+      const mode = modes[0]?.slice(2) ?? 'tree';
+      const json = a.flags.has('--json');
       const root = gitRoot(process.cwd());
       const config = loadConfig(root);
-      if (flag('--pr')) {
+      const name = `yokoten check${mode === 'pr' ? ' --pr' : ''}`;
+      const notes: Finding[] = [];
+      let problems: Finding[];
+      if (mode === 'pr') {
         const pr = readPullRequest(root, env);
         if (!pr) {
-          print(['yokoten check --pr: no pull request in this run (it reads the CI event); nothing to check']);
+          const skipped = 'no pull request in this run (it reads the CI event); nothing to check';
+          if (json) printJson({ check: mode, ok: true, skipped, findings: [], notes: [] });
+          else print([`${name}: ${skipped}`]);
           return 0;
         }
         // Plain English (record 0005): long sentences in changed Markdown are notes, never failures.
-        const notes: string[] = [];
+        const long: Finding[] = [];
         for (const file of pr.files.filter((p) => /\.md$/i.test(p))) {
           let text = '';
           try {
@@ -124,37 +185,51 @@ function main(): number | Promise<number> {
           } catch {
             continue; // deleted in this pull request
           }
-          for (const s of longSentences(text)) notes.push(`${file}:${s.line}: a sentence of ${s.words} words; plain English aims at 25 or fewer`);
+          for (const s of longSentences(text)) long.push(longSentenceNote(file, s));
         }
-        if (notes.length) print([`yokoten check --pr: note: ${notes.length} long sentence(s)`, ...notes.slice(0, 10).map((n) => `- ${n}`), ...(notes.length > 10 ? [`- and ${notes.length - 10} more`] : [])]);
+        notes.push(...long);
+        if (long.length && !json) print([`${name}: note: ${long.length} long sentence(s)`, ...bullets(long.slice(0, 10)), ...(long.length > 10 ? [`- and ${long.length - 10} more`] : [])]);
         // A large pull request (record 0004) is a note too, never a failure.
         const large = largeDiff(changedLines(pr.numstat));
-        if (large) print([`yokoten check --pr: note: ${large}`]);
-        const problems = checkPullRequest(pr, config);
-        if (!problems.length) {
-          print(['yokoten check --pr: ok']);
-          return 0;
+        if (large) {
+          notes.push(large);
+          if (!json) print([`${name}: note: ${formatFinding(large)}`]);
         }
-        print([`yokoten check --pr: ${problems.length} problem(s)`, ...problems.map((p) => `- ${p}`)], process.stderr);
-        return 1;
+        problems = checkPullRequest(pr, config);
+      } else {
+        problems = mode === 'history' ? checkHistory(root, { config, env }) : check(root, { config, env, staged: mode === 'staged' });
+        const zones = mode === 'history' && config.privacy.utc ? historyTimeZones(root) : 0;
+        if (zones) {
+          notes.push(timeZoneNote(zones));
+          if (!json) print([`${name}: note: ${formatFinding(timeZoneNote(zones))}`]);
+        }
       }
-      const problems = flag('--history') ? checkHistory(root, { config, env }) : check(root, { config, env, staged: flag('--staged') });
-      const zones = flag('--history') && config.privacy.utc ? historyTimeZones(root) : 0;
-      if (zones) print([`yokoten check: note: ${zones} commit(s) record a time zone other than UTC. Rewriting history is the owner's call; new commits are checked.`]);
-      if (!problems.length) {
-        print([`yokoten check: ok${flag('--history') ? ' (every commit on every branch)' : ''}`]);
-        return 0;
-      }
-      print([`yokoten check: ${problems.length} problem(s)`, ...problems.map((p) => `- ${p}`)], process.stderr);
-      return 1;
+      if (json) printJson({ check: mode, ok: !problems.length, findings: problems, notes });
+      else if (!problems.length) print([`${name}: ok${mode === 'history' ? ' (every commit on every branch)' : ''}`]);
+      else print([`${name}: ${problems.length} problem(s)`, ...bullets(problems)], process.stderr);
+      return problems.length ? 1 : 0;
     }
     case 'doctor': {
+      const a = parse({ flags: ['--session', '--json'] });
+      if (typeof a === 'string') return usage(a);
+      const session = a.flags.has('--session');
       const root = rootOf(process.cwd());
       const config = root ? loadConfig(root) : DEFAULTS;
-      const { ok, lines } = doctor(root, { env, config, session: flag('--session') });
-      print(lines);
+      const { ok, lines, report } = doctor(root, { env, config, session });
+      if (a.flags.has('--json')) printJson(report);
+      else print(lines);
       // A session must start even when a project has steps left.
-      return flag('--session') || ok ? 0 : 1;
+      return session || ok ? 0 : 1;
+    }
+    case 'explain': {
+      const a = parse({ flags: ['--json'], positional: 1 });
+      if (typeof a === 'string') return usage(a);
+      const [id] = a.positional;
+      const found = id === undefined ? null : explain(id);
+      if (a.flags.has('--json')) printJson(found ? { found: true, ...found } : { id: id ?? null, found: false, ids: ids() });
+      else if (found) print(explainLines(found));
+      else print([id === undefined ? 'yokoten explain: name a rule or a step.' : `yokoten explain: no rule or step is called ${id}.`, `Ids: ${ids().join(', ')}`], process.stderr);
+      return found ? 0 : 1;
     }
     case 'init': {
       const dir = resolve(args.find((a) => !a.startsWith('-')) ?? '.');

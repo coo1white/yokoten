@@ -4,10 +4,11 @@
 
 import { posix } from 'node:path';
 import type { Config } from './config.ts';
-import { matcher } from './glob.ts';
+import { matcher } from './config.ts';
+import { type Finding, finding } from './message.ts';
 
 /** Problems for a list of file paths (relative, forward slashes), one per folder over the cap. */
-export function checkLayout(files: string[], { layout }: Pick<Config, 'layout'>): string[] {
+export function checkLayout(files: string[], { layout }: Pick<Config, 'layout'>): Finding[] {
   const children = new Map<string, Set<string>>();
   for (const file of files) {
     const parts = file.split('/');
@@ -19,10 +20,12 @@ export function checkLayout(files: string[], { layout }: Pick<Config, 'layout'>)
     }
   }
   const exempt = new Set(layout.exempt.map((d) => posix.normalize(d).replace(/\/$/, '')));
-  const problems: string[] = [];
+  const problems: Finding[] = [];
   for (const [dir, names] of [...children].sort(([a], [b]) => a.localeCompare(b))) {
     if (exempt.has(dir) || names.size <= layout.maxEntries) continue;
-    problems.push(`${dir}/ has ${names.size} entries, over the cap of ${layout.maxEntries}: ${[...names].sort().join(', ')}. Group them into a new folder, or add ${dir} to layout.exempt in yokoten.json if it is a log.`);
+    problems.push(
+      finding('layout', `${names.size} entries, over the cap of ${layout.maxEntries}: ${[...names].sort().join(', ')}`, `group them into a new folder, or add ${dir} to layout.exempt in yokoten.json if it is a log`, { file: `${dir}/` }),
+    );
   }
   return problems;
 }
@@ -42,17 +45,17 @@ export function isBuildOutput(path: string, allow: (path: string) => boolean = (
   return path.split('/').slice(0, -1).some((dir) => BUILD_DIRS.includes(dir)) || BUILT.test(path);
 }
 
-const fix = (path: string) => `Remove it with \`git rm --cached ${path}\` and add it to .gitignore, or list the path in allowBuild in yokoten.json.`;
+const fix = (path: string) => `remove it with \`git rm --cached ${path}\` and add it to .gitignore, or list the path in allowBuild in yokoten.json`;
 
 /** Problems for the files a commit adds or changes, each with whether git sees it as binary. */
-export function checkBuildOutput(files: { path: string; binary: boolean }[], { allowBuild }: Pick<Config, 'allowBuild'>): string[] {
+export function checkBuildOutput(files: { path: string; binary: boolean }[], { allowBuild }: Pick<Config, 'allowBuild'>): Finding[] {
   const allow = matcher(allowBuild);
-  const problems: string[] = [];
+  const problems: Finding[] = [];
   for (const { path, binary } of files) {
     if (allow(path)) continue;
     const dir = path.split('/').slice(0, -1).find((d) => BUILD_DIRS.includes(d));
-    if (dir) problems.push(`${path}: build output, in a ${dir}/ folder. A build makes it again from the source, so a committed copy goes stale. ${fix(path)}`);
-    else if (BUILT.test(path) || (binary && !MEDIA.test(path))) problems.push(`${path}: a binary file. A reviewer can't read it, and it may not match the source. ${fix(path)}`);
+    if (dir) problems.push(finding('build-output', `build output, in a ${dir}/ folder`, fix(path), { file: path }));
+    else if (BUILT.test(path) || (binary && !MEDIA.test(path))) problems.push(finding('binary', 'a binary file', fix(path), { file: path }));
   }
   return problems;
 }

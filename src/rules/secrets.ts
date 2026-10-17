@@ -57,7 +57,6 @@ export function findSecrets(lines: string[], allow: string[] = []): [number, str
   return found;
 }
 
-export const secretProblem = (where: string, kind: string): string => `${where}: a secret (${kind}). Remove it, rotate it, and keep it outside the repo.`;
 
 /**
  * A known-bad sample, so the check can prove it still catches secrets. Built from pieces

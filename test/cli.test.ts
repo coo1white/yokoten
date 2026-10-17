@@ -513,3 +513,121 @@ test('check --pr: a large pull request gets a note, never a failure; lock files 
   assert.match(r.stdout, /note: this pull request changes 500 lines, over 400\. Smaller pull requests are easier to review/);
   assert.match(r.stdout, /check --pr: ok/);
 });
+
+// #42: stdout is data and stderr is for people; --json prints pure JSON. Exit codes are
+// written down once (docs/guide.md, "Exit codes") and held here.
+test('exit codes: 0 ok, 1 problems or a usage error, 2 the hook blocked (#42)', () => {
+  const s = sandbox();
+  const hook = (command: string) => s.run(['hook'], { input: JSON.stringify({ cwd: s.repo, tool_input: { command } }) });
+  s.write('a.md', 'fine\n');
+  s.git('add', '.');
+  assert.equal(s.run(['check']).status, 0);
+  assert.equal(hook('git status').status, 0);
+  assert.equal(s.run(['doctor', '--session']).status, 0, 'a session always starts');
+  assert.equal(s.run(['explain', 'release']).status, 0);
+  assert.equal(s.run(['doctor']).status, 1, 'steps left on the road');
+  s.write('b.md', `me${at}gmail.com\n`);
+  s.git('add', '.');
+  assert.equal(s.run(['check']).status, 1);
+  assert.equal(s.run(['explain', 'nope']).status, 1);
+  assert.equal(hook('git push --tags').status, 2);
+  // A usage error is refused, never ignored: no fake success.
+  for (const args of [['nope'], ['check', '--stagd'], ['check', '--staged', '--pr'], ['check', 'extra'], ['doctor', '--sesion'], ['hook', '--agent'], ['explain', 'a', 'b']]) {
+    const r = s.run(args, { input: '{}' });
+    assert.equal(r.status, 1, args.join(' '));
+    assert.equal(r.stdout, '', `${args.join(' ')}: nothing on stdout`);
+    assert.notEqual(r.stderr, '', `${args.join(' ')}: says why on stderr`);
+  }
+});
+
+test('--json: check, doctor, hook and explain print pure JSON with what, why and fix; never a private value (#42)', () => {
+  const s = sandbox();
+  const marks = join(s.home, 'marks');
+  writeFileSync(marks, 'mycity\n');
+  const extra = { YOKOTEN_PRIVATE_MARKS: marks, YOKOTEN_ROLE: 'worker' };
+  const token = `${'gh'}p_${'x7Y2k9'.repeat(6)}`;
+  s.write('AGENTS.md', '# rules\n');
+  s.write('notes/a.md', `me${at}gmail.com\nI live in MyCity\n${token}\nserver ${[10, 1, 2, 3].join('.')}\n`);
+  s.write('dist/app.js', 'x\n');
+  for (let i = 0; i < 8; i++) s.write(`many/${i}.md`, 'x\n');
+  s.git('add', '.');
+  const shaped = (f: Record<string, unknown>) => {
+    for (const k of ['id', 'what', 'why', 'fix']) assert.ok(typeof f[k] === 'string' && f[k], `${f.id}: ${k}`);
+  };
+  const clean = (out: string) => {
+    for (const secret of ['mycity', 'gmail', token, [10, 1, 2, 3].join('.'), s.home]) assert.ok(!out.toLowerCase().includes(secret.toLowerCase()), `${secret} printed`);
+  };
+
+  // check: the text form says what, why and fix on each line.
+  let r = s.run(['check', '--staged'], { extra: { ...extra, GIT_AUTHOR_DATE: '2026-10-18T09:00:00+0700' } });
+  assert.equal(r.status, 1);
+  const lines = r.stderr.split('\n').filter((l) => l.startsWith('- '));
+  assert.ok(lines.length >= 7, r.stderr);
+  for (const line of lines) assert.match(line, /^- .+\. [A-Z].+\. .+\.$/, line);
+  clean(r.stderr);
+  r = s.run(['check', '--staged', '--json'], { extra: { ...extra, GIT_AUTHOR_DATE: '2026-10-18T09:00:00+0700' } });
+  assert.equal(r.status, 1);
+  assert.equal(r.stderr, '');
+  const report = JSON.parse(r.stdout);
+  assert.equal(report.check, 'staged');
+  assert.equal(report.ok, false);
+  assert.deepEqual(
+    [...new Set(report.findings.map((f: { id: string }) => f.id))].sort(),
+    ['build-output', 'email', 'ip', 'layout', 'lead-only', 'private-mark', 'secret', 'time-zone'],
+  );
+  report.findings.forEach(shaped);
+  assert.deepEqual(report.findings.find((f: { id: string }) => f.id === 'email'), {
+    id: 'email',
+    what: 'an email address',
+    why: 'an email address points at a person, and git keeps it after the file is gone',
+    fix: 'use your GitHub noreply address, or a placeholder at example.com',
+    file: 'notes/a.md',
+    line: 1,
+  });
+  clean(r.stdout);
+  r = s.run(['check', '--json'], { extra });
+  assert.deepEqual(Object.keys(JSON.parse(r.stdout)), ['check', 'ok', 'findings', 'notes']);
+
+  // hook: the runtimes still read stderr and the exit code; --json adds the finding on stdout.
+  const call = { cwd: s.repo, tool_input: { command: 'git push --force' } };
+  r = s.run(['hook', '--json'], { input: JSON.stringify(call) });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /^yokoten: git push --force forces the push\. .+\. Use --force-with-lease/);
+  const blocked = JSON.parse(r.stdout);
+  assert.equal(blocked.blocked, true);
+  shaped(blocked.finding);
+  assert.equal(blocked.finding.id, 'force-push');
+  r = s.run(['hook', '--json'], { input: JSON.stringify({ cwd: s.repo, tool_input: { command: 'git status' } }) });
+  assert.deepEqual([r.status, JSON.parse(r.stdout)], [0, { blocked: false, toolCall: true }]);
+  r = s.run(['hook'], { input: JSON.stringify(call) });
+  assert.equal(r.stdout, '', 'without --json, stdout stays empty for the runtimes');
+
+  // doctor: the road and the machine as data.
+  r = s.run(['doctor', '--json'], { extra });
+  assert.equal(r.status, 1);
+  const doc = JSON.parse(r.stdout);
+  assert.equal(doc.stage, 1);
+  assert.equal(doc.next.id, 'tool-hook');
+  assert.ok(doc.steps.some((st: { id: string; mark: string }) => st.id === 'rules' && st.mark === 'done'));
+  assert.ok(doc.findings.some((f: { id: string }) => f.id === 'secret'), 'the tree check is in it');
+  doc.findings.forEach(shaped);
+  doc.notes.forEach(shaped);
+  clean(r.stdout);
+  r = s.run(['doctor', '--session', '--json'], { extra });
+  assert.equal(r.status, 0);
+  assert.deepEqual(JSON.parse(r.stdout).findings.map((f: { id: string }) => f.id), ['tool-hook']);
+
+  // explain: a known id, and an unknown one with the list.
+  r = s.run(['explain', 'secret', '--json']);
+  assert.deepEqual(Object.keys(JSON.parse(r.stdout)), ['found', 'id', 'kind', 'what', 'why', 'check']);
+  r = s.run(['explain', 'nope', '--json']);
+  assert.equal(r.status, 1);
+  const unknown = JSON.parse(r.stdout);
+  assert.equal(unknown.found, false);
+  assert.ok(unknown.ids.includes('secret') && unknown.ids.includes('tool-hook'));
+  r = s.run(['explain', 'commit-check']);
+  assert.match(r.stdout, /^commit-check: a step on the road: stage 1 of 5, safety net\.\nWhy: .+\.\nCheck: .+\.\nStandard: OSPS-BR-07\.01\.\n$/);
+  r = s.run(['explain']);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /Ids: release, /);
+});

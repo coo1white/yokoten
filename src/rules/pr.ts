@@ -3,11 +3,12 @@
 // on main, so the title has the commit form. A reviewer, the owner or an agent, reads
 // the same shape every time, and a beginner learns it from what CI says.
 //
-// Each problem says what is wrong and how to fix it. Text from the pull request is user
+// Each problem says what is wrong, why, and how to fix it (a Finding). Text from the pull request is user
 // input: it is read here as data, and never printed back in full.
 
 import type { Config } from './config.ts';
-import { matcher } from './glob.ts';
+import { matcher } from './config.ts';
+import { type Finding, finding } from './message.ts';
 
 /** A pull request, as any code host can describe it. */
 export interface PullRequest {
@@ -34,42 +35,44 @@ function section(body: string, name: string): string | null {
 }
 
 /** Problems with a pull request. An empty list means it meets the standard. */
-export function checkPullRequest(pr: PullRequest, config: Pick<Config, 'tests'>): string[] {
-  const problems: string[] = [];
+export function checkPullRequest(pr: PullRequest, config: Pick<Config, 'tests'>): Finding[] {
+  const problems: Finding[] = [];
   const title = pr.title.trim();
   if (!TITLE.test(title)) {
-    problems.push(`title: use \`type(area): summary\` or \`type: summary\`, with a type from ${TYPES.join(', ')}. The title becomes the commit on main.`);
+    problems.push(finding('pr-title', 'title: not in the commit form', `use \`type(area): summary\` or \`type: summary\`, with a type from ${TYPES.join(', ')}`));
   }
-  if (title.length > 72) problems.push(`title: ${title.length} characters, over 72. Shorten it; the details go in the body.`);
-  if (/\.$/.test(title)) problems.push('title: remove the full stop at the end.');
-  if (/#\d/.test(title)) problems.push('title: remove the issue number; put `Closes #N` in the body.');
+  if (title.length > 72) problems.push(finding('pr-title', `title: ${title.length} characters, over 72`, 'shorten it; the details go in the body'));
+  if (/\.$/.test(title)) problems.push(finding('pr-title', 'title: a full stop at the end', 'remove the full stop', { why: 'a commit title has no full stop' }));
+  if (/#\d/.test(title)) problems.push(finding('pr-title', 'title: an issue number', 'remove the issue number, and put `Closes #N` in the body', { why: 'the host links the issue from the body' }));
 
   const body = pr.body ?? '';
   const first = body.split(/\r?\n/).find((l) => l.trim()) ?? '';
   if (!/^tier: [ABC]\s*$/.test(first.trim())) {
-    problems.push('body: the first line must be `tier: A`, `tier: B` or `tier: C`: how hard a mistake is to take back (A: secrets, data, install, releases; B: other code; C: docs and wording).');
+    problems.push(finding('pr-tier', 'body: the first line is not a tier', 'make the first line `tier: A`, `tier: B` or `tier: C` (A: secrets, data, install, releases; B: other code; C: docs and wording)'));
   }
   for (const name of SECTIONS) {
     const text = section(body, name);
-    if (text === null) problems.push(`body: add a \`## ${name}\` section.`);
-    else if (!text || /^<[^>]*>$/.test(text)) problems.push(`body: the \`## ${name}\` section is empty. Fill it in.`);
+    if (text === null) problems.push(finding('pr-section', `body: no \`## ${name}\` section`, `add a \`## ${name}\` section`));
+    else if (!text || /^<[^>]*>$/.test(text)) problems.push(finding('pr-section', `body: the \`## ${name}\` section is empty`, 'fill it in'));
   }
   if (!/\b(closes|fixes|resolves|refs) #\d+/i.test(body)) {
-    problems.push('body: link the issue with `Closes #N` (or `Refs #N` when it does not finish it). Every change starts as an issue.');
+    problems.push(finding('pr-issue', 'body: no linked issue', 'link the issue with `Closes #N`, or `Refs #N` when it does not finish it'));
   }
 
   // A change to what the project does needs a changelog line. Docs, tests and CI do not.
   const isTest = matcher(config.tests);
   const behaviour = pr.files.filter((f) => !/\.md$/i.test(f) && !isTest(f) && !f.startsWith('.github/'));
   if (behaviour.length && !pr.files.includes('CHANGELOG.md') && !/^No changelog: \S/m.test(body)) {
-    problems.push(`changelog: ${behaviour.length} changed file(s) change what the project does, and CHANGELOG.md has no new line. Add one under [Unreleased], or write \`No changelog: <reason>\` in the body.`);
+    problems.push(
+      finding('pr-changelog', `changelog: ${behaviour.length} changed file(s) change what the project does, and CHANGELOG.md has no new line`, 'add one under [Unreleased], or write `No changelog: <reason>` in the body'),
+    );
   }
   if (pr.files.some((f) => f.startsWith('kit/')) && !/\bkit\b/i.test(body)) {
-    problems.push('body: this changes `kit/`, which every project gets on its next init. Say so in the body.');
+    problems.push(finding('pr-kit', 'body: this changes `kit/` and does not say so', 'say in the body that every project gets this change on its next init'));
   }
 
-  if (!pr.milestone) problems.push('milestone: set one, so the board and the roadmap show this work.');
-  if (!pr.labels.length) problems.push('labels: add a type label (feat, bug, docs, ...) and a tier label.');
+  if (!pr.milestone) problems.push(finding('pr-milestone', 'milestone: none set', 'set one'));
+  if (!pr.labels.length) problems.push(finding('pr-labels', 'labels: none', 'add a type label (feat, bug, docs, ...) and a tier label'));
   return problems;
 }
 
@@ -142,7 +145,11 @@ export function changedLines(numstat: string): number {
  * A note when a pull request changes more than `max` lines (record 0004), else null. A
  * note, never a failure: Google's review guide finds about 100 lines fine, 1000 too large.
  */
-export function largeDiff(lines: number, max = 400): string | null {
+export function largeDiff(lines: number, max = 400): Finding | null {
   if (lines <= max) return null;
-  return `this pull request changes ${lines} lines, over ${max}. Smaller pull requests are easier to review; split it if you can.`;
+  return finding('large-diff', `this pull request changes ${lines} lines, over ${max}`, 'split it if you can');
 }
+
+/** A long sentence (from `longSentences`) as a note on a file. */
+export const longSentenceNote = (file: string, { line, words }: { line: number; words: number }): Finding =>
+  finding('long-sentence', `a sentence of ${words} words`, 'split it into sentences of 25 words or fewer', { file, line });
