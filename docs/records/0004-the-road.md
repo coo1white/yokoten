@@ -59,6 +59,17 @@ signed in, those steps show as "can't check", not as done.
 **Step names stay the keys for "not now".** The existing names (`rules`, `commit-check`,
 `tool-hook`, `ci`, `runtime`, `issues`) keep working in `yokoten.json`.
 
+**GitHub first, other hosts later, through one boundary.** A step names what it needs
+in host-neutral words ("the standard labels exist", "main is protected"), never a
+GitHub endpoint. The `github` layer becomes `host`: a neutral interface (labels,
+milestones, board, branch and tag protection, security settings, a bot token) and one
+adapter per host, `src/host/github.ts` first, the way `src/agents/` holds one file per
+agent. The host is worked out from the `origin` remote (github.com), or named in
+`yokoten.json` for a self-hosted one. A host with no adapter shows its steps as "can't
+check", never as done. Gitea already reads `.github/workflows` and `.github/ISSUE_TEMPLATE`,
+so most of the kit carries over; its adapter is later work, after the hackathon. The
+architecture test holds the boundary: nothing outside `src/host/` names a host's API.
+
 **Built in pieces.** #33 builds the road and the local steps. #10, #34, #35 and #7 each add
 their steps' checks; until a check exists, its step isn't shown.
 
@@ -86,6 +97,9 @@ the rules, skills or hooks change.
   and an old project adopting yokoten may already release properly with no board.
 - **Points, badges, levels with names.** Noise. The reward is a project that works the
   way good teams work.
+- **Write the host checks straight against GitHub, and abstract later.** Cheaper today,
+  but every step would then name GitHub endpoints, and adding Gitea would mean touching
+  each one. The boundary costs one interface now.
 - **Call the GitHub API in every session.** Slow, fails offline, and a session start must
   never hang.
 
