@@ -10,6 +10,7 @@ export interface Config {
   privacy: { allow: string[]; skip: string[]; utc: boolean };
   notNow: Record<string, string>;
   allowBuild: string[];
+  areas: string[];
 }
 
 /** What yokoten.json may hold: any key, or part of one. */
@@ -20,6 +21,7 @@ interface ConfigFile {
   privacy?: Partial<Config['privacy']>;
   notNow?: Record<string, string>;
   allowBuild?: string[];
+  areas?: string[];
 }
 
 /** The guard's own environment (process.env, or a test's stand-in). */
@@ -43,6 +45,9 @@ export const DEFAULTS: Config = {
   notNow: {},
   // Build output and binaries the commit check lets through, as globs: ["dist/**", "*.pdf"].
   allowBuild: [],
+  // The areas an issue title (`area: ...`) and a pull request title (`type(area): ...`)
+  // may name: ["doctor", "check"]. Empty means any lowercase word.
+  areas: [],
 };
 
 export function loadConfig(root: string): Config {
@@ -59,6 +64,7 @@ export function loadConfig(root: string): Config {
     privacy: { ...DEFAULTS.privacy, ...file.privacy },
     notNow: file.notNow ?? {},
     allowBuild: file.allowBuild ?? DEFAULTS.allowBuild,
+    areas: file.areas ?? DEFAULTS.areas,
   };
 }
 

@@ -249,6 +249,7 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.match(workflow, /node \.yokoten\/bin\/yokoten\.ts check/);
   assert.match(workflow, /persist-credentials: false/, 'the hardened workflow (#36)');
   assert.match(readFileSync(join(s.repo, '.github/workflows/pr.yml'), 'utf8'), /node \.yokoten\/bin\/yokoten\.ts check --pr/, 'the pull request check (#47)');
+  assert.match(readFileSync(join(s.repo, '.github/workflows/issue.yml'), 'utf8'), /node \.yokoten\/bin\/yokoten\.ts check --issue/, 'the issue title check');
   assert.ok(existsSync(join(s.repo, '.yokoten', 'VERSION')));
   assert.equal(s.git('config', 'core.hooksPath').stdout.trim(), '.githooks');
   // Again: nothing changes.
@@ -512,6 +513,45 @@ test('check --pr: a large pull request gets a note, never a failure; lock files 
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /note: this pull request changes 500 lines, over 400\. Smaller pull requests are easier to review/);
   assert.match(r.stdout, /check --pr: ok/);
+});
+
+test('check --issue: reads the issue from the CI event; a bad title fails, a good one passes', () => {
+  const s = sandbox();
+  s.write('yokoten.json', JSON.stringify({ areas: ['doctor', 'check'] }));
+  const event = (issue: object) => {
+    const file = join(s.home, 'event.json');
+    writeFileSync(file, JSON.stringify({ action: 'opened', issue }));
+    return { GITHUB_EVENT_PATH: file };
+  };
+  let r = s.run(['check', '--issue'], { extra: event({ title: 'doctor: add the review step', labels: [{ name: 'feat' }] }) });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /check --issue: ok/);
+  r = s.run(['check', '--issue'], { extra: event({ title: 'The review step is missing.', labels: [{ name: 'incident' }] }) });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /check --issue: 2 problem\(s\)\n- title: it does not start with an area\. .+`area: symptom`.+\n- title: a full stop at the end\./);
+  assert.doesNotMatch(r.stderr, /The review step is missing/, 'the title is user input; it is not printed back');
+  r = s.run(['check', '--issue'], { extra: event({ title: 'site: a page', labels: [] }) });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /Use one of: doctor, check\./);
+  r = s.run(['check', '--issue', '--json'], { extra: event({ title: 'site: a page.', labels: [] }) });
+  assert.equal(r.status, 1);
+  assert.equal(r.stderr, '');
+  const report = JSON.parse(r.stdout);
+  assert.equal(report.check, 'issue');
+  assert.deepEqual(report.findings.map((f: { id: string }) => f.id), ['issue-area', 'issue-title']);
+  assert.ok(!r.stdout.includes('a page'), 'the title is not printed back');
+  r = s.run(['check', '--issue', '--pr']);
+  assert.equal(r.status, 1, 'two modes are a usage error');
+  assert.equal(r.stdout, '');
+  // A comment on a pull request comes as an issue too; it is not an issue to check.
+  r = s.run(['check', '--issue'], { extra: event({ title: 'Anything', pull_request: { url: 'x' } }) });
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /no issue in this run/);
+  r = s.run(['check', '--issue']);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /no issue in this run/);
+  r = s.run(['check', '--issue', '--json']);
+  assert.deepEqual(JSON.parse(r.stdout).skipped, 'no issue in this run (it reads the CI event); nothing to check');
 });
 
 // #42: stdout is data and stderr is for people; --json prints pure JSON. Exit codes are

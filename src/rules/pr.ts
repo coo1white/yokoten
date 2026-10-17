@@ -35,11 +35,15 @@ function section(body: string, name: string): string | null {
 }
 
 /** Problems with a pull request. An empty list means it meets the standard. */
-export function checkPullRequest(pr: PullRequest, config: Pick<Config, 'tests'>): Finding[] {
+export function checkPullRequest(pr: PullRequest, config: Pick<Config, 'tests'> & Partial<Pick<Config, 'areas'>>): Finding[] {
   const problems: Finding[] = [];
   const title = pr.title.trim();
   if (!TITLE.test(title)) {
     problems.push(finding('pr-title', 'title: not in the commit form', `use \`type(area): summary\` or \`type: summary\`, with a type from ${TYPES.join(', ')}`));
+  }
+  const area = TITLE.exec(title)?.[2]?.slice(1, -1);
+  if (area && config.areas?.length && !config.areas.includes(area)) {
+    problems.push(finding('pr-title', `title: the area \`${area}\` is not in yokoten.json "areas"`, `use one of: ${config.areas.join(', ')}`, { why: 'issues and pull requests share one list of areas' }));
   }
   if (title.length > 72) problems.push(finding('pr-title', `title: ${title.length} characters, over 72`, 'shorten it; the details go in the body'));
   if (/\.$/.test(title)) problems.push(finding('pr-title', 'title: a full stop at the end', 'remove the full stop', { why: 'a commit title has no full stop' }));
@@ -153,3 +157,37 @@ export function largeDiff(lines: number, max = 400): Finding | null {
 /** A long sentence (from `longSentences`) as a note on a file. */
 export const longSentenceNote = (file: string, { line, words }: { line: number; words: number }): Finding =>
   finding('long-sentence', `a sentence of ${words} words`, 'split it into sentences of 25 words or fewer', { file, line });
+
+// The issue rule. An issue title names its area and then the work: `doctor: add the
+// review step` for a task, `check: misses a key in a JSON file` for an incident (the
+// symptom, not the fix). The same areas as the pull request titles, so a list of issues
+// reads like a list of commits to come. The title is user input and never printed back.
+
+const AREA = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
+const ISSUE_MAX = 60;
+
+/**
+ * Problems with an issue title. An empty list means it meets the standard. `labels` say
+ * what kind of issue it is: an `incident` describes a symptom, anything else a task.
+ */
+export function checkIssueTitle(title: string, config: Partial<Pick<Config, 'areas'>>, labels: string[] = []): Finding[] {
+  const problems: Finding[] = [];
+  const t = title.trim();
+  const incident = labels.some((l) => l.toLowerCase() === 'incident');
+  const form = incident ? '`area: symptom`, for example `check: misses a key in a JSON file`' : '`area: verb phrase`, for example `doctor: add the review step`';
+  const areas = config.areas ?? [];
+  const m = /^([^\s:]+): +(\S.*)$/.exec(t);
+  if (!m) {
+    problems.push(finding('issue-area', 'title: it does not start with an area', `write it as ${form}`));
+  } else if (!AREA.test(m[1])) {
+    problems.push(finding('issue-area', 'title: the area is not one lowercase word', `use a lowercase word, or words joined by hyphens, as in ${form}`, { why: 'one form for every area keeps the list easy to scan and search' }));
+  } else if (m[1] === 'area') {
+    problems.push(finding('issue-area', 'title: it still starts with the placeholder `area`', `replace it with the part of the project, as in ${form}`, { why: 'the template puts it there for you to replace' }));
+  } else if (areas.length && !areas.includes(m[1])) {
+    problems.push(finding('issue-area', 'title: the area is not in yokoten.json "areas"', `use one of: ${areas.join(', ')}`, { why: 'issues and pull requests share one list of areas' }));
+  }
+  if (t.length > ISSUE_MAX) problems.push(finding('issue-title', `title: ${t.length} characters, over ${ISSUE_MAX}`, 'shorten it, and put the details in the body'));
+  if (/[.。]$/.test(t)) problems.push(finding('issue-title', 'title: a full stop at the end', 'remove the full stop', { why: 'a title is a name, not a sentence' }));
+  if (/#\d/.test(t)) problems.push(finding('issue-title', 'title: an issue number', 'remove the number, and name the other issue in the body', { why: 'the host links issues from the body, not from the title' }));
+  return problems;
+}

@@ -146,6 +146,16 @@ export const RULES = {
     why: 'labels say what kind of change it is and how hard it is to take back',
     check: PR_CHECK,
   },
+  'issue-area': {
+    rule: 'an issue title starts with its area: `area: verb phrase` for a task, `area: symptom` for an incident',
+    why: 'the area tells a reader which part of the project the issue is about',
+    check: '`yokoten check --issue` in CI reads the issue when it is opened or edited; yokoten.json "areas" limits the areas',
+  },
+  'issue-title': {
+    rule: 'an issue title has at most 60 characters, no full stop at the end and no issue number',
+    why: 'a long title is cut off in lists and boards',
+    check: '`yokoten check --issue` in CI reads the issue when it is opened or edited',
+  },
   'long-sentence': {
     rule: 'plain English: a sentence has at most 25 words (record 0005)',
     why: 'beginners, second-language readers and agents misread long sentences',

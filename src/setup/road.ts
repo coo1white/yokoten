@@ -199,8 +199,8 @@ export const ROAD: Step[] = [
   {
     stage: 2,
     key: 'ci',
-    // `check --pr` is the titles step; this one wants the tree check itself.
-    check: (root) => runs('check(?!\\s+--pr)').test(ciText(root)),
+    // `check --pr` is the titles step, and `check --issue` checks issues; this one wants the tree check itself.
+    check: (root) => runs('check(?!\\s+--(?:pr|issue))').test(ciText(root)),
     what: () => 'CI does not run `yokoten check`',
     fix: () => '`yokoten init` adds .github/workflows/yokoten.yml',
     why: 'a commit made with the hook off would reach main unchecked',

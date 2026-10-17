@@ -13,7 +13,7 @@ import { timeZoneNote } from '../src/run/check.ts';
 import { agentHooks, machineChecks } from '../src/setup/doctor.ts';
 import { explain, ids } from '../src/setup/explain.ts';
 import { ROAD, stepFinding } from '../src/setup/road.ts';
-import { changedLines, checkPullRequest, largeDiff, longSentenceNote, longSentences, type PullRequest } from '../src/rules/pr.ts';
+import { changedLines, checkIssueTitle, checkPullRequest, largeDiff, longSentenceNote, longSentences, type PullRequest } from '../src/rules/pr.ts';
 
 test('glob: a slash anchors at the root, no slash matches in any folder', () => {
   const m = (g: string, p: string) => matcher([g])(p);
@@ -135,6 +135,48 @@ test('large pull request: lines added and deleted; binary files and lock files d
   assert.equal(changedLines(''), 0);
 });
 
+const AREAS = { areas: ['doctor', 'check', 'kit'] };
+
+test('issue title: `area: verb phrase` or `area: symptom` passes', () => {
+  assert.deepEqual(checkIssueTitle('doctor: add the review step', AREAS), []);
+  assert.deepEqual(checkIssueTitle('check: misses a key in a JSON file', AREAS, ['incident']), []);
+  assert.deepEqual(checkIssueTitle('dev-env: set up the container', {}), [], 'no list: any lowercase word, hyphens allowed');
+  assert.deepEqual(checkIssueTitle(`kit: ${'a'.repeat(55)}`, AREAS), [], '60 characters is the most');
+});
+
+test('issue title: each break fails with what, why and the fix', () => {
+  const one = (title: string, id: string, pattern: RegExp, config: { areas?: string[] } = AREAS, labels: string[] = []) => {
+    const problems = checkIssueTitle(title, config, labels);
+    assert.equal(problems.length, 1, `${title} -> ${problems.map(formatFinding).join(' | ')}`);
+    assert.equal(problems[0].id, id);
+    assert.match(formatFinding(problems[0]), pattern);
+  };
+  one(`doctor: ${'a'.repeat(60)}`, 'issue-title', /^title: 68 characters, over 60\. .+\. Shorten it/);
+  one('doctor: add the review step.', 'issue-title', /full stop/);
+  one('doctor: add the review step (#59)', 'issue-title', /issue number/);
+  one('Add the review step to doctor', 'issue-area', /does not start with an area\. .+`area: verb phrase`/);
+  one('A crash when the file is empty', 'issue-area', /`area: symptom`/, AREAS, ['incident']);
+  one('Doctor: add the review step', 'issue-area', /not one lowercase word/);
+  one('doctor check: add a step', 'issue-area', /does not start with an area/);
+  one('area: add the review step', 'issue-area', /placeholder `area`/, {});
+  one('site: turn off analytics', 'issue-area', /not in yokoten\.json "areas"\. .+Use one of: doctor, check, kit\.$/);
+});
+
+test('pull request: an area outside the configured list fails; no list lets any through', () => {
+  assert.deepEqual(checkPullRequest(goodPr(), { ...DEFAULTS, areas: ['kit'] }), []);
+  assert.deepEqual(checkPullRequest({ ...goodPr(), title: 'feat: no area' }, { ...DEFAULTS, areas: ['kit'] }), []);
+  const problems = checkPullRequest({ ...goodPr(), title: 'feat(site): a page' }, { ...DEFAULTS, areas: ['kit'] });
+  assert.equal(problems.length, 1);
+  assert.match(formatFinding(problems[0]), /the area `site` is not in yokoten\.json "areas"\. .+\. Use one of: kit\.$/);
+  assert.deepEqual(checkPullRequest({ ...goodPr(), title: 'feat(site): a page' }, DEFAULTS), []);
+});
+
+test('config: yokoten\'s own areas cover its open work', () => {
+  const own = loadConfig(join(import.meta.dirname, '..'));
+  assert.ok(own.areas.includes('doctor') && own.areas.includes('owner'));
+  assert.deepEqual(DEFAULTS.areas, []);
+});
+
 // #42: every message has the same shape. Each check and guard gets a known-bad input,
 // and each message must say what, why and the fix, in text and in JSON.
 test('messages: every check and guard says what, why and the fix, in text and JSON (#42)', () => {
@@ -151,6 +193,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   found.push(...checkLayout(Array.from({ length: 8 }, (_, i) => `d/${i}`), DEFAULTS));
   found.push(...checkBuildOutput([{ path: 'dist/a.js', binary: false }, { path: 'a.bin', binary: true }], DEFAULTS));
   found.push(...checkPullRequest({ title: `Bad title (#1) ${'x'.repeat(70)}.`, body: '## Why\n\n', files: ['src/a.ts', 'kit/x'], labels: [], milestone: null }, DEFAULTS));
+  found.push(...checkIssueTitle('Bad title (#1) that runs on well past the sixty character limit.', {}));
   add(largeDiff(500));
   add(longSentenceNote('a.md', { line: 3, words: 30 }));
   add(timeZoneNote(2));

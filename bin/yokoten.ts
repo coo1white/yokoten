@@ -5,13 +5,13 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
-import { botConfig, botEnv, installationToken, readPullRequest, repoOf } from '../src/host/github.ts';
+import { botConfig, botEnv, installationToken, readIssue, readPullRequest, repoOf } from '../src/host/github.ts';
 import { check, checkHistory, gitRoot, historyTimeZones, timeZoneNote } from '../src/run/check.ts';
 import * as claudeCode from '../src/agents/claude-code.ts';
 import * as codex from '../src/agents/codex.ts';
 import * as gemini from '../src/agents/gemini.ts';
 import { type Finding, formatFinding } from '../src/rules/message.ts';
-import { changedLines, checkPullRequest, largeDiff, longSentenceNote, longSentences } from '../src/rules/pr.ts';
+import { changedLines, checkIssueTitle, checkPullRequest, largeDiff, longSentenceNote, longSentences } from '../src/rules/pr.ts';
 import { hideHome } from '../src/rules/privacy.ts';
 import { type Action, judge } from '../src/run/hook.ts';
 import { doctor } from '../src/setup/doctor.ts';
@@ -29,6 +29,7 @@ const HELP = `yokoten ${VERSION}
   yokoten check [--staged]   layout, privacy and lead-only files (--staged: the next commit)
   yokoten check --history    the privacy check over every commit; run before going public
   yokoten check --pr         the pull request of this CI run: title, tier, sections, issue, changelog
+  yokoten check --issue      the issue of this CI run: a title of \`area: summary\`, 60 characters at most
   yokoten hook [--agent <name>] [--commands-only]
                              the tool-call guard: reads one tool call on stdin; <name> is
                              claude-code (the default), codex or gemini
@@ -157,18 +158,27 @@ function main(): number | Promise<number> {
       return 2;
     }
     case 'check': {
-      const a = parse({ flags: ['--staged', '--history', '--pr', '--json'] });
+      const a = parse({ flags: ['--staged', '--history', '--pr', '--issue', '--json'] });
       if (typeof a === 'string') return usage(a);
-      const modes = ['--staged', '--history', '--pr'].filter((m) => a.flags.has(m));
+      const modes = ['--staged', '--history', '--pr', '--issue'].filter((m) => a.flags.has(m));
       if (modes.length > 1) return usage(`${modes.join(' and ')} can't be used together`);
       const mode = modes[0]?.slice(2) ?? 'tree';
       const json = a.flags.has('--json');
       const root = gitRoot(process.cwd());
       const config = loadConfig(root);
-      const name = `yokoten check${mode === 'pr' ? ' --pr' : ''}`;
+      const name = `yokoten check${mode === 'pr' || mode === 'issue' ? ` --${mode}` : ''}`;
       const notes: Finding[] = [];
       let problems: Finding[];
-      if (mode === 'pr') {
+      if (mode === 'issue') {
+        const issue = readIssue(env);
+        if (!issue) {
+          const skipped = 'no issue in this run (it reads the CI event); nothing to check';
+          if (json) printJson({ check: mode, ok: true, skipped, findings: [], notes: [] });
+          else print([`${name}: ${skipped}`]);
+          return 0;
+        }
+        problems = checkIssueTitle(issue.title, config, issue.labels);
+      } else if (mode === 'pr') {
         const pr = readPullRequest(root, env);
         if (!pr) {
           const skipped = 'no pull request in this run (it reads the CI event); nothing to check';
