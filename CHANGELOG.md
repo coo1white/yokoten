@@ -11,6 +11,10 @@ All notable changes are listed here. The format follows
 - `yokoten bot -- <command>` runs one command (`gh`, `git push`) as the bot GitHub App,
   with a one-hour token made from the App's key. The token is never printed, and git
   cannot fall back to the owner's login. The dispatch skill now uses it (#4).
+- `install` also writes every skill to `~/.agents/skills`, the open Agent Skills folder
+  that Codex, Gemini CLI, Copilot, Cursor and others read, next to `~/.claude/skills`.
+  `doctor` wants each skill in both and names what is missing. Agents stay Claude-only
+  (#29).
 
 ### Internal
 
