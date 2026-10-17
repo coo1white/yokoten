@@ -1,0 +1,26 @@
+# Monthly, one grouped pull request per kind, so updates don't each cost a review
+# (core rule 8). yokoten has no runtime dependencies: these are the type checker and
+# the actions CI runs.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      dev:
+        patterns: ['*']
+    commit-message:
+      prefix: chore
+      include: scope
+    labels: [ci]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ['*']
+    commit-message:
+      prefix: ci
+    labels: [ci]
