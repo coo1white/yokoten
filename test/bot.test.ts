@@ -6,7 +6,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { appJwt, botConfig, botEnv, installationToken, repoOf } from '../src/github/bot.ts';
+import { appJwt, botConfig, botEnv, installationToken, repoOf } from '../src/host/github.ts';
 import { checkCommand } from '../src/rules/guards.ts';
 
 // A throwaway key, made for this test run only.

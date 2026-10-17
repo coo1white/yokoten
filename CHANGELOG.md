@@ -6,6 +6,15 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `doctor` is a guide along the road in five stages (record 0004). A session hears
+  three lines: the stage, the one next step, and why. Full `doctor` shows every stage
+  and step as done, next, to do, not now or can't check. The stage is worked out each
+  time, never saved, and the existing "not now" keys still work. New local steps:
+  templates, changelog, titles, codeowners, bot and security-files. The `github` layer
+  is now `host`, with `src/host/github.ts` as the first adapter (#33).
+
 ### Added
 
 - A pull request standard, checked in CI by `yokoten check --pr` (its own `pr` workflow,

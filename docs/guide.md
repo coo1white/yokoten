@@ -40,9 +40,9 @@ yokoten turns those lessons into something that checks itself:
 - **Guards that run on their own.** A tool-call hook stops an agent before a bad
   command runs. A commit check catches what the hook can't see. CI runs the same
   check for commits made without either.
-- **A reminder you don't have to remember.** Every session starts with `doctor`, which
-  tells the agent what this project is missing. The agent brings it up, so you don't
-  have to.
+- **A reminder you don't have to remember.** Every session starts with `doctor`. It
+  tells the agent the project's stage on the road, and the one next step. The agent
+  brings it up, so you don't have to.
 
 ## Three checks and a lock
 
@@ -66,14 +66,31 @@ flowchart LR
 At the start of a session in a project that hasn't adopted yokoten yet:
 
 ```
-yokoten: this project is missing 5 practice(s):
-- rules: no AGENTS.md: the agents have no written rules here
-- commit-check: commits are not checked (core.hooksPath is not .githooks, or .githooks/pre-commit does not run yokoten)
-- tool-hook: no tool-call guard in .claude/settings.json
-- ci: CI does not run `yokoten check`, so a commit made without the hook gets through
-- runtime: no .yokoten/ runtime
-Tell the user, and offer the yokoten skill to adopt them (each one: as-is, lighter, or not now with a reason).
+yokoten: stage 1 of 5, safety net. Next: no AGENTS.md, so the agents have no written rules here; `yokoten init` adds one.
+Why: an agent follows the rules it can read, and only those.
+Tell the user in plain words, one step at a time, and offer to do it (as-is, lighter, or not now with a reason).
 ```
+
+The session hears about one step only: the stage, the next step, and why it matters.
+The stage is worked out from the files each time; nothing saves it. A step you marked
+"not now" is skipped. The order is advice: a later step done early counts as done.
+When every step is done or "not now", the session hears one line that says so.
+The agent tells you in your own language. yokoten prints English, which agents read most
+reliably.
+
+`yokoten doctor` shows the whole road. Each step is **done**, **next**, **to do**, **not
+now** (with your reason) or **can't check**. Steps that yokoten can't check yet are not
+listed:
+
+| Stage | Steps |
+|---|---|
+| **1 · Safety net** | `rules`, `tool-hook`, `commit-check`, `runtime` |
+| **2 · Issues and pull requests** | `ci`, `issues` (no todo file), `templates` |
+| **3 · Release** | `changelog`, `titles` (CI runs `check --pr`) |
+| **4 · A team of agents** | `codeowners`, `bot`, `skills` |
+| **5 · Going public** | `security-files` (a security policy, Dependabot, a license) |
+
+[Record 0004](records/0004-the-road.md) says why the road looks like this.
 
 And when an agent tries to push a release tag:
 
@@ -105,7 +122,7 @@ git clone https://github.com/coo1white/yokoten
 node yokoten/bin/yokoten.ts install      # this machine: skills, agents, hooks
 cd your-project
 node ~/.local/share/yokoten/bin/yokoten.ts init     # this project: adds files, never overwrites
-node ~/.local/share/yokoten/bin/yokoten.ts doctor   # what's still missing
+node ~/.local/share/yokoten/bin/yokoten.ts doctor   # the road: where you are, what's next
 ```
 
 `init` copies the runtime into `.yokoten/` in your project. Commit it: the hooks and CI
@@ -124,7 +141,7 @@ then run with no network and no global install.
 |---------|--------------|
 | `install` | Skills into `~/.claude/skills` and `~/.agents/skills`, agents into `~/.claude/agents`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file |
 | `init [dir]` | Puts the practices into a project. Adds files; keeps any that are already there and says so |
-| `doctor [--session]` | What this project and machine are missing. `--session` is the short form for the start of a session |
+| `doctor [--session]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session |
 | `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit |
 | `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, changelog line, milestone and labels. Long sentences in changed Markdown are notes |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public |

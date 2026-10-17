@@ -33,8 +33,8 @@ yokoten 把这些经验做成会自己检查的东西：
   时预见的风险），以及由哪项检查守着。没有检查的规则只是愿望。
 - **守卫自己会运行。** 工具调用 hook 在坏命令执行之前就拦下来；提交检查抓 hook 看不到的；
   CI 再跑一遍同样的检查，兜住绕过前两道的提交。
-- **不用你记着提醒。** 每次会话开头先跑 `doctor`，告诉 agent 这个项目还缺哪些做法。由
-  agent 主动提出来，你不用记。
+- **不用你记着提醒。** 每次会话开头先跑 `doctor`，告诉 agent 这个项目走到了哪一关，
+  下一步做什么。由 agent 主动提出来，你不用记。
 
 ## 三道检查，一把锁
 
@@ -58,14 +58,30 @@ flowchart LR
 在一个还没采用 yokoten 的项目里，会话一开始会看到：
 
 ```
-yokoten: this project is missing 5 practice(s):
-- rules: no AGENTS.md: the agents have no written rules here
-- commit-check: commits are not checked (core.hooksPath is not .githooks, or .githooks/pre-commit does not run yokoten)
-- tool-hook: no tool-call guard in .claude/settings.json
-- ci: CI does not run `yokoten check`, so a commit made without the hook gets through
-- runtime: no .yokoten/ runtime
-Tell the user, and offer the yokoten skill to adopt them (each one: as-is, lighter, or not now with a reason).
+yokoten: stage 1 of 5, safety net. Next: no AGENTS.md, so the agents have no written rules here; `yokoten init` adds one.
+Why: an agent follows the rules it can read, and only those.
+Tell the user in plain words, one step at a time, and offer to do it (as-is, lighter, or not now with a reason).
 ```
+
+会话里只说一步：在第几关，下一步做什么，为什么要做。第几关是每次看项目里的文件算出来的，
+不存在哪里。你说过「暂不」的步骤会跳过。顺序只是建议：后面关卡的步骤提前做了，也算做完。
+所有步骤都做完或者「暂不」的时候，会话里只有一行，说路走完了。
+
+agent 会用你的语言跟你讲。yokoten 自己输出英文，因为 agent 读英文最稳。
+
+`yokoten doctor` 会列出整条路。每一步标成 done（做完了）、next（下一步）、to do（还没做）、
+not now（暂不，后面跟着你给的原因）或者 can't check（这里查不了）。yokoten 还查不了的步骤
+先不列出来：
+
+| 关卡 | 步骤 |
+|---|---|
+| **1 · 安全网** | `rules`、`tool-hook`、`commit-check`、`runtime` |
+| **2 · 先开 issue，再走 PR** | `ci`、`issues`（没有 todo 文件）、`templates` |
+| **3 · 发版** | `changelog`、`titles`（CI 跑 `check --pr`） |
+| **4 · 带一支 AI 团队** | `codeowners`、`bot`、`skills` |
+| **5 · 公开** | `security-files`（安全说明、Dependabot、许可证） |
+
+为什么这样分，见[决策记录 0004](../records/0004-the-road.md)。
 
 agent 想推送发版 tag 的时候：
 
@@ -97,7 +113,7 @@ git clone https://github.com/coo1white/yokoten
 node yokoten/bin/yokoten.ts install      # 这台电脑：技能、agent、hook
 cd your-project
 node ~/.local/share/yokoten/bin/yokoten.ts init     # 这个项目：只加文件，不覆盖
-node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看还缺什么
+node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看走到哪一关，下一步做什么
 ```
 
 `init` 会把运行时复制到项目的 `.yokoten/` 里。把它一起提交：这样 hook 和 CI 不联网、
@@ -115,7 +131,7 @@ node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看还缺什么
 |------|--------|
 | `install` | 把技能装进 `~/.claude/skills` 和 `~/.agents/skills`，agent 装进 `~/.claude/agents`，加上会话开头的 `doctor` hook 和用户级命令守卫，再建一个空的私有词表 |
 | `init [dir]` | 把这套做法放进一个项目。只加文件；已有的文件保留，并告诉你保留了哪些 |
-| `doctor [--session]` | 这个项目和这台电脑还缺什么。`--session` 是会话开头用的简短版 |
+| `doctor [--session]` | 整条路：每一关、每一步，加上这台电脑还缺什么。`--session` 只说下一步，会话开头用 |
 | `check [--staged]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交 |
 | `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的 CHANGELOG、milestone 和标签。改动的文档里句子太长只提醒，不算失败 |
 | `check --history` | 对所有分支的每一个提交做隐私检查。私有仓库公开之前跑一遍 |

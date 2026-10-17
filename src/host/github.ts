@@ -1,3 +1,7 @@
+// The GitHub adapter. Everything yokoten knows about GitHub's API lives in src/host/
+// (record 0004); a rule or a step names what it needs in host-neutral words. Two parts:
+// the bot, and the pull request of a CI run.
+//
 // The bot: a GitHub App that pushes branches and opens pull requests for the lead, so
 // the owner's account is never used for that. It signs in with one-hour tokens made from
 // its private key.
@@ -5,11 +9,13 @@
 // The token is handed to one command's environment and never printed: a printed token
 // lands in the agent's transcript.
 
+import { execFileSync } from 'node:child_process';
 import { createPrivateKey, sign } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
+import type { PullRequest } from '../rules/pr.ts';
 
 export interface BotConfig {
   appId: string;
@@ -32,7 +38,13 @@ export function botConfig(env: Env): BotConfig | string {
   };
 }
 
-const b64url = (data: string | Buffer) => Buffer.from(data).toString('base64url');
+/** A bot is set up on this machine: its App ID is set and its key file is there. Reads no network. */
+export function hasBot(env: Env): boolean {
+  const config = botConfig(env);
+  return typeof config !== 'string' && existsSync(config.keyFile);
+}
+
+const b64url =(data: string | Buffer) => Buffer.from(data).toString('base64url');
 
 /** A JWT that says "I am App `appId`", signed RS256, good for nine minutes (GitHub allows ten). */
 export function appJwt(appId: string, keyPem: string, now = Math.floor(Date.now() / 1000)): string {
@@ -80,5 +92,42 @@ export function botEnv(env: Env, token: string): Env {
     [`GIT_CONFIG_VALUE_${n}`]: '',
     [`GIT_CONFIG_KEY_${n + 1}`]: key,
     [`GIT_CONFIG_VALUE_${n + 1}`]: '!gh auth git-credential',
+  };
+}
+
+// A pull request as GitHub Actions describes it: the event file of the run. The rule that
+// judges it (src/rules/pr.ts) knows no host; this part is the GitHub half.
+//
+// The event file holds the title, body, labels and milestone. The changed files come from
+// git, between the base and the head commit of the pull request, so the checkout needs
+// both (fetch-depth: 0).
+
+interface Event {
+  pull_request?: {
+    title?: string;
+    body?: string | null;
+    labels?: { name?: string }[];
+    milestone?: { title?: string } | null;
+    base?: { sha?: string };
+    head?: { sha?: string };
+  };
+}
+
+/** The pull request of this run, or null when the run is not for one. */
+export function readPullRequest(root: string, env: Env): (PullRequest & { head: string }) | null {
+  if (!env.GITHUB_EVENT_PATH) return null;
+  const event: Event = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, 'utf8'));
+  const pr = event.pull_request;
+  if (!pr) return null;
+  const base = pr.base?.sha ?? '';
+  const head = pr.head?.sha ?? '';
+  const files = base && head ? execFileSync('git', ['diff', '--name-only', '-z', `${base}...${head}`], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean) : [];
+  return {
+    title: pr.title ?? '',
+    body: pr.body ?? '',
+    files,
+    labels: (pr.labels ?? []).map((l) => l.name ?? '').filter(Boolean),
+    milestone: pr.milestone?.title ?? null,
+    head,
   };
 }

@@ -78,10 +78,11 @@ yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
     `gemini.ts` have the tool call and the project hook. Shared by several runtimes:
     `agent-skills.ts`, the `.agents/skills` folder, and `hooks-file.ts`, the hooks
     table. Nothing else in `src/` names a runtime.
-  - `github/`: the GitHub API, today the bot's token. Becoming `host/`, one adapter
-    per code host (#33).
+  - `host/`: one adapter per code host. `github.ts` is the first: the bot's token
+    and the pull request of a CI run. Nothing else in `src/` or `bin/` names a host's
+    API (`test/architecture.test.ts` holds this).
   - `setup/`: `install`, `init` and `doctor`, writing yokoten into a machine or a
-    project.
+    project. `road.ts` is the road `doctor` walks: one table of stages and steps.
 - **Docs live in the repo.** No wiki: a wiki page is not reviewed and agents do not read
   it. Decisions go in `docs/records/`; what went wrong and what check now holds it goes
   in an issue labelled `incident`, and the rule's "why" in `AGENTS.md` points to it.
