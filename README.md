@@ -1,20 +1,24 @@
 <div align="center">
 
-# yokoten · 横展
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
+  <img src="docs/assets/banner-light.svg" width="100%" alt="yokoten · 横展. A guide for the journey. A guard at the bridge. A road climbs through the mountains past five numbered stages to a bridge, where a lantern keeps watch.">
+</picture>
 
-[![ci](https://github.com/coo1white/yokoten/actions/workflows/yokoten.yml/badge.svg)](https://github.com/coo1white/yokoten/actions/workflows/yokoten.yml)
-[![TypeScript](https://img.shields.io/badge/TypeScript-no%20build-3178C6?logo=typescript&logoColor=white)](docs/records/0002-typescript.md)
-[![Node](https://img.shields.io/badge/Node-%E2%89%A522.18-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
-[![dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](package.json)
-[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Claude Code](https://img.shields.io/badge/for-Claude%20Code-D97757?logo=claude&logoColor=white)](https://claude.com/claude-code)
-
-**A guide for the journey. A guard at the bridge.**
+<br/>
 
 One person and a few AI agents, building to a professional team's standard.<br/>
 yokoten was built this way, and this repo is the example.
 
-English | [中文](docs/zh-CN/README.md)
+**[yokoten.app](https://yokoten.app)** &nbsp;·&nbsp; English | [中文](docs/zh-CN/README.md)
+
+<br/>
+
+[![ci](https://img.shields.io/github/actions/workflow/status/coo1white/yokoten/yokoten.yml?branch=main&label=ci&style=flat&labelColor=1c1a16&color=9e3620)](https://github.com/coo1white/yokoten/actions/workflows/yokoten.yml)
+[![works with 3 agents](https://img.shields.io/badge/works%20with-3%20agents-9e3620?style=flat&labelColor=1c1a16)](docs/guide.md#install-and-commands "Claude Code, Codex, Gemini CLI")
+[![dependencies 0](https://img.shields.io/badge/dependencies-0-9e3620?style=flat&labelColor=1c1a16)](package.json)
+[![TypeScript, no build](https://img.shields.io/badge/TypeScript-no%20build-9e3620?style=flat&logo=typescript&logoColor=f4f0e6&labelColor=1c1a16)](docs/records/0002-typescript.md)
+[![license MIT](https://img.shields.io/badge/license-MIT-9e3620?style=flat&labelColor=1c1a16)](LICENSE)
 
 </div>
 
@@ -88,4 +92,4 @@ next step.
 
 ---
 
-MIT · Built by [coolwhite](https://coolwhite.us/), with lessons from the factory floor.
+<p align="center"><sub>MIT · Built by <a href="https://coolwhite.us/">coolwhite</a>, with lessons from the factory floor.</sub></p>
