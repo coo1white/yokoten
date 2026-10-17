@@ -126,7 +126,7 @@ then run with no network and no global install.
 | `init [dir]` | Puts the practices into a project. Adds files; keeps any that are already there and says so |
 | `doctor [--session]` | What this project and machine are missing. `--session` is the short form for the start of a session |
 | `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit |
-| `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, changelog line, milestone and labels. Long sentences in changed Markdown are notes |
+| `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, changelog line, milestone and labels. Long sentences in changed Markdown, and a diff over 400 changed lines, are notes |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public |
 | `hook [--agent <name>] [--commands-only]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini` |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Setup: [server.md](server.md#3-the-bot-a-github-app) |

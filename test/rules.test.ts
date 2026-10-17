@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
 import { matcher } from '../src/rules/glob.ts';
 import { checkLayout } from '../src/rules/layout.ts';
-import { checkPullRequest, longSentences, type PullRequest } from '../src/rules/pr.ts';
+import { changedLines, checkPullRequest, largeDiff, longSentences, type PullRequest } from '../src/rules/pr.ts';
 
 test('glob: a slash anchors at the root, no slash matches in any folder', () => {
   const m = (g: string, p: string) => matcher([g])(p);
@@ -95,4 +95,19 @@ test('plain English: long sentences are found; code, tables and comments are not
     { line: 12, words: 30 },
   ]);
   assert.deepEqual(longSentences(`A [link with many words in its text](https://example.com/${'x'.repeat(50)}) is short.`), []);
+});
+
+test('large pull request: a note over 400 changed lines, none at or below (#57)', () => {
+  assert.equal(largeDiff(400), null);
+  assert.equal(largeDiff(12), null);
+  const note = largeDiff(401) ?? '';
+  assert.match(note, /changes 401 lines, over 400\. Smaller pull requests are easier to review; split it if you can\./);
+  assert.ok(note.split(/\s+/).length <= 25, 'plain English: 25 words or fewer');
+  assert.match(largeDiff(150, 100) ?? '', /over 100/);
+});
+
+test('large pull request: lines added and deleted; binary files and lock files do not count (#57)', () => {
+  const numstat = ['3\t2\tsrc/a.ts', '-\t-\tlogo.png', '900\t40\tpackage-lock.json', '5\t0\tweb/yarn.lock', '1\t1\t', 'old name.ts', 'new\tname.ts', ''].join('\0');
+  assert.equal(changedLines(numstat), 7);
+  assert.equal(changedLines(''), 0);
 });

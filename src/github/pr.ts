@@ -22,7 +22,7 @@ interface Event {
 }
 
 /** The pull request of this run, or null when the run is not for one. */
-export function readPullRequest(root: string, env: Env): (PullRequest & { head: string }) | null {
+export function readPullRequest(root: string, env: Env): (PullRequest & { head: string; numstat: string }) | null {
   if (!env.GITHUB_EVENT_PATH) return null;
   const event: Event = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, 'utf8'));
   const pr = event.pull_request;
@@ -30,6 +30,7 @@ export function readPullRequest(root: string, env: Env): (PullRequest & { head: 
   const base = pr.base?.sha ?? '';
   const head = pr.head?.sha ?? '';
   const files = base && head ? execFileSync('git', ['diff', '--name-only', '-z', `${base}...${head}`], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean) : [];
+  const numstat = base && head ? execFileSync('git', ['diff', '--numstat', '-z', `${base}...${head}`], { cwd: root, encoding: 'utf8' }) : '';
   return {
     title: pr.title ?? '',
     body: pr.body ?? '',
@@ -37,5 +38,6 @@ export function readPullRequest(root: string, env: Env): (PullRequest & { head: 
     labels: (pr.labels ?? []).map((l) => l.name ?? '').filter(Boolean),
     milestone: pr.milestone?.title ?? null,
     head,
+    numstat,
   };
 }
