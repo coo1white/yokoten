@@ -44,11 +44,10 @@ yokoten: git push --tags pushes tags. Only the owner decides when to release.
 | 关卡 | 学会什么 | 在这里看 |
 |---|---|---|
 | **1 · 安全网** | AI 要读的规则，能拦住它的检查 | [AGENTS.md](../../AGENTS.md) |
-| **2 · 先开 issue，再走 PR** | 每次改动都有原因；CI 通过才合并 | [issue](https://github.com/coo1white/yokoten/issues?q=is%3Aissue)、[PR](https://github.com/coo1white/yokoten/pulls?q=is%3Apr) |
-| **3 · 计划** | 标签、milestone、看板 | [看板](https://github.com/users/coo1white/projects/1) |
-| **4 · 发版** | 清楚的提交信息、CHANGELOG、版本号 | [CHANGELOG.md](../../CHANGELOG.md) |
-| **5 · 带一支 AI 团队** | bot、worker、审查；你始终是老板 | [使用指南](guide.md#像带团队一样管-agent) |
-| **6 · 公开** | 检查全部历史里的隐私、安全设置、分支保护 | [安全说明](../../.github/SECURITY.md) |
+| **2 · 先开 issue，再走 PR** | 每次改动都有原因；CI 通过才合并；标签、milestone、看板 | [issue](https://github.com/coo1white/yokoten/issues?q=is%3Aissue)、[PR](https://github.com/coo1white/yokoten/pulls?q=is%3Apr)、[看板](https://github.com/users/coo1white/projects/1) |
+| **3 · 发版** | 清楚的提交信息、CHANGELOG、版本号 | [CHANGELOG.md](../../CHANGELOG.md) |
+| **4 · 带一支 AI 团队** | bot、worker、审查；你始终是老板 | [使用指南](guide.md#像带团队一样管-agent) |
+| **5 · 公开** | 检查全部历史里的隐私、安全设置、分支保护 | [安全说明](../../.github/SECURITY.md) |
 
 ## 快速开始
 
