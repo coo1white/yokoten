@@ -17,6 +17,9 @@ All notable changes are listed here. The format follows
 
 ### Added
 
+- A `tests` step in stage 1 of the road: the project has a test command (a `test`
+  script in package.json, or a test runner such as `node --test` or `go test`), and a
+  workflow in `.github/workflows` runs it (#55).
 - `check --pr` notes a pull request that changes more than 400 lines (added plus
   deleted; binary and lock files not counted): smaller pull requests are easier to
   review. A note, never a failure (record 0004, #57).

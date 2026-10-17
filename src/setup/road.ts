@@ -88,6 +88,26 @@ export function skillsLacking(env: Env): string[] | null {
   return [...lacking].map(([dir, names]) => `${dir} (${names.join(', ')})`);
 }
 
+// The test command, from package.json. npm's placeholder script, which only fails, is no command.
+const NPM_PLACEHOLDER = 'echo "Error: no test specified" && exit 1';
+const testScript = (root: string): string => {
+  try {
+    const script = JSON.parse(read(join(root, 'package.json')) || '{}')?.scripts?.test;
+    return typeof script === 'string' && script.trim() && script.trim() !== NPM_PLACEHOLDER ? script.trim() : '';
+  } catch {
+    return '';
+  }
+};
+// A command that runs the package.json script, and runners that need no script.
+const RUNS_SCRIPT = /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|t)\b/;
+const RUNNERS = /\b(?:node\s+--test|deno\s+test|go\s+test|cargo\s+test|pytest|mvn\s+test|gradle\s+test)\b/;
+/** Whether CI runs the tests: the package.json script, or a test runner named outright. */
+const ciRunsTests = (root: string) => {
+  const ci = ciText(root);
+  const script = testScript(root);
+  return RUNNERS.test(ci) || (script !== '' && (RUNS_SCRIPT.test(ci) || ci.includes(script)));
+};
+
 const SECURITY_FILES: [string, string[]][] = [
   ['security policy (SECURITY.md)', ['.github/SECURITY.md', 'SECURITY.md']],
   ['Dependabot config', ['.github/dependabot.yml', '.github/dependabot.yaml']],
@@ -127,6 +147,16 @@ export const ROAD: Step[] = [
       return vendored ? `.yokoten/ is ${vendored}, this yokoten is ${VERSION}; run \`yokoten init\` to update it` : 'no .yokoten/ runtime; `yokoten init` adds it';
     },
     why: 'the hooks and CI run this copy, so they work with no network and no global install',
+  },
+  {
+    stage: 1,
+    key: 'tests',
+    check: (root) => ciRunsTests(root),
+    what: (root) =>
+      testScript(root)
+        ? 'CI does not run the tests; add a step that runs `npm test` (or your test command) to a workflow in .github/workflows'
+        : 'no test command: no "test" script in package.json, and no workflow runs a test runner; add tests and a CI step that runs them',
+    why: 'tests that run on every push catch a broken change before it reaches main',
   },
   {
     stage: 2,

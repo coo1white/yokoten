@@ -75,7 +75,7 @@ not now（暂不，后面跟着你给的原因）或者 can't check（这里查�
 
 | 关卡 | 步骤 |
 |---|---|
-| **1 · 安全网** | `rules`、`tool-hook`、`commit-check`、`runtime` |
+| **1 · 安全网** | `rules`、`tool-hook`、`commit-check`、`runtime`、`tests`（有测试命令，CI 会跑） |
 | **2 · 先开 issue，再走 PR** | `ci`、`issues`（没有 todo 文件）、`templates` |
 | **3 · 发版** | `changelog`、`titles`（CI 跑 `check --pr`） |
 | **4 · 带一支 AI 团队** | `codeowners`、`bot`、`skills` |

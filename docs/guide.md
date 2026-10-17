@@ -84,7 +84,7 @@ listed:
 
 | Stage | Steps |
 |---|---|
-| **1 · Safety net** | `rules`, `tool-hook`, `commit-check`, `runtime` |
+| **1 · Safety net** | `rules`, `tool-hook`, `commit-check`, `runtime`, `tests` (a test command, and CI runs it) |
 | **2 · Issues and pull requests** | `ci`, `issues` (no todo file), `templates` |
 | **3 · Release** | `changelog`, `titles` (CI runs `check --pr`) |
 | **4 · A team of agents** | `codeowners`, `bot`, `skills` |
