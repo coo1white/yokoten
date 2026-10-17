@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import type { Config, Env } from '../rules/config.ts';
 import { matcher } from '../rules/glob.ts';
 import { checkEdit } from '../rules/guards.ts';
-import { checkLayout } from '../rules/layout.ts';
+import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
 import { loadMarks, notUtc, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
 
 const git = (cwd: string, args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 1 << 30 });
@@ -43,6 +43,24 @@ function stagedFiles(root: string): { status: string; path: string }[] {
 
 const isBinary = (buf: Buffer) => buf.includes(0);
 
+/** The files the next commit adds or changes, and whether git sees each as binary (`-` lines). */
+function stagedBinary(root: string): { path: string; binary: boolean }[] {
+  // -z --numstat gives "added\tdeleted\tpath", or for a move "added\tdeleted\t", old path, new path.
+  const out = git(root, ['diff', '--cached', '--numstat', '--diff-filter=ACMR', '-z']).split('\0');
+  const files: { path: string; binary: boolean }[] = [];
+  for (let i = 0; i < out.length; i++) {
+    const [added, deleted, path] = out[i].split('\t');
+    if (deleted === undefined) continue;
+    const binary = added === '-' && deleted === '-';
+    if (path) files.push({ path, binary });
+    else {
+      files.push({ path: out[i + 2], binary });
+      i += 2;
+    }
+  }
+  return files;
+}
+
 /** Problems for the whole tree, or with `staged`, for the commit about to be made. */
 export function check(root: string, { config, env, staged = false }: { config: Config; env: Env; staged?: boolean }): string[] {
   const problems: string[] = [];
@@ -62,6 +80,7 @@ export function check(root: string, { config, env, staged = false }: { config: C
       if (reason) problems.push(reason);
       if (status !== 'D') privacy(path, gitBytes(root, ['show', `:${path}`]));
     }
+    problems.push(...checkBuildOutput(stagedBinary(root), config));
   } else {
     for (const path of indexFiles(root)) {
       let buf: Buffer;

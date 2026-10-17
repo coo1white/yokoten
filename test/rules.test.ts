@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
 import { matcher } from '../src/rules/glob.ts';
-import { checkLayout } from '../src/rules/layout.ts';
+import { checkBuildOutput, checkLayout, isBuildOutput } from '../src/rules/layout.ts';
 import { changedLines, checkPullRequest, largeDiff, longSentences, type PullRequest } from '../src/rules/pr.ts';
 
 test('glob: a slash anchors at the root, no slash matches in any folder', () => {
@@ -36,6 +36,19 @@ test('layout: an exempt folder may grow', () => {
   assert.deepEqual(checkLayout(records, { layout: { maxEntries: 7, exempt: ['docs/records/'] } }), []);
 });
 
+test('build output: build folders and binaries are refused, images, fonts and allowed paths pass (#56)', () => {
+  const files = (...paths: string[]) => paths.map((path) => ({ path, binary: !/\.(js|ts|md|svg)$/.test(path) }));
+  const problems = checkBuildOutput(files('dist/app.js', 'pkg/build/x.js', 'out/a.md', 'tool.exe', 'lib.wasm', 'data.bin'), DEFAULTS);
+  assert.equal(problems.length, 6);
+  assert.match(problems[0], /^dist\/app\.js: build output, in a dist\/ folder\..*git rm --cached dist\/app\.js.*allowBuild in yokoten\.json/);
+  assert.match(problems[3], /^tool\.exe: a binary file\./);
+  // Text whose name says built still counts; images and fonts do not.
+  assert.equal(checkBuildOutput([{ path: 'lib.wasm', binary: false }], DEFAULTS).length, 1);
+  assert.deepEqual(checkBuildOutput(files('docs/a.png', 'site/logo.svg', 'fonts/x.woff2', 'src/output.ts', 'distance.js'), DEFAULTS), []);
+  assert.deepEqual(checkBuildOutput(files('dist/app.js', 'vendor/tool.zip'), { allowBuild: ['dist/**', '*.zip'] }), []);
+  assert.ok(isBuildOutput('a/dist/b.js') && !isBuildOutput('a/dist/b.js', () => true) && !isBuildOutput('dist.md'));
+});
+
 test('config: missing file means defaults, a key overrides, bad JSON says where', () => {
   const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
   assert.deepEqual(loadConfig(dir).layout, DEFAULTS.layout);
@@ -45,6 +58,7 @@ test('config: missing file means defaults, a key overrides, bad JSON says where'
   assert.deepEqual(c.layout.exempt, []);
   assert.equal(c.notNow.ci, 'later');
   assert.deepEqual(c.tests, DEFAULTS.tests);
+  assert.deepEqual(c.allowBuild, []);
   writeFileSync(join(dir, 'yokoten.json'), '{ nope');
   assert.throws(() => loadConfig(dir), /^Error: yokoten\.json:/);
 });

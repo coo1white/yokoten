@@ -223,3 +223,13 @@ test('adopt chat: one OpenAI-style call with the key in the header only, against
   assert.equal(llamaConfig({}), null);
   assert.deepEqual(llamaConfig({ MODEL_API_KEY: 'test-key' }), { base: 'https://api.meta.ai/v1', model: 'muse-spark-1.3', key: 'test-key' });
 });
+test('road: every outside standard has the form "<standard>: <item>" or an item id, joined by " · " (#58)', () => {
+  const named = ROAD.filter((s) => s.standard);
+  assert.ok(named.length >= 10, 'most steps name a standard');
+  for (const { key, standard } of named) {
+    for (const part of (standard ?? '').split(' · ')) {
+      assert.match(part, /^[A-Za-z][\w .-]*(?:: \S(?:.*\S)?)?$/, `${key}: "${part}"`);
+      if (part.startsWith('OSPS')) assert.match(part, /^OSPS-[A-Z]{2}-\d{2}\.\d{2}$/, `${key}: an OSPS Baseline id`);
+    }
+  }
+});

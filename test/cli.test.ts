@@ -28,7 +28,12 @@ function sandbox() {
     mkdirSync(dirname(join(repo, path)), { recursive: true });
     writeFileSync(join(repo, path), text);
   };
-  return { home, repo, env, git, run, write };
+  // The tests step (#55): a test script, and a workflow that runs it.
+  const withTests = () => {
+    write('package.json', JSON.stringify({ scripts: { test: 'node --test' } }));
+    write('.github/workflows/test.yml', 'on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm test\n');
+  };
+  return { home, repo, env, git, run, write, withTests };
 }
 
 test('hook: blocks with exit 2 and a reason, allows with exit 0', () => {
@@ -149,6 +154,35 @@ test('check --staged: stops a commit with a personal email or a private mark', (
   assert.ok(!/mycity/i.test(r.stderr));
 });
 
+test('check --staged: stops build output and binaries, lets images and allowed paths through (#56)', () => {
+  const s = sandbox();
+  s.write('dist/app.js', 'console.log(1);\n');
+  writeFileSync(join(s.repo, 'tool'), Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0, 1, 2, 0]));
+  writeFileSync(join(s.repo, 'logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0]));
+  s.git('add', '.');
+  let r = s.run(['check', '--staged']);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /dist\/app\.js: build output, in a dist\/ folder\./);
+  assert.match(r.stderr, /tool: a binary file\. A reviewer can't read it/);
+  assert.ok(!r.stderr.includes('logo.png'), 'an image is fine');
+  s.write('yokoten.json', JSON.stringify({ allowBuild: ['dist/**', 'tool'] }));
+  s.git('add', '.');
+  r = s.run(['check', '--staged']);
+  assert.equal(r.status, 0, r.stderr);
+});
+
+test('doctor: the no-build-output step looks at the tracked files (#56)', () => {
+  const s = sandbox();
+  const line = () => s.run(['doctor']).stdout.split('\n').find((l) => / no-build-output/.test(l)) ?? '';
+  assert.match(line(), /^ +done +no-build-output/);
+  s.write('build/a.js', 'x\n');
+  s.write('lib/x.so', 'x\n');
+  s.git('add', '.');
+  assert.match(line(), /^ +to do +no-build-output \(Scorecard: Binary-Artifacts\): build output in the repo \(build\/a\.js, lib\/x\.so\)/);
+  s.write('yokoten.json', JSON.stringify({ allowBuild: ['build/**', 'lib/**'] }));
+  assert.match(line(), /^ +done +no-build-output/);
+});
+
 test('check --staged: stops a commit whose time carries a time zone, never printing it (#40)', () => {
   const s = sandbox();
   s.write('a.md', 'fine\n');
@@ -256,7 +290,9 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.notEqual(secret.status, 0, 'a secret is refused too (#8)');
   assert.match(secret.stderr, /leak\.md:1: a secret \(AWS access key id\)/);
   s.git('reset', '-q', 'leak.md');
-  // init does all of stages 1 and 2, so the road goes on to stage 3.
+  // init does all of stages 1 and 2 but the tests, so with tests the road goes on to stage 3.
+  assert.match(s.run(['doctor', '--session']).stdout, /^yokoten: stage 1 of 5, safety net\. Next: no test command/);
+  s.withTests();
   r = s.run(['doctor', '--session']);
   assert.equal(r.status, 0);
   assert.match(r.stdout, /^yokoten: stage 3 of 5, release\. Next: no CHANGELOG\.md/);
@@ -298,15 +334,15 @@ test('doctor --session: "not now" skips a step, by the names yokoten.json alread
   const next = () => s.run(['doctor', '--session']).stdout.split('\n')[0];
   s.write('yokoten.json', JSON.stringify({ notNow: { rules: 'our rules live in the wiki for now' } }));
   assert.match(next(), /stage 1 of 5, safety net\. Next: no tool-call guard/);
-  s.write('yokoten.json', JSON.stringify({ notNow: { rules: 'a', 'tool-hook': 'b', 'commit-check': 'c', runtime: 'd' } }));
+  s.write('yokoten.json', JSON.stringify({ notNow: { rules: 'a', 'tool-hook': 'b', 'commit-check': 'c', runtime: 'd', tests: 'e' } }));
   assert.match(next(), /stage 2 of 5, issues and pull requests\. Next: CI does not run/, 'a stage with every step not now is passed');
-  s.write('yokoten.json', JSON.stringify({ notNow: { rules: 'a', 'tool-hook': 'b', 'commit-check': 'c', runtime: 'd', ci: 'no remote yet', issues: 'f' } }));
+  s.write('yokoten.json', JSON.stringify({ notNow: { rules: 'a', 'tool-hook': 'b', 'commit-check': 'c', runtime: 'd', tests: 'e', ci: 'no remote yet', issues: 'f' } }));
   assert.match(next(), /stage 2 of 5, issues and pull requests\. Next: no issue templates and no pull request template/);
   const full = s.run(['doctor']).stdout;
-  assert.match(full, /^ +not now +ci: no remote yet$/m, 'the full map shows the reason');
-  assert.match(full, /^ +next +templates: /m);
-  assert.match(full, /^ +to do +changelog: /m);
-  assert.match(full, /^ +to do +titles: CI does not check pull requests/m);
+  assert.match(full, /^ +not now +ci \(Scorecard: CI-Tests\): no remote yet$/m, 'the full map shows the reason');
+  assert.match(full, /^ +next +templates \(GitHub community profile\): /m);
+  assert.match(full, /^ +to do +changelog \(Best Practices: release_notes\): /m);
+  assert.match(full, /^ +to do +titles \(Conventional Commits 1\.0\.0\): CI does not check pull requests/m);
 });
 
 test('doctor: each stage boundary, from a fresh repo to the end of the road', () => {
@@ -320,6 +356,7 @@ test('doctor: each stage boundary, from a fresh repo to the end of the road', ()
   assert.match(next(), /stage 1 of 5, safety net\. Next: no AGENTS\.md/);
   // Stage 1 done, stage 2 not: init without its CI workflow.
   assert.equal(s.run(['init']).status, 0);
+  s.withTests();
   rmSync(join(s.repo, '.github', 'workflows', 'yokoten.yml'));
   assert.match(next(), /stage 2 of 5, issues and pull requests\. Next: CI does not run `yokoten check`/, 'the pull request check alone is not the CI check');
   s.write('TODO.md', '- one\n');
@@ -344,7 +381,25 @@ test('doctor: each stage boundary, from a fresh repo to the end of the road', ()
   // The order is advice, not a gate: a later step done early counts as done.
   rmSync(join(s.repo, 'AGENTS.md'));
   assert.match(next(bot), /stage 1 of 5, safety net\. Next: no AGENTS\.md/);
-  assert.match(s.run(['doctor'], { extra: { ...extra, ...bot } }).stdout, /^ +done +security-files$/m);
+  assert.match(s.run(['doctor'], { extra: { ...extra, ...bot } }).stdout, /^ +done +security-files \(Scorecard: Security-Policy · OSPS-VM-02\.01\)$/m, 'full doctor names the outside standard (#58)');
+});
+
+test('doctor: the tests step wants a test command and a CI step that runs it (#55)', () => {
+  const s = sandbox();
+  const line = () => s.run(['doctor']).stdout.split('\n').find((l) => / tests\b/.test(l)) ?? '';
+  assert.match(line(), /^ +to do +tests \(Best Practices: test\): no test command/);
+  // npm's placeholder script only fails: it is no test command.
+  s.write('package.json', JSON.stringify({ scripts: { test: 'echo "Error: no test specified" && exit 1' } }));
+  assert.match(line(), /^ +to do +tests \(Best Practices: test\): no test command/);
+  s.write('package.json', JSON.stringify({ scripts: { test: 'vitest run' } }));
+  assert.match(line(), /^ +to do +tests \(Best Practices: test\): CI does not run the tests/);
+  s.write('.github/workflows/ci.yml', 'jobs:\n  t:\n    steps:\n      - run: npm run test\n');
+  assert.match(line(), /^ +done +tests/);
+  // A project with no package.json: CI that runs a test runner is enough.
+  rmSync(join(s.repo, 'package.json'));
+  assert.match(line(), /^ +to do +tests \(Best Practices: test\): no test command/);
+  s.write('.github/workflows/ci.yml', 'jobs:\n  t:\n    steps:\n      - run: go test ./...\n');
+  assert.match(line(), /^ +done +tests/);
 });
 
 test('install: skills, agents and hooks once, the user\'s own files untouched', () => {

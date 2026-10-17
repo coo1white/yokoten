@@ -75,11 +75,14 @@ not now（暂不，后面跟着你给的原因）或者 can't check（这里查�
 
 | 关卡 | 步骤 |
 |---|---|
-| **1 · 安全网** | `rules`、`tool-hook`、`commit-check`、`runtime` |
-| **2 · 先开 issue，再走 PR** | `ci`、`issues`（没有 todo 文件）、`templates` |
+| **1 · 安全网** | `rules`、`tool-hook`、`commit-check`、`runtime`、`tests`（有测试命令，CI 会跑） |
+| **2 · 先开 issue，再走 PR** | `ci`、`issues`（没有 todo 文件）、`templates`、`no-build-output`（`dist/`、`build/`、`out/` 里没有提交的文件，也没有编译出来的二进制文件） |
 | **3 · 发版** | `changelog`、`titles`（CI 跑 `check --pr`） |
 | **4 · 带一支 AI 团队** | `codeowners`、`bot`、`skills` |
 | **5 · 公开** | `security-files`（安全说明、Dependabot、许可证） |
+
+如果某一步对应外部的标准，`yokoten doctor` 会在步骤名后面写出来，比如 `ci (Scorecard: CI-Tests)`。
+会话开头那三行不写。
 
 为什么这样分，见[决策记录 0004](../records/0004-the-road.md)。
 
@@ -147,12 +150,21 @@ node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看走到哪一关，�
 | `install` | 把技能装进 `~/.claude/skills` 和 `~/.agents/skills`，agent 装进 `~/.claude/agents`，加上会话开头的 `doctor` hook 和用户级命令守卫，再建一个空的私有词表 |
 | `init [dir]` | 把这套做法放进一个项目。只加文件；已有的文件保留，并告诉你保留了哪些 |
 | `doctor [--session]` | 整条路：每一关、每一步，加上这台电脑还缺什么。`--session` 只说下一步，会话开头用 |
+<<<<<<< HEAD
 | `adopt [--json]` | 给老项目的采用表出一份草稿：项目现在做到了哪些，每一步建议怎么定。`--json` 输出每一行的数据。不改任何文件 |
 | `check [--staged]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交 |
+=======
+| `check [--staged]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交。提交里不能有构建产物和二进制文件 |
+>>>>>>> origin/main
 | `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的 CHANGELOG、milestone 和标签。改动的文档里句子太长、改动超过 400 行，都只提醒，不算失败 |
 | `check --history` | 对所有分支的每一个提交做隐私检查。私有仓库公开之前跑一遍 |
 | `hook [--agent <name>] [--commands-only]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool |
 | `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。设置方法见 [server.md](../server.md#3-the-bot-a-github-app) |
+
+提交检查不让你提交 `dist/`、`build/`、`out/` 文件夹里的文件，也不让你提交二进制文件。
+这些文件构建一次就会重新生成，二进制文件审查的人也看不懂。图片和字体（`png`、`jpg`、`gif`、
+`webp`、`svg`、`ico`、`woff`、`woff2`）可以提交。某个文件确实要留在仓库里，就在 `yokoten.json`
+里写上它的路径（可以用通配符）：`"allowBuild": ["docs/manual.pdf"]`。
 
 
 ## 核心规则

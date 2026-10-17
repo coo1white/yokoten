@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkCommand, checkEdit } from '../rules/guards.ts';
 import { type Config, DEFAULTS, type Env } from '../rules/config.ts';
-import { checkLayout } from '../rules/layout.ts';
+import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
 import { loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
@@ -44,6 +44,7 @@ export function selfTest(): string[] {
   if (scanText(SECRET_CONTROL, { file: 'control' }).length < 2) failed.push('secret check');
   if (!notUtc('A <a@example.com> 1760745600 +0700') || notUtc('A <a@example.com> 1760745600 +0000')) failed.push('time zone check');
   if (checkLayout(Array.from({ length: 8 }, (_, i) => `d/${i}`), DEFAULTS).length !== 1) failed.push('layout check');
+  if (checkBuildOutput([{ path: 'dist/a.js', binary: false }, { path: 'a.bin', binary: true }], DEFAULTS).length !== 2) failed.push('build output check');
   failed.push(...roadControl());
   return failed;
 }
@@ -128,7 +129,7 @@ export function doctor(root: string | null, { env, config, session = false }: { 
     lines.push(`  ${i + 1}. ${name}`);
     for (const { step, mark } of where.steps.filter((w) => w.step.stage === i + 1)) {
       const note = mark === 'done' ? '' : mark === 'not now' ? config.notNow[step.key] : mark === "can't check" ? '' : step.what(root, env);
-      lines.push(`    ${mark.padEnd(11)} ${step.key}${note ? `: ${note}` : ''}`);
+      lines.push(`    ${mark.padEnd(11)} ${step.key}${step.standard ? ` (${step.standard})` : ''}${note ? `: ${note}` : ''}`);
     }
   });
   lines.push('project:');

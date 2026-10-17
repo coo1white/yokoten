@@ -84,11 +84,14 @@ listed:
 
 | Stage | Steps |
 |---|---|
-| **1 · Safety net** | `rules`, `tool-hook`, `commit-check`, `runtime` |
-| **2 · Issues and pull requests** | `ci`, `issues` (no todo file), `templates` |
+| **1 · Safety net** | `rules`, `tool-hook`, `commit-check`, `runtime`, `tests` (a test command, and CI runs it) |
+| **2 · Issues and pull requests** | `ci`, `issues` (no todo file), `templates`, `no-build-output` (nothing in `dist/`, `build/` or `out/`, no built binaries) |
 | **3 · Release** | `changelog`, `titles` (CI runs `check --pr`) |
 | **4 · A team of agents** | `codeowners`, `bot`, `skills` |
 | **5 · Going public** | `security-files` (a security policy, Dependabot, a license) |
+
+After a step, `yokoten doctor` names the outside standard it meets, when there is one,
+for example `ci (Scorecard: CI-Tests)`. The session message leaves it out.
 
 [Record 0004](records/0004-the-road.md) says why the road looks like this.
 
@@ -160,12 +163,21 @@ then run with no network and no global install.
 | `install` | Skills into `~/.claude/skills` and `~/.agents/skills`, agents into `~/.claude/agents`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file |
 | `init [dir]` | Puts the practices into a project. Adds files; keeps any that are already there and says so |
 | `doctor [--session]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session |
+<<<<<<< HEAD
 | `adopt [--json]` | A draft of the adoption table for an old project: what it does today, and a proposed decision for each step. `--json` prints the rows. Writes nothing |
 | `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit |
+=======
+| `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries |
+>>>>>>> origin/main
 | `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, changelog line, milestone and labels. Long sentences in changed Markdown, and a diff over 400 changed lines, are notes |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public |
 | `hook [--agent <name>] [--commands-only]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini` |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Setup: [server.md](server.md#3-the-bot-a-github-app) |
+
+The commit check refuses a file in a `dist/`, `build/` or `out/` folder, and a binary file.
+A build makes such files again, and a reviewer can't read a binary. Images and fonts
+(`png`, `jpg`, `gif`, `webp`, `svg`, `ico`, `woff`, `woff2`) pass. To keep a file
+anyway, list it in `yokoten.json` as a glob: `"allowBuild": ["docs/manual.pdf"]`.
 
 
 ## The core rules
