@@ -39,6 +39,21 @@ export const addProjectHook = (root: string, cli: string) =>
   addHook(projectSettings(root), 'PreToolUse', 'Bash|Edit|Write|MultiEdit|NotebookEdit', `node "$CLAUDE_PROJECT_DIR/${cli}" hook`);
 export const hasProjectHook = (root: string): boolean => hasHook(projectSettings(root), 'PreToolUse', 'hook');
 
+/**
+ * An environment variable for every agent session in the project (settings "env"). Used
+ * for TZ=UTC, so the agents' commits record no time zone.
+ */
+export function setProjectEnv(root: string, key: string, value: string): Added {
+  const path = projectSettings(root);
+  const settings: Settings = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {};
+  const env = (settings.env ??= {}) as Record<string, string>;
+  if (env[key] === value) return 'same';
+  const had = key in env;
+  env[key] = value;
+  writeSettings(path, settings);
+  return had ? 'updated' : 'added';
+}
+
 /** The user's hooks, in every repo: doctor at session start, and the command guard. */
 export function addUserHooks(env: Env, cli: string): { doctor: Added; guard: Added } {
   return {

@@ -87,6 +87,18 @@ export function hideHome(text: string, env: Env): string {
 }
 
 /**
+ * Whether a git ident ("Name <email> 1760745600 +0700") carries a time zone other than
+ * UTC. A commit records its author's and committer's UTC offset, and an offset narrows
+ * down where someone lives. The offset itself is never printed.
+ */
+export function notUtc(ident: string): boolean {
+  const zone = /\s([+-]\d{4})\s*$/.exec(ident)?.[1];
+  return zone !== undefined && zone !== '+0000' && zone !== '-0000';
+}
+
+export const TIME_ZONE_FIX = 'commit with TZ=UTC (`TZ=UTC git commit`, or `export TZ=UTC` in your shell); yokoten init sets it for agent sessions';
+
+/**
  * A known-bad sample, so a check can prove it still catches what it should. It is built
  * from pieces so this file does not fail its own check.
  */
