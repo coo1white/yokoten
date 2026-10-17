@@ -33,11 +33,18 @@ export function loadMarks(env: Env): string[] {
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
 const IPV4 = /(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])/g;
 
+// Addresses that point at no person. A personal address at the same domains
+// (someone at gmail.com, or at github.com) is still caught.
 const OK_EMAIL = [
-  /@users\.noreply\.github\.com$/i,
-  /^noreply@(github\.com|anthropic\.com)$/i,
+  /@users\.noreply\.(github|gitlab)\.com$/i,
+  // A team's inbox at a public service, quoted in a commit message or a doc.
+  /^(noreply|no-reply|support|security|privacy|notifications)@(github\.com|gitlab\.com|bitbucket\.org|anthropic\.com|npmjs\.com)$/i,
+  // An SSH remote (git@host:owner/repo) at a public forge. One at a private host is
+  // still caught: it names the host.
+  /^git@(github\.com|gitlab\.com|bitbucket\.org|codeberg\.org|ssh\.dev\.azure\.com)$/i,
   /@example\.(com|org|net)$/i,
-  /@[\w.-]+\.(test|example|invalid|localhost)$/i,
+  // Names reserved for tests, docs and local networks (RFC 2606, RFC 6762).
+  /@[\w.-]+\.(test|example|invalid|localhost|local)$/i,
 ];
 // Localhost, "any", and the three ranges RFC 5737 keeps for documentation.
 const OK_IP = [/^127\./, /^0\.0\.0\.0$/, /^192\.0\.2\./, /^198\.51\.100\./, /^203\.0\.113\./];

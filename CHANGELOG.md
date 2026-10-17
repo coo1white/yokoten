@@ -14,6 +14,10 @@ All notable changes are listed here. The format follows
 
 ### Fixed
 
+- The privacy check no longer flags addresses that point at no person: role inboxes at
+  public services (`support@github.com`), SSH remotes at public forges
+  (`git@gitlab.com:owner/repo`), GitLab noreply addresses and `.local` names. A personal
+  address at the same domains, and an SSH remote at a private host, are still caught (#11).
 - The tool-call hook now applies file rules when the repo path goes through a symlink
   (on macOS, every path under `/var`). Before, such an edit was treated as outside the
   repo and let through (#1).
