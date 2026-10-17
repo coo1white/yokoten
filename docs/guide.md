@@ -133,6 +133,17 @@ An old project isn't a blank slate. Some of its habits are better than ours. So 
 decision: **as-is**, **lighter** (and what's left out), or **not now** (with the reason
 and when to look again). "Not now" goes into `yokoten.json`, and `doctor` stops asking.
 
+## Works with
+
+yokoten guards three AI coding agents. Each one keeps the same rules.
+
+| Agent | What yokoten adds |
+|---|---|
+| Claude Code | the tool-call guard (a hook), the guide at the start of each session, skills and agents |
+| Codex CLI | the tool-call guard, in `.codex/hooks.json`. Codex asks you once to trust project hooks (`/hooks`) |
+| Gemini CLI | the tool-call guard, in `.gemini/settings.json` |
+| Any other agent | the rules in `AGENTS.md`, and the commit check, which stops a bad commit whoever made it |
+
 ## Install and commands
 
 Requires Node 22.18 or later, which runs TypeScript as it is. No build step, no

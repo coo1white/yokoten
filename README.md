@@ -14,11 +14,11 @@ yokoten was built this way, and this repo is the example.
 
 <br/>
 
-[![ci](https://img.shields.io/github/actions/workflow/status/coo1white/yokoten/yokoten.yml?branch=main&label=ci&style=flat&labelColor=1f2328&color=9e3620)](https://github.com/coo1white/yokoten/actions/workflows/yokoten.yml)
-[![works with 3 agents](https://img.shields.io/badge/works%20with-3%20agents-9e3620?style=flat&labelColor=1f2328)](docs/guide.md#install-and-commands "Claude Code, Codex, Gemini CLI")
-[![dependencies 0](https://img.shields.io/badge/dependencies-0-9e3620?style=flat&labelColor=1f2328)](package.json)
-[![TypeScript, no build](https://img.shields.io/badge/TypeScript-no%20build-9e3620?style=flat&logo=typescript&logoColor=f0f6fc&labelColor=1f2328)](docs/records/0002-typescript.md)
-[![license MIT](https://img.shields.io/badge/license-MIT-9e3620?style=flat&labelColor=1f2328)](LICENSE)
+[![ci](https://img.shields.io/github/actions/workflow/status/coo1white/yokoten/yokoten.yml?branch=main&label=ci&style=flat-square&labelColor=3d444d&color=1f2328)](https://github.com/coo1white/yokoten/actions/workflows/yokoten.yml)
+[![works with 3 agents](https://img.shields.io/badge/works%20with-3%20agents-1f2328?style=flat-square&labelColor=3d444d)](docs/guide.md#works-with "Claude Code, Codex CLI, Gemini CLI")
+[![dependencies 0](https://img.shields.io/badge/dependencies-0-1f2328?style=flat-square&labelColor=3d444d)](package.json)
+[![TypeScript, no build](https://img.shields.io/badge/TypeScript-no%20build-1f2328?style=flat-square&logo=typescript&logoColor=f0f6fc&labelColor=3d444d)](docs/records/0002-typescript.md)
+[![license MIT](https://img.shields.io/badge/license-MIT-1f2328?style=flat-square&labelColor=3d444d)](LICENSE)
 
 </div>
 
