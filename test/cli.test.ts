@@ -421,8 +421,40 @@ test('check --pr: reads the CI event, lists the changed files from git, notes lo
   r = s.run(['check', '--pr'], { extra: event(`${body}No changelog: a test\n`) });
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /check --pr: ok/);
+  assert.doesNotMatch(r.stdout, /lines, over 400/, 'a small diff gets no size note (#57)');
   // Outside a pull request run, there is nothing to check.
   r = s.run(['check', '--pr']);
   assert.equal(r.status, 0);
   assert.match(r.stdout, /no pull request in this run/);
+});
+
+test('check --pr: a large pull request gets a note, never a failure; lock files do not count (#57)', () => {
+  const s = sandbox();
+  s.write('README.md', 'Short.\n');
+  s.git('add', '.');
+  s.git('commit', '-qm', 'base');
+  const base = s.git('rev-parse', 'HEAD').stdout.trim();
+  const lines = (n: number) => Array.from({ length: n }, (_, i) => `export const a${i} = ${i};\n`).join('');
+  s.write('package-lock.json', lines(1000));
+  s.write('src/a.ts', lines(300));
+  s.git('add', '.');
+  s.git('commit', '-qm', 'small');
+  const small = s.git('rev-parse', 'HEAD').stdout.trim();
+  s.write('src/b.ts', lines(200));
+  s.git('add', '.');
+  s.git('commit', '-qm', 'large');
+  const large = s.git('rev-parse', 'HEAD').stdout.trim();
+  const event = (head: string) => {
+    const file = join(s.home, 'event.json');
+    const body = 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\nNo changelog: a test\n';
+    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
+    return { GITHUB_EVENT_PATH: file };
+  };
+  let r = s.run(['check', '--pr'], { extra: event(small) });
+  assert.equal(r.status, 0, r.stderr);
+  assert.doesNotMatch(r.stdout, /lines, over 400/, '300 lines; the lock file does not count');
+  r = s.run(['check', '--pr'], { extra: event(large) });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /note: this pull request changes 500 lines, over 400\. Smaller pull requests are easier to review/);
+  assert.match(r.stdout, /check --pr: ok/);
 });

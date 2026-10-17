@@ -10,7 +10,7 @@ import { check, checkHistory, gitRoot, historyTimeZones } from '../src/run/check
 import * as claudeCode from '../src/agents/claude-code.ts';
 import * as codex from '../src/agents/codex.ts';
 import * as gemini from '../src/agents/gemini.ts';
-import { checkPullRequest, longSentences } from '../src/rules/pr.ts';
+import { changedLines, checkPullRequest, largeDiff, longSentences } from '../src/rules/pr.ts';
 import { hideHome } from '../src/rules/privacy.ts';
 import { type Action, judge } from '../src/run/hook.ts';
 import { doctor } from '../src/setup/doctor.ts';
@@ -127,6 +127,9 @@ function main(): number | Promise<number> {
           for (const s of longSentences(text)) notes.push(`${file}:${s.line}: a sentence of ${s.words} words; plain English aims at 25 or fewer`);
         }
         if (notes.length) print([`yokoten check --pr: note: ${notes.length} long sentence(s)`, ...notes.slice(0, 10).map((n) => `- ${n}`), ...(notes.length > 10 ? [`- and ${notes.length - 10} more`] : [])]);
+        // A large pull request (record 0004) is a note too, never a failure.
+        const large = largeDiff(changedLines(pr.numstat));
+        if (large) print([`yokoten check --pr: note: ${large}`]);
         const problems = checkPullRequest(pr, config);
         if (!problems.length) {
           print(['yokoten check --pr: ok']);

@@ -17,6 +17,9 @@ All notable changes are listed here. The format follows
 
 ### Added
 
+- `check --pr` notes a pull request that changes more than 400 lines (added plus
+  deleted; binary and lock files not counted): smaller pull requests are easier to
+  review. A note, never a failure (record 0004, #57).
 - A pull request standard, checked in CI by `yokoten check --pr` (its own `pr` workflow,
   so editing the title or labels reruns it): a commit-form title of at most 72
   characters, a `tier: A/B/C` first line (how hard a mistake is to take back), Why /
