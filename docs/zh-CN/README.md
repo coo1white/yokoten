@@ -14,11 +14,11 @@ yokoten 自己就是这样做出来的，这个仓库就是示范。
 
 <br/>
 
-[![ci](https://img.shields.io/github/actions/workflow/status/coo1white/yokoten/yokoten.yml?branch=main&label=ci&style=flat&labelColor=1c1a16&color=9e3620)](https://github.com/coo1white/yokoten/actions/workflows/yokoten.yml)
-[![works with 3 agents](https://img.shields.io/badge/works%20with-3%20agents-9e3620?style=flat&labelColor=1c1a16)](guide.md#安装和命令 "Claude Code、Codex、Gemini CLI")
-[![dependencies 0](https://img.shields.io/badge/dependencies-0-9e3620?style=flat&labelColor=1c1a16)](../../package.json)
-[![TypeScript, no build](https://img.shields.io/badge/TypeScript-no%20build-9e3620?style=flat&logo=typescript&logoColor=f4f0e6&labelColor=1c1a16)](../records/0002-typescript.md)
-[![license MIT](https://img.shields.io/badge/license-MIT-9e3620?style=flat&labelColor=1c1a16)](../../LICENSE)
+[![ci](https://img.shields.io/github/actions/workflow/status/coo1white/yokoten/yokoten.yml?branch=main&label=ci&style=flat&labelColor=1f2328&color=9e3620)](https://github.com/coo1white/yokoten/actions/workflows/yokoten.yml)
+[![works with 3 agents](https://img.shields.io/badge/works%20with-3%20agents-9e3620?style=flat&labelColor=1f2328)](guide.md#安装和命令 "Claude Code、Codex、Gemini CLI")
+[![dependencies 0](https://img.shields.io/badge/dependencies-0-9e3620?style=flat&labelColor=1f2328)](../../package.json)
+[![TypeScript, no build](https://img.shields.io/badge/TypeScript-no%20build-9e3620?style=flat&logo=typescript&logoColor=f0f6fc&labelColor=1f2328)](../records/0002-typescript.md)
+[![license MIT](https://img.shields.io/badge/license-MIT-9e3620?style=flat&labelColor=1f2328)](../../LICENSE)
 
 </div>
 
