@@ -177,8 +177,9 @@ Honest limits:
   protection, code owners, and a bot without the rights to release or change CI.
 - **Server settings aren't checked yet.** `doctor` lists the three steps for the owner.
   Checking them through the API is planned.
-- **Claude Code first.** Hooks, skills and agents follow Claude Code's formats. Muse
-  Code reads `AGENTS.md`, so the rules carry over; its skills and hooks are planned.
+- **Claude Code first.** Hooks, skills and agents follow Claude Code's formats. The rules
+  are plain `AGENTS.md`, which Claude Code reads when a project has no `CLAUDE.md`, and
+  so do most other agents. Muse Code's skills and hooks are planned.
 
 ## What was left out on purpose
 
