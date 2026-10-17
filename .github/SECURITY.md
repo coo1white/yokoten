@@ -20,7 +20,7 @@ vulnerability is anything that lets a repo, a file, or a tool call:
 
 Not a vulnerability: getting a command past the tool-call guard by building it in
 pieces. The guard reads command text and catches mistakes, not attacks; the lock is on
-the server ([the guide](docs/guide.md#what-it-doesnt-do) says so).
+the server ([the guide](../docs/guide.md#what-it-doesnt-do) says so).
 
 ## Supported versions
 

@@ -3,15 +3,15 @@
 # yokoten · 横展
 
 [![test](https://github.com/coo1white/yokoten/actions/workflows/test.yml/badge.svg)](https://github.com/coo1white/yokoten/actions/workflows/test.yml)
-[![TypeScript](https://img.shields.io/badge/TypeScript-no%20build-3178C6?logo=typescript&logoColor=white)](docs/records/0002-typescript.md)
+[![TypeScript](https://img.shields.io/badge/TypeScript-no%20build-3178C6?logo=typescript&logoColor=white)](../records/0002-typescript.md)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A522.18-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
-[![dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](package.json)
-[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](../../package.json)
+[![license](https://img.shields.io/badge/license-MIT-blue)](../../LICENSE)
 [![Claude Code](https://img.shields.io/badge/for-Claude%20Code-D97757?logo=claude&logoColor=white)](https://claude.com/claude-code)
 
 **把一个项目里学到的东西，带到每一个项目里去。**
 
-[English](README.md) | 中文
+[English](../../README.md) | 中文
 
 </div>
 
@@ -72,9 +72,9 @@ node ~/.local/share/yokoten/bin/yokoten.ts init      # 每个项目一次
 
 ## 了解更多
 
-- **[使用指南](docs/guide.zh-CN.md)**：12 条规则、全部命令、工作原理，以及它做不到的事。
-- **[服务器设置](docs/server.md)**：在 GitHub 上保护 `main` 和发版 tag（英文）。
-- **[决定记录](docs/records/)**：为什么这样设计（英文）。
+- **[使用指南](guide.md)**：12 条规则、全部命令、工作原理，以及它做不到的事。
+- **[服务器设置](../server.md)**：在 GitHub 上保护 `main` 和发版 tag（英文）。
+- **[决定记录](../records/)**：为什么这样设计（英文）。
 
 ---
 

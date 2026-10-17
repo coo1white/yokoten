@@ -11,7 +11,7 @@
 
 **Carry what one project learned into every project.**
 
-English | [中文](README.zh-CN.md)
+English | [中文](docs/zh-CN/README.md)
 
 </div>
 

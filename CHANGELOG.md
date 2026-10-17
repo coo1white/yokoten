@@ -21,6 +21,10 @@ All notable changes are listed here. The format follows
 
 ### Changed
 
+- `init` no longer adds `CLAUDE.md`. Claude Code reads `AGENTS.md` when a project has
+  none, so the one-line import was only clutter; a project that has one keeps it (#27).
+- The repo root holds only files a tool looks for there. The Chinese README and guide
+  are in `docs/zh-CN/`, and the security policy is in `.github/` (#27).
 - yokoten is written in TypeScript, and Node runs it as it is: no build step, still no
   runtime dependencies. It needs Node 22.18 or later. Hooks, the vendored runtime and
   the machine copy run `bin/yokoten.ts`; `tsc` checks the types in CI (#9).

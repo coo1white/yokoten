@@ -14,6 +14,10 @@ updates:
       prefix: chore
       include: scope
     labels: [ci]
+    ignore:
+      # @types/node follows the Node floor (22), not the newest Node.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
   - package-ecosystem: github-actions
     directory: /
     schedule:
