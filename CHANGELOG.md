@@ -31,6 +31,14 @@ All notable changes are listed here. The format follows
   that Codex, Gemini CLI, Copilot, Cursor and others read, next to `~/.claude/skills`.
   `doctor` wants each skill in both and names what is missing. Agents stay Claude-only
   (#29).
+- The tool-call guard for Codex and Gemini CLI. `yokoten hook --agent codex` reads a
+  Codex PreToolUse call (a shell command, or the files an `apply_patch` touches);
+  `--agent gemini` reads a Gemini CLI BeforeTool call (`run_shell_command`,
+  `write_file`, `replace`). Without `--agent`, it reads Claude Code's call as before.
+  **Kit change:** `init` now also writes `.codex/hooks.json` and `.gemini/settings.json`
+  (keeping what is in them), and `.codex/**` and `.gemini/**` are lead-only by default.
+  `doctor` reports the two hooks but does not count them as missing yet: a real block in
+  each tool is still to be seen (#30).
 
 ### Internal
 

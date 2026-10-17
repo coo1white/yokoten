@@ -51,6 +51,77 @@ test('hook: blocks with exit 2 and a reason, allows with exit 0', () => {
   assert.equal(s.run(['hook'], { input: 'not json' }).status, 0);
 });
 
+// Each call is shaped as the runtime's hook docs show it (#30): Codex's PreToolUse
+// (developers.openai.com/codex/hooks) and Gemini CLI's BeforeTool (geminicli.com/docs/hooks).
+test('hook --agent codex: shell calls by command, apply_patch by the files it touches (#30)', () => {
+  const s = sandbox();
+  const call = (tool_name: string, command: string, extra?: Record<string, string>) =>
+    s.run(['hook', '--agent', 'codex'], {
+      input: JSON.stringify({
+        session_id: 'thr_123',
+        transcript_path: null,
+        cwd: s.repo,
+        hook_event_name: 'PreToolUse',
+        model: 'gpt-5',
+        permission_mode: 'default',
+        turn_id: 'turn_1',
+        tool_name,
+        tool_use_id: 'call_1',
+        tool_input: { command },
+      }),
+      extra,
+    });
+  let r = call('Bash', 'git push --tags');
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /owner decides when to release/);
+  assert.equal(call('Bash', 'git status').status, 0);
+  const patch = (header: string) => `*** Begin Patch\n${header}\n@@\n-old\n+new\n*** End Patch\n`;
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  r = call('apply_patch', patch('*** Update File: AGENTS.md'), worker);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /lead-only/);
+  assert.equal(call('apply_patch', patch('*** Update File: src/a.ts\n*** Move to: .codex/hooks.json'), worker).status, 2, 'a move into a lead-only path');
+  assert.equal(call('apply_patch', patch(`*** Add File: ${join(s.repo, '.github', 'x.yml')}`), worker).status, 2, 'an absolute path');
+  assert.equal(call('apply_patch', patch('*** Update File: src/a.ts'), worker).status, 0);
+  assert.equal(call('apply_patch', patch('*** Update File: AGENTS.md')).status, 0, 'the lead may');
+  // A patch is not a command, and an unknown tool is neither.
+  assert.equal(call('apply_patch', 'git push --tags').status, 0);
+  assert.equal(call('mcp__fs__write', 'git push --tags').status, 0);
+});
+
+test('hook --agent gemini: run_shell_command by command, write_file and replace by file_path (#30)', () => {
+  const s = sandbox();
+  const call = (tool_name: string, tool_input: object, extra?: Record<string, string>) =>
+    s.run(['hook', '--agent', 'gemini'], {
+      input: JSON.stringify({
+        session_id: 's1',
+        transcript_path: join(s.home, 't.json'),
+        cwd: s.repo,
+        hook_event_name: 'BeforeTool',
+        timestamp: '2026-10-18T00:00:00Z',
+        tool_name,
+        tool_input,
+      }),
+      extra,
+    });
+  let r = call('run_shell_command', { command: 'git push --tags', description: 'push tags' });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /owner decides when to release/);
+  assert.equal(r.stdout, '', 'Gemini CLI reads stdout as JSON: nothing else goes there');
+  assert.equal(call('run_shell_command', { command: 'git status' }).status, 0);
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  r = call('write_file', { file_path: join(s.repo, 'AGENTS.md'), content: 'x' }, worker);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /lead-only/);
+  assert.equal(call('replace', { file_path: '.gemini/settings.json', instruction: 'i', old_string: 'a', new_string: 'b' }, worker).status, 2);
+  assert.equal(call('write_file', { file_path: 'src/a.ts', content: 'x' }, worker).status, 0);
+  assert.equal(call('read_file', { file_path: 'AGENTS.md' }, worker).status, 0, 'reading is not editing');
+  assert.equal(call('write_file', { file_path: 'AGENTS.md', content: 'x' }).status, 0, 'the lead may');
+  r = s.run(['hook', '--agent', 'cursor'], { input: '{}' });
+  assert.equal(r.status, 1, 'an unknown agent is an error to see, not a block');
+  assert.match(r.stderr, /claude-code, codex, gemini/);
+});
+
 test('hook: a repo reached through a symlink gets the same file rules (#1)', () => {
   const s = sandbox();
   const link = join(s.home, 'link');
@@ -126,6 +197,11 @@ test('init: adds the practices, keeps what is there, and doctor then finds nothi
   const s = sandbox();
   s.write('AGENTS.md', '# our own rules\n');
   s.write('.github/SECURITY.md', '# email us\n');
+  // The user's own Codex and Gemini CLI settings stay.
+  const mine = (event: string) => ({ [event]: [{ matcher: 'read_file', hooks: [{ type: 'command', command: 'mine' }] }] });
+  s.write('.codex/hooks.json', JSON.stringify({ description: 'ours', hooks: mine('PreToolUse') }));
+  s.write('.gemini/settings.json', JSON.stringify({ theme: 'x', hooks: mine('BeforeTool') }));
+  assert.match(s.run(['doctor']).stdout, /note +codex-hook: no tool-call guard/, 'reported, not counted as missing');
   let r = s.run(['init']);
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /kept AGENTS\.md/);
@@ -150,6 +226,23 @@ test('init: adds the practices, keeps what is there, and doctor then finds nothi
   const settings = JSON.parse(readFileSync(join(s.repo, '.claude', 'settings.json'), 'utf8'));
   assert.equal(settings.hooks.PreToolUse.length, 1);
   assert.equal(settings.env.TZ, 'UTC', 'agent commits record no time zone (#40)');
+  assert.match(r.stdout, /same the Codex tool-call hook/);
+  assert.match(r.stdout, /same the Gemini CLI tool-call hook/);
+  const codex = JSON.parse(readFileSync(join(s.repo, '.codex', 'hooks.json'), 'utf8'));
+  assert.equal(codex.description, 'ours');
+  assert.equal(codex.hooks.PreToolUse.length, 2);
+  assert.deepEqual(codex.hooks.PreToolUse[1], {
+    hooks: [{ type: 'command', command: 'node "$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.ts" hook --agent codex' }],
+    matcher: 'Bash|apply_patch',
+  });
+  const gemini = JSON.parse(readFileSync(join(s.repo, '.gemini', 'settings.json'), 'utf8'));
+  assert.equal(gemini.theme, 'x');
+  assert.equal(gemini.hooks.BeforeTool.length, 2);
+  assert.deepEqual(gemini.hooks.BeforeTool[1], {
+    hooks: [{ type: 'command', command: 'node "$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts" hook --agent gemini', name: 'yokoten' }],
+    matcher: 'run_shell_command|write_file|replace',
+  });
+  assert.match(s.run(['doctor']).stdout, /ok +codex-hook\n +ok +gemini-hook/);
   // The pre-commit hook runs the vendored check on a real commit.
   s.git('add', '.');
   const commit = s.git('commit', '-qm', 'adopt yokoten');

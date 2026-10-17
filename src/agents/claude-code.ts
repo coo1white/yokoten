@@ -1,13 +1,12 @@
 // Everything yokoten knows about Claude Code: the shape of its tool calls, where its
-// settings, skills and agents live, and how its hooks are written. Another runtime gets
-// a sibling file with the same exports.
+// settings, skills and agents live, and how its hooks are written. Each other runtime
+// gets a sibling file with the same tool-call exports (codex.ts, gemini.ts).
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
-import { runs, subcommand } from '../run/cli.ts';
 import type { Action } from '../run/hook.ts';
+import { type Added, addHook, hasHook, readSettings, writeSettings } from './hooks-file.ts';
 
 /**
  * A PreToolUse call, as an Action. The guard reads the fields, not the tool's name:
@@ -45,7 +44,7 @@ export const hasProjectHook = (root: string): boolean => hasHook(projectSettings
  */
 export function setProjectEnv(root: string, key: string, value: string): Added {
   const path = projectSettings(root);
-  const settings: Settings = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {};
+  const settings = readSettings(path);
   const env = (settings.env ??= {}) as Record<string, string>;
   if (env[key] === value) return 'same';
   const had = key in env;
@@ -62,55 +61,3 @@ export function addUserHooks(env: Env, cli: string): { doctor: Added; guard: Add
   };
 }
 export const hasSessionDoctor = (env: Env): boolean => hasHook(userSettings(env), 'SessionStart', 'doctor');
-
-type Added = 'same' | 'updated' | 'added';
-
-interface HookGroup {
-  matcher?: string;
-  hooks?: { type?: string; command?: string }[];
-}
-interface Settings {
-  hooks?: Record<string, HookGroup[]>;
-  [key: string]: unknown;
-}
-
-/**
- * Add a command hook to a settings file, once. A hook that runs the same yokoten `<sub>`
- * counts as already there (an older path is updated in place).
- */
-function addHook(settingsPath: string, event: string, matcher: string | undefined, command: string): Added {
-  let settings: Settings = {};
-  if (existsSync(settingsPath)) settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
-  const sub = subcommand(command);
-  const groups = ((settings.hooks ??= {})[event] ??= []);
-  for (const group of groups) {
-    for (const hook of group.hooks ?? []) {
-      if (sub && runs(sub).test(hook.command ?? '')) {
-        if (hook.command === command && (group.matcher ?? '') === (matcher ?? '')) return 'same';
-        hook.command = command;
-        if (matcher !== undefined) group.matcher = matcher;
-        writeSettings(settingsPath, settings);
-        return 'updated';
-      }
-    }
-  }
-  const group: HookGroup = { hooks: [{ type: 'command', command }] };
-  if (matcher !== undefined) group.matcher = matcher;
-  groups.push(group);
-  writeSettings(settingsPath, settings);
-  return 'added';
-}
-
-function writeSettings(path: string, settings: Settings): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`);
-}
-
-function hasHook(settingsPath: string, event: string, sub: string): boolean {
-  try {
-    const settings: Settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
-    return (settings.hooks?.[event] ?? []).some((g) => (g.hooks ?? []).some((h) => runs(sub).test(h.command ?? '')));
-  } catch {
-    return false;
-  }
-}

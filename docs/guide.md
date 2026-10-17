@@ -128,7 +128,7 @@ then run with no network and no global install.
 | `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit |
 | `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, changelog line, milestone and labels. Long sentences in changed Markdown are notes |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public |
-| `hook [--commands-only]` | The tool-call guard. Reads a Claude Code PreToolUse call on stdin |
+| `hook [--agent <name>] [--commands-only]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini` |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Setup: [server.md](server.md#3-the-bot-a-github-app) |
 
 
@@ -195,11 +195,15 @@ Honest limits:
   protection, code owners, and a bot without the rights to release or change CI.
 - **Server settings aren't checked yet.** `doctor` lists the three steps for the owner.
   Checking them through the API is planned.
-- **Claude Code first.** Hooks and agents follow Claude Code's formats. Skills are the
-  open SKILL.md format, so `install` also puts them in `~/.agents/skills`, where Codex,
-  Gemini CLI, Copilot, Cursor and other agents find them. The rules are plain
-  `AGENTS.md`, which Claude Code reads when a project has no `CLAUDE.md`, and so do
-  most other agents. Muse Code's skills and hooks are planned.
+- **Claude Code first.** Agents and the user-level hooks follow Claude Code's formats.
+  Skills are the open SKILL.md format, so `install` also puts them in `~/.agents/skills`,
+  where Codex, Gemini CLI, Copilot, Cursor and other agents find them. The tool-call
+  guard also runs in Codex and Gemini CLI: `init` writes `.codex/hooks.json` and
+  `.gemini/settings.json`, and each tool asks you once to trust the hook. Nobody has yet
+  seen a real Codex or Gemini CLI session blocked by it (#30), so `doctor` reports those
+  two hooks but does not count them as missing. The rules are plain `AGENTS.md`, which
+  Claude Code reads when a project has no `CLAUDE.md`, and so do most other agents. Muse
+  Code's skills and hooks are planned.
 
 ## What was left out on purpose
 
