@@ -7,7 +7,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { hasProjectHook } from '../agents/claude-code.ts';
 import { runs } from '../run/cli.ts';
@@ -57,7 +57,15 @@ const ciText = (root: string) => {
 };
 
 const TODO_FILES = ['TODO.md', 'TODO', 'todo.md', 'docs/todo'];
-const todoFiles = (root: string) => TODO_FILES.filter((p) => existsSync(join(root, p)));
+// Names as the folder lists them: on a case-insensitive disk (macOS) TODO.md also "exists" as todo.md.
+const listed = (dir: string): string[] => {
+  try {
+    return readdirSync(dir);
+  } catch {
+    return [];
+  }
+};
+const todoFiles = (root: string) => TODO_FILES.filter((p) => listed(join(root, dirname(p))).includes(basename(p)));
 
 const hasIssueTemplate = (root: string) => {
   const dir = join(root, '.github', 'ISSUE_TEMPLATE');
