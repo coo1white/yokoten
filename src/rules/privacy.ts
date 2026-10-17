@@ -11,16 +11,17 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import type { Env } from './config.ts';
 
-export const marksFile = (env) => env.YOKOTEN_PRIVATE_MARKS || join(env.HOME || homedir(), '.config', 'yokoten', 'private-marks');
+export const marksFile = (env: Env): string => env.YOKOTEN_PRIVATE_MARKS || join(env.HOME || homedir(), '.config', 'yokoten', 'private-marks');
 
 /** The owner's marks, lowercased. An empty list when the file is missing. */
-export function loadMarks(env) {
+export function loadMarks(env: Env): string[] {
   let text = '';
   try {
     text = readFileSync(marksFile(env), 'utf8');
   } catch (err) {
-    if (err.code !== 'ENOENT') throw err;
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
   }
   return text
     .split(/\r?\n/)
@@ -45,8 +46,8 @@ const OK_IP = [/^127\./, /^0\.0\.0\.0$/, /^192\.0\.2\./, /^198\.51\.100\./, /^20
  * Problems in one file's text. `allow` holds literal strings the project has said are
  * fine (yokoten.json "privacy.allow"), such as a public support address.
  */
-export function scanText(text, { file, marks = [], allow = [] }) {
-  const problems = [];
+export function scanText(text: string, { file, marks = [], allow = [] }: { file: string; marks?: string[]; allow?: string[] }): string[] {
+  const problems: string[] = [];
   const lines = text.split('\n');
   lines.forEach((line, i) => {
     const where = `${file}:${i + 1}`;

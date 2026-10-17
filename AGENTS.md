@@ -49,19 +49,24 @@ skill: find the cause, add or fix the check, then carry the fix to the other pro
 ## This project
 
 yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
-`yokoten init`, and the hooks here run `bin/yokoten.mjs` directly.
+`yokoten init`, and the hooks here run `bin/yokoten.ts` directly.
 
-- **Test**: `node --test` (Node 22 or later). **Check**: `node bin/yokoten.mjs check`.
-- **No dependencies.** Node's standard library only. A hook that needs `npm install`
-  first is a hook that does not run on a fresh machine.
-- **Scripts are `.mjs`.** No Python, no shell beyond the one-line git hook.
+- **Test**: `node --test` (Node 22.18 or later). **Types**: `npm run typecheck`.
+  **Check**: `node bin/yokoten.ts check`.
+- **No runtime dependencies.** Node's standard library only. A hook that needs
+  `npm install` first is a hook that does not run on a fresh machine. TypeScript and
+  `@types/node` are dev dependencies, for `tsc` alone.
+- **TypeScript that Node runs as it is.** No build: Node strips the types. So only
+  syntax it can erase (`erasableSyntaxOnly`): no `enum`, no `namespace`, no
+  parameter properties. Imports name the `.ts` file. No Python, no shell beyond the
+  one-line git hook.
 - **`kit/` is what other projects get.** A change there changes every project on its
   next `init` or `install`. Say so in the pull request.
 - **Every new check gets a positive control**: a test (and, for doctor, a self-test
   case) that feeds it a known-bad input and expects a catch.
 - **Examples use placeholders**: `example.com` addresses and `192.0.2.0/24` IPs. A
   test that needs a real-looking sample builds it from pieces (see
-  `test/privacy.test.mjs`), so the repo passes its own privacy check.
+  `test/privacy.test.ts`), so the repo passes its own privacy check.
 
 ### Commits and versions
 

@@ -8,7 +8,15 @@
 
 import { realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
-import { checkCommand, checkEdit } from '../rules/guards.mjs';
+import type { Config, Env } from '../rules/config.ts';
+import { checkCommand, checkEdit } from '../rules/guards.ts';
+
+/** The fields of a PreToolUse call the guard reads. Anything else is ignored. */
+export interface ToolCall {
+  cwd?: string;
+  agent_type?: string;
+  tool_input?: { command?: unknown; file_path?: unknown; path?: unknown; notebook_path?: unknown };
+}
 
 /**
  * The reason to stop the call, or null. `root` is the repo root, or null outside a repo.
@@ -16,7 +24,10 @@ import { checkCommand, checkEdit } from '../rules/guards.mjs';
  * that hold everywhere (no tag pushes, no force pushes, no skipped checks) and leaves file
  * rules to each project's own hook.
  */
-export function judge(input, { root, config, env, commandsOnly = false }) {
+export function judge(
+  input: ToolCall | null,
+  { root, config, env, commandsOnly = false }: { root: string | null; config: Config; env: Env; commandsOnly?: boolean },
+): string | null {
   const tool = input?.tool_input ?? {};
   if (typeof tool.command === 'string') return checkCommand(tool.command, { env });
   if (commandsOnly || !root) return null;
@@ -24,7 +35,7 @@ export function judge(input, { root, config, env, commandsOnly = false }) {
   if (/worker/i.test(input?.agent_type ?? '')) env = { ...env, YOKOTEN_ROLE: 'worker' };
   for (const p of [tool.file_path, tool.path, tool.notebook_path]) {
     if (typeof p !== 'string' || p === '') continue;
-    const rel = relative(real(root), real(resolve(input.cwd ?? root, p)));
+    const rel = relative(real(root), real(resolve(input?.cwd ?? root, p)));
     // A file outside the repo is not this repo's business.
     if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) continue;
     const reason = checkEdit(rel.split(sep).join('/'), { config, env });
@@ -36,7 +47,7 @@ export function judge(input, { root, config, env, commandsOnly = false }) {
 // The real path, through symlinks. git reports the repo root's real path, and a tool may
 // send a path through a symlink (on macOS, /var is /private/var). A file that does not
 // exist yet takes the real path of its nearest existing folder.
-function real(path) {
+function real(path: string): string {
   try {
     return realpathSync(path);
   } catch {

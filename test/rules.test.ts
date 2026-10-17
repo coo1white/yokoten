@@ -3,19 +3,19 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { DEFAULTS, loadConfig } from '../src/rules/config.mjs';
-import { matcher } from '../src/rules/glob.mjs';
-import { checkLayout } from '../src/rules/layout.mjs';
+import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
+import { matcher } from '../src/rules/glob.ts';
+import { checkLayout } from '../src/rules/layout.ts';
 
 test('glob: a slash anchors at the root, no slash matches in any folder', () => {
-  const m = (g, p) => matcher([g])(p);
-  assert.ok(m('test/**', 'test/a/b.mjs'));
-  assert.ok(!m('test/**', 'src/test/a.mjs'));
+  const m = (g: string, p: string) => matcher([g])(p);
+  assert.ok(m('test/**', 'test/a/b.ts'));
+  assert.ok(!m('test/**', 'src/test/a.ts'));
   assert.ok(m('*.test.*', 'src/deep/a.test.ts'));
   assert.ok(m('.github/**', '.github/workflows/ci.yml'));
   assert.ok(!m('.github/**', 'kit/.github/x'));
-  assert.ok(m('src/**/x.mjs', 'src/x.mjs'));
-  assert.ok(m('src/**/x.mjs', 'src/a/b/x.mjs'));
+  assert.ok(m('src/**/x.ts', 'src/x.ts'));
+  assert.ok(m('src/**/x.ts', 'src/a/b/x.ts'));
   assert.ok(m('a?.md', 'ab.md'));
   assert.ok(!m('a?.md', 'a/.md'));
   assert.ok(!m('a.md', 'aXmd'), 'a dot is a dot');

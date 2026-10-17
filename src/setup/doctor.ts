@@ -11,28 +11,35 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { checkCommand, checkEdit } from '../rules/guards.mjs';
-import { DEFAULTS } from '../rules/config.mjs';
-import { checkLayout } from '../rules/layout.mjs';
-import { loadMarks, POSITIVE_CONTROL, scanText } from '../rules/privacy.mjs';
-import { check } from '../run/check.mjs';
-import { hasHook, KIT, runtimeVersion, VERSION } from './files.mjs';
-import { isSelf } from './init.mjs';
-import { paths } from './install.mjs';
+import { checkCommand, checkEdit } from '../rules/guards.ts';
+import { type Config, DEFAULTS, type Env } from '../rules/config.ts';
+import { checkLayout } from '../rules/layout.ts';
+import { loadMarks, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
+import { check } from '../run/check.ts';
+import { hasHook, KIT, runs, runtimeVersion, VERSION } from './files.ts';
+import { isSelf } from './init.ts';
+import { paths } from './install.ts';
+
+/** One practice: its name (the key for "notNow"), whether it is in place, and the fix. */
+interface Practice {
+  name: string;
+  ok: boolean;
+  fix: string;
+}
 
 /** The checks that must catch a known-bad input. Returns the names of any that did not. */
-export function selfTest() {
-  const failed = [];
+export function selfTest(): string[] {
+  const failed: string[] = [];
   if (!checkCommand('git push origin --tags', { env: {} })) failed.push('release guard');
   if (!checkCommand('git commit --no-verify -m x', { env: {} })) failed.push('skip-check guard');
-  if (!checkEdit('test/a.test.mjs', { config: DEFAULTS, env: { YOKOTEN_FIX_TASK: '1' } })) failed.push('test guard');
+  if (!checkEdit('test/a.test.ts', { config: DEFAULTS, env: { YOKOTEN_FIX_TASK: '1' } })) failed.push('test guard');
   if (!checkEdit('AGENTS.md', { config: DEFAULTS, env: { YOKOTEN_ROLE: 'worker' } })) failed.push('lead-only guard');
   if (scanText(POSITIVE_CONTROL, { file: 'control' }).length < 2) failed.push('privacy check');
   if (checkLayout(Array.from({ length: 8 }, (_, i) => `d/${i}`), DEFAULTS).length !== 1) failed.push('layout check');
   return failed;
 }
 
-const read = (path) => {
+const read = (path: string) => {
   try {
     return readFileSync(path, 'utf8');
   } catch {
@@ -40,7 +47,7 @@ const read = (path) => {
   }
 };
 
-const gitConfig = (root, key) => {
+const gitConfig = (root: string, key: string) => {
   try {
     return execFileSync('git', ['config', '--get', key], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch {
@@ -48,8 +55,8 @@ const gitConfig = (root, key) => {
   }
 };
 
-/** Each practice a project should run: its name (the key for "notNow"), whether it is in place, and the fix. */
-export function projectChecks(root) {
+/** Each practice a project should run. */
+export function projectChecks(root: string): Practice[] {
   const workflows = join(root, '.github', 'workflows');
   const ciText = existsSync(workflows) ? readdirSync(workflows).map((f) => read(join(workflows, f))).join('\n') : '';
   const vendored = runtimeVersion(join(root, '.yokoten'));
@@ -57,11 +64,11 @@ export function projectChecks(root) {
     { name: 'rules', ok: existsSync(join(root, 'AGENTS.md')), fix: 'no AGENTS.md: the agents have no written rules here' },
     {
       name: 'commit-check',
-      ok: gitConfig(root, 'core.hooksPath') === '.githooks' && /yokoten\.mjs"?\s+check/.test(read(join(root, '.githooks', 'pre-commit'))),
+      ok: gitConfig(root, 'core.hooksPath') === '.githooks' && runs('check').test(read(join(root, '.githooks', 'pre-commit'))),
       fix: 'commits are not checked (core.hooksPath is not .githooks, or .githooks/pre-commit does not run yokoten)',
     },
     { name: 'tool-hook', ok: hasHook(join(root, '.claude', 'settings.json'), 'PreToolUse', 'hook'), fix: 'no tool-call guard in .claude/settings.json' },
-    { name: 'ci', ok: /yokoten\.mjs"?\s+check/.test(ciText), fix: 'CI does not run `yokoten check`, so a commit made without the hook gets through' },
+    { name: 'ci', ok: runs('check').test(ciText), fix: 'CI does not run `yokoten check`, so a commit made without the hook gets through' },
     {
       name: 'runtime',
       ok: isSelf(root) || vendored === VERSION,
@@ -76,7 +83,7 @@ export function projectChecks(root) {
 }
 
 /** Machine checks: the skills, the user-level hooks, the private marks. */
-export function machineChecks(env) {
+export function machineChecks(env: Env): Practice[] {
   const p = paths(env);
   const kitSkills = join(KIT, 'user', 'skills');
   // A vendored project copy has no kit; the machine copy and the source do.
@@ -99,14 +106,14 @@ const OWNER_STEPS = [
 ];
 
 /** The report, and whether everything is in place. */
-export function doctor(root, { env, config, session = false }) {
-  const lines = [];
+export function doctor(root: string | null, { env, config, session = false }: { env: Env; config: Config; session?: boolean }): { ok: boolean; lines: string[] } {
+  const lines: string[] = [];
   const broken = selfTest();
   if (broken.length) lines.push(`yokoten is BROKEN: ${broken.join(', ')} let a known-bad input through. Do not trust any check until this is fixed.`);
   if (!root) return { ok: broken.length === 0, lines };
 
-  const missing = [];
-  const notNow = [];
+  const missing: string[] = [];
+  const notNow: string[] = [];
   for (const c of projectChecks(root)) {
     if (c.ok) continue;
     if (config.notNow[c.name]) notNow.push(`${c.name}: ${config.notNow[c.name]}`);

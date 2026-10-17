@@ -3,11 +3,11 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { loadMarks, POSITIVE_CONTROL, scanText } from '../src/rules/privacy.mjs';
+import { loadMarks, POSITIVE_CONTROL, scanText } from '../src/rules/privacy.ts';
 
 // Samples are built from pieces so this file passes its own check.
 const at = '@';
-const ip = (...n) => n.join('.');
+const ip = (...n: number[]) => n.join('.');
 
 test('positive control: the known-bad sample is caught', () => {
   assert.equal(scanText(POSITIVE_CONTROL, { file: 'x' }).length, 2);

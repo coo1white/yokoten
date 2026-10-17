@@ -62,14 +62,14 @@ yokoten: git push --tags pushes tags. Only the owner decides when to release. If
 
 ## 快速开始
 
-需要 Node 22 或更高版本，没有任何依赖。
+需要 Node 22.18 或更高版本：它能直接运行 TypeScript，不用先编译。没有任何依赖。
 
 ```sh
 git clone https://github.com/coo1white/yokoten
-node yokoten/bin/yokoten.mjs install      # 这台电脑：技能、agent、hook
+node yokoten/bin/yokoten.ts install      # 这台电脑：技能、agent、hook
 cd your-project
-node ~/.local/share/yokoten/bin/yokoten.mjs init     # 这个项目：只加文件，不覆盖
-node ~/.local/share/yokoten/bin/yokoten.mjs doctor   # 看看还缺什么
+node ~/.local/share/yokoten/bin/yokoten.ts init     # 这个项目：只加文件，不覆盖
+node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看还缺什么
 ```
 
 `init` 会把运行时复制到项目的 `.yokoten/` 里。把它一起提交：这样 hook 和 CI 不联网、

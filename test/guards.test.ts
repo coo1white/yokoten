@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { DEFAULTS } from '../src/rules/config.mjs';
-import { checkCommand, checkEdit } from '../src/rules/guards.mjs';
+import { DEFAULTS, type Env } from '../src/rules/config.ts';
+import { checkCommand, checkEdit } from '../src/rules/guards.ts';
 
-const blocked = (command, env = {}) => assert.ok(checkCommand(command, { env }), `should block: ${command}`);
-const allowed = (command, env = {}) => assert.equal(checkCommand(command, { env }), null, `should allow: ${command}`);
+const blocked = (command: string, env: Env = {}) => assert.ok(checkCommand(command, { env }), `should block: ${command}`);
+const allowed = (command: string, env: Env = {}) => assert.equal(checkCommand(command, { env }), null, `should allow: ${command}`);
 
 test('release: tag pushes, release commands and publishing are the owner\'s', () => {
   for (const c of [
@@ -56,11 +56,11 @@ test('everyday commands pass', () => {
 
 test('fix task: test files are off limits', () => {
   const env = { YOKOTEN_FIX_TASK: '1' };
-  for (const p of ['test/a.mjs', 'src/a.test.ts', 'web/b.spec.js', 'pkg/x_test.go', 'tests/fixtures/x.json']) {
+  for (const p of ['test/a.ts', 'src/a.test.ts', 'web/b.spec.js', 'pkg/x_test.go', 'tests/fixtures/x.json']) {
     assert.ok(checkEdit(p, { config: DEFAULTS, env }), p);
   }
   assert.equal(checkEdit('src/a.ts', { config: DEFAULTS, env }), null);
-  assert.equal(checkEdit('test/a.mjs', { config: DEFAULTS, env: {} }), null);
+  assert.equal(checkEdit('test/a.ts', { config: DEFAULTS, env: {} }), null);
 });
 
 test('lead-only files: a worker is stopped, the lead is not', () => {

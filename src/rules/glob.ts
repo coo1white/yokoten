@@ -5,7 +5,7 @@
 // (`test/**` is the root's test folder); a glob without one matches a name in any folder
 // (`*.test.*`).
 
-export function globToRegExp(glob) {
+export function globToRegExp(glob: string): RegExp {
   let re = '';
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i];
@@ -29,7 +29,7 @@ export function globToRegExp(glob) {
 }
 
 /** A function that says whether a path matches any of the globs. */
-export function matcher(globs) {
+export function matcher(globs: string[]): (path: string) => boolean {
   const patterns = globs.map(globToRegExp);
   return (path) => patterns.some((re) => re.test(path));
 }

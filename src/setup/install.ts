@@ -9,10 +9,11 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { addHook, copyRuntime, KIT, writeManaged, writeNew } from './files.mjs';
-import { marksFile } from '../rules/privacy.mjs';
+import type { Env } from '../rules/config.ts';
+import { addHook, copyRuntime, KIT, writeManaged, writeNew } from './files.ts';
+import { marksFile } from '../rules/privacy.ts';
 
-export const paths = (env) => {
+export const paths = (env: Env) => {
   const home = env.HOME || homedir();
   return {
     runtime: join(home, '.local', 'share', 'yokoten'),
@@ -26,9 +27,9 @@ const MARKS_HEADER = `# yokoten private marks: words that must never be publishe
 # account names. This file stays on this machine; never commit it or paste it anywhere.
 `;
 
-export function install(env) {
+export function install(env: Env): string[] {
   const p = paths(env);
-  const report = [];
+  const report: string[] = [];
   copyRuntime(p.runtime, { withKit: true });
   report.push(`wrote ${p.runtime}`);
 
@@ -43,7 +44,7 @@ export function install(env) {
     report.push(`${result} agent ${file.replace(/\.md$/, '')}`);
   }
 
-  const cli = '"$HOME/.local/share/yokoten/bin/yokoten.mjs"';
+  const cli = '"$HOME/.local/share/yokoten/bin/yokoten.ts"';
   const settings = join(p.claude, 'settings.json');
   report.push(`${addHook(settings, 'SessionStart', undefined, `node ${cli} doctor --session`)} the SessionStart doctor`);
   report.push(`${addHook(settings, 'PreToolUse', 'Bash', `node ${cli} hook --commands-only`)} the user-level command guard`);
