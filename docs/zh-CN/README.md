@@ -73,4 +73,4 @@ node ~/.local/share/yokoten/bin/yokoten.ts init      # 每个项目一次
 
 ---
 
-MIT · 由 [coolwhite](https://coolwhite.us/) 制作：用工厂的纪律，做 AI 写的软件。
+MIT · 由 [coolwhite](https://coolwhite.us/) 制作，带着在工厂车间里学到的东西。
