@@ -17,11 +17,11 @@ import { checkLayout } from '../rules/layout.ts';
 import { loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
-import { hasProjectHook, hasSessionDoctor, skillFile } from '../agents/claude-code.ts';
+import { hasProjectHook, hasSessionDoctor } from '../agents/claude-code.ts';
 import { runs } from '../run/cli.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
 import { isSelf } from './init.ts';
-import { paths } from './install.ts';
+import { paths, skillFiles, skillsDir } from './install.ts';
 
 /** One practice: its name (the key for "notNow"), whether it is in place, and the fix. */
 interface Practice {
@@ -93,9 +93,15 @@ export function machineChecks(env: Env): Practice[] {
   const kitSkills = join(KIT, 'user', 'skills');
   // A vendored project copy has no kit; the machine copy and the source do.
   const skills = existsSync(kitSkills) ? readdirSync(kitSkills) : [];
+  // Every skill in every folder; the fix names each folder and what it lacks.
+  const lacking = new Map<string, string[]>();
+  for (const name of skills) {
+    for (const file of skillFiles(env, name)) if (!existsSync(file)) lacking.set(skillsDir(file), [...(lacking.get(skillsDir(file)) ?? []), name]);
+  }
+  const skillsFix = skills.length === 0 ? 'the yokoten skills are not installed' : `not in ${[...lacking].map(([dir, names]) => `${dir} (${names.join(', ')})`).join(' or ')}; run \`yokoten install\``;
   const runtime = runtimeVersion(p.runtime);
   return [
-    { name: 'skills', ok: skills.length > 0 && skills.every((s) => existsSync(skillFile(env, s))), fix: 'the yokoten skills are not installed' },
+    { name: 'skills', ok: skills.length > 0 && lacking.size === 0, fix: skillsFix },
     { name: 'session-doctor', ok: hasSessionDoctor(env), fix: 'sessions do not start with doctor' },
     { name: 'runtime', ok: runtime === VERSION, fix: runtime ? `the installed runtime is ${runtime}, this yokoten is ${VERSION}` : 'no runtime installed' },
     { name: 'private-marks', ok: loadMarks(env).length > 0, fix: `${p.marks} is missing or empty, so the privacy check only knows emails and IPs` },

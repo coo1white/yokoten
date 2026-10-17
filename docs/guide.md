@@ -113,7 +113,7 @@ then run with no network and no global install.
 
 | Command | What it does |
 |---------|--------------|
-| `install` | Skills and agents into `~/.claude`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file |
+| `install` | Skills into `~/.claude/skills` and `~/.agents/skills`, agents into `~/.claude/agents`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file |
 | `init [dir]` | Puts the practices into a project. Adds files; keeps any that are already there and says so |
 | `doctor [--session]` | What this project and machine are missing. `--session` is the short form for the start of a session |
 | `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit |
@@ -185,9 +185,11 @@ Honest limits:
   protection, code owners, and a bot without the rights to release or change CI.
 - **Server settings aren't checked yet.** `doctor` lists the three steps for the owner.
   Checking them through the API is planned.
-- **Claude Code first.** Hooks, skills and agents follow Claude Code's formats. The rules
-  are plain `AGENTS.md`, which Claude Code reads when a project has no `CLAUDE.md`, and
-  so do most other agents. Muse Code's skills and hooks are planned.
+- **Claude Code first.** Hooks and agents follow Claude Code's formats. Skills are the
+  open SKILL.md format, so `install` also puts them in `~/.agents/skills`, where Codex,
+  Gemini CLI, Copilot, Cursor and other agents find them. The rules are plain
+  `AGENTS.md`, which Claude Code reads when a project has no `CLAUDE.md`, and so do
+  most other agents. Muse Code's skills and hooks are planned.
 
 ## What was left out on purpose
 
@@ -195,7 +197,8 @@ These came from the same projects and worked there, but cost more than they save
 a general kit: a check that every commit's type matches the files it touches; byte-level
 replay of merges in the queue; a folder taxonomy for todo files; a 978-line rules file;
 signed release verdicts committed to the repo; a controlled-English style standard as a
-hard rule. A practice earns a place by paying for itself in more than one project.
+hard rule (a light version came back as guidance with a soft check:
+[record 0005](records/0005-plain-english.md)). A practice earns a place by paying for itself in more than one project.
 
 
 ## Status

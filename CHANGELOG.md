@@ -15,6 +15,10 @@ All notable changes are listed here. The format follows
   npm, Slack, Stripe live, Google, OpenAI and Anthropic tokens, AWS access key ids,
   and PEM private keys. A hit names the kind, never the secret, and doctor's self-test
   feeds it a sample (#8).
+- `install` also writes every skill to `~/.agents/skills`, the open Agent Skills folder
+  that Codex, Gemini CLI, Copilot, Cursor and others read, next to `~/.claude/skills`.
+  `doctor` wants each skill in both and names what is missing. Agents stay Claude-only
+  (#29).
 
 ### Internal
 

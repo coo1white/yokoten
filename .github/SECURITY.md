@@ -15,8 +15,8 @@ vulnerability is anything that lets a repo, a file, or a tool call:
 
 - run code you did not expect when a hook, the commit check or `doctor` runs;
 - make yokoten print a line of your private-marks file, or send it anywhere;
-- make `init` or `install` write outside the project, `~/.claude`, or yokoten's own
-  folders.
+- make `init` or `install` write outside the project, `~/.claude`, `~/.agents/skills`,
+  or yokoten's own folders.
 
 Not a vulnerability: getting a command past the tool-call guard by building it in
 pieces. The guard reads command text and catches mistakes, not attacks; the lock is on

@@ -1,7 +1,7 @@
 // End to end: the CLI in throwaway git repos, the way a hook or CI runs it.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -179,19 +179,34 @@ test('doctor --session: names what is missing, and respects notNow', () => {
 test('install: skills, agents and hooks once, the user\'s own files untouched', () => {
   const s = sandbox();
   const claude = join(s.home, '.claude');
+  const shared = join(s.home, '.agents');
   mkdirSync(join(claude, 'agents'), { recursive: true });
   writeFileSync(join(claude, 'agents', 'reviewer.md'), 'my own reviewer\n');
+  // The user's own skill in the shared folder, with a kit skill's name.
+  mkdirSync(join(shared, 'skills', 'rca'), { recursive: true });
+  writeFileSync(join(shared, 'skills', 'rca', 'SKILL.md'), 'my own rca\n');
   writeFileSync(join(claude, 'settings.json'), JSON.stringify({ model: 'x', hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'other' }] }] } }));
   let r = s.run(['install']);
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /kept \(yours\) agent reviewer/);
   assert.equal(readFileSync(join(claude, 'agents', 'reviewer.md'), 'utf8'), 'my own reviewer\n');
-  assert.ok(existsSync(join(claude, 'skills', 'yokoten', 'SKILL.md')));
-  assert.ok(existsSync(join(s.home, '.local/share/yokoten/kit/user/skills')));
+  // Every skill in both folders: Claude Code's, and the shared one other agents read (#29).
+  const kitSkills = readdirSync(join(s.home, '.local/share/yokoten/kit/user/skills'));
+  assert.ok(kitSkills.length > 0);
+  for (const name of kitSkills) {
+    assert.ok(existsSync(join(claude, 'skills', name, 'SKILL.md')), `~/.claude/skills/${name}`);
+    assert.ok(existsSync(join(shared, 'skills', name, 'SKILL.md')), `~/.agents/skills/${name}`);
+    assert.match(r.stdout, new RegExp(`wrote skill ${name} in ~/\\.claude/skills`));
+  }
+  assert.match(r.stdout, /kept \(yours\) skill rca in ~\/\.agents\/skills/);
+  assert.equal(readFileSync(join(shared, 'skills', 'rca', 'SKILL.md'), 'utf8'), 'my own rca\n');
+  assert.ok(!existsSync(join(shared, 'agents')), 'agents stay Claude-only');
   const marks = join(s.home, '.config/yokoten/private-marks');
   assert.equal(statSync(marks).mode & 0o777, 0o600);
   r = s.run(['install']);
-  assert.match(r.stdout, /same skill yokoten/);
+  for (const name of kitSkills) assert.match(r.stdout, new RegExp(`same skill ${name} in ~/\\.claude/skills`));
+  for (const name of kitSkills.filter((n) => n !== 'rca')) assert.match(r.stdout, new RegExp(`same skill ${name} in ~/\\.agents/skills`));
+  assert.match(r.stdout, /kept \(yours\) skill rca in ~\/\.agents\/skills/);
   const settings = JSON.parse(readFileSync(join(claude, 'settings.json'), 'utf8'));
   assert.equal(settings.model, 'x');
   assert.equal(settings.hooks.SessionStart.length, 1);
@@ -203,4 +218,9 @@ test('install: skills, agents and hooks once, the user\'s own files untouched', 
   // The home folder names the machine's user; it never shows (#25).
   for (const out of [r.stdout, doctor.stdout]) assert.ok(!out.includes(s.home), 'output shows the home path');
   assert.match(doctor.stdout, /~\/\.config\/yokoten\/private-marks/);
+  // The skills check wants every skill in both folders, and names what is missing.
+  const skillsLine = () => s.run(['doctor']).stdout.split('\n').find((l) => / skills/.test(l)) ?? '';
+  assert.match(skillsLine(), /^\s+ok\s+skills/);
+  rmSync(join(shared, 'skills', 'inspect'), { recursive: true });
+  assert.match(skillsLine(), /MISSING skills: not in ~\/\.agents\/skills \(inspect\)/);
 });

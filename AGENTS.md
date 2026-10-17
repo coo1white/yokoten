@@ -65,8 +65,9 @@ yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
   layer or a lower one (`test/architecture.test.ts` holds this):
   - `rules/`: what is allowed, as plain functions (guards, privacy, layout, config).
   - `run/`: the checks at work: the tool-call hook, the commit and CI check.
-  - `agents/`: one adapter per AI runtime. Only `claude-code.ts` today: its tool-call
-    shape, its settings and hooks, where its skills and agents go. Nothing else in
+  - `agents/`: one adapter per AI runtime, plus `agent-skills.ts` for the shared
+    `.agents/skills` folder. `claude-code.ts`: its tool-call shape, its settings and
+    hooks, where its skills and agents go. Nothing else in
     `src/` names a runtime.
   - `github/`: the GitHub API, today the bot's token. Becoming `host/`, one adapter
     per code host (#33).

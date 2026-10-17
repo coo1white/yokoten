@@ -105,7 +105,7 @@ node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看还缺什么
 
 | 命令 | 做什么 |
 |------|--------|
-| `install` | 把技能和 agent 装进 `~/.claude`，加上会话开头的 `doctor` hook 和用户级命令守卫，再建一个空的私有词表 |
+| `install` | 把技能装进 `~/.claude/skills` 和 `~/.agents/skills`，agent 装进 `~/.claude/agents`，加上会话开头的 `doctor` hook 和用户级命令守卫，再建一个空的私有词表 |
 | `init [dir]` | 把这套做法放进一个项目。只加文件；已有的文件保留，并告诉你保留了哪些 |
 | `doctor [--session]` | 这个项目和这台电脑还缺什么。`--session` 是会话开头用的简短版 |
 | `check [--staged]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交 |
@@ -170,15 +170,18 @@ AWS 的 access key id，还有 PEM 私钥。查到了只说是哪一种密钥，
 - **守卫只看命令文本。** 把命令拆开再拼起来就能绕过。它防的是失误和走样，不是一把锁。真正
   的锁在服务器上：分支保护、代码负责人，以及一个没有发版权限、改不了 CI 的 bot。
 - **还不检查服务器设置。** `doctor` 目前只列出主人要做的三步，通过 API 自动检查还在计划中。
-- **先支持 Claude Code。** hook、技能和 agent 都按 Claude Code 的格式写。规则就是普通的
-  `AGENTS.md`：项目里没有 `CLAUDE.md` 时 Claude Code 会直接读它，大多数别的 AI 也读。
-  Muse Code 的技能和 hook 还在计划中。
+- **先支持 Claude Code。** hook 和 agent 都按 Claude Code 的格式写。技能用的是公开的
+  SKILL.md 格式，所以 `install` 也会把它们放进 `~/.agents/skills`，Codex、Gemini CLI、
+  Copilot、Cursor 这些 AI 会去那里找。规则就是普通的 `AGENTS.md`：项目里没有
+  `CLAUDE.md` 时 Claude Code 会直接读它，大多数别的 AI 也读。Muse Code 的技能和 hook
+  还在计划中。
 
 ## 故意没带过来的
 
 这些做法来自同样的项目，在那里也管用，但放进一套通用工具里，成本比收益高：检查每个提交的
 类型是否和改动的文件对得上；在合并队列里逐字节重放合并；给 todo 文件分门别类的目录；
-978 行的规则文件；把签过名的发版结论提交进仓库；把受控英语写作规范当硬性规则。一条做法
+978 行的规则文件；把签过名的发版结论提交进仓库；把受控英语写作规范当硬性规则（后来带回了一个轻量版，只做提醒、不卡 CI，见
+[记录 0005](../records/0005-plain-english.md)）。一条做法
 要在不止一个项目里证明值得，才配进来。
 
 
