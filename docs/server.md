@@ -18,7 +18,9 @@ Settings → Rules → Rulesets → New branch ruleset.
     when new commits are pushed*, *Require review from Code Owners*, *Require approval of
     the most recent reviewable push*. Allowed merge methods: **Squash** only.
   - **Require status checks to pass**: add the CI jobs by name (`check` from
-    `yokoten.yml`, plus the project's own test job). Leave *Require branches to be up
+    `yokoten.yml`, plus the project's own test job). With more than a few jobs, add
+    one job that `needs` all the others and require only that one, as yokoten's own
+    `ci` job does. Leave *Require branches to be up
     to date before merging* off: it makes every branch behind `main` merge it in, and
     core rule 7 merges `main` only on a real conflict. The cost is rule 9's incident:
     two pull requests, each green alone, can break `main` together. CI on `main`

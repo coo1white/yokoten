@@ -1,5 +1,5 @@
-# The same check as the commit hook, for commits made without it. Make this job a
-# required check on main.
+# The same check as the commit hook, for commits made without it. Make the `check` job
+# a required check on main.
 name: yokoten
 on:
   pull_request:
@@ -7,12 +7,22 @@ on:
     branches: [main]
 permissions:
   contents: read
+# A new push to a pull request cancels the run still going for it. A push to main gets
+# a group of its own, so a run on main is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # Actions are pinned to a commit, which can't be moved the way a tag can.
+      # Dependabot (github-actions) keeps the commit and the version comment current.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
       - run: node {{cli}} check

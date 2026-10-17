@@ -2,7 +2,7 @@
 
 # yokoten · 横展
 
-[![test](https://github.com/coo1white/yokoten/actions/workflows/test.yml/badge.svg)](https://github.com/coo1white/yokoten/actions/workflows/test.yml)
+[![ci](https://github.com/coo1white/yokoten/actions/workflows/yokoten.yml/badge.svg)](https://github.com/coo1white/yokoten/actions/workflows/yokoten.yml)
 [![TypeScript](https://img.shields.io/badge/TypeScript-no%20build-3178C6?logo=typescript&logoColor=white)](../records/0002-typescript.md)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A522.18-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](../../package.json)

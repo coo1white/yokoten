@@ -18,9 +18,19 @@ All notable changes are listed here. The format follows
   live in one adapter, `src/agents/claude-code.ts`, so another runtime is one sibling
   file. A test holds the module layers, another keeps the repo's `AGENTS.md` equal to
   the kit's, and CI also runs the tests on the oldest supported Node, 22.18.0 (#17).
+- CI is one workflow, `yokoten.yml`, and main requires one check, `ci`, which fails
+  if any other job fails or is cancelled. A new lint job runs actionlint and zizmor on
+  the workflows. Actions are pinned to a commit, with the version in a comment, and a
+  test holds that. Runs have time limits, checkout keeps no token, and a new push to a
+  pull request cancels its old run. Dependabot waits a week before taking a release,
+  and now also updates the kit's workflow (#36).
 
 ### Changed
 
+- The CI workflow `init` writes is hardened: actions on the current versions, pinned
+  to a commit with the version in a comment, a 10-minute time limit, no token left
+  after checkout, and a new push to a pull request cancels its old run. Run `init`
+  after deleting the old file to get it (#36).
 - The README opens with what yokoten is for: one person and a few AI agents, building
   to a professional team's standard. It shows what changes on day one, and the road a
   project takes, stage by stage, with this repo as the example (#32).
