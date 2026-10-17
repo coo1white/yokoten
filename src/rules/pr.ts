@@ -113,3 +113,36 @@ export function longSentences(text: string, max = 25): { line: number; words: nu
   flush();
   return found;
 }
+
+// Lock files are written by a tool, not by a person, so a reviewer does not read them line by line.
+const LOCK_FILES = new Set(['package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml']);
+
+/**
+ * Lines a diff adds and deletes, from `git diff --numstat -z`. A binary file (`-`) counts
+ * as 0, and lock files are not counted. A rename names its new path after the counts.
+ */
+export function changedLines(numstat: string): number {
+  const parts = numstat.split('\0');
+  let total = 0;
+  for (let i = 0; i < parts.length; i++) {
+    const m = /^(\d+|-)\t(\d+|-)\t(.*)$/s.exec(parts[i]);
+    if (!m) continue;
+    let path = m[3];
+    if (!path) {
+      path = parts[i + 2] ?? '';
+      i += 2;
+    }
+    if (LOCK_FILES.has(path.split('/').pop() ?? '')) continue;
+    total += (m[1] === '-' ? 0 : Number(m[1])) + (m[2] === '-' ? 0 : Number(m[2]));
+  }
+  return total;
+}
+
+/**
+ * A note when a pull request changes more than `max` lines (record 0004), else null. A
+ * note, never a failure: Google's review guide finds about 100 lines fine, 1000 too large.
+ */
+export function largeDiff(lines: number, max = 400): string | null {
+  if (lines <= max) return null;
+  return `this pull request changes ${lines} lines, over ${max}. Smaller pull requests are easier to review; split it if you can.`;
+}
