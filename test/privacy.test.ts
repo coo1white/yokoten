@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { hideHome, loadMarks, POSITIVE_CONTROL, scanText } from '../src/rules/privacy.ts';
+import { hideHome, loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../src/rules/privacy.ts';
 
 // Samples are built from pieces so this file passes its own check.
 const at = '@';
@@ -60,6 +60,14 @@ test('private marks file: comments and blanks skipped, missing file is empty', (
   writeFileSync(file, '# header\n\nMyCity\n  myserver  \n');
   assert.deepEqual(loadMarks({ YOKOTEN_PRIVATE_MARKS: file }), ['mycity', 'myserver']);
   assert.deepEqual(loadMarks({ YOKOTEN_PRIVATE_MARKS: join(dir, 'none') }), []);
+});
+
+test('commit times: an ident with a non-UTC offset is caught (#40)', () => {
+  assert.equal(notUtc(`A <a${at}example.com> 1760745600 +0700`), true);
+  assert.equal(notUtc(`A <a${at}example.com> 1760745600 -0500`), true);
+  assert.equal(notUtc(`A <a${at}example.com> 1760745600 +0000`), false);
+  assert.equal(notUtc(`A <a${at}example.com> 1760745600 -0000`), false);
+  assert.equal(notUtc('no time here'), false);
 });
 
 test('output: the home folder shows as ~ (#25)', () => {

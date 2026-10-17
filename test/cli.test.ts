@@ -16,8 +16,9 @@ function sandbox() {
   const repo = join(base, 'repo');
   mkdirSync(home);
   mkdirSync(repo);
-  // A clean environment: no real HOME, no real marks, no role.
-  const env = { PATH: process.env.PATH, HOME: home, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig') };
+  // A clean environment: no real HOME, no real marks, no role, and commit times in UTC
+  // whatever the machine's time zone (#40).
+  const env = { PATH: process.env.PATH, HOME: home, TZ: 'UTC', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig') };
   const git = (...args: string[]) => spawnSync('git', args, { cwd: repo, env, encoding: 'utf8' });
   git('init', '-q', '-b', 'main');
   git('config', 'user.name', 'Test');
@@ -77,6 +78,32 @@ test('check --staged: stops a commit with a personal email or a private mark', (
   assert.ok(!/mycity/i.test(r.stderr));
 });
 
+test('check --staged: stops a commit whose time carries a time zone, never printing it (#40)', () => {
+  const s = sandbox();
+  s.write('a.md', 'fine\n');
+  s.git('add', '.');
+  const zoned = { GIT_AUTHOR_DATE: '2026-10-18T09:00:00+0700' };
+  let r = s.run(['check', '--staged'], { extra: zoned });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /carries your time zone/);
+  assert.ok(!/0700/.test(r.stderr), 'the offset is never printed');
+  assert.equal(s.run(['check', '--staged'], { extra: { GIT_AUTHOR_DATE: '2026-10-18T02:00:00+0000' } }).status, 0);
+  // A project can turn it off.
+  s.write('yokoten.json', JSON.stringify({ privacy: { utc: false } }));
+  s.git('add', '.');
+  r = s.run(['check', '--staged'], { extra: zoned });
+  assert.equal(r.status, 0, r.stderr);
+});
+
+test('check --history: counts commits with a time zone, as a note that does not fail (#40)', () => {
+  const s = sandbox();
+  s.git('commit', '-q', '--allow-empty', '-m', 'utc');
+  spawnSync('git', ['commit', '-q', '--allow-empty', '-m', 'zoned'], { cwd: s.repo, env: { ...s.env, TZ: 'Asia/Tokyo' } });
+  const r = s.run(['check', '--history']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /note: 1 commit\(s\) record a time zone other than UTC/);
+});
+
 test('check --history: finds what a later commit deleted, and a personal author email', () => {
   const s = sandbox();
   s.write('notes.md', `server ${[10, 1, 2, 3].join('.')}\n`);
@@ -109,8 +136,10 @@ test('init: adds the practices, keeps what is there, and doctor then finds nothi
   // Again: nothing changes.
   r = s.run(['init']);
   assert.match(r.stdout, /same the tool-call hook/);
+  assert.match(r.stdout, /same TZ=UTC for agent sessions/);
   const settings = JSON.parse(readFileSync(join(s.repo, '.claude', 'settings.json'), 'utf8'));
   assert.equal(settings.hooks.PreToolUse.length, 1);
+  assert.equal(settings.env.TZ, 'UTC', 'agent commits record no time zone (#40)');
   // The pre-commit hook runs the vendored check on a real commit.
   s.git('add', '.');
   const commit = s.git('commit', '-qm', 'adopt yokoten');

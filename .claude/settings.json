@@ -11,5 +11,8 @@
         "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit"
       }
     ]
+  },
+  "env": {
+    "TZ": "UTC"
   }
 }

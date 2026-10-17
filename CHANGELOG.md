@@ -44,6 +44,11 @@ All notable changes are listed here. The format follows
 
 ### Fixed
 
+- Commits no longer record the machine's time zone, which narrows down where the owner
+  lives. The commit check refuses a commit whose time is not UTC (and says how to fix
+  it, never printing the offset); `init` sets `TZ=UTC` for agent sessions; `check
+  --history` counts older commits with a time zone as a note. A project can turn it off
+  with `privacy.utc: false` (#40).
 - Nothing yokoten prints shows the home folder, which names the machine's user:
   `install`, `doctor`, hook reasons and errors show it as `~`. Core rule 11 now covers
   output as well as the repo (#25).

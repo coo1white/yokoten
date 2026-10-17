@@ -168,6 +168,10 @@ your name, your city, your domains, your server names. That file stays outside t
 repo, because a list of what must not be published can't itself be published. A hit
 is reported by file and line; the mark itself is never printed.
 
+A commit also records the time it was made, with your time zone, and a time zone
+narrows down where you live. So the commit check asks for UTC: `init` sets `TZ=UTC` for
+agent sessions, and for your own commits it tells you how.
+
 ## What it doesn't do
 
 Honest limits:

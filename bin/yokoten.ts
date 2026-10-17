@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
 import { botConfig, botEnv, installationToken, repoOf } from '../src/github/bot.ts';
-import { check, checkHistory, gitRoot } from '../src/run/check.ts';
+import { check, checkHistory, gitRoot, historyTimeZones } from '../src/run/check.ts';
 import { readToolCall } from '../src/agents/claude-code.ts';
 import { hideHome } from '../src/rules/privacy.ts';
 import { judge } from '../src/run/hook.ts';
@@ -89,6 +89,8 @@ function main(): number | Promise<number> {
       const root = gitRoot(process.cwd());
       const config = loadConfig(root);
       const problems = flag('--history') ? checkHistory(root, { config, env }) : check(root, { config, env, staged: flag('--staged') });
+      const zones = flag('--history') && config.privacy.utc ? historyTimeZones(root) : 0;
+      if (zones) print([`yokoten check: note: ${zones} commit(s) record a time zone other than UTC. Rewriting history is the owner's call; new commits are checked.`]);
       if (!problems.length) {
         print([`yokoten check: ok${flag('--history') ? ' (every commit on every branch)' : ''}`]);
         return 0;

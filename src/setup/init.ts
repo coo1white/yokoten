@@ -5,7 +5,7 @@
 import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { addProjectHook } from '../agents/claude-code.ts';
+import { addProjectHook, setProjectEnv } from '../agents/claude-code.ts';
 import { copyRuntime, HOME_DIR, KIT, render, writeNew } from './files.ts';
 
 /** yokoten's own repo runs its own bin; every other project runs a vendored copy. */
@@ -43,6 +43,7 @@ export function init(root: string): string[] {
   chmodSync(join(root, '.githooks', 'pre-commit'), 0o755);
   const hook = addProjectHook(root, cli);
   report.push(`${hook} the tool-call hook in .claude/settings.json`);
+  report.push(`${setProjectEnv(root, 'TZ', 'UTC')} TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)`);
   try {
     execFileSync('git', ['config', 'core.hooksPath', '.githooks'], { cwd: root, stdio: 'pipe' });
     report.push('set git core.hooksPath to .githooks (the commit check)');
