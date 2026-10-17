@@ -86,8 +86,8 @@ yokoten: git push --tags pushes tags. Only the owner decides when to release. If
 | Layer | What | How |
 |-------|------|-----|
 | **Machine** | Skills, agents, and two user-level hooks, the same on every computer | `yokoten install` |
-| **Project** | Rules, the commit check, the tool-call hook, CI, issue and PR templates | `yokoten init`, then the `yokoten` skill for an old project |
-| **Server** | Branch and tag rulesets, squash merge, code owners, a bot with limited rights | Set once by the owner; `doctor` lists the steps |
+| **Project** | Rules, the commit check, the tool-call hook, CI, issue and PR templates, Dependabot (monthly, one pull request), a security policy | `yokoten init`, then the `yokoten` skill for an old project |
+| **Server** | Branch and tag rulesets, squash merge, code owners, a bot with limited rights, the security switches | Set once by the owner; `doctor` lists the steps |
 | **Rules** | `AGENTS.md`: twelve core rules, plus the project's own | Every rule names its check |
 
 An old project isn't a blank slate. Some of its habits are better than ours. So the
@@ -111,14 +111,24 @@ node ~/.local/share/yokoten/bin/yokoten.ts doctor   # what's still missing
 `init` copies the runtime into `.yokoten/` in your project. Commit it: the hooks and CI
 then run with no network and no global install.
 
+`init` also puts two safe defaults in `.github/`:
+
+- `dependabot.yml` updates the actions that CI runs. It opens one pull request a month,
+  and takes a release only when it is a week old. A comment in the file shows how to
+  add your own packages (npm, pip, Go) the same way.
+- `SECURITY.md` asks people to report a vulnerability privately, not in a public issue.
+  For this, turn on private vulnerability reporting. `doctor` lists it with the other
+  security switches.
+
 | Command | What it does |
 |---------|--------------|
-| `install` | Skills and agents into `~/.claude`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file |
+| `install` | Skills into `~/.claude/skills` and `~/.agents/skills`, agents into `~/.claude/agents`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file |
 | `init [dir]` | Puts the practices into a project. Adds files; keeps any that are already there and says so |
 | `doctor [--session]` | What this project and machine are missing. `--session` is the short form for the start of a session |
 | `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit |
+| `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, changelog line, milestone and labels. Long sentences in changed Markdown are notes |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public |
-| `hook [--commands-only]` | The tool-call guard. Reads a Claude Code PreToolUse call on stdin |
+| `hook [--agent <name>] [--commands-only]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini` |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Setup: [server.md](server.md#3-the-bot-a-github-app) |
 
 
@@ -136,7 +146,7 @@ The full table, with the reasons, is in [`kit/project/AGENTS.md`](../kit/project
 8. Squash merge. One pull request, one purpose; small polish goes in one batch.
 9. Review and test the exact commit that merges.
 10. No folder holds more than 7 entries.
-11. Nothing in the repo, or in what yokoten prints, points at a person.
+11. Nothing in the repo, or in what yokoten prints, points at a person or holds a secret.
 12. Decisions are written down once and kept. Facts are replaced. Times are UTC.
 
 ## Managing agents like a team
@@ -168,6 +178,14 @@ your name, your city, your domains, your server names. That file stays outside t
 repo, because a list of what must not be published can't itself be published. A hit
 is reported by file and line; the mark itself is never printed.
 
+The same check catches secrets: GitHub, npm, Slack, Stripe, Google, OpenAI and
+Anthropic tokens, AWS access key ids, and PEM private keys. A hit names the kind of
+secret, never the secret. Deleting it is not enough, since git keeps it: rotate it.
+
+A commit also records the time it was made, with your time zone, and a time zone
+narrows down where you live. So the commit check asks for UTC: `init` sets `TZ=UTC` for
+agent sessions, and for your own commits it tells you how.
+
 ## What it doesn't do
 
 Honest limits:
@@ -177,9 +195,15 @@ Honest limits:
   protection, code owners, and a bot without the rights to release or change CI.
 - **Server settings aren't checked yet.** `doctor` lists the three steps for the owner.
   Checking them through the API is planned.
-- **Claude Code first.** Hooks, skills and agents follow Claude Code's formats. The rules
-  are plain `AGENTS.md`, which Claude Code reads when a project has no `CLAUDE.md`, and
-  so do most other agents. Muse Code's skills and hooks are planned.
+- **Claude Code first.** Agents and the user-level hooks follow Claude Code's formats.
+  Skills are the open SKILL.md format, so `install` also puts them in `~/.agents/skills`,
+  where Codex, Gemini CLI, Copilot, Cursor and other agents find them. The tool-call
+  guard also runs in Codex and Gemini CLI: `init` writes `.codex/hooks.json` and
+  `.gemini/settings.json`, and each tool asks you once to trust the hook. Nobody has yet
+  seen a real Codex or Gemini CLI session blocked by it (#30), so `doctor` reports those
+  two hooks but does not count them as missing. The rules are plain `AGENTS.md`, which
+  Claude Code reads when a project has no `CLAUDE.md`, and so do most other agents. Muse
+  Code's skills and hooks are planned.
 
 ## What was left out on purpose
 
@@ -187,7 +211,8 @@ These came from the same projects and worked there, but cost more than they save
 a general kit: a check that every commit's type matches the files it touches; byte-level
 replay of merges in the queue; a folder taxonomy for todo files; a 978-line rules file;
 signed release verdicts committed to the repo; a controlled-English style standard as a
-hard rule. A practice earns a place by paying for itself in more than one project.
+hard rule (a light version came back as guidance with a soft check:
+[record 0005](records/0005-plain-english.md)). A practice earns a place by paying for itself in more than one project.
 
 
 ## Status

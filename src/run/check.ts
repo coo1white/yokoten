@@ -9,7 +9,7 @@ import type { Config, Env } from '../rules/config.ts';
 import { matcher } from '../rules/glob.ts';
 import { checkEdit } from '../rules/guards.ts';
 import { checkLayout } from '../rules/layout.ts';
-import { loadMarks, scanText } from '../rules/privacy.ts';
+import { loadMarks, notUtc, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
 
 const git = (cwd: string, args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 1 << 30 });
 // Bytes, not text: a blob may be binary.
@@ -53,6 +53,10 @@ export function check(root: string, { config, env, staged = false }: { config: C
     problems.push(...scanText(buf.toString('utf8'), { file: path, marks, allow: config.privacy.allow }));
   };
   if (staged) {
+    // The commit about to be made: git var gives its author and committer, time included.
+    if (config.privacy.utc && ['GIT_AUTHOR_IDENT', 'GIT_COMMITTER_IDENT'].some((v) => notUtc(git(root, ['var', v])))) {
+      problems.push(`this commit's time carries your time zone, which narrows down where you are: ${TIME_ZONE_FIX}.`);
+    }
     for (const { status, path } of stagedFiles(root)) {
       const reason = checkEdit(path, { config, env });
       if (reason) problems.push(reason);
@@ -71,6 +75,17 @@ export function check(root: string, { config, env, staged = false }: { config: C
   }
   problems.push(...checkLayout(indexFiles(root), config));
   return problems;
+}
+
+/**
+ * How many commits on every branch record a time zone other than UTC. History can't be
+ * changed without a force push, which is the owner's call, so this is a count to know,
+ * not a problem that fails the check.
+ */
+export function historyTimeZones(root: string): number {
+  return git(root, ['log', '--all', '--format=%ad|%cd', '--date=format:%z'])
+    .split('\n')
+    .filter((line) => line && line.split('|').some((zone) => notUtc(` ${zone}`))).length;
 }
 
 /**

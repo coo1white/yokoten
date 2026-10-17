@@ -1,0 +1,47 @@
+// What yokoten knows about OpenAI's Codex CLI: the shape of its PreToolUse call and where
+// its project hooks live. Source: https://developers.openai.com/codex/hooks
+//
+// Codex runs a project's hooks only after the user trusts the project's .codex/ folder
+// and reviews the hook (`/hooks`). It records trust against the hook's hash, so a changed
+// command has to be trusted again.
+
+import { join } from 'node:path';
+import type { Action } from '../run/hook.ts';
+import { addHook, hasHook } from './hooks-file.ts';
+
+// The docs: "Bash and apply_patch use tool_input.command", and unified exec reports as Bash.
+const SHELL = 'Bash';
+
+/** The files an apply_patch envelope adds, updates, deletes or moves to. */
+function patchPaths(patch: string): string[] {
+  return [...patch.matchAll(/^[ \t]*\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+?)[ \t]*$/gm)].map((m) => m[1]);
+}
+
+/**
+ * A PreToolUse call, as an Action. A shell call's `tool_input.command` is the command; an
+ * apply_patch call's `tool_input.command` is the patch, and its file headers are the paths.
+ * Any other tool (MCP, update_plan) is neither.
+ */
+export function readToolCall(input: unknown): Action {
+  const call = (input ?? {}) as { cwd?: unknown; tool_name?: unknown; tool_input?: unknown };
+  const tool = (typeof call.tool_input === 'object' && call.tool_input !== null ? call.tool_input : {}) as Record<string, unknown>;
+  const name = typeof call.tool_name === 'string' ? call.tool_name : '';
+  const command = typeof tool.command === 'string' ? tool.command : undefined;
+  return {
+    command: name === SHELL ? command : undefined,
+    paths: name === 'apply_patch' && command ? patchPaths(command) : [],
+    cwd: typeof call.cwd === 'string' && call.cwd !== '' ? call.cwd : undefined,
+    // A Codex PreToolUse call names no subagent type; YOKOTEN_ROLE decides.
+    worker: false,
+  };
+}
+
+const projectHooks = (root: string) => join(root, '.codex', 'hooks.json');
+
+/**
+ * The project's tool-call guard. Codex runs a hook in the session's cwd and documents no
+ * project-dir variable; its docs advise a path from the git root, as here.
+ */
+export const addProjectHook = (root: string, cli: string) =>
+  addHook(projectHooks(root), 'PreToolUse', 'Bash|apply_patch', `node "$(git rev-parse --show-toplevel)/${cli}" hook --agent codex`);
+export const hasProjectHook = (root: string): boolean => hasHook(projectHooks(root), 'PreToolUse', 'hook');

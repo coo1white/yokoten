@@ -1,0 +1,28 @@
+# The pull request standard: title, tier, sections, linked issue, changelog, milestone,
+# labels. Its own workflow, because it must run again when the title, body, labels or
+# milestone change, and that should not rerun the tests. Make the `pr` job a required
+# check on main, next to the CI check.
+name: pr
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled, milestoned, demilestoned, ready_for_review]
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  pr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # The whole history, so the check can list the files between base and head.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      # The title and body are read from the event file, never pasted into this shell line.
+      - run: node {{cli}} check --pr

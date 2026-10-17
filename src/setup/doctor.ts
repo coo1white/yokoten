@@ -14,13 +14,16 @@ import { join } from 'node:path';
 import { checkCommand, checkEdit } from '../rules/guards.ts';
 import { type Config, DEFAULTS, type Env } from '../rules/config.ts';
 import { checkLayout } from '../rules/layout.ts';
-import { loadMarks, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
+import { loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
+import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
-import { hasProjectHook, hasSessionDoctor, skillFile } from '../agents/claude-code.ts';
+import { hasProjectHook, hasSessionDoctor } from '../agents/claude-code.ts';
+import * as codex from '../agents/codex.ts';
+import * as gemini from '../agents/gemini.ts';
 import { runs } from '../run/cli.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
 import { isSelf } from './init.ts';
-import { paths } from './install.ts';
+import { paths, skillFiles, skillsDir } from './install.ts';
 
 /** One practice: its name (the key for "notNow"), whether it is in place, and the fix. */
 interface Practice {
@@ -37,6 +40,8 @@ export function selfTest(): string[] {
   if (!checkEdit('test/a.test.ts', { config: DEFAULTS, env: { YOKOTEN_FIX_TASK: '1' } })) failed.push('test guard');
   if (!checkEdit('AGENTS.md', { config: DEFAULTS, env: { YOKOTEN_ROLE: 'worker' } })) failed.push('lead-only guard');
   if (scanText(POSITIVE_CONTROL, { file: 'control' }).length < 2) failed.push('privacy check');
+  if (scanText(SECRET_CONTROL, { file: 'control' }).length < 2) failed.push('secret check');
+  if (!notUtc('A <a@example.com> 1760745600 +0700') || notUtc('A <a@example.com> 1760745600 +0000')) failed.push('time zone check');
   if (checkLayout(Array.from({ length: 8 }, (_, i) => `d/${i}`), DEFAULTS).length !== 1) failed.push('layout check');
   return failed;
 }
@@ -84,26 +89,45 @@ export function projectChecks(root: string): Practice[] {
   ];
 }
 
+/**
+ * The other agents' tool-call hooks. Reported, but not a missing practice yet: no real
+ * Codex or Gemini CLI run has been seen to block through them (#30), and a project that
+ * uses neither should not fail doctor over them.
+ */
+export function agentHooks(root: string): Practice[] {
+  return [
+    { name: 'codex-hook', ok: codex.hasProjectHook(root), fix: 'no tool-call guard in .codex/hooks.json; `yokoten init` adds it' },
+    { name: 'gemini-hook', ok: gemini.hasProjectHook(root), fix: 'no tool-call guard in .gemini/settings.json; `yokoten init` adds it' },
+  ];
+}
+
 /** Machine checks: the skills, the user-level hooks, the private marks. */
 export function machineChecks(env: Env): Practice[] {
   const p = paths(env);
   const kitSkills = join(KIT, 'user', 'skills');
   // A vendored project copy has no kit; the machine copy and the source do.
   const skills = existsSync(kitSkills) ? readdirSync(kitSkills) : [];
+  // Every skill in every folder; the fix names each folder and what it lacks.
+  const lacking = new Map<string, string[]>();
+  for (const name of skills) {
+    for (const file of skillFiles(env, name)) if (!existsSync(file)) lacking.set(skillsDir(file), [...(lacking.get(skillsDir(file)) ?? []), name]);
+  }
+  const skillsFix = skills.length === 0 ? 'the yokoten skills are not installed' : `not in ${[...lacking].map(([dir, names]) => `${dir} (${names.join(', ')})`).join(' or ')}; run \`yokoten install\``;
   const runtime = runtimeVersion(p.runtime);
   return [
-    { name: 'skills', ok: skills.length > 0 && skills.every((s) => existsSync(skillFile(env, s))), fix: 'the yokoten skills are not installed' },
+    { name: 'skills', ok: skills.length > 0 && lacking.size === 0, fix: skillsFix },
     { name: 'session-doctor', ok: hasSessionDoctor(env), fix: 'sessions do not start with doctor' },
     { name: 'runtime', ok: runtime === VERSION, fix: runtime ? `the installed runtime is ${runtime}, this yokoten is ${VERSION}` : 'no runtime installed' },
     { name: 'private-marks', ok: loadMarks(env).length > 0, fix: `${p.marks} is missing or empty, so the privacy check only knows emails and IPs` },
   ];
 }
 
-// What doctor cannot see yet and the owner sets once per repo, on the server. Kept to three.
+// What doctor cannot see yet and the owner sets once per repo, on the server. Kept to three
+// (record 0001), so the security switches (#35) share the last step with the bot.
 const OWNER_STEPS = [
   'main: a ruleset with pull request required, the CI check required, no force push, no deletion; squash merge only, delete branch on merge',
   'tags: a ruleset on v* so only you create, move or delete a release tag',
-  'the bot: a collaborator (or GitHub App) with write access and no Workflows permission; CODEOWNERS with you, and code owner review required',
+  'the bot and security: a collaborator (or GitHub App) with write access and no Workflows permission; CODEOWNERS with you, and code owner review required; in Settings, Advanced Security, turn on private vulnerability reporting, secret scanning with push protection, and Dependabot alerts',
 ];
 
 /** The report, and whether everything is in place. */
@@ -135,6 +159,7 @@ export function doctor(root: string | null, { env, config, session = false }: { 
   lines.push(`yokoten ${VERSION}, self-test ${broken.length ? 'FAILED' : 'ok'}`);
   lines.push('project:');
   for (const c of projectChecks(root)) lines.push(`  ${c.ok ? 'ok     ' : config.notNow[c.name] ? 'not now' : 'MISSING'} ${c.name}${c.ok ? '' : `: ${config.notNow[c.name] ?? c.fix}`}`);
+  for (const c of agentHooks(root)) lines.push(`  ${c.ok ? 'ok     ' : 'note   '} ${c.name}${c.ok ? '' : `: ${c.fix}`}`);
   const problems = check(root, { config, env });
   lines.push(`  ${problems.length ? 'MISSING' : 'ok     '} tree: ${problems.length ? `${problems.length} problem(s), run \`yokoten check\`` : 'layout and privacy clean'}`);
   lines.push('machine:');

@@ -6,10 +6,14 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
 import { botConfig, botEnv, installationToken, repoOf } from '../src/github/bot.ts';
-import { check, checkHistory, gitRoot } from '../src/run/check.ts';
-import { readToolCall } from '../src/agents/claude-code.ts';
+import { readPullRequest } from '../src/github/pr.ts';
+import { check, checkHistory, gitRoot, historyTimeZones } from '../src/run/check.ts';
+import * as claudeCode from '../src/agents/claude-code.ts';
+import * as codex from '../src/agents/codex.ts';
+import * as gemini from '../src/agents/gemini.ts';
+import { checkPullRequest, longSentences } from '../src/rules/pr.ts';
 import { hideHome } from '../src/rules/privacy.ts';
-import { judge } from '../src/run/hook.ts';
+import { type Action, judge } from '../src/run/hook.ts';
 import { doctor } from '../src/setup/doctor.ts';
 import { VERSION } from '../src/setup/files.ts';
 import { init } from '../src/setup/init.ts';
@@ -22,12 +26,16 @@ const HELP = `yokoten ${VERSION}
   yokoten doctor [--session] what this project and machine are missing
   yokoten check [--staged]   layout, privacy and lead-only files (--staged: the next commit)
   yokoten check --history    the privacy check over every commit; run before going public
-  yokoten hook [--commands-only]  the tool-call guard (reads a PreToolUse call on stdin)
+  yokoten check --pr         the pull request of this CI run: title, tier, sections, issue, changelog
+  yokoten hook [--agent <name>] [--commands-only]
+                             the tool-call guard: reads one tool call on stdin; <name> is
+                             claude-code (the default), codex or gemini
   yokoten bot -- <command>   run one command as the bot (gh, git push); the token is never printed
 `;
 
 const [cmd, ...args] = process.argv.slice(2);
 const flag = (name: string) => args.includes(name);
+const option = (name: string) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
 const env = process.env;
 
 const rootOf = (dir: string): string | null => {
@@ -68,16 +76,29 @@ async function bot(command: string[]): Promise<number> {
   return spawnSync(file, rest, { stdio: 'inherit', env: botEnv(env, token) }).status ?? 1;
 }
 
+// Each runtime sends its tool call in its own shape; its adapter turns it into an Action.
+const READERS: Record<string, (input: unknown) => Action> = {
+  'claude-code': claudeCode.readToolCall,
+  codex: codex.readToolCall,
+  gemini: gemini.readToolCall,
+};
+
 function main(): number | Promise<number> {
   switch (cmd) {
     case 'hook': {
+      const agent = option('--agent') ?? 'claude-code';
+      const read = Object.hasOwn(READERS, agent) ? READERS[agent] : undefined;
+      if (!read) {
+        print([`yokoten hook: unknown --agent ${agent}; use one of: ${Object.keys(READERS).join(', ')}`], process.stderr);
+        return 1;
+      }
       let input: unknown;
       try {
         input = JSON.parse(readFileSync(0, 'utf8'));
       } catch {
         return 0; // not a tool call; nothing to judge
       }
-      const action = readToolCall(input);
+      const action = read(input);
       const root = rootOf(action.cwd ?? process.cwd());
       const config = root ? loadConfig(root) : DEFAULTS;
       const reason = judge(action, { root, config, env, commandsOnly: flag('--commands-only') });
@@ -88,7 +109,35 @@ function main(): number | Promise<number> {
     case 'check': {
       const root = gitRoot(process.cwd());
       const config = loadConfig(root);
+      if (flag('--pr')) {
+        const pr = readPullRequest(root, env);
+        if (!pr) {
+          print(['yokoten check --pr: no pull request in this run (it reads the CI event); nothing to check']);
+          return 0;
+        }
+        // Plain English (record 0005): long sentences in changed Markdown are notes, never failures.
+        const notes: string[] = [];
+        for (const file of pr.files.filter((p) => /\.md$/i.test(p))) {
+          let text = '';
+          try {
+            text = execFileSync('git', ['show', `${pr.head}:${file}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+          } catch {
+            continue; // deleted in this pull request
+          }
+          for (const s of longSentences(text)) notes.push(`${file}:${s.line}: a sentence of ${s.words} words; plain English aims at 25 or fewer`);
+        }
+        if (notes.length) print([`yokoten check --pr: note: ${notes.length} long sentence(s)`, ...notes.slice(0, 10).map((n) => `- ${n}`), ...(notes.length > 10 ? [`- and ${notes.length - 10} more`] : [])]);
+        const problems = checkPullRequest(pr, config);
+        if (!problems.length) {
+          print(['yokoten check --pr: ok']);
+          return 0;
+        }
+        print([`yokoten check --pr: ${problems.length} problem(s)`, ...problems.map((p) => `- ${p}`)], process.stderr);
+        return 1;
+      }
       const problems = flag('--history') ? checkHistory(root, { config, env }) : check(root, { config, env, staged: flag('--staged') });
+      const zones = flag('--history') && config.privacy.utc ? historyTimeZones(root) : 0;
+      if (zones) print([`yokoten check: note: ${zones} commit(s) record a time zone other than UTC. Rewriting history is the owner's call; new commits are checked.`]);
       if (!problems.length) {
         print([`yokoten check: ok${flag('--history') ? ' (every commit on every branch)' : ''}`]);
         return 0;

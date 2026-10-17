@@ -7,7 +7,7 @@ export interface Config {
   layout: { maxEntries: number; exempt: string[] };
   tests: string[];
   leadOnly: string[];
-  privacy: { allow: string[]; skip: string[] };
+  privacy: { allow: string[]; skip: string[]; utc: boolean };
   notNow: Record<string, string>;
 }
 
@@ -31,10 +31,11 @@ export const DEFAULTS: Config = {
   tests: ['*.test.*', '*.spec.*', '*_test.go', 'test/**', 'tests/**'],
   // What only the lead (the session that reviews and pushes) may change: the rules the
   // agents work under, and the CI that checks them.
-  leadOnly: ['AGENTS.md', 'CLAUDE.md', 'yokoten.json', '.claude/**', '.muse/**', '.githooks/**', '.github/**'],
+  leadOnly: ['AGENTS.md', 'CLAUDE.md', 'yokoten.json', '.claude/**', '.codex/**', '.gemini/**', '.muse/**', '.githooks/**', '.github/**'],
   // `allow`: literal strings the privacy check lets through (a public support address).
   // `skip`: files it does not read (lockfiles, vendored code).
-  privacy: { allow: [], skip: ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'go.sum'] },
+  // `utc`: commits must record their time in UTC, not the machine's time zone.
+  privacy: { allow: [], skip: ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'go.sum'], utc: true },
   // Practices this project has decided not to take up yet, by doctor's name for them, each
   // with the reason and when to look again: { "ci": "no remote yet; revisit on first push" }.
   notNow: {},

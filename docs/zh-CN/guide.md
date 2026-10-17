@@ -80,8 +80,8 @@ yokoten: git push --tags pushes tags. Only the owner decides when to release. If
 | 层 | 管什么 | 怎么装 |
 |----|--------|--------|
 | **机器** | 技能、agent 定义、两个用户级 hook，每台电脑都一样 | `yokoten install` |
-| **项目** | 规则、提交检查、工具调用 hook、CI、issue 和 PR 模板 | `yokoten init`；老项目再用 `yokoten` 技能 |
-| **服务器** | 分支和 tag 规则集、squash 合并、代码负责人、权限受限的 bot | 由仓库主人设置一次；`doctor` 会列出步骤 |
+| **项目** | 规则、提交检查、工具调用 hook、CI、issue 和 PR 模板、Dependabot（每月一个 PR）、安全说明 | `yokoten init`；老项目再用 `yokoten` 技能 |
+| **服务器** | 分支和 tag 规则集、squash 合并、代码负责人、权限受限的 bot、几个安全开关 | 由仓库主人设置一次；`doctor` 会列出步骤 |
 | **规则** | `AGENTS.md`：12 条核心规则，加上项目自己的规则 | 每条规则都写明由哪项检查守着 |
 
 老项目不是一张白纸，它有些习惯比我们的还好。所以 `yokoten` 技能会和你一条一条过，每条
@@ -103,14 +103,23 @@ node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看还缺什么
 `init` 会把运行时复制到项目的 `.yokoten/` 里。把它一起提交：这样 hook 和 CI 不联网、
 不用全局安装也能跑。
 
+`init` 还会在 `.github/` 里放两个默认就安全的文件：
+
+- `dependabot.yml`：自动更新 CI 用到的 action。一个月只开一个 PR，所有更新都在里面；
+  新版本发布满一周才会用。文件里的注释写了怎么用同样的方式加上你自己的包（npm、pip、Go 等）。
+- `SECURITY.md`：告诉别人发现漏洞要私下报告，不要发公开 issue。要让私下报告能用，得在仓库
+  设置里打开 private vulnerability reporting（私下报告漏洞）。`doctor` 会把它和其他安全开关
+  一起列出来。
+
 | 命令 | 做什么 |
 |------|--------|
-| `install` | 把技能和 agent 装进 `~/.claude`，加上会话开头的 `doctor` hook 和用户级命令守卫，再建一个空的私有词表 |
+| `install` | 把技能装进 `~/.claude/skills` 和 `~/.agents/skills`，agent 装进 `~/.claude/agents`，加上会话开头的 `doctor` hook 和用户级命令守卫，再建一个空的私有词表 |
 | `init [dir]` | 把这套做法放进一个项目。只加文件；已有的文件保留，并告诉你保留了哪些 |
 | `doctor [--session]` | 这个项目和这台电脑还缺什么。`--session` 是会话开头用的简短版 |
 | `check [--staged]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交 |
+| `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的 CHANGELOG、milestone 和标签。改动的文档里句子太长只提醒，不算失败 |
 | `check --history` | 对所有分支的每一个提交做隐私检查。私有仓库公开之前跑一遍 |
-| `hook [--commands-only]` | 工具调用守卫，从标准输入读 Claude Code 的 PreToolUse 调用 |
+| `hook [--agent <name>] [--commands-only]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool |
 | `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。设置方法见 [server.md](../server.md#3-the-bot-a-github-app) |
 
 
@@ -128,7 +137,7 @@ node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看还缺什么
 8. 用 squash 合并。一个 PR 只做一件事；零碎的小改动攒成一批再提。
 9. 审查和测试的，必须是最终合并的那个提交。
 10. 每个文件夹最多 7 项。
-11. 仓库里，以及 yokoten 打印出来的内容里，都不能有任何能指向某个人的信息。
+11. 仓库里，以及 yokoten 打印出来的内容里，都不能有任何能指向某个人的信息，也不能有密钥。
 12. 决定只写一次并保留下来；事实直接替换；时间一律用 UTC。
 
 ## 像带团队一样管 agent
@@ -156,6 +165,13 @@ node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看还缺什么
 仓库外面，因为「不能公开的东西」这张清单本身也不能公开。查到问题时只报文件和行号，不会把
 词表里的词打印出来。
 
+这个检查也会查密钥：GitHub、npm、Slack、Stripe、Google、OpenAI 和 Anthropic 的 token，
+AWS 的 access key id，还有 PEM 私钥。查到了只说是哪一种密钥，不会把密钥本身打印出来。光删掉
+不够，git 历史里还留着，得去把它作废，换一个新的。
+
+每个提交还会记下提交时间和你的时区，而时区能大致看出你住在哪里。所以提交检查要求用 UTC：
+`init` 会给 agent 会话设好 `TZ=UTC`，你自己提交时，它会告诉你怎么设。
+
 ## 做不到的事
 
 如实说明：
@@ -163,15 +179,21 @@ node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看还缺什么
 - **守卫只看命令文本。** 把命令拆开再拼起来就能绕过。它防的是失误和走样，不是一把锁。真正
   的锁在服务器上：分支保护、代码负责人，以及一个没有发版权限、改不了 CI 的 bot。
 - **还不检查服务器设置。** `doctor` 目前只列出主人要做的三步，通过 API 自动检查还在计划中。
-- **先支持 Claude Code。** hook、技能和 agent 都按 Claude Code 的格式写。规则就是普通的
-  `AGENTS.md`：项目里没有 `CLAUDE.md` 时 Claude Code 会直接读它，大多数别的 AI 也读。
-  Muse Code 的技能和 hook 还在计划中。
+- **先支持 Claude Code。** agent 和用户级 hook 都按 Claude Code 的格式写。技能用的是公开
+  的 SKILL.md 格式，所以 `install` 也会把它们放进 `~/.agents/skills`，Codex、Gemini CLI、
+  Copilot、Cursor 这些 AI 会去那里找。工具调用守卫在 Codex 和 Gemini CLI 里也能用：`init`
+  会写好 `.codex/hooks.json` 和 `.gemini/settings.json`，这两个工具第一次碰到这个 hook
+  时会让你确认一次。还没有人在真的 Codex 或 Gemini CLI 里看到它拦下过命令（#30），所以
+  `doctor` 只说这两个 hook 在不在，不算作缺少。规则就是普通的 `AGENTS.md`：项目里没有
+  `CLAUDE.md` 时 Claude Code 会直接读它，大多数别的 AI 也读。Muse Code 的技能和 hook
+  还在计划中。
 
 ## 故意没带过来的
 
 这些做法来自同样的项目，在那里也管用，但放进一套通用工具里，成本比收益高：检查每个提交的
 类型是否和改动的文件对得上；在合并队列里逐字节重放合并；给 todo 文件分门别类的目录；
-978 行的规则文件；把签过名的发版结论提交进仓库；把受控英语写作规范当硬性规则。一条做法
+978 行的规则文件；把签过名的发版结论提交进仓库；把受控英语写作规范当硬性规则（后来带回了一个轻量版，只做提醒、不卡 CI，见
+[记录 0005](../records/0005-plain-english.md)）。一条做法
 要在不止一个项目里证明值得，才配进来。
 
 

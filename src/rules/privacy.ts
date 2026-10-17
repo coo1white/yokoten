@@ -1,4 +1,5 @@
-// The privacy rule: nothing in the repo points at the person behind it. Two kinds of check:
+// The privacy rule: nothing in the repo points at the person behind it, or opens their
+// accounts. Three kinds of check:
 //
 // - Patterns anyone can see: email addresses and IPv4 addresses. A few are always fine
 //   (GitHub's noreply addresses, the documentation ranges, localhost).
@@ -7,11 +8,14 @@
 //   because a list of what must not be published cannot itself be published. CI does not
 //   have the file, so CI checks the patterns only; the commit check on the owner's machine
 //   checks both.
+// - Secrets: tokens and private keys, in secrets.ts. Their hits pass through scanText too,
+//   so every caller (the commit, CI, the history) catches them.
 
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Env } from './config.ts';
+import { findSecrets, secretProblem } from './secrets.ts';
 
 export const marksFile = (env: Env): string => env.YOKOTEN_PRIVATE_MARKS || join(env.HOME || homedir(), '.config', 'yokoten', 'private-marks');
 
@@ -56,8 +60,11 @@ const OK_IP = [/^127\./, /^0\.0\.0\.0$/, /^192\.0\.2\./, /^198\.51\.100\./, /^20
 export function scanText(text: string, { file, marks = [], allow = [] }: { file: string; marks?: string[]; allow?: string[] }): string[] {
   const problems: string[] = [];
   const lines = text.split('\n');
+  const secrets = findSecrets(lines, allow);
   lines.forEach((line, i) => {
     const where = `${file}:${i + 1}`;
+    // The secret itself is never printed either, only its kind.
+    for (const [at, kind] of secrets) if (at === i) problems.push(secretProblem(where, kind));
     for (const [hit] of line.matchAll(EMAIL)) {
       if (!OK_EMAIL.some((re) => re.test(hit)) && !allow.includes(hit)) {
         problems.push(`${where}: an email address. Use your GitHub noreply address, or a placeholder at example.com.`);
@@ -85,6 +92,18 @@ export function hideHome(text: string, env: Env): string {
   const home = (env.HOME || homedir()).replace(/[\\/]+$/, '');
   return home.length > 1 ? text.split(home).join('~') : text;
 }
+
+/**
+ * Whether a git ident ("Name <email> 1760745600 +0700") carries a time zone other than
+ * UTC. A commit records its author's and committer's UTC offset, and an offset narrows
+ * down where someone lives. The offset itself is never printed.
+ */
+export function notUtc(ident: string): boolean {
+  const zone = /\s([+-]\d{4})\s*$/.exec(ident)?.[1];
+  return zone !== undefined && zone !== '+0000' && zone !== '-0000';
+}
+
+export const TIME_ZONE_FIX = 'commit with TZ=UTC (`TZ=UTC git commit`, or `export TZ=UTC` in your shell); yokoten init sets it for agent sessions';
 
 /**
  * A known-bad sample, so a check can prove it still catches what it should. It is built

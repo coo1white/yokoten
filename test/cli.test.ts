@@ -1,7 +1,7 @@
 // End to end: the CLI in throwaway git repos, the way a hook or CI runs it.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -16,8 +16,9 @@ function sandbox() {
   const repo = join(base, 'repo');
   mkdirSync(home);
   mkdirSync(repo);
-  // A clean environment: no real HOME, no real marks, no role.
-  const env = { PATH: process.env.PATH, HOME: home, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig') };
+  // A clean environment: no real HOME, no real marks, no role, and commit times in UTC
+  // whatever the machine's time zone (#40).
+  const env = { PATH: process.env.PATH, HOME: home, TZ: 'UTC', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig') };
   const git = (...args: string[]) => spawnSync('git', args, { cwd: repo, env, encoding: 'utf8' });
   git('init', '-q', '-b', 'main');
   git('config', 'user.name', 'Test');
@@ -50,6 +51,77 @@ test('hook: blocks with exit 2 and a reason, allows with exit 0', () => {
   assert.equal(s.run(['hook'], { input: 'not json' }).status, 0);
 });
 
+// Each call is shaped as the runtime's hook docs show it (#30): Codex's PreToolUse
+// (developers.openai.com/codex/hooks) and Gemini CLI's BeforeTool (geminicli.com/docs/hooks).
+test('hook --agent codex: shell calls by command, apply_patch by the files it touches (#30)', () => {
+  const s = sandbox();
+  const call = (tool_name: string, command: string, extra?: Record<string, string>) =>
+    s.run(['hook', '--agent', 'codex'], {
+      input: JSON.stringify({
+        session_id: 'thr_123',
+        transcript_path: null,
+        cwd: s.repo,
+        hook_event_name: 'PreToolUse',
+        model: 'gpt-5',
+        permission_mode: 'default',
+        turn_id: 'turn_1',
+        tool_name,
+        tool_use_id: 'call_1',
+        tool_input: { command },
+      }),
+      extra,
+    });
+  let r = call('Bash', 'git push --tags');
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /owner decides when to release/);
+  assert.equal(call('Bash', 'git status').status, 0);
+  const patch = (header: string) => `*** Begin Patch\n${header}\n@@\n-old\n+new\n*** End Patch\n`;
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  r = call('apply_patch', patch('*** Update File: AGENTS.md'), worker);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /lead-only/);
+  assert.equal(call('apply_patch', patch('*** Update File: src/a.ts\n*** Move to: .codex/hooks.json'), worker).status, 2, 'a move into a lead-only path');
+  assert.equal(call('apply_patch', patch(`*** Add File: ${join(s.repo, '.github', 'x.yml')}`), worker).status, 2, 'an absolute path');
+  assert.equal(call('apply_patch', patch('*** Update File: src/a.ts'), worker).status, 0);
+  assert.equal(call('apply_patch', patch('*** Update File: AGENTS.md')).status, 0, 'the lead may');
+  // A patch is not a command, and an unknown tool is neither.
+  assert.equal(call('apply_patch', 'git push --tags').status, 0);
+  assert.equal(call('mcp__fs__write', 'git push --tags').status, 0);
+});
+
+test('hook --agent gemini: run_shell_command by command, write_file and replace by file_path (#30)', () => {
+  const s = sandbox();
+  const call = (tool_name: string, tool_input: object, extra?: Record<string, string>) =>
+    s.run(['hook', '--agent', 'gemini'], {
+      input: JSON.stringify({
+        session_id: 's1',
+        transcript_path: join(s.home, 't.json'),
+        cwd: s.repo,
+        hook_event_name: 'BeforeTool',
+        timestamp: '2026-10-18T00:00:00Z',
+        tool_name,
+        tool_input,
+      }),
+      extra,
+    });
+  let r = call('run_shell_command', { command: 'git push --tags', description: 'push tags' });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /owner decides when to release/);
+  assert.equal(r.stdout, '', 'Gemini CLI reads stdout as JSON: nothing else goes there');
+  assert.equal(call('run_shell_command', { command: 'git status' }).status, 0);
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  r = call('write_file', { file_path: join(s.repo, 'AGENTS.md'), content: 'x' }, worker);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /lead-only/);
+  assert.equal(call('replace', { file_path: '.gemini/settings.json', instruction: 'i', old_string: 'a', new_string: 'b' }, worker).status, 2);
+  assert.equal(call('write_file', { file_path: 'src/a.ts', content: 'x' }, worker).status, 0);
+  assert.equal(call('read_file', { file_path: 'AGENTS.md' }, worker).status, 0, 'reading is not editing');
+  assert.equal(call('write_file', { file_path: 'AGENTS.md', content: 'x' }).status, 0, 'the lead may');
+  r = s.run(['hook', '--agent', 'cursor'], { input: '{}' });
+  assert.equal(r.status, 1, 'an unknown agent is an error to see, not a block');
+  assert.match(r.stderr, /claude-code, codex, gemini/);
+});
+
 test('hook: a repo reached through a symlink gets the same file rules (#1)', () => {
   const s = sandbox();
   const link = join(s.home, 'link');
@@ -77,9 +149,36 @@ test('check --staged: stops a commit with a personal email or a private mark', (
   assert.ok(!/mycity/i.test(r.stderr));
 });
 
+test('check --staged: stops a commit whose time carries a time zone, never printing it (#40)', () => {
+  const s = sandbox();
+  s.write('a.md', 'fine\n');
+  s.git('add', '.');
+  const zoned = { GIT_AUTHOR_DATE: '2026-10-18T09:00:00+0700' };
+  let r = s.run(['check', '--staged'], { extra: zoned });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /carries your time zone/);
+  assert.ok(!/0700/.test(r.stderr), 'the offset is never printed');
+  assert.equal(s.run(['check', '--staged'], { extra: { GIT_AUTHOR_DATE: '2026-10-18T02:00:00+0000' } }).status, 0);
+  // A project can turn it off.
+  s.write('yokoten.json', JSON.stringify({ privacy: { utc: false } }));
+  s.git('add', '.');
+  r = s.run(['check', '--staged'], { extra: zoned });
+  assert.equal(r.status, 0, r.stderr);
+});
+
+test('check --history: counts commits with a time zone, as a note that does not fail (#40)', () => {
+  const s = sandbox();
+  s.git('commit', '-q', '--allow-empty', '-m', 'utc');
+  spawnSync('git', ['commit', '-q', '--allow-empty', '-m', 'zoned'], { cwd: s.repo, env: { ...s.env, TZ: 'Asia/Tokyo' } });
+  const r = s.run(['check', '--history']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /note: 1 commit\(s\) record a time zone other than UTC/);
+});
+
 test('check --history: finds what a later commit deleted, and a personal author email', () => {
   const s = sandbox();
-  s.write('notes.md', `server ${[10, 1, 2, 3].join('.')}\n`);
+  const token = `${'gh'}p_${'x7Y2k9'.repeat(6)}`;
+  s.write('notes.md', `server ${[10, 1, 2, 3].join('.')}\ntoken ${token}\n`);
   s.git('add', '.');
   s.git('commit', '-qm', 'add notes');
   s.git('rm', '-q', 'notes.md');
@@ -89,26 +188,61 @@ test('check --history: finds what a later commit deleted, and a personal author 
   const r = s.run(['check', '--history']);
   assert.equal(r.status, 1);
   assert.match(r.stderr, /notes\.md @ blob \w+:1: an IP address/);
+  assert.match(r.stderr, /notes\.md @ blob \w+:2: a secret \(GitHub token\)/, 'a secret deleted later (#8)');
+  assert.ok(!r.stderr.includes(token), 'the secret is never printed');
   assert.match(r.stderr, /\(author\/committer\):1: an email/);
 });
 
 test('init: adds the practices, keeps what is there, and doctor then finds nothing missing', () => {
   const s = sandbox();
   s.write('AGENTS.md', '# our own rules\n');
+  s.write('.github/SECURITY.md', '# email us\n');
+  // The user's own Codex and Gemini CLI settings stay.
+  const mine = (event: string) => ({ [event]: [{ matcher: 'read_file', hooks: [{ type: 'command', command: 'mine' }] }] });
+  s.write('.codex/hooks.json', JSON.stringify({ description: 'ours', hooks: mine('PreToolUse') }));
+  s.write('.gemini/settings.json', JSON.stringify({ theme: 'x', hooks: mine('BeforeTool') }));
+  assert.match(s.run(['doctor']).stdout, /note +codex-hook: no tool-call guard/, 'reported, not counted as missing');
   let r = s.run(['init']);
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /kept AGENTS\.md/);
   assert.match(r.stdout, /wrote \.githooks\/pre-commit/);
   assert.equal(readFileSync(join(s.repo, 'AGENTS.md'), 'utf8'), '# our own rules\n');
+  assert.match(r.stdout, /kept \.github\/SECURITY\.md/);
+  assert.equal(readFileSync(join(s.repo, '.github/SECURITY.md'), 'utf8'), '# email us\n', 'the project\'s own policy stays');
+  assert.match(r.stdout, /wrote \.github\/dependabot\.yml/);
   assert.ok(statSync(join(s.repo, '.githooks', 'pre-commit')).mode & 0o100);
-  assert.match(readFileSync(join(s.repo, '.github/workflows/yokoten.yml'), 'utf8'), /node \.yokoten\/bin\/yokoten\.ts check/);
+  const workflow = readFileSync(join(s.repo, '.github/workflows/yokoten.yml'), 'utf8');
+  assert.match(workflow, /node \.yokoten\/bin\/yokoten\.ts check/);
+  assert.match(workflow, /persist-credentials: false/, 'the hardened workflow (#36)');
+  assert.match(readFileSync(join(s.repo, '.github/workflows/pr.yml'), 'utf8'), /node \.yokoten\/bin\/yokoten\.ts check --pr/, 'the pull request check (#47)');
   assert.ok(existsSync(join(s.repo, '.yokoten', 'VERSION')));
   assert.equal(s.git('config', 'core.hooksPath').stdout.trim(), '.githooks');
   // Again: nothing changes.
   r = s.run(['init']);
+  assert.match(r.stdout, /kept \.github\/SECURITY\.md/);
+  assert.match(r.stdout, /kept \.github\/dependabot\.yml/);
   assert.match(r.stdout, /same the tool-call hook/);
+  assert.match(r.stdout, /same TZ=UTC for agent sessions/);
   const settings = JSON.parse(readFileSync(join(s.repo, '.claude', 'settings.json'), 'utf8'));
   assert.equal(settings.hooks.PreToolUse.length, 1);
+  assert.equal(settings.env.TZ, 'UTC', 'agent commits record no time zone (#40)');
+  assert.match(r.stdout, /same the Codex tool-call hook/);
+  assert.match(r.stdout, /same the Gemini CLI tool-call hook/);
+  const codex = JSON.parse(readFileSync(join(s.repo, '.codex', 'hooks.json'), 'utf8'));
+  assert.equal(codex.description, 'ours');
+  assert.equal(codex.hooks.PreToolUse.length, 2);
+  assert.deepEqual(codex.hooks.PreToolUse[1], {
+    hooks: [{ type: 'command', command: 'node "$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.ts" hook --agent codex' }],
+    matcher: 'Bash|apply_patch',
+  });
+  const gemini = JSON.parse(readFileSync(join(s.repo, '.gemini', 'settings.json'), 'utf8'));
+  assert.equal(gemini.theme, 'x');
+  assert.equal(gemini.hooks.BeforeTool.length, 2);
+  assert.deepEqual(gemini.hooks.BeforeTool[1], {
+    hooks: [{ type: 'command', command: 'node "$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts" hook --agent gemini', name: 'yokoten' }],
+    matcher: 'run_shell_command|write_file|replace',
+  });
+  assert.match(s.run(['doctor']).stdout, /ok +codex-hook\n +ok +gemini-hook/);
   // The pre-commit hook runs the vendored check on a real commit.
   s.git('add', '.');
   const commit = s.git('commit', '-qm', 'adopt yokoten');
@@ -116,10 +250,29 @@ test('init: adds the practices, keeps what is there, and doctor then finds nothi
   s.write('leak.md', `me${at}gmail.com\n`);
   s.git('add', 'leak.md');
   assert.notEqual(s.git('commit', '-qm', 'leak').status, 0);
+  s.write('leak.md', `${'AK'}IA${'Q7W3R9T2Y5Q7W3R9'}\n`);
+  s.git('add', 'leak.md');
+  const secret = s.git('commit', '-qm', 'leak');
+  assert.notEqual(secret.status, 0, 'a secret is refused too (#8)');
+  assert.match(secret.stderr, /leak\.md:1: a secret \(AWS access key id\)/);
   s.git('reset', '-q', 'leak.md');
   r = s.run(['doctor', '--session']);
   assert.equal(r.status, 0);
   assert.doesNotMatch(r.stdout, /missing \d+ practice/);
+});
+
+test('init: safe defaults, Dependabot and a security policy; doctor lists the security switches (#35)', () => {
+  const s = sandbox();
+  const r = s.run(['init']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /wrote \.github\/SECURITY\.md/);
+  assert.match(r.stdout, /wrote \.github\/dependabot\.yml/);
+  const dependabot = readFileSync(join(s.repo, '.github/dependabot.yml'), 'utf8');
+  for (const line of [/package-ecosystem: github-actions/, /interval: monthly/, /default-days: 7/, /patterns: \['\*'\]/, /prefix: ci/]) assert.match(dependabot, line);
+  assert.equal([...dependabot.matchAll(/^\s*- package-ecosystem:/gm)].length, 1, 'actions only, since the stack is unknown');
+  assert.match(readFileSync(join(s.repo, '.github/SECURITY.md'), 'utf8'), /\*\*Report a vulnerability\*\*/);
+  const doctor = s.run(['doctor']);
+  for (const sw of [/private vulnerability reporting/, /secret scanning with push protection/, /Dependabot alerts/]) assert.match(doctor.stdout, sw);
 });
 
 test('doctor --session: names what is missing, and respects notNow', () => {
@@ -140,19 +293,34 @@ test('doctor --session: names what is missing, and respects notNow', () => {
 test('install: skills, agents and hooks once, the user\'s own files untouched', () => {
   const s = sandbox();
   const claude = join(s.home, '.claude');
+  const shared = join(s.home, '.agents');
   mkdirSync(join(claude, 'agents'), { recursive: true });
   writeFileSync(join(claude, 'agents', 'reviewer.md'), 'my own reviewer\n');
+  // The user's own skill in the shared folder, with a kit skill's name.
+  mkdirSync(join(shared, 'skills', 'rca'), { recursive: true });
+  writeFileSync(join(shared, 'skills', 'rca', 'SKILL.md'), 'my own rca\n');
   writeFileSync(join(claude, 'settings.json'), JSON.stringify({ model: 'x', hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'other' }] }] } }));
   let r = s.run(['install']);
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /kept \(yours\) agent reviewer/);
   assert.equal(readFileSync(join(claude, 'agents', 'reviewer.md'), 'utf8'), 'my own reviewer\n');
-  assert.ok(existsSync(join(claude, 'skills', 'yokoten', 'SKILL.md')));
-  assert.ok(existsSync(join(s.home, '.local/share/yokoten/kit/user/skills')));
+  // Every skill in both folders: Claude Code's, and the shared one other agents read (#29).
+  const kitSkills = readdirSync(join(s.home, '.local/share/yokoten/kit/user/skills'));
+  assert.ok(kitSkills.length > 0);
+  for (const name of kitSkills) {
+    assert.ok(existsSync(join(claude, 'skills', name, 'SKILL.md')), `~/.claude/skills/${name}`);
+    assert.ok(existsSync(join(shared, 'skills', name, 'SKILL.md')), `~/.agents/skills/${name}`);
+    assert.match(r.stdout, new RegExp(`wrote skill ${name} in ~/\\.claude/skills`));
+  }
+  assert.match(r.stdout, /kept \(yours\) skill rca in ~\/\.agents\/skills/);
+  assert.equal(readFileSync(join(shared, 'skills', 'rca', 'SKILL.md'), 'utf8'), 'my own rca\n');
+  assert.ok(!existsSync(join(shared, 'agents')), 'agents stay Claude-only');
   const marks = join(s.home, '.config/yokoten/private-marks');
   assert.equal(statSync(marks).mode & 0o777, 0o600);
   r = s.run(['install']);
-  assert.match(r.stdout, /same skill yokoten/);
+  for (const name of kitSkills) assert.match(r.stdout, new RegExp(`same skill ${name} in ~/\\.claude/skills`));
+  for (const name of kitSkills.filter((n) => n !== 'rca')) assert.match(r.stdout, new RegExp(`same skill ${name} in ~/\\.agents/skills`));
+  assert.match(r.stdout, /kept \(yours\) skill rca in ~\/\.agents\/skills/);
   const settings = JSON.parse(readFileSync(join(claude, 'settings.json'), 'utf8'));
   assert.equal(settings.model, 'x');
   assert.equal(settings.hooks.SessionStart.length, 1);
@@ -164,4 +332,39 @@ test('install: skills, agents and hooks once, the user\'s own files untouched', 
   // The home folder names the machine's user; it never shows (#25).
   for (const out of [r.stdout, doctor.stdout]) assert.ok(!out.includes(s.home), 'output shows the home path');
   assert.match(doctor.stdout, /~\/\.config\/yokoten\/private-marks/);
+  // The skills check wants every skill in both folders, and names what is missing.
+  const skillsLine = () => s.run(['doctor']).stdout.split('\n').find((l) => / skills/.test(l)) ?? '';
+  assert.match(skillsLine(), /^\s+ok\s+skills/);
+  rmSync(join(shared, 'skills', 'inspect'), { recursive: true });
+  assert.match(skillsLine(), /MISSING skills: not in ~\/\.agents\/skills \(inspect\)/);
+});
+
+test('check --pr: reads the CI event, lists the changed files from git, notes long prose (#47)', () => {
+  const s = sandbox();
+  s.write('README.md', 'Short.\n');
+  s.git('add', '.');
+  s.git('commit', '-qm', 'base');
+  const base = s.git('rev-parse', 'HEAD').stdout.trim();
+  s.write('src/a.ts', 'export const a = 1;\n');
+  s.write('README.md', `Short.\n${Array.from({ length: 30 }, (_, i) => `w${i}`).join(' ')}.\n`);
+  s.git('add', '.');
+  s.git('commit', '-qm', 'head');
+  const head = s.git('rev-parse', 'HEAD').stdout.trim();
+  const event = (body: string) => {
+    const file = join(s.home, 'event.json');
+    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
+    return { GITHUB_EVENT_PATH: file };
+  };
+  const body = 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\n';
+  let r = s.run(['check', '--pr'], { extra: event(body) });
+  assert.equal(r.status, 1, 'src/a.ts changed with no changelog line');
+  assert.match(r.stderr, /changelog: 1 changed file/);
+  assert.match(r.stdout, /note: 1 long sentence\(s\)\n- README\.md:2: a sentence of 30 words/);
+  r = s.run(['check', '--pr'], { extra: event(`${body}No changelog: a test\n`) });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /check --pr: ok/);
+  // Outside a pull request run, there is nothing to check.
+  r = s.run(['check', '--pr']);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /no pull request in this run/);
 });
