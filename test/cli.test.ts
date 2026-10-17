@@ -106,7 +106,8 @@ test('check --history: counts commits with a time zone, as a note that does not 
 
 test('check --history: finds what a later commit deleted, and a personal author email', () => {
   const s = sandbox();
-  s.write('notes.md', `server ${[10, 1, 2, 3].join('.')}\n`);
+  const token = `${'gh'}p_${'x7Y2k9'.repeat(6)}`;
+  s.write('notes.md', `server ${[10, 1, 2, 3].join('.')}\ntoken ${token}\n`);
   s.git('add', '.');
   s.git('commit', '-qm', 'add notes');
   s.git('rm', '-q', 'notes.md');
@@ -116,6 +117,8 @@ test('check --history: finds what a later commit deleted, and a personal author 
   const r = s.run(['check', '--history']);
   assert.equal(r.status, 1);
   assert.match(r.stderr, /notes\.md @ blob \w+:1: an IP address/);
+  assert.match(r.stderr, /notes\.md @ blob \w+:2: a secret \(GitHub token\)/, 'a secret deleted later (#8)');
+  assert.ok(!r.stderr.includes(token), 'the secret is never printed');
   assert.match(r.stderr, /\(author\/committer\):1: an email/);
 });
 
@@ -147,6 +150,11 @@ test('init: adds the practices, keeps what is there, and doctor then finds nothi
   s.write('leak.md', `me${at}gmail.com\n`);
   s.git('add', 'leak.md');
   assert.notEqual(s.git('commit', '-qm', 'leak').status, 0);
+  s.write('leak.md', `${'AK'}IA${'Q7W3R9T2Y5Q7W3R9'}\n`);
+  s.git('add', 'leak.md');
+  const secret = s.git('commit', '-qm', 'leak');
+  assert.notEqual(secret.status, 0, 'a secret is refused too (#8)');
+  assert.match(secret.stderr, /leak\.md:1: a secret \(AWS access key id\)/);
   s.git('reset', '-q', 'leak.md');
   r = s.run(['doctor', '--session']);
   assert.equal(r.status, 0);

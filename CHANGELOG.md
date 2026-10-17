@@ -11,6 +11,10 @@ All notable changes are listed here. The format follows
 - `yokoten bot -- <command>` runs one command (`gh`, `git push`) as the bot GitHub App,
   with a one-hour token made from the App's key. The token is never printed, and git
   cannot fall back to the owner's login. The dispatch skill now uses it (#4).
+- The privacy check (commit, CI and `check --history`) also catches secrets: GitHub,
+  npm, Slack, Stripe live, Google, OpenAI and Anthropic tokens, AWS access key ids,
+  and PEM private keys. A hit names the kind, never the secret, and doctor's self-test
+  feeds it a sample (#8).
 
 ### Internal
 
