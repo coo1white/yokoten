@@ -56,15 +56,27 @@ no sign-up, is tied to no person, and its rights are listed one by one.
      change the CI that checks it (core rule 5).
    - Where can this App be installed: **Only on this account**.
 2. Create it. On the App's page, **Generate a private key**. A `.pem` file downloads.
-   Move it to `~/.config/yokoten/` and run `chmod 600` on it. Never commit it, never
-   paste it into a chat.
+   Move it to `~/.config/yokoten/bot.pem` and run `chmod 600` on it. Never commit it,
+   never paste it into a chat.
 3. **Install App** → only select repositories → this repo.
 4. Add a `.github/CODEOWNERS` file with `* @<you>`, so every pull request needs your
    review (step 1 requires it).
 
-The App signs in with short-lived tokens (one hour) made from the private key. A
-helper to make them is planned; until then, see GitHub's guide to authenticating as an
-App installation.
+5. Note the **App ID** (on the App's page, under About), and add it to your shell
+   profile: `export YOKOTEN_BOT_APP_ID=<the App ID>`.
+
+The lead then runs a command as the bot:
+
+```sh
+node .yokoten/bin/yokoten.ts bot -- git push -u origin my-branch
+node .yokoten/bin/yokoten.ts bot -- gh pr create --fill
+```
+
+yokoten makes a one-hour token from the key and gives it to that one command. The token
+is never printed, so it never lands in a transcript, and git cannot fall back to your own
+login. The guard still applies: `bot -- git push --tags` is stopped like any tag push.
+(Settings: `YOKOTEN_BOT_KEY` for another key path, `YOKOTEN_BOT_INSTALLATION` to skip
+looking the installation up.)
 
 ## What you have now
 

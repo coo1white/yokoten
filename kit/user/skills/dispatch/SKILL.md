@@ -47,5 +47,7 @@ never changes lead-only files (the guard stops it).
 1. Read the report, then read the diff. A report is a claim; the diff is the fact.
 2. Run the "done when" command yourself.
 3. Review with the `inspect` skill.
-4. Push the branch and open the pull request as the bot account, with `Closes #<n>`.
+4. Push the branch and open the pull request as the bot, with `Closes #<n>`:
+   `yokoten bot -- git push -u origin <branch>`, then `yokoten bot -- gh pr create`.
+   Never with the owner's login.
 5. Remove the worktree once the pull request is merged.

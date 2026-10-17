@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // yokoten: carry what one project learned into every project.
 
+import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
+import { botConfig, botEnv, installationToken, repoOf } from '../src/github/bot.ts';
 import { check, checkHistory, gitRoot } from '../src/run/check.ts';
 import { readToolCall } from '../src/agents/claude-code.ts';
 import { judge } from '../src/run/hook.ts';
@@ -20,6 +22,7 @@ const HELP = `yokoten ${VERSION}
   yokoten check [--staged]   layout, privacy and lead-only files (--staged: the next commit)
   yokoten check --history    the privacy check over every commit; run before going public
   yokoten hook [--commands-only]  the tool-call guard (reads a PreToolUse call on stdin)
+  yokoten bot -- <command>   run one command as the bot (gh, git push); the token is never printed
 `;
 
 const [cmd, ...args] = process.argv.slice(2);
@@ -38,7 +41,28 @@ function print(lines: string[], stream: NodeJS.WritableStream = process.stdout):
   if (lines.length) stream.write(`${lines.join('\n')}\n`);
 }
 
-function main(): number {
+async function bot(command: string[]): Promise<number> {
+  const config = botConfig(env);
+  if (typeof config === 'string') {
+    print([`yokoten bot: ${config}`], process.stderr);
+    return 1;
+  }
+  if (!command.length) {
+    print(['yokoten bot: no command. Example: yokoten bot -- gh pr create --fill'], process.stderr);
+    return 1;
+  }
+  const remote = execFileSync('git', ['remote', 'get-url', 'origin'], { encoding: 'utf8' });
+  const repo = repoOf(remote);
+  if (!repo) {
+    print(['yokoten bot: the origin remote is not a GitHub repo'], process.stderr);
+    return 1;
+  }
+  const token = await installationToken(config, repo);
+  const [file, ...rest] = command;
+  return spawnSync(file, rest, { stdio: 'inherit', env: botEnv(env, token) }).status ?? 1;
+}
+
+function main(): number | Promise<number> {
   switch (cmd) {
     case 'hook': {
       let input: unknown;
@@ -79,6 +103,8 @@ function main(): number {
       print(init(rootOf(dir) ?? dir));
       return 0;
     }
+    case 'bot':
+      return bot(args.slice(args.indexOf('--') === -1 ? 0 : args.indexOf('--') + 1));
     case 'install':
       print(install(env));
       return 0;
@@ -97,10 +123,15 @@ function main(): number {
   }
 }
 
-try {
-  process.exitCode = main();
-} catch (err) {
-  // Exit 1, not 2: a broken guard should be seen, not block every tool call.
-  process.stderr.write(`yokoten ${cmd}: ${(err as Error).message}\n`);
-  process.exitCode = 1;
-}
+// Exit 1, not 2, on an error: a broken guard should be seen, not block every tool call.
+Promise.resolve()
+  .then(main)
+  .then(
+    (code) => {
+      process.exitCode = code;
+    },
+    (err: Error) => {
+      process.stderr.write(`yokoten ${cmd}: ${err.message}\n`);
+      process.exitCode = 1;
+    },
+  );

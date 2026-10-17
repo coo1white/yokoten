@@ -10,8 +10,9 @@ const SRC = join(ROOT, 'src');
 
 // Lowest first. A module may import from its own layer or a lower one, never a higher.
 // rules: what is allowed, as pure functions. run: the checks at work (hook, commit, CI).
-// agents: one adapter per AI runtime. setup: writing yokoten into a machine or a project.
-const LAYERS = ['rules', 'run', 'agents', 'setup'];
+// agents: one adapter per AI runtime. github: the code host's API (the bot).
+// setup: writing yokoten into a machine or a project.
+const LAYERS = ['rules', 'run', 'agents', 'github', 'setup'];
 
 test('layers: no module imports from a layer above its own', () => {
   const found = new Set<string>();

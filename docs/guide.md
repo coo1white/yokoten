@@ -119,6 +119,7 @@ then run with no network and no global install.
 | `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public |
 | `hook [--commands-only]` | The tool-call guard. Reads a Claude Code PreToolUse call on stdin |
+| `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Setup: [server.md](server.md#3-the-bot-a-github-app) |
 
 
 ## The core rules
