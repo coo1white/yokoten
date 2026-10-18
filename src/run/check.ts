@@ -80,11 +80,16 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
     problems.push(...scanText(buf.toString('utf8'), { file: path, marks, allow: config.privacy.allow }));
   };
   if (staged) {
+    const files = stagedFiles(root);
+    // git sets GIT_INDEX_FILE for the commit hooks, so an empty commit or an amend is
+    // still checked. Run by hand with nothing staged, there is no commit to check (#208).
+    const isCommitting = files.length > 0 || env.GIT_INDEX_FILE !== undefined;
+    if (!isCommitting) notes.push(finding('time-zone', 'nothing is staged', 'stage a change with `git add`, then run it again', { why: 'with nothing staged there is no commit to check' }));
     // The commit about to be made: git var gives its author and committer, time included.
-    if (config.privacy.utc && ['GIT_AUTHOR_IDENT', 'GIT_COMMITTER_IDENT'].some((v) => notUtc(git(root, ['var', v])))) {
+    if (isCommitting && config.privacy.utc && ['GIT_AUTHOR_IDENT', 'GIT_COMMITTER_IDENT'].some((v) => notUtc(git(root, ['var', v])))) {
       problems.push(finding('time-zone', "this commit's time carries your time zone", TIME_ZONE_FIX));
     }
-    for (const { status, path } of stagedFiles(root)) {
+    for (const { status, path } of files) {
       const reason = checkEdit(path, { config, env });
       if (reason) problems.push(reason);
       if (status !== 'D') privacy(path, gitBytes(root, ['show', `:${path}`]));
@@ -185,6 +190,7 @@ export function checkHistory(root: string, { config, env }: { config: Config; en
   const wanted = types.filter((l) => l.endsWith(' blob')).map((l) => l.split(' ')[0]).filter((sha) => !skip(blobs.get(sha) ?? ''));
   if (wanted.length === 0) return [...problems.values()];
   const batch = gitBytes(root, ['cat-file', '--batch'], wanted.join('\n') + '\n');
+  const found = new Map<string, Finding[]>();
   let at = 0;
   while (at < batch.length) {
     const nl = batch.indexOf(10, at);
@@ -192,9 +198,35 @@ export function checkHistory(root: string, { config, env }: { config: Config; en
     const body = batch.subarray(nl + 1, nl + 1 + Number(size));
     at = nl + 1 + Number(size) + 1;
     if (isBinary(body)) continue;
-    add(scanText(body.toString('utf8'), { file: `${blobs.get(sha)} @ blob ${sha.slice(0, 8)}`, ...opts }));
+    const hits = scanText(body.toString('utf8'), { file: '', ...opts });
+    if (hits.length) found.set(sha, hits);
+  }
+  // Name each blob by the commit that added it (#208), read only when there is a hit.
+  const added = found.size ? firstCommits(root) : new Map<string, string>();
+  for (const [sha, hits] of found) {
+    const commit = added.get(sha);
+    const file = `${blobs.get(sha)} @ ${commit ?? `blob ${sha.slice(0, 8)}`}`;
+    const hint = commit ? '' : `; \`git log --all --find-object=${sha.slice(0, 8)}\` names the commit`;
+    add(hits.map((f) => ({ ...f, file, fix: f.fix + hint })));
   }
   return [...problems.values()];
+}
+
+/**
+ * The commit that first added each blob, by its first 8 characters: one walk of every
+ * branch, oldest first. A blob only a merge brings in is not found.
+ */
+function firstCommits(root: string): Map<string, string> {
+  const added = new Map<string, string>();
+  let commit = '';
+  for (const line of git(root, ['log', '--all', '--reverse', '--raw', '--no-abbrev', '--no-renames', '--format=commit %H']).split('\n')) {
+    if (line.startsWith('commit ')) commit = line.slice(7, 15);
+    else if (line.startsWith(':')) {
+      const sha = line.split(' ')[3];
+      if (sha && !added.has(sha)) added.set(sha, commit);
+    }
+  }
+  return added;
 }
 
 /** The history's time zone count (`historyTimeZones`), as a note. */

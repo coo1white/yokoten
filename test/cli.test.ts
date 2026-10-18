@@ -302,6 +302,30 @@ test('check --staged: stops a commit whose time carries a time zone, never print
   assert.equal(r.status, 0, r.stderr);
 });
 
+test('check --staged: with nothing staged, no commit time to check (#208)', () => {
+  const sandbox = makeSandbox();
+  const zoned = { TZ: 'Asia/Tokyo' };
+  // An empty repo, then one with a commit: nothing staged is ok, and says so.
+  for (const step of ['empty', 'committed']) {
+    if (step === 'committed') sandbox.git('commit', '-q', '--allow-empty', '-m', 'first');
+    const r = sandbox.run(['check', '--staged'], { extra: zoned });
+    assert.equal(r.status, 0, `${step}: ${r.stderr}`);
+    assert.match(r.stdout, /note: nothing is staged/);
+    assert.ok(!/time zone/.test(r.stderr), step);
+  }
+  // In the commit hook git sets GIT_INDEX_FILE: an empty commit or an amend is checked.
+  let r = sandbox.run(['check', '--staged'], { extra: { ...zoned, GIT_INDEX_FILE: join(sandbox.repo, '.git', 'index') } });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /carries your time zone/);
+  // A real staged change is still checked.
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', '.');
+  r = sandbox.run(['check', '--staged'], { extra: zoned });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /carries your time zone/);
+  assert.ok(!/nothing is staged/.test(r.stdout));
+});
+
 test('check --history: counts commits with a time zone, as a note that does not fail (#40)', () => {
   const sandbox = makeSandbox();
   sandbox.git('commit', '-q', '--allow-empty', '-m', 'utc');
@@ -323,8 +347,10 @@ test('check --history: finds what a later commit deleted, and a personal author 
   assert.equal(sandbox.run(['check']).status, 0, 'the tree today is clean');
   const r = sandbox.run(['check', '--history']);
   assert.equal(r.status, 1);
-  assert.match(r.stderr, /notes\.md @ blob \w+:1: an IP address/);
-  assert.match(r.stderr, /notes\.md @ blob \w+:2: a secret \(GitHub token\)/, 'a secret deleted later (#8)');
+  // Named by the commit that added the file (#208), not only by its blob.
+  const added = sandbox.git('rev-parse', 'HEAD~2').stdout.slice(0, 8);
+  assert.ok(r.stderr.includes(`notes.md @ ${added}:1: an IP address`), r.stderr);
+  assert.ok(r.stderr.includes(`notes.md @ ${added}:2: a secret (GitHub token)`), 'a secret deleted later (#8)');
   assert.ok(!r.stderr.includes(token), 'the secret is never printed');
   assert.match(r.stderr, /\(author\/committer\):1: an email/);
 });
