@@ -10,7 +10,8 @@ import { test } from 'node:test';
 import { annotation, annotations, appJwt, botConfig, botEnv, type Gh, installationToken, readCommandTitle, readServer, repoOf, type ServerSettings, stepSummary, type Unread } from '../src/host/github.ts';
 import { DEFAULTS } from '../src/rules/config.ts';
 import { checkCommand } from '../src/rules/guards.ts';
-import { doctor, serverChecks } from '../src/setup/doctor.ts';
+import { doctor } from '../src/setup/doctor.ts';
+import { road, ROAD, serverChecks, stepFinding } from '../src/setup/road.ts';
 import { LABELS, setUpPlanning } from '../src/setup/plan.ts';
 
 // A throwaway key, made for this test run only.
@@ -246,22 +247,74 @@ test("server: gh missing, signed out or refused is \"can't check\" with the fix,
   assert.match(checks.find((c) => c.id === 'delete-branch')?.finding.what ?? '', /only a repo admin/);
 });
 
-test('doctor: reads the server of a GitHub origin; a MISSING setting fails, a note does not (#7)', () => {
+const SERVER_KEYS = ['protection', 'merge-settings', 'security-settings'];
+const serverSteps = () => ROAD.filter((s) => SERVER_KEYS.includes(s.key));
+const serverFound = (server: Parameters<typeof road>[3]) => Object.fromEntries(road('.', {}, serverSteps(), server).map((r) => [r.step.key, r.found]));
+
+test('road: the server steps are stage 5, and pass a repo with every setting on (#7)', () => {
+  assert.deepEqual(serverSteps().map((s) => [s.key, s.stage]), SERVER_KEYS.map((key) => [key, 5]));
+  assert.deepEqual(serverFound(readServer(serverGh(GOOD).gh, REPO)), { protection: true, 'merge-settings': true, 'security-settings': true });
+});
+
+test('road: each server step catches its setting off, and says what and the fix (#7)', () => {
+  const each: [string, Record<string, unknown>, RegExp][] = [
+    ['protection', { [`repos/${REPO}/rules/branches/main`]: [{ type: 'pull_request', parameters: { allowed_merge_methods: ['squash'] } }] }, /no rule for no force push, no deletion; no CI check must pass before a merge; code owner review is not required/],
+    ['protection', { [`repos/${REPO}/rulesets/7`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'deletion' }] } }, /^no active tag ruleset on v\*/],
+    ['merge-settings', { [`repos/${REPO}`]: { ...(GOOD[`repos/${REPO}`] as object), delete_branch_on_merge: false } }, /^merged branches are not deleted$/],
+    ['merge-settings', { [`repos/${REPO}/rules/branches/main`]: [{ type: 'pull_request', parameters: { require_code_owner_review: true, allowed_merge_methods: ['squash', 'rebase'] } }, ...(GOOD[`repos/${REPO}/rules/branches/main`] as object[]).slice(1)] }, /not only by squash/],
+    ['security-settings', { [`repos/${REPO}/private-vulnerability-reporting`]: { enabled: false } }, /^private vulnerability reporting is off$/],
+  ];
+  for (const [key, change, what] of each) {
+    const server = readServer(serverGh({ ...GOOD, ...change }).gh, REPO);
+    const found = serverFound(server);
+    assert.equal(found[key], false, `${key} lets ${Object.keys(change)[0]} through`);
+    assert.equal(Object.values(found).filter((f) => f === false).length, 1, `only ${key} fails`);
+    const f = stepFinding(ROAD.find((s) => s.key === key)!, '.', {}, server);
+    assert.match(f.what, what);
+    assert.match(f.fix, /^in Settings, /);
+  }
+});
+
+test("road: with no gh, no network, a non-GitHub remote or a session, the server steps are can't check, never done (#7)", () => {
+  const unreads = [
+    undefined, // a session
+    readServer(() => { throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }); }, REPO),
+    readServer(() => { throw said(401); }, REPO),
+    readServer(() => { throw new Error('getaddrinfo ENOTFOUND api.github.com'); }, REPO),
+    { unread: 'the origin remote is not on a host yokoten knows (GitHub for now)', fix: 'add a GitHub origin remote, or check these settings by hand' },
+  ];
+  for (const server of unreads) assert.deepEqual(serverFound(server), { protection: null, 'merge-settings': null, 'security-settings': null });
+  const protection = ROAD.find((s) => s.key === 'protection')!;
+  assert.equal(protection.unchecked?.(undefined), 'a session never calls the network; run `yokoten doctor`');
+  assert.match(protection.unchecked?.(unreads[1]) ?? '', /^gh is not installed; get it from https:\/\/cli\.github\.com/);
+  // A setting only an admin can see is can't check too, not done.
+  const hidden = readServer(serverGh({ ...GOOD, [`repos/${REPO}`]: { default_branch: 'main' } }).gh, REPO);
+  assert.equal(serverFound(hidden)['merge-settings'], null);
+});
+
+test('doctor: reads the server of a GitHub origin into the road; a step not done fails, a note does not (#7)', () => {
   const root = mkdtempSync(join(tmpdir(), 'yokoten-server-'));
   execFileSync('git', ['init', '-q', root]);
   const run = (routes: Record<string, unknown>) => doctor(root, { env: { HOME: root }, config: DEFAULTS, gh: serverGh(routes).gh });
   let result = run(GOOD);
-  assert.match(result.lines.join('\n'), /^ {2}can't check server-settings: can't check: the origin remote is not on a host yokoten knows/m);
+  const text = () => result.lines.join('\n');
+  assert.match(text(), /^ {2}can't check server-settings: can't check: the origin remote is not on a host yokoten knows/m);
+  assert.match(text(), /^ {4}can't check protection \(Scorecard: Branch-Protection\): the origin remote is not on a host yokoten knows/m);
   assert.ok(result.lines.some((l) => /secret scanning with push protection/.test(l)), 'the by-hand list when nothing is read');
   execFileSync('git', ['remote', 'add', 'origin', `https://github.com/${REPO}.git`], { cwd: root });
   result = run(GOOD);
-  assert.ok(result.lines.includes('  ok          main-rules'));
+  for (const key of SERVER_KEYS) assert.equal(result.report.steps?.find((s) => s.id === key)?.mark, 'done', key);
+  assert.ok(!result.lines.some((l) => /main-rules/.test(l)), 'the road shows the setting; the server list does not repeat it');
   assert.ok(result.report.notes?.some((n) => n.id === 'forgotten-branches'));
-  assert.ok(!result.report.findings.some((f) => f.id.startsWith('server') || f.id === 'main-rules'));
+  assert.ok(!result.report.findings.some((f) => f.id.startsWith('server') || SERVER_KEYS.includes(f.id)));
   result = run({ ...GOOD, [`repos/${REPO}/rules/branches/main`]: [] });
   assert.equal(result.ok, false);
+  assert.equal(result.report.steps?.find((s) => s.id === 'protection')?.mark, 'to do');
   assert.deepEqual(result.report.server?.find((s) => s.id === 'main-rules'), { id: 'main-rules', mark: 'MISSING' });
-  assert.ok(result.report.findings.some((f) => f.id === 'required-checks'));
+  assert.match(result.report.findings.find((f) => f.id === 'protection')?.what ?? '', /no CI check must pass before a merge/);
+  // A session never calls gh, so the server steps never hold its stage.
+  const session = doctor(root, { env: { HOME: root }, config: DEFAULTS, session: true, gh: () => { throw new Error('a session called gh'); } });
+  assert.notEqual(session.report.next?.id, 'protection');
 });
 
 // #91: workflow commands, escaped as GitHub's runner decodes them

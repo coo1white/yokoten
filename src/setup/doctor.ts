@@ -28,7 +28,7 @@ import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '.
 import { runtimeVersion, VERSION } from './files.ts';
 import { compareCoreRules, readCoreRules, summarizeUpdate } from './init.ts';
 import { paths } from './install.ts';
-import { type Mark, road, STAGES, stepFinding, stepText, walk } from './road.ts';
+import { type Mark, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
 
 /** One check outside the road: its name in the report, whether it is in place, and the finding when it is not. */
 interface Practice {
@@ -103,13 +103,28 @@ export function coreRulesCheck(root: string): { mark: 'ok' | 'MISSING' | 'note';
   return { mark: 'MISSING', finding: finding('core-rules', `the core rules in AGENTS.md are behind yokoten ${VERSION}'s, or were edited by hand (${summarizeUpdate(rules)})`, fix) };
 }
 
-/** In a folder with nothing but a todo file, and a home with nothing in it, no step on the road may be done. */
+/** A server with every setting off: no server step on the road may pass it (#7). */
+const SERVER_CONTROL: ServerRead = {
+  repo: 'octo/demo',
+  defaultBranch: 'main',
+  mergeMethods: ['merge', 'squash'],
+  deleteBranchOnMerge: false,
+  branch: { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false },
+  tags: false,
+  security: { secretScanning: false, pushProtection: false, privateReporting: false, dependabotAlerts: false },
+  forgotten: [],
+};
+
+/**
+ * In a folder with nothing but a todo file, a home with nothing in it, and a server with
+ * every setting off, no step on the road may be done.
+ */
 function roadControl(): string[] {
   let dir = '';
   try {
     dir = mkdtempSync(join(tmpdir(), 'yokoten-control-'));
     writeFileSync(join(dir, 'TODO.md'), '- an item\n');
-    return road(dir, { HOME: dir })
+    return road(dir, { HOME: dir }, ROAD, SERVER_CONTROL)
       .filter((r) => r.found === true)
       .map((r) => `the ${r.step.key} step`);
   } catch {
@@ -128,49 +143,6 @@ const BY_HAND = [
   'tags: a ruleset on v* so only you create, move or delete a release tag',
   'security: in Settings, Advanced Security, turn on private vulnerability reporting, secret scanning with push protection, and Dependabot alerts',
 ];
-
-/** One server setting as doctor reports it. A "can't check" or a note never fails doctor. */
-export interface ServerCheck {
-  id: RuleId;
-  mark: 'ok' | 'MISSING' | "can't check" | 'note';
-  finding: Finding;
-}
-
-const RULESET = 'in Settings, Rules, Rulesets, edit the ruleset on the default branch';
-
-/** Each server setting, judged. `settings` is what the host adapter read, or why it could not. */
-export function serverChecks(settings: ServerSettings | Unread): ServerCheck[] {
-  const cant = (id: RuleId, u: Unread): ServerCheck => ({ id, mark: "can't check", finding: finding(id, `can't check: ${u.unread}`, u.fix) });
-  if ('unread' in settings) return [cant('server-settings', settings)];
-  const judge = (id: RuleId, found: boolean | Unread | null, what: string, fix: string): ServerCheck => {
-    if (found === null) return cant(id, { unread: 'only a repo admin can see this setting', fix: 'run doctor signed in to gh as a repo admin' });
-    if (typeof found !== 'boolean') return cant(id, found);
-    return { id, mark: found ? 'ok' : 'MISSING', finding: finding(id, what, fix) };
-  };
-  const { branch, security: sec } = settings;
-  const rules = 'unread' in branch ? null : branch;
-  const lacking = rules ? [rules.pullRequest ? '' : 'a pull request', rules.noForcePush ? '' : 'no force push', rules.noDeletion ? '' : 'no deletion'].filter(Boolean) : [];
-  const squash = rules?.mergeMethods.length ? rules.mergeMethods.join() === 'squash' : settings.mergeMethods && settings.mergeMethods.join() === 'squash';
-  const off = ([['secret scanning', sec.secretScanning], ['push protection', sec.pushProtection], ['private vulnerability reporting', sec.privateReporting], ['Dependabot alerts', sec.dependabotAlerts]] as const)
-    .filter(([, on]) => on === false).map(([name]) => name);
-  const unknown = Object.values(sec).some((on) => on === null);
-  const checks = [
-    judge('main-rules', rules ? !lacking.length : branch as Unread, `the default branch (${settings.defaultBranch}) has no rule for ${lacking.join(', ')}`, `${RULESET}, or add one, and turn those rules on`),
-    judge('required-checks', rules ? rules.requiredChecks.length > 0 : branch as Unread, 'no CI check must pass before a merge', `${RULESET}: require status checks, and add the CI check by name (yokoten's kit names it \`ci\`)`),
-    judge('code-owner-review', rules ? rules.codeOwnerReview : branch as Unread, 'code owner review is not required', `${RULESET}: in "Require a pull request", turn on "Require review from Code Owners"`),
-    judge('squash-only', squash, 'pull requests can merge by merge commit or rebase, not only by squash', 'in Settings, General, Pull Requests, allow squash merging only'),
-    judge('delete-branch', settings.deleteBranchOnMerge, 'merged branches are not deleted', 'in Settings, General, Pull Requests, turn on "Automatically delete head branches"'),
-    judge('tag-rules', settings.tags, 'no active tag ruleset on v* that restricts creation, update and deletion', 'in Settings, Rules, Rulesets, add a tag ruleset on v* with those three rules, and you on the bypass list'),
-    judge('security-switches', off.length ? false : unknown ? null : true, `${off.join(', ')} ${off.length > 1 ? 'are' : 'is'} off`, 'in Settings, Advanced Security, turn them on'),
-  ];
-  const { forgotten } = settings;
-  if ('unread' in forgotten) checks.push(cant('forgotten-branches', forgotten));
-  else if (forgotten.length) {
-    const named = `${forgotten.slice(0, 3).join(', ')}${forgotten.length > 3 ? `, and ${forgotten.length - 3} more` : ''}`;
-    checks.push({ id: 'forgotten-branches', mark: 'note', finding: finding('forgotten-branches', `${forgotten.length} branch(es) with no open pull request (${named})`, 'open a pull request for each, or delete the ones you no longer need; doctor never deletes a branch') });
-  }
-  return checks;
-}
 
 /** The server settings of the project's origin remote, or why they can't be read. */
 function readOrigin(root: string, gh: Gh): ServerSettings | Unread {
@@ -240,9 +212,11 @@ export function doctor(
   const base = { version: VERSION, selfTest: { ok: !failed.length, failed }, stages: STAGES };
   if (!root) return { ok: !failed.length, lines, report: { ...base, ok: !failed.length, repo: false, stage: null, next: null, findings } };
 
-  const where = walk(road(root, env), config.notNow);
+  // Read only, and only in full doctor: a session never calls the network (record 0004).
+  const server: ServerRead = session ? undefined : gh ? readOrigin(root, gh) : { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' };
+  const where = walk(road(root, env, ROAD, server), config.notNow);
   const machine = machineChecks(env);
-  const next = where.next ? stepFinding(where.next, root, env) : null;
+  const next = where.next ? stepFinding(where.next, root, env, server) : null;
   const core = coreRulesCheck(root);
   const isCoreBehind = core?.mark === 'MISSING';
 
@@ -278,10 +252,10 @@ export function doctor(
       let note = '';
       if (mark === 'not now') note = state.reason = config.notNow[step.key];
       else if (mark === 'next' || mark === 'to do') {
-        const f = stepFinding(step, root, env);
+        const f = stepFinding(step, root, env, server);
         findings.push(f);
         note = stepText(f);
-      }
+      } else if (mark === "can't check" && step.unchecked) note = step.unchecked(server);
       steps.push(state);
       lines.push(`    ${mark.padEnd(11)} ${step.key}${step.standard ? ` (${step.standard})` : ''}${note ? `: ${note}` : ''}`);
     }
@@ -305,16 +279,15 @@ export function doctor(
     lines.push(`  ${c.ok ? 'ok     ' : 'MISSING'} ${c.name}${c.ok ? '' : `: ${stepText(c.finding)}`}`);
     if (!c.ok) findings.push(c.finding);
   }
-  // Read only, and only in full doctor: a session never calls the network.
-  const server = serverChecks(gh ? readOrigin(root, gh) : { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' });
+  // The road's stage 5 shows the settings it groups (#7); here are the rest, which never fail doctor.
+  const settings = serverChecks(server ?? { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' });
   lines.push('server (read only; the owner sets these once per repo):');
-  for (const c of server) {
+  for (const c of settings.filter((c) => !ROAD_SERVER_IDS.includes(c.id))) {
     lines.push(`  ${c.mark.padEnd(11)} ${c.id}${c.mark === 'ok' ? '' : `: ${stepText(c.finding)}`}`);
-    if (c.mark === 'MISSING') findings.push(c.finding);
-    else if (c.mark !== 'ok') notes.push(c.finding);
+    if (c.mark !== 'ok') notes.push(c.finding);
   }
-  if (server[0].id === 'server-settings') lines.push('  check these by hand:', ...BY_HAND.map((s) => `    ${s}`));
+  if (settings[0].id === 'server-settings') lines.push('  check these by hand:', ...BY_HAND.map((s) => `    ${s}`));
   lines.push(...OWNER_STEPS.map((s) => `  not checked ${s}`));
-  const ok = !failed.length && !where.next && !isCoreBehind && !problems.length && machine.every((c) => c.ok) && server.every((c) => c.mark !== 'MISSING');
-  return { ok, lines, report: { ...base, ok, repo: true, stage: where.stage, next, findings, steps, notes, server: server.map(({ id, mark }) => ({ id, mark })) } };
+  const ok = !failed.length && !where.next && !isCoreBehind && !problems.length && machine.every((c) => c.ok);
+  return { ok, lines, report: { ...base, ok, repo: true, stage: where.stage, next, findings, steps, notes, server: settings.map(({ id, mark }) => ({ id, mark })) } };
 }
