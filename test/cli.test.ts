@@ -423,6 +423,104 @@ test('init: safe defaults, Dependabot and a security policy; doctor lists the se
   for (const sw of [/private vulnerability reporting/, /secret scanning with push protection/, /Dependabot alerts/]) assert.match(doctor.stdout, sw);
 });
 
+/** The doctor --json mark of one road step. */
+const stepMark = (sandbox: ReturnType<typeof makeSandbox>, id: string) =>
+  (JSON.parse(sandbox.run(['doctor', '--json']).stdout).steps as { id: string; mark: string }[]).find((step) => step.id === id)?.mark;
+
+test("init: a CLAUDE.md gets one line that imports AGENTS.md, and doctor's rules step wants it (#206)", () => {
+  const sandbox = makeSandbox();
+  sandbox.write('CLAUDE.md', '# our rules\n\nRun the tests first.\n');
+  sandbox.write('AGENTS.md', '# shared rules\n');
+  assert.notEqual(stepMark(sandbox, 'rules'), 'done', 'AGENTS.md that Claude Code does not read is not done');
+  assert.match(sandbox.run(['doctor']).stdout, /rules[^\n]*: CLAUDE\.md does not import AGENTS\.md[^\n]*; add a line `@AGENTS\.md`/);
+  rmSync(join(sandbox.repo, 'AGENTS.md'));
+  let result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /wrote AGENTS\.md/);
+  assert.match(result.stdout, /updated CLAUDE\.md: it now reads AGENTS\.md/);
+  const claude = readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8');
+  assert.ok(claude.startsWith('# our rules\n\nRun the tests first.\n\n'), 'the project\'s own lines stay');
+  assert.match(claude, /\n<!--[^\n]*-->\n@AGENTS\.md\n$/, 'a comment line, then the import, at the end');
+  assert.equal(stepMark(sandbox, 'rules'), 'done');
+  // Again: one import, not two.
+  result = sandbox.run(['init']);
+  assert.doesNotMatch(result.stdout, /updated CLAUDE\.md/);
+  assert.equal(readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8'), claude);
+});
+
+test('init: a CLAUDE.md that already imports or links AGENTS.md is left as it is (#206)', () => {
+  for (const text of [`# rules\n${at}AGENTS.md\n`, '# rules\nSee [the rules](AGENTS.md).\n', `# rules\nRead ${at}./AGENTS.md first.\n`]) {
+    const sandbox = makeSandbox();
+    sandbox.write('CLAUDE.md', text);
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stdout, /CLAUDE\.md/, text);
+    assert.equal(readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8'), text);
+    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+  }
+});
+
+test("init: husky keeps its hooks folder; .husky/pre-commit gets the check and keeps its own lines (#206)", () => {
+  const sandbox = makeSandbox();
+  sandbox.write('.husky/pre-commit', '#!/bin/sh\ntouch own-hook-ran\n');
+  chmodSync(join(sandbox.repo, '.husky/pre-commit'), 0o755);
+  sandbox.git('config', 'core.hooksPath', '.husky');
+  let result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /added the check to \.husky\/pre-commit: the commit check \(kept core\.hooksPath \(husky\)/);
+  assert.doesNotMatch(result.stdout, /set git core\.hooksPath/);
+  assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '.husky', 'the project\'s hooks folder stays');
+  assert.ok(!existsSync(join(sandbox.repo, '.githooks')), 'no second hooks folder that git never runs');
+  const hook = readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8');
+  assert.match(hook, /^#!\/bin\/sh\n# yokoten: [^\n]*\nnode "\.yokoten\/bin\/yokoten\.ts" check --staged \|\| exit 1\ntouch own-hook-ran\n$/);
+  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  // Again: the hook already runs yokoten.
+  result = sandbox.run(['init']);
+  assert.match(result.stdout, /same \.husky\/pre-commit/);
+  assert.equal(readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8'), hook);
+  // A real commit runs both: the project's hook and the yokoten check.
+  sandbox.git('add', '.');
+  const commit = sandbox.git('commit', '-qm', 'adopt yokoten');
+  assert.equal(commit.status, 0, commit.stderr);
+  assert.ok(existsSync(join(sandbox.repo, 'own-hook-ran')), 'the project\'s own hook still runs');
+  sandbox.write('leak.md', `me${at}gmail.com\n`);
+  sandbox.git('add', 'leak.md');
+  assert.notEqual(sandbox.git('commit', '-qm', 'leak').status, 0);
+});
+
+test('init: husky not yet installed in this clone; init leaves core.hooksPath unset and says to run npm install (#206)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('.husky/pre-commit', 'npm test\n');
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /added the check to \.husky\/pre-commit/);
+  assert.match(result.stdout, /run `npm install`/);
+  assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '');
+  assert.match(readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8'), /^# yokoten: [^\n]*\nnode [^\n]*\nnpm test\n$/);
+  assert.notEqual(stepMark(sandbox, 'commit-check'), 'done', 'git runs no hook yet');
+  assert.match(sandbox.run(['doctor']).stdout, /run `npm install` so husky sets core\.hooksPath/);
+  sandbox.git('config', 'core.hooksPath', '.husky/_');
+  assert.equal(stepMark(sandbox, 'commit-check'), 'done', "husky 9's folder runs .husky/pre-commit");
+});
+
+test("init: another core.hooksPath is kept, and its pre-commit is made with the check (#206)", () => {
+  const sandbox = makeSandbox();
+  sandbox.write('tools/hooks/commit-msg', '#!/bin/sh\n');
+  sandbox.git('config', 'core.hooksPath', 'tools/hooks');
+  assert.match(sandbox.run(['doctor']).stdout, /tools\/hooks\/pre-commit does not run yokoten/);
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /wrote tools\/hooks\/pre-commit: the commit check \(kept core\.hooksPath \(tools\/hooks\)/);
+  assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), 'tools/hooks');
+  assert.ok(statSync(join(sandbox.repo, 'tools/hooks/pre-commit')).mode & 0o100, 'executable');
+  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  sandbox.git('add', '.');
+  assert.equal(sandbox.git('commit', '-qm', 'adopt yokoten').status, 0);
+  sandbox.write('leak.md', `me${at}gmail.com\n`);
+  sandbox.git('add', 'leak.md');
+  assert.notEqual(sandbox.git('commit', '-qm', 'leak').status, 0, 'the check runs from the project\'s folder');
+});
+
 // A lesson added to the kit's core rules reaches a project that already ran init (#120).
 test('update: doctor says when the core rules are behind; update previews, and --write keeps "This project" byte for byte (#120)', () => {
   const sandbox = makeSandbox();
