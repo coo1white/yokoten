@@ -344,6 +344,12 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 | `explain [<id>]` | 讲一条规则或者路上的一步：它是什么、为什么要有、yokoten 怎么检查 |
 | `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。如果命令是 `gh issue` 或 `gh pr` 的 `create`、`edit`，并且带了标题，它会先按 CI 的规则检查标题；标题不合格就直接拒绝，什么都不会发出去。设置方法见 [server.md](../server.md#3-the-bot-a-github-app) |
 
+每个命令后面加 `--help` 或 `-h`，就会打出它自己的说明：做什么、有哪些选项、一个例子。
+`yokoten help <命令>` 打出的也一样，`yokoten --help` 列出所有命令。看说明不会改任何东西，
+退出码是 0。命令或选项打错了，yokoten 会提示最接近的那个，比如 `yokoten docter` 会问
+你是不是想打 "doctor"。`bot --` 后面的词都交给要运行的命令，所以
+`yokoten bot -- gh --help` 运行的是 `gh --help`。
+
 `check`、`doctor`、`hook`、`explain` 都可以加 `--json`。加了以后，标准输出里只有 JSON，
 别的什么都没有，方便 AI 和脚本读。每条结果的字段都一样：`id`、`what`、`why`、`fix`；
 指南里讲到这条规则的，再加 `docs`（链接）；问题出在文件里的，再加 `file` 和 `line`。
