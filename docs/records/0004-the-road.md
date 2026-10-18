@@ -156,3 +156,10 @@ the rules, skills or hooks change.
 - Tests: each stage boundary (a repo with stage N done reports stage N+1), the "not now"
   skip, the "can't check" case, and a fresh empty repo that reaches stage 5 by following
   only what `doctor` says.
+
+## Update (2026-10-18)
+
+Stage 3 checks `changelog` and `titles` only. `first-release` is left out: many new
+projects do not release for a long time, and the stage would hold them there and hide
+stages 4 and 5. When to ship is the owner's call, not the tool's. A first tag may come back
+later as a note, never as a gate (#34, #79).

@@ -103,5 +103,7 @@ yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
 - **Versions** follow [Semantic Versioning](https://semver.org/). Before 1.0, a minor
   bump may break things; say so in the changelog.
 - **`CHANGELOG.md`**: every pull request that changes behaviour adds a line under
-  `[Unreleased]`. At release, the owner moves those lines under the new version,
-  bumps `package.json`, and creates the `vX.Y.Z` tag. Agents never tag (core rule 3).
+  `[Unreleased]`. At release, an agent may prepare a `chore: release vX.Y.Z` pull request
+  (the `release` skill): it proposes the version, and after the owner agrees it moves
+  those lines under the new version and bumps `package.json`. The owner reviews and
+  merges it, then creates the `vX.Y.Z` tag. Agents never tag (core rule 3).

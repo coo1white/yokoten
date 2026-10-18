@@ -227,7 +227,7 @@ test('check --history: finds what a later commit deleted, and a personal author 
   assert.match(r.stderr, /\(author\/committer\):1: an email/);
 });
 
-test('init: adds the practices, keeps what is there, and doctor goes on to stage 3', () => {
+test('init: adds the practices, keeps what is there, and doctor goes on to stage 4', () => {
   const s = sandbox();
   s.write('AGENTS.md', '# our own rules\n');
   s.write('.github/SECURITY.md', '# email us\n');
@@ -244,6 +244,8 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.match(r.stdout, /kept \.github\/SECURITY\.md/);
   assert.equal(readFileSync(join(s.repo, '.github/SECURITY.md'), 'utf8'), '# email us\n', 'the project\'s own policy stays');
   assert.match(r.stdout, /wrote \.github\/dependabot\.yml/);
+  assert.match(r.stdout, /wrote CHANGELOG\.md/);
+  assert.match(readFileSync(join(s.repo, 'CHANGELOG.md'), 'utf8'), /^## \[Unreleased\]$/m, 'the changelog skeleton (#34)');
   assert.ok(statSync(join(s.repo, '.githooks', 'pre-commit')).mode & 0o100);
   const workflow = readFileSync(join(s.repo, '.github/workflows/yokoten.yml'), 'utf8');
   assert.match(workflow, /node \.yokoten\/bin\/yokoten\.ts check/);
@@ -257,6 +259,7 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   r = s.run(['init']);
   assert.match(r.stdout, /kept \.github\/SECURITY\.md/);
   assert.match(r.stdout, /kept \.github\/dependabot\.yml/);
+  assert.match(r.stdout, /kept CHANGELOG\.md/);
   assert.match(r.stdout, /same the tool-call hook/);
   assert.match(r.stdout, /same TZ=UTC for agent sessions/);
   const settings = JSON.parse(readFileSync(join(s.repo, '.claude', 'settings.json'), 'utf8'));
@@ -292,12 +295,12 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.notEqual(secret.status, 0, 'a secret is refused too (#8)');
   assert.match(secret.stderr, /leak\.md:1: a secret \(AWS access key id\)/);
   s.git('reset', '-q', 'leak.md');
-  // init does all of stages 1 and 2 but the tests, so with tests the road goes on to stage 3.
+  // init does all of stages 1 to 3 but the tests, so with tests the road goes on to stage 4.
   assert.match(s.run(['doctor', '--session']).stdout, /^yokoten: stage 1 of 5, safety net\. Next: no test command/);
   s.withTests();
   r = s.run(['doctor', '--session']);
   assert.equal(r.status, 0);
-  assert.match(r.stdout, /^yokoten: stage 3 of 5, release\. Next: no CHANGELOG\.md/);
+  assert.match(r.stdout, /^yokoten: stage 4 of 5, a team of agents\. Next: no CODEOWNERS file/);
 });
 
 test('init: safe defaults, Dependabot and a security policy; doctor lists the security switches (#35)', () => {
@@ -365,7 +368,8 @@ test('doctor: each stage boundary, from a fresh repo to the end of the road', ()
   s.run(['init']);
   assert.match(next(), /stage 2 of 5, issues and pull requests\. Next: a todo file \(TODO\.md\)/);
   rmSync(join(s.repo, 'TODO.md'));
-  // Stage 2 done.
+  // Stage 2 done. init wrote a changelog; without it, stage 3 is next.
+  rmSync(join(s.repo, 'CHANGELOG.md'));
   assert.match(next(), /stage 3 of 5, release\. Next: no CHANGELOG\.md/);
   s.write('CHANGELOG.md', '# Changelog\n\n## [Unreleased]\n');
   // Stage 3 done.
@@ -420,7 +424,11 @@ test('install: skills, agents and hooks once, the user\'s own files untouched', 
   assert.equal(readFileSync(join(claude, 'agents', 'reviewer.md'), 'utf8'), 'my own reviewer\n');
   // Every skill in both folders: Claude Code's, and the shared one other agents read (#29).
   const kitSkills = readdirSync(join(s.home, '.local/share/yokoten/kit/user/skills'));
-  assert.ok(kitSkills.length > 0);
+  assert.ok(kitSkills.includes('release'), 'the release skill (#34)');
+  // The release skill leaves the tag to the owner: the tag command it gives is stopped for an agent.
+  const tagLine = readFileSync(join(claude, 'skills', 'release', 'SKILL.md'), 'utf8').match(/`(git tag [^`]+)`/);
+  assert.ok(tagLine);
+  assert.equal(s.run(['hook'], { input: JSON.stringify({ cwd: s.repo, tool_input: { command: tagLine[1].replaceAll('X.Y.Z', '1.2.3') } }) }).status, 2);
   for (const name of kitSkills) {
     assert.ok(existsSync(join(claude, 'skills', name, 'SKILL.md')), `~/.claude/skills/${name}`);
     assert.ok(existsSync(join(shared, 'skills', name, 'SKILL.md')), `~/.agents/skills/${name}`);

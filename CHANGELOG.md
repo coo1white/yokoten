@@ -13,6 +13,11 @@ All notable changes are listed here. The format follows
   `--yes` it only says what it would make. It keeps what is there and deletes nothing.
   `init` now refuses an unknown option (#10).
 - The secret check catches Meta Model API keys (`LLM_` with an app id and a secret) (#68).
+- A release flow for every project. `init` adds a `CHANGELOG.md` with an
+  `[Unreleased]` section when the project has none. The new `release` skill picks the
+  next version from the changelog, before 1.0 and after. It prepares the release pull
+  request; only the owner creates the tag. Kit change: every project gets the changelog
+  on its next `init`, and the skill on the next `install` (#34).
 - Full `doctor` reads the server settings through `gh` and reports each as ok, missing
   or can't check: the rules on the default branch, the required CI check, code owner
   review, squash only, delete branch on merge, the tag ruleset on `v*` and the security
