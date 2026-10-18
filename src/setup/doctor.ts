@@ -107,13 +107,22 @@ export function coreRulesCheck(root: string): { mark: 'ok' | 'MISSING' | 'note';
 /** The one command that updates the plugin, from a shell. */
 export const PLUGIN_UPDATE = '`claude plugin update yokoten@yokoten`, then restart Claude Code';
 
-/** The commit at HEAD in `root`, or null outside a git repo. */
-function readHead(root: string): string | null {
-  try {
-    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-  } catch {
-    return null;
+/** The default branch refs doctor compares against, the first one present wins. Local only, no fetch. */
+const DEFAULT_BRANCH_REFS = ['refs/remotes/origin/HEAD', 'refs/remotes/origin/main', 'refs/heads/main'];
+
+/**
+ * The commit at the tip of the default branch in `root`: `origin/HEAD`, else `origin/main`,
+ * else `main`, whichever exists locally. Null when none does, or outside a git repo.
+ */
+function readDefaultBranch(root: string): string | null {
+  for (const ref of DEFAULT_BRANCH_REFS) {
+    try {
+      return execFileSync('git', ['rev-parse', '--verify', '-q', `${ref}^{commit}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {
+      // Not here; try the next one.
+    }
   }
+  return null;
 }
 
 /** Whether `older` is in the history of `newer` in `root`. False when git doesn't know `older`. */
@@ -130,7 +139,9 @@ function isAncestor(root: string, older: string, newer: string): boolean {
  * A note when the enabled yokoten plugin is older than what doctor knows offline (#198).
  * Two comparisons, the first that can tell wins:
  * the plugin's package version against this yokoten's, and, in yokoten's own repo, the
- * plugin's commit against HEAD: older only when it is in HEAD's history and not HEAD.
+ * plugin's commit against the default branch's tip: older only when it is in that tip's
+ * history and not the tip. Not HEAD: on a feature branch HEAD descends from an up-to-date
+ * plugin, and an update could not help.
  * Anything doctor can't compare (no install, an odd file, a commit git doesn't know) says
  * nothing. A note, never a failure. Files and local git only, so a session can run it.
  */
@@ -142,9 +153,9 @@ export function pluginAgeCheck(root: string | null, env: Env): Finding | null {
   const note = (older: string, newer: string) => finding('machine-runtime', `the yokoten plugin is older than this yokoten (${older} < ${newer})`, `update it: ${PLUGIN_UPDATE}`, { why });
   if (plugin.version && compareVersions(plugin.version, VERSION) === -1) return note(plugin.version, VERSION);
   if (!root || !plugin.commit || !isSelf(root)) return null;
-  const head = readHead(root);
-  if (!head || head === plugin.commit || !isAncestor(root, plugin.commit, head)) return null;
-  return note(plugin.commit.slice(0, 12), head.slice(0, 12));
+  const tip = readDefaultBranch(root);
+  if (!tip || tip === plugin.commit || !isAncestor(root, plugin.commit, tip)) return null;
+  return note(plugin.commit.slice(0, 12), tip.slice(0, 12));
 }
 
 /** A server with every setting off, no label and only a closed milestone: no server step on the road may pass it (#7, #10). */
