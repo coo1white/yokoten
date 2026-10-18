@@ -20,7 +20,7 @@ import { hasPlugin, hasProjectHook } from '../agents/claude-code.ts';
 import { runs } from '../run/cli.ts';
 import { hasBot, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
-import { isSelf } from './init.ts';
+import { claudeReadsRules, cliPath, hookFile, isSelf } from './init.ts';
 import { FIRST_MILESTONE, lackingLabels, pickNewMilestone } from './plan.ts';
 import { skillFiles, skillsDir } from './install.ts';
 
@@ -279,16 +279,22 @@ const newMilestoneOf = (server: ServerRead) => {
   return ('unread' in planning ? null : pickNewMilestone(planning.milestones)) ?? FIRST_MILESTONE;
 };
 
+/** The pre-commit git runs here, by core.hooksPath, relative to the root; null when that is unset or outside the repo. */
+const commitHook = (root: string): string | null => {
+  const hooksPath = gitConfig(root, 'core.hooksPath');
+  return hooksPath ? hookFile(root, hooksPath) : null;
+};
+
 /** The road, in order. Step names never change: they are the keys for "not now". */
 export const ROAD: Step[] = [
   {
     stage: 1,
     key: 'rules',
-    check: (root) => existsSync(join(root, 'AGENTS.md')),
-    what: () => 'no AGENTS.md, so the agents have no written rules here',
-    fix: () => '`yokoten init` adds one',
+    check: (root) => existsSync(join(root, 'AGENTS.md')) && claudeReadsRules(root),
+    what: (root) => (existsSync(join(root, 'AGENTS.md')) ? 'CLAUDE.md does not import AGENTS.md, so Claude Code does not read the rules' : 'no AGENTS.md, so the agents have no written rules here'),
+    fix: (root) => (existsSync(join(root, 'AGENTS.md')) ? 'add a line `@AGENTS.md` at the end of CLAUDE.md, or run `yokoten init`' : '`yokoten init` adds one'),
     why: 'an agent follows the rules it can read, and only those',
-    how: 'AGENTS.md is at the repo root',
+    how: 'AGENTS.md is at the repo root, and a CLAUDE.md, when there is one, imports it (`@AGENTS.md`) or links to it: with a CLAUDE.md, Claude Code reads AGENTS.md only through it',
     standard: 'OpenSSF: AI code assistant instructions',
   },
   {
@@ -303,11 +309,23 @@ export const ROAD: Step[] = [
   {
     stage: 1,
     key: 'commit-check',
-    check: (root) => gitConfig(root, 'core.hooksPath') === '.githooks' && runs('check').test(read(join(root, '.githooks', 'pre-commit'))),
-    what: () => 'commits are not checked: core.hooksPath is not .githooks, or .githooks/pre-commit does not run yokoten',
-    fix: () => '`yokoten init` sets both',
+    check: (root) => {
+      const file = commitHook(root);
+      return file !== null && runs('check').test(read(join(root, file)));
+    },
+    what: (root) => {
+      const file = commitHook(root);
+      if (file) return `commits are not checked: ${file} does not run yokoten`;
+      return gitConfig(root, 'core.hooksPath') ? 'commits are not checked: core.hooksPath is outside this repo' : 'commits are not checked: core.hooksPath is not set';
+    },
+    fix: (root) => {
+      if (!gitConfig(root, 'core.hooksPath') && existsSync(join(root, '.husky'))) return 'run `npm install` so husky sets core.hooksPath, then `yokoten init`';
+      const file = commitHook(root);
+      if (file && file !== '.githooks/pre-commit') return `\`yokoten init\` adds the check to ${file}, or add the line \`node "${cliPath(root)}" check --staged || exit 1\` there yourself`;
+      return '`yokoten init` sets it up';
+    },
     why: 'a secret or a personal email is hard to take back once a commit is pushed',
-    how: 'git config core.hooksPath is .githooks, and .githooks/pre-commit runs `yokoten check`',
+    how: "the pre-commit that git runs from core.hooksPath runs `yokoten check`: .githooks/pre-commit, or the project's own (husky: .husky/pre-commit)",
     standard: 'OSPS-BR-07.01',
   },
   {
