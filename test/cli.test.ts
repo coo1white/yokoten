@@ -618,7 +618,12 @@ test('install: skills, agents and hooks once, the user\'s own files untouched', 
   mkdirSync(join(shared, 'skills', 'rca'), { recursive: true });
   writeFileSync(join(shared, 'skills', 'rca', 'SKILL.md'), 'my own rca\n');
   writeFileSync(join(claude, 'settings.json'), JSON.stringify({ model: 'x', hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'other' }] }] } }));
-  let result = sandbox.run(['install']);
+  // An unknown option is refused, and nothing is written (#203).
+  const homeBefore = readdirSync(sandbox.home, { recursive: true }).sort();
+  let result = sandbox.run(['install', '--dry-run']);
+  assert.deepEqual([result.status, result.stdout, result.stderr], [1, '', 'yokoten install: unknown option --dry-run. Run `yokoten help`.\n']);
+  assert.deepEqual(readdirSync(sandbox.home, { recursive: true }).sort(), homeBefore, 'install --dry-run writes nothing');
+  result = sandbox.run(['install']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /kept \(yours\) agent reviewer/);
   assert.equal(readFileSync(join(claude, 'agents', 'reviewer.md'), 'utf8'), 'my own reviewer\n');
@@ -1287,9 +1292,9 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
   const path = { PATH: `${bin}:${process.env.PATH}` };
   const bot = { ...path, YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
   // Not spawnSync: the server must answer while the CLI runs.
-  const run = (command: string[], extra: Record<string, string> = bot) =>
+  const run = (command: string[], extra: Record<string, string> = bot, before: string[] = []) =>
     new Promise<{ status: number | null; stderr: string }>((done) => {
-      const child = spawn('node', [CLI, 'bot', '--', ...command], { cwd: sandbox.repo, env: { ...sandbox.env, ...extra } });
+      const child = spawn('node', [CLI, 'bot', ...before, '--', ...command], { cwd: sandbox.repo, env: { ...sandbox.env, ...extra } });
       let stderr = '';
       child.stderr.on('data', (chunk) => (stderr += chunk));
       child.on('close', (status) => done({ status, stderr }));
@@ -1330,6 +1335,16 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
     }
     assert.deepEqual(ran(), good.map((command) => ({ args: command.slice(1), token: 'ghs_test' })));
     assert.equal(requests.length, good.length * 2, 'one installation lookup and one token per run');
+
+    // bot has no options of its own (#203): one before `--` is refused, and nothing runs.
+    const unknown = await run(['echo'], bot, ['--x']);
+    assert.deepEqual([unknown.status, unknown.stderr], [1, 'yokoten bot: unknown option --x. Run `yokoten help`.\n']);
+    assert.equal(ran().length, good.length, 'gh did not run');
+    assert.equal(requests.length, good.length * 2, 'no token was asked for');
+    // Everything after `--` is the command's, passed on unchanged.
+    const passed = await run(['gh', '--anything', 'issue', 'list']);
+    assert.equal(passed.status, 0, passed.stderr);
+    assert.deepEqual(ran().at(-1), { args: ['--anything', 'issue', 'list'], token: 'ghs_test' });
   } finally {
     server.close();
   }
