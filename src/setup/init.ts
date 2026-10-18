@@ -12,7 +12,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { addProjectHook, addProjectStopHook, setProjectEnv } from '../agents/claude-code.ts';
 import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
-import { UnreadableHooksFile } from '../agents/hooks-file.ts';
+import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
 import { copyRuntime, HOME_DIR, KIT, render, VERSION, writeNew } from './files.ts';
 
@@ -35,19 +35,19 @@ function walk(dir: string): string[] {
 }
 
 /**
- * One agent's hook lines, or one skip line when its file won't parse (#248): the file
- * stays as it was, init goes on, and `ok` is false.
+ * One agent's hook lines, or one skip line when its file won't parse or has the wrong
+ * shape (#248): the file stays as it was, init goes on, and `ok` is false.
  */
 function agentHooks(name: string, file: string, add: () => string[]): { ok: boolean; lines: string[] } {
   try {
     return { ok: true, lines: add() };
   } catch (err) {
     if (!(err instanceof UnreadableHooksFile)) throw err;
-    return { ok: false, lines: [`skipped ${name}: can't read ${file} (make it valid JSON, then run \`yokoten init\` again)`] };
+    return { ok: false, lines: [`skipped ${name}: ${skippedBecause(file, err.problem, 'init')}`] };
   }
 }
 
-/** One line per thing done, kept or skipped; `ok` is false when a hooks file was skipped because it won't parse. */
+/** One line per thing done, kept or skipped; `ok` is false when a hooks file was skipped (#248). */
 export function init(root: string): { ok: boolean; lines: string[] } {
   const report: string[] = [];
   const cli = cliPath(root);
@@ -72,15 +72,21 @@ export function init(root: string): { ok: boolean; lines: string[] } {
   report.push(`${addProjectStopHook(root, cli)} the stop check in .claude/settings.json (changed files, before the agent ends its turn)`);
   // Codex and Gemini CLI get the same guard, whether or not they are installed here: two
   // small files are easier to predict than a guess about which agents someone uses.
-  // A file that won't parse is named and skipped, never rewritten (#248).
-  const codexHooks = agentHooks('the Codex hooks', '.codex/hooks.json', () => [
-    `${codex.addProjectHook(root, cli)} the Codex tool-call hook in .codex/hooks.json (Codex asks you to trust it once, in /hooks)`,
-    `${codex.addProjectStopHook(root, cli)} the Codex stop check in .codex/hooks.json`,
-  ]);
-  const geminiHooks = agentHooks('the Gemini CLI hooks', '.gemini/settings.json', () => [
-    `${gemini.addProjectHook(root, cli)} the Gemini CLI tool-call hook in .gemini/settings.json`,
-    `${gemini.addProjectStopHook(root, cli)} the Gemini CLI stop check in .gemini/settings.json (AfterAgent)`,
-  ]);
+  // A file that won't parse, or has the wrong shape, is named and skipped, never rewritten (#248).
+  const codexHooks = agentHooks('the Codex hooks', '.codex/hooks.json', () => {
+    codex.checkProjectHooks(root);
+    return [
+      `${codex.addProjectHook(root, cli)} the Codex tool-call hook in .codex/hooks.json (Codex asks you to trust it once, in /hooks)`,
+      `${codex.addProjectStopHook(root, cli)} the Codex stop check in .codex/hooks.json`,
+    ];
+  });
+  const geminiHooks = agentHooks('the Gemini CLI hooks', '.gemini/settings.json', () => {
+    gemini.checkProjectHooks(root);
+    return [
+      `${gemini.addProjectHook(root, cli)} the Gemini CLI tool-call hook in .gemini/settings.json`,
+      `${gemini.addProjectStopHook(root, cli)} the Gemini CLI stop check in .gemini/settings.json (AfterAgent)`,
+    ];
+  });
   report.push(...codexHooks.lines, ...geminiHooks.lines);
   report.push(`${setProjectEnv(root, 'TZ', 'UTC')} TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)`);
   report.push(...setCommitCheck(root, cli, hooks));

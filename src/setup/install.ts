@@ -16,7 +16,7 @@ import { skillFile as sharedSkillFile } from '../agents/agent-skills.ts';
 import { addUserHooks, agentFile, skillFile as claudeSkillFile } from '../agents/claude-code.ts';
 import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
-import { UnreadableHooksFile } from '../agents/hooks-file.ts';
+import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { copyRuntime, KIT, writeManaged, writeNew } from './files.ts';
 import { marksFile } from '../rules/privacy.ts';
 
@@ -44,8 +44,8 @@ const MARKS_HEADER = `# yokoten private marks: words that must never be publishe
 `;
 
 /**
- * The other agents' two user hooks, or one skip line when their file won't parse (#248):
- * the file stays as it was, the other steps go on, and `ok` is false.
+ * The other agents' two user hooks, or one skip line when their file won't parse or has
+ * the wrong shape (#248): the file stays as it was, the other steps go on, and `ok` is false.
  */
 function otherAgentHooks(name: string, cliName: string, file: string, add: () => { doctor: string; guard: string }): { ok: boolean; lines: string[] } {
   try {
@@ -53,11 +53,11 @@ function otherAgentHooks(name: string, cliName: string, file: string, add: () =>
     return { ok: true, lines: [`${hooks.doctor} the ${name} SessionStart doctor in ${file}`, `${hooks.guard} the ${name} command guard in ${file}`] };
   } catch (err) {
     if (!(err instanceof UnreadableHooksFile)) throw err;
-    return { ok: false, lines: [`skipped ${cliName}: can't read ${file} (make it valid JSON, then run \`yokoten install\` again)`] };
+    return { ok: false, lines: [`skipped ${cliName}: ${skippedBecause(file, err.problem, 'install')}`] };
   }
 }
 
-/** One line per thing done, kept or skipped; `ok` is false when a file was skipped because it won't parse. */
+/** One line per thing done, kept or skipped; `ok` is false when a file was skipped (#248). */
 export function install(env: Env): { ok: boolean; lines: string[] } {
   const target = paths(env);
   const report: string[] = [];
@@ -81,7 +81,7 @@ export function install(env: Env): { ok: boolean; lines: string[] } {
   report.push(`${hooks.doctor} the SessionStart doctor`, `${hooks.guard} the user-level command guard`);
   // Codex and Gemini CLI get the same two hooks (#211), but only when the CLI's folder is
   // already there: install never makes ~/.codex or ~/.gemini for someone who doesn't use it.
-  // A file that won't parse is named and skipped, never rewritten (#248).
+  // A file that won't parse, or has the wrong shape, is named and skipped, never rewritten (#248).
   if (codex.hasUserDir(env)) {
     const codexHooks = otherAgentHooks('Codex', 'Codex CLI', '~/.codex/hooks.json', () => codex.addUserHooks(env, USER_CLI, USER_MISSING));
     ok &&= codexHooks.ok;

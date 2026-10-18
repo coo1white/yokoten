@@ -8,8 +8,13 @@ import { dirname } from 'node:path';
 import { runs, subcommand } from '../run/cli.ts';
 
 export type Added = 'same' | 'updated' | 'added';
-/** What `hookState` finds: what `addHook` would do, or a file that won't parse. */
-export type HookState = Added | 'unreadable';
+/**
+ * Why `addHook` won't touch a file: it doesn't parse ('json'), or a key it would edit has
+ * the wrong type ('shape', and `hint` names the key and the type it should be).
+ */
+export type Problem = { kind: 'json' } | { kind: 'shape'; hint: string };
+/** What `hookState` finds: what `addHook` would do, or why it won't touch the file. */
+export type HookState = Added | Problem;
 /** `addHook`'s arguments: the file, event, matcher, command and extra fields. */
 export type HookArgs = [path: string, event: string, matcher: string | undefined, command: string, extra?: Record<string, string>];
 
@@ -35,35 +40,69 @@ export function writeSettings(path: string, settings: Settings): void {
 }
 
 /**
- * A file `addHook` won't touch: it doesn't parse, or it isn't a hooks table (a `hooks`
- * key that isn't an object of event lists). `addHook` throws it before writing anything,
+ * A file `addHook` won't touch (see `Problem`). It is thrown before anything is written,
  * so the caller can name the file, skip it and go on (#248).
  */
 export class UnreadableHooksFile extends Error {
   readonly path: string;
-  constructor(path: string) {
-    super(`can't read ${path} (make it valid JSON, then run the command again)`);
+  readonly problem: Problem;
+  constructor(path: string, problem: Problem) {
+    super(problem.kind === 'json' ? `can't read ${path} (make it valid JSON)` : `${path} has an unexpected shape (${problem.hint})`);
     this.name = 'UnreadableHooksFile';
     this.path = path;
+    this.problem = problem;
   }
 }
 
-const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+/** The line that says a file was skipped, `file` as the user should see it and `command` the one to run again. */
+export const skippedBecause = (file: string, problem: Problem, command: string): string =>
+  problem.kind === 'json' ? `can't read ${file} (make it valid JSON, then run \`yokoten ${command}\` again)` : `${file} has an unexpected shape (${problem.hint})`;
 
-/** The file's settings, or null when it won't parse or its `hooks` is not an object of lists of objects. */
-function readTable(path: string): Settings | null {
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+const isObjectList = (v: unknown): v is Record<string, unknown>[] => Array.isArray(v) && v.every(isObject);
+
+/**
+ * Whether `placeHook` can edit `events` in these settings. Only the keys it walks are
+ * checked: the top level and `hooks` are objects, each `hooks[event]` is missing or a list
+ * of objects, and so is each of their `hooks`. Any other key, such as Gemini CLI's
+ * `hooks.disabled`, is the user's and is left alone.
+ */
+function shapeProblem(settings: unknown, events: readonly string[]): Problem | null {
+  const shape = (hint: string): Problem => ({ kind: 'shape', hint });
+  if (!isObject(settings)) return shape('the file should be a JSON object');
+  const { hooks } = settings;
+  if (hooks === undefined) return null;
+  if (!isObject(hooks)) return shape('`hooks` should be an object');
+  for (const event of events) {
+    const groups = hooks[event];
+    if (groups === undefined) continue;
+    if (!isObjectList(groups)) return shape(`\`hooks.${event}\` should be a list of objects`);
+    const bad = groups.findIndex((group) => group.hooks !== undefined && !isObjectList(group.hooks));
+    if (bad >= 0) return shape(`\`hooks.${event}[${bad}].hooks\` should be a list of objects`);
+  }
+  return null;
+}
+
+/** The file's settings when `placeHook` can edit `events` in it, or why it can't. */
+function readTable(path: string, events: readonly string[]): { settings: Settings } | { problem: Problem } {
   let settings: unknown;
   try {
     settings = readSettings(path);
   } catch {
-    return null;
+    return { problem: { kind: 'json' } };
   }
-  if (!isObject(settings)) return null;
-  const { hooks } = settings;
-  if (hooks === undefined) return settings as Settings;
-  if (!isObject(hooks)) return null;
-  const tables = Object.values(hooks).every((groups) => Array.isArray(groups) && groups.every(isObject));
-  return tables ? (settings as Settings) : null;
+  const problem = shapeProblem(settings, events);
+  return problem ? { problem } : { settings: settings as Settings };
+}
+
+/**
+ * Throw `UnreadableHooksFile` unless `addHook` can edit every one of `events` in the file.
+ * A caller that adds more than one hook to a file checks them all first, so a bad second
+ * event leaves the file as it was, not half written.
+ */
+export function checkHooksFile(path: string, events: readonly string[]): void {
+  const table = readTable(path, events);
+  if ('problem' in table) throw new UnreadableHooksFile(path, table.problem);
 }
 
 /**
@@ -93,34 +132,30 @@ function placeHook(settings: Settings, event: string, matcher: string | undefine
 
 /**
  * Add a command hook to a settings file, once (see `placeHook`), and write the file when
- * that changed it. A file that won't parse, or whose `hooks` is the wrong type, throws
+ * that changed it. A file it can't edit (see `checkHooksFile`) throws
  * `UnreadableHooksFile` and stays as it was.
  */
 export function addHook(path: string, event: string, matcher: string | undefined, command: string, extra: Record<string, string> = {}): Added {
-  const settings = readTable(path);
-  if (!settings) throw new UnreadableHooksFile(path);
-  const added = placeHook(settings, event, matcher, command, extra);
-  if (added !== 'same') writeSettings(path, settings);
+  const table = readTable(path, [event]);
+  if ('problem' in table) throw new UnreadableHooksFile(path, table.problem);
+  const added = placeHook(table.settings, event, matcher, command, extra);
+  if (added !== 'same') writeSettings(path, table.settings);
   return added;
 }
 
 /**
  * What `addHook` would do with these arguments, read-only: 'same' when the hook is there
  * as it would write it, 'updated' when it is there but out of date (command, matcher or
- * fields), 'added' when it is missing, and 'unreadable' when `addHook` would refuse the
- * file: it won't parse, or its `hooks` is the wrong type.
+ * fields), 'added' when it is missing, and the `Problem` when `addHook` would refuse the file.
  */
 export function hookState(path: string, event: string, matcher: string | undefined, command: string, extra: Record<string, string> = {}): HookState {
-  const settings = readTable(path);
-  return settings ? placeHook(settings, event, matcher, command, extra) : 'unreadable';
+  const table = readTable(path, [event]);
+  return 'problem' in table ? table.problem : placeHook(table.settings, event, matcher, command, extra);
 }
 
-/** Whether the file has a hook for `event` that runs yokoten's `<sub>`. */
+/** Whether the file has a hook for `event` that runs yokoten's `<sub>`; no for a file `addHook` can't edit. */
 export function hasHook(path: string, event: string, sub: string): boolean {
-  try {
-    const settings: Settings = JSON.parse(readFileSync(path, 'utf8'));
-    return (settings.hooks?.[event] ?? []).some((g) => (g.hooks ?? []).some((h) => runs(sub).test(h.command ?? '')));
-  } catch {
-    return false;
-  }
+  const table = readTable(path, [event]);
+  if ('problem' in table) return false;
+  return (table.settings.hooks?.[event] ?? []).some((g) => (g.hooks ?? []).some((h) => runs(sub).test(h.command ?? '')));
 }
