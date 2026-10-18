@@ -31,7 +31,11 @@ export function judge(
   action: Action,
   { root, config, env, commandsOnly = false }: { root: string | null; config: Config; env: Env; commandsOnly?: boolean },
 ): Finding | null {
-  if (action.command !== undefined) return checkCommand(action.command, { env });
+  // A command may also edit files (Codex runs apply_patch through the shell): check both.
+  if (action.command !== undefined) {
+    const reason = checkCommand(action.command, { env });
+    if (reason) return reason;
+  }
   if (commandsOnly || !root) return null;
   if (action.worker) env = { ...env, YOKOTEN_ROLE: 'worker' };
   for (const p of action.paths) {

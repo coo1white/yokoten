@@ -143,15 +143,15 @@ test('hook --agent codex: shell calls by command, apply_patch by the files it to
       }),
       extra,
     });
-  let r = call('Bash', 'git push --tags');
-  assert.equal(r.status, 2);
-  assert.match(r.stderr, /owner decides when to release/);
+  let result = call('Bash', 'git push --tags');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /owner decides when to release/);
   assert.equal(call('Bash', 'git status').status, 0);
   const patch = (header: string) => `*** Begin Patch\n${header}\n@@\n-old\n+new\n*** End Patch\n`;
   const worker = { YOKOTEN_ROLE: 'worker' };
-  r = call('apply_patch', patch('*** Update File: AGENTS.md'), worker);
-  assert.equal(r.status, 2);
-  assert.match(r.stderr, /lead-only/);
+  result = call('apply_patch', patch('*** Update File: AGENTS.md'), worker);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /lead-only/);
   assert.equal(call('apply_patch', patch('*** Update File: src/a.ts\n*** Move to: .codex/hooks.json'), worker).status, 2, 'a move into a lead-only path');
   assert.equal(call('apply_patch', patch(`*** Add File: ${join(sandbox.repo, '.github', 'x.yml')}`), worker).status, 2, 'an absolute path');
   assert.equal(call('apply_patch', patch('*** Update File: src/a.ts'), worker).status, 0);
@@ -159,6 +159,19 @@ test('hook --agent codex: shell calls by command, apply_patch by the files it to
   // A worker subagent's call names its role (Codex rust-v0.163.0, #210); no env needed.
   assert.equal(call('apply_patch', patch('*** Update File: AGENTS.md'), {}, { agent_id: 'a1', agent_type: 'worker' }).status, 2, 'a worker subagent');
   assert.equal(call('apply_patch', patch('*** Update File: AGENTS.md'), {}, { agent_id: 'a2', agent_type: 'explorer' }).status, 0, 'an explorer is not a worker');
+  // A shell-run apply_patch is a Bash call, with no second hook (#209): its files count too.
+  const heredoc = (header: string, before = '') => `${before}apply_patch <<'EOF'\n${patch(header)}EOF\n`;
+  result = call('Bash', heredoc('*** Update File: AGENTS.md'), worker);
+  assert.equal(result.status, 2, 'a heredoc to apply_patch');
+  assert.match(result.stderr, /AGENTS\.md/);
+  assert.match(call('Bash', `${heredoc('*** Update File: src/a.ts')}git push --tags\n`, worker).stderr, /owner decides when to release/, 'the command is still checked');
+  assert.equal(call('Bash', `${heredoc('*** Update File: src/a.ts')}git push --tags\n`, worker).status, 2);
+  assert.equal(call('Bash', `applypatch '${patch('*** Delete File: .github/x.yml')}'`, worker).status, 2, 'the envelope as an argument');
+  assert.equal(call('Bash', heredoc('*** Add File: workflows/x.yml', 'cd .github && '), worker).status, 2, 'after a cd');
+  assert.equal(call('Bash', heredoc('*** Update File: src/a.ts\n*** Move to: CLAUDE.md'), worker).status, 2, 'a move');
+  assert.equal(call('Bash', heredoc('*** Update File: src/a.ts'), worker).status, 0);
+  assert.equal(call('Bash', heredoc('*** Update File: AGENTS.md')).status, 0, 'the lead may');
+  assert.equal(call('Bash', `cat > notes.md <<'EOF'\n${patch('*** Update File: AGENTS.md')}EOF\n`, worker).status, 0, 'an envelope as data');
   // A patch is not a command, and an unknown tool is neither.
   assert.equal(call('apply_patch', 'git push --tags').status, 0);
   assert.equal(call('mcp__fs__write', 'git push --tags').status, 0);
