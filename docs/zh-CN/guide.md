@@ -1,4 +1,4 @@
-<!-- source: docs/guide.md blob 0aecc285290d6f3f5f5b7549fe8f42d3c5078364 -->
+<!-- source: docs/guide.md blob 3d07bb6a010fb7168753e17272d283124ea21a1d -->
 # yokoten 使用指南
 
 [README](README.md) 是简短版。剩下的都在这里：yokoten 为什么要做、它怎么工作、有哪些规则和命令，还有它做不到的事。
@@ -495,8 +495,9 @@ yokoten 每学到一个教训，核心规则就会改。`yokoten install` 会更
 退回旧版。这时 `doctor` 会让你升级 yokoten 本身，而不是去改项目。没有这一行的文件，
 就只按内容比。
 
-`update` 要用装好的 yokoten 或者 clone 下来的仓库跑，别用 `.yokoten/` 里的那份：
-项目里那份没有带 kit，没东西可比。
+`.yokoten/` 里那份也带着 kit 的 `AGENTS.md`，所以 CI 和钩子里跑 `doctor`，比的就是项目
+当初拷进来的那版 kit。想换成更新的规则，就用装好的 yokoten、插件或者 clone 下来的仓库跑
+`update`。再跑一次 `init`，`.yokoten/` 也会一起更新。
 
 装了 Claude Code 插件的话，直接用 `/yokoten:update`。它跑的是插件自己那份 yokoten，
 先给你看要改什么，你点头了才写。

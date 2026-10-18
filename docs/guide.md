@@ -536,8 +536,9 @@ yokoten you run, `update` refuses and writes nothing, so the rules never go back
 an older kit. `doctor` then says to update yokoten itself, not the project. A file
 without that line compares by its text only.
 
-Run `update` from an installed yokoten or a clone, not from `.yokoten/`. The copy in
-your project has no kit to compare with.
+The copy in `.yokoten/` keeps the kit's `AGENTS.md`, so `doctor` in CI and the hooks
+compares with the kit your project vendored. To take newer rules, run `update` from an
+installed yokoten, the plugin or a clone. Run `init` again to refresh `.yokoten/` too.
 
 With the Claude Code plugin, run `/yokoten:update`. It runs the plugin's own yokoten,
 shows the change, and writes only after you agree.
