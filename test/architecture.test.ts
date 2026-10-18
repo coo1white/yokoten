@@ -133,9 +133,9 @@ test('workflows: checkout keeps no token (#36)', () => {
 
 // ---- Names (#109, record 0006) ----
 //
-// The names we declare in src/ and bin/ follow the rule in AGENTS.md. The reader lives in
-// src/run/names.ts, where `check --pr` uses it too. It does not read test/: a test may
-// keep a short name inside one `test()`.
+// The names we declare in src/, bin/ and test/ follow the rule in AGENTS.md. The reader lives
+// in src/run/names.ts, where `check --pr` uses it too. A test may still use a one-letter name
+// inside a short block (10 lines or fewer).
 
 test('names: words are counted from camelCase, PascalCase and CONSTANT_CASE (#109)', () => {
   assert.deepEqual(splitWords('loadHttpUrl'), ['load', 'Http', 'Url']);
@@ -194,18 +194,18 @@ test('names: strings, comments, templates and regular expressions are not read a
   assert.deepEqual(names, ['text', 'shown', 'pattern', 'half', 'sum', 'list', 'total', 'n', 'a', 'b', 'ROOT_DIR', 'handler', 'run', 'value', 'ignore', '_', 'item']);
 });
 
-test('names: src/ and bin/ use whole, short names (#109)', () => {
+test('names: src/, bin/ and test/ use whole, short names (#109, #113)', () => {
   const found: string[] = [];
   const kinds = new Set<string>();
   let declared = 0;
-  for (const path of execFileSync('git', ['ls-files', 'bin', 'src'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter((file) => file.endsWith('.ts'))) {
+  for (const path of execFileSync('git', ['ls-files', 'bin', 'src', 'test'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter((file) => file.endsWith('.ts'))) {
     const text = readFileSync(join(ROOT, path), 'utf8');
     const declarations = findDeclarations(tokenize(text));
     declared += declarations.length;
     for (const declaration of declarations) kinds.add(declaration.kind);
     for (const problem of findNameProblems(text)) found.push(`${path}:${problem.line}: ${problem.what}. ${problem.why}. ${problem.fix}.`);
   }
-  assert.ok(declared > 500, `only ${declared} names found in src/ and bin/; the reader is broken`);
+  assert.ok(declared > 500, `only ${declared} names found in src/, bin/ and test/; the reader is broken`);
   assert.deepEqual([...kinds].sort(), ['function', 'parameter', 'property', 'type', 'variable'], 'a kind of declaration was not found; the reader is broken');
   assert.deepEqual(found, [], 'rename each one; the rule and its reasons are in AGENTS.md ("Names") and docs/records/0006-names.md');
 });

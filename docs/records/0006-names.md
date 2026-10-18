@@ -63,8 +63,9 @@ TypeScript's `noUnusedParameters` skips a name that starts with `_`, and `_` is 
 common way to say "not used".
 
 `test/architecture.test.ts` checks rules 2 and 3, and `CONSTANT_CASE` inside a function.
-It reads every name declared in `src/` and `bin/`. Each failure says the file, the line,
-the name, the reason and a fix. Rules 1 and 5 need judgement, so the reviewer holds them.
+It reads every name declared in `src/`, `bin/` and `test/`. Each failure says the file,
+the line, the name, the reason and a fix. Rules 1 and 5 need judgement, so the reviewer
+holds them.
 
 The test reads the code with a small tokenizer, not the TypeScript compiler. CI runs the
 tests without `npm ci`, so the compiler is not there. TypeScript 7 also has no stable
@@ -72,9 +73,8 @@ compiler API for JavaScript. The tokenizer drops comments, strings and regular
 expressions, then finds declarations by their shape. A positive control feeds it bad
 names and expects a catch.
 
-The test does not read `test/`. A test may keep a short name inside one `test()` block
-when the 10-line rule holds. Many tests now use `s` and `r` across a long block. Moving
-them to the rule is its own piece of work.
+The test reads `test/` too (#113). A test may still use a one-letter name inside a short
+block, when the 10-line rule holds.
 
 ## Options not taken
 
