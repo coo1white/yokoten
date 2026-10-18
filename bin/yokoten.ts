@@ -387,8 +387,8 @@ function main(): number | Promise<number> {
           print([`yokoten learn --ship: ${shipped.problems.length} problem(s); nothing was moved:`, ...shipped.problems.map((problem) => `- ${problem}`)], process.stderr);
           return 1;
         }
-        const { id, url } = shipped.lesson;
-        print([`yokoten learn --ship: ${id} is in ${KIT_LESSONS_DIR}/${id}/, with a row in ${KIT_LESSONS_DIR}/${LESSONS_TABLE} (from ${url}, yokoten ${VERSION}).`, `Commit it in a pull request. After it merges, \`yokoten doctor\` runs it in every project that uses the kit.`]);
+        const { id, folder, url } = shipped.lesson;
+        print([`yokoten learn --ship: ${id} is in ${KIT_LESSONS_DIR}/${folder}/, with a row in ${KIT_LESSONS_DIR}/${LESSONS_TABLE} (from ${url}, yokoten ${VERSION}).`, `Commit it in a pull request. After it merges, \`yokoten doctor\` runs it in every project that uses the kit.`]);
         return 0;
       }
       if (reference === undefined) return usage('name an incident issue, by its number or its URL');

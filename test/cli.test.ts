@@ -1400,7 +1400,7 @@ test('lessons: learn, write the check, ship, then doctor in a second repo shows 
     .replace(/ {2}\/\/ TODO\(reviewer\): replace with files where all is well\.\n/, ''));
   result = runCopy(['learn', '--ship', 'incident-9'], yokoten);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /^yokoten learn --ship: incident-9 is in kit\/lessons\/incident-9\/, with a row in kit\/lessons\/README\.md \(from https:\/\/example\.com\/issues\/9, yokoten \d+\.\d+\.\d+\)\./);
+  assert.match(result.stdout, /^yokoten learn --ship: incident-9 is in kit\/lessons\/1\/incident-9\/, with a row in kit\/lessons\/README\.md \(from https:\/\/example\.com\/issues\/9, yokoten \d+\.\d+\.\d+\)\./);
 
   // The second repo: a project with the problem. Doctor shows the note, and it fails nothing.
   sandbox.write('.env', 'KEY=1\n');
