@@ -12,7 +12,7 @@ import { DEFAULTS } from '../src/rules/config.ts';
 import { checkCommand } from '../src/rules/guards.ts';
 import { doctor } from '../src/setup/doctor.ts';
 import { road, ROAD, serverChecks, stepFinding } from '../src/setup/road.ts';
-import { LABELS, setUpPlanning } from '../src/setup/plan.ts';
+import { LABELS, pickNewMilestone, setUpPlanning } from '../src/setup/plan.ts';
 
 // A throwaway key, made for this test run only.
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -176,7 +176,7 @@ test('server: each setting off is MISSING, with what and the fix (#7)', () => {
 
 test("server: gh missing, signed out or refused is \"can't check\" with the fix, never a crash (#7)", () => {
   const missing = readServer(() => { throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }); }, REPO);
-  assert.deepEqual(serverChecks(missing).map((c) => [c.id, c.mark, c.finding.what]), [['server-settings', "can't check", "can't check: gh is not installed"]]);
+  assert.deepEqual(serverChecks(missing).map((c) => [c.id, c.mark, c.finding.what]), [['server-settings', "can't check", 'gh is not installed']]);
   assert.match(serverChecks(readServer(() => { throw said(401); }, REPO))[0].finding.fix, /`gh auth login`/);
   // A free private repo, read by someone who is not an admin: rulesets refused, settings hidden.
   const refused = { ...GOOD, [`repos/${REPO}`]: { default_branch: 'main' }, [`repos/${REPO}/rules/branches/main`]: said(403), [`repos/${REPO}/rulesets?targets=tag&includes_parents=true&per_page=100`]: said(403), [`repos/${REPO}/private-vulnerability-reporting`]: said(403), [`repos/${REPO}/vulnerability-alerts`]: undefined };
@@ -239,8 +239,14 @@ test('doctor: reads the server of a GitHub origin into the road; a step not done
   const run = (routes: Record<string, unknown>) => doctor(root, { env: { HOME: root }, config: DEFAULTS, gh: serverGh(routes).gh });
   let result = run(GOOD);
   const text = () => result.lines.join('\n');
-  assert.match(text(), /^ {2}can't check server-settings: can't check: the origin remote is not on a host yokoten knows/m);
-  assert.match(text(), /^ {4}can't check protection \(Scorecard: Branch-Protection\): the origin remote is not on a host yokoten knows/m);
+  // No origin remote at all: say so, and say "can't check" once (#208).
+  assert.match(text(), /^ {2}can't check server-settings: there is no origin remote yet; add one on GitHub to check the server settings/m);
+  assert.match(text(), /^ {4}can't check protection \(Scorecard: Branch-Protection\): there is no origin remote yet/m);
+  assert.ok(!/can't check.*can't check/.test(text()), 'no line says "can\'t check" twice');
+  execFileSync('git', ['remote', 'add', 'origin', 'https://gitea.example.com/me/repo.git'], { cwd: root });
+  result = run(GOOD);
+  assert.match(text(), /^ {2}can't check server-settings: the origin remote is not on a host yokoten knows/m);
+  execFileSync('git', ['remote', 'remove', 'origin'], { cwd: root });
   assert.ok(result.lines.some((l) => /secret scanning with push protection/.test(l)), 'the by-hand list when nothing is read');
   execFileSync('git', ['remote', 'add', 'origin', `https://github.com/${REPO}.git`], { cwd: root });
   result = run(GOOD);
@@ -340,7 +346,8 @@ test('planning: no gh, signed out, or no GitHub remote is a skip that says why, 
   assert.deepEqual(out, { ok: true, lines: ['GitHub: skipped, because gh is not signed in. To set up labels and a milestone, run `gh auth login`, then run `yokoten init --github`'] });
   const elsewhere = setUpPlanning(() => { throw new Error('gh was called'); }, 'https://gitea.example.com/me/repo.git', APPLY);
   assert.deepEqual(elsewhere, { ok: true, lines: ['GitHub: skipped, because the origin remote is not on GitHub. Labels and a milestone need a GitHub repo'] });
-  assert.equal(setUpPlanning(() => { throw new Error('gh was called'); }, '', APPLY).ok, true, 'no remote at all');
+  const none = setUpPlanning(() => { throw new Error('gh was called'); }, '', APPLY);
+  assert.deepEqual(none, { ok: true, lines: ['GitHub: skipped, because there is no origin remote yet. Add one on GitHub, then run `yokoten init --github` to set up labels and a milestone'] }, 'no remote at all (#208)');
 });
 
 // The planning steps (#10): stage 2, read in full doctor only.
@@ -359,6 +366,32 @@ test('road: the labels and milestone steps are stage 2; missing labels or no ope
     assert.deepEqual(planningFound(server), { labels: null, milestone: null });
   }
   assert.equal(ROAD.find((s) => s.key === 'labels')!.unchecked?.(undefined), 'a session never calls the network; run `yokoten doctor`');
+});
+
+test('milestone: init and the road use one rule, an open milestone; a closed one is never kept or reopened (#178)', () => {
+  const milestoneStep = ROAD.find((s) => s.key === 'milestone')!;
+  // Positive control: the old init rule kept a closed "First release", and the road stayed not done.
+  const fake = fakeGh([...LABELS], ['closed First release']);
+  const server = () => withPlanning(readPlanning(fake.gh, 'me/repo'));
+  assert.equal(planningFound(server()).milestone, false);
+  assert.equal(stepFinding(milestoneStep, '.', {}, server()).fix, '`yokoten init --github --yes` makes one called "Next release"', 'doctor names what init makes');
+  const planned = setUpPlanning(fake.gh, REMOTE, DRY);
+  assert.ok(planned.lines.includes('- make milestone "Next release"'), planned.lines.join('\n'));
+  assert.ok(!planned.lines.includes('- a milestone is open; kept'));
+  assert.equal(planningFound(server()).milestone, false, 'not done until the milestone exists');
+  const applied = setUpPlanning(fake.gh, REMOTE, APPLY);
+  assert.ok(applied.lines.includes('- done: make milestone "Next release"'));
+  assert.deepEqual(fake.milestones, ['closed First release', 'open Next release'], 'the closed one stays closed');
+  assert.equal(planningFound(server()).milestone, true);
+  assert.equal(setUpPlanning(fake.gh, REMOTE, APPLY).lines.at(-1), 'Nothing to change.');
+  // An open milestone: init keeps it and the road is done.
+  const open = fakeGh([...LABELS], ['closed First release', 'open v2']);
+  assert.ok(setUpPlanning(open.gh, REMOTE, DRY).lines.includes('- a milestone is open; kept'));
+  assert.equal(planningFound(withPlanning(readPlanning(open.gh, 'me/repo'))).milestone, true);
+  // Only other closed ones: "First release"; every name taken: the next free number.
+  assert.equal(pickNewMilestone([{ title: 'v0.1', open: false }]), 'First release');
+  assert.equal(pickNewMilestone([]), 'First release');
+  assert.equal(pickNewMilestone(['first release', 'Next release', 'Next release 2'].map((title) => ({ title, open: false }))), 'Next release 3');
 });
 
 // #91: workflow commands, escaped as GitHub's runner decodes them
