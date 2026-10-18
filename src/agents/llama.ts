@@ -22,7 +22,7 @@ export const DEFAULT_BASE = 'https://api.meta.ai/v1';
 export const DEFAULT_MODEL = 'muse-spark-1.3';
 
 /** How to set the key, said when none is set. */
-export const KEY_HINT = 'set LLAMA_API_KEY (a Meta model API key from dev.meta.ai) to have a model draft the decisions';
+export const KEY_HINT = 'set MODEL_API_KEY (or LLAMA_API_KEY), a Meta model API key from dev.meta.ai, to have a model draft the decisions';
 
 export interface LlamaConfig {
   base: string;

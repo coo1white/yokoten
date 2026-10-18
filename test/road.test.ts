@@ -76,6 +76,9 @@ test('adopt facts: an empty repo has every project step missing, and no evidence
   assert.deepEqual(rows.map((r) => r.key), ROAD.map((s) => s.key), 'a row for every step on the road, in its order');
   assert.equal(statusOf(rows)['no-build-output'], 'done', 'a step with no reading of its own gets a row from its own check');
   assert.match(rows.find((r) => r.key === 'protection')?.evidence ?? '', /can't check/, 'a server step is not read here');
+  // A setting yokoten can't read is unknown, never missing: the draft must not tell the user to turn on what may be on.
+  for (const key of ['protection', 'merge-settings', 'security-settings']) assert.equal(statusOf(rows)[key], 'unknown', key);
+  assert.match(ruleDraft(rows).find((r) => r.key === 'protection')?.reason ?? '', /yokoten doctor/, 'the rule draft says to check it with doctor');
   const s = statusOf(rows);
   for (const key of ['rules', 'tool-hook', 'commit-check', 'runtime', 'tests', 'ci', 'templates', 'changelog', 'titles', 'codeowners', 'bot', 'security-files']) assert.equal(s[key], 'missing', key);
   assert.equal(s.issues, 'done', 'no todo file');

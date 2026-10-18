@@ -19,7 +19,8 @@ import { loadMarks, scanText } from '../../rules/privacy.ts';
 import { chat, KEY_HINT, type LlamaConfig, llamaConfig, type Message } from '../../agents/llama.ts';
 import { type Found, gitConfig, hasIssueTemplate, hasPrTemplate, ROAD, road, securityLacking, todoFiles } from '../road.ts';
 
-export type Status = 'done' | 'missing' | 'partial';
+/** `unknown`: yokoten can't check the step from here (a server setting, in a session). */
+export type Status = 'done' | 'missing' | 'partial' | 'unknown';
 export type Decision = 'as-is' | 'lighter' | 'not-now';
 export const DECISIONS: Decision[] = ['as-is', 'lighter', 'not-now'];
 
@@ -118,7 +119,7 @@ export function facts(root: string, env: Env): Fact[] {
   const rows: Fact[] = [];
   const add = (key: string, status: Status, evidence: string) => rows.push({ key, status, evidence, why: step(key)?.why ?? TESTS_WHY });
   const plain = (key: string, done: string, missing: string, f: Found = found.get(key) ?? null) =>
-    add(key, f ? 'done' : 'missing', f ? done : f === null ? "yokoten can't check this here" : missing);
+    add(key, f ? 'done' : f === null ? 'unknown' : 'missing', f ? done : f === null ? "yokoten can't check this here; `yokoten doctor` reads it" : missing);
 
   const ruleFiles = has(root, ['CLAUDE.md', 'CONTRIBUTING.md', '.github/CONTRIBUTING.md', '.cursorrules', '.github/copilot-instructions.md', 'GEMINI.md']);
   if (found.get('rules')) add('rules', 'done', 'AGENTS.md');
@@ -170,20 +171,21 @@ export function facts(root: string, env: Env): Fact[] {
 
 const sentence = (text: string) => `${text[0].toUpperCase()}${text.slice(1)}.`;
 
-/** The draft with no model: done or missing is as-is, partial is lighter. */
+/** The draft with no model: done or missing is as-is, partial is lighter, unknown is as-is once checked. */
 export function ruleDraft(rows: Fact[]): Row[] {
   return rows.map((f) => ({
     ...f,
     decision: f.status === 'partial' ? 'lighter' : 'as-is',
-    reason: f.status === 'done' ? 'The project already does this; keep it as it is.' : f.status === 'partial' ? 'The project has its own way; keep it and add only the missing part.' : sentence(f.why),
+    reason: f.status === 'done' ? 'The project already does this; keep it as it is.' : f.status === 'partial' ? 'The project has its own way; keep it and add only the missing part.' : f.status === 'unknown' ? 'Run `yokoten doctor` to see whether the project already does this.' : sentence(f.why),
   }));
 }
 
 const SYSTEM = [
   'You help a developer adopt yokoten, a kit of working practices for AI coding agents, in an existing project.',
-  'You get one row per practice: its key, what the project does today (done, missing or partial), short evidence, and why the practice matters.',
+  'You get one row per practice: its key, what the project does today (done, missing, partial, or unknown when yokoten could not check it), short evidence, and why the practice matters.',
   'For every row, propose one decision. "as-is": take the practice as yokoten has it. "lighter": take a smaller form; say what is left out. "not-now": leave it out; say when to look again.',
   'Give a reason in one plain English sentence of at most 25 words.',
+  'For an unknown row, do not say the practice is missing: say to check it with `yokoten doctor` first.',
   'Keep what the project already does well. Do not propose not-now for a safety practice without a strong reason.',
   'Answer with JSON only: {"rows":[{"key":"...","decision":"as-is|lighter|not-now","reason":"..."}]}, one entry per row, every key once.',
 ].join('\n');
@@ -301,7 +303,7 @@ export function table(d: Draft): string[] {
     '|----------|-------------------|-------|-----|',
     ...d.rows.map((r) => `| ${r.key} | ${r.status}: ${cell(r.evidence)} | ${r.decision} | ${cell(r.reason)} |`),
     '',
-    d.by === 'rules' ? `Drafted by rules (done or missing: as-is; partial: lighter), because ${d.note}.` : `Drafted by ${d.by}.`,
+    d.by === 'rules' ? `Drafted by rules (done, missing or unknown: as-is; partial: lighter), because ${d.note}.` : `Drafted by ${d.by}.`,
     YOU_DECIDE,
   ];
 }

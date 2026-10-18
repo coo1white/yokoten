@@ -1316,7 +1316,7 @@ test('adopt: with no key, the rule-based draft and how to set the key; it change
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /^\| Practice \| The project today \| Draft \| Why \|/);
   assert.match(r.stdout, /\| rules \| partial: no AGENTS\.md, but CLAUDE\.md \| lighter \|/);
-  assert.match(r.stdout, /set LLAMA_API_KEY/);
+  assert.match(r.stdout, /set MODEL_API_KEY \(or LLAMA_API_KEY\)/);
   assert.match(r.stdout, /You decide every row/);
   const json = sandbox.run(['adopt', '--json']);
   const rows = JSON.parse(json.stdout) as { key: string; decision: string }[];
