@@ -171,6 +171,27 @@ test('hook --agent codex: shell calls by command, apply_patch by the files it to
   assert.equal(call('Bash', heredoc('*** Add File: workflows/x.yml', 'cd .github; pwd\n'), worker).status, 2, 'a cd further back');
   assert.equal(call('Bash', heredoc('*** Add File: workflows/x.yml', 'pushd ".github" >/dev/null; ls; '), worker).status, 2, 'a quoted pushd');
   assert.equal(call('Bash', heredoc('*** Update File: a.ts', 'cd src; '), worker).status, 0, 'a cd into a normal dir');
+  // Anything may stand in front of apply_patch: any mention counts every header (PR #221).
+  const lead = patch('*** Update File: AGENTS.md');
+  const ways = {
+    'command apply_patch': heredoc('*** Update File: AGENTS.md', 'command '),
+    'timeout 30 apply_patch': heredoc('*** Update File: AGENTS.md', 'timeout 30 '),
+    'env -C': heredoc('*** Add File: workflows/x.yml', 'env -C .github '),
+    'FOO=1 apply_patch': heredoc('*** Update File: AGENTS.md', 'FOO=1 '),
+    '\\apply_patch': heredoc('*** Update File: AGENTS.md', '\\'),
+    'a variable': `p=apply_patch; $p <<'EOF'\n${lead}EOF\n`,
+    'a pipe': `printf '%s\\n' '${lead}' | apply_patch`,
+    'written newlines': `printf '*** Begin Patch\\n*** Update File: AGENTS.md\\n*** End Patch\\n' | apply_patch`,
+    'an early end marker': heredoc('*** Update File: src/a.ts\n@@\n+*** End Patch\n*** Update File: AGENTS.md'),
+  };
+  for (const [way, command] of Object.entries(ways)) assert.equal(call('Bash', command, worker).status, 2, way);
+  assert.equal(call('Bash', heredoc('*** Update File: src/a.ts', 'command '), worker).status, 0, 'a normal file');
+  // A dir only the shell knows: each path counts from every folder above the cwd too.
+  sandbox.write('src/a.ts', '');
+  const deeper = { cwd: join(sandbox.repo, 'src') };
+  assert.equal(call('Bash', heredoc('*** Update File: AGENTS.md', 'cd "$(git rev-parse --show-toplevel)" && '), worker, deeper).status, 2, 'cd to an unknown dir');
+  assert.equal(call('Bash', heredoc('*** Update File: AGENTS.md', 'cd ~/x; cd -; '), worker, deeper).status, 2, 'cd ~ and cd -');
+  assert.equal(call('Bash', heredoc('*** Update File: AGENTS.md', 'cd "$HOME"; '), {}, deeper).status, 0, 'the lead may');
   assert.equal(call('Bash', heredoc('*** Update File: src/a.ts\n*** Move to: CLAUDE.md'), worker).status, 2, 'a move');
   assert.equal(call('Bash', heredoc('*** Update File: src/a.ts'), worker).status, 0);
   assert.equal(call('Bash', heredoc('*** Update File: AGENTS.md')).status, 0, 'the lead may');
