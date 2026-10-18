@@ -580,6 +580,8 @@ function read(text: string, start: number, closer: string, depth: number, out: s
   let words: string[] = [];
   let word = '';
   let inWord = false;
+  let isQuoted = false; // the word has a quote or a \ in it, so it is no keyword: `'case'`, `\case`
+  let caseAt = -1; // where `case` stands in words, when it starts the command
   let line: string[][] = []; // the commands so far on this line, for heredocs
   let pipes: boolean[] = []; // for each of them, whether it pipes into the next
   let pending: Heredoc[] = [];
@@ -593,19 +595,23 @@ function read(text: string, start: number, closer: string, depth: number, out: s
 
   const endWord = () => {
     const ended = inWord ? word : null;
+    const isKeyword = !isQuoted;
     if (ended !== null) words.push(ended);
     word = '';
     inWord = false;
+    isQuoted = false;
     if (ended === null) return;
     if (isPattern && ++alternative > 1) isPattern = false; // `a b)` is no pattern: read it as a command
+    if (!isKeyword) return;
     const isFirst = words.slice(0, -1).every((w) => KEYWORDS.has(w));
     if (ended === 'esac' && isFirst && cases > 0) {
       cases--;
       isPattern = false;
+    } else if (ended === 'case' && isFirst) {
+      caseAt = words.length - 1;
     } else if (ended === 'in' && !isPattern) {
       // `case $x in`: what comes next is a pattern, not a command.
-      const head = words.slice(words.findIndex((w) => !KEYWORDS.has(w)));
-      if (head.length === 3 && head[0] === 'case') {
+      if (caseAt !== -1 && words.length - 1 === caseAt + 2) {
         endCommand();
         cases++;
         isPattern = true;
@@ -652,6 +658,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
     }
     piped = pipe ? words : null;
     words = [];
+    caseAt = -1;
   };
 
   let index = start;
@@ -667,6 +674,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       // A case pattern, `a|b)` or `(a)`, names values, not programs. The commands come after the ).
       if (character === ')') {
         words = [];
+        caseAt = -1;
         isPattern = false;
       }
       alternative = 0;
@@ -692,6 +700,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
     } else if (character === '\\') {
       if (next !== '\n') {
         word += next ?? character;
+        isQuoted = true;
         inWord = true;
       }
       index += 2;
@@ -704,6 +713,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       else {
         const body = text.slice(open + 1, end);
         word += ansi ? body.replace(/\\(.)/gs, '$1') : body;
+        isQuoted = true;
         inWord = true;
         index = end + 1;
       }
@@ -713,6 +723,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       if (!quoted) index = open + 1; // unclosed: drop the quote and read on
       else {
         word += quoted.value;
+        isQuoted = true;
         inWord = true;
         index = quoted.end;
       }

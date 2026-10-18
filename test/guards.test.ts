@@ -602,3 +602,20 @@ test('blocked commands: a find inside a find is read once, fast, and a huge list
   assert.equal(checkCommand(many, { env: {}, config: pythonBlocked })?.id, 'unreadable-command');
   assert.equal(checkCommand(many, { env: {} }), null, 'without a block list, nothing to look for');
 });
+
+test('bash: a quoted or escaped case is no keyword, so nothing after it is a pattern (#226)', () => {
+  const tagPush = ['git', 'push', '--tags'].join(' ');
+  const publish = ['npm', 'publish'].join(' ');
+  for (const command of [
+    `( 'case' x in; ${force} )`,
+    `echo $( 'case' x in; ${tagPush} )`,
+    `x=$(\\case a in; ${publish})`,
+    `"case" x in ${force})`,
+    `case x "in" ${force})`,
+    `case x in a) echo;; 'esac' ${force})`,
+  ]) blocked(command);
+  // Bash runs a program named case here; the words stay a command, none is dropped.
+  assert.deepEqual(commandWords("'case' x in a) b"), [['case', 'x', 'in', 'a'], ['b']]);
+  // The keyword, unquoted, still has patterns; a quoted pattern is still a pattern.
+  shouldPass([`case x in ${py}) echo;; esac`, `case "x" in '${py}') echo;; esac`]);
+});
