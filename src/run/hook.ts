@@ -6,7 +6,7 @@
 
 import { realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
-import { type Config, DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
+import { type Config, DEFAULTS, type Env, type IgnoredPart, loadConfig } from '../rules/config.ts';
 import { checkCommand, checkEdit } from '../rules/guards.ts';
 import type { Finding } from '../rules/message.ts';
 
@@ -23,15 +23,19 @@ export interface Action {
 
 /**
  * The config the hook works with: the repo's yokoten.json, or the defaults outside a repo.
- * A wrong "commands" drops only the block list (#192): the core checks still run, and
- * `warn` gets one line that says what was ignored and why. Any other problem throws.
+ * The hook never fails open on its own config (#218): a file it cannot read gives the
+ * defaults, and a wrong "commands" drops only the block list (#192). The core checks
+ * still run, and `warn` gets one line that says what was ignored and why.
  */
 export function loadHookConfig(root: string | null, warn: (line: string) => void): Config {
   if (!root) return DEFAULTS;
-  return loadConfig(root, {
-    onBadCommands: (problem) => warn(`yokoten hook: yokoten.json "commands" was ignored, so no program is blocked; the core checks still run. ${problem}`),
-  });
+  return loadConfig(root, { onProblem: (problem, ignored) => warn(`yokoten hook: ${IGNORED[ignored]}; the core checks still run. ${problem}`) });
 }
+
+const IGNORED: Record<IgnoredPart, string> = {
+  file: 'yokoten.json was ignored, so the defaults apply',
+  commands: 'yokoten.json "commands" was ignored, so no program is blocked',
+};
 
 /**
  * Why to stop the action (what, why, fix), or null. `root` is the repo root, or null outside a repo.
@@ -43,7 +47,8 @@ export function judge(
   action: Action,
   { root, config, env, commandsOnly = false }: { root: string | null; config: Config; env: Env; commandsOnly?: boolean },
 ): Finding | null {
-  if (action.command !== undefined) return checkCommand(action.command, { env, config });
+  // The command runs in the call's folder: a hooks setting is judged in that repo (#217).
+  if (action.command !== undefined) return checkCommand(action.command, { env, config, cwd: action.cwd ?? root ?? undefined });
   if (commandsOnly || !root) return null;
   if (action.worker) env = { ...env, YOKOTEN_ROLE: 'worker' };
   for (const p of action.paths) {

@@ -110,6 +110,14 @@ test('config: for the hook, a wrong "commands" drops only the block list, said o
   assert.deepEqual(loadHookConfig(dir, (line) => lines.push(line)).commands.block, { python3: 'TypeScript only' });
   assert.equal(loadHookConfig(null, (line) => lines.push(line)), DEFAULTS);
   assert.equal(lines.length, 1);
+  // A file that is not one JSON object gives the defaults, said once (#218).
+  for (const text of ['{ nope', '[]', 'null']) {
+    writeFileSync(join(dir, 'yokoten.json'), text);
+    assert.throws(() => loadConfig(dir), /^Error: yokoten\.json: /, text);
+    assert.equal(loadHookConfig(dir, (line) => lines.push(line)), DEFAULTS, text);
+    assert.match(lines.at(-1) ?? '', /^yokoten hook: yokoten\.json was ignored, so the defaults apply; the core checks still run\. yokoten\.json: \S/);
+  }
+  assert.equal(lines.length, 4);
 });
 
 const goodPr = (): PullRequest => ({

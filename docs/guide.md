@@ -466,6 +466,8 @@ project's own stack.
 - A name has no folder and no space. A wrong shape in `"commands"` is a config error for
   `check` and `doctor`. The guard then blocks no program and says so, and the core
   checks still run.
+- When `yokoten.json` is not valid JSON, `check` and `doctor` report a config error. The
+  guard then uses the defaults, says so in one line, and still runs the core checks.
 
 The guard reads command text. It does not see a program that a script, a `make` target,
 an npm script or a shell function runs. Name each version you want to stop:

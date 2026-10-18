@@ -59,17 +59,23 @@ export const DEFAULTS: Config = {
   commands: { block: {} },
 };
 
+/** The part of yokoten.json the hook ignored: the whole file, or only "commands". */
+export type IgnoredPart = 'file' | 'commands';
+
 /**
- * yokoten.json, or the defaults. A problem in the file throws. `onBadCommands` is for the
- * hook: a wrong "commands" then drops only the block list, and the hook keeps its core
- * checks. Without it (check, doctor), a wrong "commands" is a config problem too.
+ * yokoten.json, or the defaults. A problem in the file throws. `onProblem` is for the hook
+ * (#192, #218): it gets the problem instead, and the hook keeps its core checks. A file
+ * that cannot be read or is not one JSON object then gives the defaults. A wrong
+ * "commands" drops only the block list. Without it (check, doctor), each is a config problem.
  */
-export function loadConfig(root: string, { onBadCommands }: { onBadCommands?: (problem: string) => void } = {}): Config {
-  let file: ConfigFile = {};
+export function loadConfig(root: string, { onProblem }: { onProblem?: (problem: string, ignored: IgnoredPart) => void } = {}): Config {
+  let file: ConfigFile;
   try {
-    file = JSON.parse(readFileSync(join(root, 'yokoten.json'), 'utf8'));
+    file = readConfigFile(root);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(`yokoten.json: ${(err as Error).message}`);
+    if (!onProblem) throw err;
+    onProblem((err as Error).message, 'file');
+    return DEFAULTS;
   }
   return {
     layout: { ...DEFAULTS.layout, ...file.layout },
@@ -80,16 +86,37 @@ export function loadConfig(root: string, { onBadCommands }: { onBadCommands?: (p
     allowBuild: file.allowBuild ?? DEFAULTS.allowBuild,
     areas: file.areas ?? DEFAULTS.areas,
     translations: { ...DEFAULTS.translations, ...file.translations },
-    commands: { block: readBlockListOr(file.commands, onBadCommands) },
+    commands: { block: readBlockListOr(file.commands, onProblem) },
   };
 }
 
-function readBlockListOr(commands: unknown, onBadCommands?: (problem: string) => void): Record<string, string> {
-  if (!onBadCommands) return readBlockList(commands);
+// The file as one JSON object; a missing file is an empty one. The message names the file
+// and never holds a path, so the hook can print it as it is (core rule 11).
+function readConfigFile(root: string): ConfigFile {
+  let text: string;
+  try {
+    text = readFileSync(join(root, 'yokoten.json'), 'utf8');
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return {};
+    throw new Error(`yokoten.json: cannot be read (${code ?? 'unknown error'})`);
+  }
+  let file: unknown;
+  try {
+    file = JSON.parse(text);
+  } catch (err) {
+    throw new Error(`yokoten.json: ${(err as Error).message.replace(/\s+/g, ' ')}`);
+  }
+  if (!isPlainObject(file)) throw new Error('yokoten.json: the file must hold one JSON object, such as {}');
+  return file as ConfigFile;
+}
+
+function readBlockListOr(commands: unknown, onProblem?: (problem: string, ignored: IgnoredPart) => void): Record<string, string> {
+  if (!onProblem) return readBlockList(commands);
   try {
     return readBlockList(commands);
   } catch (err) {
-    onBadCommands((err as Error).message);
+    onProblem((err as Error).message, 'commands');
     return {};
   }
 }

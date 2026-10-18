@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { DEFAULTS, type Env } from '../src/rules/config.ts';
 import { checkCommand, checkEdit, commandWords, hookFile, runsCheck } from '../src/rules/guards.ts';
+import { judge } from '../src/run/hook.ts';
 
 const blocked = (command: string, env: Env = {}) => assert.ok(checkCommand(command, { env }), `should block: ${command}`);
 const allowed = (command: string, env: Env = {}) => assert.equal(checkCommand(command, { env }), null, `should allow: ${command}`);
@@ -206,6 +207,21 @@ test('hooks setting: a folder whose pre-commit runs the check, or the value alre
     assert.match(refusal?.fix ?? '', /add `yokoten check` to hooks\/plain\/pre-commit/);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('hooks setting: the hook judges it in the folder the command runs in (#217, #218)', () => {
+  const repo = makeHooksRepo();
+  const command = 'git config core.hooksPath .husky/_';
+  const judgeFrom = (cwd: string | undefined, root: string | null) => judge({ command, paths: [], cwd, worker: false }, { root, config: DEFAULTS, env: {} });
+  try {
+    // The session runs elsewhere; the agent's command runs in the repo.
+    assert.equal(judgeFrom(repo, null), null, 'the call\'s cwd');
+    assert.equal(judgeFrom(undefined, repo), null, 'else the repo root');
+    // Positive control: the same command, judged from a folder outside the repo, is refused.
+    assert.equal(checkCommand(command, { env: {}, cwd: tmpdir() })?.id, 'hooks-path');
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
   }
 });
 
