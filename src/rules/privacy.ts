@@ -36,10 +36,12 @@ export function loadMarks(env: Env): string[] {
 }
 
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
-// A version token in a user agent (Chrome/120.0.0.0) is not an address: a letter or
-// digit, then `/`, comes right before it. A URL (http://192.0.2.1) has `/` or `:` there,
-// so it is still caught. Only IPv4 is checked, private ranges included; IPv6 is not.
-const IPV4 = /(?<![\w.])(?<![A-Za-z0-9]\/)(?:\d{1,3}\.){3}\d{1,3}(?![\w.])/g;
+// A browser version in a user agent (Chrome/120.0.0.0) is not an address. Only the
+// browser product names are skipped, case-sensitive as a user agent writes them: an
+// address in a path (api/192.0.2.1) or a URL (http://192.0.2.1) is still caught.
+// Only IPv4 is checked, private ranges included; IPv6 is not.
+const BROWSER = 'Chrome|Chromium|CriOS|Edg|EdgA|EdgiOS|Edge|OPR|Opera|Version|Firefox|FxiOS|Safari|AppleWebKit|Gecko|Mozilla|YaBrowser|SamsungBrowser|UCBrowser|Electron';
+const IPV4 = new RegExp(`(?<![\\w.])(?<!\\b(?:${BROWSER})/)(?:\\d{1,3}\\.){3}\\d{1,3}(?![\\w.])`, 'g');
 
 // Addresses that point at no person. A personal address at the same domains
 // (someone at gmail.com, or at github.com) is still caught.
