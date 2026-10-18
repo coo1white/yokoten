@@ -30,7 +30,7 @@ skill: find the cause, add or fix the check, then carry the fix to the other pro
 | 5 | A worker does not change lead-only files: these rules, agent config, hooks, CI. | Risk: a pull request that edits CI runs that CI before anyone reads it. | Tool guard and commit check; the bot has no Workflows permission |
 | 6 | Never skip the commit check (`--no-verify`, changing `core.hooksPath`). | Risk: a skipped check makes a broken commit look reviewed. | Tool guard; CI runs the same check |
 | 7 | No plain force push. Merge `main` into a branch only on a real conflict; never rebase a shared branch. | Risk: a force push throws away commits someone else pushed. | Tool guard; branch ruleset |
-| 8 | Squash merge. One pull request, one purpose; small polish goes in one batch. A pull request has a commit-form title, a `tier:` line, Why / What changed / How tested, a linked issue, a changelog line when behaviour changes, a milestone and labels. An issue title is `area: verb phrase` (a task) or `area: symptom` (an incident): at most 60 characters, no full stop, no `#N`. | Incident: the owner was asked to review a +3 −2 pull request on its own and said small changes should not each cost a review. | Repo settings (squash only); `check --pr` and `check --issue` in CI |
+| 8 | Squash merge. One pull request, one purpose; small polish goes in one batch. A pull request has a commit-form title, a `tier:` line, Why / What changed / How tested, a linked issue, a file in `changes/` when behaviour changes, a milestone and labels. An issue title is `area: verb phrase` (a task) or `area: symptom` (an incident): at most 60 characters, no full stop, no `#N`. | Incident: the owner was asked to review a +3 −2 pull request on its own and said small changes should not each cost a review. | Repo settings (squash only); `check --pr` and `check --issue` in CI |
 | 9 | Review and test the exact commit that merges. The reviewer only reads; the verifier runs it. | Incident: two pull requests, each green on its own, broke `main` together, twice. | `inspect` skill; merge queue where the host has one |
 | 10 | No folder holds more than 7 entries (the root is not counted). | Risk: a flat folder grows until nobody can find anything. Set as a standard by the owner. | Commit check (layout) |
 | 11 | Nothing in the repo, or in what yokoten prints, points at a person or opens their accounts: no personal email, IP, name, city or private domain, and no secret (token or private key). A hit is reported by place, never by content; the home folder shows as `~`. | Incident: the old check read only the live docs, and server names and addresses were still in 56 tracked files. | Commit check and CI (privacy and secrets); `check --history` before going public |
@@ -132,8 +132,10 @@ yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
   The body says why; `Closes #N` links the issue.
 - **Versions** follow [Semantic Versioning](https://semver.org/). Before 1.0, a minor
   bump may break things; say so in the changelog.
-- **`CHANGELOG.md`**: every pull request that changes behaviour adds a line under
-  `[Unreleased]`. At release, an agent may prepare a `chore: release vX.Y.Z` pull request
-  (the `release` skill): it proposes the version, and after the owner agrees it moves
-  those lines under the new version and bumps `package.json`. The owner reviews and
+- **`CHANGELOG.md`**: every pull request that changes behaviour adds a file in
+  `changes/` (`changes/README.md` shows the form), not a line in `CHANGELOG.md`, so pull
+  requests never conflict. At release, an agent may prepare a `chore: release vX.Y.Z`
+  pull request (the `release` skill): it runs `node bin/yokoten.ts changelog --write`,
+  proposes the version, and after the owner agrees it moves the `[Unreleased]` lines
+  under the new version and bumps `package.json`. The owner reviews and
   merges it, then creates the `vX.Y.Z` tag. Agents never tag (core rule 3).

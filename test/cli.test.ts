@@ -311,6 +311,8 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.match(result.stdout, /wrote \.github\/dependabot\.yml/);
   assert.match(result.stdout, /wrote CHANGELOG\.md/);
   assert.match(readFileSync(join(sandbox.repo, 'CHANGELOG.md'), 'utf8'), /^## \[Unreleased\]$/m, 'the changelog skeleton (#34)');
+  assert.match(result.stdout, /wrote changes\/README\.md/);
+  assert.match(readFileSync(join(sandbox.repo, 'changes/README.md'), 'utf8'), /node \.yokoten\/bin\/yokoten\.ts changelog --write/, 'the change files folder (#132)');
   assert.ok(statSync(join(sandbox.repo, '.githooks', 'pre-commit')).mode & 0o100);
   const workflow = readFileSync(join(sandbox.repo, '.github/workflows/yokoten.yml'), 'utf8');
   assert.match(workflow, /node \.yokoten\/bin\/yokoten\.ts check/);
@@ -435,9 +437,11 @@ test('doctor: each stage boundary, from a fresh repo to the end of the road', ()
   sandbox.run(['init']);
   assert.match(next(), /stage 2 of 5, issues and pull requests\. Next: a todo file \(TODO\.md\)/);
   rmSync(join(sandbox.repo, 'TODO.md'));
-  // Stage 2 done. init wrote a changelog; without it, stage 3 is next.
+  // Stage 2 done. init wrote a changelog and changes/; without both, stage 3 is next.
   rmSync(join(sandbox.repo, 'CHANGELOG.md'));
-  assert.match(next(), /stage 3 of 5, release\. Next: no CHANGELOG\.md/);
+  assert.match(next(), /stage 4 of 5/, 'changes/ alone passes the changelog step (#132)');
+  rmSync(join(sandbox.repo, 'changes'), { recursive: true });
+  assert.match(next(), /stage 3 of 5, release\. Next: no CHANGELOG\.md with an "Unreleased" section, and no changes\/ folder/);
   sandbox.write('CHANGELOG.md', '# Changelog\n\n## [Unreleased]\n');
   // Stage 3 done.
   assert.match(next(), /stage 4 of 5, a team of agents\. Next: no CODEOWNERS file/);
@@ -559,6 +563,61 @@ test('check --pr: reads the CI event, lists the changed files from git, notes lo
   result = sandbox.run(['check', '--pr']);
   assert.equal(result.status, 0);
   assert.match(result.stdout, /no pull request in this run/);
+});
+
+test('check --pr: a change file counts as the changelog entry, and its form is checked (#132)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('README.md', 'Short.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'base');
+  const base = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  const commit = (files: Record<string, string>) => {
+    for (const [file, content] of Object.entries(files)) sandbox.write(file, content);
+    sandbox.git('add', '.');
+    sandbox.git('commit', '-qm', 'head');
+    return sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  };
+  const good = commit({ 'src/a.ts': 'export const a = 1;\n', 'changes/1-a.md': 'Added\n\nA new thing.\n' });
+  const bad = commit({ 'changes/1-a.md': 'Improved\n\nA new thing.\n' });
+  const event = (head: string) => {
+    const file = join(sandbox.home, 'event.json');
+    const body = 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\n';
+    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
+    return { GITHUB_EVENT_PATH: file };
+  };
+  let result = sandbox.run(['check', '--pr'], { extra: event(good) });
+  assert.equal(result.status, 0, result.stderr);
+  result = sandbox.run(['check', '--pr'], { extra: event(bad) });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /- changes\/1-a\.md:1: line 1 is not a section\. .*Make line 1 one of: Added, Changed/);
+  assert.doesNotMatch(result.stderr, /changelog: /, 'the file still counts as the entry');
+});
+
+test('changelog: previews the change files, and --write moves them into CHANGELOG.md (#132)', () => {
+  const sandbox = makeSandbox();
+  let result = sandbox.run(['changelog']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /no change files in changes\//);
+  sandbox.write('CHANGELOG.md', '# Changelog\n\n## [Unreleased]\n\n## [0.1.0] - 2026-10-18\n\n### Added\n\n- The first release.\n');
+  sandbox.write('changes/README.md', '# Change files\n');
+  sandbox.write('changes/2-b.md', 'Fixed\n\nA fix.\n');
+  sandbox.write('changes/1-a.md', 'Added\n\nA thing.\n');
+  result = sandbox.run(['changelog']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /2 change\(s\); `--write` adds these under \[Unreleased\] in CHANGELOG\.md:\n\n### Added\n\n- A thing\.\n\n### Fixed\n\n- A fix\.\n$/);
+  assert.ok(existsSync(join(sandbox.repo, 'changes/1-a.md')), 'a preview writes nothing');
+  // A bad file stops the write, and says so on stderr.
+  sandbox.write('changes/3-c.md', 'Added\n');
+  result = sandbox.run(['changelog', '--write']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /1 problem\(s\); nothing was written:\n- changes\/3-c\.md:1: no entry after the section/);
+  rmSync(join(sandbox.repo, 'changes/3-c.md'));
+  result = sandbox.run(['changelog', '--write']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /wrote 2 change\(s\) under \[Unreleased\] in CHANGELOG\.md, and deleted:\n- changes\/1-a\.md\n- changes\/2-b\.md/);
+  assert.equal(readFileSync(join(sandbox.repo, 'CHANGELOG.md'), 'utf8'), '# Changelog\n\n## [Unreleased]\n\n### Added\n\n- A thing.\n\n### Fixed\n\n- A fix.\n\n## [0.1.0] - 2026-10-18\n\n### Added\n\n- The first release.\n');
+  assert.deepEqual(readdirSync(join(sandbox.repo, 'changes')), ['README.md']);
+  assert.equal(sandbox.run(['changelog', '--wrote']).status, 1, 'an unknown option is refused');
 });
 
 test('check --pr: CODEOWNERS comes from the base branch, so a pull request cannot lower its own tier', () => {

@@ -95,7 +95,7 @@ export const RULES = {
   layout: {
     rule: 'no folder holds more than 7 entries; the root is not counted (core rule 10)',
     why: 'a flat folder grows until nobody can find anything',
-    check: 'the commit check and CI count the entries of each folder below the root; yokoten.json "layout.exempt" lets a log grow',
+    check: 'the commit check and CI count the entries of each folder below the root; changes/ and the folders in yokoten.json "layout.exempt" may grow',
   },
   'build-output': {
     rule: 'no build output in a commit',
@@ -133,9 +133,14 @@ export const RULES = {
     check: PR_CHECK,
   },
   'pr-changelog': {
-    rule: 'a pull request that changes behaviour adds a line to CHANGELOG.md (core rule 8)',
-    why: 'each pull request adds its line as it goes, so a release needs no digging',
-    check: `${PR_CHECK}; docs, tests and CI need no line, and \`No changelog: <reason>\` in the body lets code through`,
+    rule: 'a pull request that changes behaviour adds a file in changes/ (core rule 8)',
+    why: 'each pull request adds its own file, so pull requests never conflict and a release needs no digging',
+    check: `${PR_CHECK}; a new line in CHANGELOG.md counts too; docs, tests and CI need no entry, and \`No changelog: <reason>\` in the body lets code through`,
+  },
+  'change-file': {
+    rule: 'a change file has its section on line 1, a blank line 2, then the entry (core rule 8)',
+    why: '`yokoten changelog` puts each entry under its section in CHANGELOG.md, so it must read the file',
+    check: `${PR_CHECK} and each change file it adds or edits; \`yokoten changelog\` writes nothing while a change file is wrong`,
   },
   'pr-kit': {
     rule: 'a pull request that changes kit/ says so (core rule 8)',
