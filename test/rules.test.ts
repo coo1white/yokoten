@@ -626,6 +626,40 @@ test('translations: a missing source, an unknown blob and a shallow clone each g
   assert.match(note.fix, /fetch-depth: 0/);
 });
 
+test('translations: two pull requests that each change both files, squash-merged in turn, give no note (#155)', () => {
+  const repo = makeTranslatedRepo();
+  const english = (top: string, bottom: string) => `# Guide\n\n${top}\n\nMiddle.\n\n${bottom}\n`;
+  const translation = (blob: string, body: string) => `${sourceMarker('en.md', blob)}\n# 指南\n\n${body}\n`;
+  const blobOf = (text: string) => {
+    writeFileSync(join(repo.root, 'scratch.txt'), text);
+    return repo.git('hash-object', 'scratch.txt');
+  };
+  // One squash commit on main that changes both files, as a merged pull request does.
+  const merge = (englishText: string, translationText: string) => {
+    writeFileSync(join(repo.root, 'en.md'), englishText);
+    writeFileSync(join(repo.root, 'zh.md'), translationText);
+    repo.git('add', 'en.md', 'zh.md');
+    repo.git('commit', '-q', '-m', 'squash merge');
+  };
+  merge(english('Top.', 'Bottom.'), translation(blobOf(english('Top.', 'Bottom.')), '上。下。'));
+  // Branches A and B both start here. A changes the top, B the bottom; each updates zh.md.
+  merge(english('Top, A.', 'Bottom.'), translation(blobOf(english('Top, A.', 'Bottom.')), '上，A。下。'));
+  // B's marker names the English as B saw it, a blob main never holds.
+  const branchBlob = blobOf(english('Top.', 'Bottom, B.'));
+  merge(english('Top, A.', 'Bottom, B.'), translation(branchBlob, '上，A。下，B。'));
+  assert.notEqual(repo.git('hash-object', 'en.md'), branchBlob, 'the marker is stale');
+  assert.deepEqual(translationNotes(repo.root, ['en.md', 'zh.md']), [], 'both were translated: no note');
+  // The English changes later, with no translation: a note, counted from history.
+  repo.commit('en.md', english('Top, A.', 'Bottom, B, then C.'));
+  const [note, ...rest] = translationNotes(repo.root, ['zh.md']);
+  assert.deepEqual(rest, []);
+  assert.equal(note.what, 'is behind en.md by 1 commit');
+  assert.match(note.fix, /git diff [0-9a-f]{12} HEAD -- en\.md/);
+  // A typo fix that leaves the marker alone does not make it current.
+  repo.commit('zh.md', translation(branchBlob, '上，A。下，B！'));
+  assert.equal(translationNotes(repo.root, ['zh.md'])[0]?.what, 'is behind en.md by 1 commit');
+});
+
 test('translations: check gives a note, and yokoten.json "translations": { "fail": true } a problem (#87)', () => {
   const repo = makeTranslatedRepo();
   repo.commit('en.md', '# Guide\n\nStep one, changed.\n');
