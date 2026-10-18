@@ -10,6 +10,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { closestWord, COMMANDS, editDistance, HELP_OPTIONS } from '../src/run/cli.ts';
+import { guardDeadline } from '../src/run/hook.ts';
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'yokoten.ts');
 const at = '@';
@@ -83,6 +84,10 @@ test('hook: past the deadline the call is refused, in text and JSON (#274)', () 
   assert.equal(call('ls').status, 0);
   assert.equal(call('git push --force origin main').status, 2);
   assert.equal(sandbox.run(['hook'], { input, extra: { YOKOTEN_GUARD_DEADLINE_MS: 'soon' } }).status, 0, 'a bad value keeps the default');
+  // The setting can never turn the deadline off, nor set a timer Node can't hold.
+  for (const [value, ms] of [['', 5000], ['0', 5000], ['-5', 5000], ['0x10', 5000], ['1e9', 5000], ['2.5', 5000], ['Infinity', 5000], ['250', 250], ['90000', 30_000], ['3000000000', 30_000]] as const) {
+    assert.equal(guardDeadline(value), ms, `YOKOTEN_GUARD_DEADLINE_MS=${value}`);
+  }
 });
 
 test('hook: a command the guard reads too slowly is refused within the deadline (#274)', () => {
