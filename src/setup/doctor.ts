@@ -103,7 +103,7 @@ export function coreRulesCheck(root: string): { mark: 'ok' | 'MISSING' | 'note';
   return { mark: 'MISSING', finding: finding('core-rules', `the core rules in AGENTS.md are behind yokoten ${VERSION}'s, or were edited by hand (${summarizeUpdate(rules)})`, fix) };
 }
 
-/** A server with every setting off: no server step on the road may pass it (#7). */
+/** A server with every setting off, no label and only a closed milestone: no server step on the road may pass it (#7, #10). */
 const SERVER_CONTROL: ServerRead = {
   repo: 'octo/demo',
   defaultBranch: 'main',
@@ -113,6 +113,7 @@ const SERVER_CONTROL: ServerRead = {
   tags: false,
   security: { secretScanning: false, pushProtection: false, privateReporting: false, dependabotAlerts: false },
   forgotten: [],
+  planning: { repo: 'octo/demo', labels: [], milestones: [{ title: 'v0.1', open: false }] },
 };
 
 /**
