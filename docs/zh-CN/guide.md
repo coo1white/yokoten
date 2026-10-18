@@ -183,7 +183,7 @@ yokoten 能管住三种 AI 编程 agent，它们守的是同一套规矩。
 |---|---|
 | Claude Code | 工具调用拦截（钩子）、收尾检查（钩子）、每次会话开头的带路提示、skills 和 agents |
 | Codex CLI | 工具调用拦截，写在 `.codex/hooks.json`。第一次用时 Codex 会请你确认信任项目钩子（`/hooks`） |
-| Gemini CLI | 工具调用拦截，写在 `.gemini/settings.json` |
+| Gemini CLI | 工具调用拦截，写在 `.gemini/settings.json`。要在仓库根目录启动 Gemini：它只读启动时所在文件夹里的 `.gemini/settings.json` |
 | 其他 agent | `AGENTS.md` 里的规则；还有提交检查，不管是谁提交的，坏提交都会被拦下 |
 
 ## 安装和命令

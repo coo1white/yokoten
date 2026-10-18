@@ -199,7 +199,7 @@ yokoten guards three AI coding agents. Each one keeps the same rules.
 |---|---|
 | Claude Code | the tool-call guard (a hook), the stop check (a hook), the guide at the start of each session, skills and agents |
 | Codex CLI | the tool-call guard, in `.codex/hooks.json`. Codex asks you once to trust project hooks (`/hooks`) |
-| Gemini CLI | the tool-call guard, in `.gemini/settings.json` |
+| Gemini CLI | the tool-call guard, in `.gemini/settings.json`. Start Gemini at the repo root: it reads `.gemini/settings.json` from the folder it starts in, and nowhere else |
 | Any other agent | the rules in `AGENTS.md`, and the commit check, which stops a bad commit whoever made it |
 
 ## Install and commands

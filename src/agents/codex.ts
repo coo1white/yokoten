@@ -23,7 +23,7 @@ function patchPaths(patch: string): string[] {
  * Any other tool (MCP, update_plan) is neither.
  */
 export function readToolCall(input: unknown): Action {
-  const call = (input ?? {}) as { cwd?: unknown; tool_name?: unknown; tool_input?: unknown };
+  const call = (input ?? {}) as { cwd?: unknown; tool_name?: unknown; tool_input?: unknown; agent_type?: unknown };
   const tool = (typeof call.tool_input === 'object' && call.tool_input !== null ? call.tool_input : {}) as Record<string, unknown>;
   const name = typeof call.tool_name === 'string' ? call.tool_name : '';
   const command = typeof tool.command === 'string' ? tool.command : undefined;
@@ -31,8 +31,10 @@ export function readToolCall(input: unknown): Action {
     command: name === SHELL ? command : undefined,
     paths: name === 'apply_patch' && command ? patchPaths(command) : [],
     cwd: typeof call.cwd === 'string' && call.cwd !== '' ? call.cwd : undefined,
-    // A Codex PreToolUse call names no subagent type; YOKOTEN_ROLE decides.
-    worker: false,
+    // Since rust-v0.163.0 a subagent's call may carry `agent_type`: a built-in role
+    // (default, worker, explorer) or a custom one's name from .codex/agents/*.toml. Not
+    // on the docs page yet, so it is optional; without it YOKOTEN_ROLE decides.
+    worker: /worker/i.test(typeof call.agent_type === 'string' ? call.agent_type : ''),
   };
 }
 
