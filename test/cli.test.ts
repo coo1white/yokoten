@@ -470,6 +470,46 @@ test('init: a CLAUDE.md that already imports or links AGENTS.md is left as it is
   }
 });
 
+test("init: a .claude/CLAUDE.md alone gets `@../AGENTS.md`, and doctor's rules step wants it (#206)", () => {
+  const sandbox = makeSandbox();
+  sandbox.write('.claude/CLAUDE.md', '# our rules\n');
+  sandbox.write('AGENTS.md', '# shared rules\n');
+  assert.notEqual(stepMark(sandbox, 'rules'), 'done', 'Claude Code reads .claude/CLAUDE.md instead of AGENTS.md');
+  assert.match(sandbox.run(['doctor']).stdout, /rules[^\n]*: \.claude\/CLAUDE\.md does not import AGENTS\.md[^\n]*; add a line `@\.\.\/AGENTS\.md`/);
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /updated \.claude\/CLAUDE\.md: it now reads AGENTS\.md/);
+  // Claude Code resolves an import relative to the file that holds it, so this is the root AGENTS.md.
+  assert.match(readFileSync(join(sandbox.repo, '.claude', 'CLAUDE.md'), 'utf8'), /^# our rules\n\n<!--[^\n]*-->\n@\.\.\/AGENTS\.md\n$/);
+  assert.equal(existsSync(join(sandbox.repo, 'CLAUDE.md')), false, 'no root CLAUDE.md is made');
+  assert.equal(stepMark(sandbox, 'rules'), 'done');
+});
+
+test('init: CLAUDE.md and .claude/CLAUDE.md, neither importing AGENTS.md: the root one gets the import (#206)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('CLAUDE.md', '# root rules\n');
+  sandbox.write('.claude/CLAUDE.md', '# folder rules\n');
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /updated CLAUDE\.md: it now reads AGENTS\.md/);
+  assert.doesNotMatch(result.stdout, /updated \.claude\/CLAUDE\.md/);
+  assert.match(readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8'), /\n@AGENTS\.md\n$/);
+  assert.equal(readFileSync(join(sandbox.repo, '.claude', 'CLAUDE.md'), 'utf8'), '# folder rules\n');
+  assert.equal(stepMark(sandbox, 'rules'), 'done');
+});
+
+test('init: a .claude/CLAUDE.md that already imports AGENTS.md is left as it is (#206)', () => {
+  for (const text of [`# rules\n${at}../AGENTS.md\n`, '# rules\nSee [the rules](../AGENTS.md).\n']) {
+    const sandbox = makeSandbox();
+    sandbox.write('.claude/CLAUDE.md', text);
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stdout, /CLAUDE\.md/, text);
+    assert.equal(readFileSync(join(sandbox.repo, '.claude', 'CLAUDE.md'), 'utf8'), text);
+    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+  }
+});
+
 test("init: husky keeps its hooks folder; .husky/pre-commit gets the check and keeps its own lines (#206)", () => {
   const sandbox = makeSandbox();
   sandbox.write('.husky/pre-commit', '#!/bin/sh\ntouch own-hook-ran\n');
