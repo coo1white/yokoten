@@ -33,3 +33,12 @@ The check line may run through `pnpm exec`, `yarn`, `bunx` or `npx --no`, follow
 `./fake-yokoten`. `env -S` reads its `\_`, `\t` and `\c` escapes. A heredoc right after a
 group (`{ read -r a; } <<EOF`) is the group's input. `env -C`, `env --chdir`, `builtin cd` and
 `GIT_COMMON_DIR=` move repo, and `source /dev/stdin` or `. /dev/fd/N` runs its input.
+
+The guard reads `env` and `find -exec` chains, `GIT_CONFIG_KEY_n` lists and long hook lines of
+100k repeats in well under 2 s; they took minutes. The check line `yokoten init` writes, with
+`2>/dev/null` after the `]`, counts. With `core.hooksPath .husky/_`, husky's own
+`.husky/_/pre-commit` and `.husky/_/h` must be the ones a husky 9 release writes; then
+`.husky/pre-commit` runs with `sh -e`, so `npx yokoten check` followed by `npm test` counts. A
+hook with no `#!` line runs with sh, and `#!/usr/bin/env -S bash` names a shell.
+`source -- /dev/stdin`, `. //dev/stdin` and `. /proc/<pid>/fd/0` run their input; `sudo -D` and
+`sudo --chdir` move repo. A command that sets core.hooksPath many times asks git once.

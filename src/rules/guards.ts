@@ -11,6 +11,7 @@
 // CODEOWNERS, and a release token the agents do not hold.
 
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { accessSync, constants, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { Config, Env } from './config.ts';
@@ -37,10 +38,14 @@ export function checkEdit(path: string, { config, env }: { config: Config; env: 
 export function checkCommand(command: string, options: { env: Env; config?: Pick<Config, 'commands'>; cwd?: string }): Finding | null {
   // The reader is not a full parser. Whatever goes wrong inside it, the command is refused,
   // never let through: an error here must not open the guard.
+  const outerAnswers = gitAnswers;
   try {
+    gitAnswers = outerAnswers ?? new Map();
     return withBudget(command.length, () => checkEachCommand(command, { ...options, cwd: options.cwd ?? process.cwd() }));
   } catch {
     return finding('unreadable-command', 'yokoten could not read this command', 'split it into simpler commands, one per call');
+  } finally {
+    gitAnswers = outerAnswers;
   }
 }
 
@@ -61,18 +66,32 @@ const RELEASE_FIX = 'if the owner asked for this, they start a new session with 
 const release = (what: string) => finding('release', what, RELEASE_FIX);
 
 const MOVERS = new Set(['cd', 'pushd', 'popd']);
-const movesRepo = (words: string[]): boolean =>
-  words.some((word, index) => /^(GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR)=/.test(word) || word === '--worktree' || (programName(word) === 'env' && envChangesFolder(words, index + 1))) ||
-  findPrograms(words).some((program) => MOVERS.has(programName(program)));
-
-// `env -C dir`, `env --chdir=dir` (or cut short, `--ch`), `env -iC dir`: env runs its program elsewhere.
-function envChangesFolder(words: string[], index: number): boolean {
-  for (; index < words.length && words[index].startsWith('-'); index += LAUNCHERS.env.options.includes(words[index]) ? 2 : 1) {
-    const long = /^--(c[a-z]*)(?:=|$)/.exec(words[index]);
-    if ((long && 'chdir'.startsWith(long[1])) || /^-[a-zA-RT-Z]*C/.test(words[index])) return true;
-    if (splitString(words, index) !== undefined) return false;
+function movesRepo(words: string[]): boolean {
+  // The options of an env or sudo are read once: an env word among them (`-/env`) would
+  // read the same options again, to the same end.
+  const readTo = { env: 0, sudo: 0 };
+  for (const [index, word] of words.entries()) {
+    if (/^(GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR)=/.test(word) || word === '--worktree') return true;
+    const name = programName(word);
+    if ((name !== 'env' && name !== 'sudo') || index < readTo[name]) continue;
+    const moved = changesFolder(name, words, index + 1);
+    if (moved === true) return true;
+    readTo[name] = moved;
   }
-  return false;
+  return findPrograms(words).some((program) => MOVERS.has(programName(program)));
+}
+
+// `env -C dir`, `env --chdir=dir` (or cut short, `--ch`), `env -iC dir`, `sudo -D dir`,
+// `sudo --chdir=dir`: the launcher runs its program elsewhere. Returns true, or the index
+// after the launcher's options.
+function changesFolder(name: 'env' | 'sudo', words: string[], index: number): true | number {
+  const short = name === 'env' ? /^-[a-zA-RT-Z]*C/ : /^-[a-zA-Z]*D/;
+  for (; index < words.length && words[index].startsWith('-'); index += LAUNCHERS[name].options.includes(words[index]) ? 2 : 1) {
+    const long = /^--(c[a-z]*)(?:=|$)/.exec(words[index]);
+    if ((long && 'chdir'.startsWith(long[1])) || short.test(words[index])) return true;
+    if (name === 'env' && splitString(words, index) !== undefined) return index;
+  }
+  return index;
 }
 
 const base = (word: string) => word.slice(Math.max(word.lastIndexOf('/'), word.lastIndexOf('\\')) + 1);
@@ -169,6 +188,7 @@ const isAssignment = (word: string) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
 
 function checkHooksEnvironment(words: string[]): Finding | null {
   const lastGit = words.findLastIndex(isGit);
+  let values: Map<string, string> | null = null; // GIT_CONFIG_VALUE_n, the first of each n
   let isPrefix = true; // every word before this one is an assignment, an option or an assigner
   for (const [index, word] of words.entries()) {
     const variable = /^GIT_CONFIG_(KEY_(\d+)|PARAMETERS)=(.*)$/is.exec(word);
@@ -182,13 +202,22 @@ function checkHooksEnvironment(words: string[]): Finding | null {
       continue;
     }
     if (!isHooksPath(setting)) continue;
-    const valueName = `git_config_value_${number}=`;
-    const value = words.find((w) => w.toLowerCase().startsWith(valueName));
-    if (value?.slice(valueName.length) !== HOOKS_DIR) {
+    values ??= configValues(words);
+    if (values.get(number) !== HOOKS_DIR) {
       return hooksPath(`GIT_CONFIG_KEY_${number} names core.hooksPath with a value other than .githooks, which skips the commit check`);
     }
   }
   return null;
+}
+
+// Each GIT_CONFIG_VALUE_n=value in the words, by n as written: the first one counts.
+function configValues(words: string[]): Map<string, string> {
+  const values = new Map<string, string>();
+  for (const word of words) {
+    const value = /^GIT_CONFIG_VALUE_(\d+)=(.*)$/is.exec(word);
+    if (value && !values.has(value[1])) values.set(value[1], value[2]);
+  }
+  return values;
 }
 
 // `git config` options that take the next word as their value.
@@ -265,16 +294,21 @@ function checkHooksFolder(value: string, options: string[], directory: string | 
   const file = hookFile(root, value);
   if (file === null) return hooksPath(`core.hooksPath ${value} is outside this repo, so the commit check does not run`);
   // git runs the folder's own pre-commit only when it is an executable file; husky's
-  // `.husky/_/pre-commit` then runs `.husky/pre-commit`.
-  const runs = `${hooksFolder(root, value)}/pre-commit`.replace(/^\//, '');
+  // `.husky/_/pre-commit` then runs `.husky/pre-commit`, with `sh -e`.
+  const folder = hooksFolder(root, value);
+  const runs = `${folder}/pre-commit`.replace(/^\//, '');
   const notRun = hookNotRun(join(root, runs));
   if (notRun) return hooksPath(`core.hooksPath ${value} turns off the commit check: git does not run ${runs}, ${notRun}`, `make ${runs} an executable shell script (\`yokoten init\` sets it up), then set core.hooksPath again`);
-  if (runsCheck(readText(join(root, file)))) return null;
+  const isHusky = folder === '.husky/_';
+  const notHusky = isHusky ? notHuskys(root) : null;
+  if (notHusky) return hooksPath(`core.hooksPath ${value} may not run the commit check: ${notHusky}`, 'run `npx husky` to write husky\'s own files, then set core.hooksPath again');
+  if (runsCheck(readText(join(root, file)), isHusky)) return null;
   return hooksPath(`core.hooksPath ${value} turns off the commit check: ${file} does not run \`yokoten check\``, `add \`yokoten check\` to ${file} (\`yokoten init\` adds it), then set core.hooksPath again`);
 }
 
-// The shells a hook may name on its first line, directly or through /usr/bin/env.
-const SHEBANG = /^#!\s*(?:\/usr\/bin\/env\s+|\/(?:[\w.+-]+\/)*)(?:sh|bash|dash|zsh)(?:[ \t].*)?$/;
+// The shells a hook may name on its first line, directly or through /usr/bin/env (also
+// `env -S`). A file with no #! line git runs with sh.
+const SHEBANG = /^#!\s*(?:\/usr\/bin\/env\s+(?:-S\s*)?|\/(?:[\w.+-]+\/)*)(?:sh|bash|dash|zsh)(?:[ \t].*)?$/;
 
 // Why git would not run the hook file at `path` as a shell script, or null when it would.
 function hookNotRun(path: string): string | null {
@@ -291,7 +325,37 @@ function hookNotRun(path: string): string | null {
     }
   }
   const first = readText(path).split(/\r?\n/, 1)[0];
-  return SHEBANG.test(first) ? null : 'whose first line does not name sh, bash, dash or zsh';
+  return !first.startsWith('#!') || SHEBANG.test(first) ? null : 'whose first line does not name sh, bash, dash or zsh';
+}
+
+// husky 9's own files in `.husky/_`: each hook sources `h` from its folder, and `h` runs
+// `.husky/<hook>` with `sh -e` (or sources it after `set -e`) and fails when it fails.
+// Any other `.husky/_/pre-commit` or `h` may not run `.husky/pre-commit` at all.
+const HUSKY_HOOK = new Set(['. "${0%/*}/h"', '. "$(dirname "$0")/h"']);
+// The sha256 of each `h` husky 9.0.1 to 9.1.7 writes, without its comments, blank lines and indents.
+const HUSKY_H = new Set([
+  'b4b605f02218e49f92d437c0a447422cf962979c9805ec0722fd73bb12fc14ca', // 9.0.1
+  '4cfec33fb6483d59ef799858e8ae5df0dfc98454ea386145c8382024076e9566', // 9.0.2 to 9.0.5
+  '0ee76fc9c7a5dbce7cede4a7c6d99683c5e817164d5d86366541f008577daaa1', // 9.0.6
+  '60898241f581d3f63d82dc61e43edbebcce35969496d446eadc3fba0854963ad', // 9.0.7 to 9.0.10
+  '38db74aaa760471c57f52d64b89894a2a66098045068776c01fdde3518cdf8fb', // 9.0.11
+  '035106e41eb342267fe34024d2aaebf81588523b28d46714283a273f62abdfa5', // 9.1.0 and 9.1.1
+  'b4d32bb43592bfdc3a4077f47985f69777539e69ed16907148044b1d2b54f6ea', // 9.1.2
+  '237b908c80bcad80439474bb49def6559697dbabee6cb2d6f6c969f354886d81', // 9.1.3 to 9.1.7
+]);
+const shellLines = (text: string) =>
+  text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== '' && !line.startsWith('#'));
+
+// Why `.husky/_` in `root` is not husky's own, or null when it is.
+function notHuskys(root: string): string | null {
+  const hook = shellLines(readText(join(root, '.husky', '_', 'pre-commit')));
+  if (hook.length !== 1 || !HUSKY_HOOK.has(hook[0])) return '.husky/_/pre-commit is not the one husky writes';
+  const h = shellLines(readText(join(root, '.husky', '_', 'h'))).join('\n');
+  if (!HUSKY_H.has(createHash('sha256').update(h).digest('hex'))) return '.husky/_/h is missing, or is not the one a husky 9 release writes';
+  return null;
 }
 
 /**
@@ -315,7 +379,8 @@ function hooksFolder(root: string, setting: string): string | null {
 // A line that runs the check and stops the commit when it fails, in the shapes yokoten
 // writes or knows: `exec node "bin/yokoten.ts" check --staged`, `npx yokoten check || exit 1`,
 // `pnpm exec yokoten check`, `npx lint-staged && npx yokoten check`, and the guarded form
-// `[ -f <cli> ] || { echo '...' >&2; exit 1; }; node <cli> check`.
+// `[ -f <cli> ] || { echo '...' >&2; exit 1; }; node <cli> check` (with `2>/dev/null` after
+// the `]`, as `yokoten init` writes it).
 //
 // The program is yokoten itself: `yokoten` or `yokoten.ts`, bare or quoted, or under
 // node_modules/.bin, bin/ or .yokoten/. `./fake-yokoten` is some other program. The check
@@ -329,7 +394,7 @@ const CHECK_TAIL = String.raw`\s+check(?:\s+--(?:staged|json))*(?<stop>\s*\|\|\s
 const NOT_BEFORE = String.raw`(?!(?:exit|return|exec|eval|source|trap|kill|set|shift|break|continue|alias|unset|builtin|command|\.)(?:\s|$))`;
 const BEFORE = String.raw`(?<before>(?:${NOT_BEFORE}[\w./@:=+-]+(?:\s+[\w./@:=+-]+)*\s*&&\s*)+)?`;
 const CHECK_LINE = new RegExp(String.raw`^${BEFORE}(?<exec>exec\s+)?${RUNNER}${PROGRAM}${CHECK_TAIL}`);
-const GUARDED_LINE = new RegExp(String.raw`^\[ -f (?<cli>${PROGRAM}) \] \|\| \{ echo '[^']*'(?: >&2)?; exit [1-9]\d*; \}; node \k<cli>${CHECK_TAIL}`);
+const GUARDED_LINE = new RegExp(String.raw`^\[ -f (?<cli>${PROGRAM}) \](?: 2>/dev/null)? \|\| \{ echo '[^']*'(?: >&2)?; exit [1-9]\d*; \}; node \k<cli>${CHECK_TAIL}`);
 // Shell words that open and close a block: a line inside one may never run.
 const OPENERS = new Set(['if', 'while', 'until', 'for', 'case', 'select']);
 const CLOSERS = new Set(['fi', 'done', 'esac']);
@@ -339,15 +404,16 @@ const CLOSERS = new Set(['fi', 'done', 'esac']);
  * a line in one of the shapes above, at the top level (not inside an `if`, a loop, a group,
  * a quote, a heredoc, or after `||`, `&&` or `|` on the line before), with no `exit` or
  * `return` (but `exit 1`), `exec` or heredoc before it. A line with no `exec` and no
- * `|| exit` is the last command, or follows `set -e` (and no `set +e`).
+ * `|| exit` is the last command, or follows `set -e` (and no `set +e`). `startsStrict`:
+ * the script runs with `sh -e`, as husky 9 runs `.husky/pre-commit`.
  */
-export function runsCheck(script: string): boolean {
+export function runsCheck(script: string, startsStrict = false): boolean {
   return withBudget(
     script.length,
     () => {
       const lines = scriptLines(script);
       let depth = 0;
-      let isStrict = false; // set -e: a failed command stops the script
+      let isStrict = startsStrict; // set -e: a failed command stops the script
       for (const [index, line] of lines.entries()) {
         const shape = CHECK_LINE.exec(line) ?? GUARDED_LINE.exec(line);
         if (shape && depth === 0) {
@@ -381,11 +447,13 @@ function leaves(line: string): boolean {
 // ends in `||`, `&&` or `|` belongs to it. Blank lines are left out.
 function scriptLines(script: string): string[] {
   const lines: string[] = [];
+  let goesOn = false; // the last line ends in ||, && or | (or |&), so the next one joins it
   const add = (text: string) => {
     const line = text.trim();
     if (line === '') return;
-    if (lines.length > 0 && /(?:\|\||&&|\||\|&)$/.test(lines[lines.length - 1])) lines[lines.length - 1] += ` ${line}`;
+    if (goesOn) lines[lines.length - 1] += ` ${line}`;
     else lines.push(line);
+    goesOn = line.endsWith('|') || line.endsWith('&&') || line.endsWith('|&');
   };
   let line = '';
   let quote = ''; // the open quote: ', " or $'
@@ -433,21 +501,77 @@ function blockDepth(line: string): number {
       else if (!KEYWORDS.has(word)) break;
     }
   }
-  const bare = line.replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, '').replace(/\$\{[^}]*\}|\$\(+[^)]*\)+/g, '');
-  for (const character of bare) {
+  for (const character of withoutSubstitutions(withoutQuotes(line))) {
     if (character === '(' || character === '{') depth++;
     else if (character === ')' || character === '}') depth--;
   }
   return depth;
 }
 
-// What git prints, trimmed, or null when it fails.
-function readGit(directory: string, args: string[]): string | null {
-  try {
-    return execFileSync('git', args, { cwd: directory, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-  } catch {
-    return null;
+// The line without its '...' and "..." strings (a " string takes \ escapes). An unclosed
+// quote stays as it is. Once a quote finds no end, no later one of its kind does, so each
+// kind is looked for to the end of the line at most once.
+function withoutQuotes(line: string): string {
+  let out = '';
+  const closes = new Set(["'", '"']); // the kinds that may still close
+  for (let at = 0; at < line.length; at++) {
+    const character = line[at];
+    const end = closes.has(character) ? closeQuote(line, at) : -1;
+    if (end !== -1) at = end;
+    else {
+      closes.delete(character);
+      out += character;
+    }
   }
+  return out;
+}
+
+// The index of the quote that closes the one at `at`, or -1.
+function closeQuote(line: string, at: number): number {
+  if (line[at] === "'") return line.indexOf("'", at + 1);
+  for (let i = at + 1; i < line.length; i++) {
+    if (line[i] === '\\') i++;
+    else if (line[i] === '"') return i;
+  }
+  return -1;
+}
+
+// The text without ${...} and $(...) (also $((...)) and more parens): from the opener to the
+// first } or ), with the run of ) after it. An opener with no closer after it stays, and
+// then no later opener of its kind has one either.
+function withoutSubstitutions(text: string): string {
+  let out = '';
+  const closes = new Set(['}', ')']); // the closers still found further on
+  for (let at = 0; at < text.length; at++) {
+    const closer = text[at] !== '$' ? '' : text[at + 1] === '{' ? '}' : text[at + 1] === '(' ? ')' : '';
+    const end = closes.has(closer) ? text.indexOf(closer, at + 2) : -1;
+    if (end === -1) {
+      closes.delete(closer);
+      out += text[at];
+      continue;
+    }
+    at = end;
+    if (closer === ')') while (text[at + 1] === ')') at++;
+  }
+  return out;
+}
+
+// What git prints, trimmed, or null when it fails. Within one checkCommand each question
+// goes to git once: a command that sets core.hooksPath many times starts git twice, not
+// twice for each.
+let gitAnswers: Map<string, string | null> | null = null;
+
+function readGit(directory: string, args: string[]): string | null {
+  const key = [directory, ...args].join('\0');
+  if (gitAnswers?.has(key)) return gitAnswers.get(key) ?? null;
+  let answer: string | null;
+  try {
+    answer = execFileSync('git', args, { cwd: directory, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch {
+    answer = null;
+  }
+  gitAnswers?.set(key, answer);
+  return answer;
 }
 
 function readText(path: string): string {
@@ -547,11 +671,11 @@ function redirectLength(words: string[], index: number): number {
   return redirect[1] === '' && index + 1 < words.length ? 2 : 1;
 }
 
-/** The index of the first word at or after `index` that is not an assignment, a redirect or a keyword. */
-function skipPrefix(words: string[], index: number): number {
-  while (index < words.length) {
+/** The index of the first word at or after `index` that is not an assignment, a redirect or a keyword, at most `limit`. */
+function skipPrefix(words: string[], index: number, limit = words.length): number {
+  while (index < limit) {
     if (isAssignment(words[index]) || KEYWORDS.has(words[index])) index++;
-    else if (redirectLength(words, index) > 0) index += redirectLength(words, index);
+    else if (redirectLength(words, index) > 0) index = Math.min(index + redirectLength(words, index), limit);
     else break;
   }
   return index;
@@ -605,7 +729,7 @@ function findPrograms(words: string[]): string[] {
   // words finds them all, a find inside a find too, without reading any word twice.
   if (findAt !== -1) {
     for (let action = findAt + 1; action < words.length && programs.length <= MAX_PROGRAMS; action++) {
-      if (FIND_ACTIONS.has(words[action])) programAt(words, action + 1, programs);
+      if (FIND_ACTIONS.has(words[action])) programAt(words, action + 1, programs, true);
     }
   }
   return programs;
@@ -613,11 +737,18 @@ function findPrograms(words: string[]): string[] {
 
 // Adds the program of the command that starts at `index` to `programs`, after
 // assignments, redirects, keywords and launchers, and the programs of an `env -S`
-// string. Returns the index of the program when it is find, or -1.
-function programAt(words: string[], index: number, programs: string[]): number {
-  while (index < words.length) {
-    index = skipPrefix(words, index);
-    if (index >= words.length || HEADS.has(words[index])) return -1;
+// string. Returns the index of the program when it is find, or -1. In a find action
+// (`isAction`) the command ends at `;` or `{} +`, and the walk stops at the next action too:
+// findPrograms reads that one itself, so no word is walked once for each action before it.
+function programAt(words: string[], index: number, programs: string[], isAction = false): number {
+  let limit = words.length;
+  if (isAction) {
+    limit = index;
+    while (limit < words.length && !FIND_ACTIONS.has(words[limit]) && words[limit] !== ';' && !(words[limit] === '+' && words[limit - 1] === '{}')) limit++;
+  }
+  while (index < limit) {
+    index = skipPrefix(words, index, limit);
+    if (index >= limit || HEADS.has(words[index])) return -1;
     const name = programName(words[index]);
     if (!Object.hasOwn(LAUNCHERS, name)) {
       programs.push(words[index]);
@@ -627,7 +758,7 @@ function programAt(words: string[], index: number, programs: string[]): number {
     index++;
     // `command -v x` only says where x is; it does not run it.
     if (name === 'command' && /^-[a-zA-Z]*[vV]/.test(words[index] ?? '')) return -1;
-    while (index < words.length && words[index].startsWith('-')) {
+    while (index < limit && words[index].startsWith('-')) {
       const split = name === 'env' ? splitString(words, index) : undefined;
       if (split !== undefined) {
         for (const command of commandWords(split)) for (const program of findPrograms(command)) programs.push(program);
@@ -732,8 +863,13 @@ function runnerAt(words: string[]): number {
   return at;
 }
 
-// `source /dev/stdin` and `. /dev/fd/3` run what comes in, as a shell does.
-const sourcesInput = (words: string[], i: number): boolean => (words[i] === 'source' || words[i] === '.') && /^\/(?:dev\/(?:stdin|fd\/\d+)|proc\/self\/fd\/\d+)$/.test(words[i + 1] ?? '');
+// `source /dev/stdin` and `. /dev/fd/3` run what comes in, as a shell does;
+// `source -- /dev/stdin`, `. //dev/stdin` and `. /proc/$$/fd/0` do too.
+function sourcesInput(words: string[], i: number): boolean {
+  if (words[i] !== 'source' && words[i] !== '.') return false;
+  const file = (words[i + 1] === '--' ? words[i + 2] : words[i + 1]) ?? '';
+  return /^\/(?:dev\/(?:stdin|fd\/\d+)|proc\/[^/]+\/fd\/\d+)$/.test(file.replace(/\/{2,}/g, '/'));
+}
 
 // ssh options that take a value, in the same word (-p22) or the next (-p 22).
 const SSH_VALUE_OPTIONS = 'BbcDEeFIiJLlmOoPpQRSWw';

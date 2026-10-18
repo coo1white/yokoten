@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -155,6 +155,32 @@ function writeHook(path: string, text: string, mode = 0o755): void {
   chmodSync(path, mode);
 }
 
+// husky 9.1.7's own files in .husky/_: each hook sources h, and h runs .husky/<hook> with sh -e.
+const HUSKY_HOOK = '#!/usr/bin/env sh\n. "$(dirname "$0")/h"';
+const HUSKY_H = `#!/usr/bin/env sh
+[ "$HUSKY" = "2" ] && set -x
+n=$(basename "$0")
+s=$(dirname "$(dirname "$0")")/$n
+
+[ ! -f "$s" ] && exit 0
+
+if [ -f "$HOME/.huskyrc" ]; then
+	echo "husky - '~/.huskyrc' is DEPRECATED, please move your code to ~/.config/husky/init.sh"
+fi
+i="\${XDG_CONFIG_HOME:-$HOME/.config}/husky/init.sh"
+[ -f "$i" ] && . "$i"
+
+[ "\${HUSKY-}" = "0" ] && exit 0
+
+export PATH="node_modules/.bin:$PATH"
+sh -e "$s" "$@"
+c=$?
+
+[ $c != 0 ] && echo "husky - $n script failed (code $c)"
+[ $c = 127 ] && echo "husky - command not found in PATH=$PATH"
+exit $c
+`;
+
 function makeHooksRepo(): string {
   const root = mkdtempSync(join(tmpdir(), 'yokoten-hooks-'));
   const git = (...args: string[]) => execFileSync('git', args, { cwd: root, stdio: 'pipe' });
@@ -162,7 +188,8 @@ function makeHooksRepo(): string {
   git('config', 'core.hooksPath', 'hooks/own');
   mkdirSync(join(root, '.husky', '_'), { recursive: true });
   writeHook(join(root, '.husky', 'pre-commit'), '#!/bin/sh\nnpx lint-staged\nnode ".yokoten/bin/yokoten.ts" check --staged || exit 1\n');
-  writeHook(join(root, '.husky', '_', 'pre-commit'), '#!/usr/bin/env sh\n. "$(dirname "$0")/h"\n');
+  writeHook(join(root, '.husky', '_', 'pre-commit'), HUSKY_HOOK);
+  writeHook(join(root, '.husky', '_', 'h'), HUSKY_H, 0o644);
   mkdirSync(join(root, 'hooks', 'plain'), { recursive: true });
   writeHook(join(root, 'hooks', 'plain', 'pre-commit'), '#!/bin/sh\n# yokoten check is not run here\nnpm test\n');
   return root;
@@ -790,8 +817,9 @@ test('hooks setting: git must run the hook file as an executable shell script (#
     hook('hooks/py', `#!/usr/bin/env ${py}\n${runs}`);
     hook('hooks/node', `#!/usr/bin/env node\n${runs}`);
     mkdirSync(join(cwd, 'hooks', 'dir', 'pre-commit'), { recursive: true });
-    for (const folder of ['hooks/sh', 'hooks/env', 'hooks/zsh']) assert.equal(verdict(folder), 'pass', folder);
-    for (const folder of ['hooks/none', 'hooks/py', 'hooks/node', 'hooks/dir', 'hooks/missing']) assert.equal(verdict(folder), 'hooks-path', folder);
+    // A hook with no #! line git runs with sh.
+    for (const folder of ['hooks/sh', 'hooks/env', 'hooks/zsh', 'hooks/none']) assert.equal(verdict(folder), 'pass', folder);
+    for (const folder of ['hooks/py', 'hooks/node', 'hooks/dir', 'hooks/missing']) assert.equal(verdict(folder), 'hooks-path', folder);
     if (process.platform !== 'win32') {
       hook('hooks/plainmode', `#!/bin/sh\n${runs}`, 0o644);
       assert.equal(verdict('hooks/plainmode'), 'hooks-path', 'a hook git cannot execute');
@@ -911,5 +939,168 @@ test('hooks setting: env -C, env --chdir, builtin cd and GIT_COMMON_DIR move rep
     for (const prefix of ['env -i ', 'env -u X ', 'builtin echo x && ']) pass(prefix + set);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// The fourth review of #226. Each shape runs in its own node, which a slow read cannot hold
+// up for long: at 100k repeats every one is read in under 2 s. The text goes in on stdin.
+test('bash and hooks: loops that never spent the budget read 100k repeats in under 2 s (#226)', () => {
+  const guards = join(import.meta.dirname, '..', 'src', 'rules', 'guards.ts');
+  const run = (mode: 'command' | 'hook', text: string): { result: string; took: number } => {
+    const code = [
+      "import { readFileSync } from 'node:fs';",
+      `import { checkCommand, runsCheck } from ${JSON.stringify(guards)};`,
+      "const text = readFileSync(0, 'utf8');",
+      'const started = Date.now();',
+      `const result = ${mode === 'hook' ? 'String(runsCheck(text))' : `checkCommand(text, { env: {}, config: ${JSON.stringify(pythonBlocked)}, cwd: ${JSON.stringify(tmpdir())} })?.id ?? 'allow'`};`,
+      'console.log(JSON.stringify({ result, took: Date.now() - started }));',
+    ].join('\n');
+    const child = spawnSync(process.execPath, ['--max-old-space-size=256', '--input-type=module', '-e', code], { input: text, encoding: 'utf8', timeout: 15000 });
+    assert.equal(child.status, 0, `${text.slice(0, 40)}... did not finish: ${child.signal ?? child.error ?? child.stderr.slice(0, 300)}`);
+    return JSON.parse(child.stdout);
+  };
+  const repeats = 100000;
+  const keys = 'GIT_CONFIG_KEY_0=core.hooksPath '.repeat(repeats);
+  const commands: [string, string][] = [
+    ['-/env '.repeat(repeats), 'allow'],
+    [`${force}; ${'-/env '.repeat(repeats)}`, 'force-push'],
+    [`find . ${'-exec env '.repeat(repeats)}`, 'allow'],
+    [`${force}; find . ${'-exec env '.repeat(repeats)}`, 'force-push'],
+    [`find . ${'-exec env -u '.repeat(repeats)}`, 'allow'],
+    [`find . ${'-exec timeout '.repeat(repeats)}`, 'allow'],
+    [`find . ${'-exec > '.repeat(repeats)}`, 'allow'],
+    [`${keys}GIT_CONFIG_VALUE_0=.githooks git status`, 'allow'],
+    [`${keys}GIT_CONFIG_VALUE_0=/x git status`, 'hooks-path'],
+  ];
+  for (const [command, want] of commands) {
+    const { result, took } = run('command', command);
+    assert.equal(result, want, `${command.slice(0, 40)}...`);
+    assert.ok(took < 2000, `${command.slice(0, 40)}... took ${took} ms`);
+  }
+  // A line that opens more than it closes leaves the check inside a block; a pipe at the end
+  // of each line joins the check to the pipeline.
+  for (const line of ['$(((('.repeat(repeats), '$('.repeat(repeats), '${'.repeat(repeats)]) {
+    const { result, took } = run('hook', `#!/bin/sh\n${line}\nnpx yokoten check\n`);
+    assert.equal(result, 'false', `${line.slice(0, 10)}...`);
+    assert.ok(took < 2000, `${line.slice(0, 10)}... took ${took} ms`);
+  }
+  const piped = run('hook', `#!/bin/sh\n${'a |\n'.repeat(repeats)}npx yokoten check\n`);
+  assert.equal(piped.result, 'false');
+  assert.ok(piped.took < 2000, `a | x${repeats} took ${piped.took} ms`);
+  // The linear reads keep what the old ones found: a closed $( and quotes cut no block.
+  for (const line of ['x="(" y=\'{\' z=${a:-x} w=$(echo a) v=$((1 + (2)))', 'echo "a\\"(" \'"\'']) {
+    assert.equal(runsCheck(`#!/bin/sh\n${line}\nnpx yokoten check\n`), true, line);
+  }
+  assert.equal(runsCheck('#!/bin/sh\necho "(" (\nnpx yokoten check\n'), false, 'a ( outside the quotes');
+});
+
+test('hooks setting: the check line yokoten init writes, with 2>/dev/null after the ], counts (#226)', () => {
+  // As `commitCheckLine` and `handOffLines` in yokoten init write them (#256, #263).
+  const cli = '.yokoten/bin/yokoten.ts';
+  const check = `[ -f "${cli}" ] 2>/dev/null || { echo 'yokoten: the commit check cannot run, because ${cli} is missing. Restore it from git, or run yokoten init again' >&2; exit 1; }; node "${cli}" check --staged || exit 1`;
+  const handOff = [
+    '# yokoten: then the pre-commit this clone has in .git/hooks, as git ran it before core.hooksPath was set (#256)',
+    'yokoten_old="$(git rev-parse --git-common-dir 2>/dev/null)/hooks/pre-commit"; if [ -x "$yokoten_old" ] && ! [ "$yokoten_old" -ef "$0" ]; then "$yokoten_old" "$@" || exit $?; fi',
+  ];
+  assert.equal(runsCheck(['#!/bin/sh', check, ...handOff, ''].join('\n')), true);
+  assert.equal(runsCheck(['#!/bin/sh', check, ...handOff, 'npm test', ''].join('\n')), true);
+  assert.equal(runsCheck(['#!/bin/sh', check.replace(' 2>/dev/null', ' 2>/tmp/x'), ''].join('\n')), false, 'only 2>/dev/null');
+});
+
+// The command that sets the hooks folder, built so that this file's own text does not read as one.
+const setHooks = (folder: string) => `${['git config core', 'hooksPath'].join('.')} ${folder}`;
+
+test('hooks setting: with .husky/_, git runs husky\'s own hook, which runs .husky/pre-commit with sh -e (#226)', () => {
+  const cwd = makeHooksRepo();
+  const verdict = () => checkCommand(setHooks('.husky/_'), { env: {}, cwd })?.id ?? 'pass';
+  const write = (path: string, text: string, mode = 0o755) => writeHook(join(cwd, '.husky', path), text, mode);
+  try {
+    // sh -e stops at a failed check, so the check need not be last or end in || exit.
+    write('pre-commit', 'npx yokoten check\nnpm test\n', 0o644);
+    assert.equal(verdict(), 'pass', 'husky runs .husky/pre-commit with sh -e');
+    write('_/pre-commit', '#!/usr/bin/env sh\n. "${0%/*}/h"');
+    assert.equal(verdict(), 'pass', 'husky 9.0\'s own hook');
+    write('_/pre-commit', '#!/bin/sh\nexit 0\n');
+    assert.equal(verdict(), 'hooks-path', 'a .husky/_/pre-commit that runs nothing');
+    write('_/pre-commit', `${HUSKY_HOOK}\nexit 0\n`);
+    assert.equal(verdict(), 'hooks-path', 'husky\'s hook with more after it');
+    write('_/pre-commit', HUSKY_HOOK);
+    write('_/h', HUSKY_H.replace('sh -e "$s" "$@"', 'exit 0'), 0o644);
+    assert.equal(verdict(), 'hooks-path', 'an h that does not run .husky/pre-commit');
+    write('_/h', HUSKY_H.replace('sh -e', 'sh'), 0o644);
+    assert.equal(verdict(), 'hooks-path', 'an h that runs it without -e');
+    rmSync(join(cwd, '.husky', '_', 'h'));
+    assert.match(checkCommand(setHooks('.husky/_'), { env: {}, cwd })?.what ?? '', /\.husky\/_\/h is missing/);
+    write('_/h', `# a comment\n\n${HUSKY_H.replaceAll('\n', '\r\n')}`, 0o644);
+    assert.equal(verdict(), 'pass', 'husky\'s h, with CRLF and a comment');
+    // .husky itself (husky 8) runs .husky/pre-commit as it is: no sh -e.
+    assert.equal(checkCommand(setHooks('.husky'), { env: {}, cwd })?.id, 'hooks-path');
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('hooks setting: a hook with no #! line, or #!/usr/bin/env -S bash, runs as a shell script (#226)', () => {
+  const cwd = makeHooksRepo();
+  const verdict = (folder: string) => checkCommand(setHooks(folder), { env: {}, cwd })?.id ?? 'pass';
+  const hook = (folder: string, text: string) => {
+    mkdirSync(join(cwd, folder), { recursive: true });
+    writeHook(join(cwd, folder, 'pre-commit'), text);
+  };
+  try {
+    hook('hooks/bare', 'npx yokoten check || exit 1\n');
+    hook('hooks/envs', '#!/usr/bin/env -S bash -e\nnpx yokoten check || exit 1\n');
+    hook('hooks/envs-node', '#!/usr/bin/env -S node\nnpx yokoten check || exit 1\n');
+    hook('hooks/bare-plain', 'npm test\n');
+    assert.equal(verdict('hooks/bare'), 'pass');
+    assert.equal(verdict('hooks/envs'), 'pass');
+    assert.equal(verdict('hooks/envs-node'), 'hooks-path');
+    assert.equal(verdict('hooks/bare-plain'), 'hooks-path');
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('bash: source -- /dev/stdin, //dev/stdin and /proc/<pid>/fd/0 run their input (#226)', () => {
+  for (const command of [
+    `source -- /dev/stdin <<'EOF'\n${force}\nEOF`,
+    `. //dev/stdin <<'EOF'\n${force}\nEOF`,
+    `. /dev//fd/0 <<'EOF'\n${force}\nEOF`,
+    `. /proc/$$/fd/0 <<'EOF'\n${force}\nEOF`,
+    `echo '${force}' | source /proc/123/fd/0`,
+  ]) blocked(command);
+  allowed(`source -- ./env.sh <<'EOF'\n${force}\nEOF`);
+  allowed(`. /proc/self/status <<'EOF'\n${force}\nEOF`);
+});
+
+test('hooks setting: sudo -D and sudo --chdir move repo, like env -C (#226)', () => {
+  const cwd = makeHooksRepo();
+  const set = setHooks('.husky/_');
+  try {
+    for (const prefix of ['sudo -D /tmp ', 'sudo -nD /tmp ', 'sudo -D/tmp ', 'sudo --chdir=/tmp ', 'sudo --chdir /tmp ', 'sudo -u root -D /tmp ']) {
+      assert.equal(checkCommand(prefix + set, { env: {}, cwd })?.id, 'hooks-path', `should block: ${prefix}`);
+    }
+    for (const prefix of ['sudo ', 'sudo -n ', 'sudo -u root ']) assert.equal(checkCommand(prefix + set, { env: {}, cwd }), null, `should allow: ${prefix}`);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('hooks setting: one command asks git each question once, however often it sets the folder (#226)', { skip: process.platform === 'win32' }, () => {
+  const cwd = makeHooksRepo();
+  const bin = mkdtempSync(join(tmpdir(), 'yokoten-git-'));
+  const log = join(bin, 'log');
+  const real = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+  writeHook(join(bin, 'git'), `#!/bin/sh\necho x >> "${log}"\nexec "${real}" "$@"\n`);
+  const path = process.env.PATH;
+  process.env.PATH = `${bin}:${path}`;
+  try {
+    assert.equal(checkCommand(`${setHooks('.husky/_')}; `.repeat(50), { env: {}, cwd }), null);
+    const calls = readFileSync(log, 'utf8').split('\n').filter(Boolean).length;
+    assert.equal(calls, 2, 'rev-parse --show-toplevel and config --get, once each');
+  } finally {
+    process.env.PATH = path;
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(bin, { recursive: true, force: true });
   }
 });
