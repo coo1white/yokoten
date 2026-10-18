@@ -13,6 +13,7 @@ import { checkCommand } from '../src/rules/guards.ts';
 import { doctor } from '../src/setup/doctor.ts';
 import { road, ROAD, serverChecks, stepFinding } from '../src/setup/road.ts';
 import { LABELS, setUpPlanning } from '../src/setup/plan.ts';
+import { findOutsidePulls, type PullRequest, writeComment } from '../scripts/outside-prs.ts';
 
 // A throwaway key, made for this test run only.
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -406,4 +407,33 @@ test('step summary: a heading with the result, a table, notes apart, at most 50 
   assert.equal(text.split('\n').filter((l) => l.startsWith('| a.md:')).length, 50);
   assert.match(text, /\nAnd 3 more\. The job log lists them all\.\n/);
   assert.match(text, /#### Notes \(1\): these never fail the check\n\nThe job log lists them\.\n/);
+});
+
+// ---- Outside pull requests (#88) ----
+
+test('outside pull requests: counts outside people only, by number; a member, a bot and an old one are not counted (#88)', () => {
+  const since = new Date('2026-10-12T06:00:00Z');
+  const until = new Date('2026-10-19T06:00:00Z');
+  const pull = (number: number, association: string, type = 'User', created = '2026-10-15T00:00:00Z'): PullRequest => ({ number, created_at: created, author_association: association, user: { login: `account${number}`, type } });
+  const pulls = [
+    pull(7, 'NONE'),
+    pull(3, 'FIRST_TIME_CONTRIBUTOR'),
+    pull(4, 'FIRST_TIMER'),
+    pull(5, 'CONTRIBUTOR'),
+    pull(10, 'MEMBER'),
+    pull(11, 'OWNER'),
+    pull(12, 'COLLABORATOR'),
+    pull(13, 'NONE', 'Bot'),
+    { ...pull(14, 'CONTRIBUTOR'), user: { login: 'helper[bot]', type: 'User' } },
+    pull(15, 'NONE', 'User', '2026-10-01T00:00:00Z'),
+  ];
+  assert.deepEqual(findOutsidePulls(pulls, since), [3, 4, 5, 7]);
+  // Positive control: the same list with only a member and a bot counts nothing.
+  assert.deepEqual(findOutsidePulls([pull(10, 'MEMBER'), pull(13, 'NONE', 'Bot')], since), []);
+
+  const comment = writeComment([3, 4, 5, 7], since, until);
+  assert.equal(comment, 'Outside pull requests opened 2026-10-12 to 2026-10-19 (UTC): **4**. The threshold is 5 a week.\n\n#3, #4, #5, #7\n');
+  assert.doesNotMatch(comment, /account|helper/, 'the comment names no account');
+  assert.match(writeComment([1, 2, 3, 4, 5], since, until), /That is 5 or more\. Check them for spam/);
+  assert.equal(writeComment([], since, until), 'Outside pull requests opened 2026-10-12 to 2026-10-19 (UTC): **0**. The threshold is 5 a week.\n');
 });
