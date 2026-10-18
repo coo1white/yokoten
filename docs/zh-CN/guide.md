@@ -1,4 +1,4 @@
-<!-- source: docs/guide.md blob ce71abd9fd2fe194c9ee3fcc3609ffcf5974dcb7 -->
+<!-- source: docs/guide.md blob 0c0826d6c081a3d010128187a1083af93b06e797 -->
 # yokoten 使用指南
 
 [README](README.md) 是简短版。剩下的都在这里：yokoten 为什么要做、它怎么工作、有哪些规则和命令，还有它做不到的事。
@@ -484,7 +484,7 @@ yokoten 每学到一个教训，核心规则就会改。`yokoten install` 会更
 
 1. 所有工作从 issue 开始，不用 todo 文件。
 2. 没有 PR、CI 没过，什么都进不了 `main`。
-3. 只有仓库主人能打 tag、发版。
+3. 只有仓库主人能打 tag、发版。主人随口说一句「合吧」「ship it」，不算同意发版。
 4. 修复任务只改代码，不改测试。
 5. worker 不改只有 lead 能改的文件：规则、agent 配置、hook、CI。
 6. 不许跳过提交检查。
