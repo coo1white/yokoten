@@ -98,6 +98,15 @@ not now（暂不，后面跟着你给的原因）或者 can't check（这里查�
 第 2 关的 `labels` 和 `milestone` 也这样读。标准标签是 `bug`、`feat`、`docs`、`refactor`、`ci`、
 `owner`、`incident`、`good first issue` 和 `hotfix`。`init` 会告诉你缺哪些，`init --github --yes` 帮你加上。
 
+`init --github --yes` 还会把 `yokoten.json` 里 "areas" 列的模块各建一个标签，统一用灰色。
+模块不超过 8 个才建：再多，标签就太乱了，你常用的那几个自己手动建就好。已有的模块标签原样保留，yokoten 也从来不删。
+
+看板可有可无。`init --github --yes --board` 会建一个和仓库同名的看板，并关联到仓库，
+Status 字段设成 Todo、In progress、In review、Done 四项。建看板要 gh 的令牌带 `project` 权限；
+没有的话，init 就跳过看板，并告诉你跑 `gh auth refresh -s project`。再跑一次，它按名字找到这个看板，不会再建。
+看板的视图和自动规则，API 设不了。所以只要仓库关联了看板，完整的 `doctor` 就会把这些列成"手动设置"的几行，
+提醒你去点。这几行不会让 doctor 报错。
+
 如果某一步对应外部的标准，`yokoten doctor` 会在步骤名后面写出来，比如 `ci (Scorecard: CI-Tests)`。
 会话开头那三行不写。
 
@@ -280,7 +289,7 @@ kit 里 `init` 放的 workflow 暂时还是跑 `.yokoten/` 里的那份，等第
 |------|--------|
 | `install` | 把技能装进 `~/.claude/skills` 和 `~/.agents/skills`，agent 装进 `~/.claude/agents`，加上会话开头的 `doctor` hook 和用户级命令守卫，再建一个空的私有词表 |
 | `init [dir]` | 把这套做法放进一个项目。只加文件；已有的文件保留，并告诉你保留了哪些。它还会用 `gh` 看一眼 GitHub，告诉你要补哪些标准标签和里程碑，但不会去改 GitHub。没装 `gh`、没登录，或者远程仓库不在 GitHub 上，就说一声跳过了 |
-| `init --github --yes [--remove-default-labels]` | 补上缺的标准标签；没有打开的里程碑时，建一个叫 "First release" 的。已有的标准标签，颜色和说明改成标准的。再跑一次什么也不会变。GitHub 自带的、不在这套里的标签（`question`、`wontfix` 等），只有加上 `--remove-default-labels` 才会删 |
+| `init --github --yes [--remove-default-labels] [--board]` | 补上缺的标准标签；没有打开的里程碑时，建一个叫 "First release" 的。已有的标准标签，颜色和说明改成标准的。`yokoten.json` 里的模块不超过 8 个时，每个模块建一个灰色标签。再跑一次什么也不会变。GitHub 自带的、不在这套里的标签（`question`、`wontfix` 等），只有加上 `--remove-default-labels` 才会删。加 `--board` 还会建一个关联到仓库的看板，要 gh 的令牌带 `project` 权限 |
 | `update [dir] [--write]` | 看看这个版本的 yokoten 会怎么改项目 `AGENTS.md` 里的核心规则。加上 `--write` 才真的替换；「This project」那部分原样保留。见[更新规则](#更新规则) |
 | `doctor [--session]` | 整条路：每一关、每一步，加上这台电脑还缺什么。`--session` 只说下一步，会话开头用 |
 | `check [--staged]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交。提交里不能有构建产物和二进制文件。查整个目录时，落后于英文的译文会给一条提醒，见[翻译](#翻译) |

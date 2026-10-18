@@ -1043,6 +1043,7 @@ fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s));
   assert.equal(calls().length, 0);
   assert.equal(sandbox.run(['init', '--yes'], { extra }).status, 1, '--yes alone is refused');
   assert.equal(sandbox.run(['init', '--remove-default-labels'], { extra }).status, 1, 'so is --remove-default-labels');
+  assert.equal(sandbox.run(['init', '--board'], { extra }).status, 1, 'and --board (#156)');
   sandbox.git('remote', 'add', 'origin', 'https://github.com/example/repo.git');
   result = sandbox.run(['init'], { extra });
   assert.equal(result.status, 0, result.stderr);

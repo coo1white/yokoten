@@ -110,6 +110,17 @@ A session never calls the network, so there they are always **can't check**.
 `docs`, `refactor`, `ci`, `owner`, `incident`, `good first issue` and `hotfix`. `init` shows which
 are missing, and `init --github --yes` adds them.
 
+`init --github --yes` also adds your own areas from `yokoten.json` "areas" as labels, in one
+grey colour. It does this only for 8 areas or fewer: a longer list is noise, so make the few you
+use by hand. An area label that is there is kept as it is, and yokoten never deletes one.
+
+The board is optional. `init --github --yes --board` makes one named after the repo and links
+it. Its Status field gets Todo, In progress, In review and Done. A board needs the gh token's
+`project` scope; without it, init skips the board and says to run `gh auth refresh -s project`.
+A second run finds the board by its title and makes nothing. The API can't set a board's views
+or workflows. So when a board is linked, full `doctor` lists them as "by hand" lines. They never
+fail doctor.
+
 After a step, `yokoten doctor` names the outside standard it meets, when there is one,
 for example `ci (Scorecard: CI-Tests)`. The session message leaves it out.
 
@@ -299,7 +310,7 @@ then run with no network and no global install.
 |---------|--------------|
 | `install` | Skills into `~/.claude/skills` and `~/.agents/skills`, agents into `~/.claude/agents`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file |
 | `init [dir]` | Puts the practices into a project. Adds files; keeps any that are already there and says so. It also reads GitHub through `gh` and says which standard labels and milestone it would add. It never changes GitHub. Without `gh`, a sign-in or a GitHub remote, it says what it skipped |
-| `init --github --yes [--remove-default-labels]` | Adds the missing standard labels, and a milestone "First release" when no milestone is open. A standard label that is there gets the standard colour and description. A second run changes nothing. GitHub's default labels outside the set (`question`, `wontfix` and others) are deleted only with `--remove-default-labels` |
+| `init --github --yes [--remove-default-labels] [--board]` | Adds the missing standard labels, and a milestone "First release" when no milestone is open. A standard label that is there gets the standard colour and description. With 8 areas or fewer in `yokoten.json`, it adds one grey label per area. A second run changes nothing. GitHub's default labels outside the set (`question`, `wontfix` and others) are deleted only with `--remove-default-labels`. `--board` also makes a board linked to the repo; it needs the gh token's `project` scope |
 | `update [dir] [--write]` | Shows what this yokoten changes in the core rules of the project's `AGENTS.md`. `--write` replaces them, and keeps the "This project" part as it is. See [Updating the rules](#updating-the-rules) |
 | `doctor [--session]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session |
 | `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries. For the tree, a translation behind its English source is a note. See [Translations](#translations) |
