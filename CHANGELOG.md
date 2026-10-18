@@ -8,6 +8,9 @@ All notable changes are listed here. The format follows
 
 ### Added
 
+- The README and the Chinese README show a short terminal demo under Quick start. An
+  agent's force push is blocked with what, why and the fix. Then `doctor` names the next
+  step. `node scripts/demo-svg.ts` builds it from `scripts/demo.txt` (#90).
 - In GitHub Actions, `check` shows its findings on the pull request page. Each finding
   is an annotation on its line, and the job summary lists what, why and the fix. Notes
   are warnings. Output outside Actions does not change (#91).
