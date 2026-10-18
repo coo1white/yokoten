@@ -589,3 +589,16 @@ test('bash: what looked like a case pattern but holds a cut or two words is comm
   allowed('case x in a|b) echo;; esac');
   allowed('case x in\n  a | b) echo;;\nesac');
 });
+
+test('blocked commands: a find inside a find is read once, fast, and a huge list is refused (#226)', () => {
+  const chain = (inner: string) => `find . ${'-exec find . '.repeat(18)}${inner}${'\\; '.repeat(19)}`;
+  const started = Date.now();
+  blocked(`${chain('')}&& ${force}`);
+  assert.ok(isBlockedByList(chain(`-exec ${py} {} `)), 'the program at the end of the chain');
+  assert.equal(isBlockedByList(chain('-exec echo {} ')), false, 'a chain that runs no blocked program');
+  assert.ok(Date.now() - started < 1000, `the 18-deep chain took ${Date.now() - started} ms`);
+  shouldBlock([`find . -exec nice ${py} {} +`, `find . -exec echo {} \\; -ok ${py} {} \\;`]);
+  const many = `find . ${'-exec echo {} \\; '.repeat(300)}`;
+  assert.equal(checkCommand(many, { env: {}, config: pythonBlocked })?.id, 'unreadable-command');
+  assert.equal(checkCommand(many, { env: {} }), null, 'without a block list, nothing to look for');
+});

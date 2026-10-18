@@ -386,41 +386,60 @@ function splitString(words: string[], index: number): string | undefined {
   return undefined;
 }
 
+// At most this many programs from one command: a longer list is refused (see checkBlocked).
+const MAX_PROGRAMS = 256;
+
 /** The words that name the programs a command runs, in order. */
 function findPrograms(words: string[]): string[] {
   const programs: string[] = [];
   // commandWords reads `bash -c 'x'` again as `-c x`: the shell's options come first.
-  let index = words.findIndex((word) => !word.startsWith('-'));
-  if (index === -1) return programs;
-  while (index < words.length) {
-    index = skipPrefix(words, index);
-    if (index >= words.length || HEADS.has(words[index])) return programs;
-    const name = programName(words[index]);
-    if (!Object.hasOwn(LAUNCHERS, name)) {
-      programs.push(words[index]);
-      if (name === 'find') {
-        for (let action = index + 1; action < words.length; action++) {
-          if (FIND_ACTIONS.has(words[action])) programs.push(...findPrograms(words.slice(action + 1)));
-        }
-      }
-      return programs;
+  const start = words.findIndex((word) => !word.startsWith('-'));
+  if (start === -1) return programs;
+  const findAt = programAt(words, start, programs);
+  // find runs the program after each -exec, -execdir, -ok and -okdir. One pass over the
+  // words finds them all, a find inside a find too, without reading any word twice.
+  if (findAt !== -1) {
+    for (let action = findAt + 1; action < words.length && programs.length <= MAX_PROGRAMS; action++) {
+      if (FIND_ACTIONS.has(words[action])) programAt(words, action + 1, programs);
     }
-    const launcher = LAUNCHERS[name];
-    index++;
-    // `command -v x` only says where x is; it does not run it.
-    if (name === 'command' && /^-[a-zA-Z]*[vV]/.test(words[index] ?? '')) return programs;
-    while (index < words.length && words[index].startsWith('-')) {
-      const split = name === 'env' ? splitString(words, index) : undefined;
-      if (split !== undefined) programs.push(...commandWords(split).flatMap(findPrograms));
-      index += launcher.options.includes(words[index]) ? 2 : 1;
-    }
-    index += launcher.operands ?? 0;
   }
   return programs;
 }
 
+// Adds the program of the command that starts at `index` to `programs`, after
+// assignments, redirects, keywords and launchers, and the programs of an `env -S`
+// string. Returns the index of the program when it is find, or -1.
+function programAt(words: string[], index: number, programs: string[]): number {
+  while (index < words.length) {
+    index = skipPrefix(words, index);
+    if (index >= words.length || HEADS.has(words[index])) return -1;
+    const name = programName(words[index]);
+    if (!Object.hasOwn(LAUNCHERS, name)) {
+      programs.push(words[index]);
+      return name === 'find' ? index : -1;
+    }
+    const launcher = LAUNCHERS[name];
+    index++;
+    // `command -v x` only says where x is; it does not run it.
+    if (name === 'command' && /^-[a-zA-Z]*[vV]/.test(words[index] ?? '')) return -1;
+    while (index < words.length && words[index].startsWith('-')) {
+      const split = name === 'env' ? splitString(words, index) : undefined;
+      if (split !== undefined) {
+        for (const command of commandWords(split)) for (const program of findPrograms(command)) programs.push(program);
+      }
+      index += launcher.options.includes(words[index]) ? 2 : 1;
+    }
+    index += launcher.operands ?? 0;
+  }
+  return -1;
+}
+
 function checkBlocked(words: string[], blockList: Record<string, string>): Finding | null {
-  const name = findPrograms(words).map(programName).find((program) => Object.hasOwn(blockList, program));
+  const programs = findPrograms(words);
+  if (programs.length > MAX_PROGRAMS && Object.keys(blockList).length > 0) {
+    return finding('unreadable-command', `yokoten could not read this command: it runs more than ${MAX_PROGRAMS} programs`, 'split it into simpler commands, one per call');
+  }
+  const name = programs.map(programName).find((program) => Object.hasOwn(blockList, program));
   if (name === undefined) return null;
   const reason = blockList[name].trim().replace(/\.+$/, '');
   return finding('blocked-command', `\`${name}\` is blocked in this project`, 'use the project\'s own stack instead; yokoten.json "commands.block" lists what is blocked', { why: reason });
