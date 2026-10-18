@@ -137,6 +137,7 @@ AI 想推送发版 tag 时，会看到：
 
 ```
 yokoten: git push --tags pushes tags. Only the owner decides when to release. If the owner asked for this, they start a new session with YOKOTEN_RELEASE_APPROVAL=1 (`YOKOTEN_RELEASE_APPROVAL=1 claude`); do not look for another way.
+  docs: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#the-core-rules
 ```
 
 （提示用英文写，因为 AI 读英文最不容易出错。）
@@ -173,14 +174,17 @@ Docs: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#the-core-r
 ### 先拿一份草稿
 
 `yokoten adopt` 会在你们开始过之前先把这张表填个初稿。它读项目里的文件，逐条写出项目现在的
-情况：**已有**、**没有**，或者**部分有**（项目有自己的做法，比如用 husky 管提交 hook，或者
-有 CI 但没跑 yokoten）。然后让模型给每一条提一个建议，附一句理由。
+情况：**已有**、**没有**、**部分有**（项目有自己的做法，比如用 husky 管提交 hook，或者
+有 CI 但没跑 yokoten），或者**不清楚**（这一步在这里查不了，比如服务器上的设置，要跑
+`yokoten doctor` 才看得到）。然后让模型给每一条提一个建议，附一句理由。
 
 - 模型只拿到这些简短的情况说明，拿不到文件内容。
 - 发出去之前，yokoten 先对要发的内容做一遍隐私检查。查到问题就什么都不发。
 - 没有 key、调用失败、或者模型的回答不合格式时，改用固定规则出草稿：已有或没有的，照搬；
-  部分有的，减量。输出会写明是谁出的草稿。
+  部分有的，减量；不清楚的，先用 `doctor` 查一下，再照搬。输出会写明是谁出的草稿。
 - `adopt` 不改任何文件。每一条最后还是你来定。
+- 部分有的那几条，跑 `init` 也不会被冲掉：它会让 `CLAUDE.md` 引入 `AGENTS.md`，也会把
+  提交检查加进 husky 的 `pre-commit`。
 
 用的是 Meta 的模型 API，走它兼容 OpenAI 的接口（`https://api.meta.ai/v1`，模型是
 `muse-spark-1.3`）。把 key 设到 `LLAMA_API_KEY` 或 `MODEL_API_KEY` 里。想换成别家兼容 OpenAI 的接口和模型，设 `LLAMA_API_BASE` 和 `LLAMA_MODEL`。
@@ -193,7 +197,7 @@ yokoten 能管住三种 AI 编程 agent，它们守的是同一套规矩。
 |---|---|
 | Claude Code | 工具调用拦截（钩子）、收尾检查（钩子）、每次会话开头的带路提示、skills 和 agents |
 | Codex CLI | 工具调用拦截，写在 `.codex/hooks.json`。第一次用时 Codex 会请你确认信任项目钩子（`/hooks`） |
-| Gemini CLI | 工具调用拦截，写在 `.gemini/settings.json` |
+| Gemini CLI | 工具调用拦截，写在 `.gemini/settings.json`。要在仓库根目录启动 Gemini：它只读启动时所在文件夹里的 `.gemini/settings.json` |
 | 其他 agent | `AGENTS.md` 里的规则；还有提交检查，不管是谁提交的，坏提交都会被拦下 |
 
 ## 安装和命令
@@ -221,12 +225,14 @@ yokoten 能管住三种 AI 编程 agent，它们守的是同一套规矩。
 |---|---|
 | 技能：`/yokoten:dispatch`、`/yokoten:inspect`、`/yokoten:rca`、`/yokoten:record`、`/yokoten:release`、`/yokoten:yokoten` | `kit/user/skills/` |
 | agent：`yokoten:worker`、`yokoten:reviewer`、`yokoten:verifier` | `kit/user/agents/` |
-| `/yokoten:init` 和 `/yokoten:doctor`：直接用插件里的 yokoten 跑这两个命令 | `kit/plugin/skills/` |
+| `/yokoten:init`、`/yokoten:doctor` 和 `/yokoten:update`：直接用插件里的 yokoten 跑这几个命令 | `kit/plugin/skills/` |
 | 会话开头跑 `doctor` 的 hook 和命令守卫，跟 `install` 加的两个一样 | `.claude-plugin/plugin.json` |
 
 Claude Code 用 `node` 直接跑插件里的 `.ts` 文件。之所以能跑，是因为插件不放在
 `node_modules` 下面（Node 不处理 `node_modules` 里的 TypeScript）。想更新，就打开 `/plugin`，
-在 **Installed** 里选 yokoten，点 **Update now**。别人做的插件市场默认不自动更新，要自己打开。
+在 **Installed** 里选 yokoten，点 **Update now**。别人做的插件市场默认不自动更新，要自己打开。在终端里跑
+`claude plugin update yokoten@yokoten` 也一样，跑完要重启 Claude Code。插件要是比跑 `doctor`
+的这份 yokoten 旧，`doctor` 会提醒你。
 
 插件只管 Claude Code。它不会帮你建私有词表文件：`doctor` 会告诉你文件在哪，你自己建。
 插件在你的用户设置里开着的时候，`doctor` 就把它的 hook 和技能算作已经装好。
@@ -318,6 +324,12 @@ kit 里 `init` 放的 workflow 暂时还是跑 `.yokoten/` 里的那份，等第
 `init` 会把 yokoten 运行要用的文件复制到项目的 `.yokoten/` 里。把它一起提交：这样不联网、
 不全局安装，hook 和 CI 也能跑。
 
+项目原来的设置，`init` 会保住。有 `CLAUDE.md` 的，它在文件末尾加一行 `@AGENTS.md`：有
+`CLAUDE.md` 时，Claude Code 只通过这一行才会读 `AGENTS.md`。`.claude/CLAUDE.md` 也算：
+根目录没有 `CLAUDE.md` 的话，就在它末尾加 `@../AGENTS.md`。用 husky 或者别的
+`core.hooksPath` 的，它不换掉那个目录，而是把提交检查加进那里的 `pre-commit`。项目自己的
+hook 一行都不删，`init` 也会说改了哪个文件。
+
 `init` 还会在 `.github/workflows/` 里放三个 workflow：`yokoten.yml`（跑提交检查；一个 lint
 job 用 actionlint 和 zizmor 查 workflow 本身；还有一个 `ci` job，设成必过的检查就只要设它）、
 `pr.yml` 和 `issue.yml`。每个 action 都固定到某一次提交，每个 job 都有超时，checkout 不留
@@ -338,32 +350,42 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 | `init [dir]` | 把这套做法放进一个项目。只加文件；已有的文件保留，并告诉你保留了哪些。它还会用 `gh` 看一眼 GitHub，告诉你要补哪些标准标签和里程碑，但不会去改 GitHub。没装 `gh`、没登录，或者远程仓库不在 GitHub 上，就说一声跳过了 |
 | `init --github --yes [--remove-default-labels]` | 补上缺的标准标签；没有打开的里程碑时，建一个叫 "First release" 的；要是已经有一个关掉的里程碑叫这个名字，就叫 "Next release"。关掉的里程碑不会被重新打开。已有的标准标签，颜色和说明改成标准的。再跑一次什么也不会变。GitHub 自带的、不在这套里的标签（`question`、`wontfix` 等），只有加上 `--remove-default-labels` 才会删 |
 | `update [dir] [--write]` | 看看这个版本的 yokoten 会怎么改项目 `AGENTS.md` 里的核心规则。加上 `--write` 才真的替换；「This project」那部分原样保留。见[更新规则](#更新规则) |
-| `doctor [--session]` | 整条路：每一关、每一步，加上这台电脑还缺什么。`--session` 只说下一步，会话开头用 |
+| `doctor [--session] [--json]` | 整条路：每一关、每一步，加上这台电脑还缺什么。`--session` 只说下一步，会话开头用 |
 | `adopt [--json]` | 给老项目的采用表出一份草稿：项目现在做到了哪些，每一步建议怎么定。`--json` 输出每一行的数据。不改任何文件 |
-| `check [--staged]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交。提交里不能有构建产物和二进制文件。查整个目录时，落后于英文的译文会给一条提醒，见[翻译](#翻译) |
+| `check [--staged] [--json]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交。提交里不能有构建产物和二进制文件。查整个目录时，落后于英文的译文会给一条提醒，见[翻译](#翻译) |
 | `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的变更文件、milestone 和标签，见下面的「更新日志」。改到 CODEOWNERS 里列出的文件，必须写 `tier: A`。改动的文档里句子太长、改动的代码里名字难读、改动超过 400 行，都只提醒，不算失败 |
 | `check --issue` | 在 CI 里检查 issue 的标题，见下面的「issue 标题」 |
 | `changelog [--write]` | 列出 `changes/` 里的文件会往 `[Unreleased]` 下面加哪些条目。加上 `--write` 就真的写进 `CHANGELOG.md`，再删掉这些文件；发版前跑。见下面的「更新日志」 |
 | `check --history` | 对所有分支的每一个提交做隐私检查。私有仓库公开之前跑一遍 |
-| `hook [--agent <name>] [--commands-only]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool |
+| `hook [--agent <name>] [--commands-only] [--json]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool |
 | `hook --stop` | 收尾检查。从标准输入读 Claude Code 的 Stop 事件，检查改过的文件。见[收尾检查](#收尾检查) |
-| `explain [<id>]` | 讲一条规则或者路上的一步：它是什么、为什么要有、yokoten 怎么检查 |
+| `explain [<id>] [--json]` | 讲一条规则或者路上的一步：它是什么、为什么要有、yokoten 怎么检查 |
 | `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。如果命令是 `gh issue` 或 `gh pr` 的 `create`、`edit`，并且带了标题，它会先按 CI 的规则检查标题；标题不合格就直接拒绝，什么都不会发出去。设置方法见 [server.md](../server.md#3-the-bot-a-github-app) |
+
+每个命令后面加 `--help` 或 `-h`，就会打出它自己的说明：做什么、有哪些选项、一个例子。
+`yokoten help <命令>` 打出的也一样，`yokoten --help` 列出所有命令，`yokoten version`（或者
+`--version`、`-v`）打出版本号。看说明不会改任何东西，
+退出码是 0。命令或选项打错了，yokoten 会提示最接近的那个，比如 `yokoten docter` 会问
+你是不是想打 "doctor"。`bot --` 后面的词都交给要运行的命令，所以
+`yokoten bot -- gh --help` 运行的是 `gh --help`。
 
 `check`、`doctor`、`hook`、`explain` 都可以加 `--json`。加了以后，标准输出里只有 JSON，
 别的什么都没有，方便 AI 和脚本读。每条结果的字段都一样：`id`、`what`、`why`、`fix`；
 指南里讲到这条规则的，再加 `docs`（链接）；问题出在文件里的，再加 `file` 和 `line`。
 拿 `id` 去跑 `yokoten explain` 就能看到详细说明。任何字段里都不会有隐私内容。
 
-- `check --json`：`{ check, ok, findings, notes }`。`check` 是 `tree`、`staged`、`history`
-  或 `pr`，说明查的是哪一种。`notes` 只是提醒，不会让检查失败。
+- `check --json`：`{ check, ok, findings, notes }`。`check` 是 `tree`、`staged`、`history`、
+  `pr` 或 `issue`，说明查的是哪一种。`notes` 只是提醒，不会让检查失败。CI 这次跑的不是
+  PR 或 issue 时，`check --pr` 和 `check --issue` 直接算通过，多一个 `skipped` 写明原因。
 - `doctor --json`：`{ version, ok, selfTest, repo, stage, stages, next, findings, steps,
   notes, server }`。加 `--session` 时只给下一步、私有词表缺失的提醒，以及核心规则落后时的 `core-rules`。
-- `hook --json`：在标准输出给出 `{ blocked, finding }`。AI 工具本身不用它：它们按各自的
-  hook 协议，看退出码，再从标准错误读原因。
-- `hook --stop --json`：`{ blocked, stop, findings }`。`stop_hook_active` 为真时多一个 `skipped`。
-- `explain --json`：`{ found, id, kind, what, why, check, docs, stage, standard }`；找不到时是
-  `{ found: false, ids }`。
+- `hook --json`：拦下时是 `{ blocked: true, finding }`，放行时是 `{ blocked: false, toolCall: true }`；
+  标准输入读到的不是工具调用时，是 `{ blocked: false, toolCall: false }`。AI 工具本身不用它：
+  它们按各自的 hook 协议，看退出码，再从标准错误读原因。
+- `hook --stop --json`：`{ blocked, stop, findings }`。`stop_hook_active` 为真，或者检查本身出错时，
+  多一个 `skipped` 写明原因。读到的不是 Stop 事件时，是 `{ blocked: false, stop: false }`。
+- `explain --json`：`{ found, id, kind, what, why, check, docs, stage, standard }`。id 不存在或者
+  没写时是 `{ id, found: false, ids }`；没写 id 时，`id` 是 `null`。
 
 输出的规矩只有一条：结果写到标准输出（stdout），问题、拒绝和出错写到标准错误（stderr）。
 不认识的选项会直接拒绝，不会悄悄忽略。
@@ -520,6 +542,37 @@ yokoten 每学到一个教训，核心规则就会改。`yokoten install` 会更
 装了 Claude Code 插件的话，直接用 `/yokoten:update`。它跑的是插件自己那份 yokoten，
 先给你看要改什么，你点头了才写。
 
+### 设置
+
+项目的设置写在仓库根目录的 `yokoten.json` 里，每一项都可以不写。列表类的设置，你写了
+就整个换掉默认值，不会接在默认值后面。
+
+| 键 | 默认值 | 管什么 |
+|----|--------|--------|
+| `layout.maxEntries` | `7` | 一个文件夹最多放几项（第 10 条核心规则） |
+| `layout.exempt` | 无 | 可以超过上限的文件夹，比如一项一项往下记的决策记录 |
+| `tests` | `*.test.*`、`*.spec.*`、`*_test.go`、`test/**`、`tests/**` | 哪些算测试文件，修复任务不能改 |
+| `leadOnly` | 规则、agent 配置、`.githooks/**`、`.github/**` | worker 不能改的文件 |
+| `privacy.allow` | 无 | 隐私检查放行的原样字符串，比如公开的客服邮箱 |
+| `privacy.skip` | 各种 lock 文件 | 隐私检查不读的文件 |
+| `privacy.utc` | `true` | 提交时间必须用 UTC |
+| `notNow` | 无 | 暂时不做的步骤，用 `doctor` 里的名字，每条写上原因：`{ "ci": "no remote yet" }` |
+| `allowBuild` | 无 | 提交检查放行的构建产物和二进制文件 |
+| `areas` | 不限 | 标题里能用的模块名，见 [issue 标题](#issue-标题) |
+| `translations.fail` | `false` | 译文落后于原文时，检查直接失败 |
+
+环境变量：
+
+| 变量 | 管什么 |
+|------|--------|
+| `YOKOTEN_ROLE=worker` | 这个会话是 worker，不能改只有 lead 能改的文件 |
+| `YOKOTEN_FIX_TASK=1` | 这个会话是修复任务，不能改测试文件 |
+| `YOKOTEN_RELEASE_APPROVAL=1` | 主人允许这个会话发版 |
+| `YOKOTEN_PRIVATE_MARKS` | 私有词表换个路径 |
+| `YOKOTEN_BOT_APP_ID`、`YOKOTEN_BOT_KEY`、`YOKOTEN_BOT_INSTALLATION` | bot 的设置，见 [server.md](../server.md#3-the-bot-a-github-app) |
+| `YOKOTEN_GITHUB_API` | 换一个 GitHub API 地址，比如自建的 GitHub Enterprise Server |
+| `LLAMA_API_KEY` 或 `MODEL_API_KEY`、`LLAMA_API_BASE`、`LLAMA_MODEL` | `adopt` 用的模型，见[先拿一份草稿](#先拿一份草稿) |
+
 
 ## 核心规则
 
@@ -528,7 +581,7 @@ yokoten 每学到一个教训，核心规则就会改。`yokoten install` 会更
 1. 所有工作从 issue 开始，不用 todo 文件。
 2. 没有 PR、CI 没过，什么都进不了 `main`。
 3. 只有仓库主人能打 tag、发版。
-4. 修复任务只改代码，不改测试。
+4. 修复任务只改代码，不改测试（`YOKOTEN_FIX_TASK=1`）。
 5. worker 不改只有 lead 能改的文件：规则、agent 配置、hook、CI。
 6. 不许跳过提交检查。
 7. 不用普通的强制推送，不对共享分支做 rebase。
@@ -583,13 +636,14 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 - **lead** 是和你对话的那个会话。它做计划、拆任务、做审查，通过 **bot** 开 PR，从不用你的
   账号。
 - **worker** 是 lead 为单个任务启动的会话，各自在自己的 worktree 里，带着
-  `YOKOTEN_ROLE=worker`。它改代码、交报告，从不推送。
+  `YOKOTEN_ROLE=worker`。它改代码、交报告，从不推送。如果是修复任务，还会带上
+  `YOKOTEN_FIX_TASK=1`，这时守卫和提交检查都不让它改测试文件。
 - **bot** 是装在仓库上的 GitHub App。它能开 PR，但没有 Workflows 权限，改不了检查它的
   CI。规则集要求你审查，所以它开的 PR，你不点头就合不进去。
 
-这套方法靠五个技能来做：`dispatch`（给 worker 派活）、`inspect`（分三轮审查某一个具体提交）、
-`rca`（找根因、加检查、再推广到其他项目）、`record`（把决定写下来）、`yokoten`（采用这套
-做法）。三个 agent 干活：`worker`、`reviewer`（只读）、`verifier`（只跑不修）。
+这套方法靠六个技能来做：`dispatch`（给 worker 派活）、`inspect`（分三轮审查某一个具体提交）、
+`rca`（找根因、加检查、再推广到其他项目）、`record`（把决定写下来）、`release`（定下一个
+版本号、准备更新日志，tag 由主人来打）、`yokoten`（采用这套做法）。三个 agent 干活：`worker`、`reviewer`（只读）、`verifier`（只跑不修）。
 
 ### 谁来审什么
 
