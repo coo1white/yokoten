@@ -190,7 +190,7 @@ export const OFFER = 'Tell the user in plain words, one step at a time, and offe
  * Added to that line when doctor runs from the Claude Code plugin's hook: there is no
  * `yokoten` command on the PATH, so the agent runs the plugin's commands.
  */
-export const PLUGIN_COMMANDS = 'In this session, yokoten runs as /yokoten:init and /yokoten:doctor.';
+export const PLUGIN_COMMANDS = 'In this session, yokoten runs as /yokoten:init, /yokoten:doctor and /yokoten:update.';
 
 /** One step in the JSON map: its mark, its outside standard, and the reason for "not now". */
 export interface StepState {

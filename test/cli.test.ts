@@ -1121,7 +1121,7 @@ test('plugin: its hooks are the ones install adds, and the guard it registers bl
   const session = run(hooks.SessionStart[0].hooks[0].command);
   assert.equal(session.status, 0, session.stderr);
   assert.match(session.stdout, /^yokoten: stage 1 of 5/);
-  assert.match(session.stdout, /runs as \/yokoten:init and \/yokoten:doctor/);
+  assert.match(session.stdout, /runs as \/yokoten:init, \/yokoten:doctor and \/yokoten:update/);
   assert.doesNotMatch(sandbox.run(['doctor', '--session']).stdout, /yokoten:init/, 'only from the plugin');
 });
 
