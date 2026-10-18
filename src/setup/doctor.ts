@@ -93,6 +93,30 @@ export function machineChecks(env: Env): Practice[] {
 }
 
 /**
+ * The other agents' user hooks, from `install`: doctor at session start and the command
+ * guard (#211). Only for a CLI this machine looks to use, its folder ~/.codex or
+ * ~/.gemini, so a Claude Code user hears nothing about tools they don't run.
+ *
+ * A note, never MISSING, so it never changes the exit code: no real Codex or Gemini CLI
+ * run has been seen to block through these hooks yet (#30), and a folder left by a CLI
+ * tried once is not proof the user wants yokoten there.
+ */
+export function userAgentHooks(env: Env): Practice[] {
+  const missing = (hooks: { doctor: boolean; guard: boolean }, file: string) =>
+    [...(hooks.doctor ? [] : ['no session-start doctor']), ...(hooks.guard ? [] : ['no command guard'])].join(' and ') + ` in ${file}`;
+  const checks: Practice[] = [];
+  if (codex.hasUserDir(env)) {
+    const hooks = codex.hasUserHooks(env);
+    checks.push(practice('codex-user-hook', 'codex-hook', hooks.doctor && hooks.guard, missing(hooks, '~/.codex/hooks.json'), '`yokoten install` adds it'));
+  }
+  if (gemini.hasUserDir(env)) {
+    const hooks = gemini.hasUserHooks(env);
+    checks.push(practice('gemini-user-hook', 'gemini-hook', hooks.doctor && hooks.guard, missing(hooks, '~/.gemini/settings.json'), '`yokoten install` adds it'));
+  }
+  return checks;
+}
+
+/**
  * The core rules in AGENTS.md against the kit's (#120). No AGENTS.md gives null: the
  * road's rules step asks for it. A file doctor can't compare is a note, never a guess.
  */
@@ -366,6 +390,10 @@ export function doctor(
   for (const c of machine) {
     lines.push(`  ${c.ok ? 'ok     ' : 'MISSING'} ${c.name}${c.ok ? '' : `: ${stepText(c.finding)}`}`);
     if (!c.ok) findings.push(c.finding);
+  }
+  for (const c of userAgentHooks(env)) {
+    lines.push(`  ${c.ok ? 'ok     ' : 'note   '} ${c.name}${c.ok ? '' : `: ${stepText(c.finding)}`}`);
+    if (!c.ok) notes.push(c.finding);
   }
   const stale = pluginAgeCheck(root, env);
   if (stale) {

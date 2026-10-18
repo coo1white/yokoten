@@ -5,8 +5,9 @@
 // Gemini CLI fingerprints a project hook by its name and command, and warns once before
 // it first runs a new or changed one.
 
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { guardCommand, missingProjectRuntime } from '../run/cli.ts';
 import type { Action } from '../run/hook.ts';
@@ -76,3 +77,12 @@ export function addUserHooks(env: Env, cli: string, missing: string): { doctor: 
     guard: addHook(userSettings(env), 'BeforeTool', SHELL, guardCommand(cli, 'hook --agent gemini --commands-only', missing), { name: 'yokoten-guard' }),
   };
 }
+
+/** Whether Gemini CLI looks used on this machine: its user folder, ~/.gemini, exists. */
+export const hasUserDir = (env: Env): boolean => existsSync(dirname(userSettings(env)));
+
+/** Whether the user's hooks from `addUserHooks` are there: doctor at session start, and the command guard. */
+export const hasUserHooks = (env: Env): { doctor: boolean; guard: boolean } => ({
+  doctor: hasHook(userSettings(env), 'SessionStart', 'doctor'),
+  guard: hasHook(userSettings(env), 'BeforeTool', 'hook'),
+});

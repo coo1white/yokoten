@@ -5,8 +5,9 @@
 // and reviews the hook (`/hooks`). It records trust against the hook's hash, so a changed
 // command has to be trusted again.
 
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { guardCommand, missingProjectRuntime } from '../run/cli.ts';
 import type { Action } from '../run/hook.ts';
@@ -76,3 +77,12 @@ export function addUserHooks(env: Env, cli: string, missing: string): { doctor: 
     guard: addHook(userHooks(env), 'PreToolUse', SHELL, guardCommand(cli, 'hook --agent codex --commands-only', missing)),
   };
 }
+
+/** Whether Codex looks used on this machine: its user folder, ~/.codex, exists. */
+export const hasUserDir = (env: Env): boolean => existsSync(dirname(userHooks(env)));
+
+/** Whether the user's hooks from `addUserHooks` are there: doctor at session start, and the command guard. */
+export const hasUserHooks = (env: Env): { doctor: boolean; guard: boolean } => ({
+  doctor: hasHook(userHooks(env), 'SessionStart', 'doctor'),
+  guard: hasHook(userHooks(env), 'PreToolUse', 'hook'),
+});

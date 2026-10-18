@@ -1761,6 +1761,29 @@ test('doctor: the plugin, when on, stands in for install', () => {
   assert.match(machine(), /MISSING session-doctor/, 'a broken settings file enables nothing');
 });
 
+// #211: Codex's and Gemini CLI's user hooks, only once the CLI's folder exists; a note
+// that never changes the exit code, and ok after `install`.
+test('doctor: notes the Codex and Gemini CLI user hooks when that CLI is used (#211)', () => {
+  for (const [agent, dir, file] of [['codex', '.codex', 'hooks.json'], ['gemini', '.gemini', 'settings.json']]) {
+    const sandbox = makeSandbox();
+    const name = `${agent}-user-hook`;
+    const before = sandbox.run(['doctor']);
+    assert.doesNotMatch(before.stdout, new RegExp(name), `${agent}: no ~/${dir}, no line`);
+    mkdirSync(join(sandbox.home, dir));
+    const noted = sandbox.run(['doctor']);
+    assert.match(noted.stdout, new RegExp(`note {4}${name}: no session-start doctor and no command guard in ~/${dir}/${file}; \`yokoten install\` adds it`));
+    assert.equal(noted.status, before.status, `${agent}: a note never changes the exit code`);
+    const json = JSON.parse(sandbox.run(['doctor', '--json']).stdout);
+    assert.ok(json.notes.some((n: { id: string }) => n.id === `${agent}-hook`), `${agent}: a note in --json`);
+    assert.ok(!json.findings.some((n: { id: string }) => n.id === `${agent}-hook`), `${agent}: not a finding`);
+    assert.equal(sandbox.run(['install']).status, 0);
+    assert.match(sandbox.run(['doctor']).stdout, new RegExp(`ok {6}${name}\\n`));
+    const explain = sandbox.run(['explain', `${agent}-hook`]).stdout;
+    assert.match(explain, /tool-call guard and stop check/);
+    assert.match(explain, agent === 'codex' ? /a Stop hook/ : /an AfterAgent hook/);
+  }
+});
+
 // #198: a plugin older than this yokoten is a note, in full doctor and in a session. A fake
 // install in the fake HOME, laid out as Claude Code keeps it; the real one is never read.
 test('doctor: notes an installed plugin older than this yokoten (#198)', () => {

@@ -774,7 +774,8 @@ Honest limits:
   guard and the stop check also run in Codex and Gemini CLI: `init` writes
   `.codex/hooks.json` and `.gemini/settings.json`, and each tool asks you to trust the
   hooks. Nobody has yet seen a real Codex or Gemini CLI session blocked by them (#30), so
-  `doctor` reports those hooks but does not count them as missing. The rules are plain `AGENTS.md`, which
+  `doctor` reports those hooks, and the user hooks once `~/.codex` or `~/.gemini` exists, but
+  does not count them as missing. The rules are plain `AGENTS.md`, which
   Claude Code reads when a project has no `CLAUDE.md`, and so do most other agents. Muse
   Code's skills and hooks are planned.
 

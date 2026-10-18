@@ -236,15 +236,15 @@ export const RULES = {
     check: '`doctor` feeds each check a known-bad input before anything else',
   },
   'codex-hook': {
-    rule: "the project has Codex's tool-call guard",
-    why: "without it, Codex's commands and edits in this project are not checked",
-    check: '`doctor` reads .codex/hooks.json for a PreToolUse hook that runs `yokoten hook --agent codex`; a note, not a missing step',
+    rule: "the project has Codex's tool-call guard and stop check",
+    why: "without them, Codex's commands and edits in this project are not checked, and its turn can end with a bad file",
+    check: '`doctor` reads .codex/hooks.json for a PreToolUse hook that runs `yokoten hook --agent codex` and a Stop hook that runs `yokoten hook --stop --agent codex`; when ~/.codex exists, also ~/.codex/hooks.json for the session-start doctor and the command guard. A note, not a missing step',
     docs: guide('works-with'),
   },
   'gemini-hook': {
-    rule: "the project has Gemini CLI's tool-call guard",
-    why: "without it, Gemini CLI's commands and edits in this project are not checked",
-    check: '`doctor` reads .gemini/settings.json for a BeforeTool hook that runs `yokoten hook --agent gemini`; a note, not a missing step',
+    rule: "the project has Gemini CLI's tool-call guard and stop check",
+    why: "without them, Gemini CLI's commands and edits in this project are not checked, and its turn can end with a bad file",
+    check: '`doctor` reads .gemini/settings.json for a BeforeTool hook that runs `yokoten hook --agent gemini` and an AfterAgent hook that runs `yokoten hook --stop --agent gemini`; when ~/.gemini exists, also ~/.gemini/settings.json for the session-start doctor and the command guard. A note, not a missing step',
     docs: guide('works-with'),
   },
   'core-rules': {
