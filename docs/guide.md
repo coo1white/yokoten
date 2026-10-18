@@ -378,6 +378,12 @@ It puts two safe defaults in `.github/` too:
 | `explain [<id>]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. Setup: [server.md](server.md#3-the-bot-a-github-app) |
 
+Each command prints its own help with `--help` or `-h`: what it does, its options and
+one example. `yokoten help <command>` prints the same, and `yokoten --help` lists the
+commands. Help changes nothing and exits 0. For a typo, yokoten names the closest command
+or option: `yokoten docter` asks `Did you mean "doctor"?`. After `bot --`, every word
+belongs to the command it runs, so `yokoten bot -- gh --help` runs `gh --help`.
+
 `check`, `doctor`, `hook` and `explain` take `--json`. Then stdout holds JSON and
 nothing else, for an agent or a script. Each finding has the same fields: `id`, `what`,
 `why`, `fix`, `docs` (the link) when the guide explains the rule, and `file` and `line`
