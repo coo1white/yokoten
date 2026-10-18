@@ -60,11 +60,16 @@ export function install(env: Env): string[] {
   const missing = 'yokoten: the runtime at ~/.local/share/yokoten is missing; run the install again';
   const hooks = addUserHooks(env, cli, missing);
   report.push(`${hooks.doctor} the SessionStart doctor`, `${hooks.guard} the user-level command guard`);
-  // Codex and Gemini CLI get the same two hooks (#211), whether or not they are installed.
-  const codexHooks = codex.addUserHooks(env, cli, missing);
-  report.push(`${codexHooks.doctor} the Codex SessionStart doctor in ~/.codex/hooks.json`, `${codexHooks.guard} the Codex command guard in ~/.codex/hooks.json`);
-  const geminiHooks = gemini.addUserHooks(env, cli, missing);
-  report.push(`${geminiHooks.doctor} the Gemini CLI SessionStart doctor in ~/.gemini/settings.json`, `${geminiHooks.guard} the Gemini CLI command guard in ~/.gemini/settings.json`);
+  // Codex and Gemini CLI get the same two hooks (#211), but only when the CLI's folder is
+  // already there: install never makes ~/.codex or ~/.gemini for someone who doesn't use it.
+  if (codex.hasUserDir(env)) {
+    const codexHooks = codex.addUserHooks(env, cli, missing);
+    report.push(`${codexHooks.doctor} the Codex SessionStart doctor in ~/.codex/hooks.json`, `${codexHooks.guard} the Codex command guard in ~/.codex/hooks.json`);
+  } else report.push('skipped Codex CLI: ~/.codex not found (run `yokoten install` again after installing Codex)');
+  if (gemini.hasUserDir(env)) {
+    const geminiHooks = gemini.addUserHooks(env, cli, missing);
+    report.push(`${geminiHooks.doctor} the Gemini CLI SessionStart doctor in ~/.gemini/settings.json`, `${geminiHooks.guard} the Gemini CLI command guard in ~/.gemini/settings.json`);
+  } else report.push('skipped Gemini CLI: ~/.gemini not found (run `yokoten install` again after installing Gemini CLI)');
 
   const marks = writeNew(target.marks, MARKS_HEADER, { mode: 0o600 });
   report.push(`${marks} ${target.marks}${marks === 'wrote' ? ' (add your marks to it)' : ''}`);

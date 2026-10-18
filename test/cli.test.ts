@@ -918,6 +918,13 @@ test('install: the session doctor and the command guard for Codex and Gemini CLI
   const sandbox = makeSandbox();
   const codexFile = join(sandbox.home, '.codex', 'hooks.json');
   const geminiFile = join(sandbox.home, '.gemini', 'settings.json');
+  // No ~/.codex or ~/.gemini: install makes neither, and says so.
+  const skipped = sandbox.run(['install']);
+  assert.equal(skipped.status, 0, skipped.stderr);
+  assert.match(skipped.stdout, /^skipped Codex CLI: ~\/\.codex not found \(run `yokoten install` again after installing Codex\)$/m);
+  assert.match(skipped.stdout, /^skipped Gemini CLI: ~\/\.gemini not found \(run `yokoten install` again after installing Gemini CLI\)$/m);
+  assert.ok(!existsSync(dirname(codexFile)), 'no ~/.codex made');
+  assert.ok(!existsSync(dirname(geminiFile)), 'no ~/.gemini made');
   const mine = (event: string) => ({ [event]: [{ matcher: 'read_file', hooks: [{ type: 'command', command: 'mine' }] }] });
   mkdirSync(dirname(codexFile));
   mkdirSync(dirname(geminiFile));
@@ -1055,6 +1062,9 @@ test('hooks: a missing runtime says one plain line with no path, never a stack t
   // A hook from before #204 is updated in place, never added twice.
   const old = 'node "$HOME/.local/share/yokoten/bin/yokoten.ts" doctor --session';
   mkdirSync(join(sandbox.home, '.claude'));
+  // Codex and Gemini CLI get user hooks only when their folders exist (#211).
+  mkdirSync(join(sandbox.home, '.codex'));
+  mkdirSync(join(sandbox.home, '.gemini'));
   writeFileSync(join(sandbox.home, '.claude', 'settings.json'), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: old }] }] } }));
   assert.match(sandbox.run(['install']).stdout, /^updated the SessionStart doctor$/m);
   assert.equal(sandbox.run(['init']).status, 0);
@@ -1776,6 +1786,7 @@ test('doctor: notes the Codex and Gemini CLI user hooks when that CLI is used (#
     const json = JSON.parse(sandbox.run(['doctor', '--json']).stdout);
     assert.ok(json.notes.some((n: { id: string }) => n.id === `${agent}-hook`), `${agent}: a note in --json`);
     assert.ok(!json.findings.some((n: { id: string }) => n.id === `${agent}-hook`), `${agent}: not a finding`);
+    // The folder exists by now, so install writes the hooks.
     assert.equal(sandbox.run(['install']).status, 0);
     assert.match(sandbox.run(['doctor']).stdout, new RegExp(`ok {6}${name}\\n`));
     const explain = sandbox.run(['explain', `${agent}-hook`]).stdout;
