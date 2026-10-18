@@ -12,6 +12,7 @@ export interface Config {
   allowBuild: string[];
   areas: string[];
   translations: { fail: boolean };
+  commands: { block: Record<string, string> };
 }
 
 /** What yokoten.json may hold: any key, or part of one. */
@@ -24,6 +25,7 @@ interface ConfigFile {
   allowBuild?: string[];
   areas?: string[];
   translations?: Partial<Config['translations']>;
+  commands?: { block?: Record<string, string> };
 }
 
 /** The guard's own environment (process.env, or a test's stand-in). */
@@ -52,6 +54,9 @@ export const DEFAULTS: Config = {
   areas: [],
   // A translation behind its English source (#87) is a note; `fail` makes it a problem.
   translations: { fail: false },
+  // Programs no agent may run here, each with the reason (#192):
+  // { "block": { "python3": "this project is TypeScript only" } }.
+  commands: { block: {} },
 };
 
 export function loadConfig(root: string): Config {
@@ -70,8 +75,27 @@ export function loadConfig(root: string): Config {
     allowBuild: file.allowBuild ?? DEFAULTS.allowBuild,
     areas: file.areas ?? DEFAULTS.areas,
     translations: { ...DEFAULTS.translations, ...file.translations },
+    commands: { block: readBlockList(file.commands) },
   };
 }
+
+// "commands": { "block": { "<program>": "<reason>" } }. A wrong shape is a config problem,
+// said as one, so the guard never runs on a list it misread.
+function readBlockList(commands: unknown): Record<string, string> {
+  if (commands === undefined) return {};
+  const shape = 'yokoten.json: "commands" must look like { "block": { "<program>": "<reason>" } }';
+  if (!isPlainObject(commands)) throw new Error(shape);
+  const block = commands.block;
+  if (block === undefined) return {};
+  if (!isPlainObject(block)) throw new Error(shape);
+  for (const [program, reason] of Object.entries(block)) {
+    if (!/^[^\s/\\]+$/.test(program)) throw new Error(`yokoten.json: "commands.block" names a program by its name alone, with no path or space: ${JSON.stringify(program)}`);
+    if (typeof reason !== 'string' || !reason.trim()) throw new Error(`yokoten.json: "commands.block.${program}" must be the reason, as text`);
+  }
+  return { ...(block as Record<string, string>) };
+}
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 
 // Globs, as yokoten.json names files. Matched against a path relative to the repo root,
 // with forward slashes.

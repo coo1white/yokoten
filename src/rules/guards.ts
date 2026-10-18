@@ -25,10 +25,13 @@ export function checkEdit(path: string, { config, env }: { config: Config; env: 
   return null;
 }
 
-/** A shell command, as the agent wrote it. */
-export function checkCommand(command: string, { env }: { env: Env }): Finding | null {
+/**
+ * A shell command, as the agent wrote it. `config` brings the programs the project blocks
+ * (yokoten.json "commands.block"); without it, only the core rules apply.
+ */
+export function checkCommand(command: string, { env, config }: { env: Env; config?: Pick<Config, 'commands'> }): Finding | null {
   for (const words of commandWords(command)) {
-    const reason = checkGit(words, env) ?? checkHooksEnvironment(words) ?? checkPublish(words, env);
+    const reason = checkGit(words, env, config) ?? checkHooksEnvironment(words) ?? checkPublish(words, env) ?? checkBlocked(words, config?.commands.block ?? {});
     if (reason) return reason;
   }
   return null;
@@ -44,7 +47,7 @@ const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--config-env', '--git-dir', '--w
 
 // Each check looks for its program anywhere in the command, so a prefix such as FOO=1,
 // sudo, env, command, exec, time, nice, nohup, timeout or xargs does not hide it.
-function checkGit(words: string[], env: Env): Finding | null {
+function checkGit(words: string[], env: Env, config?: Pick<Config, 'commands'>): Finding | null {
   const start = words.findIndex(isGit);
   if (start === -1) return null;
   const settings: string[] = [];
@@ -67,7 +70,7 @@ function checkGit(words: string[], env: Env): Finding | null {
   // `git -c alias.x='!cmd' x` runs cmd through a shell.
   for (const s of settings) {
     const alias = /^alias\.[^=]*=!(.*)$/is.exec(s);
-    const reason = alias && checkCommand(alias[1], { env });
+    const reason = alias && checkCommand(alias[1], { env, config });
     if (reason) return reason;
   }
   if (sub === 'push') {
@@ -206,6 +209,58 @@ function checkPublish(words: string[], env: Env): Finding | null {
   if (sub !== -1 && gh.slice(sub + 1).some((a) => ['create', 'upload', 'edit'].includes(a))) return release('gh release publishes a release');
   if (after(['npm', 'pnpm', 'yarn']).includes('publish')) return release('this publishes a package');
   return null;
+}
+
+// ---- Programs the project blocks (#192) ----
+//
+// yokoten.json "commands.block" names programs no agent runs here, each with its reason.
+// Only the program of each command counts, so `echo python` and `cat python.md` pass.
+// The program is the first word after assignments (FOO=1) and the wrappers that run the
+// next word as a program: env, sudo, doas, command, exec, time, nice, nohup, timeout and
+// xargs, with their options. A shell string (`bash -c '...'`) is read by commandWords.
+
+// Each wrapper, with the options that take the next word as their value.
+const WRAPPERS: Record<string, string[]> = {
+  env: ['-u', '--unset', '-C', '--chdir'],
+  sudo: ['-u', '--user', '-g', '--group', '-C', '--close-from', '-D', '--chdir', '-h', '--host', '-p', '--prompt', '-r', '--role', '-t', '--type', '-T', '--command-timeout', '-U', '--other-user'],
+  doas: ['-u', '-C'],
+  command: [],
+  exec: ['-a'],
+  time: ['-f', '--format', '-o', '--output'],
+  nice: ['-n', '--adjustment'],
+  nohup: [],
+  timeout: ['-s', '--signal', '-k', '--kill-after'],
+  xargs: ['-a', '--arg-file', '-d', '--delimiter', '-E', '-I', '-L', '--max-lines', '-n', '--max-args', '-P', '--max-procs', '-s', '--max-chars'],
+};
+
+/** A program's name: no folder and no .exe. */
+const programName = (word: string) => base(word).replace(/\.exe$/i, '');
+
+// The word that names the program a command runs, or undefined.
+function findProgram(words: string[]): string | undefined {
+  // commandWords reads `bash -c 'x'` again as `-c x`: the shell's options come first.
+  let index = words.findIndex((word) => !word.startsWith('-'));
+  if (index === -1) return undefined;
+  while (index < words.length) {
+    while (index < words.length && isAssignment(words[index])) index++;
+    const name = programName(words[index] ?? '');
+    if (!Object.hasOwn(WRAPPERS, name)) return words[index];
+    index++;
+    // `command -v x` only says where x is; it does not run it.
+    if (name === 'command' && /^-[a-zA-Z]*[vV]/.test(words[index] ?? '')) return undefined;
+    while (index < words.length && words[index].startsWith('-')) index += WRAPPERS[name].includes(words[index]) ? 2 : 1;
+    if (name === 'timeout') index++; // the duration
+  }
+  return undefined;
+}
+
+function checkBlocked(words: string[], blockList: Record<string, string>): Finding | null {
+  const program = findProgram(words);
+  if (program === undefined) return null;
+  const name = programName(program);
+  if (!Object.hasOwn(blockList, name)) return null;
+  const reason = blockList[name].trim().replace(/\.+$/, '');
+  return finding('blocked-command', `\`${name}\` is blocked in this project`, 'use the project\'s own stack instead; yokoten.json "commands.block" lists what is blocked', { why: reason });
 }
 
 // ---- Reading bash ----

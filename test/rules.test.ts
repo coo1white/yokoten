@@ -81,6 +81,17 @@ test('config: missing file means defaults, a key overrides, bad JSON says where'
   assert.throws(() => loadConfig(dir), /^Error: yokoten\.json:/);
 });
 
+test('config: "commands.block" is read, and a wrong shape is a config problem (#192)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  assert.deepEqual(loadConfig(dir).commands, { block: {} });
+  writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ commands: { block: { python3: 'TypeScript only' } } }));
+  assert.deepEqual(loadConfig(dir).commands.block, { python3: 'TypeScript only' });
+  for (const commands of [[], 'python3', { block: ['python3'] }, { block: { python3: 1 } }, { block: { python3: ' ' } }, { block: { '/usr/bin/python3': 'no' } }, { block: { 'py thon': 'no' } }]) {
+    writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ commands }));
+    assert.throws(() => loadConfig(dir), /^Error: yokoten\.json: "commands/, JSON.stringify(commands));
+  }
+});
+
 const goodPr = (): PullRequest => ({
   title: 'feat(kit): a pull request standard, checked in CI',
   body: 'tier: B\nCloses #47\n\n## Why\nNothing checks it.\n\n## What changed\n- a rule\n\n## How tested\n`node --test`: 50 pass.\n',
@@ -431,6 +442,7 @@ test('pull request title: one rule for check --pr and the bot (#117)', () => {
 test('config: yokoten\'s own areas cover its open work', () => {
   const own = loadConfig(join(import.meta.dirname, '..'));
   assert.ok(own.areas.includes('doctor') && own.areas.includes('owner'));
+  assert.ok(Object.hasOwn(own.commands.block, 'python') && Object.hasOwn(own.commands.block, 'python3'), 'no Python here (#192)');
   assert.deepEqual(DEFAULTS.areas, []);
 });
 
@@ -444,6 +456,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   };
   const env = { YOKOTEN_FIX_TASK: '1', YOKOTEN_ROLE: 'worker' };
   for (const c of ['git push --tags', 'git push origin v1.0.0', 'git -c push.followTags=true push', 'gh release create v1', 'npm publish', 'git push --force', 'git commit --no-verify -m x', 'git commit -nm x', 'git config core.hooksPath /dev/null']) add(checkCommand(c, { env: {} }));
+  add(checkCommand('python3 --version', { env: {}, config: { commands: { block: { python3: 'this project is TypeScript only' } } } }));
   add(checkEdit('test/a.test.ts', { config: DEFAULTS, env }));
   add(checkEdit('AGENTS.md', { config: DEFAULTS, env }));
   found.push(...scanText(`${POSITIVE_CONTROL}\n${SECRET_CONTROL}\nhome town`, { file: 'a.md', marks: ['home town'] }));

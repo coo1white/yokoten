@@ -72,6 +72,12 @@ export const RULES = {
     check: 'the tool-call guard lets a read of core.hooksPath through, and stops any other value than .githooks: `git config`, `git -c`, `--config-env` and GIT_CONFIG_KEY_n; the commit-check step looks at the setting',
     docs: guide('the-core-rules'),
   },
+  'blocked-command': {
+    rule: 'an agent does not run a program the project blocks in yokoten.json "commands.block"',
+    why: 'the project chose its stack, and an agent forgets a rule written only in prose',
+    check: 'the tool-call guard stops a command whose program is on the list, with any folder or .exe, in any part of the command and after env, sudo, nice and other wrappers; the reason comes from yokoten.json',
+    docs: guide('blocked-commands'),
+  },
   'test-file': {
     rule: 'a fix task changes code, never tests (core rule 4)',
     why: 'a fix task changes the code until the test passes, never the test',
