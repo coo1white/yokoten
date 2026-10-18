@@ -420,6 +420,24 @@ test('check --staged: in a merge, a merged-in file is still checked for privacy 
   assert.match(result.stderr, /notes\.md:1: an email/);
 });
 
+test('check --staged: a staged entry git can\'t read fails, not passes as empty (#244)', () => {
+  const sandbox = makeSandbox();
+  sandbox.git('update-index', '--add', '--info-only', '--cacheinfo', `100644,${'1'.repeat(40)},ghost.md`);
+  const result = sandbox.run(['check', '--staged']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /ghost\.md: git can't read the staged copy\. .+ Run `git add ghost\.md` again/);
+});
+
+test('check --staged: a text file with a NUL after 8000 bytes is scanned for privacy (#244)', () => {
+  const sandbox = makeSandbox();
+  writeFileSync(join(sandbox.repo, 'late.txt'), Buffer.concat([Buffer.from(`write to me${at}gmail.com\n`), Buffer.alloc(9000, 'a'), Buffer.alloc(1)]));
+  sandbox.git('add', '.');
+  const result = sandbox.run(['check', '--staged']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /late\.txt:1: an email/);
+  assert.ok(!result.stderr.includes('binary'), result.stderr);
+});
+
 test('doctor: the no-build-output step looks at the tracked files (#56)', () => {
   const sandbox = makeSandbox();
   const line = () => sandbox.run(['doctor']).stdout.split('\n').find((l) => / no-build-output/.test(l)) ?? '';

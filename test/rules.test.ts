@@ -10,7 +10,7 @@ import { checkBuildOutput, checkLayout, isBuildOutput } from '../src/rules/layou
 import { DOCS_URL, type Finding, finding, formatFinding, type Rule, RULES } from '../src/rules/message.ts';
 import { POSITIVE_CONTROL, scanText } from '../src/rules/privacy.ts';
 import { SECRET_CONTROL } from '../src/rules/secrets.ts';
-import { check, timeZoneNote } from '../src/run/check.ts';
+import { batchBlobs, check, readBlobs, timeZoneNote } from '../src/run/check.ts';
 import { parseSourceMarker, sourceMarker, translationNotes } from '../src/run/translations.ts';
 import { agentHooks, coreRulesCheck, coreRulesControl, machineChecks, selfTest } from '../src/setup/doctor.ts';
 import { compareCoreRules, compareVersions, readKitVersion } from '../src/setup/init.ts';
@@ -460,6 +460,8 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   translated.commit('en.md', '# Guide\n\nStep one, changed.\n');
   add(translationNotes(translated.root, ['zh.md'])[0]);
   found.push(...parseChange('changes/1-a.md', 'Improved\n\nA thing.\n').problems);
+  translated.git('update-index', '--add', '--info-only', '--cacheinfo', `100644,${'1'.repeat(40)},ghost.md`);
+  add(check(translated.root, { config: DEFAULTS, env: {}, staged: true }).find((f) => f.id === 'missing-blob'));
   // The road and the machine, from an empty folder and an empty home.
   const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
   for (const step of ROAD) add(stepFinding(step, dir, { HOME: dir }));
@@ -577,6 +579,26 @@ function makeTranslatedRepo() {
   commit('zh.md', `${sourceMarker('en.md')}\n# 指南\n\n第一步。\n`);
   return { root, git, commit };
 }
+
+// #244: blobs are read in batches under a cap, so one buffer never holds a whole big commit.
+test('readBlobs: batches under the cap; a blob over it is read only for its start (#244)', () => {
+  const sizes = new Map([['a', 10], ['b', 20], ['c', 30], ['d', 41], ['e', 40], ['f', 0]]);
+  assert.deepEqual(batchBlobs(sizes, 40), { batches: [['a', 'b'], ['c'], ['e', 'f']], over: ['d'] });
+  const repo = makeTranslatedRepo();
+  const blob = (bytes: Buffer) => {
+    writeFileSync(join(repo.root, 'b'), bytes);
+    return repo.git('hash-object', '-w', 'b');
+  };
+  const small = [10, 20, 30].map((n) => blob(Buffer.alloc(n, String(n))));
+  const big = blob(Buffer.concat([Buffer.alloc(9000, 'a'), Buffer.alloc(1)]));
+  const missing = 'f'.repeat(40);
+  const read = readBlobs(repo.root, [...small, small[0], big, missing], 40);
+  assert.deepEqual([...read.keys()].sort(), [...small, big].sort(), 'a missing blob is left out; a repeat is read once');
+  for (const [i, n] of [10, 20, 30].entries()) assert.deepEqual(read.get(small[i]), { bytes: Buffer.alloc(n, String(n)), size: n, whole: true });
+  const start = read.get(big);
+  assert.deepEqual([start?.bytes.length, start?.size, start?.whole], [8000, 9001, false], 'only the first 8000 bytes, enough to tell binary');
+  assert.deepEqual(readBlobs(repo.root, []), new Map());
+});
 
 // The older marker form (#87), with the English blob; still read (#166).
 const blobMarker = (source: string, blob: string) => `<!-- source: ${source} blob ${blob} -->`;

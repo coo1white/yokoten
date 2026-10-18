@@ -2,7 +2,7 @@
 // sed, or with a script, and only the commit sees all three. The hook stops the edit
 // tool early; this is the inspection at the end of the line.
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { lstatSync, readFileSync, readlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { Config, Env } from '../rules/config.ts';
@@ -15,7 +15,7 @@ import { translationNotes } from './translations.ts';
 
 const git = (cwd: string, args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 1 << 30 });
 // Bytes, not text: a blob may be binary.
-const gitBytes = (cwd: string, args: string[], input = '') => execFileSync('git', args, { cwd, input, maxBuffer: 1 << 30 });
+const gitBytes = (cwd: string, args: string[], input = '', maxBuffer = 1 << 30) => execFileSync('git', args, { cwd, input, maxBuffer });
 const list = (out: string) => out.split('\0').filter(Boolean);
 
 // Outside a repo this fails, and the caller handles it. Hide git's own error, or an agent
@@ -76,28 +76,83 @@ function mergeMade(root: string, files: Staged[], heads: string[]): Staged[] {
 /** A gitlink (a submodule's commit): no blob to read in this repo. */
 const GITLINK = '160000';
 
-/** The bytes of each blob, by id, read in one `git cat-file --batch`. */
-function readBlobs(root: string, ids: string[]): Map<string, Buffer> {
-  const blobs = new Map<string, Buffer>();
-  if (ids.length === 0) return blobs;
-  const batch = gitBytes(root, ['cat-file', '--batch'], ids.join('\n') + '\n');
-  let at = 0;
-  while (at < batch.length) {
-    const nl = batch.indexOf(10, at);
-    const [id, type, size] = batch.subarray(at, nl).toString('utf8').split(' ');
-    if (type === 'missing') {
-      at = nl + 1;
+/** How many bytes git reads to decide whether a file is binary. */
+const BINARY_PEEK = 8000;
+/**
+ * The most bytes one `git cat-file --batch` call returns. Blobs are read in batches under
+ * it, so a commit of many large images never fills one buffer. A blob larger than it is
+ * read only for its first BINARY_PEEK bytes: enough to tell binary, and a text file that
+ * big is not scanned for privacy.
+ */
+export const BATCH_CAP = 64 << 20;
+
+/** A blob as read: its bytes, all of them when `whole`, else only the first BINARY_PEEK. */
+export type Blob = { bytes: Buffer; size: number; whole: boolean };
+
+/** Blob ids, in order, as batches of at most `cap` bytes, and the ids each larger than `cap`. */
+export function batchBlobs(sizes: Map<string, number>, cap: number): { batches: string[][]; over: string[] } {
+  const batches: string[][] = [];
+  const over: string[] = [];
+  let batch: string[] = [];
+  let total = 0;
+  for (const [id, size] of sizes) {
+    if (size > cap) {
+      over.push(id);
       continue;
     }
-    blobs.set(id, batch.subarray(nl + 1, nl + 1 + Number(size)));
-    at = nl + 1 + Number(size) + 1;
+    if (total + size > cap && batch.length > 0) {
+      batches.push(batch);
+      batch = [];
+      total = 0;
+    }
+    batch.push(id);
+    total += size;
+  }
+  if (batch.length > 0) batches.push(batch);
+  return { batches, over };
+}
+
+/**
+ * Each blob by id, read in `git cat-file --batch` calls of at most `cap` bytes. A blob
+ * missing from the object store is left out.
+ */
+export function readBlobs(root: string, ids: string[], cap = BATCH_CAP): Map<string, Blob> {
+  const blobs = new Map<string, Blob>();
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return blobs;
+  // Sizes first, so no call returns more than the cap.
+  const sizes = new Map<string, number>();
+  for (const line of gitBytes(root, ['cat-file', '--batch-check=%(objectname) %(objectsize)'], unique.join('\n') + '\n').toString('utf8').split('\n')) {
+    const [id, size] = line.split(' ');
+    if (size !== undefined && size !== 'missing') sizes.set(id, Number(size));
+  }
+  const { batches, over } = batchBlobs(sizes, cap);
+  for (const id of over) {
+    // Only the start: git is stopped once the buffer is past it.
+    const out = spawnSync('git', ['cat-file', 'blob', id], { cwd: root, maxBuffer: BINARY_PEEK, stdio: ['ignore', 'pipe', 'ignore'] }).stdout ?? Buffer.alloc(0);
+    blobs.set(id, { bytes: out.subarray(0, BINARY_PEEK), size: sizes.get(id) ?? 0, whole: false });
+  }
+  for (const ids of batches) {
+    // Each blob comes back as "<id> <type> <size>\n<bytes>\n".
+    const room = ids.reduce((sum, id) => sum + (sizes.get(id) ?? 0) + 128, 0);
+    const out = gitBytes(root, ['cat-file', '--batch'], ids.join('\n') + '\n', room);
+    let at = 0;
+    while (at < out.length) {
+      const nl = out.indexOf(10, at);
+      const [id, type, size] = out.subarray(at, nl).toString('utf8').split(' ');
+      if (type === 'missing') {
+        at = nl + 1;
+        continue;
+      }
+      blobs.set(id, { bytes: out.subarray(nl + 1, nl + 1 + Number(size)), size: Number(size), whole: true });
+      at = nl + 1 + Number(size) + 1;
+    }
   }
   return blobs;
 }
 
-const isBinary = (buf: Buffer) => buf.includes(0);
 /** Binary the way git decides it from the bytes: a NUL in the first 8000. */
-const looksBinary = (buf: Buffer) => buf.subarray(0, 8000).includes(0);
+const looksBinary = (buf: Buffer) => buf.subarray(0, BINARY_PEEK).includes(0);
 
 /**
  * A file in the work tree as git would store it: a symlink's link text, never its
@@ -124,7 +179,7 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
   const marks = loadMarks(env);
   const skip = matcher(config.privacy.skip);
   const privacy = (path: string, buf: Buffer) => {
-    if (skip(path) || isBinary(buf)) return;
+    if (skip(path) || looksBinary(buf)) return;
     problems.push(...scanText(buf.toString('utf8'), { file: path, marks, allow: config.privacy.allow }));
   };
   if (staged) {
@@ -142,8 +197,16 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
     // A deleted file has no blob, and a submodule's lives in its own repo.
     const kept = files.filter((f) => f.status !== 'D' && f.mode !== GITLINK);
     const blobs = readBlobs(root, kept.map((f) => f.blob));
-    for (const { path, blob } of kept) privacy(path, blobs.get(blob) ?? Buffer.alloc(0));
-    problems.push(...checkBuildOutput(kept.map(({ path, blob }) => ({ path, binary: looksBinary(blobs.get(blob) ?? Buffer.alloc(0)) })), config));
+    // An entry whose blob is not in the object store can't be checked, so it can't pass.
+    for (const { path } of kept.filter((f) => !blobs.has(f.blob))) {
+      problems.push(finding('missing-blob', "git can't read the staged copy", `run \`git add ${path}\` again, or \`git rm --cached ${path}\``, { file: path }));
+    }
+    // A blob over the batch cap was read only for its start: binary is known, privacy is not.
+    for (const { path, blob } of kept) {
+      const found = blobs.get(blob);
+      if (found?.whole) privacy(path, found.bytes);
+    }
+    problems.push(...checkBuildOutput(kept.map(({ path, blob }) => ({ path, binary: looksBinary(blobs.get(blob)?.bytes ?? Buffer.alloc(0)) })), config));
   } else {
     for (const path of indexFiles(root)) {
       const buf = readEntry(root, path); // none if deleted in the work tree but not yet staged
@@ -177,7 +240,7 @@ export function checkChanged(root: string, { config, env }: { config: Config; en
     if (reason) problems.push(reason);
     if (skip(path)) continue;
     const buf = readEntry(root, path); // none if deleted, or a folder (a submodule)
-    if (buf && !isBinary(buf)) problems.push(...scanText(buf.toString('utf8'), { file: path, marks, allow: config.privacy.allow }));
+    if (buf && !looksBinary(buf)) problems.push(...scanText(buf.toString('utf8'), { file: path, marks, allow: config.privacy.allow }));
   }
   return problems;
 }
@@ -227,9 +290,9 @@ export function checkHistory(root: string, { config, env }: { config: Config; en
     .toString('utf8')
     .split('\n');
   const wanted = types.filter((l) => l.endsWith(' blob')).map((l) => l.split(' ')[0]).filter((sha) => !skip(blobs.get(sha) ?? ''));
-  for (const [sha, body] of readBlobs(root, wanted)) {
-    if (isBinary(body)) continue;
-    add(scanText(body.toString('utf8'), { file: `${blobs.get(sha)} @ blob ${sha.slice(0, 8)}`, ...opts }));
+  for (const [sha, { bytes, whole }] of readBlobs(root, wanted)) {
+    if (!whole || looksBinary(bytes)) continue;
+    add(scanText(bytes.toString('utf8'), { file: `${blobs.get(sha)} @ blob ${sha.slice(0, 8)}`, ...opts }));
   }
   return [...problems.values()];
 }
