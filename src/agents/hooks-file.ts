@@ -59,8 +59,9 @@ export function stripComments(text: string): string {
       out += text.slice(pos, end + 1);
       end++;
     } else if (char === '/' && text[pos + 1] === '/') {
-      while (end < text.length && text[end] !== '\n' && text[end] !== '\r') end++;
-      out += ' '.repeat(end - pos);
+      // Only a newline ends it, as in Gemini CLI's parser: a lone \r does not.
+      while (end < text.length && text[end] !== '\n') end++;
+      out += text.slice(pos, end).replace(/[^\r]/g, ' ');
     } else if (char === '/' && text[pos + 1] === '*') {
       const close = text.indexOf('*/', pos + 2);
       end = close < 0 ? text.length : close + 2;
