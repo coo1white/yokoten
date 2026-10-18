@@ -264,6 +264,12 @@ export const RULES = {
     why: 'the user-level hooks run the installed copy, so an old copy checks old rules',
     check: '`doctor` compares the VERSION file in ~/.local/share/yokoten with its own version',
   },
+  'plugin-version': {
+    rule: 'the enabled Claude Code plugin is not older than the yokoten that runs doctor',
+    why: "the plugin's hooks run the plugin's own copy, so an old plugin checks old rules",
+    check: "`doctor` compares the plugin's package version with its own and, in yokoten's own repo, the plugin's commit with HEAD; a note, never a failure, and nothing when it can't compare offline",
+    docs: guide('the-claude-code-plugin'),
+  },
   'private-marks': {
     rule: 'this machine has a private-marks file with at least one line',
     why: 'without your marks, the privacy check knows only email addresses, IP addresses and secrets',

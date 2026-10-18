@@ -138,8 +138,7 @@ export function pluginAgeCheck(root: string | null, env: Env): Finding | null {
   if (!hasPlugin(env)) return null;
   const plugin = readInstalledPlugin(env, root);
   if (!plugin) return null;
-  const why = "the plugin's hooks run the plugin's copy, so an old copy checks old rules";
-  const note = (older: string, newer: string) => finding('machine-runtime', `the yokoten plugin is older than this yokoten (${older} < ${newer})`, `update it: ${PLUGIN_UPDATE}`, { why });
+  const note = (older: string, newer: string) => finding('plugin-version', `the yokoten plugin is older than this yokoten (${older} < ${newer})`, `update it: ${PLUGIN_UPDATE}`);
   if (plugin.version && compareVersions(plugin.version, VERSION) === -1) return note(plugin.version, VERSION);
   if (!root || !plugin.commit || !isSelf(root)) return null;
   const head = readHead(root);
