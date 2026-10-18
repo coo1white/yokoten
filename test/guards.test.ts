@@ -619,3 +619,18 @@ test('bash: a quoted or escaped case is no keyword, so nothing after it is a pat
   // The keyword, unquoted, still has patterns; a quoted pattern is still a pattern.
   shouldPass([`case x in ${py}) echo;; esac`, `case "x" in '${py}') echo;; esac`]);
 });
+
+test('bash: a heredoc on exec alone or a bare redirect feeds the shell, so it is commands (#226)', () => {
+  for (const command of [
+    `exec <<'EOF'; bash\n${force}\nEOF`,
+    `exec 0<<'EOF'; sh\n${force}\nEOF`,
+    `exec 3<<'EOF'; bash <&3\n${force}\nEOF`,
+    `<<'EOF'\n${force}\nEOF`,
+    `X=1 <<'EOF'\n${force}\nEOF`,
+  ]) blocked(command);
+  for (const command of [
+    `exec cat <<'EOF'\n${force}\nEOF`,
+    `cat 3<<'EOF'\n${force}\nEOF`,
+    `while read line; do echo "$line"; done <<'EOF'\n${force}\nEOF`,
+  ]) allowed(command);
+});

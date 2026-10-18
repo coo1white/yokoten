@@ -787,6 +787,11 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       words.push('<<<');
       index += 3;
     } else if (character === '<' && next === '<' && !word.endsWith('<')) {
+      // `3<<EOF`: the number names the file descriptor, part of the redirect, not a word.
+      if (inWord && !isQuoted && /^(\d+|\{[A-Za-z_]\w*\})$/.test(word)) {
+        word = '';
+        inWord = false;
+      }
       endWord();
       const doc = heredoc(text, index + 2, line.length, [...groups]);
       if (doc) {
@@ -875,7 +880,7 @@ function heredoc(text: string, index: number, cmd: number, groups: Group[]): { d
 // command that holds the <<, or of a command it pipes into (`cat <<EOF | bash`). The
 // program is found after assignments, keywords and launchers (see readsCommands), so
 // `then bash <<EOF` and `env X=1 bash -s <<EOF` count, and `cat > sh <<EOF` or
-// `node - <<EOF` do not. A pipe left open at the line end (`cat <<EOF |`) counts too: its
+// `node - <<EOF` do not. So does a command with no program (see feedsShell). A pipe left open at the line end (`cat <<EOF |`) counts too: its
 // reader is on a later line. A group that closed on the line pipes its commands on
 // (`{ cat <<EOF; } | bash`). Then the body is read as commands. A body in a group still
 // open waits in the group: where the group sends its output decides (see `settle` in read).
@@ -897,7 +902,7 @@ function bodies(text: string, index: number, docs: Heredoc[], { line, pipes, gro
     while (pipes[last] && last + 1 < line.length) last++;
     const readers = line.slice(doc.cmd, last + 1);
     const isOpenPipe = readers.length > 1 && readers[readers.length - 1].length === 0;
-    if (isOpenPipe || readers.some(readsCommands)) {
+    if (isOpenPipe || feedsShell(line[doc.cmd] ?? []) || readers.some(readsCommands)) {
       out.push(...commandWords(body, depth + 1));
       continue;
     }
@@ -905,6 +910,12 @@ function bodies(text: string, index: number, docs: Heredoc[], { line, pipes, gro
     doc.groups.findLast((group) => groups.includes(group))?.bodies.push(body);
   }
   return Math.min(index, text.length);
+}
+
+// A heredoc on a command with no program feeds the shell itself: `exec <<EOF`, `exec
+// 3<<EOF; bash <&3`, or a bare redirect. A keyword (`done <<EOF`) hands it to its loop.
+function feedsShell(words: string[]): boolean {
+  return words.every((word) => !KEYWORDS.has(word) && !HEADS.has(word)) && findPrograms(words).length === 0;
 }
 
 // Programs that read their input as data, never as commands.
