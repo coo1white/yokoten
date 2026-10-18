@@ -98,6 +98,7 @@ const SECRETS: [string, string][] = [
   ['Anthropic key', `ANTHROPIC_API_KEY=${'sk'}-ant-api03-${alnum(93)}AA`],
   ['OpenAI key', `${'sk'}-proj-${alnum(120)}`],
   ['OpenAI key', `${'sk'}-${alnum(20)}${'T3Blbk'}FJ${alnum(20)}`],
+  ['Meta key', `META_API_KEY=${'LL'}M_${'123456789012345'}_${alnum(40)}`],
 ];
 
 test('secrets: the positive control is caught', () => {
@@ -148,6 +149,10 @@ test('secrets: near-misses are not caught (#8)', () => {
     `${'sk'}-ant-api03-short`,
     `${'sk'}-proj-short`,
     `${'sk'}-${alnum(48)}`, // no marker
+    `${'LL'}M_${'12345'}_${alnum(40)}`, // Meta: app id too short
+    `${'LL'}M_${'123456789012345'}_short`, // Meta: secret too short
+    `${'LL'}M_app_${alnum(40)}`, // Meta: no numeric app id
+    `MY_${'LL'}M_${'123456789012345'}_${alnum(40)}`, // Meta: inside a longer word
     'const ghp_prefix = "ghp_"; // prefixes as words',
     'sha512-' + alnum(86) + '==', // a lockfile integrity hash
   ]) {
