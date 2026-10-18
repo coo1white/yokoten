@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { type Finding, formatFinding, place } from '../rules/message.ts';
 import type { CodeOwners, PullRequest } from '../rules/pr.ts';
+import { cleanChildEnv } from '../run/child.ts';
 
 export interface BotConfig {
   appId: string;
@@ -121,14 +122,15 @@ export async function installationToken(config: BotConfig, repo: string): Promis
   return token;
 }
 
-/** The environment for one command run as the bot: gh reads GH_TOKEN, and git asks gh. */
+/** The environment for one command run as the bot: gh reads GH_TOKEN, and git asks gh.
+ * The command may run tests (a push hook, npm test), so it gets a clean child env (#168). */
 export function botEnv(env: Env, token: string): Env {
   // Added after any git config already passed this way. The empty value clears other
   // credential helpers for github.com, so git cannot fall back to the owner's login.
   const n = Number(env.GIT_CONFIG_COUNT) || 0;
   const key = 'credential.https://github.com.helper';
   return {
-    ...env,
+    ...cleanChildEnv(env),
     GH_TOKEN: token,
     GITHUB_TOKEN: token,
     GIT_CONFIG_COUNT: String(n + 2),
