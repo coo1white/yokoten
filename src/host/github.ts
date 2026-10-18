@@ -511,18 +511,20 @@ export function readIncident(gh: Gh, reference: string): Incident | string {
     const reason = terminalText(String((err as { stderr?: string }).stderr || '').split('\n')[0].trim());
     return `gh can't read issue ${reference}${reason ? ` (${reason})` : ''}: run \`gh auth login\`, and check the number and the repo`;
   }
-  const issue = JSON.parse(text) as { number?: unknown; title?: unknown; body?: unknown; url?: unknown; labels?: { name?: string }[] };
+  const issue = JSON.parse(text) as { number?: unknown; title?: unknown; body?: unknown; url?: unknown; labels?: unknown };
   // The number names the draft's folder (lessons/incident-<n>), so only a whole number will do.
   const { number } = issue;
   if (typeof number !== 'number' || !Number.isSafeInteger(number) || number <= 0) return `gh gave no issue number for ${reference}: it must be a whole number above 0`;
-  // gh's JSON is checked, not cast: a null or odd title, body or url must not crash the draft.
-  const { title, body, url } = issue;
+  // gh's JSON is checked, not cast: a null or odd title, body, url or label must not crash the draft.
+  const { title, body, url, labels } = issue;
   if (typeof title !== 'string') return `gh gave no title for ${reference}`;
   return {
     number,
     title,
     body: typeof body === 'string' ? body : '',
     url: typeof url === 'string' ? url : '',
-    labels: (issue.labels ?? []).map((label) => label.name ?? '').filter(Boolean),
+    labels: (Array.isArray(labels) ? labels : [])
+      .map((label: unknown) => (label as { name?: unknown } | null)?.name)
+      .filter((name): name is string => typeof name === 'string' && name !== ''),
   };
 }

@@ -454,5 +454,9 @@ test('incident: an odd title is a reason; an odd body or url is empty, and the d
     const noUrl = readIncident(ghWith({ url: odd }), '3') as Incident;
     assert.equal(noUrl.url, '', `url ${JSON.stringify(odd)}`);
     assert.match(draftLesson(noUrl).files[0].text, /^\/\/ TODO\(reviewer\): gh gave no URL for the issue$/m);
+    assert.deepEqual((readIncident(ghWith({ labels: odd }), '3') as Incident).labels, [], `labels ${JSON.stringify(odd)}`);
   }
+  // Only entries with a string name are kept.
+  const mixed = [{ name: 'incident' }, null, 7, 'bug', { name: 5 }, { name: null }, {}, { name: '' }, [{ name: 'x' }], { name: 'bug' }];
+  assert.deepEqual((readIncident(ghWith({ labels: mixed }), '3') as Incident).labels, ['incident', 'bug']);
 });
