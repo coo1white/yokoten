@@ -146,3 +146,48 @@ export function readIssue(env: Env): { title: string; labels: string[] } | null 
   if (!issue || issue.pull_request) return null;
   return { title: issue.title ?? '', labels: (issue.labels ?? []).map((l) => l.name ?? '').filter(Boolean) };
 }
+
+// The planning setup (#10): labels and milestones, read and made through `gh`, so
+// yokoten uses the owner's own sign-in and holds no token. `Gh` runs one gh command and
+// returns its stdout; it throws when gh fails. Tests pass a fake, so they never reach GitHub.
+
+export type Gh = (args: string[]) => string;
+
+/** Runs the real gh in `cwd`. */
+export const ghIn =
+  (cwd: string): Gh =>
+  (args) =>
+    execFileSync('gh', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+
+export interface Planning {
+  /** "owner/name". */
+  repo: string;
+  labels: string[];
+  milestones: { title: string; open: boolean }[];
+}
+
+/** The repo's labels and milestones, or the reason gh can't read them. */
+export function readPlanning(gh: Gh): Planning | string {
+  let repo: string;
+  try {
+    repo = gh(['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner']).trim();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'gh is not installed: get it from https://cli.github.com, then run `gh auth login`';
+    return 'gh can\'t read this repo: run `gh auth login`, and check that the origin remote is on GitHub';
+  }
+  const lines = (text: string) => text.split('\n').filter(Boolean);
+  const labels = lines(gh(['label', 'list', '--limit', '1000', '--json', 'name', '--jq', '.[].name']));
+  const milestones = lines(gh(['api', '--paginate', `repos/${repo}/milestones?state=all&per_page=100`, '--jq', '.[] | "\\(.state) \\(.title)"'])).map((l) => {
+    const [state, ...title] = l.split(' ');
+    return { title: title.join(' '), open: state === 'open' };
+  });
+  return { repo, labels, milestones };
+}
+
+export function createLabel(gh: Gh, label: { name: string; color: string; description: string }): void {
+  gh(['label', 'create', label.name, '--color', label.color, '--description', label.description]);
+}
+
+export function createMilestone(gh: Gh, repo: string, title: string): void {
+  gh(['api', '--method', 'POST', `repos/${repo}/milestones`, '-f', `title=${title}`]);
+}
