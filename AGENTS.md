@@ -44,6 +44,29 @@ most 20 words; a description at most 25. One instruction per sentence. One word 
 thing. Active voice. A flow gets a diagram. `check --pr` notes long sentences in changed
 Markdown; a note never fails CI.
 
+## Names
+
+A name is what a reader meets first and reads most. Pick names that a new reader, or an
+agent, understands without scrolling back. The yokoten guide says why:
+[Naming](https://github.com/coo1white/yokoten/blob/main/docs/guide.md#naming).
+
+- Whole words. A short form only when everyone knows it (`id`, `url`, `config`). Never
+  delete letters inside a word.
+- At most 4 words. There is no character limit, because a limit makes people abbreviate.
+- One letter only for a name used within about 10 lines, such as a loop counter.
+- A function's name starts with a verb. A true/false value starts with `is`, `has` or
+  `can`.
+- One idea keeps one name in every file.
+- Use the language's own case style, for example `camelCase` in TypeScript and
+  `snake_case` in Python.
+
+| Hard to read | Easy to read | Why |
+|---|---|---|
+| `r`, still used 30 lines later | `result` | By line 30 the reader has forgotten what `r` holds. |
+| `cfgMgr` | `configManager` | Letters cut from inside words make the reader guess. |
+| `processTheUserInputDataNow` | `parseInput` | Six words, and three of them say nothing. |
+| `valid` | `isValid` | `is` says the value is only true or false. |
+
 ## Where to look
 
 | For | Read |
@@ -83,17 +106,13 @@ yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
     API (`test/architecture.test.ts` holds this).
   - `setup/`: `install`, `init` and `doctor`, writing yokoten into a machine or a
     project. `road.ts` is the road `doctor` walks: one table of stages and steps.
-- **Names** (record 0006). `test/architecture.test.ts` holds rules 2 and 3 and
-  `CONSTANT_CASE`; the reviewer holds rules 1 and 5.
-  1. Whole English words. Only widely known short forms: `id`, `url`, `pr`, `ci`,
-     `env`, `config`, `repo`, `dir`, `json`, `html`. Never delete letters inside a word.
-  2. At most 4 words per name. No character limit: a limit pushes people to abbreviate.
-  3. One letter only when used within 10 lines and not exported. `_` only for a
-     parameter we don't use.
-  4. `camelCase` for values and functions, `PascalCase` for types, `CONSTANT_CASE` only
-     for fixed values at the top of a file. Acronyms as words (`loadHttpUrl`).
-  5. Functions start with a verb; true/false values start with `is`, `has` or `can`;
-     one idea keeps one name in every file.
+- **Names** (record 0006): the core "Names" rules, in TypeScript. Short forms: `id`,
+  `url`, `pr`, `ci`, `env`, `config`, `repo`, `dir`, `json`, `html`. `camelCase` for
+  values and functions, `PascalCase` for types, `CONSTANT_CASE` only for fixed values at
+  the top of a file. Acronyms as words (`loadHttpUrl`). `_` only for a parameter we don't
+  use. One letter only when used within 10 lines and not exported.
+  `test/architecture.test.ts` holds the 4-word and one-letter rules and `CONSTANT_CASE`;
+  the reviewer holds the rest.
 - **Docs live in the repo.** No wiki: a wiki page is not reviewed and agents do not read
   it. Decisions go in `docs/records/`; what went wrong and what check now holds it goes
   in an issue labelled `incident`, and the rule's "why" in `AGENTS.md` points to it.

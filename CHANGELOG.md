@@ -12,6 +12,10 @@ All notable changes are listed here. The format follows
   runs `check`, and runs `check --pr` on pull requests. Inputs: `pr-check` and
   `node-version`. It needs `contents: read` and takes no token. The kit's workflow
   moves to the action after the first release (#106).
+- The kit's `AGENTS.md` has a "Names" section: whole words, at most 4, one letter only
+  for a short life, verbs for functions, `is`/`has`/`can` for true or false, and a table of
+  hard and easy names. **Kit change:** new projects get it from `init`;
+  a project that already has `AGENTS.md` must copy the section by hand for now (#110).
 - `yokoten bot` checks the title before `gh issue create`, `gh issue edit`, `gh pr create`
   or `gh pr edit` runs. It uses the rules of `check --issue` and the title part of
   `check --pr`. A bad title is refused with what, why and the fix, and nothing is sent.
