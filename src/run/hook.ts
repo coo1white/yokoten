@@ -6,7 +6,7 @@
 
 import { realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
-import type { Config, Env } from '../rules/config.ts';
+import { type Config, DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
 import { checkCommand, checkEdit } from '../rules/guards.ts';
 import type { Finding } from '../rules/message.ts';
 
@@ -19,6 +19,18 @@ export interface Action {
   cwd?: string;
   /** The action comes from a worker, whatever the session's own role. */
   worker: boolean;
+}
+
+/**
+ * The config the hook works with: the repo's yokoten.json, or the defaults outside a repo.
+ * A wrong "commands" drops only the block list (#192): the core checks still run, and
+ * `warn` gets one line that says what was ignored and why. Any other problem throws.
+ */
+export function loadHookConfig(root: string | null, warn: (line: string) => void): Config {
+  if (!root) return DEFAULTS;
+  return loadConfig(root, {
+    onBadCommands: (problem) => warn(`yokoten hook: yokoten.json "commands" was ignored, so no program is blocked; the core checks still run. ${problem}`),
+  });
 }
 
 /**

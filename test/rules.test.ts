@@ -11,6 +11,7 @@ import { DOCS_URL, type Finding, finding, formatFinding, type Rule, RULES } from
 import { POSITIVE_CONTROL, scanText } from '../src/rules/privacy.ts';
 import { SECRET_CONTROL } from '../src/rules/secrets.ts';
 import { check, timeZoneNote } from '../src/run/check.ts';
+import { loadHookConfig } from '../src/run/hook.ts';
 import { parseSourceMarker, sourceMarker, translationNotes } from '../src/run/translations.ts';
 import { agentHooks, coreRulesCheck, machineChecks } from '../src/setup/doctor.ts';
 import { compareCoreRules, compareVersions, readKitVersion } from '../src/setup/init.ts';
@@ -90,6 +91,25 @@ test('config: "commands.block" is read, and a wrong shape is a config problem (#
     writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ commands }));
     assert.throws(() => loadConfig(dir), /^Error: yokoten\.json: "commands/, JSON.stringify(commands));
   }
+});
+
+test('config: for the hook, a wrong "commands" drops only the block list, said once (#192)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ leadOnly: ['secret/**'], commands: { block: ['python3'] } }));
+  const lines: string[] = [];
+  const config = loadHookConfig(dir, (line) => lines.push(line));
+  assert.deepEqual(config.commands.block, {});
+  assert.deepEqual(config.leadOnly, ['secret/**'], 'the rest of the file still counts');
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^yokoten hook: yokoten\.json "commands" was ignored, .*core checks still run\. yokoten\.json: "commands" must look like/);
+  assert.equal(checkCommand('git push --force', { env: {}, config })?.id, 'force-push', 'the core checks still run');
+  // Positive control: check and doctor still see it as a config problem.
+  assert.throws(() => loadConfig(dir), /^Error: yokoten\.json: "commands/);
+  // A good list says nothing; outside a repo, the defaults.
+  writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ commands: { block: { python3: 'TypeScript only' } } }));
+  assert.deepEqual(loadHookConfig(dir, (line) => lines.push(line)).commands.block, { python3: 'TypeScript only' });
+  assert.equal(loadHookConfig(null, (line) => lines.push(line)), DEFAULTS);
+  assert.equal(lines.length, 1);
 });
 
 const goodPr = (): PullRequest => ({

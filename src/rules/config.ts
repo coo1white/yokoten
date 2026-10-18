@@ -59,7 +59,12 @@ export const DEFAULTS: Config = {
   commands: { block: {} },
 };
 
-export function loadConfig(root: string): Config {
+/**
+ * yokoten.json, or the defaults. A problem in the file throws. `onBadCommands` is for the
+ * hook: a wrong "commands" then drops only the block list, and the hook keeps its core
+ * checks. Without it (check, doctor), a wrong "commands" is a config problem too.
+ */
+export function loadConfig(root: string, { onBadCommands }: { onBadCommands?: (problem: string) => void } = {}): Config {
   let file: ConfigFile = {};
   try {
     file = JSON.parse(readFileSync(join(root, 'yokoten.json'), 'utf8'));
@@ -75,8 +80,18 @@ export function loadConfig(root: string): Config {
     allowBuild: file.allowBuild ?? DEFAULTS.allowBuild,
     areas: file.areas ?? DEFAULTS.areas,
     translations: { ...DEFAULTS.translations, ...file.translations },
-    commands: { block: readBlockList(file.commands) },
+    commands: { block: readBlockListOr(file.commands, onBadCommands) },
   };
+}
+
+function readBlockListOr(commands: unknown, onBadCommands?: (problem: string) => void): Record<string, string> {
+  if (!onBadCommands) return readBlockList(commands);
+  try {
+    return readBlockList(commands);
+  } catch (err) {
+    onBadCommands((err as Error).message);
+    return {};
+  }
 }
 
 // "commands": { "block": { "<program>": "<reason>" } }. A wrong shape is a config problem,
