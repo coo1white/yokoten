@@ -48,6 +48,9 @@ npx yokoten init         # 每个项目做一次
 npx yokoten doctor       # 看看走到了第几关、下一步做什么
 ```
 
+第一次提交前要注意：用 `TZ=UTC git commit` 提交，或者在 shell 配置文件里加一行 `export TZ=UTC`，
+以后就不用管了。提交检查只认 UTC 时间，因为提交里带的时区会让陌生人猜到你大概住在哪里。
+
 用 Claude Code 的话，也可以装插件：先输入 `/plugin marketplace add yokoten-labs/yokoten`，
 再输入 `/plugin install yokoten@yokoten`。两种选一种就行，别都装。
 npm 上还没有第一个版本时，[从 clone 下来的仓库装](guide.md#从-clone-下来的仓库装)。
