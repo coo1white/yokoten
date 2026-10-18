@@ -219,6 +219,12 @@ export const RULES = {
     check: '`check --pr` notes a name of more than 4 words on lines added to TypeScript and JavaScript files; camelCase, PascalCase and snake_case words count, an acronym as one; a note never fails CI',
     docs: guide('naming'),
   },
+  'translation-behind': {
+    rule: 'a translation follows its English source (record 0007)',
+    why: 'a reader of the translation gets old or missing steps without knowing it',
+    check: '`check` reads line 1 of each Markdown and HTML file; `<!-- source: <path> blob <sha> -->` names the English file and the git blob it was translated from, and a different blob now is a note; yokoten.json `"translations": { "fail": true }` makes it a problem',
+    docs: guide('translations'),
+  },
   'large-diff': {
     rule: 'a pull request changes at most about 400 lines (record 0004)',
     why: 'smaller pull requests are easier to review',
@@ -244,7 +250,7 @@ export const RULES = {
   'core-rules': {
     rule: 'the core rules in AGENTS.md are the ones in the kit of the yokoten you run',
     why: 'a lesson added to the core rules reaches a project only when its AGENTS.md gets the new text',
-    check: '`doctor` compares everything above `## This project` in AGENTS.md with the kit\'s core rules, and a session hears when they differ; without that heading it can\'t compare, as a note; `yokoten update` shows the change, and `--write` makes it',
+    check: '`doctor` compares everything above `## This project` in AGENTS.md with the kit\'s core rules, and a session hears when they differ; without that heading it can\'t compare, as a note; a `<!-- yokoten kit X.Y.Z -->` mark newer than the yokoten you run is a note to update yokoten itself, and `update` refuses it; `yokoten update` shows the change, and `--write` makes it',
     docs: guide('updating-the-rules'),
   },
   'session-doctor': {

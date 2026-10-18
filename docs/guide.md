@@ -55,6 +55,16 @@ yokoten turns those lessons into something that checks itself:
   tells the agent the project's stage on the road, and the one next step. The agent
   brings it up, so you don't have to.
 
+## What changes on day one
+
+| Your agent tries to… | Without yokoten | With yokoten |
+|---|---|---|
+| force-push, or tag a release | it happens | stopped before it runs, and told why |
+| "fix" a failing test by editing the test | the test passes, the bug stays | not allowed in a fix |
+| commit your email, a server IP, your city | it goes public | the commit stops; the report names the file and line, never the text |
+| open a pull request | as you, with all your rights | as a bot; nothing merges without you |
+| work in another project | starts from zero | sees what that project is missing, and offers to set it up |
+
 ## Three checks and a lock
 
 ```mermaid
@@ -97,15 +107,33 @@ listed:
 | Stage | Steps |
 |---|---|
 | **1 · Safety net** | `rules`, `tool-hook`, `commit-check`, `runtime`, `tests` (a test command, and CI runs it) |
-| **2 · Issues and pull requests** | `ci`, `issues` (no todo file), `templates`, `no-build-output` (nothing in `dist/`, `build/` or `out/`, no built binaries) |
+| **2 · Issues and pull requests** | `ci`, `issues` (no todo file), `templates`, `labels` (the standard set), `milestone` (an open one), `no-build-output` (nothing in `dist/`, `build/` or `out/`, no built binaries) |
 | **3 · Release** | `changelog`, `titles` (CI runs `check --pr`) |
 | **4 · A team of agents** | `codeowners`, `bot`, `skills` |
-| **5 · Going public** | `security-files` (a security policy, Dependabot, a license) |
+| **5 · Going public** | `security-files` (a security policy, Dependabot, a license), `protection` (rulesets on the default branch and `v*` tags), `merge-settings` (squash only, delete branch on merge), `security-settings` (secret scanning, push protection, private reporting, Dependabot alerts) |
+
+The last three are server settings. Full `doctor` reads them through `gh api`, and only reads.
+Without `gh`, a sign-in, the network or a GitHub remote, they are **can't check**, never done.
+A session never calls the network, so there they are always **can't check**.
+
+`labels` and `milestone` in stage 2 are read the same way. The standard labels are `bug`, `feat`,
+`docs`, `refactor`, `ci`, `owner`, `incident`, `good first issue` and `hotfix`. `init` shows which
+are missing, and `init --github --yes` adds them.
 
 After a step, `yokoten doctor` names the outside standard it meets, when there is one,
 for example `ci (Scorecard: CI-Tests)`. The session message leaves it out.
 
 [Record 0004](records/0004-the-road.md) says why the road looks like this.
+
+This repo walks the same road, so you can see each stage working:
+
+| Stage | You learn | See it here |
+|---|---|---|
+| **1 · Safety net** | rules your agents read, and checks that stop them when rules aren't enough | [AGENTS.md](../AGENTS.md) |
+| **2 · Issues and pull requests** | every change starts as an issue and merges only when CI passes; labels, milestones, and a board keep track | [issues](https://github.com/yokoten-labs/yokoten/issues?q=is%3Aissue), [pull requests](https://github.com/yokoten-labs/yokoten/pulls?q=is%3Apr), [the board](https://github.com/orgs/yokoten-labs/projects/1) |
+| **3 · Release** | commit messages that say what changed and why, a changelog, a version number for every release | [CHANGELOG.md](../CHANGELOG.md) |
+| **4 · A team of agents** | a bot opens pull requests, workers take tasks, a reviewer checks them; only you merge | [Managing agents like a team](#managing-agents-like-a-team) |
+| **5 · Going public** | scan every past commit for private data, turn on security settings, protect `main` | [security policy](../.github/SECURITY.md) |
 
 And when an agent tries to push a release tag:
 
@@ -212,8 +240,13 @@ The package runs built JavaScript, because Node does not run TypeScript under
 `node_modules`. The repo has no build; `npm pack` makes the package's `dist/`
 ([record 0008](records/0008-npm-package.md)).
 
-The owner publishes the package, as the owner creates a release tag. Until the first
-release is on npm, [install from a clone](#install-from-a-clone).
+The owner publishes the package, as the owner creates a release tag. The tag starts the
+release workflow. It runs the checks, then the publish job waits for the owner's
+approval in the `release` environment. Only then does it publish to npm, with no npm
+token stored anywhere ([record 0009](records/0009-release-environment.md)). The first
+release is the one exception: the owner publishes it by hand, because npm can't trust a
+workflow for a package it does not have yet. Until the
+first release is on npm, [install from a clone](#install-from-a-clone).
 
 ### Install from a clone
 
@@ -278,7 +311,13 @@ on `@main`.
 `init` copies the runtime into `.yokoten/` in your project. Commit it: the hooks and CI
 then run with no network and no global install.
 
-`init` also puts two safe defaults in `.github/`:
+`init` also writes three workflows into `.github/workflows/`: `yokoten.yml` (the
+commit check, a lint job with actionlint and zizmor, and one `ci` job to make the required
+check), `pr.yml` and `issue.yml`. Each action is pinned to a commit, each job has a time
+limit, checkout keeps no token, and a new push cancels the old run on the same pull
+request. Add your tests as a job in `yokoten.yml` and to the `needs` list of `ci`.
+
+It puts two safe defaults in `.github/` too:
 
 - `dependabot.yml` updates the actions that CI runs. It opens one pull request a month,
   and takes a release only when it is a week old. A comment in the file shows how to
@@ -290,11 +329,11 @@ then run with no network and no global install.
 | Command | What it does |
 |---------|--------------|
 | `install` | Skills into `~/.claude/skills` and `~/.agents/skills`, agents into `~/.claude/agents`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file |
-| `init [dir]` | Puts the practices into a project. Adds files; keeps any that are already there and says so |
-| `init --github [--yes]` | Also adds the standard labels and a first milestone on GitHub, through `gh`. Without `--yes` it only says what it would make. It keeps every label and milestone that is there, and never deletes or renames one |
+| `init [dir]` | Puts the practices into a project. Adds files; keeps any that are already there and says so. It also reads GitHub through `gh` and says which standard labels and milestone it would add. It never changes GitHub. Without `gh`, a sign-in or a GitHub remote, it says what it skipped |
+| `init --github --yes [--remove-default-labels]` | Adds the missing standard labels, and a milestone "First release" when no milestone is open. A standard label that is there gets the standard colour and description. A second run changes nothing. GitHub's default labels outside the set (`question`, `wontfix` and others) are deleted only with `--remove-default-labels` |
 | `update [dir] [--write]` | Shows what this yokoten changes in the core rules of the project's `AGENTS.md`. `--write` replaces them, and keeps the "This project" part as it is. See [Updating the rules](#updating-the-rules) |
 | `doctor [--session]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session |
-| `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries |
+| `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries. For the tree, a translation behind its English source is a note. See [Translations](#translations) |
 | `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
 | `check --issue` | In CI: the issue's title. See [Issue titles](#issue-titles) |
 | `changelog [--write]` | Shows the entries the files in `changes/` add under `[Unreleased]`. `--write` puts them into `CHANGELOG.md` and deletes the files; run it before a release. See [The changelog](#the-changelog) |
@@ -419,6 +458,40 @@ checks its form. A line in `CHANGELOG.md` still passes, for a project that has n
 yet. `init` adds `changes/README.md`, which shows the form. `changes/` may hold more
 than 7 files, since each release empties it.
 
+### Translations
+
+English is the source; a translation follows it. When the English text changes, the
+translation falls behind, and nobody sees it. So each translated file names its source
+on line 1, in an HTML comment. GitHub does not show it.
+
+```markdown
+<!-- source: docs/guide.md blob 3b18e512dba79e4c8300dd08aeb37f8e728b8dad -->
+```
+
+The path is the English file, from the repo root. The blob is git's id for the English
+text you translated: run `git hash-object docs/guide.md`. When you update the
+translation, set line 1 again, in the same commit or pull request as the English.
+
+`check` reads line 1 of each Markdown and HTML file. A translation is current when its
+blob is the English text in the work tree. If not, `check` compares commits on the
+current branch, first parent only. The translation is current when the last commit that
+changed its line 1 is the same as, or later than, the last commit that changed the
+English. Why commits: two pull requests can change the English at the same time. After
+both merge, the English is a blob that neither branch had. A blob alone would then say
+"behind", although both translations were done.
+
+Two edits do not count. An edit to the English that is not yet committed makes the
+translation behind. A commit that changes the translation but leaves line 1 alone, such
+as a typo fix, does not make it current.
+
+When a translation is behind, `check` gives a `translation-behind` note. The note says
+how many commits behind, and how to see the change: `git diff <blob> HEAD:docs/guide.md`.
+A note never fails CI. To make it fail, put `"translations": { "fail": true }` in
+`yokoten.json`.
+
+A shallow clone may not hold the commits that `check` compares. Then it gives a note,
+not "current". In CI, use `fetch-depth: 0`.
+
 ### Updating the rules
 
 When yokoten learns a lesson, its core rules change. `yokoten install` updates the
@@ -436,6 +509,13 @@ replaces the core part. Everything from `## This project` down stays byte for by
 A line you edited by hand in the core part shows as `-`, because the update replaces
 it. Move your own rules under `## This project` first. Without that heading, yokoten
 can't tell the core rules from yours. Then it says so, and compares and writes nothing.
+
+The first line of `AGENTS.md` names the kit that wrote the core rules, as a comment
+that GitHub does not show: `<!-- yokoten kit 0.1.0 -->`. `init` writes it, and
+`update --write` sets the new version. When the project's kit is newer than the
+yokoten you run, `update` refuses and writes nothing, so the rules never go back to
+an older kit. `doctor` then says to update yokoten itself, not the project. A file
+without that line compares by its text only.
 
 Run `update` from an installed yokoten or a clone, not from `.yokoten/`. The copy in
 your project has no kit to compare with.
@@ -614,8 +694,8 @@ Honest limits:
   pieces still gets past them. They catch mistakes and drift; they aren't a lock. The
   lock is on the server: branch protection, code owners, and a bot without the rights to
   release or change CI.
-- **Server settings aren't checked yet.** `doctor` lists the three steps for the owner.
-  Checking them through the API is planned.
+- **Server settings are read on GitHub only.** Another host shows the server steps as
+  **can't check**. `doctor` does not check the bot's rights yet.
 - **Claude Code first.** Agents and the user-level hooks follow Claude Code's formats.
   Skills are the open SKILL.md format, so `install` also puts them in `~/.agents/skills`,
   where Codex, Gemini CLI, Copilot, Cursor and other agents find them. The tool-call
@@ -640,3 +720,21 @@ hard rule (a light version came back as guidance with a soft check:
 
 Version 0.1. The decisions behind it are in [`docs/records/`](records/). Work is
 tracked in issues; the rules for working on yokoten are in [`AGENTS.md`](../AGENTS.md).
+
+### Where this is going
+
+The dream: anyone can build software the way good teams do. The whole cycle is the
+SDLC: plan, build, test, review, release, maintain. You learn it by doing it in your
+own project, one stage at a time.
+
+| Stage | Name | What it means | Now |
+|---|---|---|---|
+| 1 | **Guard** | AI agents are stopped before a dangerous action: a force push, a test edited to pass, a private detail leaked | ✅ done |
+| 2 | **Guide** | a beginner walks the five stages with `doctor`, one thing at a time; an agent reads an old project and drafts how to adopt yokoten | 🚧 now, around the hackathon |
+| 3 | **Any tool, any host** | Claude Code, Codex, Gemini CLI and Muse Code keep the same rules; GitHub, Gitea and GitLab all work | next |
+| 4 | **The whole cycle** | from a short spec to build, test, review, release and maintenance, the full SDLC has a guide | later |
+| 5 | **Yokoten** | a lesson one project learns becomes a check, and the check spreads to every project. What one person learns, everyone gets | the goal |
+
+The near steps are in [M0](https://github.com/yokoten-labs/yokoten/milestone/1) and
+[M1](https://github.com/yokoten-labs/yokoten/milestone/2). The
+[board](https://github.com/orgs/yokoten-labs/projects/1) shows what is being built today.

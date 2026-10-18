@@ -11,6 +11,7 @@ export interface Config {
   notNow: Record<string, string>;
   allowBuild: string[];
   areas: string[];
+  translations: { fail: boolean };
 }
 
 /** What yokoten.json may hold: any key, or part of one. */
@@ -22,6 +23,7 @@ interface ConfigFile {
   notNow?: Record<string, string>;
   allowBuild?: string[];
   areas?: string[];
+  translations?: Partial<Config['translations']>;
 }
 
 /** The guard's own environment (process.env, or a test's stand-in). */
@@ -48,6 +50,8 @@ export const DEFAULTS: Config = {
   // The areas an issue title (`area: ...`) and a pull request title (`type(area): ...`)
   // may name: ["doctor", "check"]. Empty means any lowercase word.
   areas: [],
+  // A translation behind its English source (#87) is a note; `fail` makes it a problem.
+  translations: { fail: false },
 };
 
 export function loadConfig(root: string): Config {
@@ -65,6 +69,7 @@ export function loadConfig(root: string): Config {
     notNow: file.notNow ?? {},
     allowBuild: file.allowBuild ?? DEFAULTS.allowBuild,
     areas: file.areas ?? DEFAULTS.areas,
+    translations: { ...DEFAULTS.translations, ...file.translations },
   };
 }
 

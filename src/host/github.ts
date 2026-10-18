@@ -293,9 +293,10 @@ export function stepSummary(name: string, problems: Finding[], notes: Finding[])
   return `${lines.join('\n')}\n`;
 }
 
-// The planning setup (#10): labels and milestones, read and made through `gh`, so
+// The planning setup (#10): labels and milestones, read and changed through `gh`, so
 // yokoten uses the owner's own sign-in and holds no token. `Gh` runs one gh command and
 // returns its stdout; it throws when gh fails. Tests pass a fake, so they never reach GitHub.
+// Every call names the repo, so gh never guesses it from another remote.
 
 export type Gh = (args: string[]) => string;
 
@@ -305,33 +306,49 @@ export const ghIn =
   (args) =>
     execFileSync('gh', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
+/** A label as the host keeps it. `color` is six hex digits, with no `#`. */
+export interface Label {
+  name: string;
+  color: string;
+  description: string;
+}
+
 export interface Planning {
   /** "owner/name". */
   repo: string;
-  labels: string[];
+  labels: Label[];
   milestones: { title: string; open: boolean }[];
 }
 
-/** The repo's labels and milestones, or the reason gh can't read them. */
-export function readPlanning(gh: Gh): Planning | string {
-  let repo: string;
+/** The labels and milestones of `repo` ("owner/name"), or why gh can't read them. */
+export function readPlanning(gh: Gh, repo: string): Planning | Unread {
   try {
-    repo = gh(['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner']).trim();
+    const lines = (path: string, jq: string) => gh(['api', '--paginate', path, '--jq', jq]).split('\n').filter(Boolean);
+    // One JSON object per line, so a description with a space or a comma stays whole.
+    const labels = lines(`repos/${repo}/labels?per_page=100`, '.[] | {name, color, description} | tojson').map((line) => JSON.parse(line) as Partial<Label>);
+    const milestones = lines(`repos/${repo}/milestones?state=all&per_page=100`, '.[] | "\\(.state) \\(.title)"')
+      .map((line) => {
+        const [state, ...title] = line.split(' ');
+        return { title: title.join(' '), open: state === 'open' };
+      });
+    return { repo, labels: labels.map((l) => ({ name: l.name ?? '', color: l.color ?? '', description: l.description ?? '' })).filter((l) => l.name), milestones };
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'gh is not installed: get it from https://cli.github.com, then run `gh auth login`';
-    return 'gh can\'t read this repo: run `gh auth login`, and check that the origin remote is on GitHub';
+    return unread(err);
   }
-  const lines = (text: string) => text.split('\n').filter(Boolean);
-  const labels = lines(gh(['label', 'list', '--limit', '1000', '--json', 'name', '--jq', '.[].name']));
-  const milestones = lines(gh(['api', '--paginate', `repos/${repo}/milestones?state=all&per_page=100`, '--jq', '.[] | "\\(.state) \\(.title)"'])).map((l) => {
-    const [state, ...title] = l.split(' ');
-    return { title: title.join(' '), open: state === 'open' };
-  });
-  return { repo, labels, milestones };
 }
 
-export function createLabel(gh: Gh, label: { name: string; color: string; description: string }): void {
-  gh(['label', 'create', label.name, '--color', label.color, '--description', label.description]);
+export function createLabel(gh: Gh, repo: string, label: Label): void {
+  gh(['label', 'create', label.name, '-R', repo, '--color', label.color, '--description', label.description]);
+}
+
+/** Sets the colour and description of the label called `name`, which keeps its name. */
+export function editLabel(gh: Gh, repo: string, name: string, label: Label): void {
+  gh(['label', 'edit', name, '-R', repo, '--color', label.color, '--description', label.description]);
+}
+
+/** Deletes a label. The host also takes it off every issue and pull request. */
+export function deleteLabel(gh: Gh, repo: string, name: string): void {
+  gh(['label', 'delete', name, '-R', repo, '--yes']);
 }
 
 export function createMilestone(gh: Gh, repo: string, title: string): void {
@@ -379,6 +396,8 @@ export interface ServerSettings {
   security: Security;
   /** Branches with no open pull request, apart from the default branch. */
   forgotten: string[] | Unread;
+  /** The labels and milestones (#10), for the road's stage 2. Left out by a reader that does not need them. */
+  planning?: Planning | Unread;
 }
 
 /** Why gh failed, in words a beginner can act on. */
@@ -470,7 +489,9 @@ export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
     return lines(`repos/${repo}/branches?per_page=100`, '.[].name').filter((b) => b !== defaultBranch && !open.has(`${owner}:${b}`));
   });
 
-  return { repo, defaultBranch, mergeMethods, deleteBranchOnMerge: info.delete_branch_on_merge ?? null, branch, tags, security, forgotten };
+  const planning = readPlanning(gh, repo);
+
+  return { repo, defaultBranch, mergeMethods, deleteBranchOnMerge: info.delete_branch_on_merge ?? null, branch, tags, security, forgotten, planning };
 }
 
 // An incident issue for `yokoten learn` (#77), read through `gh issue view`, so it uses
