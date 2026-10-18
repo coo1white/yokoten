@@ -487,9 +487,10 @@ on line 1, in an HTML comment. GitHub does not show it.
 <!-- source: docs/guide.md -->
 ```
 
-The path is the English file, from the repo root. Write this line once; it never
-changes. When you change the English, update the translation in the same commit or pull
-request.
+The path is the English file, from the repo root. Only a relative path makes a marker:
+an attribution comment such as `<!-- source: https://example.com/post -->`, or an
+absolute path, is left alone. Write this line once; it never changes. When you change
+the English, update the translation in the same commit or pull request.
 
 `check` reads line 1 of each Markdown and HTML file. Then it compares commits on the
 current branch, first parent only. The translation is current when the last commit that
@@ -505,6 +506,11 @@ The cost: a commit that changes only the translation also counts. A typo fix in 
 translation can hide an English change that nobody translated. So run `check` before a
 typo fix. If it notes the translation as behind, update the translation first.
 
+A known gap: a pull request that changes only the English, merged before one that
+changes both files, is not caught. The second one is the last commit for both files, so
+the translation looks current, but the first change was never translated. When you
+review a pull request that changes only the English, ask for the translation too.
+
 In the work tree, an edit to the translation counts as a later change. An edit to the
 English with no edit to the translation makes the translation behind.
 
@@ -518,8 +524,10 @@ An older form of line 1 adds the English blob:
 `check` still reads it. A blob equal to the English text is current; otherwise the
 commits decide. You can drop the blob at any time.
 
-A shallow clone may not hold the commits that `check` compares. Then it gives a note,
-not "current". In CI, use `fetch-depth: 0`.
+A shallow clone does not hold the commits that `check` compares. Then `check` gives one
+note for the whole run, that translations weren't checked, and no note for each file.
+That note never fails, even with `"fail": true`. In CI, use `fetch-depth: 0`; the kit's
+`yokoten.yml` does.
 
 ### Updating the rules
 
