@@ -13,18 +13,22 @@ const SRC = join(ROOT, 'src');
 
 // Lowest first. A module may import from its own layer or a lower one, never a higher.
 // rules: what is allowed, as pure functions. run: the checks at work (hook, commit, CI).
-// agents: one adapter per AI runtime. host: one adapter per code host (the bot, a CI
-// run's pull request). setup: writing yokoten into a machine or a project.
+// agents: one adapter per AI runtime, and llama.ts, the model API that adopt calls.
+// host: one adapter per code host (the bot, a CI run's pull request). setup: writing
+// yokoten into a machine or a project.
 const LAYERS = ['rules', 'run', 'agents', 'host', 'setup'];
 
 test('layers: no module imports from a layer above its own', () => {
   const found = new Set<string>();
   for (const layer of readdirSync(SRC)) {
     assert.ok(LAYERS.includes(layer), `src/${layer}/ is not in LAYERS: add it, in order`);
-    for (const file of readdirSync(join(SRC, layer))) {
-      const text = readFileSync(join(SRC, layer, file), 'utf8');
+    // A layer may have folders of its own (src/setup/advice/); their files belong to it.
+    const files = readdirSync(join(SRC, layer), { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile());
+    for (const entry of files) {
+      const file = relative(join(SRC, layer), join(entry.parentPath, entry.name));
+      const text = readFileSync(join(entry.parentPath, entry.name), 'utf8');
       for (const [, spec] of text.matchAll(/from '(\.[^']+)'/g)) {
-        const target = relative(SRC, join(SRC, layer, spec)).split(/[\\/]/)[0];
+        const target = relative(SRC, join(entry.parentPath, spec)).split(/[\\/]/)[0];
         found.add(`${layer}->${target}`);
         assert.ok(LAYERS.indexOf(target) <= LAYERS.indexOf(layer), `src/${layer}/${file} imports ${spec}, from the higher layer ${target}`);
       }
@@ -285,4 +289,34 @@ test('names: src/, bin/ and test/ use whole, short names (#109, #113)', () => {
   assert.ok(declared > 500, `only ${declared} names found in src/, bin/ and test/; the reader is broken`);
   assert.deepEqual([...kinds].sort(), ['function', 'parameter', 'property', 'type', 'variable'], 'a kind of declaration was not found; the reader is broken');
   assert.deepEqual(found, [], 'rename each one; the rule and its reasons are in AGENTS.md ("Names") and docs/records/0006-names.md');
+});
+
+// The install commands have one machine-readable source, docs/facts.json, which the site
+// reads (#150). The guides show the same commands, word for word; README shows npx.
+type InstallStep = { cmd: string; note?: { en: string; zh: string } };
+type Facts = { install: Record<string, InstallStep[]> };
+
+/** The commands in `lists` of `facts` that `text` does not hold word for word. */
+function missingCommands(facts: Facts, lists: string[], text: string): string[] {
+  return lists.flatMap((list) => (facts.install[list] ?? []).map((step) => step.cmd)).filter((cmd) => !text.includes(cmd));
+}
+
+test('docs: every install command in docs/facts.json is in the guides and READMEs (#150)', () => {
+  const fake: Facts = { install: { npx: [{ cmd: 'npx yokoten install' }, { cmd: 'npx yokoten uninstall' }] } };
+  assert.deepEqual(missingCommands(fake, ['npx'], 'npx yokoten install\n'), ['npx yokoten uninstall']);
+
+  const facts: Facts = JSON.parse(readFileSync(join(ROOT, 'docs/facts.json'), 'utf8'));
+  assert.ok(facts.install.clone?.length && facts.install.npx?.length, 'docs/facts.json has no install.clone or install.npx; the site reads install.clone');
+  for (const step of Object.values(facts.install).flat()) {
+    if (step.note) assert.ok(step.note.en && step.note.zh, `"${step.cmd}": a note needs en and zh`);
+  }
+  const shown: [string, string[]][] = [
+    ['docs/guide.md', ['npx', 'clone']],
+    ['docs/zh-CN/guide.md', ['npx', 'clone']],
+    ['README.md', ['npx']],
+    ['docs/zh-CN/README.md', ['npx']],
+  ];
+  for (const [file, lists] of shown) {
+    assert.deepEqual(missingCommands(facts, lists, readFileSync(join(ROOT, file), 'utf8')), [], `${file} lacks these commands from docs/facts.json; change both`);
+  }
 });

@@ -11,7 +11,7 @@
 // A check that passes everything looks the same as a healthy project, so this comes first.
 
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkCommand, checkEdit } from '../rules/guards.ts';
@@ -25,7 +25,7 @@ import { hasPlugin, hasSessionDoctor } from '../agents/claude-code.ts';
 import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
 import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
-import { runtimeVersion, VERSION } from './files.ts';
+import { KIT, runtimeVersion, VERSION } from './files.ts';
 import { compareCoreRules, readCoreRules, summarizeUpdate } from './init.ts';
 import { paths } from './install.ts';
 import { type Mark, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
@@ -54,6 +54,7 @@ export function selfTest(): string[] {
   failed.push(...roadControl());
   const kit = '# rules\n\n## This project\n';
   if (compareCoreRules('# old rules\n\n## This project\n', kit).state !== 'behind' || compareCoreRules('# rules\n', kit).state !== "can't compare") failed.push('core rules check');
+  failed.push(...coreRulesControl());
   return failed;
 }
 
@@ -129,6 +130,30 @@ function roadControl(): string[] {
     return road(dir, { HOME: dir }, ROAD, SERVER_CONTROL)
       .filter((r) => r.found === true)
       .map((r) => `the ${r.step.key} step`);
+  } catch {
+    return []; // no temp folder to test in; the other checks still run
+  } finally {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * In a temp project, against the real kit: core rules edited by hand are MISSING, and
+ * core rules from a newer kit are the `newer` note, never "ok" and never MISSING (#170).
+ * `check` is a parameter so a test can hand in a broken one.
+ */
+export function coreRulesControl(check: typeof coreRulesCheck = coreRulesCheck): string[] {
+  if (!existsSync(join(KIT, 'project', 'AGENTS.md'))) return []; // the copy in .yokoten/ has no kit to compare with
+  let dir = '';
+  try {
+    dir = mkdtempSync(join(tmpdir(), 'yokoten-control-'));
+    const failed: string[] = [];
+    writeFileSync(join(dir, 'AGENTS.md'), '# rules edited by hand\n\n## This project\n');
+    if (check(dir)?.mark !== 'MISSING') failed.push('core rules check (edited by hand)');
+    writeFileSync(join(dir, 'AGENTS.md'), '<!-- yokoten kit 9999.0.0 -->\n# rules from a newer kit\n\n## This project\n');
+    const newer = check(dir);
+    if (newer?.mark !== 'note' || !newer.finding.what.includes('newer than this yokoten')) failed.push('core rules check (newer kit)');
+    return failed;
   } catch {
     return []; // no temp folder to test in; the other checks still run
   } finally {

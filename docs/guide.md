@@ -183,6 +183,25 @@ An old project isn't a blank slate. Some of its habits are better than ours. So 
 decision: **as-is**, **lighter** (and what's left out), or **not now** (with the reason
 and when to look again). "Not now" goes into `yokoten.json`, and `doctor` stops asking.
 
+### A first draft of the table
+
+`yokoten adopt` drafts that table before the talk starts. It reads the project's files
+and says what the project does today for each step: **done**, **missing** or
+**partial**. Partial means the project has its own way, such as husky hooks, or a CI
+that doesn't run yokoten. A model then proposes a decision and a one-sentence reason
+for each row.
+
+- The model gets only those short facts. It never gets file contents.
+- yokoten runs its privacy check on the request first. On a hit, it sends nothing.
+- With no key, a failed call or a bad answer, rules draft the table instead: done or
+  missing is as-is, partial is lighter. The output says which one drafted it.
+- `adopt` never writes a file. You still decide every row.
+
+The model runs on Meta's model API, through its OpenAI-compatible endpoint
+(`https://api.meta.ai/v1`, model `muse-spark-1.3`). Set `LLAMA_API_KEY` or `MODEL_API_KEY`
+to your key. `LLAMA_API_BASE` and `LLAMA_MODEL` point it at any other OpenAI-compatible
+endpoint and model.
+
 ## Works with
 
 yokoten guards three AI coding agents. Each one keeps the same rules.
@@ -272,6 +291,9 @@ node ~/.local/share/yokoten/bin/yokoten.ts init     # this project: adds files, 
 node ~/.local/share/yokoten/bin/yokoten.ts doctor   # the road: where you are, what's next
 ```
 
+These commands, and the npx ones, are also in [docs/facts.json](facts.json), which the
+website reads, so a change to them goes in both places.
+
 ### Use it as a GitHub Action
 
 Any repo on GitHub can run yokoten's checks in CI with one workflow file. Nothing is
@@ -341,9 +363,10 @@ It puts two safe defaults in `.github/` too:
 |---------|--------------|
 | `install` | Skills into `~/.claude/skills` and `~/.agents/skills`, agents into `~/.claude/agents`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file |
 | `init [dir]` | Puts the practices into a project. Adds files; keeps any that are already there and says so. It also reads GitHub through `gh` and says which standard labels and milestone it would add. It never changes GitHub. Without `gh`, a sign-in or a GitHub remote, it says what it skipped |
-| `init --github --yes [--remove-default-labels]` | Adds the missing standard labels, and a milestone "First release" when no milestone is open. A standard label that is there gets the standard colour and description. A second run changes nothing. GitHub's default labels outside the set (`question`, `wontfix` and others) are deleted only with `--remove-default-labels` |
+| `init --github --yes [--remove-default-labels]` | Adds the missing standard labels, and a milestone "First release" when no milestone is open. When a closed milestone already has that title, the new one is "Next release". A closed milestone is never reopened. A standard label that is there gets the standard colour and description. A second run changes nothing. GitHub's default labels outside the set (`question`, `wontfix` and others) are deleted only with `--remove-default-labels` |
 | `update [dir] [--write]` | Shows what this yokoten changes in the core rules of the project's `AGENTS.md`. `--write` replaces them, and keeps the "This project" part as it is. See [Updating the rules](#updating-the-rules) |
 | `doctor [--session]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session |
+| `adopt [--json]` | A draft of the adoption table for an old project: what it does today, and a proposed decision for each step. `--json` prints the rows. Writes nothing |
 | `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries. For the tree, a translation behind its English source is a note. See [Translations](#translations) |
 | `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
 | `check --issue` | In CI: the issue's title. See [Issue titles](#issue-titles) |
@@ -475,29 +498,39 @@ translation falls behind, and nobody sees it. So each translated file names its 
 on line 1, in an HTML comment. GitHub does not show it.
 
 ```markdown
-<!-- source: docs/guide.md blob 3b18e512dba79e4c8300dd08aeb37f8e728b8dad -->
+<!-- source: docs/guide.md -->
 ```
 
-The path is the English file, from the repo root. The blob is git's id for the English
-text you translated: run `git hash-object docs/guide.md`. When you update the
-translation, set line 1 again, in the same commit or pull request as the English.
+The path is the English file, from the repo root. Write this line once; it never
+changes. When you change the English, update the translation in the same commit or pull
+request.
 
-`check` reads line 1 of each Markdown and HTML file. A translation is current when its
-blob is the English text in the work tree. If not, `check` compares commits on the
+`check` reads line 1 of each Markdown and HTML file. Then it compares commits on the
 current branch, first parent only. The translation is current when the last commit that
-changed its line 1 is the same as, or later than, the last commit that changed the
-English. Why commits: two pull requests can change the English at the same time. After
-both merge, the English is a blob that neither branch had. A blob alone would then say
-"behind", although both translations were done.
+changed it is the same as, or later than, the last commit that changed the English. Any
+line of the translation counts.
 
-Two edits do not count. An edit to the English that is not yet committed makes the
-translation behind. A commit that changes the translation but leaves line 1 alone, such
-as a typo fix, does not make it current.
+Why not a line that records the English version? Every pull request that changes the
+English would then edit that line. Two such pull requests would always conflict on it.
+With a line that never changes, parallel pull requests touch only the paragraphs they
+translate.
+
+The cost: a commit that changes only the translation also counts. A typo fix in the
+translation can hide an English change that nobody translated. So run `check` before a
+typo fix. If it notes the translation as behind, update the translation first.
+
+In the work tree, an edit to the translation counts as a later change. An edit to the
+English with no edit to the translation makes the translation behind.
 
 When a translation is behind, `check` gives a `translation-behind` note. The note says
-how many commits behind, and how to see the change: `git diff <blob> HEAD:docs/guide.md`.
+how many commits behind, and how to see the change: `git diff <commit> HEAD -- docs/guide.md`.
 A note never fails CI. To make it fail, put `"translations": { "fail": true }` in
 `yokoten.json`.
+
+An older form of line 1 adds the English blob:
+`<!-- source: docs/guide.md blob 3b18e512dba79e4c8300dd08aeb37f8e728b8dad -->`.
+`check` still reads it. A blob equal to the English text is current; otherwise the
+commits decide. You can drop the blob at any time.
 
 A shallow clone may not hold the commits that `check` compares. Then it gives a note,
 not "current". In CI, use `fetch-depth: 0`.
@@ -527,8 +560,9 @@ yokoten you run, `update` refuses and writes nothing, so the rules never go back
 an older kit. `doctor` then says to update yokoten itself, not the project. A file
 without that line compares by its text only.
 
-Run `update` from an installed yokoten or a clone, not from `.yokoten/`. The copy in
-your project has no kit to compare with.
+The copy in `.yokoten/` keeps the kit's `AGENTS.md`, so `doctor` in CI and the hooks
+compares with the kit your project vendored. To take newer rules, run `update` from an
+installed yokoten, the plugin or a clone. Run `init` again to refresh `.yokoten/` too.
 
 With the Claude Code plugin, run `/yokoten:update`. It runs the plugin's own yokoten,
 shows the change, and writes only after you agree.

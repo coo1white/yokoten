@@ -12,7 +12,7 @@ import { DEFAULTS } from '../src/rules/config.ts';
 import { checkCommand } from '../src/rules/guards.ts';
 import { doctor } from '../src/setup/doctor.ts';
 import { road, ROAD, serverChecks, stepFinding } from '../src/setup/road.ts';
-import { LABELS, setUpPlanning } from '../src/setup/plan.ts';
+import { LABELS, pickNewMilestone, setUpPlanning } from '../src/setup/plan.ts';
 
 // A throwaway key, made for this test run only.
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -415,6 +415,32 @@ test('road: the labels and milestone steps are stage 2; missing labels or no ope
     assert.deepEqual(planningFound(server), { labels: null, milestone: null });
   }
   assert.equal(ROAD.find((s) => s.key === 'labels')!.unchecked?.(undefined), 'a session never calls the network; run `yokoten doctor`');
+});
+
+test('milestone: init and the road use one rule, an open milestone; a closed one is never kept or reopened (#178)', () => {
+  const milestoneStep = ROAD.find((s) => s.key === 'milestone')!;
+  // Positive control: the old init rule kept a closed "First release", and the road stayed not done.
+  const fake = fakeGh([...LABELS], ['closed First release']);
+  const server = () => withPlanning(readPlanning(fake.gh, 'me/repo'));
+  assert.equal(planningFound(server()).milestone, false);
+  assert.equal(stepFinding(milestoneStep, '.', {}, server()).fix, '`yokoten init --github --yes` makes one called "Next release"', 'doctor names what init makes');
+  const planned = setUpPlanning(fake.gh, REMOTE, DRY);
+  assert.ok(planned.lines.includes('- make milestone "Next release"'), planned.lines.join('\n'));
+  assert.ok(!planned.lines.includes('- a milestone is open; kept'));
+  assert.equal(planningFound(server()).milestone, false, 'not done until the milestone exists');
+  const applied = setUpPlanning(fake.gh, REMOTE, APPLY);
+  assert.ok(applied.lines.includes('- done: make milestone "Next release"'));
+  assert.deepEqual(fake.milestones, ['closed First release', 'open Next release'], 'the closed one stays closed');
+  assert.equal(planningFound(server()).milestone, true);
+  assert.equal(setUpPlanning(fake.gh, REMOTE, APPLY).lines.at(-1), 'Nothing to change.');
+  // An open milestone: init keeps it and the road is done.
+  const open = fakeGh([...LABELS], ['closed First release', 'open v2']);
+  assert.ok(setUpPlanning(open.gh, REMOTE, DRY).lines.includes('- a milestone is open; kept'));
+  assert.equal(planningFound(withPlanning(readPlanning(open.gh, 'me/repo'))).milestone, true);
+  // Only other closed ones: "First release"; every name taken: the next free number.
+  assert.equal(pickNewMilestone([{ title: 'v0.1', open: false }]), 'First release');
+  assert.equal(pickNewMilestone([]), 'First release');
+  assert.equal(pickNewMilestone(['first release', 'Next release', 'Next release 2'].map((title) => ({ title, open: false }))), 'Next release 3');
 });
 
 // #91: workflow commands, escaped as GitHub's runner decodes them

@@ -20,8 +20,9 @@ function makeSandbox() {
   mkdirSync(home);
   mkdirSync(repo);
   // A clean environment: no real HOME, no real marks, no role, and commit times in UTC
-  // whatever the machine's time zone (#40).
-  const env = { PATH: process.env.PATH, HOME: home, TZ: 'UTC', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig') };
+  // whatever the machine's time zone (#40). No proxy either: the shell's proxy is not
+  // passed on, and a call to a fake server on this machine goes to it directly (#138).
+  const env = { PATH: process.env.PATH, HOME: home, TZ: 'UTC', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' };
   const git = (...args: string[]) => spawnSync('git', args, { cwd: repo, env, encoding: 'utf8' });
   git('init', '-q', '-b', 'main');
   git('config', 'user.name', 'Test');
@@ -486,6 +487,32 @@ test('update: init writes the kit version; a newer project is refused, an older 
   assert.equal(readFileSync(path, 'utf8'), fresh, 'updated, and the mark is added');
   writeFileSync(path, fresh.replace(/^<!-- yokoten kit .* -->\n/, ''));
   assert.match(sandbox.run(['update']).stdout, /up to date/, 'the mark alone is no change');
+});
+
+// CI and the hooks run the copy in .yokoten/. It carries the kit's AGENTS.md, so doctor
+// there compares with the kit the project vendored, not "can't compare" (#145).
+test('update: the .yokoten/ copy has the kit\'s AGENTS.md, so doctor and update compare from it (#145)', () => {
+  const sandbox = makeSandbox();
+  assert.equal(sandbox.run(['init']).status, 0);
+  const vendored = (...args: string[]) => spawnSync('node', ['.yokoten/bin/yokoten.ts', ...args], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
+  const kitDir = join(sandbox.repo, '.yokoten', 'kit');
+  assert.deepEqual(readdirSync(kitDir, { recursive: true }).map(String).sort(), ['project', join('project', 'AGENTS.md')], 'one kit file, no more');
+  assert.match(vendored('doctor').stdout, /\n {2}ok +core-rules\n/, 'a fresh project is up to date');
+
+  const path = join(sandbox.repo, 'AGENTS.md');
+  const fresh = readFileSync(path, 'utf8');
+  writeFileSync(path, fresh.replace('Plain English, close to', 'Plain words, close to'));
+  assert.match(vendored('doctor').stdout, /MISSING core-rules: the core rules in AGENTS\.md are behind yokoten 0\.1\.0's, or were edited by hand/);
+  const result = vendored('update', '--write');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(path, 'utf8'), fresh, 'the copy writes its own kit, the one CI checks against');
+
+  // The control: without the kit file, the copy can't compare. init puts it back.
+  rmSync(kitDir, { recursive: true });
+  assert.match(vendored('doctor').stdout, /\n {2}note +core-rules: can't compare the core rules in AGENTS\.md: this copy of yokoten has no kit/);
+  assert.equal(sandbox.run(['init']).status, 0);
+  assert.ok(existsSync(join(kitDir, 'project', 'AGENTS.md')), 'init refreshes the copied kit file');
+  assert.match(vendored('doctor').stdout, /\n {2}ok +core-rules\n/);
 });
 
 // The road (record 0004). A session hears three lines about one step; the marks file is
@@ -1095,7 +1122,7 @@ fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s));
   assert.match(result.stdout, /- done: make label "good first issue"[^\n]*\n[^]*- done: make milestone "First release"/);
   assert.equal(changed().length, 9);
   result = sandbox.run(['init', '--github', '--yes'], { extra });
-  assert.match(result.stdout, /- 9 of the 9 standard labels are there; kept\n- a milestone is there; kept\n[^]*Nothing to change\./);
+  assert.match(result.stdout, /- 9 of the 9 standard labels are there; kept\n- a milestone is open; kept\n[^]*Nothing to change\./);
   assert.equal(changed().length, 9, 'the second run changed nothing');
   // Without gh on the PATH, init still succeeds and says so. Only node and git are there.
   const noGh = join(sandbox.home, 'no-gh');
@@ -1181,9 +1208,9 @@ test('plugin: its hooks are the ones install adds, and the guard it registers bl
   assert.doesNotMatch(sandbox.run(['doctor', '--session']).stdout, /yokoten:init/, 'only from the plugin');
 });
 
-// /yokoten:update (#142). The copy in .yokoten/ has no kit, so the skill runs the
-// plugin's own yokoten, which has it: the preview first, the write only when asked.
-test('plugin: /yokoten:update previews from the plugin, then writes with --write; the .yokoten/ copy cannot compare', () => {
+// /yokoten:update (#142). The skill runs the plugin's own yokoten, which may be newer
+// than the project's .yokoten/ copy: the preview first, the write only when asked.
+test('plugin: /yokoten:update previews from the plugin, then writes with --write; a .yokoten/ copy without its kit cannot compare', () => {
   const sandbox = makeSandbox();
   assert.equal(sandbox.run(['init']).status, 0);
   const path = join(sandbox.repo, 'AGENTS.md');
@@ -1197,7 +1224,8 @@ test('plugin: /yokoten:update previews from the plugin, then writes with --write
   assert.doesNotMatch(skill, /\.yokoten\/bin/, 'the skill never runs the copy in .yokoten/');
   const run = (command: string) => spawnSync(command.replaceAll(PLUGIN_ROOT, ROOT), { shell: true, cwd: sandbox.repo, env: { ...sandbox.env, CLAUDE_PLUGIN_ROOT: ROOT }, encoding: 'utf8' });
 
-  // The control: the project's own copy has no kit, so it can't compare and writes nothing.
+  // The control: a .yokoten/ copy without its kit file can't compare and writes nothing.
+  rmSync(join(sandbox.repo, '.yokoten', 'kit'), { recursive: true });
   const vendored = spawnSync('node', ['.yokoten/bin/yokoten.ts', 'update', '--write'], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
   assert.equal(vendored.status, 1);
   assert.match(vendored.stderr, /can't compare AGENTS\.md with the kit: this copy of yokoten has no kit.*\/yokoten:update/);
@@ -1305,4 +1333,22 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
   } finally {
     server.close();
   }
+});
+
+test('adopt: with no key, the rule-based draft and how to set the key; it changes no file (#6)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('CLAUDE.md', '# rules\n');
+  sandbox.write('package.json', JSON.stringify({ scripts: { test: 'node --test' } }));
+  const before = sandbox.git('status', '--porcelain', '--ignored').stdout;
+  const r = sandbox.run(['adopt']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^\| Practice \| The project today \| Draft \| Why \|/);
+  assert.match(r.stdout, /\| rules \| partial: no AGENTS\.md, but CLAUDE\.md \| lighter \|/);
+  assert.match(r.stdout, /set MODEL_API_KEY \(or LLAMA_API_KEY\)/);
+  assert.match(r.stdout, /You decide every row/);
+  const json = sandbox.run(['adopt', '--json']);
+  const rows = JSON.parse(json.stdout) as { key: string; decision: string }[];
+  assert.equal(rows.find((row) => row.key === 'tests')?.decision, 'as-is');
+  assert.match(json.stderr, /drafted by rules/);
+  assert.equal(sandbox.git('status', '--porcelain', '--ignored').stdout, before, 'adopt writes nothing');
 });
