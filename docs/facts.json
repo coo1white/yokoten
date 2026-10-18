@@ -1,0 +1,15 @@
+{
+  "install": {
+    "npx": [
+      { "cmd": "npx yokoten install", "note": { "en": "once per computer", "zh": "每台电脑一次" } },
+      { "cmd": "cd your-project" },
+      { "cmd": "npx yokoten init", "note": { "en": "once per project", "zh": "每个项目一次" } }
+    ],
+    "clone": [
+      { "cmd": "git clone https://github.com/yokoten-labs/yokoten" },
+      { "cmd": "node yokoten/bin/yokoten.ts install", "note": { "en": "once per computer", "zh": "每台电脑一次" } },
+      { "cmd": "cd your-project" },
+      { "cmd": "node ~/.local/share/yokoten/bin/yokoten.ts init", "note": { "en": "once per project", "zh": "每个项目一次" } }
+    ]
+  }
+}
