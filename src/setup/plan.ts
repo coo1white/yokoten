@@ -195,6 +195,7 @@ function describeFailure(err: unknown): string {
  * A skip (no GitHub remote, no gh, no sign-in, no project scope) is ok: init goes on and says so.
  */
 export function setUpPlanning(gh: Gh, remote: string, { apply, removeDefaults, areas = [], board = false }: PlanningOptions): { ok: boolean; lines: string[] } {
+  if (!remote.trim()) return { ok: true, lines: ['GitHub: skipped, because there is no origin remote yet. Add one on GitHub, then run `yokoten init --github` to set up labels and a milestone'] };
   const repo = repoOf(remote);
   if (!repo) return { ok: true, lines: ['GitHub: skipped, because the origin remote is not on GitHub. Labels and a milestone need a GitHub repo'] };
   const found = readPlanning(gh, repo);
