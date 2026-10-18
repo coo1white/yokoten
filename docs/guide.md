@@ -393,9 +393,11 @@ agent sessions, and for your own commits it tells you how.
 
 Honest limits:
 
-- **The guards read command text.** A command assembled in pieces gets past them.
-  They catch mistakes and drift; they aren't a lock. The lock is on the server: branch
-  protection, code owners, and a bot without the rights to release or change CI.
+- **The guards read command text.** They read bash syntax (quotes, heredocs, `bash -c`,
+  substitutions), and they block when they can't tell what runs. A command assembled in
+  pieces still gets past them. They catch mistakes and drift; they aren't a lock. The
+  lock is on the server: branch protection, code owners, and a bot without the rights to
+  release or change CI.
 - **Server settings aren't checked yet.** `doctor` lists the three steps for the owner.
   Checking them through the API is planned.
 - **Claude Code first.** Agents and the user-level hooks follow Claude Code's formats.

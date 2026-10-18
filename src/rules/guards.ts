@@ -27,7 +27,7 @@ export function checkEdit(path: string, { config, env }: { config: Config; env: 
 
 /** A shell command, as the agent wrote it. */
 export function checkCommand(command: string, { env }: { env: Env }): Finding | null {
-  for (const words of segments(command)) {
+  for (const words of commandWords(command)) {
     const reason = checkGit(words, env) ?? checkPublish(words, env);
     if (reason) return reason;
   }
@@ -37,20 +37,13 @@ export function checkCommand(command: string, { env }: { env: Env }): Finding | 
 const RELEASE_FIX = 'if the owner asked for this, they start a new session with YOKOTEN_RELEASE_APPROVAL=1 (`YOKOTEN_RELEASE_APPROVAL=1 claude`); do not look for another way';
 const release = (what: string) => finding('release', what, RELEASE_FIX);
 
-// Quotes become spaces, so `bash -c 'git push --tags'` reads like the plain command. Then
-// the text is cut at ; | & ( ) and line ends, and each piece is split into words.
-function segments(command: string): string[][] {
-  return command
-    .replace(/['"`]/g, ' ')
-    .split(/[;|&()\r\n]+/)
-    .map((s) => s.trim().split(/\s+/).filter(Boolean))
-    .filter((words) => words.length > 0);
-}
-
+const base = (word: string) => word.slice(Math.max(word.lastIndexOf('/'), word.lastIndexOf('\\')) + 1);
 const isGit = (word: string) => /(^|[/\\])git(\.exe)?$/.test(word);
 // Git options that take the next word as their value.
 const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace']);
 
+// Each check looks for its program anywhere in the command, so a prefix such as FOO=1,
+// sudo, env, command, exec, time, nice, nohup, timeout or xargs does not hide it.
 function checkGit(words: string[], env: Env): Finding | null {
   const start = words.findIndex(isGit);
   if (start === -1) return null;
@@ -66,6 +59,12 @@ function checkGit(words: string[], env: Env): Finding | null {
 
   if (settings.some((s) => /^push\.followtags/i.test(s)) && !env.YOKOTEN_RELEASE_APPROVAL) {
     return release('git -c push.followTags pushes tags');
+  }
+  // `git -c alias.x='!cmd' x` runs cmd through a shell.
+  for (const s of settings) {
+    const alias = /^alias\.[^=]*=!(.*)$/is.exec(s);
+    const reason = alias && checkCommand(alias[1], { env });
+    if (reason) return reason;
   }
   if (sub === 'push') {
     if (!env.YOKOTEN_RELEASE_APPROVAL) {
@@ -86,10 +85,315 @@ function checkGit(words: string[], env: Env): Finding | null {
   return null;
 }
 
+// A word anywhere after the program counts, so an option in between (`npm --tag x publish`)
+// does not hide it. `npm run publish` blocks too: the script may well publish.
 function checkPublish(words: string[], env: Env): Finding | null {
   if (env.YOKOTEN_RELEASE_APPROVAL) return null;
-  const line = words.join(' ');
-  if (/(^|\s)gh release (create|upload|edit)(\s|$)/.test(line)) return release('gh release publishes a release');
-  if (/(^|\s)(npm|pnpm|yarn)( npm)? publish(\s|$)/.test(line)) return release('this publishes a package');
+  const after = (names: string[]) => {
+    const i = words.findIndex((w) => names.includes(base(w).replace(/\.(exe|cmd)$/i, '')));
+    return i === -1 ? [] : words.slice(i + 1);
+  };
+  const gh = after(['gh']);
+  const sub = gh.indexOf('release');
+  if (sub !== -1 && gh.slice(sub + 1).some((a) => ['create', 'upload', 'edit'].includes(a))) return release('gh release publishes a release');
+  if (after(['npm', 'pnpm', 'yarn']).includes('publish')) return release('this publishes a package');
   return null;
+}
+
+// ---- Reading bash ----
+//
+// A small reader for everyday bash, not a full parser. It turns command text into a list
+// of commands, each a list of words.
+//
+// - Quotes: '...', "..." (with \ escapes), $'...' and $"..." are part of one word. A
+//   separator inside them does not cut the command.
+// - Separators: ; & && || | |& ( ) { } and line ends. A \ before a line end joins lines.
+// - A word that starts with # begins a comment, to the line end.
+// - $(...), `...`, <(...) and >(...) run, so their text is read as commands, even in "...".
+// - A heredoc body is data, unless a shell reads it (see `bodies`).
+// - A shell, eval or ssh runs a string, so the words after it are read again as commands.
+//
+// When the text is unclear, the guard blocks rather than guesses. An unclosed quote is
+// dropped and the rest is read as plain words, so `echo 'x; npm publish` still blocks.
+// Functions and aliases are not followed.
+
+const MAX_DEPTH = 8;
+const isShell = (word: string) => /^(?:ba|da|z|k|c|tc|fi|pw)?sh(?:\.exe)?$/.test(base(word));
+// Programs that run a later word through a shell, beside the shells. A pattern means only
+// with that option: sudo and doas pass their words to a program unless given -s or -i,
+// and env unless given -S. xargs, nohup, time and the like run a program, not a shell
+// string, so their words are already checked where they stand.
+const RUNNERS: Record<string, RegExp | null> = {
+  eval: null, ssh: null, su: null, runuser: null, watch: null, script: null, flock: null, parallel: null, tmux: null, screen: null,
+  sudo: /^(-[a-zA-Z]*[si]|--shell|--login)/, doas: /^-[a-zA-Z]*s/, env: /^(-[a-zA-Z]*S|--split-string)/,
+};
+
+// Where a shell or a runner stands in the command, or -1. Anywhere counts: `find -exec sh
+// -c`, `xargs sh -c` and `sudo bash -c` all run a string.
+function runnerAt(words: string[]): number {
+  return words.findIndex((w, i) => {
+    if (isShell(w)) return true;
+    const name = base(w);
+    if (!Object.hasOwn(RUNNERS, name)) return false;
+    const option = RUNNERS[name];
+    return option === null || words.slice(i + 1).some((a) => option.test(a));
+  });
+}
+
+/** Every command the text runs, as lists of words. Text that runs inside a command is listed too. */
+export function commandWords(text: string, depth = 0): string[][] {
+  const out: string[][] = [];
+  read(text, 0, '', depth, out);
+  return out;
+}
+
+interface Heredoc {
+  delim: string;
+  strip: boolean;
+  quoted: boolean;
+  /** The index, on its line, of the command that holds the <<. */
+  cmd: number;
+}
+
+// Reads commands from `start` until `closer` (`)` or a backtick) or the end, and adds them
+// to `out`. Returns the index after the closer, or -1 if a closer was wanted and not found.
+function read(text: string, start: number, closer: string, depth: number, out: string[][]): number {
+  // Too deep to follow: fall back to the rough cut, which finds more than is there.
+  if (depth > MAX_DEPTH) {
+    out.push(...rough(text.slice(start)));
+    return text.length;
+  }
+  const nested = (s: string) => out.push(...commandWords(s, depth + 1));
+  let words: string[] = [];
+  let word = '';
+  let inWord = false;
+  let line: string[][] = []; // the commands so far on this line, for heredocs
+  let pending: Heredoc[] = [];
+  let piped: string[] | null = null; // the command before a |
+
+  const endWord = () => {
+    if (inWord) words.push(word);
+    word = '';
+    inWord = false;
+  };
+  const endCommand = (pipe = false) => {
+    endWord();
+    line.push(words);
+    if (words.length === 0) return;
+    out.push(words);
+    const at = runnerAt(words);
+    if (at !== -1) {
+      // `bash -c 'x'`, `eval "x"`, `ssh host 'x'`: read the words after it as commands.
+      nested(words.slice(at + 1).join(' '));
+      // `echo 'npm publish' | bash`: the words before the pipe are the shell's input.
+      if (piped) nested(piped.slice(1).join(' ').replace(/\\n/g, '\n'));
+    }
+    piped = pipe ? words : null;
+    words = [];
+  };
+
+  let i = start;
+  while (i < text.length) {
+    const c = text[i];
+    const next = text[i + 1];
+    if (closer && c === closer) {
+      endCommand();
+      return i + 1;
+    }
+    if (c === ' ' || c === '\t' || c === '\r') {
+      endWord();
+      i++;
+    } else if (c === '\n') {
+      endCommand();
+      i = pending.length ? bodies(text, i + 1, pending, line, depth, out) : i + 1;
+      pending = [];
+      line = [];
+    } else if (c === '#' && !inWord) {
+      while (i < text.length && text[i] !== '\n') i++;
+    } else if (c === '\\') {
+      if (next !== '\n') {
+        word += next ?? c;
+        inWord = true;
+      }
+      i += 2;
+    } else if (c === "'" || (c === '$' && next === "'")) {
+      // '...' is as written. $'...' takes \ escapes, so \' does not close it.
+      const ansi = c === '$';
+      const open = ansi ? i + 1 : i;
+      const end = ansi ? closeAnsi(text, open + 1) : text.indexOf("'", open + 1);
+      if (end === -1) i = open + 1; // unclosed: drop the quote and read on
+      else {
+        const body = text.slice(open + 1, end);
+        word += ansi ? body.replace(/\\(.)/gs, '$1') : body;
+        inWord = true;
+        i = end + 1;
+      }
+    } else if (c === '"' || (c === '$' && next === '"')) {
+      const open = c === '$' ? i + 1 : i;
+      const quoted = readDouble(text, open + 1, depth, out);
+      if (!quoted) i = open + 1; // unclosed: drop the quote and read on
+      else {
+        word += quoted.value;
+        inWord = true;
+        i = quoted.end;
+      }
+    } else if ((c === '$' || c === '<' || c === '>') && next === '(') {
+      // $(...), $((...)), <(...) and >(...): the inside runs on its own.
+      const end = read(text, i + 2, ')', depth + 1, out);
+      if (end === -1) {
+        endCommand(); // unclosed: cut here and read on
+        i += 2;
+      } else {
+        word += text.slice(i, end);
+        inWord = true;
+        i = end;
+      }
+    } else if (c === '`') {
+      const end = read(text, i + 1, '`', depth + 1, out);
+      inWord = true;
+      i = end === -1 ? i + 1 : end;
+    } else if (c === '(') {
+      // A subshell or (( maths )): read the inside on its own, so a << there is no heredoc.
+      endWord();
+      const end = read(text, i + 1, ')', depth + 1, out);
+      if (end === -1) endCommand();
+      i = end === -1 ? i + 1 : end;
+    } else if (c === ')' || c === ';' || ((c === '{' || c === '}') && !inWord && /[\s;]|^$/.test(next ?? ''))) {
+      // A group `{ a; }` cuts like a separator. A brace inside a word (${x}, a{b,c}) does not.
+      endCommand();
+      i++;
+    } else if (c === '&') {
+      if (next === '>' || word.endsWith('>')) {
+        // &> and >& are redirects, not separators.
+        word += c;
+        inWord = true;
+        i++;
+      } else {
+        endCommand();
+        i += next === '&' ? 2 : 1;
+      }
+    } else if (c === '|') {
+      endCommand(next !== '|');
+      i += next === '|' || next === '&' ? 2 : 1;
+    } else if (c === '<' && next === '<' && text[i + 2] === '<') {
+      // A here-string is one more word. A shell that reads it is a runner, so it is read.
+      endWord();
+      words.push('<<<');
+      i += 3;
+    } else if (c === '<' && next === '<' && !word.endsWith('<')) {
+      endWord();
+      const doc = heredoc(text, i + 2, line.length);
+      if (doc) {
+        pending.push(doc.doc);
+        i = doc.end;
+      } else {
+        words.push('<<'); // no word after it: bash calls that an error; read on
+        i += 2;
+      }
+    } else {
+      word += c;
+      inWord = true;
+      i++;
+    }
+  }
+  endCommand();
+  return closer ? -1 : text.length;
+}
+
+// The end of a $'...' string: the next ' without a \ before it.
+function closeAnsi(text: string, i: number): number {
+  for (; i < text.length; i++) {
+    if (text[i] === '\\') i++;
+    else if (text[i] === "'") return i;
+  }
+  return -1;
+}
+
+// Reads "..." from after the opening quote. $(...) and `...` inside it run, so they are
+// read as commands. Returns the word's text and the index after the closing quote, or null
+// when it never closes. With `toEnd` there is no closing quote: it reads a heredoc body.
+function readDouble(text: string, i: number, depth: number, out: string[][], toEnd = false): { value: string; end: number } | null {
+  let value = '';
+  while (i < text.length) {
+    const c = text[i];
+    if (c === '"' && !toEnd) return { value, end: i + 1 };
+    if (c === '\\') {
+      // In "...", \ escapes only $ ` " \ and a line end. Before anything else it stays.
+      const n = text[i + 1] ?? '';
+      if (n && '$`"\\'.includes(n)) value += n;
+      else if (n !== '\n') value += c + n;
+      i += 2;
+    } else if ((c === '$' && text[i + 1] === '(') || c === '`') {
+      const from = c === '`' ? i + 1 : i + 2;
+      const end = read(text, from, c === '`' ? '`' : ')', depth + 1, out);
+      if (end === -1) return null;
+      value += text.slice(i, end);
+      i = end;
+    } else {
+      value += c;
+      i++;
+    }
+  }
+  return toEnd ? { value, end: i } : null;
+}
+
+// Reads the word after << or <<-. A quoted word means the body is not expanded.
+function heredoc(text: string, i: number, cmd: number): { doc: Heredoc; end: number } | null {
+  const strip = text[i] === '-';
+  if (strip) i++;
+  while (text[i] === ' ' || text[i] === '\t') i++;
+  let delim = '';
+  let quoted = false;
+  while (i < text.length && !/[\s;&|()<>]/.test(text[i])) {
+    const c = text[i];
+    if (c === "'" || c === '"') {
+      const end = text.indexOf(c, i + 1);
+      if (end === -1) return null;
+      delim += text.slice(i + 1, end);
+      quoted = true;
+      i = end + 1;
+    } else if (c === '\\') {
+      delim += text[i + 1] ?? '';
+      quoted = true;
+      i += 2;
+    } else {
+      delim += c;
+      i++;
+    }
+  }
+  return delim ? { doc: { delim, strip, quoted, cmd }, end: i } : null;
+}
+
+// Reads the heredoc bodies that start at `i`, in order, and returns the index after the
+// last one. A body is data, unless a shell or runner reads it: the command that holds the
+// <<, or any later command on that line (so `cat <<EOF | bash` counts, and so does
+// `cat <<EOF > f; bash`, which blocks more than it must). Then the body is read as
+// commands. An unquoted body still runs $(...) and `...`, so those are read too. A body
+// with no end line runs to the end of the text, as in bash.
+function bodies(text: string, i: number, docs: Heredoc[], line: string[][], depth: number, out: string[][]): number {
+  for (const doc of docs) {
+    const lines: string[] = [];
+    while (i < text.length) {
+      let nl = text.indexOf('\n', i);
+      if (nl === -1) nl = text.length;
+      const ln = text.slice(i, nl);
+      i = nl + 1;
+      if ((doc.strip ? ln.replace(/^\t+/, '') : ln).replace(/\r$/, '') === doc.delim) break;
+      lines.push(ln);
+    }
+    const body = lines.join('\n');
+    if (line.slice(doc.cmd).some((words) => runnerAt(words) !== -1)) out.push(...commandWords(body, depth + 1));
+    else if (!doc.quoted) readDouble(body, 0, depth, out, true);
+  }
+  return Math.min(i, text.length);
+}
+
+// The old cut: quotes become spaces, then cut at ; | & ( ) and line ends. It finds more
+// than is there, so it is only the fallback when nesting is too deep to follow.
+function rough(text: string): string[][] {
+  return text
+    .replace(/['"`]/g, ' ')
+    .split(/[;|&()\r\n]+/)
+    .map((s) => s.trim().split(/\s+/).filter(Boolean))
+    .filter((words) => words.length > 0);
 }

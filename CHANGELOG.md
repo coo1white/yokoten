@@ -163,6 +163,10 @@ All notable changes are listed here. The format follows
 
 ### Fixed
 
+- The tool-call guard reads bash, not just words. Text in quotes and heredoc bodies is
+  data, so `git commit -m "docs: npm publish"` and `cat > f <<EOF` pass. A heredoc a
+  shell reads, `bash -c`, `eval`, `$(...)` and backticks are still checked. Comments,
+  `\` line joins and `{ }` groups are understood. When the text is unclear, it blocks (#105).
 - `check --pr` reads HTML comments as GitHub does: a `<!--` that never closes hides the
   rest of the body, so a section it hides counts as empty (#102).
 - Outside a repo, the tool-call guard no longer prints git's own error. An agent read it as the

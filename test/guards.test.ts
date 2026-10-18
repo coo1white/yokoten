@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { DEFAULTS, type Env } from '../src/rules/config.ts';
-import { checkCommand, checkEdit } from '../src/rules/guards.ts';
+import { checkCommand, checkEdit, commandWords } from '../src/rules/guards.ts';
 
 const blocked = (command: string, env: Env = {}) => assert.ok(checkCommand(command, { env }), `should block: ${command}`);
 const allowed = (command: string, env: Env = {}) => assert.equal(checkCommand(command, { env }), null, `should allow: ${command}`);
@@ -72,4 +72,70 @@ test('lead-only files: a worker is stopped, the lead is not', () => {
   // A glob with a slash is the root's folder only; one without matches in any folder.
   assert.ok(checkEdit('kit/project/AGENTS.md', { config: DEFAULTS, env: worker }));
   assert.equal(checkEdit('kit/project/.github/workflows/x.yml', { config: DEFAULTS, env: worker }), null);
+});
+
+// Bash syntax (#105). Each row of the issue's table first, then the rest of everyday bash.
+test('bash: words in quotes or a heredoc are data, not commands (#105)', () => {
+  allowed('git commit -m "docs: explain when to run npm publish"');
+  allowed('echo "never run gh release create by hand"');
+  allowed('grep -rn "git push --tags" docs');
+  allowed('cat > notes.md <<EOF\nRun npm publish after the tag.\nEOF');
+  allowed("ego-browser nodejs <<'EOF'\nawait page.fill(\"#q\", \"npm publish\");\nEOF");
+  blocked('npm publish');
+  blocked('bash <<EOF\nnpm publish\nEOF');
+  for (const c of ['bash -c "npm publish"', "sh -c 'git push --tags'", 'zsh -c "gh release create v1"', 'eval "npm publish"', '/bin/bash -c "npm publish"', 'sudo -u x bash -lc "npm publish"', 'find . -exec sh -c "npm publish" \\;']) blocked(c);
+  // A commit message written the usual way, with an apostrophe and brackets in it.
+  allowed("git commit -m \"$(cat <<'EOF'\nfix: don't run npm publish (yet)\n\nCo-Authored-By: x\nEOF\n)\"");
+  blocked("git commit -m \"$(cat <<'EOF'\nfix: don't\nEOF\n)\" && git push --tags");
+  allowed('bash -c "git commit -m \\"docs: npm publish\\""');
+});
+
+test('bash: a shell that reads a heredoc, a pipe or a here-string runs it (#105)', () => {
+  for (const c of [
+    'bash <<-EOF\n\tnpm publish\n\tEOF',
+    "sh <<'EOF'\nnpm publish\nEOF",
+    'env FOO=1 bash -s <<EOF\nnpm publish\nEOF',
+    'cat <<EOF | bash\nnpm publish\nEOF',
+    "ssh host <<'EOF'\nnpm publish\nEOF",
+    'echo "npm publish" | bash',
+    "printf 'npm publish\\n' | sh",
+    'bash <<< "npm publish"',
+    'ssh host "git push --tags"',
+  ]) blocked(c);
+  allowed('cat <<< "npm publish"');
+  // After the end line, the text is commands again.
+  blocked('cat <<-EOF\n\tdata\n\tEOF\nnpm publish');
+  allowed('cat <<-EOF\n\tnpm publish\n\tEOF\nls');
+});
+
+test('bash: substitutions run, so their commands count, even inside "..." (#105)', () => {
+  for (const c of ['echo $(npm publish)', 'echo `npm publish`', 'echo "$(npm publish)"', 'echo "`npm publish`"', 'diff <(npm publish) x', 'cat > f <<EOF\n$(npm publish)\nEOF']) blocked(c);
+  // A quoted heredoc word turns substitution off.
+  allowed("cat > f <<'EOF'\n$(npm publish)\nEOF");
+  // $(( )) is maths: its << is a shift, not a heredoc.
+  allowed('echo $((1<<2))\nls');
+  blocked('echo $((1<<2))\nnpm publish');
+});
+
+test('bash: separators, groups, comments and line joins (#105)', () => {
+  for (const c of ["git commit -m 'x' && npm publish", 'false || npm publish', 'ls; npm publish', 'ls | npm publish', 'sleep 1 & npm publish', 'ls\nnpm publish', '(cd x && npm publish)', '{ cd x; npm publish; }', 'echo a \\\n&& npm publish', 'git push origin main 2>&1 --tags']) blocked(c);
+  allowed('ls # npm publish');
+  blocked('ls # a comment\nnpm publish');
+  allowed('echo a#b');
+  assert.deepEqual(commandWords("printf '%s' \"a;b\""), [['printf', '%s', 'a;b']]);
+  assert.deepEqual(commandWords('git commit \\\n  -m x'), [['git', 'commit', '-m', 'x']]);
+  assert.deepEqual(commandWords("echo $'it\\'s;' $\"a|b\" \\;"),[['echo', "it's;", 'a|b', ';']]);
+});
+
+test('bash: prefixes and wrappers do not hide the command (#105)', () => {
+  for (const c of ['FOO=1 npm publish', 'NODE_ENV=prod npm publish', 'sudo npm publish', 'env X=1 npm publish', 'command npm publish', 'exec npm publish', 'time npm publish', 'nice -n 5 npm publish', 'nohup npm publish', 'timeout 10 npm publish', 'ls | xargs npm publish', 'npm --tag beta publish', 'env -S "npm publish"', "git -c alias.p='!git push --tags' p"]) blocked(c);
+  // sudo runs a program, not a shell string, so a quoted message stays a message.
+  allowed('sudo git commit -m "docs: npm publish"');
+});
+
+test('bash: an unclosed quote is dropped and the rest read as words (#105)', () => {
+  blocked("echo 'x; npm publish");
+  blocked('git commit -m "fix; npm publish');
+  blocked('echo "$(echo x; npm publish');
+  blocked('echo `npm publish');
 });
