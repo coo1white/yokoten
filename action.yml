@@ -1,0 +1,38 @@
+# yokoten as a GitHub Action (#106): one step runs yokoten's checks in the caller's CI.
+# It runs yokoten from this action's own copy, in the caller's workspace. Nothing leaves
+# the job: no token, no network call from yokoten.
+#
+# The caller's checkout needs the whole history (`fetch-depth: 0`) for `check --pr`: it
+# lists the files between the base and the head commit. The job needs only
+# `permissions: contents: read`. docs/guide.md, "Use it as a GitHub Action", has the example.
+name: yokoten
+description: Check a repo with yokoten. Layout, privacy, secrets and lead-only files; the pull request standard on pull requests.
+inputs:
+  pr-check:
+    description: Also run `check --pr` on a pull_request event. Set to false to skip it.
+    required: false
+    default: 'true'
+  node-version:
+    description: The Node version to set up. yokoten needs 22.18 or later.
+    required: false
+    default: '22'
+runs:
+  using: composite
+  steps:
+    # The same pin as yokoten's own CI. No cache: yokoten installs nothing.
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: ${{ inputs.node-version }}
+        package-manager-cache: false
+    # The annotations and the job summary come from yokoten itself when GITHUB_ACTIONS is set.
+    - name: yokoten check
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: node "$GITHUB_ACTION_PATH/bin/yokoten.ts" check
+    # It runs even when `check` failed, so both sets of findings show. The title and
+    # body are read from the event file (GITHUB_EVENT_PATH), never pasted into this line.
+    - name: yokoten check --pr
+      if: ${{ !cancelled() && inputs.pr-check == 'true' && github.event_name == 'pull_request' }}
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: node "$GITHUB_ACTION_PATH/bin/yokoten.ts" check --pr

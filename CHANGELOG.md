@@ -8,6 +8,10 @@ All notable changes are listed here. The format follows
 
 ### Added
 
+- yokoten runs as a GitHub Action: `uses: coo1white/yokoten@<commit SHA>`. It sets up Node,
+  runs `check`, and runs `check --pr` on pull requests. Inputs: `pr-check` and
+  `node-version`. It needs `contents: read` and takes no token. The kit's workflow
+  moves to the action after the first release (#106).
 - The kit's `AGENTS.md` has a "Names" section: whole words, at most 4, one letter only
   for a short life, verbs for functions, `is`/`has`/`can` for true or false, and a table of
   hard and easy names. **Kit change:** new projects get it from `init`;
