@@ -13,6 +13,7 @@ import * as codex from '../src/agents/codex.ts';
 import * as gemini from '../src/agents/gemini.ts';
 import { type Finding, formatFinding } from '../src/rules/message.ts';
 import { draftLesson, formatDraft, writeDraft } from '../src/run/learn.ts';
+import { KIT_LESSONS_DIR, LESSONS_TABLE, shipLesson } from '../src/run/lessons.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
 import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, largeDiff, longSentenceNote, longSentences } from '../src/rules/pr.ts';
 import { hideHome } from '../src/rules/privacy.ts';
@@ -46,6 +47,8 @@ const HELP = `yokoten ${VERSION}
   yokoten learn <issue> [--write]
                              a check draft from an incident issue (a number or a URL), read
                              through gh, for a person to review; --write puts it in lessons/
+  yokoten learn --ship <id>  in yokoten: move a reviewed lesson into kit/lessons/, where
+                             doctor runs it in every project; refused while a TODO is left
   yokoten hook [--agent <name>] [--commands-only]
                              the tool-call guard: reads one tool call on stdin; <name> is
                              claude-code (the default), codex or gemini
@@ -364,11 +367,24 @@ function main(): number | Promise<number> {
     }
     case 'learn': {
       // A draft for review (#77), never a shipped check: it writes only with --write, and adds only.
-      const options = parse({ flags: ['--write'], positional: 1 });
+      const options = parse({ flags: ['--write', '--ship'], positional: 1 });
       if (typeof options === 'string') return usage(options);
       const [reference] = options.positional;
-      if (reference === undefined) return usage('name an incident issue, by its number or its URL');
       const root = rootOf(process.cwd()) ?? process.cwd();
+      // A reviewed lesson ships in the kit (#147): doctor then runs it in every project.
+      if (options.flags.has('--ship')) {
+        if (options.flags.has('--write')) return usage('--ship and --write are two steps: write the draft, review it, then ship it');
+        if (reference === undefined) return usage('name the lesson to ship, by its id or its issue number');
+        const shipped = shipLesson(root, reference, VERSION);
+        if ('problems' in shipped) {
+          print([`yokoten learn --ship: ${shipped.problems.length} problem(s); nothing was moved:`, ...shipped.problems.map((problem) => `- ${problem}`)], process.stderr);
+          return 1;
+        }
+        const { id, url } = shipped.lesson;
+        print([`yokoten learn --ship: ${id} is in ${KIT_LESSONS_DIR}/${id}/, with a row in ${KIT_LESSONS_DIR}/${LESSONS_TABLE} (from ${url}, yokoten ${VERSION}).`, `Commit it in a pull request. After it merges, \`yokoten doctor\` runs it in every project that uses the kit.`]);
+        return 0;
+      }
+      if (reference === undefined) return usage('name an incident issue, by its number or its URL');
       const incident = readIncident(ghIn(root), reference);
       if (typeof incident === 'string') {
         print([`yokoten learn: ${incident}`], process.stderr);

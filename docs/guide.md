@@ -299,6 +299,7 @@ then run with no network and no global install.
 | `check --issue` | In CI: the issue's title. See [Issue titles](#issue-titles) |
 | `changelog [--write]` | Shows the entries the files in `changes/` add under `[Unreleased]`. `--write` puts them into `CHANGELOG.md` and deletes the files; run it before a release. See [The changelog](#the-changelog) |
 | `learn <issue> [--write]` | Drafts a check from an incident issue, for a person to review. `--write` adds the files in `lessons/`. See [Learning from an incident](#learning-from-an-incident) |
+| `learn --ship <id>` | In yokoten: moves a reviewed lesson into `kit/lessons/`, where `doctor` runs it in every project. Refused while a `TODO(reviewer)` is left or its test fails |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public |
 | `hook [--agent <name>] [--commands-only]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini` |
 | `hook --stop` | The stop check. Reads a Claude Code Stop event on stdin and checks the changed files. See [The stop check](#the-stop-check) |
@@ -314,7 +315,7 @@ value.
 - `check --json`: `{ check, ok, findings, notes }`. `check` is `tree`, `staged`,
   `history` or `pr`. A note never fails the check.
 - `doctor --json`: `{ version, ok, selfTest, repo, stage, stages, next, findings, steps,
-  notes, server }`. With `--session`, only the next step, the private-marks finding, and `core-rules` when the rules are behind.
+  notes, server, lessons }`. The findings of a lesson are in `notes`. With `--session`, only the next step, the private-marks finding, and `core-rules` when the rules are behind.
 - `hook --json`: `{ blocked, finding }` on stdout. The runtimes do not use it: they read
   the exit code and the reason on stderr, as their hook protocols say.
 - `hook --stop --json`: `{ blocked, stop, findings }`. With `stop_hook_active`, also `skipped`.
@@ -445,14 +446,15 @@ shows the change, and writes only after you agree.
 
 ### Learning from an incident
 
-An incident is a lesson. `yokoten learn` turns it into a check draft, the first part of
-the loop:
+An incident is a lesson. `yokoten learn` turns it into a check that every project runs:
 
 ```mermaid
 flowchart LR
   A[incident issue] --> B[yokoten learn]
   B --> C[check draft]
   C --> D[a person reviews it]
+  D --> E[learn --ship: in the kit]
+  E --> F[doctor in every project]
 ```
 
 Give it the issue's number, or its URL for an issue in another repo. It reads the issue
@@ -463,7 +465,7 @@ issue's sections.
 |---|---|
 | `id` | `incident-<number>` |
 | `what` | the title, after `area: ` |
-| `why` | the "Why it got through" section |
+| `why` | the "Why it matters" section. With none, "Why it got through" and a `TODO(reviewer)` to rewrite it |
 | `fix` | the "Fix" section |
 
 A field with no section in the issue gets a `TODO(reviewer)`, never a guess. The draft
@@ -478,6 +480,28 @@ adds two files in `lessons/incident-138/`:
 
 The test fails until a person writes the check. So a draft never passes on its own.
 `--write` adds only: it keeps a file that is already there.
+
+`findProblems` gets the folder of a repo. It gives one finding for each place with the
+problem. It reads files only: no network, no writes. Keep it fast, because `doctor` runs
+it in every project.
+
+When the review is done, ship the lesson. In a copy of yokoten, run
+`yokoten learn --ship incident-138`. It moves the lesson into `kit/lessons/incident-138/`.
+It adds a row to the lessons table, `kit/lessons/README.md`: the id, the incident, and the
+yokoten version. While a `TODO(reviewer)` is left or the test fails, it refuses and moves
+nothing. A test in yokoten checks the same for every lesson in the kit. It is a command,
+not a `git mv`, so the move, the table row and the test run are one step.
+
+When the project gets the new yokoten, `yokoten doctor` runs the lesson against it. A
+lesson that finds the problem gives a note:
+
+```
+project:
+  note    lesson incident-138: test/api.test.ts: a test calls a server on this machine and does not set NO_PROXY; set NO_PROXY and no_proxy to 127.0.0.1,localhost while the test runs, then put the old values back
+```
+
+A note never fails `doctor`. To stop a lesson in one project, add its id to "notNow" in
+`yokoten.json`, with the reason: `"notNow": { "incident-138": "a setup file sets it" }`.
 
 
 ## The core rules

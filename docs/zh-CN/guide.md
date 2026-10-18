@@ -279,6 +279,7 @@ kit 里 `init` 放的 workflow 暂时还是跑 `.yokoten/` 里的那份，等第
 | `check --issue` | 在 CI 里检查 issue 的标题，见下面的「issue 标题」 |
 | `changelog [--write]` | 列出 `changes/` 里的文件会往 `[Unreleased]` 下面加哪些条目。加上 `--write` 就真的写进 `CHANGELOG.md`，再删掉这些文件；发版前跑。见下面的「更新日志」 |
 | `learn <issue> [--write]` | 从一个事故 issue 起草一条检查，留给人来审。加上 `--write` 才把文件写进 `lessons/`。见下面的「从事故里学」 |
+| `learn --ship <id>` | 在 yokoten 里用：把审过的教训搬进 `kit/lessons/`，以后每个项目跑 `doctor` 都会查它。还有 `TODO(reviewer)` 没填，或者它的测试没过，就不让搬 |
 | `check --history` | 对所有分支的每一个提交做隐私检查。私有仓库公开之前跑一遍 |
 | `hook [--agent <name>] [--commands-only]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool |
 | `hook --stop` | 收尾检查。从标准输入读 Claude Code 的 Stop 事件，检查改过的文件。见[收尾检查](#收尾检查) |
@@ -293,7 +294,7 @@ kit 里 `init` 放的 workflow 暂时还是跑 `.yokoten/` 里的那份，等第
 - `check --json`：`{ check, ok, findings, notes }`。`check` 是 `tree`、`staged`、`history`
   或 `pr`，说明查的是哪一种。`notes` 只是提醒，不会让检查失败。
 - `doctor --json`：`{ version, ok, selfTest, repo, stage, stages, next, findings, steps,
-  notes, server }`。加 `--session` 时只给下一步、私有词表缺失的提醒，以及核心规则落后时的 `core-rules`。
+  notes, server, lessons }`。教训查出来的问题放在 `notes` 里。加 `--session` 时只给下一步、私有词表缺失的提醒，以及核心规则落后时的 `core-rules`。
 - `hook --json`：在标准输出给出 `{ blocked, finding }`。AI 工具本身不用它：它们按各自的
   hook 协议，看退出码，再从标准错误读原因。
 - `hook --stop --json`：`{ blocked, stop, findings }`。`stop_hook_active` 为真时多一个 `skipped`。
@@ -415,13 +416,15 @@ yokoten 每学到一个教训，核心规则就会改。`yokoten install` 会更
 
 ### 从事故里学
 
-出了一次事故，就是学到了一课。`yokoten learn` 把这一课写成一条检查的草稿，这是闭环的第一步：
+出了一次事故，就是学到了一课。`yokoten learn` 把这一课写成一条检查，最后每个项目都会跑它：
 
 ```mermaid
 flowchart LR
   A[事故 issue] --> B[yokoten learn]
   B --> C[检查草稿]
   C --> D[人来审]
+  D --> E[learn --ship：放进 kit]
+  E --> F[每个项目的 doctor]
 ```
 
 后面跟 issue 编号就行；别的仓库的 issue，就给它的网址。它用 `gh` 读 issue，走的是你自己的登录。
@@ -431,7 +434,7 @@ flowchart LR
 |---|---|
 | `id` | `incident-<编号>` |
 | `what` | 标题里 `area: ` 后面那部分 |
-| `why` | 「Why it got through」那一节 |
+| `why` | 「Why it matters」那一节。没有这一节，就先拿「Why it got through」顶上，再留一个 `TODO(reviewer)` 让人改写 |
 | `fix` | 「Fix」那一节 |
 
 issue 里没写的那一节，对应的字段就留一个 `TODO(reviewer)`，绝不替你瞎编。issue 的原文也会放进注释里，
@@ -445,6 +448,25 @@ issue 里没写的那一节，对应的字段就留一个 `TODO(reviewer)`，绝
 
 检查没写好之前，这个测试一直是红的，所以草稿自己永远过不了。`--write` 只加文件，
 已经有的文件不会动。
+
+`findProblems` 拿到的是一个仓库的文件夹，在哪里发现问题，就为那个地方报一条。它只读文件：
+不联网，也不改任何东西。要写得快一点，因为每个项目跑 `doctor` 都会跑它。
+
+审完了，就把这一课发出去。在 yokoten 的仓库里跑 `yokoten learn --ship incident-138`，
+它会把这一课搬进 `kit/lessons/incident-138/`，再在教训表 `kit/lessons/README.md` 里加一行：
+编号、出自哪个事故、哪个 yokoten 版本加的。只要还有 `TODO(reviewer)` 没填，或者测试没过，
+它就不搬，什么都不动。yokoten 自己也有一个测试，对 kit 里的每一课都查这几条。
+之所以做成命令而不是让人手动 `git mv`，是因为搬文件、加表格、跑测试要一次做完，不会只做一半。
+
+项目换上新版 yokoten 以后，`yokoten doctor` 就会拿这一课去查这个项目。查到问题，就给一条提醒：
+
+```
+project:
+  note    lesson incident-138: test/api.test.ts: a test calls a server on this machine and does not set NO_PROXY; set NO_PROXY and no_proxy to 127.0.0.1,localhost while the test runs, then put the old values back
+```
+
+提醒不会让 `doctor` 失败。某个项目不想查这一课，就在 `yokoten.json` 的 "notNow" 里写上它的编号和理由，
+比如 `"notNow": { "incident-138": "a setup file sets it" }`。
 
 
 ## 核心规则
