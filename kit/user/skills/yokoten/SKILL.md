@@ -22,7 +22,7 @@ project today is one of:
 - **unknown**: yokoten could not tell from here, for example a server setting with no
   `gh`. Run `yokoten doctor` before you call it missing.
 
-A model drafts the decisions when `LLAMA_API_KEY` is set;
+A model drafts the decisions when `MODEL_API_KEY` (or `LLAMA_API_KEY`) is set;
 otherwise rules draft them, and the output says so. `adopt` writes nothing.
 
 Then check the draft. Read the project's own `AGENTS.md`, `CLAUDE.md`, `README.md`, CI
