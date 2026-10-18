@@ -90,9 +90,10 @@ yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
 - **TypeScript that Node runs as it is.** No build in the repo: Node strips the types.
   Only the npm package is built: `npm pack` emits `dist/` (git-ignored), because Node
   does not strip types under `node_modules` (record 0008). So only syntax it can erase
-  (`erasableSyntaxOnly`): no `enum`, no `namespace`, no parameter properties. Imports name the `.ts` file. Code is `.ts` only: no `.js`,
-  `.mjs`, `.cjs` or `.tsx` (`test/architecture.test.ts` holds this). No Python, no
-  shell beyond the one-line git hook.
+  (`erasableSyntaxOnly`): no `enum`, no `namespace`, no parameter properties. Imports
+  name the `.ts` file. Code is `.ts` only: no `.js`, `.mjs`, `.cjs` or `.tsx`
+  (`test/architecture.test.ts` holds this). No Python, no shell beyond the one-line git
+  hook.
 - **Layers.** `src/` has five, lowest first; a module imports only from its own
   layer or a lower one (`test/architecture.test.ts` holds this):
   - `rules/`: what is allowed, as plain functions (guards, privacy, layout, config).
