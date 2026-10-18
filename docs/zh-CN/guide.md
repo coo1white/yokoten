@@ -1,4 +1,4 @@
-<!-- source: docs/guide.md blob 0c0826d6c081a3d010128187a1083af93b06e797 -->
+<!-- source: docs/guide.md -->
 # yokoten 使用指南
 
 [README](README.md) 是简短版。剩下的都在这里：yokoten 为什么要做、它怎么工作、有哪些规则和命令，还有它做不到的事。
@@ -160,6 +160,21 @@ Docs: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#the-core-r
 做法都由你定：**照搬**、**减量**（说清去掉了哪部分），或者**暂不**（写明原因，以及什么
 时候再看）。「暂不」会写进 `yokoten.json`，`doctor` 就不再追问。
 
+### 先拿一份草稿
+
+`yokoten adopt` 会在你们开始过之前先把这张表填个初稿。它读项目里的文件，逐条写出项目现在的
+情况：**已有**、**没有**，或者**部分有**（项目有自己的做法，比如用 husky 管提交 hook，或者
+有 CI 但没跑 yokoten）。然后让模型给每一条提一个建议，附一句理由。
+
+- 模型只拿到这些简短的情况说明，拿不到文件内容。
+- 发出去之前，yokoten 先对要发的内容做一遍隐私检查。查到问题就什么都不发。
+- 没有 key、调用失败、或者模型的回答不合格式时，改用固定规则出草稿：已有或没有的，照搬；
+  部分有的，减量。输出会写明是谁出的草稿。
+- `adopt` 不改任何文件。每一条最后还是你来定。
+
+用的是 Meta 的模型 API，走它兼容 OpenAI 的接口（`https://api.meta.ai/v1`，模型是
+`muse-spark-1.3`）。把 key 设到 `LLAMA_API_KEY` 或 `MODEL_API_KEY` 里。想换成别家兼容 OpenAI 的接口和模型，设 `LLAMA_API_BASE` 和 `LLAMA_MODEL`。
+
 ## 支持哪些 agent
 
 yokoten 能管住三种 AI 编程 agent，它们守的是同一套规矩。
@@ -243,6 +258,8 @@ node ~/.local/share/yokoten/bin/yokoten.ts init     # 这个项目：只加文�
 node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看走到哪一关，下一步做什么
 ```
 
+这些命令（包括上面 npx 那几条）在 [docs/facts.json](../facts.json) 里还有一份，网站读的是那份，所以改命令的时候两边都要改。
+
 ### 当成 GitHub Action 用
 
 GitHub 上的任何仓库，加一个 workflow 文件，就能在 CI 里跑 yokoten 的检查。仓库里不用装
@@ -309,9 +326,10 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 |------|--------|
 | `install` | 把技能装进 `~/.claude/skills` 和 `~/.agents/skills`，agent 装进 `~/.claude/agents`，加上会话开头的 `doctor` hook 和用户级命令守卫，再建一个空的私有词表 |
 | `init [dir]` | 把这套做法放进一个项目。只加文件；已有的文件保留，并告诉你保留了哪些。它还会用 `gh` 看一眼 GitHub，告诉你要补哪些标准标签和里程碑，但不会去改 GitHub。没装 `gh`、没登录，或者远程仓库不在 GitHub 上，就说一声跳过了 |
-| `init --github --yes [--remove-default-labels]` | 补上缺的标准标签；没有打开的里程碑时，建一个叫 "First release" 的。已有的标准标签，颜色和说明改成标准的。再跑一次什么也不会变。GitHub 自带的、不在这套里的标签（`question`、`wontfix` 等），只有加上 `--remove-default-labels` 才会删 |
+| `init --github --yes [--remove-default-labels]` | 补上缺的标准标签；没有打开的里程碑时，建一个叫 "First release" 的；要是已经有一个关掉的里程碑叫这个名字，就叫 "Next release"。关掉的里程碑不会被重新打开。已有的标准标签，颜色和说明改成标准的。再跑一次什么也不会变。GitHub 自带的、不在这套里的标签（`question`、`wontfix` 等），只有加上 `--remove-default-labels` 才会删 |
 | `update [dir] [--write]` | 看看这个版本的 yokoten 会怎么改项目 `AGENTS.md` 里的核心规则。加上 `--write` 才真的替换；「This project」那部分原样保留。见[更新规则](#更新规则) |
 | `doctor [--session]` | 整条路：每一关、每一步，加上这台电脑还缺什么。`--session` 只说下一步，会话开头用 |
+| `adopt [--json]` | 给老项目的采用表出一份草稿：项目现在做到了哪些，每一步建议怎么定。`--json` 输出每一行的数据。不改任何文件 |
 | `check [--staged]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交。提交里不能有构建产物和二进制文件。查整个目录时，落后于英文的译文会给一条提醒，见[翻译](#翻译) |
 | `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的变更文件、milestone 和标签，见下面的「更新日志」。改到 CODEOWNERS 里列出的文件，必须写 `tier: A`。改动的文档里句子太长、改动的代码里名字难读、改动超过 400 行，都只提醒，不算失败 |
 | `check --issue` | 在 CI 里检查 issue 的标题，见下面的「issue 标题」 |
@@ -434,20 +452,34 @@ Fixed
 都写明它是从哪个英文文件翻的，用 HTML 注释写，GitHub 上看不到。
 
 ```markdown
-<!-- source: docs/guide.md blob 3b18e512dba79e4c8300dd08aeb37f8e728b8dad -->
+<!-- source: docs/guide.md -->
 ```
 
-路径是英文文件的路径，从仓库根目录算起。blob 是 git 给你翻译时那版英文内容算出的编号，
-跑 `git hash-object docs/guide.md` 就能拿到。记 blob 而不记 commit，是因为 squash
-合并以后 blob 还在，commit 却没了。这样英文和译文可以放在同一个 PR 里改。
+路径是英文文件的路径，从仓库根目录算起。这一行写一次就行，以后不用再改。改英文时，把译文
+也一起改了，放在同一个 commit 或同一个 PR 里。
 
-`check` 会读每个 Markdown 和 HTML 文件的第 1 行。英文在那之后又改过，它就给一条
-`translation-behind` 提醒：落后了几个 commit，怎么看英文改了什么
-（`git diff <blob> HEAD:docs/guide.md`）。提醒不会让 CI 失败。想让它失败，就在
+`check` 会读每个 Markdown 和 HTML 文件的第 1 行，然后看当前分支的提交（只沿第一个父提交
+往回找）：最后一次改译文的提交，和最后一次改英文的提交是同一个，或者更晚，译文就算最新。
+译文改了哪一行都算。
+
+为什么不在这一行记下英文的版本？那样的话，每个改英文的 PR 都得改这一行，两个这样的 PR
+一定会在这一行上冲突。这一行不变，几个 PR 同时改，也只会各改各翻的那几段。
+
+代价是：只改译文的提交也算数。在译文里改个错字，可能就把一处没人翻的英文改动盖过去了。所以
+改错字之前先跑一下 `check`，如果它说译文落后，先把译文补上。
+
+工作区里还没提交的改动也这样算：译文改了，就当作更晚的改动；只改了英文、没改译文，译文算落后。
+
+译文落后时，`check` 给一条 `translation-behind` 提醒：落后了几个 commit，怎么看英文改了
+什么（`git diff <commit> HEAD -- docs/guide.md`）。提醒不会让 CI 失败。想让它失败，就在
 `yokoten.json` 里写 `"translations": { "fail": true }`。
 
-浅克隆也能看出译文落后了，只是算不出落后多少。想在 CI 里看到具体数字，checkout 时设
-`fetch-depth: 0`。
+旧的写法在第 1 行还多写了英文的 blob：
+`<!-- source: docs/guide.md blob 3b18e512dba79e4c8300dd08aeb37f8e728b8dad -->`。
+`check` 照样认。blob 和英文对得上，就算最新；对不上，就按上面的提交来判断。blob 随时可以删掉。
+
+浅克隆里可能没有要比的那些提交。这时 `check` 给一条提醒，不会当成最新。CI 里 checkout
+时设 `fetch-depth: 0`。
 
 ### 更新规则
 
@@ -471,8 +503,9 @@ yokoten 每学到一个教训，核心规则就会改。`yokoten install` 会更
 退回旧版。这时 `doctor` 会让你升级 yokoten 本身，而不是去改项目。没有这一行的文件，
 就只按内容比。
 
-`update` 要用装好的 yokoten 或者 clone 下来的仓库跑，别用 `.yokoten/` 里的那份：
-项目里那份没有带 kit，没东西可比。
+`.yokoten/` 里那份也带着 kit 的 `AGENTS.md`，所以 CI 和钩子里跑 `doctor`，比的就是项目
+当初拷进来的那版 kit。想换成更新的规则，就用装好的 yokoten、插件或者 clone 下来的仓库跑
+`update`。再跑一次 `init`，`.yokoten/` 也会一起更新。
 
 装了 Claude Code 插件的话，直接用 `/yokoten:update`。它跑的是插件自己那份 yokoten，
 先给你看要改什么，你点头了才写。

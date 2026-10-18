@@ -12,9 +12,9 @@ import { POSITIVE_CONTROL, scanText } from '../src/rules/privacy.ts';
 import { SECRET_CONTROL } from '../src/rules/secrets.ts';
 import { check, timeZoneNote } from '../src/run/check.ts';
 import { parseSourceMarker, sourceMarker, translationNotes } from '../src/run/translations.ts';
-import { agentHooks, coreRulesCheck, machineChecks } from '../src/setup/doctor.ts';
+import { agentHooks, coreRulesCheck, coreRulesControl, machineChecks, selfTest } from '../src/setup/doctor.ts';
 import { compareCoreRules, compareVersions, readKitVersion } from '../src/setup/init.ts';
-import { explain, explainLines, ids } from '../src/setup/explain.ts';
+import { explain, explainLines, ids } from '../src/setup/advice/explain.ts';
 import { ROAD, serverChecks, stepFinding } from '../src/setup/road.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
 import { formatChanges, mergeChanges, parseChange, readChanges, writeChanges } from '../src/run/changelog.ts';
@@ -574,22 +574,27 @@ function makeTranslatedRepo() {
     git('commit', '-q', '-m', `change ${path}`);
   };
   commit('en.md', '# Guide\n\nStep one.\n');
-  commit('zh.md', `${sourceMarker('en.md', git('hash-object', 'en.md'))}\n# 指南\n\n第一步。\n`);
+  commit('zh.md', `${sourceMarker('en.md')}\n# 指南\n\n第一步。\n`);
   return { root, git, commit };
 }
 
-test('translations: line 1 names the source and its blob; other first lines are not markers (#87)', () => {
+// The older marker form (#87), with the English blob; still read (#166).
+const blobMarker = (source: string, blob: string) => `<!-- source: ${source} blob ${blob} -->`;
+
+test('translations: line 1 names the source; the older form adds a blob; other first lines are not markers (#87, #166)', () => {
   const blob = 'a'.repeat(40);
-  assert.deepEqual(parseSourceMarker(`${sourceMarker('docs/guide.md', blob)}\n# Title`), { source: 'docs/guide.md', blob });
-  assert.equal(parseSourceMarker('# Title\n<!-- source: a.md blob abcdef1 -->'), null, 'only line 1');
-  assert.equal(parseSourceMarker('<!-- source: a.md -->'), null, 'no blob');
+  assert.equal(sourceMarker('docs/guide.md'), '<!-- source: docs/guide.md -->');
+  assert.deepEqual(parseSourceMarker(`${sourceMarker('docs/guide.md')}\n# Title`), { source: 'docs/guide.md', blob: null });
+  assert.deepEqual(parseSourceMarker(`${blobMarker('docs/guide.md', blob)}\n# Title`), { source: 'docs/guide.md', blob });
+  assert.equal(parseSourceMarker('# Title\n<!-- source: a.md -->'), null, 'only line 1');
+  assert.equal(parseSourceMarker('<!-- source: -->'), null, 'no path');
   assert.equal(parseSourceMarker('---\nsource: a.md\n---'), null, 'front matter is not the form');
 });
 
-test('translations: a note when English changed after the marker, none when it is current (#87)', () => {
+test('translations: a note when English changed after the translation, none when it is current (#87)', () => {
   const repo = makeTranslatedRepo();
   assert.deepEqual(translationNotes(repo.root, ['en.md', 'zh.md']), [], 'current: no note');
-  const old = repo.git('hash-object', 'en.md');
+  const translated = repo.git('rev-parse', 'HEAD');
   repo.commit('en.md', '# Guide\n\nStep one.\nStep two.\n');
   repo.commit('en.md', '# Guide\n\nStep one.\nStep two.\nStep three.\n');
   const [note, ...rest] = translationNotes(repo.root, ['en.md', 'zh.md']);
@@ -598,32 +603,99 @@ test('translations: a note when English changed after the marker, none when it i
   assert.equal(note.file, 'zh.md');
   assert.equal(note.line, 1);
   assert.equal(note.what, 'is behind en.md by 2 commits');
-  assert.ok(note.fix.includes(`git diff ${old.slice(0, 12)} HEAD:en.md`), note.fix);
-  assert.ok(note.fix.includes(sourceMarker('en.md', repo.git('hash-object', 'en.md'))), 'the fix gives the new line 1');
-  // Brought up to date: the note goes.
-  repo.commit('zh.md', `${sourceMarker('en.md', repo.git('hash-object', 'en.md'))}\n# 指南\n`);
+  assert.ok(note.fix.includes(`git diff ${translated.slice(0, 12)} HEAD -- en.md`), note.fix);
+  // Brought up to date, line 1 unchanged: the note goes.
+  repo.commit('zh.md', `${sourceMarker('en.md')}\n# 指南\n\n第一步。第二步。第三步。\n`);
   assert.deepEqual(translationNotes(repo.root, ['zh.md']), []);
-  // An edit not yet committed is behind too.
+  // An English edit not yet committed is behind; a translation edit with it is current.
   writeFileSync(join(repo.root, 'en.md'), '# Guide, edited\n');
   assert.equal(translationNotes(repo.root, ['zh.md'])[0]?.what, 'is behind en.md by edits not yet committed');
+  writeFileSync(join(repo.root, 'zh.md'), `${sourceMarker('en.md')}\n# 指南（改）\n`);
+  assert.deepEqual(translationNotes(repo.root, ['zh.md']), []);
 });
 
-test('translations: a missing source, an unknown blob and a shallow clone each give a clear note (#87)', () => {
+test('translations: a missing source and a shallow clone each give a clear note, never "current" (#87)', () => {
   const repo = makeTranslatedRepo();
-  writeFileSync(join(repo.root, 'gone.md'), `${sourceMarker('nowhere.md', 'b'.repeat(40))}\n`);
-  writeFileSync(join(repo.root, 'out.md'), `${sourceMarker('../en.md', 'b'.repeat(40))}\n`);
-  writeFileSync(join(repo.root, 'odd.md'), `${sourceMarker('en.md', 'b'.repeat(40))}\n`);
-  const notes = translationNotes(repo.root, ['gone.md', 'out.md', 'odd.md']);
+  writeFileSync(join(repo.root, 'gone.md'), `${sourceMarker('nowhere.md')}\n`);
+  writeFileSync(join(repo.root, 'out.md'), `${sourceMarker('../en.md')}\n`);
+  const notes = translationNotes(repo.root, ['gone.md', 'out.md']);
   assert.match(notes[0].what, /names nowhere\.md as its English source, which is not in the repo/);
   assert.match(notes[1].what, /names \.\.\/en\.md as its English source, which is not in the repo/);
-  assert.match(notes[2].what, /is behind en\.md: blob bbbbbbbbbbbb is not in its history/);
-  // A shallow clone (CI's default checkout): behind, but how far is not known.
-  repo.commit('en.md', '# Guide\n\nStep one, changed.\n');
+  // A shallow clone (CI's default checkout): its one commit seems to add both files.
+  for (const english of ['# Guide\n\nStep one, changed.\n', null]) {
+    if (english) repo.commit('en.md', english);
+    const shallow = mkdtempSync(join(tmpdir(), 'yokoten-'));
+    execFileSync('git', ['clone', '-q', '--depth', '1', `file://${repo.root}`, shallow], { stdio: 'ignore' });
+    const [note] = translationNotes(shallow, ['zh.md']);
+    assert.match(note.what, /is behind en\.md: this clone is shallow, so how far is not known/);
+    assert.match(note.fix, /fetch-depth: 0/);
+  }
+  // Deep enough to see the change: the history decides.
+  repo.commit('zh.md', `${sourceMarker('en.md')}\n# 指南\n\n第一步（改）。\n`);
+  const deeper = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  execFileSync('git', ['clone', '-q', '--depth', '2', `file://${repo.root}`, deeper], { stdio: 'ignore' });
+  assert.deepEqual(translationNotes(deeper, ['zh.md']), []);
+});
+
+test('translations: two branches that each change both files never edit the same line, and merge in turn with no note (#166)', () => {
+  const repo = makeTranslatedRepo();
+  const english = (top: string, bottom: string) => `# Guide\n\n${top}\n\nMiddle.\n\n${bottom}\n`;
+  const translation = (top: string, bottom: string) => `${sourceMarker('en.md')}\n# 指南\n\n${top}\n\n中。\n\n${bottom}\n`;
+  const change = (englishText: string, translationText: string, message: string) => {
+    writeFileSync(join(repo.root, 'en.md'), englishText);
+    writeFileSync(join(repo.root, 'zh.md'), translationText);
+    repo.git('add', 'en.md', 'zh.md');
+    repo.git('commit', '-q', '-m', message);
+  };
+  change(english('Top.', 'Bottom.'), translation('上。', '下。'), 'base');
+  // Branches A and B both start here. A changes the top, B the bottom; each updates zh.md.
+  repo.git('checkout', '-q', '-b', 'a');
+  change(english('Top, A.', 'Bottom.'), translation('上，A。', '下。'), 'a');
+  repo.git('checkout', '-q', '-b', 'b', 'main');
+  change(english('Top.', 'Bottom, B.'), translation('上。', '下，B。'), 'b');
+  // The lines each branch changes in zh.md: none in common, and never line 1.
+  const changedLines = (branch: string) => repo.git('diff', '-U0', 'main', branch, '--', 'zh.md').split('\n').filter((line) => line.startsWith('@@')).map((line) => line.split(' ')[1]);
+  const [linesA, linesB] = [changedLines('a'), changedLines('b')];
+  assert.ok(linesA.length > 0 && linesB.length > 0, 'both branches change the translation');
+  assert.deepEqual(linesA.filter((line) => linesB.includes(line)), [], `A ${linesA}, B ${linesB}`);
+  assert.ok(![...linesA, ...linesB].some((line) => line === '-1' || line.startsWith('-1,')), 'line 1 is never edited');
+  // Squash-merged in turn: git merges B after A with no conflict (it throws on one).
+  repo.git('checkout', '-q', 'main');
+  for (const branch of ['a', 'b']) {
+    repo.git('merge', '-q', '--squash', branch);
+    repo.git('commit', '-q', '-m', `squash ${branch}`);
+  }
+  assert.equal(readFileSync(join(repo.root, 'zh.md'), 'utf8'), translation('上，A。', '下，B。'));
+  assert.deepEqual(translationNotes(repo.root, ['en.md', 'zh.md']), [], 'both were translated: no note');
+  // The English changes later, with no translation: a note, counted from history.
+  repo.commit('en.md', english('Top, A.', 'Bottom, B, then C.'));
+  const [note, ...rest] = translationNotes(repo.root, ['zh.md']);
+  assert.deepEqual(rest, []);
+  assert.equal(note.what, 'is behind en.md by 1 commit');
+  assert.match(note.fix, /git diff [0-9a-f]{12} HEAD -- en\.md/);
+  // The known cost, written in the guide: a typo fix to the translation counts as following.
+  repo.commit('zh.md', translation('上，A。', '下，B！'));
+  assert.deepEqual(translationNotes(repo.root, ['zh.md']), []);
+});
+
+test('translations: the older marker with a blob still works, and its fix offers the line that never changes (#166)', () => {
+  const repo = makeTranslatedRepo();
+  repo.commit('zh.md', `${blobMarker('en.md', repo.git('hash-object', 'en.md'))}\n# 指南\n\n第一步。\n`);
+  assert.deepEqual(translationNotes(repo.root, ['zh.md']), [], 'blob is the English: current');
+  // Even in a shallow clone, a blob equal to the English is current.
   const shallow = mkdtempSync(join(tmpdir(), 'yokoten-'));
   execFileSync('git', ['clone', '-q', '--depth', '1', `file://${repo.root}`, shallow], { stdio: 'ignore' });
-  const [note] = translationNotes(shallow, ['zh.md']);
-  assert.match(note.what, /is behind en\.md: this clone is shallow, so how far is not known/);
-  assert.match(note.fix, /fetch-depth: 0/);
+  assert.deepEqual(translationNotes(shallow, ['zh.md']), []);
+  // A stale blob: the history decides. Changed together, current; the English later, behind.
+  writeFileSync(join(repo.root, 'en.md'), '# Guide\n\nStep one, two.\n');
+  writeFileSync(join(repo.root, 'zh.md'), `${blobMarker('en.md', 'b'.repeat(40))}\n# 指南\n\n第一步，第二步。\n`);
+  repo.git('add', 'en.md', 'zh.md');
+  repo.git('commit', '-q', '-m', 'both');
+  assert.deepEqual(translationNotes(repo.root, ['zh.md']), [], 'a blob no commit had, changed with the English: current');
+  repo.commit('en.md', '# Guide\n\nStep one, two, three.\n');
+  const [note] = translationNotes(repo.root, ['zh.md']);
+  assert.equal(note.what, 'is behind en.md by 1 commit');
+  assert.ok(note.fix.includes(sourceMarker('en.md')), note.fix);
 });
 
 test('translations: check gives a note, and yokoten.json "translations": { "fail": true } a problem (#87)', () => {
@@ -663,4 +735,19 @@ test('core rules: the kit version mark tells older from newer; no mark compares 
   assert.equal(compareCoreRules(`# rules\n\n${own}`, kit).state, 'same', 'the mark alone is no change');
   assert.equal(compareCoreRules(`<!-- yokoten kit 0.9.0 -->\n# rules\n\n${own}`, kit).state, 'same', 'a newer mark with the same text is up to date');
   assert.equal(compareCoreRules(`<!-- yokoten kit {{version}} -->\n# rules, later\n\n${own}`, kit).state, 'behind', 'a mark that is not a version is unknown');
+});
+
+test('self-test: the core-rules control passes the real check and fails a broken one (#170)', () => {
+  assert.deepEqual(coreRulesControl(), []);
+  assert.ok(!selfTest().some((name) => name.startsWith('core rules')));
+  const always = (mark: 'ok' | 'MISSING' | 'note') => (root: string) => ({ mark, finding: { ...coreRulesCheck(root)!.finding } });
+  assert.deepEqual(coreRulesControl(always('ok')), ['core rules check (edited by hand)', 'core rules check (newer kit)'], 'a check that passes everything');
+  assert.deepEqual(coreRulesControl(always('MISSING')), ['core rules check (newer kit)'], 'a check that calls a newer kit MISSING');
+  assert.deepEqual(coreRulesControl(always('note')), ['core rules check (edited by hand)'], 'a check that only gives notes');
+  // A compare that never sees a version: the newer kit looks hand-edited, so MISSING.
+  const noVersion = (root: string) => {
+    const result = coreRulesCheck(root)!;
+    return result.mark === 'note' ? { mark: 'MISSING' as const, finding: result.finding } : result;
+  };
+  assert.deepEqual(coreRulesControl(noVersion), ['core rules check (newer kit)']);
 });

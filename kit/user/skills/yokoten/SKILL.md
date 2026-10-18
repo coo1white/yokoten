@@ -12,15 +12,19 @@ practices one at a time with the user, and decide each one.
 
 ## 1. See where the project is
 
-Run `yokoten doctor` in the repo root. Read the project's own `AGENTS.md`, `CLAUDE.md`,
-`README.md`, CI files and hooks, if there are any. Note what the project already does
-that a core rule asks for, even if it does it another way.
+Run `yokoten adopt` in the repo root. It prints a draft of the table in step 2: one
+row per step, what the project does today (done, missing or partial), and a proposed
+decision with a reason. A model drafts the decisions when `LLAMA_API_KEY` is set;
+otherwise rules draft them, and the output says so. `adopt` writes nothing.
+
+Then check the draft. Read the project's own `AGENTS.md`, `CLAUDE.md`, `README.md`, CI
+files and hooks, if there are any. Note what the project already does that a core rule
+asks for, even if it does it another way. Correct any row the draft got wrong.
 
 ## 2. Decide each practice with the user
 
-Make one table and show it before changing anything. One row per practice doctor
-names (rules, commit-check, tool-hook, ci, runtime, issues) and per core rule in
-`AGENTS.md` that the project does not already follow:
+Start from the table `yokoten adopt` printed, and show it before changing anything.
+Add a row for each core rule in `AGENTS.md` that the project does not already follow:
 
 | Practice | The project today | Decision | Why |
 |----------|-------------------|----------|-----|
@@ -32,8 +36,9 @@ The decision is one of:
 - **not now**: leave it out, with the reason and *when to look again* (a date, or an
   event such as "first outside contributor" or "first release").
 
-Ask, do not assume. A one-person script repo does not need the bot account; a repo
-that ships to users does. Wait for the user's answer on every row.
+The draft is a proposal, not an answer. Walk it with the user one row at a time, in
+plain words. Ask, do not assume. A one-person script repo does not need the bot account;
+a repo that ships to users does. Wait for the user's answer on every row.
 
 ## 3. Put it in
 

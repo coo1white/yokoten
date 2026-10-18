@@ -21,7 +21,7 @@ import { runs } from '../run/cli.ts';
 import { hasBot, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
 import { isSelf } from './init.ts';
-import { lackingLabels } from './plan.ts';
+import { FIRST_MILESTONE, lackingLabels, pickNewMilestone } from './plan.ts';
 import { skillFiles, skillsDir } from './install.ts';
 
 /** The stage names, in order. A step's `stage` is its number here, from 1. */
@@ -67,7 +67,7 @@ const read = (path: string) => {
   }
 };
 
-const gitConfig = (root: string, key: string) => {
+export const gitConfig = (root: string, key: string) => {
   try {
     return execFileSync('git', ['config', '--get', key], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch {
@@ -89,13 +89,13 @@ const listed = (dir: string): string[] => {
     return [];
   }
 };
-const todoFiles = (root: string) => TODO_FILES.filter((p) => listed(join(root, dirname(p))).includes(basename(p)));
+export const todoFiles = (root: string) => TODO_FILES.filter((p) => listed(join(root, dirname(p))).includes(basename(p)));
 
-const hasIssueTemplate = (root: string) => {
+export const hasIssueTemplate = (root: string) => {
   const dir = join(root, '.github', 'ISSUE_TEMPLATE');
   return existsSync(dir) && readdirSync(dir).some((f) => /\.(ya?ml|md)$/i.test(f));
 };
-const hasPrTemplate = (root: string) => ['pull_request_template.md', 'PULL_REQUEST_TEMPLATE.md'].some((f) => existsSync(join(root, '.github', f)));
+export const hasPrTemplate = (root: string) => ['pull_request_template.md', 'PULL_REQUEST_TEMPLATE.md'].some((f) => existsSync(join(root, '.github', f)));
 
 /**
  * The kit's skills not yet in every skills folder, as "folder (names)"; empty when all are
@@ -154,7 +154,7 @@ const SECURITY_FILES: [string, string[]][] = [
   ['Dependabot config', ['.github/dependabot.yml', '.github/dependabot.yaml']],
   ['license file', ['LICENSE', 'LICENSE.md', 'LICENSE.txt', 'COPYING']],
 ];
-const securityLacking = (root: string) => SECURITY_FILES.filter(([, paths]) => !paths.some((p) => existsSync(join(root, p)))).map(([name]) => name);
+export const securityLacking = (root: string) => SECURITY_FILES.filter(([, paths]) => !paths.some((p) => existsSync(join(root, p)))).map(([name]) => name);
 
 // The server settings (#7), judged. Each setting is one check with its own rule id, so
 // `yokoten explain main-rules` works. The road groups them into three steps.
@@ -273,6 +273,12 @@ const lackingNames = (server: ServerRead) => {
   return 'unread' in planning ? [] : lackingLabels(planning.labels.map((l) => l.name)).map((l) => l.name);
 };
 
+/** The title `init --github` would give a new milestone, by the same rule the step checks. */
+const newMilestoneOf = (server: ServerRead) => {
+  const planning = planningOf(server);
+  return ('unread' in planning ? null : pickNewMilestone(planning.milestones)) ?? FIRST_MILESTONE;
+};
+
 /** The road, in order. Step names never change: they are the keys for "not now". */
 export const ROAD: Step[] = [
   {
@@ -366,9 +372,9 @@ export const ROAD: Step[] = [
     why: 'a label says what kind of change a pull request is, and the pull request check asks for one',
     how: 'through the code host\'s API, in full doctor only: the repo has the labels bug, feat, docs, refactor, ci, owner, incident, good first issue and hotfix',
   }),
-  planningStep('milestone', (planning) => planning.milestones.some((m) => m.open), {
+  planningStep('milestone', (planning) => pickNewMilestone(planning.milestones) === null, {
     what: () => 'no open milestone on the server',
-    fix: () => '`yokoten init --github --yes` makes one called "First release"',
+    fix: (...[, , server]) => `\`yokoten init --github --yes\` makes one called "${newMilestoneOf(server)}"`,
     why: 'a milestone says when a change ships, and the pull request check asks for one',
     how: 'through the code host\'s API, in full doctor only: the repo has at least one open milestone',
   }),

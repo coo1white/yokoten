@@ -21,14 +21,17 @@ export const MANAGED = 'managed by yokoten';
 /**
  * Copy the runtime (bin, src, package.json) to `dest`, so hooks run with no network and
  * no global install. The machine copy also takes the kit, which install and the machine
- * checks read. The copy is replaced whole; `VERSION` says which release it is.
+ * checks read. A project's copy takes only the kit's AGENTS.md, so `doctor` and
+ * `update` in CI and the hooks compare against the kit the project vendored (#145).
+ * The copy is replaced whole; `VERSION` says which release it is.
  * It copies the .ts files, also from the npm package: `dest` is not under node_modules,
  * so Node runs them there as they are.
  */
 export function copyRuntime(dest: string, { withKit = false }: { withKit?: boolean } = {}): void {
   rmSync(dest, { recursive: true, force: true });
   mkdirSync(dest, { recursive: true });
-  for (const part of ['bin', 'src', 'package.json', ...(withKit ? ['kit'] : [])]) cpSync(join(HOME_DIR, part), join(dest, part), { recursive: true });
+  const kitParts = withKit ? ['kit'] : [join('kit', 'project', 'AGENTS.md')];
+  for (const part of ['bin', 'src', 'package.json', ...kitParts]) cpSync(join(HOME_DIR, part), join(dest, part), { recursive: true });
   writeFileSync(join(dest, 'VERSION'), `${VERSION}\n`);
 }
 
