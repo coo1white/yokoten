@@ -20,16 +20,22 @@ On 2026-10-18 the owner chose that the bot keeps the Workflows permission.
   - npm publishing runs only in the protected `release` environment
     ([0009](0009-release-environment.md)). A workflow on a branch can't publish.
   - The tag ruleset lets only the owner create `v*` tags.
+  - The Actions setting "Allow GitHub Actions to create and approve pull requests"
+    stays off. Otherwise a workflow the bot pushes could approve the bot's own pull
+    request and meet the one-approval rule unread.
 - The rest of point 8 stands: agents never use the owner's account to approve, and
   never push tags or releases.
 
 ## Options not taken
 
 - **No Workflows permission.** Every CI change from an agent would stop for a hand
-  step. Manual steps are the exception (0001 point 5).
+  step, and 0001 point 5 keeps the owner's manual steps at three or fewer.
 
 ## Consequences
 
 - A workflow the bot pushes to a branch runs before anyone reviews it. So any secret
   or cloud trust must sit behind a protected environment, as 0009 says.
+- If someone turns on "Allow GitHub Actions to create and approve pull requests",
+  CI could approve the bot's pull requests. Keep it off while the bot has this
+  permission.
 - Docs that say the bot has no Workflows permission are wrong and get fixed in place.
