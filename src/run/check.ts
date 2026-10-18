@@ -17,7 +17,10 @@ const git = (cwd: string, args: string[]) => execFileSync('git', args, { cwd, en
 const gitBytes = (cwd: string, args: string[], input = '') => execFileSync('git', args, { cwd, input, maxBuffer: 1 << 30 });
 const list = (out: string) => out.split('\0').filter(Boolean);
 
-export const gitRoot = (cwd: string): string => git(cwd, ['rev-parse', '--show-toplevel']).trim();
+// Outside a repo this fails, and the caller handles it. Hide git's own error, or an agent
+// reads it as the result of the command the guard just stopped.
+export const gitRoot = (cwd: string): string =>
+  execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 
 /** The files in the index: what the next commit (or, in CI, the checkout) holds. */
 export const indexFiles = (root: string): string[] => list(git(root, ['ls-files', '-z']));

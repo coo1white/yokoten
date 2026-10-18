@@ -94,7 +94,7 @@ not now（暂不，后面跟着你给的原因）或者 can't check（这里查�
 AI 想推送发版 tag 时，会看到：
 
 ```
-yokoten: git push --tags pushes tags. Only the owner decides when to release. If the owner asked for this, they start the session with YOKOTEN_RELEASE_APPROVAL set.
+yokoten: git push --tags pushes tags. Only the owner decides when to release. If the owner asked for this, they start a new session with YOKOTEN_RELEASE_APPROVAL=1 (`YOKOTEN_RELEASE_APPROVAL=1 claude`); do not look for another way.
 ```
 
 （提示用英文写，因为 AI 读英文最不容易出错。）
