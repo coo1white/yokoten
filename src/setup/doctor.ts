@@ -59,14 +59,19 @@ export function selfTest(): string[] {
 }
 
 /**
- * The other agents' tool-call hooks. Reported, but not a missing practice yet: no real
- * Codex or Gemini CLI run has been seen to block through them (#30), and a project that
- * uses neither should not fail doctor over them.
+ * The other agents' project hooks: the tool-call guard and the stop check. Reported, but
+ * not a missing practice yet: no real Codex or Gemini CLI run has been seen to block
+ * through them (#30), and a project that uses neither should not fail doctor over them.
  */
 export function agentHooks(root: string): Practice[] {
+  // Each step wants both project hooks: the tool-call guard and the stop check (#211).
+  const missing = (guard: boolean, stop: boolean, file: string) =>
+    [...(guard ? [] : ['no tool-call guard']), ...(stop ? [] : ['no stop check'])].join(' and ') + ` in ${file}`;
+  const [codexGuard, codexStop] = [codex.hasProjectHook(root), codex.hasProjectStopHook(root)];
+  const [geminiGuard, geminiStop] = [gemini.hasProjectHook(root), gemini.hasProjectStopHook(root)];
   return [
-    practice('codex-hook', 'codex-hook', codex.hasProjectHook(root), 'no tool-call guard in .codex/hooks.json', '`yokoten init` adds it'),
-    practice('gemini-hook', 'gemini-hook', gemini.hasProjectHook(root), 'no tool-call guard in .gemini/settings.json', '`yokoten init` adds it'),
+    practice('codex-hook', 'codex-hook', codexGuard && codexStop, missing(codexGuard, codexStop, '.codex/hooks.json'), '`yokoten init` adds it'),
+    practice('gemini-hook', 'gemini-hook', geminiGuard && geminiStop, missing(geminiGuard, geminiStop, '.gemini/settings.json'), '`yokoten init` adds it'),
   ];
 }
 

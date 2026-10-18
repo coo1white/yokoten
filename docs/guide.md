@@ -203,9 +203,25 @@ yokoten guards three AI coding agents. Each one keeps the same rules.
 | Agent | What yokoten adds |
 |---|---|
 | Claude Code | the tool-call guard (a hook), the stop check (a hook), the guide at the start of each session, skills and agents |
-| Codex CLI | the tool-call guard, in `.codex/hooks.json`. Codex asks you once to trust project hooks (`/hooks`) |
-| Gemini CLI | the tool-call guard, in `.gemini/settings.json`. Start Gemini at the repo root: it reads `.gemini/settings.json` from the folder it starts in, and nowhere else |
+| Codex CLI | the tool-call guard and the stop check, in `.codex/hooks.json`. The guide at the start of each session and the command guard, in `~/.codex/hooks.json` |
+| Gemini CLI | the tool-call guard and the stop check (AfterAgent), in `.gemini/settings.json`. The guide at the start of each session and the command guard, in `~/.gemini/settings.json` |
 | Any other agent | the rules in `AGENTS.md`, and the commit check, which stops a bad commit whoever made it |
+
+`init` writes the project hooks. `install` writes the user hooks. Each agent runs a
+hook only after you trust it:
+
+- **Codex** runs project hooks only in a trusted project. Then approve each hook in
+  `/hooks`. Codex remembers the command, so a changed command must be approved again.
+- **Gemini CLI** runs project hooks only in a trusted folder. Start Gemini at the repo
+  root: it reads `.gemini/settings.json` from the folder it starts in, and nowhere else.
+  It warns once before it runs a new or changed hook.
+
+A worker is a session with `YOKOTEN_ROLE=worker`. In Codex, a subagent whose
+`agent_type` names a worker is a worker too. Gemini CLI's strict environment
+sanitization removes `YOKOTEN_ROLE` from the hooks. Then yokoten can't tell a worker in
+Gemini CLI: every session counts as the lead, and the lead-only guard does not stop a
+worker's edit. The server lock still holds: code owners, and a bot without the rights to
+change CI.
 
 ## Install and commands
 
@@ -362,11 +378,11 @@ It puts two safe defaults in `.github/` too:
 
 | Command | What it does |
 |---------|--------------|
-| `install` | Skills into `~/.claude/skills` and `~/.agents/skills`, agents into `~/.claude/agents`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file |
+| `install` | Skills into `~/.claude/skills` and `~/.agents/skills`, agents into `~/.claude/agents`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file. The two hooks go to Claude Code, Codex and Gemini CLI |
 | `init [dir]` | Puts the practices into a project. Adds files; keeps any that are already there and says so. It also reads GitHub through `gh` and says which standard labels and milestone it would add. It never changes GitHub. Without `gh`, a sign-in or a GitHub remote, it says what it skipped |
 | `init --github --yes [--remove-default-labels]` | Adds the missing standard labels, and a milestone "First release" when no milestone is open. When a closed milestone already has that title, the new one is "Next release". A closed milestone is never reopened. A standard label that is there gets the standard colour and description. A second run changes nothing. GitHub's default labels outside the set (`question`, `wontfix` and others) are deleted only with `--remove-default-labels` |
 | `update [dir] [--write]` | Shows what this yokoten changes in the core rules of the project's `AGENTS.md`. `--write` replaces them, and keeps the "This project" part as it is. See [Updating the rules](#updating-the-rules) |
-| `doctor [--session]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session |
+| `doctor [--session]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session. With `--agent gemini`, it prints the step as the JSON that Gemini CLI reads |
 | `adopt [--json]` | A draft of the adoption table for an old project: what it does today, and a proposed decision for each step. `--json` prints the rows. Writes nothing |
 | `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries. For the tree, a translation behind its English source is a note. See [Translations](#translations) |
 | `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
@@ -374,7 +390,7 @@ It puts two safe defaults in `.github/` too:
 | `changelog [--write]` | Shows the entries the files in `changes/` add under `[Unreleased]`. `--write` puts them into `CHANGELOG.md` and deletes the files; run it before a release. See [The changelog](#the-changelog) |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public |
 | `hook [--agent <name>] [--commands-only]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini` |
-| `hook --stop` | The stop check. Reads a Claude Code Stop event on stdin and checks the changed files. See [The stop check](#the-stop-check) |
+| `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop event by default, a Codex Stop event with `--agent codex`, a Gemini CLI AfterAgent event with `--agent gemini`. See [The stop check](#the-stop-check) |
 | `explain [<id>]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. Setup: [server.md](server.md#3-the-bot-a-github-app) |
 
@@ -422,7 +438,8 @@ block every tool call.
 
 The tool-call hook reads commands. It does not see a file that `sed` or a script
 changed. The commit check sees it, but only at the commit. The stop check runs earlier:
-when a Claude Code agent tries to end its turn.
+when the agent tries to end its turn. That is the Stop event in Claude Code and Codex,
+and AfterAgent in Gemini CLI.
 
 ```mermaid
 flowchart LR
@@ -435,14 +452,15 @@ flowchart LR
 
 - It checks the changed files only: staged, not staged, and new files that git does not
   ignore. It uses the privacy, secret and file rules of `check --staged`.
-- It sends the agent back once. Claude Code then sets `stop_hook_active`, and the next
+- It sends the agent back once. The agent then sets `stop_hook_active`, and the next
   stop always ends the turn. There is no loop.
 - It reads no history and uses no network.
 - On an error in yokoten, the turn ends and stderr gets one line.
 - A new file you want to keep out of the check goes in `.gitignore`, or in
   `privacy.skip` in `yokoten.json`.
 
-`init` adds it to `.claude/settings.json`. `install` does not add it at user level: it
+`init` adds it to `.claude/settings.json`, `.codex/hooks.json` and `.gemini/settings.json`.
+`install` does not add it at user level: it
 reads files, so each project turns it on, as with the file rules of the tool-call hook.
 
 The commit check refuses a file in a `dist/`, `build/` or `out/` folder, and a binary file.
@@ -743,13 +761,13 @@ Honest limits:
   release or change CI.
 - **Server settings are read on GitHub only.** Another host shows the server steps as
   **can't check**. `doctor` does not check the bot's rights yet.
-- **Claude Code first.** Agents and the user-level hooks follow Claude Code's formats.
+- **Claude Code first.** Agents follow Claude Code's format.
   Skills are the open SKILL.md format, so `install` also puts them in `~/.agents/skills`,
   where Codex, Gemini CLI, Copilot, Cursor and other agents find them. The tool-call
-  guard also runs in Codex and Gemini CLI: `init` writes `.codex/hooks.json` and
-  `.gemini/settings.json`, and each tool asks you once to trust the hook. Nobody has yet
-  seen a real Codex or Gemini CLI session blocked by it (#30), so `doctor` reports those
-  two hooks but does not count them as missing. The rules are plain `AGENTS.md`, which
+  guard and the stop check also run in Codex and Gemini CLI: `init` writes
+  `.codex/hooks.json` and `.gemini/settings.json`, and each tool asks you to trust the
+  hooks. Nobody has yet seen a real Codex or Gemini CLI session blocked by them (#30), so
+  `doctor` reports those hooks but does not count them as missing. The rules are plain `AGENTS.md`, which
   Claude Code reads when a project has no `CLAUDE.md`, and so do most other agents. Muse
   Code's skills and hooks are planned.
 

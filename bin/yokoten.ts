@@ -38,7 +38,8 @@ const HELP = `yokoten ${VERSION}
                              the core rules in a project's AGENTS.md: shows what this yokoten
                              changes; --write replaces them and keeps the "This project" part
   yokoten doctor [--session] the road: where this project is and its next step (--session:
-                             only the next step), and what this machine is missing
+                             only the next step), and what this machine is missing;
+                             --session --agent gemini prints it as Gemini CLI's JSON
   yokoten adopt [--json]     a draft of the adoption table for an old project: what it does
                              today, and as-is, lighter or not now for each step
   yokoten check [--staged]   layout, privacy and lead-only files (--staged: the next commit)
@@ -51,8 +52,10 @@ const HELP = `yokoten ${VERSION}
   yokoten hook [--agent <name>] [--commands-only]
                              the tool-call guard: reads one tool call on stdin; <name> is
                              claude-code (the default), codex or gemini
-  yokoten hook --stop        the stop check: reads a Claude Code Stop event on stdin, checks
-                             the changed files, and sends the agent back once to fix them
+  yokoten hook --stop [--agent <name>]
+                             the stop check: reads the end-of-turn event on stdin (Stop, or
+                             Gemini CLI's AfterAgent), checks the changed files, and sends
+                             the agent back once to fix them
   yokoten explain [<id>]     a rule or a step: what it is, why, and how it is checked
   yokoten bot -- <command>   run one command as the bot (gh, git push); the token is never printed;
                              an issue or pull request title is checked first
@@ -184,17 +187,24 @@ const READERS: Record<string, (input: unknown) => Action> = {
   gemini: gemini.readToolCall,
 };
 
+// Each runtime's event for the end of a turn: Claude Code's and Codex's Stop, Gemini CLI's AfterAgent (#211).
+const STOP_READERS: Record<string, typeof claudeCode.readStop> = {
+  'claude-code': claudeCode.readStop,
+  codex: codex.readStop,
+  gemini: gemini.readStop,
+};
+
 /**
- * The stop check (#92). Claude Code runs it when the agent is about to end its turn
+ * The stop check (#92). The agent runs it when it is about to end its turn
  * (code.claude.com/docs/en/hooks#stop). Findings in the changed files send the agent back
  * once: exit 2, with the findings on stderr as the reason. `stop_hook_active` means it was
  * already sent back, so the turn ends whatever is found: never a loop. On any error the
  * turn ends too, with one line on stderr: a broken check must not trap a session.
  */
-function stopHook(json: boolean): number {
+function stopHook(json: boolean, read: typeof claudeCode.readStop): number {
   let event: ReturnType<typeof claudeCode.readStop>;
   try {
-    event = claudeCode.readStop(JSON.parse(readFileSync(0, 'utf8')));
+    event = read(JSON.parse(readFileSync(0, 'utf8')));
   } catch {
     event = null;
   }
@@ -217,7 +227,7 @@ function stopHook(json: boolean): number {
   }
   if (json) printJson({ blocked: findings.length > 0, stop: true, findings });
   if (!findings.length) return 0;
-  // Claude Code gives stderr to the agent as the reason to go on when a Stop hook exits 2.
+  // Each runtime gives stderr to the agent as the reason to go on when this hook exits 2.
   print([`yokoten: ${findings.length} problem(s) in the changed files. Fix them before you end the turn:`, ...bullets(findings)], process.stderr);
   return 2;
 }
@@ -228,12 +238,12 @@ function main(): number | Promise<number> {
       const options = parse({ flags: ['--commands-only', '--json', '--stop'], values: ['--agent'] });
       if (typeof options === 'string') return usage(options);
       const json = options.flags.has('--json');
+      const agent = options.values['--agent'] ?? 'claude-code';
       if (options.flags.has('--stop')) {
         if (options.flags.has('--commands-only')) return usage("--stop and --commands-only can't be used together");
-        if ((options.values['--agent'] ?? 'claude-code') !== 'claude-code') return usage('--stop reads a Claude Code Stop event only');
-        return stopHook(json);
+        if (!Object.hasOwn(STOP_READERS, agent)) return usage(`unknown --agent ${agent}; use one of: ${Object.keys(STOP_READERS).join(', ')}`);
+        return stopHook(json, STOP_READERS[agent]);
       }
-      const agent = options.values['--agent'] ?? 'claude-code';
       const read = Object.hasOwn(READERS, agent) ? READERS[agent] : undefined;
       if (!read) {
         print([`yokoten hook: unknown --agent ${agent}; use one of: ${Object.keys(READERS).join(', ')}`], process.stderr);
@@ -367,14 +377,19 @@ function main(): number | Promise<number> {
       return 0;
     }
     case 'doctor': {
-      const options = parse({ flags: ['--session', '--json'] });
+      const options = parse({ flags: ['--session', '--json'], values: ['--agent'] });
       if (typeof options === 'string') return usage(options);
+      const agent = options.values['--agent'] ?? 'claude-code';
+      if (!Object.hasOwn(READERS, agent)) return usage(`unknown --agent ${agent}; use one of: ${Object.keys(READERS).join(', ')}`);
       const session = options.flags.has('--session');
       const root = rootOf(process.cwd());
       const config = root ? loadConfig(root) : DEFAULTS;
       const { ok, lines, report } = doctor(root, { env, config, session, gh: root ? ghIn(root) : undefined });
       if (options.flags.has('--json')) printJson(report);
-      else print(lines);
+      // Gemini CLI reads a SessionStart hook's context from JSON only (#211).
+      else if (session && agent === 'gemini') {
+        if (lines.length) say(`${gemini.formatSessionContext(hideHome(lines.join('\n'), env))}\n`, process.stdout);
+      } else print(lines);
       // A session must start even when a project has steps left.
       return session || ok ? 0 : 1;
     }

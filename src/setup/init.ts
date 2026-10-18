@@ -60,6 +60,8 @@ export function init(root: string): string[] {
   // small files are easier to predict than a guess about which agents someone uses.
   report.push(`${codex.addProjectHook(root, cli)} the Codex tool-call hook in .codex/hooks.json (Codex asks you to trust it once, in /hooks)`);
   report.push(`${gemini.addProjectHook(root, cli)} the Gemini CLI tool-call hook in .gemini/settings.json`);
+  report.push(`${codex.addProjectStopHook(root, cli)} the Codex stop check in .codex/hooks.json`);
+  report.push(`${gemini.addProjectStopHook(root, cli)} the Gemini CLI stop check in .gemini/settings.json (AfterAgent)`);
   report.push(`${setProjectEnv(root, 'TZ', 'UTC')} TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)`);
   report.push(...setCommitCheck(root, cli, hooks));
   return report;
