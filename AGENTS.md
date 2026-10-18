@@ -1,3 +1,4 @@
+<!-- yokoten kit {{version}} -->
 # How work is done here
 
 This file is for every agent and every person working in this repo. It starts from

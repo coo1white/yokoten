@@ -447,6 +447,47 @@ test('update: doctor says when the core rules are behind; update previews, and -
   assert.match(sandbox.run(['explain', 'core-rules']).stdout, /^core-rules: the core rules in AGENTS\.md/);
 });
 
+// A project written by a newer yokoten is never taken back to an older kit (#141).
+test('update: init writes the kit version; a newer project is refused, an older one is updated (#141)', () => {
+  const sandbox = makeSandbox();
+  assert.equal(sandbox.run(['init']).status, 0);
+  const path = join(sandbox.repo, 'AGENTS.md');
+  const fresh = readFileSync(path, 'utf8');
+  assert.match(fresh, /^<!-- yokoten kit 0\.1\.0 -->\n# How work is done here\n/, 'init writes the mark on the first line');
+  const own = fresh.slice(fresh.indexOf('## This project'));
+  const kitCore = fresh.slice(0, fresh.indexOf('## This project'));
+
+  // Newer: a later kit added a line. update refuses, with or without --write, and doctor
+  // says to update yokoten, not the project.
+  const newer = kitCore.replace('0.1.0 -->', '0.2.0 -->').replace('## Roles\n', '## Roles\n\nA rule from a later kit.\n') + own;
+  writeFileSync(path, newer);
+  for (const args of [['update'], ['update', '--write']]) {
+    const result = sandbox.run(args);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /^yokoten update: AGENTS\.md was written by yokoten 0\.2\.0, newer than this yokoten 0\.1\.0\. Nothing was written/);
+  }
+  assert.equal(readFileSync(path, 'utf8'), newer, 'a newer project is not downgraded');
+  const doctor = sandbox.run(['doctor']);
+  assert.match(doctor.stdout, /\n {2}note +core-rules: the core rules in AGENTS\.md come from yokoten 0\.2\.0, newer than this yokoten 0\.1\.0; update yokoten itself, not the project/);
+  assert.doesNotMatch(doctor.stdout, /MISSING core-rules/);
+
+  // Older: the same text with an older mark is updated, and gets the new mark.
+  writeFileSync(path, newer.replace('0.2.0 -->', '0.0.9 -->'));
+  assert.match(sandbox.run(['doctor']).stdout, /MISSING core-rules: the core rules in AGENTS\.md are behind/);
+  let result = sandbox.run(['update', '--write']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(path, 'utf8'), fresh);
+
+  // No mark (every project before #141): an unknown version, compared by content as before.
+  const unmarked = newer.replace(/^<!-- yokoten kit .* -->\n/, '');
+  writeFileSync(path, unmarked);
+  result = sandbox.run(['update', '--write']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(path, 'utf8'), fresh, 'updated, and the mark is added');
+  writeFileSync(path, fresh.replace(/^<!-- yokoten kit .* -->\n/, ''));
+  assert.match(sandbox.run(['update']).stdout, /up to date/, 'the mark alone is no change');
+});
+
 // The road (record 0004). A session hears three lines about one step; the marks file is
 // set so that the private-marks note does not add a fourth.
 test('doctor --session: exactly three lines, about the first step of the first stage not done', () => {
