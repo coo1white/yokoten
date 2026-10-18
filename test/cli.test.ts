@@ -1781,17 +1781,72 @@ test('doctor: notes the Codex and Gemini CLI user hooks when that CLI is used (#
     assert.doesNotMatch(before.stdout, new RegExp(name), `${agent}: no ~/${dir}, no line`);
     mkdirSync(join(sandbox.home, dir));
     const noted = sandbox.run(['doctor']);
-    assert.match(noted.stdout, new RegExp(`note {4}${name}: no session-start doctor and no command guard in ~/${dir}/${file}; \`yokoten install\` adds it`));
+    assert.match(noted.stdout, new RegExp(`^  note {4}${name}: no session-start doctor and no command guard in ~/${dir}/${file}; \`yokoten install\` adds them$`, 'm'));
     assert.equal(noted.status, before.status, `${agent}: a note never changes the exit code`);
     const json = JSON.parse(sandbox.run(['doctor', '--json']).stdout);
-    assert.ok(json.notes.some((n: { id: string }) => n.id === `${agent}-hook`), `${agent}: a note in --json`);
-    assert.ok(!json.findings.some((n: { id: string }) => n.id === `${agent}-hook`), `${agent}: not a finding`);
+    assert.ok(json.notes.some((n: { id: string }) => n.id === name), `${agent}: a note in --json, under its own id`);
+    assert.ok(!json.notes.some((n: { id: string; what: string }) => n.id === `${agent}-hook` && n.what.includes(`~/${dir}`)), `${agent}: not under the project rule's id`);
+    assert.ok(!json.findings.some((n: { id: string }) => n.id === name), `${agent}: not a finding`);
     // The folder exists by now, so install writes the hooks.
     assert.equal(sandbox.run(['install']).status, 0);
     assert.match(sandbox.run(['doctor']).stdout, new RegExp(`ok {6}${name}\\n`));
     const explain = sandbox.run(['explain', `${agent}-hook`]).stdout;
     assert.match(explain, /tool-call guard and stop check/);
     assert.match(explain, agent === 'codex' ? /a Stop hook/ : /an AfterAgent hook/);
+    assert.doesNotMatch(explain, new RegExp(`~/${dir}`), `${agent}-hook is about the project only`);
+    const explainUser = sandbox.run(['explain', name]).stdout;
+    assert.match(explainUser, /session-start doctor and command guard/);
+    assert.match(explainUser, new RegExp(`~/${dir}/${file}`));
+  }
+});
+
+// #211 review: doctor compares each user hook with what install writes, so one missing,
+// an old one, or a file it can't read each says so; a ~/.codex that is a file is no folder.
+test('doctor: a missing, out-of-date or unreadable Codex or Gemini CLI user hook (#211)', () => {
+  for (const [agent, dir, file, guardEvent] of [['codex', '.codex', 'hooks.json', 'PreToolUse'], ['gemini', '.gemini', 'settings.json', 'BeforeTool']]) {
+    const sandbox = makeSandbox();
+    const name = `${agent}-user-hook`;
+    const path = join(sandbox.home, dir, file);
+    const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const line = (text: string) => new RegExp(`^  note {4}${name}: ${escape(text)}$`, 'm');
+    mkdirSync(join(sandbox.home, dir));
+    assert.equal(sandbox.run(['install']).status, 0);
+    const written = readFileSync(path, 'utf8');
+    type Hooks = { hooks: Record<string, { matcher?: string; hooks: { command: string }[] }[]> };
+    const edit = (change: (s: Hooks) => void) => {
+      const settings: Hooks = JSON.parse(written);
+      change(settings);
+      writeFileSync(path, JSON.stringify(settings));
+    };
+    // Only the guard missing: its exact line, and "it".
+    edit((s) => delete s.hooks[guardEvent]);
+    assert.match(sandbox.run(['doctor']).stdout, line(`no command guard in ~/${dir}/${file}; \`yokoten install\` adds it`));
+    // The doctor hook from an older runtime path: out of date, not ok.
+    edit((s) => {
+      const hook = s.hooks.SessionStart[0].hooks[0];
+      hook.command = hook.command.replace('.local/share/yokoten', '.yokoten');
+    });
+    assert.match(sandbox.run(['doctor']).stdout, line(`the session-start doctor in ~/${dir}/${file} is out of date; \`yokoten install\` updates it`));
+    // The guard on another matcher: out of date too.
+    edit((s) => {
+      s.hooks[guardEvent][0].matcher = 'other';
+    });
+    assert.match(sandbox.run(['doctor']).stdout, line(`the command guard in ~/${dir}/${file} is out of date; \`yokoten install\` updates it`));
+    assert.match(sandbox.run(['install']).stdout, /^updated the .* command guard in /m);
+    assert.match(sandbox.run(['doctor']).stdout, new RegExp(`^  ok {6}${name}$`, 'm'));
+    // A file that won't parse: can't read it, never "missing".
+    writeFileSync(path, '{ not json');
+    const unread = sandbox.run(['doctor']);
+    assert.match(unread.stdout, line(`can't read ~/${dir}/${file}; make it valid JSON, then run \`yokoten install\``));
+    assert.doesNotMatch(unread.stdout, new RegExp(`${name}: no `));
+    // A ~/.codex that is a file: not a folder, so doctor says nothing and install skips it.
+    rmSync(join(sandbox.home, dir), { recursive: true });
+    writeFileSync(join(sandbox.home, dir), 'a file');
+    assert.doesNotMatch(sandbox.run(['doctor']).stdout, new RegExp(name));
+    const install = sandbox.run(['install']);
+    assert.equal(install.status, 0, install.stderr);
+    assert.match(install.stdout, new RegExp(`^skipped .*: ~/\\${dir} not found`, 'm'));
+    assert.equal(readFileSync(join(sandbox.home, dir), 'utf8'), 'a file');
   }
 });
 

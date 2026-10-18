@@ -27,6 +27,10 @@ export const paths = (env: Env) => {
   };
 };
 
+/** The runtime the user hooks run, and what they say when it is gone. `doctor` compares the hooks with these. */
+export const USER_CLI = '"$HOME/.local/share/yokoten/bin/yokoten.ts"';
+export const USER_MISSING = 'yokoten: the runtime at ~/.local/share/yokoten is missing; run the install again';
+
 /** Every place a skill goes: Claude Code's folder, and the shared one other agents read. */
 export const skillFiles = (env: Env, name: string): string[] => [claudeSkillFile(env, name), sharedSkillFile(env, name)];
 
@@ -56,18 +60,16 @@ export function install(env: Env): string[] {
     report.push(`${result} agent ${file.replace(/\.md$/, '')}`);
   }
 
-  const cli = '"$HOME/.local/share/yokoten/bin/yokoten.ts"';
-  const missing = 'yokoten: the runtime at ~/.local/share/yokoten is missing; run the install again';
-  const hooks = addUserHooks(env, cli, missing);
+  const hooks = addUserHooks(env, USER_CLI, USER_MISSING);
   report.push(`${hooks.doctor} the SessionStart doctor`, `${hooks.guard} the user-level command guard`);
   // Codex and Gemini CLI get the same two hooks (#211), but only when the CLI's folder is
   // already there: install never makes ~/.codex or ~/.gemini for someone who doesn't use it.
   if (codex.hasUserDir(env)) {
-    const codexHooks = codex.addUserHooks(env, cli, missing);
+    const codexHooks = codex.addUserHooks(env, USER_CLI, USER_MISSING);
     report.push(`${codexHooks.doctor} the Codex SessionStart doctor in ~/.codex/hooks.json`, `${codexHooks.guard} the Codex command guard in ~/.codex/hooks.json`);
   } else report.push('skipped Codex CLI: ~/.codex not found (run `yokoten install` again after installing Codex)');
   if (gemini.hasUserDir(env)) {
-    const geminiHooks = gemini.addUserHooks(env, cli, missing);
+    const geminiHooks = gemini.addUserHooks(env, USER_CLI, USER_MISSING);
     report.push(`${geminiHooks.doctor} the Gemini CLI SessionStart doctor in ~/.gemini/settings.json`, `${geminiHooks.guard} the Gemini CLI command guard in ~/.gemini/settings.json`);
   } else report.push('skipped Gemini CLI: ~/.gemini not found (run `yokoten install` again after installing Gemini CLI)');
 

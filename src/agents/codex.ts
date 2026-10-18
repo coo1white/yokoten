@@ -5,13 +5,13 @@
 // and reviews the hook (`/hooks`). It records trust against the hook's hash, so a changed
 // command has to be trusted again.
 
-import { existsSync } from 'node:fs';
+import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { guardCommand, missingProjectRuntime } from '../run/cli.ts';
 import type { Action } from '../run/hook.ts';
-import { type Added, addHook, hasHook } from './hooks-file.ts';
+import { type Added, addHook, hasHook, type HookArgs, type HookState, hookState } from './hooks-file.ts';
 
 // The docs: "Bash and apply_patch use tool_input.command", and unified exec reports as Bash.
 const SHELL = 'Bash';
@@ -66,23 +66,37 @@ export { readStop } from './claude-code.ts';
 
 const userHooks = (env: Env) => join(env.HOME || homedir(), '.codex', 'hooks.json');
 
+/** The two user hooks, as `addHook`'s arguments: one builder for `addUserHooks` and `userHooksState`. */
+const userHookArgs = (env: Env, cli: string, missing: string): Record<'doctor' | 'guard', HookArgs> => ({
+  doctor: [userHooks(env), 'SessionStart', undefined, guardCommand(cli, 'doctor --session --agent codex', missing, { isSessionStart: true })],
+  guard: [userHooks(env), 'PreToolUse', SHELL, guardCommand(cli, 'hook --agent codex --commands-only', missing)],
+});
+
 /**
  * The user's hooks, in every repo: doctor at session start, and the command guard on
  * shell calls. Codex adds a SessionStart hook's plain stdout to the agent's context.
  * `missing` is what they say when `cli` is gone.
  */
 export function addUserHooks(env: Env, cli: string, missing: string): { doctor: Added; guard: Added } {
-  return {
-    doctor: addHook(userHooks(env), 'SessionStart', undefined, guardCommand(cli, 'doctor --session --agent codex', missing, { isSessionStart: true })),
-    guard: addHook(userHooks(env), 'PreToolUse', SHELL, guardCommand(cli, 'hook --agent codex --commands-only', missing)),
-  };
+  const args = userHookArgs(env, cli, missing);
+  return { doctor: addHook(...args.doctor), guard: addHook(...args.guard) };
 }
 
-/** Whether Codex looks used on this machine: its user folder, ~/.codex, exists. */
-export const hasUserDir = (env: Env): boolean => existsSync(dirname(userHooks(env)));
+/** Whether Codex looks used on this machine: its user folder, ~/.codex, is a folder. */
+export function hasUserDir(env: Env): boolean {
+  try {
+    return statSync(dirname(userHooks(env))).isDirectory();
+  } catch {
+    return false;
+  }
+}
 
-/** Whether the user's hooks from `addUserHooks` are there: doctor at session start, and the command guard. */
-export const hasUserHooks = (env: Env): { doctor: boolean; guard: boolean } => ({
-  doctor: hasHook(userHooks(env), 'SessionStart', 'doctor'),
-  guard: hasHook(userHooks(env), 'PreToolUse', 'hook'),
-});
+/**
+ * The user's hooks against what `addUserHooks` would write with the same `cli` and
+ * `missing`, read-only (see `hookState`): a hook with another command, matcher or runtime
+ * path is 'updated', one not there is 'added'.
+ */
+export function userHooksState(env: Env, cli: string, missing: string): { doctor: HookState; guard: HookState } {
+  const args = userHookArgs(env, cli, missing);
+  return { doctor: hookState(...args.doctor), guard: hookState(...args.guard) };
+}

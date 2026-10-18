@@ -12,7 +12,7 @@ import { POSITIVE_CONTROL, scanText } from '../src/rules/privacy.ts';
 import { SECRET_CONTROL } from '../src/rules/secrets.ts';
 import { check, timeZoneNote } from '../src/run/check.ts';
 import { parseSourceMarker, sourceMarker, translationNotes } from '../src/run/translations.ts';
-import { agentHooks, coreRulesCheck, coreRulesControl, machineChecks, selfTest } from '../src/setup/doctor.ts';
+import { agentHooks, coreRulesCheck, coreRulesControl, machineChecks, selfTest, userAgentHooks } from '../src/setup/doctor.ts';
 import { compareCoreRules, compareVersions, readKitVersion } from '../src/setup/init.ts';
 import { explain, explainLines, ids } from '../src/setup/advice/explain.ts';
 import { ROAD, serverChecks, stepFinding } from '../src/setup/road.ts';
@@ -464,6 +464,9 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
   for (const step of ROAD) add(stepFinding(step, dir, { HOME: dir }));
   for (const c of [...agentHooks(dir), ...machineChecks({ HOME: dir, YOKOTEN_PRIVATE_MARKS: join(dir, 'none') })]) add(c.finding);
+  // The Codex and Gemini CLI user hooks (#211): only once their folders exist.
+  for (const folder of ['.codex', '.gemini']) mkdirSync(join(dir, folder));
+  for (const c of userAgentHooks({ HOME: dir })) add(c.finding);
   // The core rules (#120): behind the kit, and with no heading to compare by.
   for (const rules of ['# old rules\n\n## This project\n', '# rules\n']) {
     writeFileSync(join(dir, 'AGENTS.md'), rules);
