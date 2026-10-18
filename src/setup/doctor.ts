@@ -136,7 +136,7 @@ function roadControl(): string[] {
 }
 
 /** What doctor can't read on the server yet, and the owner sets once per repo. */
-const OWNER_STEPS = ['the bot: a GitHub App (or collaborator) with write access and no Workflows permission'];
+const OWNER_STEPS = ['the bot: a GitHub App (or collaborator) with write access; CODEOWNERS sends CI changes to you'];
 
 /** The settings to check by hand when doctor can't read the server. */
 const BY_HAND = [
