@@ -11,6 +11,7 @@ import { checkEdit } from '../rules/guards.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
 import { type Finding, finding } from '../rules/message.ts';
 import { loadMarks, notUtc, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
+import { translationNotes } from './translations.ts';
 
 const git = (cwd: string, args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 1 << 30 });
 // Bytes, not text: a blob may be binary.
@@ -65,8 +66,12 @@ function stagedBinary(root: string): { path: string; binary: boolean }[] {
   return files;
 }
 
-/** Problems for the whole tree, or with `staged`, for the commit about to be made. */
-export function check(root: string, { config, env, staged = false }: { config: Config; env: Env; staged?: boolean }): Finding[] {
+/**
+ * Problems for the whole tree, or with `staged`, for the commit about to be made. For the
+ * whole tree, a translation behind its source (#87) goes in `notes`, or with yokoten.json
+ * `"translations": { "fail": true }`, in the problems.
+ */
+export function check(root: string, { config, env, staged = false, notes = [] }: { config: Config; env: Env; staged?: boolean; notes?: Finding[] }): Finding[] {
   const problems: Finding[] = [];
   const marks = loadMarks(env);
   const skip = matcher(config.privacy.skip);
@@ -95,6 +100,7 @@ export function check(root: string, { config, env, staged = false }: { config: C
       }
       privacy(path, buf);
     }
+    (config.translations.fail ? problems : notes).push(...translationNotes(root, indexFiles(root)));
   }
   problems.push(...checkLayout(indexFiles(root), config));
   return problems;

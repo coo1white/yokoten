@@ -68,3 +68,8 @@ owner can choose a different version.
 - Start a release when the owner has not asked for one.
 
 After the owner merges, tell them the command to run: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+
+If the project publishes from a release workflow with a `release` environment, also
+tell the owner: the tag starts the workflow, the checks run, and then the publish job
+waits. It publishes only after the owner approves it in the `release` environment, on
+the run page (**Review deployments**). Nothing reaches the registry before that.

@@ -7,10 +7,11 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { annotation, annotations, appJwt, botConfig, botEnv, type Gh, installationToken, readCommandTitle, readIncident, readServer, repoOf, type ServerSettings, stepSummary, type Unread } from '../src/host/github.ts';
+import { annotation, annotations, appJwt, botConfig, botEnv, type Gh, installationToken, readCommandTitle, readIncident, readServer, repoOf, type ServerSettings, stepSummary, type Unread, type Label, readPlanning } from '../src/host/github.ts';
 import { DEFAULTS } from '../src/rules/config.ts';
 import { checkCommand } from '../src/rules/guards.ts';
-import { doctor, serverChecks } from '../src/setup/doctor.ts';
+import { doctor } from '../src/setup/doctor.ts';
+import { road, ROAD, serverChecks, stepFinding } from '../src/setup/road.ts';
 import { LABELS, setUpPlanning } from '../src/setup/plan.ts';
 
 // A throwaway key, made for this test run only.
@@ -96,65 +97,6 @@ test('command title: the title gh issue or gh pr create or edit sets; null for a
 test('the bot is not a way around the guard', () => {
   assert.ok(checkCommand('node .yokoten/bin/yokoten.ts bot -- git push --tags', { env: {} }));
   assert.ok(checkCommand('yokoten bot -- gh release create v1', { env: {} }));
-});
-
-// A fake gh that holds one repo's labels and milestones in memory. The real one is never run.
-function fakeGh(labels: string[], milestones: string[] = []) {
-  const calls: string[][] = [];
-  const gh: Gh = (args) => {
-    calls.push(args);
-    const [command, subcommand] = args;
-    if (command === 'repo') return 'me/repo\n';
-    if (command === 'label' && subcommand === 'list') return labels.map((l) => `${l}\n`).join('');
-    if (command === 'label' && subcommand === 'create') {
-      if (args[2] === 'docs') throw Object.assign(new Error('failed'), { stderr: 'HTTP 403: no access\n' });
-      labels.push(args[2]);
-      return '';
-    }
-    if (command === 'api' && args.includes('POST')) {
-      milestones.push(`open ${args.at(-1)?.slice('title='.length)}`);
-      return '';
-    }
-    if (command === 'api') return milestones.map((m) => `${m}\n`).join('');
-    throw new Error(`unexpected gh ${args.join(' ')}`);
-  };
-  return { gh, calls, labels, milestones };
-}
-
-test('planning: says what it would make, and changes nothing without --yes (#10)', () => {
-  const f = fakeGh(['bug', 'Enhancement', 'wontfix']);
-  const r = setUpPlanning(f.gh, false);
-  assert.ok(r.ok);
-  assert.ok(r.lines.includes('- 1 of the 9 standard labels are there; kept'));
-  assert.ok(r.lines.some((l) => l.startsWith('- not in the standard set: Enhancement, wontfix. yokoten never deletes')));
-  assert.ok(r.lines.includes('- label "hotfix" (Urgent: fix and release soon)'));
-  assert.ok(r.lines.includes('- milestone "First release"'));
-  assert.deepEqual(f.calls.filter((c) => c.includes('create') || c.includes('POST')), [], 'nothing made');
-});
-
-test('planning: makes what is missing, keeps what is there, and a second run makes nothing (#10)', () => {
-  const fake = fakeGh(['BUG', 'owner'], ['closed v0.0.1']);
-  let result = setUpPlanning(fake.gh, true);
-  assert.equal(result.ok, false, 'one label was refused');
-  assert.ok(result.lines.includes('- could not make label "docs": HTTP 403: no access'));
-  assert.ok(result.lines.includes('- made label "hotfix"'), 'the refusal did not stop the rest');
-  assert.ok(result.lines.includes('- made milestone "First release"'));
-  assert.equal(fake.calls.filter((c) => c[1] === 'create').length, LABELS.length - 2, 'bug and owner kept, case ignored');
-  assert.deepEqual(fake.calls.find((c) => c.includes('docs')), ['label', 'create', 'docs', '--color', '0075ca', '--description', 'Documentation only']);
-  fake.labels.push('docs');
-  const before = fake.calls.length;
-  result = setUpPlanning(fake.gh, true);
-  assert.ok(result.ok);
-  assert.equal(result.lines.at(-1), 'Nothing to make.');
-  assert.ok(fake.calls.slice(before).every((c) => c[1] !== 'create' && !c.includes('POST')));
-});
-
-test('planning: gh missing or signed out is said, not thrown (#10)', () => {
-  const missing = setUpPlanning(() => { throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }); }, true);
-  assert.equal(missing.ok, false);
-  assert.match(missing.lines[0], /^GitHub: gh is not installed/);
-  const out = setUpPlanning(() => { throw new Error('exit 4'); }, true);
-  assert.match(out.lines[0], /run `gh auth login`/);
 });
 
 // The server settings (#7), read through a fake gh. Each route is an API path; a missing
@@ -246,22 +188,177 @@ test("server: gh missing, signed out or refused is \"can't check\" with the fix,
   assert.match(checks.find((c) => c.id === 'delete-branch')?.finding.what ?? '', /only a repo admin/);
 });
 
-test('doctor: reads the server of a GitHub origin; a MISSING setting fails, a note does not (#7)', () => {
+const SERVER_KEYS = ['protection', 'merge-settings', 'security-settings'];
+const serverSteps = () => ROAD.filter((s) => SERVER_KEYS.includes(s.key));
+const serverFound = (server: Parameters<typeof road>[3]) => Object.fromEntries(road('.', {}, serverSteps(), server).map((r) => [r.step.key, r.found]));
+
+test('road: the server steps are stage 5, and pass a repo with every setting on (#7)', () => {
+  assert.deepEqual(serverSteps().map((s) => [s.key, s.stage]), SERVER_KEYS.map((key) => [key, 5]));
+  assert.deepEqual(serverFound(readServer(serverGh(GOOD).gh, REPO)), { protection: true, 'merge-settings': true, 'security-settings': true });
+});
+
+test('road: each server step catches its setting off, and says what and the fix (#7)', () => {
+  const each: [string, Record<string, unknown>, RegExp][] = [
+    ['protection', { [`repos/${REPO}/rules/branches/main`]: [{ type: 'pull_request', parameters: { allowed_merge_methods: ['squash'] } }] }, /no rule for no force push, no deletion; no CI check must pass before a merge; code owner review is not required/],
+    ['protection', { [`repos/${REPO}/rulesets/7`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'deletion' }] } }, /^no active tag ruleset on v\*/],
+    ['merge-settings', { [`repos/${REPO}`]: { ...(GOOD[`repos/${REPO}`] as object), delete_branch_on_merge: false } }, /^merged branches are not deleted$/],
+    ['merge-settings', { [`repos/${REPO}/rules/branches/main`]: [{ type: 'pull_request', parameters: { require_code_owner_review: true, allowed_merge_methods: ['squash', 'rebase'] } }, ...(GOOD[`repos/${REPO}/rules/branches/main`] as object[]).slice(1)] }, /not only by squash/],
+    ['security-settings', { [`repos/${REPO}/private-vulnerability-reporting`]: { enabled: false } }, /^private vulnerability reporting is off$/],
+  ];
+  for (const [key, change, what] of each) {
+    const server = readServer(serverGh({ ...GOOD, ...change }).gh, REPO);
+    const found = serverFound(server);
+    assert.equal(found[key], false, `${key} lets ${Object.keys(change)[0]} through`);
+    assert.equal(Object.values(found).filter((f) => f === false).length, 1, `only ${key} fails`);
+    const f = stepFinding(ROAD.find((s) => s.key === key)!, '.', {}, server);
+    assert.match(f.what, what);
+    assert.match(f.fix, /^in Settings, /);
+  }
+});
+
+test("road: with no gh, no network, a non-GitHub remote or a session, the server steps are can't check, never done (#7)", () => {
+  const unreads = [
+    undefined, // a session
+    readServer(() => { throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }); }, REPO),
+    readServer(() => { throw said(401); }, REPO),
+    readServer(() => { throw new Error('getaddrinfo ENOTFOUND api.github.com'); }, REPO),
+    { unread: 'the origin remote is not on a host yokoten knows (GitHub for now)', fix: 'add a GitHub origin remote, or check these settings by hand' },
+  ];
+  for (const server of unreads) assert.deepEqual(serverFound(server), { protection: null, 'merge-settings': null, 'security-settings': null });
+  const protection = ROAD.find((s) => s.key === 'protection')!;
+  assert.equal(protection.unchecked?.(undefined), 'a session never calls the network; run `yokoten doctor`');
+  assert.match(protection.unchecked?.(unreads[1]) ?? '', /^gh is not installed; get it from https:\/\/cli\.github\.com/);
+  // A setting only an admin can see is can't check too, not done.
+  const hidden = readServer(serverGh({ ...GOOD, [`repos/${REPO}`]: { default_branch: 'main' } }).gh, REPO);
+  assert.equal(serverFound(hidden)['merge-settings'], null);
+});
+
+test('doctor: reads the server of a GitHub origin into the road; a step not done fails, a note does not (#7)', () => {
   const root = mkdtempSync(join(tmpdir(), 'yokoten-server-'));
   execFileSync('git', ['init', '-q', root]);
   const run = (routes: Record<string, unknown>) => doctor(root, { env: { HOME: root }, config: DEFAULTS, gh: serverGh(routes).gh });
   let result = run(GOOD);
-  assert.match(result.lines.join('\n'), /^ {2}can't check server-settings: can't check: the origin remote is not on a host yokoten knows/m);
+  const text = () => result.lines.join('\n');
+  assert.match(text(), /^ {2}can't check server-settings: can't check: the origin remote is not on a host yokoten knows/m);
+  assert.match(text(), /^ {4}can't check protection \(Scorecard: Branch-Protection\): the origin remote is not on a host yokoten knows/m);
   assert.ok(result.lines.some((l) => /secret scanning with push protection/.test(l)), 'the by-hand list when nothing is read');
   execFileSync('git', ['remote', 'add', 'origin', `https://github.com/${REPO}.git`], { cwd: root });
   result = run(GOOD);
-  assert.ok(result.lines.includes('  ok          main-rules'));
+  for (const key of SERVER_KEYS) assert.equal(result.report.steps?.find((s) => s.id === key)?.mark, 'done', key);
+  assert.ok(!result.lines.some((l) => /main-rules/.test(l)), 'the road shows the setting; the server list does not repeat it');
   assert.ok(result.report.notes?.some((n) => n.id === 'forgotten-branches'));
-  assert.ok(!result.report.findings.some((f) => f.id.startsWith('server') || f.id === 'main-rules'));
+  assert.ok(!result.report.findings.some((f) => f.id.startsWith('server') || SERVER_KEYS.includes(f.id)));
   result = run({ ...GOOD, [`repos/${REPO}/rules/branches/main`]: [] });
   assert.equal(result.ok, false);
+  assert.equal(result.report.steps?.find((s) => s.id === 'protection')?.mark, 'to do');
   assert.deepEqual(result.report.server?.find((s) => s.id === 'main-rules'), { id: 'main-rules', mark: 'MISSING' });
-  assert.ok(result.report.findings.some((f) => f.id === 'required-checks'));
+  assert.match(result.report.findings.find((f) => f.id === 'protection')?.what ?? '', /no CI check must pass before a merge/);
+  // A session never calls gh, so the server steps never hold its stage.
+  const session = doctor(root, { env: { HOME: root }, config: DEFAULTS, session: true, gh: () => { throw new Error('a session called gh'); } });
+  assert.notEqual(session.report.next?.id, 'protection');
+});
+
+// A fake gh that holds one repo's labels and milestones in memory. The real one is never run.
+const REMOTE = 'https://github.com/me/repo.git';
+function fakeGh(labels: (string | Label)[], milestones: string[] = []) {
+  const calls: string[][] = [];
+  const held: Label[] = labels.map((l) => (typeof l === 'string' ? { name: l, color: 'ededed', description: '' } : l));
+  const option = (args: string[], name: string) => args[args.indexOf(name) + 1];
+  const gh: Gh = (args) => {
+    calls.push(args);
+    const [command, subcommand, name] = args;
+    assert.ok(command === 'api' || args.includes('me/repo'), `every call names the repo: ${args.join(' ')}`);
+    if (command === 'label' && args.includes('docs') && subcommand !== 'delete') throw Object.assign(new Error('failed'), { stderr: 'HTTP 403: no access\n' });
+    if (command === 'label' && subcommand === 'create') held.push({ name, color: option(args, '--color'), description: option(args, '--description') });
+    else if (command === 'label' && subcommand === 'edit') Object.assign(held.find((l) => l.name === name)!, { color: option(args, '--color'), description: option(args, '--description') });
+    else if (command === 'label' && subcommand === 'delete') held.splice(held.findIndex((l) => l.name === name), 1);
+    else if (command === 'api' && args.includes('POST')) milestones.push(`open ${args.at(-1)?.slice('title='.length)}`);
+    else if (command === 'api' && args.includes('repos/me/repo/labels?per_page=100')) return held.map((l) => `${JSON.stringify(l)}\n`).join('');
+    else if (command === 'api' && args.includes('repos/me/repo/milestones?state=all&per_page=100')) return milestones.map((m) => `${m}\n`).join('');
+    else throw new Error(`unexpected gh ${args.join(' ')}`);
+    return '';
+  };
+  return { gh, calls, held, milestones };
+}
+const writes = (calls: string[][]) => calls.filter((c) => c[0] === 'label' || c.includes('POST'));
+const DRY = { apply: false, removeDefaults: false };
+const APPLY = { apply: true, removeDefaults: false };
+
+test('planning: says what it would do, and changes nothing without --yes (#10)', () => {
+  const standardBug = LABELS.find((l) => l.name === 'bug')!;
+  const f = fakeGh([standardBug, 'feat', 'Enhancement', 'wontfix']);
+  const r = setUpPlanning(f.gh, REMOTE, DRY);
+  assert.ok(r.ok);
+  assert.ok(r.lines.includes('- 1 of the 9 standard labels are there; kept'));
+  assert.ok(r.lines.includes('- not in the standard set: Enhancement, wontfix. yokoten deletes them only with --remove-default-labels'));
+  assert.ok(r.lines.includes('- make label "hotfix" (Urgent: fix and release soon)'));
+  assert.ok(r.lines.includes('- update label "feat" to the standard colour and description'));
+  assert.ok(r.lines.includes('- make milestone "First release"'));
+  assert.equal(r.lines.at(-1), 'Nothing changed. Run `yokoten init --github --yes` to do it.');
+  assert.deepEqual(writes(f.calls), [], 'nothing changed');
+});
+
+test('planning: makes what is missing, updates what differs, and a second run changes nothing (#10)', () => {
+  const fake = fakeGh(['BUG', 'owner', 'question'], ['closed v0.0.1']);
+  let result = setUpPlanning(fake.gh, REMOTE, APPLY);
+  assert.equal(result.ok, false, 'one label was refused');
+  assert.ok(result.lines.includes('- could not make label "docs" (Documentation only): HTTP 403: no access'));
+  assert.ok(result.lines.includes('- done: make label "hotfix" (Urgent: fix and release soon)'), 'the refusal did not stop the rest');
+  assert.ok(result.lines.includes('- done: update label "BUG" to the standard colour and description'), 'case ignored; the name is kept');
+  assert.ok(result.lines.includes('- done: make milestone "First release"'));
+  assert.equal(fake.calls.filter((c) => c[1] === 'create').length, LABELS.length - 2);
+  assert.deepEqual(fake.calls.find((c) => c.includes('docs')), ['label', 'create', 'docs', '-R', 'me/repo', '--color', '0075ca', '--description', 'Documentation only']);
+  assert.ok(fake.held.some((l) => l.name === 'question'), 'a label outside the set is never deleted by default');
+  fake.held.push(LABELS.find((l) => l.name === 'docs')!);
+  // Run twice: no duplicate, no update, nothing made.
+  const before = fake.calls.length;
+  result = setUpPlanning(fake.gh, REMOTE, APPLY);
+  assert.ok(result.ok);
+  assert.equal(result.lines.at(-1), 'Nothing to change.');
+  assert.deepEqual(writes(fake.calls.slice(before)), []);
+  assert.equal(fake.held.filter((l) => l.name.toLowerCase() === 'bug').length, 1, 'no duplicate');
+  assert.deepEqual(fake.milestones, ['closed v0.0.1', 'open First release']);
+});
+
+test('planning: deletes GitHub\'s default labels only with --remove-default-labels (#10)', () => {
+  const fake = fakeGh([...LABELS, 'question', 'Wontfix', 'my-own'], ['open v1']);
+  let result = setUpPlanning(fake.gh, REMOTE, { apply: false, removeDefaults: true });
+  assert.ok(result.lines.includes('- delete label "question" (the host also takes it off every issue)'));
+  assert.equal(result.lines.at(-1), 'Nothing changed. Run `yokoten init --github --yes --remove-default-labels` to do it.');
+  assert.deepEqual(writes(fake.calls), []);
+  result = setUpPlanning(fake.gh, REMOTE, { apply: true, removeDefaults: true });
+  assert.ok(result.ok);
+  assert.deepEqual(writes(fake.calls), [['label', 'delete', 'question', '-R', 'me/repo', '--yes'], ['label', 'delete', 'Wontfix', '-R', 'me/repo', '--yes']]);
+  assert.ok(fake.held.some((l) => l.name === 'my-own'), 'a label the owner made is not a GitHub default');
+});
+
+test('planning: no gh, signed out, or no GitHub remote is a skip that says why, not a failure (#10)', () => {
+  const missing = setUpPlanning(() => { throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }); }, REMOTE, APPLY);
+  assert.equal(missing.ok, true);
+  assert.match(missing.lines[0], /^GitHub: skipped, because gh is not installed\. To set up labels and a milestone, get it from https:\/\/cli\.github\.com/);
+  const out = setUpPlanning(() => { throw Object.assign(new Error('exit 4'), { stderr: 'HTTP 401: Bad credentials' }); }, REMOTE, APPLY);
+  assert.deepEqual(out, { ok: true, lines: ['GitHub: skipped, because gh is not signed in. To set up labels and a milestone, run `gh auth login`, then run `yokoten init --github`'] });
+  const elsewhere = setUpPlanning(() => { throw new Error('gh was called'); }, 'https://gitea.example.com/me/repo.git', APPLY);
+  assert.deepEqual(elsewhere, { ok: true, lines: ['GitHub: skipped, because the origin remote is not on GitHub. Labels and a milestone need a GitHub repo'] });
+  assert.equal(setUpPlanning(() => { throw new Error('gh was called'); }, '', APPLY).ok, true, 'no remote at all');
+});
+
+// The planning steps (#10): stage 2, read in full doctor only.
+const planningFound = (server: Parameters<typeof road>[3]) => Object.fromEntries(road('.', {}, ROAD.filter((s) => ['labels', 'milestone'].includes(s.key)), server).map((r) => [r.step.key, r.found]));
+const withPlanning = (planning: ServerSettings['planning']) => ({ ...(readServer(serverGh(GOOD).gh, REPO) as ServerSettings), planning });
+
+test('road: the labels and milestone steps are stage 2; missing labels or no open milestone is not done (#10)', () => {
+  assert.deepEqual(ROAD.filter((s) => ['labels', 'milestone'].includes(s.key)).map((s) => s.stage), [2, 2]);
+  const all = readPlanning(fakeGh([...LABELS], ['open v1']).gh, 'me/repo');
+  assert.deepEqual(planningFound(withPlanning(all)), { labels: true, milestone: true });
+  const lacking = withPlanning(readPlanning(fakeGh(LABELS.filter((l) => l.name !== 'hotfix'), ['closed v1']).gh, 'me/repo'));
+  assert.deepEqual(planningFound(lacking), { labels: false, milestone: false });
+  assert.equal(stepFinding(ROAD.find((s) => s.key === 'labels')!, '.', {}, lacking).what, 'the standard labels are not all on the server (no hotfix)');
+  // A session, no gh, or a server read without them: can't check, never done.
+  for (const server of [undefined, readServer(() => { throw said(401); }, REPO), withPlanning(undefined), withPlanning({ unread: 'gh is not signed in', fix: 'run `gh auth login`' })]) {
+    assert.deepEqual(planningFound(server), { labels: null, milestone: null });
+  }
+  assert.equal(ROAD.find((s) => s.key === 'labels')!.unchecked?.(undefined), 'a session never calls the network; run `yokoten doctor`');
 });
 
 // #91: workflow commands, escaped as GitHub's runner decodes them
