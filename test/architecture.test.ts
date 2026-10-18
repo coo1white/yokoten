@@ -290,3 +290,33 @@ test('names: src/, bin/ and test/ use whole, short names (#109, #113)', () => {
   assert.deepEqual([...kinds].sort(), ['function', 'parameter', 'property', 'type', 'variable'], 'a kind of declaration was not found; the reader is broken');
   assert.deepEqual(found, [], 'rename each one; the rule and its reasons are in AGENTS.md ("Names") and docs/records/0006-names.md');
 });
+
+// The install commands have one machine-readable source, docs/facts.json, which the site
+// reads (#150). The guides show the same commands, word for word; README shows npx.
+type InstallStep = { cmd: string; note?: { en: string; zh: string } };
+type Facts = { install: Record<string, InstallStep[]> };
+
+/** The commands in `lists` of `facts` that `text` does not hold word for word. */
+function missingCommands(facts: Facts, lists: string[], text: string): string[] {
+  return lists.flatMap((list) => (facts.install[list] ?? []).map((step) => step.cmd)).filter((cmd) => !text.includes(cmd));
+}
+
+test('docs: every install command in docs/facts.json is in the guides and READMEs (#150)', () => {
+  const fake: Facts = { install: { npx: [{ cmd: 'npx yokoten install' }, { cmd: 'npx yokoten uninstall' }] } };
+  assert.deepEqual(missingCommands(fake, ['npx'], 'npx yokoten install\n'), ['npx yokoten uninstall']);
+
+  const facts: Facts = JSON.parse(readFileSync(join(ROOT, 'docs/facts.json'), 'utf8'));
+  assert.ok(facts.install.clone?.length && facts.install.npx?.length, 'docs/facts.json has no install.clone or install.npx; the site reads install.clone');
+  for (const step of Object.values(facts.install).flat()) {
+    if (step.note) assert.ok(step.note.en && step.note.zh, `"${step.cmd}": a note needs en and zh`);
+  }
+  const shown: [string, string[]][] = [
+    ['docs/guide.md', ['npx', 'clone']],
+    ['docs/zh-CN/guide.md', ['npx', 'clone']],
+    ['README.md', ['npx']],
+    ['docs/zh-CN/README.md', ['npx']],
+  ];
+  for (const [file, lists] of shown) {
+    assert.deepEqual(missingCommands(facts, lists, readFileSync(join(ROOT, file), 'utf8')), [], `${file} lacks these commands from docs/facts.json; change both`);
+  }
+});

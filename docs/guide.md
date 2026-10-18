@@ -280,6 +280,9 @@ node ~/.local/share/yokoten/bin/yokoten.ts init     # this project: adds files, 
 node ~/.local/share/yokoten/bin/yokoten.ts doctor   # the road: where you are, what's next
 ```
 
+These commands, and the npx ones, are also in [docs/facts.json](facts.json), which the
+website reads, so a change to them goes in both places.
+
 ### Use it as a GitHub Action
 
 Any repo on GitHub can run yokoten's checks in CI with one workflow file. Nothing is
@@ -349,7 +352,7 @@ It puts two safe defaults in `.github/` too:
 |---------|--------------|
 | `install` | Skills into `~/.claude/skills` and `~/.agents/skills`, agents into `~/.claude/agents`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file |
 | `init [dir]` | Puts the practices into a project. Adds files; keeps any that are already there and says so. It also reads GitHub through `gh` and says which standard labels and milestone it would add. It never changes GitHub. Without `gh`, a sign-in or a GitHub remote, it says what it skipped |
-| `init --github --yes [--remove-default-labels]` | Adds the missing standard labels, and a milestone "First release" when no milestone is open. A standard label that is there gets the standard colour and description. A second run changes nothing. GitHub's default labels outside the set (`question`, `wontfix` and others) are deleted only with `--remove-default-labels` |
+| `init --github --yes [--remove-default-labels]` | Adds the missing standard labels, and a milestone "First release" when no milestone is open. When a closed milestone already has that title, the new one is "Next release". A closed milestone is never reopened. A standard label that is there gets the standard colour and description. A second run changes nothing. GitHub's default labels outside the set (`question`, `wontfix` and others) are deleted only with `--remove-default-labels` |
 | `update [dir] [--write]` | Shows what this yokoten changes in the core rules of the project's `AGENTS.md`. `--write` replaces them, and keeps the "This project" part as it is. See [Updating the rules](#updating-the-rules) |
 | `doctor [--session]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session |
 | `adopt [--json]` | A draft of the adoption table for an old project: what it does today, and a proposed decision for each step. `--json` prints the rows. Writes nothing |

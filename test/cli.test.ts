@@ -1121,7 +1121,7 @@ fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s));
   assert.match(result.stdout, /- done: make label "good first issue"[^\n]*\n[^]*- done: make milestone "First release"/);
   assert.equal(changed().length, 9);
   result = sandbox.run(['init', '--github', '--yes'], { extra });
-  assert.match(result.stdout, /- 9 of the 9 standard labels are there; kept\n- a milestone is there; kept\n[^]*Nothing to change\./);
+  assert.match(result.stdout, /- 9 of the 9 standard labels are there; kept\n- a milestone is open; kept\n[^]*Nothing to change\./);
   assert.equal(changed().length, 9, 'the second run changed nothing');
   // Without gh on the PATH, init still succeeds and says so. Only node and git are there.
   const noGh = join(sandbox.home, 'no-gh');
