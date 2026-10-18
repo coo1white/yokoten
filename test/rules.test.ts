@@ -610,6 +610,8 @@ test('learn: --write adds the draft\'s files and keeps a file that is there', ()
   writeFileSync(join(root, 'lessons/incident-12/lesson.ts'), 'reviewed\n');
   assert.deepEqual(writeDraft(root, draft), { written: [], kept: ['lessons/incident-12/lesson.ts', 'lessons/incident-12/lesson.test.ts'] });
   assert.equal(readFileSync(join(root, 'lessons/incident-12/lesson.ts'), 'utf8'), 'reviewed\n', 'a reviewer\'s work is never overwritten');
+});
+
 /**
  * A git repo with an English file and a translation whose line 1 names it, at the
  * English text as committed. `git` runs in it with no global config, in UTC.
