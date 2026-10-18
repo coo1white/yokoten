@@ -50,6 +50,98 @@ test('skipping the commit check is stopped', () => {
   allowed('git commit -m "no --verify needed"'.replace('--verify', 'verify'));
 });
 
+// The hooks setting (#114). Each row of the issue's table first, then the other forms.
+test('git options that take a value are skipped before the subcommand (#114)', () => {
+  // `--attr-source <tree>` takes a value; without it in the list, `HEAD` looked like the subcommand.
+  blocked('git --attr-source HEAD push --tags');
+  blocked('git -C . --namespace x push --tags');
+});
+
+test('hooks setting: a read passes, a change or a one-command skip blocks (#114)', () => {
+  allowed('git config core.hooksPath');
+  allowed('git config --get core.hooksPath');
+  allowed('git config --show-origin core.hooksPath');
+  allowed('git config core.hooksPath .githooks');
+  blocked('git config core.hooksPath /dev/null');
+  blocked('git config --unset core.hooksPath');
+  blocked('git -c core.hooksPath=/dev/null commit -m x');
+});
+
+test('hooks setting: every way to read it passes (#114)', () => {
+  for (const c of [
+    'git config --get-all core.hooksPath',
+    'git config --get-regexp core.hooksPath',
+    'git config --get-regexp hooks',
+    'git config --show-origin --get core.hooksPath',
+    'git config --local --show-scope core.hooksPath',
+    'git config --get --default .githooks core.hooksPath',
+    'git config --list',
+    'git config -l --show-origin',
+    'git config CORE.HOOKSPATH',
+    'git config get core.hooksPath',
+    'git config get --all --show-origin core.hooksPath',
+    'git config list',
+    'git -C ../other config --get core.hooksPath',
+    'test "$(git config core.hooksPath)" = .githooks && echo ok',
+    'grep -rn GIT_CONFIG_KEY_0=core.hooksPath test',
+    'git -c core.hooksPath=.githooks commit -m x',
+    'git -c user.name=x commit -m x',
+    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=.githooks git commit -m x',
+    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=x git commit -m x',
+  ]) allowed(c);
+});
+
+test('hooks setting: every way to change it blocks, unless the value is .githooks (#114)', () => {
+  for (const c of [
+    'git config --local core.hooksPath /dev/null',
+    'git config --global core.hooksPath ~/hooks',
+    'git config core.hooksPath --local',
+    'git config -f .git/config core.hooksPath x',
+    'git config Core.HooksPath /dev/null',
+    'git config --unset-all core.hooksPath',
+    'git config --replace-all core.hooksPath /dev/null',
+    'git config --add core.hooksPath /dev/null',
+    'git config --edit core.hooksPath',
+    'git config -e core.hooksPath',
+    'git config --remove-section core',
+    'git config --rename-section core old',
+    'git config set core.hooksPath /dev/null',
+    'git config set --local core.hooksPath /dev/null',
+    'git config set core.hooksPath',
+    'git config unset core.hooksPath',
+    'git config unset --all core.hooksPath',
+    'git config remove-section CORE',
+  ]) blocked(c);
+  allowed('git config set core.hooksPath .githooks');
+  allowed('git config --add core.hooksPath .githooks');
+  allowed('git config --replace-all core.hooksPath .githooks');
+  allowed('git config --unset user.name');
+  allowed('git config --remove-section alias');
+});
+
+test('hooks setting: git -c, --config-env and GIT_CONFIG_KEY_n cannot skip the check (#114)', () => {
+  for (const c of [
+    'git -c core.hookspath=/dev/null commit -m x',
+    'git -c CORE.HOOKSPATH= commit -m x',
+    'git -c core.hooksPath commit -m x',
+    'git -c user.name=x -c core.hooksPath=/tmp/none commit -m x',
+    'git -c core.hooksPath=.githooks -c core.hooksPath=/dev/null commit -m x',
+    'git -C ../other -c core.hooksPath=/dev/null push',
+    'git --config-env=core.hooksPath=HOOKS commit -m x',
+    'git --config-env core.hooksPath=HOOKS commit -m x',
+    'git --config-env core.hooksPath=HOOKS',
+    'bash -c "git -c core.hooksPath=/dev/null commit -m x"',
+    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null git commit -m x',
+    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=CORE.HOOKSPATH GIT_CONFIG_VALUE_0=/dev/null git commit -m x',
+    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath git commit -m x',
+    'env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0= git commit -m x',
+    'sudo -u nobody GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/x git commit',
+    'export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null; git commit -m x',
+    'GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_1=core.hooksPath GIT_CONFIG_VALUE_0=.githooks GIT_CONFIG_VALUE_1=/x git commit',
+    "GIT_CONFIG_PARAMETERS=\"'core.hooksPath'='/dev/null'\" git commit -m x",
+  ]) blocked(c);
+});
+
 test('everyday commands pass', () => {
   for (const c of ['git status', 'git push', 'git push origin feature-v2', 'git commit -m "fix v1 parser"', 'npm test', 'gh pr create --fill', 'ls -la', 'gh release list']) allowed(c);
 });

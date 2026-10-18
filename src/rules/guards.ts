@@ -28,7 +28,7 @@ export function checkEdit(path: string, { config, env }: { config: Config; env: 
 /** A shell command, as the agent wrote it. */
 export function checkCommand(command: string, { env }: { env: Env }): Finding | null {
   for (const words of commandWords(command)) {
-    const reason = checkGit(words, env) ?? checkPublish(words, env);
+    const reason = checkGit(words, env) ?? checkHooksEnvironment(words) ?? checkPublish(words, env);
     if (reason) return reason;
   }
   return null;
@@ -40,7 +40,7 @@ const release = (what: string) => finding('release', what, RELEASE_FIX);
 const base = (word: string) => word.slice(Math.max(word.lastIndexOf('/'), word.lastIndexOf('\\')) + 1);
 const isGit = (word: string) => /(^|[/\\])git(\.exe)?$/.test(word);
 // Git options that take the next word as their value.
-const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace']);
+const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--config-env', '--git-dir', '--work-tree', '--namespace', '--attr-source']);
 
 // Each check looks for its program anywhere in the command, so a prefix such as FOO=1,
 // sudo, env, command, exec, time, nice, nohup, timeout or xargs does not hide it.
@@ -48,15 +48,19 @@ function checkGit(words: string[], env: Env): Finding | null {
   const start = words.findIndex(isGit);
   if (start === -1) return null;
   const settings: string[] = [];
+  const fromEnvironment: string[] = []; // --config-env name=VARIABLE
   let i = start + 1;
   while (i < words.length && words[i].startsWith('-')) {
     if (words[i] === '-c') settings.push(words[i + 1] ?? '');
+    if (words[i] === '--config-env') fromEnvironment.push(words[i + 1] ?? '');
+    if (words[i].startsWith('--config-env=')) fromEnvironment.push(words[i].slice('--config-env='.length));
     i += GIT_VALUE_OPTIONS.has(words[i]) ? 2 : 1;
   }
   const sub = words[i];
   const args = words.slice(i + 1);
-  const lower = args.map((a) => a.toLowerCase());
 
+  const hooks = checkHooksSettings(settings, fromEnvironment);
+  if (hooks) return hooks;
   if (settings.some((s) => /^push\.followtags/i.test(s)) && !env.YOKOTEN_RELEASE_APPROVAL) {
     return release('git -c push.followTags pushes tags');
   }
@@ -78,11 +82,115 @@ function checkGit(words: string[], env: Env): Finding | null {
   }
   const skip = args.includes('--no-verify') ? '--no-verify' : sub === 'commit' ? args.find((a) => /^-[a-z]*n[a-z]*$/i.test(a)) : undefined;
   if (skip) return finding('skip-check', `git ${sub} ${skip} skips the commit check`, 'fix what the check reports instead');
-  if (sub === 'config' && lower.includes('core.hookspath')) {
-    const value = args[lower.indexOf('core.hookspath') + 1];
-    if (value !== '.githooks') return finding('hooks-path', 'changing core.hooksPath turns off the commit check', 'leave it at .githooks; only the owner changes it');
+  if (sub === 'config') return checkConfig(args);
+  return null;
+}
+
+// ---- The hooks setting (#114) ----
+//
+// git runs the commit check from core.hooksPath. Reading the setting is fine. Any value
+// but .githooks turns the check off: for good with `git config`, or for one command with
+// `git -c`, `--config-env` or GIT_CONFIG_KEY_n. Keys are case-insensitive, as in git.
+// A value the guard cannot see (from a variable) blocks.
+
+const HOOKS_DIR = '.githooks';
+const isHooksPath = (key: string) => key.trim().toLowerCase() === 'core.hookspath';
+const hooksPath = (what: string) => finding('hooks-path', what, 'leave it at .githooks; only the owner changes it');
+
+// `git -c core.hooksPath=<value>` and `--config-env core.hooksPath=<VARIABLE>`.
+function checkHooksSettings(settings: string[], fromEnvironment: string[]): Finding | null {
+  if (fromEnvironment.some((s) => isHooksPath(s.split('=')[0]))) {
+    return hooksPath('git --config-env core.hooksPath sets the hooks folder from a variable, which can skip the commit check');
+  }
+  for (const setting of settings) {
+    const equals = setting.indexOf('=');
+    const key = equals === -1 ? setting : setting.slice(0, equals);
+    if (isHooksPath(key) && (equals === -1 || setting.slice(equals + 1) !== HOOKS_DIR)) {
+      return hooksPath('git -c core.hooksPath with a value other than .githooks skips the commit check for that command');
+    }
   }
   return null;
+}
+
+// `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=x git commit` does
+// what `git -c` does, and so does GIT_CONFIG_PARAMETERS, the variable `-c` itself sets.
+// An assignment counts when it stands before the program, after env, sudo or export, or
+// anywhere before a git word. So `grep GIT_CONFIG_KEY_0=core.hooksPath file` is a read.
+const ASSIGNERS = new Set(['env', 'sudo', 'doas', 'export', 'declare', 'typeset', 'readonly', 'local']);
+const isAssignment = (word: string) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
+
+function checkHooksEnvironment(words: string[]): Finding | null {
+  for (const [index, word] of words.entries()) {
+    const variable = /^GIT_CONFIG_(KEY_(\d+)|PARAMETERS)=(.*)$/is.exec(word);
+    if (!variable) continue;
+    const isPrefix = words.slice(0, index).every((w) => isAssignment(w) || w.startsWith('-') || ASSIGNERS.has(base(w)));
+    if (!isPrefix && !words.slice(index + 1).some(isGit)) continue;
+    const [, name, number, setting] = variable;
+    if (name.toUpperCase() === 'PARAMETERS') {
+      if (setting.toLowerCase().includes('core.hookspath')) return hooksPath('GIT_CONFIG_PARAMETERS names core.hooksPath, which can skip the commit check');
+      continue;
+    }
+    if (!isHooksPath(setting)) continue;
+    const valueName = `git_config_value_${number}=`;
+    const value = words.find((w) => w.toLowerCase().startsWith(valueName));
+    if (value?.slice(valueName.length) !== HOOKS_DIR) {
+      return hooksPath(`GIT_CONFIG_KEY_${number} names core.hooksPath with a value other than .githooks, which skips the commit check`);
+    }
+  }
+  return null;
+}
+
+// `git config` options that take the next word as their value.
+const CONFIG_VALUE_OPTIONS = new Set(['-f', '--file', '--blob', '--type', '--default', '--comment', '--value', '--url']);
+const CONFIG_READS = new Set(['--get', '--get-all', '--get-regexp', '--get-urlmatch', '--get-color', '--get-colorbool', '--list', '-l', 'get', 'list']);
+const CONFIG_REMOVES = new Set(['--unset', '--unset-all', 'unset', '--edit', '-e', 'edit']);
+const CONFIG_SECTIONS = new Set(['--rename-section', '--remove-section', 'rename-section', 'remove-section']);
+// git 2.46 and later also takes a subcommand: `git config get|list|set|unset|...`.
+const CONFIG_SUBCOMMANDS = new Set(['get', 'list', 'set', 'unset', 'edit', 'rename-section', 'remove-section']);
+
+// Splits `git config` arguments into options and plain words. The old form (`isOldForm`)
+// reads options only before the first plain word: `git config core.hooksPath --local`
+// sets the value "--local". The subcommand form reads options anywhere.
+function splitConfig(args: string[], isOldForm: boolean): { options: string[]; plain: string[] } {
+  const options: string[] = [];
+  const plain: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if ((isOldForm && plain.length > 0) || !args[i].startsWith('-') || args[i] === '-') plain.push(args[i]);
+    else if (args[i] === '--') {
+      plain.push(...args.slice(i + 1));
+      break;
+    } else {
+      options.push(args[i]);
+      if (CONFIG_VALUE_OPTIONS.has(args[i])) i++;
+    }
+  }
+  return { options, plain };
+}
+
+// `git config`: a read passes; a change to core.hooksPath passes only to .githooks.
+function checkConfig(args: string[]): Finding | null {
+  let { options, plain } = splitConfig(args, true);
+  const subcommand = CONFIG_SUBCOMMANDS.has(plain[0]) ? plain[0] : undefined;
+  if (subcommand) {
+    const rest = splitConfig(plain.slice(1), false);
+    options = [...options, ...rest.options];
+    plain = rest.plain;
+  }
+  const actions = subcommand ? [subcommand] : options;
+  const section = actions.find((a) => CONFIG_SECTIONS.has(a));
+  if (section) {
+    return plain.some((w) => w.toLowerCase() === 'core') ? hooksPath(`git config ${section} core changes core.hooksPath, which turns off the commit check`) : null;
+  }
+  if (!isHooksPath(plain[0] ?? '')) return null;
+  const remove = actions.find((a) => CONFIG_REMOVES.has(a));
+  if (remove) return hooksPath(`git config ${remove} core.hooksPath turns off the commit check`);
+  if (actions.some((a) => CONFIG_READS.has(a))) return null;
+  // A set: `git config <key> <value>`, --add, --replace-all or `git config set`.
+  // With no value and no action, it is a read.
+  const value = plain[1];
+  const isSet = subcommand !== undefined || actions.some((a) => a === '--add' || a === '--replace-all');
+  if (value === undefined && !isSet) return null;
+  return value === HOOKS_DIR ? null : hooksPath('changing core.hooksPath turns off the commit check');
 }
 
 // A word anywhere after the program counts, so an option in between (`npm --tag x publish`)

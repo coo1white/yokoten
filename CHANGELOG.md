@@ -171,6 +171,10 @@ All notable changes are listed here. The format follows
 
 ### Fixed
 
+- The tool-call guard lets a read of `core.hooksPath` through, such as `git config --get`.
+  It now stops `git -c core.hooksPath=...`, `--config-env` and `GIT_CONFIG_KEY_n`, which
+  skipped the commit check for one command. Only the value `.githooks` passes. And
+  `git --attr-source <tree>` no longer hides a tag push from the guard (#114).
 - The tool-call guard reads bash, not just words. Text in quotes and heredoc bodies is
   data, so `git commit -m "docs: npm publish"` and `cat > f <<EOF` pass. A heredoc a
   shell reads, `bash -c`, `eval`, `$(...)` and backticks are still checked. Comments,
