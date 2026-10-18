@@ -116,8 +116,10 @@ yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
 - **Docs live in the repo.** No wiki: a wiki page is not reviewed and agents do not read
   it. Decisions go in `docs/records/`; what went wrong and what check now holds it goes
   in an issue labelled `incident`, and the rule's "why" in `AGENTS.md` points to it.
-- **`kit/` is what other projects get.** A change there changes every project on its
-  next `init` or `install`. Say so in the pull request.
+- **`kit/` is what other projects get.** `install` replaces the skills and agents it
+  manages on each machine. `init` adds only missing files, so it never changes a
+  project's `AGENTS.md` again. The core rules in it change when the project runs
+  `yokoten update --write`; `doctor` says when they are behind. Say so in the pull request.
 - **Every new check gets a positive control**: a test (and, for doctor, a self-test
   case) that feeds it a known-bad input and expects a catch.
 - **Examples use placeholders**: `example.com` addresses and `192.0.2.0/24` IPs. A
