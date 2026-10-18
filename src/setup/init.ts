@@ -1,16 +1,18 @@
 // `yokoten init`: put the practices into a project. It only adds: a file that is already
-// there is kept, and the report says so. Deciding what to do with a project's own rules
-// (keep, merge, or say not now) is the yokoten skill's job, not this command's.
+// there is kept, and the report says so. Two files get lines added, never removed: a
+// CLAUDE.md, and a project's own pre-commit (#206). Deciding what to do with a project's
+// own rules (keep, merge, or say not now) is the yokoten skill's job, not this command's.
 //
 // `yokoten update` is the one command here that replaces text: the core rules in
 // AGENTS.md, and only with --write. It is at the end of this file.
 
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { addProjectHook, addProjectStopHook, setProjectEnv } from '../agents/claude-code.ts';
 import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
+import { runs } from '../run/cli.ts';
 import { copyRuntime, HOME_DIR, KIT, render, VERSION, writeNew } from './files.ts';
 
 /** yokoten's own repo runs its own bin; every other project runs a vendored copy. */
@@ -39,13 +41,18 @@ export function init(root: string): string[] {
     const copied = copyRuntime(join(root, '.yokoten'));
     report.push(copied === 'kept' ? 'kept .yokoten/ (the copy running now)' : 'wrote .yokoten/ (the runtime the hooks run; commit it)');
   }
+  const hooks = readHookSetup(root);
   const kit = join(KIT, 'project');
   for (const file of walk(kit)) {
     const rel = relative(kit, file).split('\\').join('/');
+    // A project with its own hooks folder keeps it, so .githooks/ would be a hook git never runs.
+    if (hooks.kind === 'own' && rel.startsWith('.githooks/')) continue;
     const result = writeNew(join(root, rel), render(readFileSync(file, 'utf8'), { cli, version: VERSION }));
     report.push(`${result} ${rel}`);
   }
-  chmodSync(join(root, '.githooks', 'pre-commit'), 0o755);
+  if (hooks.kind !== 'own') chmodSync(join(root, '.githooks', 'pre-commit'), 0o755);
+  const imported = importRules(root);
+  if (imported) report.push(imported);
   const hook = addProjectHook(root, cli);
   report.push(`${hook} the tool-call hook in .claude/settings.json`);
   report.push(`${addProjectStopHook(root, cli)} the stop check in .claude/settings.json (changed files, before the agent ends its turn)`);
@@ -54,13 +61,107 @@ export function init(root: string): string[] {
   report.push(`${codex.addProjectHook(root, cli)} the Codex tool-call hook in .codex/hooks.json (Codex asks you to trust it once, in /hooks)`);
   report.push(`${gemini.addProjectHook(root, cli)} the Gemini CLI tool-call hook in .gemini/settings.json`);
   report.push(`${setProjectEnv(root, 'TZ', 'UTC')} TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)`);
-  try {
-    execFileSync('git', ['config', 'core.hooksPath', '.githooks'], { cwd: root, stdio: 'pipe' });
-    report.push('set git core.hooksPath to .githooks (the commit check)');
-  } catch {
-    report.push('not a git repo: run `git init`, then `git config core.hooksPath .githooks`');
-  }
+  report.push(...setCommitCheck(root, cli, hooks));
   return report;
+}
+
+// ---- A project's own CLAUDE.md and commit hooks (#206) ----
+//
+// init adds; it never switches a project's setup off without saying so. Claude Code reads
+// AGENTS.md only when there is no CLAUDE.md, so a CLAUDE.md gets one line that imports it.
+// A project with its own hooks folder (husky, or another core.hooksPath) keeps it, and
+// that folder's pre-commit gets the yokoten check: one hooks folder, so nothing is turned off.
+
+/** A CLAUDE.md line that imports AGENTS.md (`@AGENTS.md`) or links to it. */
+const RULES_IMPORT = /(?:^|\s)@(?:\.\/)?AGENTS\.md\b|\]\((?:\.\/)?AGENTS\.md\)/m;
+
+/** True when Claude Code reads AGENTS.md here: there is no CLAUDE.md, or it imports AGENTS.md. */
+export function claudeReadsRules(root: string): boolean {
+  const path = join(root, 'CLAUDE.md');
+  return !existsSync(path) || RULES_IMPORT.test(readFileSync(path, 'utf8'));
+}
+
+/** Add the AGENTS.md import to a CLAUDE.md that lacks it. Returns the report line, or null when nothing changed. */
+function importRules(root: string): string | null {
+  if (claudeReadsRules(root)) return null;
+  const path = join(root, 'CLAUDE.md');
+  const text = readFileSync(path, 'utf8');
+  const newline = text.includes('\r\n') ? '\r\n' : '\n';
+  const gap = text === '' ? '' : text.endsWith(newline) ? newline : newline + newline;
+  writeFileSync(path, `${text}${gap}<!-- Added by yokoten: Claude Code reads AGENTS.md only through this import. -->${newline}@AGENTS.md${newline}`);
+  return 'updated CLAUDE.md: it now reads AGENTS.md (Claude Code reads AGENTS.md only when CLAUDE.md imports it)';
+}
+
+/** How git runs commit hooks here: yokoten's .githooks, the project's own folder, or no git repo. */
+type HookSetup = { kind: 'plain' } | { kind: 'own'; hooksPath: string } | { kind: 'no repo' };
+
+/** The repo's own core.hooksPath (not the user's global one), '' when unset, or null outside a git repo. */
+function readLocalHooksPath(root: string): string | null {
+  try {
+    return execFileSync('git', ['config', '--local', '--get', 'core.hooksPath'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch (error) {
+    return (error as { status?: number }).status === 1 ? '' : null;
+  }
+}
+
+function readHookSetup(root: string): HookSetup {
+  const hooksPath = readLocalHooksPath(root);
+  if (hooksPath === null) return { kind: 'no repo' };
+  const isHusky = existsSync(join(root, '.husky'));
+  if (!isHusky && (hooksPath === '' || hookFile(root, hooksPath) === '.githooks/pre-commit')) return { kind: 'plain' };
+  return { kind: 'own', hooksPath };
+}
+
+/**
+ * The pre-commit file git runs for this core.hooksPath, relative to the root, or null when
+ * the folder is outside the repo. husky's folder (`.husky/_`, or `.husky` before husky 9)
+ * runs `.husky/pre-commit`.
+ */
+export function hookFile(root: string, hooksPath: string): string | null {
+  const folder = relative(root, resolve(root, hooksPath)).split('\\').join('/');
+  if (folder === '..' || folder.startsWith('../') || isAbsolute(folder)) return null;
+  if (folder === '.husky' || folder.startsWith('.husky/')) return '.husky/pre-commit';
+  return folder ? `${folder}/pre-commit` : 'pre-commit';
+}
+
+/** The lines init adds to a project's own pre-commit. `|| exit 1` because a hook may go on after it. */
+const checkLines = (cli: string) => ['# yokoten: the commit check (lead-only files, test files in a fix task, layout and privacy)', `node "${cli}" check --staged || exit 1`];
+
+/** Add the yokoten check to a pre-commit, after its `#!` line, so a later `exec` can't skip it. Its own lines stay. */
+function addCheckLines(path: string, cli: string): 'added the check to' | 'wrote' | 'same' {
+  if (!existsSync(path)) {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, ['#!/bin/sh', ...checkLines(cli), ''].join('\n'), { mode: 0o755 });
+    chmodSync(path, 0o755);
+    return 'wrote';
+  }
+  const text = readFileSync(path, 'utf8');
+  if (runs('check').test(text)) return 'same';
+  const newline = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = text.split(/\r?\n/);
+  const at = lines[0]?.startsWith('#!') ? 1 : 0;
+  lines.splice(at, 0, ...checkLines(cli));
+  writeFileSync(path, lines.join(newline));
+  chmodSync(path, statSync(path).mode | 0o111);
+  return 'added the check to';
+}
+
+/** Point git at the commit check: set .githooks, or add the check to the project's own pre-commit. */
+function setCommitCheck(root: string, cli: string, hooks: HookSetup): string[] {
+  if (hooks.kind === 'no repo') return ['not a git repo: run `git init`, then `git config core.hooksPath .githooks`'];
+  if (hooks.kind === 'plain') {
+    execFileSync('git', ['config', 'core.hooksPath', '.githooks'], { cwd: root, stdio: 'pipe' });
+    return ['set git core.hooksPath to .githooks (the commit check)'];
+  }
+  const { hooksPath } = hooks;
+  const file = hooksPath ? hookFile(root, hooksPath) : '.husky/pre-commit';
+  const owner = hooksPath ? `core.hooksPath (${file === '.husky/pre-commit' ? 'husky' : hooksPath})` : 'husky';
+  if (file === null) {
+    return [`kept core.hooksPath: it is outside this repo, so yokoten did not change it. Add this line to its pre-commit: node "${cli}" check --staged || exit 1`];
+  }
+  const lines = [`${addCheckLines(join(root, file), cli)} ${file}: the commit check (kept ${owner}, so the project's own hooks still run)`];
+  if (!hooksPath) lines.push('husky is not set up in this clone yet: run `npm install` (husky sets core.hooksPath), and the check runs from .husky/pre-commit');
+  return lines;
 }
 
 // ---- The core rules in AGENTS.md (#120) ----

@@ -188,6 +188,8 @@ for each row.
   missing is as-is, partial is lighter, unknown is as-is once `doctor` has checked it.
   The output says which one drafted it.
 - `adopt` never writes a file. You still decide every row.
+- A partial row is not lost when you run `init`: it imports `AGENTS.md` from your
+  `CLAUDE.md`, and it adds the commit check to husky's `pre-commit`.
 
 The model runs on Meta's model API, through its OpenAI-compatible endpoint
 (`https://api.meta.ai/v1`, model `muse-spark-1.3`). Set `LLAMA_API_KEY` or `MODEL_API_KEY`
@@ -202,7 +204,7 @@ yokoten guards three AI coding agents. Each one keeps the same rules.
 |---|---|
 | Claude Code | the tool-call guard (a hook), the stop check (a hook), the guide at the start of each session, skills and agents |
 | Codex CLI | the tool-call guard, in `.codex/hooks.json`. Codex asks you once to trust project hooks (`/hooks`) |
-| Gemini CLI | the tool-call guard, in `.gemini/settings.json` |
+| Gemini CLI | the tool-call guard, in `.gemini/settings.json`. Start Gemini at the repo root: it reads `.gemini/settings.json` from the folder it starts in, and nowhere else |
 | Any other agent | the rules in `AGENTS.md`, and the commit check, which stops a bad commit whoever made it |
 
 ## Install and commands
@@ -337,6 +339,11 @@ on `@main`.
 
 `init` copies the runtime into `.yokoten/` in your project. Commit it: the hooks and CI
 then run with no network and no global install.
+
+`init` keeps a project's own setup working. With a `CLAUDE.md`, it adds an `@AGENTS.md`
+line at the end, because Claude Code reads `AGENTS.md` only through that import. With
+husky or another `core.hooksPath`, it keeps that folder and adds the commit check to its
+`pre-commit`. The project's own hook lines stay, and `init` says which file it changed.
 
 `init` also writes three workflows into `.github/workflows/`: `yokoten.yml` (the
 commit check, a lint job with actionlint and zizmor, and one `ci` job to make the required

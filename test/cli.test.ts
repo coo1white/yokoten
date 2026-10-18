@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -133,7 +133,7 @@ test('hook --stop: sends the agent back once with the findings in changed files,
 // (developers.openai.com/codex/hooks) and Gemini CLI's BeforeTool (geminicli.com/docs/hooks).
 test('hook --agent codex: shell calls by command, apply_patch by the files it touches (#30)', () => {
   const sandbox = makeSandbox();
-  const call = (tool_name: string, command: string, extra?: Record<string, string>) =>
+  const call = (tool_name: string, command: string, extra?: Record<string, string>, fields: object = {}) =>
     sandbox.run(['hook', '--agent', 'codex'], {
       input: JSON.stringify({
         session_id: 'thr_123',
@@ -146,6 +146,7 @@ test('hook --agent codex: shell calls by command, apply_patch by the files it to
         tool_name,
         tool_use_id: 'call_1',
         tool_input: { command },
+        ...fields,
       }),
       extra,
     });
@@ -162,6 +163,9 @@ test('hook --agent codex: shell calls by command, apply_patch by the files it to
   assert.equal(call('apply_patch', patch(`*** Add File: ${join(sandbox.repo, '.github', 'x.yml')}`), worker).status, 2, 'an absolute path');
   assert.equal(call('apply_patch', patch('*** Update File: src/a.ts'), worker).status, 0);
   assert.equal(call('apply_patch', patch('*** Update File: AGENTS.md')).status, 0, 'the lead may');
+  // A worker subagent's call names its role (Codex rust-v0.163.0, #210); no env needed.
+  assert.equal(call('apply_patch', patch('*** Update File: AGENTS.md'), {}, { agent_id: 'a1', agent_type: 'worker' }).status, 2, 'a worker subagent');
+  assert.equal(call('apply_patch', patch('*** Update File: AGENTS.md'), {}, { agent_id: 'a2', agent_type: 'explorer' }).status, 0, 'an explorer is not a worker');
   // A patch is not a command, and an unknown tool is neither.
   assert.equal(call('apply_patch', 'git push --tags').status, 0);
   assert.equal(call('mcp__fs__write', 'git push --tags').status, 0);
@@ -198,6 +202,38 @@ test('hook --agent gemini: run_shell_command by command, write_file and replace 
   result = sandbox.run(['hook', '--agent', 'cursor'], { input: '{}' });
   assert.equal(result.status, 1, 'an unknown agent is an error to see, not a block');
   assert.match(result.stderr, /claude-code, codex, gemini/);
+});
+
+// Gemini CLI (v0.64.0) swaps `$GEMINI_PROJECT_DIR` in the command text for the shell-quoted
+// launch folder, then runs the text in a shell (#210). This copies that against a repo whose
+// path has a space and an @.
+test('init: the Gemini hook command runs when Gemini quotes a path with a space (#210)', () => {
+  const sandbox = makeSandbox();
+  // An older yokoten wrote the folder in double quotes; init updates that hook in place.
+  const old = 'node "$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts" hook --agent gemini';
+  sandbox.write('.gemini/settings.json', JSON.stringify({ hooks: { BeforeTool: [{ matcher: 'run_shell_command', hooks: [{ type: 'command', command: old, name: 'yokoten' }] }] } }));
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /updated the Gemini CLI tool-call hook/);
+  const repo = join(dirname(sandbox.repo), 'my repo@1');
+  renameSync(sandbox.repo, repo);
+  const groups = JSON.parse(readFileSync(join(repo, '.gemini', 'settings.json'), 'utf8')).hooks.BeforeTool;
+  assert.equal(groups.length, 1, 'updated, not added');
+  const command: string = groups[0].hooks[0].command;
+  assert.equal(command, guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --agent gemini'));
+  // shell-quote, which Gemini uses, writes a path with a space and no single quote as
+  // '…'; a single quote inside would become '\''.
+  const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
+  const input = JSON.stringify({ session_id: 's1', cwd: repo, hook_event_name: 'BeforeTool', tool_name: 'run_shell_command', tool_input: { command: 'git push --tags' } });
+  const asGemini = (text: string) =>
+    spawnSync('bash', ['-c', text.replaceAll('$GEMINI_PROJECT_DIR', quote(repo))], { cwd: repo, env: { ...sandbox.env, GEMINI_PROJECT_DIR: repo }, input, encoding: 'utf8' });
+  const ran = asGemini(command);
+  assert.equal(ran.status, 2, ran.stderr);
+  assert.match(ran.stderr, /owner decides when to release/);
+  // The control: the old quoted command never reaches yokoten.
+  const broken = asGemini(old);
+  assert.notEqual(broken.status, 2);
+  assert.match(broken.stderr, /Cannot find module/);
 });
 
 test('hook: a repo reached through a symlink gets the same file rules (#1)', () => {
@@ -355,7 +391,7 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.equal(gemini.theme, 'x');
   assert.equal(gemini.hooks.BeforeTool.length, 2);
   assert.deepEqual(gemini.hooks.BeforeTool[1], {
-    hooks: [{ type: 'command', command: guarded('"$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts"', 'hook --agent gemini'), name: 'yokoten' }],
+    hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --agent gemini'), name: 'yokoten' }],
     matcher: 'run_shell_command|write_file|replace',
   });
   assert.match(sandbox.run(['doctor']).stdout, /ok +codex-hook\n +ok +gemini-hook/);
@@ -392,6 +428,104 @@ test('init: safe defaults, Dependabot and a security policy; doctor lists the se
   assert.match(readFileSync(join(sandbox.repo, '.github/SECURITY.md'), 'utf8'), /\*\*Report a vulnerability\*\*/);
   const doctor = sandbox.run(['doctor']);
   for (const sw of [/private vulnerability reporting/, /secret scanning with push protection/, /Dependabot alerts/]) assert.match(doctor.stdout, sw);
+});
+
+/** The doctor --json mark of one road step. */
+const stepMark = (sandbox: ReturnType<typeof makeSandbox>, id: string) =>
+  (JSON.parse(sandbox.run(['doctor', '--json']).stdout).steps as { id: string; mark: string }[]).find((step) => step.id === id)?.mark;
+
+test("init: a CLAUDE.md gets one line that imports AGENTS.md, and doctor's rules step wants it (#206)", () => {
+  const sandbox = makeSandbox();
+  sandbox.write('CLAUDE.md', '# our rules\n\nRun the tests first.\n');
+  sandbox.write('AGENTS.md', '# shared rules\n');
+  assert.notEqual(stepMark(sandbox, 'rules'), 'done', 'AGENTS.md that Claude Code does not read is not done');
+  assert.match(sandbox.run(['doctor']).stdout, /rules[^\n]*: CLAUDE\.md does not import AGENTS\.md[^\n]*; add a line `@AGENTS\.md`/);
+  rmSync(join(sandbox.repo, 'AGENTS.md'));
+  let result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /wrote AGENTS\.md/);
+  assert.match(result.stdout, /updated CLAUDE\.md: it now reads AGENTS\.md/);
+  const claude = readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8');
+  assert.ok(claude.startsWith('# our rules\n\nRun the tests first.\n\n'), 'the project\'s own lines stay');
+  assert.match(claude, /\n<!--[^\n]*-->\n@AGENTS\.md\n$/, 'a comment line, then the import, at the end');
+  assert.equal(stepMark(sandbox, 'rules'), 'done');
+  // Again: one import, not two.
+  result = sandbox.run(['init']);
+  assert.doesNotMatch(result.stdout, /updated CLAUDE\.md/);
+  assert.equal(readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8'), claude);
+});
+
+test('init: a CLAUDE.md that already imports or links AGENTS.md is left as it is (#206)', () => {
+  for (const text of [`# rules\n${at}AGENTS.md\n`, '# rules\nSee [the rules](AGENTS.md).\n', `# rules\nRead ${at}./AGENTS.md first.\n`]) {
+    const sandbox = makeSandbox();
+    sandbox.write('CLAUDE.md', text);
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stdout, /CLAUDE\.md/, text);
+    assert.equal(readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8'), text);
+    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+  }
+});
+
+test("init: husky keeps its hooks folder; .husky/pre-commit gets the check and keeps its own lines (#206)", () => {
+  const sandbox = makeSandbox();
+  sandbox.write('.husky/pre-commit', '#!/bin/sh\ntouch own-hook-ran\n');
+  chmodSync(join(sandbox.repo, '.husky/pre-commit'), 0o755);
+  sandbox.git('config', 'core.hooksPath', '.husky');
+  let result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /added the check to \.husky\/pre-commit: the commit check \(kept core\.hooksPath \(husky\)/);
+  assert.doesNotMatch(result.stdout, /set git core\.hooksPath/);
+  assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '.husky', 'the project\'s hooks folder stays');
+  assert.ok(!existsSync(join(sandbox.repo, '.githooks')), 'no second hooks folder that git never runs');
+  const hook = readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8');
+  assert.match(hook, /^#!\/bin\/sh\n# yokoten: [^\n]*\nnode "\.yokoten\/bin\/yokoten\.ts" check --staged \|\| exit 1\ntouch own-hook-ran\n$/);
+  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  // Again: the hook already runs yokoten.
+  result = sandbox.run(['init']);
+  assert.match(result.stdout, /same \.husky\/pre-commit/);
+  assert.equal(readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8'), hook);
+  // A real commit runs both: the project's hook and the yokoten check.
+  sandbox.git('add', '.');
+  const commit = sandbox.git('commit', '-qm', 'adopt yokoten');
+  assert.equal(commit.status, 0, commit.stderr);
+  assert.ok(existsSync(join(sandbox.repo, 'own-hook-ran')), 'the project\'s own hook still runs');
+  sandbox.write('leak.md', `me${at}gmail.com\n`);
+  sandbox.git('add', 'leak.md');
+  assert.notEqual(sandbox.git('commit', '-qm', 'leak').status, 0);
+});
+
+test('init: husky not yet installed in this clone; init leaves core.hooksPath unset and says to run npm install (#206)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('.husky/pre-commit', 'npm test\n');
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /added the check to \.husky\/pre-commit/);
+  assert.match(result.stdout, /run `npm install`/);
+  assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '');
+  assert.match(readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8'), /^# yokoten: [^\n]*\nnode [^\n]*\nnpm test\n$/);
+  assert.notEqual(stepMark(sandbox, 'commit-check'), 'done', 'git runs no hook yet');
+  assert.match(sandbox.run(['doctor']).stdout, /run `npm install` so husky sets core\.hooksPath/);
+  sandbox.git('config', 'core.hooksPath', '.husky/_');
+  assert.equal(stepMark(sandbox, 'commit-check'), 'done', "husky 9's folder runs .husky/pre-commit");
+});
+
+test("init: another core.hooksPath is kept, and its pre-commit is made with the check (#206)", () => {
+  const sandbox = makeSandbox();
+  sandbox.write('tools/hooks/commit-msg', '#!/bin/sh\n');
+  sandbox.git('config', 'core.hooksPath', 'tools/hooks');
+  assert.match(sandbox.run(['doctor']).stdout, /tools\/hooks\/pre-commit does not run yokoten/);
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /wrote tools\/hooks\/pre-commit: the commit check \(kept core\.hooksPath \(tools\/hooks\)/);
+  assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), 'tools/hooks');
+  assert.ok(statSync(join(sandbox.repo, 'tools/hooks/pre-commit')).mode & 0o100, 'executable');
+  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  sandbox.git('add', '.');
+  assert.equal(sandbox.git('commit', '-qm', 'adopt yokoten').status, 0);
+  sandbox.write('leak.md', `me${at}gmail.com\n`);
+  sandbox.git('add', 'leak.md');
+  assert.notEqual(sandbox.git('commit', '-qm', 'leak').status, 0, 'the check runs from the project\'s folder');
 });
 
 // A lesson added to the kit's core rules reaches a project that already ran init (#120).
