@@ -356,6 +356,8 @@ export interface BranchRules {
   requiredChecks: string[];
   noForcePush: boolean;
   noDeletion: boolean;
+  /** The approving reviews a merge needs: the most any ruleset, or the old branch protection, asks for. */
+  approvals: number;
 }
 
 /** Each security switch: on, off, or null when gh can't see it. */
@@ -369,6 +371,8 @@ export interface Security {
 export interface ServerSettings {
   repo: string;
   defaultBranch: string;
+  /** Whether the repo is private, or null when GitHub did not say. */
+  isPrivate: boolean | null;
   /** Merge methods the repo allows, or null without admin rights. */
   mergeMethods: string[] | null;
   deleteBranchOnMerge: boolean | null;
@@ -385,6 +389,7 @@ export function unread(err: unknown): Unread {
   if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { unread: 'gh is not installed', fix: 'get it from https://cli.github.com, then run `gh auth login`' };
   const said = String((err as { stderr?: string }).stderr || (err as Error).message);
   if (/HTTP 401|gh auth login|not logged in/i.test(said)) return { unread: 'gh is not signed in', fix: 'run `gh auth login`' };
+  if (/Upgrade to GitHub Pro/i.test(said)) return { unread: 'rulesets need GitHub Pro on a private repo', fix: 'make the repo public, or upgrade to GitHub Pro' };
   if (/HTTP 40[34]/.test(said)) return { unread: 'GitHub said no (403 or 404)', fix: 'sign in to gh as a repo admin; on a private repo, rulesets need GitHub Pro' };
   return { unread: 'gh could not reach GitHub', fix: 'check the network, then run doctor again' };
 }
@@ -405,6 +410,7 @@ export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
   };
   type Repo = {
     default_branch?: string;
+    private?: boolean;
     allow_squash_merge?: boolean;
     allow_merge_commit?: boolean;
     allow_rebase_merge?: boolean;
@@ -422,6 +428,8 @@ export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
     const rules = api<Rule[]>(`repos/${repo}/rules/branches/${encodeURIComponent(defaultBranch)}`) ?? [];
     const of = (type: string) => rules.filter((r) => r.type === type);
     const pr = of('pull_request').map((r) => r.parameters ?? {});
+    // The old branch protection, which only an admin can read; unread counts as none.
+    const oldApprovals = () => { try { return api<{ required_approving_review_count?: number }>(`repos/${repo}/branches/${encodeURIComponent(defaultBranch)}/protection/required_pull_request_reviews`)?.required_approving_review_count ?? 0; } catch { return 0; } };
     return {
       pullRequest: pr.length > 0,
       codeOwnerReview: pr.some((p) => p.require_code_owner_review === true),
@@ -429,6 +437,7 @@ export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
       requiredChecks: of('required_status_checks').flatMap((r) => ((r.parameters?.required_status_checks ?? []) as { context?: string }[]).map((c) => c.context ?? '')).filter(Boolean),
       noForcePush: of('non_fast_forward').length > 0,
       noDeletion: of('deletion').length > 0,
+      approvals: Math.max(0, ...pr.map((p) => Number(p.required_approving_review_count) || 0), oldApprovals()),
     };
   });
 
@@ -469,5 +478,5 @@ export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
     return lines(`repos/${repo}/branches?per_page=100`, '.[].name').filter((b) => b !== defaultBranch && !open.has(`${owner}:${b}`));
   });
 
-  return { repo, defaultBranch, mergeMethods, deleteBranchOnMerge: info.delete_branch_on_merge ?? null, branch, tags, security, forgotten };
+  return { repo, defaultBranch, isPrivate: info.private ?? null, mergeMethods, deleteBranchOnMerge: info.delete_branch_on_merge ?? null, branch, tags, security, forgotten };
 }

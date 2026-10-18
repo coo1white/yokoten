@@ -469,9 +469,9 @@ test('messages: every check and guard says what, why and the fix, in text and JS
     add(coreRulesCheck(dir)?.finding);
   }
   // The server, with every setting off, and with nothing readable.
-  const off = { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false };
+  const off = { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false, approvals: 0 };
   const security = { secretScanning: false, pushProtection: false, privateReporting: false, dependabotAlerts: false };
-  const server = { repo: 'octo/demo', defaultBranch: 'main', mergeMethods: ['merge', 'squash'], deleteBranchOnMerge: false, branch: off, tags: false, security, forgotten: ['old'] };
+  const server = { repo: 'octo/demo', defaultBranch: 'main', isPrivate: false, mergeMethods: ['merge', 'squash'], deleteBranchOnMerge: false, branch: off, tags: false, security, forgotten: ['old'] };
   for (const c of [...serverChecks(server), ...serverChecks({ unread: 'gh is not installed', fix: 'get it' })]) add(c.finding);
 
   const known = new Set(ids());

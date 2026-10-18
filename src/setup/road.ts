@@ -243,6 +243,39 @@ const serverStep = (key: string, fields: { lacking: string; fix: string; why: st
   ...(fields.standard ? { standard: fields.standard } : {}),
 });
 
+// The review step (#59): a merge to the default branch needs one approval. The bot opens
+// the pull requests, so the owner is not their author and can approve them. A private
+// repo on a free plan has no rulesets: the step waits for stage 5, when the repo goes
+// public. That shows as "can't check", which never holds the stage. It is not "not now":
+// that mark is the owner's own decision in yokoten.json, and doctor never makes it for them.
+
+/** The branch rules full doctor read, or why there are none to judge. */
+const reviewRules = (server: ServerRead) => {
+  const settings = server ?? SESSION_UNREAD;
+  if ('unread' in settings) return settings;
+  if (!('unread' in settings.branch)) return settings.branch;
+  if (settings.isPrivate && /GitHub Pro/.test(settings.branch.unread)) return { unread: `${settings.branch.unread}, so no rule can ask for an approval yet; this step waits for stage 5, when the repo goes public`, fix: 'or upgrade to GitHub Pro and run doctor again' };
+  return settings.branch;
+};
+
+const reviewStep: Step = {
+  stage: 4,
+  key: 'review',
+  check: (...[, , server]) => {
+    const rules = reviewRules(server);
+    return 'unread' in rules ? null : rules.approvals >= 1;
+  },
+  what: () => 'a merge to the default branch needs no approving review',
+  fix: () => `${RULESET}: in "Require a pull request", set "Required approvals" to 1. You can't approve your own pull request, so let the bot open them`,
+  unchecked: (server) => {
+    const rules = reviewRules(server);
+    return 'unread' in rules ? `${rules.unread}; ${rules.fix}` : '';
+  },
+  why: 'the bot opens the pull requests, so you approve work you did not write, and nothing merges unread',
+  how: 'through the code host\'s API, in full doctor only: a ruleset (or the old branch protection) on the default branch asks for at least 1 approving review; a private repo without rulesets waits for stage 5',
+  standard: 'Scorecard: Code-Review',
+};
+
 /** The road, in order. Step names never change: they are the keys for "not now". */
 export const ROAD: Step[] = [
   {
@@ -399,6 +432,7 @@ export const ROAD: Step[] = [
     why: 'the skills show an agent how to hand off work, review it and find the cause of a failure',
     how: 'every skill in the kit is in ~/.claude/skills and in ~/.agents/skills, or the Claude Code plugin is on; a project copy of yokoten has no kit, so it can\'t check',
   },
+  reviewStep,
   {
     stage: 5,
     key: 'security-files',

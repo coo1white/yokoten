@@ -1,4 +1,4 @@
-<!-- source: docs/guide.md blob ce71abd9fd2fe194c9ee3fcc3609ffcf5974dcb7 -->
+<!-- source: docs/guide.md blob 04be477f47498e7a6883a084f074cdaebb675ba1 -->
 # yokoten 使用指南
 
 [README](README.md) 是简短版。剩下的都在这里：yokoten 为什么要做、它怎么工作、有哪些规则和命令，还有它做不到的事。
@@ -98,12 +98,20 @@ not now（暂不，后面跟着你给的原因）或者 can't check（这里查�
 | **1 · 安全网** | `rules`、`tool-hook`、`commit-check`、`runtime`、`tests`（有测试命令，CI 会跑） |
 | **2 · 先开 issue，再走 PR** | `ci`、`issues`（没有 todo 文件）、`templates`、`no-build-output`（`dist/`、`build/`、`out/` 里没有提交的文件，也没有编译出来的二进制文件） |
 | **3 · 发版** | `changelog`、`titles`（CI 跑 `check --pr`） |
-| **4 · 带一支 AI 团队** | `codeowners`、`bot`、`skills` |
+| **4 · 带一支 AI 团队** | `codeowners`、`bot`、`skills`、`review`（合并到默认分支前要有一个人批准） |
 | **5 · 公开** | `security-files`（安全说明、Dependabot、许可证）、`protection`（默认分支和 `v*` tag 上的规则集）、`merge-settings`（只许 squash 合并，合并后自动删分支）、`security-settings`（secret scanning、push protection、私下报告漏洞、Dependabot 提醒） |
 
 后三步是服务器上的设置。完整的 `doctor` 用 `gh api` 去读，只读不改。
 没装 `gh`、没登录、没网，或者远程仓库不在 GitHub 上，这三步就标 can't check，绝不会算作做完。
 会话开头不联网，所以那里这三步总是 can't check。
+
+`review` 也是这样读服务器的。默认分支的规则集（或者分支保护）要求至少一个批准，这一步就算做完。
+GitHub 不让你批准自己开的 PR，所以让 bot 来开 PR，你来批准、合并。
+设置方法：编辑默认分支上的规则集，在“Require a pull request”里把“Required approvals”设成 1。
+这样一来，合并的人不是写代码的人，OpenSSF Scorecard 应该会把每次改动算作审过。
+这是我们从 Scorecard 文档里读到的，还没在真正跑一次 Scorecard 时验证过。
+免费账号的私有仓库没有规则集，这时 `review` 标 can't check，等到第 5 关仓库公开时再做。
+它不标 not now，因为 not now 只留给你自己做的决定。
 
 如果某一步对应外部的标准，`yokoten doctor` 会在步骤名后面写出来，比如 `ci (Scorecard: CI-Tests)`。
 会话开头那三行不写。

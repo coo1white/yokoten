@@ -103,9 +103,10 @@ export function coreRulesCheck(root: string): { mark: 'ok' | 'MISSING' | 'note';
 const SERVER_CONTROL: ServerRead = {
   repo: 'octo/demo',
   defaultBranch: 'main',
+  isPrivate: false,
   mergeMethods: ['merge', 'squash'],
   deleteBranchOnMerge: false,
-  branch: { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false },
+  branch: { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false, approvals: 0 },
   tags: false,
   security: { secretScanning: false, pushProtection: false, privateReporting: false, dependabotAlerts: false },
   forgotten: [],

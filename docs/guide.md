@@ -109,12 +109,23 @@ listed:
 | **1 · Safety net** | `rules`, `tool-hook`, `commit-check`, `runtime`, `tests` (a test command, and CI runs it) |
 | **2 · Issues and pull requests** | `ci`, `issues` (no todo file), `templates`, `no-build-output` (nothing in `dist/`, `build/` or `out/`, no built binaries) |
 | **3 · Release** | `changelog`, `titles` (CI runs `check --pr`) |
-| **4 · A team of agents** | `codeowners`, `bot`, `skills` |
+| **4 · A team of agents** | `codeowners`, `bot`, `skills`, `review` (a merge to the default branch needs one approval) |
 | **5 · Going public** | `security-files` (a security policy, Dependabot, a license), `protection` (rulesets on the default branch and `v*` tags), `merge-settings` (squash only, delete branch on merge), `security-settings` (secret scanning, push protection, private reporting, Dependabot alerts) |
 
 The last three are server settings. Full `doctor` reads them through `gh api`, and only reads.
 Without `gh`, a sign-in, the network or a GitHub remote, they are **can't check**, never done.
 A session never calls the network, so there they are always **can't check**.
+
+`review` reads the server the same way. It is done when the default branch's ruleset, or
+its branch protection, asks for at least one approving review. GitHub does not let you
+approve your own pull request. So the bot opens the pull requests, and you approve and
+merge them. To set it up, edit the ruleset on the default branch: in "Require a pull
+request", set "Required approvals" to 1. OpenSSF Scorecard should then count each change
+as reviewed, because the person who merges it did not write it. We read this in the
+Scorecard docs and have not checked it in a real Scorecard run yet. A private repo on a
+free plan has no rulesets, so there `review` is **can't check** and waits for stage 5,
+when the repo goes public. It is not **not now**: that mark is only for a decision you
+make.
 
 After a step, `yokoten doctor` names the outside standard it meets, when there is one,
 for example `ci (Scorecard: CI-Tests)`. The session message leaves it out.
