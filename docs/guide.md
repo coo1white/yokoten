@@ -55,6 +55,16 @@ yokoten turns those lessons into something that checks itself:
   tells the agent the project's stage on the road, and the one next step. The agent
   brings it up, so you don't have to.
 
+## What changes on day one
+
+| Your agent tries to… | Without yokoten | With yokoten |
+|---|---|---|
+| force-push, or tag a release | it happens | stopped before it runs, and told why |
+| "fix" a failing test by editing the test | the test passes, the bug stays | not allowed in a fix |
+| commit your email, a server IP, your city | it goes public | the commit stops; the report names the file and line, never the text |
+| open a pull request | as you, with all your rights | as a bot; nothing merges without you |
+| work in another project | starts from zero | sees what that project is missing, and offers to set it up |
+
 ## Three checks and a lock
 
 ```mermaid
@@ -110,6 +120,16 @@ After a step, `yokoten doctor` names the outside standard it meets, when there i
 for example `ci (Scorecard: CI-Tests)`. The session message leaves it out.
 
 [Record 0004](records/0004-the-road.md) says why the road looks like this.
+
+This repo walks the same road, so you can see each stage working:
+
+| Stage | You learn | See it here |
+|---|---|---|
+| **1 · Safety net** | rules your agents read, and checks that stop them when rules aren't enough | [AGENTS.md](../AGENTS.md) |
+| **2 · Issues and pull requests** | every change starts as an issue and merges only when CI passes; labels, milestones, and a board keep track | [issues](https://github.com/yokoten-labs/yokoten/issues?q=is%3Aissue), [pull requests](https://github.com/yokoten-labs/yokoten/pulls?q=is%3Apr), [the board](https://github.com/orgs/yokoten-labs/projects/1) |
+| **3 · Release** | commit messages that say what changed and why, a changelog, a version number for every release | [CHANGELOG.md](../CHANGELOG.md) |
+| **4 · A team of agents** | a bot opens pull requests, workers take tasks, a reviewer checks them; only you merge | [Managing agents like a team](#managing-agents-like-a-team) |
+| **5 · Going public** | scan every past commit for private data, turn on security settings, protect `main` | [security policy](../.github/SECURITY.md) |
 
 And when an agent tries to push a release tag:
 
@@ -235,8 +255,13 @@ The package runs built JavaScript, because Node does not run TypeScript under
 `node_modules`. The repo has no build; `npm pack` makes the package's `dist/`
 ([record 0008](records/0008-npm-package.md)).
 
-The owner publishes the package, as the owner creates a release tag. Until the first
-release is on npm, [install from a clone](#install-from-a-clone).
+The owner publishes the package, as the owner creates a release tag. The tag starts the
+release workflow. It runs the checks, then the publish job waits for the owner's
+approval in the `release` environment. Only then does it publish to npm, with no npm
+token stored anywhere ([record 0009](records/0009-release-environment.md)). The first
+release is the one exception: the owner publishes it by hand, because npm can't trust a
+workflow for a package it does not have yet. Until the
+first release is on npm, [install from a clone](#install-from-a-clone).
 
 ### Install from a clone
 
@@ -482,6 +507,13 @@ A line you edited by hand in the core part shows as `-`, because the update repl
 it. Move your own rules under `## This project` first. Without that heading, yokoten
 can't tell the core rules from yours. Then it says so, and compares and writes nothing.
 
+The first line of `AGENTS.md` names the kit that wrote the core rules, as a comment
+that GitHub does not show: `<!-- yokoten kit 0.1.0 -->`. `init` writes it, and
+`update --write` sets the new version. When the project's kit is newer than the
+yokoten you run, `update` refuses and writes nothing, so the rules never go back to
+an older kit. `doctor` then says to update yokoten itself, not the project. A file
+without that line compares by its text only.
+
 Run `update` from an installed yokoten or a clone, not from `.yokoten/`. The copy in
 your project has no kit to compare with.
 
@@ -649,3 +681,21 @@ hard rule (a light version came back as guidance with a soft check:
 
 Version 0.1. The decisions behind it are in [`docs/records/`](records/). Work is
 tracked in issues; the rules for working on yokoten are in [`AGENTS.md`](../AGENTS.md).
+
+### Where this is going
+
+The dream: anyone can build software the way good teams do. The whole cycle is the
+SDLC: plan, build, test, review, release, maintain. You learn it by doing it in your
+own project, one stage at a time.
+
+| Stage | Name | What it means | Now |
+|---|---|---|---|
+| 1 | **Guard** | AI agents are stopped before a dangerous action: a force push, a test edited to pass, a private detail leaked | ✅ done |
+| 2 | **Guide** | a beginner walks the five stages with `doctor`, one thing at a time; an agent reads an old project and drafts how to adopt yokoten | 🚧 now, around the hackathon |
+| 3 | **Any tool, any host** | Claude Code, Codex, Gemini CLI and Muse Code keep the same rules; GitHub, Gitea and GitLab all work | next |
+| 4 | **The whole cycle** | from a short spec to build, test, review, release and maintenance, the full SDLC has a guide | later |
+| 5 | **Yokoten** | a lesson one project learns becomes a check, and the check spreads to every project. What one person learns, everyone gets | the goal |
+
+The near steps are in [M0](https://github.com/yokoten-labs/yokoten/milestone/1) and
+[M1](https://github.com/yokoten-labs/yokoten/milestone/2). The
+[board](https://github.com/orgs/yokoten-labs/projects/1) shows what is being built today.

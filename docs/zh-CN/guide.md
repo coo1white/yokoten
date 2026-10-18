@@ -1,4 +1,4 @@
-<!-- source: docs/guide.md blob 69bf1d5b352107b97d18698d946f41025236fb63 -->
+<!-- source: docs/guide.md blob ce71abd9fd2fe194c9ee3fcc3609ffcf5974dcb7 -->
 # yokoten 使用指南
 
 [README](README.md) 是简短版。剩下的都在这里：yokoten 为什么要做、它怎么工作、有哪些规则和命令，还有它做不到的事。
@@ -44,6 +44,16 @@ yokoten 把这些经验写成规则，再配上会自己跑的检查：
   有的提交绕过了前两道，CI 再跑一遍同样的检查，把它兜住。
 - **不用你记着提醒。** 每次会话一开头先跑 `doctor`，告诉 AI 这个项目走到了第几关、
   下一步做什么。AI 会主动跟你提，你不用记。
+
+## 装上的第一天，有什么不同
+
+| AI 想做的事 | 没有 yokoten | 有 yokoten |
+|---|---|---|
+| 强推（force push），或者自己打 tag 发版 | 直接就做了 | 还没执行就被拦下，并告诉它为什么 |
+| 测试不过，就去改测试 | 测试通过了，bug 还在 | 修 bug 时不许改测试 |
+| 提交里带上你的邮箱、服务器 IP、所在城市 | 被公开出去 | 提交被拦下；报告只指出哪个文件第几行，不把内容打出来 |
+| 开 PR | 用你的账号开，权限和你一样大 | 用 bot 账号开；你不点头，什么都合不进去 |
+| 换到另一个项目 | 一切从头来 | 看出这个项目缺什么，问你要不要补上 |
 
 ## 三道检查，一把锁
 
@@ -99,6 +109,16 @@ not now（暂不，后面跟着你给的原因）或者 can't check（这里查�
 会话开头那三行不写。
 
 为什么这样分，见[决定记录 0004](../records/0004-the-road.md)。
+
+这个仓库自己也在走这条路，每一关你都能直接看它怎么运转：
+
+| 关 | 学会什么 | 在这里看 |
+|---|---|---|
+| **1 · 安全网** | AI 要读的规则，以及规则管不住时拦下它的检查 | [AGENTS.md](../../AGENTS.md) |
+| **2 · 先开 issue，再走 PR** | 每次改动先开 issue 说清为什么；CI 通过了才合并；用标签、里程碑（milestone）和看板管起来 | [issue](https://github.com/yokoten-labs/yokoten/issues?q=is%3Aissue)、[PR](https://github.com/yokoten-labs/yokoten/pulls?q=is%3Apr)、[看板](https://github.com/orgs/yokoten-labs/projects/1) |
+| **3 · 发版** | 写明改了什么、为什么改的提交信息；CHANGELOG；每次发版一个版本号 | [CHANGELOG.md](../../CHANGELOG.md) |
+| **4 · 带一支 AI 团队** | bot 开 PR，worker 领任务，reviewer 审查；最后拍板的永远是你 | [像带团队一样管 agent](#像带团队一样管-agent) |
+| **5 · 公开** | 把全部提交历史查一遍，看有没有漏出隐私；打开安全设置；保护 `main` 分支 | [安全说明](../../.github/SECURITY.md) |
 
 AI 想推送发版 tag 时，会看到：
 
@@ -217,7 +237,10 @@ npm 上的包跑的是编译好的 JavaScript，因为 Node 不处理 `node_modu
 仓库本身还是不用编译，只有 `npm pack` 打包的时候才生成 `dist/`
 （见[记录 0008](../records/0008-npm-package.md)，英文）。
 
-发布到 npm 是主人的事，跟打发版 tag 一样。第一个版本发布之前，先
+发布到 npm 是主人的事，跟打发版 tag 一样。tag 一推上去，发布 workflow 就开始跑：先跑检查，
+然后发布那一步停下来，等主人在 `release` 环境里点批准，批准了才发到 npm。整个过程不存任何
+npm token（见[记录 0009](../records/0009-release-environment.md)，英文）。只有第一个版本例外，
+由主人手动发布：npm 上还没有这个包的时候，没法设置信任哪个 workflow。第一个版本发布之前，先
 [从 clone 下来的仓库装](#从-clone-下来的仓库装)。
 
 ### 从 clone 下来的仓库装
@@ -448,6 +471,12 @@ yokoten 每学到一个教训，核心规则就会改。`yokoten install` 会更
 挪到 `## This project` 下面。要是文件里没有这个标题，yokoten 分不清哪些是核心规则、
 哪些是你的，它会直接告诉你，不比也不写。
 
+`AGENTS.md` 第一行记着核心规则是哪个版本的 kit 写的，比如 `<!-- yokoten kit 0.1.0 -->`。
+这是一行注释，GitHub 上看不到。`init` 会写上它，`update --write` 会换成新版本号。
+要是项目里的版本比你正在用的 yokoten 还新，`update` 会拒绝，什么都不写，免得把规则
+退回旧版。这时 `doctor` 会让你升级 yokoten 本身，而不是去改项目。没有这一行的文件，
+就只按内容比。
+
 `update` 要用装好的 yokoten 或者 clone 下来的仓库跑，别用 `.yokoten/` 里的那份：
 项目里那份没有带 kit，没东西可比。
 
@@ -592,3 +621,18 @@ AWS 的 access key id，还有 PEM 私钥。查到了只说是哪一种密钥，
 
 版本 0.1。背后的决定记录在 [`docs/records/`](../records/)。工作用 issue 跟踪；参与开发
 yokoten 本身的规则在 [`AGENTS.md`](../../AGENTS.md)。
+
+### 往哪里去
+
+梦想：人人都能像好团队那样做软件。软件开发是一整圈：计划、开发、测试、审查、发版、维护，
+也就是 SDLC。yokoten 带你在自己的项目里亲手走一遍，一次一关。
+
+| 阶段 | 名字 | 意思 | 现在 |
+|---|---|---|---|
+| 1 | **守桥** | AI agent 做危险操作之前就被拦下：force push、改测试让它通过、泄露隐私 | ✅ 已完成 |
+| 2 | **带路** | 新手跟着 `doctor` 走完五关，一次只做一件事；agent 读懂老项目，起草接入 yokoten 的方案 | 🚧 正在做，黑客松前后 |
+| 3 | **任何工具，任何平台** | Claude Code、Codex、Gemini CLI 和 Muse Code 守同一套规则；GitHub、Gitea、GitLab 都能用 | 下一步 |
+| 4 | **完整的循环** | 从一份简短的方案开始，到开发、测试、审查、发版、维护，整个 SDLC 每一步都有人带路 | 之后 |
+| 5 | **横展** | 一个项目学到的教训，变成一条检查；这条检查推广到所有项目。一个人学到的，大家都能用上 | 目标 |
+
+近期要做的事在 [M0](https://github.com/yokoten-labs/yokoten/milestone/1) 和 [M1](https://github.com/yokoten-labs/yokoten/milestone/2) 里，[看板](https://github.com/orgs/yokoten-labs/projects/1)上能看到今天在做什么。
