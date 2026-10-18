@@ -57,6 +57,9 @@ All notable changes are listed here. The format follows
 
 ### Changed
 
+- yokoten is developed in English only: code, commits, issues, records and CLI output.
+  Users can read the website, README, guide and video in English, Chinese and Japanese
+  (record 0007). The Japanese pages are planned (#121).
 - yokoten names things in whole words, at most four (record 0006). A test reads every
   name declared in `src/` and `bin/`. It fails on a one-letter name used over 10 lines
   or exported, a `_` at the start or end, or `CONSTANT_CASE` in a function. The names
