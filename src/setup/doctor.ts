@@ -10,28 +10,33 @@
 // Doctor first checks itself: it feeds each check a known-bad input and expects a catch.
 // A check that passes everything looks the same as a healthy project, so this comes first.
 
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkCommand, checkEdit } from '../rules/guards.ts';
 import { type Config, DEFAULTS, type Env } from '../rules/config.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
+import { type Finding, finding, formatFinding, type RuleId } from '../rules/message.ts';
 import { loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
 import { hasSessionDoctor } from '../agents/claude-code.ts';
 import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
+import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
 import { runtimeVersion, VERSION } from './files.ts';
 import { paths } from './install.ts';
-import { road, STAGES, walk } from './road.ts';
+import { type Mark, road, STAGES, stepFinding, stepText, walk } from './road.ts';
 
-/** One check outside the road: its name, whether it is in place, and the fix. */
+/** One check outside the road: its name in the report, whether it is in place, and the finding when it is not. */
 interface Practice {
   name: string;
   ok: boolean;
-  fix: string;
+  finding: Finding;
 }
+
+const practice = (name: string, id: RuleId, ok: boolean, what: string, fix: string): Practice => ({ name, ok, finding: finding(id, what, fix) });
 
 /** The checks that must catch a known-bad input. Returns the names of any that did not. */
 export function selfTest(): string[] {
@@ -56,8 +61,8 @@ export function selfTest(): string[] {
  */
 export function agentHooks(root: string): Practice[] {
   return [
-    { name: 'codex-hook', ok: codex.hasProjectHook(root), fix: 'no tool-call guard in .codex/hooks.json; `yokoten init` adds it' },
-    { name: 'gemini-hook', ok: gemini.hasProjectHook(root), fix: 'no tool-call guard in .gemini/settings.json; `yokoten init` adds it' },
+    practice('codex-hook', 'codex-hook', codex.hasProjectHook(root), 'no tool-call guard in .codex/hooks.json', '`yokoten init` adds it'),
+    practice('gemini-hook', 'gemini-hook', gemini.hasProjectHook(root), 'no tool-call guard in .gemini/settings.json', '`yokoten init` adds it'),
   ];
 }
 
@@ -66,14 +71,13 @@ export function machineChecks(env: Env): Practice[] {
   const p = paths(env);
   const runtime = runtimeVersion(p.runtime);
   return [
-    { name: 'session-doctor', ok: hasSessionDoctor(env), fix: 'sessions do not start with doctor' },
-    { name: 'runtime', ok: runtime === VERSION, fix: runtime ? `the installed runtime is ${runtime}, this yokoten is ${VERSION}` : 'no runtime installed' },
-    { name: 'private-marks', ok: loadMarks(env).length > 0, fix: `${p.marks} is missing or empty, so the privacy check only knows emails and IPs` },
+    practice('session-doctor', 'session-doctor', hasSessionDoctor(env), 'sessions do not start with doctor', 'run `yokoten install`'),
+    // 'runtime' in the text, as before; the id differs from the road's runtime step.
+    practice('runtime', 'machine-runtime', runtime === VERSION, runtime ? `the installed runtime is ${runtime}, this yokoten is ${VERSION}` : 'no runtime installed', 'run `yokoten install` from this copy of yokoten'),
+    practice('private-marks', 'private-marks', loadMarks(env).length > 0, `${p.marks} is missing or empty`, 'add your name, city, domain and server names to it, one per line'),
   ];
 }
 
-// What doctor cannot see yet and the owner sets once per repo, on the server. Kept to three
-// (record 0001), so the security switches (#35) share the last step with the bot.
 /** In a folder with nothing but a todo file, and a home with nothing in it, no step on the road may be done. */
 function roadControl(): string[] {
   let dir = '';
@@ -90,11 +94,70 @@ function roadControl(): string[] {
   }
 }
 
-const OWNER_STEPS = [
-  'main: a ruleset with pull request required, the CI check required, no force push, no deletion; squash merge only, delete branch on merge',
+/** What doctor can't read on the server yet, and the owner sets once per repo. */
+const OWNER_STEPS = ['the bot: a GitHub App (or collaborator) with write access and no Workflows permission'];
+
+/** The settings to check by hand when doctor can't read the server. */
+const BY_HAND = [
+  'main: a ruleset with pull request required, the CI check required, code owner review, no force push, no deletion; squash merge only, delete branch on merge',
   'tags: a ruleset on v* so only you create, move or delete a release tag',
-  'the bot and security: a collaborator (or GitHub App) with write access and no Workflows permission; CODEOWNERS with you, and code owner review required; in Settings, Advanced Security, turn on private vulnerability reporting, secret scanning with push protection, and Dependabot alerts',
+  'security: in Settings, Advanced Security, turn on private vulnerability reporting, secret scanning with push protection, and Dependabot alerts',
 ];
+
+/** One server setting as doctor reports it. A "can't check" or a note never fails doctor. */
+export interface ServerCheck {
+  id: RuleId;
+  mark: 'ok' | 'MISSING' | "can't check" | 'note';
+  finding: Finding;
+}
+
+const RULESET = 'in Settings, Rules, Rulesets, edit the ruleset on the default branch';
+
+/** Each server setting, judged. `settings` is what the host adapter read, or why it could not. */
+export function serverChecks(settings: ServerSettings | Unread): ServerCheck[] {
+  const cant = (id: RuleId, u: Unread): ServerCheck => ({ id, mark: "can't check", finding: finding(id, `can't check: ${u.unread}`, u.fix) });
+  if ('unread' in settings) return [cant('server-settings', settings)];
+  const judge = (id: RuleId, found: boolean | Unread | null, what: string, fix: string): ServerCheck => {
+    if (found === null) return cant(id, { unread: 'only a repo admin can see this setting', fix: 'run doctor signed in to gh as a repo admin' });
+    if (typeof found !== 'boolean') return cant(id, found);
+    return { id, mark: found ? 'ok' : 'MISSING', finding: finding(id, what, fix) };
+  };
+  const { branch, security: sec } = settings;
+  const rules = 'unread' in branch ? null : branch;
+  const lacking = rules ? [rules.pullRequest ? '' : 'a pull request', rules.noForcePush ? '' : 'no force push', rules.noDeletion ? '' : 'no deletion'].filter(Boolean) : [];
+  const squash = rules?.mergeMethods.length ? rules.mergeMethods.join() === 'squash' : settings.mergeMethods && settings.mergeMethods.join() === 'squash';
+  const off = ([['secret scanning', sec.secretScanning], ['push protection', sec.pushProtection], ['private vulnerability reporting', sec.privateReporting], ['Dependabot alerts', sec.dependabotAlerts]] as const)
+    .filter(([, on]) => on === false).map(([name]) => name);
+  const unknown = Object.values(sec).some((on) => on === null);
+  const checks = [
+    judge('main-rules', rules ? !lacking.length : branch as Unread, `the default branch (${settings.defaultBranch}) has no rule for ${lacking.join(', ')}`, `${RULESET}, or add one, and turn those rules on`),
+    judge('required-checks', rules ? rules.requiredChecks.length > 0 : branch as Unread, 'no CI check must pass before a merge', `${RULESET}: require status checks, and add the CI check by name (yokoten's kit names it \`ci\`)`),
+    judge('code-owner-review', rules ? rules.codeOwnerReview : branch as Unread, 'code owner review is not required', `${RULESET}: in "Require a pull request", turn on "Require review from Code Owners"`),
+    judge('squash-only', squash, 'pull requests can merge by merge commit or rebase, not only by squash', 'in Settings, General, Pull Requests, allow squash merging only'),
+    judge('delete-branch', settings.deleteBranchOnMerge, 'merged branches are not deleted', 'in Settings, General, Pull Requests, turn on "Automatically delete head branches"'),
+    judge('tag-rules', settings.tags, 'no active tag ruleset on v* that restricts creation, update and deletion', 'in Settings, Rules, Rulesets, add a tag ruleset on v* with those three rules, and you on the bypass list'),
+    judge('security-switches', off.length ? false : unknown ? null : true, `${off.join(', ')} ${off.length > 1 ? 'are' : 'is'} off`, 'in Settings, Advanced Security, turn them on'),
+  ];
+  const { forgotten } = settings;
+  if ('unread' in forgotten) checks.push(cant('forgotten-branches', forgotten));
+  else if (forgotten.length) {
+    const named = `${forgotten.slice(0, 3).join(', ')}${forgotten.length > 3 ? `, and ${forgotten.length - 3} more` : ''}`;
+    checks.push({ id: 'forgotten-branches', mark: 'note', finding: finding('forgotten-branches', `${forgotten.length} branch(es) with no open pull request (${named})`, 'open a pull request for each, or delete the ones you no longer need; doctor never deletes a branch') });
+  }
+  return checks;
+}
+
+/** The server settings of the project's origin remote, or why they can't be read. */
+function readOrigin(root: string, gh: Gh): ServerSettings | Unread {
+  let remote = '';
+  try {
+    remote = execFileSync('git', ['config', '--get', 'remote.origin.url'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch {
+    // no origin remote
+  }
+  const repo = repoOf(remote);
+  return repo ? readServer(gh, repo) : { unread: 'the origin remote is not on a host yokoten knows (GitHub for now)', fix: 'add a GitHub origin remote, or check these settings by hand' };
+}
 
 /** What a session hears when the road is done, as far as yokoten can check. */
 export const ROAD_DONE = 'yokoten: every step yokoten can check is done, or marked not now.';
@@ -102,42 +165,113 @@ export const ROAD_DONE = 'yokoten: every step yokoten can check is done, or mark
 /** The last of a session's three lines: what the agent does with the step. */
 export const OFFER = 'Tell the user in plain words, one step at a time, and offer to do it (as-is, lighter, or not now with a reason).';
 
-/** The report, and whether everything is in place. */
-export function doctor(root: string | null, { env, config, session = false }: { env: Env; config: Config; session?: boolean }): { ok: boolean; lines: string[] } {
+/** One step in the JSON map: its mark, its outside standard, and the reason for "not now". */
+export interface StepState {
+  id: string;
+  stage: number;
+  mark: Mark;
+  standard?: string;
+  reason?: string;
+}
+
+/**
+ * What `doctor --json` prints. `findings` is everything to do, each with what, why and
+ * fix; `notes` never fail doctor. A session (`--session`) gets the next step and the
+ * private-marks finding only, as its three lines do.
+ */
+export interface DoctorReport {
+  version: string;
+  ok: boolean;
+  selfTest: { ok: boolean; failed: string[] };
+  /** False outside a git repo: then there is no road to walk. */
+  repo: boolean;
+  stage: number | null;
+  stages: string[];
+  next: Finding | null;
+  findings: Finding[];
+  steps?: StepState[];
+  notes?: Finding[];
+  server?: { id: string; mark: ServerCheck['mark'] }[];
+}
+
+/** The report, as text lines and as data, and whether everything is in place. */
+export function doctor(
+  root: string | null,
+  { env, config, session = false, gh }: { env: Env; config: Config; session?: boolean; gh?: Gh },
+): { ok: boolean; lines: string[]; report: DoctorReport } {
   const lines: string[] = [];
-  const broken = selfTest();
-  if (broken.length) lines.push(`yokoten is BROKEN: ${broken.join(', ')} let a known-bad input through. Do not trust any check until this is fixed.`);
-  if (!root) return { ok: broken.length === 0, lines };
+  const failed = selfTest();
+  const findings: Finding[] = [];
+  if (failed.length) {
+    lines.push(`yokoten is BROKEN: ${failed.join(', ')} let a known-bad input through. Do not trust any check until this is fixed.`);
+    findings.push(finding('self-test', `${failed.join(', ')} let a known-bad input through`, 'do not trust any check until this is fixed; run `yokoten install` again, or report it in an issue'));
+  }
+  const base = { version: VERSION, selfTest: { ok: !failed.length, failed }, stages: STAGES };
+  if (!root) return { ok: !failed.length, lines, report: { ...base, ok: !failed.length, repo: false, stage: null, next: null, findings } };
 
   const where = walk(road(root, env), config.notNow);
   const machine = machineChecks(env);
+  const next = where.next ? stepFinding(where.next, root, env) : null;
 
   // A session reads files only, never the network, so it starts fast and works offline.
   if (session) {
-    const { stage, next } = where;
-    if (stage && next) lines.push(`yokoten: stage ${stage} of ${STAGES.length}, ${STAGES[stage - 1]}. Next: ${next.what(root, env)}.`, `Why: ${next.why}.`, OFFER);
+    const { stage } = where;
+    if (stage && next) lines.push(`yokoten: stage ${stage} of ${STAGES.length}, ${STAGES[stage - 1]}. Next: ${stepText(next)}.`, `Why: ${next.why}.`, OFFER);
     else lines.push(ROAD_DONE);
+    if (next) findings.push(next);
     // Not a step on the road, but the privacy check is weaker until it is fixed.
     const marks = machine.find((c) => c.name === 'private-marks' && !c.ok);
-    if (marks) lines.push(`yokoten: ${marks.fix}.`);
-    return { ok: !broken.length && !where.next, lines };
+    if (marks) {
+      lines.push(`yokoten: ${formatFinding(marks.finding)}`);
+      findings.push(marks.finding);
+    }
+    const ok = !failed.length && !next;
+    return { ok, lines, report: { ...base, ok, repo: true, stage, next, findings } };
   }
 
-  lines.push(`yokoten ${VERSION}, self-test ${broken.length ? 'FAILED' : 'ok'}`);
+  lines.push(`yokoten ${VERSION}, self-test ${failed.length ? 'FAILED' : 'ok'}`);
   lines.push(where.stage ? `the road: stage ${where.stage} of ${STAGES.length}, ${STAGES[where.stage - 1]}` : `the road: ${ROAD_DONE.replace(/^yokoten: /, '')}`);
+  const steps: StepState[] = [];
   STAGES.forEach((name, i) => {
     lines.push(`  ${i + 1}. ${name}`);
     for (const { step, mark } of where.steps.filter((w) => w.step.stage === i + 1)) {
-      const note = mark === 'done' ? '' : mark === 'not now' ? config.notNow[step.key] : mark === "can't check" ? '' : step.what(root, env);
+      const state: StepState = { id: step.key, stage: step.stage, mark };
+      if (step.standard) state.standard = step.standard;
+      let note = '';
+      if (mark === 'not now') note = state.reason = config.notNow[step.key];
+      else if (mark === 'next' || mark === 'to do') {
+        const f = stepFinding(step, root, env);
+        findings.push(f);
+        note = stepText(f);
+      }
+      steps.push(state);
       lines.push(`    ${mark.padEnd(11)} ${step.key}${step.standard ? ` (${step.standard})` : ''}${note ? `: ${note}` : ''}`);
     }
   });
   lines.push('project:');
-  for (const c of agentHooks(root)) lines.push(`  ${c.ok ? 'ok     ' : 'note   '} ${c.name}${c.ok ? '' : `: ${c.fix}`}`);
+  const notes: Finding[] = [];
+  for (const c of agentHooks(root)) {
+    lines.push(`  ${c.ok ? 'ok     ' : 'note   '} ${c.name}${c.ok ? '' : `: ${stepText(c.finding)}`}`);
+    if (!c.ok) notes.push(c.finding);
+  }
   const problems = check(root, { config, env });
+  findings.push(...problems);
   lines.push(`  ${problems.length ? 'MISSING' : 'ok     '} tree: ${problems.length ? `${problems.length} problem(s), run \`yokoten check\`` : 'layout and privacy clean'}`);
   lines.push('machine:');
-  for (const c of machine) lines.push(`  ${c.ok ? 'ok     ' : 'MISSING'} ${c.name}${c.ok ? '' : `: ${c.fix}`}`);
-  lines.push('server (not checked yet; set once per repo by the owner):', ...OWNER_STEPS.map((s, i) => `  ${i + 1}. ${s}`));
-  return { ok: !broken.length && !where.next && !problems.length && machine.every((c) => c.ok), lines };
+  for (const c of machine) {
+    lines.push(`  ${c.ok ? 'ok     ' : 'MISSING'} ${c.name}${c.ok ? '' : `: ${stepText(c.finding)}`}`);
+    if (!c.ok) findings.push(c.finding);
+  }
+  // Read only, and only in full doctor: a session never calls the network.
+  const server = serverChecks(gh ? readOrigin(root, gh) : { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' });
+  lines.push('server (read only; the owner sets these once per repo):');
+  for (const c of server) {
+    lines.push(`  ${c.mark.padEnd(11)} ${c.id}${c.mark === 'ok' ? '' : `: ${stepText(c.finding)}`}`);
+    if (c.mark === 'MISSING') findings.push(c.finding);
+    else if (c.mark !== 'ok') notes.push(c.finding);
+  }
+  if (server[0].id === 'server-settings') lines.push('  check these by hand:', ...BY_HAND.map((s) => `    ${s}`));
+  lines.push(...OWNER_STEPS.map((s) => `  not checked ${s}`));
+  const ok = !failed.length && !where.next && !problems.length && machine.every((c) => c.ok) && server.every((c) => c.mark !== 'MISSING');
+  return { ok, lines, report: { ...base, ok, repo: true, stage: where.stage, next, findings, steps, notes, server: server.map(({ id, mark }) => ({ id, mark })) } };
 }

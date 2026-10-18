@@ -10,6 +10,7 @@ export interface Config {
   privacy: { allow: string[]; skip: string[]; utc: boolean };
   notNow: Record<string, string>;
   allowBuild: string[];
+  areas: string[];
 }
 
 /** What yokoten.json may hold: any key, or part of one. */
@@ -20,6 +21,7 @@ interface ConfigFile {
   privacy?: Partial<Config['privacy']>;
   notNow?: Record<string, string>;
   allowBuild?: string[];
+  areas?: string[];
 }
 
 /** The guard's own environment (process.env, or a test's stand-in). */
@@ -43,6 +45,9 @@ export const DEFAULTS: Config = {
   notNow: {},
   // Build output and binaries the commit check lets through, as globs: ["dist/**", "*.pdf"].
   allowBuild: [],
+  // The areas an issue title (`area: ...`) and a pull request title (`type(area): ...`)
+  // may name: ["doctor", "check"]. Empty means any lowercase word.
+  areas: [],
 };
 
 export function loadConfig(root: string): Config {
@@ -59,5 +64,43 @@ export function loadConfig(root: string): Config {
     privacy: { ...DEFAULTS.privacy, ...file.privacy },
     notNow: file.notNow ?? {},
     allowBuild: file.allowBuild ?? DEFAULTS.allowBuild,
+    areas: file.areas ?? DEFAULTS.areas,
   };
+}
+
+// Globs, as yokoten.json names files. Matched against a path relative to the repo root,
+// with forward slashes.
+//
+// `*` matches inside one name, `?` one character, `**/` any number of folders (none too),
+// and a trailing `**` everything below. A glob with a slash is anchored at the root
+// (`test/**` is the root's test folder); a glob without one matches a name in any folder
+// (`*.test.*`).
+
+export function globToRegExp(glob: string): RegExp {
+  let re = '';
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === '*' && glob[i + 1] === '*') {
+      if (glob[i + 2] === '/') {
+        re += '(?:.*/)?';
+        i += 2;
+      } else {
+        re += '.*';
+        i += 1;
+      }
+    } else if (c === '*') {
+      re += '[^/]*';
+    } else if (c === '?') {
+      re += '[^/]';
+    } else {
+      re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    }
+  }
+  return new RegExp(glob.includes('/') ? `^${re}$` : `(?:^|/)${re}$`);
+}
+
+/** A function that says whether a path matches any of the globs. */
+export function matcher(globs: string[]): (path: string) => boolean {
+  const patterns = globs.map(globToRegExp);
+  return (path) => patterns.some((re) => re.test(path));
 }

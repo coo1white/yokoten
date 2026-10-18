@@ -1,5 +1,6 @@
 name: Task
-description: A piece of work. Every change starts here.
+description: "A piece of work. Every change starts here. Title: `area: verb phrase`, for example `doctor: add the review step`. At most 60 characters, no full stop, no #N."
+title: "area: "
 body:
   - type: textarea
     id: goal

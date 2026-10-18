@@ -6,8 +6,40 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `yokoten init --github` adds the standard labels (bug, feat, docs, refactor, ci,
+  owner, incident, good first issue, hotfix) and a first milestone, through `gh`. Without
+  `--yes` it only says what it would make. It keeps what is there and deletes nothing.
+  `init` now refuses an unknown option (#10).
+- The secret check catches Meta Model API keys (`LLM_` with an app id and a secret) (#68).
+- Full `doctor` reads the server settings through `gh` and reports each as ok, missing
+  or can't check: the rules on the default branch, the required CI check, code owner
+  review, squash only, delete branch on merge, the tag ruleset on `v*` and the security
+  switches. It notes branches with no open pull request. It only reads, and never
+  changes a setting. When `gh` is missing, signed out or refused, it says how to fix
+  that and goes on. A missing setting makes `doctor` exit 1 (#7).
+
 ### Changed
 
+- `doctor --json` gives `server` as a list of `{ id, mark }` (it was a list of text) (#7).
+- The pull request check counts `Part of #N` as a linked issue. Only `Closes`, `Fixes`
+  and `Resolves` close it (#82).
+- The CI workflow `init` writes has one required check, `ci`. It waits for every other
+  job and fails if one of them fails. A new `lint` job runs actionlint and zizmor on the
+  workflows. Each job gets only the permissions it names. Make `ci` the required check
+  in place of `check`. Delete the old file and run `init` again to get it (#36).
+- yokoten's own CI tests on Node 22.18.0 and 24 on Linux, and on Node 24 on macOS. A
+  test holds that `ci` waits for every job and that checkout keeps no token (#36).
+- Every message has three parts: what happened, why it matters, and the fix. Most
+  lines keep their words and gain the missing part. Some are reworded. A full folder
+  reads `docs/: 9 entries, over the cap of 7: ...` (was `docs/ has 9 entries ...`). A
+  pull request problem reads `title: not in the commit form. ... Use ...`. The force push
+  message names the flag, and a long-sentence note gains its fix (#42).
+- An unknown option to `check`, `doctor`, `hook` or `explain` is refused with exit 1;
+  it used to be ignored. So are two of `--staged`, `--history` and `--pr` together,
+  where one used to win quietly. Exit codes are unchanged: 0 ok, 1 problems or a usage
+  error, 2 the hook blocked (#42).
 - `doctor` is a guide along the road in five stages (record 0004). A session hears
   three lines: the stage, the one next step, and why. Full `doctor` shows every stage
   and step as done, next, to do, not now or can't check. The stage is worked out each
@@ -17,6 +49,18 @@ All notable changes are listed here. The format follows
 
 ### Added
 
+- Issue titles have a standard: `area: verb phrase` for a task, `area: symptom` for an
+  incident, at most 60 characters, no full stop and no `#N`. `check --issue` checks it
+  in CI, and the new `issue` workflow runs it when an issue is opened or edited; it only
+  reads. The issue templates start the title with `area: `. `"areas"` in
+  `yokoten.json` limits the areas, for issue titles and for pull request titles. Kit
+  change: every project gets the workflow and the templates on its next `init`.
+- `--json` on `check`, `doctor`, `hook` and `explain`: pure JSON on stdout, for an
+  agent or a script. Each finding has `id`, `what`, `why`, `fix`, and `file` and
+  `line` when it is in a file; no field holds a private value. The guide's new "Exit
+  codes" section writes the codes down once (#42).
+- `yokoten explain <id>`: a rule or a step on the road, its reason and how it is
+  checked. An unknown id exits 1 with the list of ids (#42).
 - Full `doctor` names the outside standard each step meets, when there is one: OpenSSF
   Scorecard, the Best Practices badge, OSPS Baseline, Conventional Commits, for example
   `ci (Scorecard: CI-Tests)`. The session message stays three lines (#58).

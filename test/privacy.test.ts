@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { hideHome, loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../src/rules/privacy.ts';
 import { SECRET_CONTROL } from '../src/rules/secrets.ts';
+import { formatFinding } from '../src/rules/message.ts';
 
 // Samples are built from pieces so this file passes its own check.
 const at = '@';
@@ -16,7 +17,7 @@ test('positive control: the known-bad sample is caught', () => {
 
 test('emails: personal ones are caught, noreply and examples are fine', () => {
   assert.equal(scanText(`me${at}gmail.com`, { file: 'a' }).length, 1);
-  assert.match(scanText(`x\nmail me${at}mydomain.dev`, { file: 'a.md' })[0], /^a\.md:2: an email/);
+  assert.match(formatFinding(scanText(`x\nmail me${at}mydomain.dev`, { file: 'a.md' })[0]), /^a\.md:2: an email/);
   for (const ok of [`1+me${at}users.noreply.github.com`, `noreply${at}anthropic.com`, `you${at}example.com`, `a${at}host.test`]) {
     assert.deepEqual(scanText(ok, { file: 'a' }), [], ok);
   }
@@ -52,7 +53,7 @@ test('IPs: real ones are caught, documentation ranges and versions are not', () 
 test('private marks: matched without case, never echoed', () => {
   const problems = scanText('Deploy to Secret-Box tonight', { file: 'a', marks: ['secret-box'] });
   assert.equal(problems.length, 1);
-  assert.ok(!/secret-box/i.test(problems[0]), 'the mark must not appear in the output');
+  assert.ok(!/secret-box/i.test(JSON.stringify(problems)), 'the mark must not appear in the output');
 });
 
 test('private marks file: comments and blanks skipped, missing file is empty', () => {
@@ -97,6 +98,7 @@ const SECRETS: [string, string][] = [
   ['Anthropic key', `ANTHROPIC_API_KEY=${'sk'}-ant-api03-${alnum(93)}AA`],
   ['OpenAI key', `${'sk'}-proj-${alnum(120)}`],
   ['OpenAI key', `${'sk'}-${alnum(20)}${'T3Blbk'}FJ${alnum(20)}`],
+  ['Meta key', `META_API_KEY=${'LL'}M_${'123456789012345'}_${alnum(40)}`],
 ];
 
 test('secrets: the positive control is caught', () => {
@@ -107,14 +109,14 @@ test('secrets: each kind is caught, by place and kind, never by content (#8)', (
   for (const [kind, line] of SECRETS) {
     const problems = scanText(`intro\n${line}\n`, { file: 'conf.env' });
     // The whole output, word for word: the secret is not in it.
-    assert.deepEqual(problems, [`conf.env:2: a secret (${kind}). Remove it, rotate it, and keep it outside the repo.`], line);
+    assert.deepEqual(problems, [{ id: 'secret', what: `a secret (${kind})`, why: 'a secret opens your accounts to anyone who can read the repo, and git keeps it after the file is gone', fix: 'remove it, rotate it, and keep it outside the repo', file: 'conf.env', line: 2 }], line);
   }
 });
 
 test('secrets: PEM private keys with a body are caught, a header alone is not (#8)', () => {
   const body = 'MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn';
   for (const kind of ['', 'RSA ', 'EC ', 'OPENSSH ', 'ENCRYPTED ']) {
-    assert.match(scanText(`${pem(kind)}\n${body}\n`, { file: 'k' }).join(), /^k:1: a secret \(private key\)/, kind);
+    assert.match(scanText(`${pem(kind)}\n${body}\n`, { file: 'k' }).map(formatFinding).join(), /^k:1: a secret \(private key\)/, kind);
   }
   assert.equal(scanText(`${pem('RSA ')}\nProc-Type: 4,ENCRYPTED\n`, { file: 'k' }).length, 1, 'an encrypted PEM');
   assert.equal(scanText(`{"key": "${pem('')}\\n${body}\\n"}`, { file: 'k.json' }).length, 1, 'a key inside a JSON string');
@@ -147,6 +149,10 @@ test('secrets: near-misses are not caught (#8)', () => {
     `${'sk'}-ant-api03-short`,
     `${'sk'}-proj-short`,
     `${'sk'}-${alnum(48)}`, // no marker
+    `${'LL'}M_${'12345'}_${alnum(40)}`, // Meta: app id too short
+    `${'LL'}M_${'123456789012345'}_short`, // Meta: secret too short
+    `${'LL'}M_app_${alnum(40)}`, // Meta: no numeric app id
+    `MY_${'LL'}M_${'123456789012345'}_${alnum(40)}`, // Meta: inside a longer word
     'const ghp_prefix = "ghp_"; // prefixes as words',
     'sha512-' + alnum(86) + '==', // a lockfile integrity hash
   ]) {

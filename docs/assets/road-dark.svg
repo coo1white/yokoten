@@ -1,18 +1,188 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 150" width="1280" height="150" role="img" aria-label="Five stations on one road: the first done, the second now, three ahead.">
-<defs><radialGradient id="h"><stop offset="0" stop-color="#ec8f6c" stop-opacity=".35"/><stop offset="1" stop-color="#ec8f6c" stop-opacity="0"/></radialGradient></defs>
-<style>@media (prefers-reduced-motion:no-preference){.now{animation:g 3.6s ease-in-out infinite}.ahead{animation:w 40s linear infinite}}@keyframes g{50%{opacity:.45}}@keyframes w{to{stroke-dashoffset:-1}}</style>
-<path d="M40 112C95 112 95 92 150 92C272.5 92 272.5 58 395 58C517.5 58 517.5 92 640 92C762.5 92 762.5 58 885 58C1007.5 58 1007.5 80 1130 80" fill="none" stroke="#151b23" stroke-width="20" stroke-linecap="round"/>
-<path class="ahead" d="M40 112C95 112 95 92 150 92C272.5 92 272.5 58 395 58C517.5 58 517.5 92 640 92C762.5 92 762.5 58 885 58C1007.5 58 1007.5 80 1130 80" pathLength="1" fill="none" stroke="#6e7681" stroke-width="1.6" stroke-dasharray=".008 .007" stroke-linecap="round"/>
-<path d="M40 112C95 112 95 92 150 92C272.5 92 272.5 58 395 58" fill="none" stroke="#f0f6fc" stroke-width="1.8" stroke-linecap="round"/>
-<g fill="none" stroke="#6e7681" stroke-width="1.4" stroke-linecap="round" opacity=".7"><path d="M1160 80 C1185 80 1200 52 1240 46"/><path d="M1160 80 L1244 80"/><path d="M1160 80 C1185 80 1200 108 1240 114"/></g>
-<circle class="now" cx="395" cy="58" r="46" fill="url(#h)"/>
-<circle cx="150" cy="92" r="22" fill="#ec8f6c"/>
-<circle cx="395" cy="58" r="22" fill="#0d1117" stroke="#ec8f6c" stroke-width="2"/>
-<circle cx="640" cy="92" r="22" fill="#0d1117" stroke="#6e7681" stroke-width="1.6"/>
-<circle cx="885" cy="58" r="22" fill="#0d1117" stroke="#6e7681" stroke-width="1.6"/>
-<circle cx="1130" cy="80" r="30" fill="none" stroke="#ec8f6c" stroke-width="1.2" opacity=".6"/>
-<circle cx="1130" cy="80" r="22" fill="#0d1117" stroke="#ec8f6c" stroke-width="1.8"/>
-<path fill="#0d1117" d="M145.9 98.7L145.9 96.6L149.5 96.6L149.5 86.8L145.9 89.5L145.9 87.1L149.1 84.8L151.8 84.8L151.8 96.6L154.8 96.6L154.8 98.7L145.9 98.7Z"/>
-<path fill="#ec8f6c" d="M390.8 64.7L390.8 62.4L395.2 58Q396.1 57.1 396.5 56.3Q397 55.6 397 54.8Q397 53.8 396.4 53.2Q395.9 52.6 395 52.6Q393.9 52.6 393.3 53.2Q392.7 53.8 392.7 54.9L390.5 54.9Q390.5 53.6 391 52.6Q391.6 51.6 392.6 51.1Q393.6 50.6 395 50.6Q396.3 50.6 397.2 51.1Q398.2 51.6 398.7 52.5Q399.3 53.4 399.3 54.6Q399.3 55.9 398.6 57.1Q398 58.3 396.5 59.7L393.6 62.6L399.5 62.6L399.5 64.7L390.8 64.7ZM1130 86.8Q1128.1 86.8 1126.9 85.9Q1125.8 84.9 1125.7 83.3L1128 83.3Q1128 84 1128.6 84.4Q1129.1 84.8 1130 84.8Q1131 84.8 1131.5 84.3Q1132 83.8 1132 82.8L1132 81.5Q1132 80.5 1131.5 80Q1131 79.4 1130 79.4Q1129.4 79.4 1128.9 79.7Q1128.4 80 1128.2 80.4L1126 80.4L1126.1 72.8L1133.8 72.8L1133.8 74.9L1128.3 74.9L1128.2 79L1128.8 79L1128.2 79.4Q1128.2 78.6 1128.9 78Q1129.6 77.5 1130.8 77.5Q1132.4 77.5 1133.4 78.6Q1134.3 79.6 1134.3 81.5L1134.3 82.8Q1134.3 84.7 1133.2 85.8Q1132 86.8 1130 86.8Z"/>
-<path fill="#6e7681" d="M639.9 98.8Q638.5 98.8 637.5 98.3Q636.5 97.9 636 97Q635.5 96.1 635.5 94.9L637.8 94.9Q637.8 95.8 638.3 96.3Q638.9 96.9 639.9 96.9Q640.9 96.9 641.4 96.3Q642 95.8 642 94.9L642 93.8Q642 92.8 641.4 92.3Q640.9 91.7 639.9 91.7L638.3 91.7L638.3 89.7L641.4 86.8L636.1 86.8L636.1 84.8L643.8 84.8L643.8 86.9L639.9 90.5L639.9 89.8Q641.9 89.8 643.1 90.8Q644.3 91.9 644.3 93.8L644.3 94.9Q644.3 96.1 643.7 97Q643.2 97.9 642.2 98.3Q641.2 98.8 639.9 98.8ZM886.7 64.7L886.7 61.9L880.6 61.9L880.6 58.5L885.9 50.8L888.5 50.8L882.8 59.1L882.8 59.8L886.7 59.8L886.7 56.7L889 56.7L889 64.7L886.7 64.7Z"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" class="plan-art armed play" viewBox="-20 -24 1000 494" width="1000" height="494" role="img" aria-label="A road switching back up a mountain past three stations, each higher than the last: now (you are here), the Meta hackathon, and next. Near the top, paths from other projects join it: yokoten, what one project learns, every project uses. On the summit is a flag: anyone can build software the way good teams do."><style><![CDATA[
+svg { --bg: #0d1117; --ink: #f0f6fc; --muted: #9198a1; --line: #3d444d; --accent: #ec8f6c; --ridge: #6e7681; --road-bed: #151b23; --font-display: Georgia, 'Times New Roman', serif; --font-sans: system-ui, -apple-system, 'Segoe UI', sans-serif; --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.plan-drop { display: none; }
+/* The roadmap mountain (PlanScene in art.tsx). Shared by the page and the standalone SVGs made by
+   scripts/export-roadmap-svg.mjs, so it uses only the colour tokens and classes inside the <svg>.
+   Without `armed` it is the still, final frame. `armed play` on an ancestor plays it once (~5 s). */
+.plan-art {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+.plan-ridge path {
+  stroke: var(--ridge);
+  stroke-width: 1.2;
+}
+.plan-mountain {
+  fill: color-mix(in srgb, var(--ridge) 9%, transparent);
+}
+.plan-outline {
+  stroke: var(--ridge);
+  stroke-width: 1.4;
+  stroke-linejoin: round;
+}
+.plan-drop line {
+  stroke: var(--line);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 5;
+}
+.plan-sides path {
+  stroke: var(--ridge);
+  stroke-width: 2;
+  stroke-dasharray: 2 7;
+}
+.plan-sides circle {
+  fill: var(--bg);
+  stroke: var(--ridge);
+  stroke-width: 2;
+}
+.plan-bed {
+  stroke: var(--road-bed);
+  stroke-width: 22;
+}
+.plan-built,
+.plan-ahead {
+  stroke: var(--ink);
+  stroke-width: 5;
+}
+.plan-ahead {
+  stroke-dasharray: 9 11;
+}
+.plan-flag line {
+  stroke: var(--ink);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+}
+.plan-cloth {
+  fill: var(--accent);
+}
+.plan-label {
+  fill: var(--ink);
+}
+.plan-dream {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 22px;
+}
+.plan-yk {
+  font-family: var(--font-sans);
+  font-size: 17px;
+  fill: var(--muted);
+}
+.plan-stop circle {
+  fill: var(--bg);
+  stroke: var(--accent);
+  stroke-width: 3.5;
+}
+.plan-now circle {
+  fill: var(--accent);
+}
+.plan-now .plan-ring {
+  fill: color-mix(in srgb, var(--accent) 22%, transparent);
+  stroke: none;
+}
+.plan-stop,
+.plan-ring,
+.plan-cloth {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.plan-cloth {
+  transform-origin: left center;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .armed:not(.play) .plan-reveal {
+    stroke-dasharray: 1 1;
+    stroke-dashoffset: 1;
+  }
+  .armed:not(.play) :is(.plan-stop, .plan-sides, .plan-yk, .plan-flag, .plan-dream) {
+    opacity: 0;
+  }
+  .play .plan-reveal {
+    stroke-dasharray: 1 1;
+    animation: plan-draw 3.4s cubic-bezier(0.45, 0, 0.4, 1) 0.2s both;
+  }
+  .play .plan-stop {
+    animation: plan-pop 0.5s cubic-bezier(0.3, 1.5, 0.5, 1) both;
+  }
+  .play .plan-stop-0 {
+    animation-delay: 0.55s;
+  }
+  .play .plan-stop-1 {
+    animation-delay: 1.35s;
+  }
+  .play .plan-stop-2 {
+    animation-delay: 2.15s;
+  }
+  .play .plan-ring {
+    animation: plan-here 2.8s ease-in-out 1.1s 2;
+  }
+  .play .plan-sides {
+    animation: plan-fade 0.8s ease-out 3s both;
+  }
+  .play .plan-yk {
+    animation: plan-fade 0.8s ease-out 3.3s both;
+  }
+  .play .plan-flag {
+    animation: plan-fade 0.3s ease-out 3.6s both;
+  }
+  .play .plan-cloth {
+    animation: plan-raise 0.9s cubic-bezier(0.2, 0.8, 0.3, 1) 3.65s both;
+  }
+  .play .plan-dream {
+    animation: plan-rise 0.9s ease-out 4.2s both;
+  }
+}
+@keyframes plan-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes plan-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.2);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes plan-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes plan-raise {
+  from {
+    transform: translateY(20px) scaleX(0.3);
+  }
+  to {
+    transform: none;
+  }
+}
+@keyframes plan-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes plan-here {
+  50% {
+    transform: scale(1.3);
+    opacity: 0.4;
+  }
+}
+]]></style><defs><mask id="plan-reveal-_R_0_" maskUnits="userSpaceOnUse" x="-40" y="-40" width="1040" height="550"><path class="plan-reveal" d="M-10 458 C18.3 450.3 93.3 423.0 160 412 C226.7 401.0 366.7 402.7 390 392 C413.3 381.3 285.0 363.0 300 348 C315.0 333.0 413.3 312.3 480 302 C546.7 291.7 678.3 296.0 700 286 C721.7 276.0 593.3 256.3 610 242 C626.7 227.7 748.7 212.3 800 200 C851.3 187.7 924.3 180.7 918 168 C911.7 155.3 768.3 136.7 762 124 C755.7 111.3 865.3 105.3 880 92 C894.7 78.7 855.0 52.0 850 44" pathLength="1" fill="none" stroke="#fff" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"></path></mask></defs><g class="plan-ridge" fill="none" stroke-linejoin="round" stroke-linecap="round"><path d="M0 250 L80 208 L140 228 L190 196" opacity=".35"></path><path d="M0 330 L110 270 L180 296 L280 236" opacity=".5"></path></g><path class="plan-mountain" d="M40 470 L300 300 L360 330 L560 190 L620 215 L850 40 L960 140 L960 470 Z"></path><path class="plan-outline" d="M40 470 L300 300 L360 330 L560 190 L620 215 L850 40 L960 140" fill="none"></path><g class="plan-drop"><line x1="160" y1="430" x2="160" y2="470"></line><line x1="480" y1="320" x2="480" y2="470"></line><line x1="800" y1="218" x2="800" y2="470"></line></g><g class="plan-sides" fill="none" stroke-linecap="round"><g><path d="M556 236 C626 204 700 152 762 124"></path><circle cx="556" cy="236" r="5"></circle></g><g><path d="M872 300 C900 262 922 212 918 168"></path><circle cx="872" cy="300" r="5"></circle></g><g><path d="M690 182 C720 140 760 106 800 100"></path><circle cx="690" cy="182" r="5"></circle></g></g><g mask="url(#plan-reveal-_R_0_)" fill="none" stroke-linecap="round" stroke-linejoin="round"><path class="plan-bed" d="M-10 458 C18.3 450.3 93.3 423.0 160 412 C226.7 401.0 366.7 402.7 390 392 C413.3 381.3 285.0 363.0 300 348 C315.0 333.0 413.3 312.3 480 302 C546.7 291.7 678.3 296.0 700 286 C721.7 276.0 593.3 256.3 610 242 C626.7 227.7 748.7 212.3 800 200 C851.3 187.7 924.3 180.7 918 168 C911.7 155.3 768.3 136.7 762 124 C755.7 111.3 865.3 105.3 880 92 C894.7 78.7 855.0 52.0 850 44"></path><path class="plan-built" d="M-10 458 C18.3 450.3 93.3 423.0 160 412 C226.7 401.0 366.7 402.7 390 392 C413.3 381.3 285.0 363.0 300 348 C315.0 333.0 413.3 312.3 480 302 C546.7 291.7 678.3 296.0 700 286 C721.7 276.0 593.3 256.3 610 242 C626.7 227.7 748.7 212.3 800 200"></path><path class="plan-ahead" d="M800 200 C851.3 187.7 924.3 180.7 918 168 C911.7 155.3 768.3 136.7 762 124 C755.7 111.3 865.3 105.3 880 92 C894.7 78.7 855.0 52.0 850 44"></path></g><text class="plan-label plan-yk" text-anchor="end"><tspan x="540" y="150">Yokoten (横展):</tspan><tspan x="540" y="174">what one project learns, every project uses</tspan></text><g class="plan-flag"><line x1="850" y1="42" x2="850" y2="-6"></line><path class="plan-cloth" d="M851 -6 L884 4 L851 14 Z"></path></g><text class="plan-label plan-dream" x="828" y="22" text-anchor="end">The dream: anyone can build software the way good teams do</text><g class="plan-stop plan-stop-0 plan-now"><circle class="plan-ring" cx="160" cy="412" r="19"></circle><circle cx="160" cy="412" r="11"></circle></g><g class="plan-stop plan-stop-1"><circle cx="480" cy="302" r="11"></circle></g><g class="plan-stop plan-stop-2"><circle cx="800" cy="200" r="11"></circle></g></svg>

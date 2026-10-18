@@ -7,18 +7,21 @@
 
 <br/>
 
-One person and a few AI agents, building to a professional team's standard.<br/>
-yokoten was built this way, and this repo is the example.
+One person, a few AI agents, and the habits of a good software team.<br/>
+yokoten was built that way, and every issue, review, and release is in this repo.
 
 **[yokoten.app](https://yokoten.app)** &nbsp;·&nbsp; English | [中文](docs/zh-CN/README.md)
 
 <br/>
 
-[![ci](https://img.shields.io/github/actions/workflow/status/coo1white/yokoten/yokoten.yml?branch=main&label=ci&style=flat&labelColor=1f2328&color=9e3620)](https://github.com/coo1white/yokoten/actions/workflows/yokoten.yml)
-[![works with 3 agents](https://img.shields.io/badge/works%20with-3%20agents-9e3620?style=flat&labelColor=1f2328)](docs/guide.md#install-and-commands "Claude Code, Codex, Gemini CLI")
-[![dependencies 0](https://img.shields.io/badge/dependencies-0-9e3620?style=flat&labelColor=1f2328)](package.json)
-[![TypeScript, no build](https://img.shields.io/badge/TypeScript-no%20build-9e3620?style=flat&logo=typescript&logoColor=f0f6fc&labelColor=1f2328)](docs/records/0002-typescript.md)
-[![license MIT](https://img.shields.io/badge/license-MIT-9e3620?style=flat&labelColor=1f2328)](LICENSE)
+[![ci](https://github.com/coo1white/yokoten/actions/workflows/yokoten.yml/badge.svg)](https://github.com/coo1white/yokoten/actions/workflows/yokoten.yml)
+[![built with Claude Code](https://img.shields.io/badge/built%20with-Claude%20Code-D97757?logo=claude&logoColor=white)](https://claude.com/claude-code)
+[![TypeScript](https://img.shields.io/badge/TypeScript-no%20build-3178C6?logo=typescript&logoColor=white)](docs/records/0002-typescript.md)
+[![Node](https://img.shields.io/badge/Node-%E2%89%A522.18-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](package.json)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+[Works with](docs/guide.md#works-with) Claude Code, Codex CLI and Gemini CLI.
 
 </div>
 
@@ -30,7 +33,7 @@ yokoten was built this way, and this repo is the example.
 | "fix" a failing test by editing the test | the test passes, the bug stays | not allowed in a fix |
 | commit your email, a server IP, your city | it goes public | the commit stops; the report names the file and line, never the text |
 | open a pull request | as you, with all your rights | as a bot; nothing merges without you |
-| work in another project | starts from zero | hears what that project is missing, and offers to set it up |
+| work in another project | starts from zero | sees what that project is missing, and offers to set it up |
 
 When it stops something, the agent reads a reason, not just "no":
 
@@ -40,29 +43,34 @@ yokoten: git push --tags pushes tags. Only the owner decides when to release.
 
 ## The road
 
-Software teams work in a loop: plan, build, check, review, release. yokoten takes you
+Software teams work in a loop: plan, build, test, review, release. yokoten takes you
 along it one stage at a time. Every stage is something this repo already does, so you
 can see it working:
 
 | Stage | You learn | See it here |
 |---|---|---|
-| **1 · Safety net** | rules the agents read, checks that stop them | [AGENTS.md](AGENTS.md) |
-| **2 · Issues and pull requests** | every change has a reason; CI passes before it merges; labels, milestones, a board | [issues](https://github.com/coo1white/yokoten/issues?q=is%3Aissue), [pull requests](https://github.com/coo1white/yokoten/pulls?q=is%3Apr), [the board](https://github.com/users/coo1white/projects/1) |
-| **3 · Release** | clear commit messages, a changelog, version numbers | [CHANGELOG.md](CHANGELOG.md) |
-| **4 · A team of agents** | a bot, workers, a reviewer; you stay the boss | [the guide](docs/guide.md#managing-agents-like-a-team) |
-| **5 · Going public** | a privacy check over all history, security settings, protected branches | [security policy](.github/SECURITY.md) |
+| **1 · Safety net** | rules your agents read, and checks that stop them when rules aren't enough | [AGENTS.md](AGENTS.md) |
+| **2 · Issues and pull requests** | every change starts as an issue and merges only when CI passes; labels, milestones, and a board keep track | [issues](https://github.com/coo1white/yokoten/issues?q=is%3Aissue), [pull requests](https://github.com/coo1white/yokoten/pulls?q=is%3Apr), [the board](https://github.com/users/coo1white/projects/1) |
+| **3 · Release** | commit messages that say what changed and why, a changelog, a version number for every release | [CHANGELOG.md](CHANGELOG.md) |
+| **4 · A team of agents** | a bot opens pull requests, workers take tasks, a reviewer checks them; only you merge | [the guide](docs/guide.md#managing-agents-like-a-team) |
+| **5 · Going public** | scan every past commit for private data, turn on security settings, protect `main` | [security policy](.github/SECURITY.md) |
 
 ## Where this is going
 
-**The dream: everyone can build software the way good teams do.** Someone new to
-programming should start on the right road on day one and walk it safely with AI agents.
-Software development has a full cycle (the SDLC: plan, build, test, review, release,
-maintain). yokoten teaches that cycle by doing it, one step at a time.
+**The dream: anyone can build software the way good teams do.** On a good team, every
+change has a reason, a test, and a review. Most people pick up those habits over years,
+often after something breaks. With yokoten, a newcomer starts with them on day one, and
+the guard stops their agents before the worst mistakes. The whole cycle is the SDLC:
+plan, build, test, review, release, maintain. You learn it by doing it in your own
+project, one stage at a time.
+
+And no lesson stays stuck in one place. When one project learns something the hard way,
+yokoten offers the fix to every other project. That is what the name means.
 
 <p align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/road-dark.svg">
-  <img src="docs/assets/road-light.svg" width="100%" alt="Five stations on one road. The first is done, the second is where we are now, and three are ahead. From the last one, the road branches out.">
+  <img src="docs/assets/road-light.svg" width="100%" alt="A road climbs a mountain past three stations: now, the hackathon, and next. Paths from other projects join it near the top. At the summit a flag marks the dream: anyone can build software the way good teams do.">
 </picture>
 </p>
 
@@ -74,8 +82,8 @@ maintain). yokoten teaches that cycle by doing it, one step at a time.
 | 4 | **The whole cycle** | from a short spec to build, test, review, release and maintenance, the full SDLC has a guide | later |
 | 5 | **Yokoten** | a lesson one project learns becomes a check, and the check spreads to every project. What one person learns, everyone gets | the goal |
 
-The word *yokoten* (横展) comes from Toyota's factories. A lesson learned on one line is
-spread across every line. That is where the name comes from.
+The word *yokoten* (横展) comes from Toyota's factories: the lessons learned on one line
+spread to every line. That is where the name comes from.
 
 The near steps are in [M0](https://github.com/coo1white/yokoten/milestone/1) and
 [M1](https://github.com/coo1white/yokoten/milestone/2); the [board](https://github.com/users/coo1white/projects/1) shows what is being built today.
