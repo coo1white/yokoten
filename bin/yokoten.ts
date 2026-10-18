@@ -71,12 +71,12 @@ interface Parsed {
   values: Record<string, string>;
   positional: string[];
 }
-function parse(known: { flags: string[]; values?: string[]; positional?: number }): Parsed | string {
+function parse(known: { flags: string[]; values?: string[]; positional?: number }, words: string[] = args): Parsed | string {
   const parsed: Parsed = { flags: new Set(), values: {}, positional: [] };
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
+  for (let i = 0; i < words.length; i++) {
+    const a = words[i];
     if (known.values?.includes(a)) {
-      const value = args[++i];
+      const value = words[++i];
       if (value === undefined || value.startsWith('--')) return `${a} needs a value`;
       parsed.values[a] = value;
     } else if (known.flags.includes(a)) parsed.flags.add(a);
@@ -424,11 +424,19 @@ function main(): number | Promise<number> {
       print([`yokoten update: ${lines[0]}`, ...lines.slice(1)], ok ? process.stdout : process.stderr);
       return ok ? 0 : 1;
     }
-    case 'bot':
-      return bot(args.slice(args.indexOf('--') === -1 ? 0 : args.indexOf('--') + 1));
-    case 'install':
+    case 'bot': {
+      // No options of its own: everything after `--` is the command, passed on unchanged.
+      const end = args.indexOf('--');
+      const options = parse({ flags: [] }, end === -1 ? args : args.slice(0, end));
+      if (typeof options === 'string') return usage(options);
+      return bot(end === -1 ? [] : args.slice(end + 1));
+    }
+    case 'install': {
+      const options = parse({ flags: [] });
+      if (typeof options === 'string') return usage(options);
       print(install(env));
       return 0;
+    }
     case 'version':
     case '--version':
       print([VERSION]);
