@@ -1,4 +1,4 @@
-<!-- source: docs/guide.md blob ce71abd9fd2fe194c9ee3fcc3609ffcf5974dcb7 -->
+<!-- source: docs/guide.md blob 0aecc285290d6f3f5f5b7549fe8f42d3c5078364 -->
 # yokoten 使用指南
 
 [README](README.md) 是简短版。剩下的都在这里：yokoten 为什么要做、它怎么工作、有哪些规则和命令，还有它做不到的事。
@@ -438,16 +438,24 @@ Fixed
 ```
 
 路径是英文文件的路径，从仓库根目录算起。blob 是 git 给你翻译时那版英文内容算出的编号，
-跑 `git hash-object docs/guide.md` 就能拿到。记 blob 而不记 commit，是因为 squash
-合并以后 blob 还在，commit 却没了。这样英文和译文可以放在同一个 PR 里改。
+跑 `git hash-object docs/guide.md` 就能拿到。更新译文时把第 1 行一起改掉，和英文放在
+同一个 commit 或同一个 PR 里。
 
-`check` 会读每个 Markdown 和 HTML 文件的第 1 行。英文在那之后又改过，它就给一条
-`translation-behind` 提醒：落后了几个 commit，怎么看英文改了什么
-（`git diff <blob> HEAD:docs/guide.md`）。提醒不会让 CI 失败。想让它失败，就在
+`check` 会读每个 Markdown 和 HTML 文件的第 1 行。blob 和工作区里的英文对得上，译文就算
+最新。对不上的话，`check` 再看当前分支的提交（只沿第一个父提交往回找）：最后一次改译文
+第 1 行的提交，和最后一次改英文的提交是同一个，或者更晚，译文也算最新。为什么要看提交？
+两个 PR 可能同时改英文。两个都合进来以后，英文变成了哪个分支都没见过的 blob。光看 blob
+就会说译文落后，其实两边都翻好了。
+
+有两种改动不算数。英文改了还没提交，译文算落后。提交里改了译文、却没动第 1 行（比如只改
+个错字），译文也不算最新。
+
+译文落后时，`check` 给一条 `translation-behind` 提醒：落后了几个 commit，怎么看英文改了
+什么（`git diff <blob> HEAD:docs/guide.md`）。提醒不会让 CI 失败。想让它失败，就在
 `yokoten.json` 里写 `"translations": { "fail": true }`。
 
-浅克隆也能看出译文落后了，只是算不出落后多少。想在 CI 里看到具体数字，checkout 时设
-`fetch-depth: 0`。
+浅克隆里可能没有要比的那些提交。这时 `check` 给一条提醒，不会当成最新。CI 里 checkout
+时设 `fetch-depth: 0`。
 
 ### 更新规则
 
