@@ -64,6 +64,38 @@ test('hook: blocks with exit 2 and a reason, allows with exit 0', () => {
   assert.equal(sandbox.run(['hook'], { input: 'not json' }).status, 0);
 });
 
+// The runtimes let a tool call through when the hook runs past their timeout, so a guard
+// that reads too long is stopped and the call refused (#274).
+test('hook: past the deadline the call is refused, in text and JSON (#274)', () => {
+  const sandbox = makeSandbox();
+  const input = JSON.stringify({ cwd: sandbox.repo, tool_input: { command: `npm run build -- ${'--flag value '.repeat(200)}` } });
+  const late = { YOKOTEN_GUARD_DEADLINE_MS: '1' };
+  let result = sandbox.run(['hook'], { input, extra: late });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /^yokoten: the guard took longer than 1 ms to read this command\. .*Split the command into smaller ones\./);
+  result = sandbox.run(['hook', '--json'], { input, extra: late });
+  assert.equal(result.status, 2);
+  const out = JSON.parse(result.stdout);
+  assert.equal(out.blocked, true);
+  assert.equal(out.finding.id, 'unreadable-command');
+  // The default deadline: a plain command passes, and the guard still blocks.
+  const call = (command: string) => sandbox.run(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: { command } }) });
+  assert.equal(call('ls').status, 0);
+  assert.equal(call('git push --force origin main').status, 2);
+  assert.equal(sandbox.run(['hook'], { input, extra: { YOKOTEN_GUARD_DEADLINE_MS: 'soon' } }).status, 0, 'a bad value keeps the default');
+});
+
+test('hook: a command the guard reads too slowly is refused within the deadline (#274)', () => {
+  const sandbox = makeSandbox();
+  const input = JSON.stringify({ cwd: sandbox.repo, tool_input: { command: `find . ${'-exec env '.repeat(30000)}` } });
+  const start = Date.now();
+  const result = spawnSync('node', ['--max-old-space-size=256', CLI, 'hook'], { cwd: sandbox.repo, env: sandbox.env, input, encoding: 'utf8', timeout: 20000 });
+  const took = Date.now() - start;
+  assert.ok(took < 10000, `the hook took ${took} ms`);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /took longer than 5000 ms/);
+});
+
 // The Stop event is shaped as Claude Code's hook docs show it (code.claude.com/docs/en/hooks#stop).
 test('hook --stop: sends the agent back once with the findings in changed files, never twice (#92)', () => {
   const sandbox = makeSandbox();

@@ -16,7 +16,7 @@ import { isCodeFile, nameNotes } from '../src/run/names.ts';
 import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, largeDiff, longSentenceNote, longSentences } from '../src/rules/pr.ts';
 import { closestWord, COMMANDS, commandHelp, findCommand, HELP_OPTIONS, commandList } from '../src/run/cli.ts';
 import { hideHome } from '../src/rules/privacy.ts';
-import { type Action, judge } from '../src/run/hook.ts';
+import { type Action, GUARD_DEADLINE_MS, judgeWithDeadline } from '../src/run/hook.ts';
 import { draft, facts, table } from '../src/setup/advice/adopt.ts';
 import { doctor } from '../src/setup/doctor.ts';
 import { explain, explainLines, ids } from '../src/setup/advice/explain.ts';
@@ -261,12 +261,15 @@ function main(): number | Promise<number> {
       const action = read(input);
       const root = rootOf(action.cwd ?? process.cwd());
       const config = root ? loadConfig(root) : DEFAULTS;
-      const found = judge(action, { root, config, env, commandsOnly: options.flags.has('--commands-only') });
-      if (json) printJson(found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
-      if (!found) return 0;
-      // The runtimes read the reason from stderr when the hook exits 2.
-      say(`yokoten: ${formatFinding(found)}\n`, process.stderr);
-      return 2;
+      const deadline = Number(env.YOKOTEN_GUARD_DEADLINE_MS);
+      const judged = judgeWithDeadline(action, { root, config, env, commandsOnly: options.flags.has('--commands-only') }, deadline > 0 ? deadline : GUARD_DEADLINE_MS);
+      return judged.then((found) => {
+        if (json) printJson(found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
+        if (!found) return 0;
+        // The runtimes read the reason from stderr when the hook exits 2.
+        say(`yokoten: ${formatFinding(found)}\n`, process.stderr);
+        return 2;
+      });
     }
     case 'check': {
       const options = parse('check');

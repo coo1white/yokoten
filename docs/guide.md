@@ -424,7 +424,10 @@ never what matched.
 | 2 | The hook blocked the tool call, or the stop check sent the agent back. The reason is on stderr |
 
 These codes do not change. A broken guard gives 1, not 2: you see it, and it does not
-block every tool call.
+block every tool call. The tool-call guard is the exception: the runtimes let a call
+through when a hook runs past their timeout, so when reading a call takes the guard longer
+than 5 seconds (`YOKOTEN_GUARD_DEADLINE_MS` changes it), or fails, it refuses the call
+with 2 (`unreadable-command`).
 
 ### The stop check
 

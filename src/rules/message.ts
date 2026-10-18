@@ -72,6 +72,12 @@ export const RULES = {
     check: 'the tool-call guard lets a read of core.hooksPath through, and stops any other value than .githooks: `git config`, `git -c`, `--config-env` and GIT_CONFIG_KEY_n; the commit-check step looks at the setting',
     docs: guide('the-core-rules'),
   },
+  'unreadable-command': {
+    rule: 'a command the guard cannot read is refused, not let through',
+    why: 'the guard reads command text, and a command it cannot read could hide anything',
+    check: 'the tool-call guard refuses a tool call, with exit 2, when reading it fails or takes longer than its deadline (5 seconds; YOKOTEN_GUARD_DEADLINE_MS changes it)',
+    docs: guide('what-it-doesnt-do'),
+  },
   'test-file': {
     rule: 'a fix task changes code, never tests (core rule 4)',
     why: 'a fix task changes the code until the test passes, never the test',
