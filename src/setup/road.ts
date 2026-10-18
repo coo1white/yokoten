@@ -20,7 +20,7 @@ import { hasPlugin, hasProjectHook } from '../agents/claude-code.ts';
 import { runs } from '../run/cli.ts';
 import { hasBot, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
-import { claudeReadsRules, cliPath, hookFile, isSelf } from './init.ts';
+import { claudeReadsRules, cliPath, findRulesGap, hookFile, isSelf } from './init.ts';
 import { FIRST_MILESTONE, lackingLabels, pickNewMilestone } from './plan.ts';
 import { skillFiles, skillsDir } from './install.ts';
 
@@ -149,10 +149,12 @@ const builtFiles = (root: string): string[] | null => {
   return files.filter((f) => isBuildOutput(f, allow));
 };
 
+/** The one security file init does not write: the license is the owner's choice. */
+const LICENSE_FILE = 'license file';
 const SECURITY_FILES: [string, string[]][] = [
   ['security policy (SECURITY.md)', ['.github/SECURITY.md', 'SECURITY.md']],
   ['Dependabot config', ['.github/dependabot.yml', '.github/dependabot.yaml']],
-  ['license file', ['LICENSE', 'LICENSE.md', 'LICENSE.txt', 'COPYING']],
+  [LICENSE_FILE, ['LICENSE', 'LICENSE.md', 'LICENSE.txt', 'COPYING']],
 ];
 export const securityLacking = (root: string) => SECURITY_FILES.filter(([, paths]) => !paths.some((p) => existsSync(join(root, p)))).map(([name]) => name);
 
@@ -170,7 +172,7 @@ const RULESET = 'in Settings, Rules, Rulesets, edit the ruleset on the default b
 
 /** Each server setting, judged. `settings` is what the host adapter read, or why it could not. */
 export function serverChecks(settings: ServerSettings | Unread): ServerCheck[] {
-  const cant = (id: RuleId, u: Unread): ServerCheck => ({ id, mark: "can't check", finding: finding(id, `can't check: ${u.unread}`, u.fix) });
+  const cant = (id: RuleId, u: Unread): ServerCheck => ({ id, mark: "can't check", finding: finding(id, u.unread, u.fix) });
   if ('unread' in settings) return [cant('server-settings', settings)];
   const judge = (id: RuleId, found: boolean | Unread | null, what: string, fix: string): ServerCheck => {
     if (found === null) return cant(id, { unread: 'only a repo admin can see this setting', fix: 'run doctor signed in to gh as a repo admin' });
@@ -227,7 +229,7 @@ const judgeServer = (key: string, server: ServerRead): Found => {
 
 /** One field of each check with this mark, joined by "; ", or `fallback` when no check has the mark. */
 const joinChecks = (key: string, server: ServerRead, mark: ServerCheck['mark'], field: 'what' | 'fix', fallback: string) => {
-  const texts = stepChecks(key, server).filter((c) => c.mark === mark).map((c) => c.finding[field].replace(/^can't check: /, ''));
+  const texts = stepChecks(key, server).filter((c) => c.mark === mark).map((c) => c.finding[field]);
   return texts.length ? [...new Set(texts)].join('; ') : fallback;
 };
 
@@ -291,10 +293,16 @@ export const ROAD: Step[] = [
     stage: 1,
     key: 'rules',
     check: (root) => existsSync(join(root, 'AGENTS.md')) && claudeReadsRules(root),
-    what: (root) => (existsSync(join(root, 'AGENTS.md')) ? 'CLAUDE.md does not import AGENTS.md, so Claude Code does not read the rules' : 'no AGENTS.md, so the agents have no written rules here'),
-    fix: (root) => (existsSync(join(root, 'AGENTS.md')) ? 'add a line `@AGENTS.md` at the end of CLAUDE.md, or run `yokoten init`' : '`yokoten init` adds one'),
+    what: (root) => {
+      const gap = findRulesGap(root);
+      return existsSync(join(root, 'AGENTS.md')) && gap ? `${gap.file} does not import AGENTS.md, so Claude Code does not read the rules` : 'no AGENTS.md, so the agents have no written rules here';
+    },
+    fix: (root) => {
+      const gap = findRulesGap(root);
+      return existsSync(join(root, 'AGENTS.md')) && gap ? `add a line \`${gap.line}\` at the end of ${gap.file}, or run \`yokoten init\`` : '`yokoten init` adds one';
+    },
     why: 'an agent follows the rules it can read, and only those',
-    how: 'AGENTS.md is at the repo root, and a CLAUDE.md, when there is one, imports it (`@AGENTS.md`) or links to it: with a CLAUDE.md, Claude Code reads AGENTS.md only through it',
+    how: 'AGENTS.md is at the repo root, and a CLAUDE.md (at the root or in .claude/), when there is one, imports it (`@AGENTS.md`, or `@../AGENTS.md` from .claude/) or links to it: with a CLAUDE.md, Claude Code reads AGENTS.md only through it',
     standard: 'OpenSSF: AI code assistant instructions',
   },
   {
@@ -470,7 +478,12 @@ export const ROAD: Step[] = [
     key: 'security-files',
     check: (root) => securityLacking(root).length === 0,
     what: (root) => `no ${securityLacking(root).join(', no ')}`,
-    fix: () => '`yokoten init` adds the security policy and Dependabot, and you choose the license',
+    fix: (root) => {
+      const lacking = securityLacking(root);
+      const license = lacking.includes(LICENSE_FILE);
+      const byInit = lacking.length > (license ? 1 : 0);
+      return [byInit ? 'run `yokoten init` to add the security policy and Dependabot' : '', license ? 'choose a license and add it as LICENSE' : ''].filter(Boolean).join(', and ');
+    },
     how: 'a SECURITY.md, a Dependabot config and a license file are in the repo',
     why: 'people can then report a hole in private, old dependencies get updates, and others know how they may use the code',
     standard: 'Scorecard: Security-Policy · OSPS-VM-02.01',

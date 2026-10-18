@@ -232,6 +232,7 @@ function readOrigin(root: string, gh: Gh): ServerSettings | Unread {
   } catch {
     // no origin remote
   }
+  if (!remote.trim()) return { unread: 'there is no origin remote yet', fix: 'add one on GitHub to check the server settings, or check them by hand' };
   const repo = repoOf(remote);
   return repo ? readServer(gh, repo) : { unread: 'the origin remote is not on a host yokoten knows (GitHub for now)', fix: 'add a GitHub origin remote, or check these settings by hand' };
 }
