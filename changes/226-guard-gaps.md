@@ -18,3 +18,18 @@ words are read in a fraction of a second. A hooks folder counts only when its pr
 `.husky/<other>` is judged by its own pre-commit, values git expands (`~`, `%(prefix)`) are
 refused, and so is a change in a command that also moves repo (`cd`, `pushd`, `GIT_DIR=`,
 `GIT_WORK_TREE=`, `--worktree`).
+
+The guard's work on one command is bounded. Each construct is read once: an unclosed `$(`,
+`<(`, `((`, backtick or `"` is no longer read again at each level, which ran node out of
+memory on a 300-byte command and let it through. Every read of a command shares one budget
+(20 steps a character), and a command over it is refused. A pipeline of 8000 heredocs is read
+in a fraction of a second, not 12 s. A hooks folder counts only when git runs its pre-commit:
+an executable file (and for husky, `.husky/_/pre-commit` too) whose first line names sh,
+bash, dash or zsh. The pre-commit is read as the shell reads it: lines joined by `\`, a quote
+across lines, a line after `||`, `&&` or `|` are not a check line of their own; the check
+takes only `--staged` and `--json`; `return` counts as `exit`, and `set +e` ends `set -e`.
+The check line may run through `pnpm exec`, `yarn`, `bunx` or `npx --no`, follow
+`npx lint-staged &&`, end in `|| exit $?`, `;` or a comment, and names yokoten itself, not
+`./fake-yokoten`. `env -S` reads its `\_`, `\t` and `\c` escapes. A heredoc right after a
+group (`{ read -r a; } <<EOF`) is the group's input. `env -C`, `env --chdir`, `builtin cd` and
+`GIT_COMMON_DIR=` move repo, and `source /dev/stdin` or `. /dev/fd/N` runs its input.
