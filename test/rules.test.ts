@@ -12,7 +12,7 @@ import { POSITIVE_CONTROL, scanText } from '../src/rules/privacy.ts';
 import { SECRET_CONTROL } from '../src/rules/secrets.ts';
 import { check, timeZoneNote } from '../src/run/check.ts';
 import { parseSourceMarker, sourceMarker, translationNotes } from '../src/run/translations.ts';
-import { agentHooks, coreRulesCheck, findStateFile, formatLessonChecks, lessonChecks, machineChecks, readState, saveState } from '../src/setup/doctor.ts';
+import { agentHooks, coreRulesCheck, findStateFile, formatLessonChecks, lessonChecks, machineChecks, readState, saveState, seenAfter } from '../src/setup/doctor.ts';
 import { compareCoreRules, compareVersions, readKitVersion } from '../src/setup/init.ts';
 import { explain, explainLines, ids } from '../src/setup/advice/explain.ts';
 import { ROAD, serverChecks, stepFinding } from '../src/setup/road.ts';
@@ -928,6 +928,16 @@ test('lessons: a lesson not yet seen is new, with what it looks for; not now and
   ]);
   // No state (outside a git repo): nothing is new.
   assert.ok(lessonChecks(clean, {}, place).every((check) => !check.isNew));
+  // A lesson that can't run is not new and is not saved as seen; once it is fixed, the note shows once.
+  const broken = makeModuleDir('yokoten-broken-');
+  mkdirSync(join(broken, 'incident-1'));
+  writeFileSync(join(broken, 'incident-1', 'lesson.ts'), "export function findProblems() { throw new Error('a bug in the lesson'); }\n");
+  const crashed = lessonChecks(clean, {}, { ...place, codeDir: broken }, ['incident-2', 'incident-3']);
+  assert.ok(!formatLessonChecks(crashed).some((line) => line.includes('new lesson')), formatLessonChecks(crashed).join('\n'));
+  assert.deepEqual(seenAfter(['incident-2', 'incident-3'], crashed), ['incident-2', 'incident-3']);
+  const fixed = lessonChecks(clean, {}, place, seenAfter(['incident-2', 'incident-3'], crashed));
+  assert.equal(formatLessonChecks(fixed)[0], '  note    new lesson: incident-1 (a .env file is in the repo); doctor now runs it in this project');
+  assert.deepEqual(seenAfter(['incident-2', 'incident-3'], fixed), ['incident-2', 'incident-3', 'incident-1']);
 });
 
 test('lessons: the state file is in the git folder; missing, broken or unwritable state is empty, never an error', () => {

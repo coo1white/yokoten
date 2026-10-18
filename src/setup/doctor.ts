@@ -163,6 +163,7 @@ export interface LessonCheck {
  * Each lesson the kit ships, run against this project: read only, offline and fast. A
  * lesson in yokoten.json "notNow" does not run. A lesson that can't run is a note too.
  * With `seen`, the lessons this clone already ran: a lesson that runs and is not in it is new.
+ * A lesson that can't run is not new, so the note waits for the first run that works.
  */
 export function lessonChecks(root: string, notNow: Record<string, string>, place: LessonPlace = kitLessons(), seen: string[] | null = null): LessonCheck[] {
   const isSkipped = (id: string) => Object.hasOwn(notNow, id);
@@ -171,7 +172,7 @@ export function lessonChecks(root: string, notNow: Record<string, string>, place
     const run = runs.get(id);
     // "Not now" silences the new-lesson note too.
     if (!run) return { id, mark: 'not now', findings: [], reason: notNow[id] };
-    const known = { ...(run.what === undefined ? {} : { what: run.what }), ...(seen && !seen.includes(id) ? { isNew: true } : {}) };
+    const known = { ...(run.what === undefined ? {} : { what: run.what }), ...(seen && !seen.includes(id) && !run.error ? { isNew: true } : {}) };
     if (run.error) return { id, mark: 'note', findings: [{ id, what: `can't run this lesson: ${run.error}`, why: 'a lesson from the kit could not check this project', fix: 'run `yokoten install` again; if it stays, report it in an issue' }], ...known };
     return { id, mark: run.findings.length ? 'note' : 'ok', findings: run.findings, ...known };
   });
@@ -193,6 +194,11 @@ export function formatLessonChecks(lessons: LessonCheck[]): string[] {
 // What full doctor keeps between runs, per clone (record 0004). The file is in the git
 // folder, so it is never committed. A missing or broken file is an empty state: losing it
 // costs one repeated note, never a failed doctor.
+
+/** The lessons seen after this run: the ones seen before, and the new ones that ran. */
+export function seenAfter(seen: string[], lessons: LessonCheck[]): string[] {
+  return [...seen, ...lessons.filter((lesson) => lesson.isNew).map((lesson) => lesson.id)];
+}
 
 /** Where the state file is, in the git folder that all worktrees of a clone share. */
 export const STATE_FILE = 'yokoten/state.json';
@@ -382,8 +388,8 @@ export function doctor(
   const state = readState(stateFile);
   const seenLessons = state.seenLessons ?? [];
   const lessons = lessonChecks(root, config.notNow, undefined, stateFile ? seenLessons : null);
-  const newIds = lessons.filter((lesson) => lesson.isNew).map((lesson) => lesson.id);
-  if (newIds.length) saveState(stateFile, { ...state, seenLessons: [...seenLessons, ...newIds] });
+  const nextSeen = seenAfter(seenLessons, lessons);
+  if (nextSeen.length > seenLessons.length) saveState(stateFile, { ...state, seenLessons: nextSeen });
   lines.push(...formatLessonChecks(lessons));
   notes.push(...lessons.flatMap((lesson) => lesson.findings));
   const problems = check(root, { config, env });
