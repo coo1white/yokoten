@@ -6,6 +6,7 @@
 // it first runs a new or changed one.
 
 import { join } from 'node:path';
+import { guardCommand, missingProjectRuntime } from '../run/cli.ts';
 import type { Action } from '../run/hook.ts';
 import { addHook, hasHook } from './hooks-file.ts';
 
@@ -33,7 +34,7 @@ const projectSettings = (root: string) => join(root, '.gemini', 'settings.json')
 
 /** The project's tool-call guard. GEMINI_PROJECT_DIR is the project root, set for every hook. */
 export const addProjectHook = (root: string, cli: string) =>
-  addHook(projectSettings(root), 'BeforeTool', 'run_shell_command|write_file|replace', `node "$GEMINI_PROJECT_DIR/${cli}" hook --agent gemini`, {
+  addHook(projectSettings(root), 'BeforeTool', 'run_shell_command|write_file|replace', guardCommand(`"$GEMINI_PROJECT_DIR/${cli}"`, 'hook --agent gemini', missingProjectRuntime(cli)), {
     name: 'yokoten',
   });
 export const hasProjectHook = (root: string): boolean => hasHook(projectSettings(root), 'BeforeTool', 'hook');

@@ -6,6 +6,7 @@
 // command has to be trusted again.
 
 import { join } from 'node:path';
+import { guardCommand, missingProjectRuntime } from '../run/cli.ts';
 import type { Action } from '../run/hook.ts';
 import { addHook, hasHook } from './hooks-file.ts';
 
@@ -43,5 +44,5 @@ const projectHooks = (root: string) => join(root, '.codex', 'hooks.json');
  * project-dir variable; its docs advise a path from the git root, as here.
  */
 export const addProjectHook = (root: string, cli: string) =>
-  addHook(projectHooks(root), 'PreToolUse', 'Bash|apply_patch', `node "$(git rev-parse --show-toplevel)/${cli}" hook --agent codex`);
+  addHook(projectHooks(root), 'PreToolUse', 'Bash|apply_patch', guardCommand(`"$(git rev-parse --show-toplevel)/${cli}"`, 'hook --agent codex', missingProjectRuntime(cli)));
 export const hasProjectHook = (root: string): boolean => hasHook(projectHooks(root), 'PreToolUse', 'hook');

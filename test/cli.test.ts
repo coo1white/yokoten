@@ -2,16 +2,23 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { copyRuntime } from '../src/setup/files.ts';
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'yokoten.ts');
+
+// A project hook command as init writes it: a plain line when `path` is gone (#204), else node.
+const MISSING_PROJECT = 'yokoten: the hook cannot run, because .yokoten/ is missing. Restore it from git, or run yokoten init again';
+const guarded = (path: string, args: string) => `[ -f ${path} ] || { echo '${MISSING_PROJECT}' >&2; exit 1; }; node ${path} ${args}`;
 const at = '@';
+
+const pick = (result: { status: number | null; stdout: string; stderr: string }) => [result.status, result.stdout, result.stderr];
 
 function makeSandbox() {
   const base = mkdtempSync(join(tmpdir(), 'yokoten-'));
@@ -333,7 +340,7 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   const settings = JSON.parse(readFileSync(join(sandbox.repo, '.claude', 'settings.json'), 'utf8'));
   assert.equal(settings.hooks.PreToolUse.length, 1);
   assert.match(result.stdout, /same the stop check/);
-  assert.deepEqual(settings.hooks.Stop, [{ hooks: [{ type: 'command', command: 'node "$CLAUDE_PROJECT_DIR/.yokoten/bin/yokoten.ts" hook --stop' }] }], 'the stop check, once (#92)');
+  assert.deepEqual(settings.hooks.Stop, [{ hooks: [{ type: 'command', command: guarded('"$CLAUDE_PROJECT_DIR/.yokoten/bin/yokoten.ts"', 'hook --stop') }] }], 'the stop check, once (#92)');
   assert.equal(settings.env.TZ, 'UTC', 'agent commits record no time zone (#40)');
   assert.match(result.stdout, /same the Codex tool-call hook/);
   assert.match(result.stdout, /same the Gemini CLI tool-call hook/);
@@ -341,14 +348,14 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.equal(codex.description, 'ours');
   assert.equal(codex.hooks.PreToolUse.length, 2);
   assert.deepEqual(codex.hooks.PreToolUse[1], {
-    hooks: [{ type: 'command', command: 'node "$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.ts" hook --agent codex' }],
+    hooks: [{ type: 'command', command: guarded('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.ts"', 'hook --agent codex') }],
     matcher: 'Bash|apply_patch',
   });
   const gemini = JSON.parse(readFileSync(join(sandbox.repo, '.gemini', 'settings.json'), 'utf8'));
   assert.equal(gemini.theme, 'x');
   assert.equal(gemini.hooks.BeforeTool.length, 2);
   assert.deepEqual(gemini.hooks.BeforeTool[1], {
-    hooks: [{ type: 'command', command: 'node "$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts" hook --agent gemini', name: 'yokoten' }],
+    hooks: [{ type: 'command', command: guarded('"$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts"', 'hook --agent gemini'), name: 'yokoten' }],
     matcher: 'run_shell_command|write_file|replace',
   });
   assert.match(sandbox.run(['doctor']).stdout, /ok +codex-hook\n +ok +gemini-hook/);
@@ -661,6 +668,89 @@ test('install: skills, agents and hooks once, the user\'s own files untouched', 
   assert.match(skillsLine(), /^\s+done\s+skills$/);
   rmSync(join(shared, 'skills', 'inspect'), { recursive: true });
   assert.match(skillsLine(), /^\s+(next|to do)\s+skills: the yokoten skills are not in ~\/\.agents\/skills \(inspect\); run `yokoten install`, or install the Claude Code plugin$/);
+});
+
+// The guide says: run install again to update, and init again to refresh .yokoten/. Run
+// from the copy it would replace, that copy was deleted (#204).
+test('install: run from the installed copy, it keeps that copy, and the next run works (#204)', () => {
+  const sandbox = makeSandbox();
+  assert.equal(sandbox.run(['install']).status, 0);
+  const installed = join(sandbox.home, '.local/share/yokoten/bin/yokoten.ts');
+  for (let run = 0; run < 2; run++) {
+    const result = spawnSync('node', [installed, 'install'], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^kept: ~\/\.local\/share\/yokoten is the copy running now$/m);
+    assert.ok(!result.stdout.includes(sandbox.home), 'output shows the home path');
+    assert.ok(existsSync(installed), 'the installed copy is still there');
+  }
+});
+
+test('init: run from the project\'s .yokoten/, it keeps .yokoten/ (#204)', () => {
+  const sandbox = makeSandbox();
+  assert.equal(sandbox.run(['init']).status, 0);
+  const vendored = () => spawnSync('node', ['.yokoten/bin/yokoten.ts', 'init'], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
+  let result = vendored();
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^kept \.yokoten\/ \(the copy running now\)$/m);
+  result = vendored();
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(existsSync(join(sandbox.repo, '.yokoten', 'VERSION')));
+});
+
+test('install: a copy that fails half way leaves the old copy working (#204)', () => {
+  const sandbox = makeSandbox();
+  const dest = join(sandbox.home, '.local', 'share', 'yokoten');
+  assert.equal(copyRuntime(dest, { withKit: true }), 'wrote');
+  writeFileSync(join(dest, 'VERSION'), 'old\n');
+  let calls = 0;
+  const failing = ((source: string, target: string, options: object) => {
+    if (++calls === 2) throw new Error('disk full');
+    cpSync(source, target, options);
+  }) as typeof cpSync;
+  assert.throws(() => copyRuntime(dest, { withKit: true, copy: failing }), /disk full/);
+  assert.equal(readFileSync(join(dest, 'VERSION'), 'utf8'), 'old\n', 'the old copy is in place');
+  assert.deepEqual(readdirSync(dirname(dest)), ['yokoten'], 'no half copy is left next to it');
+  const doctor = spawnSync('node', [join(dest, 'bin', 'yokoten.ts'), 'doctor', '--session'], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
+  assert.equal(doctor.status, 0, doctor.stderr);
+  // A good copy then takes its place.
+  assert.equal(copyRuntime(dest, { withKit: true }), 'wrote');
+  assert.notEqual(readFileSync(join(dest, 'VERSION'), 'utf8'), 'old\n');
+  assert.deepEqual(readdirSync(dirname(dest)), ['yokoten']);
+});
+
+test('hooks: a missing runtime says one plain line with no path, never a stack trace (#204)', () => {
+  const sandbox = makeSandbox();
+  // A hook from before #204 is updated in place, never added twice.
+  const old = 'node "$HOME/.local/share/yokoten/bin/yokoten.ts" doctor --session';
+  mkdirSync(join(sandbox.home, '.claude'));
+  writeFileSync(join(sandbox.home, '.claude', 'settings.json'), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: old }] }] } }));
+  assert.match(sandbox.run(['install']).stdout, /^updated the SessionStart doctor$/m);
+  assert.equal(sandbox.run(['init']).status, 0);
+  rmSync(join(sandbox.home, '.local', 'share', 'yokoten'), { recursive: true });
+  rmSync(join(sandbox.repo, '.yokoten'), { recursive: true });
+  const shell = (command: string, extra: Record<string, string> = {}) =>
+    spawnSync(command, { shell: '/bin/sh', cwd: sandbox.repo, env: { ...sandbox.env, CLAUDE_PROJECT_DIR: sandbox.repo, GEMINI_PROJECT_DIR: sandbox.repo, ...extra }, input: '{}', encoding: 'utf8' });
+  const commands = (file: string) => {
+    const hooks = JSON.parse(readFileSync(file, 'utf8')).hooks as Record<string, { hooks: { command: string }[] }[]>;
+    return Object.fromEntries(Object.entries(hooks).map(([event, groups]) => [event, groups.flatMap((g) => g.hooks.map((h) => h.command))]));
+  };
+  const user = commands(join(sandbox.home, '.claude', 'settings.json'));
+  assert.equal(user.SessionStart.length, 1);
+  const machineLine = 'yokoten: the runtime at ~/.local/share/yokoten is missing; run the install again\n';
+  // At session start the line goes to the agent; a tool call goes on, with the line shown.
+  assert.deepEqual(pick(shell(user.SessionStart[0])), [0, machineLine, '']);
+  assert.deepEqual(pick(shell(user.PreToolUse[0])), [1, '', machineLine]);
+  const project = commands(join(sandbox.repo, '.claude', 'settings.json'));
+  const projectLine = `${MISSING_PROJECT}\n`;
+  for (const command of [...project.PreToolUse, ...project.Stop, ...commands(join(sandbox.repo, '.codex', 'hooks.json')).PreToolUse.slice(-1), ...commands(join(sandbox.repo, '.gemini', 'settings.json')).BeforeTool]) {
+    assert.deepEqual(pick(shell(command)), [1, '', projectLine], command);
+  }
+  // The commit check stops the commit, with one plain line: a commit now would delete .yokoten/.
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', 'a.md');
+  const commit = sandbox.git('commit', '-qm', 'a');
+  assert.deepEqual(pick(commit), [1, '', 'yokoten: the commit check cannot run, because .yokoten/bin/yokoten.ts is missing. Restore it from git, or run yokoten init again\n']);
+  for (const out of [commit.stderr, projectLine, machineLine]) assert.ok(!out.includes(sandbox.home) && !out.includes(sandbox.repo), 'no absolute path');
 });
 
 test('check --pr: reads the CI event, lists the changed files from git, notes long prose (#47)', () => {
@@ -1189,7 +1279,9 @@ test('plugin: its hooks are the ones install adds, and the guard it registers bl
   // install's user-level hooks, with the plugin's root in place of the machine copy.
   assert.equal(sandbox.run(['install']).status, 0);
   const installed = JSON.parse(readFileSync(join(sandbox.home, '.claude', 'settings.json'), 'utf8')).hooks;
-  const shape = (h: typeof hooks, cli: string) => Object.fromEntries(Object.entries(h).map(([event, groups]) => [event, groups.map((g) => ({ matcher: g.matcher, commands: g.hooks.map((x) => `${x.type}: ${x.command.replace(cli, 'CLI')}`) }))]));
+  // Claude Code keeps the plugin's copy, so only install's commands check that the copy is there (#204).
+  const unguard = (command: string) => command.replace(/^\[ -f .*?; \}; (?=node )/, '');
+  const shape = (h: typeof hooks, cli: string) => Object.fromEntries(Object.entries(h).map(([event, groups]) => [event, groups.map((g) => ({ matcher: g.matcher, commands: g.hooks.map((x) => `${x.type}: ${unguard(x.command).replace(cli, 'CLI')}`) }))]));
   assert.deepEqual(shape(hooks, `"${PLUGIN_ROOT}/bin/yokoten.ts"`), shape(installed, '"$HOME/.local/share/yokoten/bin/yokoten.ts"'));
   // The command as Claude Code runs it: the root filled in, through the shell.
   const run = (command: string, input?: string, extra: Record<string, string> = {}) =>
