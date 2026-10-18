@@ -229,7 +229,7 @@ function main(): number | Promise<number> {
       const session = a.flags.has('--session');
       const root = rootOf(process.cwd());
       const config = root ? loadConfig(root) : DEFAULTS;
-      const { ok, lines, report } = doctor(root, { env, config, session });
+      const { ok, lines, report } = doctor(root, { env, config, session, gh: root ? ghIn(root) : undefined });
       if (a.flags.has('--json')) printJson(report);
       else print(lines);
       // A session must start even when a project has steps left.

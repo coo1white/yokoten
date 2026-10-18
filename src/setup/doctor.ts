@@ -10,6 +10,7 @@
 // Doctor first checks itself: it feeds each check a known-bad input and expects a catch.
 // A check that passes everything looks the same as a healthy project, so this comes first.
 
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -23,6 +24,7 @@ import { check } from '../run/check.ts';
 import { hasSessionDoctor } from '../agents/claude-code.ts';
 import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
+import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
 import { runtimeVersion, VERSION } from './files.ts';
 import { paths } from './install.ts';
 import { type Mark, road, STAGES, stepFinding, stepText, walk } from './road.ts';
@@ -76,8 +78,6 @@ export function machineChecks(env: Env): Practice[] {
   ];
 }
 
-// What doctor cannot see yet and the owner sets once per repo, on the server. Kept to three
-// (record 0001), so the security switches (#35) share the last step with the bot.
 /** In a folder with nothing but a todo file, and a home with nothing in it, no step on the road may be done. */
 function roadControl(): string[] {
   let dir = '';
@@ -94,11 +94,70 @@ function roadControl(): string[] {
   }
 }
 
-const OWNER_STEPS = [
-  'main: a ruleset with pull request required, the CI check required, no force push, no deletion; squash merge only, delete branch on merge',
+/** What doctor can't read on the server yet, and the owner sets once per repo. */
+const OWNER_STEPS = ['the bot: a GitHub App (or collaborator) with write access and no Workflows permission'];
+
+/** The settings to check by hand when doctor can't read the server. */
+const BY_HAND = [
+  'main: a ruleset with pull request required, the CI check required, code owner review, no force push, no deletion; squash merge only, delete branch on merge',
   'tags: a ruleset on v* so only you create, move or delete a release tag',
-  'the bot and security: a collaborator (or GitHub App) with write access and no Workflows permission; CODEOWNERS with you, and code owner review required; in Settings, Advanced Security, turn on private vulnerability reporting, secret scanning with push protection, and Dependabot alerts',
+  'security: in Settings, Advanced Security, turn on private vulnerability reporting, secret scanning with push protection, and Dependabot alerts',
 ];
+
+/** One server setting as doctor reports it. A "can't check" or a note never fails doctor. */
+export interface ServerCheck {
+  id: RuleId;
+  mark: 'ok' | 'MISSING' | "can't check" | 'note';
+  finding: Finding;
+}
+
+const RULESET = 'in Settings, Rules, Rulesets, edit the ruleset on the default branch';
+
+/** Each server setting, judged. `settings` is what the host adapter read, or why it could not. */
+export function serverChecks(settings: ServerSettings | Unread): ServerCheck[] {
+  const cant = (id: RuleId, u: Unread): ServerCheck => ({ id, mark: "can't check", finding: finding(id, `can't check: ${u.unread}`, u.fix) });
+  if ('unread' in settings) return [cant('server-settings', settings)];
+  const judge = (id: RuleId, found: boolean | Unread | null, what: string, fix: string): ServerCheck => {
+    if (found === null) return cant(id, { unread: 'only a repo admin can see this setting', fix: 'run doctor signed in to gh as a repo admin' });
+    if (typeof found !== 'boolean') return cant(id, found);
+    return { id, mark: found ? 'ok' : 'MISSING', finding: finding(id, what, fix) };
+  };
+  const { branch, security: sec } = settings;
+  const rules = 'unread' in branch ? null : branch;
+  const lacking = rules ? [rules.pullRequest ? '' : 'a pull request', rules.noForcePush ? '' : 'no force push', rules.noDeletion ? '' : 'no deletion'].filter(Boolean) : [];
+  const squash = rules?.mergeMethods.length ? rules.mergeMethods.join() === 'squash' : settings.mergeMethods && settings.mergeMethods.join() === 'squash';
+  const off = ([['secret scanning', sec.secretScanning], ['push protection', sec.pushProtection], ['private vulnerability reporting', sec.privateReporting], ['Dependabot alerts', sec.dependabotAlerts]] as const)
+    .filter(([, on]) => on === false).map(([name]) => name);
+  const unknown = Object.values(sec).some((on) => on === null);
+  const checks = [
+    judge('main-rules', rules ? !lacking.length : branch as Unread, `the default branch (${settings.defaultBranch}) has no rule for ${lacking.join(', ')}`, `${RULESET}, or add one, and turn those rules on`),
+    judge('required-checks', rules ? rules.requiredChecks.length > 0 : branch as Unread, 'no CI check must pass before a merge', `${RULESET}: require status checks, and add the CI check by name (yokoten's kit names it \`ci\`)`),
+    judge('code-owner-review', rules ? rules.codeOwnerReview : branch as Unread, 'code owner review is not required', `${RULESET}: in "Require a pull request", turn on "Require review from Code Owners"`),
+    judge('squash-only', squash, 'pull requests can merge by merge commit or rebase, not only by squash', 'in Settings, General, Pull Requests, allow squash merging only'),
+    judge('delete-branch', settings.deleteBranchOnMerge, 'merged branches are not deleted', 'in Settings, General, Pull Requests, turn on "Automatically delete head branches"'),
+    judge('tag-rules', settings.tags, 'no active tag ruleset on v* that restricts creation, update and deletion', 'in Settings, Rules, Rulesets, add a tag ruleset on v* with those three rules, and you on the bypass list'),
+    judge('security-switches', off.length ? false : unknown ? null : true, `${off.join(', ')} ${off.length > 1 ? 'are' : 'is'} off`, 'in Settings, Advanced Security, turn them on'),
+  ];
+  const { forgotten } = settings;
+  if ('unread' in forgotten) checks.push(cant('forgotten-branches', forgotten));
+  else if (forgotten.length) {
+    const named = `${forgotten.slice(0, 3).join(', ')}${forgotten.length > 3 ? `, and ${forgotten.length - 3} more` : ''}`;
+    checks.push({ id: 'forgotten-branches', mark: 'note', finding: finding('forgotten-branches', `${forgotten.length} branch(es) with no open pull request (${named})`, 'open a pull request for each, or delete the ones you no longer need; doctor never deletes a branch') });
+  }
+  return checks;
+}
+
+/** The server settings of the project's origin remote, or why they can't be read. */
+function readOrigin(root: string, gh: Gh): ServerSettings | Unread {
+  let remote = '';
+  try {
+    remote = execFileSync('git', ['config', '--get', 'remote.origin.url'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch {
+    // no origin remote
+  }
+  const repo = repoOf(remote);
+  return repo ? readServer(gh, repo) : { unread: 'the origin remote is not on a host yokoten knows (GitHub for now)', fix: 'add a GitHub origin remote, or check these settings by hand' };
+}
 
 /** What a session hears when the road is done, as far as yokoten can check. */
 export const ROAD_DONE = 'yokoten: every step yokoten can check is done, or marked not now.';
@@ -132,13 +191,13 @@ export interface DoctorReport {
   findings: Finding[];
   steps?: StepState[];
   notes?: Finding[];
-  server?: string[];
+  server?: { id: string; mark: ServerCheck['mark'] }[];
 }
 
 /** The report, as text lines and as data, and whether everything is in place. */
 export function doctor(
   root: string | null,
-  { env, config, session = false }: { env: Env; config: Config; session?: boolean },
+  { env, config, session = false, gh }: { env: Env; config: Config; session?: boolean; gh?: Gh },
 ): { ok: boolean; lines: string[]; report: DoctorReport } {
   const lines: string[] = [];
   const failed = selfTest();
@@ -203,7 +262,16 @@ export function doctor(
     lines.push(`  ${c.ok ? 'ok     ' : 'MISSING'} ${c.name}${c.ok ? '' : `: ${stepText(c.finding)}`}`);
     if (!c.ok) findings.push(c.finding);
   }
-  lines.push('server (not checked yet; set once per repo by the owner):', ...OWNER_STEPS.map((s, i) => `  ${i + 1}. ${s}`));
-  const ok = !failed.length && !where.next && !problems.length && machine.every((c) => c.ok);
-  return { ok, lines, report: { ...base, ok, repo: true, stage: where.stage, next, findings, steps, notes, server: OWNER_STEPS } };
+  // Read only, and only in full doctor: a session never calls the network.
+  const server = serverChecks(gh ? readOrigin(root, gh) : { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' });
+  lines.push('server (read only; the owner sets these once per repo):');
+  for (const c of server) {
+    lines.push(`  ${c.mark.padEnd(11)} ${c.id}${c.mark === 'ok' ? '' : `: ${stepText(c.finding)}`}`);
+    if (c.mark === 'MISSING') findings.push(c.finding);
+    else if (c.mark !== 'ok') notes.push(c.finding);
+  }
+  if (server[0].id === 'server-settings') lines.push('  check these by hand:', ...BY_HAND.map((s) => `    ${s}`));
+  lines.push(...OWNER_STEPS.map((s) => `  not checked ${s}`));
+  const ok = !failed.length && !where.next && !problems.length && machine.every((c) => c.ok) && server.every((c) => c.mark !== 'MISSING');
+  return { ok, lines, report: { ...base, ok, repo: true, stage: where.stage, next, findings, steps, notes, server: server.map(({ id, mark }) => ({ id, mark })) } };
 }
