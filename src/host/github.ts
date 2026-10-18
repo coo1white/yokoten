@@ -17,7 +17,6 @@ import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { type Finding, formatFinding, place } from '../rules/message.ts';
 import type { CodeOwners, PullRequest } from '../rules/pr.ts';
-import { cleanChildEnv } from '../run/child.ts';
 
 export interface BotConfig {
   appId: string;
@@ -120,6 +119,16 @@ export async function installationToken(config: BotConfig, repo: string): Promis
   const { token } = await call('POST', `/app/installations/${id}/access_tokens`);
   if (!token) throw new Error('GitHub sent no token');
   return token;
+}
+
+// `node --test` sets NODE_TEST_CONTEXT for the test files it starts. A `node --test` that
+// inherits it reports to that parent run instead, and exits 0 even when a test fails (#168).
+
+/** A copy of `env` that a child `node --test` cannot mistake for a parent test run's. */
+export function cleanChildEnv(env: Env): Env {
+  const clean = { ...env };
+  delete clean.NODE_TEST_CONTEXT;
+  return clean;
 }
 
 /** The environment for one command run as the bot: gh reads GH_TOKEN, and git asks gh.
