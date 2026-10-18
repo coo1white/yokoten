@@ -31,9 +31,14 @@ export function readToolCall(input: unknown): Action {
 
 const projectSettings = (root: string) => join(root, '.gemini', 'settings.json');
 
-/** The project's tool-call guard. GEMINI_PROJECT_DIR is the project root, set for every hook. */
+/**
+ * The project's tool-call guard. GEMINI_PROJECT_DIR is the folder Gemini CLI was started
+ * in, not a repo root. Gemini (v0.64.0) puts it into the command text already shell-quoted,
+ * so the command leaves it unquoted, as the docs example does: quoting it again breaks a
+ * path with a space, and the hook would fail open. An older quoted hook is updated in place.
+ */
 export const addProjectHook = (root: string, cli: string) =>
-  addHook(projectSettings(root), 'BeforeTool', 'run_shell_command|write_file|replace', `node "$GEMINI_PROJECT_DIR/${cli}" hook --agent gemini`, {
+  addHook(projectSettings(root), 'BeforeTool', 'run_shell_command|write_file|replace', `node $GEMINI_PROJECT_DIR/${cli} hook --agent gemini`, {
     name: 'yokoten',
   });
 export const hasProjectHook = (root: string): boolean => hasHook(projectSettings(root), 'BeforeTool', 'hook');

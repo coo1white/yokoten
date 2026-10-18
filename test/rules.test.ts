@@ -12,7 +12,7 @@ import { POSITIVE_CONTROL, scanText } from '../src/rules/privacy.ts';
 import { SECRET_CONTROL } from '../src/rules/secrets.ts';
 import { check, timeZoneNote } from '../src/run/check.ts';
 import { parseSourceMarker, sourceMarker, translationNotes } from '../src/run/translations.ts';
-import { agentHooks, coreRulesCheck, findStateFile, formatLessonChecks, lessonChecks, machineChecks, readState, saveState, seenAfter } from '../src/setup/doctor.ts';
+import { agentHooks, coreRulesCheck, coreRulesControl, findStateFile, formatLessonChecks, lessonChecks, machineChecks, readState, saveState, seenAfter, selfTest } from '../src/setup/doctor.ts';
 import { compareCoreRules, compareVersions, readKitVersion } from '../src/setup/init.ts';
 import { explain, explainLines, ids } from '../src/setup/advice/explain.ts';
 import { ROAD, serverChecks, stepFinding } from '../src/setup/road.ts';
@@ -1112,4 +1112,19 @@ test('lessons: every lesson the kit ships has a row, its incident, no TODO, and 
     const run = spawnSync(process.execPath, ['--test', join(kitLessons, folder, 'lesson.test.ts')], { env, encoding: 'utf8' });
     assert.equal(run.status, 0, `${id}: its test passes\n${run.stdout}`);
   }
+});
+
+test('self-test: the core-rules control passes the real check and fails a broken one (#170)', () => {
+  assert.deepEqual(coreRulesControl(), []);
+  assert.ok(!selfTest().some((name) => name.startsWith('core rules')));
+  const always = (mark: 'ok' | 'MISSING' | 'note') => (root: string) => ({ mark, finding: { ...coreRulesCheck(root)!.finding } });
+  assert.deepEqual(coreRulesControl(always('ok')), ['core rules check (edited by hand)', 'core rules check (newer kit)'], 'a check that passes everything');
+  assert.deepEqual(coreRulesControl(always('MISSING')), ['core rules check (newer kit)'], 'a check that calls a newer kit MISSING');
+  assert.deepEqual(coreRulesControl(always('note')), ['core rules check (edited by hand)'], 'a check that only gives notes');
+  // A compare that never sees a version: the newer kit looks hand-edited, so MISSING.
+  const noVersion = (root: string) => {
+    const result = coreRulesCheck(root)!;
+    return result.mark === 'note' ? { mark: 'MISSING' as const, finding: result.finding } : result;
+  };
+  assert.deepEqual(coreRulesControl(noVersion), ['core rules check (newer kit)']);
 });
