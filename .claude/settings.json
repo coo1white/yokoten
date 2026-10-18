@@ -10,6 +10,16 @@
         ],
         "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit"
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/bin/yokoten.ts\" hook --stop"
+          }
+        ]
+      }
     ]
   },
   "env": {

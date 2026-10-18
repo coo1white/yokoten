@@ -98,6 +98,38 @@ export function check(root: string, { config, env, staged = false }: { config: C
 }
 
 /**
+ * The files changed in the work tree: staged, not staged, and new files git does not
+ * ignore. A move counts as a delete and an add. `--no-optional-locks` keeps git from
+ * writing the index, so this can run while the agent's own git command runs.
+ */
+export const changedFiles = (root: string): string[] =>
+  list(git(root, ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames'])).map((entry) => entry.slice(3));
+
+/**
+ * Problems in the changed files only (#92): the file rules and the privacy check that
+ * `check --staged` uses, on what is in the work tree now. The Stop hook runs it, so it
+ * reads no history and makes no network call. A deleted file gets only the file rules.
+ */
+export function checkChanged(root: string, { config, env }: { config: Config; env: Env }): Finding[] {
+  const problems: Finding[] = [];
+  const marks = loadMarks(env);
+  const skip = matcher(config.privacy.skip);
+  for (const path of changedFiles(root)) {
+    const reason = checkEdit(path, { config, env });
+    if (reason) problems.push(reason);
+    if (skip(path)) continue;
+    let buf: Buffer;
+    try {
+      buf = readFileSync(join(root, path));
+    } catch {
+      continue; // deleted, or a folder (a submodule)
+    }
+    if (!isBinary(buf)) problems.push(...scanText(buf.toString('utf8'), { file: path, marks, allow: config.privacy.allow }));
+  }
+  return problems;
+}
+
+/**
  * How many commits on every branch record a time zone other than UTC. History can't be
  * changed without a force push, which is the owner's call, so this is a count to know,
  * not a problem that fails the check.

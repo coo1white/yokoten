@@ -6,8 +6,8 @@ The [README](../README.md) is the short version. This is everything else: why yo
 
 - **Session**: one conversation with an AI coding agent, such as Claude Code.
 - **Hook**: a small program the agent's tool runs at a set moment. yokoten adds one that
-  runs before every command or edit (and can stop it), and one at the start of each
-  session.
+  runs before every command or edit (and can stop it), one when the agent ends its turn,
+  and one at the start of each session.
 - **Commit check**: a git hook (`.githooks/pre-commit`) that runs before each commit.
 - **CI**: the checks GitHub runs on every pull request.
 - **Ruleset**: a GitHub setting that protects a branch or tag, for example "no merge
@@ -61,6 +61,7 @@ flowchart LR
 | | Runs | Stops |
 |-|------|-------|
 | **1** | before each tool call | tag pushes, force pushes, skipped checks; test edits in a fix task; a worker editing the rules |
+| **1b** | when a Claude Code agent ends its turn | the same personal data, secrets and file rules as the commit check, in the changed files. It sends the agent back once with the findings |
 | **2** | on every commit | what the hook can't see: files changed by `sed` or a script, personal data, an overfull folder |
 | **3** | on every pull request | a commit made with the hook off |
 | **lock** | on the server | a merge without your review, a push to `main`, a release tag that isn't yours |
@@ -140,7 +141,7 @@ yokoten guards three AI coding agents. Each one keeps the same rules.
 
 | Agent | What yokoten adds |
 |---|---|
-| Claude Code | the tool-call guard (a hook), the guide at the start of each session, skills and agents |
+| Claude Code | the tool-call guard (a hook), the stop check (a hook), the guide at the start of each session, skills and agents |
 | Codex CLI | the tool-call guard, in `.codex/hooks.json`. Codex asks you once to trust project hooks (`/hooks`) |
 | Gemini CLI | the tool-call guard, in `.gemini/settings.json` |
 | Any other agent | the rules in `AGENTS.md`, and the commit check, which stops a bad commit whoever made it |
@@ -181,6 +182,7 @@ then run with no network and no global install.
 | `check --issue` | In CI: the issue's title. See [Issue titles](#issue-titles) |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public |
 | `hook [--agent <name>] [--commands-only]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini` |
+| `hook --stop` | The stop check. Reads a Claude Code Stop event on stdin and checks the changed files. See [The stop check](#the-stop-check) |
 | `explain [<id>]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Setup: [server.md](server.md#3-the-bot-a-github-app) |
 
@@ -195,6 +197,7 @@ the `id`. No field holds a private value.
   notes, server }`. With `--session`, only the next step and the private-marks finding.
 - `hook --json`: `{ blocked, finding }` on stdout. The runtimes do not use it: they read
   the exit code and the reason on stderr, as their hook protocols say.
+- `hook --stop --json`: `{ blocked, stop, findings }`. With `stop_hook_active`, also `skipped`.
 - `explain --json`: `{ found, id, kind, what, why, check, stage, standard }`, or
   `{ found: false, ids }`.
 
@@ -207,10 +210,37 @@ go to stderr. An unknown option is refused, never ignored.
 |------|-------|
 | 0 | All is well. `doctor --session` always gives 0, so a session always starts |
 | 1 | Problems found (`check`, `doctor`), an unknown id (`explain`), a usage error, or an error in yokoten itself |
-| 2 | The hook blocked the tool call. The reason is on stderr |
+| 2 | The hook blocked the tool call, or the stop check sent the agent back. The reason is on stderr |
 
 These codes do not change. A broken guard gives 1, not 2: you see it, and it does not
 block every tool call.
+
+### The stop check
+
+The tool-call hook reads commands. It does not see a file that `sed` or a script
+changed. The commit check sees it, but only at the commit. The stop check runs earlier:
+when a Claude Code agent tries to end its turn.
+
+```mermaid
+flowchart LR
+  S["agent ends its turn"] --> A{"already sent back once?"}
+  A -- yes --> E["turn ends"]
+  A -- no --> C{"findings in changed files?"}
+  C -- no --> E
+  C -- yes --> B["agent gets the findings and fixes them"]
+```
+
+- It checks the changed files only: staged, not staged, and new files that git does not
+  ignore. It uses the privacy, secret and file rules of `check --staged`.
+- It sends the agent back once. Claude Code then sets `stop_hook_active`, and the next
+  stop always ends the turn. There is no loop.
+- It reads no history and uses no network.
+- On an error in yokoten, the turn ends and stderr gets one line.
+- A new file you want to keep out of the check goes in `.gitignore`, or in
+  `privacy.skip` in `yokoten.json`.
+
+`init` adds it to `.claude/settings.json`. `install` does not add it at user level: it
+reads files, so each project turns it on, as with the file rules of the tool-call hook.
 
 The commit check refuses a file in a `dist/`, `build/` or `out/` folder, and a binary file.
 A build makes such files again, and a reviewer can't read a binary. Images and fonts
