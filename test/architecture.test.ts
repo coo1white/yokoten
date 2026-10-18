@@ -315,6 +315,7 @@ test('docs: every install command in docs/facts.json is in the guides and README
     ['docs/zh-CN/guide.md', ['npx', 'clone']],
     ['README.md', ['npx']],
     ['docs/zh-CN/README.md', ['npx']],
+    ['docs/ja/README.md', ['npx']],
   ];
   for (const [file, lists] of shown) {
     assert.deepEqual(missingCommands(facts, lists, readFileSync(join(ROOT, file), 'utf8')), [], `${file} lacks these commands from docs/facts.json; change both`);
