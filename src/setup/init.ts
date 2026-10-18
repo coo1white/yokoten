@@ -1,6 +1,7 @@
 // `yokoten init`: put the practices into a project. It only adds: a file that is already
 // there is kept, and the report says so. Some files get lines added, never removed: a
-// CLAUDE.md, and a project's own pre-commit and pre-merge-commit (#206, #239). Deciding
+// CLAUDE.md, and a project's own pre-commit and pre-merge-commit (#206, #239). A hook the
+// clone has in .git/hooks keeps running, after the check, from .githooks (#256). Deciding
 // what to do with a project's own rules (keep, merge, or say not now) is the yokoten
 // skill's job, not this command's.
 //
@@ -8,8 +9,9 @@
 // AGENTS.md, and only with --write. It is at the end of this file.
 
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { addProjectHook, addProjectStopHook, setProjectEnv } from '../agents/claude-code.ts';
 import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
@@ -46,15 +48,14 @@ export function init(root: string): string[] {
   const kit = join(KIT, 'project');
   for (const file of walk(kit)) {
     const rel = relative(kit, file).split('\\').join('/');
-    // A project with its own hooks folder keeps it, so .githooks/ would be a hook git never runs.
-    if (hooks.kind === 'own' && rel.startsWith('.githooks/')) continue;
+    // The hooks are written below. A project with its own hooks folder keeps it, so it gets no .githooks/.
+    if (rel.startsWith('.githooks/')) continue;
     const result = writeNew(join(root, rel), render(readFileSync(file, 'utf8'), { cli, version: VERSION }));
     report.push(`${result} ${rel}`);
   }
-  if (hooks.kind !== 'own') {
-    chmodSync(join(root, '.githooks', 'pre-commit'), 0o755);
-    report.push(`${writeMergeHook(root, cli, kit)} .githooks/pre-merge-commit`);
-  }
+  // Read before .githooks/ is written: whether it can run the hooks this clone has in .git/hooks (#256).
+  const blocks = hooks.kind === 'plain' ? handOffBlocks(root) : [];
+  if (hooks.kind !== 'own') report.push(...writeGithooks(root, cli, kit, blocks.length === 0));
   const imported = importRules(root);
   if (imported) report.push(imported);
   const hook = addProjectHook(root, cli);
@@ -67,7 +68,7 @@ export function init(root: string): string[] {
   report.push(`${codex.addProjectStopHook(root, cli)} the Codex stop check in .codex/hooks.json`);
   report.push(`${gemini.addProjectStopHook(root, cli)} the Gemini CLI stop check in .gemini/settings.json (AfterAgent)`);
   report.push(`${setProjectEnv(root, 'TZ', 'UTC')} TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)`);
-  report.push(...setCommitCheck(root, cli, hooks));
+  report.push(...setCommitCheck(root, cli, hooks, blocks));
   return report;
 }
 
@@ -111,7 +112,7 @@ function readLocalHooksPath(root: string): string | null {
   }
 }
 
-function readHookSetup(root: string): HookSetup {
+export function readHookSetup(root: string): HookSetup {
   const hooksPath = readLocalHooksPath(root);
   if (hooksPath === null) return { kind: 'no repo' };
   const isHusky = existsSync(join(root, '.husky'));
@@ -146,8 +147,10 @@ export const checkLines = (cli: string): string[] => ['# yokoten: the commit che
 /**
  * Add the yokoten check to a commit hook, after its `#!` line, so a later `exec` can't skip it.
  * Its own lines stay. A hook git would skip, for lack of the execute bit, is made executable.
+ * A file under .husky/ keeps its mode: husky 9 runs it with `sh`, so a chmod is only noise in the diff (#256).
  */
 function addCheckLines(path: string, cli: string): 'added the check to' | 'wrote' | 'made executable' | 'same' {
+  const keepMode = basename(dirname(path)) === '.husky';
   if (!existsSync(path)) {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, ['#!/bin/sh', ...checkLines(cli), ''].join('\n'), { mode: 0o755 });
@@ -156,8 +159,7 @@ function addCheckLines(path: string, cli: string): 'added the check to' | 'wrote
   }
   const text = readFileSync(path, 'utf8');
   if (runs('check').test(text)) {
-    // Windows has no execute bit, and git there runs a hook without one.
-    if (process.platform === 'win32' || statSync(path).mode & 0o111) return 'same';
+    if (keepMode || isExecutable(path)) return 'same';
     chmodSync(path, statSync(path).mode | 0o111);
     return 'made executable';
   }
@@ -166,31 +168,186 @@ function addCheckLines(path: string, cli: string): 'added the check to' | 'wrote
   const at = lines[0]?.startsWith('#!') ? 1 : 0;
   lines.splice(at, 0, ...checkLines(cli));
   writeFileSync(path, lines.join(newline));
-  chmodSync(path, statSync(path).mode | 0o111);
+  if (!keepMode) chmodSync(path, statSync(path).mode | 0o111);
   return 'added the check to';
 }
 
-/**
- * Write .githooks/pre-merge-commit with the kit's pre-commit, so a merge commit gets the
- * same check (#239). One that is there is kept, and gets the check when it lacks it.
- */
-function writeMergeHook(root: string, cli: string, kit: string): 'wrote' | 'kept' | 'added the check to' | 'made executable' {
-  const path = join(root, '.githooks', 'pre-merge-commit');
-  if (existsSync(path)) {
-    const result = addCheckLines(path, cli);
-    return result === 'same' ? 'kept' : result === 'wrote' ? 'added the check to' : result;
+/** Whether git runs this hook file. Windows has no execute bit, and git there runs a hook without one. */
+export const isExecutable = (path: string): boolean => process.platform === 'win32' || (statSync(path).mode & 0o111) !== 0;
+
+// ---- The hooks a clone already has in .git/hooks (#256) ----
+//
+// With core.hooksPath unset, git runs the hooks in .git/hooks: lefthook's, the pre-commit
+// framework's, or a hand-written one. Pointing git at .githooks would switch them off
+// without a word. So .githooks/pre-commit runs the check and then hands off to the old
+// hook, with the same arguments and stdin, when it is executable.
+//
+// The old hook stays where it is. Once core.hooksPath is .githooks, `git rev-parse
+// --git-path hooks` names .githooks, so the hand-off finds the old hook by the common git
+// dir, which never moves (a linked worktree shares it). Nothing is renamed, so a tool that
+// finds its hook by name still finds it, and unsetting core.hooksPath gives back the setup
+// the clone had. YOKOTEN_OLD_HOOK stops a loop when the old hook runs .githooks itself.
+
+/** A hook that git runs now, from .git/hooks or a global core.hooksPath, and .githooks would switch off. */
+export interface OldHook {
+  hook: CommitHook;
+  /** Where it is, for a message: relative to the root, or from ~. */
+  file: string;
+  /** yes: .githooks can run it after the check. Otherwise why it can't. */
+  handOff: 'yes' | 'not executable' | 'global';
+}
+
+const gitLine = (root: string, args: string[]): string | null => {
+  try {
+    return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch {
+    return null;
   }
-  writeNew(path, render(readFileSync(join(kit, '.githooks', 'pre-commit'), 'utf8'), { cli, version: VERSION }), { mode: 0o755 });
-  chmodSync(path, 0o755);
-  return 'wrote';
+};
+
+/** A path for a message: relative to the root, or from ~, so no home folder is printed. */
+const showPath = (root: string, path: string): string => {
+  const rel = relative(root, path);
+  if (rel && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)) return rel.split(sep).join('/');
+  const home = homedir();
+  return (path.startsWith(home + sep) ? `~${path.slice(home.length)}` : path).split(sep).join('/');
+};
+
+const sameFile = (a: string, b: string): boolean => {
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * The commit hooks this clone has outside .githooks that git runs (or, with core.hooksPath
+ * set, ran before it). A hook that is .githooks's own file, through a link, is not one.
+ */
+export function readOldHooks(root: string): OldHook[] {
+  const hooksPath = readLocalHooksPath(root);
+  const common = hooksPath === null ? null : gitLine(root, ['rev-parse', '--git-common-dir']);
+  if (common === null) return [];
+  const found: OldHook[] = [];
+  for (const hook of COMMIT_HOOKS) {
+    const own = resolve(root, common, 'hooks', hook);
+    const runsNow = hooksPath === '' ? gitLine(root, ['rev-parse', '--git-path', `hooks/${hook}`]) : null;
+    const path = runsNow ? resolve(root, runsNow) : own;
+    if (!existsSync(path) || sameFile(path, join(root, '.githooks', hook))) continue;
+    const file = showPath(root, path);
+    if (path !== own && !sameFile(path, own)) found.push({ hook, file, handOff: 'global' });
+    else if (isExecutable(path)) found.push({ hook, file, handOff: 'yes' });
+    // git skips it today; with core.hooksPath set, there is nothing to lose.
+    else if (hooksPath === '') found.push({ hook, file, handOff: 'not executable' });
+  }
+  return found;
+}
+
+/** The lines in .githooks/<hook>, after the check, that run the old hook in .git/hooks. */
+export const handOffLines = (hook: CommitHook): string[] => [
+  `# yokoten: then the ${hook} this clone has in .git/hooks, as git ran it before core.hooksPath was set (#256)`,
+  `yokoten_old="$(git rev-parse --git-common-dir 2>/dev/null)/hooks/${hook}"; if [ -x "$yokoten_old" ] && [ -z "$YOKOTEN_OLD_HOOK" ]; then YOKOTEN_OLD_HOOK=1 "$yokoten_old" "$@" || exit $?; fi`,
+];
+
+/** Whether a hook's text already hands off to the old hook. */
+export const hasHandOff = (text: string, hook: CommitHook): boolean => new RegExp(`--git-common-dir[^\\n]*\\)/hooks/${hook}"`).test(text);
+
+/** The check as the kit's hook ends with it: `exec`, so nothing after it would run. */
+const EXEC_CHECK = /^exec\s+(node\s+\S+\s+check\s+--staged)\s*$/;
+
+/**
+ * The hook's text with the hand-off after its check, or null when yokoten can't tell where
+ * that is: the check must be a line that ends in `|| exit 1`, or the kit's `exec node ...
+ * check --staged`, which then loses its `exec`.
+ */
+export function placeHandOff(text: string, hook: CommitHook): string | null {
+  if (hasHandOff(text, hook)) return text;
+  const newline = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = text.split(/\r?\n/);
+  const at = lines.findIndex((line) => runs('check').test(line));
+  if (at === -1) return null;
+  const line = lines[at].trim();
+  const exec = line.match(EXEC_CHECK);
+  if (exec) lines[at] = `${exec[1]} || exit 1`;
+  else if (!/\|\|\s*exit(?:\s+(?:1|\$\?))?\s*$/.test(line)) return null;
+  lines.splice(at + 1, 0, ...handOffLines(hook));
+  return lines.join(newline);
+}
+
+/**
+ * Why .githooks can't take over from the old hooks here, one line each, with what to do;
+ * empty when it can. Read before init writes .githooks, and by doctor.
+ */
+export function handOffBlocks(root: string, olds: OldHook[] = readOldHooks(root)): string[] {
+  const unset = readLocalHooksPath(root) === '';
+  return olds.flatMap((old): string[] => {
+    const own = `.githooks/${old.hook}`;
+    if (old.handOff === 'not executable') {
+      return [`${old.file} is not executable, so git skips it and ${own} could not run it. To keep it, run \`chmod +x ${old.file}\`, then \`yokoten init\`; to let it go, run \`git config core.hooksPath .githooks\``];
+    }
+    if (old.handOff === 'global') {
+      return [`git runs ${old.hook} from your global core.hooksPath (${old.file}), which ${own} can't run. To use the commit check in this repo instead, run \`git config core.hooksPath .githooks\``];
+    }
+    const path = join(root, own);
+    if (!existsSync(path)) return [];
+    const text = readFileSync(path, 'utf8');
+    // A hook without the check gets the check line, and the hand-off goes after it.
+    if (!runs('check').test(text) || placeHandOff(text, old.hook) !== null) return [];
+    return [`${own} is the project's own, and yokoten can't tell where its check ends. To keep ${old.file}, add this line after the check: ${handOffLines(old.hook)[1]}${unset ? '; then run `git config core.hooksPath .githooks`' : ''}`];
+  });
+}
+
+/** The config files of hook managers that install into .git/hooks. */
+const HOOK_MANAGERS = ['lefthook.yml', 'lefthook.yaml', '.lefthook.yml', '.lefthook.yaml', '.pre-commit-config.yaml'];
+
+/**
+ * Write .githooks/pre-commit and .githooks/pre-merge-commit. A new one is the kit's hook, or,
+ * when this clone has an old hook, the check and then the hand-off. One that is there is
+ * kept, and gets the check when it lacks it (#239, #256), and the hand-off.
+ */
+function writeGithooks(root: string, cli: string, kit: string, handOff: boolean): string[] {
+  const olds = handOff ? readOldHooks(root).filter((old) => old.handOff === 'yes') : [];
+  const lines: string[] = [];
+  for (const hook of COMMIT_HOOKS) {
+    const rel = `.githooks/${hook}`;
+    const path = join(root, rel);
+    const old = olds.find((o) => o.hook === hook);
+    if (!existsSync(path)) {
+      const text = old ? ['#!/bin/sh', ...checkLines(cli), ...handOffLines(hook), ''].join('\n') : render(readFileSync(join(kit, '.githooks', 'pre-commit'), 'utf8'), { cli, version: VERSION });
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, text, { mode: 0o755 });
+      chmodSync(path, 0o755);
+      lines.push(`wrote ${rel}`);
+    } else {
+      const result = addCheckLines(path, cli);
+      const text = readFileSync(path, 'utf8');
+      const placed = old && !hasHandOff(text, hook) ? placeHandOff(text, hook) : null;
+      if (placed !== null) {
+        writeFileSync(path, placed);
+        chmodSync(path, statSync(path).mode | 0o111);
+      }
+      lines.push(`${placed !== null ? 'updated' : result === 'same' ? 'kept' : result} ${rel}`);
+    }
+    if (old) lines.push(`kept your ${old.file}: ${rel} runs it after the check`);
+  }
+  return lines;
 }
 
 /** Point git at the commit check: set .githooks, or add the check to the project's own pre-commit. */
-function setCommitCheck(root: string, cli: string, hooks: HookSetup): string[] {
+function setCommitCheck(root: string, cli: string, hooks: HookSetup, blocks: string[]): string[] {
   if (hooks.kind === 'no repo') return ['not a git repo: run `git init`, then `git config core.hooksPath .githooks`'];
   if (hooks.kind === 'plain') {
+    const unset = readLocalHooksPath(root) === '';
+    const olds = readOldHooks(root);
+    const managers = HOOK_MANAGERS.filter((name) => existsSync(join(root, name)));
+    const note = olds.length && managers.length ? [`note: ${managers.join(' and ')} is here; its hooks in .git/hooks ${blocks.length ? 'still run, because core.hooksPath stays unset' : 'still run, after the check. After you install it again, run `yokoten doctor` to see that the check is still on'}`] : [];
+    if (blocks.length) {
+      const head = unset ? 'left core.hooksPath unset, so the commit check is not on yet' : 'a hook this clone had is switched off';
+      return [`${head}: ${blocks.join('; ')}`, ...note];
+    }
     execFileSync('git', ['config', 'core.hooksPath', '.githooks'], { cwd: root, stdio: 'pipe' });
-    return ['set git core.hooksPath to .githooks (the commit check)'];
+    return ['set git core.hooksPath to .githooks (the commit check)', ...note];
   }
   const { hooksPath } = hooks;
   const fileOf = (hook: CommitHook) => (hooksPath ? hookFile(root, hooksPath, hook) : `.husky/${hook}`);

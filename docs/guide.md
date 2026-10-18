@@ -363,6 +363,18 @@ husky or another `core.hooksPath`, it keeps that folder and adds the commit chec
 `pre-commit`. The project's own hook lines stay, and `init` says which file it changed.
 git runs `pre-merge-commit`, not `pre-commit`, for a merge it commits itself, so `init` adds
 the same check there too (`.githooks/pre-merge-commit`, or husky's `.husky/pre-merge-commit`).
+A `.githooks/pre-commit` of the project's own gets the check too. A file under `.husky/`
+keeps its mode, because husky 9 runs it with `sh`.
+
+A clone can also have its own hooks in `.git/hooks`: from lefthook, the pre-commit
+framework, or written by hand. Pointing git at `.githooks` would switch them off, so
+`init` writes `.githooks/pre-commit` and `.githooks/pre-merge-commit` to run the check
+first and then the old hook, with the same arguments, when it is executable. The old hook
+stays in `.git/hooks`, and `init` says which ones it kept. When it can't hand off (the
+hook is not executable, or it comes from a global `core.hooksPath`), `init` leaves
+`core.hooksPath` unset and prints what to do. `doctor` does not count the commit check as
+done while such a hook would be dropped. For a workflow of the project's own that `init`
+keeps, `doctor` gives the step to add to it.
 
 `init` also writes three workflows into `.github/workflows/`: `yokoten.yml` (the
 commit check, a lint job with actionlint and zizmor, and one `ci` job to make the required

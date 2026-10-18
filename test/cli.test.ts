@@ -716,6 +716,141 @@ test('doctor: a hook in the project\'s folder that is not executable is not chec
   assert.match(doctor, /or do it yourself: add the line below to tools\/hooks\/pre-commit, after its `#!` line; run `chmod \+x tools\/hooks\/pre-commit`\. The line: /);
 });
 
+// A clone's own hooks in .git/hooks (lefthook, the pre-commit framework, a hand-written
+// one) must not be switched off when init points git at .githooks (#256).
+const NO_EXEC_BIT = process.platform === 'win32' && 'Windows has no execute bit';
+
+test('init: a pre-commit in .git/hooks keeps running, after the check, from .githooks (#256)', { skip: NO_EXEC_BIT }, () => {
+  const sandbox = makeSandbox();
+  const gitDir = join(sandbox.repo, '.git');
+  // The old hooks leave a mark in .git, and the pre-commit fails while .git/block-me is there.
+  writeFileSync(join(gitDir, 'hooks', 'pre-commit'), '#!/bin/sh\ndir="$(git rev-parse --git-dir)"\ntouch "$dir/old-hook-ran"\n[ ! -f "$dir/block-me" ]\n', { mode: 0o755 });
+  writeFileSync(join(gitDir, 'hooks', 'pre-merge-commit'), '#!/bin/sh\ntouch "$(git rev-parse --git-dir)/old-merge-hook-ran"\n', { mode: 0o755 });
+  sandbox.write('lefthook.yml', 'pre-commit:\n  commands:\n    lint:\n      run: echo lint\n');
+  let result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^kept your \.git\/hooks\/pre-commit: \.githooks\/pre-commit runs it after the check$/m);
+  assert.match(result.stdout, /^kept your \.git\/hooks\/pre-merge-commit: \.githooks\/pre-merge-commit runs it after the check$/m);
+  assert.match(result.stdout, /^note: lefthook\.yml is here; its hooks in \.git\/hooks still run, after the check/m);
+  assert.match(result.stdout, /^set git core\.hooksPath to \.githooks/m);
+  assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '.githooks');
+  assert.ok(existsSync(join(gitDir, 'hooks', 'pre-commit')), 'the old hook stays where it was');
+  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  // A real commit runs the check, then the old hook.
+  sandbox.git('add', '.');
+  let commit = sandbox.git('commit', '-qm', 'adopt yokoten');
+  assert.equal(commit.status, 0, commit.stderr);
+  assert.ok(existsSync(join(gitDir, 'old-hook-ran')), 'the old pre-commit ran');
+  // The old hook's failure stops the commit.
+  writeFileSync(join(gitDir, 'block-me'), '');
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', 'a.md');
+  assert.notEqual(sandbox.git('commit', '-qm', 'blocked').status, 0, 'the old hook can still refuse a commit');
+  rmSync(join(gitDir, 'block-me'));
+  // The check comes first: when it refuses, the old hook does not run.
+  rmSync(join(gitDir, 'old-hook-ran'));
+  sandbox.write('leak.md', `me${at}gmail.com\n`);
+  sandbox.git('add', 'leak.md');
+  commit = sandbox.git('commit', '-qm', 'leak');
+  assert.notEqual(commit.status, 0, 'the check runs');
+  assert.ok(!existsSync(join(gitDir, 'old-hook-ran')), 'the check runs before the old hook');
+  sandbox.git('rm', '-q', '--cached', 'leak.md');
+  rmSync(join(sandbox.repo, 'leak.md'));
+  assert.equal(sandbox.git('commit', '-qm', 'a').status, 0);
+  // A merge commit runs the old pre-merge-commit too.
+  sandbox.git('checkout', '-qb', 'topic');
+  sandbox.write('topic.md', 'fine\n');
+  sandbox.git('add', 'topic.md');
+  assert.equal(sandbox.git('commit', '-qm', 'topic').status, 0);
+  sandbox.git('checkout', '-q', 'main');
+  const merge = sandbox.git('merge', '--no-ff', '-q', '-m', 'merge topic', 'topic');
+  assert.equal(merge.status, 0, merge.stderr);
+  assert.ok(existsSync(join(gitDir, 'old-merge-hook-ran')), 'the old pre-merge-commit ran');
+  // A clone that ran an older init: .githooks/pre-commit without the hand-off drops the old hook, and doctor says so.
+  const kitHook = readFileSync(join(CLI, '..', '..', 'kit', 'project', '.githooks', 'pre-commit'), 'utf8').replaceAll('{{cli}}', '.yokoten/bin/yokoten.ts');
+  writeFileSync(join(sandbox.repo, '.githooks', 'pre-commit'), kitHook);
+  assert.notEqual(stepMark(sandbox, 'commit-check'), 'done', 'the old pre-commit would be dropped');
+  const doctor = sandbox.run(['doctor']).stdout;
+  assert.match(doctor, /commit-check \(OSPS-BR-07\.01\): a hook this clone had is switched off: \.git\/hooks\/pre-commit no longer runs: \.githooks\/pre-commit does not run it; `yokoten init` makes \.githooks\/pre-commit run \.git\/hooks\/pre-commit after the check/);
+  result = sandbox.run(['init']);
+  assert.match(result.stdout, /^updated \.githooks\/pre-commit$/m);
+  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  const hook = readFileSync(join(sandbox.repo, '.githooks', 'pre-commit'), 'utf8');
+  assert.match(hook, /^node "\.yokoten\/bin\/yokoten\.ts" check --staged \|\| exit 1\n# yokoten: then the pre-commit/m, 'the kit\'s `exec` goes, so the hand-off runs after the check');
+  rmSync(join(gitDir, 'old-hook-ran'));
+  sandbox.write('b.md', 'fine\n');
+  sandbox.git('add', 'b.md');
+  assert.equal(sandbox.git('commit', '-qm', 'b').status, 0);
+  assert.ok(existsSync(join(gitDir, 'old-hook-ran')), 'the old pre-commit runs again');
+});
+
+test('init: a pre-commit in .git/hooks that git skips leaves core.hooksPath unset, and doctor gives the same steps (#256)', { skip: NO_EXEC_BIT }, () => {
+  const sandbox = makeSandbox();
+  writeFileSync(join(sandbox.repo, '.git', 'hooks', 'pre-commit'), '#!/bin/sh\nexit 0\n', { mode: 0o644 });
+  chmodSync(join(sandbox.repo, '.git', 'hooks', 'pre-commit'), 0o644);
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  const steps = '.git/hooks/pre-commit is not executable, so git skips it and .githooks/pre-commit could not run it. To keep it, run `chmod +x .git/hooks/pre-commit`, then `yokoten init`; to let it go, run `git config core.hooksPath .githooks`';
+  assert.ok(result.stdout.includes(`left core.hooksPath unset, so the commit check is not on yet: ${steps}\n`), result.stdout);
+  assert.doesNotMatch(result.stdout, /set git core\.hooksPath/);
+  assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '');
+  const doctor = sandbox.run(['doctor']).stdout;
+  assert.ok(doctor.includes(`commit-check (OSPS-BR-07.01): commits are not checked: core.hooksPath is not set; ${steps}\n`), doctor);
+  // Made executable, the next init hands off to it.
+  chmodSync(join(sandbox.repo, '.git', 'hooks', 'pre-commit'), 0o755);
+  assert.match(sandbox.run(['init']).stdout, /^kept your \.git\/hooks\/pre-commit: \.githooks\/pre-commit runs it after the check$/m);
+  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+});
+
+// doctor's advice must be true: when it says init sets it up, init does (#256).
+test('init: a .githooks/pre-commit of the project\'s own gets the check, and a kept one keeps its mode (#256)', { skip: NO_EXEC_BIT }, () => {
+  const sandbox = makeSandbox();
+  sandbox.write('.githooks/pre-commit', '#!/bin/sh\necho own\n');
+  chmodSync(join(sandbox.repo, '.githooks/pre-commit'), 0o700);
+  sandbox.git('config', 'core.hooksPath', '.githooks');
+  assert.match(sandbox.run(['doctor']).stdout, /commits are not checked: \.githooks\/pre-commit does not run yokoten[^\n]*; `yokoten init` sets it up/);
+  let result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^added the check to \.githooks\/pre-commit$/m);
+  const path = join(sandbox.repo, '.githooks/pre-commit');
+  const hook = readFileSync(path, 'utf8');
+  assert.equal(hook, `#!/bin/sh\n${checkLines('.yokoten/bin/yokoten.ts').join('\n')}\necho own\n`);
+  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  const mode = statSync(path).mode & 0o777;
+  // Again: the file is kept as it is, mode too.
+  result = sandbox.run(['init']);
+  assert.match(result.stdout, /^kept \.githooks\/pre-commit$/m);
+  assert.equal(readFileSync(path, 'utf8'), hook);
+  assert.equal(statSync(path).mode & 0o777, mode, 'no chmod on a file init did not change');
+});
+
+test('doctor: a workflow of the project\'s own that init keeps gets the step to add, not "init adds it" (#256)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('.github/workflows/pr.yml', 'name: pr\non: pull_request\njobs:\n  lint:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo lint\n');
+  sandbox.write('.github/workflows/yokoten.yml', 'name: yokoten\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo build\n');
+  assert.equal(sandbox.run(['init']).status, 0);
+  const doctor = sandbox.run(['doctor']).stdout;
+  assert.ok(doctor.includes('titles (Conventional Commits 1.0.0): CI does not check pull requests (`yokoten check --pr`); add this step to .github/workflows/pr.yml, after actions/checkout with `fetch-depth: 0` and actions/setup-node, in a job that runs on pull_request (`yokoten init` keeps your file as it is): `- run: node .yokoten/bin/yokoten.ts check --pr`\n'), doctor);
+  assert.ok(doctor.includes('ci (Scorecard: CI-Tests): CI does not run `yokoten check`; add this step to .github/workflows/yokoten.yml, after actions/checkout and actions/setup-node (`yokoten init` keeps your file as it is): `- run: node .yokoten/bin/yokoten.ts check`\n'), doctor);
+  assert.doesNotMatch(doctor, /`yokoten init` adds \.github\/workflows/);
+});
+
+test('init: a file under .husky/ keeps its mode; husky 9 runs it with sh (#256)', { skip: NO_EXEC_BIT }, () => {
+  const sandbox = makeSandbox();
+  sandbox.write('.husky/pre-commit', 'npm test\n');
+  sandbox.write('.husky/pre-merge-commit', 'npm test\n');
+  for (const hook of ['pre-commit', 'pre-merge-commit']) chmodSync(join(sandbox.repo, '.husky', hook), 0o644);
+  sandbox.write('.husky/_/h', '#!/bin/sh\n');
+  sandbox.git('config', 'core.hooksPath', '.husky/_');
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /added the check to \.husky\/pre-commit/);
+  for (const hook of ['pre-commit', 'pre-merge-commit']) {
+    assert.equal(statSync(join(sandbox.repo, '.husky', hook)).mode & 0o777, 0o644, `.husky/${hook} keeps its mode`);
+  }
+  assert.equal(stepMark(sandbox, 'commit-check'), 'done', 'husky 9 needs no execute bit on .husky/pre-commit');
+});
+
 // A lesson added to the kit's core rules reaches a project that already ran init (#120).
 test('update: doctor says when the core rules are behind; update previews, and --write keeps "This project" byte for byte (#120)', () => {
   const sandbox = makeSandbox();
