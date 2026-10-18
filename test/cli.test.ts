@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -1737,7 +1737,8 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
   mkdirSync(bin);
   writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args: process.argv.slice(2), token: process.env.GH_TOKEN }) + '\\n');\n`);
   chmodSync(join(bin, 'gh'), 0o755);
-  const ran = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+  copyFileSync(join(bin, 'gh'), join(bin, 'gh.exe'));
+  const ran =() => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
   const requests: string[] = [];
   const server = createServer((req, res) => {
     requests.push(`${req.method} ${req.url}`);
@@ -1786,6 +1787,20 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
     await refused(['gh', 'pr', 'create', '-dt', 'feat(host): add a step.'], /title: a full stop at the end\. A commit title has no full stop/);
     await refused(['gh', 'issue', 'create', '-wthost: add a step.'], /title: a full stop at the end\. A title is a name/);
     await refused(['gh', 'pr', 'create', '-dzt', 'feat(host): add a step'], /title: can't read the title in `-dzt`\. .+\. Write --title on its own\.$/m);
+    // gh api on an issue or pull request path (#295): its title= field is checked too.
+    await refused(['gh', 'api', 'repos/o/r/issues', '-f', 'title=Broken'], /title: /);
+    await refused(['gh', 'api', '-X', 'PATCH', '/repos/o/r/pulls/5', '--field=title=feat(host): add a step.'], /title: a full stop at the end\. A commit title has no full stop/);
+    // gh by another name runs, so its title is checked (#295).
+    await refused(['gh.exe', 'issue', 'create', '-t', 'Broken'], /title: /);
+    await refused([join(bin, 'gh'), 'issue', 'create', '-t', 'Broken'], /title: /);
+    // The bot runs gh and git only (#295): a wrapper would hide the title, so it is refused
+    // before the token is asked for, and nothing runs.
+    for (const command of [['env', 'gh', 'issue', 'create', '-t', 'Broken'], ['/usr/bin/env', 'gh', 'issue', 'create', '-t', 'Broken'], ['sh', '-c', 'gh issue create -t Broken'], ['node', 'x']]) {
+      const r = await run(command);
+      assert.deepEqual([r.status, r.stderr], [1, `yokoten bot: runs gh and git only; run \`${command[0]}\` without the bot\n`], command.join(' '));
+      assert.deepEqual(requests, [], `no token was asked for: ${command.join(' ')}`);
+      assert.deepEqual(ran(), [], `nothing ran: ${command.join(' ')}`);
+    }
     // With no bot set up at all, the title is still the reason given.
     await refused(['gh', 'pr', 'create', '--title', 'feat(host): add a step.'], /full stop/, path);
     const missing = await run(['gh', 'pr', 'create', '--title', 'feat(host): add a step'], path);
@@ -1800,6 +1815,12 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
       ['gh', 'pr', 'new', '-t', 'feat(host): check the title'],
       ['gh', 'pr', 'create', '--fill'],
       ['gh', 'issue', 'list'],
+      // #295: gh by another name, -t=X as gh reads it, gh api with a good title, and other gh api calls unchecked.
+      ['gh.exe', 'issue', 'create', '-t', 'host: check the title'],
+      [join(bin, 'gh'), 'pr', 'create', '-t', 'feat(host): check the title'],
+      ['gh', 'pr', 'create', '-t=fix: good title'],
+      ['gh', 'api', 'repos/o/r/issues', '-f', 'title=host: check the title'],
+      ['gh', 'api', 'graphql', '-f', 'query=x', '-f', 'title=Broken'],
     ];
     for (const command of good) {
       const r = await run(command);
