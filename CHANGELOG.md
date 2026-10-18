@@ -10,7 +10,8 @@ All notable changes are listed here. The format follows
 
 - Every project's `AGENTS.md` has a "Names" section: whole words, at most 4, one letter only
   for a short life, verbs for functions, `is`/`has`/`can` for true or false, and a table of
-  hard and easy names. **Kit change:** projects get it on their next `init` (#110).
+  hard and easy names. **Kit change:** new projects get it from `init`;
+  a project that already has `AGENTS.md` must copy the section by hand for now (#110).
 - In GitHub Actions, `check` shows its findings on the pull request page. Each finding
   is an annotation on its line, and the job summary lists what, why and the fix. Notes
   are warnings. Output outside Actions does not change (#91).
