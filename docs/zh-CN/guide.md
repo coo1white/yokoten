@@ -249,6 +249,7 @@ kit 里 `init` 放的 workflow 暂时还是跑 `.yokoten/` 里的那份，等第
 |------|--------|
 | `install` | 把技能装进 `~/.claude/skills` 和 `~/.agents/skills`，agent 装进 `~/.claude/agents`，加上会话开头的 `doctor` hook 和用户级命令守卫，再建一个空的私有词表 |
 | `init [dir]` | 把这套做法放进一个项目。只加文件；已有的文件保留，并告诉你保留了哪些 |
+| `update [dir] [--write]` | 看看这个版本的 yokoten 会怎么改项目 `AGENTS.md` 里的核心规则。加上 `--write` 才真的替换；「This project」那部分原样保留。见[更新规则](#更新规则) |
 | `doctor [--session]` | 整条路：每一关、每一步，加上这台电脑还缺什么。`--session` 只说下一步，会话开头用 |
 | `check [--staged]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交。提交里不能有构建产物和二进制文件 |
 | `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的变更文件、milestone 和标签，见下面的「更新日志」。改到 CODEOWNERS 里列出的文件，必须写 `tier: A`。改动的文档里句子太长、改动的代码里名字难读、改动超过 400 行，都只提醒，不算失败 |
@@ -268,7 +269,7 @@ kit 里 `init` 放的 workflow 暂时还是跑 `.yokoten/` 里的那份，等第
 - `check --json`：`{ check, ok, findings, notes }`。`check` 是 `tree`、`staged`、`history`
   或 `pr`，说明查的是哪一种。`notes` 只是提醒，不会让检查失败。
 - `doctor --json`：`{ version, ok, selfTest, repo, stage, stages, next, findings, steps,
-  notes, server }`。加 `--session` 时只给下一步，以及私有词表缺失的提醒。
+  notes, server }`。加 `--session` 时只给下一步、私有词表缺失的提醒，以及核心规则落后时的 `core-rules`。
 - `hook --json`：在标准输出给出 `{ blocked, finding }`。AI 工具本身不用它：它们按各自的
   hook 协议，看退出码，再从标准错误读原因。
 - `hook --stop --json`：`{ blocked, stop, findings }`。`stop_hook_active` 为真时多一个 `skipped`。
@@ -365,6 +366,25 @@ Fixed
 `check --pr` 把 `changes/` 里新加的文件当成这个 PR 的更新日志，还会检查格式。直接改
 `CHANGELOG.md` 也照样能过，还没换过来的项目不受影响。`init` 会加上 `changes/README.md`，
 里面有格式说明。`changes/` 里的文件可以超过 7 个，因为每次发版都会清空。
+
+### 更新规则
+
+yokoten 每学到一个教训，核心规则就会改。`yokoten install` 会更新你电脑上的技能和 agent。
+项目里的 `AGENTS.md` 是你自己的文件，你不开口，它就不会变；`init` 也不会再去动它。
+
+`doctor` 会拿 `AGENTS.md` 里 `## This project` 上面的部分，跟你正在用的 yokoten
+自带的核心规则比。两边不一样，它就报 `core-rules`，会话开头也会提一句。
+
+`yokoten update` 只把要改的地方列出来，不写任何东西：哪几节变了，每一行是加（`+`）
+还是删（`-`）。跑 `yokoten update --write` 才会替换核心规则那部分。从 `## This project`
+往下的内容一个字节都不动。
+
+核心规则里你自己手改过的行，也会显示成 `-`，因为更新会把它换掉。所以先把你自己的规则
+挪到 `## This project` 下面。要是文件里没有这个标题，yokoten 分不清哪些是核心规则、
+哪些是你的，它会直接告诉你，不比也不写。
+
+`update` 要用装好的 yokoten 或者 clone 下来的仓库跑，别用 `.yokoten/` 里的那份：
+项目里那份没有带 kit，没东西可比。
 
 
 ## 核心规则

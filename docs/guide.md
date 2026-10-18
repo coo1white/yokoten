@@ -268,6 +268,7 @@ then run with no network and no global install.
 | `install` | Skills into `~/.claude/skills` and `~/.agents/skills`, agents into `~/.claude/agents`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file |
 | `init [dir]` | Puts the practices into a project. Adds files; keeps any that are already there and says so |
 | `init --github [--yes]` | Also adds the standard labels and a first milestone on GitHub, through `gh`. Without `--yes` it only says what it would make. It keeps every label and milestone that is there, and never deletes or renames one |
+| `update [dir] [--write]` | Shows what this yokoten changes in the core rules of the project's `AGENTS.md`. `--write` replaces them, and keeps the "This project" part as it is. See [Updating the rules](#updating-the-rules) |
 | `doctor [--session]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session |
 | `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries |
 | `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
@@ -288,7 +289,7 @@ value.
 - `check --json`: `{ check, ok, findings, notes }`. `check` is `tree`, `staged`,
   `history` or `pr`. A note never fails the check.
 - `doctor --json`: `{ version, ok, selfTest, repo, stage, stages, next, findings, steps,
-  notes, server }`. With `--session`, only the next step and the private-marks finding.
+  notes, server }`. With `--session`, only the next step, the private-marks finding, and `core-rules` when the rules are behind.
 - `hook --json`: `{ blocked, finding }` on stdout. The runtimes do not use it: they read
   the exit code and the reason on stderr, as their hook protocols say.
 - `hook --stop --json`: `{ blocked, stop, findings }`. With `stop_hook_active`, also `skipped`.
@@ -392,6 +393,27 @@ it says which file and why, and writes nothing.
 checks its form. A line in `CHANGELOG.md` still passes, for a project that has not moved
 yet. `init` adds `changes/README.md`, which shows the form. `changes/` may hold more
 than 7 files, since each release empties it.
+
+### Updating the rules
+
+When yokoten learns a lesson, its core rules change. `yokoten install` updates the
+skills and agents on your machine. Your project's `AGENTS.md` is your file, so it
+changes only when you ask. `init` never touches it again.
+
+`doctor` compares the part of `AGENTS.md` above `## This project` with the core rules
+of the yokoten you run. When they differ, it reports `core-rules`, and a session hears
+it too.
+
+`yokoten update` shows the change and writes nothing. It names the sections that
+changed, and lists each line it adds (`+`) or removes (`-`). `yokoten update --write`
+replaces the core part. Everything from `## This project` down stays byte for byte.
+
+A line you edited by hand in the core part shows as `-`, because the update replaces
+it. Move your own rules under `## This project` first. Without that heading, yokoten
+can't tell the core rules from yours. Then it says so, and compares and writes nothing.
+
+Run `update` from an installed yokoten or a clone, not from `.yokoten/`. The copy in
+your project has no kit to compare with.
 
 
 ## The core rules

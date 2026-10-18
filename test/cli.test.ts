@@ -386,6 +386,67 @@ test('init: safe defaults, Dependabot and a security policy; doctor lists the se
   for (const sw of [/private vulnerability reporting/, /secret scanning with push protection/, /Dependabot alerts/]) assert.match(doctor.stdout, sw);
 });
 
+// A lesson added to the kit's core rules reaches a project that already ran init (#120).
+test('update: doctor says when the core rules are behind; update previews, and --write keeps "This project" byte for byte (#120)', () => {
+  const sandbox = makeSandbox();
+  assert.equal(sandbox.run(['init']).status, 0);
+  const path = join(sandbox.repo, 'AGENTS.md');
+  const fresh = readFileSync(path, 'utf8');
+  const kitCore = fresh.slice(0, fresh.indexOf('## This project'));
+  assert.match(sandbox.run(['doctor']).stdout, /\n {2}ok +core-rules\n/, 'init wrote the kit, so it is up to date');
+  let result = sandbox.run(['update']);
+  assert.deepEqual([result.status, result.stdout], [0, 'yokoten update: the core rules in AGENTS.md are up to date with yokoten 0.1.0; nothing to change\n']);
+
+  // An older kit had no rule 12, and someone edited a line by hand. The project's own
+  // part has trailing spaces and a CRLF line end, to show it is kept byte for byte.
+  const own = '## This project\n\nBuild with `make`.  \n<!-- ours -->\r\n';
+  const old = kitCore.replace(/^\| 12 \|.*\n/m, '').replace('Plain English, close to', 'Plain words, close to') + own;
+  writeFileSync(path, old);
+  const doctor = sandbox.run(['doctor']);
+  assert.match(doctor.stdout, /MISSING core-rules: the core rules in AGENTS\.md are behind yokoten 0\.1\.0's, or were edited by hand \(2 line\(s\) added, 1 removed; sections changed: Core rules, Writing\); run `yokoten update` to see the change/);
+  assert.equal(doctor.status, 1);
+  assert.match(sandbox.run(['doctor', '--session']).stdout, /^yokoten: the core rules in AGENTS\.md are behind/m, 'a session hears it');
+  assert.ok(JSON.parse(sandbox.run(['doctor', '--json']).stdout).findings.some((f: { id: string }) => f.id === 'core-rules'));
+
+  // The preview shows each line, the hand edit too, and writes nothing.
+  result = sandbox.run(['update']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^yokoten update: the core rules in AGENTS\.md differ from yokoten 0\.1\.0's: 2 line\(s\) added, 1 removed; sections changed: Core rules, Writing\n/);
+  assert.match(result.stdout, /^- Plain words, close to ASD-STE100/m, 'the hand-edited line is shown as replaced');
+  assert.match(result.stdout, /^\+ Plain English, close to ASD-STE100/m);
+  assert.match(result.stdout, /^\+ \| 12 \| Decisions are written down once/m);
+  assert.match(result.stdout, /Nothing was written\. Run `yokoten update --write` to write it\.\n$/);
+  assert.equal(readFileSync(path, 'utf8'), old, 'the preview writes nothing');
+
+  // --write replaces the core part only; a second run has nothing to do.
+  result = sandbox.run(['update', '--write']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `yokoten update: replaced the core rules in AGENTS.md with yokoten 0.1.0's: 2 line(s) added, 1 removed; sections changed: Core rules, Writing. "## This project" and below are unchanged\n`);
+  assert.equal(readFileSync(path, 'utf8'), kitCore + own);
+  assert.match(sandbox.run(['update']).stdout, /up to date/);
+  assert.match(sandbox.run(['doctor']).stdout, /\n {2}ok +core-rules\n/);
+
+  // Line ends do not count: a CRLF checkout is up to date.
+  writeFileSync(path, kitCore.replaceAll('\n', '\r\n') + own);
+  assert.match(sandbox.run(['update']).stdout, /up to date/);
+
+  // Without the heading, doctor can't tell the core rules from the project's: a note, never a guess.
+  writeFileSync(path, '# our own rules\n');
+  assert.match(sandbox.run(['doctor']).stdout, /\n {2}note +core-rules: can't compare the core rules in AGENTS\.md: AGENTS\.md has no `## This project` heading/);
+  assert.doesNotMatch(sandbox.run(['doctor', '--session']).stdout, /core rules/);
+  result = sandbox.run(['update', '--write']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^yokoten update: can't compare AGENTS\.md with the kit: .*Nothing was written/);
+  assert.equal(readFileSync(path, 'utf8'), '# our own rules\n');
+
+  rmSync(path);
+  assert.doesNotMatch(sandbox.run(['doctor']).stdout, /core-rules/, 'the road asks for AGENTS.md');
+  result = sandbox.run(['update']);
+  assert.deepEqual([result.status, result.stderr], [1, 'yokoten update: no AGENTS.md here; nothing was written. Run `yokoten init` to add one\n']);
+  assert.equal(sandbox.run(['update', '--force']).status, 1, 'an unknown option is refused');
+  assert.match(sandbox.run(['explain', 'core-rules']).stdout, /^core-rules: the core rules in AGENTS\.md/);
+});
+
 // The road (record 0004). A session hears three lines about one step; the marks file is
 // set so that the private-marks note does not add a fourth.
 test('doctor --session: exactly three lines, about the first step of the first stage not done', () => {

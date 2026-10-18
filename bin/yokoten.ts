@@ -19,7 +19,7 @@ import { type Action, judge } from '../src/run/hook.ts';
 import { doctor } from '../src/setup/doctor.ts';
 import { explain, explainLines, ids } from '../src/setup/explain.ts';
 import { VERSION } from '../src/setup/files.ts';
-import { init } from '../src/setup/init.ts';
+import { init, updateCoreRules } from '../src/setup/init.ts';
 import { install } from '../src/setup/install.ts';
 import { setUpPlanning } from '../src/setup/plan.ts';
 
@@ -30,6 +30,9 @@ const HELP = `yokoten ${VERSION}
   yokoten init --github [--yes]
                              also the standard labels and a first milestone on GitHub, through
                              gh; without --yes it only says what it would make
+  yokoten update [dir] [--write]
+                             the core rules in a project's AGENTS.md: shows what this yokoten
+                             changes; --write replaces them and keeps the "This project" part
   yokoten doctor [--session] the road: where this project is and its next step (--session:
                              only the next step), and what this machine is missing
   yokoten check [--staged]   layout, privacy and lead-only files (--staged: the next commit)
@@ -392,6 +395,15 @@ function main(): number | Promise<number> {
       const planning = setUpPlanning(ghIn(root), options.flags.has('--yes'));
       print(planning.lines, planning.ok ? process.stdout : process.stderr);
       return planning.ok ? 0 : 1;
+    }
+    case 'update': {
+      // Its own command, not an init flag: init promises to add only, never to overwrite (#120).
+      const options = parse({ flags: ['--write'], positional: 1 });
+      if (typeof options === 'string') return usage(options);
+      const dir = resolve(options.positional[0] ?? '.');
+      const { ok, lines } = updateCoreRules(rootOf(dir) ?? dir, { write: options.flags.has('--write') });
+      print([`yokoten update: ${lines[0]}`, ...lines.slice(1)], ok ? process.stdout : process.stderr);
+      return ok ? 0 : 1;
     }
     case 'bot':
       return bot(args.slice(args.indexOf('--') === -1 ? 0 : args.indexOf('--') + 1));
