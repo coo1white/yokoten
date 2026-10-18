@@ -138,12 +138,21 @@ export function checkChanged(root: string, { config, env }: { config: Config; en
   return problems;
 }
 
+/** Whether this clone is shallow: git holds only the newest commits (CI's default checkout). */
+const isShallow = (root: string): boolean => git(root, ['rev-parse', '--is-shallow-repository']).trim() === 'true';
+
+/** What `check --history` reports in a shallow clone, in place of a scan (#266). */
+const shallowHistory = (): Finding =>
+  finding('shallow-history', "this clone is shallow, so the history check can't see old commits", 'use `fetch-depth: 0` in actions/checkout, or run `git fetch --unshallow`, then run it again');
+
 /**
  * How many commits on every branch record a time zone other than UTC. History can't be
  * changed without a force push, which is the owner's call, so this is a count to know,
- * not a problem that fails the check.
+ * not a problem that fails the check. A shallow clone can't count them: 0, and
+ * `checkHistory` says why.
  */
 export function historyTimeZones(root: string): number {
+  if (isShallow(root)) return 0;
   return git(root, ['log', '--all', '--format=%ad|%cd', '--date=format:%z'])
     .split('\n')
     .filter((line) => line && line.split('|').some((zone) => notUtc(` ${zone}`))).length;
@@ -152,9 +161,11 @@ export function historyTimeZones(root: string): number {
 /**
  * The privacy check over every commit on every branch: what was ever committed, plus
  * author and committer emails and commit messages. Run it before a private repo goes
- * public; a file deleted later is still in the history.
+ * public; a file deleted later is still in the history. A shallow clone can't see the
+ * older commits, so it is not scanned: one finding says so (#266).
  */
 export function checkHistory(root: string, { config, env }: { config: Config; env: Env }): Finding[] {
+  if (isShallow(root)) return [shallowHistory()];
   // The same hit in several commits is reported once.
   const problems = new Map<string, Finding>();
   const add = (found: Finding[]) => {

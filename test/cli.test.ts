@@ -330,6 +330,42 @@ test('check --history: finds what a later commit deleted, and a personal author 
   assert.match(r.stderr, /\(author\/committer\):1: an email/);
 });
 
+test('check --history: a shallow clone fails with one finding, never "every commit" (#266)', () => {
+  const sandbox = makeSandbox();
+  const token = `${'gh'}p_${'x7Y2k9'.repeat(6)}`;
+  sandbox.write('notes.md', `token ${token}\n`);
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'add notes');
+  sandbox.git('rm', '-q', 'notes.md');
+  sandbox.git('commit', '-qm', 'remove notes');
+  // A full clone finds the secret a later commit deleted.
+  const full = join(sandbox.home, 'full');
+  const shallow = join(sandbox.home, 'shallow');
+  spawnSync('git', ['clone', '-q', `file://${sandbox.repo}`, full], { env: sandbox.env });
+  spawnSync('git', ['clone', '-q', '--depth', '1', `file://${sandbox.repo}`, shallow], { env: sandbox.env });
+  let result = sandbox.run(['check', '--history'], { cwd: full });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /notes\.md @ blob \w+:1: a secret \(GitHub token\)/);
+  // The shallow clone (actions/checkout's default) is not scanned, and says why.
+  result = sandbox.run(['check', '--history'], { cwd: shallow });
+  assert.equal(result.status, 1, result.stdout);
+  assert.ok(!/every commit/.test(result.stdout + result.stderr), result.stdout);
+  assert.match(result.stderr, /1 problem\(s\)\n- this clone is shallow, so the history check can't see old commits\. .+\. Use `fetch-depth: 0` in actions\/checkout, or run `git fetch --unshallow`/);
+  assert.ok(!result.stderr.includes('notes.md'), 'nothing was scanned');
+  result = sandbox.run(['check', '--history', '--json'], { cwd: shallow });
+  assert.equal(result.status, 1);
+  const out = JSON.parse(result.stdout);
+  assert.equal(out.ok, false);
+  assert.deepEqual(out.findings.map((f: { id: string }) => f.id), ['shallow-history']);
+  assert.deepEqual(out.notes, []);
+  // In GitHub Actions: an error annotation and a row in the job summary.
+  const summary = join(sandbox.home, 'summary.md');
+  result = sandbox.run(['check', '--history'], { cwd: shallow, extra: { GITHUB_ACTIONS: 'true', GITHUB_STEP_SUMMARY: summary } });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /^::error title=yokoten shallow-history::.*this clone is shallow/m);
+  assert.match(readFileSync(summary, 'utf8'), /1 problem\n[^]*shallow-history[^]*this clone is shallow/);
+});
+
 test('init: adds the practices, keeps what is there, and doctor goes on to stage 4', () => {
   const sandbox = makeSandbox();
   sandbox.write('AGENTS.md', '# our own rules\n');
