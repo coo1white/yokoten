@@ -14,7 +14,7 @@ import { agentHooks, machineChecks, serverChecks } from '../src/setup/doctor.ts'
 import { explain, ids } from '../src/setup/explain.ts';
 import { ROAD, stepFinding } from '../src/setup/road.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
-import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, ownersOf, parseCodeOwners, largeDiff, longSentenceNote, longSentences, type PullRequest } from '../src/rules/pr.ts';
+import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, ownersOf, parseCodeOwners, largeDiff, longSentenceNote, longSentences, type PullRequest } from '../src/rules/pr.ts';
 
 test('glob: a slash anchors at the root, no slash matches in any folder', () => {
   const m = (g: string, p: string) => matcher([g])(p);
@@ -305,6 +305,18 @@ test('pull request: an area outside the configured list fails; no list lets any 
   assert.equal(problems.length, 1);
   assert.match(formatFinding(problems[0]), /the area `site` is not in yokoten\.json "areas"\. .+\. Use one of: kit\.$/);
   assert.deepEqual(checkPullRequest({ ...goodPr(), title: 'feat(site): a page' }, DEFAULTS), []);
+});
+
+test('pull request title: one rule for check --pr and the bot (#117)', () => {
+  const config = { areas: ['host'] };
+  assert.deepEqual(checkPullRequestTitle('feat(host): check the title', config), []);
+  const bad = ['feat(guard): a step', `feat(host): ${'a'.repeat(62)}`, 'feat(host): a step.', 'feat(host): a step (#1)', 'Add a step'];
+  for (const title of bad) {
+    const problems = checkPullRequestTitle(title, config);
+    assert.equal(problems.length, 1, title);
+    assert.equal(problems[0].id, 'pr-title');
+    assert.deepEqual(checkPullRequest({ ...goodPr(), title }, { ...DEFAULTS, ...config }), problems, 'checkPullRequest gives the same title findings');
+  }
 });
 
 test('config: yokoten\'s own areas cover its open work', () => {

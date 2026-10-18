@@ -8,6 +8,10 @@ All notable changes are listed here. The format follows
 
 ### Added
 
+- `yokoten bot` checks the title before `gh issue create`, `gh issue edit`, `gh pr create`
+  or `gh pr edit` runs. It uses the rules of `check --issue` and the title part of
+  `check --pr`. A bad title is refused with what, why and the fix, and nothing is sent.
+  A command with no title passes; CI still checks it (#117).
 - `check --pr` notes hard-to-read names on the lines a pull request adds to TypeScript
   and JavaScript files. A one-letter name used over more than 10 lines, or exported, is
   `name-short`; a name of more than 4 words is `name-long`. Notes never fail CI (#111).
