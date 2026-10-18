@@ -10,6 +10,7 @@ import { test } from 'node:test';
 import { annotation, annotations, appJwt, botConfig, botEnv, type Gh, installationToken, type Label, readCommandTitle, readPlanning, readServer, repoOf, type ServerSettings, stepSummary, type Unread } from '../src/host/github.ts';
 import { DEFAULTS } from '../src/rules/config.ts';
 import { checkCommand } from '../src/rules/guards.ts';
+import { checkIssueTitle, checkPullRequestTitle } from '../src/rules/pr.ts';
 import { doctor } from '../src/setup/doctor.ts';
 import { road, ROAD, serverChecks, stepFinding } from '../src/setup/road.ts';
 import { LABELS, pickNewMilestone, setUpPlanning } from '../src/setup/plan.ts';
@@ -113,6 +114,44 @@ test('command title: every spelling gh takes for create and edit is read (#279)'
   assert.equal(read('gh -R issue pr create --title a')?.kind, 'pr', 'the value of -R is not the noun');
   assert.equal(read('gh issue --body create view --title a'), null, 'the value of --body is not the verb');
   for (const line of ['gh -R o/r issue view --title a', 'gh --repo o/r repo create --title a', 'gh issue new -- --title a', 'gh -R o/r']) assert.equal(read(line), null, line);
+});
+
+test('command title: short flags run together are read as gh reads them (#290)', () => {
+  const read = (line: string) => readCommandTitle(line.split(' '));
+  const spellings: [string, 'issue' | 'pr', string[]][] = [
+    ['gh pr create -dt Broken', 'pr', []],
+    ['gh pr create -dtBroken', 'pr', []],
+    ['gh pr create -dlbug -t Broken', 'pr', ['bug']],
+    ['gh pr create -dl bug -dwt Broken', 'pr', ['bug']],
+    ['gh issue create -et Broken', 'issue', []],
+    ['gh issue create -t Broken', 'issue', []],
+    ['gh issue create -tBroken', 'issue', []],
+    ['gh issue -Ro/r create -wtBroken', 'issue', []],
+    ['gh pr edit 5 -t Broken -dfb -t', 'pr', []],
+  ];
+  for (const [line, kind, labels] of spellings) assert.deepEqual(read(line), { kind, title: 'Broken', labels }, line);
+  assert.equal(read('gh pr create -dt a -t b')?.title, 'b', 'the last one still wins');
+  assert.equal(read('gh pr create -df'), null, 'switches only: no title');
+  // A letter gh's create and edit don't have: the bot can't tell what the word holds, so it refuses.
+  assert.deepEqual(read('gh pr create -dzt Broken'), { kind: 'pr', unreadable: '-dzt' });
+  assert.deepEqual(read('gh issue create -zt Broken --title Fine'), { kind: 'issue', unreadable: '-zt' }, 'even with a readable title after it');
+  assert.deepEqual(read('gh issue edit 5 -dz'), { kind: 'issue', unreadable: '-dz' });
+  assert.equal(read('gh pr view -zt a'), null, 'only create and edit are checked');
+  assert.deepEqual(read('gh pr create --body -zt --title a'), { kind: 'pr', title: 'a', labels: [] }, 'the value of another option is not read');
+});
+
+test('command title: good titles in run-together short flags pass the title rules (#290)', () => {
+  const config = { ...DEFAULTS, areas: ['host'] };
+  const good = 'feat(host): check the title';
+  for (const command of [['gh', 'pr', 'create', '-dt', good], ['gh', 'pr', 'create', `-dt${good}`], ['gh', 'pr', 'create', '-dlbug', '-t', good]]) {
+    const found = readCommandTitle(command);
+    assert.ok(found && !('unreadable' in found), command.join(' '));
+    assert.deepEqual(checkPullRequestTitle(found.title, config), [], command.join(' '));
+  }
+  const issue = readCommandTitle(['gh', 'issue', 'create', '-wlbug', '-thost: check the title']);
+  assert.ok(issue && !('unreadable' in issue));
+  assert.deepEqual(issue.labels, ['bug']);
+  assert.deepEqual(checkIssueTitle(issue.title, config, issue.labels), []);
 });
 
 test('the bot is not a way around the guard', () => {

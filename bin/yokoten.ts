@@ -11,7 +11,7 @@ import { check, checkChanged, checkHistory, gitRoot, historyTimeZones, timeZoneN
 import * as claudeCode from '../src/agents/claude-code.ts';
 import * as codex from '../src/agents/codex.ts';
 import * as gemini from '../src/agents/gemini.ts';
-import { type Finding, formatFinding } from '../src/rules/message.ts';
+import { type Finding, finding, formatFinding } from '../src/rules/message.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
 import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, largeDiff, longSentenceNote, longSentences } from '../src/rules/pr.ts';
 import { closestWord, COMMANDS, commandHelp, findCommand, HELP_OPTIONS, commandList } from '../src/run/cli.ts';
@@ -144,11 +144,16 @@ function showOnPullRequest(name: string, problems: Finding[], notes: Finding[], 
 /**
  * Problems with the title a bot command is about to set (#117), by the rules CI uses:
  * `check --issue` for an issue, the title part of `check --pr` for a pull request. No
- * title in the command, no problems. It reads no token and no network.
+ * title in the command, no problems. A run-together short flag it can't read is a problem
+ * (#290), so the title is never sent unchecked. It reads no token and no network.
  */
 function checkCommandTitle(command: string[]): Finding[] {
   const found = readCommandTitle(command);
   if (!found) return [];
+  if ('unreadable' in found) {
+    const id = found.kind === 'issue' ? 'issue-title' : 'pr-title';
+    return [finding(id, `title: can't read the title in \`${found.unreadable}\``, 'write --title on its own', { why: 'the bot checks the title before it sends anything' })];
+  }
   const root = rootOf(process.cwd());
   const config = root ? loadConfig(root) : DEFAULTS;
   return found.kind === 'issue' ? checkIssueTitle(found.title, config, found.labels) : checkPullRequestTitle(found.title, config);
