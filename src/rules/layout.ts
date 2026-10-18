@@ -6,6 +6,7 @@ import { posix } from 'node:path';
 import type { Config } from './config.ts';
 import { matcher } from './config.ts';
 import { type Finding, finding } from './message.ts';
+import { CHANGES_DIR } from './pr.ts';
 
 /** Problems for a list of file paths (relative, forward slashes), one per folder over the cap. */
 export function checkLayout(files: string[], { layout }: Pick<Config, 'layout'>): Finding[] {
@@ -19,7 +20,8 @@ export function checkLayout(files: string[], { layout }: Pick<Config, 'layout'>)
       names.add(parts[depth]);
     }
   }
-  const exempt = new Set(layout.exempt.map((d) => posix.normalize(d).replace(/\/$/, '')));
+  // The change files wait in one folder until a release empties it (#132), so it may grow.
+  const exempt = new Set([CHANGES_DIR, ...layout.exempt.map((d) => posix.normalize(d).replace(/\/$/, ''))]);
   const problems: Finding[] = [];
   for (const [dir, names] of [...children].sort(([a], [b]) => a.localeCompare(b))) {
     if (exempt.has(dir) || names.size <= layout.maxEntries) continue;

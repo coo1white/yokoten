@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -14,7 +14,8 @@ import { agentHooks, machineChecks, serverChecks } from '../src/setup/doctor.ts'
 import { explain, ids } from '../src/setup/explain.ts';
 import { ROAD, stepFinding } from '../src/setup/road.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
-import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, ownersOf, parseCodeOwners, largeDiff, longSentenceNote, longSentences, type PullRequest } from '../src/rules/pr.ts';
+import { formatChanges, mergeChanges, parseChange, readChanges, writeChanges } from '../src/run/changelog.ts';
+import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, ownersOf, parseCodeOwners, largeDiff, longSentenceNote, longSentences, type PullRequest } from '../src/rules/pr.ts';
 
 test('glob: a slash anchors at the root, no slash matches in any folder', () => {
   const m = (g: string, p: string) => matcher([g])(p);
@@ -42,6 +43,12 @@ test('layout: a folder over the cap is reported once, the root never', () => {
 test('layout: an exempt folder may grow', () => {
   const records = Array.from({ length: 30 }, (_, i) => `docs/records/${i}.md`);
   assert.deepEqual(checkLayout(records, { layout: { maxEntries: 7, exempt: ['docs/records/'] } }), []);
+});
+
+test('layout: changes/ may grow, since a release empties it (#132)', () => {
+  const changes = Array.from({ length: 12 }, (_, index) => `changes/${index}-a.md`);
+  assert.deepEqual(checkLayout(changes, DEFAULTS), []);
+  assert.equal(checkLayout(changes.map((file) => `docs/${file}`), DEFAULTS).length, 1, 'only the changes/ folder at the root');
 });
 
 test('build output: build folders and binaries are refused, images, fonts and allowed paths pass (#56)', () => {
@@ -123,6 +130,103 @@ test('pull request: Closes, Fixes, Part of and Refs each link the issue (#82)', 
 test('pull request: docs, tests and CI need no changelog line; a reason lets code through (#47)', () => {
   assert.deepEqual(checkPullRequest({ ...goodPr(), files: ['docs/guide.md', 'test/a.test.ts', '.github/workflows/pr.yml'] }, DEFAULTS), []);
   assert.deepEqual(checkPullRequest({ ...goodPr(), files: ['src/a.ts'], body: `${goodPr().body}No changelog: a comment only\n` }, DEFAULTS), []);
+});
+
+test('pull request: a file in changes/ counts as the changelog entry (#132)', () => {
+  assert.deepEqual(checkPullRequest({ ...goodPr(), files: ['src/rules/pr.ts', 'changes/47-pr-standard.md'] }, DEFAULTS), []);
+  const problems = checkPullRequest({ ...goodPr(), files: ['src/rules/pr.ts', 'changes/README.md'] }, DEFAULTS);
+  assert.deepEqual(problems.map((problem) => problem.id), ['pr-changelog'], 'the README is not a change file');
+  assert.match(formatFinding(problems[0]), /no new file in changes\/\..*Add `changes\/<issue>-<slug>\.md`/);
+  assert.ok(isChangeFile('changes/1-a.md') && isChangeFile('changes/1-a.txt'));
+  assert.ok(!isChangeFile('changes/README.md') && !isChangeFile('changes/.keep') && !isChangeFile('changes/a/b.md') && !isChangeFile('docs/changes/a.md'));
+});
+
+// ---- Change files (#132) ----
+
+const CHANGELOG = [
+  '# Changelog',
+  '',
+  '## [Unreleased]',
+  '',
+  '### Added',
+  '',
+  '- An old entry,',
+  '  wrapped.',
+  '',
+  '### Fixed',
+  '',
+  '- An old fix.',
+  '',
+  '## [0.1.0] - 2026-10-18',
+  '',
+  '### Added',
+  '',
+  '- The first release.',
+  '',
+].join('\n');
+
+/** A folder with CHANGELOG.md and the change files given, by name. */
+function makeRepo(files: Record<string, string>): string {
+  const root = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  mkdirSync(join(root, 'changes'));
+  writeFileSync(join(root, 'CHANGELOG.md'), CHANGELOG);
+  writeFileSync(join(root, 'changes', 'README.md'), '# Change files\n\nNot a change.\n');
+  for (const [name, content] of Object.entries(files)) writeFileSync(join(root, 'changes', name), content);
+  return root;
+}
+
+test('changes: a file is a section, a blank line, then the entry; a bullet is added when missing', () => {
+  assert.deepEqual(parseChange('changes/1-a.md', 'Fixed\n\nA crash,\nwhen empty.\n'), { change: { file: 'changes/1-a.md', section: 'Fixed', lines: ['- A crash,', '  when empty.'] }, problems: [] });
+  assert.deepEqual(parseChange('changes/1-a.md', 'added\r\n\r\n- One.\r\n- Two.\r\n').change?.lines, ['- One.', '- Two.'], 'several bullets, CRLF, any case');
+  const bad = (content: string, file = 'changes/1-a.md') => parseChange(file, content).problems.map((problem) => `${problem.line ?? '-'}: ${problem.what}`);
+  assert.deepEqual(bad('Improved\n\nA thing.\n'), ['1: line 1 is not a section']);
+  assert.deepEqual(bad('Added\nA thing.\n'), ['2: line 2 is not blank']);
+  assert.deepEqual(bad('Added\n\n\n'), ['1: no entry after the section']);
+  assert.deepEqual(bad('Added\n'), ['1: no entry after the section']);
+  assert.deepEqual(bad('Added\n\nA thing.\n', 'changes/1-a.txt'), ['-: a change file is not Markdown']);
+  assert.equal(parseChange('changes/1-a.md', 'Improved\n\nsecret words\n').problems.every((problem) => !JSON.stringify(problem).includes('secret words')), true, 'the text is never printed back');
+});
+
+test('changes: the collector groups and orders the sections, and skips README.md', () => {
+  const root = makeRepo({ '132-b.md': 'Fixed\n\nB.\n', '9-a.md': 'Internal\n\nA.\n', '10-c.md': 'Added\n\nC.\n', '200-d.md': 'Fixed\n\nD.\n' });
+  const { changes, problems } = readChanges(root);
+  assert.deepEqual(problems, []);
+  assert.deepEqual(changes.map((change) => change.file), ['changes/9-a.md', 'changes/10-c.md', 'changes/132-b.md', 'changes/200-d.md'], 'by issue number');
+  assert.deepEqual(formatChanges(changes), ['### Added', '', '- C.', '', '### Fixed', '', '- B.', '- D.', '', '### Internal', '', '- A.']);
+  assert.deepEqual(readChanges(mkdtempSync(join(tmpdir(), 'yokoten-'))), { changes: [], problems: [] }, 'no changes/ folder');
+});
+
+test('changes: a bad file is refused, and nothing is written or deleted', () => {
+  const root = makeRepo({ '1-good.md': 'Added\n\nGood.\n', '2-bad.md': 'Improved\n\nBad.\n' });
+  const { changes, problems } = writeChanges(root);
+  assert.deepEqual(changes, []);
+  assert.deepEqual(problems.map((problem) => [problem.id, problem.file, problem.line]), [['change-file', 'changes/2-bad.md', 1]]);
+  assert.equal(readFileSync(join(root, 'CHANGELOG.md'), 'utf8'), CHANGELOG);
+  assert.ok(existsSync(join(root, 'changes', '1-good.md')) && existsSync(join(root, 'changes', '2-bad.md')));
+  // No Unreleased heading: refused too.
+  writeFileSync(join(root, 'changes', '2-bad.md'), 'Fixed\n\nNow good.\n');
+  writeFileSync(join(root, 'CHANGELOG.md'), '# Changelog\n\n## [0.1.0]\n');
+  assert.match(writeChanges(root).problems[0]?.what ?? '', /no `## \[Unreleased\]` heading/);
+  assert.ok(existsSync(join(root, 'changes', '1-good.md')));
+});
+
+test('changes: --write puts each entry after its section, deletes the files, and keeps released versions', () => {
+  const root = makeRepo({ '5-a.md': 'Added\n\nNew A.\n', '6-b.md': 'Changed\n\nNew B,\nwrapped.\n', '7-c.md': 'Internal\n\nNew C.\n', '8-d.md': 'Fixed\n\nNew D.\n' });
+  const { changes, problems } = writeChanges(root);
+  assert.deepEqual(problems, []);
+  assert.equal(changes.length, 4);
+  const written = readFileSync(join(root, 'CHANGELOG.md'), 'utf8');
+  const [unreleased, released] = written.split('## [0.1.0]');
+  assert.equal(`## [0.1.0]${released}`, CHANGELOG.slice(CHANGELOG.indexOf('## [0.1.0]')), 'released versions are not touched');
+  assert.equal(
+    unreleased,
+    ['# Changelog', '', '## [Unreleased]', '', '### Added', '', '- An old entry,', '  wrapped.', '- New A.', '', '### Changed', '', '- New B,', '  wrapped.', '', '### Fixed', '', '- An old fix.', '- New D.', '', '### Internal', '', '- New C.', '', ''].join('\n'),
+  );
+  assert.deepEqual(readChanges(root), { changes: [], problems: [] }, 'the used files are gone');
+  assert.ok(existsSync(join(root, 'changes', 'README.md')), 'the README stays');
+  // An empty Unreleased gets its first heading.
+  const merged = mergeChanges('# Changelog\n\n## [Unreleased]\n\n## [0.1.0]\n', changes.slice(0, 1));
+  assert.equal(merged, '# Changelog\n\n## [Unreleased]\n\n### Added\n\n- New A.\n\n## [0.1.0]\n');
 });
 
 test('CODEOWNERS: anchored, folder, glob, last match wins, comments, several owners', () => {
@@ -347,6 +451,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   add(longSentenceNote('a.md', { line: 3, words: 30 }));
   found.push(...nameNotes('a.ts', NAMED, new Set([1, 2])));
   add(timeZoneNote(2));
+  found.push(...parseChange('changes/1-a.md', 'Improved\n\nA thing.\n').problems);
   // The road and the machine, from an empty folder and an empty home.
   const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
   for (const step of ROAD) add(stepFinding(step, dir, { HOME: dir }));
