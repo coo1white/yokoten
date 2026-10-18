@@ -315,7 +315,8 @@ kit 里 `init` 放的 workflow 暂时还是跑 `.yokoten/` 里的那份，等第
 不全局安装，hook 和 CI 也能跑。
 
 项目原来的设置，`init` 会保住。有 `CLAUDE.md` 的，它在文件末尾加一行 `@AGENTS.md`：有
-`CLAUDE.md` 时，Claude Code 只通过这一行才会读 `AGENTS.md`。用 husky 或者别的
+`CLAUDE.md` 时，Claude Code 只通过这一行才会读 `AGENTS.md`。`.claude/CLAUDE.md` 也算：
+根目录没有 `CLAUDE.md` 的话，就在它末尾加 `@../AGENTS.md`。用 husky 或者别的
 `core.hooksPath` 的，它不换掉那个目录，而是把提交检查加进那里的 `pre-commit`。项目自己的
 hook 一行都不删，`init` 也会说改了哪个文件。
 

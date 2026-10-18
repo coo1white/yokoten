@@ -68,28 +68,47 @@ export function init(root: string): string[] {
 // ---- A project's own CLAUDE.md and commit hooks (#206) ----
 //
 // init adds; it never switches a project's setup off without saying so. Claude Code reads
-// AGENTS.md only when there is no CLAUDE.md, so a CLAUDE.md gets one line that imports it.
+// AGENTS.md only when there is no CLAUDE.md (at the root or in .claude/), so a CLAUDE.md
+// gets one line that imports it.
 // A project with its own hooks folder (husky, or another core.hooksPath) keeps it, and
 // that folder's pre-commit gets the yokoten check: one hooks folder, so nothing is turned off.
 
-/** A CLAUDE.md line that imports AGENTS.md (`@AGENTS.md`) or links to it. */
-const RULES_IMPORT = /(?:^|\s)@(?:\.\/)?AGENTS\.md\b|\]\((?:\.\/)?AGENTS\.md\)/m;
+/**
+ * The project CLAUDE.md files Claude Code reads instead of AGENTS.md, root first, with
+ * the import that reaches the root AGENTS.md from each. Claude Code resolves an `@`
+ * import relative to the file that holds it.
+ */
+const CLAUDE_FILES = [
+  { file: 'CLAUDE.md', rules: 'AGENTS.md', imports: /(?:^|\s)@(?:\.\/)?AGENTS\.md\b|\]\((?:\.\/)?AGENTS\.md\)/m },
+  { file: '.claude/CLAUDE.md', rules: '../AGENTS.md', imports: /(?:^|\s)@\.\.\/AGENTS\.md\b|\]\(\.\.\/AGENTS\.md\)/m },
+];
 
-/** True when Claude Code reads AGENTS.md here: there is no CLAUDE.md, or it imports AGENTS.md. */
-export function claudeReadsRules(root: string): boolean {
-  const path = join(root, 'CLAUDE.md');
-  return !existsSync(path) || RULES_IMPORT.test(readFileSync(path, 'utf8'));
+/** The project CLAUDE.md files that are here, root first. */
+const findClaudeFiles = (root: string) => CLAUDE_FILES.filter((entry) => existsSync(join(root, entry.file)));
+
+/**
+ * The CLAUDE.md file that should import AGENTS.md, with its import line, or null when
+ * Claude Code reads AGENTS.md here: there is no CLAUDE.md, or one of them imports it.
+ */
+export function findRulesGap(root: string): { file: string; line: string } | null {
+  const found = findClaudeFiles(root);
+  if (found.length === 0 || found.some((entry) => entry.imports.test(readFileSync(join(root, entry.file), 'utf8')))) return null;
+  return { file: found[0].file, line: `@${found[0].rules}` };
 }
 
-/** Add the AGENTS.md import to a CLAUDE.md that lacks it. Returns the report line, or null when nothing changed. */
+/** True when Claude Code reads AGENTS.md here: there is no CLAUDE.md, or one imports AGENTS.md. */
+export const claudeReadsRules = (root: string): boolean => findRulesGap(root) === null;
+
+/** Add the AGENTS.md import to the CLAUDE.md that lacks it. Returns the report line, or null when nothing changed. */
 function importRules(root: string): string | null {
-  if (claudeReadsRules(root)) return null;
-  const path = join(root, 'CLAUDE.md');
+  const gap = findRulesGap(root);
+  if (!gap) return null;
+  const path = join(root, gap.file);
   const text = readFileSync(path, 'utf8');
   const newline = text.includes('\r\n') ? '\r\n' : '\n';
-  const gap = text === '' ? '' : text.endsWith(newline) ? newline : newline + newline;
-  writeFileSync(path, `${text}${gap}<!-- Added by yokoten: Claude Code reads AGENTS.md only through this import. -->${newline}@AGENTS.md${newline}`);
-  return 'updated CLAUDE.md: it now reads AGENTS.md (Claude Code reads AGENTS.md only when CLAUDE.md imports it)';
+  const spacing = text === '' ? '' : text.endsWith(newline) ? newline : newline + newline;
+  writeFileSync(path, `${text}${spacing}<!-- Added by yokoten: Claude Code reads AGENTS.md only through this import. -->${newline}${gap.line}${newline}`);
+  return `updated ${gap.file}: it now reads AGENTS.md (Claude Code reads AGENTS.md only when a CLAUDE.md imports it)`;
 }
 
 /** How git runs commit hooks here: yokoten's .githooks, the project's own folder, or no git repo. */
