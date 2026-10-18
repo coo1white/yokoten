@@ -213,7 +213,9 @@ export function annotations(problems: Finding[], notes: Finding[], isPlaceAFile 
 }
 
 const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
-const cell = (text: string) => text.replace(/\r?\n/g, ' ').replace(/\|/g, '\\|').replace(/</g, '&lt;');
+// A backslash first, or `a\|b` would close the cell; `<` because the summary is HTML.
+const cell = (text: string) =>
+  text.replace(/\r?\n/g, ' ').replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/</g, '&lt;');
 const row = (f: Finding) => `| ${cell(place(f).replace(/: $/, ''))} | ${cell(f.what)} | ${cell(capitalize(f.why))} | ${cell(capitalize(f.fix))} |`;
 const TABLE_HEAD = ['| Place | What | Why | Fix |', '|-------|------|-----|-----|'];
 

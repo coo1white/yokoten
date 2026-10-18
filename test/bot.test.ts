@@ -257,6 +257,7 @@ test('step summary: a heading with the result, a table, notes apart, at most 50 
   assert.equal(stepSummary('yokoten check', [], []), '### yokoten check: ok\n\n');
   // GitHub renders the summary as HTML: a `<` in a cell would hide the text after it.
   assert.match(stepSummary('yokoten check', [{ id: 'email', what: 'an email', why: 'w', fix: 'f', file: '<draft>.md', line: 1 }], []), /\| &lt;draft>\.md:1 \|/);
+  assert.match(stepSummary('yokoten check', [{ id: 'email', what: 'a\\|b', why: 'w', fix: 'f' }], []), /\| a\\\\\\\|b \|/);
   const one = stepSummary('yokoten check --pr', [{ id: 'pr-title', what: 'title: a | b', why: 'why', fix: 'fix it' }], [{ id: 'long-sentence', what: 'long', why: 'w', fix: 'f', file: 'a.md', line: 2 }]);
   assert.equal(one, [
     '### yokoten check --pr: 1 problem',
