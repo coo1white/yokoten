@@ -91,6 +91,20 @@ function mergeMade(root: string, paths: string[], heads: string[]): string[] {
   return left;
 }
 
+/**
+ * The paths the merge removed that only the other side had: some MERGE_HEAD has the path,
+ * and neither the index nor HEAD does. The staged diff is against HEAD, so it never lists
+ * them; a worker who merges in a lead-only file and then moves or removes it would
+ * otherwise pass. One `git diff` per head, and one `git ls-tree` for HEAD.
+ */
+function mergeRemoved(root: string, heads: string[]): string[] {
+  if (heads.length === 0) return [];
+  const gone = new Set(heads.flatMap((head) => list(git(root, ['diff', '--cached', '--no-renames', '--diff-filter=D', '--name-only', '-z', '--end-of-options', head]))));
+  if (gone.size === 0) return [];
+  const inHead = new Set(list(git(root, ['ls-tree', '-r', '--name-only', '-z', 'HEAD'])));
+  return [...gone].filter((path) => !inHead.has(path));
+}
+
 /** A gitlink (a submodule's commit): no blob to read in this repo. */
 const GITLINK = '160000';
 
@@ -210,7 +224,9 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
     // bringing in main is not handing over main's edits to lead-only files or tests. A
     // move is checked at its old path too: moving AGENTS.md away removes it. A copy leaves it.
     const touched = [...new Set(files.flatMap((f) => (f.from === undefined || f.status !== 'R' ? [f.path] : [f.from, f.path])))];
-    for (const path of mergeMade(root, touched, mergeHeads(root))) {
+    // A file only the other branch had, removed during the merge, is the worker's too.
+    const heads = mergeHeads(root);
+    for (const path of [...new Set([...mergeMade(root, touched, heads), ...mergeRemoved(root, heads)])]) {
       const reason = checkEdit(path, { config, env });
       if (reason) problems.push(reason);
     }

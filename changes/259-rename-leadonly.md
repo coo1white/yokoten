@@ -6,4 +6,5 @@ and fix-task test checks on the old path of a move as well as the new one, so
 fix task can't move a test. A copy leaves the original, so only its new path is checked.
 Moving any other file still passes, and the lead can move lead-only files. The privacy
 check still reads only the new copy. In a merge, a move that the other branch made is not
-the worker's; a move made during the merge is (#259).
+the worker's; a move made during the merge is. So is removing, during a merge, a lead-only
+file that only the other branch had, by `git rm` or by moving it away (#259).

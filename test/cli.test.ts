@@ -492,6 +492,40 @@ test('check --staged: in a merge, a move is the worker\'s only if the merge made
   assert.match(result.stderr, /AGENTS\.md is lead-only/);
 });
 
+test('check --staged: in a merge, removing a lead-only file only the other side has is the worker\'s (#259)', () => {
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  // Main moves .github/a.yml to .github/b.yml; a worker merges main in, then runs `then`.
+  const merged = (then: string[][], extra: Record<string, string>) => {
+    const sandbox = makeSandbox();
+    sandbox.write('.github/a.yml', 'on: push\n');
+    sandbox.write('src/a.ts', 'a\n');
+    sandbox.git('add', '.');
+    sandbox.git('commit', '-qm', 'start');
+    sandbox.git('checkout', '-qb', 'work');
+    sandbox.write('src/a.ts', 'b\n');
+    sandbox.git('commit', '-qam', 'work');
+    sandbox.git('checkout', '-q', 'main');
+    assert.equal(sandbox.git('mv', '.github/a.yml', '.github/b.yml').status, 0);
+    sandbox.git('commit', '-qm', 'lead move');
+    sandbox.git('checkout', '-q', 'work');
+    assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', 'main').status, 0);
+    for (const args of then) assert.equal(sandbox.git(...args).status, 0, args.join(' '));
+    return sandbox.run(['check', '--staged'], { extra });
+  };
+  let result = merged([['mv', '.github/b.yml', 'c.yml']], worker);
+  assert.equal(result.status, 1, 'a worker moves the merged-in file away');
+  assert.match(result.stderr, /\.github\/b\.yml is lead-only/);
+  result = merged([['rm', '-qf', '.github/b.yml']], worker);
+  assert.equal(result.status, 1, 'a worker removes the merged-in file');
+  assert.match(result.stderr, /\.github\/b\.yml is lead-only/);
+  result = merged([['mv', '.github/b.yml', 'c.yml']], {});
+  assert.deepEqual([result.status, result.stderr], [0, ''], 'the lead moves it');
+  result = merged([['rm', '-qf', '.github/b.yml']], {});
+  assert.deepEqual([result.status, result.stderr], [0, ''], 'the lead removes it');
+  result = merged([], worker);
+  assert.deepEqual([result.status, result.stderr], [0, ''], 'a clean merge of the move');
+});
+
 test('check --staged: a staged entry git can\'t read fails, not passes as empty (#244)', () => {
   const sandbox = makeSandbox();
   sandbox.git('update-index', '--add', '--info-only', '--cacheinfo', `100644,${'1'.repeat(40)},ghost.md`);
