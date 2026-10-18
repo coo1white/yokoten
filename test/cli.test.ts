@@ -815,7 +815,7 @@ test('check --pr: reads the CI event, lists the changed files from git, notes lo
   const head = sandbox.git('rev-parse', 'HEAD').stdout.trim();
   const event = (body: string) => {
     const file = join(sandbox.home, 'event.json');
-    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
+    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
     return { GITHUB_EVENT_PATH: file };
   };
   const body = 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\n';
@@ -850,7 +850,7 @@ test('check --pr: a change file counts as the changelog entry, and its form is c
   const event = (head: string) => {
     const file = join(sandbox.home, 'event.json');
     const body = 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\n';
-    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
+    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
     return { GITHUB_EVENT_PATH: file };
   };
   let result = sandbox.run(['check', '--pr'], { extra: event(good) });
@@ -904,7 +904,7 @@ test('check --pr: CODEOWNERS comes from the base branch, so a pull request canno
   const event = (tier: string) => {
     const file = join(sandbox.home, 'event.json');
     const body = `tier: ${tier}\nCloses #1\nThis changes the kit.\n## Why\nx\n## What changed\nx\n## How tested\nx\n`;
-    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
+    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }, { name: `tier ${tier}` }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
     return { GITHUB_EVENT_PATH: file };
   };
   let r = sandbox.run(['check', '--pr'], { extra: event('B') });
@@ -933,7 +933,7 @@ test('check --pr: a large pull request gets a note, never a failure; lock files 
   const event = (head: string) => {
     const file = join(sandbox.home, 'event.json');
     const body = 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\nNo changelog: a test\n';
-    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
+    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
     return { GITHUB_EVENT_PATH: file };
   };
   let r = sandbox.run(['check', '--pr'], { extra: event(small) });
@@ -1062,7 +1062,7 @@ test('check --pr: notes hard-to-read names on added code lines, and the exit cod
   const head = project.git('rev-parse', 'HEAD').stdout.trim();
   const file = join(project.home, 'event.json');
   const body = 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\nNo changelog: a test\n';
-  writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
+  writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
   const r = project.run(['check', '--pr'], { extra: { GITHUB_EVENT_PATH: file } });
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /note: 2 hard-to-read name\(s\)\n- src\/cart\.js:1: "s" is used for 14 lines\. A reader must scroll back to learn what it holds\. Name what it is, e\.g\. "text"\.\n  docs: \S+#naming\n- src\/cart\.js:2: "loadTheWholeUserList" has 5 words, over 4\. /);
@@ -1084,7 +1084,7 @@ test('check --pr in GitHub Actions: notes are warnings, in their own section (#9
   sandbox.git('commit', '-qm', 'head');
   const head = sandbox.git('rev-parse', 'HEAD').stdout.trim();
   const file = join(sandbox.home, 'event.json');
-  writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body: 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\n', labels: [{ name: 'feat' }], milestone: null, base: { sha: base }, head: { sha: head } } }));
+  writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body: 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\n', labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: null, base: { sha: base }, head: { sha: head } } }));
   const summary = join(sandbox.home, 'summary.md');
   const r = sandbox.run(['check', '--pr'], { extra: { GITHUB_EVENT_PATH: file, GITHUB_ACTIONS: 'true', GITHUB_STEP_SUMMARY: summary } });
   assert.equal(r.status, 1, 'no milestone');

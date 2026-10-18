@@ -648,6 +648,12 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 文件来给自己降级。本地跑、没有 base 的时候，读工作区里的文件，提示里会说读的是哪一份。
 没有 CODEOWNERS 文件，就不查。
 
+审的人靠标签找 tier，所以 `check --pr` 也看标签。一个 PR 要有一个类型标签和一个 tier 标签。
+类型标签可以直接用标题里的类型（`feat`、`fix`、`docs`、`refactor`、`ci` 等），也可以用常见的叫法：
+`fix` 可以叫 `bug`、`hotfix` 或 `incident`，`feat` 可以叫 `feature` 或 `enhancement`，`docs` 可以叫
+`documentation`。tier 标签是 `tier A`、`tier B` 或 `tier C`，写成 `tier: B` 也行，而且要跟正文第一行的
+`tier:` 一样。少了哪个、哪个不对，各报一条，每条都说怎么改。
+
 服务器怎么设置，一步一步写在 [`docs/server.md`](../server.md)。
 
 ## 隐私

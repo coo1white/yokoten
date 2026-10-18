@@ -185,8 +185,8 @@ export const RULES = {
     docs: guide('the-core-rules'),
   },
   'pr-labels': {
-    rule: 'a pull request has a type label and a tier label (core rule 8)',
-    why: 'labels say what kind of change it is and how hard it is to take back',
+    rule: 'a pull request has one type label, and one tier label that matches the `tier:` line in its body (core rule 8)',
+    why: 'a reviewer filters on labels to find what kind of change it is and what needs the owner',
     check: PR_CHECK,
     docs: guide('the-core-rules'),
   },

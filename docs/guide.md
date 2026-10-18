@@ -713,6 +713,13 @@ request can't edit the file to lower its own tier. Without a base commit, on a l
 it reads the working tree. The message says which one it read. No CODEOWNERS file, no
 check.
 
+A reviewer finds the tier through labels, so `check --pr` also reads them. A pull request
+needs one type label and one tier label. A type label is a title type (`feat`, `fix`,
+`docs`, `refactor`, `ci` and the others) or a common name for one: `bug`, `hotfix` or
+`incident` for `fix`, `feature` or `enhancement` for `feat`, `documentation` for `docs`.
+The tier label is `tier A`, `tier B` or `tier C` (`tier: B` also counts). It must match
+the `tier:` line in the body. Each missing or wrong label gets its own message.
+
 Server setup, step by step: [`docs/server.md`](server.md).
 
 ## Privacy
