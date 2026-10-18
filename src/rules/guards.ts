@@ -34,7 +34,17 @@ export function checkEdit(path: string, { config, env }: { config: Config; env: 
  * folder the command runs in, by default this process's: a change to core.hooksPath reads
  * that repo's setting and hooks.
  */
-export function checkCommand(command: string, { env, config, cwd = process.cwd() }: { env: Env; config?: Pick<Config, 'commands'>; cwd?: string }): Finding | null {
+export function checkCommand(command: string, options: { env: Env; config?: Pick<Config, 'commands'>; cwd?: string }): Finding | null {
+  // The reader is not a full parser. Whatever goes wrong inside it, the command is refused,
+  // never let through: an error here must not open the guard.
+  try {
+    return checkEachCommand(command, options);
+  } catch {
+    return finding('unreadable-command', 'yokoten could not read this command', 'split it into simpler commands, one per call');
+  }
+}
+
+function checkEachCommand(command: string, { env, config, cwd = process.cwd() }: { env: Env; config?: Pick<Config, 'commands'>; cwd?: string }): Finding | null {
   for (const words of commandWords(command)) {
     const reason = checkGit(words, { env, config, cwd }) ?? checkHooksEnvironment(words) ?? checkPublish(words, env) ?? checkBlocked(words, config?.commands.block ?? {});
     if (reason) return reason;
@@ -560,6 +570,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
   let carried: string[] = []; // heredoc bodies a closed group pipes on, waiting for the command that reads them
   let cases = 0; // how many `case ... in` are open
   let isPattern = false; // reading a case pattern, up to its )
+  let alternative = 0; // words in the pattern since the last |: more than one is no pattern
 
   const endWord = () => {
     const ended = inWord ? word : null;
@@ -567,6 +578,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
     word = '';
     inWord = false;
     if (ended === null) return;
+    if (isPattern && ++alternative > 1) isPattern = false; // `a b)` is no pattern: read it as a command
     const isFirst = words.slice(0, -1).every((w) => KEYWORDS.has(w));
     if (ended === 'esac' && isFirst && cases > 0) {
       cases--;
@@ -578,6 +590,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
         endCommand();
         cases++;
         isPattern = true;
+        alternative = 0;
       }
     }
   };
@@ -626,13 +639,18 @@ function read(text: string, start: number, closer: string, depth: number, out: s
   while (index < text.length) {
     const character = text[index];
     const next = text[index + 1];
-    if (isPattern && (character === ')' || character === '|' || (character === '(' && !inWord && words.length === 0))) {
+    // A separator inside what looked like a pattern means it was none: the words so far, and
+    // every command before, are read as commands. Only words since the last cut are dropped.
+    const isCut = character === ';' || character === '&' || (character === '|' && next === '|') || ((character === '\n' || character === '(') && (inWord || words.length > 0));
+    if (isPattern && isCut) isPattern = false;
+    if (isPattern && (character === ')' || character === '|' || character === '(')) endWord();
+    if (isPattern && (character === ')' || character === '|' || character === '(')) {
       // A case pattern, `a|b)` or `(a)`, names values, not programs. The commands come after the ).
-      endWord();
       if (character === ')') {
         words = [];
         isPattern = false;
       }
+      alternative = 0;
       index++;
       continue;
     }
@@ -714,6 +732,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       // `;;`, `;&` and `;;&` end a case item: a pattern comes next.
       endCommand();
       isPattern = true;
+      alternative = 0;
       index += next === ';' && text[index + 2] === '&' ? 3 : 2;
     } else if (character === ')' || character === ';' || (character === '}' && !inWord && /[\s;]|^$/.test(next ?? ''))) {
       // A brace inside a word (${x}, a{b,c}) does not cut.

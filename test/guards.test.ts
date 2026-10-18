@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -556,4 +556,36 @@ test('bash: a heredoc in a group or subshell that pipes into a shell is commands
     '(( i = 1 << 2 ))',
   ]) allowed(command);
   assert.ok(isBlockedByList(`( (${py} x) )`), 'a subshell in a subshell');
+});
+
+// The review of #226: the reader must never fail open or lose a command.
+const force = ['git', 'push', '--for' + 'ce'].join(' ');
+
+test('bash: a command the reader cannot read is refused with exit 2, not let through (#226)', () => {
+  // So many commands in one shell string that reading them throws (too many to spread).
+  const tooBig = `bash -c "${':;'.repeat(300000)}"`;
+  assert.equal(checkCommand(tooBig, { env: {} })?.id, 'unreadable-command');
+  const hook = spawnSync(process.execPath, [join(import.meta.dirname, '..', 'bin', 'yokoten.ts'), 'hook'], {
+    cwd: tmpdir(),
+    input: JSON.stringify({ cwd: tmpdir(), hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: tooBig } }),
+    encoding: 'utf8',
+  });
+  assert.equal(hook.status, 2, hook.stderr);
+  assert.match(hook.stderr, /yokoten could not read this command/);
+  assert.match(hook.stderr, /split it into simpler commands/i);
+  // A long command that reads fine still passes.
+  allowed(`bash -c "${':;'.repeat(1000)}"`);
+});
+
+test('bash: what looked like a case pattern but holds a cut or two words is commands (#226)', () => {
+  for (const command of [
+    `( 'case' x in; ${force} )`,
+    `x=$(\\case a in; ${force})`,
+    `case x in a) echo;;\n${force} | x)\nesac`,
+    `case x in ${force})`,
+    `case x in a && ${force})`,
+  ]) blocked(command);
+  assert.ok(isBlockedByList(`case x in a b) ${py} x;; esac`), 'two words before ) are no pattern');
+  allowed('case x in a|b) echo;; esac');
+  allowed('case x in\n  a | b) echo;;\nesac');
 });

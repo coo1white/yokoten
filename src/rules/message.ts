@@ -78,6 +78,12 @@ export const RULES = {
     check: 'the tool-call guard stops a command whose program is on the list, with any folder or .exe, in any part of the command and after env, sudo, nice and other wrappers; the reason comes from yokoten.json',
     docs: guide('blocked-commands'),
   },
+  'unreadable-command': {
+    rule: 'a command the guard cannot read is refused, not let through',
+    why: 'the guard reads command text, and a command it cannot read could hide anything',
+    check: 'the tool-call guard refuses a command when reading it fails, with exit 2',
+    docs: guide('what-it-doesnt-do'),
+  },
   'test-file': {
     rule: 'a fix task changes code, never tests (core rule 4)',
     why: 'a fix task changes the code until the test passes, never the test',
