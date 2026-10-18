@@ -356,6 +356,20 @@ test('check --history: finds what a later commit deleted, and a personal author 
   assert.match(r.stderr, /\(author\/committer\):1: an email/);
 });
 
+test('check --history: names a moved file by its path in the commit that added it (#208)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('notes.md', `server ${[10, 1, 2, 3].join('.')}\n`);
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'add notes');
+  const added = sandbox.git('rev-parse', 'HEAD').stdout.slice(0, 8);
+  sandbox.git('mv', 'notes.md', 'moved.md');
+  sandbox.git('commit', '-qm', 'move notes');
+  const r = sandbox.run(['check', '--history']);
+  assert.equal(r.status, 1);
+  assert.ok(r.stderr.includes(`notes.md @ ${added}:1: an IP address`), r.stderr);
+  assert.ok(!r.stderr.includes('moved.md @'), 'that commit has no moved.md');
+});
+
 test('init: adds the practices, keeps what is there, and doctor goes on to stage 4', () => {
   const sandbox = makeSandbox();
   sandbox.write('AGENTS.md', '# our own rules\n');

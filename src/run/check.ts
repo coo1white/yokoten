@@ -202,28 +202,32 @@ export function checkHistory(root: string, { config, env }: { config: Config; en
     if (hits.length) found.set(sha, hits);
   }
   // Name each blob by the commit that added it (#208), read only when there is a hit.
-  const added = found.size ? firstCommits(root) : new Map<string, string>();
+  const added = found.size ? firstCommits(root) : new Map<string, { commit: string; path: string }>();
   for (const [sha, hits] of found) {
-    const commit = added.get(sha);
-    const file = `${blobs.get(sha)} @ ${commit ?? `blob ${sha.slice(0, 8)}`}`;
-    const hint = commit ? '' : `; \`git log --all --find-object=${sha.slice(0, 8)}\` names the commit`;
+    const first = added.get(sha);
+    const file = first ? `${first.path} @ ${first.commit}` : `${blobs.get(sha)} @ blob ${sha.slice(0, 8)}`;
+    const hint = first ? '' : `; \`git log --all --find-object=${sha.slice(0, 8)}\` names the commit`;
     add(hits.map((f) => ({ ...f, file, fix: f.fix + hint })));
   }
   return [...problems.values()];
 }
 
 /**
- * The commit that first added each blob, by its first 8 characters: one walk of every
- * branch, oldest first. A blob only a merge brings in is not found.
+ * The commit that first added each blob (its first 8 characters), and the blob's path in
+ * that commit: one walk of every branch, oldest first. A blob only a merge brings in is
+ * not found.
  */
-function firstCommits(root: string): Map<string, string> {
-  const added = new Map<string, string>();
+function firstCommits(root: string): Map<string, { commit: string; path: string }> {
+  const added = new Map<string, { commit: string; path: string }>();
   let commit = '';
-  for (const line of git(root, ['log', '--all', '--reverse', '--raw', '--no-abbrev', '--no-renames', '--format=commit %H']).split('\n')) {
+  // Plain paths: a raw line is ":old-mode new-mode old-sha new-sha status<TAB>path".
+  const log = git(root, ['-c', 'core.quotePath=false', 'log', '--all', '--reverse', '--raw', '--no-abbrev', '--no-renames', '--format=commit %H']);
+  for (const line of log.split('\n')) {
     if (line.startsWith('commit ')) commit = line.slice(7, 15);
     else if (line.startsWith(':')) {
-      const sha = line.split(' ')[3];
-      if (sha && !added.has(sha)) added.set(sha, commit);
+      const tab = line.indexOf('\t');
+      const sha = line.slice(0, tab).split(' ')[3];
+      if (sha && !added.has(sha)) added.set(sha, { commit, path: line.slice(tab + 1) });
     }
   }
   return added;
