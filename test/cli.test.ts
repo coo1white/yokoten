@@ -28,7 +28,8 @@ function makeSandbox() {
   git('init', '-q', '-b', 'main');
   git('config', 'user.name', 'Test');
   git('config', 'user.email', `1+test${at}users.noreply.github.com`);
-  const run = (args: string[], { input, cwd = repo, extra = {} }: { input?: string; cwd?: string; extra?: Record<string, string> } = {}) => spawnSync('node', [CLI, ...args], { cwd, env: { ...env, ...extra }, input, encoding: 'utf8' });
+  const run = (args: string[], { input, cwd = repo, extra = {}, timeout }: { input?: string; cwd?: string; extra?: Record<string, string>; timeout?: number } = {}) =>
+    spawnSync('node', [CLI, ...args], { cwd, env: { ...env, ...extra }, input, encoding: 'utf8', timeout });
   const write = (path: string, text: string) => {
     mkdirSync(dirname(join(repo, path)), { recursive: true });
     writeFileSync(join(repo, path), text);
@@ -272,6 +273,81 @@ test('check --staged: stops build output and binaries, lets images and allowed p
   sandbox.git('add', '.');
   r = sandbox.run(['check', '--staged']);
   assert.equal(r.status, 0, r.stderr);
+});
+
+test('check --staged: a submodule and a path with a colon pass, read by blob id (#244)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const head = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  // A submodule add, as git records it: a gitlink at mode 160000.
+  sandbox.git('update-index', '--add', '--cacheinfo', `160000,${head},sub`);
+  sandbox.write('2:notes.md', 'notes\n');
+  sandbox.git('add', '2:notes.md');
+  let result = sandbox.run(['check', '--staged']);
+  assert.equal(result.status, 0, result.stderr);
+  result = sandbox.run(['check', '--staged', '--json']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).check, 'staged');
+  // A pointer bump.
+  sandbox.git('commit', '-qm', 'sub');
+  sandbox.git('commit', '-q', '--allow-empty', '-m', 'next');
+  const next = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  sandbox.git('update-index', '--cacheinfo', `160000,${next},sub`);
+  result = sandbox.run(['check', '--staged']);
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('check --staged: a symlink turned into a file is checked for privacy (#244)', () => {
+  const sandbox = makeSandbox();
+  symlinkSync('a.md', join(sandbox.repo, 'link'));
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  rmSync(join(sandbox.repo, 'link'));
+  sandbox.write('link', `write to me${at}gmail.com\n`);
+  sandbox.git('add', 'link');
+  const result = sandbox.run(['check', '--staged']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /link:1: an email/);
+});
+
+test('check and the stop hook read a symlink as its link text, never its target (#244)', () => {
+  const sandbox = makeSandbox();
+  writeFileSync(join(dirname(sandbox.repo), 'outside.txt'), `write to me${at}gmail.com\n`);
+  symlinkSync('../outside.txt', join(sandbox.repo, 'out'));
+  symlinkSync('/dev/zero', join(sandbox.repo, 'zero'));
+  sandbox.git('add', '.');
+  const stop = () => sandbox.run(['hook', '--stop'], { input: JSON.stringify({ cwd: sandbox.repo, stop_hook_active: false }), timeout: 10000 });
+  let result = stop();
+  assert.deepEqual([result.status, result.stderr], [0, ''], 'staged, before the commit');
+  sandbox.git('commit', '-qm', 'links');
+  result = sandbox.run(['check'], { timeout: 10000 });
+  assert.equal(result.status, 0, result.stderr);
+  // A link whose text is itself an email is still caught.
+  symlinkSync(`me${at}gmail.com`, join(sandbox.repo, 'mail'));
+  sandbox.git('add', 'mail');
+  assert.match(stop().stderr, /mail:1: an email/);
+  assert.match(sandbox.run(['check'], { timeout: 10000 }).stderr, /mail:1: an email/);
+});
+
+test('check --staged: binary is decided from the bytes, not .gitattributes (#244)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('.gitattributes', 'yarn.lock -diff\n*.pbxproj binary\n');
+  sandbox.write('yarn.lock', 'left-pad@1.0.0:\n  version "1.0.0"\n');
+  sandbox.write('App.pbxproj', '// !$*UTF8*$!\n{\n}\n');
+  sandbox.git('add', '.');
+  let result = sandbox.run(['check', '--staged']);
+  assert.equal(result.status, 0, result.stderr);
+  // A NUL in the first 8000 bytes is binary; one after them is not, as git decides.
+  writeFileSync(join(sandbox.repo, 'tool'), Buffer.concat([Buffer.from('#!'), Buffer.alloc(1), Buffer.from('x\n')]));
+  writeFileSync(join(sandbox.repo, 'late.txt'), Buffer.concat([Buffer.alloc(8000, 'a'), Buffer.alloc(1)]));
+  sandbox.git('add', '.');
+  result = sandbox.run(['check', '--staged']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /tool: a binary file/);
+  assert.ok(!result.stderr.includes('late.txt'), result.stderr);
 });
 
 test('doctor: the no-build-output step looks at the tracked files (#56)', () => {
