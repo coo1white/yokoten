@@ -700,6 +700,26 @@ test('learn: the printed draft sends no terminal escape from the issue, shown as
   assert.match(text, /\/\/ {3}A check {2}\[31mred \[0m\./, 'a comment in the draft has a space for each');
 });
 
+test('learn: bidi controls from the issue are shown as \\uXXXX in the preview and the draft (positive control: raw ones fail)', () => {
+  // RLO and the isolates reorder what a reviewer sees ("trojan source"). Built by code, so
+  // this file holds none of them raw.
+  const bidi = [0x202e, 0x2066, 0x2067, 0x2068, 0x2069].map((code) => String.fromCharCode(code));
+  const raw = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
+  const title = `repo: tests break ${bidi.join('x')} end`;
+  const body = `## Fix\n\nA check ${bidi.join('')}.\n\n## Lesson\n\nKeep ${bidi[0]}out.`;
+  const incident = { ...incidentOf(body, title), labels: [] };
+  const draft = draftLesson(incident);
+  const text = formatDraft(incident, draft).join('\n');
+  assert.ok(!raw.test(text), 'no raw bidi control in the preview');
+  assert.ok(text.includes('repo: tests break \\u202ex\\u2066x\\u2067x\\u2068x\\u2069 end'), 'the preview shows each as \\uXXXX');
+  const root = mkdtempSync(join(tmpdir(), 'yokoten-learn-bidi-'));
+  writeDraft(root, draft);
+  for (const file of draft.files) assert.ok(!raw.test(readFileSync(join(root, file.path), 'utf8')), `no raw bidi control in ${file.path}`);
+  const lesson = readFileSync(join(root, draft.files[0].path), 'utf8');
+  assert.ok(lesson.includes('// A lesson from incident #12: repo: tests break \\u202ex\\u2066x'), 'a comment shows each as \\uXXXX text');
+  assert.ok(lesson.includes("  fix: 'A check \\u202e\\u2066\\u2067\\u2068\\u2069',"), 'a string escapes each');
+});
+
 test('learn: --write adds the draft\'s files and keeps a file that is there', () => {
   const root = mkdtempSync(join(tmpdir(), 'yokoten-learn-'));
   const draft = draftLesson(incidentOf('## Fix\n\nA check.'));
