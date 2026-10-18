@@ -1,7 +1,8 @@
 // The shape of the code, checked. A rule about structure that no test holds drifts.
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { readdirSync, readFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -320,4 +321,81 @@ test('docs: every install command in docs/facts.json is in the guides and README
   for (const [file, lists] of shown) {
     assert.deepEqual(missingCommands(facts, lists, readFileSync(join(ROOT, file), 'utf8')), [], `${file} lacks these commands from docs/facts.json; change both`);
   }
+});
+
+// The split tool (#152) moves tests one or two folders deeper. A test that imports a script
+// still finds it there; an import the tool cannot place stops it, with a list. The fixture
+// repo has a script and two test files named like the real ones, so the real table places them.
+function makeSplitFixture(files: Record<string, string>): string {
+  const root = mkdtempSync(join(tmpdir(), 'yokoten-split-'));
+  const hoisted = "const ROOT = 'root';\nconst CLI = 'cli';\nconst at = '@';\nfunction makeSandbox(): string {\n  return ROOT + CLI + at;\n}\n";
+  const all: Record<string, string> = {
+    'test/cli.test.ts': `import assert from 'node:assert/strict';\nimport { test } from 'node:test';\n\n${hoisted}\ntest('install: the helpers move', () => {\n  assert.equal(makeSandbox(), 'rootcli@');\n});\n`,
+    ...files,
+  };
+  for (const [path, text] of Object.entries(all)) {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), text);
+  }
+  return root;
+}
+
+function runSplit(root: string): { status: number | null; output: string } {
+  const result = spawnSync(process.execPath, [join(ROOT, 'scripts/split-tests.ts'), '--from', join(root, 'test'), '--out', join(root, 'split')], { encoding: 'utf8' });
+  return { status: result.status, output: result.stdout + result.stderr };
+}
+
+test('split tests: an import of ../scripts/ gets the extra ../ and the moved test runs (#152)', () => {
+  const root = makeSplitFixture({
+    'scripts/greet.ts': 'export function greet(name: string): string {\n  return `hello ${name}`;\n}\n',
+    'test/bot.test.ts': [
+      "import assert from 'node:assert/strict';",
+      "import { test } from 'node:test';",
+      "import { greet } from '../scripts/greet.ts';",
+      '',
+      "test('board sync: a static import of a script', () => {",
+      "  assert.equal(greet('board'), 'hello board');",
+      '});',
+      '',
+      "test('board sync: a dynamic import of a script', async () => {",
+      "  const module = await import('../scripts/greet.ts');",
+      "  assert.equal(module.greet('sync'), 'hello sync');",
+      '});',
+      '',
+    ].join('\n'),
+  });
+  const split = runSplit(root);
+  assert.equal(split.status, 0, split.output);
+  const moved = readFileSync(join(root, 'split/host/github/board.test.ts'), 'utf8');
+  assert.match(moved, /^\/\/ Tests for scripts\/greet\.ts\.\n/);
+  assert.match(moved, /^import \{ greet \} from '\.\.\/\.\.\/\.\.\/scripts\/greet\.ts';$/m);
+  assert.match(moved, /await import\('\.\.\/\.\.\/\.\.\/scripts\/greet\.ts'\)/);
+  // The child must not report to this test run, so it gets no NODE_TEST_CONTEXT.
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const run = spawnSync(process.execPath, ['--test', '--test-reporter=tap', 'split/**/*.test.ts'], { cwd: root, encoding: 'utf8', env });
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.match(run.stdout, /^# pass 3$/m);
+  assert.match(run.stdout, /^# fail 0$/m);
+});
+
+test('split tests: an import it cannot place stops it with a list, and nothing is written (#152)', () => {
+  const root = makeSplitFixture({
+    'test/bot.test.ts': [
+      "import { test } from 'node:test';",
+      "import { missing } from '../scripts/missing.ts';",
+      "import { packaged } from 'some-package';",
+      '',
+      "test('board sync: never runs', () => {",
+      '  missing(packaged);',
+      '});',
+      '',
+    ].join('\n'),
+  });
+  const split = runSplit(root);
+  assert.equal(split.status, 1, split.output);
+  assert.match(split.output, /imports this script cannot place/);
+  assert.match(split.output, /test\/bot\.test\.ts:2: missing from '\.\.\/scripts\/missing\.ts': no file scripts\/missing\.ts in the repo/);
+  assert.match(split.output, /test\/bot\.test\.ts:3: packaged from 'some-package': not node: and not a relative path/);
+  assert.ok(!existsSync(join(root, 'split')), 'a stopped split writes nothing');
 });

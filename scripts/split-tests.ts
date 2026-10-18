@@ -8,19 +8,24 @@
 // no row stops it, with a list: there is no silent default. Each new file gets only the
 // imports and declarations its tests use; a few shared ones move to test/helpers.ts. Test
 // bodies are copied byte for byte. The one change: a path string on a line with
-// `import.meta` gets one more `../` per folder deeper.
+// `import.meta`, or in `import('../…')`, gets one more `../` per folder deeper. Imports
+// are written again for each file: `node:` ones as they are, and a relative one (`../src/…`,
+// `../scripts/…`, any file in the repo outside test/) with one more `../` per folder deeper.
+// An import of anything else (a package, a file in test/, a file that is not there) stops
+// it, with a list.
 //
 // Run it once, on a fresh main, when no branch is open on test/:
 //   node scripts/split-tests.ts              rewrite test/
 //   node scripts/split-tests.ts --dry-run    print the report and the new tree, write nothing
 //   node scripts/split-tests.ts --out <dir>  write the new tree into <dir>, to check it
+//   node scripts/split-tests.ts --from <dir> read the test files from <dir>, not test/; the
+//                                            repo root is its parent (for the script's test)
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findDeclarations, type Token, tokenize } from '../src/run/names.ts';
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const TEST_DIR = join(ROOT, 'test');
+const DEFAULT_TEST_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'test');
 
 // Where each test goes: target file under test/, and the "<source file>:<prefix>" keys it
 // takes. The prefix is the test name up to its first `:` (the whole name if it has none).
@@ -54,6 +59,9 @@ const MAPPING: [string, string[]][] = [
   ['host/github/token.test.ts', ['bot:JWT', 'bot:token', 'bot:config', 'bot:repo', 'bot:env']],
   ['host/github/title.test.ts', ['bot:command title', 'bot:the bot is not a way around the guard', 'cli:bot']],
   ['host/github/output.test.ts', ['bot:annotations', 'bot:step summary']],
+  // scripts/board-sync.ts (PR #190) talks to GitHub's project board. test/ already holds 7
+  // entries, so a test/scripts/ folder would break the cap; it goes next to the host.
+  ['host/github/board.test.ts', ['bot:board sync']],
   ['setup/plan.test.ts', ['bot:planning', 'bot:milestone']],
   ['setup/road.test.ts', ['road:road']],
   ['setup/install.test.ts', ['cli:install']],
@@ -233,16 +241,22 @@ function readImport(tokens: Located[], file: string): ImportName[] {
   return names;
 }
 
-// A module as the repo names it: `src/run/names.ts` from `../src/run/names.ts` in test/.
-function canonicalModule(module: string, file: string): string {
-  if (module.startsWith('node:')) return module;
-  if (module.startsWith('../src/')) return module.slice(3);
-  throw new SplitError(`${file}: imports ${module}; only node: and ../src/ imports are moved`);
+// A module as the repo names it: `src/run/names.ts` from `../src/run/names.ts` in test/,
+// `scripts/board-sync.ts` from `../scripts/board-sync.ts`. Undefined, with the reason, for
+// an import this script cannot place: it never guesses.
+function canonicalModule(module: string, root: string): { module?: string; reason?: string } {
+  if (module.startsWith('node:')) return { module };
+  if (!module.startsWith('../')) return { reason: module.startsWith('./') ? 'a file in test/, which the split does not move' : 'not node: and not a relative path' };
+  const path = module.slice(3);
+  if (path.startsWith('../') || path.split('/').includes('..')) return { reason: 'a path that leaves the repo or goes back up' };
+  if (!existsSync(join(root, path))) return { reason: `no file ${path} in the repo` };
+  return { module: path };
 }
 
-// Reads a test file into its imports and top-level statements. `isSource` is false for a
-// file this script wrote, whose imports are not moved again.
-function parseFile(source: string, text: string, file: string, isSource = true): SourceFile {
+// Reads a test file into its imports and top-level statements. With `root`, imports are
+// named from the repo root, and the ones that cannot be go into `unplaced`. Without it (a
+// file this script wrote) imports are kept as they are.
+function parseFile(source: string, text: string, file: string, root?: string, unplaced: string[] = []): SourceFile {
   const tokens = locate(text, tokenize(text));
   const ranges: [number, number][] = [];
   let depth = 0;
@@ -279,7 +293,11 @@ function parseFile(source: string, text: string, file: string, isSource = true):
     const kind = own[0].text === 'import' ? 'import' : own[0].text === 'test' ? 'test' : 'declaration';
     const statement: Statement = { kind, source, index, line: own[0].line, text: raw, leading: raw.slice(0, raw.length - (end - lineStart)), code: text.slice(own[0].start, own.at(-1)?.end), declared: [], uses: usedNames(own), name: '', prefix: '', carried: '' };
     if (kind === 'import') {
-      for (const name of readImport(own, file)) imports.push({ ...name, module: isSource ? canonicalModule(name.module, file) : name.module });
+      for (const name of readImport(own, file)) {
+        const found = root === undefined ? { module: name.module } : canonicalModule(name.module, root);
+        if (found.module === undefined) unplaced.push(`  ${file}:${own[0].line}: ${name.local} from '${name.module}': ${found.reason}`);
+        else imports.push({ ...name, module: found.module });
+      }
     } else if (kind === 'test') {
       const name = stringValue(own[2]);
       if (name === undefined) throw new SplitError(`${file}:${own[0].line}: a test whose name is not a plain string`);
@@ -292,17 +310,29 @@ function parseFile(source: string, text: string, file: string, isSource = true):
   return { source, imports, statements };
 }
 
-// One more `../` (or one fewer, for a negative `delta`) in each path string on a line that
-// uses `import.meta`. Paths elsewhere are relative to the working folder, or are data.
+// The path strings that are relative to the test file itself: a `'../…'` string on a line
+// that uses `import.meta`, or the one in `import('../…')`. Paths elsewhere are relative to
+// the working folder, or are data.
+function modulePaths(tokens: Located[]): Set<Located> {
+  const metaLines = new Set(tokens.filter((token, index) => token.text === 'import' && tokens[index + 1]?.text === '.' && tokens[index + 2]?.text === 'meta').map((token) => token.line));
+  const isUp = (token: Located | undefined) => token?.kind === 'string' && /^(['"])\.\.(?:\/|\1)/.test(token.text);
+  const found = new Set(tokens.filter((token) => isUp(token) && metaLines.has(token.line)));
+  tokens.forEach((token, index) => {
+    if (token.text === 'import' && tokens[index + 1]?.text === '(' && isUp(tokens[index + 2])) found.add(tokens[index + 2]);
+  });
+  return found;
+}
+
+// One more `../` (or one fewer, for a negative `delta`) in each of the module paths above.
 function shiftPaths(text: string, delta: number): { text: string; shifted: number } {
   if (delta === 0) return { text, shifted: 0 };
   const tokens = locate(text, tokenize(text));
-  const metaLines = new Set(tokens.filter((token, index) => token.text === 'import' && tokens[index + 1]?.text === '.' && tokens[index + 2]?.text === 'meta').map((token) => token.line));
+  const paths = modulePaths(tokens);
   let result = '';
   let cursor = 0;
   let shifted = 0;
   for (const token of tokens) {
-    if (token.kind !== 'string' || !metaLines.has(token.line) || !/^(['"])\.\.(?:\/|\1)/.test(token.text)) continue;
+    if (!paths.has(token)) continue;
     const parts = token.text.slice(1, -1).split('/');
     const ups = parts.findIndex((part) => part !== '..');
     const upCount = ups === -1 ? parts.length : ups;
@@ -317,16 +347,17 @@ function shiftPaths(text: string, delta: number): { text: string; shifted: numbe
 
 const compareNames = (left: string, right: string) => left.toLowerCase().localeCompare(right.toLowerCase()) || (left < right ? 1 : -1);
 
-// node first, then the helpers, then src by layer, then by path.
+// node first, then the helpers, then src by layer, then the rest of the repo by path.
 function moduleRank(module: string): string {
   if (module.startsWith('node:')) return `0 ${module}`;
   if (module === HELPERS) return `1 ${module}`;
+  if (!module.startsWith('src/')) return `3 ${module}`;
   const layer = LAYERS.indexOf(module.split('/')[1]);
   return `2 ${layer === -1 ? LAYERS.length : layer} ${module}`;
 }
 
 // The import lines for a file `depth` folders below test/: node first, then the helpers,
-// then src by layer. Two or more names go one per line, so branches add separate lines.
+// then src by layer, then the rest. A repo path gets one `../` for test/ and one per folder. Two or more names go one per line, so branches add separate lines.
 function formatImports(names: ImportName[], depth: number): string {
   const byModule = new Map<string, ImportName[]>();
   for (const name of names) byModule.set(name.module, [...(byModule.get(name.module) ?? []), name]);
@@ -348,33 +379,42 @@ function formatImports(names: ImportName[], depth: number): string {
 }
 
 // The src module a test file is for: `test/run/check/pr.test.ts` is for `src/run/check.ts`.
-function moduleFor(target: string): { module: string; isPart: boolean } | undefined {
+function moduleFor(target: string, root: string): { module: string; isPart: boolean } | undefined {
   const path = target.replace(/\.test\.ts$/, '');
-  if (existsSync(join(ROOT, 'src', `${path}.ts`))) return { module: `src/${path}.ts`, isPart: false };
-  if (existsSync(join(ROOT, 'src', `${dirname(path)}.ts`))) return { module: `src/${dirname(path)}.ts`, isPart: true };
+  if (existsSync(join(root, 'src', `${path}.ts`))) return { module: `src/${path}.ts`, isPart: false };
+  if (existsSync(join(root, 'src', `${dirname(path)}.ts`))) return { module: `src/${dirname(path)}.ts`, isPart: true };
   return undefined;
 }
 
 function main() {
   const args = process.argv.slice(2);
   const isDryRun = args.includes('--dry-run');
-  const outAt = args.indexOf('--out');
-  const outArg = outAt === -1 ? undefined : args[outAt + 1];
-  const known = args.every((arg, index) => arg === '--dry-run' || index === outAt || (outAt !== -1 && index === outAt + 1));
-  if (!known || (outAt !== -1 && !outArg)) throw new SplitError('usage: node scripts/split-tests.ts [--dry-run] [--out <dir>]');
+  const values = new Map<string, string>();
+  let isKnown = true;
+  for (let index = 0; index < args.length; index++) {
+    if (args[index] === '--dry-run') continue;
+    if (['--out', '--from'].includes(args[index]) && args[index + 1] && !values.has(args[index])) values.set(args[index], args[++index]);
+    else isKnown = false;
+  }
+  if (!isKnown) throw new SplitError('usage: node scripts/split-tests.ts [--dry-run] [--out <dir>] [--from <dir>]');
 
+  const outArg = values.get('--out');
   const outDir = outArg === undefined ? undefined : resolve(outArg);
-  const entries = readdirSync(TEST_DIR, { withFileTypes: true });
+  const testDir = resolve(values.get('--from') ?? DEFAULT_TEST_DIR);
+  const root = dirname(testDir);
+  const entries = readdirSync(testDir, { withFileTypes: true });
   const folders = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
   if (folders.length) throw new SplitError(`test/ already has subfolders (${folders.join(', ')}): the split has run. Place new tests by hand, next to their module.`);
   const others = entries.filter((entry) => !entry.name.endsWith('.test.ts') && !STAYS.includes(entry.name)).map((entry) => entry.name);
   if (others.length) throw new SplitError(`test/ has files this script does not read: ${others.join(', ')}`);
   const sourceNames = entries.map((entry) => entry.name).filter((name) => !STAYS.includes(name)).sort();
   const files = new Map<string, SourceFile>();
+  const unplaced: string[] = [];
   for (const name of sourceNames) {
     const source = name.replace(/\.test\.ts$/, '');
-    files.set(source, parseFile(source, readFileSync(join(TEST_DIR, name), 'utf8'), `test/${name}`));
+    files.set(source, parseFile(source, readFileSync(join(testDir, name), 'utf8'), `test/${name}`, root, unplaced));
   }
+  if (unplaced.length) throw new SplitError(`imports this script cannot place. It moves node: imports and relative ones to a file in the repo outside test/:\n${unplaced.join('\n')}`);
   const sourceOrder = (source: string) => sourceNames.indexOf(`${source}.test.ts`);
   const byPlace = (left: Statement, right: Statement) => sourceOrder(left.source) - sourceOrder(right.source) || left.index - right.index;
 
@@ -503,7 +543,9 @@ function main() {
     return result.text;
   };
   for (const target of targets) {
-    const found = moduleFor(target.path);
+    // A file whose tests import a script tests that script, wherever it sits.
+    const scripts = [...new Set([...target.imports.values()].map((name) => name.module).filter((module) => module.startsWith('scripts/')))];
+    const found = scripts.length ? { module: scripts.join(', '), isPart: false } : moduleFor(target.path, root);
     const prefixes = [...new Set(target.tests.map((test) => test.prefix))];
     const header = found ? `// Tests for ${found.module}${found.isPart ? `: ${prefixes.join(', ')}` : ''}.` : `// Tests: ${prefixes.join(', ')}.`;
     if (!found) report.push(`  note: test/${target.path} has no src module of its own`);
@@ -529,7 +571,7 @@ function main() {
   const expected = allTests.map((test) => test.carried + test.text).sort();
   const found: string[] = [];
   for (const target of targets) {
-    const parsed = parseFile(target.path, target.text, `test/${target.path}`, false);
+    const parsed = parseFile(target.path, target.text, `test/${target.path}`);
     for (const statement of parsed.statements.filter((item) => item.kind === 'test')) {
       after.push(statement.name);
       found.push(shiftPaths(statement.text, -target.depth).text);
@@ -558,11 +600,11 @@ function main() {
     if (target.depth === 0) continue;
     for (const statement of [...target.declarations, ...target.tests]) {
       const tokens = locate(statement.text, tokenize(statement.text));
-      const metaLines = new Set(tokens.filter((token, index) => token.text === 'import' && tokens[index + 1]?.text === '.' && tokens[index + 2]?.text === 'meta').map((token) => token.line));
+      const paths = modulePaths(tokens);
       for (const token of tokens) {
         const line = statement.line + token.line - tokens[0].line;
         const isPath = token.kind === 'string' && /^['"`]?\.\.(?:\/|['"`]|$)/.test(token.text);
-        if (isPath && !metaLines.has(token.line)) leftNotes.push(`  test/${statement.source}.test.ts:${line}: ${token.text} left as it is (no import.meta on its line)`);
+        if (isPath && !paths.has(token)) leftNotes.push(`  test/${statement.source}.test.ts:${line}: ${token.text} left as it is (no import.meta on its line, not in import())`);
         if (token.text === 'import' && tokens[tokens.indexOf(token) + 2]?.text === 'meta' && !tokens.some((other) => other.line === token.line && other.kind === 'string' && /^['"]\.\./.test(other.text))) {
           leftNotes.push(`  test/${statement.source}.test.ts:${line}: import.meta with no path string on its line; check it by hand`);
         }
@@ -599,19 +641,17 @@ function main() {
   console.log(lines.join('\n'));
   if (isDryRun) return;
 
-  const base = outDir ?? TEST_DIR;
+  const base = outDir ?? testDir;
   if (outDir) {
     if (existsSync(outDir) && readdirSync(outDir).length) throw new SplitError(`${outDir} is not empty`);
-    for (const name of STAYS) {
-      mkdirSync(outDir, { recursive: true });
-      copyFileSync(join(TEST_DIR, name), join(outDir, name));
-    }
+    mkdirSync(outDir, { recursive: true });
+    for (const name of STAYS) if (existsSync(join(testDir, name))) copyFileSync(join(testDir, name), join(outDir, name));
   }
   for (const target of [helpers, ...targets]) {
     mkdirSync(dirname(join(base, target.path)), { recursive: true });
     writeFileSync(join(base, target.path), target.text);
   }
-  if (!outDir) for (const name of sourceNames) rmSync(join(TEST_DIR, name));
+  if (!outDir) for (const name of sourceNames) rmSync(join(testDir, name));
   console.log(`\nWrote ${targets.length + 1} files into ${outDir ?? 'test/'}.`);
 }
 
