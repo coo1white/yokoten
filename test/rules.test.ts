@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -601,6 +601,50 @@ test('learn: sections by heading or bold label, outside code blocks; one line pe
   assert.equal(summarize('1. First step:\n2. Second'), 'First step');
   // A quote in the issue stays inside the generated string.
   assert.match(draftLesson(incidentOf('## Fix\n\nIt\'s fixed with a \\ path.')).files[0].text, /fix: 'It\\'s fixed with a \\\\ path',/);
+});
+
+test('learn: issue text never becomes code in the draft (positive control: the payload is real code)', () => {
+  // JavaScript ends a line at U+2028, U+2029 and a lone CR too. A title or body could end a
+  // `//` comment there and run the rest when the draft's test imports lesson.ts.
+  const [lineSeparator, paragraphSeparator] = [String.fromCharCode(0x2028), String.fromCharCode(0x2029)];
+  const payload = "process.getBuiltinModule('node:fs').writeFileSync('PWNED','x');//";
+  const hostile = (end: string) => `${end}${payload}`;
+  const nasty = "*/ ${x} `tick` 'quote' \"dq\" \\ \u0000\u001b\u0085";
+  const title = `repo: tests break${hostile(lineSeparator)}${hostile(paragraphSeparator)}${hostile('\r')}`;
+  const body = [
+    '## What happened',
+    '',
+    `It broke.${hostile(lineSeparator)}`,
+    `Again.${hostile(paragraphSeparator)} ${nasty}`,
+    '',
+    '## Why it got through',
+    '',
+    `No check.${hostile('\r')}`,
+    '',
+    '## Fix',
+    '',
+    `A check.${hostile(lineSeparator)}${hostile(paragraphSeparator)}${hostile('\r')} ${nasty}`,
+    '',
+    '## Lesson',
+    '',
+    `Read twice.${hostile('\r\n')}`,
+  ].join('\n');
+  const root = mkdtempSync(join(tmpdir(), 'yokoten-learn-hostile-'));
+  const draft = draftLesson({ ...incidentOf(body, title), url: `https://example.com/issues/12${hostile(lineSeparator)}` });
+  writeDraft(root, draft);
+  // The draft parses, and importing it (as its own test does) runs no issue text.
+  const run = spawnSync(process.execPath, ['--input-type=module', '-e', "const { lesson } = await import('./lessons/incident-12/lesson.ts'); console.log(JSON.stringify(lesson));"], { cwd: root, encoding: 'utf8', timeout: 20_000 });
+  assert.ok(!existsSync(join(root, 'PWNED')), 'the payload did not run');
+  assert.equal(run.status, 0, run.stderr);
+  const lesson = readFileSync(join(root, 'lessons/incident-12/lesson.ts'), 'utf8');
+  assert.ok(!/[\r\u{2028}\u{2029}]/u.test(lesson), 'no line end but LF in the draft');
+  for (const line of lesson.split('\n').filter((line) => line.includes('writeFileSync'))) {
+    assert.match(line, /^(\/\/|  (what|why|fix): ')/, `the payload is only in a comment or a string: ${JSON.stringify(line)}`);
+  }
+  // A string keeps its text, but for CR and LF, which become a space as before.
+  const expected = Object.fromEntries(Object.entries(draft.finding).map(([key, value]) => [key, value.replace(/\r\n|[\n\r]/g, ' ')]));
+  assert.deepEqual(JSON.parse(run.stdout), expected, 'the strings keep their text');
+  assert.ok(draft.finding.fix.includes(payload) && draft.finding.what.includes(lineSeparator), 'the payload reached the draft as text');
 });
 
 test('learn: --write adds the draft\'s files and keeps a file that is there', () => {
