@@ -297,12 +297,23 @@ jobs:
 这个 action 先装好 Node，再跑 `check`；如果是 PR，还会接着跑 `check --pr`。查出来的问题
 会标在 PR 页面上，跟 yokoten 自己的 CI 一样。
 
+它认这三种事件：
+
+- **`push`**：跑 `check`。
+- **`pull_request`**：先跑 `check`，再跑 `check --pr`。
+- **`issues`**：先跑 `check`，再跑 `check --issue` 查 issue 标题。要在 `on:` 下面加上
+  `issues: types: [opened, edited]` 才会触发。
+
+`pull_request_target` 拉下来的是目标分支，不是 PR 本身的代码，所以 action 不跑
+`check --pr`，只留一条提示：PR 检查要用 `pull_request` 触发，不是 `pull_request_target`。
+
 - **版本要钉死。** 写完整的 commit SHA。写 `@main` 这种分支名，哪天内容变了你都不知道。
   等发布了正式版本，也可以写版本标签。
 - **checkout** 要加 `fetch-depth: 0`。`check --pr` 要比较 PR 的起点和最新提交，两个都得拉下来。
 - **权限**只要 `contents: read`。这个 action 不要令牌。
-- **参数**只有两个：`pr-check`（默认 `true`）和 `node-version`（默认 `22`，最低 22.18）。
-  不想查 PR 的格式，就写 `pr-check: false`。
+- **参数**有三个：`pr-check`（默认 `true`）、`issue-check`（默认 `true`）和 `node-version`
+  （默认 `22`，最低 22.18）。不想查 PR 的格式，就写 `pr-check: false`；不想查 issue 标题，
+  就写 `issue-check: false`。
 - **Node**：action 装的 Node，这个 job 后面的步骤也会用到。
 
 `check --pr` 按核心规则第 8 条检查 PR。还没按这条规则走的仓库，可以先写 `pr-check: false`。
