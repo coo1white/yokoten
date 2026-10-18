@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -418,6 +418,34 @@ test('check --staged: in a merge, a merged-in file is still checked for privacy 
   const result = sandbox.run(['check', '--staged'], { extra: { YOKOTEN_ROLE: 'worker' } });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /notes\.md:1: an email/);
+});
+
+test('check --staged: a malformed MERGE_HEAD is ignored, and the full role check runs (#246)', () => {
+  // A real merge of main, which changed AGENTS.md, then a line git would read as an option.
+  const sandbox = mergeSandbox();
+  sandbox.write('AGENTS.md', 'new rules\n');
+  sandbox.git('commit', '-qam', 'lead');
+  sandbox.git('checkout', '-q', 'work');
+  assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', 'main').status, 0);
+  const mergeHead = join(sandbox.repo, sandbox.git('rev-parse', '--git-path', 'MERGE_HEAD').stdout.trim());
+  appendFileSync(mergeHead, '--relative=zzz\n');
+  const result = sandbox.run(['check', '--staged'], { extra: { YOKOTEN_ROLE: 'worker' } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /AGENTS\.md is lead-only/);
+});
+
+test('check --staged: a MERGE_HEAD that descends from HEAD exempts nothing (#246)', () => {
+  // A fast-forward is a one-parent commit, not a merge: a stash of a lead-only edit named
+  // in MERGE_HEAD must not let that edit through.
+  const sandbox = mergeSandbox();
+  sandbox.write('AGENTS.md', 'my rules\n');
+  assert.equal(sandbox.git('stash', '-q').status, 0);
+  const stash = sandbox.git('rev-parse', 'stash@{0}').stdout.trim();
+  writeFileSync(join(sandbox.repo, sandbox.git('rev-parse', '--git-path', 'MERGE_HEAD').stdout.trim()), `${stash}\n`);
+  assert.equal(sandbox.git('checkout', 'stash@{0}', '--', 'AGENTS.md').status, 0);
+  const result = sandbox.run(['check', '--staged'], { extra: { YOKOTEN_ROLE: 'worker' } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /AGENTS\.md is lead-only/);
 });
 
 test('check --staged: a staged entry git can\'t read fails, not passes as empty (#244)', () => {
