@@ -604,6 +604,20 @@ test('learn: with no "Why it matters", the why starts from "Why it got through",
   assert.deepEqual([labelled.finding.why, labelled.todos], ['a leak', []]);
 });
 
+test('learn: an issue made from the kit\'s incident template drafts with no TODO (#169)', () => {
+  // GitHub writes an issue form as `### <label>`, a blank line, then the answer.
+  const template = readFileSync(join(import.meta.dirname, '..', 'kit/project/.github/ISSUE_TEMPLATE/incident.yml'), 'utf8');
+  const labels = [...template.matchAll(/^\s+label: (.+)$/gm)].map((match) => match[1].trim());
+  assert.ok(labels.includes('Fix'), 'the template has a "Fix" field');
+  const body = labels.map((label) => `### ${label}\n\n${label === 'Fix' ? 'The check reads JSON too, with a test' : `An answer for ${label}`}`).join('\n\n');
+  const draft = draftLesson(incidentOf(body));
+  assert.deepEqual(draft.todos, []);
+  assert.equal(draft.finding.fix, 'The check reads JSON too, with a test');
+  // Positive control: the same issue with "Fix" left empty gets a TODO.
+  const empty = draftLesson(incidentOf(body.replace('The check reads JSON too, with a test', '_No response_')));
+  assert.deepEqual(empty.todos, ['fix: the issue has no "Fix" section']);
+});
+
 test('learn: sections by heading or bold label, outside code blocks; one line per field', () => {
   const sections = readSections('Intro.\n**What happened:** a commit kept its time zone.\n### Fix and check\n\n- [ ] The commit check refuses it,\n  with a test.\n- [ ] init sets TZ.\n\n```sh\n# a comment\n```\n');
   assert.deepEqual(sections.map((section) => section.heading), ['What happened', 'Fix and check']);
