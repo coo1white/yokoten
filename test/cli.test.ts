@@ -56,6 +56,59 @@ test('hook: blocks with exit 2 and a reason, allows with exit 0', () => {
   assert.equal(s.run(['hook'], { input: 'not json' }).status, 0);
 });
 
+// The Stop event is shaped as Claude Code's hook docs show it (code.claude.com/docs/en/hooks#stop).
+test('hook --stop: sends the agent back once with the findings in changed files, never twice (#92)', () => {
+  const s = sandbox();
+  const stop = (active = false, extra?: Record<string, string>) =>
+    s.run(['hook', '--stop'], { input: JSON.stringify({ session_id: 'abc123', cwd: s.repo, hook_event_name: 'Stop', stop_hook_active: active, last_assistant_message: 'done' }), extra });
+  s.write('a.md', 'fine\n');
+  s.git('add', '.');
+  s.git('commit', '-qm', 'start');
+  // Clean: the turn ends.
+  let r = stop();
+  assert.deepEqual([r.status, r.stdout, r.stderr], [0, '', '']);
+  // A fake secret in a new, untracked file, written by a script the tool hook never saw.
+  const key = `${'AK'}IA${'Q7W3R9T2Y5Q7W3R9'}`;
+  s.write('scripts/out.txt', `${key}\n`);
+  r = stop();
+  assert.equal(r.status, 2, 'blocked');
+  assert.match(r.stderr, /^yokoten: 1 problem\(s\) in the changed files\. Fix them before you end the turn:\n- scripts\/out\.txt:1: a secret \(AWS access key id\)\. .+\. .+\.\n$/);
+  assert.ok(!r.stderr.includes(key), 'the secret is never printed');
+  assert.equal(r.stdout, '', 'stdout stays empty for the runtime');
+  // Already sent back once: the turn ends, whatever is found. No loop.
+  r = stop(true);
+  assert.deepEqual([r.status, r.stderr], [0, '']);
+  // Staged and changed files count too; a lead-only file only for a worker.
+  rmSync(join(s.repo, 'scripts'), { recursive: true });
+  s.write('a.md', `mail me${at}gmail.com\n`);
+  assert.match(stop().stderr, /a\.md:1: an email/);
+  s.write('a.md', 'fine\n');
+  s.write('AGENTS.md', '# rules\n');
+  s.git('add', 'AGENTS.md');
+  assert.equal(stop().status, 0);
+  r = stop(false, { YOKOTEN_ROLE: 'worker' });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /AGENTS\.md is lead-only/);
+  // --json: the same Finding shape.
+  r = s.run(['hook', '--stop', '--json'], { input: JSON.stringify({ cwd: s.repo, stop_hook_active: false }), extra: { YOKOTEN_ROLE: 'worker' } });
+  assert.equal(r.status, 2);
+  const out = JSON.parse(r.stdout);
+  assert.deepEqual([out.blocked, out.stop, out.findings[0].id], [true, true, 'lead-only']);
+  for (const k of ['what', 'why', 'fix']) assert.ok(out.findings[0][k]);
+  // Not a Stop event, or not a repo: the turn ends.
+  for (const input of ['not json', '', 'null', '[1]']) assert.equal(s.run(['hook', '--stop'], { input }).status, 0, input);
+  const away = mkdtempSync(join(tmpdir(), 'yokoten-away-'));
+  assert.equal(s.run(['hook', '--stop'], { input: JSON.stringify({ cwd: away }) }).status, 0);
+  // A broken config is an internal error: the turn ends, with one line on stderr.
+  s.write('yokoten.json', '{ broken');
+  r = s.run(['hook', '--stop'], { input: JSON.stringify({ cwd: s.repo }) });
+  assert.equal(r.status, 0);
+  assert.match(r.stderr, /^yokoten hook --stop: skipped, [^\n]+\n$/);
+  // --stop is for Claude Code's Stop event only.
+  assert.equal(s.run(['hook', '--stop', '--agent', 'codex'], { input: '{}' }).status, 1);
+  assert.equal(s.run(['hook', '--stop', '--commands-only'], { input: '{}' }).status, 1);
+});
+
 // Each call is shaped as the runtime's hook docs show it (#30): Codex's PreToolUse
 // (developers.openai.com/codex/hooks) and Gemini CLI's BeforeTool (geminicli.com/docs/hooks).
 test('hook --agent codex: shell calls by command, apply_patch by the files it touches (#30)', () => {
@@ -264,6 +317,8 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.match(r.stdout, /same TZ=UTC for agent sessions/);
   const settings = JSON.parse(readFileSync(join(s.repo, '.claude', 'settings.json'), 'utf8'));
   assert.equal(settings.hooks.PreToolUse.length, 1);
+  assert.match(r.stdout, /same the stop check/);
+  assert.deepEqual(settings.hooks.Stop, [{ hooks: [{ type: 'command', command: 'node "$CLAUDE_PROJECT_DIR/.yokoten/bin/yokoten.ts" hook --stop' }] }], 'the stop check, once (#92)');
   assert.equal(settings.env.TZ, 'UTC', 'agent commits record no time zone (#40)');
   assert.match(r.stdout, /same the Codex tool-call hook/);
   assert.match(r.stdout, /same the Gemini CLI tool-call hook/);
@@ -447,6 +502,7 @@ test('install: skills, agents and hooks once, the user\'s own files untouched', 
   assert.equal(settings.model, 'x');
   assert.equal(settings.hooks.SessionStart.length, 1);
   assert.equal(settings.hooks.PreToolUse.length, 2);
+  assert.equal(settings.hooks.Stop, undefined, "the stop check reads files, so it is per project, from init (#92)");
   // The installed copy runs on its own.
   const doctor = spawnSync('node', [join(s.home, '.local/share/yokoten/bin/yokoten.ts'), 'doctor', '--session'], { cwd: s.repo, env: s.env, encoding: 'utf8' });
   assert.equal(doctor.status, 0, doctor.stderr);

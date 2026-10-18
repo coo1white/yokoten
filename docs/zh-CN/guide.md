@@ -5,8 +5,8 @@
 ## 先认识几个词
 
 - **会话**：和 AI 编程助手（比如 Claude Code）的一次对话。
-- **hook**：AI 工具在固定时刻自动运行的小程序。yokoten 加了两个：一个在每条命令、每次改
-  文件之前运行（可以拦下来），一个在每次会话开头运行。
+- **hook**：AI 工具在固定时刻自动运行的小程序。yokoten 加了三个：一个在每条命令、每次改
+  文件之前运行（可以拦下来），一个在 AI 说完这一轮、准备停下时运行，一个在每次会话开头运行。
 - **提交检查**：每次 git 提交前运行的检查（`.githooks/pre-commit`）。
 - **CI**：GitHub 在每个 PR 上自动跑的检查。
 - **规则集（ruleset）**：GitHub 上保护分支或 tag 的设置，比如「没有审查不能合并」。
@@ -53,6 +53,7 @@ flowchart LR
 | | 什么时候跑 | 拦下什么 |
 |-|-----------|---------|
 | **1** | 每次工具调用之前 | 推 tag、强制推送、跳过检查；修复任务里改测试；worker 改规则 |
+| **1b** | Claude Code 的 AI 准备结束这一轮时 | 改过的文件里有没有个人信息、密钥，有没有改了不该改的文件（和提交检查一样）。有问题就把它叫回来改一次 |
 | **2** | 每次提交 | hook 看不到的：用 `sed` 或脚本改的文件、个人信息、超过 7 项的文件夹 |
 | **3** | 每个 PR | 关掉 hook 做出来的提交 |
 | **锁** | 服务器上 | 没经过你审查的合并、直接推 `main`、不是你打的发版 tag |
@@ -131,7 +132,7 @@ yokoten 能管住三种 AI 编程 agent，它们守的是同一套规矩。
 
 | Agent | yokoten 给它加了什么 |
 |---|---|
-| Claude Code | 工具调用拦截（钩子）、每次会话开头的带路提示、skills 和 agents |
+| Claude Code | 工具调用拦截（钩子）、收尾检查（钩子）、每次会话开头的带路提示、skills 和 agents |
 | Codex CLI | 工具调用拦截，写在 `.codex/hooks.json`。第一次用时 Codex 会请你确认信任项目钩子（`/hooks`） |
 | Gemini CLI | 工具调用拦截，写在 `.gemini/settings.json` |
 | 其他 agent | `AGENTS.md` 里的规则；还有提交检查，不管是谁提交的，坏提交都会被拦下 |
@@ -205,6 +206,7 @@ node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看走到哪一关，�
 | `check --issue` | 在 CI 里检查 issue 的标题，见下面的「issue 标题」 |
 | `check --history` | 对所有分支的每一个提交做隐私检查。私有仓库公开之前跑一遍 |
 | `hook [--agent <name>] [--commands-only]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool |
+| `hook --stop` | 收尾检查。从标准输入读 Claude Code 的 Stop 事件，检查改过的文件。见[收尾检查](#收尾检查) |
 | `explain [<id>]` | 讲一条规则或者路上的一步：它是什么、为什么要有、yokoten 怎么检查 |
 | `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。设置方法见 [server.md](../server.md#3-the-bot-a-github-app) |
 
@@ -219,6 +221,7 @@ node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看走到哪一关，�
   notes, server }`。加 `--session` 时只给下一步，以及私有词表缺失的提醒。
 - `hook --json`：在标准输出给出 `{ blocked, finding }`。AI 工具本身不用它：它们按各自的
   hook 协议，看退出码，再从标准错误读原因。
+- `hook --stop --json`：`{ blocked, stop, findings }`。`stop_hook_active` 为真时多一个 `skipped`。
 - `explain --json`：`{ found, id, kind, what, why, check, stage, standard }`；找不到时是
   `{ found: false, ids }`。
 
@@ -231,10 +234,36 @@ node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看走到哪一关，�
 |------|------|
 | 0 | 一切正常。`doctor --session` 永远是 0，保证会话总能开始 |
 | 1 | 查出了问题（`check`、`doctor`）、id 不存在（`explain`）、命令用法不对，或者 yokoten 自己出错 |
-| 2 | hook 拦下了这次工具调用，原因在标准错误里 |
+| 2 | hook 拦下了这次工具调用，或者收尾检查把 AI 叫回来了，原因在标准错误里 |
 
 这几个数字定下来就不改。守卫自己坏了会给 1，不给 2：这样你看得到它坏了，它也不会把每次
 工具调用都拦住。
+
+### 收尾检查
+
+工具调用 hook 只看命令。AI 用 `sed` 或脚本改了文件，它看不到。提交检查看得到，但要等到
+提交的时候。收尾检查更早：Claude Code 的 AI 说完这一轮、准备停下时就跑。
+
+```mermaid
+flowchart LR
+  S["AI 准备停下"] --> A{"已经被叫回来过一次？"}
+  A -- 是 --> E["停下"]
+  A -- 否 --> C{"改过的文件有问题？"}
+  C -- 没有 --> E
+  C -- 有 --> B["AI 拿到问题清单，回去改"]
+```
+
+- 只查改过的文件：已暂存的、没暂存的，还有 git 没忽略的新文件。用的是 `check --staged`
+  那一套：个人信息、密钥、不该改的文件。
+- 只叫回来一次。叫回来以后 Claude Code 会把 `stop_hook_active` 设成真，下次停下就一定放行，
+  不会来回打转。
+- 不读历史，不联网。
+- yokoten 自己出错时直接放行，只在标准错误里写一行。
+- 有个新文件你想留着、不想被查，就把它写进 `.gitignore`，或者写进 `yokoten.json` 的
+  `privacy.skip`。
+
+`init` 会把它写进 `.claude/settings.json`。`install` 不在用户级加它：它要读文件，所以由
+每个项目自己打开，跟工具调用 hook 里管文件的规则一样。
 
 提交检查不让你提交 `dist/`、`build/`、`out/` 文件夹里的文件，也不让你提交二进制文件。
 这些文件每次构建都会重新生成，二进制文件审查的人也看不懂。图片和字体（`png`、`jpg`、`gif`、

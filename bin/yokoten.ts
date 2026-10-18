@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
 import { botConfig, botEnv, ghIn, installationToken, readIssue, readPullRequest, repoOf } from '../src/host/github.ts';
-import { check, checkHistory, gitRoot, historyTimeZones, timeZoneNote } from '../src/run/check.ts';
+import { check, checkChanged, checkHistory, gitRoot, historyTimeZones, timeZoneNote } from '../src/run/check.ts';
 import * as claudeCode from '../src/agents/claude-code.ts';
 import * as codex from '../src/agents/codex.ts';
 import * as gemini from '../src/agents/gemini.ts';
@@ -37,11 +37,14 @@ const HELP = `yokoten ${VERSION}
   yokoten hook [--agent <name>] [--commands-only]
                              the tool-call guard: reads one tool call on stdin; <name> is
                              claude-code (the default), codex or gemini
+  yokoten hook --stop        the stop check: reads a Claude Code Stop event on stdin, checks
+                             the changed files, and sends the agent back once to fix them
   yokoten explain [<id>]     a rule or a step: what it is, why, and how it is checked
   yokoten bot -- <command>   run one command as the bot (gh, git push); the token is never printed
 
   --json on check, doctor, hook and explain: data on stdout, for an agent or a script.
-  Exit codes: 0 ok, 1 problems found or a usage error, 2 the hook blocked the tool call.
+  Exit codes: 0 ok, 1 problems found or a usage error, 2 the hook blocked the tool call
+  or the end of the turn.
 `;
 
 const [cmd, ...args] = process.argv.slice(2);
@@ -130,12 +133,55 @@ const READERS: Record<string, (input: unknown) => Action> = {
   gemini: gemini.readToolCall,
 };
 
+/**
+ * The stop check (#92). Claude Code runs it when the agent is about to end its turn
+ * (code.claude.com/docs/en/hooks#stop). Findings in the changed files send the agent back
+ * once: exit 2, with the findings on stderr as the reason. `stop_hook_active` means it was
+ * already sent back, so the turn ends whatever is found: never a loop. On any error the
+ * turn ends too, with one line on stderr: a broken check must not trap a session.
+ */
+function stopHook(json: boolean): number {
+  let event: ReturnType<typeof claudeCode.readStop>;
+  try {
+    event = claudeCode.readStop(JSON.parse(readFileSync(0, 'utf8')));
+  } catch {
+    event = null;
+  }
+  if (!event) {
+    if (json) printJson({ blocked: false, stop: false });
+    return 0;
+  }
+  if (event.active) {
+    if (json) printJson({ blocked: false, stop: true, skipped: 'the agent was already sent back once', findings: [] });
+    return 0;
+  }
+  let findings: Finding[];
+  try {
+    const root = rootOf(event.cwd ?? process.cwd());
+    findings = root ? checkChanged(root, { config: loadConfig(root), env }) : [];
+  } catch (err) {
+    say(`yokoten hook --stop: skipped, ${((err as Error).message ?? String(err)).split('\n')[0]}\n`, process.stderr);
+    if (json) printJson({ blocked: false, stop: true, skipped: 'the check failed', findings: [] });
+    return 0;
+  }
+  if (json) printJson({ blocked: findings.length > 0, stop: true, findings });
+  if (!findings.length) return 0;
+  // Claude Code gives stderr to the agent as the reason to go on when a Stop hook exits 2.
+  print([`yokoten: ${findings.length} problem(s) in the changed files. Fix them before you end the turn:`, ...bullets(findings)], process.stderr);
+  return 2;
+}
+
 function main(): number | Promise<number> {
   switch (cmd) {
     case 'hook': {
-      const a = parse({ flags: ['--commands-only', '--json'], values: ['--agent'] });
+      const a = parse({ flags: ['--commands-only', '--json', '--stop'], values: ['--agent'] });
       if (typeof a === 'string') return usage(a);
       const json = a.flags.has('--json');
+      if (a.flags.has('--stop')) {
+        if (a.flags.has('--commands-only')) return usage("--stop and --commands-only can't be used together");
+        if ((a.values['--agent'] ?? 'claude-code') !== 'claude-code') return usage('--stop reads a Claude Code Stop event only');
+        return stopHook(json);
+      }
       const agent = a.values['--agent'] ?? 'claude-code';
       const read = Object.hasOwn(READERS, agent) ? READERS[agent] : undefined;
       if (!read) {

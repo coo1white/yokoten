@@ -25,6 +25,19 @@ export function readToolCall(input: unknown): Action {
   };
 }
 
+/**
+ * A Stop event (the agent is about to end its turn), or null when the input is not one.
+ * `active` is Claude Code's `stop_hook_active`: a stop hook already sent the agent back.
+ */
+export function readStop(input: unknown): { cwd?: string; active: boolean } | null {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const event = input as { cwd?: unknown; stop_hook_active?: unknown };
+  return {
+    cwd: typeof event.cwd === 'string' && event.cwd !== '' ? event.cwd : undefined,
+    active: event.stop_hook_active === true,
+  };
+}
+
 /** Where Claude Code keeps a user's skills, agents and settings. */
 export const userDir = (env: Env): string => join(env.HOME || homedir(), '.claude');
 export const skillFile = (env: Env, name: string): string => join(userDir(env), 'skills', name, 'SKILL.md');
@@ -37,6 +50,14 @@ const projectSettings = (root: string) => join(root, '.claude', 'settings.json')
 export const addProjectHook = (root: string, cli: string) =>
   addHook(projectSettings(root), 'PreToolUse', 'Bash|Edit|Write|MultiEdit|NotebookEdit', `node "$CLAUDE_PROJECT_DIR/${cli}" hook`);
 export const hasProjectHook = (root: string): boolean => hasHook(projectSettings(root), 'PreToolUse', 'hook');
+
+/**
+ * The project's stop check (#92): before the agent ends its turn, `hook --stop` checks the
+ * changed files. It catches a file changed by sed or a script, which the tool-call guard
+ * does not see. Stop takes no matcher.
+ */
+export const addProjectStopHook = (root: string, cli: string) =>
+  addHook(projectSettings(root), 'Stop', undefined, `node "$CLAUDE_PROJECT_DIR/${cli}" hook --stop`);
 
 /**
  * An environment variable for every agent session in the project (settings "env"). Used

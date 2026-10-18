@@ -14,6 +14,11 @@ All notable changes are listed here. The format follows
   and adds `/yokoten:init` and `/yokoten:doctor`. `git clone` and `install` still work.
   `doctor` counts an enabled plugin as the session hook, the runtime and the skills.
   `.claude-plugin/` is lead-only by default, in every project (#31).
+- A stop check for Claude Code: `yokoten hook --stop`. When the agent tries to end its
+  turn, it checks the changed files (staged, not staged and new) for personal data,
+  secrets and file rules. With findings, it sends the agent back once to fix them. It
+  never sends it back twice in a row (`stop_hook_active`), and on an error the turn
+  ends. **Kit change:** `init` now adds a Stop hook to `.claude/settings.json` (#92).
 - `yokoten init --github` adds the standard labels (bug, feat, docs, refactor, ci,
   owner, incident, good first issue, hotfix) and a first milestone, through `gh`. Without
   `--yes` it only says what it would make. It keeps what is there and deletes nothing.
