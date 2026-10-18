@@ -157,11 +157,14 @@ const ASSIGNERS = new Set(['env', 'sudo', 'doas', 'export', 'declare', 'typeset'
 const isAssignment = (word: string) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
 
 function checkHooksEnvironment(words: string[]): Finding | null {
+  const lastGit = words.findLastIndex(isGit);
+  let isPrefix = true; // every word before this one is an assignment, an option or an assigner
   for (const [index, word] of words.entries()) {
     const variable = /^GIT_CONFIG_(KEY_(\d+)|PARAMETERS)=(.*)$/is.exec(word);
+    const wasPrefix = isPrefix;
+    isPrefix = isPrefix && (isAssignment(word) || word.startsWith('-') || ASSIGNERS.has(base(word)));
     if (!variable) continue;
-    const isPrefix = words.slice(0, index).every((w) => isAssignment(w) || w.startsWith('-') || ASSIGNERS.has(base(w)));
-    if (!isPrefix && !words.slice(index + 1).some(isGit)) continue;
+    if (!wasPrefix && lastGit <= index) continue;
     const [, name, number, setting] = variable;
     if (name.toUpperCase() === 'PARAMETERS') {
       if (setting.toLowerCase().includes('core.hookspath')) return hooksPath('GIT_CONFIG_PARAMETERS names core.hooksPath, which can skip the commit check');
@@ -540,16 +543,20 @@ const RUNNERS: Record<string, RegExp | null> = {
   sudo: /^(-[a-zA-Z]*[si]|--shell|--login)/, doas: /^-[a-zA-Z]*s/, env: /^(-[a-zA-Z]*S|--s)/,
 };
 
+const RUNNER_OPTIONS = Object.entries(RUNNERS).flatMap(([runner, option]) => (option ? [[runner, option] as const] : []));
+
 // Where a shell or a runner stands in the command, or -1. Anywhere counts: `find -exec sh
 // -c`, `xargs sh -c` and `sudo bash -c` all run a string.
+// It walks back from the end once, so each word is tested once against each option.
 function runnerAt(words: string[]): number {
-  return words.findIndex((w, i) => {
-    if (isShell(w)) return true;
-    const name = base(w);
-    if (!Object.hasOwn(RUNNERS, name)) return false;
-    const option = RUNNERS[name];
-    return option === null || words.slice(i + 1).some((a) => option.test(a));
-  });
+  const later = new Set<string>(); // runners whose option stands after the current word
+  let at = -1;
+  for (let i = words.length - 1; i >= 0; i--) {
+    const name = base(words[i]);
+    if (isShell(words[i]) || (Object.hasOwn(RUNNERS, name) && (RUNNERS[name] === null || later.has(name)))) at = i;
+    for (const [runner, option] of RUNNER_OPTIONS) if (option.test(words[i])) later.add(runner);
+  }
+  return at;
 }
 
 // ssh options that take a value, in the same word (-p22) or the next (-p 22).
@@ -646,6 +653,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
   let inWord = false;
   let isQuoted = false; // the word has a quote or a \ in it, so it is no keyword: `'case'`, `\case`
   let caseAt = -1; // where `case` stands in words, when it starts the command
+  let isLeading = true; // every word so far is a keyword, so the next one leads the command
   let line: string[][] = []; // the commands so far on this line, for heredocs
   let pipes: boolean[] = []; // for each of them, whether it pipes into the next
   let pending: Heredoc[] = [];
@@ -660,14 +668,17 @@ function read(text: string, start: number, closer: string, depth: number, out: s
   const endWord = () => {
     const ended = inWord ? word : null;
     const isKeyword = !isQuoted;
-    if (ended !== null) words.push(ended);
+    const isFirst = isLeading;
+    if (ended !== null) {
+      words.push(ended);
+      isLeading = isLeading && isKeyword && KEYWORDS.has(ended);
+    }
     word = '';
     inWord = false;
     isQuoted = false;
     if (ended === null) return;
     if (isPattern && ++alternative > 1) isPattern = false; // `a b)` is no pattern: read it as a command
     if (!isKeyword) return;
-    const isFirst = words.slice(0, -1).every((w) => KEYWORDS.has(w));
     if (ended === 'esac' && isFirst && cases > 0) {
       cases--;
       isPattern = false;
@@ -723,6 +734,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
     piped = pipe ? words : null;
     words = [];
     caseAt = -1;
+    isLeading = true;
   };
 
   let index = start;
@@ -739,6 +751,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       if (character === ')') {
         words = [];
         caseAt = -1;
+        isLeading = true;
         isPattern = false;
       }
       alternative = 0;

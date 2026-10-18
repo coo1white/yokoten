@@ -689,3 +689,13 @@ test('bash: a heredoc on exec alone or a bare redirect feeds the shell, so it is
     `while read line; do echo "$line"; done <<'EOF'\n${force}\nEOF`,
   ]) allowed(command);
 });
+
+test('bash: a command of 100k words is read in under a second (#226)', () => {
+  for (const command of [`echo ${'a '.repeat(100000)}`, `${'then '.repeat(100000)}echo`, `${'env '.repeat(100000)}echo`, `${'sudo '.repeat(100000)}echo`, `${'GIT_CONFIG_KEY_0=x '.repeat(100000)}git status`]) {
+    const started = Date.now();
+    assert.equal(checkCommand(command, { env: {}, config: pythonBlocked }), null);
+    const took = Date.now() - started;
+    assert.ok(took < 1000, `${command.slice(0, 20)}... took ${took} ms`);
+  }
+  blocked(`echo ${'a '.repeat(100000)}; ${force}`);
+});
