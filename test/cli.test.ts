@@ -43,6 +43,9 @@ test('hook: blocks with exit 2 and a reason, allows with exit 0', () => {
   assert.equal(r.status, 2);
   assert.match(r.stderr, /owner decides when to release/);
   assert.equal(call({ command: 'git status' }).status, 0);
+  // A heredoc body is data, unless a shell reads it (#105).
+  assert.equal(call({ command: "ego-browser nodejs <<'EOF'\nawait page.fill('#q', 'npm publish');\nEOF" }).status, 0);
+  assert.equal(call({ command: 'bash <<EOF\nnpm publish\nEOF' }).status, 2);
   assert.equal(call({ file_path: join(s.repo, 'AGENTS.md') }).status, 0);
   r = call({ file_path: join(s.repo, 'AGENTS.md') }, { YOKOTEN_ROLE: 'worker' });
   assert.equal(r.status, 2);
