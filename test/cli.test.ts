@@ -1352,3 +1352,18 @@ test('adopt: with no key, the rule-based draft and how to set the key; it change
   assert.match(json.stderr, /drafted by rules/);
   assert.equal(sandbox.git('status', '--porcelain', '--ignored').stdout, before, 'adopt writes nothing');
 });
+
+test('init: a yokoten.json "areas" that is not a list stops init before it writes a file (#156)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', JSON.stringify({ areas: 'cli' }));
+  let result = sandbox.run(['init']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^yokoten init: yokoten\.json: "areas" must be a list of names/);
+  assert.doesNotMatch(result.stderr, /is not a function/);
+  assert.ok(!existsSync(join(sandbox.repo, 'AGENTS.md')), 'nothing written');
+  // The control: the same project with a list runs.
+  sandbox.write('yokoten.json', JSON.stringify({ areas: ['cli'] }));
+  result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(existsSync(join(sandbox.repo, 'AGENTS.md')));
+});

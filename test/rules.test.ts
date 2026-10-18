@@ -81,6 +81,19 @@ test('config: missing file means defaults, a key overrides, bad JSON says where'
   assert.throws(() => loadConfig(dir), /^Error: yokoten\.json:/);
 });
 
+test('config: "areas" must be a list of names, or loading says so (#156)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const areas = (value: unknown) => {
+    writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ areas: value }));
+    return () => loadConfig(dir).areas;
+  };
+  assert.deepEqual(areas(['cli', 'docs'])(), ['cli', 'docs'], 'the control: a list of names loads');
+  assert.deepEqual(areas([])(), []);
+  for (const bad of ['cli', ['cli', ''], ['cli', 1], null, { cli: true }]) {
+    assert.throws(areas(bad), /^Error: yokoten\.json: "areas" must be a list of names, like \["cli", "docs"\]$/, JSON.stringify(bad));
+  }
+});
+
 const goodPr = (): PullRequest => ({
   title: 'feat(kit): a pull request standard, checked in CI',
   body: 'tier: B\nCloses #47\n\n## Why\nNothing checks it.\n\n## What changed\n- a rule\n\n## How tested\n`node --test`: 50 pass.\n',

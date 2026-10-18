@@ -412,13 +412,15 @@ function main(): number | Promise<number> {
       if (options.flags.has('--board') && !options.flags.has('--github')) return usage('--board goes with --github');
       const dir = resolve(options.positional[0] ?? '.');
       const root = rootOf(dir) ?? dir;
+      // Read first: a broken yokoten.json stops init before it writes a file.
+      const { areas } = loadConfig(root);
       print(init(root));
       // The host is changed only when asked (#10): it is a remote, and other people see it.
       // Without --yes, init only reads it and says what it would do, or what it skipped.
       const planning = setUpPlanning(ghIn(root), readOriginUrl(root), {
         apply: options.flags.has('--yes'),
         removeDefaults: options.flags.has('--remove-default-labels'),
-        areas: loadConfig(root).areas,
+        areas,
         board: options.flags.has('--board'),
       });
       print(planning.lines, planning.ok ? process.stdout : process.stderr);

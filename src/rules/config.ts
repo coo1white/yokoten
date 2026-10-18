@@ -68,9 +68,15 @@ export function loadConfig(root: string): Config {
     privacy: { ...DEFAULTS.privacy, ...file.privacy },
     notNow: file.notNow ?? {},
     allowBuild: file.allowBuild ?? DEFAULTS.allowBuild,
-    areas: file.areas ?? DEFAULTS.areas,
+    areas: file.areas === undefined ? DEFAULTS.areas : names(file.areas, 'areas'),
     translations: { ...DEFAULTS.translations, ...file.translations },
   };
+}
+
+/** A list of non-empty strings, or a config error that names the key. */
+function names(value: unknown, key: string): string[] {
+  if (Array.isArray(value) && value.every((item) => typeof item === 'string' && item.trim() !== '')) return value;
+  throw new Error(`yokoten.json: "${key}" must be a list of names, like ["cli", "docs"]`);
 }
 
 // Globs, as yokoten.json names files. Matched against a path relative to the repo root,
