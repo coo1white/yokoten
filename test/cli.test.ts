@@ -422,6 +422,15 @@ test('init: safe defaults, Dependabot and a security policy; doctor lists the se
   assert.match(readFileSync(join(sandbox.repo, '.github/SECURITY.md'), 'utf8'), /\*\*Report a vulnerability\*\*/);
   const doctor = sandbox.run(['doctor']);
   for (const sw of [/private vulnerability reporting/, /secret scanning with push protection/, /Dependabot alerts/]) assert.match(doctor.stdout, sw);
+  // Right after init only the license is missing: say what to do, not that init adds it (#208).
+  const security = () => sandbox.run(['doctor']).stdout.split('\n').find((l) => / security-files\b/.test(l)) ?? '';
+  assert.match(security(), /: no license file; choose a license and add it as LICENSE$/);
+  assert.doesNotMatch(security(), /yokoten init/);
+  rmSync(join(sandbox.repo, '.github/SECURITY.md'));
+  assert.match(security(), /: no security policy \(SECURITY\.md\), no license file; run `yokoten init` to add the security policy and Dependabot, and choose a license and add it as LICENSE$/);
+  sandbox.write('LICENSE', 'placeholder license\n');
+  sandbox.run(['init']);
+  assert.match(security(), /^ +done +security-files/);
 });
 
 /** The doctor --json mark of one road step. */
@@ -1309,7 +1318,7 @@ fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s));
   // Without a GitHub remote, init succeeds, says what it skipped, and never runs gh.
   let result = sandbox.run(['init'], { extra });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /GitHub: skipped, because the origin remote is not on GitHub/);
+  assert.match(result.stdout, /GitHub: skipped, because there is no origin remote yet/);
   assert.equal(calls().length, 0);
   assert.equal(sandbox.run(['init', '--yes'], { extra }).status, 1, '--yes alone is refused');
   assert.equal(sandbox.run(['init', '--remove-default-labels'], { extra }).status, 1, 'so is --remove-default-labels');
