@@ -19,23 +19,33 @@ function patchPaths(patch: string): string[] {
 
 const ENVELOPE = /\*\*\* Begin Patch[\s\S]*?\*\*\* End Patch/g;
 // What the shell runs right before an envelope: `apply_patch <<'EOF'` (a heredoc) or
-// `apply_patch "` (an argument), after an optional `cd <dir> &&`. Group 1, 2 or 3 is the dir.
-const PATCH_COMMAND = /(?:^|[\n;&|(`'"])\s*(?:cd\s+(?:"([^"]*)"|'([^']*)'|([^\s;&|]+))\s*(?:&&|;|\n)\s*)?(?:apply_patch|applypatch)\b[^\n]*\n?\s*$/;
+// `apply_patch "` (an argument).
+const PATCH_COMMAND = /(?:^|[\n;&|(`'"])\s*(?:apply_patch|applypatch)\b[^\n]*\n?\s*$/;
+// A `cd` or `pushd`, quoted or bare. Group 1, 2 or 3 is the dir.
+const DIR_CHANGE = /(?:^|[\s;&|(`'"])(?:cd|pushd)\s+(?:"([^"]*)"|'([^']*)'|([^\s;&|)]+))/g;
 
 /**
  * The files a shell command's apply_patch envelopes touch. Codex sends a shell-run
  * apply_patch as a Bash call and fires no second hook (rust-v0.163.0). An envelope that
  * another command reads, such as `cat > notes.md <<'EOF'`, is data, not an edit.
+ * The shell may have changed dir first. Each relative path counts from the session's cwd
+ * and from every dir a `cd` or `pushd` before the envelope names: one of them is right.
  */
 function shellPatchPaths(command: string): string[] {
   const paths: string[] = [];
   let start = 0;
   for (const envelope of command.matchAll(ENVELOPE)) {
-    const before = PATCH_COMMAND.exec(command.slice(start, envelope.index));
+    const isApplyPatch = PATCH_COMMAND.test(command.slice(start, envelope.index));
     start = envelope.index + envelope[0].length;
-    if (!before) continue;
-    const dir = before[1] ?? before[2] ?? before[3];
-    for (const path of patchPaths(envelope[0])) paths.push(dir && !isAbsolute(path) ? join(dir, path) : path);
+    if (!isApplyPatch) continue;
+    const dirs = [...command.slice(0, envelope.index).matchAll(DIR_CHANGE)]
+      .map((m) => m[1] ?? m[2] ?? m[3])
+      // `~`, `-` and variables name a dir only the shell knows.
+      .filter((dir) => dir !== '' && !/^[~-]|\$/.test(dir));
+    for (const path of patchPaths(envelope[0])) {
+      paths.push(path);
+      if (!isAbsolute(path)) paths.push(...dirs.map((dir) => join(dir, path)));
+    }
   }
   return paths;
 }
