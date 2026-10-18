@@ -208,8 +208,8 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
     const files = stagedFiles(root);
     // In a merge, the role checks see only what the merge itself changed: a worker
     // bringing in main is not handing over main's edits to lead-only files or tests. A
-    // move or copy is checked at its old path too: moving AGENTS.md away removes it.
-    const touched = [...new Set(files.flatMap((f) => (f.from === undefined ? [f.path] : [f.from, f.path])))];
+    // move is checked at its old path too: moving AGENTS.md away removes it. A copy leaves it.
+    const touched = [...new Set(files.flatMap((f) => (f.from === undefined || f.status !== 'R' ? [f.path] : [f.from, f.path])))];
     for (const path of mergeMade(root, touched, mergeHeads(root))) {
       const reason = checkEdit(path, { config, env });
       if (reason) problems.push(reason);
