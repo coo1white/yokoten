@@ -223,7 +223,7 @@ then run with no network and no global install.
 | `init --github [--yes]` | Also adds the standard labels and a first milestone on GitHub, through `gh`. Without `--yes` it only says what it would make. It keeps every label and milestone that is there, and never deletes or renames one |
 | `doctor [--session]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session |
 | `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries |
-| `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, changelog line, milestone and labels. A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, and a diff over 400 changed lines, are notes |
+| `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, changelog line, milestone and labels. A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
 | `check --issue` | In CI: the issue's title. See [Issue titles](#issue-titles) |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public |
 | `hook [--agent <name>] [--commands-only]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini` |
@@ -374,8 +374,12 @@ three-line loop is clear. The further a name travels, the more it must say.
 Each failure says what to change:
 
 ```
-src/rules/guards.ts:195: i — one letter, used 101 lines on — a reader must scroll back to learn what it holds: name what it is, e.g. "index"
+src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to learn what it holds. Name what it is, e.g. "index".
 ```
+
+In any project, `check --pr` notes a one-letter name used far from where it is made,
+and a name of more than 4 words. It reads only the lines a pull request adds to
+TypeScript and JavaScript files. A note never fails CI.
 
 Rules 1 and 5 need judgement, so the reviewer checks them.
 

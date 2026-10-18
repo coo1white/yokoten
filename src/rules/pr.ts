@@ -226,6 +226,42 @@ export function changedLines(numstat: string): number {
   return total;
 }
 
+// Git writes a path with unusual characters in quotes, with C escapes. With
+// core.quotePath off, only control characters, quotes and backslashes are escaped.
+const C_ESCAPES: Record<string, string> = { a: '\x07', b: '\b', t: '\t', n: '\n', v: '\v', f: '\f', r: '\r' };
+const unquotePath = (raw: string) =>
+  raw.startsWith('"') && raw.endsWith('"') ? raw.slice(1, -1).replace(/\\([0-7]{3}|.)/g, (_, code: string) => (/^[0-7]{3}$/.test(code) ? String.fromCharCode(parseInt(code, 8)) : (C_ESCAPES[code] ?? code))) : raw;
+
+/**
+ * The line numbers each file gains, in its new version, from `git diff` with the
+ * `a/` and `b/` prefixes. A renamed file counts only the lines it adds. A file the
+ * diff deletes is left out. Inside a hunk, a line that starts with `+++` is an added
+ * line; a file's header comes before its first hunk.
+ */
+export function addedLinesByFile(diff: string): Map<string, Set<number>> {
+  const byFile = new Map<string, Set<number>>();
+  let added: Set<number> | null = null;
+  let next = 0;
+  let isInHunk = false;
+  for (const line of diff.split('\n')) {
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (line.startsWith('diff ')) {
+      added = null;
+      isInHunk = false;
+    } else if (!isInHunk && line.startsWith('+++ ')) {
+      // Git ends the line with a tab when the path has a space.
+      const file = unquotePath(line.slice(4).replace(/\t$/, ''));
+      added = file.startsWith('b/') ? new Set<number>() : null;
+      if (added) byFile.set(file.slice(2), added);
+    } else if (hunk) {
+      next = Number(hunk[1]);
+      isInHunk = true;
+    } else if (isInHunk && line.startsWith('+')) added?.add(next++);
+    else if (isInHunk && line.startsWith(' ')) next++;
+  }
+  return byFile;
+}
+
 /**
  * A note when a pull request changes more than `max` lines (record 0004), else null. A
  * note, never a failure: Google's review guide finds about 100 lines fine, 1000 too large.
