@@ -287,6 +287,17 @@ node ~/.local/share/yokoten/bin/yokoten.ts init     # this project: adds files, 
 node ~/.local/share/yokoten/bin/yokoten.ts doctor   # the road: where you are, what's next
 ```
 
+A clone install puts no `yokoten` command on your PATH, but yokoten's messages say
+`yokoten init` and `yokoten doctor`. So `install` ends with this line for your shell
+profile (`~/.bashrc` or `~/.zshrc`). Add it yourself, then open a new shell:
+
+```sh
+alias yokoten='node ~/.local/share/yokoten/bin/yokoten.ts'
+```
+
+yokoten never edits your shell profile. When a `yokoten` on your PATH already runs this
+copy, `install` leaves the line out.
+
 These commands, and the npx ones, are also in [docs/facts.json](facts.json), which the
 website reads, so a change to them goes in both places.
 
@@ -418,8 +429,8 @@ never what matched.
 
 | Code | Means |
 |------|-------|
-| 0 | All is well. `doctor --session` always gives 0, so a session always starts |
-| 1 | Problems found (`check`, `doctor`), an unknown id (`explain`), a usage error, or an error in yokoten itself |
+| 0 | All is well. Steps left on the road are to do, not problems, so `doctor` gives 0 with them. `doctor --session` always gives 0, so a session always starts |
+| 1 | Problems found: by `check`, or by `doctor` (a failed self-test, or a core-rules, tree or machine line marked MISSING), an unknown id (`explain`), a usage error, or an error in yokoten itself |
 | 2 | The hook blocked the tool call, or the stop check sent the agent back. The reason is on stderr |
 
 These codes do not change. A broken guard gives 1, not 2: you see it, and it does not

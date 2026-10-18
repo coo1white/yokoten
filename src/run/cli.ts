@@ -81,7 +81,7 @@ export const COMMANDS: Command[] = [
     name: 'doctor',
     summary: 'the road: where this project is and its next step',
     usage: '[--session] [--json]',
-    text: ['Shows every stage and step of the road, and what this machine is missing.', 'It exits 1 while steps are left, and always 0 with --session.'],
+    text: ['Shows every stage and step of the road, and what this machine is missing.', 'It exits 1 on a problem: a failed self-test, or a core-rules, tree or machine line', 'marked MISSING. Steps left on the road are to do, not problems. Always 0 with --session.'],
     options: [
       { name: '--session', text: 'only the next step, for the start of a session' },
       { name: '--json', text: 'the report as JSON on stdout' },

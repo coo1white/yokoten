@@ -2,7 +2,7 @@
 // yokoten: carry what one project learned into every project.
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
 import { annotations, botConfig, botEnv, ghIn, installationToken, isGitHubActions, readCodeOwners, readCommandTitle, readIssue, readPullRequest, repoOf, stepSummary } from '../src/host/github.ts';
@@ -384,7 +384,7 @@ function main(): number | Promise<number> {
       const { ok, lines, report } = doctor(root, { env, config, session, gh: root ? ghIn(root) : undefined });
       if (options.flags.has('--json')) printJson(report);
       else print(lines);
-      // A session must start even when a project has steps left.
+      // A session must start even when doctor found a problem.
       return session || ok ? 0 : 1;
     }
     case 'explain': {
@@ -421,14 +421,21 @@ function main(): number | Promise<number> {
       // The host is changed only when asked (#10): it is a remote, and other people see it.
       // Without --yes, init only reads it and says what it would do, or what it skipped.
       const planning = setUpPlanning(ghIn(root), readOriginUrl(root), { apply: options.flags.has('--yes'), removeDefaults: options.flags.has('--remove-default-labels') });
-      print(planning.lines, planning.ok ? process.stdout : process.stderr);
-      return planning.ok ? 0 : 1;
+      // --github --yes asked for changes on GitHub; a skip made none, so it fails (#208).
+      const isRefused = planning.skipped && options.flags.has('--yes');
+      print(planning.lines, planning.ok && !isRefused ? process.stdout : process.stderr);
+      if (isRefused) print(['yokoten init: --github --yes changed nothing on GitHub (the reason is above). The project files are as listed above.'], process.stderr);
+      return planning.ok && !isRefused ? 0 : 1;
     }
     case 'update': {
       // Its own command, not an init flag: init promises to add only, never to overwrite (#120).
       const options = parse('update');
       if (typeof options === 'string') return usage(options);
       const dir = resolve(options.positional[0] ?? '.');
+      if (!existsSync(dir)) {
+        print([`yokoten update: ${options.positional[0]} does not exist; nothing to update.`], process.stderr);
+        return 1;
+      }
       const { ok, lines } = updateCoreRules(rootOf(dir) ?? dir, { write: options.flags.has('--write') });
       print([`yokoten update: ${lines[0]}`, ...lines.slice(1)], ok ? process.stdout : process.stderr);
       return ok ? 0 : 1;
