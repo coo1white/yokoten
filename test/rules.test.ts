@@ -614,6 +614,75 @@ test('learn: sections by heading or bold label, outside code blocks; one line pe
   assert.match(draftLesson(incidentOf('## Fix\n\nIt\'s fixed with a \\ path.')).files[0].text, /fix: 'It\\'s fixed with a \\\\ path',/);
 });
 
+test('learn: issue text never becomes code in the draft (positive control: the payload is real code)', () => {
+  // JavaScript ends a line at U+2028, U+2029 and a lone CR too. A title or body could end a
+  // `//` comment there and run the rest when the draft's test imports lesson.ts.
+  const [lineSeparator, paragraphSeparator] = [String.fromCharCode(0x2028), String.fromCharCode(0x2029)];
+  const payload = "process.getBuiltinModule('node:fs').writeFileSync('PWNED','x');//";
+  const hostile = (end: string) => `${end}${payload}`;
+  const nasty = "*/ ${x} `tick` 'quote' \"dq\" \\ \u0000\u001b\u0085";
+  const title = `repo: tests break${hostile(lineSeparator)}${hostile(paragraphSeparator)}${hostile('\r')}`;
+  const body = [
+    '## What happened',
+    '',
+    `It broke.${hostile(lineSeparator)}`,
+    `Again.${hostile(paragraphSeparator)} ${nasty}`,
+    '',
+    '## Why it got through',
+    '',
+    `No check.${hostile('\r')}`,
+    '',
+    '## Fix',
+    '',
+    `A check.${hostile(lineSeparator)}${hostile(paragraphSeparator)}${hostile('\r')} ${nasty}`,
+    '',
+    '## Lesson',
+    '',
+    `Read twice.${hostile('\r\n')}`,
+  ].join('\n');
+  // Writes the draft to a new folder and imports its lesson.ts there, as the draft's own
+  // test does: the import parses the file and runs any code in it.
+  const importDraft = (made: ReturnType<typeof draftLesson>) => {
+    const root = mkdtempSync(join(tmpdir(), 'yokoten-learn-hostile-'));
+    writeDraft(root, made);
+    const path = made.files[0].path;
+    const run = spawnSync(process.execPath, ['--input-type=module', '-e', `const { lesson } = await import('./${path}'); console.log(JSON.stringify(lesson));`], { cwd: root, encoding: 'utf8', timeout: 20_000 });
+    return { root, run, lesson: readFileSync(join(root, path), 'utf8') };
+  };
+  const draft = draftLesson({ ...incidentOf(body, title), url: `https://example.com/issues/12${hostile(lineSeparator)}` });
+  const { root, run, lesson } = importDraft(draft);
+  // The same with no lone CR: without the fix this draft parses, so the payload would run.
+  const parsing = draftLesson({
+    ...incidentOf(`## Fix\n\nA check.${hostile(lineSeparator)}${hostile(paragraphSeparator)}\n\n## Lesson\n\nRead twice.${hostile(paragraphSeparator)}`, `repo: tests break${hostile(lineSeparator)}${hostile(paragraphSeparator)}`),
+    number: 13,
+  });
+  const second = importDraft(parsing);
+  assert.ok(!existsSync(join(root, 'PWNED')), 'the payload did not run');
+  assert.ok(!existsSync(join(second.root, 'PWNED')), 'the payload did not run (no lone CR)');
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(second.run.status, 0, second.run.stderr);
+  assert.equal(JSON.parse(second.run.stdout).what, parsing.finding.what);
+  assert.ok(!/[\r\u{2028}\u{2029}]/u.test(lesson), 'no line end but LF in the draft');
+  for (const line of lesson.split('\n').filter((line) => line.includes('writeFileSync'))) {
+    assert.match(line, /^(\/\/|  (what|why|fix): ')/, `the payload is only in a comment or a string: ${JSON.stringify(line)}`);
+  }
+  // A string keeps its text, but for CR and LF, which become a space as before.
+  const expected = Object.fromEntries(Object.entries(draft.finding).map(([key, value]) => [key, value.replace(/\r\n|[\n\r]/g, ' ')]));
+  assert.deepEqual(JSON.parse(run.stdout), expected, 'the strings keep their text');
+  assert.ok(draft.finding.fix.includes(payload) && draft.finding.what.includes(lineSeparator), 'the payload reached the draft as text');
+});
+
+test('learn: the printed draft sends no terminal escape from the issue, shown as \\uXXXX instead', () => {
+  // Clear the line and move up: a title could hide or fake a line of the preview. OSC 8: a link.
+  const title = 'repo: tests break \u001b[2K\u001b[1A \u001b]8;;https://example.com/x\u0007click\u001b]8;;\u0007 \u009b31m';
+  const body = '## Fix\n\nA check \u001b[31mred\u001b[0m.\n\n## Lesson\n\nKeep \u001b]0;title\u0007 out.';
+  const incident = { ...incidentOf(body, title), labels: [] };
+  const text = formatDraft(incident, draftLesson(incident)).join('\n');
+  assert.ok(!/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(text), 'no control character but tab and newline');
+  assert.match(text, /^a check draft from issue #12, "repo: tests break \\u001b\[2K\\u001b\[1A \\u001b\]8;;https:\/\/example\.com\/x\\u0007click\\u001b\]8;;\\u0007 \\u009b31m"\.\n/);
+  assert.match(text, /\/\/ {3}A check {2}\[31mred \[0m\./, 'a comment in the draft has a space for each');
+});
+
 test('learn: --write adds the draft\'s files and keeps a file that is there', () => {
   const root = mkdtempSync(join(tmpdir(), 'yokoten-learn-'));
   const draft = draftLesson(incidentOf('## Fix\n\nA check.'));

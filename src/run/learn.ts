@@ -106,10 +106,30 @@ function readSymptom(title: string): string {
   return /^[A-Z][a-z]/.test(symptom) ? symptom.charAt(0).toLowerCase() + symptom.slice(1) : symptom;
 }
 
-/** A TypeScript string in single quotes. */
-const quote = (text: string) => `'${text.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\r?\n/g, ' ')}'`;
+// Issue text is anyone's text, and it lands in a .ts file that people run. JavaScript ends
+// a line at CR LF, LF, a lone CR, U+2028 and U+2029, so each one could end a `//` comment
+// and make the rest of the line code. Other control characters (C0 but tab, DEL, C1) have
+// no place in a draft either.
+const LINE_END = /\r\n|[\n\r\u2028\u2029]/;
+const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
+/** A character as a `\uXXXX` escape, which TypeScript reads back and a terminal shows as text. */
+const unicodeEscape = (character: string) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`;
+/** Issue text as one line that is safe in a `//` comment: each line end or control character is a space. */
+const commentText = (text: string) => text.split(LINE_END).join(' ').replace(CONTROL, ' ');
+/** A TypeScript string in single quotes. A line end is a space; U+2028, U+2029 and control characters are escaped. */
+const quote = (text: string) =>
+  `'${text
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/\r\n|[\n\r]/g, ' ')
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029]/g, unicodeEscape)}'`;
+/**
+ * Issue text that is safe to print: each control character but tab and newline (so ESC,
+ * CR, DEL and C1, which start ANSI and OSC codes) is shown as `\uXXXX`, never sent raw.
+ */
+export const terminalText = (text: string) => text.replace(CONTROL, unicodeEscape);
 /** Text as `//` comment lines, indented under a label. */
-const commentLines = (text: string) => text.split(/\r?\n/).map((line) => (line.trim() ? `//   ${line.trimEnd()}` : '//'));
+const commentLines = (text: string) => text.split(LINE_END).map((line) => commentText(line)).map((line) => (line.trim() ? `//   ${line.trimEnd()}` : '//'));
 
 /** The check draft for an incident. It reads only the issue, and writes nothing. */
 export function draftLesson(incident: Incident): Draft {
@@ -152,8 +172,8 @@ export function draftLesson(incident: Incident): Draft {
   }
   const dir = `${LESSONS_DIR}/${id}`;
   const lesson = [
-    `// A lesson from incident #${incident.number}: ${incident.title.replace(/\r?\n/g, ' ')}`,
-    `// ${incident.url}`,
+    `// A lesson from incident #${incident.number}: ${commentText(incident.title)}`,
+    `// ${commentText(incident.url)}`,
     '//',
     '// A draft from `yokoten learn`. A person reviews it before it ships: fill in each TODO,',
     '// write findProblems, and make the test next to this file pass. Then, in yokoten,',
@@ -228,11 +248,11 @@ export function draftLesson(incident: Incident): Draft {
 
 /** The draft as text for a person: what to fill in, then each file. Writes nothing. */
 export function formatDraft(incident: Incident, draft: Draft): string[] {
-  const lines = [`a check draft from issue #${incident.number}, "${incident.title}".`];
+  const lines = [`a check draft from issue #${incident.number}, "${terminalText(incident.title)}".`];
   if (!incident.labels.includes('incident')) lines.push('Note: the issue has no `incident` label; it is drafted anyway.');
   if (draft.todos.length) lines.push(`${draft.todos.length} TODO(s) for the reviewer:`, ...draft.todos.map((todo) => `- ${todo}`));
   else lines.push('The issue answers every field. A reviewer still writes the check and its test.');
-  for (const file of draft.files) lines.push('', `--- ${file.path}`, file.text.trimEnd());
+  for (const file of draft.files) lines.push('', `--- ${terminalText(file.path)}`, terminalText(file.text.trimEnd()));
   return lines;
 }
 
