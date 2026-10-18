@@ -1900,6 +1900,14 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
     const own = await run(['gh', 'issue', 'list'], path, ['--help']);
     assert.equal(own.status, 0, own.stderr);
     assert.equal(ran().length, good.length + 2, 'gh did not run for bot --help');
+    // A command that is not there, or that a signal ends, is named with the reason (#282).
+    const absent = await run(['no-such-cmd-xyz', 'arg']);
+    assert.deepEqual([absent.status, absent.stderr], [1, 'yokoten bot: could not run no-such-cmd-xyz: ENOENT\n']);
+    writeFileSync(join(bin, 'killed'), '#!/bin/sh\nkill -TERM $$\n');
+    chmodSync(join(bin, 'killed'), 0o755);
+    const killed = await run(['killed']);
+    assert.deepEqual([killed.status, killed.stderr], [1, 'yokoten bot: killed was ended by SIGTERM\n']);
+    for (const said of [absent.stderr, killed.stderr]) assert.doesNotMatch(said, /ghs_test|bot\.pem|GH_TOKEN/, 'no token or env');
   } finally {
     server.close();
   }

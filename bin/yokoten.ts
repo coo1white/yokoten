@@ -218,7 +218,18 @@ async function bot(command: string[]): Promise<number> {
   }
   const token = await installationToken(config, repo);
   const [file, ...rest] = command;
-  return spawnSync(file, rest, { stdio: 'inherit', env: botEnv(env, token) }).status ?? 1;
+  const result = spawnSync(file, rest, { stdio: 'inherit', env: botEnv(env, token) });
+  // A command that never ran, or that a signal ended, says so (#282). Only the file and the
+  // code or signal are named: never the token or the environment.
+  if (result.error) {
+    print([`yokoten bot: could not run ${file}: ${(result.error as NodeJS.ErrnoException).code ?? result.error.message.split('\n')[0]}`], process.stderr);
+    return 1;
+  }
+  if (result.signal) {
+    print([`yokoten bot: ${file} was ended by ${result.signal}`], process.stderr);
+    return 1;
+  }
+  return result.status ?? 1;
 }
 
 // Each runtime sends its tool call in its own shape; its adapter turns it into an Action.
