@@ -270,7 +270,7 @@ then run with no network and no global install.
 | `init --github [--yes]` | Also adds the standard labels and a first milestone on GitHub, through `gh`. Without `--yes` it only says what it would make. It keeps every label and milestone that is there, and never deletes or renames one |
 | `update [dir] [--write]` | Shows what this yokoten changes in the core rules of the project's `AGENTS.md`. `--write` replaces them, and keeps the "This project" part as it is. See [Updating the rules](#updating-the-rules) |
 | `doctor [--session]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session |
-| `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries |
+| `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries. For the tree, a translation behind its English source is a note. See [Translations](#translations) |
 | `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
 | `check --issue` | In CI: the issue's title. See [Issue titles](#issue-titles) |
 | `changelog [--write]` | Shows the entries the files in `changes/` add under `[Unreleased]`. `--write` puts them into `CHANGELOG.md` and deletes the files; run it before a release. See [The changelog](#the-changelog) |
@@ -393,6 +393,28 @@ it says which file and why, and writes nothing.
 checks its form. A line in `CHANGELOG.md` still passes, for a project that has not moved
 yet. `init` adds `changes/README.md`, which shows the form. `changes/` may hold more
 than 7 files, since each release empties it.
+
+### Translations
+
+English is the source; a translation follows it. When the English text changes, the
+translation falls behind, and nobody sees it. So each translated file names its source
+on line 1, in an HTML comment. GitHub does not show it.
+
+```markdown
+<!-- source: docs/guide.md blob 3b18e512dba79e4c8300dd08aeb37f8e728b8dad -->
+```
+
+The path is the English file, from the repo root. The blob is git's id for the English
+text you translated: run `git hash-object docs/guide.md`. A blob, not a commit: a squash
+merge keeps it, so you can change both files in one pull request.
+
+`check` reads line 1 of each Markdown and HTML file. When the English file has changed
+since, it gives a `translation-behind` note. The note says how many commits behind, and
+how to see the change: `git diff <blob> HEAD:docs/guide.md`. A note never fails CI. To
+make it fail, put `"translations": { "fail": true }` in `yokoten.json`.
+
+A shallow clone can tell that a translation is behind, but not how far. In CI, use
+`fetch-depth: 0` to see the count.
 
 ### Updating the rules
 
