@@ -21,7 +21,7 @@ import { runs } from '../run/cli.ts';
 import { hasBot, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
 import { isSelf } from './init.ts';
-import { lackingLabels } from './plan.ts';
+import { FIRST_MILESTONE, lackingLabels, pickNewMilestone } from './plan.ts';
 import { skillFiles, skillsDir } from './install.ts';
 
 /** The stage names, in order. A step's `stage` is its number here, from 1. */
@@ -273,6 +273,12 @@ const lackingNames = (server: ServerRead) => {
   return 'unread' in planning ? [] : lackingLabels(planning.labels.map((l) => l.name)).map((l) => l.name);
 };
 
+/** The title `init --github` would give a new milestone, by the same rule the step checks. */
+const newMilestoneOf = (server: ServerRead) => {
+  const planning = planningOf(server);
+  return ('unread' in planning ? null : pickNewMilestone(planning.milestones)) ?? FIRST_MILESTONE;
+};
+
 /** The road, in order. Step names never change: they are the keys for "not now". */
 export const ROAD: Step[] = [
   {
@@ -366,9 +372,9 @@ export const ROAD: Step[] = [
     why: 'a label says what kind of change a pull request is, and the pull request check asks for one',
     how: 'through the code host\'s API, in full doctor only: the repo has the labels bug, feat, docs, refactor, ci, owner, incident, good first issue and hotfix',
   }),
-  planningStep('milestone', (planning) => planning.milestones.some((m) => m.open), {
+  planningStep('milestone', (planning) => pickNewMilestone(planning.milestones) === null, {
     what: () => 'no open milestone on the server',
-    fix: () => '`yokoten init --github --yes` makes one called "First release"',
+    fix: (...[, , server]) => `\`yokoten init --github --yes\` makes one called "${newMilestoneOf(server)}"`,
     why: 'a milestone says when a change ships, and the pull request check asks for one',
     how: 'through the code host\'s API, in full doctor only: the repo has at least one open milestone',
   }),
