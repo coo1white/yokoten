@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { guardCommand, missingProjectRuntime } from '../run/cli.ts';
 import type { Action } from '../run/hook.ts';
-import { type Added, addHook, hasHook, type HookArgs, type HookState, hookState } from './hooks-file.ts';
+import { type Added, addHook, checkHooksFile, hasHook, type HookArgs, type HookState, hookState } from './hooks-file.ts';
 
 // The docs: "Bash and apply_patch use tool_input.command", and unified exec reports as Bash.
 const SHELL = 'Bash';
@@ -61,6 +61,9 @@ export const addProjectStopHook = (root: string, cli: string) =>
   addHook(projectHooks(root), 'Stop', undefined, guardCommand(`"$(git rev-parse --show-toplevel)/${cli}"`, 'hook --stop --agent codex', missingProjectRuntime(cli)));
 export const hasProjectStopHook = (root: string): boolean => hasHook(projectHooks(root), 'Stop', 'hook');
 
+/** Throw `UnreadableHooksFile` unless both project hooks can go in the file: check before adding either. */
+export const checkProjectHooks = (root: string): void => checkHooksFile(projectHooks(root), ['PreToolUse', 'Stop']);
+
 /** A Stop event: the same fields as Claude Code's (`cwd`, `stop_hook_active`). */
 export { readStop } from './claude-code.ts';
 
@@ -79,6 +82,7 @@ const userHookArgs = (env: Env, cli: string, missing: string): Record<'doctor' |
  */
 export function addUserHooks(env: Env, cli: string, missing: string): { doctor: Added; guard: Added } {
   const args = userHookArgs(env, cli, missing);
+  checkHooksFile(args.doctor[0], [args.doctor[1], args.guard[1]]);
   return { doctor: addHook(...args.doctor), guard: addHook(...args.guard) };
 }
 

@@ -54,13 +54,14 @@ const projectSettings = (root: string) => join(root, '.claude', 'settings.json')
  * writer of the user and project settings goes through this one check (#254).
  */
 function readClaudeSettings(path: string): Settings | null {
-  const settings = readTable(path);
+  const table = readTable(path, []);
+  const settings = 'problem' in table ? null : table.settings;
   return settings && (settings.env === undefined || isObject(settings.env)) ? settings : null;
 }
 
 /** The path, once it is known to be readable; else `UnreadableHooksFile`, before anything is written. */
 function readable(path: string): string {
-  if (!readClaudeSettings(path)) throw new UnreadableHooksFile(path);
+  if (!readClaudeSettings(path)) throw new UnreadableHooksFile(path, { kind: 'json' });
   return path;
 }
 
@@ -88,7 +89,7 @@ export const addProjectStopHook = (root: string, cli: string) =>
 export function setProjectEnv(root: string, key: string, value: string): Added {
   const path = projectSettings(root);
   const settings = readClaudeSettings(path);
-  if (!settings) throw new UnreadableHooksFile(path);
+  if (!settings) throw new UnreadableHooksFile(path, { kind: 'json' });
   const env = (settings.env ??= {}) as Record<string, unknown>;
   if (env[key] === value) return 'same';
   const had = key in env;
