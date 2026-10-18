@@ -302,7 +302,7 @@ export const ROAD: Step[] = [
       return existsSync(join(root, 'AGENTS.md')) && gap ? `add a line \`${gap.line}\` at the end of ${gap.file}, or run \`yokoten init\`` : '`yokoten init` adds one';
     },
     why: 'an agent follows the rules it can read, and only those',
-    how: 'AGENTS.md is at the repo root, and a CLAUDE.md (at the root or in .claude/), when there is one, imports it (`@AGENTS.md`, or `@../AGENTS.md` from .claude/) or links to it: with a CLAUDE.md, Claude Code reads AGENTS.md only through it',
+    how: 'AGENTS.md is at the repo root, and a CLAUDE.md (at the root or in .claude/), when there is one, imports it (`@AGENTS.md`, or `@../AGENTS.md` from .claude/; a Markdown link is not an import): with a CLAUDE.md, Claude Code reads AGENTS.md only through it',
     standard: 'OpenSSF: AI code assistant instructions',
   },
   {
