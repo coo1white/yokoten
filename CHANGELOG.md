@@ -8,7 +8,7 @@ All notable changes are listed here. The format follows
 
 ### Added
 
-- yokoten runs as a GitHub Action: `uses: coo1white/yokoten@<commit SHA>`. It sets up Node,
+- yokoten runs as a GitHub Action: `uses: yokoten-labs/yokoten@<commit SHA>`. It sets up Node,
   runs `check`, and runs `check --pr` on pull requests. Inputs: `pr-check` and
   `node-version`. It needs `contents: read` and takes no token. The kit's workflow
   moves to the action after the first release (#106).
@@ -29,7 +29,7 @@ All notable changes are listed here. The format follows
 - In GitHub Actions, `check` shows its findings on the pull request page. Each finding
   is an annotation on its line, and the job summary lists what, why and the fix. Notes
   are warnings. Output outside Actions does not change (#91).
-- yokoten installs as a Claude Code plugin: `/plugin marketplace add coo1white/yokoten`,
+- yokoten installs as a Claude Code plugin: `/plugin marketplace add yokoten-labs/yokoten`,
   then `/plugin install yokoten@yokoten`. The repo is the plugin and its marketplace. It
   uses the kit's skills and agents as they are, adds the same two hooks as `install`,
   and adds `/yokoten:init` and `/yokoten:doctor`. `git clone` and `install` still work.
@@ -240,5 +240,5 @@ All notable changes are listed here. The format follows
   `inspect`, `rca`, `record`), three agents (`worker`, `reviewer`, `verifier`), CI,
   issue and pull request templates.
 
-[Unreleased]: https://github.com/coo1white/yokoten/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/coo1white/yokoten/releases/tag/v0.1.0
+[Unreleased]: https://github.com/yokoten-labs/yokoten/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/yokoten-labs/yokoten/releases/tag/v0.1.0

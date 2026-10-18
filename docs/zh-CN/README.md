@@ -14,7 +14,7 @@ yokoten 就是这么做出来的：每个 issue、每次审查、每个版本，
 
 <br/>
 
-[![ci](https://github.com/coo1white/yokoten/actions/workflows/yokoten.yml/badge.svg)](https://github.com/coo1white/yokoten/actions/workflows/yokoten.yml)
+[![ci](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml/badge.svg)](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml)
 [![built with Claude Code](https://img.shields.io/badge/built%20with-Claude%20Code-D97757?logo=claude&logoColor=white)](https://claude.com/claude-code)
 [![TypeScript](https://img.shields.io/badge/TypeScript-no%20build-3178C6?logo=typescript&logoColor=white)](../records/0002-typescript.md)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A522.18-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
@@ -51,7 +51,7 @@ yokoten: git push --tags pushes tags. Only the owner decides when to release.
 | 关 | 学会什么 | 在这里看 |
 |---|---|---|
 | **1 · 安全网** | AI 要读的规则，以及规则管不住时拦下它的检查 | [AGENTS.md](../../AGENTS.md) |
-| **2 · 先开 issue，再走 PR** | 每次改动先开 issue 说清为什么；CI 通过了才合并；用标签、里程碑（milestone）和看板管起来 | [issue](https://github.com/coo1white/yokoten/issues?q=is%3Aissue)、[PR](https://github.com/coo1white/yokoten/pulls?q=is%3Apr)、[看板](https://github.com/users/coo1white/projects/1) |
+| **2 · 先开 issue，再走 PR** | 每次改动先开 issue 说清为什么；CI 通过了才合并；用标签、里程碑（milestone）和看板管起来 | [issue](https://github.com/yokoten-labs/yokoten/issues?q=is%3Aissue)、[PR](https://github.com/yokoten-labs/yokoten/pulls?q=is%3Apr)、[看板](https://github.com/users/coo1white/projects/1) |
 | **3 · 发版** | 写明改了什么、为什么改的提交信息；CHANGELOG；每次发版一个版本号 | [CHANGELOG.md](../../CHANGELOG.md) |
 | **4 · 带一支 AI 团队** | bot 开 PR，worker 领任务，reviewer 审查；最后拍板的永远是你 | [使用指南](guide.md#像带团队一样管-agent) |
 | **5 · 公开** | 把全部提交历史查一遍，看有没有漏出隐私；打开安全设置；保护 `main` 分支 | [安全说明](../../.github/SECURITY.md) |
@@ -84,7 +84,7 @@ AI 想闯大祸时，桥头有人守着。
 
 「横展」这个词来自丰田的工厂：一条产线学到的教训（lessons learned），推广到所有产线。yokoten 的名字就是从这里来的。
 
-近期要做的事在 [M0](https://github.com/coo1white/yokoten/milestone/1) 和 [M1](https://github.com/coo1white/yokoten/milestone/2) 里，[看板](https://github.com/users/coo1white/projects/1)上能看到今天在做什么。
+近期要做的事在 [M0](https://github.com/yokoten-labs/yokoten/milestone/1) 和 [M1](https://github.com/yokoten-labs/yokoten/milestone/2) 里，[看板](https://github.com/users/coo1white/projects/1)上能看到今天在做什么。
 
 ## 快速开始
 
@@ -93,7 +93,7 @@ AI 想闯大祸时，桥头有人守着。
 **用 Claude Code 的话**，在里面输入这两条：
 
 ```text
-/plugin marketplace add coo1white/yokoten
+/plugin marketplace add yokoten-labs/yokoten
 /plugin install yokoten@yokoten
 ```
 
@@ -103,7 +103,7 @@ AI 想闯大祸时，桥头有人守着。
 **不用插件的话**（Codex CLI、Gemini CLI 也是这样装）：
 
 ```sh
-git clone https://github.com/coo1white/yokoten
+git clone https://github.com/yokoten-labs/yokoten
 node yokoten/bin/yokoten.ts install                 # 每台电脑做一次
 cd your-project
 node ~/.local/share/yokoten/bin/yokoten.ts init      # 每个项目做一次

@@ -894,7 +894,7 @@ test('--json: check, doctor, hook and explain print pure JSON with what, why and
     what: 'an email address',
     why: 'an email address points at a person, and git keeps it after the file is gone',
     fix: 'use your GitHub noreply address, or a placeholder at example.com',
-    docs: 'https://github.com/coo1white/yokoten/blob/main/docs/guide.md#privacy',
+    docs: 'https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#privacy',
     file: 'notes/a.md',
     line: 1,
   });
@@ -940,7 +940,7 @@ test('--json: check, doctor, hook and explain print pure JSON with what, why and
   assert.equal(unknown.found, false);
   assert.ok(unknown.ids.includes('secret') && unknown.ids.includes('tool-hook'));
   result = sandbox.run(['explain', 'secret']);
-  assert.match(result.stdout, /^secret: .+\.\nWhy: .+\.\nCheck: .+\.\nDocs: https:\/\/github\.com\/coo1white\/yokoten\/blob\/main\/docs\/guide\.md#privacy\n$/, 'the link to the rule (#94)');
+  assert.match(result.stdout, /^secret: .+\.\nWhy: .+\.\nCheck: .+\.\nDocs: https:\/\/github\.com\/yokoten-labs\/yokoten\/blob\/main\/docs\/guide\.md#privacy\n$/, 'the link to the rule (#94)');
   result = sandbox.run(['explain', 'commit-check']);
   assert.match(result.stdout, /^commit-check: a step on the road: stage 1 of 5, safety net\.\nWhy: .+\.\nCheck: .+\.\nStandard: OSPS-BR-07\.01\.\n$/);
   result = sandbox.run(['explain']);

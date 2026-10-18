@@ -36,7 +36,7 @@ export interface Rule {
  * Where the rules are explained: the guide on GitHub for now (#94). The site's Docs
  * pages (#85) can replace it here, in one place.
  */
-export const DOCS_URL = 'https://github.com/coo1white/yokoten/blob/main/docs/guide.md';
+export const DOCS_URL = 'https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md';
 const guide = (section: string) => `${DOCS_URL}#${section}`;
 
 const RELEASE_WHY = 'only the owner decides when to release';

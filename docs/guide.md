@@ -127,7 +127,7 @@ $ yokoten explain force-push
 force-push: no plain force push (core rule 7).
 Why: a plain force push can throw away work that someone else pushed.
 Check: the tool-call guard stops `git push --force`, `-f` and a `+ref`; `--force-with-lease` passes; a branch ruleset on the server is the lock.
-Docs: https://github.com/coo1white/yokoten/blob/main/docs/guide.md#the-core-rules
+Docs: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#the-core-rules
 ```
 
 ## Four layers
@@ -165,13 +165,13 @@ dependencies. There are two ways to install. Use one, not both.
 In a Claude Code session:
 
 ```text
-/plugin marketplace add coo1white/yokoten
+/plugin marketplace add yokoten-labs/yokoten
 /plugin install yokoten@yokoten
 ```
 
 The first command adds this repo as a plugin marketplace. The second opens the plugin.
 Choose "Install for you" (user scope). From your shell, `claude plugin marketplace add
-coo1white/yokoten` and then `claude plugin install yokoten@yokoten` do the same.
+yokoten-labs/yokoten` and then `claude plugin install yokoten@yokoten` do the same.
 
 The plugin is this repo. It uses the same files that `install` copies, so the two ways
 can't drift apart:
@@ -197,7 +197,7 @@ counts its hooks and skills as installed.
 For Codex CLI and Gemini CLI, or without the plugin:
 
 ```sh
-git clone https://github.com/coo1white/yokoten
+git clone https://github.com/yokoten-labs/yokoten
 node yokoten/bin/yokoten.ts install      # this machine: skills, agents, hooks
 cd your-project
 node ~/.local/share/yokoten/bin/yokoten.ts init     # this project: adds files, never overwrites
@@ -229,7 +229,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: coo1white/yokoten@<full commit SHA>
+      - uses: yokoten-labs/yokoten@<full commit SHA>
 ```
 
 The action sets up Node, then runs `check`. On a pull request it also runs `check

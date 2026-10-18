@@ -1,7 +1,7 @@
 # How work is done here
 
 This file is for every agent and every person working in this repo. It starts from
-[yokoten](https://github.com/coo1white/yokoten)'s core rules; the project's own section is
+[yokoten](https://github.com/yokoten-labs/yokoten)'s core rules; the project's own section is
 at the end.
 
 Every rule names why it exists and the check that holds it. A rule with no check is a
@@ -48,7 +48,7 @@ Markdown; a note never fails CI.
 
 A name is what a reader meets first and reads most. Pick names that a new reader, or an
 agent, understands without scrolling back. The yokoten guide says why:
-[Naming](https://github.com/coo1white/yokoten/blob/main/docs/guide.md#naming).
+[Naming](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#naming).
 
 - Whole words. A short form only when everyone knows it (`id`, `url`, `config`). Never
   delete letters inside a word.
