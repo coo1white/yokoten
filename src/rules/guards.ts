@@ -618,6 +618,8 @@ function checkPublish(words: string[], env: Env): Finding | null {
 const KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'fi', 'while', 'until', 'do', 'done', 'esac', '!', '{', '}', '(']);
 // A loop or case head names a variable and data, not a program: `for f in a b`.
 const HEADS = new Set(['for', 'select', 'case', 'in']);
+// The words that open a compound command, each with the word that closes it.
+const COMPOUNDS: Record<string, 'fi' | 'done' | 'esac'> = { if: 'fi', while: 'done', until: 'done', for: 'done', select: 'done', case: 'esac' };
 
 // Each launcher, with the options that take the next word as their value, and how many
 // plain words come before the program (timeout's duration, chrt's priority, taskset's mask).
@@ -702,9 +704,14 @@ function envEscapes(text: string | undefined): string | undefined {
   if (text === undefined) return undefined;
   spend(text.length);
   let out = '';
+  const variable = /\$\{[A-Za-z_]\w*\}/y;
   for (let i = 0; i < text.length; i++) {
     const next = text[i + 1] ?? '';
-    if (text[i] !== '\\') out += text[i];
+    variable.lastIndex = i;
+    // env puts the variable's value in place of ${NAME}; the guard does not know it, and
+    // reads it as empty, so `--for${X}ce` reads as the option it may well be.
+    if (text[i] === '$' && next === '{' && variable.test(text)) i = variable.lastIndex - 1;
+    else if (text[i] !== '\\') out += text[i];
     else if (next === 'c') break;
     else {
       out += '_tnvfr'.includes(next) && next !== '' ? ' ' : text[i] + next;
@@ -871,6 +878,22 @@ function sourcesInput(words: string[], i: number): boolean {
   return /^\/(?:dev\/(?:stdin|fd\/\d+)|proc\/[^/]+\/fd\/\d+)$/.test(file.replace(/\/{2,}/g, '/'));
 }
 
+// `source x` and `. x`: the shell runs the file, so a `<(...)` given to it is commands.
+function isSource(words: string[]): boolean {
+  const program = findPrograms(words)[0];
+  return program === 'source' || program === '.';
+}
+
+// The command xargs runs, without what comes in (`xargs -0 git` gives `git`), or null when
+// the command has no xargs. With no program after its options, xargs runs echo.
+function xargsCommand(words: string[]): string | null {
+  spend(words.length);
+  let index = words.findIndex((word) => programName(word) === 'xargs');
+  if (index === -1) return null;
+  for (index++; index < words.length && words[index].startsWith('-'); ) index += LAUNCHERS.xargs.options.includes(words[index]) ? 2 : 1;
+  return words.slice(index).join(' ');
+}
+
 // ssh options that take a value, in the same word (-p22) or the next (-p 22).
 const SSH_VALUE_OPTIONS = 'BbcDEeFIiJLlmOoPpQRSWw';
 // flock options that take a value. -c (--command) takes the shell string.
@@ -957,15 +980,19 @@ interface Heredoc {
   group?: Group;
 }
 
-// A group `{ ...; }` or a subshell `( ... )`. What its commands print goes where the group
-// sends it, so a heredoc body inside may reach a shell after the group: `{ cat <<EOF; } | bash`.
+// A group `{ ...; }`, a subshell `( ... )`, or a compound command (`if ... fi`, a loop to
+// its `done`, `case ... esac`). What its commands print goes where the group sends it, so a
+// heredoc body or an echo inside may reach a shell after the group: `{ cat <<EOF; } | bash`,
+// `if x; then echo y; fi | bash`. A compound command's kind is the word that closes it.
 interface Group {
-  kind: '(' | '{';
+  kind: '(' | '{' | 'fi' | 'done' | 'esac';
   /** The index, on the current line, of its first command, and of the one after it once closed. */
   from: number;
   to: number;
-  /** Bodies of heredocs inside it that wait for where the group's output goes. */
+  /** What its commands print (heredoc bodies, the words an echo prints), waiting for where the group's output goes. */
   bodies: string[];
+  /** The groups closed inside it that sent their output on to it: their bodies are its own. */
+  inner: Group[];
   /** Whether a command in it reads its input as commands. */
   reads: boolean;
 }
@@ -981,6 +1008,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
   }
   const nested = (s: string) => out.push(...commandWords(s, depth + 1));
   let words: string[] = [];
+  let substitutions: string[] = []; // the text inside each $(...) and <(...) of this command
   let word = '';
   let inWord = false;
   let isQuoted = false; // the word has a quote or a \ in it, so it is no keyword: `'case'`, `\case`
@@ -991,7 +1019,9 @@ function read(text: string, start: number, closer: string, depth: number, out: s
   let pending: Heredoc[] = [];
   let piped: string[] | null = null; // the command before a |
   const groups: Group[] = []; // the groups open now, outermost first
-  let closed: Group | null = null; // a group that just closed, until we see where it sends its output
+  // A group that just closed, until we see where it sends its output. closeGroup sets it, so
+  // the type is written out: TypeScript would take it for null.
+  let closed = null as Group | null;
   let carried: string[] = []; // heredoc bodies a closed group pipes on, waiting for the command that reads them
   let cases = 0; // how many `case ... in` are open
   let isPattern = false; // reading a case pattern, up to its )
@@ -1011,6 +1041,12 @@ function read(text: string, start: number, closer: string, depth: number, out: s
     if (ended === null) return;
     if (isPattern && ++alternative > 1) isPattern = false; // `a b)` is no pattern: read it as a command
     if (!isKeyword) return;
+    // A compound command is a group, open from its first word to the word that closes it.
+    if (isFirst && Object.hasOwn(COMPOUNDS, ended)) {
+      groups.push({ kind: COMPOUNDS[ended], from: line.length, to: 0, bodies: [], inner: [], reads: false });
+    } else if (isFirst && groups.length > 0 && groups[groups.length - 1].kind === ended) {
+      closeGroup(line.length + 1); // the command the closing word leads is the group's too
+    }
     if (ended === 'esac' && isFirst && cases > 0) {
       cases--;
       isPattern = false;
@@ -1026,6 +1062,15 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       }
     }
   };
+  // Closes the innermost group, whose commands end before `to`. A group that reads commands
+  // makes its parent one that does.
+  const closeGroup = (to: number) => {
+    closed = groups.pop() ?? null;
+    if (closed === null) return;
+    closed.to = to;
+    const parent = groups.at(-1);
+    if (parent && closed.reads) parent.reads = true;
+  };
   // Where a group that just closed sends the bodies inside it, and whether this command
   // reads bodies a group piped on. A body that reaches no reader stays data.
   const settle = (pipe: boolean) => {
@@ -1036,11 +1081,11 @@ function read(text: string, start: number, closer: string, depth: number, out: s
     }
     if (closed) {
       if (pipe) {
-        spend(closed.to - closed.from + closed.bodies.length);
-        carried.push(...closed.bodies);
+        spend(closed.to - closed.from);
+        groupBodies(closed, carried);
         // For the bodies read at this line's end: the group's commands pipe on, too.
         for (let i = closed.from; i < closed.to; i++) pipes[i] = true;
-      } else groups.at(-1)?.bodies.push(...closed.bodies);
+      } else groups.at(-1)?.inner.push(closed); // its bodies are its parent's now
       closed = null;
     }
   };
@@ -1048,7 +1093,8 @@ function read(text: string, start: number, closer: string, depth: number, out: s
   // pipe to nothing or in a group that never closed, are read as commands, not guessed.
   const finish = () => {
     endCommand();
-    for (const body of [...carried, ...groups.flatMap((group) => group.bodies)]) nested(body);
+    for (const group of groups) groupBodies(group, carried);
+    for (const body of carried) nested(body);
   };
   const endCommand = (pipe = false) => {
     endWord();
@@ -1059,8 +1105,11 @@ function read(text: string, start: number, closer: string, depth: number, out: s
     if (words.length === 0) return;
     out.push(words);
     if (groups.length > 0) {
-      spend(groups.length);
-      if (readsCommands(words)) for (const group of groups) group.reads = true;
+      // The innermost group reads; it tells its parent when it closes (see closeGroup).
+      if (readsCommands(words)) groups[groups.length - 1].reads = true;
+      // What the command prints, as `echo` would, waits in the group for where it goes.
+      const printed = words.slice(skipPrefix(words, 0) + 1).join(' ');
+      if (printed) groups[groups.length - 1].bodies.push(printed.replace(/\\n/g, '\n'));
     }
     const at = runnerAt(words);
     if (at !== -1) {
@@ -1069,7 +1118,14 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       // `echo 'npm publish' | bash`: the words before the pipe are the shell's input.
       if (piped) nested(piped.slice(1).join(' ').replace(/\\n/g, '\n'));
     }
+    // `bash <(x)`, `source <(x)`, `eval "$(x)"`: what x prints is commands, as in `x | bash`.
+    // All of them in one group: in a group piped to a shell, every line is read as commands.
+    if (substitutions.length > 0 && (at !== -1 || isSource(words))) nested(`{ ${substitutions.join('\n')}\n} | bash`);
+    // `echo push | xargs git`: xargs hands what comes in to its program as words.
+    const handed = piped ? xargsCommand(words) : null;
+    if (piped && handed !== null) nested(`${handed} ${piped.slice(skipPrefix(piped, 0) + 1).join(' ').replace(/\\n/g, ' ')}`);
     piped = pipe ? words : null;
+    substitutions = [];
     words = [];
     caseAt = -1;
     isLeading = true;
@@ -1137,7 +1193,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       }
     } else if (character === '"' || (character === '$' && next === '"')) {
       const open = character === '$' ? index + 1 : index;
-      const quoted = readDouble(text, open + 1, depth, out);
+      const quoted = readDouble(text, open + 1, depth, out, false, substitutions);
       if (quoted === RAN_OUT) index = text.length; // a substitution in it never closed and read the rest
       else if (!quoted) index = open + 1; // unclosed: drop the quote and read on
       else {
@@ -1154,12 +1210,14 @@ function read(text: string, start: number, closer: string, depth: number, out: s
         endCommand();
         index = text.length;
       } else {
+        if (character !== '>' && text[index + 2] !== '(') substitutions.push(text.slice(index + 2, end - 1));
         word += text.slice(index, end);
         inWord = true;
         index = end;
       }
     } else if (character === '`') {
       const end = read(text, index + 1, '`', depth + 1, out);
+      if (end !== -1) substitutions.push(text.slice(index + 1, end - 1));
       inWord = true;
       index = end === -1 ? text.length : end; // unclosed: the read inside read the rest
     } else if (character === '(' && next === '(') {
@@ -1171,12 +1229,11 @@ function read(text: string, start: number, closer: string, depth: number, out: s
     } else if (character === '(' || (character === '{' && !inWord && /\s/.test(next ?? ''))) {
       // A subshell or a group cuts like a separator, and is open until its ) or }.
       endCommand();
-      groups.push({ kind: character, from: line.length, to: 0, bodies: [], reads: false });
+      groups.push({ kind: character, from: line.length, to: 0, bodies: [], inner: [], reads: false });
       index++;
     } else if ((character === ')' && groups.at(-1)?.kind === '(') || (character === '}' && !inWord && /[\s;|&)<>]|^$/.test(next ?? '') && groups.at(-1)?.kind === '{')) {
       endCommand();
-      closed = groups.pop() ?? null;
-      if (closed) closed.to = line.length;
+      closeGroup(line.length);
       index++;
     } else if (character === ';' && cases > 0 && (next === ';' || next === '&')) {
       // `;;`, `;&` and `;;&` end a case item: a pattern comes next.
@@ -1216,8 +1273,9 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       spend(groups.length);
       const doc = heredoc(text, index + 2, line.length, [...groups]);
       if (doc) {
-        // Right after a group closes, the heredoc is the group's input: `{ read a; } <<EOF`.
-        if (closed && withoutRedirects(words).length === 0) doc.doc.group = closed;
+        // Right after a group closes, the heredoc is the group's input: `{ read a; } <<EOF`,
+        // `while read l; do x; done <<EOF` (there the closing word leads the command).
+        if (closed && withoutRedirects(words).length === (closed.kind === '(' || closed.kind === '{' ? 0 : 1)) doc.doc.group = closed;
         pending.push(doc.doc);
         index = doc.end;
       } else {
@@ -1232,6 +1290,20 @@ function read(text: string, start: number, closer: string, depth: number, out: s
   }
   finish();
   return closer ? -1 : text.length;
+}
+
+// Adds the bodies of `group` and of the groups closed inside it to `into`. Each closed group
+// has one parent, and its bodies are taken once, so a deep nest of groups costs no more
+// than its bodies.
+function groupBodies(group: Group, into: string[]): void {
+  const stack = [group];
+  for (let next = stack.pop(); next !== undefined; next = stack.pop()) {
+    spend(1 + next.bodies.length);
+    for (const body of next.bodies) into.push(body);
+    for (const inner of next.inner) stack.push(inner);
+    next.bodies = [];
+    next.inner = [];
+  }
 }
 
 // The end of a $'...' string: the next ' without a \ before it.
@@ -1251,7 +1323,7 @@ const RAN_OUT = Symbol('ran out');
 // Reads "..." from after the opening quote. $(...) and `...` inside it run, so they are
 // read as commands. Returns the word's text and the index after the closing quote, or null
 // when it never closes (RAN_OUT when a substitution in it never closes). With `toEnd` there is no closing quote: it reads a heredoc body.
-function readDouble(text: string, index: number, depth: number, out: string[][], toEnd = false): { value: string; end: number } | typeof RAN_OUT | null {
+function readDouble(text: string, index: number, depth: number, out: string[][], toEnd = false, substitutions: string[] = []): { value: string; end: number } | typeof RAN_OUT | null {
   let value = '';
   while (index < text.length) {
     spend(1);
@@ -1267,6 +1339,7 @@ function readDouble(text: string, index: number, depth: number, out: string[][],
       const from = character === '`' ? index + 1 : index + 2;
       const end = read(text, from, character === '`' ? '`' : ')', depth + 1, out);
       if (end === -1) return RAN_OUT;
+      substitutions.push(text.slice(from, end - 1));
       value += text.slice(index, end);
       index = end;
     } else {
@@ -1284,8 +1357,14 @@ function heredoc(text: string, index: number, cmd: number, groups: Group[]): { d
   while (text[index] === ' ' || text[index] === '\t') index++;
   let delim = '';
   let quoted = false;
-  while (index < text.length && !/[\s;&|()<>]/.test(text[index])) {
+  // A \r is part of the word, as in bash: `<<EOF\r` ends at a line `EOF\r`.
+  while (index < text.length && !/[ \t\n;&|()<>]/.test(text[index])) {
     const character = text[index];
+    // `<<$'EOF'` and `<<$"EOF"`: bash ends the body at EOF, without the $.
+    if (character === '$' && (text[index + 1] === "'" || text[index + 1] === '"')) {
+      index++;
+      continue;
+    }
     if (character === "'" || character === '"') {
       const end = text.indexOf(character, index + 1);
       spend((end === -1 ? text.length : end) - index);
@@ -1329,6 +1408,7 @@ function bodies(text: string, index: number, docs: Heredoc[], { line, pipes, gro
     ends[i] = pipesOn ? ends[i + 1] : i;
     reads[i] = readsCommands(line[i]) || (pipesOn && reads[i + 1]);
   }
+  const handedTo = new Map<number, string | null>(); // what xargs runs, for each command that holds a heredoc
   for (const doc of docs) {
     const lines: string[] = [];
     while (index < text.length) {
@@ -1337,10 +1417,15 @@ function bodies(text: string, index: number, docs: Heredoc[], { line, pipes, gro
       spend(nl - index + 1);
       const ln = text.slice(index, nl);
       index = nl + 1;
-      if ((doc.strip ? ln.replace(/^\t+/, '') : ln).replace(/\r$/, '') === doc.delim) break;
+      // As in bash, a line ends the body only when it is the word exactly: `EOF\r` does not.
+      if ((doc.strip ? ln.replace(/^\t+/, '') : ln) === doc.delim) break;
       lines.push(ln);
     }
     const body = lines.join('\n');
+    // `xargs git <<EOF`: the body's words are the program's words.
+    if (!handedTo.has(doc.cmd)) handedTo.set(doc.cmd, xargsCommand(line[doc.cmd] ?? []));
+    const handed = handedTo.get(doc.cmd) ?? null;
+    if (handed !== null) out.push(...commandWords(`${handed} ${body.replace(/\s+/g, ' ')}`, depth + 1));
     const last = ends[doc.cmd] ?? doc.cmd;
     const isOpenPipe = last > doc.cmd && line[last].length === 0;
     const isRead = doc.group ? doc.group.reads : feedsShell(line[doc.cmd] ?? []);
@@ -1383,7 +1468,9 @@ function readsCommands(words: string[]): boolean {
   if (known !== undefined) return known;
   const program = findPrograms(words)[0];
   let reads: boolean;
-  if (program === undefined || !DATA_READERS.has(programName(program))) reads = runnerAt(words) !== -1;
+  // A program from a variable (`$line`) may be anything, so its input may run.
+  if (program?.startsWith('$')) reads = true;
+  else if (program === undefined || !DATA_READERS.has(programName(program))) reads = runnerAt(words) !== -1;
   else {
     const at = words.indexOf(program);
     reads = runnerAt(withoutRedirects(at === -1 ? words : words.slice(0, at + 1))) !== -1;

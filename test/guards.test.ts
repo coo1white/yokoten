@@ -786,6 +786,9 @@ test('bash: nested constructs at 10k repeats stay under a second and never throw
     '$(', '$( ', '<(', '>(', '((', '$((', '"$(', '"`', '`', '`"', "$'\\'", '<<"', "<<'", '{ ', '( ', '${', '"${',
     'case x in ', 'a) ', ';; ', 'bash -c "', "bash -c '", 'eval "', 'env -S"', 'ssh h "', 'sudo -s "', 'x | bash ', '\\\n',
     'cat <<E | ', 'cat <<E\n', '{ cat <<E; } | ', 'find . -exec ', 'git -c alias.x="!', '$(echo "$(', '"$(echo \'',
+    // #283: compound commands as groups, substitutions handed to a shell, xargs, env -S ${X}.
+    'if a; then ', 'while a; do ', 'done | ', 'fi <<E\n', 'bash <(', 'bash <(a) ', 'source <(a) ', 'eval "$(a)" ', 'eval "$(cat <<E\n',
+    'xargs ', 'a | xargs git ', 'xargs git <<E\n', 'env -S"${X}', '<<$\'E\'\n', '{ echo a; ',
   ];
   for (const shape of shapes) {
     const text = shape.repeat(10000);
@@ -971,6 +974,15 @@ test('bash and hooks: loops that never spent the budget read 100k repeats in und
     [`find . ${'-exec > '.repeat(repeats)}`, 'allow'],
     [`${keys}GIT_CONFIG_VALUE_0=.githooks git status`, 'allow'],
     [`${keys}GIT_CONFIG_VALUE_0=/x git status`, 'hooks-path'],
+    // #283: each new reader, at 100k repeats.
+    [`${'{ echo a; '.repeat(repeats)}${'} '.repeat(repeats)}| bash`, 'allow'],
+    [`${'if a; then echo a; '.repeat(repeats)}${'fi; '.repeat(repeats)}`, 'allow'],
+    [`${'for a in b; do '.repeat(repeats)}echo a${'; done'.repeat(repeats)} | cat`, 'allow'],
+    // What 100k substitutions print, handed to a shell, is too many commands to read: refused, in time.
+    [`bash ${'<(echo a) '.repeat(repeats)}`, 'unreadable-command'],
+    [`eval "${'$(echo a)'.repeat(repeats)}"`, 'unreadable-command'],
+    [`echo a | xargs ${'-0 '.repeat(repeats)}git status`, 'allow'],
+    [`env -S'git status ${'${X}'.repeat(repeats)}'`, 'allow'],
   ];
   for (const [command, want] of commands) {
     const { result, took } = run('command', command);
@@ -1103,4 +1115,91 @@ test('hooks setting: one command asks git each question once, however often it s
     rmSync(cwd, { recursive: true, force: true });
     rmSync(bin, { recursive: true, force: true });
   }
+});
+
+// #283: heredoc shapes bash runs that the guard skipped. Each was run in bash (with a
+// harmless command in place of the push) to see where bash ends the body and what it runs.
+const refusedAs = (command: string, id: string) => assert.equal(checkCommand(command, { env: {} })?.id, id, `should refuse as ${id}: ${JSON.stringify(command)}`);
+
+test('bash: a heredoc ends where bash ends it: at EOF for <<$\'EOF\', and not at EOF\\r (#283)', () => {
+  refusedAs(`cat <<$'EOF'\nx\nEOF\n${force}\n$EOF`, 'force-push');
+  refusedAs(`cat <<$"EOF"\nx\nEOF\n${force}\n$EOF`, 'force-push');
+  refusedAs(`cat <<'EOF'\nEOF\r\ncat <<'X'\nEOF\n${force}\nX`, 'force-push');
+  // `<<EOF\r` (a CRLF line): the word is EOF\r, the body ends at EOF\r, and the next line runs.
+  refusedAs(`cat <<'EOF'\r\nx\r\nEOF\r\n${force}\r\n`, 'force-push');
+  refusedAs(`cat <<EOF\r\nx\r\nEOF\r\n${force}\r\n`, 'force-push');
+  // Look-alikes: the push is in the body, which cat prints.
+  allowed(`cat <<$'EOF'\n${force}\nEOF`);
+  allowed(`cat <<'EOF'\n${force}\r\nEOF`);
+  allowed(`cat <<'EOF'\r\n${force}\r\nEOF\r\n`);
+  // Only the word itself ends a body: a space before it does not, nor spaces after <<-.
+  allowed(`cat << 'A'\nx\n A\n${force}\nA`);
+  allowed(`cat <<-A\nx\n  A\n${force}\nA`);
+});
+
+test('bash: what a substitution prints, handed to a shell, is commands (#283)', () => {
+  for (const command of [
+    `bash <(echo '${force}')`,
+    `source <(echo '${force}')`,
+    `. <(printf '%s\\n' '${force}')`,
+    `bash <(cat <<'EOF'\n${force}\nEOF\n)`,
+    `bash -c "$(cat <<'EOF'\n${force}\nEOF\n)"`,
+    `eval "$(cat <<'EOF'\n${force}\nEOF\n)"`,
+    `eval "$(echo '${force}')"`,
+    `eval \`echo '${force}'\``,
+    `sh -c "$(printf '%s' '${force}')"`,
+  ]) refusedAs(command, 'force-push');
+  for (const command of [
+    'bash <(echo ls)',
+    `cat <(echo '${force}')`,
+    `diff <(echo '${force}') <(echo x)`,
+    `bash <(cat <<'EOF'\nls\nEOF\n)`,
+    `git commit -m "$(cat <<'EOF'\nfix: say why ${force} is refused\nEOF\n)"`,
+    `echo "$(echo '${force}')"`,
+  ]) allowed(command);
+});
+
+test('bash: a compound command piped to a shell is read like a group (#283)', () => {
+  for (const command of [
+    `if true; then cat <<'E'\n${force}\nE\nfi | bash`,
+    `for i in 1; do cat <<'E'\n${force}\nE\ndone | bash`,
+    `while true; do echo '${force}'; break; done | sh`,
+    `until false; do echo '${force}'; done | bash`,
+    `case a in a) echo '${force}';; esac | bash`,
+    `{ echo '${force}'; } | bash`,
+    `( echo '${force}' ) | bash`,
+    `if true; then { echo '${force}'; }; fi | bash`,
+  ]) refusedAs(command, 'force-push');
+  for (const command of [
+    `if true; then cat <<'E'\n${force}\nE\nfi | cat`,
+    `for i in 1; do echo '${force}'; done`,
+    `{ echo '${force}'; } | tee out`,
+    'if true; then echo ls; fi | bash',
+    `if true; then echo x; fi\necho '${force}' | cat`,
+  ]) allowed(command);
+});
+
+test('bash: a loop fed by a heredoc that runs each line reads it as commands (#283)', () => {
+  refusedAs(`while read l; do eval "$l"; done <<'E'\n${force}\nE`, 'force-push');
+  refusedAs(`while read -r l; do $l; done <<'E'\n${force}\nE`, 'force-push');
+  refusedAs(`while read -r l; do "$l"; done <<'E'\n${force}\nE`, 'force-push');
+  allowed(`while read -r l; do echo "$l"; done <<'E'\n${force}\nE`);
+  allowed(`while read -r l; do printf '%s\\n' "$l"; done <<'E'\n${force}\nE`);
+});
+
+test('bash: xargs hands what comes in to its program (#283)', () => {
+  const pushForce = force.split(' ').slice(1).join(' ');
+  refusedAs(`xargs -0 git <<'E'\n${pushForce}\nE`, 'force-push');
+  refusedAs(`echo ${pushForce} | xargs git`, 'force-push');
+  refusedAs(`echo ${pushForce} | xargs -n 9 -P 2 git`, 'force-push');
+  allowed(`xargs git add <<'E'\na.ts\nE`);
+  allowed('echo a.ts | xargs git add');
+  allowed(`echo ${pushForce} | xargs echo`);
+});
+
+test('bash: env -S puts a variable\'s value in place of ${NAME}, which the guard reads as empty (#283)', () => {
+  const [git, push, option] = force.split(' ');
+  refusedAs(`env -S"${git} ${push} ${option.slice(0, 5)}\${X}${option.slice(5)} origin main"`, 'force-push');
+  refusedAs(`env -S'${git} ${push} ${option.slice(0, 5)}\${X}${option.slice(5)}'`, 'force-push');
+  allowed('env -S\'git status ${X}\'');
 });
