@@ -10,6 +10,8 @@ export interface Config {
   privacy: { allow: string[]; skip: string[]; utc: boolean };
   notNow: Record<string, string>;
   allowBuild: string[];
+  areas: string[];
+  translations: { fail: boolean };
 }
 
 /** What yokoten.json may hold: any key, or part of one. */
@@ -20,6 +22,8 @@ interface ConfigFile {
   privacy?: Partial<Config['privacy']>;
   notNow?: Record<string, string>;
   allowBuild?: string[];
+  areas?: string[];
+  translations?: Partial<Config['translations']>;
 }
 
 /** The guard's own environment (process.env, or a test's stand-in). */
@@ -33,7 +37,7 @@ export const DEFAULTS: Config = {
   tests: ['*.test.*', '*.spec.*', '*_test.go', 'test/**', 'tests/**'],
   // What only the lead (the session that reviews and pushes) may change: the rules the
   // agents work under, and the CI that checks them.
-  leadOnly: ['AGENTS.md', 'CLAUDE.md', 'yokoten.json', '.claude/**', '.codex/**', '.gemini/**', '.muse/**', '.githooks/**', '.github/**'],
+  leadOnly: ['AGENTS.md', 'CLAUDE.md', 'yokoten.json', '.claude/**', '.claude-plugin/**', '.codex/**', '.gemini/**', '.muse/**', '.githooks/**', '.github/**'],
   // `allow`: literal strings the privacy check lets through (a public support address).
   // `skip`: files it does not read (lockfiles, vendored code).
   // `utc`: commits must record their time in UTC, not the machine's time zone.
@@ -43,6 +47,11 @@ export const DEFAULTS: Config = {
   notNow: {},
   // Build output and binaries the commit check lets through, as globs: ["dist/**", "*.pdf"].
   allowBuild: [],
+  // The areas an issue title (`area: ...`) and a pull request title (`type(area): ...`)
+  // may name: ["doctor", "check"]. Empty means any lowercase word.
+  areas: [],
+  // A translation behind its English source (#87) is a note; `fail` makes it a problem.
+  translations: { fail: false },
 };
 
 export function loadConfig(root: string): Config {
@@ -59,5 +68,44 @@ export function loadConfig(root: string): Config {
     privacy: { ...DEFAULTS.privacy, ...file.privacy },
     notNow: file.notNow ?? {},
     allowBuild: file.allowBuild ?? DEFAULTS.allowBuild,
+    areas: file.areas ?? DEFAULTS.areas,
+    translations: { ...DEFAULTS.translations, ...file.translations },
   };
+}
+
+// Globs, as yokoten.json names files. Matched against a path relative to the repo root,
+// with forward slashes.
+//
+// `*` matches inside one name, `?` one character, `**/` any number of folders (none too),
+// and a trailing `**` everything below. A glob with a slash is anchored at the root
+// (`test/**` is the root's test folder); a glob without one matches a name in any folder
+// (`*.test.*`).
+
+export function globToRegExp(glob: string): RegExp {
+  let re = '';
+  for (let index = 0; index < glob.length; index++) {
+    const character = glob[index];
+    if (character === '*' && glob[index + 1] === '*') {
+      if (glob[index + 2] === '/') {
+        re += '(?:.*/)?';
+        index += 2;
+      } else {
+        re += '.*';
+        index += 1;
+      }
+    } else if (character === '*') {
+      re += '[^/]*';
+    } else if (character === '?') {
+      re += '[^/]';
+    } else {
+      re += character.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    }
+  }
+  return new RegExp(glob.includes('/') ? `^${re}$` : `(?:^|/)${re}$`);
+}
+
+/** A function that says whether a path matches any of the globs. */
+export function matcher(globs: string[]): (path: string) => boolean {
+  const patterns = globs.map(globToRegExp);
+  return (path) => patterns.some((re) => re.test(path));
 }

@@ -1,6 +1,7 @@
 {
-  // Type checking only. Node runs the .ts files as they are (type stripping), so there
-  // is no build and no output: only syntax Node can erase is allowed.
+  // Type checking only. Node runs the .ts files as they are (type stripping), so the repo
+  // has no build and no output: only syntax Node can erase is allowed. The npm package
+  // alone is built, by tsconfig.build.json (#31).
   "compilerOptions": {
     "target": "es2023",
     "module": "nodenext",
@@ -15,5 +16,5 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true
   },
-  "include": ["bin", "src", "test"]
+  "include": ["bin", "src", "test", "scripts"]
 }

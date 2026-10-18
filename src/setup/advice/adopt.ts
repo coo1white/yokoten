@@ -13,10 +13,10 @@
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Env } from '../rules/config.ts';
-import { loadMarks, scanText } from '../rules/privacy.ts';
-import { chat, KEY_HINT, type LlamaConfig, llamaConfig, type Message } from '../agents/llama.ts';
-import { type Found, gitConfig, hasIssueTemplate, hasPrTemplate, ROAD, road, securityLacking, todoFiles } from './road.ts';
+import type { Env } from '../../rules/config.ts';
+import { loadMarks, scanText } from '../../rules/privacy.ts';
+import { chat, KEY_HINT, type LlamaConfig, llamaConfig, type Message } from '../../agents/llama.ts';
+import { type Found, gitConfig, hasIssueTemplate, hasPrTemplate, ROAD, road, securityLacking, todoFiles } from '../road.ts';
 
 export type Status = 'done' | 'missing' | 'partial';
 export type Decision = 'as-is' | 'lighter' | 'not-now';
@@ -220,7 +220,8 @@ export function promptProblems(messages: Message[], env: Env): string[] {
   } catch {
     // An unreadable marks file: the patterns still run.
   }
-  const problems = scanText(text, { file: 'prompt', marks });
+  // Each finding names its kind only ("an email address"), never the value.
+  const problems = scanText(text, { file: 'prompt', marks }).map((found) => `prompt: ${found.what}.`);
   const home = (env.HOME ?? '').replace(/[\\/]+$/, '');
   if ((home.length > 1 && text.includes(home)) || /(^|[\s"'(])(\/(home|Users)\/|[A-Za-z]:\\)/.test(text)) problems.push('prompt: a path outside the repo.');
   return problems;

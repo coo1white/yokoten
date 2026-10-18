@@ -7,8 +7,8 @@ on:
   pull_request:
   push:
     branches: [main]
-permissions:
-  contents: read
+# No job gets a permission it does not name.
+permissions: {}
 # A new push to a pull request cancels the run still going for it. Every other run
 # (a push to main) gets a group of its own, so nothing on main is ever cancelled.
 concurrency:
@@ -18,11 +18,17 @@ jobs:
   test:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        # The oldest Node that runs .ts as it is (package.json "engines"), and the current 22.
-        node: ['22.18.0', '22']
+        os: [ubuntu-latest]
+        # The oldest Node that runs .ts as it is (package.json "engines"), and the current LTS.
+        node: ['22.18.0', '24']
+        # One macOS run: paths there go through symlinks (/var), which hid a real bug (#1).
+        include:
+          - os: macos-latest
+            node: '24'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -35,6 +41,8 @@ jobs:
   typecheck:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -44,13 +52,19 @@ jobs:
           node-version: 22
       - run: npm ci
       - run: npm run typecheck
+      # The npm package (record 0008): pack it, install it offline, run install, init and doctor.
+      - run: npm run check-package
   # The same check as the commit hook, for commits made without it.
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
+      # The whole history, so a translation note can say how many commits it is behind.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -61,6 +75,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     env:
       ACTIONLINT_VERSION: 1.7.12
       ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
@@ -86,13 +102,31 @@ jobs:
         with:
           advanced-security: false
           annotations: true
+  # The action other repos use (action.yml, #106), run here as they would run it. No
+  # `check --pr`: this workflow does not run again when the title or labels change, so a
+  # fixed title would leave `ci` red. The `pr` workflow checks the pull request.
+  action:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # GitHub documents `$/` only with a folder after it, not for an action at the root.
+      - uses: ./ # zizmor: ignore[self-repository]
+        with:
+          pr-check: false
   # The one required check. It runs even when a job it needs failed, and goes red if
   # any of them did not succeed (failed, cancelled or skipped).
   ci:
     if: always()
-    needs: [test, typecheck, check, lint]
+    needs: [test, typecheck, check, lint, action]
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions: {}
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
         run: exit 1

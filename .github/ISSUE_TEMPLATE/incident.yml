@@ -1,5 +1,6 @@
 name: Incident
-description: Something went wrong in how we work. The rca skill turns it into a check.
+description: "Something went wrong in how we work. The rca skill turns it into a check. Title: `area: symptom` (what you saw, not the fix), for example `check: misses a key in a JSON file`. At most 60 characters, no full stop, no #N."
+title: "area: "
 labels: [incident]
 body:
   - type: textarea

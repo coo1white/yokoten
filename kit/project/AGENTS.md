@@ -1,7 +1,7 @@
 # How work is done here
 
 This file is for every agent and every person working in this repo. It starts from
-[yokoten](https://github.com/coo1white/yokoten)'s core rules; the project's own section is
+[yokoten](https://github.com/yokoten-labs/yokoten)'s core rules; the project's own section is
 at the end.
 
 Every rule names why it exists and the check that holds it. A rule with no check is a
@@ -30,7 +30,7 @@ skill: find the cause, add or fix the check, then carry the fix to the other pro
 | 5 | A worker does not change lead-only files: these rules, agent config, hooks, CI. | Risk: a pull request that edits CI runs that CI before anyone reads it. | Tool guard and commit check; the bot has no Workflows permission |
 | 6 | Never skip the commit check (`--no-verify`, changing `core.hooksPath`). | Risk: a skipped check makes a broken commit look reviewed. | Tool guard; CI runs the same check |
 | 7 | No plain force push. Merge `main` into a branch only on a real conflict; never rebase a shared branch. | Risk: a force push throws away commits someone else pushed. | Tool guard; branch ruleset |
-| 8 | Squash merge. One pull request, one purpose; small polish goes in one batch. A pull request has a commit-form title, a `tier:` line, Why / What changed / How tested, a linked issue, a changelog line when behaviour changes, a milestone and labels. | Incident: the owner was asked to review a +3 −2 pull request on its own and said small changes should not each cost a review. | Repo settings (squash only); `check --pr` in CI |
+| 8 | Squash merge. One pull request, one purpose; small polish goes in one batch. A pull request has a commit-form title, a `tier:` line, Why / What changed / How tested, a linked issue, a file in `changes/` when behaviour changes, a milestone and labels. An issue title is `area: verb phrase` (a task) or `area: symptom` (an incident): at most 60 characters, no full stop, no `#N`. | Incident: the owner was asked to review a +3 −2 pull request on its own and said small changes should not each cost a review. | Repo settings (squash only); `check --pr` and `check --issue` in CI |
 | 9 | Review and test the exact commit that merges. The reviewer only reads; the verifier runs it. | Incident: two pull requests, each green on its own, broke `main` together, twice. | `inspect` skill; merge queue where the host has one |
 | 10 | No folder holds more than 7 entries (the root is not counted). | Risk: a flat folder grows until nobody can find anything. Set as a standard by the owner. | Commit check (layout) |
 | 11 | Nothing in the repo, or in what yokoten prints, points at a person or opens their accounts: no personal email, IP, name, city or private domain, and no secret (token or private key). A hit is reported by place, never by content; the home folder shows as `~`. | Incident: the old check read only the live docs, and server names and addresses were still in 56 tracked files. | Commit check and CI (privacy and secrets); `check --history` before going public |
@@ -43,6 +43,29 @@ include beginners, people reading a second language, and agents. An instruction 
 most 20 words; a description at most 25. One instruction per sentence. One word for one
 thing. Active voice. A flow gets a diagram. `check --pr` notes long sentences in changed
 Markdown; a note never fails CI.
+
+## Names
+
+A name is what a reader meets first and reads most. Pick names that a new reader, or an
+agent, understands without scrolling back. The yokoten guide says why:
+[Naming](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#naming).
+
+- Whole words. A short form only when everyone knows it (`id`, `url`, `config`). Never
+  delete letters inside a word.
+- At most 4 words. There is no character limit, because a limit makes people abbreviate.
+- One letter only for a name used within about 10 lines, such as a loop counter.
+- A function's name starts with a verb. A true/false value starts with `is`, `has` or
+  `can`.
+- One idea keeps one name in every file.
+- Use the language's own case style, for example `camelCase` in TypeScript and
+  `snake_case` in Python.
+
+| Hard to read | Easy to read | Why |
+|---|---|---|
+| `r`, still used 30 lines later | `result` | By line 30 the reader has forgotten what `r` holds. |
+| `cfgMgr` | `configManager` | Letters cut from inside words make the reader guess. |
+| `processTheUserInputDataNow` | `parseInput` | Six words, and three of them say nothing. |
+| `valid` | `isValid` | `is` says the value is only true or false. |
 
 ## Where to look
 

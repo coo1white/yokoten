@@ -1,0 +1,35 @@
+# Once a week, count the pull requests that outside people (not bots) opened in the last 7 days,
+# and post the count on issue #88. It never closes, labels or comments on a pull request.
+# The owner turns on "only collaborators can create pull requests" if spam grows (#88).
+name: outside-prs
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+jobs:
+  count:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Count outside pull requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          since=$(date -u -d '7 days ago' +%Y-%m-%d)
+          list=$(gh api -X GET search/issues -f q="repo:$REPO is:pr created:>=$since" -f per_page=100 \
+            --jq '.items[] | select(.user.type != "Bot" and .author_association != "OWNER" and .author_association != "MEMBER" and .author_association != "COLLABORATOR") | "- #\(.number) \(.title)"')
+          n=$(printf '%s' "$list" | grep -c . || true)
+          {
+            echo "Outside pull requests opened since $since: **$n**."
+            if [ "$n" -gt 0 ]; then echo; echo "$list"; fi
+            if [ "$n" -ge 5 ]; then echo; echo "That is 5 or more. Check them for spam (see the rule above)."; fi
+          } > body.md
+          gh issue comment 88 --repo "$REPO" --body-file body.md
