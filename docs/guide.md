@@ -172,6 +172,25 @@ An old project isn't a blank slate. Some of its habits are better than ours. So 
 decision: **as-is**, **lighter** (and what's left out), or **not now** (with the reason
 and when to look again). "Not now" goes into `yokoten.json`, and `doctor` stops asking.
 
+### A first draft of the table
+
+`yokoten adopt` drafts that table before the talk starts. It reads the project's files
+and says what the project does today for each step: **done**, **missing** or
+**partial**. Partial means the project has its own way, such as husky hooks, or a CI
+that doesn't run yokoten. A model then proposes a decision and a one-sentence reason
+for each row.
+
+- The model gets only those short facts. It never gets file contents.
+- yokoten runs its privacy check on the request first. On a hit, it sends nothing.
+- With no key, a failed call or a bad answer, rules draft the table instead: done or
+  missing is as-is, partial is lighter. The output says which one drafted it.
+- `adopt` never writes a file. You still decide every row.
+
+The model runs on Meta's model API, through its OpenAI-compatible endpoint
+(`https://api.meta.ai/v1`, model `muse-spark-1.3`). Set `LLAMA_API_KEY` or `MODEL_API_KEY`
+to your key. `LLAMA_API_BASE` and `LLAMA_MODEL` point it at any other OpenAI-compatible
+endpoint and model.
+
 ## Works with
 
 yokoten guards three AI coding agents. Each one keeps the same rules.
@@ -333,6 +352,7 @@ It puts two safe defaults in `.github/` too:
 | `init --github --yes [--remove-default-labels]` | Adds the missing standard labels, and a milestone "First release" when no milestone is open. A standard label that is there gets the standard colour and description. A second run changes nothing. GitHub's default labels outside the set (`question`, `wontfix` and others) are deleted only with `--remove-default-labels` |
 | `update [dir] [--write]` | Shows what this yokoten changes in the core rules of the project's `AGENTS.md`. `--write` replaces them, and keeps the "This project" part as it is. See [Updating the rules](#updating-the-rules) |
 | `doctor [--session]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session |
+| `adopt [--json]` | A draft of the adoption table for an old project: what it does today, and a proposed decision for each step. `--json` prints the rows. Writes nothing |
 | `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries. For the tree, a translation behind its English source is a note. See [Translations](#translations) |
 | `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
 | `check --issue` | In CI: the issue's title. See [Issue titles](#issue-titles) |
