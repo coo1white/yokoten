@@ -28,6 +28,8 @@ const PATTERNS: { kind: string; re: RegExp }[] = [
   { kind: 'OpenAI key', re: token('sk-(?:proj|svcacct|admin)-[A-Za-z0-9_\\-]{40,}') },
   // OpenAI legacy key, which carries "OpenAI" in base64 (T3BlbkFJ) in its middle.
   { kind: 'OpenAI key', re: token('sk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}') },
+  // Meta Model API key: LLM_, the numeric app id, then the secret.
+  { kind: 'Meta key', re: token('LLM_[0-9]{6,}_[A-Za-z0-9_\\-]{20,}') },
 ];
 
 // The examples AWS prints in its own docs (AKIAIOSFODNN7EXAMPLE) open nothing.

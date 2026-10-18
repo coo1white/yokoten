@@ -6,6 +6,10 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The secret check catches Meta Model API keys (`LLM_` with an app id and a secret) (#68).
+
 ### Changed
 
 - Every message has three parts: what happened, why it matters, and the fix. Most
