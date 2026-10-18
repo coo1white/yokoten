@@ -44,6 +44,29 @@ most 20 words; a description at most 25. One instruction per sentence. One word 
 thing. Active voice. A flow gets a diagram. `check --pr` notes long sentences in changed
 Markdown; a note never fails CI.
 
+## Names
+
+A name is what a reader meets first and reads most. Pick names that a new reader, or an
+agent, understands without scrolling back. The yokoten guide says why:
+[Naming](https://github.com/coo1white/yokoten/blob/main/docs/guide.md#naming).
+
+- Whole words. A short form only when everyone knows it (`id`, `url`, `config`). Never
+  delete letters inside a word.
+- At most 4 words. There is no character limit, because a limit makes people abbreviate.
+- One letter only for a name used within about 10 lines, such as a loop counter.
+- A function's name starts with a verb. A true/false value starts with `is`, `has` or
+  `can`.
+- One idea keeps one name in every file.
+- Use the language's own case style, for example `camelCase` in TypeScript and
+  `snake_case` in Python.
+
+| Hard to read | Easy to read | Why |
+|---|---|---|
+| `r`, still used 30 lines later | `result` | By line 30 the reader has forgotten what `r` holds. |
+| `cfgMgr` | `configManager` | Letters cut from inside words make the reader guess. |
+| `processTheUserInputDataNow` | `parseInput` | Six words, and three of them say nothing. |
+| `valid` | `isValid` | `is` says the value is only true or false. |
+
 ## Where to look
 
 | For | Read |
