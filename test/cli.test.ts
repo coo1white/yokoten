@@ -1405,3 +1405,23 @@ test('adopt: with no key, the rule-based draft and how to set the key; it change
   assert.match(json.stderr, /drafted by rules/);
   assert.equal(sandbox.git('status', '--porcelain', '--ignored').stdout, before, 'adopt writes nothing');
 });
+
+// #174: the pitch demo runs end to end, offline, in a temp folder it removes, and never
+// touches this repo's kit.
+test('demo: scripts/demo.ts walks the loop from an incident to a doctor note, and leaves nothing', () => {
+  const temp = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const kitTable = join(dirname(CLI), '..', 'kit', 'lessons', 'README.md');
+  const before = readFileSync(kitTable, 'utf8');
+  const result = spawnSync('node', [join(dirname(CLI), '..', 'scripts', 'demo.ts')], { env: { PATH: process.env.PATH, TMPDIR: temp }, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /\n\$ yokoten learn https:\/\/github\.com\/octo-org\/project-a\/issues\/12\nyokoten learn: a check draft from issue #12, /);
+  assert.match(result.stdout, /\nWrote:\n- lessons\/incident-12\/lesson\.ts\n/);
+  assert.match(result.stdout, /\nyokoten learn --ship: 2 problem\(s\); nothing was moved:\n- lessons\/incident-12\/lesson\.ts still has 1 TODO\(reviewer\)/);
+  assert.match(result.stdout, /\n\+ {2}what: 'a test calls a server on this machine and does not set NO_PROXY',\n/);
+  assert.match(result.stdout, /\nyokoten learn --ship: incident-12 is in kit\/lessons\/incident-12\//);
+  assert.match(result.stdout, /\n {2}note {4}lesson incident-12: test\/api\.test\.js: a test calls a server on this machine and does not set NO_PROXY; set NO_PROXY/);
+  assert.match(result.stdout, /\nDone in \d+\.\ds: /);
+  assert.deepEqual(readdirSync(temp), [], 'the demo folder is gone');
+  assert.equal(readFileSync(kitTable, 'utf8'), before, 'the real kit is not touched');
+  rmSync(temp, { recursive: true, force: true });
+});

@@ -557,6 +557,11 @@ project:
 提醒不会让 `doctor` 失败。某个项目不想查这一课，就在 `yokoten.json` 的 "notNow" 里写上它的编号和理由，
 比如 `"notNow": { "incident-138": "a setup file sets it" }`。
 
+**自己走一遍。** 在 yokoten 的仓库里跑 `node scripts/demo.ts`，大约一秒就把整个流程走完：
+出事故、起草稿、没审就发被拒、人来审、发进 kit，最后另一个项目的 `doctor` 给出提醒。
+全程在临时文件夹里做，不联网（用的是假的 `gh`），做完就删。想留下来看看，加 `--keep`，
+它会打出文件夹在哪里。
+
 
 ## 核心规则
 
