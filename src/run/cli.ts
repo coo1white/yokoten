@@ -4,8 +4,8 @@
 /** A command that runs yokoten's `<sub>`, by whatever path. */
 export const runs = (sub: string): RegExp => new RegExp(`yokoten\\.ts"?\\s+${sub}\\b`);
 
-/** The yokoten subcommand a command runs, if any. */
-export const subcommand = (command: string): string | undefined => command.match(/yokoten\.ts"?\s+(\w\S*)/)?.[1];
+/** The yokoten subcommand a command runs, if any. The word ends at a `;`, as in a tool-call guard (#260). */
+export const subcommand = (command: string): string | undefined => command.match(/yokoten\.ts"?\s+(\w[\w-]*)/)?.[1];
 
 /**
  * A hook command that runs `node <path> <args>`, with `path` quoted for the shell. When the
@@ -16,18 +16,41 @@ export const subcommand = (command: string): string | undefined => command.match
  * error goes to /dev/null, so a broken path never prints the full path.
  * `missing` has no quote or backslash, so it fits in the echo and the JSON as it is. It
  * never names the file followed by a word, or `subcommand` would read that word.
+ * A tool-call guard (`isToolCall`) fails closed: see `refuseOnFailure`.
  */
 export function guardCommand(
   path: string,
   args: string,
   missing: string,
-  { isSessionStart = false, sessionOutput = 'text' }: { isSessionStart?: boolean; sessionOutput?: 'text' | 'json' } = {},
+  {
+    isSessionStart = false,
+    sessionOutput = 'text',
+    isToolCall = false,
+  }: { isSessionStart?: boolean; sessionOutput?: 'text' | 'json'; isToolCall?: boolean } = {},
 ): string {
   if (/['"\\]/.test(missing)) throw new Error(`a missing-runtime line has a quote or a backslash: ${missing}`);
   const line = sessionOutput === 'json' ? `{"hookSpecificOutput":{"additionalContext":"${missing}"}}` : missing;
   const say = isSessionStart ? `echo '${line}'; exit 0` : `echo '${missing}' >&2; exit 1`;
-  return `[ -f ${path} ] 2>/dev/null || { ${say}; }; node ${path} ${args}`;
+  const check = `[ -f ${path} ] 2>/dev/null || { ${say}; }; `;
+  return check + (isToolCall ? refuseOnFailure(`node ${GUARD_HEAP} ${path} ${args}`) : `node ${path} ${args}`);
 }
+
+/**
+ * Caps the tool-call guard's heap at 256 MB. A read that runs away aborts in a second or
+ * two and is refused, instead of swapping until the agent's hook timeout lets the call
+ * through (#260). One tool call is at most a few MB of JSON, so this leaves a wide margin.
+ */
+export const GUARD_HEAP = '--max-old-space-size=256';
+
+/**
+ * `run`, a tool-call guard, failing closed (#260). The agents block a call on exit 2 only,
+ * and run it on any other failure, so a guard that crashes, runs out of memory or is
+ * killed would let the call through. Here 0 and 2 pass as they are, and anything else,
+ * a signal (128 + its number) included, becomes 2 with one line on stderr. The plugin's
+ * PreToolUse hook in .claude-plugin/plugin.json holds the same text.
+ */
+export const refuseOnFailure = (run: string): string =>
+  `${run}; code=$?; [ $code -eq 0 ] || [ $code -eq 2 ] || { echo "yokoten's guard failed (exit $code), so the command is refused; run \\\`yokoten doctor\\\`" >&2; code=2; }; exit $code`;
 
 /**
  * The line that runs the commit check from a project's own pre-commit, by `cli`'s path.

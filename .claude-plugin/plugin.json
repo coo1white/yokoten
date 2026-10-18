@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/yokoten.ts\" hook --commands-only"
+            "command": "node --max-old-space-size=256 \"${CLAUDE_PLUGIN_ROOT}/bin/yokoten.ts\" hook --commands-only; code=$?; [ $code -eq 0 ] || [ $code -eq 2 ] || { echo \"yokoten's guard failed (exit $code), so the command is refused; run \\`yokoten doctor\\`\" >&2; code=2; }; exit $code"
           }
         ]
       }

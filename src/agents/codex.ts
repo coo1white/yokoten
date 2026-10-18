@@ -48,7 +48,7 @@ const projectHooks = (root: string) => join(root, '.codex', 'hooks.json');
  * project-dir variable; its docs advise a path from the git root, as here.
  */
 export const addProjectHook = (root: string, cli: string) =>
-  addHook(projectHooks(root), 'PreToolUse', 'Bash|apply_patch', guardCommand(`"$(git rev-parse --show-toplevel)/${cli}"`, 'hook --agent codex', missingProjectRuntime(cli)));
+  addHook(projectHooks(root), 'PreToolUse', 'Bash|apply_patch', guardCommand(`"$(git rev-parse --show-toplevel)/${cli}"`, 'hook --agent codex', missingProjectRuntime(cli), { isToolCall: true }));
 export const hasProjectHook = (root: string): boolean => hasHook(projectHooks(root), 'PreToolUse', 'hook');
 
 /**
@@ -73,6 +73,6 @@ const userHooks = (env: Env) => join(env.HOME || homedir(), '.codex', 'hooks.jso
 export function addUserHooks(env: Env, cli: string, missing: string): { doctor: Added; guard: Added } {
   return {
     doctor: addHook(userHooks(env), 'SessionStart', undefined, guardCommand(cli, 'doctor --session --agent codex', missing, { isSessionStart: true })),
-    guard: addHook(userHooks(env), 'PreToolUse', SHELL, guardCommand(cli, 'hook --agent codex --commands-only', missing)),
+    guard: addHook(userHooks(env), 'PreToolUse', SHELL, guardCommand(cli, 'hook --agent codex --commands-only', missing, { isToolCall: true })),
   };
 }

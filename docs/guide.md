@@ -438,8 +438,14 @@ never what matched.
 | 1 | Problems found (`check`, `doctor`), an unknown id (`explain`), a usage error, or an error in yokoten itself |
 | 2 | The hook blocked the tool call, or the stop check sent the agent back. The reason is on stderr |
 
-These codes do not change. A broken guard gives 1, not 2: you see it, and it does not
-block every tool call.
+These codes do not change. yokoten itself gives 1 when it breaks. But only exit 2 blocks
+a call in all three agents, so a guard that crashed would let the call through. The
+tool-call hook that `init`, `install` and the plugin write turns any other exit into 2:
+when the guard crashes, runs out of memory or is killed, the call is refused with one
+line, `` yokoten's guard failed (exit N), so the command is refused; run `yokoten doctor` ``.
+One case stays at 1: when the runtime is gone, the hook says so in one line and the call
+goes on, so a deleted folder does not block every tool call. The stop check and the
+session doctor pass a failure on as it is.
 
 ### The stop check
 
