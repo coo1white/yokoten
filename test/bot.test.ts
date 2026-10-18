@@ -428,4 +428,17 @@ test('incident: read through gh issue view; a bad reference or a gh failure is a
     throw Object.assign(new Error('Command failed'), { stderr: 'GraphQL: Could not resolve to an issue\nmore' });
   };
   assert.equal(readIncident(refused, '99'), 'gh can\'t read issue 99 (GraphQL: Could not resolve to an issue): run `gh auth login`, and check the number and the repo');
+  const escaping: Gh = () => {
+    throw Object.assign(new Error('Command failed'), { stderr: 'bad \u001b[2K\u001b]8;;https://example.com\u0007link' });
+  };
+  assert.ok(!/[\u001b\u0007]/.test(String(readIncident(escaping, '99'))), 'gh\'s error text reaches the terminal with no raw escape');
+});
+
+test('incident: the number gh gives must be a whole number above 0, since it names the draft\'s folder', () => {
+  const ghWith = (number: unknown): Gh => () => JSON.stringify({ number, title: 'check: misses a key', body: '', url: 'https://example.com/issues/1', labels: [] });
+  for (const bad of ['1/../../x', 0, -1, 1.5, 2 ** 53, null, undefined]) {
+    const result = readIncident(ghWith(bad), '1');
+    assert.equal(result, 'gh gave no issue number for 1: it must be a whole number above 0', `number ${String(bad)}`);
+  }
+  assert.equal((readIncident(ghWith(7), '1') as { number: number }).number, 7);
 });

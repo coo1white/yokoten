@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { type Finding, formatFinding, place } from '../rules/message.ts';
 import type { CodeOwners, PullRequest } from '../rules/pr.ts';
-import type { Incident } from '../run/learn.ts';
+import { type Incident, terminalText } from '../run/learn.ts';
 
 export interface BotConfig {
   appId: string;
@@ -508,12 +508,15 @@ export function readIncident(gh: Gh, reference: string): Incident | string {
     text = gh(['issue', 'view', reference, '--json', 'number,title,body,url,labels']);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'gh is not installed: get it from https://cli.github.com, then run `gh auth login`';
-    const reason = String((err as { stderr?: string }).stderr || '').split('\n')[0].trim();
+    const reason = terminalText(String((err as { stderr?: string }).stderr || '').split('\n')[0].trim());
     return `gh can't read issue ${reference}${reason ? ` (${reason})` : ''}: run \`gh auth login\`, and check the number and the repo`;
   }
-  const issue = JSON.parse(text) as { number?: number; title?: string; body?: string; url?: string; labels?: { name?: string }[] };
+  const issue = JSON.parse(text) as { number?: unknown; title?: string; body?: string; url?: string; labels?: { name?: string }[] };
+  // The number names the draft's folder (lessons/incident-<n>), so only a whole number will do.
+  const { number } = issue;
+  if (typeof number !== 'number' || !Number.isSafeInteger(number) || number <= 0) return `gh gave no issue number for ${reference}: it must be a whole number above 0`;
   return {
-    number: issue.number ?? 0,
+    number,
     title: issue.title ?? '',
     body: issue.body ?? '',
     url: issue.url ?? '',
