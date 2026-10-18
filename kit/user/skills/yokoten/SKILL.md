@@ -13,8 +13,16 @@ practices one at a time with the user, and decide each one.
 ## 1. See where the project is
 
 Run `yokoten adopt` in the repo root. It prints a draft of the table in step 2: one
-row per step, what the project does today (done, missing or partial), and a proposed
-decision with a reason. A model drafts the decisions when `LLAMA_API_KEY` is set;
+row per step, what the project does today, and a proposed decision with a reason. The
+project today is one of:
+
+- **done**: the project does it.
+- **missing**: the project does not do it.
+- **partial**: the project does part of it, or does it its own way.
+- **unknown**: yokoten could not tell from here, for example a server setting with no
+  `gh`. Run `yokoten doctor` before you call it missing.
+
+A model drafts the decisions when `LLAMA_API_KEY` is set;
 otherwise rules draft them, and the output says so. `adopt` writes nothing.
 
 Then check the draft. Read the project's own `AGENTS.md`, `CLAUDE.md`, `README.md`, CI
