@@ -20,7 +20,7 @@ import { hasPlugin, hasProjectHook } from '../agents/claude-code.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
 import { hasBot, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
-import { claudeReadsRules, cliPath, COMMIT_HOOKS, handOffBlocks, hasHandOff, hookFile, isExecutable, isSelf, type OldHook, readHookSetup, readOldHooks } from './init.ts';
+import { claudeReadsRules, cliPath, COMMIT_HOOKS, handOffBlocks, deadHookNotes, hasHandOff, hookFile, isCommitHook, isExecutable, isSelf, type OldHook, readHookSetup, readOldHooks } from './init.ts';
 import { FIRST_MILESTONE, lackingLabels, pickNewMilestone } from './plan.ts';
 import { skillFiles, skillsDir } from './install.ts';
 
@@ -399,13 +399,19 @@ export const ROAD: Step[] = [
       const hooks = uncheckedHooks(root);
       const files = hooks?.map((h) => h.file) ?? [];
       const dropped = droppedHooks(root);
-      if (hooks && !files.length && dropped.length) return `\`yokoten init\` makes ${dropped.map((old) => `.githooks/${old.hook} run ${old.file}`).join(' and ')} after the check`;
-      if (!files.length || files.includes('.githooks/pre-commit')) return '`yokoten init` sets it up';
+      if (hooks && !files.length && dropped.length) {
+        return `\`yokoten init\` makes ${dropped.map((old) => `.githooks/${old.hook} run ${old.file}${isCommitHook(old.hook) ? ' after the check' : ''}`).join(' and ')}`;
+      }
+      if (!files.length || files.includes('.githooks/pre-commit')) {
+        // A hook git skips today is not a reason to wait; init sets .githooks and says how to keep it (#256).
+        const dead = readHookSetup(root).kind === 'plain' ? deadHookNotes(readOldHooks(root)) : [];
+        return ['`yokoten init` sets it up', ...dead.map((line) => `note: ${line}`)].join('; ');
+      }
       if (files.join() === '.githooks/pre-merge-commit') return '`yokoten init` sets up .githooks/pre-merge-commit';
       return ownHookFix(hooks as UncheckedHook[], cliPath(root));
     },
     why: 'a secret or a personal email is hard to take back once a commit is pushed',
-    how: "the pre-commit and pre-merge-commit that git runs from core.hooksPath run `yokoten check`: in .githooks/, or in the project's own folder (husky: .husky/). With .githooks, an executable hook left in .git/hooks is run from .githooks after the check, so it is not switched off",
+    how: "the pre-commit and pre-merge-commit that git runs from core.hooksPath run `yokoten check`: in .githooks/, or in the project's own folder (husky: .husky/). With .githooks, each executable hook left in .git/hooks is run from .githooks (a commit hook after the check), so it is not switched off",
     standard: 'OSPS-BR-07.01',
   },
   {

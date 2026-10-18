@@ -336,12 +336,16 @@ hook 一行都不删，`init` 也会说改了哪个文件。git 自己提交合�
 文件，文件权限不动：husky 9 是用 `sh` 去跑它们的。
 
 有的仓库在 `.git/hooks` 里也有自己的 hook，可能是 lefthook 或 pre-commit 框架装的，也可能是
-手写的。git 改成从 `.githooks` 找 hook 以后，这些 hook 就不跑了。所以 `init` 写的
-`.githooks/pre-commit` 和 `.githooks/pre-merge-commit` 先跑检查，再去跑原来那个 hook，参数原样
-传过去；原来的 hook 要有执行权限才会跑。原来的 hook 留在 `.git/hooks` 里不动，`init` 会说保留了
-哪几个。要是接不上（hook 没有执行权限，或者它来自全局的 `core.hooksPath`），`init` 就不设
-`core.hooksPath`，并告诉你该怎么做。这样的 hook 会被丢掉的时候，`doctor` 不会把提交检查算作做完。
-项目自己的 workflow，`init` 会原样留着，`doctor` 会告诉你该往里加哪一步。
+手写的。git 改成从 `.githooks` 找 hook 以后，这些 hook 全都不跑了。所以 `init` 写的
+`.githooks/pre-commit` 和 `.githooks/pre-merge-commit` 先跑检查，再去跑原来那个 hook；别的有执行
+权限的 hook，比如 `commit-msg`、`pre-push`，`init` 也在 `.githooks` 里各写一个文件，只管去跑原来
+那个。参数和标准输入都原样传过去。原来的 hook 留在 `.git/hooks` 里不动，`init` 会一个个说保留了
+哪些。没有执行权限的 hook，git 现在本来就不跑，所以 `init` 照常设好，并告诉你怎么留住它。要是接
+不上（提交 hook 来自全局的 `core.hooksPath`，或者项目自己的 `.githooks` 文件把检查写在 `if` 里，
+或者它和原来的 hook 都要读标准输入），`init` 就不设 `core.hooksPath`，并告诉你该怎么做。设了全局
+`core.hooksPath` 的话，`.git/hooks` 里的文件本来就没跑过，`init` 不管它们。这样的 hook 会被丢掉的
+时候，`doctor` 不会把提交检查算作做完。项目自己的 workflow，`init` 会原样留着，`doctor` 会告诉
+你该往里加哪一步。
 
 `init` 还会在 `.github/workflows/` 里放三个 workflow：`yokoten.yml`（跑提交检查；一个 lint
 job 用 actionlint 和 zizmor 查 workflow 本身；还有一个 `ci` job，设成必过的检查就只要设它）、
