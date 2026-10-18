@@ -200,6 +200,51 @@ test('bash: a shell that reads a heredoc, a pipe or a here-string runs it (#105)
   allowed('cat <<-EOF\n\tnpm publish\n\tEOF\nls');
 });
 
+// #196: three false refusals in one night, each from a heredoc body a non-shell reads.
+test('bash: a heredoc read by a program that is not a shell is data (#196)', () => {
+  const caseOne = "cat > body.md <<'EOF'\n## What happened\nThe owner runs npm publish after the tag.\nEOF";
+  allowed(caseOne);
+  allowed("node - <<'EOF'\nconst a = 'git commit -m \"x\"';\nconst b = 'nice -n 10';\nEOF");
+  allowed(`cat > issue.md <<'EOF'\nA PR body written with:\n\n${caseOne}\n\nwas refused.\nEOF`);
+  for (const command of [
+    'cat > f <<EOF\ngit push --force\nEOF',
+    "tee notes.md <<'EOF'\nnpm publish\nEOF",
+    "gh issue create --title x --body-file - <<'EOF'\ngh release create v1\nEOF",
+    "nice -n 10 node - <<'EOF'\ngit push --tags\nEOF",
+    // A word that names a shell or a runner is not the program: a file called sh or script.
+    'cat > sh <<EOF\nnpm publish\nEOF',
+    'cat > script <<EOF\nnpm publish\nEOF',
+    'node x.ts --shell bash <<EOF\nnpm publish\nEOF',
+    // Only the command that holds the << and what it pipes into read the body.
+    'cat <<EOF > run.sh; bash -n run.sh\nnpm publish\nEOF',
+    'cat <<EOF && bash -c true\nnpm publish\nEOF',
+    // Several heredocs, quoted and not, with <<-: each body goes to its own command.
+    "cat <<'A' > a.md; tee b.md <<-B\nnpm publish\nA\n\tgit push --force\n\tB",
+    'cat <<A <<"B"\nnpm publish\nA\ngit push --tags\nB',
+  ]) allowed(command);
+  // The same text read by the block list: python is stopped by its own name, not its body.
+  assert.equal(checkCommand("python3 - <<'EOF'\nprint(1)\nEOF", { env: {}, config: { commands: { block: { python3: 'TypeScript only' } } } })?.id, 'blocked-command');
+});
+
+test('bash: a heredoc read by a shell is commands, and so are the lines after it (#196)', () => {
+  for (const command of [
+    "bash <<'EOF'\ngit push --force\nEOF",
+    'sh -s <<EOF\nnpm publish\nEOF',
+    'nice -n 10 bash <<EOF\nnpm publish\nEOF',
+    'sudo -u x zsh <<EOF\nnpm publish\nEOF',
+    'sudo -s <<EOF\nnpm publish\nEOF',
+    '/bin/dash <<-EOF\n\tnpm publish\n\tEOF',
+    'ksh <<EOF\nnpm publish\nEOF',
+    'cat <<EOF | tee log | bash\nnpm publish\nEOF',
+    'cat <<EOF |\nnpm publish\nEOF\nbash',
+    'cat <<EOF\ndata\nEOF\ngit push --force',
+    "node - <<'EOF'\nconsole.log(1);\nEOF\nnpm publish",
+    // The second heredoc is a shell's, though the first is data.
+    "cat <<'A'; bash <<'B'\nhello\nA\nnpm publish\nB",
+    'cat > f <<A <<B; ls\nx\nA\ny\nB\ngit push --force',
+  ]) blocked(command);
+});
+
 test('bash: substitutions run, so their commands count, even inside "..." (#105)', () => {
   for (const c of ['echo $(npm publish)', 'echo `npm publish`', 'echo "$(npm publish)"', 'echo "`npm publish`"', 'diff <(npm publish) x', 'cat > f <<EOF\n$(npm publish)\nEOF']) blocked(c);
   // A quoted heredoc word turns substitution off.
