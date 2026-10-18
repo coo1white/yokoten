@@ -249,7 +249,7 @@ kit 里 `init` 放的 workflow 暂时还是跑 `.yokoten/` 里的那份，等第
 | `init [dir]` | 把这套做法放进一个项目。只加文件；已有的文件保留，并告诉你保留了哪些 |
 | `doctor [--session]` | 整条路：每一关、每一步，加上这台电脑还缺什么。`--session` 只说下一步，会话开头用 |
 | `check [--staged]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交。提交里不能有构建产物和二进制文件 |
-| `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的 CHANGELOG、milestone 和标签。改到 CODEOWNERS 里列出的文件，必须写 `tier: A`。改动的文档里句子太长、改动超过 400 行，都只提醒，不算失败 |
+| `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的 CHANGELOG、milestone 和标签。改到 CODEOWNERS 里列出的文件，必须写 `tier: A`。改动的文档里句子太长、改动的代码里名字难读、改动超过 400 行，都只提醒，不算失败 |
 | `check --issue` | 在 CI 里检查 issue 的标题，见下面的「issue 标题」 |
 | `check --history` | 对所有分支的每一个提交做隐私检查。私有仓库公开之前跑一遍 |
 | `hook [--agent <name>] [--commands-only]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool |
@@ -386,8 +386,10 @@ yokoten 自己的代码守五条规矩。为什么这么定、参考了哪些资
 `test/architecture.test.ts` 会检查第 2、3 条，还有函数里的 `CONSTANT_CASE`。每处不合格都会写明该怎么改：
 
 ```
-src/rules/guards.ts:195: i — one letter, used 101 lines on — a reader must scroll back to learn what it holds: name what it is, e.g. "index"
+src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to learn what it holds. Name what it is, e.g. "index".
 ```
+
+别的项目里，`check --pr` 也会提醒两种名字：单个字母却用到很远的地方，或者超过 4 个词。它只看 PR 在 TypeScript 和 JavaScript 文件里新加的行。只是提醒，CI 不会因此失败。
 
 第 1 条和第 5 条要靠人判断，所以交给审查的人来看。
 

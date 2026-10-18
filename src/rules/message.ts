@@ -167,6 +167,16 @@ export const RULES = {
     why: 'beginners, second-language readers and agents misread long sentences',
     check: '`check --pr` notes long sentences in changed Markdown, skipping code, tables and headings; a note never fails CI',
   },
+  'name-short': {
+    rule: 'a one-letter name is used within 10 lines and not exported (record 0006; docs/guide.md#naming)',
+    why: 'a reader must scroll back to learn what a far-off letter holds',
+    check: '`check --pr` notes a one-letter name used more than 10 lines after it is declared, or exported, on lines added to TypeScript and JavaScript files; `_` for an unused parameter passes; a note never fails CI',
+  },
+  'name-long': {
+    rule: 'a name has at most 4 words (record 0006; docs/guide.md#naming)',
+    why: 'a long name is slow to read, and the words that matter get lost',
+    check: '`check --pr` notes a name of more than 4 words on lines added to TypeScript and JavaScript files; camelCase, PascalCase and snake_case words count, an acronym as one; a note never fails CI',
+  },
   'large-diff': {
     rule: 'a pull request changes at most about 400 lines (record 0004)',
     why: 'smaller pull requests are easier to review',

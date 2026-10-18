@@ -12,6 +12,9 @@ All notable changes are listed here. The format follows
   runs `check`, and runs `check --pr` on pull requests. Inputs: `pr-check` and
   `node-version`. It needs `contents: read` and takes no token. The kit's workflow
   moves to the action after the first release (#106).
+- `check --pr` notes hard-to-read names on the lines a pull request adds to TypeScript
+  and JavaScript files. A one-letter name used over more than 10 lines, or exported, is
+  `name-short`; a name of more than 4 words is `name-long`. Notes never fail CI (#111).
 - The README and the Chinese README show a short terminal demo under Quick start. An
   agent's force push is blocked with what, why and the fix. Then `doctor` names the next
   step. `node scripts/demo-svg.ts` builds it from `scripts/demo.txt` (#90).
