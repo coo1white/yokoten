@@ -13,7 +13,7 @@ yokoten 带你一步步养成好团队的习惯；你还在学的时候，它替
 
 它自己就是一个人带几个 AI 这么做出来的：每个 issue、每次审查、每个版本，都在这个仓库里。
 
-**[yokoten.app](https://yokoten.app)** &nbsp;·&nbsp; [English](../../README.md) | 中文
+**[yokoten.app](https://yokoten.app)** &nbsp;·&nbsp; [English](../../README.md) | 中文 | [日本語](../ja/README.md)
 
 <br/>
 
