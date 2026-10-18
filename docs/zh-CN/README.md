@@ -1,4 +1,4 @@
-<!-- source: README.md blob af50e3c890e5edb9a46dfa5e756fa87a8e592f1e -->
+<!-- source: README.md -->
 <div align="center">
 
 <picture>
