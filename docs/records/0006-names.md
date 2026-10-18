@@ -95,3 +95,5 @@ them to the rule is its own piece of work.
 - The kit gets the same rule next (#110), and `check` gets a soft note for any project
   (#111). That note can reuse this tokenizer, since it too must run with no
   dependencies.
+- The tokenizer now lives in `src/run/names.ts`. The test and `check --pr` both use
+  it (#111).
