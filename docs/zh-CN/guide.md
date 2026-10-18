@@ -206,7 +206,8 @@ worker 靠 `YOKOTEN_ROLE=worker` 认出来。在 Codex 里，子 agent 的 `agen
 
 需要 Node 22.18 或更高版本：它能直接运行 TypeScript，不用先编译。没有任何依赖。
 装法有两种：一种是 Claude Code 插件，一种是 `install` 命令（从 npm 跑，或者从 clone
-下来的仓库跑）。选一种就行，别两种都装。
+下来的仓库跑）。选一种就行，别两种都装。yokoten 写进去的 hook 命令要在 POSIX shell 里跑，
+Windows 上请用 Git Bash。
 
 ### 用 Claude Code 插件装
 

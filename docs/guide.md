@@ -227,7 +227,8 @@ change CI.
 
 Requires Node 22.18 or later, which runs TypeScript as it is. No dependencies. There
 are two ways to install: the Claude Code plugin, or the `install` command, from npm or
-from a clone. Use one, not both.
+from a clone. Use one, not both. The hook commands that yokoten writes need a POSIX shell:
+on Windows, use Git Bash.
 
 ### The Claude Code plugin
 

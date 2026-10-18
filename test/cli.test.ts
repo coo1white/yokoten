@@ -9,14 +9,15 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { closestWord, COMMANDS, editDistance, HELP_OPTIONS } from '../src/run/cli.ts';
+import { closestWord, COMMANDS, editDistance, guardCommand, HELP_OPTIONS } from '../src/run/cli.ts';
 import { copyRuntime } from '../src/setup/files.ts';
+import { checkLines } from '../src/setup/init.ts';
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'yokoten.ts');
 
 // A project hook command as init writes it: a plain line when `path` is gone (#204), else node.
 const MISSING_PROJECT = 'yokoten: the hook cannot run, because .yokoten/ is missing. Restore it from git, or run yokoten init again';
-const guarded = (path: string, args: string) => `[ -f ${path} ] || { echo '${MISSING_PROJECT}' >&2; exit 1; }; node ${path} ${args}`;
+const guarded = (path: string, args: string) => `[ -f ${path} ] 2>/dev/null || { echo '${MISSING_PROJECT}' >&2; exit 1; }; node ${path} ${args}`;
 const at = '@';
 
 const pick = (result: { status: number | null; stdout: string; stderr: string }) => [result.status, result.stdout, result.stderr];
@@ -543,7 +544,8 @@ test("init: husky keeps its hooks folder; .husky/pre-commit gets the check and k
   assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '.husky', 'the project\'s hooks folder stays');
   assert.ok(!existsSync(join(sandbox.repo, '.githooks')), 'no second hooks folder that git never runs');
   const hook = readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8');
-  assert.match(hook, /^#!\/bin\/sh\n# yokoten: [^\n]*\n\[ -f "\.yokoten\/bin\/yokoten\.ts" \] \|\| \{ echo [^\n]* >&2; exit 1; \}\nnode "\.yokoten\/bin\/yokoten\.ts" check --staged \|\| exit 1\ntouch own-hook-ran\n$/);
+  assert.equal(hook, `#!/bin/sh\n${checkLines('.yokoten/bin/yokoten.ts').join('\n')}\ntouch own-hook-ran\n`);
+  assert.match(hook, /\n\[ -f "\.yokoten\/bin\/yokoten\.ts" \] 2>\/dev\/null \|\| \{ echo [^\n]* >&2; exit 1; \}; node "\.yokoten\/bin\/yokoten\.ts" check --staged \|\| exit 1\n/);
   assert.equal(stepMark(sandbox, 'commit-check'), 'done');
   // Again: the hook already runs yokoten.
   result = sandbox.run(['init']);
@@ -573,7 +575,7 @@ test('init: husky not yet installed in this clone; init leaves core.hooksPath un
   assert.match(result.stdout, /added the check to \.husky\/pre-commit/);
   assert.match(result.stdout, /run `npm install`/);
   assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '');
-  assert.match(readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8'), /^# yokoten: [^\n]*\n\[ -f [^\n]*\nnode [^\n]*\nnpm test\n$/);
+  assert.match(readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8'), /^# yokoten: [^\n]*\n\[ -f [^\n]*; node [^\n]*\nnpm test\n$/);
   // A hook that init changed before the runtime guard (#204) already runs the check.
   const before = '# yokoten: the commit check\nnode ".yokoten/bin/yokoten.ts" check --staged || exit 1\nnpm test\n';
   sandbox.write('.husky/pre-commit', before);
@@ -585,11 +587,24 @@ test('init: husky not yet installed in this clone; init leaves core.hooksPath un
   assert.equal(stepMark(sandbox, 'commit-check'), 'done', "husky 9's folder runs .husky/pre-commit");
 });
 
+test('init: a core.hooksPath outside the repo is kept, and the advice is the line init would write (#204)', () => {
+  const sandbox = makeSandbox();
+  sandbox.git('config', 'core.hooksPath', join(sandbox.home, 'hooks'));
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  const [, checkLine] = checkLines('.yokoten/bin/yokoten.ts');
+  assert.ok(result.stdout.includes(`Add this line to its pre-commit: ${checkLine}\n`), result.stdout);
+});
+
 test("init: another core.hooksPath is kept, and its pre-commit is made with the check (#206)", () => {
   const sandbox = makeSandbox();
   sandbox.write('tools/hooks/commit-msg', '#!/bin/sh\n');
   sandbox.git('config', 'core.hooksPath', 'tools/hooks');
-  assert.match(sandbox.run(['doctor']).stdout, /tools\/hooks\/pre-commit does not run yokoten/);
+  const doctor = sandbox.run(['doctor']).stdout;
+  assert.match(doctor, /tools\/hooks\/pre-commit does not run yokoten/);
+  // The advice shows the line init writes, runtime guard included (#204).
+  const [, checkLine] = checkLines('.yokoten/bin/yokoten.ts');
+  assert.ok(doctor.includes(`or add this line there yourself: ${checkLine}`), doctor);
   const result = sandbox.run(['init']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /wrote tools\/hooks\/pre-commit: the commit check \(kept core\.hooksPath \(tools\/hooks\)/);
@@ -910,8 +925,8 @@ test('install: the session doctor and the command guard for Codex and Gemini CLI
   writeFileSync(geminiFile, JSON.stringify({ theme: 'x', hooks: mine('BeforeTool') }));
   const cli = '"$HOME/.local/share/yokoten/bin/yokoten.ts"';
   const line = 'yokoten: the runtime at ~/.local/share/yokoten is missing; run the install again';
-  const atStart = (args: string) => `[ -f ${cli} ] || { echo '${line}'; exit 0; }; node ${cli} ${args}`;
-  const onCall = (args: string) => `[ -f ${cli} ] || { echo '${line}' >&2; exit 1; }; node ${cli} ${args}`;
+  const atStart = (args: string) => `[ -f ${cli} ] 2>/dev/null || { echo '${line}'; exit 0; }; node ${cli} ${args}`;
+  const onCall = (args: string) => `[ -f ${cli} ] 2>/dev/null || { echo '${line}' >&2; exit 1; }; node ${cli} ${args}`;
   let result = sandbox.run(['install']);
   assert.equal(result.status, 0, result.stderr);
   for (const what of ['Codex SessionStart doctor', 'Codex command guard', 'Gemini CLI SessionStart doctor', 'Gemini CLI command guard']) assert.match(result.stdout, new RegExp(`^added the ${what} in ~/`, 'm'));
@@ -923,7 +938,7 @@ test('install: the session doctor and the command guard for Codex and Gemini CLI
   assert.deepEqual(codex.hooks.PreToolUse, [...mine('PreToolUse').PreToolUse, { hooks: [{ type: 'command', command: onCall('hook --agent codex --commands-only') }], matcher: 'Bash' }]);
   const gemini = JSON.parse(readFileSync(geminiFile, 'utf8'));
   assert.equal(gemini.theme, 'x');
-  assert.deepEqual(gemini.hooks.SessionStart, [{ hooks: [{ type: 'command', command: atStart('doctor --session --agent gemini'), name: 'yokoten-session' }] }]);
+  assert.deepEqual(gemini.hooks.SessionStart, [{ hooks: [{ type: 'command', command: atStart('doctor --session --agent gemini').replace(`echo '${line}'`, `echo '{"hookSpecificOutput":{"additionalContext":"${line}"}}'`), name: 'yokoten-session' }] }]);
   assert.deepEqual(gemini.hooks.BeforeTool, [...mine('BeforeTool').BeforeTool, { hooks: [{ type: 'command', command: onCall('hook --agent gemini --commands-only'), name: 'yokoten-guard' }], matcher: 'run_shell_command' }]);
   // The command guard stops a tag push in any repo, adopted or not.
   const shell = (text: string, input: object) => spawnSync(text, { shell: '/bin/sh', cwd: sandbox.repo, env: sandbox.env, input: JSON.stringify(input), encoding: 'utf8' });
@@ -1029,6 +1044,12 @@ test('init: a repo inside the running copy gets its own .yokoten/, unless the co
   assert.ok(!readdirSync(join(clone, 'src')).some((name) => name.startsWith('.')), 'no temp folder is left');
 });
 
+// The line goes into a single-quoted echo, and into JSON for Gemini CLI, as it is (#204).
+test('guardCommand: refuses a missing-runtime line with a quote or a backslash (#204)', () => {
+  for (const line of ["it's gone", 'say "gone"', 'a\\b']) assert.throws(() => guardCommand('p', 'hook', line), /quote or a backslash/, line);
+  assert.doesNotThrow(() => guardCommand('p', 'hook', 'yokoten: gone; run the install again'));
+});
+
 test('hooks: a missing runtime says one plain line with no path, never a stack trace (#204)', () => {
   const sandbox = makeSandbox();
   // A hook from before #204 is updated in place, never added twice.
@@ -1054,7 +1075,11 @@ test('hooks: a missing runtime says one plain line with no path, never a stack t
   // The same for Codex and Gemini CLI (#211).
   const codexUser = commands(join(sandbox.home, '.codex', 'hooks.json'));
   const geminiUser = commands(join(sandbox.home, '.gemini', 'settings.json'));
-  for (const command of [...codexUser.SessionStart, ...geminiUser.SessionStart]) assert.deepEqual(pick(shell(command)), [0, machineLine, ''], command);
+  for (const command of codexUser.SessionStart) assert.deepEqual(pick(shell(command)), [0, machineLine, ''], command);
+  // Gemini CLI reads only JSON at session start.
+  const geminiStart = shell(geminiUser.SessionStart[0]);
+  assert.equal(geminiStart.status, 0, geminiStart.stderr);
+  assert.deepEqual(JSON.parse(geminiStart.stdout), { hookSpecificOutput: { additionalContext: machineLine.trimEnd() } });
   for (const command of [...codexUser.PreToolUse, ...geminiUser.BeforeTool]) assert.deepEqual(pick(shell(command)), [1, '', machineLine], command);
   const project = commands(join(sandbox.repo, '.claude', 'settings.json'));
   const projectLine = `${MISSING_PROJECT}\n`;
@@ -1062,6 +1087,10 @@ test('hooks: a missing runtime says one plain line with no path, never a stack t
   const geminiProject = commands(join(sandbox.repo, '.gemini', 'settings.json'));
   for (const command of [...project.PreToolUse, ...project.Stop, ...codexProject.PreToolUse.slice(-1), ...codexProject.Stop, ...geminiProject.BeforeTool, ...geminiProject.AfterAgent]) {
     assert.deepEqual(pick(shell(command)), [1, '', projectLine], command);
+  }
+  // A project path with a space: the `[` test's own error, with the full path, is not shown.
+  for (const command of [...geminiProject.BeforeTool, ...geminiProject.AfterAgent]) {
+    assert.deepEqual(pick(shell(command, { GEMINI_PROJECT_DIR: join(sandbox.home, 'a b') })), [1, '', projectLine], command);
   }
   // The commit check stops the commit, with one plain line: a commit now would delete .yokoten/.
   sandbox.write('a.md', 'fine\n');

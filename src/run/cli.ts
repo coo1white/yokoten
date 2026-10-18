@@ -12,13 +12,30 @@ export const subcommand = (command: string): string | undefined => command.match
  * file is gone, it says `missing` in one line, never a Node stack trace with the full path
  * (#204). It exits 1: the agents report that and go on, so a missing copy never blocks
  * every tool call. At session start the line goes to stdout with exit 0, where the agent
- * reads it. `missing` has no single quote, and never names the file followed by a word,
- * or `subcommand` would read that word.
+ * reads it, as plain text or, for Gemini CLI, as JSON (`sessionOutput`). The test's own
+ * error goes to /dev/null, so a broken path never prints the full path.
+ * `missing` has no quote or backslash, so it fits in the echo and the JSON as it is. It
+ * never names the file followed by a word, or `subcommand` would read that word.
  */
-export function guardCommand(path: string, args: string, missing: string, { isSessionStart = false }: { isSessionStart?: boolean } = {}): string {
-  const say = isSessionStart ? `echo '${missing}'; exit 0` : `echo '${missing}' >&2; exit 1`;
-  return `[ -f ${path} ] || { ${say}; }; node ${path} ${args}`;
+export function guardCommand(
+  path: string,
+  args: string,
+  missing: string,
+  { isSessionStart = false, sessionOutput = 'text' }: { isSessionStart?: boolean; sessionOutput?: 'text' | 'json' } = {},
+): string {
+  if (/['"\\]/.test(missing)) throw new Error(`a missing-runtime line has a quote or a backslash: ${missing}`);
+  const line = sessionOutput === 'json' ? `{"hookSpecificOutput":{"additionalContext":"${missing}"}}` : missing;
+  const say = isSessionStart ? `echo '${line}'; exit 0` : `echo '${missing}' >&2; exit 1`;
+  return `[ -f ${path} ] 2>/dev/null || { ${say}; }; node ${path} ${args}`;
 }
+
+/**
+ * The line that runs the commit check from a project's own pre-commit, by `cli`'s path.
+ * Without the runtime, one plain line and exit 1, as in the kit's pre-commit (#204).
+ * `init` writes it, and its advice and `doctor`'s show the same line.
+ */
+export const commitCheckLine = (cli: string): string =>
+  `[ -f "${cli}" ] 2>/dev/null || { echo 'yokoten: the commit check cannot run, because ${cli} is missing. Restore it from git, or run yokoten init again' >&2; exit 1; }; node "${cli}" check --staged || exit 1`;
 
 /** The line a project's hook says when its runtime folder (`.yokoten/`, or `bin/` in yokoten's own repo) is gone. */
 export const missingProjectRuntime = (cli: string): string =>

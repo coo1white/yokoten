@@ -17,7 +17,7 @@ import { type Finding, finding, type RuleId } from '../rules/message.ts';
 import { CHANGES_DIR } from '../rules/pr.ts';
 import { BUILD_DIRS, isBuildOutput } from '../rules/layout.ts';
 import { hasPlugin, hasProjectHook } from '../agents/claude-code.ts';
-import { runs } from '../run/cli.ts';
+import { commitCheckLine, runs } from '../run/cli.ts';
 import { hasBot, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
 import { claudeReadsRules, cliPath, hookFile, isSelf } from './init.ts';
@@ -321,7 +321,7 @@ export const ROAD: Step[] = [
     fix: (root) => {
       if (!gitConfig(root, 'core.hooksPath') && existsSync(join(root, '.husky'))) return 'run `npm install` so husky sets core.hooksPath, then `yokoten init`';
       const file = commitHook(root);
-      if (file && file !== '.githooks/pre-commit') return `\`yokoten init\` adds the check to ${file}, or add the line \`node "${cliPath(root)}" check --staged || exit 1\` there yourself`;
+      if (file && file !== '.githooks/pre-commit') return `\`yokoten init\` adds the check to ${file}, or add this line there yourself: ${commitCheckLine(cliPath(root))}`;
       return '`yokoten init` sets it up';
     },
     why: 'a secret or a personal email is hard to take back once a commit is pushed',

@@ -72,7 +72,7 @@ const userSettings = (env: Env) => join(env.HOME || homedir(), '.gemini', 'setti
 /** The user's hooks, in every repo: doctor at session start, and the command guard on shell calls. `missing` is what they say when `cli` is gone. */
 export function addUserHooks(env: Env, cli: string, missing: string): { doctor: Added; guard: Added } {
   return {
-    doctor: addHook(userSettings(env), 'SessionStart', undefined, guardCommand(cli, 'doctor --session --agent gemini', missing, { isSessionStart: true }), { name: 'yokoten-session' }),
+    doctor: addHook(userSettings(env), 'SessionStart', undefined, guardCommand(cli, 'doctor --session --agent gemini', missing, { isSessionStart: true, sessionOutput: 'json' }), { name: 'yokoten-session' }),
     guard: addHook(userSettings(env), 'BeforeTool', SHELL, guardCommand(cli, 'hook --agent gemini --commands-only', missing), { name: 'yokoten-guard' }),
   };
 }
