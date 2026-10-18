@@ -13,7 +13,7 @@ yokoten 带你一步步养成好团队的习惯；你还在学的时候，它替
 
 它自己就是一个人带几个 AI 这么做出来的：每个 issue、每次审查、每个版本，都在这个仓库里。
 
-**[yokoten.app](https://yokoten.app)** &nbsp;·&nbsp; [English](../../README.md) | 中文
+**[yokoten.app](https://yokoten.app)** &nbsp;·&nbsp; [English](../../README.md) | 中文 | [日本語](../ja/README.md)
 
 <br/>
 
@@ -47,6 +47,9 @@ cd your-project
 npx yokoten init         # 每个项目做一次
 npx yokoten doctor       # 看看走到了第几关、下一步做什么
 ```
+
+第一次提交前要注意：用 `TZ=UTC git commit` 提交，或者在 shell 配置文件里加一行 `export TZ=UTC`，
+以后就不用管了。提交检查只认 UTC 时间，因为提交里带的时区会让陌生人猜到你大概住在哪里。
 
 用 Claude Code 的话，也可以装插件：先输入 `/plugin marketplace add yokoten-labs/yokoten`，
 再输入 `/plugin install yokoten@yokoten`。两种选一种就行，别都装。
