@@ -178,7 +178,7 @@ then run with no network and no global install.
 | `init --github [--yes]` | Also adds the standard labels and a first milestone on GitHub, through `gh`. Without `--yes` it only says what it would make. It keeps every label and milestone that is there, and never deletes or renames one |
 | `doctor [--session]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session |
 | `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries |
-| `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, changelog line, milestone and labels. Long sentences in changed Markdown, and a diff over 400 changed lines, are notes |
+| `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, changelog line, milestone and labels. A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, and a diff over 400 changed lines, are notes |
 | `check --issue` | In CI: the issue's title. See [Issue titles](#issue-titles) |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public |
 | `hook [--agent <name>] [--commands-only]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini` |
@@ -303,6 +303,28 @@ commit in three passes), `rca` (root cause, a check, then spread it), `record` (
 decisions down), `release` (pick the next version and prepare the changelog; the owner tags),
 and `yokoten` (adopt the practices). Three agents do the work:
 `worker`, `reviewer` (reads only), and `verifier` (runs, never fixes).
+
+### Who reviews what
+
+Review follows risk. The tier on a pull request's first line says how hard a mistake
+is to undo (record 0004):
+
+| Tier | Kind of change | Who reviews |
+|------|----------------|-------------|
+| C | Standard: docs, wording, styles | The lead |
+| B | Normal: other code, with tests | The lead |
+| A | Hard to undo: secrets, data, install, releases, owned files | The owner |
+
+`.github/CODEOWNERS` lists the owned files: the rules, the kit, agent config, CI and the
+records. It does not list every file. With "require review from code owners" on, the
+host asks the owner to review a pull request that changes one of them.
+
+`check --pr` ties the two together. A pull request that changes an owned file fails
+unless its first line is `tier: A`. The paths set the lowest tier. The author can raise
+a tier, never lower it. The check reads CODEOWNERS from the base branch, so a pull
+request can't edit the file to lower its own tier. Without a base commit, on a local run,
+it reads the working tree. The message says which one it read. No CODEOWNERS file, no
+check.
 
 Server setup, step by step: [`docs/server.md`](server.md).
 

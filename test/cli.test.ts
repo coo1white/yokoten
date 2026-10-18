@@ -549,6 +549,32 @@ test('check --pr: reads the CI event, lists the changed files from git, notes lo
   assert.match(r.stdout, /no pull request in this run/);
 });
 
+test('check --pr: CODEOWNERS comes from the base branch, so a pull request cannot lower its own tier', () => {
+  const s = sandbox();
+  s.write('.github/CODEOWNERS', '/kit/ @owner\n');
+  s.write('README.md', 'Short.\n');
+  s.git('add', '.');
+  s.git('commit', '-qm', 'base');
+  const base = s.git('rev-parse', 'HEAD').stdout.trim();
+  // The pull request edits CODEOWNERS to drop kit/, and changes kit/.
+  s.write('.github/CODEOWNERS', '/nothing/ @owner\n');
+  s.write('kit/a.md', 'Short.\n');
+  s.git('add', '.');
+  s.git('commit', '-qm', 'head');
+  const head = s.git('rev-parse', 'HEAD').stdout.trim();
+  const event = (tier: string) => {
+    const file = join(s.home, 'event.json');
+    const body = `tier: ${tier}\nCloses #1\nThis changes the kit.\n## Why\nx\n## What changed\nx\n## How tested\nx\n`;
+    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
+    return { GITHUB_EVENT_PATH: file };
+  };
+  let r = s.run(['check', '--pr'], { extra: event('B') });
+  assert.equal(r.status, 1, r.stdout);
+  assert.match(r.stderr, /this changes 1 file\(s\) that CODEOWNERS owns \(read from the base branch\): kit\/a\.md/);
+  r = s.run(['check', '--pr'], { extra: event('A') });
+  assert.equal(r.status, 0, r.stderr);
+});
+
 test('check --pr: a large pull request gets a note, never a failure; lock files do not count (#57)', () => {
   const s = sandbox();
   s.write('README.md', 'Short.\n');

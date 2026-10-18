@@ -166,7 +166,7 @@ node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看走到哪一关，�
 | `init [dir]` | 把这套做法放进一个项目。只加文件；已有的文件保留，并告诉你保留了哪些 |
 | `doctor [--session]` | 整条路：每一关、每一步，加上这台电脑还缺什么。`--session` 只说下一步，会话开头用 |
 | `check [--staged]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交。提交里不能有构建产物和二进制文件 |
-| `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的 CHANGELOG、milestone 和标签。改动的文档里句子太长、改动超过 400 行，都只提醒，不算失败 |
+| `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的 CHANGELOG、milestone 和标签。改到 CODEOWNERS 里列出的文件，必须写 `tier: A`。改动的文档里句子太长、改动超过 400 行，都只提醒，不算失败 |
 | `check --issue` | 在 CI 里检查 issue 的标题，见下面的「issue 标题」 |
 | `check --history` | 对所有分支的每一个提交做隐私检查。私有仓库公开之前跑一遍 |
 | `hook [--agent <name>] [--commands-only]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool |
@@ -283,6 +283,27 @@ issue 标题先写改哪一块，再写要做什么。这样一排 issue 看下�
 这套方法靠五个技能来做：`dispatch`（给 worker 派活）、`inspect`（分三轮审查某一个具体提交）、
 `rca`（找根因、加检查、再推广到其他项目）、`record`（把决定写下来）、`yokoten`（采用这套
 做法）。三个 agent 干活：`worker`、`reviewer`（只读）、`verifier`（只跑不修）。
+
+### 谁来审什么
+
+风险越大，越要主人来看。PR 第一行的 tier 说的是：改错了有多难收回（记录 0004）。
+
+| tier | 什么样的改动 | 谁来审 |
+|------|--------------|--------|
+| C | 日常小改：文档、措辞、样式 | lead 审 |
+| B | 普通改动：其他代码，带测试 | lead 审 |
+| A | 改错了很难收回：密钥、数据、安装、发版、CODEOWNERS 里的文件 | 主人审 |
+
+`.github/CODEOWNERS` 只列出改错了很难收回的文件：规则、kit、agent 配置、CI、记录。
+不是每个文件都列。仓库打开「需要 code owner 审查」以后，PR 一改到这些文件，GitHub
+就会请主人来审。
+
+`check --pr` 把这两件事接起来。PR 改到 CODEOWNERS 里的文件，第一行却不是 `tier: A`，
+检查就不通过。改了哪些路径，决定 tier 最低是多少。作者可以把 tier 往高了写，不能往低了写。
+
+检查读的是目标分支（base）上的 CODEOWNERS，不是 PR 自己改过的那份。这样 PR 没法靠改这个
+文件来给自己降级。本地跑、没有 base 的时候，读工作区里的文件，提示里会说读的是哪一份。
+没有 CODEOWNERS 文件，就不查。
 
 服务器怎么设置，一步一步写在 [`docs/server.md`](../server.md)。
 

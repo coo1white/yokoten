@@ -117,6 +117,11 @@ export const RULES = {
     why: 'the tier says how hard a mistake is to take back, and so who must review it',
     check: PR_CHECK,
   },
+  'pr-owned': {
+    rule: 'a pull request that changes a file CODEOWNERS owns is tier A; the paths set the lowest tier, and the author can only raise it (core rule 8)',
+    why: 'CODEOWNERS names the files where a mistake is hard to undo, and those need the owner\'s review',
+    check: `${PR_CHECK}, with CODEOWNERS from the base branch, so a pull request can't change the file to lower its own tier; no CODEOWNERS file, no check`,
+  },
   'pr-section': {
     rule: 'a pull request body has Why, What changed and How tested sections (core rule 8)',
     why: 'a reviewer reads the same shape every time, and nothing is forgotten',

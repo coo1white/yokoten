@@ -15,7 +15,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
-import type { PullRequest } from '../rules/pr.ts';
+import type { CodeOwners, PullRequest } from '../rules/pr.ts';
 
 export interface BotConfig {
   appId: string;
@@ -114,7 +114,7 @@ interface Event {
 }
 
 /** The pull request of this run, or null when the run is not for one. */
-export function readPullRequest(root: string, env: Env): (PullRequest & { head: string; numstat: string }) | null {
+export function readPullRequest(root: string, env: Env): (PullRequest & { base: string; head: string; numstat: string }) | null {
   if (!env.GITHUB_EVENT_PATH) return null;
   const event: Event = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, 'utf8'));
   const pr = event.pull_request;
@@ -129,9 +129,32 @@ export function readPullRequest(root: string, env: Env): (PullRequest & { head: 
     files,
     labels: (pr.labels ?? []).map((l) => l.name ?? '').filter(Boolean),
     milestone: pr.milestone?.title ?? null,
+    base,
     head,
     numstat,
   };
+}
+
+// GitHub reads CODEOWNERS from the first of these places, on the pull request's base
+// branch. yokoten reads it from the same commit, so a pull request can't edit the file
+// to lower its own tier. Without a base commit (a local run), it reads the working tree.
+const CODEOWNERS_PLACES = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'];
+
+/** The CODEOWNERS file at the base commit, or in the working tree when `base` is empty; null when there is none. */
+export function readCodeOwners(root: string, base: string): CodeOwners | null {
+  for (const place of CODEOWNERS_PLACES) {
+    if (base) {
+      try {
+        const text = execFileSync('git', ['show', `${base}:${place}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+        return { text, from: 'the base branch' };
+      } catch {
+        continue; // not at this place in the base commit
+      }
+    }
+    const file = join(root, place);
+    if (existsSync(file)) return { text: readFileSync(file, 'utf8'), from: 'the working tree' };
+  }
+  return null;
 }
 
 // An issue as GitHub Actions describes it: the event file of an `issues` run. The rule

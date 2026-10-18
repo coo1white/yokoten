@@ -13,7 +13,7 @@ import { timeZoneNote } from '../src/run/check.ts';
 import { agentHooks, machineChecks, serverChecks } from '../src/setup/doctor.ts';
 import { explain, ids } from '../src/setup/explain.ts';
 import { ROAD, stepFinding } from '../src/setup/road.ts';
-import { changedLines, checkIssueTitle, checkPullRequest, largeDiff, longSentenceNote, longSentences, type PullRequest } from '../src/rules/pr.ts';
+import { changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, ownersOf, parseCodeOwners, largeDiff, longSentenceNote, longSentences, type PullRequest } from '../src/rules/pr.ts';
 
 test('glob: a slash anchors at the root, no slash matches in any folder', () => {
   const m = (g: string, p: string) => matcher([g])(p);
@@ -117,6 +117,55 @@ test('pull request: docs, tests and CI need no changelog line; a reason lets cod
   assert.deepEqual(checkPullRequest({ ...goodPr(), files: ['src/a.ts'], body: `${goodPr().body}No changelog: a comment only\n` }, DEFAULTS), []);
 });
 
+test('CODEOWNERS: anchored, folder, glob, last match wins, comments, several owners', () => {
+  const rules = parseCodeOwners(
+    [
+      '# The owner reviews the rules.',
+      '',
+      '/AGENTS.md @owner # an inline comment',
+      '/kit/ @owner @team/leads',
+      'apps/ @apps',
+      'docs/* @docs',
+      '*.lock @deps',
+      '/src/**/secret.ts @sec',
+      '/kit/notes/ ',
+      '**/logs @logs',
+    ].join('\n'),
+  );
+  const o = (path: string) => ownersOf(rules, path);
+  assert.deepEqual(o('AGENTS.md'), ['@owner'], 'anchored');
+  assert.deepEqual(o('sub/AGENTS.md'), [], 'a leading slash anchors at the root');
+  assert.deepEqual(o('kit/a/b.md'), ['@owner', '@team/leads'], 'a folder and everything in it; two owners');
+  assert.deepEqual(o('kit'), [], 'a trailing slash needs something inside the folder');
+  assert.deepEqual(o('apps/x.ts'), ['@apps']);
+  assert.deepEqual(o('deep/apps/x.ts'), ['@apps'], 'a folder pattern with no other slash matches in any folder');
+  assert.deepEqual(o('docs/x.md'), ['@docs'], 'docs/* matches a file in docs/');
+  assert.deepEqual(o('docs/a/x.md'), [], 'and not deeper');
+  assert.deepEqual(o('deep/yarn.lock'), ['@deps'], 'no slash matches in any folder');
+  assert.deepEqual(o('src/secret.ts'), ['@sec'], '** matches no folder');
+  assert.deepEqual(o('src/a/b/secret.ts'), ['@sec'], '** crosses folders');
+  assert.deepEqual(o('kit/notes/a.md'), [], 'a later pattern with no owners wins');
+  assert.deepEqual(o('a/b/logs/x.txt'), ['@logs']);
+  assert.deepEqual(o('README.md'), []);
+  const all = parseCodeOwners('* @owner\n/docs/ @writer\n');
+  assert.deepEqual(ownersOf(all, 'src/deep/a.ts'), ['@owner'], '* matches every path');
+  assert.deepEqual(ownersOf(all, 'docs/guide.md'), ['@writer'], 'the last match wins');
+});
+
+test('CODEOWNERS: an owned file needs tier A; the paths set the lowest tier', () => {
+  const codeOwners = { text: '/kit/ @owner\n/AGENTS.md @owner\n', from: 'the base branch' as const };
+  const pr = (tier: string, files: string[]) => ({ body: `tier: ${tier}\nCloses #1\n`, files });
+  const found = checkOwnedTier(pr('B', ['kit/a.md', 'src/x.ts', 'AGENTS.md']), codeOwners);
+  assert.equal(found?.id, 'pr-owned');
+  assert.match(formatFinding(found as Finding), /`tier: B`, and this changes 2 file\(s\) that CODEOWNERS owns \(read from the base branch\): kit\/a\.md, AGENTS\.md\. .*Make the first line `tier: A`/);
+  assert.equal(checkOwnedTier(pr('C', ['kit/a.md']), codeOwners)?.id, 'pr-owned');
+  assert.equal(checkOwnedTier(pr('A', ['kit/a.md']), codeOwners), null, 'tier A is fine');
+  assert.equal(checkOwnedTier(pr('B', ['src/x.ts', 'docs/a.md']), codeOwners), null, 'no owned file');
+  assert.equal(checkOwnedTier(pr('B', ['kit/a.md']), null), null, 'no CODEOWNERS file');
+  const many = checkOwnedTier(pr('B', Array.from({ length: 8 }, (_, i) => `kit/${i}.md`)), codeOwners);
+  assert.match(many?.what ?? '', /kit\/4\.md, and 3 more$/);
+});
+
 test('plain English: long sentences are found; code, tables and comments are not (#49)', () => {
   const long = Array.from({ length: 30 }, (_, i) => `word${i}`).join(' ') + '.';
   const text = ['# A heading that is not prose', '', 'Short one. Another short one.', long, '', '```', long, '```', `| ${long} |`, `<!-- ${long} -->`, '- a list item.', `- ${long}`].join('\n');
@@ -202,6 +251,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   found.push(...checkLayout(Array.from({ length: 8 }, (_, i) => `d/${i}`), DEFAULTS));
   found.push(...checkBuildOutput([{ path: 'dist/a.js', binary: false }, { path: 'a.bin', binary: true }], DEFAULTS));
   found.push(...checkPullRequest({ title: `Bad title (#1) ${'x'.repeat(70)}.`, body: '## Why\n\n', files: ['src/a.ts', 'kit/x'], labels: [], milestone: null }, DEFAULTS));
+  add(checkOwnedTier({ body: 'tier: B\n', files: ['kit/x'] }, { text: '/kit/ @owner\n', from: 'the base branch' }));
   found.push(...checkIssueTitle('Bad title (#1) that runs on well past the sixty character limit.', {}));
   add(largeDiff(500));
   add(longSentenceNote('a.md', { line: 3, words: 30 }));
