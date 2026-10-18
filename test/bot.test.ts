@@ -328,7 +328,7 @@ test('planning: makes the tier labels the pull request check asks for, once (#22
     assert.ok(result.lines.some((line) => line.startsWith(`- done: make label "tier ${tier}"`)), `tier ${tier}: ${result.lines.join(' | ')}`);
     assert.equal(fake.held.filter((l) => l.name === `tier ${tier}`).length, 1);
   }
-  assert.match(fake.held.find((l) => l.name === 'tier A')!.description, /owner reviews/);
+  assert.match(fake.held.find((l) => l.name === 'tier A')!.description, /Owner reviews/);
   const before = fake.calls.length;
   result = setUpPlanning(fake.gh, REMOTE, APPLY);
   assert.equal(result.lines.at(-1), 'Nothing to change.');

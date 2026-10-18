@@ -26,9 +26,9 @@ export const LABELS: Label[] = [
   { name: 'incident', color: 'b60205', description: 'Something went wrong; the fix adds a check' },
   { name: 'good first issue', color: '7057ff', description: 'A small, clear task for a new contributor' },
   { name: 'hotfix', color: 'e11d21', description: 'Urgent: fix and release soon' },
-  { name: 'tier A', color: 'b60205', description: 'Hard to undo: secrets, data, install, releases. The owner reviews' },
-  { name: 'tier B', color: 'fbca04', description: 'Other code, with tests. The lead reviews' },
-  { name: 'tier C', color: '0e8a16', description: 'Docs and wording. The lead reviews' },
+  { name: 'tier A', color: 'b60205', description: 'Hard to take back: secrets, data, install/update path, releases, going public. Owner reviews.' },
+  { name: 'tier B', color: 'fbca04', description: 'Other code. Tests for the change; merges when CI is green.' },
+  { name: 'tier C', color: '0e8a16', description: 'Docs, wording, styles. Merges when CI is green.' },
 ];
 
 /** The milestone made when the repo has no open one. */
