@@ -2,8 +2,8 @@
   "name": "yokoten",
   "description": "yokoten for Claude Code: the guard, the session guide, and the skills, from this repo.",
   "owner": {
-    "name": "coo1white",
-    "url": "https://github.com/coo1white"
+    "name": "yokoten-labs",
+    "url": "https://github.com/yokoten-labs"
   },
   "plugins": [
     {

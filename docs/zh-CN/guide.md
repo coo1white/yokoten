@@ -116,7 +116,7 @@ $ yokoten explain force-push
 force-push: no plain force push (core rule 7).
 Why: a plain force push can throw away work that someone else pushed.
 Check: the tool-call guard stops `git push --force`, `-f` and a `+ref`; `--force-with-lease` passes; a branch ruleset on the server is the lock.
-Docs: https://github.com/coo1white/yokoten/blob/main/docs/guide.md#the-core-rules
+Docs: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#the-core-rules
 ```
 
 ## 四层
@@ -153,13 +153,13 @@ yokoten 能管住三种 AI 编程 agent，它们守的是同一套规矩。
 在 Claude Code 里输入：
 
 ```text
-/plugin marketplace add coo1white/yokoten
+/plugin marketplace add yokoten-labs/yokoten
 /plugin install yokoten@yokoten
 ```
 
 第一条把这个仓库加成插件市场，第二条打开插件页面，选「Install for you」（给自己装，
 所有项目都能用）。不进 Claude Code 也行，在终端里先跑
-`claude plugin marketplace add coo1white/yokoten`，再跑 `claude plugin install yokoten@yokoten`。
+`claude plugin marketplace add yokoten-labs/yokoten`，再跑 `claude plugin install yokoten@yokoten`。
 
 插件就是这个仓库本身。它用的文件和 `install` 复制的是同一份，所以两种装法不会越走越不一样：
 
@@ -182,7 +182,7 @@ Claude Code 用 `node` 直接跑插件里的 `.ts` 文件。之所以能跑，�
 用 Codex CLI、Gemini CLI，或者不想用插件，就这样装：
 
 ```sh
-git clone https://github.com/coo1white/yokoten
+git clone https://github.com/yokoten-labs/yokoten
 node yokoten/bin/yokoten.ts install      # 这台电脑：技能、agent、hook
 cd your-project
 node ~/.local/share/yokoten/bin/yokoten.ts init     # 这个项目：只加文件，不覆盖
@@ -214,7 +214,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: coo1white/yokoten@<完整的 commit SHA>
+      - uses: yokoten-labs/yokoten@<完整的 commit SHA>
 ```
 
 这个 action 先装好 Node，再跑 `check`；如果是 PR，还会接着跑 `check --pr`。查出来的问题
