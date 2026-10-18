@@ -289,7 +289,7 @@ test('planning: says what it would do, and changes nothing without --yes (#10)',
   const f = fakeGh([standardBug, 'feat', 'Enhancement', 'wontfix']);
   const r = setUpPlanning(f.gh, REMOTE, DRY);
   assert.ok(r.ok);
-  assert.ok(r.lines.includes('- 1 of the 9 standard labels are there; kept'));
+  assert.ok(r.lines.includes('- 1 of the 12 standard labels are there; kept'));
   assert.ok(r.lines.includes('- not in the standard set: Enhancement, wontfix. yokoten deletes them only with --remove-default-labels'));
   assert.ok(r.lines.includes('- make label "hotfix" (Urgent: fix and release soon)'));
   assert.ok(r.lines.includes('- update label "feat" to the standard colour and description'));
@@ -318,6 +318,21 @@ test('planning: makes what is missing, updates what differs, and a second run ch
   assert.deepEqual(writes(fake.calls.slice(before)), []);
   assert.equal(fake.held.filter((l) => l.name.toLowerCase() === 'bug').length, 1, 'no duplicate');
   assert.deepEqual(fake.milestones, ['closed v0.0.1', 'open First release']);
+});
+
+test('planning: makes the tier labels the pull request check asks for, once (#225)', () => {
+  const fake = fakeGh([LABELS.find((l) => l.name === 'docs')!], ['open v1']);
+  let result = setUpPlanning(fake.gh, REMOTE, APPLY);
+  assert.ok(result.ok, result.lines.join('\n'));
+  for (const tier of ['A', 'B', 'C']) {
+    assert.ok(result.lines.some((line) => line.startsWith(`- done: make label "tier ${tier}"`)), `tier ${tier}: ${result.lines.join(' | ')}`);
+    assert.equal(fake.held.filter((l) => l.name === `tier ${tier}`).length, 1);
+  }
+  assert.match(fake.held.find((l) => l.name === 'tier A')!.description, /owner reviews/);
+  const before = fake.calls.length;
+  result = setUpPlanning(fake.gh, REMOTE, APPLY);
+  assert.equal(result.lines.at(-1), 'Nothing to change.');
+  assert.deepEqual(writes(fake.calls.slice(before)), [], 'a second run makes nothing new');
 });
 
 test('planning: deletes GitHub\'s default labels only with --remove-default-labels (#10)', () => {

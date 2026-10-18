@@ -117,8 +117,9 @@ Without `gh`, a sign-in, the network or a GitHub remote, they are **can't check*
 A session never calls the network, so there they are always **can't check**.
 
 `labels` and `milestone` in stage 2 are read the same way. The standard labels are `bug`, `feat`,
-`docs`, `refactor`, `ci`, `owner`, `incident`, `good first issue` and `hotfix`. `init` shows which
-are missing, and `init --github --yes` adds them.
+`docs`, `refactor`, `ci`, `owner`, `incident`, `good first issue`, `hotfix`, and the tier labels
+`tier A`, `tier B` and `tier C`. `init` shows which are missing, and `init --github --yes` adds
+them.
 
 After a step, `yokoten doctor` names the outside standard it meets, when there is one,
 for example `ci (Scorecard: CI-Tests)`. The session message leaves it out.

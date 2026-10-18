@@ -106,7 +106,8 @@ not now（暂不，后面跟着你给的原因）或者 can't check（这里查�
 会话开头不联网，所以那里这三步总是 can't check。
 
 第 2 关的 `labels` 和 `milestone` 也这样读。标准标签是 `bug`、`feat`、`docs`、`refactor`、`ci`、
-`owner`、`incident`、`good first issue` 和 `hotfix`。`init` 会告诉你缺哪些，`init --github --yes` 帮你加上。
+`owner`、`incident`、`good first issue`、`hotfix`，还有三个 tier 标签 `tier A`、`tier B`、`tier C`。
+`init` 会告诉你缺哪些，`init --github --yes` 帮你加上。
 
 如果某一步对应外部的标准，`yokoten doctor` 会在步骤名后面写出来，比如 `ci (Scorecard: CI-Tests)`。
 会话开头那三行不写。
