@@ -48,10 +48,14 @@ export class UnreadableHooksFile extends Error {
   }
 }
 
-const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+export const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
-/** The file's settings, or null when it won't parse or its `hooks` is not an object of lists of objects. */
-function readTable(path: string): Settings | null {
+/**
+ * The file's settings, or null when it won't parse, its top level is not an object, or its
+ * `hooks` is not an object of lists of objects. A missing file is empty settings. Every
+ * reader of a hooks file goes through this one check (#248, #254).
+ */
+export function readTable(path: string): Settings | null {
   let settings: unknown;
   try {
     settings = readSettings(path);
@@ -117,10 +121,6 @@ export function hookState(path: string, event: string, matcher: string | undefin
 
 /** Whether the file has a hook for `event` that runs yokoten's `<sub>`. */
 export function hasHook(path: string, event: string, sub: string): boolean {
-  try {
-    const settings: Settings = JSON.parse(readFileSync(path, 'utf8'));
-    return (settings.hooks?.[event] ?? []).some((g) => (g.hooks ?? []).some((h) => runs(sub).test(h.command ?? '')));
-  } catch {
-    return false;
-  }
+  const settings = readTable(path);
+  return (settings?.hooks?.[event] ?? []).some((g) => (Array.isArray(g.hooks) ? g.hooks : []).some((h) => typeof h?.command === 'string' && runs(sub).test(h.command)));
 }

@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { guardCommand, missingProjectRuntime } from '../run/cli.ts';
 import type { Action } from '../run/hook.ts';
-import { type Added, addHook, hasHook, readSettings, writeSettings } from './hooks-file.ts';
+import { type Added, addHook, hasHook, isObject, readTable, type Settings, UnreadableHooksFile, writeSettings } from './hooks-file.ts';
 
 /**
  * A PreToolUse call, as an Action. The guard reads the fields, not the tool's name:
@@ -48,10 +48,29 @@ export const agentFile = (env: Env, file: string): string => join(userDir(env), 
 const userSettings = (env: Env) => join(userDir(env), 'settings.json');
 const projectSettings = (root: string) => join(root, '.claude', 'settings.json');
 
+/**
+ * A Claude Code settings file, or null when yokoten won't touch it: it doesn't parse, its
+ * top level isn't an object, or its `hooks` or `env` is the wrong type. Every reader and
+ * writer of the user and project settings goes through this one check (#254).
+ */
+function readClaudeSettings(path: string): Settings | null {
+  const settings = readTable(path);
+  return settings && (settings.env === undefined || isObject(settings.env)) ? settings : null;
+}
+
+/** The path, once it is known to be readable; else `UnreadableHooksFile`, before anything is written. */
+function readable(path: string): string {
+  if (!readClaudeSettings(path)) throw new UnreadableHooksFile(path);
+  return path;
+}
+
+/** Whether yokoten can read the user's ~/.claude/settings.json (a missing file is readable: it is empty). */
+export const userSettingsReadable = (env: Env): boolean => readClaudeSettings(userSettings(env)) !== null;
+
 /** The project's tool-call guard: every shell call and edit goes past `hook` first. */
 export const addProjectHook = (root: string, cli: string) =>
-  addHook(projectSettings(root), 'PreToolUse', 'Bash|Edit|Write|MultiEdit|NotebookEdit', guardCommand(`"$CLAUDE_PROJECT_DIR/${cli}"`, 'hook', missingProjectRuntime(cli)));
-export const hasProjectHook = (root: string): boolean => hasHook(projectSettings(root), 'PreToolUse', 'hook');
+  addHook(readable(projectSettings(root)), 'PreToolUse', 'Bash|Edit|Write|MultiEdit|NotebookEdit', guardCommand(`"$CLAUDE_PROJECT_DIR/${cli}"`, 'hook', missingProjectRuntime(cli)));
+export const hasProjectHook = (root: string): boolean => readClaudeSettings(projectSettings(root)) !== null && hasHook(projectSettings(root), 'PreToolUse', 'hook');
 
 /**
  * The project's stop check (#92): before the agent ends its turn, `hook --stop` checks the
@@ -59,16 +78,18 @@ export const hasProjectHook = (root: string): boolean => hasHook(projectSettings
  * does not see. Stop takes no matcher.
  */
 export const addProjectStopHook = (root: string, cli: string) =>
-  addHook(projectSettings(root), 'Stop', undefined, guardCommand(`"$CLAUDE_PROJECT_DIR/${cli}"`, 'hook --stop', missingProjectRuntime(cli)));
+  addHook(readable(projectSettings(root)), 'Stop', undefined, guardCommand(`"$CLAUDE_PROJECT_DIR/${cli}"`, 'hook --stop', missingProjectRuntime(cli)));
 
 /**
  * An environment variable for every agent session in the project (settings "env"). Used
- * for TZ=UTC, so the agents' commits record no time zone.
+ * for TZ=UTC, so the agents' commits record no time zone. A file that won't parse, or whose
+ * `env` is the wrong type, throws `UnreadableHooksFile` and stays as it was.
  */
 export function setProjectEnv(root: string, key: string, value: string): Added {
   const path = projectSettings(root);
-  const settings = readSettings(path);
-  const env = (settings.env ??= {}) as Record<string, string>;
+  const settings = readClaudeSettings(path);
+  if (!settings) throw new UnreadableHooksFile(path);
+  const env = (settings.env ??= {}) as Record<string, unknown>;
   if (env[key] === value) return 'same';
   const had = key in env;
   env[key] = value;
@@ -76,14 +97,19 @@ export function setProjectEnv(root: string, key: string, value: string): Added {
   return had ? 'updated' : 'added';
 }
 
-/** The user's hooks, in every repo: doctor at session start, and the command guard. `missing` is what they say when `cli` is gone. */
+/**
+ * The user's hooks, in every repo: doctor at session start, and the command guard.
+ * `missing` is what they say when `cli` is gone. A settings file yokoten can't read throws
+ * `UnreadableHooksFile` before either hook is written.
+ */
 export function addUserHooks(env: Env, cli: string, missing: string): { doctor: Added; guard: Added } {
+  const path = readable(userSettings(env));
   return {
-    doctor: addHook(userSettings(env), 'SessionStart', undefined, guardCommand(cli, 'doctor --session', missing, { isSessionStart: true })),
-    guard: addHook(userSettings(env), 'PreToolUse', 'Bash', guardCommand(cli, 'hook --commands-only', missing)),
+    doctor: addHook(path, 'SessionStart', undefined, guardCommand(cli, 'doctor --session', missing, { isSessionStart: true })),
+    guard: addHook(path, 'PreToolUse', 'Bash', guardCommand(cli, 'hook --commands-only', missing)),
   };
 }
-export const hasSessionDoctor = (env: Env): boolean => hasHook(userSettings(env), 'SessionStart', 'doctor');
+export const hasSessionDoctor = (env: Env): boolean => userSettingsReadable(env) && hasHook(userSettings(env), 'SessionStart', 'doctor');
 
 /**
  * Whether the yokoten plugin is on in the user's settings (`enabledPlugins`, the key
@@ -91,12 +117,8 @@ export const hasSessionDoctor = (env: Env): boolean => hasHook(userSettings(env)
  * hooks, so it stands in for `install` in Claude Code.
  */
 export function hasPlugin(env: Env): boolean {
-  let enabled: unknown;
-  try {
-    enabled = readSettings(userSettings(env)).enabledPlugins;
-  } catch {
-    return false; // a settings file that is not JSON enables nothing
-  }
+  // A settings file yokoten can't read enables nothing.
+  const enabled = readClaudeSettings(userSettings(env))?.enabledPlugins;
   return typeof enabled === 'object' && enabled !== null && Object.entries(enabled).some(([id, on]) => id.startsWith('yokoten@') && on === true);
 }
 

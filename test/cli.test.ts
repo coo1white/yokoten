@@ -1005,6 +1005,56 @@ test('init: an unreadable project .codex/hooks.json or .gemini/settings.json is 
   }
 });
 
+// #254: the same for Claude Code's own settings file, the one people edit by hand most.
+const BAD_CLAUDE_SETTINGS = ['{ not json', '{"hooks": "x"}\n', '[]', '{"env": "x"}'];
+
+test('install: an unreadable ~/.claude/settings.json is skipped, the rest goes on, and install exits 1 (#254)', () => {
+  for (const content of BAD_CLAUDE_SETTINGS) {
+    const sandbox = makeSandbox();
+    const file = join(sandbox.home, '.claude', 'settings.json');
+    for (const dir of ['.claude', '.codex', '.gemini']) mkdirSync(join(sandbox.home, dir));
+    writeFileSync(file, content);
+    const result = sandbox.run(['install']);
+    const what = JSON.stringify(content);
+    assert.equal(result.status, 1, `${what}: ${result.stdout}${result.stderr}`);
+    assert.ok(result.stdout.split('\n').includes("skipped Claude Code: can't read ~/.claude/settings.json (make it valid JSON, then run `yokoten install` again)"), `${what}: ${result.stdout}${result.stderr}`);
+    assert.doesNotMatch(result.stdout, /the SessionStart doctor$|the user-level command guard$/m, what);
+    assert.ok(!result.stdout.includes(sandbox.home) && !result.stderr.includes(sandbox.home), `${what}: the home path is shown`);
+    assert.equal(readFileSync(file, 'utf8'), content, `${what}: the file changed`);
+    // Every other step still ran: the Codex and Gemini CLI hooks, and the marks file.
+    assert.match(result.stdout, /^added the Codex command guard in ~\//m, what);
+    assert.match(result.stdout, /^added the Gemini CLI command guard in ~\//m, what);
+    assert.match(result.stdout.trimEnd().split('\n').at(-1) ?? '', /marks/, what);
+    // Doctor says it can't read the file, never that the hook is missing, and doesn't crash.
+    const doctor = sandbox.run(['doctor']);
+    assert.match(doctor.stdout, /^  MISSING session-doctor: can't read ~\/\.claude\/settings\.json/m, `${what}: ${doctor.stdout}${doctor.stderr}`);
+    assert.doesNotMatch(doctor.stderr, /SyntaxError|TypeError|at /, what);
+    assert.equal(readFileSync(file, 'utf8'), content, `${what}: doctor changed the file`);
+  }
+});
+
+test('init: an unreadable project .claude/settings.json is skipped, the rest goes on, and init exits 1 (#254)', () => {
+  for (const content of BAD_CLAUDE_SETTINGS) {
+    const sandbox = makeSandbox();
+    const file = join(sandbox.repo, '.claude', 'settings.json');
+    mkdirSync(dirname(file));
+    writeFileSync(file, content);
+    const result = sandbox.run(['init']);
+    const what = JSON.stringify(content);
+    assert.equal(result.status, 1, `${what}: ${result.stdout}${result.stderr}`);
+    assert.ok(result.stdout.split('\n').includes("skipped the Claude Code settings: can't read .claude/settings.json (make it valid JSON, then run `yokoten init` again)"), `${what}: ${result.stdout}${result.stderr}`);
+    assert.doesNotMatch(result.stdout, /in \.claude\/settings\.json/, what);
+    assert.equal(readFileSync(file, 'utf8'), content, `${what}: the file changed`);
+    // Every other step still ran: the Codex and Gemini CLI hooks, and the commit check.
+    assert.ok(hasHook(join(sandbox.repo, '.codex', 'hooks.json'), 'Stop', 'hook'), `${what}: no Codex stop check`);
+    assert.ok(hasHook(join(sandbox.repo, '.gemini', 'settings.json'), 'AfterAgent', 'hook'), `${what}: no Gemini CLI stop check`);
+    assert.match(result.stdout, /the commit check/, what);
+    const doctor = sandbox.run(['doctor']);
+    assert.doesNotMatch(doctor.stderr, /SyntaxError|TypeError|at /, what);
+    assert.equal(readFileSync(file, 'utf8'), content, `${what}: doctor changed the file`);
+  }
+});
+
 // Codex adds a SessionStart hook's plain stdout to the context; Gemini CLI reads JSON only (#211).
 test('doctor --session --agent: plain text for Codex, hookSpecificOutput JSON for Gemini CLI (#211)', () => {
   const sandbox = makeSandbox();

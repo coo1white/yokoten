@@ -35,7 +35,7 @@ function walk(dir: string): string[] {
 }
 
 /**
- * One agent's hook lines, or one skip line when its file won't parse (#248): the file
+ * One agent's hook lines, or one skip line when its file won't parse (#248, #254): the file
  * stays as it was, init goes on, and `ok` is false.
  */
 function agentHooks(name: string, file: string, add: () => string[]): { ok: boolean; lines: string[] } {
@@ -47,7 +47,7 @@ function agentHooks(name: string, file: string, add: () => string[]): { ok: bool
   }
 }
 
-/** One line per thing done, kept or skipped; `ok` is false when a hooks file was skipped because it won't parse. */
+/** One line per thing done, kept or skipped; `ok` is false when a hooks or settings file was skipped because it won't parse. */
 export function init(root: string): { ok: boolean; lines: string[] } {
   const report: string[] = [];
   const cli = cliPath(root);
@@ -67,9 +67,14 @@ export function init(root: string): { ok: boolean; lines: string[] } {
   if (hooks.kind !== 'own') chmodSync(join(root, '.githooks', 'pre-commit'), 0o755);
   const imported = importRules(root);
   if (imported) report.push(imported);
-  const hook = addProjectHook(root, cli);
-  report.push(`${hook} the tool-call hook in .claude/settings.json`);
-  report.push(`${addProjectStopHook(root, cli)} the stop check in .claude/settings.json (changed files, before the agent ends its turn)`);
+  // Claude Code's settings, the file people edit by hand most: skipped as one, never
+  // rewritten, when yokoten can't read it (#254).
+  const claudeHooks = agentHooks('the Claude Code settings', '.claude/settings.json', () => [
+    `${addProjectHook(root, cli)} the tool-call hook in .claude/settings.json`,
+    `${addProjectStopHook(root, cli)} the stop check in .claude/settings.json (changed files, before the agent ends its turn)`,
+    `${setProjectEnv(root, 'TZ', 'UTC')} TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)`,
+  ]);
+  report.push(...claudeHooks.lines);
   // Codex and Gemini CLI get the same guard, whether or not they are installed here: two
   // small files are easier to predict than a guess about which agents someone uses.
   // A file that won't parse is named and skipped, never rewritten (#248).
@@ -82,9 +87,8 @@ export function init(root: string): { ok: boolean; lines: string[] } {
     `${gemini.addProjectStopHook(root, cli)} the Gemini CLI stop check in .gemini/settings.json (AfterAgent)`,
   ]);
   report.push(...codexHooks.lines, ...geminiHooks.lines);
-  report.push(`${setProjectEnv(root, 'TZ', 'UTC')} TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)`);
   report.push(...setCommitCheck(root, cli, hooks));
-  return { ok: codexHooks.ok && geminiHooks.ok, lines: report };
+  return { ok: claudeHooks.ok && codexHooks.ok && geminiHooks.ok, lines: report };
 }
 
 // ---- A project's own CLAUDE.md and commit hooks (#206) ----
