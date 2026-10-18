@@ -484,29 +484,39 @@ translation falls behind, and nobody sees it. So each translated file names its 
 on line 1, in an HTML comment. GitHub does not show it.
 
 ```markdown
-<!-- source: docs/guide.md blob 3b18e512dba79e4c8300dd08aeb37f8e728b8dad -->
+<!-- source: docs/guide.md -->
 ```
 
-The path is the English file, from the repo root. The blob is git's id for the English
-text you translated: run `git hash-object docs/guide.md`. When you update the
-translation, set line 1 again, in the same commit or pull request as the English.
+The path is the English file, from the repo root. Write this line once; it never
+changes. When you change the English, update the translation in the same commit or pull
+request.
 
-`check` reads line 1 of each Markdown and HTML file. A translation is current when its
-blob is the English text in the work tree. If not, `check` compares commits on the
+`check` reads line 1 of each Markdown and HTML file. Then it compares commits on the
 current branch, first parent only. The translation is current when the last commit that
-changed its line 1 is the same as, or later than, the last commit that changed the
-English. Why commits: two pull requests can change the English at the same time. After
-both merge, the English is a blob that neither branch had. A blob alone would then say
-"behind", although both translations were done.
+changed it is the same as, or later than, the last commit that changed the English. Any
+line of the translation counts.
 
-Two edits do not count. An edit to the English that is not yet committed makes the
-translation behind. A commit that changes the translation but leaves line 1 alone, such
-as a typo fix, does not make it current.
+Why not a line that records the English version? Every pull request that changes the
+English would then edit that line. Two such pull requests would always conflict on it.
+With a line that never changes, parallel pull requests touch only the paragraphs they
+translate.
+
+The cost: a commit that changes only the translation also counts. A typo fix in the
+translation can hide an English change that nobody translated. So run `check` before a
+typo fix. If it notes the translation as behind, update the translation first.
+
+In the work tree, an edit to the translation counts as a later change. An edit to the
+English with no edit to the translation makes the translation behind.
 
 When a translation is behind, `check` gives a `translation-behind` note. The note says
-how many commits behind, and how to see the change: `git diff <blob> HEAD:docs/guide.md`.
+how many commits behind, and how to see the change: `git diff <commit> HEAD -- docs/guide.md`.
 A note never fails CI. To make it fail, put `"translations": { "fail": true }` in
 `yokoten.json`.
+
+An older form of line 1 adds the English blob:
+`<!-- source: docs/guide.md blob 3b18e512dba79e4c8300dd08aeb37f8e728b8dad -->`.
+`check` still reads it. A blob equal to the English text is current; otherwise the
+commits decide. You can drop the blob at any time.
 
 A shallow clone may not hold the commits that `check` compares. Then it gives a note,
 not "current". In CI, use `fetch-depth: 0`.
