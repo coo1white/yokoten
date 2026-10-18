@@ -1262,6 +1262,103 @@ test('doctor: the plugin, when on, stands in for install', () => {
   assert.match(machine(), /MISSING session-doctor/, 'a broken settings file enables nothing');
 });
 
+// #198: a plugin older than this yokoten is a note, in full doctor and in a session. A fake
+// install in the fake HOME, laid out as Claude Code keeps it; the real one is never read.
+test('doctor: notes an installed plugin older than this yokoten (#198)', () => {
+  const sandbox = makeSandbox();
+  const version: string = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version;
+  const plugins = join(sandbox.home, '.claude', 'plugins');
+  const folder = join(plugins, 'cache', 'yokoten', 'yokoten', 'abc123');
+  mkdirSync(folder, { recursive: true });
+  const enable = (on: boolean) => writeFileSync(join(sandbox.home, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { 'yokoten@yokoten': on } }));
+  const install = (entry: object) => writeFileSync(join(plugins, 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'yokoten@yokoten': [{ scope: 'user', installPath: folder, version: 'abc123', ...entry }] } }));
+  const pluginVersion = (v: string) => writeFileSync(join(folder, 'package.json'), JSON.stringify({ name: 'yokoten', version: v }));
+  const full = () => sandbox.run(['doctor']).stdout;
+  const olderNote = /the yokoten plugin is older than this yokoten/;
+
+  // Positive control: an old plugin is noted, with the one command, and doctor does not fail on it.
+  enable(true);
+  install({ gitCommitSha: 'abc123' });
+  pluginVersion('0.0.1');
+  const lines = full().split('\n');
+  const line = `  note    plugin: the yokoten plugin is older than this yokoten (0.0.1 < ${version}); update it: \`claude plugin update yokoten@yokoten\`, then restart Claude Code`;
+  assert.ok(lines.includes(line), lines.join('\n'));
+  assert.ok(!lines.some((l) => l.includes('MISSING plugin')));
+  assert.match(sandbox.run(['doctor', '--session']).stdout, olderNote);
+  const json = JSON.parse(sandbox.run(['doctor', '--json']).stdout);
+  assert.ok(json.notes.some((n: { what: string }) => olderNote.test(n.what)), 'a note in JSON');
+  assert.ok(!json.findings.some((f: { what: string }) => olderNote.test(f.what)), 'not a finding');
+
+  // The same version, or a newer one: nothing.
+  pluginVersion(version);
+  assert.doesNotMatch(full(), olderNote);
+  pluginVersion('9999.0.0');
+  assert.doesNotMatch(full(), olderNote);
+  // Off in the settings: the plugin does not run, so its age does not matter.
+  pluginVersion('0.0.1');
+  enable(false);
+  assert.doesNotMatch(full(), olderNote);
+  enable(true);
+  // A project install for another project is not this one's.
+  install({ scope: 'project', projectPath: join(sandbox.home, 'elsewhere') });
+  assert.doesNotMatch(full(), olderNote);
+  // No install file, or an odd one: no note, no crash.
+  for (const text of [null, 'not json', '{"plugins": []}', '{"plugins": {"yokoten@yokoten": "odd"}}', '{"plugins": {"yokoten@yokoten": [null, 7]}}']) {
+    rmSync(join(plugins, 'installed_plugins.json'), { force: true });
+    if (text !== null) writeFileSync(join(plugins, 'installed_plugins.json'), text);
+    const result = sandbox.run(['doctor']);
+    assert.ok(result.stdout.includes('machine:'), `${text}: doctor ran to the end`);
+    assert.doesNotMatch(result.stdout, olderNote, String(text));
+    assert.doesNotMatch(result.stderr, /Error/, String(text));
+  }
+  install({ gitCommitSha: 'abc123' });
+  rmSync(join(folder, 'package.json'));
+  assert.doesNotMatch(full(), olderNote, 'outside a yokoten checkout, a commit alone tells nothing');
+});
+
+test('doctor: in a yokoten checkout, a plugin commit behind the default branch is a note (#198)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('package.json', JSON.stringify({ name: 'yokoten', version: '0.0.1' }));
+  sandbox.write('bin/yokoten.ts', '');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-q', '-m', 'feat: one');
+  const first = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  const plugins = join(sandbox.home, '.claude', 'plugins');
+  mkdirSync(plugins, { recursive: true });
+  writeFileSync(join(sandbox.home, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { 'yokoten@yokoten': true } }));
+  // No installPath and no package.json: only the commit can tell.
+  const install = (sha: string) => writeFileSync(join(plugins, 'installed_plugins.json'), JSON.stringify({ plugins: { 'yokoten@yokoten': [{ scope: 'user', version: sha.slice(0, 12), gitCommitSha: sha }] } }));
+  const olderNote = /the yokoten plugin is older than this yokoten \(([0-9a-f]{12}) < ([0-9a-f]{12})\)/;
+  const commit = (name: string) => {
+    sandbox.write(`${name}.md`, `${name}\n`);
+    sandbox.git('add', '.');
+    sandbox.git('commit', '-q', '-m', `feat: ${name}`);
+    return sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  };
+  install(first);
+  assert.doesNotMatch(sandbox.run(['doctor']).stdout, olderNote, 'the plugin is main');
+  // The plugin is main's tip and doctor runs on a feature branch ahead of main: up to date,
+  // though HEAD descends from it. An update could not help, so nothing.
+  sandbox.git('checkout', '-q', '-b', 'feature');
+  commit('two');
+  assert.doesNotMatch(sandbox.run(['doctor']).stdout, olderNote, 'the plugin is main, HEAD is ahead');
+  assert.doesNotMatch(sandbox.run(['doctor', '--session']).stdout, olderNote);
+  // Positive control: main moves on, so the plugin is one commit behind it, on any branch.
+  sandbox.git('checkout', '-q', 'main');
+  const tip = commit('three');
+  sandbox.git('checkout', '-q', 'feature');
+  const match = sandbox.run(['doctor']).stdout.match(olderNote);
+  assert.deepEqual(match?.slice(1), [first.slice(0, 12), tip.slice(0, 12)]);
+  assert.match(sandbox.run(['doctor', '--session']).stdout, olderNote);
+  // A commit this repo doesn't know: can't tell, so nothing.
+  install('0'.repeat(40));
+  assert.doesNotMatch(sandbox.run(['doctor']).stdout, olderNote);
+  // No origin/HEAD, origin/main or main: no default branch to compare with, so nothing.
+  install(first);
+  sandbox.git('branch', '-q', '-m', 'main', 'trunk');
+  assert.doesNotMatch(sandbox.run(['doctor']).stdout, olderNote, 'no main ref');
+});
+
 // #117: the bot checks a title before it sends anything, by the rules CI uses. A fake gh
 // and a local API server stand in for GitHub; the real ones are never reached.
 test('bot: a bad title is refused before the token is asked for; a good one runs (#117)', async () => {
