@@ -24,18 +24,72 @@ const TYPES = ['feat', 'fix', 'docs', 'test', 'refactor', 'chore', 'ci', 'perf',
 const TITLE = new RegExp(`^(${TYPES.join('|')})(\\([a-z0-9][a-z0-9./-]*\\))?!?: \\S`);
 const SECTIONS = ['Why', 'What changed', 'How tested'];
 
-/**
- * The text with each HTML comment turned into spaces, so line numbers stay the same. As
- * on GitHub, a comment that never closes hides the rest of the text. A left-to-right scan,
- * not a regex replace, so one pass gives the same result as GitHub's page.
- */
-function blankComments(text: string): string {
+/** The text with fenced code blocks and code spans passed through `blank`. No regex: a PR body comes from anyone. */
+function blankCode(text: string, blank: (code: string) => string): string {
+  // Fenced blocks, line by line. An unclosed fence runs to the end.
+  let fence = '';
+  const lines = text.split('\n').map((line) => {
+    const mark = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1] ?? '';
+    if (!fence) {
+      if (!mark) return line;
+      fence = mark;
+      return blank(line);
+    }
+    if (mark && mark[0] === fence[0] && mark.length >= fence.length && line.trim() === mark) fence = '';
+    return blank(line);
+  });
+  // Code spans: a run of backticks up to the next run of the same length.
+  const rest = lines.join('\n');
   let out = '';
   let at = 0;
-  for (let open = text.indexOf('<!--'); open >= 0; open = text.indexOf('<!--', at)) {
-    const close = text.indexOf('-->', open + 4);
+  let i = 0;
+  while (i < rest.length) {
+    if (rest[i] !== '`') {
+      i++;
+      continue;
+    }
+    let n = 0;
+    while (rest[i + n] === '`') n++;
+    let close = -1;
+    for (let j = i + n; j < rest.length; ) {
+      if (rest[j] !== '`') {
+        j++;
+        continue;
+      }
+      let m = 0;
+      while (rest[j + m] === '`') m++;
+      if (m === n) {
+        close = j;
+        break;
+      }
+      j += m;
+    }
+    if (close < 0) {
+      i += n;
+      continue;
+    }
+    out += rest.slice(at, i) + blank(rest.slice(i, close + n));
+    at = i = close + n;
+  }
+  return out + rest.slice(at);
+}
+
+/**
+ * The text with each HTML comment turned into spaces, so line numbers stay the same. As
+ * on GitHub, a comment that never closes hides the rest of the text, and a `<!--` inside
+ * code is only text. A left-to-right scan, not a regex replace, so one pass gives the same
+ * result as GitHub's page.
+ */
+function blankComments(text: string): string {
+  // The same text with code turned into spaces: comments are looked for here.
+  const blank = (c: string) => c.replace(/[^\n]/g, ' ');
+  const plain = blankCode(text, blank);
+  let out = '';
+  let at = 0;
+  for (let open = plain.indexOf('<!--'); open >= 0; open = plain.indexOf('<!--', at)) {
+    const close = plain.indexOf('-->', open + 4);
     const end = close < 0 ? text.length : close + 3;
-    out += text.slice(at, open) + text.slice(open, end).replace(/[^\n]/g, ' ');
+    out += text.slice(at, open) + blank(text.slice(open, end));
     at = end;
   }
   return out + text.slice(at);

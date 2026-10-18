@@ -100,6 +100,9 @@ test('pull request: each missing part fails with what to do (#47)', () => {
   one({ body: goodPr().body.replace('`node --test`', '<!-- how\n`node --test`') }, /`## How tested` section is empty/);
   // A comment rebuilt from pieces is text on GitHub's page, and to the check.
   assert.deepEqual(checkPullRequest({ ...goodPr(), body: goodPr().body.replace('Nothing checks it.', '<!<!---->-- Nothing checks it.') }, DEFAULTS), []);
+  // Inside code, `<!--` is only text: in a code span, and in a fenced block.
+  assert.deepEqual(checkPullRequest({ ...goodPr(), body: goodPr().body.replace('Nothing checks it.', 'A `<!--` that never closes. Also ``a ` <!-- b``.') }, DEFAULTS), []);
+  assert.deepEqual(checkPullRequest({ ...goodPr(), body: goodPr().body.replace('Nothing checks it.', 'See:\n```html\n<!-- open\n```\nThat is all.') }, DEFAULTS), []);
   one({ body: goodPr().body.replace('Closes #47', 'Closes #') }, /Closes #N/);
   one({ files: ['src/rules/pr.ts'] }, /^changelog:/);
   one({ milestone: null }, /^milestone:/);
