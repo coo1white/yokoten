@@ -61,6 +61,49 @@ export function repoOf(remote: string): string | null {
   return remote.trim().match(/github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/)?.[1] ?? null;
 }
 
+/** The title a `gh issue` or `gh pr` command is about to set, and its labels. */
+export interface CommandTitle {
+  kind: 'issue' | 'pr';
+  title: string;
+  labels: string[];
+}
+
+// The gh options of `issue`/`pr` `create`/`edit` that take a value. Their value is
+// skipped, so a body of `-t` is not read as the title option.
+const VALUE_OPTIONS = new Set([
+  '--body', '-b', '--body-file', '-F', '--assignee', '-a', '--milestone', '-m', '--project', '-p', '--repo', '-R', '--template', '-T',
+  '--base', '-B', '--head', '-H', '--reviewer', '-r', '--recover', '--remove-label', '--add-assignee', '--remove-assignee',
+  '--add-project', '--remove-project', '--add-reviewer', '--remove-reviewer',
+]);
+const LABEL_OPTIONS = new Set(['--label', '-l', '--add-label']);
+
+/**
+ * The title that `gh issue create`, `gh issue edit`, `gh pr create` or `gh pr edit` sets
+ * with `--title X`, `--title=X`, `-t X` or `-tX` (#117). Null for any other command, or
+ * when no title is given (`--fill`): CI checks that title. As in gh, the last one wins.
+ */
+export function readCommandTitle(command: string[]): CommandTitle | null {
+  const [file, kind, verb, ...rest] = command;
+  if (!file || file.split(/[\\/]/).pop() !== 'gh') return null;
+  if ((kind !== 'issue' && kind !== 'pr') || (verb !== 'create' && verb !== 'edit')) return null;
+  let title: string | null = null;
+  const labels: string[] = [];
+  for (let index = 0; index < rest.length; index++) {
+    const word = rest[index];
+    if (word === '--') break;
+    const equals = word.startsWith('--') ? word.indexOf('=') : -1;
+    const name = equals > 0 ? word.slice(0, equals) : /^-[a-zA-Z]./.test(word) ? word.slice(0, 2) : word;
+    const attached = equals > 0 ? word.slice(equals + 1) : name !== word ? word.slice(2) : null;
+    const isTitle = name === '--title' || name === '-t';
+    if (!isTitle && !LABEL_OPTIONS.has(name) && !VALUE_OPTIONS.has(name)) continue;
+    const value = attached ?? rest[++index];
+    if (value === undefined) break;
+    if (isTitle) title = value;
+    else if (LABEL_OPTIONS.has(name)) labels.push(...value.split(',').map((label) => label.trim()).filter(Boolean));
+  }
+  return title === null ? null : { kind, title, labels };
+}
+
 /** An installation token for `repo`, good for one hour. */
 export async function installationToken(config: BotConfig, repo: string): Promise<string> {
   const jwt = appJwt(config.appId, readFileSync(config.keyFile, 'utf8'));

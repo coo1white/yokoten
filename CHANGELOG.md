@@ -8,6 +8,10 @@ All notable changes are listed here. The format follows
 
 ### Added
 
+- `yokoten bot` checks the title before `gh issue create`, `gh issue edit`, `gh pr create`
+  or `gh pr edit` runs. It uses the rules of `check --issue` and the title part of
+  `check --pr`. A bad title is refused with what, why and the fix, and nothing is sent.
+  A command with no title passes; CI still checks it (#117).
 - In GitHub Actions, `check` shows its findings on the pull request page. Each finding
   is an annotation on its line, and the job summary lists what, why and the fix. Notes
   are warnings. Output outside Actions does not change (#91).

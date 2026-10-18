@@ -105,10 +105,13 @@ function section(body: string, name: string): string | null {
   return (end < 0 ? rest : rest.slice(0, end)).join('\n').trim();
 }
 
-/** Problems with a pull request. An empty list means it meets the standard. */
-export function checkPullRequest(pr: PullRequest, config: Pick<Config, 'tests'> & Partial<Pick<Config, 'areas'>>): Finding[] {
+/**
+ * Problems with a pull request title: the commit form, an area from the list, at most 72
+ * characters, no full stop and no issue number. `checkPullRequest` and the bot use it.
+ */
+export function checkPullRequestTitle(rawTitle: string, config: Partial<Pick<Config, 'areas'>>): Finding[] {
   const problems: Finding[] = [];
-  const title = pr.title.trim();
+  const title = rawTitle.trim();
   if (!TITLE.test(title)) {
     problems.push(finding('pr-title', 'title: not in the commit form', `use \`type(area): summary\` or \`type: summary\`, with a type from ${TYPES.join(', ')}`));
   }
@@ -119,6 +122,12 @@ export function checkPullRequest(pr: PullRequest, config: Pick<Config, 'tests'> 
   if (title.length > 72) problems.push(finding('pr-title', `title: ${title.length} characters, over 72`, 'shorten it; the details go in the body'));
   if (/\.$/.test(title)) problems.push(finding('pr-title', 'title: a full stop at the end', 'remove the full stop', { why: 'a commit title has no full stop' }));
   if (/#\d/.test(title)) problems.push(finding('pr-title', 'title: an issue number', 'remove the issue number, and put `Closes #N` in the body', { why: 'the host links the issue from the body' }));
+  return problems;
+}
+
+/** Problems with a pull request. An empty list means it meets the standard. */
+export function checkPullRequest(pr: PullRequest, config: Pick<Config, 'tests'> & Partial<Pick<Config, 'areas'>>): Finding[] {
+  const problems = checkPullRequestTitle(pr.title, config);
 
   const body = pr.body ?? '';
   const first = body.split(/\r?\n/).find((l) => l.trim()) ?? '';
