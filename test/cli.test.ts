@@ -1031,10 +1031,18 @@ test('init: an unreadable project .codex/hooks.json or .gemini/settings.json is 
 });
 
 // #254: the same for Claude Code's own settings file, the one people edit by hand most.
-const BAD_CLAUDE_SETTINGS = ['{ not json', '{"hooks": "x"}\n', '[]', '{"env": "x"}'];
+// Each bad file and why it is skipped: a parse error asks for valid JSON, a wrong shape names the key.
+const JSON_FIX = (command: string) => `(make it valid JSON, then run \`yokoten ${command}\` again)`;
+const BAD_USER_SETTINGS: [content: string, reason: (file: string) => string][] = [
+  ['{ not json', (file) => `can't read ${file} ${JSON_FIX('install')}`],
+  ['{"hooks": "x"}\n', (file) => `${file} has an unexpected shape (\`hooks\` should be an object)`],
+  ['[]', (file) => `${file} has an unexpected shape (the file should be a JSON object)`],
+  // A deep shape in the second event install adds: checked before the first is written.
+  ['{"hooks":{"PreToolUse":[{"hooks":5}]}}', (file) => `${file} has an unexpected shape (\`hooks.PreToolUse[0].hooks\` should be a list of objects)`],
+];
 
 test('install: an unreadable ~/.claude/settings.json is skipped, the rest goes on, and install exits 1 (#254)', () => {
-  for (const content of BAD_CLAUDE_SETTINGS) {
+  for (const [content, reason] of BAD_USER_SETTINGS) {
     const sandbox = makeSandbox();
     const file = join(sandbox.home, '.claude', 'settings.json');
     for (const dir of ['.claude', '.codex', '.gemini']) mkdirSync(join(sandbox.home, dir));
@@ -1042,7 +1050,7 @@ test('install: an unreadable ~/.claude/settings.json is skipped, the rest goes o
     const result = sandbox.run(['install']);
     const what = JSON.stringify(content);
     assert.equal(result.status, 1, `${what}: ${result.stdout}${result.stderr}`);
-    assert.ok(result.stdout.split('\n').includes("skipped Claude Code: can't read ~/.claude/settings.json (make it valid JSON, then run `yokoten install` again)"), `${what}: ${result.stdout}${result.stderr}`);
+    assert.ok(result.stdout.split('\n').includes(`skipped Claude Code: ${reason('~/.claude/settings.json')}`), `${what}: ${result.stdout}${result.stderr}`);
     assert.doesNotMatch(result.stdout, /the SessionStart doctor$|the user-level command guard$/m, what);
     assert.ok(!result.stdout.includes(sandbox.home) && !result.stderr.includes(sandbox.home), `${what}: the home path is shown`);
     assert.equal(readFileSync(file, 'utf8'), content, `${what}: the file changed`);
@@ -1050,16 +1058,47 @@ test('install: an unreadable ~/.claude/settings.json is skipped, the rest goes o
     assert.match(result.stdout, /^added the Codex command guard in ~\//m, what);
     assert.match(result.stdout, /^added the Gemini CLI command guard in ~\//m, what);
     assert.match(result.stdout.trimEnd().split('\n').at(-1) ?? '', /marks/, what);
-    // Doctor says it can't read the file, never that the hook is missing, and doesn't crash.
+    // Doctor names the same problem, never that the hook is missing, and doesn't crash.
     const doctor = sandbox.run(['doctor']);
-    assert.match(doctor.stdout, /^  MISSING session-doctor: can't read ~\/\.claude\/settings\.json/m, `${what}: ${doctor.stdout}${doctor.stderr}`);
+    const said = content.startsWith('{ not') ? "can't read ~/.claude/settings.json" : '~/.claude/settings.json has an unexpected shape';
+    assert.ok(doctor.stdout.split('\n').some((line) => line.startsWith(`  MISSING session-doctor: ${said}`)), `${what}: ${doctor.stdout}${doctor.stderr}`);
     assert.doesNotMatch(doctor.stderr, /SyntaxError|TypeError|at /, what);
     assert.equal(readFileSync(file, 'utf8'), content, `${what}: doctor changed the file`);
   }
 });
 
+// #254: only the keys install edits are checked. Another event, or an `env` install never
+// touches, is the user's: install adds its hooks and keeps the key as it was.
+test('install: keys in ~/.claude/settings.json that install does not edit are kept and the hooks added (#254)', () => {
+  for (const [content, key, value] of [
+    ['{"hooks":{"Notification":"x"}}', 'Notification', 'x'],
+    ['{"env":"x"}', 'env', 'x'],
+  ] as const) {
+    const sandbox = makeSandbox();
+    const file = join(sandbox.home, '.claude', 'settings.json');
+    mkdirSync(dirname(file));
+    writeFileSync(file, content);
+    const result = sandbox.run(['install']);
+    assert.equal(result.status, 0, `${content}: ${result.stdout}${result.stderr}`);
+    const settings = JSON.parse(readFileSync(file, 'utf8'));
+    assert.equal(key === 'env' ? settings.env : settings.hooks.Notification, value, content);
+    assert.ok(hasHook(file, 'SessionStart', 'doctor'), `${content}: no doctor hook`);
+    assert.ok(hasHook(file, 'PreToolUse', 'hook'), `${content}: no guard`);
+    assert.match(sandbox.run(['doctor']).stdout, /^  ok {6}session-doctor$/m, content);
+  }
+});
+
+const BAD_PROJECT_SETTINGS: [content: string, reason: (file: string) => string][] = [
+  ['{ not json', (file) => `can't read ${file} ${JSON_FIX('init')}`],
+  ['{"hooks": "x"}\n', (file) => `${file} has an unexpected shape (\`hooks\` should be an object)`],
+  ['[]', (file) => `${file} has an unexpected shape (the file should be a JSON object)`],
+  ['{"env": "x"}', (file) => `${file} has an unexpected shape (\`env\` should be an object)`],
+  // The stop check is the second hook init adds: checked before the first is written.
+  ['{"hooks":{"Stop":[{"hooks":5}]}}', (file) => `${file} has an unexpected shape (\`hooks.Stop[0].hooks\` should be a list of objects)`],
+];
+
 test('init: an unreadable project .claude/settings.json is skipped, the rest goes on, and init exits 1 (#254)', () => {
-  for (const content of BAD_CLAUDE_SETTINGS) {
+  for (const [content, reason] of BAD_PROJECT_SETTINGS) {
     const sandbox = makeSandbox();
     const file = join(sandbox.repo, '.claude', 'settings.json');
     mkdirSync(dirname(file));
@@ -1067,7 +1106,7 @@ test('init: an unreadable project .claude/settings.json is skipped, the rest goe
     const result = sandbox.run(['init']);
     const what = JSON.stringify(content);
     assert.equal(result.status, 1, `${what}: ${result.stdout}${result.stderr}`);
-    assert.ok(result.stdout.split('\n').includes("skipped the Claude Code settings: can't read .claude/settings.json (make it valid JSON, then run `yokoten init` again)"), `${what}: ${result.stdout}${result.stderr}`);
+    assert.ok(result.stdout.split('\n').includes(`skipped the Claude Code settings: ${reason('.claude/settings.json')}`), `${what}: ${result.stdout}${result.stderr}`);
     assert.doesNotMatch(result.stdout, /in \.claude\/settings\.json/, what);
     assert.equal(readFileSync(file, 'utf8'), content, `${what}: the file changed`);
     // Every other step still ran: the Codex and Gemini CLI hooks, and the commit check.

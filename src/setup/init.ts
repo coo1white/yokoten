@@ -9,7 +9,7 @@
 import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { addProjectHook, addProjectStopHook, setProjectEnv } from '../agents/claude-code.ts';
+import { addProjectHook, addProjectStopHook, checkProjectSettings, setProjectEnv } from '../agents/claude-code.ts';
 import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
@@ -68,12 +68,15 @@ export function init(root: string): { ok: boolean; lines: string[] } {
   const imported = importRules(root);
   if (imported) report.push(imported);
   // Claude Code's settings, the file people edit by hand most: skipped as one, never
-  // rewritten, when yokoten can't read it (#254).
-  const claudeHooks = agentHooks('the Claude Code settings', '.claude/settings.json', () => [
-    `${addProjectHook(root, cli)} the tool-call hook in .claude/settings.json`,
-    `${addProjectStopHook(root, cli)} the stop check in .claude/settings.json (changed files, before the agent ends its turn)`,
-    `${setProjectEnv(root, 'TZ', 'UTC')} TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)`,
-  ]);
+  // rewritten, when it won't parse or has the wrong shape (#254).
+  const claudeHooks = agentHooks('the Claude Code settings', '.claude/settings.json', () => {
+    checkProjectSettings(root);
+    return [
+      `${addProjectHook(root, cli)} the tool-call hook in .claude/settings.json`,
+      `${addProjectStopHook(root, cli)} the stop check in .claude/settings.json (changed files, before the agent ends its turn)`,
+      `${setProjectEnv(root, 'TZ', 'UTC')} TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)`,
+    ];
+  });
   report.push(...claudeHooks.lines);
   // Codex and Gemini CLI get the same guard, whether or not they are installed here: two
   // small files are easier to predict than a guess about which agents someone uses.

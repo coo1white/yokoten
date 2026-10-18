@@ -21,7 +21,7 @@ import { type Finding, finding, formatFinding, type RuleId } from '../rules/mess
 import { loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
-import { hasPlugin, hasSessionDoctor, readInstalledPlugin, userSettingsReadable } from '../agents/claude-code.ts';
+import { hasPlugin, hasSessionDoctor, readInstalledPlugin, userSettingsProblem } from '../agents/claude-code.ts';
 import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
 import type { HookState } from '../agents/hooks-file.ts';
@@ -85,10 +85,15 @@ export function machineChecks(env: Env): Practice[] {
   const target = paths(env);
   const runtime = runtimeVersion(target.runtime);
   const plugin = hasPlugin(env);
-  // A settings file doctor can't read says so, never "missing" (#254).
-  const session = userSettingsReadable(env)
-    ? practice('session-doctor', 'session-doctor', plugin || hasSessionDoctor(env), 'sessions do not start with doctor', 'run `yokoten install`, or install the Claude Code plugin')
-    : practice('session-doctor', 'session-doctor', false, "can't read ~/.claude/settings.json", 'make it valid JSON, then run `yokoten install`');
+  // A settings file doctor can't use names the problem, never says "missing" (#254); the
+  // same two wordings as the Codex and Gemini CLI user hooks.
+  const problem = userSettingsProblem(env);
+  const session =
+    problem?.kind === 'json'
+      ? practice('session-doctor', 'session-doctor', false, "can't read ~/.claude/settings.json", 'make it valid JSON, then run `yokoten install`')
+      : problem
+        ? practice('session-doctor', 'session-doctor', false, '~/.claude/settings.json has an unexpected shape', `${problem.hint}; fix it, then run \`yokoten install\``)
+        : practice('session-doctor', 'session-doctor', plugin || hasSessionDoctor(env), 'sessions do not start with doctor', 'run `yokoten install`, or install the Claude Code plugin');
   return [
     session,
     // 'runtime' in the text, as before; the id differs from the road's runtime step.

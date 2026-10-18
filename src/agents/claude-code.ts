@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { guardCommand, missingProjectRuntime } from '../run/cli.ts';
 import type { Action } from '../run/hook.ts';
-import { type Added, addHook, hasHook, isObject, readTable, type Settings, UnreadableHooksFile, writeSettings } from './hooks-file.ts';
+import { type Added, addHook, checkHooksFile, hasHook, isObject, type Problem, readTable, type Settings, UnreadableHooksFile, writeSettings } from './hooks-file.ts';
 
 /**
  * A PreToolUse call, as an Action. The guard reads the fields, not the tool's name:
@@ -48,30 +48,40 @@ export const agentFile = (env: Env, file: string): string => join(userDir(env), 
 const userSettings = (env: Env) => join(userDir(env), 'settings.json');
 const projectSettings = (root: string) => join(root, '.claude', 'settings.json');
 
+// The events yokoten adds to each file. A caller checks a file's events together before
+// adding either hook, so a bad second event leaves the file as it was (#248, #254).
+const USER_EVENTS = ['SessionStart', 'PreToolUse'];
+const PROJECT_EVENTS = ['PreToolUse', 'Stop'];
+
+/** The settings, when `setProjectEnv` can edit them: `env` is missing or an object. */
+function withEnv(table: ReturnType<typeof readTable>): { settings: Settings } | { problem: Problem } {
+  if ('problem' in table || table.settings.env === undefined || isObject(table.settings.env)) return table;
+  return { problem: { kind: 'shape', hint: '`env` should be an object' } };
+}
+
 /**
- * A Claude Code settings file, or null when yokoten won't touch it: it doesn't parse, its
- * top level isn't an object, or its `hooks` or `env` is the wrong type. Every reader and
- * writer of the user and project settings goes through this one check (#254).
+ * Why yokoten won't edit the user's ~/.claude/settings.json, or null when it can (a missing
+ * file is empty settings). Only the keys `addUserHooks` edits are checked (#254).
  */
-function readClaudeSettings(path: string): Settings | null {
-  const table = readTable(path, []);
-  const settings = 'problem' in table ? null : table.settings;
-  return settings && (settings.env === undefined || isObject(settings.env)) ? settings : null;
+export function userSettingsProblem(env: Env): Problem | null {
+  const table = readTable(userSettings(env), USER_EVENTS);
+  return 'problem' in table ? table.problem : null;
 }
 
-/** The path, once it is known to be readable; else `UnreadableHooksFile`, before anything is written. */
-function readable(path: string): string {
-  if (!readClaudeSettings(path)) throw new UnreadableHooksFile(path, { kind: 'json' });
-  return path;
+/**
+ * Throw `UnreadableHooksFile` unless init can edit the project's .claude/settings.json: both
+ * hook events and `env`. init calls it before writing any of the three (#254).
+ */
+export function checkProjectSettings(root: string): void {
+  const path = projectSettings(root);
+  const table = withEnv(readTable(path, PROJECT_EVENTS));
+  if ('problem' in table) throw new UnreadableHooksFile(path, table.problem);
 }
-
-/** Whether yokoten can read the user's ~/.claude/settings.json (a missing file is readable: it is empty). */
-export const userSettingsReadable = (env: Env): boolean => readClaudeSettings(userSettings(env)) !== null;
 
 /** The project's tool-call guard: every shell call and edit goes past `hook` first. */
 export const addProjectHook = (root: string, cli: string) =>
-  addHook(readable(projectSettings(root)), 'PreToolUse', 'Bash|Edit|Write|MultiEdit|NotebookEdit', guardCommand(`"$CLAUDE_PROJECT_DIR/${cli}"`, 'hook', missingProjectRuntime(cli)));
-export const hasProjectHook = (root: string): boolean => readClaudeSettings(projectSettings(root)) !== null && hasHook(projectSettings(root), 'PreToolUse', 'hook');
+  addHook(projectSettings(root), 'PreToolUse', 'Bash|Edit|Write|MultiEdit|NotebookEdit', guardCommand(`"$CLAUDE_PROJECT_DIR/${cli}"`, 'hook', missingProjectRuntime(cli)));
+export const hasProjectHook = (root: string): boolean => hasHook(projectSettings(root), 'PreToolUse', 'hook');
 
 /**
  * The project's stop check (#92): before the agent ends its turn, `hook --stop` checks the
@@ -79,7 +89,7 @@ export const hasProjectHook = (root: string): boolean => readClaudeSettings(proj
  * does not see. Stop takes no matcher.
  */
 export const addProjectStopHook = (root: string, cli: string) =>
-  addHook(readable(projectSettings(root)), 'Stop', undefined, guardCommand(`"$CLAUDE_PROJECT_DIR/${cli}"`, 'hook --stop', missingProjectRuntime(cli)));
+  addHook(projectSettings(root), 'Stop', undefined, guardCommand(`"$CLAUDE_PROJECT_DIR/${cli}"`, 'hook --stop', missingProjectRuntime(cli)));
 
 /**
  * An environment variable for every agent session in the project (settings "env"). Used
@@ -88,8 +98,9 @@ export const addProjectStopHook = (root: string, cli: string) =>
  */
 export function setProjectEnv(root: string, key: string, value: string): Added {
   const path = projectSettings(root);
-  const settings = readClaudeSettings(path);
-  if (!settings) throw new UnreadableHooksFile(path, { kind: 'json' });
+  const table = withEnv(readTable(path, []));
+  if ('problem' in table) throw new UnreadableHooksFile(path, table.problem);
+  const { settings } = table;
   const env = (settings.env ??= {}) as Record<string, unknown>;
   if (env[key] === value) return 'same';
   const had = key in env;
@@ -100,17 +111,18 @@ export function setProjectEnv(root: string, key: string, value: string): Added {
 
 /**
  * The user's hooks, in every repo: doctor at session start, and the command guard.
- * `missing` is what they say when `cli` is gone. A settings file yokoten can't read throws
+ * `missing` is what they say when `cli` is gone. A settings file yokoten can't edit throws
  * `UnreadableHooksFile` before either hook is written.
  */
 export function addUserHooks(env: Env, cli: string, missing: string): { doctor: Added; guard: Added } {
-  const path = readable(userSettings(env));
+  const path = userSettings(env);
+  checkHooksFile(path, USER_EVENTS);
   return {
     doctor: addHook(path, 'SessionStart', undefined, guardCommand(cli, 'doctor --session', missing, { isSessionStart: true })),
     guard: addHook(path, 'PreToolUse', 'Bash', guardCommand(cli, 'hook --commands-only', missing)),
   };
 }
-export const hasSessionDoctor = (env: Env): boolean => userSettingsReadable(env) && hasHook(userSettings(env), 'SessionStart', 'doctor');
+export const hasSessionDoctor = (env: Env): boolean => hasHook(userSettings(env), 'SessionStart', 'doctor');
 
 /**
  * Whether the yokoten plugin is on in the user's settings (`enabledPlugins`, the key
@@ -119,7 +131,8 @@ export const hasSessionDoctor = (env: Env): boolean => userSettingsReadable(env)
  */
 export function hasPlugin(env: Env): boolean {
   // A settings file yokoten can't read enables nothing.
-  const enabled = readClaudeSettings(userSettings(env))?.enabledPlugins;
+  const table = readTable(userSettings(env), []);
+  const enabled = 'problem' in table ? undefined : table.settings.enabledPlugins;
   return typeof enabled === 'object' && enabled !== null && Object.entries(enabled).some(([id, on]) => id.startsWith('yokoten@') && on === true);
 }
 
