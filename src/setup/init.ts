@@ -36,7 +36,9 @@ function walk(dir: string): string[] {
 
 /**
  * One agent's hook lines, or one skip line when its file won't parse or has the wrong
- * shape (#248, #254): the file stays as it was, init goes on, and `ok` is false.
+ * shape (#248, #254), or is a Gemini CLI file with comments, which yokoten never rewrites
+ * (#258; the line then holds the hooks to add by hand): the file stays as it was, init
+ * goes on, and `ok` is false until the hooks are there.
  */
 function agentHooks(name: string, file: string, add: () => string[]): { ok: boolean; lines: string[] } {
   try {
@@ -89,7 +91,7 @@ export function init(root: string): { ok: boolean; lines: string[] } {
     ];
   });
   const geminiHooks = agentHooks('the Gemini CLI hooks', '.gemini/settings.json', () => {
-    gemini.checkProjectHooks(root);
+    gemini.checkProjectHooks(root, cli);
     return [
       `${gemini.addProjectHook(root, cli)} the Gemini CLI tool-call hook in .gemini/settings.json`,
       `${gemini.addProjectStopHook(root, cli)} the Gemini CLI stop check in .gemini/settings.json (AfterAgent)`,

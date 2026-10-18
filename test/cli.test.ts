@@ -1030,6 +1030,116 @@ test('init: an unreadable project .codex/hooks.json or .gemini/settings.json is 
   }
 });
 
+// #258: Gemini CLI reads settings.json with comments allowed (strip-json-comments), but
+// not trailing commas. yokoten reads it the same way, and never rewrites a commented file:
+// it prints the hooks to add by hand, and the file with them added by hand is ok.
+const commentedGemini = (hooks: string) => `{
+  // my theme
+  "theme": "dark", /* a block
+  comment */
+  "url": "http://example.com/*not a comment*/",
+  "quote": "a \\" // still a string",
+  "hooks": ${hooks}
+}
+`;
+const COMMENTED = (file: string) => `${file} has comments, so yokoten won't rewrite it; add this under "hooks" by hand (each group in the list for its event, in place of an older yokoten one)`;
+
+/** The skip line, and the JSON printed under it to add by hand. */
+function handAdd(stdout: string, skip: string): Record<string, unknown[]> {
+  const lines = stdout.split('\n');
+  const at = lines.indexOf(skip);
+  assert.ok(at >= 0, `no line ${JSON.stringify(skip)} in:\n${stdout}`);
+  const block = [];
+  for (const line of lines.slice(at + 1)) {
+    if (!line.startsWith('  ')) break;
+    block.push(line);
+  }
+  return JSON.parse(block.join('\n'));
+}
+
+/** The JSON at the end of doctor's line for `id`. */
+function doctorHandAdd(stdout: string, id: string, file: string): Record<string, unknown[]> {
+  const line = stdout.split('\n').find((l) => l.startsWith(`  note    ${id}: `)) ?? '';
+  assert.ok(line.startsWith(`  note    ${id}: ${COMMENTED(file)}: {`), `doctor: ${stdout}`);
+  return JSON.parse(line.slice(line.indexOf(': {') + 2));
+}
+
+test('install: a commented ~/.gemini/settings.json is left as it was and gets the hooks to add by hand; with them, it is ok (#258)', () => {
+  const sandbox = makeSandbox();
+  const file = join(sandbox.home, '.gemini', 'settings.json');
+  mkdirSync(dirname(file));
+  const before = commentedGemini('{}');
+  writeFileSync(file, before);
+  const result = sandbox.run(['install']);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.equal(result.stderr, '');
+  assert.doesNotMatch(result.stdout, /can't read|unexpected shape/);
+  assert.ok(!result.stdout.includes(sandbox.home), 'the home path is shown');
+  assert.equal(readFileSync(file, 'utf8'), before, 'the file changed');
+  const add = handAdd(result.stdout, `skipped Gemini CLI: ${COMMENTED('~/.gemini/settings.json')}, then run \`yokoten install\` again:`);
+  assert.deepEqual(Object.keys(add), ['SessionStart', 'BeforeTool']);
+  assert.deepEqual(
+    Object.values(add).map((groups) => (groups as { hooks: { name: string }[] }[]).map((g) => g.hooks[0].name)),
+    [['yokoten-session'], ['yokoten-guard']],
+  );
+  // The rest still ran.
+  assert.match(result.stdout, /^added the user-level command guard$/m);
+  // Doctor gives the same hooks to add, on one line.
+  assert.deepEqual(doctorHandAdd(sandbox.run(['doctor']).stdout, 'gemini-user-hook', '~/.gemini/settings.json'), add);
+
+  // Added by hand, comments and all: install finds them the same and leaves the file.
+  const after = commentedGemini(JSON.stringify(add, null, 2));
+  writeFileSync(file, after);
+  const again = sandbox.run(['install']);
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.match(again.stdout, /^same the Gemini CLI SessionStart doctor in ~\/\.gemini\/settings\.json$/m);
+  assert.match(again.stdout, /^same the Gemini CLI command guard in ~\/\.gemini\/settings\.json$/m);
+  assert.equal(readFileSync(file, 'utf8'), after, 'the file changed');
+  assert.match(sandbox.run(['doctor']).stdout, /^ {2}ok {6}gemini-user-hook$/m);
+});
+
+test('init: a commented .gemini/settings.json is left as it was and gets the hooks to add by hand; with them, it is ok (#258)', () => {
+  const sandbox = makeSandbox();
+  const file = join(sandbox.repo, '.gemini', 'settings.json');
+  const before = commentedGemini('{ "BeforeTool": [] }');
+  sandbox.write('.gemini/settings.json', before);
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stdout, /can't read|unexpected shape/);
+  assert.equal(readFileSync(file, 'utf8'), before, 'the file changed');
+  const add = handAdd(result.stdout, `skipped the Gemini CLI hooks: ${COMMENTED('.gemini/settings.json')}, then run \`yokoten init\` again:`);
+  assert.deepEqual(add, {
+    BeforeTool: [{ hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --agent gemini'), name: 'yokoten' }], matcher: 'run_shell_command|write_file|replace' }],
+    AfterAgent: [{ hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --stop --agent gemini'), name: 'yokoten-stop' }] }],
+  });
+  assert.ok(hasHook(join(sandbox.repo, '.codex', 'hooks.json'), 'Stop', 'hook'), 'no Codex stop check');
+  assert.deepEqual(doctorHandAdd(sandbox.run(['doctor']).stdout, 'gemini-hook', '.gemini/settings.json'), add);
+
+  const after = commentedGemini(JSON.stringify(add, null, 2));
+  writeFileSync(file, after);
+  const again = sandbox.run(['init']);
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.match(again.stdout, /^same the Gemini CLI tool-call hook in \.gemini\/settings\.json$/m);
+  assert.match(again.stdout, /^same the Gemini CLI stop check in \.gemini\/settings\.json/m);
+  assert.equal(readFileSync(file, 'utf8'), after, 'the file changed');
+  assert.match(sandbox.run(['doctor']).stdout, /^ {2}ok {6}gemini-hook$/m);
+});
+
+test('install: Gemini CLI allows comments but not trailing commas, and Codex allows neither (#258)', () => {
+  for (const [dir, file, cli, content] of [
+    ['.gemini', 'settings.json', 'Gemini CLI', '{ // c\n  "theme": "dark",\n}\n'],
+    ['.codex', 'hooks.json', 'Codex CLI', '{ // c\n  "hooks": {}\n}\n'],
+  ]) {
+    const sandbox = makeSandbox();
+    mkdirSync(join(sandbox.home, dir));
+    writeFileSync(join(sandbox.home, dir, file), content);
+    const result = sandbox.run(['install']);
+    assert.equal(result.status, 1, cli);
+    assert.ok(result.stdout.split('\n').includes(`skipped ${cli}: can't read ~/${dir}/${file} (make it valid JSON, then run \`yokoten install\` again)`), `${cli}: ${result.stdout}`);
+    assert.equal(readFileSync(join(sandbox.home, dir, file), 'utf8'), content, cli);
+  }
+});
+
 // #254: the same for Claude Code's own settings file, the one people edit by hand most.
 // Each bad file and why it is skipped: a parse error asks for valid JSON, a wrong shape names the key.
 const JSON_FIX = (command: string) => `(make it valid JSON, then run \`yokoten ${command}\` again)`;

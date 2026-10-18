@@ -45,7 +45,9 @@ const MARKS_HEADER = `# yokoten private marks: words that must never be publishe
 
 /**
  * One agent's two user hooks, or one skip line when its file won't parse or has the wrong
- * shape (#248, #254): the file stays as it was, the other steps go on, and `ok` is false.
+ * shape (#248, #254), or is a Gemini CLI file with comments, which yokoten never rewrites
+ * (#258; the line then holds the hooks to add by hand): the file stays as it was, the
+ * other steps go on, and `ok` is false until the hooks are there.
  */
 function agentHooks(cliName: string, file: string, add: () => string[]): { ok: boolean; lines: string[] } {
   try {
