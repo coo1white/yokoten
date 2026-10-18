@@ -67,14 +67,26 @@ project, one stage at a time.
 And no lesson stays stuck in one place. When one project learns something the hard way,
 yokoten offers the fix to every other project. That is what the name means.
 
-| When | What | Track it |
-|---|---|---|
-| **Now, before 26 Oct 2026** | `doctor` walks you along the road; a release flow; checks on GitHub settings; `npx yokoten`; the same guard in Codex and Gemini CLI | [M0](https://github.com/coo1white/yokoten/milestone/1) |
-| **Meta hackathon, 26 Oct – 3 Nov** | an agent that reads an old project and drafts how to adopt yokoten; Muse Code support | [M1](https://github.com/coo1white/yokoten/milestone/2) |
-| **Next** | Gitea and other code hosts; a short spec before larger changes; the OpenSSF Best Practices badge as public proof | [issues](https://github.com/coo1white/yokoten/issues) |
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/road-dark.svg">
+  <img src="docs/assets/road-light.svg" width="100%" alt="A road climbs a mountain past three stations: now, the hackathon, and next. Paths from other projects join it near the top. At the summit a flag marks the dream: anyone can build software the way good teams do.">
+</picture>
+</p>
 
-Every step is planned in the open. The [board](https://github.com/users/coo1white/projects/1)
-shows what is being built today.
+| Stage | Name | What it means | Now |
+|---|---|---|---|
+| 1 | **Guard** | AI agents are stopped before a dangerous action: a force push, a test edited to pass, a private detail leaked | ✅ done |
+| 2 | **Guide** | a beginner walks the five stages with `doctor`, one thing at a time; an agent reads an old project and drafts how to adopt yokoten | 🚧 now, around the hackathon |
+| 3 | **Any tool, any host** | Claude Code, Codex, Gemini CLI and Muse Code keep the same rules; GitHub, Gitea and GitLab all work | next |
+| 4 | **The whole cycle** | from a short spec to build, test, review, release and maintenance, the full SDLC has a guide | later |
+| 5 | **Yokoten** | a lesson one project learns becomes a check, and the check spreads to every project. What one person learns, everyone gets | the goal |
+
+The word *yokoten* (横展) comes from Toyota's factories: the lessons learned on one line
+spread to every line. That is where the name comes from.
+
+The near steps are in [M0](https://github.com/coo1white/yokoten/milestone/1) and
+[M1](https://github.com/coo1white/yokoten/milestone/2); the [board](https://github.com/users/coo1white/projects/1) shows what is being built today.
 
 ## Quick start
 
@@ -95,10 +107,6 @@ next step.
 - **[The guide](docs/guide.md)**: the twelve rules, every command, how it works, and what it can't do.
 - **[Server setup](docs/server.md)**: protect `main` and release tags on GitHub.
 - **[Decisions](docs/records/)**: why it's built this way.
-
-*Yokoten* (横展) comes from Toyota's factories. When one production line fixes a defect,
-every line that could have it gets the fix too. yokoten does that for your projects: a
-lesson one project learns is offered to the rest.
 
 ---
 

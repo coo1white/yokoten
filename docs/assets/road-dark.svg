@@ -1,0 +1,188 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="plan-art armed play" viewBox="-20 -24 1000 494" width="1000" height="494" role="img" aria-label="A road switching back up a mountain past three stations, each higher than the last: now (you are here), the Meta hackathon, and next. Near the top, paths from other projects join it: yokoten, what one project learns, every project uses. On the summit is a flag: anyone can build software the way good teams do."><style><![CDATA[
+svg { --bg: #0d1117; --ink: #f0f6fc; --muted: #9198a1; --line: #3d444d; --accent: #ec8f6c; --ridge: #6e7681; --road-bed: #151b23; --font-display: Georgia, 'Times New Roman', serif; --font-sans: system-ui, -apple-system, 'Segoe UI', sans-serif; --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.plan-drop { display: none; }
+/* The roadmap mountain (PlanScene in art.tsx). Shared by the page and the standalone SVGs made by
+   scripts/export-roadmap-svg.mjs, so it uses only the colour tokens and classes inside the <svg>.
+   Without `armed` it is the still, final frame. `armed play` on an ancestor plays it once (~5 s). */
+.plan-art {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+.plan-ridge path {
+  stroke: var(--ridge);
+  stroke-width: 1.2;
+}
+.plan-mountain {
+  fill: color-mix(in srgb, var(--ridge) 9%, transparent);
+}
+.plan-outline {
+  stroke: var(--ridge);
+  stroke-width: 1.4;
+  stroke-linejoin: round;
+}
+.plan-drop line {
+  stroke: var(--line);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 5;
+}
+.plan-sides path {
+  stroke: var(--ridge);
+  stroke-width: 2;
+  stroke-dasharray: 2 7;
+}
+.plan-sides circle {
+  fill: var(--bg);
+  stroke: var(--ridge);
+  stroke-width: 2;
+}
+.plan-bed {
+  stroke: var(--road-bed);
+  stroke-width: 22;
+}
+.plan-built,
+.plan-ahead {
+  stroke: var(--ink);
+  stroke-width: 5;
+}
+.plan-ahead {
+  stroke-dasharray: 9 11;
+}
+.plan-flag line {
+  stroke: var(--ink);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+}
+.plan-cloth {
+  fill: var(--accent);
+}
+.plan-label {
+  fill: var(--ink);
+}
+.plan-dream {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 22px;
+}
+.plan-yk {
+  font-family: var(--font-sans);
+  font-size: 17px;
+  fill: var(--muted);
+}
+.plan-stop circle {
+  fill: var(--bg);
+  stroke: var(--accent);
+  stroke-width: 3.5;
+}
+.plan-now circle {
+  fill: var(--accent);
+}
+.plan-now .plan-ring {
+  fill: color-mix(in srgb, var(--accent) 22%, transparent);
+  stroke: none;
+}
+.plan-stop,
+.plan-ring,
+.plan-cloth {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.plan-cloth {
+  transform-origin: left center;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .armed:not(.play) .plan-reveal {
+    stroke-dasharray: 1 1;
+    stroke-dashoffset: 1;
+  }
+  .armed:not(.play) :is(.plan-stop, .plan-sides, .plan-yk, .plan-flag, .plan-dream) {
+    opacity: 0;
+  }
+  .play .plan-reveal {
+    stroke-dasharray: 1 1;
+    animation: plan-draw 3.4s cubic-bezier(0.45, 0, 0.4, 1) 0.2s both;
+  }
+  .play .plan-stop {
+    animation: plan-pop 0.5s cubic-bezier(0.3, 1.5, 0.5, 1) both;
+  }
+  .play .plan-stop-0 {
+    animation-delay: 0.55s;
+  }
+  .play .plan-stop-1 {
+    animation-delay: 1.35s;
+  }
+  .play .plan-stop-2 {
+    animation-delay: 2.15s;
+  }
+  .play .plan-ring {
+    animation: plan-here 2.8s ease-in-out 1.1s 2;
+  }
+  .play .plan-sides {
+    animation: plan-fade 0.8s ease-out 3s both;
+  }
+  .play .plan-yk {
+    animation: plan-fade 0.8s ease-out 3.3s both;
+  }
+  .play .plan-flag {
+    animation: plan-fade 0.3s ease-out 3.6s both;
+  }
+  .play .plan-cloth {
+    animation: plan-raise 0.9s cubic-bezier(0.2, 0.8, 0.3, 1) 3.65s both;
+  }
+  .play .plan-dream {
+    animation: plan-rise 0.9s ease-out 4.2s both;
+  }
+}
+@keyframes plan-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes plan-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.2);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes plan-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes plan-raise {
+  from {
+    transform: translateY(20px) scaleX(0.3);
+  }
+  to {
+    transform: none;
+  }
+}
+@keyframes plan-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes plan-here {
+  50% {
+    transform: scale(1.3);
+    opacity: 0.4;
+  }
+}
+]]></style><defs><mask id="plan-reveal-_R_0_" maskUnits="userSpaceOnUse" x="-40" y="-40" width="1040" height="550"><path class="plan-reveal" d="M-10 458 C18.3 450.3 93.3 423.0 160 412 C226.7 401.0 366.7 402.7 390 392 C413.3 381.3 285.0 363.0 300 348 C315.0 333.0 413.3 312.3 480 302 C546.7 291.7 678.3 296.0 700 286 C721.7 276.0 593.3 256.3 610 242 C626.7 227.7 748.7 212.3 800 200 C851.3 187.7 924.3 180.7 918 168 C911.7 155.3 768.3 136.7 762 124 C755.7 111.3 865.3 105.3 880 92 C894.7 78.7 855.0 52.0 850 44" pathLength="1" fill="none" stroke="#fff" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"></path></mask></defs><g class="plan-ridge" fill="none" stroke-linejoin="round" stroke-linecap="round"><path d="M0 250 L80 208 L140 228 L190 196" opacity=".35"></path><path d="M0 330 L110 270 L180 296 L280 236" opacity=".5"></path></g><path class="plan-mountain" d="M40 470 L300 300 L360 330 L560 190 L620 215 L850 40 L960 140 L960 470 Z"></path><path class="plan-outline" d="M40 470 L300 300 L360 330 L560 190 L620 215 L850 40 L960 140" fill="none"></path><g class="plan-drop"><line x1="160" y1="430" x2="160" y2="470"></line><line x1="480" y1="320" x2="480" y2="470"></line><line x1="800" y1="218" x2="800" y2="470"></line></g><g class="plan-sides" fill="none" stroke-linecap="round"><g><path d="M556 236 C626 204 700 152 762 124"></path><circle cx="556" cy="236" r="5"></circle></g><g><path d="M872 300 C900 262 922 212 918 168"></path><circle cx="872" cy="300" r="5"></circle></g><g><path d="M690 182 C720 140 760 106 800 100"></path><circle cx="690" cy="182" r="5"></circle></g></g><g mask="url(#plan-reveal-_R_0_)" fill="none" stroke-linecap="round" stroke-linejoin="round"><path class="plan-bed" d="M-10 458 C18.3 450.3 93.3 423.0 160 412 C226.7 401.0 366.7 402.7 390 392 C413.3 381.3 285.0 363.0 300 348 C315.0 333.0 413.3 312.3 480 302 C546.7 291.7 678.3 296.0 700 286 C721.7 276.0 593.3 256.3 610 242 C626.7 227.7 748.7 212.3 800 200 C851.3 187.7 924.3 180.7 918 168 C911.7 155.3 768.3 136.7 762 124 C755.7 111.3 865.3 105.3 880 92 C894.7 78.7 855.0 52.0 850 44"></path><path class="plan-built" d="M-10 458 C18.3 450.3 93.3 423.0 160 412 C226.7 401.0 366.7 402.7 390 392 C413.3 381.3 285.0 363.0 300 348 C315.0 333.0 413.3 312.3 480 302 C546.7 291.7 678.3 296.0 700 286 C721.7 276.0 593.3 256.3 610 242 C626.7 227.7 748.7 212.3 800 200"></path><path class="plan-ahead" d="M800 200 C851.3 187.7 924.3 180.7 918 168 C911.7 155.3 768.3 136.7 762 124 C755.7 111.3 865.3 105.3 880 92 C894.7 78.7 855.0 52.0 850 44"></path></g><text class="plan-label plan-yk" text-anchor="end"><tspan x="540" y="150">Yokoten (横展):</tspan><tspan x="540" y="174">what one project learns, every project uses</tspan></text><g class="plan-flag"><line x1="850" y1="42" x2="850" y2="-6"></line><path class="plan-cloth" d="M851 -6 L884 4 L851 14 Z"></path></g><text class="plan-label plan-dream" x="828" y="22" text-anchor="end">The dream: anyone can build software the way good teams do</text><g class="plan-stop plan-stop-0 plan-now"><circle class="plan-ring" cx="160" cy="412" r="19"></circle><circle cx="160" cy="412" r="11"></circle></g><g class="plan-stop plan-stop-1"><circle cx="480" cy="302" r="11"></circle></g><g class="plan-stop plan-stop-2"><circle cx="800" cy="200" r="11"></circle></g></svg>
