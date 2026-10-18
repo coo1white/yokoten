@@ -200,6 +200,7 @@ export const RULES = {
     rule: '`check --pr` and `check --issue` read the event file of the CI run',
     why: 'the pull request or the issue is in that file, so without it nothing is checked',
     check: 'in a CI run, `check --pr` and `check --issue` fail when the event file is missing or is not a JSON object; with no event file named, they skip',
+    docs: guide('use-it-as-a-github-action'),
   },
   'issue-area': {
     rule: 'an issue title starts with its area: `area: verb phrase` for a task, `area: symptom` for an incident',
