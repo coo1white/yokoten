@@ -8,7 +8,7 @@ All notable changes are listed here. The format follows
 
 ### Added
 
-- Every project's `AGENTS.md` has a "Names" section: whole words, at most 4, one letter only
+- The kit's `AGENTS.md` has a "Names" section: whole words, at most 4, one letter only
   for a short life, verbs for functions, `is`/`has`/`can` for true or false, and a table of
   hard and easy names. **Kit change:** new projects get it from `init`;
   a project that already has `AGENTS.md` must copy the section by hand for now (#110).
