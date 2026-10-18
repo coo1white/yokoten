@@ -111,6 +111,10 @@ node ~/.local/share/yokoten/bin/yokoten.ts init      # 每个项目做一次
 
 两种选一种就行，别都装。每种装法带来什么，[使用指南](guide.md#安装和命令)里有写。
 
+装好以后，agent 想 force push 会是这样：
+
+<img src="../assets/demo.svg" width="680" alt="终端里，agent 要执行 git push --force origin main，被 yokoten 拦了下来。yokoten 说清楚这条命令会做什么、为什么危险、该怎么改：换成 --force-with-lease。接着运行 yokoten doctor，它说现在在第 1 关（共 5 关），下一步是加测试。">
+
 ## 了解更多
 
 - **[使用指南](guide.md)**：12 条规则、所有命令、它怎么工作，还有它做不到的事。

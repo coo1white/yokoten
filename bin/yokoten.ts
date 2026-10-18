@@ -11,7 +11,8 @@ import * as claudeCode from '../src/agents/claude-code.ts';
 import * as codex from '../src/agents/codex.ts';
 import * as gemini from '../src/agents/gemini.ts';
 import { type Finding, formatFinding } from '../src/rules/message.ts';
-import { changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, largeDiff, longSentenceNote, longSentences } from '../src/rules/pr.ts';
+import { isCodeFile, nameNotes } from '../src/run/names.ts';
+import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, largeDiff, longSentenceNote, longSentences } from '../src/rules/pr.ts';
 import { hideHome } from '../src/rules/privacy.ts';
 import { type Action, judge } from '../src/run/hook.ts';
 import { doctor } from '../src/setup/doctor.ts';
@@ -253,19 +254,39 @@ function main(): number | Promise<number> {
           else print([`${name}: ${skipped}`]);
           return 0;
         }
+        // The file as the pull request leaves it, or null when the pull request deletes it.
+        const readAtHead = (file: string): string | null => {
+          try {
+            return execFileSync('git', ['show', `${pr.head}:${file}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+          } catch {
+            return null;
+          }
+        };
+        const printNotes = (found: Finding[], label: string) => {
+          if (found.length && !json) print([`${name}: note: ${found.length} ${label}`, ...bullets(found.slice(0, 10)), ...(found.length > 10 ? [`- and ${found.length - 10} more`] : [])]);
+        };
         // Plain English (record 0005): long sentences in changed Markdown are notes, never failures.
         const long: Finding[] = [];
         for (const file of pr.files.filter((p) => /\.md$/i.test(p))) {
-          let text = '';
-          try {
-            text = execFileSync('git', ['show', `${pr.head}:${file}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-          } catch {
-            continue; // deleted in this pull request
-          }
-          for (const s of longSentences(text)) long.push(longSentenceNote(file, s));
+          const text = readAtHead(file);
+          if (text !== null) for (const s of longSentences(text)) long.push(longSentenceNote(file, s));
         }
         notes.push(...long);
-        if (long.length && !json) print([`${name}: note: ${long.length} long sentence(s)`, ...bullets(long.slice(0, 10)), ...(long.length > 10 ? [`- and ${long.length - 10} more`] : [])]);
+        printNotes(long, 'long sentence(s)');
+        // Names (record 0006): hard-to-read names on the lines a pull request adds to code
+        // are notes too. Old lines are left alone, so a project is not noted all at once.
+        const names: Finding[] = [];
+        const codeFiles = pr.files.filter(isCodeFile);
+        // One diff with renames found, so a moved file is not noted as all new. Fixed
+        // prefixes and plain paths, whatever the user's git settings say.
+        const diffArgs = ['-c', 'core.quotePath=false', 'diff', '-U0', '-M', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', `${pr.base}...${pr.head}`];
+        const added = codeFiles.length ? addedLinesByFile(execFileSync('git', diffArgs, { cwd: root, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })) : new Map<string, Set<number>>();
+        for (const file of codeFiles) {
+          const text = added.has(file) ? readAtHead(file) : null;
+          if (text !== null) names.push(...nameNotes(file, text, added.get(file) ?? new Set()));
+        }
+        notes.push(...names);
+        printNotes(names, 'hard-to-read name(s)');
         // A large pull request (record 0004) is a note too, never a failure.
         const large = largeDiff(changedLines(pr.numstat));
         if (large) {

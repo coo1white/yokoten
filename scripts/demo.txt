@@ -1,0 +1,20 @@
+> git push --force origin main
+!   blocked by the yokoten hook (exit 2)
+-   yokoten: git push --force forces the push.
+-   A plain force push can throw away work that someone else pushed.
+-   Use --force-with-lease, which stops when the remote has work you have not seen.
+
+$ yokoten doctor
+- yokoten 0.1.0, self-test ok
+^ the road: stage 1 of 5, safety net
+-   1. safety net
++     done        rules (OpenSSF: AI code assistant instructions)
++     done        tool-hook
++     done        commit-check (OSPS-BR-07.01)
++     done        runtime
+*     next        tests (Best Practices: test): no test command: no "test" script
+-                 in package.json, and no workflow runs a test runner; add tests
+-                 and a CI step that runs them
+-   2. issues and pull requests
+~   ...
+$
