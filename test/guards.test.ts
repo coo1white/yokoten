@@ -245,6 +245,25 @@ test('bash: a heredoc read by a shell is commands, and so are the lines after it
   ]) blocked(command);
 });
 
+test('bash: a shell after a keyword or a launcher reads the heredoc (#196)', () => {
+  for (const command of [
+    "if true; then bash <<'EOF'\ngit push --force origin main\nEOF\nfi",
+    "for r in a; do bash <<'EOF'\ngit push --force origin main\nEOF\ndone",
+    'while false; do sh <<EOF\ngit push --force origin main\nEOF\ndone',
+    "! bash <<'EOF'\nnpm publish\nEOF",
+    "stdbuf -oL bash <<'EOF'\ngit push --force origin main\nEOF",
+    "setsid bash <<'EOF'\ngit push --force origin main\nEOF",
+    "busybox sh <<'EOF'\ngit push --force origin main\nEOF",
+    "chrt -f 10 bash <<'EOF'\nnpm publish\nEOF",
+    "cat <<'EOF' | stdbuf -oL bash\ngit push --force origin main\nEOF",
+    // A program the guard does not know may hand its input to a shell: refused, not guessed.
+    "some-launcher --flag bash <<'EOF'\nnpm publish\nEOF",
+  ]) blocked(command);
+  // A program known to read data keeps its body as data, with a shell word after it.
+  allowed("if true; then cat > sh <<'EOF'\nnpm publish\nEOF\nfi");
+  allowed("stdbuf -oL tee bash <<'EOF'\nnpm publish\nEOF");
+});
+
 test('bash: substitutions run, so their commands count, even inside "..." (#105)', () => {
   for (const c of ['echo $(npm publish)', 'echo `npm publish`', 'echo "$(npm publish)"', 'echo "`npm publish`"', 'diff <(npm publish) x', 'cat > f <<EOF\n$(npm publish)\nEOF']) blocked(c);
   // A quoted heredoc word turns substitution off.
