@@ -330,7 +330,9 @@ function main(): number | Promise<number> {
         const owned = checkOwnedTier(pr, readCodeOwners(root, pr.base));
         if (owned) problems.push(owned);
       } else {
-        problems = mode === 'history' ? checkHistory(root, { config, env }) : check(root, { config, env, staged: mode === 'staged' });
+        problems = mode === 'history' ? checkHistory(root, { config, env }) : check(root, { config, env, staged: mode === 'staged', notes });
+        // A translation behind its English source (#87) is a note, for the whole tree only.
+        if (!json) for (const note of notes) print([`${name}: note: ${formatFinding(note)}`]);
         const zones = mode === 'history' && config.privacy.utc ? historyTimeZones(root) : 0;
         if (zones) {
           notes.push(timeZoneNote(zones));
