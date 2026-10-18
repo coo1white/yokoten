@@ -7,7 +7,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { annotation, annotations, appJwt, botConfig, botEnv, type Gh, installationToken, readServer, repoOf, type ServerSettings, stepSummary, type Unread } from '../src/host/github.ts';
+import { annotation, annotations, appJwt, botConfig, botEnv, type Gh, installationToken, readCommandTitle, readServer, repoOf, type ServerSettings, stepSummary, type Unread } from '../src/host/github.ts';
 import { DEFAULTS } from '../src/rules/config.ts';
 import { checkCommand } from '../src/rules/guards.ts';
 import { doctor, serverChecks } from '../src/setup/doctor.ts';
@@ -67,6 +67,21 @@ test('env: gh gets the token, and git asks gh for github.com instead of the owne
   assert.equal(e.GIT_CONFIG_VALUE_1, '');
   assert.equal(e.GIT_CONFIG_VALUE_2, '!gh auth git-credential');
   assert.equal(e.PATH, '/bin');
+});
+
+test('command title: the title gh issue or gh pr create or edit sets; null for anything else (#117)', () => {
+  const read = (line: string) => readCommandTitle(line.split(' '));
+  assert.deepEqual(read('gh issue create --title host:x --label feat,incident -l tier'), { kind: 'issue', title: 'host:x', labels: ['feat', 'incident', 'tier'] });
+  assert.deepEqual(read('gh issue edit 5 --title=a --add-label incident'), { kind: 'issue', title: 'a', labels: ['incident'] });
+  assert.deepEqual(read('gh pr create -t a --body b'), { kind: 'pr', title: 'a', labels: [] });
+  assert.deepEqual(read('/usr/bin/gh pr edit 5 -ta'), { kind: 'pr', title: 'a', labels: [] }, 'a path to gh, and an attached short value');
+  assert.equal(read('gh pr create -t a -t b')?.title, 'b', 'the last one wins, as in gh');
+  assert.equal(read('gh pr create --body -t --title a')?.title, 'a', 'the value of another option is not read as an option');
+  assert.equal(read('gh pr create --body -t'), null);
+  assert.equal(read('gh pr create --fill'), null, 'no title: CI checks it');
+  assert.equal(read('gh pr create -- --title a'), null, 'nothing after --');
+  assert.equal(read('gh pr create --title'), null, 'no value');
+  for (const line of ['gh pr view --title a', 'gh repo create --title a', 'git commit --title a', 'gh issue']) assert.equal(read(line), null, line);
 });
 
 test('the bot is not a way around the guard', () => {

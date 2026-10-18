@@ -1,7 +1,10 @@
 // End to end: the CLI in throwaway git repos, the way a hook or CI runs it.
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { generateKeyPairSync } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -1016,4 +1019,77 @@ test('doctor: the plugin, when on, stands in for install', () => {
   assert.doesNotMatch(out, /skills: the yokoten skills are not in/);
   writeFileSync(join(s.home, '.claude', 'settings.json'), 'not json');
   assert.match(machine(), /MISSING session-doctor/, 'a broken settings file enables nothing');
+});
+
+// #117: the bot checks a title before it sends anything, by the rules CI uses. A fake gh
+// and a local API server stand in for GitHub; the real ones are never reached.
+test('bot: a bad title is refused before the token is asked for; a good one runs (#117)', async () => {
+  const s = sandbox();
+  s.write('yokoten.json', JSON.stringify({ areas: ['host', 'check'] }));
+  s.git('remote', 'add', 'origin', 'https://github.com/me/repo.git');
+  const bin = join(s.home, 'bin');
+  const log = join(s.home, 'gh.log');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args: process.argv.slice(2), token: process.env.GH_TOKEN }) + '\\n');\n`);
+  chmodSync(join(bin, 'gh'), 0o755);
+  const ran = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+  const requests: string[] = [];
+  const server = createServer((req, res) => {
+    requests.push(`${req.method} ${req.url}`);
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(req.method === 'GET' ? { id: 77 } : { token: 'ghs_test' }));
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  // A throwaway key, made for this test run only.
+  const key = join(s.home, 'bot.pem');
+  writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
+  const path = { PATH: `${bin}:${process.env.PATH}` };
+  const bot = { ...path, YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+  // Not spawnSync: the server must answer while the CLI runs.
+  const run = (command: string[], extra: Record<string, string> = bot) =>
+    new Promise<{ status: number | null; stderr: string }>((done) => {
+      const child = spawn('node', [CLI, 'bot', '--', ...command], { cwd: s.repo, env: { ...s.env, ...extra } });
+      let stderr = '';
+      child.stderr.on('data', (chunk) => (stderr += chunk));
+      child.on('close', (status) => done({ status, stderr }));
+    });
+  const refused = async (command: string[], pattern: RegExp, extra?: Record<string, string>) => {
+    const r = await run(command, extra);
+    assert.equal(r.status, 1, command.join(' '));
+    assert.match(r.stderr, /^yokoten bot: 1 problem\(s\) in the title; nothing was sent\. Fix the title and run it again:\n- title: /, command.join(' '));
+    assert.match(r.stderr, pattern, command.join(' '));
+    assert.doesNotMatch(r.stderr, /YOKOTEN_BOT|bot\.pem|GitHub said/, 'the title is the reason, not the bot setup');
+    assert.deepEqual(requests, [], `no token was asked for: ${command.join(' ')}`);
+    assert.deepEqual(ran(), [], `gh did not run: ${command.join(' ')}`);
+  };
+  try {
+    // Positive controls: each bad title is refused with what, why and the fix.
+    await refused(['gh', 'issue', 'create', '--title', `host: ${'a'.repeat(60)}`, '--body', 'x'], /title: 66 characters, over 60\. .+\. Shorten it/);
+    await refused(['gh', 'issue', 'create', '-t', 'guard: add a step', '-l', 'feat'], /not in yokoten\.json "areas"\. .+\. Use one of: host, check\.$/m);
+    await refused(['gh', 'issue', 'edit', '5', '--title=host: add a step.'], /title: a full stop at the end\. A title is a name/);
+    await refused(['gh', 'pr', 'create', `--title=feat(host): ${'a'.repeat(62)}`, '--body', 'x'], /title: 74 characters, over 72\. .+\. Shorten it/);
+    await refused(['gh', 'pr', 'edit', '5', '-t', 'feat(host): add a step.'], /title: a full stop at the end\. A commit title has no full stop\. Remove the full stop\./);
+    await refused(['gh', 'pr', 'create', '-t', 'feat(guard): add a step'], /the area `guard` is not in yokoten\.json "areas"/);
+    // With no bot set up at all, the title is still the reason given.
+    await refused(['gh', 'pr', 'create', '--title', 'feat(host): add a step.'], /full stop/, path);
+    const missing = await run(['gh', 'pr', 'create', '--title', 'feat(host): add a step'], path);
+    assert.equal(missing.status, 1);
+    assert.match(missing.stderr, /^yokoten bot: YOKOTEN_BOT_APP_ID is not set/, 'a good title goes on to the bot setup');
+
+    // A good title, and commands with no title, take the normal bot path.
+    const good: string[][] = [
+      ['gh', 'issue', 'create', '--title', 'host: check the title', '--label', 'incident', '--body', '-t'],
+      ['gh', 'pr', 'create', '-t', 'feat(host): check the title', '--body', 'x'],
+      ['gh', 'pr', 'create', '--fill'],
+      ['gh', 'issue', 'list'],
+    ];
+    for (const command of good) {
+      const r = await run(command);
+      assert.equal(r.status, 0, `${command.join(' ')}: ${r.stderr}`);
+    }
+    assert.deepEqual(ran(), good.map((command) => ({ args: command.slice(1), token: 'ghs_test' })));
+    assert.equal(requests.length, good.length * 2, 'one installation lookup and one token per run');
+  } finally {
+    server.close();
+  }
 });

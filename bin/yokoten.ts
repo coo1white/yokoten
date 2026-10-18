@@ -5,14 +5,14 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { appendFileSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
-import { annotations, botConfig, botEnv, ghIn, installationToken, isGitHubActions, readCodeOwners, readIssue, readPullRequest, repoOf, stepSummary } from '../src/host/github.ts';
+import { annotations, botConfig, botEnv, ghIn, installationToken, isGitHubActions, readCodeOwners, readCommandTitle, readIssue, readPullRequest, repoOf, stepSummary } from '../src/host/github.ts';
 import { check, checkChanged, checkHistory, gitRoot, historyTimeZones, timeZoneNote } from '../src/run/check.ts';
 import * as claudeCode from '../src/agents/claude-code.ts';
 import * as codex from '../src/agents/codex.ts';
 import * as gemini from '../src/agents/gemini.ts';
 import { type Finding, formatFinding } from '../src/rules/message.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
-import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, largeDiff, longSentenceNote, longSentences } from '../src/rules/pr.ts';
+import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, largeDiff, longSentenceNote, longSentences } from '../src/rules/pr.ts';
 import { hideHome } from '../src/rules/privacy.ts';
 import { type Action, judge } from '../src/run/hook.ts';
 import { doctor } from '../src/setup/doctor.ts';
@@ -41,7 +41,8 @@ const HELP = `yokoten ${VERSION}
   yokoten hook --stop        the stop check: reads a Claude Code Stop event on stdin, checks
                              the changed files, and sends the agent back once to fix them
   yokoten explain [<id>]     a rule or a step: what it is, why, and how it is checked
-  yokoten bot -- <command>   run one command as the bot (gh, git push); the token is never printed
+  yokoten bot -- <command>   run one command as the bot (gh, git push); the token is never printed;
+                             an issue or pull request title is checked first
 
   --json on check, doctor, hook and explain: data on stdout, for an agent or a script.
   Exit codes: 0 ok, 1 problems found or a usage error, 2 the hook blocked the tool call
@@ -123,7 +124,26 @@ function showOnPullRequest(name: string, problems: Finding[], notes: Finding[], 
   }
 }
 
+/**
+ * Problems with the title a bot command is about to set (#117), by the rules CI uses:
+ * `check --issue` for an issue, the title part of `check --pr` for a pull request. No
+ * title in the command, no problems. It reads no token and no network.
+ */
+function checkCommandTitle(command: string[]): Finding[] {
+  const found = readCommandTitle(command);
+  if (!found) return [];
+  const root = rootOf(process.cwd());
+  const config = root ? loadConfig(root) : DEFAULTS;
+  return found.kind === 'issue' ? checkIssueTitle(found.title, config, found.labels) : checkPullRequestTitle(found.title, config);
+}
+
 async function bot(command: string[]): Promise<number> {
+  // The title first: a bad title is refused before anything is sent, so it never needs a rename.
+  const titleProblems = checkCommandTitle(command);
+  if (titleProblems.length) {
+    print([`yokoten bot: ${titleProblems.length} problem(s) in the title; nothing was sent. Fix the title and run it again:`, ...bullets(titleProblems)], process.stderr);
+    return 1;
+  }
   const config = botConfig(env);
   if (typeof config === 'string') {
     print([`yokoten bot: ${config}`], process.stderr);
