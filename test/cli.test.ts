@@ -350,6 +350,76 @@ test('check --staged: binary is decided from the bytes, not .gitattributes (#244
   assert.ok(!result.stderr.includes('late.txt'), result.stderr);
 });
 
+// A merge leaves the index and MERGE_HEAD as the pre-merge-commit hook sees them (#246).
+function mergeSandbox() {
+  const sandbox = makeSandbox();
+  sandbox.write('AGENTS.md', 'rules\n');
+  sandbox.write('test/a.test.ts', 'old\n');
+  sandbox.write('src/a.ts', 'a\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  sandbox.git('checkout', '-qb', 'work');
+  sandbox.write('src/a.ts', 'b\n');
+  sandbox.git('commit', '-qam', 'work');
+  sandbox.git('checkout', '-q', 'main');
+  return sandbox;
+}
+
+test('check --staged: in a merge, the role checks see only what the merge itself changed (#246)', () => {
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  // Main changed a lead-only file and a test; a worker brings main into its branch.
+  let sandbox = mergeSandbox();
+  sandbox.write('AGENTS.md', 'new rules\n');
+  sandbox.write('test/a.test.ts', 'new\n');
+  sandbox.git('commit', '-qam', 'lead');
+  sandbox.git('checkout', '-q', 'work');
+  assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', 'main').status, 0);
+  let result = sandbox.run(['check', '--staged'], { extra: worker });
+  assert.deepEqual([result.status, result.stderr], [0, ''], 'main changed AGENTS.md');
+  result = sandbox.run(['check', '--staged'], { extra: { ...worker, YOKOTEN_FIX_TASK: '1' } });
+  assert.deepEqual([result.status, result.stderr], [0, ''], 'main changed a test, in a fix task');
+  // An edit made during the merge is the worker's own.
+  sandbox.write('AGENTS.md', 'my rules\n');
+  sandbox.git('add', 'AGENTS.md');
+  result = sandbox.run(['check', '--staged'], { extra: worker });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /AGENTS\.md is lead-only/);
+
+  // A conflict in AGENTS.md resolved by a new edit is refused.
+  sandbox = mergeSandbox();
+  sandbox.write('AGENTS.md', 'lead rules\n');
+  sandbox.git('commit', '-qam', 'lead');
+  sandbox.git('checkout', '-q', 'work');
+  sandbox.write('AGENTS.md', 'worker rules\n');
+  sandbox.git('commit', '-qam', 'worker edit');
+  assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', 'main').status, 1, 'a conflict');
+  sandbox.write('AGENTS.md', 'both rules\n');
+  sandbox.git('add', 'AGENTS.md');
+  result = sandbox.run(['check', '--staged'], { extra: worker });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /AGENTS\.md is lead-only/);
+
+  // Outside a merge, a worker's commit of AGENTS.md is refused as before.
+  sandbox = mergeSandbox();
+  sandbox.write('AGENTS.md', 'my rules\n');
+  sandbox.git('add', 'AGENTS.md');
+  result = sandbox.run(['check', '--staged'], { extra: worker });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /AGENTS\.md is lead-only/);
+});
+
+test('check --staged: in a merge, a merged-in file is still checked for privacy (#246)', () => {
+  const sandbox = mergeSandbox();
+  sandbox.write('notes.md', `write to me${at}gmail.com\n`);
+  sandbox.git('add', 'notes.md');
+  sandbox.git('commit', '-qm', 'notes');
+  sandbox.git('checkout', '-q', 'work');
+  assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', 'main').status, 0);
+  const result = sandbox.run(['check', '--staged'], { extra: { YOKOTEN_ROLE: 'worker' } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /notes\.md:1: an email/);
+});
+
 test('doctor: the no-build-output step looks at the tracked files (#56)', () => {
   const sandbox = makeSandbox();
   const line = () => sandbox.run(['doctor']).stdout.split('\n').find((l) => / no-build-output/.test(l)) ?? '';

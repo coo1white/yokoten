@@ -4,7 +4,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { lstatSync, readFileSync, readlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { Config, Env } from '../rules/config.ts';
 import { matcher } from '../rules/config.ts';
 import { checkEdit } from '../rules/guards.ts';
@@ -44,6 +44,33 @@ function stagedFiles(root: string): Staged[] {
     i += moved ? 3 : 2;
   }
   return files;
+}
+
+/**
+ * The other parents of the merge being committed, from MERGE_HEAD; none outside a merge.
+ * `--git-path` finds it in a worktree too.
+ */
+function mergeHeads(root: string): string[] {
+  try {
+    return readFileSync(resolve(root, git(root, ['rev-parse', '--git-path', 'MERGE_HEAD']).trim()), 'utf8').split('\n').filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The staged paths the merge itself made: those that differ from every parent. A file the
+ * other branch changed matches that branch, so only a conflict resolution or an edit made
+ * during the merge is left. HEAD is already a parent the staged list differs from; each
+ * MERGE_HEAD parent takes one `git diff`.
+ */
+function mergeMade(root: string, files: Staged[], heads: string[]): Staged[] {
+  let left = files;
+  for (const head of heads) {
+    const differs = new Set(list(git(root, ['diff', '--cached', '--name-only', '--no-renames', '-z', head])));
+    left = left.filter((f) => differs.has(f.path));
+  }
+  return left;
 }
 
 /** A gitlink (a submodule's commit): no blob to read in this repo. */
@@ -106,7 +133,9 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
       problems.push(finding('time-zone', "this commit's time carries your time zone", TIME_ZONE_FIX));
     }
     const files = stagedFiles(root);
-    for (const { path } of files) {
+    // In a merge, the role checks see only what the merge itself changed: a worker
+    // bringing in main is not handing over main's edits to lead-only files or tests.
+    for (const { path } of mergeMade(root, files, mergeHeads(root))) {
       const reason = checkEdit(path, { config, env });
       if (reason) problems.push(reason);
     }
