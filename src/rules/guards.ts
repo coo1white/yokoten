@@ -40,7 +40,7 @@ const release = (what: string) => finding('release', what, RELEASE_FIX);
 const base = (word: string) => word.slice(Math.max(word.lastIndexOf('/'), word.lastIndexOf('\\')) + 1);
 const isGit = (word: string) => /(^|[/\\])git(\.exe)?$/.test(word);
 // Git options that take the next word as their value.
-const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--config-env', '--git-dir', '--work-tree', '--namespace']);
+const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--config-env', '--git-dir', '--work-tree', '--namespace', '--attr-source']);
 
 // Each check looks for its program anywhere in the command, so a prefix such as FOO=1,
 // sudo, env, command, exec, time, nice, nohup, timeout or xargs does not hide it.

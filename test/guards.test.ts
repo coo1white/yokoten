@@ -51,6 +51,12 @@ test('skipping the commit check is stopped', () => {
 });
 
 // The hooks setting (#114). Each row of the issue's table first, then the other forms.
+test('git options that take a value are skipped before the subcommand (#114)', () => {
+  // `--attr-source <tree>` takes a value; without it in the list, `HEAD` looked like the subcommand.
+  blocked('git --attr-source HEAD push --tags');
+  blocked('git -C . --namespace x push --tags');
+});
+
 test('hooks setting: a read passes, a change or a one-command skip blocks (#114)', () => {
   allowed('git config core.hooksPath');
   allowed('git config --get core.hooksPath');
