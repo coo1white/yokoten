@@ -21,15 +21,18 @@ import { explain, explainLines, ids } from '../src/setup/explain.ts';
 import { VERSION } from '../src/setup/files.ts';
 import { init, updateCoreRules } from '../src/setup/init.ts';
 import { install } from '../src/setup/install.ts';
-import { setUpPlanning } from '../src/setup/plan.ts';
+import { readOriginUrl, setUpPlanning } from '../src/setup/plan.ts';
 
 const HELP = `yokoten ${VERSION}
 
   yokoten install            skills, agents and user-level hooks for this machine
   yokoten init [dir]         put the practices into a project (adds only, never overwrites)
-  yokoten init --github [--yes]
-                             also the standard labels and a first milestone on GitHub, through
-                             gh; without --yes it only says what it would make
+                             it also reads GitHub through gh and says which standard labels
+                             and milestone it would add; it never changes GitHub by itself
+  yokoten init --github --yes [--remove-default-labels]
+                             add the standard labels and a first milestone on GitHub, and give
+                             the standard labels their colour and description; delete GitHub's
+                             default labels outside the set only with --remove-default-labels
   yokoten update [dir] [--write]
                              the core rules in a project's AGENTS.md: shows what this yokoten
                              changes; --write replaces them and keeps the "This project" part
@@ -381,18 +384,16 @@ function main(): number | Promise<number> {
       return found ? 0 : 1;
     }
     case 'init': {
-      const options = parse({ flags: ['--github', '--yes'], positional: 1 });
+      const options = parse({ flags: ['--github', '--yes', '--remove-default-labels'], positional: 1 });
       if (typeof options === 'string') return usage(options);
       if (options.flags.has('--yes') && !options.flags.has('--github')) return usage('--yes goes with --github');
+      if (options.flags.has('--remove-default-labels') && !options.flags.has('--github')) return usage('--remove-default-labels goes with --github');
       const dir = resolve(options.positional[0] ?? '.');
       const root = rootOf(dir) ?? dir;
       print(init(root));
       // The host is changed only when asked (#10): it is a remote, and other people see it.
-      if (!options.flags.has('--github')) {
-        print(['GitHub labels and a milestone: run `yokoten init --github` to see what it would make']);
-        return 0;
-      }
-      const planning = setUpPlanning(ghIn(root), options.flags.has('--yes'));
+      // Without --yes, init only reads it and says what it would do, or what it skipped.
+      const planning = setUpPlanning(ghIn(root), readOriginUrl(root), { apply: options.flags.has('--yes'), removeDefaults: options.flags.has('--remove-default-labels') });
       print(planning.lines, planning.ok ? process.stdout : process.stderr);
       return planning.ok ? 0 : 1;
     }
