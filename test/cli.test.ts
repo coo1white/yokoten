@@ -543,7 +543,7 @@ test("init: husky keeps its hooks folder; .husky/pre-commit gets the check and k
   assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '.husky', 'the project\'s hooks folder stays');
   assert.ok(!existsSync(join(sandbox.repo, '.githooks')), 'no second hooks folder that git never runs');
   const hook = readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8');
-  assert.match(hook, /^#!\/bin\/sh\n# yokoten: [^\n]*\nnode "\.yokoten\/bin\/yokoten\.ts" check --staged \|\| exit 1\ntouch own-hook-ran\n$/);
+  assert.match(hook, /^#!\/bin\/sh\n# yokoten: [^\n]*\n\[ -f "\.yokoten\/bin\/yokoten\.ts" \] \|\| \{ echo [^\n]* >&2; exit 1; \}\nnode "\.yokoten\/bin\/yokoten\.ts" check --staged \|\| exit 1\ntouch own-hook-ran\n$/);
   assert.equal(stepMark(sandbox, 'commit-check'), 'done');
   // Again: the hook already runs yokoten.
   result = sandbox.run(['init']);
@@ -557,6 +557,12 @@ test("init: husky keeps its hooks folder; .husky/pre-commit gets the check and k
   sandbox.write('leak.md', `me${at}gmail.com\n`);
   sandbox.git('add', 'leak.md');
   assert.notEqual(sandbox.git('commit', '-qm', 'leak').status, 0);
+  sandbox.git('reset', '-q', 'leak.md');
+  // Without the runtime, one plain line and no commit, never a stack trace (#204).
+  rmSync(join(sandbox.repo, '.yokoten'), { recursive: true });
+  sandbox.write('b.md', 'fine\n');
+  sandbox.git('add', 'b.md');
+  assert.deepEqual(pick(sandbox.git('commit', '-qm', 'b')), [1, '', 'yokoten: the commit check cannot run, because .yokoten/bin/yokoten.ts is missing. Restore it from git, or run yokoten init again\n']);
 });
 
 test('init: husky not yet installed in this clone; init leaves core.hooksPath unset and says to run npm install (#206)', () => {
@@ -567,7 +573,12 @@ test('init: husky not yet installed in this clone; init leaves core.hooksPath un
   assert.match(result.stdout, /added the check to \.husky\/pre-commit/);
   assert.match(result.stdout, /run `npm install`/);
   assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '');
-  assert.match(readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8'), /^# yokoten: [^\n]*\nnode [^\n]*\nnpm test\n$/);
+  assert.match(readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8'), /^# yokoten: [^\n]*\n\[ -f [^\n]*\nnode [^\n]*\nnpm test\n$/);
+  // A hook that init changed before the runtime guard (#204) already runs the check.
+  const before = '# yokoten: the commit check\nnode ".yokoten/bin/yokoten.ts" check --staged || exit 1\nnpm test\n';
+  sandbox.write('.husky/pre-commit', before);
+  assert.match(sandbox.run(['init']).stdout, /^same \.husky\/pre-commit/m);
+  assert.equal(readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8'), before);
   assert.notEqual(stepMark(sandbox, 'commit-check'), 'done', 'git runs no hook yet');
   assert.match(sandbox.run(['doctor']).stdout, /run `npm install` so husky sets core\.hooksPath/);
   sandbox.git('config', 'core.hooksPath', '.husky/_');
@@ -970,6 +981,52 @@ test('install: a copy that fails half way leaves the old copy working (#204)', (
   assert.equal(copyRuntime(dest, { withKit: true }), 'wrote');
   assert.notEqual(readFileSync(join(dest, 'VERSION'), 'utf8'), 'old\n');
   assert.deepEqual(readdirSync(dirname(dest)), ['yokoten']);
+});
+
+// A temp folder left beside the copy, in a repo root, is one `git add -A` away from a commit (#204).
+test('install: a rename that fails leaves the old copy and no temp folder (#204)', () => {
+  const sandbox = makeSandbox();
+  const dest = join(sandbox.home, '.local', 'share', 'yokoten');
+  assert.equal(copyRuntime(dest, { withKit: true }), 'wrote');
+  writeFileSync(join(dest, 'VERSION'), 'old\n');
+  const failing = (() => {
+    throw new Error('busy');
+  }) as typeof renameSync;
+  assert.throws(() => copyRuntime(dest, { withKit: true, rename: failing }), /busy/);
+  assert.equal(readFileSync(join(dest, 'VERSION'), 'utf8'), 'old\n', 'the old copy is in place');
+  assert.deepEqual(readdirSync(dirname(dest)), ['yokoten'], 'no temp folder is left next to it');
+});
+
+test('install: temp folders that an earlier crash left are removed, and only those (#204)', () => {
+  const sandbox = makeSandbox();
+  const parent = join(sandbox.home, '.local', 'share');
+  const kept = ['.yokoten-newer', '.other-new-abc123', 'notes'];
+  for (const name of ['.yokoten-new-abc123', '.yokoten-old-def456', ...kept]) mkdirSync(join(parent, name), { recursive: true });
+  assert.equal(copyRuntime(join(parent, 'yokoten'), { withKit: true }), 'wrote');
+  assert.deepEqual(readdirSync(parent).sort(), [...kept, 'yokoten'].sort());
+});
+
+// A repo inside the clone that runs init was told "kept", with nothing written (#204).
+test('init: a repo inside the running copy gets its own .yokoten/, unless the copy would hold itself (#204)', () => {
+  const sandbox = makeSandbox();
+  const clone = join(sandbox.home, 'clone');
+  for (const part of ['bin', 'src', 'kit', 'package.json']) cpSync(join(dirname(CLI), '..', part), join(clone, part), { recursive: true });
+  const initIn = (path: string) => {
+    mkdirSync(path, { recursive: true });
+    spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: path, env: sandbox.env });
+    return spawnSync('node', [join(clone, 'bin', 'yokoten.ts'), 'init'], { cwd: path, env: sandbox.env, encoding: 'utf8' });
+  };
+  const project = join(clone, 'project');
+  let result = initIn(project);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^wrote \.yokoten\/ /m);
+  assert.ok(existsSync(join(project, '.yokoten', 'VERSION')), 'the project has its own runtime');
+  // Copying src/ into a folder inside src/ never ends, so init writes nothing and says why.
+  const inside = join(clone, 'src', 'project');
+  result = initIn(inside);
+  assert.deepEqual(pick(result), [1, '', 'yokoten init: cannot copy the runtime to src/project/.yokoten, because it is inside src/ of the copy running now. Run yokoten from a copy outside that folder\n']);
+  assert.deepEqual(readdirSync(inside), ['.git'], 'nothing is written');
+  assert.ok(!readdirSync(join(clone, 'src')).some((name) => name.startsWith('.')), 'no temp folder is left');
 });
 
 test('hooks: a missing runtime says one plain line with no path, never a stack trace (#204)', () => {

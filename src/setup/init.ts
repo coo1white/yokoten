@@ -126,8 +126,15 @@ export function hookFile(root: string, hooksPath: string): string | null {
   return folder ? `${folder}/pre-commit` : 'pre-commit';
 }
 
-/** The lines init adds to a project's own pre-commit. `|| exit 1` because a hook may go on after it. */
-const checkLines = (cli: string) => ['# yokoten: the commit check (lead-only files, test files in a fix task, layout and privacy)', `node "${cli}" check --staged || exit 1`];
+/**
+ * The lines init adds to a project's own pre-commit. `exit 1` because a hook may go on after
+ * them. Without the runtime, one plain line, as in the kit's pre-commit (#204).
+ */
+const checkLines = (cli: string) => [
+  '# yokoten: the commit check (lead-only files, test files in a fix task, layout and privacy)',
+  `[ -f "${cli}" ] || { echo 'yokoten: the commit check cannot run, because ${cli} is missing. Restore it from git, or run yokoten init again' >&2; exit 1; }`,
+  `node "${cli}" check --staged || exit 1`,
+];
 
 /** Add the yokoten check to a pre-commit, after its `#!` line, so a later `exec` can't skip it. Its own lines stay. */
 function addCheckLines(path: string, cli: string): 'added the check to' | 'wrote' | 'same' {
