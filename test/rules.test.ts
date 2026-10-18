@@ -15,6 +15,7 @@ import { explain, explainLines, ids } from '../src/setup/explain.ts';
 import { ROAD, stepFinding } from '../src/setup/road.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
 import { formatChanges, mergeChanges, parseChange, readChanges, writeChanges } from '../src/run/changelog.ts';
+import { draftLesson, formatDraft, type Incident, readSections, summarize, writeDraft } from '../src/run/learn.ts';
 import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, ownersOf, parseCodeOwners, largeDiff, longSentenceNote, longSentences, type PullRequest } from '../src/rules/pr.ts';
 
 test('glob: a slash anchors at the root, no slash matches in any folder', () => {
@@ -549,4 +550,58 @@ test('docs: a finding carries its rule\'s link, in text, JSON and explain (#94)'
   assert.equal(explained && explainLines(explained).at(-1), `Docs: ${link}`);
   const step = explain('commit-check');
   assert.ok(step && step.docs === undefined && !explainLines(step).some((line) => line.startsWith('Docs:')), 'a step has no link yet');
+});
+
+// `yokoten learn` (#77): an incident issue becomes a check draft, from the issue's own
+// sections. The issue text is stubbed here; nothing reaches the network.
+const incidentOf = (body: string, title = 'check: misses a key in a JSON file'): Incident => ({ number: 12, title, body, url: 'https://example.com/issues/12', labels: ['incident'] });
+
+test('learn: the draft takes what, why and the fix from the issue\'s sections', () => {
+  const body = '## What happened\n\nA key in a JSON file was not checked.\n\n## Why it got through\n\nThe privacy check read Markdown only.\n\n## Fix\n\nThe check reads JSON too.\nIt has a test.\n\nMore detail.\n';
+  const draft = draftLesson(incidentOf(body));
+  assert.deepEqual(draft.finding, { id: 'incident-12', what: 'misses a key in a JSON file', why: 'The privacy check read Markdown only', fix: 'The check reads JSON too. It has a test' });
+  assert.deepEqual(draft.todos, []);
+  assert.deepEqual(draft.files.map((file) => file.path), ['lessons/incident-12/lesson.ts', 'lessons/incident-12/lesson.test.ts']);
+  const [lesson, check] = draft.files.map((file) => file.text);
+  assert.match(lesson, /^\/\/ A lesson from incident #12: check: misses a key in a JSON file\n\/\/ https:\/\/example\.com\/issues\/12\n/);
+  assert.match(lesson, /\n\/\/ Fix \(from the issue\):\n\/\/   The check reads JSON too\.\n\/\/   It has a test\.\n\/\/\n\/\/   More detail\.\n/);
+  assert.match(lesson, /\n {2}why: 'The privacy check read Markdown only',\n/);
+  assert.match(lesson, /export function findProblems\(input: string\): Finding\[\] \{\n {2}\/\/ TODO\(reviewer\)/);
+  // The draft's own test is a positive control that fails until the check is written.
+  assert.match(check, /import \{ findProblems, lesson \} from '\.\/lesson\.ts';/);
+  assert.match(check, /test\('incident-12: catches the known-bad case'[^]*\[lesson\.id\]\);/);
+  assert.match(formatDraft(incidentOf(body), draft).join('\n'), /The issue answers every field\.[^]*\n--- lessons\/incident-12\/lesson\.ts\n/);
+});
+
+test('learn: a missing section gives a TODO for the reviewer, never a made-up answer (positive control)', () => {
+  const draft = draftLesson(incidentOf('## What happened\n\nA key was not checked.\n\n## Why it got through\n\n_No response_\n'));
+  assert.deepEqual(draft.todos, ['why: the issue has no "Why it got through" section', 'fix: the issue has no "Fix" section']);
+  assert.match(draft.finding.why, /^TODO\(reviewer\): the issue has no "Why it got through" section; /);
+  assert.match(draft.finding.fix, /^TODO\(reviewer\): the issue has no "Fix" section; /);
+  assert.ok(!/No response/.test(draft.files[0].text), 'an empty form field is not copied as an answer');
+  // No sections at all: every field the body should give is a TODO, and what comes from the title.
+  const empty = draftLesson(incidentOf('Something broke.', 'Commit times carry a time zone'));
+  assert.equal(empty.finding.what, 'commit times carry a time zone');
+  assert.equal(empty.todos.length, 2);
+  const lines = formatDraft({ ...incidentOf(''), labels: [] }, draftLesson(incidentOf(''))).join('\n');
+  assert.match(lines, /Note: the issue has no `incident` label; it is drafted anyway\.\n2 TODO\(s\) for the reviewer:\n- why: /);
+});
+
+test('learn: sections by heading or bold label, outside code blocks; one line per field', () => {
+  const sections = readSections('Intro.\n**What happened:** a commit kept its time zone.\n### Fix and check\n\n- [ ] The commit check refuses it,\n  with a test.\n- [ ] init sets TZ.\n\n```sh\n# a comment\n```\n');
+  assert.deepEqual(sections.map((section) => section.heading), ['What happened', 'Fix and check']);
+  assert.equal(sections[0].text, 'a commit kept its time zone.');
+  assert.equal(summarize(sections[1].text), 'The commit check refuses it, with a test');
+  assert.equal(summarize('1. First step:\n2. Second'), 'First step');
+  // A quote in the issue stays inside the generated string.
+  assert.match(draftLesson(incidentOf('## Fix\n\nIt\'s fixed with a \\ path.')).files[0].text, /fix: 'It\\'s fixed with a \\\\ path',/);
+});
+
+test('learn: --write adds the draft\'s files and keeps a file that is there', () => {
+  const root = mkdtempSync(join(tmpdir(), 'yokoten-learn-'));
+  const draft = draftLesson(incidentOf('## Fix\n\nA check.'));
+  assert.deepEqual(writeDraft(root, draft), { written: ['lessons/incident-12/lesson.ts', 'lessons/incident-12/lesson.test.ts'], kept: [] });
+  writeFileSync(join(root, 'lessons/incident-12/lesson.ts'), 'reviewed\n');
+  assert.deepEqual(writeDraft(root, draft), { written: [], kept: ['lessons/incident-12/lesson.ts', 'lessons/incident-12/lesson.test.ts'] });
+  assert.equal(readFileSync(join(root, 'lessons/incident-12/lesson.ts'), 'utf8'), 'reviewed\n', 'a reviewer\'s work is never overwritten');
 });

@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { type Finding, formatFinding, place } from '../rules/message.ts';
 import type { CodeOwners, PullRequest } from '../rules/pr.ts';
+import type { Incident } from '../run/learn.ts';
 
 export interface BotConfig {
   appId: string;
@@ -470,4 +471,31 @@ export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
   });
 
   return { repo, defaultBranch, mergeMethods, deleteBranchOnMerge: info.delete_branch_on_merge ?? null, branch, tags, security, forgotten };
+}
+
+// An incident issue for `yokoten learn` (#77), read through `gh issue view`, so it uses
+// the owner's own sign-in and holds no token. A number names an issue of this repo; a URL
+// names one in any repo. Read only.
+
+const ISSUE_REFERENCE = /^(\d+|https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+)$/;
+
+/** The issue's number, title, body, URL and labels, or the reason gh can't read it. */
+export function readIncident(gh: Gh, reference: string): Incident | string {
+  if (!ISSUE_REFERENCE.test(reference)) return `${reference} is not an issue: give its number, or a URL like https://github.com/owner/repo/issues/12`;
+  let text: string;
+  try {
+    text = gh(['issue', 'view', reference, '--json', 'number,title,body,url,labels']);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'gh is not installed: get it from https://cli.github.com, then run `gh auth login`';
+    const reason = String((err as { stderr?: string }).stderr || '').split('\n')[0].trim();
+    return `gh can't read issue ${reference}${reason ? ` (${reason})` : ''}: run \`gh auth login\`, and check the number and the repo`;
+  }
+  const issue = JSON.parse(text) as { number?: number; title?: string; body?: string; url?: string; labels?: { name?: string }[] };
+  return {
+    number: issue.number ?? 0,
+    title: issue.title ?? '',
+    body: issue.body ?? '',
+    url: issue.url ?? '',
+    labels: (issue.labels ?? []).map((label) => label.name ?? '').filter(Boolean),
+  };
 }

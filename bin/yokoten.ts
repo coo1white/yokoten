@@ -5,13 +5,14 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { appendFileSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
-import { annotations, botConfig, botEnv, ghIn, installationToken, isGitHubActions, readCodeOwners, readCommandTitle, readIssue, readPullRequest, repoOf, stepSummary } from '../src/host/github.ts';
+import { annotations, botConfig, botEnv, ghIn, installationToken, isGitHubActions, readCodeOwners, readCommandTitle, readIncident, readIssue, readPullRequest, repoOf, stepSummary } from '../src/host/github.ts';
 import { formatChanges, parseChange, readChanges, writeChanges } from '../src/run/changelog.ts';
 import { check, checkChanged, checkHistory, gitRoot, historyTimeZones, timeZoneNote } from '../src/run/check.ts';
 import * as claudeCode from '../src/agents/claude-code.ts';
 import * as codex from '../src/agents/codex.ts';
 import * as gemini from '../src/agents/gemini.ts';
 import { type Finding, formatFinding } from '../src/rules/message.ts';
+import { draftLesson, formatDraft, writeDraft } from '../src/run/learn.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
 import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, largeDiff, longSentenceNote, longSentences } from '../src/rules/pr.ts';
 import { hideHome } from '../src/rules/privacy.ts';
@@ -42,6 +43,9 @@ const HELP = `yokoten ${VERSION}
   yokoten changelog [--write]
                              the entries the files in changes/ add under [Unreleased]; --write
                              puts them into CHANGELOG.md and deletes the files (before a release)
+  yokoten learn <issue> [--write]
+                             a check draft from an incident issue (a number or a URL), read
+                             through gh, for a person to review; --write puts it in lessons/
   yokoten hook [--agent <name>] [--commands-only]
                              the tool-call guard: reads one tool call on stdin; <name> is
                              claude-code (the default), codex or gemini
@@ -356,6 +360,34 @@ function main(): number | Promise<number> {
       if (!changes.length) print(['yokoten changelog: no change files in changes/; nothing to add']);
       else if (isWrite) print([`yokoten changelog: wrote ${changes.length} change(s) under [Unreleased] in CHANGELOG.md, and deleted:`, ...changes.map((change) => `- ${change.file}`)]);
       else print([`yokoten changelog: ${changes.length} change(s); \`--write\` adds these under [Unreleased] in CHANGELOG.md:`, '', ...formatChanges(changes)]);
+      return 0;
+    }
+    case 'learn': {
+      // A draft for review (#77), never a shipped check: it writes only with --write, and adds only.
+      const options = parse({ flags: ['--write'], positional: 1 });
+      if (typeof options === 'string') return usage(options);
+      const [reference] = options.positional;
+      if (reference === undefined) return usage('name an incident issue, by its number or its URL');
+      const root = rootOf(process.cwd()) ?? process.cwd();
+      const incident = readIncident(ghIn(root), reference);
+      if (typeof incident === 'string') {
+        print([`yokoten learn: ${incident}`], process.stderr);
+        return 1;
+      }
+      const draft = draftLesson(incident);
+      const [first, ...rest] = formatDraft(incident, draft);
+      if (!options.flags.has('--write')) {
+        print([`yokoten learn: ${first}`, ...rest, '', `Nothing was written. \`yokoten learn ${reference} --write\` adds these files for review.`]);
+        return 0;
+      }
+      const { written, kept } = writeDraft(root, draft);
+      print([
+        `yokoten learn: ${first}`,
+        ...rest.slice(0, rest.indexOf('')),
+        ...(written.length ? ['Wrote:', ...written.map((path) => `- ${path}`)] : []),
+        ...(kept.length ? ['Kept, already there:', ...kept.map((path) => `- ${path}`)] : []),
+        'Review the draft: fill in each TODO, write the check, and make its test pass.',
+      ]);
       return 0;
     }
     case 'doctor': {

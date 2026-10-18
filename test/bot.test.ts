@@ -7,7 +7,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { annotation, annotations, appJwt, botConfig, botEnv, type Gh, installationToken, readCommandTitle, readServer, repoOf, type ServerSettings, stepSummary, type Unread } from '../src/host/github.ts';
+import { annotation, annotations, appJwt, botConfig, botEnv, type Gh, installationToken, readCommandTitle, readIncident, readServer, repoOf, type ServerSettings, stepSummary, type Unread } from '../src/host/github.ts';
 import { DEFAULTS } from '../src/rules/config.ts';
 import { checkCommand } from '../src/rules/guards.ts';
 import { doctor, serverChecks } from '../src/setup/doctor.ts';
@@ -309,4 +309,26 @@ test('step summary: a heading with the result, a table, notes apart, at most 50 
   assert.equal(text.split('\n').filter((l) => l.startsWith('| a.md:')).length, 50);
   assert.match(text, /\nAnd 3 more\. The job log lists them all\.\n/);
   assert.match(text, /#### Notes \(1\): these never fail the check\n\nThe job log lists them\.\n/);
+});
+
+// `yokoten learn` (#77) reads an incident through gh. A fake gh stands in; GitHub is never reached.
+test('incident: read through gh issue view; a bad reference or a gh failure is a reason, never a crash', () => {
+  const calls: string[][] = [];
+  const gh: Gh = (args) => {
+    calls.push(args);
+    return JSON.stringify({ number: 12, title: 'check: misses a key', body: '## Fix\n\nA check.', url: 'https://example.com/issues/12', labels: [{ name: 'incident' }, { name: 'bug' }] });
+  };
+  assert.deepEqual(readIncident(gh, '12'), { number: 12, title: 'check: misses a key', body: '## Fix\n\nA check.', url: 'https://example.com/issues/12', labels: ['incident', 'bug'] });
+  assert.deepEqual(calls, [['issue', 'view', '12', '--json', 'number,title,body,url,labels']]);
+  assert.equal(typeof readIncident(gh, 'https://github.com/owner/repo/issues/12'), 'object');
+  for (const bad of ['--web', '12; rm', 'https://example.com/issues/12']) assert.match(String(readIncident(gh, bad)), /is not an issue: give its number, or a URL/);
+  assert.equal(calls.length, 2, 'a bad reference never reaches gh');
+  const missing: Gh = () => {
+    throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' });
+  };
+  assert.match(String(readIncident(missing, '12')), /^gh is not installed/);
+  const refused: Gh = () => {
+    throw Object.assign(new Error('Command failed'), { stderr: 'GraphQL: Could not resolve to an issue\nmore' });
+  };
+  assert.equal(readIncident(refused, '99'), 'gh can\'t read issue 99 (GraphQL: Could not resolve to an issue): run `gh auth login`, and check the number and the repo');
 });
