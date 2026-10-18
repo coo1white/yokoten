@@ -111,7 +111,9 @@ not now（暂不，后面跟着你给的原因）或者 can't check（这里查�
 第 4 关的 `review` 也这样读服务器。默认分支的规则集（或者分支保护）要求至少一个批准，这一步就算做完。
 GitHub 不让你批准自己开的 PR，所以让 bot 来开 PR，你来批准、合并。
 设置方法：编辑默认分支上的规则集，在“Require a pull request”里把“Required approvals”设成 1。
-这样一来，合并的人不是写代码的人，OpenSSF Scorecard 应该会把每次改动算作审过。
+另外，Settings → Actions → General 里的“Allow GitHub Actions to create and approve pull requests”要一直关着。
+它要是开着，bot 推一个 workflow 就能批准它自己开的 PR，所以 `review` 不算做完。
+批准设好以后，合并的人不是写代码的人，OpenSSF Scorecard 应该会把每次改动算作审过。
 这是我们从 Scorecard 文档里读到的，还没在真正跑一次 Scorecard 时验证过。
 免费账号的私有仓库没有规则集，这时 `review` 标 can't check，等到第 5 关仓库公开时再做。
 它不标 not now，因为 not now 只留给你自己做的决定。

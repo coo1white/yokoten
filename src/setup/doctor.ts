@@ -109,6 +109,7 @@ const SERVER_CONTROL: ServerRead = {
   repo: 'octo/demo',
   defaultBranch: 'main',
   isPrivate: false,
+  actionsCanApprove: false,
   mergeMethods: ['merge', 'squash'],
   deleteBranchOnMerge: false,
   branch: { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false, approvals: 0 },

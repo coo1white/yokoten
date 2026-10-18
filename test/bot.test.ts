@@ -262,26 +262,52 @@ test('doctor: reads the server of a GitHub origin into the road; a step not done
 const review = ROAD.find((s) => s.key === 'review')!;
 const RULES = `repos/${REPO}/rules/branches/main`;
 const withApprovals = (count: number) => [{ type: 'pull_request', parameters: { required_approving_review_count: count } }, ...(GOOD[RULES] as object[]).slice(1)];
+// An admin's read: the old branch protection and the Actions setting are visible.
+const ACTIONS = `repos/${REPO}/actions/permissions/workflow`;
+const ADMIN = { ...GOOD, [`repos/${REPO}`]: { ...(GOOD[`repos/${REPO}`] as object), permissions: { admin: true } }, [ACTIONS]: { can_approve_pull_request_reviews: false } };
 
 test('road: the review step is stage 4, done when a merge needs at least one approval (#59)', () => {
   assert.equal(review.stage, 4);
-  assert.equal(review.check('.', {}, readServer(serverGh({ ...GOOD, [RULES]: withApprovals(1) }).gh, REPO)), true);
-  assert.equal(review.check('.', {}, readServer(serverGh({ ...GOOD, [RULES]: withApprovals(2) }).gh, REPO)), true);
+  assert.equal(review.check('.', {}, readServer(serverGh({ ...ADMIN, [RULES]: withApprovals(1) }).gh, REPO)), true);
+  assert.equal(review.check('.', {}, readServer(serverGh({ ...ADMIN, [RULES]: withApprovals(2) }).gh, REPO)), true);
   // The old branch protection counts too, when an admin can read it.
-  const old = { ...GOOD, [`repos/${REPO}/branches/main/protection/required_pull_request_reviews`]: { required_approving_review_count: 1 } };
+  const old = { ...ADMIN, [`repos/${REPO}/branches/main/protection/required_pull_request_reviews`]: { required_approving_review_count: 1 } };
   assert.equal(review.check('.', {}, readServer(serverGh(old).gh, REPO)), true);
 });
 
 test('road: the review step catches a merge with no approval, and says how to set one (#59)', () => {
   // Positive control: every other setting is on, and only the approval is missing.
   for (const rules of [GOOD[RULES], withApprovals(0), []]) {
-    const server = readServer(serverGh({ ...GOOD, [RULES]: rules }).gh, REPO);
+    const server = readServer(serverGh({ ...ADMIN, [RULES]: rules }).gh, REPO);
     assert.equal(review.check('.', {}, server), false, JSON.stringify(rules));
   }
-  const f = stepFinding(review, '.', {}, readServer(serverGh(GOOD).gh, REPO));
+  const f = stepFinding(review, '.', {}, readServer(serverGh(ADMIN).gh, REPO));
   assert.equal(f.what, 'a merge to the default branch needs no approving review');
   assert.match(f.fix, /"Required approvals" to 1/);
   assert.match(f.fix, /can't approve your own pull request, so let the bot open them/);
+  assert.match(f.fix, /keep "Allow GitHub Actions to create and approve pull requests" off/);
+});
+
+test('road: the review step is not done while a workflow may approve a pull request (#59)', () => {
+  // With the Actions setting on, a workflow the bot pushes could approve the bot's own pull request.
+  const on = readServer(serverGh({ ...ADMIN, [RULES]: withApprovals(1), [ACTIONS]: { can_approve_pull_request_reviews: true } }).gh, REPO);
+  assert.equal(review.check('.', {}, on), false);
+  const f = stepFinding(review, '.', {}, on);
+  assert.match(f.what, /^a workflow may approve a pull request/);
+  assert.match(f.fix, /turn off "Allow GitHub Actions to create and approve pull requests"/);
+  // Unreadable is can't check, never done.
+  const hidden = readServer(serverGh({ ...ADMIN, [RULES]: withApprovals(1), [ACTIONS]: said(403) }).gh, REPO);
+  assert.equal(review.check('.', {}, hidden), null);
+  assert.match(review.unchecked?.(hidden) ?? '', /can be read only by an admin/);
+});
+
+test("road: a non-admin who can't read the old branch protection gets can't check, not to do (#59)", () => {
+  // Rulesets ask for nothing, and the old protection answers 404, which to a non-admin says nothing.
+  const server = readServer(serverGh({ ...GOOD, [RULES]: [] }).gh, REPO);
+  assert.equal(review.check('.', {}, server), null);
+  assert.match(review.unchecked?.(server) ?? '', /old branch protection can be read only by an admin/);
+  // To an admin, the same 404 means there is no old protection.
+  assert.equal(review.check('.', {}, readServer(serverGh({ ...ADMIN, [RULES]: [] }).gh, REPO)), false);
 });
 
 test("road: a private repo without rulesets waits for stage 5; nothing read is can't check (#59)", () => {
@@ -306,7 +332,7 @@ test('doctor: shows the review step in stage 4, and a session never asks gh abou
   const root = mkdtempSync(join(tmpdir(), 'yokoten-review-'));
   execFileSync('git', ['init', '-q', root]);
   execFileSync('git', ['remote', 'add', 'origin', `https://github.com/${REPO}.git`], { cwd: root });
-  const full = doctor(root, { env: { HOME: root }, config: DEFAULTS, gh: serverGh({ ...GOOD, [RULES]: withApprovals(1) }).gh });
+  const full = doctor(root, { env: { HOME: root }, config: DEFAULTS, gh: serverGh({ ...ADMIN, [RULES]: withApprovals(1) }).gh });
   assert.deepEqual(full.report.steps?.find((s) => s.id === 'review'), { id: 'review', stage: 4, mark: 'done', standard: 'Scorecard: Code-Review' });
   assert.deepEqual(full.report.selfTest, { ok: true, failed: [] }, 'the server control still passes no step');
   const session = doctor(root, { env: { HOME: root }, config: DEFAULTS, session: true, gh: () => { throw new Error('a session called gh'); } });

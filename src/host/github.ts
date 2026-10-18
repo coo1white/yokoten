@@ -373,8 +373,8 @@ export interface BranchRules {
   requiredChecks: string[];
   noForcePush: boolean;
   noDeletion: boolean;
-  /** The approving reviews a merge needs: the most any ruleset, or the old branch protection, asks for. */
-  approvals: number;
+  /** The approving reviews a merge needs: the most any ruleset, or the old branch protection, asks for; null when no ruleset asks and the old protection can't be read. */
+  approvals: number | null;
 }
 
 /** Each security switch: on, off, or null when gh can't see it. */
@@ -390,6 +390,8 @@ export interface ServerSettings {
   defaultBranch: string;
   /** Whether the repo is private, or null when GitHub did not say. */
   isPrivate: boolean | null;
+  /** Whether a workflow may approve a pull request (an Actions setting), or null without admin rights. */
+  actionsCanApprove: boolean | null;
   /** Merge methods the repo allows, or null without admin rights. */
   mergeMethods: string[] | null;
   deleteBranchOnMerge: boolean | null;
@@ -408,7 +410,7 @@ export function unread(err: unknown): Unread {
   if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { unread: 'gh is not installed', fix: 'get it from https://cli.github.com, then run `gh auth login`' };
   const said = String((err as { stderr?: string }).stderr || (err as Error).message);
   if (/HTTP 401|gh auth login|not logged in/i.test(said)) return { unread: 'gh is not signed in', fix: 'run `gh auth login`' };
-  if (/Upgrade to GitHub Pro/i.test(said)) return { unread: 'rulesets need GitHub Pro on a private repo', fix: 'make the repo public, or upgrade to GitHub Pro' };
+  if (/Upgrade to GitHub Pro/i.test(said)) return { unread: 'rulesets need GitHub Pro on a private repo', fix: 'make the repo public, or upgrade to GitHub Pro (or Team for an organization)' };
   if (/HTTP 40[34]/.test(said)) return { unread: 'GitHub said no (403 or 404)', fix: 'sign in to gh as a repo admin; on a private repo, rulesets need GitHub Pro' };
   return { unread: 'gh could not reach GitHub', fix: 'check the network, then run doctor again' };
 }
@@ -430,6 +432,7 @@ export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
   type Repo = {
     default_branch?: string;
     private?: boolean;
+    permissions?: { admin?: boolean };
     allow_squash_merge?: boolean;
     allow_merge_commit?: boolean;
     allow_rebase_merge?: boolean;
@@ -441,14 +444,17 @@ export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
   const defaultBranch = info.default_branch ?? 'main';
   // GitHub sends the merge settings only to an admin.
   const methods: [string, boolean | undefined][] = [['squash', info.allow_squash_merge], ['merge', info.allow_merge_commit], ['rebase', info.allow_rebase_merge]];
+  const admin = info.permissions?.admin === true;
   const mergeMethods = methods.some(([, on]) => on === undefined) ? null : methods.filter(([, on]) => on).map(([name]) => name);
 
   const branch = attempt((): BranchRules => {
     const rules = api<Rule[]>(`repos/${repo}/rules/branches/${encodeURIComponent(defaultBranch)}`) ?? [];
     const of = (type: string) => rules.filter((r) => r.type === type);
     const pr = of('pull_request').map((r) => r.parameters ?? {});
-    // The old branch protection, which only an admin can read; unread counts as none.
-    const oldApprovals = () => { try { return api<{ required_approving_review_count?: number }>(`repos/${repo}/branches/${encodeURIComponent(defaultBranch)}/protection/required_pull_request_reviews`)?.required_approving_review_count ?? 0; } catch { return 0; } };
+    // The old branch protection, which only an admin can read: a 404 to an admin means none, any other failure is unknown.
+    const oldApprovals = (): number | null => { try { return api<{ required_approving_review_count?: number }>(`repos/${repo}/branches/${encodeURIComponent(defaultBranch)}/protection/required_pull_request_reviews`)?.required_approving_review_count ?? 0; } catch (err) { return admin && /HTTP 404/.test(String((err as { stderr?: string }).stderr || (err as Error).message)) ? 0 : null; } };
+    const ruled = Math.max(0, ...pr.map((p) => Number(p.required_approving_review_count) || 0));
+    const old = oldApprovals();
     return {
       pullRequest: pr.length > 0,
       codeOwnerReview: pr.some((p) => p.require_code_owner_review === true),
@@ -456,7 +462,7 @@ export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
       requiredChecks: of('required_status_checks').flatMap((r) => ((r.parameters?.required_status_checks ?? []) as { context?: string }[]).map((c) => c.context ?? '')).filter(Boolean),
       noForcePush: of('non_fast_forward').length > 0,
       noDeletion: of('deletion').length > 0,
-      approvals: Math.max(0, ...pr.map((p) => Number(p.required_approving_review_count) || 0), oldApprovals()),
+      approvals: old === null ? (ruled >= 1 ? ruled : null) : Math.max(ruled, old),
     };
   });
 
@@ -497,7 +503,11 @@ export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
     return lines(`repos/${repo}/branches?per_page=100`, '.[].name').filter((b) => b !== defaultBranch && !open.has(`${owner}:${b}`));
   });
 
+  // With this Actions setting on, a workflow the bot pushes could approve the bot's own pull request.
+  const actions = attempt(() => api<{ can_approve_pull_request_reviews?: boolean }>(`repos/${repo}/actions/permissions/workflow`)?.can_approve_pull_request_reviews);
+  const actionsCanApprove = typeof actions === 'boolean' ? actions : null;
+
   const planning = readPlanning(gh, repo);
 
-  return { repo, defaultBranch, isPrivate: info.private ?? null, mergeMethods, deleteBranchOnMerge: info.delete_branch_on_merge ?? null, branch, tags, security, forgotten, planning };
+  return { repo, defaultBranch, isPrivate: info.private ?? null, actionsCanApprove, mergeMethods, deleteBranchOnMerge: info.delete_branch_on_merge ?? null, branch, tags, security, forgotten, planning };
 }
