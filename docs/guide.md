@@ -608,8 +608,8 @@ The full table, with the reasons, is in [`kit/project/AGENTS.md`](../kit/project
 4. A fix task changes code, never tests.
 5. A worker doesn't change lead-only files: the rules, agent config, hooks, CI.
 6. Never skip the commit check. Reading core.hooksPath is fine. A new hooks folder is fine
-   when its pre-commit runs `yokoten check` on a line of its own and stops the commit when
-   the check fails, as `yokoten init` sets up for husky.
+   when its pre-commit is an executable shell script that runs `yokoten check` on a line of
+   its own and stops the commit when the check fails, as `yokoten init` sets up for husky.
 7. No plain force push. Never rebase a shared branch.
 8. Squash merge. One pull request, one purpose; small polish goes in one batch.
 9. Review and test the exact commit that merges.

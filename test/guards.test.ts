@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -148,16 +148,23 @@ test('hooks setting: git -c, --config-env and GIT_CONFIG_KEY_n cannot skip the c
 });
 
 // The hooks setting in a project with its own hooks folder (#217). A repo with husky's
-// pre-commit running the check, a folder without it, and core.hooksPath set to `hooks/own`.
+// pre-commit running the check (and husky's own `.husky/_/pre-commit`, which git runs), a
+// folder without it, and core.hooksPath set to `hooks/own`. Hook files are executable.
+function writeHook(path: string, text: string, mode = 0o755): void {
+  writeFileSync(path, text);
+  chmodSync(path, mode);
+}
+
 function makeHooksRepo(): string {
   const root = mkdtempSync(join(tmpdir(), 'yokoten-hooks-'));
   const git = (...args: string[]) => execFileSync('git', args, { cwd: root, stdio: 'pipe' });
   git('init', '-q');
   git('config', 'core.hooksPath', 'hooks/own');
-  mkdirSync(join(root, '.husky'));
-  writeFileSync(join(root, '.husky', 'pre-commit'), '#!/bin/sh\nnpx lint-staged\nnode ".yokoten/bin/yokoten.ts" check --staged || exit 1\n');
+  mkdirSync(join(root, '.husky', '_'), { recursive: true });
+  writeHook(join(root, '.husky', 'pre-commit'), '#!/bin/sh\nnpx lint-staged\nnode ".yokoten/bin/yokoten.ts" check --staged || exit 1\n');
+  writeHook(join(root, '.husky', '_', 'pre-commit'), '#!/usr/bin/env sh\n. "$(dirname "$0")/h"\n');
   mkdirSync(join(root, 'hooks', 'plain'), { recursive: true });
-  writeFileSync(join(root, 'hooks', 'plain', 'pre-commit'), '#!/bin/sh\n# yokoten check is not run here\nnpm test\n');
+  writeHook(join(root, 'hooks', 'plain', 'pre-commit'), '#!/bin/sh\n# yokoten check is not run here\nnpm test\n');
   return root;
 }
 
@@ -711,4 +718,198 @@ test('bash: the core rules read the string env -S runs, in every spelling (#226)
   ]) blocked(command);
   allowed("env -iS'git status' --short");
   allowed('env -S "git status"');
+});
+
+// The third review of #226. The reader's work is bounded: each construct is read once, and
+// one budget covers every read of a command.
+const timed = <T>(read: () => T): { value: T; took: number } => {
+  const started = Date.now();
+  const value = read();
+  return { value, took: Date.now() - started };
+};
+
+test('bash: an unclosed $( is read once, not again at each level (#226)', () => {
+  for (const repeats of [30, 10000]) {
+    const { value, took } = timed(() => checkCommand(`${'echo $(a '.repeat(repeats)}; ${force}`, { env: {} }));
+    assert.ok(value, `${repeats} unclosed $( then a force push should block`);
+    assert.ok(took < 1000, `${repeats} unclosed $( took ${took} ms`);
+  }
+  for (const shape of ['echo "$(a ', 'cat <(a ', '((', 'echo `a ']) {
+    const { value, took } = timed(() => checkCommand(`${shape.repeat(10000)}; ${force}`, { env: {} }));
+    assert.ok(value, `${shape} x10000 then a force push should block`);
+    assert.ok(took < 1000, `${shape} x10000 took ${took} ms`);
+  }
+  // What an unclosed $( holds is still read: a force push inside it blocks, a read passes.
+  blocked(`echo $(${force}`);
+  allowed('echo $(git status');
+});
+
+test('bash: a heredoc pipeline is read in linear time (#226)', () => {
+  const pipeline = (reader: string, body: string) => `${'cat <<E | '.repeat(8000)}${reader}\n${`${body}\nE\n`.repeat(8000)}`;
+  const data = timed(() => checkCommand(pipeline('cat', force), { env: {} }));
+  assert.equal(data.value, null, 'bodies piped into cat are data');
+  assert.ok(data.took < 1000, `the 8000-heredoc pipeline into cat took ${data.took} ms`);
+  const shell = timed(() => checkCommand(pipeline('bash', force), { env: {} }));
+  assert.equal(shell.value?.id, 'force-push', 'bodies piped into bash are commands');
+  assert.ok(shell.took < 1000, `the 8000-heredoc pipeline into bash took ${shell.took} ms`);
+});
+
+test('bash: nested constructs at 10k repeats stay under a second and never throw (#226)', () => {
+  const shapes = [
+    '$(', '$( ', '<(', '>(', '((', '$((', '"$(', '"`', '`', '`"', "$'\\'", '<<"', "<<'", '{ ', '( ', '${', '"${',
+    'case x in ', 'a) ', ';; ', 'bash -c "', "bash -c '", 'eval "', 'env -S"', 'ssh h "', 'sudo -s "', 'x | bash ', '\\\n',
+    'cat <<E | ', 'cat <<E\n', '{ cat <<E; } | ', 'find . -exec ', 'git -c alias.x="!', '$(echo "$(', '"$(echo \'',
+  ];
+  for (const shape of shapes) {
+    const text = shape.repeat(10000);
+    for (const command of [text, `${text}\n${force}`, `${force}; ${text}`]) {
+      let took = 0;
+      let result: ReturnType<typeof checkCommand> = null;
+      assert.doesNotThrow(() => {
+        ({ value: result, took } = timed(() => checkCommand(command, { env: {}, config: pythonBlocked })));
+      }, JSON.stringify(shape));
+      assert.ok(took < 1000, `${JSON.stringify(shape)} x10000 took ${took} ms`);
+      if (command.startsWith(force)) assert.ok(result, `${JSON.stringify(shape)} after a force push should block`);
+    }
+  }
+});
+
+test('hooks setting: git must run the hook file as an executable shell script (#226)', () => {
+  const cwd = makeHooksRepo();
+  const verdict = (folder: string) => checkCommand(`git config core.hooksPath ${folder}`, { env: {}, cwd })?.id ?? 'pass';
+  const hook = (folder: string, text: string, mode = 0o755) => {
+    mkdirSync(join(cwd, folder), { recursive: true });
+    writeHook(join(cwd, folder, 'pre-commit'), text, mode);
+  };
+  const runs = 'npx yokoten check || exit 1\n';
+  try {
+    hook('hooks/sh', `#!/bin/sh\n${runs}`);
+    hook('hooks/env', `#!/usr/bin/env bash\n${runs}`);
+    hook('hooks/zsh', `#!/usr/bin/zsh -e\n${runs}`);
+    hook('hooks/none', runs);
+    hook('hooks/py', `#!/usr/bin/env ${py}\n${runs}`);
+    hook('hooks/node', `#!/usr/bin/env node\n${runs}`);
+    mkdirSync(join(cwd, 'hooks', 'dir', 'pre-commit'), { recursive: true });
+    for (const folder of ['hooks/sh', 'hooks/env', 'hooks/zsh']) assert.equal(verdict(folder), 'pass', folder);
+    for (const folder of ['hooks/none', 'hooks/py', 'hooks/node', 'hooks/dir', 'hooks/missing']) assert.equal(verdict(folder), 'hooks-path', folder);
+    if (process.platform !== 'win32') {
+      hook('hooks/plainmode', `#!/bin/sh\n${runs}`, 0o644);
+      assert.equal(verdict('hooks/plainmode'), 'hooks-path', 'a hook git cannot execute');
+      assert.match(checkCommand('git config core.hooksPath hooks/plainmode', { env: {}, cwd })?.what ?? '', /hooks\/plainmode\/pre-commit, which is not executable/);
+      // husky: git runs .husky/_/pre-commit, which must be there and executable.
+      assert.equal(verdict('.husky/_'), 'pass');
+      chmodSync(join(cwd, '.husky', '_', 'pre-commit'), 0o644);
+      assert.equal(verdict('.husky/_'), 'hooks-path', 'husky\'s own hook is not executable');
+    }
+    rmSync(join(cwd, '.husky', '_', 'pre-commit'));
+    assert.equal(verdict('.husky/_'), 'hooks-path', 'husky\'s own hook is missing');
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('hooks setting: the script is read as the shell reads it, across lines (#226)', () => {
+  const check = 'npx yokoten check';
+  for (const script of [
+    `true ||\n${check}\n`,
+    `echo x |\n${check}\n`,
+    `true \\\n${check}\n`,
+    `echo "\n${check}\n"\n`,
+    `: '\n${check}\n'\n`,
+    `${check} --issue\n`,
+    `${check} --pr\n`,
+    `${check} --staged --pr\n`,
+    `return 0\n${check}\n`,
+    `npm test || return 0\n${check}\n`,
+    `set -e\nset +e\n${check}\nnpm test\n`,
+    `set -e\nnpm test; set +e\n${check}\nnpm test\n`,
+  ]) assert.equal(runsCheck(script), false, script);
+  for (const script of [
+    `true\n${check}\n`,
+    `echo x | cat\n${check}\n`,
+    `npm \\\n  test\n${check}\n`,
+    `echo "a\nb"\n${check}\n`,
+    `${check} --staged --json\n`,
+    `npm test || exit 1\n${check}\n`,
+    `true &&\n${check} || exit 1\nnpm test\n`,
+    `set -e\n${check}\nnpm test\n`,
+    `set -e\nset +x\n${check}\nnpm test\n`,
+  ]) assert.equal(runsCheck(script), true, script);
+});
+
+test('hooks setting: the check line in every runner yokoten knows, and only yokoten (#226)', () => {
+  for (const script of [
+    'pnpm exec yokoten check\n',
+    'yarn yokoten check --staged\n',
+    'bunx yokoten check || exit 1\nnpm test\n',
+    'npx --no -- yokoten check || exit 1\nnpm test\n',
+    'npx --no-install yokoten check || exit 1\nnpm test\n',
+    'npx yokoten check || exit $?\nnpm test\n',
+    'npx lint-staged && npx yokoten check\n',
+    'npx lint-staged && npx yokoten check || exit 1\nnpm test\n',
+    'npx yokoten check # the commit check\n',
+    'npx yokoten check || exit 1 # the commit check\nnpm test\n',
+    'npx yokoten check;\n',
+    'node ./node_modules/.bin/yokoten check || exit 1\nnpm test\n',
+    'exec node ".yokoten/bin/yokoten.ts" check --staged\nnpm test\n',
+  ]) assert.equal(runsCheck(script), true, script);
+  for (const script of [
+    './fake-yokoten check\n',
+    'node ./fake-yokoten check\n',
+    'node "evil/yokoten.ts" check\n',
+    'npx yokoten check#x\n',
+    'npx lint-staged && npx yokoten check\nnpm test\n',
+    'exit 0 && npx yokoten check || exit 1\n',
+    'set -e\nnpx lint-staged && npx yokoten check\nnpm test\n',
+    `[ -f ./fake ] || { echo 'm' >&2; exit 1; }; node ./fake check || exit 1\nnpm test\n`,
+  ]) assert.equal(runsCheck(script), false, script);
+});
+
+test('bash: env -S reads its own escapes before it splits the string (#226)', () => {
+  const spaced = (escape: string) => ['env ', "-S'git", `${escape}push`, `${escape}--for` + 'ce', `${escape}origin`, `${escape}main'`].join('');
+  for (const escape of ['\\_', '\\t', '\\n', '\\v', '\\f', '\\r']) blocked(spaced(escape));
+  blocked(['env ', "--split-string='git", '\\_push', "\\_--for" + "ce'"].join(''));
+  allowed(['env ', "-S'git", '\\_status', '\\cgit push --for' + "ce'"].join(''));
+  allowed(['env ', "-S'git", "\\_status'"].join(''));
+  shouldBlock([['env ', `-S'${py}`, "\\_x'"].join('')]);
+});
+
+test('bash: a heredoc right after a group or subshell is the group\'s input (#226)', () => {
+  for (const command of [
+    `{ read -r a; } <<'EOF'\n${force}\nEOF`,
+    `( read -r a ) <<'EOF'\n${force}\nEOF`,
+    `{\n  read -r a\n  read -r b\n} <<'EOF'\n${force}\nEOF`,
+    `{ cat; } <<'EOF' > out\n${force}\nEOF`,
+  ]) allowed(command);
+  for (const command of [
+    `{ bash; } <<'EOF'\n${force}\nEOF`,
+    `( read -r a; sh ) <<'EOF'\n${force}\nEOF`,
+    `{\n  bash\n} <<'EOF'\n${force}\nEOF`,
+    `{ cat; } <<'EOF' | bash\n${force}\nEOF`,
+  ]) blocked(command);
+});
+
+test('bash: source or . of stdin or a file descriptor runs its input (#226)', () => {
+  for (const command of [
+    `source /dev/stdin <<'EOF'\n${force}\nEOF`,
+    `. /dev/stdin <<'EOF'\n${force}\nEOF`,
+    `. /dev/fd/3 3<<'EOF'\n${force}\nEOF`,
+    `echo '${force}' | source /dev/stdin`,
+    `echo '${force}' | . /proc/self/fd/0`,
+  ]) blocked(command);
+  allowed(`source ./env.sh <<'EOF'\n${force}\nEOF`);
+  allowed(`echo '${force}' | . ./x.sh`);
+});
+
+test('hooks setting: env -C, env --chdir, builtin cd and GIT_COMMON_DIR move repo (#226)', () => {
+  const cwd = makeHooksRepo();
+  const set = ['git config core', 'hooksPath .husky/_'].join('.');
+  const stop = (command: string) => assert.equal(checkCommand(command, { env: {}, cwd })?.id, 'hooks-path', `should block: ${command}`);
+  const pass = (command: string) => assert.equal(checkCommand(command, { env: {}, cwd }), null, `should allow: ${command}`);
+  try {
+    for (const prefix of ['env -C /tmp ', 'env -iC /tmp ', 'env --chdir=/tmp ', 'env --ch /tmp ', 'builtin cd /tmp && ', 'GIT_COMMON_DIR=/tmp/other/.git ']) stop(prefix + set);
+    for (const prefix of ['env -i ', 'env -u X ', 'builtin echo x && ']) pass(prefix + set);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });

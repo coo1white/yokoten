@@ -11,7 +11,7 @@
 // CODEOWNERS, and a release token the agents do not hold.
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { accessSync, constants, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { Config, Env } from './config.ts';
 import { matcher } from './config.ts';
@@ -38,7 +38,7 @@ export function checkCommand(command: string, options: { env: Env; config?: Pick
   // The reader is not a full parser. Whatever goes wrong inside it, the command is refused,
   // never let through: an error here must not open the guard.
   try {
-    return checkEachCommand(command, { ...options, cwd: options.cwd ?? process.cwd() });
+    return withBudget(command.length, () => checkEachCommand(command, { ...options, cwd: options.cwd ?? process.cwd() }));
   } catch {
     return finding('unreadable-command', 'yokoten could not read this command', 'split it into simpler commands, one per call');
   }
@@ -62,7 +62,18 @@ const release = (what: string) => finding('release', what, RELEASE_FIX);
 
 const MOVERS = new Set(['cd', 'pushd', 'popd']);
 const movesRepo = (words: string[]): boolean =>
-  words.some((word) => /^(GIT_DIR|GIT_WORK_TREE)=/.test(word) || word === '--worktree') || findPrograms(words).some((program) => MOVERS.has(programName(program)));
+  words.some((word, index) => /^(GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR)=/.test(word) || word === '--worktree' || (programName(word) === 'env' && envChangesFolder(words, index + 1))) ||
+  findPrograms(words).some((program) => MOVERS.has(programName(program)));
+
+// `env -C dir`, `env --chdir=dir` (or cut short, `--ch`), `env -iC dir`: env runs its program elsewhere.
+function envChangesFolder(words: string[], index: number): boolean {
+  for (; index < words.length && words[index].startsWith('-'); index += LAUNCHERS.env.options.includes(words[index]) ? 2 : 1) {
+    const long = /^--(c[a-z]*)(?:=|$)/.exec(words[index]);
+    if ((long && 'chdir'.startsWith(long[1])) || /^-[a-zA-RT-Z]*C/.test(words[index])) return true;
+    if (splitString(words, index) !== undefined) return false;
+  }
+  return false;
+}
 
 const base = (word: string) => word.slice(Math.max(word.lastIndexOf('/'), word.lastIndexOf('\\')) + 1);
 const isGit = (word: string) => /(^|[/\\])git(\.exe)?$/.test(word);
@@ -241,7 +252,8 @@ function checkConfig(args: string[], directory: string | null): Finding | null {
 const OTHER_SCOPES = new Set(['--global', '--system', '-f', '--file', '--blob', '--worktree']);
 
 // A new core.hooksPath in the repo's own config passes when it is the value already set,
-// or when the folder's pre-commit runs `yokoten check`.
+// or when git runs the folder's pre-commit (an executable file whose first line names sh,
+// bash, dash or zsh) and the script runs `yokoten check` (for husky, .husky/pre-commit).
 function checkHooksFolder(value: string, options: string[], directory: string | null): Finding | null {
   const scope = options.find((o) => OTHER_SCOPES.has(o.split('=')[0]));
   if (scope) return hooksPath(`git config ${scope} core.hooksPath changes the hooks folder outside this repo's own config, which can turn off the commit check`);
@@ -252,8 +264,34 @@ function checkHooksFolder(value: string, options: string[], directory: string | 
   if (readGit(root, ['config', '--get', 'core.hooksPath']) === value) return null;
   const file = hookFile(root, value);
   if (file === null) return hooksPath(`core.hooksPath ${value} is outside this repo, so the commit check does not run`);
+  // git runs the folder's own pre-commit only when it is an executable file; husky's
+  // `.husky/_/pre-commit` then runs `.husky/pre-commit`.
+  const runs = `${hooksFolder(root, value)}/pre-commit`.replace(/^\//, '');
+  const notRun = hookNotRun(join(root, runs));
+  if (notRun) return hooksPath(`core.hooksPath ${value} turns off the commit check: git does not run ${runs}, ${notRun}`, `make ${runs} an executable shell script (\`yokoten init\` sets it up), then set core.hooksPath again`);
   if (runsCheck(readText(join(root, file)))) return null;
   return hooksPath(`core.hooksPath ${value} turns off the commit check: ${file} does not run \`yokoten check\``, `add \`yokoten check\` to ${file} (\`yokoten init\` adds it), then set core.hooksPath again`);
+}
+
+// The shells a hook may name on its first line, directly or through /usr/bin/env.
+const SHEBANG = /^#!\s*(?:\/usr\/bin\/env\s+|\/(?:[\w.+-]+\/)*)(?:sh|bash|dash|zsh)(?:[ \t].*)?$/;
+
+// Why git would not run the hook file at `path` as a shell script, or null when it would.
+function hookNotRun(path: string): string | null {
+  try {
+    if (!statSync(path).isFile()) return 'which is not a file';
+  } catch {
+    return 'which does not exist';
+  }
+  if (process.platform !== 'win32') {
+    try {
+      accessSync(path, constants.X_OK);
+    } catch {
+      return 'which is not executable';
+    }
+  }
+  const first = readText(path).split(/\r?\n/, 1)[0];
+  return SHEBANG.test(first) ? null : 'whose first line does not name sh, bash, dash or zsh';
 }
 
 /**
@@ -262,47 +300,126 @@ function checkHooksFolder(value: string, options: string[], directory: string | 
  * husky 9) runs `.husky/pre-commit`. Any other folder runs its own pre-commit.
  */
 export function hookFile(root: string, setting: string): string | null {
-  const folder = relative(root, resolve(root, setting)).split('\\').join('/');
-  if (folder === '..' || folder.startsWith('../') || isAbsolute(folder)) return null;
+  const folder = hooksFolder(root, setting);
+  if (folder === null) return null;
   if (folder === '.husky' || folder === '.husky/_') return '.husky/pre-commit';
   return folder ? `${folder}/pre-commit` : 'pre-commit';
 }
 
+// The hooks folder, relative to the repo root ('' for the root), or null when outside it.
+function hooksFolder(root: string, setting: string): string | null {
+  const folder = relative(root, resolve(root, setting)).split('\\').join('/');
+  return folder === '..' || folder.startsWith('../') || isAbsolute(folder) ? null : folder;
+}
+
 // A line that runs the check and stops the commit when it fails, in the shapes yokoten
 // writes or knows: `exec node "bin/yokoten.ts" check --staged`, `npx yokoten check || exit 1`,
-// and the guarded form `[ -f <cli> ] || { echo '...' >&2; exit 1; }; node <cli> check`.
-// The line starts with it; after it comes nothing, or `|| exit` with no code or one not 0.
-const CHECK_TAIL = String.raw`check(?:\s+--?[\w-]+)*\s*(?<stop>\|\|\s*exit(?:\s+[1-9]\d*)?\s*)?$`;
-const CHECK_LINE = new RegExp(String.raw`^(?<exec>exec\s+)?(?:npx\s+)?(?:node\s+)?["']?[\w./@\$\{\}-]*yokoten(?:\.ts)?["']?\s+` + CHECK_TAIL);
-const GUARDED_LINE = new RegExp(String.raw`^\[ -f (\S+) \] \|\| \{ echo '[^']*'(?: >&2)?; exit [1-9]\d*; \}; node \1 ` + CHECK_TAIL);
+// `pnpm exec yokoten check`, `npx lint-staged && npx yokoten check`, and the guarded form
+// `[ -f <cli> ] || { echo '...' >&2; exit 1; }; node <cli> check`.
+//
+// The program is yokoten itself: `yokoten` or `yokoten.ts`, bare or quoted, or under
+// node_modules/.bin, bin/ or .yokoten/. `./fake-yokoten` is some other program. The check
+// takes only --staged and --json (`check --pr` reads a pull request, not the commit). After
+// it comes nothing, a `;`, or `|| exit` with no code, a code not 0, or `$?`.
+const CLI = String.raw`(?:yokoten(?:\.ts)?|(?:\./)?(?:node_modules/\.bin/yokoten|bin/yokoten(?:\.ts)?|\.yokoten/(?:bin/)?yokoten(?:\.ts)?))`;
+const PROGRAM = String.raw`(?:"${CLI}"|'${CLI}'|${CLI})`;
+const RUNNER = String.raw`(?:(?:npx(?:\s+--no-install|\s+--no(?:\s+--)?)?|pnpm\s+exec|yarn|bunx)\s+)?(?:node\s+)?`;
+const CHECK_TAIL = String.raw`\s+check(?:\s+--(?:staged|json))*(?<stop>\s*\|\|\s*exit(?:\s+(?:[1-9]\d*|\$\?))?)?(?:\s*;)?$`;
+// Commands before the check with `&&`: they cannot end the script (no exit, exec, source).
+const NOT_BEFORE = String.raw`(?!(?:exit|return|exec|eval|source|trap|kill|set|shift|break|continue|alias|unset|builtin|command|\.)(?:\s|$))`;
+const BEFORE = String.raw`(?<before>(?:${NOT_BEFORE}[\w./@:=+-]+(?:\s+[\w./@:=+-]+)*\s*&&\s*)+)?`;
+const CHECK_LINE = new RegExp(String.raw`^${BEFORE}(?<exec>exec\s+)?${RUNNER}${PROGRAM}${CHECK_TAIL}`);
+const GUARDED_LINE = new RegExp(String.raw`^\[ -f (?<cli>${PROGRAM}) \] \|\| \{ echo '[^']*'(?: >&2)?; exit [1-9]\d*; \}; node \k<cli>${CHECK_TAIL}`);
 // Shell words that open and close a block: a line inside one may never run.
 const OPENERS = new Set(['if', 'while', 'until', 'for', 'case', 'select']);
 const CLOSERS = new Set(['fi', 'done', 'esac']);
 
 /**
  * This pre-commit script runs `yokoten check` and fails the commit when the check fails:
- * a line, not a comment, in one of the shapes above, at the top level (not inside an
- * `if`, a loop, a group or a heredoc), with no `exit` (but `exit 1`), `exec` or heredoc
- * before it. A line with no `exec` and no `|| exit` is the last command, or follows `set -e`.
+ * a line in one of the shapes above, at the top level (not inside an `if`, a loop, a group,
+ * a quote, a heredoc, or after `||`, `&&` or `|` on the line before), with no `exit` or
+ * `return` (but `exit 1`), `exec` or heredoc before it. A line with no `exec` and no
+ * `|| exit` is the last command, or follows `set -e` (and no `set +e`).
  */
 export function runsCheck(script: string): boolean {
-  const lines = script.split(/\r?\n/).map((line) => line.trim());
-  let depth = 0;
-  let isStrict = false; // set -e: a failed command stops the script
-  for (const [index, line] of lines.entries()) {
-    if (line === '' || line.startsWith('#')) continue;
-    const shape = CHECK_LINE.exec(line) ?? GUARDED_LINE.exec(line);
-    if (shape && depth === 0) {
-      const stops = shape.groups?.exec !== undefined || shape.groups?.stop !== undefined;
-      const isLast = lines.slice(index + 1).every((rest) => rest === '' || rest.startsWith('#'));
-      if (stops || isLast || isStrict) return true;
-    }
-    if (/<<|\bexec\b/.test(line) || /\bexit\b(?!\s+[1-9])/.test(line)) return false;
-    if (/^set\s+-[a-z]*e/.test(line)) isStrict = true;
-    depth += blockDepth(line);
-    if (depth < 0) return false;
+  return withBudget(
+    script.length,
+    () => {
+      const lines = scriptLines(script);
+      let depth = 0;
+      let isStrict = false; // set -e: a failed command stops the script
+      for (const [index, line] of lines.entries()) {
+        const shape = CHECK_LINE.exec(line) ?? GUARDED_LINE.exec(line);
+        if (shape && depth === 0) {
+          const { before, exec, stop } = shape.groups ?? {};
+          const isLast = index === lines.length - 1;
+          // After `a &&`, a failed `a` skips the check: exec and set -e do not help.
+          if (stop !== undefined || isLast || (before === undefined && (exec !== undefined || isStrict))) return true;
+        }
+        if (leaves(line)) return false;
+        if (/(?:^|[;&|({]\s*)set\s+(?:\+[a-zA-Z]*e|\+o\s+errexit)/.test(line)) isStrict = false;
+        else if (depth === 0 && /^set\s+(?:-[a-zA-Z]*e|-o\s+errexit)/.test(line)) isStrict = true;
+        depth += blockDepth(line);
+        if (depth < 0) return false;
+      }
+      return false;
+    },
+    true,
+  );
+}
+
+// Whether a line may end the script, or hand it to a heredoc, before a later line runs.
+// `exit 1` and `|| exit $?` stop the commit, so they do not count.
+function leaves(line: string): boolean {
+  if (line.includes('<<')) return true;
+  const rest = line.replace(/\|\|\s*(?:exit|return)\s+\$\?/g, '').replace(/(?<![\w.-])(?:exit|return)\s+[1-9]\d*(?![\w$])/g, '');
+  return /(?<![\w.-])(?:exec|exit|return)(?![\w.-])/.test(rest);
+}
+
+// The script's command lines, as the shell reads them: a \ before a line end joins the
+// lines, a quote stays open across lines, a comment is dropped, and a line after one that
+// ends in `||`, `&&` or `|` belongs to it. Blank lines are left out.
+function scriptLines(script: string): string[] {
+  const lines: string[] = [];
+  const add = (text: string) => {
+    const line = text.trim();
+    if (line === '') return;
+    if (lines.length > 0 && /(?:\|\||&&|\||\|&)$/.test(lines[lines.length - 1])) lines[lines.length - 1] += ` ${line}`;
+    else lines.push(line);
+  };
+  let line = '';
+  let quote = ''; // the open quote: ', " or $'
+  for (let at = 0; at < script.length; at++) {
+    spend(1);
+    const character = script[at];
+    const next = script[at + 1] ?? '';
+    if (quote === "'") {
+      line += character;
+      if (character === "'") quote = '';
+    } else if (character === '\\' && (next === '\n' || (next === '\r' && script[at + 2] === '\n')) && quote !== "$'") {
+      at += next === '\r' ? 2 : 1; // the line goes on
+    } else if (character === '\\') {
+      line += character + next;
+      at++;
+    } else if (quote) {
+      line += character;
+      if ((quote === '"' && character === '"') || (quote === "$'" && character === "'")) quote = '';
+    } else if (character === "'" || character === '"') {
+      quote = character;
+      line += character;
+    } else if (character === '$' && next === "'") {
+      quote = "$'";
+      line += "$'";
+      at++;
+    } else if (character === '#' && /^$|[\s;&|()]$/.test(line.slice(-1))) {
+      while (at + 1 < script.length && script[at + 1] !== '\n') at++;
+    } else if (character === '\n') {
+      add(line);
+      line = '';
+    } else line += character;
   }
-  return false;
+  add(line);
+  return lines;
 }
 
 // How many blocks a line opens, less those it closes: keywords that lead a command, and
@@ -386,6 +503,7 @@ const LAUNCHERS: Record<string, { options: string[]; operands?: number }> = {
   doas: { options: ['-u', '-C'] },
   pkexec: { options: ['--user'] },
   command: { options: [] },
+  builtin: { options: [] },
   exec: { options: ['-a'] },
   time: { options: ['-f', '--format', '-o', '--output'] },
   nice: { options: ['-n', '--adjustment'] },
@@ -447,10 +565,29 @@ const programName = (word: string) => base(word).replace(/\.exe$/i, '');
 function splitString(words: string[], index: number): string | undefined {
   const option = words[index];
   const long = /^--(s[a-z-]*)(?:=(.*))?$/s.exec(option);
-  if (long && 'split-string'.startsWith(long[1])) return long[2] ?? words[index + 1];
+  if (long && 'split-string'.startsWith(long[1])) return envEscapes(long[2] ?? words[index + 1]);
   const short = /^-[a-zA-Z]*S(.*)$/s.exec(option);
-  if (short) return short[1] || words[index + 1];
+  if (short) return envEscapes(short[1] || words[index + 1]);
   return undefined;
+}
+
+// env -S reads its own escapes before it splits: \_ (a space), \t \n \v \f \r are
+// whitespace that cuts words, and \c ends the string. The other escapes (\\ \" \' \$ \#)
+// are left for commandWords, which reads them as the shell does.
+function envEscapes(text: string | undefined): string | undefined {
+  if (text === undefined) return undefined;
+  spend(text.length);
+  let out = '';
+  for (let i = 0; i < text.length; i++) {
+    const next = text[i + 1] ?? '';
+    if (text[i] !== '\\') out += text[i];
+    else if (next === 'c') break;
+    else {
+      out += '_tnvfr'.includes(next) && next !== '' ? ' ' : text[i] + next;
+      i++;
+    }
+  }
+  return out;
 }
 
 // At most this many programs from one command: a longer list is refused (see checkBlocked).
@@ -458,6 +595,7 @@ const MAX_PROGRAMS = 256;
 
 /** The words that name the programs a command runs, in order. */
 function findPrograms(words: string[]): string[] {
+  spend(words.length);
   const programs: string[] = [];
   // commandWords reads `bash -c 'x'` again as `-c x`: the shell's options come first.
   const start = words.findIndex((word) => !word.startsWith('-'));
@@ -526,13 +664,47 @@ function checkBlocked(words: string[], blockList: Record<string, string>): Findi
 // - $(...), `...`, <(...) and >(...) run, so their text is read as commands, even in "...".
 // - A heredoc body is data, unless a shell reads it (see `bodies`).
 // - A shell, eval or ssh runs a string, so the words after it are read again as commands
-//   (see `runString`).
+//   (see `runString`). So does `source /dev/stdin` or `. /dev/fd/N` with its input.
+// - Each construct is read once: an unclosed $(, <(, ((, ` or " has read the rest of the
+//   text as commands, and the rest is not read again. All reads of one command share one
+//   work budget (see withBudget); a command over it is refused.
 //
 // When the text is unclear, the guard blocks rather than guesses. An unclosed quote is
 // dropped and the rest is read as plain words, so `echo 'x; npm publish` still blocks.
 // Functions and aliases are not followed.
 
 const MAX_DEPTH = 8;
+
+// ---- The work budget ----
+//
+// Every read of one command draws on one budget: each character the reader visits, each
+// word a word loop looks at. Nested constructs read text again (a shell string, an env -S
+// string, a substitution), at most MAX_DEPTH times over, so a command that reads cleanly
+// stays well inside it. A command that would cost more, by design or by accident, throws,
+// and checkCommand refuses it: the guard never runs out of time or memory and lets it by.
+const BUDGET_PER_CHARACTER = 20;
+const BUDGET_BASE = 200_000;
+let budget: { left: number } | null = null;
+
+class OverBudget extends Error {}
+
+function spend(amount: number): void {
+  if (budget !== null && (budget.left -= amount) < 0) throw new OverBudget('the command costs too much to read');
+}
+
+// Runs `read` under a budget for text of `size` characters. A read inside another shares
+// the outer budget, unless `fresh` (a hook file is not part of the command).
+function withBudget<T>(size: number, read: () => T, fresh = false): T {
+  if (budget !== null && !fresh) return read();
+  const outer = budget;
+  budget = { left: BUDGET_PER_CHARACTER * size + BUDGET_BASE };
+  try {
+    return read();
+  } finally {
+    budget = outer;
+  }
+}
+
 const isShell = (word: string) => /^(?:ba|da|z|k|c|tc|fi|pw)?sh(?:\.exe)?$/.test(base(word));
 // Programs that run a later word through a shell, beside the shells. A pattern means only
 // with that option: sudo and doas pass their words to a program unless given -s or -i,
@@ -549,15 +721,19 @@ const RUNNER_OPTIONS = Object.entries(RUNNERS).flatMap(([runner, option]) => (op
 // -c`, `xargs sh -c` and `sudo bash -c` all run a string.
 // It walks back from the end once, so each word is tested once against each option.
 function runnerAt(words: string[]): number {
+  spend(words.length);
   const later = new Set<string>(); // runners whose option stands after the current word
   let at = -1;
   for (let i = words.length - 1; i >= 0; i--) {
     const name = base(words[i]);
-    if (isShell(words[i]) || (Object.hasOwn(RUNNERS, name) && (RUNNERS[name] === null || later.has(name)))) at = i;
+    if (isShell(words[i]) || (Object.hasOwn(RUNNERS, name) && (RUNNERS[name] === null || later.has(name))) || sourcesInput(words, i)) at = i;
     for (const [runner, option] of RUNNER_OPTIONS) if (option.test(words[i])) later.add(runner);
   }
   return at;
 }
+
+// `source /dev/stdin` and `. /dev/fd/3` run what comes in, as a shell does.
+const sourcesInput = (words: string[], i: number): boolean => (words[i] === 'source' || words[i] === '.') && /^\/(?:dev\/(?:stdin|fd\/\d+)|proc\/self\/fd\/\d+)$/.test(words[i + 1] ?? '');
 
 // ssh options that take a value, in the same word (-p22) or the next (-p 22).
 const SSH_VALUE_OPTIONS = 'BbcDEeFIiJLlmOoPpQRSWw';
@@ -629,7 +805,7 @@ function flockCommand(words: string[], index: number): string {
 /** Every command the text runs, as lists of words. Text that runs inside a command is listed too. */
 export function commandWords(text: string, depth = 0): string[][] {
   const out: string[][] = [];
-  read(text, 0, '', depth, out);
+  withBudget(text.length, () => read(text, 0, '', depth, out));
   return out;
 }
 
@@ -641,6 +817,8 @@ interface Heredoc {
   cmd: number;
   /** The groups open around it, outermost first. */
   groups: Group[];
+  /** The group it follows, `{ read a; } <<EOF`: the body is the group's input. */
+  group?: Group;
 }
 
 // A group `{ ...; }` or a subshell `( ... )`. What its commands print goes where the group
@@ -652,6 +830,8 @@ interface Group {
   to: number;
   /** Bodies of heredocs inside it that wait for where the group's output goes. */
   bodies: string[];
+  /** Whether a command in it reads its input as commands. */
+  reads: boolean;
 }
 
 // Reads commands from `start` until `closer` (`)` or a backtick) or the end, and adds them
@@ -659,7 +839,8 @@ interface Group {
 function read(text: string, start: number, closer: string, depth: number, out: string[][]): number {
   // Too deep to follow: fall back to the rough cut, which finds more than is there.
   if (depth > MAX_DEPTH) {
-    out.push(...rough(text.slice(start)));
+    spend(text.length - start);
+    for (const words of rough(text.slice(start))) out.push(words);
     return text.length;
   }
   const nested = (s: string) => out.push(...commandWords(s, depth + 1));
@@ -719,6 +900,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
     }
     if (closed) {
       if (pipe) {
+        spend(closed.to - closed.from + closed.bodies.length);
         carried.push(...closed.bodies);
         // For the bodies read at this line's end: the group's commands pipe on, too.
         for (let i = closed.from; i < closed.to; i++) pipes[i] = true;
@@ -734,11 +916,16 @@ function read(text: string, start: number, closer: string, depth: number, out: s
   };
   const endCommand = (pipe = false) => {
     endWord();
+    spend(words.length);
     line.push(words);
     pipes.push(pipe);
     settle(pipe);
     if (words.length === 0) return;
     out.push(words);
+    if (groups.length > 0) {
+      spend(groups.length);
+      if (readsCommands(words)) for (const group of groups) group.reads = true;
+    }
     const at = runnerAt(words);
     if (at !== -1) {
       // `bash -c 'x'`, `eval "x"`, `ssh host 'x'`: read the string it runs as commands.
@@ -754,6 +941,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
 
   let index = start;
   while (index < text.length) {
+    spend(1);
     const character = text[index];
     const next = text[index + 1];
     // A separator inside what looked like a pattern means it was none: the words so far, and
@@ -786,6 +974,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       pending = [];
       line = [];
       pipes = [];
+      spend(groups.length);
       for (const group of groups) group.from = 0;
     } else if (character === '#' && !inWord) {
       while (index < text.length && text[index] !== '\n') index++;
@@ -801,6 +990,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       const ansi = character === '$';
       const open = ansi ? index + 1 : index;
       const end = ansi ? closeAnsi(text, open + 1) : text.indexOf("'", open + 1);
+      spend((end === -1 ? text.length : end) - open);
       if (end === -1) index = open + 1; // unclosed: drop the quote and read on
       else {
         const body = text.slice(open + 1, end);
@@ -812,7 +1002,8 @@ function read(text: string, start: number, closer: string, depth: number, out: s
     } else if (character === '"' || (character === '$' && next === '"')) {
       const open = character === '$' ? index + 1 : index;
       const quoted = readDouble(text, open + 1, depth, out);
-      if (!quoted) index = open + 1; // unclosed: drop the quote and read on
+      if (quoted === RAN_OUT) index = text.length; // a substitution in it never closed and read the rest
+      else if (!quoted) index = open + 1; // unclosed: drop the quote and read on
       else {
         word += quoted.value;
         isQuoted = true;
@@ -823,8 +1014,9 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       // $(...), $((...)), <(...) and >(...): the inside runs on its own.
       const end = read(text, index + 2, ')', depth + 1, out);
       if (end === -1) {
-        endCommand(); // unclosed: cut here and read on
-        index += 2;
+        // Unclosed: the read inside already read the rest as commands. Never read it again.
+        endCommand();
+        index = text.length;
       } else {
         word += text.slice(index, end);
         inWord = true;
@@ -833,17 +1025,17 @@ function read(text: string, start: number, closer: string, depth: number, out: s
     } else if (character === '`') {
       const end = read(text, index + 1, '`', depth + 1, out);
       inWord = true;
-      index = end === -1 ? index + 1 : end;
+      index = end === -1 ? text.length : end; // unclosed: the read inside read the rest
     } else if (character === '(' && next === '(') {
       // (( maths )): read the inside on its own, so a << there is a shift, not a heredoc.
       endWord();
       const end = read(text, index + 1, ')', depth + 1, out);
       if (end === -1) endCommand();
-      index = end === -1 ? index + 1 : end;
+      index = end === -1 ? text.length : end; // unclosed: the read inside read the rest
     } else if (character === '(' || (character === '{' && !inWord && /\s/.test(next ?? ''))) {
       // A subshell or a group cuts like a separator, and is open until its ) or }.
       endCommand();
-      groups.push({ kind: character, from: line.length, to: 0, bodies: [] });
+      groups.push({ kind: character, from: line.length, to: 0, bodies: [], reads: false });
       index++;
     } else if ((character === ')' && groups.at(-1)?.kind === '(') || (character === '}' && !inWord && /[\s;|&)<>]|^$/.test(next ?? '') && groups.at(-1)?.kind === '{')) {
       endCommand();
@@ -885,8 +1077,11 @@ function read(text: string, start: number, closer: string, depth: number, out: s
         inWord = false;
       }
       endWord();
+      spend(groups.length);
       const doc = heredoc(text, index + 2, line.length, [...groups]);
       if (doc) {
+        // Right after a group closes, the heredoc is the group's input: `{ read a; } <<EOF`.
+        if (closed && withoutRedirects(words).length === 0) doc.doc.group = closed;
         pending.push(doc.doc);
         index = doc.end;
       } else {
@@ -906,18 +1101,24 @@ function read(text: string, start: number, closer: string, depth: number, out: s
 // The end of a $'...' string: the next ' without a \ before it.
 function closeAnsi(text: string, i: number): number {
   for (; i < text.length; i++) {
+    spend(1);
     if (text[i] === '\\') i++;
     else if (text[i] === "'") return i;
   }
   return -1;
 }
 
+// What readDouble returns when a substitution inside never closed: that read went on to the
+// end of the text, so the caller must not read the rest again.
+const RAN_OUT = Symbol('ran out');
+
 // Reads "..." from after the opening quote. $(...) and `...` inside it run, so they are
 // read as commands. Returns the word's text and the index after the closing quote, or null
-// when it never closes. With `toEnd` there is no closing quote: it reads a heredoc body.
-function readDouble(text: string, index: number, depth: number, out: string[][], toEnd = false): { value: string; end: number } | null {
+// when it never closes (RAN_OUT when a substitution in it never closes). With `toEnd` there is no closing quote: it reads a heredoc body.
+function readDouble(text: string, index: number, depth: number, out: string[][], toEnd = false): { value: string; end: number } | typeof RAN_OUT | null {
   let value = '';
   while (index < text.length) {
+    spend(1);
     const character = text[index];
     if (character === '"' && !toEnd) return { value, end: index + 1 };
     if (character === '\\') {
@@ -929,7 +1130,7 @@ function readDouble(text: string, index: number, depth: number, out: string[][],
     } else if ((character === '$' && text[index + 1] === '(') || character === '`') {
       const from = character === '`' ? index + 1 : index + 2;
       const end = read(text, from, character === '`' ? '`' : ')', depth + 1, out);
-      if (end === -1) return null;
+      if (end === -1) return RAN_OUT;
       value += text.slice(index, end);
       index = end;
     } else {
@@ -951,6 +1152,7 @@ function heredoc(text: string, index: number, cmd: number, groups: Group[]): { d
     const character = text[index];
     if (character === "'" || character === '"') {
       const end = text.indexOf(character, index + 1);
+      spend((end === -1 ? text.length : end) - index);
       if (end === -1) return null;
       delim += text.slice(index + 1, end);
       quoted = true;
@@ -976,25 +1178,37 @@ function heredoc(text: string, index: number, cmd: number, groups: Group[]): { d
 // reader is on a later line. A group that closed on the line pipes its commands on
 // (`{ cat <<EOF; } | bash`). Then the body is read as commands. A body in a group still
 // open waits in the group: where the group sends its output decides (see `settle` in read).
+// A heredoc right after a group closes is the group's input (`{ read a; } <<EOF`): it is
+// commands when a command in the group reads commands, or the group pipes into one.
 // An unquoted body still runs $(...) and `...`, so those are read too. A body with no end
 // line runs to the end of the text, as in bash.
 function bodies(text: string, index: number, docs: Heredoc[], { line, pipes, groups }: { line: string[][]; pipes: boolean[]; groups: Group[] }, depth: number, out: string[][]): number {
+  // Once per line, from the last command back: where the pipeline from each command ends,
+  // and whether a command from it to there reads commands. Each heredoc then looks it up.
+  spend(line.length);
+  const ends: number[] = [];
+  const reads: boolean[] = [];
+  for (let i = line.length - 1; i >= 0; i--) {
+    const pipesOn = pipes[i] && i + 1 < line.length;
+    ends[i] = pipesOn ? ends[i + 1] : i;
+    reads[i] = readsCommands(line[i]) || (pipesOn && reads[i + 1]);
+  }
   for (const doc of docs) {
     const lines: string[] = [];
     while (index < text.length) {
       let nl = text.indexOf('\n', index);
       if (nl === -1) nl = text.length;
+      spend(nl - index + 1);
       const ln = text.slice(index, nl);
       index = nl + 1;
       if ((doc.strip ? ln.replace(/^\t+/, '') : ln).replace(/\r$/, '') === doc.delim) break;
       lines.push(ln);
     }
     const body = lines.join('\n');
-    let last = doc.cmd;
-    while (pipes[last] && last + 1 < line.length) last++;
-    const readers = line.slice(doc.cmd, last + 1);
-    const isOpenPipe = readers.length > 1 && readers[readers.length - 1].length === 0;
-    if (isOpenPipe || feedsShell(line[doc.cmd] ?? []) || readers.some(readsCommands)) {
+    const last = ends[doc.cmd] ?? doc.cmd;
+    const isOpenPipe = last > doc.cmd && line[last].length === 0;
+    const isRead = doc.group ? doc.group.reads : feedsShell(line[doc.cmd] ?? []);
+    if (isOpenPipe || isRead || reads[doc.cmd] === true) {
       out.push(...commandWords(body, depth + 1));
       continue;
     }
@@ -1024,11 +1238,22 @@ const DATA_READERS = new Set([
 // `node x.ts --shell bash <<EOF` are data, and `sudo -s` still counts. When it is not, the
 // guard does not know what the program does with its input, so a shell or runner anywhere
 // in the command counts: `mystery-launcher bash <<EOF` is refused rather than guessed.
+// The answer is kept per command: a line of heredocs and pipes asks again for the same one.
+// An empty list is not kept: the reader may still fill it.
+const readsCache = new WeakMap<string[], boolean>();
+
 function readsCommands(words: string[]): boolean {
+  const known = readsCache.get(words);
+  if (known !== undefined) return known;
   const program = findPrograms(words)[0];
-  if (program === undefined || !DATA_READERS.has(programName(program))) return runnerAt(words) !== -1;
-  const at = words.indexOf(program);
-  return runnerAt(withoutRedirects(at === -1 ? words : words.slice(0, at + 1))) !== -1;
+  let reads: boolean;
+  if (program === undefined || !DATA_READERS.has(programName(program))) reads = runnerAt(words) !== -1;
+  else {
+    const at = words.indexOf(program);
+    reads = runnerAt(withoutRedirects(at === -1 ? words : words.slice(0, at + 1))) !== -1;
+  }
+  if (words.length > 0) readsCache.set(words, reads);
+  return reads;
 }
 
 // The words with each redirect and its file taken out: `> sh cat` names no shell.
