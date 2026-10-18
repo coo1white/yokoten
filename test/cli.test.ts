@@ -1272,8 +1272,6 @@ test('help: a typo in a command or an option names the closest one; a far one li
   assert.equal(closestWord('xyz', ['doctor', 'check']), undefined, 'more than two edits: no guess');
 });
 
-const pick = (r: { status: number | null; stdout: string; stderr: string }) => [r.status, r.stdout, r.stderr];
-
 test('--json: check, doctor, hook and explain print pure JSON with what, why and fix; never a private value (#42)', () => {
   const sandbox = makeSandbox();
   const marks = join(sandbox.home, 'marks');
