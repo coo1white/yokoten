@@ -34,7 +34,7 @@ export function checkCommand(command: string, { env }: { env: Env }): Finding | 
   return null;
 }
 
-const RELEASE_FIX = 'if the owner asked for this, they start the session with YOKOTEN_RELEASE_APPROVAL set';
+const RELEASE_FIX = 'if the owner asked for this, they start a new session with YOKOTEN_RELEASE_APPROVAL=1 (`YOKOTEN_RELEASE_APPROVAL=1 claude`); do not look for another way';
 const release = (what: string) => finding('release', what, RELEASE_FIX);
 
 // Quotes become spaces, so `bash -c 'git push --tags'` reads like the plain command. Then
