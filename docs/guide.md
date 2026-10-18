@@ -463,15 +463,43 @@ project's own stack.
   string in `env -S`.
 - A word that only holds the name passes: `echo python`, `cat python.md`, `pythonic`.
   `command -v python3` passes too: it only says where the program is.
-- A name has no folder and no space. A wrong shape in `"commands"` is a config error for
-  `check` and `doctor`. The guard then blocks no program and says so, and the core
-  checks still run.
-- When `yokoten.json` is not valid JSON, `check` and `doctor` report a config error. The
-  guard then uses the defaults, says so in one line, and still runs the core checks.
+- A name has no folder and no space. A wrong shape in `"commands"` is a config error,
+  as for any key in [yokoten.json](#yokotenjson). The guard then blocks no program and
+  says so, and the core checks still run.
 
 The guard reads command text. It does not see a program that a script, a `make` target,
 an npm script or a shell function runs. Name each version you want to stop:
 `python3.12` is not `python3`.
+
+### yokoten.json
+
+`yokoten.json` at the repo root holds the project's settings. Every key is optional. A
+missing key, or a missing file, gives the default.
+
+| Key | Must be | Default |
+|-----|---------|---------|
+| `layout` | `{ "maxEntries": 7, "exempt": ["docs/records"] }`: a whole number above 0, and a list of folders | 7, no folder exempt |
+| `tests` | a list of globs | `*.test.*`, `*.spec.*`, `*_test.go`, `test/**`, `tests/**` |
+| `leadOnly` | a list of globs | the rules, agent config, hooks and CI |
+| `privacy` | `{ "allow": [], "skip": [], "utc": true }`: two lists of text, and true or false | lockfiles skipped, UTC on |
+| `notNow` | reasons by step name: `{ "ci": "no remote yet" }` | none |
+| `allowBuild` | a list of globs | none |
+| `areas` | a list of words | any lowercase word |
+| `translations` | `{ "fail": true }` | `false` |
+| `commands` | `{ "block": { "<program>": "<reason>" } }` | no program blocked |
+
+yokoten checks each key against this table, in one place:
+
+- A key with the wrong shape, such as `"leadOnly": "x"`, is a config error. `check` and
+  `doctor` exit 1. The message names the key and says what it must look like.
+- The tool-call hook then uses that key's default. It says so in one line on stderr, and
+  the core checks still run. A wrong field in an object, such as `layout.maxEntries`,
+  gives only that field's default. A wrong `"commands"` drops the whole block list.
+- When `yokoten.json` is not valid JSON, or is not one JSON object, `check` and `doctor`
+  report a config error. The hook then uses all the defaults, says so in one line, and
+  still runs the core checks.
+- A key that yokoten does not know is a note from `check`, never an error. A config
+  written for a newer yokoten then still works with an older one.
 
 ### Issue titles
 

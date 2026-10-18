@@ -430,13 +430,40 @@ AGENTS.md 里，它就只是个愿望。把这些程序写进 `yokoten.json`，�
   `find -exec` 运行的程序；`env -S` 里的字符串。
 - 只是参数里出现这个名字的不拦：`echo python`、`cat python.md`、`pythonic`。
   `command -v python3` 也不拦，它只是查程序在哪儿，并不运行。
-- 名字里不能带路径，也不能有空格。`commands` 写错了格式，`check` 和 `doctor` 会报配置错误；
-  守卫这时不拦任何程序，但会说一声，核心检查照常运行。
-- `yokoten.json` 本身写坏了、不是合法的 JSON，`check` 和 `doctor` 也会报配置错误；
-  守卫这时按默认设置干活，用一行字说明，核心检查照常运行。
+- 名字里不能带路径，也不能有空格。`commands` 写错了格式，跟 [yokoten.json](#yokotenjson)
+  里别的设置写错一样，算配置错误；守卫这时不拦任何程序，但会说一声，核心检查照常运行。
 
 守卫读的是命令的文字。脚本、`make` 目标、npm 脚本或者 shell 函数在里面运行的程序，它看不到。
 想拦哪个版本就写哪个：`python3.12` 不算 `python3`。
+
+### yokoten.json
+
+项目的设置都写在仓库根目录的 `yokoten.json` 里。每一项都可以不写，不写的项、或者整个文件
+不存在，都按默认值来。
+
+| 设置 | 该怎么写 | 默认值 |
+|------|----------|--------|
+| `layout` | `{ "maxEntries": 7, "exempt": ["docs/records"] }`：一个大于 0 的整数，加一串文件夹 | 7，没有例外的文件夹 |
+| `tests` | 一串通配符 | `*.test.*`、`*.spec.*`、`*_test.go`、`test/**`、`tests/**` |
+| `leadOnly` | 一串通配符 | 规则、agent 配置、钩子和 CI |
+| `privacy` | `{ "allow": [], "skip": [], "utc": true }`：两串文字，加一个 true 或 false | 跳过锁文件，要求 UTC |
+| `notNow` | 每个步骤名配一个原因：`{ "ci": "no remote yet" }` | 没有 |
+| `allowBuild` | 一串通配符 | 没有 |
+| `areas` | 一串单词 | 任何小写单词都行 |
+| `translations` | `{ "fail": true }` | `false` |
+| `commands` | `{ "block": { "<程序>": "<原因>" } }` | 不拦任何程序 |
+
+yokoten 拿这张表统一检查每一项：
+
+- 某一项格式不对，比如 `"leadOnly": "x"`，就是配置错误。`check` 和 `doctor` 退出码是 1，
+  提示里会写是哪一项、应该怎么写。
+- 工具调用钩子遇到这种情况，这一项就用默认值，在 stderr 上用一行字说明，核心检查照常运行。
+  如果只是对象里的某个字段写错了，比如 `layout.maxEntries`，就只有这个字段用默认值。
+  `commands` 写错了，整个禁用列表都不算。
+- `yokoten.json` 本身写坏了，不是合法的 JSON，或者最外层不是一个 JSON 对象，`check` 和
+  `doctor` 也会报配置错误；钩子这时全部按默认设置干活，用一行字说明，核心检查照常运行。
+- yokoten 不认识的设置项，`check` 只给一条提醒，不算错误。这样给新版 yokoten 写的配置，
+  在旧版上也能用。
 
 ### issue 标题
 

@@ -83,6 +83,29 @@ test('hook: bad JSON in yokoten.json gives the defaults and one line, and check 
   assert.match(result.stdout + result.stderr, /yokoten\.json:/);
 });
 
+test('hook: a key with the wrong shape gets its default and one line; check names the key; an unknown key is a note (#228)', () => {
+  const sandbox = makeSandbox();
+  // Positive control: before #228, this made the hook crash on an edit (exit 1, guard open).
+  sandbox.write('yokoten.json', '{ "leadOnly": "x" }');
+  const call = (toolInput: Record<string, string>) => sandbox.run(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: toolInput }), extra: { YOKOTEN_ROLE: 'worker' } });
+  const line = /^yokoten hook: yokoten\.json "leadOnly" was ignored, so its default applies; the core checks still run\. yokoten\.json: "leadOnly" must be a list of text, such as [^\n]+\n/;
+  for (const toolInput of [{ file_path: 'AGENTS.md' }, { command: 'git push --force' }] as Record<string, string>[]) {
+    const result = call(toolInput);
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, line);
+    assert.equal(result.stderr.match(/^yokoten hook:/gm)?.length, 1, 'one line');
+  }
+  let result = sandbox.run(['check']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^yokoten check: yokoten\.json: "leadOnly" must be a list of text/);
+  // An unknown key is a note, and check passes.
+  sandbox.write('yokoten.json', '{ "colour": "blue" }');
+  result = sandbox.run(['check']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^yokoten check: note: yokoten\.json: "colour" is not a key this version of yokoten knows/m);
+  assert.equal(call({ command: 'git status' }).stderr, '', 'the hook says nothing');
+});
+
 test('hook --stop: sends the agent back once with the findings in changed files, never twice (#92)', () => {
   const sandbox = makeSandbox();
   const stop = (active = false, extra?: Record<string, string>) =>
