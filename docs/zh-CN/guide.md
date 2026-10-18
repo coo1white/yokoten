@@ -374,8 +374,8 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
   它们按各自的 hook 协议，看退出码，再从标准错误读原因。
 - `hook --stop --json`：`{ blocked, stop, findings }`。`stop_hook_active` 为真，或者检查本身出错时，
   多一个 `skipped` 写明原因。读到的不是 Stop 事件时，是 `{ blocked: false, stop: false }`。
-- `explain --json`：`{ found, id, kind, what, why, check, docs, stage, standard }`。id 不存在或者
-  没写时是 `{ id, found: false, ids }`；没写 id 时，`id` 是 `null`。
+- `explain --json`：`{ found, id, kind, what, why, check, docs, stage, standard }`。id 不存在时是
+  `{ id, found: false, ids }`，退出码 1；没写 id 时是 `{ ids }`，退出码 0。
 
 输出的规矩只有一条：结果写到标准输出（stdout），问题、拒绝和出错写到标准错误（stderr）。
 不认识的选项会直接拒绝，不会悄悄忽略。
