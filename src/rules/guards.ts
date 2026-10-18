@@ -192,108 +192,108 @@ function read(text: string, start: number, closer: string, depth: number, out: s
     words = [];
   };
 
-  let i = start;
-  while (i < text.length) {
-    const c = text[i];
-    const next = text[i + 1];
-    if (closer && c === closer) {
+  let index = start;
+  while (index < text.length) {
+    const character = text[index];
+    const next = text[index + 1];
+    if (closer && character === closer) {
       endCommand();
-      return i + 1;
+      return index + 1;
     }
-    if (c === ' ' || c === '\t' || c === '\r') {
+    if (character === ' ' || character === '\t' || character === '\r') {
       endWord();
-      i++;
-    } else if (c === '\n') {
+      index++;
+    } else if (character === '\n') {
       endCommand();
-      i = pending.length ? bodies(text, i + 1, pending, line, depth, out) : i + 1;
+      index = pending.length ? bodies(text, index + 1, pending, line, depth, out) : index + 1;
       pending = [];
       line = [];
-    } else if (c === '#' && !inWord) {
-      while (i < text.length && text[i] !== '\n') i++;
-    } else if (c === '\\') {
+    } else if (character === '#' && !inWord) {
+      while (index < text.length && text[index] !== '\n') index++;
+    } else if (character === '\\') {
       if (next !== '\n') {
-        word += next ?? c;
+        word += next ?? character;
         inWord = true;
       }
-      i += 2;
-    } else if (c === "'" || (c === '$' && next === "'")) {
+      index += 2;
+    } else if (character === "'" || (character === '$' && next === "'")) {
       // '...' is as written. $'...' takes \ escapes, so \' does not close it.
-      const ansi = c === '$';
-      const open = ansi ? i + 1 : i;
+      const ansi = character === '$';
+      const open = ansi ? index + 1 : index;
       const end = ansi ? closeAnsi(text, open + 1) : text.indexOf("'", open + 1);
-      if (end === -1) i = open + 1; // unclosed: drop the quote and read on
+      if (end === -1) index = open + 1; // unclosed: drop the quote and read on
       else {
         const body = text.slice(open + 1, end);
         word += ansi ? body.replace(/\\(.)/gs, '$1') : body;
         inWord = true;
-        i = end + 1;
+        index = end + 1;
       }
-    } else if (c === '"' || (c === '$' && next === '"')) {
-      const open = c === '$' ? i + 1 : i;
+    } else if (character === '"' || (character === '$' && next === '"')) {
+      const open = character === '$' ? index + 1 : index;
       const quoted = readDouble(text, open + 1, depth, out);
-      if (!quoted) i = open + 1; // unclosed: drop the quote and read on
+      if (!quoted) index = open + 1; // unclosed: drop the quote and read on
       else {
         word += quoted.value;
         inWord = true;
-        i = quoted.end;
+        index = quoted.end;
       }
-    } else if ((c === '$' || c === '<' || c === '>') && next === '(') {
+    } else if ((character === '$' || character === '<' || character === '>') && next === '(') {
       // $(...), $((...)), <(...) and >(...): the inside runs on its own.
-      const end = read(text, i + 2, ')', depth + 1, out);
+      const end = read(text, index + 2, ')', depth + 1, out);
       if (end === -1) {
         endCommand(); // unclosed: cut here and read on
-        i += 2;
+        index += 2;
       } else {
-        word += text.slice(i, end);
+        word += text.slice(index, end);
         inWord = true;
-        i = end;
+        index = end;
       }
-    } else if (c === '`') {
-      const end = read(text, i + 1, '`', depth + 1, out);
+    } else if (character === '`') {
+      const end = read(text, index + 1, '`', depth + 1, out);
       inWord = true;
-      i = end === -1 ? i + 1 : end;
-    } else if (c === '(') {
+      index = end === -1 ? index + 1 : end;
+    } else if (character === '(') {
       // A subshell or (( maths )): read the inside on its own, so a << there is no heredoc.
       endWord();
-      const end = read(text, i + 1, ')', depth + 1, out);
+      const end = read(text, index + 1, ')', depth + 1, out);
       if (end === -1) endCommand();
-      i = end === -1 ? i + 1 : end;
-    } else if (c === ')' || c === ';' || ((c === '{' || c === '}') && !inWord && /[\s;]|^$/.test(next ?? ''))) {
+      index = end === -1 ? index + 1 : end;
+    } else if (character === ')' || character === ';' || ((character === '{' || character === '}') && !inWord && /[\s;]|^$/.test(next ?? ''))) {
       // A group `{ a; }` cuts like a separator. A brace inside a word (${x}, a{b,c}) does not.
       endCommand();
-      i++;
-    } else if (c === '&') {
+      index++;
+    } else if (character === '&') {
       if (next === '>' || word.endsWith('>')) {
         // &> and >& are redirects, not separators.
-        word += c;
+        word += character;
         inWord = true;
-        i++;
+        index++;
       } else {
         endCommand();
-        i += next === '&' ? 2 : 1;
+        index += next === '&' ? 2 : 1;
       }
-    } else if (c === '|') {
+    } else if (character === '|') {
       endCommand(next !== '|');
-      i += next === '|' || next === '&' ? 2 : 1;
-    } else if (c === '<' && next === '<' && text[i + 2] === '<') {
+      index += next === '|' || next === '&' ? 2 : 1;
+    } else if (character === '<' && next === '<' && text[index + 2] === '<') {
       // A here-string is one more word. A shell that reads it is a runner, so it is read.
       endWord();
       words.push('<<<');
-      i += 3;
-    } else if (c === '<' && next === '<' && !word.endsWith('<')) {
+      index += 3;
+    } else if (character === '<' && next === '<' && !word.endsWith('<')) {
       endWord();
-      const doc = heredoc(text, i + 2, line.length);
+      const doc = heredoc(text, index + 2, line.length);
       if (doc) {
         pending.push(doc.doc);
-        i = doc.end;
+        index = doc.end;
       } else {
         words.push('<<'); // no word after it: bash calls that an error; read on
-        i += 2;
+        index += 2;
       }
     } else {
-      word += c;
+      word += character;
       inWord = true;
-      i++;
+      index++;
     }
   }
   endCommand();
@@ -312,72 +312,72 @@ function closeAnsi(text: string, i: number): number {
 // Reads "..." from after the opening quote. $(...) and `...` inside it run, so they are
 // read as commands. Returns the word's text and the index after the closing quote, or null
 // when it never closes. With `toEnd` there is no closing quote: it reads a heredoc body.
-function readDouble(text: string, i: number, depth: number, out: string[][], toEnd = false): { value: string; end: number } | null {
+function readDouble(text: string, index: number, depth: number, out: string[][], toEnd = false): { value: string; end: number } | null {
   let value = '';
-  while (i < text.length) {
-    const c = text[i];
-    if (c === '"' && !toEnd) return { value, end: i + 1 };
-    if (c === '\\') {
+  while (index < text.length) {
+    const character = text[index];
+    if (character === '"' && !toEnd) return { value, end: index + 1 };
+    if (character === '\\') {
       // In "...", \ escapes only $ ` " \ and a line end. Before anything else it stays.
-      const n = text[i + 1] ?? '';
+      const n = text[index + 1] ?? '';
       if (n && '$`"\\'.includes(n)) value += n;
-      else if (n !== '\n') value += c + n;
-      i += 2;
-    } else if ((c === '$' && text[i + 1] === '(') || c === '`') {
-      const from = c === '`' ? i + 1 : i + 2;
-      const end = read(text, from, c === '`' ? '`' : ')', depth + 1, out);
+      else if (n !== '\n') value += character + n;
+      index += 2;
+    } else if ((character === '$' && text[index + 1] === '(') || character === '`') {
+      const from = character === '`' ? index + 1 : index + 2;
+      const end = read(text, from, character === '`' ? '`' : ')', depth + 1, out);
       if (end === -1) return null;
-      value += text.slice(i, end);
-      i = end;
+      value += text.slice(index, end);
+      index = end;
     } else {
-      value += c;
-      i++;
+      value += character;
+      index++;
     }
   }
-  return toEnd ? { value, end: i } : null;
+  return toEnd ? { value, end: index } : null;
 }
 
 // Reads the word after << or <<-. A quoted word means the body is not expanded.
-function heredoc(text: string, i: number, cmd: number): { doc: Heredoc; end: number } | null {
-  const strip = text[i] === '-';
-  if (strip) i++;
-  while (text[i] === ' ' || text[i] === '\t') i++;
+function heredoc(text: string, index: number, cmd: number): { doc: Heredoc; end: number } | null {
+  const strip = text[index] === '-';
+  if (strip) index++;
+  while (text[index] === ' ' || text[index] === '\t') index++;
   let delim = '';
   let quoted = false;
-  while (i < text.length && !/[\s;&|()<>]/.test(text[i])) {
-    const c = text[i];
-    if (c === "'" || c === '"') {
-      const end = text.indexOf(c, i + 1);
+  while (index < text.length && !/[\s;&|()<>]/.test(text[index])) {
+    const character = text[index];
+    if (character === "'" || character === '"') {
+      const end = text.indexOf(character, index + 1);
       if (end === -1) return null;
-      delim += text.slice(i + 1, end);
+      delim += text.slice(index + 1, end);
       quoted = true;
-      i = end + 1;
-    } else if (c === '\\') {
-      delim += text[i + 1] ?? '';
+      index = end + 1;
+    } else if (character === '\\') {
+      delim += text[index + 1] ?? '';
       quoted = true;
-      i += 2;
+      index += 2;
     } else {
-      delim += c;
-      i++;
+      delim += character;
+      index++;
     }
   }
-  return delim ? { doc: { delim, strip, quoted, cmd }, end: i } : null;
+  return delim ? { doc: { delim, strip, quoted, cmd }, end: index } : null;
 }
 
-// Reads the heredoc bodies that start at `i`, in order, and returns the index after the
+// Reads the heredoc bodies that start at `index`, in order, and returns the index after the
 // last one. A body is data, unless a shell or runner reads it: the command that holds the
 // <<, or any later command on that line (so `cat <<EOF | bash` counts, and so does
 // `cat <<EOF > f; bash`, which blocks more than it must). Then the body is read as
 // commands. An unquoted body still runs $(...) and `...`, so those are read too. A body
 // with no end line runs to the end of the text, as in bash.
-function bodies(text: string, i: number, docs: Heredoc[], line: string[][], depth: number, out: string[][]): number {
+function bodies(text: string, index: number, docs: Heredoc[], line: string[][], depth: number, out: string[][]): number {
   for (const doc of docs) {
     const lines: string[] = [];
-    while (i < text.length) {
-      let nl = text.indexOf('\n', i);
+    while (index < text.length) {
+      let nl = text.indexOf('\n', index);
       if (nl === -1) nl = text.length;
-      const ln = text.slice(i, nl);
-      i = nl + 1;
+      const ln = text.slice(index, nl);
+      index = nl + 1;
       if ((doc.strip ? ln.replace(/^\t+/, '') : ln).replace(/\r$/, '') === doc.delim) break;
       lines.push(ln);
     }
@@ -385,7 +385,7 @@ function bodies(text: string, i: number, docs: Heredoc[], line: string[][], dept
     if (line.slice(doc.cmd).some((words) => runnerAt(words) !== -1)) out.push(...commandWords(body, depth + 1));
     else if (!doc.quoted) readDouble(body, 0, depth, out, true);
   }
-  return Math.min(i, text.length);
+  return Math.min(index, text.length);
 }
 
 // The old cut: quotes become spaces, then cut at ; | & ( ) and line ends. It finds more

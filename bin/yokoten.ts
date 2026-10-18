@@ -174,15 +174,15 @@ function stopHook(json: boolean): number {
 function main(): number | Promise<number> {
   switch (cmd) {
     case 'hook': {
-      const a = parse({ flags: ['--commands-only', '--json', '--stop'], values: ['--agent'] });
-      if (typeof a === 'string') return usage(a);
-      const json = a.flags.has('--json');
-      if (a.flags.has('--stop')) {
-        if (a.flags.has('--commands-only')) return usage("--stop and --commands-only can't be used together");
-        if ((a.values['--agent'] ?? 'claude-code') !== 'claude-code') return usage('--stop reads a Claude Code Stop event only');
+      const options = parse({ flags: ['--commands-only', '--json', '--stop'], values: ['--agent'] });
+      if (typeof options === 'string') return usage(options);
+      const json = options.flags.has('--json');
+      if (options.flags.has('--stop')) {
+        if (options.flags.has('--commands-only')) return usage("--stop and --commands-only can't be used together");
+        if ((options.values['--agent'] ?? 'claude-code') !== 'claude-code') return usage('--stop reads a Claude Code Stop event only');
         return stopHook(json);
       }
-      const agent = a.values['--agent'] ?? 'claude-code';
+      const agent = options.values['--agent'] ?? 'claude-code';
       const read = Object.hasOwn(READERS, agent) ? READERS[agent] : undefined;
       if (!read) {
         print([`yokoten hook: unknown --agent ${agent}; use one of: ${Object.keys(READERS).join(', ')}`], process.stderr);
@@ -200,7 +200,7 @@ function main(): number | Promise<number> {
       const action = read(input);
       const root = rootOf(action.cwd ?? process.cwd());
       const config = root ? loadConfig(root) : DEFAULTS;
-      const found = judge(action, { root, config, env, commandsOnly: a.flags.has('--commands-only') });
+      const found = judge(action, { root, config, env, commandsOnly: options.flags.has('--commands-only') });
       if (json) printJson(found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
       if (!found) return 0;
       // The runtimes read the reason from stderr when the hook exits 2.
@@ -208,12 +208,12 @@ function main(): number | Promise<number> {
       return 2;
     }
     case 'check': {
-      const a = parse({ flags: ['--staged', '--history', '--pr', '--issue', '--json'] });
-      if (typeof a === 'string') return usage(a);
-      const modes = ['--staged', '--history', '--pr', '--issue'].filter((m) => a.flags.has(m));
+      const options = parse({ flags: ['--staged', '--history', '--pr', '--issue', '--json'] });
+      if (typeof options === 'string') return usage(options);
+      const modes = ['--staged', '--history', '--pr', '--issue'].filter((m) => options.flags.has(m));
       if (modes.length > 1) return usage(`${modes.join(' and ')} can't be used together`);
       const mode = modes[0]?.slice(2) ?? 'tree';
-      const json = a.flags.has('--json');
+      const json = options.flags.has('--json');
       const root = gitRoot(process.cwd());
       const config = loadConfig(root);
       const name = `yokoten check${mode === 'pr' || mode === 'issue' ? ` --${mode}` : ''}`;
@@ -273,40 +273,40 @@ function main(): number | Promise<number> {
       return problems.length ? 1 : 0;
     }
     case 'doctor': {
-      const a = parse({ flags: ['--session', '--json'] });
-      if (typeof a === 'string') return usage(a);
-      const session = a.flags.has('--session');
+      const options = parse({ flags: ['--session', '--json'] });
+      if (typeof options === 'string') return usage(options);
+      const session = options.flags.has('--session');
       const root = rootOf(process.cwd());
       const config = root ? loadConfig(root) : DEFAULTS;
       const { ok, lines, report } = doctor(root, { env, config, session, gh: root ? ghIn(root) : undefined });
-      if (a.flags.has('--json')) printJson(report);
+      if (options.flags.has('--json')) printJson(report);
       else print(lines);
       // A session must start even when a project has steps left.
       return session || ok ? 0 : 1;
     }
     case 'explain': {
-      const a = parse({ flags: ['--json'], positional: 1 });
-      if (typeof a === 'string') return usage(a);
-      const [id] = a.positional;
+      const options = parse({ flags: ['--json'], positional: 1 });
+      if (typeof options === 'string') return usage(options);
+      const [id] = options.positional;
       const found = id === undefined ? null : explain(id);
-      if (a.flags.has('--json')) printJson(found ? { found: true, ...found } : { id: id ?? null, found: false, ids: ids() });
+      if (options.flags.has('--json')) printJson(found ? { found: true, ...found } : { id: id ?? null, found: false, ids: ids() });
       else if (found) print(explainLines(found));
       else print([id === undefined ? 'yokoten explain: name a rule or a step.' : `yokoten explain: no rule or step is called ${id}.`, `Ids: ${ids().join(', ')}`], process.stderr);
       return found ? 0 : 1;
     }
     case 'init': {
-      const a = parse({ flags: ['--github', '--yes'], positional: 1 });
-      if (typeof a === 'string') return usage(a);
-      if (a.flags.has('--yes') && !a.flags.has('--github')) return usage('--yes goes with --github');
-      const dir = resolve(a.positional[0] ?? '.');
+      const options = parse({ flags: ['--github', '--yes'], positional: 1 });
+      if (typeof options === 'string') return usage(options);
+      if (options.flags.has('--yes') && !options.flags.has('--github')) return usage('--yes goes with --github');
+      const dir = resolve(options.positional[0] ?? '.');
       const root = rootOf(dir) ?? dir;
       print(init(root));
       // The host is changed only when asked (#10): it is a remote, and other people see it.
-      if (!a.flags.has('--github')) {
+      if (!options.flags.has('--github')) {
         print(['GitHub labels and a milestone: run `yokoten init --github` to see what it would make']);
         return 0;
       }
-      const planning = setUpPlanning(ghIn(root), a.flags.has('--yes'));
+      const planning = setUpPlanning(ghIn(root), options.flags.has('--yes'));
       print(planning.lines, planning.ok ? process.stdout : process.stderr);
       return planning.ok ? 0 : 1;
     }

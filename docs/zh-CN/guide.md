@@ -308,6 +308,41 @@ issue 标题先写改哪一块，再写要做什么。这样一排 issue 看下�
 11. 仓库里，以及 yokoten 打印出来的内容里，都不能有任何能指向某个人的信息，也不能有密钥。
 12. 决定只写一次并保留下来；事实直接替换；时间一律用 UTC。
 
+## 起名字
+
+读代码时，最先看到的是名字，看得最多的也是名字。名字起得好，读的人不用往回翻，就知道它装的是什么。
+有一项研究请 72 位开发者在代码里找错：名字是完整单词时，他们比看单个字母或缩写快了大约 19%。
+
+yokoten 自己的代码守五条规矩。为什么这么定、参考了哪些资料，写在[记录 0006](../records/0006-names.md)。
+
+1. 用完整的英文单词。缩写只用人人都认识的：`id`、`url`、`pr`、`ci`、`env`、`config`、`repo`、`dir`、`json`、`html`。不要从单词中间删字母。
+2. 一个名字最多 4 个词。不限字符数：一限字符，大家就会去缩写。
+3. 只有 10 行之内就用完、也不导出给别的文件的名字，才能用单个字母。`_` 只留给用不到的参数。
+4. 变量和函数用 `camelCase`，类型用 `PascalCase`。`CONSTANT_CASE` 只给写在文件开头、不会变的值。缩写词当成普通单词来写：`loadHttpUrl`。
+5. 函数名用动词开头。表示「是或否」的值，用 `is`、`has` 或 `can` 开头。同一个东西，在哪个文件里都叫同一个名字。
+
+| 别这么写 | 这么写 | 原因 |
+|---|---|---|
+| `r`，30 行以后还在用 | `result` | 读到第 30 行，早就忘了 `r` 是什么。 |
+| `cfgMgr` | `configManager` | 单词中间删了字母，读的人只能猜。 |
+| `processTheUserInputDataNow` | `parseInput` | 6 个词，其中 process、data、now 都没多说什么。 |
+| `_count` | `count` | 前面的 `_` 没有任何意思。 |
+| 函数里的 `MAX_TRIES` | `maxTries` | `CONSTANT_CASE` 的意思是「整个文件里都不变」。 |
+| `loadHTTPURL` | `loadHttpUrl` | 两个缩写连在一起，分不清哪里断开。 |
+| `valid` | `isValid` | 看到 `is` 就知道它只有「是」和「否」两种值。 |
+| `user()` | `loadUser()` | 动词说清楚这个函数要做什么。 |
+
+名字也不是越长越好。一眼就能看完的地方，短名字反而清楚：三行的循环里写 `for (const n of numbers)` 就很好。
+名字用到的地方离得越远，就越要说清楚。
+
+`test/architecture.test.ts` 会检查第 2、3 条，还有函数里的 `CONSTANT_CASE`。每处不合格都会写明该怎么改：
+
+```
+src/rules/guards.ts:195: i — one letter, used 101 lines on — a reader must scroll back to learn what it holds: name what it is, e.g. "index"
+```
+
+第 1 条和第 5 条要靠人判断，所以交给审查的人来看。
+
 ## 像带团队一样管 agent
 
 这套做法把 AI 当成产线上的员工：每个人分工清楚，权限也有限。

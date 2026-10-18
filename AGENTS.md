@@ -83,6 +83,17 @@ yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
     API (`test/architecture.test.ts` holds this).
   - `setup/`: `install`, `init` and `doctor`, writing yokoten into a machine or a
     project. `road.ts` is the road `doctor` walks: one table of stages and steps.
+- **Names** (record 0006). `test/architecture.test.ts` holds rules 2 and 3 and
+  `CONSTANT_CASE`; the reviewer holds rules 1 and 5.
+  1. Whole English words. Only widely known short forms: `id`, `url`, `pr`, `ci`,
+     `env`, `config`, `repo`, `dir`, `json`, `html`. Never delete letters inside a word.
+  2. At most 4 words per name. No character limit: a limit pushes people to abbreviate.
+  3. One letter only when used within 10 lines and not exported. `_` only for a
+     parameter we don't use.
+  4. `camelCase` for values and functions, `PascalCase` for types, `CONSTANT_CASE` only
+     for fixed values at the top of a file. Acronyms as words (`loadHttpUrl`).
+  5. Functions start with a verb; true/false values start with `is`, `has` or `can`;
+     one idea keeps one name in every file.
 - **Docs live in the repo.** No wiki: a wiki page is not reviewed and agents do not read
   it. Decisions go in `docs/records/`; what went wrong and what check now holds it goes
   in an issue labelled `incident`, and the rule's "why" in `AGENTS.md` points to it.

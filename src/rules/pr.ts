@@ -42,34 +42,34 @@ function blankCode(text: string, blank: (code: string) => string): string {
   const rest = lines.join('\n');
   let out = '';
   let at = 0;
-  let i = 0;
-  while (i < rest.length) {
-    if (rest[i] !== '`') {
-      i++;
+  let index = 0;
+  while (index < rest.length) {
+    if (rest[index] !== '`') {
+      index++;
       continue;
     }
-    let n = 0;
-    while (rest[i + n] === '`') n++;
+    let ticks = 0;
+    while (rest[index + ticks] === '`') ticks++;
     let close = -1;
-    for (let j = i + n; j < rest.length; ) {
-      if (rest[j] !== '`') {
-        j++;
+    for (let scan = index + ticks; scan < rest.length; ) {
+      if (rest[scan] !== '`') {
+        scan++;
         continue;
       }
-      let m = 0;
-      while (rest[j + m] === '`') m++;
-      if (m === n) {
-        close = j;
+      let closing = 0;
+      while (rest[scan + closing] === '`') closing++;
+      if (closing === ticks) {
+        close = scan;
         break;
       }
-      j += m;
+      scan += closing;
     }
     if (close < 0) {
-      i += n;
+      index += ticks;
       continue;
     }
-    out += rest.slice(at, i) + blank(rest.slice(i, close + n));
-    at = i = close + n;
+    out += rest.slice(at, index) + blank(rest.slice(index, close + ticks));
+    at = index = close + ticks;
   }
   return out + rest.slice(at);
 }
@@ -168,7 +168,7 @@ export function longSentences(text: string, max = 25): { line: number; words: nu
     sentence = [];
   };
   const lines = blankComments(text).split(/\r?\n/);
-  lines.forEach((raw, i) => {
+  lines.forEach((raw, index) => {
     const line = raw.trim();
     if (/^(```|~~~)/.test(line)) {
       flush();
@@ -184,7 +184,7 @@ export function longSentences(text: string, max = 25): { line: number; words: nu
     // Links count as their text.
     const prose = line.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/`[^`]*`/g, 'x');
     for (const part of prose.split(/(?<=[.!?:;])\s+/)) {
-      if (!sentence.length) startLine = i + 1;
+      if (!sentence.length) startLine = index + 1;
       sentence.push(part);
       if (/[.!?:;]$/.test(part)) flush();
     }
@@ -244,11 +244,11 @@ const ISSUE_MAX = 60;
  */
 export function checkIssueTitle(title: string, config: Partial<Pick<Config, 'areas'>>, labels: string[] = []): Finding[] {
   const problems: Finding[] = [];
-  const t = title.trim();
+  const text = title.trim();
   const incident = labels.some((l) => l.toLowerCase() === 'incident');
   const form = incident ? '`area: symptom`, for example `check: misses a key in a JSON file`' : '`area: verb phrase`, for example `doctor: add the review step`';
   const areas = config.areas ?? [];
-  const m = /^([^\s:]+): +(\S.*)$/.exec(t);
+  const m = /^([^\s:]+): +(\S.*)$/.exec(text);
   if (!m) {
     problems.push(finding('issue-area', 'title: it does not start with an area', `write it as ${form}`));
   } else if (!AREA.test(m[1])) {
@@ -258,9 +258,9 @@ export function checkIssueTitle(title: string, config: Partial<Pick<Config, 'are
   } else if (areas.length && !areas.includes(m[1])) {
     problems.push(finding('issue-area', 'title: the area is not in yokoten.json "areas"', `use one of: ${areas.join(', ')}`, { why: 'issues and pull requests share one list of areas' }));
   }
-  if (t.length > ISSUE_MAX) problems.push(finding('issue-title', `title: ${t.length} characters, over ${ISSUE_MAX}`, 'shorten it, and put the details in the body'));
-  if (/[.。]$/.test(t)) problems.push(finding('issue-title', 'title: a full stop at the end', 'remove the full stop', { why: 'a title is a name, not a sentence' }));
-  if (/#\d/.test(t)) problems.push(finding('issue-title', 'title: an issue number', 'remove the number, and name the other issue in the body', { why: 'the host links issues from the body, not from the title' }));
+  if (text.length > ISSUE_MAX) problems.push(finding('issue-title', `title: ${text.length} characters, over ${ISSUE_MAX}`, 'shorten it, and put the details in the body'));
+  if (/[.。]$/.test(text)) problems.push(finding('issue-title', 'title: a full stop at the end', 'remove the full stop', { why: 'a title is a name, not a sentence' }));
+  if (/#\d/.test(text)) problems.push(finding('issue-title', 'title: an issue number', 'remove the number, and name the other issue in the body', { why: 'the host links issues from the body, not from the title' }));
   return problems;
 }
 
@@ -288,19 +288,19 @@ function ownerPattern(raw: string): RegExp {
   const body = raw.replace(/^\//, '').replace(/\/$/, '');
   const anchored = raw.startsWith('/') || body.includes('/');
   let re = '';
-  for (let i = 0; i < body.length; i++) {
-    const c = body[i];
-    if (c === '*' && body[i + 1] === '*') {
-      if (body[i + 2] === '/') {
+  for (let index = 0; index < body.length; index++) {
+    const character = body[index];
+    if (character === '*' && body[index + 1] === '*') {
+      if (body[index + 2] === '/') {
         re += '(?:.*/)?';
-        i += 2;
+        index += 2;
       } else {
         re += '.*';
-        i += 1;
+        index += 1;
       }
-    } else if (c === '*') re += '[^/]*';
-    else if (c === '?') re += '[^/]';
-    else re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    } else if (character === '*') re += '[^/]*';
+    else if (character === '?') re += '[^/]';
+    else re += character.replace(/[.+^${}()|[\]\\]/g, '\\$&');
   }
   // `docs/*` matches the files in docs/ and not deeper (GitHub's documented case).
   const end = folder ? '/.*' : /(^|\/)\*$/.test(body) && body !== '*' ? '' : '(?:/.*)?';
