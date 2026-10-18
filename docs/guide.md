@@ -139,6 +139,7 @@ And when an agent tries to push a release tag:
 
 ```
 yokoten: git push --tags pushes tags. Only the owner decides when to release. If the owner asked for this, they start a new session with YOKOTEN_RELEASE_APPROVAL=1 (`YOKOTEN_RELEASE_APPROVAL=1 claude`); do not look for another way.
+  docs: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#the-core-rules
 ```
 
 Every message has the same three parts: **what** happened, **why** it matters, and the
@@ -175,15 +176,17 @@ and when to look again). "Not now" goes into `yokoten.json`, and `doctor` stops 
 ### A first draft of the table
 
 `yokoten adopt` drafts that table before the talk starts. It reads the project's files
-and says what the project does today for each step: **done**, **missing** or
-**partial**. Partial means the project has its own way, such as husky hooks, or a CI
-that doesn't run yokoten. A model then proposes a decision and a one-sentence reason
+and says what the project does today for each step: **done**, **missing**, **partial**
+or **unknown**. Partial means the project has its own way, such as husky hooks, or a CI
+that doesn't run yokoten. Unknown means yokoten can't check the step from here, such as
+a server setting; `yokoten doctor` reads it. A model then proposes a decision and a one-sentence reason
 for each row.
 
 - The model gets only those short facts. It never gets file contents.
 - yokoten runs its privacy check on the request first. On a hit, it sends nothing.
 - With no key, a failed call or a bad answer, rules draft the table instead: done or
-  missing is as-is, partial is lighter. The output says which one drafted it.
+  missing is as-is, partial is lighter, unknown is as-is once `doctor` has checked it.
+  The output says which one drafted it.
 - `adopt` never writes a file. You still decide every row.
 
 The model runs on Meta's model API, through its OpenAI-compatible endpoint
@@ -228,7 +231,7 @@ can't drift apart:
 |---|---|
 | The skills: `/yokoten:dispatch`, `/yokoten:inspect`, `/yokoten:rca`, `/yokoten:record`, `/yokoten:release`, `/yokoten:yokoten` | `kit/user/skills/` |
 | The agents: `yokoten:worker`, `yokoten:reviewer`, `yokoten:verifier` | `kit/user/agents/` |
-| `/yokoten:init` and `/yokoten:doctor`, which run yokoten from the plugin | `kit/plugin/skills/` |
+| `/yokoten:init`, `/yokoten:doctor` and `/yokoten:update`, which run yokoten from the plugin | `kit/plugin/skills/` |
 | The SessionStart `doctor` hook and the command guard: the same two hooks that `install` adds | `.claude-plugin/plugin.json` |
 
 Claude Code runs the plugin's `.ts` files with `node`. Node can do this because the
@@ -375,14 +378,18 @@ when it is in a file. `yokoten explain <id>` takes the `id`. No field holds a pr
 value.
 
 - `check --json`: `{ check, ok, findings, notes }`. `check` is `tree`, `staged`,
-  `history` or `pr`. A note never fails the check.
+  `history`, `pr` or `issue`. A note never fails the check. When the CI run has no
+  pull request or issue, `check --pr` and `check --issue` are ok and add `skipped`, the reason.
 - `doctor --json`: `{ version, ok, selfTest, repo, stage, stages, next, findings, steps,
   notes, server }`. With `--session`, only the next step, the private-marks finding, and `core-rules` when the rules are behind.
-- `hook --json`: `{ blocked, finding }` on stdout. The runtimes do not use it: they read
-  the exit code and the reason on stderr, as their hook protocols say.
-- `hook --stop --json`: `{ blocked, stop, findings }`. With `stop_hook_active`, also `skipped`.
-- `explain --json`: `{ found, id, kind, what, why, check, docs, stage, standard }`, or
-  `{ found: false, ids }`.
+- `hook --json`: `{ blocked: true, finding }` when it blocks, `{ blocked: false, toolCall: true }`
+  when it allows, and `{ blocked: false, toolCall: false }` when stdin is not a tool call.
+  The runtimes do not use it: they read the exit code and the reason on stderr, as their
+  hook protocols say.
+- `hook --stop --json`: `{ blocked, stop, findings }`. With `stop_hook_active`, or when the
+  check fails, also `skipped`, the reason. When stdin is not a Stop event: `{ blocked: false, stop: false }`.
+- `explain --json`: `{ found, id, kind, what, why, check, docs, stage, standard }`. For an
+  unknown id, or none: `{ id, found: false, ids }`, where `id` is `null` when none was given.
 
 Output for people follows one rule. Results go to stdout. Problems, refusals and errors
 go to stderr. An unknown option is refused, never ignored.
@@ -558,6 +565,37 @@ installed yokoten, the plugin or a clone. Run `init` again to refresh `.yokoten/
 With the Claude Code plugin, run `/yokoten:update`. It runs the plugin's own yokoten,
 shows the change, and writes only after you agree.
 
+### Settings
+
+`yokoten.json` at the repo root holds the project's settings. Every key is optional.
+A list you set replaces the default list; it does not add to it.
+
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `layout.maxEntries` | `7` | The most entries a folder may hold (core rule 10) |
+| `layout.exempt` | none | Folders that may grow past it, such as a log of records |
+| `tests` | `*.test.*`, `*.spec.*`, `*_test.go`, `test/**`, `tests/**` | The test files a fix task may not change |
+| `leadOnly` | the rules, agent config, `.githooks/**`, `.github/**` | The files a worker may not change |
+| `privacy.allow` | none | Exact strings the privacy check lets through, such as a public support address |
+| `privacy.skip` | lock files | Files the privacy check does not read |
+| `privacy.utc` | `true` | Commit times must be in UTC |
+| `notNow` | none | Steps not taken up yet, by `doctor`'s name, each with a reason: `{ "ci": "no remote yet" }` |
+| `allowBuild` | none | Build output and binaries the commit check lets through |
+| `areas` | any | The areas a title may name. See [Issue titles](#issue-titles) |
+| `translations.fail` | `false` | A translation behind its source fails the check |
+
+Environment variables:
+
+| Variable | What it does |
+|----------|--------------|
+| `YOKOTEN_ROLE=worker` | The session is a worker. It may not change lead-only files |
+| `YOKOTEN_FIX_TASK=1` | The session is a fix task. It may not change test files |
+| `YOKOTEN_RELEASE_APPROVAL=1` | The owner allows a release from this session |
+| `YOKOTEN_PRIVATE_MARKS` | Another path for the private-marks file |
+| `YOKOTEN_BOT_APP_ID`, `YOKOTEN_BOT_KEY`, `YOKOTEN_BOT_INSTALLATION` | The bot. See [server.md](server.md#3-the-bot-a-github-app) |
+| `YOKOTEN_GITHUB_API` | Another GitHub API address, such as GitHub Enterprise Server |
+| `LLAMA_API_KEY` or `MODEL_API_KEY`, `LLAMA_API_BASE`, `LLAMA_MODEL` | The model for `adopt`. See [A first draft of the table](#a-first-draft-of-the-table) |
+
 
 ## The core rules
 
@@ -566,7 +604,7 @@ The full table, with the reasons, is in [`kit/project/AGENTS.md`](../kit/project
 1. Every piece of work starts as an issue. No todo files.
 2. Nothing reaches `main` without a pull request and green CI.
 3. Only the owner creates tags and releases.
-4. A fix task changes code, never tests.
+4. A fix task changes code, never tests (`YOKOTEN_FIX_TASK=1`).
 5. A worker doesn't change lead-only files: the rules, agent config, hooks, CI.
 6. Never skip the commit check.
 7. No plain force push. Never rebase a shared branch.
@@ -633,7 +671,9 @@ The setup treats agents like staff on a line, each with a clear role and limited
 - **The lead** is the session you talk to. It plans, splits the work, reviews, and opens
   pull requests through a **bot**, never with your account.
 - **Workers** are sessions the lead starts for one task each, in their own worktree,
-  with `YOKOTEN_ROLE=worker`. They change code and report back. They never push.
+  with `YOKOTEN_ROLE=worker`. They change code and report back. They never push. A
+  fix task also gets `YOKOTEN_FIX_TASK=1`. Then the guard and the commit check stop a
+  change to a test file.
 - **The bot** is a GitHub App installed on the repo. It can open pull requests but has
   no Workflows permission, so it can't change the CI that checks it. A ruleset requires
   your review, so nothing it opens merges without you.
