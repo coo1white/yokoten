@@ -17,6 +17,7 @@ import type { Env } from '../../rules/config.ts';
 import { place } from '../../rules/message.ts';
 import { loadMarks, scanText } from '../../rules/privacy.ts';
 import { chat, KEY_HINT, type LlamaConfig, llamaConfig, type Message } from '../../agents/llama.ts';
+import { findRulesGap } from '../init.ts';
 import { type Found, gitConfig, hasIssueTemplate, hasPrTemplate, ROAD, road, securityLacking, todoFiles } from '../road.ts';
 
 /** `unknown`: yokoten can't check the step from here (a server setting, in a session). */
@@ -121,8 +122,9 @@ export function facts(root: string, env: Env): Fact[] {
   const plain = (key: string, done: string, missing: string, f: Found = found.get(key) ?? null) =>
     add(key, f ? 'done' : f === null ? 'unknown' : 'missing', f ? done : f === null ? "yokoten can't check this here; `yokoten doctor` reads it" : missing);
 
-  const ruleFiles = has(root, ['CLAUDE.md', 'CONTRIBUTING.md', '.github/CONTRIBUTING.md', '.cursorrules', '.github/copilot-instructions.md', 'GEMINI.md']);
+  const ruleFiles = has(root, ['CLAUDE.md', '.claude/CLAUDE.md', 'CONTRIBUTING.md', '.github/CONTRIBUTING.md', '.cursorrules', '.github/copilot-instructions.md', 'GEMINI.md']);
   if (found.get('rules')) add('rules', 'done', 'AGENTS.md');
+  else if (existsSync(join(root, 'AGENTS.md'))) add('rules', 'partial', `AGENTS.md, but ${findRulesGap(root)?.file ?? 'CLAUDE.md'} does not import it, so Claude Code does not read it`);
   else add('rules', ruleFiles.length ? 'partial' : 'missing', ruleFiles.length ? `no AGENTS.md, but ${ruleFiles.join(', ')}` : 'no AGENTS.md or other written rules');
 
   plain('tool-hook', 'the tool-call guard is in .claude/settings.json', 'no tool-call guard');
