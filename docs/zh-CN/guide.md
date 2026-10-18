@@ -1,3 +1,4 @@
+<!-- source: docs/guide.md blob 69bf1d5b352107b97d18698d946f41025236fb63 -->
 # yokoten 使用指南
 
 [README](README.md) 是简短版。剩下的都在这里：yokoten 为什么要做、它怎么工作、有哪些规则和命令，还有它做不到的事。
@@ -274,7 +275,7 @@ kit 里 `init` 放的 workflow 暂时还是跑 `.yokoten/` 里的那份，等第
 | `init [dir]` | 把这套做法放进一个项目。只加文件；已有的文件保留，并告诉你保留了哪些 |
 | `update [dir] [--write]` | 看看这个版本的 yokoten 会怎么改项目 `AGENTS.md` 里的核心规则。加上 `--write` 才真的替换；「This project」那部分原样保留。见[更新规则](#更新规则) |
 | `doctor [--session]` | 整条路：每一关、每一步，加上这台电脑还缺什么。`--session` 只说下一步，会话开头用 |
-| `check [--staged]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交。提交里不能有构建产物和二进制文件 |
+| `check [--staged]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交。提交里不能有构建产物和二进制文件。查整个目录时，落后于英文的译文会给一条提醒，见[翻译](#翻译) |
 | `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的变更文件、milestone 和标签，见下面的「更新日志」。改到 CODEOWNERS 里列出的文件，必须写 `tier: A`。改动的文档里句子太长、改动的代码里名字难读、改动超过 400 行，都只提醒，不算失败 |
 | `check --issue` | 在 CI 里检查 issue 的标题，见下面的「issue 标题」 |
 | `changelog [--write]` | 列出 `changes/` 里的文件会往 `[Unreleased]` 下面加哪些条目。加上 `--write` 就真的写进 `CHANGELOG.md`，再删掉这些文件；发版前跑。见下面的「更新日志」 |
@@ -389,6 +390,27 @@ Fixed
 `check --pr` 把 `changes/` 里新加的文件当成这个 PR 的更新日志，还会检查格式。直接改
 `CHANGELOG.md` 也照样能过，还没换过来的项目不受影响。`init` 会加上 `changes/README.md`，
 里面有格式说明。`changes/` 里的文件可以超过 7 个，因为每次发版都会清空。
+
+### 翻译
+
+英文是原文，译文跟着英文走。英文改了，译文就落后了，可往往没人发现。所以每个译文文件的第 1 行
+都写明它是从哪个英文文件翻的，用 HTML 注释写，GitHub 上看不到。
+
+```markdown
+<!-- source: docs/guide.md blob 3b18e512dba79e4c8300dd08aeb37f8e728b8dad -->
+```
+
+路径是英文文件的路径，从仓库根目录算起。blob 是 git 给你翻译时那版英文内容算出的编号，
+跑 `git hash-object docs/guide.md` 就能拿到。记 blob 而不记 commit，是因为 squash
+合并以后 blob 还在，commit 却没了。这样英文和译文可以放在同一个 PR 里改。
+
+`check` 会读每个 Markdown 和 HTML 文件的第 1 行。英文在那之后又改过，它就给一条
+`translation-behind` 提醒：落后了几个 commit，怎么看英文改了什么
+（`git diff <blob> HEAD:docs/guide.md`）。提醒不会让 CI 失败。想让它失败，就在
+`yokoten.json` 里写 `"translations": { "fail": true }`。
+
+浅克隆也能看出译文落后了，只是算不出落后多少。想在 CI 里看到具体数字，checkout 时设
+`fetch-depth: 0`。
 
 ### 更新规则
 
