@@ -1347,7 +1347,7 @@ test('learn: previews a check draft from an incident, writes it with --write, an
   let result = sandbox.run(['learn', '7'], { extra });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^yokoten learn: a check draft from issue #7, "repo: a test fails behind a proxy"\.\n1 TODO\(s\) for the reviewer:\n- why: the issue has no "Why it matters" section\n/);
-  assert.match(result.stdout, /\n--- lessons\/incident-7\/lesson\.ts\n[^]*fix: 'The test sets NO_PROXY',[^]*\n--- lessons\/incident-7\/lesson\.test\.ts\n/);
+  assert.match(result.stdout, /\n--- lessons\/incident-7\/lesson\.ts\n[^]*fix: 'the test sets NO_PROXY',[^]*\n--- lessons\/incident-7\/lesson\.test\.ts\n/);
   assert.match(result.stdout, /Nothing was written\. `yokoten learn 7 --write` adds these files for review\.\n$/);
   assert.ok(!existsSync(join(sandbox.repo, 'lessons')), 'a preview writes nothing');
   result = sandbox.run(['learn', '7', '--write'], { extra });
@@ -1405,7 +1405,7 @@ test('lessons: learn, write the check, ship, then doctor in a second repo shows 
   // The second repo: a project with the problem. Doctor shows the note, and it fails nothing.
   sandbox.write('.env', 'KEY=1\n');
   result = runCopy(['doctor'], sandbox.repo);
-  assert.match(result.stdout, /\n {2}note {4}lesson incident-9: \.env is in the repo; Remove it, and add it to \.gitignore\n/);
+  assert.match(result.stdout, /\n {2}note {4}lesson incident-9: \.env is in the repo; remove it, and add it to \.gitignore\n/);
   const report = JSON.parse(runCopy(['doctor', '--json'], sandbox.repo).stdout);
   assert.deepEqual(report.lessons.find((lesson: { id: string }) => lesson.id === 'incident-9'), { id: 'incident-9', mark: 'note' });
   assert.ok(report.notes.some((note: { id: string }) => note.id === 'incident-9') && !report.findings.some((f: { id: string }) => f.id === 'incident-9'), 'a note, never a finding');
