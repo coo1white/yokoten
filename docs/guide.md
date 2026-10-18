@@ -439,6 +439,9 @@ can't tell the core rules from yours. Then it says so, and compares and writes n
 Run `update` from an installed yokoten or a clone, not from `.yokoten/`. The copy in
 your project has no kit to compare with.
 
+With the Claude Code plugin, run `/yokoten:update`. It runs the plugin's own yokoten,
+shows the change, and writes only after you agree.
+
 
 ## The core rules
 

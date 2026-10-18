@@ -409,6 +409,9 @@ yokoten 每学到一个教训，核心规则就会改。`yokoten install` 会更
 `update` 要用装好的 yokoten 或者 clone 下来的仓库跑，别用 `.yokoten/` 里的那份：
 项目里那份没有带 kit，没东西可比。
 
+装了 Claude Code 插件的话，直接用 `/yokoten:update`。它跑的是插件自己那份 yokoten，
+先给你看要改什么，你点头了才写。
+
 
 ## 核心规则
 
