@@ -198,7 +198,10 @@ npm 上的包跑的是编译好的 JavaScript，因为 Node 不处理 `node_modu
 仓库本身还是不用编译，只有 `npm pack` 打包的时候才生成 `dist/`
 （见[记录 0008](../records/0008-npm-package.md)，英文）。
 
-发布到 npm 是主人的事，跟打发版 tag 一样。第一个版本发布之前，先
+发布到 npm 是主人的事，跟打发版 tag 一样。tag 一推上去，发布 workflow 就开始跑：先跑检查，
+然后发布那一步停下来，等主人在 `release` 环境里点批准，批准了才发到 npm。整个过程不存任何
+npm token（见[记录 0009](../records/0009-release-environment.md)，英文）。只有第一个版本例外，
+由主人手动发布：npm 上还没有这个包的时候，没法设置信任哪个 workflow。第一个版本发布之前，先
 [从 clone 下来的仓库装](#从-clone-下来的仓库装)。
 
 ### 从 clone 下来的仓库装

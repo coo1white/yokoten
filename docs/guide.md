@@ -212,8 +212,13 @@ The package runs built JavaScript, because Node does not run TypeScript under
 `node_modules`. The repo has no build; `npm pack` makes the package's `dist/`
 ([record 0008](records/0008-npm-package.md)).
 
-The owner publishes the package, as the owner creates a release tag. Until the first
-release is on npm, [install from a clone](#install-from-a-clone).
+The owner publishes the package, as the owner creates a release tag. The tag starts the
+release workflow. It runs the checks, then the publish job waits for the owner's
+approval in the `release` environment. Only then does it publish to npm, with no npm
+token stored anywhere ([record 0009](records/0009-release-environment.md)). The first
+release is the one exception: the owner publishes it by hand, because npm can't trust a
+workflow for a package it does not have yet. Until the
+first release is on npm, [install from a clone](#install-from-a-clone).
 
 ### Install from a clone
 
