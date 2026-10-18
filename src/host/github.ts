@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { type Finding, formatFinding, place } from '../rules/message.ts';
 import type { CodeOwners, PullRequest } from '../rules/pr.ts';
+import { git } from '../run/check.ts';
 
 export interface BotConfig {
   appId: string;
@@ -165,9 +166,10 @@ export function readPullRequest(root: string, env: Env): (PullRequest & { base: 
   if (!pr) return null;
   const base = pr.base?.sha ?? '';
   const head = pr.head?.sha ?? '';
-  const files = base && head ? execFileSync('git', ['diff', '--name-only', '-z', `${base}...${head}`], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean) : [];
-  const deleted = base && head ? execFileSync('git', ['diff', '--name-only', '--diff-filter=D', '-z', `${base}...${head}`], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean) : [];
-  const numstat = base && head ? execFileSync('git', ['diff', '--numstat', '-z', `${base}...${head}`], { cwd: root, encoding: 'utf8' }) : '';
+  // Through `git` from check.ts, which reads past replace refs (#294).
+  const files = base && head ? git(root, ['diff', '--name-only', '-z', `${base}...${head}`]).split('\0').filter(Boolean) : [];
+  const deleted = base && head ? git(root, ['diff', '--name-only', '--diff-filter=D', '-z', `${base}...${head}`]).split('\0').filter(Boolean) : [];
+  const numstat = base && head ? git(root, ['diff', '--numstat', '-z', `${base}...${head}`]) : '';
   return {
     title: pr.title ?? '',
     body: pr.body ?? '',
@@ -191,7 +193,7 @@ export function readCodeOwners(root: string, base: string): CodeOwners | null {
   for (const place of CODEOWNERS_PLACES) {
     if (base) {
       try {
-        const text = execFileSync('git', ['show', `${base}:${place}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+        const text = git(root, ['show', `${base}:${place}`], { quiet: true });
         return { text, from: 'the base branch' };
       } catch {
         continue; // not at this place in the base commit

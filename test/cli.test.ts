@@ -398,6 +398,35 @@ test('check --history: a commit hidden by git replace is still scanned; a grafts
   assert.deepEqual(JSON.parse(result.stdout).findings.map((f: { id: string }) => f.id), ['shallow-history']);
 });
 
+test('check --staged reads the staged blob past git replace; GIT_GRAFT_FILE fails check --history (#294)', () => {
+  const sandbox = makeSandbox();
+  const token = `${'gh'}p_${'x7Y2k9'.repeat(6)}`;
+  sandbox.write('notes.md', `token ${token}\n`);
+  sandbox.git('add', 'notes.md');
+  // Swap the staged blob for a clean one: git show :notes.md now prints the clean text,
+  // while the commit would still hold the token.
+  const staged = sandbox.git('rev-parse', ':notes.md').stdout.trim();
+  const clean = spawnSync('git', ['hash-object', '-w', '--stdin'], { cwd: sandbox.repo, env: sandbox.env, input: 'nothing here\n', encoding: 'utf8' }).stdout.trim();
+  assert.equal(sandbox.git('replace', staged, clean).status, 0);
+  assert.equal(sandbox.git('show', ':notes.md').stdout, 'nothing here\n', 'git itself shows the clean blob');
+  const result = sandbox.run(['check', '--staged']);
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stderr, /notes\.md:1: a secret \(GitHub token\)/);
+  assert.ok(!result.stderr.includes(token), 'the secret is never printed');
+
+  // A grafts file named by GIT_GRAFT_FILE hides commits like .git/info/grafts does.
+  sandbox.git('replace', '-d', staged);
+  sandbox.git('commit', '-qm', 'add notes');
+  sandbox.git('rm', '-q', 'notes.md');
+  sandbox.git('commit', '-qm', 'remove notes');
+  const grafts = join(sandbox.home, 'grafts');
+  writeFileSync(grafts, `${sandbox.git('rev-parse', 'HEAD').stdout.trim()}\n`);
+  const history = sandbox.run(['check', '--history'], { extra: { GIT_GRAFT_FILE: grafts } });
+  assert.equal(history.status, 1, history.stdout);
+  assert.match(history.stderr, /1 problem\(s\)\n- this repo has a grafts file, so the history check can't see every commit\./);
+  assert.ok(!history.stderr.includes('notes.md'), 'nothing was scanned');
+});
+
 test('init: adds the practices, keeps what is there, and doctor goes on to stage 4', () => {
   const sandbox = makeSandbox();
   sandbox.write('AGENTS.md', '# our own rules\n');

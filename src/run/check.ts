@@ -13,9 +13,16 @@ import { type Finding, finding } from '../rules/message.ts';
 import { loadMarks, notUtc, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
 import { translationNotes } from './translations.ts';
 
-const git = (cwd: string, args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 1 << 30 });
+/**
+ * Git that reads the objects as they are, not as `git replace` shows them. A replace ref
+ * makes git show other bytes than the ones it commits, and replace refs are pushed like
+ * any ref, so a check that reads through one checks the wrong bytes (#284, #294). Every
+ * read of repo content goes through here or `gitBytes`. `quiet` hides git's own error.
+ */
+export const git = (cwd: string, args: string[], { quiet = false } = {}): string =>
+  execFileSync('git', ['--no-replace-objects', ...args], { cwd, encoding: 'utf8', maxBuffer: 1 << 30, stdio: quiet ? ['ignore', 'pipe', 'ignore'] : ['pipe', 'pipe', 'inherit'] });
 // Bytes, not text: a blob may be binary.
-const gitBytes = (cwd: string, args: string[], input = '') => execFileSync('git', args, { cwd, input, maxBuffer: 1 << 30 });
+const gitBytes = (cwd: string, args: string[], input = '') => execFileSync('git', ['--no-replace-objects', ...args], { cwd, input, maxBuffer: 1 << 30 });
 const list = (out: string) => out.split('\0').filter(Boolean);
 
 // Outside a repo this fails, and the caller handles it. Hide git's own error, or an agent
@@ -138,18 +145,15 @@ export function checkChanged(root: string, { config, env }: { config: Config; en
   return problems;
 }
 
-/**
- * The history scan reads the commits as they are, not as `git replace` shows them: a
- * replace ref can hide a commit, and replace refs are pushed like any ref (#284).
- */
-const historyGit = (root: string, args: string[]) => git(root, ['--no-replace-objects', ...args]);
-const historyGitBytes = (root: string, args: string[], input = '') => gitBytes(root, ['--no-replace-objects', ...args], input);
-
 /** Whether this clone is shallow: git holds only the newest commits (CI's default checkout). */
 const isShallow = (root: string): boolean => git(root, ['rev-parse', '--is-shallow-repository']).trim() === 'true';
 
-/** Whether the repo has an `info/grafts` file, which can hide commits from git (#284). */
-const hasGrafts = (root: string): boolean => existsSync(join(resolve(root, git(root, ['rev-parse', '--git-common-dir']).trim()), 'info', 'grafts'));
+/**
+ * Whether git reads a grafts file, which can hide commits from git (#284): one named by
+ * GIT_GRAFT_FILE, or `info/grafts` where git looks for it (#294).
+ */
+const hasGrafts = (root: string, env: Env = process.env): boolean =>
+  Boolean(env.GIT_GRAFT_FILE) || existsSync(resolve(root, git(root, ['rev-parse', '--git-path', 'info/grafts']).trim()));
 
 /** What `check --history` reports in a shallow clone, in place of a scan (#266). */
 const shallowHistory = (): Finding =>
@@ -167,7 +171,7 @@ const graftedHistory = (): Finding =>
  */
 export function historyTimeZones(root: string): number {
   if (isShallow(root) || hasGrafts(root)) return 0;
-  return historyGit(root, ['log', '--all', '--format=%ad|%cd', '--date=format:%z'])
+  return git(root, ['log', '--all', '--format=%ad|%cd', '--date=format:%z'])
     .split('\n')
     .filter((line) => line && line.split('|').some((zone) => notUtc(` ${zone}`))).length;
 }
@@ -181,7 +185,7 @@ export function historyTimeZones(root: string): number {
  */
 export function checkHistory(root: string, { config, env }: { config: Config; env: Env }): Finding[] {
   if (isShallow(root)) return [shallowHistory()];
-  if (hasGrafts(root)) return [graftedHistory()];
+  if (hasGrafts(root, env)) return [graftedHistory()];
   // The same hit in several commits is reported once.
   const problems = new Map<string, Finding>();
   const add = (found: Finding[]) => {
@@ -191,7 +195,7 @@ export function checkHistory(root: string, { config, env }: { config: Config; en
   const skip = matcher(config.privacy.skip);
   const opts = { marks, allow: config.privacy.allow };
 
-  const log = historyGit(root, ['log', '--all', '--format=%h%x00%ae%x00%ce%x00%B%x1e']);
+  const log = git(root, ['log', '--all', '--format=%h%x00%ae%x00%ce%x00%B%x1e']);
   for (const entry of log.split('\x1e')) {
     const [hash, author, committer, message] = entry.replace(/^\n/, '').split('\0');
     if (!hash) continue;
@@ -200,18 +204,18 @@ export function checkHistory(root: string, { config, env }: { config: Config; en
   }
 
   // Every blob ever committed, with the first path it was seen at.
-  const objects = historyGit(root, ['rev-list', '--all', '--objects']).split('\n');
+  const objects = git(root, ['rev-list', '--all', '--objects']).split('\n');
   const blobs = new Map<string, string>();
   for (const line of objects) {
     const [sha, ...rest] = line.split(' ');
     if (sha && rest.length) blobs.set(sha, rest.join(' '));
   }
-  const types = historyGitBytes(root, ['cat-file', '--batch-check=%(objectname) %(objecttype)'], [...blobs.keys()].join('\n') + '\n')
+  const types = gitBytes(root, ['cat-file', '--batch-check=%(objectname) %(objecttype)'], [...blobs.keys()].join('\n') + '\n')
     .toString('utf8')
     .split('\n');
   const wanted = types.filter((l) => l.endsWith(' blob')).map((l) => l.split(' ')[0]).filter((sha) => !skip(blobs.get(sha) ?? ''));
   if (wanted.length === 0) return [...problems.values()];
-  const batch = historyGitBytes(root, ['cat-file', '--batch'], wanted.join('\n') + '\n');
+  const batch = gitBytes(root, ['cat-file', '--batch'], wanted.join('\n') + '\n');
   let at = 0;
   while (at < batch.length) {
     const nl = batch.indexOf(10, at);

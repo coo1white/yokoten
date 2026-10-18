@@ -7,7 +7,7 @@ import { resolve } from 'node:path';
 import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
 import { annotations, botConfig, botEnv, ghIn, installationToken, isGitHubActions, readCodeOwners, readCommandTitle, readIssue, readPullRequest, repoOf, stepSummary } from '../src/host/github.ts';
 import { formatChanges, parseChange, readChanges, writeChanges } from '../src/run/changelog.ts';
-import { check, checkChanged, checkHistory, gitRoot, historyTimeZones, timeZoneNote } from '../src/run/check.ts';
+import { check, checkChanged, checkHistory, git, gitRoot, historyTimeZones, timeZoneNote } from '../src/run/check.ts';
 import * as claudeCode from '../src/agents/claude-code.ts';
 import * as codex from '../src/agents/codex.ts';
 import * as gemini from '../src/agents/gemini.ts';
@@ -300,7 +300,7 @@ function main(): number | Promise<number> {
         // The file as the pull request leaves it, or null when the pull request deletes it.
         const readAtHead = (file: string): string | null => {
           try {
-            return execFileSync('git', ['show', `${pr.head}:${file}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+            return git(root, ['show', `${pr.head}:${file}`], { quiet: true });
           } catch {
             return null;
           }
@@ -323,7 +323,7 @@ function main(): number | Promise<number> {
         // One diff with renames found, so a moved file is not noted as all new. Fixed
         // prefixes and plain paths, whatever the user's git settings say.
         const diffArgs = ['-c', 'core.quotePath=false', 'diff', '-U0', '-M', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', `${pr.base}...${pr.head}`];
-        const added = codeFiles.length ? addedLinesByFile(execFileSync('git', diffArgs, { cwd: root, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })) : new Map<string, Set<number>>();
+        const added = codeFiles.length ? addedLinesByFile(git(root, diffArgs)) : new Map<string, Set<number>>();
         for (const file of codeFiles) {
           const text = added.has(file) ? readAtHead(file) : null;
           if (text !== null) names.push(...nameNotes(file, text, added.get(file) ?? new Set()));
