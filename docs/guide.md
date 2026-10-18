@@ -202,6 +202,51 @@ node ~/.local/share/yokoten/bin/yokoten.ts init     # this project: adds files, 
 node ~/.local/share/yokoten/bin/yokoten.ts doctor   # the road: where you are, what's next
 ```
 
+### Use it as a GitHub Action
+
+Any repo on GitHub can run yokoten's checks in CI with one workflow file. Nothing is
+installed in the repo, and nothing leaves the job: no token, no outside service.
+
+```yaml
+# .github/workflows/yokoten.yml
+name: yokoten
+on:
+  pull_request:
+    # `edited`, `labeled` and `milestoned` run `check --pr` again after a fix.
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled, milestoned, demilestoned]
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  yokoten:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: coo1white/yokoten@<full commit SHA>
+```
+
+The action sets up Node, then runs `check`. On a pull request it also runs `check
+--pr`. The findings show on the pull request page, as in yokoten's own CI.
+
+- **Pin it.** Use a full commit SHA. A branch name like `@main` changes under you. Once
+  there is a release, a release tag works too.
+- **The checkout** needs `fetch-depth: 0`. `check --pr` lists the files between the base
+  and the head commit, so it needs both.
+- **Permissions**: `contents: read` is enough. The action takes no token.
+- **Inputs**: `pr-check` (default `true`) and `node-version` (default `22`, at least
+  22.18). Set `pr-check: false` to skip the pull request standard.
+- **Node**: the action sets up Node for the rest of the job too.
+
+`check --pr` holds a pull request to the standard of core rule 8. A repo that does not
+follow it yet can start with `pr-check: false`. The `init` workflow in the kit still
+runs `.yokoten/`. It moves to the action after the first release, so it never depends
+on `@main`.
+
 ### Commands
 
 `init` copies the runtime into `.yokoten/` in your project. Commit it: the hooks and CI

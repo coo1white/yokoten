@@ -8,6 +8,10 @@ All notable changes are listed here. The format follows
 
 ### Added
 
+- yokoten runs as a GitHub Action: `uses: coo1white/yokoten@<commit SHA>`. It sets up Node,
+  runs `check`, and runs `check --pr` on pull requests. Inputs: `pr-check` and
+  `node-version`. It needs `contents: read` and takes no token. The kit's workflow
+  moves to the action after the first release (#106).
 - The README and the Chinese README show a short terminal demo under Quick start. An
   agent's force push is blocked with what, why and the fix. Then `doctor` names the next
   step. `node scripts/demo-svg.ts` builds it from `scripts/demo.txt` (#90).

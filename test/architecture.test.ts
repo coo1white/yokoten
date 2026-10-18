@@ -67,6 +67,10 @@ test('workflows: every action is pinned to a commit, the version in a comment', 
       assert.deepEqual(unpinned(text), [], `${dir}/${file}: pin each action to a commit, as \`owner/repo@<40 hex> # vX.Y.Z\``);
     }
   }
+  // The action other repos run (#106) pins what it uses the same way.
+  const action = readFileSync(join(ROOT, 'action.yml'), 'utf8');
+  assert.ok(/uses:/.test(action), 'action.yml: no `uses:` found; the scan is broken');
+  assert.deepEqual(unpinned(action), [], 'action.yml: pin each action to a commit, as `owner/repo@<40 hex> # vX.Y.Z`');
   assert.ok(seen > 0, 'no `uses:` found; the scan is broken');
 });
 

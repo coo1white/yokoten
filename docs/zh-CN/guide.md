@@ -187,6 +187,49 @@ node ~/.local/share/yokoten/bin/yokoten.ts init     # 这个项目：只加文�
 node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看走到哪一关，下一步做什么
 ```
 
+### 当成 GitHub Action 用
+
+GitHub 上的任何仓库，加一个 workflow 文件，就能在 CI 里跑 yokoten 的检查。仓库里不用装
+任何东西，数据也不会离开这次 CI：不用令牌，不连外面的服务。
+
+```yaml
+# .github/workflows/yokoten.yml
+name: yokoten
+on:
+  pull_request:
+    # 有了 edited、labeled、milestoned，改完标题或标签，check --pr 会再跑一遍。
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled, milestoned, demilestoned]
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  yokoten:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: coo1white/yokoten@<完整的 commit SHA>
+```
+
+这个 action 先装好 Node，再跑 `check`；如果是 PR，还会接着跑 `check --pr`。查出来的问题
+会标在 PR 页面上，跟 yokoten 自己的 CI 一样。
+
+- **版本要钉死。** 写完整的 commit SHA。写 `@main` 这种分支名，哪天内容变了你都不知道。
+  等发布了正式版本，也可以写版本标签。
+- **checkout** 要加 `fetch-depth: 0`。`check --pr` 要比较 PR 的起点和最新提交，两个都得拉下来。
+- **权限**只要 `contents: read`。这个 action 不要令牌。
+- **参数**只有两个：`pr-check`（默认 `true`）和 `node-version`（默认 `22`，最低 22.18）。
+  不想查 PR 的格式，就写 `pr-check: false`。
+- **Node**：action 装的 Node，这个 job 后面的步骤也会用到。
+
+`check --pr` 按核心规则第 8 条检查 PR。还没按这条规则走的仓库，可以先写 `pr-check: false`。
+kit 里 `init` 放的 workflow 暂时还是跑 `.yokoten/` 里的那份，等第一个正式版本发布以后再换成
+这个 action，这样就不会依赖 `@main`。
+
 ### 命令
 
 `init` 会把 yokoten 运行要用的文件复制到项目的 `.yokoten/` 里。把它一起提交：这样不联网、

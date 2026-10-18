@@ -114,6 +114,8 @@ node ~/.local/share/yokoten/bin/yokoten.ts init      # once per project
 
 Use one way, not both. [The guide](docs/guide.md#install-and-commands) says what each one adds.
 
+**In CI only**, add one workflow file: [use it as a GitHub Action](docs/guide.md#use-it-as-a-github-action).
+
 Here is what happens when an agent tries a force push in a project with yokoten:
 
 <img src="docs/assets/demo.svg" width="680" alt="A terminal. An agent runs git push --force origin main. The yokoten hook blocks it and says what happened, why, and the fix: use --force-with-lease. Then yokoten doctor shows stage 1 of 5 and names the next step: add tests.">
