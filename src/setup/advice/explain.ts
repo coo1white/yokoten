@@ -2,8 +2,8 @@
 // explain a finding. Every finding's id is here: a rule a check or a guard holds, or a
 // step on the road.
 
-import { type Rule, RULES, type RuleId } from '../rules/message.ts';
-import { ROAD, STAGES } from './road.ts';
+import { type Rule, RULES, type RuleId } from '../../rules/message.ts';
+import { ROAD, STAGES } from '../road.ts';
 
 /** What `explain --json` prints for a known id. */
 export interface Explained {
