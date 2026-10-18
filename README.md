@@ -92,6 +92,19 @@ The near steps are in [M0](https://github.com/coo1white/yokoten/milestone/1) and
 
 You need [Node](https://nodejs.org/) 22.18 or later. Nothing else.
 
+**In Claude Code**, type these two commands:
+
+```text
+/plugin marketplace add coo1white/yokoten
+/plugin install yokoten@yokoten
+```
+
+Choose "Install for you", then open a project. The session tells you which stage you
+are at, and the one next step. Run `/yokoten:init` to put the practices into the
+project.
+
+**Without the plugin**, for Codex CLI and Gemini CLI too:
+
 ```sh
 git clone https://github.com/coo1white/yokoten
 node yokoten/bin/yokoten.ts install                 # once per computer
@@ -99,8 +112,7 @@ cd your-project
 node ~/.local/share/yokoten/bin/yokoten.ts init      # once per project
 ```
 
-Then open the project in Claude Code. It tells you which stage you are at, and the one
-next step.
+Use one way, not both. [The guide](docs/guide.md#install-and-commands) says what each one adds.
 
 ## Learn more
 

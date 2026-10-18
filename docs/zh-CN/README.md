@@ -90,6 +90,18 @@ AI 想闯大祸时，桥头有人守着。
 
 只要装 [Node](https://nodejs.org/) 22.18 或更高版本，别的都不用装。
 
+**用 Claude Code 的话**，在里面输入这两条：
+
+```text
+/plugin marketplace add coo1white/yokoten
+/plugin install yokoten@yokoten
+```
+
+选「Install for you」，然后打开一个项目。会话一开始就会告诉你走到了第几关、下一步该做哪一件事。
+输入 `/yokoten:init`，就把这套做法放进项目。
+
+**不用插件的话**（Codex CLI、Gemini CLI 也是这样装）：
+
 ```sh
 git clone https://github.com/coo1white/yokoten
 node yokoten/bin/yokoten.ts install                 # 每台电脑做一次
@@ -97,7 +109,7 @@ cd your-project
 node ~/.local/share/yokoten/bin/yokoten.ts init      # 每个项目做一次
 ```
 
-然后用 Claude Code 打开项目。它会告诉你走到了第几关，下一步该做哪一件事。
+两种选一种就行，别都装。每种装法带来什么，[使用指南](guide.md#安装和命令)里有写。
 
 ## 了解更多
 

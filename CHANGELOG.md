@@ -8,6 +8,12 @@ All notable changes are listed here. The format follows
 
 ### Added
 
+- yokoten installs as a Claude Code plugin: `/plugin marketplace add coo1white/yokoten`,
+  then `/plugin install yokoten@yokoten`. The repo is the plugin and its marketplace. It
+  uses the kit's skills and agents as they are, adds the same two hooks as `install`,
+  and adds `/yokoten:init` and `/yokoten:doctor`. `git clone` and `install` still work.
+  `doctor` counts an enabled plugin as the session hook, the runtime and the skills.
+  `.claude-plugin/` is lead-only by default, in every project (#31).
 - `check --pr` fails a pull request that changes a file CODEOWNERS owns unless its
   first line is `tier: A`. The paths set the lowest tier; the author can only raise it.
   It reads CODEOWNERS from the base branch, so a pull request can't lower its own tier.

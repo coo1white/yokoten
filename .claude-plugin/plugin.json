@@ -1,0 +1,49 @@
+{
+  "name": "yokoten",
+  "description": "Rules, guards and skills for AI coding agents: the tool-call guard, doctor at the start of each session, and the yokoten skills and agents.",
+  "author": {
+    "name": "coo1white",
+    "url": "https://github.com/coo1white"
+  },
+  "homepage": "https://yokoten.app",
+  "repository": "https://github.com/coo1white/yokoten",
+  "license": "MIT",
+  "keywords": [
+    "guardrails",
+    "hooks",
+    "sdlc",
+    "agents"
+  ],
+  "skills": [
+    "./kit/user/skills/",
+    "./kit/plugin/skills/"
+  ],
+  "agents": [
+    "./kit/user/agents/reviewer.md",
+    "./kit/user/agents/verifier.md",
+    "./kit/user/agents/worker.md"
+  ],
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/yokoten.ts\" doctor --session"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/yokoten.ts\" hook --commands-only"
+          }
+        ]
+      }
+    ]
+  }
+}

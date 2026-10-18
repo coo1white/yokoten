@@ -125,7 +125,7 @@ Check: the tool-call guard stops `git push --force`, `-f` and a `+ref`; `--force
 
 | Layer | What | How |
 |-------|------|-----|
-| **Machine** | Skills, agents, and two user-level hooks, the same on every computer | `yokoten install` |
+| **Machine** | Skills, agents, and two user-level hooks, the same on every computer | `yokoten install`, or the Claude Code plugin |
 | **Project** | Rules, the commit check, the tool-call hook, CI, issue and PR templates, Dependabot (monthly, one pull request), a security policy | `yokoten init`, then the `yokoten` skill for an old project |
 | **Server** | Branch and tag rulesets, squash merge, code owners, a bot with limited rights, the security switches | Set once by the owner; `doctor` lists the steps |
 | **Rules** | `AGENTS.md`: twelve core rules, plus the project's own | Every rule names its check |
@@ -149,7 +149,43 @@ yokoten guards three AI coding agents. Each one keeps the same rules.
 ## Install and commands
 
 Requires Node 22.18 or later, which runs TypeScript as it is. No build step, no
-dependencies.
+dependencies. There are two ways to install. Use one, not both.
+
+### The Claude Code plugin
+
+In a Claude Code session:
+
+```text
+/plugin marketplace add coo1white/yokoten
+/plugin install yokoten@yokoten
+```
+
+The first command adds this repo as a plugin marketplace. The second opens the plugin.
+Choose "Install for you" (user scope). From your shell, `claude plugin marketplace add
+coo1white/yokoten` and then `claude plugin install yokoten@yokoten` do the same.
+
+The plugin is this repo. It uses the same files that `install` copies, so the two ways
+can't drift apart:
+
+| The plugin adds | From |
+|---|---|
+| The skills: `/yokoten:dispatch`, `/yokoten:inspect`, `/yokoten:rca`, `/yokoten:record`, `/yokoten:release`, `/yokoten:yokoten` | `kit/user/skills/` |
+| The agents: `yokoten:worker`, `yokoten:reviewer`, `yokoten:verifier` | `kit/user/agents/` |
+| `/yokoten:init` and `/yokoten:doctor`, which run yokoten from the plugin | `kit/plugin/skills/` |
+| The SessionStart `doctor` hook and the command guard: the same two hooks that `install` adds | `.claude-plugin/plugin.json` |
+
+Claude Code runs the plugin's `.ts` files with `node`. Node can do this because the
+plugin folder is not under `node_modules`. To get a newer yokoten, open `/plugin`, select
+yokoten on the **Installed** tab, and choose **Update now**. A third-party marketplace
+does not update on its own until you turn on auto-update for it.
+
+The plugin works in Claude Code only. It does not make the private-marks file: `doctor`
+names the file, and you make it. When the plugin is on in your user settings, `doctor`
+counts its hooks and skills as installed.
+
+### Install from a clone
+
+For Codex CLI and Gemini CLI, or without the plugin:
 
 ```sh
 git clone https://github.com/coo1white/yokoten
@@ -158,6 +194,8 @@ cd your-project
 node ~/.local/share/yokoten/bin/yokoten.ts init     # this project: adds files, never overwrites
 node ~/.local/share/yokoten/bin/yokoten.ts doctor   # the road: where you are, what's next
 ```
+
+### Commands
 
 `init` copies the runtime into `.yokoten/` in your project. Commit it: the hooks and CI
 then run with no network and no global install.

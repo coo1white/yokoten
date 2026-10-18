@@ -12,7 +12,7 @@ import { type Env, loadConfig } from '../rules/config.ts';
 import { matcher } from '../rules/config.ts';
 import type { Finding } from '../rules/message.ts';
 import { BUILD_DIRS, isBuildOutput } from '../rules/layout.ts';
-import { hasProjectHook } from '../agents/claude-code.ts';
+import { hasPlugin, hasProjectHook } from '../agents/claude-code.ts';
 import { runs } from '../run/cli.ts';
 import { hasBot } from '../host/github.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
@@ -289,13 +289,14 @@ export const ROAD: Step[] = [
     stage: 4,
     key: 'skills',
     check: (_root, env) => {
+      if (hasPlugin(env)) return true; // the Claude Code plugin brings the skills
       const lacking = skillsLacking(env);
       return lacking && lacking.length === 0;
     },
     what: (_root, env) => `the yokoten skills are not in ${(skillsLacking(env) ?? []).join(' or ')}`,
-    fix: () => 'run `yokoten install`',
+    fix: () => 'run `yokoten install`, or install the Claude Code plugin',
     why: 'the skills show an agent how to hand off work, review it and find the cause of a failure',
-    how: 'every skill in the kit is in ~/.claude/skills and in ~/.agents/skills; a project copy of yokoten has no kit, so it can\'t check',
+    how: 'every skill in the kit is in ~/.claude/skills and in ~/.agents/skills, or the Claude Code plugin is on; a project copy of yokoten has no kit, so it can\'t check',
   },
   {
     stage: 5,
