@@ -2,7 +2,7 @@
 // Then adoption (#6), which reads the road's checks for an old project.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -250,4 +250,57 @@ test('road: every outside standard has the form "<standard>: <item>" or an item 
       if (part.startsWith('OSPS')) assert.match(part, /^OSPS-[A-Z]{2}-\d{2}\.\d{2}$/, `${key}: an OSPS Baseline id`);
     }
   }
+});
+
+// ---- The tests step (#257): the common test commands in a workflow count, in any kind of project. ----
+
+/** The tests step on a scratch repo with these files: whether it is done, and what it says when not. */
+const testsStep = (files: Record<string, string>) => {
+  const dir = mkdtempSync(join(tmpdir(), 'yokoten-tests-step-'));
+  try {
+    for (const [path, text] of Object.entries(files)) {
+      mkdirSync(dirname(join(dir, path)), { recursive: true });
+      writeFileSync(join(dir, path), text);
+    }
+    const tests = ROAD.find((s) => s.key === 'tests');
+    assert.ok(tests);
+    return { done: tests.check(dir, {}, undefined), what: tests.what(dir, {}, undefined) };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+const workflow = (run: string) => ({ '.github/workflows/ci.yml': `jobs:\n  t:\n    steps:\n      - run: ${run}\n` });
+
+test('road: the tests step is done for a workflow that runs any common test runner (#257)', () => {
+  const runs = ['python -m unittest discover', 'python -m pytest', 'tox', 'nox', 'make test', 'npx vitest run', 'npx jest', 'pnpm exec vitest run', 'pnpm exec jest', 'yarn vitest run', 'yarn jest',
+    'uv run pytest', 'go test ./...', 'node --test'];
+  for (const run of runs) assert.equal(testsStep(workflow(run)).done, true, run);
+  // In a multi-line run block, and after another command.
+  assert.equal(testsStep({ '.github/workflows/ci.yml': 'jobs:\n  t:\n    steps:\n      - run: |\n          pip install tox\n          tox -e py\n' }).done, true);
+  assert.equal(testsStep(workflow('npm ci && npx jest --ci')).done, true);
+  // Installing a runner is not running it.
+  assert.equal(testsStep(workflow('pip install tox nox')).done, false);
+});
+
+test('road: in a workspaces repo, a workflow that runs each package\'s tests is enough, with no root script (#257)', () => {
+  const workspaces = { 'package.json': JSON.stringify({ private: true, workspaces: ['packages/*'] }) };
+  const pnpm = { 'package.json': JSON.stringify({ private: true }), 'pnpm-workspace.yaml': 'packages:\n  - packages/*\n' };
+  for (const run of ['npm test --workspaces', 'npm run test -ws', 'pnpm -r test', 'yarn workspaces run test']) {
+    assert.equal(testsStep({ ...workspaces, ...workflow(run) }).done, true, run);
+    assert.equal(testsStep({ ...pnpm, ...workflow(run) }).done, true, `${run} (pnpm-workspace.yaml)`);
+  }
+  // Without workspaces, a root with no "test" script runs nothing with npm test.
+  assert.equal(testsStep({ 'package.json': JSON.stringify({ private: true }), ...workflow('npm test') }).done, false);
+  // A lint step is not a test step.
+  assert.equal(testsStep({ ...workspaces, ...workflow('npm run lint') }).done, false);
+});
+
+test('road: the tests step stays next with only a lint step, and says what is missing by project type (#257)', () => {
+  const lint = testsStep({ 'package.json': JSON.stringify({ scripts: { lint: 'eslint .' } }), ...workflow('npm run lint') });
+  assert.deepEqual(lint, { done: false, what: 'no test command: no "test" script in package.json, and no workflow runs a test runner' });
+  const go = testsStep({ 'go.mod': 'module example.com/x\n' });
+  assert.deepEqual(go, { done: false, what: 'no workflow runs the tests (`go test`, …)' });
+  assert.equal(testsStep({ 'pyproject.toml': '[project]\nname = "x"\n' }).what, 'no workflow runs the tests (`pytest`, …)');
+  assert.equal(testsStep({}).what, 'no workflow runs the tests (`go test`, `pytest`, `cargo test`, …)');
+  for (const files of [{ 'go.mod': '' }, { 'pyproject.toml': '' }, {}] as Record<string, string>[]) assert.doesNotMatch(testsStep(files).what, /package\.json/);
 });
