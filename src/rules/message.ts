@@ -320,6 +320,12 @@ export const RULES = {
     why: 'a forgotten branch holds work nobody is looking at',
     check: `${SERVER_CHECK}; a note only, and doctor never deletes a branch`,
   },
+  'not-a-repo': {
+    rule: 'yokoten runs inside a git repo',
+    why: 'the checks read commits, so yokoten needs git history',
+    check: 'every command that reads or writes a project looks for its git repo first, and stops before it writes anything; `doctor --session` and the hooks do not report it, so a session in another folder gets no noise',
+    docs: guide('commands'),
+  },
 } satisfies Record<string, Rule>;
 
 export type RuleId = keyof typeof RULES;
@@ -333,6 +339,9 @@ export function finding(id: RuleId, what: string, fix: string, more: { file?: st
   if (more.line !== undefined) f.line = more.line;
   return f;
 }
+
+/** Outside a git repo (#205): the one finding every command that needs a repo gives. */
+export const notRepoFinding = (folder: string): Finding => finding('not-a-repo', `${folder} is not inside a git repo`, 'run it inside your project, or `git init` first');
 
 const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 

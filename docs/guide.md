@@ -392,6 +392,10 @@ value.
 Output for people follows one rule. Results go to stdout. Problems, refusals and errors
 go to stderr. An unknown option is refused, never ignored.
 
+`init`, `update`, `doctor`, `check`, `adopt` and `bot` need a git repo. Outside one, they
+say so, write nothing, and exit 1. `init <dir>` also refuses a folder that does not exist.
+`doctor --session` stays quiet outside a repo, so a session there gets no noise.
+
 In CI, you don't need to open the log to see what failed. When `check` runs in GitHub
 Actions, each finding is an annotation on the changed line of the pull request. The job
 summary lists each finding with its place, rule, what, why and the fix. The rule links to

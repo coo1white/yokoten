@@ -2,7 +2,7 @@
 // yokoten: carry what one project learned into every project.
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
 import { annotations, botConfig, botEnv, ghIn, installationToken, isGitHubActions, readCodeOwners, readCommandTitle, readIssue, readPullRequest, repoOf, stepSummary } from '../src/host/github.ts';
@@ -11,7 +11,7 @@ import { check, checkChanged, checkHistory, gitRoot, historyTimeZones, timeZoneN
 import * as claudeCode from '../src/agents/claude-code.ts';
 import * as codex from '../src/agents/codex.ts';
 import * as gemini from '../src/agents/gemini.ts';
-import { type Finding, formatFinding } from '../src/rules/message.ts';
+import { type Finding, formatFinding, notRepoFinding } from '../src/rules/message.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
 import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, largeDiff, longSentenceNote, longSentences } from '../src/rules/pr.ts';
 import { hideHome } from '../src/rules/privacy.ts';
@@ -101,6 +101,19 @@ const rootOf = (dir: string): string | null => {
   }
 };
 
+/**
+ * The repo root, or null after one plain finding on stderr (#205): a command that needs a
+ * repo calls this before it writes anything. With --json, `json` shapes the output.
+ */
+function requireRoot(dir: string, json?: (missing: Finding) => unknown): string | null {
+  const root = rootOf(dir);
+  if (root) return root;
+  const missing = notRepoFinding(dir);
+  if (json) printJson(json(missing));
+  else print([`yokoten ${cmd}: ${formatFinding(missing)}`], process.stderr);
+  return null;
+}
+
 // Everything yokoten prints goes through here or `say`, never straight to a stream: the
 // output lands in transcripts and CI logs, so the home folder is shown as ~ (core rule 11).
 function print(lines: string[], stream: NodeJS.WritableStream = process.stdout): void {
@@ -166,6 +179,7 @@ async function bot(command: string[]): Promise<number> {
     print(['yokoten bot: no command. Example: yokoten bot -- gh pr create --fill'], process.stderr);
     return 1;
   }
+  if (!requireRoot(process.cwd())) return 1;
   const remote = execFileSync('git', ['remote', 'get-url', 'origin'], { encoding: 'utf8' });
   const repo = repoOf(remote);
   if (!repo) {
@@ -265,7 +279,8 @@ function main(): number | Promise<number> {
       if (modes.length > 1) return usage(`${modes.join(' and ')} can't be used together`);
       const mode = modes[0]?.slice(2) ?? 'tree';
       const json = options.flags.has('--json');
-      const root = gitRoot(process.cwd());
+      const root = requireRoot(process.cwd(), json ? (missing) => ({ check: mode, ok: false, findings: [missing], notes: [] }) : undefined);
+      if (!root) return 1;
       const config = loadConfig(root);
       const name = `yokoten check${mode === 'pr' || mode === 'issue' ? ` --${mode}` : ''}`;
       const notes: Finding[] = [];
@@ -373,6 +388,13 @@ function main(): number | Promise<number> {
       const root = rootOf(process.cwd());
       const config = root ? loadConfig(root) : DEFAULTS;
       const { ok, lines, report } = doctor(root, { env, config, session, gh: root ? ghIn(root) : undefined });
+      // Full doctor outside a repo says so (#205). A session there stays quiet: no noise in a non-repo folder.
+      if (!root && !session) {
+        const missing = notRepoFinding(process.cwd());
+        if (options.flags.has('--json')) printJson({ ...report, ok: false, findings: [...report.findings, missing] });
+        else print([...lines, `yokoten doctor: ${formatFinding(missing)}`], process.stderr);
+        return 1;
+      }
       if (options.flags.has('--json')) printJson(report);
       else print(lines);
       // A session must start even when a project has steps left.
@@ -392,7 +414,8 @@ function main(): number | Promise<number> {
       // Reads files and asks the model; never writes a file or changes config.
       const options = parse({ flags: ['--json'] });
       if (typeof options === 'string') return usage(options);
-      const root = gitRoot(process.cwd());
+      const root = requireRoot(process.cwd());
+      if (!root) return 1;
       return draft(facts(root, env), { env }).then((drafted) => {
         if (options.flags.has('--json')) {
           printJson(drafted.rows.map(({ key, status, evidence, decision, reason }) => ({ key, status, evidence, decision, reason })));
@@ -407,7 +430,13 @@ function main(): number | Promise<number> {
       if (options.flags.has('--yes') && !options.flags.has('--github')) return usage('--yes goes with --github');
       if (options.flags.has('--remove-default-labels') && !options.flags.has('--github')) return usage('--remove-default-labels goes with --github');
       const dir = resolve(options.positional[0] ?? '.');
-      const root = rootOf(dir) ?? dir;
+      // Checked before anything is written (#205): a typo never becomes a new folder.
+      if (!existsSync(dir)) {
+        print([`yokoten init: ${options.positional[0]} does not exist; nothing was written. Create it and run \`git init\` there first.`], process.stderr);
+        return 1;
+      }
+      const root = requireRoot(dir);
+      if (!root) return 1;
       print(init(root));
       // The host is changed only when asked (#10): it is a remote, and other people see it.
       // Without --yes, init only reads it and says what it would do, or what it skipped.
@@ -420,7 +449,9 @@ function main(): number | Promise<number> {
       const options = parse({ flags: ['--write'], positional: 1 });
       if (typeof options === 'string') return usage(options);
       const dir = resolve(options.positional[0] ?? '.');
-      const { ok, lines } = updateCoreRules(rootOf(dir) ?? dir, { write: options.flags.has('--write') });
+      const root = requireRoot(dir);
+      if (!root) return 1;
+      const { ok, lines } = updateCoreRules(root, { write: options.flags.has('--write') });
       print([`yokoten update: ${lines[0]}`, ...lines.slice(1)], ok ? process.stdout : process.stderr);
       return ok ? 0 : 1;
     }

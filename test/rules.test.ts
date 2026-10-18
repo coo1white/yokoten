@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import { DEFAULTS, loadConfig, matcher } from '../src/rules/config.ts';
 import { checkCommand, checkEdit } from '../src/rules/guards.ts';
 import { checkBuildOutput, checkLayout, isBuildOutput } from '../src/rules/layout.ts';
-import { DOCS_URL, type Finding, finding, formatFinding, type Rule, RULES } from '../src/rules/message.ts';
+import { DOCS_URL, type Finding, finding, formatFinding, notRepoFinding, type Rule, RULES } from '../src/rules/message.ts';
 import { POSITIVE_CONTROL, scanText } from '../src/rules/privacy.ts';
 import { SECRET_CONTROL } from '../src/rules/secrets.ts';
 import { check, timeZoneNote } from '../src/run/check.ts';
@@ -463,6 +463,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   // The road and the machine, from an empty folder and an empty home.
   const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
   for (const step of ROAD) add(stepFinding(step, dir, { HOME: dir }));
+  add(notRepoFinding(dir));
   for (const c of [...agentHooks(dir), ...machineChecks({ HOME: dir, YOKOTEN_PRIVATE_MARKS: join(dir, 'none') })]) add(c.finding);
   // The core rules (#120): behind the kit, and with no heading to compare by.
   for (const rules of ['# old rules\n\n## This project\n', '# rules\n']) {
