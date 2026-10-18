@@ -33,6 +33,7 @@ const HELP = [
   '',
   ...commandList(),
   '',
+  'Start: `yokoten install` once on this machine, then `yokoten init` in your project.',
   'Run `yokoten <command> --help` for its options and an example.',
   '--json on check, doctor, hook and explain: data on stdout, for an agent or a script.',
   'Exit codes: 0 ok, 1 problems found or a usage error, 2 the hook blocked the tool call',
