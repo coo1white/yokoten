@@ -571,7 +571,22 @@ function runString(words: string[], at: number): string {
   const name = base(words[at]);
   if (name === 'ssh') return words.slice(sshCommand(words, at + 1)).join(' ');
   if (name === 'flock') return flockCommand(words, at + 1);
+  if (name === 'env') return envCommand(words, at + 1) ?? words.slice(at + 1).join(' ');
   return words.slice(at + 1).join(' ');
+}
+
+// The command `env -S` runs: its split string, then the words after it
+// (`env -iS'git push' x`, `env --split-string='a b'`, `env -u X -S 'a b'`).
+function envCommand(words: string[], index: number): string | undefined {
+  while (index < words.length && words[index].startsWith('-')) {
+    const split = splitString(words, index);
+    if (split !== undefined) {
+      const isInline = /^--[^=]*=/.test(words[index]) || /^-[a-zA-Z]*S./s.test(words[index]);
+      return [split, ...words.slice(index + (isInline ? 1 : 2))].join(' ');
+    }
+    index += LAUNCHERS.env.options.includes(words[index]) ? 2 : 1;
+  }
+  return undefined;
 }
 
 // The index of the first word after ssh's options and host.

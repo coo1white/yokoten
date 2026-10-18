@@ -699,3 +699,16 @@ test('bash: a command of 100k words is read in under a second (#226)', () => {
   }
   blocked(`echo ${'a '.repeat(100000)}; ${force}`);
 });
+
+test('bash: the core rules read the string env -S runs, in every spelling (#226)', () => {
+  for (const command of [
+    `env -iS'${force}'`,
+    `env -S '${force}'`,
+    `env --split-string='${force}'`,
+    `env --split='${force}'`,
+    `env -u X -S '${force}'`,
+    `env -S 'git push' --force`,
+  ]) blocked(command);
+  allowed("env -iS'git status' --short");
+  allowed('env -S "git status"');
+});
