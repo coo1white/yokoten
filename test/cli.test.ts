@@ -447,6 +447,47 @@ test('update: doctor says when the core rules are behind; update previews, and -
   assert.match(sandbox.run(['explain', 'core-rules']).stdout, /^core-rules: the core rules in AGENTS\.md/);
 });
 
+// A project written by a newer yokoten is never taken back to an older kit (#141).
+test('update: init writes the kit version; a newer project is refused, an older one is updated (#141)', () => {
+  const sandbox = makeSandbox();
+  assert.equal(sandbox.run(['init']).status, 0);
+  const path = join(sandbox.repo, 'AGENTS.md');
+  const fresh = readFileSync(path, 'utf8');
+  assert.match(fresh, /^<!-- yokoten kit 0\.1\.0 -->\n# How work is done here\n/, 'init writes the mark on the first line');
+  const own = fresh.slice(fresh.indexOf('## This project'));
+  const kitCore = fresh.slice(0, fresh.indexOf('## This project'));
+
+  // Newer: a later kit added a line. update refuses, with or without --write, and doctor
+  // says to update yokoten, not the project.
+  const newer = kitCore.replace('0.1.0 -->', '0.2.0 -->').replace('## Roles\n', '## Roles\n\nA rule from a later kit.\n') + own;
+  writeFileSync(path, newer);
+  for (const args of [['update'], ['update', '--write']]) {
+    const result = sandbox.run(args);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /^yokoten update: AGENTS\.md was written by yokoten 0\.2\.0, newer than this yokoten 0\.1\.0\. Nothing was written/);
+  }
+  assert.equal(readFileSync(path, 'utf8'), newer, 'a newer project is not downgraded');
+  const doctor = sandbox.run(['doctor']);
+  assert.match(doctor.stdout, /\n {2}note +core-rules: the core rules in AGENTS\.md come from yokoten 0\.2\.0, newer than this yokoten 0\.1\.0; update yokoten itself, not the project/);
+  assert.doesNotMatch(doctor.stdout, /MISSING core-rules/);
+
+  // Older: the same text with an older mark is updated, and gets the new mark.
+  writeFileSync(path, newer.replace('0.2.0 -->', '0.0.9 -->'));
+  assert.match(sandbox.run(['doctor']).stdout, /MISSING core-rules: the core rules in AGENTS\.md are behind/);
+  let result = sandbox.run(['update', '--write']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(path, 'utf8'), fresh);
+
+  // No mark (every project before #141): an unknown version, compared by content as before.
+  const unmarked = newer.replace(/^<!-- yokoten kit .* -->\n/, '');
+  writeFileSync(path, unmarked);
+  result = sandbox.run(['update', '--write']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(path, 'utf8'), fresh, 'updated, and the mark is added');
+  writeFileSync(path, fresh.replace(/^<!-- yokoten kit .* -->\n/, ''));
+  assert.match(sandbox.run(['update']).stdout, /up to date/, 'the mark alone is no change');
+});
+
 // The road (record 0004). A session hears three lines about one step; the marks file is
 // set so that the private-marks note does not add a fourth.
 test('doctor --session: exactly three lines, about the first step of the first stage not done', () => {
@@ -1009,47 +1050,62 @@ test('--json: check, doctor, hook and explain print pure JSON with what, why and
   assert.match(result.stderr, /Ids: release, /);
 });
 
-test('init --github: opt-in, says what it would make, makes it with --yes, and a second run makes nothing (#10)', () => {
+test('init: reads GitHub and says what it would do; --github --yes does it, and a second run changes nothing (#10)', () => {
   const sandbox = makeSandbox();
   // A fake gh first on PATH, holding the repo in a file. The real gh and GitHub are never reached.
   const bin = join(sandbox.home, 'bin');
   const state = join(sandbox.home, 'gh.json');
   mkdirSync(bin);
-  writeFileSync(state, JSON.stringify({ labels: ['bug', 'question'], milestones: [], calls: [] }));
+  writeFileSync(state, JSON.stringify({ labels: [{ name: 'bug', color: 'd73a4a', description: 'Something does not work as it should' }, { name: 'question', color: 'd876e3', description: '' }], milestones: [], calls: [] }));
   writeFileSync(
     join(bin, 'gh'),
     `#!/usr/bin/env node
 const fs = require('node:fs');
 const s = JSON.parse(fs.readFileSync(${JSON.stringify(state)}, 'utf8'));
 const a = process.argv.slice(2);
+const option = (name) => a[a.indexOf(name) + 1];
 s.calls.push(a.join(' '));
-if (a[0] === 'repo') console.log('me/repo');
-else if (a[0] === 'label' && a[1] === 'list') s.labels.forEach((l) => console.log(l));
-else if (a[0] === 'label' && a[1] === 'create') s.labels.push(a[2]);
+if (a[0] === 'label' && a[1] === 'create') s.labels.push({ name: a[2], color: option('--color'), description: option('--description') });
+else if (a[0] === 'label' && a[1] === 'delete') s.labels = s.labels.filter((l) => l.name !== a[2]);
 else if (a.includes('POST')) s.milestones.push(a.at(-1).slice(6));
+else if (a[0] === 'api' && a.some((w) => w.includes('/labels'))) s.labels.forEach((l) => console.log(JSON.stringify(l)));
 else if (a[0] === 'api') s.milestones.forEach((m) => console.log('open ' + m));
 fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s));
 `,
   );
   chmodSync(join(bin, 'gh'), 0o755);
   const extra = { PATH: `${bin}:${process.env.PATH}` };
-  const made = () => JSON.parse(readFileSync(state, 'utf8')).calls.filter((c: string) => / create |POST/.test(c));
+  const calls = (): string[] => JSON.parse(readFileSync(state, 'utf8')).calls;
+  const changed = () => calls().filter((c) => /^label |POST/.test(c));
+  // Without a GitHub remote, init succeeds, says what it skipped, and never runs gh.
   let result = sandbox.run(['init'], { extra });
-  assert.match(result.stdout, /run `yokoten init --github` to see what it would make/);
-  assert.equal(JSON.parse(readFileSync(state, 'utf8')).calls.length, 0, 'without --github, gh is not run');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /GitHub: skipped, because the origin remote is not on GitHub/);
+  assert.equal(calls().length, 0);
   assert.equal(sandbox.run(['init', '--yes'], { extra }).status, 1, '--yes alone is refused');
-  result = sandbox.run(['init', '--github'], { extra });
+  assert.equal(sandbox.run(['init', '--remove-default-labels'], { extra }).status, 1, 'so is --remove-default-labels');
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/example/repo.git');
+  result = sandbox.run(['init'], { extra });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /GitHub: me\/repo\n- 1 of the 9 standard labels are there; kept\n- not in the standard set: question\./);
-  assert.match(result.stdout, /Would make:\n- label "feat"[^]*- milestone "First release"\nNothing changed\./);
-  assert.deepEqual(made(), []);
+  assert.match(result.stdout, /GitHub: example\/repo\n- 1 of the 9 standard labels are there; kept\n- not in the standard set: question\./);
+  assert.match(result.stdout, /Would do:\n- make label "feat"[^]*- make milestone "First release"\nNothing changed\./);
+  assert.deepEqual(changed(), [], 'plain init only reads');
   result = sandbox.run(['init', '--github', '--yes'], { extra });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /- made label "good first issue"\n[^]*- made milestone "First release"/);
-  assert.equal(made().length, 9);
+  assert.match(result.stdout, /- done: make label "good first issue"[^\n]*\n[^]*- done: make milestone "First release"/);
+  assert.equal(changed().length, 9);
   result = sandbox.run(['init', '--github', '--yes'], { extra });
-  assert.match(result.stdout, /- 9 of the 9 standard labels are there; kept\n- a milestone is there; kept\n[^]*Nothing to make\./);
-  assert.equal(made().length, 9, 'the second run made nothing');
+  assert.match(result.stdout, /- 9 of the 9 standard labels are there; kept\n- a milestone is there; kept\n[^]*Nothing to change\./);
+  assert.equal(changed().length, 9, 'the second run changed nothing');
+  // Without gh on the PATH, init still succeeds and says so. Only node and git are there.
+  const noGh = join(sandbox.home, 'no-gh');
+  mkdirSync(noGh);
+  const gitPath = spawnSync('git', ['--exec-path'], { encoding: 'utf8' }).stdout.trim();
+  symlinkSync(process.execPath, join(noGh, 'node'));
+  symlinkSync(join(gitPath, 'git'), join(noGh, 'git'));
+  result = sandbox.run(['init', '--github', '--yes'], { extra: { PATH: noGh } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /GitHub: skipped, because gh is not installed/);
 });
 
 // The Claude Code plugin (#31). The repo root is the plugin and its own marketplace, so the

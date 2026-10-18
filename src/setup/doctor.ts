@@ -96,10 +96,14 @@ export function coreRulesCheck(root: string): { mark: 'ok' | 'MISSING' | 'note';
   const fix = 'run `yokoten update` to see the change, then `yokoten update --write`; the "This project" part stays as it is';
   if (rules.state === 'same') return { mark: 'ok', finding: finding('core-rules', 'the core rules in AGENTS.md are up to date', fix) };
   if (rules.state === "can't compare") return { mark: 'note', finding: finding('core-rules', `can't compare the core rules in AGENTS.md: ${rules.why}`, rules.fix) };
+  // A project written by a newer yokoten is not behind: this yokoten is (#141).
+  if (rules.state === 'newer') {
+    return { mark: 'note', finding: finding('core-rules', `the core rules in AGENTS.md come from yokoten ${rules.version}, newer than this yokoten ${VERSION}`, 'update yokoten itself, not the project: `npx yokoten@latest install`, the latest Claude Code plugin, or a pull in your clone') };
+  }
   return { mark: 'MISSING', finding: finding('core-rules', `the core rules in AGENTS.md are behind yokoten ${VERSION}'s, or were edited by hand (${summarizeUpdate(rules)})`, fix) };
 }
 
-/** A server with every setting off: no server step on the road may pass it (#7). */
+/** A server with every setting off, no label and only a closed milestone: no server step on the road may pass it (#7, #10). */
 const SERVER_CONTROL: ServerRead = {
   repo: 'octo/demo',
   defaultBranch: 'main',
@@ -110,6 +114,7 @@ const SERVER_CONTROL: ServerRead = {
   tags: false,
   security: { secretScanning: false, pushProtection: false, privateReporting: false, dependabotAlerts: false },
   forgotten: [],
+  planning: { repo: 'octo/demo', labels: [], milestones: [{ title: 'v0.1', open: false }] },
 };
 
 /**

@@ -250,7 +250,7 @@ export const RULES = {
   'core-rules': {
     rule: 'the core rules in AGENTS.md are the ones in the kit of the yokoten you run',
     why: 'a lesson added to the core rules reaches a project only when its AGENTS.md gets the new text',
-    check: '`doctor` compares everything above `## This project` in AGENTS.md with the kit\'s core rules, and a session hears when they differ; without that heading it can\'t compare, as a note; `yokoten update` shows the change, and `--write` makes it',
+    check: '`doctor` compares everything above `## This project` in AGENTS.md with the kit\'s core rules, and a session hears when they differ; without that heading it can\'t compare, as a note; a `<!-- yokoten kit X.Y.Z -->` mark newer than the yokoten you run is a note to update yokoten itself, and `update` refuses it; `yokoten update` shows the change, and `--write` makes it',
     docs: guide('updating-the-rules'),
   },
   'session-doctor': {

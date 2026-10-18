@@ -1,7 +1,7 @@
 // The road (record 0004): five stages, a few steps in each, and every step a check yokoten
 // can run. A step with no check yet is not in the table; #10, #34 and #35 add theirs.
 //
-// The server steps (#7) judge what the host adapter read. Only full doctor reads the host;
+// The server steps (#7) and the planning steps (#10) judge what the host adapter read. Only full doctor reads the host;
 // a session passes nothing, so those steps are "can't check" there and never hold the stage.
 //
 // The stage is worked out from what the project has, never saved: it is the stage of the
@@ -18,9 +18,10 @@ import { CHANGES_DIR } from '../rules/pr.ts';
 import { BUILD_DIRS, isBuildOutput } from '../rules/layout.ts';
 import { hasPlugin, hasProjectHook } from '../agents/claude-code.ts';
 import { runs } from '../run/cli.ts';
-import { hasBot, type ServerSettings, type Unread } from '../host/github.ts';
+import { hasBot, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
 import { isSelf } from './init.ts';
+import { lackingLabels } from './plan.ts';
 import { skillFiles, skillsDir } from './install.ts';
 
 /** The stage names, in order. A step's `stage` is its number here, from 1. */
@@ -276,6 +277,35 @@ const reviewStep: Step = {
   standard: 'Scorecard: Code-Review',
 };
 
+// The planning steps (#10): the labels and an open milestone, as full doctor read them.
+
+/** The labels and milestones full doctor read, or why there are none to judge. */
+const planningOf = (server: ServerRead): Planning | Unread => {
+  if (server === undefined) return SESSION_UNREAD;
+  if ('unread' in server) return server;
+  return server.planning ?? { unread: 'the labels and milestones were not read', fix: 'run `yokoten doctor`' };
+};
+
+/** A stage 2 step judged from the labels and milestones. `isDone` sees only what was read. */
+const planningStep = (key: string, isDone: (planning: Planning) => boolean, fields: Omit<Step, 'stage' | 'key' | 'check' | 'unchecked'>): Step => ({
+  stage: 2,
+  key,
+  check: (...[, , server]) => {
+    const planning = planningOf(server);
+    return 'unread' in planning ? null : isDone(planning);
+  },
+  unchecked: (server) => {
+    const planning = planningOf(server);
+    return 'unread' in planning ? `${planning.unread}; ${planning.fix}` : 'nothing was read; run `yokoten doctor`';
+  },
+  ...fields,
+});
+
+const lackingNames = (server: ServerRead) => {
+  const planning = planningOf(server);
+  return 'unread' in planning ? [] : lackingLabels(planning.labels.map((l) => l.name)).map((l) => l.name);
+};
+
 /** The road, in order. Step names never change: they are the keys for "not now". */
 export const ROAD: Step[] = [
   {
@@ -363,6 +393,18 @@ export const ROAD: Step[] = [
     how: '.github/ISSUE_TEMPLATE holds a template, and .github holds a pull request template',
     standard: 'GitHub community profile',
   },
+  planningStep('labels', (planning) => lackingLabels(planning.labels.map((l) => l.name)).length === 0, {
+    what: (...[, , server]) => `the standard labels are not all on the server (no ${lackingNames(server).join(', ')})`,
+    fix: () => '`yokoten init` shows what it would add, and `yokoten init --github --yes` adds them',
+    why: 'a label says what kind of change a pull request is, and the pull request check asks for one',
+    how: 'through the code host\'s API, in full doctor only: the repo has the labels bug, feat, docs, refactor, ci, owner, incident, good first issue and hotfix',
+  }),
+  planningStep('milestone', (planning) => planning.milestones.some((m) => m.open), {
+    what: () => 'no open milestone on the server',
+    fix: () => '`yokoten init --github --yes` makes one called "First release"',
+    why: 'a milestone says when a change ships, and the pull request check asks for one',
+    how: 'through the code host\'s API, in full doctor only: the repo has at least one open milestone',
+  }),
   {
     stage: 2,
     key: 'no-build-output',

@@ -1,4 +1,4 @@
-<!-- source: docs/guide.md blob 04be477f47498e7a6883a084f074cdaebb675ba1 -->
+<!-- source: docs/guide.md blob 10b2cccd7a97bf5e4e18dd8e0c8aff730828e738 -->
 # yokoten 使用指南
 
 [README](README.md) 是简短版。剩下的都在这里：yokoten 为什么要做、它怎么工作、有哪些规则和命令，还有它做不到的事。
@@ -96,7 +96,7 @@ not now（暂不，后面跟着你给的原因）或者 can't check（这里查�
 | 关 | 步骤 |
 |---|---|
 | **1 · 安全网** | `rules`、`tool-hook`、`commit-check`、`runtime`、`tests`（有测试命令，CI 会跑） |
-| **2 · 先开 issue，再走 PR** | `ci`、`issues`（没有 todo 文件）、`templates`、`no-build-output`（`dist/`、`build/`、`out/` 里没有提交的文件，也没有编译出来的二进制文件） |
+| **2 · 先开 issue，再走 PR** | `ci`、`issues`（没有 todo 文件）、`templates`、`labels`（标准标签都在）、`milestone`（有一个没关的里程碑）、`no-build-output`（`dist/`、`build/`、`out/` 里没有提交的文件，也没有编译出来的二进制文件） |
 | **3 · 发版** | `changelog`、`titles`（CI 跑 `check --pr`） |
 | **4 · 带一支 AI 团队** | `codeowners`、`bot`、`skills`、`review`（合并到默认分支前要有一个人批准） |
 | **5 · 公开** | `security-files`（安全说明、Dependabot、许可证）、`protection`（默认分支和 `v*` tag 上的规则集）、`merge-settings`（只许 squash 合并，合并后自动删分支）、`security-settings`（secret scanning、push protection、私下报告漏洞、Dependabot 提醒） |
@@ -105,7 +105,10 @@ not now（暂不，后面跟着你给的原因）或者 can't check（这里查�
 没装 `gh`、没登录、没网，或者远程仓库不在 GitHub 上，这三步就标 can't check，绝不会算作做完。
 会话开头不联网，所以那里这三步总是 can't check。
 
-`review` 也是这样读服务器的。默认分支的规则集（或者分支保护）要求至少一个批准，这一步就算做完。
+第 2 关的 `labels` 和 `milestone` 也这样读。标准标签是 `bug`、`feat`、`docs`、`refactor`、`ci`、
+`owner`、`incident`、`good first issue` 和 `hotfix`。`init` 会告诉你缺哪些，`init --github --yes` 帮你加上。
+
+第 4 关的 `review` 也这样读服务器。默认分支的规则集（或者分支保护）要求至少一个批准，这一步就算做完。
 GitHub 不让你批准自己开的 PR，所以让 bot 来开 PR，你来批准、合并。
 设置方法：编辑默认分支上的规则集，在“Require a pull request”里把“Required approvals”设成 1。
 这样一来，合并的人不是写代码的人，OpenSSF Scorecard 应该会把每次改动算作审过。
@@ -230,7 +233,10 @@ npm 上的包跑的是编译好的 JavaScript，因为 Node 不处理 `node_modu
 仓库本身还是不用编译，只有 `npm pack` 打包的时候才生成 `dist/`
 （见[记录 0008](../records/0008-npm-package.md)，英文）。
 
-发布到 npm 是主人的事，跟打发版 tag 一样。第一个版本发布之前，先
+发布到 npm 是主人的事，跟打发版 tag 一样。tag 一推上去，发布 workflow 就开始跑：先跑检查，
+然后发布那一步停下来，等主人在 `release` 环境里点批准，批准了才发到 npm。整个过程不存任何
+npm token（见[记录 0009](../records/0009-release-environment.md)，英文）。只有第一个版本例外，
+由主人手动发布：npm 上还没有这个包的时候，没法设置信任哪个 workflow。第一个版本发布之前，先
 [从 clone 下来的仓库装](#从-clone-下来的仓库装)。
 
 ### 从 clone 下来的仓库装
@@ -293,7 +299,13 @@ kit 里 `init` 放的 workflow 暂时还是跑 `.yokoten/` 里的那份，等第
 `init` 会把 yokoten 运行要用的文件复制到项目的 `.yokoten/` 里。把它一起提交：这样不联网、
 不全局安装，hook 和 CI 也能跑。
 
-`init` 还会在 `.github/` 里放两个文件，默认设置就是安全的：
+`init` 还会在 `.github/workflows/` 里放三个 workflow：`yokoten.yml`（跑提交检查；一个 lint
+job 用 actionlint 和 zizmor 查 workflow 本身；还有一个 `ci` job，设成必过的检查就只要设它）、
+`pr.yml` 和 `issue.yml`。每个 action 都固定到某一次提交，每个 job 都有超时，checkout 不留
+token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你自己的测试，加成 `yokoten.yml` 里
+的一个 job，再把它写进 `ci` 的 `needs`。
+
+另外还在 `.github/` 里放两个文件，默认设置就是安全的：
 
 - `dependabot.yml`：自动更新 CI 用到的 action。一个月只开一个 PR，所有更新都在里面；
   新版本发布满一周才会用。文件里的注释写了怎么用同样的方式加上你自己的包（npm、pip、Go 等）。
@@ -304,7 +316,8 @@ kit 里 `init` 放的 workflow 暂时还是跑 `.yokoten/` 里的那份，等第
 | 命令 | 做什么 |
 |------|--------|
 | `install` | 把技能装进 `~/.claude/skills` 和 `~/.agents/skills`，agent 装进 `~/.claude/agents`，加上会话开头的 `doctor` hook 和用户级命令守卫，再建一个空的私有词表 |
-| `init [dir]` | 把这套做法放进一个项目。只加文件；已有的文件保留，并告诉你保留了哪些 |
+| `init [dir]` | 把这套做法放进一个项目。只加文件；已有的文件保留，并告诉你保留了哪些。它还会用 `gh` 看一眼 GitHub，告诉你要补哪些标准标签和里程碑，但不会去改 GitHub。没装 `gh`、没登录，或者远程仓库不在 GitHub 上，就说一声跳过了 |
+| `init --github --yes [--remove-default-labels]` | 补上缺的标准标签；没有打开的里程碑时，建一个叫 "First release" 的。已有的标准标签，颜色和说明改成标准的。再跑一次什么也不会变。GitHub 自带的、不在这套里的标签（`question`、`wontfix` 等），只有加上 `--remove-default-labels` 才会删 |
 | `update [dir] [--write]` | 看看这个版本的 yokoten 会怎么改项目 `AGENTS.md` 里的核心规则。加上 `--write` 才真的替换；「This project」那部分原样保留。见[更新规则](#更新规则) |
 | `doctor [--session]` | 整条路：每一关、每一步，加上这台电脑还缺什么。`--session` 只说下一步，会话开头用 |
 | `check [--staged]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交。提交里不能有构建产物和二进制文件。查整个目录时，落后于英文的译文会给一条提醒，见[翻译](#翻译) |
@@ -459,6 +472,12 @@ yokoten 每学到一个教训，核心规则就会改。`yokoten install` 会更
 核心规则里你自己手改过的行，也会显示成 `-`，因为更新会把它换掉。所以先把你自己的规则
 挪到 `## This project` 下面。要是文件里没有这个标题，yokoten 分不清哪些是核心规则、
 哪些是你的，它会直接告诉你，不比也不写。
+
+`AGENTS.md` 第一行记着核心规则是哪个版本的 kit 写的，比如 `<!-- yokoten kit 0.1.0 -->`。
+这是一行注释，GitHub 上看不到。`init` 会写上它，`update --write` 会换成新版本号。
+要是项目里的版本比你正在用的 yokoten 还新，`update` 会拒绝，什么都不写，免得把规则
+退回旧版。这时 `doctor` 会让你升级 yokoten 本身，而不是去改项目。没有这一行的文件，
+就只按内容比。
 
 `update` 要用装好的 yokoten 或者 clone 下来的仓库跑，别用 `.yokoten/` 里的那份：
 项目里那份没有带 kit，没东西可比。

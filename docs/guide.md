@@ -107,7 +107,7 @@ listed:
 | Stage | Steps |
 |---|---|
 | **1 · Safety net** | `rules`, `tool-hook`, `commit-check`, `runtime`, `tests` (a test command, and CI runs it) |
-| **2 · Issues and pull requests** | `ci`, `issues` (no todo file), `templates`, `no-build-output` (nothing in `dist/`, `build/` or `out/`, no built binaries) |
+| **2 · Issues and pull requests** | `ci`, `issues` (no todo file), `templates`, `labels` (the standard set), `milestone` (an open one), `no-build-output` (nothing in `dist/`, `build/` or `out/`, no built binaries) |
 | **3 · Release** | `changelog`, `titles` (CI runs `check --pr`) |
 | **4 · A team of agents** | `codeowners`, `bot`, `skills`, `review` (a merge to the default branch needs one approval) |
 | **5 · Going public** | `security-files` (a security policy, Dependabot, a license), `protection` (rulesets on the default branch and `v*` tags), `merge-settings` (squash only, delete branch on merge), `security-settings` (secret scanning, push protection, private reporting, Dependabot alerts) |
@@ -116,7 +116,11 @@ The last three are server settings. Full `doctor` reads them through `gh api`, a
 Without `gh`, a sign-in, the network or a GitHub remote, they are **can't check**, never done.
 A session never calls the network, so there they are always **can't check**.
 
-`review` reads the server the same way. It is done when the default branch's ruleset, or
+`labels` and `milestone` in stage 2 are read the same way. The standard labels are `bug`, `feat`,
+`docs`, `refactor`, `ci`, `owner`, `incident`, `good first issue` and `hotfix`. `init` shows which
+are missing, and `init --github --yes` adds them.
+
+`review` in stage 4 reads the server the same way. It is done when the default branch's ruleset, or
 its branch protection, asks for at least one approving review. GitHub does not let you
 approve your own pull request. So the bot opens the pull requests, and you approve and
 merge them. To set it up, edit the ruleset on the default branch: in "Require a pull
@@ -247,8 +251,13 @@ The package runs built JavaScript, because Node does not run TypeScript under
 `node_modules`. The repo has no build; `npm pack` makes the package's `dist/`
 ([record 0008](records/0008-npm-package.md)).
 
-The owner publishes the package, as the owner creates a release tag. Until the first
-release is on npm, [install from a clone](#install-from-a-clone).
+The owner publishes the package, as the owner creates a release tag. The tag starts the
+release workflow. It runs the checks, then the publish job waits for the owner's
+approval in the `release` environment. Only then does it publish to npm, with no npm
+token stored anywhere ([record 0009](records/0009-release-environment.md)). The first
+release is the one exception: the owner publishes it by hand, because npm can't trust a
+workflow for a package it does not have yet. Until the
+first release is on npm, [install from a clone](#install-from-a-clone).
 
 ### Install from a clone
 
@@ -313,7 +322,13 @@ on `@main`.
 `init` copies the runtime into `.yokoten/` in your project. Commit it: the hooks and CI
 then run with no network and no global install.
 
-`init` also puts two safe defaults in `.github/`:
+`init` also writes three workflows into `.github/workflows/`: `yokoten.yml` (the
+commit check, a lint job with actionlint and zizmor, and one `ci` job to make the required
+check), `pr.yml` and `issue.yml`. Each action is pinned to a commit, each job has a time
+limit, checkout keeps no token, and a new push cancels the old run on the same pull
+request. Add your tests as a job in `yokoten.yml` and to the `needs` list of `ci`.
+
+It puts two safe defaults in `.github/` too:
 
 - `dependabot.yml` updates the actions that CI runs. It opens one pull request a month,
   and takes a release only when it is a week old. A comment in the file shows how to
@@ -325,8 +340,8 @@ then run with no network and no global install.
 | Command | What it does |
 |---------|--------------|
 | `install` | Skills into `~/.claude/skills` and `~/.agents/skills`, agents into `~/.claude/agents`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file |
-| `init [dir]` | Puts the practices into a project. Adds files; keeps any that are already there and says so |
-| `init --github [--yes]` | Also adds the standard labels and a first milestone on GitHub, through `gh`. Without `--yes` it only says what it would make. It keeps every label and milestone that is there, and never deletes or renames one |
+| `init [dir]` | Puts the practices into a project. Adds files; keeps any that are already there and says so. It also reads GitHub through `gh` and says which standard labels and milestone it would add. It never changes GitHub. Without `gh`, a sign-in or a GitHub remote, it says what it skipped |
+| `init --github --yes [--remove-default-labels]` | Adds the missing standard labels, and a milestone "First release" when no milestone is open. A standard label that is there gets the standard colour and description. A second run changes nothing. GitHub's default labels outside the set (`question`, `wontfix` and others) are deleted only with `--remove-default-labels` |
 | `update [dir] [--write]` | Shows what this yokoten changes in the core rules of the project's `AGENTS.md`. `--write` replaces them, and keeps the "This project" part as it is. See [Updating the rules](#updating-the-rules) |
 | `doctor [--session]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session |
 | `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries. For the tree, a translation behind its English source is a note. See [Translations](#translations) |
@@ -492,6 +507,13 @@ replaces the core part. Everything from `## This project` down stays byte for by
 A line you edited by hand in the core part shows as `-`, because the update replaces
 it. Move your own rules under `## This project` first. Without that heading, yokoten
 can't tell the core rules from yours. Then it says so, and compares and writes nothing.
+
+The first line of `AGENTS.md` names the kit that wrote the core rules, as a comment
+that GitHub does not show: `<!-- yokoten kit 0.1.0 -->`. `init` writes it, and
+`update --write` sets the new version. When the project's kit is newer than the
+yokoten you run, `update` refuses and writes nothing, so the rules never go back to
+an older kit. `doctor` then says to update yokoten itself, not the project. A file
+without that line compares by its text only.
 
 Run `update` from an installed yokoten or a clone, not from `.yokoten/`. The copy in
 your project has no kit to compare with.

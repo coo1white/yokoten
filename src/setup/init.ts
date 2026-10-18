@@ -42,7 +42,7 @@ export function init(root: string): string[] {
   const kit = join(KIT, 'project');
   for (const file of walk(kit)) {
     const rel = relative(kit, file).split('\\').join('/');
-    const result = writeNew(join(root, rel), render(readFileSync(file, 'utf8'), { cli }));
+    const result = writeNew(join(root, rel), render(readFileSync(file, 'utf8'), { cli, version: VERSION }));
     report.push(`${result} ${rel}`);
   }
   chmodSync(join(root, '.githooks', 'pre-commit'), 0o755);
@@ -78,6 +78,59 @@ const findProjectStart = (text: string): number => text.search(/^## This project
 
 const splitLines = (text: string): string[] => text.split(/\r?\n/);
 
+// ---- The kit version in AGENTS.md (#141) ----
+//
+// The first line of the kit's AGENTS.md says which kit wrote the core rules, as an HTML
+// comment, so GitHub shows nothing. With it, a project written by a newer yokoten is not
+// "behind", and `update --write` never takes it back to an older kit. A file without the
+// mark (every project before #141) has an unknown version and compares by content only.
+
+/** The kit version mark, for example `<!-- yokoten kit 0.1.0 -->`. */
+const KIT_MARK = /^<!-- yokoten kit (\S+) -->[ \t]*$/;
+
+const isMarkLine = (line: string): boolean => KIT_MARK.test(line);
+
+/** The kit version that a core part names, or null when it has no mark. */
+export const readKitVersion = (core: string): string | null => {
+  for (const line of splitLines(core)) {
+    const found = line.match(KIT_MARK);
+    if (found) return found[1];
+  }
+  return null;
+};
+
+const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
+
+/** Semver order of two pre-release tags, like `beta.2` and `beta.10`. */
+function comparePrerelease(left: string, right: string): number {
+  const leftParts = left.split('.');
+  const rightParts = right.split('.');
+  for (let index = 0; index < Math.min(leftParts.length, rightParts.length); index++) {
+    const [a, b] = [leftParts[index], rightParts[index]];
+    if (a === b) continue;
+    const [isNumberA, isNumberB] = [/^\d+$/.test(a), /^\d+$/.test(b)];
+    if (isNumberA && isNumberB) return Math.sign(Number(a) - Number(b));
+    if (isNumberA !== isNumberB) return isNumberA ? -1 : 1;
+    return a < b ? -1 : 1;
+  }
+  return Math.sign(leftParts.length - rightParts.length);
+}
+
+/** -1, 0 or 1 as `left` is older than, the same as, or newer than `right`; null when either is not a semver version. */
+export function compareVersions(left: string, right: string): number | null {
+  const a = left.match(SEMVER);
+  const b = right.match(SEMVER);
+  if (!a || !b) return null;
+  for (let part = 1; part <= 3; part++) {
+    const difference = Number(a[part]) - Number(b[part]);
+    if (difference) return Math.sign(difference);
+  }
+  if (a[4] === b[4]) return 0;
+  if (a[4] === undefined) return 1;
+  if (b[4] === undefined) return -1;
+  return comparePrerelease(a[4], b[4]);
+}
+
 /** One line the update adds or removes. */
 export interface LineChange {
   kind: 'added' | 'removed';
@@ -95,7 +148,8 @@ export interface SectionChanges {
 export type CoreRules =
   | { state: 'same' }
   | { state: "can't compare"; why: string; fix: string }
-  | { state: 'behind'; changes: LineChange[]; sections: SectionChanges; updated: string };
+  | { state: 'behind'; changes: LineChange[]; sections: SectionChanges; updated: string }
+  | { state: 'newer'; version: string; kitVersion: string };
 
 /** The lines to remove and add to turn `before` into `after`, from their longest common run. */
 function diffLines(before: string[], after: string[]): LineChange[] {
@@ -150,8 +204,9 @@ function compareSections(before: string[], after: string[]): SectionChanges {
 }
 
 /**
- * Compare a project's AGENTS.md with the kit's, rendered. Line ends do not count, so a
- * checkout with CRLF is not behind. `updated` is the file with the kit's core part and
+ * Compare a project's AGENTS.md with the kit's, rendered. Line ends and the kit version
+ * mark do not count, so a checkout with CRLF is not behind. When the text differs and the
+ * project's mark is newer than the kit's, it is `newer`, never `behind` (#141). `updated` is the file with the kit's core part and
  * the project's own part as it is.
  */
 export function compareCoreRules(project: string, kit: string): CoreRules {
@@ -165,17 +220,21 @@ export function compareCoreRules(project: string, kit: string): CoreRules {
       fix: `put the project's own rules under a \`${PROJECT_HEADING}\` heading at the end of AGENTS.md, below the core rules`,
     };
   }
-  const before = splitLines(project.slice(0, start));
-  const after = splitLines(kit.slice(0, kitStart));
+  const before = splitLines(project.slice(0, start)).filter((line) => !isMarkLine(line));
+  const after = splitLines(kit.slice(0, kitStart)).filter((line) => !isMarkLine(line));
   if (before.join('\n') === after.join('\n')) return { state: 'same' };
-  const core = project.slice(0, start).includes('\r\n') ? after.join('\r\n') : after.join('\n');
+  const version = readKitVersion(project.slice(0, start));
+  const kitVersion = readKitVersion(kit.slice(0, kitStart));
+  if (version !== null && kitVersion !== null && compareVersions(version, kitVersion) === 1) return { state: 'newer', version, kitVersion };
+  const kitCore = splitLines(kit.slice(0, kitStart));
+  const core = project.slice(0, start).includes('\r\n') ? kitCore.join('\r\n') : kitCore.join('\n');
   return { state: 'behind', changes: diffLines(before, after), sections: compareSections(before, after), updated: core + project.slice(start) };
 }
 
 /** The kit's AGENTS.md, rendered for this project, or null when this copy of yokoten has no kit. */
 function readKitRules(root: string): string | null {
   const path = join(KIT, 'project', 'AGENTS.md');
-  return existsSync(path) ? render(readFileSync(path, 'utf8'), { cli: cliPath(root) }) : null;
+  return existsSync(path) ? render(readFileSync(path, 'utf8'), { cli: cliPath(root), version: VERSION }) : null;
 }
 
 /** The project's core rules against the kit's, or null when the project has no AGENTS.md. */
@@ -208,6 +267,9 @@ export function updateCoreRules(root: string, { write }: { write: boolean }): { 
   if (rules === null) return { ok: false, lines: ['no AGENTS.md here; nothing was written. Run `yokoten init` to add one'] };
   if (rules.state === "can't compare") return { ok: false, lines: [`can't compare AGENTS.md with the kit: ${rules.why}. Nothing was written. To fix it, ${rules.fix}`] };
   if (rules.state === 'same') return { ok: true, lines: [`the core rules in AGENTS.md are up to date with yokoten ${VERSION}; nothing to change`] };
+  if (rules.state === 'newer') {
+    return { ok: false, lines: [`AGENTS.md was written by yokoten ${rules.version}, newer than this yokoten ${VERSION}. Nothing was written: an update would take the core rules back to an older kit. Update yokoten itself instead, then run \`yokoten update\` again`] };
+  }
   const summary = summarizeUpdate(rules);
   if (write) {
     writeFileSync(join(root, 'AGENTS.md'), rules.updated);
