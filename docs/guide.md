@@ -100,7 +100,11 @@ listed:
 | **2 · Issues and pull requests** | `ci`, `issues` (no todo file), `templates`, `no-build-output` (nothing in `dist/`, `build/` or `out/`, no built binaries) |
 | **3 · Release** | `changelog`, `titles` (CI runs `check --pr`) |
 | **4 · A team of agents** | `codeowners`, `bot`, `skills` |
-| **5 · Going public** | `security-files` (a security policy, Dependabot, a license) |
+| **5 · Going public** | `security-files` (a security policy, Dependabot, a license), `protection` (rulesets on the default branch and `v*` tags), `merge-settings` (squash only, delete branch on merge), `security-settings` (secret scanning, push protection, private reporting, Dependabot alerts) |
+
+The last three are server settings. Full `doctor` reads them through `gh api`, and only reads.
+Without `gh`, a sign-in, the network or a GitHub remote, they are **can't check**, never done.
+A session never calls the network, so there they are always **can't check**.
 
 After a step, `yokoten doctor` names the outside standard it meets, when there is one,
 for example `ci (Scorecard: CI-Tests)`. The session message leaves it out.
@@ -599,8 +603,8 @@ Honest limits:
   pieces still gets past them. They catch mistakes and drift; they aren't a lock. The
   lock is on the server: branch protection, code owners, and a bot without the rights to
   release or change CI.
-- **Server settings aren't checked yet.** `doctor` lists the three steps for the owner.
-  Checking them through the API is planned.
+- **Server settings are read on GitHub only.** Another host shows the server steps as
+  **can't check**. `doctor` does not check the bot's rights yet.
 - **Claude Code first.** Agents and the user-level hooks follow Claude Code's formats.
   Skills are the open SKILL.md format, so `install` also puts them in `~/.agents/skills`,
   where Codex, Gemini CLI, Copilot, Cursor and other agents find them. The tool-call

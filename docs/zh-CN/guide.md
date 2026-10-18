@@ -89,7 +89,11 @@ not now（暂不，后面跟着你给的原因）或者 can't check（这里查�
 | **2 · 先开 issue，再走 PR** | `ci`、`issues`（没有 todo 文件）、`templates`、`no-build-output`（`dist/`、`build/`、`out/` 里没有提交的文件，也没有编译出来的二进制文件） |
 | **3 · 发版** | `changelog`、`titles`（CI 跑 `check --pr`） |
 | **4 · 带一支 AI 团队** | `codeowners`、`bot`、`skills` |
-| **5 · 公开** | `security-files`（安全说明、Dependabot、许可证） |
+| **5 · 公开** | `security-files`（安全说明、Dependabot、许可证）、`protection`（默认分支和 `v*` tag 上的规则集）、`merge-settings`（只许 squash 合并，合并后自动删分支）、`security-settings`（secret scanning、push protection、私下报告漏洞、Dependabot 提醒） |
+
+后三步是服务器上的设置。完整的 `doctor` 用 `gh api` 去读，只读不改。
+没装 `gh`、没登录、没网，或者远程仓库不在 GitHub 上，这三步就标 can't check，绝不会算作做完。
+会话开头不联网，所以那里这三步总是 can't check。
 
 如果某一步对应外部的标准，`yokoten doctor` 会在步骤名后面写出来，比如 `ci (Scorecard: CI-Tests)`。
 会话开头那三行不写。
@@ -549,7 +553,7 @@ AWS 的 access key id，还有 PEM 私钥。查到了只说是哪一种密钥，
 - **守卫只看命令文本。** 它看得懂 bash 的写法（引号、heredoc、`bash -c`、`$(...)` 这类替换），
   看不准会跑什么就拦下。但把命令拆开再拼起来，还是能绕过。它防的是失误和走样，不是一把锁。真正
   的锁在服务器上：分支保护、代码负责人，以及一个没有发版权限、改不了 CI 的 bot。
-- **还不检查服务器设置。** `doctor` 目前只列出主人要做的三步，通过 API 自动检查还在计划中。
+- **服务器设置只能读 GitHub 的。** 换成别的代码托管平台，这几步就标 can't check。bot 的权限 `doctor` 还查不了。
 - **先支持 Claude Code。** agent 和用户级 hook 都按 Claude Code 的格式写。技能用的是公开
   的 SKILL.md 格式，所以 `install` 也会把它们放进 `~/.agents/skills`，Codex、Gemini CLI、
   Copilot、Cursor 这些 AI 会去那里找。工具调用守卫在 Codex 和 Gemini CLI 里也能用：`init`
