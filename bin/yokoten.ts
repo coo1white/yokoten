@@ -14,6 +14,7 @@ import * as gemini from '../src/agents/gemini.ts';
 import { type Finding, formatFinding } from '../src/rules/message.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
 import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, largeDiff, longSentenceNote, longSentences } from '../src/rules/pr.ts';
+import { closestWord, COMMANDS, commandHelp, findCommand, HELP_OPTIONS, commandList } from '../src/run/cli.ts';
 import { hideHome } from '../src/rules/privacy.ts';
 import { type Action, judge } from '../src/run/hook.ts';
 import { draft, facts, table } from '../src/setup/advice/adopt.ts';
@@ -24,43 +25,20 @@ import { init, updateCoreRules } from '../src/setup/init.ts';
 import { install } from '../src/setup/install.ts';
 import { readOriginUrl, setUpPlanning } from '../src/setup/plan.ts';
 
-const HELP = `yokoten ${VERSION}
-
-  yokoten install            skills, agents and user-level hooks for this machine
-  yokoten init [dir]         put the practices into a project (adds only, never overwrites)
-                             it also reads GitHub through gh and says which standard labels
-                             and milestone it would add; it never changes GitHub by itself
-  yokoten init --github --yes [--remove-default-labels]
-                             add the standard labels and a first milestone on GitHub, and give
-                             the standard labels their colour and description; delete GitHub's
-                             default labels outside the set only with --remove-default-labels
-  yokoten update [dir] [--write]
-                             the core rules in a project's AGENTS.md: shows what this yokoten
-                             changes; --write replaces them and keeps the "This project" part
-  yokoten doctor [--session] the road: where this project is and its next step (--session:
-                             only the next step), and what this machine is missing
-  yokoten adopt [--json]     a draft of the adoption table for an old project: what it does
-                             today, and as-is, lighter or not now for each step
-  yokoten check [--staged]   layout, privacy and lead-only files (--staged: the next commit)
-  yokoten check --history    the privacy check over every commit; run before going public
-  yokoten check --pr         the pull request of this CI run: title, tier, sections, issue, changelog
-  yokoten check --issue      the issue of this CI run: a title of \`area: summary\`, 60 characters at most
-  yokoten changelog [--write]
-                             the entries the files in changes/ add under [Unreleased]; --write
-                             puts them into CHANGELOG.md and deletes the files (before a release)
-  yokoten hook [--agent <name>] [--commands-only]
-                             the tool-call guard: reads one tool call on stdin; <name> is
-                             claude-code (the default), codex or gemini
-  yokoten hook --stop        the stop check: reads a Claude Code Stop event on stdin, checks
-                             the changed files, and sends the agent back once to fix them
-  yokoten explain [<id>]     a rule or a step: what it is, why, and how it is checked
-  yokoten bot -- <command>   run one command as the bot (gh, git push); the token is never printed;
-                             an issue or pull request title is checked first
-
-  --json on check, doctor, hook and explain: data on stdout, for an agent or a script.
-  Exit codes: 0 ok, 1 problems found or a usage error, 2 the hook blocked the tool call
-  or the end of the turn.
-`;
+// The help comes from one table, the same one the parser reads (#207).
+const HELP = [
+  `yokoten ${VERSION}`,
+  '',
+  'Usage: yokoten <command> [options]',
+  '',
+  ...commandList(),
+  '',
+  'Start: `yokoten install` once on this machine, then `yokoten init` in your project.',
+  'Run `yokoten <command> --help` for its options and an example.',
+  '--json on check, doctor, hook and explain: data on stdout, for an agent or a script.',
+  'Exit codes: 0 ok, 1 problems found or a usage error, 2 the hook blocked the tool call',
+  'or the end of the turn.',
+].join('\n');
 
 const [cmd, ...args] = process.argv.slice(2);
 const env = process.env;
@@ -71,26 +49,51 @@ interface Parsed {
   values: Record<string, string>;
   positional: string[];
 }
-function parse(known: { flags: string[]; values?: string[]; positional?: number }, words: string[] = args): Parsed | string {
+/** Reads the words by the options and argument the command's help lists, nothing else. */
+function parse(name: string, words: string[] = args): Parsed | string {
+  const command = findCommand(name);
+  if (!command) throw new Error(`no help entry for ${name}`);
+  const known = new Map(command.options.map((option) => [option.name, option]));
   const parsed: Parsed = { flags: new Set(), values: {}, positional: [] };
   for (let i = 0; i < words.length; i++) {
     const a = words[i];
-    if (known.values?.includes(a)) {
+    const option = known.get(a);
+    if (option?.value) {
       const value = words[++i];
       if (value === undefined || value.startsWith('--')) return `${a} needs a value`;
       parsed.values[a] = value;
-    } else if (known.flags.includes(a)) parsed.flags.add(a);
-    else if (a.startsWith('-')) return `unknown option ${a}`;
-    else parsed.positional.push(a);
+    } else if (option) parsed.flags.add(a);
+    else if (a.startsWith('-')) {
+      const near = closestWord(a, [...known.keys(), HELP_OPTIONS[0]]);
+      return `unknown option ${a}${near ? `. Did you mean ${near}?` : ''}`;
+    } else parsed.positional.push(a);
   }
-  if (parsed.positional.length > (known.positional ?? 0)) return `unexpected argument ${parsed.positional[known.positional ?? 0]}`;
+  const allowed = command.argument ? 1 : 0;
+  if (parsed.positional.length > allowed) return `unexpected argument ${parsed.positional[allowed]}`;
   return parsed;
 }
 
 /** A usage error: said on stderr, exit 1, as for an unknown command. */
 function usage(error: string): number {
-  print([`yokoten ${cmd}: ${error}. Run \`yokoten help\`.`], process.stderr);
+  print([`yokoten ${cmd}: ${error}${/[.?]$/.test(error) ? '' : '.'} Run \`yokoten ${cmd} --help\`.`], process.stderr);
   return 1;
+}
+
+/** An unknown command: the closest one when it is near, or else the list. Exit 1. */
+function unknownCommand(name: string): number {
+  const near = closestWord(name, COMMANDS.map((command) => command.name));
+  const hint = near ? `Did you mean "${near}"?` : `Commands: ${COMMANDS.map((command) => command.name).join(', ')}.`;
+  print([`yokoten: unknown command "${name}". ${hint} Run \`yokoten help\`.`], process.stderr);
+  return 1;
+}
+
+/**
+ * True when the command line asks for help: `--help` or `-h` among its own words. For
+ * `bot`, only the words before `--` count: after it, they belong to the command it runs.
+ */
+function isHelpAsked(words: string[]): boolean {
+  const end = words.indexOf('--');
+  return (end === -1 ? words : words.slice(0, end)).some((word) => HELP_OPTIONS.includes(word));
 }
 
 const rootOf = (dir: string): string | null => {
@@ -223,9 +226,15 @@ function stopHook(json: boolean): number {
 }
 
 function main(): number | Promise<number> {
+  // `<command> --help` prints that command's help and does nothing else (#207).
+  const command = cmd === undefined ? undefined : findCommand(cmd);
+  if (command && isHelpAsked(args)) {
+    print(commandHelp(command));
+    return 0;
+  }
   switch (cmd) {
     case 'hook': {
-      const options = parse({ flags: ['--commands-only', '--json', '--stop'], values: ['--agent'] });
+      const options = parse('hook');
       if (typeof options === 'string') return usage(options);
       const json = options.flags.has('--json');
       if (options.flags.has('--stop')) {
@@ -259,7 +268,7 @@ function main(): number | Promise<number> {
       return 2;
     }
     case 'check': {
-      const options = parse({ flags: ['--staged', '--history', '--pr', '--issue', '--json'] });
+      const options = parse('check');
       if (typeof options === 'string') return usage(options);
       const modes = ['--staged', '--history', '--pr', '--issue'].filter((m) => options.flags.has(m));
       if (modes.length > 1) return usage(`${modes.join(' and ')} can't be used together`);
@@ -352,7 +361,7 @@ function main(): number | Promise<number> {
       return problems.length ? 1 : 0;
     }
     case 'changelog': {
-      const options = parse({ flags: ['--write'] });
+      const options = parse('changelog');
       if (typeof options === 'string') return usage(options);
       const root = rootOf(process.cwd()) ?? process.cwd();
       const isWrite = options.flags.has('--write');
@@ -367,7 +376,7 @@ function main(): number | Promise<number> {
       return 0;
     }
     case 'doctor': {
-      const options = parse({ flags: ['--session', '--json'] });
+      const options = parse('doctor');
       if (typeof options === 'string') return usage(options);
       const session = options.flags.has('--session');
       const root = rootOf(process.cwd());
@@ -379,7 +388,7 @@ function main(): number | Promise<number> {
       return session || ok ? 0 : 1;
     }
     case 'explain': {
-      const options = parse({ flags: ['--json'], positional: 1 });
+      const options = parse('explain');
       if (typeof options === 'string') return usage(options);
       const [id] = options.positional;
       const found = id === undefined ? null : explain(id);
@@ -390,7 +399,7 @@ function main(): number | Promise<number> {
     }
     case 'adopt': {
       // Reads files and asks the model; never writes a file or changes config.
-      const options = parse({ flags: ['--json'] });
+      const options = parse('adopt');
       if (typeof options === 'string') return usage(options);
       const root = gitRoot(process.cwd());
       return draft(facts(root, env), { env }).then((drafted) => {
@@ -402,7 +411,7 @@ function main(): number | Promise<number> {
       });
     }
     case 'init': {
-      const options = parse({ flags: ['--github', '--yes', '--remove-default-labels'], positional: 1 });
+      const options = parse('init');
       if (typeof options === 'string') return usage(options);
       if (options.flags.has('--yes') && !options.flags.has('--github')) return usage('--yes goes with --github');
       if (options.flags.has('--remove-default-labels') && !options.flags.has('--github')) return usage('--remove-default-labels goes with --github');
@@ -417,7 +426,7 @@ function main(): number | Promise<number> {
     }
     case 'update': {
       // Its own command, not an init flag: init promises to add only, never to overwrite (#120).
-      const options = parse({ flags: ['--write'], positional: 1 });
+      const options = parse('update');
       if (typeof options === 'string') return usage(options);
       const dir = resolve(options.positional[0] ?? '.');
       const { ok, lines } = updateCoreRules(rootOf(dir) ?? dir, { write: options.flags.has('--write') });
@@ -427,29 +436,45 @@ function main(): number | Promise<number> {
     case 'bot': {
       // No options of its own: everything after `--` is the command, passed on unchanged.
       const end = args.indexOf('--');
-      const options = parse({ flags: [] }, end === -1 ? args : args.slice(0, end));
+      const options = parse('bot', end === -1 ? args : args.slice(0, end));
       if (typeof options === 'string') return usage(options);
       return bot(end === -1 ? [] : args.slice(end + 1));
     }
     case 'install': {
-      const options = parse({ flags: [] });
+      const options = parse('install');
       if (typeof options === 'string') return usage(options);
       print(install(env));
       return 0;
     }
-    case 'version':
-    case '--version':
+    case 'version': {
+      const options = parse('version');
+      if (typeof options === 'string') return usage(options);
       print([VERSION]);
       return 0;
-    case undefined:
-    case 'help':
-    case '--help':
-      print([HELP]);
+    }
+    case '--version':
+    case '-v':
+      print([VERSION]);
       return 0;
+    case 'help': {
+      const options = parse('help');
+      if (typeof options === 'string') return usage(options);
+      const [name] = options.positional;
+      if (name === undefined) break;
+      const named = findCommand(name);
+      if (!named) return unknownCommand(name);
+      print(commandHelp(named));
+      return 0;
+    }
+    case undefined:
+    case '--help':
+    case '-h':
+      break;
     default:
-      print([`unknown command: ${cmd}`, HELP], process.stderr);
-      return 1;
+      return unknownCommand(cmd);
   }
+  print([HELP]);
+  return 0;
 }
 
 // Exit 1, not 2, on an error: a broken guard should be seen, not block every tool call.

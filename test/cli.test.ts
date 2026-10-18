@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { closestWord, COMMANDS, editDistance, HELP_OPTIONS } from '../src/run/cli.ts';
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'yokoten.ts');
 const at = '@';
@@ -755,7 +756,7 @@ test('install: skills, agents and hooks once, the user\'s own files untouched', 
   // An unknown option is refused, and nothing is written (#203).
   const homeBefore = readdirSync(sandbox.home, { recursive: true }).sort();
   let result = sandbox.run(['install', '--dry-run']);
-  assert.deepEqual([result.status, result.stdout, result.stderr], [1, '', 'yokoten install: unknown option --dry-run. Run `yokoten help`.\n']);
+  assert.deepEqual([result.status, result.stdout, result.stderr], [1, '', 'yokoten install: unknown option --dry-run. Run `yokoten install --help`.\n']);
   assert.deepEqual(readdirSync(sandbox.home, { recursive: true }).sort(), homeBefore, 'install --dry-run writes nothing');
   result = sandbox.run(['install']);
   assert.equal(result.status, 0, result.stderr);
@@ -1120,6 +1121,68 @@ test('exit codes: 0 ok, 1 problems or a usage error, 2 the hook blocked (#42)', 
     assert.notEqual(r.stderr, '', `${args.join(' ')}: says why on stderr`);
   }
 });
+
+test('help: every command has --help, -h and `help <command>`; each exits 0 and writes nothing (#207)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const before = () => [sandbox.git('status', '--porcelain', '--ignored').stdout, readdirSync(sandbox.home, { recursive: true }).sort()];
+  const start = before();
+  for (const command of COMMANDS) {
+    for (const args of [[command.name, '--help'], [command.name, '-h'], ['help', command.name], [command.name, '--nope', '--help']]) {
+      const r = sandbox.run(args, { input: '{}' });
+      assert.deepEqual([r.status, r.stderr], [0, ''], args.join(' '));
+      assert.match(r.stdout, new RegExp(`^Usage: yokoten ${command.name}\\b`), args.join(' '));
+      for (const option of [...command.options.map((o) => o.name), ...HELP_OPTIONS]) assert.ok(r.stdout.includes(option), `${args.join(' ')}: names ${option}`);
+      assert.match(r.stdout, /\nExample:\n {2}\S/, `${args.join(' ')}: one example`);
+    }
+  }
+  assert.deepEqual(before(), start, '--help writes nothing');
+  // The command list names every command, and -h and -v work alone.
+  for (const args of [[], ['--help'], ['-h'], ['help']]) {
+    const r = sandbox.run(args);
+    assert.equal(r.status, 0, args.join(' '));
+    for (const command of COMMANDS) assert.match(r.stdout, new RegExp(`^ {2}${command.name} `, 'm'), `${args.join(' ')}: lists ${command.name}`);
+  }
+  assert.equal(sandbox.run(['-v']).stdout, sandbox.run(['--version']).stdout);
+});
+
+test('help: the help table and the parser list the same commands and options (#207)', () => {
+  const source = readFileSync(CLI, 'utf8');
+  // Every parse call names a command in the table; no option list is written outside it.
+  const parsed = [...source.matchAll(/\bparse\('([a-z]+)'/g)].map((m) => m[1]);
+  assert.deepEqual([...parsed].sort(), COMMANDS.map((command) => command.name).sort(), 'each command parses its words by its help entry');
+  assert.doesNotMatch(source, /flags: \[/, 'no option list outside the help table');
+  const cases = [...source.matchAll(/^ {4}case '([a-z]+)':/gm)].map((m) => m[1]);
+  assert.deepEqual([...cases].sort(), COMMANDS.map((command) => command.name).sort(), 'each command in the switch has a help entry, and the reverse');
+  // Each option the help lists is accepted: with it, the parser gives no "unknown option".
+  const sandbox = makeSandbox();
+  for (const command of COMMANDS) {
+    for (const option of command.options) {
+      const r = sandbox.run([command.name, option.name, ...(option.value ? ['x'] : []), '--not-an-option']);
+      assert.match(r.stderr, new RegExp(`unknown option --not-an-option`), `${command.name} ${option.name}`);
+    }
+  }
+});
+
+test('help: a typo in a command or an option names the closest one; a far one lists the commands (#207)', () => {
+  const sandbox = makeSandbox();
+  const cases: [string[], string][] = [
+    [['docter'], 'yokoten: unknown command "docter". Did you mean "doctor"? Run `yokoten help`.\n'],
+    [['help', 'chek'], 'yokoten: unknown command "chek". Did you mean "check"? Run `yokoten help`.\n'],
+    [['check', '--stagd'], 'yokoten check: unknown option --stagd. Did you mean --staged? Run `yokoten check --help`.\n'],
+    [['doctor', '--hepl'], 'yokoten doctor: unknown option --hepl. Did you mean --help? Run `yokoten doctor --help`.\n'],
+  ];
+  for (const [args, stderr] of cases) assert.deepEqual(pick(sandbox.run(args, { input: '{}' })), [1, '', stderr], args.join(' '));
+  const far = sandbox.run(['zzzzzz']);
+  assert.deepEqual([far.status, far.stdout], [1, '']);
+  assert.match(far.stderr, /^yokoten: unknown command "zzzzzz"\. Commands: install, init, .*version\. Run `yokoten help`\.\n$/);
+  assert.equal(editDistance('docter', 'doctor'), 1);
+  assert.equal(closestWord('xyz', ['doctor', 'check']), undefined, 'more than two edits: no guess');
+});
+
+const pick = (r: { status: number | null; stdout: string; stderr: string }) => [r.status, r.stdout, r.stderr];
 
 test('--json: check, doctor, hook and explain print pure JSON with what, why and fix; never a private value (#42)', () => {
   const sandbox = makeSandbox();
@@ -1569,13 +1632,21 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
 
     // bot has no options of its own (#203): one before `--` is refused, and nothing runs.
     const unknown = await run(['echo'], bot, ['--x']);
-    assert.deepEqual([unknown.status, unknown.stderr], [1, 'yokoten bot: unknown option --x. Run `yokoten help`.\n']);
+    assert.deepEqual([unknown.status, unknown.stderr], [1, 'yokoten bot: unknown option --x. Run `yokoten bot --help`.\n']);
     assert.equal(ran().length, good.length, 'gh did not run');
     assert.equal(requests.length, good.length * 2, 'no token was asked for');
     // Everything after `--` is the command's, passed on unchanged.
     const passed = await run(['gh', '--anything', 'issue', 'list']);
     assert.equal(passed.status, 0, passed.stderr);
     assert.deepEqual(ran().at(-1), { args: ['--anything', 'issue', 'list'], token: 'ghs_test' });
+    // --help after `--` is the command's own (#207): gh runs, and yokoten prints no help.
+    const helped = await run(['gh', '--help']);
+    assert.equal(helped.status, 0, helped.stderr);
+    assert.deepEqual(ran().at(-1), { args: ['--help'], token: 'ghs_test' });
+    // Before `--`, it is bot's help: no bot setup needed, no token, nothing runs.
+    const own = await run(['gh', 'issue', 'list'], path, ['--help']);
+    assert.equal(own.status, 0, own.stderr);
+    assert.equal(ran().length, good.length + 2, 'gh did not run for bot --help');
   } finally {
     server.close();
   }
