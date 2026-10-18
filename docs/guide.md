@@ -188,6 +188,8 @@ for each row.
   missing is as-is, partial is lighter, unknown is as-is once `doctor` has checked it.
   The output says which one drafted it.
 - `adopt` never writes a file. You still decide every row.
+- A partial row is not lost when you run `init`: it imports `AGENTS.md` from your
+  `CLAUDE.md`, and it adds the commit check to husky's `pre-commit`.
 
 The model runs on Meta's model API, through its OpenAI-compatible endpoint
 (`https://api.meta.ai/v1`, model `muse-spark-1.3`). Set `LLAMA_API_KEY` or `MODEL_API_KEY`
@@ -338,6 +340,12 @@ on `@main`.
 `init` copies the runtime into `.yokoten/` in your project. Commit it: the hooks and CI
 then run with no network and no global install.
 
+`init` keeps a project's own setup working. With a `CLAUDE.md`, it adds an `@AGENTS.md`
+line at the end, because Claude Code reads `AGENTS.md` only through that import. A
+`.claude/CLAUDE.md` counts too, and gets `@../AGENTS.md` when there is no root one. With
+husky or another `core.hooksPath`, it keeps that folder and adds the commit check to its
+`pre-commit`. The project's own hook lines stay, and `init` says which file it changed.
+
 `init` also writes three workflows into `.github/workflows/`: `yokoten.yml` (the
 commit check, a lint job with actionlint and zizmor, and one `ci` job to make the required
 check), `pr.yml` and `issue.yml`. Each action is pinned to a commit, each job has a time
@@ -359,17 +367,24 @@ It puts two safe defaults in `.github/` too:
 | `init [dir]` | Puts the practices into a project. Adds files; keeps any that are already there and says so. It also reads GitHub through `gh` and says which standard labels and milestone it would add. It never changes GitHub. Without `gh`, a sign-in or a GitHub remote, it says what it skipped |
 | `init --github --yes [--remove-default-labels]` | Adds the missing standard labels, and a milestone "First release" when no milestone is open. When a closed milestone already has that title, the new one is "Next release". A closed milestone is never reopened. A standard label that is there gets the standard colour and description. A second run changes nothing. GitHub's default labels outside the set (`question`, `wontfix` and others) are deleted only with `--remove-default-labels` |
 | `update [dir] [--write]` | Shows what this yokoten changes in the core rules of the project's `AGENTS.md`. `--write` replaces them, and keeps the "This project" part as it is. See [Updating the rules](#updating-the-rules) |
-| `doctor [--session]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session |
+| `doctor [--session] [--json]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session |
 | `adopt [--json]` | A draft of the adoption table for an old project: what it does today, and a proposed decision for each step. `--json` prints the rows. Writes nothing |
-| `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries. For the tree, a translation behind its English source is a note. See [Translations](#translations) |
+| `check [--staged] [--json]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries. For the tree, a translation behind its English source is a note. See [Translations](#translations) |
 | `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
 | `check --issue` | In CI: the issue's title. See [Issue titles](#issue-titles) |
 | `changelog [--write]` | Shows the entries the files in `changes/` add under `[Unreleased]`. `--write` puts them into `CHANGELOG.md` and deletes the files; run it before a release. See [The changelog](#the-changelog) |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public |
-| `hook [--agent <name>] [--commands-only]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini` |
+| `hook [--agent <name>] [--commands-only] [--json]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini` |
 | `hook --stop` | The stop check. Reads a Claude Code Stop event on stdin and checks the changed files. See [The stop check](#the-stop-check) |
-| `explain [<id>]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
+| `explain [<id>] [--json]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. Setup: [server.md](server.md#3-the-bot-a-github-app) |
+
+Each command prints its own help with `--help` or `-h`: what it does, its options and
+one example. `yokoten help <command>` prints the same, and `yokoten --help` lists the
+commands. `yokoten version` (or `--version`, `-v`) prints the version. Help changes nothing
+and exits 0. For a typo, yokoten names the closest command
+or option: `yokoten docter` asks `Did you mean "doctor"?`. After `bot --`, every word
+belongs to the command it runs, so `yokoten bot -- gh --help` runs `gh --help`.
 
 `check`, `doctor`, `hook` and `explain` take `--json`. Then stdout holds JSON and
 nothing else, for an agent or a script. Each finding has the same fields: `id`, `what`,
@@ -389,7 +404,7 @@ value.
 - `hook --stop --json`: `{ blocked, stop, findings }`. With `stop_hook_active`, or when the
   check fails, also `skipped`, the reason. When stdin is not a Stop event: `{ blocked: false, stop: false }`.
 - `explain --json`: `{ found, id, kind, what, why, check, docs, stage, standard }`. For an
-  unknown id, or none: `{ id, found: false, ids }`, where `id` is `null` when none was given.
+  unknown id: `{ id, found: false, ids }`, exit 1. With no id: `{ ids }`, exit 0.
 
 Output for people follows one rule. Results go to stdout. Problems, refusals and errors
 go to stderr. An unknown option is refused, never ignored.
