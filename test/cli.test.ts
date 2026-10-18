@@ -1272,6 +1272,33 @@ test('exit codes: 0 ok, 1 problems or a usage error, 2 the hook blocked (#42)', 
     assert.equal(r.stdout, '', `${args.join(' ')}: nothing on stdout`);
     assert.notEqual(r.stderr, '', `${args.join(' ')}: says why on stderr`);
   }
+  // With --json, the usage error is JSON on stdout too, and still said on stderr (#280).
+  const jsonErrors = [
+    ['check', '--json', '--bogus'],
+    ['check', '--json', '--staged', '--pr'],
+    ['check', '--json', 'extra'],
+    ['doctor', '--json', '--bogus'],
+    ['explain', '--json', 'a', 'b'],
+    ['adopt', '--json', '--x'],
+    ['hook', '--json', '--agent', 'nope'],
+    ['hook', '--json', '--agent'],
+  ];
+  for (const args of jsonErrors) {
+    const r = sandbox.run(args, { input: '{}' });
+    assert.equal(r.status, 1, args.join(' '));
+    const out = JSON.parse(r.stdout);
+    assert.deepEqual(Object.keys(out), ['command', 'ok', 'error'], args.join(' '));
+    assert.equal(out.command, args[0]);
+    assert.equal(out.ok, false);
+    assert.match(out.error, /^[^\n]+$/, `${args.join(' ')}: one line`);
+    assert.match(r.stderr, new RegExp(`^yokoten ${args[0]}: .+ Run \`yokoten ${args[0]} --help\`\\.\\n$`), args.join(' '));
+  }
+  // An error past the parser, caught at the top, is JSON too.
+  const crashed = sandbox.run(['check', '--pr', '--json'], { extra: { GITHUB_EVENT_PATH: join(sandbox.repo, 'no-such-event.json') } });
+  assert.equal(crashed.status, 1);
+  assert.deepEqual({ ...JSON.parse(crashed.stdout), error: 'x' }, { command: 'check', ok: false, error: 'x' });
+  assert.match(JSON.parse(crashed.stdout).error, /^ENOENT/);
+  assert.match(crashed.stderr, /^yokoten check: ENOENT/);
 });
 
 test('outside a git repo: every command that needs one says so plainly, exits 1 and writes nothing (#205)', () => {

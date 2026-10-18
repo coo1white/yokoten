@@ -386,8 +386,9 @@ and exits 0. For a typo, yokoten names the closest command
 or option: `yokoten docter` asks `Did you mean "doctor"?`. After `bot --`, every word
 belongs to the command it runs, so `yokoten bot -- gh --help` runs `gh --help`.
 
-`check`, `doctor`, `hook` and `explain` take `--json`. Then stdout holds JSON and
-nothing else, for an agent or a script. Each finding has the same fields: `id`, `what`,
+`check`, `doctor`, `hook`, `explain` and `adopt` take `--json`. Then stdout holds JSON and
+nothing else, for an agent or a script. An error is JSON too: a usage error or a crash
+prints `{ command, ok: false, error }` with exit 1, and the message still goes to stderr. Each finding has the same fields: `id`, `what`,
 `why`, `fix`, `docs` (the link) when the guide explains the rule, and `file` and `line`
 when it is in a file. `yokoten explain <id>` takes the `id`. No field holds a private
 value.

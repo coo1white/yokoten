@@ -74,8 +74,26 @@ function parse(name: string, words: string[] = args): Parsed | string {
   return parsed;
 }
 
-/** A usage error: said on stderr, exit 1, as for an unknown command. */
+/**
+ * --json among the command's own words, for a command that takes it (#280). It is read
+ * before the parser, so a usage error and a crash are JSON too. For `bot`, the words after
+ * `--` belong to the command it runs.
+ */
+const isJsonAsked = ((): boolean => {
+  const command = cmd === undefined ? undefined : findCommand(cmd);
+  if (!command?.options.some((option) => option.name === '--json')) return false;
+  const end = args.indexOf('--');
+  return (end === -1 ? args : args.slice(0, end)).includes('--json');
+})();
+
+/** With --json, an error as data on stdout too: `{ command, ok: false, error }`, one line. */
+function printJsonError(error: string): void {
+  if (isJsonAsked) printJson({ command: cmd, ok: false, error });
+}
+
+/** A usage error: said on stderr, exit 1, as for an unknown command. With --json, also on stdout. */
 function usage(error: string): number {
+  printJsonError(error);
   print([`yokoten ${cmd}: ${error}${/[.?]$/.test(error) ? '' : '.'} Run \`yokoten ${cmd} --help\`.`], process.stderr);
   return 1;
 }
@@ -267,10 +285,7 @@ function main(): number | Promise<number> {
       }
       const agent = options.values['--agent'] ?? 'claude-code';
       const read = Object.hasOwn(READERS, agent) ? READERS[agent] : undefined;
-      if (!read) {
-        print([`yokoten hook: unknown --agent ${agent}; use one of: ${Object.keys(READERS).join(', ')}`], process.stderr);
-        return 1;
-      }
+      if (!read) return usage(`unknown --agent ${agent}; use one of: ${Object.keys(READERS).join(', ')}`);
       let input: unknown;
       try {
         input = JSON.parse(readFileSync(0, 'utf8'));
@@ -530,6 +545,7 @@ Promise.resolve()
       process.exitCode = code;
     },
     (err: Error) => {
+      printJsonError(String(err?.message ?? err).split('\n')[0]);
       say(`yokoten ${cmd}: ${err.message}\n`, process.stderr);
       process.exitCode = 1;
     },
