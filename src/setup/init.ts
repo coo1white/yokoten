@@ -76,12 +76,33 @@ export function init(root: string): string[] {
 /**
  * The project CLAUDE.md files Claude Code reads instead of AGENTS.md, root first, with
  * the import that reaches the root AGENTS.md from each. Claude Code resolves an `@`
- * import relative to the file that holds it.
+ * import relative to the file that holds it, and the path ends at the first space.
+ * Only an `@` import counts: Claude Code does not load a file a Markdown link points to,
+ * and it skips code spans and fenced code blocks.
  */
 const CLAUDE_FILES = [
-  { file: 'CLAUDE.md', rules: 'AGENTS.md', imports: /(?:^|\s)@(?:\.\/)?AGENTS\.md\b|\]\((?:\.\/)?AGENTS\.md\)/m },
-  { file: '.claude/CLAUDE.md', rules: '../AGENTS.md', imports: /(?:^|\s)@\.\.\/AGENTS\.md\b|\]\(\.\.\/AGENTS\.md\)/m },
+  { file: 'CLAUDE.md', rules: 'AGENTS.md', imports: /(?:^|\s)@(?:\.\/)?AGENTS\.md(?=\s|$)/m },
+  { file: '.claude/CLAUDE.md', rules: '../AGENTS.md', imports: /(?:^|\s)@\.\.\/AGENTS\.md(?=\s|$)/m },
 ];
+
+/** The text without its fenced code blocks and code spans, where Claude Code reads no import. */
+function removeCode(text: string): string {
+  const kept: string[] = [];
+  let fence: { mark: string; length: number } | null = null;
+  for (const line of text.split(/\r?\n/)) {
+    const found = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence) {
+      if (found && found[1][0] === fence.mark && found[1].length >= fence.length && found[2].trim() === '') fence = null;
+      kept.push('');
+    } else if (found && !(found[1][0] === '`' && found[2].includes('`'))) {
+      fence = { mark: found[1][0], length: found[1].length };
+      kept.push('');
+    } else {
+      kept.push(line);
+    }
+  }
+  return kept.join('\n').replace(/(`+)[\s\S]*?(?<!`)\1(?!`)/g, ' ');
+}
 
 /** The project CLAUDE.md files that are here, root first. */
 const findClaudeFiles = (root: string) => CLAUDE_FILES.filter((entry) => existsSync(join(root, entry.file)));
@@ -92,12 +113,19 @@ const findClaudeFiles = (root: string) => CLAUDE_FILES.filter((entry) => existsS
  */
 export function findRulesGap(root: string): { file: string; line: string } | null {
   const found = findClaudeFiles(root);
-  if (found.length === 0 || found.some((entry) => entry.imports.test(readFileSync(join(root, entry.file), 'utf8')))) return null;
+  if (found.length === 0 || found.some((entry) => entry.imports.test(removeCode(readFileSync(join(root, entry.file), 'utf8'))))) return null;
   return { file: found[0].file, line: `@${found[0].rules}` };
 }
 
 /** True when Claude Code reads AGENTS.md here: there is no CLAUDE.md, or one imports AGENTS.md. */
 export const claudeReadsRules = (root: string): boolean => findRulesGap(root) === null;
+
+/** The line ending most lines of the text use: CRLF or LF, LF on a tie. */
+function findMainNewline(text: string): string {
+  const crlf = text.split('\r\n').length - 1;
+  const lf = text.split('\n').length - 1 - crlf;
+  return crlf > lf ? '\r\n' : '\n';
+}
 
 /** Add the AGENTS.md import to the CLAUDE.md that lacks it. Returns the report line, or null when nothing changed. */
 function importRules(root: string): string | null {
@@ -105,9 +133,11 @@ function importRules(root: string): string | null {
   if (!gap) return null;
   const path = join(root, gap.file);
   const text = readFileSync(path, 'utf8');
-  const newline = text.includes('\r\n') ? '\r\n' : '\n';
-  const spacing = text === '' ? '' : text.endsWith(newline) ? newline : newline + newline;
-  writeFileSync(path, `${text}${spacing}<!-- Added by yokoten: Claude Code reads AGENTS.md only through this import. -->${newline}${gap.line}${newline}`);
+  const newline = findMainNewline(text);
+  // The project's lines, then one blank line, whatever line endings the file ends with.
+  const kept = text.replace(/[\r\n]+$/, '');
+  const spacing = kept === '' ? '' : newline + newline;
+  writeFileSync(path, `${kept}${spacing}<!-- Added by yokoten: Claude Code reads AGENTS.md only through this import. -->${newline}${gap.line}${newline}`);
   return `updated ${gap.file}: it now reads AGENTS.md (Claude Code reads AGENTS.md only when a CLAUDE.md imports it)`;
 }
 

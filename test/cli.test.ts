@@ -458,8 +458,8 @@ test("init: a CLAUDE.md gets one line that imports AGENTS.md, and doctor's rules
   assert.equal(readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8'), claude);
 });
 
-test('init: a CLAUDE.md that already imports or links AGENTS.md is left as it is (#206)', () => {
-  for (const text of [`# rules\n${at}AGENTS.md\n`, '# rules\nSee [the rules](AGENTS.md).\n', `# rules\nRead ${at}./AGENTS.md first.\n`]) {
+test('init: a CLAUDE.md that already imports AGENTS.md is left as it is (#206)', () => {
+  for (const text of [`# rules\n${at}AGENTS.md\n`, `# rules\nRead ${at}./AGENTS.md first.\n`, `# rules\r\n${at}AGENTS.md\r\n`, `# rules\n${at}AGENTS.md`]) {
     const sandbox = makeSandbox();
     sandbox.write('CLAUDE.md', text);
     const result = sandbox.run(['init']);
@@ -499,7 +499,7 @@ test('init: CLAUDE.md and .claude/CLAUDE.md, neither importing AGENTS.md: the ro
 });
 
 test('init: a .claude/CLAUDE.md that already imports AGENTS.md is left as it is (#206)', () => {
-  for (const text of [`# rules\n${at}../AGENTS.md\n`, '# rules\nSee [the rules](../AGENTS.md).\n']) {
+  for (const text of [`# rules\n${at}../AGENTS.md\n`, `# rules\nRead ${at}../AGENTS.md first.\n`]) {
     const sandbox = makeSandbox();
     sandbox.write('.claude/CLAUDE.md', text);
     const result = sandbox.run(['init']);
@@ -507,6 +507,108 @@ test('init: a .claude/CLAUDE.md that already imports AGENTS.md is left as it is 
     assert.doesNotMatch(result.stdout, /CLAUDE\.md/, text);
     assert.equal(readFileSync(join(sandbox.repo, '.claude', 'CLAUDE.md'), 'utf8'), text);
     assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+  }
+});
+
+test('init: an import of another file that starts with AGENTS.md does not count; init adds the real import (#206)', () => {
+  const cases = [
+    { file: 'CLAUDE.md', text: `# rules\n${at}AGENTS.md.bak\n`, line: `${at}AGENTS.md` },
+    { file: 'CLAUDE.md', text: `# rules\nOld: ${at}./AGENTS.md.old\n`, line: `${at}AGENTS.md` },
+    { file: '.claude/CLAUDE.md', text: `# rules\n${at}../AGENTS.md.bak\n`, line: `${at}../AGENTS.md` },
+  ];
+  for (const { file, text, line } of cases) {
+    const sandbox = makeSandbox();
+    sandbox.write(file, text);
+    sandbox.write('AGENTS.md', '# shared rules\n');
+    assert.notEqual(stepMark(sandbox, 'rules'), 'done', text);
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(result.stdout.includes(`updated ${file}: it now reads AGENTS.md`), result.stdout);
+    const after = readFileSync(join(sandbox.repo, file), 'utf8');
+    assert.ok(after.startsWith(text), 'the old line stays');
+    assert.ok(after.endsWith(`-->\n${line}\n`), after);
+    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+  }
+});
+
+test('init: a Markdown link to AGENTS.md is not an import; init adds the import and keeps the link (#206)', () => {
+  // Claude Code loads only `@path` imports; a link is text, so the session would not read AGENTS.md.
+  const cases = [
+    { file: 'CLAUDE.md', text: '# rules\nSee [the rules](AGENTS.md).\n', line: `${at}AGENTS.md` },
+    { file: 'CLAUDE.md', text: '# rules\nSee [the rules](./AGENTS.md).\n', line: `${at}AGENTS.md` },
+    { file: '.claude/CLAUDE.md', text: '# rules\nSee [the rules](../AGENTS.md).\n', line: `${at}../AGENTS.md` },
+  ];
+  for (const { file, text, line } of cases) {
+    const sandbox = makeSandbox();
+    sandbox.write(file, text);
+    sandbox.write('AGENTS.md', '# shared rules\n');
+    assert.notEqual(stepMark(sandbox, 'rules'), 'done', text);
+    assert.match(sandbox.run(['doctor']).stdout, /rules[^\n]*does not import AGENTS\.md/, text);
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    const after = readFileSync(join(sandbox.repo, file), 'utf8');
+    assert.ok(after.startsWith(text), 'the link stays');
+    assert.ok(after.endsWith(`-->\n${line}\n`), after);
+    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+  }
+});
+
+test('init: an import inside a code span or fenced block is not an import; init adds the real one (#206)', () => {
+  // Claude Code skips Markdown code spans and fenced code blocks when it reads imports.
+  const fence = '```';
+  for (const text of [
+    `# rules\nWrite \`${at}AGENTS.md\` to import it.\n`,
+    `# rules\nWrite \`\`${at}AGENTS.md\`\` to import it.\n`,
+    `# rules\n${fence}md\n${at}AGENTS.md\n${fence}\n`,
+    `# rules\n~~~\n${at}AGENTS.md\n~~~\n`,
+    `# rules\n  ${fence}\n${at}AGENTS.md\n  ${fence}\n`,
+  ]) {
+    const sandbox = makeSandbox();
+    sandbox.write('CLAUDE.md', text);
+    sandbox.write('AGENTS.md', '# shared rules\n');
+    assert.notEqual(stepMark(sandbox, 'rules'), 'done', text);
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    const after = readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8');
+    assert.ok(after.startsWith(text.replace(/\n$/, '')), 'the example stays');
+    assert.ok(after.endsWith(`-->\n${at}AGENTS.md\n`), after);
+    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+  }
+});
+
+test('init: a real import next to a fenced or quoted example is left as it is (#206)', () => {
+  const fence = '```';
+  for (const text of [
+    `# rules\n${at}AGENTS.md\n\nExample:\n${fence}\n${at}AGENTS.md\n${fence}\n`,
+    `# rules\nExample: \`${at}AGENTS.md\`.\n${at}AGENTS.md\n`,
+    `# rules\n${fence}\n${at}other.md\n${fence}\n${at}AGENTS.md\n`,
+  ]) {
+    const sandbox = makeSandbox();
+    sandbox.write('CLAUDE.md', text);
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stdout, /CLAUDE\.md/, text);
+    assert.equal(readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8'), text);
+    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+  }
+});
+
+test("init: a CLAUDE.md with mixed line endings gets the file's main ending and one blank line (#206)", () => {
+  const cases = [
+    { text: '# rules\r\nOne.\r\nTwo.\n', want: '# rules\r\nOne.\r\nTwo.\r\n\r\n<!--' },
+    { text: '# rules\r\nOne.\r\nTwo.', want: '# rules\r\nOne.\r\nTwo.\r\n\r\n<!--' },
+    { text: '# rules\nOne.\nTwo.\r\n', want: '# rules\nOne.\nTwo.\n\n<!--' },
+    { text: '# rules\nOne.\n\n\n', want: '# rules\nOne.\n\n<!--' },
+  ];
+  for (const { text, want } of cases) {
+    const sandbox = makeSandbox();
+    sandbox.write('CLAUDE.md', text);
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    const after = readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8');
+    const newline = want.includes('\r\n') ? '\r\n' : '\n';
+    assert.equal(after.slice(0, want.length), want, JSON.stringify(after));
+    assert.ok(after.endsWith(`-->${newline}${at}AGENTS.md${newline}`), JSON.stringify(after));
   }
 });
 
