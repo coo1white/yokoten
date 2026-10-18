@@ -72,14 +72,14 @@ export function agentHooks(root: string): Practice[] {
  * on, those two checks pass; an old runtime that install left is still reported.
  */
 export function machineChecks(env: Env): Practice[] {
-  const p = paths(env);
-  const runtime = runtimeVersion(p.runtime);
+  const target = paths(env);
+  const runtime = runtimeVersion(target.runtime);
   const plugin = hasPlugin(env);
   return [
     practice('session-doctor', 'session-doctor', plugin || hasSessionDoctor(env), 'sessions do not start with doctor', 'run `yokoten install`, or install the Claude Code plugin'),
     // 'runtime' in the text, as before; the id differs from the road's runtime step.
     practice('runtime', 'machine-runtime', runtime === VERSION || (plugin && runtime === null), runtime ? `the installed runtime is ${runtime}, this yokoten is ${VERSION}` : 'no runtime installed', 'run `yokoten install` from this copy of yokoten'),
-    practice('private-marks', 'private-marks', loadMarks(env).length > 0, `${p.marks} is missing or empty`, 'add your name, city, domain and server names to it, one per line'),
+    practice('private-marks', 'private-marks', loadMarks(env).length > 0, `${target.marks} is missing or empty`, 'add your name, city, domain and server names to it, one per line'),
   ];
 }
 

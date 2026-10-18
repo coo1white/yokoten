@@ -329,6 +329,50 @@ The full table, with the reasons, is in [`kit/project/AGENTS.md`](../kit/project
 11. Nothing in the repo, or in what yokoten prints, points at a person or holds a secret.
 12. Decisions are written down once and kept. Facts are replaced. Times are UTC.
 
+## Naming
+
+A name is the first thing a reader meets in code, and the thing they read most. A good
+name tells them what a thing holds, so they don't scroll back to find out. In one study,
+72 developers found defects about 19% faster when names were whole words.
+
+yokoten's own code follows five rules. The reasons and the sources are in
+[record 0006](records/0006-names.md).
+
+1. Use whole English words. Use only the short forms everyone knows: `id`, `url`, `pr`,
+   `ci`, `env`, `config`, `repo`, `dir`, `json`, `html`. Don't delete letters inside a word.
+2. Use at most 4 words. There is no limit on characters, because a limit makes people
+   cut words short.
+3. Use one letter only for a name that is used within 10 lines and not exported. Use
+   `_` only for a parameter you don't use.
+4. Write values and functions in `camelCase` and types in `PascalCase`. Use
+   `CONSTANT_CASE` only for a fixed value at the top of a file. Write an acronym as a
+   word: `loadHttpUrl`.
+5. Start a function with a verb. Start a true/false value with `is`, `has` or `can`.
+   Give one idea one name, in every file.
+
+| Instead of | Write | Why |
+|---|---|---|
+| `r`, used 30 lines later | `result` | By line 30, the reader has forgotten what `r` holds. |
+| `cfgMgr` | `configManager` | Letters were deleted inside words; the reader must guess them. |
+| `processTheUserInputDataNow` | `parseInput` | 6 words. "process", "data" and "now" tell the reader nothing new. |
+| `_count` | `count` | The `_` adds nothing. |
+| `MAX_TRIES`, inside a function | `maxTries` | `CONSTANT_CASE` says "fixed for the whole file". |
+| `loadHTTPURL` | `loadHttpUrl` | Where does one acronym end and the next start? |
+| `valid` | `isValid` | `is` says it is true or false. |
+| `user()` | `loadUser()` | The verb says what the function does. |
+
+Short is fine where the reader sees everything at once: `for (const n of numbers)` in a
+three-line loop is clear. The further a name travels, the more it must say.
+
+`test/architecture.test.ts` checks rules 2 and 3, and `CONSTANT_CASE` inside a function.
+Each failure says what to change:
+
+```
+src/rules/guards.ts:195: i — one letter, used 101 lines on — a reader must scroll back to learn what it holds: name what it is, e.g. "index"
+```
+
+Rules 1 and 5 need judgement, so the reviewer checks them.
+
 ## Managing agents like a team
 
 The setup treats agents like staff on a line, each with a clear role and limited rights:

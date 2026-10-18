@@ -78,22 +78,22 @@ export function loadConfig(root: string): Config {
 
 export function globToRegExp(glob: string): RegExp {
   let re = '';
-  for (let i = 0; i < glob.length; i++) {
-    const c = glob[i];
-    if (c === '*' && glob[i + 1] === '*') {
-      if (glob[i + 2] === '/') {
+  for (let index = 0; index < glob.length; index++) {
+    const character = glob[index];
+    if (character === '*' && glob[index + 1] === '*') {
+      if (glob[index + 2] === '/') {
         re += '(?:.*/)?';
-        i += 2;
+        index += 2;
       } else {
         re += '.*';
-        i += 1;
+        index += 1;
       }
-    } else if (c === '*') {
+    } else if (character === '*') {
       re += '[^/]*';
-    } else if (c === '?') {
+    } else if (character === '?') {
       re += '[^/]';
     } else {
-      re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+      re += character.replace(/[.+^${}()|[\]\\]/g, '\\$&');
     }
   }
   return new RegExp(glob.includes('/') ? `^${re}$` : `(?:^|/)${re}$`);

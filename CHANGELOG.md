@@ -44,6 +44,11 @@ All notable changes are listed here. The format follows
 
 ### Changed
 
+- yokoten names things in whole words, at most four (record 0006). A test reads every
+  name declared in `src/` and `bin/`. It fails on a one-letter name used over 10 lines
+  or exported, a `_` at the start or end, or `CONSTANT_CASE` in a function. The names
+  it found are renamed; behaviour does not change. The guide has a "Naming" section
+  (#109).
 - `doctor --json` gives `server` as a list of `{ id, mark }` (it was a list of text) (#7).
 - The pull request check counts `Part of #N` as a linked issue. Only `Closes`, `Fixes`
   and `Resolves` close it (#82).
