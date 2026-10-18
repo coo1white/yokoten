@@ -16,6 +16,12 @@ All notable changes are listed here. The format follows
 
 ### Changed
 
+- The CI workflow `init` writes has one required check, `ci`. It waits for every other
+  job and fails if one of them fails. A new `lint` job runs actionlint and zizmor on the
+  workflows. Each job gets only the permissions it names. Make `ci` the required check
+  in place of `check`. Delete the old file and run `init` again to get it (#36).
+- yokoten's own CI tests on Node 22.18.0 and 24 on Linux, and on Node 24 on macOS. A
+  test holds that `ci` waits for every job and that checkout keeps no token (#36).
 - Every message has three parts: what happened, why it matters, and the fix. Most
   lines keep their words and gain the missing part. Some are reworded. A full folder
   reads `docs/: 9 entries, over the cap of 7: ...` (was `docs/ has 9 entries ...`). A

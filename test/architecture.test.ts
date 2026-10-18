@@ -80,3 +80,48 @@ test('code is .ts only: no .js, .mjs, .cjs or .tsx under bin, src or test (#43)'
   assert.ok(files.some((f) => f.endsWith('.ts')), 'no .ts found; the scan is broken');
   assert.deepEqual(strayCode(files), [], 'write it as .ts: Node runs it with no build');
 });
+
+// The ruleset on main names one check, `ci`. So `ci` must wait for every other job in
+// its workflow, and run even when one of them failed. Then a red job turns `ci` red (#36).
+// The jobs are read from the text: a job is a key two spaces in under `jobs:`.
+const jobs = (text: string) => {
+  const body = text.split(/^jobs:\n/m)[1] ?? '';
+  return body.split(/^ {2}(?=[\w-]+:\n)/m).slice(1).map((block) => ({
+    name: block.slice(0, block.indexOf(':')),
+    block,
+  }));
+};
+const ciProblems = (text: string) => {
+  const all = jobs(text);
+  const ci = all.find((j) => j.name === 'ci');
+  if (!ci) return ['no `ci` job'];
+  const problems: string[] = [];
+  if (!/^ {4}if: always\(\)$/m.test(ci.block)) problems.push('`ci` has no `if: always()`');
+  const needs = (ci.block.match(/^ {4}needs: \[(.*)\]$/m)?.[1] ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  for (const j of all) if (j.name !== 'ci' && !needs.includes(j.name)) problems.push(`\`ci\` does not need \`${j.name}\``);
+  for (const j of all) if (!/^ {4}timeout-minutes: \d+$/m.test(j.block)) problems.push(`\`${j.name}\` has no time limit`);
+  if (!/^permissions: \{\}$/m.test(text)) problems.push('the workflow does not start from no permissions');
+  return problems;
+};
+
+test('workflows: the one required check, `ci`, waits for every job (#36)', () => {
+  const good = 'permissions: {}\njobs:\n  a:\n    timeout-minutes: 10\n  ci:\n    if: always()\n    needs: [a]\n    timeout-minutes: 10\n';
+  assert.deepEqual(ciProblems(good), []);
+  assert.deepEqual(ciProblems(good.replace('jobs:\n', 'jobs:\n  b:\n    timeout-minutes: 5\n')), ['`ci` does not need `b`']);
+  assert.deepEqual(ciProblems(good.replace('    if: always()\n', '')), ['`ci` has no `if: always()`']);
+  for (const dir of ['.github/workflows', 'kit/project/.github/workflows']) {
+    const text = readFileSync(join(ROOT, dir, 'yokoten.yml'), 'utf8');
+    assert.ok(jobs(text).length > 1, `${dir}/yokoten.yml: no jobs found; the scan is broken`);
+    assert.deepEqual(ciProblems(text), [], `${dir}/yokoten.yml`);
+  }
+});
+
+test('workflows: checkout keeps no token (#36)', () => {
+  for (const dir of ['.github/workflows', 'kit/project/.github/workflows']) {
+    for (const file of readdirSync(join(ROOT, dir)).filter((f) => /\.ya?ml$/.test(f))) {
+      const text = readFileSync(join(ROOT, dir, file), 'utf8');
+      const checkouts = [...text.matchAll(/uses: actions\/checkout@.*\n((?: {8,}.*\n)*)/g)];
+      for (const c of checkouts) assert.match(c[1], /persist-credentials: false/, `${dir}/${file}: add \`persist-credentials: false\` to checkout`);
+    }
+  }
+});

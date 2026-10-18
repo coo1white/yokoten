@@ -7,8 +7,8 @@ on:
   pull_request:
   push:
     branches: [main]
-permissions:
-  contents: read
+# No job gets a permission it does not name.
+permissions: {}
 # A new push to a pull request cancels the run still going for it. Every other run
 # (a push to main) gets a group of its own, so nothing on main is ever cancelled.
 concurrency:
@@ -18,11 +18,17 @@ jobs:
   test:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        # The oldest Node that runs .ts as it is (package.json "engines"), and the current 22.
-        node: ['22.18.0', '22']
+        os: [ubuntu-latest]
+        # The oldest Node that runs .ts as it is (package.json "engines"), and the current LTS.
+        node: ['22.18.0', '24']
+        # One macOS run: paths there go through symlinks (/var), which hid a real bug (#1).
+        include:
+          - os: macos-latest
+            node: '24'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -35,6 +41,8 @@ jobs:
   typecheck:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -48,6 +56,8 @@ jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -61,6 +71,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     env:
       ACTIONLINT_VERSION: 1.7.12
       ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
@@ -93,6 +105,7 @@ jobs:
     needs: [test, typecheck, check, lint]
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions: {}
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
         run: exit 1

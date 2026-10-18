@@ -1,21 +1,26 @@
-# The same check as the commit hook, for commits made without it. Make the `check` job
-# a required check on main.
+# yokoten's checks in CI. Make the `ci` job the one required check on main: it waits
+# for every other job here and fails if any of them did not succeed. Add your own jobs
+# (tests, build) to this file and to the `needs` list of `ci`. Then the ruleset never
+# changes when a job is added or renamed.
 name: yokoten
 on:
   pull_request:
   push:
     branches: [main]
-permissions:
-  contents: read
+# No job gets a permission it does not name.
+permissions: {}
 # A new push to a pull request cancels the run still going for it. A push to main gets
 # a group of its own, so a run on main is never cancelled.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: true
 jobs:
+  # The same check as the commit hook, for commits made without it.
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       # Actions are pinned to a commit, which can't be moved the way a tag can.
       # Dependabot (github-actions) keeps the commit and the version comment current.
@@ -26,3 +31,40 @@ jobs:
         with:
           node-version: 22
       - run: node {{cli}} check
+  # The workflows themselves: actionlint finds mistakes, zizmor finds security problems.
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      ACTIONLINT_VERSION: 1.7.12
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # A pinned release, checked against its hash before it runs.
+      - name: actionlint
+        run: |
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$tarball" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$tarball"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color
+      # Findings fail the job as annotations. Nothing is uploaded to code scanning.
+      - uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
+        with:
+          advanced-security: false
+          annotations: true
+  # The one required check. It runs even when a job it needs failed. It goes red if
+  # any of them did not succeed (failed, cancelled or skipped).
+  ci:
+    if: always()
+    needs: [check, lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions: {}
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
+        run: exit 1
