@@ -1,6 +1,11 @@
 // The GitHub adapter. Everything yokoten knows about GitHub's API lives in src/host/
-// (record 0004); a rule or a step names what it needs in host-neutral words. Two parts:
-// the bot, and the pull request of a CI run.
+// (record 0004); a rule or a step names what it needs in host-neutral words. The parts,
+// in order:
+// - the bot, and the title a `gh issue` or `gh pr` command sets;
+// - the pull request and the issue of a CI run, and the CODEOWNERS file;
+// - the findings of a check on the pull request page;
+// - labels and milestones (the planning setup);
+// - the server settings, read only.
 //
 // The bot: a GitHub App that pushes branches and opens pull requests for the lead, so
 // the owner's account is never used for that. It signs in with one-hour tokens made from
