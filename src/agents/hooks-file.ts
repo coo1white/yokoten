@@ -35,6 +35,38 @@ export function writeSettings(path: string, settings: Settings): void {
 }
 
 /**
+ * A file `addHook` won't touch: it doesn't parse, or it isn't a hooks table (a `hooks`
+ * key that isn't an object of event lists). `addHook` throws it before writing anything,
+ * so the caller can name the file, skip it and go on (#248).
+ */
+export class UnreadableHooksFile extends Error {
+  readonly path: string;
+  constructor(path: string) {
+    super(`can't read ${path} (make it valid JSON, then run the command again)`);
+    this.name = 'UnreadableHooksFile';
+    this.path = path;
+  }
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/** The file's settings, or null when it won't parse or its `hooks` is not an object of lists of objects. */
+function readTable(path: string): Settings | null {
+  let settings: unknown;
+  try {
+    settings = readSettings(path);
+  } catch {
+    return null;
+  }
+  if (!isObject(settings)) return null;
+  const { hooks } = settings;
+  if (hooks === undefined) return settings as Settings;
+  if (!isObject(hooks)) return null;
+  const tables = Object.values(hooks).every((groups) => Array.isArray(groups) && groups.every(isObject));
+  return tables ? (settings as Settings) : null;
+}
+
+/**
  * Put a command hook in `settings`, once, and say what that took. A hook that runs the
  * same yokoten `<sub>` counts as already there (an older path is updated in place).
  * `extra` holds more handler fields, such as Gemini CLI's `name`. Only `settings` in
@@ -59,9 +91,14 @@ function placeHook(settings: Settings, event: string, matcher: string | undefine
   return 'added';
 }
 
-/** Add a command hook to a settings file, once (see `placeHook`), and write the file when that changed it. */
+/**
+ * Add a command hook to a settings file, once (see `placeHook`), and write the file when
+ * that changed it. A file that won't parse, or whose `hooks` is the wrong type, throws
+ * `UnreadableHooksFile` and stays as it was.
+ */
 export function addHook(path: string, event: string, matcher: string | undefined, command: string, extra: Record<string, string> = {}): Added {
-  const settings = readSettings(path);
+  const settings = readTable(path);
+  if (!settings) throw new UnreadableHooksFile(path);
   const added = placeHook(settings, event, matcher, command, extra);
   if (added !== 'same') writeSettings(path, settings);
   return added;
@@ -70,17 +107,12 @@ export function addHook(path: string, event: string, matcher: string | undefined
 /**
  * What `addHook` would do with these arguments, read-only: 'same' when the hook is there
  * as it would write it, 'updated' when it is there but out of date (command, matcher or
- * fields), 'added' when it is missing, and 'unreadable' when the file won't parse.
+ * fields), 'added' when it is missing, and 'unreadable' when `addHook` would refuse the
+ * file: it won't parse, or its `hooks` is the wrong type.
  */
 export function hookState(path: string, event: string, matcher: string | undefined, command: string, extra: Record<string, string> = {}): HookState {
-  let settings: Settings;
-  try {
-    settings = readSettings(path);
-  } catch {
-    return 'unreadable';
-  }
-  if (typeof settings !== 'object' || settings === null || Array.isArray(settings)) return 'unreadable';
-  return placeHook(settings, event, matcher, command, extra);
+  const settings = readTable(path);
+  return settings ? placeHook(settings, event, matcher, command, extra) : 'unreadable';
 }
 
 /** Whether the file has a hook for `event` that runs yokoten's `<sub>`. */

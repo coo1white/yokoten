@@ -11,6 +11,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { closestWord, COMMANDS, editDistance, guardCommand, HELP_OPTIONS } from '../src/run/cli.ts';
 import { copyRuntime } from '../src/setup/files.ts';
+import { hasHook } from '../src/agents/hooks-file.ts';
 import { checkLines } from '../src/setup/init.ts';
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'yokoten.ts');
@@ -952,6 +953,56 @@ test('install: the session doctor and the command guard for Codex and Gemini CLI
   const push = { session_id: 's1', cwd: sandbox.repo, hook_event_name: 'PreToolUse', tool_input: { command: 'git push --tags' } };
   assert.equal(shell(codex.hooks.PreToolUse[1].hooks[0].command, { ...push, tool_name: 'Bash' }).status, 2, 'Codex');
   assert.equal(shell(gemini.hooks.BeforeTool[1].hooks[0].command, { ...push, hook_event_name: 'BeforeTool', tool_name: 'run_shell_command' }).status, 2, 'Gemini CLI');
+});
+
+// #248: a hooks file that won't parse, or whose `hooks` is the wrong type, is named and
+// skipped, byte for byte as it was; the other CLI still gets its hooks, and install fails.
+test('install: an unreadable Codex or Gemini CLI hooks file is skipped, the rest goes on, and install exits 1 (#248)', () => {
+  const agents = [
+    { name: 'Codex', cli: 'Codex CLI', file: '.codex/hooks.json', id: 'codex-user-hook' },
+    { name: 'Gemini CLI', cli: 'Gemini CLI', file: '.gemini/settings.json', id: 'gemini-user-hook' },
+  ];
+  for (const [bad, good] of [agents, [...agents].reverse()]) {
+    for (const content of ['{ not json', '{"hooks": "x"}\n', '{"hooks": []}', '{"hooks": {"SessionStart": "x"}}']) {
+      const sandbox = makeSandbox();
+      const badPath = join(sandbox.home, bad.file);
+      const goodPath = join(sandbox.home, good.file);
+      mkdirSync(dirname(badPath));
+      mkdirSync(dirname(goodPath));
+      writeFileSync(badPath, content);
+      const result = sandbox.run(['install']);
+      const what = `${bad.name}, ${JSON.stringify(content)}`;
+      assert.equal(result.status, 1, what);
+      assert.match(result.stdout, new RegExp(`^skipped ${bad.cli}: can't read ~/\\${bad.file.replace('/', '\\/')} \\(make it valid JSON, then run \`yokoten install\` again\\)$`, 'm'), what);
+      assert.doesNotMatch(result.stdout, new RegExp(`the ${bad.name} (SessionStart doctor|command guard)`), what);
+      assert.ok(!result.stdout.includes(sandbox.home) && !result.stderr.includes(sandbox.home), `${what}: the home path is shown`);
+      assert.equal(readFileSync(badPath, 'utf8'), content, `${what}: the file changed`);
+      // Every other step still ran: the other CLI, Claude Code's hooks, and the marks file.
+      assert.match(result.stdout, new RegExp(`^added the ${good.name} command guard in ~/`, 'm'), what);
+      assert.ok(hasHook(goodPath, 'SessionStart', 'doctor'), `${what}: no ${good.name} hooks`);
+      assert.match(result.stdout, /^added the user-level command guard$/m, what);
+      assert.match(result.stdout.trimEnd().split('\n').at(-1) ?? '', /marks/, what);
+      // Doctor says the same file can't be read, whatever made it so.
+      assert.match(sandbox.run(['doctor']).stdout, new RegExp(`^  note {4}${bad.id}: can't read ~/`, 'm'), what);
+    }
+  }
+});
+
+test('init: an unreadable project .codex/hooks.json or .gemini/settings.json is skipped, the rest goes on, and init exits 1 (#248)', () => {
+  for (const [bad, good, name] of [['.codex/hooks.json', '.gemini/settings.json', 'the Codex hooks'], ['.gemini/settings.json', '.codex/hooks.json', 'the Gemini CLI hooks']]) {
+    for (const content of ['{ not json', '{"hooks": "x"}']) {
+      const sandbox = makeSandbox();
+      mkdirSync(join(sandbox.repo, dirname(bad)));
+      writeFileSync(join(sandbox.repo, bad), content);
+      const result = sandbox.run(['init']);
+      const what = `${bad}, ${JSON.stringify(content)}`;
+      assert.equal(result.status, 1, what);
+      assert.ok(result.stdout.split('\n').includes(`skipped ${name}: can't read ${bad} (make it valid JSON, then run \`yokoten init\` again)`), `${what}: ${result.stdout}${result.stderr}`);
+      assert.equal(readFileSync(join(sandbox.repo, bad), 'utf8'), content, `${what}: the file changed`);
+      assert.ok(hasHook(join(sandbox.repo, good), dirname(good) === '.codex' ? 'Stop' : 'AfterAgent', 'hook'), `${what}: no stop check in ${good}`);
+      assert.match(result.stdout, /TZ=UTC for agent sessions/, what);
+    }
+  }
 });
 
 // Codex adds a SessionStart hook's plain stdout to the context; Gemini CLI reads JSON only (#211).
