@@ -110,9 +110,11 @@ function lastText(lines: string[], start: number, end: number): number {
  * section heading is added in Keep a Changelog's order. Released versions are not touched.
  */
 export function mergeChanges(changelog: string, changes: Change[]): string | Finding {
-  // New lines take the file's own line ending, so a CRLF file stays CRLF.
-  const eol = changelog.includes('\r\n') ? '\r\n' : '\n';
-  const lines = changelog.split(eol);
+  // Lines already there keep their bytes. New lines take a CR when the file has CRLF, so a
+  // CRLF file stays CRLF, and one stray CRLF line doesn't change how the rest is read.
+  const cr = changelog.includes('\r\n') ? '\r' : '';
+  const added = (...text: string[]) => text.map((line) => line + cr);
+  const lines = changelog.split('\n');
   const top = lines.findIndex((line) => UNRELEASED.test(line));
   if (top < 0) return finding('change-file', 'CHANGELOG.md has no `## [Unreleased]` heading', 'add `## [Unreleased]` above the first version, then run it again', { file: 'CHANGELOG.md' });
   for (const section of CHANGE_SECTIONS) {
@@ -130,7 +132,7 @@ export function mergeChanges(changelog: string, changes: Change[]): string | Fin
     const order = CHANGE_SECTIONS.indexOf(section);
     const later = headings.find((heading) => CHANGE_SECTIONS.findIndex((name) => name.toLowerCase() === heading.name.toLowerCase()) > order);
     if (found < 0 && later) {
-      lines.splice(later.index, 0, `### ${section}`, '', ...entries, '');
+      lines.splice(later.index, 0, ...added(`### ${section}`, '', ...entries, ''));
       continue;
     }
     // After the section's last entry, or after the last text of Unreleased with a new heading.
@@ -138,9 +140,9 @@ export function mergeChanges(changelog: string, changes: Change[]): string | Fin
     const after = lastText(lines, start, found >= 0 ? (headings[found + 1]?.index ?? end) : end);
     const block = found >= 0 ? (after === start ? ['', ...entries] : entries) : ['', `### ${section}`, '', ...entries];
     // A blank line before whatever comes next: a heading, or the next version.
-    lines.splice(after + 1, 0, ...block, ...(lines[after + 1]?.trim() ? [''] : []));
+    lines.splice(after + 1, 0, ...added(...block, ...(lines[after + 1]?.trim() ? [''] : [])));
   }
-  return lines.join(eol);
+  return lines.join('\n');
 }
 
 /**

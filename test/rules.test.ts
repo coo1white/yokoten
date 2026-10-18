@@ -253,6 +253,10 @@ test('changes: --write puts each entry after its section, deletes the files, and
   // A CRLF file stays CRLF (#281).
   const crlf = mergeChanges(CHANGELOG.replaceAll('\n', '\r\n'), changes);
   assert.equal(crlf, written.replaceAll('\n', '\r\n'));
+  // One stray CRLF line: the file is still read, and its lines keep their bytes (#281).
+  const mixed = mergeChanges(CHANGELOG.replace('\n', '\r\n'), changes);
+  assert.equal(typeof mixed, 'string', 'a stray CRLF line still has an Unreleased heading');
+  assert.ok((mixed as string).startsWith(CHANGELOG.split('\n')[0] + '\r\n'), 'the CRLF line is kept');
 });
 
 test('CODEOWNERS: anchored, folder, glob, last match wins, comments, several owners', () => {
