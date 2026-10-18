@@ -262,6 +262,8 @@ test('annotations: escape the message and the properties; a history place goes i
   assert.equal(annotation(f, 'error'), '::error file=docs/a%2Cb%3Ac.md,line=7,title=yokoten layout::100%25 full,%0Aline two%0D. A: b. See a, b.');
   assert.equal(annotation({ id: 'large-diff', what: 'big', why: 'w', fix: 'f' }, 'warning'), '::warning title=yokoten large-diff::big. W. F.');
   assert.equal(annotation({ ...f, what: 'x', file: 'commit abc (message)', line: 1 }, 'error', false), '::error title=yokoten layout::commit abc (message):1: x. A: b. See a, b.');
+  const linked = { id: 'email', what: 'an email', why: 'w', fix: 'f', docs: 'https://example.com/guide#privacy', file: 'a.md', line: 1 };
+  assert.equal(annotation(linked, 'error'), '::error file=a.md,line=1,title=yokoten email::an email. W. F.%0A  docs: https://example.com/guide#privacy', 'the link goes in the message (#94)');
   const many = Array.from({ length: 60 }, (_, i) => ({ id: 'email', what: `e${i}`, why: 'w', fix: 'f', file: 'a.md', line: i + 1 }));
   const lines = annotations(many, [{ id: 'large-diff', what: 'big', why: 'w', fix: 'f' }]);
   assert.equal(lines.length, 50, 'GitHub shows at most 50 per job');
@@ -277,18 +279,21 @@ test('step summary: a heading with the result, a table, notes apart, at most 50 
   assert.equal(one, [
     '### yokoten check --pr: 1 problem',
     '',
-    '| Place | What | Why | Fix |',
-    '|-------|------|-----|-----|',
-    '|  | title: a \\| b | Why | Fix it |',
+    '| Place | Rule | What | Why | Fix |',
+    '|-------|------|------|-----|-----|',
+    '|  | pr-title | title: a \\| b | Why | Fix it |',
     '',
     '#### Notes (1): these never fail the check',
     '',
-    '| Place | What | Why | Fix |',
-    '|-------|------|-----|-----|',
-    '| a.md:2 | long | W | F |',
+    '| Place | Rule | What | Why | Fix |',
+    '|-------|------|------|-----|-----|',
+    '| a.md:2 | long-sentence | long | W | F |',
     '',
     '',
   ].join('\n'));
+  // The id links to its section (#94).
+  const linked = { id: 'email', what: 'an email', why: 'w', fix: 'f', docs: 'https://example.com/guide#privacy', file: 'a.md', line: 1 };
+  assert.match(stepSummary('yokoten check', [linked], []), /\n\| a\.md:1 \| \[email\]\(https:\/\/example\.com\/guide#privacy\) \| an email \| W \| F \|\n/);
   const many = Array.from({ length: 53 }, (_, i) => ({ id: 'email', what: `e${i}`, why: 'w', fix: 'f', file: 'a.md', line: i + 1 }));
   const text = stepSummary('yokoten check', many, [{ id: 'large-diff', what: 'big', why: 'w', fix: 'f' }]);
   assert.match(text, /^### yokoten check: 53 problems\n/);

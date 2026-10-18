@@ -6,12 +6,12 @@ import { test } from 'node:test';
 import { DEFAULTS, loadConfig, matcher } from '../src/rules/config.ts';
 import { checkCommand, checkEdit } from '../src/rules/guards.ts';
 import { checkBuildOutput, checkLayout, isBuildOutput } from '../src/rules/layout.ts';
-import { type Finding, formatFinding, RULES } from '../src/rules/message.ts';
+import { DOCS_URL, type Finding, finding, formatFinding, type Rule, RULES } from '../src/rules/message.ts';
 import { POSITIVE_CONTROL, scanText } from '../src/rules/privacy.ts';
 import { SECRET_CONTROL } from '../src/rules/secrets.ts';
 import { timeZoneNote } from '../src/run/check.ts';
 import { agentHooks, machineChecks, serverChecks } from '../src/setup/doctor.ts';
-import { explain, ids } from '../src/setup/explain.ts';
+import { explain, explainLines, ids } from '../src/setup/explain.ts';
 import { ROAD, stepFinding } from '../src/setup/road.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
 import { formatChanges, mergeChanges, parseChange, readChanges, writeChanges } from '../src/run/changelog.ts';
@@ -320,8 +320,8 @@ const NAMED = [
 test('names: a note for a long-lived one-letter name and a 5-word name on added lines (#111)', () => {
   const notes = nameNotes('src/cart.ts', NAMED, new Set([1, 2, 3]));
   assert.deepEqual(notes.map(formatFinding), [
-    'src/cart.ts:1: "t" is used for 14 lines. A reader must scroll back to learn what it holds. Name what it is, e.g. "text".',
-    'src/cart.ts:2: "loadTheWholeUserList" has 5 words, over 4. A long name is slow to read, and the words that matter get lost. Keep the words a reader needs; the file and the type say the rest, e.g. "processTheUserInputDataNow" becomes "parseInput".',
+    `src/cart.ts:1: "t" is used for 14 lines. A reader must scroll back to learn what it holds. Name what it is, e.g. "text".\n  docs: ${DOCS_URL}#naming`,
+    `src/cart.ts:2: "loadTheWholeUserList" has 5 words, over 4. A long name is slow to read, and the words that matter get lost. Keep the words a reader needs; the file and the type say the rest, e.g. "processTheUserInputDataNow" becomes "parseInput".\n  docs: ${DOCS_URL}#naming`,
   ]);
   assert.deepEqual(notes.map((note) => note.id), ['name-short', 'name-long']);
   assert.deepEqual(nameNotes('src/cart.ts', NAMED, new Set([3])), [], '`i` in a short loop is fine');
@@ -401,7 +401,7 @@ test('issue title: each break fails with what, why and the fix', () => {
   one('Doctor: add the review step', 'issue-area', /not one lowercase word/);
   one('doctor check: add a step', 'issue-area', /does not start with an area/);
   one('area: add the review step', 'issue-area', /placeholder `area`/, {});
-  one('site: turn off analytics', 'issue-area', /not in yokoten\.json "areas"\. .+Use one of: doctor, check, kit\.$/);
+  one('site: turn off analytics', 'issue-area', /not in yokoten\.json "areas"\. .+Use one of: doctor, check, kit\.\n  docs: \S+#issue-titles$/);
 });
 
 test('pull request: an area outside the configured list fails; no list lets any through', () => {
@@ -409,7 +409,7 @@ test('pull request: an area outside the configured list fails; no list lets any 
   assert.deepEqual(checkPullRequest({ ...goodPr(), title: 'feat: no area' }, { ...DEFAULTS, areas: ['kit'] }), []);
   const problems = checkPullRequest({ ...goodPr(), title: 'feat(site): a page' }, { ...DEFAULTS, areas: ['kit'] });
   assert.equal(problems.length, 1);
-  assert.match(formatFinding(problems[0]), /the area `site` is not in yokoten\.json "areas"\. .+\. Use one of: kit\.$/);
+  assert.match(formatFinding(problems[0]), /the area `site` is not in yokoten\.json "areas"\. .+\. Use one of: kit\.\n  docs: \S+#the-core-rules$/);
   assert.deepEqual(checkPullRequest({ ...goodPr(), title: 'feat(site): a page' }, DEFAULTS), []);
 });
 
@@ -474,7 +474,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
     }
     assert.ok(known.has(f.id), `${f.id}: yokoten explain does not know this id`);
     const json = JSON.parse(JSON.stringify(f));
-    assert.deepEqual(Object.keys(json).filter((k) => !['id', 'what', 'why', 'fix', 'file', 'line'].includes(k)), [], `${f.id}: only the stable fields`);
+    assert.deepEqual(Object.keys(json).filter((k) => !['id', 'what', 'why', 'fix', 'docs', 'file', 'line'].includes(k)), [], `${f.id}: only the stable fields`);
     assert.ok(json.id && json.what && json.why && json.fix, `${f.id}: JSON has id, what, why and fix`);
   }
   // Every rule and every step was reached, so none is left without the shape. The self-test
@@ -497,4 +497,51 @@ test('explain: each rule and step, its reason and its check; ids are unique (#42
   }
   assert.equal(explain('nope'), null);
   assert.equal(explain('toString'), null, 'only own keys');
+});
+
+// #94: a finding links to where its rule is explained. The anchors are made as GitHub
+// makes them: lower case, punctuation dropped, spaces to `-`, and `-1`, `-2` for a repeat.
+const guideAnchors = (markdown: string): Set<string> => {
+  const anchors = new Set<string>();
+  let isInFence = false;
+  for (const line of markdown.split('\n')) {
+    if (/^\s*(```|~~~)/.test(line)) isInFence = !isInFence;
+    const heading = isInFence ? null : line.match(/^#{1,6}\s+(.+?)\s*#*\s*$/);
+    if (!heading) continue;
+    const slug = heading[1].toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, '').replace(/\s/g, '-');
+    let anchor = slug;
+    for (let count = 1; anchors.has(anchor); count++) anchor = `${slug}-${count}`;
+    anchors.add(anchor);
+  }
+  return anchors;
+};
+
+test('docs: every link goes to a heading of docs/guide.md, so a renamed heading fails (#94)', () => {
+  const anchors = guideAnchors(readFileSync(new URL('../docs/guide.md', import.meta.url), 'utf8'));
+  assert.ok(anchors.has('naming') && anchors.has('what-it-doesnt-do'), 'GitHub drops punctuation');
+  assert.ok(!anchors.has('githubworkflowsyokotenyml'), 'a `#` line in a code block is not a heading');
+  const linked = Object.entries(RULES as Record<string, Rule>).filter(([, rule]) => rule.docs !== undefined);
+  assert.ok(linked.length >= 30, `most rules have a link; ${linked.length} do`);
+  for (const [id, rule] of linked) {
+    const [base, anchor, ...rest] = (rule.docs ?? '').split('#');
+    assert.equal(base, DOCS_URL, `${id}: the link starts with DOCS_URL, so the site can replace it in one place`);
+    assert.deepEqual(rest, [], `${id}: one anchor`);
+    assert.ok(anchors.has(anchor), `${id}: docs/guide.md has no heading for #${anchor}`);
+  }
+});
+
+test('docs: a finding carries its rule\'s link, in text, JSON and explain (#94)', () => {
+  const link = `${DOCS_URL}#the-core-rules`;
+  const found = finding('skip-check', 'it skips the check', 'run it again');
+  assert.equal(found.docs, link);
+  assert.equal(formatFinding(found), `it skips the check. The commit check is the inspection step, and a skipped check makes a broken commit look reviewed. Run it again.\n  docs: ${link}`);
+  assert.equal(JSON.parse(JSON.stringify(found)).docs, link);
+  const plain = finding('large-diff', 'big', 'split it');
+  assert.equal(plain.docs, undefined, 'no section fits: no link');
+  assert.ok(!formatFinding(plain).includes('docs:'));
+  const explained = explain('skip-check');
+  assert.equal(explained?.docs, link);
+  assert.equal(explained && explainLines(explained).at(-1), `Docs: ${link}`);
+  const step = explain('commit-check');
+  assert.ok(step && step.docs === undefined && !explainLines(step).some((line) => line.startsWith('Docs:')), 'a step has no link yet');
 });

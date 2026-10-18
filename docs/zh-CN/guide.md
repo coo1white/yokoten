@@ -105,7 +105,8 @@ yokoten: git push --tags pushes tags. Only the owner decides when to release. If
 
 每条提示都是同样的三段：**出了什么事**（what）、**为什么要紧**（why）、**怎么改**（fix，
 一条命令或者一处改动）。问题出在某个文件里时，开头先写位置：`文件:行号:`。查到问题时，
-只说是哪一类，不说内容：密钥、私有词表里的词，都不会打印出来。
+只说是哪一类，不说内容：密钥、私有词表里的词，都不会打印出来。如果指南里有一节专门讲这条
+规则，提示最后会另起一行，给出那一节的链接：`docs: <链接>`。
 
 想知道某条规则为什么存在，就跑 `yokoten explain <id>`。id 就是规则或步骤的名字，比如
 `secret`、`commit-check`。不写 id，或者写了一个不存在的，它会把所有 id 列出来。
@@ -115,6 +116,7 @@ $ yokoten explain force-push
 force-push: no plain force push (core rule 7).
 Why: a plain force push can throw away work that someone else pushed.
 Check: the tool-call guard stops `git push --force`, `-f` and a `+ref`; `--force-with-lease` passes; a branch ruleset on the server is the lock.
+Docs: https://github.com/coo1white/yokoten/blob/main/docs/guide.md#the-core-rules
 ```
 
 ## 四层
@@ -260,8 +262,8 @@ kit 里 `init` 放的 workflow 暂时还是跑 `.yokoten/` 里的那份，等第
 
 `check`、`doctor`、`hook`、`explain` 都可以加 `--json`。加了以后，标准输出里只有 JSON，
 别的什么都没有，方便 AI 和脚本读。每条结果的字段都一样：`id`、`what`、`why`、`fix`；
-问题出在文件里的，再加 `file` 和 `line`。拿 `id` 去跑 `yokoten explain` 就能看到详细说明。
-任何字段里都不会有隐私内容。
+指南里讲到这条规则的，再加 `docs`（链接）；问题出在文件里的，再加 `file` 和 `line`。
+拿 `id` 去跑 `yokoten explain` 就能看到详细说明。任何字段里都不会有隐私内容。
 
 - `check --json`：`{ check, ok, findings, notes }`。`check` 是 `tree`、`staged`、`history`
   或 `pr`，说明查的是哪一种。`notes` 只是提醒，不会让检查失败。
@@ -270,14 +272,15 @@ kit 里 `init` 放的 workflow 暂时还是跑 `.yokoten/` 里的那份，等第
 - `hook --json`：在标准输出给出 `{ blocked, finding }`。AI 工具本身不用它：它们按各自的
   hook 协议，看退出码，再从标准错误读原因。
 - `hook --stop --json`：`{ blocked, stop, findings }`。`stop_hook_active` 为真时多一个 `skipped`。
-- `explain --json`：`{ found, id, kind, what, why, check, stage, standard }`；找不到时是
+- `explain --json`：`{ found, id, kind, what, why, check, docs, stage, standard }`；找不到时是
   `{ found: false, ids }`。
 
 输出的规矩只有一条：结果写到标准输出（stdout），问题、拒绝和出错写到标准错误（stderr）。
 不认识的选项会直接拒绝，不会悄悄忽略。
 
 CI 没过，不用再翻日志找原因。`check` 在 GitHub Actions 里跑的时候，每个问题都会标在 PR
-改动的那一行上；任务摘要（job summary）里也会列出来：在哪、出了什么问题、为什么、怎么改。
+改动的那一行上；任务摘要（job summary）里也会列出来：在哪、哪条规则、出了什么问题、
+为什么、怎么改。规则名可以点，点开就是指南里讲它的那一节。
 只是提醒的，显示成黄色警告，不会让检查失败。和平时的输出一样，这里只说问题在哪，
 不会把查到的内容打出来。
 

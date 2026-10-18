@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { hideHome, loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../src/rules/privacy.ts';
 import { SECRET_CONTROL } from '../src/rules/secrets.ts';
-import { formatFinding } from '../src/rules/message.ts';
+import { DOCS_URL, formatFinding } from '../src/rules/message.ts';
 
 // Samples are built from pieces so this file passes its own check.
 const at = '@';
@@ -109,7 +109,7 @@ test('secrets: each kind is caught, by place and kind, never by content (#8)', (
   for (const [kind, line] of SECRETS) {
     const problems = scanText(`intro\n${line}\n`, { file: 'conf.env' });
     // The whole output, word for word: the secret is not in it.
-    assert.deepEqual(problems, [{ id: 'secret', what: `a secret (${kind})`, why: 'a secret opens your accounts to anyone who can read the repo, and git keeps it after the file is gone', fix: 'remove it, rotate it, and keep it outside the repo', file: 'conf.env', line: 2 }], line);
+    assert.deepEqual(problems, [{ id: 'secret', what: `a secret (${kind})`, why: 'a secret opens your accounts to anyone who can read the repo, and git keeps it after the file is gone', fix: 'remove it, rotate it, and keep it outside the repo', docs: `${DOCS_URL}#privacy`, file: 'conf.env', line: 2 }], line);
   }
 });
 
