@@ -1,4 +1,4 @@
-<!-- source: docs/guide.md blob 0aecc285290d6f3f5f5b7549fe8f42d3c5078364 -->
+<!-- source: docs/guide.md -->
 # yokoten 使用指南
 
 [README](README.md) 是简短版。剩下的都在这里：yokoten 为什么要做、它怎么工作、有哪些规则和命令，还有它做不到的事。
@@ -258,6 +258,8 @@ node ~/.local/share/yokoten/bin/yokoten.ts init     # 这个项目：只加文�
 node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看走到哪一关，下一步做什么
 ```
 
+这些命令（包括上面 npx 那几条）在 [docs/facts.json](../facts.json) 里还有一份，网站读的是那份，所以改命令的时候两边都要改。
+
 ### 当成 GitHub Action 用
 
 GitHub 上的任何仓库，加一个 workflow 文件，就能在 CI 里跑 yokoten 的检查。仓库里不用装
@@ -450,25 +452,31 @@ Fixed
 都写明它是从哪个英文文件翻的，用 HTML 注释写，GitHub 上看不到。
 
 ```markdown
-<!-- source: docs/guide.md blob 3b18e512dba79e4c8300dd08aeb37f8e728b8dad -->
+<!-- source: docs/guide.md -->
 ```
 
-路径是英文文件的路径，从仓库根目录算起。blob 是 git 给你翻译时那版英文内容算出的编号，
-跑 `git hash-object docs/guide.md` 就能拿到。更新译文时把第 1 行一起改掉，和英文放在
-同一个 commit 或同一个 PR 里。
+路径是英文文件的路径，从仓库根目录算起。这一行写一次就行，以后不用再改。改英文时，把译文
+也一起改了，放在同一个 commit 或同一个 PR 里。
 
-`check` 会读每个 Markdown 和 HTML 文件的第 1 行。blob 和工作区里的英文对得上，译文就算
-最新。对不上的话，`check` 再看当前分支的提交（只沿第一个父提交往回找）：最后一次改译文
-第 1 行的提交，和最后一次改英文的提交是同一个，或者更晚，译文也算最新。为什么要看提交？
-两个 PR 可能同时改英文。两个都合进来以后，英文变成了哪个分支都没见过的 blob。光看 blob
-就会说译文落后，其实两边都翻好了。
+`check` 会读每个 Markdown 和 HTML 文件的第 1 行，然后看当前分支的提交（只沿第一个父提交
+往回找）：最后一次改译文的提交，和最后一次改英文的提交是同一个，或者更晚，译文就算最新。
+译文改了哪一行都算。
 
-有两种改动不算数。英文改了还没提交，译文算落后。提交里改了译文、却没动第 1 行（比如只改
-个错字），译文也不算最新。
+为什么不在这一行记下英文的版本？那样的话，每个改英文的 PR 都得改这一行，两个这样的 PR
+一定会在这一行上冲突。这一行不变，几个 PR 同时改，也只会各改各翻的那几段。
+
+代价是：只改译文的提交也算数。在译文里改个错字，可能就把一处没人翻的英文改动盖过去了。所以
+改错字之前先跑一下 `check`，如果它说译文落后，先把译文补上。
+
+工作区里还没提交的改动也这样算：译文改了，就当作更晚的改动；只改了英文、没改译文，译文算落后。
 
 译文落后时，`check` 给一条 `translation-behind` 提醒：落后了几个 commit，怎么看英文改了
-什么（`git diff <blob> HEAD:docs/guide.md`）。提醒不会让 CI 失败。想让它失败，就在
+什么（`git diff <commit> HEAD -- docs/guide.md`）。提醒不会让 CI 失败。想让它失败，就在
 `yokoten.json` 里写 `"translations": { "fail": true }`。
+
+旧的写法在第 1 行还多写了英文的 blob：
+`<!-- source: docs/guide.md blob 3b18e512dba79e4c8300dd08aeb37f8e728b8dad -->`。
+`check` 照样认。blob 和英文对得上，就算最新；对不上，就按上面的提交来判断。blob 随时可以删掉。
 
 浅克隆里可能没有要比的那些提交。这时 `check` 给一条提醒，不会当成最新。CI 里 checkout
 时设 `fetch-depth: 0`。
@@ -495,8 +503,9 @@ yokoten 每学到一个教训，核心规则就会改。`yokoten install` 会更
 退回旧版。这时 `doctor` 会让你升级 yokoten 本身，而不是去改项目。没有这一行的文件，
 就只按内容比。
 
-`update` 要用装好的 yokoten 或者 clone 下来的仓库跑，别用 `.yokoten/` 里的那份：
-项目里那份没有带 kit，没东西可比。
+`.yokoten/` 里那份也带着 kit 的 `AGENTS.md`，所以 CI 和钩子里跑 `doctor`，比的就是项目
+当初拷进来的那版 kit。想换成更新的规则，就用装好的 yokoten、插件或者 clone 下来的仓库跑
+`update`。再跑一次 `init`，`.yokoten/` 也会一起更新。
 
 装了 Claude Code 插件的话，直接用 `/yokoten:update`。它跑的是插件自己那份 yokoten，
 先给你看要改什么，你点头了才写。
