@@ -1,0 +1,13 @@
+{
+  // The npm package only. Node does not strip types under node_modules, so the package
+  // ships .js. Packing runs `npm run build` (the prepack script), which emits bin/ and
+  // src/ into dist/ (git-ignored). The repo itself still runs the .ts files.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": ".",
+    "rewriteRelativeImportExtensions": true
+  },
+  "include": ["bin", "src"]
+}

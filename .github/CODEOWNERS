@@ -1,2 +1,31 @@
-# The owner reviews everything; rules, CI and the kit most of all.
-* @coo1white
+# Only the paths where a mistake is hard to undo. A pull request that changes one of
+# them is tier A (record 0004): `check --pr` fails a lower tier, and the owner reviews it.
+# The owner is not asked to review the rest: it is tier B or C.
+
+# The rules agents work under, and the record of why.
+/AGENTS.md @coo1white
+/docs/records/ @coo1white
+
+# What every project gets on its next init or install.
+/kit/ @coo1white
+
+# The rule code, and the code that runs it: the tool-call hook and the commit check.
+/src/rules/ @coo1white
+/src/run/hook.ts @coo1white
+/src/run/check.ts @coo1white
+
+# The bot's token and the pull request reader.
+/src/host/github.ts @coo1white
+
+# Config that can turn a guard off: lead-only paths, privacy allow list, the git hook.
+/yokoten.json @coo1white
+/.githooks/ @coo1white
+/.claude/ @coo1white
+
+# CI, review owners, and dependency updates.
+/.github/workflows/ @coo1white
+/.github/CODEOWNERS @coo1white
+/.github/dependabot.yml @coo1white
+
+# The package: its name, bin, files and engines.
+/package.json @coo1white

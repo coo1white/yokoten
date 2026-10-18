@@ -13,10 +13,11 @@
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Env } from '../rules/config.ts';
-import { loadMarks, scanText } from '../rules/privacy.ts';
-import { chat, KEY_HINT, type LlamaConfig, llamaConfig, type Message } from '../agents/llama.ts';
-import { type Found, gitConfig, hasIssueTemplate, hasPrTemplate, ROAD, road, securityLacking, todoFiles } from './road.ts';
+import type { Env } from '../../rules/config.ts';
+import { place } from '../../rules/message.ts';
+import { loadMarks, scanText } from '../../rules/privacy.ts';
+import { chat, KEY_HINT, type LlamaConfig, llamaConfig, type Message } from '../../agents/llama.ts';
+import { type Found, gitConfig, hasIssueTemplate, hasPrTemplate, ROAD, road, securityLacking, todoFiles } from '../road.ts';
 
 export type Status = 'done' | 'missing' | 'partial';
 export type Decision = 'as-is' | 'lighter' | 'not-now';
@@ -157,7 +158,14 @@ export function facts(root: string, env: Env): Fact[] {
 
   const lacking = securityLacking(root);
   add('security-files', lacking.length === 0 ? 'done' : lacking.length < 3 ? 'partial' : 'missing', lacking.length ? `no ${lacking.join(', no ')}` : 'a security policy, Dependabot and a license');
-  return rows;
+
+  // A step with no reading of its own above gets a row from its own check and words, so a
+  // step added to the road later is never left out of the draft.
+  for (const other of ROAD.filter((s) => !rows.some((row) => row.key === s.key))) {
+    plain(other.key, "yokoten's check for this step passes", found.get(other.key) === false ? other.what(root, env, undefined) : '');
+  }
+  const order = (key: string) => ROAD.findIndex((s) => s.key === key);
+  return rows.sort((first, second) => order(first.key) - order(second.key));
 }
 
 const sentence = (text: string) => `${text[0].toUpperCase()}${text.slice(1)}.`;
@@ -220,7 +228,7 @@ export function promptProblems(messages: Message[], env: Env): string[] {
   } catch {
     // An unreadable marks file: the patterns still run.
   }
-  const problems = scanText(text, { file: 'prompt', marks });
+  const problems = scanText(text, { file: 'prompt', marks }).map((found) => `${place(found)}${found.what}`);
   const home = (env.HOME ?? '').replace(/[\\/]+$/, '');
   if ((home.length > 1 && text.includes(home)) || /(^|[\s"'(])(\/(home|Users)\/|[A-Za-z]:\\)/.test(text)) problems.push('prompt: a path outside the repo.');
   return problems;

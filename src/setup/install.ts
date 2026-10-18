@@ -36,10 +36,10 @@ const MARKS_HEADER = `# yokoten private marks: words that must never be publishe
 `;
 
 export function install(env: Env): string[] {
-  const p = paths(env);
+  const target = paths(env);
   const report: string[] = [];
-  copyRuntime(p.runtime, { withKit: true });
-  report.push(`wrote ${p.runtime}`);
+  copyRuntime(target.runtime, { withKit: true });
+  report.push(`wrote ${target.runtime}`);
 
   const skills = join(KIT, 'user', 'skills');
   for (const name of readdirSync(skills)) {
@@ -56,7 +56,7 @@ export function install(env: Env): string[] {
   const hooks = addUserHooks(env, cli);
   report.push(`${hooks.doctor} the SessionStart doctor`, `${hooks.guard} the user-level command guard`);
 
-  const marks = writeNew(p.marks, MARKS_HEADER, { mode: 0o600 });
-  report.push(`${marks} ${p.marks}${marks === 'wrote' ? ' (add your marks to it)' : ''}`);
+  const marks = writeNew(target.marks, MARKS_HEADER, { mode: 0o600 });
+  report.push(`${marks} ${target.marks}${marks === 'wrote' ? ' (add your marks to it)' : ''}`);
   return report;
 }

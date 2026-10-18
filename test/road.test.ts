@@ -9,10 +9,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { chat, type LlamaConfig, llamaConfig } from '../src/agents/llama.ts';
-import { draft, type Fact, facts, parseAnswer, prompt, promptProblems, ruleDraft, table } from '../src/setup/adopt.ts';
+import { draft, type Fact, facts, parseAnswer, prompt, promptProblems, ruleDraft, table } from '../src/setup/advice/adopt.ts';
 import { type Found, ROAD, STAGES, type Step, walk } from '../src/setup/road.ts';
 
-const step = (stage: number, key: string): Step => ({ stage, key, check: () => false, what: () => key, why: key });
+const step = (stage: number, key: string): Step => ({ stage, key, check: () => false, what: () => key, fix: () => key, why: key, how: key });
 const steps = [step(1, 'a'), step(1, 'b'), step(2, 'c'), step(3, 'd')];
 const at = (found: Found[], notNow: Record<string, string> = {}) => walk(steps.map((s, i) => ({ step: s, found: found[i] })), notNow);
 const marks = (found: Found[], notNow: Record<string, string> = {}) => at(found, notNow).steps.map((w) => w.mark);
@@ -54,6 +54,7 @@ test('road: five stages, each step in one of them, each key once, each why a sen
   // The keys a project may already have in yokoten.json "notNow" keep working.
   for (const key of ['rules', 'commit-check', 'tool-hook', 'ci', 'runtime', 'issues']) assert.ok(ROAD.some((s) => s.key === key), key);
   for (const s of ROAD) assert.ok(!/[.]$/.test(s.why) && s.why.split(' ').length <= 25, `${s.key}: a why has no full stop and at most 25 words`);
+  for (const s of ROAD) assert.ok(s.how && !/[.]$/.test(s.how), `${s.key}: says how it is checked, with no full stop`);
 });
 
 // ---- Adoption (#6): the facts from files, then a draft from a model or the rules. ----
@@ -72,7 +73,9 @@ const statusOf = (rows: Fact[]) => Object.fromEntries(rows.map((r) => [r.key, r.
 test('adopt facts: an empty repo has every project step missing, and no evidence names a path outside it', () => {
   const dir = fixture({});
   const rows = facts(dir, { HOME: dir });
-  assert.deepEqual(rows.map((r) => r.key), ['rules', 'tool-hook', 'commit-check', 'runtime', 'tests', 'ci', 'issues', 'templates', 'changelog', 'titles', 'codeowners', 'bot', 'skills', 'security-files']);
+  assert.deepEqual(rows.map((r) => r.key), ROAD.map((s) => s.key), 'a row for every step on the road, in its order');
+  assert.equal(statusOf(rows)['no-build-output'], 'done', 'a step with no reading of its own gets a row from its own check');
+  assert.match(rows.find((r) => r.key === 'protection')?.evidence ?? '', /can't check/, 'a server step is not read here');
   const s = statusOf(rows);
   for (const key of ['rules', 'tool-hook', 'commit-check', 'runtime', 'tests', 'ci', 'templates', 'changelog', 'titles', 'codeowners', 'bot', 'security-files']) assert.equal(s[key], 'missing', key);
   assert.equal(s.issues, 'done', 'no todo file');

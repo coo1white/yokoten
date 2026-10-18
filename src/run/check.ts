@@ -6,17 +6,22 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Config, Env } from '../rules/config.ts';
-import { matcher } from '../rules/glob.ts';
+import { matcher } from '../rules/config.ts';
 import { checkEdit } from '../rules/guards.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
+import { type Finding, finding } from '../rules/message.ts';
 import { loadMarks, notUtc, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
+import { translationNotes } from './translations.ts';
 
 const git = (cwd: string, args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 1 << 30 });
 // Bytes, not text: a blob may be binary.
 const gitBytes = (cwd: string, args: string[], input = '') => execFileSync('git', args, { cwd, input, maxBuffer: 1 << 30 });
 const list = (out: string) => out.split('\0').filter(Boolean);
 
-export const gitRoot = (cwd: string): string => git(cwd, ['rev-parse', '--show-toplevel']).trim();
+// Outside a repo this fails, and the caller handles it. Hide git's own error, or an agent
+// reads it as the result of the command the guard just stopped.
+export const gitRoot = (cwd: string): string =>
+  execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 
 /** The files in the index: what the next commit (or, in CI, the checkout) holds. */
 export const indexFiles = (root: string): string[] => list(git(root, ['ls-files', '-z']));
@@ -61,9 +66,13 @@ function stagedBinary(root: string): { path: string; binary: boolean }[] {
   return files;
 }
 
-/** Problems for the whole tree, or with `staged`, for the commit about to be made. */
-export function check(root: string, { config, env, staged = false }: { config: Config; env: Env; staged?: boolean }): string[] {
-  const problems: string[] = [];
+/**
+ * Problems for the whole tree, or with `staged`, for the commit about to be made. For the
+ * whole tree, a translation behind its source (#87) goes in `notes`, or with yokoten.json
+ * `"translations": { "fail": true }`, in the problems.
+ */
+export function check(root: string, { config, env, staged = false, notes = [] }: { config: Config; env: Env; staged?: boolean; notes?: Finding[] }): Finding[] {
+  const problems: Finding[] = [];
   const marks = loadMarks(env);
   const skip = matcher(config.privacy.skip);
   const privacy = (path: string, buf: Buffer) => {
@@ -73,7 +82,7 @@ export function check(root: string, { config, env, staged = false }: { config: C
   if (staged) {
     // The commit about to be made: git var gives its author and committer, time included.
     if (config.privacy.utc && ['GIT_AUTHOR_IDENT', 'GIT_COMMITTER_IDENT'].some((v) => notUtc(git(root, ['var', v])))) {
-      problems.push(`this commit's time carries your time zone, which narrows down where you are: ${TIME_ZONE_FIX}.`);
+      problems.push(finding('time-zone', "this commit's time carries your time zone", TIME_ZONE_FIX));
     }
     for (const { status, path } of stagedFiles(root)) {
       const reason = checkEdit(path, { config, env });
@@ -91,8 +100,41 @@ export function check(root: string, { config, env, staged = false }: { config: C
       }
       privacy(path, buf);
     }
+    (config.translations.fail ? problems : notes).push(...translationNotes(root, indexFiles(root)));
   }
   problems.push(...checkLayout(indexFiles(root), config));
+  return problems;
+}
+
+/**
+ * The files changed in the work tree: staged, not staged, and new files git does not
+ * ignore. A move counts as a delete and an add. `--no-optional-locks` keeps git from
+ * writing the index, so this can run while the agent's own git command runs.
+ */
+export const changedFiles = (root: string): string[] =>
+  list(git(root, ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames'])).map((entry) => entry.slice(3));
+
+/**
+ * Problems in the changed files only (#92): the file rules and the privacy check that
+ * `check --staged` uses, on what is in the work tree now. The Stop hook runs it, so it
+ * reads no history and makes no network call. A deleted file gets only the file rules.
+ */
+export function checkChanged(root: string, { config, env }: { config: Config; env: Env }): Finding[] {
+  const problems: Finding[] = [];
+  const marks = loadMarks(env);
+  const skip = matcher(config.privacy.skip);
+  for (const path of changedFiles(root)) {
+    const reason = checkEdit(path, { config, env });
+    if (reason) problems.push(reason);
+    if (skip(path)) continue;
+    let buf: Buffer;
+    try {
+      buf = readFileSync(join(root, path));
+    } catch {
+      continue; // deleted, or a folder (a submodule)
+    }
+    if (!isBinary(buf)) problems.push(...scanText(buf.toString('utf8'), { file: path, marks, allow: config.privacy.allow }));
+  }
   return problems;
 }
 
@@ -112,8 +154,12 @@ export function historyTimeZones(root: string): number {
  * author and committer emails and commit messages. Run it before a private repo goes
  * public; a file deleted later is still in the history.
  */
-export function checkHistory(root: string, { config, env }: { config: Config; env: Env }): string[] {
-  const problems = new Set<string>();
+export function checkHistory(root: string, { config, env }: { config: Config; env: Env }): Finding[] {
+  // The same hit in several commits is reported once.
+  const problems = new Map<string, Finding>();
+  const add = (found: Finding[]) => {
+    for (const f of found) problems.set(JSON.stringify(f), f);
+  };
   const marks = loadMarks(env);
   const skip = matcher(config.privacy.skip);
   const opts = { marks, allow: config.privacy.allow };
@@ -122,8 +168,8 @@ export function checkHistory(root: string, { config, env }: { config: Config; en
   for (const entry of log.split('\x1e')) {
     const [hash, author, committer, message] = entry.replace(/^\n/, '').split('\0');
     if (!hash) continue;
-    for (const p of scanText(`${author}\n${committer}`, { file: `commit ${hash} (author/committer)`, ...opts })) problems.add(p);
-    for (const p of scanText(message ?? '', { file: `commit ${hash} (message)`, ...opts })) problems.add(p);
+    add(scanText(`${author}\n${committer}`, { file: `commit ${hash} (author/committer)`, ...opts }));
+    add(scanText(message ?? '', { file: `commit ${hash} (message)`, ...opts }));
   }
 
   // Every blob ever committed, with the first path it was seen at.
@@ -137,7 +183,7 @@ export function checkHistory(root: string, { config, env }: { config: Config; en
     .toString('utf8')
     .split('\n');
   const wanted = types.filter((l) => l.endsWith(' blob')).map((l) => l.split(' ')[0]).filter((sha) => !skip(blobs.get(sha) ?? ''));
-  if (wanted.length === 0) return [...problems];
+  if (wanted.length === 0) return [...problems.values()];
   const batch = gitBytes(root, ['cat-file', '--batch'], wanted.join('\n') + '\n');
   let at = 0;
   while (at < batch.length) {
@@ -146,7 +192,11 @@ export function checkHistory(root: string, { config, env }: { config: Config; en
     const body = batch.subarray(nl + 1, nl + 1 + Number(size));
     at = nl + 1 + Number(size) + 1;
     if (isBinary(body)) continue;
-    for (const p of scanText(body.toString('utf8'), { file: `${blobs.get(sha)} @ blob ${sha.slice(0, 8)}`, ...opts })) problems.add(p);
+    add(scanText(body.toString('utf8'), { file: `${blobs.get(sha)} @ blob ${sha.slice(0, 8)}`, ...opts }));
   }
-  return [...problems];
+  return [...problems.values()];
 }
+
+/** The history's time zone count (`historyTimeZones`), as a note. */
+export const timeZoneNote = (commits: number): Finding =>
+  finding('time-zone', `${commits} commit(s) record a time zone other than UTC`, "leave them unless the owner decides to rewrite history; new commits are checked");

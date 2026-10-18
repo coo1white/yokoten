@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 474" width="680" height="474" role="img" aria-labelledby="title" xml:space="preserve">
+<title id="title">An agent runs git push --force. yokoten blocks it and says what happened, why, and the fix. Then yokoten doctor names the next step.</title>
+<style>
+text{font:13px ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;fill:#e6edf3;white-space:pre}
+.l{animation:show .01s both}
+.c{animation:type .01s both}
+.k{animation:blink 1s step-end infinite}
+.a{fill:#ec8f6c}.p{fill:#7ee787}.r{fill:#ff7b72;font-weight:bold}.b{font-weight:bold}.d,.t{fill:#9198a1}.g{fill:#7ee787}.y{fill:#e3b341}
+@keyframes show{from{opacity:0}to{opacity:1}}
+@keyframes type{from{fill-opacity:0}to{fill-opacity:1}}
+@keyframes blink{50%{fill-opacity:0}}
+@media (prefers-reduced-motion:reduce){.l,.c,.k{animation:none}}
+</style>
+<rect width="680" height="474" rx="10" fill="#0d1117"/>
+<rect x=".5" y=".5" width="679" height="473" rx="9.5" fill="none" stroke="#3d444d"/>
+<path d="M0 34H680" stroke="#3d444d"/>
+<circle cx="20" cy="17" r="5.5" fill="#ff5f57"/><circle cx="38" cy="17" r="5.5" fill="#febc2e"/><circle cx="56" cy="17" r="5.5" fill="#28c840"/>
+<text x="340" y="21" text-anchor="middle" class="t">my-app</text>
+<text x="20" y="67" class="l" style="animation-delay:0.6s"><tspan class="a">agent &gt; </tspan><tspan class="c" style="animation-delay:0.9s">g</tspan><tspan class="c" style="animation-delay:0.94s">i</tspan><tspan class="c" style="animation-delay:0.99s">t</tspan><tspan class="c" style="animation-delay:1.03s"> </tspan><tspan class="c" style="animation-delay:1.08s">p</tspan><tspan class="c" style="animation-delay:1.13s">u</tspan><tspan class="c" style="animation-delay:1.17s">s</tspan><tspan class="c" style="animation-delay:1.21s">h</tspan><tspan class="c" style="animation-delay:1.26s"> </tspan><tspan class="c" style="animation-delay:1.3s">-</tspan><tspan class="c" style="animation-delay:1.35s">-</tspan><tspan class="c" style="animation-delay:1.4s">f</tspan><tspan class="c" style="animation-delay:1.44s">o</tspan><tspan class="c" style="animation-delay:1.48s">r</tspan><tspan class="c" style="animation-delay:1.53s">c</tspan><tspan class="c" style="animation-delay:1.57s">e</tspan><tspan class="c" style="animation-delay:1.62s"> </tspan><tspan class="c" style="animation-delay:1.67s">o</tspan><tspan class="c" style="animation-delay:1.71s">r</tspan><tspan class="c" style="animation-delay:1.75s">i</tspan><tspan class="c" style="animation-delay:1.8s">g</tspan><tspan class="c" style="animation-delay:1.84s">i</tspan><tspan class="c" style="animation-delay:1.89s">n</tspan><tspan class="c" style="animation-delay:1.93s"> </tspan><tspan class="c" style="animation-delay:1.98s">m</tspan><tspan class="c" style="animation-delay:2.02s">a</tspan><tspan class="c" style="animation-delay:2.07s">i</tspan><tspan class="c" style="animation-delay:2.11s">n</tspan></text>
+<text x="20" y="87" class="l r" style="animation-delay:2.66s">  blocked by the yokoten hook (exit 2)</text>
+<text x="20" y="107" class="l" style="animation-delay:2.78s">  yokoten: git push --force forces the push.</text>
+<text x="20" y="127" class="l" style="animation-delay:2.9s">  A plain force push can throw away work that someone else pushed.</text>
+<text x="20" y="147" class="l" style="animation-delay:3.02s">  Use --force-with-lease, which stops when the remote has work you have not seen.</text>
+<text x="20" y="187" class="l" style="animation-delay:4.14s"><tspan class="p">~/my-app $ </tspan><tspan class="c" style="animation-delay:4.44s">y</tspan><tspan class="c" style="animation-delay:4.49s">o</tspan><tspan class="c" style="animation-delay:4.53s">k</tspan><tspan class="c" style="animation-delay:4.58s">o</tspan><tspan class="c" style="animation-delay:4.62s">t</tspan><tspan class="c" style="animation-delay:4.67s">e</tspan><tspan class="c" style="animation-delay:4.71s">n</tspan><tspan class="c" style="animation-delay:4.76s"> </tspan><tspan class="c" style="animation-delay:4.8s">d</tspan><tspan class="c" style="animation-delay:4.85s">o</tspan><tspan class="c" style="animation-delay:4.89s">c</tspan><tspan class="c" style="animation-delay:4.94s">t</tspan><tspan class="c" style="animation-delay:4.98s">o</tspan><tspan class="c" style="animation-delay:5.03s">r</tspan></text>
+<text x="20" y="207" class="l" style="animation-delay:5.57s">yokoten 0.1.0, self-test ok</text>
+<text x="20" y="227" class="l b" style="animation-delay:5.69s">the road: stage 1 of 5, safety net</text>
+<text x="20" y="247" class="l" style="animation-delay:5.81s">  1. safety net</text>
+<text x="20" y="267" class="l" style="animation-delay:5.93s">    <tspan class="g">done</tspan>        rules (OpenSSF: AI code assistant instructions)</text>
+<text x="20" y="287" class="l" style="animation-delay:6.05s">    <tspan class="g">done</tspan>        tool-hook</text>
+<text x="20" y="307" class="l" style="animation-delay:6.17s">    <tspan class="g">done</tspan>        commit-check (OSPS-BR-07.01)</text>
+<text x="20" y="327" class="l" style="animation-delay:6.29s">    <tspan class="g">done</tspan>        runtime</text>
+<text x="20" y="347" class="l" style="animation-delay:6.41s">    <tspan class="y">next</tspan>        tests (Best Practices: test): no test command: no "test" script</text>
+<text x="20" y="367" class="l" style="animation-delay:6.53s">                in package.json, and no workflow runs a test runner; add tests</text>
+<text x="20" y="387" class="l" style="animation-delay:6.65s">                and a CI step that runs them</text>
+<text x="20" y="407" class="l" style="animation-delay:6.77s">  2. issues and pull requests</text>
+<text x="20" y="427" class="l d" style="animation-delay:6.89s">  ...</text>
+<text x="20" y="447" class="l" style="animation-delay:7.01s"><tspan class="p">~/my-app $ </tspan><tspan class="k">█</tspan></text>
+</svg>

@@ -6,8 +6,91 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- yokoten runs as a GitHub Action: `uses: yokoten-labs/yokoten@<commit SHA>`. It sets up Node,
+  runs `check`, and runs `check --pr` on pull requests. Inputs: `pr-check` and
+  `node-version`. It needs `contents: read` and takes no token. The kit's workflow
+  moves to the action after the first release (#106).
+- The kit's `AGENTS.md` has a "Names" section: whole words, at most 4, one letter only
+  for a short life, verbs for functions, `is`/`has`/`can` for true or false, and a table of
+  hard and easy names. **Kit change:** new projects get it from `init`;
+  a project that already has `AGENTS.md` must copy the section by hand for now (#110).
+- `yokoten bot` checks the title before `gh issue create`, `gh issue edit`, `gh pr create`
+  or `gh pr edit` runs. It uses the rules of `check --issue` and the title part of
+  `check --pr`. A bad title is refused with what, why and the fix, and nothing is sent.
+  A command with no title passes; CI still checks it (#117).
+- `check --pr` notes hard-to-read names on the lines a pull request adds to TypeScript
+  and JavaScript files. A one-letter name used over more than 10 lines, or exported, is
+  `name-short`; a name of more than 4 words is `name-long`. Notes never fail CI (#111).
+- The README and the Chinese README show a short terminal demo under Quick start. An
+  agent's force push is blocked with what, why and the fix. Then `doctor` names the next
+  step. `node scripts/demo-svg.ts` builds it from `scripts/demo.txt` (#90).
+- In GitHub Actions, `check` shows its findings on the pull request page. Each finding
+  is an annotation on its line, and the job summary lists what, why and the fix. Notes
+  are warnings. Output outside Actions does not change (#91).
+- yokoten installs as a Claude Code plugin: `/plugin marketplace add yokoten-labs/yokoten`,
+  then `/plugin install yokoten@yokoten`. The repo is the plugin and its marketplace. It
+  uses the kit's skills and agents as they are, adds the same two hooks as `install`,
+  and adds `/yokoten:init` and `/yokoten:doctor`. `git clone` and `install` still work.
+  `doctor` counts an enabled plugin as the session hook, the runtime and the skills.
+  `.claude-plugin/` is lead-only by default, in every project (#31).
+- `check --pr` fails a pull request that changes a file CODEOWNERS owns unless its
+  first line is `tier: A`. The paths set the lowest tier; the author can only raise it.
+  It reads CODEOWNERS from the base branch, so a pull request can't lower its own tier.
+  No CODEOWNERS file, no check. yokoten's own CODEOWNERS now lists only the paths where
+  a mistake is hard to undo, and `doctor` no longer suggests `* @<you>`. **Kit change:**
+  the pull request template says owned files are tier A (#97).
+- A stop check for Claude Code: `yokoten hook --stop`. When the agent tries to end its
+  turn, it checks the changed files (staged, not staged and new) for personal data,
+  secrets and file rules. With findings, it sends the agent back once to fix them. It
+  never sends it back twice in a row (`stop_hook_active`), and on an error the turn
+  ends. **Kit change:** `init` now adds a Stop hook to `.claude/settings.json` (#92).
+- `yokoten init --github` adds the standard labels (bug, feat, docs, refactor, ci,
+  owner, incident, good first issue, hotfix) and a first milestone, through `gh`. Without
+  `--yes` it only says what it would make. It keeps what is there and deletes nothing.
+  `init` now refuses an unknown option (#10).
+- The secret check catches Meta Model API keys (`LLM_` with an app id and a secret) (#68).
+- A release flow for every project. `init` adds a `CHANGELOG.md` with an
+  `[Unreleased]` section when the project has none. The new `release` skill picks the
+  next version from the changelog, before 1.0 and after. It prepares the release pull
+  request; only the owner creates the tag. Kit change: every project gets the changelog
+  on its next `init`, and the skill on the next `install` (#34).
+- Full `doctor` reads the server settings through `gh` and reports each as ok, missing
+  or can't check: the rules on the default branch, the required CI check, code owner
+  review, squash only, delete branch on merge, the tag ruleset on `v*` and the security
+  switches. It notes branches with no open pull request. It only reads, and never
+  changes a setting. When `gh` is missing, signed out or refused, it says how to fix
+  that and goes on. A missing setting makes `doctor` exit 1 (#7).
+
 ### Changed
 
+- yokoten is developed in English only: code, commits, issues, records and CLI output.
+  Users can read the website, README, guide and video in English, Chinese and Japanese
+  (record 0007). The Japanese pages are planned (#121).
+- yokoten names things in whole words, at most four (record 0006). A test reads every
+  name declared in `src/` and `bin/`. It fails on a one-letter name used over 10 lines
+  or exported, a `_` at the start or end, or `CONSTANT_CASE` in a function. The names
+  it found are renamed; behaviour does not change. The guide has a "Naming" section
+  (#109).
+- `doctor --json` gives `server` as a list of `{ id, mark }` (it was a list of text) (#7).
+- The pull request check counts `Part of #N` as a linked issue. Only `Closes`, `Fixes`
+  and `Resolves` close it (#82).
+- The CI workflow `init` writes has one required check, `ci`. It waits for every other
+  job and fails if one of them fails. A new `lint` job runs actionlint and zizmor on the
+  workflows. Each job gets only the permissions it names. Make `ci` the required check
+  in place of `check`. Delete the old file and run `init` again to get it (#36).
+- yokoten's own CI tests on Node 22.18.0 and 24 on Linux, and on Node 24 on macOS. A
+  test holds that `ci` waits for every job and that checkout keeps no token (#36).
+- Every message has three parts: what happened, why it matters, and the fix. Most
+  lines keep their words and gain the missing part. Some are reworded. A full folder
+  reads `docs/: 9 entries, over the cap of 7: ...` (was `docs/ has 9 entries ...`). A
+  pull request problem reads `title: not in the commit form. ... Use ...`. The force push
+  message names the flag, and a long-sentence note gains its fix (#42).
+- An unknown option to `check`, `doctor`, `hook` or `explain` is refused with exit 1;
+  it used to be ignored. So are two of `--staged`, `--history` and `--pr` together,
+  where one used to win quietly. Exit codes are unchanged: 0 ok, 1 problems or a usage
+  error, 2 the hook blocked (#42).
 - `doctor` is a guide along the road in five stages (record 0004). A session hears
   three lines: the stage, the one next step, and why. Full `doctor` shows every stage
   and step as done, next, to do, not now or can't check. The stage is worked out each
@@ -17,15 +100,18 @@ All notable changes are listed here. The format follows
 
 ### Added
 
-<<<<<<< HEAD
-- `yokoten adopt` drafts the adoption table for an old project. It reads files to find
-  what the project does today for each step (done, missing or partial), with no model.
-  Then Meta's model API (the Llama API, OpenAI-compatible) proposes as-is, lighter or not
-  now, with a reason. Only those short facts are sent, and only after the privacy check
-  passes. With no `LLAMA_API_KEY`, a failed call or a bad answer, rules draft it instead.
-  `--json` prints the rows. It writes nothing; the user decides every row. Kit change:
-  the `yokoten` skill now runs `yokoten adopt` first (#6).
-=======
+- Issue titles have a standard: `area: verb phrase` for a task, `area: symptom` for an
+  incident, at most 60 characters, no full stop and no `#N`. `check --issue` checks it
+  in CI, and the new `issue` workflow runs it when an issue is opened or edited; it only
+  reads. The issue templates start the title with `area: `. `"areas"` in
+  `yokoten.json` limits the areas, for issue titles and for pull request titles. Kit
+  change: every project gets the workflow and the templates on its next `init`.
+- `--json` on `check`, `doctor`, `hook` and `explain`: pure JSON on stdout, for an
+  agent or a script. Each finding has `id`, `what`, `why`, `fix`, and `file` and
+  `line` when it is in a file; no field holds a private value. The guide's new "Exit
+  codes" section writes the codes down once (#42).
+- `yokoten explain <id>`: a rule or a step on the road, its reason and how it is
+  checked. An unknown id exits 1 with the list of ids (#42).
 - Full `doctor` names the outside standard each step meets, when there is one: OpenSSF
   Scorecard, the Best Practices badge, OSPS Baseline, Conventional Commits, for example
   `ci (Scorecard: CI-Tests)`. The session message stays three lines (#58).
@@ -37,7 +123,6 @@ All notable changes are listed here. The format follows
 - A `tests` step in stage 1 of the road: the project has a test command (a `test`
   script in package.json, or a test runner such as `node --test` or `go test`), and a
   workflow in `.github/workflows` runs it (#55).
->>>>>>> origin/main
 - `check --pr` notes a pull request that changes more than 400 lines (added plus
   deleted; binary and lock files not counted): smaller pull requests are easier to
   review. A note, never a failure (record 0004, #57).
@@ -107,6 +192,19 @@ All notable changes are listed here. The format follows
 
 ### Fixed
 
+- The tool-call guard lets a read of `core.hooksPath` through, such as `git config --get`.
+  It now stops `git -c core.hooksPath=...`, `--config-env` and `GIT_CONFIG_KEY_n`, which
+  skipped the commit check for one command. Only the value `.githooks` passes. And
+  `git --attr-source <tree>` no longer hides a tag push from the guard (#114).
+- The tool-call guard reads bash, not just words. Text in quotes and heredoc bodies is
+  data, so `git commit -m "docs: npm publish"` and `cat > f <<EOF` pass. A heredoc a
+  shell reads, `bash -c`, `eval`, `$(...)` and backticks are still checked. Comments,
+  `\` line joins and `{ }` groups are understood. When the text is unclear, it blocks (#105).
+- `check --pr` reads HTML comments as GitHub does: a `<!--` that never closes hides the
+  rest of the body, so a section it hides counts as empty (#102).
+- Outside a repo, the tool-call guard no longer prints git's own error. An agent read it as the
+  result of the command the guard stopped. The release message now gives the value:
+  `YOKOTEN_RELEASE_APPROVAL=1 claude` (#100).
 - Commits no longer record the machine's time zone, which narrows down where the owner
   lives. The commit check refuses a commit whose time is not UTC (and says how to fix
   it, never printing the offset); `init` sets `TZ=UTC` for agent sessions; `check
@@ -142,5 +240,5 @@ All notable changes are listed here. The format follows
   `inspect`, `rca`, `record`), three agents (`worker`, `reviewer`, `verifier`), CI,
   issue and pull request templates.
 
-[Unreleased]: https://github.com/coo1white/yokoten/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/coo1white/yokoten/releases/tag/v0.1.0
+[Unreleased]: https://github.com/yokoten-labs/yokoten/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/yokoten-labs/yokoten/releases/tag/v0.1.0
