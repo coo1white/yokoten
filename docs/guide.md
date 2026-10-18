@@ -103,7 +103,7 @@ for example `ci (Scorecard: CI-Tests)`. The session message leaves it out.
 And when an agent tries to push a release tag:
 
 ```
-yokoten: git push --tags pushes tags. Only the owner decides when to release. If the owner asked for this, they start the session with YOKOTEN_RELEASE_APPROVAL set.
+yokoten: git push --tags pushes tags. Only the owner decides when to release. If the owner asked for this, they start a new session with YOKOTEN_RELEASE_APPROVAL=1 (`YOKOTEN_RELEASE_APPROVAL=1 claude`); do not look for another way.
 ```
 
 Every message has the same three parts: **what** happened, **why** it matters, and the

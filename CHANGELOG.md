@@ -163,6 +163,9 @@ All notable changes are listed here. The format follows
 
 ### Fixed
 
+- Outside a repo, the tool-call guard no longer prints git's own error. An agent read it as the
+  result of the command the guard stopped. The release message now gives the value:
+  `YOKOTEN_RELEASE_APPROVAL=1 claude` (#100).
 - Commits no longer record the machine's time zone, which narrows down where the owner
   lives. The commit check refuses a commit whose time is not UTC (and says how to fix
   it, never printing the offset); `init` sets `TZ=UTC` for agent sessions; `check

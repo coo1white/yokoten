@@ -99,6 +99,12 @@ test('hook --stop: sends the agent back once with the findings in changed files,
   for (const input of ['not json', '', 'null', '[1]']) assert.equal(s.run(['hook', '--stop'], { input }).status, 0, input);
   const away = mkdtempSync(join(tmpdir(), 'yokoten-away-'));
   assert.equal(s.run(['hook', '--stop'], { input: JSON.stringify({ cwd: away }) }).status, 0);
+  // Outside a repo the guard still stops a tag push, and git's own error stays hidden:
+  // an agent read it as the result of the stopped command.
+  r = s.run(['hook', '--commands-only'], { cwd: away, input: JSON.stringify({ cwd: away, tool_name: 'Bash', tool_input: { command: 'git push --tags' } }) });
+  assert.equal(r.status, 2);
+  assert.doesNotMatch(r.stderr, /fatal|not a git repository/);
+  assert.match(r.stderr, /^yokoten: git push --tags pushes tags\..*YOKOTEN_RELEASE_APPROVAL=1 claude/);
   // A broken config is an internal error: the turn ends, with one line on stderr.
   s.write('yokoten.json', '{ broken');
   r = s.run(['hook', '--stop'], { input: JSON.stringify({ cwd: s.repo }) });
