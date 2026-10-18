@@ -487,6 +487,13 @@ A line you edited by hand in the core part shows as `-`, because the update repl
 it. Move your own rules under `## This project` first. Without that heading, yokoten
 can't tell the core rules from yours. Then it says so, and compares and writes nothing.
 
+The first line of `AGENTS.md` names the kit that wrote the core rules, as a comment
+that GitHub does not show: `<!-- yokoten kit 0.1.0 -->`. `init` writes it, and
+`update --write` sets the new version. When the project's kit is newer than the
+yokoten you run, `update` refuses and writes nothing, so the rules never go back to
+an older kit. `doctor` then says to update yokoten itself, not the project. A file
+without that line compares by its text only.
+
 Run `update` from an installed yokoten or a clone, not from `.yokoten/`. The copy in
 your project has no kit to compare with.
 

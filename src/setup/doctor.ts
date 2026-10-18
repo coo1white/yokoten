@@ -96,6 +96,10 @@ export function coreRulesCheck(root: string): { mark: 'ok' | 'MISSING' | 'note';
   const fix = 'run `yokoten update` to see the change, then `yokoten update --write`; the "This project" part stays as it is';
   if (rules.state === 'same') return { mark: 'ok', finding: finding('core-rules', 'the core rules in AGENTS.md are up to date', fix) };
   if (rules.state === "can't compare") return { mark: 'note', finding: finding('core-rules', `can't compare the core rules in AGENTS.md: ${rules.why}`, rules.fix) };
+  // A project written by a newer yokoten is not behind: this yokoten is (#141).
+  if (rules.state === 'newer') {
+    return { mark: 'note', finding: finding('core-rules', `the core rules in AGENTS.md come from yokoten ${rules.version}, newer than this yokoten ${VERSION}`, 'update yokoten itself, not the project: `npx yokoten@latest install`, the latest Claude Code plugin, or a pull in your clone') };
+  }
   return { mark: 'MISSING', finding: finding('core-rules', `the core rules in AGENTS.md are behind yokoten ${VERSION}'s, or were edited by hand (${summarizeUpdate(rules)})`, fix) };
 }
 

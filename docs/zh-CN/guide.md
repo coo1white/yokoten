@@ -455,6 +455,12 @@ yokoten 每学到一个教训，核心规则就会改。`yokoten install` 会更
 挪到 `## This project` 下面。要是文件里没有这个标题，yokoten 分不清哪些是核心规则、
 哪些是你的，它会直接告诉你，不比也不写。
 
+`AGENTS.md` 第一行记着核心规则是哪个版本的 kit 写的，比如 `<!-- yokoten kit 0.1.0 -->`。
+这是一行注释，GitHub 上看不到。`init` 会写上它，`update --write` 会换成新版本号。
+要是项目里的版本比你正在用的 yokoten 还新，`update` 会拒绝，什么都不写，免得把规则
+退回旧版。这时 `doctor` 会让你升级 yokoten 本身，而不是去改项目。没有这一行的文件，
+就只按内容比。
+
 `update` 要用装好的 yokoten 或者 clone 下来的仓库跑，别用 `.yokoten/` 里的那份：
 项目里那份没有带 kit，没东西可比。
 
