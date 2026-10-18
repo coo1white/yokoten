@@ -11,7 +11,7 @@ import { check, checkChanged, checkHistory, gitRoot, historyTimeZones, timeZoneN
 import * as claudeCode from '../src/agents/claude-code.ts';
 import * as codex from '../src/agents/codex.ts';
 import * as gemini from '../src/agents/gemini.ts';
-import { type Finding, formatFinding, notRepoFinding } from '../src/rules/message.ts';
+import { type Finding, finding, formatFinding, notRepoFinding } from '../src/rules/message.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
 import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, largeDiff, longSentenceNote, longSentences } from '../src/rules/pr.ts';
 import { hideHome } from '../src/rules/privacy.ts';
@@ -93,13 +93,21 @@ function usage(error: string): number {
   return 1;
 }
 
+// Set when a git call failed because git itself was not found, not because of the folder.
+let isGitMissing = false;
+
 const rootOf = (dir: string): string | null => {
   try {
     return gitRoot(dir);
-  } catch {
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT' && existsSync(dir)) isGitMissing = true;
     return null;
   }
 };
+
+/** Why there is no repo root: git is missing, or the folder is not in a repo. Call it after rootOf. */
+const noRootFinding = (dir: string): Finding =>
+  isGitMissing ? finding('not-a-repo', 'git is not installed (or not on PATH); yokoten needs git', 'install git, or add it to PATH') : notRepoFinding(dir);
 
 /**
  * The repo root, or null after one plain finding on stderr (#205): a command that needs a
@@ -108,7 +116,7 @@ const rootOf = (dir: string): string | null => {
 function requireRoot(dir: string, json?: (missing: Finding) => unknown): string | null {
   const root = rootOf(dir);
   if (root) return root;
-  const missing = notRepoFinding(dir);
+  const missing = noRootFinding(dir);
   if (json) printJson(json(missing));
   else print([`yokoten ${cmd}: ${formatFinding(missing)}`], process.stderr);
   return null;
@@ -390,7 +398,7 @@ function main(): number | Promise<number> {
       const { ok, lines, report } = doctor(root, { env, config, session, gh: root ? ghIn(root) : undefined });
       // Full doctor outside a repo says so (#205). A session there stays quiet: no noise in a non-repo folder.
       if (!root && !session) {
-        const missing = notRepoFinding(process.cwd());
+        const missing = noRootFinding(process.cwd());
         if (options.flags.has('--json')) printJson({ ...report, ok: false, findings: [...report.findings, missing] });
         else print([...lines, `yokoten doctor: ${formatFinding(missing)}`], process.stderr);
         return 1;

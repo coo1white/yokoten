@@ -1071,6 +1071,19 @@ test('outside a git repo: every command that needs one says so plainly, exits 1 
   assert.equal(sandbox.run(['changelog'], { cwd: away }).status, 0);
 });
 
+test('git not installed: a command that needs a repo says git is missing, not "not a repo" (#205)', () => {
+  const sandbox = makeSandbox();
+  // Only node on the PATH.
+  const noGit = join(sandbox.home, 'no-git');
+  mkdirSync(noGit);
+  symlinkSync(process.execPath, join(noGit, 'node'));
+  for (const command of ['check', 'doctor']) {
+    const result = sandbox.run([command], { extra: { PATH: noGit } });
+    assert.equal(result.status, 1, command);
+    assert.match(result.stderr, new RegExp(`^yokoten ${command}: git is not installed \\(or not on PATH\\); yokoten needs git\\. `), command);
+  }
+});
+
 test('--json: check, doctor, hook and explain print pure JSON with what, why and fix; never a private value (#42)', () => {
   const sandbox = makeSandbox();
   const marks = join(sandbox.home, 'marks');

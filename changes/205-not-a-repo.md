@@ -7,3 +7,5 @@ exited 0, `check` and `adopt` printed a raw git error, and `init` wrote its file
 
 Output hides the home folder by its real path too, so a linked home or a macOS folder
 under /private no longer shows the path.
+
+Output hides both $HOME and the system home (any slash or case on Windows) only where a path ends, and a missing git is named.

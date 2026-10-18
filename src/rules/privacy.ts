@@ -85,19 +85,42 @@ export function scanText(text: string, { file, marks = [], allow = [] }: { file:
   return problems;
 }
 
-/**
- * Text as yokoten may show it: the home folder, which names the machine's user, becomes
- * `~`. Everything yokoten prints passes through this. The home's real path goes first: on
- * macOS a temp or home folder resolves to /private/..., which holds the plain path inside it.
- */
-export function hideHome(text: string, env: Env): string {
-  const home = (env.HOME || homedir()).replace(/[\\/]+$/, '');
-  if (home.length <= 1) return text;
+// A character that can sit next to a path segment and continue it. A dot continues it
+// only when a name character follows, so a full stop after a path still ends it.
+const PATH_CHAR = String.raw`[\p{L}\p{N}_\-+@%~#$]`;
+const BEFORE_HOME = String.raw`(?<!${PATH_CHAR}|[.\\/])`;
+const AFTER_HOME = String.raw`(?!${PATH_CHAR}|\.${PATH_CHAR})`;
+
+/** The forms of one home folder that text may hold: as given, its real path, and on Windows its MSYS form. */
+function homeForms(home: string | undefined): string[] {
+  if (!home) return [];
   let real = home;
   try {
     real = realpathSync(home);
   } catch {}
-  return [real, home].reduce((shown, path) => (path.length > 1 ? shown.split(path).join('~') : shown), text);
+  const forms = [home, real].map((path) => path.replace(/[\\/]+$/, ''));
+  // C:\Users\me is /c/Users/me in Git Bash.
+  for (const path of [...forms]) {
+    const drive = /^([A-Za-z]):([\\/].*)$/.exec(path);
+    if (drive) forms.push(`/${drive[1].toLowerCase()}${drive[2]}`);
+  }
+  return forms.filter((path) => path.length > 1 && !/^[A-Za-z]:$/.test(path));
+}
+
+/**
+ * Text as yokoten may show it: the home folder, which names the machine's user, becomes
+ * `~`. Everything yokoten prints passes through this. Both homes are hidden: $HOME and the
+ * system's (they differ under sudo, in CI, or with HOME=/tmp/x), each also by its real path
+ * (on macOS a temp or home folder resolves to /private/...). A home is replaced only where
+ * its path ends, so /data/u never touches /data/users. On Windows `\` and `/` match each
+ * other, and case does not count.
+ */
+export function hideHome(text: string, env: Env, { platform = process.platform as string, systemHome = homedir() } = {}): string {
+  const homes = [...new Set([...homeForms(env.HOME), ...homeForms(systemHome)])].sort((a, b) => b.length - a.length);
+  if (!homes.length) return text;
+  const isWindows = platform === 'win32';
+  const pattern = homes.map((home) => home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\\\|\//g, String.raw`[\\/]`)).join('|');
+  return text.replace(new RegExp(`${BEFORE_HOME}(?:${pattern})${AFTER_HOME}`, isWindows ? 'giu' : 'gu'), '~');
 }
 
 /**
