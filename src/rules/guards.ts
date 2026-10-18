@@ -10,6 +10,9 @@
 // command built up in pieces gets past it. The lock is on the server: branch protection,
 // CODEOWNERS, and a release token the agents do not hold.
 
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { Config, Env } from './config.ts';
 import { matcher } from './config.ts';
 import { type Finding, finding } from './message.ts';
@@ -27,11 +30,13 @@ export function checkEdit(path: string, { config, env }: { config: Config; env: 
 
 /**
  * A shell command, as the agent wrote it. `config` brings the programs the project blocks
- * (yokoten.json "commands.block"); without it, only the core rules apply.
+ * (yokoten.json "commands.block"); without it, only the core rules apply. `cwd` is the
+ * folder the command runs in, by default this process's: a change to core.hooksPath reads
+ * that repo's setting and hooks.
  */
-export function checkCommand(command: string, { env, config }: { env: Env; config?: Pick<Config, 'commands'> }): Finding | null {
+export function checkCommand(command: string, { env, config, cwd = process.cwd() }: { env: Env; config?: Pick<Config, 'commands'>; cwd?: string }): Finding | null {
   for (const words of commandWords(command)) {
-    const reason = checkGit(words, env, config) ?? checkHooksEnvironment(words) ?? checkPublish(words, env) ?? checkBlocked(words, config?.commands.block ?? {});
+    const reason = checkGit(words, { env, config, cwd }) ?? checkHooksEnvironment(words) ?? checkPublish(words, env) ?? checkBlocked(words, config?.commands.block ?? {});
     if (reason) return reason;
   }
   return null;
@@ -47,13 +52,18 @@ const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--config-env', '--git-dir', '--w
 
 // Each check looks for its program anywhere in the command, so a prefix such as FOO=1,
 // sudo, env, command, exec, time, nice, nohup, timeout or xargs does not hide it.
-function checkGit(words: string[], env: Env, config?: Pick<Config, 'commands'>): Finding | null {
+function checkGit(words: string[], { env, config, cwd }: { env: Env; config?: Pick<Config, 'commands'>; cwd: string }): Finding | null {
   const start = words.findIndex(isGit);
   if (start === -1) return null;
   const settings: string[] = [];
   const fromEnvironment: string[] = []; // --config-env name=VARIABLE
+  // The folder git works in: `-C` moves it. With --git-dir or --work-tree, the guard
+  // does not know the repo, so it is null.
+  let directory: string | null = cwd;
   let i = start + 1;
   while (i < words.length && words[i].startsWith('-')) {
+    if (words[i] === '-C' && directory !== null) directory = resolve(directory, words[i + 1] ?? '');
+    if (/^--(git-dir|work-tree)(=|$)/.test(words[i])) directory = null;
     if (words[i] === '-c') settings.push(words[i + 1] ?? '');
     if (words[i] === '--config-env') fromEnvironment.push(words[i + 1] ?? '');
     if (words[i].startsWith('--config-env=')) fromEnvironment.push(words[i].slice('--config-env='.length));
@@ -70,7 +80,7 @@ function checkGit(words: string[], env: Env, config?: Pick<Config, 'commands'>):
   // `git -c alias.x='!cmd' x` runs cmd through a shell.
   for (const s of settings) {
     const alias = /^alias\.[^=]*=!(.*)$/is.exec(s);
-    const reason = alias && checkCommand(alias[1], { env, config });
+    const reason = alias && checkCommand(alias[1], { env, config, cwd });
     if (reason) return reason;
   }
   if (sub === 'push') {
@@ -85,20 +95,25 @@ function checkGit(words: string[], env: Env, config?: Pick<Config, 'commands'>):
   }
   const skip = args.includes('--no-verify') ? '--no-verify' : sub === 'commit' ? args.find((a) => /^-[a-z]*n[a-z]*$/i.test(a)) : undefined;
   if (skip) return finding('skip-check', `git ${sub} ${skip} skips the commit check`, 'fix what the check reports instead');
-  if (sub === 'config') return checkConfig(args);
+  if (sub === 'config') return checkConfig(args, directory);
   return null;
 }
 
 // ---- The hooks setting (#114) ----
 //
 // git runs the commit check from core.hooksPath. Reading the setting is fine. Any value
-// but .githooks turns the check off: for good with `git config`, or for one command with
+// but .githooks can turn the check off: for good with `git config`, or for one command with
 // `git -c`, `--config-env` or GIT_CONFIG_KEY_n. Keys are case-insensitive, as in git.
 // A value the guard cannot see (from a variable) blocks.
+//
+// `git config` in the repo's own config may also set the value already set, or a folder
+// whose pre-commit runs `yokoten check` (#217): husky's `.husky/_`, or a folder
+// `yokoten init` kept.
 
 const HOOKS_DIR = '.githooks';
+const HOOKS_FIX = 'leave it as it is; another folder is fine once its pre-commit runs `yokoten check` (`yokoten init` adds it there)';
 const isHooksPath = (key: string) => key.trim().toLowerCase() === 'core.hookspath';
-const hooksPath = (what: string) => finding('hooks-path', what, 'leave it at .githooks; only the owner changes it');
+const hooksPath = (what: string, fix = HOOKS_FIX) => finding('hooks-path', what, fix);
 
 // `git -c core.hooksPath=<value>` and `--config-env core.hooksPath=<VARIABLE>`.
 function checkHooksSettings(settings: string[], fromEnvironment: string[]): Finding | null {
@@ -170,8 +185,9 @@ function splitConfig(args: string[], isOldForm: boolean): { options: string[]; p
   return { options, plain };
 }
 
-// `git config`: a read passes; a change to core.hooksPath passes only to .githooks.
-function checkConfig(args: string[]): Finding | null {
+// `git config`: a read passes; a change to core.hooksPath passes only to .githooks, or as
+// checkHooksFolder allows. `directory` is the folder git works in, or null when unknown.
+function checkConfig(args: string[], directory: string | null): Finding | null {
   let { options, plain } = splitConfig(args, true);
   const subcommand = CONFIG_SUBCOMMANDS.has(plain[0]) ? plain[0] : undefined;
   if (subcommand) {
@@ -193,7 +209,59 @@ function checkConfig(args: string[]): Finding | null {
   const value = plain[1];
   const isSet = subcommand !== undefined || actions.some((a) => a === '--add' || a === '--replace-all');
   if (value === undefined && !isSet) return null;
-  return value === HOOKS_DIR ? null : hooksPath('changing core.hooksPath turns off the commit check');
+  if (value === HOOKS_DIR) return null;
+  if (value === undefined) return hooksPath('git config set core.hooksPath with no value turns off the commit check');
+  return checkHooksFolder(value, options, directory);
+}
+
+// Config that is not this repo's own: a change there reaches other repos, or none.
+const OTHER_SCOPES = new Set(['--global', '--system', '-f', '--file', '--blob']);
+
+// A new core.hooksPath in the repo's own config passes when it is the value already set,
+// or when the folder's pre-commit runs `yokoten check`.
+function checkHooksFolder(value: string, options: string[], directory: string | null): Finding | null {
+  const scope = options.find((o) => OTHER_SCOPES.has(o.split('=')[0]));
+  if (scope) return hooksPath(`git config ${scope} core.hooksPath changes the hooks folder outside this repo's own config, which can turn off the commit check`);
+  const root = directory === null ? null : readGit(directory, ['rev-parse', '--show-toplevel']);
+  if (root === null) return hooksPath('changing core.hooksPath where the guard cannot find the repo can turn off the commit check');
+  if (readGit(root, ['config', '--get', 'core.hooksPath']) === value) return null;
+  const file = hookFile(root, value);
+  if (file === null) return hooksPath(`core.hooksPath ${value} is outside this repo, so the commit check does not run`);
+  if (runsCheck(readText(join(root, file)))) return null;
+  return hooksPath(`core.hooksPath ${value} turns off the commit check: ${file} does not run \`yokoten check\``, `add \`yokoten check\` to ${file} (\`yokoten init\` adds it), then set core.hooksPath again`);
+}
+
+/**
+ * The pre-commit file git runs for this core.hooksPath, relative to the repo root, or null
+ * when the folder is outside the repo. husky's folder (`.husky/_`, or `.husky` before
+ * husky 9) runs `.husky/pre-commit`.
+ */
+export function hookFile(root: string, setting: string): string | null {
+  const folder = relative(root, resolve(root, setting)).split('\\').join('/');
+  if (folder === '..' || folder.startsWith('../') || isAbsolute(folder)) return null;
+  if (folder === '.husky' || folder.startsWith('.husky/')) return '.husky/pre-commit';
+  return folder ? `${folder}/pre-commit` : 'pre-commit';
+}
+
+/** A line of this script, not a comment, runs `yokoten check` (by any path, or `yokoten.ts`). */
+export const runsCheck = (script: string): boolean =>
+  script.split(/\r?\n/).some((line) => !line.trimStart().startsWith('#') && /\byokoten(\.ts)?["']?\s+check\b/.test(line));
+
+// What git prints, trimmed, or null when it fails.
+function readGit(directory: string, args: string[]): string | null {
+  try {
+    return execFileSync('git', args, { cwd: directory, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function readText(path: string): string {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch {
+    return '';
+  }
 }
 
 // A word anywhere after the program counts, so an option in between (`npm --tag x publish`)
