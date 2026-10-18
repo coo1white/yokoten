@@ -163,6 +163,8 @@ All notable changes are listed here. The format follows
 
 ### Fixed
 
+- `check --pr` reads HTML comments as GitHub does: a `<!--` that never closes hides the
+  rest of the body, so a section it hides counts as empty (#102).
 - Outside a repo, the tool-call guard no longer prints git's own error. An agent read it as the
   result of the command the guard stopped. The release message now gives the value:
   `YOKOTEN_RELEASE_APPROVAL=1 claude` (#100).
