@@ -65,7 +65,10 @@ no sign-up, is tied to no person, and its rights are listed one by one.
      changes CI, and that CI runs before anyone reviews it. yokoten's own bot has Read
      and write. The locks are then on the server: CODEOWNERS makes a CI change need
      your review (step 4), and anything that can publish waits for your approval in a
-     protected `release` environment (record 0009).
+     protected `release` environment (record 0009). Also keep the repo's Actions
+     setting **Allow GitHub Actions to create and approve pull requests** off.
+     Otherwise a workflow the bot pushes could approve the bot's own pull request and
+     meet a one-approval rule before anyone reads it.
    - Where can this App be installed: **Only on this account** (the account that owns
      the repo).
 2. Create it. On the App's page, **Generate a private key**. A `.pem` file downloads.
