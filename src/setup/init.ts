@@ -1,7 +1,8 @@
 // `yokoten init`: put the practices into a project. It only adds: a file that is already
-// there is kept, and the report says so. Two files get lines added, never removed: a
-// CLAUDE.md, and a project's own pre-commit (#206). Deciding what to do with a project's
-// own rules (keep, merge, or say not now) is the yokoten skill's job, not this command's.
+// there is kept, and the report says so. Some files get lines added, never removed: a
+// CLAUDE.md, and a project's own pre-commit and pre-merge-commit (#206, #239). Deciding
+// what to do with a project's own rules (keep, merge, or say not now) is the yokoten
+// skill's job, not this command's.
 //
 // `yokoten update` is the one command here that replaces text: the core rules in
 // AGENTS.md, and only with --write. It is at the end of this file.
@@ -50,7 +51,10 @@ export function init(root: string): string[] {
     const result = writeNew(join(root, rel), render(readFileSync(file, 'utf8'), { cli, version: VERSION }));
     report.push(`${result} ${rel}`);
   }
-  if (hooks.kind !== 'own') chmodSync(join(root, '.githooks', 'pre-commit'), 0o755);
+  if (hooks.kind !== 'own') {
+    chmodSync(join(root, '.githooks', 'pre-commit'), 0o755);
+    report.push(`${writeMergeHook(root, cli, kit)} .githooks/pre-merge-commit`);
+  }
   const imported = importRules(root);
   if (imported) report.push(imported);
   const hook = addProjectHook(root, cli);
@@ -72,7 +76,8 @@ export function init(root: string): string[] {
 // init adds; it never switches a project's setup off without saying so. Claude Code reads
 // AGENTS.md only when there is no CLAUDE.md, so a CLAUDE.md gets one line that imports it.
 // A project with its own hooks folder (husky, or another core.hooksPath) keeps it, and
-// that folder's pre-commit gets the yokoten check: one hooks folder, so nothing is turned off.
+// that folder's pre-commit and pre-merge-commit get the yokoten check: one hooks folder,
+// so nothing is turned off.
 
 /** A CLAUDE.md line that imports AGENTS.md (`@AGENTS.md`) or links to it. */
 const RULES_IMPORT = /(?:^|\s)@(?:\.\/)?AGENTS\.md\b|\]\((?:\.\/)?AGENTS\.md\)/m;
@@ -115,21 +120,30 @@ function readHookSetup(root: string): HookSetup {
 }
 
 /**
- * The pre-commit file git runs for this core.hooksPath, relative to the root, or null when
- * the folder is outside the repo. husky's folder (`.husky/_`, or `.husky` before husky 9)
- * runs `.husky/pre-commit`.
+ * The hooks git runs before it makes a commit: pre-commit, and pre-merge-commit for a
+ * merge that git commits itself (`git merge --no-ff` without a conflict). Both run the
+ * commit check (#239).
  */
-export function hookFile(root: string, hooksPath: string): string | null {
+export const COMMIT_HOOKS = ['pre-commit', 'pre-merge-commit'] as const;
+
+export type CommitHook = (typeof COMMIT_HOOKS)[number];
+
+/**
+ * The hook file git runs for this core.hooksPath, relative to the root, or null when the
+ * folder is outside the repo. husky's folder (`.husky/_`, or `.husky` before husky 9)
+ * runs `.husky/pre-commit` and `.husky/pre-merge-commit`.
+ */
+export function hookFile(root: string, hooksPath: string, hook: CommitHook = 'pre-commit'): string | null {
   const folder = relative(root, resolve(root, hooksPath)).split('\\').join('/');
   if (folder === '..' || folder.startsWith('../') || isAbsolute(folder)) return null;
-  if (folder === '.husky' || folder.startsWith('.husky/')) return '.husky/pre-commit';
-  return folder ? `${folder}/pre-commit` : 'pre-commit';
+  if (folder === '.husky' || folder.startsWith('.husky/')) return `.husky/${hook}`;
+  return folder ? `${folder}/${hook}` : hook;
 }
 
-/** The lines init adds to a project's own pre-commit. `exit 1` because a hook may go on after them. */
+/** The lines init adds to a project's own pre-commit and pre-merge-commit. `exit 1` because a hook may go on after them. */
 export const checkLines = (cli: string): string[] => ['# yokoten: the commit check (lead-only files, test files in a fix task, layout and privacy)', commitCheckLine(cli)];
 
-/** Add the yokoten check to a pre-commit, after its `#!` line, so a later `exec` can't skip it. Its own lines stay. */
+/** Add the yokoten check to a commit hook, after its `#!` line, so a later `exec` can't skip it. Its own lines stay. */
 function addCheckLines(path: string, cli: string): 'added the check to' | 'wrote' | 'same' {
   if (!existsSync(path)) {
     mkdirSync(dirname(path), { recursive: true });
@@ -148,6 +162,18 @@ function addCheckLines(path: string, cli: string): 'added the check to' | 'wrote
   return 'added the check to';
 }
 
+/**
+ * Write .githooks/pre-merge-commit with the kit's pre-commit, so a merge commit gets the
+ * same check (#239). One that is there is kept, and gets the check when it lacks it.
+ */
+function writeMergeHook(root: string, cli: string, kit: string): 'wrote' | 'kept' | 'added the check to' {
+  const path = join(root, '.githooks', 'pre-merge-commit');
+  if (existsSync(path)) return addCheckLines(path, cli) === 'same' ? 'kept' : 'added the check to';
+  writeNew(path, render(readFileSync(join(kit, '.githooks', 'pre-commit'), 'utf8'), { cli, version: VERSION }), { mode: 0o755 });
+  chmodSync(path, 0o755);
+  return 'wrote';
+}
+
 /** Point git at the commit check: set .githooks, or add the check to the project's own pre-commit. */
 function setCommitCheck(root: string, cli: string, hooks: HookSetup): string[] {
   if (hooks.kind === 'no repo') return ['not a git repo: run `git init`, then `git config core.hooksPath .githooks`'];
@@ -156,13 +182,16 @@ function setCommitCheck(root: string, cli: string, hooks: HookSetup): string[] {
     return ['set git core.hooksPath to .githooks (the commit check)'];
   }
   const { hooksPath } = hooks;
-  const file = hooksPath ? hookFile(root, hooksPath) : '.husky/pre-commit';
-  const owner = hooksPath ? `core.hooksPath (${file === '.husky/pre-commit' ? 'husky' : hooksPath})` : 'husky';
-  if (file === null) {
-    return [`kept core.hooksPath: it is outside this repo, so yokoten did not change it. Add this line to its pre-commit: ${commitCheckLine(cli)}`];
+  const fileOf = (hook: CommitHook) => (hooksPath ? hookFile(root, hooksPath, hook) : `.husky/${hook}`);
+  const owner = hooksPath ? `core.hooksPath (${fileOf('pre-commit') === '.husky/pre-commit' ? 'husky' : hooksPath})` : 'husky';
+  if (fileOf('pre-commit') === null) {
+    return [`kept core.hooksPath: it is outside this repo, so yokoten did not change it. Add this line to its pre-commit and pre-merge-commit: ${commitCheckLine(cli)}`];
   }
-  const lines = [`${addCheckLines(join(root, file), cli)} ${file}: the commit check (kept ${owner}, so the project's own hooks still run)`];
-  if (!hooksPath) lines.push('husky is not set up in this clone yet: run `npm install` (husky sets core.hooksPath), and the check runs from .husky/pre-commit');
+  const lines = COMMIT_HOOKS.map((hook) => {
+    const file = fileOf(hook) as string;
+    return `${addCheckLines(join(root, file), cli)} ${file}: the commit check (kept ${owner}, so the project's own hooks still run)`;
+  });
+  if (!hooksPath) lines.push('husky is not set up in this clone yet: run `npm install` (husky sets core.hooksPath), and the check runs from .husky/pre-commit and .husky/pre-merge-commit');
   return lines;
 }
 

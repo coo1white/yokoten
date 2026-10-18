@@ -20,7 +20,7 @@ import { hasPlugin, hasProjectHook } from '../agents/claude-code.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
 import { hasBot, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
-import { claudeReadsRules, cliPath, hookFile, isSelf } from './init.ts';
+import { claudeReadsRules, cliPath, COMMIT_HOOKS, hookFile, isSelf } from './init.ts';
 import { FIRST_MILESTONE, lackingLabels, pickNewMilestone } from './plan.ts';
 import { skillFiles, skillsDir } from './install.ts';
 
@@ -285,6 +285,13 @@ const commitHook = (root: string): string | null => {
   return hooksPath ? hookFile(root, hooksPath) : null;
 };
 
+/** The commit hooks here (pre-commit and pre-merge-commit) that do not run the check (#239); null when git runs none from this repo. */
+const uncheckedHooks = (root: string): string[] | null => {
+  const hooksPath = gitConfig(root, 'core.hooksPath');
+  if (!hooksPath || commitHook(root) === null) return null;
+  return COMMIT_HOOKS.map((hook) => hookFile(root, hooksPath, hook) as string).filter((file) => !runs('check').test(read(join(root, file))));
+};
+
 /** The road, in order. Step names never change: they are the keys for "not now". */
 export const ROAD: Step[] = [
   {
@@ -309,23 +316,21 @@ export const ROAD: Step[] = [
   {
     stage: 1,
     key: 'commit-check',
-    check: (root) => {
-      const file = commitHook(root);
-      return file !== null && runs('check').test(read(join(root, file)));
-    },
+    check: (root) => uncheckedHooks(root)?.length === 0,
     what: (root) => {
-      const file = commitHook(root);
-      if (file) return `commits are not checked: ${file} does not run yokoten`;
+      const files = uncheckedHooks(root);
+      if (files) return `commits are not checked: ${files.map((file) => `${file} does not run yokoten`).join('; ')}`;
       return gitConfig(root, 'core.hooksPath') ? 'commits are not checked: core.hooksPath is outside this repo' : 'commits are not checked: core.hooksPath is not set';
     },
     fix: (root) => {
       if (!gitConfig(root, 'core.hooksPath') && existsSync(join(root, '.husky'))) return 'run `npm install` so husky sets core.hooksPath, then `yokoten init`';
-      const file = commitHook(root);
-      if (file && file !== '.githooks/pre-commit') return `\`yokoten init\` adds the check to ${file}, or add this line there yourself: ${commitCheckLine(cliPath(root))}`;
-      return '`yokoten init` sets it up';
+      const files = uncheckedHooks(root);
+      if (!files?.length || files.includes('.githooks/pre-commit')) return '`yokoten init` sets it up';
+      if (files.join() === '.githooks/pre-merge-commit') return '`yokoten init` adds the check to .githooks/pre-merge-commit';
+      return `\`yokoten init\` adds the check to ${files.join(' and ')}, or add this line there yourself: ${commitCheckLine(cliPath(root))}`;
     },
     why: 'a secret or a personal email is hard to take back once a commit is pushed',
-    how: "the pre-commit that git runs from core.hooksPath runs `yokoten check`: .githooks/pre-commit, or the project's own (husky: .husky/pre-commit)",
+    how: "the pre-commit and pre-merge-commit that git runs from core.hooksPath run `yokoten check`: in .githooks/, or in the project's own folder (husky: .husky/)",
     standard: 'OSPS-BR-07.01',
   },
   {

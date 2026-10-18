@@ -540,6 +540,9 @@ test("init: husky keeps its hooks folder; .husky/pre-commit gets the check and k
   let result = sandbox.run(['init']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /added the check to \.husky\/pre-commit: the commit check \(kept core\.hooksPath \(husky\)/);
+  assert.match(result.stdout, /wrote \.husky\/pre-merge-commit: the commit check \(kept core\.hooksPath \(husky\)/, 'a merge commit is checked too (#239)');
+  assert.equal(readFileSync(join(sandbox.repo, '.husky/pre-merge-commit'), 'utf8'), `#!/bin/sh\n${checkLines('.yokoten/bin/yokoten.ts').join('\n')}\n`);
+  assert.ok(statSync(join(sandbox.repo, '.husky/pre-merge-commit')).mode & 0o100, 'executable');
   assert.doesNotMatch(result.stdout, /set git core\.hooksPath/);
   assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '.husky', 'the project\'s hooks folder stays');
   assert.ok(!existsSync(join(sandbox.repo, '.githooks')), 'no second hooks folder that git never runs');
@@ -550,6 +553,7 @@ test("init: husky keeps its hooks folder; .husky/pre-commit gets the check and k
   // Again: the hook already runs yokoten.
   result = sandbox.run(['init']);
   assert.match(result.stdout, /same \.husky\/pre-commit/);
+  assert.match(result.stdout, /same \.husky\/pre-merge-commit/);
   assert.equal(readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8'), hook);
   // A real commit runs both: the project's hook and the yokoten check.
   sandbox.git('add', '.');
@@ -587,13 +591,61 @@ test('init: husky not yet installed in this clone; init leaves core.hooksPath un
   assert.equal(stepMark(sandbox, 'commit-check'), 'done', "husky 9's folder runs .husky/pre-commit");
 });
 
+// git runs pre-merge-commit, not pre-commit, for a merge it commits itself (#239).
+test('init: a merge commit runs the commit check too (#239)', () => {
+  const sandbox = makeSandbox();
+  let result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /wrote \.githooks\/pre-merge-commit/);
+  const mergeHook = join(sandbox.repo, '.githooks', 'pre-merge-commit');
+  const hook = readFileSync(mergeHook, 'utf8');
+  assert.equal(hook, readFileSync(join(sandbox.repo, '.githooks', 'pre-commit'), 'utf8'), 'the same check as pre-commit');
+  assert.ok(statSync(mergeHook).mode & 0o100, 'executable');
+  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  // Again: nothing changes.
+  result = sandbox.run(['init']);
+  assert.match(result.stdout, /kept \.githooks\/pre-merge-commit/);
+  assert.equal(readFileSync(mergeHook, 'utf8'), hook);
+  sandbox.git('add', '.');
+  assert.equal(sandbox.git('commit', '-qm', 'adopt yokoten').status, 0);
+  sandbox.git('checkout', '-qb', 'topic');
+  sandbox.write('topic.md', 'fine\n');
+  sandbox.git('add', 'topic.md');
+  assert.equal(sandbox.git('commit', '-qm', 'topic').status, 0);
+  sandbox.git('checkout', '-q', 'main');
+  const merge = (zone: string) => spawnSync('git', ['merge', '--no-ff', '-q', '-m', 'merge topic', 'topic'], { cwd: sandbox.repo, env: { ...sandbox.env, TZ: zone }, encoding: 'utf8' });
+  // A merge with the author's time zone is refused, and the zone is never printed.
+  const zoned = merge('Asia/Tokyo');
+  assert.notEqual(zoned.status, 0, 'the merge commit is checked');
+  assert.match(zoned.stderr, /carries your time zone/);
+  assert.doesNotMatch(zoned.stderr, /\+0900/);
+  assert.equal(sandbox.git('rev-list', '--count', '--merges', 'HEAD').stdout.trim(), '0');
+  sandbox.git('merge', '--abort');
+  const plain = merge('UTC');
+  assert.equal(plain.status, 0, plain.stderr);
+  assert.equal(sandbox.git('rev-list', '--count', '--merges', 'HEAD').stdout.trim(), '1');
+  // Doctor names a missing pre-merge-commit, and init writes it back.
+  rmSync(mergeHook);
+  assert.notEqual(stepMark(sandbox, 'commit-check'), 'done');
+  const doctor = sandbox.run(['doctor']).stdout;
+  assert.match(doctor, /\.githooks\/pre-merge-commit does not run yokoten/);
+  assert.doesNotMatch(doctor, /\.githooks\/pre-commit does not run yokoten/);
+  assert.match(doctor, /`yokoten init` adds the check to \.githooks\/pre-merge-commit/);
+  // A pre-merge-commit of the project's own keeps its lines and gets the check.
+  writeFileSync(mergeHook, '#!/bin/sh\necho own\n');
+  result = sandbox.run(['init']);
+  assert.match(result.stdout, /added the check to \.githooks\/pre-merge-commit/);
+  assert.equal(readFileSync(mergeHook, 'utf8'), `#!/bin/sh\n${checkLines('.yokoten/bin/yokoten.ts').join('\n')}\necho own\n`);
+  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+});
+
 test('init: a core.hooksPath outside the repo is kept, and the advice is the line init would write (#204)', () => {
   const sandbox = makeSandbox();
   sandbox.git('config', 'core.hooksPath', join(sandbox.home, 'hooks'));
   const result = sandbox.run(['init']);
   assert.equal(result.status, 0, result.stderr);
   const [, checkLine] = checkLines('.yokoten/bin/yokoten.ts');
-  assert.ok(result.stdout.includes(`Add this line to its pre-commit: ${checkLine}\n`), result.stdout);
+  assert.ok(result.stdout.includes(`Add this line to its pre-commit and pre-merge-commit: ${checkLine}\n`), result.stdout);
 });
 
 test("init: another core.hooksPath is kept, and its pre-commit is made with the check (#206)", () => {
