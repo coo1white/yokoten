@@ -12,6 +12,12 @@ All notable changes are listed here. The format follows
   for a short life, verbs for functions, `is`/`has`/`can` for true or false, and a table of
   hard and easy names. **Kit change:** new projects get it from `init`;
   a project that already has `AGENTS.md` must copy the section by hand for now (#110).
+- `check --pr` notes hard-to-read names on the lines a pull request adds to TypeScript
+  and JavaScript files. A one-letter name used over more than 10 lines, or exported, is
+  `name-short`; a name of more than 4 words is `name-long`. Notes never fail CI (#111).
+- The README and the Chinese README show a short terminal demo under Quick start. An
+  agent's force push is blocked with what, why and the fix. Then `doctor` names the next
+  step. `node scripts/demo-svg.ts` builds it from `scripts/demo.txt` (#90).
 - In GitHub Actions, `check` shows its findings on the pull request page. Each finding
   is an annotation on its line, and the job summary lists what, why and the fix. Notes
   are warnings. Output outside Actions does not change (#91).
