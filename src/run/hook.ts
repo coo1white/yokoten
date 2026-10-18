@@ -50,6 +50,16 @@ export const GUARD_DEADLINE_MS = 5000;
 
 type JudgeOptions = Parameters<typeof judge>[1];
 
+// A worker does not share the main thread's compile cache, so it turns the cache on
+// itself, then loads this module (#286). It starts as plain JavaScript: this module's
+// imports are compiled before any of its code runs, and the cache must be on by then.
+// An error from the cache is ignored, as in src/run/compile-cache.ts.
+const WORKER_START = `
+const { enableCompileCache } = require('node:module');
+try { enableCompileCache?.(); } catch {}
+import(${JSON.stringify(import.meta.url)});
+`;
+
 /**
  * `judge`, in a worker thread, with a deadline. The runtimes let a tool call through when
  * the hook runs past their own timeout, so a slow guard would open the gate. A timer in
@@ -59,7 +69,7 @@ type JudgeOptions = Parameters<typeof judge>[1];
 export function judgeWithDeadline(action: Action, options: JudgeOptions, deadlineMs: number): Promise<Finding | null> {
   return new Promise((settle) => {
     // Plain data only: process.env does not cross to a worker as it is.
-    const worker = new Worker(new URL(import.meta.url), { workerData: { yokotenJudge: { action, options: { ...options, env: { ...options.env } } } } });
+    const worker = new Worker(WORKER_START, { eval: true, workerData: { yokotenJudge: { action, options: { ...options, env: { ...options.env } } } } });
     let done = false;
     const finish = (found: Finding | null) => {
       if (done) return;

@@ -1332,8 +1332,18 @@ test('help: every command has --help, -h and `help <command>`; each exits 0 and 
   assert.equal(sandbox.run(['-v']).stdout, sandbox.run(['--version']).stdout);
 });
 
+test('compile cache: a cache folder that cannot be made does not stop the command (#286)', () => {
+  const sandbox = makeSandbox();
+  // A file where the folder should be: Node can't create the cache there.
+  const file = join(sandbox.home, 'not-a-folder');
+  writeFileSync(file, '');
+  const r = sandbox.run(['--version'], { extra: { NODE_COMPILE_CACHE: file } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^\d+\.\d+\.\d+\n$/);
+});
+
 test('help: the help table and the parser list the same commands and options (#207)', () => {
-  const source = readFileSync(CLI, 'utf8');
+  const source = readFileSync(join(dirname(CLI), 'main.ts'), 'utf8');
   // Every parse call names a command in the table; no option list is written outside it.
   const parsed = [...source.matchAll(/\bparse\('([a-z]+)'/g)].map((m) => m[1]);
   assert.deepEqual([...parsed].sort(), COMMANDS.map((command) => command.name).sort(), 'each command parses its words by its help entry');
