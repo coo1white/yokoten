@@ -309,6 +309,37 @@ test('blocked commands: the program is stopped by its name, with any folder or .
   assert.match(found?.docs ?? '', /#blocked-commands$/);
 });
 
+test('blocked commands: after a shell keyword, a launcher, find -exec or env -S (#192)', () => {
+  for (const command of [
+    'for f in *.json; do python3 -m json.tool $f; done',
+    'if true; then python3 x; fi',
+    'if python3 x; then echo; fi',
+    'if false; then echo; else python3 x; fi',
+    'while python3 x; do :; done',
+    'until false; do python3 x; done',
+    '! python3 x',
+    '{ python3 x; }',
+    "find . -name '*.py' -exec python3 {} \\;",
+    "find . -name '*.py' -execdir nice python3 {} +",
+    "find . -type f -print -ok python3 {} ';'",
+    'setsid python3 x',
+    'stdbuf -oL python3 x',
+    'stdbuf -o L python3 x',
+    'busybox nohup python3 x',
+    'chrt -f 10 python3 x',
+    'ionice -c 3 python3 x',
+    'taskset -c 0 python3 x',
+    'unbuffer python3 x',
+    "env --split-string='python3 x'",
+    "env -S 'python3 x'",
+    "env -S'python3 x'",
+    'time python3 x',
+  ]) assert.ok(isBlockedByList(command), `should block: ${command}`);
+  for (const command of ['for python3 in a b; do echo $python3; done', "find . -name 'python3'", 'git commit -m "no python3 here"', "echo 'then python3'", 'setsid node x.ts', 'stdbuf -oL node x.ts']) {
+    assert.equal(isBlockedByList(command), false, `should allow: ${command}`);
+  }
+});
+
 test('blocked commands: a word that only holds the name passes, and so does no list (#192)', () => {
   for (const command of ['echo python', 'pythonic x', 'cat python.md', 'ls python3/', 'grep -r python3 src', 'command -v python3', 'node bin/yokoten.ts check', 'env X=1 node x.ts', 'nice -n 10 node --test']) {
     assert.equal(isBlockedByList(command), false, `should allow: ${command}`);
