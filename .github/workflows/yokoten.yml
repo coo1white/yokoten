@@ -52,6 +52,8 @@ jobs:
           node-version: 22
       - run: npm ci
       - run: npm run typecheck
+      # The npm package (record 0008): pack it, install it offline, run install, init and doctor.
+      - run: npm run check-package
   # The same check as the commit hook, for commits made without it.
   check:
     runs-on: ubuntu-latest
