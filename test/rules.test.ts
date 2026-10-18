@@ -173,6 +173,32 @@ test('config: a key with the wrong shape is a config error that names it, and th
   assert.deepEqual(lines.map((line) => /"([^"]+)" was ignored/.exec(line)?.[1]), ['layout.maxEntries', 'leadOnly'], 'one line for each wrong key');
 });
 
+test('config: null is a missing key; check lists every wrong key at once; unknown "commands" fields are notes (#228)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  // null gives the default, as before #228: no problem, no note, no hook line.
+  writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ leadOnly: null, notNow: null, layout: null, privacy: { utc: null }, commands: { block: null } }));
+  assert.deepEqual(loadConfig(dir), { ...DEFAULTS, privacy: { ...DEFAULTS.privacy } });
+  const lines: string[] = [];
+  loadHookConfig(dir, (line) => lines.push(line));
+  assert.deepEqual(lines, []);
+  assert.deepEqual(findUnknownKeys(dir), []);
+  // Three wrong keys: one error names all three, so one run shows them.
+  writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ leadOnly: 'x', tests: 5, layout: { maxEntries: '7' } }));
+  assert.throws(() => loadConfig(dir), (err: Error) => {
+    const [head, ...rest] = err.message.split('\n');
+    assert.equal(head, 'yokoten.json: 3 keys have the wrong shape:');
+    assert.deepEqual(rest.map((line) => /^- "([^"]+)" must be /.exec(line)?.[1]), ['layout.maxEntries', 'tests', 'leadOnly']);
+    return true;
+  });
+  // A misspelled field under "commands" blocks nothing: a note for check, and the hook stays quiet.
+  writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ commands: { blok: { python3: 'TypeScript only' } } }));
+  assert.deepEqual(loadConfig(dir).commands.block, {});
+  const quiet: string[] = [];
+  loadHookConfig(dir, (line) => quiet.push(line));
+  assert.deepEqual(quiet, []);
+  assert.deepEqual(findUnknownKeys(dir).map((note) => /^"([^"]+)"/.exec(note.what)?.[1]), ['commands.blok']);
+});
+
 test('config: an unknown key is a note, never a problem; yokoten\'s own files and the kit\'s pass with no note (#228)', () => {
   const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
   writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ colour: 'blue', layout: { maxEntry: 9 }, tests: ['spec/**'] }));

@@ -474,7 +474,7 @@ an npm script or a shell function runs. Name each version you want to stop:
 ### yokoten.json
 
 `yokoten.json` at the repo root holds the project's settings. Every key is optional. A
-missing key, or a missing file, gives the default.
+missing key, a key set to `null`, or a missing file gives the default.
 
 | Key | Must be | Default |
 |-----|---------|---------|
@@ -491,7 +491,8 @@ missing key, or a missing file, gives the default.
 yokoten checks each key against this table, in one place:
 
 - A key with the wrong shape, such as `"leadOnly": "x"`, is a config error. `check` and
-  `doctor` exit 1. The message names the key and says what it must look like.
+  `doctor` exit 1. The message names each wrong key and says what it must look like, so
+  one run shows them all.
 - The tool-call hook then uses that key's default. It says so in one line on stderr, and
   the core checks still run. A wrong field in an object, such as `layout.maxEntries`,
   gives only that field's default. A wrong `"commands"` drops the whole block list.
@@ -499,7 +500,8 @@ yokoten checks each key against this table, in one place:
   report a config error. The hook then uses all the defaults, says so in one line, and
   still runs the core checks.
 - A key that yokoten does not know is a note from `check`, never an error. A config
-  written for a newer yokoten then still works with an older one.
+  written for a newer yokoten then still works with an older one. A field it does not
+  know inside an object, such as `"commands": { "blok": ... }`, is a note too.
 
 ### Issue titles
 

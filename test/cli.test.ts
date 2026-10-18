@@ -104,6 +104,11 @@ test('hook: a key with the wrong shape gets its default and one line; check name
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^yokoten check: note: yokoten\.json: "colour" is not a key this version of yokoten knows/m);
   assert.equal(call({ command: 'git status' }).stderr, '', 'the hook says nothing');
+  // Every wrong key in one run.
+  sandbox.write('yokoten.json', '{ "leadOnly": "x", "tests": 5, "notNow": null }');
+  result = sandbox.run(['check']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^yokoten check: yokoten\.json: 2 keys have the wrong shape:\n- "tests" must be [^\n]+\n- "leadOnly" must be /);
 });
 
 test('hook --stop: sends the agent back once with the findings in changed files, never twice (#92)', () => {

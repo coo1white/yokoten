@@ -53,10 +53,15 @@ export const DEFAULTS: Config = {
  */
 export type IgnoredPart = string;
 
-/** What one value must look like: the problem with a value (null when it fits), and its copy. */
+/**
+ * What one value must look like: the problem with a value (null when it fits), and its
+ * copy. `knownFields`: for an object checked as one unit, the fields it may hold, so an
+ * unknown one is a note.
+ */
 interface Shape {
   problem: (value: unknown, path: string) => string | null;
   read?: (value: unknown) => unknown;
+  knownFields?: string[];
 }
 
 /** A key that holds an object: what the object looks like, and a shape for each field. */
@@ -82,7 +87,7 @@ const blockList: Shape = {
     const looks = 'yokoten.json: "commands" must look like { "block": { "<program>": "<reason>" } }';
     if (!isPlainObject(commands)) return looks;
     const block = commands.block;
-    if (block === undefined) return null;
+    if (block === undefined || block === null) return null;
     if (!isPlainObject(block)) return looks;
     for (const [program, reason] of Object.entries(block)) {
       if (!/^[^\s/\\]+$/.test(program)) return `yokoten.json: "commands.block" names a program by its name alone, with no path or space: ${JSON.stringify(program)}`;
@@ -90,7 +95,8 @@ const blockList: Shape = {
     }
     return null;
   },
-  read: (commands) => ({ block: { ...((commands as { block?: Record<string, string> }).block ?? {}) } }),
+  read: (commands) => ({ block: { ...((commands as { block?: Record<string, string> | null }).block ?? {}) } }),
+  knownFields: ['block'],
 };
 
 /**
@@ -120,8 +126,9 @@ const SHAPES: Record<keyof Config, Shape | Fields> = {
  * (#192, #218, #228): it gets each problem instead, and the hook keeps its core checks. A
  * file that cannot be read or is not one JSON object then gives the defaults. A key with
  * the wrong shape gives that key's default, and the rest of the file still counts.
- * Without it (check, doctor), each is a config problem. An unknown key is never a problem
- * here: `findUnknownKeys` makes it a note.
+ * Without it (check, doctor), one error lists every wrong key, so one run shows them all.
+ * `null` is a missing key: the default, with no problem. An unknown key is never a
+ * problem here: `findUnknownKeys` makes it a note.
  */
 export function loadConfig(root: string, { onProblem }: { onProblem?: (problem: string, ignored: IgnoredPart) => void } = {}): Config {
   let file: Record<string, unknown>;
@@ -132,13 +139,14 @@ export function loadConfig(root: string, { onProblem }: { onProblem?: (problem: 
     onProblem((err as Error).message, 'file');
     return DEFAULTS;
   }
-  // The value at `path` if it fits its shape, or the default.
+  const problems: string[] = [];
+  // The value at `path` if it fits its shape, or the default. `null` means the default too.
   const readValue = (entry: Shape, value: unknown, path: string, fallback: unknown): unknown => {
-    if (value === undefined) return fallback;
+    if (value === undefined || value === null) return fallback;
     const problem = entry.problem(value, path);
     if (problem === null) return entry.read ? entry.read(value) : value;
-    if (!onProblem) throw new Error(problem);
-    onProblem(problem, path);
+    if (onProblem) onProblem(problem, path);
+    else problems.push(problem);
     return fallback;
   };
   const config: Record<string, unknown> = {};
@@ -152,6 +160,8 @@ export function loadConfig(root: string, { onProblem }: { onProblem?: (problem: 
     const defaults = fallback as unknown as Record<string, unknown>;
     config[key] = Object.fromEntries(Object.entries(entry.fields).map(([field, fieldShape]) => [field, object === defaults ? defaults[field] : readValue(fieldShape, object[field], `${key}.${field}`, defaults[field])]));
   }
+  if (problems.length === 1) throw new Error(problems[0]);
+  if (problems.length) throw new Error([`yokoten.json: ${problems.length} keys have the wrong shape:`, ...problems.map((problem) => `- ${problem.replace(/^yokoten\.json: /, '')}`)].join('\n'));
   return config as unknown as Config;
 }
 
@@ -172,7 +182,10 @@ export function findUnknownKeys(root: string): Finding[] {
   for (const [key, value] of Object.entries(file)) {
     const entry: Shape | Fields | undefined = Object.hasOwn(SHAPES, key) ? SHAPES[key as keyof Config] : undefined;
     if (!entry) unknown.push(key);
-    else if ('fields' in entry && isPlainObject(value)) unknown.push(...Object.keys(value).filter((field) => !Object.hasOwn(entry.fields, field)).map((field) => `${key}.${field}`));
+    else if (isPlainObject(value)) {
+      const known = 'fields' in entry ? Object.keys(entry.fields) : (entry.knownFields ?? Object.keys(value));
+      unknown.push(...Object.keys(value).filter((field) => !known.includes(field)).map((field) => `${key}.${field}`));
+    }
   }
   return unknown.map((key) => finding('config-key', `"${key}" is not a key this version of yokoten knows`, `check the spelling against the guide, or update yokoten if a newer version added "${key}"`, { file: 'yokoten.json' }));
 }
