@@ -123,6 +123,7 @@ export function facts(root: string, env: Env): Fact[] {
 
   const ruleFiles = has(root, ['CLAUDE.md', 'CONTRIBUTING.md', '.github/CONTRIBUTING.md', '.cursorrules', '.github/copilot-instructions.md', 'GEMINI.md']);
   if (found.get('rules')) add('rules', 'done', 'AGENTS.md');
+  else if (existsSync(join(root, 'AGENTS.md'))) add('rules', 'partial', 'AGENTS.md, but CLAUDE.md does not import it, so Claude Code does not read it');
   else add('rules', ruleFiles.length ? 'partial' : 'missing', ruleFiles.length ? `no AGENTS.md, but ${ruleFiles.join(', ')}` : 'no AGENTS.md or other written rules');
 
   plain('tool-hook', 'the tool-call guard is in .claude/settings.json', 'no tool-call guard');
