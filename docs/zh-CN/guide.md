@@ -409,8 +409,10 @@ CI 没过，不用再翻日志找原因。`check` 在 GitHub Actions 里跑的�
 调用就放过去了。所以 `init`、`install` 和插件写的工具调用 hook 会把别的退出码都改成 2：
 守卫崩了、内存爆了、被杀掉了，这次调用都会被拒绝，标准错误里有一行
 `` yokoten's guard failed (exit N), so the command is refused; run `yokoten doctor` ``。
-只有一种情况还是 1：运行时的文件夹没了，hook 说一行提示就放行，免得删了一个文件夹，
-每次工具调用都被拦住。收尾检查和会话开头的 doctor 照旧，出错就原样交出去。
+标准错误里只有这一行，node 自己的报错和 shell 打的「Killed」都不显示。
+有两种情况还是 1：运行时的文件夹没了，或者 AI 工具的 PATH 里找不到 `node`。这时 hook
+说一行提示就放行，免得每次工具调用都被拦住，你还能跑 `yokoten doctor` 看是怎么回事。
+收尾检查和会话开头的 doctor 照旧，出错就原样交出去。
 
 ### 收尾检查
 

@@ -443,9 +443,11 @@ a call in all three agents, so a guard that crashed would let the call through. 
 tool-call hook that `init`, `install` and the plugin write turns any other exit into 2:
 when the guard crashes, runs out of memory or is killed, the call is refused with one
 line, `` yokoten's guard failed (exit N), so the command is refused; run `yokoten doctor` ``.
-One case stays at 1: when the runtime is gone, the hook says so in one line and the call
-goes on, so a deleted folder does not block every tool call. The stop check and the
-session doctor pass a failure on as it is.
+That line is all of stderr: node's own error and the shell's "Killed" line are dropped.
+Two cases stay at 1: when the runtime is gone, or when `node` is not on the agent's
+PATH, the hook says so in one line and the call goes on. A deleted folder or a missing
+node does not block every tool call, so you can still run `yokoten doctor`. The stop
+check and the session doctor pass a failure on as it is.
 
 ### The stop check
 

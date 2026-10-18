@@ -32,7 +32,7 @@ export function guardCommand(
   const line = sessionOutput === 'json' ? `{"hookSpecificOutput":{"additionalContext":"${missing}"}}` : missing;
   const say = isSessionStart ? `echo '${line}'; exit 0` : `echo '${missing}' >&2; exit 1`;
   const check = `[ -f ${path} ] 2>/dev/null || { ${say}; }; `;
-  return check + (isToolCall ? refuseOnFailure(`node ${GUARD_HEAP} ${path} ${args}`) : `node ${path} ${args}`);
+  return check + (isToolCall ? refuseOnFailure(path, args) : `node ${path} ${args}`);
 }
 
 /**
@@ -42,15 +42,28 @@ export function guardCommand(
  */
 export const GUARD_HEAP = '--max-old-space-size=256';
 
+/** What a tool-call guard says when node is not on the agent's PATH. It lets the call go on, as a missing runtime does. */
+export const MISSING_NODE = 'yokoten: the guard cannot run, because node is not on PATH for this agent; run yokoten doctor in a terminal';
+
 /**
- * `run`, a tool-call guard, failing closed (#260). The agents block a call on exit 2 only,
- * and run it on any other failure, so a guard that crashes, runs out of memory or is
- * killed would let the call through. Here 0 and 2 pass as they are, and anything else,
- * a signal (128 + its number) included, becomes 2 with one line on stderr. The plugin's
- * PreToolUse hook in .claude-plugin/plugin.json holds the same text.
+ * `node <path> <args>`, a tool-call guard, failing closed (#260). The agents block a call
+ * on exit 2 only, and run it on any other failure, so a guard that crashes, runs out of
+ * memory or is killed would let the call through. Here 0 and 2 pass as they are, stdout
+ * and stderr both, and anything else, a signal (128 + its number) included, becomes 2
+ * with one line on stderr and nothing more: node's own stderr, a heap trace, is dropped.
+ * - No node on PATH is one line and exit 1, as a missing runtime is: refusing every call
+ *   would refuse the `yokoten doctor` that explains it.
+ * - node's stderr goes to a variable, with an `x` after it so a trailing newline stays;
+ *   its stdout goes straight to the hook's own, through fd 3.
+ * - The subshell's stderr is /dev/null, so the shell's job line for a killed node
+ *   ("Killed", or bash's line with the whole command and its paths) never shows.
+ * The plugin's PreToolUse hook in .claude-plugin/plugin.json is this text; a test holds them equal.
  */
-export const refuseOnFailure = (run: string): string =>
-  `${run}; code=$?; [ $code -eq 0 ] || [ $code -eq 2 ] || { echo "yokoten's guard failed (exit $code), so the command is refused; run \\\`yokoten doctor\\\`" >&2; code=2; }; exit $code`;
+export const refuseOnFailure = (path: string, args: string): string =>
+  `command -v node >/dev/null 2>&1 || { echo '${MISSING_NODE}' >&2; exit 1; }; ` +
+  `{ err=$( ( node ${GUARD_HEAP} ${path} ${args} 2>&1 1>&3 3>&-; c=$?; printf x; exit $c ) 2>/dev/null ); code=$?; } 3>&1; ` +
+  'case $code in 0|2) printf %s "${err%x}" >&2;; ' +
+  '*) echo "yokoten\'s guard failed (exit $code), so the command is refused; run \\`yokoten doctor\\`" >&2; code=2;; esac; exit $code';
 
 /**
  * The line that runs the commit check from a project's own pre-commit, by `cli`'s path.
