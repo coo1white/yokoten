@@ -13,7 +13,8 @@ import { timeZoneNote } from '../src/run/check.ts';
 import { agentHooks, machineChecks, serverChecks } from '../src/setup/doctor.ts';
 import { explain, ids } from '../src/setup/explain.ts';
 import { ROAD, stepFinding } from '../src/setup/road.ts';
-import { changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, ownersOf, parseCodeOwners, largeDiff, longSentenceNote, longSentences, type PullRequest } from '../src/rules/pr.ts';
+import { isCodeFile, nameNotes } from '../src/run/names.ts';
+import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, ownersOf, parseCodeOwners, largeDiff, longSentenceNote, longSentences, type PullRequest } from '../src/rules/pr.ts';
 
 test('glob: a slash anchors at the root, no slash matches in any folder', () => {
   const m = (g: string, p: string) => matcher([g])(p);
@@ -200,6 +201,76 @@ test('large pull request: lines added and deleted; binary files and lock files d
   assert.equal(changedLines(''), 0);
 });
 
+// A file with a long-lived one-letter name on line 1, a 5-word name on line 2, and `i`
+// in a short loop on line 3. The one-letter name is used on line 15.
+const NAMED = [
+  'const t = 0;',
+  'const loadTheWholeUserList = () => [];',
+  'for (let i = 0; i < 3; i++) console.log(i);',
+  ...Array(11).fill('// filler'),
+  'console.log(t);',
+].join('\n');
+
+test('names: a note for a long-lived one-letter name and a 5-word name on added lines (#111)', () => {
+  const notes = nameNotes('src/cart.ts', NAMED, new Set([1, 2, 3]));
+  assert.deepEqual(notes.map(formatFinding), [
+    'src/cart.ts:1: "t" is used for 14 lines. A reader must scroll back to learn what it holds. Name what it is, e.g. "text".',
+    'src/cart.ts:2: "loadTheWholeUserList" has 5 words, over 4. A long name is slow to read, and the words that matter get lost. Keep the words a reader needs; the file and the type say the rest, e.g. "processTheUserInputDataNow" becomes "parseInput".',
+  ]);
+  assert.deepEqual(notes.map((note) => note.id), ['name-short', 'name-long']);
+  assert.deepEqual(nameNotes('src/cart.ts', NAMED, new Set([3])), [], '`i` in a short loop is fine');
+  assert.deepEqual(nameNotes('src/cart.ts', NAMED, new Set([4, 15])), [], 'names on unchanged lines are left alone');
+  assert.deepEqual(nameNotes('src/a.ts', 'export const x = 1;\nconst ignore = (_: unknown) => 1;\nconst _count = 2;\n', new Set([1, 2, 3])).map((note) => note.what), ['"x" is one letter, and exported'], 'only the two name notes; `_` for an unused parameter passes');
+});
+
+test('names: TypeScript and JavaScript files are read, others are not (#111)', () => {
+  for (const file of ['a.ts', 'b/c.tsx', 'a.js', 'a.jsx', 'a.mjs', 'a.cjs', 'a.mts', 'a.cts']) assert.ok(isCodeFile(file), file);
+  for (const file of ['a.md', 'a.json', 'a.d', 'ts', 'a.tsv', 'a.py']) assert.ok(!isCodeFile(file), file);
+});
+
+test('names: the added lines of each file, from git diff (#111)', () => {
+  const diff = [
+    'diff --git a/src/a.ts b/src/a.ts',
+    'index 1..2 100644',
+    '--- a/src/a.ts',
+    '+++ b/src/a.ts',
+    '@@ -1,0 +2,2 @@',
+    '+const one = 1;',
+    '++++ not a header',
+    '@@ -9 +11 @@ function f() {',
+    '-old',
+    '+new',
+    'diff --git a/old.ts b/new name.ts',
+    'similarity index 90%',
+    'rename from old.ts',
+    'rename to new name.ts',
+    '--- a/old.ts',
+    '+++ b/new name.ts\t',
+    '@@ -5,2 +5,3 @@',
+    ' kept',
+    '-gone',
+    '+added',
+    '+more',
+    'diff --git a/gone.ts b/gone.ts',
+    '--- a/gone.ts',
+    '+++ /dev/null',
+    '@@ -1 +0,0 @@',
+    '-x',
+    'diff --git "a/tab\\there.ts" "b/tab\\there.ts"',
+    '--- /dev/null',
+    '+++ "b/tab\\there.ts"',
+    '@@ -0,0 +1 @@',
+    '+y',
+    '',
+  ].join('\n');
+  const added = addedLinesByFile(diff);
+  assert.deepEqual([...added.keys()], ['src/a.ts', 'new name.ts', 'tab\there.ts']);
+  assert.deepEqual([...(added.get('src/a.ts') ?? [])], [2, 3, 11]);
+  assert.deepEqual([...(added.get('new name.ts') ?? [])], [6, 7], 'a renamed file counts only its new lines');
+  assert.deepEqual([...(added.get('tab\there.ts') ?? [])], [1]);
+  assert.equal(addedLinesByFile('').size, 0);
+});
+
 const AREAS = { areas: ['doctor', 'check', 'kit'] };
 
 test('issue title: `area: verb phrase` or `area: symptom` passes', () => {
@@ -262,6 +333,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   found.push(...checkIssueTitle('Bad title (#1) that runs on well past the sixty character limit.', {}));
   add(largeDiff(500));
   add(longSentenceNote('a.md', { line: 3, words: 30 }));
+  found.push(...nameNotes('a.ts', NAMED, new Set([1, 2])));
   add(timeZoneNote(2));
   // The road and the machine, from an empty folder and an empty home.
   const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));

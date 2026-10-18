@@ -715,6 +715,34 @@ test('check outside GitHub Actions: the output is unchanged and no summary is wr
   assert.ok(!existsSync(summary), 'no summary outside Actions');
 });
 
+test('check --pr: notes hard-to-read names on added code lines, and the exit code does not change (#111)', () => {
+  const project = sandbox();
+  const filler = Array(11).fill('// filler');
+  // An old file with a long-lived one-letter name: not noted, its lines are not added.
+  project.write('src/old.ts', ['const t = 0;', ...filler, 'console.log(t);', ''].join('\n'));
+  project.write('src/moved.ts', ['const q = 0;', ...filler, 'console.log(q);', ''].join('\n'));
+  project.git('add', '.');
+  project.git('commit', '-qm', 'base');
+  const base = project.git('rev-parse', 'HEAD').stdout.trim();
+  project.write('src/old.ts', ['const t = 0;', ...filler, 'console.log(t);', 'const count = t + 1;', ''].join('\n'));
+  project.git('mv', 'src/moved.ts', 'src/renamed.ts');
+  project.write('src/cart.js', ['const s = 0;', 'const loadTheWholeUserList = () => [];', 'for (let i = 0; i < 3; i++) console.log(i);', ...filler, 'console.log(s);', ''].join('\n'));
+  project.git('add', '.');
+  project.git('commit', '-qm', 'head');
+  const head = project.git('rev-parse', 'HEAD').stdout.trim();
+  const file = join(project.home, 'event.json');
+  const body = 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\nNo changelog: a test\n';
+  writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
+  const r = project.run(['check', '--pr'], { extra: { GITHUB_EVENT_PATH: file } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /note: 2 hard-to-read name\(s\)\n- src\/cart\.js:1: "s" is used for 14 lines\. A reader must scroll back to learn what it holds\. Name what it is, e\.g\. "text"\.\n- src\/cart\.js:2: "loadTheWholeUserList" has 5 words, over 4\. /);
+  assert.doesNotMatch(r.stdout, /"i"|old\.ts|renamed\.ts/, 'no note for `i` in a short loop, for unchanged lines, or for a moved file');
+  assert.match(r.stdout, /check --pr: ok/);
+  const json = JSON.parse(project.run(['check', '--pr', '--json'], { extra: { GITHUB_EVENT_PATH: file } }).stdout);
+  assert.equal(json.ok, true, 'notes never fail the check');
+  assert.deepEqual(json.notes.map((note: { id: string; file: string; line: number }) => `${note.id} ${note.file}:${note.line}`), ['name-short src/cart.js:1', 'name-long src/cart.js:2']);
+});
+
 test('check --pr in GitHub Actions: notes are warnings, in their own section (#91)', () => {
   const s = sandbox();
   s.write('README.md', 'Short.\n');
