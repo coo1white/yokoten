@@ -479,16 +479,28 @@ on line 1, in an HTML comment. GitHub does not show it.
 ```
 
 The path is the English file, from the repo root. The blob is git's id for the English
-text you translated: run `git hash-object docs/guide.md`. A blob, not a commit: a squash
-merge keeps it, so you can change both files in one pull request.
+text you translated: run `git hash-object docs/guide.md`. When you update the
+translation, set line 1 again, in the same commit or pull request as the English.
 
-`check` reads line 1 of each Markdown and HTML file. When the English file has changed
-since, it gives a `translation-behind` note. The note says how many commits behind, and
-how to see the change: `git diff <blob> HEAD:docs/guide.md`. A note never fails CI. To
-make it fail, put `"translations": { "fail": true }` in `yokoten.json`.
+`check` reads line 1 of each Markdown and HTML file. A translation is current when its
+blob is the English text in the work tree. If not, `check` compares commits on the
+current branch, first parent only. The translation is current when the last commit that
+changed its line 1 is the same as, or later than, the last commit that changed the
+English. Why commits: two pull requests can change the English at the same time. After
+both merge, the English is a blob that neither branch had. A blob alone would then say
+"behind", although both translations were done.
 
-A shallow clone can tell that a translation is behind, but not how far. In CI, use
-`fetch-depth: 0` to see the count.
+Two edits do not count. An edit to the English that is not yet committed makes the
+translation behind. A commit that changes the translation but leaves line 1 alone, such
+as a typo fix, does not make it current.
+
+When a translation is behind, `check` gives a `translation-behind` note. The note says
+how many commits behind, and how to see the change: `git diff <blob> HEAD:docs/guide.md`.
+A note never fails CI. To make it fail, put `"translations": { "fail": true }` in
+`yokoten.json`.
+
+A shallow clone may not hold the commits that `check` compares. Then it gives a note,
+not "current". In CI, use `fetch-depth: 0`.
 
 ### Updating the rules
 
