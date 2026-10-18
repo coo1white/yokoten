@@ -1,4 +1,4 @@
-<!-- source: docs/guide.md blob ce71abd9fd2fe194c9ee3fcc3609ffcf5974dcb7 -->
+<!-- source: docs/guide.md blob d4744df7ce4151f004d76781b3b2a2f8e73bbb4b -->
 # yokoten 使用指南
 
 [README](README.md) 是简短版。剩下的都在这里：yokoten 为什么要做、它怎么工作、有哪些规则和命令，还有它做不到的事。
@@ -239,6 +239,8 @@ cd your-project
 node ~/.local/share/yokoten/bin/yokoten.ts init     # 这个项目：只加文件，不覆盖
 node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看走到哪一关，下一步做什么
 ```
+
+这些命令（包括上面 npx 那几条）在 [docs/facts.json](../facts.json) 里还有一份，网站读的是那份，所以改命令的时候两边都要改。
 
 ### 当成 GitHub Action 用
 
