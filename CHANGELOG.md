@@ -9,6 +9,11 @@ All notable changes are listed here. The format follows
 ### Added
 
 - The secret check catches Meta Model API keys (`LLM_` with an app id and a secret) (#68).
+- A release flow for every project. `init` adds a `CHANGELOG.md` with an
+  `[Unreleased]` section when the project has none. The new `release` skill picks the
+  next version from the changelog, before 1.0 and after. It prepares the release pull
+  request; only the owner creates the tag. Kit change: every project gets the changelog
+  on its next `init`, and the skill on the next `install` (#34).
 
 ### Changed
 

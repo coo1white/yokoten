@@ -267,9 +267,10 @@ The setup treats agents like staff on a line, each with a clear role and limited
   no Workflows permission, so it can't change the CI that checks it. A ruleset requires
   your review, so nothing it opens merges without you.
 
-Five skills carry the method: `dispatch` (brief a worker), `inspect` (review one exact
+Six skills carry the method: `dispatch` (brief a worker), `inspect` (review one exact
 commit in three passes), `rca` (root cause, a check, then spread it), `record` (write
-decisions down), and `yokoten` (adopt the practices). Three agents do the work:
+decisions down), `release` (pick the next version and prepare the changelog; the owner tags),
+and `yokoten` (adopt the practices). Three agents do the work:
 `worker`, `reviewer` (reads only), and `verifier` (runs, never fixes).
 
 Server setup, step by step: [`docs/server.md`](server.md).

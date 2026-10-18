@@ -251,7 +251,7 @@ export const ROAD: Step[] = [
     key: 'changelog',
     check: (root) => /^#+\s*\[?Unreleased\]?/im.test(read(join(root, 'CHANGELOG.md'))),
     what: () => 'no CHANGELOG.md with an "Unreleased" section',
-    fix: () => 'add one, with a line for each change that users notice',
+    fix: () => '`yokoten init` adds one; then each pull request adds a line for each change that users notice',
     why: 'each pull request adds its line as it goes, so a release needs no digging',
     how: 'CHANGELOG.md has an Unreleased heading',
     standard: 'Best Practices: release_notes',
