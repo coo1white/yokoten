@@ -9,7 +9,7 @@
 // step done early counts as done.
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { type Env, loadConfig } from '../rules/config.ts';
 import { matcher } from '../rules/config.ts';
@@ -285,11 +285,51 @@ const commitHook = (root: string): string | null => {
   return hooksPath ? hookFile(root, hooksPath) : null;
 };
 
+/** A commit hook that git would not run the check from, and why. */
+interface UncheckedHook {
+  file: string;
+  /** missing: there is no file; no check: it does not run yokoten; not executable: git skips it. */
+  problem: 'missing' | 'no check' | 'not executable';
+  /** Whether the file needs `chmod +x`. Windows has no execute bit, and git there runs a hook without one. */
+  needsChmod: boolean;
+}
+
 /** The commit hooks here (pre-commit and pre-merge-commit) that do not run the check (#239); null when git runs none from this repo. */
-const uncheckedHooks = (root: string): string[] | null => {
+const uncheckedHooks = (root: string): UncheckedHook[] | null => {
   const hooksPath = gitConfig(root, 'core.hooksPath');
   if (!hooksPath || commitHook(root) === null) return null;
-  return COMMIT_HOOKS.map((hook) => hookFile(root, hooksPath, hook) as string).filter((file) => !runs('check').test(read(join(root, file))));
+  const unchecked: UncheckedHook[] = [];
+  for (const hook of COMMIT_HOOKS) {
+    const file = hookFile(root, hooksPath, hook) as string;
+    const path = join(root, file);
+    if (!existsSync(path)) {
+      unchecked.push({ file, problem: 'missing', needsChmod: process.platform !== 'win32' });
+      continue;
+    }
+    const needsChmod = process.platform !== 'win32' && !(statSync(path).mode & 0o111);
+    if (!runs('check').test(read(path))) unchecked.push({ file, problem: 'no check', needsChmod });
+    else if (needsChmod) unchecked.push({ file, problem: 'not executable', needsChmod });
+  }
+  return unchecked;
+};
+
+const HOOK_PROBLEM: Record<UncheckedHook['problem'], (file: string) => string> = {
+  missing: (file) => `there is no ${file}`,
+  'no check': (file) => `${file} does not run yokoten`,
+  'not executable': (file) => `${file} is not executable, so git skips it`,
+};
+
+/** What to do by hand for hooks in a project's own folder: a new file needs a `#!` line and `chmod +x`, or git skips it. */
+const ownHookFix = (hooks: UncheckedHook[], cli: string): string => {
+  const files = (problem: UncheckedHook['problem']) => hooks.filter((h) => h.problem === problem).map((h) => h.file);
+  const chmod = hooks.filter((h) => h.needsChmod).map((h) => h.file);
+  const steps: string[] = [];
+  if (files('missing').length) steps.push(`make ${files('missing').join(' and ')} with \`#!/bin/sh\` as the first line and the line below after it`);
+  if (files('no check').length) steps.push(`add the line below to ${files('no check').join(' and ')}, after its \`#!\` line`);
+  if (chmod.length) steps.push(`run \`chmod +x ${chmod.join(' ')}\``);
+  const all = hooks.map((h) => h.file).join(' and ');
+  if (hooks.every((h) => h.problem === 'not executable')) return `${steps.join('')}, or \`yokoten init\``;
+  return `\`yokoten init\` adds the check to ${all}, or do it yourself: ${steps.join('; ')}. The line: ${commitCheckLine(cli)}`;
 };
 
 /** The road, in order. Step names never change: they are the keys for "not now". */
@@ -318,16 +358,21 @@ export const ROAD: Step[] = [
     key: 'commit-check',
     check: (root) => uncheckedHooks(root)?.length === 0,
     what: (root) => {
-      const files = uncheckedHooks(root);
-      if (files) return `commits are not checked: ${files.map((file) => `${file} does not run yokoten`).join('; ')}`;
+      const hooks = uncheckedHooks(root);
+      if (hooks) {
+        // Only pre-merge-commit: ordinary commits are still checked, merge commits are not.
+        const which = hooks.every((h) => h.file.endsWith('pre-merge-commit')) ? 'merge commits' : 'commits';
+        return `${which} are not checked: ${hooks.map((h) => HOOK_PROBLEM[h.problem](h.file)).join('; ')}`;
+      }
       return gitConfig(root, 'core.hooksPath') ? 'commits are not checked: core.hooksPath is outside this repo' : 'commits are not checked: core.hooksPath is not set';
     },
     fix: (root) => {
       if (!gitConfig(root, 'core.hooksPath') && existsSync(join(root, '.husky'))) return 'run `npm install` so husky sets core.hooksPath, then `yokoten init`';
-      const files = uncheckedHooks(root);
-      if (!files?.length || files.includes('.githooks/pre-commit')) return '`yokoten init` sets it up';
-      if (files.join() === '.githooks/pre-merge-commit') return '`yokoten init` adds the check to .githooks/pre-merge-commit';
-      return `\`yokoten init\` adds the check to ${files.join(' and ')}, or add this line there yourself: ${commitCheckLine(cliPath(root))}`;
+      const hooks = uncheckedHooks(root);
+      const files = hooks?.map((h) => h.file) ?? [];
+      if (!files.length || files.includes('.githooks/pre-commit')) return '`yokoten init` sets it up';
+      if (files.join() === '.githooks/pre-merge-commit') return '`yokoten init` sets up .githooks/pre-merge-commit';
+      return ownHookFix(hooks as UncheckedHook[], cliPath(root));
     },
     why: 'a secret or a personal email is hard to take back once a commit is pushed',
     how: "the pre-commit and pre-merge-commit that git runs from core.hooksPath run `yokoten check`: in .githooks/, or in the project's own folder (husky: .husky/)",

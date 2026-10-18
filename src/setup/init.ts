@@ -143,8 +143,11 @@ export function hookFile(root: string, hooksPath: string, hook: CommitHook = 'pr
 /** The lines init adds to a project's own pre-commit and pre-merge-commit. `exit 1` because a hook may go on after them. */
 export const checkLines = (cli: string): string[] => ['# yokoten: the commit check (lead-only files, test files in a fix task, layout and privacy)', commitCheckLine(cli)];
 
-/** Add the yokoten check to a commit hook, after its `#!` line, so a later `exec` can't skip it. Its own lines stay. */
-function addCheckLines(path: string, cli: string): 'added the check to' | 'wrote' | 'same' {
+/**
+ * Add the yokoten check to a commit hook, after its `#!` line, so a later `exec` can't skip it.
+ * Its own lines stay. A hook git would skip, for lack of the execute bit, is made executable.
+ */
+function addCheckLines(path: string, cli: string): 'added the check to' | 'wrote' | 'made executable' | 'same' {
   if (!existsSync(path)) {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, ['#!/bin/sh', ...checkLines(cli), ''].join('\n'), { mode: 0o755 });
@@ -152,7 +155,12 @@ function addCheckLines(path: string, cli: string): 'added the check to' | 'wrote
     return 'wrote';
   }
   const text = readFileSync(path, 'utf8');
-  if (runs('check').test(text)) return 'same';
+  if (runs('check').test(text)) {
+    // Windows has no execute bit, and git there runs a hook without one.
+    if (process.platform === 'win32' || statSync(path).mode & 0o111) return 'same';
+    chmodSync(path, statSync(path).mode | 0o111);
+    return 'made executable';
+  }
   const newline = text.includes('\r\n') ? '\r\n' : '\n';
   const lines = text.split(/\r?\n/);
   const at = lines[0]?.startsWith('#!') ? 1 : 0;
@@ -166,9 +174,12 @@ function addCheckLines(path: string, cli: string): 'added the check to' | 'wrote
  * Write .githooks/pre-merge-commit with the kit's pre-commit, so a merge commit gets the
  * same check (#239). One that is there is kept, and gets the check when it lacks it.
  */
-function writeMergeHook(root: string, cli: string, kit: string): 'wrote' | 'kept' | 'added the check to' {
+function writeMergeHook(root: string, cli: string, kit: string): 'wrote' | 'kept' | 'added the check to' | 'made executable' {
   const path = join(root, '.githooks', 'pre-merge-commit');
-  if (existsSync(path)) return addCheckLines(path, cli) === 'same' ? 'kept' : 'added the check to';
+  if (existsSync(path)) {
+    const result = addCheckLines(path, cli);
+    return result === 'same' ? 'kept' : result === 'wrote' ? 'added the check to' : result;
+  }
   writeNew(path, render(readFileSync(join(kit, '.githooks', 'pre-commit'), 'utf8'), { cli, version: VERSION }), { mode: 0o755 });
   chmodSync(path, 0o755);
   return 'wrote';
