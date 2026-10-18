@@ -267,7 +267,7 @@ export const RULES = {
   'plugin-version': {
     rule: 'the enabled Claude Code plugin is not older than the yokoten that runs doctor',
     why: "the plugin's hooks run the plugin's own copy, so an old plugin checks old rules",
-    check: "`doctor` compares the plugin's package version with its own and, in yokoten's own repo, the plugin's commit with HEAD; a note, never a failure, and nothing when it can't compare offline",
+    check: "`doctor` compares the plugin's package version with its own and, in yokoten's own repo, the plugin's commit with the default branch's tip (origin/HEAD, else origin/main, else main); a note, never a failure, and nothing when it can't compare offline",
     docs: guide('the-claude-code-plugin'),
   },
   'private-marks': {
