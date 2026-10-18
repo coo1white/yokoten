@@ -21,12 +21,12 @@ import { type Finding, finding, formatFinding, type RuleId } from '../rules/mess
 import { loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
-import { hasPlugin, hasSessionDoctor } from '../agents/claude-code.ts';
+import { hasPlugin, hasSessionDoctor, readInstalledPlugin } from '../agents/claude-code.ts';
 import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
 import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
-import { compareCoreRules, readCoreRules, summarizeUpdate } from './init.ts';
+import { compareCoreRules, compareVersions, isSelf, readCoreRules, summarizeUpdate } from './init.ts';
 import { paths } from './install.ts';
 import { type Mark, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
 
@@ -102,6 +102,49 @@ export function coreRulesCheck(root: string): { mark: 'ok' | 'MISSING' | 'note';
     return { mark: 'note', finding: finding('core-rules', `the core rules in AGENTS.md come from yokoten ${rules.version}, newer than this yokoten ${VERSION}`, 'update yokoten itself, not the project: `npx yokoten@latest install`, the latest Claude Code plugin, or a pull in your clone') };
   }
   return { mark: 'MISSING', finding: finding('core-rules', `the core rules in AGENTS.md are behind yokoten ${VERSION}'s, or were edited by hand (${summarizeUpdate(rules)})`, fix) };
+}
+
+/** The one command that updates the plugin, from a shell. */
+export const PLUGIN_UPDATE = '`claude plugin update yokoten@yokoten`, then restart Claude Code';
+
+/** The commit at HEAD in `root`, or null outside a git repo. */
+function readHead(root: string): string | null {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/** Whether `older` is in the history of `newer` in `root`. False when git doesn't know `older`. */
+function isAncestor(root: string, older: string, newer: string): boolean {
+  try {
+    execFileSync('git', ['merge-base', '--is-ancestor', older, newer], { cwd: root, stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A note when the enabled yokoten plugin is older than what doctor knows offline (#198).
+ * Two comparisons, the first that can tell wins:
+ * the plugin's package version against this yokoten's, and, in yokoten's own repo, the
+ * plugin's commit against HEAD: older only when it is in HEAD's history and not HEAD.
+ * Anything doctor can't compare (no install, an odd file, a commit git doesn't know) says
+ * nothing. A note, never a failure. Files and local git only, so a session can run it.
+ */
+export function pluginAgeCheck(root: string | null, env: Env): Finding | null {
+  if (!hasPlugin(env)) return null;
+  const plugin = readInstalledPlugin(env, root);
+  if (!plugin) return null;
+  const why = "the plugin's hooks run the plugin's copy, so an old copy checks old rules";
+  const note = (older: string, newer: string) => finding('machine-runtime', `the yokoten plugin is older than this yokoten (${older} < ${newer})`, `update it: ${PLUGIN_UPDATE}`, { why });
+  if (plugin.version && compareVersions(plugin.version, VERSION) === -1) return note(plugin.version, VERSION);
+  if (!root || !plugin.commit || !isSelf(root)) return null;
+  const head = readHead(root);
+  if (!head || head === plugin.commit || !isAncestor(root, plugin.commit, head)) return null;
+  return note(plugin.commit.slice(0, 12), head.slice(0, 12));
 }
 
 /** A server with every setting off, no label and only a closed milestone: no server step on the road may pass it (#7, #10). */
@@ -258,6 +301,9 @@ export function doctor(
       lines.push(`yokoten: ${formatFinding(marks.finding)}`);
       findings.push(marks.finding);
     }
+    // A stale plugin keeps old guard rules running; the session hears it (#198).
+    const stale = pluginAgeCheck(root, env);
+    if (stale) lines.push(`yokoten: ${formatFinding(stale)}`);
     // A lesson the kit learned reaches the project here: the session hears it (#120).
     if (core && isCoreBehind) {
       lines.push(`yokoten: ${formatFinding(core.finding)}`);
@@ -304,6 +350,11 @@ export function doctor(
   for (const c of machine) {
     lines.push(`  ${c.ok ? 'ok     ' : 'MISSING'} ${c.name}${c.ok ? '' : `: ${stepText(c.finding)}`}`);
     if (!c.ok) findings.push(c.finding);
+  }
+  const stale = pluginAgeCheck(root, env);
+  if (stale) {
+    lines.push(`  note    plugin: ${stepText(stale)}`);
+    notes.push(stale);
   }
   // The road's stage 5 shows the settings it groups (#7); here are the rest, which never fail doctor.
   const settings = serverChecks(server ?? { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' });

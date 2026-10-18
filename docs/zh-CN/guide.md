@@ -216,7 +216,9 @@ yokoten 能管住三种 AI 编程 agent，它们守的是同一套规矩。
 
 Claude Code 用 `node` 直接跑插件里的 `.ts` 文件。之所以能跑，是因为插件不放在
 `node_modules` 下面（Node 不处理 `node_modules` 里的 TypeScript）。想更新，就打开 `/plugin`，
-在 **Installed** 里选 yokoten，点 **Update now**。别人做的插件市场默认不自动更新，要自己打开。
+在 **Installed** 里选 yokoten，点 **Update now**。别人做的插件市场默认不自动更新，要自己打开。在终端里跑
+`claude plugin update yokoten@yokoten` 也一样，跑完要重启 Claude Code。插件要是比跑 `doctor`
+的这份 yokoten 旧，`doctor` 会提醒你。
 
 插件只管 Claude Code。它不会帮你建私有词表文件：`doctor` 会告诉你文件在哪，你自己建。
 插件在你的用户设置里开着的时候，`doctor` 就把它的 hook 和技能算作已经装好。
