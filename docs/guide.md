@@ -116,7 +116,8 @@ yokoten: git push --tags pushes tags. Only the owner decides when to release. If
 Every message has the same three parts: **what** happened, **why** it matters, and the
 **fix**, a command or an edit. A problem in a file starts with its place, `file:line:`.
 A hit names the kind of thing it found, never the thing: a secret or a private mark
-is never printed.
+is never printed. When a section of this guide explains the rule, the message ends with
+a link to it, on its own line: `docs: <url>`.
 
 To ask why a rule exists, run `yokoten explain <id>`. The id is the rule or step name,
 such as `secret` or `commit-check`. With no id, or an unknown one, it lists every id.
@@ -126,6 +127,7 @@ $ yokoten explain force-push
 force-push: no plain force push (core rule 7).
 Why: a plain force push can throw away work that someone else pushed.
 Check: the tool-call guard stops `git push --force`, `-f` and a `+ref`; `--force-with-lease` passes; a branch ruleset on the server is the lock.
+Docs: https://github.com/coo1white/yokoten/blob/main/docs/guide.md#the-core-rules
 ```
 
 ## Four layers
@@ -278,8 +280,9 @@ then run with no network and no global install.
 
 `check`, `doctor`, `hook` and `explain` take `--json`. Then stdout holds JSON and
 nothing else, for an agent or a script. Each finding has the same fields: `id`, `what`,
-`why`, `fix`, and `file` and `line` when it is in a file. `yokoten explain <id>` takes
-the `id`. No field holds a private value.
+`why`, `fix`, `docs` (the link) when the guide explains the rule, and `file` and `line`
+when it is in a file. `yokoten explain <id>` takes the `id`. No field holds a private
+value.
 
 - `check --json`: `{ check, ok, findings, notes }`. `check` is `tree`, `staged`,
   `history` or `pr`. A note never fails the check.
@@ -288,7 +291,7 @@ the `id`. No field holds a private value.
 - `hook --json`: `{ blocked, finding }` on stdout. The runtimes do not use it: they read
   the exit code and the reason on stderr, as their hook protocols say.
 - `hook --stop --json`: `{ blocked, stop, findings }`. With `stop_hook_active`, also `skipped`.
-- `explain --json`: `{ found, id, kind, what, why, check, stage, standard }`, or
+- `explain --json`: `{ found, id, kind, what, why, check, docs, stage, standard }`, or
   `{ found: false, ids }`.
 
 Output for people follows one rule. Results go to stdout. Problems, refusals and errors
@@ -296,8 +299,8 @@ go to stderr. An unknown option is refused, never ignored.
 
 In CI, you don't need to open the log to see what failed. When `check` runs in GitHub
 Actions, each finding is an annotation on the changed line of the pull request. The job
-summary lists each finding with its place, what, why and the fix. A note shows as a
-warning and never fails the check. Like the rest of the output, these name a place,
+summary lists each finding with its place, rule, what, why and the fix. The rule links to
+its section of this guide. A note shows as a warning and never fails the check. Like the rest of the output, these name a place,
 never what matched.
 
 ### Exit codes

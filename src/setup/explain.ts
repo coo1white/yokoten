@@ -2,7 +2,7 @@
 // explain a finding. Every finding's id is here: a rule a check or a guard holds, or a
 // step on the road.
 
-import { RULES, type RuleId } from '../rules/message.ts';
+import { type Rule, RULES, type RuleId } from '../rules/message.ts';
 import { ROAD, STAGES } from './road.ts';
 
 /** What `explain --json` prints for a known id. */
@@ -14,6 +14,8 @@ export interface Explained {
   why: string;
   /** How yokoten checks it. */
   check: string;
+  /** Where the rule is explained in full, as a URL. */
+  docs?: string;
   stage?: number;
   standard?: string;
 }
@@ -24,8 +26,10 @@ export const ids = (): string[] => [...Object.keys(RULES), ...ROAD.map((s) => s.
 /** The rule or step with this id, or null. */
 export function explain(id: string): Explained | null {
   if (Object.hasOwn(RULES, id)) {
-    const r = RULES[id as RuleId];
-    return { id, kind: 'rule', what: r.rule, why: r.why, check: r.check };
+    const rule: Rule = RULES[id as RuleId];
+    const e: Explained = { id, kind: 'rule', what: rule.rule, why: rule.why, check: rule.check };
+    if (rule.docs !== undefined) e.docs = rule.docs;
+    return e;
   }
   const step = ROAD.find((s) => s.key === id);
   if (!step) return null;
@@ -34,10 +38,11 @@ export function explain(id: string): Explained | null {
   return e;
 }
 
-/** The text form: the id and what it is, then why, how it is checked, and any standard. */
+/** The text form: the id and what it is, then why, how it is checked, any standard, and any link. */
 export const explainLines = (e: Explained): string[] => [
   `${e.id}: ${e.what}.`,
   `Why: ${e.why}.`,
   `Check: ${e.check}.`,
   ...(e.standard ? [`Standard: ${e.standard}.`] : []),
+  ...(e.docs ? [`Docs: ${e.docs}`] : []),
 ];

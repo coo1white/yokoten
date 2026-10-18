@@ -219,6 +219,7 @@ export function readIssue(env: Env): { title: string; labels: string[] } | null 
 // - an annotation per finding: a line on stdout, `::error file=…,line=…,title=…::message`,
 //   shown on that line of the diff (docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands);
 // - Markdown appended to the file named by GITHUB_STEP_SUMMARY, shown on the run's page.
+// Each carries the rule's link (#94): the annotation in its message, the summary on the id.
 // Both are made from the finding's own text, so they hold no private value (core rule 11).
 
 /** This run is a GitHub Actions job. */
@@ -245,7 +246,7 @@ export function annotation(f: Finding, level: 'error' | 'warning', isPlaceAFile 
   if (file !== undefined) properties.push(`file=${escapeProperty(file)}`);
   if (file !== undefined && f.line !== undefined) properties.push(`line=${f.line}`);
   properties.push(`title=${escapeProperty(`yokoten ${f.id}`)}`);
-  const message = formatFinding(file === undefined ? f : { id: f.id, what: f.what, why: f.why, fix: f.fix });
+  const message = formatFinding(file === undefined ? f : { id: f.id, what: f.what, why: f.why, fix: f.fix, docs: f.docs });
   return `::${level} ${properties.join(',')}::${escapeData(message)}`;
 }
 
@@ -259,8 +260,11 @@ const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1
 // A backslash first, or `a\|b` would close the cell; `<` because the summary is HTML.
 const cell = (text: string) =>
   text.replace(/\r?\n/g, ' ').replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/</g, '&lt;');
-const row = (f: Finding) => `| ${cell(place(f).replace(/: $/, ''))} | ${cell(f.what)} | ${cell(capitalize(f.why))} | ${cell(capitalize(f.fix))} |`;
-const TABLE_HEAD = ['| Place | What | Why | Fix |', '|-------|------|-----|-----|'];
+// The rule's id links to where it is explained (#94), when there is a link.
+const ruleCell = (f: Finding) => (f.docs === undefined ? cell(f.id) : `[${cell(f.id)}](${cell(f.docs)})`);
+const row = (f: Finding) =>
+  `| ${cell(place(f).replace(/: $/, ''))} | ${ruleCell(f)} | ${cell(f.what)} | ${cell(capitalize(f.why))} | ${cell(capitalize(f.fix))} |`;
+const TABLE_HEAD = ['| Place | Rule | What | Why | Fix |', '|-------|------|------|-----|-----|'];
 
 /**
  * The job summary for one check, as Markdown: a heading with the result, a table of the
