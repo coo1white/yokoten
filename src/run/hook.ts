@@ -47,6 +47,19 @@ export function judge(
 
 /** How long the guard may read one tool call. YOKOTEN_GUARD_DEADLINE_MS changes it. */
 export const GUARD_DEADLINE_MS = 5000;
+/** The most YOKOTEN_GUARD_DEADLINE_MS may set: well under the runtimes' own hook timeouts, which let the call through. */
+export const GUARD_DEADLINE_MAX_MS = 30_000;
+
+/**
+ * The deadline YOKOTEN_GUARD_DEADLINE_MS asks for, in whole milliseconds. Anything else
+ * (empty, 0, a sign, a fraction, hex, words) keeps the default, and a value past the cap
+ * is cut to it, so the setting can never turn the deadline off.
+ */
+export function guardDeadline(value: string | undefined): number {
+  if (!value || !/^\d+$/.test(value)) return GUARD_DEADLINE_MS;
+  const ms = Number(value);
+  return ms > 0 ? Math.min(ms, GUARD_DEADLINE_MAX_MS) : GUARD_DEADLINE_MS;
+}
 
 type JudgeOptions = Parameters<typeof judge>[1];
 
