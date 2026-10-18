@@ -11,7 +11,7 @@
 // A check that passes everything looks the same as a healthy project, so this comes first.
 
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,12 +23,12 @@ import { loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
 import { type LessonPlace, listLessons, runLessons } from '../run/learn.ts';
-import { hasPlugin, hasSessionDoctor } from '../agents/claude-code.ts';
+import { hasPlugin, hasSessionDoctor, readInstalledPlugin } from '../agents/claude-code.ts';
 import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
 import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
-import { compareCoreRules, readCoreRules, summarizeUpdate } from './init.ts';
+import { compareCoreRules, compareVersions, isSelf, readCoreRules, summarizeUpdate } from './init.ts';
 import { paths } from './install.ts';
 import { type Mark, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
 
@@ -56,6 +56,7 @@ export function selfTest(): string[] {
   failed.push(...roadControl());
   const kit = '# rules\n\n## This project\n';
   if (compareCoreRules('# old rules\n\n## This project\n', kit).state !== 'behind' || compareCoreRules('# rules\n', kit).state !== "can't compare") failed.push('core rules check');
+  failed.push(...coreRulesControl());
   return failed;
 }
 
@@ -103,6 +104,60 @@ export function coreRulesCheck(root: string): { mark: 'ok' | 'MISSING' | 'note';
     return { mark: 'note', finding: finding('core-rules', `the core rules in AGENTS.md come from yokoten ${rules.version}, newer than this yokoten ${VERSION}`, 'update yokoten itself, not the project: `npx yokoten@latest install`, the latest Claude Code plugin, or a pull in your clone') };
   }
   return { mark: 'MISSING', finding: finding('core-rules', `the core rules in AGENTS.md are behind yokoten ${VERSION}'s, or were edited by hand (${summarizeUpdate(rules)})`, fix) };
+}
+
+/** The one command that updates the plugin, from a shell. */
+export const PLUGIN_UPDATE = '`claude plugin update yokoten@yokoten`, then restart Claude Code';
+
+/** The default branch refs doctor compares against, the first one present wins. Local only, no fetch. */
+const DEFAULT_BRANCH_REFS = ['refs/remotes/origin/HEAD', 'refs/remotes/origin/main', 'refs/heads/main'];
+
+/**
+ * The commit at the tip of the default branch in `root`: `origin/HEAD`, else `origin/main`,
+ * else `main`, whichever exists locally. Null when none does, or outside a git repo.
+ */
+function readDefaultBranch(root: string): string | null {
+  for (const ref of DEFAULT_BRANCH_REFS) {
+    try {
+      return execFileSync('git', ['rev-parse', '--verify', '-q', `${ref}^{commit}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {
+      // Not here; try the next one.
+    }
+  }
+  return null;
+}
+
+/** Whether `older` is in the history of `newer` in `root`. False when git doesn't know `older`. */
+function isAncestor(root: string, older: string, newer: string): boolean {
+  try {
+    execFileSync('git', ['merge-base', '--is-ancestor', older, newer], { cwd: root, stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A note when the enabled yokoten plugin is older than what doctor knows offline (#198).
+ * Two comparisons, the first that can tell wins:
+ * the plugin's package version against this yokoten's, and, in yokoten's own repo, the
+ * plugin's commit against the default branch's tip: older only when it is in that tip's
+ * history and not the tip. Not HEAD: on a feature branch HEAD descends from an up-to-date
+ * plugin, and an update could not help.
+ * Anything doctor can't compare (no install, an odd file, a commit git doesn't know) says
+ * nothing. A note, never a failure. Files and local git only, so a session can run it.
+ */
+export function pluginAgeCheck(root: string | null, env: Env): Finding | null {
+  if (!hasPlugin(env)) return null;
+  const plugin = readInstalledPlugin(env, root);
+  if (!plugin) return null;
+  const why = "the plugin's hooks run the plugin's copy, so an old copy checks old rules";
+  const note = (older: string, newer: string) => finding('machine-runtime', `the yokoten plugin is older than this yokoten (${older} < ${newer})`, `update it: ${PLUGIN_UPDATE}`, { why });
+  if (plugin.version && compareVersions(plugin.version, VERSION) === -1) return note(plugin.version, VERSION);
+  if (!root || !plugin.commit || !isSelf(root)) return null;
+  const tip = readDefaultBranch(root);
+  if (!tip || tip === plugin.commit || !isAncestor(root, plugin.commit, tip)) return null;
+  return note(plugin.commit.slice(0, 12), tip.slice(0, 12));
 }
 
 /** A server with every setting off, no label and only a closed milestone: no server step on the road may pass it (#7, #10). */
@@ -179,6 +234,30 @@ export function formatLessonChecks(lessons: LessonCheck[]): string[] {
   });
 }
 
+/**
+ * In a temp project, against the real kit: core rules edited by hand are MISSING, and
+ * core rules from a newer kit are the `newer` note, never "ok" and never MISSING (#170).
+ * `check` is a parameter so a test can hand in a broken one.
+ */
+export function coreRulesControl(check: typeof coreRulesCheck = coreRulesCheck): string[] {
+  if (!existsSync(join(KIT, 'project', 'AGENTS.md'))) return []; // the copy in .yokoten/ has no kit to compare with
+  let dir = '';
+  try {
+    dir = mkdtempSync(join(tmpdir(), 'yokoten-control-'));
+    const failed: string[] = [];
+    writeFileSync(join(dir, 'AGENTS.md'), '# rules edited by hand\n\n## This project\n');
+    if (check(dir)?.mark !== 'MISSING') failed.push('core rules check (edited by hand)');
+    writeFileSync(join(dir, 'AGENTS.md'), '<!-- yokoten kit 9999.0.0 -->\n# rules from a newer kit\n\n## This project\n');
+    const newer = check(dir);
+    if (newer?.mark !== 'note' || !newer.finding.what.includes('newer than this yokoten')) failed.push('core rules check (newer kit)');
+    return failed;
+  } catch {
+    return []; // no temp folder to test in; the other checks still run
+  } finally {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 /** What doctor can't read on the server yet, and the owner sets once per repo. */
 const OWNER_STEPS = ['the bot: a GitHub App (or collaborator) with write access and no Workflows permission'];
 
@@ -197,6 +276,7 @@ function readOrigin(root: string, gh: Gh): ServerSettings | Unread {
   } catch {
     // no origin remote
   }
+  if (!remote.trim()) return { unread: 'there is no origin remote yet', fix: 'add one on GitHub to check the server settings, or check them by hand' };
   const repo = repoOf(remote);
   return repo ? readServer(gh, repo) : { unread: 'the origin remote is not on a host yokoten knows (GitHub for now)', fix: 'add a GitHub origin remote, or check these settings by hand' };
 }
@@ -279,6 +359,9 @@ export function doctor(
       lines.push(`yokoten: ${formatFinding(marks.finding)}`);
       findings.push(marks.finding);
     }
+    // A stale plugin keeps old guard rules running; the session hears it (#198).
+    const stale = pluginAgeCheck(root, env);
+    if (stale) lines.push(`yokoten: ${formatFinding(stale)}`);
     // A lesson the kit learned reaches the project here: the session hears it (#120).
     if (core && isCoreBehind) {
       lines.push(`yokoten: ${formatFinding(core.finding)}`);
@@ -328,6 +411,11 @@ export function doctor(
   for (const c of machine) {
     lines.push(`  ${c.ok ? 'ok     ' : 'MISSING'} ${c.name}${c.ok ? '' : `: ${stepText(c.finding)}`}`);
     if (!c.ok) findings.push(c.finding);
+  }
+  const stale = pluginAgeCheck(root, env);
+  if (stale) {
+    lines.push(`  note    plugin: ${stepText(stale)}`);
+    notes.push(stale);
   }
   // The road's stage 5 shows the settings it groups (#7); here are the rest, which never fail doctor.
   const settings = serverChecks(server ?? { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' });
