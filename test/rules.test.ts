@@ -10,9 +10,9 @@ import { DOCS_URL, type Finding, finding, formatFinding, type Rule, RULES } from
 import { POSITIVE_CONTROL, scanText } from '../src/rules/privacy.ts';
 import { SECRET_CONTROL } from '../src/rules/secrets.ts';
 import { timeZoneNote } from '../src/run/check.ts';
-import { agentHooks, coreRulesCheck, machineChecks, serverChecks } from '../src/setup/doctor.ts';
+import { agentHooks, coreRulesCheck, machineChecks } from '../src/setup/doctor.ts';
 import { explain, explainLines, ids } from '../src/setup/explain.ts';
-import { ROAD, stepFinding } from '../src/setup/road.ts';
+import { ROAD, serverChecks, stepFinding } from '../src/setup/road.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
 import { formatChanges, mergeChanges, parseChange, readChanges, writeChanges } from '../src/run/changelog.ts';
 import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, ownersOf, parseCodeOwners, largeDiff, longSentenceNote, longSentences, type PullRequest } from '../src/rules/pr.ts';
