@@ -1,10 +1,12 @@
 // The shape of the code, checked. A rule about structure that no test holds drifts.
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { readdirSync, readFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { COMMANDS } from '../src/run/cli.ts';
 import { findDeclarations, findNameProblems, splitWords, tokenize } from '../src/run/names.ts';
 import { HOME_DIR, homeDirOf } from '../src/setup/files.ts';
 
@@ -289,4 +291,176 @@ test('names: src/, bin/ and test/ use whole, short names (#109, #113)', () => {
   assert.ok(declared > 500, `only ${declared} names found in src/, bin/ and test/; the reader is broken`);
   assert.deepEqual([...kinds].sort(), ['function', 'parameter', 'property', 'type', 'variable'], 'a kind of declaration was not found; the reader is broken');
   assert.deepEqual(found, [], 'rename each one; the rule and its reasons are in AGENTS.md ("Names") and docs/records/0006-names.md');
+});
+
+// The install commands have one machine-readable source, docs/facts.json, which the site
+// reads (#150). The guides show the same commands, word for word; README shows npx.
+type InstallStep = { cmd: string; note?: { en: string; zh: string } };
+type Facts = { install: Record<string, InstallStep[]> };
+
+/** The commands in `lists` of `facts` that `text` does not hold word for word. */
+function missingCommands(facts: Facts, lists: string[], text: string): string[] {
+  return lists.flatMap((list) => (facts.install[list] ?? []).map((step) => step.cmd)).filter((cmd) => !text.includes(cmd));
+}
+
+test('docs: every install command in docs/facts.json is in the guides and READMEs (#150)', () => {
+  const fake: Facts = { install: { npx: [{ cmd: 'npx yokoten install' }, { cmd: 'npx yokoten uninstall' }] } };
+  assert.deepEqual(missingCommands(fake, ['npx'], 'npx yokoten install\n'), ['npx yokoten uninstall']);
+
+  const facts: Facts = JSON.parse(readFileSync(join(ROOT, 'docs/facts.json'), 'utf8'));
+  assert.ok(facts.install.clone?.length && facts.install.npx?.length, 'docs/facts.json has no install.clone or install.npx; the site reads install.clone');
+  for (const step of Object.values(facts.install).flat()) {
+    if (step.note) assert.ok(step.note.en && step.note.zh, `"${step.cmd}": a note needs en and zh`);
+  }
+  const shown: [string, string[]][] = [
+    ['docs/guide.md', ['npx', 'clone']],
+    ['docs/zh-CN/guide.md', ['npx', 'clone']],
+    ['README.md', ['npx']],
+    ['docs/zh-CN/README.md', ['npx']],
+    ['docs/ja/README.md', ['npx']],
+  ];
+  for (const [file, lists] of shown) {
+    assert.deepEqual(missingCommands(facts, lists, readFileSync(join(ROOT, file), 'utf8')), [], `${file} lacks these commands from docs/facts.json; change both`);
+  }
+});
+
+// The guide's Commands table is typed by hand; COMMANDS in src/run/cli.ts is what the
+// parser and --help read (#219). Each command needs a row, and each option must show in
+// one of its rows or in the paragraph right after the table. A command with no row, like
+// help and version, passes when that paragraph names `yokoten <name>`: they take no
+// option, and a row would only repeat the paragraph (#230).
+type GuideCommand = { name: string; options: { name: string }[] };
+
+/** True when `text` holds `word` with no letter, digit or dash right before or after it. */
+const hasWord = (text: string, word: string): boolean => new RegExp(`(?<![\\w-])${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`).test(text);
+
+/** What the Commands table under `heading` in `guide` lacks from `commands`, or names that `commands` lacks. */
+function findGuideGaps(guide: string, heading: string, commands: GuideCommand[]): string[] {
+  const lines = guide.split('\n');
+  const start = lines.indexOf(heading);
+  if (start < 0) return [`no "${heading}" heading`];
+  const tableStart = lines.findIndex((line, i) => i > start && line.startsWith('|'));
+  if (tableStart < 0 || lines.slice(start + 1, tableStart).some((line) => line.startsWith('#'))) return [`no table under "${heading}"`];
+  let tableEnd = tableStart;
+  while (lines[tableEnd]?.startsWith('|')) tableEnd++;
+  // Skip the header row and the |---| row.
+  const rows = lines.slice(tableStart + 2, tableEnd);
+  let paragraphEnd = tableEnd + 1;
+  while (lines[paragraphEnd]?.trim()) paragraphEnd++;
+  const paragraph = lines.slice(tableEnd + 1, paragraphEnd).join(' ');
+  // The command a row is about: the first word of its first cell.
+  const commandOf = (row: string): string => row.split('|')[1].replaceAll('`', '').trim().split(/\s+/)[0];
+  const gaps: string[] = [];
+  for (const row of rows) {
+    const name = commandOf(row);
+    if (!commands.some((command) => command.name === name)) gaps.push(`a row names "${name}", which is not in COMMANDS`);
+  }
+  for (const command of commands) {
+    const commandRows = rows.filter((row) => commandOf(row) === command.name);
+    if (!commandRows.length && !hasWord(paragraph, `yokoten ${command.name}`)) gaps.push(`${command.name}: no row`);
+    for (const option of command.options) {
+      const isInParagraph = hasWord(paragraph, `\`${command.name}`) && hasWord(paragraph, option.name);
+      if (!commandRows.some((row) => hasWord(row, option.name)) && !isInParagraph) gaps.push(`${command.name} ${option.name}: in no row`);
+    }
+  }
+  return gaps;
+}
+
+test('docs: the guides\' Commands table covers every command and option in COMMANDS (#230)', () => {
+  const fake: GuideCommand[] = [
+    { name: 'check', options: [{ name: '--json' }, { name: '--staged' }] },
+    { name: 'version', options: [] },
+  ];
+  const table = '### Commands\n\nIntro.\n\n| Command | What |\n|---|---|\n';
+  assert.deepEqual(findGuideGaps(`${table}| \`check [--staged]\` | x |\n| \`lint\` | y |\n\nRun \`yokoten version\`.\n`, '### Commands', fake), [
+    'a row names "lint", which is not in COMMANDS',
+    'check --json: in no row',
+  ]);
+  assert.deepEqual(findGuideGaps(`${table}| \`check --staged\` | x |\n\n\`check\` takes \`--json\`.\n\nRun \`yokoten version\`.\n`, '### Commands', fake), ['version: no row']);
+  assert.deepEqual(findGuideGaps(`${table}| \`check --staged\` | x |\n\n\`check\` takes \`--json\`. \`yokoten version\` too.\n`, '### Commands', fake), []);
+
+  const guides: [string, string][] = [
+    ['docs/guide.md', '### Commands'],
+    ['docs/zh-CN/guide.md', '### 命令'],
+  ];
+  for (const [file, heading] of guides) {
+    assert.deepEqual(findGuideGaps(readFileSync(join(ROOT, file), 'utf8'), heading, COMMANDS), [], `${file}: its Commands table differs from COMMANDS in src/run/cli.ts`);
+  }
+});
+
+// The split tool (#152) moves tests one or two folders deeper. A test that imports a script
+// still finds it there; an import the tool cannot place stops it, with a list. The fixture
+// repo has a script and two test files named like the real ones, so the real table places them.
+function makeSplitFixture(files: Record<string, string>): string {
+  const root = mkdtempSync(join(tmpdir(), 'yokoten-split-'));
+  const hoisted = "const ROOT = 'root';\nconst CLI = 'cli';\nconst at = '@';\nfunction makeSandbox(): string {\n  return ROOT + CLI + at;\n}\n";
+  const all: Record<string, string> = {
+    'test/cli.test.ts': `import assert from 'node:assert/strict';\nimport { test } from 'node:test';\n\n${hoisted}\ntest('install: the helpers move', () => {\n  assert.equal(makeSandbox(), 'rootcli@');\n});\n`,
+    ...files,
+  };
+  for (const [path, text] of Object.entries(all)) {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), text);
+  }
+  return root;
+}
+
+function runSplit(root: string): { status: number | null; output: string } {
+  const result = spawnSync(process.execPath, [join(ROOT, 'scripts/split-tests.ts'), '--from', join(root, 'test'), '--out', join(root, 'split')], { encoding: 'utf8' });
+  return { status: result.status, output: result.stdout + result.stderr };
+}
+
+test('split tests: an import of ../scripts/ gets the extra ../ and the moved test runs (#152)', () => {
+  const root = makeSplitFixture({
+    'scripts/greet.ts': 'export function greet(name: string): string {\n  return `hello ${name}`;\n}\n',
+    'test/bot.test.ts': [
+      "import assert from 'node:assert/strict';",
+      "import { test } from 'node:test';",
+      "import { greet } from '../scripts/greet.ts';",
+      '',
+      "test('board sync: a static import of a script', () => {",
+      "  assert.equal(greet('board'), 'hello board');",
+      '});',
+      '',
+      "test('board sync: a dynamic import of a script', async () => {",
+      "  const module = await import('../scripts/greet.ts');",
+      "  assert.equal(module.greet('sync'), 'hello sync');",
+      '});',
+      '',
+    ].join('\n'),
+  });
+  const split = runSplit(root);
+  assert.equal(split.status, 0, split.output);
+  const moved = readFileSync(join(root, 'split/host/github/board.test.ts'), 'utf8');
+  assert.match(moved, /^\/\/ Tests for scripts\/greet\.ts\.\n/);
+  assert.match(moved, /^import \{ greet \} from '\.\.\/\.\.\/\.\.\/scripts\/greet\.ts';$/m);
+  assert.match(moved, /await import\('\.\.\/\.\.\/\.\.\/scripts\/greet\.ts'\)/);
+  // The child must not report to this test run, so it gets no NODE_TEST_CONTEXT.
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const run = spawnSync(process.execPath, ['--test', '--test-reporter=tap', 'split/**/*.test.ts'], { cwd: root, encoding: 'utf8', env });
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.match(run.stdout, /^# pass 3$/m);
+  assert.match(run.stdout, /^# fail 0$/m);
+});
+
+test('split tests: an import it cannot place stops it with a list, and nothing is written (#152)', () => {
+  const root = makeSplitFixture({
+    'test/bot.test.ts': [
+      "import { test } from 'node:test';",
+      "import { missing } from '../scripts/missing.ts';",
+      "import { packaged } from 'some-package';",
+      '',
+      "test('board sync: never runs', () => {",
+      '  missing(packaged);',
+      '});',
+      '',
+    ].join('\n'),
+  });
+  const split = runSplit(root);
+  assert.equal(split.status, 1, split.output);
+  assert.match(split.output, /imports this script cannot place/);
+  assert.match(split.output, /test\/bot\.test\.ts:2: missing from '\.\.\/scripts\/missing\.ts': no file scripts\/missing\.ts in the repo/);
+  assert.match(split.output, /test\/bot\.test\.ts:3: packaged from 'some-package': not node: and not a relative path/);
+  assert.ok(!existsSync(join(root, 'split')), 'a stopped split writes nothing');
 });
