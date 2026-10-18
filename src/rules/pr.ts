@@ -24,9 +24,26 @@ const TYPES = ['feat', 'fix', 'docs', 'test', 'refactor', 'chore', 'ci', 'perf',
 const TITLE = new RegExp(`^(${TYPES.join('|')})(\\([a-z0-9][a-z0-9./-]*\\))?!?: \\S`);
 const SECTIONS = ['Why', 'What changed', 'How tested'];
 
+/**
+ * The text with each HTML comment turned into spaces, so line numbers stay the same. As
+ * on GitHub, a comment that never closes hides the rest of the text. A left-to-right scan,
+ * not a regex replace, so one pass gives the same result as GitHub's page.
+ */
+function blankComments(text: string): string {
+  let out = '';
+  let at = 0;
+  for (let open = text.indexOf('<!--'); open >= 0; open = text.indexOf('<!--', at)) {
+    const close = text.indexOf('-->', open + 4);
+    const end = close < 0 ? text.length : close + 3;
+    out += text.slice(at, open) + text.slice(open, end).replace(/[^\n]/g, ' ');
+    at = end;
+  }
+  return out + text.slice(at);
+}
+
 /** The text under a `## Name` heading, without HTML comments, up to the next heading. */
 function section(body: string, name: string): string | null {
-  const lines = body.replace(/<!--[\s\S]*?-->/g, '').split(/\r?\n/);
+  const lines = blankComments(body).split(/\r?\n/);
   const start = lines.findIndex((l) => l.trim().toLowerCase() === `## ${name.toLowerCase()}`);
   if (start < 0) return null;
   const rest = lines.slice(start + 1);
@@ -96,7 +113,7 @@ export function longSentences(text: string, max = 25): { line: number; words: nu
     if (words > max) found.push({ line: startLine, words });
     sentence = [];
   };
-  const lines = text.replace(/<!--[\s\S]*?-->/g, (c) => c.replace(/[^\n]/g, ' ')).split(/\r?\n/);
+  const lines = blankComments(text).split(/\r?\n/);
   lines.forEach((raw, i) => {
     const line = raw.trim();
     if (/^(```|~~~)/.test(line)) {

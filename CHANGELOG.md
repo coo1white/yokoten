@@ -163,6 +163,8 @@ All notable changes are listed here. The format follows
 
 ### Fixed
 
+- `check --pr` reads HTML comments as GitHub does: a `<!--` that never closes hides the
+  rest of the body, so a section it hides counts as empty (#102).
 - Commits no longer record the machine's time zone, which narrows down where the owner
   lives. The commit check refuses a commit whose time is not UTC (and says how to fix
   it, never printing the offset); `init` sets `TZ=UTC` for agent sessions; `check

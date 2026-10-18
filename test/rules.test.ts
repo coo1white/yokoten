@@ -96,6 +96,10 @@ test('pull request: each missing part fails with what to do (#47)', () => {
   one({ body: goodPr().body.replace('tier: B\n', '') }, /`tier: A`/);
   one({ body: goodPr().body.replace('## How tested\n`node --test`: 50 pass.\n', '') }, /[Aa]dd a `## How tested`/);
   one({ body: goodPr().body.replace('Nothing checks it.', '<!-- say why -->') }, /`## Why` section is empty/);
+  // A comment that never closes hides the rest on GitHub's page, so the check skips it too.
+  one({ body: goodPr().body.replace('`node --test`', '<!-- how\n`node --test`') }, /`## How tested` section is empty/);
+  // A comment rebuilt from pieces is text on GitHub's page, and to the check.
+  assert.deepEqual(checkPullRequest({ ...goodPr(), body: goodPr().body.replace('Nothing checks it.', '<!<!---->-- Nothing checks it.') }, DEFAULTS), []);
   one({ body: goodPr().body.replace('Closes #47', 'Closes #') }, /Closes #N/);
   one({ files: ['src/rules/pr.ts'] }, /^changelog:/);
   one({ milestone: null }, /^milestone:/);
