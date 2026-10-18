@@ -553,6 +553,46 @@ test('init: a Markdown link to AGENTS.md is not an import; init adds the import 
   }
 });
 
+test('init: an import inside a code span or fenced block is not an import; init adds the real one (#206)', () => {
+  // Claude Code skips Markdown code spans and fenced code blocks when it reads imports.
+  const fence = '```';
+  for (const text of [
+    `# rules\nWrite \`${at}AGENTS.md\` to import it.\n`,
+    `# rules\nWrite \`\`${at}AGENTS.md\`\` to import it.\n`,
+    `# rules\n${fence}md\n${at}AGENTS.md\n${fence}\n`,
+    `# rules\n~~~\n${at}AGENTS.md\n~~~\n`,
+    `# rules\n  ${fence}\n${at}AGENTS.md\n  ${fence}\n`,
+  ]) {
+    const sandbox = makeSandbox();
+    sandbox.write('CLAUDE.md', text);
+    sandbox.write('AGENTS.md', '# shared rules\n');
+    assert.notEqual(stepMark(sandbox, 'rules'), 'done', text);
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    const after = readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8');
+    assert.ok(after.startsWith(text.replace(/\n$/, '')), 'the example stays');
+    assert.ok(after.endsWith(`-->\n${at}AGENTS.md\n`), after);
+    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+  }
+});
+
+test('init: a real import next to a fenced or quoted example is left as it is (#206)', () => {
+  const fence = '```';
+  for (const text of [
+    `# rules\n${at}AGENTS.md\n\nExample:\n${fence}\n${at}AGENTS.md\n${fence}\n`,
+    `# rules\nExample: \`${at}AGENTS.md\`.\n${at}AGENTS.md\n`,
+    `# rules\n${fence}\n${at}other.md\n${fence}\n${at}AGENTS.md\n`,
+  ]) {
+    const sandbox = makeSandbox();
+    sandbox.write('CLAUDE.md', text);
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stdout, /CLAUDE\.md/, text);
+    assert.equal(readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8'), text);
+    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+  }
+});
+
 test("init: a CLAUDE.md with mixed line endings gets the file's main ending and one blank line (#206)", () => {
   const cases = [
     { text: '# rules\r\nOne.\r\nTwo.\n', want: '# rules\r\nOne.\r\nTwo.\r\n\r\n<!--' },
