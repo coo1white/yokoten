@@ -15,6 +15,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
+import { type Finding, formatFinding, place } from '../rules/message.ts';
 import type { CodeOwners, PullRequest } from '../rules/pr.ts';
 
 export interface BotConfig {
@@ -168,6 +169,78 @@ export function readIssue(env: Env): { title: string; labels: string[] } | null 
   // A comment on a pull request carries it as an `issue` too; that title follows the pull request rule.
   if (!issue || issue.pull_request) return null;
   return { title: issue.title ?? '', labels: (issue.labels ?? []).map((l) => l.name ?? '').filter(Boolean) };
+}
+
+// The findings of a check on the pull request page (#91), so a beginner need not open the
+// log. Two parts, and neither needs a token:
+// - an annotation per finding: a line on stdout, `::error file=…,line=…,title=…::message`,
+//   shown on that line of the diff (docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands);
+// - Markdown appended to the file named by GITHUB_STEP_SUMMARY, shown on the run's page.
+// Both are made from the finding's own text, so they hold no private value (core rule 11).
+
+/** This run is a GitHub Actions job. */
+export const isGitHubActions = (env: Env): boolean => env.GITHUB_ACTIONS === 'true';
+
+// GitHub shows at most 10 annotations of each kind per step, and 50 per job. The rest
+// are in the log and the summary, so more lines would only make the log longer.
+const MAX_ANNOTATIONS = 50;
+const MAX_SUMMARY_ROWS = 50;
+
+// A workflow command ends at a newline, and its properties at `,` and `::`; GitHub's
+// runner decodes these escapes.
+const escapeData = (text: string) => text.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+const escapeProperty = (text: string) => escapeData(text).replace(/:/g, '%3A').replace(/,/g, '%2C');
+
+/**
+ * One finding as a workflow command: `error` for a problem, `warning` for a note. When
+ * `isPlaceAFile` is false (a `check --history` place is a commit or a blob), the place
+ * goes into the message instead of `file` and `line`.
+ */
+export function annotation(f: Finding, level: 'error' | 'warning', isPlaceAFile = true): string {
+  const properties: string[] = [];
+  const file = isPlaceAFile ? f.file : undefined;
+  if (file !== undefined) properties.push(`file=${escapeProperty(file)}`);
+  if (file !== undefined && f.line !== undefined) properties.push(`line=${f.line}`);
+  properties.push(`title=${escapeProperty(`yokoten ${f.id}`)}`);
+  const message = formatFinding(file === undefined ? f : { id: f.id, what: f.what, why: f.why, fix: f.fix });
+  return `::${level} ${properties.join(',')}::${escapeData(message)}`;
+}
+
+/** The annotations for one check: problems first, then notes, at most 50. */
+export function annotations(problems: Finding[], notes: Finding[], isPlaceAFile = true): string[] {
+  const all = [...problems.map((f) => annotation(f, 'error', isPlaceAFile)), ...notes.map((f) => annotation(f, 'warning', isPlaceAFile))];
+  return all.slice(0, MAX_ANNOTATIONS);
+}
+
+const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+// A backslash first, or `a\|b` would close the cell; `<` because the summary is HTML.
+const cell = (text: string) =>
+  text.replace(/\r?\n/g, ' ').replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/</g, '&lt;');
+const row = (f: Finding) => `| ${cell(place(f).replace(/: $/, ''))} | ${cell(f.what)} | ${cell(capitalize(f.why))} | ${cell(capitalize(f.fix))} |`;
+const TABLE_HEAD = ['| Place | What | Why | Fix |', '|-------|------|-----|-----|'];
+
+/**
+ * The job summary for one check, as Markdown: a heading with the result, a table of the
+ * problems, and the notes in their own section. At most 50 rows; it says how many more.
+ */
+export function stepSummary(name: string, problems: Finding[], notes: Finding[]): string {
+  const count = problems.length;
+  const lines = [`### ${name}: ${count ? `${count} problem${count === 1 ? '' : 's'}` : 'ok'}`, ''];
+  let room = MAX_SUMMARY_ROWS;
+  const table = (findings: Finding[]) => {
+    const shown = findings.slice(0, room);
+    room -= shown.length;
+    lines.push(...TABLE_HEAD, ...shown.map(row));
+    if (findings.length > shown.length) lines.push('', `And ${findings.length - shown.length} more. The job log lists them all.`);
+    lines.push('');
+  };
+  if (count) table(problems);
+  if (notes.length) {
+    lines.push(`#### Notes (${notes.length}): these never fail the check`, '');
+    if (room) table(notes);
+    else lines.push(`The job log lists them.`, '');
+  }
+  return `${lines.join('\n')}\n`;
 }
 
 // The planning setup (#10): labels and milestones, read and made through `gh`, so

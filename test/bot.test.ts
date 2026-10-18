@@ -7,7 +7,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { appJwt, botConfig, botEnv, type Gh, installationToken, readServer, repoOf, type ServerSettings, type Unread } from '../src/host/github.ts';
+import { annotation, annotations, appJwt, botConfig, botEnv, type Gh, installationToken, readServer, repoOf, type ServerSettings, stepSummary, type Unread } from '../src/host/github.ts';
 import { DEFAULTS } from '../src/rules/config.ts';
 import { checkCommand } from '../src/rules/guards.ts';
 import { doctor, serverChecks } from '../src/setup/doctor.ts';
@@ -238,4 +238,46 @@ test('doctor: reads the server of a GitHub origin; a MISSING setting fails, a no
   assert.equal(r.ok, false);
   assert.deepEqual(r.report.server?.find((s) => s.id === 'main-rules'), { id: 'main-rules', mark: 'MISSING' });
   assert.ok(r.report.findings.some((f) => f.id === 'required-checks'));
+});
+
+// #91: workflow commands, escaped as GitHub's runner decodes them
+// (docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands).
+test('annotations: escape the message and the properties; a history place goes in the message (#91)', () => {
+  const f = { id: 'layout', what: '100% full,\nline two\r', why: 'a: b', fix: 'see a, b', file: 'docs/a,b:c.md', line: 7 };
+  assert.equal(annotation(f, 'error'), '::error file=docs/a%2Cb%3Ac.md,line=7,title=yokoten layout::100%25 full,%0Aline two%0D. A: b. See a, b.');
+  assert.equal(annotation({ id: 'large-diff', what: 'big', why: 'w', fix: 'f' }, 'warning'), '::warning title=yokoten large-diff::big. W. F.');
+  assert.equal(annotation({ ...f, what: 'x', file: 'commit abc (message)', line: 1 }, 'error', false), '::error title=yokoten layout::commit abc (message):1: x. A: b. See a, b.');
+  const many = Array.from({ length: 60 }, (_, i) => ({ id: 'email', what: `e${i}`, why: 'w', fix: 'f', file: 'a.md', line: i + 1 }));
+  const lines = annotations(many, [{ id: 'large-diff', what: 'big', why: 'w', fix: 'f' }]);
+  assert.equal(lines.length, 50, 'GitHub shows at most 50 per job');
+  assert.ok(lines.every((l) => l.startsWith('::error ')), 'problems come before notes');
+});
+
+test('step summary: a heading with the result, a table, notes apart, at most 50 rows (#91)', () => {
+  assert.equal(stepSummary('yokoten check', [], []), '### yokoten check: ok\n\n');
+  // GitHub renders the summary as HTML: a `<` in a cell would hide the text after it.
+  assert.match(stepSummary('yokoten check', [{ id: 'email', what: 'an email', why: 'w', fix: 'f', file: '<draft>.md', line: 1 }], []), /\| &lt;draft>\.md:1 \|/);
+  assert.match(stepSummary('yokoten check', [{ id: 'email', what: 'a\\|b', why: 'w', fix: 'f' }], []), /\| a\\\\\\\|b \|/);
+  const one = stepSummary('yokoten check --pr', [{ id: 'pr-title', what: 'title: a | b', why: 'why', fix: 'fix it' }], [{ id: 'long-sentence', what: 'long', why: 'w', fix: 'f', file: 'a.md', line: 2 }]);
+  assert.equal(one, [
+    '### yokoten check --pr: 1 problem',
+    '',
+    '| Place | What | Why | Fix |',
+    '|-------|------|-----|-----|',
+    '|  | title: a \\| b | Why | Fix it |',
+    '',
+    '#### Notes (1): these never fail the check',
+    '',
+    '| Place | What | Why | Fix |',
+    '|-------|------|-----|-----|',
+    '| a.md:2 | long | W | F |',
+    '',
+    '',
+  ].join('\n'));
+  const many = Array.from({ length: 53 }, (_, i) => ({ id: 'email', what: `e${i}`, why: 'w', fix: 'f', file: 'a.md', line: i + 1 }));
+  const text = stepSummary('yokoten check', many, [{ id: 'large-diff', what: 'big', why: 'w', fix: 'f' }]);
+  assert.match(text, /^### yokoten check: 53 problems\n/);
+  assert.equal(text.split('\n').filter((l) => l.startsWith('| a.md:')).length, 50);
+  assert.match(text, /\nAnd 3 more\. The job log lists them all\.\n/);
+  assert.match(text, /#### Notes \(1\): these never fail the check\n\nThe job log lists them\.\n/);
 });

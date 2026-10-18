@@ -654,6 +654,89 @@ test('check --issue: reads the issue from the CI event; a bad title fails, a goo
   assert.deepEqual(JSON.parse(r.stdout).skipped, 'no issue in this run (it reads the CI event); nothing to check');
 });
 
+// #91: in GitHub Actions, the findings show on the pull request page: an annotation per
+// finding on stdout, and a job summary. The finding text is reused, so no private value.
+test('check in GitHub Actions: annotations and a job summary, place but never content (#91)', () => {
+  const s = sandbox();
+  const marks = join(s.home, 'marks');
+  writeFileSync(marks, 'mycity\n');
+  const token = `${'gh'}p_${'x7Y2k9'.repeat(6)}`;
+  const email = `me${at}gmail.com`;
+  s.write('a.md', 'fine\n');
+  s.write('notes/b.md', `fine\n${email}\nI live in MyCity\ntoken ${token}\n`);
+  s.git('add', '.');
+  const summary = join(s.home, 'summary.md');
+  const actions = { GITHUB_ACTIONS: 'true', GITHUB_STEP_SUMMARY: summary, YOKOTEN_PRIVATE_MARKS: marks };
+  const before = s.run(['check'], { extra: { YOKOTEN_PRIVATE_MARKS: marks } });
+  const r = s.run(['check'], { extra: actions });
+  assert.equal(r.status, 1);
+  assert.equal(r.stderr, before.stderr, 'the text for people is the same');
+  const lines = r.stdout.trimEnd().split('\n');
+  assert.equal(lines.length, 3);
+  assert.match(lines[0], /^::error file=notes\/b\.md,line=2,title=yokoten email::an email address\. .+\. .+\.$/);
+  assert.match(lines[1], /^::error file=notes\/b\.md,line=3,title=yokoten private-mark::matches a line of your private-marks file\. /);
+  assert.match(lines[2], /^::error file=notes\/b\.md,line=4,title=yokoten secret::a secret \(GitHub token\)\. /);
+  const text = readFileSync(summary, 'utf8');
+  assert.match(text, /^### yokoten check: 3 problems\n\n\| Place \| What \| Why \| Fix \|\n/);
+  assert.match(text, /\| notes\/b\.md:2 \| an email address \| .+ \| .+ \|/);
+  assert.match(text, /\| notes\/b\.md:3 \| matches a line of your private-marks file \|/);
+  assert.match(text, /\| notes\/b\.md:4 \| a secret \(GitHub token\) \|/);
+  // The positive control: the place is there, the matched text is not (core rule 11).
+  for (const out of [r.stdout, text]) {
+    assert.ok(!out.includes(token) && !out.includes(email) && !/mycity/i.test(out), 'no matched text');
+    assert.ok(!out.includes(s.home), 'the home folder is never shown');
+  }
+  // --json keeps stdout pure JSON; the summary is still written. The summary file grows.
+  const json = s.run(['check', '--json'], { extra: actions });
+  assert.equal(JSON.parse(json.stdout).ok, false);
+  assert.equal(readFileSync(summary, 'utf8').split('### yokoten check: 3 problems').length, 3, 'appended, not replaced');
+  // ok, with the mode in the heading.
+  s.git('rm', '-q', '--cached', 'notes/b.md');
+  rmSync(join(s.repo, 'notes'), { recursive: true });
+  const ok = s.run(['check', '--staged'], { extra: actions });
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(ok.stdout, 'yokoten check: ok\n', 'no findings, no annotations');
+  assert.match(readFileSync(summary, 'utf8'), /### yokoten check --staged: ok\n\n$/);
+});
+
+test('check outside GitHub Actions: the output is unchanged and no summary is written (#91)', () => {
+  const s = sandbox();
+  s.write('a.md', `me${at}gmail.com\n`);
+  s.git('add', '.');
+  const summary = join(s.home, 'summary.md');
+  const plain = s.run(['check']);
+  assert.equal(plain.status, 1);
+  assert.equal(plain.stdout, '');
+  assert.match(plain.stderr, /^yokoten check: 1 problem\(s\)\n- a\.md:1: an email address\. [^\n]+\.\n$/);
+  for (const extra of [{ GITHUB_STEP_SUMMARY: summary }, { GITHUB_ACTIONS: 'false', GITHUB_STEP_SUMMARY: summary }] as Record<string, string>[]) {
+    const r = s.run(['check'], { extra });
+    assert.deepEqual([r.status, r.stdout, r.stderr], [plain.status, plain.stdout, plain.stderr], JSON.stringify(extra));
+  }
+  assert.ok(!existsSync(summary), 'no summary outside Actions');
+});
+
+test('check --pr in GitHub Actions: notes are warnings, in their own section (#91)', () => {
+  const s = sandbox();
+  s.write('README.md', 'Short.\n');
+  s.git('add', '.');
+  s.git('commit', '-qm', 'base');
+  const base = s.git('rev-parse', 'HEAD').stdout.trim();
+  s.write('README.md', `Short.\n${Array.from({ length: 30 }, (_, i) => `w${i}`).join(' ')}.\n`);
+  s.git('add', '.');
+  s.git('commit', '-qm', 'head');
+  const head = s.git('rev-parse', 'HEAD').stdout.trim();
+  const file = join(s.home, 'event.json');
+  writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body: 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\n', labels: [{ name: 'feat' }], milestone: null, base: { sha: base }, head: { sha: head } } }));
+  const summary = join(s.home, 'summary.md');
+  const r = s.run(['check', '--pr'], { extra: { GITHUB_EVENT_PATH: file, GITHUB_ACTIONS: 'true', GITHUB_STEP_SUMMARY: summary } });
+  assert.equal(r.status, 1, 'no milestone');
+  assert.match(r.stdout, /^::error title=yokoten pr-milestone::/m, 'a finding with no place has no file');
+  assert.match(r.stdout, /^::warning file=README\.md,line=2,title=yokoten long-sentence::a sentence of 30 words\. /m);
+  const text = readFileSync(summary, 'utf8');
+  assert.match(text, /^### yokoten check --pr: 1 problem\n/);
+  assert.match(text, /\n#### Notes \(1\): these never fail the check\n\n\| Place \| What \| Why \| Fix \|\n\|[-|]+\|\n\| README\.md:2 \| a sentence of 30 words \|/);
+});
+
 // #42: stdout is data and stderr is for people; --json prints pure JSON. Exit codes are
 // written down once (docs/guide.md, "Exit codes") and held here.
 test('exit codes: 0 ok, 1 problems or a usage error, 2 the hook blocked (#42)', () => {
