@@ -12,7 +12,7 @@ yokoten guides you through a good team's habits, and guards your AI agents while
 
 One person and a few AI agents built it that way: every issue, review, and release is in this repo.
 
-**[yokoten.app](https://yokoten.app)** &nbsp;·&nbsp; English | [中文](docs/zh-CN/README.md)
+**[yokoten.app](https://yokoten.app)** &nbsp;·&nbsp; English | [中文](docs/zh-CN/README.md) | [日本語](docs/ja/README.md)
 
 <br/>
 
