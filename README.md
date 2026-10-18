@@ -106,6 +106,14 @@ project.
 **Without the plugin**, for Codex CLI and Gemini CLI too:
 
 ```sh
+npx yokoten install      # once per computer
+cd your-project
+npx yokoten init         # once per project
+```
+
+The owner publishes the npm package. Until the first release is on npm, use a clone:
+
+```sh
 git clone https://github.com/yokoten-labs/yokoten
 node yokoten/bin/yokoten.ts install                 # once per computer
 cd your-project

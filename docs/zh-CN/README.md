@@ -103,6 +103,14 @@ AI 想闯大祸时，桥头有人守着。
 **不用插件的话**（Codex CLI、Gemini CLI 也是这样装）：
 
 ```sh
+npx yokoten install      # 每台电脑做一次
+cd your-project
+npx yokoten init         # 每个项目做一次
+```
+
+npm 上的包由主人发布。第一个版本发布之前，先从 clone 下来的仓库装：
+
+```sh
 git clone https://github.com/yokoten-labs/yokoten
 node yokoten/bin/yokoten.ts install                 # 每台电脑做一次
 cd your-project

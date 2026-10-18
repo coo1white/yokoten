@@ -184,7 +184,7 @@ export function readCoreRules(root: string): CoreRules | null {
   if (!existsSync(path)) return null;
   const kit = readKitRules(root);
   if (kit === null) {
-    return { state: "can't compare", why: 'this copy of yokoten has no kit (the copy in .yokoten/ leaves it out)', fix: 'run the command from an installed yokoten or a clone, not from .yokoten/' };
+    return { state: "can't compare", why: 'this copy of yokoten has no kit (the copy in .yokoten/ leaves it out)', fix: 'run the command from an installed yokoten, the Claude Code plugin (/yokoten:update), or a clone, not from .yokoten/' };
   }
   return compareCoreRules(readFileSync(path, 'utf8'), kit);
 }

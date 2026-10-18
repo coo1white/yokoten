@@ -5,7 +5,13 @@ import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } fr
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const HOME_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+/**
+ * The folder with package.json, kit/, bin/ and src/. This file is src/setup/files.ts in
+ * the repo and in a vendored copy. In the npm package it also runs as
+ * dist/src/setup/files.js (#31), one level deeper.
+ */
+export const homeDirOf = (moduleFile: string): string => join(dirname(moduleFile), '..', '..', ...(moduleFile.endsWith('.js') ? ['..'] : []));
+export const HOME_DIR = homeDirOf(fileURLToPath(import.meta.url));
 export const VERSION: string = JSON.parse(readFileSync(join(HOME_DIR, 'package.json'), 'utf8')).version;
 export const KIT = join(HOME_DIR, 'kit');
 
@@ -16,6 +22,8 @@ export const MANAGED = 'managed by yokoten';
  * Copy the runtime (bin, src, package.json) to `dest`, so hooks run with no network and
  * no global install. The machine copy also takes the kit, which install and the machine
  * checks read. The copy is replaced whole; `VERSION` says which release it is.
+ * It copies the .ts files, also from the npm package: `dest` is not under node_modules,
+ * so Node runs them there as they are.
  */
 export function copyRuntime(dest: string, { withKit = false }: { withKit?: boolean } = {}): void {
   rmSync(dest, { recursive: true, force: true });

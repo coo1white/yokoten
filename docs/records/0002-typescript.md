@@ -1,6 +1,6 @@
 # 0002 TypeScript, run by Node as it is
 
-Status: accepted; changes point 6 of [0001](0001-yokoten.md)
+Status: accepted; changes point 6 of [0001](0001-yokoten.md); the npm package changed by [0008](0008-npm-package.md)
 Date: 2026-10-18 (UTC)
 
 ## Context
@@ -35,4 +35,4 @@ Since 22.18, Node runs `.ts` files itself by stripping the types. No build, no l
 - A machine with Node older than 22.18 cannot run yokoten. Node 22 is the oldest line
   still supported, and its current releases are well past 22.18.
 - Node does not strip types under `node_modules`, so publishing to npm would need a
-  build step then. yokoten is not on npm.
+  build step then. [0008](0008-npm-package.md) adds that build, for the package only.

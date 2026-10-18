@@ -1121,8 +1121,42 @@ test('plugin: its hooks are the ones install adds, and the guard it registers bl
   const session = run(hooks.SessionStart[0].hooks[0].command);
   assert.equal(session.status, 0, session.stderr);
   assert.match(session.stdout, /^yokoten: stage 1 of 5/);
-  assert.match(session.stdout, /runs as \/yokoten:init and \/yokoten:doctor/);
+  assert.match(session.stdout, /runs as \/yokoten:init, \/yokoten:doctor and \/yokoten:update/);
   assert.doesNotMatch(sandbox.run(['doctor', '--session']).stdout, /yokoten:init/, 'only from the plugin');
+});
+
+// /yokoten:update (#142). The copy in .yokoten/ has no kit, so the skill runs the
+// plugin's own yokoten, which has it: the preview first, the write only when asked.
+test('plugin: /yokoten:update previews from the plugin, then writes with --write; the .yokoten/ copy cannot compare', () => {
+  const sandbox = makeSandbox();
+  assert.equal(sandbox.run(['init']).status, 0);
+  const path = join(sandbox.repo, 'AGENTS.md');
+  const fresh = readFileSync(path, 'utf8');
+  const old = fresh.replace('Plain English, close to', 'Plain words, close to');
+  assert.notEqual(old, fresh);
+  writeFileSync(path, old);
+  const skill = readFileSync(join(ROOT, 'kit/plugin/skills/update/SKILL.md'), 'utf8');
+  const commands = [...skill.matchAll(/^ *(node "\$\{CLAUDE_PLUGIN_ROOT\}\/bin\/yokoten\.ts" update.*)$/gm)].map((m) => m[1]);
+  assert.deepEqual(commands, [`node "${PLUGIN_ROOT}/bin/yokoten.ts" update`, `node "${PLUGIN_ROOT}/bin/yokoten.ts" update --write`], 'preview, then write');
+  assert.doesNotMatch(skill, /\.yokoten\/bin/, 'the skill never runs the copy in .yokoten/');
+  const run = (command: string) => spawnSync(command.replaceAll(PLUGIN_ROOT, ROOT), { shell: true, cwd: sandbox.repo, env: { ...sandbox.env, CLAUDE_PLUGIN_ROOT: ROOT }, encoding: 'utf8' });
+
+  // The control: the project's own copy has no kit, so it can't compare and writes nothing.
+  const vendored = spawnSync('node', ['.yokoten/bin/yokoten.ts', 'update', '--write'], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
+  assert.equal(vendored.status, 1);
+  assert.match(vendored.stderr, /can't compare AGENTS\.md with the kit: this copy of yokoten has no kit.*\/yokoten:update/);
+  assert.equal(readFileSync(path, 'utf8'), old);
+
+  let result = run(commands[0]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^- Plain words, close to/m);
+  assert.match(result.stdout, /^\+ Plain English, close to/m);
+  assert.equal(readFileSync(path, 'utf8'), old, 'the preview writes nothing');
+  result = run(commands[1]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /replaced the core rules in AGENTS\.md/);
+  assert.equal(readFileSync(path, 'utf8'), fresh);
+  assert.match(run(commands[0]).stdout, /up to date/);
 });
 
 test('doctor: the plugin, when on, stands in for install', () => {
