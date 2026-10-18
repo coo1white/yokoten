@@ -140,21 +140,21 @@ test('CODEOWNERS: anchored, folder, glob, last match wins, comments, several own
       '**/logs @logs',
     ].join('\n'),
   );
-  const o = (path: string) => ownersOf(rules, path);
-  assert.deepEqual(o('AGENTS.md'), ['@owner'], 'anchored');
-  assert.deepEqual(o('sub/AGENTS.md'), [], 'a leading slash anchors at the root');
-  assert.deepEqual(o('kit/a/b.md'), ['@owner', '@team/leads'], 'a folder and everything in it; two owners');
-  assert.deepEqual(o('kit'), [], 'a trailing slash needs something inside the folder');
-  assert.deepEqual(o('apps/x.ts'), ['@apps']);
-  assert.deepEqual(o('deep/apps/x.ts'), ['@apps'], 'a folder pattern with no other slash matches in any folder');
-  assert.deepEqual(o('docs/x.md'), ['@docs'], 'docs/* matches a file in docs/');
-  assert.deepEqual(o('docs/a/x.md'), [], 'and not deeper');
-  assert.deepEqual(o('deep/yarn.lock'), ['@deps'], 'no slash matches in any folder');
-  assert.deepEqual(o('src/secret.ts'), ['@sec'], '** matches no folder');
-  assert.deepEqual(o('src/a/b/secret.ts'), ['@sec'], '** crosses folders');
-  assert.deepEqual(o('kit/notes/a.md'), [], 'a later pattern with no owners wins');
-  assert.deepEqual(o('a/b/logs/x.txt'), ['@logs']);
-  assert.deepEqual(o('README.md'), []);
+  const owners = (path: string) => ownersOf(rules, path);
+  assert.deepEqual(owners('AGENTS.md'), ['@owner'], 'anchored');
+  assert.deepEqual(owners('sub/AGENTS.md'), [], 'a leading slash anchors at the root');
+  assert.deepEqual(owners('kit/a/b.md'), ['@owner', '@team/leads'], 'a folder and everything in it; two owners');
+  assert.deepEqual(owners('kit'), [], 'a trailing slash needs something inside the folder');
+  assert.deepEqual(owners('apps/x.ts'), ['@apps']);
+  assert.deepEqual(owners('deep/apps/x.ts'), ['@apps'], 'a folder pattern with no other slash matches in any folder');
+  assert.deepEqual(owners('docs/x.md'), ['@docs'], 'docs/* matches a file in docs/');
+  assert.deepEqual(owners('docs/a/x.md'), [], 'and not deeper');
+  assert.deepEqual(owners('deep/yarn.lock'), ['@deps'], 'no slash matches in any folder');
+  assert.deepEqual(owners('src/secret.ts'), ['@sec'], '** matches no folder');
+  assert.deepEqual(owners('src/a/b/secret.ts'), ['@sec'], '** crosses folders');
+  assert.deepEqual(owners('kit/notes/a.md'), [], 'a later pattern with no owners wins');
+  assert.deepEqual(owners('a/b/logs/x.txt'), ['@logs']);
+  assert.deepEqual(owners('README.md'), []);
   const all = parseCodeOwners('* @owner\n/docs/ @writer\n');
   assert.deepEqual(ownersOf(all, 'src/deep/a.ts'), ['@owner'], '* matches every path');
   assert.deepEqual(ownersOf(all, 'docs/guide.md'), ['@writer'], 'the last match wins');
