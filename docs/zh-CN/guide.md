@@ -452,7 +452,8 @@ PR 改了用户能感觉到的东西，就加一个小文件：`changes/<issue>-
 
 文件就是普通的 Markdown。第 1 行写分类：Added、Changed、Deprecated、Removed、Fixed、Security
 或 Internal。第 2 行空着。从第 3 行开始写条目，写成它在更新日志里该有的样子。前面的 `- `
-会自动加上。一个文件里写好几条也可以。
+会自动加上。一个文件里写好几条也可以。条目里不能有标题；文件直接放在 `changes/` 下面，
+不要放进子文件夹，也不要用链接。
 
 ```markdown
 Fixed

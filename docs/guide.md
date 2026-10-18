@@ -487,6 +487,8 @@ files never conflict.
 The file is plain Markdown. Line 1 is the section: Added, Changed, Deprecated, Removed,
 Fixed, Security or Internal. Line 2 is blank. From line 3, write the entry as it should
 read in the changelog. The `- ` is added for you. Several bullets in one file are fine.
+The entry has no headings, and the file is a plain file right in `changes/`, not in a
+folder or behind a link.
 
 ```markdown
 Fixed

@@ -7,7 +7,7 @@
 // as it should read in the changelog. The text comes from a pull request, so a problem
 // names the file and the line, and never prints the text back.
 
-import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { type Finding, finding } from '../rules/message.ts';
 import { CHANGES_DIR, isChangeFile } from '../rules/pr.ts';
@@ -26,6 +26,9 @@ const UNRELEASED = /^##\s+\[?Unreleased\]?\s*$/i;
 const VERSION_HEADING = /^##\s/;
 const SECTION_HEADING = /^###\s+(\S+)\s*$/;
 const isBullet = (line: string) => /^[-*+] /.test(line);
+// A Markdown heading (up to three spaces, one to six #, then a space or the end). In an
+// entry it would land in CHANGELOG.md as is, and could add a fake version.
+const isHeading = (line: string) => /^ {0,3}#{1,6}(\s|$)/.test(line);
 
 /**
  * The entry as changelog lines. The collector adds `- ` when the text has no bullet of
@@ -44,6 +47,8 @@ export function parseChange(file: string, content: string): { change: Change | n
   const section = CHANGE_SECTIONS.find((name) => name.toLowerCase() === lines[0].trim().toLowerCase());
   if (!section) return fail('line 1 is not a section', `make line 1 one of: ${CHANGE_SECTIONS.join(', ')}`, 1);
   if (lines.length > 1 && lines[1].trim()) return fail('line 2 is not blank', 'leave line 2 empty, and start the entry on line 3', 2);
+  const heading = lines.findIndex((line, index) => index > 1 && isHeading(line));
+  if (heading > 0) return fail(`line ${heading + 1} is a heading`, 'write the entry as plain text or bullets; the section on line 1 is its only heading', heading + 1);
   const text = lines.slice(2);
   while (text.length && !text[0].trim()) text.shift();
   while (text.length && !text[text.length - 1].trim()) text.pop();
@@ -64,8 +69,14 @@ export function readChanges(root: string): { changes: Change[]; problems: Findin
   for (const name of names) {
     const file = `${CHANGES_DIR}/${name}`;
     if (!isChangeFile(file)) continue;
-    if (statSync(join(dir, name)).isDirectory()) {
+    const stat = lstatSync(join(dir, name));
+    if (stat.isDirectory()) {
       problems.push(finding('change-file', 'a folder inside the changes folder', `move its files up into ${CHANGES_DIR}/`, { file }));
+      continue;
+    }
+    // A link may point outside the repo, or nowhere; a change file is a plain file.
+    if (!stat.isFile()) {
+      problems.push(finding('change-file', 'a change file is a link or another special file, not a plain file', `replace it with a plain file in ${CHANGES_DIR}/`, { file }));
       continue;
     }
     const read = parseChange(file, readFileSync(join(dir, name), 'utf8'));
@@ -99,7 +110,9 @@ function lastText(lines: string[], start: number, end: number): number {
  * section heading is added in Keep a Changelog's order. Released versions are not touched.
  */
 export function mergeChanges(changelog: string, changes: Change[]): string | Finding {
-  const lines = changelog.split('\n');
+  // New lines take the file's own line ending, so a CRLF file stays CRLF.
+  const eol = changelog.includes('\r\n') ? '\r\n' : '\n';
+  const lines = changelog.split(eol);
   const top = lines.findIndex((line) => UNRELEASED.test(line));
   if (top < 0) return finding('change-file', 'CHANGELOG.md has no `## [Unreleased]` heading', 'add `## [Unreleased]` above the first version, then run it again', { file: 'CHANGELOG.md' });
   for (const section of CHANGE_SECTIONS) {
@@ -127,7 +140,7 @@ export function mergeChanges(changelog: string, changes: Change[]): string | Fin
     // A blank line before whatever comes next: a heading, or the next version.
     lines.splice(after + 1, 0, ...block, ...(lines[after + 1]?.trim() ? [''] : []));
   }
-  return lines.join('\n');
+  return lines.join(eol);
 }
 
 /**
