@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { COMMANDS } from '../src/run/cli.ts';
 import { findDeclarations, findNameProblems, splitWords, tokenize } from '../src/run/names.ts';
 import { HOME_DIR, homeDirOf } from '../src/setup/files.ts';
 
@@ -320,6 +321,70 @@ test('docs: every install command in docs/facts.json is in the guides and README
   ];
   for (const [file, lists] of shown) {
     assert.deepEqual(missingCommands(facts, lists, readFileSync(join(ROOT, file), 'utf8')), [], `${file} lacks these commands from docs/facts.json; change both`);
+  }
+});
+
+// The guide's Commands table is typed by hand; COMMANDS in src/run/cli.ts is what the
+// parser and --help read (#219). Each command needs a row, and each option must show in
+// one of its rows or in the paragraph right after the table. A command with no row, like
+// help and version, passes when that paragraph names `yokoten <name>`: they take no
+// option, and a row would only repeat the paragraph (#230).
+type GuideCommand = { name: string; options: { name: string }[] };
+
+/** True when `text` holds `word` with no letter, digit or dash right before or after it. */
+const hasWord = (text: string, word: string): boolean => new RegExp(`(?<![\\w-])${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`).test(text);
+
+/** What the Commands table under `heading` in `guide` lacks from `commands`, or names that `commands` lacks. */
+function findGuideGaps(guide: string, heading: string, commands: GuideCommand[]): string[] {
+  const lines = guide.split('\n');
+  const start = lines.indexOf(heading);
+  if (start < 0) return [`no "${heading}" heading`];
+  const tableStart = lines.findIndex((line, i) => i > start && line.startsWith('|'));
+  if (tableStart < 0 || lines.slice(start + 1, tableStart).some((line) => line.startsWith('#'))) return [`no table under "${heading}"`];
+  let tableEnd = tableStart;
+  while (lines[tableEnd]?.startsWith('|')) tableEnd++;
+  // Skip the header row and the |---| row.
+  const rows = lines.slice(tableStart + 2, tableEnd);
+  let paragraphEnd = tableEnd + 1;
+  while (lines[paragraphEnd]?.trim()) paragraphEnd++;
+  const paragraph = lines.slice(tableEnd + 1, paragraphEnd).join(' ');
+  // The command a row is about: the first word of its first cell.
+  const commandOf = (row: string): string => row.split('|')[1].replaceAll('`', '').trim().split(/\s+/)[0];
+  const gaps: string[] = [];
+  for (const row of rows) {
+    const name = commandOf(row);
+    if (!commands.some((command) => command.name === name)) gaps.push(`a row names "${name}", which is not in COMMANDS`);
+  }
+  for (const command of commands) {
+    const commandRows = rows.filter((row) => commandOf(row) === command.name);
+    if (!commandRows.length && !hasWord(paragraph, `yokoten ${command.name}`)) gaps.push(`${command.name}: no row`);
+    for (const option of command.options) {
+      const isInParagraph = hasWord(paragraph, `\`${command.name}`) && hasWord(paragraph, option.name);
+      if (!commandRows.some((row) => hasWord(row, option.name)) && !isInParagraph) gaps.push(`${command.name} ${option.name}: in no row`);
+    }
+  }
+  return gaps;
+}
+
+test('docs: the guides\' Commands table covers every command and option in COMMANDS (#230)', () => {
+  const fake: GuideCommand[] = [
+    { name: 'check', options: [{ name: '--json' }, { name: '--staged' }] },
+    { name: 'version', options: [] },
+  ];
+  const table = '### Commands\n\nIntro.\n\n| Command | What |\n|---|---|\n';
+  assert.deepEqual(findGuideGaps(`${table}| \`check [--staged]\` | x |\n| \`lint\` | y |\n\nRun \`yokoten version\`.\n`, '### Commands', fake), [
+    'a row names "lint", which is not in COMMANDS',
+    'check --json: in no row',
+  ]);
+  assert.deepEqual(findGuideGaps(`${table}| \`check --staged\` | x |\n\n\`check\` takes \`--json\`.\n\nRun \`yokoten version\`.\n`, '### Commands', fake), ['version: no row']);
+  assert.deepEqual(findGuideGaps(`${table}| \`check --staged\` | x |\n\n\`check\` takes \`--json\`. \`yokoten version\` too.\n`, '### Commands', fake), []);
+
+  const guides: [string, string][] = [
+    ['docs/guide.md', '### Commands'],
+    ['docs/zh-CN/guide.md', '### 命令'],
+  ];
+  for (const [file, heading] of guides) {
+    assert.deepEqual(findGuideGaps(readFileSync(join(ROOT, file), 'utf8'), heading, COMMANDS), [], `${file}: its Commands table differs from COMMANDS in src/run/cli.ts`);
   }
 });
 
