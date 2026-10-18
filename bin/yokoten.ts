@@ -288,7 +288,8 @@ function main(): number | Promise<number> {
           else print([`${name}: ${skipped}`]);
           return 0;
         }
-        problems = checkIssueTitle(issue.title, config, issue.labels);
+        // An event that can't be read is one finding (#267), so --json and the summary still work.
+        problems = 'problem' in issue ? [issue.problem] : checkIssueTitle(issue.title, config, issue.labels);
       } else if (mode === 'pr') {
         const pr = readPullRequest(root, env);
         if (!pr) {
@@ -297,54 +298,59 @@ function main(): number | Promise<number> {
           else print([`${name}: ${skipped}`]);
           return 0;
         }
-        // The file as the pull request leaves it, or null when the pull request deletes it.
-        const readAtHead = (file: string): string | null => {
-          try {
-            return execFileSync('git', ['show', `${pr.head}:${file}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-          } catch {
-            return null;
+        // An event or commits that can't be read are one finding (#267), never git's raw error.
+        if ('problem' in pr) {
+          problems = [pr.problem];
+        } else {
+          // The file as the pull request leaves it, or null when the pull request deletes it.
+          const readAtHead = (file: string): string | null => {
+            try {
+              return execFileSync('git', ['show', `${pr.head}:${file}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+            } catch {
+              return null;
+            }
+          };
+          const printNotes = (found: Finding[], label: string) => {
+            if (found.length && !json) print([`${name}: note: ${found.length} ${label}`, ...bullets(found.slice(0, 10)), ...(found.length > 10 ? [`- and ${found.length - 10} more`] : [])]);
+          };
+          // Plain English (record 0005): long sentences in changed Markdown are notes, never failures.
+          const long: Finding[] = [];
+          for (const file of pr.files.filter((p) => /\.md$/i.test(p))) {
+            const text = readAtHead(file);
+            if (text !== null) for (const s of longSentences(text)) long.push(longSentenceNote(file, s));
           }
-        };
-        const printNotes = (found: Finding[], label: string) => {
-          if (found.length && !json) print([`${name}: note: ${found.length} ${label}`, ...bullets(found.slice(0, 10)), ...(found.length > 10 ? [`- and ${found.length - 10} more`] : [])]);
-        };
-        // Plain English (record 0005): long sentences in changed Markdown are notes, never failures.
-        const long: Finding[] = [];
-        for (const file of pr.files.filter((p) => /\.md$/i.test(p))) {
-          const text = readAtHead(file);
-          if (text !== null) for (const s of longSentences(text)) long.push(longSentenceNote(file, s));
+          notes.push(...long);
+          printNotes(long, 'long sentence(s)');
+          // Names (record 0006): hard-to-read names on the lines a pull request adds to code
+          // are notes too. Old lines are left alone, so a project is not noted all at once.
+          const names: Finding[] = [];
+          const codeFiles = pr.files.filter(isCodeFile);
+          // One diff with renames found, so a moved file is not noted as all new. Fixed
+          // prefixes and plain paths, whatever the user's git settings say.
+          const diffArgs = ['-c', 'core.quotePath=false', 'diff', '-U0', '-M', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', `${pr.base}...${pr.head}`];
+          const added = codeFiles.length ? addedLinesByFile(execFileSync('git', diffArgs, { cwd: root, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })) : new Map<string, Set<number>>();
+          for (const file of codeFiles) {
+            const text = added.has(file) ? readAtHead(file) : null;
+            if (text !== null) names.push(...nameNotes(file, text, added.get(file) ?? new Set()));
+          }
+          notes.push(...names);
+          printNotes(names, 'hard-to-read name(s)');
+          // A large pull request (record 0004) is a note too, never a failure.
+          const large = largeDiff(changedLines(pr.numstat));
+          if (large) {
+            notes.push(large);
+            if (!json) print([`${name}: note: ${formatFinding(large)}`]);
+          }
+          problems = checkPullRequest(pr, config);
+          // Each change file the pull request leaves (#132) must be one `yokoten changelog` can read.
+          for (const file of pr.files.filter(isChangeFile)) {
+            const text = readAtHead(file);
+            if (text !== null) problems.push(...parseChange(file, text).problems);
+          }
+          // Owned paths set the lowest tier, from the base branch's CODEOWNERS.
+          const owned = checkOwnedTier(pr, readCodeOwners(root, pr.base));
+          if (owned) problems.push(owned);
         }
-        notes.push(...long);
-        printNotes(long, 'long sentence(s)');
-        // Names (record 0006): hard-to-read names on the lines a pull request adds to code
-        // are notes too. Old lines are left alone, so a project is not noted all at once.
-        const names: Finding[] = [];
-        const codeFiles = pr.files.filter(isCodeFile);
-        // One diff with renames found, so a moved file is not noted as all new. Fixed
-        // prefixes and plain paths, whatever the user's git settings say.
-        const diffArgs = ['-c', 'core.quotePath=false', 'diff', '-U0', '-M', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', `${pr.base}...${pr.head}`];
-        const added = codeFiles.length ? addedLinesByFile(execFileSync('git', diffArgs, { cwd: root, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })) : new Map<string, Set<number>>();
-        for (const file of codeFiles) {
-          const text = added.has(file) ? readAtHead(file) : null;
-          if (text !== null) names.push(...nameNotes(file, text, added.get(file) ?? new Set()));
-        }
-        notes.push(...names);
-        printNotes(names, 'hard-to-read name(s)');
-        // A large pull request (record 0004) is a note too, never a failure.
-        const large = largeDiff(changedLines(pr.numstat));
-        if (large) {
-          notes.push(large);
-          if (!json) print([`${name}: note: ${formatFinding(large)}`]);
-        }
-        problems = checkPullRequest(pr, config);
-        // Each change file the pull request leaves (#132) must be one `yokoten changelog` can read.
-        for (const file of pr.files.filter(isChangeFile)) {
-          const text = readAtHead(file);
-          if (text !== null) problems.push(...parseChange(file, text).problems);
-        }
-        // Owned paths set the lowest tier, from the base branch's CODEOWNERS.
-        const owned = checkOwnedTier(pr, readCodeOwners(root, pr.base));
-        if (owned) problems.push(owned);
       } else {
         problems = mode === 'history' ? checkHistory(root, { config, env }) : check(root, { config, env, staged: mode === 'staged', notes });
         // A translation behind its English source (#87) is a note, for the whole tree only.

@@ -190,6 +190,17 @@ export const RULES = {
     check: PR_CHECK,
     docs: guide('the-core-rules'),
   },
+  'pr-commits': {
+    rule: 'the checkout of a pull request run has its base and head commits, and the history between them',
+    why: 'yokoten reads the changed files from git, between the base and the head commit, so without them nothing in the pull request is checked',
+    check: `${PR_CHECK}; it looks for both commits and a common commit before it reads the diff, and fails when one is missing`,
+    docs: guide('use-it-as-a-github-action'),
+  },
+  'ci-event': {
+    rule: '`check --pr` and `check --issue` read the event file of the CI run',
+    why: 'the pull request or the issue is in that file, so without it nothing is checked',
+    check: 'in a CI run, `check --pr` and `check --issue` fail when the event file is missing or is not a JSON object; with no event file named, they skip',
+  },
   'issue-area': {
     rule: 'an issue title starts with its area: `area: verb phrase` for a task, `area: symptom` for an incident',
     why: 'the area tells a reader which part of the project the issue is about',
