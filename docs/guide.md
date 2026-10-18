@@ -341,7 +341,8 @@ on `@main`.
 then run with no network and no global install.
 
 `init` keeps a project's own setup working. With a `CLAUDE.md`, it adds an `@AGENTS.md`
-line at the end, because Claude Code reads `AGENTS.md` only through that import. With
+line at the end, because Claude Code reads `AGENTS.md` only through that import. A
+`.claude/CLAUDE.md` counts too, and gets `@../AGENTS.md` when there is no root one. With
 husky or another `core.hooksPath`, it keeps that folder and adds the commit check to its
 `pre-commit`. The project's own hook lines stay, and `init` says which file it changed.
 

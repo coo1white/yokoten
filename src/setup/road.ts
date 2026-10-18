@@ -20,7 +20,7 @@ import { hasPlugin, hasProjectHook } from '../agents/claude-code.ts';
 import { runs } from '../run/cli.ts';
 import { hasBot, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
-import { claudeReadsRules, cliPath, hookFile, isSelf } from './init.ts';
+import { claudeReadsRules, cliPath, findRulesGap, hookFile, isSelf } from './init.ts';
 import { FIRST_MILESTONE, lackingLabels, pickNewMilestone } from './plan.ts';
 import { skillFiles, skillsDir } from './install.ts';
 
@@ -291,10 +291,16 @@ export const ROAD: Step[] = [
     stage: 1,
     key: 'rules',
     check: (root) => existsSync(join(root, 'AGENTS.md')) && claudeReadsRules(root),
-    what: (root) => (existsSync(join(root, 'AGENTS.md')) ? 'CLAUDE.md does not import AGENTS.md, so Claude Code does not read the rules' : 'no AGENTS.md, so the agents have no written rules here'),
-    fix: (root) => (existsSync(join(root, 'AGENTS.md')) ? 'add a line `@AGENTS.md` at the end of CLAUDE.md, or run `yokoten init`' : '`yokoten init` adds one'),
+    what: (root) => {
+      const gap = findRulesGap(root);
+      return existsSync(join(root, 'AGENTS.md')) && gap ? `${gap.file} does not import AGENTS.md, so Claude Code does not read the rules` : 'no AGENTS.md, so the agents have no written rules here';
+    },
+    fix: (root) => {
+      const gap = findRulesGap(root);
+      return existsSync(join(root, 'AGENTS.md')) && gap ? `add a line \`${gap.line}\` at the end of ${gap.file}, or run \`yokoten init\`` : '`yokoten init` adds one';
+    },
     why: 'an agent follows the rules it can read, and only those',
-    how: 'AGENTS.md is at the repo root, and a CLAUDE.md, when there is one, imports it (`@AGENTS.md`) or links to it: with a CLAUDE.md, Claude Code reads AGENTS.md only through it',
+    how: 'AGENTS.md is at the repo root, and a CLAUDE.md (at the root or in .claude/), when there is one, imports it (`@AGENTS.md`, or `@../AGENTS.md` from .claude/) or links to it: with a CLAUDE.md, Claude Code reads AGENTS.md only through it',
     standard: 'OpenSSF: AI code assistant instructions',
   },
   {
