@@ -237,7 +237,9 @@ can't drift apart:
 Claude Code runs the plugin's `.ts` files with `node`. Node can do this because the
 plugin folder is not under `node_modules`. To get a newer yokoten, open `/plugin`, select
 yokoten on the **Installed** tab, and choose **Update now**. A third-party marketplace
-does not update on its own until you turn on auto-update for it.
+does not update on its own until you turn on auto-update for it. From your shell,
+`claude plugin update yokoten@yokoten` does the same; restart Claude Code after it. When the
+plugin is older than the yokoten that runs `doctor`, `doctor` says so in a note.
 
 The plugin works in Claude Code only. It does not make the private-marks file: `doctor`
 names the file, and you make it. When the plugin is on in your user settings, `doctor`
