@@ -136,7 +136,7 @@ export const COMMANDS: Command[] = [
     summary: 'a rule or a step: what it is, why, and how it is checked',
     usage: '[<id>] [--json]',
     text: ['Explains one rule or one step of the road. With no id, it lists the ids.'],
-    options: [{ name: '--json', text: 'the explanation as JSON on stdout' }],
+    options: [{ name: '--json', text: 'the explanation, or the ids, as JSON on stdout' }],
     argument: 'id',
     example: 'yokoten explain release',
   },

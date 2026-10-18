@@ -404,7 +404,7 @@ value.
 - `hook --stop --json`: `{ blocked, stop, findings }`. With `stop_hook_active`, or when the
   check fails, also `skipped`, the reason. When stdin is not a Stop event: `{ blocked: false, stop: false }`.
 - `explain --json`: `{ found, id, kind, what, why, check, docs, stage, standard }`. For an
-  unknown id, or none: `{ id, found: false, ids }`, where `id` is `null` when none was given.
+  unknown id: `{ id, found: false, ids }`, exit 1. With no id: `{ ids }`, exit 0.
 
 Output for people follows one rule. Results go to stdout. Problems, refusals and errors
 go to stderr. An unknown option is refused, never ignored.

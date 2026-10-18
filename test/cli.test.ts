@@ -1425,9 +1425,22 @@ test('--json: check, doctor, hook and explain print pure JSON with what, why and
   assert.match(result.stdout, /^secret: .+\.\nWhy: .+\.\nCheck: .+\.\nDocs: https:\/\/github\.com\/yokoten-labs\/yokoten\/blob\/main\/docs\/guide\.md#privacy\n$/, 'the link to the rule (#94)');
   result = sandbox.run(['explain', 'commit-check']);
   assert.match(result.stdout, /^commit-check: a step on the road: stage 1 of 5, safety net\.\nWhy: .+\.\nCheck: .+\.\nStandard: OSPS-BR-07\.01\.\n$/);
-  result = sandbox.run(['explain']);
+});
+
+test('explain with no id lists the ids on stdout and exits 0; --json gives { ids } (#247)', () => {
+  const sandbox = makeSandbox();
+  let result = sandbox.run(['explain']);
+  assert.deepEqual([result.status, result.stderr], [0, '']);
+  assert.match(result.stdout, /^Ids: release, .*\bsecret\b.*\n$/);
+  result = sandbox.run(['explain', '--json']);
+  assert.deepEqual([result.status, result.stderr], [0, '']);
+  const listed = JSON.parse(result.stdout);
+  assert.deepEqual(Object.keys(listed), ['ids']);
+  assert.ok(listed.ids.includes('release') && listed.ids.includes('secret'));
+  // An unknown id is still an error.
+  result = sandbox.run(['explain', 'nope']);
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /Ids: release, /);
+  assert.match(result.stderr, /no rule or step is called nope\.\nIds: release, /);
 });
 
 test('init: reads GitHub and says what it would do; --github --yes does it, and a second run changes nothing (#10)', () => {
