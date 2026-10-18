@@ -291,7 +291,8 @@ export async function draft(rows: Fact[], { env, send = chat, timeoutMs }: { env
   return { rows: answer.rows, by: `the model (${config.model})` };
 }
 
-const cell = (text: string) => text.replace(/\|/g, '\\|').replace(/\s+/g, ' ');
+// A cell in a Markdown table: a backslash first, then a pipe, so neither can end the cell.
+const cell = (text: string) => text.replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\s+/g, ' ');
 
 /** The one line that says who decides. */
 export const YOU_DECIDE = 'This is a draft. You decide every row: as-is, lighter, or not now with a reason and when to look again.';

@@ -171,6 +171,9 @@ test('adopt draft: no key, a failed call or a bad answer fall back to the rules,
   const out = table(good).join('\n');
   assert.match(out, /^\| Practice \| The project today \| Draft \| Why \|/);
   assert.match(out, /You decide every row/);
+  // A backslash before a pipe would end the cell early: both are escaped, the backslash first.
+  const tricky = table({ ...good, rows: [{ ...good.rows[0], reason: 'ends in \\| x' }] }).join('\n');
+  assert.ok(tricky.includes('| ends in \\\\\\| x |'), 'a backslash and a pipe stay inside the cell');
   for (const d of [noKey, failed, invalid, good]) assert.ok(!JSON.stringify(d).includes('test-key') && !table(d).join('\n').includes('test-key'), 'the key is never in the output');
 });
 
