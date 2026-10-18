@@ -26,14 +26,17 @@ const TYPES = ['feat', 'fix', 'docs', 'test', 'refactor', 'chore', 'ci', 'perf',
 const TITLE = new RegExp(`^(${TYPES.join('|')})(\\([a-z0-9][a-z0-9./-]*\\))?!?: \\S`);
 const SECTIONS = ['Why', 'What changed', 'How tested'];
 
-const GRAPHEMES = new Intl.Segmenter('en', { granularity: 'grapheme' });
+let graphemes: Intl.Segmenter | null | undefined;
 
 /**
  * The length of text as a person counts it (#268): one per character they see, so an emoji,
  * a flag or a family emoji is 1, not the 2 to 11 UTF-16 code units `.length` gives.
+ * The segmenter is made on first use, so a Node built without Intl still runs every other
+ * command; there a title counts code points.
  */
 export function visibleLength(text: string): number {
-  return [...GRAPHEMES.segment(text)].length;
+  if (graphemes === undefined) graphemes = typeof Intl === 'object' && typeof Intl.Segmenter === 'function' ? new Intl.Segmenter('en', { granularity: 'grapheme' }) : null;
+  return graphemes ? [...graphemes.segment(text)].length : [...text].length;
 }
 
 /**
