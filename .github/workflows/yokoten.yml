@@ -98,6 +98,22 @@ jobs:
         with:
           advanced-security: false
           annotations: true
+            # The action other repos use (action.yml, #106), run here as they would run it. No
+  # `check --pr`: this workflow does not run again when the title or labels change, so a
+  # fixed title would leave `ci` red. The `pr` workflow checks the pull request.
+  action:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./
+        with:
+          pr-check: false
   # The one required check. It runs even when a job it needs failed, and goes red if
   # any of them did not succeed (failed, cancelled or skipped).
   ci:
