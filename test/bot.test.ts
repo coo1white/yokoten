@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { annotation, annotations, appJwt, botConfig, botEnv, type Gh, installationToken, readCommandTitle, readIncident, readServer, repoOf, type ServerSettings, stepSummary, type Unread, type Label, readPlanning } from '../src/host/github.ts';
 import { DEFAULTS } from '../src/rules/config.ts';
+import { draftLesson, type Incident } from '../src/run/learn.ts';
 import { checkCommand } from '../src/rules/guards.ts';
 import { doctor } from '../src/setup/doctor.ts';
 import { road, ROAD, serverChecks, stepFinding } from '../src/setup/road.ts';
@@ -441,4 +442,17 @@ test('incident: the number gh gives must be a whole number above 0, since it nam
     assert.equal(result, 'gh gave no issue number for 1: it must be a whole number above 0', `number ${String(bad)}`);
   }
   assert.equal((readIncident(ghWith(7), '1') as { number: number }).number, 7);
+});
+
+test('incident: an odd title is a reason; an odd body or url is empty, and the draft has a TODO for the url', () => {
+  const ghWith = (fields: Record<string, unknown>): Gh => () => JSON.stringify({ number: 3, title: 'check: misses a key', body: '## Fix\n\nA check.', url: 'https://example.com/issues/3', labels: [], ...fields });
+  for (const odd of [null, 7, { text: 'x' }, ['x'], undefined]) {
+    assert.equal(readIncident(ghWith({ title: odd }), '3'), 'gh gave no title for 3', `title ${JSON.stringify(odd)}`);
+    const noBody = readIncident(ghWith({ body: odd }), '3') as Incident;
+    assert.equal(noBody.body, '', `body ${JSON.stringify(odd)}`);
+    assert.equal(typeof draftLesson(noBody).finding.fix, 'string');
+    const noUrl = readIncident(ghWith({ url: odd }), '3') as Incident;
+    assert.equal(noUrl.url, '', `url ${JSON.stringify(odd)}`);
+    assert.match(draftLesson(noUrl).files[0].text, /^\/\/ TODO\(reviewer\): gh gave no URL for the issue$/m);
+  }
 });
