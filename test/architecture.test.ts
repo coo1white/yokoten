@@ -6,6 +6,7 @@ import { dirname, join, relative } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { findDeclarations, findNameProblems, splitWords, tokenize } from '../src/run/names.ts';
+import { HOME_DIR, homeDirOf } from '../src/setup/files.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = join(ROOT, 'src');
@@ -84,6 +85,42 @@ test('code is .ts only: no .js, .mjs, .cjs or .tsx under bin, src or test (#43)'
   const files = execFileSync('git', ['ls-files', 'bin', 'src', 'test'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter(Boolean);
   assert.ok(files.some((f) => f.endsWith('.ts')), 'no .ts found; the scan is broken');
   assert.deepEqual(strayCode(files), [], 'write it as .ts: Node runs it with no build');
+});
+
+// ---- The npm package (#31) ----
+//
+// The hooks run on a fresh machine with nothing but Node, and `npx yokoten` installs one
+// package, never a tree. So there are no runtime dependencies; dev ones are for tsc only.
+const DEPENDENCY_FIELDS = ['dependencies', 'optionalDependencies', 'peerDependencies', 'bundleDependencies', 'bundledDependencies'];
+const runtimeDependencies = (pkg: Record<string, unknown>): string[] =>
+  DEPENDENCY_FIELDS.flatMap((field) => {
+    const value = pkg[field];
+    if (Array.isArray(value)) return value.map((name) => `${field}: ${name}`);
+    if (value && typeof value === 'object') return Object.keys(value).map((name) => `${field}: ${name}`);
+    return value ? [`${field}: ${String(value)}`] : [];
+  });
+
+test('package: zero runtime dependencies (#31)', () => {
+  assert.deepEqual(runtimeDependencies({ dependencies: { chalk: '^5' }, peerDependencies: {}, bundleDependencies: ['a'], devDependencies: { typescript: '^7' } }), ['dependencies: chalk', 'bundleDependencies: a']);
+  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+  assert.ok(pkg.devDependencies?.typescript, 'no typescript in devDependencies; the read is broken');
+  assert.deepEqual(runtimeDependencies(pkg), [], 'yokoten uses Node\'s standard library only (AGENTS.md, "This project")');
+});
+
+// Node does not strip types under node_modules, so the package runs the built .js in dist/.
+// dist/ is made at pack time and never committed; the repo runs the .ts files.
+test('package: the bin is the build, made at pack time and git-ignored (#31)', () => {
+  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+  assert.equal(pkg.bin.yokoten, 'dist/bin/yokoten.js');
+  for (const part of ['bin', 'src', 'kit', 'dist']) assert.ok(pkg.files.includes(part), `package.json files has no ${part}`);
+  assert.match(pkg.scripts.prepack, /scripts\/build\.ts/);
+  assert.equal(execFileSync('git', ['check-ignore', 'dist/bin/yokoten.js'], { cwd: ROOT, encoding: 'utf8' }).trim(), 'dist/bin/yokoten.js');
+});
+
+test('package: the runtime finds its home from the .ts and from the built .js (#31)', () => {
+  assert.equal(homeDirOf(join('/pkg', 'src', 'setup', 'files.ts')), join('/pkg'));
+  assert.equal(homeDirOf(join('/pkg', 'dist', 'src', 'setup', 'files.js')), join('/pkg'));
+  assert.equal(HOME_DIR, ROOT);
 });
 
 // The ruleset on main names one check, `ci`. So `ci` must wait for every other job in
