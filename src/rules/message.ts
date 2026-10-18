@@ -55,7 +55,7 @@ export const RULES = {
   'hooks-path': {
     rule: 'never turn off the commit check (core rule 6)',
     why: 'git runs the commit check from core.hooksPath, so another value turns the check off',
-    check: 'the tool-call guard stops `git config core.hooksPath` with any value but .githooks; the commit-check step looks at the setting',
+    check: 'the tool-call guard lets a read of core.hooksPath through, and stops any other value than .githooks: `git config`, `git -c`, `--config-env` and GIT_CONFIG_KEY_n; the commit-check step looks at the setting',
   },
   'test-file': {
     rule: 'a fix task changes code, never tests (core rule 4)',
