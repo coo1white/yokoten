@@ -717,7 +717,7 @@ test('learn: bidi controls from the issue are shown as \\uXXXX in the preview an
   for (const file of draft.files) assert.ok(!raw.test(readFileSync(join(root, file.path), 'utf8')), `no raw bidi control in ${file.path}`);
   const lesson = readFileSync(join(root, draft.files[0].path), 'utf8');
   assert.ok(lesson.includes('// A lesson from incident #12: repo: tests break \\u202ex\\u2066x'), 'a comment shows each as \\uXXXX text');
-  assert.ok(lesson.includes("  fix: 'A check \\u202e\\u2066\\u2067\\u2068\\u2069',"), 'a string escapes each');
+  assert.ok(lesson.includes("  fix: 'a check \\u202e\\u2066\\u2067\\u2068\\u2069',"), 'a string escapes each');
 });
 
 test('learn: --write adds the draft\'s files and keeps a file that is there', () => {
