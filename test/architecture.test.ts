@@ -172,6 +172,46 @@ test('workflows: checkout keeps no token (#36)', () => {
   }
 });
 
+// What a project gets from `init` meets the standard this repo keeps (#36), in every
+// workflow file, not only yokoten.yml: pinned actions, a time limit on each job, no
+// token kept by checkout, and a `ci` job (where there is one) that needs every job.
+const workflowProblems = (text: string) => {
+  const problems = unpinned(text).map((ref) => `\`${ref}\` is not pinned to a commit with a version comment`);
+  const all = jobs(text);
+  if (all.length === 0) problems.push('no jobs found');
+  for (const j of all) if (!/^ {4}timeout-minutes: \d+$/m.test(j.block)) problems.push(`\`${j.name}\` has no time limit`);
+  for (const c of text.matchAll(/uses: actions\/checkout@.*\n((?: {8,}.*\n)*)/g)) {
+    if (!/persist-credentials: false/.test(c[1])) problems.push('a checkout keeps its token');
+  }
+  if (all.some((j) => j.name === 'ci')) problems.push(...ciProblems(text).filter((p) => p.startsWith('`ci`')));
+  return problems;
+};
+
+test('workflows: every workflow, in the kit and here, meets the standard; a bad one is caught (#36)', () => {
+  const checkout = 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1';
+  const good = `permissions: {}\njobs:\n  a:\n    timeout-minutes: 10\n    steps:\n      - uses: ${checkout}\n        with:\n          persist-credentials: false\n  ci:\n    if: always()\n    needs: [a]\n    timeout-minutes: 10\n`;
+  assert.deepEqual(workflowProblems(good), []);
+  const bad = 'permissions: {}\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n  b:\n    timeout-minutes: 5\n  ci:\n    if: always()\n    needs: [a]\n    timeout-minutes: 10\n';
+  assert.deepEqual(workflowProblems(bad), [
+    '`actions/checkout@v4` is not pinned to a commit with a version comment',
+    '`a` has no time limit',
+    'a checkout keeps its token',
+    '`ci` does not need `b`',
+  ]);
+  // This repo's own workflows too, so the two never drift apart.
+  for (const folder of ['.github/workflows', 'kit/project/.github/workflows']) {
+    const files = readdirSync(join(ROOT, folder)).filter((f) => /\.ya?ml$/.test(f));
+    assert.ok(files.includes('yokoten.yml'), `${folder}: no yokoten.yml; the scan is broken`);
+    for (const file of files) assert.deepEqual(workflowProblems(readFileSync(join(ROOT, folder, file), 'utf8')), [], `${folder}/${file}`);
+  }
+  const dir = 'kit/project/.github/workflows';
+  // The workflows lint themselves, and Dependabot keeps the pinned actions current.
+  const kitWorkflow = readFileSync(join(ROOT, dir, 'yokoten.yml'), 'utf8');
+  assert.ok(jobs(kitWorkflow).some((j) => j.name === 'lint' && /actionlint/.test(j.block)), `${dir}/yokoten.yml: no \`lint\` job that runs actionlint`);
+  const dependabot = readFileSync(join(ROOT, 'kit/project/.github/dependabot.yml'), 'utf8');
+  assert.match(dependabot, /package-ecosystem: github-actions/, 'kit/project/.github/dependabot.yml: Dependabot must keep the actions bumped');
+});
+
 // ---- Names (#109, record 0006) ----
 //
 // The names we declare in src/, bin/ and test/ follow the rule in AGENTS.md. The reader lives
