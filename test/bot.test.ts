@@ -6,8 +6,9 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { appJwt, botConfig, botEnv, installationToken, repoOf } from '../src/host/github.ts';
+import { appJwt, botConfig, botEnv, type Gh, installationToken, repoOf } from '../src/host/github.ts';
 import { checkCommand } from '../src/rules/guards.ts';
+import { LABELS, setUpPlanning } from '../src/setup/plan.ts';
 
 // A throwaway key, made for this test run only.
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -68,4 +69,63 @@ test('env: gh gets the token, and git asks gh for github.com instead of the owne
 test('the bot is not a way around the guard', () => {
   assert.ok(checkCommand('node .yokoten/bin/yokoten.ts bot -- git push --tags', { env: {} }));
   assert.ok(checkCommand('yokoten bot -- gh release create v1', { env: {} }));
+});
+
+// A fake gh that holds one repo's labels and milestones in memory. The real one is never run.
+function fakeGh(labels: string[], milestones: string[] = []) {
+  const calls: string[][] = [];
+  const gh: Gh = (args) => {
+    calls.push(args);
+    const [a, b] = args;
+    if (a === 'repo') return 'me/repo\n';
+    if (a === 'label' && b === 'list') return labels.map((l) => `${l}\n`).join('');
+    if (a === 'label' && b === 'create') {
+      if (args[2] === 'docs') throw Object.assign(new Error('failed'), { stderr: 'HTTP 403: no access\n' });
+      labels.push(args[2]);
+      return '';
+    }
+    if (a === 'api' && args.includes('POST')) {
+      milestones.push(`open ${args.at(-1)?.slice('title='.length)}`);
+      return '';
+    }
+    if (a === 'api') return milestones.map((m) => `${m}\n`).join('');
+    throw new Error(`unexpected gh ${args.join(' ')}`);
+  };
+  return { gh, calls, labels, milestones };
+}
+
+test('planning: says what it would make, and changes nothing without --yes (#10)', () => {
+  const f = fakeGh(['bug', 'Enhancement', 'wontfix']);
+  const r = setUpPlanning(f.gh, false);
+  assert.ok(r.ok);
+  assert.ok(r.lines.includes('- 1 of the 9 standard labels are there; kept'));
+  assert.ok(r.lines.some((l) => l.startsWith('- not in the standard set: Enhancement, wontfix. yokoten never deletes')));
+  assert.ok(r.lines.includes('- label "hotfix" (Urgent: fix and release soon)'));
+  assert.ok(r.lines.includes('- milestone "First release"'));
+  assert.deepEqual(f.calls.filter((c) => c.includes('create') || c.includes('POST')), [], 'nothing made');
+});
+
+test('planning: makes what is missing, keeps what is there, and a second run makes nothing (#10)', () => {
+  const f = fakeGh(['BUG', 'owner'], ['closed v0.0.1']);
+  let r = setUpPlanning(f.gh, true);
+  assert.equal(r.ok, false, 'one label was refused');
+  assert.ok(r.lines.includes('- could not make label "docs": HTTP 403: no access'));
+  assert.ok(r.lines.includes('- made label "hotfix"'), 'the refusal did not stop the rest');
+  assert.ok(r.lines.includes('- made milestone "First release"'));
+  assert.equal(f.calls.filter((c) => c[1] === 'create').length, LABELS.length - 2, 'bug and owner kept, case ignored');
+  assert.deepEqual(f.calls.find((c) => c.includes('docs')), ['label', 'create', 'docs', '--color', '0075ca', '--description', 'Documentation only']);
+  f.labels.push('docs');
+  const before = f.calls.length;
+  r = setUpPlanning(f.gh, true);
+  assert.ok(r.ok);
+  assert.equal(r.lines.at(-1), 'Nothing to make.');
+  assert.ok(f.calls.slice(before).every((c) => c[1] !== 'create' && !c.includes('POST')));
+});
+
+test('planning: gh missing or signed out is said, not thrown (#10)', () => {
+  const missing = setUpPlanning(() => { throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }); }, true);
+  assert.equal(missing.ok, false);
+  assert.match(missing.lines[0], /^GitHub: gh is not installed/);
+  const out = setUpPlanning(() => { throw new Error('exit 4'); }, true);
+  assert.match(out.lines[0], /run `gh auth login`/);
 });

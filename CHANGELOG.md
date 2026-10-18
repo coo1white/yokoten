@@ -8,6 +8,10 @@ All notable changes are listed here. The format follows
 
 ### Added
 
+- `yokoten init --github` adds the standard labels (bug, feat, docs, refactor, ci,
+  owner, incident, good first issue, hotfix) and a first milestone, through `gh`. Without
+  `--yes` it only says what it would make. It keeps what is there and deletes nothing.
+  `init` now refuses an unknown option (#10).
 - The secret check catches Meta Model API keys (`LLM_` with an app id and a secret) (#68).
 
 ### Changed

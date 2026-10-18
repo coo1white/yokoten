@@ -1,7 +1,7 @@
 // End to end: the CLI in throwaway git repos, the way a hook or CI runs it.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -670,4 +670,47 @@ test('--json: check, doctor, hook and explain print pure JSON with what, why and
   r = s.run(['explain']);
   assert.equal(r.status, 1);
   assert.match(r.stderr, /Ids: release, /);
+});
+
+test('init --github: opt-in, says what it would make, makes it with --yes, and a second run makes nothing (#10)', () => {
+  const s = sandbox();
+  // A fake gh first on PATH, holding the repo in a file. The real gh and GitHub are never reached.
+  const bin = join(s.home, 'bin');
+  const state = join(s.home, 'gh.json');
+  mkdirSync(bin);
+  writeFileSync(state, JSON.stringify({ labels: ['bug', 'question'], milestones: [], calls: [] }));
+  writeFileSync(
+    join(bin, 'gh'),
+    `#!/usr/bin/env node
+const fs = require('node:fs');
+const s = JSON.parse(fs.readFileSync(${JSON.stringify(state)}, 'utf8'));
+const a = process.argv.slice(2);
+s.calls.push(a.join(' '));
+if (a[0] === 'repo') console.log('me/repo');
+else if (a[0] === 'label' && a[1] === 'list') s.labels.forEach((l) => console.log(l));
+else if (a[0] === 'label' && a[1] === 'create') s.labels.push(a[2]);
+else if (a.includes('POST')) s.milestones.push(a.at(-1).slice(6));
+else if (a[0] === 'api') s.milestones.forEach((m) => console.log('open ' + m));
+fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s));
+`,
+  );
+  chmodSync(join(bin, 'gh'), 0o755);
+  const extra = { PATH: `${bin}:${process.env.PATH}` };
+  const made = () => JSON.parse(readFileSync(state, 'utf8')).calls.filter((c: string) => / create |POST/.test(c));
+  let r = s.run(['init'], { extra });
+  assert.match(r.stdout, /run `yokoten init --github` to see what it would make/);
+  assert.equal(JSON.parse(readFileSync(state, 'utf8')).calls.length, 0, 'without --github, gh is not run');
+  assert.equal(s.run(['init', '--yes'], { extra }).status, 1, '--yes alone is refused');
+  r = s.run(['init', '--github'], { extra });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /GitHub: me\/repo\n- 1 of the 9 standard labels are there; kept\n- not in the standard set: question\./);
+  assert.match(r.stdout, /Would make:\n- label "feat"[^]*- milestone "First release"\nNothing changed\./);
+  assert.deepEqual(made(), []);
+  r = s.run(['init', '--github', '--yes'], { extra });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /- made label "good first issue"\n[^]*- made milestone "First release"/);
+  assert.equal(made().length, 9);
+  r = s.run(['init', '--github', '--yes'], { extra });
+  assert.match(r.stdout, /- 9 of the 9 standard labels are there; kept\n- a milestone is there; kept\n[^]*Nothing to make\./);
+  assert.equal(made().length, 9, 'the second run made nothing');
 });
