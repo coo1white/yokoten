@@ -64,8 +64,9 @@ no sign-up, is tied to no person, and its rights are listed one by one.
    Move it to `~/.config/yokoten/bot.pem` and run `chmod 600` on it. Never commit it,
    never paste it into a chat.
 3. **Install App** → only select repositories → this repo.
-4. Add a `.github/CODEOWNERS` file with `* @<you>`, so every pull request needs your
-   review (step 1 requires it).
+4. Add a `.github/CODEOWNERS` file. Give it one line `<path> @<you>` for each path where a
+   mistake is hard to undo: `AGENTS.md`, CI, agent config, the rule code. A pull request
+   that changes one of them needs your review (step 1 requires it), and is tier A.
 
 5. Note the **App ID** (on the App's page, under About), and add it to your shell
    profile: `export YOKOTEN_BOT_APP_ID=<the App ID>`.

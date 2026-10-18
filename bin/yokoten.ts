@@ -5,13 +5,13 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
-import { botConfig, botEnv, ghIn, installationToken, readIssue, readPullRequest, repoOf } from '../src/host/github.ts';
+import { botConfig, botEnv, ghIn, installationToken, readCodeOwners, readIssue, readPullRequest, repoOf } from '../src/host/github.ts';
 import { check, checkChanged, checkHistory, gitRoot, historyTimeZones, timeZoneNote } from '../src/run/check.ts';
 import * as claudeCode from '../src/agents/claude-code.ts';
 import * as codex from '../src/agents/codex.ts';
 import * as gemini from '../src/agents/gemini.ts';
 import { type Finding, formatFinding } from '../src/rules/message.ts';
-import { changedLines, checkIssueTitle, checkPullRequest, largeDiff, longSentenceNote, longSentences } from '../src/rules/pr.ts';
+import { changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, largeDiff, longSentenceNote, longSentences } from '../src/rules/pr.ts';
 import { hideHome } from '../src/rules/privacy.ts';
 import { type Action, judge } from '../src/run/hook.ts';
 import { doctor } from '../src/setup/doctor.ts';
@@ -256,6 +256,9 @@ function main(): number | Promise<number> {
           if (!json) print([`${name}: note: ${formatFinding(large)}`]);
         }
         problems = checkPullRequest(pr, config);
+        // Owned paths set the lowest tier, from the base branch's CODEOWNERS.
+        const owned = checkOwnedTier(pr, readCodeOwners(root, pr.base));
+        if (owned) problems.push(owned);
       } else {
         problems = mode === 'history' ? checkHistory(root, { config, env }) : check(root, { config, env, staged: mode === 'staged' });
         const zones = mode === 'history' && config.privacy.utc ? historyTimeZones(root) : 0;

@@ -14,6 +14,12 @@ All notable changes are listed here. The format follows
   and adds `/yokoten:init` and `/yokoten:doctor`. `git clone` and `install` still work.
   `doctor` counts an enabled plugin as the session hook, the runtime and the skills.
   `.claude-plugin/` is lead-only by default, in every project (#31).
+- `check --pr` fails a pull request that changes a file CODEOWNERS owns unless its
+  first line is `tier: A`. The paths set the lowest tier; the author can only raise it.
+  It reads CODEOWNERS from the base branch, so a pull request can't lower its own tier.
+  No CODEOWNERS file, no check. yokoten's own CODEOWNERS now lists only the paths where
+  a mistake is hard to undo, and `doctor` no longer suggests `* @<you>`. **Kit change:**
+  the pull request template says owned files are tier A (#97).
 - A stop check for Claude Code: `yokoten hook --stop`. When the agent tries to end its
   turn, it checks the changed files (staged, not staged and new) for personal data,
   secrets and file rules. With findings, it sends the agent back once to fix them. It
