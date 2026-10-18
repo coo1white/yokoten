@@ -166,11 +166,13 @@ export function readPullRequest(root: string, env: Env): (PullRequest & { base: 
   const base = pr.base?.sha ?? '';
   const head = pr.head?.sha ?? '';
   const files = base && head ? execFileSync('git', ['diff', '--name-only', '-z', `${base}...${head}`], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean) : [];
+  const deleted = base && head ? execFileSync('git', ['diff', '--name-only', '--diff-filter=D', '-z', `${base}...${head}`], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean) : [];
   const numstat = base && head ? execFileSync('git', ['diff', '--numstat', '-z', `${base}...${head}`], { cwd: root, encoding: 'utf8' }) : '';
   return {
     title: pr.title ?? '',
     body: pr.body ?? '',
     files,
+    deleted,
     labels: (pr.labels ?? []).map((l) => l.name ?? '').filter(Boolean),
     milestone: pr.milestone?.title ?? null,
     base,

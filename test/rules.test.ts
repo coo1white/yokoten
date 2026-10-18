@@ -137,6 +137,8 @@ test('pull request: a file in changes/ counts as the changelog entry (#132)', ()
   const problems = checkPullRequest({ ...goodPr(), files: ['src/rules/pr.ts', 'changes/README.md'] }, DEFAULTS);
   assert.deepEqual(problems.map((problem) => problem.id), ['pr-changelog'], 'the README is not a change file');
   assert.match(formatFinding(problems[0]), /no new file in changes\/\..*Add `changes\/<issue>-<slug>\.md`/);
+  const deletedOnly = checkPullRequest({ ...goodPr(), files: ['src/rules/pr.ts', 'changes/12-old.md'], deleted: ['changes/12-old.md'] }, DEFAULTS);
+  assert.deepEqual(deletedOnly.map((problem) => problem.id), ['pr-changelog'], 'a deleted change file is not a new entry');
   assert.ok(isChangeFile('changes/1-a.md') && isChangeFile('changes/1-a.txt'));
   assert.ok(!isChangeFile('changes/README.md') && !isChangeFile('changes/.keep') && !isChangeFile('changes/a/b.md') && !isChangeFile('docs/changes/a.md'));
 });

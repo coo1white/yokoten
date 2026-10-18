@@ -16,6 +16,8 @@ export interface PullRequest {
   body: string;
   /** Paths the pull request changes, relative to the repo root. */
   files: string[];
+  /** The paths in `files` that the pull request deletes. */
+  deleted?: string[];
   labels: string[];
   milestone: string | null;
 }
@@ -160,7 +162,8 @@ export function checkPullRequest(pr: PullRequest, config: Pick<Config, 'tests'> 
   // project that has not moved to change files. Docs, tests and CI do not.
   const isTest = matcher(config.tests);
   const behaviour = pr.files.filter((f) => !/\.md$/i.test(f) && !isTest(f) && !f.startsWith('.github/') && !isChangeFile(f));
-  const hasEntry = pr.files.includes('CHANGELOG.md') || pr.files.some(isChangeFile);
+  // A deleted change file is not a new entry: the change it names was already collected.
+  const hasEntry = pr.files.includes('CHANGELOG.md') || pr.files.some((file) => isChangeFile(file) && !pr.deleted?.includes(file));
   if (behaviour.length && !hasEntry && !/^No changelog: \S/m.test(body)) {
     problems.push(
       finding(
