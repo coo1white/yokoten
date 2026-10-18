@@ -1,4 +1,4 @@
-<!-- source: README.md blob 0320827fa4a2d4fca35c1ef25344ee7549a306dd -->
+<!-- source: README.md blob af50e3c890e5edb9a46dfa5e756fa87a8e592f1e -->
 <div align="center">
 
 <picture>
@@ -8,8 +8,10 @@
 
 <br/>
 
-一个人，带几个 AI，照好团队的规矩做软件。<br/>
-yokoten 就是这么做出来的：每个 issue、每次审查、每个版本，都在这个仓库里，随你翻。
+**人人都能像好团队那样做软件。**<br/>
+yokoten 带你一步步养成好团队的习惯；你还在学的时候，它替你看住 AI。
+
+它自己就是一个人带几个 AI 这么做出来的：每个 issue、每次审查、每个版本，都在这个仓库里。
 
 **[yokoten.app](https://yokoten.app)** &nbsp;·&nbsp; [English](../../README.md) | 中文
 
@@ -26,47 +28,38 @@ yokoten 就是这么做出来的：每个 issue、每次审查、每个版本，
 
 </div>
 
-## 装上的第一天，有什么不同
+## 为什么做它
 
-| AI 想做的事 | 没有 yokoten | 有 yokoten |
-|---|---|---|
-| 强推（force push），或者自己打 tag 发版 | 直接就做了 | 还没执行就被拦下，并告诉它为什么 |
-| 测试不过，就去改测试 | 测试通过了，bug 还在 | 修 bug 时不许改测试 |
-| 提交里带上你的邮箱、服务器 IP、所在城市 | 被公开出去 | 提交被拦下；报告只指出哪个文件第几行，不把内容打出来 |
-| 开 PR | 用你的账号开，权限和你一样大 | 用 bot 账号开；你不点头，什么都合不进去 |
-| 换到另一个项目 | 一切从头来 | 看出这个项目缺什么，问你要不要补上 |
+好团队里，每次改动都有原因、有测试、有人审过。这些习惯，很多人要干上好几年、吃过几次亏才学会。
+有了 yokoten，新手第一天就能照着做：计划、开发、测试、审查、发版，一次走一关。
+AI 想闯大祸时，比如强推、改测试蒙混过关、把隐私传上去，桥头有人先拦下。
 
-被拦下时，AI 看到的不只是一句「不行」，还有原因：
+经验也不会只留在一个项目里。「横展」是丰田工厂的说法：一条产线找到的对策，推广到所有产线。
+一个项目吃过的亏，yokoten 会把对应的检查送到你别的项目里。
 
+## 安装
+
+只要装 [Node](https://nodejs.org/) 22.18 或更高版本，别的都不用装。
+
+```sh
+npx yokoten install      # 每台电脑做一次
+cd your-project
+npx yokoten init         # 每个项目做一次
+npx yokoten doctor       # 看看走到了第几关、下一步做什么
 ```
-yokoten: git push --tags pushes tags. Only the owner decides when to release.
-```
 
-（提示用英文写，因为 AI 读英文最不容易出错。）
+用 Claude Code 的话，也可以装插件：先输入 `/plugin marketplace add yokoten-labs/yokoten`，
+再输入 `/plugin install yokoten@yokoten`。两种选一种就行，别都装。
+npm 上还没有第一个版本时，[从 clone 下来的仓库装](guide.md#从-clone-下来的仓库装)。
+只想在 CI 里用，[当成 GitHub Action 用](guide.md#当成-github-action-用)。
 
-## 这条路
+## 装好以后是什么样
 
-软件团队的活儿是一圈一圈转的：计划、开发、测试、审查、发版。yokoten 带你一次走一关。
-每一关，这个仓库自己都在做，你可以直接看它怎么运转：
+agent 想强推，yokoten 把它拦下，说清为什么，再给出改法。接着 `doctor` 告诉你下一步做哪一件事：
 
-| 关 | 学会什么 | 在这里看 |
-|---|---|---|
-| **1 · 安全网** | AI 要读的规则，以及规则管不住时拦下它的检查 | [AGENTS.md](../../AGENTS.md) |
-| **2 · 先开 issue，再走 PR** | 每次改动先开 issue 说清为什么；CI 通过了才合并；用标签、里程碑（milestone）和看板管起来 | [issue](https://github.com/yokoten-labs/yokoten/issues?q=is%3Aissue)、[PR](https://github.com/yokoten-labs/yokoten/pulls?q=is%3Apr)、[看板](https://github.com/users/coo1white/projects/1) |
-| **3 · 发版** | 写明改了什么、为什么改的提交信息；CHANGELOG；每次发版一个版本号 | [CHANGELOG.md](../../CHANGELOG.md) |
-| **4 · 带一支 AI 团队** | bot 开 PR，worker 领任务，reviewer 审查；最后拍板的永远是你 | [使用指南](guide.md#像带团队一样管-agent) |
-| **5 · 公开** | 把全部提交历史查一遍，看有没有漏出隐私；打开安全设置；保护 `main` 分支 | [安全说明](../../.github/SECURITY.md) |
+<img src="../assets/demo.svg" width="680" alt="终端里，agent 要执行 git push --force origin main，被 yokoten 拦了下来。yokoten 说清楚这条命令会做什么、为什么危险、该怎么改：换成 --force-with-lease。接着运行 yokoten doctor，它说现在在第 1 关（共 5 关），下一步是加测试。">
 
 ## 往哪里去
-
-**梦想：人人都能像好团队那样做软件。** 好团队里，每次改动都有原因、有测试、有人审过。
-这些习惯，很多人要干上好几年、吃过几次亏才学会。有了 yokoten，编程新手第一天就能照着做；
-AI 想闯大祸时，桥头有人守着。
-
-软件开发是一整圈：计划、开发、测试、审查、发版、维护（SDLC）。yokoten 带你在自己的项目里
-亲手走一遍，一次一关。
-
-经验也不会只留在一个地方。一个项目吃过的亏，yokoten 会提醒别的项目先补上。这就是「横展」的意思。
 
 <p align="center">
 <picture>
@@ -75,62 +68,18 @@ AI 想闯大祸时，桥头有人守着。
 </picture>
 </p>
 
-| 阶段 | 名字 | 意思 | 现在 |
-|---|---|---|---|
-| 1 | **守桥** | AI agent 做危险操作之前就被拦下：force push、改测试让它通过、泄露隐私 | ✅ 已完成 |
-| 2 | **带路** | 新手跟着 `doctor` 走完五关，一次只做一件事；agent 读懂老项目，起草接入 yokoten 的方案 | 🚧 正在做，黑客松前后 |
-| 3 | **任何工具，任何平台** | Claude Code、Codex、Gemini CLI 和 Muse Code 守同一套规则；GitHub、Gitea、GitLab 都能用 | 下一步 |
-| 4 | **完整的循环** | 从一份简短的方案开始，到开发、测试、审查、发版、维护，整个 SDLC 每一步都有人带路 | 之后 |
-| 5 | **横展** | 一个项目学到的教训，变成一条检查；这条检查推广到所有项目。一个人学到的，大家都能用上 | 目标 |
-
-「横展」这个词来自丰田的工厂：一条产线学到的教训（lessons learned），推广到所有产线。yokoten 的名字就是从这里来的。
-
-近期要做的事在 [M0](https://github.com/yokoten-labs/yokoten/milestone/1) 和 [M1](https://github.com/yokoten-labs/yokoten/milestone/2) 里，[看板](https://github.com/users/coo1white/projects/1)上能看到今天在做什么。
-
-## 快速开始
-
-只要装 [Node](https://nodejs.org/) 22.18 或更高版本，别的都不用装。
-
-**用 Claude Code 的话**，在里面输入这两条：
-
-```text
-/plugin marketplace add yokoten-labs/yokoten
-/plugin install yokoten@yokoten
-```
-
-选「Install for you」，然后打开一个项目。会话一开始就会告诉你走到了第几关、下一步该做哪一件事。
-输入 `/yokoten:init`，就把这套做法放进项目。
-
-**不用插件的话**（Codex CLI、Gemini CLI 也是这样装）：
-
-```sh
-npx yokoten install      # 每台电脑做一次
-cd your-project
-npx yokoten init         # 每个项目做一次
-```
-
-npm 上的包由主人发布。第一个版本发布之前，先从 clone 下来的仓库装：
-
-```sh
-git clone https://github.com/yokoten-labs/yokoten
-node yokoten/bin/yokoten.ts install                 # 每台电脑做一次
-cd your-project
-node ~/.local/share/yokoten/bin/yokoten.ts init      # 每个项目做一次
-```
-
-两种选一种就行，别都装。每种装法带来什么，[使用指南](guide.md#安装和命令)里有写。
-
-**只想在 CI 里用的话**，加一个 workflow 文件就行：[当成 GitHub Action 用](guide.md#当成-github-action-用)。
-
-装好以后，agent 想 force push 会是这样：
-
-<img src="../assets/demo.svg" width="680" alt="终端里，agent 要执行 git push --force origin main，被 yokoten 拦了下来。yokoten 说清楚这条命令会做什么、为什么危险、该怎么改：换成 --force-with-lease。接着运行 yokoten doctor，它说现在在第 1 关（共 5 关），下一步是加测试。">
+守桥已经做好了，带路正在做。再往后，支持更多 AI 工具和代码平台，然后把整个开发流程都带上。
+山顶就是「横展」：一个项目学到的，所有项目都能用上。
+五个阶段写在[路线图](guide.md#往哪里去)里，[看板](https://github.com/orgs/yokoten-labs/projects/1)上能看到今天在做什么。
 
 ## 了解更多
 
+- **[yokoten.app](https://yokoten.app)**：官网，使用指南和决定记录都能在上面直接看。
 - **[使用指南](guide.md)**：12 条规则、所有命令、它怎么工作，还有它做不到的事。
 - **[服务器设置](../server.md)**：在 GitHub 上保护 `main` 分支和发版 tag（英文）。
 - **[决定记录](../records/)**：为什么这样做（英文）。
+- **[参与开发](../../AGENTS.md)**：给 yokoten 干活要守的规矩（英文）。
+- **[安全](../../.github/SECURITY.md)**：发现安全问题怎么报告（英文）。
 
 ---
 
