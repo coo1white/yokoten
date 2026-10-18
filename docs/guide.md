@@ -270,8 +270,9 @@ then run with no network and no global install.
 | `init --github [--yes]` | Also adds the standard labels and a first milestone on GitHub, through `gh`. Without `--yes` it only says what it would make. It keeps every label and milestone that is there, and never deletes or renames one |
 | `doctor [--session]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session |
 | `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries |
-| `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, changelog line, milestone and labels. A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
+| `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
 | `check --issue` | In CI: the issue's title. See [Issue titles](#issue-titles) |
+| `changelog [--write]` | Shows the entries the files in `changes/` add under `[Unreleased]`. `--write` puts them into `CHANGELOG.md` and deletes the files; run it before a release. See [The changelog](#the-changelog) |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public |
 | `hook [--agent <name>] [--commands-only]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini` |
 | `hook --stop` | The stop check. Reads a Claude Code Stop event on stdin and checks the changed files. See [The stop check](#the-stop-check) |
@@ -364,6 +365,33 @@ tells the author to fix the title.
 Any lowercase area passes. To limit the areas, list them in `yokoten.json`:
 `"areas": ["doctor", "check", "docs"]`. Pull request titles then use the same list in
 `type(area): summary`.
+
+### The changelog
+
+A pull request that changes what users notice adds one small file,
+`changes/<issue>-<slug>.md`. It does not edit `CHANGELOG.md`. When every pull request
+adds a line at the top of the same file, each merge makes the others conflict. Separate
+files never conflict.
+
+The file is plain Markdown. Line 1 is the section: Added, Changed, Deprecated, Removed,
+Fixed, Security or Internal. Line 2 is blank. From line 3, write the entry as it should
+read in the changelog. The `- ` is added for you. Several bullets in one file are fine.
+
+```markdown
+Fixed
+
+`doctor` no longer stops when the repo has no remote (#42).
+```
+
+`yokoten changelog` shows what the files would add, and writes nothing. Before a release,
+`yokoten changelog --write` puts each entry under its section in `[Unreleased]`, and
+deletes the files it used. It never touches released versions. If a file is wrong,
+it says which file and why, and writes nothing.
+
+`check --pr` takes a new file in `changes/` as the pull request's changelog entry, and
+checks its form. A line in `CHANGELOG.md` still passes, for a project that has not moved
+yet. `init` adds `changes/README.md`, which shows the form. `changes/` may hold more
+than 7 files, since each release empties it.
 
 
 ## The core rules

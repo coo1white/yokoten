@@ -17,12 +17,16 @@ flowchart LR
 
 ## 1. Read what changed
 
+If the project has a `changes/` folder, run `yokoten changelog --write` first. It moves
+each change file under `[Unreleased]` in `CHANGELOG.md` and deletes the files. If it
+reports a bad file, fix that file and run it again.
+
 Open `CHANGELOG.md` and read the `[Unreleased]` section. If it is empty, there is
 nothing to release. Tell the user and stop.
 
 Compare it with the merged pull requests since the last tag:
 `git log --oneline "$(git describe --tags --abbrev=0)"..HEAD`. With no tag yet, read
-the whole log. A `feat:` or `fix:` commit with no changelog line is a gap. Add the
+the whole log. A `feat:` or `fix:` commit with no changelog entry is a gap. Add the
 line before you go on.
 
 ## 2. Pick the next version
@@ -51,7 +55,8 @@ owner can choose a different version.
 
 ## 4. Prepare the release pull request
 
-1. In `CHANGELOG.md`, add `## [X.Y.Z] - YYYY-MM-DD` (today, UTC) under `[Unreleased]`.
+1. Run `yokoten changelog --write` if step 1 did not, so no change file is left behind.
+   In `CHANGELOG.md`, add `## [X.Y.Z] - YYYY-MM-DD` (today, UTC) under `[Unreleased]`.
    Move the lines below it. Leave `[Unreleased]` empty.
 2. Set the version in the project's version file, such as `package.json`.
 3. Open a pull request titled `chore: release vX.Y.Z`.

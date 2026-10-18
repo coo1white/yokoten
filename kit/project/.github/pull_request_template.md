@@ -16,4 +16,4 @@ Closes #
 ## How tested
 
 <!-- The commands you ran and what they printed. "Tests pass" is not enough: which tests, and the output.
-     A change to what the project does adds a line to CHANGELOG.md, or says `No changelog: <reason>`. -->
+     A change to what the project does adds a file in changes/ (changes/README.md shows the form), or says `No changelog: <reason>`. -->

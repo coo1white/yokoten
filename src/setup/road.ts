@@ -11,6 +11,7 @@ import { basename, dirname, join } from 'node:path';
 import { type Env, loadConfig } from '../rules/config.ts';
 import { matcher } from '../rules/config.ts';
 import type { Finding } from '../rules/message.ts';
+import { CHANGES_DIR } from '../rules/pr.ts';
 import { BUILD_DIRS, isBuildOutput } from '../rules/layout.ts';
 import { hasPlugin, hasProjectHook } from '../agents/claude-code.ts';
 import { runs } from '../run/cli.ts';
@@ -249,11 +250,12 @@ export const ROAD: Step[] = [
   {
     stage: 3,
     key: 'changelog',
-    check: (root) => /^#+\s*\[?Unreleased\]?/im.test(read(join(root, 'CHANGELOG.md'))),
-    what: () => 'no CHANGELOG.md with an "Unreleased" section',
-    fix: () => '`yokoten init` adds one; then each pull request adds a line for each change that users notice',
-    why: 'each pull request adds its line as it goes, so a release needs no digging',
-    how: 'CHANGELOG.md has an Unreleased heading',
+    // A changes/ folder (#132) counts too: its files become the Unreleased lines at a release.
+    check: (root) => /^#+\s*\[?Unreleased\]?/im.test(read(join(root, 'CHANGELOG.md'))) || existsSync(join(root, CHANGES_DIR)),
+    what: () => `no CHANGELOG.md with an "Unreleased" section, and no ${CHANGES_DIR}/ folder`,
+    fix: () => `\`yokoten init\` adds both; then each pull request adds a file in ${CHANGES_DIR}/ for each change that users notice`,
+    why: 'each pull request adds its entry as it goes, so a release needs no digging',
+    how: `CHANGELOG.md has an Unreleased heading, or the repo has a ${CHANGES_DIR}/ folder`,
     standard: 'Best Practices: release_notes',
   },
   {

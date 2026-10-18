@@ -6,13 +6,14 @@ import { appendFileSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
 import { annotations, botConfig, botEnv, ghIn, installationToken, isGitHubActions, readCodeOwners, readCommandTitle, readIssue, readPullRequest, repoOf, stepSummary } from '../src/host/github.ts';
+import { formatChanges, parseChange, readChanges, writeChanges } from '../src/run/changelog.ts';
 import { check, checkChanged, checkHistory, gitRoot, historyTimeZones, timeZoneNote } from '../src/run/check.ts';
 import * as claudeCode from '../src/agents/claude-code.ts';
 import * as codex from '../src/agents/codex.ts';
 import * as gemini from '../src/agents/gemini.ts';
 import { type Finding, formatFinding } from '../src/rules/message.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
-import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, largeDiff, longSentenceNote, longSentences } from '../src/rules/pr.ts';
+import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, largeDiff, longSentenceNote, longSentences } from '../src/rules/pr.ts';
 import { hideHome } from '../src/rules/privacy.ts';
 import { type Action, judge } from '../src/run/hook.ts';
 import { doctor } from '../src/setup/doctor.ts';
@@ -35,6 +36,9 @@ const HELP = `yokoten ${VERSION}
   yokoten check --history    the privacy check over every commit; run before going public
   yokoten check --pr         the pull request of this CI run: title, tier, sections, issue, changelog
   yokoten check --issue      the issue of this CI run: a title of \`area: summary\`, 60 characters at most
+  yokoten changelog [--write]
+                             the entries the files in changes/ add under [Unreleased]; --write
+                             puts them into CHANGELOG.md and deletes the files (before a release)
   yokoten hook [--agent <name>] [--commands-only]
                              the tool-call guard: reads one tool call on stdin; <name> is
                              claude-code (the default), codex or gemini
@@ -314,6 +318,11 @@ function main(): number | Promise<number> {
           if (!json) print([`${name}: note: ${formatFinding(large)}`]);
         }
         problems = checkPullRequest(pr, config);
+        // Each change file the pull request leaves (#132) must be one `yokoten changelog` can read.
+        for (const file of pr.files.filter(isChangeFile)) {
+          const text = readAtHead(file);
+          if (text !== null) problems.push(...parseChange(file, text).problems);
+        }
         // Owned paths set the lowest tier, from the base branch's CODEOWNERS.
         const owned = checkOwnedTier(pr, readCodeOwners(root, pr.base));
         if (owned) problems.push(owned);
@@ -330,6 +339,21 @@ function main(): number | Promise<number> {
       else print([`${name}: ${problems.length} problem(s)`, ...bullets(problems)], process.stderr);
       showOnPullRequest(`yokoten check${mode === 'tree' ? '' : ` --${mode}`}`, problems, notes, { json, isPlaceAFile: mode !== 'history' });
       return problems.length ? 1 : 0;
+    }
+    case 'changelog': {
+      const options = parse({ flags: ['--write'] });
+      if (typeof options === 'string') return usage(options);
+      const root = rootOf(process.cwd()) ?? process.cwd();
+      const isWrite = options.flags.has('--write');
+      const { changes, problems } = isWrite ? writeChanges(root) : readChanges(root);
+      if (problems.length) {
+        print([`yokoten changelog: ${problems.length} problem(s); nothing was written:`, ...bullets(problems)], process.stderr);
+        return 1;
+      }
+      if (!changes.length) print(['yokoten changelog: no change files in changes/; nothing to add']);
+      else if (isWrite) print([`yokoten changelog: wrote ${changes.length} change(s) under [Unreleased] in CHANGELOG.md, and deleted:`, ...changes.map((change) => `- ${change.file}`)]);
+      else print([`yokoten changelog: ${changes.length} change(s); \`--write\` adds these under [Unreleased] in CHANGELOG.md:`, '', ...formatChanges(changes)]);
+      return 0;
     }
     case 'doctor': {
       const options = parse({ flags: ['--session', '--json'] });

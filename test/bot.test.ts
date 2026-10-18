@@ -94,19 +94,19 @@ function fakeGh(labels: string[], milestones: string[] = []) {
   const calls: string[][] = [];
   const gh: Gh = (args) => {
     calls.push(args);
-    const [a, b] = args;
-    if (a === 'repo') return 'me/repo\n';
-    if (a === 'label' && b === 'list') return labels.map((l) => `${l}\n`).join('');
-    if (a === 'label' && b === 'create') {
+    const [command, subcommand] = args;
+    if (command === 'repo') return 'me/repo\n';
+    if (command === 'label' && subcommand === 'list') return labels.map((l) => `${l}\n`).join('');
+    if (command === 'label' && subcommand === 'create') {
       if (args[2] === 'docs') throw Object.assign(new Error('failed'), { stderr: 'HTTP 403: no access\n' });
       labels.push(args[2]);
       return '';
     }
-    if (a === 'api' && args.includes('POST')) {
+    if (command === 'api' && args.includes('POST')) {
       milestones.push(`open ${args.at(-1)?.slice('title='.length)}`);
       return '';
     }
-    if (a === 'api') return milestones.map((m) => `${m}\n`).join('');
+    if (command === 'api') return milestones.map((m) => `${m}\n`).join('');
     throw new Error(`unexpected gh ${args.join(' ')}`);
   };
   return { gh, calls, labels, milestones };
@@ -124,20 +124,20 @@ test('planning: says what it would make, and changes nothing without --yes (#10)
 });
 
 test('planning: makes what is missing, keeps what is there, and a second run makes nothing (#10)', () => {
-  const f = fakeGh(['BUG', 'owner'], ['closed v0.0.1']);
-  let r = setUpPlanning(f.gh, true);
-  assert.equal(r.ok, false, 'one label was refused');
-  assert.ok(r.lines.includes('- could not make label "docs": HTTP 403: no access'));
-  assert.ok(r.lines.includes('- made label "hotfix"'), 'the refusal did not stop the rest');
-  assert.ok(r.lines.includes('- made milestone "First release"'));
-  assert.equal(f.calls.filter((c) => c[1] === 'create').length, LABELS.length - 2, 'bug and owner kept, case ignored');
-  assert.deepEqual(f.calls.find((c) => c.includes('docs')), ['label', 'create', 'docs', '--color', '0075ca', '--description', 'Documentation only']);
-  f.labels.push('docs');
-  const before = f.calls.length;
-  r = setUpPlanning(f.gh, true);
-  assert.ok(r.ok);
-  assert.equal(r.lines.at(-1), 'Nothing to make.');
-  assert.ok(f.calls.slice(before).every((c) => c[1] !== 'create' && !c.includes('POST')));
+  const fake = fakeGh(['BUG', 'owner'], ['closed v0.0.1']);
+  let result = setUpPlanning(fake.gh, true);
+  assert.equal(result.ok, false, 'one label was refused');
+  assert.ok(result.lines.includes('- could not make label "docs": HTTP 403: no access'));
+  assert.ok(result.lines.includes('- made label "hotfix"'), 'the refusal did not stop the rest');
+  assert.ok(result.lines.includes('- made milestone "First release"'));
+  assert.equal(fake.calls.filter((c) => c[1] === 'create').length, LABELS.length - 2, 'bug and owner kept, case ignored');
+  assert.deepEqual(fake.calls.find((c) => c.includes('docs')), ['label', 'create', 'docs', '--color', '0075ca', '--description', 'Documentation only']);
+  fake.labels.push('docs');
+  const before = fake.calls.length;
+  result = setUpPlanning(fake.gh, true);
+  assert.ok(result.ok);
+  assert.equal(result.lines.at(-1), 'Nothing to make.');
+  assert.ok(fake.calls.slice(before).every((c) => c[1] !== 'create' && !c.includes('POST')));
 });
 
 test('planning: gh missing or signed out is said, not thrown (#10)', () => {
@@ -150,10 +150,10 @@ test('planning: gh missing or signed out is said, not thrown (#10)', () => {
 
 // The server settings (#7), read through a fake gh. Each route is an API path; a missing
 // route answers 404, as GitHub does. The real gh is never run.
-const R = 'octo/demo';
+const REPO = 'octo/demo';
 const said = (code: number) => Object.assign(new Error('gh failed'), { stderr: `gh: request failed (HTTP ${code})\n` });
 const GOOD: Record<string, unknown> = {
-  [`repos/${R}`]: {
+  [`repos/${REPO}`]: {
     default_branch: 'main',
     allow_squash_merge: true,
     allow_merge_commit: false,
@@ -161,18 +161,18 @@ const GOOD: Record<string, unknown> = {
     delete_branch_on_merge: true,
     security_and_analysis: { secret_scanning: { status: 'enabled' }, secret_scanning_push_protection: { status: 'enabled' } },
   },
-  [`repos/${R}/rules/branches/main`]: [
+  [`repos/${REPO}/rules/branches/main`]: [
     { type: 'pull_request', parameters: { require_code_owner_review: true, allowed_merge_methods: ['squash'] } },
     { type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'ci' }] } },
     { type: 'non_fast_forward' },
     { type: 'deletion' },
   ],
-  [`repos/${R}/rulesets?targets=tag&includes_parents=true&per_page=100`]: [{ id: 7, target: 'tag', enforcement: 'active' }],
-  [`repos/${R}/rulesets/7`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'creation' }, { type: 'update' }, { type: 'deletion' }] },
-  [`repos/${R}/private-vulnerability-reporting`]: { enabled: true },
-  [`repos/${R}/vulnerability-alerts`]: '',
-  [`repos/${R}/pulls?state=open&per_page=100`]: 'octo:feat/a\nsomeone:main\n',
-  [`repos/${R}/branches?per_page=100`]: 'main\nfeat/a\nold/b\n',
+  [`repos/${REPO}/rulesets?targets=tag&includes_parents=true&per_page=100`]: [{ id: 7, target: 'tag', enforcement: 'active' }],
+  [`repos/${REPO}/rulesets/7`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'creation' }, { type: 'update' }, { type: 'deletion' }] },
+  [`repos/${REPO}/private-vulnerability-reporting`]: { enabled: true },
+  [`repos/${REPO}/vulnerability-alerts`]: '',
+  [`repos/${REPO}/pulls?state=open&per_page=100`]: 'octo:feat/a\nsomeone:main\n',
+  [`repos/${REPO}/branches?per_page=100`]: 'main\nfeat/a\nold/b\n',
 };
 
 function serverGh(routes: Record<string, unknown>) {
@@ -191,7 +191,7 @@ const marks = (s: ServerSettings | Unread) => Object.fromEntries(serverChecks(s)
 
 test('server: a repo with every setting on is ok, and doctor only reads (#7)', () => {
   const f = serverGh(GOOD);
-  const s = readServer(f.gh, R);
+  const s = readServer(f.gh, REPO);
   assert.deepEqual(marks(s), {
     'main-rules': 'ok', 'required-checks': 'ok', 'code-owner-review': 'ok', 'squash-only': 'ok',
     'delete-branch': 'ok', 'tag-rules': 'ok', 'security-switches': 'ok', 'forgotten-branches': 'note',
@@ -208,14 +208,14 @@ test('server: a repo with every setting on is ok, and doctor only reads (#7)', (
 test('server: each setting off is MISSING, with what and the fix (#7)', () => {
   const routes = {
     ...GOOD,
-    [`repos/${R}`]: { default_branch: 'trunk', allow_squash_merge: true, allow_merge_commit: true, allow_rebase_merge: false, delete_branch_on_merge: false, security_and_analysis: { secret_scanning: { status: 'disabled' } } },
-    [`repos/${R}/rules/branches/trunk`]: [{ type: 'pull_request', parameters: {} }],
-    [`repos/${R}/rulesets/7`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'deletion' }] },
-    [`repos/${R}/private-vulnerability-reporting`]: { enabled: false },
-    [`repos/${R}/vulnerability-alerts`]: undefined,
-    [`repos/${R}/branches?per_page=100`]: 'trunk\nfeat/a\n',
+    [`repos/${REPO}`]: { default_branch: 'trunk', allow_squash_merge: true, allow_merge_commit: true, allow_rebase_merge: false, delete_branch_on_merge: false, security_and_analysis: { secret_scanning: { status: 'disabled' } } },
+    [`repos/${REPO}/rules/branches/trunk`]: [{ type: 'pull_request', parameters: {} }],
+    [`repos/${REPO}/rulesets/7`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'deletion' }] },
+    [`repos/${REPO}/private-vulnerability-reporting`]: { enabled: false },
+    [`repos/${REPO}/vulnerability-alerts`]: undefined,
+    [`repos/${REPO}/branches?per_page=100`]: 'trunk\nfeat/a\n',
   };
-  const checks = serverChecks(readServer(serverGh(routes).gh, R));
+  const checks = serverChecks(readServer(serverGh(routes).gh, REPO));
   const by = (id: string) => checks.find((c) => c.id === id);
   for (const id of ['main-rules', 'required-checks', 'code-owner-review', 'squash-only', 'delete-branch', 'tag-rules', 'security-switches']) assert.equal(by(id)?.mark, 'MISSING', id);
   assert.equal(by('forgotten-branches'), undefined, 'no note when every branch has a pull request');
@@ -224,12 +224,12 @@ test('server: each setting off is MISSING, with what and the fix (#7)', () => {
 });
 
 test("server: gh missing, signed out or refused is \"can't check\" with the fix, never a crash (#7)", () => {
-  const missing = readServer(() => { throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }); }, R);
+  const missing = readServer(() => { throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }); }, REPO);
   assert.deepEqual(serverChecks(missing).map((c) => [c.id, c.mark, c.finding.what]), [['server-settings', "can't check", "can't check: gh is not installed"]]);
-  assert.match(serverChecks(readServer(() => { throw said(401); }, R))[0].finding.fix, /`gh auth login`/);
+  assert.match(serverChecks(readServer(() => { throw said(401); }, REPO))[0].finding.fix, /`gh auth login`/);
   // A free private repo, read by someone who is not an admin: rulesets refused, settings hidden.
-  const refused = { ...GOOD, [`repos/${R}`]: { default_branch: 'main' }, [`repos/${R}/rules/branches/main`]: said(403), [`repos/${R}/rulesets?targets=tag&includes_parents=true&per_page=100`]: said(403), [`repos/${R}/private-vulnerability-reporting`]: said(403), [`repos/${R}/vulnerability-alerts`]: undefined };
-  const checks = serverChecks(readServer(serverGh(refused).gh, R));
+  const refused = { ...GOOD, [`repos/${REPO}`]: { default_branch: 'main' }, [`repos/${REPO}/rules/branches/main`]: said(403), [`repos/${REPO}/rulesets?targets=tag&includes_parents=true&per_page=100`]: said(403), [`repos/${REPO}/private-vulnerability-reporting`]: said(403), [`repos/${REPO}/vulnerability-alerts`]: undefined };
+  const checks = serverChecks(readServer(serverGh(refused).gh, REPO));
   for (const id of ['main-rules', 'required-checks', 'code-owner-review', 'squash-only', 'delete-branch', 'tag-rules', 'security-switches']) {
     assert.equal(checks.find((c) => c.id === id)?.mark, "can't check", id);
   }
@@ -241,18 +241,18 @@ test('doctor: reads the server of a GitHub origin; a MISSING setting fails, a no
   const root = mkdtempSync(join(tmpdir(), 'yokoten-server-'));
   execFileSync('git', ['init', '-q', root]);
   const run = (routes: Record<string, unknown>) => doctor(root, { env: { HOME: root }, config: DEFAULTS, gh: serverGh(routes).gh });
-  let r = run(GOOD);
-  assert.match(r.lines.join('\n'), /^ {2}can't check server-settings: can't check: the origin remote is not on a host yokoten knows/m);
-  assert.ok(r.lines.some((l) => /secret scanning with push protection/.test(l)), 'the by-hand list when nothing is read');
-  execFileSync('git', ['remote', 'add', 'origin', `https://github.com/${R}.git`], { cwd: root });
-  r = run(GOOD);
-  assert.ok(r.lines.includes('  ok          main-rules'));
-  assert.ok(r.report.notes?.some((n) => n.id === 'forgotten-branches'));
-  assert.ok(!r.report.findings.some((f) => f.id.startsWith('server') || f.id === 'main-rules'));
-  r = run({ ...GOOD, [`repos/${R}/rules/branches/main`]: [] });
-  assert.equal(r.ok, false);
-  assert.deepEqual(r.report.server?.find((s) => s.id === 'main-rules'), { id: 'main-rules', mark: 'MISSING' });
-  assert.ok(r.report.findings.some((f) => f.id === 'required-checks'));
+  let result = run(GOOD);
+  assert.match(result.lines.join('\n'), /^ {2}can't check server-settings: can't check: the origin remote is not on a host yokoten knows/m);
+  assert.ok(result.lines.some((l) => /secret scanning with push protection/.test(l)), 'the by-hand list when nothing is read');
+  execFileSync('git', ['remote', 'add', 'origin', `https://github.com/${REPO}.git`], { cwd: root });
+  result = run(GOOD);
+  assert.ok(result.lines.includes('  ok          main-rules'));
+  assert.ok(result.report.notes?.some((n) => n.id === 'forgotten-branches'));
+  assert.ok(!result.report.findings.some((f) => f.id.startsWith('server') || f.id === 'main-rules'));
+  result = run({ ...GOOD, [`repos/${REPO}/rules/branches/main`]: [] });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.report.server?.find((s) => s.id === 'main-rules'), { id: 'main-rules', mark: 'MISSING' });
+  assert.ok(result.report.findings.some((f) => f.id === 'required-checks'));
 });
 
 // #91: workflow commands, escaped as GitHub's runner decodes them

@@ -16,6 +16,8 @@ export interface PullRequest {
   body: string;
   /** Paths the pull request changes, relative to the repo root. */
   files: string[];
+  /** The paths in `files` that the pull request deletes. */
+  deleted?: string[];
   labels: string[];
   milestone: string | null;
 }
@@ -23,6 +25,18 @@ export interface PullRequest {
 const TYPES = ['feat', 'fix', 'docs', 'test', 'refactor', 'chore', 'ci', 'perf', 'build', 'style', 'revert'];
 const TITLE = new RegExp(`^(${TYPES.join('|')})(\\([a-z0-9][a-z0-9./-]*\\))?!?: \\S`);
 const SECTIONS = ['Why', 'What changed', 'How tested'];
+
+/**
+ * The folder of change files (#132). Each pull request adds its own file there, so two
+ * pull requests never edit the same lines of CHANGELOG.md. `yokoten changelog` collects them.
+ */
+export const CHANGES_DIR = 'changes';
+
+/** Whether a path is a change file: right in changes/, and not its README or a dotfile. */
+export const isChangeFile = (path: string): boolean => {
+  const [dir, name, ...deeper] = path.split('/');
+  return dir === CHANGES_DIR && !!name && !deeper.length && name !== 'README.md' && !name.startsWith('.');
+};
 
 /** The text with fenced code blocks and code spans passed through `blank`. No regex: a PR body comes from anyone. */
 function blankCode(text: string, blank: (code: string) => string): string {
@@ -144,12 +158,19 @@ export function checkPullRequest(pr: PullRequest, config: Pick<Config, 'tests'> 
     problems.push(finding('pr-issue', 'body: no linked issue', 'link the issue with `Closes #N`, or `Part of #N` when it does not finish it'));
   }
 
-  // A change to what the project does needs a changelog line. Docs, tests and CI do not.
+  // A change to what the project does needs a change file, or a line in CHANGELOG.md for a
+  // project that has not moved to change files. Docs, tests and CI do not.
   const isTest = matcher(config.tests);
-  const behaviour = pr.files.filter((f) => !/\.md$/i.test(f) && !isTest(f) && !f.startsWith('.github/'));
-  if (behaviour.length && !pr.files.includes('CHANGELOG.md') && !/^No changelog: \S/m.test(body)) {
+  const behaviour = pr.files.filter((f) => !/\.md$/i.test(f) && !isTest(f) && !f.startsWith('.github/') && !isChangeFile(f));
+  // A deleted change file is not a new entry: the change it names was already collected.
+  const hasEntry = pr.files.includes('CHANGELOG.md') || pr.files.some((file) => isChangeFile(file) && !pr.deleted?.includes(file));
+  if (behaviour.length && !hasEntry && !/^No changelog: \S/m.test(body)) {
     problems.push(
-      finding('pr-changelog', `changelog: ${behaviour.length} changed file(s) change what the project does, and CHANGELOG.md has no new line`, 'add one under [Unreleased], or write `No changelog: <reason>` in the body'),
+      finding(
+        'pr-changelog',
+        `changelog: ${behaviour.length} changed file(s) change what the project does, and there is no new file in ${CHANGES_DIR}/`,
+        `add \`${CHANGES_DIR}/<issue>-<slug>.md\` (${CHANGES_DIR}/README.md shows the form), or write \`No changelog: <reason>\` in the body`,
+      ),
     );
   }
   if (pr.files.some((f) => f.startsWith('kit/')) && !/\bkit\b/i.test(body)) {

@@ -7,7 +7,7 @@ const blocked = (command: string, env: Env = {}) => assert.ok(checkCommand(comma
 const allowed = (command: string, env: Env = {}) => assert.equal(checkCommand(command, { env }), null, `should allow: ${command}`);
 
 test('release: tag pushes, release commands and publishing are the owner\'s', () => {
-  for (const c of [
+  for (const command of [
     'git push --tags',
     'git push origin --follow-tags',
     'git push --mirror backup',
@@ -24,7 +24,7 @@ test('release: tag pushes, release commands and publishing are the owner\'s', ()
     'npm publish',
     'pnpm publish --access public',
     'yarn npm publish',
-  ]) blocked(c);
+  ]) blocked(command);
 });
 
 test('release: the owner\'s approval lets it through', () => {
@@ -68,7 +68,7 @@ test('hooks setting: a read passes, a change or a one-command skip blocks (#114)
 });
 
 test('hooks setting: every way to read it passes (#114)', () => {
-  for (const c of [
+  for (const command of [
     'git config --get-all core.hooksPath',
     'git config --get-regexp core.hooksPath',
     'git config --get-regexp hooks',
@@ -88,11 +88,11 @@ test('hooks setting: every way to read it passes (#114)', () => {
     'git -c user.name=x commit -m x',
     'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=.githooks git commit -m x',
     'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=x git commit -m x',
-  ]) allowed(c);
+  ]) allowed(command);
 });
 
 test('hooks setting: every way to change it blocks, unless the value is .githooks (#114)', () => {
-  for (const c of [
+  for (const command of [
     'git config --local core.hooksPath /dev/null',
     'git config --global core.hooksPath ~/hooks',
     'git config core.hooksPath --local',
@@ -111,7 +111,7 @@ test('hooks setting: every way to change it blocks, unless the value is .githook
     'git config unset core.hooksPath',
     'git config unset --all core.hooksPath',
     'git config remove-section CORE',
-  ]) blocked(c);
+  ]) blocked(command);
   allowed('git config set core.hooksPath .githooks');
   allowed('git config --add core.hooksPath .githooks');
   allowed('git config --replace-all core.hooksPath .githooks');
@@ -120,7 +120,7 @@ test('hooks setting: every way to change it blocks, unless the value is .githook
 });
 
 test('hooks setting: git -c, --config-env and GIT_CONFIG_KEY_n cannot skip the check (#114)', () => {
-  for (const c of [
+  for (const command of [
     'git -c core.hookspath=/dev/null commit -m x',
     'git -c CORE.HOOKSPATH= commit -m x',
     'git -c core.hooksPath commit -m x',
@@ -139,7 +139,7 @@ test('hooks setting: git -c, --config-env and GIT_CONFIG_KEY_n cannot skip the c
     'export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null; git commit -m x',
     'GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_1=core.hooksPath GIT_CONFIG_VALUE_0=.githooks GIT_CONFIG_VALUE_1=/x git commit',
     "GIT_CONFIG_PARAMETERS=\"'core.hooksPath'='/dev/null'\" git commit -m x",
-  ]) blocked(c);
+  ]) blocked(command);
 });
 
 test('everyday commands pass', () => {
