@@ -10,6 +10,8 @@
 **Everyone can build software the way good teams do.**<br/>
 yokoten guides you through a good team's habits, and guards your AI agents while you learn.
 
+One person and a few AI agents built it that way: every issue, review, and release is in this repo.
+
 **[yokoten.app](https://yokoten.app)** &nbsp;·&nbsp; English | [中文](docs/zh-CN/README.md)
 
 <br/>

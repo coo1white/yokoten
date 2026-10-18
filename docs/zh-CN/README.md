@@ -1,4 +1,4 @@
-<!-- source: README.md blob 25e38da76f72fa62684f16e7c241f930eccd1210 -->
+<!-- source: README.md blob af50e3c890e5edb9a46dfa5e756fa87a8e592f1e -->
 <div align="center">
 
 <picture>
@@ -10,6 +10,8 @@
 
 **人人都能像好团队那样做软件。**<br/>
 yokoten 带你一步步养成好团队的习惯；你还在学的时候，它替你看住 AI。
+
+它自己就是一个人带几个 AI 这么做出来的：每个 issue、每次审查、每个版本，都在这个仓库里。
 
 **[yokoten.app](https://yokoten.app)** &nbsp;·&nbsp; [English](../../README.md) | 中文
 
