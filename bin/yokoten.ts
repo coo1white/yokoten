@@ -16,8 +16,9 @@ import { isCodeFile, nameNotes } from '../src/run/names.ts';
 import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, largeDiff, longSentenceNote, longSentences } from '../src/rules/pr.ts';
 import { hideHome } from '../src/rules/privacy.ts';
 import { type Action, judge } from '../src/run/hook.ts';
+import { draft, facts, table } from '../src/setup/advice/adopt.ts';
 import { doctor } from '../src/setup/doctor.ts';
-import { explain, explainLines, ids } from '../src/setup/explain.ts';
+import { explain, explainLines, ids } from '../src/setup/advice/explain.ts';
 import { VERSION } from '../src/setup/files.ts';
 import { init, updateCoreRules } from '../src/setup/init.ts';
 import { install } from '../src/setup/install.ts';
@@ -41,6 +42,8 @@ const HELP = `yokoten ${VERSION}
                              changes; --write replaces them and keeps the "This project" part
   yokoten doctor [--session] the road: where this project is and its next step (--session:
                              only the next step), and what this machine is missing
+  yokoten adopt [--json]     a draft of the adoption table for an old project: what it does
+                             today, and as-is, lighter or not now for each step
   yokoten check [--staged]   layout, privacy and lead-only files (--staged: the next commit)
   yokoten check --history    the privacy check over every commit; run before going public
   yokoten check --pr         the pull request of this CI run: title, tier, sections, issue, changelog
@@ -387,6 +390,19 @@ function main(): number | Promise<number> {
       else if (found) print(explainLines(found));
       else print([id === undefined ? 'yokoten explain: name a rule or a step.' : `yokoten explain: no rule or step is called ${id}.`, `Ids: ${ids().join(', ')}`], process.stderr);
       return found ? 0 : 1;
+    }
+    case 'adopt': {
+      // Reads files and asks the model; never writes a file or changes config.
+      const options = parse({ flags: ['--json'] });
+      if (typeof options === 'string') return usage(options);
+      const root = gitRoot(process.cwd());
+      return draft(facts(root, env), { env }).then((drafted) => {
+        if (options.flags.has('--json')) {
+          printJson(drafted.rows.map(({ key, status, evidence, decision, reason }) => ({ key, status, evidence, decision, reason })));
+          print([`yokoten adopt: drafted by ${drafted.by}${drafted.note ? `, because ${drafted.note}` : ''}. You decide every row.`], process.stderr);
+        } else print(table(drafted));
+        return 0;
+      });
     }
     case 'init': {
       const options = parse({ flags: ['--github', '--yes', '--remove-default-labels', '--board'], positional: 1 });
