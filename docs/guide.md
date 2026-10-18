@@ -282,7 +282,13 @@ on `@main`.
 `init` copies the runtime into `.yokoten/` in your project. Commit it: the hooks and CI
 then run with no network and no global install.
 
-`init` also puts two safe defaults in `.github/`:
+`init` also writes three workflows into `.github/workflows/`: `yokoten.yml` (the
+commit check, a lint job with actionlint and zizmor, and one `ci` job to make the required
+check), `pr.yml` and `issue.yml`. Each action is pinned to a commit, each job has a time
+limit, checkout keeps no token, and a new push cancels the old run on the same pull
+request. Add your tests as a job in `yokoten.yml` and to the `needs` list of `ci`.
+
+It puts two safe defaults in `.github/` too:
 
 - `dependabot.yml` updates the actions that CI runs. It opens one pull request a month,
   and takes a release only when it is a week old. A comment in the file shows how to
