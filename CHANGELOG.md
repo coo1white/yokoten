@@ -8,6 +8,12 @@ All notable changes are listed here. The format follows
 
 ### Added
 
+- yokoten installs as a Claude Code plugin: `/plugin marketplace add coo1white/yokoten`,
+  then `/plugin install yokoten@yokoten`. The repo is the plugin and its marketplace. It
+  uses the kit's skills and agents as they are, adds the same two hooks as `install`,
+  and adds `/yokoten:init` and `/yokoten:doctor`. `git clone` and `install` still work.
+  `doctor` counts an enabled plugin as the session hook, the runtime and the skills.
+  `.claude-plugin/` is lead-only by default, in every project (#31).
 - `yokoten init --github` adds the standard labels (bug, feat, docs, refactor, ci,
   owner, incident, good first issue, hotfix) and a first milestone, through `gh`. Without
   `--yes` it only says what it would make. It keeps what is there and deletes nothing.

@@ -459,7 +459,7 @@ test('install: skills, agents and hooks once, the user\'s own files untouched', 
   const skillsLine = () => s.run(['doctor']).stdout.split('\n').find((l) => / skills/.test(l)) ?? '';
   assert.match(skillsLine(), /^\s+done\s+skills$/);
   rmSync(join(shared, 'skills', 'inspect'), { recursive: true });
-  assert.match(skillsLine(), /^\s+(next|to do)\s+skills: the yokoten skills are not in ~\/\.agents\/skills \(inspect\); run `yokoten install`$/);
+  assert.match(skillsLine(), /^\s+(next|to do)\s+skills: the yokoten skills are not in ~\/\.agents\/skills \(inspect\); run `yokoten install`, or install the Claude Code plugin$/);
 });
 
 test('check --pr: reads the CI event, lists the changed files from git, notes long prose (#47)', () => {
@@ -722,4 +722,96 @@ fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s));
   r = s.run(['init', '--github', '--yes'], { extra });
   assert.match(r.stdout, /- 9 of the 9 standard labels are there; kept\n- a milestone is there; kept\n[^]*Nothing to make\./);
   assert.equal(made().length, 9, 'the second run made nothing');
+});
+
+// The Claude Code plugin (#31). The repo root is the plugin and its own marketplace, so the
+// plugin names the kit's files and copies none. The fields and path rules checked here are
+// the documented ones: code.claude.com/docs/en/plugins/manifest-reference and
+// code.claude.com/docs/en/plugins/marketplace-reference.
+const ROOT = join(dirname(CLI), '..');
+const manifest = (name: string) => JSON.parse(readFileSync(join(ROOT, '.claude-plugin', name), 'utf8'));
+const PLUGIN_ROOT = '${CLAUDE_PLUGIN_ROOT}';
+
+test('plugin: the marketplace and the plugin have the documented fields', () => {
+  const market = manifest('marketplace.json');
+  const plugin = manifest('plugin.json');
+  const ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+  assert.match(market.name, ID);
+  assert.equal(typeof market.owner?.name, 'string');
+  assert.ok(market.owner.name.length > 0);
+  assert.equal(market.plugins.length, 1);
+  const [entry] = market.plugins;
+  assert.match(entry.name, ID);
+  // The entry name and the manifest name are the same, or an install by name fails.
+  assert.equal(entry.name, plugin.name);
+  assert.equal(entry.source, './', 'the repo root is the plugin');
+  assert.match(plugin.name, /^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'kebab-case');
+  // No version in either file: users get each commit, and package.json keeps the one version.
+  assert.equal(plugin.version, undefined);
+  assert.equal(entry.version, undefined);
+});
+
+test('plugin: every path it names exists inside the plugin, and the kit is not copied', () => {
+  const plugin = manifest('plugin.json');
+  const paths: string[] = [...plugin.skills, ...plugin.agents];
+  for (const p of paths) {
+    assert.ok(p.startsWith('./'), `${p} starts with ./`);
+    assert.ok(!p.split('/').includes('..'), `${p} stays in the plugin`);
+    assert.ok(existsSync(join(ROOT, p)), `${p} exists`);
+  }
+  // Skills are folders of <name>/SKILL.md: the ones install puts on a machine, and the
+  // plugin's own, which run yokoten from the plugin. Agents are .md files, every kit agent.
+  assert.deepEqual(plugin.skills, ['./kit/user/skills/', './kit/plugin/skills/']);
+  for (const dir of plugin.skills) for (const name of readdirSync(join(ROOT, dir))) assert.ok(existsSync(join(ROOT, dir, name, 'SKILL.md')), `${dir}${name}`);
+  assert.deepEqual(plugin.agents, readdirSync(join(ROOT, 'kit/user/agents')).sort().map((f) => `./kit/user/agents/${f}`), 'list every agent in kit/user/agents');
+  // Every script a hook or a plugin skill runs is in the plugin, named from its root.
+  const skills = readdirSync(join(ROOT, 'kit/plugin/skills')).map((name) => readFileSync(join(ROOT, 'kit/plugin/skills', name, 'SKILL.md'), 'utf8'));
+  const text = [JSON.stringify(plugin.hooks), ...skills].join('\n');
+  const scripts = [...text.matchAll(/\$\{CLAUDE_PLUGIN_ROOT\}\/([^"\\ ]+)/g)].map((m) => m[1]);
+  assert.ok(scripts.length >= 4, 'the scan found the hooks and commands');
+  for (const s of scripts) assert.ok(existsSync(join(ROOT, s)), s);
+});
+
+test('plugin: its hooks are the ones install adds, and the guard it registers blocks', () => {
+  const s = sandbox();
+  const hooks = manifest('plugin.json').hooks as Record<string, { matcher?: string; hooks: { type: string; command: string }[] }[]>;
+  // install's user-level hooks, with the plugin's root in place of the machine copy.
+  assert.equal(s.run(['install']).status, 0);
+  const installed = JSON.parse(readFileSync(join(s.home, '.claude', 'settings.json'), 'utf8')).hooks;
+  const shape = (h: typeof hooks, cli: string) => Object.fromEntries(Object.entries(h).map(([event, groups]) => [event, groups.map((g) => ({ matcher: g.matcher, commands: g.hooks.map((x) => `${x.type}: ${x.command.replace(cli, 'CLI')}`) }))]));
+  assert.deepEqual(shape(hooks, `"${PLUGIN_ROOT}/bin/yokoten.ts"`), shape(installed, '"$HOME/.local/share/yokoten/bin/yokoten.ts"'));
+  // The command as Claude Code runs it: the root filled in, through the shell.
+  const run = (command: string, input?: string, extra: Record<string, string> = {}) =>
+    spawnSync(command.replaceAll(PLUGIN_ROOT, ROOT), { shell: true, cwd: s.repo, env: { ...s.env, CLAUDE_PLUGIN_ROOT: ROOT, ...extra }, input, encoding: 'utf8' });
+  const guard = hooks.PreToolUse[0].hooks[0].command;
+  const call = (command: string) => JSON.stringify({ cwd: s.repo, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } });
+  const r = run(guard, call('git push --force origin main'));
+  assert.equal(r.status, 2, r.stderr);
+  assert.match(r.stderr, /force/);
+  assert.equal(run(guard, call('git status')).status, 0);
+  // At session start, doctor tells the agent how to run yokoten from the plugin.
+  const session = run(hooks.SessionStart[0].hooks[0].command);
+  assert.equal(session.status, 0, session.stderr);
+  assert.match(session.stdout, /^yokoten: stage 1 of 5/);
+  assert.match(session.stdout, /runs as \/yokoten:init and \/yokoten:doctor/);
+  assert.doesNotMatch(s.run(['doctor', '--session']).stdout, /yokoten:init/, 'only from the plugin');
+});
+
+test('doctor: the plugin, when on, stands in for install', () => {
+  const s = sandbox();
+  const machine = () => s.run(['doctor']).stdout;
+  assert.match(machine(), /MISSING session-doctor: sessions do not start with doctor; run `yokoten install`, or install the Claude Code plugin/);
+  assert.match(machine(), /MISSING runtime: no runtime installed/);
+  mkdirSync(join(s.home, '.claude'));
+  const settings = (enabledPlugins: unknown) => writeFileSync(join(s.home, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins }));
+  settings({ 'yokoten@yokoten': false });
+  assert.match(machine(), /MISSING session-doctor/, 'off is off');
+  settings({ 'yokoten@yokoten': true });
+  const out = machine();
+  assert.match(out, /ok {6}session-doctor/);
+  assert.match(out, /ok {6}runtime/);
+  assert.match(out, /^ +(done|to do|next) +skills$/m);
+  assert.doesNotMatch(out, /skills: the yokoten skills are not in/);
+  writeFileSync(join(s.home, '.claude', 'settings.json'), 'not json');
+  assert.match(machine(), /MISSING session-doctor/, 'a broken settings file enables nothing');
 });

@@ -116,7 +116,7 @@ Check: the tool-call guard stops `git push --force`, `-f` and a `+ref`; `--force
 
 | 层 | 管什么 | 怎么装 |
 |----|--------|--------|
-| **机器** | 技能、agent 定义、两个用户级 hook，每台电脑都一样 | `yokoten install` |
+| **机器** | 技能、agent 定义、两个用户级 hook，每台电脑都一样 | `yokoten install`，或者 Claude Code 插件 |
 | **项目** | 规则、提交检查、工具调用 hook、CI、issue 和 PR 模板、Dependabot（每月一个 PR）、安全说明 | `yokoten init`；老项目再用 `yokoten` 技能 |
 | **服务器** | 分支和 tag 规则集、squash 合并、代码负责人、权限受限的 bot、几个安全开关 | 由仓库主人设置一次；`doctor` 会列出步骤 |
 | **规则** | `AGENTS.md`：12 条核心规则，加上项目自己的规则 | 每条规则都写明由哪项检查守着 |
@@ -139,6 +139,40 @@ yokoten 能管住三种 AI 编程 agent，它们守的是同一套规矩。
 ## 安装和命令
 
 需要 Node 22.18 或更高版本：它能直接运行 TypeScript，不用先编译。没有任何依赖。
+装法有两种，选一种就行，别两种都装。
+
+### 用 Claude Code 插件装
+
+在 Claude Code 里输入：
+
+```text
+/plugin marketplace add coo1white/yokoten
+/plugin install yokoten@yokoten
+```
+
+第一条把这个仓库加成插件市场，第二条打开插件页面，选「Install for you」（给自己装，
+所有项目都能用）。不进 Claude Code 也行，在终端里先跑
+`claude plugin marketplace add coo1white/yokoten`，再跑 `claude plugin install yokoten@yokoten`。
+
+插件就是这个仓库本身。它用的文件和 `install` 复制的是同一份，所以两种装法不会越走越不一样：
+
+| 插件带来的 | 来自 |
+|---|---|
+| 技能：`/yokoten:dispatch`、`/yokoten:inspect`、`/yokoten:rca`、`/yokoten:record`、`/yokoten:release`、`/yokoten:yokoten` | `kit/user/skills/` |
+| agent：`yokoten:worker`、`yokoten:reviewer`、`yokoten:verifier` | `kit/user/agents/` |
+| `/yokoten:init` 和 `/yokoten:doctor`：直接用插件里的 yokoten 跑这两个命令 | `kit/plugin/skills/` |
+| 会话开头跑 `doctor` 的 hook 和命令守卫，跟 `install` 加的两个一样 | `.claude-plugin/plugin.json` |
+
+Claude Code 用 `node` 直接跑插件里的 `.ts` 文件。之所以能跑，是因为插件不放在
+`node_modules` 下面（Node 不处理 `node_modules` 里的 TypeScript）。想更新，就打开 `/plugin`，
+在 **Installed** 里选 yokoten，点 **Update now**。别人做的插件市场默认不自动更新，要自己打开。
+
+插件只管 Claude Code。它不会帮你建私有词表文件：`doctor` 会告诉你文件在哪，你自己建。
+插件在你的用户设置里开着的时候，`doctor` 就把它的 hook 和技能算作已经装好。
+
+### 从 clone 下来的仓库装
+
+用 Codex CLI、Gemini CLI，或者不想用插件，就这样装：
 
 ```sh
 git clone https://github.com/coo1white/yokoten
@@ -147,6 +181,8 @@ cd your-project
 node ~/.local/share/yokoten/bin/yokoten.ts init     # 这个项目：只加文件，不覆盖
 node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看走到哪一关，下一步做什么
 ```
+
+### 命令
 
 `init` 会把 yokoten 运行要用的文件复制到项目的 `.yokoten/` 里。把它一起提交：这样不联网、
 不全局安装，hook 和 CI 也能跑。

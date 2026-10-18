@@ -21,7 +21,7 @@ import { type Finding, finding, formatFinding, type RuleId } from '../rules/mess
 import { loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
-import { hasSessionDoctor } from '../agents/claude-code.ts';
+import { hasPlugin, hasSessionDoctor } from '../agents/claude-code.ts';
 import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
 import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
@@ -66,14 +66,19 @@ export function agentHooks(root: string): Practice[] {
   ];
 }
 
-/** Machine checks: the user-level hooks, the runtime, the private marks. The skills are a step on the road. */
+/**
+ * Machine checks: the user-level hooks, the runtime, the private marks. The skills are a
+ * step on the road. The Claude Code plugin brings its own hooks and runtime, so with it
+ * on, those two checks pass; an old runtime that install left is still reported.
+ */
 export function machineChecks(env: Env): Practice[] {
   const p = paths(env);
   const runtime = runtimeVersion(p.runtime);
+  const plugin = hasPlugin(env);
   return [
-    practice('session-doctor', 'session-doctor', hasSessionDoctor(env), 'sessions do not start with doctor', 'run `yokoten install`'),
+    practice('session-doctor', 'session-doctor', plugin || hasSessionDoctor(env), 'sessions do not start with doctor', 'run `yokoten install`, or install the Claude Code plugin'),
     // 'runtime' in the text, as before; the id differs from the road's runtime step.
-    practice('runtime', 'machine-runtime', runtime === VERSION, runtime ? `the installed runtime is ${runtime}, this yokoten is ${VERSION}` : 'no runtime installed', 'run `yokoten install` from this copy of yokoten'),
+    practice('runtime', 'machine-runtime', runtime === VERSION || (plugin && runtime === null), runtime ? `the installed runtime is ${runtime}, this yokoten is ${VERSION}` : 'no runtime installed', 'run `yokoten install` from this copy of yokoten'),
     practice('private-marks', 'private-marks', loadMarks(env).length > 0, `${p.marks} is missing or empty`, 'add your name, city, domain and server names to it, one per line'),
   ];
 }
@@ -165,6 +170,12 @@ export const ROAD_DONE = 'yokoten: every step yokoten can check is done, or mark
 /** The last of a session's three lines: what the agent does with the step. */
 export const OFFER = 'Tell the user in plain words, one step at a time, and offer to do it (as-is, lighter, or not now with a reason).';
 
+/**
+ * Added to that line when doctor runs from the Claude Code plugin's hook: there is no
+ * `yokoten` command on the PATH, so the agent runs the plugin's commands.
+ */
+export const PLUGIN_COMMANDS = 'In this session, yokoten runs as /yokoten:init and /yokoten:doctor.';
+
 /** One step in the JSON map: its mark, its outside standard, and the reason for "not now". */
 export interface StepState {
   id: string;
@@ -216,7 +227,7 @@ export function doctor(
   // A session reads files only, never the network, so it starts fast and works offline.
   if (session) {
     const { stage } = where;
-    if (stage && next) lines.push(`yokoten: stage ${stage} of ${STAGES.length}, ${STAGES[stage - 1]}. Next: ${stepText(next)}.`, `Why: ${next.why}.`, OFFER);
+    if (stage && next) lines.push(`yokoten: stage ${stage} of ${STAGES.length}, ${STAGES[stage - 1]}. Next: ${stepText(next)}.`, `Why: ${next.why}.`, env.CLAUDE_PLUGIN_ROOT ? `${OFFER} ${PLUGIN_COMMANDS}` : OFFER);
     else lines.push(ROAD_DONE);
     if (next) findings.push(next);
     // Not a step on the road, but the privacy check is weaker until it is fixed.

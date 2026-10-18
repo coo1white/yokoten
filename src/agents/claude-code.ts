@@ -61,3 +61,18 @@ export function addUserHooks(env: Env, cli: string): { doctor: Added; guard: Add
   };
 }
 export const hasSessionDoctor = (env: Env): boolean => hasHook(userSettings(env), 'SessionStart', 'doctor');
+
+/**
+ * Whether the yokoten plugin is on in the user's settings (`enabledPlugins`, the key
+ * `yokoten@<marketplace>`). The plugin brings the skills, the agents and both user-level
+ * hooks, so it stands in for `install` in Claude Code.
+ */
+export function hasPlugin(env: Env): boolean {
+  let enabled: unknown;
+  try {
+    enabled = readSettings(userSettings(env)).enabledPlugins;
+  } catch {
+    return false; // a settings file that is not JSON enables nothing
+  }
+  return typeof enabled === 'object' && enabled !== null && Object.entries(enabled).some(([id, on]) => id.startsWith('yokoten@') && on === true);
+}
