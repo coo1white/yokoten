@@ -11,9 +11,9 @@
 // A check that passes everything looks the same as a healthy project, so this comes first.
 
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkCommand, checkEdit } from '../rules/guards.ts';
 import { type Config, DEFAULTS, type Env } from '../rules/config.ts';
@@ -153,30 +153,89 @@ export interface LessonCheck {
   mark: 'ok' | 'note' | 'not now';
   findings: Finding[];
   reason?: string;
+  /** The problem the lesson looks for, from its exported `lesson`. */
+  what?: string;
+  /** True the first time this clone's full doctor runs the lesson (#172). */
+  isNew?: boolean;
 }
 
 /**
  * Each lesson the kit ships, run against this project: read only, offline and fast. A
  * lesson in yokoten.json "notNow" does not run. A lesson that can't run is a note too.
+ * With `seen`, the lessons this clone already ran: a lesson that runs and is not in it is new.
  */
-export function lessonChecks(root: string, notNow: Record<string, string>, place: LessonPlace = kitLessons()): LessonCheck[] {
+export function lessonChecks(root: string, notNow: Record<string, string>, place: LessonPlace = kitLessons(), seen: string[] | null = null): LessonCheck[] {
   const isSkipped = (id: string) => Object.hasOwn(notNow, id);
   const runs = new Map(runLessons(root, place, isSkipped).map((run) => [run.id, run]));
   return listLessons(place).map(({ id }): LessonCheck => {
     const run = runs.get(id);
+    // "Not now" silences the new-lesson note too.
     if (!run) return { id, mark: 'not now', findings: [], reason: notNow[id] };
-    if (run.error) return { id, mark: 'note', findings: [{ id, what: `can't run this lesson: ${run.error}`, why: 'a lesson from the kit could not check this project', fix: 'run `yokoten install` again; if it stays, report it in an issue' }] };
-    return { id, mark: run.findings.length ? 'note' : 'ok', findings: run.findings };
+    const known = { ...(run.what === undefined ? {} : { what: run.what }), ...(seen && !seen.includes(id) ? { isNew: true } : {}) };
+    if (run.error) return { id, mark: 'note', findings: [{ id, what: `can't run this lesson: ${run.error}`, why: 'a lesson from the kit could not check this project', fix: 'run `yokoten install` again; if it stays, report it in an issue' }], ...known };
+    return { id, mark: run.findings.length ? 'note' : 'ok', findings: run.findings, ...known };
   });
 }
 
-/** The lessons as lines of the project part: one per lesson, or one per place a lesson found. */
+/**
+ * The lessons as lines of the project part: one per lesson, or one per place a lesson found.
+ * A new lesson gets one line more before them, even when it finds no problem.
+ */
 export function formatLessonChecks(lessons: LessonCheck[]): string[] {
-  return lessons.flatMap(({ id, mark, findings, reason }) => {
+  return lessons.flatMap(({ id, mark, findings, reason, what, isNew }) => {
+    const intro = isNew ? [`  note    new lesson: ${id}${what ? ` (${what})` : ''}; doctor now runs it in this project`] : [];
     if (mark === 'not now') return [`  not now lesson ${id}: ${reason}`];
-    if (mark === 'ok') return [`  ok      lesson ${id}`];
-    return findings.map((f) => `  note    lesson ${id}: ${stepText(f)}`);
+    if (mark === 'ok') return [...intro, `  ok      lesson ${id}`];
+    return [...intro, ...findings.map((f) => `  note    lesson ${id}: ${stepText(f)}`)];
   });
+}
+
+// What full doctor keeps between runs, per clone (record 0004). The file is in the git
+// folder, so it is never committed. A missing or broken file is an empty state: losing it
+// costs one repeated note, never a failed doctor.
+
+/** Where the state file is, in the git folder that all worktrees of a clone share. */
+export const STATE_FILE = 'yokoten/state.json';
+
+/** What the state file holds. Keys this version does not know are kept as they are. */
+export interface DoctorState {
+  /** The ids of the kit's lessons that full doctor already ran in this clone (#172). */
+  seenLessons?: string[];
+  [key: string]: unknown;
+}
+
+/** The state file of the clone at `root`, or null outside a git repo. */
+export function findStateFile(root: string): string | null {
+  try {
+    const gitDir = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    return gitDir ? join(gitDir, STATE_FILE) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The saved state, or an empty one when the file is missing or broken. */
+export function readState(file: string | null): DoctorState {
+  if (!file) return {};
+  try {
+    const state: unknown = JSON.parse(readFileSync(file, 'utf8'));
+    if (!state || typeof state !== 'object' || Array.isArray(state)) return {};
+    const { seenLessons, ...rest } = state as DoctorState;
+    return Array.isArray(seenLessons) ? { ...rest, seenLessons: seenLessons.filter((id) => typeof id === 'string') } : rest;
+  } catch {
+    return {};
+  }
+}
+
+/** Save the state. A file that can't be written is left as it is: state is never worth a failed doctor. */
+export function saveState(file: string | null, state: DoctorState): void {
+  if (!file) return;
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify(state, null, 2)}\n`);
+  } catch {
+    // a read-only git folder: the new-lesson note shows again next time
+  }
 }
 
 /** What doctor can't read on the server yet, and the owner sets once per repo. */
@@ -241,7 +300,7 @@ export interface DoctorReport {
   notes?: Finding[];
   server?: { id: string; mark: ServerCheck['mark'] }[];
   /** The kit's lessons, run against this project (#147). Their findings are in `notes`. */
-  lessons?: { id: string; mark: LessonCheck['mark']; reason?: string }[];
+  lessons?: { id: string; mark: LessonCheck['mark']; reason?: string; isNew?: boolean }[];
 }
 
 /** The report, as text lines and as data, and whether everything is in place. */
@@ -318,7 +377,13 @@ export function doctor(
     if (core.mark === 'MISSING') findings.push(core.finding);
     else if (core.mark === 'note') notes.push(core.finding);
   }
-  const lessons = lessonChecks(root, config.notNow);
+  // Full doctor alone keeps which lessons this clone has seen; a session writes nothing.
+  const stateFile = findStateFile(root);
+  const state = readState(stateFile);
+  const seenLessons = state.seenLessons ?? [];
+  const lessons = lessonChecks(root, config.notNow, undefined, stateFile ? seenLessons : null);
+  const newIds = lessons.filter((lesson) => lesson.isNew).map((lesson) => lesson.id);
+  if (newIds.length) saveState(stateFile, { ...state, seenLessons: [...seenLessons, ...newIds] });
   lines.push(...formatLessonChecks(lessons));
   notes.push(...lessons.flatMap((lesson) => lesson.findings));
   const problems = check(root, { config, env });
@@ -339,5 +404,5 @@ export function doctor(
   if (settings[0].id === 'server-settings') lines.push('  check these by hand:', ...BY_HAND.map((s) => `    ${s}`));
   lines.push(...OWNER_STEPS.map((s) => `  not checked ${s}`));
   const ok = !failed.length && !where.next && !isCoreBehind && !problems.length && machine.every((c) => c.ok);
-  return { ok, lines, report: { ...base, ok, repo: true, stage: where.stage, next, findings, steps, notes, server: settings.map(({ id, mark }) => ({ id, mark })), lessons: lessons.map(({ id, mark, reason }) => (reason === undefined ? { id, mark } : { id, mark, reason })) } };
+  return { ok, lines, report: { ...base, ok, repo: true, stage: where.stage, next, findings, steps, notes, server: settings.map(({ id, mark }) => ({ id, mark })), lessons: lessons.map(({ id, mark, reason, isNew }) => ({ id, mark, ...(reason === undefined ? {} : { reason }), ...(isNew ? { isNew } : {}) })) } };
 }
