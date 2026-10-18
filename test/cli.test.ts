@@ -1234,7 +1234,7 @@ test('check --pr and --issue: an event file that is missing or broken is one fin
       assert.deepEqual(JSON.parse(result.stdout).findings.map((f: { id: string }) => f.id), ['ci-event']);
     }
   }
-  assert.equal(readFileSync(summary, 'utf8').split('| ci-event |').length - 1, 8, 'each run wrote its summary');
+  assert.equal(readFileSync(summary, 'utf8').split('| [ci-event](').length - 1, 8, 'each run wrote its summary');
   // A label that is null or has no name, and a title that is not text, are skipped, not a crash.
   writeFileSync(file, JSON.stringify({ issue: { title: 'check: a symptom', labels: [null, 7, { name: 'incident' }, {}] } }));
   let result = sandbox.run(['check', '--issue'], { extra: { GITHUB_EVENT_PATH: file } });
