@@ -231,7 +231,7 @@ export function compareCoreRules(project: string, kit: string): CoreRules {
   return { state: 'behind', changes: diffLines(before, after), sections: compareSections(before, after), updated: core + project.slice(start) };
 }
 
-/** The kit's AGENTS.md, rendered for this project, or null when this copy of yokoten has no kit. */
+/** The kit's AGENTS.md, rendered for this project, or null when this copy of yokoten has no kit. A project's .yokoten/ has this one kit file (#145). */
 function readKitRules(root: string): string | null {
   const path = join(KIT, 'project', 'AGENTS.md');
   return existsSync(path) ? render(readFileSync(path, 'utf8'), { cli: cliPath(root), version: VERSION }) : null;
@@ -243,7 +243,7 @@ export function readCoreRules(root: string): CoreRules | null {
   if (!existsSync(path)) return null;
   const kit = readKitRules(root);
   if (kit === null) {
-    return { state: "can't compare", why: 'this copy of yokoten has no kit (the copy in .yokoten/ leaves it out)', fix: 'run the command from an installed yokoten, the Claude Code plugin (/yokoten:update), or a clone, not from .yokoten/' };
+    return { state: "can't compare", why: 'this copy of yokoten has no kit (a .yokoten/ copy made before #145 has none)', fix: 'run `yokoten init` again to refresh .yokoten/, or run the command from an installed yokoten, the Claude Code plugin (/yokoten:update), or a clone' };
   }
   return compareCoreRules(readFileSync(path, 'utf8'), kit);
 }

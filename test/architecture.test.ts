@@ -13,18 +13,22 @@ const SRC = join(ROOT, 'src');
 
 // Lowest first. A module may import from its own layer or a lower one, never a higher.
 // rules: what is allowed, as pure functions. run: the checks at work (hook, commit, CI).
-// agents: one adapter per AI runtime. host: one adapter per code host (the bot, a CI
-// run's pull request). setup: writing yokoten into a machine or a project.
+// agents: one adapter per AI runtime, and llama.ts, the model API that adopt calls.
+// host: one adapter per code host (the bot, a CI run's pull request). setup: writing
+// yokoten into a machine or a project.
 const LAYERS = ['rules', 'run', 'agents', 'host', 'setup'];
 
 test('layers: no module imports from a layer above its own', () => {
   const found = new Set<string>();
   for (const layer of readdirSync(SRC)) {
     assert.ok(LAYERS.includes(layer), `src/${layer}/ is not in LAYERS: add it, in order`);
-    for (const file of readdirSync(join(SRC, layer))) {
-      const text = readFileSync(join(SRC, layer, file), 'utf8');
+    // A layer may have folders of its own (src/setup/advice/); their files belong to it.
+    const files = readdirSync(join(SRC, layer), { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile());
+    for (const entry of files) {
+      const file = relative(join(SRC, layer), join(entry.parentPath, entry.name));
+      const text = readFileSync(join(entry.parentPath, entry.name), 'utf8');
       for (const [, spec] of text.matchAll(/from '(\.[^']+)'/g)) {
-        const target = relative(SRC, join(SRC, layer, spec)).split(/[\\/]/)[0];
+        const target = relative(SRC, join(entry.parentPath, spec)).split(/[\\/]/)[0];
         found.add(`${layer}->${target}`);
         assert.ok(LAYERS.indexOf(target) <= LAYERS.indexOf(layer), `src/${layer}/${file} imports ${spec}, from the higher layer ${target}`);
       }
