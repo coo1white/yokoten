@@ -457,12 +457,15 @@ project's own stack.
   `python3.exe` count as `python3`.
 - Every part of the command counts: `a && b`, `a | b`, `a; b`, `$(...)` and
   `bash -c '...'`.
-- Assignments and wrappers do not hide the program: `X=1 python3`, `env`, `sudo`,
-  `doas`, `command`, `exec`, `time`, `nice`, `nohup`, `timeout` and `xargs`.
+- Assignments, launchers and shell keywords do not hide the program: `X=1 python3`;
+  launchers such as `env`, `sudo`, `nice`, `timeout`, `xargs`, `setsid` and `stdbuf`;
+  a command after `if`, `for`, `while` or `!`; a program `find -exec` runs; and the
+  string in `env -S`.
 - A word that only holds the name passes: `echo python`, `cat python.md`, `pythonic`.
   `command -v python3` passes too: it only says where the program is.
-- A name has no folder and no space. A wrong shape in `yokoten.json` is a config error,
-  and the guard says so.
+- A name has no folder and no space. A wrong shape in `"commands"` is a config error for
+  `check` and `doctor`. The guard then blocks no program and says so, and the core
+  checks still run.
 
 The guard reads command text. It does not see a program that a script, a `make` target,
 an npm script or a shell function runs. Name each version you want to stop:

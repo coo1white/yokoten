@@ -425,11 +425,13 @@ AGENTS.md 里，它就只是个愿望。把这些程序写进 `yokoten.json`，�
 
 - 守卫只看每条命令真正运行的程序，按名字认：`/usr/bin/python3` 和 `python3.exe` 都算 `python3`。
 - 命令的每一段都会查：`a && b`、`a | b`、`a; b`、`$(...)` 和 `bash -c '...'`。
-- 前面加了变量或者套了一层也藏不住：`X=1 python3`，以及 `env`、`sudo`、`doas`、`command`、
-  `exec`、`time`、`nice`、`nohup`、`timeout`、`xargs`。
+- 前面加了变量、套了一层或者放在流程语句里也藏不住：`X=1 python3`；`env`、`sudo`、`nice`、
+  `timeout`、`xargs`、`setsid`、`stdbuf` 这类启动器；`if`、`for`、`while`、`!` 后面的命令；
+  `find -exec` 运行的程序；`env -S` 里的字符串。
 - 只是参数里出现这个名字的不拦：`echo python`、`cat python.md`、`pythonic`。
   `command -v python3` 也不拦，它只是查程序在哪儿，并不运行。
-- 名字里不能带路径，也不能有空格。`yokoten.json` 写错了格式，守卫会直接报配置错误。
+- 名字里不能带路径，也不能有空格。`commands` 写错了格式，`check` 和 `doctor` 会报配置错误；
+  守卫这时不拦任何程序，但会说一声，核心检查照常运行。
 
 守卫读的是命令的文字。脚本、`make` 目标、npm 脚本或者 shell 函数在里面运行的程序，它看不到。
 想拦哪个版本就写哪个：`python3.12` 不算 `python3`。
