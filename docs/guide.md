@@ -2,6 +2,13 @@
 
 The [README](../README.md) is the short version. This is everything else: why yokoten exists, how it works, the rules, the commands, and what it can't do.
 
+## A race track
+
+**Think of it as a race track.** An AI coding agent is a fast car. yokoten is the track
+it runs on. The guardrails stop a mistake from becoming a wreck (the guard). The racing
+line shows the next turn, one stage at a time (the guide). And every crash makes every
+track safer: when one project learns a lesson, every project gets the check (*yokoten*).
+
 ## Words used here
 
 - **Session**: one conversation with an AI coding agent, such as Claude Code.
