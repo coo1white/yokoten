@@ -2,10 +2,10 @@
 // yokoten: carry what one project learned into every project.
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
-import { botConfig, botEnv, ghIn, installationToken, readCodeOwners, readIssue, readPullRequest, repoOf } from '../src/host/github.ts';
+import { annotations, botConfig, botEnv, ghIn, installationToken, isGitHubActions, readCodeOwners, readIssue, readPullRequest, repoOf, stepSummary } from '../src/host/github.ts';
 import { check, checkChanged, checkHistory, gitRoot, historyTimeZones, timeZoneNote } from '../src/run/check.ts';
 import * as claudeCode from '../src/agents/claude-code.ts';
 import * as codex from '../src/agents/codex.ts';
@@ -104,6 +104,23 @@ function printJson(data: unknown): void {
 }
 
 const bullets = (findings: Finding[]) => findings.map((f) => `- ${formatFinding(f)}`);
+
+/**
+ * In a GitHub Actions job, the findings of a check also go on the pull request page
+ * (#91): annotations on stdout, and a job summary. Outside Actions, nothing. With
+ * --json, stdout holds only the JSON, so there are no annotations; the summary is a file.
+ * A summary that can't be written is said on stderr; it never changes the result.
+ */
+function showOnPullRequest(name: string, problems: Finding[], notes: Finding[], { json, isPlaceAFile }: { json: boolean; isPlaceAFile: boolean }): void {
+  if (!isGitHubActions(env)) return;
+  if (!json) print(annotations(problems, notes, isPlaceAFile));
+  if (!env.GITHUB_STEP_SUMMARY) return;
+  try {
+    appendFileSync(env.GITHUB_STEP_SUMMARY, hideHome(stepSummary(name, problems, notes), env));
+  } catch (err) {
+    say(`${name}: the job summary was not written: ${((err as Error).message ?? String(err)).split('\n')[0]}\n`, process.stderr);
+  }
+}
 
 async function bot(command: string[]): Promise<number> {
   const config = botConfig(env);
@@ -270,6 +287,7 @@ function main(): number | Promise<number> {
       if (json) printJson({ check: mode, ok: !problems.length, findings: problems, notes });
       else if (!problems.length) print([`${name}: ok${mode === 'history' ? ' (every commit on every branch)' : ''}`]);
       else print([`${name}: ${problems.length} problem(s)`, ...bullets(problems)], process.stderr);
+      showOnPullRequest(`yokoten check${mode === 'tree' ? '' : ` --${mode}`}`, problems, notes, { json, isPlaceAFile: mode !== 'history' });
       return problems.length ? 1 : 0;
     }
     case 'doctor': {

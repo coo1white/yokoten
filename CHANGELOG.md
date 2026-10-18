@@ -8,6 +8,9 @@ All notable changes are listed here. The format follows
 
 ### Added
 
+- In GitHub Actions, `check` shows its findings on the pull request page. Each finding
+  is an annotation on its line, and the job summary lists what, why and the fix. Notes
+  are warnings. Output outside Actions does not change (#91).
 - yokoten installs as a Claude Code plugin: `/plugin marketplace add coo1white/yokoten`,
   then `/plugin install yokoten@yokoten`. The repo is the plugin and its marketplace. It
   uses the kit's skills and agents as they are, adds the same two hooks as `install`,

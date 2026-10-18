@@ -249,6 +249,12 @@ the `id`. No field holds a private value.
 Output for people follows one rule. Results go to stdout. Problems, refusals and errors
 go to stderr. An unknown option is refused, never ignored.
 
+In CI, you don't need to open the log to see what failed. When `check` runs in GitHub
+Actions, each finding is an annotation on the changed line of the pull request. The job
+summary lists each finding with its place, what, why and the fix. A note shows as a
+warning and never fails the check. Like the rest of the output, these name a place,
+never what matched.
+
 ### Exit codes
 
 | Code | Means |
