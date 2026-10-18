@@ -1320,7 +1320,7 @@ test('doctor: notes an installed plugin older than this yokoten (#198)', () => {
   assert.doesNotMatch(full(), olderNote, 'outside a yokoten checkout, a commit alone tells nothing');
 });
 
-test('doctor: in a yokoten checkout, a plugin commit behind HEAD is a note (#198)', () => {
+test('doctor: in a yokoten checkout, a plugin commit behind the default branch is a note (#198)', () => {
   const sandbox = makeSandbox();
   sandbox.write('package.json', JSON.stringify({ name: 'yokoten', version: '0.0.1' }));
   sandbox.write('bin/yokoten.ts', '');
@@ -1333,19 +1333,34 @@ test('doctor: in a yokoten checkout, a plugin commit behind HEAD is a note (#198
   // No installPath and no package.json: only the commit can tell.
   const install = (sha: string) => writeFileSync(join(plugins, 'installed_plugins.json'), JSON.stringify({ plugins: { 'yokoten@yokoten': [{ scope: 'user', version: sha.slice(0, 12), gitCommitSha: sha }] } }));
   const olderNote = /the yokoten plugin is older than this yokoten \(([0-9a-f]{12}) < ([0-9a-f]{12})\)/;
+  const commit = (name: string) => {
+    sandbox.write(`${name}.md`, `${name}\n`);
+    sandbox.git('add', '.');
+    sandbox.git('commit', '-q', '-m', `feat: ${name}`);
+    return sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  };
   install(first);
-  assert.doesNotMatch(sandbox.run(['doctor']).stdout, olderNote, 'the plugin is HEAD');
-  sandbox.write('a.md', 'two\n');
-  sandbox.git('add', '.');
-  sandbox.git('commit', '-q', '-m', 'feat: two');
-  const head = sandbox.git('rev-parse', 'HEAD').stdout.trim();
-  // Positive control: the plugin's commit is in HEAD's history.
+  assert.doesNotMatch(sandbox.run(['doctor']).stdout, olderNote, 'the plugin is main');
+  // The plugin is main's tip and doctor runs on a feature branch ahead of main: up to date,
+  // though HEAD descends from it. An update could not help, so nothing.
+  sandbox.git('checkout', '-q', '-b', 'feature');
+  commit('two');
+  assert.doesNotMatch(sandbox.run(['doctor']).stdout, olderNote, 'the plugin is main, HEAD is ahead');
+  assert.doesNotMatch(sandbox.run(['doctor', '--session']).stdout, olderNote);
+  // Positive control: main moves on, so the plugin is one commit behind it, on any branch.
+  sandbox.git('checkout', '-q', 'main');
+  const tip = commit('three');
+  sandbox.git('checkout', '-q', 'feature');
   const match = sandbox.run(['doctor']).stdout.match(olderNote);
-  assert.deepEqual(match?.slice(1), [first.slice(0, 12), head.slice(0, 12)]);
+  assert.deepEqual(match?.slice(1), [first.slice(0, 12), tip.slice(0, 12)]);
   assert.match(sandbox.run(['doctor', '--session']).stdout, olderNote);
   // A commit this repo doesn't know: can't tell, so nothing.
   install('0'.repeat(40));
   assert.doesNotMatch(sandbox.run(['doctor']).stdout, olderNote);
+  // No origin/HEAD, origin/main or main: no default branch to compare with, so nothing.
+  install(first);
+  sandbox.git('branch', '-q', '-m', 'main', 'trunk');
+  assert.doesNotMatch(sandbox.run(['doctor']).stdout, olderNote, 'no main ref');
 });
 
 // #117: the bot checks a title before it sends anything, by the rules CI uses. A fake gh
