@@ -258,6 +258,8 @@ node ~/.local/share/yokoten/bin/yokoten.ts init     # 这个项目：只加文�
 node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看走到哪一关，下一步做什么
 ```
 
+这些命令（包括上面 npx 那几条）在 [docs/facts.json](../facts.json) 里还有一份，网站读的是那份，所以改命令的时候两边都要改。
+
 ### 当成 GitHub Action 用
 
 GitHub 上的任何仓库，加一个 workflow 文件，就能在 CI 里跑 yokoten 的检查。仓库里不用装

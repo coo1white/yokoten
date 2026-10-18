@@ -280,6 +280,9 @@ node ~/.local/share/yokoten/bin/yokoten.ts init     # this project: adds files, 
 node ~/.local/share/yokoten/bin/yokoten.ts doctor   # the road: where you are, what's next
 ```
 
+These commands, and the npx ones, are also in [docs/facts.json](facts.json), which the
+website reads, so a change to them goes in both places.
+
 ### Use it as a GitHub Action
 
 Any repo on GitHub can run yokoten's checks in CI with one workflow file. Nothing is
