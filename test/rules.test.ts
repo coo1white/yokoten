@@ -624,6 +624,9 @@ test('learn: the fix reads as part of one sentence with the what (#182)', () => 
   assert.equal(fixOf('CI runs it.'), 'CI runs it');
   assert.equal(fixOf('NO_PROXY is set.'), 'NO_PROXY is set');
   assert.equal(fixOf('GitHub keeps it.'), 'GitHub keeps it');
+  assert.equal(fixOf('I set NO_PROXY in the test.'), 'I set NO_PROXY in the test', 'the word I stays');
+  assert.equal(fixOf("I'm setting it."), "I'm setting it");
+  assert.equal(fixOf('It sets it.'), 'it sets it');
   // A missing Fix section keeps its TODO as it is.
   assert.match(draftLesson(incidentOf('')).finding.fix, /^TODO\(reviewer\): /);
 });

@@ -104,12 +104,13 @@ export function summarize(text: string): string {
  * Text shaped to go inside a sentence: no full stop at the end, and the first letter lower
  * case when the first word is a capital followed only by lower-case letters ("The", "A").
  * A code span, an acronym (`CI`, `NO_PROXY`) or a word with another capital (`GitHub`)
- * stays as it is. A one-capital name ("Node") is lowered too: the draft can't tell it from
- * an ordinary word, and the reviewer fixes it. Doctor prints "<what>; <fix>" as one sentence.
+ * stays as it is, and so does the word "I". A one-capital name ("Node") is lowered too: the
+ * draft can't tell it from an ordinary word, and the reviewer fixes it. Doctor prints
+ * "<what>; <fix>" as one sentence.
  */
 function asClause(text: string): string {
   const clause = text.trim().replace(/\.$/, '');
-  return /^[A-Z][a-z]*(?![\w-])/.test(clause) ? clause.charAt(0).toLowerCase() + clause.slice(1) : clause;
+  return /^(?!I(?![a-z]))[A-Z][a-z]*(?![\w-])/.test(clause) ? clause.charAt(0).toLowerCase() + clause.slice(1) : clause;
 }
 
 /** The symptom of an `area: symptom` title, shaped as a clause, as a finding's `what`. */
