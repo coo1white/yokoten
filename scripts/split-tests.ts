@@ -413,8 +413,10 @@ function main() {
     if (!found || found.declared.length !== 1) throw new SplitError(`test/${HOIST_SOURCE}.test.ts has no single declaration of ${name} to move to test/${HELPERS}`);
     return found;
   });
-  const helperCode = new Map(helperStatements.map((statement) => [statement.declared[0], statement.code]));
-  const isHoisted = (statement: Statement) => statement.kind === 'declaration' && statement.declared.length === 1 && helperCode.get(statement.declared[0]) === statement.code;
+  // A declaration counts as a helper wherever a file has one with the same names and code.
+  const keyOf = (statement: Statement) => `${statement.declared.join(',')}\n${statement.code}`;
+  const helperKeys = new Set(helperStatements.map(keyOf));
+  const isHoisted = (statement: Statement) => statement.kind === 'declaration' && helperKeys.has(keyOf(statement));
   // A hoisted declaration's leading comment moves to the next statement of its file.
   for (const file of files.values()) {
     let carried = '';
@@ -429,15 +431,65 @@ function main() {
 
   // Each target's declarations, imports and helpers, from the names its tests use.
   const report: string[] = [];
-  const targets: Target[] = [];
-  for (const [path, tests] of [...placed].sort(([left], [right]) => (left < right ? -1 : 1))) {
-    tests.sort(byPlace);
-    const depth = path.split('/').length - 1;
-    const target: Target = { path, depth, tests, declarations: [], imports: new Map(), helpers: new Set(), text: '' };
-    resolveNames(target, tests, files, isHoisted, path);
-    target.declarations.sort(byPlace);
-    targets.push(target);
+  const resolveAll = () =>
+    [...placed]
+      .sort(([left], [right]) => (left < right ? -1 : 1))
+      .map(([path, tests]) => {
+        tests.sort(byPlace);
+        const target: Target = { path, depth: path.split('/').length - 1, tests, declarations: [], imports: new Map(), helpers: new Set(), text: '' };
+        resolveNames(target, tests, files, isHoisted, path);
+        target.declarations.sort(byPlace);
+        return target;
+      });
+  let targets = resolveAll();
+  // A declaration copied into two or more files moves to the helpers, with what it uses,
+  // so a later edit touches one place. Then every file is resolved again.
+  const copies = new Map<Statement, number>();
+  for (const target of targets) for (const statement of target.declarations) copies.set(statement, (copies.get(statement) ?? 0) + 1);
+  // On a name clash the first by place moves, and the other stays a copy in each file, with
+  // whatever uses it: a helper cannot use a file's own declaration.
+  const kept = new Set<Statement>();
+  const declarationOf = (statement: Statement, name: string) =>
+    files.get(statement.source)?.statements.find((other) => other.kind === 'declaration' && other.declared.includes(name) && !other.declared.every((own) => statement.declared.includes(own)));
+  let shared: Statement[] = [];
+  for (let isSettled = false; !isSettled; ) {
+    isSettled = true;
+    shared = [...copies].filter(([statement, count]) => count > 1 && !kept.has(statement)).map(([statement]) => statement);
+    for (let index = 0; index < shared.length && isSettled; index++) {
+      for (const name of shared[index].uses) {
+        const used = declarationOf(shared[index], name);
+        if (used && kept.has(used)) {
+          kept.add(shared[index]);
+          isSettled = false;
+          break;
+        }
+        if (used && !isHoisted(used) && !shared.includes(used)) shared.push(used);
+      }
+    }
+    if (!isSettled) continue;
+    const names = new Map<string, Statement>(helperStatements.flatMap((statement) => statement.declared.map((name): [string, Statement] => [name, statement])));
+    for (const statement of [...shared].sort(byPlace)) {
+      const clash = statement.declared.some((name) => names.has(name) && names.get(name)?.code !== statement.code);
+      if (clash) {
+        kept.add(statement);
+        isSettled = false;
+        break;
+      }
+      for (const name of statement.declared) names.set(name, statement);
+    }
   }
+  for (const statement of [...kept].sort(byPlace)) {
+    if ((copies.get(statement) ?? 0) > 1) report.push(`  note: ${statement.declared.join(', ')} (test/${statement.source}.test.ts:${statement.line}) is used by ${copies.get(statement)} files but stays a copy in each: its name clashes in test/${HELPERS}, or it uses one that does`);
+  }
+  const stateful = shared.filter((statement) => holdsState(statement, new Set(files.get(statement.source)?.imports.map((name) => name.local))));
+  if (stateful.length) throw new SplitError(`declarations used by two or more files hold module-level state, so they cannot move to test/${HELPERS}: ${stateful.map((statement) => `${statement.declared.join(', ')} (test/${statement.source}.test.ts:${statement.line})`).join('; ')}. Give each file its own, or make it a function.`);
+  const uniqueShared = shared.filter((statement, index) => shared.findIndex((other) => keyOf(other) === keyOf(statement)) === index).sort(byPlace);
+  for (const statement of uniqueShared) {
+    helperStatements.push(statement);
+    helperKeys.add(keyOf(statement));
+  }
+  if (uniqueShared.length) targets = resolveAll();
+  const typeNames = new Set(helperStatements.filter((statement) => ['type', 'interface'].includes(statement.code.split(/\s/)[0])).flatMap((statement) => statement.declared));
   const helpers: Target = { path: HELPERS, depth: 0, tests: [], declarations: helperStatements, imports: new Map(), helpers: new Set(), text: '' };
   resolveNames(helpers, helperStatements, files, () => false, HELPERS);
   if (helpers.declarations.length !== helperStatements.length) throw new SplitError(`a helper uses a declaration that is not a helper: ${helpers.declarations.filter((statement) => !helperStatements.includes(statement)).map((statement) => statement.declared.join(', ')).join('; ')}`);
@@ -455,7 +507,7 @@ function main() {
     const prefixes = [...new Set(target.tests.map((test) => test.prefix))];
     const header = found ? `// Tests for ${found.module}${found.isPart ? `: ${prefixes.join(', ')}` : ''}.` : `// Tests: ${prefixes.join(', ')}.`;
     if (!found) report.push(`  note: test/${target.path} has no src module of its own`);
-    const imports = [...target.imports.values(), ...[...target.helpers].map((local): ImportName => ({ local, imported: local, module: HELPERS, isType: false, isDefault: false }))];
+    const imports = [...target.imports.values(), ...[...target.helpers].map((local): ImportName => ({ local, imported: local, module: HELPERS, isType: typeNames.has(local), isDefault: false }))];
     const parts = [header, formatImports(imports, target.depth)];
     for (const statement of target.declarations) {
       parts.push(shift(statement, target));
@@ -466,9 +518,9 @@ function main() {
     target.text = `${parts.join('\n\n')}\n`;
   }
   helpers.text = `${[
-    `// Shared by the test files: the CLI's path, the repo root, and a throwaway git repo to run it in.`,
+    `// Shared by the test files: the CLI's path, the repo root, a throwaway git repo to run it in,\n// and every declaration that two or more test files use. No state: each file imports it.`,
     formatImports([...helpers.imports.values()], 0),
-    ...helperStatements.map((statement) => `export ${statement.code}`),
+    ...helperStatements.map((statement) => `${HOIST.includes(statement.declared[0]) && statement.source === HOIST_SOURCE ? '' : statement.leading}export ${statement.code}`),
   ].join('\n\n')}\n`;
 
   // Self-check: the same tests, by name and by text, and the same count.
@@ -526,6 +578,7 @@ function main() {
     'Files:',
     ...targets.map((target) => `  test/${target.path}: ${target.tests.length} tests, from ${[...new Set(target.tests.map((test) => test.source))].map((source) => `${source}.test.ts`).join(' + ')}`),
     `  test/${HELPERS}: ${HOIST.join(', ')} (from ${HOIST_SOURCE}.test.ts)`,
+    ...uniqueShared.map((statement) => `  test/${HELPERS}: ${statement.declared.join(', ')} (${statement.code.split('\n').length} lines, from test/${statement.source}.test.ts:${statement.line}), used by ${copies.get(statement) ?? 0} files`),
     '',
     'Tree:',
     ...tree,
@@ -560,6 +613,25 @@ function main() {
   }
   if (!outDir) for (const name of sourceNames) rmSync(join(TEST_DIR, name));
   console.log(`\nWrote ${targets.length + 1} files into ${outDir ?? 'test/'}.`);
+}
+
+// Module-level state, which a helper may not hold: a `let` or `var` (an importing file
+// cannot assign it), or a value made at load time with `new` or a call to an imported
+// function (a key pair, a temp folder, a server). Functions and plain values are fine.
+function holdsState(statement: Statement, imported: Set<string>): boolean {
+  const tokens = locate(statement.code, tokenize(statement.code));
+  const keyword = tokens[0].text;
+  if (keyword === 'let' || keyword === 'var') return true;
+  if (keyword !== 'const') return false;
+  const value = tokens.slice(tokens.findIndex((token) => token.text === '=') + 1);
+  // A function runs nothing at load time: `function`, `async`, `x =>`, `(...) =>`.
+  if (['function', 'async'].includes(value[0]?.text) || value[1]?.text === '=>') return false;
+  if (value[0]?.text === '(') {
+    let depth = 0;
+    const close = value.findIndex((token) => (depth += token.text === '(' ? 1 : token.text === ')' ? -1 : 0) === 0);
+    if (['=>', ':'].includes(value[close + 1]?.text)) return false;
+  }
+  return value.some((token, index) => token.text === 'new' || (imported.has(token.text) && value[index + 1]?.text === '(' && value[index - 1]?.text !== '.'));
 }
 
 // Fills a target's declarations, imports and helpers from the names `statements` use, in
