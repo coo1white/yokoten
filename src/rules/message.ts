@@ -219,6 +219,12 @@ export const RULES = {
     check: '`check --pr` notes a name of more than 4 words on lines added to TypeScript and JavaScript files; camelCase, PascalCase and snake_case words count, an acronym as one; a note never fails CI',
     docs: guide('naming'),
   },
+  'translation-behind': {
+    rule: 'a translation follows its English source (record 0007)',
+    why: 'a reader of the translation gets old or missing steps without knowing it',
+    check: '`check` reads line 1 of each Markdown and HTML file; `<!-- source: <path> blob <sha> -->` names the English file and the git blob it was translated from, and a different blob now is a note; yokoten.json `"translations": { "fail": true }` makes it a problem',
+    docs: guide('translations'),
+  },
   'large-diff': {
     rule: 'a pull request changes at most about 400 lines (record 0004)',
     why: 'smaller pull requests are easier to review',
