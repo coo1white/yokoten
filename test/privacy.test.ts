@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -76,6 +76,15 @@ test('output: the home folder shows as ~ (#25)', () => {
   assert.equal(hideHome('wrote /home/someone/.local/share/yokoten', { HOME: '/home/someone' }), 'wrote ~/.local/share/yokoten');
   assert.equal(hideHome('a /home/someone/ b /home/someone', { HOME: '/home/someone/' }), 'a ~/ b ~');
   assert.equal(hideHome('/x', { HOME: '/' }), '/x', 'a root home hides nothing');
+  const real = mkdtempSync(join(tmpdir(), 'yokoten-home-'));
+  const link = `${real}-link`;
+  symlinkSync(real, link);
+  try {
+    assert.equal(hideHome(`ran in ${realpathSync(real)}/away`, { HOME: link }), 'ran in ~/away', 'the real path of a linked home is hidden too');
+  } finally {
+    rmSync(link);
+    rmSync(real, { recursive: true });
+  }
 });
 
 // Secrets (#8). Each sample is a prefix plus a body, joined here, so no token sits in

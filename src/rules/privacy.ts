@@ -11,7 +11,7 @@
 // - Secrets: tokens and private keys, in secrets.ts. Their hits pass through scanText too,
 //   so every caller (the commit, CI, the history) catches them.
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Env } from './config.ts';
@@ -87,11 +87,17 @@ export function scanText(text: string, { file, marks = [], allow = [] }: { file:
 
 /**
  * Text as yokoten may show it: the home folder, which names the machine's user, becomes
- * `~`. Everything yokoten prints passes through this.
+ * `~`. Everything yokoten prints passes through this. The home's real path goes first: on
+ * macOS a temp or home folder resolves to /private/..., which holds the plain path inside it.
  */
 export function hideHome(text: string, env: Env): string {
   const home = (env.HOME || homedir()).replace(/[\\/]+$/, '');
-  return home.length > 1 ? text.split(home).join('~') : text;
+  if (home.length <= 1) return text;
+  let real = home;
+  try {
+    real = realpathSync(home);
+  } catch {}
+  return [real, home].reduce((shown, path) => (path.length > 1 ? shown.split(path).join('~') : shown), text);
 }
 
 /**
