@@ -11,18 +11,17 @@
 // to today's English is current at once. Only a relative path is a marker: a URL or an
 // absolute path on line 1, as in an attribution comment, is not (#181).
 //
-// Otherwise the history decides, by what HEAD holds (#155). A translation is current
-// when the last commit that changed it, any line, is the same as or later than the last
-// commit that changed the English, both in first-parent history. Two pull requests that
-// change both files merge in turn, and the last commit to touch the translation is never
-// older than the English. The costs: a commit that changes only the translation, such as
-// a typo fix, also counts, and can hide an English change it never followed; and a pull
-// request that changed only the English, merged before one that changes both, is hidden
-// the same way.
+// Otherwise the history decides, by what HEAD holds (#155, #181). In first-parent history
+// since the translation was added, each commit that changed the English but not the
+// translation, and came after the last commit that changed only the translation, puts it
+// one commit behind. A commit that changes both is followed, but does not hide an
+// English-only commit before it: two pull requests merged in turn, one that changed only
+// the English, are still caught. The cost: a commit that changes only the translation,
+// such as a typo fix, counts as following every English change before it.
 //
-// In the work tree, an edit to the translation counts as a later change; an edit to the
+// In the work tree, an edit to the translation counts as following; an edit to the
 // English alone makes it behind. A shallow clone can't see the commits: one note for
-// the run says the translations weren't checked, never a note per file (#181).
+// the run says the translations weren't checked, never a note per file.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
@@ -62,22 +61,40 @@ const plural = (count: number, word: string) => `${count} ${word}${count === 1 ?
 const isEdited = (root: string, file: string, blob: string): boolean => tryGit(root, ['rev-parse', `HEAD:${file}`]) !== blob;
 
 /**
- * The committed state, from first-parent history: 0 when the last commit that changed the
- * translation is the same as, or later than, the last that changed the English; else how
- * many commits changed the English since. Null when history can't tell.
+ * The committed state, from first-parent history since the translation was added: how many
+ * commits changed the English but not the translation after the last commit that changed
+ * only the translation, and the commit to diff from (the parent of the oldest of them).
+ * Null when history can't tell.
  */
 function countCommitsBehind(root: string, source: string, file: string): { commits: number; since: string } | null {
-  const english = tryGit(root, ['log', '-1', '--first-parent', '--format=%H', 'HEAD', '--', source]);
-  const since = tryGit(root, ['log', '-1', '--first-parent', '--format=%H', 'HEAD', '--', file]);
-  if (!english || !since) return null;
-  try {
-    execFileSync('git', ['merge-base', '--is-ancestor', english, since], { cwd: root, stdio: 'ignore' });
-    return { commits: 0, since };
-  } catch (error) {
-    if ((error as { status?: number }).status !== 1) return null;
+  // Newest first: a line `@<commit> <parent>`, then the paths of the two it changed.
+  const log = tryGit(root, ['log', '--first-parent', '--no-renames', '--name-only', '--format=@%H %P', 'HEAD', '--', source, file]);
+  if (log === null) return null;
+  const commits: { parent: string | undefined; english: boolean; translation: boolean }[] = [];
+  for (const line of log.split('\n')) {
+    if (line.startsWith('@')) {
+      const [, parent] = line.slice(1).split(' ');
+      commits.push({ parent, english: false, translation: false });
+    } else if (line && commits.length) {
+      const last = commits[commits.length - 1];
+      if (line === source) last.english = true;
+      if (line === file) last.translation = true;
+    }
   }
-  const commits = Number(tryGit(root, ['rev-list', '--count', '--first-parent', `${since}..HEAD`, '--', source]));
-  return Number.isInteger(commits) && commits > 0 ? { commits, since } : null;
+  // Commits before the translation was added are not its business.
+  const added = commits.findLastIndex((c) => c.translation);
+  if (added === -1) return null;
+  let count = 0;
+  let since: string | undefined;
+  for (const commit of commits.slice(0, added + 1)) {
+    if (commit.translation && !commit.english) break;
+    if (commit.english && !commit.translation) {
+      count += 1;
+      since = commit.parent;
+    }
+  }
+  if (count === 0) return { commits: 0, since: '' };
+  return since ? { commits: count, since } : null;
 }
 
 // Why a translation got no answer: the clone is shallow, so its history is not there.

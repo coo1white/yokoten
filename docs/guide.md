@@ -492,24 +492,27 @@ an attribution comment such as `<!-- source: https://example.com/post -->`, or a
 absolute path, is left alone. Write this line once; it never changes. When you change
 the English, update the translation in the same commit or pull request.
 
-`check` reads line 1 of each Markdown and HTML file. Then it compares commits on the
-current branch, first parent only. The translation is current when the last commit that
-changed it is the same as, or later than, the last commit that changed the English. Any
-line of the translation counts.
+`check` reads line 1 of each Markdown and HTML file. Then it reads the commits on the
+current branch, first parent only, since the translation was added. A commit that
+changed the English but not the translation puts the translation one commit behind,
+unless a later commit changed only the translation. A commit that changes both is fine,
+but it does not cover an English-only commit before it: when one pull request changes
+only the English and another changes both, the first is still noted. Any line of the
+translation counts.
 
 Why not a line that records the English version? Every pull request that changes the
 English would then edit that line. Two such pull requests would always conflict on it.
 With a line that never changes, parallel pull requests touch only the paragraphs they
 translate.
 
-The cost: a commit that changes only the translation also counts. A typo fix in the
-translation can hide an English change that nobody translated. So run `check` before a
-typo fix. If it notes the translation as behind, update the translation first.
+The cost: a commit that changes only the translation counts as following every English
+change before it. A typo fix in the translation can hide an English change that nobody
+translated. So run `check` before a typo fix. If it notes the translation as behind,
+update the translation first.
 
-A known gap: a pull request that changes only the English, merged before one that
-changes both files, is not caught. The second one is the last commit for both files, so
-the translation looks current, but the first change was never translated. When you
-review a pull request that changes only the English, ask for the translation too.
+With squash merges, every pull request that changes only the English leaves a note
+until a commit changes only the translation, even when a later pull request translated
+it along with its own change.
 
 In the work tree, an edit to the translation counts as a later change. An edit to the
 English with no edit to the translation makes the translation behind.

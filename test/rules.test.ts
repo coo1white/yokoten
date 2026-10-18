@@ -659,6 +659,48 @@ test('translations: a shallow clone gives one note for the run, never a note per
   assert.deepEqual(translationNotes(shallow, ['zh.md']), []);
 });
 
+test('translations: an English-only commit is behind until a commit changes only the translation, even after a commit that changes both (#181)', () => {
+  const repo = makeTranslatedRepo();
+  const english = (top: string, bottom: string) => `# Guide\n\n${top}\n\nMiddle.\n\n${bottom}\n`;
+  const translation = (top: string, bottom: string) => `${sourceMarker('en.md')}\n# 指南\n\n${top}\n\n中。\n\n${bottom}\n`;
+  const change = (englishText: string, translationText: string | null, message: string) => {
+    writeFileSync(join(repo.root, 'en.md'), englishText);
+    repo.git('add', 'en.md');
+    if (translationText !== null) {
+      writeFileSync(join(repo.root, 'zh.md'), translationText);
+      repo.git('add', 'zh.md');
+    }
+    repo.git('commit', '-q', '-m', message);
+  };
+  change(english('Top.', 'Bottom.'), translation('上。', '下。'), 'base');
+  // B changes only the English; A changes both. B is squash-merged first, then A.
+  repo.git('checkout', '-q', '-b', 'b');
+  change(english('Top.', 'Bottom, B.'), null, 'b');
+  repo.git('checkout', '-q', '-b', 'a', 'main');
+  change(english('Top, A.', 'Bottom.'), translation('上，A。', '下。'), 'a');
+  repo.git('checkout', '-q', 'main');
+  for (const branch of ['b', 'a']) {
+    repo.git('merge', '-q', '--squash', branch);
+    repo.git('commit', '-q', '-m', `squash ${branch}`);
+  }
+  const base = repo.git('rev-parse', 'HEAD~2');
+  const [note, ...rest] = translationNotes(repo.root, ['en.md', 'zh.md']);
+  assert.deepEqual(rest, []);
+  assert.equal(note?.what, 'is behind en.md by 1 commit', 'B was never translated');
+  assert.ok(note.fix.includes(`git diff ${base.slice(0, 12)} HEAD -- en.md`), note.fix);
+  // B's change translated, in a commit that changes only the translation: current.
+  repo.commit('zh.md', translation('上，A。', '下，B。'));
+  assert.deepEqual(translationNotes(repo.root, ['zh.md']), []);
+  // English commits before the translation was added are not counted.
+  const fresh = makeTranslatedRepo();
+  fresh.commit('en.md', '# Guide\n\nStep one, two.\n');
+  writeFileSync(join(fresh.root, 'en.md'), '# Guide\n\nStep one, two, three.\n');
+  writeFileSync(join(fresh.root, 'ja.md'), `${sourceMarker('en.md')}\n# ガイド\n`);
+  fresh.git('add', 'en.md', 'ja.md');
+  fresh.git('commit', '-q', '-m', 'both');
+  assert.deepEqual(translationNotes(fresh.root, ['ja.md']), []);
+});
+
 test('translations: two branches that each change both files never edit the same line, and merge in turn with no note (#166)', () => {
   const repo = makeTranslatedRepo();
   const english = (top: string, bottom: string) => `# Guide\n\n${top}\n\nMiddle.\n\n${bottom}\n`;
