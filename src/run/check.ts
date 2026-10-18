@@ -26,11 +26,12 @@ export const gitRoot = (cwd: string): string =>
 /** The files in the index: what the next commit (or, in CI, the checkout) holds. */
 export const indexFiles = (root: string): string[] => list(git(root, ['ls-files', '-z']));
 
-type Staged = { status: string; path: string; mode: string; blob: string };
+/** A staged entry; `from` is the old path of a move or copy. */
+type Staged = { status: string; path: string; from?: string; mode: string; blob: string };
 
 /**
  * The files the next commit adds, changes, moves, deletes or changes the type of (a move
- * by its new name), with the mode and blob id git stores for each.
+ * by its new name, and its old one in `from`), with the mode and blob id git stores for each.
  */
 function stagedFiles(root: string): Staged[] {
   // -z --raw gives ":oldmode newmode oldblob newblob status", then the path (for R/C, old
@@ -40,7 +41,7 @@ function stagedFiles(root: string): Staged[] {
   for (let i = 0; i < out.length; ) {
     const [, mode, , blob, status] = out[i].split(' ');
     const moved = status.startsWith('R') || status.startsWith('C');
-    files.push({ status: status[0], path: out[moved ? i + 2 : i + 1], mode, blob });
+    files.push(moved ? { status: status[0], path: out[i + 2], from: out[i + 1], mode, blob } : { status: status[0], path: out[i + 1], mode, blob });
     i += moved ? 3 : 2;
   }
   return files;
@@ -70,7 +71,7 @@ function mergeHeads(root: string): string[] {
 }
 
 /**
- * The staged paths the merge itself made: those that differ from every parent. A file the
+ * The paths the merge itself changed: those whose staged state differs from every parent. A file the
  * other branch changed matches that branch, so only a conflict resolution or an edit made
  * during the merge is left. HEAD is already a parent the staged list differs from; each
  * MERGE_HEAD parent takes one `git diff`.
@@ -79,11 +80,13 @@ function mergeHeads(root: string): string[] {
  * agent can write, so a merge made up on purpose gets past it. The lock is on the server:
  * branch protection and CODEOWNERS.
  */
-function mergeMade(root: string, files: Staged[], heads: string[]): Staged[] {
-  let left = files;
+function mergeMade(root: string, paths: string[], heads: string[]): string[] {
+  let left = paths;
   for (const head of heads) {
+    // --no-renames: a move is its old path deleted and its new path added, so the old
+    // path counts as changed unless this parent made the same move.
     const differs = new Set(list(git(root, ['diff', '--cached', '--name-only', '--no-renames', '-z', '--end-of-options', head])));
-    left = left.filter((f) => differs.has(f.path));
+    left = left.filter((path) => differs.has(path));
   }
   return left;
 }
@@ -204,8 +207,10 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
     }
     const files = stagedFiles(root);
     // In a merge, the role checks see only what the merge itself changed: a worker
-    // bringing in main is not handing over main's edits to lead-only files or tests.
-    for (const { path } of mergeMade(root, files, mergeHeads(root))) {
+    // bringing in main is not handing over main's edits to lead-only files or tests. A
+    // move or copy is checked at its old path too: moving AGENTS.md away removes it.
+    const touched = [...new Set(files.flatMap((f) => (f.from === undefined ? [f.path] : [f.from, f.path])))];
+    for (const path of mergeMade(root, touched, mergeHeads(root))) {
       const reason = checkEdit(path, { config, env });
       if (reason) problems.push(reason);
     }
