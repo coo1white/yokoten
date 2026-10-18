@@ -285,14 +285,16 @@ function checkPublish(words: string[], env: Env): Finding | null {
 // Only a program counts, so `echo python` and `cat python.md` pass. A command can run
 // more than one program, and `findPrograms` lists each:
 //
-// - the first word after assignments (FOO=1) and shell keywords (`then`, `do`, `!`);
+// - the first word after assignments (FOO=1), redirects (`>out`, `2>&1`, `< in`) and
+//   shell keywords (`then`, `do`, `!`);
 // - after a launcher that runs the next word as a program (env, sudo, nice, timeout,
 //   xargs, stdbuf, setsid, busybox and the others in LAUNCHERS), the word after its
 //   options;
 // - the program after `find ... -exec`, `-execdir`, `-ok` and `-okdir`;
 // - the programs of the string `env -S` splits.
 //
-// A shell string (`bash -c '...'`) is read by commandWords.
+// A shell string (`bash -c '...'`, `ssh host '...'`, `flock f -c '...'`) is read by
+// commandWords. A case pattern (`python3)`) is no command: the reader drops it.
 
 // Shell keywords before a program: `if x`, `then x`, `do x`, `! x`. `time` is a launcher.
 const KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'fi', 'while', 'until', 'do', 'done', 'esac', '!', '{', '}', '(']);
@@ -340,14 +342,35 @@ const LAUNCHERS: Record<string, { options: string[]; operands?: number }> = {
 // find runs the program after each of these.
 const FIND_ACTIONS = new Set(['-exec', '-execdir', '-ok', '-okdir']);
 
+// A redirect: `>out`, `2>&1`, `&>>log`, `<in`, or one with its file in the next word (`> out`).
+const REDIRECT = /^(?:\d+|\{[A-Za-z_]\w*\}|&)?(?:>>|<<<|<>|>\||[<>]&|[<>])(.*)$/s;
+
+/** How many words the redirect at `index` takes: 0 when the word is no redirect. */
+function redirectLength(words: string[], index: number): number {
+  const redirect = REDIRECT.exec(words[index] ?? '');
+  if (!redirect) return 0;
+  return redirect[1] === '' && index + 1 < words.length ? 2 : 1;
+}
+
+/** The index of the first word at or after `index` that is not an assignment, a redirect or a keyword. */
+function skipPrefix(words: string[], index: number): number {
+  while (index < words.length) {
+    if (isAssignment(words[index]) || KEYWORDS.has(words[index])) index++;
+    else if (redirectLength(words, index) > 0) index += redirectLength(words, index);
+    else break;
+  }
+  return index;
+}
+
 /** A program's name: no folder and no .exe. */
 const programName = (word: string) => base(word).replace(/\.exe$/i, '');
 
 // The string `env -S` splits into a command, from the option at `index`, or undefined.
+// A long option may be cut short, as getopt allows: `--split`, `--s`.
 function splitString(words: string[], index: number): string | undefined {
   const option = words[index];
-  const long = /^--split-string(?:=(.*))?$/s.exec(option);
-  if (long) return long[1] ?? words[index + 1];
+  const long = /^--(s[a-z-]*)(?:=(.*))?$/s.exec(option);
+  if (long && 'split-string'.startsWith(long[1])) return long[2] ?? words[index + 1];
   const short = /^-[a-zA-Z]*S(.*)$/s.exec(option);
   if (short) return short[1] || words[index + 1];
   return undefined;
@@ -360,7 +383,7 @@ function findPrograms(words: string[]): string[] {
   let index = words.findIndex((word) => !word.startsWith('-'));
   if (index === -1) return programs;
   while (index < words.length) {
-    while (index < words.length && (isAssignment(words[index]) || KEYWORDS.has(words[index]))) index++;
+    index = skipPrefix(words, index);
     if (index >= words.length || HEADS.has(words[index])) return programs;
     const name = programName(words[index]);
     if (!Object.hasOwn(LAUNCHERS, name)) {
@@ -401,10 +424,13 @@ function checkBlocked(words: string[], blockList: Record<string, string>): Findi
 // - Quotes: '...', "..." (with \ escapes), $'...' and $"..." are part of one word. A
 //   separator inside them does not cut the command.
 // - Separators: ; & && || | |& ( ) { } and line ends. A \ before a line end joins lines.
+//   A group `{ ...; }` or subshell `( ... )` stays open until its } or ).
+// - A case pattern (`a|b)` after `case x in` or `;;`) is dropped: it names values.
 // - A word that starts with # begins a comment, to the line end.
 // - $(...), `...`, <(...) and >(...) run, so their text is read as commands, even in "...".
 // - A heredoc body is data, unless a shell reads it (see `bodies`).
-// - A shell, eval or ssh runs a string, so the words after it are read again as commands.
+// - A shell, eval or ssh runs a string, so the words after it are read again as commands
+//   (see `runString`).
 //
 // When the text is unclear, the guard blocks rather than guesses. An unclosed quote is
 // dropped and the rest is read as plain words, so `echo 'x; npm publish` still blocks.
@@ -418,7 +444,7 @@ const isShell = (word: string) => /^(?:ba|da|z|k|c|tc|fi|pw)?sh(?:\.exe)?$/.test
 // string, so their words are already checked where they stand.
 const RUNNERS: Record<string, RegExp | null> = {
   eval: null, ssh: null, su: null, runuser: null, watch: null, script: null, flock: null, parallel: null, tmux: null, screen: null,
-  sudo: /^(-[a-zA-Z]*[si]|--shell|--login)/, doas: /^-[a-zA-Z]*s/, env: /^(-[a-zA-Z]*S|--split-string)/,
+  sudo: /^(-[a-zA-Z]*[si]|--shell|--login)/, doas: /^-[a-zA-Z]*s/, env: /^(-[a-zA-Z]*S|--s)/,
 };
 
 // Where a shell or a runner stands in the command, or -1. Anywhere counts: `find -exec sh
@@ -431,6 +457,58 @@ function runnerAt(words: string[]): number {
     const option = RUNNERS[name];
     return option === null || words.slice(i + 1).some((a) => option.test(a));
   });
+}
+
+// ssh options that take a value, in the same word (-p22) or the next (-p 22).
+const SSH_VALUE_OPTIONS = 'BbcDEeFIiJLlmOoPpQRSWw';
+// flock options that take a value. -c (--command) takes the shell string.
+const FLOCK_VALUE_OPTIONS = 'wE';
+
+// The text a runner at `at` hands to a shell. For most it is every word after the runner.
+// ssh runs the words after its options and the host (`ssh -p 22 host 'x'`), and flock the
+// string after -c (`flock f -c 'x'`) or the command after its file (`flock f x`).
+function runString(words: string[], at: number): string {
+  const name = base(words[at]);
+  if (name === 'ssh') return words.slice(sshCommand(words, at + 1)).join(' ');
+  if (name === 'flock') return flockCommand(words, at + 1);
+  return words.slice(at + 1).join(' ');
+}
+
+// The index of the first word after ssh's options and host.
+function sshCommand(words: string[], index: number): number {
+  while (index < words.length && words[index].startsWith('-') && words[index] !== '-') {
+    if (words[index] === '--') return index + 2;
+    const option = words[index];
+    const value = [...option.slice(1)].findIndex((letter) => SSH_VALUE_OPTIONS.includes(letter));
+    // A value option last in its word takes the next word: `-tp 22`.
+    index += value !== -1 && value === option.length - 2 ? 2 : 1;
+  }
+  return index + 1;
+}
+
+// flock's command: the string after -c or --command, before or after the file, or the
+// words after the file.
+function flockCommand(words: string[], index: number): string {
+  let file = false;
+  for (; index < words.length; index++) {
+    const word = words[index];
+    if (word.startsWith('--')) {
+      const command = /^--command(?:=(.*))?$/s.exec(word);
+      if (command) return command[1] ?? words[index + 1] ?? '';
+      if (/^--(wait|timeout|conflict-exit-code)$/.test(word)) index++;
+    } else if (word.startsWith('-') && word.length > 1) {
+      for (let letter = 1; letter < word.length; letter++) {
+        const rest = word.slice(letter + 1);
+        if (word[letter] === 'c') return rest || (words[index + 1] ?? '');
+        if (FLOCK_VALUE_OPTIONS.includes(word[letter])) {
+          if (!rest) index++;
+          break;
+        }
+      }
+    } else if (!file) file = true;
+    else return words.slice(index).join(' ');
+  }
+  return '';
 }
 
 /** Every command the text runs, as lists of words. Text that runs inside a command is listed too. */
@@ -446,6 +524,19 @@ interface Heredoc {
   quoted: boolean;
   /** The index, on its line, of the command that holds the <<. */
   cmd: number;
+  /** The groups open around it, outermost first. */
+  groups: Group[];
+}
+
+// A group `{ ...; }` or a subshell `( ... )`. What its commands print goes where the group
+// sends it, so a heredoc body inside may reach a shell after the group: `{ cat <<EOF; } | bash`.
+interface Group {
+  kind: '(' | '{';
+  /** The index, on the current line, of its first command, and of the one after it once closed. */
+  from: number;
+  to: number;
+  /** Bodies of heredocs inside it that wait for where the group's output goes. */
+  bodies: string[];
 }
 
 // Reads commands from `start` until `closer` (`)` or a backtick) or the end, and adds them
@@ -464,22 +555,66 @@ function read(text: string, start: number, closer: string, depth: number, out: s
   let pipes: boolean[] = []; // for each of them, whether it pipes into the next
   let pending: Heredoc[] = [];
   let piped: string[] | null = null; // the command before a |
+  const groups: Group[] = []; // the groups open now, outermost first
+  let closed: Group | null = null; // a group that just closed, until we see where it sends its output
+  let carried: string[] = []; // heredoc bodies a closed group pipes on, waiting for the command that reads them
+  let cases = 0; // how many `case ... in` are open
+  let isPattern = false; // reading a case pattern, up to its )
 
   const endWord = () => {
-    if (inWord) words.push(word);
+    const ended = inWord ? word : null;
+    if (ended !== null) words.push(ended);
     word = '';
     inWord = false;
+    if (ended === null) return;
+    const isFirst = words.slice(0, -1).every((w) => KEYWORDS.has(w));
+    if (ended === 'esac' && isFirst && cases > 0) {
+      cases--;
+      isPattern = false;
+    } else if (ended === 'in' && !isPattern) {
+      // `case $x in`: what comes next is a pattern, not a command.
+      const head = words.slice(words.findIndex((w) => !KEYWORDS.has(w)));
+      if (head.length === 3 && head[0] === 'case') {
+        endCommand();
+        cases++;
+        isPattern = true;
+      }
+    }
+  };
+  // Where a group that just closed sends the bodies inside it, and whether this command
+  // reads bodies a group piped on. A body that reaches no reader stays data.
+  const settle = (pipe: boolean) => {
+    if (carried.length > 0 && words.length > 0) {
+      const reads = readsCommands(words);
+      if (reads) for (const body of carried) nested(body);
+      if (reads || !pipe) carried = [];
+    }
+    if (closed) {
+      if (pipe) {
+        carried.push(...closed.bodies);
+        // For the bodies read at this line's end: the group's commands pipe on, too.
+        for (let i = closed.from; i < closed.to; i++) pipes[i] = true;
+      } else groups.at(-1)?.bodies.push(...closed.bodies);
+      closed = null;
+    }
+  };
+  // The end of the text or of a substitution. Bodies that still wait for a reader, after a
+  // pipe to nothing or in a group that never closed, are read as commands, not guessed.
+  const finish = () => {
+    endCommand();
+    for (const body of [...carried, ...groups.flatMap((group) => group.bodies)]) nested(body);
   };
   const endCommand = (pipe = false) => {
     endWord();
     line.push(words);
     pipes.push(pipe);
+    settle(pipe);
     if (words.length === 0) return;
     out.push(words);
     const at = runnerAt(words);
     if (at !== -1) {
-      // `bash -c 'x'`, `eval "x"`, `ssh host 'x'`: read the words after it as commands.
-      nested(words.slice(at + 1).join(' '));
+      // `bash -c 'x'`, `eval "x"`, `ssh host 'x'`: read the string it runs as commands.
+      nested(runString(words, at));
       // `echo 'npm publish' | bash`: the words before the pipe are the shell's input.
       if (piped) nested(piped.slice(1).join(' ').replace(/\\n/g, '\n'));
     }
@@ -491,8 +626,18 @@ function read(text: string, start: number, closer: string, depth: number, out: s
   while (index < text.length) {
     const character = text[index];
     const next = text[index + 1];
-    if (closer && character === closer) {
-      endCommand();
+    if (isPattern && (character === ')' || character === '|' || (character === '(' && !inWord && words.length === 0))) {
+      // A case pattern, `a|b)` or `(a)`, names values, not programs. The commands come after the ).
+      endWord();
+      if (character === ')') {
+        words = [];
+        isPattern = false;
+      }
+      index++;
+      continue;
+    }
+    if (closer && character === closer && !(character === ')' && groups.at(-1)?.kind === '(')) {
+      finish();
       return index + 1;
     }
     if (character === ' ' || character === '\t' || character === '\r') {
@@ -500,10 +645,11 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       index++;
     } else if (character === '\n') {
       endCommand();
-      index = pending.length ? bodies(text, index + 1, pending, line, pipes, depth, out) : index + 1;
+      index = pending.length ? bodies(text, index + 1, pending, { line, pipes, groups }, depth, out) : index + 1;
       pending = [];
       line = [];
       pipes = [];
+      for (const group of groups) group.from = 0;
     } else if (character === '#' && !inWord) {
       while (index < text.length && text[index] !== '\n') index++;
     } else if (character === '\\') {
@@ -548,14 +694,29 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       const end = read(text, index + 1, '`', depth + 1, out);
       inWord = true;
       index = end === -1 ? index + 1 : end;
-    } else if (character === '(') {
-      // A subshell or (( maths )): read the inside on its own, so a << there is no heredoc.
+    } else if (character === '(' && next === '(') {
+      // (( maths )): read the inside on its own, so a << there is a shift, not a heredoc.
       endWord();
       const end = read(text, index + 1, ')', depth + 1, out);
       if (end === -1) endCommand();
       index = end === -1 ? index + 1 : end;
-    } else if (character === ')' || character === ';' || ((character === '{' || character === '}') && !inWord && /[\s;]|^$/.test(next ?? ''))) {
-      // A group `{ a; }` cuts like a separator. A brace inside a word (${x}, a{b,c}) does not.
+    } else if (character === '(' || (character === '{' && !inWord && /\s/.test(next ?? ''))) {
+      // A subshell or a group cuts like a separator, and is open until its ) or }.
+      endCommand();
+      groups.push({ kind: character, from: line.length, to: 0, bodies: [] });
+      index++;
+    } else if ((character === ')' && groups.at(-1)?.kind === '(') || (character === '}' && !inWord && /[\s;|&)<>]|^$/.test(next ?? '') && groups.at(-1)?.kind === '{')) {
+      endCommand();
+      closed = groups.pop() ?? null;
+      if (closed) closed.to = line.length;
+      index++;
+    } else if (character === ';' && cases > 0 && (next === ';' || next === '&')) {
+      // `;;`, `;&` and `;;&` end a case item: a pattern comes next.
+      endCommand();
+      isPattern = true;
+      index += next === ';' && text[index + 2] === '&' ? 3 : 2;
+    } else if (character === ')' || character === ';' || (character === '}' && !inWord && /[\s;]|^$/.test(next ?? ''))) {
+      // A brace inside a word (${x}, a{b,c}) does not cut.
       endCommand();
       index++;
     } else if (character === '&') {
@@ -578,7 +739,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       index += 3;
     } else if (character === '<' && next === '<' && !word.endsWith('<')) {
       endWord();
-      const doc = heredoc(text, index + 2, line.length);
+      const doc = heredoc(text, index + 2, line.length, [...groups]);
       if (doc) {
         pending.push(doc.doc);
         index = doc.end;
@@ -592,7 +753,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       index++;
     }
   }
-  endCommand();
+  finish();
   return closer ? -1 : text.length;
 }
 
@@ -634,7 +795,7 @@ function readDouble(text: string, index: number, depth: number, out: string[][],
 }
 
 // Reads the word after << or <<-. A quoted word means the body is not expanded.
-function heredoc(text: string, index: number, cmd: number): { doc: Heredoc; end: number } | null {
+function heredoc(text: string, index: number, cmd: number, groups: Group[]): { doc: Heredoc; end: number } | null {
   const strip = text[index] === '-';
   if (strip) index++;
   while (text[index] === ' ' || text[index] === '\t') index++;
@@ -657,7 +818,7 @@ function heredoc(text: string, index: number, cmd: number): { doc: Heredoc; end:
       index++;
     }
   }
-  return delim ? { doc: { delim, strip, quoted, cmd }, end: index } : null;
+  return delim ? { doc: { delim, strip, quoted, cmd, groups }, end: index } : null;
 }
 
 // Reads the heredoc bodies that start at `index`, in order, and returns the index after the
@@ -665,11 +826,13 @@ function heredoc(text: string, index: number, cmd: number): { doc: Heredoc; end:
 // command that holds the <<, or of a command it pipes into (`cat <<EOF | bash`). The
 // program is found after assignments, keywords and launchers (see readsCommands), so
 // `then bash <<EOF` and `env X=1 bash -s <<EOF` count, and `cat > sh <<EOF` or
-// `node - <<EOF` do not. A pipe
-// left open at the line end (`cat <<EOF |`) counts too: its reader is on a later line.
-// Then the body is read as commands. An unquoted body still runs $(...) and `...`, so
-// those are read too. A body with no end line runs to the end of the text, as in bash.
-function bodies(text: string, index: number, docs: Heredoc[], line: string[][], pipes: boolean[], depth: number, out: string[][]): number {
+// `node - <<EOF` do not. A pipe left open at the line end (`cat <<EOF |`) counts too: its
+// reader is on a later line. A group that closed on the line pipes its commands on
+// (`{ cat <<EOF; } | bash`). Then the body is read as commands. A body in a group still
+// open waits in the group: where the group sends its output decides (see `settle` in read).
+// An unquoted body still runs $(...) and `...`, so those are read too. A body with no end
+// line runs to the end of the text, as in bash.
+function bodies(text: string, index: number, docs: Heredoc[], { line, pipes, groups }: { line: string[][]; pipes: boolean[]; groups: Group[] }, depth: number, out: string[][]): number {
   for (const doc of docs) {
     const lines: string[] = [];
     while (index < text.length) {
@@ -685,8 +848,12 @@ function bodies(text: string, index: number, docs: Heredoc[], line: string[][], 
     while (pipes[last] && last + 1 < line.length) last++;
     const readers = line.slice(doc.cmd, last + 1);
     const isOpenPipe = readers.length > 1 && readers[readers.length - 1].length === 0;
-    if (isOpenPipe || readers.some(readsCommands)) out.push(...commandWords(body, depth + 1));
-    else if (!doc.quoted) readDouble(body, 0, depth, out, true);
+    if (isOpenPipe || readers.some(readsCommands)) {
+      out.push(...commandWords(body, depth + 1));
+      continue;
+    }
+    if (!doc.quoted) readDouble(body, 0, depth, out, true);
+    doc.groups.findLast((group) => groups.includes(group))?.bodies.push(body);
   }
   return Math.min(index, text.length);
 }
@@ -709,7 +876,18 @@ function readsCommands(words: string[]): boolean {
   const program = findPrograms(words)[0];
   if (program === undefined || !DATA_READERS.has(programName(program))) return runnerAt(words) !== -1;
   const at = words.indexOf(program);
-  return runnerAt(at === -1 ? words : words.slice(0, at + 1)) !== -1;
+  return runnerAt(withoutRedirects(at === -1 ? words : words.slice(0, at + 1))) !== -1;
+}
+
+// The words with each redirect and its file taken out: `> sh cat` names no shell.
+function withoutRedirects(words: string[]): string[] {
+  const kept: string[] = [];
+  for (let index = 0; index < words.length; ) {
+    const length = redirectLength(words, index);
+    if (length === 0) kept.push(words[index]);
+    index += length || 1;
+  }
+  return kept;
 }
 
 // The old cut: quotes become spaces, then cut at ; | & ( ) and line ends. It finds more

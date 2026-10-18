@@ -462,3 +462,98 @@ test('blocked commands: a word that only holds the name passes, and so does no l
   }
   assert.equal(isBlockedByList('toString x'), false, 'only the list\'s own keys');
 });
+
+// #226: gaps the reviews of #195 and #199 left. The blocked name is built from pieces.
+const py = ['py', 'thon3'].join('');
+const shouldBlock = (commands: string[]) => {
+  for (const command of commands) assert.ok(isBlockedByList(command), `should block: ${command}`);
+};
+const shouldPass = (commands: string[]) => {
+  for (const command of commands) assert.equal(isBlockedByList(command), false, `should allow: ${command}`);
+};
+
+test('blocked commands: the string ssh and flock run is read, after their options (#226)', () => {
+  shouldBlock([
+    `ssh host '${py} x'`,
+    `ssh -p 22 host ${py} x`,
+    `ssh -tp 22 host ${py} x`,
+    `ssh -o BatchMode=yes -tt host "${py} -V"`,
+    `ssh -- host ${py} x`,
+    `flock /tmp/lock -c '${py} x'`,
+    `flock -n /tmp/lock -c '${py} x'`,
+    `flock -xc '${py} x' /tmp/lock`,
+    `flock /tmp/lock --command '${py} x'`,
+    `flock -w 5 /tmp/lock ${py} x`,
+  ]);
+  shouldPass(['ssh host ls', `ssh -i key host 'echo ${py}'`, 'flock /tmp/lock -c "npm test"', `ssh ${py}-box ls`]);
+  // The core rules read the same string.
+  blocked("ssh -p 22 host 'git push --force'");
+  blocked("flock /tmp/lock -c 'npm publish'");
+});
+
+test('blocked commands: a case pattern is no program, the commands after it are (#226)', () => {
+  shouldPass([
+    `case $x in\n${py})\n  echo one;;\nesac`,
+    `case $x in\n${py}|py)\n  echo one\n  ;;\n*) echo other ;;\nesac`,
+    `case $x in a) echo a;; ${py}) echo b;; esac`,
+    `case $x in\n(${py}) echo one;;\nesac`,
+    `x=$(case $y in ${py}) echo;; esac)`,
+    `echo "case ${py}) x"`,
+  ]);
+  shouldBlock([
+    `case $x in\n${py})\n  ${py} x;;\nesac`,
+    `case $x in ${py}) echo;; *) ${py} x;; esac`,
+    `case $x in\na) echo;;\nesac\n${py} x`,
+    `case a in x) case b in y) echo;; esac;; esac; ${py} x`,
+  ]);
+  blocked('case $x in a) git push --force;; esac');
+  assert.deepEqual(commandWords('case $x in\na|b)\n  echo one;;\nesac'), [['case', '$x', 'in'], ['echo', 'one'], ['esac']]);
+});
+
+test('blocked commands: env -S in combined flags or a cut-short long option (#226)', () => {
+  shouldBlock([`env -iS'${py} x'`, `env -iS '${py} x'`, `env -vS"${py} x"`, `env --split='${py} x'`, `env --s '${py} x'`]);
+  shouldPass(['env -i node x.ts', `env --unset=X echo ${py}`]);
+});
+
+test('blocked commands: a redirect before the program does not hide it (#226)', () => {
+  shouldBlock([`>out ${py} x`, `2>/dev/null ${py} x`, `<in ${py}`, `> out ${py} x`, `&>log ${py} x`, `2>&1 nice ${py} x`]);
+  shouldPass([`>out echo ${py}`, `< ${py} cat`, `2> ${py}.log node x.ts`]);
+});
+
+test('bash: a redirect before the program, and the heredoc it holds (#226)', () => {
+  blocked("2>&1 bash <<'EOF'\ngit push --force\nEOF");
+  blocked(">out bash <<'EOF'\nnpm publish\nEOF");
+  // The program is cat, and the shell names are files.
+  allowed(">out cat <<'EOF'\ngit push --force\nEOF");
+  allowed("> sh cat <<'EOF'\nnpm publish\nEOF");
+  allowed("cat > f <<'EOF'\ngit push --force\nEOF");
+});
+
+test('bash: a heredoc in a group or subshell that pipes into a shell is commands (#226)', () => {
+  for (const command of [
+    "{ cat <<'EOF'; } | bash\ngit push --force\nEOF",
+    "( cat <<'EOF' ) | sh\ngit push --force\nEOF",
+    "{ cat <<'EOF'; echo; } | bash\nnpm publish\nEOF",
+    "{ cat <<'EOF'; }|bash\nnpm publish\nEOF",
+    "{ cat <<'EOF'; } | tee log | bash\nnpm publish\nEOF",
+    "{ cat <<'EOF'; } |\nbash\nnpm publish\nEOF",
+    "{\ncat <<'EOF'\ngit push --force\nEOF\n} | bash",
+    "(\ncat <<'EOF'\ngit push --force\nEOF\n) | sh",
+    "{ { cat <<'EOF'; }\nnpm publish\nEOF\n} | bash",
+    "{\ncat <<'EOF'\nnpm publish\nEOF\n} | tee x | bash",
+    // A group that never closes: bash stops, the guard does not guess.
+    "{\ncat <<'EOF'\nnpm publish\nEOF\n",
+    "echo 'npm publish' | (bash)",
+  ]) blocked(command);
+  for (const command of [
+    "{ cat <<'EOF'; } > file\ngit push --force\nEOF",
+    "( cat <<'EOF' ) > file\ngit push --force\nEOF",
+    "{\ncat <<'EOF'\ngit push --force\nEOF\n} > file",
+    "{ cat <<'EOF'; } | grep x\nnpm publish\nEOF",
+    "{\ncat <<'EOF'\nnpm publish\nEOF\n} | tee x\nbash -n x",
+    'f() { echo hi; }',
+    'echo $((1<<2))',
+    '(( i = 1 << 2 ))',
+  ]) allowed(command);
+  assert.ok(isBlockedByList(`( (${py} x) )`), 'a subshell in a subshell');
+});

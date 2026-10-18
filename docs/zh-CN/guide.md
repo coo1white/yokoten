@@ -424,11 +424,13 @@ AGENTS.md 里，它就只是个愿望。把这些程序写进 `yokoten.json`，�
 是哪个程序、你写的原因，并让 agent 改用项目自己的技术栈。
 
 - 守卫只看每条命令真正运行的程序，按名字认：`/usr/bin/python3` 和 `python3.exe` 都算 `python3`。
-- 命令的每一段都会查：`a && b`、`a | b`、`a; b`、`$(...)` 和 `bash -c '...'`。
-- 前面加了变量、套了一层或者放在流程语句里也藏不住：`X=1 python3`；`env`、`sudo`、`nice`、
-  `timeout`、`xargs`、`setsid`、`stdbuf` 这类启动器；`if`、`for`、`while`、`!` 后面的命令；
+- 命令的每一段都会查：`a && b`、`a | b`、`a; b`、`$(...)`，还有交给 shell 运行的字符串：
+  `bash -c '...'`、`ssh host '...'`、`flock file -c '...'`。
+- 前面加了变量或重定向、套了一层或者放在流程语句里也藏不住：`X=1 python3`；`2>/dev/null python3`；
+  `env`、`sudo`、`nice`、`timeout`、`xargs`、`setsid`、`stdbuf` 这类启动器；`if`、`for`、`while`、`!` 后面的命令；
   `find -exec` 运行的程序；`env -S` 里的字符串。
-- 只是参数里出现这个名字的不拦：`echo python`、`cat python.md`、`pythonic`。
+- 只是参数里出现这个名字的不拦：`echo python`、`cat python.md`、`pythonic`，
+  还有 `case` 里的匹配项，比如 `python3)`。
   `command -v python3` 也不拦，它只是查程序在哪儿，并不运行。
 - 名字里不能带路径，也不能有空格。`commands` 写错了格式，`check` 和 `doctor` 会报配置错误；
   守卫这时不拦任何程序，但会说一声，核心检查照常运行。

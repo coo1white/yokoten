@@ -455,13 +455,15 @@ project's own stack.
 
 - The guard looks at the program of each command, by its name: `/usr/bin/python3` and
   `python3.exe` count as `python3`.
-- Every part of the command counts: `a && b`, `a | b`, `a; b`, `$(...)` and
-  `bash -c '...'`.
-- Assignments, launchers and shell keywords do not hide the program: `X=1 python3`;
+- Every part of the command counts: `a && b`, `a | b`, `a; b`, `$(...)`, and the
+  string a shell runs: `bash -c '...'`, `ssh host '...'`, `flock file -c '...'`.
+- Assignments, redirects, launchers and shell keywords do not hide the program:
+  `X=1 python3`; `2>/dev/null python3`;
   launchers such as `env`, `sudo`, `nice`, `timeout`, `xargs`, `setsid` and `stdbuf`;
   a command after `if`, `for`, `while` or `!`; a program `find -exec` runs; and the
   string in `env -S`.
-- A word that only holds the name passes: `echo python`, `cat python.md`, `pythonic`.
+- A word that only holds the name passes: `echo python`, `cat python.md`, `pythonic`,
+  and a `case` pattern such as `python3)`.
   `command -v python3` passes too: it only says where the program is.
 - A name has no folder and no space. A wrong shape in `"commands"` is a config error for
   `check` and `doctor`. The guard then blocks no program and says so, and the core
