@@ -14,7 +14,7 @@ import { check, timeZoneNote } from '../src/run/check.ts';
 import { parseSourceMarker, sourceMarker, translationNotes } from '../src/run/translations.ts';
 import { agentHooks, coreRulesCheck, machineChecks } from '../src/setup/doctor.ts';
 import { compareCoreRules, compareVersions, readKitVersion } from '../src/setup/init.ts';
-import { explain, explainLines, ids } from '../src/setup/explain.ts';
+import { explain, explainLines, ids } from '../src/setup/advice/explain.ts';
 import { ROAD, serverChecks, stepFinding } from '../src/setup/road.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
 import { formatChanges, mergeChanges, parseChange, readChanges, writeChanges } from '../src/run/changelog.ts';

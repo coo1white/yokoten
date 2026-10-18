@@ -160,6 +160,21 @@ Docs: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#the-core-r
 做法都由你定：**照搬**、**减量**（说清去掉了哪部分），或者**暂不**（写明原因，以及什么
 时候再看）。「暂不」会写进 `yokoten.json`，`doctor` 就不再追问。
 
+### 先拿一份草稿
+
+`yokoten adopt` 会在你们开始过之前先把这张表填个初稿。它读项目里的文件，逐条写出项目现在的
+情况：**已有**、**没有**，或者**部分有**（项目有自己的做法，比如用 husky 管提交 hook，或者
+有 CI 但没跑 yokoten）。然后让模型给每一条提一个建议，附一句理由。
+
+- 模型只拿到这些简短的情况说明，拿不到文件内容。
+- 发出去之前，yokoten 先对要发的内容做一遍隐私检查。查到问题就什么都不发。
+- 没有 key、调用失败、或者模型的回答不合格式时，改用固定规则出草稿：已有或没有的，照搬；
+  部分有的，减量。输出会写明是谁出的草稿。
+- `adopt` 不改任何文件。每一条最后还是你来定。
+
+用的是 Meta 的模型 API，走它兼容 OpenAI 的接口（`https://api.meta.ai/v1`，模型是
+`muse-spark-1.3`）。把 key 设到 `LLAMA_API_KEY` 或 `MODEL_API_KEY` 里。想换成别家兼容 OpenAI 的接口和模型，设 `LLAMA_API_BASE` 和 `LLAMA_MODEL`。
+
 ## 支持哪些 agent
 
 yokoten 能管住三种 AI 编程 agent，它们守的是同一套规矩。
@@ -312,6 +327,7 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 | `init --github --yes [--remove-default-labels]` | 补上缺的标准标签；没有打开的里程碑时，建一个叫 "First release" 的。已有的标准标签，颜色和说明改成标准的。再跑一次什么也不会变。GitHub 自带的、不在这套里的标签（`question`、`wontfix` 等），只有加上 `--remove-default-labels` 才会删 |
 | `update [dir] [--write]` | 看看这个版本的 yokoten 会怎么改项目 `AGENTS.md` 里的核心规则。加上 `--write` 才真的替换；「This project」那部分原样保留。见[更新规则](#更新规则) |
 | `doctor [--session]` | 整条路：每一关、每一步，加上这台电脑还缺什么。`--session` 只说下一步，会话开头用 |
+| `adopt [--json]` | 给老项目的采用表出一份草稿：项目现在做到了哪些，每一步建议怎么定。`--json` 输出每一行的数据。不改任何文件 |
 | `check [--staged]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交。提交里不能有构建产物和二进制文件。查整个目录时，落后于英文的译文会给一条提醒，见[翻译](#翻译) |
 | `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的变更文件、milestone 和标签，见下面的「更新日志」。改到 CODEOWNERS 里列出的文件，必须写 `tier: A`。改动的文档里句子太长、改动的代码里名字难读、改动超过 400 行，都只提醒，不算失败 |
 | `check --issue` | 在 CI 里检查 issue 的标题，见下面的「issue 标题」 |
