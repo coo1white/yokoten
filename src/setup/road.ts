@@ -122,14 +122,126 @@ const testScript = (root: string): string => {
     return '';
   }
 };
-// A command that runs the package.json script, and runners that need no script.
-const RUNS_SCRIPT = /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|t)\b/;
-const RUNNERS = /\b(?:node\s+--test|deno\s+test|go\s+test|cargo\s+test|pytest|mvn\s+test|gradle\s+test)\b/;
-/** Whether CI runs the tests: the package.json script, or a test runner named outright. */
-const ciRunsTests = (root: string) => {
-  const ci = ciText(root);
-  const script = testScript(root);
-  return RUNNERS.test(ci) || (script !== '' && (RUNS_SCRIPT.test(ci) || ci.includes(script)));
+/**
+ * The shell lines that the workflows run: each `run:` value, one line, or each line of a
+ * `run: |` block. A job id, a matrix item or a comment is never a command. Each line is
+ * matched on its own, so no pattern can run across a newline.
+ */
+const runLines = (ci: string): string[] => {
+  const lines: string[] = [];
+  const text = ci.split(/\r?\n/);
+  for (let i = 0; i < text.length; i++) {
+    const key = /^([ \t]*(?:-[ \t]+)?)run:(?:[ \t]+(.*))?$/.exec(text[i]);
+    if (!key) continue;
+    const value = (key[2] ?? '').trim();
+    if (/^[|>][-+0-9]*(?:[ \t]+#.*)?$/.test(value)) {
+      // A block: the lines indented more than the `run` key, with `\` continuations joined.
+      let line = '';
+      for (; i + 1 < text.length && (text[i + 1].trim() === '' || /^[ \t]*/.exec(text[i + 1])![0].length > key[1].length); i++) {
+        const next = text[i + 1].trim();
+        if (!next) continue;
+        line = line ? `${line} ${next}` : next;
+        if (!line.endsWith('\\')) {
+          lines.push(line);
+          line = '';
+        }
+      }
+      if (line) lines.push(line);
+    } else if (!value.startsWith('#')) lines.push(value.replace(/^(["'])(.*)\1$/, '$2'));
+  }
+  return lines;
+};
+/**
+ * The simple commands in a shell line: split at ;, &, |, with an opening "(" and any
+ * `VAR=value`, `env` or `time` before the command taken off. Comments go.
+ */
+const commands = (line: string): string[] =>
+  line.split(/[;&|]+/).map((c) => c.trim().replace(/^(?:\(\s*|[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+|env(?:\s+-\S+)*\s+|time\s+)*/, '')).filter((c) => c && !c.startsWith('#'));
+/** A command that only asks a tool about itself. */
+const ASKS = /\s--(?:version|help)(?=\s|$)/;
+// The end of a command name: a space or the end, so "make test-deps" and "jest-preview" are not runs.
+const END = String.raw`(?=\s|$)`;
+// Flags with no value, as tools take them before the command: npx --yes, node --experimental-strip-types.
+const FLAGS = String.raw`(?:\s+-\S+)*`;
+// Flags that may take a value: npm -w app, pnpm --filter app.
+const VALUED = String.raw`(?:\s+-\S+(?:\s+[^-\s]\S*)?)*`;
+const anchored = (pattern: string) => new RegExp(`^${pattern}${END}`);
+/** The package.json "test" script, run by its package manager. */
+const RUNS_SCRIPT = anchored(String.raw`(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|t)`);
+// Tools that start a Node runner: npx, bunx, npm exec, pnpm (exec, dlx), yarn (run).
+const NODE_EXEC = String.raw`(?:(?:npx|bunx)${FLAGS}\s+|npm\s+exec${FLAGS}\s+(?:--\s+)?|(?:pnpm|yarn)(?:\s+(?:exec|dlx|run))?\s+)?`;
+// Tools that start a Python runner: uv run, uvx, pipx run, poetry run, pipenv run.
+const PY_EXEC = String.raw`(?:(?:uvx|uv\s+run|pipx\s+run|poetry\s+run|pipenv\s+run)${FLAGS}\s+)?`;
+// A Python module run as a program: python -m, coverage run -m.
+const PY_M = String.raw`(?:python3?|coverage\s+run)\s+-m\s+`;
+/** Test runners that need no package.json script, one entry per runner. Each is matched at the start of a command. */
+const RUNNERS: RegExp[] = [
+  anchored(String.raw`node${FLAGS}\s+--test`),
+  anchored(String.raw`deno\s+test`),
+  anchored(String.raw`go\s+test`),
+  anchored(String.raw`cargo\s+test`),
+  anchored(String.raw`(?:\./)?mvnw?${FLAGS}\s+test`),
+  anchored(String.raw`(?:\./)?gradlew?${FLAGS}\s+test`),
+  anchored(`${PY_EXEC}(?:${PY_M})?(?:pytest|tox|nox)`),
+  anchored(`${PY_EXEC}${PY_M}unittest`),
+  anchored(String.raw`make(?:\s+-C\s*\S+|\s+-\S+)*\s+tests?`),
+  anchored(`${NODE_EXEC}(?:vitest|jest)`),
+];
+/** In a workspaces repo, commands that run each package's "test" script; the root may have none. */
+const RUNS_WORKSPACES: RegExp[] = [
+  // npm takes its flags anywhere: npm test --workspaces, npm -w app test, npm run test -ws.
+  new RegExp(String.raw`^npm(?=.*\s(?:--workspaces?|-ws|-w)(?:[\s=]|$))${VALUED}\s+(?:run\s+)?(?:test|t)${END}`),
+  anchored(String.raw`pnpm${VALUED}\s+(?:-r|--recursive|--filter(?:=|\s+)\S+|-F\s+\S+)${VALUED}\s+(?:run\s+)?test`),
+  anchored(String.raw`yarn\s+workspaces\s+(?:foreach${VALUED}\s+)?run\s+test`),
+];
+const packageJson = (root: string): Record<string, unknown> | null => {
+  try {
+    const json = JSON.parse(read(join(root, 'package.json')) || 'null');
+    return json && typeof json === 'object' ? json : null;
+  } catch {
+    return null;
+  }
+};
+const isWorkspaces = (root: string) => Boolean(packageJson(root)?.workspaces) || existsSync(join(root, 'pnpm-workspace.yaml'));
+/**
+ * Whether the workflow text runs the tests: the package.json "test" script (`script`, or
+ * empty), each package's script in a workspaces repo, or a test runner named outright.
+ */
+export const runsTests = (ci: string, script: string, workspaces: boolean) => {
+  const lines = runLines(ci);
+  const run = lines.flatMap(commands).filter((c) => !ASKS.test(c));
+  if (run.some((c) => RUNNERS.some((r) => r.test(c)))) return true;
+  if (script !== '' && (run.some((c) => RUNS_SCRIPT.test(c)) || lines.some((l) => l.includes(script)))) return true;
+  return workspaces && run.some((c) => RUNS_WORKSPACES.some((r) => r.test(c)));
+};
+const ciRunsTests = (root: string) => runsTests(ciText(root), testScript(root), isWorkspaces(root));
+// What runs the tests in each kind of project, by a file at the root; the first three when none is found.
+const PROJECT_RUNNERS: [string[], string][] = [
+  [['go.mod'], 'go test'],
+  [['pyproject.toml', 'setup.py', 'setup.cfg', 'tox.ini', 'requirements.txt'], 'pytest'],
+  [['Cargo.toml'], 'cargo test'],
+  [['pom.xml'], 'mvn test'],
+  [['build.gradle', 'build.gradle.kts'], 'gradle test'],
+  [['deno.json', 'deno.jsonc'], 'deno test'],
+];
+const runnersFor = (root: string) => {
+  const found = PROJECT_RUNNERS.filter(([files]) => files.some((f) => existsSync(join(root, f)))).map(([, runner]) => runner);
+  const named = (found.length ? found : PROJECT_RUNNERS.slice(0, 3).map(([, runner]) => runner)).map((r) => `\`${r}\``);
+  return named.length > 1 ? `${named.slice(0, -1).join(', ')} or ${named.at(-1)}` : named[0];
+};
+/** The command that runs each package's tests in this workspaces repo. */
+const workspacesTest = (root: string) => (existsSync(join(root, 'pnpm-workspace.yaml')) ? '`pnpm -r test`' : '`npm test --workspaces`');
+/** Why the tests step is not done, worded by what the project is: package.json only when there is one. */
+const noTests = (root: string) => {
+  if (testScript(root)) return 'CI does not run the tests';
+  if (isWorkspaces(root)) return `no workflow runs each package's tests (e.g. ${workspacesTest(root)})`;
+  if (packageJson(root)) return 'no test command: no "test" script in package.json, and no workflow runs a test runner';
+  return `no workflow runs a test command such as ${runnersFor(root)}`;
+};
+const testsFix = (root: string) => {
+  if (testScript(root)) return 'add a step that runs `npm test` (or your test command) to a workflow in .github/workflows';
+  if (isWorkspaces(root)) return `add a step that runs ${workspacesTest(root)} to a workflow in .github/workflows`;
+  return 'add tests and a CI step that runs them';
 };
 
 /** Tracked build output, as yokoten.json lets it through; null outside a git repo. */
@@ -352,10 +464,10 @@ export const ROAD: Step[] = [
     stage: 1,
     key: 'tests',
     check: (root) => ciRunsTests(root),
-    what: (root) => (testScript(root) ? 'CI does not run the tests' : 'no test command: no "test" script in package.json, and no workflow runs a test runner'),
-    fix: (root) => (testScript(root) ? 'add a step that runs `npm test` (or your test command) to a workflow in .github/workflows' : 'add tests and a CI step that runs them'),
+    what: noTests,
+    fix: testsFix,
     why: 'tests that run on every push catch a broken change before it reaches main',
-    how: 'package.json has a real "test" script and a workflow in .github/workflows runs it, or a workflow runs a test runner such as `node --test` or `go test`',
+    how: 'package.json has a real "test" script and a `run:` step in .github/workflows runs it, or a `run:` step starts a test runner such as `node --test`, `go test`, `pytest`, `tox`, `make test` or `npx vitest`; in a workspaces repo, `npm test --workspaces` or `pnpm -r test` counts too',
     standard: 'Best Practices: test',
   },
   {

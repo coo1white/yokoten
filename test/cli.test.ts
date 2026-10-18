@@ -403,7 +403,7 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.match(secret.stderr, /leak\.md:1: a secret \(AWS access key id\)/);
   sandbox.git('reset', '-q', 'leak.md');
   // init does all of stages 1 to 3 but the tests, so with tests the road goes on to stage 4.
-  assert.match(sandbox.run(['doctor', '--session']).stdout, /^yokoten: stage 1 of 5, safety net\. Next: no test command/);
+  assert.match(sandbox.run(['doctor', '--session']).stdout, /^yokoten: stage 1 of 5, safety net\. Next: no workflow runs a test command/);
   sandbox.withTests();
   result = sandbox.run(['doctor', '--session']);
   assert.equal(result.status, 0);
@@ -879,7 +879,8 @@ test('doctor: each stage boundary, from a fresh repo to the end of the road', ()
 test('doctor: the tests step wants a test command and a CI step that runs it (#55)', () => {
   const sandbox = makeSandbox();
   const line = () => sandbox.run(['doctor']).stdout.split('\n').find((l) => / tests\b/.test(l)) ?? '';
-  assert.match(line(), /^ +to do +tests \(Best Practices: test\): no test command/);
+  // No package.json: the message does not name it (#257).
+  assert.match(line(), /^ +to do +tests \(Best Practices: test\): no workflow runs a test command/);
   // npm's placeholder script only fails: it is no test command.
   sandbox.write('package.json', JSON.stringify({ scripts: { test: 'echo "Error: no test specified" && exit 1' } }));
   assert.match(line(), /^ +to do +tests \(Best Practices: test\): no test command/);
@@ -889,7 +890,7 @@ test('doctor: the tests step wants a test command and a CI step that runs it (#5
   assert.match(line(), /^ +done +tests/);
   // A project with no package.json: CI that runs a test runner is enough.
   rmSync(join(sandbox.repo, 'package.json'));
-  assert.match(line(), /^ +to do +tests \(Best Practices: test\): no test command/);
+  assert.match(line(), /^ +to do +tests \(Best Practices: test\): no workflow runs a test command such as `go test`, `pytest` or `cargo test`/);
   sandbox.write('.github/workflows/ci.yml', 'jobs:\n  t:\n    steps:\n      - run: go test ./...\n');
   assert.match(line(), /^ +done +tests/);
 });
