@@ -38,14 +38,19 @@ export function checkCommand(command: string, options: { env: Env; config?: Pick
   // The reader is not a full parser. Whatever goes wrong inside it, the command is refused,
   // never let through: an error here must not open the guard.
   try {
-    return checkEachCommand(command, options);
+    return checkEachCommand(command, { ...options, cwd: options.cwd ?? process.cwd() });
   } catch {
     return finding('unreadable-command', 'yokoten could not read this command', 'split it into simpler commands, one per call');
   }
 }
 
-function checkEachCommand(command: string, { env, config, cwd = process.cwd() }: { env: Env; config?: Pick<Config, 'commands'>; cwd?: string }): Finding | null {
-  for (const words of commandWords(command)) {
+// `cwd` is null when the guard cannot tell which repo git works in.
+function checkEachCommand(command: string, { env, config, cwd }: { env: Env; config?: Pick<Config, 'commands'>; cwd: string | null }): Finding | null {
+  const commands = commandWords(command);
+  // A command that moves to another folder or repo (`cd x && git config ...`, GIT_DIR=)
+  // may change the hooks setting of a repo the guard does not look at.
+  if (commands.some(movesRepo)) cwd = null;
+  for (const words of commands) {
     const reason = checkGit(words, { env, config, cwd }) ?? checkHooksEnvironment(words) ?? checkPublish(words, env) ?? checkBlocked(words, config?.commands.block ?? {});
     if (reason) return reason;
   }
@@ -55,6 +60,10 @@ function checkEachCommand(command: string, { env, config, cwd = process.cwd() }:
 const RELEASE_FIX = 'if the owner asked for this, they start a new session with YOKOTEN_RELEASE_APPROVAL=1 (`YOKOTEN_RELEASE_APPROVAL=1 claude`); do not look for another way';
 const release = (what: string) => finding('release', what, RELEASE_FIX);
 
+const MOVERS = new Set(['cd', 'pushd', 'popd']);
+const movesRepo = (words: string[]): boolean =>
+  words.some((word) => /^(GIT_DIR|GIT_WORK_TREE)=/.test(word) || word === '--worktree') || findPrograms(words).some((program) => MOVERS.has(programName(program)));
+
 const base = (word: string) => word.slice(Math.max(word.lastIndexOf('/'), word.lastIndexOf('\\')) + 1);
 const isGit = (word: string) => /(^|[/\\])git(\.exe)?$/.test(word);
 // Git options that take the next word as their value.
@@ -62,7 +71,7 @@ const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--config-env', '--git-dir', '--w
 
 // Each check looks for its program anywhere in the command, so a prefix such as FOO=1,
 // sudo, env, command, exec, time, nice, nohup, timeout or xargs does not hide it.
-function checkGit(words: string[], { env, config, cwd }: { env: Env; config?: Pick<Config, 'commands'>; cwd: string }): Finding | null {
+function checkGit(words: string[], { env, config, cwd }: { env: Env; config?: Pick<Config, 'commands'>; cwd: string | null }): Finding | null {
   const start = words.findIndex(isGit);
   if (start === -1) return null;
   const settings: string[] = [];
@@ -90,7 +99,7 @@ function checkGit(words: string[], { env, config, cwd }: { env: Env; config?: Pi
   // `git -c alias.x='!cmd' x` runs cmd through a shell.
   for (const s of settings) {
     const alias = /^alias\.[^=]*=!(.*)$/is.exec(s);
-    const reason = alias && checkCommand(alias[1], { env, config, cwd });
+    const reason = alias && checkEachCommand(alias[1], { env, config, cwd });
     if (reason) return reason;
   }
   if (sub === 'push') {
@@ -225,13 +234,16 @@ function checkConfig(args: string[], directory: string | null): Finding | null {
 }
 
 // Config that is not this repo's own: a change there reaches other repos, or none.
-const OTHER_SCOPES = new Set(['--global', '--system', '-f', '--file', '--blob']);
+// --worktree writes the config of the worktree git works in, which may not be this one.
+const OTHER_SCOPES = new Set(['--global', '--system', '-f', '--file', '--blob', '--worktree']);
 
 // A new core.hooksPath in the repo's own config passes when it is the value already set,
 // or when the folder's pre-commit runs `yokoten check`.
 function checkHooksFolder(value: string, options: string[], directory: string | null): Finding | null {
   const scope = options.find((o) => OTHER_SCOPES.has(o.split('=')[0]));
   if (scope) return hooksPath(`git config ${scope} core.hooksPath changes the hooks folder outside this repo's own config, which can turn off the commit check`);
+  // git expands these, and the guard does not: it cannot tell which folder they name.
+  if (value.startsWith('~') || value.startsWith('%(')) return hooksPath(`core.hooksPath ${value} names a folder git expands, which the guard cannot check`);
   const root = directory === null ? null : readGit(directory, ['rev-parse', '--show-toplevel']);
   if (root === null) return hooksPath('changing core.hooksPath where the guard cannot find the repo can turn off the commit check');
   if (readGit(root, ['config', '--get', 'core.hooksPath']) === value) return null;
@@ -244,18 +256,70 @@ function checkHooksFolder(value: string, options: string[], directory: string | 
 /**
  * The pre-commit file git runs for this core.hooksPath, relative to the repo root, or null
  * when the folder is outside the repo. husky's folder (`.husky/_`, or `.husky` before
- * husky 9) runs `.husky/pre-commit`.
+ * husky 9) runs `.husky/pre-commit`. Any other folder runs its own pre-commit.
  */
 export function hookFile(root: string, setting: string): string | null {
   const folder = relative(root, resolve(root, setting)).split('\\').join('/');
   if (folder === '..' || folder.startsWith('../') || isAbsolute(folder)) return null;
-  if (folder === '.husky' || folder.startsWith('.husky/')) return '.husky/pre-commit';
+  if (folder === '.husky' || folder === '.husky/_') return '.husky/pre-commit';
   return folder ? `${folder}/pre-commit` : 'pre-commit';
 }
 
-/** A line of this script, not a comment, runs `yokoten check` (by any path, or `yokoten.ts`). */
-export const runsCheck = (script: string): boolean =>
-  script.split(/\r?\n/).some((line) => !line.trimStart().startsWith('#') && /\byokoten(\.ts)?["']?\s+check\b/.test(line));
+// A line that runs the check and stops the commit when it fails, in the shapes yokoten
+// writes or knows: `exec node "bin/yokoten.ts" check --staged`, `npx yokoten check || exit 1`,
+// and the guarded form `[ -f <cli> ] || { echo '...' >&2; exit 1; }; node <cli> check`.
+// The line starts with it; after it comes nothing, or `|| exit` with no code or one not 0.
+const CHECK_TAIL = String.raw`check(?:\s+--?[\w-]+)*\s*(?<stop>\|\|\s*exit(?:\s+[1-9]\d*)?\s*)?$`;
+const CHECK_LINE = new RegExp(String.raw`^(?<exec>exec\s+)?(?:npx\s+)?(?:node\s+)?["']?[\w./@\$\{\}-]*yokoten(?:\.ts)?["']?\s+` + CHECK_TAIL);
+const GUARDED_LINE = new RegExp(String.raw`^\[ -f (\S+) \] \|\| \{ echo '[^']*'(?: >&2)?; exit [1-9]\d*; \}; node \1 ` + CHECK_TAIL);
+// Shell words that open and close a block: a line inside one may never run.
+const OPENERS = new Set(['if', 'while', 'until', 'for', 'case', 'select']);
+const CLOSERS = new Set(['fi', 'done', 'esac']);
+
+/**
+ * This pre-commit script runs `yokoten check` and fails the commit when the check fails:
+ * a line, not a comment, in one of the shapes above, at the top level (not inside an
+ * `if`, a loop, a group or a heredoc), with no `exit` (but `exit 1`), `exec` or heredoc
+ * before it. A line with no `exec` and no `|| exit` is the last command, or follows `set -e`.
+ */
+export function runsCheck(script: string): boolean {
+  const lines = script.split(/\r?\n/).map((line) => line.trim());
+  let depth = 0;
+  let isStrict = false; // set -e: a failed command stops the script
+  for (const [index, line] of lines.entries()) {
+    if (line === '' || line.startsWith('#')) continue;
+    const shape = CHECK_LINE.exec(line) ?? GUARDED_LINE.exec(line);
+    if (shape && depth === 0) {
+      const stops = shape.groups?.exec !== undefined || shape.groups?.stop !== undefined;
+      const isLast = lines.slice(index + 1).every((rest) => rest === '' || rest.startsWith('#'));
+      if (stops || isLast || isStrict) return true;
+    }
+    if (/<<|\bexec\b/.test(line) || /\bexit\b(?!\s+[1-9])/.test(line)) return false;
+    if (/^set\s+-[a-z]*e/.test(line)) isStrict = true;
+    depth += blockDepth(line);
+    if (depth < 0) return false;
+  }
+  return false;
+}
+
+// How many blocks a line opens, less those it closes: keywords that lead a command, and
+// ( and { and their closers outside quotes, ${...} and $(...).
+function blockDepth(line: string): number {
+  let depth = 0;
+  for (const words of commandWords(line)) {
+    for (const word of words) {
+      if (OPENERS.has(word)) depth++;
+      else if (CLOSERS.has(word)) depth--;
+      else if (!KEYWORDS.has(word)) break;
+    }
+  }
+  const bare = line.replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, '').replace(/\$\{[^}]*\}|\$\(+[^)]*\)+/g, '');
+  for (const character of bare) {
+    if (character === '(' || character === '{') depth++;
+    else if (character === ')' || character === '}') depth--;
+  }
+  return depth;
+}
 
 // What git prints, trimmed, or null when it fails.
 function readGit(directory: string, args: string[]): string | null {

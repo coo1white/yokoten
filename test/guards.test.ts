@@ -234,6 +234,61 @@ test('hooks setting: only a line that runs yokoten check counts, not a comment (
   assert.equal(hookFile('/repo', '../other'), null);
 });
 
+// The review of #226: a pre-commit that names the check but can skip it does not count.
+test('hooks setting: only a check line that stops the commit counts, at the top level (#226)', () => {
+  for (const script of [
+    '#!/bin/sh\nexec node "bin/yokoten.ts" check --staged\n',
+    '#!/bin/sh\nnpx lint-staged\nnode ".yokoten/bin/yokoten.ts" check --staged || exit 1\n',
+    `#!/bin/sh\n[ -f ".yokoten/bin/yokoten.ts" ] || { echo 'yokoten: missing' >&2; exit 1; }; node ".yokoten/bin/yokoten.ts" check --staged || exit 1\n`,
+    '#!/bin/sh\nset -e\nnpx yokoten check\nnpm test\n',
+    '#!/bin/sh\nif true; then npm test; fi\nnpx yokoten check || exit 1\n',
+  ]) assert.equal(runsCheck(script), true, script);
+  for (const script of [
+    'echo yokoten check\n',
+    'true || yokoten check\n',
+    ': yokoten check\n',
+    'exit 0\nyokoten check\n',
+    'npm test || exit 0\nyokoten check\n',
+    'exec true\nyokoten check\n',
+    'yokoten check || true\n',
+    'yokoten check || :\n',
+    'yokoten check; true\n',
+    'yokoten check &\n',
+    'yokoten check\nnpm test\n',
+    "cat <<'EOF'\nyokoten check\nEOF\n",
+    'if false; then\nyokoten check\nfi\n',
+    'if false; then\n  echo fi\n  yokoten check || exit 1\nfi\n',
+    'false && {\nyokoten check || exit 1\n}\n',
+    `[ -f x ] || { echo 'm'; exit 0; }; node x check || exit 1\n`,
+  ]) assert.equal(runsCheck(script), false, script);
+  assert.equal(hookFile('/repo', '.husky'), '.husky/pre-commit');
+  assert.equal(hookFile('/repo', '.husky/nope'), '.husky/nope/pre-commit', 'git runs the folder it names');
+});
+
+test('hooks setting: a folder git expands, or a command that moves repo, is refused (#226)', () => {
+  const cwd = makeHooksRepo();
+  const stop = (command: string) => assert.equal(checkCommand(command, { env: {}, cwd })?.id, 'hooks-path', `should block: ${command}`);
+  const pass = (command: string) => assert.equal(checkCommand(command, { env: {}, cwd }), null, `should allow: ${command}`);
+  try {
+    for (const command of [
+      'git config core.hooksPath .husky/nope',
+      'git config core.hooksPath ~/h',
+      'git config core.hooksPath %(prefix)/h',
+      `cd ${tmpdir()} && git config core.hooksPath .husky/_`,
+      'pushd sub && git config core.hooksPath .husky/_',
+      'GIT_DIR=/tmp/other/.git git config core.hooksPath .husky/_',
+      'GIT_WORK_TREE=/tmp/other git config core.hooksPath .husky/_',
+      'git config --worktree core.hooksPath .husky/_',
+    ]) stop(command);
+    // Reads, and .githooks, need no repo; the same set without a move still passes.
+    pass(`cd ${tmpdir()} && git config --get core.hooksPath`);
+    pass('cd sub && git config core.hooksPath .githooks');
+    pass('git config core.hooksPath .husky/_');
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test('everyday commands pass', () => {
   for (const c of ['git status', 'git push', 'git push origin feature-v2', 'git commit -m "fix v1 parser"', 'npm test', 'gh pr create --fill', 'ls -la', 'gh release list']) allowed(c);
 });
