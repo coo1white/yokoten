@@ -36,12 +36,21 @@ test('token: finds the installation from the repo, then exchanges the JWT', asyn
   const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
   writeFileSync(join(dir, 'bot.pem'), pem);
   const api = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  // With NODE_USE_ENV_PROXY=1, fetch sends even a local call through the shell's proxy,
+  // which closes it. The fake API is on this machine, so the call goes to it directly.
+  // Node reads both spellings of the variable, so both are set, then put back.
+  const saved = { upper: process.env.NO_PROXY, lower: process.env.no_proxy };
+  process.env.NO_PROXY = process.env.no_proxy = '127.0.0.1,localhost';
   try {
     const token = await installationToken({ appId: '1', keyFile: join(dir, 'bot.pem'), api }, 'me/repo');
     assert.equal(token, 'ghs_test');
     assert.deepEqual(seen, ['GET /repos/me/repo/installation true', 'POST /app/installations/77/access_tokens true']);
   } finally {
     server.close();
+    for (const [name, value] of [['NO_PROXY', saved.upper], ['no_proxy', saved.lower]] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
   }
 });
 
