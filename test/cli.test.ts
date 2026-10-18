@@ -248,6 +248,7 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   const workflow = readFileSync(join(s.repo, '.github/workflows/yokoten.yml'), 'utf8');
   assert.match(workflow, /node \.yokoten\/bin\/yokoten\.ts check/);
   assert.match(workflow, /persist-credentials: false/, 'the hardened workflow (#36)');
+  assert.match(workflow, /^  ci:\n    if: always\(\)\n    needs: \[check, lint\]$/m, 'one required check that waits for the rest (#36)');
   assert.match(readFileSync(join(s.repo, '.github/workflows/pr.yml'), 'utf8'), /node \.yokoten\/bin\/yokoten\.ts check --pr/, 'the pull request check (#47)');
   assert.match(readFileSync(join(s.repo, '.github/workflows/issue.yml'), 'utf8'), /node \.yokoten\/bin\/yokoten\.ts check --issue/, 'the issue title check');
   assert.ok(existsSync(join(s.repo, '.yokoten', 'VERSION')));
