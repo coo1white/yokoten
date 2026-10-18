@@ -241,6 +241,12 @@ export const RULES = {
     check: '`doctor` reads .gemini/settings.json for a BeforeTool hook that runs `yokoten hook --agent gemini`; a note, not a missing step',
     docs: guide('works-with'),
   },
+  'core-rules': {
+    rule: 'the core rules in AGENTS.md are the ones in the kit of the yokoten you run',
+    why: 'a lesson added to the core rules reaches a project only when its AGENTS.md gets the new text',
+    check: '`doctor` compares everything above `## This project` in AGENTS.md with the kit\'s core rules, and a session hears when they differ; without that heading it can\'t compare, as a note; `yokoten update` shows the change, and `--write` makes it',
+    docs: guide('updating-the-rules'),
+  },
   'session-doctor': {
     rule: 'every session starts with `yokoten doctor --session`',
     why: 'the agent then hears the next step on the road, and a drifted setup shows at once',

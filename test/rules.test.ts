@@ -10,7 +10,7 @@ import { DOCS_URL, type Finding, finding, formatFinding, type Rule, RULES } from
 import { POSITIVE_CONTROL, scanText } from '../src/rules/privacy.ts';
 import { SECRET_CONTROL } from '../src/rules/secrets.ts';
 import { timeZoneNote } from '../src/run/check.ts';
-import { agentHooks, machineChecks, serverChecks } from '../src/setup/doctor.ts';
+import { agentHooks, coreRulesCheck, machineChecks, serverChecks } from '../src/setup/doctor.ts';
 import { explain, explainLines, ids } from '../src/setup/explain.ts';
 import { ROAD, stepFinding } from '../src/setup/road.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
@@ -458,6 +458,11 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
   for (const step of ROAD) add(stepFinding(step, dir, { HOME: dir }));
   for (const c of [...agentHooks(dir), ...machineChecks({ HOME: dir, YOKOTEN_PRIVATE_MARKS: join(dir, 'none') })]) add(c.finding);
+  // The core rules (#120): behind the kit, and with no heading to compare by.
+  for (const rules of ['# old rules\n\n## This project\n', '# rules\n']) {
+    writeFileSync(join(dir, 'AGENTS.md'), rules);
+    add(coreRulesCheck(dir)?.finding);
+  }
   // The server, with every setting off, and with nothing readable.
   const off = { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false };
   const security = { secretScanning: false, pushProtection: false, privateReporting: false, dependabotAlerts: false };

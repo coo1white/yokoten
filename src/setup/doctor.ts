@@ -26,6 +26,7 @@ import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
 import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
 import { runtimeVersion, VERSION } from './files.ts';
+import { compareCoreRules, readCoreRules, summarizeUpdate } from './init.ts';
 import { paths } from './install.ts';
 import { type Mark, road, STAGES, stepFinding, stepText, walk } from './road.ts';
 
@@ -51,6 +52,8 @@ export function selfTest(): string[] {
   if (checkLayout(Array.from({ length: 8 }, (_, i) => `d/${i}`), DEFAULTS).length !== 1) failed.push('layout check');
   if (checkBuildOutput([{ path: 'dist/a.js', binary: false }, { path: 'a.bin', binary: true }], DEFAULTS).length !== 2) failed.push('build output check');
   failed.push(...roadControl());
+  const kit = '# rules\n\n## This project\n';
+  if (compareCoreRules('# old rules\n\n## This project\n', kit).state !== 'behind' || compareCoreRules('# rules\n', kit).state !== "can't compare") failed.push('core rules check');
   return failed;
 }
 
@@ -81,6 +84,19 @@ export function machineChecks(env: Env): Practice[] {
     practice('runtime', 'machine-runtime', runtime === VERSION || (plugin && runtime === null), runtime ? `the installed runtime is ${runtime}, this yokoten is ${VERSION}` : 'no runtime installed', 'run `yokoten install` from this copy of yokoten'),
     practice('private-marks', 'private-marks', loadMarks(env).length > 0, `${target.marks} is missing or empty`, 'add your name, city, domain and server names to it, one per line'),
   ];
+}
+
+/**
+ * The core rules in AGENTS.md against the kit's (#120). No AGENTS.md gives null: the
+ * road's rules step asks for it. A file doctor can't compare is a note, never a guess.
+ */
+export function coreRulesCheck(root: string): { mark: 'ok' | 'MISSING' | 'note'; finding: Finding } | null {
+  const rules = readCoreRules(root);
+  if (rules === null) return null;
+  const fix = 'run `yokoten update` to see the change, then `yokoten update --write`; the "This project" part stays as it is';
+  if (rules.state === 'same') return { mark: 'ok', finding: finding('core-rules', 'the core rules in AGENTS.md are up to date', fix) };
+  if (rules.state === "can't compare") return { mark: 'note', finding: finding('core-rules', `can't compare the core rules in AGENTS.md: ${rules.why}`, rules.fix) };
+  return { mark: 'MISSING', finding: finding('core-rules', `the core rules in AGENTS.md are behind yokoten ${VERSION}'s, or were edited by hand (${summarizeUpdate(rules)})`, fix) };
 }
 
 /** In a folder with nothing but a todo file, and a home with nothing in it, no step on the road may be done. */
@@ -187,8 +203,8 @@ export interface StepState {
 
 /**
  * What `doctor --json` prints. `findings` is everything to do, each with what, why and
- * fix; `notes` never fail doctor. A session (`--session`) gets the next step and the
- * private-marks finding only, as its three lines do.
+ * fix; `notes` never fail doctor. A session (`--session`) gets the next step, the
+ * private-marks finding and a behind `core-rules` finding only, as its lines do.
  */
 export interface DoctorReport {
   version: string;
@@ -223,6 +239,8 @@ export function doctor(
   const where = walk(road(root, env), config.notNow);
   const machine = machineChecks(env);
   const next = where.next ? stepFinding(where.next, root, env) : null;
+  const core = coreRulesCheck(root);
+  const isCoreBehind = core?.mark === 'MISSING';
 
   // A session reads files only, never the network, so it starts fast and works offline.
   if (session) {
@@ -236,7 +254,12 @@ export function doctor(
       lines.push(`yokoten: ${formatFinding(marks.finding)}`);
       findings.push(marks.finding);
     }
-    const ok = !failed.length && !next;
+    // A lesson the kit learned reaches the project here: the session hears it (#120).
+    if (core && isCoreBehind) {
+      lines.push(`yokoten: ${formatFinding(core.finding)}`);
+      findings.push(core.finding);
+    }
+    const ok = !failed.length && !next && !isCoreBehind;
     return { ok, lines, report: { ...base, ok, repo: true, stage, next, findings } };
   }
 
@@ -265,6 +288,11 @@ export function doctor(
     lines.push(`  ${c.ok ? 'ok     ' : 'note   '} ${c.name}${c.ok ? '' : `: ${stepText(c.finding)}`}`);
     if (!c.ok) notes.push(c.finding);
   }
+  if (core) {
+    lines.push(`  ${core.mark.padEnd(7)} core-rules${core.mark === 'ok' ? '' : `: ${stepText(core.finding)}`}`);
+    if (core.mark === 'MISSING') findings.push(core.finding);
+    else if (core.mark === 'note') notes.push(core.finding);
+  }
   const problems = check(root, { config, env });
   findings.push(...problems);
   lines.push(`  ${problems.length ? 'MISSING' : 'ok     '} tree: ${problems.length ? `${problems.length} problem(s), run \`yokoten check\`` : 'layout and privacy clean'}`);
@@ -283,6 +311,6 @@ export function doctor(
   }
   if (server[0].id === 'server-settings') lines.push('  check these by hand:', ...BY_HAND.map((s) => `    ${s}`));
   lines.push(...OWNER_STEPS.map((s) => `  not checked ${s}`));
-  const ok = !failed.length && !where.next && !problems.length && machine.every((c) => c.ok) && server.every((c) => c.mark !== 'MISSING');
+  const ok = !failed.length && !where.next && !isCoreBehind && !problems.length && machine.every((c) => c.ok) && server.every((c) => c.mark !== 'MISSING');
   return { ok, lines, report: { ...base, ok, repo: true, stage: where.stage, next, findings, steps, notes, server: server.map(({ id, mark }) => ({ id, mark })) } };
 }
