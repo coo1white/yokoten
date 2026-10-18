@@ -146,7 +146,8 @@ yokoten 能管住三种 AI 编程 agent，它们守的是同一套规矩。
 ## 安装和命令
 
 需要 Node 22.18 或更高版本：它能直接运行 TypeScript，不用先编译。没有任何依赖。
-装法有两种，选一种就行，别两种都装。
+装法有两种：一种是 Claude Code 插件，一种是 `install` 命令（从 npm 跑，或者从 clone
+下来的仓库跑）。选一种就行，别两种都装。
 
 ### 用 Claude Code 插件装
 
@@ -177,9 +178,31 @@ Claude Code 用 `node` 直接跑插件里的 `.ts` 文件。之所以能跑，�
 插件只管 Claude Code。它不会帮你建私有词表文件：`doctor` 会告诉你文件在哪，你自己建。
 插件在你的用户设置里开着的时候，`doctor` 就把它的 hook 和技能算作已经装好。
 
-### 从 clone 下来的仓库装
+### 用 npx 装
 
 用 Codex CLI、Gemini CLI，或者不想用插件，就这样装：
+
+```sh
+npx yokoten install      # 这台电脑：技能、agent、hook
+cd your-project
+npx yokoten init         # 这个项目：只加文件，不覆盖
+npx yokoten doctor       # 看看走到哪一关，下一步做什么
+```
+
+`npx` 会先把包下载下来再运行。这个包没有任何依赖。`install` 和 `init` 会把 yokoten
+的运行文件从包里拷出来，一份放到 `~/.local/share/yokoten`，一份放到项目的 `.yokoten/`。
+hook 跑的是这两份拷贝，所以不用联网，也不用再经过 `npx`。
+
+npm 上的包跑的是编译好的 JavaScript，因为 Node 不处理 `node_modules` 里的 TypeScript。
+仓库本身还是不用编译，只有 `npm pack` 打包的时候才生成 `dist/`
+（见[记录 0008](../records/0008-npm-package.md)，英文）。
+
+发布到 npm 是主人的事，跟打发版 tag 一样。第一个版本发布之前，先
+[从 clone 下来的仓库装](#从-clone-下来的仓库装)。
+
+### 从 clone 下来的仓库装
+
+命令一样，只是从 clone 下来的仓库跑。npm 上还没有第一个版本的时候，就用这种装法：
 
 ```sh
 git clone https://github.com/yokoten-labs/yokoten

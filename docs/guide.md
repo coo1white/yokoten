@@ -157,8 +157,9 @@ yokoten guards three AI coding agents. Each one keeps the same rules.
 
 ## Install and commands
 
-Requires Node 22.18 or later, which runs TypeScript as it is. No build step, no
-dependencies. There are two ways to install. Use one, not both.
+Requires Node 22.18 or later, which runs TypeScript as it is. No dependencies. There
+are two ways to install: the Claude Code plugin, or the `install` command, from npm or
+from a clone. Use one, not both.
 
 ### The Claude Code plugin
 
@@ -192,9 +193,32 @@ The plugin works in Claude Code only. It does not make the private-marks file: `
 names the file, and you make it. When the plugin is on in your user settings, `doctor`
 counts its hooks and skills as installed.
 
-### Install from a clone
+### Install with npx
 
 For Codex CLI and Gemini CLI, or without the plugin:
+
+```sh
+npx yokoten install      # this machine: skills, agents, hooks
+cd your-project
+npx yokoten init         # this project: adds files, never overwrites
+npx yokoten doctor       # the road: where you are, what's next
+```
+
+`npx` downloads the package and runs it. The package has no dependencies. `install`
+and `init` copy yokoten's runtime out of the package: to `~/.local/share/yokoten` and
+to `.yokoten/`. The hooks run these copies, so they need no network and no `npx`.
+
+The package runs built JavaScript, because Node does not run TypeScript under
+`node_modules`. The repo has no build; `npm pack` makes the package's `dist/`
+([record 0008](records/0008-npm-package.md)).
+
+The owner publishes the package, as the owner creates a release tag. Until the first
+release is on npm, [install from a clone](#install-from-a-clone).
+
+### Install from a clone
+
+The same commands, from a copy of this repo. Use this way until the first release is
+on npm:
 
 ```sh
 git clone https://github.com/yokoten-labs/yokoten
