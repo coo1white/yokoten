@@ -1,4 +1,4 @@
-<!-- source: docs/guide.md blob d4744df7ce4151f004d76781b3b2a2f8e73bbb4b -->
+<!-- source: docs/guide.md blob 817a75ec9cb81cbd10125cd4f9f15e2213140596 -->
 # yokoten 使用指南
 
 [README](README.md) 是简短版。剩下的都在这里：yokoten 为什么要做、它怎么工作、有哪些规则和命令，还有它做不到的事。
