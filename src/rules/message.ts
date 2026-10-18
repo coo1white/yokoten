@@ -125,6 +125,12 @@ export const RULES = {
     why: 'a build makes it again from the source, so a committed copy goes stale',
     check: 'the commit check refuses a file in a dist/, build/ or out/ folder; yokoten.json "allowBuild" lets a path through',
   },
+  'missing-blob': {
+    rule: 'the commit check reads every staged file',
+    why: 'a staged file whose copy is not in the object store can\'t be checked, and the commit would fail or hold an unchecked entry',
+    check: 'the commit check reads each staged file from the object store by its id, and refuses an entry it can\'t read',
+    docs: guide('three-checks-and-a-lock'),
+  },
   binary: {
     rule: 'no binary file in a commit, apart from images and fonts',
     why: "a reviewer can't read it, and it may not match the source",
