@@ -366,6 +366,38 @@ test('check --history: a shallow clone fails with one finding, never "every comm
   assert.match(readFileSync(summary, 'utf8'), /1 problem\n[^]*shallow-history[^]*this clone is shallow/);
 });
 
+test('check --history: a commit hidden by git replace is still scanned; a grafts file fails with one finding (#284)', () => {
+  const sandbox = makeSandbox();
+  const token = `${'gh'}p_${'x7Y2k9'.repeat(6)}`;
+  sandbox.write('notes.md', `token ${token}\n`);
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'add notes');
+  const first = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  sandbox.git('rm', '-q', 'notes.md');
+  sandbox.git('commit', '-qm', 'remove notes');
+  // Swap the first commit for an empty root commit: git log and rev-list now skip the token.
+  const emptyTree = sandbox.git('hash-object', '-w', '-t', 'tree', '/dev/null').stdout.trim();
+  const emptyRoot = sandbox.git('commit-tree', emptyTree, '-m', 'add notes').stdout.trim();
+  assert.equal(sandbox.git('replace', first, emptyRoot).status, 0);
+  assert.equal(sandbox.git('log', '--all', '--format=%H', '--', 'notes.md').stdout.trim(), '', 'git itself no longer sees the token');
+  let result = sandbox.run(['check', '--history']);
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stderr, /notes\.md @ blob \w+:1: a secret \(GitHub token\)/);
+  assert.ok(!result.stderr.includes(token), 'the secret is never printed');
+
+  // A grafts file can hide commits too: nothing is scanned, and one finding says why.
+  const second = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  sandbox.git('replace', '-d', first);
+  sandbox.write('.git/info/grafts', `${second}\n`);
+  result = sandbox.run(['check', '--history']);
+  assert.equal(result.status, 1, result.stdout);
+  assert.ok(!/every commit on every branch/.test(result.stdout + result.stderr), result.stdout);
+  assert.match(result.stderr, /1 problem\(s\)\n- this repo has a grafts file, so the history check can't see every commit\. .+\. Run `git replace --convert-graft-file`/);
+  assert.ok(!result.stderr.includes('notes.md'), 'nothing was scanned');
+  result = sandbox.run(['check', '--history', '--json']);
+  assert.deepEqual(JSON.parse(result.stdout).findings.map((f: { id: string }) => f.id), ['shallow-history']);
+});
+
 test('init: adds the practices, keeps what is there, and doctor goes on to stage 4', () => {
   const sandbox = makeSandbox();
   sandbox.write('AGENTS.md', '# our own rules\n');
