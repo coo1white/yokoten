@@ -523,7 +523,7 @@ test('init: an import of another file that starts with AGENTS.md does not count;
     assert.notEqual(stepMark(sandbox, 'rules'), 'done', text);
     const result = sandbox.run(['init']);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, new RegExp(`updated ${file.replace(/\./g, '\\.')}: it now reads AGENTS\\.md`), text);
+    assert.ok(result.stdout.includes(`updated ${file}: it now reads AGENTS.md`), result.stdout);
     const after = readFileSync(join(sandbox.repo, file), 'utf8');
     assert.ok(after.startsWith(text), 'the old line stays');
     assert.ok(after.endsWith(`-->\n${line}\n`), after);
