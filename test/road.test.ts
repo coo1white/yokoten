@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { chat, type LlamaConfig, llamaConfig } from '../src/agents/llama.ts';
 import { draft, type Fact, facts, parseAnswer, prompt, promptProblems, ruleDraft, table } from '../src/setup/advice/adopt.ts';
-import { type Found, ROAD, STAGES, type Step, walk } from '../src/setup/road.ts';
+import { type Found, ROAD, runsTests, STAGES, type Step, walk } from '../src/setup/road.ts';
 
 const step = (stage: number, key: string): Step => ({ stage, key, check: () => false, what: () => key, fix: () => key, why: key, how: key });
 const steps = [step(1, 'a'), step(1, 'b'), step(2, 'c'), step(3, 'd')];
@@ -271,36 +271,94 @@ const testsStep = (files: Record<string, string>) => {
 };
 const workflow = (run: string) => ({ '.github/workflows/ci.yml': `jobs:\n  t:\n    steps:\n      - run: ${run}\n` });
 
-test('road: the tests step is done for a workflow that runs any common test runner (#257)', () => {
-  const runs = ['python -m unittest discover', 'python -m pytest', 'tox', 'nox', 'make test', 'npx vitest run', 'npx jest', 'pnpm exec vitest run', 'pnpm exec jest', 'yarn vitest run', 'yarn jest',
-    'uv run pytest', 'go test ./...', 'node --test'];
-  for (const run of runs) assert.equal(testsStep(workflow(run)).done, true, run);
-  // In a multi-line run block, and after another command.
-  assert.equal(testsStep({ '.github/workflows/ci.yml': 'jobs:\n  t:\n    steps:\n      - run: |\n          pip install tox\n          tox -e py\n' }).done, true);
-  assert.equal(testsStep(workflow('npm ci && npx jest --ci')).done, true);
-  // Installing a runner is not running it.
-  assert.equal(testsStep(workflow('pip install tox nox')).done, false);
+// Each case: the workflow (a `- run:` value, or a whole workflow when it has a newline), the project, and whether the step is done.
+const PLAIN = {};
+const SCRIPT = { 'package.json': JSON.stringify({ scripts: { test: 'vitest run' } }) };
+const NPM_WS = { 'package.json': JSON.stringify({ private: true, workspaces: ['packages/*'] }) };
+const PNPM_WS = { 'package.json': JSON.stringify({ private: true }), 'pnpm-workspace.yaml': 'packages:\n  - packages/*\n' };
+const NO_SCRIPT = { 'package.json': JSON.stringify({ private: true }) };
+const TESTS_CASES: [string, Record<string, string>, boolean][] = [
+  // The common runners.
+  ...['python -m unittest discover', 'python -m pytest', 'tox', 'nox', 'make test', 'npx vitest run', 'npx jest', 'pnpm exec vitest run', 'pnpm exec jest', 'yarn vitest run', 'yarn jest',
+    'uv run pytest', 'go test ./...', 'node --test', 'pytest'].map((run): [string, Record<string, string>, boolean] => [run, PLAIN, true]),
+  ['jobs:\n  t:\n    steps:\n      - run: |\n          pip install tox\n          tox -e py\n', PLAIN, true],
+  ['jobs:\n  t:\n    steps:\n      - name: test\n        run: >-\n          go test ./...\n', PLAIN, true],
+  ['npm ci && npx jest --ci', PLAIN, true],
+  // Easy wins (#257 review): more ways to start a runner.
+  ...['pnpm vitest', 'pnpm jest', 'npx --yes jest', 'npm exec vitest', 'npm exec -- vitest run', 'poetry run pytest', 'pipenv run pytest', 'coverage run -m pytest', 'poetry run python -m unittest',
+    'CI=true npx vitest run', 'FOO="a b" pytest', 'env CI=1 pytest', 'time go test ./...', 'make tests', 'make -C backend test', '"tox -e py"', "'go test ./...'", '(cd app && go test ./...)',
+    'node --experimental-strip-types --test'].map((run): [string, Record<string, string>, boolean] => [run, PLAIN, true]),
+  // Not a test run: installing a runner, a name that only starts like one, asking a runner its version.
+  ...['pip install tox nox', 'pip install pytest', 'make test-deps', 'yarn jest-junit', 'npm install && jest-preview', 'npx jest --version', 'pytest --help', '# python -m unittest', 'unittest',
+    'echo tox'].map((run): [string, Record<string, string>, boolean] => [run, PLAIN, false]),
+  // Not a run step at all: a job id, a matrix item, a setting, a broken key, a comment.
+  ['jobs:\n  jest:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm ci\n', PLAIN, false],
+  ['jobs:\n  tox:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n', PLAIN, false],
+  ['jobs:\n  t:\n    strategy:\n      matrix:\n        runner:\n          - jest\n          - tox\n    steps:\n      - run: npm ci\n', PLAIN, false],
+  ['jobs:\n  t:\n    with:\n      tox-version: 4\n    steps:\n      - run: echo hi\n', PLAIN, false],
+  ['jobs:\n  t:\n    steps:\n      -run: tox\n', PLAIN, false],
+  ['jobs:\n  t:\n    steps:\n      - run: |\n          # python -m unittest\n          echo skipped\n', PLAIN, false],
+  ['jobs:\n  t:\n    steps:\n      - run: |\n          echo one\n      - name: tox\n        uses: some/action@v1\n', PLAIN, false],
+  // The package.json script.
+  ['npm test', SCRIPT, true],
+  ['npm run test', SCRIPT, true],
+  ['pnpm t', SCRIPT, true],
+  ['npm test', NO_SCRIPT, false],
+  ['npm run test:lint', SCRIPT, false],
+  // Workspaces with no root script: only a command that runs each package's tests.
+  ...['npm test --workspaces', 'npm run test -ws', 'npm test --workspace=app', 'npm -w app test', 'npm run test -w app', 'pnpm -r test', 'pnpm --recursive run test', 'pnpm --filter app test',
+    'pnpm -r --parallel test', 'yarn workspaces run test', 'yarn workspaces foreach -A run test', 'yarn workspaces foreach --all --topological run test']
+    .flatMap((run): [string, Record<string, string>, boolean][] => [[run, NPM_WS, true], [run, PNPM_WS, true]]),
+  ...['npm test', 'pnpm test', 'npm run test:lint', 'npm run test:lint -ws', 'pnpm -r test:lint', 'npm run lint', 'yarn workspaces run test:e2e']
+    .flatMap((run): [string, Record<string, string>, boolean][] => [[run, NPM_WS, false], [run, PNPM_WS, false]]),
+];
+
+test('road: the tests step counts a test command only in a run step, and not a look-alike (#257)', () => {
+  for (const [run, project, done] of TESTS_CASES) {
+    const ci = run.includes('\n') ? { '.github/workflows/ci.yml': run } : workflow(run);
+    assert.equal(testsStep({ ...project, ...ci }).done, done, `${done ? 'done' : 'next'}: ${JSON.stringify(run)} with ${Object.keys(project).join(', ') || 'no package.json'}`);
+  }
 });
 
-test('road: in a workspaces repo, a workflow that runs each package\'s tests is enough, with no root script (#257)', () => {
-  const workspaces = { 'package.json': JSON.stringify({ private: true, workspaces: ['packages/*'] }) };
-  const pnpm = { 'package.json': JSON.stringify({ private: true }), 'pnpm-workspace.yaml': 'packages:\n  - packages/*\n' };
-  for (const run of ['npm test --workspaces', 'npm run test -ws', 'pnpm -r test', 'yarn workspaces run test']) {
-    assert.equal(testsStep({ ...workspaces, ...workflow(run) }).done, true, run);
-    assert.equal(testsStep({ ...pnpm, ...workflow(run) }).done, true, `${run} (pnpm-workspace.yaml)`);
+test('road: the tests step reads a big workflow in linear time (#257)', () => {
+  const mb = 1 << 20;
+  const inputs: [string, string][] = [
+    ['1 MB of newlines', '\n'.repeat(mb)],
+    ['run: and 1 MB of spaces', `run: ${' '.repeat(mb)}`],
+    ['1 MB of blank indented lines', '    \n'.repeat(mb / 5)],
+    ['a run block of 1 MB of blank lines', `      - run: |\n${'\n'.repeat(mb)}`],
+    ['1 MB of semicolons', `- run: ${';'.repeat(mb)}`],
+    ['1 MB of flags', `- run: npm ${'-a '.repeat(mb / 3)}`],
+    ['1 MB of flags with values', `- run: pnpm ${'-a b '.repeat(mb / 5)}`],
+    ['1 MB of variables', `- run: ${'A=b '.repeat(mb / 4)}`],
+  ];
+  for (const [name, ci] of inputs) {
+    for (const workspaces of [false, true]) {
+      const start = performance.now();
+      assert.equal(runsTests(ci, 'vitest run x', workspaces), false, name);
+      const ms = performance.now() - start;
+      assert.ok(ms < 200, `${name}: ${ms.toFixed(0)} ms`);
+    }
   }
-  // Without workspaces, a root with no "test" script runs nothing with npm test.
-  assert.equal(testsStep({ 'package.json': JSON.stringify({ private: true }), ...workflow('npm test') }).done, false);
-  // A lint step is not a test step.
-  assert.equal(testsStep({ ...workspaces, ...workflow('npm run lint') }).done, false);
 });
 
 test('road: the tests step stays next with only a lint step, and says what is missing by project type (#257)', () => {
   const lint = testsStep({ 'package.json': JSON.stringify({ scripts: { lint: 'eslint .' } }), ...workflow('npm run lint') });
   assert.deepEqual(lint, { done: false, what: 'no test command: no "test" script in package.json, and no workflow runs a test runner' });
   const go = testsStep({ 'go.mod': 'module example.com/x\n' });
-  assert.deepEqual(go, { done: false, what: 'no workflow runs the tests (`go test`, …)' });
-  assert.equal(testsStep({ 'pyproject.toml': '[project]\nname = "x"\n' }).what, 'no workflow runs the tests (`pytest`, …)');
-  assert.equal(testsStep({}).what, 'no workflow runs the tests (`go test`, `pytest`, `cargo test`, …)');
+  assert.deepEqual(go, { done: false, what: 'no workflow runs a test command such as `go test`' });
+  assert.equal(testsStep({ 'pyproject.toml': '[project]\nname = "x"\n' }).what, 'no workflow runs a test command such as `pytest`');
+  assert.equal(testsStep({}).what, 'no workflow runs a test command such as `go test`, `pytest` or `cargo test`');
   for (const files of [{ 'go.mod': '' }, { 'pyproject.toml': '' }, {}] as Record<string, string>[]) assert.doesNotMatch(testsStep(files).what, /package\.json/);
+  // A workspaces root with no script: each package's tests, not a root script.
+  assert.equal(testsStep(NPM_WS).what, "no workflow runs each package's tests (e.g. `npm test --workspaces`)");
+  assert.equal(testsStep(PNPM_WS).what, "no workflow runs each package's tests (e.g. `pnpm -r test`)");
+  const tests = ROAD.find((s) => s.key === 'tests');
+  const dir = mkdtempSync(join(tmpdir(), 'yokoten-tests-fix-'));
+  try {
+    writeFileSync(join(dir, 'package.json'), NPM_WS['package.json']);
+    assert.equal(tests?.fix(dir, {}, undefined), 'add a step that runs `npm test --workspaces` to a workflow in .github/workflows');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
