@@ -337,7 +337,8 @@ test('road: the tests step reads a big workflow in linear time (#257)', () => {
       const start = performance.now();
       assert.equal(runsTests(ci, 'vitest run x', workspaces), false, name);
       const ms = performance.now() - start;
-      assert.ok(ms < 200, `${name}: ${ms.toFixed(0)} ms`);
+      // A quadratic read of 1 MB takes minutes; 2 s leaves room for a slow CI runner (#275).
+      assert.ok(ms < 2000, `${name}: ${ms.toFixed(0)} ms`);
     }
   }
 });
