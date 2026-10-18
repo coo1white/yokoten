@@ -52,7 +52,7 @@ export function checkPullRequest(pr: PullRequest, config: Pick<Config, 'tests'> 
   const body = pr.body ?? '';
   const first = body.split(/\r?\n/).find((l) => l.trim()) ?? '';
   if (!/^tier: [ABC]\s*$/.test(first.trim())) {
-    problems.push(finding('pr-tier', 'body: the first line is not a tier', 'make the first line `tier: A`, `tier: B` or `tier: C` (A: secrets, data, install, releases; B: other code; C: docs and wording)'));
+    problems.push(finding('pr-tier', 'body: the first line is not a tier', 'make the first line `tier: A`, `tier: B` or `tier: C` (A: secrets, data, install, releases, files CODEOWNERS owns; B: other code; C: docs and wording)'));
   }
   for (const name of SECTIONS) {
     const text = section(body, name);
@@ -191,4 +191,88 @@ export function checkIssueTitle(title: string, config: Partial<Pick<Config, 'are
   if (/[.。]$/.test(t)) problems.push(finding('issue-title', 'title: a full stop at the end', 'remove the full stop', { why: 'a title is a name, not a sentence' }));
   if (/#\d/.test(t)) problems.push(finding('issue-title', 'title: an issue number', 'remove the number, and name the other issue in the body', { why: 'the host links issues from the body, not from the title' }));
   return problems;
+}
+
+// The owner rule. CODEOWNERS names the paths where a mistake is hard to undo, and the
+// people who must review them. Record 0004's tiers say the same thing from the other
+// side: tier A needs the owner. So a pull request that changes an owned file is tier A.
+// The paths set the lowest tier; the author can raise a tier, never lower it.
+//
+// GitHub's syntax: one pattern and its owners per line, `#` starts a comment, and the
+// last pattern that matches a path wins. A leading `/`, or a `/` inside the pattern,
+// anchors it at the root; otherwise it matches in any folder. A trailing `/` matches a
+// folder and everything in it. `*` stays inside one folder, `**` crosses folders. A
+// pattern with no owners takes a path out of an earlier pattern.
+
+/** One CODEOWNERS line: the pattern as a regular expression, and its owners. */
+export interface OwnerRule {
+  pattern: string;
+  owners: string[];
+  test: (path: string) => boolean;
+}
+
+/** The regular expression for one CODEOWNERS pattern. */
+function ownerPattern(raw: string): RegExp {
+  const folder = raw.endsWith('/');
+  const body = raw.replace(/^\//, '').replace(/\/$/, '');
+  const anchored = raw.startsWith('/') || body.includes('/');
+  let re = '';
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c === '*' && body[i + 1] === '*') {
+      if (body[i + 2] === '/') {
+        re += '(?:.*/)?';
+        i += 2;
+      } else {
+        re += '.*';
+        i += 1;
+      }
+    } else if (c === '*') re += '[^/]*';
+    else if (c === '?') re += '[^/]';
+    else re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  }
+  // `docs/*` matches the files in docs/ and not deeper (GitHub's documented case).
+  const end = folder ? '/.*' : /(^|\/)\*$/.test(body) && body !== '*' ? '' : '(?:/.*)?';
+  return new RegExp(`^${anchored ? '' : '(?:.*/)?'}${re}${end}$`);
+}
+
+/** The rules in a CODEOWNERS file, in order. */
+export function parseCodeOwners(text: string): OwnerRule[] {
+  const rules: OwnerRule[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.replace(/(^|\s)#.*$/, '').trim();
+    if (!line) continue;
+    const [pattern, ...owners] = line.split(/\s+/);
+    const re = ownerPattern(pattern);
+    rules.push({ pattern, owners, test: (p) => re.test(p) });
+  }
+  return rules;
+}
+
+/** The owners of a path: the last rule that matches wins. An empty list means nobody. */
+export function ownersOf(rules: OwnerRule[], path: string): string[] {
+  let owners: string[] = [];
+  for (const rule of rules) if (rule.test(path)) owners = rule.owners;
+  return owners;
+}
+
+/** Where a CODEOWNERS file was read from: the base branch in CI, the working tree on a local run. */
+export interface CodeOwners {
+  text: string;
+  from: 'the base branch' | 'the working tree';
+}
+
+/**
+ * A failure when a pull request changes a file that CODEOWNERS owns and its tier is B or
+ * C, else null. No CODEOWNERS file, or no tier line (pr-tier reports that), passes.
+ */
+export function checkOwnedTier(pr: Pick<PullRequest, 'body' | 'files'>, codeOwners: CodeOwners | null): Finding | null {
+  if (!codeOwners) return null;
+  const tier = /^tier: ([ABC])\s*$/.exec((pr.body ?? '').split(/\r?\n/).find((l) => l.trim())?.trim() ?? '')?.[1];
+  if (!tier || tier === 'A') return null;
+  const rules = parseCodeOwners(codeOwners.text);
+  const owned = pr.files.filter((f) => ownersOf(rules, f).length);
+  if (!owned.length) return null;
+  const shown = owned.slice(0, 5).join(', ') + (owned.length > 5 ? `, and ${owned.length - 5} more` : '');
+  return finding('pr-owned', `body: \`tier: ${tier}\`, and this changes ${owned.length} file(s) that CODEOWNERS owns (read from ${codeOwners.from}): ${shown}`, 'make the first line `tier: A`');
 }
