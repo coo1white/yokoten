@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { generateKeyPairSync, verify } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -6,8 +7,10 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { appJwt, botConfig, botEnv, type Gh, installationToken, repoOf } from '../src/host/github.ts';
+import { appJwt, botConfig, botEnv, type Gh, installationToken, readServer, repoOf, type ServerSettings, type Unread } from '../src/host/github.ts';
+import { DEFAULTS } from '../src/rules/config.ts';
 import { checkCommand } from '../src/rules/guards.ts';
+import { doctor, serverChecks } from '../src/setup/doctor.ts';
 import { LABELS, setUpPlanning } from '../src/setup/plan.ts';
 
 // A throwaway key, made for this test run only.
@@ -128,4 +131,111 @@ test('planning: gh missing or signed out is said, not thrown (#10)', () => {
   assert.match(missing.lines[0], /^GitHub: gh is not installed/);
   const out = setUpPlanning(() => { throw new Error('exit 4'); }, true);
   assert.match(out.lines[0], /run `gh auth login`/);
+});
+
+// The server settings (#7), read through a fake gh. Each route is an API path; a missing
+// route answers 404, as GitHub does. The real gh is never run.
+const R = 'octo/demo';
+const said = (code: number) => Object.assign(new Error('gh failed'), { stderr: `gh: request failed (HTTP ${code})\n` });
+const GOOD: Record<string, unknown> = {
+  [`repos/${R}`]: {
+    default_branch: 'main',
+    allow_squash_merge: true,
+    allow_merge_commit: false,
+    allow_rebase_merge: false,
+    delete_branch_on_merge: true,
+    security_and_analysis: { secret_scanning: { status: 'enabled' }, secret_scanning_push_protection: { status: 'enabled' } },
+  },
+  [`repos/${R}/rules/branches/main`]: [
+    { type: 'pull_request', parameters: { require_code_owner_review: true, allowed_merge_methods: ['squash'] } },
+    { type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'ci' }] } },
+    { type: 'non_fast_forward' },
+    { type: 'deletion' },
+  ],
+  [`repos/${R}/rulesets?targets=tag&includes_parents=true&per_page=100`]: [{ id: 7, target: 'tag', enforcement: 'active' }],
+  [`repos/${R}/rulesets/7`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'creation' }, { type: 'update' }, { type: 'deletion' }] },
+  [`repos/${R}/private-vulnerability-reporting`]: { enabled: true },
+  [`repos/${R}/vulnerability-alerts`]: '',
+  [`repos/${R}/pulls?state=open&per_page=100`]: 'octo:feat/a\nsomeone:main\n',
+  [`repos/${R}/branches?per_page=100`]: 'main\nfeat/a\nold/b\n',
+};
+
+function serverGh(routes: Record<string, unknown>) {
+  const calls: string[][] = [];
+  const gh: Gh = (args) => {
+    calls.push(args);
+    const route = routes[args.find((a) => a.startsWith('repos/')) ?? ''];
+    if (route instanceof Error) throw route;
+    if (route === undefined) throw said(404);
+    return typeof route === 'string' ? route : JSON.stringify(route);
+  };
+  return { gh, calls };
+}
+
+const marks = (s: ServerSettings | Unread) => Object.fromEntries(serverChecks(s).map((c) => [c.id, c.mark]));
+
+test('server: a repo with every setting on is ok, and doctor only reads (#7)', () => {
+  const f = serverGh(GOOD);
+  const s = readServer(f.gh, R);
+  assert.deepEqual(marks(s), {
+    'main-rules': 'ok', 'required-checks': 'ok', 'code-owner-review': 'ok', 'squash-only': 'ok',
+    'delete-branch': 'ok', 'tag-rules': 'ok', 'security-switches': 'ok', 'forgotten-branches': 'note',
+  });
+  const note = serverChecks(s).find((c) => c.id === 'forgotten-branches');
+  assert.match(note?.finding.what ?? '', /^1 branch\(es\) with no open pull request \(old\/b\)$/, 'a branch of a fork with the same name does not count');
+  assert.match(note?.finding.fix ?? '', /never deletes/);
+  for (const c of f.calls) {
+    assert.equal(c[0], 'api', c.join(' '));
+    assert.ok(!c.some((a) => /^(-X|--method|-f|-F|--field|--raw-field|--input)$/.test(a)), `a write: ${c.join(' ')}`);
+  }
+});
+
+test('server: each setting off is MISSING, with what and the fix (#7)', () => {
+  const routes = {
+    ...GOOD,
+    [`repos/${R}`]: { default_branch: 'trunk', allow_squash_merge: true, allow_merge_commit: true, allow_rebase_merge: false, delete_branch_on_merge: false, security_and_analysis: { secret_scanning: { status: 'disabled' } } },
+    [`repos/${R}/rules/branches/trunk`]: [{ type: 'pull_request', parameters: {} }],
+    [`repos/${R}/rulesets/7`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'deletion' }] },
+    [`repos/${R}/private-vulnerability-reporting`]: { enabled: false },
+    [`repos/${R}/vulnerability-alerts`]: undefined,
+    [`repos/${R}/branches?per_page=100`]: 'trunk\nfeat/a\n',
+  };
+  const checks = serverChecks(readServer(serverGh(routes).gh, R));
+  const by = (id: string) => checks.find((c) => c.id === id);
+  for (const id of ['main-rules', 'required-checks', 'code-owner-review', 'squash-only', 'delete-branch', 'tag-rules', 'security-switches']) assert.equal(by(id)?.mark, 'MISSING', id);
+  assert.equal(by('forgotten-branches'), undefined, 'no note when every branch has a pull request');
+  assert.equal(by('main-rules')?.finding.what, 'the default branch (trunk) has no rule for no force push, no deletion');
+  assert.equal(by('security-switches')?.finding.what, 'secret scanning, private vulnerability reporting, Dependabot alerts are off', 'push protection is unknown, not off');
+});
+
+test("server: gh missing, signed out or refused is \"can't check\" with the fix, never a crash (#7)", () => {
+  const missing = readServer(() => { throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }); }, R);
+  assert.deepEqual(serverChecks(missing).map((c) => [c.id, c.mark, c.finding.what]), [['server-settings', "can't check", "can't check: gh is not installed"]]);
+  assert.match(serverChecks(readServer(() => { throw said(401); }, R))[0].finding.fix, /`gh auth login`/);
+  // A free private repo, read by someone who is not an admin: rulesets refused, settings hidden.
+  const refused = { ...GOOD, [`repos/${R}`]: { default_branch: 'main' }, [`repos/${R}/rules/branches/main`]: said(403), [`repos/${R}/rulesets?targets=tag&includes_parents=true&per_page=100`]: said(403), [`repos/${R}/private-vulnerability-reporting`]: said(403), [`repos/${R}/vulnerability-alerts`]: undefined };
+  const checks = serverChecks(readServer(serverGh(refused).gh, R));
+  for (const id of ['main-rules', 'required-checks', 'code-owner-review', 'squash-only', 'delete-branch', 'tag-rules', 'security-switches']) {
+    assert.equal(checks.find((c) => c.id === id)?.mark, "can't check", id);
+  }
+  assert.match(checks.find((c) => c.id === 'tag-rules')?.finding.fix ?? '', /GitHub Pro/);
+  assert.match(checks.find((c) => c.id === 'delete-branch')?.finding.what ?? '', /only a repo admin/);
+});
+
+test('doctor: reads the server of a GitHub origin; a MISSING setting fails, a note does not (#7)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'yokoten-server-'));
+  execFileSync('git', ['init', '-q', root]);
+  const run = (routes: Record<string, unknown>) => doctor(root, { env: { HOME: root }, config: DEFAULTS, gh: serverGh(routes).gh });
+  let r = run(GOOD);
+  assert.match(r.lines.join('\n'), /^ {2}can't check server-settings: can't check: the origin remote is not on a host yokoten knows/m);
+  assert.ok(r.lines.some((l) => /secret scanning with push protection/.test(l)), 'the by-hand list when nothing is read');
+  execFileSync('git', ['remote', 'add', 'origin', `https://github.com/${R}.git`], { cwd: root });
+  r = run(GOOD);
+  assert.ok(r.lines.includes('  ok          main-rules'));
+  assert.ok(r.report.notes?.some((n) => n.id === 'forgotten-branches'));
+  assert.ok(!r.report.findings.some((f) => f.id.startsWith('server') || f.id === 'main-rules'));
+  r = run({ ...GOOD, [`repos/${R}/rules/branches/main`]: [] });
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.report.server?.find((s) => s.id === 'main-rules'), { id: 'main-rules', mark: 'MISSING' });
+  assert.ok(r.report.findings.some((f) => f.id === 'required-checks'));
 });

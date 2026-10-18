@@ -13,9 +13,18 @@ All notable changes are listed here. The format follows
   `--yes` it only says what it would make. It keeps what is there and deletes nothing.
   `init` now refuses an unknown option (#10).
 - The secret check catches Meta Model API keys (`LLM_` with an app id and a secret) (#68).
+- Full `doctor` reads the server settings through `gh` and reports each as ok, missing
+  or can't check: the rules on the default branch, the required CI check, code owner
+  review, squash only, delete branch on merge, the tag ruleset on `v*` and the security
+  switches. It notes branches with no open pull request. It only reads, and never
+  changes a setting. When `gh` is missing, signed out or refused, it says how to fix
+  that and goes on. A missing setting makes `doctor` exit 1 (#7).
 
 ### Changed
 
+- `doctor --json` gives `server` as a list of `{ id, mark }` (it was a list of text) (#7).
+- The pull request check counts `Part of #N` as a linked issue. Only `Closes`, `Fixes`
+  and `Resolves` close it (#82).
 - The CI workflow `init` writes has one required check, `ci`. It waits for every other
   job and fails if one of them fails. A new `lint` job runs actionlint and zizmor on the
   workflows. Each job gets only the permissions it names. Make `ci` the required check
