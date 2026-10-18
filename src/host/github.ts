@@ -146,3 +146,183 @@ export function readIssue(env: Env): { title: string; labels: string[] } | null 
   if (!issue || issue.pull_request) return null;
   return { title: issue.title ?? '', labels: (issue.labels ?? []).map((l) => l.name ?? '').filter(Boolean) };
 }
+
+// The planning setup (#10): labels and milestones, read and made through `gh`, so
+// yokoten uses the owner's own sign-in and holds no token. `Gh` runs one gh command and
+// returns its stdout; it throws when gh fails. Tests pass a fake, so they never reach GitHub.
+
+export type Gh = (args: string[]) => string;
+
+/** Runs the real gh in `cwd`. */
+export const ghIn =
+  (cwd: string): Gh =>
+  (args) =>
+    execFileSync('gh', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+
+export interface Planning {
+  /** "owner/name". */
+  repo: string;
+  labels: string[];
+  milestones: { title: string; open: boolean }[];
+}
+
+/** The repo's labels and milestones, or the reason gh can't read them. */
+export function readPlanning(gh: Gh): Planning | string {
+  let repo: string;
+  try {
+    repo = gh(['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner']).trim();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'gh is not installed: get it from https://cli.github.com, then run `gh auth login`';
+    return 'gh can\'t read this repo: run `gh auth login`, and check that the origin remote is on GitHub';
+  }
+  const lines = (text: string) => text.split('\n').filter(Boolean);
+  const labels = lines(gh(['label', 'list', '--limit', '1000', '--json', 'name', '--jq', '.[].name']));
+  const milestones = lines(gh(['api', '--paginate', `repos/${repo}/milestones?state=all&per_page=100`, '--jq', '.[] | "\\(.state) \\(.title)"'])).map((l) => {
+    const [state, ...title] = l.split(' ');
+    return { title: title.join(' '), open: state === 'open' };
+  });
+  return { repo, labels, milestones };
+}
+
+export function createLabel(gh: Gh, label: { name: string; color: string; description: string }): void {
+  gh(['label', 'create', label.name, '--color', label.color, '--description', label.description]);
+}
+
+export function createMilestone(gh: Gh, repo: string, title: string): void {
+  gh(['api', '--method', 'POST', `repos/${repo}/milestones`, '-f', `title=${title}`]);
+}
+
+// The server settings (#7): what the owner sets once per repo, read through `gh api`.
+// Read only: nothing here changes a setting. A part gh can't read is an `Unread`, never
+// a crash, so doctor says it could not check and goes on.
+
+/** Why a part could not be read, and what to do. */
+export interface Unread {
+  unread: string;
+  fix: string;
+}
+
+/** The rules that apply to the default branch, from every active ruleset. */
+export interface BranchRules {
+  pullRequest: boolean;
+  codeOwnerReview: boolean;
+  /** Merge methods the rules allow; empty when they do not limit them. */
+  mergeMethods: string[];
+  requiredChecks: string[];
+  noForcePush: boolean;
+  noDeletion: boolean;
+}
+
+/** Each security switch: on, off, or null when gh can't see it. */
+export interface Security {
+  secretScanning: boolean | null;
+  pushProtection: boolean | null;
+  privateReporting: boolean | null;
+  dependabotAlerts: boolean | null;
+}
+
+export interface ServerSettings {
+  repo: string;
+  defaultBranch: string;
+  /** Merge methods the repo allows, or null without admin rights. */
+  mergeMethods: string[] | null;
+  deleteBranchOnMerge: boolean | null;
+  branch: BranchRules | Unread;
+  /** A ruleset on v* tags limits creation, update and deletion. */
+  tags: boolean | Unread;
+  security: Security;
+  /** Branches with no open pull request, apart from the default branch. */
+  forgotten: string[] | Unread;
+}
+
+/** Why gh failed, in words a beginner can act on. */
+export function unread(err: unknown): Unread {
+  if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { unread: 'gh is not installed', fix: 'get it from https://cli.github.com, then run `gh auth login`' };
+  const said = String((err as { stderr?: string }).stderr || (err as Error).message);
+  if (/HTTP 401|gh auth login|not logged in/i.test(said)) return { unread: 'gh is not signed in', fix: 'run `gh auth login`' };
+  if (/HTTP 40[34]/.test(said)) return { unread: 'GitHub said no (403 or 404)', fix: 'sign in to gh as a repo admin; on a private repo, rulesets need GitHub Pro' };
+  return { unread: 'gh could not reach GitHub', fix: 'check the network, then run doctor again' };
+}
+
+type Rule = { type?: string; parameters?: Record<string, unknown> };
+type Ruleset = { id?: number; target?: string; enforcement?: string; conditions?: { ref_name?: { include?: string[] } }; rules?: Rule[] };
+
+/** The server settings of `repo` ("owner/name"), or why gh can't read the repo at all. */
+export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
+  const api = <T>(path: string): T => JSON.parse(gh(['api', path]) || 'null') as T;
+  const lines = (path: string, jq: string) => gh(['api', '--paginate', path, '--jq', jq]).split('\n').filter(Boolean);
+  const attempt = <T>(read: () => T): T | Unread => {
+    try {
+      return read();
+    } catch (err) {
+      return unread(err);
+    }
+  };
+  type Repo = {
+    default_branch?: string;
+    allow_squash_merge?: boolean;
+    allow_merge_commit?: boolean;
+    allow_rebase_merge?: boolean;
+    delete_branch_on_merge?: boolean;
+    security_and_analysis?: Record<string, { status?: string } | undefined>;
+  };
+  const info = attempt(() => api<Repo>(`repos/${repo}`));
+  if ('unread' in info) return info;
+  const defaultBranch = info.default_branch ?? 'main';
+  // GitHub sends the merge settings only to an admin.
+  const methods: [string, boolean | undefined][] = [['squash', info.allow_squash_merge], ['merge', info.allow_merge_commit], ['rebase', info.allow_rebase_merge]];
+  const mergeMethods = methods.some(([, on]) => on === undefined) ? null : methods.filter(([, on]) => on).map(([name]) => name);
+
+  const branch = attempt((): BranchRules => {
+    const rules = api<Rule[]>(`repos/${repo}/rules/branches/${encodeURIComponent(defaultBranch)}`) ?? [];
+    const of = (type: string) => rules.filter((r) => r.type === type);
+    const pr = of('pull_request').map((r) => r.parameters ?? {});
+    return {
+      pullRequest: pr.length > 0,
+      codeOwnerReview: pr.some((p) => p.require_code_owner_review === true),
+      mergeMethods: [...new Set(pr.flatMap((p) => (Array.isArray(p.allowed_merge_methods) ? (p.allowed_merge_methods as string[]) : [])))],
+      requiredChecks: of('required_status_checks').flatMap((r) => ((r.parameters?.required_status_checks ?? []) as { context?: string }[]).map((c) => c.context ?? '')).filter(Boolean),
+      noForcePush: of('non_fast_forward').length > 0,
+      noDeletion: of('deletion').length > 0,
+    };
+  });
+
+  const tags = attempt(() => {
+    const sets = api<Ruleset[]>(`repos/${repo}/rulesets?targets=tag&includes_parents=true&per_page=100`) ?? [];
+    return sets
+      .filter((s) => s.target === 'tag' && s.enforcement === 'active' && s.id !== undefined)
+      .map((s) => api<Ruleset>(`repos/${repo}/rulesets/${s.id}`))
+      .some((s) => {
+        const include = s.conditions?.ref_name?.include ?? [];
+        const types = new Set((s.rules ?? []).map((r) => r.type));
+        return include.some((p) => ['~ALL', 'refs/tags/v*', 'v*'].includes(p)) && ['creation', 'update', 'deletion'].every((t) => types.has(t));
+      });
+  });
+
+  // security_and_analysis is sent only to an admin; without it, a switch is unknown.
+  const sa = info.security_and_analysis;
+  const status = (key: string) => (sa?.[key]?.status ? sa[key]?.status === 'enabled' : null);
+  const reporting = attempt(() => api<{ enabled?: boolean }>(`repos/${repo}/private-vulnerability-reporting`)?.enabled === true);
+  // 204 when on, 404 when off; but 404 also means "not allowed to see", so only an admin learns "off".
+  let alerts: boolean | null = null;
+  try {
+    gh(['api', `repos/${repo}/vulnerability-alerts`]);
+    alerts = true;
+  } catch (err) {
+    if (sa && /HTTP 404/.test(String((err as { stderr?: string }).stderr || (err as Error).message))) alerts = false;
+  }
+  const security: Security = {
+    secretScanning: status('secret_scanning'),
+    pushProtection: status('secret_scanning_push_protection'),
+    privateReporting: typeof reporting === 'boolean' ? reporting : null,
+    dependabotAlerts: alerts,
+  };
+
+  const forgotten = attempt(() => {
+    const open = new Set(lines(`repos/${repo}/pulls?state=open&per_page=100`, '.[].head.label'));
+    const owner = repo.split('/')[0];
+    return lines(`repos/${repo}/branches?per_page=100`, '.[].name').filter((b) => b !== defaultBranch && !open.has(`${owner}:${b}`));
+  });
+
+  return { repo, defaultBranch, mergeMethods, deleteBranchOnMerge: info.delete_branch_on_merge ?? null, branch, tags, security, forgotten };
+}

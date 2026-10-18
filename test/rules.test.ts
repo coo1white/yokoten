@@ -10,7 +10,7 @@ import { type Finding, formatFinding, RULES } from '../src/rules/message.ts';
 import { POSITIVE_CONTROL, scanText } from '../src/rules/privacy.ts';
 import { SECRET_CONTROL } from '../src/rules/secrets.ts';
 import { timeZoneNote } from '../src/run/check.ts';
-import { agentHooks, machineChecks } from '../src/setup/doctor.ts';
+import { agentHooks, machineChecks, serverChecks } from '../src/setup/doctor.ts';
 import { explain, ids } from '../src/setup/explain.ts';
 import { ROAD, stepFinding } from '../src/setup/road.ts';
 import { changedLines, checkIssueTitle, checkPullRequest, largeDiff, longSentenceNote, longSentences, type PullRequest } from '../src/rules/pr.ts';
@@ -101,6 +101,15 @@ test('pull request: each missing part fails with what to do (#47)', () => {
   one({ milestone: null }, /^milestone:/);
   one({ labels: [] }, /^labels:/);
   one({ files: ['kit/project/AGENTS.md', 'CHANGELOG.md'] }, /changes `kit\/`/);
+});
+
+test('pull request: Closes, Fixes, Part of and Refs each link the issue (#82)', () => {
+  for (const link of ['Closes #47', 'Fixes #47', 'Part of #47', 'part of #47', 'Refs #47']) {
+    assert.deepEqual(checkPullRequest({ ...goodPr(), body: goodPr().body.replace('Closes #47', link) }, DEFAULTS), [], link);
+  }
+  for (const link of ['Part of 47', 'Partly #47', 'See #47']) {
+    assert.deepEqual(checkPullRequest({ ...goodPr(), body: goodPr().body.replace('Closes #47', link) }, DEFAULTS).map((p) => p.id), ['pr-issue'], link);
+  }
 });
 
 test('pull request: docs, tests and CI need no changelog line; a reason lets code through (#47)', () => {
@@ -201,6 +210,11 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
   for (const step of ROAD) add(stepFinding(step, dir, { HOME: dir }));
   for (const c of [...agentHooks(dir), ...machineChecks({ HOME: dir, YOKOTEN_PRIVATE_MARKS: join(dir, 'none') })]) add(c.finding);
+  // The server, with every setting off, and with nothing readable.
+  const off = { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false };
+  const security = { secretScanning: false, pushProtection: false, privateReporting: false, dependabotAlerts: false };
+  const server = { repo: 'octo/demo', defaultBranch: 'main', mergeMethods: ['merge', 'squash'], deleteBranchOnMerge: false, branch: off, tags: false, security, forgotten: ['old'] };
+  for (const c of [...serverChecks(server), ...serverChecks({ unread: 'gh is not installed', fix: 'get it' })]) add(c.finding);
 
   const known = new Set(ids());
   for (const f of found) {

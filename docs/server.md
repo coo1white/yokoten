@@ -4,6 +4,9 @@ The guards on your machine catch mistakes. The server is the lock: these setting
 even when a hook is off or a command slips past the guard. Do them once per repo. All
 steps are in the GitHub web UI and take about fifteen minutes.
 
+Then run `yokoten doctor`. It reads these settings through `gh` and says which ones are
+missing. It never changes a setting.
+
 ## 1. Protect `main`
 
 Settings → Rules → Rulesets → New branch ruleset.

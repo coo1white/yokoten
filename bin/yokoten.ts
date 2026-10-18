@@ -5,7 +5,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
-import { botConfig, botEnv, installationToken, readIssue, readPullRequest, repoOf } from '../src/host/github.ts';
+import { botConfig, botEnv, ghIn, installationToken, readIssue, readPullRequest, repoOf } from '../src/host/github.ts';
 import { check, checkHistory, gitRoot, historyTimeZones, timeZoneNote } from '../src/run/check.ts';
 import * as claudeCode from '../src/agents/claude-code.ts';
 import * as codex from '../src/agents/codex.ts';
@@ -19,11 +19,15 @@ import { explain, explainLines, ids } from '../src/setup/explain.ts';
 import { VERSION } from '../src/setup/files.ts';
 import { init } from '../src/setup/init.ts';
 import { install } from '../src/setup/install.ts';
+import { setUpPlanning } from '../src/setup/plan.ts';
 
 const HELP = `yokoten ${VERSION}
 
   yokoten install            skills, agents and user-level hooks for this machine
   yokoten init [dir]         put the practices into a project (adds only, never overwrites)
+  yokoten init --github [--yes]
+                             also the standard labels and a first milestone on GitHub, through
+                             gh; without --yes it only says what it would make
   yokoten doctor [--session] the road: where this project is and its next step (--session:
                              only the next step), and what this machine is missing
   yokoten check [--staged]   layout, privacy and lead-only files (--staged: the next commit)
@@ -225,7 +229,7 @@ function main(): number | Promise<number> {
       const session = a.flags.has('--session');
       const root = rootOf(process.cwd());
       const config = root ? loadConfig(root) : DEFAULTS;
-      const { ok, lines, report } = doctor(root, { env, config, session });
+      const { ok, lines, report } = doctor(root, { env, config, session, gh: root ? ghIn(root) : undefined });
       if (a.flags.has('--json')) printJson(report);
       else print(lines);
       // A session must start even when a project has steps left.
@@ -242,9 +246,20 @@ function main(): number | Promise<number> {
       return found ? 0 : 1;
     }
     case 'init': {
-      const dir = resolve(args.find((a) => !a.startsWith('-')) ?? '.');
-      print(init(rootOf(dir) ?? dir));
-      return 0;
+      const a = parse({ flags: ['--github', '--yes'], positional: 1 });
+      if (typeof a === 'string') return usage(a);
+      if (a.flags.has('--yes') && !a.flags.has('--github')) return usage('--yes goes with --github');
+      const dir = resolve(a.positional[0] ?? '.');
+      const root = rootOf(dir) ?? dir;
+      print(init(root));
+      // The host is changed only when asked (#10): it is a remote, and other people see it.
+      if (!a.flags.has('--github')) {
+        print(['GitHub labels and a milestone: run `yokoten init --github` to see what it would make']);
+        return 0;
+      }
+      const planning = setUpPlanning(ghIn(root), a.flags.has('--yes'));
+      print(planning.lines, planning.ok ? process.stdout : process.stderr);
+      return planning.ok ? 0 : 1;
     }
     case 'bot':
       return bot(args.slice(args.indexOf('--') === -1 ? 0 : args.indexOf('--') + 1));

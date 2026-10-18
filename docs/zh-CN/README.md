@@ -67,13 +67,24 @@ AI 想闯大祸时，桥头有人守着。
 
 经验也不会只留在一个地方。一个项目吃过的亏，yokoten 会提醒别的项目先补上。这就是「横展」的意思。
 
-| 什么时候 | 做什么 | 在这里看 |
-|---|---|---|
-| **现在，2026 年 10 月 26 日前** | `doctor` 带你一关一关走；发版流程；检查 GitHub 设置；`npx yokoten`；Codex 和 Gemini CLI 也能拦住危险操作 | [M0](https://github.com/coo1white/yokoten/milestone/1) |
-| **Meta 黑客松，10 月 26 日 – 11 月 3 日** | 一个能读懂老项目、起草接入方案的 agent；支持 Muse Code | [M1](https://github.com/coo1white/yokoten/milestone/2) |
-| **之后** | Gitea 等其他代码托管平台；大改动前先写一份简短的方案；拿 OpenSSF Best Practices 徽章，公开证明做到了 | [issue](https://github.com/coo1white/yokoten/issues) |
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../assets/road-dark.svg">
+  <img src="../assets/road-light.svg" width="100%" alt="一条路沿着山往上爬，经过三站：现在、黑客松、下一步。快到山顶时，别的项目的小路汇进来。山顶插着一面旗，写着梦想：人人都能像好团队那样做软件。">
+</picture>
+</p>
 
-每一步都公开规划。今天在做什么，[看板](https://github.com/users/coo1white/projects/1)上都有。
+| 阶段 | 名字 | 意思 | 现在 |
+|---|---|---|---|
+| 1 | **守桥** | AI agent 做危险操作之前就被拦下：force push、改测试让它通过、泄露隐私 | ✅ 已完成 |
+| 2 | **带路** | 新手跟着 `doctor` 走完五关，一次只做一件事；agent 读懂老项目，起草接入 yokoten 的方案 | 🚧 正在做，黑客松前后 |
+| 3 | **任何工具，任何平台** | Claude Code、Codex、Gemini CLI 和 Muse Code 守同一套规则；GitHub、Gitea、GitLab 都能用 | 下一步 |
+| 4 | **完整的循环** | 从一份简短的方案开始，到开发、测试、审查、发版、维护，整个 SDLC 每一步都有人带路 | 之后 |
+| 5 | **横展** | 一个项目学到的教训，变成一条检查；这条检查推广到所有项目。一个人学到的，大家都能用上 | 目标 |
+
+「横展」这个词来自丰田的工厂：一条产线学到的教训（lessons learned），推广到所有产线。yokoten 的名字就是从这里来的。
+
+近期要做的事在 [M0](https://github.com/coo1white/yokoten/milestone/1) 和 [M1](https://github.com/coo1white/yokoten/milestone/2) 里，[看板](https://github.com/users/coo1white/projects/1)上能看到今天在做什么。
 
 ## 快速开始
 
@@ -93,9 +104,6 @@ node ~/.local/share/yokoten/bin/yokoten.ts init      # 每个项目做一次
 - **[使用指南](guide.md)**：12 条规则、所有命令、它怎么工作，还有它做不到的事。
 - **[服务器设置](../server.md)**：在 GitHub 上保护 `main` 分支和发版 tag（英文）。
 - **[决定记录](../records/)**：为什么这样做（英文）。
-
-「横展」是丰田工厂的说法：一条产线找到了缺陷的对策，所有可能出同样问题的产线都跟着改。
-yokoten 把这件事搬到你的项目上：一个项目踩过的坑，它会提醒别的项目先填上。
 
 ---
 

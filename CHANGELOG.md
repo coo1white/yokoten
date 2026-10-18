@@ -8,15 +8,34 @@ All notable changes are listed here. The format follows
 
 ### Added
 
+- `yokoten init --github` adds the standard labels (bug, feat, docs, refactor, ci,
+  owner, incident, good first issue, hotfix) and a first milestone, through `gh`. Without
+  `--yes` it only says what it would make. It keeps what is there and deletes nothing.
+  `init` now refuses an unknown option (#10).
 - The secret check catches Meta Model API keys (`LLM_` with an app id and a secret) (#68).
 - A release flow for every project. `init` adds a `CHANGELOG.md` with an
   `[Unreleased]` section when the project has none. The new `release` skill picks the
   next version from the changelog, before 1.0 and after. It prepares the release pull
   request; only the owner creates the tag. Kit change: every project gets the changelog
   on its next `init`, and the skill on the next `install` (#34).
+- Full `doctor` reads the server settings through `gh` and reports each as ok, missing
+  or can't check: the rules on the default branch, the required CI check, code owner
+  review, squash only, delete branch on merge, the tag ruleset on `v*` and the security
+  switches. It notes branches with no open pull request. It only reads, and never
+  changes a setting. When `gh` is missing, signed out or refused, it says how to fix
+  that and goes on. A missing setting makes `doctor` exit 1 (#7).
 
 ### Changed
 
+- `doctor --json` gives `server` as a list of `{ id, mark }` (it was a list of text) (#7).
+- The pull request check counts `Part of #N` as a linked issue. Only `Closes`, `Fixes`
+  and `Resolves` close it (#82).
+- The CI workflow `init` writes has one required check, `ci`. It waits for every other
+  job and fails if one of them fails. A new `lint` job runs actionlint and zizmor on the
+  workflows. Each job gets only the permissions it names. Make `ci` the required check
+  in place of `check`. Delete the old file and run `init` again to get it (#36).
+- yokoten's own CI tests on Node 22.18.0 and 24 on Linux, and on Node 24 on macOS. A
+  test holds that `ci` waits for every job and that checkout keeps no token (#36).
 - Every message has three parts: what happened, why it matters, and the fix. Most
   lines keep their words and gain the missing part. Some are reworded. A full folder
   reads `docs/: 9 entries, over the cap of 7: ...` (was `docs/ has 9 entries ...`). A

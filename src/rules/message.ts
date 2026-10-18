@@ -30,6 +30,7 @@ export interface Rule {
 
 const RELEASE_WHY = 'only the owner decides when to release';
 const PR_CHECK = '`yokoten check --pr` in CI reads the pull request';
+const SERVER_CHECK = 'full `doctor` reads it from the code host (for GitHub, with your `gh` sign-in), when the origin remote is on a host yokoten knows';
 
 /**
  * Every rule a check or a guard reports, by id. Step ids (the road) are in
@@ -195,6 +196,51 @@ export const RULES = {
     rule: 'this machine has a private-marks file with at least one line',
     why: 'without your marks, the privacy check knows only email addresses, IP addresses and secrets',
     check: '`doctor` reads ~/.config/yokoten/private-marks (or YOKOTEN_PRIVATE_MARKS) and counts its lines',
+  },
+  'server-settings': {
+    rule: 'doctor reads the settings the owner sets on the server, and never changes them',
+    why: 'the server is the lock: its settings hold even when a hook is off',
+    check: `${SERVER_CHECK}; a part it can't read shows as "can't check", with the fix`,
+  },
+  'main-rules': {
+    rule: 'a ruleset on the default branch requires a pull request and blocks force pushes and deletion (core rules 2 and 7)',
+    why: 'without it, one push can change or delete main with no review',
+    check: SERVER_CHECK,
+  },
+  'required-checks': {
+    rule: 'the ruleset on the default branch names the CI checks that must pass (core rule 2)',
+    why: 'without a named check, a pull request can merge while CI is red',
+    check: SERVER_CHECK,
+  },
+  'code-owner-review': {
+    rule: 'the ruleset on the default branch requires review from the code owners',
+    why: 'then you review every pull request an agent opens before it merges',
+    check: SERVER_CHECK,
+  },
+  'squash-only': {
+    rule: 'pull requests merge by squash only (core rule 8)',
+    why: 'one pull request becomes one commit on main, with its title as the message',
+    check: `${SERVER_CHECK}: the repo settings, or the merge methods the ruleset allows`,
+  },
+  'delete-branch': {
+    rule: 'the host deletes a branch when its pull request merges',
+    why: 'merged branches pile up, and nobody can tell which ones are still in use',
+    check: SERVER_CHECK,
+  },
+  'tag-rules': {
+    rule: 'a ruleset on v* tags limits who creates, moves or deletes a release tag (core rule 3)',
+    why: 'only the owner decides when to release, whatever an agent\'s token can do',
+    check: `${SERVER_CHECK}: an active tag ruleset on v* with creation, update and deletion restricted`,
+  },
+  'security-switches': {
+    rule: 'secret scanning, push protection, private vulnerability reporting and Dependabot alerts are on',
+    why: 'the host then stops a pushed secret, and people can report a hole in private',
+    check: `${SERVER_CHECK}; some switches are visible only to a repo admin`,
+  },
+  'forgotten-branches': {
+    rule: 'every branch on the server has an open pull request, or is deleted by its owner',
+    why: 'a forgotten branch holds work nobody is looking at',
+    check: `${SERVER_CHECK}; a note only, and doctor never deletes a branch`,
   },
 } satisfies Record<string, Rule>;
 

@@ -59,8 +59,9 @@ export function checkPullRequest(pr: PullRequest, config: Pick<Config, 'tests'> 
     if (text === null) problems.push(finding('pr-section', `body: no \`## ${name}\` section`, `add a \`## ${name}\` section`));
     else if (!text || /^<[^>]*>$/.test(text)) problems.push(finding('pr-section', `body: the \`## ${name}\` section is empty`, 'fill it in'));
   }
-  if (!/\b(closes|fixes|resolves|refs) #\d+/i.test(body)) {
-    problems.push(finding('pr-issue', 'body: no linked issue', 'link the issue with `Closes #N`, or `Refs #N` when it does not finish it'));
+  // Only Closes, Fixes and Resolves close the issue; Part of and Refs link it and leave it open.
+  if (!/\b(closes|fixes|resolves|refs|part of) #\d+/i.test(body)) {
+    problems.push(finding('pr-issue', 'body: no linked issue', 'link the issue with `Closes #N`, or `Part of #N` when it does not finish it'));
   }
 
   // A change to what the project does needs a changelog line. Docs, tests and CI do not.
