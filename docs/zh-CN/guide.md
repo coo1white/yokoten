@@ -201,7 +201,7 @@ Docs: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#the-core-r
 
 ## 支持哪些 agent
 
-yokoten 能管住六种 AI 编程 agent，它们守的是同一套规矩。下表里写“是”的，都真跑过：在一个
+yokoten 能管住七种 AI 编程 agent，它们守的是同一套规矩。下表里写“是”的，都真跑过：在一个
 用完就删的仓库里让 agent 执行 `git push --tags`，守卫把它拦了下来。光看文档不算数。
 
 | Agent | 钩子写在哪（`init` 负责写） | 怎么拦 | 真跑过吗 | 要注意 |
@@ -211,6 +211,7 @@ yokoten 能管住六种 AI 编程 agent，它们守的是同一套规矩。下�
 | Antigravity CLI（`agy`） | `.agents/hooks.json`：名叫 `yokoten` 的那一项，PreToolUse | 在 stdout 输出 `{"decision": "deny"}` | 是，2026-10-19：agy 1.4.2，`agy -p`，模型 `gemini-3.8-flash-high` | 还没有收尾检查。`.yokoten/` 不在的话，每次调用都会被拒：agy 出错时一律拦下 |
 | Codex CLI | `.codex/hooks.json`：PreToolUse 和 Stop | 退出码 2，理由写在 stderr | 是，2026-10-19：Codex 0.163.0，`codex exec`，模型用 DeepSeek 的 `deepseek-flash` | 项目钩子要先在 `/hooks` 里信任才会跑。没信任的钩子，`codex exec` 一声不吭地跳过 |
 | Muse Code | `.muse/hooks.json`：PreToolUse 和 Stop | 退出码 2，理由写在 stderr | 是，2026-10-19：Muse Code 1.4.10，`muse exec --trust-workspace`，模型 `muse-spark-1.3-contributor` | 只在你信任的文件夹里跑钩子。Muse 不把 `YOKOTEN_ROLE` 传给钩子，所以在 Muse 里每个会话都当成 lead。钩子出错或超时的话，这次调用会放行 |
+| DeepSeek Harness（`dsh`） | `.dsh/hooks.json`：PreToolUse；再用 `.dsh/yokoten.patch.yml` 让 dsh 加载它 | 退出码 2，理由写在 stderr | 是，2026-10-20：dsh 0.2.1-rc.2，`dsh headless --patch .dsh/yokoten.patch.yml`，DeepSeek 的默认模型 | 钩子要靠一个桥接插件才会跑，每个 profile 都得自己装，见 [DeepSeek Harness](#deepseek-harness)。没装插件或启动时没带 patch，dsh 一个钩子都不跑，也不提醒。Windows 上还管不住（#332）。还没有收尾检查 |
 | Gemini CLI | `.gemini/settings.json`：BeforeTool 和 AfterAgent | 退出码 2，理由写在 stderr | 没有完整跑过：个人 Google 账号 2026-06-18 起不能再登录，要付费 API key 或企业授权 | 谷歌给个人用户的 agent 现在是 Antigravity CLI |
 | 其他 agent | 无 | `AGENTS.md` 里的规则；还有提交检查，不管是谁提交的，坏提交都会被拦下 | | |
 
@@ -238,12 +239,47 @@ yokoten 能管住六种 AI 编程 agent，它们守的是同一套规矩。下�
   启动时所在文件夹里的 `.gemini/settings.json`。新加或改过的钩子，第一次跑之前它会提醒你一次。
 
 worker 靠 `YOKOTEN_ROLE=worker` 认出来。在 Codex 里，子 agent 的 `agent_type` 带 worker
-字样的，也算 worker。Copilot CLI 和 Antigravity CLI 调钩子时不说是哪种子 agent，只看
+字样的，也算 worker。Copilot CLI、Antigravity CLI 和 DeepSeek Harness 调钩子时不说是哪种子 agent，只看
 `YOKOTEN_ROLE`。Gemini CLI 开了严格的环境变量清理后，钩子里拿不到 `YOKOTEN_ROLE`。
 这时 yokoten 在 Gemini CLI 里分不出谁是 worker：每个会话都当成 lead，只有 lead 能改的
 文件，worker 改了也拦不住。Muse Code 跑钩子时只留下几个环境变量，`YOKOTEN_ROLE` 不在其中，
 所以在 Muse Code 里也一样：每个会话都当成 lead。服务器上的锁照样有效：代码负责人，还有一个
 改不了 CI 的 bot。
+
+### DeepSeek Harness
+
+DeepSeek Harness（`dsh`）靠一个桥接插件来跑 Claude Code 格式的命令钩子。这个插件不在 dsh
+的安装包里。`init` 只写钩子文件和启动用的 patch，剩下的步骤打印出来让你自己做。它什么都不装，
+也不碰 `~/.dsh`。
+
+1. 给你用的每个 profile（`tui`、`headless`、`web`）装上桥接插件，再装它依赖的协议包。
+   `dsh plugin add` 要用 `pnpm`，得先装好。少了协议包，插件就加载不了钩子。
+
+   ```sh
+   dsh plugin --profile tui add @deepseek-ai/dsh-hooks-claude-code@0.2.1-rc.2
+   dsh plugin --profile tui add @deepseek-ai/dsh-hook-protocol@0.2.1-rc.2
+   ```
+
+2. 在仓库根目录启动 dsh，`--patch` 紧跟在 profile 名字后面：
+
+   ```sh
+   dsh tui --patch .dsh/yokoten.patch.yml
+   dsh headless --patch .dsh/yokoten.patch.yml --json "<任务>"
+   ```
+
+   patch 里写的 `.dsh/hooks.json` 是相对路径，dsh 从启动时所在的文件夹去找。在别的文件夹启动，
+   或者启动时没带 patch，dsh 就一个钩子都不跑。
+   `.dsh/yokoten.patch.yml` 归 yokoten 管，每次 `init` 都会整个重写。你自己的配置请写到别的文件里。
+
+dsh 认工具名时要一字不差，而且是小写，所以钩子的 matcher 写的是 `bash|pwsh|edit|write`。
+`pwsh` 是 dsh 在 Windows 上用的 shell，先写进去，留给以后用；现在 Windows 上还管不住。
+在 Windows 上，dsh 用 PowerShell 来跑钩子，可 yokoten 的守卫是一条 POSIX shell 命令，PowerShell
+跑不了。插件把这种失败当成“放行”，所以每次调用都会直接通过。在 Windows 上，`doctor` 和 `init`
+都会照实说（#332）。
+这里没有收尾检查：插件的 Stop 事件没有防死循环的机制。`doctor` 会查这两个文件，也会去
+`${DSH_HOME:-~/.dsh}/profiles` 里看两个包装了没有；找不到 dsh 的目录，就说 can't check。
+插件出了问题也不吭声，直接放行，所以文件都在也说明不了什么。要确认守卫真的在跑，只能真拦一次：
+在一个用完就删的仓库里让 dsh 执行 `git push --tags`，看它被拒。
 
 ### 让 Claude Code 或 Codex 用 DeepSeek 的模型
 
@@ -495,7 +531,7 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 | `learn <issue> [--write]` | 从一个事故 issue 起草一条检查，留给人来审。加上 `--write` 才把文件写进 `lessons/`。见下面的「从事故里学」 |
 | `learn --ship <id>` | 在 yokoten 里用：把审过的教训搬进 `kit/lessons/` 下的一个分组，以后每个项目跑 `doctor` 都会查它。还有 `TODO(reviewer)` 没填，或者它的测试没过，就不让搬 |
 | `check --history` | 对所有分支的每一个提交做隐私检查。私有仓库公开之前跑一遍。浅克隆看不到旧的提交，所以它不扫描、直接报错；在 CI 里要拉下全部历史（`fetch-depth: 0`）。文件里查到问题时，写的是加进这个文件的那次提交，和那次提交里的路径：`文件 @ <提交>`。`git replace` 藏不住提交，它照样读原来的提交；有 grafts 文件时同样不扫描、直接报错。 |
-| `hook [--agent <name>] [--commands-only] [--json]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool，加 `--agent antigravity` 读 Antigravity CLI 的 PreToolUse，加 `--agent muse` 读 Muse Code 的 PreToolUse |
+| `hook [--agent <name>] [--commands-only] [--json]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool，加 `--agent antigravity` 读 Antigravity CLI 的 PreToolUse，加 `--agent muse` 读 Muse Code 的 PreToolUse，加 `--agent deepseek-harness` 读 DeepSeek Harness 的 PreToolUse |
 | `hook --stop [--agent <name>]` | 收尾检查。从标准输入读这一轮结束的事件，检查改过的文件：默认读 Claude Code 的 Stop；加 `--agent codex` 读 Codex 的 Stop，加 `--agent gemini` 读 Gemini CLI 的 AfterAgent。见[收尾检查](#收尾检查) |
 | `explain [<id>] [--json]` | 讲一条规则或者路上的一步：它是什么、为什么要有、yokoten 怎么检查 |
 | `uninstall` | 撤掉 `install` 装的东西：带 yokoten 管理标记的技能和 agent、`~/.claude/settings.json` 里它加的两个 hook，还有 `~/.local/share/yokoten`。你自己的文件、别的设置和 `~/.config/yokoten`（密钥、私有词表）都留着。再跑一次什么也不会变 |
@@ -994,12 +1030,16 @@ AWS 的 access key id，还有 PEM 私钥。查到了只说是哪一种密钥，
 - **服务器设置只能读 GitHub 的。** 换成别的代码托管平台，这几步就标 can't check。bot 的权限 `doctor` 还查不了。
 - **先支持 Claude Code。** agent 按 Claude Code 的格式写。技能用的是公开
   的 SKILL.md 格式，所以 `install` 也会把它们放进 `~/.agents/skills`，Codex、Gemini CLI、
-  Copilot、Cursor 这些 AI 会去那里找。工具调用守卫在 Copilot CLI、Antigravity CLI、Codex、Muse Code
-  和 Gemini CLI 里也能用，哪些真跑过、拦下过，见[支持哪些 agent](#支持哪些-agent)（#30）。
+  Copilot、Cursor 这些 AI 会去那里找。工具调用守卫在 Copilot CLI、Antigravity CLI、Codex、Muse Code、
+  DeepSeek Harness 和 Gemini CLI 里也能用，哪些真跑过、拦下过，见[支持哪些 agent](#支持哪些-agent)（#30）。
   这些 agent 的钩子，`doctor` 只说在不在，不算作缺少：项目不一定用它们。有 `~/.codex` 或
   `~/.gemini` 文件夹时，用户级的 hook 也照这样报告。规则就是普通的 `AGENTS.md`：项目里没有
   `CLAUDE.md` 时 Claude Code 会直接读它，大多数别的 AI 也读，Muse Code
   也读。
+- **DeepSeek Harness 在 Windows 上还管不住。** dsh 在那里用 PowerShell 跑钩子，而守卫是一条
+  POSIX shell 命令（#332）。另外，守卫只看 `bash`、`pwsh`、`edit` 和 `write` 这四个工具。
+  如果 profile 里装了 dsh 的可选工具 `str_replace_editor`，或者试验中的 `terminal_send`，
+  用它们改文件、往 shell 里输命令，都没人查。
 
 ## 故意没带过来的
 

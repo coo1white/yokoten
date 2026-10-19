@@ -5,6 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
 import * as claudeCode from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
+import * as deepseekHarness from '../agents/runtimes/deepseek-harness.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import { loadConfig } from '../rules/config.ts';
@@ -20,6 +21,7 @@ export const READERS: Record<string, (input: unknown) => Action> = {
   gemini: gemini.readToolCall,
   antigravity: antigravity.readToolCall,
   muse: muse.readToolCall,
+  'deepseek-harness': deepseekHarness.readToolCall,
 };
 
 // What a runtime reads on stdout when a call is refused, and the exit code it wants. The

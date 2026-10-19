@@ -15,6 +15,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import * as antigravity from '../agents/runtimes/antigravity.ts';
 import { addProjectHook, addProjectStopHook, checkProjectSettings, setProjectEnv } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
+import * as dsh from '../agents/runtimes/deepseek-harness.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
@@ -99,7 +100,7 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: bo
     ];
   });
   report.push(...claudeHooks.lines);
-  // Codex, Gemini CLI, Antigravity CLI and Muse Code get the same guard, whether or not they are
+  // Codex, Gemini CLI, Antigravity CLI, Muse Code and DeepSeek Harness get the same guard, whether or not they are
   // installed here: small files are easier to predict than a guess about which agents someone uses.
   // A file that won't parse, or has the wrong shape, is named and skipped, never rewritten (#248).
   const codexHooks = agentHooks('the Codex hooks', '.codex/hooks.json', () => {
@@ -127,9 +128,13 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: bo
       'Muse Code runs the hooks in .muse/hooks.json only after you trust this folder',
     ];
   });
-  report.push(...codexHooks.lines, ...geminiHooks.lines, ...antigravityHooks.lines, ...museHooks.lines);
+  // DeepSeek Harness runs the hooks through a bridge each profile needs. init only prints
+  // how to add it: it installs nothing and leaves ~/.dsh alone (#334).
+  // On Windows the files are still written, ready for #332, but the lines say dsh is not checked.
+  const dshHooks = agentHooks('the DeepSeek Harness hook', dsh.HOOKS_FILE, () => dsh.initLines(dsh.addProjectHooks(root, cli)));
+  report.push(...codexHooks.lines, ...geminiHooks.lines, ...antigravityHooks.lines, ...museHooks.lines, ...dshHooks.lines);
   report.push(...setCommitCheck(root, cli, hooks, blocks));
-  return { ok: claudeHooks.ok && codexHooks.ok && geminiHooks.ok && antigravityHooks.ok && museHooks.ok, lines: report };
+  return { ok: claudeHooks.ok && codexHooks.ok && geminiHooks.ok && antigravityHooks.ok && museHooks.ok && dshHooks.ok, lines: report };
 }
 
 // ---- CODEOWNERS for the lead-only paths (#304) ----

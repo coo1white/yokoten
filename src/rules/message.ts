@@ -301,6 +301,13 @@ export const RULES = {
     check: '`doctor` reads .muse/hooks.json for a PreToolUse hook and a Stop hook that each run `yokoten hook --agent muse`; a note, not a missing step',
     docs: guide('works-with'),
   },
+  'deepseek-harness-hook': {
+    rule: "the project has DeepSeek Harness's tool-call guard, and a dsh profile has the hook bridge",
+    why: 'without the bridge and its peer in the profile, dsh runs no hooks and says nothing, so its commands and edits are not checked',
+    check:
+      "`doctor` reads .dsh/hooks.json for a PreToolUse hook on `bash|pwsh|edit|write` that runs `yokoten hook --agent deepseek-harness`. It checks .dsh/yokoten.patch.yml, and looks for both packages in the dsh profiles (read-only). It is a note, not a missing step. Only a real deny proves the guard runs. On Windows it says dsh is not checked yet",
+    docs: guide('works-with'),
+  },
   'codex-user-hook': {
     rule: "Codex runs yokoten's session-start doctor and command guard in every repo",
     why: 'without them, a Codex session does not hear the next step on the road, and a tag push, force push or skipped check in a repo without yokoten is not stopped',
