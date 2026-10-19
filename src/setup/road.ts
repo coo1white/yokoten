@@ -18,9 +18,9 @@ import { CHANGES_DIR } from '../rules/pr.ts';
 import { BUILD_DIRS, isBuildOutput } from '../rules/layout.ts';
 import { hasPlugin, hasProjectHook } from '../agents/claude-code.ts';
 import { runs } from '../run/cli.ts';
-import { hasBot, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
+import { CODEOWNERS_PLACES, hasBot, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
-import { claudeReadsRules, cliPath, findRulesGap, hookFile, isSelf } from './init.ts';
+import { claudeReadsRules, cliPath, findRulesGap, hookFile, isSelf, OWNER_PLACEHOLDER } from './init.ts';
 import { FIRST_MILESTONE, lackingLabels, pickNewMilestone } from './plan.ts';
 import { skillFiles, skillsDir } from './install.ts';
 
@@ -66,6 +66,12 @@ const read = (path: string) => {
     return '';
   }
 };
+
+/** The CODEOWNERS file GitHub reads here, relative to the root, or null when there is none. */
+const codeOwnersFile = (root: string): string | null => CODEOWNERS_PLACES.find((place) => existsSync(join(root, place))) ?? null;
+
+/** True when the CODEOWNERS file still has init's placeholder in place of an owner. */
+const hasPlaceholder = (root: string, file: string): boolean => read(join(root, file)).includes(OWNER_PLACEHOLDER);
 
 export const gitConfig = (root: string, key: string) => {
   try {
@@ -556,11 +562,20 @@ export const ROAD: Step[] = [
   {
     stage: 4,
     key: 'codeowners',
-    check: (root) => ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'].some((p) => existsSync(join(root, p))),
-    what: () => 'no CODEOWNERS file',
-    fix: () => 'add .github/CODEOWNERS with a line `<path> @<your account>` for each path where a mistake is hard to undo: the rules, CI, agent config',
+    check: (root) => {
+      const file = codeOwnersFile(root);
+      return file !== null && !hasPlaceholder(root, file);
+    },
+    what: (root) => {
+      const file = codeOwnersFile(root);
+      return file ? `${file} names no owner yet (${OWNER_PLACEHOLDER})` : 'no CODEOWNERS file';
+    },
+    fix: (root) => {
+      const file = codeOwnersFile(root);
+      return file ? `put your GitHub handle in ${file}` : '`yokoten init` writes .github/CODEOWNERS for the lead-only paths; or add one with a line `<path> @<your account>` for each path where a mistake is hard to undo: the rules, CI, agent config';
+    },
     why: 'the host then asks you to review a pull request that changes those paths, and `check --pr` makes it tier A',
-    how: 'a CODEOWNERS file is in .github/, at the root or in docs/',
+    how: `a CODEOWNERS file is in .github/, at the root or in docs/, and the first one GitHub reads names an owner, not init's placeholder ${OWNER_PLACEHOLDER}`,
     standard: 'Scorecard: Branch-Protection',
   },
   {

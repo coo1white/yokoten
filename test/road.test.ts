@@ -11,6 +11,7 @@ import { test } from 'node:test';
 import { chat, type LlamaConfig, llamaConfig } from '../src/agents/llama.ts';
 import { draft, type Fact, facts, parseAnswer, prompt, promptProblems, ruleDraft, table } from '../src/setup/advice/adopt.ts';
 import { type Found, ROAD, runsTests, STAGES, type Step, walk } from '../src/setup/road.ts';
+import { codeOwnersText } from '../src/setup/init.ts';
 
 const step = (stage: number, key: string): Step => ({ stage, key, check: () => false, what: () => key, fix: () => key, why: key, how: key });
 const steps = [step(1, 'a'), step(1, 'b'), step(2, 'c'), step(3, 'd')];
@@ -362,4 +363,17 @@ test('road: the tests step stays next with only a lint step, and says what is mi
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("road: init's CODEOWNERS with the placeholder owner is to do; with a real owner, or a project's own file, it is done (#304)", () => {
+  const codeowners = ROAD.find((s) => s.key === 'codeowners')!;
+  const placeholder = fixture({ '.github/CODEOWNERS': codeOwnersText(null) });
+  assert.equal(codeowners.check(placeholder, {}, undefined), false);
+  assert.equal(codeowners.what(placeholder, {}, undefined), '.github/CODEOWNERS names no owner yet (@YOUR_GITHUB_HANDLE)');
+  assert.equal(codeowners.fix(placeholder, {}, undefined), 'put your GitHub handle in .github/CODEOWNERS');
+  assert.equal(codeowners.check(fixture({ '.github/CODEOWNERS': codeOwnersText('octo') }), {}, undefined), true);
+  assert.equal(codeowners.check(fixture({ 'docs/CODEOWNERS': '* @octo\n' }), {}, undefined), true);
+  const none = fixture({});
+  assert.equal(codeowners.check(none, {}, undefined), false);
+  assert.equal(codeowners.what(none, {}, undefined), 'no CODEOWNERS file');
 });

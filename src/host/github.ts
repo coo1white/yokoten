@@ -184,7 +184,7 @@ export function readPullRequest(root: string, env: Env): (PullRequest & { base: 
 // GitHub reads CODEOWNERS from the first of these places, on the pull request's base
 // branch. yokoten reads it from the same commit, so a pull request can't edit the file
 // to lower its own tier. Without a base commit (a local run), it reads the working tree.
-const CODEOWNERS_PLACES = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'];
+export const CODEOWNERS_PLACES = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'];
 
 /** The CODEOWNERS file at the base commit, or in the working tree when `base` is empty; null when there is none. */
 export function readCodeOwners(root: string, base: string): CodeOwners | null {

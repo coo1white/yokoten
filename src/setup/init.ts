@@ -13,6 +13,9 @@ import { addProjectHook, addProjectStopHook, setProjectEnv } from '../agents/cla
 import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
 import { runs } from '../run/cli.ts';
+import { DEFAULTS } from '../rules/config.ts';
+import { CODEOWNERS_PLACES, repoOf } from '../host/github.ts';
+import { readOriginUrl } from './plan.ts';
 import { copyRuntime, HOME_DIR, KIT, render, VERSION, writeNew } from './files.ts';
 
 /** yokoten's own repo runs its own bin; every other project runs a vendored copy. */
@@ -51,6 +54,7 @@ export function init(root: string): string[] {
     report.push(`${result} ${rel}`);
   }
   if (hooks.kind !== 'own') chmodSync(join(root, '.githooks', 'pre-commit'), 0o755);
+  report.push(writeCodeOwners(root));
   const imported = importRules(root);
   if (imported) report.push(imported);
   const hook = addProjectHook(root, cli);
@@ -63,6 +67,48 @@ export function init(root: string): string[] {
   report.push(`${setProjectEnv(root, 'TZ', 'UTC')} TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)`);
   report.push(...setCommitCheck(root, cli, hooks));
   return report;
+}
+
+// ---- CODEOWNERS for the lead-only paths (#304) ----
+//
+// The guard and the commit check stop a worker on the machine; CODEOWNERS stops the same
+// change on the server, where `check --pr` makes it tier A and the host asks the owner to
+// review. Its paths come from DEFAULTS.leadOnly, so the two lists can't drift. init
+// writes the file rather than copying it from the kit: both the paths and the owner vary.
+
+/** The owner init writes when it can't tell who owns the repo. A GitHub handle has no underscore, so this is never a real account. */
+export const OWNER_PLACEHOLDER = '@YOUR_GITHUB_HANDLE';
+
+/** A lead-only glob as a CODEOWNERS path: `x/**` is the folder `/x/`, a file is `/file`. */
+export const ownedPath = (glob: string): string => `/${glob.replace(/\/\*\*$/, '/')}`;
+
+/** The CODEOWNERS init writes: every default lead-only path, owned by `owner`, or by the placeholder when null. */
+export function codeOwnersText(owner: string | null): string {
+  const handle = owner ? `@${owner}` : OWNER_PLACEHOLDER;
+  const lines = [
+    '# Written by yokoten init. The owner reviews every change to these paths: the rules',
+    "# the agents work under, their config, the hooks and CI (yokoten's lead-only defaults).",
+    '# Turn on "Require review from Code Owners" in branch protection, or GitHub asks',
+    '# nobody. `yokoten check --pr` makes a change here tier A either way.',
+  ];
+  if (!owner) lines.push(`# Put your GitHub handle in place of ${OWNER_PLACEHOLDER} on each line below.`);
+  const paths = DEFAULTS.leadOnly.map(ownedPath);
+  const width = Math.max(...paths.map((path) => path.length));
+  return [...lines, '', ...paths.map((path) => `${path.padEnd(width)} ${handle}`), ''].join('\n');
+}
+
+/** The GitHub account in the origin remote's URL, or null without a GitHub remote. */
+const readRemoteOwner = (root: string): string | null => repoOf(readOriginUrl(root))?.split('/')[0] ?? null;
+
+/** Write .github/CODEOWNERS unless the project has one in any place GitHub reads. Returns the report line. */
+function writeCodeOwners(root: string): string {
+  const found = CODEOWNERS_PLACES.find((place) => existsSync(join(root, place)));
+  if (found) return `kept ${found}`;
+  const owner = readRemoteOwner(root);
+  writeNew(join(root, '.github', 'CODEOWNERS'), codeOwnersText(owner));
+  return owner
+    ? `wrote .github/CODEOWNERS (the lead-only paths, owned by @${owner})`
+    : `wrote .github/CODEOWNERS (the lead-only paths; put your GitHub handle in place of ${OWNER_PLACEHOLDER})`;
 }
 
 // ---- A project's own CLAUDE.md and commit hooks (#206) ----

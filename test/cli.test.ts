@@ -10,6 +10,9 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { closestWord, COMMANDS, editDistance, HELP_OPTIONS } from '../src/run/cli.ts';
+import { DEFAULTS } from '../src/rules/config.ts';
+import { parseCodeOwners } from '../src/rules/pr.ts';
+import { readCodeOwners } from '../src/host/github.ts';
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'yokoten.ts');
 const at = '@';
@@ -425,7 +428,7 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   sandbox.withTests();
   result = sandbox.run(['doctor', '--session']);
   assert.equal(result.status, 0);
-  assert.match(result.stdout, /^yokoten: stage 4 of 5, a team of agents\. Next: no CODEOWNERS file/);
+  assert.match(result.stdout, /^yokoten: stage 4 of 5, a team of agents\. Next: \.github\/CODEOWNERS names no owner yet \(@YOUR_GITHUB_HANDLE\); put your GitHub handle in \.github\/CODEOWNERS/);
 });
 
 test('init: safe defaults, Dependabot and a security policy; doctor lists the security switches (#35)', () => {
@@ -474,6 +477,64 @@ test("init: a CLAUDE.md gets one line that imports AGENTS.md, and doctor's rules
   result = sandbox.run(['init']);
   assert.doesNotMatch(result.stdout, /updated CLAUDE\.md/);
   assert.equal(readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8'), claude);
+});
+
+/** The paths CODEOWNERS should name: each lead-only default, a `x/**` glob as the folder `/x/`. */
+const leadOnlyPaths = () => DEFAULTS.leadOnly.map((glob) => (glob.endsWith('/**') ? `/${glob.slice(0, -'**'.length)}` : `/${glob}`));
+
+test('init: writes .github/CODEOWNERS for every lead-only path, owned by the GitHub remote owner; check --pr then wants tier A (#304)', () => {
+  const sandbox = makeSandbox();
+  // A gh that always fails, so init never reaches GitHub for labels.
+  const bin = join(sandbox.home, 'bin');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'gh'), '#!/bin/sh\nexit 1\n');
+  chmodSync(join(bin, 'gh'), 0o755);
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/octo/app.git');
+  const result = sandbox.run(['init'], { extra: { PATH: `${bin}:${process.env.PATH}` } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /wrote \.github\/CODEOWNERS \(the lead-only paths, owned by @octo\)/);
+  const owners = readCodeOwners(sandbox.repo, '');
+  assert.equal(owners?.from, 'the working tree');
+  const rules = parseCodeOwners(owners!.text);
+  assert.deepEqual(rules.map((rule) => rule.pattern), leadOnlyPaths());
+  for (const rule of rules) assert.deepEqual(rule.owners, [`${at}octo`], rule.pattern);
+  assert.equal(stepMark(sandbox, 'codeowners'), 'done');
+  // check --pr reads the file from the base branch, and a change under .yokoten/ needs tier A.
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'base');
+  const base = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  sandbox.write('.yokoten/extra.md', 'Short.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'head');
+  const head = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  const event = (tier: string) => {
+    const file = join(sandbox.home, 'event.json');
+    const body = `tier: ${tier}\nCloses #1\nThis changes the runtime.\n## Why\nx\n## What changed\nx\n## How tested\nx\n`;
+    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
+    return { GITHUB_EVENT_PATH: file };
+  };
+  const tierB = sandbox.run(['check', '--pr'], { extra: event('B') });
+  assert.equal(tierB.status, 1, tierB.stdout);
+  assert.match(tierB.stderr, /this changes 1 file\(s\) that CODEOWNERS owns \(read from the base branch\): \.yokoten\/extra\.md/);
+  assert.doesNotMatch(sandbox.run(['check', '--pr'], { extra: event('A') }).stderr, /CODEOWNERS owns/);
+});
+
+test('init: an existing CODEOWNERS is kept byte for byte, in any place GitHub reads it (#304)', () => {
+  const own = '# ours\r\n/src/ @octo\n';
+  let sandbox = makeSandbox();
+  sandbox.write('.github/CODEOWNERS', own);
+  let result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /kept \.github\/CODEOWNERS/);
+  assert.equal(readFileSync(join(sandbox.repo, '.github', 'CODEOWNERS'), 'utf8'), own);
+  // One in docs/: a new .github/CODEOWNERS would take its place, so init writes none.
+  sandbox = makeSandbox();
+  sandbox.write('docs/CODEOWNERS', own);
+  result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /kept docs\/CODEOWNERS/);
+  assert.equal(existsSync(join(sandbox.repo, '.github', 'CODEOWNERS')), false);
+  assert.equal(readFileSync(join(sandbox.repo, 'docs', 'CODEOWNERS'), 'utf8'), own);
 });
 
 test('init: a CLAUDE.md that already imports AGENTS.md is left as it is (#206)', () => {
@@ -877,8 +938,9 @@ test('doctor: each stage boundary, from a fresh repo to the end of the road', ()
   assert.match(next(), /stage 3 of 5, release\. Next: no CHANGELOG\.md with an "Unreleased" section, and no changes\/ folder/);
   sandbox.write('CHANGELOG.md', '# Changelog\n\n## [Unreleased]\n');
   // Stage 3 done.
-  assert.match(next(), /stage 4 of 5, a team of agents\. Next: no CODEOWNERS file/);
-  sandbox.write('.github/CODEOWNERS', '* @placeholder\n');
+  assert.match(next(), /stage 4 of 5, a team of agents\. Next: \.github\/CODEOWNERS names no owner yet \(@YOUR_GITHUB_HANDLE\); put your GitHub handle in \.github\/CODEOWNERS/);
+  // init wrote CODEOWNERS with the placeholder owner; a real owner finishes the step.
+  sandbox.write('.github/CODEOWNERS', '* @octo\n');
   assert.match(next(), /stage 4 of 5, a team of agents\. Next: no bot on this machine/);
   writeFileSync(key, 'not a real key\n');
   const bot = { YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key };
