@@ -97,12 +97,33 @@ login. The guard still applies: `bot -- git push --tags` is stopped like any tag
 (Settings: `YOKOTEN_BOT_KEY` for another key path, `YOKOTEN_BOT_INSTALLATION` to skip
 looking the installation up.)
 
+## 4. The project board (only if the repo has one)
+
+The `board` workflow fills the board's Start, Target and Status every hour, and when an
+issue opens, closes or gets a milestone. It runs as the bot, so the bot needs the right
+to change the board. The board belongs to the organization, so this is an organization
+permission.
+
+1. The App's page → **Permissions & events** → Organization permissions → **Projects:
+   Read and write**. Save.
+2. Organization settings → GitHub Apps → the bot → **Configure** → accept the request. GitHub
+   asks each installation; until you accept, the old permissions stay.
+3. The repo → Settings → Secrets and variables → Actions:
+   - **Secrets** tab → New repository secret: name `BOT_PRIVATE_KEY`, value the whole
+     text of the bot's `.pem` file.
+   - **Variables** tab → New repository variable: name `BOT_CLIENT_ID`, value the
+     **Client ID** from the App's page (under About). It is not a secret.
+4. Actions → **board** → Run workflow. The run lists each field it set.
+
+The workflow asks GitHub for a one-hour token with three rights only: write the
+organization's projects, read issues, read pull requests.
+
 ## What you have now
 
 | Who | Can | Cannot |
 |-----|-----|--------|
 | You | approve, merge, tag, change settings | merge your own unreviewed change without a bypass |
-| The bot | push branches, open pull requests and issues; with Workflows permission, push a branch that changes CI | merge without your review, push to `main`, create `v*` tags, publish without your approval in the `release` environment |
+| The bot | push branches, open pull requests and issues, fill the board; with Workflows permission, push a branch that changes CI | merge without your review, push to `main`, create `v*` tags, publish without your approval in the `release` environment |
 | A worker | commit in its worktree | push, or edit rules, hooks or CI (guard) |
 
 ## Without an App
