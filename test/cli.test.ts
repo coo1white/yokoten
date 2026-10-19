@@ -1000,7 +1000,7 @@ test('install: an unreadable Codex or Gemini CLI hooks file is skipped, the rest
       assert.match(result.stdout, new RegExp(`^added the ${good.name} command guard in ~/`, 'm'), what);
       assert.ok(hasHook(goodPath, 'SessionStart', 'doctor'), `${what}: no ${good.name} hooks`);
       assert.match(result.stdout, /^added the user-level command guard$/m, what);
-      assert.match(result.stdout.trimEnd().split('\n').at(-1) ?? '', /marks/, what);
+      assert.match(result.stdout, /^wrote ~\/\S*private-marks /m, what);
       // Doctor names the same problem.
       assert.match(sandbox.run(['doctor']).stdout, new RegExp(`^  note {4}${bad.id}: ${escape(doctor)}`, 'm'), what);
     }
