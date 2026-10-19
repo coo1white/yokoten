@@ -35,15 +35,16 @@ const DENIALS: Record<string, (reason: string) => { stdout: string; exitCode: nu
 
 // How the owner approves a release in each runtime (#350): the command that starts it with
 // YOKOTEN_RELEASE_APPROVAL=1. Copilot CLI sends Claude Code's shape, so the claude-code
-// reader can't tell them apart. Muse Code passes a hook only a short list of variables, so
-// the approval never reaches the guard there; Gemini CLI's strict sanitization drops it too.
+// reader can't tell them apart. Muse Code passes a hook only a short list of variables and
+// loses YOKOTEN_ROLE; it is not known to pass the approval, so the owner releases outside it.
+// Gemini CLI drops the variable only when its strict environment sanitization is on.
 const approve = (start: string) => `\`YOKOTEN_RELEASE_APPROVAL=1 ${start}\``;
 const RELEASE_FIXES: Record<string, string> = {
   'claude-code': releaseFix(`${approve('claude')} (or your agent's command)`),
   codex: releaseFix(approve('codex')),
-  gemini: releaseFix(`${approve('gemini')} (if its strict environment sanitization drops the variable, the owner releases outside Gemini CLI)`),
+  gemini: releaseFix(`${approve('gemini')} (if its strict environment sanitization is on, the variable is dropped: the owner releases outside Gemini CLI)`),
   antigravity: releaseFix(approve('agy')),
-  muse: 'Muse Code passes no YOKOTEN_RELEASE_APPROVAL to its hooks, so a release can\'t be approved in Muse Code; if the owner asked for this, stop and tell them to release outside it; do not look for another way',
+  muse: 'Muse Code is not known to pass YOKOTEN_RELEASE_APPROVAL to its hooks: it passes them only a short list of variables, and YOKOTEN_ROLE is lost. If the owner asked for this, stop and tell them to release outside Muse Code; do not look for another way',
   'deepseek-harness': releaseFix(approve('dsh tui --patch .dsh/yokoten.patch.yml')),
 };
 
