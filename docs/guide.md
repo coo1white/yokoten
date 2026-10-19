@@ -799,7 +799,7 @@ A list you set replaces the default list; it does not add to it.
 | `layout.maxEntries` | `7` | The most entries a folder may hold (core rule 10) |
 | `layout.exempt` | none | Folders that may grow past it, such as a log of records |
 | `tests` | `*.test.*`, `*.spec.*`, `*_test.go`, `test/**`, `tests/**` | The test files a fix task may not change |
-| `leadOnly` | the rules, agent config, `.githooks/**`, `.github/**` | The files a worker may not change |
+| `leadOnly` | the rules, agent config, `.githooks/**`, `.github/**`, the vendored runtime `.yokoten/**` | The files a worker may not change |
 | `privacy.allow` | none | Exact strings the privacy check lets through, such as a public support address |
 | `privacy.skip` | lock files | Files the privacy check does not read |
 | `privacy.utc` | `true` | Commit times must be in UTC |

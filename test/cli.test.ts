@@ -798,6 +798,24 @@ test('check --staged: stops a commit whose time carries a time zone, never print
   assert.equal(r.status, 0, r.stderr);
 });
 
+// .yokoten/ is the copy of yokoten the hooks and CI run: a worker that changes it can turn the checks off (#297).
+test('the vendored .yokoten/ runtime is lead-only: the hook and check --staged stop a worker, not the lead (#297)', () => {
+  const sandbox = makeSandbox();
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  const edit = (extra?: Record<string, string>) => sandbox.run(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: { file_path: join(sandbox.repo, '.yokoten', 'src', 'run', 'check.ts') } }), extra });
+  let result = edit(worker);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /\.yokoten\/src\/run\/check\.ts is lead-only/);
+  assert.equal(edit().status, 0, 'the lead may edit it');
+  sandbox.write('.yokoten/src/run/check.ts', 'export {};\n');
+  sandbox.git('add', '.');
+  result = sandbox.run(['check', '--staged'], { extra: worker });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /\.yokoten\/src\/run\/check\.ts is lead-only/);
+  result = sandbox.run(['check', '--staged']);
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('check --history: counts commits with a time zone, as a note that does not fail (#40)', () => {
   const sandbox = makeSandbox();
   sandbox.git('commit', '-q', '--allow-empty', '-m', 'utc');

@@ -723,7 +723,7 @@ issue 里没写的那一节，对应的字段就留一个 `TODO(reviewer)`，绝
 | `layout.maxEntries` | `7` | 一个文件夹最多放几项（第 10 条核心规则） |
 | `layout.exempt` | 无 | 可以超过上限的文件夹，比如一项一项往下记的决策记录 |
 | `tests` | `*.test.*`、`*.spec.*`、`*_test.go`、`test/**`、`tests/**` | 哪些算测试文件，修复任务不能改 |
-| `leadOnly` | 规则、agent 配置、`.githooks/**`、`.github/**` | worker 不能改的文件 |
+| `leadOnly` | 规则、agent 配置、`.githooks/**`、`.github/**`、项目里那份 yokoten 副本 `.yokoten/**` | worker 不能改的文件 |
 | `privacy.allow` | 无 | 隐私检查放行的原样字符串，比如公开的客服邮箱 |
 | `privacy.skip` | 各种 lock 文件 | 隐私检查不读的文件 |
 | `privacy.utc` | `true` | 提交时间必须用 UTC |
