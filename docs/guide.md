@@ -946,7 +946,7 @@ yokoten's own code follows five rules. The reasons and the sources are in
 Short is fine where the reader sees everything at once: `for (const n of numbers)` in a
 three-line loop is clear. The further a name travels, the more it must say.
 
-`test/architecture.test.ts` checks rules 2 and 3, and `CONSTANT_CASE` inside a function.
+`test/repo/architecture.test.ts` checks rules 2 and 3, and `CONSTANT_CASE` inside a function.
 Each failure says what to change:
 
 ```

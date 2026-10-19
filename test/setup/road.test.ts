@@ -13,7 +13,7 @@ import {
   join,
 } from 'node:path';
 import { test } from 'node:test';
-import { fixture } from '../helpers.ts';
+import { fixture } from '../repo/helpers.ts';
 import { codeOwnersText } from '../../src/setup/init.ts';
 import {
   type Found,

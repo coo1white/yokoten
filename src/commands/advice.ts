@@ -1,0 +1,68 @@
+// `yokoten doctor`, `explain` and `adopt`: they read a project and advise; none writes a file.
+
+import * as gemini from '../agents/gemini.ts';
+import { ghIn } from '../host/github.ts';
+import { DEFAULTS, loadConfig } from '../rules/config.ts';
+import { formatFinding } from '../rules/message.ts';
+import { hideHome } from '../rules/privacy.ts';
+import { draft, facts, table } from '../setup/advice/adopt.ts';
+import { explain, explainLines, ids } from '../setup/advice/explain.ts';
+import { doctor } from '../setup/doctor.ts';
+import { READERS } from './hook.ts';
+import { env, noRootFinding, parse, print, printJson, requireRoot, rootOf, say, usage } from './shared.ts';
+
+export function runDoctor(): number {
+  const options = parse('doctor');
+  if (typeof options === 'string') return usage(options);
+  const agent = options.values['--agent'] ?? 'claude-code';
+  if (!Object.hasOwn(READERS, agent)) return usage(`unknown --agent ${agent}; use one of: ${Object.keys(READERS).join(', ')}`);
+  const session = options.flags.has('--session');
+  const root = rootOf(process.cwd());
+  const config = root ? loadConfig(root) : DEFAULTS;
+  const { ok, lines, report } = doctor(root, { env, config, session, gh: root ? ghIn(root) : undefined });
+  // Full doctor outside a repo says so (#205). A session there stays quiet: no noise in a non-repo folder.
+  if (!root && !session) {
+    const missing = noRootFinding(process.cwd());
+    if (options.flags.has('--json')) printJson({ ...report, ok: false, findings: [...report.findings, missing] });
+    else print([...lines, `yokoten doctor: ${formatFinding(missing)}`], process.stderr);
+    return 1;
+  }
+  if (options.flags.has('--json')) printJson(report);
+  // Gemini CLI reads a SessionStart hook's context from JSON only (#211).
+  else if (session && agent === 'gemini') {
+    if (lines.length) say(`${gemini.formatSessionContext(hideHome(lines.join('\n'), env))}\n`, process.stdout);
+  } else print(lines);
+  // A session must start even when doctor found a problem.
+  return session || ok ? 0 : 1;
+}
+
+export function runExplain(): number {
+  const options = parse('explain');
+  if (typeof options === 'string') return usage(options);
+  const [id] = options.positional;
+  if (id === undefined) {
+    if (options.flags.has('--json')) printJson({ ids: ids() });
+    else print([`Ids: ${ids().join(', ')}`]);
+    return 0;
+  }
+  const found = explain(id);
+  if (options.flags.has('--json')) printJson(found ? { found: true, ...found } : { id, found: false, ids: ids() });
+  else if (found) print(explainLines(found));
+  else print([`yokoten explain: no rule or step is called ${id}.`, `Ids: ${ids().join(', ')}`], process.stderr);
+  return found ? 0 : 1;
+}
+
+export function runAdopt(): number | Promise<number> {
+  // Reads files and asks the model; never writes a file or changes config.
+  const options = parse('adopt');
+  if (typeof options === 'string') return usage(options);
+  const root = requireRoot(process.cwd());
+  if (!root) return 1;
+  return draft(facts(root, env), { env }).then((drafted) => {
+    if (options.flags.has('--json')) {
+      printJson(drafted.rows.map(({ key, status, evidence, decision, reason }) => ({ key, status, evidence, decision, reason })));
+      print([`yokoten adopt: drafted by ${drafted.by}${drafted.note ? `, because ${drafted.note}` : ''}. You decide every row.`], process.stderr);
+    } else print(table(drafted));
+    return 0;
+  });
+}

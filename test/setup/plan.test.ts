@@ -6,7 +6,7 @@ import {
   fakeGh,
   planningFound,
   withPlanning,
-} from '../helpers.ts';
+} from '../repo/helpers.ts';
 import {
   type Board,
   type Gh,

@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import {
   answer,
   FACTS,
-} from '../helpers.ts';
+} from '../repo/helpers.ts';
 import {
   chat,
   llamaConfig,
