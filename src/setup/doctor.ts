@@ -154,8 +154,7 @@ export function pluginAgeCheck(root: string | null, env: Env): Finding | null {
   if (!hasPlugin(env)) return null;
   const plugin = readInstalledPlugin(env, root);
   if (!plugin) return null;
-  const why = "the plugin's hooks run the plugin's copy, so an old copy checks old rules";
-  const note = (older: string, newer: string) => finding('machine-runtime', `the yokoten plugin is older than this yokoten (${older} < ${newer})`, `update it: ${PLUGIN_UPDATE}`, { why });
+  const note = (older: string, newer: string) => finding('plugin-version', `the yokoten plugin is older than this yokoten (${older} < ${newer})`, `update it: ${PLUGIN_UPDATE}`);
   if (plugin.version && compareVersions(plugin.version, VERSION) === -1) return note(plugin.version, VERSION);
   if (!root || !plugin.commit || !isSelf(root)) return null;
   const tip = readDefaultBranch(root);
@@ -167,9 +166,11 @@ export function pluginAgeCheck(root: string | null, env: Env): Finding | null {
 const SERVER_CONTROL: ServerRead = {
   repo: 'octo/demo',
   defaultBranch: 'main',
+  isPrivate: false,
+  actionsCanApprove: false,
   mergeMethods: ['merge', 'squash'],
   deleteBranchOnMerge: false,
-  branch: { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false },
+  branch: { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false, approvals: 0 },
   tags: false,
   security: { secretScanning: false, pushProtection: false, privateReporting: false, dependabotAlerts: false },
   forgotten: [],
@@ -220,7 +221,7 @@ export function coreRulesControl(check: typeof coreRulesCheck = coreRulesCheck):
 }
 
 /** What doctor can't read on the server yet, and the owner sets once per repo. */
-const OWNER_STEPS = ['the bot: a GitHub App (or collaborator) with write access and no Workflows permission'];
+const OWNER_STEPS = ['the bot: a GitHub App (or collaborator) with write access; CODEOWNERS sends CI changes to you'];
 
 /** The settings to check by hand when doctor can't read the server. */
 const BY_HAND = [
@@ -237,6 +238,7 @@ function readOrigin(root: string, gh: Gh): ServerSettings | Unread {
   } catch {
     // no origin remote
   }
+  if (!remote.trim()) return { unread: 'there is no origin remote yet', fix: 'add one on GitHub to check the server settings, or check them by hand' };
   const repo = repoOf(remote);
   return repo ? readServer(gh, repo) : { unread: 'the origin remote is not on a host yokoten knows (GitHub for now)', fix: 'add a GitHub origin remote, or check these settings by hand' };
 }
@@ -264,7 +266,9 @@ export interface StepState {
 
 /**
  * What `doctor --json` prints. `findings` is everything to do, each with what, why and
- * fix; `notes` never fail doctor. A session (`--session`) gets the next step, the
+ * fix; `notes` never fail doctor. `ok` is false only for a problem (#208): the self-test,
+ * core rules that are behind, a tree finding or a machine check. A road step not taken
+ * yet is to do, not a problem, so it never makes `ok` false. A session (`--session`) gets the next step, the
  * private-marks finding and a behind `core-rules` finding only, as its lines do.
  */
 export interface DoctorReport {
@@ -282,7 +286,7 @@ export interface DoctorReport {
   server?: { id: string; mark: ServerCheck['mark'] }[];
 }
 
-/** The report, as text lines and as data, and whether everything is in place. */
+/** The report, as text lines and as data, and whether doctor found no problem. */
 export function doctor(
   root: string | null,
   { env, config, session = false, gh }: { env: Env; config: Config; session?: boolean; gh?: Gh },
@@ -325,7 +329,7 @@ export function doctor(
       lines.push(`yokoten: ${formatFinding(core.finding)}`);
       findings.push(core.finding);
     }
-    const ok = !failed.length && !next && !isCoreBehind;
+    const ok = !failed.length && !isCoreBehind;
     return { ok, lines, report: { ...base, ok, repo: true, stage, next, findings } };
   }
 
@@ -359,9 +363,13 @@ export function doctor(
     if (core.mark === 'MISSING') findings.push(core.finding);
     else if (core.mark === 'note') notes.push(core.finding);
   }
-  const problems = check(root, { config, env });
+  const checkNotes: Finding[] = [];
+  const problems = check(root, { config, env, notes: checkNotes });
   findings.push(...problems);
   lines.push(`  ${problems.length ? 'MISSING' : 'ok     '} tree: ${problems.length ? `${problems.length} problem(s), run \`yokoten check\`` : 'layout and privacy clean'}`);
+  // check's own notes (#228), such as an unknown yokoten.json key or a translation behind: worded as check words them, and never a failure.
+  for (const n of checkNotes) lines.push(`  note    ${formatFinding(n).replaceAll('\n', '\n        ')}`);
+  notes.push(...checkNotes);
   lines.push('machine:');
   for (const c of machine) {
     lines.push(`  ${c.ok ? 'ok     ' : 'MISSING'} ${c.name}${c.ok ? '' : `: ${stepText(c.finding)}`}`);
@@ -381,6 +389,8 @@ export function doctor(
   }
   if (settings[0].id === 'server-settings') lines.push('  check these by hand:', ...BY_HAND.map((s) => `    ${s}`));
   lines.push(...OWNER_STEPS.map((s) => `  not checked ${s}`));
-  const ok = !failed.length && !where.next && !isCoreBehind && !problems.length && machine.every((c) => c.ok);
+  // The road has no failed mark: a step is done, to do, not now or can't check. Steps
+  // left are the way ahead, not problems, so they never fail doctor (#208).
+  const ok = !failed.length && !isCoreBehind && !problems.length && machine.every((c) => c.ok);
   return { ok, lines, report: { ...base, ok, repo: true, stage: where.stage, next, findings, steps, notes, server: settings.map(({ id, mark }) => ({ id, mark })) } };
 }

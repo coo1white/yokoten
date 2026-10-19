@@ -50,6 +50,10 @@ npx yokoten init         # once per project
 npx yokoten doctor       # where you are, and the one next step
 ```
 
+Before your first commit: commit with `TZ=UTC git commit`, or put `export TZ=UTC` in your
+shell profile once. The commit check refuses other time zones, because a commit's time zone
+tells strangers roughly where you live.
+
 In Claude Code, you can use the plugin instead: `/plugin marketplace add
 yokoten-labs/yokoten`, then `/plugin install yokoten@yokoten`. Use one way, not both.
 Until the first release is on npm, [install from a clone](docs/guide.md#install-from-a-clone).
