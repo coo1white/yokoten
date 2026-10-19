@@ -1,8 +1,12 @@
 // How yokoten is called. Hooks, the git hook and CI name the entry point by path, and
 // setup and doctor need to recognise a command that runs it.
 
-/** A command that runs yokoten's `<sub>`, by whatever path. */
-export const runs = (sub: string): RegExp => new RegExp(`yokoten\\.ts"?\\s+${sub}\\b`);
+// A package runner that starts the published yokoten at the start of a line or a command:
+// npx, npx --yes, bunx, pnpm dlx, npm exec. "yokoten-check" or "echo npx yokoten" is not one.
+const PACKAGE_RUN = String.raw`^[ \t]*(?:npx|bunx|pnpm[ \t]+dlx|npm[ \t]+exec)(?:[ \t]+-\S+)*[ \t]+yokoten(?:@[\w.^~-]+)?`;
+
+/** A command that runs yokoten's `<sub>`, by whatever path, or by a package runner (#298). */
+export const runs = (sub: string): RegExp => new RegExp(`(?:yokoten\\.ts"?|${PACKAGE_RUN})\\s+${sub}\\b`, 'm');
 
 /** The yokoten subcommand a command runs, if any. */
 export const subcommand = (command: string): string | undefined => command.match(/yokoten\.ts"?\s+(\S+)/)?.[1];
