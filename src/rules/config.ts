@@ -12,6 +12,7 @@ export interface Config {
   allowBuild: string[];
   areas: string[];
   translations: { fail: boolean };
+  commands: { block: Record<string, string> };
 }
 
 /** What yokoten.json may hold: any key, or part of one. */
@@ -24,6 +25,7 @@ interface ConfigFile {
   allowBuild?: string[];
   areas?: string[];
   translations?: Partial<Config['translations']>;
+  commands?: { block?: Record<string, string> };
 }
 
 /** The guard's own environment (process.env, or a test's stand-in). */
@@ -52,9 +54,17 @@ export const DEFAULTS: Config = {
   areas: [],
   // A translation behind its English source (#87) is a note; `fail` makes it a problem.
   translations: { fail: false },
+  // Programs no agent may run here, each with the reason (#192):
+  // { "block": { "python3": "this project is TypeScript only" } }.
+  commands: { block: {} },
 };
 
-export function loadConfig(root: string): Config {
+/**
+ * yokoten.json, or the defaults. A problem in the file throws. `onBadCommands` is for the
+ * hook: a wrong "commands" then drops only the block list, and the hook keeps its core
+ * checks. Without it (check, doctor), a wrong "commands" is a config problem too.
+ */
+export function loadConfig(root: string, { onBadCommands }: { onBadCommands?: (problem: string) => void } = {}): Config {
   let file: ConfigFile = {};
   try {
     file = JSON.parse(readFileSync(join(root, 'yokoten.json'), 'utf8'));
@@ -70,8 +80,37 @@ export function loadConfig(root: string): Config {
     allowBuild: file.allowBuild ?? DEFAULTS.allowBuild,
     areas: file.areas ?? DEFAULTS.areas,
     translations: { ...DEFAULTS.translations, ...file.translations },
+    commands: { block: readBlockListOr(file.commands, onBadCommands) },
   };
 }
+
+function readBlockListOr(commands: unknown, onBadCommands?: (problem: string) => void): Record<string, string> {
+  if (!onBadCommands) return readBlockList(commands);
+  try {
+    return readBlockList(commands);
+  } catch (err) {
+    onBadCommands((err as Error).message);
+    return {};
+  }
+}
+
+// "commands": { "block": { "<program>": "<reason>" } }. A wrong shape is a config problem,
+// said as one, so the guard never runs on a list it misread.
+function readBlockList(commands: unknown): Record<string, string> {
+  if (commands === undefined) return {};
+  const shape = 'yokoten.json: "commands" must look like { "block": { "<program>": "<reason>" } }';
+  if (!isPlainObject(commands)) throw new Error(shape);
+  const block = commands.block;
+  if (block === undefined) return {};
+  if (!isPlainObject(block)) throw new Error(shape);
+  for (const [program, reason] of Object.entries(block)) {
+    if (!/^[^\s/\\]+$/.test(program)) throw new Error(`yokoten.json: "commands.block" names a program by its name alone, with no path or space: ${JSON.stringify(program)}`);
+    if (typeof reason !== 'string' || !reason.trim()) throw new Error(`yokoten.json: "commands.block.${program}" must be the reason, as text`);
+  }
+  return { ...(block as Record<string, string>) };
+}
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 
 // Globs, as yokoten.json names files. Matched against a path relative to the repo root,
 // with forward slashes.

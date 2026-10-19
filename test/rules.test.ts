@@ -11,6 +11,7 @@ import { DOCS_URL, type Finding, finding, formatFinding, type Rule, RULES } from
 import { POSITIVE_CONTROL, scanText } from '../src/rules/privacy.ts';
 import { SECRET_CONTROL } from '../src/rules/secrets.ts';
 import { batchBlobs, check, checkHistory, readBlobs, timeZoneNote } from '../src/run/check.ts';
+import { loadHookConfig } from '../src/run/hook.ts';
 import { parseSourceMarker, sourceMarker, translationNotes } from '../src/run/translations.ts';
 import { agentHooks, coreRulesCheck, coreRulesControl, machineChecks, selfTest } from '../src/setup/doctor.ts';
 import { compareCoreRules, compareVersions, readKitVersion } from '../src/setup/init.ts';
@@ -80,6 +81,36 @@ test('config: missing file means defaults, a key overrides, bad JSON says where'
   assert.deepEqual(c.allowBuild, []);
   writeFileSync(join(dir, 'yokoten.json'), '{ nope');
   assert.throws(() => loadConfig(dir), /^Error: yokoten\.json:/);
+});
+
+test('config: "commands.block" is read, and a wrong shape is a config problem (#192)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  assert.deepEqual(loadConfig(dir).commands, { block: {} });
+  writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ commands: { block: { python3: 'TypeScript only' } } }));
+  assert.deepEqual(loadConfig(dir).commands.block, { python3: 'TypeScript only' });
+  for (const commands of [[], 'python3', { block: ['python3'] }, { block: { python3: 1 } }, { block: { python3: ' ' } }, { block: { '/usr/bin/python3': 'no' } }, { block: { 'py thon': 'no' } }]) {
+    writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ commands }));
+    assert.throws(() => loadConfig(dir), /^Error: yokoten\.json: "commands/, JSON.stringify(commands));
+  }
+});
+
+test('config: for the hook, a wrong "commands" drops only the block list, said once (#192)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ leadOnly: ['secret/**'], commands: { block: ['python3'] } }));
+  const lines: string[] = [];
+  const config = loadHookConfig(dir, (line) => lines.push(line));
+  assert.deepEqual(config.commands.block, {});
+  assert.deepEqual(config.leadOnly, ['secret/**'], 'the rest of the file still counts');
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^yokoten hook: yokoten\.json "commands" was ignored, .*core checks still run\. yokoten\.json: "commands" must look like/);
+  assert.equal(checkCommand('git push --force', { env: {}, config })?.id, 'force-push', 'the core checks still run');
+  // Positive control: check and doctor still see it as a config problem.
+  assert.throws(() => loadConfig(dir), /^Error: yokoten\.json: "commands/);
+  // A good list says nothing; outside a repo, the defaults.
+  writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ commands: { block: { python3: 'TypeScript only' } } }));
+  assert.deepEqual(loadHookConfig(dir, (line) => lines.push(line)).commands.block, { python3: 'TypeScript only' });
+  assert.equal(loadHookConfig(null, (line) => lines.push(line)), DEFAULTS);
+  assert.equal(lines.length, 1);
 });
 
 const goodPr = (): PullRequest => ({
@@ -507,6 +538,7 @@ test('titles: limits count the characters a person sees, not code units (#268)',
 test('config: yokoten\'s own areas cover its open work', () => {
   const own = loadConfig(join(import.meta.dirname, '..'));
   assert.ok(own.areas.includes('doctor') && own.areas.includes('owner'));
+  assert.ok(Object.hasOwn(own.commands.block, 'python') && Object.hasOwn(own.commands.block, 'python3'), 'no Python here (#192)');
   assert.deepEqual(DEFAULTS.areas, []);
 });
 
@@ -520,6 +552,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   };
   const env = { YOKOTEN_FIX_TASK: '1', YOKOTEN_ROLE: 'worker' };
   for (const c of ['git push --tags', 'git push origin v1.0.0', 'git -c push.followTags=true push', 'gh release create v1', 'npm publish', 'git push --force', 'git commit --no-verify -m x', 'git commit -nm x', 'git config core.hooksPath /dev/null']) add(checkCommand(c, { env: {} }));
+  add(checkCommand('python3 --version', { env: {}, config: { commands: { block: { python3: 'this project is TypeScript only' } } } }));
   add(checkEdit('test/a.test.ts', { config: DEFAULTS, env }));
   add(checkEdit('AGENTS.md', { config: DEFAULTS, env }));
   found.push(...scanText(`${POSITIVE_CONTROL}\n${SECRET_CONTROL}\nhome town`, { file: 'a.md', marks: ['home town'] }));

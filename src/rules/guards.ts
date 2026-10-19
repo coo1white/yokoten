@@ -25,10 +25,13 @@ export function checkEdit(path: string, { config, env }: { config: Config; env: 
   return null;
 }
 
-/** A shell command, as the agent wrote it. */
-export function checkCommand(command: string, { env }: { env: Env }): Finding | null {
+/**
+ * A shell command, as the agent wrote it. `config` brings the programs the project blocks
+ * (yokoten.json "commands.block"); without it, only the core rules apply.
+ */
+export function checkCommand(command: string, { env, config }: { env: Env; config?: Pick<Config, 'commands'> }): Finding | null {
   for (const words of commandWords(command)) {
-    const reason = checkGit(words, env) ?? checkHooksEnvironment(words) ?? checkPublish(words, env);
+    const reason = checkGit(words, env, config) ?? checkHooksEnvironment(words) ?? checkPublish(words, env) ?? checkBlocked(words, config?.commands.block ?? {});
     if (reason) return reason;
   }
   return null;
@@ -44,7 +47,7 @@ const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--config-env', '--git-dir', '--w
 
 // Each check looks for its program anywhere in the command, so a prefix such as FOO=1,
 // sudo, env, command, exec, time, nice, nohup, timeout or xargs does not hide it.
-function checkGit(words: string[], env: Env): Finding | null {
+function checkGit(words: string[], env: Env, config?: Pick<Config, 'commands'>): Finding | null {
   const start = words.findIndex(isGit);
   if (start === -1) return null;
   const settings: string[] = [];
@@ -67,7 +70,7 @@ function checkGit(words: string[], env: Env): Finding | null {
   // `git -c alias.x='!cmd' x` runs cmd through a shell.
   for (const s of settings) {
     const alias = /^alias\.[^=]*=!(.*)$/is.exec(s);
-    const reason = alias && checkCommand(alias[1], { env });
+    const reason = alias && checkCommand(alias[1], { env, config });
     if (reason) return reason;
   }
   if (sub === 'push') {
@@ -206,6 +209,120 @@ function checkPublish(words: string[], env: Env): Finding | null {
   if (sub !== -1 && gh.slice(sub + 1).some((a) => ['create', 'upload', 'edit'].includes(a))) return release('gh release publishes a release');
   if (after(['npm', 'pnpm', 'yarn']).includes('publish')) return release('this publishes a package');
   return null;
+}
+
+// ---- Programs the project blocks (#192) ----
+//
+// yokoten.json "commands.block" names programs no agent runs here, each with its reason.
+// Only a program counts, so `echo python` and `cat python.md` pass. A command can run
+// more than one program, and `findPrograms` lists each:
+//
+// - the first word after assignments (FOO=1) and shell keywords (`then`, `do`, `!`);
+// - after a launcher that runs the next word as a program (env, sudo, nice, timeout,
+//   xargs, stdbuf, setsid, busybox and the others in LAUNCHERS), the word after its
+//   options;
+// - the program after `find ... -exec`, `-execdir`, `-ok` and `-okdir`;
+// - the programs of the string `env -S` splits.
+//
+// A shell string (`bash -c '...'`) is read by commandWords.
+
+// Shell keywords before a program: `if x`, `then x`, `do x`, `! x`. `time` is a launcher.
+const KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'fi', 'while', 'until', 'do', 'done', 'esac', '!', '{', '}', '(']);
+// A loop or case head names a variable and data, not a program: `for f in a b`.
+const HEADS = new Set(['for', 'select', 'case', 'in']);
+
+// Each launcher, with the options that take the next word as their value, and how many
+// plain words come before the program (timeout's duration, chrt's priority, taskset's mask).
+const LAUNCHERS: Record<string, { options: string[]; operands?: number }> = {
+  env: { options: ['-u', '--unset', '-C', '--chdir', '-S', '--split-string'] },
+  sudo: { options: ['-u', '--user', '-g', '--group', '-C', '--close-from', '-D', '--chdir', '-h', '--host', '-p', '--prompt', '-r', '--role', '-t', '--type', '-T', '--command-timeout', '-U', '--other-user'] },
+  doas: { options: ['-u', '-C'] },
+  pkexec: { options: ['--user'] },
+  command: { options: [] },
+  exec: { options: ['-a'] },
+  time: { options: ['-f', '--format', '-o', '--output'] },
+  nice: { options: ['-n', '--adjustment'] },
+  nohup: { options: [] },
+  setsid: { options: [] },
+  timeout: { options: ['-s', '--signal', '-k', '--kill-after'], operands: 1 },
+  xargs: { options: ['-a', '--arg-file', '-d', '--delimiter', '-E', '-I', '-L', '--max-lines', '-n', '--max-args', '-P', '--max-procs', '-s', '--max-chars'] },
+  stdbuf: { options: ['-i', '-o', '-e'] },
+  unbuffer: { options: [] },
+  busybox: { options: [] },
+  chrt: { options: ['-T', '--sched-runtime', '-P', '--sched-period', '-D', '--sched-deadline'], operands: 1 },
+  ionice: { options: ['-c', '--class', '-n', '--classdata'] },
+  taskset: { options: [], operands: 1 },
+  numactl: { options: ['-N', '-m', '-C', '-p', '-i', '--cpunodebind', '--membind', '--physcpubind', '--preferred', '--interleave'] },
+  chroot: { options: [], operands: 1 },
+  flock: { options: ['-w', '--wait', '--timeout', '-E', '--conflict-exit-code'], operands: 1 },
+  faketime: { options: [], operands: 1 },
+  fakeroot: { options: ['-l', '--lib', '--faked', '-s', '-i'] },
+  eatmydata: { options: [] },
+  nocache: { options: [] },
+  catchsegv: { options: [] },
+  strace: { options: ['-o', '-e', '-p', '-s', '-u', '-E', '-a', '-b', '-I', '-O', '-S', '-P', '-X'] },
+  ltrace: { options: ['-o', '-e', '-p', '-s', '-u', '-a', '-n', '-l'] },
+  firejail: { options: [] },
+  proxychains: { options: ['-f'] },
+  proxychains4: { options: ['-f'] },
+  torsocks: { options: ['-u', '-p', '-a', '-P'] },
+  'xvfb-run': { options: ['-n', '--server-num', '-e', '--error-file', '-f', '--auth-file', '-p', '--xauth-protocol', '-s', '--server-args', '-w', '--wait'] },
+  caffeinate: { options: ['-t', '-w'] },
+};
+// find runs the program after each of these.
+const FIND_ACTIONS = new Set(['-exec', '-execdir', '-ok', '-okdir']);
+
+/** A program's name: no folder and no .exe. */
+const programName = (word: string) => base(word).replace(/\.exe$/i, '');
+
+// The string `env -S` splits into a command, from the option at `index`, or undefined.
+function splitString(words: string[], index: number): string | undefined {
+  const option = words[index];
+  const long = /^--split-string(?:=(.*))?$/s.exec(option);
+  if (long) return long[1] ?? words[index + 1];
+  const short = /^-[a-zA-Z]*S(.*)$/s.exec(option);
+  if (short) return short[1] || words[index + 1];
+  return undefined;
+}
+
+/** The words that name the programs a command runs, in order. */
+function findPrograms(words: string[]): string[] {
+  const programs: string[] = [];
+  // commandWords reads `bash -c 'x'` again as `-c x`: the shell's options come first.
+  let index = words.findIndex((word) => !word.startsWith('-'));
+  if (index === -1) return programs;
+  while (index < words.length) {
+    while (index < words.length && (isAssignment(words[index]) || KEYWORDS.has(words[index]))) index++;
+    if (index >= words.length || HEADS.has(words[index])) return programs;
+    const name = programName(words[index]);
+    if (!Object.hasOwn(LAUNCHERS, name)) {
+      programs.push(words[index]);
+      if (name === 'find') {
+        for (let action = index + 1; action < words.length; action++) {
+          if (FIND_ACTIONS.has(words[action])) programs.push(...findPrograms(words.slice(action + 1)));
+        }
+      }
+      return programs;
+    }
+    const launcher = LAUNCHERS[name];
+    index++;
+    // `command -v x` only says where x is; it does not run it.
+    if (name === 'command' && /^-[a-zA-Z]*[vV]/.test(words[index] ?? '')) return programs;
+    while (index < words.length && words[index].startsWith('-')) {
+      const split = name === 'env' ? splitString(words, index) : undefined;
+      if (split !== undefined) programs.push(...commandWords(split).flatMap(findPrograms));
+      index += launcher.options.includes(words[index]) ? 2 : 1;
+    }
+    index += launcher.operands ?? 0;
+  }
+  return programs;
+}
+
+function checkBlocked(words: string[], blockList: Record<string, string>): Finding | null {
+  const name = findPrograms(words).map(programName).find((program) => Object.hasOwn(blockList, program));
+  if (name === undefined) return null;
+  const reason = blockList[name].trim().replace(/\.+$/, '');
+  return finding('blocked-command', `\`${name}\` is blocked in this project`, 'use the project\'s own stack instead; yokoten.json "commands.block" lists what is blocked', { why: reason });
 }
 
 // ---- Reading bash ----

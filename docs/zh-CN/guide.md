@@ -67,7 +67,7 @@ flowchart LR
 
 | | 什么时候跑 | 拦下什么 |
 |-|-----------|---------|
-| **1** | 每次工具调用之前 | 推 tag、强制推送、跳过检查；修复任务里改测试；worker 改规则 |
+| **1** | 每次工具调用之前 | 推 tag、强制推送、跳过检查；修复任务里改测试；worker 改规则；项目禁用的程序 |
 | **1b** | Claude Code 的 AI 准备结束这一轮时 | 改过的文件里有没有个人信息、密钥，有没有改了不该改的文件（和提交检查一样）。有问题就把它叫回来改一次 |
 | **2** | 每次提交 | hook 看不到的：用 `sed` 或脚本改的文件、个人信息、超过 7 项的文件夹 |
 | **3** | 每个 PR | 关掉 hook 做出来的提交 |
@@ -449,6 +449,36 @@ flowchart LR
 这些文件每次构建都会重新生成，二进制文件审查的人也看不懂。图片和字体（`png`、`jpg`、`gif`、
 `webp`、`svg`、`ico`、`woff`、`woff2`）可以提交。某个文件确实要留在仓库里，就在 `yokoten.json`
 里写上它的路径（可以用通配符）：`"allowBuild": ["docs/manual.pdf"]`。
+
+### 禁用的命令
+
+项目对技术栈的约定，比如「不用 Python」「不用 yarn」，agent 干到一半很容易就忘了。只写在
+AGENTS.md 里，它就只是个愿望。把这些程序写进 `yokoten.json`，每个配上原因，工具调用守卫就会替你守住：
+
+```json
+"commands": {
+  "block": {
+    "python": "this project is TypeScript only",
+    "python3": "this project is TypeScript only"
+  }
+}
+```
+
+这样一来，不管是 lead 还是哪个 worker，只要命令里运行了 `python3`，守卫都会拦下来。提示里会写
+是哪个程序、你写的原因，并让 agent 改用项目自己的技术栈。
+
+- 守卫只看每条命令真正运行的程序，按名字认：`/usr/bin/python3` 和 `python3.exe` 都算 `python3`。
+- 命令的每一段都会查：`a && b`、`a | b`、`a; b`、`$(...)` 和 `bash -c '...'`。
+- 前面加了变量、套了一层或者放在流程语句里也藏不住：`X=1 python3`；`env`、`sudo`、`nice`、
+  `timeout`、`xargs`、`setsid`、`stdbuf` 这类启动器；`if`、`for`、`while`、`!` 后面的命令；
+  `find -exec` 运行的程序；`env -S` 里的字符串。
+- 只是参数里出现这个名字的不拦：`echo python`、`cat python.md`、`pythonic`。
+  `command -v python3` 也不拦，它只是查程序在哪儿，并不运行。
+- 名字里不能带路径，也不能有空格。`commands` 写错了格式，`check` 和 `doctor` 会报配置错误；
+  守卫这时不拦任何程序，但会说一声，核心检查照常运行。
+
+守卫读的是命令的文字。脚本、`make` 目标、npm 脚本或者 shell 函数在里面运行的程序，它看不到。
+想拦哪个版本就写哪个：`python3.12` 不算 `python3`。
 
 ### issue 标题
 

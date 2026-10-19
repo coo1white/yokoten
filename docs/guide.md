@@ -77,7 +77,7 @@ flowchart LR
 
 | | Runs | Stops |
 |-|------|-------|
-| **1** | before each tool call | tag pushes, force pushes, skipped checks; test edits in a fix task; a worker editing the rules |
+| **1** | before each tool call | tag pushes, force pushes, skipped checks; test edits in a fix task; a worker editing the rules; a program the project blocks |
 | **1b** | when a Claude Code agent ends its turn | the same personal data, secrets and file rules as the commit check, in the changed files. It sends the agent back once with the findings |
 | **2** | on every commit | what the hook can't see: files changed by `sed` or a script, personal data, an overfull folder |
 | **3** | on every pull request | a commit made with the hook off |
@@ -483,6 +483,43 @@ The commit check refuses a file in a `dist/`, `build/` or `out/` folder, and a b
 A build makes such files again, and a reviewer can't read a binary. Images and fonts
 (`png`, `jpg`, `gif`, `webp`, `svg`, `ico`, `woff`, `woff2`) pass. To keep a file
 anyway, list it in `yokoten.json` as a glob: `"allowBuild": ["docs/manual.pdf"]`.
+
+### Blocked commands
+
+A project's stack rule, such as "no Python" or "no yarn", is easy for an agent to forget
+in the middle of a task. Written only in AGENTS.md, it is a wish. List the programs in
+`yokoten.json`, each with its reason, and the tool-call guard holds the rule:
+
+```json
+"commands": {
+  "block": {
+    "python": "this project is TypeScript only",
+    "python3": "this project is TypeScript only"
+  }
+}
+```
+
+The guard then stops a command that runs `python3`, for the lead and for every worker.
+The message names the program, gives your reason, and tells the agent to use the
+project's own stack.
+
+- The guard looks at the program of each command, by its name: `/usr/bin/python3` and
+  `python3.exe` count as `python3`.
+- Every part of the command counts: `a && b`, `a | b`, `a; b`, `$(...)` and
+  `bash -c '...'`.
+- Assignments, launchers and shell keywords do not hide the program: `X=1 python3`;
+  launchers such as `env`, `sudo`, `nice`, `timeout`, `xargs`, `setsid` and `stdbuf`;
+  a command after `if`, `for`, `while` or `!`; a program `find -exec` runs; and the
+  string in `env -S`.
+- A word that only holds the name passes: `echo python`, `cat python.md`, `pythonic`.
+  `command -v python3` passes too: it only says where the program is.
+- A name has no folder and no space. A wrong shape in `"commands"` is a config error for
+  `check` and `doctor`. The guard then blocks no program and says so, and the core
+  checks still run.
+
+The guard reads command text. It does not see a program that a script, a `make` target,
+an npm script or a shell function runs. Name each version you want to stop:
+`python3.12` is not `python3`.
 
 ### Issue titles
 
