@@ -62,8 +62,16 @@ function checkEachCommand(command: string, { env, config, cwd }: { env: Env; con
   return null;
 }
 
-const RELEASE_FIX = 'if the owner asked for this, they start a new session with YOKOTEN_RELEASE_APPROVAL=1 (`YOKOTEN_RELEASE_APPROVAL=1 claude`); do not look for another way';
-const release = (what: string) => finding('release', what, RELEASE_FIX);
+/**
+ * What a release refusal tells the agent to do. `start` is the command that starts the agent
+ * with the approval, when the caller knows the agent (#350): the hook passes it in. Without
+ * one, as here, the message names no agent.
+ */
+export function releaseFix(start?: string): string {
+  const session = start ? `a new session with ${start}` : 'a new session of their agent with YOKOTEN_RELEASE_APPROVAL=1';
+  return `if the owner asked for this, they start ${session}; do not look for another way`;
+}
+const release = (what: string) => finding('release', what, releaseFix());
 
 const MOVERS = new Set(['cd', 'pushd', 'popd']);
 function movesRepo(words: string[]): boolean {

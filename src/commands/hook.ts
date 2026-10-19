@@ -9,6 +9,7 @@ import * as deepseekHarness from '../agents/runtimes/deepseek-harness.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import { loadConfig } from '../rules/config.ts';
+import { releaseFix } from '../rules/guards.ts';
 import { type Finding, formatFinding } from '../rules/message.ts';
 import { checkChanged } from '../run/check.ts';
 import { type Action, guardDeadline, judgeWithDeadline, loadHookConfig, type Repo } from '../run/hook.ts';
@@ -30,6 +31,20 @@ export const READERS: Record<string, (input: unknown) => Action> = {
 const DENIALS: Record<string, (reason: string) => { stdout: string; exitCode: number }> = {
   'claude-code': claudeCode.formatDenial,
   antigravity: antigravity.formatDenial,
+};
+
+// How the owner approves a release in each runtime (#350): the command that starts it with
+// YOKOTEN_RELEASE_APPROVAL=1. Copilot CLI sends Claude Code's shape, so the claude-code
+// reader can't tell them apart. Muse Code passes a hook only a short list of variables, so
+// the approval never reaches the guard there; Gemini CLI's strict sanitization drops it too.
+const approve = (start: string) => `\`YOKOTEN_RELEASE_APPROVAL=1 ${start}\``;
+const RELEASE_FIXES: Record<string, string> = {
+  'claude-code': releaseFix(`${approve('claude')} (or your agent's command)`),
+  codex: releaseFix(approve('codex')),
+  gemini: releaseFix(`${approve('gemini')} (if its strict environment sanitization drops the variable, the owner releases outside Gemini CLI)`),
+  antigravity: releaseFix(approve('agy')),
+  muse: 'Muse Code passes no YOKOTEN_RELEASE_APPROVAL to its hooks, so a release can\'t be approved in Muse Code; if the owner asked for this, stop and tell them to release outside it; do not look for another way',
+  'deepseek-harness': releaseFix(approve('dsh tui --patch .dsh/yokoten.patch.yml')),
 };
 
 // Each runtime's event for the end of a turn: Claude Code's, Codex's and Muse Code's Stop, Gemini CLI's AfterAgent (#211).
@@ -128,7 +143,9 @@ export function runHook(): number | Promise<number> {
   const commandsOnly = options.flags.has('--commands-only');
   const repos = editRepos(action, action.cwd ?? root ?? process.cwd(), root ? { root, config } : null, commandsOnly);
   const judged = judgeWithDeadline(action, { root, config, env, commandsOnly, repos }, guardDeadline(env.YOKOTEN_GUARD_DEADLINE_MS));
-  return judged.then((found) => {
+  return judged.then((judgedFinding) => {
+    // The guard names no agent; the hook knows which one it runs for.
+    const found = judgedFinding?.id === 'release' && Object.hasOwn(RELEASE_FIXES, agent) ? { ...judgedFinding, fix: RELEASE_FIXES[agent] } : judgedFinding;
     if (json) printJson(found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
     if (!found) return 0;
     // The runtimes read the reason from stderr when the hook exits 2; some read stdout (DENIALS).
