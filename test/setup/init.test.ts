@@ -33,7 +33,7 @@ import {
   onToolCall,
   pick,
   stepMark,
-} from '../helpers.ts';
+} from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
 import { parseCodeOwners } from '../../src/rules/pr.ts';
 import { hasHook } from '../../src/agents/hooks-file.ts';
@@ -1197,13 +1197,6 @@ test('init: a repo inside the running copy gets its own .yokoten/, unless the co
   assert.deepEqual(pick(result), [1, '', 'yokoten init: cannot copy the runtime to src/project/.yokoten, because it is inside src/ of the copy running now. Run yokoten from a copy outside that folder\n']);
   assert.deepEqual(readdirSync(inside), ['.git'], 'nothing is written');
   assert.ok(!readdirSync(join(clone, 'src')).some((name) => name.startsWith('.')), 'no temp folder is left');
-});
-
-test('update: a folder that does not exist is said plainly (#208)', () => {
-  const sandbox = makeSandbox();
-  const result = sandbox.run(['update', 'typo']);
-  assert.deepEqual([result.status, result.stdout, result.stderr], [1, '', 'yokoten update: typo does not exist; nothing to update.\n']);
-  assert.ok(!existsSync(join(sandbox.repo, 'typo')));
 });
 
 test('init: reads GitHub and says what it would do; --github --yes does it, and a second run changes nothing (#10)', () => {

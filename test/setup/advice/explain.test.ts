@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { makeSandbox } from '../../helpers.ts';
+import { makeSandbox } from '../../repo/helpers.ts';
 import { RULES } from '../../../src/rules/message.ts';
 import {
   explain,

@@ -18,20 +18,20 @@ import {
   join,
 } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { sourceMarker } from '../src/run/translations.ts';
+import { sourceMarker } from '../../src/run/translations.ts';
 import {
   type Gh,
   type Label,
   readServer,
   type ServerSettings,
-} from '../src/host/github.ts';
-import type { Fact } from '../src/setup/advice/adopt.ts';
+} from '../../src/host/github.ts';
+import type { Fact } from '../../src/setup/advice/adopt.ts';
 import {
   road,
   ROAD,
-} from '../src/setup/road.ts';
+} from '../../src/setup/road.ts';
 
-export const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'yokoten.ts');
+export const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'yokoten.ts');
 
 export const at = '@';
 

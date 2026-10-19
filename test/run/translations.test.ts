@@ -10,7 +10,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { makeTranslatedRepo } from '../helpers.ts';
+import { makeTranslatedRepo } from '../repo/helpers.ts';
 import {
   DEFAULTS,
   loadConfig,

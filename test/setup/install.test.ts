@@ -27,7 +27,7 @@ import {
   JSON_FIX,
   makeSandbox,
   onToolCall,
-} from '../helpers.ts';
+} from '../repo/helpers.ts';
 import { hasHook } from '../../src/agents/hooks-file.ts';
 import { copyRuntime } from '../../src/setup/files.ts';
 

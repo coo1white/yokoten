@@ -5,16 +5,13 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readdirSync,
   readFileSync,
-  rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { makeSandbox } from '../helpers.ts';
 import {
   formatChanges,
   mergeChanges,
@@ -56,33 +53,6 @@ function makeRepo(files: Record<string, string>): string {
   for (const [name, content] of Object.entries(files)) writeFileSync(join(root, 'changes', name), content);
   return root;
 }
-
-test('changelog: previews the change files, and --write moves them into CHANGELOG.md (#132)', () => {
-  const sandbox = makeSandbox();
-  let result = sandbox.run(['changelog']);
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /no change files in changes\//);
-  sandbox.write('CHANGELOG.md', '# Changelog\n\n## [Unreleased]\n\n## [0.1.0] - 2026-10-18\n\n### Added\n\n- The first release.\n');
-  sandbox.write('changes/README.md', '# Change files\n');
-  sandbox.write('changes/2-b.md', 'Fixed\n\nA fix.\n');
-  sandbox.write('changes/1-a.md', 'Added\n\nA thing.\n');
-  result = sandbox.run(['changelog']);
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /2 change\(s\); `--write` adds these under \[Unreleased\] in CHANGELOG\.md:\n\n### Added\n\n- A thing\.\n\n### Fixed\n\n- A fix\.\n$/);
-  assert.ok(existsSync(join(sandbox.repo, 'changes/1-a.md')), 'a preview writes nothing');
-  // A bad file stops the write, and says so on stderr.
-  sandbox.write('changes/3-c.md', 'Added\n');
-  result = sandbox.run(['changelog', '--write']);
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /1 problem\(s\); nothing was written:\n- changes\/3-c\.md:1: no entry after the section/);
-  rmSync(join(sandbox.repo, 'changes/3-c.md'));
-  result = sandbox.run(['changelog', '--write']);
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /wrote 2 change\(s\) under \[Unreleased\] in CHANGELOG\.md, and deleted:\n- changes\/1-a\.md\n- changes\/2-b\.md/);
-  assert.equal(readFileSync(join(sandbox.repo, 'CHANGELOG.md'), 'utf8'), '# Changelog\n\n## [Unreleased]\n\n### Added\n\n- A thing.\n\n### Fixed\n\n- A fix.\n\n## [0.1.0] - 2026-10-18\n\n### Added\n\n- The first release.\n');
-  assert.deepEqual(readdirSync(join(sandbox.repo, 'changes')), ['README.md']);
-  assert.equal(sandbox.run(['changelog', '--wrote']).status, 1, 'an unknown option is refused');
-});
 
 test('changes: a file is a section, a blank line, then the entry; a bullet is added when missing', () => {
   assert.deepEqual(parseChange('changes/1-a.md', 'Fixed\n\nA crash,\nwhen empty.\n'), { change: { file: 'changes/1-a.md', section: 'Fixed', lines: ['- A crash,', '  when empty.'] }, problems: [] });

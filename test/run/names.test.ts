@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { NAMED } from '../helpers.ts';
+import { NAMED } from '../repo/helpers.ts';
 import {
   DOCS_URL,
   formatFinding,
