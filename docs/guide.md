@@ -107,9 +107,9 @@ listed:
 | Stage | Steps |
 |---|---|
 | **1 · Safety net** | `rules`, `tool-hook`, `commit-check`, `runtime`, `tests` (a test command, and CI runs it) |
-| **2 · Issues and pull requests** | `ci`, `issues` (no todo file), `templates`, `labels` (the standard set), `milestone` (an open one), `no-build-output` (nothing in `dist/`, `build/` or `out/`, no built binaries) |
-| **3 · Release** | `changelog`, `titles` (CI runs `check --pr`) |
-| **4 · A team of agents** | `codeowners`, `bot`, `skills` |
+| **2 · Issues and pull requests** | `ci` (CI runs `check`, or uses the yokoten Action), `issues` (no todo file), `templates`, `labels` (the standard set), `milestone` (an open one), `no-build-output` (nothing in `dist/`, `build/` or `out/`, no built binaries) |
+| **3 · Release** | `changelog`, `titles` (CI runs `check --pr`, or uses the Action on pull requests without `pr-check: false`) |
+| **4 · A team of agents** | `codeowners`, `bot`, `skills`, `review` (a merge to the default branch needs one approval) |
 | **5 · Going public** | `security-files` (a security policy, Dependabot, a license), `protection` (rulesets on the default branch and `v*` tags), `merge-settings` (squash only, delete branch on merge), `security-settings` (secret scanning, push protection, private reporting, Dependabot alerts) |
 
 The last three are server settings. Full `doctor` reads them through `gh api`, and only reads.
@@ -117,8 +117,22 @@ Without `gh`, a sign-in, the network or a GitHub remote, they are **can't check*
 A session never calls the network, so there they are always **can't check**.
 
 `labels` and `milestone` in stage 2 are read the same way. The standard labels are `bug`, `feat`,
-`docs`, `refactor`, `ci`, `owner`, `incident`, `good first issue` and `hotfix`. `init` shows which
-are missing, and `init --github --yes` adds them.
+`docs`, `refactor`, `ci`, `owner`, `incident`, `good first issue`, `hotfix`, and the tier labels
+`tier A`, `tier B` and `tier C`. `init` shows which are missing, and `init --github --yes` adds
+them.
+
+`review` in stage 4 reads the server the same way. It is done when the default branch's ruleset, or
+its branch protection, asks for at least one approving review. GitHub does not let you
+approve your own pull request. So the bot opens the pull requests, and you approve and
+merge them. To set it up, edit the ruleset on the default branch: in "Require a pull
+request", set "Required approvals" to 1. Also keep "Allow GitHub Actions to create and
+approve pull requests" off, in Settings, Actions, General. If it is on, a workflow the bot
+pushes could approve the bot's own pull request, so `review` is not done. OpenSSF
+Scorecard should then count each change as reviewed, because the person who merges it
+did not write it. We read this in the Scorecard docs and have not checked it in a real
+Scorecard run yet. A private repo on a free plan has no rulesets, so there `review` is
+**can't check** and waits for stage 5, when the repo goes public. It is not **not now**:
+that mark is only for a decision you make.
 
 After a step, `yokoten doctor` names the outside standard it meets, when there is one,
 for example `ci (Scorecard: CI-Tests)`. The session message leaves it out.
@@ -139,6 +153,7 @@ And when an agent tries to push a release tag:
 
 ```
 yokoten: git push --tags pushes tags. Only the owner decides when to release. If the owner asked for this, they start a new session with YOKOTEN_RELEASE_APPROVAL=1 (`YOKOTEN_RELEASE_APPROVAL=1 claude`); do not look for another way.
+  docs: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#the-core-rules
 ```
 
 Every message has the same three parts: **what** happened, **why** it matters, and the
@@ -175,16 +190,20 @@ and when to look again). "Not now" goes into `yokoten.json`, and `doctor` stops 
 ### A first draft of the table
 
 `yokoten adopt` drafts that table before the talk starts. It reads the project's files
-and says what the project does today for each step: **done**, **missing** or
-**partial**. Partial means the project has its own way, such as husky hooks, or a CI
-that doesn't run yokoten. A model then proposes a decision and a one-sentence reason
+and says what the project does today for each step: **done**, **missing**, **partial**
+or **unknown**. Partial means the project has its own way, such as husky hooks, or a CI
+that doesn't run yokoten. Unknown means yokoten can't check the step from here, such as
+a server setting; `yokoten doctor` reads it. A model then proposes a decision and a one-sentence reason
 for each row.
 
 - The model gets only those short facts. It never gets file contents.
 - yokoten runs its privacy check on the request first. On a hit, it sends nothing.
 - With no key, a failed call or a bad answer, rules draft the table instead: done or
-  missing is as-is, partial is lighter. The output says which one drafted it.
+  missing is as-is, partial is lighter, unknown is as-is once `doctor` has checked it.
+  The output says which one drafted it.
 - `adopt` never writes a file. You still decide every row.
+- A partial row is not lost when you run `init`: it imports `AGENTS.md` from your
+  `CLAUDE.md`, and it adds the commit check to husky's `pre-commit`.
 
 The model runs on Meta's model API, through its OpenAI-compatible endpoint
 (`https://api.meta.ai/v1`, model `muse-spark-1.3`). Set `LLAMA_API_KEY` or `MODEL_API_KEY`
@@ -199,7 +218,7 @@ yokoten guards three AI coding agents. Each one keeps the same rules.
 |---|---|
 | Claude Code | the tool-call guard (a hook), the stop check (a hook), the guide at the start of each session, skills and agents |
 | Codex CLI | the tool-call guard, in `.codex/hooks.json`. Codex asks you once to trust project hooks (`/hooks`) |
-| Gemini CLI | the tool-call guard, in `.gemini/settings.json` |
+| Gemini CLI | the tool-call guard, in `.gemini/settings.json`. Start Gemini at the repo root: it reads `.gemini/settings.json` from the folder it starts in, and nowhere else |
 | Any other agent | the rules in `AGENTS.md`, and the commit check, which stops a bad commit whoever made it |
 
 ## Install and commands
@@ -228,13 +247,15 @@ can't drift apart:
 |---|---|
 | The skills: `/yokoten:dispatch`, `/yokoten:inspect`, `/yokoten:rca`, `/yokoten:record`, `/yokoten:release`, `/yokoten:yokoten` | `kit/user/skills/` |
 | The agents: `yokoten:worker`, `yokoten:reviewer`, `yokoten:verifier` | `kit/user/agents/` |
-| `/yokoten:init` and `/yokoten:doctor`, which run yokoten from the plugin | `kit/plugin/skills/` |
+| `/yokoten:init`, `/yokoten:doctor` and `/yokoten:update`, which run yokoten from the plugin | `kit/plugin/skills/` |
 | The SessionStart `doctor` hook and the command guard: the same two hooks that `install` adds | `.claude-plugin/plugin.json` |
 
 Claude Code runs the plugin's `.ts` files with `node`. Node can do this because the
 plugin folder is not under `node_modules`. To get a newer yokoten, open `/plugin`, select
 yokoten on the **Installed** tab, and choose **Update now**. A third-party marketplace
-does not update on its own until you turn on auto-update for it.
+does not update on its own until you turn on auto-update for it. From your shell,
+`claude plugin update yokoten@yokoten` does the same; restart Claude Code after it. When the
+plugin is older than the yokoten that runs `doctor`, `doctor` says so in a note.
 
 The plugin works in Claude Code only. It does not make the private-marks file: `doctor`
 names the file, and you make it. When the plugin is on in your user settings, `doctor`
@@ -314,13 +335,25 @@ jobs:
 The action sets up Node, then runs `check`. On a pull request it also runs `check
 --pr`. The findings show on the pull request page, as in yokoten's own CI.
 
+It handles three events:
+
+- **`push`**: `check`.
+- **`pull_request`**: `check`, then `check --pr`.
+- **`issues`**: `check`, then `check --issue` on the issue's title. To run it, add
+  `issues:` with `types: [opened, edited]` under `on:`.
+
+On `pull_request_target` the checkout holds the base branch, not the pull request, so the
+action skips `check --pr` and leaves a notice: the pull request check runs on
+`pull_request`, not `pull_request_target`.
+
 - **Pin it.** Use a full commit SHA. A branch name like `@main` changes under you. Once
   there is a release, a release tag works too.
 - **The checkout** needs `fetch-depth: 0`. `check --pr` lists the files between the base
   and the head commit, so it needs both.
 - **Permissions**: `contents: read` is enough. The action takes no token.
-- **Inputs**: `pr-check` (default `true`) and `node-version` (default `22`, at least
-  22.18). Set `pr-check: false` to skip the pull request standard.
+- **Inputs**: `pr-check` (default `true`), `issue-check` (default `true`) and
+  `node-version` (default `22`, at least 22.18). Set `pr-check: false` to skip the pull
+  request standard, `issue-check: false` to skip the issue title standard.
 - **Node**: the action sets up Node for the rest of the job too.
 
 `check --pr` holds a pull request to the standard of core rule 8. A repo that does not
@@ -332,6 +365,12 @@ on `@main`.
 
 `init` copies the runtime into `.yokoten/` in your project. Commit it: the hooks and CI
 then run with no network and no global install.
+
+`init` keeps a project's own setup working. With a `CLAUDE.md`, it adds an `@AGENTS.md`
+line at the end, because Claude Code reads `AGENTS.md` only through that import. A
+`.claude/CLAUDE.md` counts too, and gets `@../AGENTS.md` when there is no root one. With
+husky or another `core.hooksPath`, it keeps that folder and adds the commit check to its
+`pre-commit`. The project's own hook lines stay, and `init` says which file it changed.
 
 `init` also writes three workflows into `.github/workflows/`: `yokoten.yml` (the
 commit check, a lint job with actionlint and zizmor, and one `ci` job to make the required
@@ -352,19 +391,26 @@ It puts two safe defaults in `.github/` too:
 |---------|--------------|
 | `install` | Skills into `~/.claude/skills` and `~/.agents/skills`, agents into `~/.claude/agents`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file |
 | `init [dir]` | Puts the practices into a project. Adds files; keeps any that are already there and says so. It also reads GitHub through `gh` and says which standard labels and milestone it would add. It never changes GitHub. Without `gh`, a sign-in or a GitHub remote, it says what it skipped |
-| `init --github --yes [--remove-default-labels]` | Adds the missing standard labels, and a milestone "First release" when no milestone is open. A standard label that is there gets the standard colour and description. A second run changes nothing. GitHub's default labels outside the set (`question`, `wontfix` and others) are deleted only with `--remove-default-labels` |
+| `init --github --yes [--remove-default-labels]` | Adds the missing standard labels, and a milestone "First release" when no milestone is open. When a closed milestone already has that title, the new one is "Next release". A closed milestone is never reopened. A standard label that is there gets the standard colour and description. A second run changes nothing. GitHub's default labels outside the set (`question`, `wontfix` and others) are deleted only with `--remove-default-labels` |
 | `update [dir] [--write]` | Shows what this yokoten changes in the core rules of the project's `AGENTS.md`. `--write` replaces them, and keeps the "This project" part as it is. See [Updating the rules](#updating-the-rules) |
-| `doctor [--session]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session |
+| `doctor [--session] [--json]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session |
 | `adopt [--json]` | A draft of the adoption table for an old project: what it does today, and a proposed decision for each step. `--json` prints the rows. Writes nothing |
-| `check [--staged]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries. For the tree, a translation behind its English source is a note. See [Translations](#translations) |
+| `check [--staged] [--json]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries. For the tree, a translation behind its English source is a note. See [Translations](#translations) |
 | `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
 | `check --issue` | In CI: the issue's title. See [Issue titles](#issue-titles) |
 | `changelog [--write]` | Shows the entries the files in `changes/` add under `[Unreleased]`. `--write` puts them into `CHANGELOG.md` and deletes the files; run it before a release. See [The changelog](#the-changelog) |
-| `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public |
-| `hook [--agent <name>] [--commands-only]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini` |
+| `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public. A shallow clone can't see old commits, so it fails without scanning; in CI, check out the whole history (`fetch-depth: 0`) |
+| `hook [--agent <name>] [--commands-only] [--json]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini` |
 | `hook --stop` | The stop check. Reads a Claude Code Stop event on stdin and checks the changed files. See [The stop check](#the-stop-check) |
-| `explain [<id>]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
+| `explain [<id>] [--json]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. Setup: [server.md](server.md#3-the-bot-a-github-app) |
+
+Each command prints its own help with `--help` or `-h`: what it does, its options and
+one example. `yokoten help <command>` prints the same, and `yokoten --help` lists the
+commands. `yokoten version` (or `--version`, `-v`) prints the version. Help changes nothing
+and exits 0. For a typo, yokoten names the closest command
+or option: `yokoten docter` asks `Did you mean "doctor"?`. After `bot --`, every word
+belongs to the command it runs, so `yokoten bot -- gh --help` runs `gh --help`.
 
 `check`, `doctor`, `hook` and `explain` take `--json`. Then stdout holds JSON and
 nothing else, for an agent or a script. Each finding has the same fields: `id`, `what`,
@@ -373,14 +419,18 @@ when it is in a file. `yokoten explain <id>` takes the `id`. No field holds a pr
 value.
 
 - `check --json`: `{ check, ok, findings, notes }`. `check` is `tree`, `staged`,
-  `history` or `pr`. A note never fails the check.
+  `history`, `pr` or `issue`. A note never fails the check. When the CI run has no
+  pull request or issue, `check --pr` and `check --issue` are ok and add `skipped`, the reason.
 - `doctor --json`: `{ version, ok, selfTest, repo, stage, stages, next, findings, steps,
   notes, server }`. With `--session`, only the next step, the private-marks finding, and `core-rules` when the rules are behind.
-- `hook --json`: `{ blocked, finding }` on stdout. The runtimes do not use it: they read
-  the exit code and the reason on stderr, as their hook protocols say.
-- `hook --stop --json`: `{ blocked, stop, findings }`. With `stop_hook_active`, also `skipped`.
-- `explain --json`: `{ found, id, kind, what, why, check, docs, stage, standard }`, or
-  `{ found: false, ids }`.
+- `hook --json`: `{ blocked: true, finding }` when it blocks, `{ blocked: false, toolCall: true }`
+  when it allows, and `{ blocked: false, toolCall: false }` when stdin is not a tool call.
+  The runtimes do not use it: they read the exit code and the reason on stderr, as their
+  hook protocols say.
+- `hook --stop --json`: `{ blocked, stop, findings }`. With `stop_hook_active`, or when the
+  check fails, also `skipped`, the reason. When stdin is not a Stop event: `{ blocked: false, stop: false }`.
+- `explain --json`: `{ found, id, kind, what, why, check, docs, stage, standard }`. For an
+  unknown id: `{ id, found: false, ids }`, exit 1. With no id: `{ ids }`, exit 0.
 
 Output for people follows one rule. Results go to stdout. Problems, refusals and errors
 go to stderr. An unknown option is refused, never ignored.
@@ -500,6 +550,8 @@ files never conflict.
 The file is plain Markdown. Line 1 is the section: Added, Changed, Deprecated, Removed,
 Fixed, Security or Internal. Line 2 is blank. From line 3, write the entry as it should
 read in the changelog. The `- ` is added for you. Several bullets in one file are fine.
+The entry has no headings, and the file is a plain file right in `changes/`, not in a
+folder or behind a link.
 
 ```markdown
 Fixed
@@ -593,6 +645,37 @@ installed yokoten, the plugin or a clone. Run `init` again to refresh `.yokoten/
 With the Claude Code plugin, run `/yokoten:update`. It runs the plugin's own yokoten,
 shows the change, and writes only after you agree.
 
+### Settings
+
+`yokoten.json` at the repo root holds the project's settings. Every key is optional.
+A list you set replaces the default list; it does not add to it.
+
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `layout.maxEntries` | `7` | The most entries a folder may hold (core rule 10) |
+| `layout.exempt` | none | Folders that may grow past it, such as a log of records |
+| `tests` | `*.test.*`, `*.spec.*`, `*_test.go`, `test/**`, `tests/**` | The test files a fix task may not change |
+| `leadOnly` | the rules, agent config, `.githooks/**`, `.github/**` | The files a worker may not change |
+| `privacy.allow` | none | Exact strings the privacy check lets through, such as a public support address |
+| `privacy.skip` | lock files | Files the privacy check does not read |
+| `privacy.utc` | `true` | Commit times must be in UTC |
+| `notNow` | none | Steps not taken up yet, by `doctor`'s name, each with a reason: `{ "ci": "no remote yet" }` |
+| `allowBuild` | none | Build output and binaries the commit check lets through |
+| `areas` | any | The areas a title may name. See [Issue titles](#issue-titles) |
+| `translations.fail` | `false` | A translation behind its source fails the check |
+
+Environment variables:
+
+| Variable | What it does |
+|----------|--------------|
+| `YOKOTEN_ROLE=worker` | The session is a worker. It may not change lead-only files |
+| `YOKOTEN_FIX_TASK=1` | The session is a fix task. It may not change test files |
+| `YOKOTEN_RELEASE_APPROVAL=1` | The owner allows a release from this session |
+| `YOKOTEN_PRIVATE_MARKS` | Another path for the private-marks file |
+| `YOKOTEN_BOT_APP_ID`, `YOKOTEN_BOT_KEY`, `YOKOTEN_BOT_INSTALLATION` | The bot. See [server.md](server.md#3-the-bot-a-github-app) |
+| `YOKOTEN_GITHUB_API` | Another GitHub API address, such as GitHub Enterprise Server |
+| `LLAMA_API_KEY` or `MODEL_API_KEY`, `LLAMA_API_BASE`, `LLAMA_MODEL` | The model for `adopt`. See [A first draft of the table](#a-first-draft-of-the-table) |
+
 
 ## The core rules
 
@@ -600,8 +683,8 @@ The full table, with the reasons, is in [`kit/project/AGENTS.md`](../kit/project
 
 1. Every piece of work starts as an issue. No todo files.
 2. Nothing reaches `main` without a pull request and green CI.
-3. Only the owner creates tags and releases.
-4. A fix task changes code, never tests.
+3. Only the owner creates tags and releases. A general "merge" or "ship it" does not approve a release.
+4. A fix task changes code, never tests (`YOKOTEN_FIX_TASK=1`).
 5. A worker doesn't change lead-only files: the rules, agent config, hooks, CI.
 6. Never skip the commit check.
 7. No plain force push. Never rebase a shared branch.
@@ -668,10 +751,13 @@ The setup treats agents like staff on a line, each with a clear role and limited
 - **The lead** is the session you talk to. It plans, splits the work, reviews, and opens
   pull requests through a **bot**, never with your account.
 - **Workers** are sessions the lead starts for one task each, in their own worktree,
-  with `YOKOTEN_ROLE=worker`. They change code and report back. They never push.
-- **The bot** is a GitHub App installed on the repo. It can open pull requests but has
-  no Workflows permission, so it can't change the CI that checks it. A ruleset requires
-  your review, so nothing it opens merges without you.
+  with `YOKOTEN_ROLE=worker`. They change code and report back. They never push. A
+  fix task also gets `YOKOTEN_FIX_TASK=1`. Then the guard and the commit check stop a
+  change to a test file.
+- **The bot** is a GitHub App installed on the repo. It opens pull requests. If it has
+  the Workflows permission, CODEOWNERS still sends every CI change to you, and a release
+  waits for you in the protected `release` environment. A ruleset requires your review,
+  so nothing it opens merges without you.
 
 Six skills carry the method: `dispatch` (brief a worker), `inspect` (review one exact
 commit in three passes), `rca` (root cause, a check, then spread it), `record` (write
@@ -701,6 +787,13 @@ request can't edit the file to lower its own tier. Without a base commit, on a l
 it reads the working tree. The message says which one it read. No CODEOWNERS file, no
 check.
 
+A reviewer finds the tier through labels, so `check --pr` also reads them. A pull request
+needs one type label and one tier label. A type label is a title type (`feat`, `fix`,
+`docs`, `refactor`, `ci` and the others) or a common name for one: `bug`, `hotfix` or
+`incident` for `fix`, `feature` or `enhancement` for `feat`, `documentation` for `docs`.
+The tier label is `tier A`, `tier B` or `tier C` (`tier: B` also counts). It must match
+the `tier:` line in the body. Each missing or wrong label gets its own message.
+
 Server setup, step by step: [`docs/server.md`](server.md).
 
 ## Privacy
@@ -710,6 +803,12 @@ on every commit. On your own machine it also reads `~/.config/yokoten/private-ma
 your name, your city, your domains, your server names. That file stays outside the
 repo, because a list of what must not be published can't itself be published. A hit
 is reported by file and line; the mark itself is never printed.
+
+The IP check covers IPv4 only, private ranges such as `10.x` and `192.168.x` included;
+IPv6 is not checked. Localhost and the documentation ranges (`192.0.2.0/24` and its two
+siblings) are fine. Browser version strings such as `Chrome/120.0.0.0` are not
+addresses, and neither is a retina image name such as `logo@2x.png`. An address after
+`http://` or in a path such as `api/` is still caught.
 
 The same check catches secrets: GitHub, npm, Slack, Stripe, Google, OpenAI and
 Anthropic tokens, AWS access key ids, and PEM private keys. A hit names the kind of

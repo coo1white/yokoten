@@ -12,8 +12,9 @@ import { createLabel, createMilestone, deleteLabel, editLabel, type Gh, type Lab
 
 /**
  * The standard set, as agreed for yokoten (#10): a type, the same words as commit types,
- * and the flow labels. No status or priority labels: the board holds status, milestones
- * hold timing. Area labels are each project's own, so they are not here.
+ * the flow labels, and the tier labels the pull request check asks for (#225). No status
+ * or priority labels: the board holds status, milestones hold timing. Area labels are each
+ * project's own, so they are not here.
  */
 export const LABELS: Label[] = [
   { name: 'bug', color: 'd73a4a', description: 'Something does not work as it should' },
@@ -25,10 +26,32 @@ export const LABELS: Label[] = [
   { name: 'incident', color: 'b60205', description: 'Something went wrong; the fix adds a check' },
   { name: 'good first issue', color: '7057ff', description: 'A small, clear task for a new contributor' },
   { name: 'hotfix', color: 'e11d21', description: 'Urgent: fix and release soon' },
+  { name: 'tier A', color: 'b60205', description: 'Hard to take back: secrets, data, install/update path, releases, going public. Owner reviews.' },
+  { name: 'tier B', color: 'fbca04', description: 'Other code. Tests for the change; merges when CI is green.' },
+  { name: 'tier C', color: '0e8a16', description: 'Docs, wording, styles. Merges when CI is green.' },
 ];
 
 /** The milestone made when the repo has no open one. */
 export const FIRST_MILESTONE = 'First release';
+
+/** The milestone made instead when a closed one already holds the first title. */
+export const NEXT_MILESTONE = 'Next release';
+
+/**
+ * The one milestone rule for `init --github` and the road (#178): the repo needs an open
+ * milestone. Returns null when one is open, or else the title `init` makes. A closed
+ * milestone is the owner's decision, so it is never reopened. The host refuses a title a
+ * closed one holds, so the title is the first one that is free: "First release", then
+ * "Next release", then "Next release 2" and on.
+ */
+export function pickNewMilestone(milestones: { title: string; open: boolean }[]): string | null {
+  if (milestones.some((m) => m.open)) return null;
+  const taken = new Set(milestones.map((m) => m.title.toLowerCase()));
+  if (!taken.has(FIRST_MILESTONE.toLowerCase())) return FIRST_MILESTONE;
+  let title = NEXT_MILESTONE;
+  for (let count = 2; taken.has(title.toLowerCase()); count++) title = `${NEXT_MILESTONE} ${count}`;
+  return title;
+}
 
 /** GitHub's default labels that the standard set replaces. Deleted only with --remove-default-labels. */
 export const HOST_DEFAULTS = ['documentation', 'duplicate', 'enhancement', 'help wanted', 'invalid', 'question', 'wontfix'];
@@ -66,6 +89,7 @@ interface Change {
  * A skip (no GitHub remote, no gh, no sign-in) is ok: init goes on and says so.
  */
 export function setUpPlanning(gh: Gh, remote: string, { apply, removeDefaults }: PlanningOptions): { ok: boolean; lines: string[] } {
+  if (!remote.trim()) return { ok: true, lines: ['GitHub: skipped, because there is no origin remote yet. Add one on GitHub, then run `yokoten init --github` to set up labels and a milestone'] };
   const repo = repoOf(remote);
   if (!repo) return { ok: true, lines: ['GitHub: skipped, because the origin remote is not on GitHub. Labels and a milestone need a GitHub repo'] };
   const found = readPlanning(gh, repo);
@@ -82,9 +106,9 @@ export function setUpPlanning(gh: Gh, remote: string, { apply, removeDefaults }:
     } else kept++;
   }
   if (kept) lines.push(`- ${kept} of the ${LABELS.length} standard labels are there; kept`);
-  // An open milestone is a plan already. A closed one with the same title would make the host refuse.
-  if (found.milestones.some((m) => m.open || m.title === FIRST_MILESTONE)) lines.push('- a milestone is there; kept');
-  else changes.push({ what: `make milestone "${FIRST_MILESTONE}"`, run: () => createMilestone(gh, repo, FIRST_MILESTONE) });
+  const milestone = pickNewMilestone(found.milestones);
+  if (milestone === null) lines.push('- a milestone is open; kept');
+  else changes.push({ what: `make milestone "${milestone}"`, run: () => createMilestone(gh, repo, milestone) });
   const extra = found.labels.filter((l) => HOST_DEFAULTS.includes(l.name.toLowerCase())).map((l) => l.name);
   if (extra.length && removeDefaults) {
     for (const name of extra) changes.push({ what: `delete label "${name}" (the host also takes it off every issue)`, run: () => deleteLabel(gh, repo, name) });
