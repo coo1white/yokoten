@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -11,6 +11,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { closestWord, COMMANDS, editDistance, guardCommand, HELP_OPTIONS } from '../src/run/cli.ts';
 import { copyRuntime } from '../src/setup/files.ts';
+import { guardDeadline } from '../src/run/hook.ts';
 import { checkLines } from '../src/setup/init.ts';
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'yokoten.ts');
@@ -36,7 +37,8 @@ function makeSandbox() {
   git('init', '-q', '-b', 'main');
   git('config', 'user.name', 'Test');
   git('config', 'user.email', `1+test${at}users.noreply.github.com`);
-  const run = (args: string[], { input, cwd = repo, extra = {} }: { input?: string; cwd?: string; extra?: Record<string, string> } = {}) => spawnSync('node', [CLI, ...args], { cwd, env: { ...env, ...extra }, input, encoding: 'utf8' });
+  const run = (args: string[], { input, cwd = repo, extra = {}, timeout }: { input?: string; cwd?: string; extra?: Record<string, string>; timeout?: number } = {}) =>
+    spawnSync('node', [CLI, ...args], { cwd, env: { ...env, ...extra }, input, encoding: 'utf8', timeout });
   const write = (path: string, text: string) => {
     mkdirSync(dirname(join(repo, path)), { recursive: true });
     writeFileSync(join(repo, path), text);
@@ -72,7 +74,93 @@ test('hook: blocks with exit 2 and a reason, allows with exit 0', () => {
   assert.equal(sandbox.run(['hook'], { input: 'not json' }).status, 0);
 });
 
+// The runtimes let a tool call through when the hook runs past their timeout, so a guard
+// that reads too long is stopped and the call refused (#274).
+test('hook: past the deadline the call is refused, in text and JSON (#274)', () => {
+  const sandbox = makeSandbox();
+  const input = JSON.stringify({ cwd: sandbox.repo, tool_input: { command: `npm run build -- ${'--flag value '.repeat(200)}` } });
+  const late = { YOKOTEN_GUARD_DEADLINE_MS: '1' };
+  let result = sandbox.run(['hook'], { input, extra: late });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /^yokoten: the guard took longer than 1 ms to read this command\. .*Split the command into smaller ones\./);
+  result = sandbox.run(['hook', '--json'], { input, extra: late });
+  assert.equal(result.status, 2);
+  const out = JSON.parse(result.stdout);
+  assert.equal(out.blocked, true);
+  assert.equal(out.finding.id, 'unreadable-command');
+  // The default deadline: a plain command passes, and the guard still blocks.
+  const call = (command: string) => sandbox.run(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: { command } }) });
+  assert.equal(call('ls').status, 0);
+  assert.equal(call('git push --force origin main').status, 2);
+  assert.equal(sandbox.run(['hook'], { input, extra: { YOKOTEN_GUARD_DEADLINE_MS: 'soon' } }).status, 0, 'a bad value keeps the default');
+  // The setting can never turn the deadline off, nor set a timer Node can't hold.
+  for (const [value, ms] of [['', 5000], ['0', 5000], ['-5', 5000], ['0x10', 5000], ['1e9', 5000], ['2.5', 5000], ['Infinity', 5000], ['250', 250], ['90000', 30_000], ['3000000000', 30_000]] as const) {
+    assert.equal(guardDeadline(value), ms, `YOKOTEN_GUARD_DEADLINE_MS=${value}`);
+  }
+});
+
+test('hook: a command the guard reads too slowly is refused within the deadline (#274)', () => {
+  const sandbox = makeSandbox();
+  // A large command, still being read when a 1 ms deadline passes, however fast the reader:
+  // the busy worker is stopped and the hook exits at once, in little memory.
+  const input = JSON.stringify({ cwd: sandbox.repo, tool_input: { command: `find . ${'-exec env '.repeat(30000)}` } });
+  const start = Date.now();
+  const result = spawnSync('node', ['--max-old-space-size=256', CLI, 'hook'], { cwd: sandbox.repo, env: { ...sandbox.env, YOKOTEN_GUARD_DEADLINE_MS: '1' }, input, encoding: 'utf8', timeout: 20000 });
+  const took = Date.now() - start;
+  assert.ok(took < 10000, `the hook took ${took} ms`);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /took longer than 1 ms/);
+});
+
 // The Stop event is shaped as Claude Code's hook docs show it (code.claude.com/docs/en/hooks#stop).
+test('hook: bad JSON in yokoten.json gives the defaults and one line, and check still fails (#218)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', '{ "layout": ');
+  const call = (command: string) => sandbox.run(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: { command } }) });
+  const line = /^yokoten hook: yokoten\.json was ignored, so the defaults apply; the core checks still run\. yokoten\.json: [^\n]+\n/;
+  let result = call('git push --force');
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, line);
+  assert.match(result.stderr, /\nyokoten: [^\n]*force/);
+  assert.ok(!result.stderr.includes(sandbox.repo), 'no absolute path');
+  result = call('git status');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, line);
+  assert.equal(result.stderr.split('\n').filter(Boolean).length, 1, 'one line');
+  // check and doctor still see a config problem.
+  result = sandbox.run(['check']);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout + result.stderr, /yokoten\.json:/);
+});
+
+test('hook: a key with the wrong shape gets its default and one line; check names the key; an unknown key is a note (#228)', () => {
+  const sandbox = makeSandbox();
+  // Positive control: before #228, this made the hook crash on an edit (exit 1, guard open).
+  sandbox.write('yokoten.json', '{ "leadOnly": "x" }');
+  const call = (toolInput: Record<string, string>) => sandbox.run(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: toolInput }), extra: { YOKOTEN_ROLE: 'worker' } });
+  const line = /^yokoten hook: yokoten\.json "leadOnly" was ignored, so its default applies; the core checks still run\. yokoten\.json: "leadOnly" must be a list of text, such as [^\n]+\n/;
+  for (const toolInput of [{ file_path: 'AGENTS.md' }, { command: 'git push --force' }] as Record<string, string>[]) {
+    const result = call(toolInput);
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, line);
+    assert.equal(result.stderr.match(/^yokoten hook:/gm)?.length, 1, 'one line');
+  }
+  let result = sandbox.run(['check']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^yokoten check: yokoten\.json: "leadOnly" must be a list of text/);
+  // An unknown key is a note, and check passes.
+  sandbox.write('yokoten.json', '{ "colour": "blue" }');
+  result = sandbox.run(['check']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^yokoten check: note: yokoten\.json: "colour" is not a key this version of yokoten knows/m);
+  assert.equal(call({ command: 'git status' }).stderr, '', 'the hook says nothing');
+  // Every wrong key in one run.
+  sandbox.write('yokoten.json', '{ "leadOnly": "x", "tests": 5, "notNow": null }');
+  result = sandbox.run(['check']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^yokoten check: yokoten\.json: 2 keys have the wrong shape:\n- "tests" must be [^\n]+\n- "leadOnly" must be /);
+});
+
 test('hook --stop: sends the agent back once with the findings in changed files, never twice (#92)', () => {
   const sandbox = makeSandbox();
   const stop = (active = false, extra?: Record<string, string>) =>
@@ -340,6 +428,275 @@ test('check --staged: stops build output and binaries, lets images and allowed p
   assert.equal(r.status, 0, r.stderr);
 });
 
+test('check --staged: a submodule and a path with a colon pass, read by blob id (#244)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const head = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  // A submodule add, as git records it: a gitlink at mode 160000.
+  sandbox.git('update-index', '--add', '--cacheinfo', `160000,${head},sub`);
+  sandbox.write('2:notes.md', 'notes\n');
+  sandbox.git('add', '2:notes.md');
+  let result = sandbox.run(['check', '--staged']);
+  assert.equal(result.status, 0, result.stderr);
+  result = sandbox.run(['check', '--staged', '--json']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).check, 'staged');
+  // A pointer bump.
+  sandbox.git('commit', '-qm', 'sub');
+  sandbox.git('commit', '-q', '--allow-empty', '-m', 'next');
+  const next = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  sandbox.git('update-index', '--cacheinfo', `160000,${next},sub`);
+  result = sandbox.run(['check', '--staged']);
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('check --staged: a symlink turned into a file is checked for privacy (#244)', () => {
+  const sandbox = makeSandbox();
+  symlinkSync('a.md', join(sandbox.repo, 'link'));
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  rmSync(join(sandbox.repo, 'link'));
+  sandbox.write('link', `write to me${at}gmail.com\n`);
+  sandbox.git('add', 'link');
+  const result = sandbox.run(['check', '--staged']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /link:1: an email/);
+});
+
+test('check and the stop hook read a symlink as its link text, never its target (#244)', () => {
+  const sandbox = makeSandbox();
+  writeFileSync(join(dirname(sandbox.repo), 'outside.txt'), `write to me${at}gmail.com\n`);
+  symlinkSync('../outside.txt', join(sandbox.repo, 'out'));
+  symlinkSync('/dev/zero', join(sandbox.repo, 'zero'));
+  sandbox.git('add', '.');
+  const stop = () => sandbox.run(['hook', '--stop'], { input: JSON.stringify({ cwd: sandbox.repo, stop_hook_active: false }), timeout: 10000 });
+  let result = stop();
+  assert.deepEqual([result.status, result.stderr], [0, ''], 'staged, before the commit');
+  sandbox.git('commit', '-qm', 'links');
+  result = sandbox.run(['check'], { timeout: 10000 });
+  assert.equal(result.status, 0, result.stderr);
+  // A link whose text is itself an email is still caught.
+  symlinkSync(`me${at}gmail.com`, join(sandbox.repo, 'mail'));
+  sandbox.git('add', 'mail');
+  assert.match(stop().stderr, /mail:1: an email/);
+  assert.match(sandbox.run(['check'], { timeout: 10000 }).stderr, /mail:1: an email/);
+});
+
+test('check --staged: binary is decided from the bytes, not .gitattributes (#244)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('.gitattributes', 'yarn.lock -diff\n*.pbxproj binary\n');
+  sandbox.write('yarn.lock', 'left-pad@1.0.0:\n  version "1.0.0"\n');
+  sandbox.write('App.pbxproj', '// !$*UTF8*$!\n{\n}\n');
+  sandbox.git('add', '.');
+  let result = sandbox.run(['check', '--staged']);
+  assert.equal(result.status, 0, result.stderr);
+  // A NUL in the first 8000 bytes is binary; one after them is not, as git decides.
+  writeFileSync(join(sandbox.repo, 'tool'), Buffer.concat([Buffer.from('#!'), Buffer.alloc(1), Buffer.from('x\n')]));
+  writeFileSync(join(sandbox.repo, 'late.txt'), Buffer.concat([Buffer.alloc(8000, 'a'), Buffer.alloc(1)]));
+  sandbox.git('add', '.');
+  result = sandbox.run(['check', '--staged']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /tool: a binary file/);
+  assert.ok(!result.stderr.includes('late.txt'), result.stderr);
+});
+
+// A merge leaves the index and MERGE_HEAD as the pre-merge-commit hook sees them (#246).
+function mergeSandbox() {
+  const sandbox = makeSandbox();
+  sandbox.write('AGENTS.md', 'rules\n');
+  sandbox.write('test/a.test.ts', 'old\n');
+  sandbox.write('src/a.ts', 'a\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  sandbox.git('checkout', '-qb', 'work');
+  sandbox.write('src/a.ts', 'b\n');
+  sandbox.git('commit', '-qam', 'work');
+  sandbox.git('checkout', '-q', 'main');
+  return sandbox;
+}
+
+test('check --staged: in a merge, the role checks see only what the merge itself changed (#246)', () => {
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  // Main changed a lead-only file and a test; a worker brings main into its branch.
+  let sandbox = mergeSandbox();
+  sandbox.write('AGENTS.md', 'new rules\n');
+  sandbox.write('test/a.test.ts', 'new\n');
+  sandbox.git('commit', '-qam', 'lead');
+  sandbox.git('checkout', '-q', 'work');
+  assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', 'main').status, 0);
+  let result = sandbox.run(['check', '--staged'], { extra: worker });
+  assert.deepEqual([result.status, result.stderr], [0, ''], 'main changed AGENTS.md');
+  result = sandbox.run(['check', '--staged'], { extra: { ...worker, YOKOTEN_FIX_TASK: '1' } });
+  assert.deepEqual([result.status, result.stderr], [0, ''], 'main changed a test, in a fix task');
+  // An edit made during the merge is the worker's own.
+  sandbox.write('AGENTS.md', 'my rules\n');
+  sandbox.git('add', 'AGENTS.md');
+  result = sandbox.run(['check', '--staged'], { extra: worker });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /AGENTS\.md is lead-only/);
+
+  // A conflict in AGENTS.md resolved by a new edit is refused.
+  sandbox = mergeSandbox();
+  sandbox.write('AGENTS.md', 'lead rules\n');
+  sandbox.git('commit', '-qam', 'lead');
+  sandbox.git('checkout', '-q', 'work');
+  sandbox.write('AGENTS.md', 'worker rules\n');
+  sandbox.git('commit', '-qam', 'worker edit');
+  assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', 'main').status, 1, 'a conflict');
+  sandbox.write('AGENTS.md', 'both rules\n');
+  sandbox.git('add', 'AGENTS.md');
+  result = sandbox.run(['check', '--staged'], { extra: worker });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /AGENTS\.md is lead-only/);
+
+  // Outside a merge, a worker's commit of AGENTS.md is refused as before.
+  sandbox = mergeSandbox();
+  sandbox.write('AGENTS.md', 'my rules\n');
+  sandbox.git('add', 'AGENTS.md');
+  result = sandbox.run(['check', '--staged'], { extra: worker });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /AGENTS\.md is lead-only/);
+});
+
+test('check --staged: in a merge, a merged-in file is still checked for privacy (#246)', () => {
+  const sandbox = mergeSandbox();
+  sandbox.write('notes.md', `write to me${at}gmail.com\n`);
+  sandbox.git('add', 'notes.md');
+  sandbox.git('commit', '-qm', 'notes');
+  sandbox.git('checkout', '-q', 'work');
+  assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', 'main').status, 0);
+  const result = sandbox.run(['check', '--staged'], { extra: { YOKOTEN_ROLE: 'worker' } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /notes\.md:1: an email/);
+});
+
+test('check --staged: a malformed MERGE_HEAD is ignored, and the full role check runs (#246)', () => {
+  // A real merge of main, which changed AGENTS.md, then a line git would read as an option.
+  const sandbox = mergeSandbox();
+  sandbox.write('AGENTS.md', 'new rules\n');
+  sandbox.git('commit', '-qam', 'lead');
+  sandbox.git('checkout', '-q', 'work');
+  assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', 'main').status, 0);
+  const mergeHead = join(sandbox.repo, sandbox.git('rev-parse', '--git-path', 'MERGE_HEAD').stdout.trim());
+  appendFileSync(mergeHead, '--relative=zzz\n');
+  const result = sandbox.run(['check', '--staged'], { extra: { YOKOTEN_ROLE: 'worker' } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /AGENTS\.md is lead-only/);
+});
+
+test('check --staged: a MERGE_HEAD that descends from HEAD exempts nothing (#246)', () => {
+  // A fast-forward is a one-parent commit, not a merge: a stash of a lead-only edit named
+  // in MERGE_HEAD must not let that edit through.
+  const sandbox = mergeSandbox();
+  sandbox.write('AGENTS.md', 'my rules\n');
+  assert.equal(sandbox.git('stash', '-q').status, 0);
+  const stash = sandbox.git('rev-parse', 'stash@{0}').stdout.trim();
+  writeFileSync(join(sandbox.repo, sandbox.git('rev-parse', '--git-path', 'MERGE_HEAD').stdout.trim()), `${stash}\n`);
+  assert.equal(sandbox.git('checkout', 'stash@{0}', '--', 'AGENTS.md').status, 0);
+  const result = sandbox.run(['check', '--staged'], { extra: { YOKOTEN_ROLE: 'worker' } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /AGENTS\.md is lead-only/);
+});
+
+test('check --staged: a move is role-checked at its old path too (#259)', () => {
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  const moved = (from: string, to: string, extra: Record<string, string>) => {
+    const sandbox = mergeSandbox();
+    assert.equal(sandbox.git('mv', from, to).status, 0);
+    assert.match(sandbox.git('diff', '--cached', '--name-status').stdout, /^R/, 'git sees a move');
+    return sandbox.run(['check', '--staged'], { extra });
+  };
+  let result = moved('AGENTS.md', 'notes.md', worker);
+  assert.equal(result.status, 1, 'a worker moves a lead-only file away');
+  assert.match(result.stderr, /AGENTS\.md is lead-only/);
+  result = moved('src/a.ts', 'src/b.ts', worker);
+  assert.deepEqual([result.status, result.stderr], [0, ''], 'a worker moves its own file');
+  result = moved('AGENTS.md', 'notes.md', {});
+  assert.deepEqual([result.status, result.stderr], [0, ''], 'the lead moves a lead-only file');
+  result = moved('test/a.test.ts', 'test/b.test.ts', { ...worker, YOKOTEN_FIX_TASK: '1' });
+  assert.equal(result.status, 1, 'a fix task moves a test');
+  assert.match(result.stderr, /test\/a\.test\.ts is a test file/);
+});
+
+test('check --staged: in a merge, a move is the worker\'s only if the merge made it (#259)', () => {
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  // Main moved AGENTS.md; a worker brings main in.
+  let sandbox = mergeSandbox();
+  assert.equal(sandbox.git('mv', 'AGENTS.md', 'RULES.md').status, 0);
+  sandbox.git('commit', '-qm', 'lead move');
+  sandbox.git('checkout', '-q', 'work');
+  assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', 'main').status, 0);
+  let result = sandbox.run(['check', '--staged'], { extra: worker });
+  assert.deepEqual([result.status, result.stderr], [0, ''], 'main moved AGENTS.md');
+
+  // The worker moves AGENTS.md away during a merge of main.
+  sandbox = mergeSandbox();
+  sandbox.write('notes.md', 'notes\n');
+  sandbox.git('add', 'notes.md');
+  sandbox.git('commit', '-qm', 'notes');
+  sandbox.git('checkout', '-q', 'work');
+  assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', 'main').status, 0);
+  assert.equal(sandbox.git('mv', 'AGENTS.md', 'RULES.md').status, 0);
+  result = sandbox.run(['check', '--staged'], { extra: worker });
+  assert.equal(result.status, 1, 'the merge made the move');
+  assert.match(result.stderr, /AGENTS\.md is lead-only/);
+});
+
+test('check --staged: in a merge, removing a lead-only file only the other side has is the worker\'s (#259)', () => {
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  // Main moves .github/a.yml to .github/b.yml; a worker merges main in, then runs `then`.
+  const merged = (then: string[][], extra: Record<string, string>) => {
+    const sandbox = makeSandbox();
+    sandbox.write('.github/a.yml', 'on: push\n');
+    sandbox.write('src/a.ts', 'a\n');
+    sandbox.git('add', '.');
+    sandbox.git('commit', '-qm', 'start');
+    sandbox.git('checkout', '-qb', 'work');
+    sandbox.write('src/a.ts', 'b\n');
+    sandbox.git('commit', '-qam', 'work');
+    sandbox.git('checkout', '-q', 'main');
+    assert.equal(sandbox.git('mv', '.github/a.yml', '.github/b.yml').status, 0);
+    sandbox.git('commit', '-qm', 'lead move');
+    sandbox.git('checkout', '-q', 'work');
+    assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', 'main').status, 0);
+    for (const args of then) assert.equal(sandbox.git(...args).status, 0, args.join(' '));
+    return sandbox.run(['check', '--staged'], { extra });
+  };
+  let result = merged([['mv', '.github/b.yml', 'c.yml']], worker);
+  assert.equal(result.status, 1, 'a worker moves the merged-in file away');
+  assert.match(result.stderr, /\.github\/b\.yml is lead-only/);
+  result = merged([['rm', '-qf', '.github/b.yml']], worker);
+  assert.equal(result.status, 1, 'a worker removes the merged-in file');
+  assert.match(result.stderr, /\.github\/b\.yml is lead-only/);
+  result = merged([['mv', '.github/b.yml', 'c.yml']], {});
+  assert.deepEqual([result.status, result.stderr], [0, ''], 'the lead moves it');
+  result = merged([['rm', '-qf', '.github/b.yml']], {});
+  assert.deepEqual([result.status, result.stderr], [0, ''], 'the lead removes it');
+  result = merged([], worker);
+  assert.deepEqual([result.status, result.stderr], [0, ''], 'a clean merge of the move');
+});
+
+test('check --staged: a staged entry git can\'t read fails, not passes as empty (#244)', () => {
+  const sandbox = makeSandbox();
+  sandbox.git('update-index', '--add', '--info-only', '--cacheinfo', `100644,${'1'.repeat(40)},ghost.md`);
+  const result = sandbox.run(['check', '--staged']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /ghost\.md: git can't read the staged copy\. .+ Run `git add ghost\.md` again/);
+});
+
+test('check --staged: a text file with a NUL after 8000 bytes is scanned for privacy (#244)', () => {
+  const sandbox = makeSandbox();
+  writeFileSync(join(sandbox.repo, 'late.txt'), Buffer.concat([Buffer.from(`write to me${at}gmail.com\n`), Buffer.alloc(9000, 'a'), Buffer.alloc(1)]));
+  sandbox.git('add', '.');
+  const result = sandbox.run(['check', '--staged']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /late\.txt:1: an email/);
+  assert.ok(!result.stderr.includes('binary'), result.stderr);
+});
+
 test('doctor: the no-build-output step looks at the tracked files (#56)', () => {
   const sandbox = makeSandbox();
   const line = () => sandbox.run(['doctor']).stdout.split('\n').find((l) => / no-build-output/.test(l)) ?? '';
@@ -350,6 +707,34 @@ test('doctor: the no-build-output step looks at the tracked files (#56)', () => 
   assert.match(line(), /^ +to do +no-build-output \(Scorecard: Binary-Artifacts\): build output in the repo \(build\/a\.js, lib\/x\.so\)/);
   sandbox.write('yokoten.json', JSON.stringify({ allowBuild: ['build/**', 'lib/**'] }));
   assert.match(line(), /^ +done +no-build-output/);
+});
+
+test('doctor: shows check\'s notes, worded as check words them, and they never change the exit code (#228)', () => {
+  const sandbox = makeSandbox();
+  const before = sandbox.run(['doctor']);
+  assert.doesNotMatch(before.stdout, /note +yokoten\.json|is behind en\.md/);
+  // An unknown yokoten.json key.
+  sandbox.write('yokoten.json', '{ "colour": "blue" }');
+  const unknownKey = /^ {2}note +yokoten\.json: "colour" is not a key this version of yokoten knows/m;
+  assert.match(sandbox.run(['check']).stdout, /^yokoten check: note: yokoten\.json: "colour" is not a key this version of yokoten knows/m);
+  let result = sandbox.run(['doctor']);
+  assert.match(result.stdout, unknownKey);
+  assert.equal(result.status, before.status, 'a note never changes the exit code');
+  result = sandbox.run(['doctor', '--json']);
+  assert.ok(JSON.parse(result.stdout).notes.some((f: { file?: string; what: string }) => f.file === 'yokoten.json' && /"colour"/.test(f.what)));
+  assert.doesNotMatch(sandbox.run(['doctor', '--session']).stdout, /colour/, 'a session stays short');
+  // A translation behind its English source.
+  sandbox.write('en.md', '# Guide\n\nStep one.\n');
+  sandbox.write('zh.md', '<!-- source: en.md -->\n# 指南\n\n第一步。\n');
+  sandbox.git('add', 'en.md', 'zh.md');
+  sandbox.git('commit', '-q', '-m', 'docs: add the guide');
+  sandbox.write('en.md', '# Guide\n\nStep one.\nStep two.\n');
+  sandbox.git('commit', '-q', '-am', 'docs: add step two');
+  result = sandbox.run(['doctor']);
+  assert.match(result.stdout, /^ {2}note +zh\.md:1: is behind en\.md by 1 commit/m);
+  assert.match(result.stdout, unknownKey);
+  assert.equal(result.status, before.status);
+  assert.ok(JSON.parse(sandbox.run(['doctor', '--json']).stdout).notes.some((f: { id: string }) => f.id === 'translation-behind'));
 });
 
 test('check --staged: stops a commit whose time carries a time zone, never printing it (#40)', () => {
@@ -394,6 +779,74 @@ test('check --history: finds what a later commit deleted, and a personal author 
   assert.match(r.stderr, /notes\.md @ blob \w+:2: a secret \(GitHub token\)/, 'a secret deleted later (#8)');
   assert.ok(!r.stderr.includes(token), 'the secret is never printed');
   assert.match(r.stderr, /\(author\/committer\):1: an email/);
+});
+
+test('check --history: a shallow clone fails with one finding, never "every commit" (#266)', () => {
+  const sandbox = makeSandbox();
+  const token = `${'gh'}p_${'x7Y2k9'.repeat(6)}`;
+  sandbox.write('notes.md', `token ${token}\n`);
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'add notes');
+  sandbox.git('rm', '-q', 'notes.md');
+  sandbox.git('commit', '-qm', 'remove notes');
+  // A full clone finds the secret a later commit deleted.
+  const full = join(sandbox.home, 'full');
+  const shallow = join(sandbox.home, 'shallow');
+  spawnSync('git', ['clone', '-q', `file://${sandbox.repo}`, full], { env: sandbox.env });
+  spawnSync('git', ['clone', '-q', '--depth', '1', `file://${sandbox.repo}`, shallow], { env: sandbox.env });
+  let result = sandbox.run(['check', '--history'], { cwd: full });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /notes\.md @ blob \w+:1: a secret \(GitHub token\)/);
+  // The shallow clone (actions/checkout's default) is not scanned, and says why.
+  result = sandbox.run(['check', '--history'], { cwd: shallow });
+  assert.equal(result.status, 1, result.stdout);
+  assert.ok(!/every commit/.test(result.stdout + result.stderr), result.stdout);
+  assert.match(result.stderr, /1 problem\(s\)\n- this clone is shallow, so the history check can't see old commits\. .+\. Use `fetch-depth: 0` in actions\/checkout, or run `git fetch --unshallow`/);
+  assert.ok(!result.stderr.includes('notes.md'), 'nothing was scanned');
+  result = sandbox.run(['check', '--history', '--json'], { cwd: shallow });
+  assert.equal(result.status, 1);
+  const out = JSON.parse(result.stdout);
+  assert.equal(out.ok, false);
+  assert.deepEqual(out.findings.map((f: { id: string }) => f.id), ['shallow-history']);
+  assert.deepEqual(out.notes, []);
+  // In GitHub Actions: an error annotation and a row in the job summary.
+  const summary = join(sandbox.home, 'summary.md');
+  result = sandbox.run(['check', '--history'], { cwd: shallow, extra: { GITHUB_ACTIONS: 'true', GITHUB_STEP_SUMMARY: summary } });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /^::error title=yokoten shallow-history::.*this clone is shallow/m);
+  assert.match(readFileSync(summary, 'utf8'), /1 problem\n[^]*shallow-history[^]*this clone is shallow/);
+});
+
+test('check --history: a commit hidden by git replace is still scanned; a grafts file fails with one finding (#284)', () => {
+  const sandbox = makeSandbox();
+  const token = `${'gh'}p_${'x7Y2k9'.repeat(6)}`;
+  sandbox.write('notes.md', `token ${token}\n`);
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'add notes');
+  const first = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  sandbox.git('rm', '-q', 'notes.md');
+  sandbox.git('commit', '-qm', 'remove notes');
+  // Swap the first commit for an empty root commit: git log and rev-list now skip the token.
+  const emptyTree = sandbox.git('hash-object', '-w', '-t', 'tree', '/dev/null').stdout.trim();
+  const emptyRoot = sandbox.git('commit-tree', emptyTree, '-m', 'add notes').stdout.trim();
+  assert.equal(sandbox.git('replace', first, emptyRoot).status, 0);
+  assert.equal(sandbox.git('log', '--all', '--format=%H', '--', 'notes.md').stdout.trim(), '', 'git itself no longer sees the token');
+  let result = sandbox.run(['check', '--history']);
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stderr, /notes\.md @ blob \w+:1: a secret \(GitHub token\)/);
+  assert.ok(!result.stderr.includes(token), 'the secret is never printed');
+
+  // A grafts file can hide commits too: nothing is scanned, and one finding says why.
+  const second = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  sandbox.git('replace', '-d', first);
+  sandbox.write('.git/info/grafts', `${second}\n`);
+  result = sandbox.run(['check', '--history']);
+  assert.equal(result.status, 1, result.stdout);
+  assert.ok(!/every commit on every branch/.test(result.stdout + result.stderr), result.stdout);
+  assert.match(result.stderr, /1 problem\(s\)\n- this repo has a grafts file, so the history check can't see every commit\. .+\. Run `git replace --convert-graft-file`/);
+  assert.ok(!result.stderr.includes('notes.md'), 'nothing was scanned');
+  result = sandbox.run(['check', '--history', '--json']);
+  assert.deepEqual(JSON.parse(result.stdout).findings.map((f: { id: string }) => f.id), ['shallow-history']);
 });
 
 test('init: adds the practices, keeps what is there, and doctor goes on to stage 4', () => {
@@ -474,7 +927,7 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.match(secret.stderr, /leak\.md:1: a secret \(AWS access key id\)/);
   sandbox.git('reset', '-q', 'leak.md');
   // init does all of stages 1 to 3 but the tests, so with tests the road goes on to stage 4.
-  assert.match(sandbox.run(['doctor', '--session']).stdout, /^yokoten: stage 1 of 5, safety net\. Next: no test command/);
+  assert.match(sandbox.run(['doctor', '--session']).stdout, /^yokoten: stage 1 of 5, safety net\. Next: no workflow runs a test command/);
   sandbox.withTests();
   result = sandbox.run(['doctor', '--session']);
   assert.equal(result.status, 0);
@@ -493,6 +946,15 @@ test('init: safe defaults, Dependabot and a security policy; doctor lists the se
   assert.match(readFileSync(join(sandbox.repo, '.github/SECURITY.md'), 'utf8'), /\*\*Report a vulnerability\*\*/);
   const doctor = sandbox.run(['doctor']);
   for (const sw of [/private vulnerability reporting/, /secret scanning with push protection/, /Dependabot alerts/]) assert.match(doctor.stdout, sw);
+  // Right after init only the license is missing: say what to do, not that init adds it (#208).
+  const security = () => sandbox.run(['doctor']).stdout.split('\n').find((l) => / security-files\b/.test(l)) ?? '';
+  assert.match(security(), /: no license file; choose a license and add it as LICENSE$/);
+  assert.doesNotMatch(security(), /yokoten init/);
+  rmSync(join(sandbox.repo, '.github/SECURITY.md'));
+  assert.match(security(), /: no security policy \(SECURITY\.md\), no license file; run `yokoten init` to add the security policy and Dependabot, and choose a license and add it as LICENSE$/);
+  sandbox.write('LICENSE', 'placeholder license\n');
+  sandbox.run(['init']);
+  assert.match(security(), /^ +done +security-files/);
 });
 
 /** The doctor --json mark of one road step. */
@@ -520,8 +982,8 @@ test("init: a CLAUDE.md gets one line that imports AGENTS.md, and doctor's rules
   assert.equal(readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8'), claude);
 });
 
-test('init: a CLAUDE.md that already imports or links AGENTS.md is left as it is (#206)', () => {
-  for (const text of [`# rules\n${at}AGENTS.md\n`, '# rules\nSee [the rules](AGENTS.md).\n', `# rules\nRead ${at}./AGENTS.md first.\n`]) {
+test('init: a CLAUDE.md that already imports AGENTS.md is left as it is (#206)', () => {
+  for (const text of [`# rules\n${at}AGENTS.md\n`, `# rules\nRead ${at}./AGENTS.md first.\n`, `# rules\r\n${at}AGENTS.md\r\n`, `# rules\n${at}AGENTS.md`]) {
     const sandbox = makeSandbox();
     sandbox.write('CLAUDE.md', text);
     const result = sandbox.run(['init']);
@@ -529,6 +991,148 @@ test('init: a CLAUDE.md that already imports or links AGENTS.md is left as it is
     assert.doesNotMatch(result.stdout, /CLAUDE\.md/, text);
     assert.equal(readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8'), text);
     assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+  }
+});
+
+test("init: a .claude/CLAUDE.md alone gets `@../AGENTS.md`, and doctor's rules step wants it (#206)", () => {
+  const sandbox = makeSandbox();
+  sandbox.write('.claude/CLAUDE.md', '# our rules\n');
+  sandbox.write('AGENTS.md', '# shared rules\n');
+  assert.notEqual(stepMark(sandbox, 'rules'), 'done', 'Claude Code reads .claude/CLAUDE.md instead of AGENTS.md');
+  assert.match(sandbox.run(['doctor']).stdout, /rules[^\n]*: \.claude\/CLAUDE\.md does not import AGENTS\.md[^\n]*; add a line `@\.\.\/AGENTS\.md`/);
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /updated \.claude\/CLAUDE\.md: it now reads AGENTS\.md/);
+  // Claude Code resolves an import relative to the file that holds it, so this is the root AGENTS.md.
+  assert.match(readFileSync(join(sandbox.repo, '.claude', 'CLAUDE.md'), 'utf8'), /^# our rules\n\n<!--[^\n]*-->\n@\.\.\/AGENTS\.md\n$/);
+  assert.equal(existsSync(join(sandbox.repo, 'CLAUDE.md')), false, 'no root CLAUDE.md is made');
+  assert.equal(stepMark(sandbox, 'rules'), 'done');
+});
+
+test('init: CLAUDE.md and .claude/CLAUDE.md, neither importing AGENTS.md: the root one gets the import (#206)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('CLAUDE.md', '# root rules\n');
+  sandbox.write('.claude/CLAUDE.md', '# folder rules\n');
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /updated CLAUDE\.md: it now reads AGENTS\.md/);
+  assert.doesNotMatch(result.stdout, /updated \.claude\/CLAUDE\.md/);
+  assert.match(readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8'), /\n@AGENTS\.md\n$/);
+  assert.equal(readFileSync(join(sandbox.repo, '.claude', 'CLAUDE.md'), 'utf8'), '# folder rules\n');
+  assert.equal(stepMark(sandbox, 'rules'), 'done');
+});
+
+test('init: a .claude/CLAUDE.md that already imports AGENTS.md is left as it is (#206)', () => {
+  for (const text of [`# rules\n${at}../AGENTS.md\n`, `# rules\nRead ${at}../AGENTS.md first.\n`]) {
+    const sandbox = makeSandbox();
+    sandbox.write('.claude/CLAUDE.md', text);
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stdout, /CLAUDE\.md/, text);
+    assert.equal(readFileSync(join(sandbox.repo, '.claude', 'CLAUDE.md'), 'utf8'), text);
+    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+  }
+});
+
+test('init: an import of another file that starts with AGENTS.md does not count; init adds the real import (#206)', () => {
+  const cases = [
+    { file: 'CLAUDE.md', text: `# rules\n${at}AGENTS.md.bak\n`, line: `${at}AGENTS.md` },
+    { file: 'CLAUDE.md', text: `# rules\nOld: ${at}./AGENTS.md.old\n`, line: `${at}AGENTS.md` },
+    { file: '.claude/CLAUDE.md', text: `# rules\n${at}../AGENTS.md.bak\n`, line: `${at}../AGENTS.md` },
+  ];
+  for (const { file, text, line } of cases) {
+    const sandbox = makeSandbox();
+    sandbox.write(file, text);
+    sandbox.write('AGENTS.md', '# shared rules\n');
+    assert.notEqual(stepMark(sandbox, 'rules'), 'done', text);
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(result.stdout.includes(`updated ${file}: it now reads AGENTS.md`), result.stdout);
+    const after = readFileSync(join(sandbox.repo, file), 'utf8');
+    assert.ok(after.startsWith(text), 'the old line stays');
+    assert.ok(after.endsWith(`-->\n${line}\n`), after);
+    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+  }
+});
+
+test('init: a Markdown link to AGENTS.md is not an import; init adds the import and keeps the link (#206)', () => {
+  // Claude Code loads only `@path` imports; a link is text, so the session would not read AGENTS.md.
+  const cases = [
+    { file: 'CLAUDE.md', text: '# rules\nSee [the rules](AGENTS.md).\n', line: `${at}AGENTS.md` },
+    { file: 'CLAUDE.md', text: '# rules\nSee [the rules](./AGENTS.md).\n', line: `${at}AGENTS.md` },
+    { file: '.claude/CLAUDE.md', text: '# rules\nSee [the rules](../AGENTS.md).\n', line: `${at}../AGENTS.md` },
+  ];
+  for (const { file, text, line } of cases) {
+    const sandbox = makeSandbox();
+    sandbox.write(file, text);
+    sandbox.write('AGENTS.md', '# shared rules\n');
+    assert.notEqual(stepMark(sandbox, 'rules'), 'done', text);
+    assert.match(sandbox.run(['doctor']).stdout, /rules[^\n]*does not import AGENTS\.md/, text);
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    const after = readFileSync(join(sandbox.repo, file), 'utf8');
+    assert.ok(after.startsWith(text), 'the link stays');
+    assert.ok(after.endsWith(`-->\n${line}\n`), after);
+    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+  }
+});
+
+test('init: an import inside a code span or fenced block is not an import; init adds the real one (#206)', () => {
+  // Claude Code skips Markdown code spans and fenced code blocks when it reads imports.
+  const fence = '```';
+  for (const text of [
+    `# rules\nWrite \`${at}AGENTS.md\` to import it.\n`,
+    `# rules\nWrite \`\`${at}AGENTS.md\`\` to import it.\n`,
+    `# rules\n${fence}md\n${at}AGENTS.md\n${fence}\n`,
+    `# rules\n~~~\n${at}AGENTS.md\n~~~\n`,
+    `# rules\n  ${fence}\n${at}AGENTS.md\n  ${fence}\n`,
+  ]) {
+    const sandbox = makeSandbox();
+    sandbox.write('CLAUDE.md', text);
+    sandbox.write('AGENTS.md', '# shared rules\n');
+    assert.notEqual(stepMark(sandbox, 'rules'), 'done', text);
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    const after = readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8');
+    assert.ok(after.startsWith(text.replace(/\n$/, '')), 'the example stays');
+    assert.ok(after.endsWith(`-->\n${at}AGENTS.md\n`), after);
+    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+  }
+});
+
+test('init: a real import next to a fenced or quoted example is left as it is (#206)', () => {
+  const fence = '```';
+  for (const text of [
+    `# rules\n${at}AGENTS.md\n\nExample:\n${fence}\n${at}AGENTS.md\n${fence}\n`,
+    `# rules\nExample: \`${at}AGENTS.md\`.\n${at}AGENTS.md\n`,
+    `# rules\n${fence}\n${at}other.md\n${fence}\n${at}AGENTS.md\n`,
+  ]) {
+    const sandbox = makeSandbox();
+    sandbox.write('CLAUDE.md', text);
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stdout, /CLAUDE\.md/, text);
+    assert.equal(readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8'), text);
+    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+  }
+});
+
+test("init: a CLAUDE.md with mixed line endings gets the file's main ending and one blank line (#206)", () => {
+  const cases = [
+    { text: '# rules\r\nOne.\r\nTwo.\n', want: '# rules\r\nOne.\r\nTwo.\r\n\r\n<!--' },
+    { text: '# rules\r\nOne.\r\nTwo.', want: '# rules\r\nOne.\r\nTwo.\r\n\r\n<!--' },
+    { text: '# rules\nOne.\nTwo.\r\n', want: '# rules\nOne.\nTwo.\n\n<!--' },
+    { text: '# rules\nOne.\n\n\n', want: '# rules\nOne.\n\n<!--' },
+  ];
+  for (const { text, want } of cases) {
+    const sandbox = makeSandbox();
+    sandbox.write('CLAUDE.md', text);
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    const after = readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8');
+    const newline = want.includes('\r\n') ? '\r\n' : '\n';
+    assert.equal(after.slice(0, want.length), want, JSON.stringify(after));
+    assert.ok(after.endsWith(`-->${newline}${at}AGENTS.md${newline}`), JSON.stringify(after));
   }
 });
 
@@ -824,7 +1428,8 @@ test('doctor: each stage boundary, from a fresh repo to the end of the road', ()
 test('doctor: the tests step wants a test command and a CI step that runs it (#55)', () => {
   const sandbox = makeSandbox();
   const line = () => sandbox.run(['doctor']).stdout.split('\n').find((l) => / tests\b/.test(l)) ?? '';
-  assert.match(line(), /^ +to do +tests \(Best Practices: test\): no test command/);
+  // No package.json: the message does not name it (#257).
+  assert.match(line(), /^ +to do +tests \(Best Practices: test\): no workflow runs a test command/);
   // npm's placeholder script only fails: it is no test command.
   sandbox.write('package.json', JSON.stringify({ scripts: { test: 'echo "Error: no test specified" && exit 1' } }));
   assert.match(line(), /^ +to do +tests \(Best Practices: test\): no test command/);
@@ -834,7 +1439,7 @@ test('doctor: the tests step wants a test command and a CI step that runs it (#5
   assert.match(line(), /^ +done +tests/);
   // A project with no package.json: CI that runs a test runner is enough.
   rmSync(join(sandbox.repo, 'package.json'));
-  assert.match(line(), /^ +to do +tests \(Best Practices: test\): no test command/);
+  assert.match(line(), /^ +to do +tests \(Best Practices: test\): no workflow runs a test command such as `go test`, `pytest` or `cargo test`/);
   sandbox.write('.github/workflows/ci.yml', 'jobs:\n  t:\n    steps:\n      - run: go test ./...\n');
   assert.match(line(), /^ +done +tests/);
 });
@@ -1113,7 +1718,7 @@ test('check --pr: reads the CI event, lists the changed files from git, notes lo
   const head = sandbox.git('rev-parse', 'HEAD').stdout.trim();
   const event = (body: string) => {
     const file = join(sandbox.home, 'event.json');
-    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
+    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
     return { GITHUB_EVENT_PATH: file };
   };
   const body = 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\n';
@@ -1148,7 +1753,7 @@ test('check --pr: a change file counts as the changelog entry, and its form is c
   const event = (head: string) => {
     const file = join(sandbox.home, 'event.json');
     const body = 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\n';
-    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
+    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
     return { GITHUB_EVENT_PATH: file };
   };
   let result = sandbox.run(['check', '--pr'], { extra: event(good) });
@@ -1202,7 +1807,7 @@ test('check --pr: CODEOWNERS comes from the base branch, so a pull request canno
   const event = (tier: string) => {
     const file = join(sandbox.home, 'event.json');
     const body = `tier: ${tier}\nCloses #1\nThis changes the kit.\n## Why\nx\n## What changed\nx\n## How tested\nx\n`;
-    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
+    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }, { name: `tier ${tier}` }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
     return { GITHUB_EVENT_PATH: file };
   };
   let r = sandbox.run(['check', '--pr'], { extra: event('B') });
@@ -1231,7 +1836,7 @@ test('check --pr: a large pull request gets a note, never a failure; lock files 
   const event = (head: string) => {
     const file = join(sandbox.home, 'event.json');
     const body = 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\nNo changelog: a test\n';
-    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
+    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
     return { GITHUB_EVENT_PATH: file };
   };
   let r = sandbox.run(['check', '--pr'], { extra: event(small) });
@@ -1282,6 +1887,153 @@ test('check --issue: reads the issue from the CI event; a bad title fails, a goo
   assert.deepEqual(JSON.parse(result.stdout).skipped, 'no issue in this run (it reads the CI event); nothing to check');
 });
 
+// #267: a commit the checkout does not have is one finding with the fix, in text, JSON
+// and the job summary; git's raw error never reaches the output.
+test('check --pr: a base or head commit not in the checkout is one finding, never a git crash (#267)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('README.md', 'Short.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'base');
+  const base = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  sandbox.write('src/a.ts', 'export const a = 1;\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'head');
+  const head = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  const body = 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\nNo changelog: a test\n';
+  const event = (shas: { base: string; head: string }) => {
+    const file = join(sandbox.home, 'event.json');
+    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: { title: 'M0' }, base: { sha: shas.base }, head: { sha: shas.head } } }));
+    return file;
+  };
+  const noGitError = (out: string) => assert.doesNotMatch(out, /fatal|Command failed|symmetric difference|Invalid/i, out);
+  // The positive control: both commits here, so the check passes.
+  assert.equal(sandbox.run(['check', '--pr'], { extra: { GITHUB_EVENT_PATH: event({ base, head }) } }).status, 0);
+
+  // A depth-1 clone has the head but not the base.
+  const clone = join(sandbox.home, 'clone');
+  const cloned = spawnSync('git', ['clone', '-q', '--depth', '1', `file://${sandbox.repo}`, clone], { env: sandbox.env, encoding: 'utf8' });
+  assert.equal(cloned.status, 0, cloned.stderr);
+  const summary = join(sandbox.home, 'summary.md');
+  let result = sandbox.run(['check', '--pr'], { cwd: clone, extra: { GITHUB_EVENT_PATH: event({ base, head }) } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^yokoten check --pr: 1 problem\(s\)\n- the pull request's base commit is not in this checkout\. .+\. Use `fetch-depth: 0` in actions\/checkout, so the checkout has the whole history\.\n  docs: \S+#use-it-as-a-github-action\n$/);
+  noGitError(result.stderr);
+  result = sandbox.run(['check', '--pr', '--json'], { cwd: clone, extra: { GITHUB_EVENT_PATH: event({ base, head }), GITHUB_ACTIONS: 'true', GITHUB_STEP_SUMMARY: summary } });
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, '');
+  let report = JSON.parse(result.stdout);
+  assert.deepEqual([report.check, report.ok, report.findings.map((f: { id: string }) => f.id)], ['pr', false, ['pr-commits']]);
+  assert.match(report.findings[0].what, /base commit/);
+  assert.match(report.findings[0].fix, /fetch-depth: 0/);
+  const text = readFileSync(summary, 'utf8');
+  assert.match(text, /^### yokoten check --pr: 1 problem\n\n\| Place \| Rule \| What \| Why \| Fix \|\n\|[-|]+\|\n\|  \| \[pr-commits\]\(\S+\) \| the pull request's base commit is not in this checkout \| .+ \| Use `fetch-depth: 0` in actions\/checkout/);
+
+  // A full clone, with a head that was never fetched.
+  const missing = 'f'.repeat(40);
+  result = sandbox.run(['check', '--pr'], { extra: { GITHUB_EVENT_PATH: event({ base, head: missing }) } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^yokoten check --pr: 1 problem\(s\)\n- the pull request's head commit is not in this checkout\. .+fetch-depth: 0/);
+  noGitError(result.stderr);
+  result = sandbox.run(['check', '--pr', '--json'], { extra: { GITHUB_EVENT_PATH: event({ base, head: missing }) } });
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, '');
+  report = JSON.parse(result.stdout);
+  assert.deepEqual([report.ok, report.findings.length, report.findings[0].id], [false, 1, 'pr-commits']);
+  assert.match(report.findings[0].what, /head commit/);
+  // Both missing: one finding that names both. A value that is not a commit id is missing too.
+  result = sandbox.run(['check', '--pr'], { extra: { GITHUB_EVENT_PATH: event({ base: missing, head: '--output=x' }) } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^yokoten check --pr: 1 problem\(s\)\n- the pull request's base and head commits are not in this checkout\./);
+  assert.ok(!existsSync(join(sandbox.repo, 'x')), 'a sha is never read as an option');
+  // Both here, but with no common commit: git can't read base...head either.
+  sandbox.git('checkout', '-q', '--orphan', 'other');
+  sandbox.git('commit', '-qm', 'unrelated');
+  const unrelated = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  result = sandbox.run(['check', '--pr', '--json'], { extra: { GITHUB_EVENT_PATH: event({ base, head: unrelated }) } });
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, '');
+  assert.match(JSON.parse(result.stdout).findings[0].what, /no common commit/);
+});
+
+test('check --pr and --issue: an event file that is missing or broken is one finding; odd fields are skipped (#267)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('README.md', 'Short.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'base');
+  const file = join(sandbox.home, 'event.json');
+  const summary = join(sandbox.home, 'summary.md');
+  const cases: [string | null, RegExp][] = [
+    [null, /can't be read/],
+    ['{ broken', /is not valid JSON/],
+    ['null', /is not a JSON object/],
+    ['[1]', /is not a JSON object/],
+  ];
+  for (const mode of ['--pr', '--issue']) {
+    for (const [content, what] of cases) {
+      rmSync(file, { force: true });
+      if (content !== null) writeFileSync(file, content);
+      let result = sandbox.run(['check', mode], { extra: { GITHUB_EVENT_PATH: file } });
+      assert.equal(result.status, 1, `${mode} ${content}`);
+      assert.equal(result.stdout, '');
+      assert.match(result.stderr, new RegExp(`^yokoten check ${mode}: 1 problem\\(s\\)\\n- the CI event file \\(GITHUB_EVENT_PATH\\) ${what.source}\\. .+\\. Run it in a GitHub Actions job`));
+      assert.doesNotMatch(result.stderr, /ENOENT|SyntaxError|TypeError|Unexpected token/);
+      assert.ok(!result.stderr.includes(sandbox.home), 'the path is not printed');
+      result = sandbox.run(['check', mode, '--json'], { extra: { GITHUB_EVENT_PATH: file, GITHUB_ACTIONS: 'true', GITHUB_STEP_SUMMARY: summary } });
+      assert.equal(result.status, 1);
+      assert.equal(result.stderr, '');
+      assert.deepEqual(JSON.parse(result.stdout).findings.map((f: { id: string }) => f.id), ['ci-event']);
+    }
+  }
+  assert.equal(readFileSync(summary, 'utf8').split('| [ci-event](').length - 1, 8, 'each run wrote its summary');
+  // A label that is null or has no name, and a title that is not text, are skipped, not a crash.
+  writeFileSync(file, JSON.stringify({ issue: { title: 'check: a symptom', labels: [null, 7, { name: 'incident' }, {}] } }));
+  let result = sandbox.run(['check', '--issue'], { extra: { GITHUB_EVENT_PATH: file } });
+  assert.equal(result.status, 0, result.stderr);
+  writeFileSync(file, JSON.stringify({ issue: { title: 42, labels: null } }));
+  result = sandbox.run(['check', '--issue', '--json'], { extra: { GITHUB_EVENT_PATH: file } });
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, '');
+  assert.ok(JSON.parse(result.stdout).findings.length > 0, 'an empty title fails its rule');
+  const head = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body: null, labels: [null], milestone: 'M0', base: { sha: head }, head: { sha: head } } }));
+  result = sandbox.run(['check', '--pr', '--json'], { extra: { GITHUB_EVENT_PATH: file } });
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, '');
+  assert.ok(JSON.parse(result.stdout).findings.some((f: { id: string }) => f.id === 'pr-labels'));
+  // An event with neither is not a run to check, as before.
+  writeFileSync(file, JSON.stringify({ action: 'opened', pull_request: null, issue: 'x' }));
+  for (const mode of ['--pr', '--issue']) assert.match(sandbox.run(['check', mode], { extra: { GITHUB_EVENT_PATH: file } }).stdout, /in this run/);
+});
+
+// #273: an event whose base or head commit id is empty, missing or not text is one
+// finding, never an empty diff that lets the file rules pass.
+test('check --pr: a pull request event with no base or head commit id is one finding (#273)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('README.md', 'Short.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'base');
+  const head = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  const file = join(sandbox.home, 'event.json');
+  const body = 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\nNo changelog: a test\n';
+  const cases: [object, object, string][] = [
+    [{}, { sha: head }, 'base commit is'],
+    [{ sha: head }, { sha: 7 }, 'head commit is'],
+    [{ sha: '' }, { sha: '' }, 'base and head commits are'],
+  ];
+  for (const [baseField, headField, what] of cases) {
+    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }], milestone: { title: 'M0' }, base: baseField, head: headField } }));
+    let result = sandbox.run(['check', '--pr'], { extra: { GITHUB_EVENT_PATH: file } });
+    assert.equal(result.status, 1, what);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, new RegExp(`^yokoten check --pr: 1 problem\\(s\\)\\n- the pull request's ${what} missing from the event\\. .+\\. Run it in a GitHub Actions job on a \`pull_request\` event`));
+    result = sandbox.run(['check', '--pr', '--json'], { extra: { GITHUB_EVENT_PATH: file } });
+    assert.equal(result.status, 1, what);
+    assert.equal(result.stderr, '');
+    const report = JSON.parse(result.stdout);
+    assert.deepEqual([report.check, report.ok, report.findings.map((f: { id: string }) => f.id)], ['pr', false, ['pr-commits']]);
+    assert.match(report.findings[0].what, new RegExp(`${what} missing from the event`));
+  }
+});
 // #91: in GitHub Actions, the findings show on the pull request page: an annotation per
 // finding on stdout, and a job summary. The finding text is reused, so no private value.
 test('check in GitHub Actions: annotations and a job summary, place but never content (#91)', () => {
@@ -1360,7 +2112,7 @@ test('check --pr: notes hard-to-read names on added code lines, and the exit cod
   const head = project.git('rev-parse', 'HEAD').stdout.trim();
   const file = join(project.home, 'event.json');
   const body = 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\nNo changelog: a test\n';
-  writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
+  writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
   const r = project.run(['check', '--pr'], { extra: { GITHUB_EVENT_PATH: file } });
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /note: 2 hard-to-read name\(s\)\n- src\/cart\.js:1: "s" is used for 14 lines\. A reader must scroll back to learn what it holds\. Name what it is, e\.g\. "text"\.\n  docs: \S+#naming\n- src\/cart\.js:2: "loadTheWholeUserList" has 5 words, over 4\. /);
@@ -1382,7 +2134,7 @@ test('check --pr in GitHub Actions: notes are warnings, in their own section (#9
   sandbox.git('commit', '-qm', 'head');
   const head = sandbox.git('rev-parse', 'HEAD').stdout.trim();
   const file = join(sandbox.home, 'event.json');
-  writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body: 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\n', labels: [{ name: 'feat' }], milestone: null, base: { sha: base }, head: { sha: head } } }));
+  writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body: 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\n', labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: null, base: { sha: base }, head: { sha: head } } }));
   const summary = join(sandbox.home, 'summary.md');
   const r = sandbox.run(['check', '--pr'], { extra: { GITHUB_EVENT_PATH: file, GITHUB_ACTIONS: 'true', GITHUB_STEP_SUMMARY: summary } });
   assert.equal(r.status, 1, 'no milestone');
@@ -1569,9 +2321,22 @@ test('--json: check, doctor, hook and explain print pure JSON with what, why and
   assert.match(result.stdout, /^secret: .+\.\nWhy: .+\.\nCheck: .+\.\nDocs: https:\/\/github\.com\/yokoten-labs\/yokoten\/blob\/main\/docs\/guide\.md#privacy\n$/, 'the link to the rule (#94)');
   result = sandbox.run(['explain', 'commit-check']);
   assert.match(result.stdout, /^commit-check: a step on the road: stage 1 of 5, safety net\.\nWhy: .+\.\nCheck: .+\.\nStandard: OSPS-BR-07\.01\.\n$/);
-  result = sandbox.run(['explain']);
+});
+
+test('explain with no id lists the ids on stdout and exits 0; --json gives { ids } (#247)', () => {
+  const sandbox = makeSandbox();
+  let result = sandbox.run(['explain']);
+  assert.deepEqual([result.status, result.stderr], [0, '']);
+  assert.match(result.stdout, /^Ids: release, .*\bsecret\b.*\n$/);
+  result = sandbox.run(['explain', '--json']);
+  assert.deepEqual([result.status, result.stderr], [0, '']);
+  const listed = JSON.parse(result.stdout);
+  assert.deepEqual(Object.keys(listed), ['ids']);
+  assert.ok(listed.ids.includes('release') && listed.ids.includes('secret'));
+  // An unknown id is still an error.
+  result = sandbox.run(['explain', 'nope']);
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /Ids: release, /);
+  assert.match(result.stderr, /no rule or step is called nope\.\nIds: release, /);
 });
 
 test('init: reads GitHub and says what it would do; --github --yes does it, and a second run changes nothing (#10)', () => {
@@ -1604,23 +2369,23 @@ fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s));
   // Without a GitHub remote, init succeeds, says what it skipped, and never runs gh.
   let result = sandbox.run(['init'], { extra });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /GitHub: skipped, because the origin remote is not on GitHub/);
+  assert.match(result.stdout, /GitHub: skipped, because there is no origin remote yet/);
   assert.equal(calls().length, 0);
   assert.equal(sandbox.run(['init', '--yes'], { extra }).status, 1, '--yes alone is refused');
   assert.equal(sandbox.run(['init', '--remove-default-labels'], { extra }).status, 1, 'so is --remove-default-labels');
   sandbox.git('remote', 'add', 'origin', 'https://github.com/example/repo.git');
   result = sandbox.run(['init'], { extra });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /GitHub: example\/repo\n- 1 of the 9 standard labels are there; kept\n- not in the standard set: question\./);
+  assert.match(result.stdout, /GitHub: example\/repo\n- 1 of the 12 standard labels are there; kept\n- not in the standard set: question\./);
   assert.match(result.stdout, /Would do:\n- make label "feat"[^]*- make milestone "First release"\nNothing changed\./);
   assert.deepEqual(changed(), [], 'plain init only reads');
   result = sandbox.run(['init', '--github', '--yes'], { extra });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /- done: make label "good first issue"[^\n]*\n[^]*- done: make milestone "First release"/);
-  assert.equal(changed().length, 9);
+  assert.equal(changed().length, 12);
   result = sandbox.run(['init', '--github', '--yes'], { extra });
-  assert.match(result.stdout, /- 9 of the 9 standard labels are there; kept\n- a milestone is open; kept\n[^]*Nothing to change\./);
-  assert.equal(changed().length, 9, 'the second run changed nothing');
+  assert.match(result.stdout, /- 12 of the 12 standard labels are there; kept\n- a milestone is open; kept\n[^]*Nothing to change\./);
+  assert.equal(changed().length, 12, 'the second run changed nothing');
   // Without gh on the PATH, init still succeeds and says so. Only node and git are there.
   const noGh = join(sandbox.home, 'no-gh');
   mkdirSync(noGh);
@@ -1907,6 +2672,17 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
     await refused(['gh', 'pr', 'create', `--title=feat(host): ${'a'.repeat(62)}`, '--body', 'x'], /title: 74 characters, over 72\. .+\. Shorten it/);
     await refused(['gh', 'pr', 'edit', '5', '-t', 'feat(host): add a step.'], /title: a full stop at the end\. A commit title has no full stop\. Remove the full stop\./);
     await refused(['gh', 'pr', 'create', '-t', 'feat(guard): add a step'], /the area `guard` is not in yokoten\.json "areas"/);
+    // Every spelling gh takes (#279): `new` for `create`, and an option before the noun or the verb.
+    for (const command of [['gh', 'issue', 'new', '--title', 'host: add a step.'], ['gh', 'issue', '-R', 'o/r', 'create', '--title', 'host: add a step.'], ['gh', '--repo', 'o/r', 'issue', 'edit', '5', '-t', 'host: add a step.']]) {
+      await refused(command, /title: a full stop at the end\. A title is a name/);
+    }
+    for (const command of [['gh', 'pr', 'new', '--title', 'feat(host): add a step.'], ['gh', 'pr', '-R', 'o/r', 'edit', '5', '--title', 'feat(host): add a step.'], ['gh', '--repo=o/r', 'pr', 'create', '-t', 'feat(host): add a step.']]) {
+      await refused(command, /title: a full stop at the end\. A commit title has no full stop/);
+    }
+    // Short flags run together (#290): read as gh reads them, and refused when a letter is unknown.
+    await refused(['gh', 'pr', 'create', '-dt', 'feat(host): add a step.'], /title: a full stop at the end\. A commit title has no full stop/);
+    await refused(['gh', 'issue', 'create', '-wthost: add a step.'], /title: a full stop at the end\. A title is a name/);
+    await refused(['gh', 'pr', 'create', '-dzt', 'feat(host): add a step'], /title: can't read the title in `-dzt`\. .+\. Write --title on its own\.$/m);
     // With no bot set up at all, the title is still the reason given.
     await refused(['gh', 'pr', 'create', '--title', 'feat(host): add a step.'], /full stop/, path);
     const missing = await run(['gh', 'pr', 'create', '--title', 'feat(host): add a step'], path);
@@ -1917,6 +2693,8 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
     const good: string[][] = [
       ['gh', 'issue', 'create', '--title', 'host: check the title', '--label', 'incident', '--body', '-t'],
       ['gh', 'pr', 'create', '-t', 'feat(host): check the title', '--body', 'x'],
+      ['gh', 'issue', '-R', 'me/repo', 'new', '--title', 'host: check the title'],
+      ['gh', 'pr', 'new', '-t', 'feat(host): check the title'],
       ['gh', 'pr', 'create', '--fill'],
       ['gh', 'issue', 'list'],
     ];
