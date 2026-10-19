@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { addProjectHooks, PATCH, profilesWithBridge, projectHooksState, readToolCall } from '../../../src/agents/runtimes/deepseek-harness.ts';
+import { addProjectHooks, initLines, PATCH, profilesWithBridge, projectHooksState, readToolCall, WINDOWS_GAP } from '../../../src/agents/runtimes/deepseek-harness.ts';
+import { agentHooks } from '../../../src/setup/doctor.ts';
 import { makeSandbox } from '../../repo/helpers.ts';
 
 /** A PreToolUse payload in the shape the dsh 0.2.1-rc.2 hook bridge sent it in a real run (#334). */
@@ -93,4 +94,28 @@ test('deepseek-harness project files: init writes the guard and the launch patch
   assert.match(doctor(), /note +deepseek-harness-hook: can't read \.dsh\/hooks\.json/);
   assert.throws(() => addProjectHooks(sandbox.repo, cli), /can't read/);
   assert.equal(readFileSync(file, 'utf8'), '{ not json', 'a file yokoten cannot read stays as it was');
+});
+
+test('deepseek-harness on Windows: dsh runs hooks in PowerShell, so doctor notes it is not checked, never ok, and init says the same (#332)', () => {
+  const sandbox = makeSandbox();
+  const dshHome = join(sandbox.home, 'dsh-home');
+  const modules = join(dshHome, 'profiles', 'tui', 'node_modules', '@deepseek-ai');
+  for (const pkg of ['dsh-hooks-claude-code', 'dsh-hook-protocol']) {
+    mkdirSync(join(modules, pkg), { recursive: true });
+    writeFileSync(join(modules, pkg, 'package.json'), '{}');
+  }
+  addProjectHooks(sandbox.repo, '.yokoten/bin/yokoten.ts');
+  const dshCheck = (platform: string) => agentHooks(sandbox.repo, { DSH_HOME: dshHome }, platform).find((p) => p.name === 'deepseek-harness-hook');
+  const windows = dshCheck('win32');
+  assert.equal(windows?.ok, false, 'files and bridge in place, but PowerShell cannot run the guard');
+  assert.equal(windows?.finding.what, "DeepSeek Harness runs hooks in PowerShell on Windows, and yokoten's guard is a POSIX shell command, so dsh's calls are not checked on Windows yet (issue #332)");
+  assert.equal(windows?.detail, undefined);
+  const linux = dshCheck('linux');
+  assert.equal(linux?.ok, true, 'unchanged off Windows');
+  assert.match(linux?.detail ?? '', /the bridge is in profile tui; .*Only a real deny proves it/);
+  const added = { guard: 'same', patch: 'same' } as const;
+  const onWindows = initLines(added, 'win32');
+  assert.equal(onWindows.at(-1), WINDOWS_GAP);
+  assert.ok(!onWindows.some((line) => /dsh plugin|--patch/.test(line)), 'no steps that imply a guard');
+  assert.match(initLines(added, 'linux').join('\n'), /dsh plugin --profile <profile> add .*\n.*dsh <profile> --patch \.dsh\/yokoten\.patch\.yml/);
 });

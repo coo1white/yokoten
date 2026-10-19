@@ -32,8 +32,22 @@ import { type Added, addHook, checkHooksFile, type HookState, hookState } from '
  */
 export { readToolCall } from './claude-code.ts';
 
-/** The tools the guard sees: the shells (`pwsh` on Windows) and the two edit tools. */
+/**
+ * The tools the guard sees: the shell and the two edit tools. `pwsh` is dsh's shell on
+ * Windows; it stays in the matcher for issue #332, but the guard command is POSIX sh, which
+ * PowerShell can't run, so Windows is not guarded yet (see WINDOWS_GAP).
+ * Left out on purpose: the optional `str_replace_editor` (it edits by `path`, and the Claude
+ * Code reader would take its `command` field for a shell command) and the experimental
+ * `terminal_send` (it types `text` into a shell). A profile that mounts them is unguarded.
+ */
 export const MATCHER = 'bash|pwsh|edit|write';
+
+/**
+ * On Windows dsh runs hooks in PowerShell, which can't parse the POSIX guard command; the
+ * bridge reads that failure as "go ahead", so the call is not checked (#332).
+ */
+export const WINDOWS_GAP =
+  "DeepSeek Harness runs hooks in PowerShell on Windows, and yokoten's guard is a POSIX shell command, so dsh's calls are not checked on Windows yet (issue #332)";
 /** The bridge and its peer, at the version the real run used. Both go in every profile. */
 export const VERSION = '0.2.1-rc.2';
 export const PACKAGES = ['dsh-hooks-claude-code', 'dsh-hook-protocol'] as const;
@@ -114,3 +128,17 @@ export function profilesWithBridge(env: Env): { found: string[]; all: string[] }
 
 /** The two commands that add the bridge to a profile. */
 export const pluginAddCommands = (profile: string): string[] => PACKAGES.map((pkg) => `dsh plugin --profile ${profile} add @deepseek-ai/${pkg}@${VERSION}`);
+
+/**
+ * What `init` prints after writing the files. On Windows it says the calls are not checked
+ * yet, instead of how to turn on a guard that would let every call through.
+ */
+export function initLines(added: { guard: Added; patch: Added }, platform: string = process.platform): string[] {
+  const files = [`${added.guard} the DeepSeek Harness tool-call hook in ${HOOKS_FILE}`, `${added.patch} the DeepSeek Harness launch patch in ${PATCH_FILE}`];
+  if (platform === 'win32') return [...files, WINDOWS_GAP];
+  return [
+    ...files,
+    `DeepSeek Harness runs it only with the bridge in the profile (needs pnpm): ${pluginAddCommands('<profile>').join(' && ')}`,
+    `then start dsh at the repo root with the patch: dsh <profile> --patch ${PATCH_FILE}`,
+  ];
+}
