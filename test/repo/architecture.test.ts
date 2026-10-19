@@ -586,11 +586,13 @@ test('assertLinear: a quadratic read fails; a slow spell in one round does not (
   // 1,000 chars take 0.6 ms; 8,000 take 64 times that when the cost is quadratic.
   const quadratic = (input: string) => busyWait(0.6 * (input.length / 1000) ** 2);
   assert.throws(() => assertLinear('quadratic', (n) => 'x'.repeat(n), quadratic, 1000), /linear is about 8x/);
-  // Linear, but every big read of the first round is 30 ms slower, as on a busy runner.
+  // Linear, but every big read of the first round is 200 ms slower, as on a busy runner. A round
+  // has as many reads as fit in 20 ms, from one timed read, so a busy runner cuts the count
+  // (#359). A 7 ms read is past 20 / 3 ms: every round has 3 reads, however busy the runner.
   let bigReads = 0;
   const noisy = (input: string) => {
-    if (input.length > 1000 && ++bigReads <= 34) busyWait(30);
-    busyWait(0.6 * (input.length / 1000));
+    if (input.length > 1000 && ++bigReads <= 3) busyWait(200);
+    busyWait(7 * (input.length / 1000));
   };
   assertLinear('linear with a slow spell', (n) => 'x'.repeat(n), noisy, 1000);
 });
