@@ -11,7 +11,7 @@ import { checkEdit } from '../rules/guards.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
 import { type Finding, finding } from '../rules/message.ts';
 import { loadMarks, notUtc, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
-import { translationNotes } from './translations.ts';
+import { isShallowNote, translationNotes } from './translations.ts';
 
 const git = (cwd: string, args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 1 << 30 });
 // Bytes, not text: a blob may be binary.
@@ -205,7 +205,8 @@ function readEntry(root: string, path: string): Buffer | undefined {
 /**
  * Problems for the whole tree, or with `staged`, for the commit about to be made. For the
  * whole tree, a translation behind its source (#87) goes in `notes`, or with yokoten.json
- * `"translations": { "fail": true }`, in the problems. A key in yokoten.json that yokoten
+ * `"translations": { "fail": true }`, in the problems. In a shallow clone, the one note that
+ * says translations weren't checked is never a problem (#181). A key in yokoten.json that yokoten
  * does not know (#228) goes in `notes` too.
  */
 export function check(root: string, { config, env, staged = false, notes = [] }: { config: Config; env: Env; staged?: boolean; notes?: Finding[] }): Finding[] {
@@ -250,7 +251,7 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
       const buf = readEntry(root, path); // none if deleted in the work tree but not yet staged
       if (buf) privacy(path, buf);
     }
-    (config.translations.fail ? problems : notes).push(...translationNotes(root, indexFiles(root)));
+    for (const note of translationNotes(root, indexFiles(root))) (config.translations.fail && !isShallowNote(note) ? problems : notes).push(note);
     // A key yokoten.json holds but yokoten does not know (#228).
     notes.push(...findUnknownKeys(root));
   }

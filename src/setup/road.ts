@@ -9,8 +9,8 @@
 // step done early counts as done.
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { type Env, loadConfig } from '../rules/config.ts';
 import { matcher } from '../rules/config.ts';
 import { type Finding, finding, type RuleId } from '../rules/message.ts';
@@ -20,7 +20,7 @@ import { hasPlugin, hasProjectHook } from '../agents/claude-code.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
 import { hasBot, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
-import { claudeReadsRules, cliPath, COMMIT_HOOKS, findRulesGap, hookFile, isSelf } from './init.ts';
+import { claudeReadsRules, cliPath, COMMIT_HOOKS, deadHookNotes, findRulesGap, handOffBlocks, hasHandOff, hookFile, isCommitHook, isExecutable, isSelf, type OldHook, readHookSetup, readOldHooks } from './init.ts';
 import { FIRST_MILESTONE, lackingLabels, pickNewMilestone } from './plan.ts';
 import { skillFiles, skillsDir } from './install.ts';
 
@@ -512,15 +512,17 @@ interface UncheckedHook {
 const uncheckedHooks = (root: string): UncheckedHook[] | null => {
   const hooksPath = gitConfig(root, 'core.hooksPath');
   if (!hooksPath || commitHook(root) === null) return null;
+  // husky 9's folder (.husky/_) runs .husky/pre-commit with `sh`, so that file needs no execute bit (#256).
+  const runsWithSh = relative(root, resolve(root, hooksPath)).split('\\').join('/').startsWith('.husky/');
   const unchecked: UncheckedHook[] = [];
   for (const hook of COMMIT_HOOKS) {
     const file = hookFile(root, hooksPath, hook) as string;
     const path = join(root, file);
     if (!existsSync(path)) {
-      unchecked.push({ file, problem: 'missing', needsChmod: process.platform !== 'win32' });
+      unchecked.push({ file, problem: 'missing', needsChmod: process.platform !== 'win32' && !runsWithSh });
       continue;
     }
-    const needsChmod = process.platform !== 'win32' && !(statSync(path).mode & 0o111);
+    const needsChmod = !runsWithSh && !isExecutable(path);
     if (!runs('check').test(read(path))) unchecked.push({ file, problem: 'no check', needsChmod });
     else if (needsChmod) unchecked.push({ file, problem: 'not executable', needsChmod });
   }
@@ -542,8 +544,29 @@ const ownHookFix = (hooks: UncheckedHook[], cli: string): string => {
   if (files('no check').length) steps.push(`add the line below to ${files('no check').join(' and ')}, after its \`#!\` line`);
   if (chmod.length) steps.push(`run \`chmod +x ${chmod.join(' ')}\``);
   const all = hooks.map((h) => h.file).join(' and ');
-  if (hooks.every((h) => h.problem === 'not executable')) return `${steps.join('')}, or \`yokoten init\``;
+  // init keeps the mode of a file under .husky/ (#256).
+  if (hooks.every((h) => h.problem === 'not executable')) return hooks.some((h) => h.file.startsWith('.husky/')) ? steps.join('') : `${steps.join('')}, or \`yokoten init\``;
   return `\`yokoten init\` adds the check to ${all}, or do it yourself: ${steps.join('; ')}. The line: ${commitCheckLine(cli)}`;
+};
+
+/**
+ * The hooks this clone has in .git/hooks that git no longer runs, because core.hooksPath is
+ * .githooks and .githooks does not hand off to them (#256). Empty for any other hooks folder:
+ * the project chose that one itself.
+ */
+const droppedHooks = (root: string): OldHook[] => {
+  if (!gitConfig(root, 'core.hooksPath') || readHookSetup(root).kind !== 'plain') return [];
+  return readOldHooks(root).filter((old) => old.handOff === 'yes' && !hasHandOff(read(join(root, '.githooks', old.hook)), old.hook));
+};
+
+/**
+ * The fix for a workflow step: init adds the kit's workflow, but keeps one the project
+ * already has, so then the fix is the step to add to it (#256).
+ */
+const keptWorkflow = (root: string, name: string, args: string, after: string): string => {
+  const file = `.github/workflows/${name}`;
+  if (!existsSync(join(root, file))) return `\`yokoten init\` adds ${file}`;
+  return `add this step to ${file}, after ${after} (\`yokoten init\` keeps your file as it is): \`- run: node ${cliPath(root)} ${args}\``;
 };
 
 /** The road, in order. Step names never change: they are the keys for "not now". */
@@ -576,26 +599,39 @@ export const ROAD: Step[] = [
   {
     stage: 1,
     key: 'commit-check',
-    check: (root) => uncheckedHooks(root)?.length === 0,
+    check: (root) => uncheckedHooks(root)?.length === 0 && droppedHooks(root).length === 0,
     what: (root) => {
       const hooks = uncheckedHooks(root);
-      if (hooks) {
+      const dropped = droppedHooks(root).map((old) => `${old.file} no longer runs: .githooks/${old.hook} does not run it`);
+      if (hooks?.length) {
         // Only pre-merge-commit: ordinary commits are still checked, merge commits are not.
         const which = hooks.every((h) => h.file.endsWith('pre-merge-commit')) ? 'merge commits' : 'commits';
-        return `${which} are not checked: ${hooks.map((h) => HOOK_PROBLEM[h.problem](h.file)).join('; ')}`;
+        return `${which} are not checked: ${[...hooks.map((h) => HOOK_PROBLEM[h.problem](h.file)), ...dropped].join('; ')}`;
       }
+      if (hooks) return `a hook this clone had is switched off: ${dropped.join('; ')}`;
       return gitConfig(root, 'core.hooksPath') ? 'commits are not checked: core.hooksPath is outside this repo' : 'commits are not checked: core.hooksPath is not set';
     },
     fix: (root) => {
       if (!gitConfig(root, 'core.hooksPath') && existsSync(join(root, '.husky'))) return 'run `npm install` so husky sets core.hooksPath, then `yokoten init`';
+      // A hook in .git/hooks that .githooks can't run: init leaves it be, so the fix is by hand (#256).
+      const blocks = readHookSetup(root).kind === 'plain' ? handOffBlocks(root) : [];
+      if (blocks.length) return blocks.join('; ');
       const hooks = uncheckedHooks(root);
       const files = hooks?.map((h) => h.file) ?? [];
-      if (!files.length || files.includes('.githooks/pre-commit')) return '`yokoten init` sets it up';
+      const dropped = droppedHooks(root);
+      if (hooks && !files.length && dropped.length) {
+        return `\`yokoten init\` makes ${dropped.map((old) => `.githooks/${old.hook} run ${old.file}${isCommitHook(old.hook) ? ' after the check' : ''}`).join(' and ')}`;
+      }
+      if (!files.length || files.includes('.githooks/pre-commit')) {
+        // A hook git skips today is not a reason to wait; init sets .githooks and says how to keep it (#256).
+        const dead = readHookSetup(root).kind === 'plain' ? deadHookNotes(readOldHooks(root)) : [];
+        return ['`yokoten init` sets it up', ...dead.map((line) => `note: ${line}`)].join('; ');
+      }
       if (files.join() === '.githooks/pre-merge-commit') return '`yokoten init` sets up .githooks/pre-merge-commit';
       return ownHookFix(hooks as UncheckedHook[], cliPath(root));
     },
     why: 'a secret or a personal email is hard to take back once a commit is pushed',
-    how: "the pre-commit and pre-merge-commit that git runs from core.hooksPath run `yokoten check`: in .githooks/, or in the project's own folder (husky: .husky/)",
+    how: "the pre-commit and pre-merge-commit that git runs from core.hooksPath run `yokoten check`: in .githooks/, or in the project's own folder (husky: .husky/). With .githooks, each executable hook left in .git/hooks is run from .githooks (a commit hook after the check), so it is not switched off",
     standard: 'OSPS-BR-07.01',
   },
   {
@@ -626,7 +662,7 @@ export const ROAD: Step[] = [
     // `check --pr` is the titles step, and `check --issue` checks issues; this one wants the tree check itself.
     check: (root) => ciRuns(ciText(root), runs('check(?!\\s+--(?:pr|issue))')) || ciFiles(root).some((f) => yokotenActions(f).length > 0),
     what: () => 'CI does not run `yokoten check`',
-    fix: () => '`yokoten init` adds .github/workflows/yokoten.yml',
+    fix: (root) => keptWorkflow(root, 'yokoten.yml', 'check', 'actions/checkout and actions/setup-node'),
     why: 'a commit made with the hook off would reach main unchecked',
     how: 'a workflow in .github/workflows runs `yokoten check` (by its path, or with npx, bunx or pnpm dlx), or has a step that uses yokoten-labs/yokoten',
     standard: 'Scorecard: CI-Tests',
@@ -698,7 +734,7 @@ export const ROAD: Step[] = [
     key: 'titles',
     check: (root) => ciRuns(ciText(root), runs('check --pr')) || ciFiles(root).some((f) => onPullRequest(f) && yokotenActions(f).some((a) => a.prCheck)),
     what: () => 'CI does not check pull requests (`yokoten check --pr`)',
-    fix: () => '`yokoten init` adds .github/workflows/pr.yml',
+    fix: (root) => keptWorkflow(root, 'pr.yml', 'check --pr', 'actions/checkout with `fetch-depth: 0` and actions/setup-node, in a job that runs on pull_request'),
     why: 'a pull request title becomes the commit on main, so it must say what changed and why',
     how: 'a workflow in .github/workflows runs `yokoten check --pr`, or runs on pull requests with a step that uses yokoten-labs/yokoten and does not set `pr-check: false`',
     standard: 'Conventional Commits 1.0.0',

@@ -401,6 +401,22 @@ husky or another `core.hooksPath`, it keeps that folder and adds the commit chec
 `pre-commit`. The project's own hook lines stay, and `init` says which file it changed.
 git runs `pre-merge-commit`, not `pre-commit`, for a merge it commits itself, so `init` adds
 the same check there too (`.githooks/pre-merge-commit`, or husky's `.husky/pre-merge-commit`).
+A `.githooks/pre-commit` of the project's own gets the check too. A file under `.husky/`
+keeps its mode, because husky 9 runs it with `sh`.
+
+A clone can also have its own hooks in `.git/hooks`: from lefthook, the pre-commit
+framework, or written by hand. Pointing git at `.githooks` would switch all of them off,
+so `init` writes `.githooks/pre-commit` and `.githooks/pre-merge-commit` to run the check
+first and then the old hook, and for each other executable hook, such as `commit-msg` or
+`pre-push`, a `.githooks` file that only runs the old one. Each gets the same arguments
+and stdin. The old hooks stay in `.git/hooks`, and `init` names each one it kept. A hook
+that is not executable is skipped by git today, so `init` goes ahead and says how to keep
+it. When it can't hand off (a commit hook comes from a global `core.hooksPath`, or the
+project's own `.githooks` file has its check inside an `if`, or reads stdin like the old
+hook), `init` leaves `core.hooksPath` unset and prints what to do. With a global
+`core.hooksPath`, the files in `.git/hooks` never ran, so `init` leaves them out. `doctor`
+does not count the commit check as done while such a hook would be dropped. For a
+workflow of the project's own that `init` keeps, `doctor` gives the step to add to it.
 
 `init` also writes three workflows into `.github/workflows/`: `yokoten.yml` (the
 commit check, a lint job with actionlint and zizmor, and one `ci` job to make the required
@@ -419,7 +435,7 @@ It puts two safe defaults in `.github/` too:
 
 | Command | What it does |
 |---------|--------------|
-| `install` | Skills into `~/.claude/skills` and `~/.agents/skills`, agents into `~/.claude/agents`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file. The two hooks go to Claude Code, Codex and Gemini CLI |
+| `install` | Skills into `~/.claude/skills` and `~/.agents/skills`, agents into `~/.claude/agents`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file. The two hooks go to Claude Code, and to Codex and Gemini CLI when `~/.codex` or `~/.gemini` already exists |
 | `init [dir]` | Puts the practices into a project. Adds files; keeps any that are already there and says so. It also reads GitHub through `gh` and says which standard labels and milestone it would add. It never changes GitHub. Without `gh`, a sign-in or a GitHub remote, it says what it skipped |
 | `init --github --yes [--remove-default-labels]` | Adds the missing standard labels, and a milestone "First release" when no milestone is open. When a closed milestone already has that title, the new one is "Next release". A closed milestone is never reopened. A standard label that is there gets the standard colour and description. A second run changes nothing. GitHub's default labels outside the set (`question`, `wontfix` and others) are deleted only with `--remove-default-labels` |
 | `update [dir] [--write]` | Shows what this yokoten changes in the core rules of the project's `AGENTS.md`. `--write` replaces them, and keeps the "This project" part as it is. See [Updating the rules](#updating-the-rules) |
@@ -663,9 +679,10 @@ on line 1, in an HTML comment. GitHub does not show it.
 <!-- source: docs/guide.md -->
 ```
 
-The path is the English file, from the repo root. Write this line once; it never
-changes. When you change the English, update the translation in the same commit or pull
-request.
+The path is the English file, from the repo root. Only a relative path makes a marker:
+an attribution comment such as `<!-- source: https://example.com/post -->`, or an
+absolute path, is left alone. Write this line once; it never changes. When you change
+the English, update the translation in the same commit or pull request.
 
 `check` reads line 1 of each Markdown and HTML file. Then it compares commits on the
 current branch, first parent only. The translation is current when the last commit that
@@ -681,6 +698,11 @@ The cost: a commit that changes only the translation also counts. A typo fix in 
 translation can hide an English change that nobody translated. So run `check` before a
 typo fix. If it notes the translation as behind, update the translation first.
 
+A known gap: a pull request that changes only the English, merged before one that
+changes both files, is not caught. The second one is the last commit for both files, so
+the translation looks current, but the first change was never translated. When you
+review a pull request that changes only the English, ask for the translation too.
+
 In the work tree, an edit to the translation counts as a later change. An edit to the
 English with no edit to the translation makes the translation behind.
 
@@ -694,8 +716,10 @@ An older form of line 1 adds the English blob:
 `check` still reads it. A blob equal to the English text is current; otherwise the
 commits decide. You can drop the blob at any time.
 
-A shallow clone may not hold the commits that `check` compares. Then it gives a note,
-not "current". In CI, use `fetch-depth: 0`.
+A shallow clone does not hold the commits that `check` compares. Then `check` gives one
+note for the whole run, that translations weren't checked, and no note for each file.
+That note never fails, even with `"fail": true`. In CI, use `fetch-depth: 0`; the kit's
+`yokoten.yml` does.
 
 ### Updating the rules
 
@@ -981,7 +1005,8 @@ Honest limits:
   guard and the stop check also run in Codex and Gemini CLI: `init` writes
   `.codex/hooks.json` and `.gemini/settings.json`, and each tool asks you to trust the
   hooks. Nobody has yet seen a real Codex or Gemini CLI session blocked by them (#30), so
-  `doctor` reports those hooks but does not count them as missing. The rules are plain `AGENTS.md`, which
+  `doctor` reports those hooks, and the user hooks once `~/.codex` or `~/.gemini` exists, but
+  does not count them as missing. The rules are plain `AGENTS.md`, which
   Claude Code reads when a project has no `CLAUDE.md`, and so do most other agents. Muse
   Code's skills and hooks are planned.
 

@@ -278,15 +278,27 @@ export const RULES = {
     check: '`doctor` feeds each check a known-bad input before anything else',
   },
   'codex-hook': {
-    rule: "the project has Codex's tool-call guard",
-    why: "without it, Codex's commands and edits in this project are not checked",
-    check: '`doctor` reads .codex/hooks.json for a PreToolUse hook that runs `yokoten hook --agent codex`; a note, not a missing step',
+    rule: "the project has Codex's tool-call guard and stop check",
+    why: "without them, Codex's commands and edits in this project are not checked, and its turn can end with a bad file",
+    check: '`doctor` reads .codex/hooks.json for a PreToolUse hook and a Stop hook that each run `yokoten hook`; a note, not a missing step',
     docs: guide('works-with'),
   },
   'gemini-hook': {
-    rule: "the project has Gemini CLI's tool-call guard",
-    why: "without it, Gemini CLI's commands and edits in this project are not checked",
-    check: '`doctor` reads .gemini/settings.json for a BeforeTool hook that runs `yokoten hook --agent gemini`; a note, not a missing step',
+    rule: "the project has Gemini CLI's tool-call guard and stop check",
+    why: "without them, Gemini CLI's commands and edits in this project are not checked, and its turn can end with a bad file",
+    check: '`doctor` reads .gemini/settings.json for a BeforeTool hook and an AfterAgent hook that each run `yokoten hook`; a note, not a missing step',
+    docs: guide('works-with'),
+  },
+  'codex-user-hook': {
+    rule: "Codex runs yokoten's session-start doctor and command guard in every repo",
+    why: 'without them, a Codex session does not hear the next step on the road, and a tag push, force push or skipped check in a repo without yokoten is not stopped',
+    check: "when ~/.codex is a folder, `doctor` compares the SessionStart and PreToolUse hooks in ~/.codex/hooks.json with what `yokoten install` writes (command, matcher, runtime path); a missing or out-of-date hook, or a file it can't read, is a note, not a missing step",
+    docs: guide('works-with'),
+  },
+  'gemini-user-hook': {
+    rule: "Gemini CLI runs yokoten's session-start doctor and command guard in every repo",
+    why: 'without them, a Gemini CLI session does not hear the next step on the road, and a tag push, force push or skipped check in a repo without yokoten is not stopped',
+    check: "when ~/.gemini is a folder, `doctor` compares the SessionStart and BeforeTool hooks in ~/.gemini/settings.json with what `yokoten install` writes (command, matcher, name, runtime path); a missing or out-of-date hook, or a file it can't read, is a note, not a missing step",
     docs: guide('works-with'),
   },
   'core-rules': {

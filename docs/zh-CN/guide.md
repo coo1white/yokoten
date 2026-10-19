@@ -366,7 +366,20 @@ kit 里 `init` 放的 workflow 暂时还是跑 `.yokoten/` 里的那份，等第
 `core.hooksPath` 的，它不换掉那个目录，而是把提交检查加进那里的 `pre-commit`。项目自己的
 hook 一行都不删，`init` 也会说改了哪个文件。git 自己提交合并时跑的是 `pre-merge-commit`，不是
 `pre-commit`，所以 `init` 在那里也放同样的检查（`.githooks/pre-merge-commit`，用 husky 的是
-`.husky/pre-merge-commit`）。
+`.husky/pre-merge-commit`）。项目自己写的 `.githooks/pre-commit` 也会加上检查。`.husky/` 下的
+文件，文件权限不动：husky 9 是用 `sh` 去跑它们的。
+
+有的仓库在 `.git/hooks` 里也有自己的 hook，可能是 lefthook 或 pre-commit 框架装的，也可能是
+手写的。git 改成从 `.githooks` 找 hook 以后，这些 hook 全都不跑了。所以 `init` 写的
+`.githooks/pre-commit` 和 `.githooks/pre-merge-commit` 先跑检查，再去跑原来那个 hook；别的有执行
+权限的 hook，比如 `commit-msg`、`pre-push`，`init` 也在 `.githooks` 里各写一个文件，只管去跑原来
+那个。参数和标准输入都原样传过去。原来的 hook 留在 `.git/hooks` 里不动，`init` 会一个个说保留了
+哪些。没有执行权限的 hook，git 现在本来就不跑，所以 `init` 照常设好，并告诉你怎么留住它。要是接
+不上（提交 hook 来自全局的 `core.hooksPath`，或者项目自己的 `.githooks` 文件把检查写在 `if` 里，
+或者它和原来的 hook 都要读标准输入），`init` 就不设 `core.hooksPath`，并告诉你该怎么做。设了全局
+`core.hooksPath` 的话，`.git/hooks` 里的文件本来就没跑过，`init` 不管它们。这样的 hook 会被丢掉的
+时候，`doctor` 不会把提交检查算作做完。项目自己的 workflow，`init` 会原样留着，`doctor` 会告诉
+你该往里加哪一步。
 
 `init` 还会在 `.github/workflows/` 里放三个 workflow：`yokoten.yml`（跑提交检查；一个 lint
 job 用 actionlint 和 zizmor 查 workflow 本身；还有一个 `ci` job，设成必过的检查就只要设它）、
@@ -384,7 +397,7 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 
 | 命令 | 做什么 |
 |------|--------|
-| `install` | 把技能装进 `~/.claude/skills` 和 `~/.agents/skills`，agent 装进 `~/.claude/agents`，加上会话开头的 `doctor` hook 和用户级命令守卫，再建一个空的私有词表。这两个 hook Claude Code、Codex 和 Gemini CLI 各装一份 |
+| `install` | 把技能装进 `~/.claude/skills` 和 `~/.agents/skills`，agent 装进 `~/.claude/agents`，加上会话开头的 `doctor` hook 和用户级命令守卫，再建一个空的私有词表。这两个 hook 给 Claude Code 装一份；已经有 `~/.codex` 或 `~/.gemini` 文件夹的话，Codex 和 Gemini CLI 也各装一份 |
 | `init [dir]` | 把这套做法放进一个项目。只加文件；已有的文件保留，并告诉你保留了哪些。它还会用 `gh` 看一眼 GitHub，告诉你要补哪些标准标签和里程碑，但不会去改 GitHub。没装 `gh`、没登录，或者远程仓库不在 GitHub 上，就说一声跳过了 |
 | `init --github --yes [--remove-default-labels]` | 补上缺的标准标签；没有打开的里程碑时，建一个叫 "First release" 的；要是已经有一个关掉的里程碑叫这个名字，就叫 "Next release"。关掉的里程碑不会被重新打开。已有的标准标签，颜色和说明改成标准的。再跑一次什么也不会变。GitHub 自带的、不在这套里的标签（`question`、`wontfix` 等），只有加上 `--remove-default-labels` 才会删 |
 | `update [dir] [--write]` | 看看这个版本的 yokoten 会怎么改项目 `AGENTS.md` 里的核心规则。加上 `--write` 才真的替换；「This project」那部分原样保留。见[更新规则](#更新规则) |
@@ -605,8 +618,10 @@ Fixed
 <!-- source: docs/guide.md -->
 ```
 
-路径是英文文件的路径，从仓库根目录算起。这一行写一次就行，以后不用再改。改英文时，把译文
-也一起改了，放在同一个 commit 或同一个 PR 里。
+路径是英文文件的路径，从仓库根目录算起。只有相对路径才算：像
+`<!-- source: https://example.com/post -->` 这样注明出处的注释，或者写的是绝对路径，
+`check` 都不管。这一行写一次就行，以后不用再改。改英文时，把译文也一起改了，放在同一个
+commit 或同一个 PR 里。
 
 `check` 会读每个 Markdown 和 HTML 文件的第 1 行，然后看当前分支的提交（只沿第一个父提交
 往回找）：最后一次改译文的提交，和最后一次改英文的提交是同一个，或者更晚，译文就算最新。
@@ -618,6 +633,10 @@ Fixed
 代价是：只改译文的提交也算数。在译文里改个错字，可能就把一处没人翻的英文改动盖过去了。所以
 改错字之前先跑一下 `check`，如果它说译文落后，先把译文补上。
 
+还有一个已知的漏洞：一个 PR 只改了英文，先合进去；另一个 PR 英文和译文都改了，后合进去。
+这时 `check` 发现不了。后合的那个是两个文件最后一次的提交，译文看起来是最新的，可前一个 PR
+的英文改动其实没人翻。审只改英文的 PR 时，记得让对方把译文也补上。
+
 工作区里还没提交的改动也这样算：译文改了，就当作更晚的改动；只改了英文、没改译文，译文算落后。
 
 译文落后时，`check` 给一条 `translation-behind` 提醒：落后了几个 commit，怎么看英文改了
@@ -628,8 +647,9 @@ Fixed
 `<!-- source: docs/guide.md blob 3b18e512dba79e4c8300dd08aeb37f8e728b8dad -->`。
 `check` 照样认。blob 和英文对得上，就算最新；对不上，就按上面的提交来判断。blob 随时可以删掉。
 
-浅克隆里可能没有要比的那些提交。这时 `check` 给一条提醒，不会当成最新。CI 里 checkout
-时设 `fetch-depth: 0`。
+浅克隆里没有 `check` 要比的那些提交。这时 `check` 整次运行只给一条提醒，说译文没检查，
+不会每个文件都报一条。就算设了 `"fail": true`，这条提醒也不会让 CI 失败。CI 里 checkout
+时设 `fetch-depth: 0`，kit 里的 `yokoten.yml` 已经设好了。
 
 ### 更新规则
 
@@ -880,7 +900,8 @@ AWS 的 access key id，还有 PEM 私钥。查到了只说是哪一种密钥，
   Copilot、Cursor 这些 AI 会去那里找。工具调用守卫和收尾检查在 Codex 和 Gemini CLI 里也能用：
   `init` 会写好 `.codex/hooks.json` 和 `.gemini/settings.json`，这两个工具会先请你信任这些
   hook。还没有人在真的 Codex 或 Gemini CLI 里看到它们拦下过东西（#30），所以 `doctor` 只说
-  这些 hook 在不在，不算作缺少。规则就是普通的 `AGENTS.md`：项目里没有
+  这些 hook 在不在，不算作缺少。有 `~/.codex` 或 `~/.gemini` 文件夹时，用户级的
+  hook 也照这样报告。规则就是普通的 `AGENTS.md`：项目里没有
   `CLAUDE.md` 时 Claude Code 会直接读它，大多数别的 AI 也读。Muse Code 的技能和 hook
   还在计划中。
 
