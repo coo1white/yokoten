@@ -102,6 +102,16 @@ export function guardDeadline(value: string | undefined): number {
 
 type JudgeOptions = Parameters<typeof judge>[1];
 
+// A worker does not share the main thread's compile cache, so it turns the cache on
+// itself, then loads this module (#286). It starts as plain JavaScript: this module's
+// imports are compiled before any of its code runs, and the cache must be on by then.
+// An error from the cache is ignored, as in bin/yokoten.ts.
+const WORKER_START = `
+const { enableCompileCache } = require('node:module');
+try { enableCompileCache?.(); } catch {}
+import(${JSON.stringify(import.meta.url)});
+`;
+
 /** The guard worker's stack, in MB: about the main thread's. */
 const WORKER_STACK_MB = 1;
 
@@ -117,7 +127,8 @@ export function judgeWithDeadline(action: Action, options: JudgeOptions, deadlin
     // The main thread's stack (V8's default, just under 1 MB), not a worker's default 4 MB:
     // the guard reads a command the same way in the worker as in `judge`, so a command too
     // deep to read there is refused here too, not let through.
-    const worker = new Worker(new URL(import.meta.url), {
+    const worker = new Worker(WORKER_START, {
+      eval: true,
       workerData: { yokotenJudge: { action, options: { ...options, env: { ...options.env } } } },
       resourceLimits: { stackSizeMb: WORKER_STACK_MB },
     });
