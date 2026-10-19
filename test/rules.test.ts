@@ -890,6 +890,10 @@ test('translations: line 1 names the source; the older form adds a blob; other f
   assert.equal(parseSourceMarker('# Title\n<!-- source: a.md -->'), null, 'only line 1');
   assert.equal(parseSourceMarker('<!-- source: -->'), null, 'no path');
   assert.equal(parseSourceMarker('---\nsource: a.md\n---'), null, 'front matter is not the form');
+  // Only a relative path (#181): an attribution comment names a URL, and an absolute path is no repo file.
+  for (const source of ['https://example.com/post', 'mailto:a@example.com', '/docs/guide.md', 'C:\\docs\\guide.md']) {
+    assert.equal(parseSourceMarker(`${sourceMarker(source)}\n# Title`), null, source);
+  }
 });
 
 test('translations: a note when English changed after the translation, none when it is current (#87)', () => {
@@ -915,27 +919,45 @@ test('translations: a note when English changed after the translation, none when
   assert.deepEqual(translationNotes(repo.root, ['zh.md']), []);
 });
 
-test('translations: a missing source and a shallow clone each give a clear note, never "current" (#87)', () => {
+test('translations: a missing source gives a clear note; a URL or an absolute path is not a marker (#87, #181)', () => {
   const repo = makeTranslatedRepo();
   writeFileSync(join(repo.root, 'gone.md'), `${sourceMarker('nowhere.md')}\n`);
   writeFileSync(join(repo.root, 'out.md'), `${sourceMarker('../en.md')}\n`);
-  const notes = translationNotes(repo.root, ['gone.md', 'out.md']);
+  writeFileSync(join(repo.root, 'credit.md'), '<!-- source: https://example.com/post -->\n# A post\n');
+  writeFileSync(join(repo.root, 'root.md'), `${sourceMarker(join(repo.root, 'en.md'))}\n`);
+  const notes = translationNotes(repo.root, ['gone.md', 'out.md', 'credit.md', 'root.md']);
+  assert.equal(notes.length, 2, notes.map((n) => n.file).join(', '));
   assert.match(notes[0].what, /names nowhere\.md as its English source, which is not in the repo/);
   assert.match(notes[1].what, /names \.\.\/en\.md as its English source, which is not in the repo/);
-  // A shallow clone (CI's default checkout): its one commit seems to add both files.
-  for (const english of ['# Guide\n\nStep one, changed.\n', null]) {
-    if (english) repo.commit('en.md', english);
-    const shallow = mkdtempSync(join(tmpdir(), 'yokoten-'));
-    execFileSync('git', ['clone', '-q', '--depth', '1', `file://${repo.root}`, shallow], { stdio: 'ignore' });
-    const [note] = translationNotes(shallow, ['zh.md']);
-    assert.match(note.what, /is behind en\.md: this clone is shallow, so how far is not known/);
-    assert.match(note.fix, /fetch-depth: 0/);
+});
+
+test('translations: a shallow clone gives one note for the run, never a note per file, never a problem (#87, #181)', () => {
+  const repo = makeTranslatedRepo();
+  repo.commit('en.md', '# Guide\n\nStep one, changed.\n');
+  repo.commit('zh2.md', `${sourceMarker('en.md')}\n# 指南二\n`);
+  const shallowClone = (depth: number) => {
+    const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+    execFileSync('git', ['clone', '-q', '--depth', String(depth), `file://${repo.root}`, dir], { stdio: 'ignore' });
+    return dir;
+  };
+  // CI's default checkout: one commit, which seems to add every file. Deeper is still shallow.
+  for (const depth of [1, 2]) {
+    const shallow = shallowClone(depth);
+    const notes = translationNotes(shallow, ['en.md', 'zh.md', 'zh2.md']);
+    assert.equal(notes.length, 1, `depth ${depth}: ${notes.map((n) => n.what).join('; ')}`);
+    assert.equal(notes[0].file, undefined, 'not about one file');
+    assert.equal(notes[0].what, "translations weren't checked: this clone is shallow");
+    assert.match(notes[0].fix, /fetch-depth: 0/);
+    // Even with "fail": a note, never a problem.
+    const found: Finding[] = [];
+    const problems = check(shallow, { config: { ...DEFAULTS, translations: { fail: true } }, env: {}, notes: found });
+    assert.deepEqual(problems.filter((f) => f.id === 'translation-behind'), []);
+    assert.deepEqual(found.map((f) => f.what), ["translations weren't checked: this clone is shallow"]);
   }
-  // Deep enough to see the change: the history decides.
-  repo.commit('zh.md', `${sourceMarker('en.md')}\n# 指南\n\n第一步（改）。\n`);
-  const deeper = mkdtempSync(join(tmpdir(), 'yokoten-'));
-  execFileSync('git', ['clone', '-q', '--depth', '2', `file://${repo.root}`, deeper], { stdio: 'ignore' });
-  assert.deepEqual(translationNotes(deeper, ['zh.md']), []);
+  // A translation edited in the work tree needs no history: no note.
+  const shallow = shallowClone(1);
+  writeFileSync(join(shallow, 'zh.md'), `${sourceMarker('en.md')}\n# 指南（改）\n`);
+  assert.deepEqual(translationNotes(shallow, ['zh.md']), []);
 });
 
 test('translations: two branches that each change both files never edit the same line, and merge in turn with no note (#166)', () => {
