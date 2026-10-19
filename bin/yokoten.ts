@@ -35,7 +35,8 @@ const HELP = [
   '',
   'Start: `yokoten install` once on this machine, then `yokoten init` in your project.',
   'Run `yokoten <command> --help` for its options and an example.',
-  '--json on check, doctor, hook and explain: data on stdout, for an agent or a script.',
+  '--json on check, doctor, hook, explain and adopt: data on stdout,',
+  'for an agent or a script.',
   'Exit codes: 0 ok, 1 problems found or a usage error, 2 the hook blocked the tool call',
   'or the end of the turn.',
 ].join('\n');
@@ -391,10 +392,15 @@ function main(): number | Promise<number> {
       const options = parse('explain');
       if (typeof options === 'string') return usage(options);
       const [id] = options.positional;
-      const found = id === undefined ? null : explain(id);
-      if (options.flags.has('--json')) printJson(found ? { found: true, ...found } : { id: id ?? null, found: false, ids: ids() });
+      if (id === undefined) {
+        if (options.flags.has('--json')) printJson({ ids: ids() });
+        else print([`Ids: ${ids().join(', ')}`]);
+        return 0;
+      }
+      const found = explain(id);
+      if (options.flags.has('--json')) printJson(found ? { found: true, ...found } : { id, found: false, ids: ids() });
       else if (found) print(explainLines(found));
-      else print([id === undefined ? 'yokoten explain: name a rule or a step.' : `yokoten explain: no rule or step is called ${id}.`, `Ids: ${ids().join(', ')}`], process.stderr);
+      else print([`yokoten explain: no rule or step is called ${id}.`, `Ids: ${ids().join(', ')}`], process.stderr);
       return found ? 0 : 1;
     }
     case 'adopt': {
