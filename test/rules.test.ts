@@ -16,6 +16,7 @@ import { agentHooks, coreRulesCheck, coreRulesControl, machineChecks, selfTest }
 import { compareCoreRules, compareVersions, readKitVersion } from '../src/setup/init.ts';
 import { explain, explainLines, ids } from '../src/setup/advice/explain.ts';
 import { ROAD, serverChecks, stepFinding } from '../src/setup/road.ts';
+import { readIssue, readPullRequest } from '../src/host/github.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
 import { formatChanges, mergeChanges, parseChange, readChanges, writeChanges } from '../src/run/changelog.ts';
 import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, visibleLength, ownersOf, parseCodeOwners, largeDiff, longSentenceNote, longSentences, type PullRequest } from '../src/rules/pr.ts';
@@ -486,6 +487,12 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   execFileSync('git', ['clone', '-q', '--depth', '1', `file://${translated.root}`, shallow], { stdio: 'ignore' });
   found.push(...checkHistory(shallow, { config: DEFAULTS, env: {} }));
   found.push(...parseChange('changes/1-a.md', 'Improved\n\nA thing.\n').problems);
+  // A CI event that can't be read, and a pull request whose commits are not here (#267).
+  const unreadable = (read: unknown) => (read && typeof read === 'object' && 'problem' in read ? (read.problem as Finding) : null);
+  add(unreadable(readIssue({ GITHUB_EVENT_PATH: join(translated.root, 'no-event.json') })));
+  const event = join(translated.root, 'event.json');
+  writeFileSync(event, JSON.stringify({ pull_request: { base: { sha: 'f'.repeat(40) }, head: { sha: translated.git('rev-parse', 'HEAD') } } }));
+  add(unreadable(readPullRequest(translated.root, { GITHUB_EVENT_PATH: event })));
   // The road and the machine, from an empty folder and an empty home.
   const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
   for (const step of ROAD) add(stepFinding(step, dir, { HOME: dir }));
