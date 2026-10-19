@@ -1108,8 +1108,15 @@ test('init: a commented .gemini/settings.json is left as it was and gets the hoo
   assert.doesNotMatch(result.stdout, /can't read|unexpected shape/);
   assert.equal(readFileSync(file, 'utf8'), before, 'the file changed');
   const add = handAdd(result.stdout, `skipped the Gemini CLI hooks: ${COMMENTED('.gemini/settings.json')}, then run \`yokoten init\` again:`);
+  // The tool-call command may carry a fail-closed wrapper (#260); either way it checks for the
+  // project runtime first, then runs the yokoten guard with node.
+  const runtimePath = '$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts';
+  const guardCall = String((add.BeforeTool?.[0] as { hooks?: { command?: unknown }[] } | undefined)?.hooks?.[0]?.command);
+  const missingCheck = guarded(runtimePath, 'x').slice(0, -`node ${runtimePath} x`.length);
+  assert.ok(guardCall.startsWith(missingCheck), guardCall);
+  assert.match(guardCall, /\bnode(?: --\S+)* \$GEMINI_PROJECT_DIR\/\.yokoten\/bin\/yokoten\.ts hook --agent gemini(?: |$)/);
   assert.deepEqual(add, {
-    BeforeTool: [{ hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --agent gemini'), name: 'yokoten' }], matcher: 'run_shell_command|write_file|replace' }],
+    BeforeTool: [{ hooks: [{ type: 'command', command: guardCall, name: 'yokoten' }], matcher: 'run_shell_command|write_file|replace' }],
     AfterAgent: [{ hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --stop --agent gemini'), name: 'yokoten-stop' }] }],
   });
   assert.ok(hasHook(join(sandbox.repo, '.codex', 'hooks.json'), 'Stop', 'hook'), 'no Codex stop check');
