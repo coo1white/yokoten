@@ -79,8 +79,8 @@ test('muse project hooks: init writes the guard and the stop check, keeps other 
   assert.match(written.hooks.PreToolUse[1].hooks[0].command, /"\$\(git rev-parse --show-toplevel\)\/\.yokoten\/bin\/yokoten\.ts" hook --agent muse 2>&1/);
   assert.match(written.hooks.Stop[0].hooks[0].command, /hook --stop --agent muse$/);
   assert.deepEqual(projectHooksState(sandbox.repo, cli), { guard: 'same', stop: 'same' });
-  // The hooks are in place, but this home has no trust store: never ok (#341).
-  assert.match(sandbox.run(['doctor']).stdout, /note +muse-hook: can't check whether Muse Code trusts this folder/);
+  // The hooks are in place, and Muse looks unused here: no trust line (#341).
+  assert.match(sandbox.run(['doctor']).stdout, /ok +muse-hook: \.muse\/hooks\.json is in place; trust not checked, no ~\/\.config\/muse\n/);
   trustFolder(sandbox.home, realpathSync(sandbox.repo));
   assert.match(sandbox.run(['doctor']).stdout, /ok +muse-hook/);
   assert.match(sandbox.run(['init']).stdout, /same the Muse Code tool-call hook/);
@@ -100,6 +100,11 @@ test('muse trust (#341): doctor says when Muse skips the hooks; ok only when tru
   assert.equal(sandbox.run(['init']).status, 0);
   const root = realpathSync(sandbox.repo);
   const doctor = () => sandbox.run(['doctor']).stdout;
+  // No Muse home: no trust line, and no claim that Muse trusts the folder.
+  assert.doesNotMatch(doctor(), /muse-hook: can't check|Muse Code skips/);
+  assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'no home');
+  // A home without a store: can't check, never ok.
+  mkdirSync(join(sandbox.home, '.config', 'muse'), { recursive: true });
   assert.match(doctor(), /note +muse-hook: can't check whether Muse Code trusts this folder: no ~\/\.config\/muse\/trust\.json; if you use Muse Code: run `muse` in this folder and choose "Trust and continue"/);
   // The positive control: a store that trusts another folder.
   const file = trustFolder(sandbox.home, '/somewhere/else');
@@ -118,5 +123,7 @@ test('muse trust (#341): doctor says when Muse skips the hooks; ok only when tru
   assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'unreadable');
   // XDG_CONFIG_HOME moves the store: the one under ~/.config no longer counts. The note names the variable, not the path.
   trustFolder(sandbox.home, root);
+  assert.deepEqual(readTrust(root, { HOME: sandbox.home, XDG_CONFIG_HOME: join(sandbox.home, 'xdg') }), { state: 'no home', store: '$XDG_CONFIG_HOME/muse/trust.json' });
+  mkdirSync(join(sandbox.home, 'xdg', 'muse'), { recursive: true });
   assert.deepEqual(readTrust(root, { HOME: sandbox.home, XDG_CONFIG_HOME: join(sandbox.home, 'xdg') }), { state: 'no store', store: '$XDG_CONFIG_HOME/muse/trust.json' });
 });

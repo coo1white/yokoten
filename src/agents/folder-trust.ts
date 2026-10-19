@@ -3,15 +3,25 @@
 // in the user's home. Doctor reads the file, read-only and offline, and never prints it:
 // it holds the user's folder names.
 
-import { realpathSync } from 'node:fs';
+import { realpathSync, statSync } from 'node:fs';
 
 /**
  * What an agent's trust store says about the project. `store` is where the store is, as
- * the user would type it (`~/...` or `$VAR/...`), never the real path.
+ * the user would type it (`~/...` or `$VAR/...`), never the real path. 'no home' is an
+ * agent this machine does not seem to use: its home folder is not there.
  */
 export interface FolderTrust<State extends string = never> {
-  state: 'trusted' | 'untrusted' | 'no store' | 'unreadable' | State;
+  state: 'trusted' | 'untrusted' | 'no home' | 'no store' | 'unreadable' | State;
   store: string;
+}
+
+/** Whether `dir` is a folder: an agent's home, which it makes on first run. */
+export function isFolder(dir: string): boolean {
+  try {
+    return statSync(dir).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /**

@@ -134,7 +134,12 @@ test('codex trust (#341): doctor says when Codex skips the hooks, and ok only wh
     writeFileSync(config, text);
   };
   const doctor = () => sandbox.run(['doctor']).stdout;
-  // No store: can't check, and never ok.
+  // No Codex home: Codex looks unused here, so no trust line, and no claim that it is trusted.
+  assert.match(doctor(), /ok +codex-hook: \.codex\/hooks\.json is in place; trust not checked, no ~\/\.codex\n/);
+  assert.doesNotMatch(doctor(), /Codex trusts|codex-hook: can't check/);
+  assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'no home');
+  // A home without a store: can't check, and never ok.
+  mkdirSync(dirname(config), { recursive: true });
   assert.match(doctor(), /note +codex-hook: can't check whether Codex trusts this folder: no ~\/\.codex\/config\.toml; if you use Codex: run `codex` in this folder, trust it, then trust both yokoten hooks in `\/hooks`/);
   // The positive control: a store without this folder.
   writeConfig('model = "x"\n');

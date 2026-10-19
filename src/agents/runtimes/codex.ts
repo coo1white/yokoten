@@ -12,7 +12,7 @@ import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import type { Env } from '../../rules/config.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import type { Action } from '../../run/hook.ts';
-import { type FolderTrust, folderKeys } from '../folder-trust.ts';
+import { type FolderTrust, folderKeys, isFolder } from '../folder-trust.ts';
 import { type Added, addHook, checkHooksFile, hasHook, type HookArgs, type HookState, hookState, isObject } from '../hooks-file.ts';
 
 // The docs: "Bash and apply_patch use tool_input.command", and unified exec reports as Bash.
@@ -323,7 +323,9 @@ function mainCheckout(root: string): string | null {
  */
 export function readTrust(root: string, env: Env): CodexTrust {
   const store = env.CODEX_HOME ? '$CODEX_HOME/config.toml' : '~/.codex/config.toml';
-  const file = join(env.CODEX_HOME || join(env.HOME || homedir(), '.codex'), 'config.toml');
+  const home = env.CODEX_HOME || join(env.HOME || homedir(), '.codex');
+  const file = join(home, 'config.toml');
+  if (!isFolder(home)) return { state: 'no home', store };
   if (!existsSync(file)) return { state: 'no store', store };
   let tables: ReturnType<typeof readTrustTables>;
   try {

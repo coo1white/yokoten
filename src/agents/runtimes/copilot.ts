@@ -12,7 +12,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
-import { type FolderTrust, folderKeys } from '../folder-trust.ts';
+import { type FolderTrust, folderKeys, isFolder } from '../folder-trust.ts';
 import { isObject } from '../hooks-file.ts';
 
 /** The one step that makes Copilot CLI run the project's hooks. */
@@ -24,7 +24,9 @@ const isInside = (folder: string, trusted: string) => trusted === '' || folder =
 /** Whether Copilot CLI trusts the project at `root`, from its config file. Read-only. */
 export function readTrust(root: string, env: Env): FolderTrust {
   const store = env.COPILOT_HOME ? '$COPILOT_HOME/config.json' : '~/.copilot/config.json';
-  const file = join(env.COPILOT_HOME || join(env.HOME || homedir(), '.copilot'), 'config.json');
+  const home = env.COPILOT_HOME || join(env.HOME || homedir(), '.copilot');
+  const file = join(home, 'config.json');
+  if (!isFolder(home)) return { state: 'no home', store };
   if (!existsSync(file)) return { state: 'no store', store };
   let saved: unknown;
   try {

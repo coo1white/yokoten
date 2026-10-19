@@ -194,8 +194,8 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.match(result.stdout, /same the Gemini CLI stop check/);
   assert.deepEqual(codex.hooks.Stop, [{ hooks: [{ type: 'command', command: guarded('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.ts"', 'hook --stop --agent codex') }] }]);
   assert.deepEqual(gemini.hooks.AfterAgent, [{ hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --stop --agent gemini'), name: 'yokoten-stop' }] }]);
-  // Codex's hooks are in place; this home has no Codex trust store, so doctor can't call them ok (#341).
-  assert.match(sandbox.run(['doctor']).stdout, /note +codex-hook: can't check whether Codex trusts this folder[^\n]*\n +ok +gemini-hook\n +ok +antigravity-hook/);
+  // Codex's hooks are in place; this home has no ~/.codex, so doctor says nothing of its trust (#341).
+  assert.match(sandbox.run(['doctor']).stdout, /ok +codex-hook: \.codex\/hooks\.json is in place; trust not checked, no ~\/\.codex\n +ok +gemini-hook\n +ok +antigravity-hook/);
   assert.match(result.stdout, /Codex runs the hooks in \.codex\/hooks\.json only after you trust this folder and the hooks: run `codex` in this folder, trust it, then trust both yokoten hooks in `\/hooks`/);
   // Antigravity CLI (#30): its own file, and Copilot CLI reads .claude/settings.json.
   assert.match(result.stdout, /same the Antigravity CLI tool-call hook in \.agents\/hooks\.json/);

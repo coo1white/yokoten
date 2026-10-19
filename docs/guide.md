@@ -271,7 +271,8 @@ each agent's own trust store, read-only, and notes a folder it does not trust ye
 | Codex | `~/.codex/config.toml` (or `$CODEX_HOME`): `[projects]` and `[hooks.state]` | the repo folder exactly, and each hook as it is now |
 | Muse Code | `~/.config/muse/trust.json` (or `$XDG_CONFIG_HOME`) | the repo folder exactly |
 
-When doctor can't find or read a store, it says "can't check", never ok.
+Doctor checks an agent only when its home folder is there (`~/.copilot`, `~/.codex`, `~/.config/muse`).
+When that folder has no store, or one doctor can't read, it says "can't check", never ok.
 
 A worker is a session with `YOKOTEN_ROLE=worker`. In Codex, a subagent whose
 `agent_type` names a worker is a worker too. Copilot CLI and Antigravity CLI name no

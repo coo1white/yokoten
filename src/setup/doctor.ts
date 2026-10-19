@@ -83,11 +83,14 @@ function handAddPractice(id: RuleId, file: string, states: readonly HookState[])
  * The note when an agent skips the project's hooks until the user trusts the folder
  * (#341), read from the agent's own trust store; ok only when the store says trusted. A
  * store doctor can't find or read is "can't check", never ok: Codex, Muse Code and Copilot
- * CLI all fail open, without a word.
+ * CLI all fail open, without a word. Null when the agent's home folder is not there: a
+ * user who does not run that agent hears nothing about its trust.
  */
-function trustPractice(id: RuleId, agent: string, file: string, trust: FolderTrust<codex.CodexTrust['state']>, step: string): Practice {
+function trustPractice(id: RuleId, agent: string, file: string, trust: FolderTrust<codex.CodexTrust['state']>, step: string): Practice | null {
   const note = (what: string, fix: string) => practice(id, id, false, what, fix);
   switch (trust.state) {
+    case 'no home':
+      return null;
     case 'trusted':
       return practice(id, id, true, '', '');
     case 'untrusted':
@@ -105,6 +108,9 @@ function trustPractice(id: RuleId, agent: string, file: string, trust: FolderTru
   }
 }
 
+/** The hook-file line when the agent's home is not there: the file is in place, and its trust is not checked. */
+const unchecked = (id: RuleId, file: string, home: string): Practice => ({ name: id, ok: true, finding: finding(id, '', ''), detail: `${file} is in place; trust not checked, no ${home}` });
+
 /**
  * The other agents' project hooks: the tool-call guard and the stop check. Reported, but
  * not a missing practice: a project that uses none of these agents should not fail doctor
@@ -120,13 +126,20 @@ export function agentHooks(root: string, env: Env = process.env): Practice[] {
   const [codexGuard, codexStop] = [codex.hasProjectHook(root), codex.hasProjectStopHook(root)];
   const [geminiGuard, geminiStop] = [gemini.hasProjectHook(root), gemini.hasProjectStopHook(root)];
   const geminiState = geminiGuard && geminiStop ? null : gemini.projectHooksState(root, cliPath(root));
+  // Copilot CLI reads Claude Code's hooks: the road checks the file, this line only the trust,
+  // and only when Copilot looks used here.
+  const copilotTrust = copilot.readTrust(root, env);
+  const copilotLine =
+    copilotTrust.state === 'no home'
+      ? null
+      : hasProjectHook(root)
+        ? trustPractice('copilot-hook', 'Copilot CLI', '.claude/settings.json', copilotTrust, copilot.TRUST_STEP)
+        : practice('copilot-hook', 'copilot-hook', false, 'no tool-call guard in .claude/settings.json', '`yokoten init` adds it');
+  const codexTrust = codexGuard && codexStop ? codex.readTrust(root, env) : null;
   return [
-    // Copilot CLI reads Claude Code's hooks; the road checks the file, this line the trust.
-    hasProjectHook(root)
-      ? trustPractice('copilot-hook', 'Copilot CLI', '.claude/settings.json', copilot.readTrust(root, env), copilot.TRUST_STEP)
-      : practice('copilot-hook', 'copilot-hook', false, 'no tool-call guard in .claude/settings.json', '`yokoten init` adds it'),
-    codexGuard && codexStop
-      ? trustPractice('codex-hook', 'Codex', '.codex/hooks.json', codex.readTrust(root, env), codex.TRUST_STEP)
+    ...(copilotLine ? [copilotLine] : []),
+    codexTrust
+      ? (trustPractice('codex-hook', 'Codex', '.codex/hooks.json', codexTrust, codex.TRUST_STEP) ?? unchecked('codex-hook', '.codex/hooks.json', codexTrust.store.replace('/config.toml', '')))
       : practice('codex-hook', 'codex-hook', false, missing(codexGuard, codexStop, '.codex/hooks.json'), '`yokoten init` adds it'),
     (geminiState && handAddPractice('gemini-hook', '.gemini/settings.json', [geminiState.guard, geminiState.stop])) ??
       practice('gemini-hook', 'gemini-hook', geminiGuard && geminiStop, missing(geminiGuard, geminiStop, '.gemini/settings.json'), '`yokoten init` adds it'),
@@ -152,7 +165,8 @@ function musePractice(states: { guard: HookState; stop: HookState }, readTrust: 
   if (problem) return practice('muse-hook', 'muse-hook', false, problem.kind === 'json' ? `can't read ${file}` : `${file} has an unexpected shape`, 'make it valid JSON with a "hooks" object, then run `yokoten init`');
   if (all.includes('updated')) return practice('muse-hook', 'muse-hook', false, `the hooks in ${file} are out of date`, '`yokoten init` updates them');
   if (!all.every((state) => state === 'same')) return practice('muse-hook', 'muse-hook', false, `no tool-call guard or stop check in ${file}`, '`yokoten init` adds them');
-  return trustPractice('muse-hook', 'Muse Code', file, readTrust(), muse.TRUST_STEP);
+  const trust = readTrust();
+  return trustPractice('muse-hook', 'Muse Code', file, trust, muse.TRUST_STEP) ?? unchecked('muse-hook', file, trust.store.replace('/trust.json', ''));
 }
 
 /**

@@ -19,6 +19,9 @@ function trustFolders(home: string, ...folders: string[]): string {
 test('copilot trust (#341): doctor says when Copilot CLI skips the hooks; a trusted parent folder counts', () => {
   const sandbox = makeSandbox();
   const doctor = () => sandbox.run(['doctor']).stdout;
+  // No Copilot home: Copilot looks unused here, so no line at all.
+  assert.doesNotMatch(doctor(), /copilot-hook/);
+  mkdirSync(join(sandbox.home, '.copilot'));
   assert.match(doctor(), /note +copilot-hook: no tool-call guard in \.claude\/settings\.json; `yokoten init` adds it/);
   const init = sandbox.run(['init']);
   assert.equal(init.status, 0, init.stderr);
@@ -38,5 +41,9 @@ test('copilot trust (#341): doctor says when Copilot CLI skips the hooks; a trus
   writeFileSync(file, '{ not json');
   assert.match(doctor(), /note +copilot-hook: can't check whether Copilot CLI trusts this folder: can't read ~\/\.copilot\/config\.json/);
   // COPILOT_HOME moves the store, and the note names the variable, not the path.
-  assert.deepEqual(readTrust(root, { HOME: sandbox.home, COPILOT_HOME: join(sandbox.home, 'elsewhere') }), { state: 'no store', store: '$COPILOT_HOME/config.json' });
+  const elsewhere = join(sandbox.home, 'elsewhere');
+  assert.deepEqual(readTrust(root, { HOME: sandbox.home, COPILOT_HOME: elsewhere }), { state: 'no home', store: '$COPILOT_HOME/config.json' });
+  assert.doesNotMatch(sandbox.run(['doctor'], { extra: { COPILOT_HOME: elsewhere } }).stdout, /copilot-hook/, 'after init too: no home, no line');
+  mkdirSync(elsewhere);
+  assert.deepEqual(readTrust(root, { HOME: sandbox.home, COPILOT_HOME: elsewhere }), { state: 'no store', store: '$COPILOT_HOME/config.json' });
 });

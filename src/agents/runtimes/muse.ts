@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import type { Action } from '../../run/hook.ts';
-import { type FolderTrust, folderKeys } from '../folder-trust.ts';
+import { type FolderTrust, folderKeys, isFolder } from '../folder-trust.ts';
 import { type Added, addHook, checkHooksFile, type HookState, hookState, isObject } from '../hooks-file.ts';
 
 // bash takes `command` and `workdir`; the edit tools take `path`.
@@ -81,7 +81,9 @@ export const TRUST_STEP = 'run `muse` in this folder and choose "Trust and conti
 /** Whether Muse trusts the project at `root`, from its trust store. Read-only. */
 export function readTrust(root: string, env: Env): FolderTrust {
   const store = env.XDG_CONFIG_HOME ? '$XDG_CONFIG_HOME/muse/trust.json' : '~/.config/muse/trust.json';
-  const file = join(env.XDG_CONFIG_HOME || join(env.HOME || homedir(), '.config'), 'muse', 'trust.json');
+  const home = join(env.XDG_CONFIG_HOME || join(env.HOME || homedir(), '.config'), 'muse');
+  const file = join(home, 'trust.json');
+  if (!isFolder(home)) return { state: 'no home', store };
   if (!existsSync(file)) return { state: 'no store', store };
   let saved: unknown;
   try {
