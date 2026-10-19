@@ -580,6 +580,7 @@ function main(): number | Promise<number> {
       if (typeof options === 'string') return usage(options);
       if (options.flags.has('--yes') && !options.flags.has('--github')) return usage('--yes goes with --github');
       if (options.flags.has('--remove-default-labels') && !options.flags.has('--github')) return usage('--remove-default-labels goes with --github');
+      if (options.flags.has('--board') && !options.flags.has('--github')) return usage('--board goes with --github');
       const dir = resolve(options.positional[0] ?? '.');
       // Checked before anything is written (#205): a typo never becomes a new folder.
       if (!existsSync(dir)) {
@@ -588,11 +589,18 @@ function main(): number | Promise<number> {
       }
       const root = requireRoot(dir);
       if (!root) return 1;
+      // Read first: a broken yokoten.json stops init before it writes a file.
+      const { areas } = loadConfig(root);
       const done = init(root);
       print(done.lines);
       // The host is changed only when asked (#10): it is a remote, and other people see it.
       // Without --yes, init only reads it and says what it would do, or what it skipped.
-      const planning = setUpPlanning(ghIn(root), readOriginUrl(root), { apply: options.flags.has('--yes'), removeDefaults: options.flags.has('--remove-default-labels') });
+      const planning = setUpPlanning(ghIn(root), readOriginUrl(root), {
+        apply: options.flags.has('--yes'),
+        removeDefaults: options.flags.has('--remove-default-labels'),
+        areas,
+        board: options.flags.has('--board'),
+      });
       // --github --yes asked for changes on GitHub; a skip made none, so it fails (#208).
       const isRefused = planning.skipped && options.flags.has('--yes');
       print(planning.lines, planning.ok && !isRefused ? process.stdout : process.stderr);

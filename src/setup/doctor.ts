@@ -407,6 +407,23 @@ const BY_HAND = [
   'security: in Settings, Advanced Security, turn on private vulnerability reporting, secret scanning with push protection, and Dependabot alerts',
 ];
 
+/**
+ * What a board needs that the host's API can't set (#156). Listed only when a board is
+ * linked, and never a failure: the board is optional.
+ */
+const BOARD_BY_HAND = [
+  'views: a Board view grouped by Status (and a Table or Roadmap view by milestone, if you like)',
+  'workflow "Auto-add to project": on, for this repo\'s issues and pull requests',
+  'workflow "Item closed": sets Status to Done',
+  'workflow "Pull request merged": sets Status to Done',
+];
+
+/** The by-hand lines for each board linked to the repo; none when there is no board or it can't be read. */
+export function listBoardSteps(server: ServerRead): string[] {
+  if (!server || 'unread' in server || !Array.isArray(server.boards)) return [];
+  return server.boards.flatMap((board) => BOARD_BY_HAND.map((step) => `  by hand     board "${board.title}": ${step}`));
+}
+
 /** The server settings of the project's origin remote, or why they can't be read. */
 function readOrigin(root: string, gh: Gh): ServerSettings | Unread {
   let remote = '';
@@ -588,6 +605,7 @@ export function doctor(
   }
   if (settings[0].id === 'server-settings') lines.push('  check these by hand:', ...BY_HAND.map((s) => `    ${s}`));
   lines.push(...OWNER_STEPS.map((s) => `  not checked ${s}`));
+  lines.push(...listBoardSteps(server));
   // The road has no failed mark: a step is done, to do, not now or can't check. Steps
   // left are the way ahead, not problems, so they never fail doctor (#208).
   const ok = !failed.length && !isCoreBehind && !problems.length && machine.every((c) => c.ok);

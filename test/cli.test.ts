@@ -3651,6 +3651,7 @@ fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s));
   assert.equal(calls().length, 0);
   assert.equal(sandbox.run(['init', '--yes'], { extra }).status, 1, '--yes alone is refused');
   assert.equal(sandbox.run(['init', '--remove-default-labels'], { extra }).status, 1, 'so is --remove-default-labels');
+  assert.equal(sandbox.run(['init', '--board'], { extra }).status, 1, 'and --board (#156)');
   // --github --yes asked for changes on GitHub; with no remote none were made, so it fails (#208).
   result = sandbox.run(['init', '--github', '--yes'], { extra });
   assert.equal(result.status, 1);
@@ -4281,6 +4282,21 @@ test('adopt: with no key, the rule-based draft and how to set the key; it change
   assert.equal(rows.find((row) => row.key === 'tests')?.decision, 'as-is');
   assert.match(json.stderr, /drafted by rules/);
   assert.equal(sandbox.git('status', '--porcelain', '--ignored').stdout, before, 'adopt writes nothing');
+});
+
+test('init: a yokoten.json "areas" that is not a list stops init before it writes a file (#156)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', JSON.stringify({ areas: 'cli' }));
+  let result = sandbox.run(['init']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^yokoten init: yokoten\.json: "areas" must be a list of names/);
+  assert.doesNotMatch(result.stderr, /is not a function/);
+  assert.ok(!existsSync(join(sandbox.repo, 'AGENTS.md')), 'nothing written');
+  // The control: the same project with a list runs.
+  sandbox.write('yokoten.json', JSON.stringify({ areas: ['cli'] }));
+  result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(existsSync(join(sandbox.repo, 'AGENTS.md')));
 });
 
 // A guard that crashes, runs out of memory or is killed must refuse the call: the agents

@@ -116,7 +116,7 @@ const SHAPES: Record<keyof Config, Shape | Fields> = {
   },
   notNow: shape('an object of reasons by step name, such as { "ci": "no remote yet" }', (value) => isPlainObject(value) && Object.values(value).every((reason) => typeof reason === 'string')),
   allowBuild: textList('["dist/**"]'),
-  areas: textList('["doctor", "check"]'),
+  areas: shape('a list of names, like ["cli", "docs"]', (value) => isTextList(value) && (value as string[]).every((item) => item.trim() !== '')),
   translations: { example: '{ "fail": true }', fields: { fail: trueOrFalse } },
   commands: blockList,
 };

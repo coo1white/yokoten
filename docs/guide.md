@@ -134,6 +134,17 @@ Scorecard run yet. A private repo on a free plan has no rulesets, so there `revi
 **can't check** and waits for stage 5, when the repo goes public. It is not **not now**:
 that mark is only for a decision you make.
 
+`init --github --yes` also adds your own areas from `yokoten.json` "areas" as labels, in one
+grey colour. It does this only for 8 areas or fewer: a longer list is noise, so make the few you
+use by hand. An area label that is there is kept as it is, and yokoten never deletes one.
+
+The board is optional. `init --github --yes --board` makes one named after the repo and links
+it. Its Status field gets Todo, In progress, In review and Done. A board needs the gh token's
+`project` scope; without it, init skips the board and says to run `gh auth refresh -s project`.
+A second run finds the board by its title and makes nothing. The API can't set a board's views
+or workflows. So when a board is linked, full `doctor` lists them as "by hand" lines. They never
+fail doctor.
+
 After a step, `yokoten doctor` names the outside standard it meets, when there is one,
 for example `ci (Scorecard: CI-Tests)`. The session message leaves it out.
 
@@ -459,7 +470,7 @@ It puts three safe defaults in `.github/` too:
 |---------|--------------|
 | `install` | Skills into `~/.claude/skills` and `~/.agents/skills`, agents into `~/.claude/agents`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file. The two hooks go to Claude Code, and to Codex and Gemini CLI when `~/.codex` or `~/.gemini` already exists |
 | `init [dir]` | Puts the practices into a project. Adds files; keeps any that are already there and says so. It also reads GitHub through `gh` and says which standard labels and milestone it would add. It never changes GitHub. Without `gh`, a sign-in or a GitHub remote, it says what it skipped |
-| `init --github --yes [--remove-default-labels]` | Adds the missing standard labels, and a milestone "First release" when no milestone is open. When a closed milestone already has that title, the new one is "Next release". A closed milestone is never reopened. A standard label that is there gets the standard colour and description. A second run changes nothing. GitHub's default labels outside the set (`question`, `wontfix` and others) are deleted only with `--remove-default-labels` |
+| `init --github --yes [--remove-default-labels] [--board]` | Adds the missing standard labels, and a milestone "First release" when no milestone is open. When a closed milestone already has that title, the new one is "Next release". A closed milestone is never reopened. A standard label that is there gets the standard colour and description. With 8 areas or fewer in `yokoten.json`, it adds one grey label per area. A second run changes nothing. GitHub's default labels outside the set (`question`, `wontfix` and others) are deleted only with `--remove-default-labels`. `--board` also makes a board linked to the repo; it needs the gh token's `project` scope |
 | `update [dir] [--write]` | Shows what this yokoten changes in the core rules of the project's `AGENTS.md`. `--write` replaces them, and keeps the "This project" part as it is. See [Updating the rules](#updating-the-rules) |
 | `doctor [--session] [--json]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session. With `--agent gemini`, it prints the step as the JSON that Gemini CLI reads |
 | `adopt [--json]` | A draft of the adoption table for an old project: what it does today, and a proposed decision for each step. `--json` prints the rows. Writes nothing |

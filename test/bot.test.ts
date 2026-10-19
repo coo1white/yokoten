@@ -7,14 +7,14 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { annotation, annotations, appJwt, botConfig, botEnv, botProgram, cleanChildEnv, type Gh, installationToken, type Label, readCommandTitle, readIncident, readPlanning, readServer, repoOf, type ServerSettings, stepSummary, type Unread } from '../src/host/github.ts';
+import { annotation, annotations, appJwt, type Board, botConfig, botEnv, botProgram, cleanChildEnv, type Gh, installationToken, type Label, readCommandTitle, readIncident, readPlanning, readServer, repoOf, type ServerSettings, stepSummary, type Unread } from '../src/host/github.ts';
 import { DEFAULTS, type Env } from '../src/rules/config.ts';
-import { draftLesson, type Incident } from '../src/run/learn.ts';
 import { checkCommand } from '../src/rules/guards.ts';
-import { checkIssueTitle, checkPullRequestTitle } from '../src/rules/pr.ts';
-import { doctor } from '../src/setup/doctor.ts';
+import { doctor, listBoardSteps } from '../src/setup/doctor.ts';
 import { road, ROAD, serverChecks, stepFinding } from '../src/setup/road.ts';
-import { LABELS, pickNewMilestone, setUpPlanning } from '../src/setup/plan.ts';
+import { AREA_COLOR, BOARD_STATUSES, LABELS, MAX_AREA_LABELS, pickNewMilestone, setUpPlanning } from '../src/setup/plan.ts';
+import { draftLesson, type Incident } from '../src/run/learn.ts';
+import { checkIssueTitle, checkPullRequestTitle } from '../src/rules/pr.ts';
 import { syncBoard } from '../scripts/board-sync.ts';
 
 // A throwaway key, made for this test run only.
@@ -263,8 +263,8 @@ function serverGh(routes: Record<string, unknown>) {
 const marks = (s: ServerSettings | Unread) => Object.fromEntries(serverChecks(s).map((c) => [c.id, c.mark]));
 
 test('server: a repo with every setting on is ok, and doctor only reads (#7)', () => {
-  const f = serverGh(GOOD);
-  const s = readServer(f.gh, REPO);
+  const fake = serverGh(GOOD);
+  const s = readServer(fake.gh, REPO);
   assert.deepEqual(marks(s), {
     'main-rules': 'ok', 'required-checks': 'ok', 'code-owner-review': 'ok', 'squash-only': 'ok',
     'delete-branch': 'ok', 'tag-rules': 'ok', 'security-switches': 'ok', 'forgotten-branches': 'note',
@@ -272,10 +272,14 @@ test('server: a repo with every setting on is ok, and doctor only reads (#7)', (
   const note = serverChecks(s).find((c) => c.id === 'forgotten-branches');
   assert.match(note?.finding.what ?? '', /^1 branch\(es\) with no open pull request \(old\/b\)$/, 'a branch of a fork with the same name does not count');
   assert.match(note?.finding.fix ?? '', /never deletes/);
-  for (const c of f.calls) {
+  for (const c of fake.calls) {
     assert.equal(c[0], 'api', c.join(' '));
-    assert.ok(!c.some((a) => /^(-X|--method|-f|-F|--field|--raw-field|--input)$/.test(a)), `a write: ${c.join(' ')}`);
+    // A GraphQL read sends its query with -f (#156); a mutation would be a write.
+    const isGraphqlRead = c[1] === 'graphql' && c.some((a) => a.startsWith('query=query')) && !c.some((a) => /mutation/.test(a));
+    if (isGraphqlRead) assert.ok(!c.some((a) => /^(-X|--method|--input)$/.test(a)), `a write: ${c.join(' ')}`);
+    else assert.ok(!c.some((a) => /^(-X|--method|-f|-F|--field|--raw-field|--input)$/.test(a)), `a write: ${c.join(' ')}`);
   }
+  assert.ok(fake.calls.some((c) => c[1] === 'graphql'), 'the linked boards are read too (#156)');
 });
 
 test('server: each setting off is MISSING, with what and the fix (#7)', () => {
@@ -567,6 +571,149 @@ test('planning: no gh, signed out, or no GitHub remote is a skip that says why, 
   assert.deepEqual(elsewhere, { ok: true, skipped: true, lines: ['GitHub: skipped, because the origin remote is not on GitHub. Labels and a milestone need a GitHub repo'] });
   const none = setUpPlanning(() => { throw new Error('gh was called'); }, '', APPLY);
   assert.deepEqual(none, { ok: true, skipped: true, lines: ['GitHub: skipped, because there is no origin remote yet. Add one on GitHub, then run `yokoten init --github --yes` to set up labels and a milestone'] }, 'no remote at all (#208)');
+});
+
+test('planning: one neutral label per area when the list is short; kept as it is, never deleted (#156)', () => {
+  const fake = fakeGh([...LABELS, { name: 'Kit', color: 'ff0000', description: 'mine' }, 'question'], ['open v1']);
+  const areas = ['kit', 'agents', 'question', 'ci'];
+  let result = setUpPlanning(fake.gh, REMOTE, { apply: false, removeDefaults: true, areas });
+  assert.ok(result.lines.includes('- areas that are also standard labels: ci. They keep the standard label'));
+  assert.ok(result.lines.includes('- 2 of the 3 area labels are there; kept'), 'Kit and question are there');
+  assert.ok(result.lines.includes('- make label "agents" (area: agents)'));
+  assert.ok(!result.lines.some((l) => /delete label "question"/.test(l)), 'an area label is never deleted, even with --remove-default-labels');
+  assert.deepEqual(writes(fake.calls), []);
+  result = setUpPlanning(fake.gh, REMOTE, { apply: true, removeDefaults: true, areas });
+  assert.ok(result.ok);
+  assert.deepEqual(writes(fake.calls), [['label', 'create', 'agents', '-R', 'me/repo', '--color', AREA_COLOR, '--description', 'area: agents']]);
+  assert.deepEqual(fake.held.find((l) => l.name === 'Kit'), { name: 'Kit', color: 'ff0000', description: 'mine' }, 'the owner\'s colour stays');
+  // Positive control: a second run makes no new label.
+  const before = fake.calls.length;
+  result = setUpPlanning(fake.gh, REMOTE, { apply: true, removeDefaults: false, areas });
+  assert.equal(result.lines.at(-1), 'Nothing to change.');
+  assert.deepEqual(writes(fake.calls.slice(before)), []);
+  // A long list is noise: no area label at all, and the report says why.
+  const many = Array.from({ length: MAX_AREA_LABELS + 1 }, (_, i) => `area${i}`);
+  result = setUpPlanning(fakeGh([...LABELS], ['open v1']).gh, REMOTE, { apply: false, removeDefaults: false, areas: many });
+  assert.deepEqual(result.lines.slice(-2), [`- area labels: none, because yokoten.json has ${MAX_AREA_LABELS + 1} areas and more than ${MAX_AREA_LABELS} labels is noise. Make the few you filter by yourself`, 'Nothing to change.']);
+});
+
+// A fake gh with boards too: `project` commands and the GraphQL calls. The real gh is never run.
+const SCOPE_ERROR = 'gh: Your token has not been granted the required scopes to execute this query. The \'number\' field requires one of the following scopes: [\'read:project\']';
+function boardGh({ linked = [] as Board[], owned = [] as Board[], isScopeMissing = false } = {}) {
+  const inner = fakeGh([...LABELS], ['open v1']);
+  const statuses = new Map<number, string[]>(owned.map((b) => [b.number, ['Todo', 'In Progress', 'Done']]));
+  const gh: Gh = (args) => {
+    const isGraphql = args[0] === 'api' && args[1] === 'graphql';
+    if (args[0] !== 'project' && !isGraphql) return inner.gh(args);
+    inner.calls.push(args);
+    if (isScopeMissing) throw Object.assign(new Error('exit 1'), { stderr: `${SCOPE_ERROR}\n` });
+    const option = (name: string) => args[args.indexOf(name) + 1];
+    if (isGraphql && args.some((a) => a.includes('updateProjectV2Field'))) {
+      const names = [...args.find((a) => a.startsWith('query='))!.matchAll(/name: "([^"]+)"/g)].map((m) => m[1]);
+      statuses.set(Number(args.find((a) => a.startsWith('field='))!.slice('field=field-'.length)), names);
+      return '{}';
+    }
+    if (isGraphql) {
+      assert.ok(args.includes('owner=me') && args.includes('name=repo'), 'the linked boards of this repo');
+      return JSON.stringify({ data: { repository: { projectsV2: { nodes: linked } } } });
+    }
+    const [, verb, number] = args;
+    assert.equal(option('--owner'), 'me', `every board call names the owner: ${args.join(' ')}`);
+    if (verb === 'list') return JSON.stringify({ projects: owned, totalCount: owned.length });
+    if (verb === 'create') {
+      const board = { number: owned.length + 1, title: option('--title') };
+      owned.push(board);
+      statuses.set(board.number, ['Todo', 'In Progress', 'Done']);
+      return JSON.stringify({ ...board, url: `https://github.com/users/me/projects/${board.number}` });
+    }
+    if (verb === 'link') {
+      assert.equal(option('--repo'), 'repo');
+      linked.push(owned.find((b) => b.number === Number(number))!);
+      return '';
+    }
+    if (verb === 'field-list') {
+      const options = statuses.get(Number(number)) ?? [];
+      return JSON.stringify({ fields: [{ id: 'title-field', name: 'Title', type: 'ProjectV2Field' }, { id: `field-${number}`, name: 'Status', type: 'ProjectV2SingleSelectField', options: options.map((name) => ({ id: name, name })) }] });
+    }
+    throw new Error(`unexpected gh ${args.join(' ')}`);
+  };
+  return { gh, calls: inner.calls, linked, owned, statuses };
+}
+const boardWrites = (calls: string[][]) => calls.filter((c) => (c[0] === 'project' && ['create', 'link'].includes(c[1])) || c.some((a) => a.includes('updateProjectV2Field')));
+
+test('planning: --board makes one board, links it, sets Status; a second run makes none (#156)', () => {
+  const fake = boardGh();
+  let result = setUpPlanning(fake.gh, REMOTE, { apply: false, removeDefaults: false, board: true });
+  assert.deepEqual(result.lines.slice(-3), ['Would do:', '- make board "repo", link it to me/repo, and give its Status field Todo, In progress, In review, Done', 'Nothing changed. Run `yokoten init --github --yes --board` to do it.']);
+  assert.deepEqual(boardWrites(fake.calls), []);
+  result = setUpPlanning(fake.gh, REMOTE, { apply: true, removeDefaults: false, board: true });
+  assert.ok(result.ok, result.lines.join('\n'));
+  assert.deepEqual(boardWrites(fake.calls).map((c) => c.slice(0, 2).join(' ')), ['project create', 'project link', 'api graphql']);
+  assert.deepEqual(fake.linked, [{ number: 1, title: 'repo' }]);
+  assert.deepEqual(fake.statuses.get(1), BOARD_STATUSES);
+  // Positive control: the second run finds the linked board by its title and makes nothing.
+  const before = fake.calls.length;
+  result = setUpPlanning(fake.gh, REMOTE, { apply: true, removeDefaults: false, board: true });
+  assert.ok(result.lines.includes('- board "repo" is linked; kept'));
+  assert.ok(result.lines.includes('- board "repo" has the Status options; kept'));
+  assert.equal(result.lines.at(-1), 'Nothing to change.');
+  assert.deepEqual(boardWrites(fake.calls.slice(before)), []);
+  // Without --board, no board call at all.
+  const plain = boardGh();
+  setUpPlanning(plain.gh, REMOTE, APPLY);
+  assert.ok(!plain.calls.some((c) => c[0] === 'project' || c[1] === 'graphql'));
+});
+
+test('planning: a board made but not linked is linked, and a board in use keeps its Status (#156)', () => {
+  const fake = boardGh({ owned: [{ number: 4, title: 'repo' }] });
+  const result = setUpPlanning(fake.gh, REMOTE, { apply: true, removeDefaults: false, board: true });
+  assert.ok(result.ok);
+  assert.ok(result.lines.includes('- done: link board "repo" to me/repo'));
+  assert.ok(result.lines.includes('- board "repo": its Status options are Todo, In Progress, Done. yokoten never changes a board that is there; set Todo, In progress, In review, Done by hand'));
+  assert.deepEqual(boardWrites(fake.calls).map((c) => c.slice(0, 2).join(' ')), ['project link'], 'no second board, no change to its options');
+  assert.equal(fake.owned.length, 1);
+});
+
+test('planning: no project scope skips the board with the fix; the labels still go on (#156)', () => {
+  const fake = boardGh({ isScopeMissing: true });
+  const result = setUpPlanning(fake.gh, REMOTE, { apply: true, removeDefaults: false, board: true, areas: ['kit'] });
+  assert.equal(result.ok, true, 'a skip is not a failure');
+  assert.ok(result.lines.includes('- board: skipped, because the gh token has no `project` scope. To make one, run `gh auth refresh -s project`, then run `yokoten init --github --board --yes` again'));
+  assert.ok(result.lines.includes('- done: make label "kit" (area: kit)'));
+  assert.deepEqual(boardWrites(fake.calls), []);
+  // A token that reads boards but can't make one: the failure carries the same fix.
+  const readOnly = boardGh();
+  const failing: Gh = (args) => {
+    if (args[1] === 'create' && args[0] === 'project') throw Object.assign(new Error('exit 1'), { stderr: 'error: your authentication token is missing required scopes [project]\n' });
+    return readOnly.gh(args);
+  };
+  const made = setUpPlanning(failing, REMOTE, { apply: true, removeDefaults: false, board: true });
+  assert.equal(made.ok, false);
+  assert.match(made.lines.at(-1) ?? '', /^- could not make board "repo".*: error: your authentication token is missing required scopes \[project\]; run `gh auth refresh -s project`$/);
+});
+
+test('doctor: lists the board clicks by hand only when a board is linked, and never fails over them (#156)', () => {
+  const server = readServer(serverGh(GOOD).gh, REPO) as ServerSettings;
+  assert.ok('unread' in (server.boards as Unread), 'the fake answers no GraphQL: the boards are unread');
+  assert.deepEqual(listBoardSteps(server), [], 'unread: no lines');
+  assert.deepEqual(listBoardSteps({ ...server, boards: [] }), [], 'no board: no lines');
+  assert.deepEqual(listBoardSteps(undefined), [], 'a session: no lines');
+  const lines = listBoardSteps({ ...server, boards: [{ number: 1, title: 'demo' }] });
+  assert.deepEqual(lines.map((l) => l.replace(/:.*/, '')), Array(4).fill('  by hand     board "demo"'));
+  for (const part of [/views: a Board view grouped by Status/, /"Auto-add to project": on/, /"Item closed": sets Status to Done/, /"Pull request merged": sets Status to Done/]) assert.ok(lines.some((l) => part.test(l)), String(part));
+  // Through readServer and doctor: the lines appear, and the result does not change.
+  const root = mkdtempSync(join(tmpdir(), 'yokoten-board-'));
+  execFileSync('git', ['init', '-q', root]);
+  execFileSync('git', ['remote', 'add', 'origin', `https://github.com/${REPO}.git`], { cwd: root });
+  const plain = serverGh(GOOD).gh;
+  const withBoard: Gh = (args) => (args[1] === 'graphql' ? JSON.stringify({ data: { repository: { projectsV2: { nodes: [{ number: 1, title: 'demo' }] } } } }) : plain(args));
+  assert.deepEqual((readServer(withBoard, REPO) as ServerSettings).boards, [{ number: 1, title: 'demo' }]);
+  const plainResult = doctor(root, { env: { HOME: root }, config: DEFAULTS, gh: plain });
+  const boardResult = doctor(root, { env: { HOME: root }, config: DEFAULTS, gh: withBoard });
+  assert.ok(!plainResult.lines.some((l) => /by hand {5}board/.test(l)));
+  assert.equal(boardResult.lines.filter((l) => /^ {2}by hand {5}board "demo": /.test(l)).length, 4);
+  assert.equal(boardResult.ok, plainResult.ok);
+  assert.deepEqual(boardResult.report.findings, plainResult.report.findings);
 });
 
 // The planning steps (#10): stage 2, read in full doctor only.

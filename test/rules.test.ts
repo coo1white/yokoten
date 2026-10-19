@@ -84,6 +84,21 @@ test('config: missing file means defaults, a key overrides, bad JSON says where'
   assert.throws(() => loadConfig(dir), /^Error: yokoten\.json:/);
 });
 
+test('config: "areas" must be a list of names, or loading says so (#156)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const areas = (value: unknown) => {
+    writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ areas: value }));
+    return () => loadConfig(dir).areas;
+  };
+  assert.deepEqual(areas(['cli', 'docs'])(), ['cli', 'docs'], 'the control: a list of names loads');
+  assert.deepEqual(areas([])(), []);
+  // null is a missing key, as for every key (#228): the default, with no problem.
+  assert.deepEqual(areas(null)(), []);
+  for (const bad of ['cli', ['cli', ''], ['cli', 1], { cli: true }]) {
+    assert.throws(areas(bad), /^Error: yokoten\.json: "areas" must be a list of names, like \["cli", "docs"\]$/, JSON.stringify(bad));
+  }
+});
+
 test('config: "commands.block" is read, and a wrong shape is a config problem (#192)', () => {
   const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
   assert.deepEqual(loadConfig(dir).commands, { block: {} });

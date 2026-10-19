@@ -579,6 +579,87 @@ export function createMilestone(gh: Gh, repo: string, title: string): void {
   gh(['api', '--method', 'POST', `repos/${repo}/milestones`, '-f', `title=${title}`]);
 }
 
+// The optional board (#156): a GitHub Project linked to the repo. Projects need the gh
+// token's `project` scope, which `gh auth login` does not ask for. The views and the
+// built-in workflows have no API, so the owner sets them by hand; doctor lists them.
+
+/** A board, as the host numbers it under its owner. */
+export interface Board {
+  number: number;
+  title: string;
+}
+
+/** What to run when the gh token has no `project` scope. */
+export const PROJECT_SCOPE_FIX = 'run `gh auth refresh -s project`';
+
+/** gh failed because the token lacks a scope (GraphQL and `gh project` say it differently). */
+export function isScopeMissing(err: unknown): boolean {
+  return /required scopes|INSUFFICIENT_SCOPES|read:project/i.test(String((err as { stderr?: string }).stderr || (err as Error).message));
+}
+
+/** Why gh can't read the boards: a missing scope has its own fix. */
+export function boardUnread(err: unknown): Unread {
+  return isScopeMissing(err) ? { unread: 'the gh token has no `project` scope', fix: PROJECT_SCOPE_FIX } : unread(err);
+}
+
+const LINKED_BOARDS = 'query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { projectsV2(first: 100) { nodes { number title } } } }';
+
+/** The boards linked to `repo`, or why gh can't read them. */
+export function readLinkedBoards(gh: Gh, repo: string): Board[] | Unread {
+  const [owner, name] = repo.split('/');
+  try {
+    const text = gh(['api', 'graphql', '-f', `query=${LINKED_BOARDS}`, '-f', `owner=${owner}`, '-f', `name=${name}`]);
+    const data = JSON.parse(text || '{}') as { data?: { repository?: { projectsV2?: { nodes?: Partial<Board>[] } } } };
+    return (data.data?.repository?.projectsV2?.nodes ?? []).filter((b) => typeof b.number === 'number').map((b) => ({ number: b.number!, title: b.title ?? '' }));
+  } catch (err) {
+    return boardUnread(err);
+  }
+}
+
+/** The open boards of `owner` (a user or an organization), linked or not. */
+export function readOwnerBoards(gh: Gh, owner: string): Board[] | Unread {
+  try {
+    const data = JSON.parse(gh(['project', 'list', '--owner', owner, '--format', 'json', '--limit', '100']) || '{}') as { projects?: Partial<Board>[] };
+    return (data.projects ?? []).filter((b) => typeof b.number === 'number').map((b) => ({ number: b.number!, title: b.title ?? '' }));
+  } catch (err) {
+    return boardUnread(err);
+  }
+}
+
+/** The board's Status field: its id and its option names, or null when it has none. */
+export function readStatusField(gh: Gh, owner: string, number: number): { id: string; options: string[] } | null {
+  const data = JSON.parse(gh(['project', 'field-list', String(number), '--owner', owner, '--format', 'json']) || '{}') as {
+    fields?: { id?: string; name?: string; options?: { name?: string }[] }[];
+  };
+  const field = data.fields?.find((f) => f.name === 'Status' && Array.isArray(f.options));
+  return field?.id ? { id: field.id, options: (field.options ?? []).map((o) => o.name ?? '') } : null;
+}
+
+/** Makes a board owned by `owner`, and returns its number. */
+export function createBoard(gh: Gh, owner: string, title: string): number {
+  const made = JSON.parse(gh(['project', 'create', '--owner', owner, '--title', title, '--format', 'json'])) as { number?: number };
+  if (typeof made.number !== 'number') throw new Error('gh made the board but did not say its number');
+  return made.number;
+}
+
+/** Links board `number` of the repo's owner to `repo` ("owner/name"). */
+export function linkBoard(gh: Gh, repo: string, number: number): void {
+  const [owner, name] = repo.split('/');
+  gh(['project', 'link', String(number), '--owner', owner, '--repo', name]);
+}
+
+const SET_OPTIONS = 'mutation($field: ID!) { updateProjectV2Field(input: {fieldId: $field, singleSelectOptions: [OPTIONS]}) { projectV2Field { ... on ProjectV2SingleSelectField { id } } } }';
+const OPTION_COLORS = ['GRAY', 'BLUE', 'YELLOW', 'GREEN', 'PURPLE', 'ORANGE', 'RED', 'PINK'];
+
+/**
+ * Replaces the options of a single-select field. The host forgets which item had which
+ * option, so this is only for a board yokoten has just made.
+ */
+export function setFieldOptions(gh: Gh, fieldId: string, options: string[]): void {
+  const list = options.map((name, index) => `{name: ${JSON.stringify(name)}, color: ${OPTION_COLORS[index % OPTION_COLORS.length]}, description: ""}`).join(', ');
+  gh(['api', 'graphql', '-f', `query=${SET_OPTIONS.replace('OPTIONS', list)}`, '-f', `field=${fieldId}`]);
+}
+
 // The server settings (#7): what the owner sets once per repo, read through `gh api`.
 // Read only: nothing here changes a setting. A part gh can't read is an `Unread`, never
 // a crash, so doctor says it could not check and goes on.
@@ -628,6 +709,8 @@ export interface ServerSettings {
   forgotten: string[] | Unread;
   /** The labels and milestones (#10), for the road's stage 2. Left out by a reader that does not need them. */
   planning?: Planning | Unread;
+  /** The boards linked to the repo (#156), so doctor can list what to set by hand. */
+  boards?: Board[] | Unread;
   /** The organization that owns the repo, from the same repo read; null for a user. Left out when unknown (#313). */
   org?: string | null;
 }
@@ -736,10 +819,11 @@ export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
   const actionsCanApprove = typeof actions === 'boolean' ? actions : null;
 
   const planning = readPlanning(gh, repo);
+  const boards = readLinkedBoards(gh, repo);
 
   const org = info.owner?.type === 'Organization' ? (info.owner.login ?? repo.split('/')[0]) : info.owner?.type === 'User' ? null : undefined;
 
-  return { repo, defaultBranch, isPrivate: info.private ?? null, actionsCanApprove, mergeMethods, deleteBranchOnMerge: info.delete_branch_on_merge ?? null, branch, tags, security, forgotten, planning, ...(org === undefined ? {} : { org }) };
+  return { repo, defaultBranch, isPrivate: info.private ?? null, actionsCanApprove, mergeMethods, deleteBranchOnMerge: info.delete_branch_on_merge ?? null, branch, tags, security, forgotten, planning, boards, ...(org === undefined ? {} : { org }) };
 }
 
 // An incident issue for `yokoten learn` (#77), read through `gh issue view`, so it uses

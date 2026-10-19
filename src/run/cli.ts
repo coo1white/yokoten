@@ -125,7 +125,7 @@ export const COMMANDS: Command[] = [
   {
     name: 'init',
     summary: 'put the practices into a project (adds only, never overwrites)',
-    usage: '[dir] [--github --yes [--remove-default-labels]]',
+    usage: '[dir] [--github --yes [--remove-default-labels] [--board]]',
     text: [
       'Adds the practices to the project at [dir] (default: here). It keeps any file that is',
       'already there and says so. It also reads GitHub through gh and says which standard',
@@ -133,8 +133,9 @@ export const COMMANDS: Command[] = [
     ],
     options: [
       { name: '--github', text: 'work on GitHub too; goes with --yes' },
-      { name: '--yes', text: 'add the standard labels and a first milestone on GitHub' },
+      { name: '--yes', text: 'add the standard labels, a first milestone and up to 8 area labels on GitHub' },
       { name: '--remove-default-labels', text: "also delete GitHub's default labels outside the set" },
+      { name: '--board', text: "also make a board linked to the repo (needs the gh token's project scope)" },
     ],
     argument: 'dir',
     example: 'yokoten init --github --yes',
