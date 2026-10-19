@@ -68,6 +68,15 @@ export interface CommandTitle {
   labels: string[];
 }
 
+/** A `gh issue` or `gh pr` create or edit with a run-together word the bot can't read (#290). */
+export interface UnreadableTitle {
+  kind: 'issue' | 'pr';
+  /** The word, as in `-dz`. */
+  unreadable: string;
+  /** No title was read, so `found?.title` works on either kind. */
+  title?: never;
+}
+
 // The gh options of `issue`/`pr` `create`/`edit` that take a value. Their value is
 // skipped, so a body of `-t` is not read as the title option, and a repo is not read as
 // the noun or the verb.
@@ -79,6 +88,13 @@ const VALUE_OPTIONS = new Set([
   '--add-sub-issue', '--remove-sub-issue',
 ]);
 const LABEL_OPTIONS = new Set(['--label', '-l', '--add-label']);
+// Every short flag of gh `issue`/`pr` `create`/`edit` (gh 2.102 help, with the inherited
+// `-R`), so a run-together word like `-dt` or `-dlbug` is read as gh reads it (#290):
+// true takes a value, false is a switch.
+const SHORT_FLAGS = new Map<string, boolean>([
+  ...[...'abFlmpTtRBHr'].map((letter): [string, boolean] => [letter, true]),
+  ...[...'dewf'].map((letter): [string, boolean] => [letter, false]),
+]);
 // gh's verbs that set a title, by every name gh accepts (`new` is its alias for `create`).
 const TITLE_VERBS = new Set(['create', 'new', 'edit']);
 
@@ -86,21 +102,35 @@ const TITLE_VERBS = new Set(['create', 'new', 'edit']);
  * The title that `gh issue create`, `gh issue edit`, `gh pr create` or `gh pr edit` sets
  * with `--title X`, `--title=X`, `-t X` or `-tX` (#117). gh also takes `new` for `create`,
  * and an option before the noun or the verb (`gh issue -R o/r create`), so they count
- * too (#279). Null for any other command, or when no title is given (`--fill`): CI checks
+ * too (#279). Short flags run together as gh takes them (`-dt X`, `-dtX`); a run-together
+ * word with a letter not in SHORT_FLAGS gives UnreadableTitle, so the caller refuses it
+ * (#290). Null for any other command, or when no title is given (`--fill`): CI checks
  * that title. As in gh, the last one wins.
  */
-export function readCommandTitle(command: string[]): CommandTitle | null {
+export function readCommandTitle(command: string[]): CommandTitle | UnreadableTitle | null {
   const [file, ...rest] = command;
   if (!file || file.split(/[\\/]/).pop() !== 'gh') return null;
   const words: string[] = [];
   let title: string | null = null;
   const labels: string[] = [];
+  let unreadable: string | null = null;
   for (let index = 0; index < rest.length; index++) {
-    const word = rest[index];
+    let word = rest[index];
     if (word === '--') break;
     if (!word.startsWith('-') || word === '-') {
       words.push(word);
       continue;
+    }
+    if (!word.startsWith('--') && word.length > 2) {
+      // `-abc`: each letter is a flag until one takes a value, which is the rest of the word.
+      let at = 1;
+      while (at < word.length && SHORT_FLAGS.get(word[at]) === false) at++;
+      if (at === word.length) continue;
+      if (!SHORT_FLAGS.has(word[at])) {
+        unreadable ??= word;
+        continue;
+      }
+      word = `-${word.slice(at)}`;
     }
     const equals = word.startsWith('--') ? word.indexOf('=') : -1;
     const name = equals > 0 ? word.slice(0, equals) : /^-[a-zA-Z]./.test(word) ? word.slice(0, 2) : word;
@@ -114,6 +144,7 @@ export function readCommandTitle(command: string[]): CommandTitle | null {
   }
   const [kind, verb] = words;
   if ((kind !== 'issue' && kind !== 'pr') || !TITLE_VERBS.has(verb)) return null;
+  if (unreadable !== null) return { kind, unreadable };
   return title === null ? null : { kind, title, labels };
 }
 

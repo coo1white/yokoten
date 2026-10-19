@@ -1997,6 +1997,10 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
     for (const command of [['gh', 'pr', 'new', '--title', 'feat(host): add a step.'], ['gh', 'pr', '-R', 'o/r', 'edit', '5', '--title', 'feat(host): add a step.'], ['gh', '--repo=o/r', 'pr', 'create', '-t', 'feat(host): add a step.']]) {
       await refused(command, /title: a full stop at the end\. A commit title has no full stop/);
     }
+    // Short flags run together (#290): read as gh reads them, and refused when a letter is unknown.
+    await refused(['gh', 'pr', 'create', '-dt', 'feat(host): add a step.'], /title: a full stop at the end\. A commit title has no full stop/);
+    await refused(['gh', 'issue', 'create', '-wthost: add a step.'], /title: a full stop at the end\. A title is a name/);
+    await refused(['gh', 'pr', 'create', '-dzt', 'feat(host): add a step'], /title: can't read the title in `-dzt`\. .+\. Write --title on its own\.$/m);
     // With no bot set up at all, the title is still the reason given.
     await refused(['gh', 'pr', 'create', '--title', 'feat(host): add a step.'], /full stop/, path);
     const missing = await run(['gh', 'pr', 'create', '--title', 'feat(host): add a step'], path);
