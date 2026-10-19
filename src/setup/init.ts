@@ -12,7 +12,7 @@ import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { addProjectHook, addProjectStopHook, setProjectEnv } from '../agents/claude-code.ts';
+import { addProjectHook, addProjectStopHook, checkProjectSettings, setProjectEnv } from '../agents/claude-code.ts';
 import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
@@ -39,7 +39,7 @@ function walk(dir: string): string[] {
 
 /**
  * One agent's hook lines, or one skip line when its file won't parse or has the wrong
- * shape (#248): the file stays as it was, init goes on, and `ok` is false.
+ * shape (#248, #254): the file stays as it was, init goes on, and `ok` is false.
  */
 function agentHooks(name: string, file: string, add: () => string[]): { ok: boolean; lines: string[] } {
   try {
@@ -50,7 +50,7 @@ function agentHooks(name: string, file: string, add: () => string[]): { ok: bool
   }
 }
 
-/** One line per thing done, kept or skipped; `ok` is false when a hooks file was skipped (#248). */
+/** One line per thing done, kept or skipped; `ok` is false when a hooks or settings file was skipped (#248, #254). */
 export function init(root: string): { ok: boolean; lines: string[] } {
   const report: string[] = [];
   const cli = cliPath(root);
@@ -72,9 +72,17 @@ export function init(root: string): { ok: boolean; lines: string[] } {
   if (hooks.kind !== 'own') report.push(...writeGithooks(root, cli, kit, blocks.length === 0));
   const imported = importRules(root);
   if (imported) report.push(imported);
-  const hook = addProjectHook(root, cli);
-  report.push(`${hook} the tool-call hook in .claude/settings.json`);
-  report.push(`${addProjectStopHook(root, cli)} the stop check in .claude/settings.json (changed files, before the agent ends its turn)`);
+  // Claude Code's settings, the file people edit by hand most: skipped as one, never
+  // rewritten, when it won't parse or has the wrong shape (#254).
+  const claudeHooks = agentHooks('the Claude Code settings', '.claude/settings.json', () => {
+    checkProjectSettings(root);
+    return [
+      `${addProjectHook(root, cli)} the tool-call hook in .claude/settings.json`,
+      `${addProjectStopHook(root, cli)} the stop check in .claude/settings.json (changed files, before the agent ends its turn)`,
+      `${setProjectEnv(root, 'TZ', 'UTC')} TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)`,
+    ];
+  });
+  report.push(...claudeHooks.lines);
   // Codex and Gemini CLI get the same guard, whether or not they are installed here: two
   // small files are easier to predict than a guess about which agents someone uses.
   // A file that won't parse, or has the wrong shape, is named and skipped, never rewritten (#248).
@@ -93,9 +101,8 @@ export function init(root: string): { ok: boolean; lines: string[] } {
     ];
   });
   report.push(...codexHooks.lines, ...geminiHooks.lines);
-  report.push(`${setProjectEnv(root, 'TZ', 'UTC')} TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)`);
   report.push(...setCommitCheck(root, cli, hooks, blocks));
-  return { ok: codexHooks.ok && geminiHooks.ok, lines: report };
+  return { ok: claudeHooks.ok && codexHooks.ok && geminiHooks.ok, lines: report };
 }
 
 // ---- A project's own CLAUDE.md and commit hooks (#206) ----

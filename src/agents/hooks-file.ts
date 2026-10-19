@@ -58,7 +58,7 @@ export class UnreadableHooksFile extends Error {
 export const skippedBecause = (file: string, problem: Problem, command: string): string =>
   problem.kind === 'json' ? `can't read ${file} (make it valid JSON, then run \`yokoten ${command}\` again)` : `${file} has an unexpected shape (${problem.hint})`;
 
-const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+export const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const isObjectList = (v: unknown): v is Record<string, unknown>[] => Array.isArray(v) && v.every(isObject);
 
 /**
@@ -84,7 +84,7 @@ function shapeProblem(settings: unknown, events: readonly string[]): Problem | n
 }
 
 /** The file's settings when `placeHook` can edit `events` in it, or why it can't. */
-function readTable(path: string, events: readonly string[]): { settings: Settings } | { problem: Problem } {
+export function readTable(path: string, events: readonly string[]): { settings: Settings } | { problem: Problem } {
   let settings: unknown;
   try {
     settings = readSettings(path);

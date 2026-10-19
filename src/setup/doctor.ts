@@ -23,7 +23,7 @@ import { loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
 import { type LessonPlace, listLessons, runLessons } from '../run/learn.ts';
-import { hasPlugin, hasSessionDoctor, readInstalledPlugin } from '../agents/claude-code.ts';
+import { hasPlugin, hasSessionDoctor, readInstalledPlugin, userSettingsProblem } from '../agents/claude-code.ts';
 import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
 import type { HookState } from '../agents/hooks-file.ts';
@@ -87,8 +87,17 @@ export function machineChecks(env: Env): Practice[] {
   const target = paths(env);
   const runtime = runtimeVersion(target.runtime);
   const plugin = hasPlugin(env);
+  // A settings file doctor can't use names the problem, never says "missing" (#254); the
+  // same two wordings as the Codex and Gemini CLI user hooks.
+  const problem = userSettingsProblem(env);
+  const session =
+    problem?.kind === 'json'
+      ? practice('session-doctor', 'session-doctor', false, "can't read ~/.claude/settings.json", 'make it valid JSON, then run `yokoten install`')
+      : problem
+        ? practice('session-doctor', 'session-doctor', false, '~/.claude/settings.json has an unexpected shape', `${problem.hint}; fix it, then run \`yokoten install\``)
+        : practice('session-doctor', 'session-doctor', plugin || hasSessionDoctor(env), 'sessions do not start with doctor', 'run `yokoten install`, or install the Claude Code plugin');
   return [
-    practice('session-doctor', 'session-doctor', plugin || hasSessionDoctor(env), 'sessions do not start with doctor', 'run `yokoten install`, or install the Claude Code plugin'),
+    session,
     // 'runtime' in the text, as before; the id differs from the road's runtime step.
     practice('runtime', 'machine-runtime', runtime === VERSION || (plugin && runtime === null), runtime ? `the installed runtime is ${runtime}, this yokoten is ${VERSION}` : 'no runtime installed', 'run `yokoten install` from this copy of yokoten'),
     practice('private-marks', 'private-marks', loadMarks(env).length > 0, `${target.marks} is missing or empty`, 'add your name, city, domain and server names to it, one per line'),
