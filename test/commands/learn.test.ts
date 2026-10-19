@@ -61,7 +61,7 @@ test('learn: previews a check draft from an incident, writes it with --write, an
   const extra = { PATH: `${bin}:${process.env.PATH}` };
   let result = sandbox.run(['learn', '7'], { extra });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /^yokoten learn: a check draft from issue #7, "repo: a test fails behind a proxy"\.\n1 TODO\(s\) for the reviewer:\n- why: the issue has no "Why it matters" section\n/);
+  assert.match(result.stdout, /^yokoten learn: a check draft from issue #7, "repo: a test fails behind a proxy"\.\nThe issue left 1 field\(s\) open, each a TODO\(reviewer\):\n- why: the issue has no "Why it matters" section\nThe reviewer also writes the check \(findProblems\) and the cases in its test, each a TODO\(reviewer\) too\.\n/);
   assert.match(result.stdout, /\n--- lessons\/incident-7\/lesson\.ts\n[^]*fix: 'the test sets NO_PROXY',[^]*\n--- lessons\/incident-7\/lesson\.test\.ts\n/);
   assert.match(result.stdout, /Nothing was written\. `yokoten learn 7 --write` adds these files for review\.\n$/);
   assert.ok(!existsSync(join(sandbox.repo, 'lessons')), 'a preview writes nothing');
@@ -97,6 +97,10 @@ test('lessons: learn, write the check, ship, then doctor in a second repo shows 
   const cli = join(yokoten, 'bin', 'yokoten.ts');
   const runCopy = (args: string[], cwd: string, extra: Record<string, string> = {}) => spawnSync('node', [cli, ...args], { cwd, env: { ...sandbox.env, PATH: `${bin}:${process.env.PATH}`, ...extra }, encoding: 'utf8' });
 
+  // The second repo uses yokoten from before the lesson: its .yokoten/ copy has no incident-9.
+  const vendored = (args: string[]) => spawnSync('node', [join(sandbox.repo, '.yokoten', 'bin', 'yokoten.ts'), ...args], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
+  assert.equal(runCopy(['init'], sandbox.repo).status, 0);
+
   let result = runCopy(['learn', '9', '--write'], yokoten);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /The issue answers every field\./);
@@ -117,8 +121,15 @@ test('lessons: learn, write the check, ship, then doctor in a second repo shows 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^yokoten learn --ship: incident-9 is in kit\/lessons\/1\/incident-9\/, with a row in kit\/lessons\/README\.md \(from https:\/\/example\.com\/issues\/9, yokoten \d+\.\d+\.\d+\)\./);
 
+  // The message says how other projects get the lesson, not only "after it merges" (#77).
+  assert.match(result.stdout, /\nCommit it in a pull request\. Other projects get it from the yokoten that runs their doctor:\n- now: [^\n]*\n- this machine: run install from this copy[^\n]*\n- a project's \.yokoten\/: run init again from this copy, then commit \.yokoten\/\n- everyone else: the next yokoten release\n$/);
+
   // The second repo: a project with the problem. Doctor shows the note, and it fails nothing.
   sandbox.write('.env', 'KEY=1\n');
+  // The project's own .yokoten/ copy is from before the ship: it has no incident-9 until init runs again (#77).
+  assert.ok(!/lesson incident-9/.test(vendored(['doctor']).stdout), 'the old copy has no incident-9');
+  assert.equal(runCopy(['init'], sandbox.repo).status, 0);
+  assert.match(vendored(['doctor']).stdout, /\n {2}note {4}new lesson: incident-9 [^\n]*\n {2}note {4}lesson incident-9: \.env is in the repo; /);
   result = runCopy(['doctor'], sandbox.repo);
   assert.match(result.stdout, /\n {2}note {4}lesson incident-9: \.env is in the repo; remove it, and add it to \.gitignore\n/);
   const report = JSON.parse(runCopy(['doctor', '--json'], sandbox.repo).stdout);

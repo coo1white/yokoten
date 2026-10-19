@@ -543,12 +543,12 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 | `update [dir] [--write]` | 看看这个版本的 yokoten 会怎么改项目 `AGENTS.md` 里的核心规则。加上 `--write` 才真的替换；「This project」那部分原样保留。见[更新规则](#更新规则) |
 | `doctor [--session] [--json]` | 整条路：每一关、每一步，加上这台电脑还缺什么。`--session` 只说下一步，会话开头用。再加 `--agent gemini`，就按 Gemini CLI 读得懂的 JSON 输出 |
 | `adopt [--json]` | 给老项目的采用表出一份草稿：项目现在做到了哪些，每一步建议怎么定。`--json` 输出每一行的数据。不改任何文件 |
-| `check [--staged] [--json]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交。提交里不能有构建产物和二进制文件。什么都没暂存时，`--staged` 提醒一句，算通过。查整个目录时，落后于英文的译文会给一条提醒，见[翻译](#翻译) |
+| `check [--staged] [--json]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交。提交里不能有构建产物和二进制文件。`changes/` 里的文件按 `changelog` 的读法检查，格式不对，提交时就拦下。什么都没暂存时，`--staged` 提醒一句，算通过。查整个目录时，落后于英文的译文会给一条提醒，见[翻译](#翻译) |
 | `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的变更文件、milestone 和标签，见下面的「更新日志」。改到 CODEOWNERS 里列出的文件，必须写 `tier: A`。改动的文档里句子太长、改动的代码里名字难读、改动超过 400 行，都只提醒，不算失败 |
 | `check --issue` | 在 CI 里检查 issue 的标题，见下面的「issue 标题」 |
 | `changelog [--write]` | 列出 `changes/` 里的文件会往 `[Unreleased]` 下面加哪些条目。加上 `--write` 就真的写进 `CHANGELOG.md`，再删掉这些文件；发版前跑。见下面的「更新日志」 |
 | `learn <issue> [--write]` | 从一个事故 issue 起草一条检查，留给人来审。加上 `--write` 才把文件写进 `lessons/`。见下面的「从事故里学」 |
-| `learn --ship <id>` | 在 yokoten 里用：把审过的教训搬进 `kit/lessons/` 下的一个分组，以后每个项目跑 `doctor` 都会查它。还有 `TODO(reviewer)` 没填，或者它的测试没过，就不让搬 |
+| `learn --ship <id>` | 在 yokoten 里用：把审过的教训搬进 `kit/lessons/` 下的一个分组，以后用这份 yokoten 跑 `doctor`，每个项目都会查它。还有 `TODO(reviewer)` 没填，或者它的测试没过，就不让搬 |
 | `check --history` | 对所有分支的每一个提交做隐私检查。私有仓库公开之前跑一遍。浅克隆看不到旧的提交，所以它不扫描、直接报错；在 CI 里要拉下全部历史（`fetch-depth: 0`）。文件里查到问题时，写的是加进这个文件的那次提交，和那次提交里的路径：`文件 @ <提交>`。`git replace` 藏不住提交，它照样读原来的提交；有 grafts 文件时同样不扫描、直接报错。 |
 | `hook [--agent <name>] [--commands-only] [--json]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool，加 `--agent antigravity` 读 Antigravity CLI 的 PreToolUse，加 `--agent muse` 读 Muse Code 的 PreToolUse，加 `--agent deepseek-harness` 读 DeepSeek Harness 的 PreToolUse |
 | `hook --stop [--agent <name>]` | 收尾检查。从标准输入读这一轮结束的事件，检查改过的文件：默认读 Claude Code 的 Stop；加 `--agent codex` 读 Codex 的 Stop，加 `--agent gemini` 读 Gemini CLI 的 AfterAgent。见[收尾检查](#收尾检查) |
@@ -748,7 +748,9 @@ Fixed
 已经发布的版本它不碰。有文件格式不对，它会说是哪个文件、错在哪，一个字都不写。
 
 `check --pr` 把 `changes/` 里新加的文件当成这个 PR 的更新日志，还会检查格式。直接改
-`CHANGELOG.md` 也照样能过，还没换过来的项目不受影响。`init` 会加上 `changes/README.md`，
+`CHANGELOG.md` 也照样能过，还没换过来的项目不受影响。`check` 也用同样的读法检查 `changes/`
+里的文件，`check --staged` 查暂存的那些。这样格式不对的文件在提交时就被 git 钩子拦下，不用等到
+CI。暂存的变更文件里有太长的句子，它也会提醒。还没加进 git 的变更文件也算，跟 `changelog` 一样。`init` 会加上 `changes/README.md`，
 里面有格式说明。`changes/` 里的文件可以超过 7 个，因为每次发版都会清空。
 
 ### 翻译
@@ -815,7 +817,7 @@ yokoten 每学到一个教训，核心规则就会改。`yokoten install` 会更
 退回旧版。这时 `doctor` 会让你升级 yokoten 本身，而不是去改项目。没有这一行的文件，
 就只按内容比。
 
-`.yokoten/` 里那份也带着 kit 的 `AGENTS.md`，所以 CI 和钩子里跑 `doctor`，比的就是项目
+`.yokoten/` 里那份也带着 kit 的 `AGENTS.md`，还有 kit 里的课，所以 CI 和钩子里跑 `doctor`，比的就是项目
 当初拷进来的那版 kit。想换成更新的规则，就用装好的 yokoten、插件或者 clone 下来的仓库跑
 `update`。用它们再跑一次 `init`，`.yokoten/` 也会一起更新。直接用 `.yokoten/` 里那份跑 `init`，
 那份会原样留着，不会更新。
@@ -868,7 +870,17 @@ issue 里没写的那一节，对应的字段就留一个 `TODO(reviewer)`，绝
 它就不搬，什么都不动。yokoten 自己也有一个测试，对 kit 里的每一课都查这几条。
 之所以做成命令而不是让人手动 `git mv`，是因为搬文件、加表格、跑测试要一次做完，不会只做一半。
 
-项目换上新版 yokoten 以后，`yokoten doctor` 就会拿这一课去查这个项目。查到问题，就给一条提醒：
+项目跑的是哪份 yokoten 的 `doctor`，就查哪份 yokoten 里的课。每份 yokoten 只读自己的
+`kit/lessons/`，不下载，也不同步。所以发出去以后，各处什么时候能查到这一课：
+
+| 在项目里怎么跑 `doctor` | 什么时候有这一课 |
+|---|---|
+| 用刚发课的这份：`node path/to/yokoten/bin/yokoten.ts doctor` | 马上就有 |
+| 用这台电脑装的：`yokoten doctor` | 在这份里跑一次 `node bin/yokoten.ts install` 以后 |
+| 用项目自带的：`node .yokoten/bin/yokoten.ts doctor` | 用这份再跑一次 `init`，再把 `.yokoten/` 提交上去以后 |
+| 别人用 npm 或插件装的 | 等 yokoten 发下一个版本，他们升级以后 |
+
+`learn --ship` 跑完也会打出这几条。查到问题，就给一条提醒：
 
 ```
 project:
@@ -885,7 +897,8 @@ project:
 **自己走一遍。** 在 yokoten 的仓库里跑 `node scripts/demo/loop.ts`，大约一秒就把整个流程走完：
 出事故、起草稿、没审就发被拒、人来审、发进 kit，最后另一个项目的 `doctor` 给出提醒。
 全程在临时文件夹里做，不联网（用的是假的 `gh`），做完就删。想留下来看看，加 `--keep`，
-它会打出文件夹在哪里。
+它会打出文件夹在哪里。换成真的事故也是这几条命令：在 clone 下来的 yokoten 里，用你自己的
+issue，写你自己的检查。
 
 ### 设置
 

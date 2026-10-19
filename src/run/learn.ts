@@ -270,8 +270,10 @@ export function draftLesson(incident: Incident): Draft {
 export function formatDraft(incident: Incident, draft: Draft): string[] {
   const lines = [`a check draft from issue #${incident.number}, "${terminalText(incident.title)}".`];
   if (!incident.labels.includes('incident')) lines.push('Note: the issue has no `incident` label; it is drafted anyway.');
-  if (draft.todos.length) lines.push(`${draft.todos.length} TODO(s) for the reviewer:`, ...draft.todos.map((todo) => `- ${todo}`));
-  else lines.push('The issue answers every field. A reviewer still writes the check and its test.');
+  if (draft.todos.length) lines.push(`The issue left ${draft.todos.length} field(s) open, each a TODO(reviewer):`, ...draft.todos.map((todo) => `- ${todo}`));
+  else lines.push('The issue answers every field.');
+  // `--ship` counts every TODO(reviewer) mark, so the count here must not look like all of them (#77).
+  lines.push('The reviewer also writes the check (findProblems) and the cases in its test, each a TODO(reviewer) too.');
   for (const file of draft.files) lines.push('', `--- ${terminalText(file.path)}`, terminalText(file.text.trimEnd()));
   return lines;
 }
