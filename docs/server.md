@@ -158,7 +158,9 @@ Before the tag:
 1. The milestone `vX.Y.Z` has no open issues. Each one is closed, or moved out with a
    reason.
 2. A merged pull request ran `yokoten changelog --write`. It has one `## [X.Y.Z] -
-   YYYY-MM-DD` section (the tag day, UTC), and `package.json` says `X.Y.Z`.
+   YYYY-MM-DD` section (the tag day, UTC), and `package.json` says `X.Y.Z`. For v0.1.0
+   only, that section is a short summary written by hand, and the change files were
+   deleted (issue #331). From 0.1.1 on, `changelog --write` fills it.
 3. CI on `main` is green for the commit you tag.
 4. The `release` environment exists, with you as the required reviewer and only `v*`
    tags (record 0009, steps 1 to 3). Without it, the publish job runs unprotected.
