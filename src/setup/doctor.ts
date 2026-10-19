@@ -119,7 +119,7 @@ const unchecked = (id: RuleId, file: string, home: string): Practice => ({ name:
  * Codex, Muse Code and Copilot CLI run the hooks only in a folder the user trusts: `env`
  * finds their trust stores (HOME, CODEX_HOME, XDG_CONFIG_HOME, COPILOT_HOME).
  */
-export function agentHooks(root: string, env: Env): Practice[] {
+export function agentHooks(root: string, env: Env, platform: string = process.platform): Practice[] {
   // Each step wants both project hooks: the tool-call guard and the stop check (#211).
   const missing = (guard: boolean, stop: boolean, file: string) =>
     [...(guard ? [] : ['no tool-call guard']), ...(stop ? [] : ['no stop check'])].join(' and ') + ` in ${file}`;
@@ -145,7 +145,7 @@ export function agentHooks(root: string, env: Env): Practice[] {
       practice('gemini-hook', 'gemini-hook', geminiGuard && geminiStop, missing(geminiGuard, geminiStop, '.gemini/settings.json'), '`yokoten init` adds it'),
     antigravityPractice(antigravity.projectHookState(root, cliPath(root))),
     musePractice(muse.projectHooksState(root, cliPath(root)), () => muse.readTrust(root, env)),
-    dshPractice(dsh.projectHooksState(root, cliPath(root)), dsh.profilesWithBridge(env)),
+    platform === 'win32' ? practice('deepseek-harness-hook', 'deepseek-harness-hook', false, dsh.WINDOWS_GAP, 'nothing to do yet: issue #332 adds a PowerShell guard') : dshPractice(dsh.projectHooksState(root, cliPath(root)), dsh.profilesWithBridge(env)),
   ];
 }
 
@@ -172,7 +172,8 @@ function musePractice(states: { guard: HookState; stop: HookState }, readTrust: 
 /**
  * DeepSeek Harness's guard (#334): the hook in .dsh/hooks.json, the launch patch, and the bridge
  * in a dsh profile. The bridge fails open without a word, so the files and packages being
- * there never prove the guard runs: the ok line says only a real deny does.
+ * there never prove the guard runs: the ok line says only a real deny does. On Windows the
+ * guard can't run at all (dsh uses PowerShell), so agentHooks gives a note instead (#332).
  */
 function dshPractice(states: { guard: HookState; patch: string }, profiles: { found: string[]; all: string[] } | null): Practice {
   const id = 'deepseek-harness-hook';

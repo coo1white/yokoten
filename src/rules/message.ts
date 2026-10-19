@@ -312,7 +312,7 @@ export const RULES = {
     rule: "the project has DeepSeek Harness's tool-call guard, and a dsh profile has the hook bridge",
     why: 'without the bridge and its peer in the profile, dsh runs no hooks and says nothing, so its commands and edits are not checked',
     check:
-      "`doctor` reads .dsh/hooks.json for a PreToolUse hook on `bash|pwsh|edit|write` that runs `yokoten hook --agent deepseek-harness`, checks .dsh/yokoten.patch.yml, and looks for both packages in the dsh profiles (read-only); a note, not a missing step. Only a real deny proves the guard runs",
+      "`doctor` reads .dsh/hooks.json for a PreToolUse hook on `bash|pwsh|edit|write` that runs `yokoten hook --agent deepseek-harness`. It checks .dsh/yokoten.patch.yml, and looks for both packages in the dsh profiles (read-only). It is a note, not a missing step. Only a real deny proves the guard runs. On Windows it says dsh is not checked yet",
     docs: guide('works-with'),
   },
   'codex-user-hook': {

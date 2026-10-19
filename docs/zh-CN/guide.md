@@ -211,7 +211,7 @@ yokoten 能管住七种 AI 编程 agent，它们守的是同一套规矩。下�
 | Antigravity CLI（`agy`） | `.agents/hooks.json`：名叫 `yokoten` 的那一项，PreToolUse | 在 stdout 输出 `{"decision": "deny"}` | 是，2026-10-19：agy 1.4.2，`agy -p`，模型 `gemini-3.8-flash-high` | 还没有收尾检查。`.yokoten/` 不在的话，每次调用都会被拒：agy 出错时一律拦下 |
 | Codex CLI | `.codex/hooks.json`：PreToolUse 和 Stop | 退出码 2，理由写在 stderr | 是，2026-10-19：Codex 0.163.0，`codex exec`，模型用 DeepSeek 的 `deepseek-flash` | 要先信任这个文件夹，再在 `/hooks` 里信任这两个钩子，才会跑。没信任的钩子，`codex exec` 一声不吭地跳过 |
 | Muse Code | `.muse/hooks.json`：PreToolUse 和 Stop | 退出码 2，理由写在 stderr | 是，2026-10-19：Muse Code 1.4.10，`muse exec --trust-workspace`，模型 `muse-spark-1.3-contributor` | 要先信任这个文件夹，才跑钩子：在这里运行 `muse`，选 "Trust and continue"。Muse 不把 `YOKOTEN_ROLE` 传给钩子，所以在 Muse 里每个会话都当成 lead。钩子出错或超时的话，这次调用会放行 |
-| DeepSeek Harness（`dsh`） | `.dsh/hooks.json`：PreToolUse；再用 `.dsh/yokoten.patch.yml` 让 dsh 加载它 | 退出码 2，理由写在 stderr | 是，2026-10-20：dsh 0.2.1-rc.2，`dsh headless --patch .dsh/yokoten.patch.yml`，DeepSeek 的默认模型 | 钩子要靠一个桥接插件才会跑，每个 profile 都得自己装，见 [DeepSeek Harness](#deepseek-harness)。没装插件或启动时没带 patch，dsh 一个钩子都不跑，也不提醒。还没有收尾检查 |
+| DeepSeek Harness（`dsh`） | `.dsh/hooks.json`：PreToolUse；再用 `.dsh/yokoten.patch.yml` 让 dsh 加载它 | 退出码 2，理由写在 stderr | 是，2026-10-20：dsh 0.2.1-rc.2，`dsh headless --patch .dsh/yokoten.patch.yml`，DeepSeek 的默认模型 | 钩子要靠一个桥接插件才会跑，每个 profile 都得自己装，见 [DeepSeek Harness](#deepseek-harness)。没装插件或启动时没带 patch，dsh 一个钩子都不跑，也不提醒。Windows 上还管不住（#332）。还没有收尾检查 |
 | Gemini CLI | `.gemini/settings.json`：BeforeTool 和 AfterAgent | 退出码 2，理由写在 stderr | 没有完整跑过：个人 Google 账号 2026-06-18 起不能再登录，要付费 API key 或企业授权 | 谷歌给个人用户的 agent 现在是 Antigravity CLI |
 | 其他 agent | 无 | `AGENTS.md` 里的规则；还有提交检查，不管是谁提交的，坏提交都会被拦下 | | |
 
@@ -281,8 +281,13 @@ DeepSeek Harness（`dsh`）靠一个桥接插件来跑 Claude Code 格式的命�
 
    patch 里写的 `.dsh/hooks.json` 是相对路径，dsh 从启动时所在的文件夹去找。在别的文件夹启动，
    或者启动时没带 patch，dsh 就一个钩子都不跑。
+   `.dsh/yokoten.patch.yml` 归 yokoten 管，每次 `init` 都会整个重写。你自己的配置请写到别的文件里。
 
 dsh 认工具名时要一字不差，而且是小写，所以钩子的 matcher 写的是 `bash|pwsh|edit|write`。
+`pwsh` 是 dsh 在 Windows 上用的 shell，先写进去，留给以后用；现在 Windows 上还管不住。
+在 Windows 上，dsh 用 PowerShell 来跑钩子，可 yokoten 的守卫是一条 POSIX shell 命令，PowerShell
+跑不了。插件把这种失败当成“放行”，所以每次调用都会直接通过。在 Windows 上，`doctor` 和 `init`
+都会照实说（#332）。
 这里没有收尾检查：插件的 Stop 事件没有防死循环的机制。`doctor` 会查这两个文件，也会去
 `${DSH_HOME:-~/.dsh}/profiles` 里看两个包装了没有；找不到 dsh 的目录，就说 can't check。
 插件出了问题也不吭声，直接放行，所以文件都在也说明不了什么。要确认守卫真的在跑，只能真拦一次：
@@ -1043,6 +1048,10 @@ AWS 的 access key id，还有 PEM 私钥。查到了只说是哪一种密钥，
   `~/.gemini` 文件夹时，用户级的 hook 也照这样报告。规则就是普通的 `AGENTS.md`：项目里没有
   `CLAUDE.md` 时 Claude Code 会直接读它，大多数别的 AI 也读，Muse Code
   也读。
+- **DeepSeek Harness 在 Windows 上还管不住。** dsh 在那里用 PowerShell 跑钩子，而守卫是一条
+  POSIX shell 命令（#332）。另外，守卫只看 `bash`、`pwsh`、`edit` 和 `write` 这四个工具。
+  如果 profile 里装了 dsh 的可选工具 `str_replace_editor`，或者试验中的 `terminal_send`，
+  用它们改文件、往 shell 里输命令，都没人查。
 
 ## 故意没带过来的
 
