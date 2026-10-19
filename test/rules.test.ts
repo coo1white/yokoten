@@ -18,7 +18,7 @@ import { explain, explainLines, ids } from '../src/setup/advice/explain.ts';
 import { ROAD, serverChecks, stepFinding } from '../src/setup/road.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
 import { formatChanges, mergeChanges, parseChange, readChanges, writeChanges } from '../src/run/changelog.ts';
-import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, ownersOf, parseCodeOwners, largeDiff, longSentenceNote, longSentences, type PullRequest } from '../src/rules/pr.ts';
+import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, visibleLength, ownersOf, parseCodeOwners, largeDiff, longSentenceNote, longSentences, type PullRequest } from '../src/rules/pr.ts';
 
 test('glob: a slash anchors at the root, no slash matches in any folder', () => {
   const m = (g: string, p: string) => matcher([g])(p);
@@ -426,6 +426,28 @@ test('pull request title: one rule for check --pr and the bot (#117)', () => {
     assert.equal(problems[0].id, 'pr-title');
     assert.deepEqual(checkPullRequest({ ...goodPr(), title }, { ...DEFAULTS, ...config }), problems, 'checkPullRequest gives the same title findings');
   }
+});
+
+test('titles: limits count the characters a person sees, not code units (#268)', () => {
+  const flag = '🇯🇵';
+  const family = '👨‍👩‍👧‍👦';
+  assert.equal(visibleLength(flag), 1, 'a flag is one character');
+  assert.equal(visibleLength(family), 1, 'a ZWJ family is one character');
+  assert.equal(visibleLength('漢字🎉a'), 4);
+  // A pull request title of 72: 6 + 10 + 1 + 1 + 54.
+  const pr = `feat: ${'🚀'.repeat(10)}${flag}${family}${'a'.repeat(54)}`;
+  assert.equal(visibleLength(pr), 72);
+  assert.deepEqual(checkPullRequestTitle(pr, {}), [], '72 characters with emoji is the most');
+  const prOver = checkPullRequestTitle(`${pr}b`, {});
+  assert.equal(prOver.length, 1);
+  assert.match(formatFinding(prOver[0]), /^title: 73 characters, over 72\./);
+  // An issue title of 60: 5 + 40 + 5 + 1 + 1 + 8.
+  const issue = `kit: ${'漢'.repeat(40)}${'🎉'.repeat(5)}${flag}${family}${'a'.repeat(8)}`;
+  assert.equal(visibleLength(issue), 60);
+  assert.deepEqual(checkIssueTitle(issue, AREAS), [], '60 characters with CJK and emoji is the most');
+  const issueOver = checkIssueTitle(`${issue}字`, AREAS);
+  assert.equal(issueOver.length, 1);
+  assert.match(formatFinding(issueOver[0]), /^title: 61 characters, over 60\./);
 });
 
 test('config: yokoten\'s own areas cover its open work', () => {
