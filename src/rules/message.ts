@@ -108,6 +108,12 @@ export const RULES = {
     check: 'the commit check, CI and `check --history` look for the real shape of tokens (GitHub, npm, AWS, Slack, Stripe, Google, Anthropic, OpenAI) and of private keys',
     docs: guide('privacy'),
   },
+  'shallow-history': {
+    rule: '`check --history` reads the whole history, so it needs a full clone',
+    why: 'a shallow clone holds only the newest commits, so a secret in an older commit goes unseen',
+    check: '`check --history` asks git whether the clone is shallow (`git rev-parse --is-shallow-repository`); if it is, it scans nothing and fails with this finding',
+    docs: guide('privacy'),
+  },
   'time-zone': {
     rule: 'commit times are UTC (core rule 12)',
     why: 'a time zone narrows down where you live',
