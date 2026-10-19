@@ -162,9 +162,11 @@ export function pluginAgeCheck(root: string | null, env: Env): Finding | null {
 const SERVER_CONTROL: ServerRead = {
   repo: 'octo/demo',
   defaultBranch: 'main',
+  isPrivate: false,
+  actionsCanApprove: false,
   mergeMethods: ['merge', 'squash'],
   deleteBranchOnMerge: false,
-  branch: { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false },
+  branch: { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false, approvals: 0 },
   tags: false,
   security: { secretScanning: false, pushProtection: false, privateReporting: false, dependabotAlerts: false },
   forgotten: [],
@@ -215,7 +217,7 @@ export function coreRulesControl(check: typeof coreRulesCheck = coreRulesCheck):
 }
 
 /** What doctor can't read on the server yet, and the owner sets once per repo. */
-const OWNER_STEPS = ['the bot: a GitHub App (or collaborator) with write access and no Workflows permission'];
+const OWNER_STEPS = ['the bot: a GitHub App (or collaborator) with write access; CODEOWNERS sends CI changes to you'];
 
 /** The settings to check by hand when doctor can't read the server. */
 const BY_HAND = [

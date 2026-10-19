@@ -231,3 +231,78 @@ test('bash: an unclosed quote is dropped and the rest read as words (#105)', () 
   blocked('echo "$(echo x; npm publish');
   blocked('echo `npm publish');
 });
+
+// #192: a project blocks programs in yokoten.json "commands.block", each with its reason.
+const pythonBlocked = { commands: { block: { python: 'TypeScript only', python3: 'this project is TypeScript only (AGENTS.md).' } } };
+const isBlockedByList = (command: string, config: { commands: { block: Record<string, string> } } = pythonBlocked) => checkCommand(command, { env: {}, config })?.id === 'blocked-command';
+
+test('blocked commands: the program is stopped by its name, with any folder or .exe (#192)', () => {
+  for (const command of [
+    'python3 --version',
+    'python x.py',
+    '/usr/bin/python3 -c "print(1)"',
+    '"C:\\Python\\python.exe" x.py',
+    'C:/Python/python.exe x.py',
+    'python3.EXE x.py',
+    'npm test && python3 x.py',
+    'cat a | python3 -',
+    'ls; python x.py',
+    'echo $(python3 -V)',
+    "bash -c 'python3 x.py'",
+    'env X=1 python3 x.py',
+    'FOO=1 python3 x.py',
+    '/usr/bin/env python3 x.py',
+    'nice -n 10 python3 x.py',
+    'sudo -u root python3 x.py',
+    'timeout 5 python3 x.py',
+    'ls | xargs -n 1 python3',
+  ]) assert.ok(isBlockedByList(command), `should block: ${command}`);
+  const found = checkCommand('python3 --version', { env: {}, config: pythonBlocked });
+  assert.equal(found?.what, '`python3` is blocked in this project');
+  assert.equal(found?.why, 'this project is TypeScript only (AGENTS.md)', 'the reason from yokoten.json, with no full stop');
+  assert.match(found?.fix ?? '', /project's own stack/);
+  assert.match(found?.docs ?? '', /#blocked-commands$/);
+});
+
+test('blocked commands: after a shell keyword, a launcher, find -exec or env -S (#192)', () => {
+  for (const command of [
+    'for f in *.json; do python3 -m json.tool $f; done',
+    'if true; then python3 x; fi',
+    'if python3 x; then echo; fi',
+    'if false; then echo; else python3 x; fi',
+    'while python3 x; do :; done',
+    'until false; do python3 x; done',
+    '! python3 x',
+    '{ python3 x; }',
+    "find . -name '*.py' -exec python3 {} \\;",
+    "find . -name '*.py' -execdir nice python3 {} +",
+    "find . -type f -print -ok python3 {} ';'",
+    'setsid python3 x',
+    'stdbuf -oL python3 x',
+    'stdbuf -o L python3 x',
+    'busybox nohup python3 x',
+    'chrt -f 10 python3 x',
+    'ionice -c 3 python3 x',
+    'taskset -c 0 python3 x',
+    'unbuffer python3 x',
+    "env --split-string='python3 x'",
+    "env -S 'python3 x'",
+    "env -S'python3 x'",
+    'time python3 x',
+  ]) assert.ok(isBlockedByList(command), `should block: ${command}`);
+  for (const command of ['for python3 in a b; do echo $python3; done', "find . -name 'python3'", 'git commit -m "no python3 here"', "echo 'then python3'", 'setsid node x.ts', 'stdbuf -oL node x.ts']) {
+    assert.equal(isBlockedByList(command), false, `should allow: ${command}`);
+  }
+});
+
+test('blocked commands: a word that only holds the name passes, and so does no list (#192)', () => {
+  for (const command of ['echo python', 'pythonic x', 'cat python.md', 'ls python3/', 'grep -r python3 src', 'command -v python3', 'node bin/yokoten.ts check', 'env X=1 node x.ts', 'nice -n 10 node --test']) {
+    assert.equal(isBlockedByList(command), false, `should allow: ${command}`);
+  }
+  // Positive control: the same commands pass without the list.
+  for (const command of ['python3 --version', 'env X=1 python3 x.py']) {
+    assert.equal(checkCommand(command, { env: {} }), null, command);
+    assert.equal(isBlockedByList(command, { commands: { block: {} } }), false, command);
+  }
+  assert.equal(isBlockedByList('toString x'), false, 'only the list\'s own keys');
+});

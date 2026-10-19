@@ -6,7 +6,7 @@
 
 import { realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
-import type { Config, Env } from '../rules/config.ts';
+import { type Config, DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
 import { checkCommand, checkEdit } from '../rules/guards.ts';
 import type { Finding } from '../rules/message.ts';
 
@@ -22,6 +22,18 @@ export interface Action {
 }
 
 /**
+ * The config the hook works with: the repo's yokoten.json, or the defaults outside a repo.
+ * A wrong "commands" drops only the block list (#192): the core checks still run, and
+ * `warn` gets one line that says what was ignored and why. Any other problem throws.
+ */
+export function loadHookConfig(root: string | null, warn: (line: string) => void): Config {
+  if (!root) return DEFAULTS;
+  return loadConfig(root, {
+    onBadCommands: (problem) => warn(`yokoten hook: yokoten.json "commands" was ignored, so no program is blocked; the core checks still run. ${problem}`),
+  });
+}
+
+/**
  * Why to stop the action (what, why, fix), or null. `root` is the repo root, or null outside a repo.
  * `commandsOnly` is the user-level hook: it runs in every repo, so it keeps to the rules
  * that hold everywhere (no tag pushes, no force pushes, no skipped checks) and leaves file
@@ -31,7 +43,7 @@ export function judge(
   action: Action,
   { root, config, env, commandsOnly = false }: { root: string | null; config: Config; env: Env; commandsOnly?: boolean },
 ): Finding | null {
-  if (action.command !== undefined) return checkCommand(action.command, { env });
+  if (action.command !== undefined) return checkCommand(action.command, { env, config });
   if (commandsOnly || !root) return null;
   if (action.worker) env = { ...env, YOKOTEN_ROLE: 'worker' };
   for (const p of action.paths) {
