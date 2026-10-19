@@ -1812,7 +1812,8 @@ test('demo: scripts/demo.ts walks the loop from an incident to a doctor note, an
   assert.match(result.stdout, /\nWrote:\n- lessons\/incident-12\/lesson\.ts\n/);
   assert.match(result.stdout, /\nyokoten learn --ship: 2 problem\(s\); nothing was moved:\n- lessons\/incident-12\/lesson\.ts still has 1 TODO\(reviewer\)/);
   assert.match(result.stdout, /\n\+ {2}what: 'a test calls a server on this machine and does not set NO_PROXY',\n/);
-  assert.match(result.stdout, /\nyokoten learn --ship: incident-12 is in kit\/lessons\/incident-12\//);
+  // The lesson lands in the kit in its own folder, flat or under a group folder (#171).
+  assert.match(result.stdout, /\nyokoten learn --ship: incident-12 is in kit\/lessons\/(?:[^/\s]+\/)?incident-12\//);
   assert.match(result.stdout, /\n {2}note {4}lesson incident-12: test\/api\.test\.js: a test calls a server on this machine and does not set NO_PROXY; set NO_PROXY/);
   assert.match(result.stdout, /\nDone in \d+\.\ds: /);
   assert.deepEqual(readdirSync(temp), [], 'the demo folder is gone');
