@@ -186,7 +186,8 @@ Docs: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#the-core-r
 | `unpushed-commits` | 某个分支上有远端没有的提交，或者游离的 HEAD 上有哪个分支都没收着的提交 | `git push`；分支在远端还没有自己的同名分支时，用 `git push -u origin <分支>`；游离的 HEAD 先 `git switch -c <名字>` |
 | `stashes` | 有 stash。stash 从来不会被推上去 | `git stash branch <名字>`，再推上去 |
 | `stale-index-lock` | 死机留下了一个 `index.lock`，仓库里也没有 git 在跑 | 用 `rm` 删掉它 |
-| `repo-on-tmpfs` | 仓库在 tmpfs 上，一重启就清空 | `git push --all origin`，然后在硬盘上重新 clone 一份 |
+| `repo-on-tmpfs` | 仓库或某个 worktree 在 tmpfs 上，一重启就清空 | 先 `git push`，再在不会被清空的地方重新弄一份 |
+| `repo-in-temp-folder` | 仓库或某个 worktree 在临时文件夹里，系统重启时可能会清掉 | 先 `git push`，再在不会被清空的地方重新弄一份 |
 | `finished-worktree` | 某个 worktree 没有改动，而且分支已经合并、远端分支已经没了，或者游离的 HEAD 已经在默认分支里 | `git worktree remove <路径>`，分支还留着 |
 | `missing-worktree` | git 还记着某个 worktree，可它的文件夹已经没了 | `git worktree prune` |
 
@@ -202,11 +203,19 @@ squash 合并不会在分支历史里留下痕迹，所以远端分支没了，�
 这时 doctor 绝不会叫你删这个文件。凭据缓存这类一直挂着的 git 辅助进程不算。
 tmpfs 是读 `/proc/mounts` 判断的，所以只在 Linux 上查。
 
+临时文件夹指系统自己的那个（`TMPDIR`，Windows 上是 `%TEMP%`）和 `/tmp`。
+WSL 重启时会清空 `/tmp`，哪怕它不是 tmpfs。想多查几个文件夹，就写进 `YOKOTEN_TEMP_DIRS`，
+分隔方式和 `PATH` 一样。设成空的就不查了。
+
 这些都只是提醒，不会让 `doctor` 失败。doctor 在这里只读：不改文件、不动引用、不碰 worktree，
 跑 git 时也关掉了可选的锁。路径都按相对仓库的写法显示，或者从 `~` 开始写。
 
 会话开头只说有风险的，最多三条。没提交的改动要放了一个小时以上才提，
 因为手上正在做的活不会忘。该收拾的 worktree 留给完整的 `doctor` 去说。
+在 tmpfs 上或临时文件夹里的 worktree 只占一行，说一共有几个。
+
+会话开头在这件事上最多花一秒，免得磁盘缓存是冷的时候干等。时间到了，
+就把已经读到的说出来，再加一句「doctor 提前停了」。完整的 `doctor` 不限时间。
 
 ## 四层
 

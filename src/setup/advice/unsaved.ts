@@ -11,7 +11,8 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { tmpdir } from 'node:os';
+import { delimiter, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import type { Env } from '../../rules/config.ts';
 import { type Finding, finding } from '../../rules/message.ts';
 
@@ -31,12 +32,17 @@ export interface WorktreeFacts {
   changedFiles: string[] | null;
   /** When the oldest of those paths last changed, in ms since 1970. Null when none can be read. */
   oldestChange: number | null;
+  /**
+   * When its folder may not survive a restart: on a tmpfs (gone after a restart), or under
+   * a temp folder (the system may empty it). `folder` is the mount point or the temp folder.
+   */
+  volatile: { kind: 'tmpfs' | 'temp'; folder: string } | null;
   /** Its own git folder: the common one for the clone, `worktrees/<name>` in it for a linked worktree. Null when git lost track. */
   gitDir: string | null;
   /** Its `index.lock`, when there is one. */
   indexLock: { path: string; modified: number } | null;
   /** On a detached HEAD: whether no branch, tag or remote holds that commit. Null when HEAD is on a branch, or git can't tell. */
-  isHeadOnNoBranch: boolean | null;
+  isHeadUnreferenced: boolean | null;
   /** On a detached HEAD: whether the default branch holds that commit. Null when HEAD is on a branch, or git can't tell. */
   isHeadInDefault: boolean | null;
   /** For a detached HEAD in the default branch: whether HEAD moved after the worktree was made (its reflog). Null when not read. */
@@ -79,14 +85,22 @@ export interface UnsavedFacts {
   worktrees: WorktreeFacts[];
   branches: BranchFacts[];
   stashes: number;
-  /** The mount point when the repo is on a tmpfs, which a restart empties. */
-  tmpfs: string | null;
+  /** True when the read stopped at its time budget: the facts are only what was read by then. */
+  isPartial: boolean;
   /** Whether git works in this repo now: read only when a lock is found. Null when not read, or doctor can't tell. */
   isGitRunning: boolean | null;
 }
 
+/** How long a read may take, and the clock it is measured by (a test hands in its own). */
+export interface TimeBudget {
+  ms: number;
+  clock?: () => number;
+}
+
 /** How readUnsaved reads the machine. A test hands in its own. */
 export interface MachineReaders {
+  /** The temp folders, which the system may empty on restart. By default YOKOTEN_TEMP_DIRS, else the system's temp folder and /tmp. */
+  tempDirs?: string[];
   /** The text of /proc/mounts, or null where there is none (macOS, Windows). */
   readMounts?: () => string | null;
   /** The git processes running now, or null when they can't be read. */
@@ -101,17 +115,37 @@ const MEMORY_FILE_SYSTEMS = ['tmpfs', 'ramfs'];
 
 /** The git environment: no GIT_DIR or index from a hook that called doctor, and no optional locks. */
 function gitEnv(env: Env): Env {
-  const { GIT_DIR: _dir, GIT_WORK_TREE: _tree, GIT_INDEX_FILE: _index, GIT_COMMON_DIR: _common, ...rest } = env;
-  return { ...rest, GIT_OPTIONAL_LOCKS: '0' };
+  const clean: Env = { ...env, GIT_OPTIONAL_LOCKS: '0' };
+  for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR']) delete clean[key];
+  return clean;
 }
 
-/** Runs git in `cwd` and returns its output, or null when it fails. */
-function runGit(cwd: string, args: string[], env: Env): string | null {
-  try {
-    return execFileSync('git', ['--no-optional-locks', ...args], { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 });
-  } catch {
-    return null;
-  }
+/** Runs git in `cwd` and returns its output, or null when it fails or the time is up. */
+type GitRunner = ((cwd: string, args: string[]) => string | null) & { isStopped: () => boolean };
+
+/**
+ * A git runner. With a time budget, each call gets the time left as its timeout, and no
+ * call starts once the time is up: a session must not wait on a cold disk.
+ */
+function makeGitRunner(env: Env, budget: TimeBudget | undefined): GitRunner {
+  const clock = budget?.clock ?? Date.now;
+  const start = clock();
+  let isStopped = false;
+  const run = (cwd: string, args: string[]): string | null => {
+    const left = budget ? budget.ms - (clock() - start) : Infinity;
+    if (isStopped || left <= 0) {
+      isStopped = true;
+      return null;
+    }
+    try {
+      return execFileSync('git', ['--no-optional-locks', ...args], { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024, ...(budget ? { timeout: Math.ceil(left) } : {}) });
+    } catch (error) {
+      // A call killed by its timeout: the time is up.
+      if (budget && (error as { signal?: string | null }).signal) isStopped = true;
+      return null;
+    }
+  };
+  return Object.assign(run, { isStopped: () => isStopped });
 }
 
 /** The worktrees from `git worktree list --porcelain -z`: one record per worktree, attributes split by NUL. */
@@ -296,15 +330,15 @@ function readHasMoved(reflog: string): boolean | null {
 }
 
 /** The commits that `heads` reach and `exclude` don't, in one `git rev-list`. Null when git fails. */
-function listCommitsOutside(root: string, heads: string[], exclude: string[], env: Env): Set<string> | null {
-  const text = runGit(root, ['rev-list', ...heads, '--not', ...exclude], env);
+function listCommitsOutside(root: string, heads: string[], exclude: string[], git: GitRunner): Set<string> | null {
+  const text = git(root, ['rev-list', ...heads, '--not', ...exclude]);
   return text === null ? null : new Set(text.split('\n').filter(Boolean));
 }
 
 /** The local branches and their upstreams, from one `git for-each-ref`; also which default ref is there, and whether a stash is. */
-function readRefs(root: string, env: Env): { branches: BranchFacts[]; tips: Map<string, string>; targets: Map<string, string>; hasStash: boolean } | null {
+function readRefs(root: string, git: GitRunner): { branches: BranchFacts[]; tips: Map<string, string>; targets: Map<string, string>; hasStash: boolean } | null {
   const format = ['%(refname)', '%(symref)', '%(objectname)', '%(upstream)', '%(upstream:track,nobracket)', '%(upstream:remotename)', '%(upstream:remoteref)'].join('%00');
-  const text = runGit(root, ['for-each-ref', `--format=${format}`, 'refs/heads', 'refs/stash', ...DEFAULT_REFS.filter((ref) => ref.startsWith('refs/remotes/'))], env);
+  const text = git(root, ['for-each-ref', `--format=${format}`, 'refs/heads', 'refs/stash', ...DEFAULT_REFS.filter((ref) => ref.startsWith('refs/remotes/'))]);
   if (text === null) return null;
   const branches: BranchFacts[] = [];
   const tips = new Map<string, string>();
@@ -338,9 +372,9 @@ function readRefs(root: string, env: Env): { branches: BranchFacts[]; tips: Map<
  * How many commits each branch has that the default branch does not, in one call:
  * `%(ahead-behind:)` needs git 2.41; older git gives merged (0) or not known (null).
  */
-function readAheadOfDefault(root: string, tip: string, env: Env): Map<string, number | null> {
+function readAheadOfDefault(root: string, tip: string, git: GitRunner): Map<string, number | null> {
   const counts = new Map<string, number | null>();
-  const text = runGit(root, ['for-each-ref', `--format=%(refname:short)%00%(ahead-behind:${tip})`, 'refs/heads'], env);
+  const text = git(root, ['for-each-ref', `--format=%(refname:short)%00%(ahead-behind:${tip})`, 'refs/heads']);
   if (text !== null) {
     for (const line of text.split('\n')) {
       const [name, numbers] = line.split('\0');
@@ -348,21 +382,50 @@ function readAheadOfDefault(root: string, tip: string, env: Env): Map<string, nu
     }
     return counts;
   }
-  const merged = runGit(root, ['for-each-ref', '--format=%(refname:short)', `--merged=${tip}`, 'refs/heads'], env);
+  if (git.isStopped()) return counts;
+  const merged = git(root, ['for-each-ref', '--format=%(refname:short)', `--merged=${tip}`, 'refs/heads']);
   for (const name of merged?.split('\n') ?? []) if (name) counts.set(name, 0);
   return counts;
 }
 
+/** The temp folders from YOKOTEN_TEMP_DIRS (empty turns the check off), else the system's own and /tmp. */
+export function findTempDirs(env: Env, platform: string = process.platform): string[] {
+  if (env.YOKOTEN_TEMP_DIRS !== undefined) return env.YOKOTEN_TEMP_DIRS.split(delimiter).filter(Boolean);
+  return [...new Set([tmpdir(), ...(platform === 'win32' ? [] : ['/tmp'])])];
+}
+
+/** A folder by its real path, or as given when it can't be read. */
+function realPathOf(folder: string): string {
+  try {
+    return realpathSync(folder);
+  } catch {
+    return folder;
+  }
+}
+
+/** Whether `path` is `folder` or inside it. */
+const isInside = (path: string, folder: string) => {
+  const inside = relative(folder, path);
+  return !inside.startsWith('..') && !isAbsolute(inside);
+};
+
 /**
  * The facts about work only on this machine, for the clone that holds `root`. Read only.
- * Null when git can't read the repo.
+ * Null when git can't read the repo. With `budget`, it stops when the time is up and
+ * returns what it read, with `isPartial`: the costly reads, one per worktree, come last.
  */
-export function readUnsaved(root: string, { env, readMounts = readProcMounts, listProcesses = listGitProcesses }: { env: Env } & MachineReaders): UnsavedFacts | null {
-  const git = gitEnv(env);
-  const commonDir = runGit(root, ['rev-parse', '--path-format=absolute', '--git-common-dir'], git)?.trim();
-  const list = runGit(root, ['worktree', 'list', '--porcelain', '-z'], git);
-  const refs = readRefs(root, git);
-  if (!commonDir || list === null || !refs) return null;
+export function readUnsaved(root: string, { env, budget, readMounts = readProcMounts, listProcesses = listGitProcesses, tempDirs = findTempDirs(env) }: { env: Env; budget?: TimeBudget } & MachineReaders): UnsavedFacts | null {
+  const git = makeGitRunner(gitEnv(env), budget);
+  const commonDir = git(root, ['rev-parse', '--path-format=absolute', '--git-common-dir'])?.trim();
+  const list = commonDir ? git(root, ['worktree', 'list', '--porcelain', '-z']) : null;
+  const refs = list !== null ? readRefs(root, git) : null;
+  if (!commonDir || list === null || !refs) {
+    if (!git.isStopped()) return null;
+    // Out of time before the basics: say so, with nothing else.
+    return { root, commonDir: commonDir ?? '', defaultRef: null, defaultTip: null, remotes: [], worktrees: [], branches: [], stashes: 0, isPartial: true, isGitRunning: null };
+  }
+  const remotes = git(root, ['remote'])?.split('\n').filter(Boolean) ?? [];
+  const stashes = refs.hasStash ? (git(root, ['stash', 'list', '--format=%H'])?.split('\n').filter(Boolean).length ?? 0) : 0;
   const found = DEFAULT_REFS.find((ref) => refs.tips.has(ref));
   // origin/HEAD names the branch it points at: say origin/main, not origin/HEAD.
   const defaultRef = found ? (refs.targets.get(found) ?? found) : null;
@@ -380,14 +443,19 @@ export function readUnsaved(root: string, { env, readMounts = readProcMounts, li
   const detached = listed.filter((worktree) => !worktree.branch && worktree.head && !/^0+$/.test(worktree.head)).map((worktree) => worktree.head as string);
   const onNoRef = detached.length ? listCommitsOutside(root, detached, ['--branches', '--tags', '--remotes'], git) : null;
   const offDefault = detached.length && defaultTip ? listCommitsOutside(root, detached, [defaultTip], git) : null;
+  const mounts = readMounts();
+  const temps = tempDirs.map(realPathOf);
   const worktrees = listed.map((worktree): WorktreeFacts => {
     const gitDir = worktree.isMain ? commonDir : (gitDirs.get(worktree.path) ?? null);
     const isMissing = worktree.isMissing || !existsSync(worktree.path);
     const isDetached = !worktree.branch && worktree.head !== null && detached.includes(worktree.head);
     const isHeadInDefault = isDetached && offDefault ? !offDefault.has(worktree.head as string) : null;
     // A bare clone lists itself with no branch and no HEAD: there is no folder to read.
-    const status = isMissing || worktree.head === null ? null : runGit(worktree.path, ['status', '--porcelain=v2', '-z', '--untracked-files=normal'], git);
+    const status = isMissing || worktree.head === null ? null : git(worktree.path, ['status', '--porcelain=v2', '-z', '--untracked-files=normal']);
     const changedFiles = status === null ? null : parseStatus(status);
+    const real = realPathOf(worktree.path);
+    const tmpfs = isMissing ? null : findTmpfs(real, mounts);
+    const temp = isMissing ? undefined : temps.find((folder) => isInside(real, folder));
     return {
       ...worktree,
       gitDir,
@@ -395,27 +463,14 @@ export function readUnsaved(root: string, { env, readMounts = readProcMounts, li
       changedFiles,
       oldestChange: changedFiles ? findOldestChange(worktree.path, changedFiles) : null,
       indexLock: gitDir ? findIndexLock(gitDir) : null,
-      isHeadOnNoBranch: isDetached && onNoRef ? onNoRef.has(worktree.head as string) : null,
+      isHeadUnreferenced: isDetached && onNoRef ? onNoRef.has(worktree.head as string) : null,
       isHeadInDefault,
       hasHeadMoved: isHeadInDefault && gitDir ? readHasMoved(join(gitDir, 'logs', 'HEAD')) : null,
+      volatile: tmpfs ? { kind: 'tmpfs', folder: tmpfs } : temp ? { kind: 'temp', folder: temp } : null,
     };
   });
-  const stashes = refs.hasStash ? (runGit(root, ['stash', 'list', '--format=%H'], git)?.split('\n').filter(Boolean).length ?? 0) : 0;
-  const remotes = runGit(root, ['remote'], git)?.split('\n').filter(Boolean) ?? [];
-  let realRoot = root;
-  try {
-    realRoot = realpathSync(root);
-  } catch {
-    // keep it as given
-  }
   const hasLock = worktrees.some((worktree) => worktree.indexLock);
-  const folders = [commonDir, ...worktrees.map((worktree) => worktree.path)].flatMap((folder) => {
-    try {
-      return [folder, realpathSync(folder)];
-    } catch {
-      return [folder];
-    }
-  });
+  const folders = [commonDir, ...worktrees.map((worktree) => worktree.path)].flatMap((folder) => [folder, realPathOf(folder)]);
   return {
     root,
     commonDir,
@@ -425,7 +480,7 @@ export function readUnsaved(root: string, { env, readMounts = readProcMounts, li
     worktrees,
     branches: refs.branches,
     stashes,
-    tmpfs: findTmpfs(realRoot, readMounts()),
+    isPartial: git.isStopped(),
     isGitRunning: hasLock ? isGitWorkingIn(folders, listProcesses()) : null,
   };
 }
@@ -462,6 +517,52 @@ const plural = (count: number, word: string) => `${count} ${word}${count === 1 ?
 /** A command in backticks. */
 const code = (text: string) => `\`${text}\``;
 
+/** A folder from ~ when it is in the home, else as it is: a mount point or temp folder is above the repo. */
+function showFolder(folder: string, home: string | undefined): string {
+  if (!home || !isInside(folder, home)) return folder;
+  const fromHome = relative(home, folder);
+  return fromHome ? `~/${fromHome.split(sep).join('/')}` : '~';
+}
+
+/** What saves a worktree that may not survive a restart: by what it holds that is only here. */
+function volatileFix(facts: UnsavedFacts, worktree: WorktreeFacts, where: string, remote: string): string {
+  const later = 'then make it again in a folder that lasts';
+  if (!facts.remotes.length) return `add a remote and push now; ${later}`;
+  if (worktree.isMain) return `push every branch now: ${code(`git push --all ${remote}`)}; ${later}`;
+  const branch = worktree.branch ? facts.branches.find((known) => known.name === worktree.branch) : undefined;
+  const isSaved = !worktree.changedFiles?.length && worktree.changedFiles !== null && (worktree.branch ? branch?.remoteBranch === branch?.name && branch?.ahead === 0 : worktree.isHeadUnreferenced === false);
+  if (isSaved) return 'nothing there is only on this machine yet; make new worktrees in a folder that lasts';
+  if (worktree.branch) return `push it now: ${code(`git -C ${where} push -u ${remote} ${worktree.branch}`)}; ${later}`;
+  return `give its HEAD a branch and push it now: ${code(`git -C ${where} switch -c <name>`)}; ${later}`;
+}
+
+/**
+ * The worktrees whose folder may not survive a restart: on a tmpfs, or under a temp
+ * folder. One note per worktree; a session gets one line per kind, with the count.
+ */
+function volatileNotes(facts: UnsavedFacts, { home, session, remote }: { home: string | undefined; session: boolean; remote: string }): Finding[] {
+  const show = (path: string) => showPath(path, facts.root, home);
+  const notes: Finding[] = [];
+  for (const kind of ['tmpfs', 'temp'] as const) {
+    const trees = facts.worktrees.filter((worktree) => worktree.volatile?.kind === kind && !worktree.isMissing);
+    if (!trees.length) continue;
+    const id = kind === 'tmpfs' ? 'repo-on-tmpfs' : 'repo-in-temp-folder';
+    const place = (folder: string) => (kind === 'tmpfs' ? `on a tmpfs (${showFolder(folder, home)}), so everything there is gone after a restart` : `under the temp folder (${showFolder(folder, home)}), which the system may empty on restart`);
+    if (session) {
+      const folders = [...new Set(trees.map((worktree) => (worktree.volatile as { folder: string }).folder))];
+      const count = trees.length === 1 ? `${show(trees[0].path)} is` : `${trees.length} worktrees are`;
+      notes.push(finding(id, `${count} ${place(folders[0])}`, 'push the work there now; `yokoten doctor` lists the command for each'));
+      continue;
+    }
+    for (const worktree of trees) {
+      const where = show(worktree.path);
+      const folder = (worktree.volatile as { folder: string }).folder;
+      notes.push(finding(id, `${where} is ${place(folder)}`, volatileFix(facts, worktree, where, remote)));
+    }
+  }
+  return notes;
+}
+
 /**
  * The notes, one per thing to save, each with the one command that saves it. A session
  * gets only what is at risk: no worktree to tidy, and no change from the last hour.
@@ -471,13 +572,7 @@ export function unsavedNotes(facts: UnsavedFacts, { home, now = Date.now(), plat
   const show = (path: string) => showPath(path, facts.root, home);
   const defaultName = facts.defaultRef?.replace(/^refs\/(heads|remotes)\//, '') ?? 'the default branch';
   const remote = facts.remotes.includes('origin') ? 'origin' : (facts.remotes[0] ?? 'origin');
-  if (facts.tmpfs) {
-    // The mount point holds the repo, so it is above the root: show it from ~, or as it is.
-    const fromHome = home ? relative(home, facts.tmpfs) : '..';
-    const mount = fromHome.startsWith('..') || isAbsolute(fromHome) ? facts.tmpfs : `~/${fromHome.split(sep).join('/')}`.replace(/\/$/, '');
-    const push = facts.remotes.length ? `push every branch now: ${code(`git push --all ${remote}`)}` : 'add a remote and push every branch now';
-    notes.push(finding('repo-on-tmpfs', `this repo is on a tmpfs (${mount}), so everything here is gone after a restart`, `${push}; then clone it again on a disk`));
-  }
+  notes.push(...volatileNotes(facts, { home, session, remote }));
   for (const worktree of facts.worktrees) {
     const files = worktree.changedFiles;
     if (!files?.length) continue;
@@ -487,8 +582,8 @@ export function unsavedNotes(facts: UnsavedFacts, { home, now = Date.now(), plat
     const since = age === null ? '' : `, the oldest changed ${showAge(age)} ago`;
     notes.push(finding('uncommitted-changes', `${where} has ${plural(files.length, 'uncommitted file')}${since}`, `commit them: ${code(`git -C ${where} add -A && git -C ${where} commit`)}, then push`));
   }
-  // A branch exists once there is a commit.
-  if (!facts.remotes.length && facts.branches.length) {
+  // A branch exists once there is a commit. A read that stopped early may not have read the remotes.
+  if (!facts.remotes.length && facts.branches.length && !facts.isPartial) {
     notes.push(finding('unpushed-commits', 'this repo has no remote, so every commit is still only on this machine', `add one and push: ${code('git remote add origin <url>')}, then ${code('git push -u origin --all')}`));
   } else {
     for (const branch of facts.branches) {
@@ -505,7 +600,7 @@ export function unsavedNotes(facts: UnsavedFacts, { home, now = Date.now(), plat
     }
   }
   for (const worktree of facts.worktrees) {
-    if (!worktree.isHeadOnNoBranch || worktree.isMissing) continue;
+    if (!worktree.isHeadUnreferenced || worktree.isMissing) continue;
     const where = show(worktree.path);
     notes.push(finding('unpushed-commits', `worktree ${where} has commits on a detached HEAD that no branch holds, so they are still only on this machine`, `give them a branch and push it: ${code(`git -C ${where} switch -c <name>`)}, then ${code(`git -C ${where} push -u ${remote} <name>`)}`));
   }
@@ -546,7 +641,7 @@ export function unsavedNotes(facts: UnsavedFacts, { home, now = Date.now(), plat
   return notes;
 }
 
-const CONTROL_TREE: WorktreeFacts = { path: '/r', branch: 'b', head: '1', isMain: false, isMissing: false, isLocked: false, changedFiles: [], oldestChange: null, gitDir: null, indexLock: null, isHeadOnNoBranch: null, isHeadInDefault: null, hasHeadMoved: null };
+const CONTROL_TREE: WorktreeFacts = { path: '/r', branch: 'b', head: '1', isMain: false, isMissing: false, isLocked: false, changedFiles: [], oldestChange: null, gitDir: null, indexLock: null, isHeadUnreferenced: null, isHeadInDefault: null, hasHeadMoved: null, volatile: null };
 const CONTROL_BRANCH: BranchFacts = { name: 'b', head: '1', upstream: 'origin/b', remote: 'origin', remoteBranch: 'b', ahead: null, isGone: true, aheadOfDefault: 1, hasMoved: null };
 
 /**
@@ -560,13 +655,13 @@ export const UNSAVED_CONTROL: UnsavedFacts = {
   defaultTip: '0',
   remotes: ['origin'],
   stashes: 1,
-  tmpfs: '/r',
+  isPartial: false,
   isGitRunning: false,
   worktrees: [
-    { ...CONTROL_TREE, isMain: true, branch: 'main', changedFiles: ['a'], oldestChange: 0, gitDir: '/r/.git', indexLock: { path: '/r/.git/index.lock', modified: 0 } },
-    { ...CONTROL_TREE, path: '/w' },
+    { ...CONTROL_TREE, isMain: true, branch: 'main', changedFiles: ['a'], oldestChange: 0, gitDir: '/r/.git', indexLock: { path: '/r/.git/index.lock', modified: 0 }, volatile: { kind: 'tmpfs', folder: '/r' } },
+    { ...CONTROL_TREE, path: '/w', volatile: { kind: 'temp', folder: '/' } },
     { ...CONTROL_TREE, path: '/x', isMissing: true },
-    { ...CONTROL_TREE, path: '/d', branch: null, head: '2', isHeadOnNoBranch: true, isHeadInDefault: false },
+    { ...CONTROL_TREE, path: '/d', branch: null, head: '2', isHeadUnreferenced: true, isHeadInDefault: false },
   ],
   branches: [CONTROL_BRANCH, { ...CONTROL_BRANCH, name: 'main', upstream: 'origin/main', remoteBranch: 'main', ahead: 1, isGone: false }],
 };

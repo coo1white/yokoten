@@ -43,6 +43,9 @@ import {
   isUnsavedControlCaught,
   listBoardSteps,
   selfTest,
+  SESSION_UNSAVED_BUDGET,
+  sessionUnsaved,
+  STOPPED_EARLY,
   UNSAVED_OFFER,
 } from '../../src/setup/doctor.ts';
 import { LABELS } from '../../src/setup/plan.ts';
@@ -791,4 +794,21 @@ test('doctor self-test: the unsaved-work check must name every kind, and a broke
     unsavedNotes(facts, options).map((f) => (f.id === 'stale-index-lock' ? { ...f, fix: 'delete it' } : f));
   assert.equal(isUnsavedControlCaught(deletesWhenUnsure), false, "a check that says to delete a lock it can't judge");
   assert.ok(!selfTest().includes('unsaved work check'));
+});
+
+test('doctor --session: the unsaved-work read stops at its time budget and says so; full doctor has none (#365)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('a.txt', 'a\n');
+  sandbox.git('add', '-A');
+  sandbox.git('commit', '-qm', 'first');
+  let now = 0;
+  // Each look at the clock is a second later: the first git call already finds the time up.
+  const slow = sessionUnsaved(sandbox.repo, sandbox.env, () => (now += SESSION_UNSAVED_BUDGET));
+  assert.deepEqual(slow.lines, [STOPPED_EARLY]);
+  assert.deepEqual(slow.notes, [], 'no guess from what was not read');
+  // A clock that stands still: the whole read, and here a repo with no remote.
+  const fast = sessionUnsaved(sandbox.repo, sandbox.env, () => 0);
+  assert.ok(!fast.lines.includes(STOPPED_EARLY));
+  assert.deepEqual(fast.notes.map((f) => f.id), ['unpushed-commits']);
+  assert.equal(fast.lines.at(-1), UNSAVED_OFFER);
 });

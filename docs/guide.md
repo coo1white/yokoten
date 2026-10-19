@@ -202,7 +202,8 @@ A power cut, a crash or a dead disk loses work that lives only on one machine. S
 | `unpushed-commits` | A branch has commits that no remote has, or a detached HEAD has commits that no branch holds | `git push`, or `git push -u origin <branch>` for a branch with no upstream of its own; `git switch -c <name>` first for a detached HEAD |
 | `stashes` | There are stashes. A stash is never pushed | `git stash branch <name>`, then push it |
 | `stale-index-lock` | An `index.lock` is left from a crash, and no git process runs in the repo | `rm` the file |
-| `repo-on-tmpfs` | The repo is on a tmpfs, so a restart empties it | `git push --all origin`, then clone it again on a disk |
+| `repo-on-tmpfs` | The repo, or a worktree, is on a tmpfs, so a restart empties it | `git push`, then make it again in a folder that lasts |
+| `repo-in-temp-folder` | The repo, or a worktree, is under the temp folder, which the system may empty on restart | `git push`, then make it again in a folder that lasts |
 | `finished-worktree` | A worktree with no changes whose branch is merged, or whose upstream is gone, or whose detached HEAD is in the default branch | `git worktree remove <path>`; the branch stays |
 | `missing-worktree` | git still lists a worktree whose folder is gone | `git worktree prune` |
 
@@ -218,13 +219,22 @@ reads each process's folder. On macOS and Windows it can't, so any git process m
 tell". Then doctor never says to delete the file. git's long-running helpers, such as the
 credential cache, do not count. The tmpfs check reads `/proc/mounts`, so it runs on Linux only.
 
+The temp folders are the system's own (`TMPDIR`, or `%TEMP%` on Windows) and `/tmp`. WSL
+empties `/tmp` on restart, even though it is not a tmpfs. To check other folders, list them
+in `YOKOTEN_TEMP_DIRS`, split like `PATH`. Set it empty to turn the check off.
+
 All of these are notes: they never fail `doctor`. Doctor only reads here. It changes no
 file, no ref and no worktree, and git runs with optional locks off. Paths show relative to
 the repo, or from `~`.
 
 A session hears only what is at risk, three items at most. It hears uncommitted changes
 only once the oldest is an hour old, because work going on now is not forgotten. Worktrees
-to tidy up are left to full `doctor`.
+to tidy up are left to full `doctor`. Worktrees on a tmpfs or under the temp folder get one
+line, with the count.
+
+A session spends at most one second on this, because a session must not wait on a cold
+disk. When the time is up, it shows what it read and says "doctor stopped early". Full
+`doctor` has no time limit.
 
 ## Four layers
 

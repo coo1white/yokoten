@@ -10,18 +10,22 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import {
+  delimiter,
   dirname,
   join,
 } from 'node:path';
 import { test } from 'node:test';
 import { makeSandbox } from '../../repo/helpers.ts';
 import {
+  findTempDirs,
   findTmpfs,
   type GitProcess,
   isGitProcess,
   isGitWorkingIn,
   type MachineReaders,
+  type TimeBudget,
   parseStatus,
   parseWorktreeList,
   readUnsaved,
@@ -59,8 +63,8 @@ function cleanClone() {
     git(cwd, 'add', file);
     git(cwd, 'commit', '-qm', file);
   };
-  const facts = (more: MachineReaders = {}) => {
-    const read = readUnsaved(sandbox.repo, { env: sandbox.env, readMounts: () => null, listProcesses: () => [], ...more });
+  const facts = (more: MachineReaders & { budget?: TimeBudget } = {}) => {
+    const read = readUnsaved(sandbox.repo, { env: sandbox.env, readMounts: () => null, listProcesses: () => [], tempDirs: [], ...more });
     assert.ok(read, 'git read the repo');
     return read;
   };
@@ -136,11 +140,11 @@ test('unsaved: a branch made from origin/main is never told to push to main (#36
 
 test('unsaved: a repo with no remote says once that every commit is only here (#365)', () => {
   const sandbox = makeSandbox();
-  assert.deepEqual(unsavedNotes(readUnsaved(sandbox.repo, { env: sandbox.env, readMounts: () => null })!, { home: sandbox.home }), [], 'no commit yet: nothing to push');
+  assert.deepEqual(unsavedNotes(readUnsaved(sandbox.repo, { env: sandbox.env, readMounts: () => null, tempDirs: [] })!, { home: sandbox.home }), [], 'no commit yet: nothing to push');
   writeFileSync(join(sandbox.repo, 'a.txt'), 'a\n');
   sandbox.git('add', '-A');
   sandbox.git('commit', '-qm', 'first');
-  const found = unsavedNotes(readUnsaved(sandbox.repo, { env: sandbox.env, readMounts: () => null })!, { home: sandbox.home });
+  const found = unsavedNotes(readUnsaved(sandbox.repo, { env: sandbox.env, readMounts: () => null, tempDirs: [] })!, { home: sandbox.home });
   assert.deepEqual(ids(found), ['unpushed-commits']);
   assert.equal(found[0].what, 'this repo has no remote, so every commit is still only on this machine');
 });
@@ -254,16 +258,80 @@ test('unsaved: a repo on a tmpfs is gone after a restart (#365)', () => {
   const clone = cleanClone();
   const tmpfs = `tmpfs ${clone.base} tmpfs rw 0 0\n`;
   const disk = `/dev/sda1 / ext4 rw 0 0\n/dev/sdb1 ${clone.base} ext4 rw 0 0\n`;
+  const tree = join(clone.base, 'tree');
+  clone.git(clone.repo, 'worktree', 'add', '-q', '-b', 'tree', tree, 'main');
   const found = clone.notes({}, { readMounts: () => tmpfs });
-  assert.deepEqual(ids(found), ['repo-on-tmpfs']);
-  assert.match(found[0].what, /^this repo is on a tmpfs \(.+\), so everything here is gone after a restart$/);
-  assert.equal(found[0].fix, 'push every branch now: `git push --all origin`; then clone it again on a disk');
+  assert.deepEqual(ids(found), ['repo-on-tmpfs', 'repo-on-tmpfs'], 'each worktree');
+  assert.match(found[0].what, /^\. is on a tmpfs \(.+\), so everything there is gone after a restart$/);
+  assert.equal(found[0].fix, 'push every branch now: `git push --all origin`; then make it again in a folder that lasts');
+  assert.equal(found[1].fix, 'push it now: `git -C ../tree push -u origin tree`; then make it again in a folder that lasts');
   assert.deepEqual(clone.notes({}, { readMounts: () => disk }), [], 'negative control: a disk');
   assert.deepEqual(clone.notes({}, { readMounts: () => null }), [], 'no /proc/mounts (macOS): nothing');
   // A mount in the home shows from ~; with no remote, the fix says to add one.
-  const inHome = unsavedNotes({ ...UNSAVED_CONTROL, remotes: [], tmpfs: '/h/t' }, { home: '/h' }).find((f) => f.id === 'repo-on-tmpfs');
-  assert.equal(inHome?.what, 'this repo is on a tmpfs (~/t), so everything here is gone after a restart');
-  assert.equal(inHome?.fix, 'add a remote and push every branch now; then clone it again on a disk');
+  const control = { ...UNSAVED_CONTROL, remotes: [], worktrees: [{ ...UNSAVED_CONTROL.worktrees[0], volatile: { kind: 'tmpfs' as const, folder: '/h/t' } }] };
+  const inHome = unsavedNotes(control, { home: '/h' }).find((f) => f.id === 'repo-on-tmpfs');
+  assert.equal(inHome?.what, '. is on a tmpfs (~/t), so everything there is gone after a restart');
+  assert.equal(inHome?.fix, 'add a remote and push now; then make it again in a folder that lasts');
+});
+
+test('unsaved: a worktree under the temp folder, which the system may empty on restart (#365)', () => {
+  const clone = cleanClone();
+  const tree = join(clone.base, 'tree');
+  const away = join(clone.home, 'away');
+  clone.git(clone.repo, 'worktree', 'add', '-q', '-b', 'tree', tree, 'main');
+  clone.git(clone.repo, 'worktree', 'add', '-q', '-b', 'away', away, 'main');
+  // A temp folder handed in, so the test never depends on the real /tmp.
+  const temp = clone.base;
+  const found = clone.notes({}, { tempDirs: [join(clone.home, 'none'), temp] });
+  assert.deepEqual(ids(found), ['repo-in-temp-folder', 'repo-in-temp-folder', 'repo-in-temp-folder'], 'the repo and each worktree');
+  assert.match(found[0].what, /^\. is under the temp folder \(.+\), which the system may empty on restart$/);
+  assert.equal(found[1].what.split(' is ')[0], '~/away');
+  assert.equal(found[2].fix, 'push it now: `git -C ../tree push -u origin tree`; then make it again in a folder that lasts');
+  clone.git(tree, 'push', '-q', '-u', 'origin', 'tree');
+  const pushed = clone.notes({}, { tempDirs: [temp] }).find((f) => f.what.startsWith('../tree'));
+  assert.equal(pushed?.fix, 'nothing there is only on this machine yet; make new worktrees in a folder that lasts', 'pushed and clean: nothing to save');
+  assert.deepEqual(clone.notes({}, { tempDirs: [join(clone.home, 'none')] }), [], 'negative control: not under it');
+  assert.deepEqual(clone.notes({}, { tempDirs: [clone.repo + 'x'] }), [], 'a name that only starts the same is not a parent');
+  // A session hears one line for all of them.
+  const session = clone.notes({ session: true }, { tempDirs: [temp] });
+  assert.deepEqual(session.map((f) => f.what), [`3 worktrees are under the temp folder (${temp}), which the system may empty on restart`]);
+  assert.equal(session[0].fix, 'push the work there now; `yokoten doctor` lists the command for each');
+  // The tmpfs note is the stronger form: a worktree on a tmpfs in a temp folder gets that one alone.
+  const both = clone.notes({}, { tempDirs: [temp], readMounts: () => `tmpfs ${temp} tmpfs rw 0 0\n` });
+  assert.deepEqual([...new Set(ids(both))], ['repo-on-tmpfs']);
+});
+
+test('unsaved: the temp folders come from YOKOTEN_TEMP_DIRS, else the system and /tmp (#365)', () => {
+  assert.deepEqual(findTempDirs({ YOKOTEN_TEMP_DIRS: '' }), [], 'empty turns the check off');
+  assert.deepEqual(findTempDirs({ YOKOTEN_TEMP_DIRS: ['/a', '/b'].join(delimiter) }), ['/a', '/b']);
+  assert.ok(findTempDirs({}, 'linux').includes('/tmp'));
+  assert.deepEqual(findTempDirs({}, 'win32'), [tmpdir()], 'Windows: the system temp folder alone');
+  assert.ok(findTempDirs({}).includes(tmpdir()));
+});
+
+test('unsaved: with a time budget, the read stops when the time is up and says so (#365)', () => {
+  const clone = cleanClone();
+  writeFileSync(join(clone.repo, 'a.txt'), 'changed\n');
+  const ticking = (step: number) => {
+    let now = 0;
+    return () => (now += step);
+  };
+  // Each git call costs 400 ms by this clock: two calls fit in a second, the third does not.
+  const early = clone.facts({ budget: { ms: 1000, clock: ticking(400) } });
+  assert.equal(early.isPartial, true);
+  assert.deepEqual([early.worktrees, early.branches], [[], []], 'only what was read by then');
+  assert.deepEqual(unsavedNotes(early, { home: clone.home }), [], 'no guess from a partial read: no "no remote" note');
+  // Time enough for the basics (the repo, its worktrees, refs and remotes), not for each worktree.
+  const half = clone.facts({ budget: { ms: 1000, clock: ticking(170) } });
+  assert.equal(half.isPartial, true);
+  assert.deepEqual(half.branches.map((branch) => branch.name), ['main'], 'the basics were read');
+  assert.equal(half.worktrees[0].changedFiles, null, 'its status was not read');
+  // A clock that stands still, and no budget at all: the whole read.
+  for (const more of [{ budget: { ms: 1000, clock: () => 0 } }, {}]) {
+    const whole = clone.facts(more);
+    assert.equal(whole.isPartial, false);
+    assert.deepEqual(whole.worktrees[0].changedFiles, ['a.txt']);
+  }
 });
 
 test('unsaved: doctor only reads; no file in the git folder changes (#365)', () => {
@@ -327,7 +395,8 @@ test('unsaved: every note is plain, with sentences of at most 25 words, and no f
   clone.git(clone.repo, 'stash', '-q');
   writeFileSync(join(clone.repo, '.git', 'index.lock'), '');
   const found = clone.notes({}, { readMounts: () => `tmpfs ${clone.base} tmpfs rw 0 0\n` });
-  assert.ok(found.length >= 6, ids(found).join(', '));
+  found.push(...clone.notes({ session: true }, { tempDirs: [clone.base] }));
+  assert.ok(found.length >= 7, ids(found).join(', '));
   for (const f of found) {
     const text = `${f.what}. ${f.why}. ${f.fix}.`;
     assert.ok(!text.includes(clone.home), text);

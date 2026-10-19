@@ -444,9 +444,15 @@ export const RULES = {
     docs: guide('work-only-on-this-machine'),
   },
   'repo-on-tmpfs': {
-    rule: 'a repo lives on a disk, not in memory',
+    rule: 'a repo and its worktrees live on a disk, not in memory',
     why: 'a tmpfs lives in memory, so a restart empties it',
-    check: `${UNSAVED_CHECK}: /proc/mounts on Linux; on macOS and Windows it says nothing`,
+    check: `${UNSAVED_CHECK}: /proc/mounts, for each worktree, on Linux; on macOS and Windows it says nothing`,
+    docs: guide('work-only-on-this-machine'),
+  },
+  'repo-in-temp-folder': {
+    rule: 'a repo and its worktrees live outside the temp folder',
+    why: 'the system may empty its temp folder on restart, as WSL empties /tmp',
+    check: `${UNSAVED_CHECK}: each worktree's real path against the temp folders: YOKOTEN_TEMP_DIRS (empty turns it off), else the system's temp folder and /tmp`,
     docs: guide('work-only-on-this-machine'),
   },
   'not-a-repo': {
