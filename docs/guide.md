@@ -385,7 +385,9 @@ action skips `check --pr` and leaves a notice: the pull request check runs on
 - **Node**: the action sets up Node for the rest of the job too.
 
 `check --pr` holds a pull request to the standard of core rule 8. A repo that does not
-follow it yet can start with `pr-check: false`. The `init` workflow in the kit still
+follow it yet can start with `pr-check: false`. A pull request Dependabot opens gets
+the title check, and the other rules show as notes, because Dependabot writes its own
+body. The `init` workflow in the kit still
 runs `.yokoten/`. It moves to the action after the first release, so it never depends
 on `@main`.
 

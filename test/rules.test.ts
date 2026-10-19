@@ -20,8 +20,8 @@ import { ROAD, serverChecks, stepFinding } from '../src/setup/road.ts';
 import { readIssue, readPullRequest } from '../src/host/github.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
 import { formatChanges, mergeChanges, parseChange, readChanges, writeChanges } from '../src/run/changelog.ts';
+import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, largeDiff, longSentenceNote, longSentences, ownersOf, parseCodeOwners, type PullRequest, splitForDependabot, visibleLength } from '../src/rules/pr.ts';
 import { draftLesson, formatDraft, formatLessonRow, type Incident, KIT_LESSONS_DIR, LESSONS_TABLE, readLessonTable, readSections, shipLesson, summarize, writeDraft } from '../src/run/learn.ts';
-import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, largeDiff, longSentenceNote, longSentences, ownersOf, parseCodeOwners, type PullRequest, visibleLength } from '../src/rules/pr.ts';
 
 test('glob: a slash anchors at the root, no slash matches in any folder', () => {
   const m = (g: string, p: string) => matcher([g])(p);
@@ -317,6 +317,72 @@ test('pull request: a file in changes/ counts as the changelog entry (#132)', ()
   assert.deepEqual(deep.map((problem) => [problem.id, problem.file]), [['change-file', 'changes/sub/x.md']]);
   assert.match(formatFinding(deep[0]), /change files go directly in changes\//i);
   assert.deepEqual(checkPullRequest({ ...goodPr(), files: ['src/rules/pr.ts', 'changes/47-pr-standard.md', 'changes/sub/x.md'], deleted: ['changes/sub/x.md'] }, DEFAULTS), [], 'deleting one is fine');
+});
+
+// #299: the body Dependabot writes for the kit's grouped actions update, cut short.
+const DEPENDABOT_BODY = [
+  'Bumps the actions group with 1 update: [actions/checkout](https://github.com/actions/checkout).',
+  '',
+  'Updates `actions/checkout` from 4.2.1 to 4.2.2',
+  '<details>',
+  '<summary>Release notes</summary>',
+  '<p><em>Sourced from <a href="https://github.com/actions/checkout/releases">actions/checkout\'s releases</a>.</em></p>',
+  '</details>',
+  '<br />',
+  '',
+  '[![Dependabot compatibility score](https://dependabot-badges.githubapp.com/badges/compatibility_score?dependency-name=actions/checkout&package-manager=github_actions&previous-version=4.2.1&new-version=4.2.2)](https://docs.github.com/en/github/managing-security-vulnerabilities/about-dependabot-security-updates#about-compatibility-scores)',
+  '',
+  "Dependabot will resolve any conflicts with this PR as long as you don't alter it yourself. You can also trigger a rebase manually by commenting `@dependabot rebase`.",
+  '',
+  '[//]: # (dependabot-automerge-start)',
+  '[//]: # (dependabot-automerge-end)',
+  '',
+  '---',
+  '',
+  '<details>',
+  '<summary>Dependabot commands and options</summary>',
+  '<br />',
+  '',
+  'You can trigger Dependabot actions by commenting on this PR:',
+  '- `@dependabot rebase` will rebase this PR',
+  '- `@dependabot recreate` will recreate this PR, overwriting any edits that have been made to it',
+  '</details>',
+  '',
+].join('\n');
+const dependabotPr = (): PullRequest => ({
+  title: 'ci: bump the actions group with 1 update',
+  body: DEPENDABOT_BODY,
+  files: ['.github/workflows/ci.yml'],
+  labels: ['dependencies', 'github_actions'],
+  milestone: null,
+  author: 'dependabot[bot]',
+});
+
+test('pull request: Dependabot gets the title check, and the body rules as notes (#299)', () => {
+  // The kit's dependabot.yml sets the prefix `ci`, so Dependabot's title shapes pass the title rule.
+  const prefix = /^\s*prefix: (\S+)$/m.exec(readFileSync(join(import.meta.dirname, '..', 'kit', 'project', '.github', 'dependabot.yml'), 'utf8'))?.[1];
+  assert.equal(prefix, 'ci');
+  for (const title of [`${prefix}: bump the actions group with 1 update`, `${prefix}: bump the actions group across 1 directory with 3 updates`, `${prefix}: bump actions/checkout from 4.2.1 to 4.2.2`]) {
+    assert.deepEqual(checkPullRequestTitle(title, DEFAULTS), [], title);
+  }
+  const found = checkPullRequest(dependabotPr(), DEFAULTS);
+  assert.deepEqual(found.map((f) => f.id), ['pr-tier', 'pr-section', 'pr-section', 'pr-section', 'pr-issue', 'pr-milestone', 'pr-labels', 'pr-labels'], 'the rules find the same things');
+  const owned = checkOwnedTier({ files: ['.github/workflows/ci.yml'], body: 'tier: B\n' }, { text: '/.github/ @owner\n', from: 'the base branch' });
+  assert.ok(owned);
+  const split = splitForDependabot(dependabotPr(), [...found, owned]);
+  assert.deepEqual(split.problems, [], 'nothing fails');
+  assert.deepEqual(split.notes.map((f) => f.id), ['pr-tier', 'pr-section', 'pr-section', 'pr-section', 'pr-issue', 'pr-milestone', 'pr-labels', 'pr-labels', 'pr-owned'], 'every one is still shown');
+  assert.match(formatFinding(split.notes[0]), /Dependabot opened this pull request, so it is a note./);
+  for (const id of ['pr-labels', 'pr-changelog', 'pr-kit'] as const) assert.equal(splitForDependabot(dependabotPr(), [finding(id, 'x', 'y')]).notes.length, 1, id);
+
+  // The same body from anyone else fails as before; so does no login at all.
+  for (const author of ['someone', 'dependabot', 'Dependabot[bot]', '', undefined]) {
+    const other = splitForDependabot({ author }, found);
+    assert.deepEqual([other.problems, other.notes], [found, []], String(author));
+  }
+  // A bad title from Dependabot still fails.
+  const badTitle = splitForDependabot(dependabotPr(), checkPullRequest({ ...dependabotPr(), title: 'Bump the actions group with 1 update' }, DEFAULTS));
+  assert.deepEqual(badTitle.problems.map((f) => f.id), ['pr-title']);
 });
 
 // ---- Change files (#132) ----

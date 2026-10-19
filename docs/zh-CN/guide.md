@@ -352,6 +352,7 @@ jobs:
 - **Node**：action 装的 Node，这个 job 后面的步骤也会用到。
 
 `check --pr` 按核心规则第 8 条检查 PR。还没按这条规则走的仓库，可以先写 `pr-check: false`。
+Dependabot 开的 PR 只查标题，其他几条只提醒、不算失败，因为它的正文是 Dependabot 自己写的。
 kit 里 `init` 放的 workflow 暂时还是跑 `.yokoten/` 里的那份，等第一个正式版本发布以后再换成
 这个 action，这样就不会依赖 `@main`。
 

@@ -2860,6 +2860,63 @@ test('check --pr in GitHub Actions: notes are warnings, in their own section (#9
   assert.match(text, /\n#### Notes \(1\): these never fail the check\n\n\| Place \| Rule \| What \| Why \| Fix \|\n\|[-|]+\|\n\| README\.md:2 \| long-sentence \| a sentence of 30 words \|/);
 });
 
+// #299: Dependabot writes its own body, so its pull request gets the title check and the
+// body rules as notes, in text, JSON and the job summary.
+test('check --pr: a Dependabot pull request passes with notes; the same body from anyone else fails (#299)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('.github/CODEOWNERS', '/.github/ @owner\n');
+  sandbox.write('.github/workflows/ci.yml', 'steps:\n  - uses: actions/checkout@v4.2.1\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'base');
+  const base = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  sandbox.write('.github/workflows/ci.yml', 'steps:\n  - uses: actions/checkout@v4.2.2\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'head');
+  const head = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  const body = [
+    'Bumps the actions group with 1 update: [actions/checkout](https://github.com/actions/checkout).',
+    '',
+    'Updates `actions/checkout` from 4.2.1 to 4.2.2',
+    '',
+    "Dependabot will resolve any conflicts with this PR as long as you don't alter it yourself. You can also trigger a rebase manually by commenting `@dependabot rebase`.",
+    '',
+    '[//]: # (dependabot-automerge-start)',
+    '[//]: # (dependabot-automerge-end)',
+    '',
+    '---',
+    '',
+    '<details>',
+    '<summary>Dependabot commands and options</summary>',
+    '</details>',
+  ].join('\n');
+  const event = (login: string, title = 'ci: bump the actions group with 1 update') => {
+    const file = join(sandbox.home, 'event.json');
+    const labels = [{ name: 'dependencies' }, { name: 'github_actions' }];
+    writeFileSync(file, JSON.stringify({ pull_request: { title, body, user: { login, type: 'Bot' }, labels, milestone: null, base: { sha: base }, head: { sha: head } } }));
+    return file;
+  };
+  const summary = join(sandbox.home, 'summary.md');
+  let result = sandbox.run(['check', '--pr'], { extra: { GITHUB_EVENT_PATH: event('dependabot[bot]') } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /check --pr: note: 8 pull request rule\(s\) Dependabot does not meet\n- body: the first line is not a tier\. .*Dependabot opened this pull request, so it is a note\./);
+  assert.match(result.stdout, /\n- milestone: none set\./);
+  assert.match(result.stdout, /check --pr: ok\n$/);
+  result = sandbox.run(['check', '--pr', '--json'], { extra: { GITHUB_EVENT_PATH: event('dependabot[bot]'), GITHUB_ACTIONS: 'true', GITHUB_STEP_SUMMARY: summary } });
+  assert.equal(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout);
+  assert.deepEqual([report.ok, report.findings, report.notes.map((note: { id: string }) => note.id)], [true, [], ['pr-tier', 'pr-section', 'pr-section', 'pr-section', 'pr-issue', 'pr-milestone', 'pr-labels', 'pr-labels']]);
+  assert.match(readFileSync(summary, 'utf8'), /#### Notes \(8\): these never fail the check\n[^]*\| \[pr-tier\]\(\S+\) \| body: the first line is not a tier \|/);
+
+  // The same body from anyone else fails as before.
+  result = sandbox.run(['check', '--pr', '--json'], { extra: { GITHUB_EVENT_PATH: event('someone') } });
+  assert.equal(result.status, 1);
+  assert.deepEqual(JSON.parse(result.stdout).findings.map((f: { id: string }) => f.id), ['pr-tier', 'pr-section', 'pr-section', 'pr-section', 'pr-issue', 'pr-milestone', 'pr-labels', 'pr-labels']);
+  // A bad title from Dependabot still fails.
+  result = sandbox.run(['check', '--pr', '--json'], { extra: { GITHUB_EVENT_PATH: event('dependabot[bot]', 'Bump the actions group with 1 update') } });
+  assert.equal(result.status, 1);
+  assert.deepEqual(JSON.parse(result.stdout).findings.map((f: { id: string }) => f.id), ['pr-title']);
+});
+
 // #208: a clone install puts no `yokoten` on the PATH, so install says how to call it.
 test('install: prints the alias when no yokoten on the PATH runs this copy, and edits no shell file (#208)', () => {
   const sandbox = makeSandbox();
