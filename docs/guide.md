@@ -388,6 +388,8 @@ line at the end, because Claude Code reads `AGENTS.md` only through that import.
 `.claude/CLAUDE.md` counts too, and gets `@../AGENTS.md` when there is no root one. With
 husky or another `core.hooksPath`, it keeps that folder and adds the commit check to its
 `pre-commit`. The project's own hook lines stay, and `init` says which file it changed.
+git runs `pre-merge-commit`, not `pre-commit`, for a merge it commits itself, so `init` adds
+the same check there too (`.githooks/pre-merge-commit`, or husky's `.husky/pre-merge-commit`).
 
 `init` also writes three workflows into `.github/workflows/`: `yokoten.yml` (the
 commit check, a lint job with actionlint and zizmor, and one `ci` job to make the required
