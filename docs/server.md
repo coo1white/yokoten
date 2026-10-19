@@ -147,3 +147,63 @@ Settings → Advanced Security. Turn on:
 
 Some of these show only to a repo admin. `doctor` reports them as the
 `security-settings` step.
+
+## 6. Release yokoten (yokoten's own repo)
+
+This part is for yokoten's own release, by [record 0009](records/0009-release-environment.md).
+Another project follows the `release` skill. Replace `X.Y.Z` with the version.
+
+Before the tag:
+
+1. The milestone `vX.Y.Z` has no open issues. Each one is closed, or moved out with a
+   reason.
+2. A merged pull request ran `yokoten changelog --write`. It has one `## [X.Y.Z] -
+   YYYY-MM-DD` section (the tag day, UTC), and `package.json` says `X.Y.Z`.
+3. CI on `main` is green for the commit you tag.
+4. The `release` environment exists, with you as the required reviewer and only `v*`
+   tags (record 0009, steps 1 to 3). Without it, the publish job runs unprotected.
+
+The tag, from an up-to-date `main` (`-a` makes an annotated tag; use `-s` if you sign):
+
+```sh
+git switch main && git pull --ff-only
+TZ=UTC git tag -a vX.Y.Z -m "yokoten X.Y.Z"
+git push origin vX.Y.Z
+```
+
+The tag starts the `release` workflow. Its `verify` job checks that the tag matches
+`package.json`. It runs the tests, `typecheck`, `check` and `npm run check-package`, then
+packs the tarball. Its `publish` job then waits for your approval in the `release`
+environment. It publishes that tarball with provenance through npm trusted publishing,
+so it needs no npm token. The workflow makes no GitHub release; you make it below.
+
+**v0.1.0 only.** npm can't trust a workflow for a package that is not on npm yet. So
+wait for `verify` to pass, then reject the waiting `publish` job. Publish by hand, logged
+in to npm with two-factor authentication:
+
+```sh
+git clone --branch v0.1.0 https://github.com/yokoten-labs/yokoten yokoten-v0.1.0
+cd yokoten-v0.1.0 && npm ci && npm publish --access public
+```
+
+Then do record 0009, step 5 (no token publishing). Do step 6 (the trusted publisher)
+just before the next release, not now: it expires after 2 days without a publish.
+
+The GitHub release, with the notes from `CHANGELOG.md`:
+
+```sh
+awk '/^## \[/ { p = /^## \[X\.Y\.Z\]/; next } /^\[[^]]*\]: / { p = 0 } p' CHANGELOG.md > notes.md
+gh release create vX.Y.Z --verify-tag --title "yokoten X.Y.Z" --notes-file notes.md
+```
+
+After it:
+
+- <https://www.npmjs.com/package/yokoten> shows `X.Y.Z`. From the second release on, it
+  also shows provenance.
+- In a new empty folder, `npx --yes yokoten@X.Y.Z --version` prints `X.Y.Z`, and
+  `npx --yes yokoten@X.Y.Z --help` lists the commands.
+- The release page shows the notes, and the `[X.Y.Z]` link at the end of `CHANGELOG.md`
+  opens it.
+
+The same day as v0.1.0: issue #129 (the kit uses the Action, pinned by the tag's commit
+SHA), and issue #328 (the Action on the Marketplace).

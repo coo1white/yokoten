@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { COMMANDS } from '../../src/run/cli.ts';
 import { findDeclarations, findNameProblems, splitWords, tokenize } from '../../src/run/names.ts';
 import { HOME_DIR, homeDirOf } from '../../src/setup/files.ts';
+import { assertLinear } from '../../scripts/linear.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SRC = join(ROOT, 'src');
@@ -573,4 +574,25 @@ test('split tests: an import it cannot place stops it with a list, and nothing i
   assert.match(split.output, /test\/bot\.test\.ts:2: missing from '\.\.\/scripts\/missing\.ts': no file scripts\/missing\.ts in the repo/);
   assert.match(split.output, /test\/bot\.test\.ts:3: packaged from 'some-package': not node: and not a relative path/);
   assert.ok(!existsSync(join(root, 'split')), 'a stopped split writes nothing');
+});
+
+// Time a read by its input's length, with no real work: a busy wait as long as asked.
+const busyWait = (ms: number) => {
+  const end = performance.now() + ms;
+  while (performance.now() < end);
+};
+
+test('assertLinear: a quadratic read fails; a slow spell in one round does not (#343)', () => {
+  // 1,000 chars take 0.6 ms; 8,000 take 64 times that when the cost is quadratic.
+  const quadratic = (input: string) => busyWait(0.6 * (input.length / 1000) ** 2);
+  assert.throws(() => assertLinear('quadratic', (n) => 'x'.repeat(n), quadratic, 1000), /linear is about 8x/);
+  // Linear, but every big read of the first round is 200 ms slower, as on a busy runner. A round
+  // has as many reads as fit in 20 ms, from one timed read, so a busy runner cuts the count
+  // (#359). A 7 ms read is past 20 / 3 ms: every round has 3 reads, however busy the runner.
+  let bigReads = 0;
+  const noisy = (input: string) => {
+    if (input.length > 1000 && ++bigReads <= 3) busyWait(200);
+    busyWait(7 * (input.length / 1000));
+  };
+  assertLinear('linear with a slow spell', (n) => 'x'.repeat(n), noisy, 1000);
 });

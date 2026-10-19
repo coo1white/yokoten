@@ -766,7 +766,7 @@ export function compareCoreRules(project: string, kit: string): CoreRules {
   return { state: 'behind', changes: diffLines(before, after), sections: compareSections(before, after), updated: core + project.slice(start) };
 }
 
-/** The kit's AGENTS.md, rendered for this project, or null when this copy of yokoten has no kit. A project's .yokoten/ has this one kit file (#145). */
+/** The kit's AGENTS.md, rendered for this project, or null when this copy of yokoten has no kit. A project's .yokoten/ has this kit file (#145) and the kit's lessons (#77). */
 function readKitRules(root: string): string | null {
   const path = join(KIT, 'project', 'AGENTS.md');
   return existsSync(path) ? render(readFileSync(path, 'utf8'), { cli: cliPath(root), version: VERSION }) : null;

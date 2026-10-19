@@ -130,7 +130,7 @@ test('learn: the draft takes what, why and the fix from the issue\'s sections', 
   // The draft's own test is a positive control that fails until the check is written.
   assert.match(check, /import \{ findProblems, lesson \} from '\.\/lesson\.ts';/);
   assert.match(check, /test\('incident-12: catches the known-bad case'[^]*\[lesson\.id\]\);/);
-  assert.match(formatDraft(incidentOf(body), draft).join('\n'), /The issue answers every field\.[^]*\n--- lessons\/incident-12\/lesson\.ts\n/);
+  assert.match(formatDraft(incidentOf(body), draft).join('\n'), /The issue answers every field\.\nThe reviewer also writes the check \(findProblems\) and the cases in its test, each a TODO\(reviewer\) too\.\n[^]*\n--- lessons\/incident-12\/lesson\.ts\n/);
 });
 
 test('learn: a missing section gives a TODO for the reviewer, never a made-up answer (positive control)', () => {
@@ -144,7 +144,7 @@ test('learn: a missing section gives a TODO for the reviewer, never a made-up an
   assert.equal(empty.finding.what, 'commit times carry a time zone');
   assert.equal(empty.todos.length, 2);
   const lines = formatDraft({ ...incidentOf(''), labels: [] }, draftLesson(incidentOf(''))).join('\n');
-  assert.match(lines, /Note: the issue has no `incident` label; it is drafted anyway\.\n2 TODO\(s\) for the reviewer:\n- why: /);
+  assert.match(lines, /Note: the issue has no `incident` label; it is drafted anyway\.\nThe issue left 2 field\(s\) open, each a TODO\(reviewer\):\n- why: /);
 });
 
 test('learn: with no "Why it matters", the why starts from "Why it got through", with a TODO (#147)', () => {

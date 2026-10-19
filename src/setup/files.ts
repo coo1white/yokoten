@@ -51,8 +51,9 @@ function removeLeftovers(dest: string): void {
 /**
  * Copy the runtime (bin, src, package.json) to `dest`, so hooks run with no network and
  * no global install. The machine copy also takes the kit, which install and the machine
- * checks read. A project's copy takes only the kit's AGENTS.md, so `doctor` and
- * `update` in CI and the hooks compare against the kit the project vendored (#145).
+ * checks read. A project's copy takes the kit's AGENTS.md, so `doctor` and `update` in
+ * CI and the hooks compare against the kit the project vendored (#145), and the kit's
+ * lessons, so `doctor` from the copy runs the lessons the project vendored too (#77).
  * The copy is replaced whole; `VERSION` says which release it is.
  * It copies the .ts files, also from the npm package: `dest` is not under node_modules,
  * so Node runs them there as they are.
@@ -66,7 +67,9 @@ function removeLeftovers(dest: string): void {
  */
 export function copyRuntime(dest: string, { withKit = false, copy = cpSync, rename = renameSync }: { withKit?: boolean; copy?: typeof cpSync; rename?: typeof renameSync } = {}): CopyResult {
   if (isSameOrInside(HOME_DIR, dest)) return 'kept';
-  const parts = ['bin', 'src', 'package.json', ...(withKit ? ['kit'] : [join('kit', 'project', 'AGENTS.md')])];
+  // A yokoten with no lessons yet has no kit/lessons: the project copy then has none either.
+  const lessons = join('kit', 'lessons');
+  const parts = ['bin', 'src', 'package.json', ...(withKit ? ['kit'] : [join('kit', 'project', 'AGENTS.md'), lessons])].filter((part) => part !== lessons || existsSync(join(HOME_DIR, part)));
   const holder = parts.find((part) => isSameOrInside(dest, join(HOME_DIR, part)));
   if (holder) {
     const where = relative(resolveReal(HOME_DIR), resolveReal(dest)).split(sep).join('/');
