@@ -12,7 +12,7 @@ import * as claudeCode from '../src/agents/claude-code.ts';
 import * as codex from '../src/agents/codex.ts';
 import * as gemini from '../src/agents/gemini.ts';
 import { finding, type Finding, formatFinding, notRepoFinding } from '../src/rules/message.ts';
-import { draftLesson, formatDraft, writeDraft } from '../src/run/learn.ts';
+import { draftLesson, formatDraft, KIT_LESSONS_DIR, LESSONS_TABLE, shipLesson, writeDraft } from '../src/run/learn.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
 import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, largeDiff, longSentenceNote, longSentences } from '../src/rules/pr.ts';
 import { closestWord, COMMANDS, commandHelp, findCommand, HELP_OPTIONS, commandList } from '../src/run/cli.ts';
@@ -451,8 +451,21 @@ function main(): number | Promise<number> {
       const options = parse('learn');
       if (typeof options === 'string') return usage(options);
       const [reference] = options.positional;
-      if (reference === undefined) return usage('name an incident issue, by its number or its URL');
       const root = rootOf(process.cwd()) ?? process.cwd();
+      // A reviewed lesson ships in the kit (#147): doctor then runs it in every project.
+      if (options.flags.has('--ship')) {
+        if (options.flags.has('--write')) return usage('--ship and --write are two steps: write the draft, review it, then ship it');
+        if (reference === undefined) return usage('name the lesson to ship, by its id or its issue number');
+        const shipped = shipLesson(root, reference, VERSION);
+        if ('problems' in shipped) {
+          print([`yokoten learn --ship: ${shipped.problems.length} problem(s); nothing was moved:`, ...shipped.problems.map((problem) => `- ${problem}`)], process.stderr);
+          return 1;
+        }
+        const { id, url } = shipped.lesson;
+        print([`yokoten learn --ship: ${id} is in ${KIT_LESSONS_DIR}/${id}/, with a row in ${KIT_LESSONS_DIR}/${LESSONS_TABLE} (from ${url}, yokoten ${VERSION}).`, `Commit it in a pull request. After it merges, \`yokoten doctor\` runs it in every project that uses the kit.`]);
+        return 0;
+      }
+      if (reference === undefined) return usage('name an incident issue, by its number or its URL');
       const incident = readIncident(ghIn(root), reference);
       if (typeof incident === 'string') {
         print([`yokoten learn: ${incident}`], process.stderr);

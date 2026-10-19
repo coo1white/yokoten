@@ -14,6 +14,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { checkCommand, checkEdit } from '../rules/guards.ts';
 import { type Config, DEFAULTS, type Env } from '../rules/config.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
@@ -21,12 +22,13 @@ import { type Finding, finding, formatFinding, type RuleId } from '../rules/mess
 import { loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
+import { type LessonPlace, listLessons, runLessons } from '../run/learn.ts';
 import { hasPlugin, hasSessionDoctor, readInstalledPlugin } from '../agents/claude-code.ts';
 import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
 import type { HookState } from '../agents/hooks-file.ts';
 import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
-import { KIT, runtimeVersion, VERSION } from './files.ts';
+import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
 import { compareCoreRules, compareVersions, isSelf, readCoreRules, summarizeUpdate } from './init.ts';
 import { paths, USER_CLI, USER_MISSING } from './install.ts';
 import { type Mark, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
@@ -227,6 +229,48 @@ function roadControl(): string[] {
 }
 
 /**
+ * The kit's lessons (#147): the .ts in the repo and in an installed copy, the built .js in
+ * the npm package, where Node does not strip types (record 0008).
+ */
+export function kitLessons(): LessonPlace {
+  const isBuilt = fileURLToPath(import.meta.url).endsWith('.js');
+  const dir = join(KIT, 'lessons');
+  return isBuilt ? { dir, codeDir: join(HOME_DIR, 'dist', 'kit', 'lessons'), codeFile: 'lesson.js' } : { dir, codeDir: dir, codeFile: 'lesson.ts' };
+}
+
+/** One lesson as doctor reports it. A lesson gives notes only: it never fails doctor. */
+export interface LessonCheck {
+  id: string;
+  mark: 'ok' | 'note' | 'not now';
+  findings: Finding[];
+  reason?: string;
+}
+
+/**
+ * Each lesson the kit ships, run against this project: read only, offline and fast. A
+ * lesson in yokoten.json "notNow" does not run. A lesson that can't run is a note too.
+ */
+export function lessonChecks(root: string, notNow: Record<string, string>, place: LessonPlace = kitLessons()): LessonCheck[] {
+  const isSkipped = (id: string) => Object.hasOwn(notNow, id);
+  const runs = new Map(runLessons(root, place, isSkipped).map((run) => [run.id, run]));
+  return listLessons(place).map(({ id }): LessonCheck => {
+    const run = runs.get(id);
+    if (!run) return { id, mark: 'not now', findings: [], reason: notNow[id] };
+    if (run.error) return { id, mark: 'note', findings: [{ id, what: `can't run this lesson: ${run.error}`, why: 'a lesson from the kit could not check this project', fix: 'run `yokoten install` again; if it stays, report it in an issue' }] };
+    return { id, mark: run.findings.length ? 'note' : 'ok', findings: run.findings };
+  });
+}
+
+/** The lessons as lines of the project part: one per lesson, or one per place a lesson found. */
+export function formatLessonChecks(lessons: LessonCheck[]): string[] {
+  return lessons.flatMap(({ id, mark, findings, reason }) => {
+    if (mark === 'not now') return [`  not now lesson ${id}: ${reason}`];
+    if (mark === 'ok') return [`  ok      lesson ${id}`];
+    return findings.map((f) => `  note    lesson ${id}: ${stepText(f)}`);
+  });
+}
+
+/**
  * In a temp project, against the real kit: core rules edited by hand are MISSING, and
  * core rules from a newer kit are the `newer` note, never "ok" and never MISSING (#170).
  * `check` is a parameter so a test can hand in a broken one.
@@ -314,6 +358,8 @@ export interface DoctorReport {
   steps?: StepState[];
   notes?: Finding[];
   server?: { id: string; mark: ServerCheck['mark'] }[];
+  /** The kit's lessons, run against this project (#147). Their findings are in `notes`. */
+  lessons?: { id: string; mark: LessonCheck['mark']; reason?: string }[];
 }
 
 /** The report, as text lines and as data, and whether doctor found no problem. */
@@ -393,6 +439,9 @@ export function doctor(
     if (core.mark === 'MISSING') findings.push(core.finding);
     else if (core.mark === 'note') notes.push(core.finding);
   }
+  const lessons = lessonChecks(root, config.notNow);
+  lines.push(...formatLessonChecks(lessons));
+  notes.push(...lessons.flatMap((lesson) => lesson.findings));
   const checkNotes: Finding[] = [];
   const problems = check(root, { config, env, notes: checkNotes });
   findings.push(...problems);
@@ -426,5 +475,5 @@ export function doctor(
   // The road has no failed mark: a step is done, to do, not now or can't check. Steps
   // left are the way ahead, not problems, so they never fail doctor (#208).
   const ok = !failed.length && !isCoreBehind && !problems.length && machine.every((c) => c.ok);
-  return { ok, lines, report: { ...base, ok, repo: true, stage: where.stage, next, findings, steps, notes, server: settings.map(({ id, mark }) => ({ id, mark })) } };
+  return { ok, lines, report: { ...base, ok, repo: true, stage: where.stage, next, findings, steps, notes, server: settings.map(({ id, mark }) => ({ id, mark })), lessons: lessons.map(({ id, mark, reason }) => (reason === undefined ? { id, mark } : { id, mark, reason })) } };
 }

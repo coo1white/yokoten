@@ -1,13 +1,15 @@
 // `yokoten learn` (#77): an incident issue becomes a check draft for a person to review.
-// It is the first half of the loop: incident, draft, review, and later `doctor` in every
-// project that uses the kit.
+// It is the first half of the loop: incident, draft, review. The second half is at the end
+// of this file (#147): a reviewed lesson ships in the kit, and `doctor` runs it in every project.
 //
 // The draft comes from the issue's own sections, never from a guess: no model is called.
 // Where the issue gives no answer, the draft says TODO and names the missing section. The
 // draft's test is a positive control that fails until a person writes the check, so a
 // draft never passes by itself.
 
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import type { Finding } from '../rules/message.ts';
 
@@ -40,7 +42,8 @@ export const LESSONS_DIR = 'lessons';
 /** The parts of an issue the draft reads, by the headings that name them. */
 const SECTIONS = {
   what: { heading: 'What happened', pattern: /^what happened/i },
-  why: { heading: 'Why it got through', pattern: /^why/i },
+  matters: { heading: 'Why it matters', pattern: /^why it matters/i },
+  why: { heading: 'Why it got through', pattern: /^why(?! it matters)/i },
   fix: { heading: 'Fix', pattern: /^(fix|countermeasure)/i },
   lesson: { heading: 'Lesson', pattern: /^lesson/i },
   spread: { heading: 'Other places it can happen', pattern: /^other places/i },
@@ -152,15 +155,25 @@ export function draftLesson(incident: Incident): Draft {
     todos.push('what: the issue has no title');
     what = 'TODO(reviewer): the issue has no title; write what the check finds';
   }
+  // A finding's `why` says why it matters (#147). Older issues have only "Why it got
+  // through", which names the missing check: it is a start, and the reviewer rewrites it.
+  const matters = findSection(sections, 'matters');
+  const gotThrough = findSection(sections, 'why');
+  let why: string;
+  if (matters !== null && summarize(matters)) why = summarize(matters);
+  else if (gotThrough !== null && summarize(gotThrough)) {
+    todos.push(`why: the issue has no "${SECTIONS.matters.heading}" section; the draft uses "${SECTIONS.why.heading}"`);
+    why = `TODO(reviewer): the issue has no "${SECTIONS.matters.heading}" section; rewrite this from "${SECTIONS.why.heading}": ${summarize(gotThrough)}`;
+  } else why = fill('why', 'matters', 'write why this matters');
   const finding: Finding = {
     id,
     what,
-    why: fill('why', 'why', 'write why this matters'),
+    why,
     fix: fill('fix', 'fix', 'write what to do when the check finds it'),
   };
 
   const context: string[] = [];
-  for (const name of ['what', 'why', 'fix', 'lesson', 'spread'] as const) {
+  for (const name of ['what', 'matters', 'why', 'fix', 'lesson', 'spread'] as const) {
     const text = findSection(sections, name);
     if (text !== null) context.push('//', `// ${SECTIONS[name].heading} (from the issue):`, ...commentLines(text));
   }
@@ -170,7 +183,8 @@ export function draftLesson(incident: Incident): Draft {
     `// ${incident.url ? commentText(incident.url) : 'TODO(reviewer): gh gave no URL for the issue'}`,
     '//',
     '// A draft from `yokoten learn`. A person reviews it before it ships: fill in each TODO,',
-    '// write findProblems, and make the test next to this file pass.',
+    '// write findProblems, and make the test next to this file pass. Then, in yokoten,',
+    `// \`yokoten learn --ship ${id}\` moves it into the kit.`,
     ...context,
     '',
     '/** The shape of a yokoten finding: what happened, why it matters, and the fix. */',
@@ -189,30 +203,49 @@ export function draftLesson(incident: Incident): Draft {
     `  fix: ${quote(finding.fix)},`,
     '};',
     '',
-    '/** The places where the incident happens again: [lesson] when it is there, [] when not. */',
-    'export function findProblems(input: string): Finding[] {',
-    '  // TODO(reviewer): write the check. Choose what it reads (a file, a command, a setting).',
-    '  void input;',
+    '/**',
+    ' * The places in the repo at `root` where the incident can happen again: one finding for',
+    ' * each place, [] when there is none. `yokoten doctor` runs it in every project that uses',
+    ' * the kit, so it reads files only: no network, no writes, and fast. Import only from',
+    ' * Node, so the lesson works on its own.',
+    ' */',
+    'export function findProblems(root: string): Finding[] {',
+    '  // TODO(reviewer): write the check. Read the files under root that show the incident.',
+    '  void root;',
     '  return [];',
     '}',
     '',
   ].join('\n');
   const test = [
     "import assert from 'node:assert/strict';",
-    "import { test } from 'node:test';",
+    "import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';",
+    "import { tmpdir } from 'node:os';",
+    "import { dirname, join } from 'node:path';",
+    "import { after, test } from 'node:test';",
     "import { findProblems, lesson } from './lesson.ts';",
+    '',
+    '/** A throwaway repo with these files, by path. It is removed after the tests. */',
+    'function makeRepo(files: Record<string, string>): string {',
+    "  const root = mkdtempSync(join(tmpdir(), 'lesson-'));",
+    '  after(() => rmSync(root, { recursive: true, force: true }));',
+    '  for (const [path, text] of Object.entries(files)) {',
+    '    mkdirSync(dirname(join(root, path)), { recursive: true });',
+    '    writeFileSync(join(root, path), text);',
+    '  }',
+    '  return root;',
+    '}',
     '',
     '// Positive control: the check must catch a known-bad case from the incident. This test',
     '// fails until findProblems is written, so the draft never passes by itself.',
     `test(${quote(`${id}: catches the known-bad case`)}, () => {`,
-    '  // TODO(reviewer): replace with an input that shows the incident.',
-    "  const knownBad = 'TODO(reviewer)';",
+    '  // TODO(reviewer): replace with files that show the incident.',
+    "  const knownBad = makeRepo({ 'TODO(reviewer)': '' });",
     '  assert.deepEqual(findProblems(knownBad).map((found) => found.id), [lesson.id]);',
     '});',
     '',
     `test(${quote(`${id}: passes a good case`)}, () => {`,
-    '  // TODO(reviewer): replace with an input where all is well.',
-    "  const knownGood = '';",
+    '  // TODO(reviewer): replace with files where all is well.',
+    '  const knownGood = makeRepo({});',
     '  assert.deepEqual(findProblems(knownGood), []);',
     '});',
     '',
@@ -248,4 +281,165 @@ export function writeDraft(root: string, draft: Draft): { written: string[]; kep
     written.push(file.path);
   }
   return { written, kept };
+}
+
+// Shipped lessons (#147), the second half of the loop. A reviewed lesson moves from
+// `lessons/<id>/` into the kit, with a row in the kit's lessons table. `doctor` then runs
+// each lesson's check in every project that uses the kit.
+//
+// A lesson is code from the kit that runs in another person's repo. So it reads files only,
+// and a lesson that throws is reported, never fatal: a lesson gives notes, and a note never
+// fails doctor.
+
+/** Where shipped lessons live in yokoten, from the repo root: one folder per lesson. */
+export const KIT_LESSONS_DIR = 'kit/lessons';
+
+/** The lessons table, in the kit's lessons folder. Only a lesson in the table ships. */
+export const LESSONS_TABLE = 'README.md';
+
+/** A row of the lessons table. */
+export interface ShippedLesson {
+  id: string;
+  /** The incident issue the lesson came from. */
+  url: string;
+  /** The version in package.json when the lesson shipped. */
+  version: string;
+}
+
+/** What a lesson's id looks like: `incident-<n>` from `learn`, or any lower-case words. */
+const LESSON_ID = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+const TABLE_ROW = /^\|\s*([^|\s]+)\s*\|\s*([^|\s]+)\s*\|\s*([^|\s]+)\s*\|\s*$/;
+const TABLE_HEAD = ['| Lesson | Incident | Added in |', '|---|---|---|'];
+const TABLE_START = [
+  '# Lessons',
+  '',
+  'Each folder here is a lesson from a real incident: a check (`lesson.ts`) and its test',
+  '(`lesson.test.ts`). `yokoten doctor` runs every lesson in this table against the project,',
+  'and reports what a lesson finds as a note. A note never fails doctor. To stop one, add',
+  'its id to "notNow" in yokoten.json, with the reason.',
+  '',
+  '`yokoten learn --ship <id>` adds a lesson here. "Added in" is the version in',
+  'package.json when the lesson shipped.',
+  '',
+  ...TABLE_HEAD,
+];
+
+/** The rows of the lessons table. The header, the line under it, and any other text are left out. */
+export function readLessonTable(text: string): ShippedLesson[] {
+  const rows: ShippedLesson[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const row = TABLE_ROW.exec(line.trim());
+    if (!row || !LESSON_ID.test(row[1])) continue;
+    rows.push({ id: row[1], url: row[2], version: row[3] });
+  }
+  return rows;
+}
+
+/** A row of the lessons table as Markdown. */
+export const formatLessonRow = (lesson: ShippedLesson): string => `| ${lesson.id} | ${lesson.url} | ${lesson.version} |`;
+
+const readText = (path: string): string | null => {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch {
+    return null;
+  }
+};
+
+/** The incident URL on the second line of a lesson that `learn` drafted: `// https://...`. */
+const readSourceUrl = (text: string): string | null => /^\/\/ (https?:\/\/\S+)\s*$/m.exec(text)?.[1] ?? null;
+
+/**
+ * Move a reviewed lesson from `lessons/<id>/` into `kit/lessons/<id>/`, and add its row to the
+ * lessons table. It refuses, and moves nothing, when a TODO(reviewer) is left or the lesson's
+ * test fails: an unreviewed check never ships. `reference` is the id or the issue number.
+ */
+export function shipLesson(root: string, reference: string, version: string): { lesson: ShippedLesson } | { problems: string[] } {
+  const id = /^\d+$/.test(reference) ? `incident-${reference}` : reference;
+  if (!LESSON_ID.test(id)) return { problems: [`${reference} is not a lesson id: give its number or its id, for example incident-138`] };
+  if (!existsSync(join(root, 'kit'))) return { problems: ['there is no kit/ here: a lesson ships in a copy of yokoten, where kit/ is what other projects get'] };
+  const draftDir = `${LESSONS_DIR}/${id}`;
+  const shippedDir = `${KIT_LESSONS_DIR}/${id}`;
+  if (existsSync(join(root, shippedDir))) return { problems: [`${shippedDir} is already there: give the lesson a new id`] };
+  const code = readText(join(root, draftDir, 'lesson.ts'));
+  const test = readText(join(root, draftDir, 'lesson.test.ts'));
+  if (code === null || test === null) return { problems: [`no lesson in ${draftDir}: run \`yokoten learn <issue> --write\` first, then review the draft`] };
+
+  const problems: string[] = [];
+  for (const [name, text] of [['lesson.ts', code], ['lesson.test.ts', test]]) {
+    const count = text.split('TODO(reviewer)').length - 1;
+    if (count) problems.push(`${draftDir}/${name} still has ${count} TODO(reviewer): fill each one in`);
+  }
+  const url = readSourceUrl(code);
+  if (!url) problems.push(`${draftDir}/lesson.ts does not name its incident: put the issue URL on a line \`// https://...\` near the top`);
+  if (problems.length) return { problems };
+  // The positive control must pass here, before the lesson reaches any other project.
+  // Without NODE_TEST_CONTEXT: inside a test run, it makes the child report to the parent and exit 0.
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const run = spawnSync(process.execPath, ['--test', join(draftDir, 'lesson.test.ts')], { cwd: root, env, encoding: 'utf8' });
+  if (run.status !== 0) return { problems: [`the lesson's test fails: run \`node --test ${draftDir}/lesson.test.ts\` to see why, and fix the check`] };
+
+  const lesson: ShippedLesson = { id, url: url as string, version };
+  const tablePath = join(root, KIT_LESSONS_DIR, LESSONS_TABLE);
+  const table = readText(tablePath) ?? `${TABLE_START.join('\n')}\n`;
+  mkdirSync(join(root, KIT_LESSONS_DIR), { recursive: true });
+  renameSync(join(root, draftDir), join(root, shippedDir));
+  // The drafts folder goes when its last draft has shipped.
+  if (!readdirSync(join(root, LESSONS_DIR)).length) rmdirSync(join(root, LESSONS_DIR));
+  writeFileSync(tablePath, `${table.trimEnd()}\n${formatLessonRow(lesson)}\n`);
+  return { lesson };
+}
+
+/** Where `runLessons` finds the lessons: the table's folder, and the code with its file name. */
+export interface LessonPlace {
+  /** The folder with the lessons table. */
+  dir: string;
+  /** The folder with a folder of code per lesson; the npm package runs built `.js` (record 0008). */
+  codeDir: string;
+  /** `lesson.ts`, or `lesson.js` in the npm package. */
+  codeFile: string;
+}
+
+/** What one lesson found in a project, or why it could not run. */
+export interface LessonRun {
+  id: string;
+  findings: Finding[];
+  error?: string;
+}
+
+/** The shipped lessons by the table, or [] when there is no table (a project copy has no kit). */
+export function listLessons(place: LessonPlace): ShippedLesson[] {
+  const table = readText(join(place.dir, LESSONS_TABLE));
+  return table === null ? [] : readLessonTable(table);
+}
+
+/**
+ * Run each lesson's `findProblems` against the repo at `root`, in the order of the table.
+ * Ids in `skip` do not run. A lesson that can't load, throws or gives a wrong shape is an
+ * error for that lesson alone; the other lessons still run.
+ */
+export function runLessons(root: string, place: LessonPlace, skip: (id: string) => boolean = () => false): LessonRun[] {
+  const load = createRequire(import.meta.url);
+  const runs: LessonRun[] = [];
+  for (const { id } of listLessons(place)) {
+    if (skip(id)) continue;
+    const path = join(place.codeDir, id, place.codeFile);
+    try {
+      if (!existsSync(path)) throw new Error(`there is no ${place.codeFile}`);
+      const module = load(path) as { findProblems?: unknown };
+      if (typeof module.findProblems !== 'function') throw new Error('it has no findProblems function');
+      const found: unknown = module.findProblems(root);
+      if (!Array.isArray(found)) throw new Error('findProblems did not give a list');
+      const findings = found.map((item): Finding => {
+        const { what, why, fix } = (item ?? {}) as Partial<Finding>;
+        if (typeof what !== 'string' || typeof why !== 'string' || typeof fix !== 'string') throw new Error('a finding has no what, why or fix');
+        return { id, what, why, fix };
+      });
+      runs.push({ id, findings });
+    } catch (err) {
+      runs.push({ id, findings: [], error: String((err as Error)?.message ?? err).split('\n')[0].split(place.codeDir).join(KIT_LESSONS_DIR) });
+    }
+  }
+  return runs;
 }

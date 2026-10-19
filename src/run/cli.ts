@@ -196,12 +196,16 @@ export const COMMANDS: Command[] = [
   {
     name: 'learn',
     summary: 'a check draft from an incident issue, for a person to review',
-    usage: '<issue> [--write]',
+    usage: '<issue> [--write] | --ship <id>',
     text: [
       'Reads an incident issue (a number or a URL) through gh and drafts a check from it,',
-      'for a person to review. It writes nothing without --write.',
+      'for a person to review. It writes nothing without --write. In yokoten, --ship moves a',
+      'reviewed lesson into kit/lessons/, where doctor runs it in every project.',
     ],
-    options: [{ name: '--write', text: 'put the draft in lessons/ (adds only, never overwrites)' }],
+    options: [
+      { name: '--write', text: 'put the draft in lessons/ (adds only, never overwrites)' },
+      { name: '--ship', text: 'move a reviewed lesson into kit/lessons/; refused while a TODO is left' },
+    ],
     argument: 'issue',
     example: 'yokoten learn 138',
   },
