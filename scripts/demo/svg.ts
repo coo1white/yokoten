@@ -1,5 +1,5 @@
-// Builds docs/assets/demo.svg, the terminal demo in the README, from scripts/demo.txt.
-// Run it again after you change the transcript: node scripts/demo-svg.ts
+// Builds docs/assets/demo.svg, the terminal demo in the README, from scripts/demo/transcript.txt.
+// Run it again after you change the transcript: node scripts/demo/svg.ts
 //
 // Each line of the transcript starts with a mark and one space:
 //   >  an agent's tool call, typed      $  a shell command, typed ($ alone: the last prompt)
@@ -11,8 +11,8 @@
 // The lines appear one by one with CSS animations. With reduced motion, the last frame shows.
 import { readFileSync, writeFileSync } from 'node:fs';
 
-const TRANSCRIPT_URL = new URL('demo.txt', import.meta.url);
-const OUTPUT_URL = new URL('../docs/assets/demo.svg', import.meta.url);
+const TRANSCRIPT_URL = new URL('transcript.txt', import.meta.url);
+const OUTPUT_URL = new URL('../../docs/assets/demo.svg', import.meta.url);
 const TITLE = 'An agent runs git push --force. yokoten blocks it and says what happened, why, and the fix. Then yokoten doctor names the next step.';
 
 const FONT_SIZE = 13;

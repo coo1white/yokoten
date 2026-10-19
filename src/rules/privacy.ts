@@ -11,7 +11,7 @@
 // - Secrets: tokens and private keys, in secrets.ts. Their hits pass through scanText too,
 //   so every caller (the commit, CI, the history) catches them.
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Env } from './config.ts';
@@ -36,7 +36,12 @@ export function loadMarks(env: Env): string[] {
 }
 
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
-const IPV4 = /(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])/g;
+// A browser version in a user agent (Chrome/120.0.0.0) is not an address. Only the
+// browser product names are skipped, case-sensitive as a user agent writes them: an
+// address in a path (api/192.0.2.1) or a URL (http://192.0.2.1) is still caught.
+// Only IPv4 is checked, private ranges included; IPv6 is not.
+const BROWSER = 'Chrome|Chromium|CriOS|Edg|EdgA|EdgiOS|Edge|OPR|Opera|Version|Firefox|FxiOS|Safari|AppleWebKit|Gecko|Mozilla|YaBrowser|SamsungBrowser|UCBrowser|Electron';
+const IPV4 = new RegExp(`(?<![\\w.])(?<!\\b(?:${BROWSER})/)(?:\\d{1,3}\\.){3}\\d{1,3}(?![\\w.])`, 'g');
 
 // Addresses that point at no person. A personal address at the same domains
 // (someone at gmail.com, or at github.com) is still caught.
@@ -51,6 +56,8 @@ const OK_EMAIL = [
   // Names reserved for tests, docs and local networks (RFC 2606, RFC 6762).
   /@[\w.-]+\.(test|example|invalid|localhost|local)$/i,
 ];
+// A retina image name (logo@2x.png) looks like an email address at the domain 2x.png.
+const RETINA = /@\d+x\.(png|jpe?g|gif|webp|svg|avif)$/i;
 // Localhost, "any", and the three ranges RFC 5737 keeps for documentation.
 const OK_IP = [/^127\./, /^0\.0\.0\.0$/, /^192\.0\.2\./, /^198\.51\.100\./, /^203\.0\.113\./];
 
@@ -67,7 +74,7 @@ export function scanText(text: string, { file, marks = [], allow = [] }: { file:
     // The secret itself is never printed either, only its kind.
     for (const [at, kind] of secrets) if (at === i) problems.push(finding('secret', `a secret (${kind})`, 'remove it, rotate it, and keep it outside the repo', where));
     for (const [hit] of line.matchAll(EMAIL)) {
-      if (!OK_EMAIL.some((re) => re.test(hit)) && !allow.includes(hit)) {
+      if (!OK_EMAIL.some((re) => re.test(hit)) && !RETINA.test(hit) && !allow.includes(hit)) {
         problems.push(finding('email', 'an email address', 'use your GitHub noreply address, or a placeholder at example.com', where));
       }
     }
@@ -85,13 +92,42 @@ export function scanText(text: string, { file, marks = [], allow = [] }: { file:
   return problems;
 }
 
+// A character that can sit next to a path segment and continue it. A dot continues it
+// only when a name character follows, so a full stop after a path still ends it.
+const PATH_CHAR = String.raw`[\p{L}\p{N}_\-+@%~#$]`;
+const BEFORE_HOME = String.raw`(?<!${PATH_CHAR}|[.\\/])`;
+const AFTER_HOME = String.raw`(?!${PATH_CHAR}|\.${PATH_CHAR})`;
+
+/** The forms of one home folder that text may hold: as given, its real path, and on Windows its MSYS form. */
+function homeForms(home: string | undefined): string[] {
+  if (!home) return [];
+  let real = home;
+  try {
+    real = realpathSync(home);
+  } catch {}
+  const forms = [home, real].map((path) => path.replace(/[\\/]+$/, ''));
+  // C:\Users\me is /c/Users/me in Git Bash.
+  for (const path of [...forms]) {
+    const drive = /^([A-Za-z]):([\\/].*)$/.exec(path);
+    if (drive) forms.push(`/${drive[1].toLowerCase()}${drive[2]}`);
+  }
+  return forms.filter((path) => path.length > 1 && !/^[A-Za-z]:$/.test(path));
+}
+
 /**
  * Text as yokoten may show it: the home folder, which names the machine's user, becomes
- * `~`. Everything yokoten prints passes through this.
+ * `~`. Everything yokoten prints passes through this. Both homes are hidden: $HOME and the
+ * system's (they differ under sudo, in CI, or with HOME=/tmp/x), each also by its real path
+ * (on macOS a temp or home folder resolves to /private/...). A home is replaced only where
+ * its path ends, so /data/u never touches /data/users. On Windows `\` and `/` match each
+ * other, and case does not count.
  */
-export function hideHome(text: string, env: Env): string {
-  const home = (env.HOME || homedir()).replace(/[\\/]+$/, '');
-  return home.length > 1 ? text.split(home).join('~') : text;
+export function hideHome(text: string, env: Env, { platform = process.platform as string, systemHome = homedir() } = {}): string {
+  const homes = [...new Set([...homeForms(env.HOME), ...homeForms(systemHome)])].sort((a, b) => b.length - a.length);
+  if (!homes.length) return text;
+  const isWindows = platform === 'win32';
+  const pattern = homes.map((home) => home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\\\|\//g, String.raw`[\\/]`)).join('|');
+  return text.replace(new RegExp(`${BEFORE_HOME}(?:${pattern})${AFTER_HOME}`, isWindows ? 'giu' : 'gu'), '~');
 }
 
 /**

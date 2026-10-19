@@ -1,6 +1,7 @@
 # Monthly, one grouped pull request, so updates don't each cost a review (core rule 8).
 # A release is taken only once it is a week old, so one pulled for being bad never
 # reaches you. yokoten doesn't know your stack, so only the actions CI runs are on.
+# `check --pr` holds these pull requests to the title rule, and shows the rest as notes.
 #
 # To add your own packages (npm, pip, gomod, cargo, ...), copy the block below. Change
 # package-ecosystem, the group name, and the commit-message prefix (to chore). Keep the

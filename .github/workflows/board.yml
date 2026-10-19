@@ -1,0 +1,49 @@
+# Keeps the org board's Start, Target and Status filled, with no hand step (#165).
+# scripts/board-sync.ts fills only empty fields and plainly wrong statuses; it is safe
+# to run again and again.
+#
+# The token is the bot App's, made for this run with only project and read rights.
+# No `pull_request` trigger: that runs the pull request's own files with the App's key.
+# A new pull request gets its Status at the next hourly run, a merged one at the push to main.
+name: board
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+  issues:
+    types: [opened, closed, reopened, milestoned, demilestoned]
+  push:
+    branches: [main]
+permissions: {}
+# One run at a time. A run still going is never cancelled: the next one waits.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      # With no `owner`, the token reads only this repo. The App is installed on the org,
+      # so the same token may also write the org's board.
+      - id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.BOT_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+          permission-organization-projects: write
+          permission-issues: read
+          permission-pull-requests: read
+      - run: node scripts/board-sync.ts
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          BOARD_OWNER: ${{ github.repository_owner }}
+          BOARD_NUMBER: 1
