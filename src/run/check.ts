@@ -224,11 +224,15 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
     problems.push(...scanText(buf.toString('utf8'), { file: path, marks, allow: config.privacy.allow }));
   };
   if (staged) {
+    const files = stagedFiles(root);
+    // git sets GIT_INDEX_FILE for the commit hooks, so an empty commit or an amend is
+    // still checked. Run by hand with nothing staged, there is no commit to check (#208).
+    const isCommitting = files.length > 0 || env.GIT_INDEX_FILE !== undefined;
+    if (!isCommitting) notes.push(finding('time-zone', 'nothing is staged', 'stage a change with `git add`, then run it again', { why: 'with nothing staged there is no commit to check' }));
     // The commit about to be made: git var gives its author and committer, time included.
-    if (config.privacy.utc && ['GIT_AUTHOR_IDENT', 'GIT_COMMITTER_IDENT'].some((v) => notUtc(git(root, ['var', v])))) {
+    if (isCommitting && config.privacy.utc && ['GIT_AUTHOR_IDENT', 'GIT_COMMITTER_IDENT'].some((v) => notUtc(git(root, ['var', v])))) {
       problems.push(finding('time-zone', "this commit's time carries your time zone", TIME_ZONE_FIX));
     }
-    const files = stagedFiles(root);
     // In a merge, the role checks see only what the merge itself changed: a worker
     // bringing in main is not handing over main's edits to lead-only files or tests. A
     // move is checked at its old path too: moving AGENTS.md away removes it. A copy leaves it.
@@ -361,11 +365,42 @@ export function checkHistory(root: string, { config, env }: { config: Config; en
     .toString('utf8')
     .split('\n');
   const wanted = types.filter((l) => l.endsWith(' blob')).map((l) => l.split(' ')[0]).filter((sha) => !skip(blobs.get(sha) ?? ''));
+  const found = new Map<string, Finding[]>();
   for (const [sha, { bytes, whole }] of readBlobs(root, wanted, BATCH_CAP)) {
     if (!whole || looksBinary(bytes)) continue;
-    add(scanText(bytes.toString('utf8'), { file: `${blobs.get(sha)} @ blob ${sha.slice(0, 8)}`, ...opts }));
+    const hits = scanText(bytes.toString('utf8'), { file: '', ...opts });
+    if (hits.length) found.set(sha, hits);
+  }
+  // Name each blob by the commit that added it (#208), read only when there is a hit.
+  const added = found.size ? firstCommits(root) : new Map<string, { commit: string; path: string }>();
+  for (const [sha, hits] of found) {
+    const first = added.get(sha);
+    const file = first ? `${first.path} @ ${first.commit}` : `${blobs.get(sha)} @ blob ${sha.slice(0, 8)}`;
+    const hint = first ? '' : `; \`git log --all --find-object=${sha.slice(0, 8)}\` names the commit`;
+    add(hits.map((f) => ({ ...f, file, fix: f.fix + hint })));
   }
   return [...problems.values()];
+}
+
+/**
+ * The commit that first added each blob (its first 8 characters), and the blob's path in
+ * that commit: one walk of every branch, oldest first. A blob only a merge brings in is
+ * not found.
+ */
+function firstCommits(root: string): Map<string, { commit: string; path: string }> {
+  const added = new Map<string, { commit: string; path: string }>();
+  let commit = '';
+  // Plain paths: a raw line is ":old-mode new-mode old-sha new-sha status<TAB>path".
+  const log = git(root, ['-c', 'core.quotePath=false', 'log', '--all', '--reverse', '--raw', '--no-abbrev', '--no-renames', '--format=commit %H']);
+  for (const line of log.split('\n')) {
+    if (line.startsWith('commit ')) commit = line.slice(7, 15);
+    else if (line.startsWith(':')) {
+      const tab = line.indexOf('\t');
+      const sha = line.slice(0, tab).split(' ')[3];
+      if (sha && !added.has(sha)) added.set(sha, { commit, path: line.slice(tab + 1) });
+    }
+  }
+  return added;
 }
 
 /** The history's time zone count (`historyTimeZones`), as a note. */

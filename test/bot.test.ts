@@ -7,7 +7,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { annotation, annotations, appJwt, botConfig, botEnv, cleanChildEnv, type Gh, installationToken, type Label, readCommandTitle, readIncident, readPlanning, readServer, repoOf, type ServerSettings, stepSummary, type Unread } from '../src/host/github.ts';
+import { annotation, annotations, appJwt, botConfig, botEnv, botProgram, cleanChildEnv, type Gh, installationToken, type Label, readCommandTitle, readIncident, readPlanning, readServer, repoOf, type ServerSettings, stepSummary, type Unread } from '../src/host/github.ts';
 import { DEFAULTS, type Env } from '../src/rules/config.ts';
 import { draftLesson, type Incident } from '../src/run/learn.ts';
 import { checkCommand } from '../src/rules/guards.ts';
@@ -168,6 +168,52 @@ test('command title: good titles in run-together short flags pass the title rule
   assert.ok(issue && !('unreadable' in issue));
   assert.deepEqual(issue.labels, ['bug']);
   assert.deepEqual(checkIssueTitle(issue.title, config, issue.labels), []);
+});
+
+test('bot program: gh and git by base name, .exe stripped; anything else is null (#295)', () => {
+  for (const file of ['gh', 'gh.exe', 'gh.EXE', '/usr/bin/gh', 'C:\\tools\\gh.exe']) assert.equal(botProgram(file), 'gh', file);
+  for (const file of ['git', 'git.exe', '/usr/bin/git']) assert.equal(botProgram(file), 'git', file);
+  for (const file of ['env', '/usr/bin/env', 'sh', 'bash', 'node', 'npx', 'ghx', 'gh.sh', 'xgh', '']) assert.equal(botProgram(file), null, file);
+});
+
+test('command title: gh.exe, a path to gh, and -t=X are read as gh reads them (#295)', () => {
+  const read = (line: string) => readCommandTitle(line.split(' '));
+  for (const line of ['gh.exe issue create -t Broken', 'gh.EXE issue create -t Broken', '/usr/bin/gh issue create -t Broken', 'gh issue create -t=Broken', 'gh issue create -dt=Broken']) {
+    assert.deepEqual(read(line), { kind: 'issue', title: 'Broken', labels: [] }, line);
+  }
+  assert.equal(read('gh pr create -t==Broken')?.title, '=Broken', 'only one = is dropped');
+  assert.equal(read('gh pr create --title==Broken')?.title, '=Broken', 'a long option keeps what follows its =');
+  const found = readCommandTitle(['gh', 'pr', 'create', '-t=feat(host): check the title']);
+  assert.ok(found && !('unreadable' in found));
+  assert.deepEqual(checkPullRequestTitle(found.title, { ...DEFAULTS, areas: ['host'] }), [], 'a good title written -t=X passes');
+});
+
+test('command title: gh api reads title= on an issue or pull request path (#295)', () => {
+  const read = (line: string) => readCommandTitle(line.split(' '));
+  const issues: string[] = [
+    'gh api repos/o/r/issues -f title=Broken',
+    'gh api /repos/o/r/issues -F title=Broken',
+    'gh api repos/o/r/issues/5 -X PATCH --field title=Broken',
+    'gh api -X PATCH repos/o/r/issues/5 --raw-field title=Broken',
+    'gh api repos/{owner}/{repo}/issues --field=title=Broken',
+    'gh api repos/o/r/issues -ftitle=Broken',
+    'gh api repos/o/r/issues -f=title=Broken',
+    'gh api repos/o/r/issues -iftitle=Broken',
+    'gh api repos/o/r/issues -f title=a -f body=b -f title=Broken',
+  ];
+  for (const line of issues) assert.deepEqual(read(line), { kind: 'issue', title: 'Broken', labels: [] }, line);
+  assert.deepEqual(read('gh api -X PATCH repos/o/r/pulls/5 -f title=Broken'), { kind: 'pr', title: 'Broken', labels: [] });
+  assert.deepEqual(read('gh api repos/o/r/issues -F title=@title.txt'), { kind: 'issue', unreadable: 'title=@title.txt' }, 'a title gh reads from a file');
+  assert.equal(read('gh api repos/o/r/issues -f title=@x')?.title, '@x', 'a raw field is the text itself');
+  assert.deepEqual(read('gh api repos/o/r/pulls -zf title=Broken'), { kind: 'pr', unreadable: '-zf' });
+  for (const line of [
+    'gh api graphql -f query=x -f title=Broken',
+    'gh api repos/o/r/issues/5/comments -f title=Broken',
+    'gh api repos/o/r/labels -f title=Broken',
+    'gh api repos/o/r/issues -f body=x',
+    'gh api repos/o/r/issues -t title=Broken',
+    'gh api -H title=x repos/o/r/issues',
+  ]) assert.equal(read(line), null, line);
 });
 
 test('the bot is not a way around the guard', () => {

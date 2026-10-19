@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
-import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -853,6 +853,30 @@ test('check --staged: stops a commit whose time carries a time zone, never print
   assert.equal(r.status, 0, r.stderr);
 });
 
+test('check --staged: with nothing staged, no commit time to check (#208)', () => {
+  const sandbox = makeSandbox();
+  const zoned = { TZ: 'Asia/Tokyo' };
+  // An empty repo, then one with a commit: nothing staged is ok, and says so.
+  for (const step of ['empty', 'committed']) {
+    if (step === 'committed') sandbox.git('commit', '-q', '--allow-empty', '-m', 'first');
+    const r = sandbox.run(['check', '--staged'], { extra: zoned });
+    assert.equal(r.status, 0, `${step}: ${r.stderr}`);
+    assert.match(r.stdout, /note: nothing is staged/);
+    assert.ok(!/time zone/.test(r.stderr), step);
+  }
+  // In the commit hook git sets GIT_INDEX_FILE: an empty commit or an amend is checked.
+  let r = sandbox.run(['check', '--staged'], { extra: { ...zoned, GIT_INDEX_FILE: join(sandbox.repo, '.git', 'index') } });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /carries your time zone/);
+  // A real staged change is still checked.
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', '.');
+  r = sandbox.run(['check', '--staged'], { extra: zoned });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /carries your time zone/);
+  assert.ok(!/nothing is staged/.test(r.stdout));
+});
+
 // .yokoten/ is the copy of yokoten the hooks and CI run: a worker that changes it can turn the checks off (#297).
 test('the vendored .yokoten/ runtime is lead-only: the hook and check --staged stop a worker, not the lead (#297)', () => {
   const sandbox = makeSandbox();
@@ -892,10 +916,26 @@ test('check --history: finds what a later commit deleted, and a personal author 
   assert.equal(sandbox.run(['check']).status, 0, 'the tree today is clean');
   const r = sandbox.run(['check', '--history']);
   assert.equal(r.status, 1);
-  assert.match(r.stderr, /notes\.md @ blob \w+:1: an IP address/);
-  assert.match(r.stderr, /notes\.md @ blob \w+:2: a secret \(GitHub token\)/, 'a secret deleted later (#8)');
+  // Named by the commit that added the file (#208), not only by its blob.
+  const added = sandbox.git('rev-parse', 'HEAD~2').stdout.slice(0, 8);
+  assert.ok(r.stderr.includes(`notes.md @ ${added}:1: an IP address`), r.stderr);
+  assert.ok(r.stderr.includes(`notes.md @ ${added}:2: a secret (GitHub token)`), 'a secret deleted later (#8)');
   assert.ok(!r.stderr.includes(token), 'the secret is never printed');
   assert.match(r.stderr, /\(author\/committer\):1: an email/);
+});
+
+test('check --history: names a moved file by its path in the commit that added it (#208)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('notes.md', `server ${[10, 1, 2, 3].join('.')}\n`);
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'add notes');
+  const added = sandbox.git('rev-parse', 'HEAD').stdout.slice(0, 8);
+  sandbox.git('mv', 'notes.md', 'moved.md');
+  sandbox.git('commit', '-qm', 'move notes');
+  const r = sandbox.run(['check', '--history']);
+  assert.equal(r.status, 1);
+  assert.ok(r.stderr.includes(`notes.md @ ${added}:1: an IP address`), r.stderr);
+  assert.ok(!r.stderr.includes('moved.md @'), 'that commit has no moved.md');
 });
 
 test('check --history: a shallow clone fails with one finding, never "every commit" (#266)', () => {
@@ -913,7 +953,7 @@ test('check --history: a shallow clone fails with one finding, never "every comm
   spawnSync('git', ['clone', '-q', '--depth', '1', `file://${sandbox.repo}`, shallow], { env: sandbox.env });
   let result = sandbox.run(['check', '--history'], { cwd: full });
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /notes\.md @ blob \w+:1: a secret \(GitHub token\)/);
+  assert.match(result.stderr, /notes\.md @ \w+:1: a secret \(GitHub token\)/);
   // The shallow clone (actions/checkout's default) is not scanned, and says why.
   result = sandbox.run(['check', '--history'], { cwd: shallow });
   assert.equal(result.status, 1, result.stdout);
@@ -950,7 +990,7 @@ test('check --history: a commit hidden by git replace is still scanned; a grafts
   assert.equal(sandbox.git('log', '--all', '--format=%H', '--', 'notes.md').stdout.trim(), '', 'git itself no longer sees the token');
   let result = sandbox.run(['check', '--history']);
   assert.equal(result.status, 1, result.stdout);
-  assert.match(result.stderr, /notes\.md @ blob \w+:1: a secret \(GitHub token\)/);
+  assert.match(result.stderr, /notes\.md @ \w+:1: a secret \(GitHub token\)/);
   assert.ok(!result.stderr.includes(token), 'the secret is never printed');
 
   // A grafts file can hide commits too: nothing is scanned, and one finding says why.
@@ -3985,7 +4025,8 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
   mkdirSync(bin);
   writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args: process.argv.slice(2), token: process.env.GH_TOKEN }) + '\\n');\n`);
   chmodSync(join(bin, 'gh'), 0o755);
-  const ran = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+  copyFileSync(join(bin, 'gh'), join(bin, 'gh.exe'));
+  const ran =() => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
   const requests: string[] = [];
   const server = createServer((req, res) => {
     requests.push(`${req.method} ${req.url}`);
@@ -4034,6 +4075,20 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
     await refused(['gh', 'pr', 'create', '-dt', 'feat(host): add a step.'], /title: a full stop at the end\. A commit title has no full stop/);
     await refused(['gh', 'issue', 'create', '-wthost: add a step.'], /title: a full stop at the end\. A title is a name/);
     await refused(['gh', 'pr', 'create', '-dzt', 'feat(host): add a step'], /title: can't read the title in `-dzt`\. .+\. Write --title on its own\.$/m);
+    // gh api on an issue or pull request path (#295): its title= field is checked too.
+    await refused(['gh', 'api', 'repos/o/r/issues', '-f', 'title=Broken'], /title: /);
+    await refused(['gh', 'api', '-X', 'PATCH', '/repos/o/r/pulls/5', '--field=title=feat(host): add a step.'], /title: a full stop at the end\. A commit title has no full stop/);
+    // gh by another name runs, so its title is checked (#295).
+    await refused(['gh.exe', 'issue', 'create', '-t', 'Broken'], /title: /);
+    await refused([join(bin, 'gh'), 'issue', 'create', '-t', 'Broken'], /title: /);
+    // The bot runs gh and git only (#295): a wrapper would hide the title, so it is refused
+    // before the token is asked for, and nothing runs.
+    for (const command of [['env', 'gh', 'issue', 'create', '-t', 'Broken'], ['/usr/bin/env', 'gh', 'issue', 'create', '-t', 'Broken'], ['sh', '-c', 'gh issue create -t Broken'], ['node', 'x']]) {
+      const r = await run(command);
+      assert.deepEqual([r.status, r.stderr], [1, `yokoten bot: runs gh and git only; run \`${command[0]}\` without the bot\n`], command.join(' '));
+      assert.deepEqual(requests, [], `no token was asked for: ${command.join(' ')}`);
+      assert.deepEqual(ran(), [], `nothing ran: ${command.join(' ')}`);
+    }
     // With no bot set up at all, the title is still the reason given.
     await refused(['gh', 'pr', 'create', '--title', 'feat(host): add a step.'], /full stop/, path);
     const missing = await run(['gh', 'pr', 'create', '--title', 'feat(host): add a step'], path);
@@ -4048,6 +4103,12 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
       ['gh', 'pr', 'new', '-t', 'feat(host): check the title'],
       ['gh', 'pr', 'create', '--fill'],
       ['gh', 'issue', 'list'],
+      // #295: gh by another name, -t=X as gh reads it, gh api with a good title, and other gh api calls unchecked.
+      ['gh.exe', 'issue', 'create', '-t', 'host: check the title'],
+      [join(bin, 'gh'), 'pr', 'create', '-t', 'feat(host): check the title'],
+      ['gh', 'pr', 'create', '-t=fix: good title'],
+      ['gh', 'api', 'repos/o/r/issues', '-f', 'title=host: check the title'],
+      ['gh', 'api', 'graphql', '-f', 'query=x', '-f', 'title=Broken'],
     ];
     for (const command of good) {
       const r = await run(command);
@@ -4074,12 +4135,18 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
     assert.equal(own.status, 0, own.stderr);
     assert.equal(ran().length, good.length + 2, 'gh did not run for bot --help');
     // A command that is not there, or that a signal ends, is named with the reason (#282).
-    const absent = await run(['no-such-cmd-xyz', 'arg']);
-    assert.deepEqual([absent.status, absent.stderr], [1, 'yokoten bot: could not run no-such-cmd-xyz: ENOENT\n']);
-    writeFileSync(join(bin, 'killed'), '#!/bin/sh\nkill -TERM $$\n');
-    chmodSync(join(bin, 'killed'), 0o755);
-    const killed = await run(['killed']);
-    assert.deepEqual([killed.status, killed.stderr], [1, 'yokoten bot: killed was ended by SIGTERM\n']);
+    // The bot runs gh and git only (#295), so both are a gh: one at no path, one a script.
+    const noGh = join(bin, 'none', 'gh');
+    const absent = await run([noGh, 'arg']);
+    assert.equal(absent.status, 1);
+    assert.match(absent.stderr, /^yokoten bot: could not run \S*\/none\/gh: ENOENT\n$/);
+    const killedGh = join(bin, 'killed', 'gh');
+    mkdirSync(dirname(killedGh));
+    writeFileSync(killedGh, '#!/bin/sh\nkill -TERM $$\n');
+    chmodSync(killedGh, 0o755);
+    const killed = await run([killedGh]);
+    assert.equal(killed.status, 1);
+    assert.match(killed.stderr, /^yokoten bot: \S*\/killed\/gh was ended by SIGTERM\n$/);
     for (const said of [absent.stderr, killed.stderr]) assert.doesNotMatch(said, /ghs_test|bot\.pem|GH_TOKEN/, 'no token or env');
   } finally {
     server.close();

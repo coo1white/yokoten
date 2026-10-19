@@ -5,7 +5,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
-import { annotations, botConfig, botEnv, ghIn, installationToken, isGitHubActions, readCodeOwners, readCommandTitle, readIncident, readIssue, readPullRequest, repoOf, stepSummary } from '../src/host/github.ts';
+import { annotations, botConfig, botEnv, botProgram, ghIn, installationToken, isGitHubActions, readCodeOwners, readCommandTitle, readIncident, readIssue, readPullRequest, repoOf, stepSummary } from '../src/host/github.ts';
 import { formatChanges, parseChange, readChanges, writeChanges } from '../src/run/changelog.ts';
 import { check, checkChanged, checkHistory, gitRoot, historyTimeZones, timeZoneNote } from '../src/run/check.ts';
 import * as claudeCode from '../src/agents/claude-code.ts';
@@ -223,6 +223,11 @@ function checkCommandTitle(command: string[]): Finding[] {
 }
 
 async function bot(command: string[]): Promise<number> {
+  // gh and git only (#295): a wrapper such as `env gh` or `sh -c` would run a title unchecked.
+  if (command.length && !botProgram(command[0])) {
+    print([`yokoten bot: runs gh and git only; run \`${command[0]}\` without the bot`], process.stderr);
+    return 1;
+  }
   // The title first: a bad title is refused before anything is sent, so it never needs a rename.
   const titleProblems = checkCommandTitle(command);
   if (titleProblems.length) {
