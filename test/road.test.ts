@@ -8,6 +8,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+import { assertLinear } from '../scripts/linear.ts';
 import { chat, type LlamaConfig, llamaConfig } from '../src/agents/llama.ts';
 import { draft, type Fact, facts, parseAnswer, prompt, promptProblems, ruleDraft, table } from '../src/setup/advice/adopt.ts';
 import { type Found, onPullRequest, ROAD, runsTests, STAGES, type Step, walk, yokotenActions } from '../src/setup/road.ts';
@@ -16,34 +17,6 @@ const step = (stage: number, key: string): Step => ({ stage, key, check: () => f
 const steps = [step(1, 'a'), step(1, 'b'), step(2, 'c'), step(3, 'd')];
 const at = (found: Found[], notNow: Record<string, string> = {}) => walk(steps.map((s, i) => ({ step: s, found: found[i] })), notNow);
 const marks = (found: Found[], notNow: Record<string, string> = {}) => at(found, notNow).steps.map((w) => w.mark);
-
-/**
- * Proves `read` takes linear time by how its time grows, not by a wall-clock limit, which
- * fails on a slow runner (#275, #315). It reads an input of `size` and one of 8x that: linear time
- * grows about 8x, quadratic about 64x, so more than 24x fails. Each size takes its fastest read
- * of several: a GC or JIT pause lands on some reads, not all, and a total over many reads grew
- * past 24x on a 4 GB machine from GC alone (#321). 30 s on one read catches a hang.
- */
-const assertLinear = (name: string, make: (n: number) => string, read: (input: string) => void, size = 1 << 16) => {
-  const fastest = (input: string, reps: number) => {
-    let best = Infinity;
-    for (let i = 0; i < reps; i++) {
-      const start = performance.now();
-      read(input);
-      best = Math.min(best, performance.now() - start);
-      assert.ok(best < 30_000, `${name}: ${best.toFixed(0)} ms for ${input.length} chars, a hang`);
-    }
-    return best;
-  };
-  const small = make(size);
-  const big = make(8 * size);
-  // Enough reads of the small input to add up to about 20 ms, from 3 to 64.
-  const reps = Math.min(64, Math.max(3, Math.ceil(20 / Math.max(fastest(small, 1), 0.01))));
-  // Below 0.1 ms the timer is noise; a quadratic read of 8x the size still takes far longer.
-  const base = Math.max(0.1, fastest(small, reps));
-  const ms = fastest(big, reps);
-  assert.ok(ms <= 24 * base, `${name}: ${ms.toFixed(2)} ms for 8x the input of ${base.toFixed(2)} ms, ${(ms / base).toFixed(0)}x; linear is about 8x`);
-};
 
 test('road: the stage is the first one with a step neither done nor not now', () => {
   assert.equal(at([false, false, false, false]).stage, 1);
