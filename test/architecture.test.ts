@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { COMMANDS } from '../src/run/cli.ts';
 import { findDeclarations, findNameProblems, splitWords, tokenize } from '../src/run/names.ts';
 import { HOME_DIR, homeDirOf } from '../src/setup/files.ts';
 
@@ -79,6 +80,23 @@ test('workflows: every action is pinned to a commit, the version in a comment', 
   assert.ok(/uses:/.test(action), 'action.yml: no `uses:` found; the scan is broken');
   assert.deepEqual(unpinned(action), [], 'action.yml: pin each action to a commit, as `owner/repo@<40 hex> # vX.Y.Z`');
   assert.ok(seen > 0, 'no `uses:` found; the scan is broken');
+});
+
+// The action handles the events people run it on (#269): `check --issue` on issues, and
+// on pull_request_target a notice instead of `check --pr` on the wrong commits.
+const actionStep = (text: string, name: string) => text.split(/\n(?=    - )/).find((step) => step.includes(`- name: ${name}\n`)) ?? '';
+
+test('action.yml: check --issue on issues; a notice, not check --pr, on pull_request_target (#269)', () => {
+  const action = readFileSync(join(ROOT, 'action.yml'), 'utf8');
+  assert.match(action, /\n  issue-check:\n(?:    .*\n)*?    default: 'true'\n/, 'action.yml: no `issue-check` input defaulting to true');
+  const issue = actionStep(action, 'yokoten check --issue');
+  assert.match(issue, /if: \$\{\{ !cancelled\(\) && inputs\.issue-check == 'true' && github\.event_name == 'issues' \}\}/, 'action.yml: the `check --issue` step runs on issues when issue-check is true');
+  assert.match(issue, /run: node "\$GITHUB_ACTION_PATH\/bin\/yokoten\.ts" check --issue\n/);
+  const pr = actionStep(action, 'yokoten check --pr');
+  assert.match(pr, /github\.event_name == 'pull_request' \}\}/, 'action.yml: `check --pr` runs on pull_request only');
+  const target = action.split(/\n(?=    - )/).find((step) => step.includes("github.event_name == 'pull_request_target'")) ?? '';
+  assert.match(target, /run: \|\n +echo "::notice::[^"\n]*runs on pull_request, not pull_request_target[^"\n]*"\n/, 'action.yml: on pull_request_target, a notice says the check runs on pull_request');
+  assert.ok(!target.includes('check --pr"') && !/yokoten\.ts" check/.test(target), 'action.yml: the pull_request_target step must not run yokoten');
 });
 
 // Node runs .ts as it is, so no other code file is needed; one appearing means someone
@@ -320,6 +338,70 @@ test('docs: every install command in docs/facts.json is in the guides and README
   ];
   for (const [file, lists] of shown) {
     assert.deepEqual(missingCommands(facts, lists, readFileSync(join(ROOT, file), 'utf8')), [], `${file} lacks these commands from docs/facts.json; change both`);
+  }
+});
+
+// The guide's Commands table is typed by hand; COMMANDS in src/run/cli.ts is what the
+// parser and --help read (#219). Each command needs a row, and each option must show in
+// one of its rows or in the paragraph right after the table. A command with no row, like
+// help and version, passes when that paragraph names `yokoten <name>`: they take no
+// option, and a row would only repeat the paragraph (#230).
+type GuideCommand = { name: string; options: { name: string }[] };
+
+/** True when `text` holds `word` with no letter, digit or dash right before or after it. */
+const hasWord = (text: string, word: string): boolean => new RegExp(`(?<![\\w-])${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`).test(text);
+
+/** What the Commands table under `heading` in `guide` lacks from `commands`, or names that `commands` lacks. */
+function findGuideGaps(guide: string, heading: string, commands: GuideCommand[]): string[] {
+  const lines = guide.split('\n');
+  const start = lines.indexOf(heading);
+  if (start < 0) return [`no "${heading}" heading`];
+  const tableStart = lines.findIndex((line, i) => i > start && line.startsWith('|'));
+  if (tableStart < 0 || lines.slice(start + 1, tableStart).some((line) => line.startsWith('#'))) return [`no table under "${heading}"`];
+  let tableEnd = tableStart;
+  while (lines[tableEnd]?.startsWith('|')) tableEnd++;
+  // Skip the header row and the |---| row.
+  const rows = lines.slice(tableStart + 2, tableEnd);
+  let paragraphEnd = tableEnd + 1;
+  while (lines[paragraphEnd]?.trim()) paragraphEnd++;
+  const paragraph = lines.slice(tableEnd + 1, paragraphEnd).join(' ');
+  // The command a row is about: the first word of its first cell.
+  const commandOf = (row: string): string => row.split('|')[1].replaceAll('`', '').trim().split(/\s+/)[0];
+  const gaps: string[] = [];
+  for (const row of rows) {
+    const name = commandOf(row);
+    if (!commands.some((command) => command.name === name)) gaps.push(`a row names "${name}", which is not in COMMANDS`);
+  }
+  for (const command of commands) {
+    const commandRows = rows.filter((row) => commandOf(row) === command.name);
+    if (!commandRows.length && !hasWord(paragraph, `yokoten ${command.name}`)) gaps.push(`${command.name}: no row`);
+    for (const option of command.options) {
+      const isInParagraph = hasWord(paragraph, `\`${command.name}`) && hasWord(paragraph, option.name);
+      if (!commandRows.some((row) => hasWord(row, option.name)) && !isInParagraph) gaps.push(`${command.name} ${option.name}: in no row`);
+    }
+  }
+  return gaps;
+}
+
+test('docs: the guides\' Commands table covers every command and option in COMMANDS (#230)', () => {
+  const fake: GuideCommand[] = [
+    { name: 'check', options: [{ name: '--json' }, { name: '--staged' }] },
+    { name: 'version', options: [] },
+  ];
+  const table = '### Commands\n\nIntro.\n\n| Command | What |\n|---|---|\n';
+  assert.deepEqual(findGuideGaps(`${table}| \`check [--staged]\` | x |\n| \`lint\` | y |\n\nRun \`yokoten version\`.\n`, '### Commands', fake), [
+    'a row names "lint", which is not in COMMANDS',
+    'check --json: in no row',
+  ]);
+  assert.deepEqual(findGuideGaps(`${table}| \`check --staged\` | x |\n\n\`check\` takes \`--json\`.\n\nRun \`yokoten version\`.\n`, '### Commands', fake), ['version: no row']);
+  assert.deepEqual(findGuideGaps(`${table}| \`check --staged\` | x |\n\n\`check\` takes \`--json\`. \`yokoten version\` too.\n`, '### Commands', fake), []);
+
+  const guides: [string, string][] = [
+    ['docs/guide.md', '### Commands'],
+    ['docs/zh-CN/guide.md', '### 命令'],
+  ];
+  for (const [file, heading] of guides) {
+    assert.deepEqual(findGuideGaps(readFileSync(join(ROOT, file), 'utf8'), heading, COMMANDS), [], `${file}: its Commands table differs from COMMANDS in src/run/cli.ts`);
   }
 });
 
