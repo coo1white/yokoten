@@ -2250,6 +2250,50 @@ test('check --pr in GitHub Actions: notes are warnings, in their own section (#9
   assert.match(text, /\n#### Notes \(1\): these never fail the check\n\n\| Place \| Rule \| What \| Why \| Fix \|\n\|[-|]+\|\n\| README\.md:2 \| long-sentence \| a sentence of 30 words \|/);
 });
 
+// #208: a clone install puts no `yokoten` on the PATH, so install says how to call it.
+test('install: prints the alias when no yokoten on the PATH runs this copy, and edits no shell file (#208)', () => {
+  const sandbox = makeSandbox();
+  const alias = "alias yokoten='node ~/.local/share/yokoten/bin/yokoten.ts'";
+  let result = sandbox.run(['install']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.trimEnd().endsWith(`then open a new shell: ${alias}`), result.stdout);
+  for (const file of ['.bashrc', '.zshrc', '.profile', '.local/bin']) assert.ok(!existsSync(join(sandbox.home, file)), `${file} was written`);
+  // A yokoten on the PATH that runs the installed copy: the line is left out.
+  const bin = join(sandbox.home, 'bin');
+  mkdirSync(bin);
+  symlinkSync(join(sandbox.home, '.local/share/yokoten/bin/yokoten.ts'), join(bin, 'yokoten'));
+  result = sandbox.run(['install'], { extra: { PATH: `${bin}:${process.env.PATH}` } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(!result.stdout.includes('alias yokoten'), result.stdout);
+});
+
+// #208: steps left on the road are to do, not problems. Exit 1 is for a problem.
+test('doctor: exits 0 on a set-up project with steps to do, and 1 on a problem (#208)', () => {
+  const sandbox = makeSandbox();
+  assert.equal(sandbox.run(['install']).status, 0);
+  writeFileSync(join(sandbox.home, '.config/yokoten/private-marks'), 'mycity\n');
+  sandbox.withTests();
+  assert.equal(sandbox.run(['init']).status, 0);
+  let result = sandbox.run(['doctor']);
+  assert.match(result.stdout, /\n +next +codeowners[^]*\n +to do +bot/, 'later steps are left');
+  assert.equal(result.status, 0, result.stdout);
+  assert.equal(JSON.parse(sandbox.run(['doctor', '--json']).stdout).ok, true);
+  // A problem: a private mark in the tree.
+  sandbox.write('notes.md', 'I live in MyCity\n');
+  sandbox.git('add', 'notes.md');
+  result = sandbox.run(['doctor']);
+  assert.match(result.stdout, /MISSING tree: 1 problem/);
+  assert.equal(result.status, 1);
+  assert.equal(sandbox.run(['doctor', '--session']).status, 0, 'a session always starts');
+});
+
+test('update: a folder that does not exist is said plainly (#208)', () => {
+  const sandbox = makeSandbox();
+  const result = sandbox.run(['update', 'typo']);
+  assert.deepEqual([result.status, result.stdout, result.stderr], [1, '', 'yokoten update: typo does not exist; nothing to update.\n']);
+  assert.ok(!existsSync(join(sandbox.repo, 'typo')));
+});
+
 // #42: stdout is data and stderr is for people; --json prints pure JSON. Exit codes are
 // written down once (docs/guide.md, "Exit codes") and held here.
 test('exit codes: 0 ok, 1 problems or a usage error, 2 the hook blocked (#42)', () => {
@@ -2261,7 +2305,7 @@ test('exit codes: 0 ok, 1 problems or a usage error, 2 the hook blocked (#42)', 
   assert.equal(hook('git status').status, 0);
   assert.equal(sandbox.run(['doctor', '--session']).status, 0, 'a session always starts');
   assert.equal(sandbox.run(['explain', 'release']).status, 0);
-  assert.equal(sandbox.run(['doctor']).status, 1, 'steps left on the road');
+  assert.equal(sandbox.run(['doctor']).status, 1, 'nothing is installed on this machine: a problem');
   sandbox.write('b.md', `me${at}gmail.com\n`);
   sandbox.git('add', '.');
   assert.equal(sandbox.run(['check']).status, 1);
@@ -2539,6 +2583,12 @@ fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s));
   assert.equal(calls().length, 0);
   assert.equal(sandbox.run(['init', '--yes'], { extra }).status, 1, '--yes alone is refused');
   assert.equal(sandbox.run(['init', '--remove-default-labels'], { extra }).status, 1, 'so is --remove-default-labels');
+  // --github --yes asked for changes on GitHub; with no remote none were made, so it fails (#208).
+  result = sandbox.run(['init', '--github', '--yes'], { extra });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /GitHub: skipped, because there is no origin remote yet\. Add one on GitHub, then run `yokoten init --github --yes`/);
+  assert.match(result.stderr, /\nyokoten init: --github --yes changed nothing on GitHub \(the reason is above\)\. The project files are as listed above\.\n$/);
+  assert.equal(calls().length, 0);
   sandbox.git('remote', 'add', 'origin', 'https://github.com/example/repo.git');
   result = sandbox.run(['init'], { extra });
   assert.equal(result.status, 0, result.stderr);
@@ -2552,15 +2602,19 @@ fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s));
   result = sandbox.run(['init', '--github', '--yes'], { extra });
   assert.match(result.stdout, /- 12 of the 12 standard labels are there; kept\n- a milestone is open; kept\n[^]*Nothing to change\./);
   assert.equal(changed().length, 12, 'the second run changed nothing');
-  // Without gh on the PATH, init still succeeds and says so. Only node and git are there.
+  // Without gh on the PATH, plain init still succeeds and says so. Only node and git are there.
   const noGh = join(sandbox.home, 'no-gh');
   mkdirSync(noGh);
   const gitPath = spawnSync('git', ['--exec-path'], { encoding: 'utf8' }).stdout.trim();
   symlinkSync(process.execPath, join(noGh, 'node'));
   symlinkSync(join(gitPath, 'git'), join(noGh, 'git'));
-  result = sandbox.run(['init', '--github', '--yes'], { extra: { PATH: noGh } });
+  result = sandbox.run(['init'], { extra: { PATH: noGh } });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /GitHub: skipped, because gh is not installed/);
+  // init --github --yes fails: it was asked to change GitHub and could not (#208).
+  result = sandbox.run(['init', '--github', '--yes'], { extra: { PATH: noGh } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /GitHub: skipped, because gh is not installed[^\n]*\nyokoten init: --github --yes changed nothing on GitHub/);
 });
 
 // The Claude Code plugin (#31). The repo root is the plugin and its own marketplace, so the

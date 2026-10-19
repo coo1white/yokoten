@@ -5,7 +5,8 @@
 // it. A standard label that is there gets the standard colour and description, so a
 // second run changes nothing. A label outside the set is deleted only with
 // --remove-default-labels: deleting is the owner's call. Without gh, a sign-in or a
-// GitHub remote, it says what it skipped and init still succeeds.
+// GitHub remote, it says what it skipped. Plain init still succeeds; `init --github --yes`
+// fails, because the user asked for changes on GitHub and none were made (#208).
 
 import { execFileSync } from 'node:child_process';
 import { createLabel, createMilestone, deleteLabel, editLabel, type Gh, type Label, readPlanning, repoOf } from '../host/github.ts';
@@ -84,16 +85,21 @@ interface Change {
   run: () => void;
 }
 
+/** The command that sets up labels and a milestone once GitHub can be reached. */
+const SET_UP = `yokoten init --github --yes`;
+
 /**
- * Returns the report lines, and whether every change worked. `remote` is the origin URL.
- * A skip (no GitHub remote, no gh, no sign-in) is ok: init goes on and says so.
+ * Returns the report lines, whether every change worked, and whether GitHub was skipped.
+ * `remote` is the origin URL. A skip (no GitHub remote, no gh, no sign-in) is ok here:
+ * the caller decides, because only `init --github --yes` asked for a change.
  */
-export function setUpPlanning(gh: Gh, remote: string, { apply, removeDefaults }: PlanningOptions): { ok: boolean; lines: string[] } {
-  if (!remote.trim()) return { ok: true, lines: ['GitHub: skipped, because there is no origin remote yet. Add one on GitHub, then run `yokoten init --github` to set up labels and a milestone'] };
+export function setUpPlanning(gh: Gh, remote: string, { apply, removeDefaults }: PlanningOptions): { ok: boolean; skipped: boolean; lines: string[] } {
+  const skip = (line: string) => ({ ok: true, skipped: true, lines: [line] });
+  if (!remote.trim()) return skip(`GitHub: skipped, because there is no origin remote yet. Add one on GitHub, then run \`${SET_UP}\` to set up labels and a milestone`);
   const repo = repoOf(remote);
-  if (!repo) return { ok: true, lines: ['GitHub: skipped, because the origin remote is not on GitHub. Labels and a milestone need a GitHub repo'] };
+  if (!repo) return skip('GitHub: skipped, because the origin remote is not on GitHub. Labels and a milestone need a GitHub repo');
   const found = readPlanning(gh, repo);
-  if ('unread' in found) return { ok: true, lines: [`GitHub: skipped, because ${found.unread}. To set up labels and a milestone, ${found.fix}, then run \`yokoten init --github\``] };
+  if ('unread' in found) return skip(`GitHub: skipped, because ${found.unread}. To set up labels and a milestone, ${found.fix}, then run \`${SET_UP}\``);
 
   const lines = [`GitHub: ${found.repo}`];
   const changes: Change[] = [];
@@ -116,10 +122,10 @@ export function setUpPlanning(gh: Gh, remote: string, { apply, removeDefaults }:
     lines.push(`- not in the standard set: ${extra.join(', ')}. yokoten deletes them only with --remove-default-labels`);
   }
 
-  if (!changes.length) return { ok: true, lines: [...lines, 'Nothing to change.'] };
+  if (!changes.length) return { ok: true, skipped: false, lines: [...lines, 'Nothing to change.'] };
   if (!apply) {
     const command = `yokoten init --github --yes${removeDefaults ? ' --remove-default-labels' : ''}`;
-    return { ok: true, lines: [...lines, 'Would do:', ...changes.map((c) => `- ${c.what}`), `Nothing changed. Run \`${command}\` to do it.`] };
+    return { ok: true, skipped: false, lines: [...lines, 'Would do:', ...changes.map((c) => `- ${c.what}`), `Nothing changed. Run \`${command}\` to do it.`] };
   }
   // Each one on its own: one refusal does not stop the rest, and the report says which.
   let ok = true;
@@ -133,5 +139,5 @@ export function setUpPlanning(gh: Gh, remote: string, { apply, removeDefaults }:
       lines.push(`- could not ${change.what}: ${said}`);
     }
   }
-  return { ok, lines };
+  return { ok, skipped: false, lines };
 }
