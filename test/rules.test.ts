@@ -878,7 +878,7 @@ const incidentOf = (body: string, title = 'check: misses a key in a JSON file'):
 test('learn: the draft takes what, why and the fix from the issue\'s sections', () => {
   const body = '## What happened\n\nA key in a JSON file was not checked.\n\n## Why it matters\n\nA leaked key opens the account.\n\n## Why it got through\n\nThe privacy check read Markdown only.\n\n## Fix\n\nThe check reads JSON too.\nIt has a test.\n\nMore detail.\n';
   const draft = draftLesson(incidentOf(body));
-  assert.deepEqual(draft.finding, { id: 'incident-12', what: 'misses a key in a JSON file', why: 'A leaked key opens the account', fix: 'The check reads JSON too. It has a test' });
+  assert.deepEqual(draft.finding, { id: 'incident-12', what: 'misses a key in a JSON file', why: 'A leaked key opens the account', fix: 'the check reads JSON too. It has a test' });
   assert.deepEqual(draft.todos, []);
   assert.deepEqual(draft.files.map((file) => file.path), ['lessons/incident-12/lesson.ts', 'lessons/incident-12/lesson.test.ts']);
   const [lesson, check] = draft.files.map((file) => file.text);
@@ -939,7 +939,24 @@ test('learn: sections by heading or bold label, outside code blocks; one line pe
   assert.equal(summarize(sections[1].text), 'The commit check refuses it, with a test');
   assert.equal(summarize('1. First step:\n2. Second'), 'First step');
   // A quote in the issue stays inside the generated string.
-  assert.match(draftLesson(incidentOf('## Fix\n\nIt\'s fixed with a \\ path.')).files[0].text, /fix: 'It\\'s fixed with a \\\\ path',/);
+  assert.match(draftLesson(incidentOf('## Fix\n\nIt\'s fixed with a \\ path.')).files[0].text, /fix: 'it\\'s fixed with a \\\\ path',/);
+});
+
+// #182: doctor prints "<what>; <fix>", so the fix is shaped like the what: lower case
+// after the semicolon, no full stop. A code span or an acronym stays as it is.
+test('learn: the fix reads as part of one sentence with the what (#182)', () => {
+  const fixOf = (text: string) => draftLesson(incidentOf(`## Fix\n\n${text}\n`)).finding.fix;
+  assert.equal(fixOf('The test sets X.'), 'the test sets X');
+  assert.equal(fixOf('A check.'), 'a check');
+  assert.equal(fixOf('`NO_PROXY` is set.'), '`NO_PROXY` is set');
+  assert.equal(fixOf('CI runs it.'), 'CI runs it');
+  assert.equal(fixOf('NO_PROXY is set.'), 'NO_PROXY is set');
+  assert.equal(fixOf('GitHub keeps it.'), 'GitHub keeps it');
+  assert.equal(fixOf('I set NO_PROXY in the test.'), 'I set NO_PROXY in the test', 'the word I stays');
+  assert.equal(fixOf("I'm setting it."), "I'm setting it");
+  assert.equal(fixOf('It sets it.'), 'it sets it');
+  // A missing Fix section keeps its TODO as it is.
+  assert.match(draftLesson(incidentOf('')).finding.fix, /^TODO\(reviewer\): /);
 });
 
 test('learn: issue text never becomes code in the draft (positive control: the payload is real code)', () => {
@@ -1028,7 +1045,7 @@ test('learn: bidi controls from the issue are shown as \\uXXXX in the preview an
   for (const file of draft.files) assert.ok(!raw.test(readFileSync(join(root, file.path), 'utf8')), `no raw bidi control in ${file.path}`);
   const lesson = readFileSync(join(root, draft.files[0].path), 'utf8');
   assert.ok(lesson.includes('// A lesson from incident #12: repo: tests break \\u202ex\\u2066x'), 'a comment shows each as \\uXXXX text');
-  assert.ok(lesson.includes("  fix: 'A check \\u202e\\u2066\\u2067\\u2068\\u2069',"), 'a string escapes each');
+  assert.ok(lesson.includes("  fix: 'a check \\u202e\\u2066\\u2067\\u2068\\u2069',"), 'a string escapes each');
 });
 
 test('learn: --write adds the draft\'s files and keeps a file that is there', () => {
