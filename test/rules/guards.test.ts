@@ -161,6 +161,10 @@ test('release: the owner\'s approval lets it through', () => {
   allowed('npm publish', env);
 });
 
+test('release: without an agent, the fix names none (#350)', () => {
+  assert.equal(checkCommand('git push --tags', { env: {} })?.fix, 'if the owner asked for this, they start a new session of their agent with YOKOTEN_RELEASE_APPROVAL=1; do not look for another way');
+});
+
 test('approval in the command text does not count', () => {
   blocked('YOKOTEN_RELEASE_APPROVAL=1 git push --tags');
 });

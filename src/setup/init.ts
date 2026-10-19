@@ -15,6 +15,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import * as antigravity from '../agents/runtimes/antigravity.ts';
 import { addProjectHook, addProjectStopHook, checkProjectSettings, setProjectEnv } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
+import * as copilot from '../agents/runtimes/copilot.ts';
 import * as dsh from '../agents/runtimes/deepseek-harness.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import * as muse from '../agents/runtimes/muse.ts';
@@ -96,7 +97,9 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: bo
       `${addProjectStopHook(root, cli)} the stop check in .claude/settings.json (changed files, before the agent ends its turn)`,
       `${setProjectEnv(root, 'TZ', 'UTC')} TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)`,
       // Checked with a real run (#30): Copilot CLI reads these hooks, in a folder it trusts.
-      'GitHub Copilot CLI runs the hooks in .claude/settings.json once you trust this folder',
+      // It skips them without a word otherwise (#341), so the line says how to trust it.
+      'GitHub Copilot CLI runs the hooks in .claude/settings.json only after you trust this folder',
+      `to trust this folder in Copilot CLI: ${copilot.TRUST_STEP}`,
     ];
   });
   report.push(...claudeHooks.lines);
@@ -106,8 +109,10 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: bo
   const codexHooks = agentHooks('the Codex hooks', '.codex/hooks.json', () => {
     codex.checkProjectHooks(root);
     return [
-      `${codex.addProjectHook(root, cli)} the Codex tool-call hook in .codex/hooks.json (Codex asks you to trust it once, in /hooks)`,
+      `${codex.addProjectHook(root, cli)} the Codex tool-call hook in .codex/hooks.json`,
       `${codex.addProjectStopHook(root, cli)} the Codex stop check in .codex/hooks.json`,
+      'Codex runs the hooks in .codex/hooks.json only after you trust this folder and the hooks',
+      `to trust them in Codex: ${codex.TRUST_STEP}`,
     ];
   });
   const geminiHooks = agentHooks('the Gemini CLI hooks', '.gemini/settings.json', () => {
@@ -125,7 +130,7 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: bo
     return [
       `${added.guard} the Muse Code tool-call hook in .muse/hooks.json`,
       `${added.stop} the Muse Code stop check in .muse/hooks.json`,
-      'Muse Code runs the hooks in .muse/hooks.json only after you trust this folder',
+      `Muse Code runs the hooks in .muse/hooks.json only after you trust this folder: ${muse.TRUST_STEP}`,
     ];
   });
   // DeepSeek Harness runs the hooks through a bridge each profile needs. init only prints

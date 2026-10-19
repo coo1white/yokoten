@@ -24,11 +24,13 @@ import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
 import { type LessonPlace, listLessons, runLessons } from '../run/learn.ts';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
-import { hasPlugin, hasSessionDoctor, readInstalledPlugin, userSettingsProblem } from '../agents/runtimes/claude-code.ts';
+import { hasPlugin, hasProjectHook, hasSessionDoctor, readInstalledPlugin, userSettingsProblem } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
+import * as copilot from '../agents/runtimes/copilot.ts';
 import * as dsh from '../agents/runtimes/deepseek-harness.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import * as muse from '../agents/runtimes/muse.ts';
+import type { FolderTrust } from '../agents/folder-trust.ts';
 import { commentedFile, HAND_ADD, handAddJson, type HookState, mergeHandAdds } from '../agents/hooks-file.ts';
 import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
@@ -78,24 +80,71 @@ function handAddPractice(id: RuleId, file: string, states: readonly HookState[])
 }
 
 /**
+ * The note when an agent skips the project's hooks until the user trusts the folder
+ * (#341), read from the agent's own trust store; ok only when the store says trusted. A
+ * store doctor can't find or read is "can't check", never ok: Codex, Muse Code and Copilot
+ * CLI all fail open, without a word. Null when the agent's home folder is not there: a
+ * user who does not run that agent hears nothing about its trust.
+ */
+function trustPractice(id: RuleId, agent: string, file: string, trust: FolderTrust<codex.CodexTrust['state']>, step: string): Practice | null {
+  const note = (what: string, fix: string) => practice(id, id, false, what, fix);
+  switch (trust.state) {
+    case 'no home':
+      return null;
+    case 'trusted':
+      return practice(id, id, true, '', '');
+    case 'untrusted':
+      return note(`${agent} skips ${file} until you trust this folder`, step);
+    case 'no store':
+      return note(`can't check whether ${agent} trusts this folder: no ${trust.store}`, `if you use ${agent}: ${step}`);
+    case 'unreadable':
+      return note(`can't check whether ${agent} trusts this folder: can't read ${trust.store}`, `if you use ${agent}: ${step}`);
+    case 'hooks untrusted':
+      return note(`${agent} trusts this folder, but not yokoten's hooks in ${file}, so it skips them`, 'in a Codex session here, trust both in `/hooks`');
+    case 'hooks changed':
+      return note(`yokoten's hooks in ${file} changed after you trusted them, so ${agent} skips them`, 'in a Codex session here, trust both again in `/hooks`');
+    case 'hooks off':
+      return note(`a yokoten hook in ${file} is turned off in ${agent}`, 'in a Codex session here, turn it on in `/hooks`');
+  }
+}
+
+/** The hook-file line when the agent's home is not there: the file is in place, and its trust is not checked. */
+const unchecked = (id: RuleId, file: string, home: string): Practice => ({ name: id, ok: true, finding: finding(id, '', ''), detail: `${file} is in place; trust not checked, no ${home}` });
+
+/**
  * The other agents' project hooks: the tool-call guard and the stop check. Reported, but
  * not a missing practice: a project that uses none of these agents should not fail doctor
  * over them. Real runs blocked through Codex, Antigravity CLI, Muse Code and DeepSeek Harness; Gemini CLI is not run yet (#30).
  * A Gemini CLI file with comments, which init won't rewrite, gets the hooks to add by hand.
+ * Codex, Muse Code and Copilot CLI run the hooks only in a folder the user trusts: `env`
+ * finds their trust stores (HOME, CODEX_HOME, XDG_CONFIG_HOME, COPILOT_HOME).
  */
-export function agentHooks(root: string, env: Env = process.env, platform: string = process.platform): Practice[] {
+export function agentHooks(root: string, env: Env, platform: string = process.platform): Practice[] {
   // Each step wants both project hooks: the tool-call guard and the stop check (#211).
   const missing = (guard: boolean, stop: boolean, file: string) =>
     [...(guard ? [] : ['no tool-call guard']), ...(stop ? [] : ['no stop check'])].join(' and ') + ` in ${file}`;
   const [codexGuard, codexStop] = [codex.hasProjectHook(root), codex.hasProjectStopHook(root)];
   const [geminiGuard, geminiStop] = [gemini.hasProjectHook(root), gemini.hasProjectStopHook(root)];
   const geminiState = geminiGuard && geminiStop ? null : gemini.projectHooksState(root, cliPath(root));
+  // Copilot CLI reads Claude Code's hooks: the road checks the file, this line only the trust,
+  // and only when Copilot looks used here.
+  const copilotTrust = copilot.readTrust(root, env);
+  const copilotLine =
+    copilotTrust.state === 'no home'
+      ? null
+      : hasProjectHook(root)
+        ? trustPractice('copilot-hook', 'Copilot CLI', '.claude/settings.json', copilotTrust, copilot.TRUST_STEP)
+        : practice('copilot-hook', 'copilot-hook', false, 'no tool-call guard in .claude/settings.json', '`yokoten init` adds it');
+  const codexTrust = codexGuard && codexStop ? codex.readTrust(root, env) : null;
   return [
-    practice('codex-hook', 'codex-hook', codexGuard && codexStop, missing(codexGuard, codexStop, '.codex/hooks.json'), '`yokoten init` adds it'),
+    ...(copilotLine ? [copilotLine] : []),
+    codexTrust
+      ? (trustPractice('codex-hook', 'Codex', '.codex/hooks.json', codexTrust, codex.TRUST_STEP) ?? unchecked('codex-hook', '.codex/hooks.json', codexTrust.store.replace('/config.toml', '')))
+      : practice('codex-hook', 'codex-hook', false, missing(codexGuard, codexStop, '.codex/hooks.json'), '`yokoten init` adds it'),
     (geminiState && handAddPractice('gemini-hook', '.gemini/settings.json', [geminiState.guard, geminiState.stop])) ??
       practice('gemini-hook', 'gemini-hook', geminiGuard && geminiStop, missing(geminiGuard, geminiStop, '.gemini/settings.json'), '`yokoten init` adds it'),
     antigravityPractice(antigravity.projectHookState(root, cliPath(root))),
-    musePractice(muse.projectHooksState(root, cliPath(root))),
+    musePractice(muse.projectHooksState(root, cliPath(root)), () => muse.readTrust(root, env)),
     platform === 'win32' ? practice('deepseek-harness-hook', 'deepseek-harness-hook', false, dsh.WINDOWS_GAP, 'nothing to do yet: issue #332 adds a PowerShell guard') : dshPractice(dsh.projectHooksState(root, cliPath(root)), dsh.profilesWithBridge(env)),
   ];
 }
@@ -108,14 +157,16 @@ function antigravityPractice(state: HookState): Practice {
   return practice('antigravity-hook', 'antigravity-hook', state === 'same', `no tool-call guard in ${file}`, '`yokoten init` adds it');
 }
 
-/** Muse Code's tool-call guard and stop check in .muse/hooks.json: missing, out of date, or a file init can't edit. */
-function musePractice(states: { guard: HookState; stop: HookState }): Practice {
+/** Muse Code's tool-call guard and stop check in .muse/hooks.json: missing, out of date, a file init can't edit, or a folder Muse does not trust. */
+function musePractice(states: { guard: HookState; stop: HookState }, readTrust: () => FolderTrust): Practice {
   const file = '.muse/hooks.json';
   const all = [states.guard, states.stop];
   const problem = all.find((state) => typeof state === 'object');
   if (problem) return practice('muse-hook', 'muse-hook', false, problem.kind === 'json' ? `can't read ${file}` : `${file} has an unexpected shape`, 'make it valid JSON with a "hooks" object, then run `yokoten init`');
   if (all.includes('updated')) return practice('muse-hook', 'muse-hook', false, `the hooks in ${file} are out of date`, '`yokoten init` updates them');
-  return practice('muse-hook', 'muse-hook', all.every((state) => state === 'same'), `no tool-call guard or stop check in ${file}`, '`yokoten init` adds them');
+  if (!all.every((state) => state === 'same')) return practice('muse-hook', 'muse-hook', false, `no tool-call guard or stop check in ${file}`, '`yokoten init` adds them');
+  const trust = readTrust();
+  return trustPractice('muse-hook', 'Muse Code', file, trust, muse.TRUST_STEP) ?? unchecked('muse-hook', file, trust.store.replace('/trust.json', ''));
 }
 
 /**
