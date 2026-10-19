@@ -1293,12 +1293,14 @@ test('exit codes: 0 ok, 1 problems or a usage error, 2 the hook blocked (#42)', 
     assert.match(out.error, /^[^\n]+$/, `${args.join(' ')}: one line`);
     assert.match(r.stderr, new RegExp(`^yokoten ${args[0]}: .+ Run \`yokoten ${args[0]} --help\`\\.\\n$`), args.join(' '));
   }
-  // An error past the parser, caught at the top, is JSON too.
-  const crashed = sandbox.run(['check', '--pr', '--json'], { extra: { GITHUB_EVENT_PATH: join(sandbox.repo, 'no-such-event.json') } });
+  // An error past the parser, caught at the top, is JSON too. A broken yokoten.json is
+  // such an error: the config is read before any check runs.
+  sandbox.write('yokoten.json', '{\n');
+  const crashed = sandbox.run(['check', '--json']);
   assert.equal(crashed.status, 1);
   assert.deepEqual({ ...JSON.parse(crashed.stdout), error: 'x' }, { command: 'check', ok: false, error: 'x' });
-  assert.match(JSON.parse(crashed.stdout).error, /^ENOENT/);
-  assert.match(crashed.stderr, /^yokoten check: ENOENT/);
+  assert.match(JSON.parse(crashed.stdout).error, /^yokoten\.json: [^\n]+$/);
+  assert.match(crashed.stderr, /^yokoten check: yokoten\.json: /);
 });
 
 test('outside a git repo: every command that needs one says so plainly, exits 1 and writes nothing (#205)', () => {
