@@ -42,7 +42,7 @@ const projectSettings = (root: string) => join(root, '.gemini', 'settings.json')
  * path with a space, and the hook would fail open. An older quoted hook is updated in place.
  */
 export const addProjectHook = (root: string, cli: string) =>
-  addHook(projectSettings(root), 'BeforeTool', 'run_shell_command|write_file|replace', guardCommand(`$GEMINI_PROJECT_DIR/${cli}`, 'hook --agent gemini', missingProjectRuntime(cli)), {
+  addHook(projectSettings(root), 'BeforeTool', 'run_shell_command|write_file|replace', guardCommand(`$GEMINI_PROJECT_DIR/${cli}`, 'hook --agent gemini', missingProjectRuntime(cli), { isToolCall: true }), {
     name: 'yokoten',
   });
 export const hasProjectHook = (root: string): boolean => hasHook(projectSettings(root), 'BeforeTool', 'hook');
@@ -73,6 +73,6 @@ const userSettings = (env: Env) => join(env.HOME || homedir(), '.gemini', 'setti
 export function addUserHooks(env: Env, cli: string, missing: string): { doctor: Added; guard: Added } {
   return {
     doctor: addHook(userSettings(env), 'SessionStart', undefined, guardCommand(cli, 'doctor --session --agent gemini', missing, { isSessionStart: true, sessionOutput: 'json' }), { name: 'yokoten-session' }),
-    guard: addHook(userSettings(env), 'BeforeTool', SHELL, guardCommand(cli, 'hook --agent gemini --commands-only', missing), { name: 'yokoten-guard' }),
+    guard: addHook(userSettings(env), 'BeforeTool', SHELL, guardCommand(cli, 'hook --agent gemini --commands-only', missing, { isToolCall: true }), { name: 'yokoten-guard' }),
   };
 }

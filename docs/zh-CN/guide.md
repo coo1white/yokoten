@@ -435,10 +435,18 @@ CI 没过，不用再翻日志找原因。`check` 在 GitHub Actions 里跑的�
 | 1 | 查出了问题（`check`、`doctor`）、id 不存在（`explain`）、命令用法不对，或者 yokoten 自己出错 |
 | 2 | hook 拦下了这次工具调用，或者收尾检查把 AI 叫回来了，原因在标准错误里 |
 
-这几个数字定下来就不改。守卫自己坏了会给 1，不给 2：这样你看得到它坏了，它也不会把每次
-工具调用都拦住。工具调用守卫是例外：hook 跑得比 AI 工具的超时还久，工具就会直接放行，
-所以守卫读一次调用超过 5 秒（可以用 `YOKOTEN_GUARD_DEADLINE_MS` 改，最多 30 秒），或者读的时候出错，
-都会拒绝这次调用，给 2（`unreadable-command`）。
+这几个数字定下来就不改。yokoten 自己出错时给 1。可是三个 AI 工具都只认 2 才拦，守卫一崩，
+调用就放过去了。所以 `init`、`install` 和插件写的工具调用 hook 会把别的退出码都改成 2：
+守卫崩了、内存爆了、被杀掉了，这次调用都会被拒绝，标准错误里有一行
+`` yokoten's guard failed (exit N), so the command is refused; run `yokoten doctor` ``。
+标准错误里只有这一行，node 自己的报错和 shell 打的「Killed」都不显示。
+有两种情况还是 1：运行时的文件夹没了，或者 AI 工具的 PATH 里找不到 `node`。这时 hook
+说一行提示就放行，免得每次工具调用都被拦住，你还能跑 `yokoten doctor` 看是怎么回事。
+收尾检查和会话开头的 doctor 照旧，出错就原样交出去。
+
+AI 工具还有一条：hook 跑得比它的超时还久，工具就直接放行。所以守卫读一次调用超过 5 秒
+（可以用 `YOKOTEN_GUARD_DEADLINE_MS` 改，最多 30 秒），或者读的时候出错，都会拒绝这次
+调用，给 2（`unreadable-command`）。
 
 ### 收尾检查
 

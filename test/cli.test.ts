@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { closestWord, COMMANDS, editDistance, guardCommand, HELP_OPTIONS } from '../src/run/cli.ts';
+import { closestWord, COMMANDS, editDistance, guardCommand, HELP_OPTIONS, refuseOnFailure } from '../src/run/cli.ts';
 import { copyRuntime } from '../src/setup/files.ts';
 import { guardDeadline } from '../src/run/hook.ts';
 import { checkLines } from '../src/setup/init.ts';
@@ -19,6 +19,13 @@ const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'yokoten.
 // A project hook command as init writes it: a plain line when `path` is gone (#204), else node.
 const MISSING_PROJECT = 'yokoten: the hook cannot run, because .yokoten/ is missing. Restore it from git, or run yokoten init again';
 const guarded = (path: string, args: string) => `[ -f ${path} ] 2>/dev/null || { echo '${MISSING_PROJECT}' >&2; exit 1; }; node ${path} ${args}`;
+// A tool-call guard fails closed (#260): no node is one line and exit 1; then a small heap,
+// node's stderr held back, and any exit but 0 and 2 becomes 2 with one line.
+const MISSING_NODE = 'yokoten: the guard cannot run, because node is not on PATH for this agent; run yokoten doctor in a terminal';
+const REFUSE = 'case $code in 0|2) printf %s "${err%x}" >&2;; *) echo "yokoten\'s guard failed (exit $code), so the command is refused; run \\`yokoten doctor\\`" >&2; code=2;; esac; exit $code';
+const onToolCall = (check: string, path: string, args: string) =>
+  `${check}command -v node >/dev/null 2>&1 || { echo '${MISSING_NODE}' >&2; exit 1; }; { err=$( ( node --max-old-space-size=256 ${path} ${args} 2>&1 1>&3 3>&-; c=$?; printf x; exit $c ) 2>/dev/null ); code=$?; } 3>&1; ${REFUSE}`;
+const guardedCall = (path: string, args: string) => onToolCall(`[ -f ${path} ] 2>/dev/null || { echo '${MISSING_PROJECT}' >&2; exit 1; }; `, path, args);
 const at = '@';
 
 const pick = (result: { status: number | null; stdout: string; stderr: string }) => [result.status, result.stdout, result.stderr];
@@ -368,7 +375,7 @@ test('init: the Gemini hook command runs when Gemini quotes a path with a space 
   const groups = JSON.parse(readFileSync(join(repo, '.gemini', 'settings.json'), 'utf8')).hooks.BeforeTool;
   assert.equal(groups.length, 1, 'updated, not added');
   const command: string = groups[0].hooks[0].command;
-  assert.equal(command, guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --agent gemini'));
+  assert.equal(command, guardedCall('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --agent gemini'));
   // shell-quote, which Gemini uses, writes a path with a space and no single quote as
   // '…'; a single quote inside would become '\''.
   const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
@@ -897,14 +904,14 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.equal(codex.description, 'ours');
   assert.equal(codex.hooks.PreToolUse.length, 2);
   assert.deepEqual(codex.hooks.PreToolUse[1], {
-    hooks: [{ type: 'command', command: guarded('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.ts"', 'hook --agent codex') }],
+    hooks: [{ type: 'command', command: guardedCall('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.ts"', 'hook --agent codex') }],
     matcher: 'Bash|apply_patch',
   });
   const gemini = JSON.parse(readFileSync(join(sandbox.repo, '.gemini', 'settings.json'), 'utf8'));
   assert.equal(gemini.theme, 'x');
   assert.equal(gemini.hooks.BeforeTool.length, 2);
   assert.deepEqual(gemini.hooks.BeforeTool[1], {
-    hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --agent gemini'), name: 'yokoten' }],
+    hooks: [{ type: 'command', command: guardedCall('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --agent gemini'), name: 'yokoten' }],
     matcher: 'run_shell_command|write_file|replace',
   });
   // The stop checks (#211): Codex's Stop and Gemini's AfterAgent take no matcher, once each.
@@ -1629,7 +1636,7 @@ test('install: the session doctor and the command guard for Codex and Gemini CLI
   const cli = '"$HOME/.local/share/yokoten/bin/yokoten.ts"';
   const line = 'yokoten: the runtime at ~/.local/share/yokoten is missing; run the install again';
   const atStart = (args: string) => `[ -f ${cli} ] 2>/dev/null || { echo '${line}'; exit 0; }; node ${cli} ${args}`;
-  const onCall = (args: string) => `[ -f ${cli} ] 2>/dev/null || { echo '${line}' >&2; exit 1; }; node ${cli} ${args}`;
+  const onCall = (args: string) => onToolCall(`[ -f ${cli} ] 2>/dev/null || { echo '${line}' >&2; exit 1; }; `, cli, args);
   let result = sandbox.run(['install']);
   assert.equal(result.status, 0, result.stderr);
   for (const what of ['Codex SessionStart doctor', 'Codex command guard', 'Gemini CLI SessionStart doctor', 'Gemini CLI command guard']) assert.match(result.stdout, new RegExp(`^added the ${what} in ~/`, 'm'));
@@ -2611,7 +2618,7 @@ test('plugin: its hooks are the ones install adds, and the guard it registers bl
   assert.equal(sandbox.run(['install']).status, 0);
   const installed = JSON.parse(readFileSync(join(sandbox.home, '.claude', 'settings.json'), 'utf8')).hooks;
   // Claude Code keeps the plugin's copy, so only install's commands check that the copy is there (#204).
-  const unguard = (command: string) => command.replace(/^\[ -f .*?; \}; (?=node )/, '');
+  const unguard = (command: string) => command.replace(/^\[ -f .*?; \}; (?=node |command -v node )/, '');
   const shape = (h: typeof hooks, cli: string) => Object.fromEntries(Object.entries(h).map(([event, groups]) => [event, groups.map((g) => ({ matcher: g.matcher, commands: g.hooks.map((x) => `${x.type}: ${unguard(x.command).replace(cli, 'CLI')}`) }))]));
   assert.deepEqual(shape(hooks, `"${PLUGIN_ROOT}/bin/yokoten.ts"`), shape(installed, '"$HOME/.local/share/yokoten/bin/yokoten.ts"'));
   // The command as Claude Code runs it: the root filled in, through the shell.
@@ -2906,4 +2913,90 @@ test('adopt: with no key, the rule-based draft and how to set the key; it change
   assert.equal(rows.find((row) => row.key === 'tests')?.decision, 'as-is');
   assert.match(json.stderr, /drafted by rules/);
   assert.equal(sandbox.git('status', '--porcelain', '--ignored').stdout, before, 'adopt writes nothing');
+});
+
+// A guard that crashes, runs out of memory or is killed must refuse the call: the agents
+// run a call on any exit but 2 (#260). Each tool-call hook, as init, install and the plugin
+// write it, runs through sh with its runtime replaced by a script that ends one way.
+test('hooks: a tool-call guard that fails refuses the call; the stop check does not (#260)', () => {
+  const sandbox = makeSandbox();
+  // Codex and Gemini CLI are installed, so install writes their home hooks too.
+  for (const dir of ['.codex', '.gemini']) mkdirSync(join(sandbox.home, dir), { recursive: true });
+  assert.equal(sandbox.run(['install']).status, 0);
+  assert.equal(sandbox.run(['init']).status, 0);
+  const commands = (file: string) => {
+    const hooks = JSON.parse(readFileSync(file, 'utf8')).hooks as Record<string, { hooks: { command: string }[] }[]>;
+    return Object.fromEntries(Object.entries(hooks).map(([event, groups]) => [event, groups.flatMap((g) => g.hooks.map((h) => h.command))]));
+  };
+  const project = commands(join(sandbox.repo, '.claude', 'settings.json'));
+  const codex = commands(join(sandbox.repo, '.codex', 'hooks.json'));
+  const gemini = commands(join(sandbox.repo, '.gemini', 'settings.json'));
+  const user = commands(join(sandbox.home, '.claude', 'settings.json'));
+  const codexUser = commands(join(sandbox.home, '.codex', 'hooks.json'));
+  const geminiUser = commands(join(sandbox.home, '.gemini', 'settings.json'));
+  const plugin = (manifest('plugin.json').hooks.PreToolUse[0].hooks[0].command as string).replaceAll(PLUGIN_ROOT, '$PLUGIN');
+  const calls = [...project.PreToolUse, ...codex.PreToolUse.slice(-1), ...gemini.BeforeTool.slice(-1), ...user.PreToolUse, ...codexUser.PreToolUse, ...geminiUser.BeforeTool, plugin];
+  assert.equal(calls.length, 7);
+  // The project, the home and the plugin all sit under a path with a space.
+  const base = join(sandbox.home, 'a b');
+  const repo = join(base, 'my repo');
+  const home = join(base, 'home');
+  const pluginRoot = join(base, 'plugin');
+  mkdirSync(repo, { recursive: true });
+  assert.equal(spawnSync('git', ['init', '-q'], { cwd: repo }).status, 0);
+  const runtimes = [join(repo, '.yokoten', 'bin', 'yokoten.ts'), join(home, '.local', 'share', 'yokoten', 'bin', 'yokoten.ts'), join(pluginRoot, 'bin', 'yokoten.ts')];
+  const runtime = (body: string) => {
+    for (const file of runtimes) {
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, body);
+    }
+  };
+  const env = { ...sandbox.env, HOME: home, CLAUDE_PROJECT_DIR: repo, GEMINI_PROJECT_DIR: repo, PLUGIN: pluginRoot };
+  // Gemini CLI puts $GEMINI_PROJECT_DIR in the command shell-quoted itself, as shell-quote writes it.
+  const quoted = `'${repo.replaceAll("'", "'\\''")}'`;
+  // dash (Linux's /bin/sh) and bash each print a job line for a killed child; bash's holds
+  // the whole command, paths included. Each command runs under both.
+  const shells = ['/bin/sh', '/bin/bash'].filter((sh) => existsSync(sh));
+  const shell = (command: string, sh = '/bin/sh', extra: Record<string, string> = {}) =>
+    spawnSync(command.replaceAll('$GEMINI_PROJECT_DIR', quoted), { shell: sh, cwd: repo, env: { ...env, ...extra }, input: '{}', encoding: 'utf8' });
+  const each = (commands: string[], expected: unknown[]) => {
+    for (const sh of shells) for (const command of commands) assert.deepEqual(pick(shell(command, sh)), expected, `${sh}: ${command}`);
+  };
+  const refused = (code: number) => `yokoten's guard failed (exit ${code}), so the command is refused; run \`yokoten doctor\`\n`;
+  // A failure gives our one line on stderr and nothing else: node's own error is dropped.
+  runtime("process.stderr.write('a trace with /a/path\\n'); process.exit(1);\n");
+  each(calls, [2, '', refused(1)]);
+  runtime("process.stderr.write('/a/path\\n'); process.kill(process.pid, 'SIGKILL');\n");
+  each(calls, [2, '', refused(137)]);
+  // A guard's own answer passes as it is, stdout and stderr byte for byte.
+  runtime("process.stdout.write('{\"a\":1}\\n\\n'); process.stderr.write('note\\n\\n'); process.exit(0);\n");
+  each(calls, [0, '{"a":1}\n\n', 'note\n\n']);
+  runtime("process.stdout.write('{}'); process.stderr.write('no\\n'); process.exit(2);\n");
+  each(calls, [2, '{}', 'no\n']);
+  // A runaway read stops at the small heap and is refused, without swapping, and without
+  // the heap trace V8 writes.
+  runtime('const a = []; for (;;) a.push(new Array(1e6).fill(1));\n');
+  each([project.PreToolUse[0], plugin], [2, '', refused(134)]);
+  // No node on the agent's PATH: one line, and the call goes on, so `yokoten doctor` can run.
+  const noNode = join(base, 'no-node');
+  mkdirSync(noNode);
+  symlinkSync(spawnSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim(), join(noNode, 'git'));
+  runtime('process.exit(0);\n');
+  for (const sh of shells) for (const command of calls) assert.deepEqual(pick(shell(command, sh, { PATH: noNode })), [1, '', `${MISSING_NODE}\n`], `${sh}: ${command}`);
+  // The stop check and the session doctor pass a failure on: exit 2 at stop would send the
+  // agent back to work on a guard that cannot run.
+  runtime('process.exit(1);\n');
+  for (const command of [...project.Stop, ...codex.Stop, ...gemini.AfterAgent, ...user.SessionStart, ...codexUser.SessionStart, ...geminiUser.SessionStart]) {
+    assert.deepEqual(pick(shell(command)), [1, '', ''], command);
+  }
+  // A missing runtime still says its line and goes on, as before.
+  for (const file of runtimes) rmSync(file);
+  const machineLine = 'yokoten: the runtime at ~/.local/share/yokoten is missing; run the install again\n';
+  each([...project.PreToolUse, ...codex.PreToolUse.slice(-1), ...gemini.BeforeTool.slice(-1)], [1, '', `${MISSING_PROJECT}\n`]);
+  each([...user.PreToolUse, ...codexUser.PreToolUse, ...geminiUser.BeforeTool], [1, '', machineLine]);
+});
+
+// The plugin's guard is the text the builder makes, so the two cannot drift (#260).
+test('plugin: its tool-call guard is the command refuseOnFailure builds', () => {
+  assert.equal(manifest('plugin.json').hooks.PreToolUse[0].hooks[0].command, refuseOnFailure(`"${PLUGIN_ROOT}/bin/yokoten.ts"`, 'hook --commands-only'));
 });
