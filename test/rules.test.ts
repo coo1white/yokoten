@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import { type Config, DEFAULTS, findUnknownKeys, loadConfig, matcher } from '../src/rules/config.ts';
 import { checkCommand, checkEdit } from '../src/rules/guards.ts';
 import { checkBuildOutput, checkLayout, isBuildOutput } from '../src/rules/layout.ts';
-import { DOCS_URL, type Finding, finding, formatFinding, type Rule, RULES } from '../src/rules/message.ts';
+import { DOCS_URL, type Finding, finding, formatFinding, notRepoFinding, type Rule, RULES } from '../src/rules/message.ts';
 import { POSITIVE_CONTROL, scanText } from '../src/rules/privacy.ts';
 import { SECRET_CONTROL } from '../src/rules/secrets.ts';
 import { batchBlobs, check, checkHistory, readBlobs, timeZoneNote } from '../src/run/check.ts';
@@ -694,6 +694,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   // The road and the machine, from an empty folder and an empty home.
   const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
   for (const step of ROAD) add(stepFinding(step, dir, { HOME: dir }));
+  add(notRepoFinding(dir));
   writeFileSync(join(dir, 'yokoten.json'), '{ "colour": "blue" }');
   add(findUnknownKeys(dir)[0]);
   rmSync(join(dir, 'yokoten.json'));

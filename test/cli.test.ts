@@ -2171,6 +2171,67 @@ test('exit codes: 0 ok, 1 problems or a usage error, 2 the hook blocked (#42)', 
   }
 });
 
+test('outside a git repo: every command that needs one says so plainly, exits 1 and writes nothing (#205)', () => {
+  const sandbox = makeSandbox();
+  // Inside the sandbox home, so the folder shows as ~.
+  const away = join(sandbox.home, 'away');
+  mkdirSync(away);
+  const said = (command: string) => new RegExp(`^yokoten ${command}: ~/away is not inside a git repo\\. The checks read commits, so yokoten needs git history\\. Run it inside your project, or \`git init\` first\\.\\n  docs: \\S+#commands\\n$`);
+  const runs: [string[], string, Record<string, string>?][] = [
+    [['doctor'], 'doctor'],
+    [['check'], 'check'],
+    [['check', '--staged'], 'check'],
+    [['check', '--history'], 'check'],
+    [['check', '--pr'], 'check'],
+    [['check', '--issue'], 'check'],
+    [['adopt'], 'adopt'],
+    [['update'], 'update'],
+    [['update', '--write'], 'update'],
+    [['init'], 'init'],
+    [['init', '--github', '--yes'], 'init'],
+    [['bot', '--', 'gh', 'issue', 'list'], 'bot', { YOKOTEN_BOT_APP_ID: '1' }],
+  ];
+  for (const [args, command, extra] of runs) {
+    const result = sandbox.run(args, { cwd: away, extra });
+    assert.equal(result.status, 1, args.join(' '));
+    assert.equal(result.stdout, '', `${args.join(' ')}: nothing on stdout`);
+    assert.match(result.stderr, said(command), args.join(' '));
+    assert.deepEqual(readdirSync(away), [], `${args.join(' ')}: nothing written`);
+  }
+  // --json: the same finding, as data.
+  for (const args of [['check', '--json'], ['doctor', '--json']]) {
+    const result = sandbox.run(args, { cwd: away });
+    assert.equal(result.status, 1, args.join(' '));
+    const out = JSON.parse(result.stdout);
+    assert.equal(out.ok, false);
+    const found = out.findings.find((f: { id: string }) => f.id === 'not-a-repo');
+    assert.equal(found?.what, '~/away is not inside a git repo', args.join(' '));
+  }
+  // init in a folder that does not exist creates nothing: a typo never becomes a project.
+  const result = sandbox.run(['init', 'typo'], { cwd: away });
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, 'yokoten init: typo does not exist; nothing was written. Create it and run `git init` there first.\n');
+  assert.deepEqual(readdirSync(away), [], 'no folder made');
+  // A session in a non-repo folder gets no noise, and starts.
+  const session = sandbox.run(['doctor', '--session'], { cwd: away });
+  assert.deepEqual([session.status, session.stdout, session.stderr], [0, '', '']);
+  // changelog reads changes/ only, and needs no git.
+  assert.equal(sandbox.run(['changelog'], { cwd: away }).status, 0);
+});
+
+test('git not installed: a command that needs a repo says git is missing, not "not a repo" (#205)', () => {
+  const sandbox = makeSandbox();
+  // Only node on the PATH.
+  const noGit = join(sandbox.home, 'no-git');
+  mkdirSync(noGit);
+  symlinkSync(process.execPath, join(noGit, 'node'));
+  for (const command of ['check', 'doctor']) {
+    const result = sandbox.run([command], { extra: { PATH: noGit } });
+    assert.equal(result.status, 1, command);
+    assert.match(result.stderr, new RegExp(`^yokoten ${command}: git is not installed \\(or not on PATH\\); yokoten needs git\\. `), command);
+  }
+});
+
 test('help: every command has --help, -h and `help <command>`; each exits 0 and writes nothing (#207)', () => {
   const sandbox = makeSandbox();
   sandbox.write('a.md', 'fine\n');
