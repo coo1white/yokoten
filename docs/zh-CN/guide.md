@@ -421,8 +421,9 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 你是不是想打 "doctor"。`bot --` 后面的词都交给要运行的命令，所以
 `yokoten bot -- gh --help` 运行的是 `gh --help`。
 
-`check`、`doctor`、`hook`、`explain` 都可以加 `--json`。加了以后，标准输出里只有 JSON，
-别的什么都没有，方便 AI 和脚本读。每条结果的字段都一样：`id`、`what`、`why`、`fix`；
+`check`、`doctor`、`hook`、`explain`、`adopt` 都可以加 `--json`。加了以后，标准输出里只有 JSON，
+别的什么都没有，方便 AI 和脚本读。出错时也一样：用法写错了或者程序出错，标准输出是
+`{ command, ok: false, error }`，退出码是 1，错误信息照样打在标准错误里。每条结果的字段都一样：`id`、`what`、`why`、`fix`；
 指南里讲到这条规则的，再加 `docs`（链接）；问题出在文件里的，再加 `file` 和 `line`。
 拿 `id` 去跑 `yokoten explain` 就能看到详细说明。任何字段里都不会有隐私内容。
 

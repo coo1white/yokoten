@@ -2682,6 +2682,35 @@ test('exit codes: 0 ok, 1 problems or a usage error, 2 the hook blocked (#42)', 
     assert.equal(r.stdout, '', `${args.join(' ')}: nothing on stdout`);
     assert.notEqual(r.stderr, '', `${args.join(' ')}: says why on stderr`);
   }
+  // With --json, the usage error is JSON on stdout too, and still said on stderr (#280).
+  const jsonErrors = [
+    ['check', '--json', '--bogus'],
+    ['check', '--json', '--staged', '--pr'],
+    ['check', '--json', 'extra'],
+    ['doctor', '--json', '--bogus'],
+    ['explain', '--json', 'a', 'b'],
+    ['adopt', '--json', '--x'],
+    ['hook', '--json', '--agent', 'nope'],
+    ['hook', '--json', '--agent'],
+  ];
+  for (const args of jsonErrors) {
+    const r = sandbox.run(args, { input: '{}' });
+    assert.equal(r.status, 1, args.join(' '));
+    const out = JSON.parse(r.stdout);
+    assert.deepEqual(Object.keys(out), ['command', 'ok', 'error'], args.join(' '));
+    assert.equal(out.command, args[0]);
+    assert.equal(out.ok, false);
+    assert.match(out.error, /^[^\n]+$/, `${args.join(' ')}: one line`);
+    assert.match(r.stderr, new RegExp(`^yokoten ${args[0]}: .+ Run \`yokoten ${args[0]} --help\`\\.\\n$`), args.join(' '));
+  }
+  // An error past the parser, caught at the top, is JSON too. A broken yokoten.json is
+  // such an error: the config is read before any check runs.
+  sandbox.write('yokoten.json', '{\n');
+  const crashed = sandbox.run(['check', '--json']);
+  assert.equal(crashed.status, 1);
+  assert.deepEqual({ ...JSON.parse(crashed.stdout), error: 'x' }, { command: 'check', ok: false, error: 'x' });
+  assert.match(JSON.parse(crashed.stdout).error, /^yokoten\.json: [^\n]+$/);
+  assert.match(crashed.stderr, /^yokoten check: yokoten\.json: /);
 });
 
 test('outside a git repo: every command that needs one says so plainly, exits 1 and writes nothing (#205)', () => {
@@ -3389,6 +3418,14 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
     const own = await run(['gh', 'issue', 'list'], path, ['--help']);
     assert.equal(own.status, 0, own.stderr);
     assert.equal(ran().length, good.length + 2, 'gh did not run for bot --help');
+    // A command that is not there, or that a signal ends, is named with the reason (#282).
+    const absent = await run(['no-such-cmd-xyz', 'arg']);
+    assert.deepEqual([absent.status, absent.stderr], [1, 'yokoten bot: could not run no-such-cmd-xyz: ENOENT\n']);
+    writeFileSync(join(bin, 'killed'), '#!/bin/sh\nkill -TERM $$\n');
+    chmodSync(join(bin, 'killed'), 0o755);
+    const killed = await run(['killed']);
+    assert.deepEqual([killed.status, killed.stderr], [1, 'yokoten bot: killed was ended by SIGTERM\n']);
+    for (const said of [absent.stderr, killed.stderr]) assert.doesNotMatch(said, /ghs_test|bot\.pem|GH_TOKEN/, 'no token or env');
   } finally {
     server.close();
   }
