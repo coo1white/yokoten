@@ -878,6 +878,18 @@ function sourcesInput(words: string[], i: number): boolean {
   return /^\/(?:dev\/(?:stdin|fd\/\d+)|proc\/[^/]+\/fd\/\d+)$/.test(file.replace(/\/{2,}/g, '/'));
 }
 
+// A command that, in the middle of a pipeline, hands on what comes in: `tee` with any files,
+// `cat` with no file but `-`. The next command gets what the one before it printed.
+function passesOn(words: string[]): boolean {
+  const program = findPrograms(words)[0];
+  if (program === undefined) return false;
+  const name = programName(program);
+  if (name === 'tee') return true;
+  if (name !== 'cat') return false;
+  const at = words.indexOf(program, skipPrefix(words, 0));
+  return at !== -1 && words.slice(at + 1).every((word) => word.startsWith('-'));
+}
+
 // `source x` and `. x`: the shell runs the file, so a `<(...)` given to it is commands.
 function isSource(words: string[]): boolean {
   const program = findPrograms(words)[0];
@@ -892,6 +904,80 @@ function xargsCommand(words: string[]): string | null {
   if (index === -1) return null;
   for (index++; index < words.length && words[index].startsWith('-'); ) index += LAUNCHERS.xargs.options.includes(words[index]) ? 2 : 1;
   return words.slice(index).join(' ');
+}
+
+// What a command prints, as the command it pipes into reads it: for printf, its format
+// filled in (see printfText); for any other, its words after the program, as echo prints
+// them, with each \n a line end. Over-reading is fine: `cat x` "prints" x.
+function printedText(words: string[]): string {
+  const at = skipPrefix(words, 0);
+  const program = findPrograms(words)[0];
+  const printfAt = program !== undefined && programName(program) === 'printf' ? words.indexOf(program, at) : -1;
+  if (printfAt !== -1) return printfText(words.slice(printfAt + 1));
+  return words.slice(at + 1).join(' ').replace(/\\n/g, '\n');
+}
+
+// More text than this from printf's format said again for each set of arguments, and the
+// guard reads the format and the arguments as plain words instead.
+const MAX_PRINTF_REPEATS = 65_536;
+
+// What `printf [-v name] [--] format args...` prints, when the format's only conversions are
+// %s and %b (and %%): the format with each conversion filled by the next argument, again
+// while arguments are left, and its escapes \n \t \\ read. For any harder format, the
+// arguments and the format, as words: the guard reads more than printf prints, never less.
+function printfText(args: string[]): string {
+  let at = 0;
+  if (args[at] === '-v') at += 2;
+  if (args[at] === '--') at++;
+  const format = args[at] ?? '';
+  const values = args.slice(at + 1);
+  spend(format.length + values.length);
+  const texts: string[] = ['']; // the format's text before each conversion, and after the last
+  const conversions: string[] = []; // 's' or 'b'
+  let isSimple = true;
+  for (let position = 0; position < format.length && isSimple; position++) {
+    const next = format[position + 1] ?? '';
+    if (format[position] === '%' && (next === 's' || next === 'b')) {
+      conversions.push(next);
+      texts.push('');
+      position++;
+    } else if (format[position] === '%' && next === '%') {
+      texts[texts.length - 1] += '%';
+      position++;
+    } else if (format[position] === '%') isSimple = false;
+    else if (format[position] === '\\') {
+      texts[texts.length - 1] += printfEscape(next);
+      position++;
+    } else texts[texts.length - 1] += format[position];
+  }
+  const repeats = conversions.length === 0 ? 1 : Math.max(1, Math.ceil(values.length / conversions.length));
+  if (!isSimple || (repeats - 1) * format.length > MAX_PRINTF_REPEATS) {
+    // The arguments first, so xargs takes its program's first word from them; then each on a
+    // line of its own, and the format with the arguments after it, for a shell.
+    const joined = values.join(' ');
+    return [joined, ...values, `${format} ${joined}`].join('\n').replace(/\\n/g, '\n');
+  }
+  let out = '';
+  let filled = 0; // how many arguments are filled in
+  for (let repeat = 0; repeat < repeats; repeat++) {
+    spend(texts.length);
+    for (const [index, conversion] of conversions.entries()) {
+      const value = values[filled++] ?? '';
+      // %b reads the escapes in its argument too.
+      out += texts[index] + (conversion === 'b' ? value.replace(/\\(.?)/gs, (_, letter: string) => printfEscape(letter)) : value);
+    }
+    out += texts[conversions.length];
+  }
+  return out;
+}
+
+// What printf prints for the escape \<letter>: a line end for n, a tab for t, one \ for \,
+// and for any other, both characters as written.
+function printfEscape(letter: string): string {
+  if (letter === 'n') return '\n';
+  if (letter === 't') return '\t';
+  if (letter === '\\') return '\\';
+  return `\\${letter}`;
 }
 
 // ssh options that take a value, in the same word (-p22) or the next (-p 22).
@@ -1018,6 +1104,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
   let pipes: boolean[] = []; // for each of them, whether it pipes into the next
   let pending: Heredoc[] = [];
   let piped: string[] | null = null; // the command before a |
+  let pipedSubstitutions: string[] = []; // the text inside each $(...) and <(...) of that command
   const groups: Group[] = []; // the groups open now, outermost first
   // A group that just closed, until we see where it sends its output. closeGroup sets it, so
   // the type is written out: TypeScript would take it for null.
@@ -1077,7 +1164,10 @@ function read(text: string, start: number, closer: string, depth: number, out: s
     if (carried.length > 0 && words.length > 0) {
       const reads = readsCommands(words);
       if (reads) for (const body of carried) nested(body);
-      if (reads || !pipe) carried = [];
+      // `{ echo push --force; } | xargs git`: xargs hands the bodies to its program as words.
+      const handed = reads ? null : xargsCommand(words);
+      if (handed !== null) nested(`${handed} ${carried.join(' ').replace(/\s+/g, ' ')}`);
+      if (reads || handed !== null || !pipe) carried = [];
     }
     if (closed) {
       if (pipe) {
@@ -1108,23 +1198,35 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       // The innermost group reads; it tells its parent when it closes (see closeGroup).
       if (readsCommands(words)) groups[groups.length - 1].reads = true;
       // What the command prints, as `echo` would, waits in the group for where it goes.
-      const printed = words.slice(skipPrefix(words, 0) + 1).join(' ');
-      if (printed) groups[groups.length - 1].bodies.push(printed.replace(/\\n/g, '\n'));
+      const printed = printedText(words);
+      if (printed) groups[groups.length - 1].bodies.push(printed);
     }
     const at = runnerAt(words);
     if (at !== -1) {
       // `bash -c 'x'`, `eval "x"`, `ssh host 'x'`: read the string it runs as commands.
       nested(runString(words, at));
       // `echo 'npm publish' | bash`: the words before the pipe are the shell's input.
-      if (piped) nested(piped.slice(1).join(' ').replace(/\\n/g, '\n'));
+      if (piped) nested(printedText(piped));
     }
     // `bash <(x)`, `source <(x)`, `eval "$(x)"`: what x prints is commands, as in `x | bash`.
     // All of them in one group: in a group piped to a shell, every line is read as commands.
     if (substitutions.length > 0 && (at !== -1 || isSource(words))) nested(`{ ${substitutions.join('\n')}\n} | bash`);
     // `echo push | xargs git`: xargs hands what comes in to its program as words.
     const handed = piped ? xargsCommand(words) : null;
-    if (piped && handed !== null) nested(`${handed} ${piped.slice(skipPrefix(piped, 0) + 1).join(' ').replace(/\\n/g, ' ')}`);
-    piped = pipe ? words : null;
+    if (piped && handed !== null) nested(`${handed} ${printedText(piped).replace(/\s+/g, ' ')}`);
+    // `cat <(x) | bash`, `echo "$(x)" | xargs git`: the command before the pipe may print
+    // what x prints. In a group piped on, each line x prints reaches the reader.
+    if (pipedSubstitutions.length > 0 && (at !== -1 || handed !== null)) {
+      nested(`{ ${pipedSubstitutions.join('\n')}\n} | ${at !== -1 ? 'bash' : `xargs ${handed}`}`);
+    }
+    if (pipe && piped !== null && passesOn(words)) {
+      // `echo x | tee f | bash`: tee hands on what echo printed. Its own `$(x)` and `<(x)`
+      // substitutions are read too: over-reading is fine. pipedSubstitutions is this reader's own array.
+      for (const substitution of substitutions) pipedSubstitutions.push(substitution);
+    } else {
+      piped = pipe ? words : null;
+      pipedSubstitutions = pipe ? substitutions : [];
+    }
     substitutions = [];
     words = [];
     caseAt = -1;

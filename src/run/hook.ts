@@ -22,6 +22,12 @@ export interface Action {
   worker: boolean;
 }
 
+/** A repo whose file rules apply to an edit: its root, and the config read there. */
+export interface Repo {
+  root: string;
+  config: Config;
+}
+
 /**
  * The config the hook works with: the repo's yokoten.json, or the defaults outside a repo.
  * The hook never fails open on its own config (#218): a file it cannot read gives the
@@ -37,14 +43,19 @@ const sayIgnored = (ignored: IgnoredPart) =>
   ignored === 'file' ? 'yokoten.json was ignored, so the defaults apply' : `yokoten.json "${ignored}" was ignored, so its default applies`;
 
 /**
- * Why to stop the action (what, why, fix), or null. `root` is the repo root, or null outside a repo.
- * `commandsOnly` is the user-level hook: it runs in every repo, so it keeps to the rules
- * that hold everywhere (no tag pushes, no force pushes, no skipped checks) and leaves file
- * rules to each project's own hook.
+ * Why to stop the action (what, why, fix), or null. `root` is the session's repo root, or
+ * null outside a repo. `commandsOnly` is the user-level hook: it runs in every repo, so it
+ * keeps to the rules that hold everywhere (no tag pushes, no force pushes, no skipped
+ * checks), and applies file rules only through `repos`.
+ *
+ * `repos` are the yokoten repos (with a `yokoten.json`) the edit's files are in (#307): a
+ * worktree in another folder, or a session started above the repo, loads no project hook,
+ * yet still gets the file's own repo's file rules. A file takes the rules of the deepest
+ * repo that holds it.
  */
 export function judge(
   action: Action,
-  { root, config, env, commandsOnly = false }: { root: string | null; config: Config; env: Env; commandsOnly?: boolean },
+  { root, config, env, commandsOnly = false, repos = [] }: { root: string | null; config: Config; env: Env; commandsOnly?: boolean; repos?: Repo[] },
 ): Finding | null {
   // Set before the command check: no command rule reads the role yet, but one would see it.
   if (action.worker) env = { ...env, YOKOTEN_ROLE: 'worker' };
@@ -54,12 +65,20 @@ export function judge(
     const reason = checkCommand(action.command, { env, config, cwd: action.cwd ?? root ?? undefined });
     if (reason) return reason;
   }
-  if (commandsOnly || !root) return null;
+  const ruled = commandsOnly || !root ? repos : [{ root, config }, ...repos];
+  if (!ruled.length) return null;
+  const reals = ruled.map((repo) => ({ config: repo.config, real: real(repo.root) }));
   for (const p of action.paths) {
-    const rel = relative(real(root), real(resolve(action.cwd ?? root, p)));
-    // A file outside the repo is not this repo's business.
-    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) continue;
-    const reason = checkEdit(rel.split(sep).join('/'), { config, env });
+    const file = real(resolve(action.cwd ?? root ?? process.cwd(), p));
+    let best: { rel: string; config: Config } | null = null;
+    for (const repo of reals) {
+      const rel = relative(repo.real, file);
+      // A file outside the repo is not this repo's business.
+      if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) continue;
+      if (!best || rel.length < best.rel.length) best = { rel, config: repo.config };
+    }
+    if (!best) continue;
+    const reason = checkEdit(best.rel.split(sep).join('/'), { config: best.config, env });
     if (reason) return reason;
   }
   return null;
@@ -83,6 +102,16 @@ export function guardDeadline(value: string | undefined): number {
 
 type JudgeOptions = Parameters<typeof judge>[1];
 
+// A worker does not share the main thread's compile cache, so it turns the cache on
+// itself, then loads this module (#286). It starts as plain JavaScript: this module's
+// imports are compiled before any of its code runs, and the cache must be on by then.
+// An error from the cache is ignored, as in bin/yokoten.ts.
+const WORKER_START = `
+const { enableCompileCache } = require('node:module');
+try { enableCompileCache?.(); } catch {}
+import(${JSON.stringify(import.meta.url)});
+`;
+
 /** The guard worker's stack, in MB: about the main thread's. */
 const WORKER_STACK_MB = 1;
 
@@ -98,7 +127,8 @@ export function judgeWithDeadline(action: Action, options: JudgeOptions, deadlin
     // The main thread's stack (V8's default, just under 1 MB), not a worker's default 4 MB:
     // the guard reads a command the same way in the worker as in `judge`, so a command too
     // deep to read there is refused here too, not let through.
-    const worker = new Worker(new URL(import.meta.url), {
+    const worker = new Worker(WORKER_START, {
+      eval: true,
       workerData: { yokotenJudge: { action, options: { ...options, env: { ...options.env } } } },
       resourceLimits: { stackSizeMb: WORKER_STACK_MB },
     });

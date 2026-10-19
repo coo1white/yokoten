@@ -278,6 +278,11 @@ can't drift apart:
 | `/yokoten:init`, `/yokoten:doctor` and `/yokoten:update`, which run yokoten from the plugin | `kit/plugin/skills/` |
 | The SessionStart `doctor` hook and the command guard: the same two hooks that `install` adds | `.claude-plugin/plugin.json` |
 
+The command guard runs in every folder, so it keeps to the rules about commands, with one
+exception: an edit to a file inside a yokoten repo (one with `yokoten.json`) gets that
+repo's file rules, wherever the session started. A worker in a worktree outside the
+session's folder can't change a lead-only file either.
+
 Claude Code runs the plugin's `.ts` files with `node`. Node can do this because the
 plugin folder is not under `node_modules`. To get a newer yokoten, open `/plugin`, select
 yokoten on the **Installed** tab, and choose **Update now**. A third-party marketplace
@@ -288,6 +293,11 @@ plugin is older than the yokoten that runs `doctor`, `doctor` says so in a note.
 The plugin works in Claude Code only. It does not make the private-marks file: `doctor`
 names the file, and you make it. When the plugin is on in your user settings, `doctor`
 counts its hooks and skills as installed.
+
+Use the plugin or `install`, not both: with both, the guard and the session doctor run
+twice and every skill shows up twice. `doctor` says so in a note. To move from `install`
+to the plugin, run `yokoten uninstall`. It removes what `install` wrote and keeps
+`~/.config/yokoten`.
 
 ### Install with npx
 
@@ -464,16 +474,17 @@ It puts three safe defaults in `.github/` too:
 | `update [dir] [--write]` | Shows what this yokoten changes in the core rules of the project's `AGENTS.md`. `--write` replaces them, and keeps the "This project" part as it is. See [Updating the rules](#updating-the-rules) |
 | `doctor [--session] [--json]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session. With `--agent gemini`, it prints the step as the JSON that Gemini CLI reads |
 | `adopt [--json]` | A draft of the adoption table for an old project: what it does today, and a proposed decision for each step. `--json` prints the rows. Writes nothing |
-| `check [--staged] [--json]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries. For the tree, a translation behind its English source is a note. See [Translations](#translations) |
+| `check [--staged] [--json]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries. With nothing staged, `--staged` notes it and is ok. For the tree, a translation behind its English source is a note. See [Translations](#translations) |
 | `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
 | `check --issue` | In CI: the issue's title. See [Issue titles](#issue-titles) |
 | `changelog [--write]` | Shows the entries the files in `changes/` add under `[Unreleased]`. `--write` puts them into `CHANGELOG.md` and deletes the files; run it before a release. See [The changelog](#the-changelog) |
 | `learn <issue> [--write]` | Drafts a check from an incident issue, for a person to review. `--write` adds the files in `lessons/`. See [Learning from an incident](#learning-from-an-incident) |
-| `learn --ship <id>` | In yokoten: moves a reviewed lesson into `kit/lessons/`, where `doctor` runs it in every project. Refused while a `TODO(reviewer)` is left or its test fails |
-| `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public. A shallow clone can't see old commits, so it fails without scanning; in CI, check out the whole history (`fetch-depth: 0`) |
+| `learn --ship <id>` | In yokoten: moves a reviewed lesson into a group in `kit/lessons/`, where `doctor` runs it in every project. Refused while a `TODO(reviewer)` is left or its test fails |
+| `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public. A shallow clone can't see old commits, so it fails without scanning; in CI, check out the whole history (`fetch-depth: 0`). A hit in a file names the commit that added it, and the path in that commit: `file @ <commit>` |
 | `hook [--agent <name>] [--commands-only] [--json]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini` |
 | `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop event by default, a Codex Stop event with `--agent codex`, a Gemini CLI AfterAgent event with `--agent gemini`. See [The stop check](#the-stop-check) |
 | `explain [<id>] [--json]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
+| `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay. A second run changes nothing |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. Setup: [server.md](server.md#3-the-bot-a-github-app) |
 
 Each command prints its own help with `--help` or `-h`: what it does, its options and
@@ -820,8 +831,10 @@ problem. It reads files only: no network, no writes. Keep it fast, because `doct
 it in every project.
 
 When the review is done, ship the lesson. In a copy of yokoten, run
-`yokoten learn --ship incident-138`. It moves the lesson into `kit/lessons/incident-138/`.
-It adds a row to the lessons table, `kit/lessons/README.md`: the id, the incident, and the
+`yokoten learn --ship incident-138`. It moves the lesson into a numbered group, for example
+`kit/lessons/1/incident-138/`, so no folder holds more than 7 entries: a group takes 5
+lessons and 2 more groups, and a lesson goes in the first group with room. It adds a row to
+the lessons table, `kit/lessons/README.md`: the id, the folder, the incident, and the
 yokoten version. While a `TODO(reviewer)` is left or the test fails, it refuses and moves
 nothing. A test in yokoten checks the same for every lesson in the kit. It is a command,
 not a `git mv`, so the move, the table row and the test run are one step.

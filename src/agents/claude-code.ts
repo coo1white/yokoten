@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { guardCommand, missingProjectRuntime } from '../run/cli.ts';
 import type { Action } from '../run/hook.ts';
-import { type Added, addHook, checkHooksFile, hasHook, isObject, type Problem, readTable, type Settings, UnreadableHooksFile, writeSettings } from './hooks-file.ts';
+import { type Added, addHook, checkHooksFile, hasHook, isObject, type Problem, readTable, removeHook, type Settings, UnreadableHooksFile, writeSettings } from './hooks-file.ts';
 
 /**
  * A PreToolUse call, as an Action. The guard reads the fields, not the tool's name:
@@ -123,6 +123,19 @@ export function addUserHooks(env: Env, cli: string, missing: string): { doctor: 
   };
 }
 export const hasSessionDoctor = (env: Env): boolean => hasHook(userSettings(env), 'SessionStart', 'doctor');
+export const hasUserGuard = (env: Env): boolean => hasHook(userSettings(env), 'PreToolUse', 'hook');
+
+/**
+ * Take out the two hooks addUserHooks adds, and nothing else in the file. Null when the
+ * file is not JSON: then it is left as it is.
+ */
+export function removeUserHooks(env: Env): { doctor: 'removed' | 'not there'; guard: 'removed' | 'not there' } | null {
+  try {
+    return { doctor: removeHook(userSettings(env), 'SessionStart', 'doctor'), guard: removeHook(userSettings(env), 'PreToolUse', 'hook') };
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Whether the yokoten plugin is on in the user's settings (`enabledPlugins`, the key

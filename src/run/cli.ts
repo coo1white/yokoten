@@ -245,6 +245,18 @@ export const COMMANDS: Command[] = [
     example: 'yokoten bot -- gh pr create --fill',
   },
   {
+    name: 'uninstall',
+    summary: 'take back what install wrote, for example to use the plugin instead',
+    usage: '',
+    text: [
+      'Removes the skills and agents that install wrote (only files marked as managed by',
+      'yokoten), its two hooks in ~/.claude/settings.json, and ~/.local/share/yokoten.',
+      'Your own files, your other settings and ~/.config/yokoten (keys, private marks) stay.',
+    ],
+    options: [],
+    example: 'yokoten uninstall',
+  },
+  {
     name: 'help',
     summary: 'this list, or the help of one command',
     usage: '[<command>]',
