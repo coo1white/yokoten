@@ -13,7 +13,7 @@ import * as codex from '../src/agents/codex.ts';
 import * as gemini from '../src/agents/gemini.ts';
 import { type Finding, formatFinding } from '../src/rules/message.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
-import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, largeDiff, longSentenceNote, longSentences } from '../src/rules/pr.ts';
+import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, largeDiff, longSentenceNote, longSentences, splitForDependabot } from '../src/rules/pr.ts';
 import { closestWord, COMMANDS, commandHelp, findCommand, HELP_OPTIONS, commandList } from '../src/run/cli.ts';
 import { hideHome } from '../src/rules/privacy.ts';
 import { type Action, judge } from '../src/run/hook.ts';
@@ -350,6 +350,11 @@ function main(): number | Promise<number> {
           // Owned paths set the lowest tier, from the base branch's CODEOWNERS.
           const owned = checkOwnedTier(pr, readCodeOwners(root, pr.base));
           if (owned) problems.push(owned);
+          // Dependabot can't write our body (#299): those rules are notes for it, never a silent skip.
+          const split = splitForDependabot(pr, problems);
+          problems = split.problems;
+          notes.push(...split.notes);
+          printNotes(split.notes, 'pull request rule(s) Dependabot does not meet');
         }
       } else {
         problems = mode === 'history' ? checkHistory(root, { config, env }) : check(root, { config, env, staged: mode === 'staged', notes });

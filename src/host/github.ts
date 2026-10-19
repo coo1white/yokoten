@@ -244,6 +244,7 @@ export function readPullRequest(root: string, env: Env): PullRequestRead | Unrea
     deleted: diff('--name-only', '--diff-filter=D', '-z').split('\0').filter(Boolean),
     labels: labelNames(pr.labels),
     milestone: isObject(pr.milestone) && typeof pr.milestone.title === 'string' ? pr.milestone.title : null,
+    author: isObject(pr.user) ? asText(pr.user.login) : '',
     base,
     head,
     numstat: diff('--numstat', '-z'),
