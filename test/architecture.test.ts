@@ -57,6 +57,31 @@ test('AGENTS.md: the core rules here are the kit\'s, word for word', () => {
   assert.equal(core('AGENTS.md'), core('kit/project/AGENTS.md'), 'change kit/project/AGENTS.md and copy it here, or the other way round');
 });
 
+// This repo files issues from the kit's own templates (#169). A copy here that drifts
+// from the kit means `learn` reads one set of fields here and another in every project.
+// A `{{...}}` in the kit's file stands for any text in the copy.
+const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, (mark) => `\\${mark}`);
+const matchesKit = (copy: string, kit: string) => new RegExp(`^${kit.split(/\{\{[^}]*\}\}/).map(escape).join('.+?')}$`, 's').test(copy);
+
+test('issue templates: each one here is the kit\'s, word for word; a changed copy is caught (#169)', () => {
+  const kitDir = join(ROOT, 'kit/project/.github/ISSUE_TEMPLATE');
+  const hereDir = join(ROOT, '.github/ISSUE_TEMPLATE');
+  const kitFiles = readdirSync(kitDir);
+  const shared = readdirSync(hereDir).filter((file) => kitFiles.includes(file));
+  assert.ok(shared.includes('incident.yml'), 'the incident template is in both places');
+  for (const file of shared) {
+    const kit = readFileSync(join(kitDir, file), 'utf8');
+    assert.ok(matchesKit(readFileSync(join(hereDir, file), 'utf8'), kit), `.github/ISSUE_TEMPLATE/${file}: copy kit/project/.github/ISSUE_TEMPLATE/${file} here, or the other way round`);
+    // Positive control: a copy with a word changed, or a line left out, is caught.
+    assert.ok(matchesKit(kit, kit));
+    assert.ok(!matchesKit(kit.replace(/label: \S+/, 'label: Changed'), kit), `${file}: a changed label must be caught`);
+    assert.ok(!matchesKit(kit.split('\n').slice(1).join('\n'), kit), `${file}: a missing line must be caught`);
+  }
+  // A placeholder in the kit matches any text there, and nowhere else.
+  assert.ok(matchesKit('name: Acme (a.b)\n', 'name: {{project}}\n'));
+  assert.ok(!matchesKit('title: Acme\n', 'name: {{project}}\n'));
+});
+
 // A tag can be moved to other code; a commit can't. Every action is pinned to a full
 // commit, with the version it is in a comment for people and Dependabot. A local
 // action (`./path`) is code in the repo and needs no pin.
@@ -80,6 +105,23 @@ test('workflows: every action is pinned to a commit, the version in a comment', 
   assert.ok(/uses:/.test(action), 'action.yml: no `uses:` found; the scan is broken');
   assert.deepEqual(unpinned(action), [], 'action.yml: pin each action to a commit, as `owner/repo@<40 hex> # vX.Y.Z`');
   assert.ok(seen > 0, 'no `uses:` found; the scan is broken');
+});
+
+// The action handles the events people run it on (#269): `check --issue` on issues, and
+// on pull_request_target a notice instead of `check --pr` on the wrong commits.
+const actionStep = (text: string, name: string) => text.split(/\n(?=    - )/).find((step) => step.includes(`- name: ${name}\n`)) ?? '';
+
+test('action.yml: check --issue on issues; a notice, not check --pr, on pull_request_target (#269)', () => {
+  const action = readFileSync(join(ROOT, 'action.yml'), 'utf8');
+  assert.match(action, /\n  issue-check:\n(?:    .*\n)*?    default: 'true'\n/, 'action.yml: no `issue-check` input defaulting to true');
+  const issue = actionStep(action, 'yokoten check --issue');
+  assert.match(issue, /if: \$\{\{ !cancelled\(\) && inputs\.issue-check == 'true' && github\.event_name == 'issues' \}\}/, 'action.yml: the `check --issue` step runs on issues when issue-check is true');
+  assert.match(issue, /run: node "\$GITHUB_ACTION_PATH\/bin\/yokoten\.ts" check --issue\n/);
+  const pr = actionStep(action, 'yokoten check --pr');
+  assert.match(pr, /github\.event_name == 'pull_request' \}\}/, 'action.yml: `check --pr` runs on pull_request only');
+  const target = action.split(/\n(?=    - )/).find((step) => step.includes("github.event_name == 'pull_request_target'")) ?? '';
+  assert.match(target, /run: \|\n +echo "::notice::[^"\n]*runs on pull_request, not pull_request_target[^"\n]*"\n/, 'action.yml: on pull_request_target, a notice says the check runs on pull_request');
+  assert.ok(!target.includes('check --pr"') && !/yokoten\.ts" check/.test(target), 'action.yml: the pull_request_target step must not run yokoten');
 });
 
 // Node runs .ts as it is, so no other code file is needed; one appearing means someone
