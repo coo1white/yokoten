@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -21,7 +21,7 @@ import { readIssue, readPullRequest } from '../src/host/github.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
 import { formatChanges, mergeChanges, parseChange, readChanges, writeChanges } from '../src/run/changelog.ts';
 import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, largeDiff, longSentenceNote, longSentences, ownersOf, parseCodeOwners, type PullRequest, splitForDependabot, visibleLength } from '../src/rules/pr.ts';
-import { draftLesson, formatDraft, formatLessonRow, type Incident, KIT_LESSONS_DIR, LESSONS_TABLE, readLessonTable, readSections, shipLesson, summarize, writeDraft } from '../src/run/learn.ts';
+import { draftLesson, findLessonFolders, findLessonGroup, formatDraft, formatLessonRow, formatLessonTable, type Incident, KIT_LESSONS_DIR, LESSONS_TABLE, readLessonTable, readSections, shipLesson, summarize, writeDraft } from '../src/run/learn.ts';
 
 test('glob: a slash anchors at the root, no slash matches in any folder', () => {
   const m = (g: string, p: string) => matcher([g])(p);
@@ -1346,12 +1346,38 @@ function makeModuleDir(prefix: string): string {
   return root;
 }
 
-test('lessons: the table gives each row\'s id, incident and version; other lines are left out', () => {
-  const text = ['# Lessons', '', 'Text with | a pipe.', '', '| Lesson | Incident | Added in |', '|---|---|---|', formatLessonRow({ id: 'incident-138', url: 'https://example.com/issues/138', version: '0.1.0' }), '| incident-7 | https://example.com/issues/7 | 0.2.0 |', ''].join('\n');
+test('lessons: the table gives each row\'s id, folder, incident and version; other lines are left out', () => {
+  const text = ['# Lessons', '', 'Text with | a pipe.', '', '| Lesson | Folder | Incident | Added in |', '|---|---|---|---|', formatLessonRow({ id: 'incident-138', folder: '1/incident-138', url: 'https://example.com/issues/138', version: '0.1.0' }), '| incident-8 | 2/1/incident-8 | https://example.com/issues/8 | 0.2.0 |', ''].join('\n');
   assert.deepEqual(readLessonTable(text), [
-    { id: 'incident-138', url: 'https://example.com/issues/138', version: '0.1.0' },
-    { id: 'incident-7', url: 'https://example.com/issues/7', version: '0.2.0' },
+    { id: 'incident-138', folder: '1/incident-138', url: 'https://example.com/issues/138', version: '0.1.0' },
+    { id: 'incident-8', folder: '2/1/incident-8', url: 'https://example.com/issues/8', version: '0.2.0' },
   ]);
+  // A row from before groups (#171): its folder is its id. A folder out of the groups, or not ending in the id, is no row.
+  const old = ['| Lesson | Incident | Added in |', '|---|---|---|', '| incident-7 | https://example.com/issues/7 | 0.2.0 |', '| incident-9 | ../incident-9 | https://example.com/issues/9 | 0.2.0 |', '| incident-6 | 1/incident-5 | https://example.com/issues/6 | 0.2.0 |', '| 12 | 1/12 | https://example.com/issues/12 | 0.2.0 |'].join('\n');
+  assert.deepEqual(readLessonTable(old), [{ id: 'incident-7', folder: 'incident-7', url: 'https://example.com/issues/7', version: '0.2.0' }]);
+  // Written again, the table gets the folder column; the text around it stays.
+  const rewritten = formatLessonTable(`# Lessons\n\nIntro.\n\n${old}\n\nAfter.\n`, readLessonTable(old));
+  assert.equal(rewritten, '# Lessons\n\nIntro.\n\n| Lesson | Folder | Incident | Added in |\n|---|---|---|---|\n| incident-7 | incident-7 | https://example.com/issues/7 | 0.2.0 |\n\nAfter.\n');
+  assert.match(formatLessonTable(null, []), /^# Lessons\n[^]*\n\n\| Lesson \| Folder \| Incident \| Added in \|\n\|---\|---\|---\|---\|\n$/);
+});
+
+// #171: lessons sit in numbered groups, so shipping any number of them never breaks the cap.
+test('lessons: groups take 5 lessons and 2 groups, by levels; 100 lessons keep every folder within the cap', () => {
+  const kit = mkdtempSync(join(tmpdir(), 'yokoten-groups-'));
+  writeFileSync(join(kit, 'README.md'), '# Lessons\n');
+  const folders: string[] = [];
+  for (let n = 1; n <= 100; n++) {
+    const folder = `${findLessonGroup(kit)}/incident-${n}`;
+    mkdirSync(join(kit, folder), { recursive: true });
+    writeFileSync(join(kit, folder, 'lesson.ts'), '');
+    writeFileSync(join(kit, folder, 'lesson.test.ts'), '');
+    folders.push(folder);
+  }
+  assert.deepEqual([folders[0], folders[4], folders[5], folders[29], folders[30], folders[35], folders[42]], ['1/incident-1', '1/incident-5', '2/incident-6', '6/incident-30', '1/1/incident-31', '1/2/incident-36', '2/1/incident-43']);
+  const files = [join(KIT_LESSONS_DIR, 'README.md'), ...folders.flatMap((folder) => ['lesson.ts', 'lesson.test.ts'].map((name) => join(KIT_LESSONS_DIR, folder, name)))];
+  assert.deepEqual(checkLayout(files, DEFAULTS), []);
+  assert.ok(Math.max(...folders.map((folder) => folder.split('/').length)) <= 4, 'the depth grows by levels, not one per lesson');
+  assert.deepEqual(findLessonFolders(kit).sort(), [...folders].sort(), 'the walk finds each lesson');
 });
 
 test('lessons: --ship refuses a draft with a TODO or a failing test, and moves nothing (positive control)', () => {
@@ -1373,11 +1399,11 @@ test('lessons: --ship refuses a draft with a TODO or a failing test, and moves n
   assert.ok(existsSync(join(draftDir, 'lesson.ts')) && !existsSync(join(root, 'kit/lessons')), 'nothing moved');
   // Reviewed: it moves, with a row in the table, and the empty drafts folder goes.
   writeFileSync(join(draftDir, 'lesson.ts'), ENV_LESSON);
-  assert.deepEqual(shipLesson(root, '12', '0.1.0'), { lesson: { id: 'incident-12', url: 'https://example.com/issues/12', version: '0.1.0' } });
-  assert.ok(existsSync(join(root, 'kit/lessons/incident-12/lesson.test.ts')) && !existsSync(join(root, 'lessons')));
+  assert.deepEqual(shipLesson(root, '12', '0.1.0'), { lesson: { id: 'incident-12', folder: '1/incident-12', url: 'https://example.com/issues/12', version: '0.1.0' } });
+  assert.ok(existsSync(join(root, 'kit/lessons/1/incident-12/lesson.test.ts')) && !existsSync(join(root, 'lessons')));
   assert.deepEqual(readLessonTable(readFileSync(join(root, 'kit/lessons/README.md'), 'utf8')).map((row) => row.id), ['incident-12']);
   writeDraft(root, draftLesson(incidentOf('')));
-  assert.match(String((shipLesson(root, '12', '0.1.0') as { problems: string[] }).problems), /kit\/lessons\/incident-12 is already there/);
+  assert.match(String((shipLesson(root, '12', '0.1.0') as { problems: string[] }).problems), /kit\/lessons\/1\/incident-12 is already there/);
 });
 
 test('lessons: doctor runs each lesson as a note; a broken lesson is a note for itself alone; not now skips one', () => {
@@ -1410,6 +1436,20 @@ test('lessons: doctor runs each lesson as a note; a broken lesson is a note for 
   // A clean project: ok. No table (a project copy of yokoten has no kit): no lessons.
   assert.deepEqual(lessonChecks(mkdtempSync(join(tmpdir(), 'yokoten-clean-')), {}, place).map(({ mark }) => mark), ['ok', 'note', 'note', 'ok', 'note']);
   assert.deepEqual(lessonChecks(project, {}, { ...place, dir: join(kit, 'none') }), []);
+});
+
+// #171: doctor finds each lesson by the table's folder: in a group, or flat as before groups.
+test('lessons: doctor runs a lesson in a group and a flat one from an older table', () => {
+  const kit = makeModuleDir('yokoten-kit-');
+  writeFileSync(join(kit, 'README.md'), ['| Lesson | Folder | Incident | Added in |', '|---|---|---|---|', '| incident-1 | 2/1/incident-1 | https://example.com/issues/1 | 0.1.0 |', '| incident-2 | incident-2 | https://example.com/issues/2 | 0.1.0 |', ''].join('\n'));
+  for (const folder of ['2/1/incident-1', 'incident-2']) {
+    mkdirSync(join(kit, folder), { recursive: true });
+    writeFileSync(join(kit, folder, 'lesson.ts'), ENV_LESSON);
+  }
+  const project = mkdtempSync(join(tmpdir(), 'yokoten-project-'));
+  writeFileSync(join(project, '.env'), 'KEY=1\n');
+  const checks = lessonChecks(project, {}, { dir: kit, codeDir: kit, codeFile: 'lesson.ts' });
+  assert.deepEqual(checks.map(({ id, mark }) => `${id} ${mark}`), ['incident-1 note', 'incident-2 note']);
 });
 
 // #172: the first time a clone runs a lesson, doctor says so once, even when it finds nothing.
@@ -1477,20 +1517,20 @@ test('lessons: every lesson the kit ships has a row, its incident, no TODO, and 
   const kitLessons = join(import.meta.dirname, '..', KIT_LESSONS_DIR);
   const rows = readLessonTable(readFileSync(join(kitLessons, LESSONS_TABLE), 'utf8'));
   assert.ok(rows.length > 0, 'the kit ships at least one lesson');
-  const folders = readdirSync(kitLessons, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
-  assert.deepEqual(folders.sort(), rows.map((row) => row.id).sort(), 'each folder has one row in the table, and each row a folder');
-  for (const { id, url, version } of rows) {
+  assert.deepEqual(findLessonFolders(kitLessons).sort(), rows.map((row) => row.folder).sort(), 'each folder has one row in the table, and each row a folder');
+  for (const { id, folder, url, version } of rows) {
+    assert.notEqual(folder, id, `${id}: the lesson is in a group (#171)`);
     assert.match(url, /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+$/, `${id}: the incident is an issue URL`);
     assert.match(version, /^\d+\.\d+\.\d+$/, `${id}: the version is x.y.z`);
-    const code = readFileSync(join(kitLessons, id, 'lesson.ts'), 'utf8');
-    const test = readFileSync(join(kitLessons, id, 'lesson.test.ts'), 'utf8');
+    const code = readFileSync(join(kitLessons, folder, 'lesson.ts'), 'utf8');
+    const test = readFileSync(join(kitLessons, folder, 'lesson.test.ts'), 'utf8');
     assert.ok(code.includes(`// ${url}\n`), `${id}: lesson.ts names its incident`);
     assert.ok(!`${code}${test}`.includes('TODO(reviewer)'), `${id}: no TODO(reviewer) is left`);
     assert.ok(/known-bad case/.test(test), `${id}: lesson.test.ts has a positive control`);
     // Without NODE_TEST_CONTEXT, or the child reports to this run and exits 0 whatever happens.
     const env = { ...process.env };
     delete env.NODE_TEST_CONTEXT;
-    const run = spawnSync(process.execPath, ['--test', join(kitLessons, id, 'lesson.test.ts')], { env, encoding: 'utf8' });
+    const run = spawnSync(process.execPath, ['--test', join(kitLessons, folder, 'lesson.test.ts')], { env, encoding: 'utf8' });
     assert.equal(run.status, 0, `${id}: its test passes\n${run.stdout}`);
   }
 });

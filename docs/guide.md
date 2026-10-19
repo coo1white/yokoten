@@ -458,7 +458,7 @@ It puts three safe defaults in `.github/` too:
 | `check --issue` | In CI: the issue's title. See [Issue titles](#issue-titles) |
 | `changelog [--write]` | Shows the entries the files in `changes/` add under `[Unreleased]`. `--write` puts them into `CHANGELOG.md` and deletes the files; run it before a release. See [The changelog](#the-changelog) |
 | `learn <issue> [--write]` | Drafts a check from an incident issue, for a person to review. `--write` adds the files in `lessons/`. See [Learning from an incident](#learning-from-an-incident) |
-| `learn --ship <id>` | In yokoten: moves a reviewed lesson into `kit/lessons/`, where `doctor` runs it in every project. Refused while a `TODO(reviewer)` is left or its test fails |
+| `learn --ship <id>` | In yokoten: moves a reviewed lesson into a group in `kit/lessons/`, where `doctor` runs it in every project. Refused while a `TODO(reviewer)` is left or its test fails |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public. A shallow clone can't see old commits, so it fails without scanning; in CI, check out the whole history (`fetch-depth: 0`) |
 | `hook [--agent <name>] [--commands-only] [--json]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini` |
 | `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop event by default, a Codex Stop event with `--agent codex`, a Gemini CLI AfterAgent event with `--agent gemini`. See [The stop check](#the-stop-check) |
@@ -809,8 +809,10 @@ problem. It reads files only: no network, no writes. Keep it fast, because `doct
 it in every project.
 
 When the review is done, ship the lesson. In a copy of yokoten, run
-`yokoten learn --ship incident-138`. It moves the lesson into `kit/lessons/incident-138/`.
-It adds a row to the lessons table, `kit/lessons/README.md`: the id, the incident, and the
+`yokoten learn --ship incident-138`. It moves the lesson into a numbered group, for example
+`kit/lessons/1/incident-138/`, so no folder holds more than 7 entries: a group takes 5
+lessons and 2 more groups, and a lesson goes in the first group with room. It adds a row to
+the lessons table, `kit/lessons/README.md`: the id, the folder, the incident, and the
 yokoten version. While a `TODO(reviewer)` is left or the test fails, it refuses and moves
 nothing. A test in yokoten checks the same for every lesson in the kit. It is a command,
 not a `git mv`, so the move, the table row and the test run are one step.
