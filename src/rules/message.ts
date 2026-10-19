@@ -240,7 +240,7 @@ export const RULES = {
   'translation-behind': {
     rule: 'a translation follows its English source (record 0007)',
     why: 'a reader of the translation gets old or missing steps without knowing it',
-    check: '`check` reads line 1 of each Markdown and HTML file; `<!-- source: <path> blob <sha> -->` names the English file and the git blob it was translated from, and a different blob now is a note; yokoten.json `"translations": { "fail": true }` makes it a problem',
+    check: '`check` reads line 1 of each Markdown and HTML file; `<!-- source: <path> -->` names the English file; when the last commit that changed the English is later than the last commit that changed the translation, in first-parent history, it is a note (an older marker with `blob <sha>` still works, and a matching blob is current); yokoten.json `"translations": { "fail": true }` makes it a problem',
     docs: guide('translations'),
   },
   'large-diff': {

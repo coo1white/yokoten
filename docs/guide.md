@@ -704,9 +704,10 @@ The setup treats agents like staff on a line, each with a clear role and limited
   with `YOKOTEN_ROLE=worker`. They change code and report back. They never push. A
   fix task also gets `YOKOTEN_FIX_TASK=1`. Then the guard and the commit check stop a
   change to a test file.
-- **The bot** is a GitHub App installed on the repo. It can open pull requests but has
-  no Workflows permission, so it can't change the CI that checks it. A ruleset requires
-  your review, so nothing it opens merges without you.
+- **The bot** is a GitHub App installed on the repo. It opens pull requests. If it has
+  the Workflows permission, CODEOWNERS still sends every CI change to you, and a release
+  waits for you in the protected `release` environment. A ruleset requires your review,
+  so nothing it opens merges without you.
 
 Six skills carry the method: `dispatch` (brief a worker), `inspect` (review one exact
 commit in three passes), `rca` (root cause, a check, then spread it), `record` (write

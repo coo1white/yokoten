@@ -641,8 +641,9 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 - **worker** 是 lead 为单个任务启动的会话，各自在自己的 worktree 里，带着
   `YOKOTEN_ROLE=worker`。它改代码、交报告，从不推送。如果是修复任务，还会带上
   `YOKOTEN_FIX_TASK=1`，这时守卫和提交检查都不让它改测试文件。
-- **bot** 是装在仓库上的 GitHub App。它能开 PR，但没有 Workflows 权限，改不了检查它的
-  CI。规则集要求你审查，所以它开的 PR，你不点头就合不进去。
+- **bot** 是装在仓库上的 GitHub App，负责开 PR。就算给了它 Workflows 权限，改 CI 的 PR
+  也会经 CODEOWNERS 交给你审；发版要在受保护的 `release` 环境里等你批准。规则集要求你审查，
+  所以它开的 PR，你不点头就合不进去。
 
 这套方法靠六个技能来做：`dispatch`（给 worker 派活）、`inspect`（分三轮审查某一个具体提交）、
 `rca`（找根因、加检查、再推广到其他项目）、`record`（把决定写下来）、`release`（定下一个
