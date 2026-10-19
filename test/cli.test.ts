@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { closestWord, COMMANDS, editDistance, guardCommand, HELP_OPTIONS, refuseOnFailure } from '../src/run/cli.ts';
 import { copyRuntime } from '../src/setup/files.ts';
 import { guardDeadline } from '../src/run/hook.ts';
+import { hasHook } from '../src/agents/hooks-file.ts';
 import { checkLines, handOffLines, placeHandOff } from '../src/setup/init.ts';
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'yokoten.ts');
@@ -2016,6 +2017,100 @@ test('install: the session doctor and the command guard for Codex and Gemini CLI
   const push = { session_id: 's1', cwd: sandbox.repo, hook_event_name: 'PreToolUse', tool_input: { command: 'git push --tags' } };
   assert.equal(shell(codex.hooks.PreToolUse[1].hooks[0].command, { ...push, tool_name: 'Bash' }).status, 2, 'Codex');
   assert.equal(shell(gemini.hooks.BeforeTool[1].hooks[0].command, { ...push, hook_event_name: 'BeforeTool', tool_name: 'run_shell_command' }).status, 2, 'Gemini CLI');
+});
+
+// #248: a hooks file that won't parse, or where a key yokoten edits has the wrong type, is
+// named and skipped, byte for byte as it was; the other CLI still gets its hooks, and install
+// fails. A parse error asks for valid JSON; a wrong shape names the key instead.
+test('install: an unreadable Codex or Gemini CLI hooks file is skipped, the rest goes on, and install exits 1 (#248)', () => {
+  const agents = [
+    { name: 'Codex', cli: 'Codex CLI', file: '.codex/hooks.json', id: 'codex-user-hook', guard: 'PreToolUse' },
+    { name: 'Gemini CLI', cli: 'Gemini CLI', file: '.gemini/settings.json', id: 'gemini-user-hook', guard: 'BeforeTool' },
+  ];
+  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  for (const [bad, good] of [agents, [...agents].reverse()]) {
+    const shown = `~/${bad.file}`;
+    const cases: [content: string, skip: string, doctor: string][] = [
+      ['{ not json', `can't read ${shown} (make it valid JSON, then run \`yokoten install\` again)`, `can't read ${shown}; make it valid JSON`],
+      ...(
+        [
+          ['{"hooks": "x"}\n', '`hooks` should be an object'],
+          ['{"hooks": []}', '`hooks` should be an object'],
+          ['[]', 'the file should be a JSON object'],
+          ['{"hooks": {"SessionStart": "x"}}', '`hooks.SessionStart` should be a list of objects'],
+          // Deep shapes, once a crash: a number for a group's hooks, a null handler. The bad
+          // guard event leaves the file whole, though the doctor hook comes first.
+          [`{"hooks":{"${bad.guard}":[{"hooks":5}]}}`, `\`hooks.${bad.guard}[0].hooks\` should be a list of objects`],
+          ['{"hooks":{"SessionStart":[{"hooks":[null]}]}}', '`hooks.SessionStart[0].hooks` should be a list of objects'],
+        ] as const
+      ).map(([content, hint]): [string, string, string] => [content, `${shown} has an unexpected shape (${hint})`, `${shown} has an unexpected shape; ${hint}; fix it`]),
+    ];
+    for (const [content, skip, doctor] of cases) {
+      const sandbox = makeSandbox();
+      const badPath = join(sandbox.home, bad.file);
+      const goodPath = join(sandbox.home, good.file);
+      mkdirSync(dirname(badPath));
+      mkdirSync(dirname(goodPath));
+      writeFileSync(badPath, content);
+      const result = sandbox.run(['install']);
+      const what = `${bad.name}, ${JSON.stringify(content)}`;
+      assert.equal(result.status, 1, what);
+      assert.ok(result.stdout.split('\n').includes(`skipped ${bad.cli}: ${skip}`), `${what}: ${result.stdout}${result.stderr}`);
+      assert.equal(result.stderr, '', what);
+      assert.doesNotMatch(result.stdout, new RegExp(`the ${bad.name} (SessionStart doctor|command guard)`), what);
+      assert.ok(!result.stdout.includes(sandbox.home) && !result.stderr.includes(sandbox.home), `${what}: the home path is shown`);
+      assert.equal(readFileSync(badPath, 'utf8'), content, `${what}: the file changed`);
+      // Every other step still ran: the other CLI, Claude Code's hooks, and the marks file.
+      assert.match(result.stdout, new RegExp(`^added the ${good.name} command guard in ~/`, 'm'), what);
+      assert.ok(hasHook(goodPath, 'SessionStart', 'doctor'), `${what}: no ${good.name} hooks`);
+      assert.match(result.stdout, /^added the user-level command guard$/m, what);
+      assert.match(result.stdout, /^wrote ~\/\S*private-marks /m, what);
+      // Doctor names the same problem.
+      assert.match(sandbox.run(['doctor']).stdout, new RegExp(`^  note {4}${bad.id}: ${escape(doctor)}`, 'm'), what);
+    }
+  }
+});
+
+test('init: an unreadable project .codex/hooks.json or .gemini/settings.json is skipped, the rest goes on, and init exits 1 (#248)', () => {
+  for (const [bad, good, name, stop] of [['.codex/hooks.json', '.gemini/settings.json', 'the Codex hooks', 'Stop'], ['.gemini/settings.json', '.codex/hooks.json', 'the Gemini CLI hooks', 'AfterAgent']]) {
+    const cases = [
+      ['{ not json', `can't read ${bad} (make it valid JSON, then run \`yokoten init\` again)`],
+      ['{"hooks": "x"}', `${bad} has an unexpected shape (\`hooks\` should be an object)`],
+      // The stop event is added second: a bad one leaves the file whole.
+      [`{"hooks":{"${stop}":[{"hooks":[1]}]}}`, `${bad} has an unexpected shape (\`hooks.${stop}[0].hooks\` should be a list of objects)`],
+    ];
+    for (const [content, skip] of cases) {
+      const sandbox = makeSandbox();
+      mkdirSync(join(sandbox.repo, dirname(bad)));
+      writeFileSync(join(sandbox.repo, bad), content);
+      const result = sandbox.run(['init']);
+      const what = `${bad}, ${JSON.stringify(content)}`;
+      assert.equal(result.status, 1, what);
+      assert.ok(result.stdout.split('\n').includes(`skipped ${name}: ${skip}`), `${what}: ${result.stdout}${result.stderr}`);
+      assert.equal(readFileSync(join(sandbox.repo, bad), 'utf8'), content, `${what}: the file changed`);
+      assert.ok(hasHook(join(sandbox.repo, good), dirname(good) === '.codex' ? 'Stop' : 'AfterAgent', 'hook'), `${what}: no stop check in ${good}`);
+      assert.match(result.stdout, /TZ=UTC for agent sessions/, what);
+    }
+  }
+});
+
+// #248 review: yokoten checks only the keys it edits. Other keys under `hooks`, such as
+// Gemini CLI's `hooks.disabled` list, are the user's: install adds its hooks and keeps them.
+test('install: other keys under hooks, such as Gemini CLI hooks.disabled, are kept and the hooks added (#248)', () => {
+  for (const [dir, file, guard] of [['.gemini', 'settings.json', 'BeforeTool'], ['.codex', 'hooks.json', 'PreToolUse']]) {
+    const sandbox = makeSandbox();
+    const path = join(sandbox.home, dir, file);
+    mkdirSync(dirname(path));
+    writeFileSync(path, '{"hooks":{"disabled":["x"],"Other":5}}');
+    const result = sandbox.run(['install']);
+    assert.equal(result.status, 0, `${dir}: ${result.stdout}${result.stderr}`);
+    const settings = JSON.parse(readFileSync(path, 'utf8'));
+    assert.deepEqual(settings.hooks.disabled, ['x'], dir);
+    assert.equal(settings.hooks.Other, 5, dir);
+    assert.ok(hasHook(path, 'SessionStart', 'doctor'), `${dir}: no doctor hook`);
+    assert.ok(hasHook(path, guard, 'hook'), `${dir}: no guard`);
+    assert.match(sandbox.run(['doctor']).stdout, new RegExp(`^  ok {6}${dir.slice(1)}-user-hook$`, 'm'), dir);
+  }
 });
 
 // Codex adds a SessionStart hook's plain stdout to the context; Gemini CLI reads JSON only (#211).

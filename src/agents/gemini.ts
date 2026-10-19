@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { guardCommand, missingProjectRuntime } from '../run/cli.ts';
 import type { Action } from '../run/hook.ts';
-import { type Added, addHook, hasHook, type HookArgs, type HookState, hookState } from './hooks-file.ts';
+import { type Added, addHook, checkHooksFile, hasHook, type HookArgs, type HookState, hookState } from './hooks-file.ts';
 
 // run_shell_command takes `command`; write_file and replace take `file_path`.
 const SHELL = 'run_shell_command';
@@ -59,6 +59,9 @@ export const addProjectStopHook = (root: string, cli: string) =>
   });
 export const hasProjectStopHook = (root: string): boolean => hasHook(projectSettings(root), 'AfterAgent', 'hook');
 
+/** Throw `UnreadableHooksFile` unless both project hooks can go in the file: check before adding either. */
+export const checkProjectHooks = (root: string): void => checkHooksFile(projectSettings(root), ['BeforeTool', 'AfterAgent']);
+
 /** An AfterAgent event: the same fields as Claude Code's Stop (`cwd`, `stop_hook_active`). */
 export { readStop } from './claude-code.ts';
 
@@ -79,6 +82,7 @@ const userHookArgs = (env: Env, cli: string, missing: string): Record<'doctor' |
 /** The user's hooks, in every repo: doctor at session start, and the command guard on shell calls. `missing` is what they say when `cli` is gone. */
 export function addUserHooks(env: Env, cli: string, missing: string): { doctor: Added; guard: Added } {
   const args = userHookArgs(env, cli, missing);
+  checkHooksFile(args.doctor[0], [args.doctor[1], args.guard[1]]);
   return { doctor: addHook(...args.doctor), guard: addHook(...args.guard) };
 }
 

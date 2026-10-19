@@ -20,6 +20,7 @@ import { skillFile as sharedSkillFile } from '../agents/agent-skills.ts';
 import { addUserHooks, agentFile, skillFile as claudeSkillFile } from '../agents/claude-code.ts';
 import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
+import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { copyRuntime, HOME_DIR, KIT, writeManaged, writeNew } from './files.ts';
 import { marksFile } from '../rules/privacy.ts';
 
@@ -71,9 +72,25 @@ export function isOnPath(env: Env, runtime: string): boolean {
 export const aliasLine = (runtime: string): string =>
   `no \`yokoten\` command on your PATH runs this copy. Add this line to your shell profile (~/.bashrc or ~/.zshrc), then open a new shell: alias yokoten='node ${join(runtime, 'bin', 'yokoten.ts')}'`;
 
-export function install(env: Env): string[] {
+/**
+ * The other agents' two user hooks, or one skip line when their file won't parse or has
+ * the wrong shape (#248): the file stays as it was, the other steps go on, and `ok` is false.
+ */
+function otherAgentHooks(name: string, cliName: string, file: string, add: () => { doctor: string; guard: string }): { ok: boolean; lines: string[] } {
+  try {
+    const hooks = add();
+    return { ok: true, lines: [`${hooks.doctor} the ${name} SessionStart doctor in ${file}`, `${hooks.guard} the ${name} command guard in ${file}`] };
+  } catch (err) {
+    if (!(err instanceof UnreadableHooksFile)) throw err;
+    return { ok: false, lines: [`skipped ${cliName}: ${skippedBecause(file, err.problem, 'install')}`] };
+  }
+}
+
+/** One line per thing done, kept or skipped; `ok` is false when a file was skipped (#248). */
+export function install(env: Env): { ok: boolean; lines: string[] } {
   const target = paths(env);
   const report: string[] = [];
+  let ok = true;
   // Run from this copy, install keeps it (#204). The report shows the home folder as ~.
   const copied = copyRuntime(target.runtime, { withKit: true });
   report.push(copied === 'kept' ? `kept: ${target.runtime} is the copy running now` : `wrote ${target.runtime}`);
@@ -93,17 +110,20 @@ export function install(env: Env): string[] {
   report.push(`${hooks.doctor} the SessionStart doctor`, `${hooks.guard} the user-level command guard`);
   // Codex and Gemini CLI get the same two hooks (#211), but only when the CLI's folder is
   // already there: install never makes ~/.codex or ~/.gemini for someone who doesn't use it.
+  // A file that won't parse, or has the wrong shape, is named and skipped, never rewritten (#248).
   if (codex.hasUserDir(env)) {
-    const codexHooks = codex.addUserHooks(env, USER_CLI, USER_MISSING);
-    report.push(`${codexHooks.doctor} the Codex SessionStart doctor in ~/.codex/hooks.json`, `${codexHooks.guard} the Codex command guard in ~/.codex/hooks.json`);
+    const codexHooks = otherAgentHooks('Codex', 'Codex CLI', '~/.codex/hooks.json', () => codex.addUserHooks(env, USER_CLI, USER_MISSING));
+    ok &&= codexHooks.ok;
+    report.push(...codexHooks.lines);
   } else report.push('skipped Codex CLI: ~/.codex not found (run `yokoten install` again after installing Codex)');
   if (gemini.hasUserDir(env)) {
-    const geminiHooks = gemini.addUserHooks(env, USER_CLI, USER_MISSING);
-    report.push(`${geminiHooks.doctor} the Gemini CLI SessionStart doctor in ~/.gemini/settings.json`, `${geminiHooks.guard} the Gemini CLI command guard in ~/.gemini/settings.json`);
+    const geminiHooks = otherAgentHooks('Gemini CLI', 'Gemini CLI', '~/.gemini/settings.json', () => gemini.addUserHooks(env, USER_CLI, USER_MISSING));
+    ok &&= geminiHooks.ok;
+    report.push(...geminiHooks.lines);
   } else report.push('skipped Gemini CLI: ~/.gemini not found (run `yokoten install` again after installing Gemini CLI)');
 
   const marks = writeNew(target.marks, MARKS_HEADER, { mode: 0o600 });
   report.push(`${marks} ${target.marks}${marks === 'wrote' ? ' (add your marks to it)' : ''}`);
   if (!isOnPath(env, target.runtime)) report.push(aliasLine(target.runtime));
-  return report;
+  return { ok, lines: report };
 }

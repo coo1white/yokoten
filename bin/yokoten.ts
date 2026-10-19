@@ -540,7 +540,8 @@ function main(): number | Promise<number> {
       }
       const root = requireRoot(dir);
       if (!root) return 1;
-      print(init(root));
+      const done = init(root);
+      print(done.lines);
       // The host is changed only when asked (#10): it is a remote, and other people see it.
       // Without --yes, init only reads it and says what it would do, or what it skipped.
       const planning = setUpPlanning(ghIn(root), readOriginUrl(root), { apply: options.flags.has('--yes'), removeDefaults: options.flags.has('--remove-default-labels') });
@@ -548,7 +549,7 @@ function main(): number | Promise<number> {
       const isRefused = planning.skipped && options.flags.has('--yes');
       print(planning.lines, planning.ok && !isRefused ? process.stdout : process.stderr);
       if (isRefused) print(['yokoten init: --github --yes changed nothing on GitHub (the reason is above). The project files are as listed above.'], process.stderr);
-      return planning.ok && !isRefused ? 0 : 1;
+      return planning.ok && !isRefused && done.ok ? 0 : 1;
     }
     case 'update': {
       // Its own command, not an init flag: init promises to add only, never to overwrite (#120).
@@ -575,8 +576,9 @@ function main(): number | Promise<number> {
     case 'install': {
       const options = parse('install');
       if (typeof options === 'string') return usage(options);
-      print(install(env));
-      return 0;
+      const done = install(env);
+      print(done.lines);
+      return done.ok ? 0 : 1;
     }
     case 'version': {
       const options = parse('version');

@@ -109,7 +109,9 @@ export function userAgentHooks(env: Env): Practice[] {
     const missing = named.filter(([, state]) => state === 'added').map(([name]) => name);
     const stale = named.filter(([, state]) => state === 'updated').map(([name]) => name);
     const them = (names: readonly string[]) => (names.length > 1 ? 'them' : 'it');
-    if (named.some(([, state]) => state === 'unreadable')) return practice(id, id, false, `can't read ${file}`, `make it valid JSON, then run \`yokoten install\``);
+    const problem = named.map(([, state]) => state).find((state) => typeof state === 'object');
+    if (problem?.kind === 'json') return practice(id, id, false, `can't read ${file}`, 'make it valid JSON, then run `yokoten install`');
+    if (problem) return practice(id, id, false, `${file} has an unexpected shape`, `${problem.hint}; fix it, then run \`yokoten install\``);
     if (missing.length && stale.length) return practice(id, id, false, `no ${missing[0]} and an out-of-date ${stale[0]} in ${file}`, '`yokoten install` adds one and updates the other');
     if (stale.length) return practice(id, id, false, `the ${stale.join(' and the ')} in ${file} ${stale.length > 1 ? 'are' : 'is'} out of date`, `\`yokoten install\` updates ${them(stale)}`);
     return practice(id, id, !missing.length, `${missing.map((name) => `no ${name}`).join(' and ')} in ${file}`, `\`yokoten install\` adds ${them(missing)}`);
