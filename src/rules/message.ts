@@ -81,7 +81,7 @@ export const RULES = {
   'unreadable-command': {
     rule: 'a command the guard cannot read is refused, not let through',
     why: 'the guard reads command text, and a command it cannot read could hide anything',
-    check: 'the tool-call guard refuses a command when reading it fails, with exit 2',
+    check: 'the tool-call guard refuses a tool call, with exit 2, when reading it fails or takes longer than its deadline (5 seconds; YOKOTEN_GUARD_DEADLINE_MS changes it)',
     docs: guide('what-it-doesnt-do'),
   },
   'test-file': {
