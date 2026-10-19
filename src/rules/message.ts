@@ -120,6 +120,12 @@ export const RULES = {
     check: 'the commit check, CI and `check --history` look for the real shape of tokens (GitHub, npm, AWS, Slack, Stripe, Google, Anthropic, OpenAI) and of private keys',
     docs: guide('privacy'),
   },
+  'shallow-history': {
+    rule: '`check --history` reads the whole history, so it needs a full clone with no grafts file',
+    why: 'a shallow clone holds only the newest commits, and a grafts file can hide commits, so a secret in a hidden commit goes unseen',
+    check: '`check --history` asks git whether the clone is shallow (`git rev-parse --is-shallow-repository`) and looks for `info/grafts` in the git directory; if either is there, it scans nothing and fails with this finding. Replace refs are read past (`git --no-replace-objects`)',
+    docs: guide('privacy'),
+  },
   'time-zone': {
     rule: 'commit times are UTC (core rule 12)',
     why: 'a time zone narrows down where you live',
@@ -136,6 +142,12 @@ export const RULES = {
     rule: 'no build output in a commit',
     why: 'a build makes it again from the source, so a committed copy goes stale',
     check: 'the commit check refuses a file in a dist/, build/ or out/ folder; yokoten.json "allowBuild" lets a path through',
+  },
+  'missing-blob': {
+    rule: 'the commit check reads every staged file',
+    why: 'a staged file whose copy is not in the object store can\'t be checked, and the commit would fail or hold an unchecked entry',
+    check: 'the commit check reads each staged file from the object store by its id, and refuses an entry it can\'t read',
+    docs: guide('three-checks-and-a-lock'),
   },
   binary: {
     rule: 'no binary file in a commit, apart from images and fonts',
@@ -197,10 +209,22 @@ export const RULES = {
     docs: guide('the-core-rules'),
   },
   'pr-labels': {
-    rule: 'a pull request has a type label and a tier label (core rule 8)',
-    why: 'labels say what kind of change it is and how hard it is to take back',
+    rule: 'a pull request has one type label, and one tier label that matches the `tier:` line in its body (core rule 8)',
+    why: 'a reviewer filters on labels to find what kind of change it is and what needs the owner',
     check: PR_CHECK,
     docs: guide('the-core-rules'),
+  },
+  'pr-commits': {
+    rule: 'the checkout of a pull request run has its base and head commits, and the history between them',
+    why: 'yokoten reads the changed files from git, between the base and the head commit, so without them nothing in the pull request is checked',
+    check: `${PR_CHECK}; it looks for both commits and a common commit before it reads the diff, and fails when one is missing`,
+    docs: guide('use-it-as-a-github-action'),
+  },
+  'ci-event': {
+    rule: '`check --pr` and `check --issue` read the event file of the CI run',
+    why: 'the pull request or the issue is in that file, so without it nothing is checked',
+    check: 'in a CI run, `check --pr` and `check --issue` fail when the event file is missing or is not a JSON object; with no event file named, they skip',
+    docs: guide('use-it-as-a-github-action'),
   },
   'issue-area': {
     rule: 'an issue title starts with its area: `area: verb phrase` for a task, `area: symptom` for an incident',
@@ -234,7 +258,7 @@ export const RULES = {
   'translation-behind': {
     rule: 'a translation follows its English source (record 0007)',
     why: 'a reader of the translation gets old or missing steps without knowing it',
-    check: '`check` reads line 1 of each Markdown and HTML file; `<!-- source: <path> blob <sha> -->` names the English file and the git blob it was translated from, and a different blob now is a note; yokoten.json `"translations": { "fail": true }` makes it a problem',
+    check: '`check` reads line 1 of each Markdown and HTML file; `<!-- source: <path> -->` names the English file; when the last commit that changed the English is later than the last commit that changed the translation, in first-parent history, it is a note (an older marker with `blob <sha>` still works, and a matching blob is current); yokoten.json `"translations": { "fail": true }` makes it a problem',
     docs: guide('translations'),
   },
   'large-diff': {
