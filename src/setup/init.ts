@@ -38,8 +38,8 @@ export function init(root: string): string[] {
   const report: string[] = [];
   const cli = cliPath(root);
   if (!isSelf(root) && root !== HOME_DIR) {
-    copyRuntime(join(root, '.yokoten'));
-    report.push('wrote .yokoten/ (the runtime the hooks run; commit it)');
+    const copied = copyRuntime(join(root, '.yokoten'));
+    report.push(copied === 'kept' ? 'kept .yokoten/ (the copy running now)' : 'wrote .yokoten/ (the runtime the hooks run; commit it)');
   }
   const hooks = readHookSetup(root);
   const kit = join(KIT, 'project');
