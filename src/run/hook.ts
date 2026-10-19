@@ -63,6 +63,9 @@ export function guardDeadline(value: string | undefined): number {
 
 type JudgeOptions = Parameters<typeof judge>[1];
 
+/** The guard worker's stack, in MB: about the main thread's. */
+const WORKER_STACK_MB = 1;
+
 /**
  * `judge`, in a worker thread, with a deadline. The runtimes let a tool call through when
  * the hook runs past their own timeout, so a slow guard would open the gate. A timer in
@@ -72,7 +75,13 @@ type JudgeOptions = Parameters<typeof judge>[1];
 export function judgeWithDeadline(action: Action, options: JudgeOptions, deadlineMs: number): Promise<Finding | null> {
   return new Promise((settle) => {
     // Plain data only: process.env does not cross to a worker as it is.
-    const worker = new Worker(new URL(import.meta.url), { workerData: { yokotenJudge: { action, options: { ...options, env: { ...options.env } } } } });
+    // The main thread's stack (V8's default, just under 1 MB), not a worker's default 4 MB:
+    // the guard reads a command the same way in the worker as in `judge`, so a command too
+    // deep to read there is refused here too, not let through.
+    const worker = new Worker(new URL(import.meta.url), {
+      workerData: { yokotenJudge: { action, options: { ...options, env: { ...options.env } } } },
+      resourceLimits: { stackSizeMb: WORKER_STACK_MB },
+    });
     let done = false;
     const finish = (found: Finding | null) => {
       if (done) return;
