@@ -1,25 +1,27 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { DEFAULTS, loadConfig, matcher } from '../src/rules/config.ts';
+import { type Config, DEFAULTS, findUnknownKeys, loadConfig, matcher } from '../src/rules/config.ts';
 import { checkCommand, checkEdit } from '../src/rules/guards.ts';
 import { checkBuildOutput, checkLayout, isBuildOutput } from '../src/rules/layout.ts';
-import { DOCS_URL, type Finding, finding, formatFinding, type Rule, RULES } from '../src/rules/message.ts';
+import { DOCS_URL, type Finding, finding, formatFinding, notRepoFinding, type Rule, RULES } from '../src/rules/message.ts';
 import { POSITIVE_CONTROL, scanText } from '../src/rules/privacy.ts';
 import { SECRET_CONTROL } from '../src/rules/secrets.ts';
-import { check, timeZoneNote } from '../src/run/check.ts';
-import { loadHookConfig } from '../src/run/hook.ts';
+import { batchBlobs, check, checkHistory, readBlobs, timeZoneNote } from '../src/run/check.ts';
+import { lateFinding, loadHookConfig } from '../src/run/hook.ts';
 import { parseSourceMarker, sourceMarker, translationNotes } from '../src/run/translations.ts';
-import { agentHooks, coreRulesCheck, coreRulesControl, machineChecks, selfTest } from '../src/setup/doctor.ts';
+import { agentHooks, coreRulesCheck, coreRulesControl, formatLessonChecks, lessonChecks, machineChecks, pluginAgeCheck, selfTest, userAgentHooks } from '../src/setup/doctor.ts';
 import { compareCoreRules, compareVersions, readKitVersion } from '../src/setup/init.ts';
 import { explain, explainLines, ids } from '../src/setup/advice/explain.ts';
 import { ROAD, serverChecks, stepFinding } from '../src/setup/road.ts';
+import { readIssue, readPullRequest } from '../src/host/github.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
 import { formatChanges, mergeChanges, parseChange, readChanges, writeChanges } from '../src/run/changelog.ts';
-import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, ownersOf, parseCodeOwners, largeDiff, longSentenceNote, longSentences, type PullRequest } from '../src/rules/pr.ts';
+import { draftLesson, formatDraft, formatLessonRow, type Incident, KIT_LESSONS_DIR, LESSONS_TABLE, readLessonTable, readSections, shipLesson, summarize, writeDraft } from '../src/run/learn.ts';
+import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, largeDiff, longSentenceNote, longSentences, ownersOf, parseCodeOwners, type PullRequest, visibleLength } from '../src/rules/pr.ts';
 
 test('glob: a slash anchors at the root, no slash matches in any folder', () => {
   const m = (g: string, p: string) => matcher([g])(p);
@@ -120,6 +122,106 @@ test('config: for the hook, a wrong "commands" drops only the block list, said o
   assert.equal(lines.length, 4);
 });
 
+// #228: each key with the wrong shape, by its key path, and the key it falls back on.
+const WRONG_KEYS: [string, Record<string, unknown>][] = [
+  ['layout', { layout: 'x' }],
+  ['layout.maxEntries', { layout: { maxEntries: '7', exempt: ['docs/records'] } }],
+  ['layout.maxEntries', { layout: { maxEntries: 0 } }],
+  ['layout.maxEntries', { layout: { maxEntries: 1.5 } }],
+  ['layout.exempt', { layout: { exempt: 'docs/records' } }],
+  ['tests', { tests: 5 }],
+  ['leadOnly', { leadOnly: 'x' }],
+  ['leadOnly', { leadOnly: ['ok', 3] }],
+  ['privacy', { privacy: [] }],
+  ['privacy.allow', { privacy: { allow: 'a' } }],
+  ['privacy.skip', { privacy: { skip: [1] } }],
+  ['privacy.utc', { privacy: { utc: 'yes' } }],
+  ['notNow', { notNow: ['ci'] }],
+  ['notNow', { notNow: { ci: 1 } }],
+  ['allowBuild', { allowBuild: 'dist/**' }],
+  ['areas', { areas: 'doctor' }],
+  ['translations', { translations: true }],
+  ['translations.fail', { translations: { fail: 'no' } }],
+  ['commands', { commands: 'python3' }],
+  ['commands', { commands: { block: ['python3'] } }],
+];
+
+test('config: a key with the wrong shape is a config error that names it, and the hook uses its default (#228)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  for (const [path, file] of WRONG_KEYS) {
+    const label = JSON.stringify(file);
+    writeFileSync(join(dir, 'yokoten.json'), JSON.stringify(file));
+    // check and doctor: a config error that names the key.
+    assert.throws(() => loadConfig(dir), (err: Error) => err.message.startsWith(`yokoten.json: "${path.split('.')[0]}`) && err.message.includes(`"${path}"`), label);
+    // The hook: one line names the key, that key has its default, and the core checks run.
+    const lines: string[] = [];
+    const config = loadHookConfig(dir, (line) => lines.push(line));
+    assert.equal(lines.length, 1, label);
+    assert.ok(lines[0].startsWith(`yokoten hook: yokoten.json "${path}" was ignored, so its default applies; the core checks still run. yokoten.json: `), `${label}: ${lines[0]}`);
+    const [key, field] = path.split('.') as [keyof Config, string | undefined];
+    const got = config[key] as unknown as Record<string, unknown>;
+    const want = DEFAULTS[key] as unknown as Record<string, unknown>;
+    assert.deepEqual(field ? got[field] : got, field ? want[field] : want, label);
+    assert.equal(checkCommand('git push --force', { env: {}, config })?.id, 'force-push', `${label}: the core checks still run`);
+    assert.equal(checkEdit('AGENTS.md', { config, env: { YOKOTEN_ROLE: 'worker' } })?.id, 'lead-only', label);
+  }
+  // Only the wrong field falls back; the rest of the file still counts.
+  writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ layout: { maxEntries: '7', exempt: ['docs/records'] }, tests: ['spec/**'], leadOnly: 'x' }));
+  const lines: string[] = [];
+  const config = loadHookConfig(dir, (line) => lines.push(line));
+  assert.deepEqual(config.layout, { maxEntries: 7, exempt: ['docs/records'] });
+  assert.deepEqual(config.tests, ['spec/**']);
+  assert.deepEqual(config.leadOnly, DEFAULTS.leadOnly);
+  assert.deepEqual(lines.map((line) => /"([^"]+)" was ignored/.exec(line)?.[1]), ['layout.maxEntries', 'leadOnly'], 'one line for each wrong key');
+});
+
+test('config: null is a missing key; check lists every wrong key at once; unknown "commands" fields are notes (#228)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  // null gives the default, as before #228: no problem, no note, no hook line.
+  writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ leadOnly: null, notNow: null, layout: null, privacy: { utc: null }, commands: { block: null } }));
+  assert.deepEqual(loadConfig(dir), { ...DEFAULTS, privacy: { ...DEFAULTS.privacy } });
+  const lines: string[] = [];
+  loadHookConfig(dir, (line) => lines.push(line));
+  assert.deepEqual(lines, []);
+  assert.deepEqual(findUnknownKeys(dir), []);
+  // Three wrong keys: one error names all three, so one run shows them.
+  writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ leadOnly: 'x', tests: 5, layout: { maxEntries: '7' } }));
+  assert.throws(() => loadConfig(dir), (err: Error) => {
+    const [head, ...rest] = err.message.split('\n');
+    assert.equal(head, 'yokoten.json: 3 keys have the wrong shape:');
+    assert.deepEqual(rest.map((line) => /^- "([^"]+)" must be /.exec(line)?.[1]), ['layout.maxEntries', 'tests', 'leadOnly']);
+    return true;
+  });
+  // A misspelled field under "commands" blocks nothing: a note for check, and the hook stays quiet.
+  writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ commands: { blok: { python3: 'TypeScript only' } } }));
+  assert.deepEqual(loadConfig(dir).commands.block, {});
+  const quiet: string[] = [];
+  loadHookConfig(dir, (line) => quiet.push(line));
+  assert.deepEqual(quiet, []);
+  assert.deepEqual(findUnknownKeys(dir).map((note) => /^"([^"]+)"/.exec(note.what)?.[1]), ['commands.blok']);
+});
+
+test('config: an unknown key is a note, never a problem; yokoten\'s own files and the kit\'s pass with no note (#228)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ colour: 'blue', layout: { maxEntry: 9 }, tests: ['spec/**'] }));
+  assert.deepEqual(loadConfig(dir).tests, ['spec/**']);
+  const lines: string[] = [];
+  loadHookConfig(dir, (line) => lines.push(line));
+  assert.deepEqual(lines, [], 'the hook says nothing');
+  const notes = findUnknownKeys(dir);
+  assert.deepEqual(notes.map((note) => [note.id, note.file, /^"([^"]+)"/.exec(note.what)?.[1]]), [['config-key', 'yokoten.json', 'colour'], ['config-key', 'yokoten.json', 'layout.maxEntry']]);
+  // A broken file gives no notes: loadConfig reports it.
+  writeFileSync(join(dir, 'yokoten.json'), '{ nope');
+  assert.deepEqual(findUnknownKeys(dir), []);
+  for (const root of [join(import.meta.dirname, '..'), join(import.meta.dirname, '..', 'kit', 'project')]) {
+    assert.ok(existsSync(join(root, 'yokoten.json')), root);
+    const problems: string[] = [];
+    loadConfig(root, { onProblem: (problem) => problems.push(problem) });
+    assert.deepEqual(problems, [], root);
+    assert.deepEqual(findUnknownKeys(root), [], root);
+  }
+});
+
 const goodPr = (): PullRequest => ({
   title: 'feat(kit): a pull request standard, checked in CI',
   body: 'tier: B\nCloses #47\n\n## Why\nNothing checks it.\n\n## What changed\n- a rule\n\n## How tested\n`node --test`: 50 pass.\n',
@@ -156,8 +258,35 @@ test('pull request: each missing part fails with what to do (#47)', () => {
   one({ body: goodPr().body.replace('Closes #47', 'Closes #') }, /Closes #N/);
   one({ files: ['src/rules/pr.ts'] }, /^changelog:/);
   one({ milestone: null }, /^milestone:/);
-  one({ labels: [] }, /^labels:/);
+  one({ labels: ['feat'] }, /^labels: no tier label/);
   one({ files: ['kit/project/AGENTS.md', 'CHANGELOG.md'] }, /changes `kit\/`/);
+});
+
+test('pull request: one type label and one tier label that matches the body (#225)', () => {
+  const labelProblems = (labels: string[], body = goodPr().body) => checkPullRequest({ ...goodPr(), labels, body }, DEFAULTS).map(formatFinding);
+  // No labels: each missing part has its own fix.
+  const none = labelProblems([]);
+  assert.equal(none.length, 2, none.join(' | '));
+  assert.match(none[0], /^labels: no type label\. .*Add one type label, such as feat, bug, docs/);
+  assert.match(none[1], /^labels: no tier label\. .*Add the label `tier B`/);
+  // A type only, or a tier only.
+  assert.deepEqual(labelProblems(['bug']).map((p) => p.split('.')[0]), ['labels: no tier label']);
+  assert.deepEqual(labelProblems(['tier B']).map((p) => p.split('.')[0]), ['labels: no type label']);
+  // A tier label that disagrees with the body.
+  const wrong = labelProblems(['feat', 'tier A']);
+  assert.equal(wrong.length, 1, wrong.join(' | '));
+  assert.match(wrong[0], /^labels: `tier A` does not match the body's `tier: B`\. .*Change the label to `tier B`, or the first line of the body to `tier: A`/);
+  assert.match(labelProblems(['feat', 'tier A', 'tier B'])[0], /^labels: 2 tier labels\. .*Keep one tier label: `tier B`/);
+  // Both right, in each form and with each name a project may use for the type.
+  for (const labels of [['feat', 'tier B'], ['bug', 'tier: B'], ['fix', 'Tier B'], ['enhancement', 'tier:B'], ['docs', 'owner', 'tier B']]) {
+    assert.deepEqual(labelProblems(labels), [], labels.join(', '));
+  }
+  // No tier line in the body: pr-tier says so, and the labels do not say it again.
+  const noTier = checkPullRequest({ ...goodPr(), body: goodPr().body.replace('tier: B\n', '') }, DEFAULTS).map((p) => p.id);
+  assert.deepEqual(noTier, ['pr-tier']);
+  const noTierNoLabel = checkPullRequest({ ...goodPr(), labels: ['feat'], body: goodPr().body.replace('tier: B\n', '') }, DEFAULTS).map(formatFinding);
+  assert.equal(noTierNoLabel.length, 2);
+  assert.match(noTierNoLabel[1], /^labels: no tier label\. .*Add the label `tier A`, `tier B` or `tier C`, the same as the first line of the body/);
 });
 
 test('pull request: Closes, Fixes, Part of and Refs each link the issue (#82)', () => {
@@ -183,6 +312,11 @@ test('pull request: a file in changes/ counts as the changelog entry (#132)', ()
   assert.deepEqual(deletedOnly.map((problem) => problem.id), ['pr-changelog'], 'a deleted change file is not a new entry');
   assert.ok(isChangeFile('changes/1-a.md') && isChangeFile('changes/1-a.txt'));
   assert.ok(!isChangeFile('changes/README.md') && !isChangeFile('changes/.keep') && !isChangeFile('changes/a/b.md') && !isChangeFile('docs/changes/a.md'));
+  // A file deeper in changes/ would pass here and stop `changelog --write` at the release (#281).
+  const deep = checkPullRequest({ ...goodPr(), files: ['src/rules/pr.ts', 'changes/47-pr-standard.md', 'changes/sub/x.md'] }, DEFAULTS);
+  assert.deepEqual(deep.map((problem) => [problem.id, problem.file]), [['change-file', 'changes/sub/x.md']]);
+  assert.match(formatFinding(deep[0]), /change files go directly in changes\//i);
+  assert.deepEqual(checkPullRequest({ ...goodPr(), files: ['src/rules/pr.ts', 'changes/47-pr-standard.md', 'changes/sub/x.md'], deleted: ['changes/sub/x.md'] }, DEFAULTS), [], 'deleting one is fine');
 });
 
 // ---- Change files (#132) ----
@@ -228,6 +362,10 @@ test('changes: a file is a section, a blank line, then the entry; a bullet is ad
   assert.deepEqual(bad('Added\n\n\n'), ['1: no entry after the section']);
   assert.deepEqual(bad('Added\n'), ['1: no entry after the section']);
   assert.deepEqual(bad('Added\n\nA thing.\n', 'changes/1-a.txt'), ['-: a change file is not Markdown']);
+  // A heading would go into CHANGELOG.md as is, even a fake version (#281).
+  assert.deepEqual(bad('Added\n\n- A thing.\n## 9.9.9\n'), ['4: line 4 is a heading']);
+  assert.deepEqual(bad('Added\n\n### Fixed\n'), ['3: line 3 is a heading']);
+  assert.deepEqual(bad('Added\n\nA thing,\n#281 and more.\n'), [], 'an issue number is not a heading');
   assert.equal(parseChange('changes/1-a.md', 'Improved\n\nsecret words\n').problems.every((problem) => !JSON.stringify(problem).includes('secret words')), true, 'the text is never printed back');
 });
 
@@ -238,6 +376,15 @@ test('changes: the collector groups and orders the sections, and skips README.md
   assert.deepEqual(changes.map((change) => change.file), ['changes/9-a.md', 'changes/10-c.md', 'changes/132-b.md', 'changes/200-d.md'], 'by issue number');
   assert.deepEqual(formatChanges(changes), ['### Added', '', '- C.', '', '### Fixed', '', '- B.', '- D.', '', '### Internal', '', '- A.']);
   assert.deepEqual(readChanges(mkdtempSync(join(tmpdir(), 'yokoten-'))), { changes: [], problems: [] }, 'no changes/ folder');
+});
+
+test('changes: a link in changes/, dangling or not, is a finding, never a crash (#281)', () => {
+  const root = makeRepo({ '1-good.md': 'Added\n\nGood.\n' });
+  symlinkSync(join(root, 'changes', '1-good.md'), join(root, 'changes', '2-link.md'));
+  symlinkSync(join(root, 'nowhere.md'), join(root, 'changes', '3-dangling.md'));
+  const { changes, problems } = readChanges(root);
+  assert.deepEqual(changes.map((change) => change.file), ['changes/1-good.md']);
+  assert.deepEqual(problems.map((problem) => [problem.id, problem.file]), [['change-file', 'changes/2-link.md'], ['change-file', 'changes/3-dangling.md']]);
 });
 
 test('changes: a bad file is refused, and nothing is written or deleted', () => {
@@ -271,6 +418,14 @@ test('changes: --write puts each entry after its section, deletes the files, and
   // An empty Unreleased gets its first heading.
   const merged = mergeChanges('# Changelog\n\n## [Unreleased]\n\n## [0.1.0]\n', changes.slice(0, 1));
   assert.equal(merged, '# Changelog\n\n## [Unreleased]\n\n### Added\n\n- New A.\n\n## [0.1.0]\n');
+  // A CRLF file stays CRLF (#281).
+  const crlf = mergeChanges(CHANGELOG.replaceAll('\n', '\r\n'), changes);
+  assert.equal(crlf, written.replaceAll('\n', '\r\n'));
+  // One stray CRLF line: the file is still read, and its lines keep their bytes (#281).
+  const [firstLine, ...otherLines] = CHANGELOG.split('\n');
+  const mixed = mergeChanges([`${firstLine}\r`, ...otherLines].join('\n'), changes);
+  assert.equal(typeof mixed, 'string', 'a stray CRLF line still has an Unreleased heading');
+  assert.ok((mixed as string).startsWith(CHANGELOG.split('\n')[0] + '\r\n'), 'the CRLF line is kept');
 });
 
 test('CODEOWNERS: anchored, folder, glob, last match wins, comments, several owners', () => {
@@ -467,6 +622,28 @@ test('pull request title: one rule for check --pr and the bot (#117)', () => {
   }
 });
 
+test('titles: limits count the characters a person sees, not code units (#268)', () => {
+  const flag = '🇯🇵';
+  const family = '👨‍👩‍👧‍👦';
+  assert.equal(visibleLength(flag), 1, 'a flag is one character');
+  assert.equal(visibleLength(family), 1, 'a ZWJ family is one character');
+  assert.equal(visibleLength('漢字🎉a'), 4);
+  // A pull request title of 72: 6 + 10 + 1 + 1 + 54.
+  const pr = `feat: ${'🚀'.repeat(10)}${flag}${family}${'a'.repeat(54)}`;
+  assert.equal(visibleLength(pr), 72);
+  assert.deepEqual(checkPullRequestTitle(pr, {}), [], '72 characters with emoji is the most');
+  const prOver = checkPullRequestTitle(`${pr}b`, {});
+  assert.equal(prOver.length, 1);
+  assert.match(formatFinding(prOver[0]), /^title: 73 characters, over 72\./);
+  // An issue title of 60: 5 + 40 + 5 + 1 + 1 + 8.
+  const issue = `kit: ${'漢'.repeat(40)}${'🎉'.repeat(5)}${flag}${family}${'a'.repeat(8)}`;
+  assert.equal(visibleLength(issue), 60);
+  assert.deepEqual(checkIssueTitle(issue, AREAS), [], '60 characters with CJK and emoji is the most');
+  const issueOver = checkIssueTitle(`${issue}字`, AREAS);
+  assert.equal(issueOver.length, 1);
+  assert.match(formatFinding(issueOver[0]), /^title: 61 characters, over 60\./);
+});
+
 test('config: yokoten\'s own areas cover its open work', () => {
   const own = loadConfig(join(import.meta.dirname, '..'));
   assert.ok(own.areas.includes('doctor') && own.areas.includes('owner'));
@@ -488,6 +665,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   add(checkCommand(`bash -c "${':;'.repeat(300000)}"`, { env: {} })); // too many commands to read
   add(checkEdit('test/a.test.ts', { config: DEFAULTS, env }));
   add(checkEdit('AGENTS.md', { config: DEFAULTS, env }));
+  add(lateFinding({ command: 'ls', paths: [], worker: false }, 5000));
   found.push(...scanText(`${POSITIVE_CONTROL}\n${SECRET_CONTROL}\nhome town`, { file: 'a.md', marks: ['home town'] }));
   found.push(...checkLayout(Array.from({ length: 8 }, (_, i) => `d/${i}`), DEFAULTS));
   found.push(...checkBuildOutput([{ path: 'dist/a.js', binary: false }, { path: 'a.bin', binary: true }], DEFAULTS));
@@ -501,20 +679,48 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   const translated = makeTranslatedRepo();
   translated.commit('en.md', '# Guide\n\nStep one, changed.\n');
   add(translationNotes(translated.root, ['zh.md'])[0]);
+  // `check --history` in a shallow clone (#266).
+  const shallow = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  execFileSync('git', ['clone', '-q', '--depth', '1', `file://${translated.root}`, shallow], { stdio: 'ignore' });
+  found.push(...checkHistory(shallow, { config: DEFAULTS, env: {} }));
   found.push(...parseChange('changes/1-a.md', 'Improved\n\nA thing.\n').problems);
+  translated.git('update-index', '--add', '--info-only', '--cacheinfo', `100644,${'1'.repeat(40)},ghost.md`);
+  add(check(translated.root, { config: DEFAULTS, env: {}, staged: true }).find((f) => f.id === 'missing-blob'));
+  // A CI event that can't be read, and a pull request whose commits are not here (#267).
+  const unreadable = (read: unknown) => (read && typeof read === 'object' && 'problem' in read ? (read.problem as Finding) : null);
+  add(unreadable(readIssue({ GITHUB_EVENT_PATH: join(translated.root, 'no-event.json') })));
+  const event = join(translated.root, 'event.json');
+  writeFileSync(event, JSON.stringify({ pull_request: { base: { sha: 'f'.repeat(40) }, head: { sha: translated.git('rev-parse', 'HEAD') } } }));
+  add(unreadable(readPullRequest(translated.root, { GITHUB_EVENT_PATH: event })));
   // The road and the machine, from an empty folder and an empty home.
   const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
   for (const step of ROAD) add(stepFinding(step, dir, { HOME: dir }));
+  add(notRepoFinding(dir));
+  writeFileSync(join(dir, 'yokoten.json'), '{ "colour": "blue" }');
+  add(findUnknownKeys(dir)[0]);
+  rmSync(join(dir, 'yokoten.json'));
   for (const c of [...agentHooks(dir), ...machineChecks({ HOME: dir, YOKOTEN_PRIVATE_MARKS: join(dir, 'none') })]) add(c.finding);
+  // The Codex and Gemini CLI user hooks (#211): only once their folders exist.
+  for (const folder of ['.codex', '.gemini']) mkdirSync(join(dir, folder));
+  for (const c of userAgentHooks({ HOME: dir })) add(c.finding);
+  // The plugin (#198): enabled, and installed at a version older than this yokoten.
+  const pluginHome = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const pluginFolder = join(pluginHome, 'plugin');
+  mkdirSync(join(pluginHome, '.claude', 'plugins'), { recursive: true });
+  mkdirSync(pluginFolder);
+  writeFileSync(join(pluginHome, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { 'yokoten@yokoten': true } }));
+  writeFileSync(join(pluginHome, '.claude', 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'yokoten@yokoten': [{ scope: 'user', installPath: pluginFolder }] } }));
+  writeFileSync(join(pluginFolder, 'package.json'), JSON.stringify({ version: '0.0.1' }));
+  add(pluginAgeCheck(null, { HOME: pluginHome }));
   // The core rules (#120): behind the kit, and with no heading to compare by.
   for (const rules of ['# old rules\n\n## This project\n', '# rules\n']) {
     writeFileSync(join(dir, 'AGENTS.md'), rules);
     add(coreRulesCheck(dir)?.finding);
   }
   // The server, with every setting off, and with nothing readable.
-  const off = { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false };
+  const off = { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false, approvals: 0 };
   const security = { secretScanning: false, pushProtection: false, privateReporting: false, dependabotAlerts: false };
-  const server = { repo: 'octo/demo', defaultBranch: 'main', mergeMethods: ['merge', 'squash'], deleteBranchOnMerge: false, branch: off, tags: false, security, forgotten: ['old'] };
+  const server = { repo: 'octo/demo', defaultBranch: 'main', isPrivate: false, actionsCanApprove: false, mergeMethods: ['merge', 'squash'], deleteBranchOnMerge: false, branch: off, tags: false, security, forgotten: ['old'] };
   for (const c of [...serverChecks(server), ...serverChecks({ unread: 'gh is not installed', fix: 'get it' })]) add(c.finding);
 
   const known = new Set(ids());
@@ -599,6 +805,160 @@ test('docs: a finding carries its rule\'s link, in text, JSON and explain (#94)'
   assert.ok(step && step.docs === undefined && !explainLines(step).some((line) => line.startsWith('Docs:')), 'a step has no link yet');
 });
 
+// `yokoten learn` (#77): an incident issue becomes a check draft, from the issue's own
+// sections. The issue text is stubbed here; nothing reaches the network.
+const incidentOf = (body: string, title = 'check: misses a key in a JSON file'): Incident => ({ number: 12, title, body, url: 'https://example.com/issues/12', labels: ['incident'] });
+
+test('learn: the draft takes what, why and the fix from the issue\'s sections', () => {
+  const body = '## What happened\n\nA key in a JSON file was not checked.\n\n## Why it matters\n\nA leaked key opens the account.\n\n## Why it got through\n\nThe privacy check read Markdown only.\n\n## Fix\n\nThe check reads JSON too.\nIt has a test.\n\nMore detail.\n';
+  const draft = draftLesson(incidentOf(body));
+  assert.deepEqual(draft.finding, { id: 'incident-12', what: 'misses a key in a JSON file', why: 'A leaked key opens the account', fix: 'The check reads JSON too. It has a test' });
+  assert.deepEqual(draft.todos, []);
+  assert.deepEqual(draft.files.map((file) => file.path), ['lessons/incident-12/lesson.ts', 'lessons/incident-12/lesson.test.ts']);
+  const [lesson, check] = draft.files.map((file) => file.text);
+  assert.match(lesson, /^\/\/ A lesson from incident #12: check: misses a key in a JSON file\n\/\/ https:\/\/example\.com\/issues\/12\n/);
+  assert.match(lesson, /\n\/\/ Fix \(from the issue\):\n\/\/   The check reads JSON too\.\n\/\/   It has a test\.\n\/\/\n\/\/   More detail\.\n/);
+  assert.match(lesson, /\n {2}why: 'A leaked key opens the account',\n/);
+  assert.match(lesson, /\n\/\/ Why it got through \(from the issue\):\n\/\/   The privacy check read Markdown only\.\n/);
+  // The check gets the repo's folder, as doctor runs it in a project (#147).
+  assert.match(lesson, /export function findProblems\(root: string\): Finding\[\] \{\n {2}\/\/ TODO\(reviewer\)/);
+  // The draft's own test is a positive control that fails until the check is written.
+  assert.match(check, /import \{ findProblems, lesson \} from '\.\/lesson\.ts';/);
+  assert.match(check, /test\('incident-12: catches the known-bad case'[^]*\[lesson\.id\]\);/);
+  assert.match(formatDraft(incidentOf(body), draft).join('\n'), /The issue answers every field\.[^]*\n--- lessons\/incident-12\/lesson\.ts\n/);
+});
+
+test('learn: a missing section gives a TODO for the reviewer, never a made-up answer (positive control)', () => {
+  const draft = draftLesson(incidentOf('## What happened\n\nA key was not checked.\n\n## Why it got through\n\n_No response_\n'));
+  assert.deepEqual(draft.todos, ['why: the issue has no "Why it matters" section', 'fix: the issue has no "Fix" section']);
+  assert.match(draft.finding.why, /^TODO\(reviewer\): the issue has no "Why it matters" section; /);
+  assert.match(draft.finding.fix, /^TODO\(reviewer\): the issue has no "Fix" section; /);
+  assert.ok(!/No response/.test(draft.files[0].text), 'an empty form field is not copied as an answer');
+  // No sections at all: every field the body should give is a TODO, and what comes from the title.
+  const empty = draftLesson(incidentOf('Something broke.', 'Commit times carry a time zone'));
+  assert.equal(empty.finding.what, 'commit times carry a time zone');
+  assert.equal(empty.todos.length, 2);
+  const lines = formatDraft({ ...incidentOf(''), labels: [] }, draftLesson(incidentOf(''))).join('\n');
+  assert.match(lines, /Note: the issue has no `incident` label; it is drafted anyway\.\n2 TODO\(s\) for the reviewer:\n- why: /);
+});
+
+test('learn: with no "Why it matters", the why starts from "Why it got through", with a TODO (#147)', () => {
+  const draft = draftLesson(incidentOf('## What happened\n\nA key was not checked.\n\n## Why it got through\n\nThe check read Markdown only.\n\n## Fix\n\nRead JSON too.\n'));
+  assert.deepEqual(draft.todos, ['why: the issue has no "Why it matters" section; the draft uses "Why it got through"']);
+  assert.equal(draft.finding.why, 'TODO(reviewer): the issue has no "Why it matters" section; rewrite this from "Why it got through": The check read Markdown only');
+  // A bold label works too, and "Why it matters" is never read as "Why it got through".
+  const labelled = draftLesson(incidentOf('**Why it matters:** a leak.\n**Why:** no check.\n**Fix:** a check.'));
+  assert.deepEqual([labelled.finding.why, labelled.todos], ['a leak', []]);
+});
+
+test('learn: sections by heading or bold label, outside code blocks; one line per field', () => {
+  const sections = readSections('Intro.\n**What happened:** a commit kept its time zone.\n### Fix and check\n\n- [ ] The commit check refuses it,\n  with a test.\n- [ ] init sets TZ.\n\n```sh\n# a comment\n```\n');
+  assert.deepEqual(sections.map((section) => section.heading), ['What happened', 'Fix and check']);
+  assert.equal(sections[0].text, 'a commit kept its time zone.');
+  assert.equal(summarize(sections[1].text), 'The commit check refuses it, with a test');
+  assert.equal(summarize('1. First step:\n2. Second'), 'First step');
+  // A quote in the issue stays inside the generated string.
+  assert.match(draftLesson(incidentOf('## Fix\n\nIt\'s fixed with a \\ path.')).files[0].text, /fix: 'It\\'s fixed with a \\\\ path',/);
+});
+
+test('learn: issue text never becomes code in the draft (positive control: the payload is real code)', () => {
+  // JavaScript ends a line at U+2028, U+2029 and a lone CR too. A title or body could end a
+  // `//` comment there and run the rest when the draft's test imports lesson.ts.
+  const [lineSeparator, paragraphSeparator] = [String.fromCharCode(0x2028), String.fromCharCode(0x2029)];
+  const payload = "process.getBuiltinModule('node:fs').writeFileSync('PWNED','x');//";
+  const hostile = (end: string) => `${end}${payload}`;
+  const nasty = "*/ ${x} `tick` 'quote' \"dq\" \\ \u0000\u001b\u0085";
+  const title = `repo: tests break${hostile(lineSeparator)}${hostile(paragraphSeparator)}${hostile('\r')}`;
+  const body = [
+    '## What happened',
+    '',
+    `It broke.${hostile(lineSeparator)}`,
+    `Again.${hostile(paragraphSeparator)} ${nasty}`,
+    '',
+    '## Why it got through',
+    '',
+    `No check.${hostile('\r')}`,
+    '',
+    '## Fix',
+    '',
+    `A check.${hostile(lineSeparator)}${hostile(paragraphSeparator)}${hostile('\r')} ${nasty}`,
+    '',
+    '## Lesson',
+    '',
+    `Read twice.${hostile('\r\n')}`,
+  ].join('\n');
+  // Writes the draft to a new folder and imports its lesson.ts there, as the draft's own
+  // test does: the import parses the file and runs any code in it.
+  const importDraft = (made: ReturnType<typeof draftLesson>) => {
+    const root = mkdtempSync(join(tmpdir(), 'yokoten-learn-hostile-'));
+    writeDraft(root, made);
+    const path = made.files[0].path;
+    const run = spawnSync(process.execPath, ['--input-type=module', '-e', `const { lesson } = await import('./${path}'); console.log(JSON.stringify(lesson));`], { cwd: root, encoding: 'utf8', timeout: 20_000 });
+    return { root, run, lesson: readFileSync(join(root, path), 'utf8') };
+  };
+  const draft = draftLesson({ ...incidentOf(body, title), url: `https://example.com/issues/12${hostile(lineSeparator)}` });
+  const { root, run, lesson } = importDraft(draft);
+  // The same with no lone CR: without the fix this draft parses, so the payload would run.
+  const parsing = draftLesson({
+    ...incidentOf(`## Fix\n\nA check.${hostile(lineSeparator)}${hostile(paragraphSeparator)}\n\n## Lesson\n\nRead twice.${hostile(paragraphSeparator)}`, `repo: tests break${hostile(lineSeparator)}${hostile(paragraphSeparator)}`),
+    number: 13,
+  });
+  const second = importDraft(parsing);
+  assert.ok(!existsSync(join(root, 'PWNED')), 'the payload did not run');
+  assert.ok(!existsSync(join(second.root, 'PWNED')), 'the payload did not run (no lone CR)');
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(second.run.status, 0, second.run.stderr);
+  assert.equal(JSON.parse(second.run.stdout).what, parsing.finding.what);
+  assert.ok(!/[\r\u{2028}\u{2029}]/u.test(lesson), 'no line end but LF in the draft');
+  for (const line of lesson.split('\n').filter((line) => line.includes('writeFileSync'))) {
+    assert.match(line, /^(\/\/|  (what|why|fix): ')/, `the payload is only in a comment or a string: ${JSON.stringify(line)}`);
+  }
+  // A string keeps its text, but for CR and LF, which become a space as before.
+  const expected = Object.fromEntries(Object.entries(draft.finding).map(([key, value]) => [key, value.replace(/\r\n|[\n\r]/g, ' ')]));
+  assert.deepEqual(JSON.parse(run.stdout), expected, 'the strings keep their text');
+  assert.ok(draft.finding.fix.includes(payload) && draft.finding.what.includes(lineSeparator), 'the payload reached the draft as text');
+});
+
+test('learn: the printed draft sends no terminal escape from the issue, shown as \\uXXXX instead', () => {
+  // Clear the line and move up: a title could hide or fake a line of the preview. OSC 8: a link.
+  const title = 'repo: tests break \u001b[2K\u001b[1A \u001b]8;;https://example.com/x\u0007click\u001b]8;;\u0007 \u009b31m';
+  const body = '## Fix\n\nA check \u001b[31mred\u001b[0m.\n\n## Lesson\n\nKeep \u001b]0;title\u0007 out.';
+  const incident = { ...incidentOf(body, title), labels: [] };
+  const text = formatDraft(incident, draftLesson(incident)).join('\n');
+  assert.ok(!/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(text), 'no control character but tab and newline');
+  assert.match(text, /^a check draft from issue #12, "repo: tests break \\u001b\[2K\\u001b\[1A \\u001b\]8;;https:\/\/example\.com\/x\\u0007click\\u001b\]8;;\\u0007 \\u009b31m"\.\n/);
+  assert.match(text, /\/\/ {3}A check {2}\[31mred \[0m\./, 'a comment in the draft has a space for each');
+});
+
+test('learn: bidi controls from the issue are shown as \\uXXXX in the preview and the draft (positive control: raw ones fail)', () => {
+  // RLO and the isolates reorder what a reviewer sees ("trojan source"). Built by code, so
+  // this file holds none of them raw.
+  const bidi = [0x202e, 0x2066, 0x2067, 0x2068, 0x2069].map((code) => String.fromCharCode(code));
+  const raw = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
+  const title = `repo: tests break ${bidi.join('x')} end`;
+  const body = `## Fix\n\nA check ${bidi.join('')}.\n\n## Lesson\n\nKeep ${bidi[0]}out.`;
+  const incident = { ...incidentOf(body, title), labels: [] };
+  const draft = draftLesson(incident);
+  const text = formatDraft(incident, draft).join('\n');
+  assert.ok(!raw.test(text), 'no raw bidi control in the preview');
+  assert.ok(text.includes('repo: tests break \\u202ex\\u2066x\\u2067x\\u2068x\\u2069 end'), 'the preview shows each as \\uXXXX');
+  const root = mkdtempSync(join(tmpdir(), 'yokoten-learn-bidi-'));
+  writeDraft(root, draft);
+  for (const file of draft.files) assert.ok(!raw.test(readFileSync(join(root, file.path), 'utf8')), `no raw bidi control in ${file.path}`);
+  const lesson = readFileSync(join(root, draft.files[0].path), 'utf8');
+  assert.ok(lesson.includes('// A lesson from incident #12: repo: tests break \\u202ex\\u2066x'), 'a comment shows each as \\uXXXX text');
+  assert.ok(lesson.includes("  fix: 'A check \\u202e\\u2066\\u2067\\u2068\\u2069',"), 'a string escapes each');
+});
+
+test('learn: --write adds the draft\'s files and keeps a file that is there', () => {
+  const root = mkdtempSync(join(tmpdir(), 'yokoten-learn-'));
+  const draft = draftLesson(incidentOf('## Fix\n\nA check.'));
+  assert.deepEqual(writeDraft(root, draft), { written: ['lessons/incident-12/lesson.ts', 'lessons/incident-12/lesson.test.ts'], kept: [] });
+  writeFileSync(join(root, 'lessons/incident-12/lesson.ts'), 'reviewed\n');
+  assert.deepEqual(writeDraft(root, draft), { written: [], kept: ['lessons/incident-12/lesson.ts', 'lessons/incident-12/lesson.test.ts'] });
+  assert.equal(readFileSync(join(root, 'lessons/incident-12/lesson.ts'), 'utf8'), 'reviewed\n', 'a reviewer\'s work is never overwritten');
+});
+
 /**
  * A git repo with an English file and a translation whose line 1 names it, at the
  * English text as committed. `git` runs in it with no global config, in UTC.
@@ -620,6 +980,60 @@ function makeTranslatedRepo() {
   return { root, git, commit };
 }
 
+// #244: blobs are read in batches under a cap, so one buffer never holds a whole big commit.
+test('readBlobs: batches under the cap; a blob over it is read only for its start (#244)', () => {
+  const sizes = new Map([['a', 10], ['b', 20], ['c', 30], ['d', 41], ['e', 40], ['f', 0]]);
+  assert.deepEqual(batchBlobs(sizes, 40), { batches: [['a', 'b'], ['c'], ['e', 'f']], over: ['d'] });
+  const repo = makeTranslatedRepo();
+  const blob = (bytes: Buffer) => {
+    writeFileSync(join(repo.root, 'b'), bytes);
+    return repo.git('hash-object', '-w', 'b');
+  };
+  const small = [10, 20, 30].map((n) => blob(Buffer.alloc(n, String(n))));
+  const big = blob(Buffer.concat([Buffer.alloc(9000, 'a'), Buffer.alloc(1)]));
+  const missing = 'f'.repeat(40);
+  const read = readBlobs(repo.root, [...small, small[0], big, missing], 40);
+  assert.deepEqual([...read.keys()].sort(), [...small, big].sort(), 'a missing blob is left out; a repeat is read once');
+  for (const [i, n] of [10, 20, 30].entries()) assert.deepEqual(read.get(small[i]), { bytes: Buffer.alloc(n, String(n)), size: n, whole: true });
+  const start = read.get(big);
+  assert.deepEqual([start?.bytes.length, start?.size, start?.whole], [8000, 9001, false], 'only the first 8000 bytes, enough to tell binary');
+  assert.deepEqual(readBlobs(repo.root, []), new Map());
+});
+
+// #284 needs the history read past `git replace`: `pre` reaches every git call readBlobs makes.
+test('readBlobs: `pre` goes before the subcommand, in the batch and the over-cap read (#244, #284)', () => {
+  const repo = makeTranslatedRepo();
+  const blob = (bytes: Buffer) => {
+    writeFileSync(join(repo.root, 'b'), bytes);
+    return repo.git('hash-object', '-w', 'b');
+  };
+  const stored = blob(Buffer.from('stored bytes\n'));
+  const shown = blob(Buffer.from('replacement\n'));
+  const big = blob(Buffer.alloc(9000, 'a'));
+  const bigShown = blob(Buffer.alloc(9000, 'b'));
+  repo.git('replace', stored, shown);
+  repo.git('replace', big, bigShown);
+  const first = (read: Map<string, { bytes: Buffer }>, id: string) => read.get(id)?.bytes.subarray(0, 1).toString();
+  const plain = readBlobs(repo.root, [stored, big], 100);
+  assert.deepEqual([plain.get(stored)?.bytes.toString(), first(plain, big)], ['replacement\n', 'b'], 'without pre, git shows the replacement');
+  const raw = readBlobs(repo.root, [stored, big], 100, ['--no-replace-objects']);
+  assert.deepEqual([raw.get(stored)?.bytes.toString(), first(raw, big)], ['stored bytes\n', 'a'], 'with pre, the bytes as stored');
+});
+
+test('check --history: a blob swapped by git replace is read as committed, not as the swap shows it (#284)', () => {
+  const repo = makeTranslatedRepo();
+  const token = `${'gh'}p_${'x7Y2k9'.repeat(6)}`;
+  repo.commit('notes.md', `token ${token}\n`);
+  const blob = repo.git('rev-parse', 'HEAD:notes.md');
+  writeFileSync(join(repo.root, 'harmless.txt'), 'nothing here\n');
+  const harmless = repo.git('hash-object', '-w', 'harmless.txt');
+  repo.git('replace', blob, harmless);
+  assert.equal(repo.git('cat-file', '-p', blob), 'nothing here', 'git itself now shows the harmless bytes');
+  const found = checkHistory(repo.root, { config: DEFAULTS, env: {} });
+  assert.ok(found.some((f) => f.file?.startsWith(`notes.md @ blob ${blob.slice(0, 8)}`)), JSON.stringify(found));
+  assert.ok(!JSON.stringify(found).includes(token), 'the secret is never printed');
+});
+
 // The older marker form (#87), with the English blob; still read (#166).
 const blobMarker = (source: string, blob: string) => `<!-- source: ${source} blob ${blob} -->`;
 
@@ -631,6 +1045,10 @@ test('translations: line 1 names the source; the older form adds a blob; other f
   assert.equal(parseSourceMarker('# Title\n<!-- source: a.md -->'), null, 'only line 1');
   assert.equal(parseSourceMarker('<!-- source: -->'), null, 'no path');
   assert.equal(parseSourceMarker('---\nsource: a.md\n---'), null, 'front matter is not the form');
+  // Only a relative path (#181): an attribution comment names a URL, and an absolute path is no repo file.
+  for (const source of ['https://example.com/post', 'mailto:a@example.com', '/docs/guide.md', 'C:\\docs\\guide.md']) {
+    assert.equal(parseSourceMarker(`${sourceMarker(source)}\n# Title`), null, source);
+  }
 });
 
 test('translations: a note when English changed after the translation, none when it is current (#87)', () => {
@@ -656,27 +1074,45 @@ test('translations: a note when English changed after the translation, none when
   assert.deepEqual(translationNotes(repo.root, ['zh.md']), []);
 });
 
-test('translations: a missing source and a shallow clone each give a clear note, never "current" (#87)', () => {
+test('translations: a missing source gives a clear note; a URL or an absolute path is not a marker (#87, #181)', () => {
   const repo = makeTranslatedRepo();
   writeFileSync(join(repo.root, 'gone.md'), `${sourceMarker('nowhere.md')}\n`);
   writeFileSync(join(repo.root, 'out.md'), `${sourceMarker('../en.md')}\n`);
-  const notes = translationNotes(repo.root, ['gone.md', 'out.md']);
+  writeFileSync(join(repo.root, 'credit.md'), '<!-- source: https://example.com/post -->\n# A post\n');
+  writeFileSync(join(repo.root, 'root.md'), `${sourceMarker(join(repo.root, 'en.md'))}\n`);
+  const notes = translationNotes(repo.root, ['gone.md', 'out.md', 'credit.md', 'root.md']);
+  assert.equal(notes.length, 2, notes.map((n) => n.file).join(', '));
   assert.match(notes[0].what, /names nowhere\.md as its English source, which is not in the repo/);
   assert.match(notes[1].what, /names \.\.\/en\.md as its English source, which is not in the repo/);
-  // A shallow clone (CI's default checkout): its one commit seems to add both files.
-  for (const english of ['# Guide\n\nStep one, changed.\n', null]) {
-    if (english) repo.commit('en.md', english);
-    const shallow = mkdtempSync(join(tmpdir(), 'yokoten-'));
-    execFileSync('git', ['clone', '-q', '--depth', '1', `file://${repo.root}`, shallow], { stdio: 'ignore' });
-    const [note] = translationNotes(shallow, ['zh.md']);
-    assert.match(note.what, /is behind en\.md: this clone is shallow, so how far is not known/);
-    assert.match(note.fix, /fetch-depth: 0/);
+});
+
+test('translations: a shallow clone gives one note for the run, never a note per file, never a problem (#87, #181)', () => {
+  const repo = makeTranslatedRepo();
+  repo.commit('en.md', '# Guide\n\nStep one, changed.\n');
+  repo.commit('zh2.md', `${sourceMarker('en.md')}\n# 指南二\n`);
+  const shallowClone = (depth: number) => {
+    const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+    execFileSync('git', ['clone', '-q', '--depth', String(depth), `file://${repo.root}`, dir], { stdio: 'ignore' });
+    return dir;
+  };
+  // CI's default checkout: one commit, which seems to add every file. Deeper is still shallow.
+  for (const depth of [1, 2]) {
+    const shallow = shallowClone(depth);
+    const notes = translationNotes(shallow, ['en.md', 'zh.md', 'zh2.md']);
+    assert.equal(notes.length, 1, `depth ${depth}: ${notes.map((n) => n.what).join('; ')}`);
+    assert.equal(notes[0].file, undefined, 'not about one file');
+    assert.equal(notes[0].what, "translations weren't checked: this clone is shallow");
+    assert.match(notes[0].fix, /fetch-depth: 0/);
+    // Even with "fail": a note, never a problem.
+    const found: Finding[] = [];
+    const problems = check(shallow, { config: { ...DEFAULTS, translations: { fail: true } }, env: {}, notes: found });
+    assert.deepEqual(problems.filter((f) => f.id === 'translation-behind'), []);
+    assert.deepEqual(found.map((f) => f.what), ["translations weren't checked: this clone is shallow"]);
   }
-  // Deep enough to see the change: the history decides.
-  repo.commit('zh.md', `${sourceMarker('en.md')}\n# 指南\n\n第一步（改）。\n`);
-  const deeper = mkdtempSync(join(tmpdir(), 'yokoten-'));
-  execFileSync('git', ['clone', '-q', '--depth', '2', `file://${repo.root}`, deeper], { stdio: 'ignore' });
-  assert.deepEqual(translationNotes(deeper, ['zh.md']), []);
+  // A translation edited in the work tree needs no history: no note.
+  const shallow = shallowClone(1);
+  writeFileSync(join(shallow, 'zh.md'), `${sourceMarker('en.md')}\n# 指南（改）\n`);
+  assert.deepEqual(translationNotes(shallow, ['zh.md']), []);
 });
 
 test('translations: two branches that each change both files never edit the same line, and merge in turn with no note (#166)', () => {
@@ -777,6 +1213,127 @@ test('core rules: the kit version mark tells older from newer; no mark compares 
   assert.equal(compareCoreRules(`# rules\n\n${own}`, kit).state, 'same', 'the mark alone is no change');
   assert.equal(compareCoreRules(`<!-- yokoten kit 0.9.0 -->\n# rules\n\n${own}`, kit).state, 'same', 'a newer mark with the same text is up to date');
   assert.equal(compareCoreRules(`<!-- yokoten kit {{version}} -->\n# rules, later\n\n${own}`, kit).state, 'behind', 'a mark that is not a version is unknown');
+});
+
+// Shipped lessons (#147): a reviewed lesson moves into the kit, and doctor runs it in every
+// project. The lessons here are small ones, written for the test.
+const ENV_LESSON = [
+  '// A lesson from incident #12: check: a .env file is committed',
+  '// https://example.com/issues/12',
+  "import { existsSync } from 'node:fs';",
+  "import { join } from 'node:path';",
+  "export const lesson = { id: 'incident-12', what: 'a .env file is in the repo', why: 'it can hold a secret', fix: 'remove it, and add it to .gitignore' };",
+  "export function findProblems(root: string) { return existsSync(join(root, '.env')) ? [lesson] : []; }",
+  '',
+].join('\n');
+const ENV_LESSON_TEST = [
+  "import assert from 'node:assert/strict';",
+  "import { mkdtempSync, writeFileSync } from 'node:fs';",
+  "import { tmpdir } from 'node:os';",
+  "import { join } from 'node:path';",
+  "import { test } from 'node:test';",
+  "import { findProblems } from './lesson.ts';",
+  "test('catches a .env file', () => {",
+  "  const root = mkdtempSync(join(tmpdir(), 'lesson-'));",
+  "  writeFileSync(join(root, '.env'), 'KEY=1\\n');",
+  '  assert.equal(findProblems(root).length, 1);',
+  '});',
+  '',
+].join('\n');
+
+/** A folder that Node reads as ES modules, as yokoten's own folder is. */
+function makeModuleDir(prefix: string): string {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  writeFileSync(join(root, 'package.json'), '{ "type": "module" }\n');
+  return root;
+}
+
+test('lessons: the table gives each row\'s id, incident and version; other lines are left out', () => {
+  const text = ['# Lessons', '', 'Text with | a pipe.', '', '| Lesson | Incident | Added in |', '|---|---|---|', formatLessonRow({ id: 'incident-138', url: 'https://example.com/issues/138', version: '0.1.0' }), '| incident-7 | https://example.com/issues/7 | 0.2.0 |', ''].join('\n');
+  assert.deepEqual(readLessonTable(text), [
+    { id: 'incident-138', url: 'https://example.com/issues/138', version: '0.1.0' },
+    { id: 'incident-7', url: 'https://example.com/issues/7', version: '0.2.0' },
+  ]);
+});
+
+test('lessons: --ship refuses a draft with a TODO or a failing test, and moves nothing (positive control)', () => {
+  const root = makeModuleDir('yokoten-ship-');
+  const draftDir = join(root, 'lessons/incident-12');
+  assert.match(String((shipLesson(root, '12', '0.1.0') as { problems: string[] }).problems), /no kit\/ here/);
+  mkdirSync(join(root, 'kit'));
+  assert.match(String((shipLesson(root, '12', '0.1.0') as { problems: string[] }).problems), /no lesson in lessons\/incident-12: run `yokoten learn <issue> --write` first/);
+  assert.match(String((shipLesson(root, '../x', '0.1.0') as { problems: string[] }).problems), /is not a lesson id/);
+  // A fresh draft: TODOs in both files.
+  writeDraft(root, draftLesson(incidentOf('## Why it matters\n\nA leak.\n\n## Fix\n\nA check.\n')));
+  let shipped = shipLesson(root, '12', '0.1.0') as { problems: string[] };
+  assert.deepEqual(shipped.problems.map((problem) => problem.replace(/\d+ TODO/, 'N TODO')), ['lessons/incident-12/lesson.ts still has N TODO(reviewer): fill each one in', 'lessons/incident-12/lesson.test.ts still has N TODO(reviewer): fill each one in']);
+  // No TODO left, but the check finds nothing: its positive control fails.
+  writeFileSync(join(draftDir, 'lesson.ts'), ENV_LESSON.replace("existsSync(join(root, '.env')) ? [lesson] : []", '[]'));
+  writeFileSync(join(draftDir, 'lesson.test.ts'), ENV_LESSON_TEST);
+  shipped = shipLesson(root, 'incident-12', '0.1.0') as { problems: string[] };
+  assert.deepEqual(shipped.problems, ['the lesson\'s test fails: run `node --test lessons/incident-12/lesson.test.ts` to see why, and fix the check']);
+  assert.ok(existsSync(join(draftDir, 'lesson.ts')) && !existsSync(join(root, 'kit/lessons')), 'nothing moved');
+  // Reviewed: it moves, with a row in the table, and the empty drafts folder goes.
+  writeFileSync(join(draftDir, 'lesson.ts'), ENV_LESSON);
+  assert.deepEqual(shipLesson(root, '12', '0.1.0'), { lesson: { id: 'incident-12', url: 'https://example.com/issues/12', version: '0.1.0' } });
+  assert.ok(existsSync(join(root, 'kit/lessons/incident-12/lesson.test.ts')) && !existsSync(join(root, 'lessons')));
+  assert.deepEqual(readLessonTable(readFileSync(join(root, 'kit/lessons/README.md'), 'utf8')).map((row) => row.id), ['incident-12']);
+  writeDraft(root, draftLesson(incidentOf('')));
+  assert.match(String((shipLesson(root, '12', '0.1.0') as { problems: string[] }).problems), /kit\/lessons\/incident-12 is already there/);
+});
+
+test('lessons: doctor runs each lesson as a note; a broken lesson is a note for itself alone; not now skips one', () => {
+  const kit = makeModuleDir('yokoten-kit-');
+  const ids = ['incident-1', 'incident-2', 'incident-3', 'incident-4', 'incident-5'];
+  writeFileSync(join(kit, 'README.md'), ['| Lesson | Incident | Added in |', '|---|---|---|', ...ids.map((id) => `| ${id} | https://example.com/issues/1 | 0.1.0 |`), ''].join('\n'));
+  const write = (id: string, text: string) => {
+    mkdirSync(join(kit, id));
+    writeFileSync(join(kit, id, 'lesson.ts'), text);
+  };
+  write('incident-1', ENV_LESSON);
+  write('incident-2', "export function findProblems() { throw new Error('a bug in the lesson'); }\n");
+  // incident-3 has no code.
+  write('incident-4', ENV_LESSON);
+  write('incident-5', 'export function findProblems() { return [{ what: 1 }]; }\n');
+  const project = mkdtempSync(join(tmpdir(), 'yokoten-project-'));
+  writeFileSync(join(project, '.env'), 'KEY=1\n');
+  const place = { dir: kit, codeDir: kit, codeFile: 'lesson.ts' };
+  const checks = lessonChecks(project, { 'incident-4': 'we keep a sample .env' }, place);
+  assert.deepEqual(checks.map(({ id, mark }) => `${id} ${mark}`), ['incident-1 note', 'incident-2 note', 'incident-3 note', 'incident-4 not now', 'incident-5 note']);
+  assert.deepEqual(formatLessonChecks(checks), [
+    '  note    lesson incident-1: a .env file is in the repo; remove it, and add it to .gitignore',
+    '  note    lesson incident-2: can\'t run this lesson: a bug in the lesson; run `yokoten install` again; if it stays, report it in an issue',
+    '  note    lesson incident-3: can\'t run this lesson: there is no lesson.ts; run `yokoten install` again; if it stays, report it in an issue',
+    '  not now lesson incident-4: we keep a sample .env',
+    '  note    lesson incident-5: can\'t run this lesson: a finding has no what, why or fix; run `yokoten install` again; if it stays, report it in an issue',
+  ]);
+  // The finding takes the lesson's id, whatever the lesson said.
+  assert.deepEqual(checks[0].findings, [{ id: 'incident-1', what: 'a .env file is in the repo', why: 'it can hold a secret', fix: 'remove it, and add it to .gitignore' }]);
+  // A clean project: ok. No table (a project copy of yokoten has no kit): no lessons.
+  assert.deepEqual(lessonChecks(mkdtempSync(join(tmpdir(), 'yokoten-clean-')), {}, place).map(({ mark }) => mark), ['ok', 'note', 'note', 'ok', 'note']);
+  assert.deepEqual(lessonChecks(project, {}, { ...place, dir: join(kit, 'none') }), []);
+});
+
+test('lessons: every lesson the kit ships has a row, its incident, no TODO, and a passing positive control', () => {
+  const kitLessons = join(import.meta.dirname, '..', KIT_LESSONS_DIR);
+  const rows = readLessonTable(readFileSync(join(kitLessons, LESSONS_TABLE), 'utf8'));
+  assert.ok(rows.length > 0, 'the kit ships at least one lesson');
+  const folders = readdirSync(kitLessons, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  assert.deepEqual(folders.sort(), rows.map((row) => row.id).sort(), 'each folder has one row in the table, and each row a folder');
+  for (const { id, url, version } of rows) {
+    assert.match(url, /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+$/, `${id}: the incident is an issue URL`);
+    assert.match(version, /^\d+\.\d+\.\d+$/, `${id}: the version is x.y.z`);
+    const code = readFileSync(join(kitLessons, id, 'lesson.ts'), 'utf8');
+    const test = readFileSync(join(kitLessons, id, 'lesson.test.ts'), 'utf8');
+    assert.ok(code.includes(`// ${url}\n`), `${id}: lesson.ts names its incident`);
+    assert.ok(!`${code}${test}`.includes('TODO(reviewer)'), `${id}: no TODO(reviewer) is left`);
+    assert.ok(/known-bad case/.test(test), `${id}: lesson.test.ts has a positive control`);
+    // Without NODE_TEST_CONTEXT, or the child reports to this run and exits 0 whatever happens.
+    const env = { ...process.env };
+    delete env.NODE_TEST_CONTEXT;
+    const run = spawnSync(process.execPath, ['--test', join(kitLessons, id, 'lesson.test.ts')], { env, encoding: 'utf8' });
+    assert.equal(run.status, 0, `${id}: its test passes\n${run.stdout}`);
+  }
 });
 
 test('self-test: the core-rules control passes the real check and fails a broken one (#170)', () => {
