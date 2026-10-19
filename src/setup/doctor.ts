@@ -26,10 +26,10 @@ import { type LessonPlace, listLessons, runLessons } from '../run/learn.ts';
 import { hasPlugin, hasSessionDoctor, readInstalledPlugin, userSettingsProblem } from '../agents/claude-code.ts';
 import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
-import type { HookState } from '../agents/hooks-file.ts';
+import { commentedFile, HAND_ADD, handAddJson, type HookState, mergeHandAdds } from '../agents/hooks-file.ts';
 import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
-import { compareCoreRules, compareVersions, isSelf, readCoreRules, summarizeUpdate } from './init.ts';
+import { cliPath, compareCoreRules, compareVersions, isSelf, readCoreRules, summarizeUpdate } from './init.ts';
 import { paths, USER_CLI, USER_MISSING } from './install.ts';
 import { type Mark, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
 
@@ -62,9 +62,19 @@ export function selfTest(): string[] {
 }
 
 /**
+ * A file with comments that yokoten won't rewrite, and a hook not in it yet: the hooks to
+ * add by hand, on one line (#258). Null when none of the states says so.
+ */
+function handAddPractice(id: RuleId, file: string, states: readonly HookState[]): Practice | null {
+  const problem = mergeHandAdds(states);
+  return problem?.kind === 'comments' ? practice(id, id, false, commentedFile(file), `${HAND_ADD}: ${handAddJson(problem.add, null)}`) : null;
+}
+
+/**
  * The other agents' project hooks: the tool-call guard and the stop check. Reported, but
  * not a missing practice yet: no real Codex or Gemini CLI run has been seen to block
  * through them (#30), and a project that uses neither should not fail doctor over them.
+ * A Gemini CLI file with comments, which init won't rewrite, gets the hooks to add by hand.
  */
 export function agentHooks(root: string): Practice[] {
   // Each step wants both project hooks: the tool-call guard and the stop check (#211).
@@ -72,9 +82,11 @@ export function agentHooks(root: string): Practice[] {
     [...(guard ? [] : ['no tool-call guard']), ...(stop ? [] : ['no stop check'])].join(' and ') + ` in ${file}`;
   const [codexGuard, codexStop] = [codex.hasProjectHook(root), codex.hasProjectStopHook(root)];
   const [geminiGuard, geminiStop] = [gemini.hasProjectHook(root), gemini.hasProjectStopHook(root)];
+  const geminiState = geminiGuard && geminiStop ? null : gemini.projectHooksState(root, cliPath(root));
   return [
     practice('codex-hook', 'codex-hook', codexGuard && codexStop, missing(codexGuard, codexStop, '.codex/hooks.json'), '`yokoten init` adds it'),
-    practice('gemini-hook', 'gemini-hook', geminiGuard && geminiStop, missing(geminiGuard, geminiStop, '.gemini/settings.json'), '`yokoten init` adds it'),
+    (geminiState && handAddPractice('gemini-hook', '.gemini/settings.json', [geminiState.guard, geminiState.stop])) ??
+      practice('gemini-hook', 'gemini-hook', geminiGuard && geminiStop, missing(geminiGuard, geminiStop, '.gemini/settings.json'), '`yokoten init` adds it'),
   ];
 }
 
@@ -93,7 +105,7 @@ export function machineChecks(env: Env): Practice[] {
   const session =
     problem?.kind === 'json'
       ? practice('session-doctor', 'session-doctor', false, "can't read ~/.claude/settings.json", 'make it valid JSON, then run `yokoten install`')
-      : problem
+      : problem?.kind === 'shape'
         ? practice('session-doctor', 'session-doctor', false, '~/.claude/settings.json has an unexpected shape', `${problem.hint}; fix it, then run \`yokoten install\``)
         : practice('session-doctor', 'session-doctor', plugin || hasSessionDoctor(env), 'sessions do not start with doctor', 'run `yokoten install`, or install the Claude Code plugin');
   return [
@@ -122,7 +134,9 @@ export function userAgentHooks(env: Env): Practice[] {
     const them = (names: readonly string[]) => (names.length > 1 ? 'them' : 'it');
     const problem = named.map(([, state]) => state).find((state) => typeof state === 'object');
     if (problem?.kind === 'json') return practice(id, id, false, `can't read ${file}`, 'make it valid JSON, then run `yokoten install`');
-    if (problem) return practice(id, id, false, `${file} has an unexpected shape`, `${problem.hint}; fix it, then run \`yokoten install\``);
+    const hand = handAddPractice(id, file, [hooks.doctor, hooks.guard]);
+    if (hand) return hand;
+    if (problem?.kind === 'shape') return practice(id, id, false, `${file} has an unexpected shape`, `${problem.hint}; fix it, then run \`yokoten install\``);
     if (missing.length && stale.length) return practice(id, id, false, `no ${missing[0]} and an out-of-date ${stale[0]} in ${file}`, '`yokoten install` adds one and updates the other');
     if (stale.length) return practice(id, id, false, `the ${stale.join(' and the ')} in ${file} ${stale.length > 1 ? 'are' : 'is'} out of date`, `\`yokoten install\` updates ${them(stale)}`);
     return practice(id, id, !missing.length, `${missing.map((name) => `no ${name}`).join(' and ')} in ${file}`, `\`yokoten install\` adds ${them(missing)}`);
