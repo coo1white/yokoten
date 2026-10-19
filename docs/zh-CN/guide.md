@@ -98,7 +98,7 @@ not now（暂不，后面跟着你给的原因）或者 can't check（这里查�
 | **1 · 安全网** | `rules`、`tool-hook`、`commit-check`、`runtime`、`tests`（有测试命令，CI 会跑） |
 | **2 · 先开 issue，再走 PR** | `ci`（CI 跑 `check`，或者用了 yokoten 的 Action）、`issues`（没有 todo 文件）、`templates`、`labels`（标准标签都在）、`milestone`（有一个没关的里程碑）、`no-build-output`（`dist/`、`build/`、`out/` 里没有提交的文件，也没有编译出来的二进制文件） |
 | **3 · 发版** | `changelog`、`titles`（CI 跑 `check --pr`；用 Action 的话，要在 PR 上跑，而且没设 `pr-check: false`） |
-| **4 · 带一支 AI 团队** | `codeowners`、`bot`、`skills` |
+| **4 · 带一支 AI 团队** | `codeowners`、`bot`、`skills`、`review`（合并到默认分支前要有一个人批准） |
 | **5 · 公开** | `security-files`（安全说明、Dependabot、许可证）、`protection`（默认分支和 `v*` tag 上的规则集）、`merge-settings`（只许 squash 合并，合并后自动删分支）、`security-settings`（secret scanning、push protection、私下报告漏洞、Dependabot 提醒） |
 
 后三步是服务器上的设置。完整的 `doctor` 用 `gh api` 去读，只读不改。
@@ -108,6 +108,16 @@ not now（暂不，后面跟着你给的原因）或者 can't check（这里查�
 第 2 关的 `labels` 和 `milestone` 也这样读。标准标签是 `bug`、`feat`、`docs`、`refactor`、`ci`、
 `owner`、`incident`、`good first issue`、`hotfix`，还有三个 tier 标签 `tier A`、`tier B`、`tier C`。
 `init` 会告诉你缺哪些，`init --github --yes` 帮你加上。
+
+第 4 关的 `review` 也这样读服务器。默认分支的规则集（或者分支保护）要求至少一个批准，这一步就算做完。
+GitHub 不让你批准自己开的 PR，所以让 bot 来开 PR，你来批准、合并。
+设置方法：编辑默认分支上的规则集，在“Require a pull request”里把“Required approvals”设成 1。
+另外，Settings → Actions → General 里的“Allow GitHub Actions to create and approve pull requests”要一直关着。
+它要是开着，bot 推一个 workflow 就能批准它自己开的 PR，所以 `review` 不算做完。
+批准设好以后，合并的人不是写代码的人，OpenSSF Scorecard 应该会把每次改动算作审过。
+这是我们从 Scorecard 文档里读到的，还没在真正跑一次 Scorecard 时验证过。
+免费账号的私有仓库没有规则集，这时 `review` 标 can't check，等到第 5 关仓库公开时再做。
+它不标 not now，因为 not now 只留给你自己做的决定。
 
 如果某一步对应外部的标准，`yokoten doctor` 会在步骤名后面写出来，比如 `ci (Scorecard: CI-Tests)`。
 会话开头那三行不写。

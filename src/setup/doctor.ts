@@ -162,9 +162,11 @@ export function pluginAgeCheck(root: string | null, env: Env): Finding | null {
 const SERVER_CONTROL: ServerRead = {
   repo: 'octo/demo',
   defaultBranch: 'main',
+  isPrivate: false,
+  actionsCanApprove: false,
   mergeMethods: ['merge', 'squash'],
   deleteBranchOnMerge: false,
-  branch: { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false },
+  branch: { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false, approvals: 0 },
   tags: false,
   security: { secretScanning: false, pushProtection: false, privateReporting: false, dependabotAlerts: false },
   forgotten: [],

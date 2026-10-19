@@ -408,6 +408,56 @@ const serverStep = (key: string, fields: { lacking: string; fix: string; why: st
   ...(fields.standard ? { standard: fields.standard } : {}),
 });
 
+// The review step (#59): a merge to the default branch needs one approval. The bot opens
+// the pull requests, so the owner is not their author and can approve them. A private
+// repo on a free plan has no rulesets: the step waits for stage 5, when the repo goes
+// public. That shows as "can't check", which never holds the stage. It is not "not now":
+// that mark is the owner's own decision in yokoten.json, and doctor never makes it for them.
+
+/** What the review step judges, as full doctor read it, or why there is nothing to judge. */
+const reviewRead = (server: ServerRead): { approvals: number; actionsCanApprove: boolean | null } | Unread => {
+  const settings = server ?? SESSION_UNREAD;
+  if ('unread' in settings) return settings;
+  const branch = settings.branch;
+  if ('unread' in branch) {
+    if (settings.isPrivate && /GitHub Pro/.test(branch.unread)) return { unread: `${branch.unread}, so no rule can ask for an approval yet; this step waits for stage 5, when the repo goes public`, fix: 'or upgrade to GitHub Pro (or Team for an organization) and run doctor again' };
+    return branch;
+  }
+  if (branch.approvals === null) return { unread: 'no ruleset asks for an approval, and the old branch protection can be read only by an admin', fix: 'sign in to gh as a repo admin and run doctor again' };
+  return { approvals: branch.approvals, actionsCanApprove: settings.actionsCanApprove };
+};
+
+/** True when approvals are required but a workflow may still approve a pull request. */
+const workflowsApprove = (server: ServerRead) => {
+  const read = reviewRead(server);
+  return !('unread' in read) && read.approvals >= 1 && read.actionsCanApprove === true;
+};
+
+const ACTIONS_SETTING = '"Allow GitHub Actions to create and approve pull requests"';
+
+const reviewStep: Step = {
+  stage: 4,
+  key: 'review',
+  check: (...[, , server]) => {
+    const read = reviewRead(server);
+    if ('unread' in read) return null;
+    if (read.approvals < 1 || read.actionsCanApprove === true) return false;
+    return read.actionsCanApprove === false ? true : null;
+  },
+  what: (...[, , server]) => (workflowsApprove(server) ? `a workflow may approve a pull request (${ACTIONS_SETTING} is on), so the bot could approve its own` : 'a merge to the default branch needs no approving review'),
+  fix: (...[, , server]) => (workflowsApprove(server)
+    ? `in Settings, Actions, General, turn off ${ACTIONS_SETTING}, and keep it off`
+    : `${RULESET}: in "Require a pull request", set "Required approvals" to 1. You can't approve your own pull request, so let the bot open them, and keep ${ACTIONS_SETTING} off in Settings, Actions, General`),
+  unchecked: (server) => {
+    const read = reviewRead(server);
+    if ('unread' in read) return `${read.unread}; ${read.fix}`;
+    return read.approvals >= 1 && read.actionsCanApprove === null ? `the Actions setting ${ACTIONS_SETTING} can be read only by an admin; sign in to gh as a repo admin and run doctor again` : '';
+  },
+  why: 'the bot opens the pull requests, so you approve work you did not write, and nothing merges unread',
+  how: 'through the code host\'s API, in full doctor only: a ruleset (or the old branch protection) on the default branch asks for at least 1 approving review, and the Actions setting that lets a workflow approve a pull request is off; a private repo without rulesets waits for stage 5',
+  standard: 'Scorecard: Code-Review',
+};
+
 // The planning steps (#10): the labels and an open milestone, as full doctor read them.
 
 /** The labels and milestones full doctor read, or why there are none to judge. */
@@ -635,6 +685,7 @@ export const ROAD: Step[] = [
     why: 'the skills show an agent how to hand off work, review it and find the cause of a failure',
     how: 'every skill in the kit is in ~/.claude/skills and in ~/.agents/skills, or the Claude Code plugin is on; a project copy of yokoten has no kit, so it can\'t check',
   },
+  reviewStep,
   {
     stage: 5,
     key: 'security-files',
