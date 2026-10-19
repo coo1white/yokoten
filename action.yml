@@ -5,11 +5,19 @@
 # The caller's checkout needs the whole history (`fetch-depth: 0`) for `check --pr`: it
 # lists the files between the base and the head commit. The job needs only
 # `permissions: contents: read`. docs/guide.md, "Use it as a GitHub Action", has the example.
+#
+# Events: `check` runs on every event; `check --pr` on pull_request; `check --issue` on
+# issues. On pull_request_target the default checkout is the base branch, not the pull
+# request, so `check --pr` does not run there; a notice says to use pull_request.
 name: yokoten
-description: Check a repo with yokoten. Layout, privacy, secrets and lead-only files; the pull request standard on pull requests.
+description: Check a repo with yokoten. Layout, privacy, secrets and lead-only files; the pull request standard on pull requests, the issue title standard on issues.
 inputs:
   pr-check:
     description: Also run `check --pr` on a pull_request event. Set to false to skip it.
+    required: false
+    default: 'true'
+  issue-check:
+    description: Also run `check --issue` on an issues event. Set to false to skip it.
     required: false
     default: 'true'
   node-version:
@@ -36,3 +44,16 @@ runs:
       shell: bash
       working-directory: ${{ github.workspace }}
       run: node "$GITHUB_ACTION_PATH/bin/yokoten.ts" check --pr
+    # The title is read from the event file, never pasted into this line.
+    - name: yokoten check --issue
+      if: ${{ !cancelled() && inputs.issue-check == 'true' && github.event_name == 'issues' }}
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: node "$GITHUB_ACTION_PATH/bin/yokoten.ts" check --issue
+    # On pull_request_target the checkout holds the base branch, so the head commit
+    # check --pr needs is not there. It says so instead of checking the wrong commits.
+    - name: yokoten check --pr (skipped)
+      if: ${{ !cancelled() && inputs.pr-check == 'true' && github.event_name == 'pull_request_target' }}
+      shell: bash
+      run: |
+        echo "::notice::yokoten: the pull request check runs on pull_request, not pull_request_target."

@@ -26,6 +26,57 @@ const TYPES = ['feat', 'fix', 'docs', 'test', 'refactor', 'chore', 'ci', 'perf',
 const TITLE = new RegExp(`^(${TYPES.join('|')})(\\([a-z0-9][a-z0-9./-]*\\))?!?: \\S`);
 const SECTIONS = ['Why', 'What changed', 'How tested'];
 
+let graphemes: Intl.Segmenter | null | undefined;
+
+/**
+ * The length of text as a person counts it (#268): one per character they see, so an emoji,
+ * a flag or a family emoji is 1, not the 2 to 11 UTF-16 code units `.length` gives.
+ * The segmenter is made on first use, so a Node built without Intl still runs every other
+ * command; there a title counts code points.
+ */
+export function visibleLength(text: string): number {
+  if (graphemes === undefined) graphemes = typeof Intl === 'object' && typeof Intl.Segmenter === 'function' ? new Intl.Segmenter('en', { granularity: 'grapheme' }) : null;
+  return graphemes ? [...graphemes.segment(text)].length : [...text].length;
+}
+
+/**
+ * Label names that also say a type, for projects whose labels do not use the type name
+ * itself. This repo names the fix label `bug`; GitHub's defaults say `enhancement` and
+ * `documentation`. A label that is the type name itself always counts.
+ */
+const TYPE_LABEL_ALIASES: Record<string, string[]> = {
+  fix: ['bug', 'hotfix', 'incident'],
+  feat: ['feature', 'enhancement'],
+  docs: ['documentation'],
+};
+const TYPE_LABELS = new Set([...TYPES, ...Object.values(TYPE_LABEL_ALIASES).flat()]);
+const SHOWN_TYPE_LABELS = ['feat', 'bug', 'docs', 'refactor', 'ci', 'test', 'chore'];
+
+/** The tier on the body's first line, or null when the first line is not a tier. */
+const bodyTier = (body: string): string | null => /^tier: ([ABC])\s*$/.exec(body.split(/\r?\n/).find((l) => l.trim())?.trim() ?? '')?.[1] ?? null;
+
+/** The tier a label names: `tier B` or `tier: B`, in any case. Null for any other label. */
+const labelTier = (label: string): string | null => /^tier:? ?([abc])$/i.exec(label.trim())?.[1].toUpperCase() ?? null;
+
+/**
+ * Problems with a pull request's labels: one type label, and one tier label that matches
+ * the body's `tier:` line. A body with no tier line is pr-tier's finding, not this one.
+ */
+function checkLabels(labels: string[], tier: string | null): Finding[] {
+  const problems: Finding[] = [];
+  if (!labels.some((l) => TYPE_LABELS.has(l.trim().toLowerCase()))) {
+    problems.push(finding('pr-labels', 'labels: no type label', `add one type label, such as ${SHOWN_TYPE_LABELS.join(', ')}; the title's type name also counts`));
+  }
+  const tiers = [...new Set(labels.map(labelTier).filter((t) => t !== null))];
+  const wanted = tier ? `\`tier ${tier}\`` : '`tier A`, `tier B` or `tier C`, the same as the first line of the body';
+  if (!tiers.length) problems.push(finding('pr-labels', 'labels: no tier label', `add the label ${wanted}`));
+  else if (tiers.length > 1) problems.push(finding('pr-labels', `labels: ${tiers.length} tier labels`, `keep one tier label: ${wanted}`));
+  else if (tier && tiers[0] !== tier) {
+    problems.push(finding('pr-labels', `labels: \`tier ${tiers[0]}\` does not match the body's \`tier: ${tier}\``, `change the label to \`tier ${tier}\`, or the first line of the body to \`tier: ${tiers[0]}\``));
+  }
+  return problems;
+}
+
 /**
  * The folder of change files (#132). Each pull request adds its own file there, so two
  * pull requests never edit the same lines of CHANGELOG.md. `yokoten changelog` collects them.
@@ -133,7 +184,8 @@ export function checkPullRequestTitle(rawTitle: string, config: Partial<Pick<Con
   if (area && config.areas?.length && !config.areas.includes(area)) {
     problems.push(finding('pr-title', `title: the area \`${area}\` is not in yokoten.json "areas"`, `use one of: ${config.areas.join(', ')}`, { why: 'issues and pull requests share one list of areas' }));
   }
-  if (title.length > 72) problems.push(finding('pr-title', `title: ${title.length} characters, over 72`, 'shorten it; the details go in the body'));
+  const titleLength = visibleLength(title);
+  if (titleLength > 72) problems.push(finding('pr-title', `title: ${titleLength} characters, over 72`, 'shorten it; the details go in the body'));
   if (/\.$/.test(title)) problems.push(finding('pr-title', 'title: a full stop at the end', 'remove the full stop', { why: 'a commit title has no full stop' }));
   if (/#\d/.test(title)) problems.push(finding('pr-title', 'title: an issue number', 'remove the issue number, and put `Closes #N` in the body', { why: 'the host links the issue from the body' }));
   return problems;
@@ -144,8 +196,8 @@ export function checkPullRequest(pr: PullRequest, config: Pick<Config, 'tests'> 
   const problems = checkPullRequestTitle(pr.title, config);
 
   const body = pr.body ?? '';
-  const first = body.split(/\r?\n/).find((l) => l.trim()) ?? '';
-  if (!/^tier: [ABC]\s*$/.test(first.trim())) {
+  const tier = bodyTier(body);
+  if (!tier) {
     problems.push(finding('pr-tier', 'body: the first line is not a tier', 'make the first line `tier: A`, `tier: B` or `tier: C` (A: secrets, data, install, releases, files CODEOWNERS owns; B: other code; C: docs and wording)'));
   }
   for (const name of SECTIONS) {
@@ -156,6 +208,12 @@ export function checkPullRequest(pr: PullRequest, config: Pick<Config, 'tests'> 
   // Only Closes, Fixes and Resolves close the issue; Part of and Refs link it and leave it open.
   if (!/\b(closes|fixes|resolves|refs|part of) #\d+/i.test(body)) {
     problems.push(finding('pr-issue', 'body: no linked issue', 'link the issue with `Closes #N`, or `Part of #N` when it does not finish it'));
+  }
+
+  // `yokoten changelog` reads only the files right in changes/, and refuses a folder there,
+  // so a new file deeper down would pass here and stop the release.
+  for (const file of pr.files.filter((f) => f.startsWith(`${CHANGES_DIR}/`) && f.split('/').length > 2 && !pr.deleted?.includes(f))) {
+    problems.push(finding('change-file', `a file in a folder inside ${CHANGES_DIR}/`, `change files go directly in ${CHANGES_DIR}/; move it up`, { file }));
   }
 
   // A change to what the project does needs a change file, or a line in CHANGELOG.md for a
@@ -178,7 +236,7 @@ export function checkPullRequest(pr: PullRequest, config: Pick<Config, 'tests'> 
   }
 
   if (!pr.milestone) problems.push(finding('pr-milestone', 'milestone: none set', 'set one'));
-  if (!pr.labels.length) problems.push(finding('pr-labels', 'labels: none', 'add a type label (feat, bug, docs, ...) and a tier label'));
+  problems.push(...checkLabels(pr.labels, tier));
   return problems;
 }
 
@@ -324,7 +382,8 @@ export function checkIssueTitle(title: string, config: Partial<Pick<Config, 'are
   } else if (areas.length && !areas.includes(m[1])) {
     problems.push(finding('issue-area', 'title: the area is not in yokoten.json "areas"', `use one of: ${areas.join(', ')}`, { why: 'issues and pull requests share one list of areas' }));
   }
-  if (text.length > ISSUE_MAX) problems.push(finding('issue-title', `title: ${text.length} characters, over ${ISSUE_MAX}`, 'shorten it, and put the details in the body'));
+  const textLength = visibleLength(text);
+  if (textLength > ISSUE_MAX) problems.push(finding('issue-title', `title: ${textLength} characters, over ${ISSUE_MAX}`, 'shorten it, and put the details in the body'));
   if (/[.。]$/.test(text)) problems.push(finding('issue-title', 'title: a full stop at the end', 'remove the full stop', { why: 'a title is a name, not a sentence' }));
   if (/#\d/.test(text)) problems.push(finding('issue-title', 'title: an issue number', 'remove the number, and name the other issue in the body', { why: 'the host links issues from the body, not from the title' }));
   return problems;
@@ -405,7 +464,7 @@ export interface CodeOwners {
  */
 export function checkOwnedTier(pr: Pick<PullRequest, 'body' | 'files'>, codeOwners: CodeOwners | null): Finding | null {
   if (!codeOwners) return null;
-  const tier = /^tier: ([ABC])\s*$/.exec((pr.body ?? '').split(/\r?\n/).find((l) => l.trim())?.trim() ?? '')?.[1];
+  const tier = bodyTier(pr.body ?? '');
   if (!tier || tier === 'A') return null;
   const rules = parseCodeOwners(codeOwners.text);
   const owned = pr.files.filter((f) => ownersOf(rules, f).length);

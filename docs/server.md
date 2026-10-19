@@ -20,10 +20,10 @@ Settings → Rules → Rulesets → New branch ruleset.
   - **Require a pull request before merging**: 1 approval, *Dismiss stale approvals
     when new commits are pushed*, *Require review from Code Owners*, *Require approval of
     the most recent reviewable push*. Allowed merge methods: **Squash** only.
-  - **Require status checks to pass**: add the CI jobs by name (`check` from
-    `yokoten.yml`, plus the project's own test job). With more than a few jobs, add
-    one job that `needs` all the others and require only that one, as yokoten's own
-    `ci` job does. Leave *Require branches to be up
+  - **Require status checks to pass**: add `ci` from `yokoten.yml` and `pr` from
+    `pr.yml`. `ci` waits for every other job in `yokoten.yml` and fails if one of them
+    failed. Add the project's own jobs (tests, build) to that file and to the `needs`
+    list of `ci`, so the required checks never change. Leave *Require branches to be up
     to date before merging* off: it makes every branch behind `main` merge it in, and
     core rule 7 merges `main` only on a real conflict. The cost is rule 9's incident:
     two pull requests, each green alone, can break `main` together. CI on `main`
@@ -51,19 +51,32 @@ agent's token can do.
 The bot opens pull requests for the lead. It is an App, not a second account: it needs
 no sign-up, is tied to no person, and its rights are listed one by one.
 
-1. Your avatar → Settings → Developer settings → GitHub Apps → **New GitHub App**.
+1. Create the App under the account that owns the repo. For your own repo: your avatar →
+   Settings. For a repo in an organization: the organization's Settings. Then Developer
+   settings → GitHub Apps → **New GitHub App**.
    - Name: `<you>-bot` (it shows as `<you>-bot[bot]` on pull requests).
    - Homepage URL: your repo.
    - Webhook: turn **Active** off.
    - Repository permissions: **Contents: Read and write**, **Pull requests: Read and
      write**, **Issues: Read and write**, **Metadata: Read-only**. Leave everything
-     else at No access. In particular **Workflows: No access**, so the bot cannot
-     change the CI that checks it (core rule 5).
-   - Where can this App be installed: **Only on this account**.
+     else at No access.
+   - **Workflows** is your choice. With No access, the bot can't push a change to CI,
+     so you push those yourself. With Read and write, the bot can push a branch that
+     changes CI, and that CI runs before anyone reviews it. yokoten's own bot has Read
+     and write. The locks are then on the server: CODEOWNERS makes a CI change need
+     your review (step 4), and anything that can publish waits for your approval in a
+     protected `release` environment (record 0009). Also keep the repo's Actions
+     setting **Allow GitHub Actions to create and approve pull requests** off.
+     Otherwise a workflow the bot pushes could approve the bot's own pull request and
+     meet a one-approval rule before anyone reads it.
+   - Where can this App be installed: **Only on this account** (the account that owns
+     the repo).
 2. Create it. On the App's page, **Generate a private key**. A `.pem` file downloads.
    Move it to `~/.config/yokoten/bot.pem` and run `chmod 600` on it. Never commit it,
    never paste it into a chat.
-3. **Install App** → only select repositories → this repo.
+3. **Install App** → the account that owns the repo → **Only select repositories** →
+   this repo. yokoten's own bot is installed on its organization, for the yokoten repo
+   only.
 4. Add a `.github/CODEOWNERS` file. Give it one line `<path> @<you>` for each path where a
    mistake is hard to undo: `AGENTS.md`, CI, agent config, the rule code. A pull request
    that changes one of them needs your review (step 1 requires it), and is tier A.
@@ -89,7 +102,7 @@ looking the installation up.)
 | Who | Can | Cannot |
 |-----|-----|--------|
 | You | approve, merge, tag, change settings | merge your own unreviewed change without a bypass |
-| The bot | push branches, open pull requests and issues | merge without your review, push to `main`, touch CI, create `v*` tags |
+| The bot | push branches, open pull requests and issues; with Workflows permission, push a branch that changes CI | merge without your review, push to `main`, create `v*` tags, publish without your approval in the `release` environment |
 | A worker | commit in its worktree | push, or edit rules, hooks or CI (guard) |
 
 ## Without an App
@@ -98,3 +111,16 @@ A second "machine user" account with Write access works the same way: use a clas
 token **without** the `workflow` scope (a fine-grained token can't reach a repo where
 the account is only a collaborator). GitHub allows one free machine account per person.
 Sign-ups from shared VPN addresses are often blocked; the App avoids that.
+
+## 5. Security switches
+
+Settings → Advanced Security. Turn on:
+
+- **Secret scanning**, and under it **Push protection**. GitHub then stops a push that
+  holds a token or key.
+- **Private vulnerability reporting**. People can then report a hole in private, as
+  `SECURITY.md` asks.
+- **Dependabot alerts**. GitHub then says when a dependency has a known hole.
+
+Some of these show only to a repo admin. `doctor` reports them as the
+`security-settings` step.
