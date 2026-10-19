@@ -145,7 +145,9 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   writeFileSync(join(dir, 'yokoten.json'), '{ "colour": "blue" }');
   add(findUnknownKeys(dir)[0]);
   rmSync(join(dir, 'yokoten.json'));
-  for (const c of [...agentHooks(dir), ...machineChecks({ HOME: dir, YOKOTEN_PRIVATE_MARKS: join(dir, 'none') })]) add(c.finding);
+  // A sandbox home, never the real one: Copilot CLI's line shows only when ~/.copilot is there.
+  mkdirSync(join(dir, '.copilot'));
+  for (const c of [...agentHooks(dir, { HOME: dir }), ...machineChecks({ HOME: dir, YOKOTEN_PRIVATE_MARKS: join(dir, 'none') })]) add(c.finding);
   // The Codex and Gemini CLI user hooks (#211): only once their folders exist.
   for (const folder of ['.codex', '.gemini']) mkdirSync(join(dir, folder));
   for (const c of userAgentHooks({ HOME: dir })) add(c.finding);

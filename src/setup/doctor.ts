@@ -119,7 +119,7 @@ const unchecked = (id: RuleId, file: string, home: string): Practice => ({ name:
  * Codex, Muse Code and Copilot CLI run the hooks only in a folder the user trusts: `env`
  * finds their trust stores (HOME, CODEX_HOME, XDG_CONFIG_HOME, COPILOT_HOME).
  */
-export function agentHooks(root: string, env: Env = process.env): Practice[] {
+export function agentHooks(root: string, env: Env): Practice[] {
   // Each step wants both project hooks: the tool-call guard and the stop check (#211).
   const missing = (guard: boolean, stop: boolean, file: string) =>
     [...(guard ? [] : ['no tool-call guard']), ...(stop ? [] : ['no stop check'])].join(' and ') + ` in ${file}`;

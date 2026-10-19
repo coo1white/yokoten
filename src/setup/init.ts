@@ -98,7 +98,8 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: bo
       `${setProjectEnv(root, 'TZ', 'UTC')} TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)`,
       // Checked with a real run (#30): Copilot CLI reads these hooks, in a folder it trusts.
       // It skips them without a word otherwise (#341), so the line says how to trust it.
-      `GitHub Copilot CLI runs the hooks in .claude/settings.json only after you trust this folder: ${copilot.TRUST_STEP}`,
+      'GitHub Copilot CLI runs the hooks in .claude/settings.json only after you trust this folder',
+      `to trust this folder in Copilot CLI: ${copilot.TRUST_STEP}`,
     ];
   });
   report.push(...claudeHooks.lines);
@@ -110,7 +111,8 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: bo
     return [
       `${codex.addProjectHook(root, cli)} the Codex tool-call hook in .codex/hooks.json`,
       `${codex.addProjectStopHook(root, cli)} the Codex stop check in .codex/hooks.json`,
-      `Codex runs the hooks in .codex/hooks.json only after you trust this folder and the hooks: ${codex.TRUST_STEP}`,
+      'Codex runs the hooks in .codex/hooks.json only after you trust this folder and the hooks',
+      `to trust them in Codex: ${codex.TRUST_STEP}`,
     ];
   });
   const geminiHooks = agentHooks('the Gemini CLI hooks', '.gemini/settings.json', () => {

@@ -245,7 +245,7 @@ yokoten 能管住七种 AI 编程 agent，它们守的是同一套规矩。下�
 |---|---|---|
 | Copilot CLI | `~/.copilot/config.json` 里的 `trustedFolders`（设了 `$COPILOT_HOME` 就在那里） | 这个文件夹本身，或者它的上级文件夹 |
 | Codex | `~/.codex/config.toml`（设了 `$CODEX_HOME` 就在那里）里的 `[projects]` 和 `[hooks.state]` | 仓库文件夹本身，一个字都不能差；每个钩子也要按现在的内容信任过 |
-| Muse Code | `~/.config/muse/trust.json`（设了 `$XDG_CONFIG_HOME` 就在那里） | 仓库文件夹本身，一个字都不能差 |
+| Muse Code | `~/.config/muse/trust.json`（设了 `$XDG_CONFIG_HOME` 就是 `$XDG_CONFIG_HOME/muse/trust.json`） | 仓库文件夹本身，一个字都不能差 |
 
 只有这个工具的主目录在（`~/.copilot`、`~/.codex`、`~/.config/muse`），`doctor` 才查它。
 主目录在、文件却没有或读不了时，`doctor` 会说 "can't check"（查不了），不会说 ok。
