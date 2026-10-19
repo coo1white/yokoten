@@ -1,11 +1,85 @@
 // How yokoten is called. Hooks, the git hook and CI name the entry point by path, and
 // setup and doctor need to recognise a command that runs it.
 
-/** A command that runs yokoten's `<sub>`, by whatever path. */
-export const runs = (sub: string): RegExp => new RegExp(`yokoten\\.ts"?\\s+${sub}\\b`);
+// A package runner that starts the published yokoten at the start of a line or a command:
+// npx, npx --yes, bunx, pnpm dlx, npm exec. "yokoten-check" or "echo npx yokoten" is not one.
+const PACKAGE_RUN = String.raw`^[ \t]*(?:npx|bunx|pnpm[ \t]+dlx|npm[ \t]+exec)(?:[ \t]+-\S+)*[ \t]+yokoten(?:@[\w.^~-]+)?`;
 
-/** The yokoten subcommand a command runs, if any. */
-export const subcommand = (command: string): string | undefined => command.match(/yokoten\.ts"?\s+(\S+)/)?.[1];
+/** A command that runs yokoten's `<sub>`, by whatever path, or by a package runner (#298). */
+export const runs = (sub: string): RegExp => new RegExp(`(?:yokoten\\.ts"?|${PACKAGE_RUN})\\s+${sub}\\b`, 'm');
+
+/** The yokoten subcommand a command runs, if any. The word ends at a `;`, as in a tool-call guard (#260). */
+export const subcommand = (command: string): string | undefined => command.match(/yokoten\.ts"?\s+(\w[\w-]*)/)?.[1];
+
+/**
+ * A hook command that runs `node <path> <args>`, with `path` quoted for the shell. When the
+ * file is gone, it says `missing` in one line, never a Node stack trace with the full path
+ * (#204). It exits 1: the agents report that and go on, so a missing copy never blocks
+ * every tool call. At session start the line goes to stdout with exit 0, where the agent
+ * reads it, as plain text or, for Gemini CLI, as JSON (`sessionOutput`). The test's own
+ * error goes to /dev/null, so a broken path never prints the full path.
+ * `missing` has no quote or backslash, so it fits in the echo and the JSON as it is. It
+ * never names the file followed by a word, or `subcommand` would read that word.
+ * A tool-call guard (`isToolCall`) fails closed: see `refuseOnFailure`.
+ */
+export function guardCommand(
+  path: string,
+  args: string,
+  missing: string,
+  {
+    isSessionStart = false,
+    sessionOutput = 'text',
+    isToolCall = false,
+  }: { isSessionStart?: boolean; sessionOutput?: 'text' | 'json'; isToolCall?: boolean } = {},
+): string {
+  if (/['"\\]/.test(missing)) throw new Error(`a missing-runtime line has a quote or a backslash: ${missing}`);
+  const line = sessionOutput === 'json' ? `{"hookSpecificOutput":{"additionalContext":"${missing}"}}` : missing;
+  const say = isSessionStart ? `echo '${line}'; exit 0` : `echo '${missing}' >&2; exit 1`;
+  const check = `[ -f ${path} ] 2>/dev/null || { ${say}; }; `;
+  return check + (isToolCall ? refuseOnFailure(path, args) : `node ${path} ${args}`);
+}
+
+/**
+ * Caps the tool-call guard's heap at 256 MB. A read that runs away aborts in a second or
+ * two and is refused, instead of swapping until the agent's hook timeout lets the call
+ * through (#260). One tool call is at most a few MB of JSON, so this leaves a wide margin.
+ */
+export const GUARD_HEAP = '--max-old-space-size=256';
+
+/** What a tool-call guard says when node is not on the agent's PATH. It lets the call go on, as a missing runtime does. */
+export const MISSING_NODE = 'yokoten: the guard cannot run, because node is not on PATH for this agent; run yokoten doctor in a terminal';
+
+/**
+ * `node <path> <args>`, a tool-call guard, failing closed (#260). The agents block a call
+ * on exit 2 only, and run it on any other failure, so a guard that crashes, runs out of
+ * memory or is killed would let the call through. Here 0 and 2 pass as they are, stdout
+ * and stderr both, and anything else, a signal (128 + its number) included, becomes 2
+ * with one line on stderr and nothing more: node's own stderr, a heap trace, is dropped.
+ * - No node on PATH is one line and exit 1, as a missing runtime is: refusing every call
+ *   would refuse the `yokoten doctor` that explains it.
+ * - node's stderr goes to a variable, with an `x` after it so a trailing newline stays;
+ *   its stdout goes straight to the hook's own, through fd 3.
+ * - The subshell's stderr is /dev/null, so the shell's job line for a killed node
+ *   ("Killed", or bash's line with the whole command and its paths) never shows.
+ * The plugin's PreToolUse hook in .claude-plugin/plugin.json is this text; a test holds them equal.
+ */
+export const refuseOnFailure = (path: string, args: string): string =>
+  `command -v node >/dev/null 2>&1 || { echo '${MISSING_NODE}' >&2; exit 1; }; ` +
+  `{ err=$( ( node ${GUARD_HEAP} ${path} ${args} 2>&1 1>&3 3>&-; c=$?; printf x; exit $c ) 2>/dev/null ); code=$?; } 3>&1; ` +
+  'case $code in 0|2) printf %s "${err%x}" >&2;; ' +
+  '*) echo "yokoten\'s guard failed (exit $code), so the command is refused; run \\`yokoten doctor\\`" >&2; code=2;; esac; exit $code';
+
+/**
+ * The line that runs the commit check from a project's own pre-commit, by `cli`'s path.
+ * Without the runtime, one plain line and exit 1, as in the kit's pre-commit (#204).
+ * `init` writes it, and its advice and `doctor`'s show the same line.
+ */
+export const commitCheckLine = (cli: string): string =>
+  `[ -f "${cli}" ] 2>/dev/null || { echo 'yokoten: the commit check cannot run, because ${cli} is missing. Restore it from git, or run yokoten init again' >&2; exit 1; }; node "${cli}" check --staged || exit 1`;
+
+/** The line a project's hook says when its runtime folder (`.yokoten/`, or `bin/` in yokoten's own repo) is gone. */
+export const missingProjectRuntime = (cli: string): string =>
+  `yokoten: the hook cannot run, because ${cli.split('/')[0]}/ is missing. Restore it from git, or run yokoten init again`;
 
 /** One option a command takes: `value` names the word that follows it, if any. */
 export interface CommandOption {
@@ -80,11 +154,12 @@ export const COMMANDS: Command[] = [
   {
     name: 'doctor',
     summary: 'the road: where this project is and its next step',
-    usage: '[--session] [--json]',
-    text: ['Shows every stage and step of the road, and what this machine is missing.', 'It exits 1 while steps are left, and always 0 with --session.'],
+    usage: '[--session] [--json] [--agent <name>]',
+    text: ['Shows every stage and step of the road, and what this machine is missing.', 'It exits 1 on a problem: a failed self-test, or a core-rules, tree or machine line', 'marked MISSING. Steps left on the road are to do, not problems. Always 0 with --session.'],
     options: [
       { name: '--session', text: 'only the next step, for the start of a session' },
       { name: '--json', text: 'the report as JSON on stdout' },
+      { name: '--agent', value: 'name', text: 'with --session: claude-code (the default), codex, or gemini for Gemini CLI JSON' },
     ],
     example: 'yokoten doctor --session',
   },
@@ -119,6 +194,22 @@ export const COMMANDS: Command[] = [
     example: 'yokoten changelog',
   },
   {
+    name: 'learn',
+    summary: 'a check draft from an incident issue, for a person to review',
+    usage: '<issue> [--write] | --ship <id>',
+    text: [
+      'Reads an incident issue (a number or a URL) through gh and drafts a check from it,',
+      'for a person to review. It writes nothing without --write. In yokoten, --ship moves a',
+      'reviewed lesson into kit/lessons/, where doctor runs it in every project.',
+    ],
+    options: [
+      { name: '--write', text: 'put the draft in lessons/ (adds only, never overwrites)' },
+      { name: '--ship', text: 'move a reviewed lesson into kit/lessons/; refused while a TODO is left' },
+    ],
+    argument: 'issue',
+    example: 'yokoten learn 138',
+  },
+  {
     name: 'hook',
     summary: 'the tool-call guard, or the stop check with --stop',
     usage: '[--agent <name>] [--commands-only] [--stop] [--json]',
@@ -126,7 +217,7 @@ export const COMMANDS: Command[] = [
     options: [
       { name: '--agent', value: 'name', text: 'the runtime that sends the call: claude-code (the default), codex or gemini' },
       { name: '--commands-only', text: 'judge commands only, and leave files to the project' },
-      { name: '--stop', text: 'read a Claude Code Stop event, and check the changed files' },
+      { name: '--stop', text: 'read the end-of-turn event (Claude Code Stop, Codex Stop, Gemini AfterAgent) and check the changed files' },
       { name: '--json', text: 'the result as JSON on stdout' },
     ],
     example: `echo '{"tool_input":{"command":"git status"}}' | yokoten hook`,
@@ -136,7 +227,7 @@ export const COMMANDS: Command[] = [
     summary: 'a rule or a step: what it is, why, and how it is checked',
     usage: '[<id>] [--json]',
     text: ['Explains one rule or one step of the road. With no id, it lists the ids.'],
-    options: [{ name: '--json', text: 'the explanation as JSON on stdout' }],
+    options: [{ name: '--json', text: 'the explanation, or the ids, as JSON on stdout' }],
     argument: 'id',
     example: 'yokoten explain release',
   },

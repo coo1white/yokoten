@@ -1,8 +1,8 @@
 // What init and install share: where yokoten itself lives, copying its runtime, and
 // writing files without stepping on what is already there.
 
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
@@ -18,6 +18,36 @@ export const KIT = join(HOME_DIR, 'kit');
 /** A line that marks a file yokoten owns. Install replaces such a file; it never touches others. */
 export const MANAGED = 'managed by yokoten';
 
+/** How a copy of the runtime went: written, or kept because `dest` is or holds the copy running now (#204). */
+export type CopyResult = 'wrote' | 'kept';
+
+/** `path` with symlinks resolved. A part that does not exist yet is kept as it is. */
+function resolveReal(path: string): string {
+  const full = resolve(path);
+  try {
+    return realpathSync(full);
+  } catch {
+    const parent = dirname(full);
+    return parent === full ? full : join(resolveReal(parent), basename(full));
+  }
+}
+
+/** Whether `inner` is `outer` or inside it, after symlinks. */
+export function isSameOrInside(inner: string, outer: string): boolean {
+  const path = relative(resolveReal(outer), resolveReal(inner));
+  return path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path);
+}
+
+/** Remove the temp folders that a copy to `dest` stopped by a crash or Ctrl-C left next to it. */
+function removeLeftovers(dest: string): void {
+  const parent = dirname(resolve(dest));
+  if (!existsSync(parent)) return;
+  const prefixes = ['new', 'old'].map((kind) => `.${basename(dest)}-${kind}-`);
+  for (const name of readdirSync(parent)) {
+    if (prefixes.some((prefix) => name.startsWith(prefix))) rmSync(join(parent, name), { recursive: true, force: true });
+  }
+}
+
 /**
  * Copy the runtime (bin, src, package.json) to `dest`, so hooks run with no network and
  * no global install. The machine copy also takes the kit, which install and the machine
@@ -26,13 +56,46 @@ export const MANAGED = 'managed by yokoten';
  * The copy is replaced whole; `VERSION` says which release it is.
  * It copies the .ts files, also from the npm package: `dest` is not under node_modules,
  * so Node runs them there as they are.
+ *
+ * When `dest` is the running copy, or holds it, nothing is copied: replacing it would
+ * delete the files being run (#204). A `dest` inside the running copy gets its own copy,
+ * unless it is inside a part that is copied: that copy would hold itself, so it is refused.
+ * The new copy goes into a folder next to `dest` first, then takes its place, so a failed
+ * copy leaves the old one working. Temp folders that a crash left there are removed first.
+ * `copy` and `rename` are there for a test to make a step fail.
  */
-export function copyRuntime(dest: string, { withKit = false }: { withKit?: boolean } = {}): void {
-  rmSync(dest, { recursive: true, force: true });
-  mkdirSync(dest, { recursive: true });
-  const kitParts = withKit ? ['kit'] : [join('kit', 'project', 'AGENTS.md')];
-  for (const part of ['bin', 'src', 'package.json', ...kitParts]) cpSync(join(HOME_DIR, part), join(dest, part), { recursive: true });
-  writeFileSync(join(dest, 'VERSION'), `${VERSION}\n`);
+export function copyRuntime(dest: string, { withKit = false, copy = cpSync, rename = renameSync }: { withKit?: boolean; copy?: typeof cpSync; rename?: typeof renameSync } = {}): CopyResult {
+  if (isSameOrInside(HOME_DIR, dest)) return 'kept';
+  const parts = ['bin', 'src', 'package.json', ...(withKit ? ['kit'] : [join('kit', 'project', 'AGENTS.md')])];
+  const holder = parts.find((part) => isSameOrInside(dest, join(HOME_DIR, part)));
+  if (holder) {
+    const where = relative(resolveReal(HOME_DIR), resolveReal(dest)).split(sep).join('/');
+    throw new Error(`cannot copy the runtime to ${where}, because it is inside ${holder}/ of the copy running now. Run yokoten from a copy outside that folder`);
+  }
+  removeLeftovers(dest);
+  const parent = dirname(resolve(dest));
+  mkdirSync(parent, { recursive: true });
+  const fresh = mkdtempSync(join(parent, `.${basename(dest)}-new-`));
+  let old: string | null = null;
+  try {
+    for (const part of parts) copy(join(HOME_DIR, part), join(fresh, part), { recursive: true });
+    writeFileSync(join(fresh, 'VERSION'), `${VERSION}\n`);
+    if (existsSync(dest)) {
+      const aside = fresh.replace(/-new-(\w+)$/, '-old-$1');
+      rename(dest, aside);
+      old = aside;
+    }
+    rename(fresh, dest);
+  } catch (error) {
+    try {
+      if (old) rename(old, dest);
+    } finally {
+      rmSync(fresh, { recursive: true, force: true });
+    }
+    throw error;
+  }
+  if (old) rmSync(old, { recursive: true, force: true });
+  return 'wrote';
 }
 
 export const runtimeVersion = (dir: string): string | null => {
