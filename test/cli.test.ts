@@ -85,6 +85,57 @@ test('hook: blocks with exit 2 and a reason, allows with exit 0', () => {
   assert.equal(sandbox.run(['hook'], { input: 'not json' }).status, 0);
 });
 
+// A session started outside the repo, or a worker in a worktree elsewhere, loads no project
+// hook: the user-level guard applies the file's own repo's rules, if yokoten is set up there (#307).
+test('hook --commands-only: an edit in a yokoten repo gets its file rules wherever the session started (#307)', () => {
+  const sandbox = makeSandbox();
+  const away = mkdtempSync(join(tmpdir(), 'yokoten-away-'));
+  const edit = (file_path: string, extra?: Record<string, string>) =>
+    sandbox.run(['hook', '--commands-only'], { cwd: away, input: JSON.stringify({ cwd: away, tool_name: 'Edit', tool_input: { file_path } }), extra });
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  // No yokoten.json: not a yokoten repo, so no file rules.
+  assert.equal(edit(join(sandbox.repo, 'AGENTS.md'), worker).status, 0);
+  sandbox.write('yokoten.json', '{}\n');
+  sandbox.write('AGENTS.md', '# rules\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  let result = edit(join(sandbox.repo, 'AGENTS.md'), worker);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /lead-only/);
+  assert.equal(edit(join(sandbox.repo, '.githooks', 'pre-commit'), worker).status, 2, 'a file in a folder that does not exist yet');
+  assert.equal(edit(join(sandbox.repo, 'AGENTS.md')).status, 0, 'the lead may');
+  assert.equal(edit(join(sandbox.repo, 'src', 'a.ts'), worker).status, 0, 'a worker may edit code');
+  // A worker subagent in a lead session.
+  result = sandbox.run(['hook', '--commands-only'], { cwd: away, input: JSON.stringify({ cwd: away, agent_type: 'worker', tool_name: 'Edit', tool_input: { file_path: join(sandbox.repo, 'AGENTS.md') } }) });
+  assert.equal(result.status, 2);
+  // A relative path, from the session's folder.
+  const parent = dirname(sandbox.repo);
+  result = sandbox.run(['hook', '--commands-only'], { cwd: parent, input: JSON.stringify({ cwd: parent, tool_name: 'Edit', tool_input: { file_path: 'repo/AGENTS.md' } }), extra: worker });
+  assert.equal(result.status, 2);
+  // A worktree in another folder: its own checkout, the same rules.
+  const tree = join(mkdtempSync(join(tmpdir(), 'yokoten-tree-')), 'wt');
+  sandbox.git('worktree', 'add', '-q', '-b', 'task', tree);
+  result = edit(join(tree, 'AGENTS.md'), worker);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /lead-only/);
+  assert.equal(edit(join(tree, 'AGENTS.md')).status, 0);
+  // The full hook too, from a session outside the repo.
+  result = sandbox.run(['hook'], { cwd: away, input: JSON.stringify({ cwd: away, tool_name: 'Edit', tool_input: { file_path: join(tree, 'AGENTS.md') } }), extra: worker });
+  assert.equal(result.status, 2);
+  // Commands are unchanged.
+  const bash = (command: string) => sandbox.run(['hook', '--commands-only'], { cwd: away, input: JSON.stringify({ cwd: away, tool_name: 'Bash', tool_input: { command } }), extra: worker });
+  assert.equal(bash(`cat ${join(sandbox.repo, 'AGENTS.md')}`).status, 0);
+  assert.equal(bash('git push --tags').status, 2);
+  // A patch run through Codex's shell edits files too (#221): they get their repo's rules.
+  const patch = (file: string) => `apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: ${file}\n@@\n-a\n+b\n*** End Patch\nEOF\n`;
+  const codex = (command: string) =>
+    sandbox.run(['hook', '--agent', 'codex', '--commands-only'], { cwd: away, input: JSON.stringify({ cwd: away, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } }), extra: worker });
+  result = codex(patch(join(sandbox.repo, 'AGENTS.md')));
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /lead-only/);
+  assert.equal(codex(patch(join(sandbox.repo, 'src', 'a.ts'))).status, 0);
+});
+
 // The runtimes let a tool call through when the hook runs past their timeout, so a guard
 // that reads too long is stopped and the call refused (#274).
 test('hook: past the deadline the call is refused, in text and JSON (#274)', () => {
@@ -2101,6 +2152,56 @@ test('install: skills, agents and hooks once, the user\'s own files untouched', 
   assert.match(skillsLine(), /^\s+(next|to do)\s+skills: the yokoten skills are not in ~\/\.agents\/skills \(inspect\); run `yokoten install`, or install the Claude Code plugin$/);
 });
 
+test('uninstall: takes back what install wrote, keeps the user\'s own files and settings (#300)', () => {
+  const sandbox = makeSandbox();
+  const claude = join(sandbox.home, '.claude');
+  mkdirSync(join(claude, 'skills', 'mine'), { recursive: true });
+  writeFileSync(join(claude, 'skills', 'mine', 'SKILL.md'), 'my own skill\n');
+  // The user's own skill with a kit skill's name, and a file of theirs next to a managed one.
+  mkdirSync(join(sandbox.home, '.agents', 'skills', 'rca'), { recursive: true });
+  writeFileSync(join(sandbox.home, '.agents', 'skills', 'rca', 'SKILL.md'), 'my own rca\n');
+  const own = { model: 'x', hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'other' }] }] } };
+  writeFileSync(join(claude, 'settings.json'), JSON.stringify(own));
+  assert.equal(sandbox.run(['install']).status, 0);
+  writeFileSync(join(claude, 'skills', 'release', 'notes.txt'), 'mine\n');
+  const before = readdirSync(join(sandbox.home, '.local/share/yokoten/kit/user/skills'));
+
+  const result = sandbox.run(['uninstall']);
+  assert.equal(result.status, 0, result.stderr);
+  for (const name of before) assert.match(result.stdout, new RegExp(`^removed skill ${name} in ~/\\.claude/skills$`, 'm'));
+  assert.match(result.stdout, /^kept \(yours\) skill rca in ~\/\.agents\/skills$/m);
+  assert.match(result.stdout, /^removed agent worker$/m);
+  assert.match(result.stdout, /^removed the SessionStart doctor$/m);
+  assert.match(result.stdout, /^removed the user-level command guard$/m);
+  assert.match(result.stdout, /^removed ~\/\.local\/share\/yokoten$/m);
+  assert.match(result.stdout, /^kept ~\/\.config\/yokoten \(your keys and private marks\)$/m);
+  assert.ok(!result.stdout.includes(sandbox.home), 'output shows the home path');
+  // No file with the managed mark is left anywhere in the home.
+  const left = readdirSync(sandbox.home, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile());
+  assert.deepEqual(left.filter((entry) => readFileSync(join(entry.parentPath, entry.name), 'utf8').includes('managed by yokoten')).map((entry) => entry.name), []);
+  assert.ok(!existsSync(join(sandbox.home, '.local/share/yokoten')));
+  assert.equal(readFileSync(join(claude, 'skills', 'mine', 'SKILL.md'), 'utf8'), 'my own skill\n');
+  assert.equal(readFileSync(join(sandbox.home, '.agents', 'skills', 'rca', 'SKILL.md'), 'utf8'), 'my own rca\n');
+  assert.equal(readFileSync(join(claude, 'skills', 'release', 'notes.txt'), 'utf8'), 'mine\n');
+  assert.ok(existsSync(join(sandbox.home, '.config/yokoten/private-marks')));
+  assert.deepEqual(JSON.parse(readFileSync(join(claude, 'settings.json'), 'utf8')), own);
+
+  // A second run finds nothing to remove and changes nothing.
+  const homeBefore = readdirSync(sandbox.home, { recursive: true }).sort();
+  const again = sandbox.run(['uninstall']);
+  assert.equal(again.status, 0, again.stderr);
+  assert.doesNotMatch(again.stdout, /^removed/m);
+  assert.match(again.stdout, /^not there the SessionStart doctor$/m);
+  assert.deepEqual(readdirSync(sandbox.home, { recursive: true }).sort(), homeBefore);
+
+  // A settings file that is not JSON is left as it is, and the report says so.
+  writeFileSync(join(claude, 'settings.json'), 'not json');
+  const broken = sandbox.run(['uninstall']);
+  assert.equal(broken.status, 0, broken.stderr);
+  assert.match(broken.stdout, /^kept ~\/\.claude\/settings\.json: it is not JSON/m);
+  assert.equal(readFileSync(join(claude, 'settings.json'), 'utf8'), 'not json');
+});
+
 // The guide says: run install again to update, and init again to refresh .yokoten/. Run
 // from the copy it would replace, that copy was deleted (#204).
 test('install: run from the installed copy, it keeps that copy, and the next run works (#204)', () => {
@@ -3640,8 +3741,28 @@ test('doctor: the plugin, when on, stands in for install', () => {
   assert.match(out, /ok {6}runtime/);
   assert.match(out, /^ +(done|to do|next) +skills$/m);
   assert.doesNotMatch(out, /skills: the yokoten skills are not in/);
+  assert.doesNotMatch(out, /plugin-and-install/, 'no install pieces, no note');
   writeFileSync(join(sandbox.home, '.claude', 'settings.json'), 'not json');
   assert.match(machine(), /MISSING session-doctor/, 'a broken settings file enables nothing');
+});
+
+test('doctor: the plugin and install both on is a note that says to uninstall (#300)', () => {
+  const sandbox = makeSandbox();
+  assert.equal(sandbox.run(['install']).status, 0);
+  const file = join(sandbox.home, '.claude', 'settings.json');
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), enabledPlugins: { 'yokoten@yokoten': true } }));
+  const out = sandbox.run(['doctor']).stdout;
+  assert.match(out, /^ {2}note {4}plugin-and-install: the yokoten plugin is on, and `yokoten install` put these here too: the SessionStart doctor and the command guard in ~\/\.claude\/settings\.json; the skills in ~\/\.claude\/skills and ~\/\.agents\/skills; the agents in ~\/\.claude\/agents; ~\/\.local\/share\/yokoten; remove them with `yokoten uninstall`/m);
+  assert.match(sandbox.run(['doctor', '--session']).stdout, /^yokoten: the yokoten plugin is on, and `yokoten install` put these here too: .*Remove them with `yokoten uninstall`/m);
+  // An older runtime from install, with the plugin on: remove it, never install again.
+  writeFileSync(join(sandbox.home, '.local/share/yokoten/VERSION'), '0.0.1\n');
+  assert.match(sandbox.run(['doctor']).stdout, /MISSING runtime: the installed runtime is 0\.0\.1, this yokoten is \S+; remove it with `yokoten uninstall`; the plugin brings its own/);
+  // After uninstall the note is gone, and the plugin stands in for everything.
+  assert.equal(sandbox.run(['uninstall']).status, 0);
+  const after = sandbox.run(['doctor']).stdout;
+  assert.doesNotMatch(after, /plugin-and-install/);
+  assert.match(after, /ok {6}runtime/);
+  assert.match(after, /ok {6}session-doctor/);
 });
 
 // #211: Codex's and Gemini CLI's user hooks, only once the CLI's folder exists; a note

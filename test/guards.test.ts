@@ -781,6 +781,8 @@ test('bash: nested constructs up to 8000 repeats are read in linear time and nev
     'xargs ', 'a | xargs git ', 'xargs git <<E\n', 'env -S"${X}', '<<$\'E\'\n', '{ echo a; ',
     // #308: what a command prints through a pipe, from a substitution or a printf format.
     'cat <(echo a) | bash ', 'echo $(echo a) | ', 'echo "$(echo a)" | xargs git ', "printf '%s\\n' a | xargs git ", "printf '%s%b%d' ", '{ echo a; } | xargs git ',
+    // #314: pass-throughs in the middle of a pipeline.
+    '| cat ', '| tee f ', 'echo a | cat | ', 'cat <(echo a) | tee f | bash ',
   ];
   const forms: [string, (text: string) => string][] = [
     ['alone', (text) => text],
@@ -994,6 +996,10 @@ test('bash and hooks: loops that never spent the budget read 32k to 100k repeats
     [["printf '", ['%s'], "\\n' git status | bash"], 'allow'],
     [['cat ', ['<(echo a) '], '| bash'], 'unreadable-command', 12500],
     [['echo "', ['$(echo a)'], '" | xargs git status'], 'allow'],
+    // #314: a long chain of pass-throughs hands the first command's text to the shell.
+    [['echo a ', ['| cat '], '| bash'], 'allow'],
+    [[`echo '${force}' `, ['| cat '], '| bash'], 'force-push'],
+    [[`cat <(echo '${force}') `, ['| tee f '], '| bash'], 'force-push'],
   ];
   for (const [parts, want, repeats] of commands) run('command', parts, want, repeats);
   // A line that opens more than it closes leaves the check inside a block; a pipe at the end
@@ -1230,6 +1236,26 @@ test('bash: what a command prints through a pipe reaches the shell or xargs git 
     `echo $(echo '${force}') | tee out`,
     `printf '%s\\n' '${force}' | grep x`,
     'cat <(echo ls) | bash',
+  ]) allowed(command);
+});
+
+test('bash: cat and tee in the middle of a pipeline hand on what came before (#314)', () => {
+  const pushForce = force.split(' ').slice(1).join(' ');
+  const tags = `${force.split(' ').slice(0, 2).join(' ')} --tags`;
+  for (const [command, id] of [
+    [`cat <(echo '${force}') | tee f | bash`, 'force-push'],
+    [`echo '${force}' | cat | bash`, 'force-push'],
+    [`echo '${force}' | cat - | tee a b | cat -u | sh`, 'force-push'],
+    [`echo ${pushForce} | tee f | xargs git`, 'force-push'],
+    [`cat <(echo '${tags}') | tee f | bash`, 'release'],
+    [`echo '${tags}' | cat | bash`, 'release'],
+  ]) refusedAs(command, id);
+  for (const command of [
+    'echo ls | tee f | grep x',
+    `echo '${force}' | tee f | grep x`,
+    // cat with a file prints the file, not what comes in.
+    `echo '${force}' | cat notes.txt | bash`,
+    'echo ls | cat | bash',
   ]) allowed(command);
 });
 
