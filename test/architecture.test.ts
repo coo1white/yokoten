@@ -107,6 +107,23 @@ test('workflows: every action is pinned to a commit, the version in a comment', 
   assert.ok(seen > 0, 'no `uses:` found; the scan is broken');
 });
 
+// The action handles the events people run it on (#269): `check --issue` on issues, and
+// on pull_request_target a notice instead of `check --pr` on the wrong commits.
+const actionStep = (text: string, name: string) => text.split(/\n(?=    - )/).find((step) => step.includes(`- name: ${name}\n`)) ?? '';
+
+test('action.yml: check --issue on issues; a notice, not check --pr, on pull_request_target (#269)', () => {
+  const action = readFileSync(join(ROOT, 'action.yml'), 'utf8');
+  assert.match(action, /\n  issue-check:\n(?:    .*\n)*?    default: 'true'\n/, 'action.yml: no `issue-check` input defaulting to true');
+  const issue = actionStep(action, 'yokoten check --issue');
+  assert.match(issue, /if: \$\{\{ !cancelled\(\) && inputs\.issue-check == 'true' && github\.event_name == 'issues' \}\}/, 'action.yml: the `check --issue` step runs on issues when issue-check is true');
+  assert.match(issue, /run: node "\$GITHUB_ACTION_PATH\/bin\/yokoten\.ts" check --issue\n/);
+  const pr = actionStep(action, 'yokoten check --pr');
+  assert.match(pr, /github\.event_name == 'pull_request' \}\}/, 'action.yml: `check --pr` runs on pull_request only');
+  const target = action.split(/\n(?=    - )/).find((step) => step.includes("github.event_name == 'pull_request_target'")) ?? '';
+  assert.match(target, /run: \|\n +echo "::notice::[^"\n]*runs on pull_request, not pull_request_target[^"\n]*"\n/, 'action.yml: on pull_request_target, a notice says the check runs on pull_request');
+  assert.ok(!target.includes('check --pr"') && !/yokoten\.ts" check/.test(target), 'action.yml: the pull_request_target step must not run yokoten');
+});
+
 // Node runs .ts as it is, so no other code file is needed; one appearing means someone
 // reached for a build-era habit (AGENTS.md, "This project").
 const strayCode = (paths: string[]) => paths.filter((p) => /^(bin|src|test)\//.test(p) && /\.(js|mjs|cjs|jsx|tsx|mts|cts)$/.test(p));
