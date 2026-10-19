@@ -24,7 +24,7 @@ yokoten 带你一步步养成好团队的习惯；你还在学的时候，它替
 [![dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](../../package.json)
 [![license](https://img.shields.io/badge/license-MIT-blue)](../../LICENSE)
 
-[支持](guide.md#支持哪些-agent) Claude Code、Codex CLI 和 Gemini CLI。
+[支持](guide.md#支持哪些-agent) Claude Code、GitHub Copilot CLI、Antigravity CLI、Codex CLI 和 Gemini CLI。
 
 </div>
 

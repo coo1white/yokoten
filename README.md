@@ -23,7 +23,7 @@ One person and a few AI agents built it that way: every issue, review, and relea
 [![dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](package.json)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-[Works with](docs/guide.md#works-with) Claude Code, Codex CLI and Gemini CLI.
+[Works with](docs/guide.md#works-with) Claude Code, GitHub Copilot CLI, Antigravity CLI, Codex CLI and Gemini CLI.
 
 </div>
 

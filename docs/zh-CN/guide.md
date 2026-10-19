@@ -201,26 +201,79 @@ Docs: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#the-core-r
 
 ## 支持哪些 agent
 
-yokoten 能管住三种 AI 编程 agent，它们守的是同一套规矩。
+yokoten 能管住五种 AI 编程 agent，它们守的是同一套规矩。下表里写“是”的，都真跑过：在一个
+用完就删的仓库里让 agent 执行 `git push --tags`，守卫把它拦了下来。光看文档不算数。
 
-| Agent | yokoten 给它加了什么 |
-|---|---|
-| Claude Code | 工具调用拦截（钩子）、收尾检查（钩子）、每次会话开头的带路提示、skills 和 agents |
-| Codex CLI | 工具调用拦截和收尾检查，写在 `.codex/hooks.json`；会话开头的带路提示和命令守卫，写在 `~/.codex/hooks.json`。`apply_patch` 要改哪些文件，守卫都会查，在 shell 里跑的也查 |
-| Gemini CLI | 工具调用拦截和收尾检查（AfterAgent），写在 `.gemini/settings.json`；会话开头的带路提示和命令守卫，写在 `~/.gemini/settings.json` |
-| 其他 agent | `AGENTS.md` 里的规则；还有提交检查，不管是谁提交的，坏提交都会被拦下 |
+| Agent | 钩子写在哪（`init` 负责写） | 怎么拦 | 真跑过吗 | 要注意 |
+|---|---|---|---|---|
+| Claude Code | `.claude/settings.json`：PreToolUse 和 Stop | 退出码 2，理由写在 stderr | 是，2026-10-19：无界面模式，模型用 DeepSeek 的 `deepseek-flash` | 无 |
+| GitHub Copilot CLI | 也是 `.claude/settings.json`：Copilot 会读这个文件 | 退出码 2，理由同时以 JSON 写到 stdout | 是，2026-10-19：Copilot CLI 1.0.98，`copilot -p`，模型 `gpt-6-luna`（Auto 自动选的） | 只在你信任的文件夹里跑仓库钩子，没信任就一声不吭地跳过。钩子超时的话，这次调用会放行 |
+| Antigravity CLI（`agy`） | `.agents/hooks.json`：名叫 `yokoten` 的那一项，PreToolUse | 在 stdout 输出 `{"decision": "deny"}` | 是，2026-10-19：agy 1.4.2，`agy -p`，模型 `gemini-3.8-flash-high` | 还没有收尾检查。`.yokoten/` 不在的话，每次调用都会被拒：agy 出错时一律拦下 |
+| Codex CLI | `.codex/hooks.json`：PreToolUse 和 Stop | 退出码 2，理由写在 stderr | 是，2026-10-19：Codex 0.163.0，`codex exec`，模型用 DeepSeek 的 `deepseek-flash` | 项目钩子要先在 `/hooks` 里信任才会跑。没信任的钩子，`codex exec` 一声不吭地跳过 |
+| Gemini CLI | `.gemini/settings.json`：BeforeTool 和 AfterAgent | 退出码 2，理由写在 stderr | 没有完整跑过：个人 Google 账号 2026-06-18 起不能再登录，要付费 API key 或企业授权 | 谷歌给个人用户的 agent 现在是 Antigravity CLI |
+| 其他 agent | 无 | `AGENTS.md` 里的规则；还有提交检查，不管是谁提交的，坏提交都会被拦下 | | |
 
-项目里的钩子由 `init` 写，用户级的由 `install` 写。每个工具都要你先信任，钩子才会跑：
+用户级的钩子由 `install` 写：会话开头的带路提示，加上命令守卫。它们写进
+`~/.claude/settings.json`；有 `~/.codex`、`~/.gemini` 文件夹的话，也写进
+`~/.codex/hooks.json` 和 `~/.gemini/settings.json`。在 Codex 里，`apply_patch` 要改哪些
+文件，守卫都会查，在 shell 里跑的也查。
 
+每个工具都要你先信任，项目钩子才会跑：
+
+- **Claude Code**：在你信任的文件夹里跑项目钩子。
+- **Copilot CLI**：也是在你信任的文件夹里才跑。用 `copilot -p` 时，要设
+  `COPILOT_ALLOW_ALL=true`，只有正好写成 `true` 才会顺带信任当前文件夹。只加
+  `--allow-all-tools` 不行，钩子不会跑。
+- **Antigravity CLI**：我们用 `agy -p` 跑的时候，文件夹不在它的信任列表里，`.agents/hooks.json`
+  照样跑了。它跑钩子时，工作目录是 `.agents` 文件夹。网上的指南说
+  `--dangerously-skip-permissions` 会跳过钩子；但在 agy 1.4.2 里，加了这个参数钩子照样跑。
+  两种说法都别指望。
 - **Codex**：项目要先设成信任，项目钩子才会跑。然后在 `/hooks` 里逐个批准。Codex 记的是
   命令本身，命令一改，就得重新批准。
 - **Gemini CLI**：文件夹要先设成信任，项目钩子才会跑。要在仓库根目录启动 Gemini：它只读
   启动时所在文件夹里的 `.gemini/settings.json`。新加或改过的钩子，第一次跑之前它会提醒你一次。
 
 worker 靠 `YOKOTEN_ROLE=worker` 认出来。在 Codex 里，子 agent 的 `agent_type` 带 worker
-字样的，也算 worker。Gemini CLI 开了严格的环境变量清理后，钩子里拿不到 `YOKOTEN_ROLE`。
+字样的，也算 worker。Copilot CLI 和 Antigravity CLI 调钩子时不说是哪种子 agent，只看
+`YOKOTEN_ROLE`。Gemini CLI 开了严格的环境变量清理后，钩子里拿不到 `YOKOTEN_ROLE`。
 这时 yokoten 在 Gemini CLI 里分不出谁是 worker：每个会话都当成 lead，只有 lead 能改的
 文件，worker 改了也拦不住。服务器上的锁照样有效：代码负责人，还有一个改不了 CI 的 bot。
+
+### 让 Claude Code 或 Codex 用 DeepSeek 的模型
+
+守卫装在 agent 里，跟用哪个模型无关。所以 Claude Code 和 Codex 换成 DeepSeek 的模型，
+规矩还是一样。上表里这两次都用的是 `deepseek-flash`。
+
+Claude Code 走 DeepSeek 兼容 Anthropic 的接口：
+
+```sh
+export CLAUDE_CONFIG_DIR=~/.config/claude-deepseek   # 一个没登录 claude.ai 的配置文件夹
+export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
+export ANTHROPIC_API_KEY=<你的 DeepSeek key>
+export ANTHROPIC_MODEL=deepseek-flash
+claude
+```
+
+一定要单独设 `CLAUDE_CONFIG_DIR`。配置文件夹里要是登录过 claude.ai，Claude Code 发出去的
+是那个账号的令牌，不是你的 key。DeepSeek 每次都回 401，Claude Code 不提示，一直重试到
+超时，看起来就像卡住了。也别用 `--bare`：它会跳过钩子，守卫就不跑了。
+
+Codex 走 DeepSeek 兼容 OpenAI 的接口。把下面这段写进 `$CODEX_HOME/config.toml`
+（默认是 `~/.codex/config.toml`），再设好 `DEEPSEEK_API_KEY`：
+
+```toml
+model = "deepseek-flash"
+model_provider = "deepseek"
+
+[model_providers.deepseek]
+name = "DeepSeek"
+base_url = "https://api.deepseek.com"
+env_key = "DEEPSEEK_API_KEY"
+wire_api = "responses"
+```
+
+Codex 0.163.0 已经不接受 `wire_api = "chat"`。它会提示找不到 `deepseek-flash` 的模型信息，
+但照样能跑。
 
 ## 安装和命令
 
@@ -436,7 +489,7 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 | `learn <issue> [--write]` | 从一个事故 issue 起草一条检查，留给人来审。加上 `--write` 才把文件写进 `lessons/`。见下面的「从事故里学」 |
 | `learn --ship <id>` | 在 yokoten 里用：把审过的教训搬进 `kit/lessons/` 下的一个分组，以后每个项目跑 `doctor` 都会查它。还有 `TODO(reviewer)` 没填，或者它的测试没过，就不让搬 |
 | `check --history` | 对所有分支的每一个提交做隐私检查。私有仓库公开之前跑一遍。浅克隆看不到旧的提交，所以它不扫描、直接报错；在 CI 里要拉下全部历史（`fetch-depth: 0`）。文件里查到问题时，写的是加进这个文件的那次提交，和那次提交里的路径：`文件 @ <提交>`。`git replace` 藏不住提交，它照样读原来的提交；有 grafts 文件时同样不扫描、直接报错。 |
-| `hook [--agent <name>] [--commands-only] [--json]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool |
+| `hook [--agent <name>] [--commands-only] [--json]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool，加 `--agent antigravity` 读 Antigravity CLI 的 PreToolUse |
 | `hook --stop [--agent <name>]` | 收尾检查。从标准输入读这一轮结束的事件，检查改过的文件：默认读 Claude Code 的 Stop；加 `--agent codex` 读 Codex 的 Stop，加 `--agent gemini` 读 Gemini CLI 的 AfterAgent。见[收尾检查](#收尾检查) |
 | `explain [<id>] [--json]` | 讲一条规则或者路上的一步：它是什么、为什么要有、yokoten 怎么检查 |
 | `uninstall` | 撤掉 `install` 装的东西：带 yokoten 管理标记的技能和 agent、`~/.claude/settings.json` 里它加的两个 hook，还有 `~/.local/share/yokoten`。你自己的文件、别的设置和 `~/.config/yokoten`（密钥、私有词表）都留着。再跑一次什么也不会变 |
@@ -935,11 +988,10 @@ AWS 的 access key id，还有 PEM 私钥。查到了只说是哪一种密钥，
 - **服务器设置只能读 GitHub 的。** 换成别的代码托管平台，这几步就标 can't check。bot 的权限 `doctor` 还查不了。
 - **先支持 Claude Code。** agent 按 Claude Code 的格式写。技能用的是公开
   的 SKILL.md 格式，所以 `install` 也会把它们放进 `~/.agents/skills`，Codex、Gemini CLI、
-  Copilot、Cursor 这些 AI 会去那里找。工具调用守卫和收尾检查在 Codex 和 Gemini CLI 里也能用：
-  `init` 会写好 `.codex/hooks.json` 和 `.gemini/settings.json`，这两个工具会先请你信任这些
-  hook。还没有人在真的 Codex 或 Gemini CLI 里看到它们拦下过东西（#30），所以 `doctor` 只说
-  这些 hook 在不在，不算作缺少。有 `~/.codex` 或 `~/.gemini` 文件夹时，用户级的
-  hook 也照这样报告。规则就是普通的 `AGENTS.md`：项目里没有
+  Copilot、Cursor 这些 AI 会去那里找。工具调用守卫在 Copilot CLI、Antigravity CLI、Codex 和
+  Gemini CLI 里也能用，哪些真跑过、拦下过，见[支持哪些 agent](#支持哪些-agent)（#30）。
+  这些 agent 的钩子，`doctor` 只说在不在，不算作缺少：项目不一定用它们。有 `~/.codex` 或
+  `~/.gemini` 文件夹时，用户级的 hook 也照这样报告。规则就是普通的 `AGENTS.md`：项目里没有
   `CLAUDE.md` 时 Claude Code 会直接读它，大多数别的 AI 也读。Muse Code 的技能和 hook
   还在计划中。
 
