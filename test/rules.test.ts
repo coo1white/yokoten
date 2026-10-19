@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -10,15 +10,16 @@ import { checkBuildOutput, checkLayout, isBuildOutput } from '../src/rules/layou
 import { DOCS_URL, type Finding, finding, formatFinding, type Rule, RULES } from '../src/rules/message.ts';
 import { POSITIVE_CONTROL, scanText } from '../src/rules/privacy.ts';
 import { SECRET_CONTROL } from '../src/rules/secrets.ts';
-import { check, timeZoneNote } from '../src/run/check.ts';
+import { check, checkHistory, timeZoneNote } from '../src/run/check.ts';
 import { parseSourceMarker, sourceMarker, translationNotes } from '../src/run/translations.ts';
 import { agentHooks, coreRulesCheck, coreRulesControl, machineChecks, selfTest } from '../src/setup/doctor.ts';
 import { compareCoreRules, compareVersions, readKitVersion } from '../src/setup/init.ts';
 import { explain, explainLines, ids } from '../src/setup/advice/explain.ts';
 import { ROAD, serverChecks, stepFinding } from '../src/setup/road.ts';
+import { readIssue, readPullRequest } from '../src/host/github.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
 import { formatChanges, mergeChanges, parseChange, readChanges, writeChanges } from '../src/run/changelog.ts';
-import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, ownersOf, parseCodeOwners, largeDiff, longSentenceNote, longSentences, type PullRequest } from '../src/rules/pr.ts';
+import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, visibleLength, ownersOf, parseCodeOwners, largeDiff, longSentenceNote, longSentences, type PullRequest } from '../src/rules/pr.ts';
 
 test('glob: a slash anchors at the root, no slash matches in any folder', () => {
   const m = (g: string, p: string) => matcher([g])(p);
@@ -144,6 +145,11 @@ test('pull request: a file in changes/ counts as the changelog entry (#132)', ()
   assert.deepEqual(deletedOnly.map((problem) => problem.id), ['pr-changelog'], 'a deleted change file is not a new entry');
   assert.ok(isChangeFile('changes/1-a.md') && isChangeFile('changes/1-a.txt'));
   assert.ok(!isChangeFile('changes/README.md') && !isChangeFile('changes/.keep') && !isChangeFile('changes/a/b.md') && !isChangeFile('docs/changes/a.md'));
+  // A file deeper in changes/ would pass here and stop `changelog --write` at the release (#281).
+  const deep = checkPullRequest({ ...goodPr(), files: ['src/rules/pr.ts', 'changes/47-pr-standard.md', 'changes/sub/x.md'] }, DEFAULTS);
+  assert.deepEqual(deep.map((problem) => [problem.id, problem.file]), [['change-file', 'changes/sub/x.md']]);
+  assert.match(formatFinding(deep[0]), /change files go directly in changes\//i);
+  assert.deepEqual(checkPullRequest({ ...goodPr(), files: ['src/rules/pr.ts', 'changes/47-pr-standard.md', 'changes/sub/x.md'], deleted: ['changes/sub/x.md'] }, DEFAULTS), [], 'deleting one is fine');
 });
 
 // ---- Change files (#132) ----
@@ -189,6 +195,10 @@ test('changes: a file is a section, a blank line, then the entry; a bullet is ad
   assert.deepEqual(bad('Added\n\n\n'), ['1: no entry after the section']);
   assert.deepEqual(bad('Added\n'), ['1: no entry after the section']);
   assert.deepEqual(bad('Added\n\nA thing.\n', 'changes/1-a.txt'), ['-: a change file is not Markdown']);
+  // A heading would go into CHANGELOG.md as is, even a fake version (#281).
+  assert.deepEqual(bad('Added\n\n- A thing.\n## 9.9.9\n'), ['4: line 4 is a heading']);
+  assert.deepEqual(bad('Added\n\n### Fixed\n'), ['3: line 3 is a heading']);
+  assert.deepEqual(bad('Added\n\nA thing,\n#281 and more.\n'), [], 'an issue number is not a heading');
   assert.equal(parseChange('changes/1-a.md', 'Improved\n\nsecret words\n').problems.every((problem) => !JSON.stringify(problem).includes('secret words')), true, 'the text is never printed back');
 });
 
@@ -199,6 +209,15 @@ test('changes: the collector groups and orders the sections, and skips README.md
   assert.deepEqual(changes.map((change) => change.file), ['changes/9-a.md', 'changes/10-c.md', 'changes/132-b.md', 'changes/200-d.md'], 'by issue number');
   assert.deepEqual(formatChanges(changes), ['### Added', '', '- C.', '', '### Fixed', '', '- B.', '- D.', '', '### Internal', '', '- A.']);
   assert.deepEqual(readChanges(mkdtempSync(join(tmpdir(), 'yokoten-'))), { changes: [], problems: [] }, 'no changes/ folder');
+});
+
+test('changes: a link in changes/, dangling or not, is a finding, never a crash (#281)', () => {
+  const root = makeRepo({ '1-good.md': 'Added\n\nGood.\n' });
+  symlinkSync(join(root, 'changes', '1-good.md'), join(root, 'changes', '2-link.md'));
+  symlinkSync(join(root, 'nowhere.md'), join(root, 'changes', '3-dangling.md'));
+  const { changes, problems } = readChanges(root);
+  assert.deepEqual(changes.map((change) => change.file), ['changes/1-good.md']);
+  assert.deepEqual(problems.map((problem) => [problem.id, problem.file]), [['change-file', 'changes/2-link.md'], ['change-file', 'changes/3-dangling.md']]);
 });
 
 test('changes: a bad file is refused, and nothing is written or deleted', () => {
@@ -232,6 +251,14 @@ test('changes: --write puts each entry after its section, deletes the files, and
   // An empty Unreleased gets its first heading.
   const merged = mergeChanges('# Changelog\n\n## [Unreleased]\n\n## [0.1.0]\n', changes.slice(0, 1));
   assert.equal(merged, '# Changelog\n\n## [Unreleased]\n\n### Added\n\n- New A.\n\n## [0.1.0]\n');
+  // A CRLF file stays CRLF (#281).
+  const crlf = mergeChanges(CHANGELOG.replaceAll('\n', '\r\n'), changes);
+  assert.equal(crlf, written.replaceAll('\n', '\r\n'));
+  // One stray CRLF line: the file is still read, and its lines keep their bytes (#281).
+  const [firstLine, ...otherLines] = CHANGELOG.split('\n');
+  const mixed = mergeChanges([`${firstLine}\r`, ...otherLines].join('\n'), changes);
+  assert.equal(typeof mixed, 'string', 'a stray CRLF line still has an Unreleased heading');
+  assert.ok((mixed as string).startsWith(CHANGELOG.split('\n')[0] + '\r\n'), 'the CRLF line is kept');
 });
 
 test('CODEOWNERS: anchored, folder, glob, last match wins, comments, several owners', () => {
@@ -428,6 +455,28 @@ test('pull request title: one rule for check --pr and the bot (#117)', () => {
   }
 });
 
+test('titles: limits count the characters a person sees, not code units (#268)', () => {
+  const flag = '🇯🇵';
+  const family = '👨‍👩‍👧‍👦';
+  assert.equal(visibleLength(flag), 1, 'a flag is one character');
+  assert.equal(visibleLength(family), 1, 'a ZWJ family is one character');
+  assert.equal(visibleLength('漢字🎉a'), 4);
+  // A pull request title of 72: 6 + 10 + 1 + 1 + 54.
+  const pr = `feat: ${'🚀'.repeat(10)}${flag}${family}${'a'.repeat(54)}`;
+  assert.equal(visibleLength(pr), 72);
+  assert.deepEqual(checkPullRequestTitle(pr, {}), [], '72 characters with emoji is the most');
+  const prOver = checkPullRequestTitle(`${pr}b`, {});
+  assert.equal(prOver.length, 1);
+  assert.match(formatFinding(prOver[0]), /^title: 73 characters, over 72\./);
+  // An issue title of 60: 5 + 40 + 5 + 1 + 1 + 8.
+  const issue = `kit: ${'漢'.repeat(40)}${'🎉'.repeat(5)}${flag}${family}${'a'.repeat(8)}`;
+  assert.equal(visibleLength(issue), 60);
+  assert.deepEqual(checkIssueTitle(issue, AREAS), [], '60 characters with CJK and emoji is the most');
+  const issueOver = checkIssueTitle(`${issue}字`, AREAS);
+  assert.equal(issueOver.length, 1);
+  assert.match(formatFinding(issueOver[0]), /^title: 61 characters, over 60\./);
+});
+
 test('config: yokoten\'s own areas cover its open work', () => {
   const own = loadConfig(join(import.meta.dirname, '..'));
   assert.ok(own.areas.includes('doctor') && own.areas.includes('owner'));
@@ -459,7 +508,17 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   const translated = makeTranslatedRepo();
   translated.commit('en.md', '# Guide\n\nStep one, changed.\n');
   add(translationNotes(translated.root, ['zh.md'])[0]);
+  // `check --history` in a shallow clone (#266).
+  const shallow = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  execFileSync('git', ['clone', '-q', '--depth', '1', `file://${translated.root}`, shallow], { stdio: 'ignore' });
+  found.push(...checkHistory(shallow, { config: DEFAULTS, env: {} }));
   found.push(...parseChange('changes/1-a.md', 'Improved\n\nA thing.\n').problems);
+  // A CI event that can't be read, and a pull request whose commits are not here (#267).
+  const unreadable = (read: unknown) => (read && typeof read === 'object' && 'problem' in read ? (read.problem as Finding) : null);
+  add(unreadable(readIssue({ GITHUB_EVENT_PATH: join(translated.root, 'no-event.json') })));
+  const event = join(translated.root, 'event.json');
+  writeFileSync(event, JSON.stringify({ pull_request: { base: { sha: 'f'.repeat(40) }, head: { sha: translated.git('rev-parse', 'HEAD') } } }));
+  add(unreadable(readPullRequest(translated.root, { GITHUB_EVENT_PATH: event })));
   // The road and the machine, from an empty folder and an empty home.
   const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
   for (const step of ROAD) add(stepFinding(step, dir, { HOME: dir }));
