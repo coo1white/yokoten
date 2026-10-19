@@ -2,10 +2,12 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import * as antigravity from '../agents/antigravity.ts';
-import * as claudeCode from '../agents/claude-code.ts';
-import * as codex from '../agents/codex.ts';
-import * as gemini from '../agents/gemini.ts';
+import * as antigravity from '../agents/runtimes/antigravity.ts';
+import * as claudeCode from '../agents/runtimes/claude-code.ts';
+import * as codex from '../agents/runtimes/codex.ts';
+import * as deepseekHarness from '../agents/runtimes/deepseek-harness.ts';
+import * as gemini from '../agents/runtimes/gemini.ts';
+import * as muse from '../agents/runtimes/muse.ts';
 import { loadConfig } from '../rules/config.ts';
 import { type Finding, formatFinding } from '../rules/message.ts';
 import { checkChanged } from '../run/check.ts';
@@ -18,20 +20,24 @@ export const READERS: Record<string, (input: unknown) => Action> = {
   codex: codex.readToolCall,
   gemini: gemini.readToolCall,
   antigravity: antigravity.readToolCall,
+  muse: muse.readToolCall,
+  'deepseek-harness': deepseekHarness.readToolCall,
 };
 
 // What a runtime reads on stdout when a call is refused, and the exit code it wants. The
-// others take the reason on stderr and exit 2, with nothing on stdout.
+// others take the reason on stderr and exit 2, with nothing on stdout. Muse Code takes
+// either; stderr and exit 2 is the simpler one, and the model sees the same reason.
 const DENIALS: Record<string, (reason: string) => { stdout: string; exitCode: number }> = {
   'claude-code': claudeCode.formatDenial,
   antigravity: antigravity.formatDenial,
 };
 
-// Each runtime's event for the end of a turn: Claude Code's and Codex's Stop, Gemini CLI's AfterAgent (#211).
+// Each runtime's event for the end of a turn: Claude Code's, Codex's and Muse Code's Stop, Gemini CLI's AfterAgent (#211).
 const STOP_READERS: Record<string, typeof claudeCode.readStop> = {
   'claude-code': claudeCode.readStop,
   codex: codex.readStop,
   gemini: gemini.readStop,
+  muse: muse.readStop,
 };
 
 /**

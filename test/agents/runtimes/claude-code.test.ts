@@ -1,4 +1,4 @@
-// Tests for src/agents/claude-code.ts.
+// Tests for src/agents/runtimes/claude-code.ts.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -16,8 +16,8 @@ import {
   manifest,
   PLUGIN_ROOT,
   ROOT,
-} from '../repo/helpers.ts';
-import { refuseOnFailure } from '../../src/run/cli.ts';
+} from '../../repo/helpers.ts';
+import { refuseOnFailure } from '../../../src/run/cli.ts';
 
 test('plugin: the marketplace and the plugin have the documented fields', () => {
   const market = manifest('marketplace.json');

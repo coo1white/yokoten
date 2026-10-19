@@ -62,9 +62,9 @@ const MAPPING: [string, string[]][] = [
   ['run/learn.test.ts', ['cli:learn', 'rules:learn', 'rules:lessons', 'cli:lessons']],
   ['run/names.test.ts', ['rules:names']],
   ['run/translations.test.ts', ['rules:translations']],
-  ['agents/claude-code.test.ts', ['cli:plugin']],
-  ['agents/codex.test.ts', ['cli:hook --agent codex']],
-  ['agents/gemini.test.ts', ['cli:hook --agent gemini']],
+  ['agents/runtimes/claude-code.test.ts', ['cli:plugin']],
+  ['agents/runtimes/codex.test.ts', ['cli:hook --agent codex']],
+  ['agents/runtimes/gemini.test.ts', ['cli:hook --agent gemini']],
   ['agents/llama.test.ts', ['road:adopt chat']],
   // scripts/board-sync.ts (PR #190) talks to GitHub's project board; it goes with the host.
   [

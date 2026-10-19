@@ -23,10 +23,12 @@ import { loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
 import { type LessonPlace, listLessons, runLessons } from '../run/learn.ts';
-import * as antigravity from '../agents/antigravity.ts';
-import { hasPlugin, hasSessionDoctor, readInstalledPlugin, userSettingsProblem } from '../agents/claude-code.ts';
-import * as codex from '../agents/codex.ts';
-import * as gemini from '../agents/gemini.ts';
+import * as antigravity from '../agents/runtimes/antigravity.ts';
+import { hasPlugin, hasSessionDoctor, readInstalledPlugin, userSettingsProblem } from '../agents/runtimes/claude-code.ts';
+import * as codex from '../agents/runtimes/codex.ts';
+import * as dsh from '../agents/runtimes/deepseek-harness.ts';
+import * as gemini from '../agents/runtimes/gemini.ts';
+import * as muse from '../agents/runtimes/muse.ts';
 import { commentedFile, HAND_ADD, handAddJson, type HookState, mergeHandAdds } from '../agents/hooks-file.ts';
 import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
@@ -34,11 +36,15 @@ import { cliPath, compareCoreRules, compareVersions, isSelf, readCoreRules, summ
 import { installedPieces, paths, USER_CLI, USER_MISSING } from './install.ts';
 import { type Mark, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
 
-/** One check outside the road: its name in the report, whether it is in place, and the finding when it is not. */
+/**
+ * One check outside the road: its name in the report, whether it is in place, and the
+ * finding when it is not. `detail` follows the name on an ok line, for what ok can't prove.
+ */
 interface Practice {
   name: string;
   ok: boolean;
   finding: Finding;
+  detail?: string;
 }
 
 const practice = (name: string, id: RuleId, ok: boolean, what: string, fix: string): Practice => ({ name, ok, finding: finding(id, what, fix) });
@@ -74,10 +80,10 @@ function handAddPractice(id: RuleId, file: string, states: readonly HookState[])
 /**
  * The other agents' project hooks: the tool-call guard and the stop check. Reported, but
  * not a missing practice: a project that uses none of these agents should not fail doctor
- * over them. Real runs blocked through Codex and Antigravity CLI; Gemini CLI is not run yet (#30).
+ * over them. Real runs blocked through Codex, Antigravity CLI, Muse Code and DeepSeek Harness; Gemini CLI is not run yet (#30).
  * A Gemini CLI file with comments, which init won't rewrite, gets the hooks to add by hand.
  */
-export function agentHooks(root: string): Practice[] {
+export function agentHooks(root: string, env: Env = process.env, platform: string = process.platform): Practice[] {
   // Each step wants both project hooks: the tool-call guard and the stop check (#211).
   const missing = (guard: boolean, stop: boolean, file: string) =>
     [...(guard ? [] : ['no tool-call guard']), ...(stop ? [] : ['no stop check'])].join(' and ') + ` in ${file}`;
@@ -89,6 +95,8 @@ export function agentHooks(root: string): Practice[] {
     (geminiState && handAddPractice('gemini-hook', '.gemini/settings.json', [geminiState.guard, geminiState.stop])) ??
       practice('gemini-hook', 'gemini-hook', geminiGuard && geminiStop, missing(geminiGuard, geminiStop, '.gemini/settings.json'), '`yokoten init` adds it'),
     antigravityPractice(antigravity.projectHookState(root, cliPath(root))),
+    musePractice(muse.projectHooksState(root, cliPath(root))),
+    platform === 'win32' ? practice('deepseek-harness-hook', 'deepseek-harness-hook', false, dsh.WINDOWS_GAP, 'nothing to do yet: issue #332 adds a PowerShell guard') : dshPractice(dsh.projectHooksState(root, cliPath(root)), dsh.profilesWithBridge(env)),
   ];
 }
 
@@ -98,6 +106,36 @@ function antigravityPractice(state: HookState): Practice {
   if (typeof state === 'object') return practice('antigravity-hook', 'antigravity-hook', false, state.kind === 'json' ? `can't read ${file}` : `${file} has an unexpected shape`, state.kind === 'shape' ? `${state.hint}; fix it, then run \`yokoten init\`` : 'make it valid JSON, then run `yokoten init`');
   if (state === 'updated') return practice('antigravity-hook', 'antigravity-hook', false, `the tool-call guard in ${file} is out of date or off`, '`yokoten init` updates it');
   return practice('antigravity-hook', 'antigravity-hook', state === 'same', `no tool-call guard in ${file}`, '`yokoten init` adds it');
+}
+
+/** Muse Code's tool-call guard and stop check in .muse/hooks.json: missing, out of date, or a file init can't edit. */
+function musePractice(states: { guard: HookState; stop: HookState }): Practice {
+  const file = '.muse/hooks.json';
+  const all = [states.guard, states.stop];
+  const problem = all.find((state) => typeof state === 'object');
+  if (problem) return practice('muse-hook', 'muse-hook', false, problem.kind === 'json' ? `can't read ${file}` : `${file} has an unexpected shape`, 'make it valid JSON with a "hooks" object, then run `yokoten init`');
+  if (all.includes('updated')) return practice('muse-hook', 'muse-hook', false, `the hooks in ${file} are out of date`, '`yokoten init` updates them');
+  return practice('muse-hook', 'muse-hook', all.every((state) => state === 'same'), `no tool-call guard or stop check in ${file}`, '`yokoten init` adds them');
+}
+
+/**
+ * DeepSeek Harness's guard (#334): the hook in .dsh/hooks.json, the launch patch, and the bridge
+ * in a dsh profile. The bridge fails open without a word, so the files and packages being
+ * there never prove the guard runs: the ok line says only a real deny does. On Windows the
+ * guard can't run at all (dsh uses PowerShell), so agentHooks gives a note instead (#332).
+ */
+function dshPractice(states: { guard: HookState; patch: string }, profiles: { found: string[]; all: string[] } | null): Practice {
+  const id = 'deepseek-harness-hook';
+  const file = dsh.HOOKS_FILE;
+  const add = dsh.pluginAddCommands('<profile>').join(' && ');
+  const { guard, patch } = states;
+  if (typeof guard === 'object') return practice(id, id, false, guard.kind === 'json' ? `can't read ${file}` : `${file} has an unexpected shape`, 'make it valid JSON with a "hooks" object, then run `yokoten init`');
+  if (guard === 'added') return practice(id, id, false, `no tool-call guard in ${file}`, '`yokoten init` adds it');
+  if (guard === 'updated') return practice(id, id, false, `the tool-call guard in ${file} is out of date`, '`yokoten init` updates it');
+  if (patch !== 'same') return practice(id, id, false, `${dsh.PATCH_FILE} is ${patch === 'added' ? 'missing' : 'out of date'}`, `\`yokoten init\` ${patch === 'added' ? 'adds' : 'updates'} it`);
+  if (!profiles) return practice(id, id, false, "can't check the bridge: no dsh home (DSH_HOME, or ~/.dsh)", `once dsh is installed, add the bridge to each profile you use: ${add}`);
+  if (!profiles.found.length) return practice(id, id, false, 'no dsh profile has the bridge and its peer, so dsh runs no hooks', `add both to each profile you use (needs pnpm): ${add}`);
+  return { name: id, ok: true, finding: finding(id, '', ''), detail: `the bridge is in profile ${profiles.found.join(', ')}; start dsh at the repo root with --patch ${dsh.PATCH_FILE}. Only a real deny proves it` };
 }
 
 /**
@@ -562,8 +600,8 @@ export function doctor(
   });
   lines.push('project:');
   const notes: Finding[] = [];
-  for (const c of agentHooks(root)) {
-    lines.push(`  ${c.ok ? 'ok     ' : 'note   '} ${c.name}${c.ok ? '' : `: ${stepText(c.finding)}`}`);
+  for (const c of agentHooks(root, env)) {
+    lines.push(`  ${c.ok ? 'ok     ' : 'note   '} ${c.name}${c.ok ? (c.detail ? `: ${c.detail}` : '') : `: ${stepText(c.finding)}`}`);
     if (!c.ok) notes.push(c.finding);
   }
   if (core) {

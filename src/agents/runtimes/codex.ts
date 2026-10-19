@@ -8,10 +8,10 @@
 import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
-import type { Env } from '../rules/config.ts';
-import { guardCommand, missingProjectRuntime } from '../run/cli.ts';
-import type { Action } from '../run/hook.ts';
-import { type Added, addHook, checkHooksFile, hasHook, type HookArgs, type HookState, hookState } from './hooks-file.ts';
+import type { Env } from '../../rules/config.ts';
+import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
+import type { Action } from '../../run/hook.ts';
+import { type Added, addHook, checkHooksFile, hasHook, type HookArgs, type HookState, hookState } from '../hooks-file.ts';
 
 // The docs: "Bash and apply_patch use tool_input.command", and unified exec reports as Bash.
 const SHELL = 'Bash';

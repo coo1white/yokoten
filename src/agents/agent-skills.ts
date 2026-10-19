@@ -1,7 +1,7 @@
 // Agent Skills: SKILL.md is an open format, not one runtime's, and most agents (Codex,
 // Gemini CLI, Copilot, Cursor) read it from one shared folder, `.agents/skills`. So that
-// folder gets its own file here. Claude Code reads only its own folder, in claude-code.ts;
-// setup writes every skill to both.
+// folder gets its own file here. Claude Code reads only its own folder, in
+// runtimes/claude-code.ts; setup writes every skill to both.
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
