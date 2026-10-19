@@ -236,6 +236,11 @@ can't drift apart:
 | `/yokoten:init`, `/yokoten:doctor` and `/yokoten:update`, which run yokoten from the plugin | `kit/plugin/skills/` |
 | The SessionStart `doctor` hook and the command guard: the same two hooks that `install` adds | `.claude-plugin/plugin.json` |
 
+The command guard runs in every folder, so it keeps to the rules about commands, with one
+exception: an edit to a file inside a yokoten repo (one with `yokoten.json`) gets that
+repo's file rules, wherever the session started. A worker in a worktree outside the
+session's folder can't change a lead-only file either.
+
 Claude Code runs the plugin's `.ts` files with `node`. Node can do this because the
 plugin folder is not under `node_modules`. To get a newer yokoten, open `/plugin`, select
 yokoten on the **Installed** tab, and choose **Update now**. A third-party marketplace

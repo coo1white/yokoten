@@ -65,6 +65,49 @@ test('hook: blocks with exit 2 and a reason, allows with exit 0', () => {
   assert.equal(sandbox.run(['hook'], { input: 'not json' }).status, 0);
 });
 
+// A session started outside the repo, or a worker in a worktree elsewhere, loads no project
+// hook: the user-level guard applies the file's own repo's rules, if yokoten is set up there (#307).
+test('hook --commands-only: an edit in a yokoten repo gets its file rules wherever the session started (#307)', () => {
+  const sandbox = makeSandbox();
+  const away = mkdtempSync(join(tmpdir(), 'yokoten-away-'));
+  const edit = (file_path: string, extra?: Record<string, string>) =>
+    sandbox.run(['hook', '--commands-only'], { cwd: away, input: JSON.stringify({ cwd: away, tool_name: 'Edit', tool_input: { file_path } }), extra });
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  // No yokoten.json: not a yokoten repo, so no file rules.
+  assert.equal(edit(join(sandbox.repo, 'AGENTS.md'), worker).status, 0);
+  sandbox.write('yokoten.json', '{}\n');
+  sandbox.write('AGENTS.md', '# rules\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  let result = edit(join(sandbox.repo, 'AGENTS.md'), worker);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /lead-only/);
+  assert.equal(edit(join(sandbox.repo, '.githooks', 'pre-commit'), worker).status, 2, 'a file in a folder that does not exist yet');
+  assert.equal(edit(join(sandbox.repo, 'AGENTS.md')).status, 0, 'the lead may');
+  assert.equal(edit(join(sandbox.repo, 'src', 'a.ts'), worker).status, 0, 'a worker may edit code');
+  // A worker subagent in a lead session.
+  result = sandbox.run(['hook', '--commands-only'], { cwd: away, input: JSON.stringify({ cwd: away, agent_type: 'worker', tool_name: 'Edit', tool_input: { file_path: join(sandbox.repo, 'AGENTS.md') } }) });
+  assert.equal(result.status, 2);
+  // A relative path, from the session's folder.
+  const parent = dirname(sandbox.repo);
+  result = sandbox.run(['hook', '--commands-only'], { cwd: parent, input: JSON.stringify({ cwd: parent, tool_name: 'Edit', tool_input: { file_path: 'repo/AGENTS.md' } }), extra: worker });
+  assert.equal(result.status, 2);
+  // A worktree in another folder: its own checkout, the same rules.
+  const tree = join(mkdtempSync(join(tmpdir(), 'yokoten-tree-')), 'wt');
+  sandbox.git('worktree', 'add', '-q', '-b', 'task', tree);
+  result = edit(join(tree, 'AGENTS.md'), worker);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /lead-only/);
+  assert.equal(edit(join(tree, 'AGENTS.md')).status, 0);
+  // The full hook too, from a session outside the repo.
+  result = sandbox.run(['hook'], { cwd: away, input: JSON.stringify({ cwd: away, tool_name: 'Edit', tool_input: { file_path: join(tree, 'AGENTS.md') } }), extra: worker });
+  assert.equal(result.status, 2);
+  // Commands are unchanged.
+  const bash = (command: string) => sandbox.run(['hook', '--commands-only'], { cwd: away, input: JSON.stringify({ cwd: away, tool_name: 'Bash', tool_input: { command } }), extra: worker });
+  assert.equal(bash(`cat ${join(sandbox.repo, 'AGENTS.md')}`).status, 0);
+  assert.equal(bash('git push --tags').status, 2);
+});
+
 // The runtimes let a tool call through when the hook runs past their timeout, so a guard
 // that reads too long is stopped and the call refused (#274).
 test('hook: past the deadline the call is refused, in text and JSON (#274)', () => {

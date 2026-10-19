@@ -2,8 +2,8 @@
 // yokoten: carry what one project learned into every project.
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { appendFileSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
 import { annotations, botConfig, botEnv, ghIn, installationToken, isGitHubActions, readCodeOwners, readCommandTitle, readIssue, readPullRequest, repoOf, stepSummary } from '../src/host/github.ts';
 import { formatChanges, parseChange, readChanges, writeChanges } from '../src/run/changelog.ts';
@@ -16,7 +16,7 @@ import { isCodeFile, nameNotes } from '../src/run/names.ts';
 import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, largeDiff, longSentenceNote, longSentences } from '../src/rules/pr.ts';
 import { closestWord, COMMANDS, commandHelp, findCommand, HELP_OPTIONS, commandList } from '../src/run/cli.ts';
 import { hideHome } from '../src/rules/privacy.ts';
-import { type Action, guardDeadline, judgeWithDeadline } from '../src/run/hook.ts';
+import { type Action, guardDeadline, judgeWithDeadline, type Repo } from '../src/run/hook.ts';
 import { draft, facts, table } from '../src/setup/advice/adopt.ts';
 import { doctor } from '../src/setup/doctor.ts';
 import { explain, explainLines, ids } from '../src/setup/advice/explain.ts';
@@ -104,6 +104,29 @@ const rootOf = (dir: string): string | null => {
     return null;
   }
 };
+
+/**
+ * The yokoten repos (those with a `yokoten.json`) an edit's files are in, past the
+ * session's own (#307). A worktree in another folder, or a session started above the repo,
+ * loads no project hook, so the guard applies the file's own repo's rules. One `rootOf`
+ * per folder and one config per repo; a command reads no files and costs nothing here.
+ */
+function editRepos(action: Action, base: string, session: Repo | null, commandsOnly: boolean): Repo[] {
+  if (action.command !== undefined) return [];
+  const rootByFolder = new Map<string, string | null>([[base, session?.root ?? null]]);
+  const repos = new Map<string, Repo | null>();
+  // In the full hook, the session's root already has its rules.
+  if (session) repos.set(session.root, commandsOnly && existsSync(join(session.root, 'yokoten.json')) ? session : null);
+  for (const path of action.paths) {
+    let folder = dirname(resolve(base, path));
+    while (!existsSync(folder) && dirname(folder) !== folder) folder = dirname(folder);
+    if (!rootByFolder.has(folder)) rootByFolder.set(folder, rootOf(folder));
+    const root = rootByFolder.get(folder);
+    if (!root || repos.has(root)) continue;
+    repos.set(root, existsSync(join(root, 'yokoten.json')) ? { root, config: loadConfig(root) } : null);
+  }
+  return [...repos.values()].filter((repo) => repo !== null);
+}
 
 // Everything yokoten prints goes through here or `say`, never straight to a stream: the
 // output lands in transcripts and CI logs, so the home folder is shown as ~ (core rule 11).
@@ -261,7 +284,9 @@ function main(): number | Promise<number> {
       const action = read(input);
       const root = rootOf(action.cwd ?? process.cwd());
       const config = root ? loadConfig(root) : DEFAULTS;
-      const judged = judgeWithDeadline(action, { root, config, env, commandsOnly: options.flags.has('--commands-only') }, guardDeadline(env.YOKOTEN_GUARD_DEADLINE_MS));
+      const commandsOnly = options.flags.has('--commands-only');
+      const repos = editRepos(action, action.cwd ?? root ?? process.cwd(), root ? { root, config } : null, commandsOnly);
+      const judged = judgeWithDeadline(action, { root, config, env, commandsOnly, repos }, guardDeadline(env.YOKOTEN_GUARD_DEADLINE_MS));
       return judged.then((found) => {
         if (json) printJson(found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
         if (!found) return 0;
