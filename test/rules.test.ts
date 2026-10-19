@@ -118,8 +118,35 @@ test('pull request: each missing part fails with what to do (#47)', () => {
   one({ body: goodPr().body.replace('Closes #47', 'Closes #') }, /Closes #N/);
   one({ files: ['src/rules/pr.ts'] }, /^changelog:/);
   one({ milestone: null }, /^milestone:/);
-  one({ labels: [] }, /^labels:/);
+  one({ labels: ['feat'] }, /^labels: no tier label/);
   one({ files: ['kit/project/AGENTS.md', 'CHANGELOG.md'] }, /changes `kit\/`/);
+});
+
+test('pull request: one type label and one tier label that matches the body (#225)', () => {
+  const labelProblems = (labels: string[], body = goodPr().body) => checkPullRequest({ ...goodPr(), labels, body }, DEFAULTS).map(formatFinding);
+  // No labels: each missing part has its own fix.
+  const none = labelProblems([]);
+  assert.equal(none.length, 2, none.join(' | '));
+  assert.match(none[0], /^labels: no type label\. .*Add one type label, such as feat, bug, docs/);
+  assert.match(none[1], /^labels: no tier label\. .*Add the label `tier B`/);
+  // A type only, or a tier only.
+  assert.deepEqual(labelProblems(['bug']).map((p) => p.split('.')[0]), ['labels: no tier label']);
+  assert.deepEqual(labelProblems(['tier B']).map((p) => p.split('.')[0]), ['labels: no type label']);
+  // A tier label that disagrees with the body.
+  const wrong = labelProblems(['feat', 'tier A']);
+  assert.equal(wrong.length, 1, wrong.join(' | '));
+  assert.match(wrong[0], /^labels: `tier A` does not match the body's `tier: B`\. .*Change the label to `tier B`, or the first line of the body to `tier: A`/);
+  assert.match(labelProblems(['feat', 'tier A', 'tier B'])[0], /^labels: 2 tier labels\. .*Keep one tier label: `tier B`/);
+  // Both right, in each form and with each name a project may use for the type.
+  for (const labels of [['feat', 'tier B'], ['bug', 'tier: B'], ['fix', 'Tier B'], ['enhancement', 'tier:B'], ['docs', 'owner', 'tier B']]) {
+    assert.deepEqual(labelProblems(labels), [], labels.join(', '));
+  }
+  // No tier line in the body: pr-tier says so, and the labels do not say it again.
+  const noTier = checkPullRequest({ ...goodPr(), body: goodPr().body.replace('tier: B\n', '') }, DEFAULTS).map((p) => p.id);
+  assert.deepEqual(noTier, ['pr-tier']);
+  const noTierNoLabel = checkPullRequest({ ...goodPr(), labels: ['feat'], body: goodPr().body.replace('tier: B\n', '') }, DEFAULTS).map(formatFinding);
+  assert.equal(noTierNoLabel.length, 2);
+  assert.match(noTierNoLabel[1], /^labels: no tier label\. .*Add the label `tier A`, `tier B` or `tier C`, the same as the first line of the body/);
 });
 
 test('pull request: Closes, Fixes, Part of and Refs each link the issue (#82)', () => {

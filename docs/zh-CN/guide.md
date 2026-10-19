@@ -106,7 +106,8 @@ not now（暂不，后面跟着你给的原因）或者 can't check（这里查�
 会话开头不联网，所以那里这三步总是 can't check。
 
 第 2 关的 `labels` 和 `milestone` 也这样读。标准标签是 `bug`、`feat`、`docs`、`refactor`、`ci`、
-`owner`、`incident`、`good first issue` 和 `hotfix`。`init` 会告诉你缺哪些，`init --github --yes` 帮你加上。
+`owner`、`incident`、`good first issue`、`hotfix`，还有三个 tier 标签 `tier A`、`tier B`、`tier C`。
+`init` 会告诉你缺哪些，`init --github --yes` 帮你加上。
 
 如果某一步对应外部的标准，`yokoten doctor` 会在步骤名后面写出来，比如 `ci (Scorecard: CI-Tests)`。
 会话开头那三行不写。
@@ -667,6 +668,12 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 检查读的是目标分支（base）上的 CODEOWNERS，不是 PR 自己改过的那份。这样 PR 没法靠改这个
 文件来给自己降级。本地跑、没有 base 的时候，读工作区里的文件，提示里会说读的是哪一份。
 没有 CODEOWNERS 文件，就不查。
+
+审的人靠标签找 tier，所以 `check --pr` 也看标签。一个 PR 要有一个类型标签和一个 tier 标签。
+类型标签可以直接用标题里的类型（`feat`、`fix`、`docs`、`refactor`、`ci` 等），也可以用常见的叫法：
+`fix` 可以叫 `bug`、`hotfix` 或 `incident`，`feat` 可以叫 `feature` 或 `enhancement`，`docs` 可以叫
+`documentation`。tier 标签是 `tier A`、`tier B` 或 `tier C`，写成 `tier: B` 也行，而且要跟正文第一行的
+`tier:` 一样。少了哪个、哪个不对，各报一条，每条都说怎么改。
 
 服务器怎么设置，一步一步写在 [`docs/server.md`](../server.md)。
 

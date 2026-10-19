@@ -40,6 +40,44 @@ export function visibleLength(text: string): number {
 }
 
 /**
+ * Label names that also say a type, for projects whose labels do not use the type name
+ * itself. This repo names the fix label `bug`; GitHub's defaults say `enhancement` and
+ * `documentation`. A label that is the type name itself always counts.
+ */
+const TYPE_LABEL_ALIASES: Record<string, string[]> = {
+  fix: ['bug', 'hotfix', 'incident'],
+  feat: ['feature', 'enhancement'],
+  docs: ['documentation'],
+};
+const TYPE_LABELS = new Set([...TYPES, ...Object.values(TYPE_LABEL_ALIASES).flat()]);
+const SHOWN_TYPE_LABELS = ['feat', 'bug', 'docs', 'refactor', 'ci', 'test', 'chore'];
+
+/** The tier on the body's first line, or null when the first line is not a tier. */
+const bodyTier = (body: string): string | null => /^tier: ([ABC])\s*$/.exec(body.split(/\r?\n/).find((l) => l.trim())?.trim() ?? '')?.[1] ?? null;
+
+/** The tier a label names: `tier B` or `tier: B`, in any case. Null for any other label. */
+const labelTier = (label: string): string | null => /^tier:? ?([abc])$/i.exec(label.trim())?.[1].toUpperCase() ?? null;
+
+/**
+ * Problems with a pull request's labels: one type label, and one tier label that matches
+ * the body's `tier:` line. A body with no tier line is pr-tier's finding, not this one.
+ */
+function checkLabels(labels: string[], tier: string | null): Finding[] {
+  const problems: Finding[] = [];
+  if (!labels.some((l) => TYPE_LABELS.has(l.trim().toLowerCase()))) {
+    problems.push(finding('pr-labels', 'labels: no type label', `add one type label, such as ${SHOWN_TYPE_LABELS.join(', ')}; the title's type name also counts`));
+  }
+  const tiers = [...new Set(labels.map(labelTier).filter((t) => t !== null))];
+  const wanted = tier ? `\`tier ${tier}\`` : '`tier A`, `tier B` or `tier C`, the same as the first line of the body';
+  if (!tiers.length) problems.push(finding('pr-labels', 'labels: no tier label', `add the label ${wanted}`));
+  else if (tiers.length > 1) problems.push(finding('pr-labels', `labels: ${tiers.length} tier labels`, `keep one tier label: ${wanted}`));
+  else if (tier && tiers[0] !== tier) {
+    problems.push(finding('pr-labels', `labels: \`tier ${tiers[0]}\` does not match the body's \`tier: ${tier}\``, `change the label to \`tier ${tier}\`, or the first line of the body to \`tier: ${tiers[0]}\``));
+  }
+  return problems;
+}
+
+/**
  * The folder of change files (#132). Each pull request adds its own file there, so two
  * pull requests never edit the same lines of CHANGELOG.md. `yokoten changelog` collects them.
  */
@@ -158,8 +196,8 @@ export function checkPullRequest(pr: PullRequest, config: Pick<Config, 'tests'> 
   const problems = checkPullRequestTitle(pr.title, config);
 
   const body = pr.body ?? '';
-  const first = body.split(/\r?\n/).find((l) => l.trim()) ?? '';
-  if (!/^tier: [ABC]\s*$/.test(first.trim())) {
+  const tier = bodyTier(body);
+  if (!tier) {
     problems.push(finding('pr-tier', 'body: the first line is not a tier', 'make the first line `tier: A`, `tier: B` or `tier: C` (A: secrets, data, install, releases, files CODEOWNERS owns; B: other code; C: docs and wording)'));
   }
   for (const name of SECTIONS) {
@@ -198,7 +236,7 @@ export function checkPullRequest(pr: PullRequest, config: Pick<Config, 'tests'> 
   }
 
   if (!pr.milestone) problems.push(finding('pr-milestone', 'milestone: none set', 'set one'));
-  if (!pr.labels.length) problems.push(finding('pr-labels', 'labels: none', 'add a type label (feat, bug, docs, ...) and a tier label'));
+  problems.push(...checkLabels(pr.labels, tier));
   return problems;
 }
 
@@ -426,7 +464,7 @@ export interface CodeOwners {
  */
 export function checkOwnedTier(pr: Pick<PullRequest, 'body' | 'files'>, codeOwners: CodeOwners | null): Finding | null {
   if (!codeOwners) return null;
-  const tier = /^tier: ([ABC])\s*$/.exec((pr.body ?? '').split(/\r?\n/).find((l) => l.trim())?.trim() ?? '')?.[1];
+  const tier = bodyTier(pr.body ?? '');
   if (!tier || tier === 'A') return null;
   const rules = parseCodeOwners(codeOwners.text);
   const owned = pr.files.filter((f) => ownersOf(rules, f).length);

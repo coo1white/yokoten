@@ -117,8 +117,9 @@ Without `gh`, a sign-in, the network or a GitHub remote, they are **can't check*
 A session never calls the network, so there they are always **can't check**.
 
 `labels` and `milestone` in stage 2 are read the same way. The standard labels are `bug`, `feat`,
-`docs`, `refactor`, `ci`, `owner`, `incident`, `good first issue` and `hotfix`. `init` shows which
-are missing, and `init --github --yes` adds them.
+`docs`, `refactor`, `ci`, `owner`, `incident`, `good first issue`, `hotfix`, and the tier labels
+`tier A`, `tier B` and `tier C`. `init` shows which are missing, and `init --github --yes` adds
+them.
 
 After a step, `yokoten doctor` names the outside standard it meets, when there is one,
 for example `ci (Scorecard: CI-Tests)`. The session message leaves it out.
@@ -734,6 +735,13 @@ a tier, never lower it. The check reads CODEOWNERS from the base branch, so a pu
 request can't edit the file to lower its own tier. Without a base commit, on a local run,
 it reads the working tree. The message says which one it read. No CODEOWNERS file, no
 check.
+
+A reviewer finds the tier through labels, so `check --pr` also reads them. A pull request
+needs one type label and one tier label. A type label is a title type (`feat`, `fix`,
+`docs`, `refactor`, `ci` and the others) or a common name for one: `bug`, `hotfix` or
+`incident` for `fix`, `feature` or `enhancement` for `feat`, `documentation` for `docs`.
+The tier label is `tier A`, `tier B` or `tier C` (`tier: B` also counts). It must match
+the `tier:` line in the body. Each missing or wrong label gets its own message.
 
 Server setup, step by step: [`docs/server.md`](server.md).
 
