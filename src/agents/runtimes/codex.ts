@@ -213,10 +213,35 @@ function readTomlValue(text: string): unknown {
 }
 
 /**
+ * The bracket depth after `text`, from `depth`: `[` opens, `]` closes, but not inside a
+ * string, and nothing after a comment. So `args = ["a]"] # [note` closes on its own line.
+ */
+function bracketDepth(text: string, depth: number): number {
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '#') break;
+    if (c === '"' || c === "'") {
+      for (i++; i < text.length && text[i] !== c; i++) if (c === '"' && text[i] === '\\') i++;
+    } else if (c === '[') depth++;
+    else if (c === ']') depth--;
+  }
+  return depth;
+}
+
+/** A table header line: `[a."b"]` or `[[a]]`, then only a comment. Never an array element like `["a"],`. */
+function isTableHeader(line: string): boolean {
+  const close = line.startsWith('[[') ? ']]' : line.startsWith('[') ? ']' : null;
+  const path = close ? readTomlPath(line.slice(close.length)) : null;
+  return !!path && path[1].startsWith(close!) && /^\s*(#.*)?$/.test(path[1].slice(close!.length));
+}
+
+/**
  * The two tables of config.toml that hold trust, read without a TOML library (no runtime
  * dependencies): `projects` and `hooks.state`, each a map from a folder or hook key to its
  * fields. Table headers, dotted keys and one-line tables, as Codex writes them. Lines
- * inside a multi-line string or array are skipped.
+ * inside a multi-line string or array are skipped, but a table header always ends an
+ * array: a header is never read as part of the table above it, so a key below it is
+ * never put in the wrong project.
  */
 export function readTrustTables(text: string): { projects: Map<string, Record<string, unknown>>; hookStates: Map<string, Record<string, unknown>> } {
   const projects = new Map<string, Record<string, unknown>>();
@@ -233,11 +258,19 @@ export function readTrustTables(text: string): { projects: Map<string, Record<st
   };
   let header: string[] | null = [];
   let skipUntil: string | null = null;
+  let arrayDepth = 0;
   for (const raw of text.split('\n')) {
     const line = raw.trim();
     if (skipUntil) {
       if (line.includes(skipUntil)) skipUntil = null;
       continue;
+    }
+    if (arrayDepth > 0) {
+      if (isTableHeader(line)) arrayDepth = 0;
+      else {
+        arrayDepth = Math.max(0, bracketDepth(line, arrayDepth));
+        continue;
+      }
     }
     if (line === '' || line.startsWith('#')) continue;
     if (line.startsWith('[[')) {
@@ -257,9 +290,9 @@ export function readTrustTables(text: string): { projects: Map<string, Record<st
       skipUntil = opener;
       continue;
     }
-    if (value.startsWith('[') && !value.endsWith(']')) {
-      skipUntil = ']';
-      continue;
+    if (value.startsWith('[')) {
+      arrayDepth = Math.max(0, bracketDepth(value, 0));
+      if (arrayDepth > 0) continue;
     }
     if (header) set([...header, ...path[0]], readTomlValue(value));
   }

@@ -275,7 +275,7 @@ each agent's own trust store, read-only, and notes a folder it does not trust ye
 |---|---|---|
 | Copilot CLI | `trustedFolders` in `~/.copilot/config.json` (or `$COPILOT_HOME`) | the folder, or a folder above it |
 | Codex | `~/.codex/config.toml` (or `$CODEX_HOME`): `[projects]` and `[hooks.state]` | the repo folder exactly, and each hook as it is now |
-| Muse Code | `~/.config/muse/trust.json` (or `$XDG_CONFIG_HOME`) | the repo folder exactly |
+| Muse Code | `~/.config/muse/trust.json` (or `$XDG_CONFIG_HOME/muse/trust.json`) | the repo folder exactly |
 
 Doctor checks an agent only when its home folder is there (`~/.copilot`, `~/.codex`, `~/.config/muse`).
 When that folder has no store, or one doctor can't read, it says "can't check", never ok.

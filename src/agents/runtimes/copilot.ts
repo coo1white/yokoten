@@ -18,7 +18,11 @@ import { isObject } from '../hooks-file.ts';
 /** The one step that makes Copilot CLI run the project's hooks. */
 export const TRUST_STEP = 'run `copilot` in this folder and choose "Yes, and remember this folder for future sessions"';
 
-/** Whether `folder` is `trusted` or inside it. Both without a trailing slash; "/" covers all. */
+/**
+ * Whether `folder` is `trusted` or inside it. Both without a trailing slash. A "/" entry
+ * (empty here) covers every folder: inferred from the rule seen in a run, a folder covers
+ * the folders inside it; no run has saved "/" itself.
+ */
 const isInside = (folder: string, trusted: string) => trusted === '' || folder === trusted || folder.startsWith(`${trusted}/`);
 
 /** Whether Copilot CLI trusts the project at `root`, from its config file. Read-only. */

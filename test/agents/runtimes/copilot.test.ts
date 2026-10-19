@@ -25,7 +25,7 @@ test('copilot trust (#341): doctor says when Copilot CLI skips the hooks; a trus
   assert.match(doctor(), /note +copilot-hook: no tool-call guard in \.claude\/settings\.json; `yokoten init` adds it/);
   const init = sandbox.run(['init']);
   assert.equal(init.status, 0, init.stderr);
-  assert.match(init.stdout, /GitHub Copilot CLI runs the hooks in \.claude\/settings\.json only after you trust this folder: run `copilot` in this folder and choose "Yes, and remember this folder for future sessions"/);
+  assert.match(init.stdout, /GitHub Copilot CLI runs the hooks in \.claude\/settings\.json only after you trust this folder\n.*to trust this folder in Copilot CLI: run `copilot` in this folder and choose "Yes, and remember this folder for future sessions"/);
   const root = realpathSync(sandbox.repo);
   assert.match(doctor(), /note +copilot-hook: can't check whether Copilot CLI trusts this folder: no ~\/\.copilot\/config\.json; if you use Copilot CLI: run `copilot` in this folder/);
   // The positive control: a config that trusts other folders, one of them a name that only starts like this one.

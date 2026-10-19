@@ -124,6 +124,16 @@ test('codex config.toml: the trust tables, as headers, dotted keys and one-line 
   assert.deepEqual(Object.fromEntries(tables.hookStates), { '/e:stop:0:0': { trusted_hash: 'sha256:1' } });
 });
 
+test('codex config.toml: an array never swallows the next table header, so no key lands in the wrong project (#354)', () => {
+  const read = (lines: string[]) => Object.fromEntries([...readTrustTables(lines.join('\n')).projects].map(([key, fields]) => [key, fields.trust_level]));
+  // The known-bad case: an array closed on its line, then a comment, read as an open array.
+  assert.deepEqual(read(['[projects."/r"]', 'args = ["a"] # note', '[projects."/other"]', 'trust_level = "trusted"']), { '/r': undefined, '/other': 'trusted' });
+  // A bracket in a string or a comment counts for nothing; nested arrays close at the right line.
+  assert.deepEqual(read(['[projects."/r"]', 'args = ["a]", [', '  "b", # ]', '], ["c"]]', 'trust_level = "untrusted"']), { '/r': 'untrusted' });
+  // An array left open: the header still ends it, and its key stays in its own table.
+  assert.deepEqual(read(['[projects."/r"]', 'args = [', '  "a",', '  ["b"],', '[projects."/other"]', 'trust_level = "trusted"']), { '/other': 'trusted' });
+});
+
 test('codex trust (#341): doctor says when Codex skips the hooks, and ok only when the folder and both hooks are trusted', () => {
   const sandbox = makeSandbox();
   assert.equal(sandbox.run(['init']).status, 0);
@@ -146,6 +156,9 @@ test('codex trust (#341): doctor says when Codex skips the hooks, and ok only wh
   assert.match(doctor(), /note +codex-hook: Codex skips \.codex\/hooks\.json until you trust this folder; run `codex` in this folder/);
   // Codex compares the key exactly: a parent folder or a trailing slash trusts nothing.
   writeConfig(`[projects."${dirname(root)}"]\ntrust_level = "trusted"\n[projects."${root}/"]\ntrust_level = "trusted"\n`);
+  assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'untrusted');
+  // An array and a comment in this folder's own table: the trusted table below is not this folder's (#354).
+  writeConfig(`[projects."${root}"]\nargs = ["a"] # note\n[projects."/other"]\ntrust_level = "trusted"\n`);
   assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'untrusted');
   const project = `[projects."${root}"]\ntrust_level = "trusted"\n`;
   writeConfig(project);
