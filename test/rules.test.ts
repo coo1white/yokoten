@@ -13,7 +13,7 @@ import { SECRET_CONTROL } from '../src/rules/secrets.ts';
 import { batchBlobs, check, checkHistory, readBlobs, timeZoneNote } from '../src/run/check.ts';
 import { lateFinding, loadHookConfig } from '../src/run/hook.ts';
 import { parseSourceMarker, sourceMarker, translationNotes } from '../src/run/translations.ts';
-import { agentHooks, coreRulesCheck, coreRulesControl, machineChecks, selfTest } from '../src/setup/doctor.ts';
+import { agentHooks, coreRulesCheck, coreRulesControl, machineChecks, pluginAgeCheck, selfTest } from '../src/setup/doctor.ts';
 import { compareCoreRules, compareVersions, readKitVersion } from '../src/setup/init.ts';
 import { explain, explainLines, ids } from '../src/setup/advice/explain.ts';
 import { ROAD, serverChecks, stepFinding } from '../src/setup/road.ts';
@@ -699,6 +699,15 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   add(findUnknownKeys(dir)[0]);
   rmSync(join(dir, 'yokoten.json'));
   for (const c of [...agentHooks(dir), ...machineChecks({ HOME: dir, YOKOTEN_PRIVATE_MARKS: join(dir, 'none') })]) add(c.finding);
+  // The plugin (#198): enabled, and installed at a version older than this yokoten.
+  const pluginHome = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const pluginFolder = join(pluginHome, 'plugin');
+  mkdirSync(join(pluginHome, '.claude', 'plugins'), { recursive: true });
+  mkdirSync(pluginFolder);
+  writeFileSync(join(pluginHome, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { 'yokoten@yokoten': true } }));
+  writeFileSync(join(pluginHome, '.claude', 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'yokoten@yokoten': [{ scope: 'user', installPath: pluginFolder }] } }));
+  writeFileSync(join(pluginFolder, 'package.json'), JSON.stringify({ version: '0.0.1' }));
+  add(pluginAgeCheck(null, { HOME: pluginHome }));
   // The core rules (#120): behind the kit, and with no heading to compare by.
   for (const rules of ['# old rules\n\n## This project\n', '# rules\n']) {
     writeFileSync(join(dir, 'AGENTS.md'), rules);

@@ -2611,7 +2611,11 @@ test('doctor: notes an installed plugin older than this yokoten (#198)', () => {
   assert.ok(!lines.some((l) => l.includes('MISSING plugin')));
   assert.match(sandbox.run(['doctor', '--session']).stdout, olderNote);
   const json = JSON.parse(sandbox.run(['doctor', '--json']).stdout);
-  assert.ok(json.notes.some((n: { what: string }) => olderNote.test(n.what)), 'a note in JSON');
+  const jsonNote = json.notes.find((n: { what: string }) => olderNote.test(n.what));
+  assert.ok(jsonNote, 'a note in JSON');
+  assert.equal(jsonNote.id, 'plugin-version', 'its own rule, so `yokoten explain` tells the right thing');
+  assert.match(jsonNote.docs, /#the-claude-code-plugin$/);
+  assert.match(sandbox.run(['explain', jsonNote.id]).stdout, /plugin is not older than the yokoten/);
   assert.ok(!json.findings.some((f: { what: string }) => olderNote.test(f.what)), 'not a finding');
 
   // The same version, or a newer one: nothing.
