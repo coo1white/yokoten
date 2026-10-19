@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
-import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -3996,7 +3996,8 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
   mkdirSync(bin);
   writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args: process.argv.slice(2), token: process.env.GH_TOKEN }) + '\\n');\n`);
   chmodSync(join(bin, 'gh'), 0o755);
-  const ran = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+  copyFileSync(join(bin, 'gh'), join(bin, 'gh.exe'));
+  const ran =() => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
   const requests: string[] = [];
   const server = createServer((req, res) => {
     requests.push(`${req.method} ${req.url}`);
@@ -4045,6 +4046,20 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
     await refused(['gh', 'pr', 'create', '-dt', 'feat(host): add a step.'], /title: a full stop at the end\. A commit title has no full stop/);
     await refused(['gh', 'issue', 'create', '-wthost: add a step.'], /title: a full stop at the end\. A title is a name/);
     await refused(['gh', 'pr', 'create', '-dzt', 'feat(host): add a step'], /title: can't read the title in `-dzt`\. .+\. Write --title on its own\.$/m);
+    // gh api on an issue or pull request path (#295): its title= field is checked too.
+    await refused(['gh', 'api', 'repos/o/r/issues', '-f', 'title=Broken'], /title: /);
+    await refused(['gh', 'api', '-X', 'PATCH', '/repos/o/r/pulls/5', '--field=title=feat(host): add a step.'], /title: a full stop at the end\. A commit title has no full stop/);
+    // gh by another name runs, so its title is checked (#295).
+    await refused(['gh.exe', 'issue', 'create', '-t', 'Broken'], /title: /);
+    await refused([join(bin, 'gh'), 'issue', 'create', '-t', 'Broken'], /title: /);
+    // The bot runs gh and git only (#295): a wrapper would hide the title, so it is refused
+    // before the token is asked for, and nothing runs.
+    for (const command of [['env', 'gh', 'issue', 'create', '-t', 'Broken'], ['/usr/bin/env', 'gh', 'issue', 'create', '-t', 'Broken'], ['sh', '-c', 'gh issue create -t Broken'], ['node', 'x']]) {
+      const r = await run(command);
+      assert.deepEqual([r.status, r.stderr], [1, `yokoten bot: runs gh and git only; run \`${command[0]}\` without the bot\n`], command.join(' '));
+      assert.deepEqual(requests, [], `no token was asked for: ${command.join(' ')}`);
+      assert.deepEqual(ran(), [], `nothing ran: ${command.join(' ')}`);
+    }
     // With no bot set up at all, the title is still the reason given.
     await refused(['gh', 'pr', 'create', '--title', 'feat(host): add a step.'], /full stop/, path);
     const missing = await run(['gh', 'pr', 'create', '--title', 'feat(host): add a step'], path);
@@ -4059,6 +4074,12 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
       ['gh', 'pr', 'new', '-t', 'feat(host): check the title'],
       ['gh', 'pr', 'create', '--fill'],
       ['gh', 'issue', 'list'],
+      // #295: gh by another name, -t=X as gh reads it, gh api with a good title, and other gh api calls unchecked.
+      ['gh.exe', 'issue', 'create', '-t', 'host: check the title'],
+      [join(bin, 'gh'), 'pr', 'create', '-t', 'feat(host): check the title'],
+      ['gh', 'pr', 'create', '-t=fix: good title'],
+      ['gh', 'api', 'repos/o/r/issues', '-f', 'title=host: check the title'],
+      ['gh', 'api', 'graphql', '-f', 'query=x', '-f', 'title=Broken'],
     ];
     for (const command of good) {
       const r = await run(command);
@@ -4085,12 +4106,18 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
     assert.equal(own.status, 0, own.stderr);
     assert.equal(ran().length, good.length + 2, 'gh did not run for bot --help');
     // A command that is not there, or that a signal ends, is named with the reason (#282).
-    const absent = await run(['no-such-cmd-xyz', 'arg']);
-    assert.deepEqual([absent.status, absent.stderr], [1, 'yokoten bot: could not run no-such-cmd-xyz: ENOENT\n']);
-    writeFileSync(join(bin, 'killed'), '#!/bin/sh\nkill -TERM $$\n');
-    chmodSync(join(bin, 'killed'), 0o755);
-    const killed = await run(['killed']);
-    assert.deepEqual([killed.status, killed.stderr], [1, 'yokoten bot: killed was ended by SIGTERM\n']);
+    // The bot runs gh and git only (#295), so both are a gh: one at no path, one a script.
+    const noGh = join(bin, 'none', 'gh');
+    const absent = await run([noGh, 'arg']);
+    assert.equal(absent.status, 1);
+    assert.match(absent.stderr, /^yokoten bot: could not run \S*\/none\/gh: ENOENT\n$/);
+    const killedGh = join(bin, 'killed', 'gh');
+    mkdirSync(dirname(killedGh));
+    writeFileSync(killedGh, '#!/bin/sh\nkill -TERM $$\n');
+    chmodSync(killedGh, 0o755);
+    const killed = await run([killedGh]);
+    assert.equal(killed.status, 1);
+    assert.match(killed.stderr, /^yokoten bot: \S*\/killed\/gh was ended by SIGTERM\n$/);
     for (const said of [absent.stderr, killed.stderr]) assert.doesNotMatch(said, /ghs_test|bot\.pem|GH_TOKEN/, 'no token or env');
   } finally {
     server.close();
