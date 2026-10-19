@@ -172,6 +172,12 @@ export function checkPullRequest(pr: PullRequest, config: Pick<Config, 'tests'> 
     problems.push(finding('pr-issue', 'body: no linked issue', 'link the issue with `Closes #N`, or `Part of #N` when it does not finish it'));
   }
 
+  // `yokoten changelog` reads only the files right in changes/, and refuses a folder there,
+  // so a new file deeper down would pass here and stop the release.
+  for (const file of pr.files.filter((f) => f.startsWith(`${CHANGES_DIR}/`) && f.split('/').length > 2 && !pr.deleted?.includes(f))) {
+    problems.push(finding('change-file', `a file in a folder inside ${CHANGES_DIR}/`, `change files go directly in ${CHANGES_DIR}/; move it up`, { file }));
+  }
+
   // A change to what the project does needs a change file, or a line in CHANGELOG.md for a
   // project that has not moved to change files. Docs, tests and CI do not.
   const isTest = matcher(config.tests);
