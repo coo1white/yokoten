@@ -109,9 +109,9 @@ export const RULES = {
     docs: guide('privacy'),
   },
   'shallow-history': {
-    rule: '`check --history` reads the whole history, so it needs a full clone',
-    why: 'a shallow clone holds only the newest commits, so a secret in an older commit goes unseen',
-    check: '`check --history` asks git whether the clone is shallow (`git rev-parse --is-shallow-repository`); if it is, it scans nothing and fails with this finding',
+    rule: '`check --history` reads the whole history, so it needs a full clone with no grafts file',
+    why: 'a shallow clone holds only the newest commits, and a grafts file can hide commits, so a secret in a hidden commit goes unseen',
+    check: '`check --history` asks git whether the clone is shallow (`git rev-parse --is-shallow-repository`) and looks for `info/grafts` in the git directory; if either is there, it scans nothing and fails with this finding. Replace refs are read past (`git --no-replace-objects`)',
     docs: guide('privacy'),
   },
   'time-zone': {

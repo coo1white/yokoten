@@ -637,6 +637,20 @@ function makeTranslatedRepo() {
   return { root, git, commit };
 }
 
+test('check --history: a blob swapped by git replace is read as committed, not as the swap shows it (#284)', () => {
+  const repo = makeTranslatedRepo();
+  const token = `${'gh'}p_${'x7Y2k9'.repeat(6)}`;
+  repo.commit('notes.md', `token ${token}\n`);
+  const blob = repo.git('rev-parse', 'HEAD:notes.md');
+  writeFileSync(join(repo.root, 'harmless.txt'), 'nothing here\n');
+  const harmless = repo.git('hash-object', '-w', 'harmless.txt');
+  repo.git('replace', blob, harmless);
+  assert.equal(repo.git('cat-file', '-p', blob), 'nothing here', 'git itself now shows the harmless bytes');
+  const found = checkHistory(repo.root, { config: DEFAULTS, env: {} });
+  assert.ok(found.some((f) => f.file?.startsWith(`notes.md @ blob ${blob.slice(0, 8)}`)), JSON.stringify(found));
+  assert.ok(!JSON.stringify(found).includes(token), 'the secret is never printed');
+});
+
 // The older marker form (#87), with the English blob; still read (#166).
 const blobMarker = (source: string, blob: string) => `<!-- source: ${source} blob ${blob} -->`;
 
