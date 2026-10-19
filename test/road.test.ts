@@ -73,7 +73,8 @@ const statusOf = (rows: Fact[]) => Object.fromEntries(rows.map((r) => [r.key, r.
 test('adopt facts: an empty repo has every project step missing, and no evidence names a path outside it', () => {
   const dir = fixture({});
   const rows = facts(dir, { HOME: dir });
-  assert.deepEqual(rows.map((r) => r.key), ['rules', 'tool-hook', 'commit-check', 'runtime', 'tests', 'ci', 'issues', 'templates', 'changelog', 'titles', 'codeowners', 'bot', 'skills', 'security-files']);
+  assert.deepEqual(rows.map((r) => r.key), ROAD.map((step) => step.key), 'every step on the road, in its order');
+  assert.ok(rows.some((r) => r.key === 'no-build-output'), 'a step with no reading of its own still gets a row');
   const s = statusOf(rows);
   for (const key of ['rules', 'tool-hook', 'commit-check', 'runtime', 'tests', 'ci', 'templates', 'changelog', 'titles', 'codeowners', 'bot', 'security-files']) assert.equal(s[key], 'missing', key);
   assert.equal(s.issues, 'done', 'no todo file');

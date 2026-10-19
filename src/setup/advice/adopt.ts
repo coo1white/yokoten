@@ -157,7 +157,12 @@ export function facts(root: string, env: Env): Fact[] {
 
   const lacking = securityLacking(root);
   add('security-files', lacking.length === 0 ? 'done' : lacking.length < 3 ? 'partial' : 'missing', lacking.length ? `no ${lacking.join(', no ')}` : 'a security policy, Dependabot and a license');
-  return rows;
+
+  // A step with no reading of its own above still gets a row, in doctor's words. So a
+  // step added to the road later is never left out of the draft.
+  for (const other of ROAD.filter((s) => !rows.some((row) => row.key === s.key))) plain(other.key, "yokoten's check passes", found.get(other.key) ? '' : other.what(root, env));
+  const order = (key: string) => ROAD.findIndex((s) => s.key === key);
+  return rows.sort((first, second) => order(first.key) - order(second.key));
 }
 
 const sentence = (text: string) => `${text[0].toUpperCase()}${text.slice(1)}.`;
