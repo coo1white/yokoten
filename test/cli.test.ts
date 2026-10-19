@@ -66,6 +66,26 @@ test('hook: blocks with exit 2 and a reason, allows with exit 0', () => {
 });
 
 // The Stop event is shaped as Claude Code's hook docs show it (code.claude.com/docs/en/hooks#stop).
+test('hook: bad JSON in yokoten.json gives the defaults and one line, and check still fails (#218)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', '{ "layout": ');
+  const call = (command: string) => sandbox.run(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: { command } }) });
+  const line = /^yokoten hook: yokoten\.json was ignored, so the defaults apply; the core checks still run\. yokoten\.json: [^\n]+\n/;
+  let result = call('git push --force');
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, line);
+  assert.match(result.stderr, /\nyokoten: [^\n]*force/);
+  assert.ok(!result.stderr.includes(sandbox.repo), 'no absolute path');
+  result = call('git status');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, line);
+  assert.equal(result.stderr.split('\n').filter(Boolean).length, 1, 'one line');
+  // check and doctor still see a config problem.
+  result = sandbox.run(['check']);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout + result.stderr, /yokoten\.json:/);
+});
+
 test('hook --stop: sends the agent back once with the findings in changed files, never twice (#92)', () => {
   const sandbox = makeSandbox();
   const stop = (active = false, extra?: Record<string, string>) =>
