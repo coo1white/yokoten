@@ -2,13 +2,14 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { closestWord, COMMANDS, editDistance, HELP_OPTIONS } from '../src/run/cli.ts';
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'yokoten.ts');
 const at = '@';
@@ -20,8 +21,9 @@ function makeSandbox() {
   mkdirSync(home);
   mkdirSync(repo);
   // A clean environment: no real HOME, no real marks, no role, and commit times in UTC
-  // whatever the machine's time zone (#40).
-  const env = { PATH: process.env.PATH, HOME: home, TZ: 'UTC', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig') };
+  // whatever the machine's time zone (#40). No proxy either: the shell's proxy is not
+  // passed on, and a call to a fake server on this machine goes to it directly (#138).
+  const env = { PATH: process.env.PATH, HOME: home, TZ: 'UTC', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' };
   const git = (...args: string[]) => spawnSync('git', args, { cwd: repo, env, encoding: 'utf8' });
   git('init', '-q', '-b', 'main');
   git('config', 'user.name', 'Test');
@@ -145,7 +147,7 @@ test('hook --stop: sends the agent back once with the findings in changed files,
 // (developers.openai.com/codex/hooks) and Gemini CLI's BeforeTool (geminicli.com/docs/hooks).
 test('hook --agent codex: shell calls by command, apply_patch by the files it touches (#30)', () => {
   const sandbox = makeSandbox();
-  const call = (tool_name: string, command: string, extra?: Record<string, string>) =>
+  const call = (tool_name: string, command: string, extra?: Record<string, string>, fields: object = {}) =>
     sandbox.run(['hook', '--agent', 'codex'], {
       input: JSON.stringify({
         session_id: 'thr_123',
@@ -158,6 +160,7 @@ test('hook --agent codex: shell calls by command, apply_patch by the files it to
         tool_name,
         tool_use_id: 'call_1',
         tool_input: { command },
+        ...fields,
       }),
       extra,
     });
@@ -174,6 +177,9 @@ test('hook --agent codex: shell calls by command, apply_patch by the files it to
   assert.equal(call('apply_patch', patch(`*** Add File: ${join(sandbox.repo, '.github', 'x.yml')}`), worker).status, 2, 'an absolute path');
   assert.equal(call('apply_patch', patch('*** Update File: src/a.ts'), worker).status, 0);
   assert.equal(call('apply_patch', patch('*** Update File: AGENTS.md')).status, 0, 'the lead may');
+  // A worker subagent's call names its role (Codex rust-v0.163.0, #210); no env needed.
+  assert.equal(call('apply_patch', patch('*** Update File: AGENTS.md'), {}, { agent_id: 'a1', agent_type: 'worker' }).status, 2, 'a worker subagent');
+  assert.equal(call('apply_patch', patch('*** Update File: AGENTS.md'), {}, { agent_id: 'a2', agent_type: 'explorer' }).status, 0, 'an explorer is not a worker');
   // A patch is not a command, and an unknown tool is neither.
   assert.equal(call('apply_patch', 'git push --tags').status, 0);
   assert.equal(call('mcp__fs__write', 'git push --tags').status, 0);
@@ -210,6 +216,38 @@ test('hook --agent gemini: run_shell_command by command, write_file and replace 
   result = sandbox.run(['hook', '--agent', 'cursor'], { input: '{}' });
   assert.equal(result.status, 1, 'an unknown agent is an error to see, not a block');
   assert.match(result.stderr, /claude-code, codex, gemini/);
+});
+
+// Gemini CLI (v0.64.0) swaps `$GEMINI_PROJECT_DIR` in the command text for the shell-quoted
+// launch folder, then runs the text in a shell (#210). This copies that against a repo whose
+// path has a space and an @.
+test('init: the Gemini hook command runs when Gemini quotes a path with a space (#210)', () => {
+  const sandbox = makeSandbox();
+  // An older yokoten wrote the folder in double quotes; init updates that hook in place.
+  const old = 'node "$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts" hook --agent gemini';
+  sandbox.write('.gemini/settings.json', JSON.stringify({ hooks: { BeforeTool: [{ matcher: 'run_shell_command', hooks: [{ type: 'command', command: old, name: 'yokoten' }] }] } }));
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /updated the Gemini CLI tool-call hook/);
+  const repo = join(dirname(sandbox.repo), 'my repo@1');
+  renameSync(sandbox.repo, repo);
+  const groups = JSON.parse(readFileSync(join(repo, '.gemini', 'settings.json'), 'utf8')).hooks.BeforeTool;
+  assert.equal(groups.length, 1, 'updated, not added');
+  const command: string = groups[0].hooks[0].command;
+  assert.equal(command, 'node $GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts hook --agent gemini');
+  // shell-quote, which Gemini uses, writes a path with a space and no single quote as
+  // '…'; a single quote inside would become '\''.
+  const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
+  const input = JSON.stringify({ session_id: 's1', cwd: repo, hook_event_name: 'BeforeTool', tool_name: 'run_shell_command', tool_input: { command: 'git push --tags' } });
+  const asGemini = (text: string) =>
+    spawnSync('bash', ['-c', text.replaceAll('$GEMINI_PROJECT_DIR', quote(repo))], { cwd: repo, env: { ...sandbox.env, GEMINI_PROJECT_DIR: repo }, input, encoding: 'utf8' });
+  const ran = asGemini(command);
+  assert.equal(ran.status, 2, ran.stderr);
+  assert.match(ran.stderr, /owner decides when to release/);
+  // The control: the old quoted command never reaches yokoten.
+  const broken = asGemini(old);
+  assert.notEqual(broken.status, 2);
+  assert.match(broken.stderr, /Cannot find module/);
 });
 
 test('hook: a repo reached through a symlink gets the same file rules (#1)', () => {
@@ -367,7 +405,7 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.equal(gemini.theme, 'x');
   assert.equal(gemini.hooks.BeforeTool.length, 2);
   assert.deepEqual(gemini.hooks.BeforeTool[1], {
-    hooks: [{ type: 'command', command: 'node "$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts" hook --agent gemini', name: 'yokoten' }],
+    hooks: [{ type: 'command', command: 'node $GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts hook --agent gemini', name: 'yokoten' }],
     matcher: 'run_shell_command|write_file|replace',
   });
   assert.match(sandbox.run(['doctor']).stdout, /ok +codex-hook\n +ok +gemini-hook/);
@@ -385,7 +423,7 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.match(secret.stderr, /leak\.md:1: a secret \(AWS access key id\)/);
   sandbox.git('reset', '-q', 'leak.md');
   // init does all of stages 1 to 3 but the tests, so with tests the road goes on to stage 4.
-  assert.match(sandbox.run(['doctor', '--session']).stdout, /^yokoten: stage 1 of 5, safety net\. Next: no test command/);
+  assert.match(sandbox.run(['doctor', '--session']).stdout, /^yokoten: stage 1 of 5, safety net\. Next: no workflow runs a test command/);
   sandbox.withTests();
   result = sandbox.run(['doctor', '--session']);
   assert.equal(result.status, 0);
@@ -404,6 +442,255 @@ test('init: safe defaults, Dependabot and a security policy; doctor lists the se
   assert.match(readFileSync(join(sandbox.repo, '.github/SECURITY.md'), 'utf8'), /\*\*Report a vulnerability\*\*/);
   const doctor = sandbox.run(['doctor']);
   for (const sw of [/private vulnerability reporting/, /secret scanning with push protection/, /Dependabot alerts/]) assert.match(doctor.stdout, sw);
+  // Right after init only the license is missing: say what to do, not that init adds it (#208).
+  const security = () => sandbox.run(['doctor']).stdout.split('\n').find((l) => / security-files\b/.test(l)) ?? '';
+  assert.match(security(), /: no license file; choose a license and add it as LICENSE$/);
+  assert.doesNotMatch(security(), /yokoten init/);
+  rmSync(join(sandbox.repo, '.github/SECURITY.md'));
+  assert.match(security(), /: no security policy \(SECURITY\.md\), no license file; run `yokoten init` to add the security policy and Dependabot, and choose a license and add it as LICENSE$/);
+  sandbox.write('LICENSE', 'placeholder license\n');
+  sandbox.run(['init']);
+  assert.match(security(), /^ +done +security-files/);
+});
+
+/** The doctor --json mark of one road step. */
+const stepMark = (sandbox: ReturnType<typeof makeSandbox>, id: string) =>
+  (JSON.parse(sandbox.run(['doctor', '--json']).stdout).steps as { id: string; mark: string }[]).find((step) => step.id === id)?.mark;
+
+test("init: a CLAUDE.md gets one line that imports AGENTS.md, and doctor's rules step wants it (#206)", () => {
+  const sandbox = makeSandbox();
+  sandbox.write('CLAUDE.md', '# our rules\n\nRun the tests first.\n');
+  sandbox.write('AGENTS.md', '# shared rules\n');
+  assert.notEqual(stepMark(sandbox, 'rules'), 'done', 'AGENTS.md that Claude Code does not read is not done');
+  assert.match(sandbox.run(['doctor']).stdout, /rules[^\n]*: CLAUDE\.md does not import AGENTS\.md[^\n]*; add a line `@AGENTS\.md`/);
+  rmSync(join(sandbox.repo, 'AGENTS.md'));
+  let result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /wrote AGENTS\.md/);
+  assert.match(result.stdout, /updated CLAUDE\.md: it now reads AGENTS\.md/);
+  const claude = readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8');
+  assert.ok(claude.startsWith('# our rules\n\nRun the tests first.\n\n'), 'the project\'s own lines stay');
+  assert.match(claude, /\n<!--[^\n]*-->\n@AGENTS\.md\n$/, 'a comment line, then the import, at the end');
+  assert.equal(stepMark(sandbox, 'rules'), 'done');
+  // Again: one import, not two.
+  result = sandbox.run(['init']);
+  assert.doesNotMatch(result.stdout, /updated CLAUDE\.md/);
+  assert.equal(readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8'), claude);
+});
+
+test('init: a CLAUDE.md that already imports AGENTS.md is left as it is (#206)', () => {
+  for (const text of [`# rules\n${at}AGENTS.md\n`, `# rules\nRead ${at}./AGENTS.md first.\n`, `# rules\r\n${at}AGENTS.md\r\n`, `# rules\n${at}AGENTS.md`]) {
+    const sandbox = makeSandbox();
+    sandbox.write('CLAUDE.md', text);
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stdout, /CLAUDE\.md/, text);
+    assert.equal(readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8'), text);
+    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+  }
+});
+
+test("init: a .claude/CLAUDE.md alone gets `@../AGENTS.md`, and doctor's rules step wants it (#206)", () => {
+  const sandbox = makeSandbox();
+  sandbox.write('.claude/CLAUDE.md', '# our rules\n');
+  sandbox.write('AGENTS.md', '# shared rules\n');
+  assert.notEqual(stepMark(sandbox, 'rules'), 'done', 'Claude Code reads .claude/CLAUDE.md instead of AGENTS.md');
+  assert.match(sandbox.run(['doctor']).stdout, /rules[^\n]*: \.claude\/CLAUDE\.md does not import AGENTS\.md[^\n]*; add a line `@\.\.\/AGENTS\.md`/);
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /updated \.claude\/CLAUDE\.md: it now reads AGENTS\.md/);
+  // Claude Code resolves an import relative to the file that holds it, so this is the root AGENTS.md.
+  assert.match(readFileSync(join(sandbox.repo, '.claude', 'CLAUDE.md'), 'utf8'), /^# our rules\n\n<!--[^\n]*-->\n@\.\.\/AGENTS\.md\n$/);
+  assert.equal(existsSync(join(sandbox.repo, 'CLAUDE.md')), false, 'no root CLAUDE.md is made');
+  assert.equal(stepMark(sandbox, 'rules'), 'done');
+});
+
+test('init: CLAUDE.md and .claude/CLAUDE.md, neither importing AGENTS.md: the root one gets the import (#206)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('CLAUDE.md', '# root rules\n');
+  sandbox.write('.claude/CLAUDE.md', '# folder rules\n');
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /updated CLAUDE\.md: it now reads AGENTS\.md/);
+  assert.doesNotMatch(result.stdout, /updated \.claude\/CLAUDE\.md/);
+  assert.match(readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8'), /\n@AGENTS\.md\n$/);
+  assert.equal(readFileSync(join(sandbox.repo, '.claude', 'CLAUDE.md'), 'utf8'), '# folder rules\n');
+  assert.equal(stepMark(sandbox, 'rules'), 'done');
+});
+
+test('init: a .claude/CLAUDE.md that already imports AGENTS.md is left as it is (#206)', () => {
+  for (const text of [`# rules\n${at}../AGENTS.md\n`, `# rules\nRead ${at}../AGENTS.md first.\n`]) {
+    const sandbox = makeSandbox();
+    sandbox.write('.claude/CLAUDE.md', text);
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stdout, /CLAUDE\.md/, text);
+    assert.equal(readFileSync(join(sandbox.repo, '.claude', 'CLAUDE.md'), 'utf8'), text);
+    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+  }
+});
+
+test('init: an import of another file that starts with AGENTS.md does not count; init adds the real import (#206)', () => {
+  const cases = [
+    { file: 'CLAUDE.md', text: `# rules\n${at}AGENTS.md.bak\n`, line: `${at}AGENTS.md` },
+    { file: 'CLAUDE.md', text: `# rules\nOld: ${at}./AGENTS.md.old\n`, line: `${at}AGENTS.md` },
+    { file: '.claude/CLAUDE.md', text: `# rules\n${at}../AGENTS.md.bak\n`, line: `${at}../AGENTS.md` },
+  ];
+  for (const { file, text, line } of cases) {
+    const sandbox = makeSandbox();
+    sandbox.write(file, text);
+    sandbox.write('AGENTS.md', '# shared rules\n');
+    assert.notEqual(stepMark(sandbox, 'rules'), 'done', text);
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(result.stdout.includes(`updated ${file}: it now reads AGENTS.md`), result.stdout);
+    const after = readFileSync(join(sandbox.repo, file), 'utf8');
+    assert.ok(after.startsWith(text), 'the old line stays');
+    assert.ok(after.endsWith(`-->\n${line}\n`), after);
+    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+  }
+});
+
+test('init: a Markdown link to AGENTS.md is not an import; init adds the import and keeps the link (#206)', () => {
+  // Claude Code loads only `@path` imports; a link is text, so the session would not read AGENTS.md.
+  const cases = [
+    { file: 'CLAUDE.md', text: '# rules\nSee [the rules](AGENTS.md).\n', line: `${at}AGENTS.md` },
+    { file: 'CLAUDE.md', text: '# rules\nSee [the rules](./AGENTS.md).\n', line: `${at}AGENTS.md` },
+    { file: '.claude/CLAUDE.md', text: '# rules\nSee [the rules](../AGENTS.md).\n', line: `${at}../AGENTS.md` },
+  ];
+  for (const { file, text, line } of cases) {
+    const sandbox = makeSandbox();
+    sandbox.write(file, text);
+    sandbox.write('AGENTS.md', '# shared rules\n');
+    assert.notEqual(stepMark(sandbox, 'rules'), 'done', text);
+    assert.match(sandbox.run(['doctor']).stdout, /rules[^\n]*does not import AGENTS\.md/, text);
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    const after = readFileSync(join(sandbox.repo, file), 'utf8');
+    assert.ok(after.startsWith(text), 'the link stays');
+    assert.ok(after.endsWith(`-->\n${line}\n`), after);
+    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+  }
+});
+
+test('init: an import inside a code span or fenced block is not an import; init adds the real one (#206)', () => {
+  // Claude Code skips Markdown code spans and fenced code blocks when it reads imports.
+  const fence = '```';
+  for (const text of [
+    `# rules\nWrite \`${at}AGENTS.md\` to import it.\n`,
+    `# rules\nWrite \`\`${at}AGENTS.md\`\` to import it.\n`,
+    `# rules\n${fence}md\n${at}AGENTS.md\n${fence}\n`,
+    `# rules\n~~~\n${at}AGENTS.md\n~~~\n`,
+    `# rules\n  ${fence}\n${at}AGENTS.md\n  ${fence}\n`,
+  ]) {
+    const sandbox = makeSandbox();
+    sandbox.write('CLAUDE.md', text);
+    sandbox.write('AGENTS.md', '# shared rules\n');
+    assert.notEqual(stepMark(sandbox, 'rules'), 'done', text);
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    const after = readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8');
+    assert.ok(after.startsWith(text.replace(/\n$/, '')), 'the example stays');
+    assert.ok(after.endsWith(`-->\n${at}AGENTS.md\n`), after);
+    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+  }
+});
+
+test('init: a real import next to a fenced or quoted example is left as it is (#206)', () => {
+  const fence = '```';
+  for (const text of [
+    `# rules\n${at}AGENTS.md\n\nExample:\n${fence}\n${at}AGENTS.md\n${fence}\n`,
+    `# rules\nExample: \`${at}AGENTS.md\`.\n${at}AGENTS.md\n`,
+    `# rules\n${fence}\n${at}other.md\n${fence}\n${at}AGENTS.md\n`,
+  ]) {
+    const sandbox = makeSandbox();
+    sandbox.write('CLAUDE.md', text);
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stdout, /CLAUDE\.md/, text);
+    assert.equal(readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8'), text);
+    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+  }
+});
+
+test("init: a CLAUDE.md with mixed line endings gets the file's main ending and one blank line (#206)", () => {
+  const cases = [
+    { text: '# rules\r\nOne.\r\nTwo.\n', want: '# rules\r\nOne.\r\nTwo.\r\n\r\n<!--' },
+    { text: '# rules\r\nOne.\r\nTwo.', want: '# rules\r\nOne.\r\nTwo.\r\n\r\n<!--' },
+    { text: '# rules\nOne.\nTwo.\r\n', want: '# rules\nOne.\nTwo.\n\n<!--' },
+    { text: '# rules\nOne.\n\n\n', want: '# rules\nOne.\n\n<!--' },
+  ];
+  for (const { text, want } of cases) {
+    const sandbox = makeSandbox();
+    sandbox.write('CLAUDE.md', text);
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    const after = readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8');
+    const newline = want.includes('\r\n') ? '\r\n' : '\n';
+    assert.equal(after.slice(0, want.length), want, JSON.stringify(after));
+    assert.ok(after.endsWith(`-->${newline}${at}AGENTS.md${newline}`), JSON.stringify(after));
+  }
+});
+
+test("init: husky keeps its hooks folder; .husky/pre-commit gets the check and keeps its own lines (#206)", () => {
+  const sandbox = makeSandbox();
+  sandbox.write('.husky/pre-commit', '#!/bin/sh\ntouch own-hook-ran\n');
+  chmodSync(join(sandbox.repo, '.husky/pre-commit'), 0o755);
+  sandbox.git('config', 'core.hooksPath', '.husky');
+  let result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /added the check to \.husky\/pre-commit: the commit check \(kept core\.hooksPath \(husky\)/);
+  assert.doesNotMatch(result.stdout, /set git core\.hooksPath/);
+  assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '.husky', 'the project\'s hooks folder stays');
+  assert.ok(!existsSync(join(sandbox.repo, '.githooks')), 'no second hooks folder that git never runs');
+  const hook = readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8');
+  assert.match(hook, /^#!\/bin\/sh\n# yokoten: [^\n]*\nnode "\.yokoten\/bin\/yokoten\.ts" check --staged \|\| exit 1\ntouch own-hook-ran\n$/);
+  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  // Again: the hook already runs yokoten.
+  result = sandbox.run(['init']);
+  assert.match(result.stdout, /same \.husky\/pre-commit/);
+  assert.equal(readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8'), hook);
+  // A real commit runs both: the project's hook and the yokoten check.
+  sandbox.git('add', '.');
+  const commit = sandbox.git('commit', '-qm', 'adopt yokoten');
+  assert.equal(commit.status, 0, commit.stderr);
+  assert.ok(existsSync(join(sandbox.repo, 'own-hook-ran')), 'the project\'s own hook still runs');
+  sandbox.write('leak.md', `me${at}gmail.com\n`);
+  sandbox.git('add', 'leak.md');
+  assert.notEqual(sandbox.git('commit', '-qm', 'leak').status, 0);
+});
+
+test('init: husky not yet installed in this clone; init leaves core.hooksPath unset and says to run npm install (#206)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('.husky/pre-commit', 'npm test\n');
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /added the check to \.husky\/pre-commit/);
+  assert.match(result.stdout, /run `npm install`/);
+  assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '');
+  assert.match(readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8'), /^# yokoten: [^\n]*\nnode [^\n]*\nnpm test\n$/);
+  assert.notEqual(stepMark(sandbox, 'commit-check'), 'done', 'git runs no hook yet');
+  assert.match(sandbox.run(['doctor']).stdout, /run `npm install` so husky sets core\.hooksPath/);
+  sandbox.git('config', 'core.hooksPath', '.husky/_');
+  assert.equal(stepMark(sandbox, 'commit-check'), 'done', "husky 9's folder runs .husky/pre-commit");
+});
+
+test("init: another core.hooksPath is kept, and its pre-commit is made with the check (#206)", () => {
+  const sandbox = makeSandbox();
+  sandbox.write('tools/hooks/commit-msg', '#!/bin/sh\n');
+  sandbox.git('config', 'core.hooksPath', 'tools/hooks');
+  assert.match(sandbox.run(['doctor']).stdout, /tools\/hooks\/pre-commit does not run yokoten/);
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /wrote tools\/hooks\/pre-commit: the commit check \(kept core\.hooksPath \(tools\/hooks\)/);
+  assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), 'tools/hooks');
+  assert.ok(statSync(join(sandbox.repo, 'tools/hooks/pre-commit')).mode & 0o100, 'executable');
+  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  sandbox.git('add', '.');
+  assert.equal(sandbox.git('commit', '-qm', 'adopt yokoten').status, 0);
+  sandbox.write('leak.md', `me${at}gmail.com\n`);
+  sandbox.git('add', 'leak.md');
+  assert.notEqual(sandbox.git('commit', '-qm', 'leak').status, 0, 'the check runs from the project\'s folder');
 });
 
 // A lesson added to the kit's core rules reaches a project that already ran init (#120).
@@ -612,7 +899,8 @@ test('doctor: each stage boundary, from a fresh repo to the end of the road', ()
 test('doctor: the tests step wants a test command and a CI step that runs it (#55)', () => {
   const sandbox = makeSandbox();
   const line = () => sandbox.run(['doctor']).stdout.split('\n').find((l) => / tests\b/.test(l)) ?? '';
-  assert.match(line(), /^ +to do +tests \(Best Practices: test\): no test command/);
+  // No package.json: the message does not name it (#257).
+  assert.match(line(), /^ +to do +tests \(Best Practices: test\): no workflow runs a test command/);
   // npm's placeholder script only fails: it is no test command.
   sandbox.write('package.json', JSON.stringify({ scripts: { test: 'echo "Error: no test specified" && exit 1' } }));
   assert.match(line(), /^ +to do +tests \(Best Practices: test\): no test command/);
@@ -622,7 +910,7 @@ test('doctor: the tests step wants a test command and a CI step that runs it (#5
   assert.match(line(), /^ +done +tests/);
   // A project with no package.json: CI that runs a test runner is enough.
   rmSync(join(sandbox.repo, 'package.json'));
-  assert.match(line(), /^ +to do +tests \(Best Practices: test\): no test command/);
+  assert.match(line(), /^ +to do +tests \(Best Practices: test\): no workflow runs a test command such as `go test`, `pytest` or `cargo test`/);
   sandbox.write('.github/workflows/ci.yml', 'jobs:\n  t:\n    steps:\n      - run: go test ./...\n');
   assert.match(line(), /^ +done +tests/);
 });
@@ -637,7 +925,12 @@ test('install: skills, agents and hooks once, the user\'s own files untouched', 
   mkdirSync(join(shared, 'skills', 'rca'), { recursive: true });
   writeFileSync(join(shared, 'skills', 'rca', 'SKILL.md'), 'my own rca\n');
   writeFileSync(join(claude, 'settings.json'), JSON.stringify({ model: 'x', hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'other' }] }] } }));
-  let result = sandbox.run(['install']);
+  // An unknown option is refused, and nothing is written (#203).
+  const homeBefore = readdirSync(sandbox.home, { recursive: true }).sort();
+  let result = sandbox.run(['install', '--dry-run']);
+  assert.deepEqual([result.status, result.stdout, result.stderr], [1, '', 'yokoten install: unknown option --dry-run. Run `yokoten install --help`.\n']);
+  assert.deepEqual(readdirSync(sandbox.home, { recursive: true }).sort(), homeBefore, 'install --dry-run writes nothing');
+  result = sandbox.run(['install']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /kept \(yours\) agent reviewer/);
   assert.equal(readFileSync(join(claude, 'agents', 'reviewer.md'), 'utf8'), 'my own reviewer\n');
@@ -1001,6 +1294,68 @@ test('exit codes: 0 ok, 1 problems or a usage error, 2 the hook blocked (#42)', 
   }
 });
 
+test('help: every command has --help, -h and `help <command>`; each exits 0 and writes nothing (#207)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const before = () => [sandbox.git('status', '--porcelain', '--ignored').stdout, readdirSync(sandbox.home, { recursive: true }).sort()];
+  const start = before();
+  for (const command of COMMANDS) {
+    for (const args of [[command.name, '--help'], [command.name, '-h'], ['help', command.name], [command.name, '--nope', '--help']]) {
+      const r = sandbox.run(args, { input: '{}' });
+      assert.deepEqual([r.status, r.stderr], [0, ''], args.join(' '));
+      assert.match(r.stdout, new RegExp(`^Usage: yokoten ${command.name}\\b`), args.join(' '));
+      for (const option of [...command.options.map((o) => o.name), ...HELP_OPTIONS]) assert.ok(r.stdout.includes(option), `${args.join(' ')}: names ${option}`);
+      assert.match(r.stdout, /\nExample:\n {2}\S/, `${args.join(' ')}: one example`);
+    }
+  }
+  assert.deepEqual(before(), start, '--help writes nothing');
+  // The command list names every command, and -h and -v work alone.
+  for (const args of [[], ['--help'], ['-h'], ['help']]) {
+    const r = sandbox.run(args);
+    assert.equal(r.status, 0, args.join(' '));
+    for (const command of COMMANDS) assert.match(r.stdout, new RegExp(`^ {2}${command.name} `, 'm'), `${args.join(' ')}: lists ${command.name}`);
+  }
+  assert.equal(sandbox.run(['-v']).stdout, sandbox.run(['--version']).stdout);
+});
+
+test('help: the help table and the parser list the same commands and options (#207)', () => {
+  const source = readFileSync(CLI, 'utf8');
+  // Every parse call names a command in the table; no option list is written outside it.
+  const parsed = [...source.matchAll(/\bparse\('([a-z]+)'/g)].map((m) => m[1]);
+  assert.deepEqual([...parsed].sort(), COMMANDS.map((command) => command.name).sort(), 'each command parses its words by its help entry');
+  assert.doesNotMatch(source, /flags: \[/, 'no option list outside the help table');
+  const cases = [...source.matchAll(/^ {4}case '([a-z]+)':/gm)].map((m) => m[1]);
+  assert.deepEqual([...cases].sort(), COMMANDS.map((command) => command.name).sort(), 'each command in the switch has a help entry, and the reverse');
+  // Each option the help lists is accepted: with it, the parser gives no "unknown option".
+  const sandbox = makeSandbox();
+  for (const command of COMMANDS) {
+    for (const option of command.options) {
+      const r = sandbox.run([command.name, option.name, ...(option.value ? ['x'] : []), '--not-an-option']);
+      assert.match(r.stderr, new RegExp(`unknown option --not-an-option`), `${command.name} ${option.name}`);
+    }
+  }
+});
+
+test('help: a typo in a command or an option names the closest one; a far one lists the commands (#207)', () => {
+  const sandbox = makeSandbox();
+  const cases: [string[], string][] = [
+    [['docter'], 'yokoten: unknown command "docter". Did you mean "doctor"? Run `yokoten help`.\n'],
+    [['help', 'chek'], 'yokoten: unknown command "chek". Did you mean "check"? Run `yokoten help`.\n'],
+    [['check', '--stagd'], 'yokoten check: unknown option --stagd. Did you mean --staged? Run `yokoten check --help`.\n'],
+    [['doctor', '--hepl'], 'yokoten doctor: unknown option --hepl. Did you mean --help? Run `yokoten doctor --help`.\n'],
+  ];
+  for (const [args, stderr] of cases) assert.deepEqual(pick(sandbox.run(args, { input: '{}' })), [1, '', stderr], args.join(' '));
+  const far = sandbox.run(['zzzzzz']);
+  assert.deepEqual([far.status, far.stdout], [1, '']);
+  assert.match(far.stderr, /^yokoten: unknown command "zzzzzz"\. Commands: install, init, .*version\. Run `yokoten help`\.\n$/);
+  assert.equal(editDistance('docter', 'doctor'), 1);
+  assert.equal(closestWord('xyz', ['doctor', 'check']), undefined, 'more than two edits: no guess');
+});
+
+const pick = (r: { status: number | null; stdout: string; stderr: string }) => [r.status, r.stdout, r.stderr];
+
 test('--json: check, doctor, hook and explain print pure JSON with what, why and fix; never a private value (#42)', () => {
   const sandbox = makeSandbox();
   const marks = join(sandbox.home, 'marks');
@@ -1091,9 +1446,22 @@ test('--json: check, doctor, hook and explain print pure JSON with what, why and
   assert.match(result.stdout, /^secret: .+\.\nWhy: .+\.\nCheck: .+\.\nDocs: https:\/\/github\.com\/yokoten-labs\/yokoten\/blob\/main\/docs\/guide\.md#privacy\n$/, 'the link to the rule (#94)');
   result = sandbox.run(['explain', 'commit-check']);
   assert.match(result.stdout, /^commit-check: a step on the road: stage 1 of 5, safety net\.\nWhy: .+\.\nCheck: .+\.\nStandard: OSPS-BR-07\.01\.\n$/);
-  result = sandbox.run(['explain']);
+});
+
+test('explain with no id lists the ids on stdout and exits 0; --json gives { ids } (#247)', () => {
+  const sandbox = makeSandbox();
+  let result = sandbox.run(['explain']);
+  assert.deepEqual([result.status, result.stderr], [0, '']);
+  assert.match(result.stdout, /^Ids: release, .*\bsecret\b.*\n$/);
+  result = sandbox.run(['explain', '--json']);
+  assert.deepEqual([result.status, result.stderr], [0, '']);
+  const listed = JSON.parse(result.stdout);
+  assert.deepEqual(Object.keys(listed), ['ids']);
+  assert.ok(listed.ids.includes('release') && listed.ids.includes('secret'));
+  // An unknown id is still an error.
+  result = sandbox.run(['explain', 'nope']);
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /Ids: release, /);
+  assert.match(result.stderr, /no rule or step is called nope\.\nIds: release, /);
 });
 
 test('init: reads GitHub and says what it would do; --github --yes does it, and a second run changes nothing (#10)', () => {
@@ -1126,7 +1494,7 @@ fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s));
   // Without a GitHub remote, init succeeds, says what it skipped, and never runs gh.
   let result = sandbox.run(['init'], { extra });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /GitHub: skipped, because the origin remote is not on GitHub/);
+  assert.match(result.stdout, /GitHub: skipped, because there is no origin remote yet/);
   assert.equal(calls().length, 0);
   assert.equal(sandbox.run(['init', '--yes'], { extra }).status, 1, '--yes alone is refused');
   assert.equal(sandbox.run(['init', '--remove-default-labels'], { extra }).status, 1, 'so is --remove-default-labels');
@@ -1141,7 +1509,7 @@ fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s));
   assert.match(result.stdout, /- done: make label "good first issue"[^\n]*\n[^]*- done: make milestone "First release"/);
   assert.equal(changed().length, 9);
   result = sandbox.run(['init', '--github', '--yes'], { extra });
-  assert.match(result.stdout, /- 9 of the 9 standard labels are there; kept\n- a milestone is there; kept\n[^]*Nothing to change\./);
+  assert.match(result.stdout, /- 9 of the 9 standard labels are there; kept\n- a milestone is open; kept\n[^]*Nothing to change\./);
   assert.equal(changed().length, 9, 'the second run changed nothing');
   // Without gh on the PATH, init still succeeds and says so. Only node and git are there.
   const noGh = join(sandbox.home, 'no-gh');
@@ -1281,6 +1649,103 @@ test('doctor: the plugin, when on, stands in for install', () => {
   assert.match(machine(), /MISSING session-doctor/, 'a broken settings file enables nothing');
 });
 
+// #198: a plugin older than this yokoten is a note, in full doctor and in a session. A fake
+// install in the fake HOME, laid out as Claude Code keeps it; the real one is never read.
+test('doctor: notes an installed plugin older than this yokoten (#198)', () => {
+  const sandbox = makeSandbox();
+  const version: string = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version;
+  const plugins = join(sandbox.home, '.claude', 'plugins');
+  const folder = join(plugins, 'cache', 'yokoten', 'yokoten', 'abc123');
+  mkdirSync(folder, { recursive: true });
+  const enable = (on: boolean) => writeFileSync(join(sandbox.home, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { 'yokoten@yokoten': on } }));
+  const install = (entry: object) => writeFileSync(join(plugins, 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'yokoten@yokoten': [{ scope: 'user', installPath: folder, version: 'abc123', ...entry }] } }));
+  const pluginVersion = (v: string) => writeFileSync(join(folder, 'package.json'), JSON.stringify({ name: 'yokoten', version: v }));
+  const full = () => sandbox.run(['doctor']).stdout;
+  const olderNote = /the yokoten plugin is older than this yokoten/;
+
+  // Positive control: an old plugin is noted, with the one command, and doctor does not fail on it.
+  enable(true);
+  install({ gitCommitSha: 'abc123' });
+  pluginVersion('0.0.1');
+  const lines = full().split('\n');
+  const line = `  note    plugin: the yokoten plugin is older than this yokoten (0.0.1 < ${version}); update it: \`claude plugin update yokoten@yokoten\`, then restart Claude Code`;
+  assert.ok(lines.includes(line), lines.join('\n'));
+  assert.ok(!lines.some((l) => l.includes('MISSING plugin')));
+  assert.match(sandbox.run(['doctor', '--session']).stdout, olderNote);
+  const json = JSON.parse(sandbox.run(['doctor', '--json']).stdout);
+  assert.ok(json.notes.some((n: { what: string }) => olderNote.test(n.what)), 'a note in JSON');
+  assert.ok(!json.findings.some((f: { what: string }) => olderNote.test(f.what)), 'not a finding');
+
+  // The same version, or a newer one: nothing.
+  pluginVersion(version);
+  assert.doesNotMatch(full(), olderNote);
+  pluginVersion('9999.0.0');
+  assert.doesNotMatch(full(), olderNote);
+  // Off in the settings: the plugin does not run, so its age does not matter.
+  pluginVersion('0.0.1');
+  enable(false);
+  assert.doesNotMatch(full(), olderNote);
+  enable(true);
+  // A project install for another project is not this one's.
+  install({ scope: 'project', projectPath: join(sandbox.home, 'elsewhere') });
+  assert.doesNotMatch(full(), olderNote);
+  // No install file, or an odd one: no note, no crash.
+  for (const text of [null, 'not json', '{"plugins": []}', '{"plugins": {"yokoten@yokoten": "odd"}}', '{"plugins": {"yokoten@yokoten": [null, 7]}}']) {
+    rmSync(join(plugins, 'installed_plugins.json'), { force: true });
+    if (text !== null) writeFileSync(join(plugins, 'installed_plugins.json'), text);
+    const result = sandbox.run(['doctor']);
+    assert.ok(result.stdout.includes('machine:'), `${text}: doctor ran to the end`);
+    assert.doesNotMatch(result.stdout, olderNote, String(text));
+    assert.doesNotMatch(result.stderr, /Error/, String(text));
+  }
+  install({ gitCommitSha: 'abc123' });
+  rmSync(join(folder, 'package.json'));
+  assert.doesNotMatch(full(), olderNote, 'outside a yokoten checkout, a commit alone tells nothing');
+});
+
+test('doctor: in a yokoten checkout, a plugin commit behind the default branch is a note (#198)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('package.json', JSON.stringify({ name: 'yokoten', version: '0.0.1' }));
+  sandbox.write('bin/yokoten.ts', '');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-q', '-m', 'feat: one');
+  const first = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  const plugins = join(sandbox.home, '.claude', 'plugins');
+  mkdirSync(plugins, { recursive: true });
+  writeFileSync(join(sandbox.home, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { 'yokoten@yokoten': true } }));
+  // No installPath and no package.json: only the commit can tell.
+  const install = (sha: string) => writeFileSync(join(plugins, 'installed_plugins.json'), JSON.stringify({ plugins: { 'yokoten@yokoten': [{ scope: 'user', version: sha.slice(0, 12), gitCommitSha: sha }] } }));
+  const olderNote = /the yokoten plugin is older than this yokoten \(([0-9a-f]{12}) < ([0-9a-f]{12})\)/;
+  const commit = (name: string) => {
+    sandbox.write(`${name}.md`, `${name}\n`);
+    sandbox.git('add', '.');
+    sandbox.git('commit', '-q', '-m', `feat: ${name}`);
+    return sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  };
+  install(first);
+  assert.doesNotMatch(sandbox.run(['doctor']).stdout, olderNote, 'the plugin is main');
+  // The plugin is main's tip and doctor runs on a feature branch ahead of main: up to date,
+  // though HEAD descends from it. An update could not help, so nothing.
+  sandbox.git('checkout', '-q', '-b', 'feature');
+  commit('two');
+  assert.doesNotMatch(sandbox.run(['doctor']).stdout, olderNote, 'the plugin is main, HEAD is ahead');
+  assert.doesNotMatch(sandbox.run(['doctor', '--session']).stdout, olderNote);
+  // Positive control: main moves on, so the plugin is one commit behind it, on any branch.
+  sandbox.git('checkout', '-q', 'main');
+  const tip = commit('three');
+  sandbox.git('checkout', '-q', 'feature');
+  const match = sandbox.run(['doctor']).stdout.match(olderNote);
+  assert.deepEqual(match?.slice(1), [first.slice(0, 12), tip.slice(0, 12)]);
+  assert.match(sandbox.run(['doctor', '--session']).stdout, olderNote);
+  // A commit this repo doesn't know: can't tell, so nothing.
+  install('0'.repeat(40));
+  assert.doesNotMatch(sandbox.run(['doctor']).stdout, olderNote);
+  // No origin/HEAD, origin/main or main: no default branch to compare with, so nothing.
+  install(first);
+  sandbox.git('branch', '-q', '-m', 'main', 'trunk');
+  assert.doesNotMatch(sandbox.run(['doctor']).stdout, olderNote, 'no main ref');
+});
+
 // #117: the bot checks a title before it sends anything, by the rules CI uses. A fake gh
 // and a local API server stand in for GitHub; the real ones are never reached.
 test('bot: a bad title is refused before the token is asked for; a good one runs (#117)', async () => {
@@ -1306,9 +1771,9 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
   const path = { PATH: `${bin}:${process.env.PATH}` };
   const bot = { ...path, YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
   // Not spawnSync: the server must answer while the CLI runs.
-  const run = (command: string[], extra: Record<string, string> = bot) =>
+  const run = (command: string[], extra: Record<string, string> = bot, before: string[] = []) =>
     new Promise<{ status: number | null; stderr: string }>((done) => {
-      const child = spawn('node', [CLI, 'bot', '--', ...command], { cwd: sandbox.repo, env: { ...sandbox.env, ...extra } });
+      const child = spawn('node', [CLI, 'bot', ...before, '--', ...command], { cwd: sandbox.repo, env: { ...sandbox.env, ...extra } });
       let stderr = '';
       child.stderr.on('data', (chunk) => (stderr += chunk));
       child.on('close', (status) => done({ status, stderr }));
@@ -1349,6 +1814,24 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
     }
     assert.deepEqual(ran(), good.map((command) => ({ args: command.slice(1), token: 'ghs_test' })));
     assert.equal(requests.length, good.length * 2, 'one installation lookup and one token per run');
+
+    // bot has no options of its own (#203): one before `--` is refused, and nothing runs.
+    const unknown = await run(['echo'], bot, ['--x']);
+    assert.deepEqual([unknown.status, unknown.stderr], [1, 'yokoten bot: unknown option --x. Run `yokoten bot --help`.\n']);
+    assert.equal(ran().length, good.length, 'gh did not run');
+    assert.equal(requests.length, good.length * 2, 'no token was asked for');
+    // Everything after `--` is the command's, passed on unchanged.
+    const passed = await run(['gh', '--anything', 'issue', 'list']);
+    assert.equal(passed.status, 0, passed.stderr);
+    assert.deepEqual(ran().at(-1), { args: ['--anything', 'issue', 'list'], token: 'ghs_test' });
+    // --help after `--` is the command's own (#207): gh runs, and yokoten prints no help.
+    const helped = await run(['gh', '--help']);
+    assert.equal(helped.status, 0, helped.stderr);
+    assert.deepEqual(ran().at(-1), { args: ['--help'], token: 'ghs_test' });
+    // Before `--`, it is bot's help: no bot setup needed, no token, nothing runs.
+    const own = await run(['gh', 'issue', 'list'], path, ['--help']);
+    assert.equal(own.status, 0, own.stderr);
+    assert.equal(ran().length, good.length + 2, 'gh did not run for bot --help');
   } finally {
     server.close();
   }
