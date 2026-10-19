@@ -878,6 +878,18 @@ function sourcesInput(words: string[], i: number): boolean {
   return /^\/(?:dev\/(?:stdin|fd\/\d+)|proc\/[^/]+\/fd\/\d+)$/.test(file.replace(/\/{2,}/g, '/'));
 }
 
+// A command that, in the middle of a pipeline, hands on what comes in: `tee` with any files,
+// `cat` with no file but `-`. The next command gets what the one before it printed.
+function passesOn(words: string[]): boolean {
+  const program = findPrograms(words)[0];
+  if (program === undefined) return false;
+  const name = programName(program);
+  if (name === 'tee') return true;
+  if (name !== 'cat') return false;
+  const at = words.indexOf(program, skipPrefix(words, 0));
+  return at !== -1 && words.slice(at + 1).every((word) => word.startsWith('-'));
+}
+
 // `source x` and `. x`: the shell runs the file, so a `<(...)` given to it is commands.
 function isSource(words: string[]): boolean {
   const program = findPrograms(words)[0];
@@ -1207,8 +1219,14 @@ function read(text: string, start: number, closer: string, depth: number, out: s
     if (pipedSubstitutions.length > 0 && (at !== -1 || handed !== null)) {
       nested(`{ ${pipedSubstitutions.join('\n')}\n} | ${at !== -1 ? 'bash' : `xargs ${handed}`}`);
     }
-    piped = pipe ? words : null;
-    pipedSubstitutions = pipe ? substitutions : [];
+    if (pipe && piped !== null && passesOn(words)) {
+      // `echo x | tee f | bash`: tee hands on what echo printed. Its own `$(x)` and `<(x)`
+      // substitutions are read too: over-reading is fine. pipedSubstitutions is this reader's own array.
+      for (const substitution of substitutions) pipedSubstitutions.push(substitution);
+    } else {
+      piped = pipe ? words : null;
+      pipedSubstitutions = pipe ? substitutions : [];
+    }
     substitutions = [];
     words = [];
     caseAt = -1;
