@@ -789,6 +789,8 @@ test('bash: nested constructs at 10k repeats stay under a second and never throw
     // #283: compound commands as groups, substitutions handed to a shell, xargs, env -S ${X}.
     'if a; then ', 'while a; do ', 'done | ', 'fi <<E\n', 'bash <(', 'bash <(a) ', 'source <(a) ', 'eval "$(a)" ', 'eval "$(cat <<E\n',
     'xargs ', 'a | xargs git ', 'xargs git <<E\n', 'env -S"${X}', '<<$\'E\'\n', '{ echo a; ',
+    // #308: what a command prints through a pipe, from a substitution or a printf format.
+    'cat <(echo a) | bash ', 'echo $(echo a) | ', 'echo "$(echo a)" | xargs git ', "printf '%s\\n' a | xargs git ", "printf '%s%b%d' ", '{ echo a; } | xargs git ',
   ];
   for (const shape of shapes) {
     const text = shape.repeat(10000);
@@ -983,6 +985,12 @@ test('bash and hooks: loops that never spent the budget read 100k repeats in und
     [`eval "${'$(echo a)'.repeat(repeats)}"`, 'unreadable-command'],
     [`echo a | xargs ${'-0 '.repeat(repeats)}git status`, 'allow'],
     [`env -S'git status ${'${X}'.repeat(repeats)}'`, 'allow'],
+    // #308: a printf format said again for each argument, and substitutions printed into a pipe.
+    [`printf '%s\\n' status ${'a '.repeat(repeats)}| xargs git`, 'allow'],
+    [`printf '${'x'.repeat(repeats)}%s' status ${'a '.repeat(repeats)}| xargs git`, 'allow'],
+    [`printf '${'%s'.repeat(repeats)}\\n' git status | bash`, 'allow'],
+    [`cat ${'<(echo a) '.repeat(repeats)}| bash`, 'unreadable-command'],
+    [`echo "${'$(echo a)'.repeat(repeats)}" | xargs git status`, 'allow'],
   ];
   for (const [command, want] of commands) {
     const { result, took } = run('command', command);
@@ -1195,6 +1203,41 @@ test('bash: xargs hands what comes in to its program (#283)', () => {
   allowed(`xargs git add <<'E'\na.ts\nE`);
   allowed('echo a.ts | xargs git add');
   allowed(`echo ${pushForce} | xargs echo`);
+});
+
+test('bash: what a command prints through a pipe reaches the shell or xargs git (#308)', () => {
+  const pushForce = force.split(' ').slice(1).join(' ');
+  const [, push, option] = force.split(' ');
+  for (const command of [
+    `cat <(echo '${force}') | bash`,
+    `cat <(echo '${force} origin main') | sh`,
+    `echo $(echo '${force}') | bash`,
+    `echo "$(echo '${force}')" | bash`,
+    `cat <(echo '${force}') | source /dev/stdin`,
+    `printf '%s\\n' ${push} ${option} | xargs git`,
+    `printf '%s\\n' ${push} origin ${option} | xargs git`,
+    `printf '%s %s\\n' ${push} ${option} origin main | xargs -n 9 git`,
+    `printf 'git %s\\n' '${pushForce}' | bash`,
+    `printf '%b' 'echo x\\n${force}' | bash`,
+    `printf '%d\\n' ${push} ${option} | xargs git`,
+    `echo "$(echo ${pushForce})" | xargs git`,
+    `{ echo ${pushForce}; } | xargs git`,
+  ]) refusedAs(command, 'force-push');
+  for (const command of [
+    `printf '%s\\n' ${push} --tags | xargs git`,
+    `printf '%s\\n' ${push} origin --tags | xargs git`,
+    `printf '%s\\n' ${push} origin v1.2.0 | xargs git`,
+    `cat <(echo 'git ${push} --tags') | bash`,
+  ]) refusedAs(command, 'release');
+  for (const command of [
+    'cat <(echo ls) | grep x',
+    "printf '%s\\n' a b | sort",
+    "printf '%s\\n' a.ts | xargs git add",
+    `cat <(echo '${force}') | cat`,
+    `echo $(echo '${force}') | tee out`,
+    `printf '%s\\n' '${force}' | grep x`,
+    'cat <(echo ls) | bash',
+  ]) allowed(command);
 });
 
 test('bash: env -S puts a variable\'s value in place of ${NAME}, which the guard reads as empty (#283)', () => {
