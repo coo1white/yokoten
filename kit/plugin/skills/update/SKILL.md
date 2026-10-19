@@ -5,8 +5,9 @@ description: Bring the core rules in this project's AGENTS.md up to date with yo
 
 # Run yokoten update from the plugin
 
-The plugin runs its own copy of yokoten. That copy has the kit, so it can compare. The
-copy in `.yokoten/` has no kit, so do not run `update` from it.
+The plugin runs its own copy of yokoten, with its own kit. The copy in `.yokoten/` holds
+the kit's core rules too, but only as new as the day `init` wrote them. The plugin can be
+newer. So run `update` from the plugin: from `.yokoten/`, it finds nothing newer.
 
 1. Go to the root of the repo.
 2. Preview the change with the Bash tool. This writes nothing:

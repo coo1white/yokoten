@@ -51,19 +51,32 @@ agent's token can do.
 The bot opens pull requests for the lead. It is an App, not a second account: it needs
 no sign-up, is tied to no person, and its rights are listed one by one.
 
-1. Your avatar → Settings → Developer settings → GitHub Apps → **New GitHub App**.
+1. Create the App under the account that owns the repo. For your own repo: your avatar →
+   Settings. For a repo in an organization: the organization's Settings. Then Developer
+   settings → GitHub Apps → **New GitHub App**.
    - Name: `<you>-bot` (it shows as `<you>-bot[bot]` on pull requests).
    - Homepage URL: your repo.
    - Webhook: turn **Active** off.
    - Repository permissions: **Contents: Read and write**, **Pull requests: Read and
      write**, **Issues: Read and write**, **Metadata: Read-only**. Leave everything
-     else at No access. In particular **Workflows: No access**, so the bot cannot
-     change the CI that checks it (core rule 5).
-   - Where can this App be installed: **Only on this account**.
+     else at No access.
+   - **Workflows** is your choice. With No access, the bot can't push a change to CI,
+     so you push those yourself. With Read and write, the bot can push a branch that
+     changes CI, and that CI runs before anyone reviews it. yokoten's own bot has Read
+     and write. The locks are then on the server: CODEOWNERS makes a CI change need
+     your review (step 4), and anything that can publish waits for your approval in a
+     protected `release` environment (record 0009). Also keep the repo's Actions
+     setting **Allow GitHub Actions to create and approve pull requests** off.
+     Otherwise a workflow the bot pushes could approve the bot's own pull request and
+     meet a one-approval rule before anyone reads it.
+   - Where can this App be installed: **Only on this account** (the account that owns
+     the repo).
 2. Create it. On the App's page, **Generate a private key**. A `.pem` file downloads.
    Move it to `~/.config/yokoten/bot.pem` and run `chmod 600` on it. Never commit it,
    never paste it into a chat.
-3. **Install App** → only select repositories → this repo.
+3. **Install App** → the account that owns the repo → **Only select repositories** →
+   this repo. yokoten's own bot is installed on its organization, for the yokoten repo
+   only.
 4. Check `.github/CODEOWNERS`. `yokoten init` writes one line `<path> @<owner>` for each
    lead-only path, where a mistake is hard to undo: `AGENTS.md`, CI, agent config, the rule
    code. Put your GitHub handle in place of `@YOUR_GITHUB_HANDLE` if init left it, or a
@@ -86,12 +99,33 @@ login. The guard still applies: `bot -- git push --tags` is stopped like any tag
 (Settings: `YOKOTEN_BOT_KEY` for another key path, `YOKOTEN_BOT_INSTALLATION` to skip
 looking the installation up.)
 
+## 4. The project board (only if the repo has one)
+
+The `board` workflow fills the board's Start, Target and Status every hour, and when an
+issue opens, closes or gets a milestone. It runs as the bot, so the bot needs the right
+to change the board. The board belongs to the organization, so this is an organization
+permission.
+
+1. The App's page → **Permissions & events** → Organization permissions → **Projects:
+   Read and write**. Save.
+2. Organization settings → GitHub Apps → the bot → **Configure** → accept the request. GitHub
+   asks each installation; until you accept, the old permissions stay.
+3. The repo → Settings → Secrets and variables → Actions:
+   - **Secrets** tab → New repository secret: name `BOT_PRIVATE_KEY`, value the whole
+     text of the bot's `.pem` file.
+   - **Variables** tab → New repository variable: name `BOT_CLIENT_ID`, value the
+     **Client ID** from the App's page (under About). It is not a secret.
+4. Actions → **board** → Run workflow. The run lists each field it set.
+
+The workflow asks GitHub for a one-hour token with three rights only: write the
+organization's projects, read issues, read pull requests.
+
 ## What you have now
 
 | Who | Can | Cannot |
 |-----|-----|--------|
 | You | approve, merge, tag, change settings | merge your own unreviewed change without a bypass |
-| The bot | push branches, open pull requests and issues | merge without your review, push to `main`, touch CI, create `v*` tags |
+| The bot | push branches, open pull requests and issues, fill the board; with Workflows permission, push a branch that changes CI | merge without your review, push to `main`, create `v*` tags, publish without your approval in the `release` environment |
 | A worker | commit in its worktree | push, or edit rules, hooks or CI (guard) |
 
 ## Without an App
