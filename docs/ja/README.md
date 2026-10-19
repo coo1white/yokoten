@@ -26,7 +26,8 @@ yokoten 自体も、ひとりの開発者と数体の AI エージェントが�
 [![dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](../../package.json)
 [![license](https://img.shields.io/badge/license-MIT-blue)](../../LICENSE)
 
-Claude Code、GitHub Copilot CLI、Antigravity CLI、Codex CLI、Gemini CLI に[対応](../guide.md#works-with)しています。
+どの AI エージェントでも、エージェントなしでも使えます。コミットのチェックと CI が、誰の変更でも問題を止めます。<br/>
+[Claude Code、Codex CLI、GitHub Copilot CLI、Antigravity CLI、Muse Code、DeepSeek Harness](../guide.md#works-with) では、危ない操作を実行前に止めます。
 
 </div>
 

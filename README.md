@@ -23,7 +23,8 @@ One person and a few AI agents built it that way: every issue, review, and relea
 [![dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](package.json)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-[Works with](docs/guide.md#works-with) Claude Code, GitHub Copilot CLI, Antigravity CLI, Codex CLI and Gemini CLI.
+Works with any AI agent, or none: the commit check and CI stop a bad change, whoever made it.<br/>
+The guard also stops risky actions before they run, in [Claude Code, Codex CLI, GitHub Copilot CLI, Antigravity CLI, Muse Code and DeepSeek Harness](docs/guide.md#works-with).
 
 </div>
 
