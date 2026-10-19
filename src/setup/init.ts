@@ -1,7 +1,8 @@
 // `yokoten init`: put the practices into a project. It only adds: a file that is already
-// there is kept, and the report says so. Two files get lines added, never removed: a
-// CLAUDE.md, and a project's own pre-commit (#206). Deciding what to do with a project's
-// own rules (keep, merge, or say not now) is the yokoten skill's job, not this command's.
+// there is kept, and the report says so. Some files get lines added, never removed: a
+// CLAUDE.md, and a project's own pre-commit and pre-merge-commit (#206, #239). Deciding
+// what to do with a project's own rules (keep, merge, or say not now) is the yokoten
+// skill's job, not this command's.
 //
 // `yokoten update` is the one command here that replaces text: the core rules in
 // AGENTS.md, and only with --write. It is at the end of this file.
@@ -64,7 +65,10 @@ export function init(root: string): { ok: boolean; lines: string[] } {
     const result = writeNew(join(root, rel), render(readFileSync(file, 'utf8'), { cli, version: VERSION }));
     report.push(`${result} ${rel}`);
   }
-  if (hooks.kind !== 'own') chmodSync(join(root, '.githooks', 'pre-commit'), 0o755);
+  if (hooks.kind !== 'own') {
+    chmodSync(join(root, '.githooks', 'pre-commit'), 0o755);
+    report.push(`${writeMergeHook(root, cli, kit)} .githooks/pre-merge-commit`);
+  }
   const imported = importRules(root);
   if (imported) report.push(imported);
   const hook = addProjectHook(root, cli);
@@ -96,28 +100,78 @@ export function init(root: string): { ok: boolean; lines: string[] } {
 // ---- A project's own CLAUDE.md and commit hooks (#206) ----
 //
 // init adds; it never switches a project's setup off without saying so. Claude Code reads
-// AGENTS.md only when there is no CLAUDE.md, so a CLAUDE.md gets one line that imports it.
+// AGENTS.md only when there is no CLAUDE.md (at the root or in .claude/), so a CLAUDE.md
+// gets one line that imports it.
 // A project with its own hooks folder (husky, or another core.hooksPath) keeps it, and
-// that folder's pre-commit gets the yokoten check: one hooks folder, so nothing is turned off.
+// that folder's pre-commit and pre-merge-commit get the yokoten check: one hooks folder,
+// so nothing is turned off.
 
-/** A CLAUDE.md line that imports AGENTS.md (`@AGENTS.md`) or links to it. */
-const RULES_IMPORT = /(?:^|\s)@(?:\.\/)?AGENTS\.md\b|\]\((?:\.\/)?AGENTS\.md\)/m;
+/**
+ * The project CLAUDE.md files Claude Code reads instead of AGENTS.md, root first, with
+ * the import that reaches the root AGENTS.md from each. Claude Code resolves an `@`
+ * import relative to the file that holds it, and the path ends at the first space.
+ * Only an `@` import counts: Claude Code does not load a file a Markdown link points to,
+ * and it skips code spans and fenced code blocks.
+ */
+const CLAUDE_FILES = [
+  { file: 'CLAUDE.md', rules: 'AGENTS.md', imports: /(?:^|\s)@(?:\.\/)?AGENTS\.md(?=\s|$)/m },
+  { file: '.claude/CLAUDE.md', rules: '../AGENTS.md', imports: /(?:^|\s)@\.\.\/AGENTS\.md(?=\s|$)/m },
+];
 
-/** True when Claude Code reads AGENTS.md here: there is no CLAUDE.md, or it imports AGENTS.md. */
-export function claudeReadsRules(root: string): boolean {
-  const path = join(root, 'CLAUDE.md');
-  return !existsSync(path) || RULES_IMPORT.test(readFileSync(path, 'utf8'));
+/** The text without its fenced code blocks and code spans, where Claude Code reads no import. */
+function removeCode(text: string): string {
+  const kept: string[] = [];
+  let fence: { mark: string; length: number } | null = null;
+  for (const line of text.split(/\r?\n/)) {
+    const found = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence) {
+      if (found && found[1][0] === fence.mark && found[1].length >= fence.length && found[2].trim() === '') fence = null;
+      kept.push('');
+    } else if (found && !(found[1][0] === '`' && found[2].includes('`'))) {
+      fence = { mark: found[1][0], length: found[1].length };
+      kept.push('');
+    } else {
+      kept.push(line);
+    }
+  }
+  return kept.join('\n').replace(/(`+)[\s\S]*?(?<!`)\1(?!`)/g, ' ');
 }
 
-/** Add the AGENTS.md import to a CLAUDE.md that lacks it. Returns the report line, or null when nothing changed. */
+/** The project CLAUDE.md files that are here, root first. */
+const findClaudeFiles = (root: string) => CLAUDE_FILES.filter((entry) => existsSync(join(root, entry.file)));
+
+/**
+ * The CLAUDE.md file that should import AGENTS.md, with its import line, or null when
+ * Claude Code reads AGENTS.md here: there is no CLAUDE.md, or one of them imports it.
+ */
+export function findRulesGap(root: string): { file: string; line: string } | null {
+  const found = findClaudeFiles(root);
+  if (found.length === 0 || found.some((entry) => entry.imports.test(removeCode(readFileSync(join(root, entry.file), 'utf8'))))) return null;
+  return { file: found[0].file, line: `@${found[0].rules}` };
+}
+
+/** True when Claude Code reads AGENTS.md here: there is no CLAUDE.md, or one imports AGENTS.md. */
+export const claudeReadsRules = (root: string): boolean => findRulesGap(root) === null;
+
+/** The line ending most lines of the text use: CRLF or LF, LF on a tie. */
+function findMainNewline(text: string): string {
+  const crlf = text.split('\r\n').length - 1;
+  const lf = text.split('\n').length - 1 - crlf;
+  return crlf > lf ? '\r\n' : '\n';
+}
+
+/** Add the AGENTS.md import to the CLAUDE.md that lacks it. Returns the report line, or null when nothing changed. */
 function importRules(root: string): string | null {
-  if (claudeReadsRules(root)) return null;
-  const path = join(root, 'CLAUDE.md');
+  const gap = findRulesGap(root);
+  if (!gap) return null;
+  const path = join(root, gap.file);
   const text = readFileSync(path, 'utf8');
-  const newline = text.includes('\r\n') ? '\r\n' : '\n';
-  const gap = text === '' ? '' : text.endsWith(newline) ? newline : newline + newline;
-  writeFileSync(path, `${text}${gap}<!-- Added by yokoten: Claude Code reads AGENTS.md only through this import. -->${newline}@AGENTS.md${newline}`);
-  return 'updated CLAUDE.md: it now reads AGENTS.md (Claude Code reads AGENTS.md only when CLAUDE.md imports it)';
+  const newline = findMainNewline(text);
+  // The project's lines, then one blank line, whatever line endings the file ends with.
+  const kept = text.replace(/[\r\n]+$/, '');
+  const spacing = kept === '' ? '' : newline + newline;
+  writeFileSync(path, `${kept}${spacing}<!-- Added by yokoten: Claude Code reads AGENTS.md only through this import. -->${newline}${gap.line}${newline}`);
+  return `updated ${gap.file}: it now reads AGENTS.md (Claude Code reads AGENTS.md only when a CLAUDE.md imports it)`;
 }
 
 /** How git runs commit hooks here: yokoten's .githooks, the project's own folder, or no git repo. */
@@ -141,22 +195,34 @@ function readHookSetup(root: string): HookSetup {
 }
 
 /**
- * The pre-commit file git runs for this core.hooksPath, relative to the root, or null when
- * the folder is outside the repo. husky's folder (`.husky/_`, or `.husky` before husky 9)
- * runs `.husky/pre-commit`.
+ * The hooks git runs before it makes a commit: pre-commit, and pre-merge-commit for a
+ * merge that git commits itself (`git merge --no-ff` without a conflict). Both run the
+ * commit check (#239).
  */
-export function hookFile(root: string, hooksPath: string): string | null {
+export const COMMIT_HOOKS = ['pre-commit', 'pre-merge-commit'] as const;
+
+export type CommitHook = (typeof COMMIT_HOOKS)[number];
+
+/**
+ * The hook file git runs for this core.hooksPath, relative to the root, or null when the
+ * folder is outside the repo. husky's folder (`.husky/_`, or `.husky` before husky 9)
+ * runs `.husky/pre-commit` and `.husky/pre-merge-commit`.
+ */
+export function hookFile(root: string, hooksPath: string, hook: CommitHook = 'pre-commit'): string | null {
   const folder = relative(root, resolve(root, hooksPath)).split('\\').join('/');
   if (folder === '..' || folder.startsWith('../') || isAbsolute(folder)) return null;
-  if (folder === '.husky' || folder.startsWith('.husky/')) return '.husky/pre-commit';
-  return folder ? `${folder}/pre-commit` : 'pre-commit';
+  if (folder === '.husky' || folder.startsWith('.husky/')) return `.husky/${hook}`;
+  return folder ? `${folder}/${hook}` : hook;
 }
 
-/** The lines init adds to a project's own pre-commit. `exit 1` because a hook may go on after them. */
+/** The lines init adds to a project's own pre-commit and pre-merge-commit. `exit 1` because a hook may go on after them. */
 export const checkLines = (cli: string): string[] => ['# yokoten: the commit check (lead-only files, test files in a fix task, layout and privacy)', commitCheckLine(cli)];
 
-/** Add the yokoten check to a pre-commit, after its `#!` line, so a later `exec` can't skip it. Its own lines stay. */
-function addCheckLines(path: string, cli: string): 'added the check to' | 'wrote' | 'same' {
+/**
+ * Add the yokoten check to a commit hook, after its `#!` line, so a later `exec` can't skip it.
+ * Its own lines stay. A hook git would skip, for lack of the execute bit, is made executable.
+ */
+function addCheckLines(path: string, cli: string): 'added the check to' | 'wrote' | 'made executable' | 'same' {
   if (!existsSync(path)) {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, ['#!/bin/sh', ...checkLines(cli), ''].join('\n'), { mode: 0o755 });
@@ -164,7 +230,12 @@ function addCheckLines(path: string, cli: string): 'added the check to' | 'wrote
     return 'wrote';
   }
   const text = readFileSync(path, 'utf8');
-  if (runs('check').test(text)) return 'same';
+  if (runs('check').test(text)) {
+    // Windows has no execute bit, and git there runs a hook without one.
+    if (process.platform === 'win32' || statSync(path).mode & 0o111) return 'same';
+    chmodSync(path, statSync(path).mode | 0o111);
+    return 'made executable';
+  }
   const newline = text.includes('\r\n') ? '\r\n' : '\n';
   const lines = text.split(/\r?\n/);
   const at = lines[0]?.startsWith('#!') ? 1 : 0;
@@ -172,6 +243,21 @@ function addCheckLines(path: string, cli: string): 'added the check to' | 'wrote
   writeFileSync(path, lines.join(newline));
   chmodSync(path, statSync(path).mode | 0o111);
   return 'added the check to';
+}
+
+/**
+ * Write .githooks/pre-merge-commit with the kit's pre-commit, so a merge commit gets the
+ * same check (#239). One that is there is kept, and gets the check when it lacks it.
+ */
+function writeMergeHook(root: string, cli: string, kit: string): 'wrote' | 'kept' | 'added the check to' | 'made executable' {
+  const path = join(root, '.githooks', 'pre-merge-commit');
+  if (existsSync(path)) {
+    const result = addCheckLines(path, cli);
+    return result === 'same' ? 'kept' : result === 'wrote' ? 'added the check to' : result;
+  }
+  writeNew(path, render(readFileSync(join(kit, '.githooks', 'pre-commit'), 'utf8'), { cli, version: VERSION }), { mode: 0o755 });
+  chmodSync(path, 0o755);
+  return 'wrote';
 }
 
 /** Point git at the commit check: set .githooks, or add the check to the project's own pre-commit. */
@@ -182,13 +268,16 @@ function setCommitCheck(root: string, cli: string, hooks: HookSetup): string[] {
     return ['set git core.hooksPath to .githooks (the commit check)'];
   }
   const { hooksPath } = hooks;
-  const file = hooksPath ? hookFile(root, hooksPath) : '.husky/pre-commit';
-  const owner = hooksPath ? `core.hooksPath (${file === '.husky/pre-commit' ? 'husky' : hooksPath})` : 'husky';
-  if (file === null) {
-    return [`kept core.hooksPath: it is outside this repo, so yokoten did not change it. Add this line to its pre-commit: ${commitCheckLine(cli)}`];
+  const fileOf = (hook: CommitHook) => (hooksPath ? hookFile(root, hooksPath, hook) : `.husky/${hook}`);
+  const owner = hooksPath ? `core.hooksPath (${fileOf('pre-commit') === '.husky/pre-commit' ? 'husky' : hooksPath})` : 'husky';
+  if (fileOf('pre-commit') === null) {
+    return [`kept core.hooksPath: it is outside this repo, so yokoten did not change it. Add this line to its pre-commit and pre-merge-commit: ${commitCheckLine(cli)}`];
   }
-  const lines = [`${addCheckLines(join(root, file), cli)} ${file}: the commit check (kept ${owner}, so the project's own hooks still run)`];
-  if (!hooksPath) lines.push('husky is not set up in this clone yet: run `npm install` (husky sets core.hooksPath), and the check runs from .husky/pre-commit');
+  const lines = COMMIT_HOOKS.map((hook) => {
+    const file = fileOf(hook) as string;
+    return `${addCheckLines(join(root, file), cli)} ${file}: the commit check (kept ${owner}, so the project's own hooks still run)`;
+  });
+  if (!hooksPath) lines.push('husky is not set up in this clone yet: run `npm install` (husky sets core.hooksPath), and the check runs from .husky/pre-commit and .husky/pre-merge-commit');
   return lines;
 }
 

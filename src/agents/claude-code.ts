@@ -50,7 +50,7 @@ const projectSettings = (root: string) => join(root, '.claude', 'settings.json')
 
 /** The project's tool-call guard: every shell call and edit goes past `hook` first. */
 export const addProjectHook = (root: string, cli: string) =>
-  addHook(projectSettings(root), 'PreToolUse', 'Bash|Edit|Write|MultiEdit|NotebookEdit', guardCommand(`"$CLAUDE_PROJECT_DIR/${cli}"`, 'hook', missingProjectRuntime(cli)));
+  addHook(projectSettings(root), 'PreToolUse', 'Bash|Edit|Write|MultiEdit|NotebookEdit', guardCommand(`"$CLAUDE_PROJECT_DIR/${cli}"`, 'hook', missingProjectRuntime(cli), { isToolCall: true }));
 export const hasProjectHook = (root: string): boolean => hasHook(projectSettings(root), 'PreToolUse', 'hook');
 
 /**
@@ -80,7 +80,7 @@ export function setProjectEnv(root: string, key: string, value: string): Added {
 export function addUserHooks(env: Env, cli: string, missing: string): { doctor: Added; guard: Added } {
   return {
     doctor: addHook(userSettings(env), 'SessionStart', undefined, guardCommand(cli, 'doctor --session', missing, { isSessionStart: true })),
-    guard: addHook(userSettings(env), 'PreToolUse', 'Bash', guardCommand(cli, 'hook --commands-only', missing)),
+    guard: addHook(userSettings(env), 'PreToolUse', 'Bash', guardCommand(cli, 'hook --commands-only', missing, { isToolCall: true })),
   };
 }
 export const hasSessionDoctor = (env: Env): boolean => hasHook(userSettings(env), 'SessionStart', 'doctor');
