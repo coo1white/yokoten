@@ -2,6 +2,7 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { type Finding, finding } from './message.ts';
 
 export interface Config {
   layout: { maxEntries: number; exempt: string[] };
@@ -12,18 +13,7 @@ export interface Config {
   allowBuild: string[];
   areas: string[];
   translations: { fail: boolean };
-}
-
-/** What yokoten.json may hold: any key, or part of one. */
-interface ConfigFile {
-  layout?: Partial<Config['layout']>;
-  tests?: string[];
-  leadOnly?: string[];
-  privacy?: Partial<Config['privacy']>;
-  notNow?: Record<string, string>;
-  allowBuild?: string[];
-  areas?: string[];
-  translations?: Partial<Config['translations']>;
+  commands: { block: Record<string, string> };
 }
 
 /** The guard's own environment (process.env, or a test's stand-in). */
@@ -37,7 +27,7 @@ export const DEFAULTS: Config = {
   tests: ['*.test.*', '*.spec.*', '*_test.go', 'test/**', 'tests/**'],
   // What only the lead (the session that reviews and pushes) may change: the rules the
   // agents work under, and the CI that checks them.
-  leadOnly: ['AGENTS.md', 'CLAUDE.md', 'yokoten.json', '.claude/**', '.claude-plugin/**', '.codex/**', '.gemini/**', '.muse/**', '.githooks/**', '.github/**'],
+  leadOnly: ['AGENTS.md', 'CLAUDE.md', 'yokoten.json', '.claude/**', '.claude-plugin/**', '.codex/**', '.gemini/**', '.muse/**', '.githooks/**', '.github/**', '.yokoten/**'],
   // `allow`: literal strings the privacy check lets through (a public support address).
   // `skip`: files it does not read (lockfiles, vendored code).
   // `utc`: commits must record their time in UTC, not the machine's time zone.
@@ -52,31 +42,173 @@ export const DEFAULTS: Config = {
   areas: [],
   // A translation behind its English source (#87) is a note; `fail` makes it a problem.
   translations: { fail: false },
+  // Programs no agent may run here, each with the reason (#192):
+  // { "block": { "python3": "this project is TypeScript only" } }.
+  commands: { block: {} },
 };
 
-export function loadConfig(root: string): Config {
-  let file: ConfigFile = {};
-  try {
-    file = JSON.parse(readFileSync(join(root, 'yokoten.json'), 'utf8'));
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(`yokoten.json: ${(err as Error).message}`);
-  }
-  return {
-    layout: { ...DEFAULTS.layout, ...file.layout },
-    tests: file.tests ?? DEFAULTS.tests,
-    leadOnly: file.leadOnly ?? DEFAULTS.leadOnly,
-    privacy: { ...DEFAULTS.privacy, ...file.privacy },
-    notNow: file.notNow ?? {},
-    allowBuild: file.allowBuild ?? DEFAULTS.allowBuild,
-    areas: file.areas === undefined ? DEFAULTS.areas : names(file.areas, 'areas'),
-    translations: { ...DEFAULTS.translations, ...file.translations },
-  };
+/**
+ * The part of yokoten.json the hook ignored: "file" for the whole file, or the key path
+ * of one key that has the wrong shape, such as "leadOnly" or "layout.maxEntries".
+ */
+export type IgnoredPart = string;
+
+/**
+ * What one value must look like: the problem with a value (null when it fits), and its
+ * copy. `knownFields`: for an object checked as one unit, the fields it may hold, so an
+ * unknown one is a note.
+ */
+interface Shape {
+  problem: (value: unknown, path: string) => string | null;
+  read?: (value: unknown) => unknown;
+  knownFields?: string[];
 }
 
-/** A list of non-empty strings, or a config error that names the key. */
-function names(value: unknown, key: string): string[] {
-  if (Array.isArray(value) && value.every((item) => typeof item === 'string' && item.trim() !== '')) return value;
-  throw new Error(`yokoten.json: "${key}" must be a list of names, like ["cli", "docs"]`);
+/** A key that holds an object: what the object looks like, and a shape for each field. */
+interface Fields {
+  example: string;
+  fields: Record<string, Shape>;
+}
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+const isTextList = (value: unknown) => Array.isArray(value) && value.every((item) => typeof item === 'string');
+
+// A shape said in words. The message names the key and what it must be (#228).
+const shape = (text: string, fits: (value: unknown) => boolean): Shape => ({
+  problem: (value, path) => (fits(value) ? null : `yokoten.json: "${path}" must be ${text}`),
+});
+const textList = (example: string) => shape(`a list of text, such as ${example}`, isTextList);
+const trueOrFalse = shape('true or false', (value) => typeof value === 'boolean');
+
+// "commands": { "block": { "<program>": "<reason>" } }. A wrong shape drops the whole
+// block list, so the guard never runs on a list it misread (#192).
+const blockList: Shape = {
+  problem: (commands) => {
+    const looks = 'yokoten.json: "commands" must look like { "block": { "<program>": "<reason>" } }';
+    if (!isPlainObject(commands)) return looks;
+    const block = commands.block;
+    if (block === undefined || block === null) return null;
+    if (!isPlainObject(block)) return looks;
+    for (const [program, reason] of Object.entries(block)) {
+      if (!/^[^\s/\\]+$/.test(program)) return `yokoten.json: "commands.block" names a program by its name alone, with no path or space: ${JSON.stringify(program)}`;
+      if (typeof reason !== 'string' || !reason.trim()) return `yokoten.json: "commands.block.${program}" must be the reason, as text`;
+    }
+    return null;
+  },
+  read: (commands) => ({ block: { ...((commands as { block?: Record<string, string> | null }).block ?? {}) } }),
+  knownFields: ['block'],
+};
+
+/**
+ * Every key yokoten.json may hold, and its shape (#228). The one place a key is checked:
+ * code that reads a Config can trust its types. A key not listed here is unknown.
+ */
+const SHAPES: Record<keyof Config, Shape | Fields> = {
+  layout: {
+    example: '{ "maxEntries": 7, "exempt": ["docs/records"] }',
+    fields: { maxEntries: shape('a whole number above 0, such as 7', (value) => Number.isInteger(value) && (value as number) > 0), exempt: textList('["docs/records"]') },
+  },
+  tests: textList('["*.test.*", "test/**"]'),
+  leadOnly: textList('["AGENTS.md", ".github/**"]'),
+  privacy: {
+    example: '{ "allow": [], "skip": ["package-lock.json"], "utc": true }',
+    fields: { allow: textList('["support@example.com"]'), skip: textList('["package-lock.json"]'), utc: trueOrFalse },
+  },
+  notNow: shape('an object of reasons by step name, such as { "ci": "no remote yet" }', (value) => isPlainObject(value) && Object.values(value).every((reason) => typeof reason === 'string')),
+  allowBuild: textList('["dist/**"]'),
+  areas: shape('a list of names, like ["cli", "docs"]', (value) => isTextList(value) && (value as string[]).every((item) => item.trim() !== '')),
+  translations: { example: '{ "fail": true }', fields: { fail: trueOrFalse } },
+  commands: blockList,
+};
+
+/**
+ * yokoten.json, or the defaults. A problem in the file throws. `onProblem` is for the hook
+ * (#192, #218, #228): it gets each problem instead, and the hook keeps its core checks. A
+ * file that cannot be read or is not one JSON object then gives the defaults. A key with
+ * the wrong shape gives that key's default, and the rest of the file still counts.
+ * Without it (check, doctor), one error lists every wrong key, so one run shows them all.
+ * `null` is a missing key: the default, with no problem. An unknown key is never a
+ * problem here: `findUnknownKeys` makes it a note.
+ */
+export function loadConfig(root: string, { onProblem }: { onProblem?: (problem: string, ignored: IgnoredPart) => void } = {}): Config {
+  let file: Record<string, unknown>;
+  try {
+    file = readConfigFile(root);
+  } catch (err) {
+    if (!onProblem) throw err;
+    onProblem((err as Error).message, 'file');
+    return DEFAULTS;
+  }
+  const problems: string[] = [];
+  // The value at `path` if it fits its shape, or the default. `null` means the default too.
+  const readValue = (entry: Shape, value: unknown, path: string, fallback: unknown): unknown => {
+    if (value === undefined || value === null) return fallback;
+    const problem = entry.problem(value, path);
+    if (problem === null) return entry.read ? entry.read(value) : value;
+    if (onProblem) onProblem(problem, path);
+    else problems.push(problem);
+    return fallback;
+  };
+  const config: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(SHAPES) as [keyof Config, Shape | Fields][]) {
+    const fallback = DEFAULTS[key];
+    if (!('fields' in entry)) {
+      config[key] = readValue(entry, file[key], key, fallback);
+      continue;
+    }
+    const object = readValue(shape(`an object, such as ${entry.example}`, isPlainObject), file[key], key, fallback) as Record<string, unknown>;
+    const defaults = fallback as unknown as Record<string, unknown>;
+    config[key] = Object.fromEntries(Object.entries(entry.fields).map(([field, fieldShape]) => [field, object === defaults ? defaults[field] : readValue(fieldShape, object[field], `${key}.${field}`, defaults[field])]));
+  }
+  if (problems.length === 1) throw new Error(problems[0]);
+  if (problems.length) throw new Error([`yokoten.json: ${problems.length} keys have the wrong shape:`, ...problems.map((problem) => `- ${problem.replace(/^yokoten\.json: /, '')}`)].join('\n'));
+  return config as unknown as Config;
+}
+
+/**
+ * A note for each key in yokoten.json that yokoten does not know (#228): a misspelled
+ * key does nothing. It is a note, not a problem, so a config written for a newer yokoten
+ * still works with an older one. A file that cannot be read gives no notes: `loadConfig`
+ * reports it.
+ */
+export function findUnknownKeys(root: string): Finding[] {
+  let file: Record<string, unknown>;
+  try {
+    file = readConfigFile(root);
+  } catch {
+    return [];
+  }
+  const unknown: string[] = [];
+  for (const [key, value] of Object.entries(file)) {
+    const entry: Shape | Fields | undefined = Object.hasOwn(SHAPES, key) ? SHAPES[key as keyof Config] : undefined;
+    if (!entry) unknown.push(key);
+    else if (isPlainObject(value)) {
+      const known = 'fields' in entry ? Object.keys(entry.fields) : (entry.knownFields ?? Object.keys(value));
+      unknown.push(...Object.keys(value).filter((field) => !known.includes(field)).map((field) => `${key}.${field}`));
+    }
+  }
+  return unknown.map((key) => finding('config-key', `"${key}" is not a key this version of yokoten knows`, `check the spelling against the guide, or update yokoten if a newer version added "${key}"`, { file: 'yokoten.json' }));
+}
+
+// The file as one JSON object; a missing file is an empty one. The message names the file
+// and never holds a path, so the hook can print it as it is (core rule 11).
+function readConfigFile(root: string): Record<string, unknown> {
+  let text: string;
+  try {
+    text = readFileSync(join(root, 'yokoten.json'), 'utf8');
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return {};
+    throw new Error(`yokoten.json: cannot be read (${code ?? 'unknown error'})`);
+  }
+  let file: unknown;
+  try {
+    file = JSON.parse(text);
+  } catch (err) {
+    throw new Error(`yokoten.json: ${(err as Error).message.replace(/\s+/g, ' ')}`);
+  }
+  if (!isPlainObject(file)) throw new Error('yokoten.json: the file must hold one JSON object, such as {}');
+  return file;
 }
 
 // Globs, as yokoten.json names files. Matched against a path relative to the repo root,

@@ -5,9 +5,10 @@
 // It changes a remote, so `init` only says what it would do. `init --github --yes` does
 // it. A standard label that is there gets the standard colour and description, so a
 // second run changes nothing. A label outside the set is deleted only with
-// --remove-default-labels: deleting is the owner's call. An area label is never deleted
-// or changed. Without gh, a sign-in or a GitHub remote, it says what it skipped and init
-// still succeeds.
+// --remove-default-labels: deleting is the owner's call. Without gh, a sign-in or a
+// GitHub remote, it says what it skipped. Plain init still succeeds; `init --github --yes`
+// fails, because the user asked for changes on GitHub and none were made (#208). An area
+// label is never deleted or changed.
 
 import { execFileSync } from 'node:child_process';
 import {
@@ -32,8 +33,9 @@ import {
 
 /**
  * The standard set, as agreed for yokoten (#10): a type, the same words as commit types,
- * and the flow labels. No status or priority labels: the board holds status, milestones
- * hold timing. Area labels are each project's own, so they are not here.
+ * the flow labels, and the tier labels the pull request check asks for (#225). No status
+ * or priority labels: the board holds status, milestones hold timing. Area labels are each
+ * project's own, so they are not here.
  */
 export const LABELS: Label[] = [
   { name: 'bug', color: 'd73a4a', description: 'Something does not work as it should' },
@@ -45,6 +47,9 @@ export const LABELS: Label[] = [
   { name: 'incident', color: 'b60205', description: 'Something went wrong; the fix adds a check' },
   { name: 'good first issue', color: '7057ff', description: 'A small, clear task for a new contributor' },
   { name: 'hotfix', color: 'e11d21', description: 'Urgent: fix and release soon' },
+  { name: 'tier A', color: 'b60205', description: 'Hard to take back: secrets, data, install/update path, releases, going public. Owner reviews.' },
+  { name: 'tier B', color: 'fbca04', description: 'Other code. Tests for the change; merges when CI is green.' },
+  { name: 'tier C', color: '0e8a16', description: 'Docs, wording, styles. Merges when CI is green.' },
 ];
 
 /** The milestone made when the repo has no open one. */
@@ -73,7 +78,7 @@ export function pickNewMilestone(milestones: { title: string; open: boolean }[])
 export const HOST_DEFAULTS = ['documentation', 'duplicate', 'enhancement', 'help wanted', 'invalid', 'question', 'wontfix'];
 
 /**
- * At most this many area labels (#156). Next to the 9 standard labels, 8 more still fit
+ * At most this many area labels (#156). Next to the standard labels, 8 more still fit
  * in the label menu at a glance. A longer list is noise: nobody filters by 20 areas, and
  * the issue title already names the area. A project with more makes the few it uses by hand.
  */
@@ -169,7 +174,7 @@ function describeStatus(gh: Gh, repo: string, board: Board): string {
 /** The board: found by title among the linked ones, then among the owner's, or made. */
 function planBoard(gh: Gh, repo: string): { lines: string[]; changes: Change[] } {
   const title = repo.split('/')[1];
-  const skip = (err: { unread: string; fix: string }) => ({ lines: [`- board: skipped, because ${err.unread}. To make one, ${err.fix}, then run \`yokoten init --github --board\` again`], changes: [] });
+  const skip = (err: { unread: string; fix: string }) => ({ lines: [`- board: skipped, because ${err.unread}. To make one, ${err.fix}, then run \`yokoten init --github --board --yes\` again`], changes: [] });
   const linked = readLinkedBoards(gh, repo);
   if ('unread' in linked) return skip(linked);
   const there = linked.find((b) => sameName(b.title, title));
@@ -190,16 +195,22 @@ function describeFailure(err: unknown): string {
   return isScopeMissing(err) ? `${said}; ${PROJECT_SCOPE_FIX}` : said;
 }
 
+/** The command that sets up labels and a milestone once GitHub can be reached. */
+const SET_UP = `yokoten init --github --yes`;
+
 /**
- * Returns the report lines, and whether every change worked. `remote` is the origin URL.
- * A skip (no GitHub remote, no gh, no sign-in, no project scope) is ok: init goes on and says so.
+ * Returns the report lines, whether every change worked, and whether GitHub was skipped.
+ * `remote` is the origin URL. A skip (no GitHub remote, no gh, no sign-in) is ok here:
+ * the caller decides, because only `init --github --yes` asked for a change. A board that
+ * can't be made for lack of the project scope is a line, not a skip: the rest still happens.
  */
-export function setUpPlanning(gh: Gh, remote: string, { apply, removeDefaults, areas = [], board = false }: PlanningOptions): { ok: boolean; lines: string[] } {
-  if (!remote.trim()) return { ok: true, lines: ['GitHub: skipped, because there is no origin remote yet. Add one on GitHub, then run `yokoten init --github` to set up labels and a milestone'] };
+export function setUpPlanning(gh: Gh, remote: string, { apply, removeDefaults, areas = [], board = false }: PlanningOptions): { ok: boolean; skipped: boolean; lines: string[] } {
+  const skip = (line: string) => ({ ok: true, skipped: true, lines: [line] });
+  if (!remote.trim()) return skip(`GitHub: skipped, because there is no origin remote yet. Add one on GitHub, then run \`${SET_UP}\` to set up labels and a milestone`);
   const repo = repoOf(remote);
-  if (!repo) return { ok: true, lines: ['GitHub: skipped, because the origin remote is not on GitHub. Labels and a milestone need a GitHub repo'] };
+  if (!repo) return skip('GitHub: skipped, because the origin remote is not on GitHub. Labels and a milestone need a GitHub repo');
   const found = readPlanning(gh, repo);
-  if ('unread' in found) return { ok: true, lines: [`GitHub: skipped, because ${found.unread}. To set up labels and a milestone, ${found.fix}, then run \`yokoten init --github\``] };
+  if ('unread' in found) return skip(`GitHub: skipped, because ${found.unread}. To set up labels and a milestone, ${found.fix}, then run \`${SET_UP}\``);
 
   const lines = [`GitHub: ${found.repo}`];
   const changes: Change[] = [];
@@ -231,10 +242,10 @@ export function setUpPlanning(gh: Gh, remote: string, { apply, removeDefaults, a
     changes.push(...boardPlan.changes);
   }
 
-  if (!changes.length) return { ok: true, lines: [...lines, 'Nothing to change.'] };
+  if (!changes.length) return { ok: true, skipped: false, lines: [...lines, 'Nothing to change.'] };
   if (!apply) {
     const command = `yokoten init --github --yes${removeDefaults ? ' --remove-default-labels' : ''}${board ? ' --board' : ''}`;
-    return { ok: true, lines: [...lines, 'Would do:', ...changes.map((c) => `- ${c.what}`), `Nothing changed. Run \`${command}\` to do it.`] };
+    return { ok: true, skipped: false, lines: [...lines, 'Would do:', ...changes.map((c) => `- ${c.what}`), `Nothing changed. Run \`${command}\` to do it.`] };
   }
   // Each one on its own: one refusal does not stop the rest, and the report says which.
   let ok = true;
@@ -247,5 +258,5 @@ export function setUpPlanning(gh: Gh, remote: string, { apply, removeDefaults, a
       lines.push(`- could not ${change.what}: ${describeFailure(err)}`);
     }
   }
-  return { ok, lines };
+  return { ok, skipped: false, lines };
 }
