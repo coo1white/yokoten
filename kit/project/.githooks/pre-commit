@@ -1,3 +1,5 @@
 #!/bin/sh
 # The commit check: lead-only files, test files in a fix task, layout and privacy.
+# Without the runtime, one plain line, and the commit waits until the runtime is back (#204).
+[ -f "{{cli}}" ] || { echo 'yokoten: the commit check cannot run, because {{cli}} is missing. Restore it from git, or run yokoten init again' >&2; exit 1; }
 exec node "{{cli}}" check --staged
