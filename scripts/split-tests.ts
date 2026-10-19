@@ -29,49 +29,55 @@ const DEFAULT_TEST_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'te
 
 // Where each test goes: target file under test/, and the "<source file>:<prefix>" keys it
 // takes. The prefix is the test name up to its first `:` (the whole name if it has none).
-// `<source>:*` takes every test of that file.
+// `<source>:*` takes every test of that file. One file per src module, at the module's own
+// path: an end-to-end test goes to the module that does what it runs.
 const MAPPING: [string, string[]][] = [
-  ['rules/guards.test.ts', ['guards:*']],
-  ['rules/privacy.test.ts', ['privacy:positive control', 'privacy:emails', 'privacy:IPs', 'privacy:private marks', 'privacy:private marks file', 'privacy:commit times', 'privacy:output']],
-  ['rules/secrets.test.ts', ['privacy:secrets']],
   ['rules/config.test.ts', ['rules:glob', 'rules:config']],
+  ['rules/guards.test.ts', ['guards:*', 'bot:the bot is not a way around the guard', 'cli:the vendored .yokoten/ runtime is lead-only']],
   ['rules/layout.test.ts', ['rules:layout', 'rules:build output']],
   ['rules/message.test.ts', ['rules:messages', 'rules:docs']],
-  ['rules/pr/pull-request.test.ts', ['rules:pull request', 'rules:pull request title']],
-  ['rules/pr/codeowners.test.ts', ['rules:CODEOWNERS']],
-  ['rules/pr/issue-title.test.ts', ['rules:issue title']],
-  ['rules/pr/size.test.ts', ['rules:large pull request', 'rules:plain English']],
+  ['rules/pr.test.ts', ['rules:pull request', 'rules:pull request title', 'rules:CODEOWNERS', 'rules:issue title', 'rules:titles', 'rules:large pull request', 'rules:plain English']],
+  ['rules/privacy.test.ts', ['privacy:positive control', 'privacy:emails', 'privacy:IPs', 'privacy:web strings', 'privacy:private marks', 'privacy:private marks file', 'privacy:commit times', 'privacy:output']],
+  ['rules/secrets.test.ts', ['privacy:secrets']],
   ['run/changelog.test.ts', ['rules:changes', 'cli:changelog']],
+  [
+    'run/check.test.ts',
+    [
+      'cli:check --staged',
+      'cli:check --staged reads the staged blob past git replace; GIT_GRAFT_FILE fails check --history (#294)',
+      'cli:check and the stop hook read a symlink as its link text, never its target (#244)',
+      'cli:check --history',
+      'rules:check --history',
+      'rules:readBlobs',
+      'cli:check --pr',
+      'cli:check --issue',
+      'cli:check --pr and --issue',
+      'cli:check --pr in GitHub Actions',
+      'cli:check in GitHub Actions',
+      'cli:check outside GitHub Actions',
+    ],
+  ],
+  ['run/cli.test.ts', ['cli:exit codes', 'cli:--json', 'cli:outside a git repo', 'cli:git not installed', 'cli:help', 'cli:compile cache', 'cli:guardCommand', 'cli:hooks', 'cli:demo']],
+  ['run/hook.test.ts', ['cli:hook', 'cli:hook --commands-only', 'cli:hook --stop', 'cli:hook --stop --agent codex|gemini']],
+  ['run/learn.test.ts', ['cli:learn', 'rules:learn', 'rules:lessons', 'cli:lessons']],
   ['run/names.test.ts', ['rules:names']],
   ['run/translations.test.ts', ['rules:translations']],
-  ['run/hook.test.ts', ['cli:hook', 'cli:hook --stop']],
-  ['run/cli.test.ts', ['cli:exit codes', 'cli:--json']],
-  ['run/check/staged.test.ts', ['cli:check --staged']],
-  ['run/check/history.test.ts', ['cli:check --history']],
-  ['run/check/pr.test.ts', ['cli:check --pr']],
-  ['run/check/issue.test.ts', ['cli:check --issue']],
-  ['run/check/actions.test.ts', ['cli:check --pr in GitHub Actions', 'cli:check in GitHub Actions', 'cli:check outside GitHub Actions']],
-  ['run/learn.test.ts', ['cli:learn', 'rules:learn', 'rules:lessons']],
   ['agents/claude-code.test.ts', ['cli:plugin']],
   ['agents/codex.test.ts', ['cli:hook --agent codex']],
   ['agents/gemini.test.ts', ['cli:hook --agent gemini']],
   ['agents/llama.test.ts', ['road:adopt chat']],
-  ['host/github/token.test.ts', ['bot:JWT', 'bot:token', 'bot:config', 'bot:repo', 'bot:env']],
-  ['host/github/title.test.ts', ['bot:command title', 'bot:the bot is not a way around the guard', 'cli:bot']],
-  ['host/github/output.test.ts', ['bot:annotations', 'bot:step summary']],
-  // scripts/board-sync.ts (PR #190) talks to GitHub's project board. test/ already holds 7
-  // entries, so a test/scripts/ folder would break the cap; it goes next to the host.
-  ['host/github/board.test.ts', ['bot:board sync']],
+  // scripts/board-sync.ts (PR #190) talks to GitHub's project board; it goes with the host.
+  [
+    'host/github.test.ts',
+    ['bot:JWT', 'bot:token', 'bot:config', 'bot:repo', 'bot:env', 'bot:child env', 'bot:bot program', 'bot:command title', 'bot:annotations', 'bot:step summary', 'bot:incident', 'bot:board sync', 'cli:bot'],
+  ],
+  ['setup/doctor.test.ts', ['cli:doctor', 'cli:doctor --session', 'cli:doctor --session --agent', 'rules:self-test', 'bot:doctor', 'bot:road', 'bot:server']],
+  ['setup/init.test.ts', ['cli:init', 'rules:core rules', 'cli:update']],
+  ['setup/install.test.ts', ['cli:install', 'cli:uninstall']],
   ['setup/plan.test.ts', ['bot:planning', 'bot:milestone']],
   ['setup/road.test.ts', ['road:road']],
-  ['setup/install.test.ts', ['cli:install']],
   ['setup/advice/adopt.test.ts', ['road:adopt facts', 'road:adopt answer', 'road:adopt draft', 'cli:adopt']],
-  ['setup/advice/explain.test.ts', ['rules:explain']],
-  ['setup/doctor/steps.test.ts', ['cli:doctor', 'rules:self-test']],
-  ['setup/doctor/session.test.ts', ['cli:doctor --session']],
-  ['setup/doctor/server.test.ts', ['bot:road', 'bot:server', 'bot:doctor']],
-  ['setup/init/practices.test.ts', ['cli:init']],
-  ['setup/init/update.test.ts', ['rules:core rules', 'cli:update']],
+  ['setup/advice/explain.test.ts', ['rules:explain', 'cli:explain with no id lists the ids on stdout and exits 0; --json gives { ids } (#247)']],
 ];
 // Test files that stay where they are, unsplit (AGENTS.md and the guides name them).
 const STAYS = ['architecture.test.ts'];
@@ -543,9 +549,9 @@ function main() {
     return result.text;
   };
   for (const target of targets) {
-    // A file whose tests import a script tests that script, wherever it sits.
+    // A file is for its src module; one with none, whose tests import a script, is for that script.
     const scripts = [...new Set([...target.imports.values()].map((name) => name.module).filter((module) => module.startsWith('scripts/')))];
-    const found = scripts.length ? { module: scripts.join(', '), isPart: false } : moduleFor(target.path, root);
+    const found = moduleFor(target.path, root) ?? (scripts.length ? { module: scripts.join(', '), isPart: false } : undefined);
     const prefixes = [...new Set(target.tests.map((test) => test.prefix))];
     const header = found ? `// Tests for ${found.module}${found.isPart ? `: ${prefixes.join(', ')}` : ''}.` : `// Tests: ${prefixes.join(', ')}.`;
     if (!found) report.push(`  note: test/${target.path} has no src module of its own`);

@@ -473,10 +473,10 @@ test('split tests: an import of ../scripts/ gets the extra ../ and the moved tes
   });
   const split = runSplit(root);
   assert.equal(split.status, 0, split.output);
-  const moved = readFileSync(join(root, 'split/host/github/board.test.ts'), 'utf8');
+  const moved = readFileSync(join(root, 'split/host/github.test.ts'), 'utf8');
   assert.match(moved, /^\/\/ Tests for scripts\/greet\.ts\.\n/);
-  assert.match(moved, /^import \{ greet \} from '\.\.\/\.\.\/\.\.\/scripts\/greet\.ts';$/m);
-  assert.match(moved, /await import\('\.\.\/\.\.\/\.\.\/scripts\/greet\.ts'\)/);
+  assert.match(moved, /^import \{ greet \} from '\.\.\/\.\.\/scripts\/greet\.ts';$/m);
+  assert.match(moved, /await import\('\.\.\/\.\.\/scripts\/greet\.ts'\)/);
   // The child must not report to this test run, so it gets no NODE_TEST_CONTEXT.
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT;
