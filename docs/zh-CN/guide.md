@@ -468,11 +468,13 @@ AGENTS.md 里，它就只是个愿望。把这些程序写进 `yokoten.json`，�
 是哪个程序、你写的原因，并让 agent 改用项目自己的技术栈。
 
 - 守卫只看每条命令真正运行的程序，按名字认：`/usr/bin/python3` 和 `python3.exe` 都算 `python3`。
-- 命令的每一段都会查：`a && b`、`a | b`、`a; b`、`$(...)` 和 `bash -c '...'`。
-- 前面加了变量、套了一层或者放在流程语句里也藏不住：`X=1 python3`；`env`、`sudo`、`nice`、
-  `timeout`、`xargs`、`setsid`、`stdbuf` 这类启动器；`if`、`for`、`while`、`!` 后面的命令；
+- 命令的每一段都会查：`a && b`、`a | b`、`a; b`、`$(...)`，还有交给 shell 运行的字符串：
+  `bash -c '...'`、`ssh host '...'`、`flock file -c '...'`。
+- 前面加了变量或重定向、套了一层或者放在流程语句里也藏不住：`X=1 python3`；`2>/dev/null python3`；
+  `env`、`sudo`、`nice`、`timeout`、`xargs`、`setsid`、`stdbuf` 这类启动器；`if`、`for`、`while`、`!` 后面的命令；
   `find -exec` 运行的程序；`env -S` 里的字符串。
-- 只是参数里出现这个名字的不拦：`echo python`、`cat python.md`、`pythonic`。
+- 只是参数里出现这个名字的不拦：`echo python`、`cat python.md`、`pythonic`，
+  还有 `case` 里的匹配项，比如 `python3)`。
   `command -v python3` 也不拦，它只是查程序在哪儿，并不运行。
 - 名字里不能带路径，也不能有空格。`commands` 写错了格式，`check` 和 `doctor` 会报配置错误；
   守卫这时不拦任何程序，但会说一声，核心检查照常运行。
@@ -628,7 +630,7 @@ yokoten 每学到一个教训，核心规则就会改。`yokoten install` 会更
 3. 只有仓库主人能打 tag、发版。主人随口说一句「合吧」「ship it」，不算同意发版。
 4. 修复任务只改代码，不改测试（`YOKOTEN_FIX_TASK=1`）。
 5. worker 不改只有 lead 能改的文件：规则、agent 配置、hook、CI。
-6. 不许跳过提交检查。查看 core.hooksPath 没问题。换成别的 hooks 文件夹也行，前提是那里的 pre-commit 会跑 `yokoten check`（用 husky 的项目，`yokoten init` 会帮你加上）。
+6. 不许跳过提交检查。查看 core.hooksPath 没问题。换成别的 hooks 文件夹也行，前提是那里的 pre-commit 是能直接执行的 shell 脚本，单独一行跑 `yokoten check`，检查没过就停下提交（用 husky 的项目，`yokoten init` 会帮你加上）。
 7. 不用普通的强制推送，不对共享分支做 rebase。
 8. 用 squash 合并。一个 PR 只做一件事；零碎的小改动攒成一批再提。
 9. 审查和测试的，必须是最终合并的那个提交。
