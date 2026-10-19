@@ -39,6 +39,72 @@ test('layers: no module imports from a layer above its own', () => {
   assert.ok(found.size > 0, 'the import scan found nothing; the pattern is broken');
 });
 
+// One test file per src module, at the module's own path: src/run/check.ts is tested in
+// test/run/check.test.ts (#152). A branch that changes a module adds its tests, and their
+// imports, to that module's file, so parallel branches do not meet in one import block.
+// Next to the layer folders, test/ holds only this file and the shared helpers.
+const TEST_TOP = ['architecture.test.ts', 'helpers.ts'];
+// Modules with no test file of their own. Keep it short: a new module gets its test file.
+const NO_TEST_FILE = [
+  'agents/agent-skills.ts', // no tests yet (#152)
+  'agents/hooks-file.ts', // no tests yet (#152); the install and init tests use it
+  'setup/files.ts', // no tests yet (#152); the install tests and this file use it
+];
+
+const filesUnder = (folder: string) =>
+  readdirSync(folder, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => relative(folder, join(entry.parentPath, entry.name)).split(/[\\/]/).join('/'));
+
+// What is wrong with test/, given the src modules and the test files, each by its path
+// inside its folder.
+function testFileProblems(modules: string[], tests: string[]): string[] {
+  const problems: string[] = [];
+  for (const path of tests) {
+    if (TEST_TOP.includes(path)) continue;
+    const module = path.replace(/\.test\.ts$/, '.ts');
+    if (module === path || !modules.includes(module)) problems.push(`test/${path} is not the test file of a src module (src/${module})`);
+  }
+  for (const module of modules) {
+    const hasFile = tests.includes(module.replace(/\.ts$/, '.test.ts'));
+    if (!hasFile && !NO_TEST_FILE.includes(module)) problems.push(`src/${module} has no test/${module.replace(/\.ts$/, '.test.ts')}`);
+    if (hasFile && NO_TEST_FILE.includes(module)) problems.push(`src/${module} has a test file now: take it off NO_TEST_FILE`);
+  }
+  for (const module of NO_TEST_FILE) if (!modules.includes(module)) problems.push(`NO_TEST_FILE names src/${module}, which is not there`);
+  return problems;
+}
+
+test('test files: each one is the test file of a src module, at the same path (#152)', () => {
+  const modules = ['run/check.ts', 'setup/advice/adopt.ts', ...NO_TEST_FILE];
+  assert.deepEqual(testFileProblems(modules, ['architecture.test.ts', 'helpers.ts', 'run/check.test.ts', 'setup/advice/adopt.test.ts']), []);
+  assert.deepEqual(testFileProblems(modules, ['run/check.test.ts', 'setup/advice/adopt.test.ts', 'run/gone.test.ts', 'run/check/pr.test.ts', 'run/util.ts', 'top.test.ts']), [
+    'test/run/gone.test.ts is not the test file of a src module (src/run/gone.ts)',
+    'test/run/check/pr.test.ts is not the test file of a src module (src/run/check/pr.ts)',
+    'test/run/util.ts is not the test file of a src module (src/run/util.ts)',
+    'test/top.test.ts is not the test file of a src module (src/top.ts)',
+  ]);
+  const tests = filesUnder(join(ROOT, 'test'));
+  assert.ok(tests.includes('run/check.test.ts'), 'test/run/check.test.ts not found; the scan is broken');
+  assert.deepEqual(
+    testFileProblems(filesUnder(SRC), tests).filter((problem) => problem.startsWith('test/')),
+    [],
+    'name each test file after its src module, or put shared code in test/helpers.ts',
+  );
+});
+
+test('test files: every src module has one, but the few on NO_TEST_FILE (#152)', () => {
+  assert.deepEqual(testFileProblems(['run/check.ts', 'run/new.ts', ...NO_TEST_FILE], ['run/check.test.ts', 'setup/files.test.ts']), [
+    'src/run/new.ts has no test/run/new.test.ts',
+    'src/setup/files.ts has a test file now: take it off NO_TEST_FILE',
+  ]);
+  assert.deepEqual(testFileProblems(['run/check.ts'], ['run/check.test.ts']), NO_TEST_FILE.map((module) => `NO_TEST_FILE names src/${module}, which is not there`));
+  assert.deepEqual(
+    testFileProblems(filesUnder(SRC), filesUnder(join(ROOT, 'test'))).filter((problem) => !problem.startsWith('test/')),
+    [],
+    'a new src module gets its test file next to the others',
+  );
+});
+
 // A step names what it needs in host-neutral words; only src/host/ talks to a host's API
 // (record 0004). Then adding a host (Gitea) means one new adapter, not a change in each step.
 const HOST_API = /api\.github\.com|\bgh api\b|GITHUB_EVENT_PATH/;
