@@ -38,8 +38,9 @@ const MARKS_HEADER = `# yokoten private marks: words that must never be publishe
 export function install(env: Env): string[] {
   const target = paths(env);
   const report: string[] = [];
-  copyRuntime(target.runtime, { withKit: true });
-  report.push(`wrote ${target.runtime}`);
+  // Run from this copy, install keeps it (#204). The report shows the home folder as ~.
+  const copied = copyRuntime(target.runtime, { withKit: true });
+  report.push(copied === 'kept' ? `kept: ${target.runtime} is the copy running now` : `wrote ${target.runtime}`);
 
   const skills = join(KIT, 'user', 'skills');
   for (const name of readdirSync(skills)) {
@@ -53,7 +54,7 @@ export function install(env: Env): string[] {
   }
 
   const cli = '"$HOME/.local/share/yokoten/bin/yokoten.ts"';
-  const hooks = addUserHooks(env, cli);
+  const hooks = addUserHooks(env, cli, 'yokoten: the runtime at ~/.local/share/yokoten is missing; run the install again');
   report.push(`${hooks.doctor} the SessionStart doctor`, `${hooks.guard} the user-level command guard`);
 
   const marks = writeNew(target.marks, MARKS_HEADER, { mode: 0o600 });

@@ -677,7 +677,8 @@ without that line compares by its text only.
 
 The copy in `.yokoten/` keeps the kit's `AGENTS.md`, so `doctor` in CI and the hooks
 compares with the kit your project vendored. To take newer rules, run `update` from an
-installed yokoten, the plugin or a clone. Run `init` again to refresh `.yokoten/` too.
+installed yokoten, the plugin or a clone. Run `init` again from there to refresh `.yokoten/` too.
+Run from `.yokoten/` itself, `init` keeps that copy as it is.
 
 With the Claude Code plugin, run `/yokoten:update`. It runs the plugin's own yokoten,
 shows the change, and writes only after you agree.
