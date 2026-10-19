@@ -524,85 +524,119 @@ function showFolder(folder: string, home: string | undefined): string {
   return fromHome ? `~/${fromHome.split(sep).join('/')}` : '~';
 }
 
-/** What saves a worktree that may not survive a restart: by what it holds that is only here. */
-function volatileFix(facts: UnsavedFacts, worktree: WorktreeFacts, where: string, remote: string): string {
-  const later = 'then make it again in a folder that lasts';
-  if (!facts.remotes.length) return `add a remote and push now; ${later}`;
-  if (worktree.isMain) return `push every branch now: ${code(`git push --all ${remote}`)}; ${later}`;
-  const branch = worktree.branch ? facts.branches.find((known) => known.name === worktree.branch) : undefined;
-  const isSaved = !worktree.changedFiles?.length && worktree.changedFiles !== null && (worktree.branch ? branch?.remoteBranch === branch?.name && branch?.ahead === 0 : worktree.isHeadUnreferenced === false);
-  if (isSaved) return 'nothing there is only on this machine yet; make new worktrees in a folder that lasts';
-  if (worktree.branch) return `push it now: ${code(`git -C ${where} push -u ${remote} ${worktree.branch}`)}; ${later}`;
-  return `give its HEAD a branch and push it now: ${code(`git -C ${where} switch -c <name>`)}; ${later}`;
+/** Where a folder that may not survive a restart is, in words: "under the temp folder (/tmp), which …". */
+function describePlace(volatile: { kind: 'tmpfs' | 'temp'; folder: string }, home: string | undefined): string {
+  const folder = showFolder(volatile.folder, home);
+  return volatile.kind === 'tmpfs' ? `on a tmpfs (${folder}), which is gone after a restart` : `under the temp folder (${folder}), which the system may empty on restart`;
 }
 
-/**
- * The worktrees whose folder may not survive a restart: on a tmpfs, or under a temp
- * folder. One note per worktree; a session gets one line per kind, with the count.
- */
-function volatileNotes(facts: UnsavedFacts, { home, session, remote }: { home: string | undefined; session: boolean; remote: string }): Finding[] {
-  const show = (path: string) => showPath(path, facts.root, home);
-  const notes: Finding[] = [];
-  for (const kind of ['tmpfs', 'temp'] as const) {
-    const trees = facts.worktrees.filter((worktree) => worktree.volatile?.kind === kind && !worktree.isMissing);
-    if (!trees.length) continue;
-    const id = kind === 'tmpfs' ? 'repo-on-tmpfs' : 'repo-in-temp-folder';
-    const place = (folder: string) => (kind === 'tmpfs' ? `on a tmpfs (${showFolder(folder, home)}), so everything there is gone after a restart` : `under the temp folder (${showFolder(folder, home)}), which the system may empty on restart`);
-    if (session) {
-      const folders = [...new Set(trees.map((worktree) => (worktree.volatile as { folder: string }).folder))];
-      const count = trees.length === 1 ? `${show(trees[0].path)} is` : `${trees.length} worktrees are`;
-      notes.push(finding(id, `${count} ${place(folders[0])}`, 'push the work there now; `yokoten doctor` lists the command for each'));
-      continue;
-    }
-    for (const worktree of trees) {
-      const where = show(worktree.path);
-      const folder = (worktree.volatile as { folder: string }).folder;
-      notes.push(finding(id, `${where} is ${place(folder)}`, volatileFix(facts, worktree, where, remote)));
-    }
-  }
-  return notes;
+const VOLATILE_IDS = { tmpfs: 'repo-on-tmpfs', temp: 'repo-in-temp-folder' } as const;
+
+/** The branches whose commits are only on this machine: the same test the branch notes use. */
+function isBranchAtRisk(branch: BranchFacts, facts: UnsavedFacts): boolean {
+  if (!facts.remotes.length) return true;
+  return !!branch.ahead || (!branch.upstream && branch.aheadOfDefault !== 0 && branch.head !== facts.defaultTip);
+}
+
+/** Whether a worktree holds work only on this machine: changed files, branch commits no remote has, or a detached HEAD no branch holds. */
+function isWorktreeAtRisk(worktree: WorktreeFacts, facts: UnsavedFacts): boolean {
+  if (worktree.changedFiles?.length || worktree.isHeadUnreferenced) return true;
+  const branch = worktree.branch ? facts.branches.find((known) => known.name === worktree.branch) : undefined;
+  return !!branch && isBranchAtRisk(branch, facts);
 }
 
 /**
  * The notes, one per thing to save, each with the one command that saves it. A session
  * gets only what is at risk: no worktree to tidy, and no change from the last hour.
+ *
+ * A worktree on a tmpfs or under a temp folder is named only when it holds work at risk,
+ * in that work's own note. The rest get one line in full doctor, and none in a session.
+ * The clone itself there always gets a note: that is how the repo is set up.
  */
 export function unsavedNotes(facts: UnsavedFacts, { home, now = Date.now(), platform = process.platform as string, session = false }: { home: string | undefined; now?: number; platform?: string; session?: boolean }): Finding[] {
   const notes: Finding[] = [];
   const show = (path: string) => showPath(path, facts.root, home);
   const defaultName = facts.defaultRef?.replace(/^refs\/(heads|remotes)\//, '') ?? 'the default branch';
   const remote = facts.remotes.includes('origin') ? 'origin' : (facts.remotes[0] ?? 'origin');
-  notes.push(...volatileNotes(facts, { home, session, remote }));
-  for (const worktree of facts.worktrees) {
+  const present = facts.worktrees.filter((worktree) => !worktree.isMissing);
+  const volatileAtRisk = present.filter((worktree) => worktree.volatile && isWorktreeAtRisk(worktree, facts));
+  // The worktrees whose place is already said in one of their notes.
+  const told = new Set<string>();
+  /** The place of an at-risk worktree, the first time one of its notes asks; then nothing. */
+  const placeOf = (worktree: WorktreeFacts | undefined): string | null => {
+    if (!worktree?.volatile || !volatileAtRisk.includes(worktree) || told.has(worktree.path)) return null;
+    told.add(worktree.path);
+    return describePlace(worktree.volatile, home);
+  };
+  if (session) {
+    // One line per kind when two or more at-risk worktrees are there: the scale, before the details.
+    for (const kind of ['tmpfs', 'temp'] as const) {
+      const trees = volatileAtRisk.filter((worktree) => worktree.volatile?.kind === kind);
+      if (trees.length < 2) continue;
+      const folder = showFolder((trees[0].volatile as { folder: string }).folder, home);
+      const where = kind === 'tmpfs' ? `on a tmpfs (${folder})` : `under the temp folder (${folder})`;
+      notes.push(finding(VOLATILE_IDS[kind], `${trees.length} worktrees ${where} hold unsaved work, and a restart may empty that folder`, 'save them first: `yokoten doctor` lists the command for each'));
+    }
+  }
+  for (const worktree of present) {
     const files = worktree.changedFiles;
     if (!files?.length) continue;
     const age = worktree.oldestChange === null ? null : now - worktree.oldestChange;
     if (session && (age === null || age < SESSION_CHANGE_AGE)) continue;
     const where = show(worktree.path);
     const since = age === null ? '' : `, the oldest changed ${showAge(age)} ago`;
-    notes.push(finding('uncommitted-changes', `${where} has ${plural(files.length, 'uncommitted file')}${since}`, `commit them: ${code(`git -C ${where} add -A && git -C ${where} commit`)}, then push`));
+    const place = placeOf(worktree);
+    notes.push(finding('uncommitted-changes', `${where} has ${plural(files.length, 'uncommitted file')}${since}${place ? `, and is ${place}` : ''}`, `commit them: ${code(`git -C ${where} add -A && git -C ${where} commit`)}, then push`));
   }
   // A branch exists once there is a commit. A read that stopped early may not have read the remotes.
   if (!facts.remotes.length && facts.branches.length && !facts.isPartial) {
     notes.push(finding('unpushed-commits', 'this repo has no remote, so every commit is still only on this machine', `add one and push: ${code('git remote add origin <url>')}, then ${code('git push -u origin --all')}`));
   } else {
     for (const branch of facts.branches) {
+      if (!isBranchAtRisk(branch, facts)) continue;
+      const worktree = present.find((tree) => tree.branch === branch.name);
+      const place = placeOf(worktree);
+      const also = place && worktree ? `; ${worktree.isMain ? 'the repo' : `its worktree ${show(worktree.path)}`} is ${place}` : '';
       // A branch made from origin/main tracks it: its commits go to a branch of its own, never to main.
-      const hasOwnUpstream = branch.remoteBranch === branch.name;
-      if (branch.ahead && hasOwnUpstream) {
-        notes.push(finding('unpushed-commits', `branch ${branch.name} has ${plural(branch.ahead, 'commit')} not pushed to ${branch.upstream}; a commit not pushed is still only on this machine`, code(`git push ${branch.remote ?? remote} ${branch.name}`)));
+      if (branch.ahead && branch.remoteBranch === branch.name) {
+        notes.push(finding('unpushed-commits', `branch ${branch.name} has ${plural(branch.ahead, 'commit')} not pushed to ${branch.upstream}; a commit not pushed is still only on this machine${also}`, code(`git push ${branch.remote ?? remote} ${branch.name}`)));
       } else if (branch.ahead) {
-        notes.push(finding('unpushed-commits', `branch ${branch.name} has ${plural(branch.ahead, 'commit')} not on ${branch.upstream}, and no branch of its own on the remote, so they are still only on this machine`, code(`git push -u ${branch.remote ?? remote} ${branch.name}`)));
-      } else if (!branch.upstream && branch.aheadOfDefault !== 0 && branch.head !== facts.defaultTip) {
+        notes.push(finding('unpushed-commits', `branch ${branch.name} has ${plural(branch.ahead, 'commit')} not on ${branch.upstream}, and no branch of its own on the remote, so they are still only on this machine${also}`, code(`git push -u ${branch.remote ?? remote} ${branch.name}`)));
+      } else {
         const count = branch.aheadOfDefault ? `${plural(branch.aheadOfDefault, 'commit')} not on ${defaultName}` : `commits not on ${defaultName}`;
-        notes.push(finding('unpushed-commits', `branch ${branch.name} has ${count} and no upstream, so they are still only on this machine`, code(`git push -u ${remote} ${branch.name}`)));
+        notes.push(finding('unpushed-commits', `branch ${branch.name} has ${count} and no upstream, so they are still only on this machine${also}`, code(`git push -u ${remote} ${branch.name}`)));
       }
     }
   }
-  for (const worktree of facts.worktrees) {
-    if (!worktree.isHeadUnreferenced || worktree.isMissing) continue;
+  for (const worktree of present) {
+    if (!worktree.isHeadUnreferenced) continue;
     const where = show(worktree.path);
-    notes.push(finding('unpushed-commits', `worktree ${where} has commits on a detached HEAD that no branch holds, so they are still only on this machine`, `give them a branch and push it: ${code(`git -C ${where} switch -c <name>`)}, then ${code(`git -C ${where} push -u ${remote} <name>`)}`));
+    const place = placeOf(worktree);
+    notes.push(finding('unpushed-commits', `worktree ${where} has commits on a detached HEAD that no branch holds, so they are still only on this machine${place ? `; it is ${place}` : ''}`, `give them a branch and push it: ${code(`git -C ${where} switch -c <name>`)}, then ${code(`git -C ${where} push -u ${remote} <name>`)}`));
+  }
+  // The clone itself always: a repo set up there loses everything on restart.
+  const main = present.find((worktree) => worktree.isMain);
+  if (main?.volatile && !told.has(main.path)) {
+    told.add(main.path);
+    const push = facts.remotes.length ? `push every branch now: ${code(`git push --all ${remote}`)}` : 'add a remote and push every branch now';
+    const place = main.volatile.kind === 'tmpfs' ? `on a tmpfs (${showFolder(main.volatile.folder, home)}), so everything here is gone after a restart` : describePlace(main.volatile, home);
+    notes.push(finding(VOLATILE_IDS[main.volatile.kind], `this repo is ${place}`, `${push}; then clone it again in a folder that lasts`));
+  }
+  if (!session) {
+    // At-risk worktrees whose note a session hid (or no remote folded): say the place on its own.
+    for (const worktree of volatileAtRisk.filter((tree) => !told.has(tree.path))) {
+      told.add(worktree.path);
+      notes.push(finding(VOLATILE_IDS[(worktree.volatile as { kind: 'tmpfs' | 'temp' }).kind], `${show(worktree.path)} holds work only on this machine, and is ${describePlace(worktree.volatile as { kind: 'tmpfs' | 'temp'; folder: string }, home)}`, 'save it: commit and push, then make it again in a folder that lasts'));
+    }
+    // The rest hold nothing at risk: one line per kind, for the next worktree made there.
+    for (const kind of ['tmpfs', 'temp'] as const) {
+      const clean = present.filter((worktree) => !worktree.isMain && worktree.volatile?.kind === kind && !told.has(worktree.path));
+      if (!clean.length) continue;
+      const folders = [...new Set(clean.map((worktree) => showFolder((worktree.volatile as { folder: string }).folder, home)))].join(', ');
+      const where = kind === 'tmpfs' ? `on a tmpfs (${folders})` : `under the temp folder (${folders})`;
+      const count = clean.length === 1 ? `1 worktree is ${where}; it holds no unsaved work` : `${clean.length} worktrees are ${where}; none holds unsaved work`;
+      notes.push(finding(VOLATILE_IDS[kind], `${count}, but new work there may be lost on restart`, 'make new worktrees in a folder that lasts'));
+    }
   }
   if (facts.stashes) {
     notes.push(finding('stashes', `there ${facts.stashes === 1 ? 'is 1 stash' : `are ${facts.stashes} stashes`}, and a stash is only on this machine`, `turn each into a branch and push it: ${code('git stash branch <name>')}, then ${code(`git push -u ${remote} <name>`)}`));
@@ -658,8 +692,9 @@ export const UNSAVED_CONTROL: UnsavedFacts = {
   isPartial: false,
   isGitRunning: false,
   worktrees: [
-    { ...CONTROL_TREE, isMain: true, branch: 'main', changedFiles: ['a'], oldestChange: 0, gitDir: '/r/.git', indexLock: { path: '/r/.git/index.lock', modified: 0 }, volatile: { kind: 'tmpfs', folder: '/r' } },
+    { ...CONTROL_TREE, isMain: true, branch: 'main', changedFiles: ['a'], oldestChange: 0, gitDir: '/r/.git', indexLock: { path: '/r/.git/index.lock', modified: 0 } },
     { ...CONTROL_TREE, path: '/w', volatile: { kind: 'temp', folder: '/' } },
+    { ...CONTROL_TREE, path: '/t', volatile: { kind: 'tmpfs', folder: '/' } },
     { ...CONTROL_TREE, path: '/x', isMissing: true },
     { ...CONTROL_TREE, path: '/d', branch: null, head: '2', isHeadUnreferenced: true, isHeadInDefault: false },
   ],

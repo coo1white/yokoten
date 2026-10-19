@@ -202,8 +202,8 @@ A power cut, a crash or a dead disk loses work that lives only on one machine. S
 | `unpushed-commits` | A branch has commits that no remote has, or a detached HEAD has commits that no branch holds | `git push`, or `git push -u origin <branch>` for a branch with no upstream of its own; `git switch -c <name>` first for a detached HEAD |
 | `stashes` | There are stashes. A stash is never pushed | `git stash branch <name>`, then push it |
 | `stale-index-lock` | An `index.lock` is left from a crash, and no git process runs in the repo | `rm` the file |
-| `repo-on-tmpfs` | The repo, or a worktree, is on a tmpfs, so a restart empties it | `git push`, then make it again in a folder that lasts |
-| `repo-in-temp-folder` | The repo, or a worktree, is under the temp folder, which the system may empty on restart | `git push`, then make it again in a folder that lasts |
+| `repo-on-tmpfs` | The repo is on a tmpfs, so a restart empties it | `git push --all origin`, then clone it again in a folder that lasts |
+| `repo-in-temp-folder` | The repo is under the temp folder, which the system may empty on restart | `git push --all origin`, then clone it again in a folder that lasts |
 | `finished-worktree` | A worktree with no changes whose branch is merged, or whose upstream is gone, or whose detached HEAD is in the default branch | `git worktree remove <path>`; the branch stays |
 | `missing-worktree` | git still lists a worktree whose folder is gone | `git worktree prune` |
 
@@ -223,14 +223,20 @@ The temp folders are the system's own (`TMPDIR`, or `%TEMP%` on Windows) and `/t
 empties `/tmp` on restart, even though it is not a tmpfs. To check other folders, list them
 in `YOKOTEN_TEMP_DIRS`, split like `PATH`. Set it empty to turn the check off.
 
+The repo itself in such a folder always gets a note: that is a setup problem. A worktree
+there is named only when it holds work at risk, and then in that work's own note. For
+example: "../w has 3 uncommitted files, the oldest changed 2 days ago, and is under the temp
+folder (/tmp), which the system may empty on restart". The worktrees there that hold nothing
+at risk get one line in full `doctor`, with the count, and none in a session.
+
 All of these are notes: they never fail `doctor`. Doctor only reads here. It changes no
 file, no ref and no worktree, and git runs with optional locks off. Paths show relative to
 the repo, or from `~`.
 
 A session hears only what is at risk, three items at most. It hears uncommitted changes
 only once the oldest is an hour old, because work going on now is not forgotten. Worktrees
-to tidy up are left to full `doctor`. Worktrees on a tmpfs or under the temp folder get one
-line, with the count.
+to tidy up are left to full `doctor`. When two or more worktrees in the temp folder hold work
+at risk, one line gives the count first.
 
 A session spends at most one second on this, because a session must not wait on a cold
 disk. When the time is up, it shows what it read and says "doctor stopped early". Full

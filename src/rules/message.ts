@@ -446,13 +446,13 @@ export const RULES = {
   'repo-on-tmpfs': {
     rule: 'a repo and its worktrees live on a disk, not in memory',
     why: 'a tmpfs lives in memory, so a restart empties it',
-    check: `${UNSAVED_CHECK}: /proc/mounts, for each worktree, on Linux; on macOS and Windows it says nothing`,
+    check: `${UNSAVED_CHECK}: /proc/mounts, for each worktree, on Linux, named as for the temp folder; on macOS and Windows it says nothing`,
     docs: guide('work-only-on-this-machine'),
   },
   'repo-in-temp-folder': {
     rule: 'a repo and its worktrees live outside the temp folder',
     why: 'the system may empty its temp folder on restart, as WSL empties /tmp',
-    check: `${UNSAVED_CHECK}: each worktree's real path against the temp folders: YOKOTEN_TEMP_DIRS (empty turns it off), else the system's temp folder and /tmp`,
+    check: `${UNSAVED_CHECK}: each worktree's real path against the temp folders: YOKOTEN_TEMP_DIRS (empty turns it off), else the system's temp folder and /tmp. The repo itself always gets a note; a worktree only when it holds work at risk, in that work's note; the rest get one line in full doctor`,
     docs: guide('work-only-on-this-machine'),
   },
   'not-a-repo': {

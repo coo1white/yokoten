@@ -261,44 +261,64 @@ test('unsaved: a repo on a tmpfs is gone after a restart (#365)', () => {
   const tree = join(clone.base, 'tree');
   clone.git(clone.repo, 'worktree', 'add', '-q', '-b', 'tree', tree, 'main');
   const found = clone.notes({}, { readMounts: () => tmpfs });
-  assert.deepEqual(ids(found), ['repo-on-tmpfs', 'repo-on-tmpfs'], 'each worktree');
-  assert.match(found[0].what, /^\. is on a tmpfs \(.+\), so everything there is gone after a restart$/);
-  assert.equal(found[0].fix, 'push every branch now: `git push --all origin`; then make it again in a folder that lasts');
-  assert.equal(found[1].fix, 'push it now: `git -C ../tree push -u origin tree`; then make it again in a folder that lasts');
+  assert.deepEqual(found.map((f) => `${f.what}; ${f.fix}`), [
+    `this repo is on a tmpfs (${clone.base}), so everything here is gone after a restart; push every branch now: \`git push --all origin\`; then clone it again in a folder that lasts`,
+    `1 worktree is on a tmpfs (${clone.base}); it holds no unsaved work, but new work there may be lost on restart; make new worktrees in a folder that lasts`,
+  ]);
+  assert.deepEqual(ids(clone.notes({ session: true }, { readMounts: () => tmpfs })), ['repo-on-tmpfs'], 'the repo itself always; a clean worktree never in a session');
   assert.deepEqual(clone.notes({}, { readMounts: () => disk }), [], 'negative control: a disk');
   assert.deepEqual(clone.notes({}, { readMounts: () => null }), [], 'no /proc/mounts (macOS): nothing');
-  // A mount in the home shows from ~; with no remote, the fix says to add one.
-  const control = { ...UNSAVED_CONTROL, remotes: [], worktrees: [{ ...UNSAVED_CONTROL.worktrees[0], volatile: { kind: 'tmpfs' as const, folder: '/h/t' } }] };
-  const inHome = unsavedNotes(control, { home: '/h' }).find((f) => f.id === 'repo-on-tmpfs');
-  assert.equal(inHome?.what, '. is on a tmpfs (~/t), so everything there is gone after a restart');
-  assert.equal(inHome?.fix, 'add a remote and push now; then make it again in a folder that lasts');
+  // A mount in the home shows from ~, and the repo's own changes carry the place: one line, not two.
+  const control = { ...UNSAVED_CONTROL, remotes: [], branches: [], stashes: 0, worktrees: [{ ...UNSAVED_CONTROL.worktrees[0], indexLock: null, volatile: { kind: 'tmpfs' as const, folder: '/h/t' } }] };
+  assert.deepEqual(unsavedNotes(control, { home: '/h', now: 1 }).map((f) => f.what), ['. has 1 uncommitted file, the oldest changed 1 minute ago, and is on a tmpfs (~/t), which is gone after a restart']);
 });
 
-test('unsaved: a worktree under the temp folder, which the system may empty on restart (#365)', () => {
+test('unsaved: a worktree under the temp folder is named only when it holds work at risk (#365)', () => {
   const clone = cleanClone();
-  const tree = join(clone.base, 'tree');
-  const away = join(clone.home, 'away');
-  clone.git(clone.repo, 'worktree', 'add', '-q', '-b', 'tree', tree, 'main');
-  clone.git(clone.repo, 'worktree', 'add', '-q', '-b', 'away', away, 'main');
-  // A temp folder handed in, so the test never depends on the real /tmp.
-  const temp = clone.base;
-  const found = clone.notes({}, { tempDirs: [join(clone.home, 'none'), temp] });
-  assert.deepEqual(ids(found), ['repo-in-temp-folder', 'repo-in-temp-folder', 'repo-in-temp-folder'], 'the repo and each worktree');
-  assert.match(found[0].what, /^\. is under the temp folder \(.+\), which the system may empty on restart$/);
-  assert.equal(found[1].what.split(' is ')[0], '~/away');
-  assert.equal(found[2].fix, 'push it now: `git -C ../tree push -u origin tree`; then make it again in a folder that lasts');
-  clone.git(tree, 'push', '-q', '-u', 'origin', 'tree');
-  const pushed = clone.notes({}, { tempDirs: [temp] }).find((f) => f.what.startsWith('../tree'));
-  assert.equal(pushed?.fix, 'nothing there is only on this machine yet; make new worktrees in a folder that lasts', 'pushed and clean: nothing to save');
-  assert.deepEqual(clone.notes({}, { tempDirs: [join(clone.home, 'none')] }), [], 'negative control: not under it');
-  assert.deepEqual(clone.notes({}, { tempDirs: [clone.repo + 'x'] }), [], 'a name that only starts the same is not a parent');
-  // A session hears one line for all of them.
-  const session = clone.notes({ session: true }, { tempDirs: [temp] });
-  assert.deepEqual(session.map((f) => f.what), [`3 worktrees are under the temp folder (${temp}), which the system may empty on restart`]);
-  assert.equal(session[0].fix, 'push the work there now; `yokoten doctor` lists the command for each');
+  // A temp folder handed in, so the test never depends on the real /tmp. The repo is outside it.
+  const temp = join(clone.base, 'temp');
+  const add = (name: string, ...args: string[]) => {
+    const tree = join(temp, name);
+    clone.git(clone.repo, 'worktree', 'add', '-q', ...args, tree, 'main');
+    return tree;
+  };
+  const clean = add('clean', '-b', 'clean');
+  const notes = (session = false) => clone.notes({ session }, { tempDirs: [join(clone.home, 'none'), temp] });
+  // Only clean ones: one line in full doctor, nothing in a session.
+  assert.deepEqual(notes().map((f) => `${f.what}; ${f.fix}`), [`1 worktree is under the temp folder (${temp}); it holds no unsaved work, but new work there may be lost on restart; make new worktrees in a folder that lasts`]);
+  assert.deepEqual(notes(true), [], 'a session: nothing about worktrees with nothing to lose');
+  add('clean-too', '-b', 'clean-too');
+  assert.equal(notes()[0].what, `2 worktrees are under the temp folder (${temp}); none holds unsaved work, but new work there may be lost on restart`);
+  // Three at risk: changed files, a commit on no remote, a detached HEAD no branch holds.
+  const dirty = add('dirty', '-b', 'dirty');
+  writeFileSync(join(dirty, 'x.txt'), 'x\n');
+  const old = new Date(Date.now() - 3 * DAY);
+  utimesSync(join(dirty, 'x.txt'), old, old);
+  clone.commit(add('ahead', '-b', 'ahead'), 'y.txt');
+  clone.commit(add('loose', '--detach'), 'z.txt');
+  const place = `under the temp folder (${temp}), which the system may empty on restart`;
+  assert.deepEqual(notes().map((f) => f.what), [
+    `../temp/dirty has 1 uncommitted file, the oldest changed 3 days ago, and is ${place}`,
+    `branch ahead has 1 commit not on origin/main and no upstream, so they are still only on this machine; its worktree ../temp/ahead is ${place}`,
+    `worktree ../temp/loose has commits on a detached HEAD that no branch holds, so they are still only on this machine; it is ${place}`,
+    `2 worktrees are under the temp folder (${temp}); none holds unsaved work, but new work there may be lost on restart`,
+  ]);
+  assert.equal(notes()[0].fix, 'commit them: `git -C ../temp/dirty add -A && git -C ../temp/dirty commit`, then push', 'the one command that saves it');
+  // A session: one line with the count of those at risk, then their notes; never the clean ones.
+  const session = notes(true);
+  assert.equal(session[0].what, `3 worktrees under the temp folder (${temp}) hold unsaved work, and a restart may empty that folder`);
+  assert.equal(session[0].fix, 'save them first: `yokoten doctor` lists the command for each');
+  assert.deepEqual(ids(session), ['repo-in-temp-folder', 'uncommitted-changes', 'unpushed-commits', 'unpushed-commits']);
+  assert.ok(!session.some((f) => f.what.includes('clean')));
+  // The repo itself under the temp folder: always a note, in a session too.
+  const repoNote = clone.notes({ session: true }, { tempDirs: [clone.base] }).find((f) => f.what.startsWith('this repo'));
+  assert.equal(repoNote?.what, `this repo is under the temp folder (${clone.base}), which the system may empty on restart`);
+  assert.deepEqual(clone.notes({}, { tempDirs: [join(clone.home, 'none')] }).filter((f) => f.id === 'repo-in-temp-folder'), [], 'negative control: not under it');
+  assert.deepEqual(clone.notes({}, { tempDirs: [`${clean}x`] }).filter((f) => f.id === 'repo-in-temp-folder'), [], 'a name that only starts the same is not a parent');
   // The tmpfs note is the stronger form: a worktree on a tmpfs in a temp folder gets that one alone.
   const both = clone.notes({}, { tempDirs: [temp], readMounts: () => `tmpfs ${temp} tmpfs rw 0 0\n` });
-  assert.deepEqual([...new Set(ids(both))], ['repo-on-tmpfs']);
+  assert.ok(!both.some((f) => f.id === 'repo-in-temp-folder'));
+  assert.ok(both.some((f) => f.what.endsWith(`is on a tmpfs (${temp}), which is gone after a restart`)));
 });
 
 test('unsaved: the temp folders come from YOKOTEN_TEMP_DIRS, else the system and /tmp (#365)', () => {
