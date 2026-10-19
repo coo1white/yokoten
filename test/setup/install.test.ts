@@ -392,6 +392,20 @@ test('install: a copy that fails half way leaves the old copy working (#204)', (
   assert.deepEqual(readdirSync(dirname(dest)), ['yokoten']);
 });
 
+// #77: a project's .yokoten/ copy is what a teammate without yokoten installed runs. With
+// no lessons in it, its doctor ran none and said nothing. Positive control: a test with the
+// incident-138 mistake must get the lesson's note from the copy's own doctor.
+test('install: a project copy carries the kit lessons, and doctor from it runs them (#77)', () => {
+  const sandbox = makeSandbox();
+  const dest = join(sandbox.repo, '.yokoten');
+  assert.equal(copyRuntime(dest), 'wrote');
+  assert.ok(existsSync(join(dest, 'kit', 'lessons', 'README.md')), 'the lessons table');
+  assert.ok(!existsSync(join(dest, 'kit', 'user')), 'only the project parts of the kit');
+  sandbox.write('test/api.test.js', "await fetch('http://127.0.0.1:8080/health');\n");
+  const doctor = spawnSync('node', [join(dest, 'bin', 'yokoten.ts'), 'doctor'], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
+  assert.match(doctor.stdout, /\n {2}note {4}lesson incident-138: test\/api\.test\.js: a test calls a server on this machine and does not set NO_PROXY; /);
+});
+
 // A temp folder left beside the copy, in a repo root, is one `git add -A` away from a commit (#204).
 test('install: a rename that fails leaves the old copy and no temp folder (#204)', () => {
   const sandbox = makeSandbox();
