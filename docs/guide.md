@@ -419,7 +419,7 @@ It puts two safe defaults in `.github/` too:
 
 | Command | What it does |
 |---------|--------------|
-| `install` | Skills into `~/.claude/skills` and `~/.agents/skills`, agents into `~/.claude/agents`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file. The two hooks go to Claude Code, Codex and Gemini CLI |
+| `install` | Skills into `~/.claude/skills` and `~/.agents/skills`, agents into `~/.claude/agents`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file. The two hooks go to Claude Code, and to Codex and Gemini CLI when `~/.codex` or `~/.gemini` already exists |
 | `init [dir]` | Puts the practices into a project. Adds files; keeps any that are already there and says so. It also reads GitHub through `gh` and says which standard labels and milestone it would add. It never changes GitHub. Without `gh`, a sign-in or a GitHub remote, it says what it skipped |
 | `init --github --yes [--remove-default-labels]` | Adds the missing standard labels, and a milestone "First release" when no milestone is open. When a closed milestone already has that title, the new one is "Next release". A closed milestone is never reopened. A standard label that is there gets the standard colour and description. A second run changes nothing. GitHub's default labels outside the set (`question`, `wontfix` and others) are deleted only with `--remove-default-labels` |
 | `update [dir] [--write]` | Shows what this yokoten changes in the core rules of the project's `AGENTS.md`. `--write` replaces them, and keeps the "This project" part as it is. See [Updating the rules](#updating-the-rules) |
@@ -920,7 +920,8 @@ Honest limits:
   guard and the stop check also run in Codex and Gemini CLI: `init` writes
   `.codex/hooks.json` and `.gemini/settings.json`, and each tool asks you to trust the
   hooks. Nobody has yet seen a real Codex or Gemini CLI session blocked by them (#30), so
-  `doctor` reports those hooks but does not count them as missing. The rules are plain `AGENTS.md`, which
+  `doctor` reports those hooks, and the user hooks once `~/.codex` or `~/.gemini` exists, but
+  does not count them as missing. The rules are plain `AGENTS.md`, which
   Claude Code reads when a project has no `CLAUDE.md`, and so do most other agents. Muse
   Code's skills and hooks are planned.
 

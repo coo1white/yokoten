@@ -24,10 +24,11 @@ import { check } from '../run/check.ts';
 import { hasPlugin, hasSessionDoctor, readInstalledPlugin } from '../agents/claude-code.ts';
 import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
+import type { HookState } from '../agents/hooks-file.ts';
 import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
 import { compareCoreRules, compareVersions, isSelf, readCoreRules, summarizeUpdate } from './init.ts';
-import { paths } from './install.ts';
+import { paths, USER_CLI, USER_MISSING } from './install.ts';
 import { type Mark, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
 
 /** One check outside the road: its name in the report, whether it is in place, and the finding when it is not. */
@@ -90,6 +91,33 @@ export function machineChecks(env: Env): Practice[] {
     practice('runtime', 'machine-runtime', runtime === VERSION || (plugin && runtime === null), runtime ? `the installed runtime is ${runtime}, this yokoten is ${VERSION}` : 'no runtime installed', 'run `yokoten install` from this copy of yokoten'),
     practice('private-marks', 'private-marks', loadMarks(env).length > 0, `${target.marks} is missing or empty`, 'add your name, city, domain and server names to it, one per line'),
   ];
+}
+
+/**
+ * The other agents' user hooks, from `install`: doctor at session start and the command
+ * guard (#211). Only for a CLI this machine looks to use, its folder ~/.codex or
+ * ~/.gemini, so a Claude Code user hears nothing about tools they don't run.
+ *
+ * Each hook is compared with what `install` would write (command, matcher, runtime path),
+ * so an old one is out of date, not ok. A note, never MISSING, so it never changes the
+ * exit code: no real Codex or Gemini CLI run has been seen to block through these hooks
+ * yet (#30), and a folder left by a CLI tried once is not proof the user wants yokoten there.
+ */
+export function userAgentHooks(env: Env): Practice[] {
+  const report = (id: 'codex-user-hook' | 'gemini-user-hook', hooks: { doctor: HookState; guard: HookState }, file: string): Practice => {
+    const named = [['session-start doctor', hooks.doctor], ['command guard', hooks.guard]] as const;
+    const missing = named.filter(([, state]) => state === 'added').map(([name]) => name);
+    const stale = named.filter(([, state]) => state === 'updated').map(([name]) => name);
+    const them = (names: readonly string[]) => (names.length > 1 ? 'them' : 'it');
+    if (named.some(([, state]) => state === 'unreadable')) return practice(id, id, false, `can't read ${file}`, `make it valid JSON, then run \`yokoten install\``);
+    if (missing.length && stale.length) return practice(id, id, false, `no ${missing[0]} and an out-of-date ${stale[0]} in ${file}`, '`yokoten install` adds one and updates the other');
+    if (stale.length) return practice(id, id, false, `the ${stale.join(' and the ')} in ${file} ${stale.length > 1 ? 'are' : 'is'} out of date`, `\`yokoten install\` updates ${them(stale)}`);
+    return practice(id, id, !missing.length, `${missing.map((name) => `no ${name}`).join(' and ')} in ${file}`, `\`yokoten install\` adds ${them(missing)}`);
+  };
+  const checks: Practice[] = [];
+  if (codex.hasUserDir(env)) checks.push(report('codex-user-hook', codex.userHooksState(env, USER_CLI, USER_MISSING), '~/.codex/hooks.json'));
+  if (gemini.hasUserDir(env)) checks.push(report('gemini-user-hook', gemini.userHooksState(env, USER_CLI, USER_MISSING), '~/.gemini/settings.json'));
+  return checks;
 }
 
 /**
@@ -374,6 +402,10 @@ export function doctor(
   for (const c of machine) {
     lines.push(`  ${c.ok ? 'ok     ' : 'MISSING'} ${c.name}${c.ok ? '' : `: ${stepText(c.finding)}`}`);
     if (!c.ok) findings.push(c.finding);
+  }
+  for (const c of userAgentHooks(env)) {
+    lines.push(`  ${c.ok ? 'ok     ' : 'note   '} ${c.name}${c.ok ? '' : `: ${stepText(c.finding)}`}`);
+    if (!c.ok) notes.push(c.finding);
   }
   const stale = pluginAgeCheck(root, env);
   if (stale) {

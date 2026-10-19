@@ -5,12 +5,13 @@
 // Gemini CLI fingerprints a project hook by its name and command, and warns once before
 // it first runs a new or changed one.
 
+import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { guardCommand, missingProjectRuntime } from '../run/cli.ts';
 import type { Action } from '../run/hook.ts';
-import { type Added, addHook, hasHook } from './hooks-file.ts';
+import { type Added, addHook, hasHook, type HookArgs, type HookState, hookState } from './hooks-file.ts';
 
 // run_shell_command takes `command`; write_file and replace take `file_path`.
 const SHELL = 'run_shell_command';
@@ -69,10 +70,33 @@ export const formatSessionContext = (text: string): string => JSON.stringify({ h
 
 const userSettings = (env: Env) => join(env.HOME || homedir(), '.gemini', 'settings.json');
 
+/** The two user hooks, as `addHook`'s arguments: one builder for `addUserHooks` and `userHooksState`. */
+const userHookArgs = (env: Env, cli: string, missing: string): Record<'doctor' | 'guard', HookArgs> => ({
+  doctor: [userSettings(env), 'SessionStart', undefined, guardCommand(cli, 'doctor --session --agent gemini', missing, { isSessionStart: true, sessionOutput: 'json' }), { name: 'yokoten-session' }],
+  guard: [userSettings(env), 'BeforeTool', SHELL, guardCommand(cli, 'hook --agent gemini --commands-only', missing, { isToolCall: true }), { name: 'yokoten-guard' }],
+});
+
 /** The user's hooks, in every repo: doctor at session start, and the command guard on shell calls. `missing` is what they say when `cli` is gone. */
 export function addUserHooks(env: Env, cli: string, missing: string): { doctor: Added; guard: Added } {
-  return {
-    doctor: addHook(userSettings(env), 'SessionStart', undefined, guardCommand(cli, 'doctor --session --agent gemini', missing, { isSessionStart: true, sessionOutput: 'json' }), { name: 'yokoten-session' }),
-    guard: addHook(userSettings(env), 'BeforeTool', SHELL, guardCommand(cli, 'hook --agent gemini --commands-only', missing, { isToolCall: true }), { name: 'yokoten-guard' }),
-  };
+  const args = userHookArgs(env, cli, missing);
+  return { doctor: addHook(...args.doctor), guard: addHook(...args.guard) };
+}
+
+/** Whether Gemini CLI looks used on this machine: its user folder, ~/.gemini, is a folder. */
+export function hasUserDir(env: Env): boolean {
+  try {
+    return statSync(dirname(userSettings(env))).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The user's hooks against what `addUserHooks` would write with the same `cli` and
+ * `missing`, read-only (see `hookState`): a hook with another command, matcher or runtime
+ * path is 'updated', one not there is 'added'.
+ */
+export function userHooksState(env: Env, cli: string, missing: string): { doctor: HookState; guard: HookState } {
+  const args = userHookArgs(env, cli, missing);
+  return { doctor: hookState(...args.doctor), guard: hookState(...args.guard) };
 }
