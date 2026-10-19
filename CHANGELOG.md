@@ -10,6 +10,7 @@ All notable changes are listed here. The format follows
 
 The first release. yokoten guides you through a good team's habits, and guards your AI agents while you learn.
 To start, read the [guide](https://github.com/yokoten-labs/yokoten/blob/v0.1.0/docs/guide.md).
+The README is also in [中文](https://github.com/yokoten-labs/yokoten/blob/v0.1.0/docs/zh-CN/README.md) and [日本語](https://github.com/yokoten-labs/yokoten/blob/v0.1.0/docs/ja/README.md).
 
 ### Added
 
