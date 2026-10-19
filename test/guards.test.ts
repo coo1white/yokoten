@@ -339,7 +339,7 @@ test('fix task: test files are off limits', () => {
 
 test('lead-only files: a worker is stopped, the lead is not', () => {
   const worker = { YOKOTEN_ROLE: 'worker' };
-  for (const p of ['AGENTS.md', 'CLAUDE.md', 'yokoten.json', '.claude/settings.json', '.claude-plugin/plugin.json', '.codex/hooks.json', '.gemini/settings.json', '.github/workflows/ci.yml', '.githooks/pre-commit']) {
+  for (const p of ['AGENTS.md', 'CLAUDE.md', 'yokoten.json', '.claude/settings.json', '.claude-plugin/plugin.json', '.codex/hooks.json', '.gemini/settings.json', '.github/workflows/ci.yml', '.githooks/pre-commit', '.yokoten/src/run/check.ts']) {
     assert.ok(checkEdit(p, { config: DEFAULTS, env: worker }), p);
     assert.equal(checkEdit(p, { config: DEFAULTS, env: {} }), null, p);
   }
