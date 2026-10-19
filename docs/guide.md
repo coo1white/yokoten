@@ -633,7 +633,7 @@ The full table, with the reasons, is in [`kit/project/AGENTS.md`](../kit/project
 
 1. Every piece of work starts as an issue. No todo files.
 2. Nothing reaches `main` without a pull request and green CI.
-3. Only the owner creates tags and releases.
+3. Only the owner creates tags and releases. A general "merge" or "ship it" does not approve a release.
 4. A fix task changes code, never tests (`YOKOTEN_FIX_TASK=1`).
 5. A worker doesn't change lead-only files: the rules, agent config, hooks, CI.
 6. Never skip the commit check.

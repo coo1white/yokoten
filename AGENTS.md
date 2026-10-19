@@ -26,7 +26,7 @@ skill: find the cause, add or fix the check, then carry the fix to the other pro
 |---|------|-----|-------|
 | 1 | Every piece of work starts as an issue. No todo files. | Incident: follow-ups written only in chat reports were nearly lost; a shared todo file made one PR run CI four times on merge conflicts. | `doctor` reports todo files |
 | 2 | Nothing reaches `main` without a pull request and green CI. | Risk: one bad push breaks every branch built on it. | Branch ruleset on the server |
-| 3 | Only the owner creates tags and releases. | Risk: when to ship is the owner's call, and a pushed tag can start a release. | Tool guard; tag ruleset on the server |
+| 3 | Only the owner creates tags and releases. A general "merge", "ship it" or "go ahead" does not approve a release. Only an owner request that names the version or says "release", "publish" or "tag" does. | Risk: when to ship is the owner's call, and a pushed tag can start a release. | Tool guard; tag ruleset on the server |
 | 4 | A fix task changes code, never tests (`YOKOTEN_FIX_TASK=1`). | Risk: the fastest way to make a test pass is to change what it asserts. | Tool guard and commit check |
 | 5 | A worker does not change lead-only files: these rules, agent config, hooks, CI. | Risk: a pull request that edits CI runs that CI before anyone reads it. | Tool guard and commit check for workers; for the bot, no Workflows permission, or CODEOWNERS review of CI changes with every secret behind a protected environment |
 | 6 | Never skip the commit check (`--no-verify`, changing `core.hooksPath`). | Risk: a skipped check makes a broken commit look reviewed. | Tool guard; CI runs the same check |

@@ -583,7 +583,7 @@ yokoten 每学到一个教训，核心规则就会改。`yokoten install` 会更
 
 1. 所有工作从 issue 开始，不用 todo 文件。
 2. 没有 PR、CI 没过，什么都进不了 `main`。
-3. 只有仓库主人能打 tag、发版。
+3. 只有仓库主人能打 tag、发版。主人随口说一句「合吧」「ship it」，不算同意发版。
 4. 修复任务只改代码，不改测试（`YOKOTEN_FIX_TASK=1`）。
 5. worker 不改只有 lead 能改的文件：规则、agent 配置、hook、CI。
 6. 不许跳过提交检查。
