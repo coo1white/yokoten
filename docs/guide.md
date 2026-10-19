@@ -424,7 +424,7 @@ check), `pr.yml` and `issue.yml`. Each action is pinned to a commit, each job ha
 limit, checkout keeps no token, and a new push cancels the old run on the same pull
 request. Add your tests as a job in `yokoten.yml` and to the `needs` list of `ci`.
 
-It puts two safe defaults in `.github/` too:
+It puts three safe defaults in `.github/` too:
 
 - `dependabot.yml` updates the actions that CI runs. It opens one pull request a month,
   and takes a release only when it is a week old. A comment in the file shows how to
@@ -432,6 +432,13 @@ It puts two safe defaults in `.github/` too:
 - `SECURITY.md` asks people to report a vulnerability privately, not in a public issue.
   For this, turn on private vulnerability reporting. `doctor` lists it with the other
   security switches.
+- `CODEOWNERS` names the owner for every lead-only path in the defaults: `AGENTS.md`,
+  `yokoten.json`, `.yokoten/`, the hooks, the agent config and `.github/`. The guard
+  stops a worker on the machine; this file stops the same change on the server. The
+  owner is the account in a GitHub `origin` remote. Without one, the file has a
+  placeholder, and `doctor` asks you to put your GitHub handle in it. It bites only when
+  branch protection has "Require review from Code Owners" on. A CODEOWNERS file the
+  project already has, in `.github/`, at the root or in `docs/`, is kept as it is.
 
 | Command | What it does |
 |---------|--------------|
@@ -953,7 +960,8 @@ is to undo (record 0004):
 | A | Hard to undo: secrets, data, install, releases, owned files | The owner |
 
 `.github/CODEOWNERS` lists the owned files: the rules, the kit, agent config, CI and the
-records. It does not list every file. With "require review from code owners" on, the
+records. It does not list every file. In a new project, `init` writes one for the
+lead-only paths. With "require review from code owners" on, the
 host asks the owner to review a pull request that changes one of them.
 
 `check --pr` ties the two together. A pull request that changes an owned file fails
