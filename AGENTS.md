@@ -127,10 +127,7 @@ yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
   case) that feeds it a known-bad input and expects a catch.
 - **Examples use placeholders**: `example.com` addresses and `192.0.2.0/24` IPs. A
   test that needs a real-looking sample builds it from pieces (see
-  `test/rules/privacy.test.ts`), so the repo passes its own privacy check.
-- **Tests sit next to their module**: the tests for `src/<layer>/<module>.ts` go in
-  `test/<layer>/<module>.test.ts`, and helpers two files share go in `test/helpers.ts`
-  (`test/architecture.test.ts` holds this). A branch then adds imports to its own file (#152).
+  `test/privacy.test.ts`), so the repo passes its own privacy check.
 
 ### Commits and versions
 
