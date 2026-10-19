@@ -24,8 +24,10 @@ export const assertLinear = (name: string, make: (n: number) => string, read: (i
   };
   const small = make(size);
   const big = make(8 * size);
-  // Enough reads of the small input to add up to about 20 ms, from 3 to 64.
-  const reps = Math.min(64, Math.max(3, Math.ceil(20 / Math.max(time(small), 0.01))));
+  // Enough reads of the small input to add up to about 20 ms, from 3 to 64. The fastest of
+  // 3 reads sets it: the first read is cold, and a busy runner slows any one read (#359).
+  const calibrate = Math.min(time(small), time(small), time(small));
+  const reps = Math.min(64, Math.max(3, Math.ceil(20 / Math.max(calibrate, 0.01))));
   const measure = () => {
     let fastSmall = Infinity;
     let fastBig = Infinity;
