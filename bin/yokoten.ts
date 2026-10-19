@@ -2,7 +2,7 @@
 // yokoten: carry what one project learned into every project.
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { DEFAULTS, loadConfig } from '../src/rules/config.ts';
 import { annotations, botConfig, botEnv, ghIn, installationToken, isGitHubActions, readCodeOwners, readCommandTitle, readIssue, readPullRequest, repoOf, stepSummary } from '../src/host/github.ts';
@@ -11,7 +11,7 @@ import { check, checkChanged, checkHistory, gitRoot, historyTimeZones, timeZoneN
 import * as claudeCode from '../src/agents/claude-code.ts';
 import * as codex from '../src/agents/codex.ts';
 import * as gemini from '../src/agents/gemini.ts';
-import { type Finding, finding, formatFinding } from '../src/rules/message.ts';
+import { finding, type Finding, formatFinding, notRepoFinding } from '../src/rules/message.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
 import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, largeDiff, longSentenceNote, longSentences } from '../src/rules/pr.ts';
 import { closestWord, COMMANDS, commandHelp, findCommand, HELP_OPTIONS, commandList } from '../src/run/cli.ts';
@@ -80,6 +80,9 @@ function usage(error: string): number {
   return 1;
 }
 
+// Set when a git call failed because git itself was not found, not because of the folder.
+let isGitMissing = false;
+
 /** An unknown command: the closest one when it is near, or else the list. Exit 1. */
 function unknownCommand(name: string): number {
   const near = closestWord(name, COMMANDS.map((command) => command.name));
@@ -100,10 +103,28 @@ function isHelpAsked(words: string[]): boolean {
 const rootOf = (dir: string): string | null => {
   try {
     return gitRoot(dir);
-  } catch {
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT' && existsSync(dir)) isGitMissing = true;
     return null;
   }
 };
+
+/** Why there is no repo root: git is missing, or the folder is not in a repo. Call it after rootOf. */
+const noRootFinding = (dir: string): Finding =>
+  isGitMissing ? finding('not-a-repo', 'git is not installed (or not on PATH); yokoten needs git', 'install git, or add it to PATH') : notRepoFinding(dir);
+
+/**
+ * The repo root, or null after one plain finding on stderr (#205): a command that needs a
+ * repo calls this before it writes anything. With --json, `json` shapes the output.
+ */
+function requireRoot(dir: string, json?: (missing: Finding) => unknown): string | null {
+  const root = rootOf(dir);
+  if (root) return root;
+  const missing = noRootFinding(dir);
+  if (json) printJson(json(missing));
+  else print([`yokoten ${cmd}: ${formatFinding(missing)}`], process.stderr);
+  return null;
+}
 
 // Everything yokoten prints goes through here or `say`, never straight to a stream: the
 // output lands in transcripts and CI logs, so the home folder is shown as ~ (core rule 11).
@@ -175,6 +196,7 @@ async function bot(command: string[]): Promise<number> {
     print(['yokoten bot: no command. Example: yokoten bot -- gh pr create --fill'], process.stderr);
     return 1;
   }
+  if (!requireRoot(process.cwd())) return 1;
   const remote = execFileSync('git', ['remote', 'get-url', 'origin'], { encoding: 'utf8' });
   const repo = repoOf(remote);
   if (!repo) {
@@ -193,17 +215,24 @@ const READERS: Record<string, (input: unknown) => Action> = {
   gemini: gemini.readToolCall,
 };
 
+// Each runtime's event for the end of a turn: Claude Code's and Codex's Stop, Gemini CLI's AfterAgent (#211).
+const STOP_READERS: Record<string, typeof claudeCode.readStop> = {
+  'claude-code': claudeCode.readStop,
+  codex: codex.readStop,
+  gemini: gemini.readStop,
+};
+
 /**
- * The stop check (#92). Claude Code runs it when the agent is about to end its turn
+ * The stop check (#92). The agent runs it when it is about to end its turn
  * (code.claude.com/docs/en/hooks#stop). Findings in the changed files send the agent back
  * once: exit 2, with the findings on stderr as the reason. `stop_hook_active` means it was
  * already sent back, so the turn ends whatever is found: never a loop. On any error the
  * turn ends too, with one line on stderr: a broken check must not trap a session.
  */
-function stopHook(json: boolean): number {
+function stopHook(json: boolean, read: typeof claudeCode.readStop): number {
   let event: ReturnType<typeof claudeCode.readStop>;
   try {
-    event = claudeCode.readStop(JSON.parse(readFileSync(0, 'utf8')));
+    event = read(JSON.parse(readFileSync(0, 'utf8')));
   } catch {
     event = null;
   }
@@ -226,7 +255,7 @@ function stopHook(json: boolean): number {
   }
   if (json) printJson({ blocked: findings.length > 0, stop: true, findings });
   if (!findings.length) return 0;
-  // Claude Code gives stderr to the agent as the reason to go on when a Stop hook exits 2.
+  // Each runtime gives stderr to the agent as the reason to go on when this hook exits 2.
   print([`yokoten: ${findings.length} problem(s) in the changed files. Fix them before you end the turn:`, ...bullets(findings)], process.stderr);
   return 2;
 }
@@ -243,12 +272,12 @@ function main(): number | Promise<number> {
       const options = parse('hook');
       if (typeof options === 'string') return usage(options);
       const json = options.flags.has('--json');
+      const agent = options.values['--agent'] ?? 'claude-code';
       if (options.flags.has('--stop')) {
         if (options.flags.has('--commands-only')) return usage("--stop and --commands-only can't be used together");
-        if ((options.values['--agent'] ?? 'claude-code') !== 'claude-code') return usage('--stop reads a Claude Code Stop event only');
-        return stopHook(json);
+        if (!Object.hasOwn(STOP_READERS, agent)) return usage(`unknown --agent ${agent}; use one of: ${Object.keys(STOP_READERS).join(', ')}`);
+        return stopHook(json, STOP_READERS[agent]);
       }
-      const agent = options.values['--agent'] ?? 'claude-code';
       const read = Object.hasOwn(READERS, agent) ? READERS[agent] : undefined;
       if (!read) {
         print([`yokoten hook: unknown --agent ${agent}; use one of: ${Object.keys(READERS).join(', ')}`], process.stderr);
@@ -282,7 +311,8 @@ function main(): number | Promise<number> {
       if (modes.length > 1) return usage(`${modes.join(' and ')} can't be used together`);
       const mode = modes[0]?.slice(2) ?? 'tree';
       const json = options.flags.has('--json');
-      const root = gitRoot(process.cwd());
+      const root = requireRoot(process.cwd(), json ? (missing) => ({ check: mode, ok: false, findings: [missing], notes: [] }) : undefined);
+      if (!root) return 1;
       const config = loadConfig(root);
       const name = `yokoten check${mode === 'pr' || mode === 'issue' ? ` --${mode}` : ''}`;
       const notes: Finding[] = [];
@@ -392,12 +422,24 @@ function main(): number | Promise<number> {
     case 'doctor': {
       const options = parse('doctor');
       if (typeof options === 'string') return usage(options);
+      const agent = options.values['--agent'] ?? 'claude-code';
+      if (!Object.hasOwn(READERS, agent)) return usage(`unknown --agent ${agent}; use one of: ${Object.keys(READERS).join(', ')}`);
       const session = options.flags.has('--session');
       const root = rootOf(process.cwd());
       const config = root ? loadConfig(root) : DEFAULTS;
       const { ok, lines, report } = doctor(root, { env, config, session, gh: root ? ghIn(root) : undefined });
+      // Full doctor outside a repo says so (#205). A session there stays quiet: no noise in a non-repo folder.
+      if (!root && !session) {
+        const missing = noRootFinding(process.cwd());
+        if (options.flags.has('--json')) printJson({ ...report, ok: false, findings: [...report.findings, missing] });
+        else print([...lines, `yokoten doctor: ${formatFinding(missing)}`], process.stderr);
+        return 1;
+      }
       if (options.flags.has('--json')) printJson(report);
-      else print(lines);
+      // Gemini CLI reads a SessionStart hook's context from JSON only (#211).
+      else if (session && agent === 'gemini') {
+        if (lines.length) say(`${gemini.formatSessionContext(hideHome(lines.join('\n'), env))}\n`, process.stdout);
+      } else print(lines);
       // A session must start even when a project has steps left.
       return session || ok ? 0 : 1;
     }
@@ -420,7 +462,8 @@ function main(): number | Promise<number> {
       // Reads files and asks the model; never writes a file or changes config.
       const options = parse('adopt');
       if (typeof options === 'string') return usage(options);
-      const root = gitRoot(process.cwd());
+      const root = requireRoot(process.cwd());
+      if (!root) return 1;
       return draft(facts(root, env), { env }).then((drafted) => {
         if (options.flags.has('--json')) {
           printJson(drafted.rows.map(({ key, status, evidence, decision, reason }) => ({ key, status, evidence, decision, reason })));
@@ -435,7 +478,13 @@ function main(): number | Promise<number> {
       if (options.flags.has('--yes') && !options.flags.has('--github')) return usage('--yes goes with --github');
       if (options.flags.has('--remove-default-labels') && !options.flags.has('--github')) return usage('--remove-default-labels goes with --github');
       const dir = resolve(options.positional[0] ?? '.');
-      const root = rootOf(dir) ?? dir;
+      // Checked before anything is written (#205): a typo never becomes a new folder.
+      if (!existsSync(dir)) {
+        print([`yokoten init: ${options.positional[0]} does not exist; nothing was written. Create it and run \`git init\` there first.`], process.stderr);
+        return 1;
+      }
+      const root = requireRoot(dir);
+      if (!root) return 1;
       print(init(root));
       // The host is changed only when asked (#10): it is a remote, and other people see it.
       // Without --yes, init only reads it and says what it would do, or what it skipped.
@@ -448,7 +497,9 @@ function main(): number | Promise<number> {
       const options = parse('update');
       if (typeof options === 'string') return usage(options);
       const dir = resolve(options.positional[0] ?? '.');
-      const { ok, lines } = updateCoreRules(rootOf(dir) ?? dir, { write: options.flags.has('--write') });
+      const root = requireRoot(dir);
+      if (!root) return 1;
+      const { ok, lines } = updateCoreRules(root, { write: options.flags.has('--write') });
       print([`yokoten update: ${lines[0]}`, ...lines.slice(1)], ok ? process.stdout : process.stderr);
       return ok ? 0 : 1;
     }

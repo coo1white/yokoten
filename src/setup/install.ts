@@ -1,11 +1,12 @@
 // `yokoten install`: the machine layer, the same on every computer. It puts the skills
 // where Claude Code and the agents that read `.agents/skills` find them in every project,
-// the agents where Claude Code finds them, and adds two user-level hooks:
+// the agents where Claude Code finds them, and adds two user-level hooks, for Claude Code,
+// Codex and Gemini CLI alike:
 //
 // - SessionStart runs `doctor --session`, so every session in every repo starts by
 //   hearing which practices that repo is missing. Nobody has to remember to ask.
-// - PreToolUse runs `hook --commands-only`: no tag pushes, no force pushes, no skipped
-//   checks, in every repo, adopted or not.
+// - PreToolUse (BeforeTool in Gemini CLI) runs `hook --commands-only`: no tag pushes, no
+//   force pushes, no skipped checks, in every repo, adopted or not.
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -13,6 +14,8 @@ import { dirname, join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { skillFile as sharedSkillFile } from '../agents/agent-skills.ts';
 import { addUserHooks, agentFile, skillFile as claudeSkillFile } from '../agents/claude-code.ts';
+import * as codex from '../agents/codex.ts';
+import * as gemini from '../agents/gemini.ts';
 import { copyRuntime, KIT, writeManaged, writeNew } from './files.ts';
 import { marksFile } from '../rules/privacy.ts';
 
@@ -54,8 +57,14 @@ export function install(env: Env): string[] {
   }
 
   const cli = '"$HOME/.local/share/yokoten/bin/yokoten.ts"';
-  const hooks = addUserHooks(env, cli, 'yokoten: the runtime at ~/.local/share/yokoten is missing; run the install again');
+  const missing = 'yokoten: the runtime at ~/.local/share/yokoten is missing; run the install again';
+  const hooks = addUserHooks(env, cli, missing);
   report.push(`${hooks.doctor} the SessionStart doctor`, `${hooks.guard} the user-level command guard`);
+  // Codex and Gemini CLI get the same two hooks (#211), whether or not they are installed.
+  const codexHooks = codex.addUserHooks(env, cli, missing);
+  report.push(`${codexHooks.doctor} the Codex SessionStart doctor in ~/.codex/hooks.json`, `${codexHooks.guard} the Codex command guard in ~/.codex/hooks.json`);
+  const geminiHooks = gemini.addUserHooks(env, cli, missing);
+  report.push(`${geminiHooks.doctor} the Gemini CLI SessionStart doctor in ~/.gemini/settings.json`, `${geminiHooks.guard} the Gemini CLI command guard in ~/.gemini/settings.json`);
 
   const marks = writeNew(target.marks, MARKS_HEADER, { mode: 0o600 });
   report.push(`${marks} ${target.marks}${marks === 'wrote' ? ' (add your marks to it)' : ''}`);
