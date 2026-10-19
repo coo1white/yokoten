@@ -376,7 +376,10 @@ It puts three safe defaults in `.github/` too:
   `yokoten.json`, `.yokoten/`, the hooks, the agent config and `.github/`. The guard
   stops a worker on the machine; this file stops the same change on the server. The
   owner is the account in a GitHub `origin` remote. Without one, the file has a
-  placeholder, and `doctor` asks you to put your GitHub handle in it. It bites only when
+  placeholder, and `doctor` asks you to put your GitHub handle in it. GitHub takes no
+  organization as an owner, so when `gh` says the account is one, the file has the
+  placeholder too, and `init` asks for a person or `@org/team`. Full `doctor` flags a
+  file whose only owner is the organization. It bites only when
   branch protection has "Require review from Code Owners" on. A CODEOWNERS file the
   project already has, in `.github/`, at the root or in `docs/`, is kept as it is.
 

@@ -14,7 +14,7 @@ import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
 import { runs } from '../run/cli.ts';
 import { DEFAULTS } from '../rules/config.ts';
-import { CODEOWNERS_PLACES, repoOf } from '../host/github.ts';
+import { CODEOWNERS_PLACES, type Gh, ghIn, isOrganization, repoOf } from '../host/github.ts';
 import { readOriginUrl } from './plan.ts';
 import { copyRuntime, HOME_DIR, KIT, render, VERSION, writeNew } from './files.ts';
 
@@ -36,8 +36,11 @@ function walk(dir: string): string[] {
   });
 }
 
-/** Returns one line per thing done or kept. */
-export function init(root: string): string[] {
+/** How long init waits for GitHub to say whether the remote owner is an organization. */
+const ORG_LOOKUP_MS = 5000;
+
+/** Returns one line per thing done or kept. `gh` asks GitHub one thing: whether the remote owner is an organization. */
+export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): string[] {
   const report: string[] = [];
   const cli = cliPath(root);
   if (!isSelf(root) && root !== HOME_DIR) {
@@ -54,7 +57,7 @@ export function init(root: string): string[] {
     report.push(`${result} ${rel}`);
   }
   if (hooks.kind !== 'own') chmodSync(join(root, '.githooks', 'pre-commit'), 0o755);
-  report.push(writeCodeOwners(root));
+  report.push(writeCodeOwners(root, gh));
   const imported = importRules(root);
   if (imported) report.push(imported);
   const hook = addProjectHook(root, cli);
@@ -82,8 +85,11 @@ export const OWNER_PLACEHOLDER = '@YOUR_GITHUB_HANDLE';
 /** A lead-only glob as a CODEOWNERS path: `x/**` is the folder `/x/`, a file is `/file`. */
 export const ownedPath = (glob: string): string => `/${glob.replace(/\/\*\*$/, '/')}`;
 
-/** The CODEOWNERS init writes: every default lead-only path, owned by `owner`, or by the placeholder when null. */
-export function codeOwnersText(owner: string | null): string {
+/**
+ * The CODEOWNERS init writes: every default lead-only path, owned by `owner`, or by the
+ * placeholder when null. `org` is the organization that owns the repo, named in the hint.
+ */
+export function codeOwnersText(owner: string | null, org?: string): string {
   const handle = owner ? `@${owner}` : OWNER_PLACEHOLDER;
   const lines = [
     '# Written by yokoten init. The owner reviews every change to these paths: the rules',
@@ -91,7 +97,8 @@ export function codeOwnersText(owner: string | null): string {
     '# Turn on "Require review from Code Owners" in branch protection, or GitHub asks',
     '# nobody. `yokoten check --pr` makes a change here tier A either way.',
   ];
-  if (!owner) lines.push(`# Put your GitHub handle in place of ${OWNER_PLACEHOLDER} on each line below.`);
+  if (!owner && org) lines.push(`# @${org} is an organization, and GitHub takes no organization here: put a person's handle or @${org}/<team> in place of ${OWNER_PLACEHOLDER} on each line below.`);
+  else if (!owner) lines.push(`# Put your GitHub handle in place of ${OWNER_PLACEHOLDER} on each line below.`);
   const paths = DEFAULTS.leadOnly.map(ownedPath);
   const width = Math.max(...paths.map((path) => path.length));
   return [...lines, '', ...paths.map((path) => `${path.padEnd(width)} ${handle}`), ''].join('\n');
@@ -100,12 +107,20 @@ export function codeOwnersText(owner: string | null): string {
 /** The GitHub account in the origin remote's URL, or null without a GitHub remote. */
 const readRemoteOwner = (root: string): string | null => repoOf(readOriginUrl(root))?.split('/')[0] ?? null;
 
-/** Write .github/CODEOWNERS unless the project has one in any place GitHub reads. Returns the report line. */
-function writeCodeOwners(root: string): string {
+/**
+ * Write .github/CODEOWNERS unless the project has one in any place GitHub reads. Returns
+ * the report line. An organization can't own a path in CODEOWNERS, so when gh says the
+ * remote owner is one, the file gets the placeholder (#313). When gh can't tell, the
+ * remote owner stays: most repos belong to a person.
+ */
+function writeCodeOwners(root: string, gh: Gh): string {
   const found = CODEOWNERS_PLACES.find((place) => existsSync(join(root, place)));
   if (found) return `kept ${found}`;
-  const owner = readRemoteOwner(root);
-  writeNew(join(root, '.github', 'CODEOWNERS'), codeOwnersText(owner));
+  const remote = readRemoteOwner(root);
+  const org = remote !== null && isOrganization(gh, remote) === true;
+  const owner = org ? null : remote;
+  writeNew(join(root, '.github', 'CODEOWNERS'), codeOwnersText(owner, org ? remote : undefined));
+  if (org) return `wrote .github/CODEOWNERS (the lead-only paths; @${remote} is an organization, so put a person or @${remote}/<team> in place of ${OWNER_PLACEHOLDER})`;
   return owner
     ? `wrote .github/CODEOWNERS (the lead-only paths, owned by @${owner})`
     : `wrote .github/CODEOWNERS (the lead-only paths; put your GitHub handle in place of ${OWNER_PLACEHOLDER})`;

@@ -455,8 +455,8 @@ test('init: safe defaults, Dependabot and a security policy; doctor lists the se
 });
 
 /** The doctor --json mark of one road step. */
-const stepMark = (sandbox: ReturnType<typeof makeSandbox>, id: string) =>
-  (JSON.parse(sandbox.run(['doctor', '--json']).stdout).steps as { id: string; mark: string }[]).find((step) => step.id === id)?.mark;
+const stepMark = (sandbox: ReturnType<typeof makeSandbox>, id: string, extra?: Record<string, string>) =>
+  (JSON.parse(sandbox.run(['doctor', '--json'], { extra }).stdout).steps as { id: string; mark: string }[]).find((step) => step.id === id)?.mark;
 
 test("init: a CLAUDE.md gets one line that imports AGENTS.md, and doctor's rules step wants it (#206)", () => {
   const sandbox = makeSandbox();
@@ -498,7 +498,7 @@ test('init: writes .github/CODEOWNERS for every lead-only path, owned by the Git
   const rules = parseCodeOwners(owners!.text);
   assert.deepEqual(rules.map((rule) => rule.pattern), leadOnlyPaths());
   for (const rule of rules) assert.deepEqual(rule.owners, [`${at}octo`], rule.pattern);
-  assert.equal(stepMark(sandbox, 'codeowners'), 'done');
+  assert.equal(stepMark(sandbox, 'codeowners', { PATH: `${bin}:${process.env.PATH}` }), 'done');
   // check --pr reads the file from the base branch, and a change under .yokoten/ needs tier A.
   sandbox.git('add', '.');
   sandbox.git('commit', '-qm', 'base');
@@ -517,6 +517,70 @@ test('init: writes .github/CODEOWNERS for every lead-only path, owned by the Git
   assert.equal(tierB.status, 1, tierB.stdout);
   assert.match(tierB.stderr, /this changes 1 file\(s\) that CODEOWNERS owns \(read from the base branch\): \.yokoten\/extra\.md/);
   assert.doesNotMatch(sandbox.run(['check', '--pr'], { extra: event('A') }).stderr, /CODEOWNERS owns/);
+});
+
+/**
+ * A gh first on PATH that answers only the given calls (all its words, joined by spaces)
+ * and fails every other one, so the real gh and GitHub are never reached (#313).
+ */
+function stubGh(sandbox: ReturnType<typeof makeSandbox>, answers: Record<string, string>): Record<string, string> {
+  const bin = join(sandbox.home, 'bin');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(
+    join(bin, 'gh'),
+    `#!/usr/bin/env node
+const answers = ${JSON.stringify(answers)};
+const said = answers[process.argv.slice(2).join(' ')];
+if (said === undefined) process.exit(1);
+console.log(said);
+`,
+  );
+  chmodSync(join(bin, 'gh'), 0o755);
+  return { PATH: `${bin}:${process.env.PATH}` };
+}
+
+test('init: a CODEOWNERS owner gh says is a user is written as is (#313)', () => {
+  const sandbox = makeSandbox();
+  const extra = stubGh(sandbox, { 'api users/octo --jq .type': 'User' });
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/octo/app.git');
+  const result = sandbox.run(['init'], { extra });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /wrote \.github\/CODEOWNERS \(the lead-only paths, owned by @octo\)/);
+  for (const rule of parseCodeOwners(readFileSync(join(sandbox.repo, '.github', 'CODEOWNERS'), 'utf8'))) assert.deepEqual(rule.owners, [`${at}octo`], rule.pattern);
+});
+
+test('init: an organization is no CODEOWNERS owner, so init writes the placeholder and says why; full doctor flags an org-only file (#313)', () => {
+  const sandbox = makeSandbox();
+  const extra = stubGh(sandbox, {
+    'api users/octo --jq .type': 'Organization',
+    'api repos/octo/app': JSON.stringify({ default_branch: 'main', owner: { login: 'octo', type: 'Organization' } }),
+  });
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/octo/app.git');
+  const result = sandbox.run(['init'], { extra });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /wrote \.github\/CODEOWNERS \(the lead-only paths; @octo is an organization, so put a person or @octo\/<team> in place of @YOUR_GITHUB_HANDLE\)/);
+  const text = readFileSync(join(sandbox.repo, '.github', 'CODEOWNERS'), 'utf8');
+  assert.match(text, /^# @octo is an organization[^\n]*@octo\/<team>/m);
+  const rules = parseCodeOwners(text);
+  assert.deepEqual(rules.map((rule) => rule.pattern), leadOnlyPaths());
+  for (const rule of rules) assert.deepEqual(rule.owners, ['@YOUR_GITHUB_HANDLE'], rule.pattern);
+  // A file owned by the organization alone locks nothing on GitHub: full doctor says so.
+  sandbox.write('.github/CODEOWNERS', '/AGENTS.md @octo\n/.github/ @Octo\n');
+  assert.equal(stepMark(sandbox, 'codeowners', extra), 'to do');
+  assert.match(sandbox.run(['doctor'], { extra }).stdout, /\.github\/CODEOWNERS names only @octo, an organization, and GitHub takes no organization as an owner; put a person's handle or @octo\/<team> in \.github\/CODEOWNERS/);
+  // A team of the organization, or a person, is an owner.
+  sandbox.write('.github/CODEOWNERS', '/AGENTS.md @octo/leads\n');
+  assert.equal(stepMark(sandbox, 'codeowners', extra), 'done');
+});
+
+test('init: when gh fails, the CODEOWNERS owner is the remote owner, as before (#313)', () => {
+  const sandbox = makeSandbox();
+  const extra = stubGh(sandbox, {});
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/octo/app.git');
+  const result = sandbox.run(['init'], { extra });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /wrote \.github\/CODEOWNERS \(the lead-only paths, owned by @octo\)/);
+  assert.doesNotMatch(readFileSync(join(sandbox.repo, '.github', 'CODEOWNERS'), 'utf8'), /YOUR_GITHUB_HANDLE/);
 });
 
 test('init: an existing CODEOWNERS is kept byte for byte, in any place GitHub reads it (#304)', () => {

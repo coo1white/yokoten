@@ -347,7 +347,9 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 - `CODEOWNERS`：默认只许 lead 改的那些路径，都写上主人：`AGENTS.md`、`yokoten.json`、
   `.yokoten/`、hook、agent 配置和 `.github/`。守卫在本机拦住 worker，这个文件在服务器上拦住
   同样的改动。主人取自 GitHub 上的 `origin` 远程仓库；没有的话，文件里先放一个占位符，
-  `doctor` 会提醒你换成自己的 GitHub 用户名。要真正起作用，得在分支保护里打开
+  `doctor` 会提醒你换成自己的 GitHub 用户名。GitHub 不认组织当主人，所以 `gh` 查出这个账号是
+  组织时，`init` 也写占位符，并提醒你换成一个人，或者 `@组织/团队`。完整的 `doctor` 发现文件里
+  只写了组织，也会提醒你。要真正起作用，得在分支保护里打开
   「Require review from Code Owners」（需要 code owner 审查）。项目里本来就有 CODEOWNERS 的
   （放在 `.github/`、根目录或 `docs/`），原样保留。
 
