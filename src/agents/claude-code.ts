@@ -28,6 +28,14 @@ export function readToolCall(input: unknown): Action {
 }
 
 /**
+ * How a refusal reaches the agent: the reason on stderr and exit 2, as Claude Code reads it.
+ * GitHub Copilot CLI reads this file's hooks too (checked with 1.0.98 on 2026-10-19). It
+ * refuses on exit 2 but tells the agent only "hook exited with code 2", unless stdout
+ * names the reason. Claude Code ignores stdout on exit 2.
+ */
+export const formatDenial = (reason: string): { stdout: string; exitCode: number } => ({ stdout: JSON.stringify({ permissionDecision: 'deny', permissionDecisionReason: reason }), exitCode: 2 });
+
+/**
  * A Stop event (the agent is about to end its turn), or null when the input is not one.
  * `active` is Claude Code's `stop_hook_active`: a stop hook already sent the agent back.
  */

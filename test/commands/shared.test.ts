@@ -136,7 +136,8 @@ test('--json: check, doctor, hook and explain print pure JSON with what, why and
   result = sandbox.run(['hook', '--json'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: { command: 'git status' } }) });
   assert.deepEqual([result.status, JSON.parse(result.stdout)], [0, { blocked: false, toolCall: true }]);
   result = sandbox.run(['hook'], { input: JSON.stringify(call) });
-  assert.equal(result.stdout, '', 'without --json, stdout stays empty for the runtimes');
+  // Without --json, stdout holds only the deny decision Copilot CLI reads (#30); Claude Code ignores it on exit 2.
+  assert.deepEqual(Object.keys(JSON.parse(result.stdout)), ['permissionDecision', 'permissionDecisionReason']);
 
   // doctor: the road and the machine as data.
   result = sandbox.run(['doctor', '--json'], { extra });

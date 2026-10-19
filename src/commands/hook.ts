@@ -2,6 +2,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import * as antigravity from '../agents/antigravity.ts';
 import * as claudeCode from '../agents/claude-code.ts';
 import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
@@ -16,6 +17,14 @@ export const READERS: Record<string, (input: unknown) => Action> = {
   'claude-code': claudeCode.readToolCall,
   codex: codex.readToolCall,
   gemini: gemini.readToolCall,
+  antigravity: antigravity.readToolCall,
+};
+
+// What a runtime reads on stdout when a call is refused, and the exit code it wants. The
+// others take the reason on stderr and exit 2, with nothing on stdout.
+const DENIALS: Record<string, (reason: string) => { stdout: string; exitCode: number }> = {
+  'claude-code': claudeCode.formatDenial,
+  antigravity: antigravity.formatDenial,
 };
 
 // Each runtime's event for the end of a turn: Claude Code's and Codex's Stop, Gemini CLI's AfterAgent (#211).
@@ -116,8 +125,11 @@ export function runHook(): number | Promise<number> {
   return judged.then((found) => {
     if (json) printJson(found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
     if (!found) return 0;
-    // The runtimes read the reason from stderr when the hook exits 2.
-    say(`yokoten: ${formatFinding(found)}\n`, process.stderr);
-    return 2;
+    // The runtimes read the reason from stderr when the hook exits 2; some read stdout (DENIALS).
+    const reason = `yokoten: ${formatFinding(found)}`;
+    say(`${reason}\n`, process.stderr);
+    const denial = Object.hasOwn(DENIALS, agent) ? DENIALS[agent](reason) : { stdout: '', exitCode: 2 };
+    if (!json && denial.stdout) say(denial.stdout, process.stdout);
+    return json ? 2 : denial.exitCode;
   });
 }

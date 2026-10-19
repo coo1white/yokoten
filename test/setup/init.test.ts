@@ -139,6 +139,7 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   sandbox.write('.codex/hooks.json', JSON.stringify({ description: 'ours', hooks: mine('PreToolUse') }));
   sandbox.write('.gemini/settings.json', JSON.stringify({ theme: 'x', hooks: mine('BeforeTool') }));
   assert.match(sandbox.run(['doctor']).stdout, /note +codex-hook: no tool-call guard/, 'reported, not counted as missing');
+  assert.match(sandbox.run(['doctor']).stdout, /note +antigravity-hook: no tool-call guard in \.agents\/hooks\.json/, 'the positive control for the Antigravity CLI step (#30)');
   let result = sandbox.run(['init']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /kept AGENTS\.md/);
@@ -193,7 +194,12 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.match(result.stdout, /same the Gemini CLI stop check/);
   assert.deepEqual(codex.hooks.Stop, [{ hooks: [{ type: 'command', command: guarded('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.ts"', 'hook --stop --agent codex') }] }]);
   assert.deepEqual(gemini.hooks.AfterAgent, [{ hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --stop --agent gemini'), name: 'yokoten-stop' }] }]);
-  assert.match(sandbox.run(['doctor']).stdout, /ok +codex-hook\n +ok +gemini-hook/);
+  assert.match(sandbox.run(['doctor']).stdout, /ok +codex-hook\n +ok +gemini-hook\n +ok +antigravity-hook/);
+  // Antigravity CLI (#30): its own file, and Copilot CLI reads .claude/settings.json.
+  assert.match(result.stdout, /same the Antigravity CLI tool-call hook in \.agents\/hooks\.json/);
+  assert.match(result.stdout, /GitHub Copilot CLI runs the hooks in \.claude\/settings\.json once you trust this folder/);
+  const agents = JSON.parse(readFileSync(join(sandbox.repo, '.agents', 'hooks.json'), 'utf8'));
+  assert.deepEqual(agents.yokoten.PreToolUse[0].hooks[0].command, guardedCall('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.ts"', 'hook --agent antigravity'));
   // The pre-commit hook runs the vendored check on a real commit.
   sandbox.git('add', '.');
   const commit = sandbox.git('commit', '-qm', 'adopt yokoten');

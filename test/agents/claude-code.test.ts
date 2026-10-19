@@ -125,3 +125,23 @@ test('plugin: /yokoten:update previews from the plugin, then writes with --write
 test('plugin: its tool-call guard is the command refuseOnFailure builds', () => {
   assert.equal(manifest('plugin.json').hooks.PreToolUse[0].hooks[0].command, refuseOnFailure(`"${PLUGIN_ROOT}/bin/yokoten.ts"`, 'hook --commands-only'));
 });
+
+test('hook: a Copilot CLI call, in the Claude-format shape it sends from .claude/settings.json, is refused with the reason on stdout too (#30)', () => {
+  const sandbox = makeSandbox();
+  // As Copilot CLI 1.0.98 sent it in a real run: PascalCase PreToolUse, snake_case fields.
+  const input = JSON.stringify({
+    hook_event_name: 'PreToolUse',
+    session_id: 'e71070b2-5aa7-4ae3-a471-9ceb55032d19',
+    timestamp: '2026-10-19T16:19:43.817Z',
+    cwd: sandbox.repo,
+    tool_name: 'Bash',
+    tool_input: { command: 'git push --tags origin', description: 'Push all tags to origin' },
+  });
+  const result = sandbox.run(['hook'], { input });
+  assert.equal(result.status, 2, 'Claude Code reads exit 2 and stderr');
+  assert.match(result.stderr, /^yokoten: git push --tags pushes tags\./);
+  // Copilot CLI shows the agent only "hook exited with code 2" unless stdout names the reason.
+  assert.deepEqual(JSON.parse(result.stdout), { permissionDecision: 'deny', permissionDecisionReason: result.stderr.trimEnd() });
+  const create = JSON.stringify({ hook_event_name: 'PreToolUse', cwd: sandbox.repo, tool_name: 'Write', tool_input: { path: join(sandbox.repo, 'AGENTS.md'), file_text: 'x' } });
+  assert.equal(sandbox.run(['hook'], { input: create, extra: { YOKOTEN_ROLE: 'worker' } }).status, 2, "Copilot's create tool names the file in `path`");
+});
