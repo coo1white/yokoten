@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { generateKeyPairSync, verify } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -7,8 +7,8 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { annotation, annotations, appJwt, botConfig, botEnv, type Gh, installationToken, type Label, readCommandTitle, readPlanning, readServer, repoOf, type ServerSettings, stepSummary, type Unread } from '../src/host/github.ts';
-import { DEFAULTS } from '../src/rules/config.ts';
+import { annotation, annotations, appJwt, botConfig, botEnv, cleanChildEnv, type Gh, installationToken, type Label, readCommandTitle, readPlanning, readServer, repoOf, type ServerSettings, stepSummary, type Unread } from '../src/host/github.ts';
+import { DEFAULTS, type Env } from '../src/rules/config.ts';
 import { checkCommand } from '../src/rules/guards.ts';
 import { checkIssueTitle, checkPullRequestTitle } from '../src/rules/pr.ts';
 import { doctor } from '../src/setup/doctor.ts';
@@ -78,6 +78,20 @@ test('env: gh gets the token, and git asks gh for github.com instead of the owne
   assert.equal(e.GIT_CONFIG_VALUE_1, '');
   assert.equal(e.GIT_CONFIG_VALUE_2, '!gh auth git-credential');
   assert.equal(e.PATH, '/bin');
+});
+
+// A child `node --test` that inherits NODE_TEST_CONTEXT reports to the parent run and exits 0
+// whatever happens (#168). The control proves the trap is real, so the fix is not a no-op.
+test('child env: a failing child node --test fails only once NODE_TEST_CONTEXT is gone (#168)', () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'yokoten-child-')), 'fail.test.ts');
+  writeFileSync(file, "import { test } from 'node:test';\ntest('fails', () => { throw new Error('fails on purpose'); });\n");
+  // The parent's own env when this runs under node --test; the same value when run alone.
+  const parentEnv = { ...process.env, NODE_TEST_CONTEXT: process.env.NODE_TEST_CONTEXT ?? 'child-v8' };
+  const runChild = (env: Env) => spawnSync(process.execPath, ['--test', file], { env, encoding: 'utf8' }).status;
+  assert.equal(runChild(parentEnv), 0, 'the trap is gone: a child with the parent env now fails on its own');
+  assert.equal(runChild(cleanChildEnv(parentEnv)), 1, 'a failing child test passed with a clean env');
+  assert.equal(cleanChildEnv(parentEnv).PATH, process.env.PATH);
+  assert.equal(botEnv(parentEnv, 'tok').NODE_TEST_CONTEXT, undefined, 'yokoten bot -- <command> passes the test context on');
 });
 
 test('command title: the title gh issue or gh pr create or edit sets; null for anything else (#117)', () => {

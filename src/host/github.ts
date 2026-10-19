@@ -165,14 +165,25 @@ export async function installationToken(config: BotConfig, repo: string): Promis
   return token;
 }
 
-/** The environment for one command run as the bot: gh reads GH_TOKEN, and git asks gh. */
+// `node --test` sets NODE_TEST_CONTEXT for the test files it starts. A `node --test` that
+// inherits it reports to that parent run instead, and exits 0 even when a test fails (#168).
+
+/** A copy of `env` that a child `node --test` cannot mistake for a parent test run's. */
+export function cleanChildEnv(env: Env): Env {
+  const clean = { ...env };
+  delete clean.NODE_TEST_CONTEXT;
+  return clean;
+}
+
+/** The environment for one command run as the bot: gh reads GH_TOKEN, and git asks gh.
+ * The command may run tests (a push hook, npm test), so it gets a clean child env (#168). */
 export function botEnv(env: Env, token: string): Env {
   // Added after any git config already passed this way. The empty value clears other
   // credential helpers for github.com, so git cannot fall back to the owner's login.
   const n = Number(env.GIT_CONFIG_COUNT) || 0;
   const key = 'credential.https://github.com.helper';
   return {
-    ...env,
+    ...cleanChildEnv(env),
     GH_TOKEN: token,
     GITHUB_TOKEN: token,
     GIT_CONFIG_COUNT: String(n + 2),
