@@ -3,7 +3,7 @@
 // tool early; this is the inspection at the end of the line.
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { lstatSync, readFileSync, readlinkSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { Config, Env } from '../rules/config.ts';
 import { matcher } from '../rules/config.ts';
@@ -262,12 +262,35 @@ export function checkChanged(root: string, { config, env }: { config: Config; en
 }
 
 /**
+ * The history scan reads the commits as they are, not as `git replace` shows them: a
+ * replace ref can hide a commit, and replace refs are pushed like any ref (#284).
+ */
+const historyGit = (root: string, args: string[]) => git(root, ['--no-replace-objects', ...args]);
+const historyGitBytes = (root: string, args: string[], input = '') => gitBytes(root, ['--no-replace-objects', ...args], input);
+
+/** Whether this clone is shallow: git holds only the newest commits (CI's default checkout). */
+const isShallow = (root: string): boolean => git(root, ['rev-parse', '--is-shallow-repository']).trim() === 'true';
+
+/** Whether the repo has an `info/grafts` file, which can hide commits from git (#284). */
+const hasGrafts = (root: string): boolean => existsSync(join(resolve(root, git(root, ['rev-parse', '--git-common-dir']).trim()), 'info', 'grafts'));
+
+/** What `check --history` reports in a shallow clone, in place of a scan (#266). */
+const shallowHistory = (): Finding =>
+  finding('shallow-history', "this clone is shallow, so the history check can't see old commits", 'use `fetch-depth: 0` in actions/checkout, or run `git fetch --unshallow`, then run it again');
+
+/** What `check --history` reports when the repo has a grafts file, in place of a scan (#284). */
+const graftedHistory = (): Finding =>
+  finding('shallow-history', "this repo has a grafts file, so the history check can't see every commit", 'run `git replace --convert-graft-file` to turn .git/info/grafts into replace refs, which the check reads past, then run it again');
+
+/**
  * How many commits on every branch record a time zone other than UTC. History can't be
  * changed without a force push, which is the owner's call, so this is a count to know,
- * not a problem that fails the check.
+ * not a problem that fails the check. A shallow clone can't count them: 0, and
+ * `checkHistory` says why.
  */
 export function historyTimeZones(root: string): number {
-  return git(root, ['log', '--all', '--format=%ad|%cd', '--date=format:%z'])
+  if (isShallow(root) || hasGrafts(root)) return 0;
+  return historyGit(root, ['log', '--all', '--format=%ad|%cd', '--date=format:%z'])
     .split('\n')
     .filter((line) => line && line.split('|').some((zone) => notUtc(` ${zone}`))).length;
 }
@@ -275,9 +298,13 @@ export function historyTimeZones(root: string): number {
 /**
  * The privacy check over every commit on every branch: what was ever committed, plus
  * author and committer emails and commit messages. Run it before a private repo goes
- * public; a file deleted later is still in the history.
+ * public; a file deleted later is still in the history. A shallow clone can't see the
+ * older commits, so it is not scanned: one finding says so (#266). A grafts file can hide
+ * commits the same way (#284).
  */
 export function checkHistory(root: string, { config, env }: { config: Config; env: Env }): Finding[] {
+  if (isShallow(root)) return [shallowHistory()];
+  if (hasGrafts(root)) return [graftedHistory()];
   // The same hit in several commits is reported once.
   const problems = new Map<string, Finding>();
   const add = (found: Finding[]) => {
@@ -287,7 +314,7 @@ export function checkHistory(root: string, { config, env }: { config: Config; en
   const skip = matcher(config.privacy.skip);
   const opts = { marks, allow: config.privacy.allow };
 
-  const log = git(root, ['log', '--all', '--format=%h%x00%ae%x00%ce%x00%B%x1e']);
+  const log = historyGit(root, ['log', '--all', '--format=%h%x00%ae%x00%ce%x00%B%x1e']);
   for (const entry of log.split('\x1e')) {
     const [hash, author, committer, message] = entry.replace(/^\n/, '').split('\0');
     if (!hash) continue;
@@ -296,17 +323,17 @@ export function checkHistory(root: string, { config, env }: { config: Config; en
   }
 
   // Every blob ever committed, with the first path it was seen at.
-  const objects = git(root, ['rev-list', '--all', '--objects']).split('\n');
+  const objects = historyGit(root, ['rev-list', '--all', '--objects']).split('\n');
   const blobs = new Map<string, string>();
   for (const line of objects) {
     const [sha, ...rest] = line.split(' ');
     if (sha && rest.length) blobs.set(sha, rest.join(' '));
   }
-  const types = gitBytes(root, ['cat-file', '--batch-check=%(objectname) %(objecttype)'], [...blobs.keys()].join('\n') + '\n')
+  const types = historyGitBytes(root, ['cat-file', '--batch-check=%(objectname) %(objecttype)'], [...blobs.keys()].join('\n') + '\n')
     .toString('utf8')
     .split('\n');
   const wanted = types.filter((l) => l.endsWith(' blob')).map((l) => l.split(' ')[0]).filter((sha) => !skip(blobs.get(sha) ?? ''));
-  for (const [sha, { bytes, whole }] of readBlobs(root, wanted)) {
+  for (const [sha, { bytes, whole }] of readBlobs(root, wanted, BATCH_CAP, ['--no-replace-objects'])) {
     if (!whole || looksBinary(bytes)) continue;
     add(scanText(bytes.toString('utf8'), { file: `${blobs.get(sha)} @ blob ${sha.slice(0, 8)}`, ...opts }));
   }

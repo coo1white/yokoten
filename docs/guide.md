@@ -107,9 +107,9 @@ listed:
 | Stage | Steps |
 |---|---|
 | **1 · Safety net** | `rules`, `tool-hook`, `commit-check`, `runtime`, `tests` (a test command, and CI runs it) |
-| **2 · Issues and pull requests** | `ci`, `issues` (no todo file), `templates`, `labels` (the standard set), `milestone` (an open one), `no-build-output` (nothing in `dist/`, `build/` or `out/`, no built binaries) |
-| **3 · Release** | `changelog`, `titles` (CI runs `check --pr`) |
-| **4 · A team of agents** | `codeowners`, `bot`, `skills` |
+| **2 · Issues and pull requests** | `ci` (CI runs `check`, or uses the yokoten Action), `issues` (no todo file), `templates`, `labels` (the standard set), `milestone` (an open one), `no-build-output` (nothing in `dist/`, `build/` or `out/`, no built binaries) |
+| **3 · Release** | `changelog`, `titles` (CI runs `check --pr`, or uses the Action on pull requests without `pr-check: false`) |
+| **4 · A team of agents** | `codeowners`, `bot`, `skills`, `review` (a merge to the default branch needs one approval) |
 | **5 · Going public** | `security-files` (a security policy, Dependabot, a license), `protection` (rulesets on the default branch and `v*` tags), `merge-settings` (squash only, delete branch on merge), `security-settings` (secret scanning, push protection, private reporting, Dependabot alerts) |
 
 The last three are server settings. Full `doctor` reads them through `gh api`, and only reads.
@@ -117,8 +117,22 @@ Without `gh`, a sign-in, the network or a GitHub remote, they are **can't check*
 A session never calls the network, so there they are always **can't check**.
 
 `labels` and `milestone` in stage 2 are read the same way. The standard labels are `bug`, `feat`,
-`docs`, `refactor`, `ci`, `owner`, `incident`, `good first issue` and `hotfix`. `init` shows which
-are missing, and `init --github --yes` adds them.
+`docs`, `refactor`, `ci`, `owner`, `incident`, `good first issue`, `hotfix`, and the tier labels
+`tier A`, `tier B` and `tier C`. `init` shows which are missing, and `init --github --yes` adds
+them.
+
+`review` in stage 4 reads the server the same way. It is done when the default branch's ruleset, or
+its branch protection, asks for at least one approving review. GitHub does not let you
+approve your own pull request. So the bot opens the pull requests, and you approve and
+merge them. To set it up, edit the ruleset on the default branch: in "Require a pull
+request", set "Required approvals" to 1. Also keep "Allow GitHub Actions to create and
+approve pull requests" off, in Settings, Actions, General. If it is on, a workflow the bot
+pushes could approve the bot's own pull request, so `review` is not done. OpenSSF
+Scorecard should then count each change as reviewed, because the person who merges it
+did not write it. We read this in the Scorecard docs and have not checked it in a real
+Scorecard run yet. A private repo on a free plan has no rulesets, so there `review` is
+**can't check** and waits for stage 5, when the repo goes public. It is not **not now**:
+that mark is only for a decision you make.
 
 After a step, `yokoten doctor` names the outside standard it meets, when there is one,
 for example `ci (Scorecard: CI-Tests)`. The session message leaves it out.
@@ -321,13 +335,25 @@ jobs:
 The action sets up Node, then runs `check`. On a pull request it also runs `check
 --pr`. The findings show on the pull request page, as in yokoten's own CI.
 
+It handles three events:
+
+- **`push`**: `check`.
+- **`pull_request`**: `check`, then `check --pr`.
+- **`issues`**: `check`, then `check --issue` on the issue's title. To run it, add
+  `issues:` with `types: [opened, edited]` under `on:`.
+
+On `pull_request_target` the checkout holds the base branch, not the pull request, so the
+action skips `check --pr` and leaves a notice: the pull request check runs on
+`pull_request`, not `pull_request_target`.
+
 - **Pin it.** Use a full commit SHA. A branch name like `@main` changes under you. Once
   there is a release, a release tag works too.
 - **The checkout** needs `fetch-depth: 0`. `check --pr` lists the files between the base
   and the head commit, so it needs both.
 - **Permissions**: `contents: read` is enough. The action takes no token.
-- **Inputs**: `pr-check` (default `true`) and `node-version` (default `22`, at least
-  22.18). Set `pr-check: false` to skip the pull request standard.
+- **Inputs**: `pr-check` (default `true`), `issue-check` (default `true`) and
+  `node-version` (default `22`, at least 22.18). Set `pr-check: false` to skip the pull
+  request standard, `issue-check: false` to skip the issue title standard.
 - **Node**: the action sets up Node for the rest of the job too.
 
 `check --pr` holds a pull request to the standard of core rule 8. A repo that does not
@@ -373,7 +399,7 @@ It puts two safe defaults in `.github/` too:
 | `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
 | `check --issue` | In CI: the issue's title. See [Issue titles](#issue-titles) |
 | `changelog [--write]` | Shows the entries the files in `changes/` add under `[Unreleased]`. `--write` puts them into `CHANGELOG.md` and deletes the files; run it before a release. See [The changelog](#the-changelog) |
-| `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public |
+| `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public. A shallow clone can't see old commits, so it fails without scanning; in CI, check out the whole history (`fetch-depth: 0`) |
 | `hook [--agent <name>] [--commands-only] [--json]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini` |
 | `hook --stop` | The stop check. Reads a Claude Code Stop event on stdin and checks the changed files. See [The stop check](#the-stop-check) |
 | `explain [<id>] [--json]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
@@ -404,7 +430,7 @@ value.
 - `hook --stop --json`: `{ blocked, stop, findings }`. With `stop_hook_active`, or when the
   check fails, also `skipped`, the reason. When stdin is not a Stop event: `{ blocked: false, stop: false }`.
 - `explain --json`: `{ found, id, kind, what, why, check, docs, stage, standard }`. For an
-  unknown id, or none: `{ id, found: false, ids }`, where `id` is `null` when none was given.
+  unknown id: `{ id, found: false, ids }`, exit 1. With no id: `{ ids }`, exit 0.
 
 Output for people follows one rule. Results go to stdout. Problems, refusals and errors
 go to stderr. An unknown option is refused, never ignored.
@@ -487,6 +513,8 @@ files never conflict.
 The file is plain Markdown. Line 1 is the section: Added, Changed, Deprecated, Removed,
 Fixed, Security or Internal. Line 2 is blank. From line 3, write the entry as it should
 read in the changelog. The `- ` is added for you. Several bullets in one file are fine.
+The entry has no headings, and the file is a plain file right in `changes/`, not in a
+folder or behind a link.
 
 ```markdown
 Fixed
@@ -618,7 +646,7 @@ The full table, with the reasons, is in [`kit/project/AGENTS.md`](../kit/project
 
 1. Every piece of work starts as an issue. No todo files.
 2. Nothing reaches `main` without a pull request and green CI.
-3. Only the owner creates tags and releases.
+3. Only the owner creates tags and releases. A general "merge" or "ship it" does not approve a release.
 4. A fix task changes code, never tests (`YOKOTEN_FIX_TASK=1`).
 5. A worker doesn't change lead-only files: the rules, agent config, hooks, CI.
 6. Never skip the commit check.
@@ -689,9 +717,10 @@ The setup treats agents like staff on a line, each with a clear role and limited
   with `YOKOTEN_ROLE=worker`. They change code and report back. They never push. A
   fix task also gets `YOKOTEN_FIX_TASK=1`. Then the guard and the commit check stop a
   change to a test file.
-- **The bot** is a GitHub App installed on the repo. It can open pull requests but has
-  no Workflows permission, so it can't change the CI that checks it. A ruleset requires
-  your review, so nothing it opens merges without you.
+- **The bot** is a GitHub App installed on the repo. It opens pull requests. If it has
+  the Workflows permission, CODEOWNERS still sends every CI change to you, and a release
+  waits for you in the protected `release` environment. A ruleset requires your review,
+  so nothing it opens merges without you.
 
 Six skills carry the method: `dispatch` (brief a worker), `inspect` (review one exact
 commit in three passes), `rca` (root cause, a check, then spread it), `record` (write
@@ -721,6 +750,13 @@ request can't edit the file to lower its own tier. Without a base commit, on a l
 it reads the working tree. The message says which one it read. No CODEOWNERS file, no
 check.
 
+A reviewer finds the tier through labels, so `check --pr` also reads them. A pull request
+needs one type label and one tier label. A type label is a title type (`feat`, `fix`,
+`docs`, `refactor`, `ci` and the others) or a common name for one: `bug`, `hotfix` or
+`incident` for `fix`, `feature` or `enhancement` for `feat`, `documentation` for `docs`.
+The tier label is `tier A`, `tier B` or `tier C` (`tier: B` also counts). It must match
+the `tier:` line in the body. Each missing or wrong label gets its own message.
+
 Server setup, step by step: [`docs/server.md`](server.md).
 
 ## Privacy
@@ -730,6 +766,12 @@ on every commit. On your own machine it also reads `~/.config/yokoten/private-ma
 your name, your city, your domains, your server names. That file stays outside the
 repo, because a list of what must not be published can't itself be published. A hit
 is reported by file and line; the mark itself is never printed.
+
+The IP check covers IPv4 only, private ranges such as `10.x` and `192.168.x` included;
+IPv6 is not checked. Localhost and the documentation ranges (`192.0.2.0/24` and its two
+siblings) are fine. Browser version strings such as `Chrome/120.0.0.0` are not
+addresses, and neither is a retina image name such as `logo@2x.png`. An address after
+`http://` or in a path such as `api/` is still caught.
 
 The same check catches secrets: GitHub, npm, Slack, Stripe, Google, OpenAI and
 Anthropic tokens, AWS access key ids, and PEM private keys. A hit names the kind of
