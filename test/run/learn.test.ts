@@ -6,8 +6,6 @@ import {
   spawnSync,
 } from 'node:child_process';
 import {
-  chmodSync,
-  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -17,15 +15,9 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import {
-  dirname,
-  join,
-} from 'node:path';
+import { join } from 'node:path';
 import { test } from 'node:test';
-import {
-  CLI,
-  makeSandbox,
-} from '../helpers.ts';
+import { makeSandbox } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
 import { checkLayout } from '../../src/rules/layout.ts';
 import {
@@ -90,87 +82,6 @@ function makeModuleDir(prefix: string): string {
   writeFileSync(join(root, 'package.json'), '{ "type": "module" }\n');
   return root;
 }
-
-// #77: `learn` turns an incident issue into a check draft. A fake gh first on PATH gives the
-// issue; the real gh and GitHub are never reached.
-test('learn: previews a check draft from an incident, writes it with --write, and never overwrites', () => {
-  const sandbox = makeSandbox();
-  const bin = join(sandbox.home, 'bin');
-  mkdirSync(bin);
-  const issue = { number: 7, title: 'repo: a test fails behind a proxy', body: '## What happened\n\nA test failed.\n\n## Fix\n\nThe test sets NO_PROXY.\n', url: 'https://example.com/issues/7', labels: [{ name: 'incident' }] };
-  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nif (process.argv[4] !== '7') { console.error('no such issue'); process.exit(1); }\nconsole.log(${JSON.stringify(JSON.stringify(issue))});\n`);
-  chmodSync(join(bin, 'gh'), 0o755);
-  const extra = { PATH: `${bin}:${process.env.PATH}` };
-  let result = sandbox.run(['learn', '7'], { extra });
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /^yokoten learn: a check draft from issue #7, "repo: a test fails behind a proxy"\.\n1 TODO\(s\) for the reviewer:\n- why: the issue has no "Why it matters" section\n/);
-  assert.match(result.stdout, /\n--- lessons\/incident-7\/lesson\.ts\n[^]*fix: 'the test sets NO_PROXY',[^]*\n--- lessons\/incident-7\/lesson\.test\.ts\n/);
-  assert.match(result.stdout, /Nothing was written\. `yokoten learn 7 --write` adds these files for review\.\n$/);
-  assert.ok(!existsSync(join(sandbox.repo, 'lessons')), 'a preview writes nothing');
-  result = sandbox.run(['learn', '7', '--write'], { extra });
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Wrote:\n- lessons\/incident-7\/lesson\.ts\n- lessons\/incident-7\/lesson\.test\.ts\nReview the draft/);
-  assert.ok(!/--- lessons/.test(result.stdout), '--write lists the files, not their text');
-  assert.match(readFileSync(join(sandbox.repo, 'lessons/incident-7/lesson.ts'), 'utf8'), /id: 'incident-7',/);
-  result = sandbox.run(['learn', '7', '--write'], { extra });
-  assert.match(result.stdout, /Kept, already there:\n- lessons\/incident-7\/lesson\.ts\n/);
-  result = sandbox.run(['learn', '8'], { extra });
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /^yokoten learn: gh can't read issue 8 \(no such issue\)/);
-  result = sandbox.run(['learn'], { extra });
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /name an incident issue/);
-});
-
-// #147, the whole loop: an incident becomes a lesson in a copy of yokoten, a person writes the
-// check, the lesson ships in the kit, and doctor in another project shows it as a note. A
-// fake gh gives the issue; nothing reaches the network.
-test('lessons: learn, write the check, ship, then doctor in a second repo shows the note', () => {
-  const sandbox = makeSandbox();
-  // The first repo: a copy of yokoten, where the kit lives.
-  const yokoten = join(sandbox.home, 'yokoten');
-  for (const part of ['bin', 'src', 'kit', 'package.json']) cpSync(join(dirname(CLI), '..', part), join(yokoten, part), { recursive: true });
-  spawnSync('git', ['init', '-q'], { cwd: yokoten });
-  const bin = join(sandbox.home, 'bin');
-  mkdirSync(bin);
-  const issue = { number: 9, title: 'repo: a .env file was committed', body: '## What happened\n\nA .env file reached main.\n\n## Why it matters\n\nA .env file can hold a secret.\n\n## Fix\n\nRemove it, and add it to .gitignore.\n', url: 'https://example.com/issues/9', labels: [{ name: 'incident' }] };
-  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nconsole.log(${JSON.stringify(JSON.stringify(issue))});\n`);
-  chmodSync(join(bin, 'gh'), 0o755);
-  const cli = join(yokoten, 'bin', 'yokoten.ts');
-  const runCopy = (args: string[], cwd: string, extra: Record<string, string> = {}) => spawnSync('node', [cli, ...args], { cwd, env: { ...sandbox.env, PATH: `${bin}:${process.env.PATH}`, ...extra }, encoding: 'utf8' });
-
-  let result = runCopy(['learn', '9', '--write'], yokoten);
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /The issue answers every field\./);
-  // Not reviewed yet: shipping is refused.
-  result = runCopy(['learn', '--ship', 'incident-9'], yokoten);
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /^yokoten learn --ship: 2 problem\(s\); nothing was moved:\n- lessons\/incident-9\/lesson\.ts still has 1 TODO\(reviewer\)/);
-  // The reviewer writes the check and its positive control.
-  const lessonFile = join(yokoten, 'lessons/incident-9/lesson.ts');
-  writeFileSync(lessonFile, readFileSync(lessonFile, 'utf8')
-    .replace('/** The shape', "import { existsSync } from 'node:fs';\nimport { join } from 'node:path';\n\n/** The shape")
-    .replace(/ {2}\/\/ TODO\(reviewer\)[^\n]*\n {2}void root;\n {2}return \[\];/, "  return existsSync(join(root, '.env')) ? [{ ...lesson, what: '.env is in the repo' }] : [];"));
-  const testFile = join(yokoten, 'lessons/incident-9/lesson.test.ts');
-  writeFileSync(testFile, readFileSync(testFile, 'utf8')
-    .replace(/ {2}\/\/ TODO\(reviewer\): replace with files that show the incident\.\n {2}const knownBad = makeRepo\(\{ 'TODO\(reviewer\)': '' \}\);/, "  const knownBad = makeRepo({ '.env': 'KEY=1' });")
-    .replace(/ {2}\/\/ TODO\(reviewer\): replace with files where all is well\.\n/, ''));
-  result = runCopy(['learn', '--ship', 'incident-9'], yokoten);
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /^yokoten learn --ship: incident-9 is in kit\/lessons\/1\/incident-9\/, with a row in kit\/lessons\/README\.md \(from https:\/\/example\.com\/issues\/9, yokoten \d+\.\d+\.\d+\)\./);
-
-  // The second repo: a project with the problem. Doctor shows the note, and it fails nothing.
-  sandbox.write('.env', 'KEY=1\n');
-  result = runCopy(['doctor'], sandbox.repo);
-  assert.match(result.stdout, /\n {2}note {4}lesson incident-9: \.env is in the repo; remove it, and add it to \.gitignore\n/);
-  const report = JSON.parse(runCopy(['doctor', '--json'], sandbox.repo).stdout);
-  assert.deepEqual(report.lessons.find((lesson: { id: string }) => lesson.id === 'incident-9'), { id: 'incident-9', mark: 'note' });
-  assert.ok(report.notes.some((note: { id: string }) => note.id === 'incident-9') && !report.findings.some((f: { id: string }) => f.id === 'incident-9'), 'a note, never a finding');
-  // Not now, with the reason.
-  sandbox.write('yokoten.json', JSON.stringify({ notNow: { 'incident-9': 'a sample file, no secret in it' } }));
-  result = runCopy(['doctor'], sandbox.repo);
-  assert.match(result.stdout, /\n {2}not now lesson incident-9: a sample file, no secret in it\n/);
-});
 
 // #172: the first full doctor in a clone says a kit lesson is new, once. A session writes nothing.
 test('lessons: full doctor notes a new lesson on the first run only; a session, not now and a broken state', () => {

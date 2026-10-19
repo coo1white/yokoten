@@ -6,19 +6,20 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { COMMANDS } from '../src/run/cli.ts';
-import { findDeclarations, findNameProblems, splitWords, tokenize } from '../src/run/names.ts';
-import { HOME_DIR, homeDirOf } from '../src/setup/files.ts';
+import { COMMANDS } from '../../src/run/cli.ts';
+import { findDeclarations, findNameProblems, splitWords, tokenize } from '../../src/run/names.ts';
+import { HOME_DIR, homeDirOf } from '../../src/setup/files.ts';
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SRC = join(ROOT, 'src');
 
 // Lowest first. A module may import from its own layer or a lower one, never a higher.
 // rules: what is allowed, as pure functions. run: the checks at work (hook, commit, CI).
 // agents: one adapter per AI runtime, and llama.ts, the model API that adopt calls.
 // host: one adapter per code host (the bot, a CI run's pull request). setup: writing
-// yokoten into a machine or a project.
-const LAYERS = ['rules', 'run', 'agents', 'host', 'setup'];
+// yokoten into a machine or a project. commands: one module per command or small group,
+// which bin/main.ts calls (#330).
+const LAYERS = ['rules', 'run', 'agents', 'host', 'setup', 'commands'];
 
 test('layers: no module imports from a layer above its own', () => {
   const found = new Set<string>();
@@ -42,8 +43,9 @@ test('layers: no module imports from a layer above its own', () => {
 // One test file per src module, at the module's own path: src/run/check.ts is tested in
 // test/run/check.test.ts (#152). A branch that changes a module adds its tests, and their
 // imports, to that module's file, so parallel branches do not meet in one import block.
-// Next to the layer folders, test/ holds only this file and the shared helpers.
-const TEST_TOP = ['architecture.test.ts', 'helpers.ts'];
+// Next to the layer folders, test/ holds repo/: this file and the shared helpers, which
+// check the repo as a whole, not one src module.
+const TEST_TOP = ['repo/architecture.test.ts', 'repo/helpers.ts'];
 // Modules with no test file of their own. Keep it short: a new module gets its test file.
 const NO_TEST_FILE = [
   'agents/agent-skills.ts', // no tests yet (#152)
@@ -76,7 +78,7 @@ function testFileProblems(modules: string[], tests: string[]): string[] {
 
 test('test files: each one is the test file of a src module, at the same path (#152)', () => {
   const modules = ['run/check.ts', 'setup/advice/adopt.ts', ...NO_TEST_FILE];
-  assert.deepEqual(testFileProblems(modules, ['architecture.test.ts', 'helpers.ts', 'run/check.test.ts', 'setup/advice/adopt.test.ts']), []);
+  assert.deepEqual(testFileProblems(modules, ['repo/architecture.test.ts', 'repo/helpers.ts', 'run/check.test.ts', 'setup/advice/adopt.test.ts']), []);
   assert.deepEqual(testFileProblems(modules, ['run/check.test.ts', 'setup/advice/adopt.test.ts', 'run/gone.test.ts', 'run/check/pr.test.ts', 'run/util.ts', 'top.test.ts']), [
     'test/run/gone.test.ts is not the test file of a src module (src/run/gone.ts)',
     'test/run/check/pr.test.ts is not the test file of a src module (src/run/check/pr.ts)',
@@ -88,7 +90,7 @@ test('test files: each one is the test file of a src module, at the same path (#
   assert.deepEqual(
     testFileProblems(filesUnder(SRC), tests).filter((problem) => problem.startsWith('test/')),
     [],
-    'name each test file after its src module, or put shared code in test/helpers.ts',
+    'name each test file after its src module, or put shared code in test/repo/helpers.ts',
   );
 });
 

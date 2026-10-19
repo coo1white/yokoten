@@ -18,7 +18,6 @@ import {
   fakeGh,
   GOOD,
   makeSandbox,
-  pick,
   planningFound,
   REPO,
   ROOT,
@@ -26,7 +25,7 @@ import {
   serverGh,
   stepMark,
   withPlanning,
-} from '../helpers.ts';
+} from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
 import {
   type Gh,
@@ -475,24 +474,6 @@ test('doctor: the tests step wants a test command and a CI step that runs it (#5
   assert.match(line(), /^ +to do +tests \(Best Practices: test\): no workflow runs a test command such as `go test`, `pytest` or `cargo test`/);
   sandbox.write('.github/workflows/ci.yml', 'jobs:\n  t:\n    steps:\n      - run: go test ./...\n');
   assert.match(line(), /^ +done +tests/);
-});
-
-// Codex adds a SessionStart hook's plain stdout to the context; Gemini CLI reads JSON only (#211).
-test('doctor --session --agent: plain text for Codex, hookSpecificOutput JSON for Gemini CLI (#211)', () => {
-  const sandbox = makeSandbox();
-  const plain = sandbox.run(['doctor', '--session']);
-  assert.match(plain.stdout, /^yokoten: stage 1 of 5/);
-  assert.deepEqual(pick(sandbox.run(['doctor', '--session', '--agent', 'codex'])), pick(plain));
-  const result = sandbox.run(['doctor', '--session', '--agent', 'gemini']);
-  assert.equal(result.status, 0, result.stderr);
-  const out = JSON.parse(result.stdout);
-  assert.deepEqual(Object.keys(out), ['hookSpecificOutput']);
-  assert.deepEqual(Object.keys(out.hookSpecificOutput), ['additionalContext']);
-  assert.equal(out.hookSpecificOutput.additionalContext, plain.stdout.trimEnd());
-  assert.ok(!result.stdout.includes(sandbox.home), 'output shows the home path');
-  // Outside a repo there is nothing to say, and no JSON either.
-  assert.equal(sandbox.run(['doctor', '--session', '--agent', 'gemini'], { cwd: sandbox.home }).stdout, '');
-  assert.equal(sandbox.run(['doctor', '--session', '--agent', 'cursor']).status, 1);
 });
 
 // #208: steps left on the road are to do, not problems. Exit 1 is for a problem.

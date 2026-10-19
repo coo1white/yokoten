@@ -11,7 +11,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { at } from '../helpers.ts';
+import { at } from '../repo/helpers.ts';
 import { formatFinding } from '../../src/rules/message.ts';
 import {
   hideHome,

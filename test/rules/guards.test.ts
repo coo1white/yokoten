@@ -16,7 +16,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { makeSandbox } from '../helpers.ts';
+import { makeSandbox } from '../repo/helpers.ts';
 import {
   DEFAULTS,
   type Env,

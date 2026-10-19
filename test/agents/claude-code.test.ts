@@ -16,7 +16,7 @@ import {
   manifest,
   PLUGIN_ROOT,
   ROOT,
-} from '../helpers.ts';
+} from '../repo/helpers.ts';
 import { refuseOnFailure } from '../../src/run/cli.ts';
 
 test('plugin: the marketplace and the plugin have the documented fields', () => {

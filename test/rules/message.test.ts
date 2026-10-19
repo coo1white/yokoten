@@ -15,7 +15,7 @@ import { test } from 'node:test';
 import {
   makeTranslatedRepo,
   NAMED,
-} from '../helpers.ts';
+} from '../repo/helpers.ts';
 import {
   DEFAULTS,
   findUnknownKeys,
