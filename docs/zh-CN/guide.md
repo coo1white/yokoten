@@ -636,7 +636,7 @@ Fixed
 `check --pr` 把 `changes/` 里新加的文件当成这个 PR 的更新日志，还会检查格式。直接改
 `CHANGELOG.md` 也照样能过，还没换过来的项目不受影响。`check` 也用同样的读法检查 `changes/`
 里的文件，`check --staged` 查暂存的那些。这样格式不对的文件在提交时就被 git 钩子拦下，不用等到
-CI。暂存的文件里有太长的句子，它也会提醒。`init` 会加上 `changes/README.md`，
+CI。暂存的变更文件里有太长的句子，它也会提醒。还没加进 git 的变更文件也算，跟 `changelog` 一样。`init` 会加上 `changes/README.md`，
 里面有格式说明。`changes/` 里的文件可以超过 7 个，因为每次发版都会清空。
 
 ### 翻译

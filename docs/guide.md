@@ -702,9 +702,10 @@ it says which file and why, and writes nothing.
 `check --pr` takes a new file in `changes/` as the pull request's changelog entry, and
 checks its form. A line in `CHANGELOG.md` still passes, for a project that has not moved
 yet. `check` reads the files in `changes/` the same way, and `check --staged` reads the
-staged ones. So the git hook stops a wrong file at commit, before CI does. It notes long
-sentences in a staged file too. `init` adds `changes/README.md`, which shows the form. `changes/` may hold more
-than 7 files, since each release empties it.
+staged ones. So the git hook stops a wrong file at commit, before CI does. It also notes
+long sentences in a staged change file. A change file not yet added to git counts too, as
+it does for `changelog`. `init` adds `changes/README.md`, which shows the form.
+`changes/` may hold more than 7 files, since each release empties it.
 
 ### Translations
 
