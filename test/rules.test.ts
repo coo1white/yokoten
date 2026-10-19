@@ -10,7 +10,7 @@ import { checkBuildOutput, checkLayout, isBuildOutput } from '../src/rules/layou
 import { DOCS_URL, type Finding, finding, formatFinding, type Rule, RULES } from '../src/rules/message.ts';
 import { POSITIVE_CONTROL, scanText } from '../src/rules/privacy.ts';
 import { SECRET_CONTROL } from '../src/rules/secrets.ts';
-import { check, checkHistory, timeZoneNote } from '../src/run/check.ts';
+import { batchBlobs, check, checkHistory, readBlobs, timeZoneNote } from '../src/run/check.ts';
 import { parseSourceMarker, sourceMarker, translationNotes } from '../src/run/translations.ts';
 import { agentHooks, coreRulesCheck, coreRulesControl, machineChecks, selfTest } from '../src/setup/doctor.ts';
 import { compareCoreRules, compareVersions, readKitVersion } from '../src/setup/init.ts';
@@ -540,6 +540,8 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   execFileSync('git', ['clone', '-q', '--depth', '1', `file://${translated.root}`, shallow], { stdio: 'ignore' });
   found.push(...checkHistory(shallow, { config: DEFAULTS, env: {} }));
   found.push(...parseChange('changes/1-a.md', 'Improved\n\nA thing.\n').problems);
+  translated.git('update-index', '--add', '--info-only', '--cacheinfo', `100644,${'1'.repeat(40)},ghost.md`);
+  add(check(translated.root, { config: DEFAULTS, env: {}, staged: true }).find((f) => f.id === 'missing-blob'));
   // A CI event that can't be read, and a pull request whose commits are not here (#267).
   const unreadable = (read: unknown) => (read && typeof read === 'object' && 'problem' in read ? (read.problem as Finding) : null);
   add(unreadable(readIssue({ GITHUB_EVENT_PATH: join(translated.root, 'no-event.json') })));
@@ -663,6 +665,46 @@ function makeTranslatedRepo() {
   commit('zh.md', `${sourceMarker('en.md')}\n# 指南\n\n第一步。\n`);
   return { root, git, commit };
 }
+
+// #244: blobs are read in batches under a cap, so one buffer never holds a whole big commit.
+test('readBlobs: batches under the cap; a blob over it is read only for its start (#244)', () => {
+  const sizes = new Map([['a', 10], ['b', 20], ['c', 30], ['d', 41], ['e', 40], ['f', 0]]);
+  assert.deepEqual(batchBlobs(sizes, 40), { batches: [['a', 'b'], ['c'], ['e', 'f']], over: ['d'] });
+  const repo = makeTranslatedRepo();
+  const blob = (bytes: Buffer) => {
+    writeFileSync(join(repo.root, 'b'), bytes);
+    return repo.git('hash-object', '-w', 'b');
+  };
+  const small = [10, 20, 30].map((n) => blob(Buffer.alloc(n, String(n))));
+  const big = blob(Buffer.concat([Buffer.alloc(9000, 'a'), Buffer.alloc(1)]));
+  const missing = 'f'.repeat(40);
+  const read = readBlobs(repo.root, [...small, small[0], big, missing], 40);
+  assert.deepEqual([...read.keys()].sort(), [...small, big].sort(), 'a missing blob is left out; a repeat is read once');
+  for (const [i, n] of [10, 20, 30].entries()) assert.deepEqual(read.get(small[i]), { bytes: Buffer.alloc(n, String(n)), size: n, whole: true });
+  const start = read.get(big);
+  assert.deepEqual([start?.bytes.length, start?.size, start?.whole], [8000, 9001, false], 'only the first 8000 bytes, enough to tell binary');
+  assert.deepEqual(readBlobs(repo.root, []), new Map());
+});
+
+// #284 needs the history read past `git replace`: `pre` reaches every git call readBlobs makes.
+test('readBlobs: `pre` goes before the subcommand, in the batch and the over-cap read (#244, #284)', () => {
+  const repo = makeTranslatedRepo();
+  const blob = (bytes: Buffer) => {
+    writeFileSync(join(repo.root, 'b'), bytes);
+    return repo.git('hash-object', '-w', 'b');
+  };
+  const stored = blob(Buffer.from('stored bytes\n'));
+  const shown = blob(Buffer.from('replacement\n'));
+  const big = blob(Buffer.alloc(9000, 'a'));
+  const bigShown = blob(Buffer.alloc(9000, 'b'));
+  repo.git('replace', stored, shown);
+  repo.git('replace', big, bigShown);
+  const first = (read: Map<string, { bytes: Buffer }>, id: string) => read.get(id)?.bytes.subarray(0, 1).toString();
+  const plain = readBlobs(repo.root, [stored, big], 100);
+  assert.deepEqual([plain.get(stored)?.bytes.toString(), first(plain, big)], ['replacement\n', 'b'], 'without pre, git shows the replacement');
+  const raw = readBlobs(repo.root, [stored, big], 100, ['--no-replace-objects']);
+  assert.deepEqual([raw.get(stored)?.bytes.toString(), first(raw, big)], ['stored bytes\n', 'a'], 'with pre, the bytes as stored');
+});
 
 test('check --history: a blob swapped by git replace is read as committed, not as the swap shows it (#284)', () => {
   const repo = makeTranslatedRepo();
