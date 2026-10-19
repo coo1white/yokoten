@@ -108,6 +108,12 @@ export const RULES = {
     check: 'the commit check, CI and `check --history` look for the real shape of tokens (GitHub, npm, AWS, Slack, Stripe, Google, Anthropic, OpenAI) and of private keys',
     docs: guide('privacy'),
   },
+  'shallow-history': {
+    rule: '`check --history` reads the whole history, so it needs a full clone with no grafts file',
+    why: 'a shallow clone holds only the newest commits, and a grafts file can hide commits, so a secret in a hidden commit goes unseen',
+    check: '`check --history` asks git whether the clone is shallow (`git rev-parse --is-shallow-repository`) and looks for `info/grafts` in the git directory; if either is there, it scans nothing and fails with this finding. Replace refs are read past (`git --no-replace-objects`)',
+    docs: guide('privacy'),
+  },
   'time-zone': {
     rule: 'commit times are UTC (core rule 12)',
     why: 'a time zone narrows down where you live',
@@ -195,6 +201,18 @@ export const RULES = {
     why: 'labels say what kind of change it is and how hard it is to take back',
     check: PR_CHECK,
     docs: guide('the-core-rules'),
+  },
+  'pr-commits': {
+    rule: 'the checkout of a pull request run has its base and head commits, and the history between them',
+    why: 'yokoten reads the changed files from git, between the base and the head commit, so without them nothing in the pull request is checked',
+    check: `${PR_CHECK}; it looks for both commits and a common commit before it reads the diff, and fails when one is missing`,
+    docs: guide('use-it-as-a-github-action'),
+  },
+  'ci-event': {
+    rule: '`check --pr` and `check --issue` read the event file of the CI run',
+    why: 'the pull request or the issue is in that file, so without it nothing is checked',
+    check: 'in a CI run, `check --pr` and `check --issue` fail when the event file is missing or is not a JSON object; with no event file named, they skip',
+    docs: guide('use-it-as-a-github-action'),
   },
   'issue-area': {
     rule: 'an issue title starts with its area: `area: verb phrase` for a task, `area: symptom` for an incident',

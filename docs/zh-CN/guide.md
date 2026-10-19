@@ -96,8 +96,8 @@ not now（暂不，后面跟着你给的原因）或者 can't check（这里查�
 | 关 | 步骤 |
 |---|---|
 | **1 · 安全网** | `rules`、`tool-hook`、`commit-check`、`runtime`、`tests`（有测试命令，CI 会跑） |
-| **2 · 先开 issue，再走 PR** | `ci`、`issues`（没有 todo 文件）、`templates`、`labels`（标准标签都在）、`milestone`（有一个没关的里程碑）、`no-build-output`（`dist/`、`build/`、`out/` 里没有提交的文件，也没有编译出来的二进制文件） |
-| **3 · 发版** | `changelog`、`titles`（CI 跑 `check --pr`） |
+| **2 · 先开 issue，再走 PR** | `ci`（CI 跑 `check`，或者用了 yokoten 的 Action）、`issues`（没有 todo 文件）、`templates`、`labels`（标准标签都在）、`milestone`（有一个没关的里程碑）、`no-build-output`（`dist/`、`build/`、`out/` 里没有提交的文件，也没有编译出来的二进制文件） |
+| **3 · 发版** | `changelog`、`titles`（CI 跑 `check --pr`；用 Action 的话，要在 PR 上跑，而且没设 `pr-check: false`） |
 | **4 · 带一支 AI 团队** | `codeowners`、`bot`、`skills` |
 | **5 · 公开** | `security-files`（安全说明、Dependabot、许可证）、`protection`（默认分支和 `v*` tag 上的规则集）、`merge-settings`（只许 squash 合并，合并后自动删分支）、`security-settings`（secret scanning、push protection、私下报告漏洞、Dependabot 提醒） |
 
@@ -297,12 +297,23 @@ jobs:
 这个 action 先装好 Node，再跑 `check`；如果是 PR，还会接着跑 `check --pr`。查出来的问题
 会标在 PR 页面上，跟 yokoten 自己的 CI 一样。
 
+它认这三种事件：
+
+- **`push`**：跑 `check`。
+- **`pull_request`**：先跑 `check`，再跑 `check --pr`。
+- **`issues`**：先跑 `check`，再跑 `check --issue` 查 issue 标题。要在 `on:` 下面加上
+  `issues: types: [opened, edited]` 才会触发。
+
+`pull_request_target` 拉下来的是目标分支，不是 PR 本身的代码，所以 action 不跑
+`check --pr`，只留一条提示：PR 检查要用 `pull_request` 触发，不是 `pull_request_target`。
+
 - **版本要钉死。** 写完整的 commit SHA。写 `@main` 这种分支名，哪天内容变了你都不知道。
   等发布了正式版本，也可以写版本标签。
 - **checkout** 要加 `fetch-depth: 0`。`check --pr` 要比较 PR 的起点和最新提交，两个都得拉下来。
 - **权限**只要 `contents: read`。这个 action 不要令牌。
-- **参数**只有两个：`pr-check`（默认 `true`）和 `node-version`（默认 `22`，最低 22.18）。
-  不想查 PR 的格式，就写 `pr-check: false`。
+- **参数**有三个：`pr-check`（默认 `true`）、`issue-check`（默认 `true`）和 `node-version`
+  （默认 `22`，最低 22.18）。不想查 PR 的格式，就写 `pr-check: false`；不想查 issue 标题，
+  就写 `issue-check: false`。
 - **Node**：action 装的 Node，这个 job 后面的步骤也会用到。
 
 `check --pr` 按核心规则第 8 条检查 PR。还没按这条规则走的仓库，可以先写 `pr-check: false`。
@@ -346,7 +357,7 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 | `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的变更文件、milestone 和标签，见下面的「更新日志」。改到 CODEOWNERS 里列出的文件，必须写 `tier: A`。改动的文档里句子太长、改动的代码里名字难读、改动超过 400 行，都只提醒，不算失败 |
 | `check --issue` | 在 CI 里检查 issue 的标题，见下面的「issue 标题」 |
 | `changelog [--write]` | 列出 `changes/` 里的文件会往 `[Unreleased]` 下面加哪些条目。加上 `--write` 就真的写进 `CHANGELOG.md`，再删掉这些文件；发版前跑。见下面的「更新日志」 |
-| `check --history` | 对所有分支的每一个提交做隐私检查。私有仓库公开之前跑一遍 |
+| `check --history` | 对所有分支的每一个提交做隐私检查。私有仓库公开之前跑一遍。浅克隆看不到旧的提交，所以它不扫描、直接报错；在 CI 里要拉下全部历史（`fetch-depth: 0`） |
 | `hook [--agent <name>] [--commands-only] [--json]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool |
 | `hook --stop` | 收尾检查。从标准输入读 Claude Code 的 Stop 事件，检查改过的文件。见[收尾检查](#收尾检查) |
 | `explain [<id>] [--json]` | 讲一条规则或者路上的一步：它是什么、为什么要有、yokoten 怎么检查 |
@@ -374,8 +385,8 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
   它们按各自的 hook 协议，看退出码，再从标准错误读原因。
 - `hook --stop --json`：`{ blocked, stop, findings }`。`stop_hook_active` 为真，或者检查本身出错时，
   多一个 `skipped` 写明原因。读到的不是 Stop 事件时，是 `{ blocked: false, stop: false }`。
-- `explain --json`：`{ found, id, kind, what, why, check, docs, stage, standard }`。id 不存在或者
-  没写时是 `{ id, found: false, ids }`；没写 id 时，`id` 是 `null`。
+- `explain --json`：`{ found, id, kind, what, why, check, docs, stage, standard }`。id 不存在时是
+  `{ id, found: false, ids }`，退出码 1；没写 id 时是 `{ ids }`，退出码 0。
 
 输出的规矩只有一条：结果写到标准输出（stdout），问题、拒绝和出错写到标准错误（stderr）。
 不认识的选项会直接拒绝，不会悄悄忽略。
@@ -452,7 +463,8 @@ PR 改了用户能感觉到的东西，就加一个小文件：`changes/<issue>-
 
 文件就是普通的 Markdown。第 1 行写分类：Added、Changed、Deprecated、Removed、Fixed、Security
 或 Internal。第 2 行空着。从第 3 行开始写条目，写成它在更新日志里该有的样子。前面的 `- `
-会自动加上。一个文件里写好几条也可以。
+会自动加上。一个文件里写好几条也可以。条目里不能有标题；文件直接放在 `changes/` 下面，
+不要放进子文件夹，也不要用链接。
 
 ```markdown
 Fixed
@@ -664,6 +676,11 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 `~/.config/yokoten/private-marks`，里面是你的名字、所在城市、域名、服务器名。这个文件放在
 仓库外面，因为「不能公开的东西」这张清单本身也不能公开。查到问题时只报文件和行号，不会把
 词表里的词打印出来。
+
+IP 只查 IPv4，内网地址（比如 `10.x`、`192.168.x`）也算；IPv6 不查。本机地址和专门留给文档用的
+几段地址（`192.0.2.0/24` 等三段）不算。浏览器的版本号（比如 `Chrome/120.0.0.0`）不算 IP，
+`logo@2x.png` 这种高清图的文件名也不算邮箱。不过写在 `http://` 后面或者路径里（比如 `api/`
+后面）的 IP 照样会查出来。
 
 这个检查也会查密钥：GitHub、npm、Slack、Stripe、Google、OpenAI 和 Anthropic 的 token，
 AWS 的 access key id，还有 PEM 私钥。查到了只说是哪一种密钥，不会把密钥本身打印出来。光删掉
