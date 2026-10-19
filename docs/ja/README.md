@@ -51,6 +51,9 @@ npx yokoten init         # プロジェクトごとに一度
 npx yokoten doctor       # 今いる関所と、次の一手
 ```
 
+最初のコミットの前に：`TZ=UTC git commit` でコミットするか、シェルの設定ファイルに `export TZ=UTC` を一度書いておいてください。
+コミットチェックは UTC 以外のタイムゾーンを通しません。コミットのタイムゾーンから、住んでいる地域がおおよそ分かってしまうからです。
+
 Claude Code ではプラグインとしても使えます。`/plugin marketplace add yokoten-labs/yokoten` のあとに
 `/plugin install yokoten@yokoten` を実行してください。どちらか片方だけを使い、両方は入れないでください。
 最初のリリースが npm に出るまでは、[clone からインストール](../guide.md#install-from-a-clone)できます。

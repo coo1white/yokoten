@@ -10,7 +10,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { type Env, loadConfig } from '../rules/config.ts';
 import { matcher } from '../rules/config.ts';
 import { type Finding, finding, type RuleId } from '../rules/message.ts';
@@ -20,7 +20,7 @@ import { hasPlugin, hasProjectHook } from '../agents/claude-code.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
 import { hasBot, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
-import { claudeReadsRules, cliPath, hookFile, isSelf } from './init.ts';
+import { claudeReadsRules, cliPath, COMMIT_HOOKS, deadHookNotes, findRulesGap, handOffBlocks, hasHandOff, hookFile, isCommitHook, isExecutable, isSelf, type OldHook, readHookSetup, readOldHooks } from './init.ts';
 import { FIRST_MILESTONE, lackingLabels, pickNewMilestone } from './plan.ts';
 import { skillFiles, skillsDir } from './install.ts';
 
@@ -75,10 +75,11 @@ export const gitConfig = (root: string, key: string) => {
   }
 };
 
-const ciText = (root: string) => {
+const ciFiles = (root: string): string[] => {
   const dir = join(root, '.github', 'workflows');
-  return existsSync(dir) ? readdirSync(dir).map((f) => read(join(dir, f))).join('\n') : '';
+  return existsSync(dir) ? readdirSync(dir).map((f) => read(join(dir, f))) : [];
 };
+const ciText = (root: string) => ciFiles(root).join('\n');
 
 const TODO_FILES = ['TODO.md', 'TODO', 'todo.md', 'docs/todo'];
 // Names as the folder lists them: on a case-insensitive disk (macOS) TODO.md also "exists" as todo.md.
@@ -122,14 +123,175 @@ const testScript = (root: string): string => {
     return '';
   }
 };
-// A command that runs the package.json script, and runners that need no script.
-const RUNS_SCRIPT = /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|t)\b/;
-const RUNNERS = /\b(?:node\s+--test|deno\s+test|go\s+test|cargo\s+test|pytest|mvn\s+test|gradle\s+test)\b/;
-/** Whether CI runs the tests: the package.json script, or a test runner named outright. */
-const ciRunsTests = (root: string) => {
-  const ci = ciText(root);
-  const script = testScript(root);
-  return RUNNERS.test(ci) || (script !== '' && (RUNS_SCRIPT.test(ci) || ci.includes(script)));
+/**
+ * The shell lines that the workflows run: each `run:` value, one line, or each line of a
+ * `run: |` block. A job id, a matrix item or a comment is never a command. Each line is
+ * matched on its own, so no pattern can run across a newline.
+ */
+const runLines = (ci: string): string[] => {
+  const lines: string[] = [];
+  const text = ci.split(/\r?\n/);
+  for (let i = 0; i < text.length; i++) {
+    const key = /^([ \t]*(?:-[ \t]+)?)run:(?:[ \t]+(.*))?$/.exec(text[i]);
+    if (!key) continue;
+    const value = (key[2] ?? '').trim();
+    if (/^[|>][-+0-9]*(?:[ \t]+#.*)?$/.test(value)) {
+      // A block: the lines indented more than the `run` key, with `\` continuations joined.
+      let line = '';
+      for (; i + 1 < text.length && (text[i + 1].trim() === '' || /^[ \t]*/.exec(text[i + 1])![0].length > key[1].length); i++) {
+        const next = text[i + 1].trim();
+        if (!next) continue;
+        line = line ? `${line} ${next}` : next;
+        if (!line.endsWith('\\')) {
+          lines.push(line);
+          line = '';
+        }
+      }
+      if (line) lines.push(line);
+    } else if (!value.startsWith('#')) lines.push(value.replace(/^(["'])(.*)\1$/, '$2'));
+  }
+  return lines;
+};
+/**
+ * The simple commands in a shell line: split at ;, &, |, with an opening "(" and any
+ * `VAR=value`, `env` or `time` before the command taken off. Comments go.
+ */
+const commands = (line: string): string[] =>
+  line.split(/[;&|]+/).map((c) => c.trim().replace(/^(?:\(\s*|[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+|env(?:\s+-\S+)*\s+|time\s+)*/, '')).filter((c) => c && !c.startsWith('#'));
+/** A command that only asks a tool about itself. */
+const ASKS = /\s--(?:version|help)(?=\s|$)/;
+// The end of a command name: a space or the end, so "make test-deps" and "jest-preview" are not runs.
+const END = String.raw`(?=\s|$)`;
+// Flags with no value, as tools take them before the command: npx --yes, node --experimental-strip-types.
+const FLAGS = String.raw`(?:\s+-\S+)*`;
+// Flags that may take a value: npm -w app, pnpm --filter app.
+const VALUED = String.raw`(?:\s+-\S+(?:\s+[^-\s]\S*)?)*`;
+const anchored = (pattern: string) => new RegExp(`^${pattern}${END}`);
+/** The package.json "test" script, run by its package manager. */
+const RUNS_SCRIPT = anchored(String.raw`(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|t)`);
+// Tools that start a Node runner: npx, bunx, npm exec, pnpm (exec, dlx), yarn (run).
+const NODE_EXEC = String.raw`(?:(?:npx|bunx)${FLAGS}\s+|npm\s+exec${FLAGS}\s+(?:--\s+)?|(?:pnpm|yarn)(?:\s+(?:exec|dlx|run))?\s+)?`;
+// Tools that start a Python runner: uv run, uvx, pipx run, poetry run, pipenv run.
+const PY_EXEC = String.raw`(?:(?:uvx|uv\s+run|pipx\s+run|poetry\s+run|pipenv\s+run)${FLAGS}\s+)?`;
+// A Python module run as a program: python -m, coverage run -m.
+const PY_M = String.raw`(?:python3?|coverage\s+run)\s+-m\s+`;
+/** Test runners that need no package.json script, one entry per runner. Each is matched at the start of a command. */
+const RUNNERS: RegExp[] = [
+  anchored(String.raw`node${FLAGS}\s+--test`),
+  anchored(String.raw`deno\s+test`),
+  anchored(String.raw`go\s+test`),
+  anchored(String.raw`cargo\s+test`),
+  anchored(String.raw`(?:\./)?mvnw?${FLAGS}\s+test`),
+  anchored(String.raw`(?:\./)?gradlew?${FLAGS}\s+test`),
+  anchored(`${PY_EXEC}(?:${PY_M})?(?:pytest|tox|nox)`),
+  anchored(`${PY_EXEC}${PY_M}unittest`),
+  anchored(String.raw`make(?:\s+-C\s*\S+|\s+-\S+)*\s+tests?`),
+  anchored(`${NODE_EXEC}(?:vitest|jest)`),
+];
+/** In a workspaces repo, commands that run each package's "test" script; the root may have none. */
+const RUNS_WORKSPACES: RegExp[] = [
+  // npm takes its flags anywhere: npm test --workspaces, npm -w app test, npm run test -ws.
+  new RegExp(String.raw`^npm(?=.*\s(?:--workspaces?|-ws|-w)(?:[\s=]|$))${VALUED}\s+(?:run\s+)?(?:test|t)${END}`),
+  anchored(String.raw`pnpm${VALUED}\s+(?:-r|--recursive|--filter(?:=|\s+)\S+|-F\s+\S+)${VALUED}\s+(?:run\s+)?test`),
+  anchored(String.raw`yarn\s+workspaces\s+(?:foreach${VALUED}\s+)?run\s+test`),
+];
+const packageJson = (root: string): Record<string, unknown> | null => {
+  try {
+    const json = JSON.parse(read(join(root, 'package.json')) || 'null');
+    return json && typeof json === 'object' ? json : null;
+  } catch {
+    return null;
+  }
+};
+const isWorkspaces = (root: string) => Boolean(packageJson(root)?.workspaces) || existsSync(join(root, 'pnpm-workspace.yaml'));
+/**
+ * Whether the workflow text runs the tests: the package.json "test" script (`script`, or
+ * empty), each package's script in a workspaces repo, or a test runner named outright.
+ */
+export const runsTests = (ci: string, script: string, workspaces: boolean) => {
+  const lines = runLines(ci);
+  const run = lines.flatMap(commands).filter((c) => !ASKS.test(c));
+  if (run.some((c) => RUNNERS.some((r) => r.test(c)))) return true;
+  if (script !== '' && (run.some((c) => RUNS_SCRIPT.test(c)) || lines.some((l) => l.includes(script)))) return true;
+  return workspaces && run.some((c) => RUNS_WORKSPACES.some((r) => r.test(c)));
+};
+/**
+ * Whether the workflows run a yokoten command: anywhere in the text by its path, or as a
+ * command in a `run:` step, where `- run: npx yokoten check` starts after the key (#298).
+ */
+const ciRuns = (ci: string, command: RegExp) => command.test(ci) || runLines(ci).flatMap(commands).some((c) => command.test(c));
+const indentOf = (line: string) => /^[ \t]*/.exec(line)![0].length;
+// A step that uses yokoten's own Action, at any ref (even the guide's "<full commit SHA>"), quoted or not, with a comment or not.
+const USES_YOKOTEN = /^[ \t]*uses:[ \t]*(["']?)yokoten-labs\/yokoten@[^\s"'#]+(?:[ \t]+[^\s"'#]+)*\1[ \t]*(?:#.*)?$/;
+const PR_CHECK_OFF = /^[ \t]*pr-check:[ \t]*(["']?)false\1[ \t]*(?:#.*)?$/;
+/**
+ * The steps in one workflow that use the yokoten Action, each with whether it runs
+ * `check --pr`: it does unless its `with:` sets `pr-check: false`. Each list item is read
+ * once and then skipped, so the read is linear in the text (#298).
+ */
+export const yokotenActions = (workflow: string): { prCheck: boolean }[] => {
+  const found: { prCheck: boolean }[] = [];
+  const text = workflow.split(/\r?\n/);
+  for (let i = 0; i < text.length; i++) {
+    const item = /^([ \t]*)-[ \t]+(.*)$/.exec(text[i]);
+    if (!item) continue;
+    // The item's keys sit two past the dash; its first key is on the dash line.
+    const keyIndent = item[1].length + 2;
+    const lines = [' '.repeat(keyIndent) + item[2]];
+    for (; i + 1 < text.length && (text[i + 1].trim() === '' || indentOf(text[i + 1]) > item[1].length); i++) lines.push(text[i + 1]);
+    const keys = lines.filter((l) => l.trim() !== '' && indentOf(l) === keyIndent);
+    if (!keys.some((l) => USES_YOKOTEN.test(l))) continue;
+    let inWith = false;
+    let prCheck = true;
+    for (const line of lines) {
+      if (line.trim() === '') continue;
+      if (indentOf(line) <= keyIndent) inWith = /^[ \t]*with:[ \t]*(?:#.*)?$/.test(line) && indentOf(line) === keyIndent;
+      else if (inWith && PR_CHECK_OFF.test(line)) prCheck = false;
+    }
+    found.push({ prCheck });
+  }
+  return found;
+};
+/** Whether one workflow runs on pull requests: its top-level `on:` names pull_request or pull_request_target. */
+export const onPullRequest = (workflow: string): boolean => {
+  const text = workflow.split(/\r?\n/);
+  for (let i = 0; i < text.length; i++) {
+    const on = /^(?:on|"on"|'on'):(.*)$/.exec(text[i]);
+    if (!on) continue;
+    const block = [on[1]];
+    for (; i + 1 < text.length && (text[i + 1].trim() === '' || /^[ \t#]/.test(text[i + 1])); i++) block.push(text[i + 1]);
+    if (block.some((l) => /(?:^|[\s[,{])pull_request(?:_target)?(?=[\s:,\]}]|$)/.test(l.replace(/#.*/, '')))) return true;
+  }
+  return false;
+};
+const ciRunsTests = (root: string) => runsTests(ciText(root), testScript(root), isWorkspaces(root));
+// What runs the tests in each kind of project, by a file at the root; the first three when none is found.
+const PROJECT_RUNNERS: [string[], string][] = [
+  [['go.mod'], 'go test'],
+  [['pyproject.toml', 'setup.py', 'setup.cfg', 'tox.ini', 'requirements.txt'], 'pytest'],
+  [['Cargo.toml'], 'cargo test'],
+  [['pom.xml'], 'mvn test'],
+  [['build.gradle', 'build.gradle.kts'], 'gradle test'],
+  [['deno.json', 'deno.jsonc'], 'deno test'],
+];
+const runnersFor = (root: string) => {
+  const found = PROJECT_RUNNERS.filter(([files]) => files.some((f) => existsSync(join(root, f)))).map(([, runner]) => runner);
+  const named = (found.length ? found : PROJECT_RUNNERS.slice(0, 3).map(([, runner]) => runner)).map((r) => `\`${r}\``);
+  return named.length > 1 ? `${named.slice(0, -1).join(', ')} or ${named.at(-1)}` : named[0];
+};
+/** The command that runs each package's tests in this workspaces repo. */
+const workspacesTest = (root: string) => (existsSync(join(root, 'pnpm-workspace.yaml')) ? '`pnpm -r test`' : '`npm test --workspaces`');
+/** Why the tests step is not done, worded by what the project is: package.json only when there is one. */
+const noTests = (root: string) => {
+  if (testScript(root)) return 'CI does not run the tests';
+  if (isWorkspaces(root)) return `no workflow runs each package's tests (e.g. ${workspacesTest(root)})`;
+  if (packageJson(root)) return 'no test command: no "test" script in package.json, and no workflow runs a test runner';
+  return `no workflow runs a test command such as ${runnersFor(root)}`;
+};
+const testsFix = (root: string) => {
+  if (testScript(root)) return 'add a step that runs `npm test` (or your test command) to a workflow in .github/workflows';
+  if (isWorkspaces(root)) return `add a step that runs ${workspacesTest(root)} to a workflow in .github/workflows`;
+  return 'add tests and a CI step that runs them';
 };
 
 /** Tracked build output, as yokoten.json lets it through; null outside a git repo. */
@@ -149,10 +311,12 @@ const builtFiles = (root: string): string[] | null => {
   return files.filter((f) => isBuildOutput(f, allow));
 };
 
+/** The one security file init does not write: the license is the owner's choice. */
+const LICENSE_FILE = 'license file';
 const SECURITY_FILES: [string, string[]][] = [
   ['security policy (SECURITY.md)', ['.github/SECURITY.md', 'SECURITY.md']],
   ['Dependabot config', ['.github/dependabot.yml', '.github/dependabot.yaml']],
-  ['license file', ['LICENSE', 'LICENSE.md', 'LICENSE.txt', 'COPYING']],
+  [LICENSE_FILE, ['LICENSE', 'LICENSE.md', 'LICENSE.txt', 'COPYING']],
 ];
 export const securityLacking = (root: string) => SECURITY_FILES.filter(([, paths]) => !paths.some((p) => existsSync(join(root, p)))).map(([name]) => name);
 
@@ -170,7 +334,7 @@ const RULESET = 'in Settings, Rules, Rulesets, edit the ruleset on the default b
 
 /** Each server setting, judged. `settings` is what the host adapter read, or why it could not. */
 export function serverChecks(settings: ServerSettings | Unread): ServerCheck[] {
-  const cant = (id: RuleId, u: Unread): ServerCheck => ({ id, mark: "can't check", finding: finding(id, `can't check: ${u.unread}`, u.fix) });
+  const cant = (id: RuleId, u: Unread): ServerCheck => ({ id, mark: "can't check", finding: finding(id, u.unread, u.fix) });
   if ('unread' in settings) return [cant('server-settings', settings)];
   const judge = (id: RuleId, found: boolean | Unread | null, what: string, fix: string): ServerCheck => {
     if (found === null) return cant(id, { unread: 'only a repo admin can see this setting', fix: 'run doctor signed in to gh as a repo admin' });
@@ -227,7 +391,7 @@ const judgeServer = (key: string, server: ServerRead): Found => {
 
 /** One field of each check with this mark, joined by "; ", or `fallback` when no check has the mark. */
 const joinChecks = (key: string, server: ServerRead, mark: ServerCheck['mark'], field: 'what' | 'fix', fallback: string) => {
-  const texts = stepChecks(key, server).filter((c) => c.mark === mark).map((c) => c.finding[field].replace(/^can't check: /, ''));
+  const texts = stepChecks(key, server).filter((c) => c.mark === mark).map((c) => c.finding[field]);
   return texts.length ? [...new Set(texts)].join('; ') : fallback;
 };
 
@@ -243,6 +407,56 @@ const serverStep = (key: string, fields: { lacking: string; fix: string; why: st
   how: fields.how,
   ...(fields.standard ? { standard: fields.standard } : {}),
 });
+
+// The review step (#59): a merge to the default branch needs one approval. The bot opens
+// the pull requests, so the owner is not their author and can approve them. A private
+// repo on a free plan has no rulesets: the step waits for stage 5, when the repo goes
+// public. That shows as "can't check", which never holds the stage. It is not "not now":
+// that mark is the owner's own decision in yokoten.json, and doctor never makes it for them.
+
+/** What the review step judges, as full doctor read it, or why there is nothing to judge. */
+const reviewRead = (server: ServerRead): { approvals: number; actionsCanApprove: boolean | null } | Unread => {
+  const settings = server ?? SESSION_UNREAD;
+  if ('unread' in settings) return settings;
+  const branch = settings.branch;
+  if ('unread' in branch) {
+    if (settings.isPrivate && /GitHub Pro/.test(branch.unread)) return { unread: `${branch.unread}, so no rule can ask for an approval yet; this step waits for stage 5, when the repo goes public`, fix: 'or upgrade to GitHub Pro (or Team for an organization) and run doctor again' };
+    return branch;
+  }
+  if (branch.approvals === null) return { unread: 'no ruleset asks for an approval, and the old branch protection can be read only by an admin', fix: 'sign in to gh as a repo admin and run doctor again' };
+  return { approvals: branch.approvals, actionsCanApprove: settings.actionsCanApprove };
+};
+
+/** True when approvals are required but a workflow may still approve a pull request. */
+const workflowsApprove = (server: ServerRead) => {
+  const read = reviewRead(server);
+  return !('unread' in read) && read.approvals >= 1 && read.actionsCanApprove === true;
+};
+
+const ACTIONS_SETTING = '"Allow GitHub Actions to create and approve pull requests"';
+
+const reviewStep: Step = {
+  stage: 4,
+  key: 'review',
+  check: (...[, , server]) => {
+    const read = reviewRead(server);
+    if ('unread' in read) return null;
+    if (read.approvals < 1 || read.actionsCanApprove === true) return false;
+    return read.actionsCanApprove === false ? true : null;
+  },
+  what: (...[, , server]) => (workflowsApprove(server) ? `a workflow may approve a pull request (${ACTIONS_SETTING} is on), so the bot could approve its own` : 'a merge to the default branch needs no approving review'),
+  fix: (...[, , server]) => (workflowsApprove(server)
+    ? `in Settings, Actions, General, turn off ${ACTIONS_SETTING}, and keep it off`
+    : `${RULESET}: in "Require a pull request", set "Required approvals" to 1. You can't approve your own pull request, so let the bot open them, and keep ${ACTIONS_SETTING} off in Settings, Actions, General`),
+  unchecked: (server) => {
+    const read = reviewRead(server);
+    if ('unread' in read) return `${read.unread}; ${read.fix}`;
+    return read.approvals >= 1 && read.actionsCanApprove === null ? `the Actions setting ${ACTIONS_SETTING} can be read only by an admin; sign in to gh as a repo admin and run doctor again` : '';
+  },
+  why: 'the bot opens the pull requests, so you approve work you did not write, and nothing merges unread',
+  how: 'through the code host\'s API, in full doctor only: a ruleset (or the old branch protection) on the default branch asks for at least 1 approving review, and the Actions setting that lets a workflow approve a pull request is off; a private repo without rulesets waits for stage 5',
+  standard: 'Scorecard: Code-Review',
+};
 
 // The planning steps (#10): the labels and an open milestone, as full doctor read them.
 
@@ -285,16 +499,92 @@ const commitHook = (root: string): string | null => {
   return hooksPath ? hookFile(root, hooksPath) : null;
 };
 
+/** A commit hook that git would not run the check from, and why. */
+interface UncheckedHook {
+  file: string;
+  /** missing: there is no file; no check: it does not run yokoten; not executable: git skips it. */
+  problem: 'missing' | 'no check' | 'not executable';
+  /** Whether the file needs `chmod +x`. Windows has no execute bit, and git there runs a hook without one. */
+  needsChmod: boolean;
+}
+
+/** The commit hooks here (pre-commit and pre-merge-commit) that do not run the check (#239); null when git runs none from this repo. */
+const uncheckedHooks = (root: string): UncheckedHook[] | null => {
+  const hooksPath = gitConfig(root, 'core.hooksPath');
+  if (!hooksPath || commitHook(root) === null) return null;
+  // husky 9's folder (.husky/_) runs .husky/pre-commit with `sh`, so that file needs no execute bit (#256).
+  const runsWithSh = relative(root, resolve(root, hooksPath)).split('\\').join('/').startsWith('.husky/');
+  const unchecked: UncheckedHook[] = [];
+  for (const hook of COMMIT_HOOKS) {
+    const file = hookFile(root, hooksPath, hook) as string;
+    const path = join(root, file);
+    if (!existsSync(path)) {
+      unchecked.push({ file, problem: 'missing', needsChmod: process.platform !== 'win32' && !runsWithSh });
+      continue;
+    }
+    const needsChmod = !runsWithSh && !isExecutable(path);
+    if (!runs('check').test(read(path))) unchecked.push({ file, problem: 'no check', needsChmod });
+    else if (needsChmod) unchecked.push({ file, problem: 'not executable', needsChmod });
+  }
+  return unchecked;
+};
+
+const HOOK_PROBLEM: Record<UncheckedHook['problem'], (file: string) => string> = {
+  missing: (file) => `there is no ${file}`,
+  'no check': (file) => `${file} does not run yokoten`,
+  'not executable': (file) => `${file} is not executable, so git skips it`,
+};
+
+/** What to do by hand for hooks in a project's own folder: a new file needs a `#!` line and `chmod +x`, or git skips it. */
+const ownHookFix = (hooks: UncheckedHook[], cli: string): string => {
+  const files = (problem: UncheckedHook['problem']) => hooks.filter((h) => h.problem === problem).map((h) => h.file);
+  const chmod = hooks.filter((h) => h.needsChmod).map((h) => h.file);
+  const steps: string[] = [];
+  if (files('missing').length) steps.push(`make ${files('missing').join(' and ')} with \`#!/bin/sh\` as the first line and the line below after it`);
+  if (files('no check').length) steps.push(`add the line below to ${files('no check').join(' and ')}, after its \`#!\` line`);
+  if (chmod.length) steps.push(`run \`chmod +x ${chmod.join(' ')}\``);
+  const all = hooks.map((h) => h.file).join(' and ');
+  // init keeps the mode of a file under .husky/ (#256).
+  if (hooks.every((h) => h.problem === 'not executable')) return hooks.some((h) => h.file.startsWith('.husky/')) ? steps.join('') : `${steps.join('')}, or \`yokoten init\``;
+  return `\`yokoten init\` adds the check to ${all}, or do it yourself: ${steps.join('; ')}. The line: ${commitCheckLine(cli)}`;
+};
+
+/**
+ * The hooks this clone has in .git/hooks that git no longer runs, because core.hooksPath is
+ * .githooks and .githooks does not hand off to them (#256). Empty for any other hooks folder:
+ * the project chose that one itself.
+ */
+const droppedHooks = (root: string): OldHook[] => {
+  if (!gitConfig(root, 'core.hooksPath') || readHookSetup(root).kind !== 'plain') return [];
+  return readOldHooks(root).filter((old) => old.handOff === 'yes' && !hasHandOff(read(join(root, '.githooks', old.hook)), old.hook));
+};
+
+/**
+ * The fix for a workflow step: init adds the kit's workflow, but keeps one the project
+ * already has, so then the fix is the step to add to it (#256).
+ */
+const keptWorkflow = (root: string, name: string, args: string, after: string): string => {
+  const file = `.github/workflows/${name}`;
+  if (!existsSync(join(root, file))) return `\`yokoten init\` adds ${file}`;
+  return `add this step to ${file}, after ${after} (\`yokoten init\` keeps your file as it is): \`- run: node ${cliPath(root)} ${args}\``;
+};
+
 /** The road, in order. Step names never change: they are the keys for "not now". */
 export const ROAD: Step[] = [
   {
     stage: 1,
     key: 'rules',
     check: (root) => existsSync(join(root, 'AGENTS.md')) && claudeReadsRules(root),
-    what: (root) => (existsSync(join(root, 'AGENTS.md')) ? 'CLAUDE.md does not import AGENTS.md, so Claude Code does not read the rules' : 'no AGENTS.md, so the agents have no written rules here'),
-    fix: (root) => (existsSync(join(root, 'AGENTS.md')) ? 'add a line `@AGENTS.md` at the end of CLAUDE.md, or run `yokoten init`' : '`yokoten init` adds one'),
+    what: (root) => {
+      const gap = findRulesGap(root);
+      return existsSync(join(root, 'AGENTS.md')) && gap ? `${gap.file} does not import AGENTS.md, so Claude Code does not read the rules` : 'no AGENTS.md, so the agents have no written rules here';
+    },
+    fix: (root) => {
+      const gap = findRulesGap(root);
+      return existsSync(join(root, 'AGENTS.md')) && gap ? `add a line \`${gap.line}\` at the end of ${gap.file}, or run \`yokoten init\`` : '`yokoten init` adds one';
+    },
     why: 'an agent follows the rules it can read, and only those',
-    how: 'AGENTS.md is at the repo root, and a CLAUDE.md, when there is one, imports it (`@AGENTS.md`) or links to it: with a CLAUDE.md, Claude Code reads AGENTS.md only through it',
+    how: 'AGENTS.md is at the repo root, and a CLAUDE.md (at the root or in .claude/), when there is one, imports it (`@AGENTS.md`, or `@../AGENTS.md` from .claude/; a Markdown link is not an import): with a CLAUDE.md, Claude Code reads AGENTS.md only through it',
     standard: 'OpenSSF: AI code assistant instructions',
   },
   {
@@ -309,23 +599,39 @@ export const ROAD: Step[] = [
   {
     stage: 1,
     key: 'commit-check',
-    check: (root) => {
-      const file = commitHook(root);
-      return file !== null && runs('check').test(read(join(root, file)));
-    },
+    check: (root) => uncheckedHooks(root)?.length === 0 && droppedHooks(root).length === 0,
     what: (root) => {
-      const file = commitHook(root);
-      if (file) return `commits are not checked: ${file} does not run yokoten`;
+      const hooks = uncheckedHooks(root);
+      const dropped = droppedHooks(root).map((old) => `${old.file} no longer runs: .githooks/${old.hook} does not run it`);
+      if (hooks?.length) {
+        // Only pre-merge-commit: ordinary commits are still checked, merge commits are not.
+        const which = hooks.every((h) => h.file.endsWith('pre-merge-commit')) ? 'merge commits' : 'commits';
+        return `${which} are not checked: ${[...hooks.map((h) => HOOK_PROBLEM[h.problem](h.file)), ...dropped].join('; ')}`;
+      }
+      if (hooks) return `a hook this clone had is switched off: ${dropped.join('; ')}`;
       return gitConfig(root, 'core.hooksPath') ? 'commits are not checked: core.hooksPath is outside this repo' : 'commits are not checked: core.hooksPath is not set';
     },
     fix: (root) => {
       if (!gitConfig(root, 'core.hooksPath') && existsSync(join(root, '.husky'))) return 'run `npm install` so husky sets core.hooksPath, then `yokoten init`';
-      const file = commitHook(root);
-      if (file && file !== '.githooks/pre-commit') return `\`yokoten init\` adds the check to ${file}, or add this line there yourself: ${commitCheckLine(cliPath(root))}`;
-      return '`yokoten init` sets it up';
+      // A hook in .git/hooks that .githooks can't run: init leaves it be, so the fix is by hand (#256).
+      const blocks = readHookSetup(root).kind === 'plain' ? handOffBlocks(root) : [];
+      if (blocks.length) return blocks.join('; ');
+      const hooks = uncheckedHooks(root);
+      const files = hooks?.map((h) => h.file) ?? [];
+      const dropped = droppedHooks(root);
+      if (hooks && !files.length && dropped.length) {
+        return `\`yokoten init\` makes ${dropped.map((old) => `.githooks/${old.hook} run ${old.file}${isCommitHook(old.hook) ? ' after the check' : ''}`).join(' and ')}`;
+      }
+      if (!files.length || files.includes('.githooks/pre-commit')) {
+        // A hook git skips today is not a reason to wait; init sets .githooks and says how to keep it (#256).
+        const dead = readHookSetup(root).kind === 'plain' ? deadHookNotes(readOldHooks(root)) : [];
+        return ['`yokoten init` sets it up', ...dead.map((line) => `note: ${line}`)].join('; ');
+      }
+      if (files.join() === '.githooks/pre-merge-commit') return '`yokoten init` sets up .githooks/pre-merge-commit';
+      return ownHookFix(hooks as UncheckedHook[], cliPath(root));
     },
     why: 'a secret or a personal email is hard to take back once a commit is pushed',
-    how: "the pre-commit that git runs from core.hooksPath runs `yokoten check`: .githooks/pre-commit, or the project's own (husky: .husky/pre-commit)",
+    how: "the pre-commit and pre-merge-commit that git runs from core.hooksPath run `yokoten check`: in .githooks/, or in the project's own folder (husky: .husky/). With .githooks, each executable hook left in .git/hooks is run from .githooks (a commit hook after the check), so it is not switched off",
     standard: 'OSPS-BR-07.01',
   },
   {
@@ -344,21 +650,21 @@ export const ROAD: Step[] = [
     stage: 1,
     key: 'tests',
     check: (root) => ciRunsTests(root),
-    what: (root) => (testScript(root) ? 'CI does not run the tests' : 'no test command: no "test" script in package.json, and no workflow runs a test runner'),
-    fix: (root) => (testScript(root) ? 'add a step that runs `npm test` (or your test command) to a workflow in .github/workflows' : 'add tests and a CI step that runs them'),
+    what: noTests,
+    fix: testsFix,
     why: 'tests that run on every push catch a broken change before it reaches main',
-    how: 'package.json has a real "test" script and a workflow in .github/workflows runs it, or a workflow runs a test runner such as `node --test` or `go test`',
+    how: 'package.json has a real "test" script and a `run:` step in .github/workflows runs it, or a `run:` step starts a test runner such as `node --test`, `go test`, `pytest`, `tox`, `make test` or `npx vitest`; in a workspaces repo, `npm test --workspaces` or `pnpm -r test` counts too',
     standard: 'Best Practices: test',
   },
   {
     stage: 2,
     key: 'ci',
     // `check --pr` is the titles step, and `check --issue` checks issues; this one wants the tree check itself.
-    check: (root) => runs('check(?!\\s+--(?:pr|issue))').test(ciText(root)),
+    check: (root) => ciRuns(ciText(root), runs('check(?!\\s+--(?:pr|issue))')) || ciFiles(root).some((f) => yokotenActions(f).length > 0),
     what: () => 'CI does not run `yokoten check`',
-    fix: () => '`yokoten init` adds .github/workflows/yokoten.yml',
+    fix: (root) => keptWorkflow(root, 'yokoten.yml', 'check', 'actions/checkout and actions/setup-node'),
     why: 'a commit made with the hook off would reach main unchecked',
-    how: 'a workflow in .github/workflows runs `yokoten check`',
+    how: 'a workflow in .github/workflows runs `yokoten check` (by its path, or with npx, bunx or pnpm dlx), or has a step that uses yokoten-labs/yokoten',
     standard: 'Scorecard: CI-Tests',
   },
   {
@@ -388,7 +694,7 @@ export const ROAD: Step[] = [
     what: (...[, , server]) => `the standard labels are not all on the server (no ${lackingNames(server).join(', ')})`,
     fix: () => '`yokoten init` shows what it would add, and `yokoten init --github --yes` adds them',
     why: 'a label says what kind of change a pull request is, and the pull request check asks for one',
-    how: 'through the code host\'s API, in full doctor only: the repo has the labels bug, feat, docs, refactor, ci, owner, incident, good first issue and hotfix',
+    how: 'through the code host\'s API, in full doctor only: the repo has the labels bug, feat, docs, refactor, ci, owner, incident, good first issue, hotfix, tier A, tier B and tier C',
   }),
   planningStep('milestone', (planning) => pickNewMilestone(planning.milestones) === null, {
     what: () => 'no open milestone on the server',
@@ -426,11 +732,11 @@ export const ROAD: Step[] = [
   {
     stage: 3,
     key: 'titles',
-    check: (root) => runs('check --pr').test(ciText(root)),
+    check: (root) => ciRuns(ciText(root), runs('check --pr')) || ciFiles(root).some((f) => onPullRequest(f) && yokotenActions(f).some((a) => a.prCheck)),
     what: () => 'CI does not check pull requests (`yokoten check --pr`)',
-    fix: () => '`yokoten init` adds .github/workflows/pr.yml',
+    fix: (root) => keptWorkflow(root, 'pr.yml', 'check --pr', 'actions/checkout with `fetch-depth: 0` and actions/setup-node, in a job that runs on pull_request'),
     why: 'a pull request title becomes the commit on main, so it must say what changed and why',
-    how: 'a workflow in .github/workflows runs `yokoten check --pr`',
+    how: 'a workflow in .github/workflows runs `yokoten check --pr`, or runs on pull requests with a step that uses yokoten-labs/yokoten and does not set `pr-check: false`',
     standard: 'Conventional Commits 1.0.0',
   },
   {
@@ -465,12 +771,18 @@ export const ROAD: Step[] = [
     why: 'the skills show an agent how to hand off work, review it and find the cause of a failure',
     how: 'every skill in the kit is in ~/.claude/skills and in ~/.agents/skills, or the Claude Code plugin is on; a project copy of yokoten has no kit, so it can\'t check',
   },
+  reviewStep,
   {
     stage: 5,
     key: 'security-files',
     check: (root) => securityLacking(root).length === 0,
     what: (root) => `no ${securityLacking(root).join(', no ')}`,
-    fix: () => '`yokoten init` adds the security policy and Dependabot, and you choose the license',
+    fix: (root) => {
+      const lacking = securityLacking(root);
+      const license = lacking.includes(LICENSE_FILE);
+      const byInit = lacking.length > (license ? 1 : 0);
+      return [byInit ? 'run `yokoten init` to add the security policy and Dependabot' : '', license ? 'choose a license and add it as LICENSE' : ''].filter(Boolean).join(', and ');
+    },
     how: 'a SECURITY.md, a Dependabot config and a license file are in the repo',
     why: 'people can then report a hole in private, old dependencies get updates, and others know how they may use the code',
     standard: 'Scorecard: Security-Policy · OSPS-VM-02.01',

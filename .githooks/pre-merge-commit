@@ -1,0 +1,3 @@
+#!/bin/sh
+# The commit check: lead-only files, test files in a fix task, layout and privacy.
+exec node "bin/yokoten.ts" check --staged
