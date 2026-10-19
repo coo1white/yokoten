@@ -261,6 +261,12 @@ export const RULES = {
     check: '`check` reads line 1 of each Markdown and HTML file; `<!-- source: <path> -->` names the English file; when the last commit that changed the English is later than the last commit that changed the translation, in first-parent history, it is a note (an older marker with `blob <sha>` still works, and a matching blob is current); yokoten.json `"translations": { "fail": true }` makes it a problem',
     docs: guide('translations'),
   },
+  'config-key': {
+    rule: 'yokoten.json holds the keys yokoten knows, each in its own shape (#228)',
+    why: 'yokoten ignores a key it does not know, so a misspelled key looks set but does nothing',
+    check: '`check` notes a key it does not know; a key with the wrong shape is a config error for `check` and `doctor`, and the tool-call hook uses that key\'s default and says so in one line',
+    docs: guide('yokotenjson'),
+  },
   'large-diff': {
     rule: 'a pull request changes at most about 400 lines (record 0004)',
     why: 'smaller pull requests are easier to review',

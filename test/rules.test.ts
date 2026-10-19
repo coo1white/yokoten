@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { DEFAULTS, loadConfig, matcher } from '../src/rules/config.ts';
+import { type Config, DEFAULTS, findUnknownKeys, loadConfig, matcher } from '../src/rules/config.ts';
 import { checkCommand, checkEdit } from '../src/rules/guards.ts';
 import { checkBuildOutput, checkLayout, isBuildOutput } from '../src/rules/layout.ts';
 import { DOCS_URL, type Finding, finding, formatFinding, type Rule, RULES } from '../src/rules/message.ts';
@@ -119,6 +119,106 @@ test('config: for the hook, a wrong "commands" drops only the block list, said o
     assert.match(lines.at(-1) ?? '', /^yokoten hook: yokoten\.json was ignored, so the defaults apply; the core checks still run\. yokoten\.json: \S/);
   }
   assert.equal(lines.length, 4);
+});
+
+// #228: each key with the wrong shape, by its key path, and the key it falls back on.
+const WRONG_KEYS: [string, Record<string, unknown>][] = [
+  ['layout', { layout: 'x' }],
+  ['layout.maxEntries', { layout: { maxEntries: '7', exempt: ['docs/records'] } }],
+  ['layout.maxEntries', { layout: { maxEntries: 0 } }],
+  ['layout.maxEntries', { layout: { maxEntries: 1.5 } }],
+  ['layout.exempt', { layout: { exempt: 'docs/records' } }],
+  ['tests', { tests: 5 }],
+  ['leadOnly', { leadOnly: 'x' }],
+  ['leadOnly', { leadOnly: ['ok', 3] }],
+  ['privacy', { privacy: [] }],
+  ['privacy.allow', { privacy: { allow: 'a' } }],
+  ['privacy.skip', { privacy: { skip: [1] } }],
+  ['privacy.utc', { privacy: { utc: 'yes' } }],
+  ['notNow', { notNow: ['ci'] }],
+  ['notNow', { notNow: { ci: 1 } }],
+  ['allowBuild', { allowBuild: 'dist/**' }],
+  ['areas', { areas: 'doctor' }],
+  ['translations', { translations: true }],
+  ['translations.fail', { translations: { fail: 'no' } }],
+  ['commands', { commands: 'python3' }],
+  ['commands', { commands: { block: ['python3'] } }],
+];
+
+test('config: a key with the wrong shape is a config error that names it, and the hook uses its default (#228)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  for (const [path, file] of WRONG_KEYS) {
+    const label = JSON.stringify(file);
+    writeFileSync(join(dir, 'yokoten.json'), JSON.stringify(file));
+    // check and doctor: a config error that names the key.
+    assert.throws(() => loadConfig(dir), (err: Error) => err.message.startsWith(`yokoten.json: "${path.split('.')[0]}`) && err.message.includes(`"${path}"`), label);
+    // The hook: one line names the key, that key has its default, and the core checks run.
+    const lines: string[] = [];
+    const config = loadHookConfig(dir, (line) => lines.push(line));
+    assert.equal(lines.length, 1, label);
+    assert.ok(lines[0].startsWith(`yokoten hook: yokoten.json "${path}" was ignored, so its default applies; the core checks still run. yokoten.json: `), `${label}: ${lines[0]}`);
+    const [key, field] = path.split('.') as [keyof Config, string | undefined];
+    const got = config[key] as unknown as Record<string, unknown>;
+    const want = DEFAULTS[key] as unknown as Record<string, unknown>;
+    assert.deepEqual(field ? got[field] : got, field ? want[field] : want, label);
+    assert.equal(checkCommand('git push --force', { env: {}, config })?.id, 'force-push', `${label}: the core checks still run`);
+    assert.equal(checkEdit('AGENTS.md', { config, env: { YOKOTEN_ROLE: 'worker' } })?.id, 'lead-only', label);
+  }
+  // Only the wrong field falls back; the rest of the file still counts.
+  writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ layout: { maxEntries: '7', exempt: ['docs/records'] }, tests: ['spec/**'], leadOnly: 'x' }));
+  const lines: string[] = [];
+  const config = loadHookConfig(dir, (line) => lines.push(line));
+  assert.deepEqual(config.layout, { maxEntries: 7, exempt: ['docs/records'] });
+  assert.deepEqual(config.tests, ['spec/**']);
+  assert.deepEqual(config.leadOnly, DEFAULTS.leadOnly);
+  assert.deepEqual(lines.map((line) => /"([^"]+)" was ignored/.exec(line)?.[1]), ['layout.maxEntries', 'leadOnly'], 'one line for each wrong key');
+});
+
+test('config: null is a missing key; check lists every wrong key at once; unknown "commands" fields are notes (#228)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  // null gives the default, as before #228: no problem, no note, no hook line.
+  writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ leadOnly: null, notNow: null, layout: null, privacy: { utc: null }, commands: { block: null } }));
+  assert.deepEqual(loadConfig(dir), { ...DEFAULTS, privacy: { ...DEFAULTS.privacy } });
+  const lines: string[] = [];
+  loadHookConfig(dir, (line) => lines.push(line));
+  assert.deepEqual(lines, []);
+  assert.deepEqual(findUnknownKeys(dir), []);
+  // Three wrong keys: one error names all three, so one run shows them.
+  writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ leadOnly: 'x', tests: 5, layout: { maxEntries: '7' } }));
+  assert.throws(() => loadConfig(dir), (err: Error) => {
+    const [head, ...rest] = err.message.split('\n');
+    assert.equal(head, 'yokoten.json: 3 keys have the wrong shape:');
+    assert.deepEqual(rest.map((line) => /^- "([^"]+)" must be /.exec(line)?.[1]), ['layout.maxEntries', 'tests', 'leadOnly']);
+    return true;
+  });
+  // A misspelled field under "commands" blocks nothing: a note for check, and the hook stays quiet.
+  writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ commands: { blok: { python3: 'TypeScript only' } } }));
+  assert.deepEqual(loadConfig(dir).commands.block, {});
+  const quiet: string[] = [];
+  loadHookConfig(dir, (line) => quiet.push(line));
+  assert.deepEqual(quiet, []);
+  assert.deepEqual(findUnknownKeys(dir).map((note) => /^"([^"]+)"/.exec(note.what)?.[1]), ['commands.blok']);
+});
+
+test('config: an unknown key is a note, never a problem; yokoten\'s own files and the kit\'s pass with no note (#228)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ colour: 'blue', layout: { maxEntry: 9 }, tests: ['spec/**'] }));
+  assert.deepEqual(loadConfig(dir).tests, ['spec/**']);
+  const lines: string[] = [];
+  loadHookConfig(dir, (line) => lines.push(line));
+  assert.deepEqual(lines, [], 'the hook says nothing');
+  const notes = findUnknownKeys(dir);
+  assert.deepEqual(notes.map((note) => [note.id, note.file, /^"([^"]+)"/.exec(note.what)?.[1]]), [['config-key', 'yokoten.json', 'colour'], ['config-key', 'yokoten.json', 'layout.maxEntry']]);
+  // A broken file gives no notes: loadConfig reports it.
+  writeFileSync(join(dir, 'yokoten.json'), '{ nope');
+  assert.deepEqual(findUnknownKeys(dir), []);
+  for (const root of [join(import.meta.dirname, '..'), join(import.meta.dirname, '..', 'kit', 'project')]) {
+    assert.ok(existsSync(join(root, 'yokoten.json')), root);
+    const problems: string[] = [];
+    loadConfig(root, { onProblem: (problem) => problems.push(problem) });
+    assert.deepEqual(problems, [], root);
+    assert.deepEqual(findUnknownKeys(root), [], root);
+  }
 });
 
 const goodPr = (): PullRequest => ({
@@ -593,6 +693,9 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   // The road and the machine, from an empty folder and an empty home.
   const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
   for (const step of ROAD) add(stepFinding(step, dir, { HOME: dir }));
+  writeFileSync(join(dir, 'yokoten.json'), '{ "colour": "blue" }');
+  add(findUnknownKeys(dir)[0]);
+  rmSync(join(dir, 'yokoten.json'));
   for (const c of [...agentHooks(dir), ...machineChecks({ HOME: dir, YOKOTEN_PRIVATE_MARKS: join(dir, 'none') })]) add(c.finding);
   // The core rules (#120): behind the kit, and with no heading to compare by.
   for (const rules of ['# old rules\n\n## This project\n', '# rules\n']) {

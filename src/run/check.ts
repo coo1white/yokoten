@@ -6,7 +6,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, readlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { Config, Env } from '../rules/config.ts';
-import { matcher } from '../rules/config.ts';
+import { findUnknownKeys, matcher } from '../rules/config.ts';
 import { checkEdit } from '../rules/guards.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
 import { type Finding, finding } from '../rules/message.ts';
@@ -205,7 +205,8 @@ function readEntry(root: string, path: string): Buffer | undefined {
 /**
  * Problems for the whole tree, or with `staged`, for the commit about to be made. For the
  * whole tree, a translation behind its source (#87) goes in `notes`, or with yokoten.json
- * `"translations": { "fail": true }`, in the problems.
+ * `"translations": { "fail": true }`, in the problems. A key in yokoten.json that yokoten
+ * does not know (#228) goes in `notes` too.
  */
 export function check(root: string, { config, env, staged = false, notes = [] }: { config: Config; env: Env; staged?: boolean; notes?: Finding[] }): Finding[] {
   const problems: Finding[] = [];
@@ -250,6 +251,8 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
       if (buf) privacy(path, buf);
     }
     (config.translations.fail ? problems : notes).push(...translationNotes(root, indexFiles(root)));
+    // A key yokoten.json holds but yokoten does not know (#228).
+    notes.push(...findUnknownKeys(root));
   }
   problems.push(...checkLayout(indexFiles(root), config));
   return problems;

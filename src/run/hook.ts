@@ -24,18 +24,16 @@ export interface Action {
 /**
  * The config the hook works with: the repo's yokoten.json, or the defaults outside a repo.
  * The hook never fails open on its own config (#218): a file it cannot read gives the
- * defaults, and a wrong "commands" drops only the block list (#192). The core checks
- * still run, and `warn` gets one line that says what was ignored and why.
+ * defaults, and a key with the wrong shape gives only that key's default (#192, #228).
+ * The core checks still run, and `warn` gets one line for each part it ignored, with why.
  */
 export function loadHookConfig(root: string | null, warn: (line: string) => void): Config {
   if (!root) return DEFAULTS;
-  return loadConfig(root, { onProblem: (problem, ignored) => warn(`yokoten hook: ${IGNORED[ignored]}; the core checks still run. ${problem}`) });
+  return loadConfig(root, { onProblem: (problem, ignored) => warn(`yokoten hook: ${sayIgnored(ignored)}; the core checks still run. ${problem}`) });
 }
 
-const IGNORED: Record<IgnoredPart, string> = {
-  file: 'yokoten.json was ignored, so the defaults apply',
-  commands: 'yokoten.json "commands" was ignored, so no program is blocked',
-};
+const sayIgnored = (ignored: IgnoredPart) =>
+  ignored === 'file' ? 'yokoten.json was ignored, so the defaults apply' : `yokoten.json "${ignored}" was ignored, so its default applies`;
 
 /**
  * Why to stop the action (what, why, fix), or null. `root` is the repo root, or null outside a repo.
