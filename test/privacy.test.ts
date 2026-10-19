@@ -50,6 +50,30 @@ test('IPs: real ones are caught, documentation ranges and versions are not', () 
   }
 });
 
+test('web strings: retina image names and user agents are not private (#245)', () => {
+  const ua = `Mozilla/5.0 (Windows NT 10.0) Chrome/${ip(120, 0, 0, 0)} Safari/537.36`;
+  for (const ok of [`url("img/logo${at}2x.png")`, `icons/close${at}3x.webp`, `a${at}2X.JPEG b${at}10x.avif`, ua]) {
+    assert.deepEqual(scanText(ok, { file: 'a' }), [], ok);
+  }
+  // A real address on the same line is still caught.
+  const email = `someone${at}gmail.com`;
+  assert.deepEqual(scanText(`url("img/logo${at}2x.png") ${email}`, { file: 'a' }).map((f) => f.id), ['email']);
+  assert.deepEqual(scanText(`${ua} from ${ip(10, 0, 0, 5)}`, { file: 'a' }).map((f) => f.id), ['ip']);
+  // Only a browser version is skipped: a URL or a path root still names the host.
+  for (const bad of [`http://${ip(10, 0, 0, 5)}`, `https://${ip(8, 8, 8, 8)}/x`, `ssh:/${ip(8, 8, 8, 8)}`, `/${ip(8, 8, 8, 8)}`, `${ua} http://${ip(100, 64, 1, 2)}:8080`]) {
+    assert.equal(scanText(bad, { file: 'a' }).length, 1, bad);
+  }
+  // An address in a path is real, even after a letter and `/`; only browser versions are skipped.
+  for (const bad of [`api/${ip(8, 8, 8, 8)}`, `hosts/${ip(10, 0, 0, 5)}`, `servers/${ip(192, 168, 1, 20)}`, `chrome/${ip(8, 8, 8, 8)}`, `MyChrome/${ip(8, 8, 8, 8)}`]) {
+    assert.equal(scanText(bad, { file: 'a' }).length, 1, bad);
+  }
+  for (const ok of [`Chrome/${ip(120, 0, 0, 0)}`, 'Edg/120.0.2210.91', `Firefox/${ip(121, 0, 1, 2)}`]) {
+    assert.deepEqual(scanText(ok, { file: 'a' }), [], ok);
+  }
+  // Not an image: still an email address.
+  assert.equal(scanText(`me${at}2x.dev`, { file: 'a' }).length, 1);
+});
+
 test('private marks: matched without case, never echoed', () => {
   const problems = scanText('Deploy to Secret-Box tonight', { file: 'a', marks: ['secret-box'] });
   assert.equal(problems.length, 1);
