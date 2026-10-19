@@ -135,13 +135,15 @@ test('hook: past the deadline the call is refused, in text and JSON (#274)', () 
 
 test('hook: a command the guard reads too slowly is refused within the deadline (#274)', () => {
   const sandbox = makeSandbox();
+  // A large command, still being read when a 1 ms deadline passes, however fast the reader:
+  // the busy worker is stopped and the hook exits at once, in little memory.
   const input = JSON.stringify({ cwd: sandbox.repo, tool_input: { command: `find . ${'-exec env '.repeat(30000)}` } });
   const start = Date.now();
-  const result = spawnSync('node', ['--max-old-space-size=256', CLI, 'hook'], { cwd: sandbox.repo, env: sandbox.env, input, encoding: 'utf8', timeout: 20000 });
+  const result = spawnSync('node', ['--max-old-space-size=256', CLI, 'hook'], { cwd: sandbox.repo, env: { ...sandbox.env, YOKOTEN_GUARD_DEADLINE_MS: '1' }, input, encoding: 'utf8', timeout: 20000 });
   const took = Date.now() - start;
   assert.ok(took < 10000, `the hook took ${took} ms`);
   assert.equal(result.status, 2);
-  assert.match(result.stderr, /took longer than 5000 ms/);
+  assert.match(result.stderr, /took longer than 1 ms/);
 });
 
 // The Stop event is shaped as Claude Code's hook docs show it (code.claude.com/docs/en/hooks#stop).
