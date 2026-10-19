@@ -46,6 +46,48 @@ function stagedFiles(root: string): Staged[] {
   return files;
 }
 
+/** A full object id: SHA-1 or SHA-256. */
+const OBJECT_ID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
+
+/**
+ * The other parents of the merge being committed, from MERGE_HEAD; none outside a merge.
+ * `--git-path` finds it in a worktree too. A line that is not an object id makes the whole
+ * file untrusted, so none is returned and every staged file gets the role checks. A head
+ * HEAD already leads to is a fast-forward, which git commits with one parent, not as a
+ * merge, so it is dropped.
+ */
+function mergeHeads(root: string): string[] {
+  let lines: string[];
+  try {
+    lines = readFileSync(resolve(root, git(root, ['rev-parse', '--git-path', 'MERGE_HEAD']).trim()), 'utf8').split('\n').filter(Boolean);
+  } catch {
+    return [];
+  }
+  if (!lines.every((line) => OBJECT_ID.test(line))) return [];
+  // Exit 1 is "not an ancestor": a real other parent. 0 is a fast-forward; 128 is an id
+  // git can't read. Both exempt nothing.
+  return lines.filter((head) => spawnSync('git', ['merge-base', '--is-ancestor', 'HEAD', head], { cwd: root, stdio: 'ignore' }).status === 1);
+}
+
+/**
+ * The staged paths the merge itself made: those that differ from every parent. A file the
+ * other branch changed matches that branch, so only a conflict resolution or an edit made
+ * during the merge is left. HEAD is already a parent the staged list differs from; each
+ * MERGE_HEAD parent takes one `git diff`.
+ *
+ * Like the guards, this is a guard against mistakes, not a lock. MERGE_HEAD is a file the
+ * agent can write, so a merge made up on purpose gets past it. The lock is on the server:
+ * branch protection and CODEOWNERS.
+ */
+function mergeMade(root: string, files: Staged[], heads: string[]): Staged[] {
+  let left = files;
+  for (const head of heads) {
+    const differs = new Set(list(git(root, ['diff', '--cached', '--name-only', '--no-renames', '-z', '--end-of-options', head])));
+    left = left.filter((f) => differs.has(f.path));
+  }
+  return left;
+}
+
 /** A gitlink (a submodule's commit): no blob to read in this repo. */
 const GITLINK = '160000';
 
@@ -162,7 +204,9 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
       problems.push(finding('time-zone', "this commit's time carries your time zone", TIME_ZONE_FIX));
     }
     const files = stagedFiles(root);
-    for (const { path } of files) {
+    // In a merge, the role checks see only what the merge itself changed: a worker
+    // bringing in main is not handing over main's edits to lead-only files or tests.
+    for (const { path } of mergeMade(root, files, mergeHeads(root))) {
       const reason = checkEdit(path, { config, env });
       if (reason) problems.push(reason);
     }
