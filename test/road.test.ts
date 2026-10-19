@@ -373,6 +373,10 @@ test("road: init's CODEOWNERS with the placeholder owner is to do; with a real o
   assert.equal(codeowners.fix(placeholder, {}, undefined), 'put your GitHub handle in .github/CODEOWNERS');
   assert.equal(codeowners.check(fixture({ '.github/CODEOWNERS': codeOwnersText('octo') }), {}, undefined), true);
   assert.equal(codeowners.check(fixture({ 'docs/CODEOWNERS': '* @octo\n' }), {}, undefined), true);
+  // The owner put in on every rule line, with init's comment that names the placeholder left as it was.
+  const filled = codeOwnersText(null).split('\n').map((line) => (line.startsWith('#') ? line : line.split('@YOUR_GITHUB_HANDLE').join('@octo'))).join('\n');
+  assert.match(filled, /^#.*@YOUR_GITHUB_HANDLE/m, 'the comment still names the placeholder');
+  assert.equal(codeowners.check(fixture({ '.github/CODEOWNERS': filled }), {}, undefined), true);
   const none = fixture({});
   assert.equal(codeowners.check(none, {}, undefined), false);
   assert.equal(codeowners.what(none, {}, undefined), 'no CODEOWNERS file');

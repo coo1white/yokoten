@@ -70,8 +70,11 @@ const read = (path: string) => {
 /** The CODEOWNERS file GitHub reads here, relative to the root, or null when there is none. */
 const codeOwnersFile = (root: string): string | null => CODEOWNERS_PLACES.find((place) => existsSync(join(root, place))) ?? null;
 
-/** True when the CODEOWNERS file still has init's placeholder in place of an owner. */
-const hasPlaceholder = (root: string, file: string): boolean => read(join(root, file)).includes(OWNER_PLACEHOLDER);
+/** True when a rule line of the CODEOWNERS file still has init's placeholder in place of an owner. Comments don't count, as in GitHub. */
+const hasPlaceholder = (root: string, file: string): boolean =>
+  read(join(root, file))
+    .split(/\r?\n/)
+    .some((line) => line.replace(/(^|\s)#.*$/, '').includes(OWNER_PLACEHOLDER));
 
 export const gitConfig = (root: string, key: string) => {
   try {
