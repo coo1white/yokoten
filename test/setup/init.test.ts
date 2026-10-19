@@ -1066,7 +1066,10 @@ test('update: the .yokoten/ copy has the kit\'s AGENTS.md, so doctor and update 
   assert.equal(sandbox.run(['init']).status, 0);
   const vendored = (...args: string[]) => spawnSync('node', ['.yokoten/bin/yokoten.ts', ...args], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
   const kitDir = join(sandbox.repo, '.yokoten', 'kit');
-  assert.deepEqual(readdirSync(kitDir, { recursive: true }).map(String).sort(), ['project', join('project', 'AGENTS.md')], 'one kit file, no more');
+  // The kit's lessons come too (#77), so doctor from the copy runs them; nothing else of the kit.
+  const kitFiles = readdirSync(kitDir, { recursive: true }).map(String).sort();
+  assert.deepEqual(kitFiles.filter((path) => !path.startsWith('lessons')), ['project', join('project', 'AGENTS.md')], 'one kit file and the lessons, no more');
+  assert.ok(kitFiles.includes(join('lessons', 'README.md')), 'the lessons table');
   assert.match(vendored('doctor').stdout, /\n {2}ok +core-rules\n/, 'a fresh project is up to date');
 
   const path = join(sandbox.repo, 'AGENTS.md');

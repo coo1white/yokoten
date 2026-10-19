@@ -479,7 +479,7 @@ It puts three safe defaults in `.github/` too:
 | `check --issue` | In CI: the issue's title. See [Issue titles](#issue-titles) |
 | `changelog [--write]` | Shows the entries the files in `changes/` add under `[Unreleased]`. `--write` puts them into `CHANGELOG.md` and deletes the files; run it before a release. See [The changelog](#the-changelog) |
 | `learn <issue> [--write]` | Drafts a check from an incident issue, for a person to review. `--write` adds the files in `lessons/`. See [Learning from an incident](#learning-from-an-incident) |
-| `learn --ship <id>` | In yokoten: moves a reviewed lesson into a group in `kit/lessons/`, where `doctor` runs it in every project. Refused while a `TODO(reviewer)` is left or its test fails |
+| `learn --ship <id>` | In yokoten: moves a reviewed lesson into a group in `kit/lessons/`, where `doctor` from that yokoten runs it in every project. Refused while a `TODO(reviewer)` is left or its test fails |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public. A shallow clone can't see old commits, so it fails without scanning; in CI, check out the whole history (`fetch-depth: 0`). A hit in a file names the commit that added it, and the path in that commit: `file @ <commit>`. It reads commits past `git replace`, and fails the same way when a grafts file can hide commits. |
 | `hook [--agent <name>] [--commands-only] [--json]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini` |
 | `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop event by default, a Codex Stop event with `--agent codex`, a Gemini CLI AfterAgent event with `--agent gemini`. See [The stop check](#the-stop-check) |
@@ -781,7 +781,7 @@ yokoten you run, `update` refuses and writes nothing, so the rules never go back
 an older kit. `doctor` then says to update yokoten itself, not the project. A file
 without that line compares by its text only.
 
-The copy in `.yokoten/` keeps the kit's `AGENTS.md`, so `doctor` in CI and the hooks
+The copy in `.yokoten/` keeps the kit's `AGENTS.md` and its lessons, so `doctor` in CI and the hooks
 compares with the kit your project vendored. To take newer rules, run `update` from an
 installed yokoten, the plugin or a clone. Run `init` again from there to refresh `.yokoten/` too.
 Run from `.yokoten/` itself, `init` keeps that copy as it is.
@@ -839,8 +839,17 @@ yokoten version. While a `TODO(reviewer)` is left or the test fails, it refuses 
 nothing. A test in yokoten checks the same for every lesson in the kit. It is a command,
 not a `git mv`, so the move, the table row and the test run are one step.
 
-When the project gets the new yokoten, `yokoten doctor` runs the lesson against it. A
-lesson that finds the problem gives a note:
+A project runs the lessons of the yokoten that runs its `doctor`. Each copy of yokoten reads
+its own `kit/lessons/`: nothing is downloaded or synced. So after the ship:
+
+| Who runs `doctor` in the project | Has the lesson |
+|---|---|
+| This copy: `node path/to/yokoten/bin/yokoten.ts doctor` | at once |
+| This machine: `yokoten doctor` | after `node bin/yokoten.ts install` from this copy |
+| The project's own copy: `node .yokoten/bin/yokoten.ts doctor` | after `init` again from this copy; commit `.yokoten/` |
+| Everyone else, through npm or the plugin | when their yokoten updates, at the next release |
+
+`learn --ship` prints the same list. A lesson that finds the problem gives a note:
 
 ```
 project:
@@ -858,7 +867,8 @@ A note never fails `doctor`. To stop a lesson in one project, add its id to "not
 **Try the loop.** In a clone of yokoten, run `node scripts/demo/loop.ts`. In about a second, it
 walks the whole loop in a temp folder: an incident, the draft, a refused ship, the review,
 the ship, and the note in a second project. It runs offline, with a fake `gh`, and removes
-the folder after. `--keep` keeps the folder and prints where it is.
+the folder after. `--keep` keeps the folder and prints where it is. The real loop is the same
+commands, with your own issue and your own check, in a clone of yokoten.
 
 ### Settings
 
