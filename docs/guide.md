@@ -745,6 +745,12 @@ your name, your city, your domains, your server names. That file stays outside t
 repo, because a list of what must not be published can't itself be published. A hit
 is reported by file and line; the mark itself is never printed.
 
+The IP check covers IPv4 only, private ranges such as `10.x` and `192.168.x` included;
+IPv6 is not checked. Localhost and the documentation ranges (`192.0.2.0/24` and its two
+siblings) are fine. Browser version strings such as `Chrome/120.0.0.0` are not
+addresses, and neither is a retina image name such as `logo@2x.png`. An address after
+`http://` or in a path such as `api/` is still caught.
+
 The same check catches secrets: GitHub, npm, Slack, Stripe, Google, OpenAI and
 Anthropic tokens, AWS access key ids, and PEM private keys. A hit names the kind of
 secret, never the secret. Deleting it is not enough, since git keeps it: rotate it.

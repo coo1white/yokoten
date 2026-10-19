@@ -677,6 +677,11 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 仓库外面，因为「不能公开的东西」这张清单本身也不能公开。查到问题时只报文件和行号，不会把
 词表里的词打印出来。
 
+IP 只查 IPv4，内网地址（比如 `10.x`、`192.168.x`）也算；IPv6 不查。本机地址和专门留给文档用的
+几段地址（`192.0.2.0/24` 等三段）不算。浏览器的版本号（比如 `Chrome/120.0.0.0`）不算 IP，
+`logo@2x.png` 这种高清图的文件名也不算邮箱。不过写在 `http://` 后面或者路径里（比如 `api/`
+后面）的 IP 照样会查出来。
+
 这个检查也会查密钥：GitHub、npm、Slack、Stripe、Google、OpenAI 和 Anthropic 的 token，
 AWS 的 access key id，还有 PEM 私钥。查到了只说是哪一种密钥，不会把密钥本身打印出来。光删掉
 不够，git 历史里还留着，得去把它作废，换一个新的。
