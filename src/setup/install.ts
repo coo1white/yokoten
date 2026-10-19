@@ -73,13 +73,14 @@ export const aliasLine = (runtime: string): string =>
   `no \`yokoten\` command on your PATH runs this copy. Add this line to your shell profile (~/.bashrc or ~/.zshrc), then open a new shell: alias yokoten='node ${join(runtime, 'bin', 'yokoten.ts')}'`;
 
 /**
- * The other agents' two user hooks, or one skip line when their file won't parse or has
- * the wrong shape (#248): the file stays as it was, the other steps go on, and `ok` is false.
+ * One agent's two user hooks, or one skip line when its file won't parse or has the wrong
+ * shape (#248, #254), or is a Gemini CLI file with comments, which yokoten never rewrites
+ * (#258; the line then holds the hooks to add by hand): the file stays as it was, the
+ * other steps go on, and `ok` is false until the hooks are there.
  */
-function otherAgentHooks(name: string, cliName: string, file: string, add: () => { doctor: string; guard: string }): { ok: boolean; lines: string[] } {
+function agentHooks(cliName: string, file: string, add: () => string[]): { ok: boolean; lines: string[] } {
   try {
-    const hooks = add();
-    return { ok: true, lines: [`${hooks.doctor} the ${name} SessionStart doctor in ${file}`, `${hooks.guard} the ${name} command guard in ${file}`] };
+    return { ok: true, lines: add() };
   } catch (err) {
     if (!(err instanceof UnreadableHooksFile)) throw err;
     return { ok: false, lines: [`skipped ${cliName}: ${skippedBecause(file, err.problem, 'install')}`] };
@@ -106,18 +107,23 @@ export function install(env: Env): { ok: boolean; lines: string[] } {
     report.push(`${result} agent ${file.replace(/\.md$/, '')}`);
   }
 
-  const hooks = addUserHooks(env, USER_CLI, USER_MISSING);
-  report.push(`${hooks.doctor} the SessionStart doctor`, `${hooks.guard} the user-level command guard`);
+  const claudeHooks = agentHooks('Claude Code', '~/.claude/settings.json', () => {
+    const hooks = addUserHooks(env, USER_CLI, USER_MISSING);
+    return [`${hooks.doctor} the SessionStart doctor`, `${hooks.guard} the user-level command guard`];
+  });
+  ok &&= claudeHooks.ok;
+  report.push(...claudeHooks.lines);
   // Codex and Gemini CLI get the same two hooks (#211), but only when the CLI's folder is
   // already there: install never makes ~/.codex or ~/.gemini for someone who doesn't use it.
   // A file that won't parse, or has the wrong shape, is named and skipped, never rewritten (#248).
+  const otherHooks = (name: string, file: string, hooks: { doctor: string; guard: string }) => [`${hooks.doctor} the ${name} SessionStart doctor in ${file}`, `${hooks.guard} the ${name} command guard in ${file}`];
   if (codex.hasUserDir(env)) {
-    const codexHooks = otherAgentHooks('Codex', 'Codex CLI', '~/.codex/hooks.json', () => codex.addUserHooks(env, USER_CLI, USER_MISSING));
+    const codexHooks = agentHooks('Codex CLI', '~/.codex/hooks.json', () => otherHooks('Codex', '~/.codex/hooks.json', codex.addUserHooks(env, USER_CLI, USER_MISSING)));
     ok &&= codexHooks.ok;
     report.push(...codexHooks.lines);
   } else report.push('skipped Codex CLI: ~/.codex not found (run `yokoten install` again after installing Codex)');
   if (gemini.hasUserDir(env)) {
-    const geminiHooks = otherAgentHooks('Gemini CLI', 'Gemini CLI', '~/.gemini/settings.json', () => gemini.addUserHooks(env, USER_CLI, USER_MISSING));
+    const geminiHooks = agentHooks('Gemini CLI', '~/.gemini/settings.json', () => otherHooks('Gemini CLI', '~/.gemini/settings.json', gemini.addUserHooks(env, USER_CLI, USER_MISSING)));
     ok &&= geminiHooks.ok;
     report.push(...geminiHooks.lines);
   } else report.push('skipped Gemini CLI: ~/.gemini not found (run `yokoten install` again after installing Gemini CLI)');

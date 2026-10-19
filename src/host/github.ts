@@ -305,6 +305,7 @@ export function readPullRequest(root: string, env: Env): PullRequestRead | Unrea
     deleted: diff('--name-only', '--diff-filter=D', '-z').split('\0').filter(Boolean),
     labels: labelNames(pr.labels),
     milestone: isObject(pr.milestone) && typeof pr.milestone.title === 'string' ? pr.milestone.title : null,
+    author: isObject(pr.user) ? asText(pr.user.login) : '',
     base,
     head,
     numstat: diff('--numstat', '-z'),
@@ -314,7 +315,7 @@ export function readPullRequest(root: string, env: Env): PullRequestRead | Unrea
 // GitHub reads CODEOWNERS from the first of these places, on the pull request's base
 // branch. yokoten reads it from the same commit, so a pull request can't edit the file
 // to lower its own tier. Without a base commit (a local run), it reads the working tree.
-const CODEOWNERS_PLACES = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'];
+export const CODEOWNERS_PLACES = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'];
 
 /** The CODEOWNERS file at the base commit, or in the working tree when `base` is empty; null when there is none. */
 export function readCodeOwners(root: string, base: string): CodeOwners | null {
@@ -429,11 +430,25 @@ export function stepSummary(name: string, problems: Finding[], notes: Finding[])
 
 export type Gh = (args: string[]) => string;
 
-/** Runs the real gh in `cwd`. */
+/** Runs the real gh in `cwd`. With `timeout` (ms), a call that takes longer is stopped and throws. */
 export const ghIn =
-  (cwd: string): Gh =>
+  (cwd: string, timeout?: number): Gh =>
   (args) =>
-    execFileSync('gh', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    execFileSync('gh', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout });
+
+/**
+ * True when the GitHub account `owner` is an organization, false when it is a user, and
+ * null when gh can't tell: not installed, not signed in, or no answer (#313). One call.
+ * A bare `@org` is not a valid CODEOWNERS owner: GitHub wants a person or `@org/team`.
+ */
+export function isOrganization(gh: Gh, owner: string): boolean | null {
+  try {
+    const type = gh(['api', `users/${owner}`, '--jq', '.type']).trim();
+    return type === 'Organization' ? true : type === 'User' ? false : null;
+  } catch {
+    return null;
+  }
+}
 
 /** A label as the host keeps it. `color` is six hex digits, with no `#`. */
 export interface Label {
@@ -533,6 +548,8 @@ export interface ServerSettings {
   forgotten: string[] | Unread;
   /** The labels and milestones (#10), for the road's stage 2. Left out by a reader that does not need them. */
   planning?: Planning | Unread;
+  /** The organization that owns the repo, from the same repo read; null for a user. Left out when unknown (#313). */
+  org?: string | null;
 }
 
 /** Why gh failed, in words a beginner can act on. */
@@ -568,6 +585,7 @@ export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
     allow_rebase_merge?: boolean;
     delete_branch_on_merge?: boolean;
     security_and_analysis?: Record<string, { status?: string } | undefined>;
+    owner?: { login?: string; type?: string };
   };
   const info = attempt(() => api<Repo>(`repos/${repo}`));
   if ('unread' in info) return info;
@@ -639,7 +657,9 @@ export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
 
   const planning = readPlanning(gh, repo);
 
-  return { repo, defaultBranch, isPrivate: info.private ?? null, actionsCanApprove, mergeMethods, deleteBranchOnMerge: info.delete_branch_on_merge ?? null, branch, tags, security, forgotten, planning };
+  const org = info.owner?.type === 'Organization' ? (info.owner.login ?? repo.split('/')[0]) : info.owner?.type === 'User' ? null : undefined;
+
+  return { repo, defaultBranch, isPrivate: info.private ?? null, actionsCanApprove, mergeMethods, deleteBranchOnMerge: info.delete_branch_on_merge ?? null, branch, tags, security, forgotten, planning, ...(org === undefined ? {} : { org }) };
 }
 
 // An incident issue for `yokoten learn` (#77), read through `gh issue view`, so it uses

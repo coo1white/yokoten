@@ -100,10 +100,22 @@ export function summarize(text: string): string {
     .replace(/[.:]$/, '');
 }
 
-/** The symptom of an `area: symptom` title, starting lower case, as a finding's `what`. */
+/**
+ * Text shaped to go inside a sentence: no full stop at the end, and the first letter lower
+ * case when the first word is a capital followed only by lower-case letters ("The", "A").
+ * A code span, an acronym (`CI`, `NO_PROXY`) or a word with another capital (`GitHub`)
+ * stays as it is, and so does the word "I". A one-capital name ("Node") is lowered too: the
+ * draft can't tell it from an ordinary word, and the reviewer fixes it. Doctor prints
+ * "<what>; <fix>" as one sentence.
+ */
+function asClause(text: string): string {
+  const clause = text.trim().replace(/\.$/, '');
+  return /^(?!I(?![a-z]))[A-Z][a-z]*(?![\w-])/.test(clause) ? clause.charAt(0).toLowerCase() + clause.slice(1) : clause;
+}
+
+/** The symptom of an `area: symptom` title, shaped as a clause, as a finding's `what`. */
 function readSymptom(title: string): string {
-  const symptom = (/^[\w./-]+:\s+(.+)$/.exec(title.trim())?.[1] ?? title).trim().replace(/\.$/, '');
-  return /^[A-Z][a-z]/.test(symptom) ? symptom.charAt(0).toLowerCase() + symptom.slice(1) : symptom;
+  return asClause(/^[\w./-]+:\s+(.+)$/.exec(title.trim())?.[1] ?? title);
 }
 
 // Issue text is anyone's text, and it lands in a .ts file that people run. JavaScript ends
@@ -169,7 +181,8 @@ export function draftLesson(incident: Incident): Draft {
     id,
     what,
     why,
-    fix: fill('fix', 'fix', 'write what to do when the check finds it'),
+    // Doctor prints "<what>; <fix>", so the fix is shaped like the what (#182).
+    fix: asClause(fill('fix', 'fix', 'write what to do when the check finds it')),
   };
 
   const context: string[] = [];
@@ -405,6 +418,8 @@ export interface LessonPlace {
 export interface LessonRun {
   id: string;
   findings: Finding[];
+  /** The `what` of the lesson's exported `lesson`: the problem it looks for, when it says. */
+  what?: string;
   error?: string;
 }
 
@@ -427,7 +442,7 @@ export function runLessons(root: string, place: LessonPlace, skip: (id: string) 
     const path = join(place.codeDir, id, place.codeFile);
     try {
       if (!existsSync(path)) throw new Error(`there is no ${place.codeFile}`);
-      const module = load(path) as { findProblems?: unknown };
+      const module = load(path) as { findProblems?: unknown; lesson?: { what?: unknown } };
       if (typeof module.findProblems !== 'function') throw new Error('it has no findProblems function');
       const found: unknown = module.findProblems(root);
       if (!Array.isArray(found)) throw new Error('findProblems did not give a list');
@@ -436,7 +451,8 @@ export function runLessons(root: string, place: LessonPlace, skip: (id: string) 
         if (typeof what !== 'string' || typeof why !== 'string' || typeof fix !== 'string') throw new Error('a finding has no what, why or fix');
         return { id, what, why, fix };
       });
-      runs.push({ id, findings });
+      const what = module.lesson?.what;
+      runs.push(typeof what === 'string' ? { id, findings, what } : { id, findings });
     } catch (err) {
       runs.push({ id, findings: [], error: String((err as Error)?.message ?? err).split('\n')[0].split(place.codeDir).join(KIT_LESSONS_DIR) });
     }

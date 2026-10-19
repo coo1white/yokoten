@@ -385,7 +385,9 @@ action skips `check --pr` and leaves a notice: the pull request check runs on
 - **Node**: the action sets up Node for the rest of the job too.
 
 `check --pr` holds a pull request to the standard of core rule 8. A repo that does not
-follow it yet can start with `pr-check: false`. The `init` workflow in the kit still
+follow it yet can start with `pr-check: false`. A pull request Dependabot opens gets
+the title check, and the other rules show as notes, because Dependabot writes its own
+body. The `init` workflow in the kit still
 runs `.yokoten/`. It moves to the action after the first release, so it never depends
 on `@main`.
 
@@ -424,7 +426,7 @@ check), `pr.yml` and `issue.yml`. Each action is pinned to a commit, each job ha
 limit, checkout keeps no token, and a new push cancels the old run on the same pull
 request. Add your tests as a job in `yokoten.yml` and to the `needs` list of `ci`.
 
-It puts two safe defaults in `.github/` too:
+It puts three safe defaults in `.github/` too:
 
 - `dependabot.yml` updates the actions that CI runs. It opens one pull request a month,
   and takes a release only when it is a week old. A comment in the file shows how to
@@ -432,6 +434,16 @@ It puts two safe defaults in `.github/` too:
 - `SECURITY.md` asks people to report a vulnerability privately, not in a public issue.
   For this, turn on private vulnerability reporting. `doctor` lists it with the other
   security switches.
+- `CODEOWNERS` names the owner for every lead-only path in the defaults: `AGENTS.md`,
+  `yokoten.json`, `.yokoten/`, the hooks, the agent config and `.github/`. The guard
+  stops a worker on the machine; this file stops the same change on the server. The
+  owner is the account in a GitHub `origin` remote. Without one, the file has a
+  placeholder, and `doctor` asks you to put your GitHub handle in it. GitHub takes no
+  organization as an owner, so when `gh` says the account is one, the file has the
+  placeholder too, and `init` asks for a person or `@org/team`. Full `doctor` flags a
+  file whose only owner is the organization. It bites only when
+  branch protection has "Require review from Code Owners" on. A CODEOWNERS file the
+  project already has, in `.github/`, at the root or in `docs/`, is kept as it is.
 
 | Command | What it does |
 |---------|--------------|
@@ -471,7 +483,7 @@ value.
   `history`, `pr` or `issue`. A note never fails the check. When the CI run has no
   pull request or issue, `check --pr` and `check --issue` are ok and add `skipped`, the reason.
 - `doctor --json`: `{ version, ok, selfTest, repo, stage, stages, next, findings, steps,
-  notes, server, lessons }`. The findings of a lesson are in `notes`. With `--session`, only the next step, the private-marks finding, and `core-rules` when the rules are behind.
+  notes, server, lessons }`. The findings of a lesson are in `notes`; a new lesson has `isNew: true`. With `--session`, only the next step, the private-marks finding, and `core-rules` when the rules are behind.
 - `hook --json`: `{ blocked: true, finding }` when it blocks, `{ blocked: false, toolCall: true }`
   when it allows, and `{ blocked: false, toolCall: false }` when stdin is not a tool call.
   The runtimes do not use it: they read the exit code and the reason on stderr, as their
@@ -811,8 +823,18 @@ project:
   note    lesson incident-138: test/api.test.ts: a test calls a server on this machine and does not set NO_PROXY; set NO_PROXY and no_proxy to 127.0.0.1,localhost while the test runs, then put the old values back
 ```
 
+The first time a project's full `doctor` runs a new lesson, it also says so once, even
+when the lesson finds nothing: `note    new lesson: incident-138 (<what>); doctor now
+runs it in this project`. It keeps the lessons it has seen in `.git/yokoten/state.json`,
+so the file is never committed. A session does not write it.
+
 A note never fails `doctor`. To stop a lesson in one project, add its id to "notNow" in
 `yokoten.json`, with the reason: `"notNow": { "incident-138": "a setup file sets it" }`.
+
+**Try the loop.** In a clone of yokoten, run `node scripts/demo/loop.ts`. In about a second, it
+walks the whole loop in a temp folder: an incident, the draft, a refused ship, the review,
+the ship, and the note in a second project. It runs offline, with a fake `gh`, and removes
+the folder after. `--keep` keeps the folder and prints where it is.
 
 ### Settings
 
@@ -948,7 +970,8 @@ is to undo (record 0004):
 | A | Hard to undo: secrets, data, install, releases, owned files | The owner |
 
 `.github/CODEOWNERS` lists the owned files: the rules, the kit, agent config, CI and the
-records. It does not list every file. With "require review from code owners" on, the
+records. It does not list every file. In a new project, `init` writes one for the
+lead-only paths. With "require review from code owners" on, the
 host asks the owner to review a pull request that changes one of them.
 
 `check --pr` ties the two together. A pull request that changes an owned file fails

@@ -352,6 +352,7 @@ jobs:
 - **Node**：action 装的 Node，这个 job 后面的步骤也会用到。
 
 `check --pr` 按核心规则第 8 条检查 PR。还没按这条规则走的仓库，可以先写 `pr-check: false`。
+Dependabot 开的 PR 只查标题，其他几条只提醒、不算失败，因为它的正文是 Dependabot 自己写的。
 kit 里 `init` 放的 workflow 暂时还是跑 `.yokoten/` 里的那份，等第一个正式版本发布以后再换成
 这个 action，这样就不会依赖 `@main`。
 
@@ -387,13 +388,21 @@ job 用 actionlint 和 zizmor 查 workflow 本身；还有一个 `ci` job，设�
 token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你自己的测试，加成 `yokoten.yml` 里
 的一个 job，再把它写进 `ci` 的 `needs`。
 
-另外还在 `.github/` 里放两个文件，默认设置就是安全的：
+另外还在 `.github/` 里放三个文件，默认设置就是安全的：
 
 - `dependabot.yml`：自动更新 CI 用到的 action。一个月只开一个 PR，所有更新都在里面；
   新版本发布满一周才会用。文件里的注释写了怎么用同样的方式加上你自己的包（npm、pip、Go 等）。
 - `SECURITY.md`：告诉别人发现漏洞要私下报告，不要发公开 issue。要让私下报告能用，得在仓库
   设置里打开 private vulnerability reporting（私下报告漏洞）。`doctor` 会把它和其他安全开关
   一起列出来。
+- `CODEOWNERS`：默认只许 lead 改的那些路径，都写上主人：`AGENTS.md`、`yokoten.json`、
+  `.yokoten/`、hook、agent 配置和 `.github/`。守卫在本机拦住 worker，这个文件在服务器上拦住
+  同样的改动。主人取自 GitHub 上的 `origin` 远程仓库；没有的话，文件里先放一个占位符，
+  `doctor` 会提醒你换成自己的 GitHub 用户名。GitHub 不认组织当主人，所以 `gh` 查出这个账号是
+  组织时，`init` 也写占位符，并提醒你换成一个人，或者 `@组织/团队`。完整的 `doctor` 发现文件里
+  只写了组织，也会提醒你。要真正起作用，得在分支保护里打开
+  「Require review from Code Owners」（需要 code owner 审查）。项目里本来就有 CODEOWNERS 的
+  （放在 `.github/`、根目录或 `docs/`），原样保留。
 
 | 命令 | 做什么 |
 |------|--------|
@@ -432,7 +441,7 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
   `pr` 或 `issue`，说明查的是哪一种。`notes` 只是提醒，不会让检查失败。CI 这次跑的不是
   PR 或 issue 时，`check --pr` 和 `check --issue` 直接算通过，多一个 `skipped` 写明原因。
 - `doctor --json`：`{ version, ok, selfTest, repo, stage, stages, next, findings, steps,
-  notes, server, lessons }`。教训查出来的问题放在 `notes` 里。加 `--session` 时只给下一步、私有词表缺失的提醒，以及核心规则落后时的 `core-rules`。
+  notes, server, lessons }`。教训查出来的问题放在 `notes` 里，第一次见到的教训带 `isNew: true`。加 `--session` 时只给下一步、私有词表缺失的提醒，以及核心规则落后时的 `core-rules`。
 - `hook --json`：拦下时是 `{ blocked: true, finding }`，放行时是 `{ blocked: false, toolCall: true }`；
   标准输入读到的不是工具调用时，是 `{ blocked: false, toolCall: false }`。AI 工具本身不用它：
   它们按各自的 hook 协议，看退出码，再从标准错误读原因。
@@ -733,8 +742,17 @@ project:
   note    lesson incident-138: test/api.test.ts: a test calls a server on this machine and does not set NO_PROXY; set NO_PROXY and no_proxy to 127.0.0.1,localhost while the test runs, then put the old values back
 ```
 
+项目里第一次跑完整的 `doctor` 碰到一课新的，会单独说一次，哪怕没查出问题：
+`note    new lesson: incident-138 (<what>); doctor now runs it in this project`。
+见过哪些课记在 `.git/yokoten/state.json` 里，这个文件不会被提交。会话开头跑的 doctor 不写它。
+
 提醒不会让 `doctor` 失败。某个项目不想查这一课，就在 `yokoten.json` 的 "notNow" 里写上它的编号和理由，
 比如 `"notNow": { "incident-138": "a setup file sets it" }`。
+
+**自己走一遍。** 在 yokoten 的仓库里跑 `node scripts/demo/loop.ts`，大约一秒就把整个流程走完：
+出事故、起草稿、没审就发被拒、人来审、发进 kit，最后另一个项目的 `doctor` 给出提醒。
+全程在临时文件夹里做，不联网（用的是假的 `gh`），做完就删。想留下来看看，加 `--keep`，
+它会打出文件夹在哪里。
 
 ### 设置
 
@@ -851,7 +869,7 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 | A | 改错了很难收回：密钥、数据、安装、发版、CODEOWNERS 里的文件 | 主人审 |
 
 `.github/CODEOWNERS` 只列出改错了很难收回的文件：规则、kit、agent 配置、CI、记录。
-不是每个文件都列。仓库打开「需要 code owner 审查」以后，PR 一改到这些文件，GitHub
+不是每个文件都列。新项目跑 `init` 时，会按只许 lead 改的路径写好一份。仓库打开「需要 code owner 审查」以后，PR 一改到这些文件，GitHub
 就会请主人来审。
 
 `check --pr` 把这两件事接起来。PR 改到 CODEOWNERS 里的文件，第一行却不是 `tier: A`，

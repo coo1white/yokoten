@@ -14,13 +14,13 @@ import { basename, dirname, join, relative, resolve } from 'node:path';
 import { type Env, loadConfig } from '../rules/config.ts';
 import { matcher } from '../rules/config.ts';
 import { type Finding, finding, type RuleId } from '../rules/message.ts';
-import { CHANGES_DIR } from '../rules/pr.ts';
+import { CHANGES_DIR, parseCodeOwners } from '../rules/pr.ts';
 import { BUILD_DIRS, isBuildOutput } from '../rules/layout.ts';
 import { hasPlugin, hasProjectHook } from '../agents/claude-code.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
-import { hasBot, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
+import { CODEOWNERS_PLACES, hasBot, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
-import { claudeReadsRules, cliPath, COMMIT_HOOKS, deadHookNotes, findRulesGap, handOffBlocks, hasHandOff, hookFile, isCommitHook, isExecutable, isSelf, type OldHook, readHookSetup, readOldHooks } from './init.ts';
+import { claudeReadsRules, cliPath, COMMIT_HOOKS, deadHookNotes, findRulesGap, handOffBlocks, hasHandOff, hookFile, isCommitHook, isExecutable, isSelf, type OldHook, OWNER_PLACEHOLDER, readHookSetup, readOldHooks } from './init.ts';
 import { FIRST_MILESTONE, lackingLabels, pickNewMilestone } from './plan.ts';
 import { skillFiles, skillsDir } from './install.ts';
 
@@ -66,6 +66,27 @@ const read = (path: string) => {
     return '';
   }
 };
+
+/** The CODEOWNERS file GitHub reads here, relative to the root, or null when there is none. */
+const codeOwnersFile = (root: string): string | null => CODEOWNERS_PLACES.find((place) => existsSync(join(root, place))) ?? null;
+
+/** True when a rule line of the CODEOWNERS file still has init's placeholder in place of an owner. Comments don't count, as in GitHub. */
+const hasPlaceholder = (root: string, file: string): boolean =>
+  read(join(root, file))
+    .split(/\r?\n/)
+    .some((line) => line.replace(/(^|\s)#.*$/, '').includes(OWNER_PLACEHOLDER));
+
+/**
+ * The organization named as the only owner in the CODEOWNERS file, or null. Only full
+ * doctor knows the repo's owner is an organization, from the repo read it already makes;
+ * a session never asks (#313). GitHub takes no bare `@org`, so such a file locks nothing.
+ */
+function orgOnlyOwner(root: string, file: string, server: ServerRead): string | null {
+  const org = server && !('unread' in server) ? server.org : null;
+  if (!org) return null;
+  const owners = parseCodeOwners(read(join(root, file))).flatMap((rule) => rule.owners);
+  return owners.length > 0 && owners.every((owner) => owner.toLowerCase() === `@${org.toLowerCase()}`) ? org : null;
+}
 
 export const gitConfig = (root: string, key: string) => {
   try {
@@ -742,11 +763,24 @@ export const ROAD: Step[] = [
   {
     stage: 4,
     key: 'codeowners',
-    check: (root) => ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'].some((p) => existsSync(join(root, p))),
-    what: () => 'no CODEOWNERS file',
-    fix: () => 'add .github/CODEOWNERS with a line `<path> @<your account>` for each path where a mistake is hard to undo: the rules, CI, agent config',
+    check: (root, _, server) => {
+      const file = codeOwnersFile(root);
+      return file !== null && !hasPlaceholder(root, file) && !orgOnlyOwner(root, file, server);
+    },
+    what: (root, _, server) => {
+      const file = codeOwnersFile(root);
+      const org = file && orgOnlyOwner(root, file, server);
+      if (org) return `${file} names only @${org}, an organization, and GitHub takes no organization as an owner`;
+      return file ? `${file} names no owner yet (${OWNER_PLACEHOLDER})` : 'no CODEOWNERS file';
+    },
+    fix: (root, _, server) => {
+      const file = codeOwnersFile(root);
+      const org = file && orgOnlyOwner(root, file, server);
+      if (org) return `put a person's handle or @${org}/<team> in ${file}`;
+      return file ? `put your GitHub handle in ${file}` : '`yokoten init` writes .github/CODEOWNERS for the lead-only paths; or add one with a line `<path> @<your account>` for each path where a mistake is hard to undo: the rules, CI, agent config';
+    },
     why: 'the host then asks you to review a pull request that changes those paths, and `check --pr` makes it tier A',
-    how: 'a CODEOWNERS file is in .github/, at the root or in docs/',
+    how: `a CODEOWNERS file is in .github/, at the root or in docs/, and the first one GitHub reads names an owner, not init's placeholder ${OWNER_PLACEHOLDER}; full doctor also reads whether the repo belongs to an organization, and an organization alone (@org, not @org/team) is not an owner`,
     standard: 'Scorecard: Branch-Protection',
   },
   {

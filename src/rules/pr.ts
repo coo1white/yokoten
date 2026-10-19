@@ -20,6 +20,8 @@ export interface PullRequest {
   deleted?: string[];
   labels: string[];
   milestone: string | null;
+  /** The login of the account that opened it, or '' when the host does not say. */
+  author?: string;
 }
 
 const TYPES = ['feat', 'fix', 'docs', 'test', 'refactor', 'chore', 'ci', 'perf', 'build', 'style', 'revert'];
@@ -238,6 +240,30 @@ export function checkPullRequest(pr: PullRequest, config: Pick<Config, 'tests'> 
   if (!pr.milestone) problems.push(finding('pr-milestone', 'milestone: none set', 'set one'));
   problems.push(...checkLabels(pr.labels, tier));
   return problems;
+}
+
+// Dependabot's pull requests (#299). Dependabot writes its own body, and sets no tier,
+// milestone, label of ours or change file, so those rules are notes for it: the owner
+// still sees each one, and the check stays green. The title rule stays a failure, since
+// the title becomes the commit on main and the kit's dependabot.yml sets its prefix. The
+// owned-tier rule is a note too: Dependabot can't write a tier line, and GitHub's
+// required review from code owners, not this check, is the lock on owned files.
+
+/** The login GitHub gives Dependabot's pull requests. */
+export const DEPENDABOT = 'dependabot[bot]';
+const DEPENDABOT_NOTES = new Set(['pr-tier', 'pr-section', 'pr-issue', 'pr-changelog', 'pr-kit', 'pr-milestone', 'pr-labels', 'pr-owned']);
+
+/**
+ * The pull request findings, split into problems and notes. For a pull request Dependabot
+ * opened, the rules it can't meet are notes; for anyone else, nothing moves.
+ */
+export function splitForDependabot(pr: Pick<PullRequest, 'author'>, found: Finding[]): { problems: Finding[]; notes: Finding[] } {
+  if (pr.author !== DEPENDABOT) return { problems: found, notes: [] };
+  const why = 'Dependabot opened this pull request, so it is a note';
+  return {
+    problems: found.filter((f) => !DEPENDABOT_NOTES.has(f.id)),
+    notes: found.filter((f) => DEPENDABOT_NOTES.has(f.id)).map((f) => ({ ...f, why: `${f.why}; ${why}` })),
+  };
 }
 
 /**

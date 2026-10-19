@@ -12,11 +12,14 @@ import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { addProjectHook, addProjectStopHook, setProjectEnv } from '../agents/claude-code.ts';
+import { addProjectHook, addProjectStopHook, checkProjectSettings, setProjectEnv } from '../agents/claude-code.ts';
 import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
+import { DEFAULTS } from '../rules/config.ts';
+import { CODEOWNERS_PLACES, type Gh, ghIn, isOrganization, repoOf } from '../host/github.ts';
+import { readOriginUrl } from './plan.ts';
 import { copyRuntime, HOME_DIR, KIT, render, VERSION, writeNew } from './files.ts';
 
 /** yokoten's own repo runs its own bin; every other project runs a vendored copy. */
@@ -39,7 +42,9 @@ function walk(dir: string): string[] {
 
 /**
  * One agent's hook lines, or one skip line when its file won't parse or has the wrong
- * shape (#248): the file stays as it was, init goes on, and `ok` is false.
+ * shape (#248, #254), or is a Gemini CLI file with comments, which yokoten never rewrites
+ * (#258; the line then holds the hooks to add by hand): the file stays as it was, init
+ * goes on, and `ok` is false until the hooks are there.
  */
 function agentHooks(name: string, file: string, add: () => string[]): { ok: boolean; lines: string[] } {
   try {
@@ -50,8 +55,14 @@ function agentHooks(name: string, file: string, add: () => string[]): { ok: bool
   }
 }
 
-/** One line per thing done, kept or skipped; `ok` is false when a hooks file was skipped (#248). */
-export function init(root: string): { ok: boolean; lines: string[] } {
+/** How long init waits for GitHub to say whether the remote owner is an organization. */
+const ORG_LOOKUP_MS = 5000;
+
+/**
+ * One line per thing done, kept or skipped; `ok` is false when a hooks or settings file was
+ * skipped (#248, #254). `gh` asks GitHub one thing: whether the remote owner is an organization.
+ */
+export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: boolean; lines: string[] } {
   const report: string[] = [];
   const cli = cliPath(root);
   if (!isSelf(root) && root !== HOME_DIR) {
@@ -70,11 +81,20 @@ export function init(root: string): { ok: boolean; lines: string[] } {
   // Read before .githooks/ is written: whether it can run the hooks this clone has in .git/hooks (#256).
   const blocks = hooks.kind === 'plain' ? handOffBlocks(root) : [];
   if (hooks.kind !== 'own') report.push(...writeGithooks(root, cli, kit, blocks.length === 0));
+  report.push(writeCodeOwners(root, gh));
   const imported = importRules(root);
   if (imported) report.push(imported);
-  const hook = addProjectHook(root, cli);
-  report.push(`${hook} the tool-call hook in .claude/settings.json`);
-  report.push(`${addProjectStopHook(root, cli)} the stop check in .claude/settings.json (changed files, before the agent ends its turn)`);
+  // Claude Code's settings, the file people edit by hand most: skipped as one, never
+  // rewritten, when it won't parse or has the wrong shape (#254).
+  const claudeHooks = agentHooks('the Claude Code settings', '.claude/settings.json', () => {
+    checkProjectSettings(root);
+    return [
+      `${addProjectHook(root, cli)} the tool-call hook in .claude/settings.json`,
+      `${addProjectStopHook(root, cli)} the stop check in .claude/settings.json (changed files, before the agent ends its turn)`,
+      `${setProjectEnv(root, 'TZ', 'UTC')} TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)`,
+    ];
+  });
+  report.push(...claudeHooks.lines);
   // Codex and Gemini CLI get the same guard, whether or not they are installed here: two
   // small files are easier to predict than a guess about which agents someone uses.
   // A file that won't parse, or has the wrong shape, is named and skipped, never rewritten (#248).
@@ -86,16 +106,69 @@ export function init(root: string): { ok: boolean; lines: string[] } {
     ];
   });
   const geminiHooks = agentHooks('the Gemini CLI hooks', '.gemini/settings.json', () => {
-    gemini.checkProjectHooks(root);
+    gemini.checkProjectHooks(root, cli);
     return [
       `${gemini.addProjectHook(root, cli)} the Gemini CLI tool-call hook in .gemini/settings.json`,
       `${gemini.addProjectStopHook(root, cli)} the Gemini CLI stop check in .gemini/settings.json (AfterAgent)`,
     ];
   });
   report.push(...codexHooks.lines, ...geminiHooks.lines);
-  report.push(`${setProjectEnv(root, 'TZ', 'UTC')} TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)`);
   report.push(...setCommitCheck(root, cli, hooks, blocks));
-  return { ok: codexHooks.ok && geminiHooks.ok, lines: report };
+  return { ok: claudeHooks.ok && codexHooks.ok && geminiHooks.ok, lines: report };
+}
+
+// ---- CODEOWNERS for the lead-only paths (#304) ----
+//
+// The guard and the commit check stop a worker on the machine; CODEOWNERS stops the same
+// change on the server, where `check --pr` makes it tier A and the host asks the owner to
+// review. Its paths come from DEFAULTS.leadOnly, so the two lists can't drift. init
+// writes the file rather than copying it from the kit: both the paths and the owner vary.
+
+/** The owner init writes when it can't tell who owns the repo. A GitHub handle has no underscore, so this is never a real account. */
+export const OWNER_PLACEHOLDER = '@YOUR_GITHUB_HANDLE';
+
+/** A lead-only glob as a CODEOWNERS path: `x/**` is the folder `/x/`, a file is `/file`. */
+export const ownedPath = (glob: string): string => `/${glob.replace(/\/\*\*$/, '/')}`;
+
+/**
+ * The CODEOWNERS init writes: every default lead-only path, owned by `owner`, or by the
+ * placeholder when null. `org` is the organization that owns the repo, named in the hint.
+ */
+export function codeOwnersText(owner: string | null, org?: string): string {
+  const handle = owner ? `@${owner}` : OWNER_PLACEHOLDER;
+  const lines = [
+    '# Written by yokoten init. The owner reviews every change to these paths: the rules',
+    "# the agents work under, their config, the hooks and CI (yokoten's lead-only defaults).",
+    '# Turn on "Require review from Code Owners" in branch protection, or GitHub asks',
+    '# nobody. `yokoten check --pr` makes a change here tier A either way.',
+  ];
+  if (!owner && org) lines.push(`# @${org} is an organization, and GitHub takes no organization here: put a person's handle or @${org}/<team> in place of ${OWNER_PLACEHOLDER} on each line below.`);
+  else if (!owner) lines.push(`# Put your GitHub handle in place of ${OWNER_PLACEHOLDER} on each line below.`);
+  const paths = DEFAULTS.leadOnly.map(ownedPath);
+  const width = Math.max(...paths.map((path) => path.length));
+  return [...lines, '', ...paths.map((path) => `${path.padEnd(width)} ${handle}`), ''].join('\n');
+}
+
+/** The GitHub account in the origin remote's URL, or null without a GitHub remote. */
+const readRemoteOwner = (root: string): string | null => repoOf(readOriginUrl(root))?.split('/')[0] ?? null;
+
+/**
+ * Write .github/CODEOWNERS unless the project has one in any place GitHub reads. Returns
+ * the report line. An organization can't own a path in CODEOWNERS, so when gh says the
+ * remote owner is one, the file gets the placeholder (#313). When gh can't tell, the
+ * remote owner stays: most repos belong to a person.
+ */
+function writeCodeOwners(root: string, gh: Gh): string {
+  const found = CODEOWNERS_PLACES.find((place) => existsSync(join(root, place)));
+  if (found) return `kept ${found}`;
+  const remote = readRemoteOwner(root);
+  const org = remote !== null && isOrganization(gh, remote) === true;
+  const owner = org ? null : remote;
+  writeNew(join(root, '.github', 'CODEOWNERS'), codeOwnersText(owner, org ? remote : undefined));
+  if (org) return `wrote .github/CODEOWNERS (the lead-only paths; @${remote} is an organization, so put a person or @${remote}/<team> in place of ${OWNER_PLACEHOLDER})`;
+  return owner
+    ? `wrote .github/CODEOWNERS (the lead-only paths, owned by @${owner})`
+    : `wrote .github/CODEOWNERS (the lead-only paths; put your GitHub handle in place of ${OWNER_PLACEHOLDER})`;
 }
 
 // ---- A project's own CLAUDE.md and commit hooks (#206) ----
