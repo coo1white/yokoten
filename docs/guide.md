@@ -217,7 +217,7 @@ yokoten guards three AI coding agents. Each one keeps the same rules.
 | Agent | What yokoten adds |
 |---|---|
 | Claude Code | the tool-call guard (a hook), the stop check (a hook), the guide at the start of each session, skills and agents |
-| Codex CLI | the tool-call guard and the stop check, in `.codex/hooks.json`. The guide at the start of each session and the command guard, in `~/.codex/hooks.json` |
+| Codex CLI | the tool-call guard and the stop check, in `.codex/hooks.json`. The guide at the start of each session and the command guard, in `~/.codex/hooks.json`. The guard checks the files of an `apply_patch`, also one run through the shell |
 | Gemini CLI | the tool-call guard and the stop check (AfterAgent), in `.gemini/settings.json`. The guide at the start of each session and the command guard, in `~/.gemini/settings.json` |
 | Any other agent | the rules in `AGENTS.md`, and the commit check, which stops a bad commit whoever made it |
 
