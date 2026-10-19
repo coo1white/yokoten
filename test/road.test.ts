@@ -20,17 +20,20 @@ const marks = (found: Found[], notNow: Record<string, string> = {}) => at(found,
 /**
  * Proves `read` takes linear time by how its time grows, not by a wall-clock limit, which
  * fails on a slow runner (#275, #315). It reads an input of size n and one of 8n: linear time
- * grows about 8x, quadratic about 64x, so more than 24x fails. The small size takes the best of
- * three runs, and the big one gets two more tries, so one pause does not count; 30 s catches a hang.
+ * grows about 8x, quadratic about 64x, so more than 24x fails. Each timing repeats the read until
+ * the small input takes 5 ms, since on a 1 ms base one pause of a slow runner is already 25x (#321).
+ * The small size takes the best of three runs, and the big one gets two more tries; 30 s catches a hang.
  */
 const assertLinear = (name: string, make: (n: number) => string, read: (input: string) => void, n = 1 << 16) => {
+  let reps = 1;
   const time = (input: string) => {
     const start = performance.now();
-    read(input);
+    for (let i = 0; i < reps; i++) read(input);
     return performance.now() - start;
   };
   const small = make(n);
   const big = make(8 * n);
+  while (reps < 64 && time(small) < 5) reps *= 2;
   // Below 1 ms the timer and the JIT are noise; a quadratic read of 8n still takes far longer.
   const base = Math.max(1, Math.min(time(small), time(small), time(small)));
   let ms = Infinity;
