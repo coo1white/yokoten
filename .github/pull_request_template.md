@@ -7,7 +7,7 @@ Closes #
        A: secrets, data, the install and update path, releases, and any file CODEOWNERS owns. Needs a test that fails without the change, and the owner's review.
        B: other code. Needs tests for the change.
        C: docs, wording, styles.
-     Set a milestone and labels (a type and a tier). `yokoten check --pr` checks all of this in CI. -->
+     Set a milestone, a type label, and a tier label that matches `tier:` above. `yokoten check --pr` checks all of this in CI. -->
 
 ## Why
 
