@@ -237,9 +237,9 @@ export const COMMANDS: Command[] = [
     summary: 'run one command as the bot (gh, git push); the token is never printed',
     usage: '-- <command>',
     text: [
-      'Runs the command after -- as the bot, with a one-hour token. It checks an issue or',
-      'pull request title first, and sends nothing when the title is wrong. Everything',
-      'after -- is passed on unchanged, --help too.',
+      'Runs the command after -- as the bot, with a one-hour token. It runs gh and git',
+      'only. It checks an issue or pull request title first, and sends nothing when the',
+      'title is wrong. Everything after -- is passed on unchanged, --help too.',
     ],
     options: [],
     example: 'yokoten bot -- gh pr create --fill',
