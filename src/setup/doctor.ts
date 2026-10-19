@@ -30,7 +30,7 @@ import { commentedFile, HAND_ADD, handAddJson, type HookState, mergeHandAdds } f
 import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
 import { cliPath, compareCoreRules, compareVersions, isSelf, readCoreRules, summarizeUpdate } from './init.ts';
-import { paths, USER_CLI, USER_MISSING } from './install.ts';
+import { installedPieces, paths, USER_CLI, USER_MISSING } from './install.ts';
 import { type Mark, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
 
 /** One check outside the road: its name in the report, whether it is in place, and the finding when it is not. */
@@ -93,7 +93,8 @@ export function agentHooks(root: string): Practice[] {
 /**
  * Machine checks: the user-level hooks, the runtime, the private marks. The skills are a
  * step on the road. The Claude Code plugin brings its own hooks and runtime, so with it
- * on, those two checks pass; an old runtime that install left is still reported.
+ * on, those two checks pass; an old runtime that install left is still reported, with
+ * the advice to remove it: installing again would keep both (#300).
  */
 export function machineChecks(env: Env): Practice[] {
   const target = paths(env);
@@ -111,7 +112,7 @@ export function machineChecks(env: Env): Practice[] {
   return [
     session,
     // 'runtime' in the text, as before; the id differs from the road's runtime step.
-    practice('runtime', 'machine-runtime', runtime === VERSION || (plugin && runtime === null), runtime ? `the installed runtime is ${runtime}, this yokoten is ${VERSION}` : 'no runtime installed', 'run `yokoten install` from this copy of yokoten'),
+    practice('runtime', 'machine-runtime', runtime === VERSION || (plugin && runtime === null), runtime ? `the installed runtime is ${runtime}, this yokoten is ${VERSION}` : 'no runtime installed', plugin ? 'remove it with `yokoten uninstall`; the plugin brings its own' : 'run `yokoten install` from this copy of yokoten'),
     practice('private-marks', 'private-marks', loadMarks(env).length > 0, `${target.marks} is missing or empty`, 'add your name, city, domain and server names to it, one per line'),
   ];
 }
@@ -215,6 +216,20 @@ export function pluginAgeCheck(root: string | null, env: Env): Finding | null {
   const tip = readDefaultBranch(root);
   if (!tip || tip === plugin.commit || !isAncestor(root, plugin.commit, tip)) return null;
   return note(plugin.commit.slice(0, 12), tip.slice(0, 12));
+}
+
+/**
+ * A note when the plugin is on and install's pieces are here too (#300): then the guard
+ * and the session doctor run twice, and every skill shows up twice. It names what to
+ * remove, and the one command that does it.
+ */
+export function doubleInstallCheck(env: Env): Finding | null {
+  if (!hasPlugin(env)) return null;
+  const pieces = installedPieces(env);
+  if (!pieces.length) return null;
+  return finding('machine-runtime', `the yokoten plugin is on, and \`yokoten install\` put these here too: ${pieces.join('; ')}`, 'remove them with `yokoten uninstall`; the plugin brings its own', {
+    why: 'with both, the guard and the session doctor run twice and every skill shows up twice',
+  });
 }
 
 /** A server with every setting off, no label and only a closed milestone: no server step on the road may pass it (#7, #10). */
@@ -488,6 +503,8 @@ export function doctor(
     // A stale plugin keeps old guard rules running; the session hears it (#198).
     const stale = pluginAgeCheck(root, env);
     if (stale) lines.push(`yokoten: ${formatFinding(stale)}`);
+    const double = doubleInstallCheck(env);
+    if (double) lines.push(`yokoten: ${formatFinding(double)}`);
     // A lesson the kit learned reaches the project here: the session hears it (#120).
     if (core && isCoreBehind) {
       lines.push(`yokoten: ${formatFinding(core.finding)}`);
@@ -556,6 +573,11 @@ export function doctor(
   if (stale) {
     lines.push(`  note    plugin: ${stepText(stale)}`);
     notes.push(stale);
+  }
+  const double = doubleInstallCheck(env);
+  if (double) {
+    lines.push(`  note    plugin-and-install: ${stepText(double)}`);
+    notes.push(double);
   }
   // The road's stage 5 shows the settings it groups (#7); here are the rest, which never fail doctor.
   const settings = serverChecks(server ?? { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' });

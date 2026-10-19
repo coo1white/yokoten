@@ -283,6 +283,11 @@ The plugin works in Claude Code only. It does not make the private-marks file: `
 names the file, and you make it. When the plugin is on in your user settings, `doctor`
 counts its hooks and skills as installed.
 
+Use the plugin or `install`, not both: with both, the guard and the session doctor run
+twice and every skill shows up twice. `doctor` says so in a note. To move from `install`
+to the plugin, run `yokoten uninstall`. It removes what `install` wrote and keeps
+`~/.config/yokoten`.
+
 ### Install with npx
 
 For Codex CLI and Gemini CLI, or without the plugin:
@@ -468,6 +473,7 @@ It puts three safe defaults in `.github/` too:
 | `hook [--agent <name>] [--commands-only] [--json]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini` |
 | `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop event by default, a Codex Stop event with `--agent codex`, a Gemini CLI AfterAgent event with `--agent gemini`. See [The stop check](#the-stop-check) |
 | `explain [<id>] [--json]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
+| `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay. A second run changes nothing |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. Setup: [server.md](server.md#3-the-bot-a-github-app) |
 
 Each command prints its own help with `--help` or `-h`: what it does, its options and

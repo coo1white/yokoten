@@ -23,7 +23,7 @@ import { doctor } from '../src/setup/doctor.ts';
 import { explain, explainLines, ids } from '../src/setup/advice/explain.ts';
 import { VERSION } from '../src/setup/files.ts';
 import { init, updateCoreRules } from '../src/setup/init.ts';
-import { install } from '../src/setup/install.ts';
+import { install, uninstall } from '../src/setup/install.ts';
 import { readOriginUrl, setUpPlanning } from '../src/setup/plan.ts';
 
 // The help comes from one table, the same one the parser reads (#207).
@@ -622,6 +622,12 @@ function main(): number | Promise<number> {
       const done = install(env);
       print(done.lines);
       return done.ok ? 0 : 1;
+    }
+    case 'uninstall': {
+      const options = parse('uninstall');
+      if (typeof options === 'string') return usage(options);
+      print(uninstall(env));
+      return 0;
     }
     case 'version': {
       const options = parse('version');

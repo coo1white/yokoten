@@ -264,3 +264,32 @@ export function hasHook(path: string, event: string, sub: string, options: ReadO
   if ('problem' in table) return false;
   return (table.settings.hooks?.[event] ?? []).some((g) => (g.hooks ?? []).some((h) => runs(sub).test(h.command ?? '')));
 }
+
+/**
+ * Take out every hook for `event` that runs yokoten's `<sub>`, and the groups and events
+ * left empty. Everything else in the file stays. A file that is not JSON throws, so the
+ * caller can leave it alone and say so.
+ */
+export function removeHook(path: string, event: string, sub: string): 'removed' | 'not there' {
+  if (!existsSync(path)) return 'not there';
+  const settings = readSettings(path);
+  const groups = settings.hooks?.[event];
+  if (!settings.hooks || !Array.isArray(groups)) return 'not there';
+  let removed = false;
+  const kept: HookGroup[] = [];
+  for (const group of groups) {
+    const handlers = (group.hooks ?? []).filter((hook) => !runs(sub).test(hook.command ?? ''));
+    if (handlers.length === (group.hooks ?? []).length) {
+      kept.push(group);
+      continue;
+    }
+    removed = true;
+    if (handlers.length) kept.push({ ...group, hooks: handlers });
+  }
+  if (!removed) return 'not there';
+  if (kept.length) settings.hooks[event] = kept;
+  else delete settings.hooks[event];
+  if (!Object.keys(settings.hooks).length) delete settings.hooks;
+  writeSettings(path, settings);
+  return 'removed';
+}
