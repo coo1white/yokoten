@@ -521,7 +521,8 @@ test('init: writes .github/CODEOWNERS for every lead-only path, owned by the Git
 
 /**
  * A gh first on PATH that answers only the given calls (all its words, joined by spaces)
- * and fails every other one, so the real gh and GitHub are never reached (#313).
+ * and fails every other one, so the real gh and GitHub are never reached (#313). Each
+ * call is logged, one a line, for `ghCalls`.
  */
 function stubGh(sandbox: ReturnType<typeof makeSandbox>, answers: Record<string, string>): Record<string, string> {
   const bin = join(sandbox.home, 'bin');
@@ -530,7 +531,9 @@ function stubGh(sandbox: ReturnType<typeof makeSandbox>, answers: Record<string,
     join(bin, 'gh'),
     `#!/usr/bin/env node
 const answers = ${JSON.stringify(answers)};
-const said = answers[process.argv.slice(2).join(' ')];
+const call = process.argv.slice(2).join(' ');
+require('node:fs').appendFileSync(${JSON.stringify(join(sandbox.home, 'gh.log'))}, call + '\\n');
+const said = answers[call];
 if (said === undefined) process.exit(1);
 console.log(said);
 `,
@@ -538,6 +541,12 @@ console.log(said);
   chmodSync(join(bin, 'gh'), 0o755);
   return { PATH: `${bin}:${process.env.PATH}` };
 }
+
+/** The calls the gh from `stubGh` got, in order. */
+const ghCalls = (sandbox: ReturnType<typeof makeSandbox>): string[] => {
+  const log = join(sandbox.home, 'gh.log');
+  return existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : [];
+};
 
 test('init: a CODEOWNERS owner gh says is a user is written as is (#313)', () => {
   const sandbox = makeSandbox();
@@ -547,6 +556,8 @@ test('init: a CODEOWNERS owner gh says is a user is written as is (#313)', () =>
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /wrote \.github\/CODEOWNERS \(the lead-only paths, owned by @octo\)/);
   for (const rule of parseCodeOwners(readFileSync(join(sandbox.repo, '.github', 'CODEOWNERS'), 'utf8'))) assert.deepEqual(rule.owners, [`${at}octo`], rule.pattern);
+  // init asked GitHub, once, who @octo is.
+  assert.deepEqual(ghCalls(sandbox).filter((c) => c.startsWith('api users/')), ['api users/octo --jq .type']);
 });
 
 test('init: an organization is no CODEOWNERS owner, so init writes the placeholder and says why; full doctor flags an org-only file (#313)', () => {
