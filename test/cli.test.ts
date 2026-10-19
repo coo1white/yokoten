@@ -853,6 +853,30 @@ test('check --staged: stops a commit whose time carries a time zone, never print
   assert.equal(r.status, 0, r.stderr);
 });
 
+test('check --staged: with nothing staged, no commit time to check (#208)', () => {
+  const sandbox = makeSandbox();
+  const zoned = { TZ: 'Asia/Tokyo' };
+  // An empty repo, then one with a commit: nothing staged is ok, and says so.
+  for (const step of ['empty', 'committed']) {
+    if (step === 'committed') sandbox.git('commit', '-q', '--allow-empty', '-m', 'first');
+    const r = sandbox.run(['check', '--staged'], { extra: zoned });
+    assert.equal(r.status, 0, `${step}: ${r.stderr}`);
+    assert.match(r.stdout, /note: nothing is staged/);
+    assert.ok(!/time zone/.test(r.stderr), step);
+  }
+  // In the commit hook git sets GIT_INDEX_FILE: an empty commit or an amend is checked.
+  let r = sandbox.run(['check', '--staged'], { extra: { ...zoned, GIT_INDEX_FILE: join(sandbox.repo, '.git', 'index') } });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /carries your time zone/);
+  // A real staged change is still checked.
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', '.');
+  r = sandbox.run(['check', '--staged'], { extra: zoned });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /carries your time zone/);
+  assert.ok(!/nothing is staged/.test(r.stdout));
+});
+
 // .yokoten/ is the copy of yokoten the hooks and CI run: a worker that changes it can turn the checks off (#297).
 test('the vendored .yokoten/ runtime is lead-only: the hook and check --staged stop a worker, not the lead (#297)', () => {
   const sandbox = makeSandbox();
@@ -892,10 +916,26 @@ test('check --history: finds what a later commit deleted, and a personal author 
   assert.equal(sandbox.run(['check']).status, 0, 'the tree today is clean');
   const r = sandbox.run(['check', '--history']);
   assert.equal(r.status, 1);
-  assert.match(r.stderr, /notes\.md @ blob \w+:1: an IP address/);
-  assert.match(r.stderr, /notes\.md @ blob \w+:2: a secret \(GitHub token\)/, 'a secret deleted later (#8)');
+  // Named by the commit that added the file (#208), not only by its blob.
+  const added = sandbox.git('rev-parse', 'HEAD~2').stdout.slice(0, 8);
+  assert.ok(r.stderr.includes(`notes.md @ ${added}:1: an IP address`), r.stderr);
+  assert.ok(r.stderr.includes(`notes.md @ ${added}:2: a secret (GitHub token)`), 'a secret deleted later (#8)');
   assert.ok(!r.stderr.includes(token), 'the secret is never printed');
   assert.match(r.stderr, /\(author\/committer\):1: an email/);
+});
+
+test('check --history: names a moved file by its path in the commit that added it (#208)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('notes.md', `server ${[10, 1, 2, 3].join('.')}\n`);
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'add notes');
+  const added = sandbox.git('rev-parse', 'HEAD').stdout.slice(0, 8);
+  sandbox.git('mv', 'notes.md', 'moved.md');
+  sandbox.git('commit', '-qm', 'move notes');
+  const r = sandbox.run(['check', '--history']);
+  assert.equal(r.status, 1);
+  assert.ok(r.stderr.includes(`notes.md @ ${added}:1: an IP address`), r.stderr);
+  assert.ok(!r.stderr.includes('moved.md @'), 'that commit has no moved.md');
 });
 
 test('check --history: a shallow clone fails with one finding, never "every commit" (#266)', () => {
@@ -913,7 +953,7 @@ test('check --history: a shallow clone fails with one finding, never "every comm
   spawnSync('git', ['clone', '-q', '--depth', '1', `file://${sandbox.repo}`, shallow], { env: sandbox.env });
   let result = sandbox.run(['check', '--history'], { cwd: full });
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /notes\.md @ blob \w+:1: a secret \(GitHub token\)/);
+  assert.match(result.stderr, /notes\.md @ \w+:1: a secret \(GitHub token\)/);
   // The shallow clone (actions/checkout's default) is not scanned, and says why.
   result = sandbox.run(['check', '--history'], { cwd: shallow });
   assert.equal(result.status, 1, result.stdout);
@@ -950,7 +990,7 @@ test('check --history: a commit hidden by git replace is still scanned; a grafts
   assert.equal(sandbox.git('log', '--all', '--format=%H', '--', 'notes.md').stdout.trim(), '', 'git itself no longer sees the token');
   let result = sandbox.run(['check', '--history']);
   assert.equal(result.status, 1, result.stdout);
-  assert.match(result.stderr, /notes\.md @ blob \w+:1: a secret \(GitHub token\)/);
+  assert.match(result.stderr, /notes\.md @ \w+:1: a secret \(GitHub token\)/);
   assert.ok(!result.stderr.includes(token), 'the secret is never printed');
 
   // A grafts file can hide commits too: nothing is scanned, and one finding says why.
