@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
+import { guardCommand, missingProjectRuntime } from '../run/cli.ts';
 import type { Action } from '../run/hook.ts';
 import { type Added, addHook, hasHook, readSettings, writeSettings } from './hooks-file.ts';
 
@@ -49,7 +50,7 @@ const projectSettings = (root: string) => join(root, '.claude', 'settings.json')
 
 /** The project's tool-call guard: every shell call and edit goes past `hook` first. */
 export const addProjectHook = (root: string, cli: string) =>
-  addHook(projectSettings(root), 'PreToolUse', 'Bash|Edit|Write|MultiEdit|NotebookEdit', `node "$CLAUDE_PROJECT_DIR/${cli}" hook`);
+  addHook(projectSettings(root), 'PreToolUse', 'Bash|Edit|Write|MultiEdit|NotebookEdit', guardCommand(`"$CLAUDE_PROJECT_DIR/${cli}"`, 'hook', missingProjectRuntime(cli)));
 export const hasProjectHook = (root: string): boolean => hasHook(projectSettings(root), 'PreToolUse', 'hook');
 
 /**
@@ -58,7 +59,7 @@ export const hasProjectHook = (root: string): boolean => hasHook(projectSettings
  * does not see. Stop takes no matcher.
  */
 export const addProjectStopHook = (root: string, cli: string) =>
-  addHook(projectSettings(root), 'Stop', undefined, `node "$CLAUDE_PROJECT_DIR/${cli}" hook --stop`);
+  addHook(projectSettings(root), 'Stop', undefined, guardCommand(`"$CLAUDE_PROJECT_DIR/${cli}"`, 'hook --stop', missingProjectRuntime(cli)));
 
 /**
  * An environment variable for every agent session in the project (settings "env"). Used
@@ -75,11 +76,11 @@ export function setProjectEnv(root: string, key: string, value: string): Added {
   return had ? 'updated' : 'added';
 }
 
-/** The user's hooks, in every repo: doctor at session start, and the command guard. */
-export function addUserHooks(env: Env, cli: string): { doctor: Added; guard: Added } {
+/** The user's hooks, in every repo: doctor at session start, and the command guard. `missing` is what they say when `cli` is gone. */
+export function addUserHooks(env: Env, cli: string, missing: string): { doctor: Added; guard: Added } {
   return {
-    doctor: addHook(userSettings(env), 'SessionStart', undefined, `node ${cli} doctor --session`),
-    guard: addHook(userSettings(env), 'PreToolUse', 'Bash', `node ${cli} hook --commands-only`),
+    doctor: addHook(userSettings(env), 'SessionStart', undefined, guardCommand(cli, 'doctor --session', missing, { isSessionStart: true })),
+    guard: addHook(userSettings(env), 'PreToolUse', 'Bash', guardCommand(cli, 'hook --commands-only', missing)),
   };
 }
 export const hasSessionDoctor = (env: Env): boolean => hasHook(userSettings(env), 'SessionStart', 'doctor');

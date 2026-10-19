@@ -59,14 +59,19 @@ export function selfTest(): string[] {
 }
 
 /**
- * The other agents' tool-call hooks. Reported, but not a missing practice yet: no real
- * Codex or Gemini CLI run has been seen to block through them (#30), and a project that
- * uses neither should not fail doctor over them.
+ * The other agents' project hooks: the tool-call guard and the stop check. Reported, but
+ * not a missing practice yet: no real Codex or Gemini CLI run has been seen to block
+ * through them (#30), and a project that uses neither should not fail doctor over them.
  */
 export function agentHooks(root: string): Practice[] {
+  // Each step wants both project hooks: the tool-call guard and the stop check (#211).
+  const missing = (guard: boolean, stop: boolean, file: string) =>
+    [...(guard ? [] : ['no tool-call guard']), ...(stop ? [] : ['no stop check'])].join(' and ') + ` in ${file}`;
+  const [codexGuard, codexStop] = [codex.hasProjectHook(root), codex.hasProjectStopHook(root)];
+  const [geminiGuard, geminiStop] = [gemini.hasProjectHook(root), gemini.hasProjectStopHook(root)];
   return [
-    practice('codex-hook', 'codex-hook', codex.hasProjectHook(root), 'no tool-call guard in .codex/hooks.json', '`yokoten init` adds it'),
-    practice('gemini-hook', 'gemini-hook', gemini.hasProjectHook(root), 'no tool-call guard in .gemini/settings.json', '`yokoten init` adds it'),
+    practice('codex-hook', 'codex-hook', codexGuard && codexStop, missing(codexGuard, codexStop, '.codex/hooks.json'), '`yokoten init` adds it'),
+    practice('gemini-hook', 'gemini-hook', geminiGuard && geminiStop, missing(geminiGuard, geminiStop, '.gemini/settings.json'), '`yokoten init` adds it'),
   ];
 }
 
@@ -149,8 +154,7 @@ export function pluginAgeCheck(root: string | null, env: Env): Finding | null {
   if (!hasPlugin(env)) return null;
   const plugin = readInstalledPlugin(env, root);
   if (!plugin) return null;
-  const why = "the plugin's hooks run the plugin's copy, so an old copy checks old rules";
-  const note = (older: string, newer: string) => finding('machine-runtime', `the yokoten plugin is older than this yokoten (${older} < ${newer})`, `update it: ${PLUGIN_UPDATE}`, { why });
+  const note = (older: string, newer: string) => finding('plugin-version', `the yokoten plugin is older than this yokoten (${older} < ${newer})`, `update it: ${PLUGIN_UPDATE}`);
   if (plugin.version && compareVersions(plugin.version, VERSION) === -1) return note(plugin.version, VERSION);
   if (!root || !plugin.commit || !isSelf(root)) return null;
   const tip = readDefaultBranch(root);
@@ -162,9 +166,11 @@ export function pluginAgeCheck(root: string | null, env: Env): Finding | null {
 const SERVER_CONTROL: ServerRead = {
   repo: 'octo/demo',
   defaultBranch: 'main',
+  isPrivate: false,
+  actionsCanApprove: false,
   mergeMethods: ['merge', 'squash'],
   deleteBranchOnMerge: false,
-  branch: { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false },
+  branch: { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false, approvals: 0 },
   tags: false,
   security: { secretScanning: false, pushProtection: false, privateReporting: false, dependabotAlerts: false },
   forgotten: [],
@@ -215,7 +221,7 @@ export function coreRulesControl(check: typeof coreRulesCheck = coreRulesCheck):
 }
 
 /** What doctor can't read on the server yet, and the owner sets once per repo. */
-const OWNER_STEPS = ['the bot: a GitHub App (or collaborator) with write access and no Workflows permission'];
+const OWNER_STEPS = ['the bot: a GitHub App (or collaborator) with write access; CODEOWNERS sends CI changes to you'];
 
 /** The settings to check by hand when doctor can't read the server. */
 const BY_HAND = [
@@ -355,9 +361,13 @@ export function doctor(
     if (core.mark === 'MISSING') findings.push(core.finding);
     else if (core.mark === 'note') notes.push(core.finding);
   }
-  const problems = check(root, { config, env });
+  const checkNotes: Finding[] = [];
+  const problems = check(root, { config, env, notes: checkNotes });
   findings.push(...problems);
   lines.push(`  ${problems.length ? 'MISSING' : 'ok     '} tree: ${problems.length ? `${problems.length} problem(s), run \`yokoten check\`` : 'layout and privacy clean'}`);
+  // check's own notes (#228), such as an unknown yokoten.json key or a translation behind: worded as check words them, and never a failure.
+  for (const n of checkNotes) lines.push(`  note    ${formatFinding(n).replaceAll('\n', '\n        ')}`);
+  notes.push(...checkNotes);
   lines.push('machine:');
   for (const c of machine) {
     lines.push(`  ${c.ok ? 'ok     ' : 'MISSING'} ${c.name}${c.ok ? '' : `: ${stepText(c.finding)}`}`);

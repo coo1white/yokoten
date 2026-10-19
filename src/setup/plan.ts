@@ -12,8 +12,9 @@ import { createLabel, createMilestone, deleteLabel, editLabel, type Gh, type Lab
 
 /**
  * The standard set, as agreed for yokoten (#10): a type, the same words as commit types,
- * and the flow labels. No status or priority labels: the board holds status, milestones
- * hold timing. Area labels are each project's own, so they are not here.
+ * the flow labels, and the tier labels the pull request check asks for (#225). No status
+ * or priority labels: the board holds status, milestones hold timing. Area labels are each
+ * project's own, so they are not here.
  */
 export const LABELS: Label[] = [
   { name: 'bug', color: 'd73a4a', description: 'Something does not work as it should' },
@@ -25,6 +26,9 @@ export const LABELS: Label[] = [
   { name: 'incident', color: 'b60205', description: 'Something went wrong; the fix adds a check' },
   { name: 'good first issue', color: '7057ff', description: 'A small, clear task for a new contributor' },
   { name: 'hotfix', color: 'e11d21', description: 'Urgent: fix and release soon' },
+  { name: 'tier A', color: 'b60205', description: 'Hard to take back: secrets, data, install/update path, releases, going public. Owner reviews.' },
+  { name: 'tier B', color: 'fbca04', description: 'Other code. Tests for the change; merges when CI is green.' },
+  { name: 'tier C', color: '0e8a16', description: 'Docs, wording, styles. Merges when CI is green.' },
 ];
 
 /** The milestone made when the repo has no open one. */
