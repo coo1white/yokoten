@@ -193,7 +193,7 @@ export const RULES = {
   'change-file': {
     rule: 'a change file has its section on line 1, a blank line 2, then the entry (core rule 8)',
     why: '`yokoten changelog` puts each entry under its section in CHANGELOG.md, so it must read the file',
-    check: `${PR_CHECK} and each change file it adds or edits; \`yokoten changelog\` writes nothing while a change file is wrong`,
+    check: `${PR_CHECK} and each change file it adds or edits; \`check\` reads every change file, and \`check --staged\` the staged ones; \`yokoten changelog\` writes nothing while a change file is wrong`,
     docs: guide('the-changelog'),
   },
   'pr-kit': {
@@ -241,7 +241,7 @@ export const RULES = {
   'long-sentence': {
     rule: 'plain English: a sentence has at most 25 words (record 0005)',
     why: 'beginners, second-language readers and agents misread long sentences',
-    check: '`check --pr` notes long sentences in changed Markdown, skipping code, tables and headings; a note never fails CI',
+    check: '`check --pr` notes long sentences in changed Markdown, and `check --staged` in staged change files, skipping code, tables and headings; a note never fails CI',
   },
   'name-short': {
     rule: 'a one-letter name is used within 10 lines and not exported (record 0006; docs/guide.md#naming)',
