@@ -68,9 +68,21 @@ export const RULES = {
   },
   'hooks-path': {
     rule: 'never turn off the commit check (core rule 6)',
-    why: 'git runs the commit check from core.hooksPath, so another value turns the check off',
-    check: 'the tool-call guard lets a read of core.hooksPath through, and stops any other value than .githooks: `git config`, `git -c`, `--config-env` and GIT_CONFIG_KEY_n; the commit-check step looks at the setting',
+    why: 'git runs the commit check from core.hooksPath, so a folder whose pre-commit does not run it turns the check off',
+    check: 'the tool-call guard lets every read of core.hooksPath through. In the repo\'s own config, `git config` may set .githooks, the value already set, or a folder whose pre-commit runs `yokoten check` (husky: .husky/pre-commit). It stops any other change: `--unset`, `--global`, `git -c`, `--config-env` and GIT_CONFIG_KEY_n. The commit-check step looks at the setting',
     docs: guide('the-core-rules'),
+  },
+  'blocked-command': {
+    rule: 'an agent does not run a program the project blocks in yokoten.json "commands.block"',
+    why: 'the project chose its stack, and an agent forgets a rule written only in prose',
+    check: 'the tool-call guard stops a command whose program is on the list, with any folder or .exe, in any part of the command and after env, sudo, nice and other wrappers; the reason comes from yokoten.json',
+    docs: guide('blocked-commands'),
+  },
+  'unreadable-command': {
+    rule: 'a command the guard cannot read is refused, not let through',
+    why: 'the guard reads command text, and a command it cannot read could hide anything',
+    check: 'the tool-call guard refuses a tool call, with exit 2, when reading it fails or takes longer than its deadline (5 seconds; YOKOTEN_GUARD_DEADLINE_MS changes it)',
+    docs: guide('what-it-doesnt-do'),
   },
   'test-file': {
     rule: 'a fix task changes code, never tests (core rule 4)',
@@ -108,6 +120,12 @@ export const RULES = {
     check: 'the commit check, CI and `check --history` look for the real shape of tokens (GitHub, npm, AWS, Slack, Stripe, Google, Anthropic, OpenAI) and of private keys',
     docs: guide('privacy'),
   },
+  'shallow-history': {
+    rule: '`check --history` reads the whole history, so it needs a full clone with no grafts file',
+    why: 'a shallow clone holds only the newest commits, and a grafts file can hide commits, so a secret in a hidden commit goes unseen',
+    check: '`check --history` asks git whether the clone is shallow (`git rev-parse --is-shallow-repository`) and looks for `info/grafts` in the git directory; if either is there, it scans nothing and fails with this finding. Replace refs are read past (`git --no-replace-objects`)',
+    docs: guide('privacy'),
+  },
   'time-zone': {
     rule: 'commit times are UTC (core rule 12)',
     why: 'a time zone narrows down where you live',
@@ -124,6 +142,12 @@ export const RULES = {
     rule: 'no build output in a commit',
     why: 'a build makes it again from the source, so a committed copy goes stale',
     check: 'the commit check refuses a file in a dist/, build/ or out/ folder; yokoten.json "allowBuild" lets a path through',
+  },
+  'missing-blob': {
+    rule: 'the commit check reads every staged file',
+    why: 'a staged file whose copy is not in the object store can\'t be checked, and the commit would fail or hold an unchecked entry',
+    check: 'the commit check reads each staged file from the object store by its id, and refuses an entry it can\'t read',
+    docs: guide('three-checks-and-a-lock'),
   },
   binary: {
     rule: 'no binary file in a commit, apart from images and fonts',
@@ -185,8 +209,8 @@ export const RULES = {
     docs: guide('the-core-rules'),
   },
   'pr-labels': {
-    rule: 'a pull request has a type label and a tier label (core rule 8)',
-    why: 'labels say what kind of change it is and how hard it is to take back',
+    rule: 'a pull request has one type label, and one tier label that matches the `tier:` line in its body (core rule 8)',
+    why: 'a reviewer filters on labels to find what kind of change it is and what needs the owner',
     check: PR_CHECK,
     docs: guide('the-core-rules'),
   },
@@ -234,8 +258,14 @@ export const RULES = {
   'translation-behind': {
     rule: 'a translation follows its English source (record 0007)',
     why: 'a reader of the translation gets old or missing steps without knowing it',
-    check: '`check` reads line 1 of each Markdown and HTML file; `<!-- source: <path> blob <sha> -->` names the English file and the git blob it was translated from, and a different blob now is a note; yokoten.json `"translations": { "fail": true }` makes it a problem',
+    check: '`check` reads line 1 of each Markdown and HTML file; `<!-- source: <path> -->` names the English file; when the last commit that changed the English is later than the last commit that changed the translation, in first-parent history, it is a note (an older marker with `blob <sha>` still works, and a matching blob is current); yokoten.json `"translations": { "fail": true }` makes it a problem',
     docs: guide('translations'),
+  },
+  'config-key': {
+    rule: 'yokoten.json holds the keys yokoten knows, each in its own shape (#228)',
+    why: 'yokoten ignores a key it does not know, so a misspelled key looks set but does nothing',
+    check: '`check` notes a key it does not know; a key with the wrong shape is a config error for `check` and `doctor`, and the tool-call hook uses that key\'s default and says so in one line',
+    docs: guide('yokotenjson'),
   },
   'large-diff': {
     rule: 'a pull request changes at most about 400 lines (record 0004)',
@@ -248,15 +278,27 @@ export const RULES = {
     check: '`doctor` feeds each check a known-bad input before anything else',
   },
   'codex-hook': {
-    rule: "the project has Codex's tool-call guard",
-    why: "without it, Codex's commands and edits in this project are not checked",
-    check: '`doctor` reads .codex/hooks.json for a PreToolUse hook that runs `yokoten hook --agent codex`; a note, not a missing step',
+    rule: "the project has Codex's tool-call guard and stop check",
+    why: "without them, Codex's commands and edits in this project are not checked, and its turn can end with a bad file",
+    check: '`doctor` reads .codex/hooks.json for a PreToolUse hook and a Stop hook that each run `yokoten hook`; a note, not a missing step',
     docs: guide('works-with'),
   },
   'gemini-hook': {
-    rule: "the project has Gemini CLI's tool-call guard",
-    why: "without it, Gemini CLI's commands and edits in this project are not checked",
-    check: '`doctor` reads .gemini/settings.json for a BeforeTool hook that runs `yokoten hook --agent gemini`; a note, not a missing step',
+    rule: "the project has Gemini CLI's tool-call guard and stop check",
+    why: "without them, Gemini CLI's commands and edits in this project are not checked, and its turn can end with a bad file",
+    check: '`doctor` reads .gemini/settings.json for a BeforeTool hook and an AfterAgent hook that each run `yokoten hook`; a note, not a missing step',
+    docs: guide('works-with'),
+  },
+  'codex-user-hook': {
+    rule: "Codex runs yokoten's session-start doctor and command guard in every repo",
+    why: 'without them, a Codex session does not hear the next step on the road, and a tag push, force push or skipped check in a repo without yokoten is not stopped',
+    check: "when ~/.codex is a folder, `doctor` compares the SessionStart and PreToolUse hooks in ~/.codex/hooks.json with what `yokoten install` writes (command, matcher, runtime path); a missing or out-of-date hook, or a file it can't read, is a note, not a missing step",
+    docs: guide('works-with'),
+  },
+  'gemini-user-hook': {
+    rule: "Gemini CLI runs yokoten's session-start doctor and command guard in every repo",
+    why: 'without them, a Gemini CLI session does not hear the next step on the road, and a tag push, force push or skipped check in a repo without yokoten is not stopped',
+    check: "when ~/.gemini is a folder, `doctor` compares the SessionStart and BeforeTool hooks in ~/.gemini/settings.json with what `yokoten install` writes (command, matcher, name, runtime path); a missing or out-of-date hook, or a file it can't read, is a note, not a missing step",
     docs: guide('works-with'),
   },
   'core-rules': {
@@ -275,6 +317,12 @@ export const RULES = {
     rule: 'the installed runtime is this version of yokoten',
     why: 'the user-level hooks run the installed copy, so an old copy checks old rules',
     check: '`doctor` compares the VERSION file in ~/.local/share/yokoten with its own version',
+  },
+  'plugin-version': {
+    rule: 'the enabled Claude Code plugin is not older than the yokoten that runs doctor',
+    why: "the plugin's hooks run the plugin's own copy, so an old plugin checks old rules",
+    check: "`doctor` compares the plugin's package version with its own and, in yokoten's own repo, the plugin's commit with the default branch's tip (origin/HEAD, else origin/main, else main); a note, never a failure, and nothing when it can't compare offline",
+    docs: guide('the-claude-code-plugin'),
   },
   'private-marks': {
     rule: 'this machine has a private-marks file with at least one line',
@@ -332,6 +380,12 @@ export const RULES = {
     why: 'a forgotten branch holds work nobody is looking at',
     check: `${SERVER_CHECK}; a note only, and doctor never deletes a branch`,
   },
+  'not-a-repo': {
+    rule: 'yokoten runs inside a git repo',
+    why: 'the checks read commits, so yokoten needs git history',
+    check: 'every command that reads or writes a project looks for its git repo first, and stops before it writes anything; `doctor --session` and the hooks do not report it, so a session in another folder gets no noise',
+    docs: guide('commands'),
+  },
 } satisfies Record<string, Rule>;
 
 export type RuleId = keyof typeof RULES;
@@ -345,6 +399,9 @@ export function finding(id: RuleId, what: string, fix: string, more: { file?: st
   if (more.line !== undefined) f.line = more.line;
   return f;
 }
+
+/** Outside a git repo (#205): the one finding every command that needs a repo gives. */
+export const notRepoFinding = (folder: string): Finding => finding('not-a-repo', `${folder} is not inside a git repo`, 'run it inside your project, or `git init` first');
 
 const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 

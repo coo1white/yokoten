@@ -8,6 +8,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+import { assertLinear } from '../scripts/linear.ts';
 import { chat, type LlamaConfig, llamaConfig } from '../src/agents/llama.ts';
 import { draft, type Fact, facts, parseAnswer, prompt, promptProblems, ruleDraft, table } from '../src/setup/advice/adopt.ts';
 import { type Found, onPullRequest, ROAD, runsTests, STAGES, type Step, walk, yokotenActions } from '../src/setup/road.ts';
@@ -321,24 +322,20 @@ test('road: the tests step counts a test command only in a run step, and not a l
 });
 
 test('road: the tests step reads a big workflow in linear time (#257)', () => {
-  const mb = 1 << 20;
-  const inputs: [string, string][] = [
-    ['1 MB of newlines', '\n'.repeat(mb)],
-    ['run: and 1 MB of spaces', `run: ${' '.repeat(mb)}`],
-    ['1 MB of blank indented lines', '    \n'.repeat(mb / 5)],
-    ['a run block of 1 MB of blank lines', `      - run: |\n${'\n'.repeat(mb)}`],
-    ['1 MB of semicolons', `- run: ${';'.repeat(mb)}`],
-    ['1 MB of flags', `- run: npm ${'-a '.repeat(mb / 3)}`],
-    ['1 MB of flags with values', `- run: pnpm ${'-a b '.repeat(mb / 5)}`],
-    ['1 MB of variables', `- run: ${'A=b '.repeat(mb / 4)}`],
+  // Each input is about n characters.
+  const inputs: [string, (n: number) => string][] = [
+    ['newlines', (n) => '\n'.repeat(n)],
+    ['run: and spaces', (n) => `run: ${' '.repeat(n)}`],
+    ['blank indented lines', (n) => '    \n'.repeat(n / 5)],
+    ['a run block of blank lines', (n) => `      - run: |\n${'\n'.repeat(n)}`],
+    ['semicolons', (n) => `- run: ${';'.repeat(n)}`],
+    ['flags', (n) => `- run: npm ${'-a '.repeat(n / 3)}`],
+    ['flags with values', (n) => `- run: pnpm ${'-a b '.repeat(n / 5)}`],
+    ['variables', (n) => `- run: ${'A=b '.repeat(n / 4)}`],
   ];
-  for (const [name, ci] of inputs) {
+  for (const [name, make] of inputs) {
     for (const workspaces of [false, true]) {
-      const start = performance.now();
-      assert.equal(runsTests(ci, 'vitest run x', workspaces), false, name);
-      const ms = performance.now() - start;
-      // A quadratic read of 1 MB takes minutes; 2 s leaves room for a slow CI runner (#275).
-      assert.ok(ms < 2000, `${name}: ${ms.toFixed(0)} ms`);
+      assertLinear(`${name}, workspaces ${workspaces}`, make, (ci) => assert.equal(runsTests(ci, 'vitest run x', workspaces), false, name));
     }
   }
 });
@@ -424,22 +421,21 @@ test('road: the ci and titles steps count the yokoten Action and npx yokoten, an
 });
 
 test('road: the Action and its trigger read a big workflow in linear time (#298)', () => {
-  const mb = 1 << 20;
-  const inputs: [string, string][] = [
-    ['1 MB of newlines', '\n'.repeat(mb)],
-    ['1 MB of list items', '- a\n'.repeat(mb / 4)],
-    ['1 MB of nested dashes', `- ${'- '.repeat(mb / 2)}`],
-    ['one item of 1 MB of key lines', `- uses: x/y@v1\n${'  a: b\n'.repeat(mb / 7)}`],
-    ['on: and 1 MB of indented lines', `on:\n${'  push:\n'.repeat(mb / 8)}`],
-    ['1 MB of npx flags', `- run: npx ${'-y '.repeat(mb / 3)}`],
-    ['a uses ref of 1 MB of words', `- uses: yokoten-labs/yokoten@${'a '.repeat(mb / 2)}"`],
+  // Each input is about n characters.
+  const inputs: [string, (n: number) => string][] = [
+    ['newlines', (n) => '\n'.repeat(n)],
+    ['list items', (n) => '- a\n'.repeat(n / 4)],
+    ['nested dashes', (n) => `- ${'- '.repeat(n / 2)}`],
+    ['one item of key lines', (n) => `- uses: x/y@v1\n${'  a: b\n'.repeat(n / 7)}`],
+    ['on: and indented lines', (n) => `on:\n${'  push:\n'.repeat(n / 8)}`],
+    ['npx flags', (n) => `- run: npx ${'-y '.repeat(n / 3)}`],
+    ['a uses ref of words', (n) => `- uses: yokoten-labs/yokoten@${'a '.repeat(n / 2)}"`],
   ];
-  for (const [name, ci] of inputs) {
-    const start = performance.now();
-    assert.deepEqual(yokotenActions(ci), [], name);
-    assert.equal(onPullRequest(ci), false, name);
-    assert.equal(ciSteps(ci).ci, false, name);
-    const ms = performance.now() - start;
-    assert.ok(ms < 2000, `${name}: ${ms.toFixed(0)} ms`);
+  for (const [name, make] of inputs) {
+    assertLinear(name, make, (ci) => {
+      assert.deepEqual(yokotenActions(ci), [], name);
+      assert.equal(onPullRequest(ci), false, name);
+      assert.equal(ciSteps(ci).ci, false, name);
+    });
   }
 });

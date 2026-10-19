@@ -1,6 +1,11 @@
 // The GitHub adapter. Everything yokoten knows about GitHub's API lives in src/host/
-// (record 0004); a rule or a step names what it needs in host-neutral words. Two parts:
-// the bot, and the pull request of a CI run.
+// (record 0004); a rule or a step names what it needs in host-neutral words. The parts,
+// in order:
+// - the bot, and the title a `gh issue` or `gh pr` command sets;
+// - the pull request and the issue of a CI run, and the CODEOWNERS file;
+// - the findings of a check on the pull request page;
+// - labels and milestones (the planning setup);
+// - the server settings, read only.
 //
 // The bot: a GitHub App that pushes branches and opens pull requests for the lead, so
 // the owner's account is never used for that. It signs in with one-hour tokens made from
@@ -17,6 +22,7 @@ import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { type Finding, finding, formatFinding, place } from '../rules/message.ts';
 import type { CodeOwners, PullRequest } from '../rules/pr.ts';
+import { type Incident, terminalText } from '../run/learn.ts';
 
 export interface BotConfig {
   appId: string;
@@ -68,29 +74,70 @@ export interface CommandTitle {
   labels: string[];
 }
 
+/** A `gh issue` or `gh pr` create or edit with a run-together word the bot can't read (#290). */
+export interface UnreadableTitle {
+  kind: 'issue' | 'pr';
+  /** The word, as in `-dz`. */
+  unreadable: string;
+  /** No title was read, so `found?.title` works on either kind. */
+  title?: never;
+}
+
 // The gh options of `issue`/`pr` `create`/`edit` that take a value. Their value is
-// skipped, so a body of `-t` is not read as the title option.
+// skipped, so a body of `-t` is not read as the title option, and a repo is not read as
+// the noun or the verb.
 const VALUE_OPTIONS = new Set([
   '--body', '-b', '--body-file', '-F', '--assignee', '-a', '--milestone', '-m', '--project', '-p', '--repo', '-R', '--template', '-T',
   '--base', '-B', '--head', '-H', '--reviewer', '-r', '--recover', '--remove-label', '--add-assignee', '--remove-assignee',
-  '--add-project', '--remove-project', '--add-reviewer', '--remove-reviewer',
+  '--add-project', '--remove-project', '--add-reviewer', '--remove-reviewer', '--attach', '--type', '--parent',
+  '--blocked-by', '--blocking', '--add-blocked-by', '--add-blocking', '--remove-blocked-by', '--remove-blocking',
+  '--add-sub-issue', '--remove-sub-issue',
 ]);
 const LABEL_OPTIONS = new Set(['--label', '-l', '--add-label']);
+// Every short flag of gh `issue`/`pr` `create`/`edit` (gh 2.102 help, with the inherited
+// `-R`), so a run-together word like `-dt` or `-dlbug` is read as gh reads it (#290):
+// true takes a value, false is a switch.
+const SHORT_FLAGS = new Map<string, boolean>([
+  ...[...'abFlmpTtRBHr'].map((letter): [string, boolean] => [letter, true]),
+  ...[...'dewf'].map((letter): [string, boolean] => [letter, false]),
+]);
+// gh's verbs that set a title, by every name gh accepts (`new` is its alias for `create`).
+const TITLE_VERBS = new Set(['create', 'new', 'edit']);
 
 /**
  * The title that `gh issue create`, `gh issue edit`, `gh pr create` or `gh pr edit` sets
- * with `--title X`, `--title=X`, `-t X` or `-tX` (#117). Null for any other command, or
- * when no title is given (`--fill`): CI checks that title. As in gh, the last one wins.
+ * with `--title X`, `--title=X`, `-t X` or `-tX` (#117). gh also takes `new` for `create`,
+ * and an option before the noun or the verb (`gh issue -R o/r create`), so they count
+ * too (#279). Short flags run together as gh takes them (`-dt X`, `-dtX`); a run-together
+ * word with a letter not in SHORT_FLAGS gives UnreadableTitle, so the caller refuses it
+ * (#290). Null for any other command, or when no title is given (`--fill`): CI checks
+ * that title. As in gh, the last one wins.
  */
-export function readCommandTitle(command: string[]): CommandTitle | null {
-  const [file, kind, verb, ...rest] = command;
+export function readCommandTitle(command: string[]): CommandTitle | UnreadableTitle | null {
+  const [file, ...rest] = command;
   if (!file || file.split(/[\\/]/).pop() !== 'gh') return null;
-  if ((kind !== 'issue' && kind !== 'pr') || (verb !== 'create' && verb !== 'edit')) return null;
+  const words: string[] = [];
   let title: string | null = null;
   const labels: string[] = [];
+  let unreadable: string | null = null;
   for (let index = 0; index < rest.length; index++) {
-    const word = rest[index];
+    let word = rest[index];
     if (word === '--') break;
+    if (!word.startsWith('-') || word === '-') {
+      words.push(word);
+      continue;
+    }
+    if (!word.startsWith('--') && word.length > 2) {
+      // `-abc`: each letter is a flag until one takes a value, which is the rest of the word.
+      let at = 1;
+      while (at < word.length && SHORT_FLAGS.get(word[at]) === false) at++;
+      if (at === word.length) continue;
+      if (!SHORT_FLAGS.has(word[at])) {
+        unreadable ??= word;
+        continue;
+      }
+      word = `-${word.slice(at)}`;
+    }
     const equals = word.startsWith('--') ? word.indexOf('=') : -1;
     const name = equals > 0 ? word.slice(0, equals) : /^-[a-zA-Z]./.test(word) ? word.slice(0, 2) : word;
     const attached = equals > 0 ? word.slice(equals + 1) : name !== word ? word.slice(2) : null;
@@ -101,6 +148,9 @@ export function readCommandTitle(command: string[]): CommandTitle | null {
     if (isTitle) title = value;
     else if (LABEL_OPTIONS.has(name)) labels.push(...value.split(',').map((label) => label.trim()).filter(Boolean));
   }
+  const [kind, verb] = words;
+  if ((kind !== 'issue' && kind !== 'pr') || !TITLE_VERBS.has(verb)) return null;
+  if (unreadable !== null) return { kind, unreadable };
   return title === null ? null : { kind, title, labels };
 }
 
@@ -121,14 +171,25 @@ export async function installationToken(config: BotConfig, repo: string): Promis
   return token;
 }
 
-/** The environment for one command run as the bot: gh reads GH_TOKEN, and git asks gh. */
+// `node --test` sets NODE_TEST_CONTEXT for the test files it starts. A `node --test` that
+// inherits it reports to that parent run instead, and exits 0 even when a test fails (#168).
+
+/** A copy of `env` that a child `node --test` cannot mistake for a parent test run's. */
+export function cleanChildEnv(env: Env): Env {
+  const clean = { ...env };
+  delete clean.NODE_TEST_CONTEXT;
+  return clean;
+}
+
+/** The environment for one command run as the bot: gh reads GH_TOKEN, and git asks gh.
+ * The command may run tests (a push hook, npm test), so it gets a clean child env (#168). */
 export function botEnv(env: Env, token: string): Env {
   // Added after any git config already passed this way. The empty value clears other
   // credential helpers for github.com, so git cannot fall back to the owner's login.
   const n = Number(env.GIT_CONFIG_COUNT) || 0;
   const key = 'credential.https://github.com.helper';
   return {
-    ...env,
+    ...cleanChildEnv(env),
     GH_TOKEN: token,
     GITHUB_TOKEN: token,
     GIT_CONFIG_COUNT: String(n + 2),
@@ -443,6 +504,8 @@ export interface BranchRules {
   requiredChecks: string[];
   noForcePush: boolean;
   noDeletion: boolean;
+  /** The approving reviews a merge needs: the most any ruleset, or the old branch protection, asks for; null when no ruleset asks and the old protection can't be read. */
+  approvals: number | null;
 }
 
 /** Each security switch: on, off, or null when gh can't see it. */
@@ -456,6 +519,10 @@ export interface Security {
 export interface ServerSettings {
   repo: string;
   defaultBranch: string;
+  /** Whether the repo is private, or null when GitHub did not say. */
+  isPrivate: boolean | null;
+  /** Whether a workflow may approve a pull request (an Actions setting), or null without admin rights. */
+  actionsCanApprove: boolean | null;
   /** Merge methods the repo allows, or null without admin rights. */
   mergeMethods: string[] | null;
   deleteBranchOnMerge: boolean | null;
@@ -474,6 +541,7 @@ export function unread(err: unknown): Unread {
   if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { unread: 'gh is not installed', fix: 'get it from https://cli.github.com, then run `gh auth login`' };
   const said = String((err as { stderr?: string }).stderr || (err as Error).message);
   if (/HTTP 401|gh auth login|not logged in/i.test(said)) return { unread: 'gh is not signed in', fix: 'run `gh auth login`' };
+  if (/Upgrade to GitHub Pro/i.test(said)) return { unread: 'rulesets need GitHub Pro on a private repo', fix: 'make the repo public, or upgrade to GitHub Pro (or Team for an organization)' };
   if (/HTTP 40[34]/.test(said)) return { unread: 'GitHub said no (403 or 404)', fix: 'sign in to gh as a repo admin; on a private repo, rulesets need GitHub Pro' };
   return { unread: 'gh could not reach GitHub', fix: 'check the network, then run doctor again' };
 }
@@ -494,6 +562,8 @@ export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
   };
   type Repo = {
     default_branch?: string;
+    private?: boolean;
+    permissions?: { admin?: boolean };
     allow_squash_merge?: boolean;
     allow_merge_commit?: boolean;
     allow_rebase_merge?: boolean;
@@ -505,12 +575,17 @@ export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
   const defaultBranch = info.default_branch ?? 'main';
   // GitHub sends the merge settings only to an admin.
   const methods: [string, boolean | undefined][] = [['squash', info.allow_squash_merge], ['merge', info.allow_merge_commit], ['rebase', info.allow_rebase_merge]];
+  const admin = info.permissions?.admin === true;
   const mergeMethods = methods.some(([, on]) => on === undefined) ? null : methods.filter(([, on]) => on).map(([name]) => name);
 
   const branch = attempt((): BranchRules => {
     const rules = api<Rule[]>(`repos/${repo}/rules/branches/${encodeURIComponent(defaultBranch)}`) ?? [];
     const of = (type: string) => rules.filter((r) => r.type === type);
     const pr = of('pull_request').map((r) => r.parameters ?? {});
+    // The old branch protection, which only an admin can read: a 404 to an admin means none, any other failure is unknown.
+    const oldApprovals = (): number | null => { try { return api<{ required_approving_review_count?: number }>(`repos/${repo}/branches/${encodeURIComponent(defaultBranch)}/protection/required_pull_request_reviews`)?.required_approving_review_count ?? 0; } catch (err) { return admin && /HTTP 404/.test(String((err as { stderr?: string }).stderr || (err as Error).message)) ? 0 : null; } };
+    const ruled = Math.max(0, ...pr.map((p) => Number(p.required_approving_review_count) || 0));
+    const old = oldApprovals();
     return {
       pullRequest: pr.length > 0,
       codeOwnerReview: pr.some((p) => p.require_code_owner_review === true),
@@ -518,6 +593,7 @@ export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
       requiredChecks: of('required_status_checks').flatMap((r) => ((r.parameters?.required_status_checks ?? []) as { context?: string }[]).map((c) => c.context ?? '')).filter(Boolean),
       noForcePush: of('non_fast_forward').length > 0,
       noDeletion: of('deletion').length > 0,
+      approvals: old === null ? (ruled >= 1 ? ruled : null) : Math.max(ruled, old),
     };
   });
 
@@ -558,7 +634,46 @@ export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
     return lines(`repos/${repo}/branches?per_page=100`, '.[].name').filter((b) => b !== defaultBranch && !open.has(`${owner}:${b}`));
   });
 
+  // With this Actions setting on, a workflow the bot pushes could approve the bot's own pull request.
+  const actions = attempt(() => api<{ can_approve_pull_request_reviews?: boolean }>(`repos/${repo}/actions/permissions/workflow`)?.can_approve_pull_request_reviews);
+  const actionsCanApprove = typeof actions === 'boolean' ? actions : null;
+
   const planning = readPlanning(gh, repo);
 
-  return { repo, defaultBranch, mergeMethods, deleteBranchOnMerge: info.delete_branch_on_merge ?? null, branch, tags, security, forgotten, planning };
+  return { repo, defaultBranch, isPrivate: info.private ?? null, actionsCanApprove, mergeMethods, deleteBranchOnMerge: info.delete_branch_on_merge ?? null, branch, tags, security, forgotten, planning };
+}
+
+// An incident issue for `yokoten learn` (#77), read through `gh issue view`, so it uses
+// the owner's own sign-in and holds no token. A number names an issue of this repo; a URL
+// names one in any repo. Read only.
+
+const ISSUE_REFERENCE = /^(\d+|https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+)$/;
+
+/** The issue's number, title, body, URL and labels, or the reason gh can't read it. */
+export function readIncident(gh: Gh, reference: string): Incident | string {
+  if (!ISSUE_REFERENCE.test(reference)) return `${reference} is not an issue: give its number, or a URL like https://github.com/owner/repo/issues/12`;
+  let text: string;
+  try {
+    text = gh(['issue', 'view', reference, '--json', 'number,title,body,url,labels']);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'gh is not installed: get it from https://cli.github.com, then run `gh auth login`';
+    const reason = terminalText(String((err as { stderr?: string }).stderr || '').split('\n')[0].trim());
+    return `gh can't read issue ${reference}${reason ? ` (${reason})` : ''}: run \`gh auth login\`, and check the number and the repo`;
+  }
+  const issue = JSON.parse(text) as { number?: unknown; title?: unknown; body?: unknown; url?: unknown; labels?: unknown };
+  // The number names the draft's folder (lessons/incident-<n>), so only a whole number will do.
+  const { number } = issue;
+  if (typeof number !== 'number' || !Number.isSafeInteger(number) || number <= 0) return `gh gave no issue number for ${reference}: it must be a whole number above 0`;
+  // gh's JSON is checked, not cast: a null or odd title, body, url or label must not crash the draft.
+  const { title, body, url, labels } = issue;
+  if (typeof title !== 'string') return `gh gave no title for ${reference}`;
+  return {
+    number,
+    title,
+    body: typeof body === 'string' ? body : '',
+    url: typeof url === 'string' ? url : '',
+    labels: (Array.isArray(labels) ? labels : [])
+      .map((label: unknown) => (label as { name?: unknown } | null)?.name)
+      .filter((name): name is string => typeof name === 'string' && name !== ''),
+  };
 }

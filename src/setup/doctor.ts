@@ -14,6 +14,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { checkCommand, checkEdit } from '../rules/guards.ts';
 import { type Config, DEFAULTS, type Env } from '../rules/config.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
@@ -21,13 +22,15 @@ import { type Finding, finding, formatFinding, type RuleId } from '../rules/mess
 import { loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
+import { type LessonPlace, listLessons, runLessons } from '../run/learn.ts';
 import { hasPlugin, hasSessionDoctor, readInstalledPlugin } from '../agents/claude-code.ts';
 import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
+import type { HookState } from '../agents/hooks-file.ts';
 import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
-import { KIT, runtimeVersion, VERSION } from './files.ts';
+import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
 import { compareCoreRules, compareVersions, isSelf, readCoreRules, summarizeUpdate } from './init.ts';
-import { paths } from './install.ts';
+import { paths, USER_CLI, USER_MISSING } from './install.ts';
 import { type Mark, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
 
 /** One check outside the road: its name in the report, whether it is in place, and the finding when it is not. */
@@ -59,14 +62,19 @@ export function selfTest(): string[] {
 }
 
 /**
- * The other agents' tool-call hooks. Reported, but not a missing practice yet: no real
- * Codex or Gemini CLI run has been seen to block through them (#30), and a project that
- * uses neither should not fail doctor over them.
+ * The other agents' project hooks: the tool-call guard and the stop check. Reported, but
+ * not a missing practice yet: no real Codex or Gemini CLI run has been seen to block
+ * through them (#30), and a project that uses neither should not fail doctor over them.
  */
 export function agentHooks(root: string): Practice[] {
+  // Each step wants both project hooks: the tool-call guard and the stop check (#211).
+  const missing = (guard: boolean, stop: boolean, file: string) =>
+    [...(guard ? [] : ['no tool-call guard']), ...(stop ? [] : ['no stop check'])].join(' and ') + ` in ${file}`;
+  const [codexGuard, codexStop] = [codex.hasProjectHook(root), codex.hasProjectStopHook(root)];
+  const [geminiGuard, geminiStop] = [gemini.hasProjectHook(root), gemini.hasProjectStopHook(root)];
   return [
-    practice('codex-hook', 'codex-hook', codex.hasProjectHook(root), 'no tool-call guard in .codex/hooks.json', '`yokoten init` adds it'),
-    practice('gemini-hook', 'gemini-hook', gemini.hasProjectHook(root), 'no tool-call guard in .gemini/settings.json', '`yokoten init` adds it'),
+    practice('codex-hook', 'codex-hook', codexGuard && codexStop, missing(codexGuard, codexStop, '.codex/hooks.json'), '`yokoten init` adds it'),
+    practice('gemini-hook', 'gemini-hook', geminiGuard && geminiStop, missing(geminiGuard, geminiStop, '.gemini/settings.json'), '`yokoten init` adds it'),
   ];
 }
 
@@ -85,6 +93,35 @@ export function machineChecks(env: Env): Practice[] {
     practice('runtime', 'machine-runtime', runtime === VERSION || (plugin && runtime === null), runtime ? `the installed runtime is ${runtime}, this yokoten is ${VERSION}` : 'no runtime installed', 'run `yokoten install` from this copy of yokoten'),
     practice('private-marks', 'private-marks', loadMarks(env).length > 0, `${target.marks} is missing or empty`, 'add your name, city, domain and server names to it, one per line'),
   ];
+}
+
+/**
+ * The other agents' user hooks, from `install`: doctor at session start and the command
+ * guard (#211). Only for a CLI this machine looks to use, its folder ~/.codex or
+ * ~/.gemini, so a Claude Code user hears nothing about tools they don't run.
+ *
+ * Each hook is compared with what `install` would write (command, matcher, runtime path),
+ * so an old one is out of date, not ok. A note, never MISSING, so it never changes the
+ * exit code: no real Codex or Gemini CLI run has been seen to block through these hooks
+ * yet (#30), and a folder left by a CLI tried once is not proof the user wants yokoten there.
+ */
+export function userAgentHooks(env: Env): Practice[] {
+  const report = (id: 'codex-user-hook' | 'gemini-user-hook', hooks: { doctor: HookState; guard: HookState }, file: string): Practice => {
+    const named = [['session-start doctor', hooks.doctor], ['command guard', hooks.guard]] as const;
+    const missing = named.filter(([, state]) => state === 'added').map(([name]) => name);
+    const stale = named.filter(([, state]) => state === 'updated').map(([name]) => name);
+    const them = (names: readonly string[]) => (names.length > 1 ? 'them' : 'it');
+    const problem = named.map(([, state]) => state).find((state) => typeof state === 'object');
+    if (problem?.kind === 'json') return practice(id, id, false, `can't read ${file}`, 'make it valid JSON, then run `yokoten install`');
+    if (problem) return practice(id, id, false, `${file} has an unexpected shape`, `${problem.hint}; fix it, then run \`yokoten install\``);
+    if (missing.length && stale.length) return practice(id, id, false, `no ${missing[0]} and an out-of-date ${stale[0]} in ${file}`, '`yokoten install` adds one and updates the other');
+    if (stale.length) return practice(id, id, false, `the ${stale.join(' and the ')} in ${file} ${stale.length > 1 ? 'are' : 'is'} out of date`, `\`yokoten install\` updates ${them(stale)}`);
+    return practice(id, id, !missing.length, `${missing.map((name) => `no ${name}`).join(' and ')} in ${file}`, `\`yokoten install\` adds ${them(missing)}`);
+  };
+  const checks: Practice[] = [];
+  if (codex.hasUserDir(env)) checks.push(report('codex-user-hook', codex.userHooksState(env, USER_CLI, USER_MISSING), '~/.codex/hooks.json'));
+  if (gemini.hasUserDir(env)) checks.push(report('gemini-user-hook', gemini.userHooksState(env, USER_CLI, USER_MISSING), '~/.gemini/settings.json'));
+  return checks;
 }
 
 /**
@@ -149,8 +186,7 @@ export function pluginAgeCheck(root: string | null, env: Env): Finding | null {
   if (!hasPlugin(env)) return null;
   const plugin = readInstalledPlugin(env, root);
   if (!plugin) return null;
-  const why = "the plugin's hooks run the plugin's copy, so an old copy checks old rules";
-  const note = (older: string, newer: string) => finding('machine-runtime', `the yokoten plugin is older than this yokoten (${older} < ${newer})`, `update it: ${PLUGIN_UPDATE}`, { why });
+  const note = (older: string, newer: string) => finding('plugin-version', `the yokoten plugin is older than this yokoten (${older} < ${newer})`, `update it: ${PLUGIN_UPDATE}`);
   if (plugin.version && compareVersions(plugin.version, VERSION) === -1) return note(plugin.version, VERSION);
   if (!root || !plugin.commit || !isSelf(root)) return null;
   const tip = readDefaultBranch(root);
@@ -162,9 +198,11 @@ export function pluginAgeCheck(root: string | null, env: Env): Finding | null {
 const SERVER_CONTROL: ServerRead = {
   repo: 'octo/demo',
   defaultBranch: 'main',
+  isPrivate: false,
+  actionsCanApprove: false,
   mergeMethods: ['merge', 'squash'],
   deleteBranchOnMerge: false,
-  branch: { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false },
+  branch: { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false, approvals: 0 },
   tags: false,
   security: { secretScanning: false, pushProtection: false, privateReporting: false, dependabotAlerts: false },
   forgotten: [],
@@ -188,6 +226,48 @@ function roadControl(): string[] {
   } finally {
     if (dir) rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * The kit's lessons (#147): the .ts in the repo and in an installed copy, the built .js in
+ * the npm package, where Node does not strip types (record 0008).
+ */
+export function kitLessons(): LessonPlace {
+  const isBuilt = fileURLToPath(import.meta.url).endsWith('.js');
+  const dir = join(KIT, 'lessons');
+  return isBuilt ? { dir, codeDir: join(HOME_DIR, 'dist', 'kit', 'lessons'), codeFile: 'lesson.js' } : { dir, codeDir: dir, codeFile: 'lesson.ts' };
+}
+
+/** One lesson as doctor reports it. A lesson gives notes only: it never fails doctor. */
+export interface LessonCheck {
+  id: string;
+  mark: 'ok' | 'note' | 'not now';
+  findings: Finding[];
+  reason?: string;
+}
+
+/**
+ * Each lesson the kit ships, run against this project: read only, offline and fast. A
+ * lesson in yokoten.json "notNow" does not run. A lesson that can't run is a note too.
+ */
+export function lessonChecks(root: string, notNow: Record<string, string>, place: LessonPlace = kitLessons()): LessonCheck[] {
+  const isSkipped = (id: string) => Object.hasOwn(notNow, id);
+  const runs = new Map(runLessons(root, place, isSkipped).map((run) => [run.id, run]));
+  return listLessons(place).map(({ id }): LessonCheck => {
+    const run = runs.get(id);
+    if (!run) return { id, mark: 'not now', findings: [], reason: notNow[id] };
+    if (run.error) return { id, mark: 'note', findings: [{ id, what: `can't run this lesson: ${run.error}`, why: 'a lesson from the kit could not check this project', fix: 'run `yokoten install` again; if it stays, report it in an issue' }] };
+    return { id, mark: run.findings.length ? 'note' : 'ok', findings: run.findings };
+  });
+}
+
+/** The lessons as lines of the project part: one per lesson, or one per place a lesson found. */
+export function formatLessonChecks(lessons: LessonCheck[]): string[] {
+  return lessons.flatMap(({ id, mark, findings, reason }) => {
+    if (mark === 'not now') return [`  not now lesson ${id}: ${reason}`];
+    if (mark === 'ok') return [`  ok      lesson ${id}`];
+    return findings.map((f) => `  note    lesson ${id}: ${stepText(f)}`);
+  });
 }
 
 /**
@@ -215,7 +295,7 @@ export function coreRulesControl(check: typeof coreRulesCheck = coreRulesCheck):
 }
 
 /** What doctor can't read on the server yet, and the owner sets once per repo. */
-const OWNER_STEPS = ['the bot: a GitHub App (or collaborator) with write access and no Workflows permission'];
+const OWNER_STEPS = ['the bot: a GitHub App (or collaborator) with write access; CODEOWNERS sends CI changes to you'];
 
 /** The settings to check by hand when doctor can't read the server. */
 const BY_HAND = [
@@ -260,7 +340,9 @@ export interface StepState {
 
 /**
  * What `doctor --json` prints. `findings` is everything to do, each with what, why and
- * fix; `notes` never fail doctor. A session (`--session`) gets the next step, the
+ * fix; `notes` never fail doctor. `ok` is false only for a problem (#208): the self-test,
+ * core rules that are behind, a tree finding or a machine check. A road step not taken
+ * yet is to do, not a problem, so it never makes `ok` false. A session (`--session`) gets the next step, the
  * private-marks finding and a behind `core-rules` finding only, as its lines do.
  */
 export interface DoctorReport {
@@ -276,9 +358,11 @@ export interface DoctorReport {
   steps?: StepState[];
   notes?: Finding[];
   server?: { id: string; mark: ServerCheck['mark'] }[];
+  /** The kit's lessons, run against this project (#147). Their findings are in `notes`. */
+  lessons?: { id: string; mark: LessonCheck['mark']; reason?: string }[];
 }
 
-/** The report, as text lines and as data, and whether everything is in place. */
+/** The report, as text lines and as data, and whether doctor found no problem. */
 export function doctor(
   root: string | null,
   { env, config, session = false, gh }: { env: Env; config: Config; session?: boolean; gh?: Gh },
@@ -321,7 +405,7 @@ export function doctor(
       lines.push(`yokoten: ${formatFinding(core.finding)}`);
       findings.push(core.finding);
     }
-    const ok = !failed.length && !next && !isCoreBehind;
+    const ok = !failed.length && !isCoreBehind;
     return { ok, lines, report: { ...base, ok, repo: true, stage, next, findings } };
   }
 
@@ -355,13 +439,24 @@ export function doctor(
     if (core.mark === 'MISSING') findings.push(core.finding);
     else if (core.mark === 'note') notes.push(core.finding);
   }
-  const problems = check(root, { config, env });
+  const lessons = lessonChecks(root, config.notNow);
+  lines.push(...formatLessonChecks(lessons));
+  notes.push(...lessons.flatMap((lesson) => lesson.findings));
+  const checkNotes: Finding[] = [];
+  const problems = check(root, { config, env, notes: checkNotes });
   findings.push(...problems);
   lines.push(`  ${problems.length ? 'MISSING' : 'ok     '} tree: ${problems.length ? `${problems.length} problem(s), run \`yokoten check\`` : 'layout and privacy clean'}`);
+  // check's own notes (#228), such as an unknown yokoten.json key or a translation behind: worded as check words them, and never a failure.
+  for (const n of checkNotes) lines.push(`  note    ${formatFinding(n).replaceAll('\n', '\n        ')}`);
+  notes.push(...checkNotes);
   lines.push('machine:');
   for (const c of machine) {
     lines.push(`  ${c.ok ? 'ok     ' : 'MISSING'} ${c.name}${c.ok ? '' : `: ${stepText(c.finding)}`}`);
     if (!c.ok) findings.push(c.finding);
+  }
+  for (const c of userAgentHooks(env)) {
+    lines.push(`  ${c.ok ? 'ok     ' : 'note   '} ${c.name}${c.ok ? '' : `: ${stepText(c.finding)}`}`);
+    if (!c.ok) notes.push(c.finding);
   }
   const stale = pluginAgeCheck(root, env);
   if (stale) {
@@ -377,6 +472,8 @@ export function doctor(
   }
   if (settings[0].id === 'server-settings') lines.push('  check these by hand:', ...BY_HAND.map((s) => `    ${s}`));
   lines.push(...OWNER_STEPS.map((s) => `  not checked ${s}`));
-  const ok = !failed.length && !where.next && !isCoreBehind && !problems.length && machine.every((c) => c.ok);
-  return { ok, lines, report: { ...base, ok, repo: true, stage: where.stage, next, findings, steps, notes, server: settings.map(({ id, mark }) => ({ id, mark })) } };
+  // The road has no failed mark: a step is done, to do, not now or can't check. Steps
+  // left are the way ahead, not problems, so they never fail doctor (#208).
+  const ok = !failed.length && !isCoreBehind && !problems.length && machine.every((c) => c.ok);
+  return { ok, lines, report: { ...base, ok, repo: true, stage: where.stage, next, findings, steps, notes, server: settings.map(({ id, mark }) => ({ id, mark })), lessons: lessons.map(({ id, mark, reason }) => (reason === undefined ? { id, mark } : { id, mark, reason })) } };
 }

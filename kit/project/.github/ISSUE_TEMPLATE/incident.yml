@@ -11,6 +11,11 @@ body:
     validations:
       required: true
   - type: textarea
+    id: matters
+    attributes:
+      label: Why it matters
+      description: "What it cost, or can cost, when it happens again. One or two sentences. `yokoten learn` uses it as the check's reason."
+  - type: textarea
     id: why
     attributes:
       label: Why it got through
