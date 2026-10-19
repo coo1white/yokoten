@@ -612,7 +612,8 @@ test('learn: an issue made from the kit\'s incident template drafts with no TODO
   const body = labels.map((label) => `### ${label}\n\n${label === 'Fix' ? 'The check reads JSON too, with a test' : `An answer for ${label}`}`).join('\n\n');
   const draft = draftLesson(incidentOf(body));
   assert.deepEqual(draft.todos, []);
-  assert.equal(draft.finding.fix, 'The check reads JSON too, with a test');
+  // The first letter's case is the draft's to shape (#182), so it is not held here.
+  assert.match(draft.finding.fix, /^[Tt]he check reads JSON too, with a test$/);
   // Positive control: the same issue with "Fix" left empty gets a TODO.
   const empty = draftLesson(incidentOf(body.replace('The check reads JSON too, with a test', '_No response_')));
   assert.deepEqual(empty.todos, ['fix: the issue has no "Fix" section']);
