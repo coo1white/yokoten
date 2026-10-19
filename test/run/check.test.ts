@@ -712,3 +712,48 @@ test('check --history: a blob swapped by git replace is read as committed, not a
   assert.ok(found.some((f) => f.file?.startsWith(`notes.md @ ${added}`)), JSON.stringify(found));
   assert.ok(!JSON.stringify(found).includes(token), 'the secret is never printed');
 });
+
+test('check --staged: a staged change file is read as `yokoten changelog` reads it (#346)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('changes/README.md', '# Change files\n');
+  sandbox.write('changes/7-dark.md', '### Internal\n\nA dark mode (#7).\n');
+  sandbox.git('add', '.');
+  let result = sandbox.run(['check', '--staged']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /changes\/7-dark\.md:1: line 1 is not a section\. `yokoten changelog` puts each entry under its section/);
+  assert.match(result.stderr, /Make line 1 one of: Added, Changed, Deprecated, Removed, Fixed, Security, Internal\./);
+  assert.ok(!result.stderr.includes('README.md'), 'the README is not a change file');
+  // A long sentence is a note, as in `check --pr`; it never fails the commit.
+  const long = Array.from({ length: 30 }, (_, index) => `word${index}`).join(' ');
+  sandbox.write('changes/7-dark.md', `Added\n\nA dark mode (#7).\n${long}.\n`);
+  sandbox.git('add', '.');
+  result = sandbox.run(['check', '--staged']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /note: changes\/7-dark\.md:4: a sentence of 30 words/);
+});
+
+test('check --staged: reads the staged change file, not the work tree; plain check reads the work tree (#346)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('src/a.ts', 'a\n');
+  sandbox.write('changes/8-old.md', 'Added\n\nOld (#8).\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  // A wrong file that is not staged does not stop the commit of something else.
+  sandbox.write('changes/8-old.md', 'Nothing\n\nOld (#8).\n');
+  sandbox.write('changes/9-new.md', '## Fixed\n\nNew (#9).\n');
+  sandbox.write('src/a.ts', 'b\n');
+  sandbox.git('add', 'src/a.ts');
+  assert.equal(sandbox.run(['check', '--staged']).status, 0);
+  // Plain check reads every change file present, as `changelog` does.
+  const tree = sandbox.run(['check']);
+  assert.equal(tree.status, 1);
+  assert.match(tree.stderr, /changes\/8-old\.md:1: line 1 is not a section/);
+  assert.match(tree.stderr, /changes\/9-new\.md:1: line 1 is not a section/);
+  // Staged wrong, then fixed only in the work tree: the commit holds the staged copy.
+  sandbox.git('add', 'changes/9-new.md');
+  sandbox.write('changes/9-new.md', 'Fixed\n\nNew (#9).\n');
+  const staged = sandbox.run(['check', '--staged']);
+  assert.equal(staged.status, 1);
+  assert.match(staged.stderr, /changes\/9-new\.md:1: line 1 is not a section/);
+  assert.ok(!staged.stderr.includes('8-old'), 'the unstaged file is not read');
+});
