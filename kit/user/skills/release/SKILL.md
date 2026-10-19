@@ -50,8 +50,12 @@ A first release with no tag yet is usually `0.1.0`.
 
 ## 3. Ask the owner
 
-Tell the owner the version and the one line that decided it. Wait for a yes. The
-owner can choose a different version.
+Tell the owner the version and the one line that decided it. Wait for a yes that names
+the version or says "release". The owner can choose a different version.
+
+A general "merge", "ship it" or "go ahead" is not that yes, and does not approve the
+release (core rule 3). Only an answer that names the version or says "release",
+"publish" or "tag" does.
 
 ## 4. Prepare the release pull request
 
