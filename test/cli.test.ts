@@ -1979,6 +1979,8 @@ test('adopt: with no key, the rule-based draft and how to set the key; it change
 // write it, runs through sh with its runtime replaced by a script that ends one way.
 test('hooks: a tool-call guard that fails refuses the call; the stop check does not (#260)', () => {
   const sandbox = makeSandbox();
+  // Codex and Gemini CLI are installed, so install writes their home hooks too.
+  for (const dir of ['.codex', '.gemini']) mkdirSync(join(sandbox.home, dir), { recursive: true });
   assert.equal(sandbox.run(['install']).status, 0);
   assert.equal(sandbox.run(['init']).status, 0);
   const commands = (file: string) => {
