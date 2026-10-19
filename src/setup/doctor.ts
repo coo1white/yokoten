@@ -33,6 +33,7 @@ import * as muse from '../agents/runtimes/muse.ts';
 import type { FolderTrust } from '../agents/folder-trust.ts';
 import { commentedFile, HAND_ADD, handAddJson, type HookState, mergeHandAdds } from '../agents/hooks-file.ts';
 import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
+import { readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advice/unsaved.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
 import { cliPath, compareCoreRules, compareVersions, isSelf, readCoreRules, summarizeUpdate } from './init.ts';
 import { installedPieces, paths, USER_CLI, USER_MISSING } from './install.ts';
@@ -63,11 +64,23 @@ export function selfTest(): string[] {
   if (!notUtc('A <a@example.com> 1760745600 +0700') || notUtc('A <a@example.com> 1760745600 +0000')) failed.push('time zone check');
   if (checkLayout(Array.from({ length: 8 }, (_, i) => `d/${i}`), DEFAULTS).length !== 1) failed.push('layout check');
   if (checkBuildOutput([{ path: 'dist/a.js', binary: false }, { path: 'a.bin', binary: true }], DEFAULTS).length !== 2) failed.push('build output check');
+  if (!isUnsavedControlCaught()) failed.push('unsaved work check');
   failed.push(...roadControl());
   const kit = '# rules\n\n## This project\n';
   if (compareCoreRules('# old rules\n\n## This project\n', kit).state !== 'behind' || compareCoreRules('# rules\n', kit).state !== "can't compare") failed.push('core rules check');
   failed.push(...coreRulesControl());
   return failed;
+}
+
+/**
+ * A clone with one of each kind of work only on this machine (#365), as facts: the notes
+ * must name every kind, and say to delete no lock while doctor can't tell.
+ */
+export function isUnsavedControlCaught(notes: typeof unsavedNotes = unsavedNotes): boolean {
+  const found = new Set(notes(UNSAVED_CONTROL, { home: undefined, now: 1 }).map((f) => f.id));
+  const kinds = ['uncommitted-changes', 'unpushed-commits', 'stashes', 'stale-index-lock', 'repo-on-tmpfs', 'finished-worktree', 'missing-worktree'];
+  const unsure = notes({ ...UNSAVED_CONTROL, isGitRunning: null }, { home: undefined, now: 1 }).find((f) => f.id === 'stale-index-lock');
+  return kinds.every((kind) => found.has(kind)) && !!unsure && !/\b(rm|del|delete)\b/.test(unsure.fix);
 }
 
 /**
@@ -536,6 +549,23 @@ function readOrigin(root: string, gh: Gh): ServerSettings | Unread {
   return repo ? readServer(gh, repo) : { unread: 'the origin remote is not on a host yokoten knows (GitHub for now)', fix: 'add a GitHub origin remote, or check these settings by hand' };
 }
 
+/** At most this many notes about unsaved work in a session; full doctor lists them all. */
+const SESSION_UNSAVED_LIMIT = 3;
+
+/** What the agent does with the unsaved-work lines. */
+export const UNSAVED_OFFER = 'Tell the user what is only on this machine, and offer to run the command that saves it.';
+
+/** What a session hears about work only on this machine (#365): only what is at risk, a few lines at most. */
+function sessionUnsaved(root: string, env: Env): { lines: string[]; notes: Finding[] } {
+  const facts = readUnsaved(root, { env });
+  const notes = facts ? unsavedNotes(facts, { home: env.HOME, session: true }) : [];
+  if (!notes.length) return { lines: [], notes };
+  const more = notes.length - SESSION_UNSAVED_LIMIT;
+  const lines = notes.slice(0, SESSION_UNSAVED_LIMIT).map((f) => `yokoten: ${stepText(f)}.`);
+  if (more > 0) lines.push(`yokoten: ${more} more like this; \`yokoten doctor\` lists them all.`);
+  return { lines: [...lines, UNSAVED_OFFER], notes };
+}
+
 /** What a session hears when the road is done, as far as yokoten can check. */
 export const ROAD_DONE = 'yokoten: every step yokoten can check is done, or marked not now.';
 
@@ -621,13 +651,15 @@ export function doctor(
     if (stale) lines.push(`yokoten: ${formatFinding(stale)}`);
     const double = doubleInstallCheck(env);
     if (double) lines.push(`yokoten: ${formatFinding(double)}`);
+    const unsaved = sessionUnsaved(root, env);
+    lines.push(...unsaved.lines);
     // A lesson the kit learned reaches the project here: the session hears it (#120).
     if (core && isCoreBehind) {
       lines.push(`yokoten: ${formatFinding(core.finding)}`);
       findings.push(core.finding);
     }
     const ok = !failed.length && !isCoreBehind;
-    return { ok, lines, report: { ...base, ok, repo: true, stage, next, findings } };
+    return { ok, lines, report: { ...base, ok, repo: true, stage, next, findings, ...(unsaved.notes.length ? { notes: unsaved.notes } : {}) } };
   }
 
   lines.push(`yokoten ${VERSION}, self-test ${failed.length ? 'FAILED' : 'ok'}`);
@@ -676,6 +708,14 @@ export function doctor(
   // check's own notes (#228), such as an unknown yokoten.json key or a translation behind: worded as check words them, and never a failure.
   for (const n of checkNotes) lines.push(`  note    ${formatFinding(n).replaceAll('\n', '\n        ')}`);
   notes.push(...checkNotes);
+  // Work only on this machine (#365): notes, never a failure, and read only.
+  const unsaved = readUnsaved(root, { env });
+  const unsavedFound = unsaved ? unsavedNotes(unsaved, { home: env.HOME }) : [];
+  lines.push('unsaved work (only on this machine):');
+  if (!unsaved) lines.push("  note    can't read this repo with git, so doctor can't tell what is only here");
+  else if (!unsavedFound.length) lines.push('  ok      everything is committed and pushed');
+  for (const n of unsavedFound) lines.push(`  note    ${n.id}: ${stepText(n)}`);
+  notes.push(...unsavedFound);
   lines.push('machine:');
   for (const c of machine) {
     lines.push(`  ${c.ok ? 'ok     ' : 'MISSING'} ${c.name}${c.ok ? '' : `: ${stepText(c.finding)}`}`);

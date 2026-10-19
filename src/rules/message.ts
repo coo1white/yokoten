@@ -41,7 +41,8 @@ const guide = (section: string) => `${DOCS_URL}#${section}`;
 
 const RELEASE_WHY = 'only the owner decides when to release';
 const PR_CHECK = '`yokoten check --pr` in CI reads the pull request';
-const SERVER_CHECK = 'full `doctor` reads it from the code host (for GitHub, with your `gh` sign-in), when the origin remote is on a host yokoten knows';
+const UNSAVED_CHECK = '`doctor` and the session note read git and the file system, never change them, and give a note, never a failure';
+const SERVER_CHECK ='full `doctor` reads it from the code host (for GitHub, with your `gh` sign-in), when the origin remote is on a host yokoten knows';
 
 /**
  * Every rule a check or a guard reports, by id. Step ids (the road) are in
@@ -405,6 +406,48 @@ export const RULES = {
     rule: 'every branch on the server has an open pull request, or is deleted by its owner',
     why: 'a forgotten branch holds work nobody is looking at',
     check: `${SERVER_CHECK}; a note only, and doctor never deletes a branch`,
+  },
+  'uncommitted-changes': {
+    rule: 'changes in a worktree are committed and pushed before they are forgotten',
+    why: 'a crash, a power cut or a dead disk loses them, and only this machine has them',
+    check: `${UNSAVED_CHECK}: \`git status\` in each worktree, and the time of its oldest changed file; a session hears only changes older than an hour`,
+    docs: guide('work-only-on-this-machine'),
+  },
+  'unpushed-commits': {
+    rule: 'every branch with commits of its own is pushed',
+    why: 'a commit not pushed is still only on this machine, and a dead disk loses it',
+    check: `${UNSAVED_CHECK}: one \`git for-each-ref\` gives each branch's upstream and commits ahead; a branch with no upstream counts the commits not on the default branch; one \`git rev-list\` finds a detached HEAD whose commits no branch holds`,
+    docs: guide('work-only-on-this-machine'),
+  },
+  stashes: {
+    rule: 'a stash does not hold work for long',
+    why: 'a stash is never pushed, so it is only on this machine',
+    check: `${UNSAVED_CHECK}: \`git stash list\``,
+    docs: guide('work-only-on-this-machine'),
+  },
+  'finished-worktree': {
+    rule: 'a worktree goes once its branch is merged',
+    why: 'old worktrees pile up, and then nobody can tell which ones still hold work',
+    check: `${UNSAVED_CHECK}: a worktree with no changes whose branch is in the default branch's history, or whose upstream is gone (a squash merge leaves no other sign), or a detached HEAD in its history; a branch or HEAD that has not moved since it was made is new, not merged; full doctor only`,
+    docs: guide('work-only-on-this-machine'),
+  },
+  'missing-worktree': {
+    rule: 'git lists only worktrees whose folder is there',
+    why: 'a worktree whose folder was deleted still holds its branch, so git refuses to check that branch out anywhere else',
+    check: `${UNSAVED_CHECK}: \`git worktree list\` marks it prunable, or its folder is gone; full doctor only`,
+    docs: guide('work-only-on-this-machine'),
+  },
+  'stale-index-lock': {
+    rule: 'no index.lock is left behind by a crash',
+    why: 'git refuses to change a worktree while its index.lock is there',
+    check: `${UNSAVED_CHECK}: each worktree's index.lock, and the running processes (/proc on Linux, \`ps\` on macOS, \`tasklist\` on Windows); when it can't tell, it says so and never says to delete it`,
+    docs: guide('work-only-on-this-machine'),
+  },
+  'repo-on-tmpfs': {
+    rule: 'a repo lives on a disk, not in memory',
+    why: 'a tmpfs lives in memory, so a restart empties it',
+    check: `${UNSAVED_CHECK}: /proc/mounts on Linux; on macOS and Windows it says nothing`,
+    docs: guide('work-only-on-this-machine'),
   },
   'not-a-repo': {
     rule: 'yokoten runs inside a git repo',

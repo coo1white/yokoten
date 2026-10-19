@@ -9,6 +9,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -34,12 +35,15 @@ import {
   type ServerSettings,
   type Unread,
 } from '../../src/host/github.ts';
+import { unsavedNotes } from '../../src/setup/advice/unsaved.ts';
 import {
   coreRulesCheck,
   coreRulesControl,
   doctor,
+  isUnsavedControlCaught,
   listBoardSteps,
   selfTest,
+  UNSAVED_OFFER,
 } from '../../src/setup/doctor.ts';
 import { LABELS } from '../../src/setup/plan.ts';
 import {
@@ -728,4 +732,63 @@ test('self-test: the core-rules control passes the real check and fails a broken
     return result.mark === 'note' ? { mark: 'MISSING' as const, finding: result.finding } : result;
   };
   assert.deepEqual(coreRulesControl(noVersion), ['core rules check (newer kit)']);
+});
+
+// #365: work only on this machine. Full doctor lists it all; a session hears what is at
+// risk, three items at most. The cases themselves are tested in test/setup/advice/unsaved.test.ts.
+test('doctor: lists the work only on this machine; a session hears at most three items (#365)', () => {
+  const sandbox = makeSandbox();
+  const marks = join(sandbox.home, 'marks');
+  writeFileSync(marks, 'placeholder-mark\n');
+  const extra = { YOKOTEN_PRIVATE_MARKS: marks };
+  const session = () => sandbox.run(['doctor', '--session'], { extra }).stdout.trimEnd().split('\n');
+  // A fresh change is work going on now: the session does not hear it.
+  sandbox.write('a.txt', 'a\n');
+  assert.equal(session().length, 3, 'only the road');
+  assert.match(sandbox.run(['doctor'], { extra }).stdout, /^unsaved work \(only on this machine\):\n {2}note {4}uncommitted-changes: \. has 1 uncommitted file, the oldest changed 1 minute ago; /m);
+  const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+  utimesSync(join(sandbox.repo, 'a.txt'), old, old);
+  assert.deepEqual(session().slice(3), ['yokoten: . has 1 uncommitted file, the oldest changed 2 days ago; commit them: `git -C . add -A && git -C . commit`, then push.', UNSAVED_OFFER]);
+  const json = JSON.parse(sandbox.run(['doctor', '--session', '--json'], { extra }).stdout);
+  assert.deepEqual(json.notes.map((n: { id: string }) => n.id), ['uncommitted-changes']);
+  assert.equal(json.ok, true, 'a note never fails doctor');
+  // Commit, then four worktrees with old changes: five items, three shown.
+  sandbox.git('add', '-A');
+  sandbox.git('commit', '-qm', 'first');
+  for (const name of ['w1', 'w2', 'w3', 'w4']) {
+    const tree = join(sandbox.home, name);
+    sandbox.git('worktree', 'add', '-q', '-b', name, tree);
+    writeFileSync(join(tree, 'b.txt'), 'b\n');
+    utimesSync(join(tree, 'b.txt'), old, old);
+  }
+  const lines = session().slice(3);
+  assert.equal(lines.length, 5, lines.join('\n'));
+  assert.equal(lines[3], 'yokoten: 2 more like this; `yokoten doctor` lists them all.');
+  assert.ok(lines.every((line) => !line.includes(sandbox.home)), 'never the full home path');
+  const full = sandbox.run(['doctor'], { extra });
+  assert.equal(full.stdout.match(/^ {2}note {4}(uncommitted-changes|unpushed-commits): /gm)?.length, 5);
+  assert.match(full.stdout, /uncommitted-changes: ~\/w1 has 1 uncommitted file/, 'a worktree outside the repo shows from ~');
+});
+
+test('doctor: a clean, pushed repo has no unsaved-work note (#365)', () => {
+  const sandbox = makeSandbox();
+  const origin = join(sandbox.home, 'origin.git');
+  sandbox.git('init', '-q', '--bare', '-b', 'main', origin);
+  sandbox.write('a.txt', 'a\n');
+  sandbox.git('add', '-A');
+  sandbox.git('commit', '-qm', 'first');
+  sandbox.git('remote', 'add', 'origin', origin);
+  sandbox.git('push', '-q', '-u', 'origin', 'main');
+  const full = sandbox.run(['doctor']).stdout;
+  assert.match(full, /^unsaved work \(only on this machine\):\n {2}ok {6}everything is committed and pushed$/m);
+  assert.doesNotMatch(sandbox.run(['doctor', '--session']).stdout, /only on this machine/);
+});
+
+test('doctor self-test: the unsaved-work check must name every kind, and a broken one is caught (#365)', () => {
+  assert.equal(isUnsavedControlCaught(), true);
+  assert.equal(isUnsavedControlCaught(() => []), false, 'a check that finds nothing');
+  const deletesWhenUnsure: Parameters<typeof isUnsavedControlCaught>[0] = (facts, options) =>
+    unsavedNotes(facts, options).map((f) => (f.id === 'stale-index-lock' ? { ...f, fix: 'delete it' } : f));
+  assert.equal(isUnsavedControlCaught(deletesWhenUnsure), false, "a check that says to delete a lock it can't judge");
+  assert.ok(!selfTest().includes('unsaved work check'));
 });

@@ -68,6 +68,10 @@ import {
   ids,
 } from '../../src/setup/advice/explain.ts';
 import {
+  UNSAVED_CONTROL,
+  unsavedNotes,
+} from '../../src/setup/advice/unsaved.ts';
+import {
   agentHooks,
   coreRulesCheck,
   machineChecks,
@@ -169,6 +173,8 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   const off = { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false, approvals: 0 };
   const security = { secretScanning: false, pushProtection: false, privateReporting: false, dependabotAlerts: false };
   const server = { repo: 'octo/demo', defaultBranch: 'main', isPrivate: false, actionsCanApprove: false, mergeMethods: ['merge', 'squash'], deleteBranchOnMerge: false, branch: off, tags: false, security, forgotten: ['old'] };
+  // Work only on this machine (#365): one case of each, as facts, so no git runs here.
+  found.push(...unsavedNotes(UNSAVED_CONTROL, { home: undefined, now: 1 }));
   for (const c of [...serverChecks(server), ...serverChecks({ unread: 'gh is not installed', fix: 'get it' })]) add(c.finding);
 
   const known = new Set(ids());
