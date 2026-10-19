@@ -129,28 +129,29 @@ export function batchBlobs(sizes: Map<string, number>, cap: number): { batches: 
 
 /**
  * Each blob by id, read in `git cat-file --batch` calls of at most `cap` bytes. A blob
- * missing from the object store is left out.
+ * missing from the object store is left out. `pre` goes before the subcommand in every
+ * git call, such as `--no-replace-objects` to read the objects as stored.
  */
-export function readBlobs(root: string, ids: string[], cap = BATCH_CAP): Map<string, Blob> {
+export function readBlobs(root: string, ids: string[], cap = BATCH_CAP, pre: string[] = []): Map<string, Blob> {
   const blobs = new Map<string, Blob>();
   const unique = [...new Set(ids)];
   if (unique.length === 0) return blobs;
   // Sizes first, so no call returns more than the cap.
   const sizes = new Map<string, number>();
-  for (const line of gitBytes(root, ['cat-file', '--batch-check=%(objectname) %(objectsize)'], unique.join('\n') + '\n').toString('utf8').split('\n')) {
+  for (const line of gitBytes(root, [...pre, 'cat-file', '--batch-check=%(objectname) %(objectsize)'], unique.join('\n') + '\n').toString('utf8').split('\n')) {
     const [id, size] = line.split(' ');
     if (size !== undefined && size !== 'missing') sizes.set(id, Number(size));
   }
   const { batches, over } = batchBlobs(sizes, cap);
   for (const id of over) {
     // Only the start: git is stopped once the buffer is past it.
-    const out = spawnSync('git', ['cat-file', 'blob', id], { cwd: root, maxBuffer: BINARY_PEEK, stdio: ['ignore', 'pipe', 'ignore'] }).stdout ?? Buffer.alloc(0);
+    const out = spawnSync('git', [...pre, 'cat-file', 'blob', id], { cwd: root, maxBuffer: BINARY_PEEK, stdio: ['ignore', 'pipe', 'ignore'] }).stdout ?? Buffer.alloc(0);
     blobs.set(id, { bytes: out.subarray(0, BINARY_PEEK), size: sizes.get(id) ?? 0, whole: false });
   }
   for (const ids of batches) {
     // Each blob comes back as "<id> <type> <size>\n<bytes>\n".
     const room = ids.reduce((sum, id) => sum + (sizes.get(id) ?? 0) + 128, 0);
-    const out = gitBytes(root, ['cat-file', '--batch'], ids.join('\n') + '\n', room);
+    const out = gitBytes(root, [...pre, 'cat-file', '--batch'], ids.join('\n') + '\n', room);
     let at = 0;
     while (at < out.length) {
       const nl = out.indexOf(10, at);
