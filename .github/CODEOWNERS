@@ -13,6 +13,8 @@
 /src/rules/ @coo1white
 /src/run/hook.ts @coo1white
 /src/run/check.ts @coo1white
+/src/commands/check.ts @coo1white
+/src/commands/hook.ts @coo1white
 
 # The bot's token and the pull request reader.
 /src/host/github.ts @coo1white
