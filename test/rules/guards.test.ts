@@ -222,6 +222,36 @@ test('hooks setting: every way to read it passes (#114)', () => {
   ]) allowed(command);
 });
 
+test('hooks setting: a shell redirect is no value, so the read passes (#351)', () => {
+  for (const command of [
+    'git config core.hooksPath 2>/dev/null',
+    'git config core.hooksPath 2>/dev/null || echo unset',
+    'git config --get core.hooksPath 2>&1',
+    'git config --local --get core.hooksPath > /tmp/hooks-path',
+    'git config core.hookspath >>log 2>&1',
+    'git config get core.hooksPath 2>/dev/null',
+    'git config 2>/dev/null core.hooksPath',
+    'git config --global --get-all core.hooksPath </dev/null',
+    'git config --worktree --get core.hooksPath 2>/dev/null',
+    'git config --list 2>/dev/null | grep -i hookspath',
+    'git config -l | grep hooksPath',
+  ]) allowed(command);
+  for (const command of [
+    'git config core.hooksPath x 2>/dev/null',
+    'git config core.hooksPath /tmp/x >/dev/null 2>&1',
+    'git config core.hooksPath "2>/dev/null"',
+    "git config core.hooksPath '>x'",
+    'git config core.hooksPath 2\\>x',
+    'git config core.hooksPath 2 >/dev/null',
+    'git config --unset core.hooksPath 2>/dev/null',
+    'git config set core.hooksPath x 2>&1',
+    'git config --file .git/config core.hooksPath x 2>/dev/null',
+    'git -c core.hooksPath=/dev/null commit -m x 2>/dev/null',
+    'git config --get core.hooksPath 2>/dev/null; git config core.hooksPath /tmp/x',
+    'git config core.hooksPath 2>/dev/null && git config --unset core.hooksPath',
+  ]) blocked(command);
+});
+
 test('hooks setting: every way to change it blocks, unless the value is .githooks (#114)', () => {
   for (const command of [
     'git config --local core.hooksPath /dev/null',
@@ -248,6 +278,83 @@ test('hooks setting: every way to change it blocks, unless the value is .githook
   allowed('git config --replace-all core.hooksPath .githooks');
   allowed('git config --unset user.name');
   allowed('git config --remove-section alias');
+});
+
+test('hooks setting: git config --edit blocks in any scope, with any editor (#358)', () => {
+  for (const command of [
+    'git config --edit',
+    'git config -e',
+    'git config edit',
+    "GIT_EDITOR='sed -i s/githooks/x/' git config --edit",
+    "EDITOR='sed -i s/githooks/x/' git config -e",
+    "VISUAL='sed -i s/githooks/x/' git config --local --edit",
+    "git -c core.editor='sed -i s/githooks/x/' config -e",
+    'git --config-env core.editor=EDIT config --edit',
+    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.editor GIT_CONFIG_VALUE_0=true git config --edit',
+    'git config --global --edit',
+    'git config --system -e',
+    'git config --worktree --edit',
+    'git config --file .git/config --edit',
+    'git config --file=.git/config -e',
+    'git config edit --local',
+    'git config --local edit',
+    'git config -ef .git/config',
+    'git config -ze',
+    'git config --ed',
+    'git config --edi --global',
+    'bash -c "git config --edit"',
+  ]) blocked(command);
+  const edit = checkCommand('git config --edit', { env: {} });
+  assert.match(edit?.what ?? '', /core\.hooksPath/);
+  assert.match(edit?.fix ?? '', /git config --get/);
+});
+
+test('hooks setting: a shortened option, or an include, is read as git reads it (#358)', () => {
+  for (const command of [
+    'git config --unset-a core.hooksPath',
+    'git config --uns core.hooksPath',
+    'git config --remove-sec core',
+    'git config --rename-sec core old',
+    'git config --fil .git/config core.hooksPath /dev/null',
+    'git config --fi .git/config core.hooksPath /dev/null',
+    'git config -f.git/config core.hooksPath .githooks/../x',
+    'git config --glo core.hooksPath hooks',
+    'git config --file .git/config --replace-all core.hooksPath /dev/null',
+    'git config include.path /tmp/other.cfg',
+    'git config --add include.path /tmp/other.cfg',
+    'git config set include.path /tmp/other.cfg',
+    'git config --global Include.Path /tmp/other.cfg',
+    'git config includeIf.gitdir:/.path /tmp/other.cfg',
+    'git config --rename-section hidden include',
+    'git config --rename-section hidden includeIf.onbranch:main',
+    'git -c include.path=/tmp/other.cfg commit -m x',
+    'git -c includeIf.gitdir:/.path=/tmp/other.cfg commit -m x',
+    'git --config-env include.path=OTHER commit -m x',
+    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=include.path GIT_CONFIG_VALUE_0=/tmp/other.cfg git commit -m x',
+    "GIT_CONFIG_PARAMETERS=\"'include.path'='/tmp/other.cfg'\" git commit -m x",
+  ]) blocked(command);
+  for (const command of [
+    'git config --get core.hooksPath',
+    'git config --get-all core.hooksPath',
+    'git config get core.hooksPath',
+    'git config --list',
+    'git config -l',
+    'git config --list --show-origin',
+    'git config --get-regexp hooks',
+    'git config --get-a core.hooksPath',
+    'git config --get include.path',
+    'git config include.path',
+    'git config --unset include.path',
+    'git config --no-edit user.name',
+    'git config user.name x',
+    'git config --rename-section old new',
+    'git config --file .gitmodules --get submodule.x.path',
+    'git config -f .gitmodules --list',
+    'GIT_EDITOR=true git commit --amend',
+    'EDITOR=vim git commit',
+    'git -c core.editor=true commit',
+    'git commit -e -m x',
+  ]) allowed(command);
 });
 
 test('hooks setting: git -c, --config-env and GIT_CONFIG_KEY_n cannot skip the check (#114)', () => {

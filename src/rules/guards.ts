@@ -127,7 +127,8 @@ function checkGit(words: string[], { env, config, cwd }: { env: Env; config?: Pi
     i += GIT_VALUE_OPTIONS.has(words[i]) ? 2 : 1;
   }
   const sub = words[i];
-  const args = words.slice(i + 1);
+  const argsAt = i + 1;
+  const args = words.slice(argsAt);
 
   const hooks = checkHooksSettings(settings, fromEnvironment);
   if (hooks) return hooks;
@@ -152,7 +153,7 @@ function checkGit(words: string[], { env, config, cwd }: { env: Env; config?: Pi
   }
   const skip = args.includes('--no-verify') ? '--no-verify' : sub === 'commit' ? args.find((a) => /^-[a-z]*n[a-z]*$/i.test(a)) : undefined;
   if (skip) return finding('skip-check', `git ${sub} ${skip} skips the commit check`, 'fix what the check reports instead');
-  if (sub === 'config') return checkConfig(args, directory);
+  if (sub === 'config') return checkConfig(withoutShellRedirects(words, argsAt), directory);
   return null;
 }
 
@@ -172,11 +173,22 @@ const HOOKS_FIX = 'leave it as it is; another folder is fine once its pre-commit
 const isHooksPath = (key: string) => key.trim().toLowerCase() === 'core.hookspath';
 const hooksPath = (what: string, fix = HOOKS_FIX) => finding('hooks-path', what, fix);
 
+// An include (`include.path`, `includeIf.<condition>.path`) reads another config file,
+// which can set core.hooksPath without naming it (#358). Section and key are
+// case-insensitive; the condition is not, and does not matter here.
+const isInclude = (key: string) => /^include(if\..*)?\.path$/is.test(key.trim());
+const includes = (what: string) =>
+  hooksPath(`${what} reads another config file, which can set core.hooksPath and turn off the commit check`, 'set the setting you need by name, so the guard can check it');
+
 // `git -c core.hooksPath=<value>` and `--config-env core.hooksPath=<VARIABLE>`.
 function checkHooksSettings(settings: string[], fromEnvironment: string[]): Finding | null {
   if (fromEnvironment.some((s) => isHooksPath(s.split('=')[0]))) {
     return hooksPath('git --config-env core.hooksPath sets the hooks folder from a variable, which can skip the commit check');
   }
+  const fromVariable = fromEnvironment.map((s) => s.split('=')[0]).find(isInclude);
+  if (fromVariable) return includes(`git --config-env ${fromVariable}`);
+  const include = settings.map((s) => s.split('=')[0]).find(isInclude);
+  if (include) return includes(`git -c ${include}`);
   for (const setting of settings) {
     const equals = setting.indexOf('=');
     const key = equals === -1 ? setting : setting.slice(0, equals);
@@ -207,8 +219,10 @@ function checkHooksEnvironment(words: string[]): Finding | null {
     const [, name, number, setting] = variable;
     if (name.toUpperCase() === 'PARAMETERS') {
       if (setting.toLowerCase().includes('core.hookspath')) return hooksPath('GIT_CONFIG_PARAMETERS names core.hooksPath, which can skip the commit check');
+      if (/include(if\.[^=]*)?\.path/i.test(setting)) return includes('GIT_CONFIG_PARAMETERS with an include');
       continue;
     }
+    if (isInclude(setting)) return includes(`GIT_CONFIG_KEY_${number} ${setting.trim()}`);
     if (!isHooksPath(setting)) continue;
     values ??= configValues(words);
     if (values.get(number) !== HOOKS_DIR) {
@@ -228,13 +242,61 @@ function configValues(words: string[]): Map<string, string> {
   return values;
 }
 
+// A shell redirect is no argument to git: `git config core.hooksPath 2>/dev/null` reads
+// the setting (#351). Only a redirect the reader saw with no quote in it is taken out, so
+// `git config core.hooksPath '>x'` still sets the value ">x". Words that never went through
+// the reader (an `env -S` string, the rough cut) have no marks, and keep every word.
+const unquotedRedirects = new WeakMap<string[], Set<number>>();
+
+// The words of `words` from `from` on, with each unquoted redirect and its file taken out.
+function withoutShellRedirects(words: string[], from: number): string[] {
+  const marks = unquotedRedirects.get(words);
+  const kept: string[] = [];
+  for (let index = from; index < words.length; ) {
+    const length = marks?.has(index) ? redirectLength(words, index) : 0;
+    if (length === 0) kept.push(words[index]);
+    index += length || 1;
+  }
+  return kept;
+}
+
 // `git config` options that take the next word as their value.
 const CONFIG_VALUE_OPTIONS = new Set(['-f', '--file', '--blob', '--type', '--default', '--comment', '--value', '--url']);
 const CONFIG_READS = new Set(['--get', '--get-all', '--get-regexp', '--get-urlmatch', '--get-color', '--get-colorbool', '--list', '-l', 'get', 'list']);
-const CONFIG_REMOVES = new Set(['--unset', '--unset-all', 'unset', '--edit', '-e', 'edit']);
+const CONFIG_REMOVES = new Set(['--unset', '--unset-all', 'unset']);
+const CONFIG_EDITS = new Set(['--edit', '-e', 'edit']);
 const CONFIG_SECTIONS = new Set(['--rename-section', '--remove-section', 'rename-section', 'remove-section']);
 // git 2.46 and later also takes a subcommand: `git config get|list|set|unset|...`.
 const CONFIG_SUBCOMMANDS = new Set(['get', 'list', 'set', 'unset', 'edit', 'rename-section', 'remove-section']);
+
+// Every long option of `git config`, old form and subcommands, git 2.43 to 2.51.
+const CONFIG_LONG_OPTIONS = [
+  ...CONFIG_VALUE_OPTIONS, ...CONFIG_READS, ...CONFIG_REMOVES, ...CONFIG_EDITS, ...CONFIG_SECTIONS,
+  '--global', '--system', '--local', '--worktree', '--replace-all', '--add', '--fixed-value', '--bool', '--int',
+  '--bool-or-int', '--bool-or-str', '--path', '--expiry-date', '--null', '--name-only', '--includes',
+  '--show-origin', '--show-scope', '--show-names', '--all', '--regexp', '--append',
+].filter((option) => option.startsWith('--'));
+// Short options that take a value: in `-fx` the rest of the word is the value.
+const CONFIG_SHORT_VALUES = 'ft';
+
+// An option as git reads it (#358). git takes a long option by any start of its name
+// (`--ed` is --edit); a start several options share is each of them, since git refuses
+// it anyway. Short options join (`-ef x` is `-e -f x`). `takesNext`: the next word is a value.
+function readConfigOption(word: string): { names: string[]; takesNext: boolean } {
+  if (word.startsWith('--')) {
+    const [name, ...value] = word.split('=');
+    const exact = CONFIG_LONG_OPTIONS.includes(name);
+    const matches = exact ? [name] : CONFIG_LONG_OPTIONS.filter((option) => option.startsWith(name));
+    const names = matches.length > 0 ? matches : [name];
+    return { names: value.length > 0 ? names.map((n) => `${n}=${value.join('=')}`) : names, takesNext: value.length === 0 && names.some((n) => CONFIG_VALUE_OPTIONS.has(n)) };
+  }
+  const names: string[] = [];
+  for (const [index, letter] of [...word.slice(1)].entries()) {
+    names.push(`-${letter}`);
+    if (CONFIG_SHORT_VALUES.includes(letter)) return { names, takesNext: index === word.length - 2 };
+  }
+  return { names, takesNext: false };
+}
 
 // Splits `git config` arguments into options and plain words. The old form (`isOldForm`)
 // reads options only before the first plain word: `git config core.hooksPath --local`
@@ -248,8 +310,9 @@ function splitConfig(args: string[], isOldForm: boolean): { options: string[]; p
       plain.push(...args.slice(i + 1));
       break;
     } else {
-      options.push(args[i]);
-      if (CONFIG_VALUE_OPTIONS.has(args[i])) i++;
+      const { names, takesNext } = readConfigOption(args[i]);
+      options.push(...names);
+      if (takesNext) i++;
     }
   }
   return { options, plain };
@@ -266,19 +329,33 @@ function checkConfig(args: string[], directory: string | null): Finding | null {
     plain = rest.plain;
   }
   const actions = subcommand ? [subcommand] : options;
+  // An editor can change any setting, core.hooksPath too, and the guard cannot see what
+  // it writes: `GIT_EDITOR="sed -i ..." git config --edit` (#358). In any scope.
+  const edit = actions.find((a) => CONFIG_EDITS.has(a));
+  if (edit) {
+    return hooksPath(
+      `git config ${edit} opens a config file in an editor, which can change core.hooksPath and turn off the commit check`,
+      'read a setting with `git config --get <key>`, and change one by name (`git config <key> <value>`), so the guard can check it',
+    );
+  }
   const section = actions.find((a) => CONFIG_SECTIONS.has(a));
   if (section) {
-    return plain.some((w) => w.toLowerCase() === 'core') ? hooksPath(`git config ${section} core changes core.hooksPath, which turns off the commit check`) : null;
+    if (plain.some((w) => w.toLowerCase() === 'core')) return hooksPath(`git config ${section} core changes core.hooksPath, which turns off the commit check`);
+    // `--rename-section x include` makes the settings of x an include.
+    const include = plain.slice(1).find((w) => isInclude(`${w}.path`));
+    return include ? includes(`git config ${section} to ${include}`) : null;
   }
-  if (!isHooksPath(plain[0] ?? '')) return null;
+  const key = plain[0] ?? '';
+  if (!isHooksPath(key) && !isInclude(key)) return null;
   const remove = actions.find((a) => CONFIG_REMOVES.has(a));
-  if (remove) return hooksPath(`git config ${remove} core.hooksPath turns off the commit check`);
+  if (remove) return isInclude(key) ? null : hooksPath(`git config ${remove} core.hooksPath turns off the commit check`);
   if (actions.some((a) => CONFIG_READS.has(a))) return null;
   // A set: `git config <key> <value>`, --add, --replace-all or `git config set`.
   // With no value and no action, it is a read.
   const value = plain[1];
   const isSet = subcommand !== undefined || actions.some((a) => a === '--add' || a === '--replace-all');
   if (value === undefined && !isSet) return null;
+  if (isInclude(key)) return includes(`git config ${key}`);
   if (value === HOOKS_DIR) return null;
   if (value === undefined) return hooksPath('git config set core.hooksPath with no value turns off the commit check');
   return checkHooksFolder(value, options, directory);
@@ -1128,6 +1205,11 @@ function read(text: string, start: number, closer: string, depth: number, out: s
     const isFirst = isLeading;
     if (ended !== null) {
       words.push(ended);
+      if (!isQuoted && REDIRECT.test(ended)) {
+        const marks = unquotedRedirects.get(words) ?? new Set<number>();
+        marks.add(words.length - 1);
+        unquotedRedirects.set(words, marks);
+      }
       isLeading = isLeading && isKeyword && KEYWORDS.has(ended);
     }
     word = '';
