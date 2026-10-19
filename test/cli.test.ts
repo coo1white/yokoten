@@ -9,15 +9,16 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { closestWord, COMMANDS, editDistance, HELP_OPTIONS } from '../src/run/cli.ts';
+import { closestWord, COMMANDS, editDistance, guardCommand, HELP_OPTIONS } from '../src/run/cli.ts';
 import { copyRuntime } from '../src/setup/files.ts';
 import { guardDeadline } from '../src/run/hook.ts';
+import { checkLines } from '../src/setup/init.ts';
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'yokoten.ts');
 
 // A project hook command as init writes it: a plain line when `path` is gone (#204), else node.
 const MISSING_PROJECT = 'yokoten: the hook cannot run, because .yokoten/ is missing. Restore it from git, or run yokoten init again';
-const guarded = (path: string, args: string) => `[ -f ${path} ] || { echo '${MISSING_PROJECT}' >&2; exit 1; }; node ${path} ${args}`;
+const guarded = (path: string, args: string) => `[ -f ${path} ] 2>/dev/null || { echo '${MISSING_PROJECT}' >&2; exit 1; }; node ${path} ${args}`;
 const at = '@';
 
 const pick = (result: { status: number | null; stdout: string; stderr: string }) => [result.status, result.stdout, result.stderr];
@@ -213,9 +214,67 @@ test('hook --stop: sends the agent back once with the findings in changed files,
   result = sandbox.run(['hook', '--stop'], { input: JSON.stringify({ cwd: sandbox.repo }) });
   assert.equal(result.status, 0);
   assert.match(result.stderr, /^yokoten hook --stop: skipped, [^\n]+\n$/);
-  // --stop is for Claude Code's Stop event only.
-  assert.equal(sandbox.run(['hook', '--stop', '--agent', 'codex'], { input: '{}' }).status, 1);
+  // --stop takes a known agent only, and never with --commands-only.
+  assert.equal(sandbox.run(['hook', '--stop', '--agent', 'cursor'], { input: '{}' }).status, 1);
   assert.equal(sandbox.run(['hook', '--stop', '--commands-only'], { input: '{}' }).status, 1);
+});
+
+// Each end-of-turn event as the runtime sends it (#211): Codex's Stop (rust-v0.163.0
+// schema) and Gemini CLI's AfterAgent (v0.64.0). Both send the agent back on exit 2.
+test('hook --stop --agent codex|gemini: the end-of-turn event sends the agent back once (#211)', () => {
+  const sandbox = makeSandbox();
+  const events: Record<string, (active: boolean) => object> = {
+    codex: (active) => ({
+      session_id: 'thr_123',
+      transcript_path: null,
+      cwd: sandbox.repo,
+      hook_event_name: 'Stop',
+      model: 'gpt-5',
+      permission_mode: 'default',
+      turn_id: 'turn_1',
+      stop_hook_active: active,
+      last_assistant_message: 'done',
+    }),
+    gemini: (active) => ({
+      session_id: 's1',
+      transcript_path: join(sandbox.home, 't.json'),
+      cwd: sandbox.repo,
+      hook_event_name: 'AfterAgent',
+      timestamp: '2026-10-19T00:00:00.000Z',
+      prompt: 'fix it',
+      prompt_response: 'done',
+      stop_hook_active: active,
+    }),
+  };
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  for (const [agent, event] of Object.entries(events)) {
+    const stop = (active: boolean) => sandbox.run(['hook', '--stop', '--agent', agent], { input: JSON.stringify(event(active)) });
+    assert.deepEqual(pick(stop(false)), [0, '', ''], `${agent}: clean`);
+    sandbox.write('a.md', `mail me${at}gmail.com\n`);
+    const result = stop(false);
+    assert.equal(result.status, 2, `${agent}: sent back`);
+    assert.match(result.stderr, /^yokoten: 1 problem\(s\) in the changed files\. Fix them before you end the turn:\n- a\.md:1: an email/);
+    assert.equal(result.stdout, '', `${agent}: stdout stays empty`);
+    assert.deepEqual(pick(stop(true)), [0, '', ''], `${agent}: already sent back once`);
+    sandbox.write('a.md', 'fine\n');
+  }
+  // The hooks init writes run the same check, from the vendored copy.
+  assert.equal(sandbox.run(['init']).status, 0);
+  sandbox.write('a.md', `mail me${at}gmail.com\n`);
+  const command = (file: string, event: string) => JSON.parse(readFileSync(join(sandbox.repo, file), 'utf8')).hooks[event][0].hooks[0].command as string;
+  const shell = (text: string, input: object) =>
+    spawnSync(text, { shell: '/bin/sh', cwd: sandbox.repo, env: { ...sandbox.env, GEMINI_PROJECT_DIR: sandbox.repo }, input: JSON.stringify(input), encoding: 'utf8' });
+  assert.equal(shell(command('.codex/hooks.json', 'Stop'), events.codex(false)).status, 2, 'the Codex Stop hook');
+  assert.equal(shell(command('.gemini/settings.json', 'AfterAgent'), events.gemini(false)).status, 2, 'the Gemini AfterAgent hook');
+  assert.equal(shell(command('.codex/hooks.json', 'Stop'), events.codex(true)).status, 0);
+  // doctor's codex-hook step wants the stop check too.
+  const codexFile = join(sandbox.repo, '.codex', 'hooks.json');
+  const hooks = JSON.parse(readFileSync(codexFile, 'utf8'));
+  delete hooks.hooks.Stop;
+  writeFileSync(codexFile, JSON.stringify(hooks));
+  assert.match(sandbox.run(['doctor']).stdout, /note +codex-hook: no stop check in \.codex\/hooks\.json/);
 });
 
 // Each call is shaped as the runtime's hook docs show it (#30): Codex's PreToolUse
@@ -848,6 +907,11 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
     hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --agent gemini'), name: 'yokoten' }],
     matcher: 'run_shell_command|write_file|replace',
   });
+  // The stop checks (#211): Codex's Stop and Gemini's AfterAgent take no matcher, once each.
+  assert.match(result.stdout, /same the Codex stop check/);
+  assert.match(result.stdout, /same the Gemini CLI stop check/);
+  assert.deepEqual(codex.hooks.Stop, [{ hooks: [{ type: 'command', command: guarded('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.ts"', 'hook --stop --agent codex') }] }]);
+  assert.deepEqual(gemini.hooks.AfterAgent, [{ hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --stop --agent gemini'), name: 'yokoten-stop' }] }]);
   assert.match(sandbox.run(['doctor']).stdout, /ok +codex-hook\n +ok +gemini-hook/);
   // The pre-commit hook runs the vendored check on a real commit.
   sandbox.git('add', '.');
@@ -1084,7 +1148,8 @@ test("init: husky keeps its hooks folder; .husky/pre-commit gets the check and k
   assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '.husky', 'the project\'s hooks folder stays');
   assert.ok(!existsSync(join(sandbox.repo, '.githooks')), 'no second hooks folder that git never runs');
   const hook = readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8');
-  assert.match(hook, /^#!\/bin\/sh\n# yokoten: [^\n]*\nnode "\.yokoten\/bin\/yokoten\.ts" check --staged \|\| exit 1\ntouch own-hook-ran\n$/);
+  assert.equal(hook, `#!/bin/sh\n${checkLines('.yokoten/bin/yokoten.ts').join('\n')}\ntouch own-hook-ran\n`);
+  assert.match(hook, /\n\[ -f "\.yokoten\/bin\/yokoten\.ts" \] 2>\/dev\/null \|\| \{ echo [^\n]* >&2; exit 1; \}; node "\.yokoten\/bin\/yokoten\.ts" check --staged \|\| exit 1\n/);
   assert.equal(stepMark(sandbox, 'commit-check'), 'done');
   // Again: the hook already runs yokoten.
   result = sandbox.run(['init']);
@@ -1098,6 +1163,12 @@ test("init: husky keeps its hooks folder; .husky/pre-commit gets the check and k
   sandbox.write('leak.md', `me${at}gmail.com\n`);
   sandbox.git('add', 'leak.md');
   assert.notEqual(sandbox.git('commit', '-qm', 'leak').status, 0);
+  sandbox.git('reset', '-q', 'leak.md');
+  // Without the runtime, one plain line and no commit, never a stack trace (#204).
+  rmSync(join(sandbox.repo, '.yokoten'), { recursive: true });
+  sandbox.write('b.md', 'fine\n');
+  sandbox.git('add', 'b.md');
+  assert.deepEqual(pick(sandbox.git('commit', '-qm', 'b')), [1, '', 'yokoten: the commit check cannot run, because .yokoten/bin/yokoten.ts is missing. Restore it from git, or run yokoten init again\n']);
 });
 
 test('init: husky not yet installed in this clone; init leaves core.hooksPath unset and says to run npm install (#206)', () => {
@@ -1108,18 +1179,36 @@ test('init: husky not yet installed in this clone; init leaves core.hooksPath un
   assert.match(result.stdout, /added the check to \.husky\/pre-commit/);
   assert.match(result.stdout, /run `npm install`/);
   assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '');
-  assert.match(readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8'), /^# yokoten: [^\n]*\nnode [^\n]*\nnpm test\n$/);
+  assert.match(readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8'), /^# yokoten: [^\n]*\n\[ -f [^\n]*; node [^\n]*\nnpm test\n$/);
+  // A hook that init changed before the runtime guard (#204) already runs the check.
+  const before = '# yokoten: the commit check\nnode ".yokoten/bin/yokoten.ts" check --staged || exit 1\nnpm test\n';
+  sandbox.write('.husky/pre-commit', before);
+  assert.match(sandbox.run(['init']).stdout, /^same \.husky\/pre-commit/m);
+  assert.equal(readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8'), before);
   assert.notEqual(stepMark(sandbox, 'commit-check'), 'done', 'git runs no hook yet');
   assert.match(sandbox.run(['doctor']).stdout, /run `npm install` so husky sets core\.hooksPath/);
   sandbox.git('config', 'core.hooksPath', '.husky/_');
   assert.equal(stepMark(sandbox, 'commit-check'), 'done', "husky 9's folder runs .husky/pre-commit");
 });
 
+test('init: a core.hooksPath outside the repo is kept, and the advice is the line init would write (#204)', () => {
+  const sandbox = makeSandbox();
+  sandbox.git('config', 'core.hooksPath', join(sandbox.home, 'hooks'));
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  const [, checkLine] = checkLines('.yokoten/bin/yokoten.ts');
+  assert.ok(result.stdout.includes(`Add this line to its pre-commit: ${checkLine}\n`), result.stdout);
+});
+
 test("init: another core.hooksPath is kept, and its pre-commit is made with the check (#206)", () => {
   const sandbox = makeSandbox();
   sandbox.write('tools/hooks/commit-msg', '#!/bin/sh\n');
   sandbox.git('config', 'core.hooksPath', 'tools/hooks');
-  assert.match(sandbox.run(['doctor']).stdout, /tools\/hooks\/pre-commit does not run yokoten/);
+  const doctor = sandbox.run(['doctor']).stdout;
+  assert.match(doctor, /tools\/hooks\/pre-commit does not run yokoten/);
+  // The advice shows the line init writes, runtime guard included (#204).
+  const [, checkLine] = checkLines('.yokoten/bin/yokoten.ts');
+  assert.ok(doctor.includes(`or add this line there yourself: ${checkLine}`), doctor);
   const result = sandbox.run(['init']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /wrote tools\/hooks\/pre-commit: the commit check \(kept core\.hooksPath \(tools\/hooks\)/);
@@ -1430,6 +1519,57 @@ test('install: run from the installed copy, it keeps that copy, and the next run
   }
 });
 
+test('install: the session doctor and the command guard for Codex and Gemini CLI, safe twice (#211)', () => {
+  const sandbox = makeSandbox();
+  const codexFile = join(sandbox.home, '.codex', 'hooks.json');
+  const geminiFile = join(sandbox.home, '.gemini', 'settings.json');
+  const mine = (event: string) => ({ [event]: [{ matcher: 'read_file', hooks: [{ type: 'command', command: 'mine' }] }] });
+  mkdirSync(dirname(codexFile));
+  mkdirSync(dirname(geminiFile));
+  writeFileSync(codexFile, JSON.stringify({ description: 'ours', hooks: mine('PreToolUse') }));
+  writeFileSync(geminiFile, JSON.stringify({ theme: 'x', hooks: mine('BeforeTool') }));
+  const cli = '"$HOME/.local/share/yokoten/bin/yokoten.ts"';
+  const line = 'yokoten: the runtime at ~/.local/share/yokoten is missing; run the install again';
+  const atStart = (args: string) => `[ -f ${cli} ] 2>/dev/null || { echo '${line}'; exit 0; }; node ${cli} ${args}`;
+  const onCall = (args: string) => `[ -f ${cli} ] 2>/dev/null || { echo '${line}' >&2; exit 1; }; node ${cli} ${args}`;
+  let result = sandbox.run(['install']);
+  assert.equal(result.status, 0, result.stderr);
+  for (const what of ['Codex SessionStart doctor', 'Codex command guard', 'Gemini CLI SessionStart doctor', 'Gemini CLI command guard']) assert.match(result.stdout, new RegExp(`^added the ${what} in ~/`, 'm'));
+  result = sandbox.run(['install']);
+  for (const what of ['Codex SessionStart doctor', 'Codex command guard', 'Gemini CLI SessionStart doctor', 'Gemini CLI command guard']) assert.match(result.stdout, new RegExp(`^same the ${what} in ~/`, 'm'));
+  const codex = JSON.parse(readFileSync(codexFile, 'utf8'));
+  assert.equal(codex.description, 'ours');
+  assert.deepEqual(codex.hooks.SessionStart, [{ hooks: [{ type: 'command', command: atStart('doctor --session --agent codex') }] }]);
+  assert.deepEqual(codex.hooks.PreToolUse, [...mine('PreToolUse').PreToolUse, { hooks: [{ type: 'command', command: onCall('hook --agent codex --commands-only') }], matcher: 'Bash' }]);
+  const gemini = JSON.parse(readFileSync(geminiFile, 'utf8'));
+  assert.equal(gemini.theme, 'x');
+  assert.deepEqual(gemini.hooks.SessionStart, [{ hooks: [{ type: 'command', command: atStart('doctor --session --agent gemini').replace(`echo '${line}'`, `echo '{"hookSpecificOutput":{"additionalContext":"${line}"}}'`), name: 'yokoten-session' }] }]);
+  assert.deepEqual(gemini.hooks.BeforeTool, [...mine('BeforeTool').BeforeTool, { hooks: [{ type: 'command', command: onCall('hook --agent gemini --commands-only'), name: 'yokoten-guard' }], matcher: 'run_shell_command' }]);
+  // The command guard stops a tag push in any repo, adopted or not.
+  const shell = (text: string, input: object) => spawnSync(text, { shell: '/bin/sh', cwd: sandbox.repo, env: sandbox.env, input: JSON.stringify(input), encoding: 'utf8' });
+  const push = { session_id: 's1', cwd: sandbox.repo, hook_event_name: 'PreToolUse', tool_input: { command: 'git push --tags' } };
+  assert.equal(shell(codex.hooks.PreToolUse[1].hooks[0].command, { ...push, tool_name: 'Bash' }).status, 2, 'Codex');
+  assert.equal(shell(gemini.hooks.BeforeTool[1].hooks[0].command, { ...push, hook_event_name: 'BeforeTool', tool_name: 'run_shell_command' }).status, 2, 'Gemini CLI');
+});
+
+// Codex adds a SessionStart hook's plain stdout to the context; Gemini CLI reads JSON only (#211).
+test('doctor --session --agent: plain text for Codex, hookSpecificOutput JSON for Gemini CLI (#211)', () => {
+  const sandbox = makeSandbox();
+  const plain = sandbox.run(['doctor', '--session']);
+  assert.match(plain.stdout, /^yokoten: stage 1 of 5/);
+  assert.deepEqual(pick(sandbox.run(['doctor', '--session', '--agent', 'codex'])), pick(plain));
+  const result = sandbox.run(['doctor', '--session', '--agent', 'gemini']);
+  assert.equal(result.status, 0, result.stderr);
+  const out = JSON.parse(result.stdout);
+  assert.deepEqual(Object.keys(out), ['hookSpecificOutput']);
+  assert.deepEqual(Object.keys(out.hookSpecificOutput), ['additionalContext']);
+  assert.equal(out.hookSpecificOutput.additionalContext, plain.stdout.trimEnd());
+  assert.ok(!result.stdout.includes(sandbox.home), 'output shows the home path');
+  // Outside a repo there is nothing to say, and no JSON either.
+  assert.equal(sandbox.run(['doctor', '--session', '--agent', 'gemini'], { cwd: sandbox.home }).stdout, '');
+  assert.equal(sandbox.run(['doctor', '--session', '--agent', 'cursor']).status, 1);
+});
+
 test('init: run from the project\'s .yokoten/, it keeps .yokoten/ (#204)', () => {
   const sandbox = makeSandbox();
   assert.equal(sandbox.run(['init']).status, 0);
@@ -1463,6 +1603,58 @@ test('install: a copy that fails half way leaves the old copy working (#204)', (
   assert.deepEqual(readdirSync(dirname(dest)), ['yokoten']);
 });
 
+// A temp folder left beside the copy, in a repo root, is one `git add -A` away from a commit (#204).
+test('install: a rename that fails leaves the old copy and no temp folder (#204)', () => {
+  const sandbox = makeSandbox();
+  const dest = join(sandbox.home, '.local', 'share', 'yokoten');
+  assert.equal(copyRuntime(dest, { withKit: true }), 'wrote');
+  writeFileSync(join(dest, 'VERSION'), 'old\n');
+  const failing = (() => {
+    throw new Error('busy');
+  }) as typeof renameSync;
+  assert.throws(() => copyRuntime(dest, { withKit: true, rename: failing }), /busy/);
+  assert.equal(readFileSync(join(dest, 'VERSION'), 'utf8'), 'old\n', 'the old copy is in place');
+  assert.deepEqual(readdirSync(dirname(dest)), ['yokoten'], 'no temp folder is left next to it');
+});
+
+test('install: temp folders that an earlier crash left are removed, and only those (#204)', () => {
+  const sandbox = makeSandbox();
+  const parent = join(sandbox.home, '.local', 'share');
+  const kept = ['.yokoten-newer', '.other-new-abc123', 'notes'];
+  for (const name of ['.yokoten-new-abc123', '.yokoten-old-def456', ...kept]) mkdirSync(join(parent, name), { recursive: true });
+  assert.equal(copyRuntime(join(parent, 'yokoten'), { withKit: true }), 'wrote');
+  assert.deepEqual(readdirSync(parent).sort(), [...kept, 'yokoten'].sort());
+});
+
+// A repo inside the clone that runs init was told "kept", with nothing written (#204).
+test('init: a repo inside the running copy gets its own .yokoten/, unless the copy would hold itself (#204)', () => {
+  const sandbox = makeSandbox();
+  const clone = join(sandbox.home, 'clone');
+  for (const part of ['bin', 'src', 'kit', 'package.json']) cpSync(join(dirname(CLI), '..', part), join(clone, part), { recursive: true });
+  const initIn = (path: string) => {
+    mkdirSync(path, { recursive: true });
+    spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: path, env: sandbox.env });
+    return spawnSync('node', [join(clone, 'bin', 'yokoten.ts'), 'init'], { cwd: path, env: sandbox.env, encoding: 'utf8' });
+  };
+  const project = join(clone, 'project');
+  let result = initIn(project);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^wrote \.yokoten\/ /m);
+  assert.ok(existsSync(join(project, '.yokoten', 'VERSION')), 'the project has its own runtime');
+  // Copying src/ into a folder inside src/ never ends, so init writes nothing and says why.
+  const inside = join(clone, 'src', 'project');
+  result = initIn(inside);
+  assert.deepEqual(pick(result), [1, '', 'yokoten init: cannot copy the runtime to src/project/.yokoten, because it is inside src/ of the copy running now. Run yokoten from a copy outside that folder\n']);
+  assert.deepEqual(readdirSync(inside), ['.git'], 'nothing is written');
+  assert.ok(!readdirSync(join(clone, 'src')).some((name) => name.startsWith('.')), 'no temp folder is left');
+});
+
+// The line goes into a single-quoted echo, and into JSON for Gemini CLI, as it is (#204).
+test('guardCommand: refuses a missing-runtime line with a quote or a backslash (#204)', () => {
+  for (const line of ["it's gone", 'say "gone"', 'a\\b']) assert.throws(() => guardCommand('p', 'hook', line), /quote or a backslash/, line);
+  assert.doesNotThrow(() => guardCommand('p', 'hook', 'yokoten: gone; run the install again'));
+});
+
 test('hooks: a missing runtime says one plain line with no path, never a stack trace (#204)', () => {
   const sandbox = makeSandbox();
   // A hook from before #204 is updated in place, never added twice.
@@ -1485,10 +1677,25 @@ test('hooks: a missing runtime says one plain line with no path, never a stack t
   // At session start the line goes to the agent; a tool call goes on, with the line shown.
   assert.deepEqual(pick(shell(user.SessionStart[0])), [0, machineLine, '']);
   assert.deepEqual(pick(shell(user.PreToolUse[0])), [1, '', machineLine]);
+  // The same for Codex and Gemini CLI (#211).
+  const codexUser = commands(join(sandbox.home, '.codex', 'hooks.json'));
+  const geminiUser = commands(join(sandbox.home, '.gemini', 'settings.json'));
+  for (const command of codexUser.SessionStart) assert.deepEqual(pick(shell(command)), [0, machineLine, ''], command);
+  // Gemini CLI reads only JSON at session start.
+  const geminiStart = shell(geminiUser.SessionStart[0]);
+  assert.equal(geminiStart.status, 0, geminiStart.stderr);
+  assert.deepEqual(JSON.parse(geminiStart.stdout), { hookSpecificOutput: { additionalContext: machineLine.trimEnd() } });
+  for (const command of [...codexUser.PreToolUse, ...geminiUser.BeforeTool]) assert.deepEqual(pick(shell(command)), [1, '', machineLine], command);
   const project = commands(join(sandbox.repo, '.claude', 'settings.json'));
   const projectLine = `${MISSING_PROJECT}\n`;
-  for (const command of [...project.PreToolUse, ...project.Stop, ...commands(join(sandbox.repo, '.codex', 'hooks.json')).PreToolUse.slice(-1), ...commands(join(sandbox.repo, '.gemini', 'settings.json')).BeforeTool]) {
+  const codexProject = commands(join(sandbox.repo, '.codex', 'hooks.json'));
+  const geminiProject = commands(join(sandbox.repo, '.gemini', 'settings.json'));
+  for (const command of [...project.PreToolUse, ...project.Stop, ...codexProject.PreToolUse.slice(-1), ...codexProject.Stop, ...geminiProject.BeforeTool, ...geminiProject.AfterAgent]) {
     assert.deepEqual(pick(shell(command)), [1, '', projectLine], command);
+  }
+  // A project path with a space: the `[` test's own error, with the full path, is not shown.
+  for (const command of [...geminiProject.BeforeTool, ...geminiProject.AfterAgent]) {
+    assert.deepEqual(pick(shell(command, { GEMINI_PROJECT_DIR: join(sandbox.home, 'a b') })), [1, '', projectLine], command);
   }
   // The commit check stops the commit, with one plain line: a commit now would delete .yokoten/.
   sandbox.write('a.md', 'fine\n');
