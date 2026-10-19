@@ -1000,7 +1000,7 @@ test('install: an unreadable Codex or Gemini CLI hooks file is skipped, the rest
       assert.match(result.stdout, new RegExp(`^added the ${good.name} command guard in ~/`, 'm'), what);
       assert.ok(hasHook(goodPath, 'SessionStart', 'doctor'), `${what}: no ${good.name} hooks`);
       assert.match(result.stdout, /^added the user-level command guard$/m, what);
-      assert.match(result.stdout.trimEnd().split('\n').at(-1) ?? '', /marks/, what);
+      assert.match(result.stdout, /^wrote ~\/\S*private-marks /m, what);
       // Doctor names the same problem.
       assert.match(sandbox.run(['doctor']).stdout, new RegExp(`^  note {4}${bad.id}: ${escape(doctor)}`, 'm'), what);
     }
@@ -1174,7 +1174,7 @@ test('install: an unreadable ~/.claude/settings.json is skipped, the rest goes o
     // Every other step still ran: the Codex and Gemini CLI hooks, and the marks file.
     assert.match(result.stdout, /^added the Codex command guard in ~\//m, what);
     assert.match(result.stdout, /^added the Gemini CLI command guard in ~\//m, what);
-    assert.match(result.stdout.trimEnd().split('\n').at(-1) ?? '', /marks/, what);
+    assert.match(result.stdout, /^wrote ~\/\S*private-marks /m, what);
     // Doctor names the same problem, never that the hook is missing, and doesn't crash.
     const doctor = sandbox.run(['doctor']);
     const said = content.startsWith('{ not') ? "can't read ~/.claude/settings.json" : '~/.claude/settings.json has an unexpected shape';
