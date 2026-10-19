@@ -218,6 +218,36 @@ test('hooks setting: every way to read it passes (#114)', () => {
   ]) allowed(command);
 });
 
+test('hooks setting: a shell redirect is no value, so the read passes (#351)', () => {
+  for (const command of [
+    'git config core.hooksPath 2>/dev/null',
+    'git config core.hooksPath 2>/dev/null || echo unset',
+    'git config --get core.hooksPath 2>&1',
+    'git config --local --get core.hooksPath > /tmp/hooks-path',
+    'git config core.hookspath >>log 2>&1',
+    'git config get core.hooksPath 2>/dev/null',
+    'git config 2>/dev/null core.hooksPath',
+    'git config --global --get-all core.hooksPath </dev/null',
+    'git config --worktree --get core.hooksPath 2>/dev/null',
+    'git config --list 2>/dev/null | grep -i hookspath',
+    'git config -l | grep hooksPath',
+  ]) allowed(command);
+  for (const command of [
+    'git config core.hooksPath x 2>/dev/null',
+    'git config core.hooksPath /tmp/x >/dev/null 2>&1',
+    'git config core.hooksPath "2>/dev/null"',
+    "git config core.hooksPath '>x'",
+    'git config core.hooksPath 2\\>x',
+    'git config core.hooksPath 2 >/dev/null',
+    'git config --unset core.hooksPath 2>/dev/null',
+    'git config set core.hooksPath x 2>&1',
+    'git config --file .git/config core.hooksPath x 2>/dev/null',
+    'git -c core.hooksPath=/dev/null commit -m x 2>/dev/null',
+    'git config --get core.hooksPath 2>/dev/null; git config core.hooksPath /tmp/x',
+    'git config core.hooksPath 2>/dev/null && git config --unset core.hooksPath',
+  ]) blocked(command);
+});
+
 test('hooks setting: every way to change it blocks, unless the value is .githooks (#114)', () => {
   for (const command of [
     'git config --local core.hooksPath /dev/null',

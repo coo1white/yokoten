@@ -119,7 +119,8 @@ function checkGit(words: string[], { env, config, cwd }: { env: Env; config?: Pi
     i += GIT_VALUE_OPTIONS.has(words[i]) ? 2 : 1;
   }
   const sub = words[i];
-  const args = words.slice(i + 1);
+  const argsAt = i + 1;
+  const args = words.slice(argsAt);
 
   const hooks = checkHooksSettings(settings, fromEnvironment);
   if (hooks) return hooks;
@@ -144,7 +145,7 @@ function checkGit(words: string[], { env, config, cwd }: { env: Env; config?: Pi
   }
   const skip = args.includes('--no-verify') ? '--no-verify' : sub === 'commit' ? args.find((a) => /^-[a-z]*n[a-z]*$/i.test(a)) : undefined;
   if (skip) return finding('skip-check', `git ${sub} ${skip} skips the commit check`, 'fix what the check reports instead');
-  if (sub === 'config') return checkConfig(args, directory);
+  if (sub === 'config') return checkConfig(withoutShellRedirects(words, argsAt), directory);
   return null;
 }
 
@@ -218,6 +219,24 @@ function configValues(words: string[]): Map<string, string> {
     if (value && !values.has(value[1])) values.set(value[1], value[2]);
   }
   return values;
+}
+
+// A shell redirect is no argument to git: `git config core.hooksPath 2>/dev/null` reads
+// the setting (#351). Only a redirect the reader saw with no quote in it is taken out, so
+// `git config core.hooksPath '>x'` still sets the value ">x". Words that never went through
+// the reader (an `env -S` string, the rough cut) have no marks, and keep every word.
+const unquotedRedirects = new WeakMap<string[], Set<number>>();
+
+// The words of `words` from `from` on, with each unquoted redirect and its file taken out.
+function withoutShellRedirects(words: string[], from: number): string[] {
+  const marks = unquotedRedirects.get(words);
+  const kept: string[] = [];
+  for (let index = from; index < words.length; ) {
+    const length = marks?.has(index) ? redirectLength(words, index) : 0;
+    if (length === 0) kept.push(words[index]);
+    index += length || 1;
+  }
+  return kept;
 }
 
 // `git config` options that take the next word as their value.
@@ -1120,6 +1139,11 @@ function read(text: string, start: number, closer: string, depth: number, out: s
     const isFirst = isLeading;
     if (ended !== null) {
       words.push(ended);
+      if (!isQuoted && REDIRECT.test(ended)) {
+        const marks = unquotedRedirects.get(words) ?? new Set<number>();
+        marks.add(words.length - 1);
+        unquotedRedirects.set(words, marks);
+      }
       isLeading = isLeading && isKeyword && KEYWORDS.has(ended);
     }
     word = '';
