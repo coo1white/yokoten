@@ -1,16 +1,17 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { generateKeyPairSync, verify } from 'node:crypto';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { annotation, annotations, appJwt, botConfig, botEnv, type Gh, installationToken, readCommandTitle, readIncident, readServer, repoOf, type ServerSettings, stepSummary, type Unread, type Label, readPlanning } from '../src/host/github.ts';
-import { DEFAULTS } from '../src/rules/config.ts';
+import { annotation, annotations, appJwt, botConfig, botEnv, cleanChildEnv, type Gh, installationToken, type Label, readCommandTitle, readIncident, readPlanning, readServer, repoOf, type ServerSettings, stepSummary, type Unread } from '../src/host/github.ts';
+import { DEFAULTS, type Env } from '../src/rules/config.ts';
 import { draftLesson, type Incident } from '../src/run/learn.ts';
 import { checkCommand } from '../src/rules/guards.ts';
+import { checkIssueTitle, checkPullRequestTitle } from '../src/rules/pr.ts';
 import { doctor } from '../src/setup/doctor.ts';
 import { road, ROAD, serverChecks, stepFinding } from '../src/setup/road.ts';
 import { LABELS, pickNewMilestone, setUpPlanning } from '../src/setup/plan.ts';
@@ -80,6 +81,20 @@ test('env: gh gets the token, and git asks gh for github.com instead of the owne
   assert.equal(e.PATH, '/bin');
 });
 
+// A child `node --test` that inherits NODE_TEST_CONTEXT reports to the parent run and exits 0
+// whatever happens (#168). The control proves the trap is real, so the fix is not a no-op.
+test('child env: a failing child node --test fails only once NODE_TEST_CONTEXT is gone (#168)', () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'yokoten-child-')), 'fail.test.ts');
+  writeFileSync(file, "import { test } from 'node:test';\ntest('fails', () => { throw new Error('fails on purpose'); });\n");
+  // The parent's own env when this runs under node --test; the same value when run alone.
+  const parentEnv = { ...process.env, NODE_TEST_CONTEXT: process.env.NODE_TEST_CONTEXT ?? 'child-v8' };
+  const runChild = (env: Env) => spawnSync(process.execPath, ['--test', file], { env, encoding: 'utf8' }).status;
+  assert.equal(runChild(parentEnv), 0, 'the trap is gone: a child with the parent env now fails on its own');
+  assert.equal(runChild(cleanChildEnv(parentEnv)), 1, 'a failing child test passed with a clean env');
+  assert.equal(cleanChildEnv(parentEnv).PATH, process.env.PATH);
+  assert.equal(botEnv(parentEnv, 'tok').NODE_TEST_CONTEXT, undefined, 'yokoten bot -- <command> passes the test context on');
+});
+
 test('command title: the title gh issue or gh pr create or edit sets; null for anything else (#117)', () => {
   const read = (line: string) => readCommandTitle(line.split(' '));
   assert.deepEqual(read('gh issue create --title host:x --label feat,incident -l tier'), { kind: 'issue', title: 'host:x', labels: ['feat', 'incident', 'tier'] });
@@ -93,6 +108,65 @@ test('command title: the title gh issue or gh pr create or edit sets; null for a
   assert.equal(read('gh pr create -- --title a'), null, 'nothing after --');
   assert.equal(read('gh pr create --title'), null, 'no value');
   for (const line of ['gh pr view --title a', 'gh repo create --title a', 'git commit --title a', 'gh issue']) assert.equal(read(line), null, line);
+});
+
+test('command title: every spelling gh takes for create and edit is read (#279)', () => {
+  const read = (line: string) => readCommandTitle(line.split(' '));
+  const spellings: [string, 'issue' | 'pr'][] = [
+    ['gh issue new --title Broken', 'issue'],
+    ['gh pr new --title Broken', 'pr'],
+    ['gh issue -R o/r create --title Broken', 'issue'],
+    ['gh issue --repo=o/r new -t Broken', 'issue'],
+    ['gh --repo o/r pr create --title Broken', 'pr'],
+    ['gh -Ro/r issue create --title=Broken', 'issue'],
+    ['gh pr -R o/r edit 5 --title Broken', 'pr'],
+    ['gh issue --title Broken create', 'issue'],
+    ['gh issue --body-file f -t Broken new', 'issue'],
+    ['gh issue create --parent 3 --type Bug --title Broken', 'issue'],
+  ];
+  for (const [line, kind] of spellings) assert.deepEqual(read(line), { kind, title: 'Broken', labels: [] }, line);
+  assert.deepEqual(read('gh -R o/r issue -l feat new -t a'), { kind: 'issue', title: 'a', labels: ['feat'] }, 'a label before the verb');
+  assert.equal(read('gh -R issue pr create --title a')?.kind, 'pr', 'the value of -R is not the noun');
+  assert.equal(read('gh issue --body create view --title a'), null, 'the value of --body is not the verb');
+  for (const line of ['gh -R o/r issue view --title a', 'gh --repo o/r repo create --title a', 'gh issue new -- --title a', 'gh -R o/r']) assert.equal(read(line), null, line);
+});
+
+test('command title: short flags run together are read as gh reads them (#290)', () => {
+  const read = (line: string) => readCommandTitle(line.split(' '));
+  const spellings: [string, 'issue' | 'pr', string[]][] = [
+    ['gh pr create -dt Broken', 'pr', []],
+    ['gh pr create -dtBroken', 'pr', []],
+    ['gh pr create -dlbug -t Broken', 'pr', ['bug']],
+    ['gh pr create -dl bug -dwt Broken', 'pr', ['bug']],
+    ['gh issue create -et Broken', 'issue', []],
+    ['gh issue create -t Broken', 'issue', []],
+    ['gh issue create -tBroken', 'issue', []],
+    ['gh issue -Ro/r create -wtBroken', 'issue', []],
+    ['gh pr edit 5 -t Broken -dfb -t', 'pr', []],
+  ];
+  for (const [line, kind, labels] of spellings) assert.deepEqual(read(line), { kind, title: 'Broken', labels }, line);
+  assert.equal(read('gh pr create -dt a -t b')?.title, 'b', 'the last one still wins');
+  assert.equal(read('gh pr create -df'), null, 'switches only: no title');
+  // A letter gh's create and edit don't have: the bot can't tell what the word holds, so it refuses.
+  assert.deepEqual(read('gh pr create -dzt Broken'), { kind: 'pr', unreadable: '-dzt' });
+  assert.deepEqual(read('gh issue create -zt Broken --title Fine'), { kind: 'issue', unreadable: '-zt' }, 'even with a readable title after it');
+  assert.deepEqual(read('gh issue edit 5 -dz'), { kind: 'issue', unreadable: '-dz' });
+  assert.equal(read('gh pr view -zt a'), null, 'only create and edit are checked');
+  assert.deepEqual(read('gh pr create --body -zt --title a'), { kind: 'pr', title: 'a', labels: [] }, 'the value of another option is not read');
+});
+
+test('command title: good titles in run-together short flags pass the title rules (#290)', () => {
+  const config = { ...DEFAULTS, areas: ['host'] };
+  const good = 'feat(host): check the title';
+  for (const command of [['gh', 'pr', 'create', '-dt', good], ['gh', 'pr', 'create', `-dt${good}`], ['gh', 'pr', 'create', '-dlbug', '-t', good]]) {
+    const found = readCommandTitle(command);
+    assert.ok(found && !('unreadable' in found), command.join(' '));
+    assert.deepEqual(checkPullRequestTitle(found.title, config), [], command.join(' '));
+  }
+  const issue = readCommandTitle(['gh', 'issue', 'create', '-wlbug', '-thost: check the title']);
+  assert.ok(issue && !('unreadable' in issue));
+  assert.deepEqual(issue.labels, ['bug']);
+  assert.deepEqual(checkIssueTitle(issue.title, config, issue.labels), []);
 });
 
 test('the bot is not a way around the guard', () => {
@@ -265,6 +339,88 @@ test('doctor: reads the server of a GitHub origin into the road; a step not done
   assert.notEqual(session.report.next?.id, 'protection');
 });
 
+// The review step (#59): one approval before a merge, judged from the repo's rules and visibility.
+const review = ROAD.find((s) => s.key === 'review')!;
+const RULES = `repos/${REPO}/rules/branches/main`;
+const withApprovals = (count: number) => [{ type: 'pull_request', parameters: { required_approving_review_count: count } }, ...(GOOD[RULES] as object[]).slice(1)];
+// An admin's read: the old branch protection and the Actions setting are visible.
+const ACTIONS = `repos/${REPO}/actions/permissions/workflow`;
+const ADMIN = { ...GOOD, [`repos/${REPO}`]: { ...(GOOD[`repos/${REPO}`] as object), permissions: { admin: true } }, [ACTIONS]: { can_approve_pull_request_reviews: false } };
+
+test('road: the review step is stage 4, done when a merge needs at least one approval (#59)', () => {
+  assert.equal(review.stage, 4);
+  assert.equal(review.check('.', {}, readServer(serverGh({ ...ADMIN, [RULES]: withApprovals(1) }).gh, REPO)), true);
+  assert.equal(review.check('.', {}, readServer(serverGh({ ...ADMIN, [RULES]: withApprovals(2) }).gh, REPO)), true);
+  // The old branch protection counts too, when an admin can read it.
+  const old = { ...ADMIN, [`repos/${REPO}/branches/main/protection/required_pull_request_reviews`]: { required_approving_review_count: 1 } };
+  assert.equal(review.check('.', {}, readServer(serverGh(old).gh, REPO)), true);
+});
+
+test('road: the review step catches a merge with no approval, and says how to set one (#59)', () => {
+  // Positive control: every other setting is on, and only the approval is missing.
+  for (const rules of [GOOD[RULES], withApprovals(0), []]) {
+    const server = readServer(serverGh({ ...ADMIN, [RULES]: rules }).gh, REPO);
+    assert.equal(review.check('.', {}, server), false, JSON.stringify(rules));
+  }
+  const f = stepFinding(review, '.', {}, readServer(serverGh(ADMIN).gh, REPO));
+  assert.equal(f.what, 'a merge to the default branch needs no approving review');
+  assert.match(f.fix, /"Required approvals" to 1/);
+  assert.match(f.fix, /can't approve your own pull request, so let the bot open them/);
+  assert.match(f.fix, /keep "Allow GitHub Actions to create and approve pull requests" off/);
+});
+
+test('road: the review step is not done while a workflow may approve a pull request (#59)', () => {
+  // With the Actions setting on, a workflow the bot pushes could approve the bot's own pull request.
+  const on = readServer(serverGh({ ...ADMIN, [RULES]: withApprovals(1), [ACTIONS]: { can_approve_pull_request_reviews: true } }).gh, REPO);
+  assert.equal(review.check('.', {}, on), false);
+  const f = stepFinding(review, '.', {}, on);
+  assert.match(f.what, /^a workflow may approve a pull request/);
+  assert.match(f.fix, /turn off "Allow GitHub Actions to create and approve pull requests"/);
+  // Unreadable is can't check, never done.
+  const hidden = readServer(serverGh({ ...ADMIN, [RULES]: withApprovals(1), [ACTIONS]: said(403) }).gh, REPO);
+  assert.equal(review.check('.', {}, hidden), null);
+  assert.match(review.unchecked?.(hidden) ?? '', /can be read only by an admin/);
+});
+
+test("road: a non-admin who can't read the old branch protection gets can't check, not to do (#59)", () => {
+  // Rulesets ask for nothing, and the old protection answers 404, which to a non-admin says nothing.
+  const server = readServer(serverGh({ ...GOOD, [RULES]: [] }).gh, REPO);
+  assert.equal(review.check('.', {}, server), null);
+  assert.match(review.unchecked?.(server) ?? '', /old branch protection can be read only by an admin/);
+  // To an admin, the same 404 means there is no old protection.
+  assert.equal(review.check('.', {}, readServer(serverGh({ ...ADMIN, [RULES]: [] }).gh, REPO)), false);
+});
+
+test("road: a private repo without rulesets waits for stage 5; nothing read is can't check (#59)", () => {
+  const upgrade = Object.assign(new Error('gh failed'), { stderr: 'gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)\n' });
+  const privateRepo = { ...GOOD, [`repos/${REPO}`]: { ...(GOOD[`repos/${REPO}`] as object), private: true }, [RULES]: upgrade };
+  const server = readServer(serverGh(privateRepo).gh, REPO);
+  assert.equal(review.check('.', {}, server), null, 'waiting never holds the stage');
+  assert.match(review.unchecked?.(server) ?? '', /^rulesets need GitHub Pro on a private repo, so no rule can ask for an approval yet; this step waits for stage 5, when the repo goes public/);
+  // The same refusal on a public repo is not a plan limit: it says what gh said.
+  const publicRepo = readServer(serverGh({ ...GOOD, [RULES]: said(403) }).gh, REPO);
+  assert.equal(review.check('.', {}, publicRepo), null);
+  assert.doesNotMatch(review.unchecked?.(publicRepo) ?? '', /stage 5/);
+  // A session, or nothing read, is can't check, never done.
+  assert.equal(review.check('.', {}, undefined), null);
+  assert.equal(review.unchecked?.(undefined), 'a session never calls the network; run `yokoten doctor`');
+  const missing = readServer(() => { throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }); }, REPO);
+  assert.equal(review.check('.', {}, missing), null);
+  assert.match(review.unchecked?.(missing) ?? '', /^gh is not installed/);
+});
+
+test('doctor: shows the review step in stage 4, and a session never asks gh about it (#59)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'yokoten-review-'));
+  execFileSync('git', ['init', '-q', root]);
+  execFileSync('git', ['remote', 'add', 'origin', `https://github.com/${REPO}.git`], { cwd: root });
+  const full = doctor(root, { env: { HOME: root }, config: DEFAULTS, gh: serverGh({ ...ADMIN, [RULES]: withApprovals(1) }).gh });
+  assert.deepEqual(full.report.steps?.find((s) => s.id === 'review'), { id: 'review', stage: 4, mark: 'done', standard: 'Scorecard: Code-Review' });
+  assert.deepEqual(full.report.selfTest, { ok: true, failed: [] }, 'the server control still passes no step');
+  const session = doctor(root, { env: { HOME: root }, config: DEFAULTS, session: true, gh: () => { throw new Error('a session called gh'); } });
+  assert.notEqual(session.report.next?.id, 'review');
+  rmSync(root, { recursive: true, force: true });
+});
+
 // A fake gh that holds one repo's labels and milestones in memory. The real one is never run.
 const REMOTE = 'https://github.com/me/repo.git';
 function fakeGh(labels: (string | Label)[], milestones: string[] = []) {
@@ -296,7 +452,7 @@ test('planning: says what it would do, and changes nothing without --yes (#10)',
   const f = fakeGh([standardBug, 'feat', 'Enhancement', 'wontfix']);
   const r = setUpPlanning(f.gh, REMOTE, DRY);
   assert.ok(r.ok);
-  assert.ok(r.lines.includes('- 1 of the 9 standard labels are there; kept'));
+  assert.ok(r.lines.includes('- 1 of the 12 standard labels are there; kept'));
   assert.ok(r.lines.includes('- not in the standard set: Enhancement, wontfix. yokoten deletes them only with --remove-default-labels'));
   assert.ok(r.lines.includes('- make label "hotfix" (Urgent: fix and release soon)'));
   assert.ok(r.lines.includes('- update label "feat" to the standard colour and description'));
@@ -327,6 +483,21 @@ test('planning: makes what is missing, updates what differs, and a second run ch
   assert.deepEqual(fake.milestones, ['closed v0.0.1', 'open First release']);
 });
 
+test('planning: makes the tier labels the pull request check asks for, once (#225)', () => {
+  const fake = fakeGh([LABELS.find((l) => l.name === 'docs')!], ['open v1']);
+  let result = setUpPlanning(fake.gh, REMOTE, APPLY);
+  assert.ok(result.ok, result.lines.join('\n'));
+  for (const tier of ['A', 'B', 'C']) {
+    assert.ok(result.lines.some((line) => line.startsWith(`- done: make label "tier ${tier}"`)), `tier ${tier}: ${result.lines.join(' | ')}`);
+    assert.equal(fake.held.filter((l) => l.name === `tier ${tier}`).length, 1);
+  }
+  assert.match(fake.held.find((l) => l.name === 'tier A')!.description, /Owner reviews/);
+  const before = fake.calls.length;
+  result = setUpPlanning(fake.gh, REMOTE, APPLY);
+  assert.equal(result.lines.at(-1), 'Nothing to change.');
+  assert.deepEqual(writes(fake.calls.slice(before)), [], 'a second run makes nothing new');
+});
+
 test('planning: deletes GitHub\'s default labels only with --remove-default-labels (#10)', () => {
   const fake = fakeGh([...LABELS, 'question', 'Wontfix', 'my-own'], ['open v1']);
   let result = setUpPlanning(fake.gh, REMOTE, { apply: false, removeDefaults: true });
@@ -341,14 +512,14 @@ test('planning: deletes GitHub\'s default labels only with --remove-default-labe
 
 test('planning: no gh, signed out, or no GitHub remote is a skip that says why, not a failure (#10)', () => {
   const missing = setUpPlanning(() => { throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }); }, REMOTE, APPLY);
-  assert.equal(missing.ok, true);
+  assert.deepEqual([missing.ok, missing.skipped], [true, true], 'the caller decides: init --github --yes fails on a skip (#208)');
   assert.match(missing.lines[0], /^GitHub: skipped, because gh is not installed\. To set up labels and a milestone, get it from https:\/\/cli\.github\.com/);
   const out = setUpPlanning(() => { throw Object.assign(new Error('exit 4'), { stderr: 'HTTP 401: Bad credentials' }); }, REMOTE, APPLY);
-  assert.deepEqual(out, { ok: true, lines: ['GitHub: skipped, because gh is not signed in. To set up labels and a milestone, run `gh auth login`, then run `yokoten init --github`'] });
+  assert.deepEqual(out, { ok: true, skipped: true, lines: ['GitHub: skipped, because gh is not signed in. To set up labels and a milestone, run `gh auth login`, then run `yokoten init --github --yes`'] });
   const elsewhere = setUpPlanning(() => { throw new Error('gh was called'); }, 'https://gitea.example.com/me/repo.git', APPLY);
-  assert.deepEqual(elsewhere, { ok: true, lines: ['GitHub: skipped, because the origin remote is not on GitHub. Labels and a milestone need a GitHub repo'] });
+  assert.deepEqual(elsewhere, { ok: true, skipped: true, lines: ['GitHub: skipped, because the origin remote is not on GitHub. Labels and a milestone need a GitHub repo'] });
   const none = setUpPlanning(() => { throw new Error('gh was called'); }, '', APPLY);
-  assert.deepEqual(none, { ok: true, lines: ['GitHub: skipped, because there is no origin remote yet. Add one on GitHub, then run `yokoten init --github` to set up labels and a milestone'] }, 'no remote at all (#208)');
+  assert.deepEqual(none, { ok: true, skipped: true, lines: ['GitHub: skipped, because there is no origin remote yet. Add one on GitHub, then run `yokoten init --github --yes` to set up labels and a milestone'] }, 'no remote at all (#208)');
 });
 
 // The planning steps (#10): stage 2, read in full doctor only.
