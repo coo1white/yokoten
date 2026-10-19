@@ -94,6 +94,27 @@ test('command title: the title gh issue or gh pr create or edit sets; null for a
   for (const line of ['gh pr view --title a', 'gh repo create --title a', 'git commit --title a', 'gh issue']) assert.equal(read(line), null, line);
 });
 
+test('command title: every spelling gh takes for create and edit is read (#279)', () => {
+  const read = (line: string) => readCommandTitle(line.split(' '));
+  const spellings: [string, 'issue' | 'pr'][] = [
+    ['gh issue new --title Broken', 'issue'],
+    ['gh pr new --title Broken', 'pr'],
+    ['gh issue -R o/r create --title Broken', 'issue'],
+    ['gh issue --repo=o/r new -t Broken', 'issue'],
+    ['gh --repo o/r pr create --title Broken', 'pr'],
+    ['gh -Ro/r issue create --title=Broken', 'issue'],
+    ['gh pr -R o/r edit 5 --title Broken', 'pr'],
+    ['gh issue --title Broken create', 'issue'],
+    ['gh issue --body-file f -t Broken new', 'issue'],
+    ['gh issue create --parent 3 --type Bug --title Broken', 'issue'],
+  ];
+  for (const [line, kind] of spellings) assert.deepEqual(read(line), { kind, title: 'Broken', labels: [] }, line);
+  assert.deepEqual(read('gh -R o/r issue -l feat new -t a'), { kind: 'issue', title: 'a', labels: ['feat'] }, 'a label before the verb');
+  assert.equal(read('gh -R issue pr create --title a')?.kind, 'pr', 'the value of -R is not the noun');
+  assert.equal(read('gh issue --body create view --title a'), null, 'the value of --body is not the verb');
+  for (const line of ['gh -R o/r issue view --title a', 'gh --repo o/r repo create --title a', 'gh issue new -- --title a', 'gh -R o/r']) assert.equal(read(line), null, line);
+});
+
 test('the bot is not a way around the guard', () => {
   assert.ok(checkCommand('node .yokoten/bin/yokoten.ts bot -- git push --tags', { env: {} }));
   assert.ok(checkCommand('yokoten bot -- gh release create v1', { env: {} }));

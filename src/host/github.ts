@@ -69,28 +69,39 @@ export interface CommandTitle {
 }
 
 // The gh options of `issue`/`pr` `create`/`edit` that take a value. Their value is
-// skipped, so a body of `-t` is not read as the title option.
+// skipped, so a body of `-t` is not read as the title option, and a repo is not read as
+// the noun or the verb.
 const VALUE_OPTIONS = new Set([
   '--body', '-b', '--body-file', '-F', '--assignee', '-a', '--milestone', '-m', '--project', '-p', '--repo', '-R', '--template', '-T',
   '--base', '-B', '--head', '-H', '--reviewer', '-r', '--recover', '--remove-label', '--add-assignee', '--remove-assignee',
-  '--add-project', '--remove-project', '--add-reviewer', '--remove-reviewer',
+  '--add-project', '--remove-project', '--add-reviewer', '--remove-reviewer', '--attach', '--type', '--parent',
+  '--blocked-by', '--blocking', '--add-blocked-by', '--add-blocking', '--remove-blocked-by', '--remove-blocking',
+  '--add-sub-issue', '--remove-sub-issue',
 ]);
 const LABEL_OPTIONS = new Set(['--label', '-l', '--add-label']);
+// gh's verbs that set a title, by every name gh accepts (`new` is its alias for `create`).
+const TITLE_VERBS = new Set(['create', 'new', 'edit']);
 
 /**
  * The title that `gh issue create`, `gh issue edit`, `gh pr create` or `gh pr edit` sets
- * with `--title X`, `--title=X`, `-t X` or `-tX` (#117). Null for any other command, or
- * when no title is given (`--fill`): CI checks that title. As in gh, the last one wins.
+ * with `--title X`, `--title=X`, `-t X` or `-tX` (#117). gh also takes `new` for `create`,
+ * and an option before the noun or the verb (`gh issue -R o/r create`), so they count
+ * too (#279). Null for any other command, or when no title is given (`--fill`): CI checks
+ * that title. As in gh, the last one wins.
  */
 export function readCommandTitle(command: string[]): CommandTitle | null {
-  const [file, kind, verb, ...rest] = command;
+  const [file, ...rest] = command;
   if (!file || file.split(/[\\/]/).pop() !== 'gh') return null;
-  if ((kind !== 'issue' && kind !== 'pr') || (verb !== 'create' && verb !== 'edit')) return null;
+  const words: string[] = [];
   let title: string | null = null;
   const labels: string[] = [];
   for (let index = 0; index < rest.length; index++) {
     const word = rest[index];
     if (word === '--') break;
+    if (!word.startsWith('-') || word === '-') {
+      words.push(word);
+      continue;
+    }
     const equals = word.startsWith('--') ? word.indexOf('=') : -1;
     const name = equals > 0 ? word.slice(0, equals) : /^-[a-zA-Z]./.test(word) ? word.slice(0, 2) : word;
     const attached = equals > 0 ? word.slice(equals + 1) : name !== word ? word.slice(2) : null;
@@ -101,6 +112,8 @@ export function readCommandTitle(command: string[]): CommandTitle | null {
     if (isTitle) title = value;
     else if (LABEL_OPTIONS.has(name)) labels.push(...value.split(',').map((label) => label.trim()).filter(Boolean));
   }
+  const [kind, verb] = words;
+  if ((kind !== 'issue' && kind !== 'pr') || !TITLE_VERBS.has(verb)) return null;
   return title === null ? null : { kind, title, labels };
 }
 

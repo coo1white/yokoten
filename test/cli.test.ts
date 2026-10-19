@@ -1928,6 +1928,13 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
     await refused(['gh', 'pr', 'create', `--title=feat(host): ${'a'.repeat(62)}`, '--body', 'x'], /title: 74 characters, over 72\. .+\. Shorten it/);
     await refused(['gh', 'pr', 'edit', '5', '-t', 'feat(host): add a step.'], /title: a full stop at the end\. A commit title has no full stop\. Remove the full stop\./);
     await refused(['gh', 'pr', 'create', '-t', 'feat(guard): add a step'], /the area `guard` is not in yokoten\.json "areas"/);
+    // Every spelling gh takes (#279): `new` for `create`, and an option before the noun or the verb.
+    for (const command of [['gh', 'issue', 'new', '--title', 'host: add a step.'], ['gh', 'issue', '-R', 'o/r', 'create', '--title', 'host: add a step.'], ['gh', '--repo', 'o/r', 'issue', 'edit', '5', '-t', 'host: add a step.']]) {
+      await refused(command, /title: a full stop at the end\. A title is a name/);
+    }
+    for (const command of [['gh', 'pr', 'new', '--title', 'feat(host): add a step.'], ['gh', 'pr', '-R', 'o/r', 'edit', '5', '--title', 'feat(host): add a step.'], ['gh', '--repo=o/r', 'pr', 'create', '-t', 'feat(host): add a step.']]) {
+      await refused(command, /title: a full stop at the end\. A commit title has no full stop/);
+    }
     // With no bot set up at all, the title is still the reason given.
     await refused(['gh', 'pr', 'create', '--title', 'feat(host): add a step.'], /full stop/, path);
     const missing = await run(['gh', 'pr', 'create', '--title', 'feat(host): add a step'], path);
@@ -1938,6 +1945,8 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
     const good: string[][] = [
       ['gh', 'issue', 'create', '--title', 'host: check the title', '--label', 'incident', '--body', '-t'],
       ['gh', 'pr', 'create', '-t', 'feat(host): check the title', '--body', 'x'],
+      ['gh', 'issue', '-R', 'me/repo', 'new', '--title', 'host: check the title'],
+      ['gh', 'pr', 'new', '-t', 'feat(host): check the title'],
       ['gh', 'pr', 'create', '--fill'],
       ['gh', 'issue', 'list'],
     ];
