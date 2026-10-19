@@ -66,7 +66,7 @@ type JudgeOptions = Parameters<typeof judge>[1];
 // A worker does not share the main thread's compile cache, so it turns the cache on
 // itself, then loads this module (#286). It starts as plain JavaScript: this module's
 // imports are compiled before any of its code runs, and the cache must be on by then.
-// An error from the cache is ignored, as in src/run/compile-cache.ts.
+// An error from the cache is ignored, as in bin/yokoten.ts.
 const WORKER_START = `
 const { enableCompileCache } = require('node:module');
 try { enableCompileCache?.(); } catch {}
