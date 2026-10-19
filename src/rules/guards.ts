@@ -393,6 +393,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
   let word = '';
   let inWord = false;
   let line: string[][] = []; // the commands so far on this line, for heredocs
+  let pipes: boolean[] = []; // for each of them, whether it pipes into the next
   let pending: Heredoc[] = [];
   let piped: string[] | null = null; // the command before a |
 
@@ -404,6 +405,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
   const endCommand = (pipe = false) => {
     endWord();
     line.push(words);
+    pipes.push(pipe);
     if (words.length === 0) return;
     out.push(words);
     const at = runnerAt(words);
@@ -430,9 +432,10 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       index++;
     } else if (character === '\n') {
       endCommand();
-      index = pending.length ? bodies(text, index + 1, pending, line, depth, out) : index + 1;
+      index = pending.length ? bodies(text, index + 1, pending, line, pipes, depth, out) : index + 1;
       pending = [];
       line = [];
+      pipes = [];
     } else if (character === '#' && !inWord) {
       while (index < text.length && text[index] !== '\n') index++;
     } else if (character === '\\') {
@@ -590,12 +593,15 @@ function heredoc(text: string, index: number, cmd: number): { doc: Heredoc; end:
 }
 
 // Reads the heredoc bodies that start at `index`, in order, and returns the index after the
-// last one. A body is data, unless a shell or runner reads it: the command that holds the
-// <<, or any later command on that line (so `cat <<EOF | bash` counts, and so does
-// `cat <<EOF > f; bash`, which blocks more than it must). Then the body is read as
-// commands. An unquoted body still runs $(...) and `...`, so those are read too. A body
-// with no end line runs to the end of the text, as in bash.
-function bodies(text: string, index: number, docs: Heredoc[], line: string[][], depth: number, out: string[][]): number {
+// last one. A body is data, unless a shell or runner reads it (#196): the program of the
+// command that holds the <<, or of a command it pipes into (`cat <<EOF | bash`). The
+// program is found after assignments, keywords and launchers (see readsCommands), so
+// `then bash <<EOF` and `env X=1 bash -s <<EOF` count, and `cat > sh <<EOF` or
+// `node - <<EOF` do not. A pipe
+// left open at the line end (`cat <<EOF |`) counts too: its reader is on a later line.
+// Then the body is read as commands. An unquoted body still runs $(...) and `...`, so
+// those are read too. A body with no end line runs to the end of the text, as in bash.
+function bodies(text: string, index: number, docs: Heredoc[], line: string[][], pipes: boolean[], depth: number, out: string[][]): number {
   for (const doc of docs) {
     const lines: string[] = [];
     while (index < text.length) {
@@ -607,10 +613,35 @@ function bodies(text: string, index: number, docs: Heredoc[], line: string[][], 
       lines.push(ln);
     }
     const body = lines.join('\n');
-    if (line.slice(doc.cmd).some((words) => runnerAt(words) !== -1)) out.push(...commandWords(body, depth + 1));
+    let last = doc.cmd;
+    while (pipes[last] && last + 1 < line.length) last++;
+    const readers = line.slice(doc.cmd, last + 1);
+    const isOpenPipe = readers.length > 1 && readers[readers.length - 1].length === 0;
+    if (isOpenPipe || readers.some(readsCommands)) out.push(...commandWords(body, depth + 1));
     else if (!doc.quoted) readDouble(body, 0, depth, out, true);
   }
   return Math.min(index, text.length);
+}
+
+// Programs that read their input as data, never as commands.
+const DATA_READERS = new Set([
+  'cat', 'tee', 'node', 'deno', 'bun', 'gh', 'git', 'yokoten', 'grep', 'egrep', 'fgrep', 'rg', 'sed', 'awk', 'head', 'tail', 'wc', 'sort', 'uniq',
+  'jq', 'yq', 'tr', 'cut', 'less', 'more', 'diff', 'patch', 'base64', 'xxd', 'od', 'column', 'fold', 'fmt', 'nl', 'paste', 'rev', 'iconv',
+  'gzip', 'xz', 'zstd', 'bzip2', 'tar', 'curl', 'wget', 'mail', 'mailx', 'sendmail', 'pbcopy', 'xclip', 'wl-copy', 'clip', 'sponge',
+  'read', 'mapfile', 'readarray', 'true', ':',
+]);
+
+// Whether a command reads its input as commands. The program is found after assignments,
+// shell keywords and launchers (`then bash`, `stdbuf -oL bash`). When it is one of
+// DATA_READERS, only a shell or runner up to it counts, so `cat > sh <<EOF` and
+// `node x.ts --shell bash <<EOF` are data, and `sudo -s` still counts. When it is not, the
+// guard does not know what the program does with its input, so a shell or runner anywhere
+// in the command counts: `mystery-launcher bash <<EOF` is refused rather than guessed.
+function readsCommands(words: string[]): boolean {
+  const program = findPrograms(words)[0];
+  if (program === undefined || !DATA_READERS.has(programName(program))) return runnerAt(words) !== -1;
+  const at = words.indexOf(program);
+  return runnerAt(at === -1 ? words : words.slice(0, at + 1)) !== -1;
 }
 
 // The old cut: quotes become spaces, then cut at ; | & ( ) and line ends. It finds more
