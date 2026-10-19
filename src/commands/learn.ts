@@ -38,7 +38,15 @@ export function runLearn(): number {
       return 1;
     }
     const { id, folder, url } = shipped.lesson;
-    print([`yokoten learn --ship: ${id} is in ${KIT_LESSONS_DIR}/${folder}/, with a row in ${KIT_LESSONS_DIR}/${LESSONS_TABLE} (from ${url}, yokoten ${VERSION}).`, `Commit it in a pull request. After it merges, \`yokoten doctor\` runs it in every project that uses the kit.`]);
+    // A project runs the lessons of the yokoten that runs its doctor, so say how each one gets it (#77).
+    print([
+      `yokoten learn --ship: ${id} is in ${KIT_LESSONS_DIR}/${folder}/, with a row in ${KIT_LESSONS_DIR}/${LESSONS_TABLE} (from ${url}, yokoten ${VERSION}).`,
+      'Commit it in a pull request. Other projects get it from the yokoten that runs their doctor:',
+      "- now: run this copy's bin/yokoten.ts doctor in the project",
+      "- this machine: run install from this copy, so `yokoten doctor` has it",
+      "- a project's .yokoten/: run init again from this copy, then commit .yokoten/",
+      '- everyone else: the next yokoten release',
+    ]);
     return 0;
   }
   if (reference === undefined) return usage('name an incident issue, by its number or its URL');

@@ -5,7 +5,7 @@
 // where it is). It runs offline: a fake `gh` gives the incident issue.
 //
 //   yokoten/    a copy of this yokoten, with no lessons yet: the real kit here is never touched
-//   project-b/  another project, with a test that has the same mistake
+//   project-b/  another project that already uses yokoten (`init`), with a test that has the same mistake
 //
 // The steps: `learn` previews a check draft from project A's incident, `--write` adds it,
 // `--ship` refuses it while TODOs are left, a reviewer writes the check, `--ship` puts it in
@@ -136,6 +136,8 @@ export function runDemo({ isKept = false, print = (line: string) => console.log(
     chmodSync(join(bin, 'gh'), 0o755);
     writeFileSync(join(projectB, 'test', 'api.test.js'), PROJECT_B_TEST);
     for (const dir of [yokoten, projectB]) expect(run('git', ['init', '-q'], dir), 0, 'git init');
+    // Project B set up yokoten before the lesson existed, as a real project would have.
+    expect(runYokoten(['init'], projectB), 0, 'init in project B');
 
     print('yokoten demo: one incident in project A becomes a check that project B gets.');
 
@@ -175,7 +177,7 @@ export function runDemo({ isKept = false, print = (line: string) => console.log(
     expect(result, 0, 'learn --ship after review');
     print(result.output);
 
-    showStep(6, 'Project B has a test with the same mistake.', 'cat test/api.test.js');
+    showStep(6, 'Project B uses yokoten, and has a test with the same mistake.', 'cat test/api.test.js');
     print(PROJECT_B_TEST.trimEnd());
     print(`$ yokoten doctor | grep lesson`);
     result = runYokoten(['doctor'], projectB);
