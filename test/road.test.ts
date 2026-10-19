@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { chat, type LlamaConfig, llamaConfig } from '../src/agents/llama.ts';
 import { draft, type Fact, facts, parseAnswer, prompt, promptProblems, ruleDraft, table } from '../src/setup/advice/adopt.ts';
-import { type Found, ROAD, runsTests, STAGES, type Step, walk } from '../src/setup/road.ts';
+import { type Found, onPullRequest, ROAD, runsTests, STAGES, type Step, walk, yokotenActions } from '../src/setup/road.ts';
 
 const step = (stage: number, key: string): Step => ({ stage, key, check: () => false, what: () => key, fix: () => key, why: key, how: key });
 const steps = [step(1, 'a'), step(1, 'b'), step(2, 'c'), step(3, 'd')];
@@ -337,7 +337,8 @@ test('road: the tests step reads a big workflow in linear time (#257)', () => {
       const start = performance.now();
       assert.equal(runsTests(ci, 'vitest run x', workspaces), false, name);
       const ms = performance.now() - start;
-      assert.ok(ms < 200, `${name}: ${ms.toFixed(0)} ms`);
+      // A quadratic read of 1 MB takes minutes; 2 s leaves room for a slow CI runner (#275).
+      assert.ok(ms < 2000, `${name}: ${ms.toFixed(0)} ms`);
     }
   }
 });
@@ -360,5 +361,85 @@ test('road: the tests step stays next with only a lint step, and says what is mi
     assert.equal(tests?.fix(dir, {}, undefined), 'add a step that runs `npm test --workspaces` to a workflow in .github/workflows');
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- The ci and titles steps (#298): the yokoten Action and `npx yokoten check` count. ----
+
+// The guide's "Use it as a GitHub Action" example, as it stands.
+const GUIDE_ACTION = `# .github/workflows/yokoten.yml
+name: yokoten
+on:
+  pull_request:
+    # \`edited\`, \`labeled\` and \`milestoned\` run \`check --pr\` again after a fix.
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled, milestoned, demilestoned]
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  yokoten:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: yokoten-labs/yokoten@<full commit SHA>
+`;
+/** Whether the ci and titles steps are done on a scratch repo with this one workflow. */
+const ciSteps = (workflowText: string) => {
+  const dir = mkdtempSync(join(tmpdir(), 'yokoten-ci-step-'));
+  try {
+    mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
+    writeFileSync(join(dir, '.github', 'workflows', 'yokoten.yml'), workflowText);
+    const done = (key: string) => ROAD.find((s) => s.key === key)!.check(dir, {}, undefined);
+    return { ci: done('ci'), titles: done('titles') };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+const withAction = (step: string, on = 'pull_request') => `on: ${on}\njobs:\n  y:\n    runs-on: ubuntu-latest\n    steps:\n${step}`;
+const CI_CASES: [string, string, { ci: boolean; titles: boolean }][] = [
+  ['the guide example', GUIDE_ACTION, { ci: true, titles: true }],
+  ['pr-check: false', GUIDE_ACTION.replace('yokoten@<full commit SHA>\n', 'yokoten@<full commit SHA>\n        with:\n          pr-check: false\n'), { ci: true, titles: false }],
+  ["pr-check: 'false' before uses", withAction("      - name: yokoten\n        with:\n          pr-check: 'false' # not yet\n        uses: yokoten-labs/yokoten@v1\n"), { ci: true, titles: false }],
+  ['pr-check: true, quoted ref and a comment', withAction('      - uses: "yokoten-labs/yokoten@0123abc" # v0.1\n        with:\n          pr-check: true\n'), { ci: true, titles: true }],
+  ['push only', withAction('      - uses: yokoten-labs/yokoten@v1\n', '[push]'), { ci: true, titles: false }],
+  ['pull_request_target in a list', withAction('      - uses: yokoten-labs/yokoten@v1\n', '[push, pull_request_target]'), { ci: true, titles: true }],
+  ['npx yokoten check', withAction('      - run: npx yokoten check\n'), { ci: true, titles: false }],
+  ['npx --yes yokoten check --pr', withAction('      - run: npx --yes yokoten@latest check --pr\n'), { ci: false, titles: true }],
+  ['a run block with bunx and pnpm dlx', withAction('      - run: |\n          bunx yokoten check\n          pnpm dlx yokoten check --pr\n'), { ci: true, titles: true }],
+  // Look-alikes: another action, a package with a longer name, an echo, a comment, a commented-out step.
+  ['another action', withAction('      - uses: yokoten-labs/yokoten-extra@v1\n'), { ci: false, titles: false }],
+  ['npx yokoten-check', withAction('      - run: npx yokoten-check check\n'), { ci: false, titles: false }],
+  ['echo yokoten check', withAction('      - run: echo yokoten check && echo npx yokoten check\n'), { ci: false, titles: false }],
+  ['a comment', withAction('      - run: |\n          # npx yokoten check\n          echo hi\n'), { ci: false, titles: false }],
+  ['a commented-out step', withAction('      # - uses: yokoten-labs/yokoten@v1\n      - run: echo hi\n'), { ci: false, titles: false }],
+];
+
+test('road: the ci and titles steps count the yokoten Action and npx yokoten, and not a look-alike (#298)', () => {
+  for (const [name, text, want] of CI_CASES) assert.deepEqual(ciSteps(text), want, name);
+});
+
+test('road: the Action and its trigger read a big workflow in linear time (#298)', () => {
+  const mb = 1 << 20;
+  const inputs: [string, string][] = [
+    ['1 MB of newlines', '\n'.repeat(mb)],
+    ['1 MB of list items', '- a\n'.repeat(mb / 4)],
+    ['1 MB of nested dashes', `- ${'- '.repeat(mb / 2)}`],
+    ['one item of 1 MB of key lines', `- uses: x/y@v1\n${'  a: b\n'.repeat(mb / 7)}`],
+    ['on: and 1 MB of indented lines', `on:\n${'  push:\n'.repeat(mb / 8)}`],
+    ['1 MB of npx flags', `- run: npx ${'-y '.repeat(mb / 3)}`],
+    ['a uses ref of 1 MB of words', `- uses: yokoten-labs/yokoten@${'a '.repeat(mb / 2)}"`],
+  ];
+  for (const [name, ci] of inputs) {
+    const start = performance.now();
+    assert.deepEqual(yokotenActions(ci), [], name);
+    assert.equal(onPullRequest(ci), false, name);
+    assert.equal(ciSteps(ci).ci, false, name);
+    const ms = performance.now() - start;
+    assert.ok(ms < 2000, `${name}: ${ms.toFixed(0)} ms`);
   }
 });
