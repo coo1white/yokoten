@@ -24,7 +24,8 @@ yokoten 带你一步步养成好团队的习惯；你还在学的时候，它替
 [![dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](../../package.json)
 [![license](https://img.shields.io/badge/license-MIT-blue)](../../LICENSE)
 
-[支持](guide.md#支持哪些-agent) Claude Code、GitHub Copilot CLI、Antigravity CLI、Codex CLI 和 Gemini CLI。
+用什么 AI agent 都行，不用 agent 也行：提交检查和 CI 不管改动是谁做的，坏的都会拦下。<br/>
+在 [Claude Code、Codex CLI、GitHub Copilot CLI、Antigravity CLI、Muse Code 和 DeepSeek Harness](guide.md#支持哪些-agent) 里，危险操作在执行前就会被拦住。
 
 </div>
 
