@@ -295,6 +295,12 @@ export const RULES = {
     check: '`doctor` reads .agents/hooks.json for the `yokoten` PreToolUse hook that runs `yokoten hook --agent antigravity`; a note, not a missing step',
     docs: guide('works-with'),
   },
+  'muse-hook': {
+    rule: "the project has Muse Code's tool-call guard and stop check",
+    why: "without them, Muse Code's commands and edits in this project are not checked",
+    check: '`doctor` reads .muse/hooks.json for a PreToolUse hook and a Stop hook that each run `yokoten hook --agent muse`; a note, not a missing step',
+    docs: guide('works-with'),
+  },
   'codex-user-hook': {
     rule: "Codex runs yokoten's session-start doctor and command guard in every repo",
     why: 'without them, a Codex session does not hear the next step on the road, and a tag push, force push or skipped check in a repo without yokoten is not stopped',

@@ -27,6 +27,7 @@ import * as antigravity from '../agents/runtimes/antigravity.ts';
 import { hasPlugin, hasSessionDoctor, readInstalledPlugin, userSettingsProblem } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
+import * as muse from '../agents/runtimes/muse.ts';
 import { commentedFile, HAND_ADD, handAddJson, type HookState, mergeHandAdds } from '../agents/hooks-file.ts';
 import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
@@ -74,7 +75,7 @@ function handAddPractice(id: RuleId, file: string, states: readonly HookState[])
 /**
  * The other agents' project hooks: the tool-call guard and the stop check. Reported, but
  * not a missing practice: a project that uses none of these agents should not fail doctor
- * over them. Real runs blocked through Codex and Antigravity CLI; Gemini CLI is not run yet (#30).
+ * over them. Real runs blocked through Codex, Antigravity CLI and Muse Code; Gemini CLI is not run yet (#30).
  * A Gemini CLI file with comments, which init won't rewrite, gets the hooks to add by hand.
  */
 export function agentHooks(root: string): Practice[] {
@@ -89,6 +90,7 @@ export function agentHooks(root: string): Practice[] {
     (geminiState && handAddPractice('gemini-hook', '.gemini/settings.json', [geminiState.guard, geminiState.stop])) ??
       practice('gemini-hook', 'gemini-hook', geminiGuard && geminiStop, missing(geminiGuard, geminiStop, '.gemini/settings.json'), '`yokoten init` adds it'),
     antigravityPractice(antigravity.projectHookState(root, cliPath(root))),
+    musePractice(muse.projectHooksState(root, cliPath(root))),
   ];
 }
 
@@ -98,6 +100,16 @@ function antigravityPractice(state: HookState): Practice {
   if (typeof state === 'object') return practice('antigravity-hook', 'antigravity-hook', false, state.kind === 'json' ? `can't read ${file}` : `${file} has an unexpected shape`, state.kind === 'shape' ? `${state.hint}; fix it, then run \`yokoten init\`` : 'make it valid JSON, then run `yokoten init`');
   if (state === 'updated') return practice('antigravity-hook', 'antigravity-hook', false, `the tool-call guard in ${file} is out of date or off`, '`yokoten init` updates it');
   return practice('antigravity-hook', 'antigravity-hook', state === 'same', `no tool-call guard in ${file}`, '`yokoten init` adds it');
+}
+
+/** Muse Code's tool-call guard and stop check in .muse/hooks.json: missing, out of date, or a file init can't edit. */
+function musePractice(states: { guard: HookState; stop: HookState }): Practice {
+  const file = '.muse/hooks.json';
+  const all = [states.guard, states.stop];
+  const problem = all.find((state) => typeof state === 'object');
+  if (problem) return practice('muse-hook', 'muse-hook', false, problem.kind === 'json' ? `can't read ${file}` : `${file} has an unexpected shape`, 'make it valid JSON with a "hooks" object, then run `yokoten init`');
+  if (all.includes('updated')) return practice('muse-hook', 'muse-hook', false, `the hooks in ${file} are out of date`, '`yokoten init` updates them');
+  return practice('muse-hook', 'muse-hook', all.every((state) => state === 'same'), `no tool-call guard or stop check in ${file}`, '`yokoten init` adds them');
 }
 
 /**
