@@ -10,7 +10,7 @@ import { checkBuildOutput, checkLayout, isBuildOutput } from '../src/rules/layou
 import { DOCS_URL, type Finding, finding, formatFinding, type Rule, RULES } from '../src/rules/message.ts';
 import { POSITIVE_CONTROL, scanText } from '../src/rules/privacy.ts';
 import { SECRET_CONTROL } from '../src/rules/secrets.ts';
-import { check, timeZoneNote } from '../src/run/check.ts';
+import { check, checkHistory, timeZoneNote } from '../src/run/check.ts';
 import { parseSourceMarker, sourceMarker, translationNotes } from '../src/run/translations.ts';
 import { agentHooks, coreRulesCheck, coreRulesControl, machineChecks, selfTest } from '../src/setup/doctor.ts';
 import { compareCoreRules, compareVersions, readKitVersion } from '../src/setup/init.ts';
@@ -19,7 +19,7 @@ import { ROAD, serverChecks, stepFinding } from '../src/setup/road.ts';
 import { readIssue, readPullRequest } from '../src/host/github.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
 import { formatChanges, mergeChanges, parseChange, readChanges, writeChanges } from '../src/run/changelog.ts';
-import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, ownersOf, parseCodeOwners, largeDiff, longSentenceNote, longSentences, type PullRequest } from '../src/rules/pr.ts';
+import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, visibleLength, ownersOf, parseCodeOwners, largeDiff, longSentenceNote, longSentences, type PullRequest } from '../src/rules/pr.ts';
 
 test('glob: a slash anchors at the root, no slash matches in any folder', () => {
   const m = (g: string, p: string) => matcher([g])(p);
@@ -429,6 +429,28 @@ test('pull request title: one rule for check --pr and the bot (#117)', () => {
   }
 });
 
+test('titles: limits count the characters a person sees, not code units (#268)', () => {
+  const flag = '🇯🇵';
+  const family = '👨‍👩‍👧‍👦';
+  assert.equal(visibleLength(flag), 1, 'a flag is one character');
+  assert.equal(visibleLength(family), 1, 'a ZWJ family is one character');
+  assert.equal(visibleLength('漢字🎉a'), 4);
+  // A pull request title of 72: 6 + 10 + 1 + 1 + 54.
+  const pr = `feat: ${'🚀'.repeat(10)}${flag}${family}${'a'.repeat(54)}`;
+  assert.equal(visibleLength(pr), 72);
+  assert.deepEqual(checkPullRequestTitle(pr, {}), [], '72 characters with emoji is the most');
+  const prOver = checkPullRequestTitle(`${pr}b`, {});
+  assert.equal(prOver.length, 1);
+  assert.match(formatFinding(prOver[0]), /^title: 73 characters, over 72\./);
+  // An issue title of 60: 5 + 40 + 5 + 1 + 1 + 8.
+  const issue = `kit: ${'漢'.repeat(40)}${'🎉'.repeat(5)}${flag}${family}${'a'.repeat(8)}`;
+  assert.equal(visibleLength(issue), 60);
+  assert.deepEqual(checkIssueTitle(issue, AREAS), [], '60 characters with CJK and emoji is the most');
+  const issueOver = checkIssueTitle(`${issue}字`, AREAS);
+  assert.equal(issueOver.length, 1);
+  assert.match(formatFinding(issueOver[0]), /^title: 61 characters, over 60\./);
+});
+
 test('config: yokoten\'s own areas cover its open work', () => {
   const own = loadConfig(join(import.meta.dirname, '..'));
   assert.ok(own.areas.includes('doctor') && own.areas.includes('owner'));
@@ -460,6 +482,10 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   const translated = makeTranslatedRepo();
   translated.commit('en.md', '# Guide\n\nStep one, changed.\n');
   add(translationNotes(translated.root, ['zh.md'])[0]);
+  // `check --history` in a shallow clone (#266).
+  const shallow = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  execFileSync('git', ['clone', '-q', '--depth', '1', `file://${translated.root}`, shallow], { stdio: 'ignore' });
+  found.push(...checkHistory(shallow, { config: DEFAULTS, env: {} }));
   found.push(...parseChange('changes/1-a.md', 'Improved\n\nA thing.\n').problems);
   // A CI event that can't be read, and a pull request whose commits are not here (#267).
   const unreadable = (read: unknown) => (read && typeof read === 'object' && 'problem' in read ? (read.problem as Finding) : null);

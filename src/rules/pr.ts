@@ -26,6 +26,19 @@ const TYPES = ['feat', 'fix', 'docs', 'test', 'refactor', 'chore', 'ci', 'perf',
 const TITLE = new RegExp(`^(${TYPES.join('|')})(\\([a-z0-9][a-z0-9./-]*\\))?!?: \\S`);
 const SECTIONS = ['Why', 'What changed', 'How tested'];
 
+let graphemes: Intl.Segmenter | null | undefined;
+
+/**
+ * The length of text as a person counts it (#268): one per character they see, so an emoji,
+ * a flag or a family emoji is 1, not the 2 to 11 UTF-16 code units `.length` gives.
+ * The segmenter is made on first use, so a Node built without Intl still runs every other
+ * command; there a title counts code points.
+ */
+export function visibleLength(text: string): number {
+  if (graphemes === undefined) graphemes = typeof Intl === 'object' && typeof Intl.Segmenter === 'function' ? new Intl.Segmenter('en', { granularity: 'grapheme' }) : null;
+  return graphemes ? [...graphemes.segment(text)].length : [...text].length;
+}
+
 /**
  * The folder of change files (#132). Each pull request adds its own file there, so two
  * pull requests never edit the same lines of CHANGELOG.md. `yokoten changelog` collects them.
@@ -133,7 +146,8 @@ export function checkPullRequestTitle(rawTitle: string, config: Partial<Pick<Con
   if (area && config.areas?.length && !config.areas.includes(area)) {
     problems.push(finding('pr-title', `title: the area \`${area}\` is not in yokoten.json "areas"`, `use one of: ${config.areas.join(', ')}`, { why: 'issues and pull requests share one list of areas' }));
   }
-  if (title.length > 72) problems.push(finding('pr-title', `title: ${title.length} characters, over 72`, 'shorten it; the details go in the body'));
+  const titleLength = visibleLength(title);
+  if (titleLength > 72) problems.push(finding('pr-title', `title: ${titleLength} characters, over 72`, 'shorten it; the details go in the body'));
   if (/\.$/.test(title)) problems.push(finding('pr-title', 'title: a full stop at the end', 'remove the full stop', { why: 'a commit title has no full stop' }));
   if (/#\d/.test(title)) problems.push(finding('pr-title', 'title: an issue number', 'remove the issue number, and put `Closes #N` in the body', { why: 'the host links the issue from the body' }));
   return problems;
@@ -324,7 +338,8 @@ export function checkIssueTitle(title: string, config: Partial<Pick<Config, 'are
   } else if (areas.length && !areas.includes(m[1])) {
     problems.push(finding('issue-area', 'title: the area is not in yokoten.json "areas"', `use one of: ${areas.join(', ')}`, { why: 'issues and pull requests share one list of areas' }));
   }
-  if (text.length > ISSUE_MAX) problems.push(finding('issue-title', `title: ${text.length} characters, over ${ISSUE_MAX}`, 'shorten it, and put the details in the body'));
+  const textLength = visibleLength(text);
+  if (textLength > ISSUE_MAX) problems.push(finding('issue-title', `title: ${textLength} characters, over ${ISSUE_MAX}`, 'shorten it, and put the details in the body'));
   if (/[.。]$/.test(text)) problems.push(finding('issue-title', 'title: a full stop at the end', 'remove the full stop', { why: 'a title is a name, not a sentence' }));
   if (/#\d/.test(text)) problems.push(finding('issue-title', 'title: an issue number', 'remove the number, and name the other issue in the body', { why: 'the host links issues from the body, not from the title' }));
   return problems;
