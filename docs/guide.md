@@ -107,8 +107,8 @@ listed:
 | Stage | Steps |
 |---|---|
 | **1 · Safety net** | `rules`, `tool-hook`, `commit-check`, `runtime`, `tests` (a test command, and CI runs it) |
-| **2 · Issues and pull requests** | `ci`, `issues` (no todo file), `templates`, `labels` (the standard set), `milestone` (an open one), `no-build-output` (nothing in `dist/`, `build/` or `out/`, no built binaries) |
-| **3 · Release** | `changelog`, `titles` (CI runs `check --pr`) |
+| **2 · Issues and pull requests** | `ci` (CI runs `check`, or uses the yokoten Action), `issues` (no todo file), `templates`, `labels` (the standard set), `milestone` (an open one), `no-build-output` (nothing in `dist/`, `build/` or `out/`, no built binaries) |
+| **3 · Release** | `changelog`, `titles` (CI runs `check --pr`, or uses the Action on pull requests without `pr-check: false`) |
 | **4 · A team of agents** | `codeowners`, `bot`, `skills` |
 | **5 · Going public** | `security-files` (a security policy, Dependabot, a license), `protection` (rulesets on the default branch and `v*` tags), `merge-settings` (squash only, delete branch on merge), `security-settings` (secret scanning, push protection, private reporting, Dependabot alerts) |
 
@@ -321,13 +321,25 @@ jobs:
 The action sets up Node, then runs `check`. On a pull request it also runs `check
 --pr`. The findings show on the pull request page, as in yokoten's own CI.
 
+It handles three events:
+
+- **`push`**: `check`.
+- **`pull_request`**: `check`, then `check --pr`.
+- **`issues`**: `check`, then `check --issue` on the issue's title. To run it, add
+  `issues:` with `types: [opened, edited]` under `on:`.
+
+On `pull_request_target` the checkout holds the base branch, not the pull request, so the
+action skips `check --pr` and leaves a notice: the pull request check runs on
+`pull_request`, not `pull_request_target`.
+
 - **Pin it.** Use a full commit SHA. A branch name like `@main` changes under you. Once
   there is a release, a release tag works too.
 - **The checkout** needs `fetch-depth: 0`. `check --pr` lists the files between the base
   and the head commit, so it needs both.
 - **Permissions**: `contents: read` is enough. The action takes no token.
-- **Inputs**: `pr-check` (default `true`) and `node-version` (default `22`, at least
-  22.18). Set `pr-check: false` to skip the pull request standard.
+- **Inputs**: `pr-check` (default `true`), `issue-check` (default `true`) and
+  `node-version` (default `22`, at least 22.18). Set `pr-check: false` to skip the pull
+  request standard, `issue-check: false` to skip the issue title standard.
 - **Node**: the action sets up Node for the rest of the job too.
 
 `check --pr` holds a pull request to the standard of core rule 8. A repo that does not
