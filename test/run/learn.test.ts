@@ -17,6 +17,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { pathToFileURL } from 'node:url';
 import { makeSandbox } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
 import { checkLayout } from '../../src/rules/layout.ts';
@@ -230,7 +231,8 @@ test('learn: issue text never becomes code in the draft (positive control: the p
     const root = mkdtempSync(join(tmpdir(), 'yokoten-learn-hostile-'));
     writeDraft(root, made);
     const path = made.files[0].path;
-    const run = spawnSync(process.execPath, ['--input-type=module', '-e', `const { lesson } = await import('./${path}'); console.log(JSON.stringify(lesson));`], { cwd: root, encoding: 'utf8', timeout: 20_000 });
+    // The path goes in as an argument, not into the code: the code is fixed text.
+    const run = spawnSync(process.execPath, ['--input-type=module', '-e', 'const { lesson } = await import(process.argv[1]); console.log(JSON.stringify(lesson));', pathToFileURL(join(root, path)).href], { cwd: root, encoding: 'utf8', timeout: 20_000 });
     return { root, run, lesson: readFileSync(join(root, path), 'utf8') };
   };
   const draft = draftLesson({ ...incidentOf(body, title), url: `https://example.com/issues/12${hostile(lineSeparator)}` });

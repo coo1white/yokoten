@@ -16,6 +16,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { pathToFileURL } from 'node:url';
 import { makeSandbox } from '../repo/helpers.ts';
 import {
   DEFAULTS,
@@ -1120,14 +1121,15 @@ test('bash and hooks: loops that never spent the budget read 32k to 100k repeats
   const linear = join(import.meta.dirname, '../..', 'scripts', 'linear.ts');
   type Part = string | [string];
   const run = (mode: 'command' | 'hook', parts: Part[], want: string, repeats = 4096) => {
+    // The code is fixed text: every value goes in on stdin, so nothing is spliced into code.
     const code = [
       "import assert from 'node:assert/strict';",
       "import { readFileSync } from 'node:fs';",
-      `import { checkCommand, runsCheck } from ${JSON.stringify(guards)};`,
-      `import { assertLinear } from ${JSON.stringify(linear)};`,
-      "const { parts, want, repeats } = JSON.parse(readFileSync(0, 'utf8'));",
+      "const { guards, linear, mode, config, cwd, parts, want, repeats } = JSON.parse(readFileSync(0, 'utf8'));",
+      'const { checkCommand, runsCheck } = await import(guards);',
+      'const { assertLinear } = await import(linear);',
       "const make = (n) => parts.map((part) => (typeof part === 'string' ? part : part[0].repeat(n))).join('');",
-      `const read = (text) => ${mode === 'hook' ? 'String(runsCheck(text))' : `checkCommand(text, { env: {}, config: ${JSON.stringify(pythonBlocked)}, cwd: ${JSON.stringify(tmpdir())} })?.id ?? 'allow'`};`,
+      "const read = (text) => (mode === 'hook' ? String(runsCheck(text)) : (checkCommand(text, { env: {}, config, cwd })?.id ?? 'allow'));",
       // What the text at 8n gives is what the case proves; a smaller one may still be read in full.
       'const big = make(8 * repeats).length;',
       'assertLinear(JSON.stringify(parts).slice(0, 60), make, (text) => {',
@@ -1135,7 +1137,7 @@ test('bash and hooks: loops that never spent the budget read 32k to 100k repeats
       '  if (text.length === big) assert.equal(found, want);',
       '}, repeats);',
     ].join('\n');
-    const child = spawnSync(process.execPath, ['--max-old-space-size=256', '--input-type=module', '-e', code], { input: JSON.stringify({ parts, want, repeats }), encoding: 'utf8', timeout: 60_000 });
+    const child = spawnSync(process.execPath, ['--max-old-space-size=256', '--input-type=module', '-e', code], { input: JSON.stringify({ guards: pathToFileURL(guards).href, linear: pathToFileURL(linear).href, mode, config: pythonBlocked, cwd: tmpdir(), parts, want, repeats }), encoding: 'utf8', timeout: 60_000 });
     assert.equal(child.status, 0, `${JSON.stringify(parts).slice(0, 60)}... failed: ${child.signal ?? child.error ?? child.stderr.slice(0, 600)}`);
   };
   const keys: Part = ['GIT_CONFIG_KEY_0=core.hooksPath '];
