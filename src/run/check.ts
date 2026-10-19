@@ -10,7 +10,9 @@ import { findUnknownKeys, matcher } from '../rules/config.ts';
 import { checkEdit } from '../rules/guards.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
 import { type Finding, finding } from '../rules/message.ts';
+import { isChangeFile, longSentenceNote, longSentences } from '../rules/pr.ts';
 import { loadMarks, notUtc, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
+import { parseChange, readChanges } from './changelog.ts';
 import { isShallowNote, translationNotes } from './translations.ts';
 
 /**
@@ -254,6 +256,13 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
     for (const { path, blob } of kept) {
       const found = blobs.get(blob);
       if (found?.whole) privacy(path, found.bytes);
+      // A staged change file is read as `check --pr` reads it (#346): a problem for
+      // `yokoten changelog`'s parser fails the commit, a long sentence is a note.
+      if (found?.whole && isChangeFile(path)) {
+        const text = found.bytes.toString('utf8');
+        problems.push(...parseChange(path, text).problems);
+        notes.push(...longSentences(text).map((long) => longSentenceNote(path, long)));
+      }
     }
     problems.push(...checkBuildOutput(kept.map(({ path, blob }) => ({ path, binary: looksBinary(blobs.get(blob)?.bytes ?? Buffer.alloc(0)) })), config));
   } else {
@@ -264,6 +273,9 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
     for (const note of translationNotes(root, indexFiles(root))) (config.translations.fail && !isShallowNote(note) ? problems : notes).push(note);
     // A key yokoten.json holds but yokoten does not know (#228).
     notes.push(...findUnknownKeys(root));
+    // Every change file present, read by `yokoten changelog`'s own reader (#346). Long
+    // sentences are noted only for the files a commit changes, as `check --pr` does.
+    problems.push(...readChanges(root).problems);
   }
   problems.push(...checkLayout(indexFiles(root), config));
   return problems;
