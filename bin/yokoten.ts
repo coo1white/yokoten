@@ -11,12 +11,12 @@ import { check, checkChanged, checkHistory, gitRoot, historyTimeZones, timeZoneN
 import * as claudeCode from '../src/agents/claude-code.ts';
 import * as codex from '../src/agents/codex.ts';
 import * as gemini from '../src/agents/gemini.ts';
-import { type Finding, formatFinding } from '../src/rules/message.ts';
+import { type Finding, finding, formatFinding } from '../src/rules/message.ts';
 import { isCodeFile, nameNotes } from '../src/run/names.ts';
 import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, checkPullRequestTitle, isChangeFile, largeDiff, longSentenceNote, longSentences } from '../src/rules/pr.ts';
 import { closestWord, COMMANDS, commandHelp, findCommand, HELP_OPTIONS, commandList } from '../src/run/cli.ts';
 import { hideHome } from '../src/rules/privacy.ts';
-import { type Action, judge } from '../src/run/hook.ts';
+import { type Action, guardDeadline, judgeWithDeadline, loadHookConfig } from '../src/run/hook.ts';
 import { draft, facts, table } from '../src/setup/advice/adopt.ts';
 import { doctor } from '../src/setup/doctor.ts';
 import { explain, explainLines, ids } from '../src/setup/advice/explain.ts';
@@ -35,7 +35,8 @@ const HELP = [
   '',
   'Start: `yokoten install` once on this machine, then `yokoten init` in your project.',
   'Run `yokoten <command> --help` for its options and an example.',
-  '--json on check, doctor, hook and explain: data on stdout, for an agent or a script.',
+  '--json on check, doctor, hook, explain and adopt: data on stdout,',
+  'for an agent or a script.',
   'Exit codes: 0 ok, 1 problems found or a usage error, 2 the hook blocked the tool call',
   'or the end of the turn.',
 ].join('\n');
@@ -143,11 +144,16 @@ function showOnPullRequest(name: string, problems: Finding[], notes: Finding[], 
 /**
  * Problems with the title a bot command is about to set (#117), by the rules CI uses:
  * `check --issue` for an issue, the title part of `check --pr` for a pull request. No
- * title in the command, no problems. It reads no token and no network.
+ * title in the command, no problems. A run-together short flag it can't read is a problem
+ * (#290), so the title is never sent unchecked. It reads no token and no network.
  */
 function checkCommandTitle(command: string[]): Finding[] {
   const found = readCommandTitle(command);
   if (!found) return [];
+  if ('unreadable' in found) {
+    const id = found.kind === 'issue' ? 'issue-title' : 'pr-title';
+    return [finding(id, `title: can't read the title in \`${found.unreadable}\``, 'write --title on its own', { why: 'the bot checks the title before it sends anything' })];
+  }
   const root = rootOf(process.cwd());
   const config = root ? loadConfig(root) : DEFAULTS;
   return found.kind === 'issue' ? checkIssueTitle(found.title, config, found.labels) : checkPullRequestTitle(found.title, config);
@@ -266,13 +272,15 @@ function main(): number | Promise<number> {
       }
       const action = read(input);
       const root = rootOf(action.cwd ?? process.cwd());
-      const config = root ? loadConfig(root) : DEFAULTS;
-      const found = judge(action, { root, config, env, commandsOnly: options.flags.has('--commands-only') });
-      if (json) printJson(found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
-      if (!found) return 0;
-      // The runtimes read the reason from stderr when the hook exits 2.
-      say(`yokoten: ${formatFinding(found)}\n`, process.stderr);
-      return 2;
+      const config = loadHookConfig(root, (line) => say(`${line}\n`, process.stderr));
+      const judged = judgeWithDeadline(action, { root, config, env, commandsOnly: options.flags.has('--commands-only') }, guardDeadline(env.YOKOTEN_GUARD_DEADLINE_MS));
+      return judged.then((found) => {
+        if (json) printJson(found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
+        if (!found) return 0;
+        // The runtimes read the reason from stderr when the hook exits 2.
+        say(`yokoten: ${formatFinding(found)}\n`, process.stderr);
+        return 2;
+      });
     }
     case 'check': {
       const options = parse('check');
@@ -294,7 +302,8 @@ function main(): number | Promise<number> {
           else print([`${name}: ${skipped}`]);
           return 0;
         }
-        problems = checkIssueTitle(issue.title, config, issue.labels);
+        // An event that can't be read is one finding (#267), so --json and the summary still work.
+        problems = 'problem' in issue ? [issue.problem] : checkIssueTitle(issue.title, config, issue.labels);
       } else if (mode === 'pr') {
         const pr = readPullRequest(root, env);
         if (!pr) {
@@ -303,54 +312,59 @@ function main(): number | Promise<number> {
           else print([`${name}: ${skipped}`]);
           return 0;
         }
-        // The file as the pull request leaves it, or null when the pull request deletes it.
-        const readAtHead = (file: string): string | null => {
-          try {
-            return execFileSync('git', ['show', `${pr.head}:${file}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-          } catch {
-            return null;
+        // An event or commits that can't be read are one finding (#267), never git's raw error.
+        if ('problem' in pr) {
+          problems = [pr.problem];
+        } else {
+          // The file as the pull request leaves it, or null when the pull request deletes it.
+          const readAtHead = (file: string): string | null => {
+            try {
+              return execFileSync('git', ['show', `${pr.head}:${file}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+            } catch {
+              return null;
+            }
+          };
+          const printNotes = (found: Finding[], label: string) => {
+            if (found.length && !json) print([`${name}: note: ${found.length} ${label}`, ...bullets(found.slice(0, 10)), ...(found.length > 10 ? [`- and ${found.length - 10} more`] : [])]);
+          };
+          // Plain English (record 0005): long sentences in changed Markdown are notes, never failures.
+          const long: Finding[] = [];
+          for (const file of pr.files.filter((p) => /\.md$/i.test(p))) {
+            const text = readAtHead(file);
+            if (text !== null) for (const s of longSentences(text)) long.push(longSentenceNote(file, s));
           }
-        };
-        const printNotes = (found: Finding[], label: string) => {
-          if (found.length && !json) print([`${name}: note: ${found.length} ${label}`, ...bullets(found.slice(0, 10)), ...(found.length > 10 ? [`- and ${found.length - 10} more`] : [])]);
-        };
-        // Plain English (record 0005): long sentences in changed Markdown are notes, never failures.
-        const long: Finding[] = [];
-        for (const file of pr.files.filter((p) => /\.md$/i.test(p))) {
-          const text = readAtHead(file);
-          if (text !== null) for (const s of longSentences(text)) long.push(longSentenceNote(file, s));
+          notes.push(...long);
+          printNotes(long, 'long sentence(s)');
+          // Names (record 0006): hard-to-read names on the lines a pull request adds to code
+          // are notes too. Old lines are left alone, so a project is not noted all at once.
+          const names: Finding[] = [];
+          const codeFiles = pr.files.filter(isCodeFile);
+          // One diff with renames found, so a moved file is not noted as all new. Fixed
+          // prefixes and plain paths, whatever the user's git settings say.
+          const diffArgs = ['-c', 'core.quotePath=false', 'diff', '-U0', '-M', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', `${pr.base}...${pr.head}`];
+          const added = codeFiles.length ? addedLinesByFile(execFileSync('git', diffArgs, { cwd: root, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })) : new Map<string, Set<number>>();
+          for (const file of codeFiles) {
+            const text = added.has(file) ? readAtHead(file) : null;
+            if (text !== null) names.push(...nameNotes(file, text, added.get(file) ?? new Set()));
+          }
+          notes.push(...names);
+          printNotes(names, 'hard-to-read name(s)');
+          // A large pull request (record 0004) is a note too, never a failure.
+          const large = largeDiff(changedLines(pr.numstat));
+          if (large) {
+            notes.push(large);
+            if (!json) print([`${name}: note: ${formatFinding(large)}`]);
+          }
+          problems = checkPullRequest(pr, config);
+          // Each change file the pull request leaves (#132) must be one `yokoten changelog` can read.
+          for (const file of pr.files.filter(isChangeFile)) {
+            const text = readAtHead(file);
+            if (text !== null) problems.push(...parseChange(file, text).problems);
+          }
+          // Owned paths set the lowest tier, from the base branch's CODEOWNERS.
+          const owned = checkOwnedTier(pr, readCodeOwners(root, pr.base));
+          if (owned) problems.push(owned);
         }
-        notes.push(...long);
-        printNotes(long, 'long sentence(s)');
-        // Names (record 0006): hard-to-read names on the lines a pull request adds to code
-        // are notes too. Old lines are left alone, so a project is not noted all at once.
-        const names: Finding[] = [];
-        const codeFiles = pr.files.filter(isCodeFile);
-        // One diff with renames found, so a moved file is not noted as all new. Fixed
-        // prefixes and plain paths, whatever the user's git settings say.
-        const diffArgs = ['-c', 'core.quotePath=false', 'diff', '-U0', '-M', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', `${pr.base}...${pr.head}`];
-        const added = codeFiles.length ? addedLinesByFile(execFileSync('git', diffArgs, { cwd: root, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })) : new Map<string, Set<number>>();
-        for (const file of codeFiles) {
-          const text = added.has(file) ? readAtHead(file) : null;
-          if (text !== null) names.push(...nameNotes(file, text, added.get(file) ?? new Set()));
-        }
-        notes.push(...names);
-        printNotes(names, 'hard-to-read name(s)');
-        // A large pull request (record 0004) is a note too, never a failure.
-        const large = largeDiff(changedLines(pr.numstat));
-        if (large) {
-          notes.push(large);
-          if (!json) print([`${name}: note: ${formatFinding(large)}`]);
-        }
-        problems = checkPullRequest(pr, config);
-        // Each change file the pull request leaves (#132) must be one `yokoten changelog` can read.
-        for (const file of pr.files.filter(isChangeFile)) {
-          const text = readAtHead(file);
-          if (text !== null) problems.push(...parseChange(file, text).problems);
-        }
-        // Owned paths set the lowest tier, from the base branch's CODEOWNERS.
-        const owned = checkOwnedTier(pr, readCodeOwners(root, pr.base));
-        if (owned) problems.push(owned);
       } else {
         problems = mode === 'history' ? checkHistory(root, { config, env }) : check(root, { config, env, staged: mode === 'staged', notes });
         // A translation behind its English source (#87) is a note, for the whole tree only.
@@ -403,10 +417,15 @@ function main(): number | Promise<number> {
       const options = parse('explain');
       if (typeof options === 'string') return usage(options);
       const [id] = options.positional;
-      const found = id === undefined ? null : explain(id);
-      if (options.flags.has('--json')) printJson(found ? { found: true, ...found } : { id: id ?? null, found: false, ids: ids() });
+      if (id === undefined) {
+        if (options.flags.has('--json')) printJson({ ids: ids() });
+        else print([`Ids: ${ids().join(', ')}`]);
+        return 0;
+      }
+      const found = explain(id);
+      if (options.flags.has('--json')) printJson(found ? { found: true, ...found } : { id, found: false, ids: ids() });
       else if (found) print(explainLines(found));
-      else print([id === undefined ? 'yokoten explain: name a rule or a step.' : `yokoten explain: no rule or step is called ${id}.`, `Ids: ${ids().join(', ')}`], process.stderr);
+      else print([`yokoten explain: no rule or step is called ${id}.`, `Ids: ${ids().join(', ')}`], process.stderr);
       return found ? 0 : 1;
     }
     case 'adopt': {

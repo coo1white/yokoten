@@ -195,9 +195,11 @@ export function pluginAgeCheck(root: string | null, env: Env): Finding | null {
 const SERVER_CONTROL: ServerRead = {
   repo: 'octo/demo',
   defaultBranch: 'main',
+  isPrivate: false,
+  actionsCanApprove: false,
   mergeMethods: ['merge', 'squash'],
   deleteBranchOnMerge: false,
-  branch: { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false },
+  branch: { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false, approvals: 0 },
   tags: false,
   security: { secretScanning: false, pushProtection: false, privateReporting: false, dependabotAlerts: false },
   forgotten: [],
@@ -248,7 +250,7 @@ export function coreRulesControl(check: typeof coreRulesCheck = coreRulesCheck):
 }
 
 /** What doctor can't read on the server yet, and the owner sets once per repo. */
-const OWNER_STEPS = ['the bot: a GitHub App (or collaborator) with write access and no Workflows permission'];
+const OWNER_STEPS = ['the bot: a GitHub App (or collaborator) with write access; CODEOWNERS sends CI changes to you'];
 
 /** The settings to check by hand when doctor can't read the server. */
 const BY_HAND = [
@@ -265,6 +267,7 @@ function readOrigin(root: string, gh: Gh): ServerSettings | Unread {
   } catch {
     // no origin remote
   }
+  if (!remote.trim()) return { unread: 'there is no origin remote yet', fix: 'add one on GitHub to check the server settings, or check them by hand' };
   const repo = repoOf(remote);
   return repo ? readServer(gh, repo) : { unread: 'the origin remote is not on a host yokoten knows (GitHub for now)', fix: 'add a GitHub origin remote, or check these settings by hand' };
 }
@@ -387,9 +390,13 @@ export function doctor(
     if (core.mark === 'MISSING') findings.push(core.finding);
     else if (core.mark === 'note') notes.push(core.finding);
   }
-  const problems = check(root, { config, env });
+  const checkNotes: Finding[] = [];
+  const problems = check(root, { config, env, notes: checkNotes });
   findings.push(...problems);
   lines.push(`  ${problems.length ? 'MISSING' : 'ok     '} tree: ${problems.length ? `${problems.length} problem(s), run \`yokoten check\`` : 'layout and privacy clean'}`);
+  // check's own notes (#228), such as an unknown yokoten.json key or a translation behind: worded as check words them, and never a failure.
+  for (const n of checkNotes) lines.push(`  note    ${formatFinding(n).replaceAll('\n', '\n        ')}`);
+  notes.push(...checkNotes);
   lines.push('machine:');
   for (const c of machine) {
     lines.push(`  ${c.ok ? 'ok     ' : 'MISSING'} ${c.name}${c.ok ? '' : `: ${stepText(c.finding)}`}`);
