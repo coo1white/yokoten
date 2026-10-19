@@ -93,10 +93,10 @@ yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
   does not strip types under `node_modules` (record 0008). So only syntax it can erase
   (`erasableSyntaxOnly`): no `enum`, no `namespace`, no parameter properties. Imports
   name the `.ts` file. Code is `.ts` only: no `.js`, `.mjs`, `.cjs` or `.tsx`
-  (`test/architecture.test.ts` holds this). No Python, no shell beyond the one-line git
+  (`test/repo/architecture.test.ts` holds this). No Python, no shell beyond the one-line git
   hook.
-- **Layers.** `src/` has five, lowest first; a module imports only from its own
-  layer or a lower one (`test/architecture.test.ts` holds this):
+- **Layers.** `src/` has six, lowest first; a module imports only from its own
+  layer or a lower one (`test/repo/architecture.test.ts` holds this):
   - `rules/`: what is allowed, as plain functions (guards, privacy, layout, config).
   - `run/`: the checks at work: the tool-call hook, the commit and CI check.
   - `agents/`: one adapter per AI runtime: its tool-call shape, its settings and
@@ -106,15 +106,18 @@ yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
     table. Nothing else in `src/` names a runtime.
   - `host/`: one adapter per code host. `github.ts` is the first: the bot's token
     and the pull request of a CI run. Nothing else in `src/` or `bin/` names a host's
-    API (`test/architecture.test.ts` holds this).
+    API (`test/repo/architecture.test.ts` holds this).
   - `setup/`: `install`, `init` and `doctor`, writing yokoten into a machine or a
     project. `road.ts` is the road `doctor` walks: one table of stages and steps.
+  - `commands/`: one module per command or small group, which `bin/main.ts` calls;
+    `shared.ts` holds what several commands use (#330). `bin/main.ts` keeps help and
+    dispatch only.
 - **Names** (record 0006): the core "Names" rules, in TypeScript. Short forms: `id`,
   `url`, `pr`, `ci`, `env`, `config`, `repo`, `dir`, `json`, `html`. `camelCase` for
   values and functions, `PascalCase` for types, `CONSTANT_CASE` only for fixed values at
   the top of a file. Acronyms as words (`loadHttpUrl`). `_` only for a parameter we don't
   use. One letter only when used within 10 lines and not exported.
-  `test/architecture.test.ts` holds the 4-word and one-letter rules and `CONSTANT_CASE`;
+  `test/repo/architecture.test.ts` holds the 4-word and one-letter rules and `CONSTANT_CASE`;
   the reviewer holds the rest.
 - **Docs live in the repo.** No wiki: a wiki page is not reviewed and agents do not read
   it. Decisions go in `docs/records/`; what went wrong and what check now holds it goes
@@ -129,8 +132,8 @@ yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
   test that needs a real-looking sample builds it from pieces (see
   `test/rules/privacy.test.ts`), so the repo passes its own privacy check.
 - **Tests sit next to their module**: the tests for `src/<layer>/<module>.ts` go in
-  `test/<layer>/<module>.test.ts`, and helpers two files share go in `test/helpers.ts`
-  (`test/architecture.test.ts` holds this). A branch then adds imports to its own file (#152).
+  `test/<layer>/<module>.test.ts`, and helpers two files share go in `test/repo/helpers.ts`
+  (`test/repo/architecture.test.ts` holds this). A branch then adds imports to its own file (#152).
 
 ### Commits and versions
 
