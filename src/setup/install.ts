@@ -1,19 +1,27 @@
 // `yokoten install`: the machine layer, the same on every computer. It puts the skills
 // where Claude Code and the agents that read `.agents/skills` find them in every project,
-// the agents where Claude Code finds them, and adds two user-level hooks:
+// the agents where Claude Code finds them, and adds two user-level hooks, for Claude Code,
+// Codex and Gemini CLI alike:
 //
 // - SessionStart runs `doctor --session`, so every session in every repo starts by
 //   hearing which practices that repo is missing. Nobody has to remember to ask.
-// - PreToolUse runs `hook --commands-only`: no tag pushes, no force pushes, no skipped
-//   checks, in every repo, adopted or not.
+// - PreToolUse (BeforeTool in Gemini CLI) runs `hook --commands-only`: no tag pushes, no
+//   force pushes, no skipped checks, in every repo, adopted or not.
+//
+// It ends by saying how to call `yokoten` when no `yokoten` on the PATH runs this copy
+// (#208): every message says `yokoten init`, and a clone install puts nothing on the
+// PATH. It prints the alias and never edits the shell profile: that file is the user's.
 
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { skillFile as sharedSkillFile } from '../agents/agent-skills.ts';
 import { addUserHooks, agentFile, skillFile as claudeSkillFile } from '../agents/claude-code.ts';
-import { copyRuntime, KIT, writeManaged, writeNew } from './files.ts';
+import * as codex from '../agents/codex.ts';
+import * as gemini from '../agents/gemini.ts';
+import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
+import { copyRuntime, HOME_DIR, KIT, writeManaged, writeNew } from './files.ts';
 import { marksFile } from '../rules/privacy.ts';
 
 export const paths = (env: Env) => {
@@ -23,6 +31,10 @@ export const paths = (env: Env) => {
     marks: marksFile(env),
   };
 };
+
+/** The runtime the user hooks run, and what they say when it is gone. `doctor` compares the hooks with these. */
+export const USER_CLI = '"$HOME/.local/share/yokoten/bin/yokoten.ts"';
+export const USER_MISSING = 'yokoten: the runtime at ~/.local/share/yokoten is missing; run the install again';
 
 /** Every place a skill goes: Claude Code's folder, and the shared one other agents read. */
 export const skillFiles = (env: Env, name: string): string[] => [claudeSkillFile(env, name), sharedSkillFile(env, name)];
@@ -35,9 +47,51 @@ const MARKS_HEADER = `# yokoten private marks: words that must never be publishe
 # account names. This file stays on this machine; never commit it or paste it anywhere.
 `;
 
-export function install(env: Env): string[] {
+/** The real path of a file, or null when it is not there. */
+const realPath = (file: string): string | null => {
+  try {
+    return realpathSync(file);
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * True when a `yokoten` on the PATH is this copy or the installed runtime: its real path
+ * is one of their bin/yokoten.ts. A shell alias is not on the PATH, so it is not seen.
+ */
+export function isOnPath(env: Env, runtime: string): boolean {
+  const ours = [join(runtime, 'bin', 'yokoten.ts'), join(HOME_DIR, 'bin', 'yokoten.ts')].map(realPath).filter(Boolean);
+  return (env.PATH ?? '').split(delimiter).filter(Boolean).some((dir) => {
+    const found = realPath(join(dir, 'yokoten'));
+    return found !== null && ours.includes(found);
+  });
+}
+
+/** The line that tells the user how to call `yokoten` when the PATH has no copy that runs this one. */
+export const aliasLine = (runtime: string): string =>
+  `no \`yokoten\` command on your PATH runs this copy. Add this line to your shell profile (~/.bashrc or ~/.zshrc), then open a new shell: alias yokoten='node ${join(runtime, 'bin', 'yokoten.ts')}'`;
+
+/**
+ * One agent's two user hooks, or one skip line when its file won't parse or has the wrong
+ * shape (#248, #254), or is a Gemini CLI file with comments, which yokoten never rewrites
+ * (#258; the line then holds the hooks to add by hand): the file stays as it was, the
+ * other steps go on, and `ok` is false until the hooks are there.
+ */
+function agentHooks(cliName: string, file: string, add: () => string[]): { ok: boolean; lines: string[] } {
+  try {
+    return { ok: true, lines: add() };
+  } catch (err) {
+    if (!(err instanceof UnreadableHooksFile)) throw err;
+    return { ok: false, lines: [`skipped ${cliName}: ${skippedBecause(file, err.problem, 'install')}`] };
+  }
+}
+
+/** One line per thing done, kept or skipped; `ok` is false when a file was skipped (#248). */
+export function install(env: Env): { ok: boolean; lines: string[] } {
   const target = paths(env);
   const report: string[] = [];
+  let ok = true;
   // Run from this copy, install keeps it (#204). The report shows the home folder as ~.
   const copied = copyRuntime(target.runtime, { withKit: true });
   report.push(copied === 'kept' ? `kept: ${target.runtime} is the copy running now` : `wrote ${target.runtime}`);
@@ -53,11 +107,29 @@ export function install(env: Env): string[] {
     report.push(`${result} agent ${file.replace(/\.md$/, '')}`);
   }
 
-  const cli = '"$HOME/.local/share/yokoten/bin/yokoten.ts"';
-  const hooks = addUserHooks(env, cli, 'yokoten: the runtime at ~/.local/share/yokoten is missing; run the install again');
-  report.push(`${hooks.doctor} the SessionStart doctor`, `${hooks.guard} the user-level command guard`);
+  const claudeHooks = agentHooks('Claude Code', '~/.claude/settings.json', () => {
+    const hooks = addUserHooks(env, USER_CLI, USER_MISSING);
+    return [`${hooks.doctor} the SessionStart doctor`, `${hooks.guard} the user-level command guard`];
+  });
+  ok &&= claudeHooks.ok;
+  report.push(...claudeHooks.lines);
+  // Codex and Gemini CLI get the same two hooks (#211), but only when the CLI's folder is
+  // already there: install never makes ~/.codex or ~/.gemini for someone who doesn't use it.
+  // A file that won't parse, or has the wrong shape, is named and skipped, never rewritten (#248).
+  const otherHooks = (name: string, file: string, hooks: { doctor: string; guard: string }) => [`${hooks.doctor} the ${name} SessionStart doctor in ${file}`, `${hooks.guard} the ${name} command guard in ${file}`];
+  if (codex.hasUserDir(env)) {
+    const codexHooks = agentHooks('Codex CLI', '~/.codex/hooks.json', () => otherHooks('Codex', '~/.codex/hooks.json', codex.addUserHooks(env, USER_CLI, USER_MISSING)));
+    ok &&= codexHooks.ok;
+    report.push(...codexHooks.lines);
+  } else report.push('skipped Codex CLI: ~/.codex not found (run `yokoten install` again after installing Codex)');
+  if (gemini.hasUserDir(env)) {
+    const geminiHooks = agentHooks('Gemini CLI', '~/.gemini/settings.json', () => otherHooks('Gemini CLI', '~/.gemini/settings.json', gemini.addUserHooks(env, USER_CLI, USER_MISSING)));
+    ok &&= geminiHooks.ok;
+    report.push(...geminiHooks.lines);
+  } else report.push('skipped Gemini CLI: ~/.gemini not found (run `yokoten install` again after installing Gemini CLI)');
 
   const marks = writeNew(target.marks, MARKS_HEADER, { mode: 0o600 });
   report.push(`${marks} ${target.marks}${marks === 'wrote' ? ' (add your marks to it)' : ''}`);
-  return report;
+  if (!isOnPath(env, target.runtime)) report.push(aliasLine(target.runtime));
+  return { ok, lines: report };
 }

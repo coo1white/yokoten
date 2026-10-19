@@ -8,41 +8,16 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+import { assertLinear } from '../scripts/linear.ts';
 import { chat, type LlamaConfig, llamaConfig } from '../src/agents/llama.ts';
 import { draft, type Fact, facts, parseAnswer, prompt, promptProblems, ruleDraft, table } from '../src/setup/advice/adopt.ts';
 import { type Found, onPullRequest, ROAD, runsTests, STAGES, type Step, walk, yokotenActions } from '../src/setup/road.ts';
+import { codeOwnersText } from '../src/setup/init.ts';
 
 const step = (stage: number, key: string): Step => ({ stage, key, check: () => false, what: () => key, fix: () => key, why: key, how: key });
 const steps = [step(1, 'a'), step(1, 'b'), step(2, 'c'), step(3, 'd')];
 const at = (found: Found[], notNow: Record<string, string> = {}) => walk(steps.map((s, i) => ({ step: s, found: found[i] })), notNow);
 const marks = (found: Found[], notNow: Record<string, string> = {}) => at(found, notNow).steps.map((w) => w.mark);
-
-/**
- * Proves `read` takes linear time by how its time grows, not by a wall-clock limit, which
- * fails on a slow runner (#275, #315). It reads an input of size n and one of 8n: linear time
- * grows about 8x, quadratic about 64x, so more than 24x fails. Each timing repeats the read until
- * the small input takes 5 ms, since on a 1 ms base one pause of a slow runner is already 25x (#321).
- * The small size takes the best of three runs, and the big one gets two more tries; 30 s catches a hang.
- */
-const assertLinear = (name: string, make: (n: number) => string, read: (input: string) => void, n = 1 << 16) => {
-  let reps = 1;
-  const time = (input: string) => {
-    const start = performance.now();
-    for (let i = 0; i < reps; i++) read(input);
-    return performance.now() - start;
-  };
-  const small = make(n);
-  const big = make(8 * n);
-  while (reps < 64 && time(small) < 5) reps *= 2;
-  // Below 1 ms the timer and the JIT are noise; a quadratic read of 8n still takes far longer.
-  const base = Math.max(1, Math.min(time(small), time(small), time(small)));
-  let ms = Infinity;
-  for (let i = 0; i < 3 && ms > 24 * base; i++) {
-    ms = Math.min(ms, time(big));
-    assert.ok(ms < 30_000, `${name}: ${ms.toFixed(0)} ms for ${big.length} chars, a hang`);
-  }
-  assert.ok(ms <= 24 * base, `${name}: ${ms.toFixed(1)} ms for 8x the input of ${base.toFixed(1)} ms, ${(ms / base).toFixed(0)}x; linear is about 8x`);
-};
 
 test('road: the stage is the first one with a step neither done nor not now', () => {
   assert.equal(at([false, false, false, false]).stage, 1);
@@ -464,4 +439,21 @@ test('road: the Action and its trigger read a big workflow in linear time (#298)
       assert.equal(ciSteps(ci).ci, false, name);
     });
   }
+});
+
+test("road: init's CODEOWNERS with the placeholder owner is to do; with a real owner, or a project's own file, it is done (#304)", () => {
+  const codeowners = ROAD.find((s) => s.key === 'codeowners')!;
+  const placeholder = fixture({ '.github/CODEOWNERS': codeOwnersText(null) });
+  assert.equal(codeowners.check(placeholder, {}, undefined), false);
+  assert.equal(codeowners.what(placeholder, {}, undefined), '.github/CODEOWNERS names no owner yet (@YOUR_GITHUB_HANDLE)');
+  assert.equal(codeowners.fix(placeholder, {}, undefined), 'put your GitHub handle in .github/CODEOWNERS');
+  assert.equal(codeowners.check(fixture({ '.github/CODEOWNERS': codeOwnersText('octo') }), {}, undefined), true);
+  assert.equal(codeowners.check(fixture({ 'docs/CODEOWNERS': '* @octo\n' }), {}, undefined), true);
+  // The owner put in on every rule line, with init's comment that names the placeholder left as it was.
+  const filled = codeOwnersText(null).split('\n').map((line) => (line.startsWith('#') ? line : line.split('@YOUR_GITHUB_HANDLE').join('@octo'))).join('\n');
+  assert.match(filled, /^#.*@YOUR_GITHUB_HANDLE/m, 'the comment still names the placeholder');
+  assert.equal(codeowners.check(fixture({ '.github/CODEOWNERS': filled }), {}, undefined), true);
+  const none = fixture({});
+  assert.equal(codeowners.check(none, {}, undefined), false);
+  assert.equal(codeowners.what(none, {}, undefined), 'no CODEOWNERS file');
 });

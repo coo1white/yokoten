@@ -22,6 +22,7 @@ import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { type Finding, finding, formatFinding, place } from '../rules/message.ts';
 import type { CodeOwners, PullRequest } from '../rules/pr.ts';
+import { type Incident, terminalText } from '../run/learn.ts';
 
 export interface BotConfig {
   appId: string;
@@ -304,6 +305,7 @@ export function readPullRequest(root: string, env: Env): PullRequestRead | Unrea
     deleted: diff('--name-only', '--diff-filter=D', '-z').split('\0').filter(Boolean),
     labels: labelNames(pr.labels),
     milestone: isObject(pr.milestone) && typeof pr.milestone.title === 'string' ? pr.milestone.title : null,
+    author: isObject(pr.user) ? asText(pr.user.login) : '',
     base,
     head,
     numstat: diff('--numstat', '-z'),
@@ -313,7 +315,7 @@ export function readPullRequest(root: string, env: Env): PullRequestRead | Unrea
 // GitHub reads CODEOWNERS from the first of these places, on the pull request's base
 // branch. yokoten reads it from the same commit, so a pull request can't edit the file
 // to lower its own tier. Without a base commit (a local run), it reads the working tree.
-const CODEOWNERS_PLACES = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'];
+export const CODEOWNERS_PLACES = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'];
 
 /** The CODEOWNERS file at the base commit, or in the working tree when `base` is empty; null when there is none. */
 export function readCodeOwners(root: string, base: string): CodeOwners | null {
@@ -428,11 +430,25 @@ export function stepSummary(name: string, problems: Finding[], notes: Finding[])
 
 export type Gh = (args: string[]) => string;
 
-/** Runs the real gh in `cwd`. */
+/** Runs the real gh in `cwd`. With `timeout` (ms), a call that takes longer is stopped and throws. */
 export const ghIn =
-  (cwd: string): Gh =>
+  (cwd: string, timeout?: number): Gh =>
   (args) =>
-    execFileSync('gh', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    execFileSync('gh', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout });
+
+/**
+ * True when the GitHub account `owner` is an organization, false when it is a user, and
+ * null when gh can't tell: not installed, not signed in, or no answer (#313). One call.
+ * A bare `@org` is not a valid CODEOWNERS owner: GitHub wants a person or `@org/team`.
+ */
+export function isOrganization(gh: Gh, owner: string): boolean | null {
+  try {
+    const type = gh(['api', `users/${owner}`, '--jq', '.type']).trim();
+    return type === 'Organization' ? true : type === 'User' ? false : null;
+  } catch {
+    return null;
+  }
+}
 
 /** A label as the host keeps it. `color` is six hex digits, with no `#`. */
 export interface Label {
@@ -532,6 +548,8 @@ export interface ServerSettings {
   forgotten: string[] | Unread;
   /** The labels and milestones (#10), for the road's stage 2. Left out by a reader that does not need them. */
   planning?: Planning | Unread;
+  /** The organization that owns the repo, from the same repo read; null for a user. Left out when unknown (#313). */
+  org?: string | null;
 }
 
 /** Why gh failed, in words a beginner can act on. */
@@ -567,6 +585,7 @@ export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
     allow_rebase_merge?: boolean;
     delete_branch_on_merge?: boolean;
     security_and_analysis?: Record<string, { status?: string } | undefined>;
+    owner?: { login?: string; type?: string };
   };
   const info = attempt(() => api<Repo>(`repos/${repo}`));
   if ('unread' in info) return info;
@@ -638,5 +657,42 @@ export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
 
   const planning = readPlanning(gh, repo);
 
-  return { repo, defaultBranch, isPrivate: info.private ?? null, actionsCanApprove, mergeMethods, deleteBranchOnMerge: info.delete_branch_on_merge ?? null, branch, tags, security, forgotten, planning };
+  const org = info.owner?.type === 'Organization' ? (info.owner.login ?? repo.split('/')[0]) : info.owner?.type === 'User' ? null : undefined;
+
+  return { repo, defaultBranch, isPrivate: info.private ?? null, actionsCanApprove, mergeMethods, deleteBranchOnMerge: info.delete_branch_on_merge ?? null, branch, tags, security, forgotten, planning, ...(org === undefined ? {} : { org }) };
+}
+
+// An incident issue for `yokoten learn` (#77), read through `gh issue view`, so it uses
+// the owner's own sign-in and holds no token. A number names an issue of this repo; a URL
+// names one in any repo. Read only.
+
+const ISSUE_REFERENCE = /^(\d+|https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+)$/;
+
+/** The issue's number, title, body, URL and labels, or the reason gh can't read it. */
+export function readIncident(gh: Gh, reference: string): Incident | string {
+  if (!ISSUE_REFERENCE.test(reference)) return `${reference} is not an issue: give its number, or a URL like https://github.com/owner/repo/issues/12`;
+  let text: string;
+  try {
+    text = gh(['issue', 'view', reference, '--json', 'number,title,body,url,labels']);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'gh is not installed: get it from https://cli.github.com, then run `gh auth login`';
+    const reason = terminalText(String((err as { stderr?: string }).stderr || '').split('\n')[0].trim());
+    return `gh can't read issue ${reference}${reason ? ` (${reason})` : ''}: run \`gh auth login\`, and check the number and the repo`;
+  }
+  const issue = JSON.parse(text) as { number?: unknown; title?: unknown; body?: unknown; url?: unknown; labels?: unknown };
+  // The number names the draft's folder (lessons/incident-<n>), so only a whole number will do.
+  const { number } = issue;
+  if (typeof number !== 'number' || !Number.isSafeInteger(number) || number <= 0) return `gh gave no issue number for ${reference}: it must be a whole number above 0`;
+  // gh's JSON is checked, not cast: a null or odd title, body, url or label must not crash the draft.
+  const { title, body, url, labels } = issue;
+  if (typeof title !== 'string') return `gh gave no title for ${reference}`;
+  return {
+    number,
+    title,
+    body: typeof body === 'string' ? body : '',
+    url: typeof url === 'string' ? url : '',
+    labels: (Array.isArray(labels) ? labels : [])
+      .map((label: unknown) => (label as { name?: unknown } | null)?.name)
+      .filter((name): name is string => typeof name === 'string' && name !== ''),
+  };
 }

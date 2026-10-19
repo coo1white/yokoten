@@ -10,17 +10,17 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { type Env, loadConfig } from '../rules/config.ts';
 import { matcher } from '../rules/config.ts';
 import { type Finding, finding, type RuleId } from '../rules/message.ts';
-import { CHANGES_DIR } from '../rules/pr.ts';
+import { CHANGES_DIR, parseCodeOwners } from '../rules/pr.ts';
 import { BUILD_DIRS, isBuildOutput } from '../rules/layout.ts';
 import { hasPlugin, hasProjectHook } from '../agents/claude-code.ts';
-import { runs } from '../run/cli.ts';
-import { hasBot, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
+import { commitCheckLine, runs } from '../run/cli.ts';
+import { CODEOWNERS_PLACES, hasBot, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
-import { claudeReadsRules, cliPath, findRulesGap, hookFile, isSelf } from './init.ts';
+import { claudeReadsRules, cliPath, COMMIT_HOOKS, deadHookNotes, findRulesGap, handOffBlocks, hasHandOff, hookFile, isCommitHook, isExecutable, isSelf, type OldHook, OWNER_PLACEHOLDER, readHookSetup, readOldHooks } from './init.ts';
 import { FIRST_MILESTONE, lackingLabels, pickNewMilestone } from './plan.ts';
 import { skillFiles, skillsDir } from './install.ts';
 
@@ -66,6 +66,27 @@ const read = (path: string) => {
     return '';
   }
 };
+
+/** The CODEOWNERS file GitHub reads here, relative to the root, or null when there is none. */
+const codeOwnersFile = (root: string): string | null => CODEOWNERS_PLACES.find((place) => existsSync(join(root, place))) ?? null;
+
+/** True when a rule line of the CODEOWNERS file still has init's placeholder in place of an owner. Comments don't count, as in GitHub. */
+const hasPlaceholder = (root: string, file: string): boolean =>
+  read(join(root, file))
+    .split(/\r?\n/)
+    .some((line) => line.replace(/(^|\s)#.*$/, '').includes(OWNER_PLACEHOLDER));
+
+/**
+ * The organization named as the only owner in the CODEOWNERS file, or null. Only full
+ * doctor knows the repo's owner is an organization, from the repo read it already makes;
+ * a session never asks (#313). GitHub takes no bare `@org`, so such a file locks nothing.
+ */
+function orgOnlyOwner(root: string, file: string, server: ServerRead): string | null {
+  const org = server && !('unread' in server) ? server.org : null;
+  if (!org) return null;
+  const owners = parseCodeOwners(read(join(root, file))).flatMap((rule) => rule.owners);
+  return owners.length > 0 && owners.every((owner) => owner.toLowerCase() === `@${org.toLowerCase()}`) ? org : null;
+}
 
 export const gitConfig = (root: string, key: string) => {
   try {
@@ -499,6 +520,76 @@ const commitHook = (root: string): string | null => {
   return hooksPath ? hookFile(root, hooksPath) : null;
 };
 
+/** A commit hook that git would not run the check from, and why. */
+interface UncheckedHook {
+  file: string;
+  /** missing: there is no file; no check: it does not run yokoten; not executable: git skips it. */
+  problem: 'missing' | 'no check' | 'not executable';
+  /** Whether the file needs `chmod +x`. Windows has no execute bit, and git there runs a hook without one. */
+  needsChmod: boolean;
+}
+
+/** The commit hooks here (pre-commit and pre-merge-commit) that do not run the check (#239); null when git runs none from this repo. */
+const uncheckedHooks = (root: string): UncheckedHook[] | null => {
+  const hooksPath = gitConfig(root, 'core.hooksPath');
+  if (!hooksPath || commitHook(root) === null) return null;
+  // husky 9's folder (.husky/_) runs .husky/pre-commit with `sh`, so that file needs no execute bit (#256).
+  const runsWithSh = relative(root, resolve(root, hooksPath)).split('\\').join('/').startsWith('.husky/');
+  const unchecked: UncheckedHook[] = [];
+  for (const hook of COMMIT_HOOKS) {
+    const file = hookFile(root, hooksPath, hook) as string;
+    const path = join(root, file);
+    if (!existsSync(path)) {
+      unchecked.push({ file, problem: 'missing', needsChmod: process.platform !== 'win32' && !runsWithSh });
+      continue;
+    }
+    const needsChmod = !runsWithSh && !isExecutable(path);
+    if (!runs('check').test(read(path))) unchecked.push({ file, problem: 'no check', needsChmod });
+    else if (needsChmod) unchecked.push({ file, problem: 'not executable', needsChmod });
+  }
+  return unchecked;
+};
+
+const HOOK_PROBLEM: Record<UncheckedHook['problem'], (file: string) => string> = {
+  missing: (file) => `there is no ${file}`,
+  'no check': (file) => `${file} does not run yokoten`,
+  'not executable': (file) => `${file} is not executable, so git skips it`,
+};
+
+/** What to do by hand for hooks in a project's own folder: a new file needs a `#!` line and `chmod +x`, or git skips it. */
+const ownHookFix = (hooks: UncheckedHook[], cli: string): string => {
+  const files = (problem: UncheckedHook['problem']) => hooks.filter((h) => h.problem === problem).map((h) => h.file);
+  const chmod = hooks.filter((h) => h.needsChmod).map((h) => h.file);
+  const steps: string[] = [];
+  if (files('missing').length) steps.push(`make ${files('missing').join(' and ')} with \`#!/bin/sh\` as the first line and the line below after it`);
+  if (files('no check').length) steps.push(`add the line below to ${files('no check').join(' and ')}, after its \`#!\` line`);
+  if (chmod.length) steps.push(`run \`chmod +x ${chmod.join(' ')}\``);
+  const all = hooks.map((h) => h.file).join(' and ');
+  // init keeps the mode of a file under .husky/ (#256).
+  if (hooks.every((h) => h.problem === 'not executable')) return hooks.some((h) => h.file.startsWith('.husky/')) ? steps.join('') : `${steps.join('')}, or \`yokoten init\``;
+  return `\`yokoten init\` adds the check to ${all}, or do it yourself: ${steps.join('; ')}. The line: ${commitCheckLine(cli)}`;
+};
+
+/**
+ * The hooks this clone has in .git/hooks that git no longer runs, because core.hooksPath is
+ * .githooks and .githooks does not hand off to them (#256). Empty for any other hooks folder:
+ * the project chose that one itself.
+ */
+const droppedHooks = (root: string): OldHook[] => {
+  if (!gitConfig(root, 'core.hooksPath') || readHookSetup(root).kind !== 'plain') return [];
+  return readOldHooks(root).filter((old) => old.handOff === 'yes' && !hasHandOff(read(join(root, '.githooks', old.hook)), old.hook));
+};
+
+/**
+ * The fix for a workflow step: init adds the kit's workflow, but keeps one the project
+ * already has, so then the fix is the step to add to it (#256).
+ */
+const keptWorkflow = (root: string, name: string, args: string, after: string): string => {
+  const file = `.github/workflows/${name}`;
+  if (!existsSync(join(root, file))) return `\`yokoten init\` adds ${file}`;
+  return `add this step to ${file}, after ${after} (\`yokoten init\` keeps your file as it is): \`- run: node ${cliPath(root)} ${args}\``;
+};
+
 /** The road, in order. Step names never change: they are the keys for "not now". */
 export const ROAD: Step[] = [
   {
@@ -529,23 +620,39 @@ export const ROAD: Step[] = [
   {
     stage: 1,
     key: 'commit-check',
-    check: (root) => {
-      const file = commitHook(root);
-      return file !== null && runs('check').test(read(join(root, file)));
-    },
+    check: (root) => uncheckedHooks(root)?.length === 0 && droppedHooks(root).length === 0,
     what: (root) => {
-      const file = commitHook(root);
-      if (file) return `commits are not checked: ${file} does not run yokoten`;
+      const hooks = uncheckedHooks(root);
+      const dropped = droppedHooks(root).map((old) => `${old.file} no longer runs: .githooks/${old.hook} does not run it`);
+      if (hooks?.length) {
+        // Only pre-merge-commit: ordinary commits are still checked, merge commits are not.
+        const which = hooks.every((h) => h.file.endsWith('pre-merge-commit')) ? 'merge commits' : 'commits';
+        return `${which} are not checked: ${[...hooks.map((h) => HOOK_PROBLEM[h.problem](h.file)), ...dropped].join('; ')}`;
+      }
+      if (hooks) return `a hook this clone had is switched off: ${dropped.join('; ')}`;
       return gitConfig(root, 'core.hooksPath') ? 'commits are not checked: core.hooksPath is outside this repo' : 'commits are not checked: core.hooksPath is not set';
     },
     fix: (root) => {
       if (!gitConfig(root, 'core.hooksPath') && existsSync(join(root, '.husky'))) return 'run `npm install` so husky sets core.hooksPath, then `yokoten init`';
-      const file = commitHook(root);
-      if (file && file !== '.githooks/pre-commit') return `\`yokoten init\` adds the check to ${file}, or add the line \`node "${cliPath(root)}" check --staged || exit 1\` there yourself`;
-      return '`yokoten init` sets it up';
+      // A hook in .git/hooks that .githooks can't run: init leaves it be, so the fix is by hand (#256).
+      const blocks = readHookSetup(root).kind === 'plain' ? handOffBlocks(root) : [];
+      if (blocks.length) return blocks.join('; ');
+      const hooks = uncheckedHooks(root);
+      const files = hooks?.map((h) => h.file) ?? [];
+      const dropped = droppedHooks(root);
+      if (hooks && !files.length && dropped.length) {
+        return `\`yokoten init\` makes ${dropped.map((old) => `.githooks/${old.hook} run ${old.file}${isCommitHook(old.hook) ? ' after the check' : ''}`).join(' and ')}`;
+      }
+      if (!files.length || files.includes('.githooks/pre-commit')) {
+        // A hook git skips today is not a reason to wait; init sets .githooks and says how to keep it (#256).
+        const dead = readHookSetup(root).kind === 'plain' ? deadHookNotes(readOldHooks(root)) : [];
+        return ['`yokoten init` sets it up', ...dead.map((line) => `note: ${line}`)].join('; ');
+      }
+      if (files.join() === '.githooks/pre-merge-commit') return '`yokoten init` sets up .githooks/pre-merge-commit';
+      return ownHookFix(hooks as UncheckedHook[], cliPath(root));
     },
     why: 'a secret or a personal email is hard to take back once a commit is pushed',
-    how: "the pre-commit that git runs from core.hooksPath runs `yokoten check`: .githooks/pre-commit, or the project's own (husky: .husky/pre-commit)",
+    how: "the pre-commit and pre-merge-commit that git runs from core.hooksPath run `yokoten check`: in .githooks/, or in the project's own folder (husky: .husky/). With .githooks, each executable hook left in .git/hooks is run from .githooks (a commit hook after the check), so it is not switched off",
     standard: 'OSPS-BR-07.01',
   },
   {
@@ -576,7 +683,7 @@ export const ROAD: Step[] = [
     // `check --pr` is the titles step, and `check --issue` checks issues; this one wants the tree check itself.
     check: (root) => ciRuns(ciText(root), runs('check(?!\\s+--(?:pr|issue))')) || ciFiles(root).some((f) => yokotenActions(f).length > 0),
     what: () => 'CI does not run `yokoten check`',
-    fix: () => '`yokoten init` adds .github/workflows/yokoten.yml',
+    fix: (root) => keptWorkflow(root, 'yokoten.yml', 'check', 'actions/checkout and actions/setup-node'),
     why: 'a commit made with the hook off would reach main unchecked',
     how: 'a workflow in .github/workflows runs `yokoten check` (by its path, or with npx, bunx or pnpm dlx), or has a step that uses yokoten-labs/yokoten',
     standard: 'Scorecard: CI-Tests',
@@ -648,7 +755,7 @@ export const ROAD: Step[] = [
     key: 'titles',
     check: (root) => ciRuns(ciText(root), runs('check --pr')) || ciFiles(root).some((f) => onPullRequest(f) && yokotenActions(f).some((a) => a.prCheck)),
     what: () => 'CI does not check pull requests (`yokoten check --pr`)',
-    fix: () => '`yokoten init` adds .github/workflows/pr.yml',
+    fix: (root) => keptWorkflow(root, 'pr.yml', 'check --pr', 'actions/checkout with `fetch-depth: 0` and actions/setup-node, in a job that runs on pull_request'),
     why: 'a pull request title becomes the commit on main, so it must say what changed and why',
     how: 'a workflow in .github/workflows runs `yokoten check --pr`, or runs on pull requests with a step that uses yokoten-labs/yokoten and does not set `pr-check: false`',
     standard: 'Conventional Commits 1.0.0',
@@ -656,11 +763,24 @@ export const ROAD: Step[] = [
   {
     stage: 4,
     key: 'codeowners',
-    check: (root) => ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'].some((p) => existsSync(join(root, p))),
-    what: () => 'no CODEOWNERS file',
-    fix: () => 'add .github/CODEOWNERS with a line `<path> @<your account>` for each path where a mistake is hard to undo: the rules, CI, agent config',
+    check: (root, _, server) => {
+      const file = codeOwnersFile(root);
+      return file !== null && !hasPlaceholder(root, file) && !orgOnlyOwner(root, file, server);
+    },
+    what: (root, _, server) => {
+      const file = codeOwnersFile(root);
+      const org = file && orgOnlyOwner(root, file, server);
+      if (org) return `${file} names only @${org}, an organization, and GitHub takes no organization as an owner`;
+      return file ? `${file} names no owner yet (${OWNER_PLACEHOLDER})` : 'no CODEOWNERS file';
+    },
+    fix: (root, _, server) => {
+      const file = codeOwnersFile(root);
+      const org = file && orgOnlyOwner(root, file, server);
+      if (org) return `put a person's handle or @${org}/<team> in ${file}`;
+      return file ? `put your GitHub handle in ${file}` : '`yokoten init` writes .github/CODEOWNERS for the lead-only paths; or add one with a line `<path> @<your account>` for each path where a mistake is hard to undo: the rules, CI, agent config';
+    },
     why: 'the host then asks you to review a pull request that changes those paths, and `check --pr` makes it tier A',
-    how: 'a CODEOWNERS file is in .github/, at the root or in docs/',
+    how: `a CODEOWNERS file is in .github/, at the root or in docs/, and the first one GitHub reads names an owner, not init's placeholder ${OWNER_PLACEHOLDER}; full doctor also reads whether the repo belongs to an organization, and an organization alone (@org, not @org/team) is not an owner`,
     standard: 'Scorecard: Branch-Protection',
   },
   {

@@ -278,15 +278,27 @@ export const RULES = {
     check: '`doctor` feeds each check a known-bad input before anything else',
   },
   'codex-hook': {
-    rule: "the project has Codex's tool-call guard",
-    why: "without it, Codex's commands and edits in this project are not checked",
-    check: '`doctor` reads .codex/hooks.json for a PreToolUse hook that runs `yokoten hook --agent codex`; a note, not a missing step',
+    rule: "the project has Codex's tool-call guard and stop check",
+    why: "without them, Codex's commands and edits in this project are not checked, and its turn can end with a bad file",
+    check: '`doctor` reads .codex/hooks.json for a PreToolUse hook and a Stop hook that each run `yokoten hook`; a note, not a missing step',
     docs: guide('works-with'),
   },
   'gemini-hook': {
-    rule: "the project has Gemini CLI's tool-call guard",
-    why: "without it, Gemini CLI's commands and edits in this project are not checked",
-    check: '`doctor` reads .gemini/settings.json for a BeforeTool hook that runs `yokoten hook --agent gemini`; a note, not a missing step',
+    rule: "the project has Gemini CLI's tool-call guard and stop check",
+    why: "without them, Gemini CLI's commands and edits in this project are not checked, and its turn can end with a bad file",
+    check: '`doctor` reads .gemini/settings.json for a BeforeTool hook and an AfterAgent hook that each run `yokoten hook`; a note, not a missing step',
+    docs: guide('works-with'),
+  },
+  'codex-user-hook': {
+    rule: "Codex runs yokoten's session-start doctor and command guard in every repo",
+    why: 'without them, a Codex session does not hear the next step on the road, and a tag push, force push or skipped check in a repo without yokoten is not stopped',
+    check: "when ~/.codex is a folder, `doctor` compares the SessionStart and PreToolUse hooks in ~/.codex/hooks.json with what `yokoten install` writes (command, matcher, runtime path); a missing or out-of-date hook, or a file it can't read, is a note, not a missing step",
+    docs: guide('works-with'),
+  },
+  'gemini-user-hook': {
+    rule: "Gemini CLI runs yokoten's session-start doctor and command guard in every repo",
+    why: 'without them, a Gemini CLI session does not hear the next step on the road, and a tag push, force push or skipped check in a repo without yokoten is not stopped',
+    check: "when ~/.gemini is a folder, `doctor` compares the SessionStart and BeforeTool hooks in ~/.gemini/settings.json with what `yokoten install` writes (command, matcher, name, runtime path); a missing or out-of-date hook, or a file it can't read, is a note, not a missing step",
     docs: guide('works-with'),
   },
   'core-rules': {
@@ -305,6 +317,12 @@ export const RULES = {
     rule: 'the installed runtime is this version of yokoten',
     why: 'the user-level hooks run the installed copy, so an old copy checks old rules',
     check: '`doctor` compares the VERSION file in ~/.local/share/yokoten with its own version',
+  },
+  'plugin-version': {
+    rule: 'the enabled Claude Code plugin is not older than the yokoten that runs doctor',
+    why: "the plugin's hooks run the plugin's own copy, so an old plugin checks old rules",
+    check: "`doctor` compares the plugin's package version with its own and, in yokoten's own repo, the plugin's commit with the default branch's tip (origin/HEAD, else origin/main, else main); a note, never a failure, and nothing when it can't compare offline",
+    docs: guide('the-claude-code-plugin'),
   },
   'private-marks': {
     rule: 'this machine has a private-marks file with at least one line',
@@ -362,6 +380,12 @@ export const RULES = {
     why: 'a forgotten branch holds work nobody is looking at',
     check: `${SERVER_CHECK}; a note only, and doctor never deletes a branch`,
   },
+  'not-a-repo': {
+    rule: 'yokoten runs inside a git repo',
+    why: 'the checks read commits, so yokoten needs git history',
+    check: 'every command that reads or writes a project looks for its git repo first, and stops before it writes anything; `doctor --session` and the hooks do not report it, so a session in another folder gets no noise',
+    docs: guide('commands'),
+  },
 } satisfies Record<string, Rule>;
 
 export type RuleId = keyof typeof RULES;
@@ -375,6 +399,9 @@ export function finding(id: RuleId, what: string, fix: string, more: { file?: st
   if (more.line !== undefined) f.line = more.line;
   return f;
 }
+
+/** Outside a git repo (#205): the one finding every command that needs a repo gives. */
+export const notRepoFinding = (folder: string): Finding => finding('not-a-repo', `${folder} is not inside a git repo`, 'run it inside your project, or `git init` first');
 
 const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 

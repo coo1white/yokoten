@@ -57,11 +57,16 @@ export function judge(
   action: Action,
   { root, config, env, commandsOnly = false, repos = [] }: { root: string | null; config: Config; env: Env; commandsOnly?: boolean; repos?: Repo[] },
 ): Finding | null {
+  // Set before the command check: no command rule reads the role yet, but one would see it.
+  if (action.worker) env = { ...env, YOKOTEN_ROLE: 'worker' };
+  // A command may also edit files (Codex runs apply_patch through the shell): check both.
   // The command runs in the call's folder: a hooks setting is judged in that repo (#217).
-  if (action.command !== undefined) return checkCommand(action.command, { env, config, cwd: action.cwd ?? root ?? undefined });
+  if (action.command !== undefined) {
+    const reason = checkCommand(action.command, { env, config, cwd: action.cwd ?? root ?? undefined });
+    if (reason) return reason;
+  }
   const ruled = commandsOnly || !root ? repos : [{ root, config }, ...repos];
   if (!ruled.length) return null;
-  if (action.worker) env = { ...env, YOKOTEN_ROLE: 'worker' };
   const reals = ruled.map((repo) => ({ config: repo.config, real: real(repo.root) }));
   for (const p of action.paths) {
     const file = real(resolve(action.cwd ?? root ?? process.cwd(), p));

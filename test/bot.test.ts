@@ -7,13 +7,15 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { annotation, annotations, appJwt, botConfig, botEnv, cleanChildEnv, type Gh, installationToken, type Label, readCommandTitle, readPlanning, readServer, repoOf, type ServerSettings, stepSummary, type Unread } from '../src/host/github.ts';
+import { annotation, annotations, appJwt, botConfig, botEnv, cleanChildEnv, type Gh, installationToken, type Label, readCommandTitle, readIncident, readPlanning, readServer, repoOf, type ServerSettings, stepSummary, type Unread } from '../src/host/github.ts';
 import { DEFAULTS, type Env } from '../src/rules/config.ts';
+import { draftLesson, type Incident } from '../src/run/learn.ts';
 import { checkCommand } from '../src/rules/guards.ts';
 import { checkIssueTitle, checkPullRequestTitle } from '../src/rules/pr.ts';
 import { doctor } from '../src/setup/doctor.ts';
 import { road, ROAD, serverChecks, stepFinding } from '../src/setup/road.ts';
 import { LABELS, pickNewMilestone, setUpPlanning } from '../src/setup/plan.ts';
+import { syncBoard } from '../scripts/board-sync.ts';
 
 // A throwaway key, made for this test run only.
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -511,14 +513,14 @@ test('planning: deletes GitHub\'s default labels only with --remove-default-labe
 
 test('planning: no gh, signed out, or no GitHub remote is a skip that says why, not a failure (#10)', () => {
   const missing = setUpPlanning(() => { throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }); }, REMOTE, APPLY);
-  assert.equal(missing.ok, true);
+  assert.deepEqual([missing.ok, missing.skipped], [true, true], 'the caller decides: init --github --yes fails on a skip (#208)');
   assert.match(missing.lines[0], /^GitHub: skipped, because gh is not installed\. To set up labels and a milestone, get it from https:\/\/cli\.github\.com/);
   const out = setUpPlanning(() => { throw Object.assign(new Error('exit 4'), { stderr: 'HTTP 401: Bad credentials' }); }, REMOTE, APPLY);
-  assert.deepEqual(out, { ok: true, lines: ['GitHub: skipped, because gh is not signed in. To set up labels and a milestone, run `gh auth login`, then run `yokoten init --github`'] });
+  assert.deepEqual(out, { ok: true, skipped: true, lines: ['GitHub: skipped, because gh is not signed in. To set up labels and a milestone, run `gh auth login`, then run `yokoten init --github --yes`'] });
   const elsewhere = setUpPlanning(() => { throw new Error('gh was called'); }, 'https://gitea.example.com/me/repo.git', APPLY);
-  assert.deepEqual(elsewhere, { ok: true, lines: ['GitHub: skipped, because the origin remote is not on GitHub. Labels and a milestone need a GitHub repo'] });
+  assert.deepEqual(elsewhere, { ok: true, skipped: true, lines: ['GitHub: skipped, because the origin remote is not on GitHub. Labels and a milestone need a GitHub repo'] });
   const none = setUpPlanning(() => { throw new Error('gh was called'); }, '', APPLY);
-  assert.deepEqual(none, { ok: true, lines: ['GitHub: skipped, because there is no origin remote yet. Add one on GitHub, then run `yokoten init --github` to set up labels and a milestone'] }, 'no remote at all (#208)');
+  assert.deepEqual(none, { ok: true, skipped: true, lines: ['GitHub: skipped, because there is no origin remote yet. Add one on GitHub, then run `yokoten init --github --yes` to set up labels and a milestone'] }, 'no remote at all (#208)');
 });
 
 // The planning steps (#10): stage 2, read in full doctor only.
@@ -610,4 +612,161 @@ test('step summary: a heading with the result, a table, notes apart, at most 50 
   assert.equal(text.split('\n').filter((l) => l.startsWith('| a.md:')).length, 50);
   assert.match(text, /\nAnd 3 more\. The job log lists them all\.\n/);
   assert.match(text, /#### Notes \(1\): these never fail the check\n\nThe job log lists them\.\n/);
+});
+
+// `yokoten learn` (#77) reads an incident through gh. A fake gh stands in; GitHub is never reached.
+test('incident: read through gh issue view; a bad reference or a gh failure is a reason, never a crash', () => {
+  const calls: string[][] = [];
+  const gh: Gh = (args) => {
+    calls.push(args);
+    return JSON.stringify({ number: 12, title: 'check: misses a key', body: '## Fix\n\nA check.', url: 'https://example.com/issues/12', labels: [{ name: 'incident' }, { name: 'bug' }] });
+  };
+  assert.deepEqual(readIncident(gh, '12'), { number: 12, title: 'check: misses a key', body: '## Fix\n\nA check.', url: 'https://example.com/issues/12', labels: ['incident', 'bug'] });
+  assert.deepEqual(calls, [['issue', 'view', '12', '--json', 'number,title,body,url,labels']]);
+  assert.equal(typeof readIncident(gh, 'https://github.com/owner/repo/issues/12'), 'object');
+  for (const bad of ['--web', '12; rm', 'https://example.com/issues/12']) assert.match(String(readIncident(gh, bad)), /is not an issue: give its number, or a URL/);
+  assert.equal(calls.length, 2, 'a bad reference never reaches gh');
+  const missing: Gh = () => {
+    throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' });
+  };
+  assert.match(String(readIncident(missing, '12')), /^gh is not installed/);
+  const refused: Gh = () => {
+    throw Object.assign(new Error('Command failed'), { stderr: 'GraphQL: Could not resolve to an issue\nmore' });
+  };
+  assert.equal(readIncident(refused, '99'), 'gh can\'t read issue 99 (GraphQL: Could not resolve to an issue): run `gh auth login`, and check the number and the repo');
+  const escaping: Gh = () => {
+    throw Object.assign(new Error('Command failed'), { stderr: 'bad \u001b[2K\u001b]8;;https://example.com\u0007link' });
+  };
+  assert.ok(!/[\u001b\u0007]/.test(String(readIncident(escaping, '99'))), 'gh\'s error text reaches the terminal with no raw escape');
+});
+
+test('incident: the number gh gives must be a whole number above 0, since it names the draft\'s folder', () => {
+  const ghWith = (number: unknown): Gh => () => JSON.stringify({ number, title: 'check: misses a key', body: '', url: 'https://example.com/issues/1', labels: [] });
+  for (const bad of ['1/../../x', 0, -1, 1.5, 2 ** 53, null, undefined]) {
+    const result = readIncident(ghWith(bad), '1');
+    assert.equal(result, 'gh gave no issue number for 1: it must be a whole number above 0', `number ${String(bad)}`);
+  }
+  assert.equal((readIncident(ghWith(7), '1') as { number: number }).number, 7);
+});
+
+test('incident: an odd title is a reason; an odd body or url is empty, and the draft has a TODO for the url', () => {
+  const ghWith = (fields: Record<string, unknown>): Gh => () => JSON.stringify({ number: 3, title: 'check: misses a key', body: '## Fix\n\nA check.', url: 'https://example.com/issues/3', labels: [], ...fields });
+  for (const odd of [null, 7, { text: 'x' }, ['x'], undefined]) {
+    assert.equal(readIncident(ghWith({ title: odd }), '3'), 'gh gave no title for 3', `title ${JSON.stringify(odd)}`);
+    const noBody = readIncident(ghWith({ body: odd }), '3') as Incident;
+    assert.equal(noBody.body, '', `body ${JSON.stringify(odd)}`);
+    assert.equal(typeof draftLesson(noBody).finding.fix, 'string');
+    const noUrl = readIncident(ghWith({ url: odd }), '3') as Incident;
+    assert.equal(noUrl.url, '', `url ${JSON.stringify(odd)}`);
+    assert.match(draftLesson(noUrl).files[0].text, /^\/\/ TODO\(reviewer\): gh gave no URL for the issue$/m);
+    assert.deepEqual((readIncident(ghWith({ labels: odd }), '3') as Incident).labels, [], `labels ${JSON.stringify(odd)}`);
+  }
+  // Only entries with a string name are kept.
+  const mixed = [{ name: 'incident' }, null, 7, 'bug', { name: 5 }, { name: null }, {}, { name: '' }, [{ name: 'x' }], { name: 'bug' }];
+  assert.deepEqual((readIncident(ghWith({ labels: mixed }), '3') as Incident).labels, ['incident', 'bug']);
+});
+
+// The board sync (#165), against a fake GraphQL API. Two pages of items; the mutations
+// are recorded and applied to the fake board, never sent anywhere, so a second run sees
+// what the first one wrote.
+test('board sync: fills empty fields, keeps filled ones and Done, a dry run writes nothing, and a second run changes nothing', async () => {
+  const issue = (number: number, state: string, created: string, closed: string | null, extra: Record<string, unknown> = {}) => ({
+    __typename: 'Issue', number, state, createdAt: `${created}T08:00:00Z`, closedAt: closed && `${closed}T09:00:00Z`,
+    milestone: null, repository: { nameWithOwner: 'octo/demo' }, timelineItems: { nodes: [] }, ...extra,
+  });
+  const date = (value: string) => ({ date: value });
+  const pages = [[
+    { id: 'empty', start: null, target: null, status: null, content: issue(1, 'OPEN', '2026-10-01', null, { milestone: { dueOn: '2026-10-26T07:00:00Z' } }) },
+    { id: 'filled', start: date('2026-09-01'), target: date('2026-09-30'), status: { name: 'In progress' }, content: issue(2, 'CLOSED', '2026-10-01', '2026-10-05') },
+    { id: 'done-open', start: date('2026-10-01'), target: date('2026-10-02'), status: { name: 'Done', updatedAt: '2026-10-03T00:00:00Z' }, content: issue(3, 'OPEN', '2026-10-01', null) },
+    { id: 'done-closed', start: date('2026-09-20'), target: date('2026-09-25'), status: { name: 'Done', updatedAt: '2026-09-25T10:00:00Z' }, content: issue(7, 'CLOSED', '2026-10-01', '2026-10-05') },
+  ], [
+    { id: 'pr', start: date('2026-10-01'), target: null, status: { name: 'Todo' }, content: { ...issue(4, 'OPEN', '2026-10-01', null), __typename: 'PullRequest' } },
+    { id: 'reopened', start: date('2026-10-01'), target: date('2026-10-02'), status: { name: 'Done', updatedAt: '2026-10-03T00:00:00Z' }, content: issue(5, 'OPEN', '2026-10-01', null, { timelineItems: { nodes: [{ createdAt: '2026-10-04T00:00:00Z' }] } }) },
+    { id: 'early-close', start: date('2026-10-12'), target: null, status: { name: 'Done' }, content: { ...issue(6, 'MERGED', '2026-10-10', '2026-10-11'), __typename: 'PullRequest' } },
+    { id: 'draft', start: null, target: null, status: null, content: { __typename: 'DraftIssue' } },
+  ]];
+  const writes: Array<{ item: string; field: string; value: any }> = [];
+  // The fake board applies each write, as GitHub would.
+  const applyWrite = (write: { item: string; field: string; value: any }) => {
+    const item: any = pages.flat().find((node) => node.id === write.item);
+    if (write.field === 'F-start') item.start = date(write.value.date);
+    else if (write.field === 'F-target') item.target = date(write.value.date);
+    else if (write.field === 'F-status') item.status = { name: write.value.singleSelectOptionId.replace(/^O-/, ''), updatedAt: new Date().toISOString() };
+    else throw new Error(`unknown field ${write.field}`);
+  };
+  const before = JSON.stringify(pages);
+  const server = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (chunk) => { raw += chunk; });
+    req.on('end', () => {
+      const { query, variables } = JSON.parse(raw);
+      assert.equal(req.headers.authorization, 'Bearer t');
+      let data: unknown;
+      if (query.startsWith('mutation')) {
+        writes.push({ item: variables.item, field: variables.field, value: variables.value });
+        applyWrite(writes.at(-1)!);
+        data = { updateProjectV2ItemFieldValue: { projectV2Item: { id: variables.item } } };
+      } else if (query.includes('fields(first')) {
+        data = { organization: { projectV2: { id: 'P1', fields: { nodes: [
+          { id: 'F-title', name: 'Title' }, { id: 'F-start', name: 'Start' }, { id: 'F-target', name: 'Target' },
+          { id: 'F-status', name: 'Status', options: ['Todo', 'In progress', 'In review', 'Done'].map((name) => ({ id: `O-${name}`, name })) },
+        ] } } } };
+      } else {
+        const index = variables.after === null ? 0 : 1;
+        data = { organization: { projectV2: { items: { pageInfo: { hasNextPage: index === 0, endCursor: 'c1' }, nodes: pages[index] } } } };
+      }
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ data }));
+    });
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  const api = `http://127.0.0.1:${(server.address() as AddressInfo).port}/graphql`;
+  // As in the token test: the fake API is local, so fetch must not use the shell's proxy.
+  const saved = { upper: process.env.NO_PROXY, lower: process.env.no_proxy };
+  process.env.NO_PROXY = process.env.no_proxy = '127.0.0.1,localhost';
+  try {
+    const lines: string[] = [];
+    const options = { owner: 'octo', number: 1, token: 't', api, isDryRun: true, log: (line: string) => lines.push(line) };
+    const planned = await syncBoard(options);
+    assert.deepEqual(writes, [], 'a dry run writes nothing');
+    assert.equal(JSON.stringify(pages), before, 'a dry run leaves the board as it was');
+    assert.deepEqual(planned.map((c) => `${c.item} ${c.field}=${c.value}`), [
+      'empty Start=2026-10-01', 'empty Target=2026-10-26', 'empty Status=Todo',
+      'filled Status=Done',
+      'pr Status=In review',
+      'reopened Status=Todo',
+      'early-close Target=2026-10-12',
+    ]);
+    assert.match(lines.at(-1)!, /^8 items, 7 change\(s\) \(dry run: nothing written\)$/);
+    assert.match(lines[0], /^would set octo\/demo#1 Start: 2026-10-01$/);
+
+    const written = await syncBoard({ ...options, isDryRun: false });
+    assert.deepEqual(written, planned);
+    assert.deepEqual(writes.slice(0, 3), [
+      { item: 'empty', field: 'F-start', value: { date: '2026-10-01' } },
+      { item: 'empty', field: 'F-target', value: { date: '2026-10-26' } },
+      { item: 'empty', field: 'F-status', value: { singleSelectOptionId: 'O-Todo' } },
+    ]);
+    assert.equal(writes.length, 7);
+
+    // A Done item keeps Done and its dates.
+    const doneItems = () => pages.flat().filter((node) => node.id.startsWith('done-')).map((node) => JSON.stringify(node));
+    const doneBefore = JSON.parse(before).flat().filter((node: { id: string }) => node.id.startsWith('done-')).map((node: unknown) => JSON.stringify(node));
+    assert.deepEqual(doneItems(), doneBefore, 'the first run keeps Done items as they were');
+
+    // The second run, on the board the first one wrote: no mutation, nothing changed.
+    lines.length = 0;
+    const second = await syncBoard({ ...options, isDryRun: false });
+    assert.deepEqual(second, [], 'a second run plans nothing');
+    assert.equal(writes.length, 7, 'a second run sends no mutation');
+    assert.deepEqual(lines, ['8 items, 0 change(s)']);
+    assert.deepEqual(doneItems(), doneBefore, 'the second run keeps Done items as they were');
+  } finally {
+    server.close();
+    for (const [name, value] of [['NO_PROXY', saved.upper], ['no_proxy', saved.lower]] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
 });

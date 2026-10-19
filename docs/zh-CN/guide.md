@@ -197,15 +197,28 @@ yokoten 能管住三种 AI 编程 agent，它们守的是同一套规矩。
 | Agent | yokoten 给它加了什么 |
 |---|---|
 | Claude Code | 工具调用拦截（钩子）、收尾检查（钩子）、每次会话开头的带路提示、skills 和 agents |
-| Codex CLI | 工具调用拦截，写在 `.codex/hooks.json`。第一次用时 Codex 会请你确认信任项目钩子（`/hooks`） |
-| Gemini CLI | 工具调用拦截，写在 `.gemini/settings.json`。要在仓库根目录启动 Gemini：它只读启动时所在文件夹里的 `.gemini/settings.json` |
+| Codex CLI | 工具调用拦截和收尾检查，写在 `.codex/hooks.json`；会话开头的带路提示和命令守卫，写在 `~/.codex/hooks.json`。`apply_patch` 要改哪些文件，守卫都会查，在 shell 里跑的也查 |
+| Gemini CLI | 工具调用拦截和收尾检查（AfterAgent），写在 `.gemini/settings.json`；会话开头的带路提示和命令守卫，写在 `~/.gemini/settings.json` |
 | 其他 agent | `AGENTS.md` 里的规则；还有提交检查，不管是谁提交的，坏提交都会被拦下 |
+
+项目里的钩子由 `init` 写，用户级的由 `install` 写。每个工具都要你先信任，钩子才会跑：
+
+- **Codex**：项目要先设成信任，项目钩子才会跑。然后在 `/hooks` 里逐个批准。Codex 记的是
+  命令本身，命令一改，就得重新批准。
+- **Gemini CLI**：文件夹要先设成信任，项目钩子才会跑。要在仓库根目录启动 Gemini：它只读
+  启动时所在文件夹里的 `.gemini/settings.json`。新加或改过的钩子，第一次跑之前它会提醒你一次。
+
+worker 靠 `YOKOTEN_ROLE=worker` 认出来。在 Codex 里，子 agent 的 `agent_type` 带 worker
+字样的，也算 worker。Gemini CLI 开了严格的环境变量清理后，钩子里拿不到 `YOKOTEN_ROLE`。
+这时 yokoten 在 Gemini CLI 里分不出谁是 worker：每个会话都当成 lead，只有 lead 能改的
+文件，worker 改了也拦不住。服务器上的锁照样有效：代码负责人，还有一个改不了 CI 的 bot。
 
 ## 安装和命令
 
 需要 Node 22.18 或更高版本：它能直接运行 TypeScript，不用先编译。没有任何依赖。
 装法有两种：一种是 Claude Code 插件，一种是 `install` 命令（从 npm 跑，或者从 clone
-下来的仓库跑）。选一种就行，别两种都装。
+下来的仓库跑）。选一种就行，别两种都装。yokoten 写进去的 hook 命令要在 POSIX shell 里跑，
+Windows 上请用 Git Bash。
 
 ### 用 Claude Code 插件装
 
@@ -279,6 +292,17 @@ node ~/.local/share/yokoten/bin/yokoten.ts init     # 这个项目：只加文�
 node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看走到哪一关，下一步做什么
 ```
 
+这样装完，PATH 里没有 `yokoten` 这个命令，可 yokoten 的提示里写的都是 `yokoten init`、
+`yokoten doctor`。所以 `install` 最后会打出下面这一行，你自己把它加进 shell 配置文件
+（`~/.bashrc` 或 `~/.zshrc`），再开一个新的终端就能用了：
+
+```sh
+alias yokoten='node ~/.local/share/yokoten/bin/yokoten.ts'
+```
+
+yokoten 不会去改你的 shell 配置文件。要是 PATH 里已经有一个 `yokoten` 跑的就是这一份，
+`install` 就不打这一行。
+
 这些命令（包括上面 npx 那几条）在 [docs/facts.json](../facts.json) 里还有一份，网站读的是那份，所以改命令的时候两边都要改。
 
 ### 当成 GitHub Action 用
@@ -332,6 +356,7 @@ jobs:
 - **Node**：action 装的 Node，这个 job 后面的步骤也会用到。
 
 `check --pr` 按核心规则第 8 条检查 PR。还没按这条规则走的仓库，可以先写 `pr-check: false`。
+Dependabot 开的 PR 只查标题，其他几条只提醒、不算失败，因为它的正文是 Dependabot 自己写的。
 kit 里 `init` 放的 workflow 暂时还是跑 `.yokoten/` 里的那份，等第一个正式版本发布以后再换成
 这个 action，这样就不会依赖 `@main`。
 
@@ -344,7 +369,22 @@ kit 里 `init` 放的 workflow 暂时还是跑 `.yokoten/` 里的那份，等第
 `CLAUDE.md` 时，Claude Code 只通过这一行才会读 `AGENTS.md`。`.claude/CLAUDE.md` 也算：
 根目录没有 `CLAUDE.md` 的话，就在它末尾加 `@../AGENTS.md`。用 husky 或者别的
 `core.hooksPath` 的，它不换掉那个目录，而是把提交检查加进那里的 `pre-commit`。项目自己的
-hook 一行都不删，`init` 也会说改了哪个文件。
+hook 一行都不删，`init` 也会说改了哪个文件。git 自己提交合并时跑的是 `pre-merge-commit`，不是
+`pre-commit`，所以 `init` 在那里也放同样的检查（`.githooks/pre-merge-commit`，用 husky 的是
+`.husky/pre-merge-commit`）。项目自己写的 `.githooks/pre-commit` 也会加上检查。`.husky/` 下的
+文件，文件权限不动：husky 9 是用 `sh` 去跑它们的。
+
+有的仓库在 `.git/hooks` 里也有自己的 hook，可能是 lefthook 或 pre-commit 框架装的，也可能是
+手写的。git 改成从 `.githooks` 找 hook 以后，这些 hook 全都不跑了。所以 `init` 写的
+`.githooks/pre-commit` 和 `.githooks/pre-merge-commit` 先跑检查，再去跑原来那个 hook；别的有执行
+权限的 hook，比如 `commit-msg`、`pre-push`，`init` 也在 `.githooks` 里各写一个文件，只管去跑原来
+那个。参数和标准输入都原样传过去。原来的 hook 留在 `.git/hooks` 里不动，`init` 会一个个说保留了
+哪些。没有执行权限的 hook，git 现在本来就不跑，所以 `init` 照常设好，并告诉你怎么留住它。要是接
+不上（提交 hook 来自全局的 `core.hooksPath`，或者项目自己的 `.githooks` 文件把检查写在 `if` 里，
+或者它和原来的 hook 都要读标准输入），`init` 就不设 `core.hooksPath`，并告诉你该怎么做。设了全局
+`core.hooksPath` 的话，`.git/hooks` 里的文件本来就没跑过，`init` 不管它们。这样的 hook 会被丢掉的
+时候，`doctor` 不会把提交检查算作做完。项目自己的 workflow，`init` 会原样留着，`doctor` 会告诉
+你该往里加哪一步。
 
 `init` 还会在 `.github/workflows/` 里放三个 workflow：`yokoten.yml`（跑提交检查；一个 lint
 job 用 actionlint 和 zizmor 查 workflow 本身；还有一个 `ci` job，设成必过的检查就只要设它）、
@@ -352,29 +392,39 @@ job 用 actionlint 和 zizmor 查 workflow 本身；还有一个 `ci` job，设�
 token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你自己的测试，加成 `yokoten.yml` 里
 的一个 job，再把它写进 `ci` 的 `needs`。
 
-另外还在 `.github/` 里放两个文件，默认设置就是安全的：
+另外还在 `.github/` 里放三个文件，默认设置就是安全的：
 
 - `dependabot.yml`：自动更新 CI 用到的 action。一个月只开一个 PR，所有更新都在里面；
   新版本发布满一周才会用。文件里的注释写了怎么用同样的方式加上你自己的包（npm、pip、Go 等）。
 - `SECURITY.md`：告诉别人发现漏洞要私下报告，不要发公开 issue。要让私下报告能用，得在仓库
   设置里打开 private vulnerability reporting（私下报告漏洞）。`doctor` 会把它和其他安全开关
   一起列出来。
+- `CODEOWNERS`：默认只许 lead 改的那些路径，都写上主人：`AGENTS.md`、`yokoten.json`、
+  `.yokoten/`、hook、agent 配置和 `.github/`。守卫在本机拦住 worker，这个文件在服务器上拦住
+  同样的改动。主人取自 GitHub 上的 `origin` 远程仓库；没有的话，文件里先放一个占位符，
+  `doctor` 会提醒你换成自己的 GitHub 用户名。GitHub 不认组织当主人，所以 `gh` 查出这个账号是
+  组织时，`init` 也写占位符，并提醒你换成一个人，或者 `@组织/团队`。完整的 `doctor` 发现文件里
+  只写了组织，也会提醒你。要真正起作用，得在分支保护里打开
+  「Require review from Code Owners」（需要 code owner 审查）。项目里本来就有 CODEOWNERS 的
+  （放在 `.github/`、根目录或 `docs/`），原样保留。
 
 | 命令 | 做什么 |
 |------|--------|
-| `install` | 把技能装进 `~/.claude/skills` 和 `~/.agents/skills`，agent 装进 `~/.claude/agents`，加上会话开头的 `doctor` hook 和用户级命令守卫，再建一个空的私有词表 |
+| `install` | 把技能装进 `~/.claude/skills` 和 `~/.agents/skills`，agent 装进 `~/.claude/agents`，加上会话开头的 `doctor` hook 和用户级命令守卫，再建一个空的私有词表。这两个 hook 给 Claude Code 装一份；已经有 `~/.codex` 或 `~/.gemini` 文件夹的话，Codex 和 Gemini CLI 也各装一份 |
 | `init [dir]` | 把这套做法放进一个项目。只加文件；已有的文件保留，并告诉你保留了哪些。它还会用 `gh` 看一眼 GitHub，告诉你要补哪些标准标签和里程碑，但不会去改 GitHub。没装 `gh`、没登录，或者远程仓库不在 GitHub 上，就说一声跳过了 |
 | `init --github --yes [--remove-default-labels]` | 补上缺的标准标签；没有打开的里程碑时，建一个叫 "First release" 的；要是已经有一个关掉的里程碑叫这个名字，就叫 "Next release"。关掉的里程碑不会被重新打开。已有的标准标签，颜色和说明改成标准的。再跑一次什么也不会变。GitHub 自带的、不在这套里的标签（`question`、`wontfix` 等），只有加上 `--remove-default-labels` 才会删 |
 | `update [dir] [--write]` | 看看这个版本的 yokoten 会怎么改项目 `AGENTS.md` 里的核心规则。加上 `--write` 才真的替换；「This project」那部分原样保留。见[更新规则](#更新规则) |
-| `doctor [--session] [--json]` | 整条路：每一关、每一步，加上这台电脑还缺什么。`--session` 只说下一步，会话开头用 |
+| `doctor [--session] [--json]` | 整条路：每一关、每一步，加上这台电脑还缺什么。`--session` 只说下一步，会话开头用。再加 `--agent gemini`，就按 Gemini CLI 读得懂的 JSON 输出 |
 | `adopt [--json]` | 给老项目的采用表出一份草稿：项目现在做到了哪些，每一步建议怎么定。`--json` 输出每一行的数据。不改任何文件 |
 | `check [--staged] [--json]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交。提交里不能有构建产物和二进制文件。查整个目录时，落后于英文的译文会给一条提醒，见[翻译](#翻译) |
 | `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的变更文件、milestone 和标签，见下面的「更新日志」。改到 CODEOWNERS 里列出的文件，必须写 `tier: A`。改动的文档里句子太长、改动的代码里名字难读、改动超过 400 行，都只提醒，不算失败 |
 | `check --issue` | 在 CI 里检查 issue 的标题，见下面的「issue 标题」 |
 | `changelog [--write]` | 列出 `changes/` 里的文件会往 `[Unreleased]` 下面加哪些条目。加上 `--write` 就真的写进 `CHANGELOG.md`，再删掉这些文件；发版前跑。见下面的「更新日志」 |
+| `learn <issue> [--write]` | 从一个事故 issue 起草一条检查，留给人来审。加上 `--write` 才把文件写进 `lessons/`。见下面的「从事故里学」 |
+| `learn --ship <id>` | 在 yokoten 里用：把审过的教训搬进 `kit/lessons/` 下的一个分组，以后每个项目跑 `doctor` 都会查它。还有 `TODO(reviewer)` 没填，或者它的测试没过，就不让搬 |
 | `check --history` | 对所有分支的每一个提交做隐私检查。私有仓库公开之前跑一遍。浅克隆看不到旧的提交，所以它不扫描、直接报错；在 CI 里要拉下全部历史（`fetch-depth: 0`） |
 | `hook [--agent <name>] [--commands-only] [--json]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool |
-| `hook --stop` | 收尾检查。从标准输入读 Claude Code 的 Stop 事件，检查改过的文件。见[收尾检查](#收尾检查) |
+| `hook --stop [--agent <name>]` | 收尾检查。从标准输入读这一轮结束的事件，检查改过的文件：默认读 Claude Code 的 Stop；加 `--agent codex` 读 Codex 的 Stop，加 `--agent gemini` 读 Gemini CLI 的 AfterAgent。见[收尾检查](#收尾检查) |
 | `explain [<id>] [--json]` | 讲一条规则或者路上的一步：它是什么、为什么要有、yokoten 怎么检查 |
 | `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。如果命令是 `gh issue` 或 `gh pr` 的 `create`、`edit`，并且带了标题，它会先按 CI 的规则检查标题；标题不合格就直接拒绝，什么都不会发出去。设置方法见 [server.md](../server.md#3-the-bot-a-github-app) |
 
@@ -385,8 +435,9 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 你是不是想打 "doctor"。`bot --` 后面的词都交给要运行的命令，所以
 `yokoten bot -- gh --help` 运行的是 `gh --help`。
 
-`check`、`doctor`、`hook`、`explain` 都可以加 `--json`。加了以后，标准输出里只有 JSON，
-别的什么都没有，方便 AI 和脚本读。每条结果的字段都一样：`id`、`what`、`why`、`fix`；
+`check`、`doctor`、`hook`、`explain`、`adopt` 都可以加 `--json`。加了以后，标准输出里只有 JSON，
+别的什么都没有，方便 AI 和脚本读。出错时也一样：用法写错了或者程序出错，标准输出是
+`{ command, ok: false, error }`，退出码是 1，错误信息照样打在标准错误里。每条结果的字段都一样：`id`、`what`、`why`、`fix`；
 指南里讲到这条规则的，再加 `docs`（链接）；问题出在文件里的，再加 `file` 和 `line`。
 拿 `id` 去跑 `yokoten explain` 就能看到详细说明。任何字段里都不会有隐私内容。
 
@@ -394,7 +445,7 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
   `pr` 或 `issue`，说明查的是哪一种。`notes` 只是提醒，不会让检查失败。CI 这次跑的不是
   PR 或 issue 时，`check --pr` 和 `check --issue` 直接算通过，多一个 `skipped` 写明原因。
 - `doctor --json`：`{ version, ok, selfTest, repo, stage, stages, next, findings, steps,
-  notes, server }`。加 `--session` 时只给下一步、私有词表缺失的提醒，以及核心规则落后时的 `core-rules`。
+  notes, server, lessons }`。教训查出来的问题放在 `notes` 里，第一次见到的教训带 `isNew: true`。加 `--session` 时只给下一步、私有词表缺失的提醒，以及核心规则落后时的 `core-rules`。
 - `hook --json`：拦下时是 `{ blocked: true, finding }`，放行时是 `{ blocked: false, toolCall: true }`；
   标准输入读到的不是工具调用时，是 `{ blocked: false, toolCall: false }`。AI 工具本身不用它：
   它们按各自的 hook 协议，看退出码，再从标准错误读原因。
@@ -406,6 +457,10 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 输出的规矩只有一条：结果写到标准输出（stdout），问题、拒绝和出错写到标准错误（stderr）。
 不认识的选项会直接拒绝，不会悄悄忽略。
 
+`init`、`update`、`doctor`、`check`、`adopt` 和 `bot` 都要在 git 仓库里跑。不在仓库里，
+它们会直说，什么文件都不写，退出码是 1。`init <dir>` 碰到不存在的文件夹也会拒绝。
+`doctor --session` 在仓库外不出声，免得打扰在别的文件夹里开的会话。
+
 CI 没过，不用再翻日志找原因。`check` 在 GitHub Actions 里跑的时候，每个问题都会标在 PR
 改动的那一行上；任务摘要（job summary）里也会列出来：在哪、哪条规则、出了什么问题、
 为什么、怎么改。规则名可以点，点开就是指南里讲它的那一节。
@@ -416,19 +471,28 @@ CI 没过，不用再翻日志找原因。`check` 在 GitHub Actions 里跑的�
 
 | 退出码 | 意思 |
 |------|------|
-| 0 | 一切正常。`doctor --session` 永远是 0，保证会话总能开始 |
-| 1 | 查出了问题（`check`、`doctor`）、id 不存在（`explain`）、命令用法不对，或者 yokoten 自己出错 |
+| 0 | 一切正常。路线图上还没做的步骤只是待办，不算问题，`doctor` 照样给 0。`doctor --session` 永远是 0，保证会话总能开始 |
+| 1 | 查出了问题：`check` 查出的，或者 `doctor` 查出的（自检失败，或者 core-rules、tree、本机这几项标着 MISSING）、id 不存在（`explain`）、命令用法不对，或者 yokoten 自己出错 |
 | 2 | hook 拦下了这次工具调用，或者收尾检查把 AI 叫回来了，原因在标准错误里 |
 
-这几个数字定下来就不改。守卫自己坏了会给 1，不给 2：这样你看得到它坏了，它也不会把每次
-工具调用都拦住。工具调用守卫是例外：hook 跑得比 AI 工具的超时还久，工具就会直接放行，
-所以守卫读一次调用超过 5 秒（可以用 `YOKOTEN_GUARD_DEADLINE_MS` 改，最多 30 秒），或者读的时候出错，
-都会拒绝这次调用，给 2（`unreadable-command`）。
+这几个数字定下来就不改。yokoten 自己出错时给 1。可是三个 AI 工具都只认 2 才拦，守卫一崩，
+调用就放过去了。所以 `init`、`install` 和插件写的工具调用 hook 会把别的退出码都改成 2：
+守卫崩了、内存爆了、被杀掉了，这次调用都会被拒绝，标准错误里有一行
+`` yokoten's guard failed (exit N), so the command is refused; run `yokoten doctor` ``。
+标准错误里只有这一行，node 自己的报错和 shell 打的「Killed」都不显示。
+有两种情况还是 1：运行时的文件夹没了，或者 AI 工具的 PATH 里找不到 `node`。这时 hook
+说一行提示就放行，免得每次工具调用都被拦住，你还能跑 `yokoten doctor` 看是怎么回事。
+收尾检查和会话开头的 doctor 照旧，出错就原样交出去。
+
+AI 工具还有一条：hook 跑得比它的超时还久，工具就直接放行。所以守卫读一次调用超过 5 秒
+（可以用 `YOKOTEN_GUARD_DEADLINE_MS` 改，最多 30 秒），或者读的时候出错，都会拒绝这次
+调用，给 2（`unreadable-command`）。
 
 ### 收尾检查
 
 工具调用 hook 只看命令。AI 用 `sed` 或脚本改了文件，它看不到。提交检查看得到，但要等到
-提交的时候。收尾检查更早：Claude Code 的 AI 说完这一轮、准备停下时就跑。
+提交的时候。收尾检查更早：AI 说完这一轮、准备停下时就跑。在 Claude Code 和 Codex 里是
+Stop 事件，在 Gemini CLI 里是 AfterAgent。
 
 ```mermaid
 flowchart LR
@@ -441,14 +505,15 @@ flowchart LR
 
 - 只查改过的文件：已暂存的、没暂存的，还有 git 没忽略的新文件。用的是 `check --staged`
   那一套：个人信息、密钥、不该改的文件。
-- 只叫回来一次。叫回来以后 Claude Code 会把 `stop_hook_active` 设成真，下次停下就一定放行，
+- 只叫回来一次。叫回来以后 AI 工具会把 `stop_hook_active` 设成真，下次停下就一定放行，
   不会来回打转。
 - 不读历史，不联网。
 - yokoten 自己出错时直接放行，只在标准错误里写一行。
 - 有个新文件你想留着、不想被查，就把它写进 `.gitignore`，或者写进 `yokoten.json` 的
   `privacy.skip`。
 
-`init` 会把它写进 `.claude/settings.json`。`install` 不在用户级加它：它要读文件，所以由
+`init` 会把它写进 `.claude/settings.json`、`.codex/hooks.json` 和 `.gemini/settings.json`。
+`install` 不在用户级加它：它要读文件，所以由
 每个项目自己打开，跟工具调用 hook 里管文件的规则一样。
 
 提交检查不让你提交 `dist/`、`build/`、`out/` 文件夹里的文件，也不让你提交二进制文件。
@@ -567,8 +632,10 @@ Fixed
 <!-- source: docs/guide.md -->
 ```
 
-路径是英文文件的路径，从仓库根目录算起。这一行写一次就行，以后不用再改。改英文时，把译文
-也一起改了，放在同一个 commit 或同一个 PR 里。
+路径是英文文件的路径，从仓库根目录算起。只有相对路径才算：像
+`<!-- source: https://example.com/post -->` 这样注明出处的注释，或者写的是绝对路径，
+`check` 都不管。这一行写一次就行，以后不用再改。改英文时，把译文也一起改了，放在同一个
+commit 或同一个 PR 里。
 
 `check` 会读每个 Markdown 和 HTML 文件的第 1 行，然后看当前分支的提交（只沿第一个父提交
 往回找）：最后一次改译文的提交，和最后一次改英文的提交是同一个，或者更晚，译文就算最新。
@@ -580,6 +647,10 @@ Fixed
 代价是：只改译文的提交也算数。在译文里改个错字，可能就把一处没人翻的英文改动盖过去了。所以
 改错字之前先跑一下 `check`，如果它说译文落后，先把译文补上。
 
+还有一个已知的漏洞：一个 PR 只改了英文，先合进去；另一个 PR 英文和译文都改了，后合进去。
+这时 `check` 发现不了。后合的那个是两个文件最后一次的提交，译文看起来是最新的，可前一个 PR
+的英文改动其实没人翻。审只改英文的 PR 时，记得让对方把译文也补上。
+
 工作区里还没提交的改动也这样算：译文改了，就当作更晚的改动；只改了英文、没改译文，译文算落后。
 
 译文落后时，`check` 给一条 `translation-behind` 提醒：落后了几个 commit，怎么看英文改了
@@ -590,8 +661,9 @@ Fixed
 `<!-- source: docs/guide.md blob 3b18e512dba79e4c8300dd08aeb37f8e728b8dad -->`。
 `check` 照样认。blob 和英文对得上，就算最新；对不上，就按上面的提交来判断。blob 随时可以删掉。
 
-浅克隆里可能没有要比的那些提交。这时 `check` 给一条提醒，不会当成最新。CI 里 checkout
-时设 `fetch-depth: 0`。
+浅克隆里没有 `check` 要比的那些提交。这时 `check` 整次运行只给一条提醒，说译文没检查，
+不会每个文件都报一条。就算设了 `"fail": true`，这条提醒也不会让 CI 失败。CI 里 checkout
+时设 `fetch-depth: 0`，kit 里的 `yokoten.yml` 已经设好了。
 
 ### 更新规则
 
@@ -623,6 +695,70 @@ yokoten 每学到一个教训，核心规则就会改。`yokoten install` 会更
 装了 Claude Code 插件的话，直接用 `/yokoten:update`。它跑的是插件自己那份 yokoten，
 先给你看要改什么，你点头了才写。
 
+### 从事故里学
+
+出了一次事故，就是学到了一课。`yokoten learn` 把这一课写成一条检查，最后每个项目都会跑它：
+
+```mermaid
+flowchart LR
+  A[事故 issue] --> B[yokoten learn]
+  B --> C[检查草稿]
+  C --> D[人来审]
+  D --> E[learn --ship：放进 kit]
+  E --> F[每个项目的 doctor]
+```
+
+后面跟 issue 编号就行；别的仓库的 issue，就给它的网址。它用 `gh` 读 issue，走的是你自己的登录。
+它不调用任何 AI 模型，草稿里的内容全部照着 issue 里的几节来填：
+
+| 草稿里的字段 | 从哪来 |
+|---|---|
+| `id` | `incident-<编号>` |
+| `what` | 标题里 `area: ` 后面那部分 |
+| `why` | 「Why it matters」那一节。没有这一节，就先拿「Why it got through」顶上，再留一个 `TODO(reviewer)` 让人改写 |
+| `fix` | 「Fix」那一节 |
+
+issue 里没写的那一节，对应的字段就留一个 `TODO(reviewer)`，绝不替你瞎编。issue 的原文也会放进注释里，
+审的人不用来回翻。
+
+`yokoten learn 138` 只把草稿打出来，什么都不写。`yokoten learn 138 --write` 会在
+`lessons/incident-138/` 里加两个文件：
+
+- `lesson.ts`：这条检查要报的内容，外加一个空的 `findProblems`，检查本身要人来写。
+- `lesson.test.ts`：一个「阳性对照」测试：故意喂给检查一个有问题的例子，要求它能抓到。
+
+检查没写好之前，这个测试一直是红的，所以草稿自己永远过不了。`--write` 只加文件，
+已经有的文件不会动。
+
+`findProblems` 拿到的是一个仓库的文件夹，在哪里发现问题，就为那个地方报一条。它只读文件：
+不联网，也不改任何东西。要写得快一点，因为每个项目跑 `doctor` 都会跑它。
+
+审完了，就把这一课发出去。在 yokoten 的仓库里跑 `yokoten learn --ship incident-138`，
+它会把这一课搬进一个编了号的分组，比如 `kit/lessons/1/incident-138/`。分组是为了让每个文件夹
+最多 7 项：一个分组放 5 课，再留 2 个位置给下一层分组，新的一课放进第一个还有空位的分组。
+然后在教训表 `kit/lessons/README.md` 里加一行：编号、放在哪个文件夹、出自哪个事故、哪个 yokoten 版本加的。只要还有 `TODO(reviewer)` 没填，或者测试没过，
+它就不搬，什么都不动。yokoten 自己也有一个测试，对 kit 里的每一课都查这几条。
+之所以做成命令而不是让人手动 `git mv`，是因为搬文件、加表格、跑测试要一次做完，不会只做一半。
+
+项目换上新版 yokoten 以后，`yokoten doctor` 就会拿这一课去查这个项目。查到问题，就给一条提醒：
+
+```
+project:
+  note    lesson incident-138: test/api.test.ts: a test calls a server on this machine and does not set NO_PROXY; set NO_PROXY and no_proxy to 127.0.0.1,localhost while the test runs, then put the old values back
+```
+
+项目里第一次跑完整的 `doctor` 碰到一课新的，会单独说一次，哪怕没查出问题：
+`note    new lesson: incident-138 (<what>); doctor now runs it in this project`。
+见过哪些课记在 `.git/yokoten/state.json` 里，这个文件不会被提交。会话开头跑的 doctor 不写它。
+
+提醒不会让 `doctor` 失败。某个项目不想查这一课，就在 `yokoten.json` 的 "notNow" 里写上它的编号和理由，
+比如 `"notNow": { "incident-138": "a setup file sets it" }`。
+
+**自己走一遍。** 在 yokoten 的仓库里跑 `node scripts/demo/loop.ts`，大约一秒就把整个流程走完：
+出事故、起草稿、没审就发被拒、人来审、发进 kit，最后另一个项目的 `doctor` 给出提醒。
+全程在临时文件夹里做，不联网（用的是假的 `gh`），做完就删。想留下来看看，加 `--keep`，
+它会打出文件夹在哪里。
+
 ### 设置
 
 项目的设置写在仓库根目录的 `yokoten.json` 里，每一项都可以不写。列表类的设置，你写了
@@ -633,7 +769,7 @@ yokoten 每学到一个教训，核心规则就会改。`yokoten install` 会更
 | `layout.maxEntries` | `7` | 一个文件夹最多放几项（第 10 条核心规则） |
 | `layout.exempt` | 无 | 可以超过上限的文件夹，比如一项一项往下记的决策记录 |
 | `tests` | `*.test.*`、`*.spec.*`、`*_test.go`、`test/**`、`tests/**` | 哪些算测试文件，修复任务不能改 |
-| `leadOnly` | 规则、agent 配置、`.githooks/**`、`.github/**` | worker 不能改的文件 |
+| `leadOnly` | 规则、agent 配置、`.githooks/**`、`.github/**`、项目里那份 yokoten 副本 `.yokoten/**` | worker 不能改的文件 |
 | `privacy.allow` | 无 | 隐私检查放行的原样字符串，比如公开的客服邮箱 |
 | `privacy.skip` | 各种 lock 文件 | 隐私检查不读的文件 |
 | `privacy.utc` | `true` | 提交时间必须用 UTC |
@@ -738,7 +874,7 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 | A | 改错了很难收回：密钥、数据、安装、发版、CODEOWNERS 里的文件 | 主人审 |
 
 `.github/CODEOWNERS` 只列出改错了很难收回的文件：规则、kit、agent 配置、CI、记录。
-不是每个文件都列。仓库打开「需要 code owner 审查」以后，PR 一改到这些文件，GitHub
+不是每个文件都列。新项目跑 `init` 时，会按只许 lead 改的路径写好一份。仓库打开「需要 code owner 审查」以后，PR 一改到这些文件，GitHub
 就会请主人来审。
 
 `check --pr` 把这两件事接起来。PR 改到 CODEOWNERS 里的文件，第一行却不是 `tier: A`，
@@ -783,12 +919,13 @@ AWS 的 access key id，还有 PEM 私钥。查到了只说是哪一种密钥，
   看不准会跑什么就拦下。但把命令拆开再拼起来，还是能绕过。它防的是失误和走样，不是一把锁。真正
   的锁在服务器上：分支保护、代码负责人，以及一个没有发版权限、改不了 CI 的 bot。
 - **服务器设置只能读 GitHub 的。** 换成别的代码托管平台，这几步就标 can't check。bot 的权限 `doctor` 还查不了。
-- **先支持 Claude Code。** agent 和用户级 hook 都按 Claude Code 的格式写。技能用的是公开
+- **先支持 Claude Code。** agent 按 Claude Code 的格式写。技能用的是公开
   的 SKILL.md 格式，所以 `install` 也会把它们放进 `~/.agents/skills`，Codex、Gemini CLI、
-  Copilot、Cursor 这些 AI 会去那里找。工具调用守卫在 Codex 和 Gemini CLI 里也能用：`init`
-  会写好 `.codex/hooks.json` 和 `.gemini/settings.json`，这两个工具第一次碰到这个 hook
-  时会让你确认一次。还没有人在真的 Codex 或 Gemini CLI 里看到它拦下过命令（#30），所以
-  `doctor` 只说这两个 hook 在不在，不算作缺少。规则就是普通的 `AGENTS.md`：项目里没有
+  Copilot、Cursor 这些 AI 会去那里找。工具调用守卫和收尾检查在 Codex 和 Gemini CLI 里也能用：
+  `init` 会写好 `.codex/hooks.json` 和 `.gemini/settings.json`，这两个工具会先请你信任这些
+  hook。还没有人在真的 Codex 或 Gemini CLI 里看到它们拦下过东西（#30），所以 `doctor` 只说
+  这些 hook 在不在，不算作缺少。有 `~/.codex` 或 `~/.gemini` 文件夹时，用户级的
+  hook 也照这样报告。规则就是普通的 `AGENTS.md`：项目里没有
   `CLAUDE.md` 时 Claude Code 会直接读它，大多数别的 AI 也读。Muse Code 的技能和 hook
   还在计划中。
 

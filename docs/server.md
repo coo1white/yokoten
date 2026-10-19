@@ -77,9 +77,11 @@ no sign-up, is tied to no person, and its rights are listed one by one.
 3. **Install App** → the account that owns the repo → **Only select repositories** →
    this repo. yokoten's own bot is installed on its organization, for the yokoten repo
    only.
-4. Add a `.github/CODEOWNERS` file. Give it one line `<path> @<you>` for each path where a
-   mistake is hard to undo: `AGENTS.md`, CI, agent config, the rule code. A pull request
-   that changes one of them needs your review (step 1 requires it), and is tier A.
+4. Check `.github/CODEOWNERS`. `yokoten init` writes one line `<path> @<owner>` for each
+   lead-only path, where a mistake is hard to undo: `AGENTS.md`, CI, agent config, the rule
+   code. Put your GitHub handle in place of `@YOUR_GITHUB_HANDLE` if init left it, or a
+   person or `@org/team` if the repo belongs to an organization. A pull request that changes
+   one of these paths needs your review (step 1 requires it), and is tier A.
 
 5. Note the **App ID** (on the App's page, under About), and add it to your shell
    profile: `export YOKOTEN_BOT_APP_ID=<the App ID>`.
@@ -97,12 +99,33 @@ login. The guard still applies: `bot -- git push --tags` is stopped like any tag
 (Settings: `YOKOTEN_BOT_KEY` for another key path, `YOKOTEN_BOT_INSTALLATION` to skip
 looking the installation up.)
 
+## 4. The project board (only if the repo has one)
+
+The `board` workflow fills the board's Start, Target and Status every hour, and when an
+issue opens, closes or gets a milestone. It runs as the bot, so the bot needs the right
+to change the board. The board belongs to the organization, so this is an organization
+permission.
+
+1. The App's page → **Permissions & events** → Organization permissions → **Projects:
+   Read and write**. Save.
+2. Organization settings → GitHub Apps → the bot → **Configure** → accept the request. GitHub
+   asks each installation; until you accept, the old permissions stay.
+3. The repo → Settings → Secrets and variables → Actions:
+   - **Secrets** tab → New repository secret: name `BOT_PRIVATE_KEY`, value the whole
+     text of the bot's `.pem` file.
+   - **Variables** tab → New repository variable: name `BOT_CLIENT_ID`, value the
+     **Client ID** from the App's page (under About). It is not a secret.
+4. Actions → **board** → Run workflow. The run lists each field it set.
+
+The workflow asks GitHub for a one-hour token with three rights only: write the
+organization's projects, read issues, read pull requests.
+
 ## What you have now
 
 | Who | Can | Cannot |
 |-----|-----|--------|
 | You | approve, merge, tag, change settings | merge your own unreviewed change without a bypass |
-| The bot | push branches, open pull requests and issues; with Workflows permission, push a branch that changes CI | merge without your review, push to `main`, create `v*` tags, publish without your approval in the `release` environment |
+| The bot | push branches, open pull requests and issues, fill the board; with Workflows permission, push a branch that changes CI | merge without your review, push to `main`, create `v*` tags, publish without your approval in the `release` environment |
 | A worker | commit in its worktree | push, or edit rules, hooks or CI (guard) |
 
 ## Without an App
