@@ -1,5 +1,5 @@
 // The yokoten loop in about a second (#174): one incident becomes a check that every project
-// gets. Run it: node scripts/demo.ts [--keep]
+// gets. Run it: node scripts/demo/loop.ts [--keep]
 //
 // It works in a temp folder and leaves nothing behind (`--keep` keeps the folder and prints
 // where it is). It runs offline: a fake `gh` gives the incident issue.
@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const SOURCE_DIR = fileURLToPath(new URL('..', import.meta.url));
+const SOURCE_DIR = fileURLToPath(new URL('../..', import.meta.url));
 const COPIED_PARTS = ['bin', 'src', 'kit', 'package.json'];
 const INCIDENT_URL = 'https://github.com/octo-org/project-a/issues/12';
 const LESSON_ID = 'incident-12';
@@ -197,7 +197,7 @@ export function runDemo({ isKept = false, print = (line: string) => console.log(
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const unknown = process.argv.slice(2).filter((arg) => arg !== '--keep');
   if (unknown.length) {
-    console.error(`usage: node scripts/demo.ts [--keep]   (unknown: ${unknown.join(' ')})`);
+    console.error(`usage: node scripts/demo/loop.ts [--keep]   (unknown: ${unknown.join(' ')})`);
     process.exitCode = 2;
   } else process.exitCode = runDemo({ isKept: process.argv.includes('--keep') });
 }
