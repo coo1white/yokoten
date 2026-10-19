@@ -6,6 +6,7 @@
 // it first runs a new or changed one.
 
 import { join } from 'node:path';
+import { guardCommand, missingProjectRuntime } from '../run/cli.ts';
 import type { Action } from '../run/hook.ts';
 import { addHook, hasHook } from './hooks-file.ts';
 
@@ -38,7 +39,7 @@ const projectSettings = (root: string) => join(root, '.gemini', 'settings.json')
  * path with a space, and the hook would fail open. An older quoted hook is updated in place.
  */
 export const addProjectHook = (root: string, cli: string) =>
-  addHook(projectSettings(root), 'BeforeTool', 'run_shell_command|write_file|replace', `node $GEMINI_PROJECT_DIR/${cli} hook --agent gemini`, {
+  addHook(projectSettings(root), 'BeforeTool', 'run_shell_command|write_file|replace', guardCommand(`$GEMINI_PROJECT_DIR/${cli}`, 'hook --agent gemini', missingProjectRuntime(cli)), {
     name: 'yokoten',
   });
 export const hasProjectHook = (root: string): boolean => hasHook(projectSettings(root), 'BeforeTool', 'hook');
