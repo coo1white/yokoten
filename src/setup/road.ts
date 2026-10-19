@@ -75,10 +75,11 @@ export const gitConfig = (root: string, key: string) => {
   }
 };
 
-const ciText = (root: string) => {
+const ciFiles = (root: string): string[] => {
   const dir = join(root, '.github', 'workflows');
-  return existsSync(dir) ? readdirSync(dir).map((f) => read(join(dir, f))).join('\n') : '';
+  return existsSync(dir) ? readdirSync(dir).map((f) => read(join(dir, f))) : [];
 };
+const ciText = (root: string) => ciFiles(root).join('\n');
 
 const TODO_FILES = ['TODO.md', 'TODO', 'todo.md', 'docs/todo'];
 // Names as the folder lists them: on a case-insensitive disk (macOS) TODO.md also "exists" as todo.md.
@@ -213,6 +214,55 @@ export const runsTests = (ci: string, script: string, workspaces: boolean) => {
   if (run.some((c) => RUNNERS.some((r) => r.test(c)))) return true;
   if (script !== '' && (run.some((c) => RUNS_SCRIPT.test(c)) || lines.some((l) => l.includes(script)))) return true;
   return workspaces && run.some((c) => RUNS_WORKSPACES.some((r) => r.test(c)));
+};
+/**
+ * Whether the workflows run a yokoten command: anywhere in the text by its path, or as a
+ * command in a `run:` step, where `- run: npx yokoten check` starts after the key (#298).
+ */
+const ciRuns = (ci: string, command: RegExp) => command.test(ci) || runLines(ci).flatMap(commands).some((c) => command.test(c));
+const indentOf = (line: string) => /^[ \t]*/.exec(line)![0].length;
+// A step that uses yokoten's own Action, at any ref (even the guide's "<full commit SHA>"), quoted or not, with a comment or not.
+const USES_YOKOTEN = /^[ \t]*uses:[ \t]*(["']?)yokoten-labs\/yokoten@[^\s"'#]+(?:[ \t]+[^\s"'#]+)*\1[ \t]*(?:#.*)?$/;
+const PR_CHECK_OFF = /^[ \t]*pr-check:[ \t]*(["']?)false\1[ \t]*(?:#.*)?$/;
+/**
+ * The steps in one workflow that use the yokoten Action, each with whether it runs
+ * `check --pr`: it does unless its `with:` sets `pr-check: false`. Each list item is read
+ * once and then skipped, so the read is linear in the text (#298).
+ */
+export const yokotenActions = (workflow: string): { prCheck: boolean }[] => {
+  const found: { prCheck: boolean }[] = [];
+  const text = workflow.split(/\r?\n/);
+  for (let i = 0; i < text.length; i++) {
+    const item = /^([ \t]*)-[ \t]+(.*)$/.exec(text[i]);
+    if (!item) continue;
+    // The item's keys sit two past the dash; its first key is on the dash line.
+    const keyIndent = item[1].length + 2;
+    const lines = [' '.repeat(keyIndent) + item[2]];
+    for (; i + 1 < text.length && (text[i + 1].trim() === '' || indentOf(text[i + 1]) > item[1].length); i++) lines.push(text[i + 1]);
+    const keys = lines.filter((l) => l.trim() !== '' && indentOf(l) === keyIndent);
+    if (!keys.some((l) => USES_YOKOTEN.test(l))) continue;
+    let inWith = false;
+    let prCheck = true;
+    for (const line of lines) {
+      if (line.trim() === '') continue;
+      if (indentOf(line) <= keyIndent) inWith = /^[ \t]*with:[ \t]*(?:#.*)?$/.test(line) && indentOf(line) === keyIndent;
+      else if (inWith && PR_CHECK_OFF.test(line)) prCheck = false;
+    }
+    found.push({ prCheck });
+  }
+  return found;
+};
+/** Whether one workflow runs on pull requests: its top-level `on:` names pull_request or pull_request_target. */
+export const onPullRequest = (workflow: string): boolean => {
+  const text = workflow.split(/\r?\n/);
+  for (let i = 0; i < text.length; i++) {
+    const on = /^(?:on|"on"|'on'):(.*)$/.exec(text[i]);
+    if (!on) continue;
+    const block = [on[1]];
+    for (; i + 1 < text.length && (text[i + 1].trim() === '' || /^[ \t#]/.test(text[i + 1])); i++) block.push(text[i + 1]);
+    if (block.some((l) => /(?:^|[\s[,{])pull_request(?:_target)?(?=[\s:,\]}]|$)/.test(l.replace(/#.*/, '')))) return true;
+  }
+  return false;
 };
 const ciRunsTests = (root: string) => runsTests(ciText(root), testScript(root), isWorkspaces(root));
 // What runs the tests in each kind of project, by a file at the root; the first three when none is found.
@@ -358,6 +408,56 @@ const serverStep = (key: string, fields: { lacking: string; fix: string; why: st
   ...(fields.standard ? { standard: fields.standard } : {}),
 });
 
+// The review step (#59): a merge to the default branch needs one approval. The bot opens
+// the pull requests, so the owner is not their author and can approve them. A private
+// repo on a free plan has no rulesets: the step waits for stage 5, when the repo goes
+// public. That shows as "can't check", which never holds the stage. It is not "not now":
+// that mark is the owner's own decision in yokoten.json, and doctor never makes it for them.
+
+/** What the review step judges, as full doctor read it, or why there is nothing to judge. */
+const reviewRead = (server: ServerRead): { approvals: number; actionsCanApprove: boolean | null } | Unread => {
+  const settings = server ?? SESSION_UNREAD;
+  if ('unread' in settings) return settings;
+  const branch = settings.branch;
+  if ('unread' in branch) {
+    if (settings.isPrivate && /GitHub Pro/.test(branch.unread)) return { unread: `${branch.unread}, so no rule can ask for an approval yet; this step waits for stage 5, when the repo goes public`, fix: 'or upgrade to GitHub Pro (or Team for an organization) and run doctor again' };
+    return branch;
+  }
+  if (branch.approvals === null) return { unread: 'no ruleset asks for an approval, and the old branch protection can be read only by an admin', fix: 'sign in to gh as a repo admin and run doctor again' };
+  return { approvals: branch.approvals, actionsCanApprove: settings.actionsCanApprove };
+};
+
+/** True when approvals are required but a workflow may still approve a pull request. */
+const workflowsApprove = (server: ServerRead) => {
+  const read = reviewRead(server);
+  return !('unread' in read) && read.approvals >= 1 && read.actionsCanApprove === true;
+};
+
+const ACTIONS_SETTING = '"Allow GitHub Actions to create and approve pull requests"';
+
+const reviewStep: Step = {
+  stage: 4,
+  key: 'review',
+  check: (...[, , server]) => {
+    const read = reviewRead(server);
+    if ('unread' in read) return null;
+    if (read.approvals < 1 || read.actionsCanApprove === true) return false;
+    return read.actionsCanApprove === false ? true : null;
+  },
+  what: (...[, , server]) => (workflowsApprove(server) ? `a workflow may approve a pull request (${ACTIONS_SETTING} is on), so the bot could approve its own` : 'a merge to the default branch needs no approving review'),
+  fix: (...[, , server]) => (workflowsApprove(server)
+    ? `in Settings, Actions, General, turn off ${ACTIONS_SETTING}, and keep it off`
+    : `${RULESET}: in "Require a pull request", set "Required approvals" to 1. You can't approve your own pull request, so let the bot open them, and keep ${ACTIONS_SETTING} off in Settings, Actions, General`),
+  unchecked: (server) => {
+    const read = reviewRead(server);
+    if ('unread' in read) return `${read.unread}; ${read.fix}`;
+    return read.approvals >= 1 && read.actionsCanApprove === null ? `the Actions setting ${ACTIONS_SETTING} can be read only by an admin; sign in to gh as a repo admin and run doctor again` : '';
+  },
+  why: 'the bot opens the pull requests, so you approve work you did not write, and nothing merges unread',
+  how: 'through the code host\'s API, in full doctor only: a ruleset (or the old branch protection) on the default branch asks for at least 1 approving review, and the Actions setting that lets a workflow approve a pull request is off; a private repo without rulesets waits for stage 5',
+  standard: 'Scorecard: Code-Review',
+};
+
 // The planning steps (#10): the labels and an open milestone, as full doctor read them.
 
 /** The labels and milestones full doctor read, or why there are none to judge. */
@@ -474,11 +574,11 @@ export const ROAD: Step[] = [
     stage: 2,
     key: 'ci',
     // `check --pr` is the titles step, and `check --issue` checks issues; this one wants the tree check itself.
-    check: (root) => runs('check(?!\\s+--(?:pr|issue))').test(ciText(root)),
+    check: (root) => ciRuns(ciText(root), runs('check(?!\\s+--(?:pr|issue))')) || ciFiles(root).some((f) => yokotenActions(f).length > 0),
     what: () => 'CI does not run `yokoten check`',
     fix: () => '`yokoten init` adds .github/workflows/yokoten.yml',
     why: 'a commit made with the hook off would reach main unchecked',
-    how: 'a workflow in .github/workflows runs `yokoten check`',
+    how: 'a workflow in .github/workflows runs `yokoten check` (by its path, or with npx, bunx or pnpm dlx), or has a step that uses yokoten-labs/yokoten',
     standard: 'Scorecard: CI-Tests',
   },
   {
@@ -508,7 +608,7 @@ export const ROAD: Step[] = [
     what: (...[, , server]) => `the standard labels are not all on the server (no ${lackingNames(server).join(', ')})`,
     fix: () => '`yokoten init` shows what it would add, and `yokoten init --github --yes` adds them',
     why: 'a label says what kind of change a pull request is, and the pull request check asks for one',
-    how: 'through the code host\'s API, in full doctor only: the repo has the labels bug, feat, docs, refactor, ci, owner, incident, good first issue and hotfix',
+    how: 'through the code host\'s API, in full doctor only: the repo has the labels bug, feat, docs, refactor, ci, owner, incident, good first issue, hotfix, tier A, tier B and tier C',
   }),
   planningStep('milestone', (planning) => pickNewMilestone(planning.milestones) === null, {
     what: () => 'no open milestone on the server',
@@ -546,11 +646,11 @@ export const ROAD: Step[] = [
   {
     stage: 3,
     key: 'titles',
-    check: (root) => runs('check --pr').test(ciText(root)),
+    check: (root) => ciRuns(ciText(root), runs('check --pr')) || ciFiles(root).some((f) => onPullRequest(f) && yokotenActions(f).some((a) => a.prCheck)),
     what: () => 'CI does not check pull requests (`yokoten check --pr`)',
     fix: () => '`yokoten init` adds .github/workflows/pr.yml',
     why: 'a pull request title becomes the commit on main, so it must say what changed and why',
-    how: 'a workflow in .github/workflows runs `yokoten check --pr`',
+    how: 'a workflow in .github/workflows runs `yokoten check --pr`, or runs on pull requests with a step that uses yokoten-labs/yokoten and does not set `pr-check: false`',
     standard: 'Conventional Commits 1.0.0',
   },
   {
@@ -585,6 +685,7 @@ export const ROAD: Step[] = [
     why: 'the skills show an agent how to hand off work, review it and find the cause of a failure',
     how: 'every skill in the kit is in ~/.claude/skills and in ~/.agents/skills, or the Claude Code plugin is on; a project copy of yokoten has no kit, so it can\'t check',
   },
+  reviewStep,
   {
     stage: 5,
     key: 'security-files',
