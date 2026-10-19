@@ -1,14 +1,16 @@
-// What yokoten knows about Google's Gemini CLI: the shape of its BeforeTool call and where
-// its project hooks live. Source: https://geminicli.com/docs/hooks/ (reference, and the
+// What yokoten knows about Google's Gemini CLI: the shape of its BeforeTool and AfterAgent events, and where
+// its project and user hooks live. Source: https://geminicli.com/docs/hooks/ (reference, and the
 // tools pages for each tool's arguments).
 //
 // Gemini CLI fingerprints a project hook by its name and command, and warns once before
 // it first runs a new or changed one.
 
+import { homedir } from 'node:os';
 import { join } from 'node:path';
+import type { Env } from '../rules/config.ts';
 import { guardCommand, missingProjectRuntime } from '../run/cli.ts';
 import type { Action } from '../run/hook.ts';
-import { addHook, hasHook } from './hooks-file.ts';
+import { type Added, addHook, hasHook } from './hooks-file.ts';
 
 // run_shell_command takes `command`; write_file and replace take `file_path`.
 const SHELL = 'run_shell_command';
@@ -25,7 +27,8 @@ export function readToolCall(input: unknown): Action {
     command: name === SHELL && typeof tool.command === 'string' ? tool.command : undefined,
     paths: EDITS.has(name) && file ? [file] : [],
     cwd: text(call.cwd),
-    // A BeforeTool call names no subagent type; YOKOTEN_ROLE decides.
+    // A BeforeTool call names no subagent type; YOKOTEN_ROLE decides. Gemini's strict
+    // environment sanitization removes YOKOTEN_ROLE, and then no session is a worker.
     worker: false,
   };
 }
@@ -43,3 +46,33 @@ export const addProjectHook = (root: string, cli: string) =>
     name: 'yokoten',
   });
 export const hasProjectHook = (root: string): boolean => hasHook(projectSettings(root), 'BeforeTool', 'hook');
+
+/**
+ * The project's stop check (#211). Gemini's AfterAgent event runs when the agent ends its
+ * turn; its input has `cwd` and `stop_hook_active`, and exit 2 with a reason on stderr
+ * makes the agent try again.
+ */
+export const addProjectStopHook = (root: string, cli: string) =>
+  addHook(projectSettings(root), 'AfterAgent', undefined, guardCommand(`$GEMINI_PROJECT_DIR/${cli}`, 'hook --stop --agent gemini', missingProjectRuntime(cli)), {
+    name: 'yokoten-stop',
+  });
+export const hasProjectStopHook = (root: string): boolean => hasHook(projectSettings(root), 'AfterAgent', 'hook');
+
+/** An AfterAgent event: the same fields as Claude Code's Stop (`cwd`, `stop_hook_active`). */
+export { readStop } from './claude-code.ts';
+
+/**
+ * What a SessionStart hook prints: Gemini CLI reads the agent's context from JSON
+ * (`hookSpecificOutput.additionalContext`), not from plain text.
+ */
+export const formatSessionContext = (text: string): string => JSON.stringify({ hookSpecificOutput: { additionalContext: text } });
+
+const userSettings = (env: Env) => join(env.HOME || homedir(), '.gemini', 'settings.json');
+
+/** The user's hooks, in every repo: doctor at session start, and the command guard on shell calls. `missing` is what they say when `cli` is gone. */
+export function addUserHooks(env: Env, cli: string, missing: string): { doctor: Added; guard: Added } {
+  return {
+    doctor: addHook(userSettings(env), 'SessionStart', undefined, guardCommand(cli, 'doctor --session --agent gemini', missing, { isSessionStart: true, sessionOutput: 'json' }), { name: 'yokoten-session' }),
+    guard: addHook(userSettings(env), 'BeforeTool', SHELL, guardCommand(cli, 'hook --agent gemini --commands-only', missing), { name: 'yokoten-guard' }),
+  };
+}

@@ -1,7 +1,7 @@
 // What init and install share: where yokoten itself lives, copying its runtime, and
 // writing files without stepping on what is already there.
 
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -18,7 +18,7 @@ export const KIT = join(HOME_DIR, 'kit');
 /** A line that marks a file yokoten owns. Install replaces such a file; it never touches others. */
 export const MANAGED = 'managed by yokoten';
 
-/** How a copy of the runtime went: written, or kept because it is the copy running now (#204). */
+/** How a copy of the runtime went: written, or kept because `dest` is or holds the copy running now (#204). */
 export type CopyResult = 'wrote' | 'kept';
 
 /** `path` with symlinks resolved. A part that does not exist yet is kept as it is. */
@@ -32,14 +32,20 @@ function resolveReal(path: string): string {
   }
 }
 
-/** Whether two folders are the same, or one is inside the other, after symlinks. */
-export function isSameOrNested(left: string, right: string): boolean {
-  const [a, b] = [resolveReal(left), resolveReal(right)];
-  const isInside = (inner: string, outer: string) => {
-    const path = relative(outer, inner);
-    return path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path);
-  };
-  return isInside(a, b) || isInside(b, a);
+/** Whether `inner` is `outer` or inside it, after symlinks. */
+export function isSameOrInside(inner: string, outer: string): boolean {
+  const path = relative(resolveReal(outer), resolveReal(inner));
+  return path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path);
+}
+
+/** Remove the temp folders that a copy to `dest` stopped by a crash or Ctrl-C left next to it. */
+function removeLeftovers(dest: string): void {
+  const parent = dirname(resolve(dest));
+  if (!existsSync(parent)) return;
+  const prefixes = ['new', 'old'].map((kind) => `.${basename(dest)}-${kind}-`);
+  for (const name of readdirSync(parent)) {
+    if (prefixes.some((prefix) => name.startsWith(prefix))) rmSync(join(parent, name), { recursive: true, force: true });
+  }
 }
 
 /**
@@ -51,31 +57,41 @@ export function isSameOrNested(left: string, right: string): boolean {
  * It copies the .ts files, also from the npm package: `dest` is not under node_modules,
  * so Node runs them there as they are.
  *
- * When `dest` is the running copy (or one holds the other), nothing is copied: replacing
- * it would delete the files being run (#204). Otherwise the new copy goes into a folder
- * next to `dest` first, then takes its place, so a failed copy leaves the old one working.
- * `copy` is there for a test to make a copy fail.
+ * When `dest` is the running copy, or holds it, nothing is copied: replacing it would
+ * delete the files being run (#204). A `dest` inside the running copy gets its own copy,
+ * unless it is inside a part that is copied: that copy would hold itself, so it is refused.
+ * The new copy goes into a folder next to `dest` first, then takes its place, so a failed
+ * copy leaves the old one working. Temp folders that a crash left there are removed first.
+ * `copy` and `rename` are there for a test to make a step fail.
  */
-export function copyRuntime(dest: string, { withKit = false, copy = cpSync }: { withKit?: boolean; copy?: typeof cpSync } = {}): CopyResult {
-  if (isSameOrNested(HOME_DIR, dest)) return 'kept';
+export function copyRuntime(dest: string, { withKit = false, copy = cpSync, rename = renameSync }: { withKit?: boolean; copy?: typeof cpSync; rename?: typeof renameSync } = {}): CopyResult {
+  if (isSameOrInside(HOME_DIR, dest)) return 'kept';
+  const parts = ['bin', 'src', 'package.json', ...(withKit ? ['kit'] : [join('kit', 'project', 'AGENTS.md')])];
+  const holder = parts.find((part) => isSameOrInside(dest, join(HOME_DIR, part)));
+  if (holder) {
+    const where = relative(resolveReal(HOME_DIR), resolveReal(dest)).split(sep).join('/');
+    throw new Error(`cannot copy the runtime to ${where}, because it is inside ${holder}/ of the copy running now. Run yokoten from a copy outside that folder`);
+  }
+  removeLeftovers(dest);
   const parent = dirname(resolve(dest));
   mkdirSync(parent, { recursive: true });
   const fresh = mkdtempSync(join(parent, `.${basename(dest)}-new-`));
+  let old: string | null = null;
   try {
-    const kitParts = withKit ? ['kit'] : [join('kit', 'project', 'AGENTS.md')];
-    for (const part of ['bin', 'src', 'package.json', ...kitParts]) copy(join(HOME_DIR, part), join(fresh, part), { recursive: true });
+    for (const part of parts) copy(join(HOME_DIR, part), join(fresh, part), { recursive: true });
     writeFileSync(join(fresh, 'VERSION'), `${VERSION}\n`);
+    if (existsSync(dest)) {
+      const aside = fresh.replace(/-new-(\w+)$/, '-old-$1');
+      rename(dest, aside);
+      old = aside;
+    }
+    rename(fresh, dest);
   } catch (error) {
-    rmSync(fresh, { recursive: true, force: true });
-    throw error;
-  }
-  const old = existsSync(dest) ? fresh.replace(/-new-(\w+)$/, '-old-$1') : null;
-  if (old) renameSync(dest, old);
-  try {
-    renameSync(fresh, dest);
-  } catch (error) {
-    if (old) renameSync(old, dest);
-    rmSync(fresh, { recursive: true, force: true });
+    try {
+      if (old) rename(old, dest);
+    } finally {
+      rmSync(fresh, { recursive: true, force: true });
+    }
     throw error;
   }
   if (old) rmSync(old, { recursive: true, force: true });

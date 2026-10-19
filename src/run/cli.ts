@@ -16,13 +16,30 @@ export const subcommand = (command: string): string | undefined => command.match
  * file is gone, it says `missing` in one line, never a Node stack trace with the full path
  * (#204). It exits 1: the agents report that and go on, so a missing copy never blocks
  * every tool call. At session start the line goes to stdout with exit 0, where the agent
- * reads it. `missing` has no single quote, and never names the file followed by a word,
- * or `subcommand` would read that word.
+ * reads it, as plain text or, for Gemini CLI, as JSON (`sessionOutput`). The test's own
+ * error goes to /dev/null, so a broken path never prints the full path.
+ * `missing` has no quote or backslash, so it fits in the echo and the JSON as it is. It
+ * never names the file followed by a word, or `subcommand` would read that word.
  */
-export function guardCommand(path: string, args: string, missing: string, { isSessionStart = false }: { isSessionStart?: boolean } = {}): string {
-  const say = isSessionStart ? `echo '${missing}'; exit 0` : `echo '${missing}' >&2; exit 1`;
-  return `[ -f ${path} ] || { ${say}; }; node ${path} ${args}`;
+export function guardCommand(
+  path: string,
+  args: string,
+  missing: string,
+  { isSessionStart = false, sessionOutput = 'text' }: { isSessionStart?: boolean; sessionOutput?: 'text' | 'json' } = {},
+): string {
+  if (/['"\\]/.test(missing)) throw new Error(`a missing-runtime line has a quote or a backslash: ${missing}`);
+  const line = sessionOutput === 'json' ? `{"hookSpecificOutput":{"additionalContext":"${missing}"}}` : missing;
+  const say = isSessionStart ? `echo '${line}'; exit 0` : `echo '${missing}' >&2; exit 1`;
+  return `[ -f ${path} ] 2>/dev/null || { ${say}; }; node ${path} ${args}`;
 }
+
+/**
+ * The line that runs the commit check from a project's own pre-commit, by `cli`'s path.
+ * Without the runtime, one plain line and exit 1, as in the kit's pre-commit (#204).
+ * `init` writes it, and its advice and `doctor`'s show the same line.
+ */
+export const commitCheckLine = (cli: string): string =>
+  `[ -f "${cli}" ] 2>/dev/null || { echo 'yokoten: the commit check cannot run, because ${cli} is missing. Restore it from git, or run yokoten init again' >&2; exit 1; }; node "${cli}" check --staged || exit 1`;
 
 /** The line a project's hook says when its runtime folder (`.yokoten/`, or `bin/` in yokoten's own repo) is gone. */
 export const missingProjectRuntime = (cli: string): string =>
@@ -101,11 +118,12 @@ export const COMMANDS: Command[] = [
   {
     name: 'doctor',
     summary: 'the road: where this project is and its next step',
-    usage: '[--session] [--json]',
+    usage: '[--session] [--json] [--agent <name>]',
     text: ['Shows every stage and step of the road, and what this machine is missing.', 'It exits 1 on a problem: a failed self-test, or a core-rules, tree or machine line', 'marked MISSING. Steps left on the road are to do, not problems. Always 0 with --session.'],
     options: [
       { name: '--session', text: 'only the next step, for the start of a session' },
       { name: '--json', text: 'the report as JSON on stdout' },
+      { name: '--agent', value: 'name', text: 'with --session: claude-code (the default), codex, or gemini for Gemini CLI JSON' },
     ],
     example: 'yokoten doctor --session',
   },
@@ -147,7 +165,7 @@ export const COMMANDS: Command[] = [
     options: [
       { name: '--agent', value: 'name', text: 'the runtime that sends the call: claude-code (the default), codex or gemini' },
       { name: '--commands-only', text: 'judge commands only, and leave files to the project' },
-      { name: '--stop', text: 'read a Claude Code Stop event, and check the changed files' },
+      { name: '--stop', text: 'read the end-of-turn event (Claude Code Stop, Codex Stop, Gemini AfterAgent) and check the changed files' },
       { name: '--json', text: 'the result as JSON on stdout' },
     ],
     example: `echo '{"tool_input":{"command":"git status"}}' | yokoten hook`,

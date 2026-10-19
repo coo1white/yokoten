@@ -12,7 +12,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { addProjectHook, addProjectStopHook, setProjectEnv } from '../agents/claude-code.ts';
 import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
-import { runs } from '../run/cli.ts';
+import { commitCheckLine, runs } from '../run/cli.ts';
 import { copyRuntime, HOME_DIR, KIT, render, VERSION, writeNew } from './files.ts';
 
 /** yokoten's own repo runs its own bin; every other project runs a vendored copy. */
@@ -60,6 +60,8 @@ export function init(root: string): string[] {
   // small files are easier to predict than a guess about which agents someone uses.
   report.push(`${codex.addProjectHook(root, cli)} the Codex tool-call hook in .codex/hooks.json (Codex asks you to trust it once, in /hooks)`);
   report.push(`${gemini.addProjectHook(root, cli)} the Gemini CLI tool-call hook in .gemini/settings.json`);
+  report.push(`${codex.addProjectStopHook(root, cli)} the Codex stop check in .codex/hooks.json`);
+  report.push(`${gemini.addProjectStopHook(root, cli)} the Gemini CLI stop check in .gemini/settings.json (AfterAgent)`);
   report.push(`${setProjectEnv(root, 'TZ', 'UTC')} TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)`);
   report.push(...setCommitCheck(root, cli, hooks));
   return report;
@@ -173,8 +175,8 @@ export function hookFile(root: string, hooksPath: string): string | null {
   return folder ? `${folder}/pre-commit` : 'pre-commit';
 }
 
-/** The lines init adds to a project's own pre-commit. `|| exit 1` because a hook may go on after it. */
-const checkLines = (cli: string) => ['# yokoten: the commit check (lead-only files, test files in a fix task, layout and privacy)', `node "${cli}" check --staged || exit 1`];
+/** The lines init adds to a project's own pre-commit. `exit 1` because a hook may go on after them. */
+export const checkLines = (cli: string): string[] => ['# yokoten: the commit check (lead-only files, test files in a fix task, layout and privacy)', commitCheckLine(cli)];
 
 /** Add the yokoten check to a pre-commit, after its `#!` line, so a later `exec` can't skip it. Its own lines stay. */
 function addCheckLines(path: string, cli: string): 'added the check to' | 'wrote' | 'same' {
@@ -206,7 +208,7 @@ function setCommitCheck(root: string, cli: string, hooks: HookSetup): string[] {
   const file = hooksPath ? hookFile(root, hooksPath) : '.husky/pre-commit';
   const owner = hooksPath ? `core.hooksPath (${file === '.husky/pre-commit' ? 'husky' : hooksPath})` : 'husky';
   if (file === null) {
-    return [`kept core.hooksPath: it is outside this repo, so yokoten did not change it. Add this line to its pre-commit: node "${cli}" check --staged || exit 1`];
+    return [`kept core.hooksPath: it is outside this repo, so yokoten did not change it. Add this line to its pre-commit: ${commitCheckLine(cli)}`];
   }
   const lines = [`${addCheckLines(join(root, file), cli)} ${file}: the commit check (kept ${owner}, so the project's own hooks still run)`];
   if (!hooksPath) lines.push('husky is not set up in this clone yet: run `npm install` (husky sets core.hooksPath), and the check runs from .husky/pre-commit');
