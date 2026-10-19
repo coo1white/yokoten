@@ -234,7 +234,7 @@ Docs are not proof.
 | Antigravity CLI (`agy`) | `.agents/hooks.json`: the `yokoten` entry, PreToolUse | `{"decision": "deny"}` on stdout | yes, 2026-10-19: agy 1.4.2, `agy -p`, model `gemini-3.8-flash-high` | No stop check yet. Without `.yokoten/`, every call is refused: agy fails closed |
 | Codex CLI | `.codex/hooks.json`: PreToolUse and Stop | exit 2, the reason on stderr | yes, 2026-10-19: Codex 0.163.0, `codex exec`, on DeepSeek `deepseek-flash` | Runs a project hook only after you trust it in `/hooks`. `codex exec` skips an untrusted hook without a word |
 | Muse Code | `.muse/hooks.json`: PreToolUse and Stop | exit 2, the reason on stderr | yes, 2026-10-19: Muse Code 1.4.10, `muse exec --trust-workspace`, model `muse-spark-1.3-contributor` | Runs the hooks only in a folder you trust. Muse passes no `YOKOTEN_ROLE` to a hook, so every Muse session counts as the lead. A hook that fails or times out lets the call go on |
-| DeepSeek Harness (`dsh`) | `.dsh/hooks.json`: PreToolUse, and `.dsh/yokoten.patch.yml` to load it | exit 2, the reason on stderr | yes, 2026-10-20: dsh 0.2.1-rc.2, `dsh headless --patch .dsh/yokoten.patch.yml`, default DeepSeek model | Runs hooks only through a bridge you add to each profile: see [DeepSeek Harness](#deepseek-harness). Without it, or without the patch, dsh runs no hooks and says nothing. No stop check |
+| DeepSeek Harness (`dsh`) | `.dsh/hooks.json`: PreToolUse, and `.dsh/yokoten.patch.yml` to load it | exit 2, the reason on stderr | yes, 2026-10-20: dsh 0.2.1-rc.2, `dsh headless --patch .dsh/yokoten.patch.yml`, default DeepSeek model | Runs hooks only through a bridge you add to each profile: see [DeepSeek Harness](#deepseek-harness). Without it, or without the patch, dsh runs no hooks and says nothing. Not guarded on Windows yet (#332). No stop check |
 | Gemini CLI | `.gemini/settings.json`: BeforeTool and AfterAgent | exit 2, the reason on stderr | not run end to end: personal sign-in retired 2026-06-18; needs a paid API key or an org license | Google's agent for individuals is now Antigravity CLI |
 | Any other agent | none | the rules in `AGENTS.md`, and the commit check, which stops a bad commit whoever made it | | |
 
@@ -264,7 +264,7 @@ Each agent runs a project hook only after you trust it:
 
 A worker is a session with `YOKOTEN_ROLE=worker`. In Codex, a subagent whose
 `agent_type` names a worker is a worker too. Copilot CLI and Antigravity CLI name no
-subagent role in a hook call, and nor does DeepSeek Harness: `YOKOTEN_ROLE` decides. Gemini CLI's strict environment
+subagent role in a hook call, nor does DeepSeek Harness: `YOKOTEN_ROLE` decides. Gemini CLI's strict environment
 sanitization removes `YOKOTEN_ROLE` from the hooks. Then yokoten can't tell a worker in
 Gemini CLI: every session counts as the lead, and the lead-only guard does not stop a
 worker's edit. Muse Code passes a hook only a short list of variables, and `YOKOTEN_ROLE` is not
@@ -294,8 +294,14 @@ the rest. It installs nothing, and it leaves `~/.dsh` alone.
 
    The patch names `.dsh/hooks.json` by a relative path, which dsh reads from the folder
    it starts in. Started anywhere else, or without the patch, dsh runs no hooks.
+   yokoten owns `.dsh/yokoten.patch.yml`, and `init` rewrites it. Put overlays of your own
+   in another file.
 
 dsh matches tool names exactly, in lowercase: the hook's matcher is `bash|pwsh|edit|write`.
+`pwsh` is dsh's shell on Windows. It is in the matcher for later, but Windows is not
+guarded yet. There dsh runs the hook itself in PowerShell, which can't run yokoten's
+POSIX shell command. The bridge takes that failure as "go ahead", so every call goes
+through. On Windows `doctor` says so, and `init` does too (#332).
 There is no stop check: the bridge's Stop event has no loop guard. `doctor` checks both
 files, and looks in `${DSH_HOME:-~/.dsh}/profiles` for the two packages. Without a dsh home
 it says it can't check. The bridge fails open without a word, so files in place prove
@@ -1147,6 +1153,10 @@ Honest limits:
   does not count them as missing: a project may use none of these agents. The rules are plain `AGENTS.md`, which
   Claude Code reads when a project has no `CLAUDE.md`, and so do most other agents. Muse
   Code reads `AGENTS.md` too.
+- **DeepSeek Harness is not guarded on Windows yet.** dsh runs hooks in PowerShell there,
+  and the guard is a POSIX shell command (#332). The guard also sees only `bash`, `pwsh`,
+  `edit` and `write`. A profile that mounts dsh's optional `str_replace_editor` or the
+  experimental `terminal_send` can edit files or type into a shell unchecked.
 
 ## What was left out on purpose
 

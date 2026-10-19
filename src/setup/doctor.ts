@@ -83,7 +83,7 @@ function handAddPractice(id: RuleId, file: string, states: readonly HookState[])
  * over them. Real runs blocked through Codex, Antigravity CLI, Muse Code and DeepSeek Harness; Gemini CLI is not run yet (#30).
  * A Gemini CLI file with comments, which init won't rewrite, gets the hooks to add by hand.
  */
-export function agentHooks(root: string, env: Env = process.env): Practice[] {
+export function agentHooks(root: string, env: Env = process.env, platform: string = process.platform): Practice[] {
   // Each step wants both project hooks: the tool-call guard and the stop check (#211).
   const missing = (guard: boolean, stop: boolean, file: string) =>
     [...(guard ? [] : ['no tool-call guard']), ...(stop ? [] : ['no stop check'])].join(' and ') + ` in ${file}`;
@@ -96,7 +96,7 @@ export function agentHooks(root: string, env: Env = process.env): Practice[] {
       practice('gemini-hook', 'gemini-hook', geminiGuard && geminiStop, missing(geminiGuard, geminiStop, '.gemini/settings.json'), '`yokoten init` adds it'),
     antigravityPractice(antigravity.projectHookState(root, cliPath(root))),
     musePractice(muse.projectHooksState(root, cliPath(root))),
-    dshPractice(dsh.projectHooksState(root, cliPath(root)), dsh.profilesWithBridge(env)),
+    platform === 'win32' ? practice('deepseek-harness-hook', 'deepseek-harness-hook', false, dsh.WINDOWS_GAP, 'nothing to do yet: issue #332 adds a PowerShell guard') : dshPractice(dsh.projectHooksState(root, cliPath(root)), dsh.profilesWithBridge(env)),
   ];
 }
 
@@ -121,7 +121,8 @@ function musePractice(states: { guard: HookState; stop: HookState }): Practice {
 /**
  * DeepSeek Harness's guard (#334): the hook in .dsh/hooks.json, the launch patch, and the bridge
  * in a dsh profile. The bridge fails open without a word, so the files and packages being
- * there never prove the guard runs: the ok line says only a real deny does.
+ * there never prove the guard runs: the ok line says only a real deny does. On Windows the
+ * guard can't run at all (dsh uses PowerShell), so agentHooks gives a note instead (#332).
  */
 function dshPractice(states: { guard: HookState; patch: string }, profiles: { found: string[]; all: string[] } | null): Practice {
   const id = 'deepseek-harness-hook';

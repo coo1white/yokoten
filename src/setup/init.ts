@@ -130,15 +130,8 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: bo
   });
   // DeepSeek Harness runs the hooks through a bridge each profile needs. init only prints
   // how to add it: it installs nothing and leaves ~/.dsh alone (#334).
-  const dshHooks = agentHooks('the DeepSeek Harness hook', dsh.HOOKS_FILE, () => {
-    const added = dsh.addProjectHooks(root, cli);
-    return [
-      `${added.guard} the DeepSeek Harness tool-call hook in ${dsh.HOOKS_FILE}`,
-      `${added.patch} the DeepSeek Harness launch patch in ${dsh.PATCH_FILE}`,
-      `DeepSeek Harness runs it only with the bridge in the profile (needs pnpm): ${dsh.pluginAddCommands('<profile>').join(' && ')}`,
-      `then start dsh at the repo root with the patch: dsh <profile> --patch ${dsh.PATCH_FILE}`,
-    ];
-  });
+  // On Windows the files are still written, ready for #332, but the lines say dsh is not checked.
+  const dshHooks = agentHooks('the DeepSeek Harness hook', dsh.HOOKS_FILE, () => dsh.initLines(dsh.addProjectHooks(root, cli)));
   report.push(...codexHooks.lines, ...geminiHooks.lines, ...antigravityHooks.lines, ...museHooks.lines, ...dshHooks.lines);
   report.push(...setCommitCheck(root, cli, hooks, blocks));
   return { ok: claudeHooks.ok && codexHooks.ok && geminiHooks.ok && antigravityHooks.ok && museHooks.ok && dshHooks.ok, lines: report };
