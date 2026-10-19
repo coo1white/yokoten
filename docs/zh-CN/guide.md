@@ -242,6 +242,10 @@ Windows 上请用 Git Bash。
 | `/yokoten:init`、`/yokoten:doctor` 和 `/yokoten:update`：直接用插件里的 yokoten 跑这几个命令 | `kit/plugin/skills/` |
 | 会话开头跑 `doctor` 的 hook 和命令守卫，跟 `install` 加的两个一样 | `.claude-plugin/plugin.json` |
 
+命令守卫在哪个文件夹都会跑，所以只管命令，只有一个例外：AI 改的文件要是在一个装了 yokoten 的
+仓库里（有 `yokoten.json`），不管会话是从哪个文件夹开的，都按那个仓库管文件的规则来查。
+所以 worker 就算在会话文件夹外面的 worktree 里干活，也改不了只有 lead 能改的文件。
+
 Claude Code 用 `node` 直接跑插件里的 `.ts` 文件。之所以能跑，是因为插件不放在
 `node_modules` 下面（Node 不处理 `node_modules` 里的 TypeScript）。想更新，就打开 `/plugin`，
 在 **Installed** 里选 yokoten，点 **Update now**。别人做的插件市场默认不自动更新，要自己打开。在终端里跑
