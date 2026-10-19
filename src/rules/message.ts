@@ -68,8 +68,8 @@ export const RULES = {
   },
   'hooks-path': {
     rule: 'never turn off the commit check (core rule 6)',
-    why: 'git runs the commit check from core.hooksPath, so another value turns the check off',
-    check: 'the tool-call guard lets a read of core.hooksPath through, and stops any other value than .githooks: `git config`, `git -c`, `--config-env` and GIT_CONFIG_KEY_n; the commit-check step looks at the setting',
+    why: 'git runs the commit check from core.hooksPath, so a folder whose pre-commit does not run it turns the check off',
+    check: 'the tool-call guard lets every read of core.hooksPath through. In the repo\'s own config, `git config` may set .githooks, the value already set, or a folder whose pre-commit runs `yokoten check` (husky: .husky/pre-commit). It stops any other change: `--unset`, `--global`, `git -c`, `--config-env` and GIT_CONFIG_KEY_n. The commit-check step looks at the setting',
     docs: guide('the-core-rules'),
   },
   'blocked-command': {

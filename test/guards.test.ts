@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { DEFAULTS, type Env } from '../src/rules/config.ts';
-import { checkCommand, checkEdit, commandWords } from '../src/rules/guards.ts';
+import { checkCommand, checkEdit, commandWords, hookFile, runsCheck } from '../src/rules/guards.ts';
 
 const blocked = (command: string, env: Env = {}) => assert.ok(checkCommand(command, { env }), `should block: ${command}`);
 const allowed = (command: string, env: Env = {}) => assert.equal(checkCommand(command, { env }), null, `should allow: ${command}`);
@@ -140,6 +144,78 @@ test('hooks setting: git -c, --config-env and GIT_CONFIG_KEY_n cannot skip the c
     'GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_1=core.hooksPath GIT_CONFIG_VALUE_0=.githooks GIT_CONFIG_VALUE_1=/x git commit',
     "GIT_CONFIG_PARAMETERS=\"'core.hooksPath'='/dev/null'\" git commit -m x",
   ]) blocked(command);
+});
+
+// The hooks setting in a project with its own hooks folder (#217). A repo with husky's
+// pre-commit running the check, a folder without it, and core.hooksPath set to `hooks/own`.
+function makeHooksRepo(): string {
+  const root = mkdtempSync(join(tmpdir(), 'yokoten-hooks-'));
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: root, stdio: 'pipe' });
+  git('init', '-q');
+  git('config', 'core.hooksPath', 'hooks/own');
+  mkdirSync(join(root, '.husky'));
+  writeFileSync(join(root, '.husky', 'pre-commit'), '#!/bin/sh\nnpx lint-staged\nnode ".yokoten/bin/yokoten.ts" check --staged || exit 1\n');
+  mkdirSync(join(root, 'hooks', 'plain'), { recursive: true });
+  writeFileSync(join(root, 'hooks', 'plain', 'pre-commit'), '#!/bin/sh\n# yokoten check is not run here\nnpm test\n');
+  return root;
+}
+
+test('hooks setting: a read never blocks, in a repo with its own hooks folder (#217)', () => {
+  const cwd = makeHooksRepo();
+  try {
+    for (const command of [
+      'git config --get core.hooksPath',
+      'git config --get-all core.hooksPath',
+      'git config --list',
+      'git config -l',
+      'git config --local --get core.hooksPath',
+      'git config core.hooksPath',
+      'git config --get-regexp hooks',
+    ]) assert.equal(checkCommand(command, { env: {}, cwd }), null, `should allow: ${command}`);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('hooks setting: a folder whose pre-commit runs the check, or the value already set, passes (#217)', () => {
+  const cwd = makeHooksRepo();
+  const pass = (command: string, from = cwd) => assert.equal(checkCommand(command, { env: {}, cwd: from }), null, `should allow: ${command}`);
+  const stop = (command: string) => assert.ok(checkCommand(command, { env: {}, cwd }), `should block: ${command}`);
+  try {
+    pass('git config core.hooksPath .husky/_');
+    pass('git config --local core.hooksPath .husky/_');
+    pass('git config set core.hooksPath .husky');
+    pass('npm install && git config core.hooksPath .husky/_');
+    pass(`git -C ${cwd} config core.hooksPath .husky/_`, tmpdir());
+    pass('git config core.hooksPath hooks/own');
+    for (const command of [
+      'git config core.hooksPath hooks/plain',
+      'git config core.hooksPath hooks/none',
+      'git config core.hooksPath ../elsewhere',
+      'git config core.hooksPath /tmp/x',
+      'git config --unset core.hooksPath',
+      'git config --global core.hooksPath .husky/_',
+      'git config --system core.hooksPath .husky/_',
+      'git config -f other.config core.hooksPath .husky/_',
+      'git --git-dir=.git config core.hooksPath .husky/_',
+      'git -c core.hooksPath=/tmp/x commit -m x',
+      'git -c core.hooksPath=.husky/_ commit -m x',
+    ]) stop(command);
+    const refusal = checkCommand('git config core.hooksPath hooks/plain', { env: {}, cwd });
+    assert.match(refusal?.what ?? '', /hooks\/plain\/pre-commit does not run `yokoten check`/);
+    assert.match(refusal?.fix ?? '', /add `yokoten check` to hooks\/plain\/pre-commit/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('hooks setting: only a line that runs yokoten check counts, not a comment (#217)', () => {
+  assert.equal(runsCheck('#!/bin/sh\nnode "bin/yokoten.ts" check --staged\n'), true);
+  assert.equal(runsCheck('npx yokoten check || exit 1\r\n'), true);
+  assert.equal(runsCheck('#!/bin/sh\n# yokoten check\nnpm test\n'), false);
+  assert.equal(runsCheck('node bin/yokoten.ts checkout\n'), false);
+  assert.equal(hookFile('/repo', '.husky/_'), '.husky/pre-commit');
+  assert.equal(hookFile('/repo', '../other'), null);
 });
 
 test('everyday commands pass', () => {
