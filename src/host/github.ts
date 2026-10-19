@@ -328,7 +328,7 @@ const isUnreadable = (value: unknown): value is Unreadable => isObject(value) &&
 function hasCommit(root: string, sha: string): boolean {
   if (!/^[0-9a-f]{4,64}$/i.test(sha)) return false;
   try {
-    execFileSync('git', ['cat-file', '-e', `${sha}^{commit}`], { cwd: root, stdio: 'ignore' });
+    execFileSync('git', ['--no-replace-objects', 'cat-file', '-e', `${sha}^{commit}`], { cwd: root, stdio: 'ignore' });
     return true;
   } catch {
     return false;
@@ -338,7 +338,7 @@ function hasCommit(root: string, sha: string): boolean {
 /** The two commits have a common commit here, so `base...head` can be read. */
 function hasMergeBase(root: string, base: string, head: string): boolean {
   try {
-    execFileSync('git', ['merge-base', base, head], { cwd: root, stdio: 'ignore' });
+    execFileSync('git', ['--no-replace-objects', 'merge-base', base, head], { cwd: root, stdio: 'ignore' });
     return true;
   } catch {
     return false;
@@ -377,7 +377,7 @@ export function readPullRequest(root: string, env: Env): PullRequestRead | Unrea
   const head = isObject(pr.head) ? asText(pr.head.sha) : '';
   const problem = shasProblem(base, head) ?? commitsProblem(root, base, head);
   if (problem) return { problem };
-  const diff = (...options: string[]) => execFileSync('git', ['diff', ...options, `${base}...${head}`], { cwd: root, encoding: 'utf8' });
+  const diff = (...options: string[]) => execFileSync('git', ['--no-replace-objects', 'diff', ...options, `${base}...${head}`], { cwd: root, encoding: 'utf8' });
   return {
     title: asText(pr.title),
     body: asText(pr.body),
@@ -402,7 +402,7 @@ export function readCodeOwners(root: string, base: string): CodeOwners | null {
   for (const place of CODEOWNERS_PLACES) {
     if (base) {
       try {
-        const text = execFileSync('git', ['show', `${base}:${place}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+        const text = execFileSync('git', ['--no-replace-objects', 'show', `${base}:${place}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
         return { text, from: 'the base branch' };
       } catch {
         continue; // not at this place in the base commit

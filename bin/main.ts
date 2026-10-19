@@ -399,7 +399,7 @@ function main(): number | Promise<number> {
           // The file as the pull request leaves it, or null when the pull request deletes it.
           const readAtHead = (file: string): string | null => {
             try {
-              return execFileSync('git', ['show', `${pr.head}:${file}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+              return execFileSync('git', ['--no-replace-objects', 'show', `${pr.head}:${file}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
             } catch {
               return null;
             }
@@ -421,7 +421,7 @@ function main(): number | Promise<number> {
           const codeFiles = pr.files.filter(isCodeFile);
           // One diff with renames found, so a moved file is not noted as all new. Fixed
           // prefixes and plain paths, whatever the user's git settings say.
-          const diffArgs = ['-c', 'core.quotePath=false', 'diff', '-U0', '-M', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', `${pr.base}...${pr.head}`];
+          const diffArgs = ['--no-replace-objects', '-c', 'core.quotePath=false', 'diff', '-U0', '-M', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', `${pr.base}...${pr.head}`];
           const added = codeFiles.length ? addedLinesByFile(execFileSync('git', diffArgs, { cwd: root, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })) : new Map<string, Set<number>>();
           for (const file of codeFiles) {
             const text = added.has(file) ? readAtHead(file) : null;

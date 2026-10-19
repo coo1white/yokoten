@@ -1098,8 +1098,9 @@ test('readBlobs: batches under the cap; a blob over it is read only for its star
   assert.deepEqual(readBlobs(repo.root, []), new Map());
 });
 
-// #284 needs the history read past `git replace`: `pre` reaches every git call readBlobs makes.
-test('readBlobs: `pre` goes before the subcommand, in the batch and the over-cap read (#244, #284)', () => {
+// Every read of repo content ignores `git replace` (#284, #294): readBlobs too, in the batch
+// and in the over-cap read.
+test('readBlobs: reads the bytes as stored, past a replace ref, in the batch and the over-cap read (#244, #294)', () => {
   const repo = makeTranslatedRepo();
   const blob = (bytes: Buffer) => {
     writeFileSync(join(repo.root, 'b'), bytes);
@@ -1112,10 +1113,9 @@ test('readBlobs: `pre` goes before the subcommand, in the batch and the over-cap
   repo.git('replace', stored, shown);
   repo.git('replace', big, bigShown);
   const first = (read: Map<string, { bytes: Buffer }>, id: string) => read.get(id)?.bytes.subarray(0, 1).toString();
-  const plain = readBlobs(repo.root, [stored, big], 100);
-  assert.deepEqual([plain.get(stored)?.bytes.toString(), first(plain, big)], ['replacement\n', 'b'], 'without pre, git shows the replacement');
-  const raw = readBlobs(repo.root, [stored, big], 100, ['--no-replace-objects']);
-  assert.deepEqual([raw.get(stored)?.bytes.toString(), first(raw, big)], ['stored bytes\n', 'a'], 'with pre, the bytes as stored');
+  assert.equal(repo.git('cat-file', '-p', stored), 'replacement', 'git itself shows the replacement');
+  const read = readBlobs(repo.root, [stored, big], 100);
+  assert.deepEqual([read.get(stored)?.bytes.toString(), first(read, big)], ['stored bytes\n', 'a'], 'the bytes as stored');
 });
 
 test('check --history: a blob swapped by git replace is read as committed, not as the swap shows it (#284)', () => {
