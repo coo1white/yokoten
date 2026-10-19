@@ -10,9 +10,13 @@
 //   timeout, a hooks.json that won't parse) lets the call run.
 // - `matcher: "*"` also matches Muse's own tools (read_skill...), so the matcher names the tools.
 
+import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
+import type { Env } from '../../rules/config.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import type { Action } from '../../run/hook.ts';
+import { type FolderTrust, folderKeys } from '../folder-trust.ts';
 import { type Added, addHook, checkHooksFile, type HookState, hookState, isObject } from '../hooks-file.ts';
 
 // bash takes `command` and `workdir`; the edit tools take `path`.
@@ -61,3 +65,35 @@ export const projectHooksState = (root: string, cli: string): { guard: HookState
   guard: hookState(...guardArgs(root, cli)),
   stop: hookState(...stopArgs(root, cli)),
 });
+
+// ---- Trust (#341) ----
+//
+// Muse saves trust in `trust.json` in its config folder: `$XDG_CONFIG_HOME/muse`, or
+// `~/.config/muse`. Its shape, from Muse Code 1.4.10 on 2026-10-20:
+// `{ "schema_version": 1, "projects": { "<folder>": { "decision": "trusted" } } }`.
+// The folder is the git root: a session in a subfolder of a trusted repo is not asked
+// again. A trusted folder does not cover a folder inside it that is not in a repo, and a
+// key with a trailing slash trusts nothing: so doctor compares whole keys, exactly.
+
+/** The one step that makes Muse run the project's hooks. */
+export const TRUST_STEP = 'run `muse` in this folder and choose "Trust and continue"';
+
+/** Whether Muse trusts the project at `root`, from its trust store. Read-only. */
+export function readTrust(root: string, env: Env): FolderTrust {
+  const store = env.XDG_CONFIG_HOME ? '$XDG_CONFIG_HOME/muse/trust.json' : '~/.config/muse/trust.json';
+  const file = join(env.XDG_CONFIG_HOME || join(env.HOME || homedir(), '.config'), 'muse', 'trust.json');
+  if (!existsSync(file)) return { state: 'no store', store };
+  let saved: unknown;
+  try {
+    saved = JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    return { state: 'unreadable', store };
+  }
+  if (!isObject(saved) || saved.schema_version !== 1 || !isObject(saved.projects)) return { state: 'unreadable', store };
+  const projects = saved.projects;
+  const isTrusted = folderKeys(root).some((key) => {
+    const entry = Object.hasOwn(projects, key) ? projects[key] : undefined;
+    return isObject(entry) && entry.decision === 'trusted';
+  });
+  return { state: isTrusted ? 'trusted' : 'untrusted', store };
+}

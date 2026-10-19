@@ -1,11 +1,19 @@
 // Tests for src/agents/runtimes/muse.ts.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { addProjectHooks, projectHooksState, readToolCall } from '../../../src/agents/runtimes/muse.ts';
+import { addProjectHooks, projectHooksState, readToolCall, readTrust } from '../../../src/agents/runtimes/muse.ts';
 import { makeSandbox } from '../../repo/helpers.ts';
+
+/** Write Muse's trust store in `home`, in the shape Muse Code 1.4.10 saved it (#341). */
+function trustFolder(home: string, ...folders: string[]): string {
+  const file = join(home, '.config', 'muse', 'trust.json');
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify({ schema_version: 1, projects: Object.fromEntries(folders.map((folder) => [folder, { decision: 'trusted' }])) }, null, 2));
+  return file;
+}
 
 /** A PreToolUse payload in the shape Muse Code 1.4.10 sent it in a real run (#5). */
 const payload = (workspace: string, name: string, input: Record<string, unknown>) =>
@@ -71,6 +79,9 @@ test('muse project hooks: init writes the guard and the stop check, keeps other 
   assert.match(written.hooks.PreToolUse[1].hooks[0].command, /"\$\(git rev-parse --show-toplevel\)\/\.yokoten\/bin\/yokoten\.ts" hook --agent muse 2>&1/);
   assert.match(written.hooks.Stop[0].hooks[0].command, /hook --stop --agent muse$/);
   assert.deepEqual(projectHooksState(sandbox.repo, cli), { guard: 'same', stop: 'same' });
+  // The hooks are in place, but this home has no trust store: never ok (#341).
+  assert.match(sandbox.run(['doctor']).stdout, /note +muse-hook: can't check whether Muse Code trusts this folder/);
+  trustFolder(sandbox.home, realpathSync(sandbox.repo));
   assert.match(sandbox.run(['doctor']).stdout, /ok +muse-hook/);
   assert.match(sandbox.run(['init']).stdout, /same the Muse Code tool-call hook/);
   written.hooks.Stop[0].hooks[0].command = 'node old/yokoten.ts hook --stop --agent muse';
@@ -82,4 +93,30 @@ test('muse project hooks: init writes the guard and the stop check, keeps other 
   assert.match(sandbox.run(['doctor']).stdout, /note +muse-hook: can't read \.muse\/hooks\.json/);
   assert.throws(() => addProjectHooks(sandbox.repo, cli), /can't read/);
   assert.equal(readFileSync(file, 'utf8'), '{ not json', 'a file yokoten cannot read stays as it was');
+});
+
+test('muse trust (#341): doctor says when Muse skips the hooks; ok only when trust.json names the folder', () => {
+  const sandbox = makeSandbox();
+  assert.equal(sandbox.run(['init']).status, 0);
+  const root = realpathSync(sandbox.repo);
+  const doctor = () => sandbox.run(['doctor']).stdout;
+  assert.match(doctor(), /note +muse-hook: can't check whether Muse Code trusts this folder: no ~\/\.config\/muse\/trust\.json; if you use Muse Code: run `muse` in this folder and choose "Trust and continue"/);
+  // The positive control: a store that trusts another folder.
+  const file = trustFolder(sandbox.home, '/somewhere/else');
+  assert.match(doctor(), /note +muse-hook: Muse Code skips \.muse\/hooks\.json until you trust this folder; run `muse` in this folder and choose "Trust and continue"/);
+  // Checked with Muse 1.4.10: a trusted parent folder, or the key with a trailing slash, trusts nothing.
+  trustFolder(sandbox.home, dirname(root), `${root}/`);
+  assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'untrusted');
+  trustFolder(sandbox.home, root);
+  assert.match(doctor(), /ok +muse-hook\n/);
+  // Another decision, a file that won't parse, and a schema doctor does not know: never ok.
+  writeFileSync(file, JSON.stringify({ schema_version: 1, projects: { [root]: { decision: 'untrusted' } } }));
+  assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'untrusted');
+  writeFileSync(file, '{ not json');
+  assert.match(doctor(), /note +muse-hook: can't check whether Muse Code trusts this folder: can't read ~\/\.config\/muse\/trust\.json/);
+  writeFileSync(file, JSON.stringify({ schema_version: 2, projects: { [root]: { decision: 'trusted' } } }));
+  assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'unreadable');
+  // XDG_CONFIG_HOME moves the store: the one under ~/.config no longer counts. The note names the variable, not the path.
+  trustFolder(sandbox.home, root);
+  assert.deepEqual(readTrust(root, { HOME: sandbox.home, XDG_CONFIG_HOME: join(sandbox.home, 'xdg') }), { state: 'no store', store: '$XDG_CONFIG_HOME/muse/trust.json' });
 });

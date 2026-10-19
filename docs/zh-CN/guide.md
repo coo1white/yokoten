@@ -207,10 +207,10 @@ yokoten 能管住七种 AI 编程 agent，它们守的是同一套规矩。下�
 | Agent | 钩子写在哪（`init` 负责写） | 怎么拦 | 真跑过吗 | 要注意 |
 |---|---|---|---|---|
 | Claude Code | `.claude/settings.json`：PreToolUse 和 Stop | 退出码 2，理由写在 stderr | 是，2026-10-19：无界面模式，模型用 DeepSeek 的 `deepseek-flash` | 无 |
-| GitHub Copilot CLI | 也是 `.claude/settings.json`：Copilot 会读这个文件 | 退出码 2，理由同时以 JSON 写到 stdout | 是，2026-10-19：Copilot CLI 1.0.98，`copilot -p`，模型 `gpt-6-luna`（Auto 自动选的） | 只在你信任的文件夹里跑仓库钩子，没信任就一声不吭地跳过。钩子超时的话，这次调用会放行 |
+| GitHub Copilot CLI | 也是 `.claude/settings.json`：Copilot 会读这个文件 | 退出码 2，理由同时以 JSON 写到 stdout | 是，2026-10-19：Copilot CLI 1.0.98，`copilot -p`，模型 `gpt-6-luna`（Auto 自动选的） | 要先信任这个文件夹，才跑仓库钩子：在这里运行 `copilot`，选 "Yes, and remember this folder for future sessions"。没信任就一声不吭地跳过。钩子超时的话，这次调用会放行 |
 | Antigravity CLI（`agy`） | `.agents/hooks.json`：名叫 `yokoten` 的那一项，PreToolUse | 在 stdout 输出 `{"decision": "deny"}` | 是，2026-10-19：agy 1.4.2，`agy -p`，模型 `gemini-3.8-flash-high` | 还没有收尾检查。`.yokoten/` 不在的话，每次调用都会被拒：agy 出错时一律拦下 |
-| Codex CLI | `.codex/hooks.json`：PreToolUse 和 Stop | 退出码 2，理由写在 stderr | 是，2026-10-19：Codex 0.163.0，`codex exec`，模型用 DeepSeek 的 `deepseek-flash` | 项目钩子要先在 `/hooks` 里信任才会跑。没信任的钩子，`codex exec` 一声不吭地跳过 |
-| Muse Code | `.muse/hooks.json`：PreToolUse 和 Stop | 退出码 2，理由写在 stderr | 是，2026-10-19：Muse Code 1.4.10，`muse exec --trust-workspace`，模型 `muse-spark-1.3-contributor` | 只在你信任的文件夹里跑钩子。Muse 不把 `YOKOTEN_ROLE` 传给钩子，所以在 Muse 里每个会话都当成 lead。钩子出错或超时的话，这次调用会放行 |
+| Codex CLI | `.codex/hooks.json`：PreToolUse 和 Stop | 退出码 2，理由写在 stderr | 是，2026-10-19：Codex 0.163.0，`codex exec`，模型用 DeepSeek 的 `deepseek-flash` | 要先信任这个文件夹，再在 `/hooks` 里信任这两个钩子，才会跑。没信任的钩子，`codex exec` 一声不吭地跳过 |
+| Muse Code | `.muse/hooks.json`：PreToolUse 和 Stop | 退出码 2，理由写在 stderr | 是，2026-10-19：Muse Code 1.4.10，`muse exec --trust-workspace`，模型 `muse-spark-1.3-contributor` | 要先信任这个文件夹，才跑钩子：在这里运行 `muse`，选 "Trust and continue"。Muse 不把 `YOKOTEN_ROLE` 传给钩子，所以在 Muse 里每个会话都当成 lead。钩子出错或超时的话，这次调用会放行 |
 | DeepSeek Harness（`dsh`） | `.dsh/hooks.json`：PreToolUse；再用 `.dsh/yokoten.patch.yml` 让 dsh 加载它 | 退出码 2，理由写在 stderr | 是，2026-10-20：dsh 0.2.1-rc.2，`dsh headless --patch .dsh/yokoten.patch.yml`，DeepSeek 的默认模型 | 钩子要靠一个桥接插件才会跑，每个 profile 都得自己装，见 [DeepSeek Harness](#deepseek-harness)。没装插件或启动时没带 patch，dsh 一个钩子都不跑，也不提醒。还没有收尾检查 |
 | Gemini CLI | `.gemini/settings.json`：BeforeTool 和 AfterAgent | 退出码 2，理由写在 stderr | 没有完整跑过：个人 Google 账号 2026-06-18 起不能再登录，要付费 API key 或企业授权 | 谷歌给个人用户的 agent 现在是 Antigravity CLI |
 | 其他 agent | 无 | `AGENTS.md` 里的规则；还有提交检查，不管是谁提交的，坏提交都会被拦下 | | |
@@ -237,6 +237,17 @@ yokoten 能管住七种 AI 编程 agent，它们守的是同一套规矩。下�
   `.agents/skills` 下的技能，也要信任以后才读。
 - **Gemini CLI**：文件夹要先设成信任，项目钩子才会跑。要在仓库根目录启动 Gemini：它只读
   启动时所在文件夹里的 `.gemini/settings.json`。新加或改过的钩子，第一次跑之前它会提醒你一次。
+
+`init` 会给每个工具打印一句话，告诉你怎么信任这个文件夹。之后 `doctor` 去读各个工具
+自己记信任的文件（只读），哪个工具还没信任这个文件夹，就提醒你：
+
+| 工具 | 信任记在哪 | 怎样才算信任了 |
+|---|---|---|
+| Copilot CLI | `~/.copilot/config.json` 里的 `trustedFolders`（设了 `$COPILOT_HOME` 就在那里） | 这个文件夹本身，或者它的上级文件夹 |
+| Codex | `~/.codex/config.toml`（设了 `$CODEX_HOME` 就在那里）里的 `[projects]` 和 `[hooks.state]` | 仓库文件夹本身，一个字都不能差；每个钩子也要按现在的内容信任过 |
+| Muse Code | `~/.config/muse/trust.json`（设了 `$XDG_CONFIG_HOME` 就在那里） | 仓库文件夹本身，一个字都不能差 |
+
+找不到或读不了这些文件时，`doctor` 会说 "can't check"（查不了），不会说 ok。
 
 worker 靠 `YOKOTEN_ROLE=worker` 认出来。在 Codex 里，子 agent 的 `agent_type` 带 worker
 字样的，也算 worker。Copilot CLI、Antigravity CLI 和 DeepSeek Harness 调钩子时不说是哪种子 agent，只看

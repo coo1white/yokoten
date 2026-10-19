@@ -277,10 +277,17 @@ export const RULES = {
     why: 'a check that passes everything looks the same as a healthy project',
     check: '`doctor` feeds each check a known-bad input before anything else',
   },
+  'copilot-hook': {
+    rule: 'Copilot CLI trusts this folder, so it runs the hooks in .claude/settings.json',
+    why: 'in a folder it does not trust, Copilot CLI skips the hooks without a word, so its commands and edits are not checked',
+    check: "`doctor` looks for this folder, or a folder above it, in `trustedFolders` in Copilot's config.json (read-only); a note, not a missing step",
+    docs: guide('works-with'),
+  },
   'codex-hook': {
-    rule: "the project has Codex's tool-call guard and stop check",
-    why: "without them, Codex's commands and edits in this project are not checked, and its turn can end with a bad file",
-    check: '`doctor` reads .codex/hooks.json for a PreToolUse hook and a Stop hook that each run `yokoten hook`; a note, not a missing step',
+    rule: "the project has Codex's tool-call guard and stop check, and Codex trusts the folder and both hooks",
+    why: "without them, Codex's commands and edits in this project are not checked, and its turn can end with a bad file. Codex skips an untrusted hook without a word",
+    check:
+      "`doctor` reads .codex/hooks.json for a PreToolUse hook and a Stop hook that each run `yokoten hook`, then Codex's config.toml for the folder's trust and each hook's trusted hash (read-only); a note, not a missing step",
     docs: guide('works-with'),
   },
   'gemini-hook': {
@@ -296,9 +303,9 @@ export const RULES = {
     docs: guide('works-with'),
   },
   'muse-hook': {
-    rule: "the project has Muse Code's tool-call guard and stop check",
-    why: "without them, Muse Code's commands and edits in this project are not checked",
-    check: '`doctor` reads .muse/hooks.json for a PreToolUse hook and a Stop hook that each run `yokoten hook --agent muse`; a note, not a missing step',
+    rule: "the project has Muse Code's tool-call guard and stop check, and Muse trusts the folder",
+    why: "without them, Muse Code's commands and edits in this project are not checked. Muse skips the hooks of a folder it does not trust without a word",
+    check: "`doctor` reads .muse/hooks.json for a PreToolUse hook and a Stop hook that each run `yokoten hook --agent muse`, then Muse's trust.json for the folder (read-only); a note, not a missing step",
     docs: guide('works-with'),
   },
   'deepseek-harness-hook': {
