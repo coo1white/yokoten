@@ -194,6 +194,18 @@ export const COMMANDS: Command[] = [
     example: 'yokoten changelog',
   },
   {
+    name: 'learn',
+    summary: 'a check draft from an incident issue, for a person to review',
+    usage: '<issue> [--write]',
+    text: [
+      'Reads an incident issue (a number or a URL) through gh and drafts a check from it,',
+      'for a person to review. It writes nothing without --write.',
+    ],
+    options: [{ name: '--write', text: 'put the draft in lessons/ (adds only, never overwrites)' }],
+    argument: 'issue',
+    example: 'yokoten learn 138',
+  },
+  {
     name: 'hook',
     summary: 'the tool-call guard, or the stop check with --stop',
     usage: '[--agent <name>] [--commands-only] [--stop] [--json]',

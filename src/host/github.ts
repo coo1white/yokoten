@@ -22,6 +22,7 @@ import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { type Finding, finding, formatFinding, place } from '../rules/message.ts';
 import type { CodeOwners, PullRequest } from '../rules/pr.ts';
+import { type Incident, terminalText } from '../run/learn.ts';
 
 export interface BotConfig {
   appId: string;
@@ -639,4 +640,39 @@ export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
   const planning = readPlanning(gh, repo);
 
   return { repo, defaultBranch, isPrivate: info.private ?? null, actionsCanApprove, mergeMethods, deleteBranchOnMerge: info.delete_branch_on_merge ?? null, branch, tags, security, forgotten, planning };
+}
+
+// An incident issue for `yokoten learn` (#77), read through `gh issue view`, so it uses
+// the owner's own sign-in and holds no token. A number names an issue of this repo; a URL
+// names one in any repo. Read only.
+
+const ISSUE_REFERENCE = /^(\d+|https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+)$/;
+
+/** The issue's number, title, body, URL and labels, or the reason gh can't read it. */
+export function readIncident(gh: Gh, reference: string): Incident | string {
+  if (!ISSUE_REFERENCE.test(reference)) return `${reference} is not an issue: give its number, or a URL like https://github.com/owner/repo/issues/12`;
+  let text: string;
+  try {
+    text = gh(['issue', 'view', reference, '--json', 'number,title,body,url,labels']);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'gh is not installed: get it from https://cli.github.com, then run `gh auth login`';
+    const reason = terminalText(String((err as { stderr?: string }).stderr || '').split('\n')[0].trim());
+    return `gh can't read issue ${reference}${reason ? ` (${reason})` : ''}: run \`gh auth login\`, and check the number and the repo`;
+  }
+  const issue = JSON.parse(text) as { number?: unknown; title?: unknown; body?: unknown; url?: unknown; labels?: unknown };
+  // The number names the draft's folder (lessons/incident-<n>), so only a whole number will do.
+  const { number } = issue;
+  if (typeof number !== 'number' || !Number.isSafeInteger(number) || number <= 0) return `gh gave no issue number for ${reference}: it must be a whole number above 0`;
+  // gh's JSON is checked, not cast: a null or odd title, body, url or label must not crash the draft.
+  const { title, body, url, labels } = issue;
+  if (typeof title !== 'string') return `gh gave no title for ${reference}`;
+  return {
+    number,
+    title,
+    body: typeof body === 'string' ? body : '',
+    url: typeof url === 'string' ? url : '',
+    labels: (Array.isArray(labels) ? labels : [])
+      .map((label: unknown) => (label as { name?: unknown } | null)?.name)
+      .filter((name): name is string => typeof name === 'string' && name !== ''),
+  };
 }

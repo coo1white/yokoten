@@ -407,6 +407,7 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 | `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的变更文件、milestone 和标签，见下面的「更新日志」。改到 CODEOWNERS 里列出的文件，必须写 `tier: A`。改动的文档里句子太长、改动的代码里名字难读、改动超过 400 行，都只提醒，不算失败 |
 | `check --issue` | 在 CI 里检查 issue 的标题，见下面的「issue 标题」 |
 | `changelog [--write]` | 列出 `changes/` 里的文件会往 `[Unreleased]` 下面加哪些条目。加上 `--write` 就真的写进 `CHANGELOG.md`，再删掉这些文件；发版前跑。见下面的「更新日志」 |
+| `learn <issue> [--write]` | 从一个事故 issue 起草一条检查，留给人来审。加上 `--write` 才把文件写进 `lessons/`。见下面的「从事故里学」 |
 | `check --history` | 对所有分支的每一个提交做隐私检查。私有仓库公开之前跑一遍。浅克隆看不到旧的提交，所以它不扫描、直接报错；在 CI 里要拉下全部历史（`fetch-depth: 0`） |
 | `hook [--agent <name>] [--commands-only] [--json]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool |
 | `hook --stop [--agent <name>]` | 收尾检查。从标准输入读这一轮结束的事件，检查改过的文件：默认读 Claude Code 的 Stop；加 `--agent codex` 读 Codex 的 Stop，加 `--agent gemini` 读 Gemini CLI 的 AfterAgent。见[收尾检查](#收尾检查) |
@@ -678,6 +679,39 @@ yokoten 每学到一个教训，核心规则就会改。`yokoten install` 会更
 
 装了 Claude Code 插件的话，直接用 `/yokoten:update`。它跑的是插件自己那份 yokoten，
 先给你看要改什么，你点头了才写。
+
+### 从事故里学
+
+出了一次事故，就是学到了一课。`yokoten learn` 把这一课写成一条检查的草稿，这是闭环的第一步：
+
+```mermaid
+flowchart LR
+  A[事故 issue] --> B[yokoten learn]
+  B --> C[检查草稿]
+  C --> D[人来审]
+```
+
+后面跟 issue 编号就行；别的仓库的 issue，就给它的网址。它用 `gh` 读 issue，走的是你自己的登录。
+它不调用任何 AI 模型，草稿里的内容全部照着 issue 里的几节来填：
+
+| 草稿里的字段 | 从哪来 |
+|---|---|
+| `id` | `incident-<编号>` |
+| `what` | 标题里 `area: ` 后面那部分 |
+| `why` | 「Why it got through」那一节 |
+| `fix` | 「Fix」那一节 |
+
+issue 里没写的那一节，对应的字段就留一个 `TODO(reviewer)`，绝不替你瞎编。issue 的原文也会放进注释里，
+审的人不用来回翻。
+
+`yokoten learn 138` 只把草稿打出来，什么都不写。`yokoten learn 138 --write` 会在
+`lessons/incident-138/` 里加两个文件：
+
+- `lesson.ts`：这条检查要报的内容，外加一个空的 `findProblems`，检查本身要人来写。
+- `lesson.test.ts`：一个「阳性对照」测试：故意喂给检查一个有问题的例子，要求它能抓到。
+
+检查没写好之前，这个测试一直是红的，所以草稿自己永远过不了。`--write` 只加文件，
+已经有的文件不会动。
 
 ### 设置
 

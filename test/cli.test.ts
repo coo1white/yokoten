@@ -3376,6 +3376,37 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
   }
 });
 
+// #77: `learn` turns an incident issue into a check draft. A fake gh first on PATH gives the
+// issue; the real gh and GitHub are never reached.
+test('learn: previews a check draft from an incident, writes it with --write, and never overwrites', () => {
+  const sandbox = makeSandbox();
+  const bin = join(sandbox.home, 'bin');
+  mkdirSync(bin);
+  const issue = { number: 7, title: 'repo: a test fails behind a proxy', body: '## What happened\n\nA test failed.\n\n## Fix\n\nThe test sets NO_PROXY.\n', url: 'https://example.com/issues/7', labels: [{ name: 'incident' }] };
+  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nif (process.argv[4] !== '7') { console.error('no such issue'); process.exit(1); }\nconsole.log(${JSON.stringify(JSON.stringify(issue))});\n`);
+  chmodSync(join(bin, 'gh'), 0o755);
+  const extra = { PATH: `${bin}:${process.env.PATH}` };
+  let result = sandbox.run(['learn', '7'], { extra });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^yokoten learn: a check draft from issue #7, "repo: a test fails behind a proxy"\.\n1 TODO\(s\) for the reviewer:\n- why: the issue has no "Why it got through" section\n/);
+  assert.match(result.stdout, /\n--- lessons\/incident-7\/lesson\.ts\n[^]*fix: 'The test sets NO_PROXY',[^]*\n--- lessons\/incident-7\/lesson\.test\.ts\n/);
+  assert.match(result.stdout, /Nothing was written\. `yokoten learn 7 --write` adds these files for review\.\n$/);
+  assert.ok(!existsSync(join(sandbox.repo, 'lessons')), 'a preview writes nothing');
+  result = sandbox.run(['learn', '7', '--write'], { extra });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Wrote:\n- lessons\/incident-7\/lesson\.ts\n- lessons\/incident-7\/lesson\.test\.ts\nReview the draft/);
+  assert.ok(!/--- lessons/.test(result.stdout), '--write lists the files, not their text');
+  assert.match(readFileSync(join(sandbox.repo, 'lessons/incident-7/lesson.ts'), 'utf8'), /id: 'incident-7',/);
+  result = sandbox.run(['learn', '7', '--write'], { extra });
+  assert.match(result.stdout, /Kept, already there:\n- lessons\/incident-7\/lesson\.ts\n/);
+  result = sandbox.run(['learn', '8'], { extra });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^yokoten learn: gh can't read issue 8 \(no such issue\)/);
+  result = sandbox.run(['learn'], { extra });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /name an incident issue/);
+});
+
 test('adopt: with no key, the rule-based draft and how to set the key; it changes no file (#6)', () => {
   const sandbox = makeSandbox();
   sandbox.write('CLAUDE.md', '# rules\n');
