@@ -223,18 +223,34 @@ endpoint and model.
 
 ## Works with
 
-yokoten guards three AI coding agents. Each one keeps the same rules.
+yokoten guards five AI coding agents with the same rules. Each "yes" below is a real
+run: the agent tried `git push --tags` in a throwaway repo, and the guard stopped it.
+Docs are not proof.
 
-| Agent | What yokoten adds |
-|---|---|
-| Claude Code | the tool-call guard (a hook), the stop check (a hook), the guide at the start of each session, skills and agents |
-| Codex CLI | the tool-call guard and the stop check, in `.codex/hooks.json`. The guide at the start of each session and the command guard, in `~/.codex/hooks.json`. The guard checks the files of an `apply_patch`, also one run through the shell |
-| Gemini CLI | the tool-call guard and the stop check (AfterAgent), in `.gemini/settings.json`. The guide at the start of each session and the command guard, in `~/.gemini/settings.json` |
-| Any other agent | the rules in `AGENTS.md`, and the commit check, which stops a bad commit whoever made it |
+| Agent | Hook file (`init` writes it) | How it blocks | Verified | Caveats |
+|---|---|---|---|---|
+| Claude Code | `.claude/settings.json`: PreToolUse and Stop | exit 2, the reason on stderr | yes, 2026-10-19: headless, on DeepSeek `deepseek-flash` | none |
+| GitHub Copilot CLI | the same `.claude/settings.json`: Copilot reads it | exit 2, and the reason as JSON on stdout | yes, 2026-10-19: Copilot CLI 1.0.98, `copilot -p`, model `gpt-6-luna` (Auto) | Runs repo hooks only in a folder you trust. Skips them without a word otherwise. A hook that times out lets the call go on |
+| Antigravity CLI (`agy`) | `.agents/hooks.json`: the `yokoten` entry, PreToolUse | `{"decision": "deny"}` on stdout | yes, 2026-10-19: agy 1.4.2, `agy -p`, model `gemini-3.8-flash-high` | No stop check yet. Without `.yokoten/`, every call is refused: agy fails closed |
+| Codex CLI | `.codex/hooks.json`: PreToolUse and Stop | exit 2, the reason on stderr | yes, 2026-10-19: Codex 0.163.0, `codex exec`, on DeepSeek `deepseek-flash` | Runs a project hook only after you trust it in `/hooks`. `codex exec` skips an untrusted hook without a word |
+| Gemini CLI | `.gemini/settings.json`: BeforeTool and AfterAgent | exit 2, the reason on stderr | not run end to end: personal sign-in retired 2026-06-18; needs a paid API key or an org license | Google's agent for individuals is now Antigravity CLI |
+| Any other agent | none | the rules in `AGENTS.md`, and the commit check, which stops a bad commit whoever made it | | |
 
-`init` writes the project hooks. `install` writes the user hooks. Each agent runs a
-hook only after you trust it:
+`install` writes the user hooks: the guide at the start of each session, and the command
+guard. They go in `~/.claude/settings.json`, and in `~/.codex/hooks.json` and
+`~/.gemini/settings.json` when those folders exist. In Codex, the guard checks the files
+of an `apply_patch`, also one run through the shell.
 
+Each agent runs a project hook only after you trust it:
+
+- **Claude Code** runs project hooks in a folder you trust.
+- **Copilot CLI** runs them in a folder you trust. In `copilot -p`, set
+  `COPILOT_ALLOW_ALL=true`: that exact value trusts the folder. `--allow-all-tools` alone
+  does not, and then the hooks do not run.
+- **Antigravity CLI** ran `.agents/hooks.json` in `agy -p`, in a folder not on its trust
+  list. It runs the hook with the `.agents` folder as its working folder. Guides say
+  `--dangerously-skip-permissions` skips the hooks. In agy 1.4.2 the hook still ran with it.
+  Don't count on either.
 - **Codex** runs project hooks only in a trusted project. Then approve each hook in
   `/hooks`. Codex remembers the command, so a changed command must be approved again.
 - **Gemini CLI** runs project hooks only in a trusted folder. Start Gemini at the repo
@@ -242,11 +258,49 @@ hook only after you trust it:
   It warns once before it runs a new or changed hook.
 
 A worker is a session with `YOKOTEN_ROLE=worker`. In Codex, a subagent whose
-`agent_type` names a worker is a worker too. Gemini CLI's strict environment
+`agent_type` names a worker is a worker too. Copilot CLI and Antigravity CLI name no
+subagent role in a hook call: `YOKOTEN_ROLE` decides. Gemini CLI's strict environment
 sanitization removes `YOKOTEN_ROLE` from the hooks. Then yokoten can't tell a worker in
 Gemini CLI: every session counts as the lead, and the lead-only guard does not stop a
 worker's edit. The server lock still holds: code owners, and a bot without the rights to
 change CI.
+
+### Claude Code or Codex on DeepSeek
+
+The guard sits in the agent, not in the model. So Claude Code and Codex keep the same
+rules on a DeepSeek model. Both runs above used `deepseek-flash`.
+
+Claude Code, through DeepSeek's Anthropic-compatible API:
+
+```sh
+export CLAUDE_CONFIG_DIR=~/.config/claude-deepseek   # a config folder with no claude.ai login
+export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
+export ANTHROPIC_API_KEY=<your DeepSeek key>
+export ANTHROPIC_MODEL=deepseek-flash
+claude
+```
+
+Keep the separate `CLAUDE_CONFIG_DIR`. With a claude.ai login in the config folder, Claude
+Code sends that login's token, not the key. DeepSeek answers 401 each time, and Claude
+Code retries without a word until it times out. It looks like a hang. Do not use
+`--bare` either: it skips the hooks, so the guard does not run.
+
+Codex, through DeepSeek's OpenAI-compatible API. Put this in `$CODEX_HOME/config.toml`
+(default `~/.codex/config.toml`), and set `DEEPSEEK_API_KEY`:
+
+```toml
+model = "deepseek-flash"
+model_provider = "deepseek"
+
+[model_providers.deepseek]
+name = "DeepSeek"
+base_url = "https://api.deepseek.com"
+env_key = "DEEPSEEK_API_KEY"
+wire_api = "responses"
+```
+
+Codex 0.163.0 refuses `wire_api = "chat"`. It warns that it has no metadata for
+`deepseek-flash`, and runs anyway.
 
 ## Install and commands
 
@@ -481,7 +535,7 @@ It puts three safe defaults in `.github/` too:
 | `learn <issue> [--write]` | Drafts a check from an incident issue, for a person to review. `--write` adds the files in `lessons/`. See [Learning from an incident](#learning-from-an-incident) |
 | `learn --ship <id>` | In yokoten: moves a reviewed lesson into a group in `kit/lessons/`, where `doctor` from that yokoten runs it in every project. Refused while a `TODO(reviewer)` is left or its test fails |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public. A shallow clone can't see old commits, so it fails without scanning; in CI, check out the whole history (`fetch-depth: 0`). A hit in a file names the commit that added it, and the path in that commit: `file @ <commit>`. It reads commits past `git replace`, and fails the same way when a grafts file can hide commits. |
-| `hook [--agent <name>] [--commands-only] [--json]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini` |
+| `hook [--agent <name>] [--commands-only] [--json]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini`, an Antigravity CLI PreToolUse call with `--agent antigravity` |
 | `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop event by default, a Codex Stop event with `--agent codex`, a Gemini CLI AfterAgent event with `--agent gemini`. See [The stop check](#the-stop-check) |
 | `explain [<id>] [--json]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay. A second run changes nothing |
@@ -1060,11 +1114,10 @@ Honest limits:
 - **Claude Code first.** Agents follow Claude Code's format.
   Skills are the open SKILL.md format, so `install` also puts them in `~/.agents/skills`,
   where Codex, Gemini CLI, Copilot, Cursor and other agents find them. The tool-call
-  guard and the stop check also run in Codex and Gemini CLI: `init` writes
-  `.codex/hooks.json` and `.gemini/settings.json`, and each tool asks you to trust the
-  hooks. Nobody has yet seen a real Codex or Gemini CLI session blocked by them (#30), so
-  `doctor` reports those hooks, and the user hooks once `~/.codex` or `~/.gemini` exists, but
-  does not count them as missing. The rules are plain `AGENTS.md`, which
+  guard also runs in Copilot CLI, Antigravity CLI, Codex and Gemini CLI: see
+  [Works with](#works-with) for which runs were seen to block (#30). `doctor` reports
+  the other agents' hooks, and the user hooks once `~/.codex` or `~/.gemini` exists, but
+  does not count them as missing: a project may use none of these agents. The rules are plain `AGENTS.md`, which
   Claude Code reads when a project has no `CLAUDE.md`, and so do most other agents. Muse
   Code's skills and hooks are planned.
 

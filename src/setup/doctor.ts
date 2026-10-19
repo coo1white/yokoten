@@ -23,6 +23,7 @@ import { loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
 import { type LessonPlace, listLessons, runLessons } from '../run/learn.ts';
+import * as antigravity from '../agents/antigravity.ts';
 import { hasPlugin, hasSessionDoctor, readInstalledPlugin, userSettingsProblem } from '../agents/claude-code.ts';
 import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
@@ -72,8 +73,8 @@ function handAddPractice(id: RuleId, file: string, states: readonly HookState[])
 
 /**
  * The other agents' project hooks: the tool-call guard and the stop check. Reported, but
- * not a missing practice yet: no real Codex or Gemini CLI run has been seen to block
- * through them (#30), and a project that uses neither should not fail doctor over them.
+ * not a missing practice: a project that uses none of these agents should not fail doctor
+ * over them. Real runs blocked through Codex and Antigravity CLI; Gemini CLI is not run yet (#30).
  * A Gemini CLI file with comments, which init won't rewrite, gets the hooks to add by hand.
  */
 export function agentHooks(root: string): Practice[] {
@@ -87,7 +88,16 @@ export function agentHooks(root: string): Practice[] {
     practice('codex-hook', 'codex-hook', codexGuard && codexStop, missing(codexGuard, codexStop, '.codex/hooks.json'), '`yokoten init` adds it'),
     (geminiState && handAddPractice('gemini-hook', '.gemini/settings.json', [geminiState.guard, geminiState.stop])) ??
       practice('gemini-hook', 'gemini-hook', geminiGuard && geminiStop, missing(geminiGuard, geminiStop, '.gemini/settings.json'), '`yokoten init` adds it'),
+    antigravityPractice(antigravity.projectHookState(root, cliPath(root))),
   ];
+}
+
+/** Antigravity CLI's guard in .agents/hooks.json: one hook, no stop check (its Stop event has no `stop_hook_active`). */
+function antigravityPractice(state: HookState): Practice {
+  const file = '.agents/hooks.json';
+  if (typeof state === 'object') return practice('antigravity-hook', 'antigravity-hook', false, state.kind === 'json' ? `can't read ${file}` : `${file} has an unexpected shape`, state.kind === 'shape' ? `${state.hint}; fix it, then run \`yokoten init\`` : 'make it valid JSON, then run `yokoten init`');
+  if (state === 'updated') return practice('antigravity-hook', 'antigravity-hook', false, `the tool-call guard in ${file} is out of date or off`, '`yokoten init` updates it');
+  return practice('antigravity-hook', 'antigravity-hook', state === 'same', `no tool-call guard in ${file}`, '`yokoten init` adds it');
 }
 
 /**

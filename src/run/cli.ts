@@ -214,9 +214,9 @@ export const COMMANDS: Command[] = [
     name: 'hook',
     summary: 'the tool-call guard, or the stop check with --stop',
     usage: '[--agent <name>] [--commands-only] [--stop] [--json]',
-    text: ['Reads one tool call on stdin. It exits 2, with the reason on stderr, when it blocks the call.'],
+    text: ['Reads one tool call on stdin. It exits 2, with the reason on stderr, when it blocks the call.', 'With --agent antigravity, it says deny on stdout and exits 0, as Antigravity CLI asks.'],
     options: [
-      { name: '--agent', value: 'name', text: 'the runtime that sends the call: claude-code (the default), codex or gemini' },
+      { name: '--agent', value: 'name', text: 'the runtime that sends the call: claude-code (the default), codex, gemini or antigravity' },
       { name: '--commands-only', text: 'judge commands only, and leave files to the project' },
       { name: '--stop', text: 'read the end-of-turn event (Claude Code Stop, Codex Stop, Gemini AfterAgent) and check the changed files' },
       { name: '--json', text: 'the result as JSON on stdout' },

@@ -289,6 +289,12 @@ export const RULES = {
     check: '`doctor` reads .gemini/settings.json for a BeforeTool hook and an AfterAgent hook that each run `yokoten hook`; a note, not a missing step',
     docs: guide('works-with'),
   },
+  'antigravity-hook': {
+    rule: "the project has Antigravity CLI's tool-call guard",
+    why: "without it, Antigravity CLI's commands and edits in this project are not checked",
+    check: '`doctor` reads .agents/hooks.json for the `yokoten` PreToolUse hook that runs `yokoten hook --agent antigravity`; a note, not a missing step',
+    docs: guide('works-with'),
+  },
   'codex-user-hook': {
     rule: "Codex runs yokoten's session-start doctor and command guard in every repo",
     why: 'without them, a Codex session does not hear the next step on the road, and a tag push, force push or skipped check in a repo without yokoten is not stopped',

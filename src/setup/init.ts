@@ -12,6 +12,7 @@ import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import * as antigravity from '../agents/antigravity.ts';
 import { addProjectHook, addProjectStopHook, checkProjectSettings, setProjectEnv } from '../agents/claude-code.ts';
 import * as codex from '../agents/codex.ts';
 import * as gemini from '../agents/gemini.ts';
@@ -92,11 +93,13 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: bo
       `${addProjectHook(root, cli)} the tool-call hook in .claude/settings.json`,
       `${addProjectStopHook(root, cli)} the stop check in .claude/settings.json (changed files, before the agent ends its turn)`,
       `${setProjectEnv(root, 'TZ', 'UTC')} TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)`,
+      // Checked with a real run (#30): Copilot CLI reads these hooks, in a folder it trusts.
+      'GitHub Copilot CLI runs the hooks in .claude/settings.json once you trust this folder',
     ];
   });
   report.push(...claudeHooks.lines);
-  // Codex and Gemini CLI get the same guard, whether or not they are installed here: two
-  // small files are easier to predict than a guess about which agents someone uses.
+  // Codex, Gemini CLI and Antigravity CLI get the same guard, whether or not they are
+  // installed here: small files are easier to predict than a guess about which agents someone uses.
   // A file that won't parse, or has the wrong shape, is named and skipped, never rewritten (#248).
   const codexHooks = agentHooks('the Codex hooks', '.codex/hooks.json', () => {
     codex.checkProjectHooks(root);
@@ -112,9 +115,12 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: bo
       `${gemini.addProjectStopHook(root, cli)} the Gemini CLI stop check in .gemini/settings.json (AfterAgent)`,
     ];
   });
-  report.push(...codexHooks.lines, ...geminiHooks.lines);
+  const antigravityHooks = agentHooks('the Antigravity CLI hook', '.agents/hooks.json', () => [
+    `${antigravity.addProjectHook(root, cli)} the Antigravity CLI tool-call hook in .agents/hooks.json`,
+  ]);
+  report.push(...codexHooks.lines, ...geminiHooks.lines, ...antigravityHooks.lines);
   report.push(...setCommitCheck(root, cli, hooks, blocks));
-  return { ok: claudeHooks.ok && codexHooks.ok && geminiHooks.ok, lines: report };
+  return { ok: claudeHooks.ok && codexHooks.ok && geminiHooks.ok && antigravityHooks.ok, lines: report };
 }
 
 // ---- CODEOWNERS for the lead-only paths (#304) ----

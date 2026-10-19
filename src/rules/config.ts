@@ -27,7 +27,7 @@ export const DEFAULTS: Config = {
   tests: ['*.test.*', '*.spec.*', '*_test.go', 'test/**', 'tests/**'],
   // What only the lead (the session that reviews and pushes) may change: the rules the
   // agents work under, and the CI that checks them.
-  leadOnly: ['AGENTS.md', 'CLAUDE.md', 'yokoten.json', '.claude/**', '.claude-plugin/**', '.codex/**', '.gemini/**', '.muse/**', '.githooks/**', '.github/**', '.yokoten/**'],
+  leadOnly: ['AGENTS.md', 'CLAUDE.md', 'yokoten.json', '.claude/**', '.claude-plugin/**', '.codex/**', '.gemini/**', '.agents/hooks.json', '.muse/**', '.githooks/**', '.github/**', '.yokoten/**'],
   // `allow`: literal strings the privacy check lets through (a public support address).
   // `skip`: files it does not read (lockfiles, vendored code).
   // `utc`: commits must record their time in UTC, not the machine's time zone.
