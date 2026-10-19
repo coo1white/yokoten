@@ -814,6 +814,11 @@ project:
 A note never fails `doctor`. To stop a lesson in one project, add its id to "notNow" in
 `yokoten.json`, with the reason: `"notNow": { "incident-138": "a setup file sets it" }`.
 
+**Try the loop.** In a clone of yokoten, run `node scripts/demo/loop.ts`. In about a second, it
+walks the whole loop in a temp folder: an incident, the draft, a refused ship, the review,
+the ship, and the note in a second project. It runs offline, with a fake `gh`, and removes
+the folder after. `--keep` keeps the folder and prints where it is.
+
 ### Settings
 
 `yokoten.json` at the repo root holds the project's settings. Every key is optional.
