@@ -13,7 +13,7 @@ import { SECRET_CONTROL } from '../src/rules/secrets.ts';
 import { check, timeZoneNote } from '../src/run/check.ts';
 import { loadHookConfig } from '../src/run/hook.ts';
 import { parseSourceMarker, sourceMarker, translationNotes } from '../src/run/translations.ts';
-import { agentHooks, coreRulesCheck, machineChecks } from '../src/setup/doctor.ts';
+import { agentHooks, coreRulesCheck, coreRulesControl, machineChecks, selfTest } from '../src/setup/doctor.ts';
 import { compareCoreRules, compareVersions, readKitVersion } from '../src/setup/init.ts';
 import { explain, explainLines, ids } from '../src/setup/advice/explain.ts';
 import { ROAD, serverChecks, stepFinding } from '../src/setup/road.ts';
@@ -777,4 +777,19 @@ test('core rules: the kit version mark tells older from newer; no mark compares 
   assert.equal(compareCoreRules(`# rules\n\n${own}`, kit).state, 'same', 'the mark alone is no change');
   assert.equal(compareCoreRules(`<!-- yokoten kit 0.9.0 -->\n# rules\n\n${own}`, kit).state, 'same', 'a newer mark with the same text is up to date');
   assert.equal(compareCoreRules(`<!-- yokoten kit {{version}} -->\n# rules, later\n\n${own}`, kit).state, 'behind', 'a mark that is not a version is unknown');
+});
+
+test('self-test: the core-rules control passes the real check and fails a broken one (#170)', () => {
+  assert.deepEqual(coreRulesControl(), []);
+  assert.ok(!selfTest().some((name) => name.startsWith('core rules')));
+  const always = (mark: 'ok' | 'MISSING' | 'note') => (root: string) => ({ mark, finding: { ...coreRulesCheck(root)!.finding } });
+  assert.deepEqual(coreRulesControl(always('ok')), ['core rules check (edited by hand)', 'core rules check (newer kit)'], 'a check that passes everything');
+  assert.deepEqual(coreRulesControl(always('MISSING')), ['core rules check (newer kit)'], 'a check that calls a newer kit MISSING');
+  assert.deepEqual(coreRulesControl(always('note')), ['core rules check (edited by hand)'], 'a check that only gives notes');
+  // A compare that never sees a version: the newer kit looks hand-edited, so MISSING.
+  const noVersion = (root: string) => {
+    const result = coreRulesCheck(root)!;
+    return result.mark === 'note' ? { mark: 'MISSING' as const, finding: result.finding } : result;
+  };
+  assert.deepEqual(coreRulesControl(noVersion), ['core rules check (newer kit)']);
 });

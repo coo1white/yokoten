@@ -2,6 +2,7 @@
 // settings, skills and agents live, and how its hooks are written. Each other runtime
 // gets a sibling file with the same tool-call exports (codex.ts, gemini.ts).
 
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
@@ -96,4 +97,42 @@ export function hasPlugin(env: Env): boolean {
     return false; // a settings file that is not JSON enables nothing
   }
   return typeof enabled === 'object' && enabled !== null && Object.entries(enabled).some(([id, on]) => id.startsWith('yokoten@') && on === true);
+}
+
+/** What Claude Code recorded about the installed yokoten plugin: its commit and its package version. */
+export interface InstalledPlugin {
+  commit: string | null;
+  version: string | null;
+}
+
+/**
+ * The installed yokoten plugin, from ~/.claude/plugins/installed_plugins.json: the user
+ * install, or the one for this project. Claude Code records the commit it installed and
+ * the folder it copied; that folder's package.json has the yokoten version. Null when
+ * there is no install or the file is not the shape we know.
+ */
+export function readInstalledPlugin(env: Env, root: string | null): InstalledPlugin | null {
+  const plugins = join(userDir(env), 'plugins');
+  let installs: unknown;
+  try {
+    installs = JSON.parse(readFileSync(join(plugins, 'installed_plugins.json'), 'utf8')).plugins;
+  } catch {
+    return null;
+  }
+  if (typeof installs !== 'object' || installs === null) return null;
+  for (const [id, entries] of Object.entries(installs)) {
+    if (!id.startsWith('yokoten@') || !Array.isArray(entries)) continue;
+    const entry = entries.find((e) => e?.scope === 'user' || (root !== null && e?.projectPath === root));
+    if (!entry) continue;
+    const text = (v: unknown) => (typeof v === 'string' && v !== '' ? v : null);
+    const folder = text(entry.installPath) ?? (text(entry.version) && join(plugins, 'cache', id.slice('yokoten@'.length), 'yokoten', entry.version));
+    let version: string | null = null;
+    try {
+      if (folder) version = text(JSON.parse(readFileSync(join(folder, 'package.json'), 'utf8')).version);
+    } catch {
+      // no package.json in the install: the commit may still tell
+    }
+    return { commit: text(entry.gitCommitSha), version };
+  }
+  return null;
 }

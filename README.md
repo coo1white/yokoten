@@ -12,7 +12,7 @@ yokoten guides you through a good team's habits, and guards your AI agents while
 
 One person and a few AI agents built it that way: every issue, review, and release is in this repo.
 
-**[yokoten.app](https://yokoten.app)** &nbsp;·&nbsp; English | [中文](docs/zh-CN/README.md)
+**[yokoten.app](https://yokoten.app)** &nbsp;·&nbsp; English | [中文](docs/zh-CN/README.md) | [日本語](docs/ja/README.md)
 
 <br/>
 
@@ -49,6 +49,10 @@ cd your-project
 npx yokoten init         # once per project
 npx yokoten doctor       # where you are, and the one next step
 ```
+
+Before your first commit: commit with `TZ=UTC git commit`, or put `export TZ=UTC` in your
+shell profile once. The commit check refuses other time zones, because a commit's time zone
+tells strangers roughly where you live.
 
 In Claude Code, you can use the plugin instead: `/plugin marketplace add
 yokoten-labs/yokoten`, then `/plugin install yokoten@yokoten`. Use one way, not both.
