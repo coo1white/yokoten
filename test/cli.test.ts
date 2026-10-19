@@ -1290,6 +1290,36 @@ test('check --pr and --issue: an event file that is missing or broken is one fin
   writeFileSync(file, JSON.stringify({ action: 'opened', pull_request: null, issue: 'x' }));
   for (const mode of ['--pr', '--issue']) assert.match(sandbox.run(['check', mode], { extra: { GITHUB_EVENT_PATH: file } }).stdout, /in this run/);
 });
+
+// #273: an event whose base or head commit id is empty, missing or not text is one
+// finding, never an empty diff that lets the file rules pass.
+test('check --pr: a pull request event with no base or head commit id is one finding (#273)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('README.md', 'Short.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'base');
+  const head = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  const file = join(sandbox.home, 'event.json');
+  const body = 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\nNo changelog: a test\n';
+  const cases: [object, object, string][] = [
+    [{}, { sha: head }, 'base commit is'],
+    [{ sha: head }, { sha: 7 }, 'head commit is'],
+    [{ sha: '' }, { sha: '' }, 'base and head commits are'],
+  ];
+  for (const [baseField, headField, what] of cases) {
+    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }], milestone: { title: 'M0' }, base: baseField, head: headField } }));
+    let result = sandbox.run(['check', '--pr'], { extra: { GITHUB_EVENT_PATH: file } });
+    assert.equal(result.status, 1, what);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, new RegExp(`^yokoten check --pr: 1 problem\\(s\\)\\n- the pull request's ${what} missing from the event\\. .+\\. Run it in a GitHub Actions job on a \`pull_request\` event`));
+    result = sandbox.run(['check', '--pr', '--json'], { extra: { GITHUB_EVENT_PATH: file } });
+    assert.equal(result.status, 1, what);
+    assert.equal(result.stderr, '');
+    const report = JSON.parse(result.stdout);
+    assert.deepEqual([report.check, report.ok, report.findings.map((f: { id: string }) => f.id)], ['pr', false, ['pr-commits']]);
+    assert.match(report.findings[0].what, new RegExp(`${what} missing from the event`));
+  }
+});
 // #91: in GitHub Actions, the findings show on the pull request page: an annotation per
 // finding on stdout, and a job summary. The finding text is reused, so no private value.
 test('check in GitHub Actions: annotations and a job summary, place but never content (#91)', () => {

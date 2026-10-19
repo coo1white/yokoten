@@ -218,6 +218,15 @@ function hasMergeBase(root: string, base: string, head: string): boolean {
 }
 
 const COMMITS_FIX = 'use `fetch-depth: 0` in actions/checkout, so the checkout has the whole history';
+const SHA_FIX = 'run it in a GitHub Actions job on a `pull_request` event, whose base.sha and head.sha are the commits to compare';
+
+/** Which of the event's base and head commit ids are empty, missing or not text, as one finding, or null. */
+function shasProblem(base: string, head: string): Finding | null {
+  const missing = [['base', base], ['head', head]].filter(([, sha]) => !sha).map(([name]) => name);
+  if (missing.length === 2) return finding('pr-commits', 'the pull request\'s base and head commits are missing from the event', SHA_FIX);
+  if (missing.length === 1) return finding('pr-commits', `the pull request's ${missing[0]} commit is missing from the event`, SHA_FIX);
+  return null;
+}
 
 /** Why `base...head` can't be read in this checkout, or null when it can. */
 function commitsProblem(root: string, base: string, head: string): Finding | null {
@@ -238,11 +247,9 @@ export function readPullRequest(root: string, env: Env): PullRequestRead | Unrea
   if (!isObject(pr)) return null;
   const base = isObject(pr.base) ? asText(pr.base.sha) : '';
   const head = isObject(pr.head) ? asText(pr.head.sha) : '';
-  if (base && head) {
-    const problem = commitsProblem(root, base, head);
-    if (problem) return { problem };
-  }
-  const diff = (...options: string[]) => (base && head ? execFileSync('git', ['diff', ...options, `${base}...${head}`], { cwd: root, encoding: 'utf8' }) : '');
+  const problem = shasProblem(base, head) ?? commitsProblem(root, base, head);
+  if (problem) return { problem };
+  const diff = (...options: string[]) => execFileSync('git', ['diff', ...options, `${base}...${head}`], { cwd: root, encoding: 'utf8' });
   return {
     title: asText(pr.title),
     body: asText(pr.body),
