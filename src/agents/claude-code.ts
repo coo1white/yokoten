@@ -80,7 +80,7 @@ export function checkProjectSettings(root: string): void {
 
 /** The project's tool-call guard: every shell call and edit goes past `hook` first. */
 export const addProjectHook = (root: string, cli: string) =>
-  addHook(projectSettings(root), 'PreToolUse', 'Bash|Edit|Write|MultiEdit|NotebookEdit', guardCommand(`"$CLAUDE_PROJECT_DIR/${cli}"`, 'hook', missingProjectRuntime(cli)));
+  addHook(projectSettings(root), 'PreToolUse', 'Bash|Edit|Write|MultiEdit|NotebookEdit', guardCommand(`"$CLAUDE_PROJECT_DIR/${cli}"`, 'hook', missingProjectRuntime(cli), { isToolCall: true }));
 export const hasProjectHook = (root: string): boolean => hasHook(projectSettings(root), 'PreToolUse', 'hook');
 
 /**
@@ -119,7 +119,7 @@ export function addUserHooks(env: Env, cli: string, missing: string): { doctor: 
   checkHooksFile(path, USER_EVENTS);
   return {
     doctor: addHook(path, 'SessionStart', undefined, guardCommand(cli, 'doctor --session', missing, { isSessionStart: true })),
-    guard: addHook(path, 'PreToolUse', 'Bash', guardCommand(cli, 'hook --commands-only', missing)),
+    guard: addHook(path, 'PreToolUse', 'Bash', guardCommand(cli, 'hook --commands-only', missing, { isToolCall: true })),
   };
 }
 export const hasSessionDoctor = (env: Env): boolean => hasHook(userSettings(env), 'SessionStart', 'doctor');

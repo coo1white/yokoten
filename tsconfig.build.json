@@ -1,7 +1,8 @@
 {
   // The npm package only. Node does not strip types under node_modules, so the package
   // ships .js. Packing runs `npm run build` (the prepack script), which emits bin/ and
-  // src/ into dist/ (git-ignored). The repo itself still runs the .ts files.
+  // src/ into dist/ (git-ignored), and the kit's lessons, which doctor loads (#147). The
+  // repo itself still runs the .ts files.
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": false,
@@ -9,5 +10,6 @@
     "rootDir": ".",
     "rewriteRelativeImportExtensions": true
   },
-  "include": ["bin", "src"]
+  "include": ["bin", "src", "kit/lessons"],
+  "exclude": ["kit/lessons/**/*.test.ts"]
 }

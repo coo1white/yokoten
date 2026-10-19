@@ -57,7 +57,7 @@ const projectSettings = (root: string) => join(root, '.gemini', 'settings.json')
  *   makes the agent try again.
  */
 const projectHookArgs = (root: string, cli: string): Record<'guard' | 'stop', HookArgs> => ({
-  guard: [projectSettings(root), 'BeforeTool', 'run_shell_command|write_file|replace', guardCommand(`$GEMINI_PROJECT_DIR/${cli}`, 'hook --agent gemini', missingProjectRuntime(cli)), { name: 'yokoten' }, READ],
+  guard: [projectSettings(root), 'BeforeTool', 'run_shell_command|write_file|replace', guardCommand(`$GEMINI_PROJECT_DIR/${cli}`, 'hook --agent gemini', missingProjectRuntime(cli), { isToolCall: true }), { name: 'yokoten' }, READ],
   stop: [projectSettings(root), 'AfterAgent', undefined, guardCommand(`$GEMINI_PROJECT_DIR/${cli}`, 'hook --stop --agent gemini', missingProjectRuntime(cli)), { name: 'yokoten-stop' }, READ],
 });
 
@@ -95,7 +95,7 @@ const userSettings = (env: Env) => join(env.HOME || homedir(), '.gemini', 'setti
 /** The two user hooks, as `addHook`'s arguments: one builder for `addUserHooks` and `userHooksState`. */
 const userHookArgs = (env: Env, cli: string, missing: string): Record<'doctor' | 'guard', HookArgs> => ({
   doctor: [userSettings(env), 'SessionStart', undefined, guardCommand(cli, 'doctor --session --agent gemini', missing, { isSessionStart: true, sessionOutput: 'json' }), { name: 'yokoten-session' }, READ],
-  guard: [userSettings(env), 'BeforeTool', SHELL, guardCommand(cli, 'hook --agent gemini --commands-only', missing), { name: 'yokoten-guard' }, READ],
+  guard: [userSettings(env), 'BeforeTool', SHELL, guardCommand(cli, 'hook --agent gemini --commands-only', missing, { isToolCall: true }), { name: 'yokoten-guard' }, READ],
 });
 
 /** The user's hooks, in every repo: doctor at session start, and the command guard on shell calls. `missing` is what they say when `cli` is gone. */
