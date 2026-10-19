@@ -57,6 +57,31 @@ test('AGENTS.md: the core rules here are the kit\'s, word for word', () => {
   assert.equal(core('AGENTS.md'), core('kit/project/AGENTS.md'), 'change kit/project/AGENTS.md and copy it here, or the other way round');
 });
 
+// This repo files issues from the kit's own templates (#169). A copy here that drifts
+// from the kit means `learn` reads one set of fields here and another in every project.
+// A `{{...}}` in the kit's file stands for any text in the copy.
+const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, (mark) => `\\${mark}`);
+const matchesKit = (copy: string, kit: string) => new RegExp(`^${kit.split(/\{\{[^}]*\}\}/).map(escape).join('.+?')}$`, 's').test(copy);
+
+test('issue templates: each one here is the kit\'s, word for word; a changed copy is caught (#169)', () => {
+  const kitDir = join(ROOT, 'kit/project/.github/ISSUE_TEMPLATE');
+  const hereDir = join(ROOT, '.github/ISSUE_TEMPLATE');
+  const kitFiles = readdirSync(kitDir);
+  const shared = readdirSync(hereDir).filter((file) => kitFiles.includes(file));
+  assert.ok(shared.includes('incident.yml'), 'the incident template is in both places');
+  for (const file of shared) {
+    const kit = readFileSync(join(kitDir, file), 'utf8');
+    assert.ok(matchesKit(readFileSync(join(hereDir, file), 'utf8'), kit), `.github/ISSUE_TEMPLATE/${file}: copy kit/project/.github/ISSUE_TEMPLATE/${file} here, or the other way round`);
+    // Positive control: a copy with a word changed, or a line left out, is caught.
+    assert.ok(matchesKit(kit, kit));
+    assert.ok(!matchesKit(kit.replace(/label: \S+/, 'label: Changed'), kit), `${file}: a changed label must be caught`);
+    assert.ok(!matchesKit(kit.split('\n').slice(1).join('\n'), kit), `${file}: a missing line must be caught`);
+  }
+  // A placeholder in the kit matches any text there, and nowhere else.
+  assert.ok(matchesKit('name: Acme (a.b)\n', 'name: {{project}}\n'));
+  assert.ok(!matchesKit('title: Acme\n', 'name: {{project}}\n'));
+});
+
 // A tag can be moved to other code; a commit can't. Every action is pinned to a full
 // commit, with the version it is in a comment for people and Dependabot. A local
 // action (`./path`) is code in the repo and needs no pin.
