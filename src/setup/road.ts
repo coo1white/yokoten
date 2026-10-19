@@ -20,8 +20,8 @@ import { hasPlugin, hasProjectHook } from '../agents/claude-code.ts';
 import { runs } from '../run/cli.ts';
 import { hasBot, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
-import { isSelf } from './init.ts';
-import { lackingLabels } from './plan.ts';
+import { claudeReadsRules, cliPath, findRulesGap, hookFile, isSelf } from './init.ts';
+import { FIRST_MILESTONE, lackingLabels, pickNewMilestone } from './plan.ts';
 import { skillFiles, skillsDir } from './install.ts';
 
 /** The stage names, in order. A step's `stage` is its number here, from 1. */
@@ -75,10 +75,11 @@ export const gitConfig = (root: string, key: string) => {
   }
 };
 
-const ciText = (root: string) => {
+const ciFiles = (root: string): string[] => {
   const dir = join(root, '.github', 'workflows');
-  return existsSync(dir) ? readdirSync(dir).map((f) => read(join(dir, f))).join('\n') : '';
+  return existsSync(dir) ? readdirSync(dir).map((f) => read(join(dir, f))) : [];
 };
+const ciText = (root: string) => ciFiles(root).join('\n');
 
 const TODO_FILES = ['TODO.md', 'TODO', 'todo.md', 'docs/todo'];
 // Names as the folder lists them: on a case-insensitive disk (macOS) TODO.md also "exists" as todo.md.
@@ -122,14 +123,175 @@ const testScript = (root: string): string => {
     return '';
   }
 };
-// A command that runs the package.json script, and runners that need no script.
-const RUNS_SCRIPT = /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|t)\b/;
-const RUNNERS = /\b(?:node\s+--test|deno\s+test|go\s+test|cargo\s+test|pytest|mvn\s+test|gradle\s+test)\b/;
-/** Whether CI runs the tests: the package.json script, or a test runner named outright. */
-const ciRunsTests = (root: string) => {
-  const ci = ciText(root);
-  const script = testScript(root);
-  return RUNNERS.test(ci) || (script !== '' && (RUNS_SCRIPT.test(ci) || ci.includes(script)));
+/**
+ * The shell lines that the workflows run: each `run:` value, one line, or each line of a
+ * `run: |` block. A job id, a matrix item or a comment is never a command. Each line is
+ * matched on its own, so no pattern can run across a newline.
+ */
+const runLines = (ci: string): string[] => {
+  const lines: string[] = [];
+  const text = ci.split(/\r?\n/);
+  for (let i = 0; i < text.length; i++) {
+    const key = /^([ \t]*(?:-[ \t]+)?)run:(?:[ \t]+(.*))?$/.exec(text[i]);
+    if (!key) continue;
+    const value = (key[2] ?? '').trim();
+    if (/^[|>][-+0-9]*(?:[ \t]+#.*)?$/.test(value)) {
+      // A block: the lines indented more than the `run` key, with `\` continuations joined.
+      let line = '';
+      for (; i + 1 < text.length && (text[i + 1].trim() === '' || /^[ \t]*/.exec(text[i + 1])![0].length > key[1].length); i++) {
+        const next = text[i + 1].trim();
+        if (!next) continue;
+        line = line ? `${line} ${next}` : next;
+        if (!line.endsWith('\\')) {
+          lines.push(line);
+          line = '';
+        }
+      }
+      if (line) lines.push(line);
+    } else if (!value.startsWith('#')) lines.push(value.replace(/^(["'])(.*)\1$/, '$2'));
+  }
+  return lines;
+};
+/**
+ * The simple commands in a shell line: split at ;, &, |, with an opening "(" and any
+ * `VAR=value`, `env` or `time` before the command taken off. Comments go.
+ */
+const commands = (line: string): string[] =>
+  line.split(/[;&|]+/).map((c) => c.trim().replace(/^(?:\(\s*|[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+|env(?:\s+-\S+)*\s+|time\s+)*/, '')).filter((c) => c && !c.startsWith('#'));
+/** A command that only asks a tool about itself. */
+const ASKS = /\s--(?:version|help)(?=\s|$)/;
+// The end of a command name: a space or the end, so "make test-deps" and "jest-preview" are not runs.
+const END = String.raw`(?=\s|$)`;
+// Flags with no value, as tools take them before the command: npx --yes, node --experimental-strip-types.
+const FLAGS = String.raw`(?:\s+-\S+)*`;
+// Flags that may take a value: npm -w app, pnpm --filter app.
+const VALUED = String.raw`(?:\s+-\S+(?:\s+[^-\s]\S*)?)*`;
+const anchored = (pattern: string) => new RegExp(`^${pattern}${END}`);
+/** The package.json "test" script, run by its package manager. */
+const RUNS_SCRIPT = anchored(String.raw`(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|t)`);
+// Tools that start a Node runner: npx, bunx, npm exec, pnpm (exec, dlx), yarn (run).
+const NODE_EXEC = String.raw`(?:(?:npx|bunx)${FLAGS}\s+|npm\s+exec${FLAGS}\s+(?:--\s+)?|(?:pnpm|yarn)(?:\s+(?:exec|dlx|run))?\s+)?`;
+// Tools that start a Python runner: uv run, uvx, pipx run, poetry run, pipenv run.
+const PY_EXEC = String.raw`(?:(?:uvx|uv\s+run|pipx\s+run|poetry\s+run|pipenv\s+run)${FLAGS}\s+)?`;
+// A Python module run as a program: python -m, coverage run -m.
+const PY_M = String.raw`(?:python3?|coverage\s+run)\s+-m\s+`;
+/** Test runners that need no package.json script, one entry per runner. Each is matched at the start of a command. */
+const RUNNERS: RegExp[] = [
+  anchored(String.raw`node${FLAGS}\s+--test`),
+  anchored(String.raw`deno\s+test`),
+  anchored(String.raw`go\s+test`),
+  anchored(String.raw`cargo\s+test`),
+  anchored(String.raw`(?:\./)?mvnw?${FLAGS}\s+test`),
+  anchored(String.raw`(?:\./)?gradlew?${FLAGS}\s+test`),
+  anchored(`${PY_EXEC}(?:${PY_M})?(?:pytest|tox|nox)`),
+  anchored(`${PY_EXEC}${PY_M}unittest`),
+  anchored(String.raw`make(?:\s+-C\s*\S+|\s+-\S+)*\s+tests?`),
+  anchored(`${NODE_EXEC}(?:vitest|jest)`),
+];
+/** In a workspaces repo, commands that run each package's "test" script; the root may have none. */
+const RUNS_WORKSPACES: RegExp[] = [
+  // npm takes its flags anywhere: npm test --workspaces, npm -w app test, npm run test -ws.
+  new RegExp(String.raw`^npm(?=.*\s(?:--workspaces?|-ws|-w)(?:[\s=]|$))${VALUED}\s+(?:run\s+)?(?:test|t)${END}`),
+  anchored(String.raw`pnpm${VALUED}\s+(?:-r|--recursive|--filter(?:=|\s+)\S+|-F\s+\S+)${VALUED}\s+(?:run\s+)?test`),
+  anchored(String.raw`yarn\s+workspaces\s+(?:foreach${VALUED}\s+)?run\s+test`),
+];
+const packageJson = (root: string): Record<string, unknown> | null => {
+  try {
+    const json = JSON.parse(read(join(root, 'package.json')) || 'null');
+    return json && typeof json === 'object' ? json : null;
+  } catch {
+    return null;
+  }
+};
+const isWorkspaces = (root: string) => Boolean(packageJson(root)?.workspaces) || existsSync(join(root, 'pnpm-workspace.yaml'));
+/**
+ * Whether the workflow text runs the tests: the package.json "test" script (`script`, or
+ * empty), each package's script in a workspaces repo, or a test runner named outright.
+ */
+export const runsTests = (ci: string, script: string, workspaces: boolean) => {
+  const lines = runLines(ci);
+  const run = lines.flatMap(commands).filter((c) => !ASKS.test(c));
+  if (run.some((c) => RUNNERS.some((r) => r.test(c)))) return true;
+  if (script !== '' && (run.some((c) => RUNS_SCRIPT.test(c)) || lines.some((l) => l.includes(script)))) return true;
+  return workspaces && run.some((c) => RUNS_WORKSPACES.some((r) => r.test(c)));
+};
+/**
+ * Whether the workflows run a yokoten command: anywhere in the text by its path, or as a
+ * command in a `run:` step, where `- run: npx yokoten check` starts after the key (#298).
+ */
+const ciRuns = (ci: string, command: RegExp) => command.test(ci) || runLines(ci).flatMap(commands).some((c) => command.test(c));
+const indentOf = (line: string) => /^[ \t]*/.exec(line)![0].length;
+// A step that uses yokoten's own Action, at any ref (even the guide's "<full commit SHA>"), quoted or not, with a comment or not.
+const USES_YOKOTEN = /^[ \t]*uses:[ \t]*(["']?)yokoten-labs\/yokoten@[^\s"'#]+(?:[ \t]+[^\s"'#]+)*\1[ \t]*(?:#.*)?$/;
+const PR_CHECK_OFF = /^[ \t]*pr-check:[ \t]*(["']?)false\1[ \t]*(?:#.*)?$/;
+/**
+ * The steps in one workflow that use the yokoten Action, each with whether it runs
+ * `check --pr`: it does unless its `with:` sets `pr-check: false`. Each list item is read
+ * once and then skipped, so the read is linear in the text (#298).
+ */
+export const yokotenActions = (workflow: string): { prCheck: boolean }[] => {
+  const found: { prCheck: boolean }[] = [];
+  const text = workflow.split(/\r?\n/);
+  for (let i = 0; i < text.length; i++) {
+    const item = /^([ \t]*)-[ \t]+(.*)$/.exec(text[i]);
+    if (!item) continue;
+    // The item's keys sit two past the dash; its first key is on the dash line.
+    const keyIndent = item[1].length + 2;
+    const lines = [' '.repeat(keyIndent) + item[2]];
+    for (; i + 1 < text.length && (text[i + 1].trim() === '' || indentOf(text[i + 1]) > item[1].length); i++) lines.push(text[i + 1]);
+    const keys = lines.filter((l) => l.trim() !== '' && indentOf(l) === keyIndent);
+    if (!keys.some((l) => USES_YOKOTEN.test(l))) continue;
+    let inWith = false;
+    let prCheck = true;
+    for (const line of lines) {
+      if (line.trim() === '') continue;
+      if (indentOf(line) <= keyIndent) inWith = /^[ \t]*with:[ \t]*(?:#.*)?$/.test(line) && indentOf(line) === keyIndent;
+      else if (inWith && PR_CHECK_OFF.test(line)) prCheck = false;
+    }
+    found.push({ prCheck });
+  }
+  return found;
+};
+/** Whether one workflow runs on pull requests: its top-level `on:` names pull_request or pull_request_target. */
+export const onPullRequest = (workflow: string): boolean => {
+  const text = workflow.split(/\r?\n/);
+  for (let i = 0; i < text.length; i++) {
+    const on = /^(?:on|"on"|'on'):(.*)$/.exec(text[i]);
+    if (!on) continue;
+    const block = [on[1]];
+    for (; i + 1 < text.length && (text[i + 1].trim() === '' || /^[ \t#]/.test(text[i + 1])); i++) block.push(text[i + 1]);
+    if (block.some((l) => /(?:^|[\s[,{])pull_request(?:_target)?(?=[\s:,\]}]|$)/.test(l.replace(/#.*/, '')))) return true;
+  }
+  return false;
+};
+const ciRunsTests = (root: string) => runsTests(ciText(root), testScript(root), isWorkspaces(root));
+// What runs the tests in each kind of project, by a file at the root; the first three when none is found.
+const PROJECT_RUNNERS: [string[], string][] = [
+  [['go.mod'], 'go test'],
+  [['pyproject.toml', 'setup.py', 'setup.cfg', 'tox.ini', 'requirements.txt'], 'pytest'],
+  [['Cargo.toml'], 'cargo test'],
+  [['pom.xml'], 'mvn test'],
+  [['build.gradle', 'build.gradle.kts'], 'gradle test'],
+  [['deno.json', 'deno.jsonc'], 'deno test'],
+];
+const runnersFor = (root: string) => {
+  const found = PROJECT_RUNNERS.filter(([files]) => files.some((f) => existsSync(join(root, f)))).map(([, runner]) => runner);
+  const named = (found.length ? found : PROJECT_RUNNERS.slice(0, 3).map(([, runner]) => runner)).map((r) => `\`${r}\``);
+  return named.length > 1 ? `${named.slice(0, -1).join(', ')} or ${named.at(-1)}` : named[0];
+};
+/** The command that runs each package's tests in this workspaces repo. */
+const workspacesTest = (root: string) => (existsSync(join(root, 'pnpm-workspace.yaml')) ? '`pnpm -r test`' : '`npm test --workspaces`');
+/** Why the tests step is not done, worded by what the project is: package.json only when there is one. */
+const noTests = (root: string) => {
+  if (testScript(root)) return 'CI does not run the tests';
+  if (isWorkspaces(root)) return `no workflow runs each package's tests (e.g. ${workspacesTest(root)})`;
+  if (packageJson(root)) return 'no test command: no "test" script in package.json, and no workflow runs a test runner';
+  return `no workflow runs a test command such as ${runnersFor(root)}`;
+};
+const testsFix = (root: string) => {
+  if (testScript(root)) return 'add a step that runs `npm test` (or your test command) to a workflow in .github/workflows';
+  if (isWorkspaces(root)) return `add a step that runs ${workspacesTest(root)} to a workflow in .github/workflows`;
+  return 'add tests and a CI step that runs them';
 };
 
 /** Tracked build output, as yokoten.json lets it through; null outside a git repo. */
@@ -149,10 +311,12 @@ const builtFiles = (root: string): string[] | null => {
   return files.filter((f) => isBuildOutput(f, allow));
 };
 
+/** The one security file init does not write: the license is the owner's choice. */
+const LICENSE_FILE = 'license file';
 const SECURITY_FILES: [string, string[]][] = [
   ['security policy (SECURITY.md)', ['.github/SECURITY.md', 'SECURITY.md']],
   ['Dependabot config', ['.github/dependabot.yml', '.github/dependabot.yaml']],
-  ['license file', ['LICENSE', 'LICENSE.md', 'LICENSE.txt', 'COPYING']],
+  [LICENSE_FILE, ['LICENSE', 'LICENSE.md', 'LICENSE.txt', 'COPYING']],
 ];
 export const securityLacking = (root: string) => SECURITY_FILES.filter(([, paths]) => !paths.some((p) => existsSync(join(root, p)))).map(([name]) => name);
 
@@ -170,7 +334,7 @@ const RULESET = 'in Settings, Rules, Rulesets, edit the ruleset on the default b
 
 /** Each server setting, judged. `settings` is what the host adapter read, or why it could not. */
 export function serverChecks(settings: ServerSettings | Unread): ServerCheck[] {
-  const cant = (id: RuleId, u: Unread): ServerCheck => ({ id, mark: "can't check", finding: finding(id, `can't check: ${u.unread}`, u.fix) });
+  const cant = (id: RuleId, u: Unread): ServerCheck => ({ id, mark: "can't check", finding: finding(id, u.unread, u.fix) });
   if ('unread' in settings) return [cant('server-settings', settings)];
   const judge = (id: RuleId, found: boolean | Unread | null, what: string, fix: string): ServerCheck => {
     if (found === null) return cant(id, { unread: 'only a repo admin can see this setting', fix: 'run doctor signed in to gh as a repo admin' });
@@ -227,7 +391,7 @@ const judgeServer = (key: string, server: ServerRead): Found => {
 
 /** One field of each check with this mark, joined by "; ", or `fallback` when no check has the mark. */
 const joinChecks = (key: string, server: ServerRead, mark: ServerCheck['mark'], field: 'what' | 'fix', fallback: string) => {
-  const texts = stepChecks(key, server).filter((c) => c.mark === mark).map((c) => c.finding[field].replace(/^can't check: /, ''));
+  const texts = stepChecks(key, server).filter((c) => c.mark === mark).map((c) => c.finding[field]);
   return texts.length ? [...new Set(texts)].join('; ') : fallback;
 };
 
@@ -273,16 +437,34 @@ const lackingNames = (server: ServerRead) => {
   return 'unread' in planning ? [] : lackingLabels(planning.labels.map((l) => l.name)).map((l) => l.name);
 };
 
+/** The title `init --github` would give a new milestone, by the same rule the step checks. */
+const newMilestoneOf = (server: ServerRead) => {
+  const planning = planningOf(server);
+  return ('unread' in planning ? null : pickNewMilestone(planning.milestones)) ?? FIRST_MILESTONE;
+};
+
+/** The pre-commit git runs here, by core.hooksPath, relative to the root; null when that is unset or outside the repo. */
+const commitHook = (root: string): string | null => {
+  const hooksPath = gitConfig(root, 'core.hooksPath');
+  return hooksPath ? hookFile(root, hooksPath) : null;
+};
+
 /** The road, in order. Step names never change: they are the keys for "not now". */
 export const ROAD: Step[] = [
   {
     stage: 1,
     key: 'rules',
-    check: (root) => existsSync(join(root, 'AGENTS.md')),
-    what: () => 'no AGENTS.md, so the agents have no written rules here',
-    fix: () => '`yokoten init` adds one',
+    check: (root) => existsSync(join(root, 'AGENTS.md')) && claudeReadsRules(root),
+    what: (root) => {
+      const gap = findRulesGap(root);
+      return existsSync(join(root, 'AGENTS.md')) && gap ? `${gap.file} does not import AGENTS.md, so Claude Code does not read the rules` : 'no AGENTS.md, so the agents have no written rules here';
+    },
+    fix: (root) => {
+      const gap = findRulesGap(root);
+      return existsSync(join(root, 'AGENTS.md')) && gap ? `add a line \`${gap.line}\` at the end of ${gap.file}, or run \`yokoten init\`` : '`yokoten init` adds one';
+    },
     why: 'an agent follows the rules it can read, and only those',
-    how: 'AGENTS.md is at the repo root',
+    how: 'AGENTS.md is at the repo root, and a CLAUDE.md (at the root or in .claude/), when there is one, imports it (`@AGENTS.md`, or `@../AGENTS.md` from .claude/; a Markdown link is not an import): with a CLAUDE.md, Claude Code reads AGENTS.md only through it',
     standard: 'OpenSSF: AI code assistant instructions',
   },
   {
@@ -297,11 +479,23 @@ export const ROAD: Step[] = [
   {
     stage: 1,
     key: 'commit-check',
-    check: (root) => gitConfig(root, 'core.hooksPath') === '.githooks' && runs('check').test(read(join(root, '.githooks', 'pre-commit'))),
-    what: () => 'commits are not checked: core.hooksPath is not .githooks, or .githooks/pre-commit does not run yokoten',
-    fix: () => '`yokoten init` sets both',
+    check: (root) => {
+      const file = commitHook(root);
+      return file !== null && runs('check').test(read(join(root, file)));
+    },
+    what: (root) => {
+      const file = commitHook(root);
+      if (file) return `commits are not checked: ${file} does not run yokoten`;
+      return gitConfig(root, 'core.hooksPath') ? 'commits are not checked: core.hooksPath is outside this repo' : 'commits are not checked: core.hooksPath is not set';
+    },
+    fix: (root) => {
+      if (!gitConfig(root, 'core.hooksPath') && existsSync(join(root, '.husky'))) return 'run `npm install` so husky sets core.hooksPath, then `yokoten init`';
+      const file = commitHook(root);
+      if (file && file !== '.githooks/pre-commit') return `\`yokoten init\` adds the check to ${file}, or add the line \`node "${cliPath(root)}" check --staged || exit 1\` there yourself`;
+      return '`yokoten init` sets it up';
+    },
     why: 'a secret or a personal email is hard to take back once a commit is pushed',
-    how: 'git config core.hooksPath is .githooks, and .githooks/pre-commit runs `yokoten check`',
+    how: "the pre-commit that git runs from core.hooksPath runs `yokoten check`: .githooks/pre-commit, or the project's own (husky: .husky/pre-commit)",
     standard: 'OSPS-BR-07.01',
   },
   {
@@ -320,21 +514,21 @@ export const ROAD: Step[] = [
     stage: 1,
     key: 'tests',
     check: (root) => ciRunsTests(root),
-    what: (root) => (testScript(root) ? 'CI does not run the tests' : 'no test command: no "test" script in package.json, and no workflow runs a test runner'),
-    fix: (root) => (testScript(root) ? 'add a step that runs `npm test` (or your test command) to a workflow in .github/workflows' : 'add tests and a CI step that runs them'),
+    what: noTests,
+    fix: testsFix,
     why: 'tests that run on every push catch a broken change before it reaches main',
-    how: 'package.json has a real "test" script and a workflow in .github/workflows runs it, or a workflow runs a test runner such as `node --test` or `go test`',
+    how: 'package.json has a real "test" script and a `run:` step in .github/workflows runs it, or a `run:` step starts a test runner such as `node --test`, `go test`, `pytest`, `tox`, `make test` or `npx vitest`; in a workspaces repo, `npm test --workspaces` or `pnpm -r test` counts too',
     standard: 'Best Practices: test',
   },
   {
     stage: 2,
     key: 'ci',
     // `check --pr` is the titles step, and `check --issue` checks issues; this one wants the tree check itself.
-    check: (root) => runs('check(?!\\s+--(?:pr|issue))').test(ciText(root)),
+    check: (root) => ciRuns(ciText(root), runs('check(?!\\s+--(?:pr|issue))')) || ciFiles(root).some((f) => yokotenActions(f).length > 0),
     what: () => 'CI does not run `yokoten check`',
     fix: () => '`yokoten init` adds .github/workflows/yokoten.yml',
     why: 'a commit made with the hook off would reach main unchecked',
-    how: 'a workflow in .github/workflows runs `yokoten check`',
+    how: 'a workflow in .github/workflows runs `yokoten check` (by its path, or with npx, bunx or pnpm dlx), or has a step that uses yokoten-labs/yokoten',
     standard: 'Scorecard: CI-Tests',
   },
   {
@@ -366,9 +560,9 @@ export const ROAD: Step[] = [
     why: 'a label says what kind of change a pull request is, and the pull request check asks for one',
     how: 'through the code host\'s API, in full doctor only: the repo has the labels bug, feat, docs, refactor, ci, owner, incident, good first issue and hotfix',
   }),
-  planningStep('milestone', (planning) => planning.milestones.some((m) => m.open), {
+  planningStep('milestone', (planning) => pickNewMilestone(planning.milestones) === null, {
     what: () => 'no open milestone on the server',
-    fix: () => '`yokoten init --github --yes` makes one called "First release"',
+    fix: (...[, , server]) => `\`yokoten init --github --yes\` makes one called "${newMilestoneOf(server)}"`,
     why: 'a milestone says when a change ships, and the pull request check asks for one',
     how: 'through the code host\'s API, in full doctor only: the repo has at least one open milestone',
   }),
@@ -402,11 +596,11 @@ export const ROAD: Step[] = [
   {
     stage: 3,
     key: 'titles',
-    check: (root) => runs('check --pr').test(ciText(root)),
+    check: (root) => ciRuns(ciText(root), runs('check --pr')) || ciFiles(root).some((f) => onPullRequest(f) && yokotenActions(f).some((a) => a.prCheck)),
     what: () => 'CI does not check pull requests (`yokoten check --pr`)',
     fix: () => '`yokoten init` adds .github/workflows/pr.yml',
     why: 'a pull request title becomes the commit on main, so it must say what changed and why',
-    how: 'a workflow in .github/workflows runs `yokoten check --pr`',
+    how: 'a workflow in .github/workflows runs `yokoten check --pr`, or runs on pull requests with a step that uses yokoten-labs/yokoten and does not set `pr-check: false`',
     standard: 'Conventional Commits 1.0.0',
   },
   {
@@ -446,7 +640,12 @@ export const ROAD: Step[] = [
     key: 'security-files',
     check: (root) => securityLacking(root).length === 0,
     what: (root) => `no ${securityLacking(root).join(', no ')}`,
-    fix: () => '`yokoten init` adds the security policy and Dependabot, and you choose the license',
+    fix: (root) => {
+      const lacking = securityLacking(root);
+      const license = lacking.includes(LICENSE_FILE);
+      const byInit = lacking.length > (license ? 1 : 0);
+      return [byInit ? 'run `yokoten init` to add the security policy and Dependabot' : '', license ? 'choose a license and add it as LICENSE' : ''].filter(Boolean).join(', and ');
+    },
     how: 'a SECURITY.md, a Dependabot config and a license file are in the repo',
     why: 'people can then report a hole in private, old dependencies get updates, and others know how they may use the code',
     standard: 'Scorecard: Security-Policy · OSPS-VM-02.01',

@@ -4,6 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { assertLinear } from '../scripts/linear.ts';
 import { DEFAULTS, type Env } from '../src/rules/config.ts';
 import { checkCommand, checkEdit, commandWords, hookFile, runsCheck } from '../src/rules/guards.ts';
 import { judge } from '../src/run/hook.ts';
@@ -680,12 +681,11 @@ test('bash: what looked like a case pattern but holds a cut or two words is comm
 });
 
 test('blocked commands: a find inside a find is read once, fast, and a huge list is refused (#226)', () => {
-  const chain = (inner: string) => `find . ${'-exec find . '.repeat(18)}${inner}${'\\; '.repeat(19)}`;
-  const started = Date.now();
-  blocked(`${chain('')}&& ${force}`);
-  assert.ok(isBlockedByList(chain(`-exec ${py} {} `)), 'the program at the end of the chain');
-  assert.equal(isBlockedByList(chain('-exec echo {} ')), false, 'a chain that runs no blocked program');
-  assert.ok(Date.now() - started < 1000, `the 18-deep chain took ${Date.now() - started} ms`);
+  // Read once, the time grows with the depth, from 18 finds deep to 144.
+  const chain = (inner: string, depth: number) => `find . ${'-exec find . '.repeat(depth)}${inner}${'\\; '.repeat(depth + 1)}`;
+  assertLinear('a find chain then a force push', (depth) => `${chain('', depth)}&& ${force}`, (command) => blocked(command), 18);
+  assertLinear('a find chain that ends in python', (depth) => chain(`-exec ${py} {} `, depth), (command) => assert.ok(isBlockedByList(command), 'the program at the end of the chain'), 18);
+  assertLinear('a find chain of echo', (depth) => chain('-exec echo {} ', depth), (command) => assert.equal(isBlockedByList(command), false, 'a chain that runs no blocked program'), 18);
   shouldBlock([`find . -exec nice ${py} {} +`, `find . -exec echo {} \\; -ok ${py} {} \\;`]);
   const many = `find . ${'-exec echo {} \\; '.repeat(300)}`;
   assert.equal(checkCommand(many, { env: {}, config: pythonBlocked })?.id, 'unreadable-command');
@@ -724,12 +724,16 @@ test('bash: a heredoc on exec alone or a bare redirect feeds the shell, so it is
   ]) allowed(command);
 });
 
-test('bash: a command of 100k words is read in under a second (#226)', () => {
-  for (const command of [`echo ${'a '.repeat(100000)}`, `${'then '.repeat(100000)}echo`, `${'env '.repeat(100000)}echo`, `${'sudo '.repeat(100000)}echo`, `${'GIT_CONFIG_KEY_0=x '.repeat(100000)}git status`]) {
-    const started = Date.now();
-    assert.equal(checkCommand(command, { env: {}, config: pythonBlocked }), null);
-    const took = Date.now() - started;
-    assert.ok(took < 1000, `${command.slice(0, 20)}... took ${took} ms`);
+test('bash: a command of 100k words is read in linear time (#226)', () => {
+  const commands: [string, (n: number) => string][] = [
+    ['echo a', (n) => `echo ${'a '.repeat(n)}`],
+    ['then', (n) => `${'then '.repeat(n)}echo`],
+    ['env', (n) => `${'env '.repeat(n)}echo`],
+    ['sudo', (n) => `${'sudo '.repeat(n)}echo`],
+    ['GIT_CONFIG_KEY_0', (n) => `${'GIT_CONFIG_KEY_0=x '.repeat(n)}git status`],
+  ];
+  for (const [name, make] of commands) {
+    assertLinear(`${name} words`, make, (command) => assert.equal(checkCommand(command, { env: {}, config: pythonBlocked }), null, name), 12500);
   }
   blocked(`echo ${'a '.repeat(100000)}; ${force}`);
 });
@@ -749,22 +753,11 @@ test('bash: the core rules read the string env -S runs, in every spelling (#226)
 
 // The third review of #226. The reader's work is bounded: each construct is read once, and
 // one budget covers every read of a command.
-const timed = <T>(read: () => T): { value: T; took: number } => {
-  const started = Date.now();
-  const value = read();
-  return { value, took: Date.now() - started };
-};
-
 test('bash: an unclosed $( is read once, not again at each level (#226)', () => {
-  for (const repeats of [30, 10000]) {
-    const { value, took } = timed(() => checkCommand(`${'echo $(a '.repeat(repeats)}; ${force}`, { env: {} }));
-    assert.ok(value, `${repeats} unclosed $( then a force push should block`);
-    assert.ok(took < 1000, `${repeats} unclosed $( took ${took} ms`);
-  }
-  for (const shape of ['echo "$(a ', 'cat <(a ', '((', 'echo `a ']) {
-    const { value, took } = timed(() => checkCommand(`${shape.repeat(10000)}; ${force}`, { env: {} }));
-    assert.ok(value, `${shape} x10000 then a force push should block`);
-    assert.ok(took < 1000, `${shape} x10000 took ${took} ms`);
+  blocked(`${'echo $(a '.repeat(30)}; ${force}`);
+  // From 1250 repeats to 10k, the time grows like the text.
+  for (const shape of ['echo $(a ', 'echo "$(a ', 'cat <(a ', '((', 'echo `a ']) {
+    assertLinear(`${shape} unclosed`, (n) => `${shape.repeat(n)}; ${force}`, (command) => assert.ok(checkCommand(command, { env: {} }), `${shape} unclosed then a force push should block`), 1250);
   }
   // What an unclosed $( holds is still read: a force push inside it blocks, a read passes.
   blocked(`echo $(${force}`);
@@ -772,16 +765,13 @@ test('bash: an unclosed $( is read once, not again at each level (#226)', () => 
 });
 
 test('bash: a heredoc pipeline is read in linear time (#226)', () => {
-  const pipeline = (reader: string, body: string) => `${'cat <<E | '.repeat(8000)}${reader}\n${`${body}\nE\n`.repeat(8000)}`;
-  const data = timed(() => checkCommand(pipeline('cat', force), { env: {} }));
-  assert.equal(data.value, null, 'bodies piped into cat are data');
-  assert.ok(data.took < 1000, `the 8000-heredoc pipeline into cat took ${data.took} ms`);
-  const shell = timed(() => checkCommand(pipeline('bash', force), { env: {} }));
-  assert.equal(shell.value?.id, 'force-push', 'bodies piped into bash are commands');
-  assert.ok(shell.took < 1000, `the 8000-heredoc pipeline into bash took ${shell.took} ms`);
+  // From 1000 heredocs to 8000.
+  const pipeline = (reader: string, body: string, n: number) => `${'cat <<E | '.repeat(n)}${reader}\n${`${body}\nE\n`.repeat(n)}`;
+  assertLinear('a heredoc pipeline into cat', (n) => pipeline('cat', force, n), (command) => assert.equal(checkCommand(command, { env: {} }), null, 'bodies piped into cat are data'), 1000);
+  assertLinear('a heredoc pipeline into bash', (n) => pipeline('bash', force, n), (command) => assert.equal(checkCommand(command, { env: {} })?.id, 'force-push', 'bodies piped into bash are commands'), 1000);
 });
 
-test('bash: nested constructs at 10k repeats stay under a second and never throw (#226)', () => {
+test('bash: nested constructs up to 8000 repeats are read in linear time and never throw (#226)', () => {
   const shapes = [
     '$(', '$( ', '<(', '>(', '((', '$((', '"$(', '"`', '`', '`"', "$'\\'", '<<"', "<<'", '{ ', '( ', '${', '"${',
     'case x in ', 'a) ', ';; ', 'bash -c "', "bash -c '", 'eval "', 'env -S"', 'ssh h "', 'sudo -s "', 'x | bash ', '\\\n',
@@ -794,16 +784,21 @@ test('bash: nested constructs at 10k repeats stay under a second and never throw
     // #314: pass-throughs in the middle of a pipeline.
     '| cat ', '| tee f ', 'echo a | cat | ', 'cat <(echo a) | tee f | bash ',
   ];
+  const forms: [string, (text: string) => string][] = [
+    ['alone', (text) => text],
+    ['then a force push', (text) => `${text}\n${force}`],
+    ['after a force push', (text) => `${force}; ${text}`],
+  ];
   for (const shape of shapes) {
-    const text = shape.repeat(10000);
-    for (const command of [text, `${text}\n${force}`, `${force}; ${text}`]) {
-      let took = 0;
-      let result: ReturnType<typeof checkCommand> = null;
-      assert.doesNotThrow(() => {
-        ({ value: result, took } = timed(() => checkCommand(command, { env: {}, config: pythonBlocked })));
-      }, JSON.stringify(shape));
-      assert.ok(took < 1000, `${JSON.stringify(shape)} x10000 took ${took} ms`);
-      if (command.startsWith(force)) assert.ok(result, `${JSON.stringify(shape)} after a force push should block`);
+    for (const [form, wrap] of forms) {
+      const name = `${JSON.stringify(shape)} ${form}`;
+      assertLinear(name, (n) => wrap(shape.repeat(n)), (command) => {
+        let result: ReturnType<typeof checkCommand> = null;
+        assert.doesNotThrow(() => {
+          result = checkCommand(command, { env: {}, config: pythonBlocked });
+        }, name);
+        if (command.startsWith(force)) assert.ok(result, `${name} should block`);
+      }, 1000);
     }
   }
 });
@@ -950,69 +945,67 @@ test('hooks setting: env -C, env --chdir, builtin cd and GIT_COMMON_DIR move rep
 });
 
 // The fourth review of #226. Each shape runs in its own node, which a slow read cannot hold
-// up for long: at 100k repeats every one is read in under 2 s. The text goes in on stdin.
-test('bash and hooks: loops that never spent the budget read 100k repeats in under 2 s (#226)', () => {
+// up for long. There each is read at n and 8n repeats, 32k or 100k, and its time must grow
+// like the text (#316). A case goes in on stdin: its parts, a part in brackets repeated n times.
+test('bash and hooks: loops that never spent the budget read 32k to 100k repeats in linear time (#226)', () => {
   const guards = join(import.meta.dirname, '..', 'src', 'rules', 'guards.ts');
-  const run = (mode: 'command' | 'hook', text: string): { result: string; took: number } => {
+  const linear = join(import.meta.dirname, '..', 'scripts', 'linear.ts');
+  type Part = string | [string];
+  const run = (mode: 'command' | 'hook', parts: Part[], want: string, repeats = 4096) => {
     const code = [
+      "import assert from 'node:assert/strict';",
       "import { readFileSync } from 'node:fs';",
       `import { checkCommand, runsCheck } from ${JSON.stringify(guards)};`,
-      "const text = readFileSync(0, 'utf8');",
-      'const started = Date.now();',
-      `const result = ${mode === 'hook' ? 'String(runsCheck(text))' : `checkCommand(text, { env: {}, config: ${JSON.stringify(pythonBlocked)}, cwd: ${JSON.stringify(tmpdir())} })?.id ?? 'allow'`};`,
-      'console.log(JSON.stringify({ result, took: Date.now() - started }));',
+      `import { assertLinear } from ${JSON.stringify(linear)};`,
+      "const { parts, want, repeats } = JSON.parse(readFileSync(0, 'utf8'));",
+      "const make = (n) => parts.map((part) => (typeof part === 'string' ? part : part[0].repeat(n))).join('');",
+      `const read = (text) => ${mode === 'hook' ? 'String(runsCheck(text))' : `checkCommand(text, { env: {}, config: ${JSON.stringify(pythonBlocked)}, cwd: ${JSON.stringify(tmpdir())} })?.id ?? 'allow'`};`,
+      // What the text at 8n gives is what the case proves; a smaller one may still be read in full.
+      'const big = make(8 * repeats).length;',
+      'assertLinear(JSON.stringify(parts).slice(0, 60), make, (text) => {',
+      '  const found = read(text);',
+      '  if (text.length === big) assert.equal(found, want);',
+      '}, repeats);',
     ].join('\n');
-    const child = spawnSync(process.execPath, ['--max-old-space-size=256', '--input-type=module', '-e', code], { input: text, encoding: 'utf8', timeout: 15000 });
-    assert.equal(child.status, 0, `${text.slice(0, 40)}... did not finish: ${child.signal ?? child.error ?? child.stderr.slice(0, 300)}`);
-    return JSON.parse(child.stdout);
+    const child = spawnSync(process.execPath, ['--max-old-space-size=256', '--input-type=module', '-e', code], { input: JSON.stringify({ parts, want, repeats }), encoding: 'utf8', timeout: 60_000 });
+    assert.equal(child.status, 0, `${JSON.stringify(parts).slice(0, 60)}... failed: ${child.signal ?? child.error ?? child.stderr.slice(0, 600)}`);
   };
-  const repeats = 100000;
-  const keys = 'GIT_CONFIG_KEY_0=core.hooksPath '.repeat(repeats);
-  const commands: [string, string][] = [
-    ['-/env '.repeat(repeats), 'allow'],
-    [`${force}; ${'-/env '.repeat(repeats)}`, 'force-push'],
-    [`find . ${'-exec env '.repeat(repeats)}`, 'allow'],
-    [`${force}; find . ${'-exec env '.repeat(repeats)}`, 'force-push'],
-    [`find . ${'-exec env -u '.repeat(repeats)}`, 'allow'],
-    [`find . ${'-exec timeout '.repeat(repeats)}`, 'allow'],
-    [`find . ${'-exec > '.repeat(repeats)}`, 'allow'],
-    [`${keys}GIT_CONFIG_VALUE_0=.githooks git status`, 'allow'],
-    [`${keys}GIT_CONFIG_VALUE_0=/x git status`, 'hooks-path'],
-    // #283: each new reader, at 100k repeats.
-    [`${'{ echo a; '.repeat(repeats)}${'} '.repeat(repeats)}| bash`, 'allow'],
-    [`${'if a; then echo a; '.repeat(repeats)}${'fi; '.repeat(repeats)}`, 'allow'],
-    [`${'for a in b; do '.repeat(repeats)}echo a${'; done'.repeat(repeats)} | cat`, 'allow'],
+  const keys: Part = ['GIT_CONFIG_KEY_0=core.hooksPath '];
+  const commands: [Part[], string, number?][] = [
+    [[['-/env ']], 'allow'],
+    [[`${force}; `, ['-/env ']], 'force-push'],
+    [['find . ', ['-exec env ']], 'allow'],
+    [[`${force}; find . `, ['-exec env ']], 'force-push'],
+    [['find . ', ['-exec env -u ']], 'allow'],
+    [['find . ', ['-exec timeout ']], 'allow'],
+    [['find . ', ['-exec > ']], 'allow'],
+    [[keys, 'GIT_CONFIG_VALUE_0=.githooks git status'], 'allow'],
+    [[keys, 'GIT_CONFIG_VALUE_0=/x git status'], 'hooks-path'],
+    // #283: each new reader.
+    [[['{ echo a; '], ['} '], '| bash'], 'allow'],
+    [[['if a; then echo a; '], ['fi; ']], 'allow'],
+    [[['for a in b; do '], 'echo a', ['; done'], ' | cat'], 'allow'],
     // What 100k substitutions print, handed to a shell, is too many commands to read: refused, in time.
-    [`bash ${'<(echo a) '.repeat(repeats)}`, 'unreadable-command'],
-    [`eval "${'$(echo a)'.repeat(repeats)}"`, 'unreadable-command'],
-    [`echo a | xargs ${'-0 '.repeat(repeats)}git status`, 'allow'],
-    [`env -S'git status ${'${X}'.repeat(repeats)}'`, 'allow'],
+    [['bash ', ['<(echo a) ']], 'unreadable-command', 12500],
+    [['eval "', ['$(echo a)'], '"'], 'unreadable-command', 12500],
+    [['echo a | xargs ', ['-0 '], 'git status'], 'allow'],
+    [["env -S'git status ", ['${X}'], "'"], 'allow'],
     // #308: a printf format said again for each argument, and substitutions printed into a pipe.
-    [`printf '%s\\n' status ${'a '.repeat(repeats)}| xargs git`, 'allow'],
-    [`printf '${'x'.repeat(repeats)}%s' status ${'a '.repeat(repeats)}| xargs git`, 'allow'],
-    [`printf '${'%s'.repeat(repeats)}\\n' git status | bash`, 'allow'],
-    [`cat ${'<(echo a) '.repeat(repeats)}| bash`, 'unreadable-command'],
-    [`echo "${'$(echo a)'.repeat(repeats)}" | xargs git status`, 'allow'],
+    [["printf '%s\\n' status ", ['a '], '| xargs git'], 'allow'],
+    [["printf '", ['x'], "%s' status ", ['a '], '| xargs git'], 'allow'],
+    [["printf '", ['%s'], "\\n' git status | bash"], 'allow'],
+    [['cat ', ['<(echo a) '], '| bash'], 'unreadable-command', 12500],
+    [['echo "', ['$(echo a)'], '" | xargs git status'], 'allow'],
     // #314: a long chain of pass-throughs hands the first command's text to the shell.
-    [`echo a ${'| cat '.repeat(repeats)}| bash`, 'allow'],
-    [`echo '${force}' ${'| cat '.repeat(repeats)}| bash`, 'force-push'],
-    [`cat <(echo '${force}') ${'| tee f '.repeat(repeats)}| bash`, 'force-push'],
+    [['echo a ', ['| cat '], '| bash'], 'allow'],
+    [[`echo '${force}' `, ['| cat '], '| bash'], 'force-push'],
+    [[`cat <(echo '${force}') `, ['| tee f '], '| bash'], 'force-push'],
   ];
-  for (const [command, want] of commands) {
-    const { result, took } = run('command', command);
-    assert.equal(result, want, `${command.slice(0, 40)}...`);
-    assert.ok(took < 2000, `${command.slice(0, 40)}... took ${took} ms`);
-  }
+  for (const [parts, want, repeats] of commands) run('command', parts, want, repeats);
   // A line that opens more than it closes leaves the check inside a block; a pipe at the end
   // of each line joins the check to the pipeline.
-  for (const line of ['$(((('.repeat(repeats), '$('.repeat(repeats), '${'.repeat(repeats)]) {
-    const { result, took } = run('hook', `#!/bin/sh\n${line}\nnpx yokoten check\n`);
-    assert.equal(result, 'false', `${line.slice(0, 10)}...`);
-    assert.ok(took < 2000, `${line.slice(0, 10)}... took ${took} ms`);
-  }
-  const piped = run('hook', `#!/bin/sh\n${'a |\n'.repeat(repeats)}npx yokoten check\n`);
-  assert.equal(piped.result, 'false');
-  assert.ok(piped.took < 2000, `a | x${repeats} took ${piped.took} ms`);
+  for (const open of ['$((((', '$(', '${']) run('hook', ['#!/bin/sh\n', [open], '\nnpx yokoten check\n'], 'false');
+  run('hook', ['#!/bin/sh\n', ['a |\n'], 'npx yokoten check\n'], 'false');
   // The linear reads keep what the old ones found: a closed $( and quotes cut no block.
   for (const line of ['x="(" y=\'{\' z=${a:-x} w=$(echo a) v=$((1 + (2)))', 'echo "a\\"(" \'"\'']) {
     assert.equal(runsCheck(`#!/bin/sh\n${line}\nnpx yokoten check\n`), true, line);
