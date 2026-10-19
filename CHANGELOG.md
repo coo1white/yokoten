@@ -52,7 +52,7 @@ To start, read the [guide](https://github.com/yokoten-labs/yokoten/blob/v0.1.0/d
 
 - You talk to one lead agent; it hands each task to a worker agent in its own folder.
 - Skills help agents hand out tasks, review changes, find root causes, record decisions and prepare releases.
-- `yokoten bot` opens pull requests as a GitHub App, so nothing merges without your review.
+- `yokoten bot` opens pull requests as a GitHub App, so you review work you did not write.
 
 **Check pull requests in CI**
 
