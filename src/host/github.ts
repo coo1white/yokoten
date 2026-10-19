@@ -15,7 +15,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
-import { type Finding, formatFinding, place } from '../rules/message.ts';
+import { type Finding, finding, formatFinding, place } from '../rules/message.ts';
 import type { CodeOwners, PullRequest } from '../rules/pr.ts';
 
 export interface BotConfig {
@@ -69,28 +69,39 @@ export interface CommandTitle {
 }
 
 // The gh options of `issue`/`pr` `create`/`edit` that take a value. Their value is
-// skipped, so a body of `-t` is not read as the title option.
+// skipped, so a body of `-t` is not read as the title option, and a repo is not read as
+// the noun or the verb.
 const VALUE_OPTIONS = new Set([
   '--body', '-b', '--body-file', '-F', '--assignee', '-a', '--milestone', '-m', '--project', '-p', '--repo', '-R', '--template', '-T',
   '--base', '-B', '--head', '-H', '--reviewer', '-r', '--recover', '--remove-label', '--add-assignee', '--remove-assignee',
-  '--add-project', '--remove-project', '--add-reviewer', '--remove-reviewer',
+  '--add-project', '--remove-project', '--add-reviewer', '--remove-reviewer', '--attach', '--type', '--parent',
+  '--blocked-by', '--blocking', '--add-blocked-by', '--add-blocking', '--remove-blocked-by', '--remove-blocking',
+  '--add-sub-issue', '--remove-sub-issue',
 ]);
 const LABEL_OPTIONS = new Set(['--label', '-l', '--add-label']);
+// gh's verbs that set a title, by every name gh accepts (`new` is its alias for `create`).
+const TITLE_VERBS = new Set(['create', 'new', 'edit']);
 
 /**
  * The title that `gh issue create`, `gh issue edit`, `gh pr create` or `gh pr edit` sets
- * with `--title X`, `--title=X`, `-t X` or `-tX` (#117). Null for any other command, or
- * when no title is given (`--fill`): CI checks that title. As in gh, the last one wins.
+ * with `--title X`, `--title=X`, `-t X` or `-tX` (#117). gh also takes `new` for `create`,
+ * and an option before the noun or the verb (`gh issue -R o/r create`), so they count
+ * too (#279). Null for any other command, or when no title is given (`--fill`): CI checks
+ * that title. As in gh, the last one wins.
  */
 export function readCommandTitle(command: string[]): CommandTitle | null {
-  const [file, kind, verb, ...rest] = command;
+  const [file, ...rest] = command;
   if (!file || file.split(/[\\/]/).pop() !== 'gh') return null;
-  if ((kind !== 'issue' && kind !== 'pr') || (verb !== 'create' && verb !== 'edit')) return null;
+  const words: string[] = [];
   let title: string | null = null;
   const labels: string[] = [];
   for (let index = 0; index < rest.length; index++) {
     const word = rest[index];
     if (word === '--') break;
+    if (!word.startsWith('-') || word === '-') {
+      words.push(word);
+      continue;
+    }
     const equals = word.startsWith('--') ? word.indexOf('=') : -1;
     const name = equals > 0 ? word.slice(0, equals) : /^-[a-zA-Z]./.test(word) ? word.slice(0, 2) : word;
     const attached = equals > 0 ? word.slice(equals + 1) : name !== word ? word.slice(2) : null;
@@ -101,6 +112,8 @@ export function readCommandTitle(command: string[]): CommandTitle | null {
     if (isTitle) title = value;
     else if (LABEL_OPTIONS.has(name)) labels.push(...value.split(',').map((label) => label.trim()).filter(Boolean));
   }
+  const [kind, verb] = words;
+  if ((kind !== 'issue' && kind !== 'pr') || !TITLE_VERBS.has(verb)) return null;
   return title === null ? null : { kind, title, labels };
 }
 
@@ -145,39 +158,101 @@ export function botEnv(env: Env, token: string): Env {
 // The event file holds the title, body, labels and milestone. The changed files come from
 // git, between the base and the head commit of the pull request, so the checkout needs
 // both (fetch-depth: 0).
+//
+// What can't be read is one finding, never a crash (#267): a missing or broken event file,
+// or a commit the checkout does not have. Then `--json` still prints JSON, and the job
+// summary still says why.
 
-interface Event {
-  pull_request?: {
-    title?: string;
-    body?: string | null;
-    labels?: { name?: string }[];
-    milestone?: { title?: string } | null;
-    base?: { sha?: string };
-    head?: { sha?: string };
-  };
+/** Why the CI event could not be checked. */
+export interface Unreadable {
+  problem: Finding;
 }
 
-/** The pull request of this run, or null when the run is not for one. */
-export function readPullRequest(root: string, env: Env): (PullRequest & { base: string; head: string; numstat: string }) | null {
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+const asText = (value: unknown): string => (typeof value === 'string' ? value : '');
+/** The label names; a label that is not an object with a name is skipped. */
+const labelNames = (labels: unknown): string[] => (Array.isArray(labels) ? labels.map((l) => (isObject(l) ? asText(l.name) : '')).filter(Boolean) : []);
+
+const EVENT_FIX = 'run it in a GitHub Actions job on a `pull_request` or `issues` event, or set GITHUB_EVENT_PATH to a readable event file';
+
+/** The event of this run as an object, null when there is none, or why it can't be read. */
+function readEvent(env: Env): Record<string, unknown> | Unreadable | null {
   if (!env.GITHUB_EVENT_PATH) return null;
-  const event: Event = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, 'utf8'));
+  let raw: string;
+  try {
+    raw = readFileSync(env.GITHUB_EVENT_PATH, 'utf8');
+  } catch {
+    return { problem: finding('ci-event', 'the CI event file (GITHUB_EVENT_PATH) can\'t be read', EVENT_FIX) };
+  }
+  let event: unknown;
+  try {
+    event = JSON.parse(raw);
+  } catch {
+    return { problem: finding('ci-event', 'the CI event file (GITHUB_EVENT_PATH) is not valid JSON', EVENT_FIX) };
+  }
+  if (!isObject(event)) return { problem: finding('ci-event', 'the CI event file (GITHUB_EVENT_PATH) is not a JSON object', EVENT_FIX) };
+  return event;
+}
+
+const isUnreadable = (value: unknown): value is Unreadable => isObject(value) && 'problem' in value;
+
+/** The commit is in this checkout. A value that is not a commit id counts as missing. */
+function hasCommit(root: string, sha: string): boolean {
+  if (!/^[0-9a-f]{4,64}$/i.test(sha)) return false;
+  try {
+    execFileSync('git', ['cat-file', '-e', `${sha}^{commit}`], { cwd: root, stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The two commits have a common commit here, so `base...head` can be read. */
+function hasMergeBase(root: string, base: string, head: string): boolean {
+  try {
+    execFileSync('git', ['merge-base', base, head], { cwd: root, stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const COMMITS_FIX = 'use `fetch-depth: 0` in actions/checkout, so the checkout has the whole history';
+
+/** Why `base...head` can't be read in this checkout, or null when it can. */
+function commitsProblem(root: string, base: string, head: string): Finding | null {
+  const missing = [['base', base], ['head', head]].filter(([, sha]) => !hasCommit(root, sha)).map(([name]) => name);
+  if (missing.length === 2) return finding('pr-commits', 'the pull request\'s base and head commits are not in this checkout', COMMITS_FIX);
+  if (missing.length === 1) return finding('pr-commits', `the pull request's ${missing[0]} commit is not in this checkout`, COMMITS_FIX);
+  if (!hasMergeBase(root, base, head)) return finding('pr-commits', 'the pull request\'s base and head commits have no common commit in this checkout', COMMITS_FIX);
+  return null;
+}
+
+export type PullRequestRead = PullRequest & { base: string; head: string; numstat: string };
+
+/** The pull request of this run, null when the run is not for one, or why it can't be read. */
+export function readPullRequest(root: string, env: Env): PullRequestRead | Unreadable | null {
+  const event = readEvent(env);
+  if (event === null || isUnreadable(event)) return event;
   const pr = event.pull_request;
-  if (!pr) return null;
-  const base = pr.base?.sha ?? '';
-  const head = pr.head?.sha ?? '';
-  const files = base && head ? execFileSync('git', ['diff', '--name-only', '-z', `${base}...${head}`], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean) : [];
-  const deleted = base && head ? execFileSync('git', ['diff', '--name-only', '--diff-filter=D', '-z', `${base}...${head}`], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean) : [];
-  const numstat = base && head ? execFileSync('git', ['diff', '--numstat', '-z', `${base}...${head}`], { cwd: root, encoding: 'utf8' }) : '';
+  if (!isObject(pr)) return null;
+  const base = isObject(pr.base) ? asText(pr.base.sha) : '';
+  const head = isObject(pr.head) ? asText(pr.head.sha) : '';
+  if (base && head) {
+    const problem = commitsProblem(root, base, head);
+    if (problem) return { problem };
+  }
+  const diff = (...options: string[]) => (base && head ? execFileSync('git', ['diff', ...options, `${base}...${head}`], { cwd: root, encoding: 'utf8' }) : '');
   return {
-    title: pr.title ?? '',
-    body: pr.body ?? '',
-    files,
-    deleted,
-    labels: (pr.labels ?? []).map((l) => l.name ?? '').filter(Boolean),
-    milestone: pr.milestone?.title ?? null,
+    title: asText(pr.title),
+    body: asText(pr.body),
+    files: diff('--name-only', '-z').split('\0').filter(Boolean),
+    deleted: diff('--name-only', '--diff-filter=D', '-z').split('\0').filter(Boolean),
+    labels: labelNames(pr.labels),
+    milestone: isObject(pr.milestone) && typeof pr.milestone.title === 'string' ? pr.milestone.title : null,
     base,
     head,
-    numstat,
+    numstat: diff('--numstat', '-z'),
   };
 }
 
@@ -206,14 +281,14 @@ export function readCodeOwners(root: string, base: string): CodeOwners | null {
 // An issue as GitHub Actions describes it: the event file of an `issues` run. The rule
 // that judges its title (checkIssueTitle in src/rules/pr.ts) knows no host.
 
-/** The issue of this run (its title and label names), or null when the run is not for one. */
-export function readIssue(env: Env): { title: string; labels: string[] } | null {
-  if (!env.GITHUB_EVENT_PATH) return null;
-  const event: { issue?: { title?: string; labels?: { name?: string }[]; pull_request?: unknown } } = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, 'utf8'));
+/** The issue of this run (its title and label names), null when the run is not for one, or why the event can't be read. */
+export function readIssue(env: Env): { title: string; labels: string[] } | Unreadable | null {
+  const event = readEvent(env);
+  if (event === null || isUnreadable(event)) return event;
   const issue = event.issue;
   // A comment on a pull request carries it as an `issue` too; that title follows the pull request rule.
-  if (!issue || issue.pull_request) return null;
-  return { title: issue.title ?? '', labels: (issue.labels ?? []).map((l) => l.name ?? '').filter(Boolean) };
+  if (!isObject(issue) || issue.pull_request) return null;
+  return { title: asText(issue.title), labels: labelNames(issue.labels) };
 }
 
 // The findings of a check on the pull request page (#91), so a beginner need not open the
