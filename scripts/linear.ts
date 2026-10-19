@@ -24,8 +24,9 @@ export const assertLinear = (name: string, make: (n: number) => string, read: (i
   const big = make(8 * size);
   // Enough reads of the small input to add up to about 20 ms, from 3 to 64.
   const reps = Math.min(64, Math.max(3, Math.ceil(20 / Math.max(fastest(small, 1), 0.01))));
-  // Below 0.1 ms the timer is noise; a quadratic read of 8x the size still takes far longer.
-  const base = Math.max(0.1, fastest(small, reps));
+  // Below 0.5 ms a read is not yet in its steady state: cache effects alone showed 27x on a
+  // 0.12 ms read (#326). A quadratic read of 8x the size still takes far longer.
+  const base = Math.max(0.5, fastest(small, reps));
   const ms = fastest(big, reps);
   assert.ok(ms <= 24 * base, `${name}: ${ms.toFixed(2)} ms for 8x the input of ${base.toFixed(2)} ms, ${(ms / base).toFixed(0)}x; linear is about 8x`);
 };

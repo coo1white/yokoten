@@ -100,10 +100,22 @@ export function summarize(text: string): string {
     .replace(/[.:]$/, '');
 }
 
-/** The symptom of an `area: symptom` title, starting lower case, as a finding's `what`. */
+/**
+ * Text shaped to go inside a sentence: no full stop at the end, and the first letter lower
+ * case when the first word is a capital followed only by lower-case letters ("The", "A").
+ * A code span, an acronym (`CI`, `NO_PROXY`) or a word with another capital (`GitHub`)
+ * stays as it is, and so does the word "I". A one-capital name ("Node") is lowered too: the
+ * draft can't tell it from an ordinary word, and the reviewer fixes it. Doctor prints
+ * "<what>; <fix>" as one sentence.
+ */
+function asClause(text: string): string {
+  const clause = text.trim().replace(/\.$/, '');
+  return /^(?!I(?![a-z]))[A-Z][a-z]*(?![\w-])/.test(clause) ? clause.charAt(0).toLowerCase() + clause.slice(1) : clause;
+}
+
+/** The symptom of an `area: symptom` title, shaped as a clause, as a finding's `what`. */
 function readSymptom(title: string): string {
-  const symptom = (/^[\w./-]+:\s+(.+)$/.exec(title.trim())?.[1] ?? title).trim().replace(/\.$/, '');
-  return /^[A-Z][a-z]/.test(symptom) ? symptom.charAt(0).toLowerCase() + symptom.slice(1) : symptom;
+  return asClause(/^[\w./-]+:\s+(.+)$/.exec(title.trim())?.[1] ?? title);
 }
 
 // Issue text is anyone's text, and it lands in a .ts file that people run. JavaScript ends
@@ -169,7 +181,8 @@ export function draftLesson(incident: Incident): Draft {
     id,
     what,
     why,
-    fix: fill('fix', 'fix', 'write what to do when the check finds it'),
+    // Doctor prints "<what>; <fix>", so the fix is shaped like the what (#182).
+    fix: asClause(fill('fix', 'fix', 'write what to do when the check finds it')),
   };
 
   const context: string[] = [];
@@ -291,52 +304,138 @@ export function writeDraft(root: string, draft: Draft): { written: string[]; kep
 // and a lesson that throws is reported, never fatal: a lesson gives notes, and a note never
 // fails doctor.
 
-/** Where shipped lessons live in yokoten, from the repo root: one folder per lesson. */
+/** Where shipped lessons live in yokoten, from the repo root, in numbered group folders. */
 export const KIT_LESSONS_DIR = 'kit/lessons';
 
 /** The lessons table, in the kit's lessons folder. Only a lesson in the table ships. */
 export const LESSONS_TABLE = 'README.md';
 
+// Lessons sit in numbered group folders (#171), so no folder passes the cap of 7 entries
+// however many lessons ship. The top folder holds the table and up to 6 groups. A group
+// holds up to 5 lessons and up to 2 groups. A lesson goes in the first group with room,
+// by levels: `1/` to `6/`, then `1/1/`, `1/2/`, `2/1/` and so on. A lesson never moves once
+// it ships, so its folder in the table stays right.
+/** Groups in the top folder: the cap of 7, less the table. */
+const TOP_GROUPS = 6;
+/** Lessons in a group. With `GROUP_GROUPS`, a group is at the cap of 7. */
+const GROUP_LESSONS = 5;
+/** Groups in a group: room for the next level. */
+const GROUP_GROUPS = 2;
+/** A group folder's name: a number. A lesson id is never only a number. */
+const GROUP_NAME = /^\d+$/;
+
 /** A row of the lessons table. */
 export interface ShippedLesson {
   id: string;
+  /** The lesson's folder, from `kit/lessons`: `1/incident-138`. */
+  folder: string;
   /** The incident issue the lesson came from. */
   url: string;
   /** The version in package.json when the lesson shipped. */
   version: string;
 }
 
-/** What a lesson's id looks like: `incident-<n>` from `learn`, or any lower-case words. */
-const LESSON_ID = /^[a-z0-9]+(-[a-z0-9]+)*$/;
-const TABLE_ROW = /^\|\s*([^|\s]+)\s*\|\s*([^|\s]+)\s*\|\s*([^|\s]+)\s*\|\s*$/;
-const TABLE_HEAD = ['| Lesson | Incident | Added in |', '|---|---|---|'];
+/** What a lesson's id looks like: `incident-<n>` from `learn`, or any lower-case words; never only a number. */
+const LESSON_ID = /^(?!\d+$)[a-z0-9]+(-[a-z0-9]+)*$/;
+/** A cell of the table: text with no space or pipe in it. */
+const TABLE_CELL = /^[^|\s]+$/;
+const TABLE_HEAD = ['| Lesson | Folder | Incident | Added in |', '|---|---|---|---|'];
 const TABLE_START = [
   '# Lessons',
   '',
-  'Each folder here is a lesson from a real incident: a check (`lesson.ts`) and its test',
+  'Each lesson here is from a real incident: a folder with a check (`lesson.ts`) and its test',
   '(`lesson.test.ts`). `yokoten doctor` runs every lesson in this table against the project,',
   'and reports what a lesson finds as a note. A note never fails doctor. To stop one, add',
   'its id to "notNow" in yokoten.json, with the reason.',
   '',
-  '`yokoten learn --ship <id>` adds a lesson here. "Added in" is the version in',
-  'package.json when the lesson shipped.',
+  '`yokoten learn --ship <id>` adds a lesson here. "Folder" is where it is, in numbered',
+  'groups so no folder holds more than 7 entries: a group takes 5 lessons and 2 more groups.',
+  '"Added in" is the version in package.json when the lesson shipped.',
   '',
-  ...TABLE_HEAD,
 ];
 
-/** The rows of the lessons table. The header, the line under it, and any other text are left out. */
+/**
+ * The rows of the lessons table. The header, the line under it, and any other text are left
+ * out. A row from before groups (#171) has no folder: its folder is its id.
+ */
 export function readLessonTable(text: string): ShippedLesson[] {
   const rows: ShippedLesson[] = [];
   for (const line of text.split(/\r?\n/)) {
-    const row = TABLE_ROW.exec(line.trim());
-    if (!row || !LESSON_ID.test(row[1])) continue;
-    rows.push({ id: row[1], url: row[2], version: row[3] });
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('|') || !trimmed.endsWith('|')) continue;
+    const cells = trimmed.slice(1, -1).split('|').map((cell) => cell.trim());
+    if (!cells.every((cell) => TABLE_CELL.test(cell))) continue;
+    const [id, folder, url, version] = cells.length === 4 ? cells : cells.length === 3 ? [cells[0], cells[0], cells[1], cells[2]] : [];
+    if (!id || !LESSON_ID.test(id) || !isLessonFolder(folder, id)) continue;
+    rows.push({ id, folder, url, version });
   }
   return rows;
 }
 
+/** True when `folder` is `id`, under groups only: never a path out of the kit. */
+const isLessonFolder = (folder: string, id: string): boolean => {
+  const parts = folder.split('/');
+  return parts.pop() === id && parts.every((part) => GROUP_NAME.test(part));
+};
+
 /** A row of the lessons table as Markdown. */
-export const formatLessonRow = (lesson: ShippedLesson): string => `| ${lesson.id} | ${lesson.url} | ${lesson.version} |`;
+export const formatLessonRow = (lesson: ShippedLesson): string => `| ${lesson.id} | ${lesson.folder} | ${lesson.url} | ${lesson.version} |`;
+
+/**
+ * The table's text with these rows: the text before the table and after it stays, and the
+ * table is written whole, so a table from before groups gets the folder column.
+ */
+export function formatLessonTable(text: string | null, rows: ShippedLesson[]): string {
+  const lines = text === null ? TABLE_START.slice(0, -1) : text.trimEnd().split(/\r?\n/);
+  const start = lines.findIndex((line) => line.trim().startsWith('|'));
+  if (start < 0) return `${[...lines, '', ...TABLE_HEAD, ...rows.map(formatLessonRow)].join('\n')}\n`;
+  const end = lines.findIndex((line, index) => index > start && !line.trim().startsWith('|'));
+  const before = lines.slice(0, start);
+  const after = end < 0 ? [] : lines.slice(end);
+  return `${[...before, ...TABLE_HEAD, ...rows.map(formatLessonRow), ...after].join('\n').trimEnd()}\n`;
+}
+
+/** The folders in `dir`, by name. */
+const listFolders = (dir: string): string[] => {
+  try {
+    return readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+};
+
+/** The group folders in `dir`, by number. */
+const listGroups = (dir: string): string[] => listFolders(dir).filter((name) => GROUP_NAME.test(name)).sort((a, b) => Number(a) - Number(b));
+
+/** Every lesson folder under the kit's lessons folder `kitDir`, from it: `1/incident-138`. */
+export function findLessonFolders(kitDir: string, group = ''): string[] {
+  const dir = join(kitDir, group);
+  const here = listFolders(dir).filter((name) => !GROUP_NAME.test(name)).sort().map((name) => (group ? `${group}/${name}` : name));
+  return [...here, ...listGroups(dir).flatMap((name) => findLessonFolders(kitDir, group ? `${group}/${name}` : name))];
+}
+
+/**
+ * The group for the next lesson, from `kitDir`: the first group with room for a lesson, by
+ * levels, or else a new group in the first folder with room for one. It makes nothing.
+ */
+export function findLessonGroup(kitDir: string): string {
+  const groups: string[] = [];
+  for (let level = listGroups(kitDir); level.length; ) {
+    groups.push(...level);
+    level = level.flatMap((group) => listGroups(join(kitDir, group)).map((name) => `${group}/${name}`));
+  }
+  const open = groups.find((group) => listFolders(join(kitDir, group)).filter((name) => !GROUP_NAME.test(name)).length < GROUP_LESSONS);
+  if (open) return open;
+  // Every group is full of lessons: a new group, in the shallowest folder with room for one.
+  for (const parent of ['', ...groups]) {
+    const taken = listGroups(join(kitDir, parent));
+    if (taken.length >= (parent ? GROUP_GROUPS : TOP_GROUPS)) continue;
+    const name = String(taken.length ? Number(taken[taken.length - 1]) + 1 : 1);
+    return parent ? `${parent}/${name}` : name;
+  }
+  // Not reached: the deepest groups always have room for a group.
+  throw new Error(`no room for a lesson group in ${kitDir}`);
+}
 
 const readText = (path: string): string | null => {
   try {
@@ -350,17 +449,21 @@ const readText = (path: string): string | null => {
 const readSourceUrl = (text: string): string | null => /^\/\/ (https?:\/\/\S+)\s*$/m.exec(text)?.[1] ?? null;
 
 /**
- * Move a reviewed lesson from `lessons/<id>/` into `kit/lessons/<id>/`, and add its row to the
- * lessons table. It refuses, and moves nothing, when a TODO(reviewer) is left or the lesson's
- * test fails: an unreviewed check never ships. `reference` is the id or the issue number.
+ * Move a reviewed lesson from `lessons/<id>/` into a group of `kit/lessons/`, and add its row
+ * to the lessons table. It refuses, and moves nothing, when a TODO(reviewer) is left or the
+ * lesson's test fails: an unreviewed check never ships. `reference` is the id or the issue number.
  */
 export function shipLesson(root: string, reference: string, version: string): { lesson: ShippedLesson } | { problems: string[] } {
   const id = /^\d+$/.test(reference) ? `incident-${reference}` : reference;
   if (!LESSON_ID.test(id)) return { problems: [`${reference} is not a lesson id: give its number or its id, for example incident-138`] };
   if (!existsSync(join(root, 'kit'))) return { problems: ['there is no kit/ here: a lesson ships in a copy of yokoten, where kit/ is what other projects get'] };
   const draftDir = `${LESSONS_DIR}/${id}`;
-  const shippedDir = `${KIT_LESSONS_DIR}/${id}`;
-  if (existsSync(join(root, shippedDir))) return { problems: [`${shippedDir} is already there: give the lesson a new id`] };
+  const kitDir = join(root, KIT_LESSONS_DIR);
+  const tablePath = join(kitDir, LESSONS_TABLE);
+  const table = readText(tablePath);
+  const rows = table === null ? [] : readLessonTable(table);
+  const taken = [...rows.map((row) => row.folder), ...findLessonFolders(kitDir)].find((folder) => folder.split('/').pop() === id);
+  if (taken) return { problems: [`${KIT_LESSONS_DIR}/${taken} is already there: give the lesson a new id`] };
   const code = readText(join(root, draftDir, 'lesson.ts'));
   const test = readText(join(root, draftDir, 'lesson.test.ts'));
   if (code === null || test === null) return { problems: [`no lesson in ${draftDir}: run \`yokoten learn <issue> --write\` first, then review the draft`] };
@@ -380,14 +483,13 @@ export function shipLesson(root: string, reference: string, version: string): { 
   const run = spawnSync(process.execPath, ['--test', join(draftDir, 'lesson.test.ts')], { cwd: root, env, encoding: 'utf8' });
   if (run.status !== 0) return { problems: [`the lesson's test fails: run \`node --test ${draftDir}/lesson.test.ts\` to see why, and fix the check`] };
 
-  const lesson: ShippedLesson = { id, url: url as string, version };
-  const tablePath = join(root, KIT_LESSONS_DIR, LESSONS_TABLE);
-  const table = readText(tablePath) ?? `${TABLE_START.join('\n')}\n`;
-  mkdirSync(join(root, KIT_LESSONS_DIR), { recursive: true });
-  renameSync(join(root, draftDir), join(root, shippedDir));
+  const group = findLessonGroup(kitDir);
+  const lesson: ShippedLesson = { id, folder: `${group}/${id}`, url: url as string, version };
+  mkdirSync(join(kitDir, group), { recursive: true });
+  renameSync(join(root, draftDir), join(kitDir, lesson.folder));
   // The drafts folder goes when its last draft has shipped.
   if (!readdirSync(join(root, LESSONS_DIR)).length) rmdirSync(join(root, LESSONS_DIR));
-  writeFileSync(tablePath, `${table.trimEnd()}\n${formatLessonRow(lesson)}\n`);
+  writeFileSync(tablePath, formatLessonTable(table, [...rows, lesson]));
   return { lesson };
 }
 
@@ -395,7 +497,7 @@ export function shipLesson(root: string, reference: string, version: string): { 
 export interface LessonPlace {
   /** The folder with the lessons table. */
   dir: string;
-  /** The folder with a folder of code per lesson; the npm package runs built `.js` (record 0008). */
+  /** The folder with the code, in the same groups as the table's folders; the npm package runs built `.js` (record 0008). */
   codeDir: string;
   /** `lesson.ts`, or `lesson.js` in the npm package. */
   codeFile: string;
@@ -405,6 +507,8 @@ export interface LessonPlace {
 export interface LessonRun {
   id: string;
   findings: Finding[];
+  /** The `what` of the lesson's exported `lesson`: the problem it looks for, when it says. */
+  what?: string;
   error?: string;
 }
 
@@ -422,12 +526,12 @@ export function listLessons(place: LessonPlace): ShippedLesson[] {
 export function runLessons(root: string, place: LessonPlace, skip: (id: string) => boolean = () => false): LessonRun[] {
   const load = createRequire(import.meta.url);
   const runs: LessonRun[] = [];
-  for (const { id } of listLessons(place)) {
+  for (const { id, folder } of listLessons(place)) {
     if (skip(id)) continue;
-    const path = join(place.codeDir, id, place.codeFile);
+    const path = join(place.codeDir, folder, place.codeFile);
     try {
       if (!existsSync(path)) throw new Error(`there is no ${place.codeFile}`);
-      const module = load(path) as { findProblems?: unknown };
+      const module = load(path) as { findProblems?: unknown; lesson?: { what?: unknown } };
       if (typeof module.findProblems !== 'function') throw new Error('it has no findProblems function');
       const found: unknown = module.findProblems(root);
       if (!Array.isArray(found)) throw new Error('findProblems did not give a list');
@@ -436,7 +540,8 @@ export function runLessons(root: string, place: LessonPlace, skip: (id: string) 
         if (typeof what !== 'string' || typeof why !== 'string' || typeof fix !== 'string') throw new Error('a finding has no what, why or fix');
         return { id, what, why, fix };
       });
-      runs.push({ id, findings });
+      const what = module.lesson?.what;
+      runs.push(typeof what === 'string' ? { id, findings, what } : { id, findings });
     } catch (err) {
       runs.push({ id, findings: [], error: String((err as Error)?.message ?? err).split('\n')[0].split(place.codeDir).join(KIT_LESSONS_DIR) });
     }

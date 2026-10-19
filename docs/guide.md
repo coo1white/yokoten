@@ -443,7 +443,10 @@ It puts three safe defaults in `.github/` too:
   `yokoten.json`, `.yokoten/`, the hooks, the agent config and `.github/`. The guard
   stops a worker on the machine; this file stops the same change on the server. The
   owner is the account in a GitHub `origin` remote. Without one, the file has a
-  placeholder, and `doctor` asks you to put your GitHub handle in it. It bites only when
+  placeholder, and `doctor` asks you to put your GitHub handle in it. GitHub takes no
+  organization as an owner, so when `gh` says the account is one, the file has the
+  placeholder too, and `init` asks for a person or `@org/team`. Full `doctor` flags a
+  file whose only owner is the organization. It bites only when
   branch protection has "Require review from Code Owners" on. A CODEOWNERS file the
   project already has, in `.github/`, at the root or in `docs/`, is kept as it is.
 
@@ -460,7 +463,7 @@ It puts three safe defaults in `.github/` too:
 | `check --issue` | In CI: the issue's title. See [Issue titles](#issue-titles) |
 | `changelog [--write]` | Shows the entries the files in `changes/` add under `[Unreleased]`. `--write` puts them into `CHANGELOG.md` and deletes the files; run it before a release. See [The changelog](#the-changelog) |
 | `learn <issue> [--write]` | Drafts a check from an incident issue, for a person to review. `--write` adds the files in `lessons/`. See [Learning from an incident](#learning-from-an-incident) |
-| `learn --ship <id>` | In yokoten: moves a reviewed lesson into `kit/lessons/`, where `doctor` runs it in every project. Refused while a `TODO(reviewer)` is left or its test fails |
+| `learn --ship <id>` | In yokoten: moves a reviewed lesson into a group in `kit/lessons/`, where `doctor` runs it in every project. Refused while a `TODO(reviewer)` is left or its test fails |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public. A shallow clone can't see old commits, so it fails without scanning; in CI, check out the whole history (`fetch-depth: 0`) |
 | `hook [--agent <name>] [--commands-only] [--json]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini` |
 | `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop event by default, a Codex Stop event with `--agent codex`, a Gemini CLI AfterAgent event with `--agent gemini`. See [The stop check](#the-stop-check) |
@@ -486,7 +489,7 @@ value.
   `history`, `pr` or `issue`. A note never fails the check. When the CI run has no
   pull request or issue, `check --pr` and `check --issue` are ok and add `skipped`, the reason.
 - `doctor --json`: `{ version, ok, selfTest, repo, stage, stages, next, findings, steps,
-  notes, server, lessons }`. The findings of a lesson are in `notes`. With `--session`, only the next step, the private-marks finding, and `core-rules` when the rules are behind.
+  notes, server, lessons }`. The findings of a lesson are in `notes`; a new lesson has `isNew: true`. With `--session`, only the next step, the private-marks finding, and `core-rules` when the rules are behind.
 - `hook --json`: `{ blocked: true, finding }` when it blocks, `{ blocked: false, toolCall: true }`
   when it allows, and `{ blocked: false, toolCall: false }` when stdin is not a tool call.
   The runtimes do not use it: they read the exit code and the reason on stderr, as their
@@ -812,8 +815,10 @@ problem. It reads files only: no network, no writes. Keep it fast, because `doct
 it in every project.
 
 When the review is done, ship the lesson. In a copy of yokoten, run
-`yokoten learn --ship incident-138`. It moves the lesson into `kit/lessons/incident-138/`.
-It adds a row to the lessons table, `kit/lessons/README.md`: the id, the incident, and the
+`yokoten learn --ship incident-138`. It moves the lesson into a numbered group, for example
+`kit/lessons/1/incident-138/`, so no folder holds more than 7 entries: a group takes 5
+lessons and 2 more groups, and a lesson goes in the first group with room. It adds a row to
+the lessons table, `kit/lessons/README.md`: the id, the folder, the incident, and the
 yokoten version. While a `TODO(reviewer)` is left or the test fails, it refuses and moves
 nothing. A test in yokoten checks the same for every lesson in the kit. It is a command,
 not a `git mv`, so the move, the table row and the test run are one step.
@@ -825,6 +830,11 @@ lesson that finds the problem gives a note:
 project:
   note    lesson incident-138: test/api.test.ts: a test calls a server on this machine and does not set NO_PROXY; set NO_PROXY and no_proxy to 127.0.0.1,localhost while the test runs, then put the old values back
 ```
+
+The first time a project's full `doctor` runs a new lesson, it also says so once, even
+when the lesson finds nothing: `note    new lesson: incident-138 (<what>); doctor now
+runs it in this project`. It keeps the lessons it has seen in `.git/yokoten/state.json`,
+so the file is never committed. A session does not write it.
 
 A note never fails `doctor`. To stop a lesson in one project, add its id to "notNow" in
 `yokoten.json`, with the reason: `"notNow": { "incident-138": "a setup file sets it" }`.
