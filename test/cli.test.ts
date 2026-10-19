@@ -604,6 +604,34 @@ test('doctor: the no-build-output step looks at the tracked files (#56)', () => 
   assert.match(line(), /^ +done +no-build-output/);
 });
 
+test('doctor: shows check\'s notes, worded as check words them, and they never change the exit code (#228)', () => {
+  const sandbox = makeSandbox();
+  const before = sandbox.run(['doctor']);
+  assert.doesNotMatch(before.stdout, /note +yokoten\.json|is behind en\.md/);
+  // An unknown yokoten.json key.
+  sandbox.write('yokoten.json', '{ "colour": "blue" }');
+  const unknownKey = /^ {2}note +yokoten\.json: "colour" is not a key this version of yokoten knows/m;
+  assert.match(sandbox.run(['check']).stdout, /^yokoten check: note: yokoten\.json: "colour" is not a key this version of yokoten knows/m);
+  let result = sandbox.run(['doctor']);
+  assert.match(result.stdout, unknownKey);
+  assert.equal(result.status, before.status, 'a note never changes the exit code');
+  result = sandbox.run(['doctor', '--json']);
+  assert.ok(JSON.parse(result.stdout).notes.some((f: { file?: string; what: string }) => f.file === 'yokoten.json' && /"colour"/.test(f.what)));
+  assert.doesNotMatch(sandbox.run(['doctor', '--session']).stdout, /colour/, 'a session stays short');
+  // A translation behind its English source.
+  sandbox.write('en.md', '# Guide\n\nStep one.\n');
+  sandbox.write('zh.md', '<!-- source: en.md -->\n# 指南\n\n第一步。\n');
+  sandbox.git('add', 'en.md', 'zh.md');
+  sandbox.git('commit', '-q', '-m', 'docs: add the guide');
+  sandbox.write('en.md', '# Guide\n\nStep one.\nStep two.\n');
+  sandbox.git('commit', '-q', '-am', 'docs: add step two');
+  result = sandbox.run(['doctor']);
+  assert.match(result.stdout, /^ {2}note +zh\.md:1: is behind en\.md by 1 commit/m);
+  assert.match(result.stdout, unknownKey);
+  assert.equal(result.status, before.status);
+  assert.ok(JSON.parse(sandbox.run(['doctor', '--json']).stdout).notes.some((f: { id: string }) => f.id === 'translation-behind'));
+});
+
 test('check --staged: stops a commit whose time carries a time zone, never printing it (#40)', () => {
   const sandbox = makeSandbox();
   sandbox.write('a.md', 'fine\n');
