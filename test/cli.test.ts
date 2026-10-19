@@ -4007,6 +4007,37 @@ test('lessons: learn, write the check, ship, then doctor in a second repo shows 
   assert.match(result.stdout, /\n {2}not now lesson incident-9: a sample file, no secret in it\n/);
 });
 
+// #172: the first full doctor in a clone says a kit lesson is new, once. A session writes nothing.
+test('lessons: full doctor notes a new lesson on the first run only; a session, not now and a broken state', () => {
+  const sandbox = makeSandbox();
+  const stateFile = join(sandbox.repo, '.git', 'yokoten', 'state.json');
+  const newNote = /\n {2}note {4}new lesson: incident-138 \(a test calls a server on this machine and does not set NO_PROXY\); doctor now runs it in this project\n {2}ok {6}lesson incident-138\n/;
+  let result = sandbox.run(['doctor', '--session']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(!existsSync(stateFile), 'a session writes nothing');
+  // Not now: no new note, and the lesson is not marked seen.
+  sandbox.write('yokoten.json', JSON.stringify({ notNow: { 'incident-138': 'no local servers here' } }));
+  result = sandbox.run(['doctor']);
+  assert.ok(!/new lesson/.test(result.stdout), result.stdout);
+  assert.ok(!existsSync(stateFile));
+  rmSync(join(sandbox.repo, 'yokoten.json'));
+  // The first run: the note, even with no problem found (positive control).
+  result = sandbox.run(['doctor']);
+  assert.match(result.stdout, newNote);
+  assert.deepEqual(JSON.parse(readFileSync(stateFile, 'utf8')), { seenLessons: ['incident-138'] });
+  assert.equal(sandbox.git('status', '--porcelain').stdout, '', 'the state file is never in the tree');
+  // The second run: the lesson's own line only.
+  result = sandbox.run(['doctor']);
+  assert.ok(!/new lesson/.test(result.stdout));
+  assert.match(result.stdout, /\n {2}ok {6}lesson incident-138\n/);
+  // A broken state file is an empty state: the note again, no crash, and the file is mended.
+  writeFileSync(stateFile, '{ not json');
+  result = sandbox.run(['doctor', '--json']);
+  assert.equal(result.stderr, '');
+  assert.deepEqual(JSON.parse(result.stdout).lessons.find((lesson: { id: string }) => lesson.id === 'incident-138'), { id: 'incident-138', mark: 'ok', isNew: true });
+  assert.deepEqual(JSON.parse(readFileSync(stateFile, 'utf8')), { seenLessons: ['incident-138'] });
+});
+
 test('adopt: with no key, the rule-based draft and how to set the key; it changes no file (#6)', () => {
   const sandbox = makeSandbox();
   sandbox.write('CLAUDE.md', '# rules\n');

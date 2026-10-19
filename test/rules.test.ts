@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -13,7 +13,7 @@ import { SECRET_CONTROL } from '../src/rules/secrets.ts';
 import { batchBlobs, check, checkHistory, readBlobs, timeZoneNote } from '../src/run/check.ts';
 import { lateFinding, loadHookConfig } from '../src/run/hook.ts';
 import { parseSourceMarker, sourceMarker, translationNotes } from '../src/run/translations.ts';
-import { agentHooks, coreRulesCheck, coreRulesControl, formatLessonChecks, lessonChecks, machineChecks, pluginAgeCheck, selfTest, userAgentHooks } from '../src/setup/doctor.ts';
+import { agentHooks, coreRulesCheck, coreRulesControl, findStateFile, formatLessonChecks, lessonChecks, machineChecks, pluginAgeCheck, readState, saveState, seenAfter, selfTest, userAgentHooks } from '../src/setup/doctor.ts';
 import { compareCoreRules, compareVersions, readKitVersion } from '../src/setup/init.ts';
 import { explain, explainLines, ids } from '../src/setup/advice/explain.ts';
 import { ROAD, serverChecks, stepFinding } from '../src/setup/road.ts';
@@ -1410,6 +1410,67 @@ test('lessons: doctor runs each lesson as a note; a broken lesson is a note for 
   // A clean project: ok. No table (a project copy of yokoten has no kit): no lessons.
   assert.deepEqual(lessonChecks(mkdtempSync(join(tmpdir(), 'yokoten-clean-')), {}, place).map(({ mark }) => mark), ['ok', 'note', 'note', 'ok', 'note']);
   assert.deepEqual(lessonChecks(project, {}, { ...place, dir: join(kit, 'none') }), []);
+});
+
+// #172: the first time a clone runs a lesson, doctor says so once, even when it finds nothing.
+test('lessons: a lesson not yet seen is new, with what it looks for; not now and no state give no new note', () => {
+  const kit = makeModuleDir('yokoten-kit-');
+  writeFileSync(join(kit, 'README.md'), ['| Lesson | Incident | Added in |', '|---|---|---|', ...['incident-1', 'incident-2', 'incident-3'].map((id) => `| ${id} | https://example.com/issues/1 | 0.1.0 |`), ''].join('\n'));
+  for (const id of ['incident-1', 'incident-2', 'incident-3']) {
+    mkdirSync(join(kit, id));
+    writeFileSync(join(kit, id, 'lesson.ts'), ENV_LESSON);
+  }
+  const place = { dir: kit, codeDir: kit, codeFile: 'lesson.ts' };
+  const clean = mkdtempSync(join(tmpdir(), 'yokoten-clean-'));
+  const checks = lessonChecks(clean, { 'incident-3': 'not for us' }, place, ['incident-2']);
+  assert.deepEqual(checks.map(({ id, isNew }) => `${id} ${isNew === true}`), ['incident-1 true', 'incident-2 false', 'incident-3 false']);
+  assert.deepEqual(formatLessonChecks(checks), [
+    '  note    new lesson: incident-1 (a .env file is in the repo); doctor now runs it in this project',
+    '  ok      lesson incident-1',
+    '  ok      lesson incident-2',
+    '  not now lesson incident-3: not for us',
+  ]);
+  // A new lesson that finds a problem: the new line, then the problem.
+  writeFileSync(join(clean, '.env'), 'KEY=1\n');
+  assert.deepEqual(formatLessonChecks(lessonChecks(clean, {}, place, ['incident-2', 'incident-3'])).slice(0, 2), [
+    '  note    new lesson: incident-1 (a .env file is in the repo); doctor now runs it in this project',
+    '  note    lesson incident-1: a .env file is in the repo; remove it, and add it to .gitignore',
+  ]);
+  // No state (outside a git repo): nothing is new.
+  assert.ok(lessonChecks(clean, {}, place).every((check) => !check.isNew));
+  // A lesson that can't run is not new and is not saved as seen; once it is fixed, the note shows once.
+  const broken = makeModuleDir('yokoten-broken-');
+  mkdirSync(join(broken, 'incident-1'));
+  writeFileSync(join(broken, 'incident-1', 'lesson.ts'), "export function findProblems() { throw new Error('a bug in the lesson'); }\n");
+  const crashed = lessonChecks(clean, {}, { ...place, codeDir: broken }, ['incident-2', 'incident-3']);
+  assert.ok(!formatLessonChecks(crashed).some((line) => line.includes('new lesson')), formatLessonChecks(crashed).join('\n'));
+  assert.deepEqual(seenAfter(['incident-2', 'incident-3'], crashed), ['incident-2', 'incident-3']);
+  const fixed = lessonChecks(clean, {}, place, seenAfter(['incident-2', 'incident-3'], crashed));
+  assert.equal(formatLessonChecks(fixed)[0], '  note    new lesson: incident-1 (a .env file is in the repo); doctor now runs it in this project');
+  assert.deepEqual(seenAfter(['incident-2', 'incident-3'], fixed), ['incident-2', 'incident-3', 'incident-1']);
+});
+
+test('lessons: the state file is in the git folder; missing, broken or unwritable state is empty, never an error', () => {
+  const outside = mkdtempSync(join(tmpdir(), 'yokoten-outside-'));
+  assert.equal(findStateFile(outside), null, 'outside a git repo: no state');
+  assert.deepEqual(readState(null), {});
+  saveState(null, { seenLessons: ['incident-1'] });
+  const repo = mkdtempSync(join(tmpdir(), 'yokoten-state-'));
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  const file = findStateFile(repo) as string;
+  assert.equal(file, join(realpathSync(repo), '.git', 'yokoten', 'state.json'));
+  assert.deepEqual(readState(file), {}, 'missing');
+  for (const broken of ['{ not json', '[1]', 'null', '{"seenLessons": "incident-1"}']) {
+    writeFileSync(join(repo, '.git', 'state-broken.json'), broken);
+    assert.deepEqual(readState(join(repo, '.git', 'state-broken.json')), {}, broken);
+  }
+  // Keys this version does not know are kept; an id that is not text is dropped.
+  saveState(file, { seenLessons: ['incident-1'], server: { ci: 'ok' } });
+  assert.deepEqual(readState(file), { seenLessons: ['incident-1'], server: { ci: 'ok' } });
+  writeFileSync(file, '{"seenLessons": ["incident-1", 7]}');
+  assert.deepEqual(readState(file), { seenLessons: ['incident-1'] });
+  // A path that can't be written: no throw.
+  saveState(join(file, 'under-a-file.json'), { seenLessons: [] });
 });
 
 test('lessons: every lesson the kit ships has a row, its incident, no TODO, and a passing positive control', () => {

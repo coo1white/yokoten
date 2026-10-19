@@ -441,7 +441,7 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
   `pr` 或 `issue`，说明查的是哪一种。`notes` 只是提醒，不会让检查失败。CI 这次跑的不是
   PR 或 issue 时，`check --pr` 和 `check --issue` 直接算通过，多一个 `skipped` 写明原因。
 - `doctor --json`：`{ version, ok, selfTest, repo, stage, stages, next, findings, steps,
-  notes, server, lessons }`。教训查出来的问题放在 `notes` 里。加 `--session` 时只给下一步、私有词表缺失的提醒，以及核心规则落后时的 `core-rules`。
+  notes, server, lessons }`。教训查出来的问题放在 `notes` 里，第一次见到的教训带 `isNew: true`。加 `--session` 时只给下一步、私有词表缺失的提醒，以及核心规则落后时的 `core-rules`。
 - `hook --json`：拦下时是 `{ blocked: true, finding }`，放行时是 `{ blocked: false, toolCall: true }`；
   标准输入读到的不是工具调用时，是 `{ blocked: false, toolCall: false }`。AI 工具本身不用它：
   它们按各自的 hook 协议，看退出码，再从标准错误读原因。
@@ -741,6 +741,10 @@ issue 里没写的那一节，对应的字段就留一个 `TODO(reviewer)`，绝
 project:
   note    lesson incident-138: test/api.test.ts: a test calls a server on this machine and does not set NO_PROXY; set NO_PROXY and no_proxy to 127.0.0.1,localhost while the test runs, then put the old values back
 ```
+
+项目里第一次跑完整的 `doctor` 碰到一课新的，会单独说一次，哪怕没查出问题：
+`note    new lesson: incident-138 (<what>); doctor now runs it in this project`。
+见过哪些课记在 `.git/yokoten/state.json` 里，这个文件不会被提交。会话开头跑的 doctor 不写它。
 
 提醒不会让 `doctor` 失败。某个项目不想查这一课，就在 `yokoten.json` 的 "notNow" 里写上它的编号和理由，
 比如 `"notNow": { "incident-138": "a setup file sets it" }`。

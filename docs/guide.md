@@ -483,7 +483,7 @@ value.
   `history`, `pr` or `issue`. A note never fails the check. When the CI run has no
   pull request or issue, `check --pr` and `check --issue` are ok and add `skipped`, the reason.
 - `doctor --json`: `{ version, ok, selfTest, repo, stage, stages, next, findings, steps,
-  notes, server, lessons }`. The findings of a lesson are in `notes`. With `--session`, only the next step, the private-marks finding, and `core-rules` when the rules are behind.
+  notes, server, lessons }`. The findings of a lesson are in `notes`; a new lesson has `isNew: true`. With `--session`, only the next step, the private-marks finding, and `core-rules` when the rules are behind.
 - `hook --json`: `{ blocked: true, finding }` when it blocks, `{ blocked: false, toolCall: true }`
   when it allows, and `{ blocked: false, toolCall: false }` when stdin is not a tool call.
   The runtimes do not use it: they read the exit code and the reason on stderr, as their
@@ -822,6 +822,11 @@ lesson that finds the problem gives a note:
 project:
   note    lesson incident-138: test/api.test.ts: a test calls a server on this machine and does not set NO_PROXY; set NO_PROXY and no_proxy to 127.0.0.1,localhost while the test runs, then put the old values back
 ```
+
+The first time a project's full `doctor` runs a new lesson, it also says so once, even
+when the lesson finds nothing: `note    new lesson: incident-138 (<what>); doctor now
+runs it in this project`. It keeps the lessons it has seen in `.git/yokoten/state.json`,
+so the file is never committed. A session does not write it.
 
 A note never fails `doctor`. To stop a lesson in one project, add its id to "notNow" in
 `yokoten.json`, with the reason: `"notNow": { "incident-138": "a setup file sets it" }`.

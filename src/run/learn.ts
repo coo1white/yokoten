@@ -418,6 +418,8 @@ export interface LessonPlace {
 export interface LessonRun {
   id: string;
   findings: Finding[];
+  /** The `what` of the lesson's exported `lesson`: the problem it looks for, when it says. */
+  what?: string;
   error?: string;
 }
 
@@ -440,7 +442,7 @@ export function runLessons(root: string, place: LessonPlace, skip: (id: string) 
     const path = join(place.codeDir, id, place.codeFile);
     try {
       if (!existsSync(path)) throw new Error(`there is no ${place.codeFile}`);
-      const module = load(path) as { findProblems?: unknown };
+      const module = load(path) as { findProblems?: unknown; lesson?: { what?: unknown } };
       if (typeof module.findProblems !== 'function') throw new Error('it has no findProblems function');
       const found: unknown = module.findProblems(root);
       if (!Array.isArray(found)) throw new Error('findProblems did not give a list');
@@ -449,7 +451,8 @@ export function runLessons(root: string, place: LessonPlace, skip: (id: string) 
         if (typeof what !== 'string' || typeof why !== 'string' || typeof fix !== 'string') throw new Error('a finding has no what, why or fix');
         return { id, what, why, fix };
       });
-      runs.push({ id, findings });
+      const what = module.lesson?.what;
+      runs.push(typeof what === 'string' ? { id, findings, what } : { id, findings });
     } catch (err) {
       runs.push({ id, findings: [], error: String((err as Error)?.message ?? err).split('\n')[0].split(place.codeDir).join(KIT_LESSONS_DIR) });
     }
