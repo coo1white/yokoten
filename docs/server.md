@@ -51,19 +51,32 @@ agent's token can do.
 The bot opens pull requests for the lead. It is an App, not a second account: it needs
 no sign-up, is tied to no person, and its rights are listed one by one.
 
-1. Your avatar → Settings → Developer settings → GitHub Apps → **New GitHub App**.
+1. Create the App under the account that owns the repo. For your own repo: your avatar →
+   Settings. For a repo in an organization: the organization's Settings. Then Developer
+   settings → GitHub Apps → **New GitHub App**.
    - Name: `<you>-bot` (it shows as `<you>-bot[bot]` on pull requests).
    - Homepage URL: your repo.
    - Webhook: turn **Active** off.
    - Repository permissions: **Contents: Read and write**, **Pull requests: Read and
      write**, **Issues: Read and write**, **Metadata: Read-only**. Leave everything
-     else at No access. In particular **Workflows: No access**, so the bot cannot
-     change the CI that checks it (core rule 5).
-   - Where can this App be installed: **Only on this account**.
+     else at No access.
+   - **Workflows** is your choice. With No access, the bot can't push a change to CI,
+     so you push those yourself. With Read and write, the bot can push a branch that
+     changes CI, and that CI runs before anyone reviews it. yokoten's own bot has Read
+     and write. The locks are then on the server: CODEOWNERS makes a CI change need
+     your review (step 4), and anything that can publish waits for your approval in a
+     protected `release` environment (record 0009). Also keep the repo's Actions
+     setting **Allow GitHub Actions to create and approve pull requests** off.
+     Otherwise a workflow the bot pushes could approve the bot's own pull request and
+     meet a one-approval rule before anyone reads it.
+   - Where can this App be installed: **Only on this account** (the account that owns
+     the repo).
 2. Create it. On the App's page, **Generate a private key**. A `.pem` file downloads.
    Move it to `~/.config/yokoten/bot.pem` and run `chmod 600` on it. Never commit it,
    never paste it into a chat.
-3. **Install App** → only select repositories → this repo.
+3. **Install App** → the account that owns the repo → **Only select repositories** →
+   this repo. yokoten's own bot is installed on its organization, for the yokoten repo
+   only.
 4. Add a `.github/CODEOWNERS` file. Give it one line `<path> @<you>` for each path where a
    mistake is hard to undo: `AGENTS.md`, CI, agent config, the rule code. A pull request
    that changes one of them needs your review (step 1 requires it), and is tier A.
@@ -110,7 +123,7 @@ organization's projects, read issues, read pull requests.
 | Who | Can | Cannot |
 |-----|-----|--------|
 | You | approve, merge, tag, change settings | merge your own unreviewed change without a bypass |
-| The bot | push branches, open pull requests and issues, fill the board | merge without your review, push to `main`, touch CI, create `v*` tags |
+| The bot | push branches, open pull requests and issues, fill the board; with Workflows permission, push a branch that changes CI | merge without your review, push to `main`, create `v*` tags, publish without your approval in the `release` environment |
 | A worker | commit in its worktree | push, or edit rules, hooks or CI (guard) |
 
 ## Without an App
