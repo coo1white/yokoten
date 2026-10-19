@@ -448,6 +448,84 @@ test('check --staged: a MERGE_HEAD that descends from HEAD exempts nothing (#246
   assert.match(result.stderr, /AGENTS\.md is lead-only/);
 });
 
+test('check --staged: a move is role-checked at its old path too (#259)', () => {
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  const moved = (from: string, to: string, extra: Record<string, string>) => {
+    const sandbox = mergeSandbox();
+    assert.equal(sandbox.git('mv', from, to).status, 0);
+    assert.match(sandbox.git('diff', '--cached', '--name-status').stdout, /^R/, 'git sees a move');
+    return sandbox.run(['check', '--staged'], { extra });
+  };
+  let result = moved('AGENTS.md', 'notes.md', worker);
+  assert.equal(result.status, 1, 'a worker moves a lead-only file away');
+  assert.match(result.stderr, /AGENTS\.md is lead-only/);
+  result = moved('src/a.ts', 'src/b.ts', worker);
+  assert.deepEqual([result.status, result.stderr], [0, ''], 'a worker moves its own file');
+  result = moved('AGENTS.md', 'notes.md', {});
+  assert.deepEqual([result.status, result.stderr], [0, ''], 'the lead moves a lead-only file');
+  result = moved('test/a.test.ts', 'test/b.test.ts', { ...worker, YOKOTEN_FIX_TASK: '1' });
+  assert.equal(result.status, 1, 'a fix task moves a test');
+  assert.match(result.stderr, /test\/a\.test\.ts is a test file/);
+});
+
+test('check --staged: in a merge, a move is the worker\'s only if the merge made it (#259)', () => {
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  // Main moved AGENTS.md; a worker brings main in.
+  let sandbox = mergeSandbox();
+  assert.equal(sandbox.git('mv', 'AGENTS.md', 'RULES.md').status, 0);
+  sandbox.git('commit', '-qm', 'lead move');
+  sandbox.git('checkout', '-q', 'work');
+  assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', 'main').status, 0);
+  let result = sandbox.run(['check', '--staged'], { extra: worker });
+  assert.deepEqual([result.status, result.stderr], [0, ''], 'main moved AGENTS.md');
+
+  // The worker moves AGENTS.md away during a merge of main.
+  sandbox = mergeSandbox();
+  sandbox.write('notes.md', 'notes\n');
+  sandbox.git('add', 'notes.md');
+  sandbox.git('commit', '-qm', 'notes');
+  sandbox.git('checkout', '-q', 'work');
+  assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', 'main').status, 0);
+  assert.equal(sandbox.git('mv', 'AGENTS.md', 'RULES.md').status, 0);
+  result = sandbox.run(['check', '--staged'], { extra: worker });
+  assert.equal(result.status, 1, 'the merge made the move');
+  assert.match(result.stderr, /AGENTS\.md is lead-only/);
+});
+
+test('check --staged: in a merge, removing a lead-only file only the other side has is the worker\'s (#259)', () => {
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  // Main moves .github/a.yml to .github/b.yml; a worker merges main in, then runs `then`.
+  const merged = (then: string[][], extra: Record<string, string>) => {
+    const sandbox = makeSandbox();
+    sandbox.write('.github/a.yml', 'on: push\n');
+    sandbox.write('src/a.ts', 'a\n');
+    sandbox.git('add', '.');
+    sandbox.git('commit', '-qm', 'start');
+    sandbox.git('checkout', '-qb', 'work');
+    sandbox.write('src/a.ts', 'b\n');
+    sandbox.git('commit', '-qam', 'work');
+    sandbox.git('checkout', '-q', 'main');
+    assert.equal(sandbox.git('mv', '.github/a.yml', '.github/b.yml').status, 0);
+    sandbox.git('commit', '-qm', 'lead move');
+    sandbox.git('checkout', '-q', 'work');
+    assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', 'main').status, 0);
+    for (const args of then) assert.equal(sandbox.git(...args).status, 0, args.join(' '));
+    return sandbox.run(['check', '--staged'], { extra });
+  };
+  let result = merged([['mv', '.github/b.yml', 'c.yml']], worker);
+  assert.equal(result.status, 1, 'a worker moves the merged-in file away');
+  assert.match(result.stderr, /\.github\/b\.yml is lead-only/);
+  result = merged([['rm', '-qf', '.github/b.yml']], worker);
+  assert.equal(result.status, 1, 'a worker removes the merged-in file');
+  assert.match(result.stderr, /\.github\/b\.yml is lead-only/);
+  result = merged([['mv', '.github/b.yml', 'c.yml']], {});
+  assert.deepEqual([result.status, result.stderr], [0, ''], 'the lead moves it');
+  result = merged([['rm', '-qf', '.github/b.yml']], {});
+  assert.deepEqual([result.status, result.stderr], [0, ''], 'the lead removes it');
+  result = merged([], worker);
+  assert.deepEqual([result.status, result.stderr], [0, ''], 'a clean merge of the move');
+});
+
 test('check --staged: a staged entry git can\'t read fails, not passes as empty (#244)', () => {
   const sandbox = makeSandbox();
   sandbox.git('update-index', '--add', '--info-only', '--cacheinfo', `100644,${'1'.repeat(40)},ghost.md`);
