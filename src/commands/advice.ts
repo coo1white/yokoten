@@ -1,6 +1,6 @@
 // `yokoten doctor`, `explain` and `adopt`: they read a project and advise; none writes a file.
 
-import * as gemini from '../agents/gemini.ts';
+import * as gemini from '../agents/runtimes/gemini.ts';
 import { ghIn } from '../host/github.ts';
 import { DEFAULTS, loadConfig } from '../rules/config.ts';
 import { formatFinding } from '../rules/message.ts';

@@ -2,10 +2,10 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import * as antigravity from '../agents/antigravity.ts';
-import * as claudeCode from '../agents/claude-code.ts';
-import * as codex from '../agents/codex.ts';
-import * as gemini from '../agents/gemini.ts';
+import * as antigravity from '../agents/runtimes/antigravity.ts';
+import * as claudeCode from '../agents/runtimes/claude-code.ts';
+import * as codex from '../agents/runtimes/codex.ts';
+import * as gemini from '../agents/runtimes/gemini.ts';
 import { loadConfig } from '../rules/config.ts';
 import { type Finding, formatFinding } from '../rules/message.ts';
 import { checkChanged } from '../run/check.ts';

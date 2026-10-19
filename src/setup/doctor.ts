@@ -23,10 +23,10 @@ import { loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
 import { type LessonPlace, listLessons, runLessons } from '../run/learn.ts';
-import * as antigravity from '../agents/antigravity.ts';
-import { hasPlugin, hasSessionDoctor, readInstalledPlugin, userSettingsProblem } from '../agents/claude-code.ts';
-import * as codex from '../agents/codex.ts';
-import * as gemini from '../agents/gemini.ts';
+import * as antigravity from '../agents/runtimes/antigravity.ts';
+import { hasPlugin, hasSessionDoctor, readInstalledPlugin, userSettingsProblem } from '../agents/runtimes/claude-code.ts';
+import * as codex from '../agents/runtimes/codex.ts';
+import * as gemini from '../agents/runtimes/gemini.ts';
 import { commentedFile, HAND_ADD, handAddJson, type HookState, mergeHandAdds } from '../agents/hooks-file.ts';
 import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';

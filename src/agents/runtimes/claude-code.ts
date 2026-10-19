@@ -5,10 +5,10 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { Env } from '../rules/config.ts';
-import { guardCommand, missingProjectRuntime } from '../run/cli.ts';
-import type { Action } from '../run/hook.ts';
-import { type Added, addHook, checkHooksFile, hasHook, isObject, type Problem, readTable, removeHook, type Settings, UnreadableHooksFile, writeSettings } from './hooks-file.ts';
+import type { Env } from '../../rules/config.ts';
+import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
+import type { Action } from '../../run/hook.ts';
+import { type Added, addHook, checkHooksFile, hasHook, isObject, type Problem, readTable, removeHook, type Settings, UnreadableHooksFile, writeSettings } from '../hooks-file.ts';
 
 /**
  * A PreToolUse call, as an Action. The guard reads the fields, not the tool's name:

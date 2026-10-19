@@ -13,10 +13,10 @@
 import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import type { Env } from '../rules/config.ts';
-import { guardCommand, missingProjectRuntime } from '../run/cli.ts';
-import type { Action } from '../run/hook.ts';
-import { type Added, addHook, checkHooks, hasHook, type HookArgs, type HookState, hookState, type ReadOptions } from './hooks-file.ts';
+import type { Env } from '../../rules/config.ts';
+import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
+import type { Action } from '../../run/hook.ts';
+import { type Added, addHook, checkHooks, hasHook, type HookArgs, type HookState, hookState, type ReadOptions } from '../hooks-file.ts';
 
 /** How yokoten reads a Gemini CLI settings file: comments allowed, as Gemini CLI allows them. */
 const READ: ReadOptions = { comments: true };

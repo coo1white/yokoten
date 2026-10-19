@@ -1,9 +1,9 @@
-// Tests for src/agents/gemini.ts.
+// Tests for src/agents/runtimes/gemini.ts.
 
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { makeSandbox } from '../repo/helpers.ts';
+import { makeSandbox } from '../../repo/helpers.ts';
 
 test('hook --agent gemini: run_shell_command by command, write_file and replace by file_path (#30)', () => {
   const sandbox = makeSandbox();

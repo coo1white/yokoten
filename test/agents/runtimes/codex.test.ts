@@ -1,9 +1,9 @@
-// Tests for src/agents/codex.ts.
+// Tests for src/agents/runtimes/codex.ts.
 
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { makeSandbox } from '../repo/helpers.ts';
+import { makeSandbox } from '../../repo/helpers.ts';
 
 // Each call is shaped as the runtime's hook docs show it (#30): Codex's PreToolUse
 // (developers.openai.com/codex/hooks) and Gemini CLI's BeforeTool (geminicli.com/docs/hooks).
