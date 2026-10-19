@@ -511,14 +511,14 @@ test('planning: deletes GitHub\'s default labels only with --remove-default-labe
 
 test('planning: no gh, signed out, or no GitHub remote is a skip that says why, not a failure (#10)', () => {
   const missing = setUpPlanning(() => { throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }); }, REMOTE, APPLY);
-  assert.equal(missing.ok, true);
+  assert.deepEqual([missing.ok, missing.skipped], [true, true], 'the caller decides: init --github --yes fails on a skip (#208)');
   assert.match(missing.lines[0], /^GitHub: skipped, because gh is not installed\. To set up labels and a milestone, get it from https:\/\/cli\.github\.com/);
   const out = setUpPlanning(() => { throw Object.assign(new Error('exit 4'), { stderr: 'HTTP 401: Bad credentials' }); }, REMOTE, APPLY);
-  assert.deepEqual(out, { ok: true, lines: ['GitHub: skipped, because gh is not signed in. To set up labels and a milestone, run `gh auth login`, then run `yokoten init --github`'] });
+  assert.deepEqual(out, { ok: true, skipped: true, lines: ['GitHub: skipped, because gh is not signed in. To set up labels and a milestone, run `gh auth login`, then run `yokoten init --github --yes`'] });
   const elsewhere = setUpPlanning(() => { throw new Error('gh was called'); }, 'https://gitea.example.com/me/repo.git', APPLY);
-  assert.deepEqual(elsewhere, { ok: true, lines: ['GitHub: skipped, because the origin remote is not on GitHub. Labels and a milestone need a GitHub repo'] });
+  assert.deepEqual(elsewhere, { ok: true, skipped: true, lines: ['GitHub: skipped, because the origin remote is not on GitHub. Labels and a milestone need a GitHub repo'] });
   const none = setUpPlanning(() => { throw new Error('gh was called'); }, '', APPLY);
-  assert.deepEqual(none, { ok: true, lines: ['GitHub: skipped, because there is no origin remote yet. Add one on GitHub, then run `yokoten init --github` to set up labels and a milestone'] }, 'no remote at all (#208)');
+  assert.deepEqual(none, { ok: true, skipped: true, lines: ['GitHub: skipped, because there is no origin remote yet. Add one on GitHub, then run `yokoten init --github --yes` to set up labels and a milestone'] }, 'no remote at all (#208)');
 });
 
 // The planning steps (#10): stage 2, read in full doctor only.

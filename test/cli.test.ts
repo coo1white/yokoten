@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { closestWord, COMMANDS, editDistance, guardCommand, HELP_OPTIONS } from '../src/run/cli.ts';
+import { closestWord, COMMANDS, editDistance, guardCommand, HELP_OPTIONS, refuseOnFailure } from '../src/run/cli.ts';
 import { copyRuntime } from '../src/setup/files.ts';
 import { guardDeadline } from '../src/run/hook.ts';
 import { checkLines } from '../src/setup/init.ts';
@@ -19,6 +19,13 @@ const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'yokoten.
 // A project hook command as init writes it: a plain line when `path` is gone (#204), else node.
 const MISSING_PROJECT = 'yokoten: the hook cannot run, because .yokoten/ is missing. Restore it from git, or run yokoten init again';
 const guarded = (path: string, args: string) => `[ -f ${path} ] 2>/dev/null || { echo '${MISSING_PROJECT}' >&2; exit 1; }; node ${path} ${args}`;
+// A tool-call guard fails closed (#260): no node is one line and exit 1; then a small heap,
+// node's stderr held back, and any exit but 0 and 2 becomes 2 with one line.
+const MISSING_NODE = 'yokoten: the guard cannot run, because node is not on PATH for this agent; run yokoten doctor in a terminal';
+const REFUSE = 'case $code in 0|2) printf %s "${err%x}" >&2;; *) echo "yokoten\'s guard failed (exit $code), so the command is refused; run \\`yokoten doctor\\`" >&2; code=2;; esac; exit $code';
+const onToolCall = (check: string, path: string, args: string) =>
+  `${check}command -v node >/dev/null 2>&1 || { echo '${MISSING_NODE}' >&2; exit 1; }; { err=$( ( node --max-old-space-size=256 ${path} ${args} 2>&1 1>&3 3>&-; c=$?; printf x; exit $c ) 2>/dev/null ); code=$?; } 3>&1; ${REFUSE}`;
+const guardedCall = (path: string, args: string) => onToolCall(`[ -f ${path} ] 2>/dev/null || { echo '${MISSING_PROJECT}' >&2; exit 1; }; `, path, args);
 const at = '@';
 
 const pick = (result: { status: number | null; stdout: string; stderr: string }) => [result.status, result.stdout, result.stderr];
@@ -298,15 +305,15 @@ test('hook --agent codex: shell calls by command, apply_patch by the files it to
       }),
       extra,
     });
-  let r = call('Bash', 'git push --tags');
-  assert.equal(r.status, 2);
-  assert.match(r.stderr, /owner decides when to release/);
+  let result = call('Bash', 'git push --tags');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /owner decides when to release/);
   assert.equal(call('Bash', 'git status').status, 0);
   const patch = (header: string) => `*** Begin Patch\n${header}\n@@\n-old\n+new\n*** End Patch\n`;
   const worker = { YOKOTEN_ROLE: 'worker' };
-  r = call('apply_patch', patch('*** Update File: AGENTS.md'), worker);
-  assert.equal(r.status, 2);
-  assert.match(r.stderr, /lead-only/);
+  result = call('apply_patch', patch('*** Update File: AGENTS.md'), worker);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /lead-only/);
   assert.equal(call('apply_patch', patch('*** Update File: src/a.ts\n*** Move to: .codex/hooks.json'), worker).status, 2, 'a move into a lead-only path');
   assert.equal(call('apply_patch', patch(`*** Add File: ${join(sandbox.repo, '.github', 'x.yml')}`), worker).status, 2, 'an absolute path');
   assert.equal(call('apply_patch', patch('*** Update File: src/a.ts'), worker).status, 0);
@@ -314,6 +321,43 @@ test('hook --agent codex: shell calls by command, apply_patch by the files it to
   // A worker subagent's call names its role (Codex rust-v0.163.0, #210); no env needed.
   assert.equal(call('apply_patch', patch('*** Update File: AGENTS.md'), {}, { agent_id: 'a1', agent_type: 'worker' }).status, 2, 'a worker subagent');
   assert.equal(call('apply_patch', patch('*** Update File: AGENTS.md'), {}, { agent_id: 'a2', agent_type: 'explorer' }).status, 0, 'an explorer is not a worker');
+  // A shell-run apply_patch is a Bash call, with no second hook (#209): its files count too.
+  const heredoc = (header: string, before = '') => `${before}apply_patch <<'EOF'\n${patch(header)}EOF\n`;
+  result = call('Bash', heredoc('*** Update File: AGENTS.md'), worker);
+  assert.equal(result.status, 2, 'a heredoc to apply_patch');
+  assert.match(result.stderr, /AGENTS\.md/);
+  assert.match(call('Bash', `${heredoc('*** Update File: src/a.ts')}git push --tags\n`, worker).stderr, /owner decides when to release/, 'the command is still checked');
+  assert.equal(call('Bash', `${heredoc('*** Update File: src/a.ts')}git push --tags\n`, worker).status, 2);
+  assert.equal(call('Bash', `applypatch '${patch('*** Delete File: .github/x.yml')}'`, worker).status, 2, 'the envelope as an argument');
+  assert.equal(call('Bash', heredoc('*** Add File: workflows/x.yml', 'cd .github && '), worker).status, 2, 'after a cd');
+  assert.equal(call('Bash', heredoc('*** Add File: workflows/x.yml', 'cd .github; pwd\n'), worker).status, 2, 'a cd further back');
+  assert.equal(call('Bash', heredoc('*** Add File: workflows/x.yml', 'pushd ".github" >/dev/null; ls; '), worker).status, 2, 'a quoted pushd');
+  assert.equal(call('Bash', heredoc('*** Update File: a.ts', 'cd src; '), worker).status, 0, 'a cd into a normal dir');
+  // Anything may stand in front of apply_patch: any mention counts every header (PR #221).
+  const lead = patch('*** Update File: AGENTS.md');
+  const ways = {
+    'command apply_patch': heredoc('*** Update File: AGENTS.md', 'command '),
+    'timeout 30 apply_patch': heredoc('*** Update File: AGENTS.md', 'timeout 30 '),
+    'env -C': heredoc('*** Add File: workflows/x.yml', 'env -C .github '),
+    'FOO=1 apply_patch': heredoc('*** Update File: AGENTS.md', 'FOO=1 '),
+    '\\apply_patch': heredoc('*** Update File: AGENTS.md', '\\'),
+    'a variable': `p=apply_patch; $p <<'EOF'\n${lead}EOF\n`,
+    'a pipe': `printf '%s\\n' '${lead}' | apply_patch`,
+    'written newlines': `printf '*** Begin Patch\\n*** Update File: AGENTS.md\\n*** End Patch\\n' | apply_patch`,
+    'an early end marker': heredoc('*** Update File: src/a.ts\n@@\n+*** End Patch\n*** Update File: AGENTS.md'),
+  };
+  for (const [way, command] of Object.entries(ways)) assert.equal(call('Bash', command, worker).status, 2, way);
+  assert.equal(call('Bash', heredoc('*** Update File: src/a.ts', 'command '), worker).status, 0, 'a normal file');
+  // A dir only the shell knows: each path counts from every folder above the cwd too.
+  sandbox.write('src/a.ts', '');
+  const deeper = { cwd: join(sandbox.repo, 'src') };
+  assert.equal(call('Bash', heredoc('*** Update File: AGENTS.md', 'cd "$(git rev-parse --show-toplevel)" && '), worker, deeper).status, 2, 'cd to an unknown dir');
+  assert.equal(call('Bash', heredoc('*** Update File: AGENTS.md', 'cd ~/x; cd -; '), worker, deeper).status, 2, 'cd ~ and cd -');
+  assert.equal(call('Bash', heredoc('*** Update File: AGENTS.md', 'cd "$HOME"; '), {}, deeper).status, 0, 'the lead may');
+  assert.equal(call('Bash', heredoc('*** Update File: src/a.ts\n*** Move to: CLAUDE.md'), worker).status, 2, 'a move');
+  assert.equal(call('Bash', heredoc('*** Update File: src/a.ts'), worker).status, 0);
+  assert.equal(call('Bash', heredoc('*** Update File: AGENTS.md')).status, 0, 'the lead may');
+  assert.equal(call('Bash', `cat > notes.md <<'EOF'\n${patch('*** Update File: AGENTS.md')}EOF\n`, worker).status, 0, 'an envelope as data');
   // A patch is not a command, and an unknown tool is neither.
   assert.equal(call('apply_patch', 'git push --tags').status, 0);
   assert.equal(call('mcp__fs__write', 'git push --tags').status, 0);
@@ -368,7 +412,7 @@ test('init: the Gemini hook command runs when Gemini quotes a path with a space 
   const groups = JSON.parse(readFileSync(join(repo, '.gemini', 'settings.json'), 'utf8')).hooks.BeforeTool;
   assert.equal(groups.length, 1, 'updated, not added');
   const command: string = groups[0].hooks[0].command;
-  assert.equal(command, guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --agent gemini'));
+  assert.equal(command, guardedCall('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --agent gemini'));
   // shell-quote, which Gemini uses, writes a path with a space and no single quote as
   // '…'; a single quote inside would become '\''.
   const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
@@ -897,14 +941,14 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.equal(codex.description, 'ours');
   assert.equal(codex.hooks.PreToolUse.length, 2);
   assert.deepEqual(codex.hooks.PreToolUse[1], {
-    hooks: [{ type: 'command', command: guarded('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.ts"', 'hook --agent codex') }],
+    hooks: [{ type: 'command', command: guardedCall('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.ts"', 'hook --agent codex') }],
     matcher: 'Bash|apply_patch',
   });
   const gemini = JSON.parse(readFileSync(join(sandbox.repo, '.gemini', 'settings.json'), 'utf8'));
   assert.equal(gemini.theme, 'x');
   assert.equal(gemini.hooks.BeforeTool.length, 2);
   assert.deepEqual(gemini.hooks.BeforeTool[1], {
-    hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --agent gemini'), name: 'yokoten' }],
+    hooks: [{ type: 'command', command: guardedCall('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --agent gemini'), name: 'yokoten' }],
     matcher: 'run_shell_command|write_file|replace',
   });
   // The stop checks (#211): Codex's Stop and Gemini's AfterAgent take no matcher, once each.
@@ -1144,6 +1188,9 @@ test("init: husky keeps its hooks folder; .husky/pre-commit gets the check and k
   let result = sandbox.run(['init']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /added the check to \.husky\/pre-commit: the commit check \(kept core\.hooksPath \(husky\)/);
+  assert.match(result.stdout, /wrote \.husky\/pre-merge-commit: the commit check \(kept core\.hooksPath \(husky\)/, 'a merge commit is checked too (#239)');
+  assert.equal(readFileSync(join(sandbox.repo, '.husky/pre-merge-commit'), 'utf8'), `#!/bin/sh\n${checkLines('.yokoten/bin/yokoten.ts').join('\n')}\n`);
+  assert.ok(statSync(join(sandbox.repo, '.husky/pre-merge-commit')).mode & 0o100, 'executable');
   assert.doesNotMatch(result.stdout, /set git core\.hooksPath/);
   assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '.husky', 'the project\'s hooks folder stays');
   assert.ok(!existsSync(join(sandbox.repo, '.githooks')), 'no second hooks folder that git never runs');
@@ -1154,6 +1201,7 @@ test("init: husky keeps its hooks folder; .husky/pre-commit gets the check and k
   // Again: the hook already runs yokoten.
   result = sandbox.run(['init']);
   assert.match(result.stdout, /same \.husky\/pre-commit/);
+  assert.match(result.stdout, /same \.husky\/pre-merge-commit/);
   assert.equal(readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8'), hook);
   // A real commit runs both: the project's hook and the yokoten check.
   sandbox.git('add', '.');
@@ -1191,13 +1239,63 @@ test('init: husky not yet installed in this clone; init leaves core.hooksPath un
   assert.equal(stepMark(sandbox, 'commit-check'), 'done', "husky 9's folder runs .husky/pre-commit");
 });
 
+// git runs pre-merge-commit, not pre-commit, for a merge it commits itself (#239).
+test('init: a merge commit runs the commit check too (#239)', () => {
+  const sandbox = makeSandbox();
+  let result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /wrote \.githooks\/pre-merge-commit/);
+  const mergeHook = join(sandbox.repo, '.githooks', 'pre-merge-commit');
+  const hook = readFileSync(mergeHook, 'utf8');
+  assert.equal(hook, readFileSync(join(sandbox.repo, '.githooks', 'pre-commit'), 'utf8'), 'the same check as pre-commit');
+  assert.ok(statSync(mergeHook).mode & 0o100, 'executable');
+  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  // Again: nothing changes.
+  result = sandbox.run(['init']);
+  assert.match(result.stdout, /kept \.githooks\/pre-merge-commit/);
+  assert.equal(readFileSync(mergeHook, 'utf8'), hook);
+  sandbox.git('add', '.');
+  assert.equal(sandbox.git('commit', '-qm', 'adopt yokoten').status, 0);
+  sandbox.git('checkout', '-qb', 'topic');
+  sandbox.write('topic.md', 'fine\n');
+  sandbox.git('add', 'topic.md');
+  assert.equal(sandbox.git('commit', '-qm', 'topic').status, 0);
+  sandbox.git('checkout', '-q', 'main');
+  const merge = (zone: string) => spawnSync('git', ['merge', '--no-ff', '-q', '-m', 'merge topic', 'topic'], { cwd: sandbox.repo, env: { ...sandbox.env, TZ: zone }, encoding: 'utf8' });
+  // A merge with the author's time zone is refused, and the zone is never printed.
+  const zoned = merge('Asia/Tokyo');
+  assert.notEqual(zoned.status, 0, 'the merge commit is checked');
+  assert.match(zoned.stderr, /carries your time zone/);
+  assert.doesNotMatch(zoned.stderr, /\+0900/);
+  assert.equal(sandbox.git('rev-list', '--count', '--merges', 'HEAD').stdout.trim(), '0');
+  sandbox.git('merge', '--abort');
+  const plain = merge('UTC');
+  assert.equal(plain.status, 0, plain.stderr);
+  assert.equal(sandbox.git('rev-list', '--count', '--merges', 'HEAD').stdout.trim(), '1');
+  // Doctor names a missing pre-merge-commit, and init writes it back.
+  rmSync(mergeHook);
+  assert.notEqual(stepMark(sandbox, 'commit-check'), 'done');
+  const doctor = sandbox.run(['doctor']).stdout;
+  // Ordinary commits are still checked; only merge commits are not.
+  assert.match(doctor, /merge commits are not checked: there is no \.githooks\/pre-merge-commit/);
+  assert.doesNotMatch(doctor, /(?<!merge )commits are not checked/);
+  assert.doesNotMatch(doctor, /\.githooks\/pre-commit/);
+  assert.match(doctor, /`yokoten init` sets up \.githooks\/pre-merge-commit/);
+  // A pre-merge-commit of the project's own keeps its lines and gets the check.
+  writeFileSync(mergeHook, '#!/bin/sh\necho own\n');
+  result = sandbox.run(['init']);
+  assert.match(result.stdout, /added the check to \.githooks\/pre-merge-commit/);
+  assert.equal(readFileSync(mergeHook, 'utf8'), `#!/bin/sh\n${checkLines('.yokoten/bin/yokoten.ts').join('\n')}\necho own\n`);
+  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+});
+
 test('init: a core.hooksPath outside the repo is kept, and the advice is the line init would write (#204)', () => {
   const sandbox = makeSandbox();
   sandbox.git('config', 'core.hooksPath', join(sandbox.home, 'hooks'));
   const result = sandbox.run(['init']);
   assert.equal(result.status, 0, result.stderr);
   const [, checkLine] = checkLines('.yokoten/bin/yokoten.ts');
-  assert.ok(result.stdout.includes(`Add this line to its pre-commit: ${checkLine}\n`), result.stdout);
+  assert.ok(result.stdout.includes(`Add this line to its pre-commit and pre-merge-commit: ${checkLine}\n`), result.stdout);
 });
 
 test("init: another core.hooksPath is kept, and its pre-commit is made with the check (#206)", () => {
@@ -1205,21 +1303,65 @@ test("init: another core.hooksPath is kept, and its pre-commit is made with the 
   sandbox.write('tools/hooks/commit-msg', '#!/bin/sh\n');
   sandbox.git('config', 'core.hooksPath', 'tools/hooks');
   const doctor = sandbox.run(['doctor']).stdout;
-  assert.match(doctor, /tools\/hooks\/pre-commit does not run yokoten/);
-  // The advice shows the line init writes, runtime guard included (#204).
+  assert.match(doctor, /commit-check \(OSPS-BR-07\.01\): commits are not checked: there is no tools\/hooks\/pre-commit; there is no tools\/hooks\/pre-merge-commit/);
+  // The advice shows the line init writes, runtime guard included (#204). A new file needs
+  // a `#!` line and the execute bit, or git skips it (#239).
   const [, checkLine] = checkLines('.yokoten/bin/yokoten.ts');
-  assert.ok(doctor.includes(`or add this line there yourself: ${checkLine}`), doctor);
+  assert.ok(doctor.includes(`or do it yourself: make tools/hooks/pre-commit and tools/hooks/pre-merge-commit with \`#!/bin/sh\` as the first line and the line below after it; run \`chmod +x tools/hooks/pre-commit tools/hooks/pre-merge-commit\`. The line: ${checkLine}`), doctor);
   const result = sandbox.run(['init']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /wrote tools\/hooks\/pre-commit: the commit check \(kept core\.hooksPath \(tools\/hooks\)/);
+  assert.match(result.stdout, /wrote tools\/hooks\/pre-merge-commit: the commit check \(kept core\.hooksPath \(tools\/hooks\)/);
   assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), 'tools/hooks');
-  assert.ok(statSync(join(sandbox.repo, 'tools/hooks/pre-commit')).mode & 0o100, 'executable');
+  for (const hook of ['pre-commit', 'pre-merge-commit']) {
+    const path = join(sandbox.repo, 'tools/hooks', hook);
+    assert.equal(readFileSync(path, 'utf8'), `#!/bin/sh\n${checkLines('.yokoten/bin/yokoten.ts').join('\n')}\n`, hook);
+    assert.ok(statSync(path).mode & 0o100, `${hook} is executable`);
+  }
   assert.equal(stepMark(sandbox, 'commit-check'), 'done');
   sandbox.git('add', '.');
   assert.equal(sandbox.git('commit', '-qm', 'adopt yokoten').status, 0);
   sandbox.write('leak.md', `me${at}gmail.com\n`);
   sandbox.git('add', 'leak.md');
   assert.notEqual(sandbox.git('commit', '-qm', 'leak').status, 0, 'the check runs from the project\'s folder');
+  sandbox.git('rm', '-q', '--cached', 'leak.md');
+  rmSync(join(sandbox.repo, 'leak.md'));
+  // A real merge commit with the author's time zone is refused from the project's folder (#239).
+  sandbox.git('checkout', '-qb', 'topic');
+  sandbox.write('topic.md', 'fine\n');
+  sandbox.git('add', 'topic.md');
+  assert.equal(sandbox.git('commit', '-qm', 'topic').status, 0);
+  sandbox.git('checkout', '-q', 'main');
+  const merge = spawnSync('git', ['merge', '--no-ff', '-q', '-m', 'merge topic', 'topic'], { cwd: sandbox.repo, env: { ...sandbox.env, TZ: 'Asia/Tokyo' }, encoding: 'utf8' });
+  assert.notEqual(merge.status, 0, 'tools/hooks/pre-merge-commit runs the check');
+  assert.match(merge.stderr, /carries your time zone/);
+  assert.equal(sandbox.git('rev-list', '--count', '--merges', 'HEAD').stdout.trim(), '0');
+  sandbox.git('merge', '--abort');
+});
+
+// git skips a hook without the execute bit, so the check in it never runs (#239).
+test('doctor: a hook in the project\'s folder that is not executable is not checked, and init makes it executable (#239)', { skip: process.platform === 'win32' && 'Windows has no execute bit' }, () => {
+  const sandbox = makeSandbox();
+  sandbox.git('config', 'core.hooksPath', 'tools/hooks');
+  assert.equal(sandbox.run(['init']).status, 0);
+  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  const mergeHook = join(sandbox.repo, 'tools/hooks/pre-merge-commit');
+  chmodSync(mergeHook, 0o644);
+  assert.notEqual(stepMark(sandbox, 'commit-check'), 'done', 'the check is in the file, but git does not run it');
+  let doctor = sandbox.run(['doctor']).stdout;
+  assert.match(doctor, /commit-check \(OSPS-BR-07\.01\): merge commits are not checked: tools\/hooks\/pre-merge-commit is not executable, so git skips it/);
+  assert.match(doctor, /run `chmod \+x tools\/hooks\/pre-merge-commit`, or `yokoten init`/);
+  const result = sandbox.run(['init']);
+  assert.match(result.stdout, /made executable tools\/hooks\/pre-merge-commit/);
+  assert.ok(statSync(mergeHook).mode & 0o100, 'executable');
+  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  // A pre-commit without the check and without the execute bit: add the line, and chmod.
+  const preCommit = join(sandbox.repo, 'tools/hooks/pre-commit');
+  writeFileSync(preCommit, '#!/bin/sh\necho own\n');
+  chmodSync(preCommit, 0o644);
+  doctor = sandbox.run(['doctor']).stdout;
+  assert.match(doctor, /commit-check \(OSPS-BR-07\.01\): commits are not checked: tools\/hooks\/pre-commit does not run yokoten; `yokoten init` adds the check to tools\/hooks\/pre-commit,/);
+  assert.match(doctor, /or do it yourself: add the line below to tools\/hooks\/pre-commit, after its `#!` line; run `chmod \+x tools\/hooks\/pre-commit`\. The line: /);
 });
 
 // A lesson added to the kit's core rules reaches a project that already ran init (#120).
@@ -1538,7 +1680,7 @@ test('install: the session doctor and the command guard for Codex and Gemini CLI
   const cli = '"$HOME/.local/share/yokoten/bin/yokoten.ts"';
   const line = 'yokoten: the runtime at ~/.local/share/yokoten is missing; run the install again';
   const atStart = (args: string) => `[ -f ${cli} ] 2>/dev/null || { echo '${line}'; exit 0; }; node ${cli} ${args}`;
-  const onCall = (args: string) => `[ -f ${cli} ] 2>/dev/null || { echo '${line}' >&2; exit 1; }; node ${cli} ${args}`;
+  const onCall = (args: string) => onToolCall(`[ -f ${cli} ] 2>/dev/null || { echo '${line}' >&2; exit 1; }; `, cli, args);
   let result = sandbox.run(['install']);
   assert.equal(result.status, 0, result.stderr);
   for (const what of ['Codex SessionStart doctor', 'Codex command guard', 'Gemini CLI SessionStart doctor', 'Gemini CLI command guard']) assert.match(result.stdout, new RegExp(`^added the ${what} in ~/`, 'm'));
@@ -2155,6 +2297,50 @@ test('check --pr in GitHub Actions: notes are warnings, in their own section (#9
   assert.match(text, /\n#### Notes \(1\): these never fail the check\n\n\| Place \| Rule \| What \| Why \| Fix \|\n\|[-|]+\|\n\| README\.md:2 \| long-sentence \| a sentence of 30 words \|/);
 });
 
+// #208: a clone install puts no `yokoten` on the PATH, so install says how to call it.
+test('install: prints the alias when no yokoten on the PATH runs this copy, and edits no shell file (#208)', () => {
+  const sandbox = makeSandbox();
+  const alias = "alias yokoten='node ~/.local/share/yokoten/bin/yokoten.ts'";
+  let result = sandbox.run(['install']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.trimEnd().endsWith(`then open a new shell: ${alias}`), result.stdout);
+  for (const file of ['.bashrc', '.zshrc', '.profile', '.local/bin']) assert.ok(!existsSync(join(sandbox.home, file)), `${file} was written`);
+  // A yokoten on the PATH that runs the installed copy: the line is left out.
+  const bin = join(sandbox.home, 'bin');
+  mkdirSync(bin);
+  symlinkSync(join(sandbox.home, '.local/share/yokoten/bin/yokoten.ts'), join(bin, 'yokoten'));
+  result = sandbox.run(['install'], { extra: { PATH: `${bin}:${process.env.PATH}` } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(!result.stdout.includes('alias yokoten'), result.stdout);
+});
+
+// #208: steps left on the road are to do, not problems. Exit 1 is for a problem.
+test('doctor: exits 0 on a set-up project with steps to do, and 1 on a problem (#208)', () => {
+  const sandbox = makeSandbox();
+  assert.equal(sandbox.run(['install']).status, 0);
+  writeFileSync(join(sandbox.home, '.config/yokoten/private-marks'), 'mycity\n');
+  sandbox.withTests();
+  assert.equal(sandbox.run(['init']).status, 0);
+  let result = sandbox.run(['doctor']);
+  assert.match(result.stdout, /\n +next +codeowners[^]*\n +to do +bot/, 'later steps are left');
+  assert.equal(result.status, 0, result.stdout);
+  assert.equal(JSON.parse(sandbox.run(['doctor', '--json']).stdout).ok, true);
+  // A problem: a private mark in the tree.
+  sandbox.write('notes.md', 'I live in MyCity\n');
+  sandbox.git('add', 'notes.md');
+  result = sandbox.run(['doctor']);
+  assert.match(result.stdout, /MISSING tree: 1 problem/);
+  assert.equal(result.status, 1);
+  assert.equal(sandbox.run(['doctor', '--session']).status, 0, 'a session always starts');
+});
+
+test('update: a folder that does not exist is said plainly (#208)', () => {
+  const sandbox = makeSandbox();
+  const result = sandbox.run(['update', 'typo']);
+  assert.deepEqual([result.status, result.stdout, result.stderr], [1, '', 'yokoten update: typo does not exist; nothing to update.\n']);
+  assert.ok(!existsSync(join(sandbox.repo, 'typo')));
+});
+
 // #42: stdout is data and stderr is for people; --json prints pure JSON. Exit codes are
 // written down once (docs/guide.md, "Exit codes") and held here.
 test('exit codes: 0 ok, 1 problems or a usage error, 2 the hook blocked (#42)', () => {
@@ -2166,7 +2352,7 @@ test('exit codes: 0 ok, 1 problems or a usage error, 2 the hook blocked (#42)', 
   assert.equal(hook('git status').status, 0);
   assert.equal(sandbox.run(['doctor', '--session']).status, 0, 'a session always starts');
   assert.equal(sandbox.run(['explain', 'release']).status, 0);
-  assert.equal(sandbox.run(['doctor']).status, 1, 'steps left on the road');
+  assert.equal(sandbox.run(['doctor']).status, 1, 'nothing is installed on this machine: a problem');
   sandbox.write('b.md', `me${at}gmail.com\n`);
   sandbox.git('add', '.');
   assert.equal(sandbox.run(['check']).status, 1);
@@ -2178,6 +2364,67 @@ test('exit codes: 0 ok, 1 problems or a usage error, 2 the hook blocked (#42)', 
     assert.equal(r.status, 1, args.join(' '));
     assert.equal(r.stdout, '', `${args.join(' ')}: nothing on stdout`);
     assert.notEqual(r.stderr, '', `${args.join(' ')}: says why on stderr`);
+  }
+});
+
+test('outside a git repo: every command that needs one says so plainly, exits 1 and writes nothing (#205)', () => {
+  const sandbox = makeSandbox();
+  // Inside the sandbox home, so the folder shows as ~.
+  const away = join(sandbox.home, 'away');
+  mkdirSync(away);
+  const said = (command: string) => new RegExp(`^yokoten ${command}: ~/away is not inside a git repo\\. The checks read commits, so yokoten needs git history\\. Run it inside your project, or \`git init\` first\\.\\n  docs: \\S+#commands\\n$`);
+  const runs: [string[], string, Record<string, string>?][] = [
+    [['doctor'], 'doctor'],
+    [['check'], 'check'],
+    [['check', '--staged'], 'check'],
+    [['check', '--history'], 'check'],
+    [['check', '--pr'], 'check'],
+    [['check', '--issue'], 'check'],
+    [['adopt'], 'adopt'],
+    [['update'], 'update'],
+    [['update', '--write'], 'update'],
+    [['init'], 'init'],
+    [['init', '--github', '--yes'], 'init'],
+    [['bot', '--', 'gh', 'issue', 'list'], 'bot', { YOKOTEN_BOT_APP_ID: '1' }],
+  ];
+  for (const [args, command, extra] of runs) {
+    const result = sandbox.run(args, { cwd: away, extra });
+    assert.equal(result.status, 1, args.join(' '));
+    assert.equal(result.stdout, '', `${args.join(' ')}: nothing on stdout`);
+    assert.match(result.stderr, said(command), args.join(' '));
+    assert.deepEqual(readdirSync(away), [], `${args.join(' ')}: nothing written`);
+  }
+  // --json: the same finding, as data.
+  for (const args of [['check', '--json'], ['doctor', '--json']]) {
+    const result = sandbox.run(args, { cwd: away });
+    assert.equal(result.status, 1, args.join(' '));
+    const out = JSON.parse(result.stdout);
+    assert.equal(out.ok, false);
+    const found = out.findings.find((f: { id: string }) => f.id === 'not-a-repo');
+    assert.equal(found?.what, '~/away is not inside a git repo', args.join(' '));
+  }
+  // init in a folder that does not exist creates nothing: a typo never becomes a project.
+  const result = sandbox.run(['init', 'typo'], { cwd: away });
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, 'yokoten init: typo does not exist; nothing was written. Create it and run `git init` there first.\n');
+  assert.deepEqual(readdirSync(away), [], 'no folder made');
+  // A session in a non-repo folder gets no noise, and starts.
+  const session = sandbox.run(['doctor', '--session'], { cwd: away });
+  assert.deepEqual([session.status, session.stdout, session.stderr], [0, '', '']);
+  // changelog reads changes/ only, and needs no git.
+  assert.equal(sandbox.run(['changelog'], { cwd: away }).status, 0);
+});
+
+test('git not installed: a command that needs a repo says git is missing, not "not a repo" (#205)', () => {
+  const sandbox = makeSandbox();
+  // Only node on the PATH.
+  const noGit = join(sandbox.home, 'no-git');
+  mkdirSync(noGit);
+  symlinkSync(process.execPath, join(noGit, 'node'));
+  for (const command of ['check', 'doctor']) {
+    const result = sandbox.run([command], { extra: { PATH: noGit } });
+    assert.equal(result.status, 1, command);
+    assert.match(result.stderr, new RegExp(`^yokoten ${command}: git is not installed \\(or not on PATH\\); yokoten needs git\\. `), command);
   }
 });
 
@@ -2383,6 +2630,12 @@ fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s));
   assert.equal(calls().length, 0);
   assert.equal(sandbox.run(['init', '--yes'], { extra }).status, 1, '--yes alone is refused');
   assert.equal(sandbox.run(['init', '--remove-default-labels'], { extra }).status, 1, 'so is --remove-default-labels');
+  // --github --yes asked for changes on GitHub; with no remote none were made, so it fails (#208).
+  result = sandbox.run(['init', '--github', '--yes'], { extra });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /GitHub: skipped, because there is no origin remote yet\. Add one on GitHub, then run `yokoten init --github --yes`/);
+  assert.match(result.stderr, /\nyokoten init: --github --yes changed nothing on GitHub \(the reason is above\)\. The project files are as listed above\.\n$/);
+  assert.equal(calls().length, 0);
   sandbox.git('remote', 'add', 'origin', 'https://github.com/example/repo.git');
   result = sandbox.run(['init'], { extra });
   assert.equal(result.status, 0, result.stderr);
@@ -2396,15 +2649,19 @@ fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s));
   result = sandbox.run(['init', '--github', '--yes'], { extra });
   assert.match(result.stdout, /- 12 of the 12 standard labels are there; kept\n- a milestone is open; kept\n[^]*Nothing to change\./);
   assert.equal(changed().length, 12, 'the second run changed nothing');
-  // Without gh on the PATH, init still succeeds and says so. Only node and git are there.
+  // Without gh on the PATH, plain init still succeeds and says so. Only node and git are there.
   const noGh = join(sandbox.home, 'no-gh');
   mkdirSync(noGh);
   const gitPath = spawnSync('git', ['--exec-path'], { encoding: 'utf8' }).stdout.trim();
   symlinkSync(process.execPath, join(noGh, 'node'));
   symlinkSync(join(gitPath, 'git'), join(noGh, 'git'));
-  result = sandbox.run(['init', '--github', '--yes'], { extra: { PATH: noGh } });
+  result = sandbox.run(['init'], { extra: { PATH: noGh } });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /GitHub: skipped, because gh is not installed/);
+  // init --github --yes fails: it was asked to change GitHub and could not (#208).
+  result = sandbox.run(['init', '--github', '--yes'], { extra: { PATH: noGh } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /GitHub: skipped, because gh is not installed[^\n]*\nyokoten init: --github --yes changed nothing on GitHub/);
 });
 
 // The Claude Code plugin (#31). The repo root is the plugin and its own marketplace, so the
@@ -2462,7 +2719,7 @@ test('plugin: its hooks are the ones install adds, and the guard it registers bl
   assert.equal(sandbox.run(['install']).status, 0);
   const installed = JSON.parse(readFileSync(join(sandbox.home, '.claude', 'settings.json'), 'utf8')).hooks;
   // Claude Code keeps the plugin's copy, so only install's commands check that the copy is there (#204).
-  const unguard = (command: string) => command.replace(/^\[ -f .*?; \}; (?=node )/, '');
+  const unguard = (command: string) => command.replace(/^\[ -f .*?; \}; (?=node |command -v node )/, '');
   const shape = (h: typeof hooks, cli: string) => Object.fromEntries(Object.entries(h).map(([event, groups]) => [event, groups.map((g) => ({ matcher: g.matcher, commands: g.hooks.map((x) => `${x.type}: ${unguard(x.command).replace(cli, 'CLI')}`) }))]));
   assert.deepEqual(shape(hooks, `"${PLUGIN_ROOT}/bin/yokoten.ts"`), shape(installed, '"$HOME/.local/share/yokoten/bin/yokoten.ts"'));
   // The command as Claude Code runs it: the root filled in, through the shell.
@@ -2639,7 +2896,11 @@ test('doctor: notes an installed plugin older than this yokoten (#198)', () => {
   assert.ok(!lines.some((l) => l.includes('MISSING plugin')));
   assert.match(sandbox.run(['doctor', '--session']).stdout, olderNote);
   const json = JSON.parse(sandbox.run(['doctor', '--json']).stdout);
-  assert.ok(json.notes.some((n: { what: string }) => olderNote.test(n.what)), 'a note in JSON');
+  const jsonNote = json.notes.find((n: { what: string }) => olderNote.test(n.what));
+  assert.ok(jsonNote, 'a note in JSON');
+  assert.equal(jsonNote.id, 'plugin-version', 'its own rule, so `yokoten explain` tells the right thing');
+  assert.match(jsonNote.docs, /#the-claude-code-plugin$/);
+  assert.match(sandbox.run(['explain', jsonNote.id]).stdout, /plugin is not older than the yokoten/);
   assert.ok(!json.findings.some((f: { what: string }) => olderNote.test(f.what)), 'not a finding');
 
   // The same version, or a newer one: nothing.
@@ -2832,4 +3093,90 @@ test('adopt: with no key, the rule-based draft and how to set the key; it change
   assert.equal(rows.find((row) => row.key === 'tests')?.decision, 'as-is');
   assert.match(json.stderr, /drafted by rules/);
   assert.equal(sandbox.git('status', '--porcelain', '--ignored').stdout, before, 'adopt writes nothing');
+});
+
+// A guard that crashes, runs out of memory or is killed must refuse the call: the agents
+// run a call on any exit but 2 (#260). Each tool-call hook, as init, install and the plugin
+// write it, runs through sh with its runtime replaced by a script that ends one way.
+test('hooks: a tool-call guard that fails refuses the call; the stop check does not (#260)', () => {
+  const sandbox = makeSandbox();
+  // Codex and Gemini CLI are installed, so install writes their home hooks too.
+  for (const dir of ['.codex', '.gemini']) mkdirSync(join(sandbox.home, dir), { recursive: true });
+  assert.equal(sandbox.run(['install']).status, 0);
+  assert.equal(sandbox.run(['init']).status, 0);
+  const commands = (file: string) => {
+    const hooks = JSON.parse(readFileSync(file, 'utf8')).hooks as Record<string, { hooks: { command: string }[] }[]>;
+    return Object.fromEntries(Object.entries(hooks).map(([event, groups]) => [event, groups.flatMap((g) => g.hooks.map((h) => h.command))]));
+  };
+  const project = commands(join(sandbox.repo, '.claude', 'settings.json'));
+  const codex = commands(join(sandbox.repo, '.codex', 'hooks.json'));
+  const gemini = commands(join(sandbox.repo, '.gemini', 'settings.json'));
+  const user = commands(join(sandbox.home, '.claude', 'settings.json'));
+  const codexUser = commands(join(sandbox.home, '.codex', 'hooks.json'));
+  const geminiUser = commands(join(sandbox.home, '.gemini', 'settings.json'));
+  const plugin = (manifest('plugin.json').hooks.PreToolUse[0].hooks[0].command as string).replaceAll(PLUGIN_ROOT, '$PLUGIN');
+  const calls = [...project.PreToolUse, ...codex.PreToolUse.slice(-1), ...gemini.BeforeTool.slice(-1), ...user.PreToolUse, ...codexUser.PreToolUse, ...geminiUser.BeforeTool, plugin];
+  assert.equal(calls.length, 7);
+  // The project, the home and the plugin all sit under a path with a space.
+  const base = join(sandbox.home, 'a b');
+  const repo = join(base, 'my repo');
+  const home = join(base, 'home');
+  const pluginRoot = join(base, 'plugin');
+  mkdirSync(repo, { recursive: true });
+  assert.equal(spawnSync('git', ['init', '-q'], { cwd: repo }).status, 0);
+  const runtimes = [join(repo, '.yokoten', 'bin', 'yokoten.ts'), join(home, '.local', 'share', 'yokoten', 'bin', 'yokoten.ts'), join(pluginRoot, 'bin', 'yokoten.ts')];
+  const runtime = (body: string) => {
+    for (const file of runtimes) {
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, body);
+    }
+  };
+  const env = { ...sandbox.env, HOME: home, CLAUDE_PROJECT_DIR: repo, GEMINI_PROJECT_DIR: repo, PLUGIN: pluginRoot };
+  // Gemini CLI puts $GEMINI_PROJECT_DIR in the command shell-quoted itself, as shell-quote writes it.
+  const quoted = `'${repo.replaceAll("'", "'\\''")}'`;
+  // dash (Linux's /bin/sh) and bash each print a job line for a killed child; bash's holds
+  // the whole command, paths included. Each command runs under both.
+  const shells = ['/bin/sh', '/bin/bash'].filter((sh) => existsSync(sh));
+  const shell = (command: string, sh = '/bin/sh', extra: Record<string, string> = {}) =>
+    spawnSync(command.replaceAll('$GEMINI_PROJECT_DIR', quoted), { shell: sh, cwd: repo, env: { ...env, ...extra }, input: '{}', encoding: 'utf8' });
+  const each = (commands: string[], expected: unknown[]) => {
+    for (const sh of shells) for (const command of commands) assert.deepEqual(pick(shell(command, sh)), expected, `${sh}: ${command}`);
+  };
+  const refused = (code: number) => `yokoten's guard failed (exit ${code}), so the command is refused; run \`yokoten doctor\`\n`;
+  // A failure gives our one line on stderr and nothing else: node's own error is dropped.
+  runtime("process.stderr.write('a trace with /a/path\\n'); process.exit(1);\n");
+  each(calls, [2, '', refused(1)]);
+  runtime("process.stderr.write('/a/path\\n'); process.kill(process.pid, 'SIGKILL');\n");
+  each(calls, [2, '', refused(137)]);
+  // A guard's own answer passes as it is, stdout and stderr byte for byte.
+  runtime("process.stdout.write('{\"a\":1}\\n\\n'); process.stderr.write('note\\n\\n'); process.exit(0);\n");
+  each(calls, [0, '{"a":1}\n\n', 'note\n\n']);
+  runtime("process.stdout.write('{}'); process.stderr.write('no\\n'); process.exit(2);\n");
+  each(calls, [2, '{}', 'no\n']);
+  // A runaway read stops at the small heap and is refused, without swapping, and without
+  // the heap trace V8 writes.
+  runtime('const a = []; for (;;) a.push(new Array(1e6).fill(1));\n');
+  each([project.PreToolUse[0], plugin], [2, '', refused(134)]);
+  // No node on the agent's PATH: one line, and the call goes on, so `yokoten doctor` can run.
+  const noNode = join(base, 'no-node');
+  mkdirSync(noNode);
+  symlinkSync(spawnSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim(), join(noNode, 'git'));
+  runtime('process.exit(0);\n');
+  for (const sh of shells) for (const command of calls) assert.deepEqual(pick(shell(command, sh, { PATH: noNode })), [1, '', `${MISSING_NODE}\n`], `${sh}: ${command}`);
+  // The stop check and the session doctor pass a failure on: exit 2 at stop would send the
+  // agent back to work on a guard that cannot run.
+  runtime('process.exit(1);\n');
+  for (const command of [...project.Stop, ...codex.Stop, ...gemini.AfterAgent, ...user.SessionStart, ...codexUser.SessionStart, ...geminiUser.SessionStart]) {
+    assert.deepEqual(pick(shell(command)), [1, '', ''], command);
+  }
+  // A missing runtime still says its line and goes on, as before.
+  for (const file of runtimes) rmSync(file);
+  const machineLine = 'yokoten: the runtime at ~/.local/share/yokoten is missing; run the install again\n';
+  each([...project.PreToolUse, ...codex.PreToolUse.slice(-1), ...gemini.BeforeTool.slice(-1)], [1, '', `${MISSING_PROJECT}\n`]);
+  each([...user.PreToolUse, ...codexUser.PreToolUse, ...geminiUser.BeforeTool], [1, '', machineLine]);
+});
+
+// The plugin's guard is the text the builder makes, so the two cannot drift (#260).
+test('plugin: its tool-call guard is the command refuseOnFailure builds', () => {
+  assert.equal(manifest('plugin.json').hooks.PreToolUse[0].hooks[0].command, refuseOnFailure(`"${PLUGIN_ROOT}/bin/yokoten.ts"`, 'hook --commands-only'));
 });

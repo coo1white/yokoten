@@ -197,7 +197,7 @@ yokoten 能管住三种 AI 编程 agent，它们守的是同一套规矩。
 | Agent | yokoten 给它加了什么 |
 |---|---|
 | Claude Code | 工具调用拦截（钩子）、收尾检查（钩子）、每次会话开头的带路提示、skills 和 agents |
-| Codex CLI | 工具调用拦截和收尾检查，写在 `.codex/hooks.json`；会话开头的带路提示和命令守卫，写在 `~/.codex/hooks.json` |
+| Codex CLI | 工具调用拦截和收尾检查，写在 `.codex/hooks.json`；会话开头的带路提示和命令守卫，写在 `~/.codex/hooks.json`。`apply_patch` 要改哪些文件，守卫都会查，在 shell 里跑的也查 |
 | Gemini CLI | 工具调用拦截和收尾检查（AfterAgent），写在 `.gemini/settings.json`；会话开头的带路提示和命令守卫，写在 `~/.gemini/settings.json` |
 | 其他 agent | `AGENTS.md` 里的规则；还有提交检查，不管是谁提交的，坏提交都会被拦下 |
 
@@ -288,6 +288,17 @@ node ~/.local/share/yokoten/bin/yokoten.ts init     # 这个项目：只加文�
 node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看走到哪一关，下一步做什么
 ```
 
+这样装完，PATH 里没有 `yokoten` 这个命令，可 yokoten 的提示里写的都是 `yokoten init`、
+`yokoten doctor`。所以 `install` 最后会打出下面这一行，你自己把它加进 shell 配置文件
+（`~/.bashrc` 或 `~/.zshrc`），再开一个新的终端就能用了：
+
+```sh
+alias yokoten='node ~/.local/share/yokoten/bin/yokoten.ts'
+```
+
+yokoten 不会去改你的 shell 配置文件。要是 PATH 里已经有一个 `yokoten` 跑的就是这一份，
+`install` 就不打这一行。
+
 这些命令（包括上面 npx 那几条）在 [docs/facts.json](../facts.json) 里还有一份，网站读的是那份，所以改命令的时候两边都要改。
 
 ### 当成 GitHub Action 用
@@ -353,7 +364,9 @@ kit 里 `init` 放的 workflow 暂时还是跑 `.yokoten/` 里的那份，等第
 `CLAUDE.md` 时，Claude Code 只通过这一行才会读 `AGENTS.md`。`.claude/CLAUDE.md` 也算：
 根目录没有 `CLAUDE.md` 的话，就在它末尾加 `@../AGENTS.md`。用 husky 或者别的
 `core.hooksPath` 的，它不换掉那个目录，而是把提交检查加进那里的 `pre-commit`。项目自己的
-hook 一行都不删，`init` 也会说改了哪个文件。
+hook 一行都不删，`init` 也会说改了哪个文件。git 自己提交合并时跑的是 `pre-merge-commit`，不是
+`pre-commit`，所以 `init` 在那里也放同样的检查（`.githooks/pre-merge-commit`，用 husky 的是
+`.husky/pre-merge-commit`）。
 
 `init` 还会在 `.github/workflows/` 里放三个 workflow：`yokoten.yml`（跑提交检查；一个 lint
 job 用 actionlint 和 zizmor 查 workflow 本身；还有一个 `ci` job，设成必过的检查就只要设它）、
@@ -415,6 +428,10 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 输出的规矩只有一条：结果写到标准输出（stdout），问题、拒绝和出错写到标准错误（stderr）。
 不认识的选项会直接拒绝，不会悄悄忽略。
 
+`init`、`update`、`doctor`、`check`、`adopt` 和 `bot` 都要在 git 仓库里跑。不在仓库里，
+它们会直说，什么文件都不写，退出码是 1。`init <dir>` 碰到不存在的文件夹也会拒绝。
+`doctor --session` 在仓库外不出声，免得打扰在别的文件夹里开的会话。
+
 CI 没过，不用再翻日志找原因。`check` 在 GitHub Actions 里跑的时候，每个问题都会标在 PR
 改动的那一行上；任务摘要（job summary）里也会列出来：在哪、哪条规则、出了什么问题、
 为什么、怎么改。规则名可以点，点开就是指南里讲它的那一节。
@@ -425,14 +442,22 @@ CI 没过，不用再翻日志找原因。`check` 在 GitHub Actions 里跑的�
 
 | 退出码 | 意思 |
 |------|------|
-| 0 | 一切正常。`doctor --session` 永远是 0，保证会话总能开始 |
-| 1 | 查出了问题（`check`、`doctor`）、id 不存在（`explain`）、命令用法不对，或者 yokoten 自己出错 |
+| 0 | 一切正常。路线图上还没做的步骤只是待办，不算问题，`doctor` 照样给 0。`doctor --session` 永远是 0，保证会话总能开始 |
+| 1 | 查出了问题：`check` 查出的，或者 `doctor` 查出的（自检失败，或者 core-rules、tree、本机这几项标着 MISSING）、id 不存在（`explain`）、命令用法不对，或者 yokoten 自己出错 |
 | 2 | hook 拦下了这次工具调用，或者收尾检查把 AI 叫回来了，原因在标准错误里 |
 
-这几个数字定下来就不改。守卫自己坏了会给 1，不给 2：这样你看得到它坏了，它也不会把每次
-工具调用都拦住。工具调用守卫是例外：hook 跑得比 AI 工具的超时还久，工具就会直接放行，
-所以守卫读一次调用超过 5 秒（可以用 `YOKOTEN_GUARD_DEADLINE_MS` 改，最多 30 秒），或者读的时候出错，
-都会拒绝这次调用，给 2（`unreadable-command`）。
+这几个数字定下来就不改。yokoten 自己出错时给 1。可是三个 AI 工具都只认 2 才拦，守卫一崩，
+调用就放过去了。所以 `init`、`install` 和插件写的工具调用 hook 会把别的退出码都改成 2：
+守卫崩了、内存爆了、被杀掉了，这次调用都会被拒绝，标准错误里有一行
+`` yokoten's guard failed (exit N), so the command is refused; run `yokoten doctor` ``。
+标准错误里只有这一行，node 自己的报错和 shell 打的「Killed」都不显示。
+有两种情况还是 1：运行时的文件夹没了，或者 AI 工具的 PATH 里找不到 `node`。这时 hook
+说一行提示就放行，免得每次工具调用都被拦住，你还能跑 `yokoten doctor` 看是怎么回事。
+收尾检查和会话开头的 doctor 照旧，出错就原样交出去。
+
+AI 工具还有一条：hook 跑得比它的超时还久，工具就直接放行。所以守卫读一次调用超过 5 秒
+（可以用 `YOKOTEN_GUARD_DEADLINE_MS` 改，最多 30 秒），或者读的时候出错，都会拒绝这次
+调用，给 2（`unreadable-command`）。
 
 ### 收尾检查
 

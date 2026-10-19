@@ -318,6 +318,12 @@ export const RULES = {
     why: 'the user-level hooks run the installed copy, so an old copy checks old rules',
     check: '`doctor` compares the VERSION file in ~/.local/share/yokoten with its own version',
   },
+  'plugin-version': {
+    rule: 'the enabled Claude Code plugin is not older than the yokoten that runs doctor',
+    why: "the plugin's hooks run the plugin's own copy, so an old plugin checks old rules",
+    check: "`doctor` compares the plugin's package version with its own and, in yokoten's own repo, the plugin's commit with the default branch's tip (origin/HEAD, else origin/main, else main); a note, never a failure, and nothing when it can't compare offline",
+    docs: guide('the-claude-code-plugin'),
+  },
   'private-marks': {
     rule: 'this machine has a private-marks file with at least one line',
     why: 'without your marks, the privacy check knows only email addresses, IP addresses and secrets',
@@ -374,6 +380,12 @@ export const RULES = {
     why: 'a forgotten branch holds work nobody is looking at',
     check: `${SERVER_CHECK}; a note only, and doctor never deletes a branch`,
   },
+  'not-a-repo': {
+    rule: 'yokoten runs inside a git repo',
+    why: 'the checks read commits, so yokoten needs git history',
+    check: 'every command that reads or writes a project looks for its git repo first, and stops before it writes anything; `doctor --session` and the hooks do not report it, so a session in another folder gets no noise',
+    docs: guide('commands'),
+  },
 } satisfies Record<string, Rule>;
 
 export type RuleId = keyof typeof RULES;
@@ -387,6 +399,9 @@ export function finding(id: RuleId, what: string, fix: string, more: { file?: st
   if (more.line !== undefined) f.line = more.line;
   return f;
 }
+
+/** Outside a git repo (#205): the one finding every command that needs a repo gives. */
+export const notRepoFinding = (folder: string): Finding => finding('not-a-repo', `${folder} is not inside a git repo`, 'run it inside your project, or `git init` first');
 
 const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 

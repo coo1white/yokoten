@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -100,6 +100,41 @@ test('output: the home folder shows as ~ (#25)', () => {
   assert.equal(hideHome('wrote /home/someone/.local/share/yokoten', { HOME: '/home/someone' }), 'wrote ~/.local/share/yokoten');
   assert.equal(hideHome('a /home/someone/ b /home/someone', { HOME: '/home/someone/' }), 'a ~/ b ~');
   assert.equal(hideHome('/x', { HOME: '/' }), '/x', 'a root home hides nothing');
+  const real = mkdtempSync(join(tmpdir(), 'yokoten-home-'));
+  const link = `${real}-link`;
+  symlinkSync(real, link);
+  try {
+    assert.equal(hideHome(`ran in ${realpathSync(real)}/away`, { HOME: link }), 'ran in ~/away', 'the real path of a linked home is hidden too');
+  } finally {
+    rmSync(link);
+    rmSync(real, { recursive: true });
+  }
+});
+
+test('output: a home path is hidden only where it ends (#205)', () => {
+  const env = { HOME: '/data/u' };
+  assert.equal(hideHome('a /data/u/x and /data/users/y', env), 'a ~/x and /data/users/y', 'a longer folder name is kept');
+  assert.equal(hideHome('in /data/u. Then "/data/u", /data/u:/bin', env), 'in ~. Then "~", ~:/bin');
+  assert.equal(hideHome('/data/u.bak and /data/u-old', env), '/data/u.bak and /data/u-old');
+  const short = { HOME: '/h' };
+  assert.equal(hideHome('see https://h.example/h and https://h/x', short), 'see https://h.example/h and https://h/x', 'a short home never garbles a URL');
+  assert.equal(hideHome('/h', short), '~', 'the home alone is ~');
+  assert.equal(hideHome('/x and /', { HOME: '/' }), '/x and /', 'a root home hides nothing');
+});
+
+test('output: both homes are hidden when HOME and the system home differ (#205)', () => {
+  const options = { systemHome: '/home/u' };
+  assert.equal(hideHome('a /tmp/x/f b /home/u/g', { HOME: '/tmp/x' }, options), 'a ~/f b ~/g');
+  // Longest first: a home inside the other is replaced whole.
+  assert.equal(hideHome('at /home/u/inner/f', { HOME: '/home/u/inner' }, options), 'at ~/f');
+  assert.equal(hideHome('/home/u/g', { HOME: '/' }, options), '~/g', 'a root HOME still hides the system home');
+});
+
+test('output: a Windows home is hidden with either slash, any case, and in MSYS form (#205)', () => {
+  const options = { platform: 'win32', systemHome: 'C:\\Users\\me' };
+  assert.equal(hideHome('C:\\Users\\me\\a, c:/users/ME/b, /c/Users/me/c', {}, options), '~\\a, ~/b, ~/c');
+  assert.equal(hideHome('C:\\Users\\meg\\a', {}, options), 'C:\\Users\\meg\\a');
+  assert.equal(hideHome('/C/USERS/me', {}, { ...options, platform: 'linux' }), '/C/USERS/me', 'case counts off Windows');
 });
 
 // Secrets (#8). Each sample is a prefix plus a body, joined here, so no token sits in

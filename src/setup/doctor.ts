@@ -182,8 +182,7 @@ export function pluginAgeCheck(root: string | null, env: Env): Finding | null {
   if (!hasPlugin(env)) return null;
   const plugin = readInstalledPlugin(env, root);
   if (!plugin) return null;
-  const why = "the plugin's hooks run the plugin's copy, so an old copy checks old rules";
-  const note = (older: string, newer: string) => finding('machine-runtime', `the yokoten plugin is older than this yokoten (${older} < ${newer})`, `update it: ${PLUGIN_UPDATE}`, { why });
+  const note = (older: string, newer: string) => finding('plugin-version', `the yokoten plugin is older than this yokoten (${older} < ${newer})`, `update it: ${PLUGIN_UPDATE}`);
   if (plugin.version && compareVersions(plugin.version, VERSION) === -1) return note(plugin.version, VERSION);
   if (!root || !plugin.commit || !isSelf(root)) return null;
   const tip = readDefaultBranch(root);
@@ -295,7 +294,9 @@ export interface StepState {
 
 /**
  * What `doctor --json` prints. `findings` is everything to do, each with what, why and
- * fix; `notes` never fail doctor. A session (`--session`) gets the next step, the
+ * fix; `notes` never fail doctor. `ok` is false only for a problem (#208): the self-test,
+ * core rules that are behind, a tree finding or a machine check. A road step not taken
+ * yet is to do, not a problem, so it never makes `ok` false. A session (`--session`) gets the next step, the
  * private-marks finding and a behind `core-rules` finding only, as its lines do.
  */
 export interface DoctorReport {
@@ -313,7 +314,7 @@ export interface DoctorReport {
   server?: { id: string; mark: ServerCheck['mark'] }[];
 }
 
-/** The report, as text lines and as data, and whether everything is in place. */
+/** The report, as text lines and as data, and whether doctor found no problem. */
 export function doctor(
   root: string | null,
   { env, config, session = false, gh }: { env: Env; config: Config; session?: boolean; gh?: Gh },
@@ -356,7 +357,7 @@ export function doctor(
       lines.push(`yokoten: ${formatFinding(core.finding)}`);
       findings.push(core.finding);
     }
-    const ok = !failed.length && !next && !isCoreBehind;
+    const ok = !failed.length && !isCoreBehind;
     return { ok, lines, report: { ...base, ok, repo: true, stage, next, findings } };
   }
 
@@ -420,6 +421,8 @@ export function doctor(
   }
   if (settings[0].id === 'server-settings') lines.push('  check these by hand:', ...BY_HAND.map((s) => `    ${s}`));
   lines.push(...OWNER_STEPS.map((s) => `  not checked ${s}`));
-  const ok = !failed.length && !where.next && !isCoreBehind && !problems.length && machine.every((c) => c.ok);
+  // The road has no failed mark: a step is done, to do, not now or can't check. Steps
+  // left are the way ahead, not problems, so they never fail doctor (#208).
+  const ok = !failed.length && !isCoreBehind && !problems.length && machine.every((c) => c.ok);
   return { ok, lines, report: { ...base, ok, repo: true, stage: where.stage, next, findings, steps, notes, server: settings.map(({ id, mark }) => ({ id, mark })) } };
 }

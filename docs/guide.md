@@ -217,7 +217,7 @@ yokoten guards three AI coding agents. Each one keeps the same rules.
 | Agent | What yokoten adds |
 |---|---|
 | Claude Code | the tool-call guard (a hook), the stop check (a hook), the guide at the start of each session, skills and agents |
-| Codex CLI | the tool-call guard and the stop check, in `.codex/hooks.json`. The guide at the start of each session and the command guard, in `~/.codex/hooks.json` |
+| Codex CLI | the tool-call guard and the stop check, in `.codex/hooks.json`. The guide at the start of each session and the command guard, in `~/.codex/hooks.json`. The guard checks the files of an `apply_patch`, also one run through the shell |
 | Gemini CLI | the tool-call guard and the stop check (AfterAgent), in `.gemini/settings.json`. The guide at the start of each session and the command guard, in `~/.gemini/settings.json` |
 | Any other agent | the rules in `AGENTS.md`, and the commit check, which stops a bad commit whoever made it |
 
@@ -318,6 +318,17 @@ node ~/.local/share/yokoten/bin/yokoten.ts init     # this project: adds files, 
 node ~/.local/share/yokoten/bin/yokoten.ts doctor   # the road: where you are, what's next
 ```
 
+A clone install puts no `yokoten` command on your PATH, but yokoten's messages say
+`yokoten init` and `yokoten doctor`. So `install` ends with this line for your shell
+profile (`~/.bashrc` or `~/.zshrc`). Add it yourself, then open a new shell:
+
+```sh
+alias yokoten='node ~/.local/share/yokoten/bin/yokoten.ts'
+```
+
+yokoten never edits your shell profile. When a `yokoten` on your PATH already runs this
+copy, `install` leaves the line out.
+
 These commands, and the npx ones, are also in [docs/facts.json](facts.json), which the
 website reads, so a change to them goes in both places.
 
@@ -388,6 +399,8 @@ line at the end, because Claude Code reads `AGENTS.md` only through that import.
 `.claude/CLAUDE.md` counts too, and gets `@../AGENTS.md` when there is no root one. With
 husky or another `core.hooksPath`, it keeps that folder and adds the commit check to its
 `pre-commit`. The project's own hook lines stay, and `init` says which file it changed.
+git runs `pre-merge-commit`, not `pre-commit`, for a merge it commits itself, so `init` adds
+the same check there too (`.githooks/pre-merge-commit`, or husky's `.husky/pre-merge-commit`).
 
 `init` also writes three workflows into `.github/workflows/`: `yokoten.yml` (the
 commit check, a lint job with actionlint and zizmor, and one `ci` job to make the required
@@ -452,6 +465,10 @@ value.
 Output for people follows one rule. Results go to stdout. Problems, refusals and errors
 go to stderr. An unknown option is refused, never ignored.
 
+`init`, `update`, `doctor`, `check`, `adopt` and `bot` need a git repo. Outside one, they
+say so, write nothing, and exit 1. `init <dir>` also refuses a folder that does not exist.
+`doctor --session` stays quiet outside a repo, so a session there gets no noise.
+
 In CI, you don't need to open the log to see what failed. When `check` runs in GitHub
 Actions, each finding is an annotation on the changed line of the pull request. The job
 summary lists each finding with its place, rule, what, why and the fix. The rule links to
@@ -462,15 +479,24 @@ never what matched.
 
 | Code | Means |
 |------|-------|
-| 0 | All is well. `doctor --session` always gives 0, so a session always starts |
-| 1 | Problems found (`check`, `doctor`), an unknown id (`explain`), a usage error, or an error in yokoten itself |
+| 0 | All is well. Steps left on the road are to do, not problems, so `doctor` gives 0 with them. `doctor --session` always gives 0, so a session always starts |
+| 1 | Problems found: by `check`, or by `doctor` (a failed self-test, or a core-rules, tree or machine line marked MISSING), an unknown id (`explain`), a usage error, or an error in yokoten itself |
 | 2 | The hook blocked the tool call, or the stop check sent the agent back. The reason is on stderr |
 
-These codes do not change. A broken guard gives 1, not 2: you see it, and it does not
-block every tool call. The tool-call guard is the exception: the runtimes let a call
-through when a hook runs past their timeout, so when reading a call takes the guard longer
-than 5 seconds (`YOKOTEN_GUARD_DEADLINE_MS` changes it, up to 30 seconds), or fails, it refuses the call
-with 2 (`unreadable-command`).
+These codes do not change. yokoten itself gives 1 when it breaks. But only exit 2 blocks
+a call in all three agents, so a guard that crashed would let the call through. The
+tool-call hook that `init`, `install` and the plugin write turns any other exit into 2:
+when the guard crashes, runs out of memory or is killed, the call is refused with one
+line, `` yokoten's guard failed (exit N), so the command is refused; run `yokoten doctor` ``.
+That line is all of stderr: node's own error and the shell's "Killed" line are dropped.
+Two cases stay at 1: when the runtime is gone, or when `node` is not on the agent's
+PATH, the hook says so in one line and the call goes on. A deleted folder or a missing
+node does not block every tool call, so you can still run `yokoten doctor`. The stop
+check and the session doctor pass a failure on as it is.
+
+The runtimes also let a call through when a hook runs past their timeout, so when reading
+a call takes the guard longer than 5 seconds (`YOKOTEN_GUARD_DEADLINE_MS` changes it, up
+to 30 seconds), or fails, the guard refuses the call with 2 (`unreadable-command`).
 
 ### The stop check
 
