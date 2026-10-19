@@ -1064,8 +1064,8 @@ test('init: safe defaults, Dependabot and a security policy; doctor lists the se
 });
 
 /** The doctor --json mark of one road step. */
-const stepMark = (sandbox: ReturnType<typeof makeSandbox>, id: string) =>
-  (JSON.parse(sandbox.run(['doctor', '--json']).stdout).steps as { id: string; mark: string }[]).find((step) => step.id === id)?.mark;
+const stepMark = (sandbox: ReturnType<typeof makeSandbox>, id: string, extra?: Record<string, string>) =>
+  (JSON.parse(sandbox.run(['doctor', '--json'], { extra }).stdout).steps as { id: string; mark: string }[]).find((step) => step.id === id)?.mark;
 
 test("init: a CLAUDE.md gets one line that imports AGENTS.md, and doctor's rules step wants it (#206)", () => {
   const sandbox = makeSandbox();
@@ -1107,7 +1107,7 @@ test('init: writes .github/CODEOWNERS for every lead-only path, owned by the Git
   const rules = parseCodeOwners(owners!.text);
   assert.deepEqual(rules.map((rule) => rule.pattern), leadOnlyPaths());
   for (const rule of rules) assert.deepEqual(rule.owners, [`${at}octo`], rule.pattern);
-  assert.equal(stepMark(sandbox, 'codeowners'), 'done');
+  assert.equal(stepMark(sandbox, 'codeowners', { PATH: `${bin}:${process.env.PATH}` }), 'done');
   // check --pr reads the file from the base branch, and a change under .yokoten/ needs tier A.
   sandbox.git('add', '.');
   sandbox.git('commit', '-qm', 'base');
@@ -1126,6 +1126,81 @@ test('init: writes .github/CODEOWNERS for every lead-only path, owned by the Git
   assert.equal(tierB.status, 1, tierB.stdout);
   assert.match(tierB.stderr, /this changes 1 file\(s\) that CODEOWNERS owns \(read from the base branch\): \.yokoten\/extra\.md/);
   assert.doesNotMatch(sandbox.run(['check', '--pr'], { extra: event('A') }).stderr, /CODEOWNERS owns/);
+});
+
+/**
+ * A gh first on PATH that answers only the given calls (all its words, joined by spaces)
+ * and fails every other one, so the real gh and GitHub are never reached (#313). Each
+ * call is logged, one a line, for `ghCalls`.
+ */
+function stubGh(sandbox: ReturnType<typeof makeSandbox>, answers: Record<string, string>): Record<string, string> {
+  const bin = join(sandbox.home, 'bin');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(
+    join(bin, 'gh'),
+    `#!/usr/bin/env node
+const answers = ${JSON.stringify(answers)};
+const call = process.argv.slice(2).join(' ');
+require('node:fs').appendFileSync(${JSON.stringify(join(sandbox.home, 'gh.log'))}, call + '\\n');
+const said = answers[call];
+if (said === undefined) process.exit(1);
+console.log(said);
+`,
+  );
+  chmodSync(join(bin, 'gh'), 0o755);
+  return { PATH: `${bin}:${process.env.PATH}` };
+}
+
+/** The calls the gh from `stubGh` got, in order. */
+const ghCalls = (sandbox: ReturnType<typeof makeSandbox>): string[] => {
+  const log = join(sandbox.home, 'gh.log');
+  return existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : [];
+};
+
+test('init: a CODEOWNERS owner gh says is a user is written as is (#313)', () => {
+  const sandbox = makeSandbox();
+  const extra = stubGh(sandbox, { 'api users/octo --jq .type': 'User' });
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/octo/app.git');
+  const result = sandbox.run(['init'], { extra });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /wrote \.github\/CODEOWNERS \(the lead-only paths, owned by @octo\)/);
+  for (const rule of parseCodeOwners(readFileSync(join(sandbox.repo, '.github', 'CODEOWNERS'), 'utf8'))) assert.deepEqual(rule.owners, [`${at}octo`], rule.pattern);
+  // init asked GitHub, once, who @octo is.
+  assert.deepEqual(ghCalls(sandbox).filter((c) => c.startsWith('api users/')), ['api users/octo --jq .type']);
+});
+
+test('init: an organization is no CODEOWNERS owner, so init writes the placeholder and says why; full doctor flags an org-only file (#313)', () => {
+  const sandbox = makeSandbox();
+  const extra = stubGh(sandbox, {
+    'api users/octo --jq .type': 'Organization',
+    'api repos/octo/app': JSON.stringify({ default_branch: 'main', owner: { login: 'octo', type: 'Organization' } }),
+  });
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/octo/app.git');
+  const result = sandbox.run(['init'], { extra });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /wrote \.github\/CODEOWNERS \(the lead-only paths; @octo is an organization, so put a person or @octo\/<team> in place of @YOUR_GITHUB_HANDLE\)/);
+  const text = readFileSync(join(sandbox.repo, '.github', 'CODEOWNERS'), 'utf8');
+  assert.match(text, /^# @octo is an organization[^\n]*@octo\/<team>/m);
+  const rules = parseCodeOwners(text);
+  assert.deepEqual(rules.map((rule) => rule.pattern), leadOnlyPaths());
+  for (const rule of rules) assert.deepEqual(rule.owners, ['@YOUR_GITHUB_HANDLE'], rule.pattern);
+  // A file owned by the organization alone locks nothing on GitHub: full doctor says so.
+  sandbox.write('.github/CODEOWNERS', '/AGENTS.md @octo\n/.github/ @Octo\n');
+  assert.equal(stepMark(sandbox, 'codeowners', extra), 'to do');
+  assert.match(sandbox.run(['doctor'], { extra }).stdout, /\.github\/CODEOWNERS names only @octo, an organization, and GitHub takes no organization as an owner; put a person's handle or @octo\/<team> in \.github\/CODEOWNERS/);
+  // A team of the organization, or a person, is an owner.
+  sandbox.write('.github/CODEOWNERS', '/AGENTS.md @octo/leads\n');
+  assert.equal(stepMark(sandbox, 'codeowners', extra), 'done');
+});
+
+test('init: when gh fails, the CODEOWNERS owner is the remote owner, as before (#313)', () => {
+  const sandbox = makeSandbox();
+  const extra = stubGh(sandbox, {});
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/octo/app.git');
+  const result = sandbox.run(['init'], { extra });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /wrote \.github\/CODEOWNERS \(the lead-only paths, owned by @octo\)/);
+  assert.doesNotMatch(readFileSync(join(sandbox.repo, '.github', 'CODEOWNERS'), 'utf8'), /YOUR_GITHUB_HANDLE/);
 });
 
 test('init: an existing CODEOWNERS is kept byte for byte, in any place GitHub reads it (#304)', () => {
@@ -2193,6 +2268,123 @@ test('init: an unreadable project .codex/hooks.json or .gemini/settings.json is 
       assert.ok(hasHook(join(sandbox.repo, good), dirname(good) === '.codex' ? 'Stop' : 'AfterAgent', 'hook'), `${what}: no stop check in ${good}`);
       assert.match(result.stdout, /TZ=UTC for agent sessions/, what);
     }
+  }
+});
+
+// #258: Gemini CLI reads settings.json with comments allowed (strip-json-comments), but
+// not trailing commas. yokoten reads it the same way, and never rewrites a commented file:
+// it prints the hooks to add by hand, and the file with them added by hand is ok.
+const commentedGemini = (hooks: string) => `{
+  // my theme
+  "theme": "dark", /* a block
+  comment */
+  "url": "http://example.com/*not a comment*/",
+  "quote": "a \\" // still a string",
+  "hooks": ${hooks}
+}
+`;
+const COMMENTED = (file: string) => `${file} has comments, so yokoten won't rewrite it; add this under "hooks" by hand (each group in the list for its event, in place of an older yokoten one)`;
+
+/** The skip line, and the JSON printed under it to add by hand. */
+function handAdd(stdout: string, skip: string): Record<string, unknown[]> {
+  const lines = stdout.split('\n');
+  const at = lines.indexOf(skip);
+  assert.ok(at >= 0, `no line ${JSON.stringify(skip)} in:\n${stdout}`);
+  const block = [];
+  for (const line of lines.slice(at + 1)) {
+    if (!line.startsWith('  ')) break;
+    block.push(line);
+  }
+  return JSON.parse(block.join('\n'));
+}
+
+/** The JSON at the end of doctor's line for `id`. */
+function doctorHandAdd(stdout: string, id: string, file: string): Record<string, unknown[]> {
+  const line = stdout.split('\n').find((l) => l.startsWith(`  note    ${id}: `)) ?? '';
+  assert.ok(line.startsWith(`  note    ${id}: ${COMMENTED(file)}: {`), `doctor: ${stdout}`);
+  return JSON.parse(line.slice(line.indexOf(': {') + 2));
+}
+
+test('install: a commented ~/.gemini/settings.json is left as it was and gets the hooks to add by hand; with them, it is ok (#258)', () => {
+  const sandbox = makeSandbox();
+  const file = join(sandbox.home, '.gemini', 'settings.json');
+  mkdirSync(dirname(file));
+  const before = commentedGemini('{}');
+  writeFileSync(file, before);
+  const result = sandbox.run(['install']);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.equal(result.stderr, '');
+  assert.doesNotMatch(result.stdout, /can't read|unexpected shape/);
+  assert.ok(!result.stdout.includes(sandbox.home), 'the home path is shown');
+  assert.equal(readFileSync(file, 'utf8'), before, 'the file changed');
+  const add = handAdd(result.stdout, `skipped Gemini CLI: ${COMMENTED('~/.gemini/settings.json')}, then run \`yokoten install\` again:`);
+  assert.deepEqual(Object.keys(add), ['SessionStart', 'BeforeTool']);
+  assert.deepEqual(
+    Object.values(add).map((groups) => (groups as { hooks: { name: string }[] }[]).map((g) => g.hooks[0].name)),
+    [['yokoten-session'], ['yokoten-guard']],
+  );
+  // The rest still ran.
+  assert.match(result.stdout, /^added the user-level command guard$/m);
+  // Doctor gives the same hooks to add, on one line.
+  assert.deepEqual(doctorHandAdd(sandbox.run(['doctor']).stdout, 'gemini-user-hook', '~/.gemini/settings.json'), add);
+
+  // Added by hand, comments and all: install finds them the same and leaves the file.
+  const after = commentedGemini(JSON.stringify(add, null, 2));
+  writeFileSync(file, after);
+  const again = sandbox.run(['install']);
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.match(again.stdout, /^same the Gemini CLI SessionStart doctor in ~\/\.gemini\/settings\.json$/m);
+  assert.match(again.stdout, /^same the Gemini CLI command guard in ~\/\.gemini\/settings\.json$/m);
+  assert.equal(readFileSync(file, 'utf8'), after, 'the file changed');
+  assert.match(sandbox.run(['doctor']).stdout, /^ {2}ok {6}gemini-user-hook$/m);
+});
+
+test('init: a commented .gemini/settings.json is left as it was and gets the hooks to add by hand; with them, it is ok (#258)', () => {
+  const sandbox = makeSandbox();
+  const file = join(sandbox.repo, '.gemini', 'settings.json');
+  const before = commentedGemini('{ "BeforeTool": [] }');
+  sandbox.write('.gemini/settings.json', before);
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stdout, /can't read|unexpected shape/);
+  assert.equal(readFileSync(file, 'utf8'), before, 'the file changed');
+  const add = handAdd(result.stdout, `skipped the Gemini CLI hooks: ${COMMENTED('.gemini/settings.json')}, then run \`yokoten init\` again:`);
+  // The tool-call command may carry a fail-closed wrapper (#260); either way it checks for the
+  // project runtime first, then runs the yokoten guard with node.
+  const runtimePath = '$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts';
+  const guardCall = String((add.BeforeTool?.[0] as { hooks?: { command?: unknown }[] } | undefined)?.hooks?.[0]?.command);
+  const missingCheck = guarded(runtimePath, 'x').slice(0, -`node ${runtimePath} x`.length);
+  assert.ok(guardCall.startsWith(missingCheck), guardCall);
+  assert.match(guardCall, /\bnode(?: --\S+)* \$GEMINI_PROJECT_DIR\/\.yokoten\/bin\/yokoten\.ts hook --agent gemini(?: |$)/);
+  assert.deepEqual(add, {
+    BeforeTool: [{ hooks: [{ type: 'command', command: guardCall, name: 'yokoten' }], matcher: 'run_shell_command|write_file|replace' }],
+    AfterAgent: [{ hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --stop --agent gemini'), name: 'yokoten-stop' }] }],
+  });
+  assert.ok(hasHook(join(sandbox.repo, '.codex', 'hooks.json'), 'Stop', 'hook'), 'no Codex stop check');
+  assert.deepEqual(doctorHandAdd(sandbox.run(['doctor']).stdout, 'gemini-hook', '.gemini/settings.json'), add);
+
+  const after = commentedGemini(JSON.stringify(add, null, 2));
+  writeFileSync(file, after);
+  const again = sandbox.run(['init']);
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.match(again.stdout, /^same the Gemini CLI tool-call hook in \.gemini\/settings\.json$/m);
+  assert.match(again.stdout, /^same the Gemini CLI stop check in \.gemini\/settings\.json/m);
+  assert.equal(readFileSync(file, 'utf8'), after, 'the file changed');
+  assert.match(sandbox.run(['doctor']).stdout, /^ {2}ok {6}gemini-hook$/m);
+});
+
+test('install: Gemini CLI allows comments but not trailing commas, and Codex allows neither (#258)', () => {
+  for (const [dir, file, cli, content] of [
+    ['.gemini', 'settings.json', 'Gemini CLI', '{ // c\n  "theme": "dark",\n}\n'],
+    ['.codex', 'hooks.json', 'Codex CLI', '{ // c\n  "hooks": {}\n}\n'],
+  ]) {
+    const sandbox = makeSandbox();
+    mkdirSync(join(sandbox.home, dir));
+    writeFileSync(join(sandbox.home, dir, file), content);
+    const result = sandbox.run(['install']);
+    assert.equal(result.status, 1, cli);
+    assert.ok(result.stdout.split('\n').includes(`skipped ${cli}: can't read ~/${dir}/${file} (make it valid JSON, then run \`yokoten install\` again)`), `${cli}: ${result.stdout}`);
+    assert.equal(readFileSync(join(sandbox.home, dir, file), 'utf8'), content, cli);
   }
 });
 
@@ -3787,7 +3979,7 @@ test('learn: previews a check draft from an incident, writes it with --write, an
   let result = sandbox.run(['learn', '7'], { extra });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^yokoten learn: a check draft from issue #7, "repo: a test fails behind a proxy"\.\n1 TODO\(s\) for the reviewer:\n- why: the issue has no "Why it matters" section\n/);
-  assert.match(result.stdout, /\n--- lessons\/incident-7\/lesson\.ts\n[^]*fix: 'The test sets NO_PROXY',[^]*\n--- lessons\/incident-7\/lesson\.test\.ts\n/);
+  assert.match(result.stdout, /\n--- lessons\/incident-7\/lesson\.ts\n[^]*fix: 'the test sets NO_PROXY',[^]*\n--- lessons\/incident-7\/lesson\.test\.ts\n/);
   assert.match(result.stdout, /Nothing was written\. `yokoten learn 7 --write` adds these files for review\.\n$/);
   assert.ok(!existsSync(join(sandbox.repo, 'lessons')), 'a preview writes nothing');
   result = sandbox.run(['learn', '7', '--write'], { extra });
@@ -3840,12 +4032,12 @@ test('lessons: learn, write the check, ship, then doctor in a second repo shows 
     .replace(/ {2}\/\/ TODO\(reviewer\): replace with files where all is well\.\n/, ''));
   result = runCopy(['learn', '--ship', 'incident-9'], yokoten);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /^yokoten learn --ship: incident-9 is in kit\/lessons\/incident-9\/, with a row in kit\/lessons\/README\.md \(from https:\/\/example\.com\/issues\/9, yokoten \d+\.\d+\.\d+\)\./);
+  assert.match(result.stdout, /^yokoten learn --ship: incident-9 is in kit\/lessons\/1\/incident-9\/, with a row in kit\/lessons\/README\.md \(from https:\/\/example\.com\/issues\/9, yokoten \d+\.\d+\.\d+\)\./);
 
   // The second repo: a project with the problem. Doctor shows the note, and it fails nothing.
   sandbox.write('.env', 'KEY=1\n');
   result = runCopy(['doctor'], sandbox.repo);
-  assert.match(result.stdout, /\n {2}note {4}lesson incident-9: \.env is in the repo; Remove it, and add it to \.gitignore\n/);
+  assert.match(result.stdout, /\n {2}note {4}lesson incident-9: \.env is in the repo; remove it, and add it to \.gitignore\n/);
   const report = JSON.parse(runCopy(['doctor', '--json'], sandbox.repo).stdout);
   assert.deepEqual(report.lessons.find((lesson: { id: string }) => lesson.id === 'incident-9'), { id: 'incident-9', mark: 'note' });
   assert.ok(report.notes.some((note: { id: string }) => note.id === 'incident-9') && !report.findings.some((f: { id: string }) => f.id === 'incident-9'), 'a note, never a finding');
@@ -3853,6 +4045,37 @@ test('lessons: learn, write the check, ship, then doctor in a second repo shows 
   sandbox.write('yokoten.json', JSON.stringify({ notNow: { 'incident-9': 'a sample file, no secret in it' } }));
   result = runCopy(['doctor'], sandbox.repo);
   assert.match(result.stdout, /\n {2}not now lesson incident-9: a sample file, no secret in it\n/);
+});
+
+// #172: the first full doctor in a clone says a kit lesson is new, once. A session writes nothing.
+test('lessons: full doctor notes a new lesson on the first run only; a session, not now and a broken state', () => {
+  const sandbox = makeSandbox();
+  const stateFile = join(sandbox.repo, '.git', 'yokoten', 'state.json');
+  const newNote = /\n {2}note {4}new lesson: incident-138 \(a test calls a server on this machine and does not set NO_PROXY\); doctor now runs it in this project\n {2}ok {6}lesson incident-138\n/;
+  let result = sandbox.run(['doctor', '--session']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(!existsSync(stateFile), 'a session writes nothing');
+  // Not now: no new note, and the lesson is not marked seen.
+  sandbox.write('yokoten.json', JSON.stringify({ notNow: { 'incident-138': 'no local servers here' } }));
+  result = sandbox.run(['doctor']);
+  assert.ok(!/new lesson/.test(result.stdout), result.stdout);
+  assert.ok(!existsSync(stateFile));
+  rmSync(join(sandbox.repo, 'yokoten.json'));
+  // The first run: the note, even with no problem found (positive control).
+  result = sandbox.run(['doctor']);
+  assert.match(result.stdout, newNote);
+  assert.deepEqual(JSON.parse(readFileSync(stateFile, 'utf8')), { seenLessons: ['incident-138'] });
+  assert.equal(sandbox.git('status', '--porcelain').stdout, '', 'the state file is never in the tree');
+  // The second run: the lesson's own line only.
+  result = sandbox.run(['doctor']);
+  assert.ok(!/new lesson/.test(result.stdout));
+  assert.match(result.stdout, /\n {2}ok {6}lesson incident-138\n/);
+  // A broken state file is an empty state: the note again, no crash, and the file is mended.
+  writeFileSync(stateFile, '{ not json');
+  result = sandbox.run(['doctor', '--json']);
+  assert.equal(result.stderr, '');
+  assert.deepEqual(JSON.parse(result.stdout).lessons.find((lesson: { id: string }) => lesson.id === 'incident-138'), { id: 'incident-138', mark: 'ok', isNew: true });
+  assert.deepEqual(JSON.parse(readFileSync(stateFile, 'utf8')), { seenLessons: ['incident-138'] });
 });
 
 test('adopt: with no key, the rule-based draft and how to set the key; it changes no file (#6)', () => {
