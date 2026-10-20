@@ -708,3 +708,40 @@ test('reading the heredoc shape stays linear (#439)', () => {
     (command) => assert.equal(post(command)?.id, 'unreadable-command'),
   );
 });
+
+test("the lead's command with a body file on disk: commands that write no file don't stop it (#439)", () => {
+  const body = join(postDir, 'lead-body.md');
+  const lead = `set -a; . ~/.config/yokoten/keys.env; set +a; export NODE_USE_ENV_PROXY=1 GH_REPO=o/r; OWNER=$(gh pr view 1 -R o/r --json assignees -q '.assignees[0].login'); node bin/yokoten.ts bot -- gh pr create --title t --body-file ${body} --assignee "$OWNER"`;
+  writeFileSync(body, 'All clean.\n');
+  assert.equal(post(lead), null);
+  assert.equal(post(lead.replace('node bin/yokoten.ts bot', 'yokoten bot')), null);
+  for (const reads of ['git status', 'git log -1', 'git config --get user.name', 'git remote get-url origin', 'gh api repos/o/r/pulls', 'gh issue list', 'echo hi', 'true', 'test -f x', 'yokoten bot -- gh run view 1']) {
+    assert.equal(post(`${reads} && gh pr comment 3 -F ${body}`), null, reads);
+  }
+  writeFileSync(body, 'Tested in QuietVale.\n');
+  assert.equal(post(lead)?.id, 'private-mark');
+  // A command that may write the file still stops it.
+  writeFileSync(body, 'All clean.\n');
+  for (const writes of [
+    `echo QuietVale > ${body}`,
+    '. ./x.sh',
+    'source ~/.config/yokoten/x.sh',
+    'eval x',
+    'f() { :; }',
+    'git diff --output=x',
+    'gh api -X POST repos/o/r/issues',
+    'gh api repos/o/r/issues -f body=x',
+    'gh pr checkout 3',
+    'X=$(cp a b)',
+    'yokoten bot -- gh pr merge 3',
+    'printf x > out.md',
+    'PATH=./bin; git status',
+    'export GIT_EXTERNAL_DIFF=./x; git diff',
+    'NODE_OPTIONS=--require=./x.js node bin/yokoten.ts bot -- gh pr view 1',
+  ]) {
+    plainRefusal(`${writes}; gh pr comment 3 -F ${body}`);
+  }
+  writeFileSync(join(postDir, 'f.md'), 'clean\n');
+  plainRefusal('echo QuietVale > f.md; gh issue comment 3 -F f.md');
+  plainRefusal('. ./x.sh; gh issue comment 3 -F f.md');
+});

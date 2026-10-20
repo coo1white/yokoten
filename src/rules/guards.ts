@@ -100,14 +100,14 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
   if (commands.some(movesRepo)) cwd = null;
   // What the rest of the command may do to a file gh reads (#439).
   const heredoc = heredocPost(command, commands);
-  const others = commands.filter((words) => !isPlainCd(words)).length;
+  const writers = commands.filter((words) => !writesNoFile(words)).length;
   for (const words of commands) {
     const reason =
       checkGit(words, { env, config, cwd, rules }) ??
       checkHooksEnvironment(words) ??
       checkPublish(words, env) ??
       checkBlocked(words, config?.commands.block ?? {}) ??
-      checkPosted(words, { env, config, cwd: postCwd, command, titles, files: { heredoc, mayWrite: heredoc !== undefined || others > (isPlainCd(words) ? 0 : 1) || writesFile(words) } }) ??
+      checkPosted(words, { env, config, cwd: postCwd, command, titles, files: { heredoc, mayWrite: heredoc !== undefined || writers > (writesNoFile(words) ? 0 : 1) || writesFile(words) } }) ??
       (rules ? checkLeadOnlyWrites(words, { env, rules, folder: postCwd }) : null);
     if (reason) return reason;
     postCwd = folderAfter(words, postCwd, env);
@@ -822,9 +822,44 @@ function isPlainLine(line: string): boolean {
   return quote === '';
 }
 
-// `cd`, `pushd` or `popd` with no redirect: it writes no file.
-function isPlainCd(words: string[]): boolean {
-  return ['cd', 'pushd', 'popd'].includes(words[0] ?? '') && !unquotedRedirects.get(words)?.size;
+// Commands that write no file, whatever their words (#439).
+const NO_WRITE = new Set(['export', 'set', 'cd', 'pushd', 'popd', 'true', ':', 'test', '[', 'echo', 'printf']);
+const GH_READS = new Set(['view', 'list', 'checks']);
+const GIT_READS = new Set(['status', 'log', 'rev-parse', 'diff']);
+// The keys file the lead loads with `set -a; . ~/.config/yokoten/keys.env; set +a`.
+// Variables that change which program runs, or what it runs: setting one is no plain assignment.
+const RUNS_VIA = /^(?:PATH|BASH_ENV|ENV|IFS|PROMPT_COMMAND|SHELLOPTS|BASHOPTS|CDPATH|LD_\w*|DYLD_\w*|NODE_OPTIONS|NODE_PATH|GIT_\w*)\+?=/;
+const KEYS_FILE = /^(?:~|\$HOME|\$\{HOME\})\/\.config\/yokoten\/[\w.-]+\.env$/;
+
+/**
+ * Whether a command surely writes no file, so a body file on disk is still the one gh posts
+ * (#439): no redirect into a file, and assignments only (a substitution in one is a command
+ * of its own, checked the same way), one of NO_WRITE, the lead's keys file loaded with `.`,
+ * a gh or git read, or `yokoten bot -- <one of those>`. Anything else may write one.
+ */
+function writesNoFile(words: string[]): boolean {
+  if (writesFile(words) || words.some((word) => RUNS_VIA.test(word))) return false;
+  let at = 0;
+  while (at < words.length && /^[A-Za-z_]\w*\+?=/.test(words[at])) at++;
+  return at === words.length || readsOnly(words.slice(at));
+}
+
+function readsOnly(words: string[]): boolean {
+  const [program = '', sub = '', action = ''] = words;
+  if (NO_WRITE.has(program)) return true;
+  if (program === '.' || program === 'source') return words.length === 2 && KEYS_FILE.test(sub);
+  if (program === 'gh') {
+    if (sub === 'api') return !words.some((word) => /^(-X|--method|-f|-F|--field|--raw-field|--input)/.test(word));
+    return ['pr', 'issue', 'repo', 'run'].includes(sub) && GH_READS.has(action);
+  }
+  if (program === 'git') {
+    if (words.some((word) => word.startsWith('--output') || word === '--ext-diff')) return false;
+    return GIT_READS.has(sub) || (sub === 'config' && action === '--get') || (sub === 'remote' && action === 'get-url');
+  }
+  // `yokoten bot -- x`, `node bin/yokoten.ts bot -- x`
+  const bot = program === 'node' ? 1 : 0;
+  if (/^yokoten(\.ts|\.mjs)?$/.test(base(words[bot] ?? '')) && words[bot + 1] === 'bot' && words[bot + 2] === '--') return readsOnly(words.slice(bot + 3));
+  return false;
 }
 
 // Whether a command's own redirects write a file: `gh … > body.md` empties it before gh reads it.
