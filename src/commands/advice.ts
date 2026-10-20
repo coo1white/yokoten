@@ -1,6 +1,7 @@
-// `yokoten doctor`, `explain` and `adopt`: they read a project and advise; none writes a file.
+// `yokoten doctor`, `explain` and `adopt`: they read a project and advise. None writes to
+// the project; a Claude Code session start keeps what it said in ~/.config/yokoten/sessions/ (#405).
 
-import { readFileSync } from 'node:fs';
+import { readSync } from 'node:fs';
 import * as claudeCode from '../agents/runtimes/claude-code.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import { ghIn } from '../host/github.ts';
@@ -42,14 +43,46 @@ export function runDoctor(): number {
   return session || ok ? 0 : 1;
 }
 
-/** The SessionStart event Claude Code writes to stdin, or null when it gives none. Never waits on a terminal. */
+/** How long a session start waits for the hook's event on stdin, at most. */
+const STDIN_WAIT_MS = 300;
+/** The most of stdin read: an event is a few hundred bytes. */
+const STDIN_LIMIT = 1 << 20;
+
+/**
+ * The SessionStart event Claude Code writes to stdin, or null when it gives none. It never
+ * waits on a terminal, and never longer than STDIN_WAIT_MS on a pipe that stays open.
+ */
 function readSessionStart(): SessionStart | null {
+  // Reading process.stdin opens stdin as a stream first. For a pipe, libuv then puts the fd
+  // in non-blocking mode, so readSync below throws EAGAIN in place of waiting for a writer
+  // that never closes. A file, such as /dev/null, reads to its end at once.
   if (!claudeCode.hasSessionInput(env, process.stdin.isTTY === true)) return null;
-  try {
-    return claudeCode.readSessionStart(JSON.parse(readFileSync(0, 'utf8')));
-  } catch {
-    return null;
+  const chunks: Buffer[] = [];
+  const buffer = Buffer.alloc(64 * 1024);
+  const deadline = Date.now() + STDIN_WAIT_MS;
+  const parsed = () => {
+    try {
+      return claudeCode.readSessionStart(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+    } catch {
+      return null;
+    }
+  };
+  for (let size = 0; size < STDIN_LIMIT; ) {
+    let count = 0;
+    try {
+      count = readSync(0, buffer);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EAGAIN') break;
+      // Nothing to read yet: a whole event read so far is enough; else wait a little.
+      if (parsed() || Date.now() > deadline) break;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      continue;
+    }
+    if (count === 0) break;
+    chunks.push(Buffer.from(buffer.subarray(0, count)));
+    size += count;
   }
+  return parsed();
 }
 
 export function runExplain(): number {

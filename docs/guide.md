@@ -100,6 +100,7 @@ The stage is worked out from the files each time; nothing saves it. A step you m
 When every step is done or "not now", the session hears one line that says so.
 A file missing here but on the default branch is named with that branch, not with `init`.
 After Claude Code compacts the context, the session hears only notes that changed.
+Each session keeps what it heard in `~/.config/yokoten/sessions/`, and files older than 7 days are removed.
 The agent tells you in your own language. yokoten prints English, which agents read most
 reliably.
 

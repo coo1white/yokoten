@@ -41,6 +41,18 @@ export const KEYS_FILE = '~/.config/yokoten/keys.env';
 const BOT_SETTINGS = ['YOKOTEN_BOT_APP_ID', 'YOKOTEN_BOT_KEY', 'YOKOTEN_BOT_INSTALLATION'];
 
 /**
+ * A value as a shell profile line gives it: quotes taken off, a ` # comment` after an
+ * unquoted value dropped, and a leading `~/` or `$HOME/` made the home folder. Single
+ * quotes keep `$HOME` as it is, and quotes keep `~`, as in a shell.
+ */
+export function shellValue(raw: string, home: string): string {
+  const quoted = /^(["'])(.*?)\1\s*(?:#.*)?$/.exec(raw.trim());
+  if (quoted?.[1] === "'") return quoted[2];
+  if (quoted) return quoted[2].replace(/^\$(?:HOME|\{HOME\})(?=\/|$)/, home);
+  return raw.replace(/(?:^|\s+)#.*$/, '').trim().replace(/^(?:~|\$HOME|\$\{HOME\})(?=\/|$)/, home);
+}
+
+/**
  * The bot's settings in the keys file (#405): `NAME=value` lines, `export` and quotes
  * allowed. A session's environment often does not load this file, so the bot reads it
  * itself. Only the bot's own names are read; other keys in the file are never touched.
@@ -58,7 +70,7 @@ export function readKeysFile(env: Env): Env {
   for (const line of text.split(/\r?\n/)) {
     const pair = /^\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
     if (!pair || !BOT_SETTINGS.includes(pair[1])) continue;
-    const value = pair[2].replace(/^(["'])(.*)\1$/, '$2');
+    const value = shellValue(pair[2], env.HOME);
     if (value) found[pair[1]] = value;
   }
   return found;

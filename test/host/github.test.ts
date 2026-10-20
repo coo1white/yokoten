@@ -44,6 +44,7 @@ import {
   readLocalLogins,
   readLogin,
   repoOf,
+  shellValue,
   stepSummary,
 } from '../../src/host/github.ts';
 import { syncBoard } from '../../scripts/board-sync.ts';
@@ -117,6 +118,31 @@ test('config: the keys file gives the bot settings the session does not have (#4
   assert.equal(fromEnv.appId, '9');
   // No HOME: the keys file is not read.
   assert.equal(typeof botConfig({}), 'string');
+});
+
+test('config: a keys file value reads as a shell profile line gives it (#405)', () => {
+  const home = '/home/someone';
+  const cases: [string, string][] = [
+    ['42', '42'],
+    ['42 # the App ID', '42'],
+    ['a#b', 'a#b'],
+    ['"42" # quoted', '42'],
+    ["'42'", '42'],
+    ['"a # b"', 'a # b'],
+    ['~/keys/bot.pem', '/home/someone/keys/bot.pem'],
+    ['$HOME/keys/bot.pem # moved', '/home/someone/keys/bot.pem'],
+    ['"${HOME}/keys/bot.pem"', '/home/someone/keys/bot.pem'],
+    ["'$HOME/x'", '$HOME/x'],
+    ['"~/x"', '~/x'],
+    ['~user/x', '~user/x'],
+  ];
+  for (const [raw, value] of cases) assert.equal(shellValue(raw, home), value, raw);
+  const dir = mkdtempSync(join(tmpdir(), 'yokoten-keys-'));
+  mkdirSync(join(dir, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(join(dir, '.config', 'yokoten', 'keys.env'), 'export YOKOTEN_BOT_APP_ID=42 # the App ID\nYOKOTEN_BOT_KEY="$HOME/elsewhere.pem"\n');
+  const c = botConfig({ HOME: dir });
+  assert.ok(typeof c !== 'string');
+  assert.deepEqual([c.appId, c.keyFile], ['42', join(dir, 'elsewhere.pem')]);
 });
 
 test('repo: read from https and ssh remotes', () => {

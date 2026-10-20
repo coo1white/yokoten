@@ -1150,24 +1150,50 @@ test('doctor: a file on the default branch, missing on this one, is no "run init
   sandbox.git('branch', 'old');
   sandbox.write('AGENTS.md', '# rules\n');
   sandbox.write('.claude/settings.json', '{}\n');
+  // A workflow that runs no tests and no yokoten, and one security file of three.
+  sandbox.write('.github/workflows/lint.yml', 'on: push\njobs:\n  lint:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npx eslint .\n');
+  sandbox.write('SECURITY.md', '# Security\n');
   sandbox.git('add', '.');
   sandbox.git('commit', '-q', '-m', 'docs: add the rules');
   const first = (cwd = sandbox.repo) => sandbox.run(['doctor', '--session'], { cwd }).stdout.split('\n')[0];
+  const plain = /Next: no AGENTS\.md, so the agents have no written rules here; `yokoten init` adds one\./;
   // No origin: init.defaultBranch, else main.
   assert.equal(sandbox.git('checkout', '-q', 'old').status, 0);
   assert.equal(first(), 'yokoten: stage 1 of 5, safety net. Next: AGENTS.md is on main, not on this branch (old); work on a branch made from main, or merge main into this one.');
   const full = sandbox.run(['doctor']).stdout;
-  assert.match(full, /^ +to do +tool-hook: \.claude\/settings\.json is on main, not on this branch \(old\);/m, 'full doctor says it for each step');
-  assert.doesNotMatch(full.split('\n').filter((line) => / (rules \(|tool-hook:)/.test(line)).join('\n'), /yokoten init/);
+  const line = (key: string) => full.split('\n').find((l) => new RegExp(` ${key}[ :]`).test(l)) ?? '';
+  assert.match(line('rules'), /AGENTS\.md is on main, not on this branch \(old\)/);
+  // A step that checks more than that a file exists keeps its own advice.
+  assert.match(line('tool-hook'), /no tool-call guard in \.claude\/settings\.json; `yokoten init` adds it/);
+  for (const key of ['tests', 'ci', 'titles', 'security-files']) assert.doesNotMatch(line(key), /on main, not on this branch/, key);
+  assert.match(line('security-files'), /no Dependabot config, no license file/, 'SECURITY.md on main does not hide the other two');
   // A clone: origin/HEAD names the default branch, and the old branch is checked out.
   assert.equal(sandbox.git('checkout', '-q', 'main').status, 0);
   const clone = join(dirname(sandbox.repo), 'clone');
+  const inClone = (...args: string[]) => spawnSync('git', args, { cwd: clone, env: sandbox.env }).status;
   assert.equal(spawnSync('git', ['clone', '-q', sandbox.repo, clone], { env: sandbox.env }).status, 0);
-  assert.equal(spawnSync('git', ['checkout', '-q', 'old'], { cwd: clone, env: sandbox.env }).status, 0);
+  assert.equal(inClone('checkout', '-q', 'old'), 0);
   assert.equal(first(clone), 'yokoten: stage 1 of 5, safety net. Next: AGENTS.md is on origin/main, not on this branch (old); work on a branch made from origin/main, or merge origin/main into this one.');
+  // On the default branch, or at its commit, the file was removed here: merging changes nothing.
+  assert.equal(inClone('checkout', '-q', 'main'), 0);
+  rmSync(join(clone, 'AGENTS.md'));
+  assert.match(first(clone), plain, 'on main');
+  assert.equal(inClone('checkout', '-q', '-b', 'fresh'), 0);
+  assert.match(first(clone), plain, 'a new branch at the default commit');
+  assert.equal(inClone('checkout', '-q', '--detach', 'origin/main'), 0);
+  assert.match(first(clone), plain, 'detached at the default commit');
+  // The packed form of the refs reads the same.
+  assert.equal(inClone('pack-refs', '--all'), 0);
+  assert.equal(inClone('checkout', '-q', '-f', 'main'), 0);
+  rmSync(join(clone, 'AGENTS.md'));
+  assert.match(first(clone), plain, 'on main, packed refs');
+  // A reftable store keeps no ref in a file: then the plain advice, never a guess.
+  assert.equal(inClone('checkout', '-q', '-f', 'old'), 0);
+  mkdirSync(join(clone, '.git', 'reftable'));
+  assert.match(first(clone), plain, 'reftable');
   // Positive control: when the default branch lacks the file too, init is the fix.
   rmSync(join(sandbox.repo, 'AGENTS.md'));
-  assert.match(first(), /Next: no AGENTS\.md, so the agents have no written rules here; `yokoten init` adds one\./);
+  assert.match(first(), plain);
 });
 
 test('doctor: a compaction start drops what the session was told; files older than a week go (#405)', () => {

@@ -1071,7 +1071,7 @@ export function doctor(
   // Read only, and only in full doctor: a session never calls the network (record 0004).
   const server: ServerRead = session ? undefined : gh ? readOrigin(root, gh) : { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' };
   const where = walk(road(root, env, ROAD, server), config.notNow);
-  // Full doctor from the command line adds the obvious marks first (#390); a session writes nothing.
+  // Full doctor from the command line adds the obvious marks first (#390); a session writes no marks.
   const filled = isFilling && !session ? trySafely('the marks from this machine', () => [filledLine(fillMarks(env, machineMarks(env, { cwd: root, gh })), paths(env).marks)])[0] : null;
   const machine = machineChecks(env);
   // A file missing here may be on the default branch (#405): one git call for every step
@@ -1150,7 +1150,7 @@ export function doctor(
     if (core.mark === 'MISSING') findings.push(core.finding);
     else if (core.mark === 'note') notes.push(core.finding);
   }
-  // Full doctor alone keeps which lessons this clone has seen; a session writes nothing.
+  // Full doctor alone keeps which lessons this clone has seen; a session keeps no lessons.
   const stateFile = findStateFile(root);
   const state = readState(stateFile);
   const seenLessons = state.seenLessons ?? [];

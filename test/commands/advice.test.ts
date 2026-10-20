@@ -1,8 +1,10 @@
 // Tests for src/commands/advice.ts.
 
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { test } from 'node:test';
 import {
+  CLI,
   makeSandbox,
   pick,
 } from '../repo/helpers.ts';
@@ -51,4 +53,29 @@ test('doctor --session: after a compaction, Claude Code hears only what changed 
   // No session id, or no hook: as today.
   assert.equal(start({ source: 'compact' }), sandbox.run(['doctor', '--session']).stdout);
   assert.equal(sandbox.run(['doctor', '--session'], { input: JSON.stringify({ session_id: 's-1', source: 'compact' }) }).stdout, sandbox.run(['doctor', '--session']).stdout, 'stdin is read only in a Claude Code hook');
+});
+
+test('doctor --session: a stdin pipe left open never holds the session start (#405)', async () => {
+  const sandbox = makeSandbox();
+  const today = sandbox.run(['doctor', '--session']).stdout;
+  // Like a hook runner that writes the event, or nothing, and never closes stdin.
+  const start = (event?: Record<string, string>) =>
+    new Promise<{ code: number | null; stdout: string }>((done, failed) => {
+      const child = spawn('node', [CLI, 'doctor', '--session'], { cwd: sandbox.repo, env: { ...sandbox.env, CLAUDE_PROJECT_DIR: sandbox.repo }, stdio: ['pipe', 'pipe', 'ignore'] });
+      let stdout = '';
+      child.stdout.on('data', (chunk) => (stdout += chunk));
+      const timer = setTimeout(() => {
+        child.kill();
+        failed(new Error('doctor --session waited on an open stdin'));
+      }, 15_000);
+      child.on('exit', (code) => {
+        clearTimeout(timer);
+        child.stdin.destroy();
+        done({ code, stdout });
+      });
+      if (event) child.stdin.write(JSON.stringify(event));
+    });
+  assert.deepEqual(await start(), { code: 0, stdout: today }, 'no event: everything, as today');
+  assert.deepEqual(await start({ session_id: 's-open', source: 'startup' }), { code: 0, stdout: today });
+  assert.deepEqual(await start({ session_id: 's-open', source: 'compact' }), { code: 0, stdout: '' }, 'the event is read without an end of input');
 });
