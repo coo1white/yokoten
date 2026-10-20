@@ -20,6 +20,7 @@ import {
 } from 'node:path';
 import { test } from 'node:test';
 import {
+  at,
   COMMENTED,
   commentedGemini,
   doctorHandAdd,
@@ -75,6 +76,8 @@ test('install: skills, agents and hooks once, the user\'s own files untouched', 
   assert.ok(!existsSync(join(shared, 'agents')), 'agents stay Claude-only');
   const marks = join(sandbox.home, '.config/yokoten/private-marks');
   assert.equal(statSync(marks).mode & 0o777, 0o600);
+  // The git display name is no mark: a common name would flag every file holding the word.
+  assert.ok(!readFileSync(marks, 'utf8').includes('Jane Example'));
   result = sandbox.run(['install']);
   for (const name of kitSkills) assert.match(result.stdout, new RegExp(`same skill ${name} in ~/\\.claude/skills`));
   for (const name of kitSkills.filter((n) => n !== 'rca')) assert.match(result.stdout, new RegExp(`same skill ${name} in ~/\\.agents/skills`));
@@ -444,4 +447,58 @@ test('install: prints the alias when no yokoten on the PATH runs this copy, and 
   result = sandbox.run(['install'], { extra: { PATH: `${bin}:${process.env.PATH}` } });
   assert.equal(result.status, 0, result.stderr);
   assert.ok(!result.stdout.includes('alias yokoten'), result.stdout);
+});
+
+test("install: adds the machine's marks and a git mailmap, and never prints a value (#390)", () => {
+  const sandbox = makeSandbox();
+  const email = `jane${at}personal-mail.dev`;
+  sandbox.git('config', 'user.name', 'Jane Example');
+  sandbox.git('config', 'user.email', email);
+  sandbox.git('remote', 'add', 'origin', 'https://build.private-host.dev/jane/app.git');
+  sandbox.write('README.md', 'Hello.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'docs: hello');
+  const marks = join(sandbox.home, '.config', 'yokoten', 'private-marks');
+  let result = sandbox.run(['install']);
+  assert.equal(result.status, 0, result.stderr);
+  for (const value of ['Jane', 'personal-mail', 'private-host']) assert.ok(!(result.stdout + result.stderr).includes(value), 'install printed a value');
+  assert.match(result.stdout, /^added to ~\/\.config\/yokoten\/private-marks from this machine: git email, private remote host \(the values are not shown\)$/m);
+  assert.match(result.stdout, /^add your real name, your city, your domains to ~\/\.config\/yokoten\/private-marks, one per line; yokoten can't find these on its own$/m);
+  assert.match(result.stdout, /^wrote ~\/\.config\/yokoten\/mailmap, and git log and git show now print your emails as a placeholder$/m);
+  assert.match(readFileSync(marks, 'utf8'), /# added by yokoten from this machine\njane@personal-mail\.dev\nbuild\.private-host\.dev\n$/);
+  assert.equal(statSync(marks).mode & 0o777, 0o600);
+  // git prints the placeholder at the source.
+  assert.equal(sandbox.git('config', '--global', '--get', 'mailmap.file').stdout, '~/.config/yokoten/mailmap\n');
+  assert.match(sandbox.git('log', '-1').stdout, /^Author: owner <owner@noreply\.invalid>$/m);
+  // A second run appends nothing.
+  const before = readFileSync(marks, 'utf8');
+  result = sandbox.run(['install']);
+  assert.match(result.stdout, /^kept ~\/\.config\/yokoten\/private-marks: it already has what this machine knows$/m);
+  assert.match(result.stdout, /^kept ~\/\.config\/yokoten\/mailmap: it already maps your emails$/m);
+  assert.equal(readFileSync(marks, 'utf8'), before);
+  // The user's own mailmap.file stays.
+  sandbox.git('config', '--global', 'mailmap.file', '/elsewhere/mailmap');
+  result = sandbox.run(['install']);
+  assert.match(result.stdout, /^kept your own git mailmap.file setting; add the lines of ~\/\.config\/yokoten\/mailmap to that file$/m);
+  assert.equal(sandbox.git('config', '--global', '--get', 'mailmap.file').stdout, '/elsewhere/mailmap\n');
+});
+
+test('install: an existing mailmap keeps its lines and gets only the missing ones; a privacy step never stops install (#390)', () => {
+  const sandbox = makeSandbox();
+  sandbox.git('config', 'user.email', `jane${at}personal-mail.dev`);
+  const mailmap = join(sandbox.home, '.config', 'yokoten', 'mailmap');
+  mkdirSync(dirname(mailmap), { recursive: true });
+  const own = `Me <me${at}example.com> <old${at}example.com>\n`;
+  writeFileSync(mailmap, own);
+  let result = sandbox.run(['install']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(mailmap, 'utf8'), `${own}owner <owner@noreply.invalid> <jane${at}personal-mail.dev>\n`);
+  assert.match(result.stdout, /^wrote|^kept ~\/\.config\/yokoten\/mailmap, and git log/m);
+  // A marks path that is a folder: install says what it skipped, and goes on.
+  const broken = join(sandbox.home, 'marks-folder');
+  mkdirSync(broken);
+  result = sandbox.run(['install'], { extra: { YOKOTEN_PRIVATE_MARKS: broken } });
+  assert.match(result.stdout, /^skipped the marks from this machine: /m);
+  assert.match(result.stdout, /^skipped the git mailmap: /m);
+  assert.match(result.stdout, /skill /, 'the rest of install ran');
 });

@@ -39,6 +39,7 @@ import {
   installationToken,
   readCommandTitle,
   readIncident,
+  readLogin,
   repoOf,
   stepSummary,
 } from '../../src/host/github.ts';
@@ -446,4 +447,13 @@ test('board sync: fills empty fields, keeps filled ones and Done, a dry run writ
       else process.env[name] = value;
     }
   }
+});
+
+test('readLogin: the signed-in login, or null when gh fails or answers something else (#390)', () => {
+  const asked: string[][] = [];
+  assert.equal(readLogin((args) => (asked.push(args), 'someone-1\n')), 'someone-1');
+  assert.deepEqual(asked, [['api', 'user', '--jq', '.login']]);
+  assert.equal(readLogin(() => { throw new Error('not signed in'); }), null);
+  assert.equal(readLogin(() => '{"message":"Bad credentials"}'), null);
+  assert.equal(readLogin(() => ''), null);
 });

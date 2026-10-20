@@ -1,6 +1,6 @@
 // `yokoten hook`: the tool-call guard, and with --stop the end-of-turn check.
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
 import * as claudeCode from '../agents/runtimes/claude-code.ts';
@@ -9,7 +9,7 @@ import * as deepseekHarness from '../agents/runtimes/deepseek-harness.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import { loadConfig } from '../rules/config.ts';
-import { releaseFix } from '../rules/guards.ts';
+import { printsAccount, privateOutput, releaseFix, wrapForRedact } from '../rules/guards.ts';
 import { type Finding, formatFinding } from '../rules/message.ts';
 import { checkChanged } from '../run/check.ts';
 import { type Action, guardDeadline, judgeWithDeadline, loadHookConfig, type Repo } from '../run/hook.ts';
@@ -47,6 +47,39 @@ const RELEASE_FIXES: Record<string, string> = {
   muse: 'Muse Code is not known to pass YOKOTEN_RELEASE_APPROVAL to its hooks: it passes them only a short list of variables, and YOKOTEN_ROLE is lost. If the owner asked for this, stop and tell them to release outside Muse Code; do not look for another way',
   'deepseek-harness': releaseFix(approve('dsh tui --patch .dsh/yokoten.patch.yml')),
 };
+
+// The runtimes whose hook can change a command before it runs (#390). In the others the
+// command runs as it is, unless yokoten.json "privacy.output" is "stop": then it is refused,
+// with the wrapped command as the fix. Codex, Gemini CLI, Antigravity CLI, Muse Code and
+// DeepSeek Harness are not known to take a changed command from a hook.
+const REWRITES: Record<string, typeof claudeCode.formatRewrite> = {
+  'claude-code': claudeCode.formatRewrite,
+};
+
+/**
+ * How the wrapped command runs `yokoten redact`: the node that runs this hook and this
+ * same copy of yokoten, each by its path, quoted for bash. Neither depends on the PATH.
+ * The home folder is written `$HOME`, so the command names no user.
+ */
+export function redactCommand(node: string, cli: string, home: string | undefined): string {
+  const homePath = home?.replaceAll('\\', '/').replace(/\/+$/, '');
+  let realHome = homePath;
+  try {
+    if (home) realHome = realpathSync(home).replaceAll('\\', '/');
+  } catch {}
+  const quoted = (file: string) => {
+    let path = file.replaceAll('\\', '/');
+    try {
+      path = realpathSync(file).replaceAll('\\', '/');
+    } catch {}
+    const escape = (text: string) => text.replace(/["$`\\]/g, (mark) => `\\${mark}`);
+    for (const prefix of [homePath, realHome]) {
+      if (prefix && path.startsWith(`${prefix}/`)) return `"$HOME/${escape(path.slice(prefix.length + 1))}"`;
+    }
+    return `"${escape(path)}"`;
+  };
+  return `${quoted(node)} ${quoted(cli)} redact`;
+}
 
 // Each runtime's event for the end of a turn: Claude Code's, Codex's and Muse Code's Stop, Gemini CLI's AfterAgent (#211).
 const STOP_READERS: Record<string, typeof claudeCode.readStop> = {
@@ -146,7 +179,19 @@ export function runHook(): number | Promise<number> {
   const judged = judgeWithDeadline(action, { root, config, env, commandsOnly, repos }, guardDeadline(env.YOKOTEN_GUARD_DEADLINE_MS));
   return judged.then((judgedFinding) => {
     // The guard names no agent; the hook knows which one it runs for.
-    const found = judgedFinding?.id === 'release' && Object.hasOwn(RELEASE_FIXES, agent) ? { ...judgedFinding, fix: RELEASE_FIXES[agent] } : judgedFinding;
+    let found = judgedFinding?.id === 'release' && Object.hasOwn(RELEASE_FIXES, agent) ? { ...judgedFinding, fix: RELEASE_FIXES[agent] } : judgedFinding;
+    // A command that may print the owner's details runs through `yokoten redact` (#390).
+    const printed = !found && action.command !== undefined ? printsAccount(action.command) : null;
+    if (printed && action.command !== undefined) {
+      const wrapped = wrapForRedact(action.command, redactCommand(process.execPath, process.argv[1] ?? 'yokoten', env.HOME));
+      if (Object.hasOwn(REWRITES, agent)) {
+        if (json) printJson({ blocked: false, toolCall: true, rewritten: wrapped });
+        // Written as it is: hiding the home folder would change the command.
+        else process.stdout.write(REWRITES[agent](input, wrapped, `yokoten: ${printed}, so its output goes through yokoten redact`));
+        return 0;
+      }
+      if (config.privacy.output === 'stop') found = privateOutput(printed, wrapped);
+    }
     if (json) printJson(found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
     if (!found) return 0;
     // The runtimes read the reason from stderr when the hook exits 2; some read stdout (DENIALS).

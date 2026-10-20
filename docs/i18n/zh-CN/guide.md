@@ -538,7 +538,7 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 
 | 命令 | 做什么 |
 |------|--------|
-| `install` | 把技能装进 `~/.claude/skills` 和 `~/.agents/skills`，agent 装进 `~/.claude/agents`，加上会话开头的 `doctor` hook 和用户级命令守卫，再建一个空的私有词表。这两个 hook 给 Claude Code 装一份；已经有 `~/.codex` 或 `~/.gemini` 文件夹的话，Codex 和 Gemini CLI 也各装一份 |
+| `install` | 把技能装进 `~/.claude/skills` 和 `~/.agents/skills`，agent 装进 `~/.claude/agents`，加上会话开头的 `doctor` hook 和用户级命令守卫，再建一个空的私有词表。这两个 hook 给 Claude Code 装一份；已经有 `~/.codex` 或 `~/.gemini` 文件夹的话，Codex 和 Gemini CLI 也各装一份。它还会把这台电脑上能找到的私有词加进词表，并设好 git 的 mailmap。见「隐私」 |
 | `init [dir]` | 把这套做法放进一个项目。只加文件；已有的文件保留，并告诉你保留了哪些。它还会用 `gh` 看一眼 GitHub，告诉你要补哪些标准标签和里程碑，但不会去改 GitHub。没装 `gh`、没登录，或者远程仓库不在 GitHub 上，就说一声跳过了 |
 | `init --github --yes [--remove-default-labels] [--board]` | 补上缺的标准标签；没有打开的里程碑时，建一个叫 "First release" 的；要是已经有一个关掉的里程碑叫这个名字，就叫 "Next release"。关掉的里程碑不会被重新打开。已有的标准标签，颜色和说明改成标准的。`yokoten.json` 里的模块不超过 8 个时，每个模块建一个灰色标签。再跑一次什么也不会变。GitHub 自带的、不在这套里的标签（`question`、`wontfix` 等），只有加上 `--remove-default-labels` 才会删。加 `--board` 还会建一个关联到仓库的看板，要 gh 的令牌带 `project` 权限 |
 | `update [dir] [--write]` | 看看这个版本的 yokoten 会怎么改项目 `AGENTS.md` 里的核心规则。加上 `--write` 才真的替换；「This project」那部分原样保留。见[更新规则](#更新规则) |
@@ -547,6 +547,7 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 | `check [--staged] [--json]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交。提交里不能有构建产物和二进制文件。`changes/` 里的文件按 `changelog` 的读法检查，格式不对，提交时就拦下。什么都没暂存时，`--staged` 提醒一句，算通过。查整个目录时，落后于英文的译文会给一条提醒，见[翻译](#翻译) |
 | `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的变更文件、milestone 和标签，见下面的「更新日志」。改到 CODEOWNERS 里列出的文件，必须写 `tier: A`。改动的文档里句子太长、改动的代码里名字难读、改动超过 400 行，都只提醒，不算失败 |
 | `check --issue` | 在 CI 里检查 issue 的标题，见下面的「issue 标题」 |
+| `redact` | 从标准输入读文字，把你的信息换成占位符再输出：`<owner>`、`<email>`、`<host>`、`<mark>`。命令守卫会让有风险的命令先过一遍它。见「隐私」 |
 | `changelog [--write]` | 列出 `changes/` 里的文件会往 `[Unreleased]` 下面加哪些条目。加上 `--write` 就真的写进 `CHANGELOG.md`，再删掉这些文件；发版前跑。见下面的「更新日志」 |
 | `learn <issue> [--write]` | 从一个事故 issue 起草一条检查，留给人来审。加上 `--write` 才把文件写进 `lessons/`。见下面的「从事故里学」 |
 | `learn --ship <id>` | 在 yokoten 里用：把审过的教训搬进 `kit/lessons/` 下的一个分组，以后用这份 yokoten 跑 `doctor`，每个项目都会查它。还有 `TODO(reviewer)` 没填，或者它的测试没过，就不让搬 |
@@ -722,7 +723,7 @@ AGENTS.md 里，它就只是个愿望。把这些程序写进 `yokoten.json`，�
 | `layout` | `{ "maxEntries": 7, "exempt": ["docs/records"] }`：一个大于 0 的整数，加一串文件夹 | 7，没有例外的文件夹 |
 | `tests` | 一串通配符 | `*.test.*`、`*.spec.*`、`*_test.go`、`test/**`、`tests/**` |
 | `leadOnly` | 一串通配符 | 规则、agent 配置、钩子和 CI |
-| `privacy` | `{ "allow": [], "skip": [], "utc": true }`：两串文字，加一个 true 或 false | 跳过锁文件，要求 UTC |
+| `privacy` | `{ "allow": [], "skip": [], "utc": true, "output": "run" }`：两串文字，一个 true 或 false，再加 `"run"` 或 `"stop"` | 跳过锁文件，要求 UTC，照常跑 |
 | `notNow` | 每个步骤名配一个原因：`{ "ci": "no remote yet" }` | 没有 |
 | `allowBuild` | 一串通配符 | 没有 |
 | `areas` | 一串单词 | 任何小写单词都行 |
@@ -949,6 +950,7 @@ issue，写你自己的检查。
 | `privacy.allow` | 无 | 隐私检查放行的原样字符串，比如公开的客服邮箱 |
 | `privacy.skip` | 各种 lock 文件 | 隐私检查不读的文件 |
 | `privacy.utc` | `true` | 提交时间必须用 UTC |
+| `privacy.output` | `"run"` | 在 Claude Code 以外的 agent 里，会打印账号信息的命令照常跑；设成 `"stop"` 就拦下，告诉 agent 过滤后的命令 |
 | `notNow` | 无 | 暂时不做的步骤，用 `doctor` 里的名字，每条写上原因：`{ "ci": "no remote yet" }` |
 | `allowBuild` | 无 | 提交检查放行的构建产物和二进制文件 |
 | `areas` | 不限 | 标题里能用的模块名，见 [issue 标题](#issue-标题) |
@@ -1098,6 +1100,51 @@ agent 用 `gh` 发文字之前，工具调用守卫也跑同一套检查。直�
 
 查到问题就拦下命令，修法和提交检查一样。公开的地址加进 `privacy.allow`。命令运行时才拼出来的
 文字它看不到：`$(cat notes.md)`、变量、别的程序用管道传进来的内容。文件最多读 1 MB，更大的放行。
+
+### agent 读到的东西
+
+上面的检查管的是仓库里的内容。agent 还会读命令的输出，这些输出会进对话记录、发给模型，发出去
+就收不回来了。所以有些命令跑之前，yokoten 先把你的信息藏起来。
+
+- **`yokoten redact`**：从标准输入读文字，换成占位符再输出。它会藏起密钥（`<secret>`）、个人
+  邮箱（`<email>`）、git 的 user.name（`<owner>`）、私有远程仓库的主机名（`<host>`），还有私有
+  词表里的词。像域名的词换成 `<host>`，其他的换成 `<mark>`。词表里的词按整个单词算。没有私有
+  词表也能用，这时只藏邮箱、密钥这类格式和 git 知道的信息。它要是启动不了、读不了词表，会用
+  一行字说明，然后原样输出：绝不会让命令停下来。
+- **在 Claude Code 里，守卫会过滤单纯的读命令。** 下面这些命令会打印账号信息：没加
+  `--format`、`--pretty` 或 `--oneline` 的 `git log`、`git show`、`git blame`；`git remote -v`、
+  `get-url`、`show`；`git config --list`，以及读 `user.*`、`remote.*`；`gh auth status`；用 `gh`
+  以 GET 查访问量和账号；`npm whoami`；`wrangler whoami`。整条命令只有其中一条、前后没有别的东西
+  时，守卫会把它改成 `set -o pipefail # yokoten-redact`，再接
+  `( <命令> ) 2>&1 | { <node> <yokoten> redact || cat; }`，退出码还是原命令的。命令里有 `&&`、
+  `;`、管道、重定向、`$(...)`、`sudo` 这类前缀，或者会写文件的选项，就不改，照原样跑。
+- **别的 agent 照常跑命令。** 它们的 hook 改不了命令。`doctor` 和会话开头会说一次。想在那边
+  直接拦下这类命令，就在 `yokoten.json` 里设 `"privacy": { "output": "stop" }`，守卫会拦下命令，
+  告诉 agent 过滤后的命令怎么写。
+- **让 git 自己先藏。** `install` 会把 git 全局的 `mailmap.file` 指向
+  `~/.config/yokoten/mailmap`，这个文件不在任何仓库里。之后 `git log` 和 `git show` 会把你的
+  邮箱显示成 `owner`。文件已经有了的话，`install` 只补缺的行。你要是设了自己的
+  `mailmap.file`，`install` 不动它，只告诉你要加哪几行。
+- **词表自己补。** `install` 和 `doctor` 会把这台电脑知道的信息加进词表：git 的邮箱（noreply
+  邮箱除外）、`gh` 登录的账号、私有远程仓库的主机名。git 显示的名字不加：常见的名字会让每个含有
+  这个词的文件都被查出来。只往后加，从不打印具体的词。`doctor` 还会告诉你还缺哪几类：真名、
+  所在城市、域名。这些只有你自己能加。
+
+套上去的命令要用 bash 跑。在 Windows 上，请在 Git Bash 或 WSL 里用 agent；PowerShell 没有
+`pipefail`。
+
+老实说，下面这些藏不住：
+
+- **会改东西或往外发的命令。** `git push`、`fetch`、`pull`、`clone`，还有 `wrangler deploy`、
+  `login`，都照原样跑。push 出错时可能会露出私有主机名。改写它们会让不弹确认的 worker 卡住。
+- **agent 读的文件。** `cat CODEOWNERS`，或者 agent 自己的读文件工具，看到的就是文件原样。
+- **环境变量。** `env` 和 `printenv` 不过滤：它们会打印各种密钥。别在 agent 会话里跑。
+- **浏览器页面和截图。** 别把账号页面当文字读给 agent。
+
+hook 不可能认得所有命令。输出里露出了你的信息，就开一个事故 issue，再给那条命令在
+`ACCOUNT_PRINTERS`（`src/rules/guards.ts`）里加一行。
+
+### 时区
 
 每个提交还会记下提交时间和你的时区，而时区能大致看出你住在哪里。所以提交检查要求用 UTC：
 `init` 会给 agent 会话设好 `TZ=UTC`，你自己提交时，它会告诉你怎么设。
