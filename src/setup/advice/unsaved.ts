@@ -510,7 +510,7 @@ export function showPath(given: string, givenRoot: string, givenHome: string | u
     if (fromHome === '') return '~';
     if (!fromHome.startsWith('..') && !isAbsolute(fromHome)) return `~/${slashes(fromHome)}`;
   }
-  return inside.split(sep).filter((part) => part === '..').length <= 2 ? slashes(inside) : path;
+  return inside.split(sep).filter((part) => part === '..').length <= 2 ? slashes(inside) : given;
 }
 
 /** An age in plain words: "5 minutes", "3 hours", "2 days". */
