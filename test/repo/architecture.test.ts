@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { homedir, tmpdir, userInfo } from 'node:os';
 import { dirname, join, posix, relative } from 'node:path';
 import { test } from 'node:test';
-import { makeSandbox, makeTempDir } from './helpers.ts';
+import { killedLine, makeSandbox, makeTempDir, runChild } from './helpers.ts';
 import { fileURLToPath } from 'node:url';
 import { COMMANDS } from '../../src/run/cli.ts';
 import { findDeclarations, findNameProblems, splitWords, type Token, tokenize } from '../../src/run/names.ts';
@@ -234,6 +234,32 @@ test('temp folders: tests make them with makeTempDir, not with mkdtempSync alone
   assert.ok(paths.includes(TEMP_HELPER), 'the helper is not found; the scan is broken');
   const files = Object.fromEntries(paths.map((p) => [p, readFileSync(join(ROOT, p), 'utf8')]));
   assert.deepEqual(findBareTempDirs(files), [], `make the folder with makeTempDir from ${TEMP_HELPER}: it is removed when the test ends`);
+});
+
+// #436: a child killed by its timeout showed only `actual: null`, and a file that died later
+// named no test. runChild prints the kill with the running test's name.
+test('child processes: a killed child names the test that ran it (#436)', () => {
+  const written: string[] = [];
+  const write = process.stderr.write;
+  process.stderr.write = ((text: string | Uint8Array) => written.push(String(text)) > 0) as typeof process.stderr.write;
+  let result;
+  try {
+    result = runChild('node', ['-e', 'setTimeout(() => {}, 60_000)'], { timeout: 100 });
+  } finally {
+    process.stderr.write = write;
+  }
+  assert.equal(result.signal, 'SIGTERM');
+  assert.deepEqual(written, ['test "child processes: a killed child names the test that ran it (#436)": its child `node` was killed after 100 ms\n']);
+  assert.equal(killedLine('a', 'git', 5, { signal: 'SIGKILL' }), 'test "a": its child `git` was killed by SIGKILL\n');
+  assert.equal(killedLine('a', 'git', 5, { signal: null }), null, 'a child that ended by itself');
+  assert.equal(runChild('node', ['-e', '']).status, 0);
+});
+
+// #436: one gh call in 100 left a telemetry sender running, which wrote its device id into
+// the sandbox's home after the test removed it, so removing the sandbox failed.
+test('child processes: gh sends no telemetry from a test, in the sandbox or out (#436)', () => {
+  assert.equal(makeSandbox().env.GH_TELEMETRY, '0');
+  assert.equal(process.env.GH_TELEMETRY, '0');
 });
 
 // ---- The npm package (#31) ----

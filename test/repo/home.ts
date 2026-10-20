@@ -32,4 +32,7 @@ for (const name of HOME_VARIABLES) delete process.env[name];
 process.env.HOME = TEST_HOME;
 process.env.USERPROFILE = TEST_HOME;
 process.env.XDG_CONFIG_HOME = join(TEST_HOME, '.config');
+// gh sends telemetry from a process it leaves running, which writes into the home folder
+// after gh ends, even after the test removed it (#436).
+process.env.GH_TELEMETRY = '0';
 process.on('exit', () => rmSync(TEST_HOME, { recursive: true, force: true }));
