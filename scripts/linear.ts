@@ -48,3 +48,45 @@ export const assertLinear = (name: string, make: (n: number) => string, read: (i
     `${name}: ${again.ms.toFixed(2)} ms for 8x the input of ${again.base.toFixed(2)} ms, ${again.growth.toFixed(0)}x (first round ${first.growth.toFixed(0)}x); linear is about 8x`,
   );
 };
+
+/** One input shape for assertLinearEach: what assertLinear takes, as one object. */
+export type LinearCase = { name: string; make: (n: number) => string; read: (input: string) => void };
+
+/**
+ * assertLinear for many shapes at once, at a fraction of the cost (#442). assertLinear gives
+ * each shape about 20 ms of small reads, and as many big ones: some 200 ms a shape, however
+ * small the input, so 180 shapes took minutes. Here the shapes take turns instead: each round
+ * reads every shape small, then big, and three rounds keep each shape's fastest read. A pause
+ * or a slow spell lands on one read of one shape, not on all three of it. Each shape is read
+ * once first, cold, and that read is not timed. A shape over 24x is measured again, alone with
+ * the others over, and fails only when that round is over too. Sizes stay the caller's: a
+ * cheap quadratic loop shows only where its square outgrows the linear work (see the
+ * positive control in test/repo/architecture.test.ts).
+ */
+export const assertLinearEach = (cases: LinearCase[], size: number) => {
+  const time = (shape: LinearCase, input: string) => {
+    const start = performance.now();
+    shape.read(input);
+    const ms = performance.now() - start;
+    assert.ok(ms < 30_000, `${shape.name}: ${ms.toFixed(0)} ms for ${input.length} chars, a hang`);
+    return ms;
+  };
+  const shapes = cases.map((shape) => ({ shape, small: shape.make(size), big: shape.make(8 * size) }));
+  for (const { shape, small } of shapes) time(shape, small);
+  const measure = (list: typeof shapes) => {
+    const fast = list.map(() => ({ small: Infinity, big: Infinity }));
+    for (let round = 0; round < 3; round++) {
+      list.forEach(({ shape, small, big }, i) => {
+        fast[i].small = Math.min(fast[i].small, time(shape, small));
+        fast[i].big = Math.min(fast[i].big, time(shape, big));
+      });
+    }
+    // The same floor as assertLinear: below 0.5 ms a read is not in its steady state (#326).
+    return list.map((entry, i) => ({ entry, base: Math.max(0.5, fast[i].small), ms: fast[i].big, growth: fast[i].big / Math.max(0.5, fast[i].small) }));
+  };
+  const over = measure(shapes).filter((result) => result.growth > MAX_GROWTH);
+  if (over.length === 0) return;
+  const still = measure(over.map((result) => result.entry)).filter((result) => result.growth > MAX_GROWTH);
+  if (still.length === 0) return;
+  assert.fail(still.map(({ entry, base, ms, growth }) => `${entry.shape.name}: ${ms.toFixed(2)} ms for 8x the input of ${base.toFixed(2)} ms, ${growth.toFixed(0)}x; linear is about 8x`).join('\n'));
+};

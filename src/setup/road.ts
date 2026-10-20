@@ -11,7 +11,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
-import { type Env, loadConfig } from '../rules/config.ts';
+import { type Config, type Env, loadConfig } from '../rules/config.ts';
 import { matcher } from '../rules/config.ts';
 import { type Finding, finding, type RuleId } from '../rules/message.ts';
 import { CHANGES_DIR, parseCodeOwners } from '../rules/pr.ts';
@@ -43,11 +43,17 @@ export interface Step {
   stage: number;
   /** The step's name, and its key in yokoten.json "notNow". */
   key: string;
-  check: (root: string, env: Env, server: ServerRead) => Found;
+  /** `config` is yokoten.json when the caller has read it already; a step that needs it reads it otherwise. */
+  check: (root: string, env: Env, server: ServerRead, config?: Config) => Found;
   /** What is missing, said when the step is not done. No full stop at the end. */
-  what: (root: string, env: Env, server: ServerRead) => string;
+  what: (root: string, env: Env, server: ServerRead, config?: Config) => string;
   /** What to do about it: a command or an edit. No full stop at the end. */
-  fix: (root: string, env: Env, server: ServerRead) => string;
+  fix: (root: string, env: Env, server: ServerRead, config?: Config) => string;
+  /**
+   * What covers the step while yokoten.json "notNow" names `ci` (#377): the step needs CI,
+   * so it waits with that choice and doctor says this in its place. No full stop at the end.
+   */
+  withoutCi?: string;
   /** Why yokoten can't check the step here, and what to do. Server steps and workflow steps have it. No full stop at the end. */
   unchecked?: (server: ServerRead) => string;
   /** Why the step matters, in one plain sentence. No full stop at the end. */
@@ -65,7 +71,7 @@ export interface Step {
    * root, and any one path of a group is enough. When every group missing here is on the
    * default branch, doctor says so in place of the fix (#405).
    */
-  paths?: string[][];
+  paths?: string[][] | ((root: string, config?: Config) => string[][]);
 }
 
 const read = (path: string) => {
@@ -482,6 +488,7 @@ const hasLicense = (root: string) => {
     return false;
   }
 };
+const DEPENDABOT_FILE = 'Dependabot config';
 /**
  * Each security file: its name, the paths the default-branch lookup asks for (#405), and how
  * to tell the root has it when any of those paths is not enough. A license has many names
@@ -489,11 +496,28 @@ const hasLicense = (root: string) => {
  */
 const SECURITY_FILES: [string, string[], ((root: string) => boolean)?][] = [
   ['security policy (SECURITY.md)', ['.github/SECURITY.md', 'SECURITY.md']],
-  ['Dependabot config', ['.github/dependabot.yml', '.github/dependabot.yaml']],
+  [DEPENDABOT_FILE, ['.github/dependabot.yml', '.github/dependabot.yaml']],
   [LICENSE_FILE, ['LICENSE', 'LICENSE.md', 'LICENSE.txt', 'LICENCE', 'COPYING'], hasLicense],
 ];
-export const securityLacking = (root: string) =>
-  SECURITY_FILES.filter(([, paths, has]) => !(has ? has(root) : paths.some((p) => existsSync(join(root, p))))).map(([name]) => name);
+/** The security files asked for. With "notNow" `ci` (#377), not the kit's Dependabot config: it updates only the actions that CI runs. */
+const securityFiles = (isOff: boolean) => SECURITY_FILES.filter(([name]) => !(isOff && name === DEPENDABOT_FILE));
+/** The security files the repo lacks. */
+export const securityLacking = (root: string, isOff: boolean = isCiOff(root)): string[] =>
+  securityFiles(isOff).filter(([, paths, has]) => !(has ? has(root) : paths.some((p) => existsSync(join(root, p))))).map(([name]) => name);
+
+/**
+ * True when yokoten.json "notNow" names `ci` (#377): the project keeps CI off, and the
+ * commit hook and `yokoten check` are its gate. A broken yokoten.json reads as false.
+ * Pass `config` when it is read already (doctor), so the session start reads the file once.
+ */
+export function isCiOff(root: string, config?: Config): boolean {
+  if (config) return Object.hasOwn(config.notNow, 'ci');
+  try {
+    return Object.hasOwn(loadConfig(root).notNow, 'ci');
+  } catch {
+    return false; // the commit check names a broken yokoten.json
+  }
+}
 
 // The server settings (#7), judged. Each setting is one check with its own rule id, so
 // `yokoten explain main-rules` works. The road groups them into three steps.
@@ -507,8 +531,12 @@ export interface ServerCheck {
 
 const RULESET = 'in Settings, Rules, Rulesets, edit the ruleset on the default branch';
 
-/** Each server setting, judged. `settings` is what the host adapter read, or why it could not. */
-export function serverChecks(settings: ServerSettings | Unread): ServerCheck[] {
+/**
+ * Each server setting, judged. `settings` is what the host adapter read, or why it could not.
+ * With `isCiOff` (yokoten.json "notNow" names `ci`, #377), no CI check can be required, so
+ * required-checks is left out.
+ */
+export function serverChecks(settings: ServerSettings | Unread, { isCiOff: isOff = false }: { isCiOff?: boolean } = {}): ServerCheck[] {
   const cant = (id: RuleId, u: Unread): ServerCheck => ({ id, mark: "can't check", finding: finding(id, u.unread, u.fix) });
   if ('unread' in settings) return [cant('server-settings', settings)];
   const judge = (id: RuleId, found: boolean | Unread | null, what: string, fix: string): ServerCheck => {
@@ -525,7 +553,7 @@ export function serverChecks(settings: ServerSettings | Unread): ServerCheck[] {
   const unknown = Object.values(sec).some((on) => on === null);
   const checks = [
     judge('main-rules', rules ? !lacking.length : branch as Unread, `the default branch (${settings.defaultBranch}) has no rule for ${lacking.join(', ')}`, `${RULESET}, or add one, and turn those rules on`),
-    judge('required-checks', rules ? rules.requiredChecks.length > 0 : branch as Unread, 'no CI check must pass before a merge', `${RULESET}: require status checks, and add the CI check by name (yokoten's kit names it \`ci\`)`),
+    ...(isOff ? [] : [judge('required-checks', rules ? rules.requiredChecks.length > 0 : branch as Unread, 'no CI check must pass before a merge', `${RULESET}: require status checks, and add the CI check by name (yokoten's kit names it \`ci\`)`)]),
     judge('code-owner-review', rules ? rules.codeOwnerReview : branch as Unread, 'code owner review is not required', `${RULESET}: in "Require a pull request", turn on "Require review from Code Owners"`),
     judge('squash-only', squash, 'pull requests can merge by merge commit or rebase, not only by squash', 'in Settings, General, Pull Requests, allow squash merging only'),
     judge('delete-branch', settings.deleteBranchOnMerge, 'merged branches are not deleted', 'in Settings, General, Pull Requests, turn on "Automatically delete head branches"'),
@@ -553,20 +581,23 @@ export const ROAD_SERVER_IDS: RuleId[] = Object.values(SERVER_STEPS).flat();
 
 const SESSION_UNREAD: Unread = { unread: 'a session never calls the network', fix: 'run `yokoten doctor`' };
 
-/** The checks behind one step, and `server-settings` when nothing could be read. */
-const stepChecks = (key: string, server: ServerRead) =>
-  serverChecks(server ?? SESSION_UNREAD).filter((c) => c.id === 'server-settings' || SERVER_STEPS[key].includes(c.id));
+/**
+ * The checks behind one step, and `server-settings` when nothing could be read. `root` is
+ * null for the "can't check" texts: a check that was not read has nothing to leave out.
+ */
+const stepChecks = (key: string, root: string | null, server: ServerRead, config?: Config) =>
+  serverChecks(server ?? SESSION_UNREAD, { isCiOff: root !== null && server !== undefined && isCiOff(root, config) }).filter((c) => c.id === 'server-settings' || SERVER_STEPS[key].includes(c.id));
 
 /** Not done when a check is MISSING; can't check when a check is unread; done when all are ok. */
-const judgeServer = (key: string, server: ServerRead): Found => {
-  const checks = stepChecks(key, server);
+const judgeServer = (key: string, root: string, server: ServerRead, config?: Config): Found => {
+  const checks = stepChecks(key, root, server, config);
   if (checks.some((c) => c.mark === 'MISSING')) return false;
   return checks.some((c) => c.mark === "can't check") ? null : true;
 };
 
 /** One field of each check with this mark, joined by "; ", or `fallback` when no check has the mark. */
-const joinChecks = (key: string, server: ServerRead, mark: ServerCheck['mark'], field: 'what' | 'fix', fallback: string) => {
-  const texts = stepChecks(key, server).filter((c) => c.mark === mark).map((c) => c.finding[field]);
+const joinChecks = (key: string, root: string | null, server: ServerRead, mark: ServerCheck['mark'], field: 'what' | 'fix', fallback: string, config?: Config) => {
+  const texts = stepChecks(key, root, server, config).filter((c) => c.mark === mark).map((c) => c.finding[field]);
   return texts.length ? [...new Set(texts)].join('; ') : fallback;
 };
 
@@ -574,10 +605,10 @@ const joinChecks = (key: string, server: ServerRead, mark: ServerCheck['mark'], 
 const serverStep = (key: string, fields: { lacking: string; fix: string; why: string; how: string; standard?: string }): Step => ({
   stage: 5,
   key,
-  check: (...[, , server]) => judgeServer(key, server),
-  what: (...[, , server]) => joinChecks(key, server, 'MISSING', 'what', fields.lacking),
-  fix: (...[, , server]) => joinChecks(key, server, 'MISSING', 'fix', fields.fix),
-  unchecked: (server) => `${joinChecks(key, server, "can't check", 'what', 'nothing was read')}; ${joinChecks(key, server, "can't check", 'fix', 'run `yokoten doctor`')}`,
+  check: (root, _, server, config) => judgeServer(key, root, server, config),
+  what: (root, _, server, config) => joinChecks(key, root, server, 'MISSING', 'what', fields.lacking, config),
+  fix: (root, _, server, config) => joinChecks(key, root, server, 'MISSING', 'fix', fields.fix, config),
+  unchecked: (server) => `${joinChecks(key, null, server, "can't check", 'what', 'nothing was read')}; ${joinChecks(key, null, server, "can't check", 'fix', 'run `yokoten doctor`')}`,
   why: fields.why,
   how: fields.how,
   ...(fields.standard ? { standard: fields.standard } : {}),
@@ -836,6 +867,7 @@ export const ROAD: Step[] = [
     why: 'tests that run on every push catch a broken change before it reaches main',
     how: 'package.json has a real "test" script and a `run:` step in .github/workflows runs it, or a `run:` step starts a test runner such as `node --test`, `go test`, `pytest`, `tox`, `make test` or `npx vitest`; in a workspaces repo, `npm test --workspaces` or `pnpm -r test` counts too',
     standard: 'Best Practices: test',
+    withoutCi: 'run the tests yourself before each merge',
   },
   {
     stage: 2,
@@ -848,6 +880,7 @@ export const ROAD: Step[] = [
     why: 'a commit made with the hook off would reach main unchecked',
     how: 'a workflow in .github/workflows runs `yokoten check` (by its path, or with npx, bunx or pnpm dlx), or has a step that uses yokoten-labs/yokoten',
     standard: 'Scorecard: CI-Tests',
+    withoutCi: 'the commit hook runs `yokoten check` on each commit',
   },
   {
     stage: 2,
@@ -924,6 +957,7 @@ export const ROAD: Step[] = [
     why: 'a pull request title becomes the commit on main, so it must say what changed and why',
     how: 'a workflow in .github/workflows runs `yokoten check --pr`, or runs on pull requests with a step that uses yokoten-labs/yokoten and does not set `pr-check: false`',
     standard: 'Conventional Commits 1.0.0',
+    withoutCi: 'run `yokoten check --pr <number>` before each merge',
   },
   {
     stage: 4,
@@ -975,14 +1009,15 @@ export const ROAD: Step[] = [
   {
     stage: 5,
     key: 'security-files',
-    paths: SECURITY_FILES.map(([, paths]) => paths),
-    check: (root) => securityLacking(root).length === 0,
-    what: (root) => `no ${securityLacking(root).join(', no ')}`,
-    fix: (root) => {
-      const lacking = securityLacking(root);
+    paths: (root, config) => securityFiles(isCiOff(root, config)).map(([, paths]) => paths),
+    check: (...[root, , , config]) => securityLacking(root, isCiOff(root, config)).length === 0,
+    what: (...[root, , , config]) => `no ${securityLacking(root, isCiOff(root, config)).join(', no ')}`,
+    fix: (...[root, , , config]) => {
+      const lacking = securityLacking(root, isCiOff(root, config));
       const license = lacking.includes(LICENSE_FILE);
       const byInit = lacking.length > (license ? 1 : 0);
-      return [byInit ? 'run `yokoten init` to add the security policy and Dependabot' : '', license ? 'choose a license and add it as LICENSE' : ''].filter(Boolean).join(', and ');
+      // With CI off (#377), init writes no Dependabot config.
+      return [byInit ? `run \`yokoten init\` to add the security policy${isCiOff(root, config) ? '' : ' and Dependabot'}` : '', license ? 'choose a license and add it as LICENSE' : ''].filter(Boolean).join(', and ');
     },
     how: 'a SECURITY.md, a Dependabot config and a license file are in the repo',
     why: 'people can then report a hole in private, old dependencies get updates, and others know how they may use the code',
@@ -1037,10 +1072,10 @@ function gitFolders(root: string): { gitDir: string; commonDir: string } | null 
 }
 
 /** The path groups of a step with no path here. */
-const groupsLacking = (root: string, step: Step): string[][] => (step.paths ?? []).filter((group) => !group.some((path) => existsSync(join(root, path))));
+const groupsLacking = (root: string, step: Step, config?: Config): string[][] => (typeof step.paths === 'function' ? step.paths(root, config) : (step.paths ?? [])).filter((group) => !group.some((path) => existsSync(join(root, path))));
 
 /** The paths of `steps` whose group has no path here, each once. */
-export const missingPaths = (root: string, steps: Step[]): string[] => [...new Set(steps.flatMap((step) => groupsLacking(root, step).flat()))];
+export const missingPaths = (root: string, steps: Step[], config?: Config): string[] => [...new Set(steps.flatMap((step) => groupsLacking(root, step, config).flat()))];
 
 /** A ref's commit, from its loose file or packed-refs. Files only; null when not found. */
 function readCommit(commonDir: string, ref: string): string | null {
@@ -1085,17 +1120,28 @@ export function readDefaultBranchFiles(root: string, paths: string[]): DefaultBr
 }
 
 /**
- * A step not done, as a finding: the step's key is its id. `elsewhere` is what the default
- * branch has: when it has a path of every group missing here, the finding names that branch.
+ * What a step's finding may use beyond the step: what the code host said (`server`, full
+ * doctor only), yokoten.json when it is read already (`config`, #377), and what the default
+ * branch has (`elsewhere`, #405).
  */
-export function stepFinding(step: Step, root: string, env: Env, server?: ServerRead, elsewhere?: DefaultBranchFiles | null): Finding {
-  const lacking = elsewhere ? groupsLacking(root, step) : [];
+export interface FindingContext {
+  server?: ServerRead;
+  config?: Config;
+  elsewhere?: DefaultBranchFiles | null;
+}
+
+/**
+ * A step not done, as a finding: the step's key is its id. When the default branch has a
+ * path of every group missing here, the finding names that branch.
+ */
+export function stepFinding(step: Step, root: string, env: Env, { server, config, elsewhere }: FindingContext = {}): Finding {
+  const lacking = elsewhere ? groupsLacking(root, step, config) : [];
   const there = lacking.map((group) => group.find((path) => elsewhere?.paths.has(path)));
   if (elsewhere && lacking.length && there.every((path) => path !== undefined)) {
     const files = there.length > 1 ? `${there.slice(0, -1).join(', ')} and ${there.at(-1)} are` : `${there[0]} is`;
     return { id: step.key, what: `${files} on ${elsewhere.name}, not on this branch (${elsewhere.branch})`, why: step.why, fix: `work on a branch made from ${elsewhere.name}, or merge ${elsewhere.name} into this one` };
   }
-  return { id: step.key, what: step.what(root, env, server), why: step.why, fix: step.fix(root, env, server) };
+  return { id: step.key, what: step.what(root, env, server, config), why: step.why, fix: step.fix(root, env, server, config) };
 }
 
 /** A step not done, as the map and the session say it: what is missing, then the fix. */
@@ -1111,14 +1157,15 @@ export interface Walked {
 
 /**
  * Where a project is on the road. `next` is the first step that is neither done nor "not
- * now", and `stage` is its stage; both are null when nothing is left. A step yokoten
+ * now", and `stage` is its stage; both are null when nothing is left. A step that needs CI
+ * (`withoutCi`) is "not now" too when "notNow" names `ci` (#377). A step yokoten
  * can't check here never holds the stage: a session can do nothing about it.
  */
 export function walk(found: { step: Step; found: Found }[], notNow: Record<string, string>): { stage: number | null; next: Step | null; steps: Walked[] } {
   let next: Step | null = null;
   const steps = found.map(({ step, found: f }): Walked => {
     if (f === true) return { step, mark: 'done' };
-    if (Object.hasOwn(notNow, step.key)) return { step, mark: 'not now' };
+    if (Object.hasOwn(notNow, step.key) || (step.withoutCi && Object.hasOwn(notNow, 'ci'))) return { step, mark: 'not now' };
     if (f === null) return { step, mark: "can't check" };
     if (next) return { step, mark: 'to do' };
     next = step;
@@ -1129,6 +1176,6 @@ export function walk(found: { step: Step; found: Found }[], notNow: Record<strin
 }
 
 /** Run every check on the road for this project. `server` is what full doctor read from the code host. */
-export function road(root: string, env: Env, steps: Step[] = ROAD, server?: ServerRead): { step: Step; found: Found }[] {
-  return steps.map((step) => ({ step, found: step.check(root, env, server) }));
+export function road(root: string, env: Env, steps: Step[] = ROAD, server?: ServerRead, config?: Config): { step: Step; found: Found }[] {
+  return steps.map((step) => ({ step, found: step.check(root, env, server, config) }));
 }

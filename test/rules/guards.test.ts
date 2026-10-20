@@ -27,6 +27,7 @@ import {
   checkCommand,
   checkEdit,
   commandWords,
+  hardenRead,
   hookFile,
   isGranted,
   isLeadOnly,
@@ -36,7 +37,7 @@ import {
   wrapForRedact,
 } from '../../src/rules/guards.ts';
 import { judge } from '../../src/run/hook.ts';
-import { assertLinear } from '../../scripts/linear.ts';
+import { assertLinear, assertLinearEach } from '../../scripts/linear.ts';
 
 const blocked = (command: string, env: Env = {}) => assert.ok(checkCommand(command, { env }), `should block: ${command}`);
 
@@ -1237,8 +1238,8 @@ test('bash: a heredoc pipeline is read in linear time (#226)', () => {
   assertLinear('a heredoc pipeline into bash', (n) => pipeline('bash', force, n), (command) => assert.equal(checkCommand(command, { env: {} })?.id, 'force-push', 'bodies piped into bash are commands'), 1000);
 });
 
-test('bash: nested constructs up to 8000 repeats are read in linear time and never throw (#226)', () => {
-  const shapes = [
+// Shapes that nest or chain, each alone, before a force push and after one.
+const nestedShapes = [
     '$(', '$( ', '<(', '>(', '((', '$((', '"$(', '"`', '`', '`"', "$'\\'", '<<"', "<<'", '{ ', '( ', '${', '"${',
     'case x in ', 'a) ', ';; ', 'bash -c "', "bash -c '", 'eval "', 'env -S"', 'ssh h "', 'sudo -s "', 'x | bash ', '\\\n',
     'cat <<E | ', 'cat <<E\n', '{ cat <<E; } | ', 'find . -exec ', 'git -c alias.x="!', '$(echo "$(', '"$(echo \'',
@@ -1249,24 +1250,37 @@ test('bash: nested constructs up to 8000 repeats are read in linear time and nev
     'cat <(echo a) | bash ', 'echo $(echo a) | ', 'echo "$(echo a)" | xargs git ', "printf '%s\\n' a | xargs git ", "printf '%s%b%d' ", '{ echo a; } | xargs git ',
     // #314: pass-throughs in the middle of a pipeline.
     '| cat ', '| tee f ', 'echo a | cat | ', 'cat <(echo a) | tee f | bash ',
-  ];
-  const forms: [string, (text: string) => string][] = [
-    ['alone', (text) => text],
-    ['then a force push', (text) => `${text}\n${force}`],
-    ['after a force push', (text) => `${force}; ${text}`],
-  ];
-  for (const shape of shapes) {
-    for (const [form, wrap] of forms) {
-      const name = `${JSON.stringify(shape)} ${form}`;
-      assertLinear(name, (n) => wrap(shape.repeat(n)), (command) => {
-        let result: ReturnType<typeof checkCommand> = null;
-        assert.doesNotThrow(() => {
-          result = checkCommand(command, { env: {}, config: pythonBlocked });
-        }, name);
-        if (command.startsWith(force)) assert.ok(result, `${name} should block`);
-      }, 1000);
-    }
-  }
+];
+const nestedForms: [string, (text: string) => string][] = [
+  ['alone', (text) => text],
+  ['then a force push', (text) => `${text}\n${force}`],
+  ['after a force push', (text) => `${force}; ${text}`],
+];
+// Each read never throws, and a force push before the shapes blocks.
+const nestedCases = nestedShapes.flatMap((shape) =>
+  nestedForms.map(([form, wrap]) => {
+    const name = `${JSON.stringify(shape)} ${form}`;
+    const read = (command: string) => {
+      let result: ReturnType<typeof checkCommand> = null;
+      assert.doesNotThrow(() => {
+        result = checkCommand(command, { env: {}, config: pythonBlocked });
+      }, name);
+      if (command.startsWith(force)) assert.ok(result, `${name} should block`);
+    };
+    return { name, make: (n: number) => wrap(shape.repeat(n)), read };
+  }),
+);
+
+test('bash: nested constructs are read in linear time and never throw (#226)', () => {
+  // From 64 repeats to 512, the shapes taking turns (#442). A loop that reads the text again
+  // for each character is many times over 24x here; see the pull request of #442.
+  assertLinearEach(nestedCases, 64);
+});
+
+test('bash: nested constructs up to 8000 repeats never throw, and a force push before them blocks (#226)', () => {
+  // At 8000 repeats some shapes run out of the work budget and are refused: that path, too,
+  // must not throw. One read each; the time is proved at the sizes above.
+  for (const { make, read } of nestedCases) read(make(8000));
 });
 
 test('hooks setting: git must run the hook file as an executable shell script (#226)', () => {
@@ -1410,33 +1424,39 @@ test('hooks setting: env -C, env --chdir, builtin cd and GIT_COMMON_DIR move rep
   }
 });
 
-// The fourth review of #226. Each shape runs in its own node, which a slow read cannot hold
-// up for long. There each is read at n and 8n repeats, 32k or 100k, and its time must grow
-// like the text (#316). A case goes in on stdin: its parts, a part in brackets repeated n times.
-test('bash and hooks: loops that never spent the budget read 32k to 100k repeats in linear time (#226)', () => {
+// The fourth review of #226. The shapes run in a node of their own, which a slow read cannot
+// hold up for long. There each is read at 1024 and 8192 repeats, all taking turns, and its time
+// must grow like the text (#316, #442). A shape gives what it should at 8192 repeats, or, for
+// one with a size of its own, at that size: 100k substitutions are refused. The cases go in on
+// stdin: their parts, a part in brackets repeated n times.
+test('bash and hooks: loops that never spent the budget read thousands of repeats in linear time (#226)', () => {
   const guards = join(import.meta.dirname, '../..', 'src', 'rules', 'guards.ts');
   const linear = join(import.meta.dirname, '../..', 'scripts', 'linear.ts');
   type Part = string | [string];
-  const run = (mode: 'command' | 'hook', parts: Part[], want: string, repeats = 4096) => {
-    // The code is fixed text: every value goes in on stdin, so nothing is spliced into code.
-    const code = [
-      "import assert from 'node:assert/strict';",
-      "import { readFileSync } from 'node:fs';",
-      "const { guards, linear, mode, config, cwd, parts, want, repeats } = JSON.parse(readFileSync(0, 'utf8'));",
-      'const { checkCommand, runsCheck } = await import(guards);',
-      'const { assertLinear } = await import(linear);',
-      "const make = (n) => parts.map((part) => (typeof part === 'string' ? part : part[0].repeat(n))).join('');",
-      "const read = (text) => (mode === 'hook' ? String(runsCheck(text)) : (checkCommand(text, { env: {}, config, cwd })?.id ?? 'allow'));",
-      // What the text at 8n gives is what the case proves; a smaller one may still be read in full.
-      'const big = make(8 * repeats).length;',
-      'assertLinear(JSON.stringify(parts).slice(0, 60), make, (text) => {',
-      '  const found = read(text);',
-      '  if (text.length === big) assert.equal(found, want);',
-      '}, repeats);',
-    ].join('\n');
-    const child = spawnSync(process.execPath, ['--max-old-space-size=256', '--input-type=module', '-e', code], { input: JSON.stringify({ guards: pathToFileURL(guards).href, linear: pathToFileURL(linear).href, mode, config: pythonBlocked, cwd: tmpdir(), parts, want, repeats }), encoding: 'utf8', timeout: 60_000 });
-    assert.equal(child.status, 0, `${JSON.stringify(parts).slice(0, 60)}... failed: ${child.signal ?? child.error ?? child.stderr.slice(0, 600)}`);
-  };
+  type Case = { mode: 'command' | 'hook'; parts: Part[]; want: string; size?: number };
+  const cases: Case[] = [];
+  const run = (mode: Case['mode'], parts: Part[], want: string, size?: number) => cases.push({ mode, parts, want, size });
+  // The code is fixed text: every value goes in on stdin, so nothing is spliced into code.
+  const code = [
+    "import assert from 'node:assert/strict';",
+    "import { readFileSync } from 'node:fs';",
+    "const { guards, linear, config, cwd, cases, repeats } = JSON.parse(readFileSync(0, 'utf8'));",
+    'const { checkCommand, runsCheck } = await import(guards);',
+    'const { assertLinearEach } = await import(linear);',
+    "const make = (parts, n) => parts.map((part) => (typeof part === 'string' ? part : part[0].repeat(n))).join('');",
+    "const read = (mode, text) => (mode === 'hook' ? String(runsCheck(text)) : (checkCommand(text, { env: {}, config, cwd })?.id ?? 'allow'));",
+    'const name = (parts) => JSON.stringify(parts).slice(0, 60);',
+    // What the text at 8n gives is what the case proves; a smaller one may still be read in full.
+    'assertLinearEach(cases.map(({ mode, parts, want, size }) => {',
+    '  const big = make(parts, 8 * repeats).length;',
+    '  const check = (text) => {',
+    '    const found = read(mode, text);',
+    '    if (size === undefined && text.length === big) assert.equal(found, want, name(parts));',
+    '  };',
+    '  return { name: name(parts), make: (n) => make(parts, n), read: check };',
+    '}), repeats);',
+    'for (const { mode, parts, want, size } of cases) if (size !== undefined) assert.equal(read(mode, make(parts, size)), want, name(parts));',
+  ].join('\n');
   const keys: Part = ['GIT_CONFIG_KEY_0=core.hooksPath '];
   const commands: [Part[], string, number?][] = [
     [[['-/env ']], 'allow'],
@@ -1453,26 +1473,28 @@ test('bash and hooks: loops that never spent the budget read 32k to 100k repeats
     [[['if a; then echo a; '], ['fi; ']], 'allow'],
     [[['for a in b; do '], 'echo a', ['; done'], ' | cat'], 'allow'],
     // What 100k substitutions print, handed to a shell, is too many commands to read: refused, in time.
-    [['bash ', ['<(echo a) ']], 'unreadable-command', 12500],
-    [['eval "', ['$(echo a)'], '"'], 'unreadable-command', 12500],
+    [['bash ', ['<(echo a) ']], 'unreadable-command', 100_000],
+    [['eval "', ['$(echo a)'], '"'], 'unreadable-command', 100_000],
     [['echo a | xargs ', ['-0 '], 'git status'], 'allow'],
     [["env -S'git status ", ['${X}'], "'"], 'allow'],
     // #308: a printf format said again for each argument, and substitutions printed into a pipe.
     [["printf '%s\\n' status ", ['a '], '| xargs git'], 'allow'],
     [["printf '", ['x'], "%s' status ", ['a '], '| xargs git'], 'allow'],
     [["printf '", ['%s'], "\\n' git status | bash"], 'allow'],
-    [['cat ', ['<(echo a) '], '| bash'], 'unreadable-command', 12500],
+    [['cat ', ['<(echo a) '], '| bash'], 'unreadable-command', 100_000],
     [['echo "', ['$(echo a)'], '" | xargs git status'], 'allow'],
     // #314: a long chain of pass-throughs hands the first command's text to the shell.
     [['echo a ', ['| cat '], '| bash'], 'allow'],
     [[`echo '${force}' `, ['| cat '], '| bash'], 'force-push'],
     [[`cat <(echo '${force}') `, ['| tee f '], '| bash'], 'force-push'],
   ];
-  for (const [parts, want, repeats] of commands) run('command', parts, want, repeats);
+  for (const [parts, want, size] of commands) run('command', parts, want, size);
   // A line that opens more than it closes leaves the check inside a block; a pipe at the end
   // of each line joins the check to the pipeline.
   for (const open of ['$((((', '$(', '${']) run('hook', ['#!/bin/sh\n', [open], '\nnpx yokoten check\n'], 'false');
   run('hook', ['#!/bin/sh\n', ['a |\n'], 'npx yokoten check\n'], 'false');
+  const child = spawnSync(process.execPath, ['--max-old-space-size=256', '--input-type=module', '-e', code], { input: JSON.stringify({ guards: pathToFileURL(guards).href, linear: pathToFileURL(linear).href, config: pythonBlocked, cwd: tmpdir(), cases, repeats: 1024 }), encoding: 'utf8', timeout: 120_000 });
+  assert.equal(child.status, 0, `the linear reads failed: ${child.signal ?? child.error ?? child.stderr.slice(0, 1200)}`);
   // The linear reads keep what the old ones found: a closed $( and quotes cut no block.
   for (const line of ['x="(" y=\'{\' z=${a:-x} w=$(echo a) v=$((1 + (2)))', 'echo "a\\"(" \'"\'']) {
     assert.equal(runsCheck(`#!/bin/sh\n${line}\nnpx yokoten check\n`), true, line);
@@ -1730,10 +1752,18 @@ test('bash: env -S puts a variable\'s value in place of ${NAME}, which the guard
 
 test('printsAccount: one plain read from the table is caught (#390)', () => {
   const caught = [
-    'git log -3', 'git show HEAD', 'git blame README.md', 'git shortlog -sn', 'git whatchanged', '/usr/bin/git log',
+    'git log -3', 'git show HEAD', 'git blame README.md', 'git shortlog -sn HEAD', 'git whatchanged', '/usr/bin/git log',
     'git remote -v', 'git remote get-url origin', 'git remote show origin', 'git config --list', 'git config --global --get user.email', 'git config get remote.origin.url',
     'gh api user', 'gh api repos/o/r/traffic/views --jq .count', 'gh api -X GET users/someone', 'gh api --method=GET user --paginate', 'gh auth status', 'gh auth status --hostname github.com',
     'npm whoami', 'npm whoami --registry https://registry.npmjs.org', 'wrangler whoami', 'npx wrangler whoami', 'pnpm dlx wrangler@3 whoami',
+    // Any format: the author can print with no "Author:" line (#413).
+    'git log --format=%an', 'git log --pretty=format:%ae', 'git log --oneline', 'git show --pretty=format:%s', 'git log --format=%H -1',
+    "git log --format='%an <%ae>'", 'git log --format="%cn <%ce>" -3', 'git shortlog -sne HEAD', 'git shortlog -s -n -e main', 'git blame -e README.md',
+    "git for-each-ref --format='%(authorname) %(refname)'", 'git for-each-ref refs/tags', 'git cat-file -p HEAD', 'git cat-file commit HEAD', 'git cat-file tag v1',
+    // A quote inside the other kind is plain text.
+    `git log '"'`, `git log "'"`, "git log -- '*.md'",
+    // A shortlog with a revision; an option's value comes first.
+    'git shortlog --group=author HEAD', 'git shortlog --group author HEAD', 'git shortlog -s HEAD -- docs',
   ];
   for (const command of caught) assert.ok(printsAccount(command), `not caught: ${command}`);
   assert.equal(printsAccount('git log -1'), '`git log` prints author names and emails');
@@ -1747,17 +1777,39 @@ test('printsAccount: anything more than one plain read is left to the normal flo
     // A prefix or a launcher.
     'FOO=1 git log', 'sudo git log', 'env git log', 'nice git log', 'bash -c "git log"', 'npx --yes wrangler whoami',
     // Options that write a file, run a program, or pick another git.
-    'git -c a=b log', 'git -C x log', 'git log --output=x', 'git log -o x', 'git log --ext-diff', 'git show --textconv x', 'git log --exec-path=/x',
-    // Its own format, or a subcommand only by name further on.
-    'git log --format=%H -1', 'git log --oneline', 'git show --pretty=format:%s', 'git remote add show x', 'git remote rename get-url x', 'git remote',
+    'git -c a=b log', 'git -C x log', 'git log --output=x', 'git log -o x', 'git log --ext-diff', 'git show --textconv x', 'git log --exec-path=/x', 'git log --show-signature', 'git show --show-signature HEAD',
+    // A subcommand only by name further on.
+    'git remote add show x', 'git remote rename get-url x', 'git remote',
     // A write, or something sent.
     'git config user.email x', 'git config --get core.hooksPath', 'git push', 'git fetch', 'git pull', 'git clone x', 'git ls-remote', 'wrangler deploy', 'wrangler login', 'npx wrangler pages deploy',
     'gh api -X PATCH user -f name=x', 'gh api user -f bio=x', 'gh api --method=POST user/emails', 'gh api repos/o/r', 'gh auth status --show-token', 'gh auth token',
     // Not in the table any more: they print secrets, not only the owner.
     'env', 'printenv', 'printenv HOME',
+    // A format in a compound command, or quoted text bash still reads (#413).
+    "git log --format='%an'; ls", 'git log --format=%an | head', 'git log --format="$(id)"', 'git log --format="`id`"', "git log \\'x;ls'", "git log 'a'\\';ls'", 'git log --format=%an > out', "git log '%an' && git push",
+    // A quote the plain-text search can't match to bash's own reading: it could hide a redirect (#413).
+    `git log --format="%an %ae'$x" > out.txt --invert-grep --grep='"'`, `git log "'$x" >> ~/.bashrc '"'`, `git log 'x`, `git log "x`, `git log "a\\"b"`,
+    // A word that reads as a redirect, even quoted.
+    `git log '>' out`, `git log '2>&1'`, `git log '&>' x`,
+    // A glob: a file named `--output=x` would become an option (#413).
+    'git log *', 'git log -- *.md', 'git show HEAD?', 'git log [a]', 'git blame *',
+    // A shortlog with no revision reads stdin: an option's value or a path after -- is none.
+    'git shortlog -sne', 'git shortlog -sn', 'git shortlog -s --group author', 'git shortlog --format %an', 'git shortlog -w 20', 'git shortlog -s -- HEAD',
+    // The subcommand quoted: the rewrite can't place its options.
+    '"git" log -1', "git 'log' -1",
+    // A cat-file that is not one object printed: a batch reads stdin, a filter runs a program.
+    'git cat-file --batch', 'git cat-file -p', 'git cat-file --filters HEAD:x', 'git cat-file -t HEAD', 'git cat-file -p HEAD extra',
     'git status', 'echo git log',
   ];
   for (const command of left) assert.equal(printsAccount(command), null, command);
+});
+
+test('hardenRead: a log, show or blame runs no textconv or external diff; other reads stay as they are (#413)', () => {
+  assert.equal(hardenRead('git log -1'), 'git log --no-ext-diff --no-textconv --no-show-signature -1');
+  assert.equal(hardenRead('git show'), 'git show --no-ext-diff --no-textconv --no-show-signature');
+  assert.equal(hardenRead('/usr/bin/git whatchanged -p'), '/usr/bin/git whatchanged --no-ext-diff --no-textconv --no-show-signature -p');
+  assert.equal(hardenRead('git blame -e README.md'), 'git blame --no-textconv -e README.md');
+  for (const command of ['git shortlog -sn HEAD', 'git cat-file -p HEAD', 'git remote -v', 'npm whoami', 'git status']) assert.equal(hardenRead(command), command);
 });
 
 test('isRedacted: the wrapper\'s own first line and the call; a comment that names them is not enough (#390)', () => {

@@ -33,6 +33,7 @@ import {
 import { DEFAULTS } from '../../src/rules/config.ts';
 import { launcherDir, machineStateFile, setUpLauncher } from '../../src/setup/install.ts';
 import {
+  type BranchRules,
   type Gh,
   readPlanning,
   readServer,
@@ -70,10 +71,12 @@ import {
   sessionUnsaved,
   STOPPED_EARLY,
   UNSAVED_OFFER,
+  noCiNote,
   upstreamNote,
 } from '../../src/setup/doctor.ts';
 import { LABELS } from '../../src/setup/plan.ts';
 import {
+  missingPaths,
   road,
   ROAD,
   serverChecks,
@@ -170,7 +173,7 @@ test('road: each server step catches its setting off, and says what and the fix 
     const found = serverFound(server);
     assert.equal(found[key], false, `${key} lets ${Object.keys(change)[0]} through`);
     assert.equal(Object.values(found).filter((f) => f === false).length, 1, `only ${key} fails`);
-    const f = stepFinding(ROAD.find((s) => s.key === key)!, '.', {}, server);
+    const f = stepFinding(ROAD.find((s) => s.key === key)!, '.', {}, { server });
     assert.match(f.what, what);
     assert.match(f.fix, /^in Settings, /);
   }
@@ -251,7 +254,7 @@ test('road: the review step catches a merge with no approval, and says how to se
     const server = readServer(serverGh({ ...ADMIN, [RULES]: rules }).gh, REPO);
     assert.equal(review.check('.', {}, server), false, JSON.stringify(rules));
   }
-  const f = stepFinding(review, '.', {}, readServer(serverGh(ADMIN).gh, REPO));
+  const f = stepFinding(review, '.', {}, { server: readServer(serverGh(ADMIN).gh, REPO) });
   assert.equal(f.what, 'a merge to the default branch needs no approving review');
   assert.match(f.fix, /"Required approvals" to 1/);
   assert.match(f.fix, /can't approve your own pull request, so let the bot open them/);
@@ -262,7 +265,7 @@ test('road: the review step is not done while a workflow may approve a pull requ
   // With the Actions setting on, a workflow the bot pushes could approve the bot's own pull request.
   const on = readServer(serverGh({ ...ADMIN, [RULES]: withApprovals(1), [ACTIONS]: { can_approve_pull_request_reviews: true } }).gh, REPO);
   assert.equal(review.check('.', {}, on), false);
-  const f = stepFinding(review, '.', {}, on);
+  const f = stepFinding(review, '.', {}, { server: on });
   assert.match(f.what, /^a workflow may approve a pull request/);
   assert.match(f.fix, /turn off "Allow GitHub Actions to create and approve pull requests"/);
   // Unreadable is can't check, never done.
@@ -340,7 +343,7 @@ test('road: the labels and milestone steps are stage 2; missing labels or no ope
   assert.deepEqual(planningFound(withPlanning(all)), { labels: true, milestone: true });
   const lacking = withPlanning(readPlanning(fakeGh(LABELS.filter((l) => l.name !== 'hotfix'), ['closed v1']).gh, 'me/repo'));
   assert.deepEqual(planningFound(lacking), { labels: false, milestone: false });
-  assert.equal(stepFinding(ROAD.find((s) => s.key === 'labels')!, '.', {}, lacking).what, 'the standard labels are not all on the server (no hotfix)');
+  assert.equal(stepFinding(ROAD.find((s) => s.key === 'labels')!, '.', {}, { server: lacking }).what, 'the standard labels are not all on the server (no hotfix)');
   // A session, no gh, or a server read without them: can't check, never done.
   for (const server of [undefined, readServer(() => { throw said(401); }, REPO), withPlanning(undefined), withPlanning({ unread: 'gh is not signed in', fix: 'run `gh auth login`' })]) {
     assert.deepEqual(planningFound(server), { labels: null, milestone: null });
@@ -454,7 +457,8 @@ test('doctor --session: "not now" skips a step, by the names yokoten.json alread
   assert.match(full, /^ +not now +ci \(Scorecard: CI-Tests\): no remote yet$/m, 'the full map shows the reason');
   assert.match(full, /^ +next +templates \(GitHub community profile\): /m);
   assert.match(full, /^ +to do +changelog \(Best Practices: release_notes\): /m);
-  assert.match(full, /^ +to do +titles \(Conventional Commits 1\.0\.0\): CI does not check pull requests/m);
+  // "notNow" ci covers the steps that need CI (#377): titles waits too, and says what to run instead.
+  assert.match(full, /^ +not now +titles \(Conventional Commits 1\.0\.0\): no remote yet \(notNow ci\); run `yokoten check --pr <number>` before each merge$/m);
 });
 
 test('doctor: each stage boundary, from a fresh repo to the end of the road', () => {
@@ -1213,6 +1217,23 @@ test('doctor: in the yokoten repo, the session and doctor count the notes from o
   rmSync(empty, { recursive: true, force: true });
 });
 
+// #377: a repo that keeps CI off hears what that leaves out, and when to end it.
+test('doctor: the no-ci note says what is not checked, and from stage 5 or on a public repo how to end it (#377)', () => {
+  assert.equal(noCiNote({ tests: 'later' }, 2, undefined), null, 'no note without "notNow" ci');
+  const early = noCiNote({ ci: 'private repo' }, 2, undefined);
+  assert.match(early?.what ?? '', /nothing on the server checks pull requests, issue titles or the workflows, no code scanning such as CodeQL runs/);
+  assert.equal(early?.fix, 'before each merge, run `yokoten check --pr <number>` and the tests');
+  assert.match(noCiNote({ ci: 'private repo' }, 5, undefined)?.fix ?? '', /; when the repo goes public, remove "ci" from "notNow" in yokoten\.json, then run `yokoten init`/);
+  assert.match(noCiNote({ ci: 'private repo' }, null, undefined)?.fix ?? '', /when the repo goes public/, 'the end of the road counts as stage 5');
+  const server = readServer(serverGh(GOOD).gh, REPO);
+  assert.ok(!('unread' in server));
+  assert.match(noCiNote({ ci: 'private repo' }, 2, { ...server, isPrivate: false })?.fix ?? '', /^this repo is public now, and Actions cost no minutes on a public repo: remove "ci"/);
+  // With CI off, no CI check can be required, so the server check leaves it out.
+  const off: ServerSettings = { ...server, branch: { ...(server.branch as BranchRules), requiredChecks: [] } };
+  assert.equal(marks(off)['required-checks'], 'MISSING');
+  assert.ok(!serverChecks(off, { isCiOff: true }).some((c) => c.id === 'required-checks'));
+});
+
 test('doctor: a file on the default branch, missing on this one, is no "run init" (#405)', () => {
   const sandbox = makeSandbox();
   sandbox.git('commit', '-q', '--allow-empty', '-m', 'chore: start');
@@ -1313,6 +1334,16 @@ test('saveHostCache: keeps the other keys of machine.json, such as the Windows u
   const state = JSON.parse(files.get(machineStateFile(WSL)) ?? '{}');
   assert.deepEqual(state.windowsUsers.names, ['JaneD']);
   assert.equal(state.hostDisk.size, 1);
+});
+
+test('doctor: with "notNow" ci the default-branch lookup leaves out the Dependabot config (#377, #405)', () => {
+  const root = makeTempDir('yokoten-noci-paths-');
+  const security = [ROAD.find((s) => s.key === 'security-files')!];
+  const off = { ...DEFAULTS, notNow: { ci: 'private repo' } };
+  assert.ok(missingPaths(root, security, DEFAULTS).includes('.github/dependabot.yml'), 'positive control: CI on asks for it');
+  assert.ok(!missingPaths(root, security, off).some((path) => path.includes('dependabot')));
+  assert.ok(missingPaths(root, security, off).includes('SECURITY.md'));
+  rmSync(root, { recursive: true, force: true });
 });
 
 test('doctor: a note when no yokoten on the PATH runs the installed copy (#433)', () => {

@@ -446,3 +446,72 @@ test('redact: a long line is cut only at a space or tab, never inside a value (#
   const result = spawnSync('node', [CLI, 'redact'], { cwd: sandbox.repo, env: sandbox.env, input, encoding: 'utf8', maxBuffer: 8 << 20 });
   assert.ok(result.stdout === `${'y'.repeat((1 << 20) + 10)} <mark>`, `ends with: ${result.stdout.slice(-20)}`);
 });
+
+// #377: a repo without CI checks a pull request by its number, read through gh.
+test('check --pr <number>: reads the pull request through gh and checks it with the commits here (#377)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('README.md', 'Short.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'base');
+  const base = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  sandbox.write('src/a.ts', 'export const a = 1;\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'head');
+  const head = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  const body = 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\nNo changelog: a test\n';
+  // A gh first on PATH that answers `pr view 12` only. `pr view 13` fails as gh does for
+  // a number the repo does not have; every other call fails plainly.
+  const bin = join(sandbox.home, 'bin');
+  mkdirSync(bin);
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/octo/app.git');
+  const answer = (title: string, headSha: string, author: object = { login: 'octo' }, prBody = body) =>
+    writeFileSync(
+      join(bin, 'gh'),
+      `#!/usr/bin/env node
+if (process.argv[4] === '13') { console.error('GraphQL: Could not resolve to a PullRequest with the number of 13. (repository.pullRequest)'); process.exit(1); }
+if (process.argv.slice(2, 4).join(' ') !== 'pr view' || process.argv[4] !== '12') process.exit(1);
+console.log(${JSON.stringify(JSON.stringify({ title, body: prBody, labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: { title: 'M0' }, author, baseRefOid: base, headRefOid: headSha }))});
+`,
+      { mode: 0o755 },
+    );
+  const extra = { PATH: `${bin}:${process.env.PATH}` };
+  answer('feat: a', head);
+  let result = sandbox.run(['check', '--pr', '12'], { extra });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^yokoten check --pr: ok$/m);
+  // The control: a bad title fails, as in CI.
+  answer('a', head);
+  result = sandbox.run(['check', '--pr', '12', '--json'], { extra });
+  assert.equal(result.status, 1);
+  assert.ok(JSON.parse(result.stdout).findings.some((f: { id: string }) => f.id === 'pr-title'), result.stdout);
+  // gh names Dependabot `app/dependabot`; it counts as dependabot[bot], as in CI, so its body rules are notes.
+  const dependabotBody = (author: object) => {
+    // Dependabot writes its own body: no tier line, no sections.
+    answer('ci: bump the actions group', head, author, 'Bumps the actions group.');
+    const report = JSON.parse(sandbox.run(['check', '--pr', '12', '--json'], { extra }).stdout);
+    return report.notes.some((f: { why: string }) => /Dependabot opened this pull request/.test(f.why));
+  };
+  assert.equal(dependabotBody({ login: 'app/dependabot', is_bot: true }), true);
+  assert.equal(dependabotBody({ login: 'octo', is_bot: false }), false, 'the control: a person is held to every rule');
+  // A head commit this clone has not fetched: the fix names what to fetch.
+  answer('feat: a', 'f'.repeat(40));
+  result = sandbox.run(['check', '--pr', '12'], { extra });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /the pull request's head commit is not in this checkout\. .+ Run `git fetch origin` and `git fetch origin pull\/12\/head`, then run it again\./);
+  // gh can't read it: one finding, never a crash.
+  result = sandbox.run(['check', '--pr', '13', '--json'], { extra });
+  assert.equal(result.status, 1);
+  assert.deepEqual(JSON.parse(result.stdout).findings.map((f: { id: string; what: string }) => [f.id, f.what]), [['pr-read', 'no pull request 13 in octo/app']]);
+  result = sandbox.run(['check', '--pr', '14', '--json'], { extra });
+  assert.equal(result.status, 1);
+  assert.match(JSON.parse(result.stdout).findings[0].what, /^pull request 14 can't be read: /, 'any other gh failure keeps its own reason');
+  // A number goes with --pr only, and must be a number.
+  result = sandbox.run(['check', '12'], { extra });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /a number goes with --pr/);
+  result = sandbox.run(['check', '--pr', '--x'], { extra });
+  assert.equal(result.status, 1);
+  result = sandbox.run(['check', '--pr', 'main', '--json'], { extra });
+  assert.equal(result.status, 1);
+  assert.match(JSON.parse(result.stdout).findings[0].what, /"main" is not a pull request number/);
+});
