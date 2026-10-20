@@ -978,11 +978,11 @@ function shownPath(path: string, env: Env, marks: string[]): string {
 /**
  * Whether the command line is one gh post and nothing else (#447): `gh …`, or the bot's
  * `yokoten bot -- gh …`, optionally after one plain `cd <folder> &&`. No env prefix, no
- * `env` or `sudo`, no other command, subshell, pipe, `$(…)` or backquote, and no heredoc
+ * `env` or `sudo`, no other command, subshell, pipe, output redirect, `$'…'`, `$(…)` or backquote, and no heredoc
  * that expands one. Anything else on the line could change where gh posts before it runs,
  * so no allow applies (record 0014). `cd` is true when the line starts with that `cd`.
  */
-export function lonePost(command: string): { cd: boolean } | null {
+export function lonePost(command: string): { cd: boolean; target?: string } | null {
   let text = trimStart(command, ' \t');
   const cd = text.match(/^cd[ \t]+('[^'\n]*'|"[^"$`\\\n]*"|[\w./~+@%:,=-]+)[ \t]*&&[ \t]*/);
   if (cd) text = text.slice(cd[0].length);
@@ -1008,7 +1008,8 @@ export function lonePost(command: string): { cd: boolean } | null {
     }
     if (char === "'" || char === '"') quote = char;
     else if (char === '\n') break;
-    else if (';&|`()'.includes(char) || (char === '$' && text[index + 1] === '(')) return null;
+    else if (char === '$' && (text[index + 1] === "'" || text[index + 1] === '"')) return null; // $'…' and $"…": bash reads the quote inside differently
+    else if (char === '>' || ';&|`()'.includes(char) || (char === '$' && text[index + 1] === '(')) return null;
     else if (char === '<' && text[index + 1] === '<' && text[index + 2] !== '<') {
       if (heredoc) return null; // one heredoc at most
       const found = text.slice(index, index + 4096).match(/^<<(-?)[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|([\w.-]+))/);
@@ -1018,7 +1019,7 @@ export function lonePost(command: string): { cd: boolean } | null {
     } else if (char === '<' && text[index + 1] === '<') index += 2; // a here-string: its word is read as any other
   }
   if (quote) return null;
-  const lone = { cd: cd !== null };
+  const lone = cd ? { cd: true, target: cd[1] } : { cd: false };
   if (index >= text.length) return heredoc ? null : lone;
   // A newline: only a heredoc's body may follow, then nothing.
   if (!heredoc) return null;
@@ -1064,6 +1065,8 @@ function isPostHere(gh: GhCommand, { env, command, cwd, from }: { env: Env; comm
   if (!lone || namesTarget(gh, command, env)) return false;
   if (!lone.cd) return true;
   if (!cwd || !from) return false;
+  // With CDPATH set, bash may go to $CDPATH/<target>, not the folder the guard resolved.
+  if (env.CDPATH && lone.target !== undefined && !/^['"]?(?:~|\/|\.\/|\.\.\/)/.test(lone.target)) return false;
   const top = repoTop(cwd);
   return top !== null && top === repoTop(from);
 }

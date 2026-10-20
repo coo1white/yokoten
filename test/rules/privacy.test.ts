@@ -758,3 +758,29 @@ test('lonePost: linear on long input (#447)', () => {
   ];
   for (const [name, make] of inputs) assertLinear(name, make, (text) => lonePost(text));
 });
+
+test('lonePost: refuses what bash reads differently from the guard (#447)', () => {
+  // ANSI-C quoting: bash reads $'\'' as one quote, so `echo PWNED` runs.
+  assert.equal(lonePost(`gh issue comment 1 -b $'\\'' ; echo PWNED ; echo '`), null, "$'…'");
+  assert.equal(lonePost('gh issue comment 1 -b $"x"'), null, '$"…"');
+  // A redirect writes a file.
+  assert.equal(lonePost('gh issue comment 1 -b hi > ~/.config/gh/hosts.yml'), null, '>');
+  for (const redirect of ['>> f', '>| f', '&> f', '2> f']) assert.equal(lonePost(`gh issue comment 1 -b hi ${redirect}`), null, redirect);
+  // The plain forms stay allowed: quoted text, a quoted > and a quoted heredoc.
+  assert.deepEqual(lonePost('gh issue comment 1 -b "a > b; $HOME" --title \'x | y\''), { cd: false });
+  assert.deepEqual(lonePost("gh issue create --title x --body-file - <<'EOF'\na > b\nEOF"), { cd: false });
+  assert.deepEqual(lonePost('gh issue comment 1 -b "hello world"'), { cd: false });
+});
+
+test('checkPost: CDPATH makes a relative cd unsure, so no allow applies (#447)', () => {
+  const own = allowRepo('https://example.com/octo/app');
+  own.allow([{ remote: 'example.com/octo/app', allow: ['quietvale'] }]);
+  mkdirSync(join(own.repo, 'sub'), { recursive: true });
+  const body = '--title "check: fix a bug" --body "QuietVale ships"';
+  const post = (command: string, extra: Env) => checkCommand(command, { env: { ...own.env, ...extra }, cwd: own.repo });
+  assert.equal(post(`cd sub && gh issue create ${body}`, {}), null, 'no CDPATH: allowed');
+  assert.equal(post(`cd sub && gh issue create ${body}`, { CDPATH: '' }), null, 'empty CDPATH: allowed');
+  assert.equal(post(`cd sub && gh issue create ${body}`, { CDPATH: '/elsewhere' })?.id, 'private-mark', 'CDPATH set: refused');
+  assert.equal(post(`cd ./sub && gh issue create ${body}`, { CDPATH: '/elsewhere' }), null, './ is not searched');
+  assert.equal(post(`cd ${join(own.repo, 'sub')} && gh issue create ${body}`, { CDPATH: '/elsewhere' }), null, 'absolute is not searched');
+});
