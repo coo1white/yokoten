@@ -335,12 +335,12 @@ const builtFiles = (root: string): string[] | null => {
 /** The one security file init does not write: the license is the owner's choice. */
 const LICENSE_FILE = 'license file';
 /**
- * A license file name, as GitHub's licensee finds one (#376): LICENSE, LICENCE or COPYING in
+ * A license file name, as GitHub's licensee finds one (#376): LICENSE, LICENCE, UNLICENSE or COPYING in
  * any case, alone or followed by an extension or a suffix such as an SPDX id. So LICENSE.md,
  * licence.txt, COPYING.LESSER and the Rust dual layout LICENSE-MIT plus LICENSE-APACHE all count.
  * LICENSES.md and LICENSING.md do not: they explain which license applies where, and are no license.
  */
-export const isLicenseName = (name: string) => /^(licen[cs]e|copying)([-._].*)?$/i.test(name);
+export const isLicenseName = (name: string) => /^((un)?licen[cs]e|copying)([-._].*)?$/i.test(name);
 /** Whether the root has a license file: one readdir, names as the folder lists them. */
 const hasLicense = (root: string) => {
   try {
