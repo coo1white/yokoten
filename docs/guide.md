@@ -100,6 +100,9 @@ The session hears about one step only: the stage, the next step, and why it matt
 The stage is worked out from the files each time; nothing saves it. A step you marked
 "not now" is skipped. The order is advice: a later step done early counts as done.
 When every step is done or "not now", the session hears one line that says so.
+A file missing here but on the default branch is named with that branch, not with `init`.
+After Claude Code compacts the context, the session hears only notes that changed.
+Each session keeps what it heard in `~/.config/yokoten/sessions/`, and files older than 7 days are removed.
 The agent tells you in your own language. yokoten prints English, which agents read most
 reliably.
 
@@ -653,6 +656,14 @@ check), `pr.yml` and `issue.yml`. Each action is pinned to a commit, each job ha
 limit, checkout keeps no token, and a new push cancels the old run on the same pull
 request. Add your tests as a job in `yokoten.yml` and to the `needs` list of `ci`.
 
+In `yokoten.yml`, a `changes` job reads which files a pull request changes. The pull
+request is docs-only when each file is under `docs/` or `changes/`, or is a `README.md`
+or `CHANGELOG.md`. A job of yours can then skip a docs-only pull request; the comment
+above `ci` shows the two lines to add. `ci` counts that skip as green. The commit check
+and the lint job always run. A push to main runs every job. So does a pull request whose
+file list can't be read: a warning says so. In yokoten's own CI, a docs-only pull request
+runs the tests once, on Ubuntu with Node 24, and skips `typecheck` and the Action job.
+
 It puts three safe defaults in `.github/` too:
 
 - `dependabot.yml` updates the actions that CI runs, and the packages `init` finds (npm,
@@ -1173,7 +1184,7 @@ A list you set replaces the default list; it does not add to it.
 | `layout.exempt` | none | Folders that may grow past it, such as a log of records |
 | `tests` | `*.test.*`, `*.spec.*`, `*_test.go`, `test/**`, `tests/**` | The test files a fix task may not change |
 | `leadOnly` | the rules, agent config, `.githooks/**`, `.github/**`, the vendored runtime `.yokoten/**` | The files a worker may not change |
-| `privacy.allow` | none | Exact strings the privacy check lets through, such as a public support address |
+| `privacy.allow` | none | Exact strings the privacy check lets through, such as a public support address, or this project's own name from your private marks |
 | `privacy.skip` | lock files | Files the privacy check does not read |
 | `privacy.utc` | `true` | Commit times must be in UTC |
 | `privacy.output` | `"run"` | In an agent other than Claude Code, a command that prints account details runs as it is. `"stop"` stops it and shows the filtered command |
@@ -1192,7 +1203,7 @@ Environment variables:
 | `YOKOTEN_RELEASE_APPROVAL=1` | The owner allows a release from this session. Muse Code is not known to pass it to a hook |
 | `YOKOTEN_PRIVATE_MARKS` | Another path for the private-marks file |
 | `YOKOTEN_MIN_FREE_GB` | `doctor` notes a disk with less free space than this, in GB. `0` turns the note off. See [Machine notes](#machine-notes) |
-| `YOKOTEN_BOT_APP_ID`, `YOKOTEN_BOT_KEY`, `YOKOTEN_BOT_INSTALLATION` | The bot. See [server.md](server.md#3-the-bot-a-github-app) |
+| `YOKOTEN_BOT_APP_ID`, `YOKOTEN_BOT_KEY`, `YOKOTEN_BOT_INSTALLATION` | The bot. They can also be lines in `~/.config/yokoten/keys.env`. See [server.md](server.md#3-the-bot-a-github-app) |
 | `YOKOTEN_GITHUB_API` | Another GitHub API address, such as GitHub Enterprise Server |
 | `LLAMA_API_KEY` or `MODEL_API_KEY`, `LLAMA_API_BASE`, `LLAMA_MODEL` | The model for `adopt`. See [A first draft of the table](#a-first-draft-of-the-table) |
 
@@ -1327,6 +1338,13 @@ on every commit. On your own machine it also reads `~/.config/yokoten/private-ma
 your name, your city, your domains, your server names. That file stays outside the
 repo, because a list of what must not be published can't itself be published. A hit
 is reported by file and line; the mark itself is never printed.
+
+The marks file is for the whole machine, so a private project's name belongs in it. That
+project's own repo can still use its name: list the name in `privacy.allow` in its
+yokoten.json. A mark is let through when an entry there is the same string, upper or
+lower case aside; a part or a longer string does not count. It is let through only in
+that repo, by `check`, the commit hook and the guard for `gh` posts. Every other repo
+still stops it. `doctor` says how many of your marks the project allows, never which.
 
 Some files must name your account. So the forge login that yokoten added to the marks is
 fine in a CODEOWNERS owner, an `@` mention in `.github/`, an author or owner field of

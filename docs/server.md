@@ -84,7 +84,9 @@ no sign-up, is tied to no person, and its rights are listed one by one.
    one of these paths needs your review (step 1 requires it), and is tier A.
 
 5. Note the **App ID** (on the App's page, under About), and add it to your shell
-   profile: `export YOKOTEN_BOT_APP_ID=<the App ID>`.
+   profile: `export YOKOTEN_BOT_APP_ID=<the App ID>`. An agent session may not load your
+   profile, so you can put the line `YOKOTEN_BOT_APP_ID=<the App ID>` in
+   `~/.config/yokoten/keys.env` instead. `yokoten bot` and `doctor` both read it.
 
 The lead then runs a command as the bot:
 
