@@ -46,7 +46,7 @@ export interface Step {
   what: (root: string, env: Env, server: ServerRead) => string;
   /** What to do about it: a command or an edit. No full stop at the end. */
   fix: (root: string, env: Env, server: ServerRead) => string;
-  /** Why yokoten can't check the step here, and what to do. Only server steps have it. No full stop at the end. */
+  /** Why yokoten can't check the step here, and what to do. Server steps and workflow steps have it. No full stop at the end. */
   unchecked?: (server: ServerRead) => string;
   /** Why the step matters, in one plain sentence. No full stop at the end. */
   why: string;
@@ -184,48 +184,138 @@ const runLines = (ci: string): string[] => {
   }
   return lines;
 };
+// What a command may start with before its name: an opening "(", a `VAR=value`, `env`, `time`.
+// One is matched at a time, from where the last one ended (#322).
+const PREFIX = /\(\s*|[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+|(env\s+)|time\s+/y;
+const ENV_FLAG = /-\S+\s+/y;
+/** Where the command name starts: past the prefixes, each matched in a loop, so the time is linear in the line. */
+const prefixEnd = (command: string) => {
+  let at = 0;
+  for (;;) {
+    PREFIX.lastIndex = at;
+    const prefix = PREFIX.exec(command);
+    if (!prefix) return at;
+    at = PREFIX.lastIndex;
+    // `env` may take flags before the command: env -i node --test.
+    for (ENV_FLAG.lastIndex = at; prefix[1] && ENV_FLAG.exec(command); ) at = ENV_FLAG.lastIndex;
+  }
+};
 /**
  * The simple commands in a shell line: split at ;, &, |, with an opening "(" and any
  * `VAR=value`, `env` or `time` before the command taken off. Comments go.
  */
 const commands = (line: string): string[] =>
-  line.split(/[;&|]+/).map((c) => c.trim().replace(/^(?:\(\s*|[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+|env(?:\s+-\S+)*\s+|time\s+)*/, '')).filter((c) => c && !c.startsWith('#'));
+  line
+    .split(/[;&|]+/)
+    .map((c) => c.trim())
+    .map((c) => c.slice(prefixEnd(c)))
+    .filter((c) => c && !c.startsWith('#'));
 /** A command that only asks a tool about itself. */
 const ASKS = /\s--(?:version|help)(?=\s|$)/;
-// The end of a command name: a space or the end, so "make test-deps" and "jest-preview" are not runs.
-const END = String.raw`(?=\s|$)`;
+
+/**
+ * A command pattern, matched one word at a time (#322): from the word indexes a match can
+ * be at, the indexes it can be at after this part. A regex that repeats a group over a long
+ * line backtracks once per repeat, and V8 throws a RangeError on a big enough line.
+ */
+type Pattern = (words: string[], at: number[]) => number[];
+/** One word, by a test on it. */
+const wordIf =
+  (isMatch: (word: string) => boolean): Pattern =>
+  (words, at) =>
+    at.filter((i) => i < words.length && isMatch(words[i])).map((i) => i + 1);
+/** One of these words, whole: "make test-deps" and "jest-preview" are not runs. */
+const word = (...names: string[]) => wordIf((w) => names.includes(w));
+const anyWord = wordIf(() => true);
+const sequence =
+  (...parts: Pattern[]): Pattern =>
+  (words, at) =>
+    parts.reduce((from, part) => part(words, from), at);
+/** Any of the parts. The indexes stay in order with no repeats, merged in one pass. */
+const either =
+  (...parts: Pattern[]): Pattern =>
+  (words, at) => {
+    const results = parts.map((part) => part(words, at)).filter((result) => result.length > 0);
+    if (results.length < 2) return results[0] ?? [];
+    const isFound = new Uint8Array(words.length + 1);
+    for (const result of results) for (const i of result) isFound[i] = 1;
+    const found: number[] = [];
+    for (let i = 0; i <= words.length; i++) if (isFound[i]) found.push(i);
+    return found;
+  };
+const optional = (...parts: Pattern[]) => either(sequence(), sequence(...parts));
+/**
+ * Zero or more steps. `step` names the indexes one step reaches from index `i`, each past `i`.
+ * One pass from the first index to the last one reached, so the time is linear.
+ */
+const repeated =
+  (step: (words: string[], i: number, reach: (after: number) => void) => void): Pattern =>
+  (words, at) => {
+    if (at.length === 0) return at;
+    const isReached = new Uint8Array(words.length + 1);
+    for (const i of at) isReached[i] = 1;
+    let last = at[at.length - 1];
+    const reach = (after: number) => {
+      isReached[after] = 1;
+      last = Math.max(last, after);
+    };
+    const found: number[] = [];
+    for (let i = at[0]; i <= last; i++) {
+      if (!isReached[i]) continue;
+      found.push(i);
+      step(words, i, reach);
+    }
+    return found;
+  };
+const isFlag = (word: string | undefined) => word !== undefined && word.length > 1 && word.startsWith('-');
 // Flags with no value, as tools take them before the command: npx --yes, node --experimental-strip-types.
-const FLAGS = String.raw`(?:\s+-\S+)*`;
+const FLAGS = repeated((words, i, reach) => {
+  if (isFlag(words[i])) reach(i + 1);
+});
 // Flags that may take a value: npm -w app, pnpm --filter app.
-const VALUED = String.raw`(?:\s+-\S+(?:\s+[^-\s]\S*)?)*`;
-const anchored = (pattern: string) => new RegExp(`^${pattern}${END}`);
+const VALUED = repeated((words, i, reach) => {
+  if (!isFlag(words[i])) return;
+  reach(i + 1);
+  if (i + 1 < words.length && !words[i + 1].startsWith('-')) reach(i + 2);
+});
+// make's flags, and `-C dir` with its folder as the next word.
+const MAKE_FLAGS = repeated((words, i, reach) => {
+  if (isFlag(words[i])) reach(i + 1);
+  if (words[i] === '-C' && i + 1 < words.length) reach(i + 2);
+});
+/** Whether `pattern` matches at the start of a command, split into its words at whitespace, as `\s` does. */
+const matches = (pattern: Pattern, words: string[]) => pattern(words, [0]).length > 0;
 /** The package.json "test" script, run by its package manager. */
-const RUNS_SCRIPT = anchored(String.raw`(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|t)`);
+const RUNS_SCRIPT = sequence(word('npm', 'pnpm', 'yarn', 'bun'), optional(word('run')), word('test', 't'));
 // Tools that start a Node runner: npx, bunx, npm exec, pnpm (exec, dlx), yarn (run).
-const NODE_EXEC = String.raw`(?:(?:npx|bunx)${FLAGS}\s+|npm\s+exec${FLAGS}\s+(?:--\s+)?|(?:pnpm|yarn)(?:\s+(?:exec|dlx|run))?\s+)?`;
+const NODE_EXEC = optional(either(sequence(word('npx', 'bunx'), FLAGS), sequence(word('npm'), word('exec'), FLAGS, optional(word('--'))), sequence(word('pnpm', 'yarn'), optional(word('exec', 'dlx', 'run')))));
 // Tools that start a Python runner: uv run, uvx, pipx run, poetry run, pipenv run.
-const PY_EXEC = String.raw`(?:(?:uvx|uv\s+run|pipx\s+run|poetry\s+run|pipenv\s+run)${FLAGS}\s+)?`;
+const PY_EXEC = optional(either(word('uvx'), sequence(word('uv', 'pipx', 'poetry', 'pipenv'), word('run'))), FLAGS);
 // A Python module run as a program: python -m, coverage run -m.
-const PY_M = String.raw`(?:python3?|coverage\s+run)\s+-m\s+`;
+const PY_M = sequence(either(word('python', 'python3'), sequence(word('coverage'), word('run'))), word('-m'));
 /** Test runners that need no package.json script, one entry per runner. Each is matched at the start of a command. */
-const RUNNERS: RegExp[] = [
-  anchored(String.raw`node${FLAGS}\s+--test`),
-  anchored(String.raw`deno\s+test`),
-  anchored(String.raw`go\s+test`),
-  anchored(String.raw`cargo\s+test`),
-  anchored(String.raw`(?:\./)?mvnw?${FLAGS}\s+test`),
-  anchored(String.raw`(?:\./)?gradlew?${FLAGS}\s+test`),
-  anchored(`${PY_EXEC}(?:${PY_M})?(?:pytest|tox|nox)`),
-  anchored(`${PY_EXEC}${PY_M}unittest`),
-  anchored(String.raw`make(?:\s+-C\s*\S+|\s+-\S+)*\s+tests?`),
-  anchored(`${NODE_EXEC}(?:vitest|jest)`),
+const RUNNERS: Pattern[] = [
+  sequence(word('node'), FLAGS, word('--test')),
+  sequence(word('deno'), word('test')),
+  sequence(word('go'), word('test')),
+  sequence(word('cargo'), word('test')),
+  sequence(word('mvn', 'mvnw', './mvn', './mvnw'), FLAGS, word('test')),
+  sequence(word('gradle', 'gradlew', './gradle', './gradlew'), FLAGS, word('test')),
+  sequence(PY_EXEC, optional(PY_M), word('pytest', 'tox', 'nox')),
+  sequence(PY_EXEC, PY_M, word('unittest')),
+  sequence(word('make'), MAKE_FLAGS, word('test', 'tests')),
+  sequence(NODE_EXEC, word('vitest', 'jest')),
 ];
+const WORKSPACES_FLAGS = ['--workspace', '--workspaces', '-ws', '-w'];
+const isWorkspacesFlag = (w: string) => WORKSPACES_FLAGS.some((flag) => w === flag || w.startsWith(`${flag}=`));
+/** Only when a later word is a workspaces flag. */
+const NPM_WORKSPACES: Pattern = (words, at) => (words.slice(1).some(isWorkspacesFlag) ? at : []);
 /** In a workspaces repo, commands that run each package's "test" script; the root may have none. */
-const RUNS_WORKSPACES: RegExp[] = [
+const RUNS_WORKSPACES: Pattern[] = [
   // npm takes its flags anywhere: npm test --workspaces, npm -w app test, npm run test -ws.
-  new RegExp(String.raw`^npm(?=.*\s(?:--workspaces?|-ws|-w)(?:[\s=]|$))${VALUED}\s+(?:run\s+)?(?:test|t)${END}`),
-  anchored(String.raw`pnpm${VALUED}\s+(?:-r|--recursive|--filter(?:=|\s+)\S+|-F\s+\S+)${VALUED}\s+(?:run\s+)?test`),
-  anchored(String.raw`yarn\s+workspaces\s+(?:foreach${VALUED}\s+)?run\s+test`),
+  sequence(word('npm'), NPM_WORKSPACES, VALUED, optional(word('run')), word('test', 't')),
+  sequence(word('pnpm'), VALUED, either(word('-r', '--recursive'), wordIf((w) => w.startsWith('--filter=') && w.length > '--filter='.length), sequence(word('--filter', '-F'), anyWord)), VALUED, optional(word('run')), word('test')),
+  sequence(word('yarn'), word('workspaces'), optional(word('foreach'), VALUED), word('run'), word('test')),
 ];
 const packageJson = (root: string): Record<string, unknown> | null => {
   try {
@@ -242,10 +332,13 @@ const isWorkspaces = (root: string) => Boolean(packageJson(root)?.workspaces) ||
  */
 export const runsTests = (ci: string, script: string, workspaces: boolean) => {
   const lines = runLines(ci);
-  const run = lines.flatMap(commands).filter((c) => !ASKS.test(c));
-  if (run.some((c) => RUNNERS.some((r) => r.test(c)))) return true;
-  if (script !== '' && (run.some((c) => RUNS_SCRIPT.test(c)) || lines.some((l) => l.includes(script)))) return true;
-  return workspaces && run.some((c) => RUNS_WORKSPACES.some((r) => r.test(c)));
+  const run = lines
+    .flatMap(commands)
+    .filter((c) => !ASKS.test(c))
+    .map((c) => c.split(/\s+/));
+  if (run.some((words) => RUNNERS.some((r) => matches(r, words)))) return true;
+  if (script !== '' && (run.some((words) => matches(RUNS_SCRIPT, words)) || lines.some((l) => l.includes(script)))) return true;
+  return workspaces && run.some((words) => RUNS_WORKSPACES.some((r) => matches(r, words)));
 };
 /**
  * Whether the workflows run a yokoten command: anywhere in the text by its path, or as a
@@ -254,7 +347,26 @@ export const runsTests = (ci: string, script: string, workspaces: boolean) => {
 const ciRuns = (ci: string, command: RegExp) => command.test(ci) || runLines(ci).flatMap(commands).some((c) => command.test(c));
 const indentOf = (line: string) => /^[ \t]*/.exec(line)![0].length;
 // A step that uses yokoten's own Action, at any ref (even the guide's "<full commit SHA>"), quoted or not, with a comment or not.
-const USES_YOKOTEN = /^[ \t]*uses:[ \t]*(["']?)yokoten-labs\/yokoten@[^\s"'#]+(?:[ \t]+[^\s"'#]+)*\1[ \t]*(?:#.*)?$/;
+// The ref is read one word at a time, so a long line takes linear time and no RangeError (#322).
+const USES_HEAD = /^[ \t]*uses:[ \t]*(["']?)yokoten-labs\/yokoten@/;
+const REF_WORD = /[^\s"'#]+/y;
+const REF_GAP = /[ \t]+(?=[^\s"'#])/y;
+const LINE_END = /[ \t]*(?:#.*)?$/y;
+const usesYokoten = (line: string) => {
+  const head = USES_HEAD.exec(line);
+  if (!head) return false;
+  REF_WORD.lastIndex = head[0].length;
+  if (!REF_WORD.exec(line)) return false;
+  let at = REF_WORD.lastIndex;
+  for (REF_GAP.lastIndex = at; REF_GAP.exec(line); REF_GAP.lastIndex = at) {
+    REF_WORD.lastIndex = REF_GAP.lastIndex;
+    REF_WORD.exec(line);
+    at = REF_WORD.lastIndex;
+  }
+  const quote = head[1];
+  LINE_END.lastIndex = at + quote.length;
+  return line.startsWith(quote, at) && LINE_END.test(line);
+};
 const PR_CHECK_OFF = /^[ \t]*pr-check:[ \t]*(["']?)false\1[ \t]*(?:#.*)?$/;
 /**
  * The steps in one workflow that use the yokoten Action, each with whether it runs
@@ -272,7 +384,7 @@ export const yokotenActions = (workflow: string): { prCheck: boolean }[] => {
     const lines = [' '.repeat(keyIndent) + item[2]];
     for (; i + 1 < text.length && (text[i + 1].trim() === '' || indentOf(text[i + 1]) > item[1].length); i++) lines.push(text[i + 1]);
     const keys = lines.filter((l) => l.trim() !== '' && indentOf(l) === keyIndent);
-    if (!keys.some((l) => USES_YOKOTEN.test(l))) continue;
+    if (!keys.some(usesYokoten)) continue;
     let inWith = false;
     let prCheck = true;
     for (const line of lines) {
@@ -296,6 +408,21 @@ export const onPullRequest = (workflow: string): boolean => {
   }
   return false;
 };
+/**
+ * A check that reads the workflows. A line too big for a regex makes V8 throw a RangeError;
+ * the step is then "can't check", and doctor goes on (#322).
+ */
+export const catchLongLines =
+  (check: (root: string) => boolean) =>
+  (root: string): Found => {
+    try {
+      return check(root);
+    } catch (error) {
+      if (error instanceof RangeError) return null;
+      throw error;
+    }
+  };
+const WORKFLOW_TOO_LONG = 'a line in .github/workflows is too long to read; make it shorter and run doctor again';
 const ciRunsTests = (root: string) => runsTests(ciText(root), testScript(root), isWorkspaces(root));
 // What runs the tests in each kind of project, by a file at the root; the first three when none is found.
 const PROJECT_RUNNERS: [string[], string][] = [
@@ -703,7 +830,8 @@ export const ROAD: Step[] = [
   {
     stage: 1,
     key: 'tests',
-    check: (root) => ciRunsTests(root),
+    check: catchLongLines(ciRunsTests),
+    unchecked: () => WORKFLOW_TOO_LONG,
     what: noTests,
     fix: testsFix,
     why: 'tests that run on every push catch a broken change before it reaches main',
@@ -714,7 +842,8 @@ export const ROAD: Step[] = [
     stage: 2,
     key: 'ci',
     // `check --pr` is the titles step, and `check --issue` checks issues; this one wants the tree check itself.
-    check: (root) => ciRuns(ciText(root), runs('check(?!\\s+--(?:pr|issue))')) || ciFiles(root).some((f) => yokotenActions(f).length > 0),
+    check: catchLongLines((root) => ciRuns(ciText(root), runs('check(?!\\s+--(?:pr|issue))')) || ciFiles(root).some((f) => yokotenActions(f).length > 0)),
+    unchecked: () => WORKFLOW_TOO_LONG,
     what: () => 'CI does not run `yokoten check`',
     fix: (root) => keptWorkflow(root, 'yokoten.yml', 'check', 'actions/checkout and actions/setup-node'),
     why: 'a commit made with the hook off would reach main unchecked',
@@ -789,7 +918,8 @@ export const ROAD: Step[] = [
   {
     stage: 3,
     key: 'titles',
-    check: (root) => ciRuns(ciText(root), runs('check --pr')) || ciFiles(root).some((f) => onPullRequest(f) && yokotenActions(f).some((a) => a.prCheck)),
+    check: catchLongLines((root) => ciRuns(ciText(root), runs('check --pr')) || ciFiles(root).some((f) => onPullRequest(f) && yokotenActions(f).some((a) => a.prCheck))),
+    unchecked: () => WORKFLOW_TOO_LONG,
     what: () => 'CI does not check pull requests (`yokoten check --pr`)',
     fix: (root) => keptWorkflow(root, 'pr.yml', 'check --pr', 'actions/checkout with `fetch-depth: 0` and actions/setup-node, in a job that runs on pull_request'),
     why: 'a pull request title becomes the commit on main, so it must say what changed and why',

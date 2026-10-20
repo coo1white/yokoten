@@ -16,6 +16,7 @@ import { test } from 'node:test';
 import { fixture, makeSandbox, makeTempDir } from '../repo/helpers.ts';
 import { codeOwnersText, withGitReads } from '../../src/setup/init.ts';
 import {
+  catchLongLines,
   type Found,
   gitConfig,
   isLicenseName,
@@ -232,12 +233,70 @@ test('road: the tests step reads a big workflow in linear time (#257)', () => {
     ['flags', (n) => `- run: npm ${'-a '.repeat(n / 3)}`],
     ['flags with values', (n) => `- run: pnpm ${'-a b '.repeat(n / 5)}`],
     ['variables', (n) => `- run: ${'A=b '.repeat(n / 4)}`],
+    // Each pattern that repeats over a line (#322): a make -C folder, npm workspaces flags with values.
+    ['make -C flags', (n) => `- run: make ${'-Cx '.repeat(n / 4)}`],
+    ['npm workspaces flags', (n) => `- run: npm -w ${'-a b '.repeat(n / 5)}`],
   ];
   for (const [name, make] of inputs) {
     for (const workspaces of [false, true]) {
       assertLinear(`${name}, workspaces ${workspaces}`, make, (ci) => assert.equal(runsTests(ci, 'vitest run x', workspaces), false, name));
     }
   }
+});
+
+// Each pattern that repeats over a line, as one `run:` line of about n characters (#322).
+const LONG_LINES: [string, (n: number) => string][] = Object.entries({
+  parentheses: '( ',
+  variables: 'A=b ',
+  'quoted variables': 'A="b c" ',
+  'env flags': 'env -i ',
+  time: 'time ',
+}).map(([name, repeat]) => [name, (n) => repeat.repeat(n / repeat.length)]);
+for (const [name, start, repeat] of [
+  ['node flags', 'node', ' -a'],
+  ['mvn flags', './mvnw', ' -a'],
+  ['gradle flags', 'gradle', ' -a'],
+  ['uv run flags', 'uv run', ' -a'],
+  ['make flags', 'make', ' -k'],
+  ['make -C folders', 'make', ' -C x'],
+  ['npx flags, and npx yokoten', 'npx', ' -y'],
+  ['npm exec flags', 'npm exec', ' -y'],
+  ['npm workspaces flags', 'npm -w', ' -a b'],
+  ['pnpm flags', 'pnpm -r', ' -a b'],
+  ['pnpm filters', 'pnpm', ' --filter a'],
+  ['yarn foreach flags', 'yarn workspaces foreach', ' -a b'],
+]) {
+  LONG_LINES.push([name, (n) => `${start}${repeat.repeat(n / repeat.length)}`]);
+}
+// The big input of assertLinear is 8x this: 500,000 characters.
+const LONG_LINE_SIZE = 500_000 / 8;
+
+test('road: a run line of 500,000 characters reads in linear time, with no RangeError (#322)', () => {
+  for (const [name, make] of LONG_LINES) {
+    assertLinear(
+      name,
+      (n) => `- run: ${make(n)}`,
+      (ci) => {
+        for (const workspaces of [false, true]) assert.equal(runsTests(ci, 'vitest run x', workspaces), false, name);
+        assert.equal(ciSteps(ci).ci, false, name);
+      },
+      LONG_LINE_SIZE,
+    );
+  }
+  // The same line still counts when the runner comes at its end.
+  assert.equal(runsTests(`- run: node${' -a'.repeat(150_000)} --test`, '', false), true);
+  assert.equal(runsTests(`- run: pnpm${' -a b'.repeat(100_000)} -r test`, '', true), true);
+  assert.equal(runsTests(`- run: ${'A=b '.repeat(125_000)}go test`, '', false), true);
+  // A uses line whose ref has up to 250,000 words.
+  assertLinear('a uses ref of words', (n) => `- uses: yokoten-labs/yokoten@${'a '.repeat(n / 2)}"`, (ci) => assert.deepEqual(yokotenActions(ci), []), LONG_LINE_SIZE);
+  assertLinear('a uses ref of words and a comment', (n) => `- uses: yokoten-labs/yokoten@${'a '.repeat(n / 2)}# v1`, (ci) => assert.deepEqual(yokotenActions(ci), [{ prCheck: true }]), LONG_LINE_SIZE);
+});
+
+test('road: a workflow check that throws a RangeError is "can\'t check", and other errors still throw (#322)', () => {
+  assert.equal(catchLongLines(() => { throw new RangeError('Maximum call stack size exceeded'); })('.'), null);
+  assert.equal(catchLongLines(() => true)('.'), true);
+  assert.throws(() => catchLongLines(() => { throw new TypeError('x'); })('.'), TypeError);
+  for (const key of ['tests', 'ci', 'titles']) assert.match(ROAD.find((s) => s.key === key)?.unchecked?.(undefined) ?? '', /too long to read/, key);
 });
 
 test('road: the tests step stays next with only a lint step, and says what is missing by project type (#257)', () => {
