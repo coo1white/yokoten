@@ -243,14 +243,14 @@ test('road: the tests step reads a big workflow in linear time (#257)', () => {
   }
 });
 
-// Each pattern that repeats over a line, on one `run:` line of about 500,000 characters (#322).
-const LONG_LINES: [string, string][] = Object.entries({
+// Each pattern that repeats over a line, as one `run:` line of about n characters (#322).
+const LONG_LINES: [string, (n: number) => string][] = Object.entries({
   parentheses: '( ',
   variables: 'A=b ',
   'quoted variables': 'A="b c" ',
   'env flags': 'env -i ',
   time: 'time ',
-}).map(([name, repeat]) => [name, repeat.repeat(500_000 / repeat.length)]);
+}).map(([name, repeat]) => [name, (n) => repeat.repeat(n / repeat.length)]);
 for (const [name, start, repeat] of [
   ['node flags', 'node', ' -a'],
   ['mvn flags', './mvnw', ' -a'],
@@ -265,26 +265,30 @@ for (const [name, start, repeat] of [
   ['pnpm filters', 'pnpm', ' --filter a'],
   ['yarn foreach flags', 'yarn workspaces foreach', ' -a b'],
 ]) {
-  LONG_LINES.push([name, `${start}${repeat.repeat(500_000 / repeat.length)}`]);
+  LONG_LINES.push([name, (n) => `${start}${repeat.repeat(n / repeat.length)}`]);
 }
+// The big input of assertLinear is 8x this: 500,000 characters.
+const LONG_LINE_SIZE = 500_000 / 8;
 
-test('road: a run line of 500,000 characters reads in well under a second, with no RangeError (#322)', () => {
-  for (const [name, line] of LONG_LINES) {
-    const start = performance.now();
-    for (const workspaces of [false, true]) assert.equal(runsTests(`- run: ${line}`, 'vitest run x', workspaces), false, name);
-    assert.equal(ciSteps(`- run: ${line}`).ci, false, name);
-    const ms = performance.now() - start;
-    assert.ok(ms < 1000, `${name}: ${ms.toFixed(0)} ms`);
+test('road: a run line of 500,000 characters reads in linear time, with no RangeError (#322)', () => {
+  for (const [name, make] of LONG_LINES) {
+    assertLinear(
+      name,
+      (n) => `- run: ${make(n)}`,
+      (ci) => {
+        for (const workspaces of [false, true]) assert.equal(runsTests(ci, 'vitest run x', workspaces), false, name);
+        assert.equal(ciSteps(ci).ci, false, name);
+      },
+      LONG_LINE_SIZE,
+    );
   }
   // The same line still counts when the runner comes at its end.
   assert.equal(runsTests(`- run: node${' -a'.repeat(150_000)} --test`, '', false), true);
   assert.equal(runsTests(`- run: pnpm${' -a b'.repeat(100_000)} -r test`, '', true), true);
   assert.equal(runsTests(`- run: ${'A=b '.repeat(125_000)}go test`, '', false), true);
-  // A uses line whose ref has 250,000 words.
-  const start = performance.now();
-  assert.deepEqual(yokotenActions(`- uses: yokoten-labs/yokoten@${'a '.repeat(250_000)}"`), []);
-  assert.deepEqual(yokotenActions(`- uses: yokoten-labs/yokoten@${'a '.repeat(250_000)}# v1`), [{ prCheck: true }]);
-  assert.ok(performance.now() - start < 1000);
+  // A uses line whose ref has up to 250,000 words.
+  assertLinear('a uses ref of words', (n) => `- uses: yokoten-labs/yokoten@${'a '.repeat(n / 2)}"`, (ci) => assert.deepEqual(yokotenActions(ci), []), LONG_LINE_SIZE);
+  assertLinear('a uses ref of words and a comment', (n) => `- uses: yokoten-labs/yokoten@${'a '.repeat(n / 2)}# v1`, (ci) => assert.deepEqual(yokotenActions(ci), [{ prCheck: true }]), LONG_LINE_SIZE);
 });
 
 test('road: a workflow check that throws a RangeError is "can\'t check", and other errors still throw (#322)', () => {
