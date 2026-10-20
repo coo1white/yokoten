@@ -1010,11 +1010,11 @@ test('lonePost: trusts a heredoc only when its end word is a name in single quot
     "gh issue create --title t -F - <<'EOF'\nQuiet Vale ships\nEOF\n\r",
     "gh issue create --title t -F - <<'EOF'\nQuiet Vale ships\nEOF\n\f",
   ];
-  const r = allowRepo('https://example.com/x/quiet-vale');
-  writeFileSync(r.env.YOKOTEN_PRIVATE_MARKS as string, 'quiet vale\n');
+  const own = allowRepo('https://example.com/x/quiet-vale');
+  writeFileSync(own.env.YOKOTEN_PRIVATE_MARKS as string, 'quiet vale\n');
   for (const command of refused) {
     assert.equal(lonePost(command), null, JSON.stringify(command));
-    assert.equal(checkCommand(command, { env: r.env, cwd: r.repo })?.id, 'private-mark', JSON.stringify(command));
+    assert.equal(checkCommand(command, { env: own.env, cwd: own.repo })?.id, 'private-mark', JSON.stringify(command));
   }
   // The controls: a quoted name keeps $HOME, backquotes and $\ as text.
   for (const command of [
@@ -1022,7 +1022,7 @@ test('lonePost: trusts a heredoc only when its end word is a name in single quot
     "gh issue create --title t -F - <<-'EOF'\n\tQuiet Vale ships $HOME `id` $\\\n\t(x)\n\tEOF\n \t\n",
   ]) {
     assert.deepEqual(lonePost(command), { cd: false }, JSON.stringify(command));
-    assert.equal(checkCommand(command, { env: r.env, cwd: r.repo }), null, JSON.stringify(command));
+    assert.equal(checkCommand(command, { env: own.env, cwd: own.repo }), null, JSON.stringify(command));
   }
 });
 
