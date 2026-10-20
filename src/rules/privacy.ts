@@ -164,7 +164,7 @@ export const POSITIVE_CONTROL = [`contact: someone${'@'}personal-mail.com`, `ser
 // details through `yokoten redact`, which puts a placeholder in place of each value.
 
 /** The placeholders `redact` writes. A placeholder never names what it hides. */
-export const PLACEHOLDERS = { owner: '<owner>', email: '<email>', host: '<host>', mark: '<mark>', secret: SECRET } as const;
+export const PLACEHOLDERS = { owner: '<owner>', project: '<project>', email: '<email>', host: '<host>', mark: '<mark>', secret: SECRET } as const;
 
 const isEmailShaped = (value: string) => /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(value);
 /** A domain or host name: words joined by dots, ending in a top-level name. */
@@ -178,6 +178,8 @@ export interface Hidden {
   owners?: string[];
   /** Hosts of remotes outside the public forges. */
   hosts?: string[];
+  /** The names of the project at hand, for a note that leaves it (#392). */
+  projects?: string[];
 }
 
 /** The placeholder for one mark, by its shape: an address, a host, or anything else. */
@@ -211,6 +213,7 @@ export function makeRedactor(hidden: Hidden, env: Env): (text: string) => string
   };
   for (const owner of hidden.owners ?? []) add(owner, isEmailShaped(owner) ? PLACEHOLDERS.email : PLACEHOLDERS.owner);
   for (const host of hidden.hosts ?? []) add(host, PLACEHOLDERS.host);
+  for (const project of hidden.projects ?? []) add(project, PLACEHOLDERS.project);
   for (const mark of hidden.marks ?? []) add(mark, markPlaceholder(mark));
   // The longest first, so `jane doe` goes before `jane`.
   const values = [...placeholderOf.keys()].sort((a, b) => b.length - a.length);

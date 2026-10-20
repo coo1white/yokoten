@@ -22,6 +22,7 @@ import { makeSandbox } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
 import { checkLayout } from '../../src/rules/layout.ts';
 import {
+  countNotes,
   draftLesson,
   findLessonFolders,
   findLessonGroup,
@@ -31,11 +32,18 @@ import {
   type Incident,
   KIT_LESSONS_DIR,
   LESSONS_TABLE,
+  listNotes,
+  type NotePlace,
   readLessonTable,
+  redactNote,
+  removeNote,
   readSections,
   shipLesson,
   summarize,
+  upstreamDir,
+  waitingLine,
   writeDraft,
+  writeNote,
 } from '../../src/run/learn.ts';
 import {
   findStateFile,
@@ -485,4 +493,52 @@ test('lessons: every lesson the kit ships has a row, its incident, no TODO, and 
     const run = spawnSync(process.execPath, ['--test', join(kitLessons, folder, 'lesson.test.ts')], { env, encoding: 'utf8' });
     assert.equal(run.status, 0, `${id}: its test passes\n${run.stdout}`);
   }
+});
+
+// #392: a note for the yokoten repo leaves the project with nothing that points at it.
+test('upstream: a note hides the project, home and owner, and refuses a secret or what is left', () => {
+  const home = mkdtempSync(join(tmpdir(), 'yokoten-upstream-'));
+  const env = { HOME: home };
+  const root = join(home, 'work', 'acme-app');
+  mkdirSync(root, { recursive: true });
+  const place: NotePlace = { root, projects: ['acme-app', 'acme'], owners: ['Jane Roe'], hosts: ['git.corp.test'], marks: ['secret-city'] };
+  const note = redactNote(`In ${root}/src/x.ts the hook\nfor Acme-App broke; Jane Roe saw it in ${join(home, 'logs')} and ${root}2, near Secret-City, on git.corp.test`, place, env);
+  // `${root}2` is another folder: the path is not hidden as a prefix, though the name `acme` still is.
+  assert.deepEqual(note, { text: 'In <project>/src/x.ts the hook for <project> broke; <owner> saw it in ~/logs and ~/work/<project>-app2, near <mark>, on <host>' });
+  // A secret is refused, not hidden; the finding names its kind, never the value.
+  const token = `ghp_${'a'.repeat(36)}`;
+  const refused = redactNote(`the token ${token} leaked`, place, env);
+  assert.ok('problems' in refused && refused.problems.every((problem) => problem.id === 'secret' && !JSON.stringify(problem).includes(token)));
+  // An IP address is not hidden by redact, so the scan refuses it.
+  const ip = redactNote(`the server ${[10, 1, 2, 3].join('.')} was down`, place, env);
+  assert.deepEqual('problems' in ip ? ip.problems.map((problem) => problem.id) : [], ['ip']);
+  // A mark inside a longer word is not a whole word for redact, but the scan still catches it.
+  const inside = redactNote('at secret-cityhall', place, env);
+  assert.deepEqual('problems' in inside ? inside.problems.map((problem) => problem.id) : [], ['private-mark']);
+  // No repo: the home folder is still hidden.
+  assert.deepEqual(redactNote(`see ${home}/a.txt`, { root: null, projects: [], owners: [], hosts: [], marks: [] }, env), { text: 'see ~/a.txt' });
+  rmSync(home, { recursive: true, force: true });
+});
+
+test('upstream: the inbox writes, counts, lists and removes notes, from an empty home', () => {
+  const home = mkdtempSync(join(tmpdir(), 'yokoten-upstream-'));
+  const env = { HOME: home };
+  assert.equal(upstreamDir(env), join(home, '.config', 'yokoten', 'upstream'));
+  assert.equal(countNotes(env), 0, 'no inbox yet: none');
+  assert.deepEqual(listNotes(env), []);
+  assert.equal(waitingLine(0), null);
+  const first = writeNote(env, { part: 'hook', what: 'one', fix: 'two' }, new Date('2026-10-20T12:00:00Z'));
+  assert.match(first.id, /^20261020-120000-[0-9a-f]{4}$/);
+  assert.equal(readFileSync(join(upstreamDir(env), `${first.id}.md`), 'utf8'), 'when: 2026-10-20T12:00:00Z\npart: hook\nwhat: one\nfix: two\n');
+  const second = writeNote(env, { part: 'unknown', what: 'three' }, new Date('2026-10-20T13:00:00Z'));
+  writeFileSync(join(upstreamDir(env), 'README.txt'), 'not a note\n');
+  assert.equal(countNotes(env), 2, 'only note files count');
+  assert.equal(waitingLine(2), '2 lessons from other projects wait to become issues: yokoten learn --upstream --list');
+  assert.equal(waitingLine(1), '1 lesson from other projects waits to become an issue: yokoten learn --upstream --list');
+  assert.deepEqual(listNotes(env), [first, second]);
+  assert.equal(removeNote(env, '../private-marks'), false, 'an id is never a path');
+  assert.equal(removeNote(env, first.id), true);
+  assert.equal(removeNote(env, first.id), false);
+  assert.deepEqual(listNotes(env), [second]);
+  rmSync(home, { recursive: true, force: true });
 });

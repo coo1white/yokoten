@@ -22,7 +22,7 @@ import { type Finding, finding, formatFinding, type RuleId } from '../rules/mess
 import { loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
-import { type LessonPlace, listLessons, runLessons } from '../run/learn.ts';
+import { countNotes, type LessonPlace, listLessons, runLessons, waitingLine } from '../run/learn.ts';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
 import { hasPlugin, hasProjectHook, hasSessionDoctor, readInstalledPlugin, userSettingsProblem } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
@@ -570,6 +570,17 @@ function readOrigin(root: string, gh: Gh): ServerSettings | Unread {
   return repo ? readServer(gh, repo) : { unread: 'the origin remote is not on a host yokoten knows (GitHub for now)', fix: 'add a GitHub origin remote, or check these settings by hand' };
 }
 
+/**
+ * In yokoten's own repo only, a note when lessons from other projects wait in the inbox
+ * (#392). Elsewhere nothing: the inbox is for whoever works on yokoten. One readdir and
+ * the package.json read, no child process, so the session start stays fast.
+ */
+export function upstreamNote(root: string, env: Env): Finding | null {
+  if (!isSelf(root)) return null;
+  const line = waitingLine(countNotes(env));
+  return line ? finding('upstream-inbox', line, 'open an issue for each, then remove its note with `yokoten learn --upstream --done <id>`') : null;
+}
+
 /** What a session hears when the road is done, as far as yokoten can check. */
 export const ROAD_DONE = 'yokoten: every step yokoten can check is done, or marked not now.';
 
@@ -662,6 +673,8 @@ export function doctor(
       lines.push(`yokoten: ${formatFinding(core.finding)}`);
       findings.push(core.finding);
     }
+    const waiting = upstreamNote(root, env);
+    if (waiting) lines.push(`yokoten: ${waiting.what}`);
     const ok = !failed.length && !isCoreBehind;
     return { ok, lines, report: { ...base, ok, repo: true, stage, next, findings } };
   }
@@ -735,6 +748,11 @@ export function doctor(
   if (double) {
     lines.push(`  note    plugin-and-install: ${stepText(double)}`);
     notes.push(double);
+  }
+  const waiting = upstreamNote(root, env);
+  if (waiting) {
+    lines.push(`  note    upstream-inbox: ${waiting.what}`);
+    notes.push(waiting);
   }
   // The road's stage 5 shows the settings it groups (#7); here are the rest, which never fail doctor.
   const settings = serverChecks(server ?? { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' });

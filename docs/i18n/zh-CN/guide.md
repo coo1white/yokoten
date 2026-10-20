@@ -551,6 +551,7 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 | `changelog [--write]` | 列出 `changes/` 里的文件会往 `[Unreleased]` 下面加哪些条目。加上 `--write` 就真的写进 `CHANGELOG.md`，再删掉这些文件；发版前跑。见下面的「更新日志」 |
 | `learn <issue> [--write]` | 从一个事故 issue 起草一条检查，留给人来审。加上 `--write` 才把文件写进 `lessons/`。见下面的「从事故里学」 |
 | `learn --ship <id>` | 在 yokoten 里用：把审过的教训搬进 `kit/lessons/` 下的一个分组，以后用这份 yokoten 跑 `doctor`，每个项目都会查它。还有 `TODO(reviewer)` 没填，或者它的测试没过，就不让搬 |
+| `learn --upstream "<发生了什么>" [--area <name>] [--fix <idea>]` | 记下 yokoten 自己的一个毛病，项目和你本人的信息都先藏掉。`--list` 列出这些记录，`--done <id>` 删掉一条。见下面的「问题出在 yokoten 自己身上」 |
 | `check --history` | 对所有分支的每一个提交做隐私检查。私有仓库公开之前跑一遍。浅克隆看不到旧的提交，所以它不扫描、直接报错；在 CI 里要拉下全部历史（`fetch-depth: 0`）。文件里查到问题时，写的是加进这个文件的那次提交，和那次提交里的路径：`文件 @ <提交>`。`git replace` 藏不住提交，它照样读原来的提交；有 grafts 文件时同样不扫描、直接报错。 |
 | `hook [--agent <name>] [--commands-only] [--json]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool，加 `--agent antigravity` 读 Antigravity CLI 的 PreToolUse，加 `--agent muse` 读 Muse Code 的 PreToolUse，加 `--agent deepseek-harness` 读 DeepSeek Harness 的 PreToolUse |
 | `hook --stop [--agent <name>]` | 收尾检查。从标准输入读这一轮结束的事件，检查改过的文件：默认读 Claude Code 的 Stop；加 `--agent codex` 读 Codex 的 Stop，加 `--agent gemini` 读 Gemini CLI 的 AfterAgent。见[收尾检查](#收尾检查) |
@@ -905,6 +906,28 @@ project:
 全程在临时文件夹里做，不联网（用的是假的 `gh`），做完就删。想留下来看看，加 `--keep`，
 它会打出文件夹在哪里。换成真的事故也是这几条命令：在 clone 下来的 yokoten 里，用你自己的
 issue，写你自己的检查。
+
+### 问题出在 yokoten 自己身上
+
+有时候毛病不在你的项目，而在 yokoten：守卫漏了一种情况，或者某句提示看不懂。在哪儿发现的，就在哪儿记一笔：
+
+```
+yokoten learn --upstream "the guard let git push --tags through" --area hook --fix "match the flag too"
+```
+
+这条记录存在你自己电脑上的 `~/.config/yokoten/upstream/`，不在任何仓库里。
+`--area` 和 `--fix` 可以不写；不写 `--area`，就记成 `unknown`。存之前先清理一遍：
+
+- 项目名和项目文件夹换成 `<project>`
+- 你的主目录换成 `~`
+- 你的名字、邮箱、私有主机和私密标记换成占位符，跟 `yokoten redact` 一样
+
+清理完还带着邮箱、IP 地址或私密标记的，不存。带着密钥的，也不存。yokoten 只说是哪一类，
+不会把内容打出来。整个过程不联网，什么都不往外发。
+
+在 yokoten 自己的仓库里，会话开头和 `doctor` 会说有几条在等：
+`yokoten: 3 lessons from other projects wait to become issues: yokoten learn --upstream --list`。
+别的仓库看不到这一行。每条开一个 issue，开完用 `yokoten learn --upstream --done <id>` 删掉。
 
 ### 设置
 

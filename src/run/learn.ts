@@ -1,6 +1,7 @@
 // `yokoten learn` (#77): an incident issue becomes a check draft for a person to review.
 // It is the first half of the loop: incident, draft, review. The second half is at the end
 // of this file (#147): a reviewed lesson ships in the kit, and `doctor` runs it in every project.
+// Last comes the inbox for gaps in yokoten itself, found in any project (#392).
 //
 // The draft comes from the issue's own sections, never from a guess: no model is called.
 // Where the issue gives no answer, the draft says TODO and names the missing section. The
@@ -8,10 +9,14 @@
 // draft never passes by itself.
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import type { Env } from '../rules/config.ts';
 import type { Finding } from '../rules/message.ts';
+import { makeRedactor, PLACEHOLDERS, scanText } from '../rules/privacy.ts';
 
 /** An incident issue, as the code host gives it. */
 export interface Incident {
@@ -550,3 +555,129 @@ export function runLessons(root: string, place: LessonPlace, skip: (id: string) 
   }
   return runs;
 }
+
+// ---- Lessons for yokoten itself (#392) ----
+//
+// A gap found while yokoten runs in some project belongs in the yokoten repo, but that
+// project's details must not go with it. `learn --upstream` keeps one short note per gap
+// in an inbox outside every repo, with the project's name, its path and the owner hidden
+// first. In yokoten's own repo, the session start and doctor count the notes, and the lead
+// turns each into an issue. Nothing is sent anywhere: the inbox is a folder on this machine.
+
+/** The inbox: ~/.config/yokoten/upstream, next to the private marks. */
+export const upstreamDir = (env: Env): string => join(env.HOME || homedir(), '.config', 'yokoten', 'upstream');
+
+/** One note in the inbox. Every text field is already redacted. */
+export interface UpstreamNote {
+  id: string;
+  /** When it was written, in UTC: `2026-10-20T12:00:00Z`. */
+  when: string;
+  /** The yokoten area it is about, or `unknown`. */
+  part: string;
+  what: string;
+  fix?: string;
+}
+
+/** A note's id: its UTC time and four hex digits, `20261020-120000-ab12`. It is also its file name. */
+export const NOTE_ID = /^\d{8}-\d{6}-[0-9a-f]{4}$/;
+const NOTE_FILE = /^\d{8}-\d{6}-[0-9a-f]{4}\.md$/;
+
+/** What the note may hold: the project at hand, the owner, and the marks. */
+export interface NotePlace {
+  /** The project's root folder, or null outside a repo. */
+  root: string | null;
+  /** The project's names: its folder, its package name, its origin repo. */
+  projects: string[];
+  /** The owner's names and the private hosts, as `redact` hides them. */
+  owners: string[];
+  hosts: string[];
+  marks: string[];
+}
+
+/** Text on one line, with no control characters: a note is one short line per field. */
+const oneLine = (text: string) => terminalText(text.split(LINE_END).join(' ').replace(CONTROL, ' ')).replace(/\s+/g, ' ').trim();
+
+/** `root` in text, as itself or by its real path, where the path ends: `/a/b` never touches `/a/bc`. */
+function hideRoot(text: string, root: string | null): string {
+  if (!root) return text;
+  let real = root;
+  try {
+    real = realpathSync(root);
+  } catch {}
+  const roots = [...new Set([root, real].map((path) => path.replace(/[\\/]+$/, '')))].filter((path) => path.length > 1).sort((a, b) => b.length - a.length);
+  const pattern = roots.map((path) => path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  return text.replace(new RegExp(`(?:${pattern})(?![\\p{L}\\p{N}_\\-+@%~#$]|\\.[\\p{L}\\p{N}])`, 'gu'), PLACEHOLDERS.project);
+}
+
+/**
+ * The note's text as it may leave the project: secrets refused, the project's path and
+ * names as `<project>`, the home folder as `~`, and the owner as `redact` hides them. What
+ * the privacy check still finds after that refuses the note, by kind, never by value.
+ */
+export function redactNote(text: string, place: NotePlace, env: Env): { text: string } | { problems: Finding[] } {
+  const line = oneLine(text);
+  // A secret is refused, not hidden: whoever pasted it should know, and may need to rotate it.
+  const secrets = scanText(line, { file: 'the note' }).filter((problem) => problem.id === 'secret');
+  if (secrets.length) return { problems: secrets };
+  const redact = makeRedactor({ marks: place.marks, owners: place.owners, hosts: place.hosts, projects: place.projects }, env);
+  const out = redact(hideRoot(line, place.root));
+  const problems = scanText(out, { file: 'the note', marks: place.marks });
+  return problems.length ? { problems } : { text: out };
+}
+
+/** Write one note to the inbox. `now` is there for a test. */
+export function writeNote(env: Env, note: Omit<UpstreamNote, 'id' | 'when'>, now: Date = new Date()): UpstreamNote {
+  const when = `${now.toISOString().slice(0, 19)}Z`;
+  const dir = upstreamDir(env);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const stamp = when.replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+  let id = '';
+  do id = `${stamp}-${randomBytes(2).toString('hex')}`;
+  while (existsSync(join(dir, `${id}.md`)));
+  const written: UpstreamNote = { id, when, ...note };
+  const lines = [`when: ${when}`, `part: ${written.part}`, `what: ${written.what}`, ...(written.fix ? [`fix: ${written.fix}`] : [])];
+  writeFileSync(join(dir, `${id}.md`), `${lines.join('\n')}\n`, { mode: 0o600 });
+  return written;
+}
+
+/** How many notes wait. One readdir, no file read, so the session start stays fast. */
+export function countNotes(env: Env): number {
+  try {
+    return readdirSync(upstreamDir(env)).filter((name) => NOTE_FILE.test(name)).length;
+  } catch {
+    return 0;
+  }
+}
+
+/** The notes, oldest first. A file that can't be read is left out. */
+export function listNotes(env: Env): UpstreamNote[] {
+  const dir = upstreamDir(env);
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir).filter((name) => NOTE_FILE.test(name)).sort();
+  } catch {
+    return [];
+  }
+  const notes: UpstreamNote[] = [];
+  for (const name of names) {
+    const text = readText(join(dir, name));
+    if (text === null) continue;
+    const field = (key: string) => new RegExp(`^${key}: (.*)$`, 'm').exec(text)?.[1];
+    const fix = field('fix');
+    notes.push({ id: name.slice(0, -3), when: field('when') ?? '', part: field('part') ?? 'unknown', what: field('what') ?? '', ...(fix ? { fix } : {}) });
+  }
+  return notes;
+}
+
+/** Remove one note, after its issue is open. False when there is no such note. */
+export function removeNote(env: Env, id: string): boolean {
+  if (!NOTE_ID.test(id)) return false;
+  const file = join(upstreamDir(env), `${id}.md`);
+  if (!existsSync(file)) return false;
+  rmSync(file);
+  return true;
+}
+
+/** The line the session start and doctor give in yokoten's own repo, or null with no note. */
+export const waitingLine = (count: number): string | null =>
+  count ? `${count} ${count === 1 ? 'lesson' : 'lessons'} from other projects ${count === 1 ? 'waits' : 'wait'} to become ${count === 1 ? 'an issue' : 'issues'}: yokoten learn --upstream --list` : null;

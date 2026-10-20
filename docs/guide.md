@@ -598,6 +598,7 @@ It puts three safe defaults in `.github/` too:
 | `changelog [--write]` | Shows the entries the files in `changes/` add under `[Unreleased]`. `--write` puts them into `CHANGELOG.md` and deletes the files; run it before a release. See [The changelog](#the-changelog) |
 | `learn <issue> [--write]` | Drafts a check from an incident issue, for a person to review. `--write` adds the files in `lessons/`. See [Learning from an incident](#learning-from-an-incident) |
 | `learn --ship <id>` | In yokoten: moves a reviewed lesson into a group in `kit/lessons/`, where `doctor` from that yokoten runs it in every project. Refused while a `TODO(reviewer)` is left or its test fails |
+| `learn --upstream "<what happened>" [--area <name>] [--fix <idea>]` | Keeps a note about a gap in yokoten itself, with the project and you hidden. `--list` shows the notes; `--done <id>` removes one. See [Lessons for yokoten itself](#lessons-for-yokoten-itself) |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public. A shallow clone can't see old commits, so it fails without scanning; in CI, check out the whole history (`fetch-depth: 0`). A hit in a file names the commit that added it, and the path in that commit: `file @ <commit>`. It reads commits past `git replace`, and fails the same way when a grafts file can hide commits. |
 | `hook [--agent <name>] [--commands-only] [--json]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini`, an Antigravity CLI PreToolUse call with `--agent antigravity`, a Muse Code PreToolUse call with `--agent muse`, a DeepSeek Harness PreToolUse call with `--agent deepseek-harness` |
 | `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop event by default, a Codex Stop event with `--agent codex`, a Gemini CLI AfterAgent event with `--agent gemini`. See [The stop check](#the-stop-check) |
@@ -995,6 +996,32 @@ walks the whole loop in a temp folder: an incident, the draft, a refused ship, t
 the ship, and the note in a second project. It runs offline, with a fake `gh`, and removes
 the folder after. `--keep` keeps the folder and prints where it is. The real loop is the same
 commands, with your own issue and your own check, in a clone of yokoten.
+
+### Lessons for yokoten itself
+
+Sometimes the problem is in yokoten, not in your project: a guard missed a case, or a
+message was hard to follow. Write it down where you found it:
+
+```
+yokoten learn --upstream "the guard let git push --tags through" --area hook --fix "match the flag too"
+```
+
+The note goes to `~/.config/yokoten/upstream/`, on your machine and outside every repo.
+`--area` and `--fix` are optional; without `--area`, the part is `unknown`. Before it is
+kept, the note is cleaned:
+
+- the project's name and its folder become `<project>`
+- your home folder becomes `~`
+- your name, emails, private hosts and private marks become placeholders, as in `yokoten redact`
+
+A note that still holds an email address, an IP address or a private mark is not kept. A
+note with a secret is not kept either. yokoten says which kind of detail it found, never the
+value. Nothing is sent anywhere.
+
+In the yokoten repo, the session start and `doctor` say how many notes wait:
+`yokoten: 3 lessons from other projects wait to become issues: yokoten learn --upstream --list`.
+Other repos never see this line. Open an issue for each note, then remove it with
+`yokoten learn --upstream --done <id>`.
 
 ### Settings
 
