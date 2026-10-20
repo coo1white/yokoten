@@ -216,6 +216,46 @@ const RETINA = /@\d+x\.(png|jpe?g|gif|webp|svg|avif)$/i;
 // Localhost, "any", and the three ranges RFC 5737 keeps for documentation.
 const OK_IP = [/^127\./, /^0\.0\.0\.0$/, /^192\.0\.2\./, /^198\.51\.100\./, /^203\.0\.113\./];
 
+// A dotted quad in a spec citation or a version is not an address (#382). The words next to
+// it decide, read only around a hit, so a large file gets no extra pass:
+// - before it: `§`, "section", "sec." or "sect.", "version", "ver." or "v", or a document
+//   name: "MS-OVBA" or "[MS-OVBA]", "RFC 7230", "ECMA-376", "ISO 32000-1", "ISO/IEC 29500";
+// - after it: a pre-release or build tag, `-beta` or `+build.5`. A `-` and a second address
+//   is a range of addresses, and is caught;
+// - a range joined by "to" or "through" whose first end is skipped by the words before it
+//   ("MS-OVBA 2.3.1.15 to 2.3.1.17"): both ends are skipped;
+// - a bare range that has the shape of section numbers ("2.3.1.15 to 2.3.1.17"): the first
+//   number is 9 or less, every number is below 64, the ends differ only in the last number,
+//   and the first end is not one number four times (as public resolvers are). Any other
+//   range, private or public, is a range of addresses, and is caught.
+// A bare address in prose ("connect to <address>") is still caught.
+const QUAD = String.raw`\d{1,3}(?:\.\d{1,3}){3}`;
+const SPEC_BEFORE = /(?:§|\b(?:section|sect?\.|version|ver\.|v)|(?:\bMS-[A-Z0-9-]+\]?|\bRFC\s?\d+|\bECMA-\d+|\bISO(?:\/IEC)?\s?\d+(?:-\d+)?)[,:]?)\s*$/i;
+const TAG_AFTER = new RegExp(String.raw`^[-+](?!${QUAD})\w`);
+const RANGE_BEFORE = new RegExp(String.raw`(?<![\w.])(${QUAD})\s+(?:to|through)\s+$`, 'i');
+const RANGE_AFTER = new RegExp(String.raw`^\s+(?:to|through)\s+(${QUAD})(?![\w.])`, 'i');
+/** Whether the words just before `index` in `line` cite a spec section or a version. */
+const hasSpecBefore = (line: string, index: number): boolean => SPEC_BEFORE.test(line.slice(Math.max(0, index - 40), index));
+/** Whether the range `first` to `last` has the shape of section numbers, not of addresses. */
+function isSectionRange(first: string, last: string): boolean {
+  const [a, b, c, d] = first.split('.').map(Number);
+  const lastParts = last.split('.').map(Number);
+  const isSmall = [a, b, c, d, ...lastParts].every((n) => n < 64);
+  const isSamePrefix = lastParts[0] === a && lastParts[1] === b && lastParts[2] === c;
+  const isRepeated = a === b && b === c && c === d;
+  return a <= 9 && isSmall && isSamePrefix && !isRepeated;
+}
+/** Whether the dotted quad `hit`, found at `index` in `line`, is a section number or a version. */
+function isSectionNumber(line: string, index: number, hit: string): boolean {
+  const after = line.slice(index + hit.length, index + hit.length + 40);
+  if (hasSpecBefore(line, index) || TAG_AFTER.test(after)) return true;
+  const before = line.slice(Math.max(0, index - 40), index);
+  const rangeStart = RANGE_BEFORE.exec(before);
+  if (rangeStart) return hasSpecBefore(line, index - before.length + rangeStart.index) || isSectionRange(rangeStart[1], hit);
+  const rangeEnd = RANGE_AFTER.exec(after);
+  return rangeEnd !== null && isSectionRange(hit, rangeEnd[1]);
+}
+
 /** Whether an address found in text may point at a person: not a noreply, team, example or retina name. */
 export const isPersonalEmail = (hit: string, allow: string[] = []): boolean => !OK_EMAIL.some((re) => re.test(hit)) && !isForgeRemote(hit) && !RETINA.test(hit) && !allow.includes(hit);
 
@@ -238,9 +278,9 @@ export function scanText(text: string, { file, marks = [], allow = [], logins = 
         problems.push(finding('email', 'an email address', 'use your GitHub noreply address, or a placeholder at example.com', where));
       }
     }
-    for (const [hit] of line.matchAll(IPV4)) {
+    for (const { 0: hit, index } of line.matchAll(IPV4)) {
       const octets = hit.split('.').map(Number);
-      if (octets.some((n) => n > 255) || OK_IP.some((re) => re.test(hit)) || allow.includes(hit)) continue;
+      if (octets.some((n) => n > 255) || OK_IP.some((re) => re.test(hit)) || allow.includes(hit) || isSectionNumber(line, index, hit)) continue;
       problems.push(finding('ip', 'an IP address', 'use a placeholder from 192.0.2.0/24', where));
     }
     const lower = line.toLowerCase();

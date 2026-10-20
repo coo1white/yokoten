@@ -70,6 +70,62 @@ test('IPs: real ones are caught, documentation ranges and versions are not', () 
   }
 });
 
+test('IPs: spec section numbers and versions are not addresses (#382)', () => {
+  const quad = ip(2, 3, 4, 2);
+  for (const ok of [
+    `§${ip(1, 2, 3, 4)}`,
+    `see § ${ip(1, 2, 3, 4)}`,
+    `section ${ip(4, 2, 1, 3)}`,
+    `Section ${ip(4, 2, 1, 3)} says`,
+    `sec. ${ip(4, 2, 1, 3)}`,
+    `RFC 7230 ${ip(3, 2, 6, 1)}`,
+    `RFC7230, ${ip(3, 2, 6, 1)}`,
+    `v${ip(1, 2, 3, 4)}`,
+    `v ${ip(1, 2, 3, 4)}`,
+    `version ${ip(1, 2, 3, 4)}`,
+    `${ip(1, 2, 3, 4)}-beta`,
+    `${ip(1, 2, 3, 4)}+build.5`,
+    `//! The decompressed dir stream, MS-OVBA ${quad}: project information,`,
+    `/// The dir stream (MS-OVBA ${quad}) does not follow the format.`,
+    `see [MS-XLS] ${quad}`,
+    `ECMA-376 ${quad}`,
+    `ISO 32000-1 ${quad}`,
+    `ISO/IEC 29500 ${quad}`,
+    `/// (MS-OVBA ${ip(2, 3, 1, 15)} to ${ip(2, 3, 1, 17)}). This reports what`,
+    `${ip(2, 3, 1, 15)} to ${ip(2, 3, 1, 17)}`,
+    `${ip(2, 3, 1, 15)} through ${ip(2, 3, 1, 17)}`,
+    `MS-OVBA ${ip(2, 3, 1, 15)} to ${ip(2, 3, 1, 17)}`,
+    `section ${ip(12, 3, 1, 15)} to ${ip(12, 3, 1, 70)}`,
+  ]) {
+    assert.deepEqual(scanText(ok, { file: 'a' }), [], ok);
+  }
+  // Real addresses in prose, private ranges included, are still caught.
+  for (const bad of [
+    `connect to ${ip(8, 8, 8, 8)}`,
+    `connect to ${ip(203, 0, 114, 9)} now`,
+    `host ${ip(10, 0, 0, 5)}`,
+    `gateway ${ip(192, 168, 1, 1)}`,
+    `server ${ip(172, 16, 0, 9)}`,
+    `${ip(10, 0, 0, 5)}-${ip(10, 0, 0, 9)}`,
+    `pool ${ip(10, 0, 0, 1)} to ${ip(10, 0, 0, 9)}`,
+    `${ip(192, 168, 1, 100)} through ${ip(192, 168, 1, 200)}`,
+    // A bare range of public addresses is caught: only small section-shaped numbers are skipped.
+    `${ip(203, 0, 114, 5)} to ${ip(203, 0, 114, 9)}`,
+    `${ip(10, 0, 0, 1)} to ${ip(10, 0, 0, 9)}`,
+    `${ip(8, 8, 8, 8)} to ${ip(8, 8, 8, 9)}`,
+    `${ip(1, 1, 1, 1)} through ${ip(1, 1, 1, 3)}`,
+    `${ip(2, 3, 1, 15)} to ${ip(2, 3, 2, 17)}`,
+    `${ip(2, 3, 1, 15)} to ${ip(2, 3, 1, 99)}`,
+    `dev ${ip(8, 8, 8, 8)}`,
+    `insect. ${ip(8, 8, 8, 8)}`,
+    `${ip(8, 8, 8, 8)}:53`,
+  ]) {
+    assert.ok(scanText(bad, { file: 'a' }).length >= 1, bad);
+  }
+  // Localhost is still fine, as before.
+  assert.deepEqual(scanText(`connect to ${ip(127, 0, 0, 1)}`, { file: 'a' }), []);
+});
+
 test('web strings: retina image names and user agents are not private (#245)', () => {
   const ua = `Mozilla/5.0 (Windows NT 10.0) Chrome/${ip(120, 0, 0, 0)} Safari/537.36`;
   for (const ok of [`url("img/logo${at}2x.png")`, `icons/close${at}3x.webp`, `a${at}2X.JPEG b${at}10x.avif`, ua]) {
