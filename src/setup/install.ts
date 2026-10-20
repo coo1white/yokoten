@@ -8,6 +8,8 @@
 // - PreToolUse (BeforeTool in Gemini CLI) runs `hook --commands-only`: no tag pushes, no
 //   force pushes, no skipped checks, in every repo, adopted or not.
 //
+// Grok CLI gets the PreToolUse guard only, in ~/.grok/hooks/yokoten.json.
+//
 // `yokoten uninstall` takes back what install wrote and marked as its own, for a machine
 // that moves to the Claude Code plugin (#300): the plugin brings the same pieces, and both
 // at once run every hook twice and show every skill twice.
@@ -25,6 +27,7 @@ import { skillFile as sharedSkillFile } from '../agents/agent-skills.ts';
 import { addUserHooks, agentFile, hasSessionDoctor, hasUserGuard, removeUserHooks, skillFile as claudeSkillFile, userDir } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
+import * as grok from '../agents/runtimes/grok.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { copyRuntime, HOME_DIR, KIT, MANAGED, writeManaged, writeNew } from './files.ts';
 import { type Gh, readLogin } from '../host/github.ts';
@@ -142,6 +145,14 @@ export function install(env: Env, { cwd, gh, system = systemHome }: { cwd?: stri
     ok &&= geminiHooks.ok;
     report.push(...geminiHooks.lines);
   } else report.push('skipped Gemini CLI: ~/.gemini not found (run `yokoten install` again after installing Gemini CLI)');
+  // Grok CLI gets the command guard alone: it shows a session-start hook's output only to
+  // the user, never to the agent (#407).
+  if (grok.hasUserDir(env)) {
+    const file = grok.userHooksFile(env);
+    const grokHooks = agentHooks('Grok CLI', file, () => [`${grok.addUserHooks(env, USER_CLI, USER_MISSING).guard} the Grok CLI command guard in ${file}`]);
+    ok &&= grokHooks.ok;
+    report.push(...grokHooks.lines);
+  } else report.push('skipped Grok CLI: ~/.grok not found (run `yokoten install` again after installing Grok CLI)');
 
   const marks = writeNew(target.marks, MARKS_HEADER, { mode: 0o600 });
   report.push(`${marks} ${target.marks}${marks === 'wrote' ? ' (add your marks to it)' : ''}`);

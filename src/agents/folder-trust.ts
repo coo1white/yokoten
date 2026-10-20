@@ -1,5 +1,5 @@
-// Whether an agent runs this project's hooks: Codex, Muse Code and Copilot CLI skip them
-// without a word until the user trusts the folder (#341). Each keeps that trust in a file
+// Whether an agent runs this project's hooks: Codex, Muse Code, Copilot CLI and Grok CLI
+// skip them without a word until the user trusts the folder (#341). Each keeps that trust in a file
 // in the user's home. Doctor reads the file, read-only and offline, and never prints it:
 // it holds the user's folder names.
 

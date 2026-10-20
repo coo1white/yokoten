@@ -12,7 +12,8 @@
     "codex",
     "github-copilot",
     "antigravity",
-    "deepseek"
+    "deepseek",
+    "grok"
   ],
   "license": "MIT",
   "homepage": "https://yokoten.app",

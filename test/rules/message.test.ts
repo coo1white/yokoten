@@ -173,7 +173,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   for (const c of diskSpaceChecks(dir, { HOME: dir }, fullMachine, false)) add(c.finding);
   add(agentTempDirCheck({}, fullMachine)?.finding);
   // The Codex and Gemini CLI user hooks (#211): only once their folders exist.
-  for (const folder of ['.codex', '.gemini']) mkdirSync(join(dir, folder));
+  for (const folder of ['.codex', '.gemini', '.grok']) mkdirSync(join(dir, folder));
   for (const c of userAgentHooks({ HOME: dir })) add(c.finding);
   // Command output (#390): the mailmap note, and the refusal for an agent that can't rewrite.
   for (const c of privacyNotes({ HOME: dir, GIT_CONFIG_GLOBAL: join(dir, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1' }, null)) add(c.finding);
