@@ -2,6 +2,7 @@
 
 import '../repo/home.ts';
 import assert from 'node:assert/strict';
+import childProcess from 'node:child_process';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
   chmodSync,
@@ -13,6 +14,7 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import {
@@ -1332,4 +1334,35 @@ test('doctor: a note when no yokoten on the PATH runs the installed copy (#433)'
   mkdirSync(join(home, '.claude'));
   writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { 'yokoten@yokoten': true } }));
   assert.equal(launcherCheck(env), null);
+});
+
+// #453: full doctor in an empty repo started 31 child processes. git read the index three
+// times, and several config keys twice. Each git read now runs once per run, and the
+// config values come from one `git config --list`.
+test('doctor: full doctor in an empty repo starts each git read once, nine child processes in all (#453)', () => {
+  const sandbox = makeSandbox();
+  // As the command runs it: the environment is the process's own (src/commands/shared.ts).
+  const saved = process.env.YOKOTEN_TEMP_DIRS;
+  process.env.YOKOTEN_TEMP_DIRS = '';
+  const runs: string[] = [];
+  const originals = { ...childProcess };
+  for (const name of ['execFileSync', 'spawnSync', 'execSync', 'execFile', 'spawn', 'exec'] as const) {
+    const original = originals[name] as (...args: unknown[]) => unknown;
+    (childProcess as Record<string, unknown>)[name] = (file: string, args?: unknown, options?: { cwd?: string }) => {
+      runs.push(`${Array.isArray(args) ? [file, ...args].join(' ') : file} (in ${options?.cwd === sandbox.repo ? 'the repo' : options?.cwd})`);
+      return original(file, args, options);
+    };
+  }
+  syncBuiltinESMExports();
+  try {
+    const result = doctor(sandbox.repo, { env: process.env, config: DEFAULTS, gh: () => { throw new Error('no network in this test'); }, machine: fakeMachine(100 * GB) });
+    assert.ok(result.lines.includes('unsaved work (only on this machine):'), result.lines.join('\n'));
+  } finally {
+    Object.assign(childProcess, originals);
+    syncBuiltinESMExports();
+    if (saved === undefined) delete process.env.YOKOTEN_TEMP_DIRS;
+    else process.env.YOKOTEN_TEMP_DIRS = saved;
+  }
+  assert.deepEqual(runs.filter((run, i) => runs.indexOf(run) !== i), [], `a git read ran twice:\n${runs.join('\n')}`);
+  assert.equal(runs.length, 9, runs.join('\n'));
 });

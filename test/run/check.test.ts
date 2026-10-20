@@ -2,7 +2,7 @@
 
 import '../repo/home.ts';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   appendFileSync,
   existsSync,
@@ -20,16 +20,25 @@ import { test } from 'node:test';
 import {
   at,
   makeSandbox,
+  makeTempDir,
   makeTranslatedRepo,
 } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
 import {
+  assumeEmptyFolder,
   batchBlobs,
   changedFiles,
   checkHistory,
+  configEntries,
+  configKey,
+  forgetGitReads,
+  gitConfig,
   GitReadError,
+  parseConfigList,
   readBlobs,
   readGit,
+  remembered,
+  withGitReads,
 } from '../../src/run/check.ts';
 
 // A merge leaves the index and MERGE_HEAD as the pre-merge-commit hook sees them (#246).
@@ -946,4 +955,80 @@ test('check --staged: reads 5,000 staged files in full, past the default buffer 
   // All 5,000 were read: the layout rule counts every one of them.
   assert.deepEqual(report.findings.map((f: { id: string }) => f.id), ['layout']);
   assert.match(report.findings[0].what, /^5000 entries, over the cap of 7/);
+});
+
+// ---- Git answers kept for a run (#453) ----
+
+test('git reads: a key as git config --list prints it, the subsection as it is', () => {
+  assert.equal(configKey('core.hooksPath'), 'core.hookspath');
+  assert.equal(configKey('remote.Origin.URL'), 'remote.Origin.url');
+  assert.equal(configKey('a.b.c.D'), 'a.b.c.d');
+});
+
+test('git reads: the list with scopes, a key with no value, and a value with a newline', () => {
+  assert.deepEqual(parseConfigList('global\0user.name\nA B\0local\0core.bare\0local\0x.y\nline\nnext\0'), [
+    { scope: 'global', key: 'user.name', value: 'A B' },
+    { scope: 'local', key: 'core.bare', value: '' },
+    { scope: 'local', key: 'x.y', value: 'line\nnext' },
+  ]);
+  assert.deepEqual(parseConfigList(''), []);
+});
+
+test('git reads: an answer is kept for the run, a failure too, and dropped when the run is over or forgotten', () => {
+  let calls = 0;
+  const read = () => remembered('key', () => ++calls);
+  assert.deepEqual(withGitReads(() => [read(), read()]), [1, 1]);
+  assert.equal(read(), 2, 'outside a run, each call reads');
+  assert.deepEqual(
+    withGitReads(() => {
+      const first = read();
+      forgetGitReads();
+      return [first, read()];
+    }),
+    [3, 4],
+  );
+  let failures = 0;
+  const fail = () =>
+    remembered('fails', () => {
+      failures++;
+      throw new Error('no answer');
+    });
+  withGitReads(() => {
+    assert.throws(fail, /no answer/);
+    assert.throws(fail, /no answer/);
+  });
+  assert.equal(failures, 1, 'a failure is not read again in the run');
+});
+
+test('git reads: in a run, the values git config --get gives, from one list', () => {
+  const sandbox = makeSandbox();
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: sandbox.repo, encoding: 'utf8' });
+  git('config', '--add', 'x.many', 'first');
+  git('config', '--add', 'x.many', 'second');
+  // A key with no `=`, and a subsection in capitals.
+  appendFileSync(join(sandbox.repo, '.git', 'config'), '[x]\n\tbare\n[remote "Up"]\n\turl = https://example.com/a.git\n');
+  for (const key of ['x.many', 'X.Many', 'x.bare', 'remote.Up.url', 'remote.up.url', 'x.none', 'user.name']) {
+    let expected = '';
+    try {
+      expected = git('config', '--get', key).trim();
+    } catch {
+      // not set
+    }
+    assert.equal(withGitReads(() => gitConfig(sandbox.repo, key)), expected, key);
+    assert.equal(gitConfig(sandbox.repo, key), expected, `${key}, outside a run`);
+  }
+  const scopes = withGitReads(() => configEntries(sandbox.repo, 'x.many')?.map((entry) => `${entry.scope} ${entry.value}`));
+  assert.deepEqual(scopes, ['local first', 'local second']);
+  assert.equal(configEntries(sandbox.repo, 'x.many'), null, 'outside a run, no list: the caller asks per key');
+});
+
+test('git reads: the folder of a self-test reads as no repo and no config, only in the run', () => {
+  const dir = makeTempDir();
+  withGitReads(() => {
+    assumeEmptyFolder(dir);
+    assert.deepEqual(configEntries(dir, /./), []);
+    assert.throws(() => remembered(`ls-files\0${dir}`, () => ['a file']), /not in a git repository/);
+  });
+  assumeEmptyFolder(dir);
+  assert.equal(configEntries(dir, /./), null);
 });

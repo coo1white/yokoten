@@ -10,7 +10,7 @@
 // fails, because the user asked for changes on GitHub and none were made (#208). An area
 // label is never deleted or changed.
 
-import { execFileSync } from 'node:child_process';
+import { gitConfig } from '../run/check.ts';
 import {
   type Board,
   createBoard,
@@ -98,11 +98,7 @@ export const lackingLabels = (names: string[]): Label[] => {
 
 /** The origin remote's URL, or '' when there is none. */
 export function readOriginUrl(root: string): string {
-  try {
-    return execFileSync('git', ['config', '--get', 'remote.origin.url'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-  } catch {
-    return '';
-  }
+  return gitConfig(root, 'remote.origin.url');
 }
 
 export interface PlanningOptions {

@@ -15,6 +15,131 @@ import { autoLogins, loadMarkKinds, notUtc, scanText, TIME_ZONE_FIX } from '../r
 import { parseChange, readChanges } from './changelog.ts';
 import { isShallowNote, translationNotes } from './translations.ts';
 
+// ---- Git answers kept for a run (#408, #453) ----
+//
+// Within one run (a doctor or an init), several checks ask git the same question: the
+// repo's own core.hooksPath, say, or the files in the index. Each answer is kept for the
+// run, so git starts once per question (#408, #453). Only inside `withGitReads`: init
+// writes core.hooksPath, and tests change it between runs, so nothing is kept from one run
+// to the next. The config values come from one `git config --list` a run; outside a run
+// each value is one `git config --get`, as one value is all most callers need.
+
+type Answer = { value: unknown } | { error: unknown };
+
+let answers: Map<string, Answer> | null = null;
+
+/** Run `read` with each git answer below kept until it returns. */
+export function withGitReads<T>(read: () => T): T {
+  const outer = answers;
+  answers ??= new Map();
+  try {
+    return read();
+  } finally {
+    answers = outer;
+  }
+}
+
+/** Drop the answers kept so far in this run: after a git write, as init's `git config core.hooksPath`. */
+export function forgetGitReads(): void {
+  answers?.clear();
+}
+
+/** The answer `read` gives, kept under `key` while `withGitReads` runs. A read that throws throws again, without a second try. */
+export function remembered<T>(key: string, read: () => T): T {
+  if (!answers) return read();
+  let answer = answers.get(key);
+  if (!answer) {
+    try {
+      answer = { value: read() };
+    } catch (error) {
+      answer = { error };
+    }
+    answers.set(key, answer);
+  }
+  if ('error' in answer) throw answer.error;
+  return answer.value as T;
+}
+
+/** One git config entry: the scope it comes from (local, global, system, command, worktree), its key as git prints it, and its value. */
+export interface ConfigEntry {
+  scope: string;
+  key: string;
+  value: string;
+}
+
+/** The key as `git config --list` prints it: the section and the name in lower case, a subsection as it is. */
+export function configKey(key: string): string {
+  const first = key.indexOf('.');
+  const last = key.lastIndexOf('.');
+  if (first === -1) return key.toLowerCase();
+  return `${key.slice(0, first).toLowerCase()}${key.slice(first, last)}${key.slice(last).toLowerCase()}`;
+}
+
+/** The entries of `git config --list --show-scope -z`: `scope\0key\nvalue\0` each, or `scope\0key\0` for a key with no `=`. */
+export function parseConfigList(text: string): ConfigEntry[] {
+  const parts = text.split('\0');
+  const entries: ConfigEntry[] = [];
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    const [scope, item] = [parts[i], parts[i + 1]];
+    const newline = item.indexOf('\n');
+    entries.push(newline === -1 ? { scope, key: item, value: '' } : { scope, key: item.slice(0, newline), value: item.slice(newline + 1) });
+  }
+  return entries;
+}
+
+// The keys of two answers: `assumeEmptyFolder` keeps them ahead of the reads.
+const listKey = (root: string, env: NodeJS.ProcessEnv) => `config-list\0${root}\0${JSON.stringify(env)}`;
+const indexKey = (root: string) => `ls-files\0${root}`;
+
+/**
+ * Every config entry git sees in `root` with `env`, oldest first, from one call kept for
+ * the run. Null outside a run, or when git can't list them: the caller then asks per key.
+ */
+function readConfigList(root: string, env: NodeJS.ProcessEnv = process.env): ConfigEntry[] | null {
+  if (!answers) return null;
+  return remembered(listKey(root, env), () => {
+    try {
+      return parseConfigList(execFileSync('git', ['config', '--list', '--show-scope', '-z'], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, maxBuffer: 1 << 26 }));
+    } catch {
+      return null;
+    }
+  });
+}
+
+/** The entries of the keys `match` takes (a key name, or a test of the key as git prints it), oldest first; null as for `readConfigList`. */
+export function configEntries(root: string, match: string | RegExp, env?: NodeJS.ProcessEnv): ConfigEntry[] | null {
+  const list = readConfigList(root, env);
+  if (!list) return null;
+  const key = typeof match === 'string' ? configKey(match) : null;
+  return list.filter((entry) => (key === null ? (match as RegExp).test(entry.key) : entry.key === key));
+}
+
+/** The value `git config --get key` gives in `root` (the last one set), trimmed, or '' when it is not set or git fails. */
+export const gitConfig = (root: string, key: string): string => {
+  const entries = configEntries(root, key);
+  if (entries) return (entries.at(-1)?.value ?? '').trim();
+  return remembered(`config\0${root}\0${key}`, () => {
+    try {
+      return execFileSync('git', ['config', '--get', key], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {
+      return '';
+    }
+  });
+};
+
+/**
+ * Keep, for this run, the answers git gives in an empty folder outside any repo with no
+ * config: no entries, and no index. For a self-test's folder (doctor's road control), so
+ * the control reads no git and no config of this machine. Nothing outside a run.
+ */
+export function assumeEmptyFolder(root: string): void {
+  answers?.set(listKey(root, process.env), { value: [] });
+  answers?.set(indexKey(root), { error: new Error(`${root} is not in a git repository`) });
+}
+
+/** The answer of `read` (the files in the index of `root`), kept for the run under one key for every caller. */
+export const rememberedIndex = (root: string, read: () => string[]): string[] => remembered(indexKey(root), read);
+
 /**
  * A git read a check depends on that git could not answer (#403): it failed, was stopped,
  * or wrote more than the buffer holds. The check stops on it and says so, never reading
@@ -66,7 +191,7 @@ export const gitRoot = (cwd: string): string =>
   execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 
 /** The files in the index: what the next commit (or, in CI, the checkout) holds. */
-export const indexFiles = (root: string): string[] => list(git(root, ['ls-files', '-z']));
+export const indexFiles = (root: string): string[] => rememberedIndex(root, () => list(git(root, ['ls-files', '-z'])));
 
 /** A staged entry; `from` is the old path of a move or copy. */
 type Staged = { status: string; path: string; from?: string; mode: string; blob: string };
@@ -260,6 +385,9 @@ function readEntry(root: string, path: string): Buffer | undefined {
  */
 export function check(root: string, { config, env, staged = false, notes = [] }: { config: Config; env: Env; staged?: boolean; notes?: Finding[] }): Finding[] {
   const problems: Finding[] = [];
+  // The index is read once, here or in the run around this check (#453).
+  let index: string[] | undefined;
+  const indexed = () => (index ??= indexFiles(root));
   const kinds = loadMarkKinds(env);
   const marks = kinds.map((mark) => mark.value);
   const logins = autoLogins(kinds);
@@ -309,11 +437,11 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
     }
     problems.push(...checkBuildOutput(kept.map(({ path, blob }) => ({ path, binary: looksBinary(blobs.get(blob)?.bytes ?? Buffer.alloc(0)) })), config));
   } else {
-    for (const path of indexFiles(root)) {
+    for (const path of indexed()) {
       const buf = readEntry(root, path); // none if deleted in the work tree but not yet staged
       if (buf) privacy(path, buf);
     }
-    for (const note of translationNotes(root, indexFiles(root))) (config.translations.fail && !isShallowNote(note) ? problems : notes).push(note);
+    for (const note of translationNotes(root, indexed())) (config.translations.fail && !isShallowNote(note) ? problems : notes).push(note);
     // A key yokoten.json holds but yokoten does not know (#228).
     notes.push(...findUnknownKeys(root));
     // Every change file present, read by `yokoten changelog`'s own reader (#346). Long
@@ -321,7 +449,7 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
     problems.push(...readChanges(root).problems);
   }
   // An exempt glob that matches nothing is a note for the tree, not at each commit (#381).
-  problems.push(...checkLayout(indexFiles(root), config, staged ? undefined : notes));
+  problems.push(...checkLayout(indexed(), config, staged ? undefined : notes));
   return problems;
 }
 

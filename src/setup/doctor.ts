@@ -39,6 +39,7 @@ import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '.
 import { findTempDirs, readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advice/unsaved.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
 import { compareCoreRules, compareVersions, hookCliPath, isSelf, readCoreRules, summarizeUpdate, withGitReads } from './init.ts';
+import { assumeEmptyFolder, gitConfig } from '../run/check.ts';
 import { countOwnMarks, fillMarks, filledLine, trySafely, installedPieces, isOnPath, launcherDir, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
 import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
 
@@ -822,16 +823,21 @@ const SERVER_CONTROL: ServerRead = {
 
 /**
  * In a folder with nothing but a todo file, a home with nothing in it, and a server with
- * every setting off, no step on the road may be done.
+ * every setting off, no step on the road may be done. Git is not asked: the folder is in
+ * no repo and has no config, so no setting of this machine counts and no git starts (#453).
  */
 function roadControl(): string[] {
   let dir = '';
   try {
     dir = mkdtempSync(join(tmpdir(), 'yokoten-control-'));
     writeFileSync(join(dir, 'TODO.md'), '- an item\n');
-    return road(dir, { HOME: dir }, ROAD, SERVER_CONTROL)
-      .filter((r) => r.found === true)
-      .map((r) => `the ${r.step.key} step`);
+    const folder = dir;
+    return withGitReads(() => {
+      assumeEmptyFolder(folder);
+      return road(folder, { HOME: folder }, ROAD, SERVER_CONTROL)
+        .filter((r) => r.found === true)
+        .map((r) => `the ${r.step.key} step`);
+    });
   } catch {
     return []; // no temp folder to test in; the other checks still run
   } finally {
@@ -1033,13 +1039,8 @@ export function listBoardSteps(server: ServerRead): string[] {
 
 /** The server settings of the project's origin remote, or why they can't be read. */
 function readOrigin(root: string, gh: Gh): ServerSettings | Unread {
-  let remote = '';
-  try {
-    remote = execFileSync('git', ['config', '--get', 'remote.origin.url'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-  } catch {
-    // no origin remote
-  }
-  if (!remote.trim()) return { unread: 'there is no origin remote yet', fix: 'add one on GitHub to check the server settings, or check them by hand' };
+  const remote = gitConfig(root, 'remote.origin.url');
+  if (!remote) return { unread: 'there is no origin remote yet', fix: 'add one on GitHub to check the server settings, or check them by hand' };
   const repo = repoOf(remote);
   return repo ? readServer(gh, repo) : { unread: 'the origin remote is not on a host yokoten knows (GitHub for now)', fix: 'add a GitHub origin remote, or check these settings by hand' };
 }
@@ -1307,8 +1308,11 @@ function doctorRun(
     if (core.mark === 'MISSING') findings.push(core.finding);
     else if (core.mark === 'note') notes.push(core.finding);
   }
+  // Work only on this machine (#365): notes, never a failure, and read only. Read here, so
+  // the state file is found in the git folder it names, as a session start finds it (#453).
+  const unsaved = readUnsaved(root, { env });
   // Full doctor keeps which lessons this clone has seen; a session start keeps only which it ran.
-  const stateFile = findStateFile(root);
+  const stateFile = unsaved?.commonDir ? join(unsaved.commonDir, STATE_FILE) : findStateFile(root);
   const state = readState(stateFile);
   const seenLessons = state.seenLessons ?? [];
   const lessons = lessonChecks(root, config.notNow, undefined, stateFile ? seenLessons : null);
@@ -1325,8 +1329,6 @@ function doctorRun(
   // check's own notes (#228), such as an unknown yokoten.json key or a translation behind: worded as check words them, and never a failure.
   for (const n of checkNotes) lines.push(`  note    ${formatFinding(n).replaceAll('\n', '\n        ')}`);
   notes.push(...checkNotes);
-  // Work only on this machine (#365): notes, never a failure, and read only.
-  const unsaved = readUnsaved(root, { env });
   const unsavedFound = unsaved ? unsavedNotes(unsaved, { home: env.HOME }) : [];
   lines.push('unsaved work (only on this machine):');
   if (!unsaved) lines.push("  note    can't read this repo with git, so doctor can't tell what is only here");

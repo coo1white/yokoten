@@ -23,6 +23,7 @@ import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
+import { configEntries, forgetGitReads, remembered, withGitReads } from '../run/check.ts';
 import { DEFAULTS } from '../rules/config.ts';
 import { systemHome } from '../rules/privacy.ts';
 import { CODEOWNERS_PLACES, type Gh, ghIn, isOrganization, repoOf } from '../host/github.ts';
@@ -74,8 +75,13 @@ const ORG_LOOKUP_MS = 5000;
 /**
  * One line per thing done, kept or skipped; `ok` is false when a hooks or settings file was
  * skipped (#248, #254). `gh` asks GitHub one thing: whether the remote owner is an organization.
+ * Each git answer is kept for the run, until init sets core.hooksPath (#453).
  */
 export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: boolean; lines: string[] } {
+  return withGitReads(() => initRun(root, gh));
+}
+
+function initRun(root: string, gh: Gh): { ok: boolean; lines: string[] } {
   const report: string[] = [];
   const cli = cliPath(root);
   const hookCli = hookCliPath(root);
@@ -436,39 +442,24 @@ function importRules(root: string): string | null {
 /** How git runs commit hooks here: yokoten's .githooks, the project's own folder, or no git repo. */
 type HookSetup = { kind: 'plain' } | { kind: 'own'; hooksPath: string } | { kind: 'no repo' };
 
-// Within one doctor run, several checks ask git the same question: the repo's own
-// core.hooksPath, say. Each answer is kept for the run, so git starts once per
-// question (#408). Only inside `withGitReads`: init writes core.hooksPath, and tests
-// change it between runs, so nothing is kept from one run to the next.
-let gitReads: Map<string, unknown> | null = null;
+// Each git answer is kept for the run (`withGitReads`, src/run/check.ts): a doctor or an init.
+export { withGitReads };
 
-/** Run `read` with each git answer below kept until it returns. */
-export function withGitReads<T>(read: () => T): T {
-  const outer = gitReads;
-  gitReads ??= new Map();
-  try {
-    return read();
-  } finally {
-    gitReads = outer;
-  }
-}
-
-/** The answer `read` gives, kept under `key` while `withGitReads` runs. */
-export function remembered<T>(key: string, read: () => T): T {
-  if (!gitReads) return read();
-  if (!gitReads.has(key)) gitReads.set(key, read());
-  return gitReads.get(key) as T;
-}
-
-/** The repo's own core.hooksPath (not the user's global one), '' when unset, or null outside a git repo. */
-const readLocalHooksPath = (root: string): string | null =>
-  remembered(`local-hooks-path\0${root}`, () => {
+/**
+ * The repo's own core.hooksPath (not the user's global one), '' when unset, or null outside
+ * a git repo. In a run, from the config list and the git folder, which other checks read too.
+ */
+const readLocalHooksPath = (root: string): string | null => {
+  const entries = configEntries(root, 'core.hooksPath');
+  if (entries) return gitLine(root, ['rev-parse', '--git-common-dir']) === null ? null : (entries.filter((entry) => entry.scope === 'local').at(-1)?.value ?? '').trim();
+  return remembered(`local-hooks-path\0${root}`, () => {
     try {
       return execFileSync('git', ['config', '--local', '--get', 'core.hooksPath'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
     } catch (error) {
       return (error as { status?: number }).status === 1 ? '' : null;
     }
   });
+};
 
 export function readHookSetup(root: string): HookSetup {
   const hooksPath = readLocalHooksPath(root);
@@ -574,13 +565,15 @@ export interface OldHook {
   handOff: 'yes' | 'not executable' | 'global';
 }
 
-const gitLine = (root: string, args: string[]): string | null => {
-  try {
-    return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-  } catch {
-    return null;
-  }
-};
+/** What git prints for `args` in `root`, trimmed, or null when it fails; kept for the run. */
+const gitLine = (root: string, args: string[]): string | null =>
+  remembered(`line\0${root}\0${args.join('\0')}`, () => {
+    try {
+      return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {
+      return null;
+    }
+  });
 
 /** A path for a message: relative to the root, or from ~, so no home folder is printed. */
 const showPath = (root: string, path: string): string => {
@@ -600,8 +593,11 @@ const sameFile = (a: string, b: string): boolean => {
 };
 
 /** Whether a core.hooksPath comes from the global or system config. */
-const hasOtherHooksPath = (root: string): boolean =>
-  (gitLine(root, ['config', '--show-scope', '--get-all', 'core.hooksPath']) ?? '').split('\n').some((line) => /^(?:global|system|command)\t/.test(line));
+const hasOtherHooksPath = (root: string): boolean => {
+  const entries = configEntries(root, 'core.hooksPath');
+  if (entries) return entries.some((entry) => ['global', 'system', 'command'].includes(entry.scope));
+  return (gitLine(root, ['config', '--show-scope', '--get-all', 'core.hooksPath']) ?? '').split('\n').some((line) => /^(?:global|system|command)\t/.test(line));
+};
 
 /**
  * The hooks this clone has outside .githooks that git runs (or, with core.hooksPath set,
@@ -773,6 +769,8 @@ function setCommitCheck(root: string, cli: string, hooks: HookSetup, blocks: str
     const list = handed.map((old) => `${old.file}${isCommitHook(old.hook) ? ' (after the check)' : ''}`).join(', ');
     const note = handed.length && managers ? [`note: ${managers} is here; .githooks runs these hooks in .git/hooks: ${list}. A hook it installs later does not run until \`yokoten init\` hands off to it, and \`yokoten doctor\` names it`] : [];
     execFileSync('git', ['config', 'core.hooksPath', '.githooks'], { cwd: root, stdio: 'pipe' });
+    // The answers kept so far name the old value.
+    forgetGitReads();
     return ['set git core.hooksPath to .githooks (the commit check)', ...note, ...dead];
   }
   const { hooksPath } = hooks;
