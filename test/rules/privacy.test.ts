@@ -163,7 +163,7 @@ test('private marks file: comments and blanks skipped, missing file is empty', (
 });
 
 test('private marks file: the kind of each added mark, by its header or, under the old header, by shape (#410)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const dir = makeTempDir('yokoten-');
   const file = join(dir, 'marks');
   writeFileSync(file, `# mine\nMyCity\n# added by yokoten from this machine: forge login\nOcto-Jdoe\n# added by yokoten from this machine\njane${at}personal-mail.dev\nbuild.private-host.dev\nold-login\n# mine again\nmyserver\n`);
   assert.deepEqual(loadMarkKinds({ YOKOTEN_PRIVATE_MARKS: file }), [

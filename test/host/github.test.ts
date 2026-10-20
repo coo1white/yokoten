@@ -477,7 +477,7 @@ test('readLocalLogins: the user under each host in hosts.yml; none when the file
 
 // #406: the bot reads the branch's files as check --pr reads a pull request's: a rename is its new path.
 test('branch files: changed, renamed and deleted paths since the base, from one local diff (#406)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const dir = makeTempDir('yokoten-');
   const env = { PATH: process.env.PATH, HOME: dir, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(dir, '.gitconfig'), GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' };
   const git = (...args: string[]) => spawnSync('git', args, { cwd: dir, env, encoding: 'utf8' });
   git('init', '-q', '-b', 'main');

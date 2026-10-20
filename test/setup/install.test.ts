@@ -644,7 +644,7 @@ test('migrateMarks: an old block is split by kind; a value it cannot place stays
 });
 
 test('fillMarks: rewrites an old block in a fake home, by the gh login on file, and keeps mode 600 (#410)', () => {
-  const home = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const home = makeTempDir('yokoten-');
   const env = { HOME: home };
   const marks = join(home, '.config', 'yokoten', 'private-marks');
   mkdirSync(dirname(marks), { recursive: true });
