@@ -4,11 +4,11 @@
 // The hook knows nothing about any one runtime. An adapter in src/agents/ turns the
 // runtime's own call into an `Action` first.
 
-import { existsSync, realpathSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { existsSync } from 'node:fs';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 import { type Config, DEFAULTS, type Env, type IgnoredPart, loadConfig } from '../rules/config.ts';
-import { checkCommand, checkEdit } from '../rules/guards.ts';
+import { checkCommand, checkEdit, realPath as real } from '../rules/guards.ts';
 import { type Finding, finding } from '../rules/message.ts';
 
 /** What an agent is about to do, in no runtime's terms. */
@@ -160,16 +160,4 @@ const unreadable = (what: string): Finding => finding('unreadable-command', what
 if (!isMainThread && parentPort && workerData?.yokotenJudge) {
   const { action, options } = workerData.yokotenJudge as { action: Action; options: JudgeOptions };
   parentPort.postMessage(judge(action, options));
-}
-
-// The real path, through symlinks. git reports the repo root's real path, and a tool may
-// send a path through a symlink (on macOS, /var is /private/var). A file that does not
-// exist yet takes the real path of its nearest existing folder.
-function real(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    const parent = dirname(path);
-    return parent === path ? path : resolve(real(parent), basename(path));
-  }
 }

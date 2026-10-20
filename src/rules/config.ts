@@ -244,8 +244,8 @@ export function globToRegExp(glob: string): RegExp {
   return new RegExp(glob.includes('/') ? `^${re}$` : `(?:^|/)${re}$`);
 }
 
-/** A function that says whether a path matches any of the globs. */
-export function matcher(globs: string[]): (path: string) => boolean {
-  const patterns = globs.map(globToRegExp);
+/** A function that says whether a path matches any of the globs; with `foldsCase`, in any case. */
+export function matcher(globs: string[], { foldsCase = false }: { foldsCase?: boolean } = {}): (path: string) => boolean {
+  const patterns = globs.map((glob) => (foldsCase ? new RegExp(globToRegExp(glob).source, 'i') : globToRegExp(glob)));
   return (path) => patterns.some((re) => re.test(path));
 }

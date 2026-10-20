@@ -12,8 +12,8 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Config, Env } from './config.ts';
 import { loadConfig, matcher } from './config.ts';
 import { type Finding, finding } from './message.ts';
@@ -25,7 +25,7 @@ export function checkEdit(path: string, { config, env }: { config: Config; env: 
   if (env.YOKOTEN_FIX_TASK === '1' && matcher(config.tests)(path)) {
     return finding('test-file', `${path} is a test file, and this is a fix task (YOKOTEN_FIX_TASK=1)`, 'if the test is wrong, stop and say so in your report');
   }
-  if (env.YOKOTEN_ROLE === 'worker' && matcher(config.leadOnly)(path) && !isGranted(path, env)) {
+  if (env.YOKOTEN_ROLE === 'worker' && isLeadOnly(path, config.leadOnly) && !isGranted(path, env)) {
     return finding('lead-only', `${path} is lead-only (yokoten.json "leadOnly")`, LEAD_ONLY_FIX);
   }
   return null;
@@ -33,14 +33,28 @@ export function checkEdit(path: string, { config, env }: { config: Config; env: 
 
 const LEAD_ONLY_FIX = 'stop and hand the change to the lead: say in your report what to change in it, or ask the lead to start you with YOKOTEN_LEAD_ONLY_OK=<path>';
 
+// On macOS and Windows a file name is the same file in any case: `agents.md` is AGENTS.md.
+const FOLDS_CASE = process.platform === 'darwin' || process.platform === 'win32';
+
+/** Whether yokoten.json "leadOnly" matches the path, in any case where file names ignore it. */
+export function isLeadOnly(path: string, leadOnly: string[], foldsCase = FOLDS_CASE): boolean {
+  return matcher(leadOnly, { foldsCase })(path);
+}
+
 /**
  * Whether the lead lets this worker change a lead-only path: YOKOTEN_LEAD_ONLY_OK, a
  * comma-separated list of paths from the repo root, set when the worker starts. An entry
- * with a `*` is a glob, as in yokoten.json; any other entry is that one path.
+ * with a `*` is a glob, as in yokoten.json (`*` alone grants every lead-only file); any
+ * other entry is that one path. `\` reads as `/`, a trailing `/` and a leading `./` are
+ * dropped, and an empty entry counts for nothing.
  */
-export function isGranted(path: string, env: Env): boolean {
-  const entries = (env.YOKOTEN_LEAD_ONLY_OK ?? '').split(',').map((entry) => entry.trim().replace(/^\.\//, '')).filter(Boolean);
-  return entries.some((entry) => (entry.includes('*') ? matcher([entry])(path) : entry === path));
+export function isGranted(path: string, env: Env, foldsCase = FOLDS_CASE): boolean {
+  const entries = (env.YOKOTEN_LEAD_ONLY_OK ?? '')
+    .split(',')
+    .map((entry) => entry.trim().replace(/\\/g, '/').replace(/^(\.\/)+/, '').replace(/\/+$/, ''))
+    .filter(Boolean);
+  const same = (entry: string) => (foldsCase ? entry.toLowerCase() === path.toLowerCase() : entry === path);
+  return entries.some((entry) => (entry.includes('*') ? matcher([entry], { foldsCase })(path) : same(entry)));
 }
 
 /**
@@ -784,8 +798,15 @@ function folderAfter(words: string[], folder: string | null, env: Env): string |
 // The rules apply where the edit guard's do: in the repos the hook rules (`judge`), and in
 // a repo with a yokoten.json above the file. A worker in any other repo is not stopped.
 
-/** A file a command writes, as written, and the folder it is relative to (null: unknown). */
-type WriteTarget = { path: string; from: string | null };
+/**
+ * A file a command writes, as written, and the folder it is relative to (null: unknown).
+ * `isUnread`: the path is a patch whose files the guard could not read, so what it writes
+ * is unknown.
+ */
+type WriteTarget = { path: string; from: string | null; isUnread?: boolean };
+
+/** The largest patch the guard reads for the files it names. */
+const PATCH_LIMIT = 1 << 20;
 
 // A redirect that writes its file. `>&2` copies a stream; `>&file` writes a file.
 const WRITE_REDIRECT = /^(?:\d+|\{[A-Za-z_]\w*\}|&)?(>>|>\||<>|>&|>)(.*)$/s;
@@ -795,10 +816,16 @@ function checkLeadOnlyWrites(words: string[], { env, rules, folder }: { env: Env
   const stopped = (target: WriteTarget): string | null => {
     const ruled = rules.ruled(target, env);
     if (!ruled) return null;
-    const isLeadOnly = matcher(ruled.leadOnly);
-    return (isLeadOnly(ruled.path) || isLeadOnly(`${ruled.path}/-`)) && !isGranted(ruled.path, env) ? ruled.path : null;
+    const matches = (path: string) => isLeadOnly(path, ruled.leadOnly);
+    return (matches(ruled.path) || matches(`${ruled.path}/-`)) && !isGranted(ruled.path, env) ? ruled.path : null;
   };
   for (const target of writeTargets(words, folder, rules.rootOf)) {
+    if (target.isUnread) {
+      if (target.from !== null && rules.isRuled(target.from)) {
+        return finding('lead-only', `this command applies ${base(target.path)}, and yokoten can't read which files it changes`, `apply a patch file under 1 MB, so the guard can read it, or ${LEAD_ONLY_FIX}`);
+      }
+      continue;
+    }
     const path = stopped(target);
     if (path !== null) return finding('lead-only', `this command writes ${path}, which is lead-only (yokoten.json "leadOnly")`, LEAD_ONLY_FIX);
   }
@@ -810,12 +837,27 @@ function checkLeadOnlyWrites(words: string[], { env, rules, folder }: { env: Env
 }
 
 /**
+ * The real path, through symlinks. git reports the repo root's real path, and a tool may
+ * send a path through a symlink (on macOS, /var is /private/var). A file that does not
+ * exist yet takes the real path of its nearest existing folder.
+ */
+export function realPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    const parent = dirname(path);
+    return parent === path ? path : resolve(realPath(parent), basename(path));
+  }
+}
+
+/**
  * `ruled`: a target's path from its repo's root, and that repo's lead-only list; null when
  * no file rules apply. `rootOf`: the git root at or above a folder, from the same walks.
  */
 type FileRules = {
   ruled: (target: WriteTarget, env: Env) => { path: string; leadOnly: string[] } | null;
   rootOf: (folder: string) => string | null;
+  isRuled: (folder: string) => boolean;
 };
 
 /**
@@ -829,15 +871,19 @@ function fileRules(repos: RuledRepo[]): FileRules {
   const rootAbove = new Map<string, string | null>(); // folder → the git root above it
   const leadOnlyAt = new Map<string, string[] | null>(); // git root → its list, null without yokoten.json
   const rootOf = (folder: string) => gitRootAbove(folder, rootAbove);
+  // Roots and files are compared by real path, as for an edit: a symlink to AGENTS.md is
+  // AGENTS.md, and on macOS /var is /private/var. The roots are read once, on first use.
+  let realRepos: RuledRepo[] | null = null;
   const ruled: FileRules['ruled'] = ({ path, from }, env) => {
     if (path === '' || path === '-') return null;
     const expanded = /^~(?=\/|$)/.test(path) && env.HOME ? join(env.HOME, path.slice(1)) : path;
     if (from === null && !isAbsolute(expanded)) {
       return repos.length ? { path: expanded.replace(/\\/g, '/').replace(/^(\.\/)+/, ''), leadOnly: repos[0].leadOnly } : null;
     }
-    const full = resolve(from ?? '/', expanded);
+    const full = realPath(resolve(from ?? '/', expanded));
+    realRepos ??= repos.map((repo) => ({ ...repo, root: realPath(repo.root) }));
     let best: { path: string; leadOnly: string[] } | null = null;
-    for (const repo of repos) {
+    for (const repo of realRepos) {
       const inRepo = relative(repo.root, full);
       if (inRepo === '' || inRepo.startsWith('..') || isAbsolute(inRepo)) continue;
       if (!best || inRepo.length < best.path.length) best = { path: inRepo, leadOnly: repo.leadOnly };
@@ -849,7 +895,9 @@ function fileRules(repos: RuledRepo[]): FileRules {
     const leadOnly = leadOnlyAt.get(root);
     return leadOnly ? { path: relative(root, full).split(sep).join('/'), leadOnly } : null;
   };
-  return { ruled, rootOf };
+  // A folder is ruled when a file in it would be: `.git` stands for any file there.
+  const isRuled = (folder: string) => ruled({ path: join(folder, '.git'), from: null }, {}) !== null;
+  return { ruled, rootOf, isRuled };
 }
 
 // The nearest folder at or above `folder` with a `.git`. Each folder walked is kept, so a
@@ -1045,8 +1093,22 @@ function gitWrites(words: string[], folder: string | null, rootOf: FileRules['ro
   if (sub !== 'apply' || dir === null) return [];
   const root = rootOf(dir);
   if (!root) return [];
-  const paths = plainArgs(args, ['-p', '--exclude', '--include', '--directory']).flatMap((patch) => patchFiles(readText(resolve(dir, patch))));
-  return paths.map((path) => ({ path: join(root, path), from: root }));
+  const targets: WriteTarget[] = [];
+  // `-` is stdin, which the guard never reads. A patch is read only as a plain file of at
+  // most PATCH_LIMIT bytes: never a FIFO, a device or /dev/stdin, which could wait or be huge.
+  for (const patch of plainArgs(args, ['-p', '--exclude', '--include', '--directory']).filter((arg) => arg !== '-')) {
+    const file = resolve(dir, patch);
+    let isReadable = false;
+    try {
+      const stat = statSync(file);
+      isReadable = stat.isFile() && stat.size <= PATCH_LIMIT;
+    } catch {
+      isReadable = false;
+    }
+    if (!isReadable) targets.push({ path: patch, from: dir, isUnread: true });
+    else targets.push(...patchFiles(readText(file)).map((path) => ({ path: join(root, path), from: root })));
+  }
+  return targets;
 }
 
 // The files a patch names: `diff --git a/x b/y`, `--- a/x` and `+++ b/y`.
@@ -1176,6 +1238,11 @@ const LAUNCHERS: Record<string, { options: string[]; operands?: number }> = {
 // find runs the program after each of these.
 const FIND_ACTIONS = new Set(['-exec', '-execdir', '-ok', '-okdir']);
 
+// A redirect's operator, with the file descriptor before it.
+const REDIRECT_OPERATOR = /^(?:\d+|\{[A-Za-z_]\w*\}|&)?(?:>>|<<<|<>|>\||[<>]&|[<>])/;
+// Whether a > read now goes on the word as part of its redirect: the word so far is only a
+// file descriptor (`2`, `{fd}`), `&`, or one >, with no quote. Otherwise it starts a new word.
+const isOperatorStart = (word: string, isQuoted: boolean) => !isQuoted && /^(\d+|\{[A-Za-z_]\w*\}|&)?>?$/.test(word);
 // A redirect: `>out`, `2>&1`, `&>>log`, `<in`, or one with its file in the next word (`> out`).
 const REDIRECT = /^(?:\d+|\{[A-Za-z_]\w*\}|&)?(?:>>|<<<|<>|>\||[<>]&|[<>])(.*)$/s;
 
@@ -1744,6 +1811,12 @@ function read(text: string, start: number, closer: string, depth: number, out: s
   let word = '';
   let inWord = false;
   let isQuoted = false; // the word has a quote or a \ in it, so it is no keyword: `'case'`, `\case`
+  let quotedAt = 0; // with isQuoted, how much of the word came before its first quote
+  // Marks the word as quoted from here on, before the quoted text is added.
+  const quote = () => {
+    if (!isQuoted) quotedAt = word.length;
+    isQuoted = true;
+  };
   let caseAt = -1; // where `case` stands in words, when it starts the command
   let isLeading = true; // every word so far is a keyword, so the next one leads the command
   let line: string[][] = []; // the commands so far on this line, for heredocs
@@ -1767,7 +1840,8 @@ function read(text: string, start: number, closer: string, depth: number, out: s
     if (ended !== null) {
       words.push(ended);
       readWords.add(words);
-      if (!isQuoted && REDIRECT.test(ended)) {
+      // A redirect whose operator is unquoted, whatever its file: `>"AGENTS.md"` (#402).
+      if (REDIRECT.test(ended) && (!isQuoted || (REDIRECT_OPERATOR.exec(ended)?.[0].length ?? Infinity) <= quotedAt)) {
         const marks = unquotedRedirects.get(words) ?? new Set<number>();
         marks.add(words.length - 1);
         unquotedRedirects.set(words, marks);
@@ -1926,8 +2000,8 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       while (index < text.length && text[index] !== '\n') index++;
     } else if (character === '\\') {
       if (next !== '\n') {
+        quote();
         word += next ?? character;
-        isQuoted = true;
         inWord = true;
       }
       index += 2;
@@ -1940,8 +2014,8 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       if (end === -1) index = open + 1; // unclosed: drop the quote and read on
       else {
         const body = text.slice(open + 1, end);
+        quote();
         word += ansi ? body.replace(/\\(.)/gs, '$1') : body;
-        isQuoted = true;
         inWord = true;
         index = end + 1;
       }
@@ -1951,8 +2025,8 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       if (quoted === RAN_OUT) index = text.length; // a substitution in it never closed and read the rest
       else if (!quoted) index = open + 1; // unclosed: drop the quote and read on
       else {
+        quote();
         word += quoted.value;
-        isQuoted = true;
         inWord = true;
         index = quoted.end;
       }
@@ -2001,7 +2075,8 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       index++;
     } else if (character === '&') {
       if (next === '>' || word.endsWith('>')) {
-        // &> and >& are redirects, not separators.
+        // &> and >& are redirects, not separators. `hi&>f` is `hi &>f`.
+        if (next === '>' && inWord && !isOperatorStart(word, isQuoted)) endWord();
         word += character;
         inWord = true;
         index++;
@@ -2040,6 +2115,12 @@ function read(text: string, start: number, closer: string, depth: number, out: s
         words.push('<<'); // no word after it: bash calls that an error; read on
         index += 2;
       }
+    } else if (character === '>' && inWord && !isOperatorStart(word, isQuoted)) {
+      // An unquoted > inside a word starts a redirect, as in bash: `echo hi>f` is `echo hi >f` (#402).
+      endWord();
+      word = character;
+      inWord = true;
+      index++;
     } else {
       word += character;
       inWord = true;

@@ -12,4 +12,7 @@ The guard and the commit check then let those paths through. At session start, `
 tells a session with `YOKOTEN_ROLE=worker` "this session is a worker: lead-only files are
 guarded"; the lead hears nothing. `doctor`'s self-test now checks a shell write from
 `yokoten:worker`.
-The guard also reads `>|` as a redirect now. Before, it read it as a pipe.
+The guard also reads `>|` as a redirect now; before, it read it as a pipe. A redirect
+counts with its file in quotes or glued to the word before it (`echo x>"AGENTS.md"`). A
+symlink to a lead-only file counts as that file. On macOS and Windows, a lead-only name
+matches in any case, for edits too.

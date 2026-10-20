@@ -342,20 +342,23 @@ worker's edit. Muse Code passes a hook only a short list of variables, and `YOKO
 one of them. So in Muse Code, too, every session counts as the lead. The server lock still
 holds: code owners, and a bot without the rights to change CI.
 
-The guard stops a worker's shell writes to lead-only files as well as its edits (#402).
-It reads redirects (`>`, `>>`, `>|`, `&>`), `sed -i`, `perl -i`, `tee`, `cp`, `mv`, `install`,
-`ln`, `dd of=`, `truncate`, `rm`, and git's `checkout`, `restore`, `rm`, `mv` and
-`apply`. A `git commit` that would commit a lead-only file is stopped too: the commit
-check knows the role only from `YOKOTEN_ROLE`, and a Claude Code subagent such as
-`yokoten:worker` has none. Reads such as `cat` and `grep` pass. As for edits, this holds
-only in a repo that uses yokoten (one with a `yokoten.json`). When the brief asks for a
-change to a lead-only file, the lead starts the worker with
-`YOKOTEN_LEAD_ONLY_OK=AGENTS.md,.github/workflows/ci.yml`: paths from the repo root,
-comma-separated, an entry with `*` read as a glob. The guard and the commit check let
-those paths through. A subagent shares the lead's environment, so give such a task to a
-separate session. At session start, `doctor` tells a session with `YOKOTEN_ROLE=worker`
-"this session is a worker: lead-only files are guarded". A separate worker session that
-does not hear it has no role set. A subagent starts no session, so it hears nothing.
+The guard stops a worker's shell writes to lead-only files as well as its edits (#402). It
+reads redirects (`>`, `>>`, `>|`, `&>`), `sed -i`, `perl -i`, `tee`, `cp`, `mv`,
+`install`, `ln`, `dd of=`, `truncate`, `rm`, and git's `checkout`, `restore`, `rm`, `mv`
+and `apply`. A redirect counts with its file in quotes or glued to the word before it
+(`echo x>"AGENTS.md"`). For `git apply`, the guard reads the patch to see its files, only
+from a plain file under 1 MB; any other patch file stops a worker. A `git commit` that
+would commit a lead-only file is stopped too: the commit check knows the role only from
+`YOKOTEN_ROLE`, and a Claude Code subagent such as `yokoten:worker` has none. Reads such
+as `cat` and `grep` pass. As for edits, this holds only in a repo that uses yokoten (one
+with a `yokoten.json`). When the brief asks for a change to a lead-only file, the lead
+starts the worker with `YOKOTEN_LEAD_ONLY_OK=AGENTS.md,.github/workflows/ci.yml`: paths
+from the repo root, comma-separated, an entry with `*` read as a glob. `*` alone grants
+every lead-only file. The guard and the commit check let those paths through. A subagent
+shares the lead's environment, so give such a task to a separate session. At session
+start, `doctor` tells a session with `YOKOTEN_ROLE=worker` "this session is a worker:
+lead-only files are guarded". A separate worker session that does not hear it has no role
+set. A subagent starts no session, so it hears nothing.
 
 ### DeepSeek Harness
 

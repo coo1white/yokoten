@@ -11,6 +11,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -27,6 +28,8 @@ import {
   checkEdit,
   commandWords,
   hookFile,
+  isGranted,
+  isLeadOnly,
   isRedacted,
   printsAccount,
   runsCheck,
@@ -636,6 +639,13 @@ test('lead-only files: YOKOTEN_LEAD_ONLY_OK lets the paths it names through, and
   assert.equal(checkEdit('AGENTS.md', { config: DEFAULTS, env: granted }), null);
   assert.ok(checkEdit('CLAUDE.md', { config: DEFAULTS, env: granted }));
   assert.ok(checkEdit('kit/AGENTS.md', { config: DEFAULTS, env: granted }), 'a path is the one path, not a glob');
+  // A trailing /, \\ for / and empty entries are read as the lead meant them.
+  assert.ok(isGranted('.github/workflows/ci.yml', { YOKOTEN_LEAD_ONLY_OK: ',, .github\\workflows\\ci.yml ,' }, false));
+  assert.ok(isGranted('CLAUDE.md', { YOKOTEN_LEAD_ONLY_OK: 'CLAUDE.md/' }, false));
+  assert.ok(!isGranted('CLAUDE.md', { YOKOTEN_LEAD_ONLY_OK: ' , ' }, false), 'no entry grants nothing');
+  // `*` grants every lead-only file.
+  assert.ok(isGranted('.github/workflows/ci.yml', { YOKOTEN_LEAD_ONLY_OK: '*' }, false));
+  assert.ok(isGranted('AGENTS.md', { YOKOTEN_LEAD_ONLY_OK: '*' }, false));
 });
 
 test('lead-only files: a worker\'s git commit of a lead-only file is stopped, in the guard and the commit check (#402)', () => {
@@ -674,14 +684,109 @@ test('lead-only files: a worker\'s git commit of a lead-only file is stopped, in
 });
 
 test('lead-only files: the hook stops a shell write from the plugin agent yokoten:worker, with no YOKOTEN_ROLE (#402)', () => {
+  // The session folder is reached through a symlink, as /var is /private/var on macOS: git
+  // names the root by its real path, the agent by the link. The full hook rules the session's
+  // repo with no yokoten.json, as it does for an edit.
   const sandbox = makeSandbox();
-  const call = (agentType?: string) => sandbox.run(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, agent_type: agentType, tool_input: { command: 'sed -i s/a/b/ AGENTS.md' } }) });
-  const result = call('yokoten:worker');
-  assert.equal(result.status, 2);
-  assert.match(result.stderr, /writes AGENTS\.md, which is lead-only/);
-  assert.equal(call().status, 0, 'the lead');
-  assert.equal(call('yokoten:reviewer').status, 0, 'not a worker');
+  const link = join(sandbox.home, 'repo-link');
+  symlinkSync(sandbox.repo, link);
+  for (const cwd of [sandbox.repo, link]) {
+    const call = (agentType?: string) =>
+      sandbox.run(['hook'], { cwd, input: JSON.stringify({ cwd, agent_type: agentType, tool_input: { command: 'sed -i s/a/b/ AGENTS.md' } }) });
+    const result = call('yokoten:worker');
+    assert.equal(result.status, 2, `${cwd === link ? 'through the link' : 'the repo'}: ${result.stderr}`);
+    assert.match(result.stderr, /writes AGENTS\.md, which is lead-only/);
+    assert.equal(call().status, 0, 'the lead');
+    assert.equal(call('yokoten:reviewer').status, 0, 'not a worker');
+  }
 });
+
+test('lead-only files: a redirect is read when its operator is unquoted, glued or quoted file and all (#402)', () => {
+  const sandbox = yokotenSandbox();
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  const run = (command: string) => checkCommand(command, { env: worker, cwd: sandbox.repo })?.id ?? null;
+  for (const command of [
+    'echo hi >"AGENTS.md"',
+    "echo hi >'AGENTS.md'",
+    'echo hi >"dir with space/AGENTS.md"',
+    'echo hi>AGENTS.md',
+    'ls>AGENTS.md',
+    'echo hi>>AGENTS.md',
+    'echo x>|AGENTS.md',
+    'echo x >|AGENTS.md | cat',
+    'echo hi&>AGENTS.md',
+    'echo hi 2>AGENTS.md',
+    'echo hi 2>"AGENTS.md"',
+  ]) assert.equal(run(command), 'lead-only', `should stop: ${JSON.stringify(command)}`);
+  // A quoted or escaped operator is text.
+  for (const command of ['echo ">AGENTS.md"', "echo '>AGENTS.md'", 'echo \\>AGENTS.md', 'echo "a>AGENTS.md"', 'grep "x>" AGENTS.md']) {
+    assert.equal(run(command), null, `should allow: ${JSON.stringify(command)}`);
+  }
+});
+
+test('bash: an unquoted > inside a word starts a redirect; quoted text and file-descriptor forms read as before (#402)', () => {
+  assert.deepEqual(commandWords('echo hi>f'), [['echo', 'hi', '>f']]);
+  assert.deepEqual(commandWords('ls>f'), [['ls', '>f']]);
+  assert.deepEqual(commandWords('echo x>|f'), [['echo', 'x', '>|f']]);
+  assert.deepEqual(commandWords('a >| f | b'), [['a', '>|', 'f'], ['b']]);
+  assert.deepEqual(commandWords('echo hi&>f'), [['echo', 'hi', '&>f']]);
+  assert.deepEqual(commandWords('echo hi>>f'), [['echo', 'hi', '>>f']]);
+  // As in bash: unquoted, => and -> redirect too.
+  assert.deepEqual(commandWords('x --arg=a=>b'), [['x', '--arg=a=', '>b']]);
+  // Read as before: quotes, file descriptors, process substitution and && .
+  assert.deepEqual(commandWords('echo "a>b"'), [['echo', 'a>b']]);
+  assert.deepEqual(commandWords("x --arg='a=>b' \"c->d\""), [['x', '--arg=a=>b', 'c->d']]);
+  assert.deepEqual(commandWords('curl "https://example.com/?a>b"'), [['curl', 'https://example.com/?a>b']]);
+  assert.deepEqual(commandWords('x 2>&1'), [['x', '2>&1']]);
+  assert.deepEqual(commandWords('x 2>&1 >f'), [['x', '2>&1', '>f']]);
+  assert.deepEqual(commandWords('x {fd}>f'), [['x', '{fd}>f']]);
+  assert.deepEqual(commandWords('echo a&&b'), [['echo', 'a'], ['b']]);
+  assert.deepEqual(commandWords('diff <(a) >(b)'), [['a'], ['b'], ['diff', '<(a)', '>(b)']]);
+  // The other checks still read a glued redirect away: no file named by it is a value.
+  allowed('git config core.hooksPath>/dev/null');
+  blocked('npm publish>log');
+});
+
+test('lead-only files: a symlink to a lead-only file is that file (#402)', () => {
+  const sandbox = yokotenSandbox();
+  sandbox.write('AGENTS.md', 'rules\n');
+  symlinkSync('AGENTS.md', join(sandbox.repo, 'link.md'));
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  const found = checkCommand('echo x > link.md', { env: worker, cwd: sandbox.repo });
+  assert.equal(found?.id, 'lead-only');
+  assert.match(found?.what ?? '', /writes AGENTS\.md/);
+  assert.equal(checkCommand('echo x > notes.md', { env: worker, cwd: sandbox.repo }), null);
+});
+
+test('lead-only files: on macOS and Windows a name matches in any case (#402)', () => {
+  assert.ok(isLeadOnly('agents.md', DEFAULTS.leadOnly, true));
+  assert.ok(isLeadOnly('.GitHub/workflows/ci.yml', DEFAULTS.leadOnly, true));
+  assert.ok(!isLeadOnly('agents.md', DEFAULTS.leadOnly, false), 'Linux: another file');
+  assert.ok(isGranted('agents.md', { YOKOTEN_LEAD_ONLY_OK: 'AGENTS.md' }, true));
+  assert.ok(!isGranted('agents.md', { YOKOTEN_LEAD_ONLY_OK: 'AGENTS.md' }, false));
+});
+
+test('lead-only files: git apply reads only a plain patch file under 1 MB, and stops a worker on any other (#402)', () => {
+  const sandbox = yokotenSandbox();
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  const run = (command: string) => checkCommand(command, { env: worker, cwd: sandbox.repo });
+  sandbox.write('ok.patch', 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n');
+  assert.equal(run('git apply ok.patch'), null);
+  sandbox.write('big.patch', `diff --git a/src/a.ts b/src/a.ts\n${'+x\n'.repeat(600_000)}`);
+  assert.match(run('git apply big.patch')?.what ?? '', /can't read which files it changes/);
+  assert.equal(run('git apply missing.patch')?.id, 'lead-only');
+  assert.equal(run('git apply /dev/stdin')?.id, 'lead-only', 'a device is never read');
+  if (process.platform !== 'win32') {
+    assert.equal(spawnSync('mkfifo', [join(sandbox.repo, 'pipe.patch')]).status, 0);
+    const start = Date.now();
+    assert.equal(run('git apply pipe.patch')?.id, 'lead-only', 'a FIFO is never read');
+    assert.ok(Date.now() - start < 2000, 'and the guard does not wait on it');
+  }
+  // stdin is a known gap: the guide says so.
+  assert.equal(run('git apply - < ok.patch'), null);
+  assert.equal(checkCommand('git apply big.patch', { env: {}, cwd: sandbox.repo }), null, 'the lead');
+});
+
 
 test('lead-only files: shell writes follow the edit guard\'s scope, only in repos that use yokoten (#402)', () => {
   const sandbox = makeSandbox();
