@@ -28,13 +28,31 @@ export const systemHome = (): string => {
 };
 
 /**
- * The home folder: $HOME, else the system's, the first that is an absolute path. Null when
- * neither is (#392): then there is no place outside the repo, and a relative `.config`
- * would land in the folder the command runs in.
+ * The home folder: $HOME when it is an absolute path. Null when it is not (#392): then there
+ * is no place outside the repo, and a relative `.config` would land in the folder the
+ * command runs in. Only the CLI's entry falls back to the system's home (withHome), so an
+ * env without HOME, as a test passes, never reaches the real home folder (#356).
  */
-export function homeOf(env: Env, system: () => string = systemHome): string | null {
-  for (const home of [env.HOME, system()]) if (home && isAbsolute(home)) return home;
-  return null;
+export function homeOf(env: Env): string | null {
+  return env.HOME && isAbsolute(env.HOME) ? env.HOME : null;
+}
+
+/** The home folder, as homeOf finds it. With none, it throws NO_HOME. */
+export function homeIn(env: Env): string {
+  const home = homeOf(env);
+  if (!home) throw new Error(NO_HOME);
+  return home;
+}
+
+/**
+ * The CLI's environment: `env` with HOME from the system when HOME is empty or not a full
+ * path (#392). The one place yokoten falls back to the system's home (#356); everything
+ * else reads HOME from the env it is given.
+ */
+export function withHome(env: Env, system: () => string = systemHome): Env {
+  if (homeOf(env)) return env;
+  const home = system();
+  return home && isAbsolute(home) ? { ...env, HOME: home } : env;
 }
 
 /** Thrown when there is no home folder, so nothing outside the repo can be read or written. */
@@ -43,9 +61,7 @@ export const NO_HOME = 'yokoten finds no home folder (HOME is empty or not a ful
 /** The private-marks file. With no home folder (and no YOKOTEN_PRIVATE_MARKS), it throws NO_HOME. */
 export function marksFile(env: Env): string {
   if (env.YOKOTEN_PRIVATE_MARKS) return env.YOKOTEN_PRIVATE_MARKS;
-  const home = homeOf(env);
-  if (!home) throw new Error(NO_HOME);
-  return join(home, '.config', 'yokoten', 'private-marks');
+  return join(homeIn(env), '.config', 'yokoten', 'private-marks');
 }
 
 /** The owner's marks, lowercased. An empty list when the file is missing. */

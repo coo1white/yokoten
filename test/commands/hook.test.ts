@@ -1,5 +1,6 @@
 // Tests for src/commands/hook.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {

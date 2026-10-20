@@ -1,5 +1,6 @@
 // Tests for src/setup/doctor.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import {
@@ -44,6 +45,7 @@ import {
   doctor,
   findDriveMount,
   isLowOnSpace,
+  isShellControlCaught,
   isUnsavedControlCaught,
   isWsl,
   launcherCheck,
@@ -1185,11 +1187,16 @@ test('doctor: in the yokoten repo, the session and doctor count the notes from o
   rmSync(empty, { recursive: true, force: true });
 });
 
+test('self-test: a shell write from the plugin agent yokoten:worker is caught, and the lead passes (#402)', () => {
+  assert.ok(isShellControlCaught());
+  assert.ok(!selfTest().includes('lead-only shell guard'));
+});
+
 test('doctor: with no home folder, full and session say so in one note and do not crash (#404)', () => {
   const sandbox = makeSandbox();
   const root = sandbox.repo;
   try {
-    const machine = fakeMachine(250 * GB, { systemHome: () => '' });
+    const machine = fakeMachine(250 * GB);
     const note = /no home folder found; yokoten can't read or keep its settings/;
     const full = doctor(root, { env: { HOME: '' }, config: DEFAULTS, machine, fillMarks: true });
     assert.equal(full.lines.filter((line) => note.test(line)).length, 1, full.lines.join('\n'));
