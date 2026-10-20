@@ -138,10 +138,14 @@ function withoutGit(path: string): string {
 function localKey(path: string, base?: string): string | null {
   if (!path || (!isAbsolute(path) && !base)) return null;
   const full = resolve(base ?? '', path);
-  try {
-    return realpathSync(full);
-  } catch {
-    return full;
+  // The deepest folder that exists, with links followed, then the rest: a link such as
+  // macOS's /var gives one key whether or not the path exists yet.
+  for (let head = full, rest = ''; ; rest = rest ? join(basename(head), rest) : basename(head), head = dirname(head)) {
+    try {
+      return rest ? join(realpathSync(head), rest) : realpathSync(head);
+    } catch {
+      if (dirname(head) === head) return full;
+    }
   }
 }
 

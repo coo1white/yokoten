@@ -590,6 +590,9 @@ test('normalizeRemote: host and path, with no scheme, user info, default port or
   assert.equal(normalizeRemote('/srv/git/app.git'), '/srv/git/app.git');
   assert.equal(normalizeRemote('file:///srv/git/app.git'), '/srv/git/app.git');
   assert.equal(normalizeRemote('../up.git', join(base, 'one')), join(realpathSync(base), 'up.git'));
+  // Through a link to a folder, for a path that doesn't exist yet: one key, as on macOS's /var.
+  symlinkSync(join(base, 'one'), join(base, 'link'));
+  assert.equal(normalizeRemote(join(base, 'link', 'gone', 'up.git')), join(realpathSync(base), 'one', 'gone', 'up.git'));
   assert.notEqual(normalizeRemote('../x', join(base, 'one', 'a')), normalizeRemote('../x', join(base, 'two', 'a')), 'the same relative path from another folder is another repo');
   assert.equal(normalizeRemote('../x'), null, 'a relative path with no base is unread');
   assert.ok(!normalizeRemote('C:/git/app.git', base)?.startsWith('c/'), 'a Windows drive is not a host');
