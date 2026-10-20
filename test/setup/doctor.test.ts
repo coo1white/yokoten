@@ -188,18 +188,14 @@ test("road: with no gh, no network, a non-GitHub remote or a session, the server
 });
 
 test('doctor: a workflow with a run line of 500,000 characters does not throw (#322)', () => {
-  const root = mkdtempSync(join(tmpdir(), 'yokoten-long-run-'));
-  try {
-    execFileSync('git', ['init', '-q', root]);
-    mkdirSync(join(root, '.github', 'workflows'), { recursive: true });
-    const long = `on: pull_request\njobs:\n  t:\n    steps:\n      - run: npx${' -y'.repeat(83_000)} node${' -a'.repeat(83_000)}\n      - run: make${' -C x'.repeat(100_000)}\n`;
-    writeFileSync(join(root, '.github', 'workflows', 'ci.yml'), long);
-    for (const session of [true, false]) {
-      const result = doctor(root, { env: { HOME: root }, config: DEFAULTS, session, gh: () => { throw new Error('no network in this test'); } });
-      for (const key of ['tests', 'ci', 'titles']) assert.notEqual(result.report.steps?.find((s) => s.id === key)?.mark, 'done', key);
-    }
-  } finally {
-    rmSync(root, { recursive: true, force: true });
+  const root = makeTempDir('yokoten-long-run-');
+  execFileSync('git', ['init', '-q', root]);
+  mkdirSync(join(root, '.github', 'workflows'), { recursive: true });
+  const long = `on: pull_request\njobs:\n  t:\n    steps:\n      - run: npx${' -y'.repeat(83_000)} node${' -a'.repeat(83_000)}\n      - run: make${' -C x'.repeat(100_000)}\n`;
+  writeFileSync(join(root, '.github', 'workflows', 'ci.yml'), long);
+  for (const session of [true, false]) {
+    const result = doctor(root, { env: { HOME: root }, config: DEFAULTS, session, gh: () => { throw new Error('no network in this test'); } });
+    for (const key of ['tests', 'ci', 'titles']) assert.notEqual(result.report.steps?.find((s) => s.id === key)?.mark, 'done', key);
   }
 });
 
