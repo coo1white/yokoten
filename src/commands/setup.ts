@@ -70,6 +70,7 @@ export function runInstall(): number {
 export function runUninstall(): number {
   const options = parse('uninstall');
   if (typeof options === 'string') return usage(options);
-  print(uninstall(env));
-  return 0;
+  const done = uninstall(env);
+  print(done.lines);
+  return done.ok ? 0 : 1;
 }
