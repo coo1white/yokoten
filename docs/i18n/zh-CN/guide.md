@@ -799,7 +799,7 @@ AGENTS.md 里，它就只是个愿望。把这些程序写进 `yokoten.json`，�
 
 | 设置 | 该怎么写 | 默认值 |
 |------|----------|--------|
-| `layout` | `{ "maxEntries": 7, "exempt": ["docs/records"] }`：一个大于 0 的整数，加一串文件夹 | 7，没有例外的文件夹 |
+| `layout` | `{ "maxEntries": 7, "exempt": ["docs/records"] }`：一个大于 0 的整数，加一串文件夹或通配符 | 7，没有例外的文件夹 |
 | `tests` | 一串通配符 | `*.test.*`、`*.spec.*`、`*_test.go`、`test/**`、`tests/**` |
 | `leadOnly` | 一串通配符 | 规则、agent 配置、钩子和 CI |
 | `privacy` | `{ "allow": [], "skip": [], "utc": true, "output": "run" }`：两串文字，一个 true 或 false，再加 `"run"` 或 `"stop"` | 跳过锁文件，要求 UTC，照常跑 |
@@ -1051,7 +1051,7 @@ yokoten learn --upstream "the guard let git push --tags through" --area hook --f
 | 键 | 默认值 | 管什么 |
 |----|--------|--------|
 | `layout.maxEntries` | `7` | 一个文件夹最多放几项（第 10 条核心规则） |
-| `layout.exempt` | 无 | 可以超过上限的文件夹，比如一项一项往下记的决策记录 |
+| `layout.exempt` | 无 | 可以超过上限的文件夹，见[可以变多的文件夹](#可以变多的文件夹) |
 | `tests` | `*.test.*`、`*.spec.*`、`*_test.go`、`test/**`、`tests/**` | 哪些算测试文件，修复任务不能改 |
 | `leadOnly` | 规则、agent 配置、`.githooks/**`、`.github/**`、项目里那份 yokoten 副本 `.yokoten/**` | worker 不能改的文件 |
 | `privacy.allow` | 无 | 隐私检查放行的原样字符串，比如公开的客服邮箱，或者私密词表里这个项目自己的名字 |
@@ -1062,6 +1062,24 @@ yokoten learn --upstream "the guard let git push --tags through" --area hook --f
 | `allowBuild` | 无 | 提交检查放行的构建产物和二进制文件 |
 | `areas` | 不限 | 标题里能用的模块名，见 [issue 标题](#issue-标题) |
 | `translations.fail` | `false` | 译文落后于原文时，检查直接失败 |
+
+#### 可以变多的文件夹
+
+第 10 条核心规则说，一个文件夹最多放 7 项。有两种文件夹可以超过，`changes/` 也一直可以：
+
+- **一项一项往下记的日志**，比如 `docs/records`。每条加进去就留着。
+- **测试用的第三方样例文件**，沿用上游的文件名，旁边放着它的 `NOTICE`。测试、`NOTICE`
+  和给上游报的 bug 都靠文件名找文件。再分文件夹，查一个文件、从上游更新一次都更麻烦。
+
+这样的文件夹要一个一个手写进 `layout.exempt`。每一项是从根目录起的路径，或者一个通配符。
+通配符里，`*` 代表一层文件夹，`**` 代表任意多层，零层也行；别的字符都按原样匹配。
+Rust 的 workspace 里，一条就能管到每个 crate：
+
+```json
+{ "layout": { "exempt": ["docs/records", "crates/*/tests/data"] } }
+```
+
+哪条通配符一个文件夹都没对上，`check` 和 `doctor` 会提醒一句，过时的条目就看得见了。
 
 环境变量：
 
