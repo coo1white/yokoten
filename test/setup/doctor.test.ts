@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import {
   fakeGh,
@@ -29,6 +29,7 @@ import {
   withPlanning,
 } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
+import { machineStateFile } from '../../src/setup/install.ts';
 import {
   type Gh,
   readPlanning,
@@ -50,7 +51,6 @@ import {
   listBoardSteps,
   type MachineProbe,
   machineControl,
-  machineStateFile,
   parseLxss,
   privacyNotes,
   quoteForShell,
@@ -1131,4 +1131,30 @@ test('doctor: in the yokoten repo, the session and doctor count the notes from o
   assert.equal(upstreamNote(sandbox.repo, { HOME: empty }), null);
   assert.ok(!sandbox.run(['doctor', '--session'], { extra: { HOME: empty } }).stdout.includes('lessons from other projects'));
   rmSync(empty, { recursive: true, force: true });
+});
+
+test('doctor: with no home folder, full and session say so in one note and do not crash (#404)', () => {
+  const sandbox = makeSandbox();
+  const root = sandbox.repo;
+  try {
+    const machine = fakeMachine(250 * GB);
+    const note = /no home folder found; yokoten can't read or keep its settings/;
+    const full = doctor(root, { env: { HOME: '' }, config: DEFAULTS, machine, fillMarks: true });
+    assert.equal(full.lines.filter((line) => note.test(line)).length, 1, full.lines.join('\n'));
+    assert.ok(!full.lines.some((line) => /private-marks|mailmap/.test(line)), 'the checks of files in the home are skipped');
+    const session = doctor(root, { env: { HOME: 'relative' }, config: DEFAULTS, session: true, machine });
+    assert.equal(session.lines.filter((line) => note.test(line)).length, 1, session.lines.join('\n'));
+    // The kept reading of the host disk is neither read nor written without a home.
+    saveHostCache({ HOME: '' }, machine, { free: 0, size: 1, readAt: NOW.toISOString(), distro: '<distro>', version: 2 });
+  } finally {
+    rmSync(dirname(root), { recursive: true, force: true });
+  }
+});
+
+test('saveHostCache: keeps the other keys of machine.json, such as the Windows user names (#404)', () => {
+  const files = new Map([[machineStateFile(WSL), JSON.stringify({ windowsUsers: { names: ['JaneD'], readAt: NOW.toISOString(), scanMs: 1 } })]]);
+  saveHostCache(WSL, fakeMachine(GB, { files }), { free: 0, size: 1, readAt: NOW.toISOString(), distro: '<distro>', version: 2 });
+  const state = JSON.parse(files.get(machineStateFile(WSL)) ?? '{}');
+  assert.deepEqual(state.windowsUsers.names, ['JaneD']);
+  assert.equal(state.hostDisk.size, 1);
 });

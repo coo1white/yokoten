@@ -22,6 +22,7 @@ import type { Env } from '../rules/config.ts';
 import { type Finding, finding, formatFinding, place } from '../rules/message.ts';
 import type { CodeOwners, PullRequest } from '../rules/pr.ts';
 import { homeOf, NO_HOME } from '../rules/privacy.ts';
+import { readGit } from '../run/check.ts';
 import { type Incident, terminalText } from '../run/learn.ts';
 
 export interface BotConfig {
@@ -215,7 +216,8 @@ export function readPullRequest(root: string, env: Env): PullRequestRead | Unrea
   const head = isObject(pr.head) ? asText(pr.head.sha) : '';
   const problem = shasProblem(base, head) ?? commitsProblem(root, base, head);
   if (problem) return { problem };
-  const diff = (...options: string[]) => execFileSync('git', ['--no-replace-objects', 'diff', ...options, `${base}...${head}`], { cwd: root, encoding: 'utf8' });
+  // A diff git can't give throws a GitReadError, and the check stops on it (#403).
+  const diff = (...options: string[]) => readGit(root, ['diff', ...options, `${base}...${head}`]).toString('utf8');
   return {
     title: asText(pr.title),
     body: asText(pr.body),
@@ -237,15 +239,14 @@ export const CODEOWNERS_PLACES = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODE
 
 /** The CODEOWNERS file at the base commit, or in the working tree when `base` is empty; null when there is none. */
 export function readCodeOwners(root: string, base: string): CodeOwners | null {
+  if (base) {
+    // Which places the base commit has, then the first one's text. A read git can't answer
+    // throws a GitReadError: no answer is never "no CODEOWNERS", which would lower the tier (#403).
+    const have = new Set(readGit(root, ['ls-tree', '-z', '--name-only', base, '--', ...CODEOWNERS_PLACES]).toString('utf8').split('\0'));
+    const place = CODEOWNERS_PLACES.find((p) => have.has(p));
+    return place === undefined ? null : { text: readGit(root, ['show', `${base}:${place}`]).toString('utf8'), from: 'the base branch' };
+  }
   for (const place of CODEOWNERS_PLACES) {
-    if (base) {
-      try {
-        const text = execFileSync('git', ['--no-replace-objects', 'show', `${base}:${place}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-        return { text, from: 'the base branch' };
-      } catch {
-        continue; // not at this place in the base commit
-      }
-    }
     const file = join(root, place);
     if (existsSync(file)) return { text: readFileSync(file, 'utf8'), from: 'the working tree' };
   }

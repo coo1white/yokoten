@@ -151,6 +151,10 @@ export function scanText(text: string, { file, marks = [], allow = [] }: { file:
 const PATH_CHAR = String.raw`[\p{L}\p{N}_\-+@%~#$]`;
 const BEFORE_HOME = String.raw`(?<!${PATH_CHAR}|[.\\/])`;
 const AFTER_HOME = String.raw`(?!${PATH_CHAR}|\.${PATH_CHAR})`;
+// A slash, a backslash or a space as a URL writes it (`%2F`, `%5C`, `%20`), in either case (#404).
+const ENCODED_EDGE = '%(?:2[Ff]|5[Cc]|20)';
+// Where a cut home path ends: the end of a line, maybe after `…`, `...` or spaces (#404).
+const CUT_END = String.raw`(?=(?:…|\.\.\.)?[ \t]*\r?$)`;
 
 /** The forms of one home folder that text may hold: as given, its real path, and on Windows its MSYS form. */
 function homeForms(home: string | undefined): string[] {
@@ -194,11 +198,13 @@ export function hideHome(text: string, env: Env, { platform = process.platform a
   const homes = [...new Set([...homeForms(env.HOME), ...homeForms(system)])].sort((a, b) => b.length - a.length);
   if (!homes.length) return text;
   const isWindows = platform === 'win32';
-  const asPattern = (paths: string[]) => paths.map((home) => escapeRegExp(home).replace(/\\\\|\//g, String.raw`[\\/]`)).join('|');
+  const asPattern = (paths: string[], slash = String.raw`[\\/]`) => paths.map((home) => escapeRegExp(home).replace(/\\\\|\//g, slash)).join('|');
   const flags = isWindows ? 'giu' : 'gu';
   const whole = text.replace(new RegExp(`${BEFORE_HOME}(?:${asPattern(homes)})${AFTER_HOME}`, flags), '~');
+  // The home inside a URL, its slashes written as %2F or %5C: `vscode-remote://...%2Fhome%2F<name>%2Fx`.
+  const encoded = whole.includes('%') ? whole.replace(new RegExp(`${BEFORE_HOME}(?:${asPattern(homes, `%(?:2[Ff]|5[Cc])`)})(?=${ENCODED_EDGE}|$|(?!${PATH_CHAR}|\\.${PATH_CHAR}))`, flags), '~') : whole;
   const cuts = [...new Set(homes.flatMap(cutForms))].sort((a, b) => b.length - a.length);
-  return cuts.length ? whole.replace(new RegExp(`${BEFORE_HOME}(?:${asPattern(cuts)})(?=\r?$)`, `${flags}m`), '~') : whole;
+  return cuts.length ? encoded.replace(new RegExp(`${BEFORE_HOME}(?:${asPattern(cuts)})${CUT_END}`, `${flags}m`), '~') : encoded;
 }
 
 /**
@@ -254,8 +260,9 @@ const markPlaceholder = (mark: string) => (isEmailShaped(mark) ? PLACEHOLDERS.em
  */
 function valuePattern(value: string): string {
   const escaped = escapeRegExp(value);
-  const before = /^[A-Za-z0-9]/.test(value) ? String.raw`(?<![\p{L}\p{N}])` : '';
-  const after = /[A-Za-z0-9]$/.test(value) ? String.raw`(?![\p{L}\p{N}])` : '';
+  // A URL-encoded slash, backslash or space next to it is an edge too: `C:%5CUsers%5C<name>%5Cx`.
+  const before = /^[A-Za-z0-9]/.test(value) ? String.raw`(?:(?<=${ENCODED_EDGE})|(?<![\p{L}\p{N}]))` : '';
+  const after = /[A-Za-z0-9]$/.test(value) ? String.raw`(?:(?=${ENCODED_EDGE})|(?![\p{L}\p{N}]))` : '';
   return `${before}${escaped}${after}`;
 }
 

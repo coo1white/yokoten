@@ -26,7 +26,7 @@ export interface ReadOptions {
   comments?: boolean;
 }
 /** `addHook`'s arguments: the file, event, matcher, command, extra fields and how to read the file. */
-export type HookArgs = [path: string, event: string, matcher: string | undefined, command: string, extra?: Record<string, string>, options?: ReadOptions];
+export type HookArgs = [path: string, event: string, matcher: string | undefined, command: string, extra?: Record<string, string | number>, options?: ReadOptions];
 
 interface Handler {
   type?: string;
@@ -199,7 +199,7 @@ export function checkHooks(hooks: readonly HookArgs[]): void {
 }
 
 /** The group `placeHook` adds for a missing hook. */
-function newGroup(matcher: string | undefined, command: string, extra: Record<string, string>): HookGroup {
+function newGroup(matcher: string | undefined, command: string, extra: Record<string, string | number>): HookGroup {
   const group: HookGroup = { hooks: [{ type: 'command', command, ...extra }] };
   if (matcher !== undefined) group.matcher = matcher;
   return group;
@@ -208,10 +208,10 @@ function newGroup(matcher: string | undefined, command: string, extra: Record<st
 /**
  * Put a command hook in `settings`, once, and say what that took. A hook that runs the
  * same yokoten `<sub>` counts as already there (an older path is updated in place).
- * `extra` holds more handler fields, such as Gemini CLI's `name`. Only `settings` in
+ * `extra` holds more handler fields, such as Gemini CLI's `name` or Grok CLI's `timeout`. Only `settings` in
  * memory changes; `addHook` writes it and `hookState` throws it away.
  */
-function placeHook(settings: Settings, event: string, matcher: string | undefined, command: string, extra: Record<string, string>): Added {
+function placeHook(settings: Settings, event: string, matcher: string | undefined, command: string, extra: Record<string, string | number>): Added {
   const sub = subcommand(command);
   const groups = ((settings.hooks ??= {})[event] ??= []);
   for (const group of groups) {
@@ -233,7 +233,7 @@ function placeHook(settings: Settings, event: string, matcher: string | undefine
  * that changed it. A file it can't edit (see `checkHooksFile`), or one with comments the
  * hook isn't in yet, throws `UnreadableHooksFile` and stays as it was.
  */
-export function addHook(path: string, event: string, matcher: string | undefined, command: string, extra: Record<string, string> = {}, options: ReadOptions = {}): Added {
+export function addHook(path: string, event: string, matcher: string | undefined, command: string, extra: Record<string, string | number> = {}, options: ReadOptions = {}): Added {
   const state = hookState(path, event, matcher, command, extra, options);
   if (typeof state === 'object') throw new UnreadableHooksFile(path, state);
   if (state === 'same') return state;
@@ -251,7 +251,7 @@ export function addHook(path: string, event: string, matcher: string | undefined
  * file. In a file with comments, a hook that isn't 'same' is a 'comments' problem holding
  * the group to add by hand.
  */
-export function hookState(path: string, event: string, matcher: string | undefined, command: string, extra: Record<string, string> = {}, options: ReadOptions = {}): HookState {
+export function hookState(path: string, event: string, matcher: string | undefined, command: string, extra: Record<string, string | number> = {}, options: ReadOptions = {}): HookState {
   const table = readTable(path, [event], options);
   if ('problem' in table) return table.problem;
   const state = placeHook(table.settings, event, matcher, command, extra);

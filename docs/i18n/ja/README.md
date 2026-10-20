@@ -32,6 +32,7 @@
 - Antigravity CLI
 - Muse Code
 - DeepSeek Harness
+- Grok CLI
 
 ほかのエージェントでも、エージェントなしでも、コミットのチェックと CI が問題のある変更を止めます。
 

@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import {
   appendFileSync,
   existsSync,
+  mkdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -24,8 +25,11 @@ import {
 import { DEFAULTS } from '../../src/rules/config.ts';
 import {
   batchBlobs,
+  changedFiles,
   checkHistory,
+  GitReadError,
   readBlobs,
+  readGit,
 } from '../../src/run/check.ts';
 
 // A merge leaves the index and MERGE_HEAD as the pre-merge-commit hook sees them (#246).
@@ -757,4 +761,86 @@ test('check --staged: reads the staged change file, not the work tree; plain che
   assert.equal(staged.status, 1);
   assert.match(staged.stderr, /changes\/9-new\.md:1: line 1 is not a section/);
   assert.ok(!staged.stderr.includes('8-old'), 'the unstaged file is not read');
+});
+
+// A gate that can't read git stops and says so (#403): never "clean", never "no changes".
+test('check: every gate refuses when git can\'t answer, never passes as clean (#403)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('a.md', 'a\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'a');
+  const base = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  sandbox.write('changes/1-a.md', 'Fixed\n\nA thing (#1).\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'b');
+  const head = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  const event = join(sandbox.home, 'event.json');
+  writeFileSync(event, JSON.stringify({ pull_request: { title: 'fix(check): a', body: 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\n', labels: [{ name: 'fix' }, { name: 'tier B' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
+  const gates = [['check'], ['check', '--staged'], ['check', '--history'], ['check', '--pr']];
+  const pr = { GITHUB_EVENT_PATH: event };
+  // The positive control: each gate passes when git answers.
+  for (const args of gates) assert.equal(sandbox.run(args, { extra: pr }).status, 0, args.join(' '));
+  // GIT_DIR pointing nowhere: no repo, so each gate stops before it reads anything.
+  for (const args of gates) {
+    const result = sandbox.run([...args, '--json'], { extra: { ...pr, GIT_DIR: join(sandbox.home, 'nowhere') } });
+    assert.equal(result.status, 1, args.join(' '));
+    assert.equal(JSON.parse(result.stdout).ok, false, args.join(' '));
+  }
+  const refused = (args: string[], extra: Record<string, string>) => {
+    const result = sandbox.run([...args, '--json'], { extra });
+    assert.equal(result.status, 1, `${args.join(' ')}: ${result.stdout}${result.stderr}`);
+    const report = JSON.parse(result.stdout);
+    assert.deepEqual([report.ok, report.findings.map((f: { id: string }) => f.id)], [false, ['git-read']], args.join(' '));
+    assert.match(report.findings[0].what, /gave no answer: it exited 128: fatal: /);
+    const text = sandbox.run(args, { extra });
+    assert.match(text.stderr, /: 1 problem\(s\)\n- git can't answer, so the check stopped without looking: `git /, args.join(' '));
+  };
+  // The repo is found, but its index can't be read: the tree check and the commit check stop.
+  const badIndex = join(sandbox.home, 'index');
+  writeFileSync(badIndex, 'not an index\n');
+  refused(['check'], { GIT_INDEX_FILE: badIndex });
+  refused(['check', '--staged'], { GIT_INDEX_FILE: badIndex });
+  // A ref to a commit that is not there: the history can't be walked.
+  writeFileSync(join(sandbox.repo, '.git', 'refs', 'heads', 'broken'), `${'1'.repeat(40)}\n`);
+  refused(['check', '--history'], {});
+  rmSync(join(sandbox.repo, '.git', 'refs', 'heads', 'broken'));
+  // Both commits are here, but a blob the pull request changed is gone: its diff can't be read.
+  const blob = sandbox.git('rev-parse', `${head}:changes/1-a.md`).stdout.trim();
+  rmSync(join(sandbox.repo, '.git', 'objects', blob.slice(0, 2), blob.slice(2)));
+  refused(['check', '--pr'], pr);
+});
+
+test('readGit: no answer is a GitReadError, whatever the reason (#403)', () => {
+  const repo = makeTranslatedRepo();
+  assert.throws(() => readGit(repo.root, ['rev-parse', '--verify', 'nothing-here']), (err: Error) => err instanceof GitReadError && /`git rev-parse --verify nothing-here` gave no answer: it exited 128: fatal: /.test(err.message));
+  assert.throws(() => readGit(repo.root, ['ls-files', '-z'], { maxBuffer: 2 }), (err: Error) => err instanceof GitReadError && /its output is over the 2 bytes yokoten reads/.test(err.message));
+  assert.throws(() => readGit(join(repo.root, 'no-such-folder'), ['status']), GitReadError);
+  assert.equal(readGit(repo.root, ['rev-parse', '--is-inside-work-tree']).toString().trim(), 'true');
+});
+
+// The case from #403: a status read hidden by a user setting, or cut off by a buffer.
+test('changedFiles: reads 5,000 new files in full, past status.showUntrackedFiles=no (#403)', () => {
+  const sandbox = makeSandbox();
+  sandbox.git('config', 'status.showUntrackedFiles', 'no');
+  // Long names, so git's output is well over Node's default 1 MB buffer.
+  const long = 'n'.repeat(200);
+  mkdirSync(join(sandbox.repo, 'many'));
+  for (let i = 0; i < 5000; i++) writeFileSync(join(sandbox.repo, 'many', `${long}-${i}.txt`), '');
+  assert.equal(sandbox.git('status', '--porcelain').stdout, '', 'the setting hides them from a plain status');
+  const files = changedFiles(sandbox.repo);
+  assert.equal(files.length, 5000);
+  assert.ok(files.includes(`many/${long}-4999.txt`));
+});
+
+test('check --staged: reads 5,000 staged files in full, past the default buffer (#403)', () => {
+  const sandbox = makeSandbox();
+  const long = 'n'.repeat(200);
+  mkdirSync(join(sandbox.repo, 'many'));
+  for (let i = 0; i < 5000; i++) writeFileSync(join(sandbox.repo, 'many', `${long}-${i}.txt`), '');
+  sandbox.git('add', '.');
+  const result = sandbox.run(['check', '--staged', '--json']);
+  const report = JSON.parse(result.stdout);
+  // All 5,000 were read: the layout rule counts every one of them.
+  assert.deepEqual(report.findings.map((f: { id: string }) => f.id), ['layout']);
+  assert.match(report.findings[0].what, /^5000 entries, over the cap of 7/);
 });

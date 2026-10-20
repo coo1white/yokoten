@@ -8,7 +8,7 @@ import { dirname, join, posix, relative } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { COMMANDS } from '../../src/run/cli.ts';
-import { findDeclarations, findNameProblems, splitWords, tokenize } from '../../src/run/names.ts';
+import { findDeclarations, findNameProblems, splitWords, type Token, tokenize } from '../../src/run/names.ts';
 import { HOME_DIR, homeDirOf } from '../../src/setup/files.ts';
 import { assertLinear } from '../../scripts/linear.ts';
 import { TEST_HOME } from './home.ts';
@@ -686,4 +686,106 @@ test('home: a test that reads the home folder gets the empty temp one, not the r
   // A child process with no env of its own inherits it.
   const child = spawnSync(process.execPath, ['-e', "process.stdout.write(require('node:os').homedir())"], { encoding: 'utf8' });
   assert.equal(child.stdout, TEST_HOME);
+});
+
+// ---- Code given to node -e (#329) ----
+//
+// Code built from values is code injection waiting for a hostile value (CodeQL
+// js/bad-code-sanitization). The code a test gives `node -e` is fixed text: string literals,
+// maybe joined. Values go in on stdin or as arguments, which the child reads as data.
+const EVAL_FLAGS = new Set(['-e', '--eval', '-p', '--print']);
+const OPENERS = new Set(['(', '[', '{', '${']);
+const CLOSERS = new Set([')', ']', '}']);
+const FIXED_PUNCTUATION = new Set(['[', ']', ',', '(', ')', '+', '.']);
+
+/** The tokens of the argument that starts at `from`: up to a `,`, `)` or `]` at its own depth. */
+function argumentAt(tokens: Token[], from: number): Token[] {
+  let depth = 0;
+  let end = from;
+  for (; end < tokens.length; end++) {
+    const text = tokens[end].text;
+    if (depth === 0 && [',', ')', ']'].includes(text)) break;
+    if (OPENERS.has(text)) depth++;
+    else if (CLOSERS.has(text)) depth--;
+  }
+  return tokens.slice(from, end);
+}
+
+/** Whether `code` is only string literals, joined; a name is read through its `const`. */
+function isFixedCode(tokens: Token[], code: Token[], before: number): boolean {
+  if (code.length === 1 && code[0].kind === 'name') {
+    const declared = tokens.findLastIndex((token, index) => index < before && token.text === 'const' && tokens[index + 1]?.text === code[0].text && tokens[index + 2]?.text === '=');
+    if (declared === -1) return false;
+    let end = declared + 3;
+    let depth = 0;
+    for (; end < tokens.length && !(depth === 0 && tokens[end].text === ';'); end++) {
+      if (OPENERS.has(tokens[end].text)) depth++;
+      else if (CLOSERS.has(tokens[end].text)) depth--;
+    }
+    return isFixedCode(tokens, tokens.slice(declared + 3, end), -1);
+  }
+  return code.length > 0 && code.every((token) => token.kind === 'string' || (token.kind === 'punct' && FIXED_PUNCTUATION.has(token.text)) || (token.kind === 'name' && token.text === 'join'));
+}
+
+/** The lines of `text` that run node with -e, --eval, -p or --print, and how many give code built from values. */
+function findSplicedCode(text: string): { checked: number; lines: number[] } {
+  const tokens = tokenize(text);
+  const lines: number[] = [];
+  let checked = 0;
+  tokens.forEach((token, index) => {
+    if (token.kind !== 'string' || !EVAL_FLAGS.has(token.text.replace(/^['"]|['"]$/g, '')) || tokens[index + 1]?.text !== ',') return;
+    // Node reads the flag only before a script, so the flag's array holds only flags before
+    // it: `[execPath, 'script.ts', '-p', ...]` is the script's -p.
+    let open = index - 1;
+    while (open >= 0 && (tokens[open].text === ',' || (tokens[open].kind === 'string' && /^['"]-/.test(tokens[open].text)))) open--;
+    if (tokens[open]?.text !== '[' || tokens[open - 1]?.text !== ',') return;
+    // Back to the `(` of the call the array is an argument of: it runs node.
+    let start = open - 1;
+    for (let depth = 0; start > 0; start--) {
+      const text = tokens[start - 1].text;
+      if (text === ';') return;
+      if (CLOSERS.has(text)) depth++;
+      else if (OPENERS.has(text) && depth > 0) depth--;
+      else if (text === '(') break;
+    }
+    const runsNode = tokens.slice(start, open).some((before) => before.text === 'execPath' || /^['"]?node['"]?$/.test(before.text));
+    if (!runsNode) return;
+    checked++;
+    if (!isFixedCode(tokens, argumentAt(tokens, index + 2), index)) lines.push(token.line);
+  });
+  return { checked, lines };
+}
+
+test('node -e: the reader passes fixed code and catches code built from values (#329)', () => {
+  const good = [
+    "spawnSync(process.execPath, ['-e', 'console.log(1)']);",
+    "spawnSync(process.execPath, ['--input-type=module', '-e', 'import(process.argv[1])', pathToFileURL(path).href]);",
+    "const code = ['const input = 1;', `console.log(input)`].join('\\n');",
+    "spawnSync(process.execPath, ['--eval', code], { input: JSON.stringify({ path }) });",
+    "execFileSync('git', ['cat-file', '-e', `${sha}^{commit}`]);",
+    "const shown = ['-e', `${value}`];",
+  ].join('\n');
+  assert.deepEqual(findSplicedCode(good), { checked: 3, lines: [] });
+  const bad = [
+    "spawnSync(process.execPath, ['-e', `import(${JSON.stringify(path)})`]);",
+    "execFileSync('node', ['--eval', 'import(' + JSON.stringify(path) + ')']);",
+    'const code = `const path = ${JSON.stringify(path)};`;',
+    "spawnSync(process.execPath, ['-p', code]);",
+    "const lines = ['const a = 1;', JSON.stringify(path)].join('\\n');",
+    "spawnSync(process.execPath, ['--print', lines]);",
+    "spawnSync(process.execPath, ['-e', options.code]);",
+  ].join('\n');
+  assert.deepEqual(findSplicedCode(bad), { checked: 5, lines: [1, 2, 4, 6, 7] });
+});
+
+test('node -e: bin, src, scripts and test give node fixed code; values go on stdin or argv (#329)', () => {
+  const found: string[] = [];
+  let checked = 0;
+  for (const path of execFileSync('git', ['ls-files', 'bin', 'src', 'scripts', 'test'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter((file) => file.endsWith('.ts'))) {
+    const result = findSplicedCode(readFileSync(join(ROOT, path), 'utf8'));
+    checked += result.checked;
+    for (const line of result.lines) found.push(`${path}:${line}`);
+  }
+  assert.ok(checked >= 2, `only ${checked} node -e calls found; the reader is broken`);
+  assert.deepEqual(found, [], 'make the code fixed text; pass each value on stdin or as an argument, and import a path with import(pathToFileURL(path).href)');
 });

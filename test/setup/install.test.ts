@@ -7,6 +7,7 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
   renameSync,
@@ -19,6 +20,7 @@ import {
   dirname,
   join,
 } from 'node:path';
+import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import {
   at,
@@ -32,7 +34,7 @@ import {
 } from '../repo/helpers.ts';
 import { hasHook } from '../../src/agents/hooks-file.ts';
 import { copyRuntime } from '../../src/setup/files.ts';
-import { install, machineStateFile, machineUserNames, paths, type UserNameProbe } from '../../src/setup/install.ts';
+import { install, machineStateFile, machineUserNames, paths, uninstall, type UserNameProbe, writeFileAtomic } from '../../src/setup/install.ts';
 import { makeRedactor } from '../../src/rules/privacy.ts';
 
 const BAD_USER_SETTINGS: [content: string, reason: (file: string) => string][] = [
@@ -508,53 +510,128 @@ test('install: an existing mailmap keeps its lines and gets only the missing one
 
 // ---- The machine's user names (#404) ----
 
-/** A fake machine for machineUserNames: its account name, its home, its folders and files. */
-function fakeUsers(username: string, home: string, folders: Record<string, string[]> = {}): UserNameProbe & { files: Map<string, string>; listed: string[] } {
+const USERS_NOW = new Date('2026-10-20T08:30:00Z');
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** A fake machine for machineUserNames: its account name, its home, its folders and files, and a clock. */
+function fakeUsers(username: string, home: string, folders: Record<string, string[]> = {}, { scanMs = 1, isReadOnly = false } = {}) {
   const files = new Map<string, string>();
   const listed: string[] = [];
-  return {
+  let clock = USERS_NOW.getTime();
+  const probe: UserNameProbe & { files: Map<string, string>; listed: string[]; at(time: Date): void } = {
     files,
     listed,
+    at: (time) => void (clock = time.getTime()),
     username: () => username,
     systemHome: () => home,
     listFolders(path) {
       listed.push(path);
+      // Each read of a folder takes scanMs on the fake clock.
+      clock += scanMs;
       return folders[path] ?? null;
     },
     readText: (path) => files.get(path) ?? null,
-    writeText: (path, text) => void files.set(path, text),
+    writeText(path, text) {
+      if (isReadOnly) throw new Error('read-only');
+      files.set(path, text);
+    },
+    now: () => new Date(clock),
   };
+  return probe;
 }
 
+const WSL_ENV = { HOME: '/home/jdoe', WSL_DISTRO_NAME: '<distro>' };
+
 test('machineUserNames: the Linux and Windows user names, though no git or forge list has them (#404)', () => {
-  const env = { HOME: '/home/jdoe', WSL_DISTRO_NAME: '<distro>' };
-  const probe = fakeUsers('jdoe', '/home/jdoe', { '/mnt': ['c', 'd', 'wslg'], '/mnt/c/Users': ['Public', 'Default', 'JaneD'], '/mnt/d/Users': null as unknown as string[] });
-  const names = machineUserNames(env, probe);
+  const probe = fakeUsers('jdoe', '/home/jdoe', { '/mnt': ['c', 'd', 'wslg'], '/mnt/c/Users': ['Public', 'Default', 'defaultuser0', 'TEMP', 'JaneD', 'old.migrated', 'postgres', 'sshd', 'UpdatusUser', 'WsiAccount'] });
+  const names = machineUserNames(WSL_ENV, probe);
+  // No Windows folder is named jdoe, so every person folder counts: privacy first.
   assert.deepEqual(names, ['jdoe', 'JaneD']);
-  // Read once: the second run reads machine.json, not the drives.
-  assert.deepEqual(JSON.parse(probe.files.get(machineStateFile(env)) ?? '{}').windowsUsers, ['JaneD']);
-  probe.listed.length = 0;
-  assert.deepEqual(machineUserNames(env, probe), ['jdoe', 'JaneD']);
-  assert.deepEqual(probe.listed, []);
   const redact = makeRedactor({ owners: names }, { HOME: '/home/jdoe' });
-  const text = ['/home/jdoe/x', '/mnt/c/Users/janed/y', 'C:\\Users\\JaneD\\z', '"C:\\\\Users\\\\JaneD"', 'jdoe and JaneD', 'jdoes and janedoe stay'].join('\n');
-  assert.equal(redact(text), ['~/x', '/mnt/c/Users/<owner>/y', 'C:\\Users\\<owner>\\z', '"C:\\\\Users\\\\<owner>"', '<owner> and <owner>', 'jdoes and janedoe stay'].join('\n'));
+  const text = ['/home/jdoe/x', '/mnt/c/Users/janed/y', 'C:\\Users\\JaneD\\z', '"C:\\\\Users\\\\JaneD"', 'C:%5CUsers%5CJaneD%5Cx', 'jdoe and JaneD', 'jdoes and janedoe stay'].join('\n');
+  assert.equal(redact(text), ['~/x', '/mnt/c/Users/<owner>/y', 'C:\\Users\\<owner>\\z', '"C:\\\\Users\\\\<owner>"', 'C:%5CUsers%5C<owner>%5Cx', '<owner> and <owner>', 'jdoes and janedoe stay'].join('\n'));
 });
 
-test('machineUserNames: USERPROFILE gives the Windows name without reading the drives; shared and short names stay out (#404)', () => {
+test('machineUserNames: a Windows folder named like the Linux user is taken alone (#404)', () => {
+  const probe = fakeUsers('jdoe', '/home/jdoe', { '/mnt': ['c'], '/mnt/c/Users': ['JDoe', 'Partner'] });
+  assert.deepEqual(machineUserNames(WSL_ENV, probe), ['jdoe']);
+});
+
+test('machineUserNames: read once and kept 30 days in machine.json, its other keys kept (#404)', () => {
+  const probe = fakeUsers('jdoe', '/home/jdoe', { '/mnt': ['c'], '/mnt/c/Users': ['JaneD'] });
+  const file = machineStateFile(WSL_ENV);
+  probe.files.set(file, JSON.stringify({ hostDisk: { free: 1, size: 2, readAt: USERS_NOW.toISOString(), distro: '<distro>', version: 2 } }));
+  assert.deepEqual(machineUserNames(WSL_ENV, probe), ['jdoe', 'JaneD']);
+  const state = JSON.parse(probe.files.get(file) ?? '{}');
+  assert.deepEqual(state.hostDisk.size, 2, 'the host disk reading is kept');
+  assert.deepEqual(state.windowsUsers.names, ['JaneD']);
+  // A new process (a new probe) reads the file, not the drives.
+  const next = fakeUsers('jdoe', '/home/jdoe', { '/mnt': ['c'], '/mnt/c/Users': ['JaneD', 'Partner'] });
+  next.files.set(file, probe.files.get(file) ?? '');
+  next.at(new Date(USERS_NOW.getTime() + 29 * DAY_MS));
+  assert.deepEqual(machineUserNames(WSL_ENV, next), ['jdoe', 'JaneD']);
+  assert.deepEqual(next.listed, []);
+  // After 30 days the drives are read again.
+  const late = fakeUsers('jdoe', '/home/jdoe', { '/mnt': ['c'], '/mnt/c/Users': ['JaneD', 'Partner'] });
+  late.files.set(file, probe.files.get(file) ?? '');
+  late.at(new Date(USERS_NOW.getTime() + 31 * DAY_MS));
+  assert.deepEqual(machineUserNames(WSL_ENV, late), ['jdoe', 'JaneD', 'Partner']);
+});
+
+test('machineUserNames: kept names are filtered on read; a slow drive is not read again (#404)', () => {
+  const file = machineStateFile(WSL_ENV);
+  const old = new Date(USERS_NOW.getTime() - 60 * DAY_MS).toISOString();
+  const probe = fakeUsers('jdoe', '/home/jdoe', { '/mnt': ['c'], '/mnt/c/Users': ['Other'] });
+  probe.files.set(file, JSON.stringify({ windowsUsers: { names: ['JaneD', 'Public', 'defaultuser100001'], readAt: old, scanMs: 900 } }));
+  assert.deepEqual(machineUserNames(WSL_ENV, probe), ['jdoe', 'JaneD']);
+  assert.deepEqual(probe.listed, [], 'the last read took 900 ms, so the old names stay');
+});
+
+test('machineUserNames: a cache that cannot be written keeps the names for this process (#404)', () => {
+  const probe = fakeUsers('jdoe', '/home/jdoe', { '/mnt': ['c'], '/mnt/c/Users': ['JaneD'] }, { isReadOnly: true });
+  assert.deepEqual(machineUserNames(WSL_ENV, probe), ['jdoe', 'JaneD']);
+  probe.listed.length = 0;
+  assert.deepEqual(machineUserNames(WSL_ENV, probe), ['jdoe', 'JaneD']);
+  assert.deepEqual(probe.listed, []);
+});
+
+test('machineUserNames: USERPROFILE gives the Windows name; a macOS home gives its name; shared names stay out (#404)', () => {
   const probe = fakeUsers('runner', '/root', { '/mnt': ['c'] });
   assert.deepEqual(machineUserNames({ HOME: '/home/jd', WSL_INTEROP: '/run/x', USERPROFILE: 'C:\\Users\\JaneD' }, probe), ['JaneD']);
-  assert.deepEqual(probe.listed, []);
-  assert.deepEqual(machineUserNames({ HOME: '/tmp/tmp.AbCd' }, probe), [], 'a home outside a users folder names nobody; no WSL, no drives');
-  assert.deepEqual(probe.listed, []);
+  assert.deepEqual(probe.listed, [], 'the drives are not read');
+  assert.deepEqual(machineUserNames({ HOME: '/Users/jdoe' }, fakeUsers('jdoe', '/Users/jdoe')), ['jdoe']);
+  assert.deepEqual(machineUserNames({ HOME: '/tmp/tmp.AbCd' }, probe), [], 'a home outside a users folder names nobody');
+  for (const shared of ['dev', 'test', 'app', 'build', 'vagrant', 'gitpod', 'ec2-user', 'jenkins', 'codespace', 'temp']) {
+    assert.deepEqual(machineUserNames({ HOME: `/home/${shared}`, USER: shared }, fakeUsers(shared, `/home/${shared}`)), [], shared);
+  }
+  // Ordinary words stay readable.
+  const redact = makeRedactor({ owners: machineUserNames({ HOME: '/home/dev', USER: 'test' }, fakeUsers('app', '/home/build')) }, {});
+  assert.equal(redact('run the dev build, test the app as root'), 'run the dev build, test the app as root');
 });
 
-test('install: with no absolute home it refuses and writes nothing (#404)', () => {
+test('writeFileAtomic: the whole file or nothing, and no temp file left (#404)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'yokoten-atomic-'));
+  try {
+    const file = join(dir, 'sub', 'machine.json');
+    writeFileAtomic(file, '{}\n');
+    writeFileAtomic(file, '{"a":1}\n');
+    assert.equal(readFileSync(file, 'utf8'), '{"a":1}\n');
+    assert.deepEqual(readdirSync(join(dir, 'sub')), ['machine.json']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('install and uninstall: with no absolute home they refuse and write nothing (#404)', () => {
   const result = install({ HOME: '' });
   assert.equal(result.ok, false);
   assert.match(result.lines.join('\n'), /no home folder/);
   assert.equal(install({ HOME: 'relative/home' }).ok, false);
   assert.equal(install({}).ok, false, 'no HOME: the system home is the CLI entry\'s fallback, not install\'s (#356)');
+  const removed = uninstall({ HOME: '' });
+  assert.equal(removed.ok, false);
+  assert.match(removed.lines.join('\n'), /no home folder.*run uninstall again/);
+  assert.equal(uninstall({}).ok, false, 'no HOME: uninstall does not fall back to the system home (#356)');
   assert.throws(() => paths({ HOME: '' }), /no home folder/);
   assert.equal(existsSync('relative') || existsSync('.local'), false, 'nothing lands in the folder the test runs in');
 });

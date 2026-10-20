@@ -1,12 +1,12 @@
-// Tests for src/agents/runtimes/copilot.ts.
+// Tests for src/agents/copilot.ts.
 
-import '../../repo/home.ts';
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { readTrust } from '../../../src/agents/runtimes/copilot.ts';
-import { makeSandbox } from '../../repo/helpers.ts';
+import { readTrust } from '../../src/agents/copilot.ts';
+import { makeSandbox } from '../repo/helpers.ts';
 
 /** Write Copilot CLI's config.json in `home`, in the shape Copilot CLI 1.0.98 saved it (#341). */
 function trustFolders(home: string, ...folders: string[]): string {
