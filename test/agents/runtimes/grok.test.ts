@@ -146,41 +146,50 @@ test('hook --agent grok: the recorded tag push is refused, with the whole reason
   assert.equal(call(recorded('write', sandbox.repo, (event) => Object.assign(withTool('write', { file_path: 'AGENTS.md', content: 'x' })(event) as object, { subagentType: 'yokoten:worker' }))).status, 2);
 });
 
-test('hook: under Grok, the Claude Code hook steps aside only when a Grok yokoten hook guards the call (#407)', () => {
+test('hook: under Grok, the Claude Code hook steps aside only when a Grok yokoten hook guards at its level (#407)', () => {
   const sandbox = makeSandbox();
   const push = JSON.stringify(recorded('push', sandbox.repo));
-  const forms = [['hook'], ['hook', '--commands-only'], ['hook', '--agent', 'claude-code']];
+  const full = [['hook'], ['hook', '--agent', 'claude-code'], ['hook', '--stop']];
+  const commandsOnly = ['hook', '--commands-only'];
   const grokVariables: Record<string, string>[] = [
     { GROK_HOOK_EVENT: 'pre_tool_use', GROK_WORKSPACE_ROOT: sandbox.repo },
     { GROK_SESSION_ID: '01a15a11-55e0-7ae1-9c00-6389bfe5c78f', GROK_WORKSPACE_ROOT: sandbox.repo },
   ];
+  const run = (args: string[], extra: Record<string, string>) => sandbox.run(args, { input: push, extra });
+  const guards = (args: string[], extra: Record<string, string>, where: string) => {
+    // The stop check finds nothing in this repo, so it guards by running: exit 0 with JSON.
+    if (args.includes('--stop')) assert.deepEqual(JSON.parse(run([...args, '--json'], extra).stdout).stop, true, `${args.join(' ')} ran, ${where}`);
+    else assert.equal(run(args, extra).status, 2, `${args.join(' ')} refuses, ${where}`);
+  };
+  const stepsAside = (args: string[], extra: Record<string, string>, where: string) => {
+    const result = run(args, extra);
+    assert.deepEqual([result.status, result.stdout, result.stderr], [0, '', ''], `${args.join(' ')} steps aside, ${where}`);
+  };
   // Without Grok's variables, the Claude Code hook refuses the push.
   assert.equal(sandbox.run(['hook'], { input: push }).status, 2);
-  // Grok's variables but no Grok hook file: the Claude Code hook still guards.
-  for (const grok of grokVariables) for (const args of forms) assert.equal(sandbox.run(args, { input: push, extra: grok }).status, 2, `${args.join(' ')} under Grok, no Grok hook`);
-  const stepsAside = (where: string, extra: Record<string, string> = {}) => {
-    for (const grok of grokVariables) {
-      for (const args of [...forms, ['hook', '--stop']]) {
-        const result = sandbox.run(args, { input: push, extra: { ...grok, ...extra } });
-        assert.deepEqual([result.status, result.stdout, result.stderr], [0, '', ''], `${args.join(' ')} under Grok, ${where}`);
-      }
-      assert.equal(sandbox.run(['hook', '--agent', 'grok'], { input: push, extra: grok }).status, 2, "Grok's own hook still refuses");
-    }
-  };
-  // The user's hook, in ~/.grok/hooks, or in $GROK_HOME/hooks.
-  const userFile = join(sandbox.home, '.grok', 'hooks', 'yokoten.json');
-  mkdirSync(dirname(userFile), { recursive: true });
-  writeFileSync(userFile, '{}');
-  stepsAside('the user hook');
-  const grokHome = join(sandbox.home, 'grok-home');
-  for (const grok of grokVariables) assert.equal(sandbox.run(['hook'], { input: push, extra: { ...grok, GROK_HOME: grokHome } }).status, 2, 'GROK_HOME moves the user hook');
-  mkdirSync(join(grokHome, 'hooks'), { recursive: true });
-  writeFileSync(join(grokHome, 'hooks', 'yokoten.json'), '{}');
-  stepsAside('the user hook in GROK_HOME', { GROK_HOME: grokHome });
-  rmSync(userFile);
-  // The project's hook, in the Grok workspace root.
-  sandbox.write('.grok/hooks/yokoten.json', '{}');
-  stepsAside('the project hook');
+  for (const grok of grokVariables) {
+    // Neither Grok hook file: both levels guard.
+    for (const args of [...full, commandsOnly]) guards(args, grok, 'no Grok hook');
+    // The user file only: the commands-only hook steps aside, the full hook guards.
+    const userFile = join(sandbox.home, '.grok', 'hooks', 'yokoten.json');
+    mkdirSync(dirname(userFile), { recursive: true });
+    writeFileSync(userFile, '{}');
+    stepsAside(commandsOnly, grok, 'the user hook');
+    for (const args of full) guards(args, grok, 'the user hook only');
+    rmSync(userFile);
+    // $GROK_HOME moves the user file.
+    const grokHome = join(sandbox.home, 'grok-home');
+    guards(commandsOnly, { ...grok, GROK_HOME: grokHome }, 'no file in GROK_HOME');
+    mkdirSync(join(grokHome, 'hooks'), { recursive: true });
+    writeFileSync(join(grokHome, 'hooks', 'yokoten.json'), '{}');
+    stepsAside(commandsOnly, { ...grok, GROK_HOME: grokHome }, 'the user hook in GROK_HOME');
+    rmSync(grokHome, { recursive: true });
+    // The project file: both levels step aside, and Grok's own hook still refuses.
+    sandbox.write('.grok/hooks/yokoten.json', '{}');
+    for (const args of [...full, commandsOnly]) stepsAside(args, grok, 'the project hook');
+    assert.equal(run(['hook', '--agent', 'grok'], grok).status, 2, "Grok's own hook still refuses");
+    rmSync(join(sandbox.repo, '.grok'), { recursive: true });
+  }
 });
 
 test('hook --agent grok: a command that prints the owner\'s details is rewritten with updatedInput, keeping the other fields (#390)', () => {

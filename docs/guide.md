@@ -294,7 +294,7 @@ Docs are not proof.
 | Codex CLI | `.codex/hooks.json`: PreToolUse and Stop | exit 2, the reason on stderr | yes, 2026-10-19: Codex 0.163.0, `codex exec`, on DeepSeek `deepseek-flash` | Runs the hooks only after you trust the folder, and then both hooks in `/hooks`. `codex exec` skips an untrusted hook without a word |
 | Muse Code | `.muse/hooks.json`: PreToolUse and Stop | exit 2, the reason on stderr | yes, 2026-10-19: Muse Code 1.4.10, `muse exec --trust-workspace`, model `muse-spark-1.3-contributor` | Runs the hooks only after you trust the folder: run `muse` there and choose "Trust and continue". Muse passes no `YOKOTEN_ROLE` to a hook, so every Muse session counts as the lead. It is not known to pass `YOKOTEN_RELEASE_APPROVAL` either, so release outside Muse. A hook that fails or times out lets the call go on |
 | DeepSeek Harness (`dsh`) | `.dsh/hooks.json`: PreToolUse, and `.dsh/yokoten.patch.yml` to load it | exit 2, the reason on stderr | yes, 2026-10-20: dsh 0.2.1-rc.2, `dsh headless --patch .dsh/yokoten.patch.yml`, default DeepSeek model | Runs hooks only through a bridge you add to each profile: see [DeepSeek Harness](#deepseek-harness). Without it, or without the patch, dsh runs no hooks and says nothing. Not guarded on Windows yet (#332). No stop check |
-| Grok CLI (`grok`) | `.grok/hooks/yokoten.json`: PreToolUse and Stop | `permissionDecision: "deny"` on stdout, and exit 2 | yes, 2026-10-20: Grok CLI 1.0.52, `grok -p --trust --always-approve`, default model | Runs project hooks only after you trust the folder: run `grok` there and type `/hooks-trust`. Skips them without a word otherwise. Also runs the hooks in `.claude/settings.json`; there yokoten's Claude Code hook steps aside when a Grok yokoten hook is in place, so the guard runs once |
+| Grok CLI (`grok`) | `.grok/hooks/yokoten.json`: PreToolUse and Stop | `permissionDecision: "deny"` on stdout, and exit 2 | yes, 2026-10-20: Grok CLI 1.0.52, `grok -p --trust --always-approve`, default model | Runs project hooks only after you trust the folder: run `grok` there and type `/hooks-trust`. Skips them without a word otherwise. Also runs the hooks in `.claude/settings.json`; there yokoten's Claude Code hook steps aside when the matching Grok hook is in place, so the guard runs once |
 | Gemini CLI | `.gemini/settings.json`: BeforeTool and AfterAgent | exit 2, the reason on stderr | not run end to end: personal sign-in retired 2026-06-18; needs a paid API key or an org license | Google's agent for individuals is now Antigravity CLI |
 | Any other agent | none | the rules in `AGENTS.md`, and the commit check, which stops a bad commit whoever made it | | |
 
@@ -324,8 +324,10 @@ Each agent runs a project hook only after you trust it:
 - **Grok CLI** runs `.grok/hooks/` only in a trusted folder, and skips it without a word
   otherwise. Type `/hooks-trust` in a session there, or start it once with `grok --trust`.
   yokoten never trusts a folder for you. Grok also runs the hooks in `.claude/settings.json`;
-  yokoten's Claude Code hook exits at once there when Grok has a yokoten hook
-  (the project's or the user's), so each call is checked once. Without one, it still guards.
+  yokoten's Claude Code hooks exit at once there when the matching Grok hook is in place,
+  so each call is checked once. The project hook steps aside for `.grok/hooks/yokoten.json`. The
+  user's command guard steps aside for that file or `~/.grok/hooks/yokoten.json`. Otherwise
+  they still guard.
 - **Gemini CLI** runs project hooks only in a trusted folder. Start Gemini at the repo
   root: it reads `.gemini/settings.json` from the folder it starts in, and nowhere else.
   It warns once before it runs a new or changed hook.
