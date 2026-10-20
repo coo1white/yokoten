@@ -19,7 +19,7 @@ import { checkCommand, checkEdit } from '../rules/guards.ts';
 import { type Config, DEFAULTS, type Env } from '../rules/config.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
 import { type Finding, finding, formatFinding, type RuleId } from '../rules/message.ts';
-import { homeOf, loadMarks, notUtc, ownMarks, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
+import { homeIn, homeOf, loadMarks, notUtc, ownMarks, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
 import { judge } from '../run/hook.ts';
@@ -38,7 +38,7 @@ import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '.
 import { findTempDirs, readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advice/unsaved.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
 import { compareCoreRules, compareVersions, hookCliPath, isSelf, readCoreRules, summarizeUpdate, withGitReads } from './init.ts';
-import { countOwnMarks, fillMarks, filledLine, trySafely, installedPieces, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
+import { countOwnMarks, fillMarks, filledLine, trySafely, installedPieces, isOnPath, launcherDir, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
 import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
 
 /**
@@ -409,6 +409,20 @@ export function doubleInstallCheck(env: Env): Finding | null {
   if (!pieces.length) return null;
   return finding('machine-runtime', `the yokoten plugin is on, and \`yokoten install\` put these here too: ${pieces.join('; ')}`, 'remove them with `yokoten uninstall`; the plugin brings its own', {
     why: 'with both, the guard and the session doctor run twice and every skill shows up twice',
+  });
+}
+
+/**
+ * A note when install's runtime is here but no `yokoten` on the PATH runs it (#433): every
+ * message says `yokoten init`, and that command is then not found. With the plugin on,
+ * the plugin's own commands are used, so there is no note.
+ */
+export function launcherCheck(env: Env): Finding | null {
+  if (hasPlugin(env)) return null;
+  const { runtime } = paths(env);
+  if (!existsSync(runtime) || isOnPath(env, runtime)) return null;
+  return finding('machine-runtime', 'no `yokoten` command on your PATH runs the installed copy', `run \`node ${join(runtime, 'bin', 'yokoten.ts')} install\` in a terminal; it puts a launcher in ${launcherDir(homeIn(env))} and offers to add that folder to your PATH`, {
+    why: 'yokoten\'s messages say `yokoten init` and `yokoten doctor`',
   });
 }
 
@@ -1305,6 +1319,11 @@ function doctorRun(
   if (double) {
     lines.push(`  note    plugin-and-install: ${stepText(double)}`);
     notes.push(double);
+  }
+  const launcher = hasHome ? launcherCheck(env) : null;
+  if (launcher) {
+    lines.push(`  note    command: ${stepText(launcher)}`);
+    notes.push(launcher);
   }
   const waiting = upstreamNote(root, env);
   if (waiting) {

@@ -494,16 +494,23 @@ node ~/.local/share/yokoten/bin/yokoten.ts init     # 这个项目：只加文�
 node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看走到哪一关，下一步做什么
 ```
 
-这样装完，PATH 里没有 `yokoten` 这个命令，可 yokoten 的提示里写的都是 `yokoten init`、
-`yokoten doctor`。所以 `install` 最后会打出下面这一行，你自己把它加进 shell 配置文件
-（`~/.bashrc` 或 `~/.zshrc`），再开一个新的终端就能用了：
+yokoten 的提示里写的都是 `yokoten init`、`yokoten doctor`。所以 `install` 会在
+`~/.local/bin` 放一个小小的 `yokoten` 启动脚本（Windows 上是 `yokoten.cmd`）。大多数电脑的
+PATH 里本来就有这个文件夹，所以新开一个终端，`yokoten` 就能用了。这个脚本跑的是
+`bin/yokoten.mjs`，跟钩子用的是同一个入口，启动更快。旧版装的启动脚本，下次 `install` 会直接改写。
+
+要是 PATH 里没有 `~/.local/bin`，`install` 会问你一次：
+`Add ~/.local/bin to your PATH in ~/.bashrc? [Y/n]`（用 zsh 的话是 `~/.zshrc`）。你答应了，
+它就往这个文件里加下面这一行；不答应，它就把这一行打出来，你自己加：
 
 ```sh
-alias yokoten='node ~/.local/share/yokoten/bin/yokoten.ts'
+export PATH="$HOME/.local/bin:$PATH" # added by yokoten
 ```
 
-yokoten 不会去改你的 shell 配置文件。要是 PATH 里已经有一个 `yokoten` 跑的就是这一份，
-`install` 就不打这一行。
+只有你答应了，yokoten 才会改你的 shell 配置文件。没人在终端前的时候（管道、hook、CI 里），
+它不问，也不改。`~/.local/bin/yokoten` 要是你自己的文件，不是 yokoten 写的，它就不动，
+并告诉你是哪个文件。`uninstall` 会删掉启动脚本和带标记的那一行。PATH 里没有一个
+`yokoten` 跑的是装好的这一份时，`doctor` 会提醒你。
 
 这些命令（包括上面 npx 那几条）在 [docs/facts.json](../../facts.json) 里还有一份，网站读的是那份，所以改命令的时候两边都要改。
 

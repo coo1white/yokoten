@@ -544,16 +544,25 @@ node ~/.local/share/yokoten/bin/yokoten.ts init     # this project: adds files, 
 node ~/.local/share/yokoten/bin/yokoten.ts doctor   # the road: where you are, what's next
 ```
 
-A clone install puts no `yokoten` command on your PATH, but yokoten's messages say
-`yokoten init` and `yokoten doctor`. So `install` ends with this line for your shell
-profile (`~/.bashrc` or `~/.zshrc`). Add it yourself, then open a new shell:
+yokoten's messages say `yokoten init` and `yokoten doctor`. So `install` puts a small
+`yokoten` launcher in `~/.local/bin` (`yokoten.cmd` on Windows). That folder is on the
+PATH on most setups, so `yokoten` works in the next shell you open. The launcher runs
+`bin/yokoten.mjs`, the same fast entry the hooks run. The next `install` rewrites a
+launcher that an older install wrote.
+
+When `~/.local/bin` is not on your PATH, `install` asks once:
+`Add ~/.local/bin to your PATH in ~/.bashrc? [Y/n]` (`~/.zshrc` for zsh). On yes, it adds
+this one line to that file. On no, it prints the line for you to add:
 
 ```sh
-alias yokoten='node ~/.local/share/yokoten/bin/yokoten.ts'
+export PATH="$HOME/.local/bin:$PATH" # added by yokoten
 ```
 
-yokoten never edits your shell profile. When a `yokoten` on your PATH already runs this
-copy, `install` leaves the line out.
+yokoten edits your shell profile only after that yes. It never asks, and never edits,
+when no one is at the terminal: in a pipe, a hook or CI. A `~/.local/bin/yokoten` that
+yokoten did not write stays as it is, and `install` names it. `uninstall` removes the
+launcher and the marked line. `doctor` notes when no `yokoten` on your PATH runs the
+installed copy.
 
 These commands, and the npx ones, are also in [docs/facts.json](facts.json), which the
 website reads, so a change to them goes in both places.
