@@ -334,12 +334,27 @@ const builtFiles = (root: string): string[] | null => {
 
 /** The one security file init does not write: the license is the owner's choice. */
 const LICENSE_FILE = 'license file';
-const SECURITY_FILES: [string, string[]][] = [
-  ['security policy (SECURITY.md)', ['.github/SECURITY.md', 'SECURITY.md']],
-  ['Dependabot config', ['.github/dependabot.yml', '.github/dependabot.yaml']],
-  [LICENSE_FILE, ['LICENSE', 'LICENSE.md', 'LICENSE.txt', 'COPYING']],
+/**
+ * A license file name, as GitHub's licensee finds one (#376): LICENSE, LICENCE or COPYING in
+ * any case, alone or followed by an extension or a suffix such as an SPDX id. So LICENSE.md,
+ * licence.txt, COPYING.LESSER and the Rust dual layout LICENSE-MIT plus LICENSE-APACHE all count.
+ * LICENSES.md and LICENSING.md do not: they explain which license applies where, and are no license.
+ */
+export const isLicenseName = (name: string) => /^(licen[cs]e|copying)([-._].*)?$/i.test(name);
+/** Whether the root has a license file: one readdir, names as the folder lists them. */
+const hasLicense = (root: string) => {
+  try {
+    return readdirSync(root, { withFileTypes: true }).some((entry) => !entry.isDirectory() && isLicenseName(entry.name));
+  } catch {
+    return false;
+  }
+};
+const SECURITY_FILES: [string, (root: string) => boolean][] = [
+  ['security policy (SECURITY.md)', (root) => ['.github/SECURITY.md', 'SECURITY.md'].some((p) => existsSync(join(root, p)))],
+  ['Dependabot config', (root) => ['.github/dependabot.yml', '.github/dependabot.yaml'].some((p) => existsSync(join(root, p)))],
+  [LICENSE_FILE, hasLicense],
 ];
-export const securityLacking = (root: string) => SECURITY_FILES.filter(([, paths]) => !paths.some((p) => existsSync(join(root, p)))).map(([name]) => name);
+export const securityLacking = (root: string) => SECURITY_FILES.filter(([, has]) => !has(root)).map(([name]) => name);
 
 // The server settings (#7), judged. Each setting is one check with its own rule id, so
 // `yokoten explain main-rules` works. The road groups them into three steps.
