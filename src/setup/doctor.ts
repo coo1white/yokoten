@@ -11,7 +11,7 @@
 // A check that passes everything looks the same as a healthy project, so this comes first.
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statfsSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statfsSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, parse } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,7 +19,7 @@ import { checkCommand, checkEdit } from '../rules/guards.ts';
 import { type Config, DEFAULTS, type Env } from '../rules/config.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
 import { type Finding, finding, formatFinding, type RuleId } from '../rules/message.ts';
-import { homeOf, loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
+import { homeIn, homeOf, loadMarks, notUtc, ownMarks, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
 import { judge } from '../run/hook.ts';
@@ -38,8 +38,8 @@ import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '.
 import { findTempDirs, readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advice/unsaved.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
 import { compareCoreRules, compareVersions, hookCliPath, isSelf, readCoreRules, summarizeUpdate, withGitReads } from './init.ts';
-import { countOwnMarks, fillMarks, filledLine, trySafely, installedPieces, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
-import { type Mark, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
+import { countOwnMarks, fillMarks, filledLine, trySafely, installedPieces, isOnPath, launcherDir, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
+import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
 
 /**
  * One check outside the road: its name in the report, whether it is in place, and the
@@ -252,6 +252,15 @@ export function machineChecks(env: Env): Practice[] {
   ];
 }
 
+/** How many private marks this project allows in its own repo (#424): a count, never the marks. */
+export function allowedMarkCount(env: Env, config: Pick<Config, 'privacy'>): number {
+  try {
+    return ownMarks(loadMarks(env), config.privacy.allow).length;
+  } catch {
+    return 0; // An unreadable file: the private-marks check says so.
+  }
+}
+
 /** What doctor says when an agent can't filter command output, and how to opt in to the stop (#390). */
 export const UNFILTERED = 'only Claude Code hides your details in command output; other agents show it as it is';
 export const OUTPUT_STOP = 'to stop those commands there instead, set "privacy": { "output": "stop" } in yokoten.json';
@@ -400,6 +409,20 @@ export function doubleInstallCheck(env: Env): Finding | null {
   if (!pieces.length) return null;
   return finding('machine-runtime', `the yokoten plugin is on, and \`yokoten install\` put these here too: ${pieces.join('; ')}`, 'remove them with `yokoten uninstall`; the plugin brings its own', {
     why: 'with both, the guard and the session doctor run twice and every skill shows up twice',
+  });
+}
+
+/**
+ * A note when install's runtime is here but no `yokoten` on the PATH runs it (#433): every
+ * message says `yokoten init`, and that command is then not found. With the plugin on,
+ * the plugin's own commands are used, so there is no note.
+ */
+export function launcherCheck(env: Env): Finding | null {
+  if (hasPlugin(env)) return null;
+  const { runtime } = paths(env);
+  if (!existsSync(runtime) || isOnPath(env, runtime)) return null;
+  return finding('machine-runtime', 'no `yokoten` command on your PATH runs the installed copy', `run \`node ${join(runtime, 'bin', 'yokoten.ts')} install\` in a terminal; it puts a launcher in ${launcherDir(homeIn(env))} and offers to add that folder to your PATH`, {
+    why: 'yokoten\'s messages say `yokoten init` and `yokoten doctor`',
   });
 }
 
@@ -1024,6 +1047,70 @@ export function sessionUnsaved(root: string, env: Env, clock?: () => number): { 
   return { lines: [...lines, ...stopped, UNSAVED_OFFER], notes };
 }
 
+// A compaction start (#405). The agent keeps a summary of what it heard, so hearing the
+// same notes again after each compaction is noise. Each session keeps what it was told in
+// a small file, by the agent's session id; a compaction start then says only what is new.
+
+/** How the agent says a session started. `source` "compact" is a start after a compaction. */
+export interface SessionStart {
+  sessionId: string;
+  source: string;
+}
+
+/** A session's file is removed after this many days. */
+const SESSION_FILE_DAYS = 7;
+
+/** The folder of the per-session files. Throws NO_HOME with no home folder. */
+export const sessionsDir = (env: Env): string => join(paths(env).config, 'sessions');
+
+/**
+ * The blocks to print at this start. A compaction start drops the blocks this session
+ * was already told; any other start prints all, as before. Every start adds what it
+ * prints to the session's file. With no session, or a file that can't be read or
+ * written, it prints all.
+ */
+export function blocksToSay(env: Env, start: SessionStart | null, blocks: string[][], now = Date.now()): string[][] {
+  if (!start) return blocks;
+  try {
+    const dir = sessionsDir(env);
+    const file = join(dir, `${start.sessionId}.json`);
+    const isCompact = start.source === 'compact';
+    let said: string[] = [];
+    if (isCompact) {
+      try {
+        const saved = JSON.parse(readFileSync(file, 'utf8'));
+        if (Array.isArray(saved?.said)) said = saved.said.filter((text: unknown) => typeof text === 'string');
+      } catch {
+        // no file yet: the first start was before this version, so say all
+      }
+    } else removeOldSessionFiles(dir, now);
+    const isSaid = new Set(said);
+    const fresh = blocks.filter((block) => !isSaid.has(block.join('\n')));
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(file, `${JSON.stringify({ said: [...said, ...fresh.map((block) => block.join('\n'))] })}\n`);
+    return fresh;
+  } catch {
+    return blocks;
+  }
+}
+
+/** Removes the session files not written to for SESSION_FILE_DAYS. A file that can't be removed stays. */
+function removeOldSessionFiles(dir: string, now: number): void {
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of names.filter((n) => n.endsWith('.json'))) {
+    try {
+      if (now - statSync(join(dir, name)).mtimeMs > SESSION_FILE_DAYS * 86_400_000) rmSync(join(dir, name));
+    } catch {
+      // gone already, or not ours to remove
+    }
+  }
+}
+
 /** What a session hears when the road is done, as far as yokoten can check. */
 export const ROAD_DONE = 'yokoten: every step yokoten can check is done, or marked not now.';
 
@@ -1082,7 +1169,7 @@ export const doctor = (root: string | null, options: Parameters<typeof doctorRun
 function doctorRun(
   root: string | null,
   { env, config, session = false, gh, fillMarks: isFilling = false, machine: probe = REAL_MACHINE }: { env: Env; config: Config; session?: boolean; gh?: Gh; fillMarks?: boolean; machine?: MachineProbe },
-): { ok: boolean; lines: string[]; report: DoctorReport } {
+): { ok: boolean; lines: string[]; blocks?: string[][]; report: DoctorReport } {
   const lines: string[] = [];
   const failed = selfTest();
   const findings: Finding[] = [];
@@ -1101,44 +1188,51 @@ function doctorRun(
   const hasHome = homeOf(env) !== null;
   const filled = isFilling && !session && hasHome ? trySafely('the marks from this machine', () => [filledLine(fillMarks(env, machineMarks(env, { cwd: root, gh })), paths(env).marks)])[0] : null;
   const machine = hasHome ? machineChecks(env) : [];
-  const next = where.next ? stepFinding(where.next, root, env, server) : null;
+  // A file missing here may be on the default branch (#405): one git call for every step
+  // left. A session asks only when the step it names misses a file.
+  const left = where.steps.filter((w) => w.mark === 'next' || w.mark === 'to do').map((w) => w.step);
+  const isAsked = missingPaths(root, session ? left.slice(0, 1) : left).length > 0;
+  const elsewhere = isAsked ? readDefaultBranchFiles(root, missingPaths(root, left)) : null;
+  const next = where.next ? stepFinding(where.next, root, env, server, elsewhere) : null;
   const core = coreRulesCheck(root);
   const isCoreBehind = core?.mark === 'MISSING';
 
   // A session reads files only, never the network, so it starts fast and works offline.
   if (session) {
+    // Each note is a block of lines: a compaction start repeats only the blocks that changed (#405).
+    const blocks: string[][] = lines.map((line) => [line]);
     const { stage } = where;
-    if (stage && next) lines.push(`yokoten: stage ${stage} of ${STAGES.length}, ${STAGES[stage - 1]}. Next: ${stepText(next)}.`, `Why: ${next.why}.`, env.CLAUDE_PLUGIN_ROOT ? `${OFFER} ${PLUGIN_COMMANDS}` : OFFER);
-    else lines.push(ROAD_DONE);
+    if (stage && next) blocks.push([`yokoten: stage ${stage} of ${STAGES.length}, ${STAGES[stage - 1]}. Next: ${stepText(next)}.`, `Why: ${next.why}.`, env.CLAUDE_PLUGIN_ROOT ? `${OFFER} ${PLUGIN_COMMANDS}` : OFFER]);
+    else blocks.push([ROAD_DONE]);
     if (next) findings.push(next);
     // Not a step on the road, but the privacy check is weaker until it is fixed.
     const marks = machine.find((c) => c.name === 'private-marks' && !c.ok);
     if (marks) {
-      lines.push(`yokoten: ${formatFinding(marks.finding)}`);
+      blocks.push([`yokoten: ${formatFinding(marks.finding)}`]);
       findings.push(marks.finding);
     }
     // A stale plugin keeps old guard rules running; the session hears it (#198).
     const stale = pluginAgeCheck(root, env);
-    if (stale) lines.push(`yokoten: ${formatFinding(stale)}`);
-    if (!hasHome) lines.push(`yokoten: ${NO_HOME_NOTE}`);
+    if (stale) blocks.push([`yokoten: ${formatFinding(stale)}`]);
+    if (!hasHome) blocks.push([`yokoten: ${NO_HOME_NOTE}`]);
     const double = hasHome ? doubleInstallCheck(env) : null;
-    if (double) lines.push(`yokoten: ${formatFinding(double)}`);
+    if (double) blocks.push([`yokoten: ${formatFinding(double)}`]);
     // A full disk stops every session unseen (record 0012): statfs and one small file, no child process.
-    for (const c of diskSpaceChecks(root, env, probe, true).filter((check) => !check.ok)) lines.push(`yokoten: ${formatFinding(c.finding)}`);
+    for (const c of diskSpaceChecks(root, env, probe, true).filter((check) => !check.ok)) blocks.push([`yokoten: ${formatFinding(c.finding)}`]);
     const unsaved = sessionUnsaved(root, env);
-    lines.push(...unsaved.lines);
+    if (unsaved.lines.length) blocks.push(unsaved.lines);
     // A lesson the kit learned reaches the project here: the session hears it (#120).
     if (core && isCoreBehind) {
-      lines.push(`yokoten: ${formatFinding(core.finding)}`);
+      blocks.push([`yokoten: ${formatFinding(core.finding)}`]);
       findings.push(core.finding);
     }
     const waiting = upstreamNote(root, env);
     if (waiting) {
-      lines.push(`yokoten: ${waiting.what}`);
+      blocks.push([`yokoten: ${waiting.what}`]);
       findings.push(waiting);
     }
     const ok = !failed.length && !isCoreBehind;
-    return { ok, lines, report: { ...base, ok, repo: true, stage, next, findings, ...(unsaved.notes.length ? { notes: unsaved.notes } : {}) } };
+    return { ok, lines: blocks.flat(), blocks, report: { ...base, ok, repo: true, stage, next, findings, ...(unsaved.notes.length ? { notes: unsaved.notes } : {}) } };
   }
 
   lines.push(`yokoten ${VERSION}, self-test ${failed.length ? 'FAILED' : 'ok'}`);
@@ -1152,7 +1246,7 @@ function doctorRun(
       let note = '';
       if (mark === 'not now') note = state.reason = config.notNow[step.key];
       else if (mark === 'next' || mark === 'to do') {
-        const f = stepFinding(step, root, env, server);
+        const f = stepFinding(step, root, env, server, elsewhere);
         findings.push(f);
         note = stepText(f);
       } else if (mark === "can't check" && step.unchecked) note = step.unchecked(server);
@@ -1171,7 +1265,7 @@ function doctorRun(
     if (core.mark === 'MISSING') findings.push(core.finding);
     else if (core.mark === 'note') notes.push(core.finding);
   }
-  // Full doctor alone keeps which lessons this clone has seen; a session writes nothing.
+  // Full doctor alone keeps which lessons this clone has seen; a session keeps no lessons.
   const stateFile = findStateFile(root);
   const state = readState(stateFile);
   const seenLessons = state.seenLessons ?? [];
@@ -1183,6 +1277,8 @@ function doctorRun(
   const checkNotes: Finding[] = [];
   const problems = check(root, { config, env, notes: checkNotes });
   findings.push(...problems);
+  const allowed = allowedMarkCount(env, config);
+  if (allowed) lines.push(`  ok      own-marks: ${allowed} of your private marks allowed here by privacy.allow`);
   lines.push(`  ${problems.length ? 'MISSING' : 'ok     '} tree: ${problems.length ? `${problems.length} problem(s), run \`yokoten check\`` : 'layout and privacy clean'}`);
   // check's own notes (#228), such as an unknown yokoten.json key or a translation behind: worded as check words them, and never a failure.
   for (const n of checkNotes) lines.push(`  note    ${formatFinding(n).replaceAll('\n', '\n        ')}`);
@@ -1223,6 +1319,11 @@ function doctorRun(
   if (double) {
     lines.push(`  note    plugin-and-install: ${stepText(double)}`);
     notes.push(double);
+  }
+  const launcher = hasHome ? launcherCheck(env) : null;
+  if (launcher) {
+    lines.push(`  note    command: ${stepText(launcher)}`);
+    notes.push(launcher);
   }
   const waiting = upstreamNote(root, env);
   if (waiting) {

@@ -100,6 +100,9 @@ The session hears about one step only: the stage, the next step, and why it matt
 The stage is worked out from the files each time; nothing saves it. A step you marked
 "not now" is skipped. The order is advice: a later step done early counts as done.
 When every step is done or "not now", the session hears one line that says so.
+A file missing here but on the default branch is named with that branch, not with `init`.
+After Claude Code compacts the context, the session hears only notes that changed.
+Each session keeps what it heard in `~/.config/yokoten/sessions/`, and files older than 7 days are removed.
 The agent tells you in your own language. yokoten prints English, which agents read most
 reliably.
 
@@ -541,16 +544,25 @@ node ~/.local/share/yokoten/bin/yokoten.ts init     # this project: adds files, 
 node ~/.local/share/yokoten/bin/yokoten.ts doctor   # the road: where you are, what's next
 ```
 
-A clone install puts no `yokoten` command on your PATH, but yokoten's messages say
-`yokoten init` and `yokoten doctor`. So `install` ends with this line for your shell
-profile (`~/.bashrc` or `~/.zshrc`). Add it yourself, then open a new shell:
+yokoten's messages say `yokoten init` and `yokoten doctor`. So `install` puts a small
+`yokoten` launcher in `~/.local/bin` (`yokoten.cmd` on Windows). That folder is on the
+PATH on most setups, so `yokoten` works in the next shell you open. The launcher runs
+`bin/yokoten.mjs`, the same fast entry the hooks run. The next `install` rewrites a
+launcher that an older install wrote.
+
+When `~/.local/bin` is not on your PATH, `install` asks once:
+`Add ~/.local/bin to your PATH in ~/.bashrc? [Y/n]` (`~/.zshrc` for zsh). On yes, it adds
+this one line to that file. On no, it prints the line for you to add:
 
 ```sh
-alias yokoten='node ~/.local/share/yokoten/bin/yokoten.ts'
+export PATH="$HOME/.local/bin:$PATH" # added by yokoten
 ```
 
-yokoten never edits your shell profile. When a `yokoten` on your PATH already runs this
-copy, `install` leaves the line out.
+yokoten edits your shell profile only after that yes. It never asks, and never edits,
+when no one is at the terminal: in a pipe, a hook or CI. A `~/.local/bin/yokoten` that
+yokoten did not write stays as it is, and `install` names it. `uninstall` removes the
+launcher and the marked line. `doctor` notes when no `yokoten` on your PATH runs the
+installed copy.
 
 These commands, and the npx ones, are also in [docs/facts.json](facts.json), which the
 website reads, so a change to them goes in both places.
@@ -653,6 +665,14 @@ check), `pr.yml` and `issue.yml`. Each action is pinned to a commit, each job ha
 limit, checkout keeps no token, and a new push cancels the old run on the same pull
 request. Add your tests as a job in `yokoten.yml` and to the `needs` list of `ci`.
 
+In `yokoten.yml`, a `changes` job reads which files a pull request changes. The pull
+request is docs-only when each file is under `docs/` or `changes/`, or is a `README.md`
+or `CHANGELOG.md`. A job of yours can then skip a docs-only pull request; the comment
+above `ci` shows the two lines to add. `ci` counts that skip as green. The commit check
+and the lint job always run. A push to main runs every job. So does a pull request whose
+file list can't be read: a warning says so. In yokoten's own CI, a docs-only pull request
+runs the tests once, on Ubuntu with Node 24, and skips `typecheck` and the Action job.
+
 It puts three safe defaults in `.github/` too:
 
 - `dependabot.yml` updates the actions that CI runs, and the packages `init` finds (npm,
@@ -694,7 +714,7 @@ It puts three safe defaults in `.github/` too:
 | `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop event by default, a Codex Stop event with `--agent codex`, a Gemini CLI AfterAgent event with `--agent gemini`, a Grok CLI Stop event with `--agent grok`. See [The stop check](#the-stop-check) |
 | `explain [<id>] [--json]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay. A second run changes nothing |
-| `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
+| `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. `gh pr create` without a type or tier label gets them added: the type from the title (`bug` for `fix`), the tier from the body's `tier:` line. A label you pass is kept. A tier label that does not match the body is refused, with the message of `check --pr`. A label the repo does not have is named in a note and left out; the bot never creates labels. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
 
 Each command prints its own help with `--help` or `-h`: what it does, its options and
 one example. `yokoten help <command>` prints the same, and `yokoten --help` lists the
@@ -878,7 +898,7 @@ missing key, a key set to `null`, or a missing file gives the default.
 
 | Key | Must be | Default |
 |-----|---------|---------|
-| `layout` | `{ "maxEntries": 7, "exempt": ["docs/records"] }`: a whole number above 0, and a list of folders | 7, no folder exempt |
+| `layout` | `{ "maxEntries": 7, "exempt": ["docs/records"] }`: a whole number above 0, and a list of folders or globs | 7, no folder exempt |
 | `tests` | a list of globs | `*.test.*`, `*.spec.*`, `*_test.go`, `test/**`, `tests/**` |
 | `leadOnly` | a list of globs | the rules, agent config, hooks and CI |
 | `privacy` | `{ "allow": [], "skip": [], "utc": true, "output": "run" }`: two lists of text, true or false, and `"run"` or `"stop"` | lockfiles skipped, UTC on, output run |
@@ -1170,10 +1190,10 @@ A list you set replaces the default list; it does not add to it.
 | Key | Default | What it does |
 |-----|---------|--------------|
 | `layout.maxEntries` | `7` | The most entries a folder may hold (core rule 10) |
-| `layout.exempt` | none | Folders that may grow past it, such as a log of records |
+| `layout.exempt` | none | Folders that may grow past it. See [Folders that may grow](#folders-that-may-grow) |
 | `tests` | `*.test.*`, `*.spec.*`, `*_test.go`, `test/**`, `tests/**` | The test files a fix task may not change |
 | `leadOnly` | the rules, agent config, `.githooks/**`, `.github/**`, the vendored runtime `.yokoten/**` | The files a worker may not change |
-| `privacy.allow` | none | Exact strings the privacy check lets through, such as a public support address |
+| `privacy.allow` | none | Exact strings the privacy check lets through, such as a public support address, or this project's own name from your private marks |
 | `privacy.skip` | lock files | Files the privacy check does not read |
 | `privacy.utc` | `true` | Commit times must be in UTC |
 | `privacy.output` | `"run"` | In an agent other than Claude Code, a command that prints account details runs as it is. `"stop"` stops it and shows the filtered command |
@@ -1181,6 +1201,26 @@ A list you set replaces the default list; it does not add to it.
 | `allowBuild` | none | Build output and binaries the commit check lets through |
 | `areas` | any | The areas a title may name. See [Issue titles](#issue-titles) |
 | `translations.fail` | `false` | A translation behind its source fails the check |
+
+#### Folders that may grow
+
+Core rule 10 keeps each folder at 7 entries or fewer. Two kinds of folder may grow past it,
+and `changes/` always may:
+
+- **A log**, such as `docs/records`. Each entry is added once and kept.
+- **A third-party fixture set** that tests read, kept under its upstream names, with its
+  `NOTICE` beside it. Tests, the `NOTICE` and upstream bug reports find a file by its
+  name. Folders would make each lookup and each refresh from upstream harder.
+
+List each such folder in `layout.exempt` by hand. An entry is a path from the root, or a
+glob. In a glob, `*` is one folder and `**` is any number of folders, none too. No other
+character is special. One glob covers every crate of a Rust workspace:
+
+```json
+{ "layout": { "exempt": ["docs/records", "crates/*/tests/data"] } }
+```
+
+`check` and `doctor` note a glob that matches no folder, so a stale entry shows.
 
 Environment variables:
 
@@ -1192,7 +1232,7 @@ Environment variables:
 | `YOKOTEN_RELEASE_APPROVAL=1` | The owner allows a release from this session. Muse Code is not known to pass it to a hook |
 | `YOKOTEN_PRIVATE_MARKS` | Another path for the private-marks file |
 | `YOKOTEN_MIN_FREE_GB` | `doctor` notes a disk with less free space than this, in GB. `0` turns the note off. See [Machine notes](#machine-notes) |
-| `YOKOTEN_BOT_APP_ID`, `YOKOTEN_BOT_KEY`, `YOKOTEN_BOT_INSTALLATION` | The bot. See [server.md](server.md#3-the-bot-a-github-app) |
+| `YOKOTEN_BOT_APP_ID`, `YOKOTEN_BOT_KEY`, `YOKOTEN_BOT_INSTALLATION` | The bot. They can also be lines in `~/.config/yokoten/keys.env`. See [server.md](server.md#3-the-bot-a-github-app) |
 | `YOKOTEN_GITHUB_API` | Another GitHub API address, such as GitHub Enterprise Server |
 | `LLAMA_API_KEY` or `MODEL_API_KEY`, `LLAMA_API_BASE`, `LLAMA_MODEL` | The model for `adopt`. See [A first draft of the table](#a-first-draft-of-the-table) |
 
@@ -1327,6 +1367,17 @@ on every commit. On your own machine it also reads `~/.config/yokoten/private-ma
 your name, your city, your domains, your server names. That file stays outside the
 repo, because a list of what must not be published can't itself be published. A hit
 is reported by file and line; the mark itself is never printed.
+
+The project's own public address, such as `support@` at its domain, is found too. Nothing
+is let through on its own. If the address is public on purpose, add it to
+`privacy.allow` in yokoten.json.
+
+The marks file is for the whole machine, so a private project's name belongs in it. That
+project's own repo can still use its name: list the name in `privacy.allow` in its
+yokoten.json. A mark is let through when an entry there is the same string, upper or
+lower case aside; a part or a longer string does not count. It is let through only in
+that repo, by `check`, the commit hook and the guard for `gh` posts. Every other repo
+still stops it. `doctor` says how many of your marks the project allows, never which.
 
 Some files must name your account. So the forge login that yokoten added to the marks is
 fine in a CODEOWNERS owner, an `@` mention in `.github/`, an author or owner field of

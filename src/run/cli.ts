@@ -116,8 +116,9 @@ export const COMMANDS: Command[] = [
     usage: '',
     text: [
       'Installs the skills into ~/.claude/skills and ~/.agents/skills, the agents into',
-      '~/.claude/agents, a SessionStart doctor hook, a user-level command guard, and an',
-      'empty private-marks file. Files you wrote yourself are left alone.',
+      '~/.claude/agents, a SessionStart doctor hook, a user-level command guard, an empty',
+      'private-marks file, and a yokoten launcher in ~/.local/bin. It asks before it adds',
+      'that folder to your PATH. Files you wrote yourself are left alone.',
     ],
     options: [],
     example: 'yokoten install',
