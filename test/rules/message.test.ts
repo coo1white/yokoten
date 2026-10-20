@@ -61,6 +61,7 @@ import { nameNotes } from '../../src/run/names.ts';
 import { translationNotes } from '../../src/run/translations.ts';
 import {
   readIssue,
+  readNumberedPullRequest,
   readPullRequest,
 } from '../../src/host/github.ts';
 import {
@@ -79,6 +80,7 @@ import {
   diskSpaceChecks,
   machineChecks,
   type MachineProbe,
+  noCiNote,
   pluginAgeCheck,
   privacyNotes,
   upstreamNote,
@@ -194,6 +196,10 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   mkdirSync(join(pluginFolder, 'bin'));
   writeFileSync(join(pluginFolder, 'bin', 'yokoten.ts'), '');
   add(upstreamNote(pluginFolder, { HOME: pluginHome }));
+  // A repo that keeps CI off (#377): the note, and a pull request read by number that fails.
+  add(noCiNote({ ci: 'private repo' }, 5, undefined));
+  const numbered = readNumberedPullRequest(dir, () => { throw new Error('no gh here'); }, '12');
+  add('problem' in numbered ? numbered.problem : undefined);
   // The core rules (#120): behind the kit, and with no heading to compare by.
   for (const rules of ['# old rules\n\n## This project\n', '# rules\n']) {
     writeFileSync(join(dir, 'AGENTS.md'), rules);

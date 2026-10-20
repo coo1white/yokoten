@@ -227,6 +227,12 @@ export const RULES = {
     check: 'in a CI run, `check --pr` and `check --issue` fail when the event file is missing or is not a JSON object; with no event file named, they skip',
     docs: guide('use-it-as-a-github-action'),
   },
+  'pr-read': {
+    rule: '`check --pr <number>` reads that pull request through gh',
+    why: 'a repo without CI checks its pull requests this way, so without the read nothing is checked',
+    check: '`check --pr <number>` asks gh for the title, body, labels, milestone and commits, and fails when gh can\'t read them',
+    docs: guide('a-private-repo-without-ci'),
+  },
   'issue-area': {
     rule: 'an issue title starts with its area: `area: verb phrase` for a task, `area: symptom` for an incident',
     why: 'the area tells a reader which part of the project the issue is about',
@@ -374,6 +380,12 @@ export const RULES = {
     why: 'output an agent reads goes into the transcript and to the model, and it cannot be taken back',
     check: 'the tool-call guard sends commands known to print account details through `yokoten redact`. In Claude Code it rewrites the command; other agents are stopped and shown the command to run',
     docs: guide('privacy'),
+  },
+  'no-ci': {
+    rule: 'a repo that keeps CI off says so in yokoten.json "notNow", and knows what that leaves out',
+    why: 'without CI, nothing on the server checks pull requests, issue titles or the workflows, and a commit made with the hook off reaches main unchecked',
+    check: 'full `doctor` notes it while "notNow" names `ci`, and reminds you to end it when the repo goes public; a note, never a failure',
+    docs: guide('a-private-repo-without-ci'),
   },
   'upstream-inbox': {
     rule: 'a gap in yokoten found in another project becomes an issue in the yokoten repo',

@@ -43,6 +43,7 @@ import {
   compareCoreRules,
   compareVersions,
   handOffLines,
+  NO_CI_REASON,
   placeHandOff,
   readKitVersion,
 } from '../../src/setup/init.ts';
@@ -1318,4 +1319,86 @@ test('core rules: the kit version mark tells older from newer; no mark compares 
   assert.equal(compareCoreRules(`# rules\n\n${own}`, kit).state, 'same', 'the mark alone is no change');
   assert.equal(compareCoreRules(`<!-- yokoten kit 0.9.0 -->\n# rules\n\n${own}`, kit).state, 'same', 'a newer mark with the same text is up to date');
   assert.equal(compareCoreRules(`<!-- yokoten kit {{version}} -->\n# rules, later\n\n${own}`, kit).state, 'behind', 'a mark that is not a version is unknown');
+});
+
+// #377: a private repo pays for its Actions minutes. init says so and never chooses for
+// the owner; `init --no-ci` keeps CI off, and the road can still be finished.
+test('init: a private repo can keep CI off with --no-ci, finish the road, and take CI up again (#377)', () => {
+  const sandbox = makeSandbox();
+  const extra = stubGh(sandbox, { 'api users/octo --jq .type': 'User', 'api repos/octo/app --jq .private': 'true' });
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/octo/app.git');
+  const ciFiles = ['.github/workflows/yokoten.yml', '.github/workflows/pr.yml', '.github/workflows/issue.yml', '.github/dependabot.yml'];
+  const isThere = (file: string) => existsSync(join(sandbox.repo, file));
+  const notNow = () => JSON.parse(readFileSync(join(sandbox.repo, 'yokoten.json'), 'utf8')).notNow;
+  const marks = join(sandbox.home, 'marks');
+  writeFileSync(marks, 'placeholder-mark\n');
+  const key = join(sandbox.home, 'bot.pem');
+  writeFileSync(key, 'not a real key\n');
+  const machine = { ...extra, YOKOTEN_PRIVATE_MARKS: marks, YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key };
+  const session = () => sandbox.run(['doctor', '--session'], { extra: machine }).stdout.trimEnd().split('\n');
+  assert.equal(sandbox.run(['install']).status, 0);
+
+  // Without the choice: today's behaviour. The workflows are written, and init says what they cost.
+  let result = sandbox.run(['init'], { extra });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^note: this repo is private, so the workflows in \.github\/workflows use Actions minutes from your plan$/m);
+  assert.match(result.stdout, /^to keep CI off, run `yokoten init --no-ci`/m);
+  assert.ok(ciFiles.every(isThere));
+  assert.deepEqual(notNow(), {}, 'init never makes the choice itself');
+  sandbox.write('.github/CODEOWNERS', '* @octo\n');
+  sandbox.write('LICENSE', 'placeholder license\n');
+  assert.match(session()[0], /stage 1 of 5, safety net\. Next: no workflow runs a test command/, 'the tests step still asks for CI');
+
+  // With the choice: the kit's copies go, a changed one stays and is named, and "notNow" holds the reason.
+  sandbox.write('.github/workflows/issue.yml', 'name: ours\n');
+  result = sandbox.run(['init', '--no-ci'], { extra });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^wrote "notNow" ci in yokoten\.json/m);
+  for (const file of ['.github/workflows/yokoten.yml', '.github/workflows/pr.yml', '.github/dependabot.yml']) {
+    assert.match(result.stdout, new RegExp(`^removed ${file.replaceAll('.', '\\.')} \\(the kit's copy; CI is off\\)$`, 'm'));
+    assert.ok(!isThere(file), file);
+  }
+  assert.match(result.stdout, /^kept \.github\/workflows\/issue\.yml: it is not the kit's copy/m);
+  assert.doesNotMatch(result.stdout, /this repo is private/, 'the choice is made, so no offer');
+  assert.deepEqual(notNow(), { ci: NO_CI_REASON });
+  rmSync(join(sandbox.repo, '.github', 'workflows', 'issue.yml'));
+  // A later init writes no workflow again, and says why.
+  result = sandbox.run(['init'], { extra });
+  assert.match(result.stdout, /^skipped \.github\/workflows\/yokoten\.yml \(yokoten\.json "notNow" names ci\)$/m);
+  assert.match(result.stdout, /^skipped \.github\/dependabot\.yml \(yokoten\.json "notNow" names ci\)$/m);
+  assert.ok(!ciFiles.some(isThere));
+
+  // The road: no nag about CI, and every step yokoten can check is done or not now.
+  assert.deepEqual(session(), ['yokoten: every step yokoten can check is done, or marked not now.']);
+  const full = sandbox.run(['doctor'], { extra: machine }).stdout;
+  assert.match(full, /^ +not now +tests \(Best Practices: test\): CI is off to save Actions minutes[^\n]*\(notNow ci\); run the tests yourself before each merge$/m);
+  assert.match(full, /^ +not now +ci \(Scorecard: CI-Tests\): CI is off to save Actions minutes/m);
+  assert.match(full, /^ +not now +titles \([^)]*\): [^\n]*; run `yokoten check --pr <number>` before each merge$/m);
+  assert.match(full, /^ +done +security-files/m, 'no Dependabot config is asked for');
+  // The trade-off, said once: what is not checked, and when to end the choice.
+  assert.equal(full.match(/no-ci: /g)?.length, 1, full);
+  assert.match(full, /^ +note +no-ci: CI is off \("notNow" names `ci`\), so nothing on the server checks pull requests, issue titles or the workflows, no code scanning such as CodeQL runs[^\n]*; before each merge, run `yokoten check --pr <number>` and the tests; when the repo goes public, remove "ci" from "notNow"/m);
+
+  // Taking CI up again: remove the choice, and init brings the workflows back.
+  sandbox.write('yokoten.json', JSON.stringify({ notNow: {} }));
+  result = sandbox.run(['init'], { extra });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(ciFiles.every(isThere), result.stdout);
+  assert.match(session()[0], /stage 1 of 5, safety net\. Next: no workflow runs a test command/);
+  assert.doesNotMatch(sandbox.run(['doctor'], { extra: machine }).stdout, /no-ci/);
+});
+
+test('init: a step in "notNow" leaves out its files, unless they are there already (#377)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', JSON.stringify({ notNow: { templates: 'later', changelog: 'later', codeowners: 'later', 'security-files': 'later' } }));
+  sandbox.write('CHANGELOG.md', '# ours\n');
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  for (const file of ['.github/ISSUE_TEMPLATE/task.yml', '.github/pull_request_template.md', 'changes/README.md', '.github/SECURITY.md', '.github/dependabot.yml', '.github/CODEOWNERS']) {
+    assert.match(result.stdout, new RegExp(`^skipped ${file.replaceAll('.', '\\.')} \\(yokoten\\.json "notNow" names `, 'm'));
+    assert.ok(!existsSync(join(sandbox.repo, file)), file);
+  }
+  assert.match(result.stdout, /^kept CHANGELOG\.md$/m);
+  // The control: CI is not in "notNow", so the workflows are written.
+  assert.ok(existsSync(join(sandbox.repo, '.github', 'workflows', 'yokoten.yml')));
 });

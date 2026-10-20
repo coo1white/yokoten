@@ -9,7 +9,7 @@
 // AGENTS.md, and only with --write. It is at the end of this file.
 
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
@@ -21,8 +21,8 @@ import * as gemini from '../agents/runtimes/gemini.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
-import { DEFAULTS } from '../rules/config.ts';
-import { CODEOWNERS_PLACES, type Gh, ghIn, isOrganization, repoOf } from '../host/github.ts';
+import { DEFAULTS, loadConfig } from '../rules/config.ts';
+import { CODEOWNERS_PLACES, type Gh, ghIn, isOrganization, isPrivateRepo, repoOf } from '../host/github.ts';
 import { readOriginUrl } from './plan.ts';
 import { copyRuntime, HOME_DIR, KIT, render, VERSION, writeNew } from './files.ts';
 
@@ -64,10 +64,13 @@ const ORG_LOOKUP_MS = 5000;
 
 /**
  * One line per thing done, kept or skipped; `ok` is false when a hooks or settings file was
- * skipped (#248, #254). `gh` asks GitHub one thing: whether the remote owner is an organization.
+ * skipped (#248, #254). `gh` asks GitHub two things: whether the remote owner is an
+ * organization, and whether the repo is private (#377). `noCi` keeps CI off: see `keepCiOff`.
  */
-export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: boolean; lines: string[] } {
+export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS), { noCi = false }: { noCi?: boolean } = {}): { ok: boolean; lines: string[] } {
   const report: string[] = [];
+  const notNow = readNotNow(root);
+  if (noCi && !Object.hasOwn(notNow, 'ci')) notNow.ci = NO_CI_REASON;
   const cli = cliPath(root);
   if (!isSelf(root) && root !== HOME_DIR) {
     const copied = copyRuntime(join(root, '.yokoten'));
@@ -79,13 +82,22 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: bo
     const rel = relative(kit, file).split('\\').join('/');
     // The hooks are written below. A project with its own hooks folder keeps it, so it gets no .githooks/.
     if (rel.startsWith('.githooks/')) continue;
+    // A file for a step the project said "not now" to is left out (#377), unless it is there already.
+    const skippedFor = skippedStep(rel, notNow);
+    if (skippedFor && !existsSync(join(root, rel))) {
+      report.push(`skipped ${rel} (yokoten.json "notNow" names ${skippedFor})`);
+      continue;
+    }
     const result = writeNew(join(root, rel), render(readFileSync(file, 'utf8'), { cli, version: VERSION }));
     report.push(`${result} ${rel}`);
   }
   // Read before .githooks/ is written: whether it can run the hooks this clone has in .git/hooks (#256).
   const blocks = hooks.kind === 'plain' ? handOffBlocks(root) : [];
   if (hooks.kind !== 'own') report.push(...writeGithooks(root, cli, kit, blocks.length === 0));
-  report.push(writeCodeOwners(root, gh));
+  if (noCi) report.push(...keepCiOff(root, cli, kit));
+  else if (!Object.hasOwn(notNow, 'ci')) report.push(...privateRepoNote(root, gh));
+  if (Object.hasOwn(notNow, 'codeowners') && !CODEOWNERS_PLACES.some((place) => existsSync(join(root, place)))) report.push('skipped .github/CODEOWNERS (yokoten.json "notNow" names codeowners)');
+  else report.push(writeCodeOwners(root, gh));
   const imported = importRules(root);
   if (imported) report.push(imported);
   // Claude Code's settings, the file people edit by hand most: skipped as one, never
@@ -140,6 +152,96 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: bo
   report.push(...codexHooks.lines, ...geminiHooks.lines, ...antigravityHooks.lines, ...museHooks.lines, ...dshHooks.lines);
   report.push(...setCommitCheck(root, cli, hooks, blocks));
   return { ok: claudeHooks.ok && codexHooks.ok && geminiHooks.ok && antigravityHooks.ok && museHooks.ok && dshHooks.ok, lines: report };
+}
+
+// ---- A project that keeps CI off (#377) ----
+//
+// A private repo on a free plan pays for its Actions minutes. Such a project can keep CI
+// off: yokoten.json "notNow" then names `ci`, and the commit hook and `yokoten check` are
+// the gate. init never makes that choice itself. On a private repo it says what the
+// workflows cost and how to keep them out; `init --no-ci` makes the choice.
+
+/** The reason `init --no-ci` writes into "notNow". */
+export const NO_CI_REASON = 'CI is off to save Actions minutes; the commit hook and yokoten check are the gate. Look again when the repo goes public';
+
+/** The kit files that only CI uses: the workflows, and Dependabot, which updates only the actions CI runs. */
+const isCiFile = (rel: string): boolean => rel.startsWith('.github/workflows/') || rel === '.github/dependabot.yml';
+
+/** The kit files each road step brings, by the step's "notNow" key. A file is left out when "notNow" names any of its steps. */
+const KIT_STEPS: [step: string, isStepFile: (rel: string) => boolean][] = [
+  ['ci', isCiFile],
+  ['titles', (rel) => rel === '.github/workflows/pr.yml'],
+  ['templates', (rel) => rel.startsWith('.github/ISSUE_TEMPLATE/') || rel === '.github/pull_request_template.md'],
+  ['changelog', (rel) => rel === 'CHANGELOG.md' || rel.startsWith('changes/')],
+  ['security-files', (rel) => rel === '.github/SECURITY.md' || rel === '.github/dependabot.yml'],
+];
+
+/** The "notNow" step that leaves this kit file out, or null. */
+const skippedStep = (rel: string, notNow: Record<string, string>): string | null =>
+  KIT_STEPS.find(([step, isStepFile]) => Object.hasOwn(notNow, step) && isStepFile(rel))?.[0] ?? null;
+
+/** yokoten.json "notNow", or none when the file is missing or can't be read (`yokoten init` checks it first). */
+function readNotNow(root: string): Record<string, string> {
+  try {
+    return { ...loadConfig(root).notNow };
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * `init --no-ci`: write "notNow" `ci` into yokoten.json, and remove each CI file that is
+ * still the kit's copy, so nobody deletes them by hand. A file the project changed is kept,
+ * and the line says so. Returns the report lines.
+ */
+function keepCiOff(root: string, cli: string, kit: string): string[] {
+  const lines = [recordNotNow(root, 'ci', NO_CI_REASON)];
+  for (const file of walk(kit)) {
+    const rel = relative(kit, file).split('\\').join('/');
+    const path = join(root, rel);
+    if (!isCiFile(rel) || !existsSync(path)) continue;
+    if (readFileSync(path, 'utf8') === render(readFileSync(file, 'utf8'), { cli, version: VERSION })) {
+      rmSync(path);
+      lines.push(`removed ${rel} (the kit's copy; CI is off)`);
+    } else lines.push(`kept ${rel}: it is not the kit's copy, so delete it yourself if CI stays off`);
+  }
+  return lines;
+}
+
+/**
+ * Set one key of yokoten.json "notNow", unless it is there. An empty `"notNow": {}` is
+ * filled in place; otherwise the file is written again as formatted JSON. Returns the report line.
+ */
+function recordNotNow(root: string, key: string, reason: string): string {
+  const path = join(root, 'yokoten.json');
+  let text = '{}\n';
+  let file: Record<string, unknown>;
+  try {
+    if (existsSync(path)) text = readFileSync(path, 'utf8');
+    file = JSON.parse(text);
+  } catch {
+    return `skipped "notNow" ${key} in yokoten.json: the file can't be read; add it yourself`;
+  }
+  const notNow = (file.notNow ?? {}) as Record<string, string>;
+  if (Object.hasOwn(notNow, key)) return `kept "notNow" ${key} in yokoten.json`;
+  const entry = `"${key}": ${JSON.stringify(reason)}`;
+  const empty = /"notNow"\s*:\s*\{\s*\}/;
+  if (empty.test(text)) writeFileSync(path, text.replace(empty, `"notNow": { ${entry} }`));
+  else writeFileSync(path, `${JSON.stringify({ ...file, notNow: { ...notNow, [key]: reason } }, null, 2)}\n`);
+  return `wrote "notNow" ${key} in yokoten.json (to take CI up again, remove it and run \`yokoten init\`)`;
+}
+
+/**
+ * On a private repo, a note that the workflows use Actions minutes, and how to keep them
+ * out. Nothing when gh can't tell, or the repo is public. One gh call, only with a GitHub remote.
+ */
+function privateRepoNote(root: string, gh: Gh): string[] {
+  const repo = repoOf(readOriginUrl(root));
+  if (!repo || isPrivateRepo(gh, repo) !== true) return [];
+  return [
+    'note: this repo is private, so the workflows in .github/workflows use Actions minutes from your plan',
+    'to keep CI off, run `yokoten init --no-ci`: it removes the workflows init wrote, and records the choice in yokoten.json',
+  ];
 }
 
 // ---- CODEOWNERS for the lead-only paths (#304) ----

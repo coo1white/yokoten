@@ -35,6 +35,16 @@ const at = (found: Found[], notNow: Record<string, string> = {}) => walk(steps.m
 
 const marks = (found: Found[], notNow: Record<string, string> = {}) => at(found, notNow).steps.map((w) => w.mark);
 
+test('road: "notNow" ci also waits a step that needs CI, and only such a step (#377)', () => {
+  const needsCi: Step = { ...step(1, 'e'), withoutCi: 'run it by hand' };
+  const walked = (notNow: Record<string, string>) => walk([needsCi, step(2, 'c')].map((s) => ({ step: s, found: false })), notNow).steps.map((w) => w.mark);
+  assert.deepEqual(walked({ ci: 'private repo' }), ['not now', 'next']);
+  // The control: without "ci", the step that needs CI is the next one.
+  assert.deepEqual(walked({ other: 'x' }), ['next', 'to do']);
+  // The steps that need CI on the road: the tests, the CI check and the pull request check.
+  assert.deepEqual(ROAD.filter((s) => s.withoutCi).map((s) => s.key), ['tests', 'ci', 'titles']);
+});
+
 // ---- The tests step (#257): the common test commands in a workflow count, in any kind of project. ----
 
 /** The tests step on a scratch repo with these files: whether it is done, and what it says when not. */

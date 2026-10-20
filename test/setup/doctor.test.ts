@@ -29,6 +29,7 @@ import {
 } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
 import {
+  type BranchRules,
   type Gh,
   readPlanning,
   readServer,
@@ -61,6 +62,7 @@ import {
   sessionUnsaved,
   STOPPED_EARLY,
   UNSAVED_OFFER,
+  noCiNote,
   upstreamNote,
 } from '../../src/setup/doctor.ts';
 import { LABELS } from '../../src/setup/plan.ts';
@@ -433,7 +435,8 @@ test('doctor --session: "not now" skips a step, by the names yokoten.json alread
   assert.match(full, /^ +not now +ci \(Scorecard: CI-Tests\): no remote yet$/m, 'the full map shows the reason');
   assert.match(full, /^ +next +templates \(GitHub community profile\): /m);
   assert.match(full, /^ +to do +changelog \(Best Practices: release_notes\): /m);
-  assert.match(full, /^ +to do +titles \(Conventional Commits 1\.0\.0\): CI does not check pull requests/m);
+  // "notNow" ci covers the steps that need CI (#377): titles waits too, and says what to run instead.
+  assert.match(full, /^ +not now +titles \(Conventional Commits 1\.0\.0\): no remote yet \(notNow ci\); run `yokoten check --pr <number>` before each merge$/m);
 });
 
 test('doctor: each stage boundary, from a fresh repo to the end of the road', () => {
@@ -1130,4 +1133,21 @@ test('doctor: in the yokoten repo, the session and doctor count the notes from o
   assert.equal(upstreamNote(sandbox.repo, { HOME: empty }), null);
   assert.ok(!sandbox.run(['doctor', '--session'], { extra: { HOME: empty } }).stdout.includes('lessons from other projects'));
   rmSync(empty, { recursive: true, force: true });
+});
+
+// #377: a repo that keeps CI off hears what that leaves out, and when to end it.
+test('doctor: the no-ci note says what is not checked, and from stage 5 or on a public repo how to end it (#377)', () => {
+  assert.equal(noCiNote({ tests: 'later' }, 2, undefined), null, 'no note without "notNow" ci');
+  const early = noCiNote({ ci: 'private repo' }, 2, undefined);
+  assert.match(early?.what ?? '', /nothing on the server checks pull requests, issue titles or the workflows, no code scanning such as CodeQL runs/);
+  assert.equal(early?.fix, 'before each merge, run `yokoten check --pr <number>` and the tests');
+  assert.match(noCiNote({ ci: 'private repo' }, 5, undefined)?.fix ?? '', /; when the repo goes public, remove "ci" from "notNow" in yokoten\.json, then run `yokoten init`/);
+  assert.match(noCiNote({ ci: 'private repo' }, null, undefined)?.fix ?? '', /when the repo goes public/, 'the end of the road counts as stage 5');
+  const server = readServer(serverGh(GOOD).gh, REPO);
+  assert.ok(!('unread' in server));
+  assert.match(noCiNote({ ci: 'private repo' }, 2, { ...server, isPrivate: false })?.fix ?? '', /^this repo is public now, and Actions cost no minutes on a public repo: remove "ci"/);
+  // With CI off, no CI check can be required, so the server check leaves it out.
+  const off: ServerSettings = { ...server, branch: { ...(server.branch as BranchRules), requiredChecks: [] } };
+  assert.equal(marks(off)['required-checks'], 'MISSING');
+  assert.ok(!serverChecks(off, { isCiOff: true }).some((c) => c.id === 'required-checks'));
 });

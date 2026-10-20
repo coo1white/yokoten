@@ -125,13 +125,15 @@ export const COMMANDS: Command[] = [
   {
     name: 'init',
     summary: 'put the practices into a project (adds only, never overwrites)',
-    usage: '[dir] [--github --yes [--remove-default-labels] [--board]]',
+    usage: '[dir] [--no-ci] [--github --yes [--remove-default-labels] [--board]]',
     text: [
       'Adds the practices to the project at [dir] (default: here). It keeps any file that is',
       'already there and says so. It also reads GitHub through gh and says which standard',
       'labels and milestone it would add. It changes GitHub only with --github --yes.',
+      'It leaves out the files of a step that yokoten.json "notNow" names.',
     ],
     options: [
+      { name: '--no-ci', text: 'keep CI off: no workflows or Dependabot, and "notNow" ci in yokoten.json' },
       { name: '--github', text: 'work on GitHub too; goes with --yes' },
       { name: '--yes', text: 'add the standard labels, a first milestone and up to 8 area labels on GitHub' },
       { name: '--remove-default-labels', text: "also delete GitHub's default labels outside the set" },
@@ -175,15 +177,16 @@ export const COMMANDS: Command[] = [
   {
     name: 'check',
     summary: 'layout, privacy and lead-only files; the pull request or issue in CI',
-    usage: '[--staged | --history | --pr | --issue] [--json]',
-    text: ['Checks the whole tree by default. Use one mode at most.'],
+    usage: '[--staged | --history | --pr [number] | --issue] [--json]',
+    text: ['Checks the whole tree by default. Use one mode at most.', '--pr with a number reads that pull request through gh, so you can run it without CI.'],
     options: [
       { name: '--staged', text: 'the next commit, as the git hook runs it' },
       { name: '--history', text: 'the privacy check over every commit; run it before going public' },
-      { name: '--pr', text: 'in CI: the title, tier, sections, issue and change file of the pull request' },
+      { name: '--pr', text: 'the title, tier, sections, issue and change file of the pull request: in CI, or by its number' },
       { name: '--issue', text: 'in CI: the issue title, `area: summary` in 60 characters at most' },
       { name: '--json', text: 'the findings as JSON on stdout' },
     ],
+    argument: 'number',
     example: 'yokoten check --staged',
   },
   {

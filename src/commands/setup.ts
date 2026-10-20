@@ -25,7 +25,7 @@ export function runInit(): number {
   if (!root) return 1;
   // Read first: a broken yokoten.json stops init before it writes a file.
   const { areas } = loadConfig(root);
-  const done = init(root);
+  const done = init(root, undefined, { noCi: options.flags.has('--no-ci') });
   print(done.lines);
   // The host is changed only when asked (#10): it is a remote, and other people see it.
   // Without --yes, init only reads it and says what it would do, or what it skipped.

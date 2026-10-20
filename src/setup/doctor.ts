@@ -916,6 +916,23 @@ export function upstreamNote(root: string, env: Env): Finding | null {
   return line ? finding('upstream-inbox', line, 'open an issue for each, then remove its note with `yokoten learn --upstream --done <id>`') : null;
 }
 
+/** What a project with CI off leaves unchecked (#377): said once, in full doctor, so the trade-off stays visible. */
+export const NO_CI_GAPS = 'CI is off ("notNow" names `ci`), so nothing on the server checks pull requests, issue titles or the workflows, no code scanning such as CodeQL runs, and a commit made with the hook off reaches main unchecked';
+
+/**
+ * The note for a project that keeps CI off (#377), or null when "notNow" does not name
+ * `ci`. Its fix says what to run by hand instead. From stage 5, or when full doctor read
+ * that the repo is public, it also says how to end the choice.
+ */
+export function noCiNote(notNow: Record<string, string>, stage: number | null, server: ServerRead): Finding | null {
+  if (!Object.hasOwn(notNow, 'ci')) return null;
+  const isPublic = server !== undefined && !('unread' in server) && server.isPrivate === false;
+  const end = 'remove "ci" from "notNow" in yokoten.json, then run `yokoten init` to add the workflows';
+  if (isPublic) return finding('no-ci', NO_CI_GAPS, `this repo is public now, and Actions cost no minutes on a public repo: ${end}`);
+  const byHand = 'before each merge, run `yokoten check --pr <number>` and the tests';
+  return finding('no-ci', NO_CI_GAPS, stage === null || stage >= 5 ? `${byHand}; when the repo goes public, ${end}` : byHand);
+}
+
 /** At most this many notes about unsaved work in a session; full doctor lists them all. */
 const SESSION_UNSAVED_LIMIT = 3;
 
@@ -1058,7 +1075,8 @@ export function doctor(
       const state: StepState = { id: step.key, stage: step.stage, mark };
       if (step.standard) state.standard = step.standard;
       let note = '';
-      if (mark === 'not now') note = state.reason = config.notNow[step.key];
+      // A step that needs CI waits with "notNow" `ci` (#377): its reason, then what covers it meanwhile.
+      if (mark === 'not now') note = state.reason = Object.hasOwn(config.notNow, step.key) ? config.notNow[step.key] : `${config.notNow.ci} (notNow ci); ${step.withoutCi}`;
       else if (mark === 'next' || mark === 'to do') {
         const f = stepFinding(step, root, env, server);
         findings.push(f);
@@ -1078,6 +1096,11 @@ export function doctor(
     lines.push(`  ${core.mark.padEnd(7)} core-rules${core.mark === 'ok' ? '' : `: ${stepText(core.finding)}`}`);
     if (core.mark === 'MISSING') findings.push(core.finding);
     else if (core.mark === 'note') notes.push(core.finding);
+  }
+  const noCi = noCiNote(config.notNow, where.stage, server);
+  if (noCi) {
+    lines.push(`  note    no-ci: ${stepText(noCi)}`);
+    notes.push(noCi);
   }
   // Full doctor alone keeps which lessons this clone has seen; a session writes nothing.
   const stateFile = findStateFile(root);
@@ -1135,7 +1158,7 @@ export function doctor(
     notes.push(waiting);
   }
   // The road's stage 5 shows the settings it groups (#7); here are the rest, which never fail doctor.
-  const settings = serverChecks(server ?? { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' });
+  const settings = serverChecks(server ?? { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' }, { isCiOff: Object.hasOwn(config.notNow, 'ci') });
   lines.push('server (read only; the owner sets these once per repo):');
   for (const c of settings.filter((c) => !ROAD_SERVER_IDS.includes(c.id))) {
     lines.push(`  ${c.mark.padEnd(11)} ${c.id}${c.mark === 'ok' ? '' : `: ${stepText(c.finding)}`}`);
