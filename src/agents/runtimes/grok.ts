@@ -12,8 +12,8 @@
 //   carries `subagentType`. The shell tool is `run_terminal_command`; a file edit is
 //   `write` or `search_replace` (a matcher's `Edit` and `Write` select every edit tool).
 // - Grok also runs the hooks in `.claude/settings.json` and `~/.claude/settings.json`
-//   (its Claude compatibility, on by default). yokoten's Claude Code hook sees GROK_HOOK_EVENT
-//   there and exits at once (bin/yokoten.ts), so the guard runs once per call, from these hooks.
+//   (its Claude compatibility, on by default). yokoten's Claude Code hook exits at once there
+//   when one of these hook files is in place (bin/yokoten.ts), so the guard runs once per call.
 // - A hook's default timeout is 5 seconds, and a timed-out hook lets the call run: the
 //   guard's own deadline is 5 seconds, so these hooks set a longer `timeout`.
 // - A deny is `permissionDecision: "deny"` on stdout; at exit 2 its reason, whole, is
