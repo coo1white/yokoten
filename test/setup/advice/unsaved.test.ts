@@ -7,6 +7,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -15,6 +16,7 @@ import {
   delimiter,
   dirname,
   join,
+  relative,
 } from 'node:path';
 import { test } from 'node:test';
 import { makeSandbox } from '../../repo/helpers.ts';
@@ -327,6 +329,41 @@ test('unsaved: the temp folders come from YOKOTEN_TEMP_DIRS, else the system and
   assert.ok(findTempDirs({}, 'linux').includes('/tmp'));
   assert.deepEqual(findTempDirs({}, 'win32'), [tmpdir()], 'Windows: the system temp folder alone');
   assert.ok(findTempDirs({}).includes(tmpdir()));
+});
+
+test('unsaved: a root reached through a link reads like the real one, as on macOS /var (#365)', () => {
+  // macOS: the temp folder is under /var, a link to /private/var, and git prints /private/var.
+  // A link to the sandbox here does the same on any system.
+  const clone = cleanClone();
+  const link = `${clone.base}-link`;
+  symlinkSync(clone.base, link, 'junction');
+  try {
+    const viaLink = (path: string) => join(link, relative(clone.base, path));
+    const root = viaLink(clone.repo);
+    const notes = (more: MachineReaders = {}) => unsavedNotes(readUnsaved(root, { env: clone.env, readMounts: () => null, listProcesses: () => [], tempDirs: [], ...more })!, { home: viaLink(clone.home) });
+    assert.deepEqual(notes(), [], 'negative control: a clean clone');
+    writeFileSync(join(clone.repo, 'a.txt'), 'changed\n');
+    assert.match(notes()[0].what, /^\. has 1 uncommitted file/, 'the root is ., not the full real path');
+    clone.git(clone.repo, 'checkout', '-q', '--', 'a.txt');
+    const tree = join(clone.base, 'detached');
+    clone.git(clone.repo, 'worktree', 'add', '-q', '--detach', tree, 'main');
+    clone.commit(tree, 'c.txt');
+    assert.match(notes()[0].what, /^worktree \.\.\/detached has commits on a detached HEAD/);
+    // A folder that is gone: its real parent, then its own name.
+    const lost = join(clone.base, 'lost');
+    clone.git(clone.repo, 'worktree', 'add', '-q', '-b', 'lost', lost, 'main');
+    rmSync(lost, { recursive: true, force: true });
+    assert.ok(notes().some((f) => f.what === 'git still lists 1 worktree whose folder is gone: ../lost'));
+    // The temp folder through the link, shown by the name it was handed in by.
+    const temp = viaLink(clone.base);
+    assert.ok(notes({ tempDirs: [temp] }).some((f) => f.what === `this repo is under the temp folder (${temp}), which the system may empty on restart`));
+    // A lock, and a git process working in the repo through the link: in use.
+    writeFileSync(join(clone.repo, '.git', 'index.lock'), '');
+    assert.ok(notes().some((f) => f.id === 'stale-index-lock'), 'negative control: no git process');
+    assert.ok(!notes({ listProcesses: () => [{ cwd: root }] }).some((f) => f.id === 'stale-index-lock'));
+  } finally {
+    rmSync(link, { force: true });
+  }
 });
 
 test('unsaved: with a time budget, the read stops when the time is up and says so (#365)', () => {

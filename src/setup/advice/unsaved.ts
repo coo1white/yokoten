@@ -12,7 +12,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import type { Env } from '../../rules/config.ts';
 import { type Finding, finding } from '../../rules/message.ts';
 
@@ -211,7 +211,10 @@ export function findTmpfs(dir: string, mounts: string | null): string | null {
     const [, rawPoint, type] = line.split(' ');
     if (!rawPoint || !type) continue;
     const point = unescape(rawPoint);
-    const isUnder = point === '/' || dir === point || dir.startsWith(`${point}/`);
+    // /proc/mounts lists real paths; a memory file system's point is also read through links
+    // (never a disk's: a dead network mount would hang the read).
+    const under = (folder: string) => folder === '/' || dir === folder || dir.startsWith(`${folder}/`);
+    const isUnder = under(point) || (MEMORY_FILE_SYSTEMS.includes(type) && under(realPathOf(point)));
     if (isUnder && (!best || point.length >= best.point.length)) best = { point, type };
   }
   return best && MEMORY_FILE_SYSTEMS.includes(best.type) ? best.point : null;
@@ -394,12 +397,17 @@ export function findTempDirs(env: Env, platform: string = process.platform): str
   return [...new Set([tmpdir(), ...(platform === 'win32' ? [] : ['/tmp'])])];
 }
 
-/** A folder by its real path, or as given when it can't be read. */
-function realPathOf(folder: string): string {
+/**
+ * A path with its links resolved, as git prints it. On macOS the temp folder is under /var,
+ * a link to /private/var, and git prints /private/var: compare and relativize only real
+ * paths. A path that is gone (a missing worktree) keeps its name under its nearest real parent.
+ */
+export function realPathOf(path: string): string {
   try {
-    return realpathSync(folder);
+    return realpathSync(path);
   } catch {
-    return folder;
+    const parent = dirname(path);
+    return parent === path ? path : join(realPathOf(parent), basename(path));
   }
 }
 
@@ -455,7 +463,8 @@ export function readUnsaved(root: string, { env, budget, readMounts = readProcMo
     const changedFiles = status === null ? null : parseStatus(status);
     const real = realPathOf(worktree.path);
     const tmpfs = isMissing ? null : findTmpfs(real, mounts);
-    const temp = isMissing ? undefined : temps.find((folder) => isInside(real, folder));
+    // The temp folder as it was handed in: the user knows it by that name.
+    const temp = isMissing ? undefined : tempDirs.find((_, index) => isInside(real, temps[index]));
     return {
       ...worktree,
       gitDir,
@@ -481,7 +490,7 @@ export function readUnsaved(root: string, { env, budget, readMounts = readProcMo
     branches: refs.branches,
     stashes,
     isPartial: git.isStopped(),
-    isGitRunning: hasLock ? isGitWorkingIn(folders, listProcesses()) : null,
+    isGitRunning: hasLock ? isGitWorkingIn(folders, listProcesses()?.map((p) => ({ cwd: p.cwd === null ? null : realPathOf(p.cwd) })) ?? null) : null,
   };
 }
 
@@ -489,8 +498,10 @@ export function readUnsaved(root: string, { env, budget, readMounts = readProcMo
  * A path as the user reads it: relative inside the root, from ~ inside the home, relative
  * when it is near (`../x`, `../../x`), else as it is. Never the full home path.
  */
-export function showPath(path: string, root: string, home: string | undefined): string {
+export function showPath(given: string, givenRoot: string, givenHome: string | undefined): string {
   const slashes = (text: string) => text.split(sep).join('/');
+  // git prints real paths; the root and home may be reached through a link (macOS /var).
+  const [path, root, home] = [realPathOf(given), realPathOf(givenRoot), givenHome && realPathOf(givenHome)];
   const inside = relative(root, path);
   if (inside === '') return '.';
   if (!inside.startsWith('..') && !isAbsolute(inside)) return slashes(inside);
@@ -653,7 +664,7 @@ export function unsavedNotes(facts: UnsavedFacts, { home, now = Date.now(), plat
   if (session) return notes;
   const branches = new Map(facts.branches.map((branch) => [branch.name, branch]));
   for (const worktree of facts.worktrees) {
-    if (worktree.isMain || worktree.isMissing || worktree.isLocked || worktree.path === facts.root || worktree.changedFiles?.length !== 0) continue;
+    if (worktree.isMain || worktree.isMissing || worktree.isLocked || realPathOf(worktree.path) === realPathOf(facts.root) || worktree.changedFiles?.length !== 0) continue;
     if (!worktree.branch) {
       // A detached HEAD in the default branch's history, moved since the worktree was made.
       if (worktree.isHeadInDefault && worktree.hasHeadMoved) notes.push(finding('finished-worktree', `worktree ${show(worktree.path)} (detached HEAD) is in ${defaultName}'s history`, `remove it: ${code(`git worktree remove ${show(worktree.path)}`)}`));
