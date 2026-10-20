@@ -10,10 +10,12 @@
 // - The event has camelCase fields (`toolName`, `toolInput`, `stopHookActive`) and the
 //   same in Claude Code's snake_case (`tool_name`, `tool_input`). A subagent's call
 //   carries `subagentType`. The shell tool is `run_terminal_command`; a file edit is
-//   `write` or `search_replace` (a matcher's `Edit` and `Write` select every edit tool).
+//   `write` or `search_replace`; the matcher names every edit tool Grok's docs list.
 // - Grok also runs the hooks in `.claude/settings.json` and `~/.claude/settings.json`
-//   (its Claude compatibility, on by default). yokoten's Claude Code hook exits at once there
-//   when the matching Grok hook is in place (bin/yokoten.ts), so the guard runs once per call.
+//   (its Claude compatibility, on by default), so a call may be guarded twice. That is on
+//   purpose: a Grok hook can be skipped (an untrusted folder, an empty file a repo commits,
+//   GROK_* variables set outside Grok), and a Claude hook that stepped aside for it would
+//   leave the call unguarded. Safety comes before the second node start (#407).
 // - A hook's default timeout is 5 seconds, and a timed-out hook lets the call run: the
 //   guard's own deadline is 5 seconds, so these hooks set a longer `timeout`.
 // - A deny is `permissionDecision: "deny"` on stdout; at exit 2 its reason, whole, is
@@ -34,11 +36,15 @@ const SHELL = new Set(['run_terminal_command', 'run_terminal_cmd', 'Bash']);
 // Tools that read, search or fetch: neither a command nor an edit. An MCP tool
 // (`server__tool`) is neither too.
 const READ_ONLY = new Set(['read_file', 'grep', 'list_dir', 'web_search', 'web_fetch', 'todo_write', 'spawn_subagent', 'task']);
-// Grok maps `Bash`, `Edit` and `Write` to its own tools on every route, so the matcher
-// names the Claude Code tools: the shell call and each edit tool, on both routes.
-const MATCHER = 'Bash|Edit|Write';
-// Seconds Grok waits for a hook: well past the guard's own deadline (GUARD_DEADLINE_MAX_MS).
+// The shell call and every tool that writes a file, by each name Grok's docs give them
+// (1.0.52): Claude Code's names, which Grok maps to its own tools on every route, and
+// Grok's own (`write`, `search_replace`, `write_file`). A matcher compares whole names.
+export const EDIT_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'EditNotebook', 'search_replace', 'write', 'write_file'];
+const MATCHER = ['Bash', 'run_terminal_command', ...EDIT_TOOLS].join('|');
+// Seconds Grok waits for the tool-call guard: well past its own deadline (GUARD_DEADLINE_MAX_MS).
 const TIMEOUT = 60;
+// Seconds Grok waits for the stop check: Grok's own default for Stop.
+const STOP_TIMEOUT = 600;
 
 /**
  * A PreToolUse call, as an Action: the shell call by its command, an edit by its file. A
@@ -55,7 +61,7 @@ export function readToolCall(input: unknown): Action {
   const isEdit = !isShell && name !== '' && !READ_ONLY.has(name) && !name.includes('__');
   // A shell call's own `cwd`, when it has one, is where the command runs.
   const shellCwd = isShell ? text(tool.cwd) : undefined;
-  const file = text(tool.file_path) ?? text(tool.path);
+  const file = text(tool.file_path) ?? text(tool.path) ?? text(tool.notebook_path);
   return {
     command: isShell ? text(tool.command) : undefined,
     paths: isEdit && file ? [file] : [],
@@ -104,7 +110,7 @@ const projectHooks = (root: string) => join(root, HOOKS_FILE);
 const at = (cli: string) => `"$GROK_WORKSPACE_ROOT/${cli}"`;
 const guardArgs = (root: string, cli: string) =>
   [projectHooks(root), 'PreToolUse', MATCHER, guardCommand(at(cli), 'hook --agent grok', missingProjectRuntime(cli), { isToolCall: true }), { timeout: TIMEOUT }] as const;
-const stopArgs = (root: string, cli: string) => [projectHooks(root), 'Stop', undefined, guardCommand(at(cli), 'hook --stop --agent grok', missingProjectRuntime(cli)), { timeout: TIMEOUT }] as const;
+const stopArgs = (root: string, cli: string) => [projectHooks(root), 'Stop', undefined, guardCommand(at(cli), 'hook --stop --agent grok', missingProjectRuntime(cli)), { timeout: STOP_TIMEOUT }] as const;
 
 /**
  * Write the tool-call guard and the stop check into `.grok/hooks/yokoten.json`, keeping
@@ -150,11 +156,21 @@ export const hasUserDir = (env: Env): boolean => isFolder(homeDir(env));
 // it in the real run: one `[folders."<folder>"]` table per folder, with `trusted = true` or
 // `false`. `grok --trust` at a repo's root saved the root, with no trailing slash. Trust
 // covers the folders inside the same repo, not a repo nested in it: so doctor compares
-// whole keys, exactly. GROK_FOLDER_TRUST=0 (or false) turns the gate off, and then every
-// folder counts as trusted.
+// whole keys, exactly. GROK_FOLDER_TRUST=0 (or false), or `[folder_trust] enabled = false`
+// in Grok's config.toml, turns the gate off, and then every folder counts as trusted.
 
 /** The one step that makes Grok run the project's hooks. yokoten never trusts a folder for the user. */
 export const TRUST_STEP = 'run `grok` in this folder and type `/hooks-trust`';
+
+/** Whether `[folder_trust] enabled = false` in Grok's config.toml turns its trust gate off. Read-only. */
+function isTrustGateOff(home: string): boolean {
+  try {
+    const [tables] = readTomlTables(readFileSync(join(home, 'config.toml'), 'utf8'), [[]]);
+    return tables.get('folder_trust')?.enabled === false;
+  } catch {
+    return false;
+  }
+}
 
 /** Whether Grok trusts the project at `root`, from its trust store. Read-only. */
 export function readTrust(root: string, env: Env): FolderTrust {
@@ -162,7 +178,7 @@ export function readTrust(root: string, env: Env): FolderTrust {
   const home = homeDir(env);
   const file = join(home, 'trusted_folders.toml');
   if (!isFolder(home)) return { state: 'no home', store };
-  if (env.GROK_FOLDER_TRUST === '0' || env.GROK_FOLDER_TRUST?.toLowerCase() === 'false') return { state: 'trusted', store };
+  if (env.GROK_FOLDER_TRUST === '0' || env.GROK_FOLDER_TRUST?.toLowerCase() === 'false' || isTrustGateOff(home)) return { state: 'trusted', store };
   if (!existsSync(file)) return { state: 'no store', store };
   let folders: Map<string, Record<string, unknown>>;
   try {
