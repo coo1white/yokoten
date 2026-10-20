@@ -353,8 +353,9 @@ change to a lead-only file, the lead starts the worker with
 `YOKOTEN_LEAD_ONLY_OK=AGENTS.md,.github/workflows/ci.yml`: paths from the repo root,
 comma-separated, an entry with `*` read as a glob. The guard and the commit check let
 those paths through. A subagent shares the lead's environment, so give such a task to a
-separate session. At session start, `doctor` tells a worker "this session is a worker:
-lead-only files are guarded". If a worker does not hear it, the guard does not see its role.
+separate session. At session start, `doctor` tells a session with `YOKOTEN_ROLE=worker`
+"this session is a worker: lead-only files are guarded". A separate worker session that
+does not hear it has no role set. A subagent starts no session, so it hears nothing.
 
 ### DeepSeek Harness
 

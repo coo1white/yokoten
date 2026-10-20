@@ -322,8 +322,9 @@ worker 的 `git commit` 如果会提交这类文件，也会被拦。原因是�
 里才拦。如果任务本来就要改这类文件，lead 启动 worker 时加上
 `YOKOTEN_LEAD_ONLY_OK=AGENTS.md,.github/workflows/ci.yml`：从仓库根目录写起的路径，用逗号
 隔开，带 `*` 的按通配符算。守卫和提交检查都会放行这些路径。子 agent 跟 lead 用同一套环境
-变量，所以这种任务要交给单独开的会话。会话开始时，`doctor` 会对 worker 说 "this session is a
-worker: lead-only files are guarded"。worker 没看到这句话，就说明守卫没认出它是 worker。
+变量，所以这种任务要交给单独开的会话。会话开始时，带 `YOKOTEN_ROLE=worker` 的会话会听到
+`doctor` 说 "this session is a worker: lead-only files are guarded"。单独开的 worker 会话没看到这句话，就是没设这个变量。子 agent
+不会开新会话，所以听不到这句话。
 
 ### DeepSeek Harness
 

@@ -41,10 +41,6 @@ test('doctor --session: a worker hears that lead-only files are guarded; the lea
   const line = 'yokoten: this session is a worker: lead-only files are guarded.';
   const has = (result: { stdout: string }) => result.stdout.split('\n').includes(line);
   assert.ok(has(sandbox.run(['doctor', '--session'], { extra: { YOKOTEN_ROLE: 'worker' } })), 'YOKOTEN_ROLE=worker');
-  assert.ok(has(sandbox.run(['doctor', '--session'], { input: JSON.stringify({ hook_event_name: 'SessionStart', agent_type: 'yokoten:worker' }) })), 'the plugin agent type');
-  assert.ok(has(sandbox.run(['doctor', '--session', '--agent', 'codex'], { input: JSON.stringify({ agent_type: 'worker' }) })), "Codex's agent type");
-  assert.ok(!has(sandbox.run(['doctor', '--session'])), 'the lead, no input');
-  assert.ok(!has(sandbox.run(['doctor', '--session'], { input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup' }) })), 'the lead');
-  assert.ok(!has(sandbox.run(['doctor', '--session'], { input: 'not json' })), 'input that is not a hook call');
+  assert.ok(!has(sandbox.run(['doctor', '--session'])), 'the lead');
   assert.ok(!has(sandbox.run(['doctor'], { extra: { YOKOTEN_ROLE: 'worker' } })), 'only at session start');
 });
