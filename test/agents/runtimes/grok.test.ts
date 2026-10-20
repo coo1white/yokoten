@@ -234,7 +234,7 @@ function trustFolder(home: string, folders: Record<string, boolean>): string {
 test('grok project hooks: init writes the guard and the stop check, keeps other hooks, says how to trust, and doctor notes them', () => {
   const sandbox = makeSandbox();
   const file = join(sandbox.repo, '.grok', 'hooks', 'yokoten.json');
-  const cli = '.yokoten/bin/yokoten.ts';
+  const cli = '.yokoten/bin/yokoten.mjs'; // The agent hooks run yokoten.mjs (#408).
   assert.match(sandbox.run(['doctor']).stdout, /note +grok-hook: no tool-call guard or stop check in \.grok\/hooks\/yokoten\.json/, 'reported, not counted as missing');
   sandbox.write('.grok/hooks/yokoten.json', JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: './lint.sh' }] }] } }));
   const result = sandbox.run(['init']);
@@ -247,8 +247,8 @@ test('grok project hooks: init writes the guard and the stop check, keeps other 
   const guard = written.hooks.PreToolUse[1];
   assert.equal(guard.matcher, 'Bash|run_terminal_command|Edit|Write|MultiEdit|NotebookEdit|EditNotebook|search_replace|write|write_file', 'the shell and every edit tool Grok names');
   assert.equal(guard.hooks[0].timeout, 60, "Grok's 5-second default would let a slow guard's call through");
-  assert.match(guard.hooks[0].command, /node --max-old-space-size=256 "\$GROK_WORKSPACE_ROOT\/\.yokoten\/bin\/yokoten\.ts" hook --agent grok 2>&1/);
-  assert.match(written.hooks.Stop[0].hooks[0].command, /"\$GROK_WORKSPACE_ROOT\/\.yokoten\/bin\/yokoten\.ts" hook --stop --agent grok$/);
+  assert.match(guard.hooks[0].command, /node --max-old-space-size=256 "\$GROK_WORKSPACE_ROOT\/\.yokoten\/bin\/yokoten\.mjs" hook --agent grok 2>&1/);
+  assert.match(written.hooks.Stop[0].hooks[0].command, /"\$GROK_WORKSPACE_ROOT\/\.yokoten\/bin\/yokoten\.mjs" hook --stop --agent grok$/);
   assert.equal(written.hooks.Stop[0].hooks[0].timeout, 600, "Grok's own default for Stop");
   assert.deepEqual(projectHooksState(sandbox.repo, cli), { guard: 'same', stop: 'same' });
   // Grok looks unused here: no trust line.
