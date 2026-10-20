@@ -163,6 +163,14 @@ test('output: a home path cut short at the end of a line is hidden (#404)', () =
   // Fewer than 4 characters of the name, or a cut path inside a line, stays.
   assert.equal(hideHome('see /home/jon\nat /home/jona and on', {}, options), 'see /home/jon\nat /home/jona and on');
   assert.equal(hideHome('/home/jonas', {}, options), '/home/jonas', 'a longer name is another folder');
+  // A cut that ends in an ellipsis or spaces is cut too.
+  assert.equal(hideHome('a /home/jona…\nb /home/jonat...\nc /home/jonath  \nd /home/jon...', {}, options), 'a ~…\nb ~...\nc ~  \nd /home/jon...');
+});
+
+test('output: a home written in a URL, with %2F or %5C for its slashes, is hidden (#404)', () => {
+  const options = { systemHome: '/home/jdoe' };
+  assert.equal(hideHome('a %2Fhome%2Fjdoe%2Fx b %2fhome%2fjdoe', {}, options), 'a ~%2Fx b ~');
+  assert.equal(hideHome('%2Fhome%2Fjdoex and x%2Fhome%2Fjdoe%2F', {}, options), '%2Fhome%2Fjdoex and x%2Fhome%2Fjdoe%2F', 'another folder stays');
 });
 
 // ---- Hiding the owner in command output (#390) ----
@@ -190,6 +198,15 @@ test('makeRedactor: the home goes before the names, so /home/<name>/x becomes ~/
   assert.equal(redact('at /home/jdoe/x\n'), 'at ~/x\n');
   assert.equal(redact('/mnt/c/Users/jdoe/x, C:\\Users\\jdoe\\x, "C:\\\\Users\\\\jdoe", jdoe'), '/mnt/c/Users/<owner>/x, C:\\Users\\<owner>\\x, "C:\\\\Users\\\\<owner>", <owner>');
   assert.equal(redact('jdoes and xjdoe stay'), 'jdoes and xjdoe stay', 'a longer word that holds the name is kept');
+  assert.equal(redact('\\\\wsl$\\Ubuntu\\home\\jdoe\\x and /Users/jdoe/y'), '\\\\wsl$\\Ubuntu\\home\\<owner>\\x and /Users/<owner>/y');
+});
+
+test('makeRedactor: a name next to a URL-encoded slash, backslash or space is hidden (#404)', () => {
+  const redact = makeRedactor({ owners: ['jdoe', 'JaneD'] }, {});
+  assert.equal(redact('C:%5CUsers%5CJaneD%5Cx and c:%5cusers%5cjaned'), 'C:%5CUsers%5C<owner>%5Cx and c:%5cusers%5c<owner>');
+  assert.equal(redact('%2Fsrv%2Fjdoe%2Fx, %20jdoe%20'), '%2Fsrv%2F<owner>%2Fx, %20<owner>%20');
+  assert.equal(redact('vscode-remote://wsl%2Bubuntu/home/jdoe/x and vscode-remote://wsl%2Bubuntu%2Fhome%2Fjdoe%2Fx'), 'vscode-remote://wsl%2Bubuntu/home/<owner>/x and vscode-remote://wsl%2Bubuntu%2Fhome%2F<owner>%2Fx');
+  assert.equal(redact('%2Fjdoes and %2Fxjdoe stay'), '%2Fjdoes and %2Fxjdoe stay');
 });
 
 test('privateRemoteHosts: hosts outside the public forges; local paths name none', () => {

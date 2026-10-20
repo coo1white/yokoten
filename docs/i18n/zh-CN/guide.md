@@ -256,7 +256,7 @@ worktree 放在这里，只有里面有会丢的东西时才提，而且就写�
 
 ## 支持哪些 agent
 
-yokoten 能管住七种 AI 编程 agent，它们守的是同一套规矩。下表里写“是”的，都真跑过：在一个
+yokoten 能管住八种 AI 编程 agent，它们守的是同一套规矩。下表里写“是”的，都真跑过：在一个
 用完就删的仓库里让 agent 执行 `git push --tags`，守卫把它拦了下来。光看文档不算数。
 
 | Agent | 钩子写在哪（`init` 负责写） | 怎么拦 | 真跑过吗 | 要注意 |
@@ -267,12 +267,14 @@ yokoten 能管住七种 AI 编程 agent，它们守的是同一套规矩。下�
 | Codex CLI | `.codex/hooks.json`：PreToolUse 和 Stop | 退出码 2，理由写在 stderr | 是，2026-10-19：Codex 0.163.0，`codex exec`，模型用 DeepSeek 的 `deepseek-flash` | 要先信任这个文件夹，再在 `/hooks` 里信任这两个钩子，才会跑。没信任的钩子，`codex exec` 一声不吭地跳过 |
 | Muse Code | `.muse/hooks.json`：PreToolUse 和 Stop | 退出码 2，理由写在 stderr | 是，2026-10-19：Muse Code 1.4.10，`muse exec --trust-workspace`，模型 `muse-spark-1.3-contributor` | 要先信任这个文件夹，才跑钩子：在这里运行 `muse`，选 "Trust and continue"。Muse 不把 `YOKOTEN_ROLE` 传给钩子，所以在 Muse 里每个会话都当成 lead。也没见过它传 `YOKOTEN_RELEASE_APPROVAL`，所以发版要到 Muse 外面去。钩子出错或超时的话，这次调用会放行 |
 | DeepSeek Harness（`dsh`） | `.dsh/hooks.json`：PreToolUse；再用 `.dsh/yokoten.patch.yml` 让 dsh 加载它 | 退出码 2，理由写在 stderr | 是，2026-10-20：dsh 0.2.1-rc.2，`dsh headless --patch .dsh/yokoten.patch.yml`，DeepSeek 的默认模型 | 钩子要靠一个桥接插件才会跑，每个 profile 都得自己装，见 [DeepSeek Harness](#deepseek-harness)。没装插件或启动时没带 patch，dsh 一个钩子都不跑，也不提醒。Windows 上还管不住（#332）。还没有收尾检查 |
+| Grok CLI（`grok`） | `.grok/hooks/yokoten.json`：PreToolUse 和 Stop | 在 stdout 输出 `permissionDecision: "deny"`，退出码 2 | 是，2026-10-20：Grok CLI 1.0.52，`grok -p --trust --always-approve`，默认模型 | 要先信任这个文件夹，才跑项目钩子：在这里运行 `grok`，输入 `/hooks-trust`。没信任就一声不吭地跳过。它也会跑 `.claude/settings.json` 里的钩子，所以一次调用可能查两遍，这是有意的 |
 | Gemini CLI | `.gemini/settings.json`：BeforeTool 和 AfterAgent | 退出码 2，理由写在 stderr | 没有完整跑过：个人 Google 账号 2026-06-18 起不能再登录，要付费 API key 或企业授权 | 谷歌给个人用户的 agent 现在是 Antigravity CLI |
 | 其他 agent | 无 | `AGENTS.md` 里的规则；还有提交检查，不管是谁提交的，坏提交都会被拦下 | | |
 
 用户级的钩子由 `install` 写：会话开头的带路提示，加上命令守卫。它们写进
 `~/.claude/settings.json`；有 `~/.codex`、`~/.gemini` 文件夹的话，也写进
-`~/.codex/hooks.json` 和 `~/.gemini/settings.json`。在 Codex 里，`apply_patch` 要改哪些
+`~/.codex/hooks.json` 和 `~/.gemini/settings.json`。有 `~/.grok` 的话，Grok CLI 只装命令守卫，写进
+`~/.grok/hooks/yokoten.json`：会话开头钩子的输出，Grok 只给你看，不给 agent 看。Grok 的信任检查关掉时（设了 `GROK_FOLDER_TRUST=0`，或者 `~/.grok/config.toml` 里写了 `[folder_trust] enabled = false`），`doctor` 把每个文件夹都当成已信任。在 Codex 里，`apply_patch` 要改哪些
 文件，守卫都会查，在 shell 里跑的也查。
 
 每个工具都要你先信任，项目钩子才会跑：
@@ -290,6 +292,11 @@ yokoten 能管住七种 AI 编程 agent，它们守的是同一套规矩。下�
 - **Muse Code**：工作区要先设成信任，才会跑 `.muse/hooks.json`；没信任就一声不吭地跳过。
   用 `muse exec` 时，加 `--trust-workspace` 就是这一次信任当前文件夹。项目里
   `.agents/skills` 下的技能，也要信任以后才读。
+- **Grok CLI**：文件夹要先设成信任，才跑 `.grok/hooks/`；没信任就一声不吭地跳过。在这里的会话里
+  输入 `/hooks-trust`，或者用 `grok --trust` 启动一次。yokoten 从不替你信任文件夹。信任以后，
+  Grok 也会跑 `.claude/settings.json` 里的钩子，所以一次调用可能查两遍。这是有意的：
+  Grok 自己的钩子可能被跳过，比如文件夹没信任，或者仓库提交了一个空的钩子文件。这时
+  Claude Code 的钩子照样守着。多查一遍大约多花 0.1 秒。
 - **Gemini CLI**：文件夹要先设成信任，项目钩子才会跑。要在仓库根目录启动 Gemini：它只读
   启动时所在文件夹里的 `.gemini/settings.json`。新加或改过的钩子，第一次跑之前它会提醒你一次。
 
@@ -301,8 +308,9 @@ yokoten 能管住七种 AI 编程 agent，它们守的是同一套规矩。下�
 | Copilot CLI | `~/.copilot/config.json` 里的 `trustedFolders`（设了 `$COPILOT_HOME` 就在那里） | 这个文件夹本身，或者它的上级文件夹 |
 | Codex | `~/.codex/config.toml`（设了 `$CODEX_HOME` 就在那里）里的 `[projects]` 和 `[hooks.state]` | 仓库文件夹本身，一个字都不能差；每个钩子也要按现在的内容信任过 |
 | Muse Code | `~/.config/muse/trust.json`（设了 `$XDG_CONFIG_HOME` 就是 `$XDG_CONFIG_HOME/muse/trust.json`） | 仓库文件夹本身，一个字都不能差 |
+| Grok CLI | `~/.grok/trusted_folders.toml`（设了 `$GROK_HOME` 就在那里）里的 `[folders."<文件夹>"]`，`trusted = true` | 仓库文件夹本身，一个字都不能差 |
 
-只有这个工具的主目录在（`~/.copilot`、`~/.codex`、`~/.config/muse`），`doctor` 才查它。
+只有这个工具的主目录在（`~/.copilot`、`~/.codex`、`~/.config/muse`、`~/.grok`），`doctor` 才查它。
 主目录在、文件却没有或读不了时，`doctor` 会说 "can't check"（查不了），不会说 ok。
 
 worker 靠 `YOKOTEN_ROLE=worker` 认出来。在 Codex 里，子 agent 的 `agent_type` 带 worker
@@ -310,7 +318,8 @@ worker 靠 `YOKOTEN_ROLE=worker` 认出来。在 Codex 里，子 agent 的 `agen
 `YOKOTEN_ROLE`。Gemini CLI 开了严格的环境变量清理后，钩子里拿不到 `YOKOTEN_ROLE`。
 这时 yokoten 在 Gemini CLI 里分不出谁是 worker：每个会话都当成 lead，只有 lead 能改的
 文件，worker 改了也拦不住。Muse Code 跑钩子时只留下几个环境变量，`YOKOTEN_ROLE` 不在其中，
-所以在 Muse Code 里也一样：每个会话都当成 lead。服务器上的锁照样有效：代码负责人，还有一个
+所以在 Muse Code 里也一样：每个会话都当成 lead。Grok CLI 会把 `YOKOTEN_ROLE` 传给钩子；子 agent 的
+`subagentType` 带 worker 字样的，也算 worker。服务器上的锁照样有效：代码负责人，还有一个
 改不了 CI 的 bot。
 
 ### DeepSeek Harness
@@ -569,8 +578,9 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 
 另外还在 `.github/` 里放三个文件，默认设置就是安全的：
 
-- `dependabot.yml`：自动更新 CI 用到的 action。一个月只开一个 PR，所有更新都在里面；
-  新版本发布满一周才会用。文件里的注释写了怎么用同样的方式加上你自己的包（npm、pip、Go 等）。
+- `dependabot.yml`：自动更新 CI 用到的 action，还有 `init` 在项目里找到的包（npm、cargo、pip、
+  Go 等，看根目录和下一层文件夹）。每种一个月只开一个 PR；新版本发布满一周才会用。
+  已经有这个文件的话，`init` 不动它，只告诉你哪些包它还没管。
 - `SECURITY.md`：告诉别人发现漏洞要私下报告，不要发公开 issue。要让私下报告能用，得在仓库
   设置里打开 private vulnerability reporting（私下报告漏洞）。`doctor` 会把它和其他安全开关
   一起列出来。
@@ -600,8 +610,8 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 | `learn --ship <id>` | 在 yokoten 里用：把审过的教训搬进 `kit/lessons/` 下的一个分组，以后用这份 yokoten 跑 `doctor`，每个项目都会查它。还有 `TODO(reviewer)` 没填，或者它的测试没过，就不让搬 |
 | `learn --upstream "<发生了什么>" [--area <name>] [--fix <idea>]` | 记下 yokoten 自己的一个毛病，项目和你本人的信息都先藏掉。`--list` 列出这些记录，`--done <id>` 删掉一条。见下面的「问题出在 yokoten 自己身上」 |
 | `check --history` | 对所有分支的每一个提交做隐私检查。私有仓库公开之前跑一遍。浅克隆看不到旧的提交，所以它不扫描、直接报错；在 CI 里要拉下全部历史（`fetch-depth: 0`）。文件里查到问题时，写的是加进这个文件的那次提交，和那次提交里的路径：`文件 @ <提交>`。`git replace` 藏不住提交，它照样读原来的提交；有 grafts 文件时同样不扫描、直接报错。 |
-| `hook [--agent <name>] [--commands-only] [--json]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool，加 `--agent antigravity` 读 Antigravity CLI 的 PreToolUse，加 `--agent muse` 读 Muse Code 的 PreToolUse，加 `--agent deepseek-harness` 读 DeepSeek Harness 的 PreToolUse |
-| `hook --stop [--agent <name>]` | 收尾检查。从标准输入读这一轮结束的事件，检查改过的文件：默认读 Claude Code 的 Stop；加 `--agent codex` 读 Codex 的 Stop，加 `--agent gemini` 读 Gemini CLI 的 AfterAgent。见[收尾检查](#收尾检查) |
+| `hook [--agent <name>] [--commands-only] [--json]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool，加 `--agent antigravity` 读 Antigravity CLI 的 PreToolUse，加 `--agent muse` 读 Muse Code 的 PreToolUse，加 `--agent deepseek-harness` 读 DeepSeek Harness 的 PreToolUse，加 `--agent grok` 读 Grok CLI 的 PreToolUse |
+| `hook --stop [--agent <name>]` | 收尾检查。从标准输入读这一轮结束的事件，检查改过的文件：默认读 Claude Code 的 Stop；加 `--agent codex` 读 Codex 的 Stop，加 `--agent gemini` 读 Gemini CLI 的 AfterAgent，加 `--agent grok` 读 Grok CLI 的 Stop。见[收尾检查](#收尾检查) |
 | `explain [<id>] [--json]` | 讲一条规则或者路上的一步：它是什么、为什么要有、yokoten 怎么检查 |
 | `uninstall` | 撤掉 `install` 装的东西：带 yokoten 管理标记的技能和 agent、`~/.claude/settings.json` 里它加的两个 hook，还有 `~/.local/share/yokoten`。你自己的文件、别的设置和 `~/.config/yokoten`（密钥、私有词表）都留着。再跑一次什么也不会变 |
 | `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。如果命令是 `gh issue` 或 `gh pr` 的 `create`、`edit`，并且带了标题，它会先按 CI 的规则检查标题；标题不合格就直接拒绝，什么都不会发出去。用 `gh api` 改 issue 或 PR 时，标题也照样检查。`gh pr create` 和 `gh pr edit` 如果带了 `--body` 或 `--body-file`，正文也会先过一遍：规则和 `check --pr` 里检查正文的那部分一样，看的是这个 PR 的分支改了哪些文件，以及基础分支上的 CODEOWNERS。正文不合格同样直接拒绝，什么都不发出去。它只运行 `gh` 和 `git`，所以 `env gh …`、`sh -c …` 这类写法会被拒绝；gh 的别名（alias）它不认，别名里的标题不会被检查。设置方法见 [server.md](../../server.md#3-the-bot-a-github-app) |
@@ -852,20 +862,21 @@ CI。暂存的变更文件里有太长的句子，它也会提醒。还没加进
 commit 或同一个 PR 里。
 
 `check` 会读每个 Markdown 和 HTML 文件的第 1 行，然后看当前分支的提交（只沿第一个父提交
-往回找）：最后一次改译文的提交，和最后一次改英文的提交是同一个，或者更晚，译文就算最新。
-译文改了哪一行都算。
+往回找，找到加进译文的那次提交为止）。有一个提交改了英文、没改译文，译文就落后一个 commit。
+只有后面一个只改译文的提交，才算跟上。英文和译文一起改的提交没问题，但它盖不住前面只改英文
+的提交。所以一个 PR 只改了英文，另一个 PR 两个都改了，不管谁先合，前一个都会被提醒。译文改了
+哪一行都算。
 
 为什么不在这一行记下英文的版本？那样的话，每个改英文的 PR 都得改这一行，两个这样的 PR
 一定会在这一行上冲突。这一行不变，几个 PR 同时改，也只会各改各翻的那几段。
 
-代价是：只改译文的提交也算数。在译文里改个错字，可能就把一处没人翻的英文改动盖过去了。所以
-改错字之前先跑一下 `check`，如果它说译文落后，先把译文补上。
+代价有两个。一是只改译文的提交，算作跟上了它前面所有的英文改动。在译文里改个错字，可能就把
+一处没人翻的英文改动盖过去了。所以改错字之前先跑一下 `check`，如果它说译文落后，先把译文
+补上。二是用 squash 合并时，只改英文的 PR 会一直被提醒，直到有一个只改译文的提交。就算后面
+的 PR 改自己那部分时顺手把它也翻了，提醒也还在。想消掉提醒，就单开一个只改译文的 PR。
 
-还有一个已知的漏洞：一个 PR 只改了英文，先合进去；另一个 PR 英文和译文都改了，后合进去。
-这时 `check` 发现不了。后合的那个是两个文件最后一次的提交，译文看起来是最新的，可前一个 PR
-的英文改动其实没人翻。审只改英文的 PR 时，记得让对方把译文也补上。
-
-工作区里还没提交的改动也这样算：译文改了，就当作更晚的改动；只改了英文、没改译文，译文算落后。
+工作区里还没提交的改动也这样算：只改了译文，就当作更晚的改动；只改了英文，译文算落后；两个
+都改了，就和一个两个都改的提交一样。
 
 译文落后时，`check` 给一条 `translation-behind` 提醒：落后了几个 commit，怎么看英文改了
 什么（`git diff <commit> HEAD -- docs/guide.md`）。提醒不会让 CI 失败。想让它失败，就在
@@ -875,9 +886,10 @@ commit 或同一个 PR 里。
 `<!-- source: docs/guide.md blob 3b18e512dba79e4c8300dd08aeb37f8e728b8dad -->`。
 `check` 照样认。blob 和英文对得上，就算最新；对不上，就按上面的提交来判断。blob 随时可以删掉。
 
-浅克隆里没有 `check` 要比的那些提交。这时 `check` 整次运行只给一条提醒，说译文没检查，
-不会每个文件都报一条。就算设了 `"fail": true`，这条提醒也不会让 CI 失败。CI 里 checkout
-时设 `fetch-depth: 0`，kit 里的 `yokoten.yml` 已经设好了。
+浅克隆里只有最近的几个提交。这些提交够用时，`check` 照常判断；看到的只改英文的提交，就报
+「至少」落后几个 commit。不够用时，`check` 整次运行只给一条提醒，说有几份译文没检查，
+不会每个文件都报一条。就算设了 `"fail": true`，这条提醒也不会让 CI 失败。`check` 从不
+fetch。CI 里 checkout 时设 `fetch-depth: 0`，kit 里的 `yokoten.yml` 已经设好了。
 
 ### 更新规则
 
