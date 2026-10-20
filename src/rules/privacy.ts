@@ -76,6 +76,8 @@ export function scanText(text: string, { file, marks = [], allow = [] }: { file:
   const problems: Finding[] = [];
   const lines = text.split('\n');
   const secrets = findSecrets(lines, allow);
+  // Whole words, as `redact` matches them (#390): a mark `ann` does not flag `annotate`.
+  const markPatterns = marks.map((mark) => new RegExp(valuePattern(mark), 'iu'));
   lines.forEach((line, i) => {
     const where = { file, line: i + 1 };
     // The secret itself is never printed either, only its kind.
@@ -90,10 +92,9 @@ export function scanText(text: string, { file, marks = [], allow = [] }: { file:
       if (octets.some((n) => n > 255) || OK_IP.some((re) => re.test(hit)) || allow.includes(hit)) continue;
       problems.push(finding('ip', 'an IP address', 'use a placeholder from 192.0.2.0/24', where));
     }
-    const lower = line.toLowerCase();
-    for (const mark of marks) {
+    for (const pattern of markPatterns) {
       // The mark itself is never printed: the output may land in a CI log or a chat.
-      if (lower.includes(mark)) problems.push(finding('private-mark', 'matches a line of your private-marks file', 'remove it or reword the line; the mark itself is never printed', where));
+      if (pattern.test(line)) problems.push(finding('private-mark', 'matches a line of your private-marks file', 'remove it or reword the line; the mark itself is never printed', where));
     }
   });
   return problems;

@@ -7,7 +7,7 @@ import { formatFinding } from '../rules/message.ts';
 import { hideHome } from '../rules/privacy.ts';
 import { draft, facts, table } from '../setup/advice/adopt.ts';
 import { explain, explainLines, ids } from '../setup/advice/explain.ts';
-import { doctor } from '../setup/doctor.ts';
+import { doctor, OUTPUT_STOP, UNFILTERED } from '../setup/doctor.ts';
 import { READERS } from './hook.ts';
 import { env, noRootFinding, parse, print, printJson, requireRoot, rootOf, say, usage } from './shared.ts';
 
@@ -27,6 +27,8 @@ export function runDoctor(): number {
     else print([...lines, `yokoten doctor: ${formatFinding(missing)}`], process.stderr);
     return 1;
   }
+  // An agent that can't filter command output hears it at session start, with the opt-in (#390).
+  if (root && session && agent !== 'claude-code' && config.privacy.output !== 'stop') lines.push(`yokoten: ${UNFILTERED}. ${OUTPUT_STOP[0].toUpperCase()}${OUTPUT_STOP.slice(1)}.`);
   if (options.flags.has('--json')) printJson(report);
   // Gemini CLI reads a SessionStart hook's context from JSON only (#211).
   else if (session && agent === 'gemini') {

@@ -751,7 +751,7 @@ missing key, a key set to `null`, or a missing file gives the default.
 | `layout` | `{ "maxEntries": 7, "exempt": ["docs/records"] }`: a whole number above 0, and a list of folders | 7, no folder exempt |
 | `tests` | a list of globs | `*.test.*`, `*.spec.*`, `*_test.go`, `test/**`, `tests/**` |
 | `leadOnly` | a list of globs | the rules, agent config, hooks and CI |
-| `privacy` | `{ "allow": [], "skip": [], "utc": true }`: two lists of text, and true or false | lockfiles skipped, UTC on |
+| `privacy` | `{ "allow": [], "skip": [], "utc": true, "output": "run" }`: two lists of text, true or false, and `"run"` or `"stop"` | lockfiles skipped, UTC on, output run |
 | `notNow` | reasons by step name: `{ "ci": "no remote yet" }` | none |
 | `allowBuild` | a list of globs | none |
 | `areas` | a list of words | any lowercase word |
@@ -1004,6 +1004,7 @@ A list you set replaces the default list; it does not add to it.
 | `privacy.allow` | none | Exact strings the privacy check lets through, such as a public support address |
 | `privacy.skip` | lock files | Files the privacy check does not read |
 | `privacy.utc` | `true` | Commit times must be in UTC |
+| `privacy.output` | `"run"` | In an agent other than Claude Code, a command that prints account details runs as it is. `"stop"` stops it and shows the filtered command |
 | `notNow` | none | Steps not taken up yet, by `doctor`'s name, each with a reason: `{ "ci": "no remote yet" }` |
 | `allowBuild` | none | Build output and binaries the commit check lets through |
 | `areas` | any | The areas a title may name. See [Issue titles](#issue-titles) |
@@ -1151,7 +1152,9 @@ Rule 11 has a check. It scans for personal email addresses and IP addresses, in 
 on every commit. On your own machine it also reads `~/.config/yokoten/private-marks`:
 your name, your city, your domains, your server names. That file stays outside the
 repo, because a list of what must not be published can't itself be published. A hit
-is reported by file and line; the mark itself is never printed.
+is reported by file and line; the mark itself is never printed. A mark matches whole
+words, without case: `ann` catches "Ann wrote", not "annotate". A mark in Chinese or
+Japanese matches anywhere, since those scripts put no spaces between words.
 
 The IP check covers IPv4 only, private ranges such as `10.x` and `192.168.x` included;
 IPv6 is not checked. Localhost and the documentation ranges (`192.0.2.0/24` and its two
@@ -1181,8 +1184,13 @@ yokoten hides your details before a command runs.
   `gh auth status`, `npm whoami`, `env` and `printenv`. In Claude Code, the guard
   changes such a command to
   `set -o pipefail; ( <command> ) 2>&1 | node <yokoten> redact`. The exit code stays the
-  command's. Other agents can't change a command from a hook. There the guard stops the
-  command and shows the wrapped command to run.
+  command's. A command that only reads runs at once. A command that changes or sends
+  something (a push, a fetch, a deploy, a login) still asks you first, and shows the
+  changed command. Your permission rules still apply.
+- **Other agents run the command as it is.** Their hooks can't change a command.
+  `doctor` and the session start say so once. To stop such commands there instead, set
+  `"privacy": { "output": "stop" }` in `yokoten.json`. Then the guard stops the command
+  and shows the filtered command to run.
 - **git hides you at the source.** `install` points git's global `mailmap.file` at
   `~/.config/yokoten/mailmap`, outside every repo. Then `git log` and `git show`
   print `owner` for your emails. If you set your own `mailmap.file`, `install` keeps

@@ -217,12 +217,25 @@ export function machineChecks(env: Env): Practice[] {
   ];
 }
 
+/** What doctor says when an agent can't filter command output, and how to opt in to the stop (#390). */
+export const UNFILTERED = 'only Claude Code hides your details in command output; other agents show it as it is';
+export const OUTPUT_STOP = 'to stop those commands there instead, set "privacy": { "output": "stop" } in yokoten.json';
+
+/** Whether this machine or project is set up for an agent other than Claude Code. */
+function usesOtherAgent(env: Env, root: string | null): boolean {
+  if (codex.hasUserDir(env) || gemini.hasUserDir(env)) return true;
+  if (!root) return false;
+  const cli = cliPath(root);
+  return codex.hasProjectHook(root) || gemini.hasProjectHook(root) || antigravity.projectHookState(root, cli) === 'same' || muse.projectHooksState(root, cli).guard === 'same' || dsh.projectHooksState(root, cli).guard === 'same';
+}
+
 /**
  * What keeps the owner out of command output, as notes (#390): the git mailmap, and the
  * kinds of mark yokoten can't find on its own. Never a failure: both are a guess or a choice.
  */
-export function privacyNotes(env: Env, root: string | null): Practice[] {
+export function privacyNotes(env: Env, root: string | null, output: Config['privacy']['output'] = 'run'): Practice[] {
   const notes: Practice[] = [];
+  if (output !== 'stop' && usesOtherAgent(env, root)) notes.push(practice('private-output', 'private-output', false, UNFILTERED, OUTPUT_STOP));
   const mailmap = mailmapState(env);
   if (mailmap === 'unset') notes.push(practice('mailmap', 'mailmap', false, 'git log and git show print your name and email as they are', 'run `yokoten install`; it sets a git mailmap outside every repo'));
   if (mailmap === 'other') notes.push(practice('mailmap', 'mailmap', false, `git uses your own mailmap file, not ${MAILMAP_SETTING}`, `add the lines of ${MAILMAP_SETTING} to your file`));
@@ -699,7 +712,7 @@ export function doctor(
     if (!c.ok) findings.push(c.finding);
   }
   if (filled) lines.push(`  note    ${filled}`);
-  for (const c of privacyNotes(env, root)) {
+  for (const c of privacyNotes(env, root, config.privacy.output)) {
     lines.push(`  note    ${c.name}: ${stepText(c.finding)}`);
     notes.push(c.finding);
   }

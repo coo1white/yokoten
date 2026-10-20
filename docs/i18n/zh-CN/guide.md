@@ -692,7 +692,7 @@ AGENTS.md 里，它就只是个愿望。把这些程序写进 `yokoten.json`，�
 | `layout` | `{ "maxEntries": 7, "exempt": ["docs/records"] }`：一个大于 0 的整数，加一串文件夹 | 7，没有例外的文件夹 |
 | `tests` | 一串通配符 | `*.test.*`、`*.spec.*`、`*_test.go`、`test/**`、`tests/**` |
 | `leadOnly` | 一串通配符 | 规则、agent 配置、钩子和 CI |
-| `privacy` | `{ "allow": [], "skip": [], "utc": true }`：两串文字，加一个 true 或 false | 跳过锁文件，要求 UTC |
+| `privacy` | `{ "allow": [], "skip": [], "utc": true, "output": "run" }`：两串文字，一个 true 或 false，再加 `"run"` 或 `"stop"` | 跳过锁文件，要求 UTC，照常跑 |
 | `notNow` | 每个步骤名配一个原因：`{ "ci": "no remote yet" }` | 没有 |
 | `allowBuild` | 一串通配符 | 没有 |
 | `areas` | 一串单词 | 任何小写单词都行 |
@@ -915,6 +915,7 @@ issue，写你自己的检查。
 | `privacy.allow` | 无 | 隐私检查放行的原样字符串，比如公开的客服邮箱 |
 | `privacy.skip` | 各种 lock 文件 | 隐私检查不读的文件 |
 | `privacy.utc` | `true` | 提交时间必须用 UTC |
+| `privacy.output` | `"run"` | 在 Claude Code 以外的 agent 里，会打印账号信息的命令照常跑；设成 `"stop"` 就拦下，告诉 agent 过滤后的命令 |
 | `notNow` | 无 | 暂时不做的步骤，用 `doctor` 里的名字，每条写上原因：`{ "ci": "no remote yet" }` |
 | `allowBuild` | 无 | 提交检查放行的构建产物和二进制文件 |
 | `areas` | 不限 | 标题里能用的模块名，见 [issue 标题](#issue-标题) |
@@ -1039,7 +1040,8 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 第 11 条规则有检查守着。CI 和每次提交都会扫个人邮箱和 IP 地址。在你自己的电脑上，它还会读
 `~/.config/yokoten/private-marks`，里面是你的名字、所在城市、域名、服务器名。这个文件放在
 仓库外面，因为「不能公开的东西」这张清单本身也不能公开。查到问题时只报文件和行号，不会把
-词表里的词打印出来。
+词表里的词打印出来。英文的词按整个单词算，不分大小写：`ann` 能查出 “Ann wrote”，不会查出
+“annotate”。中文、日文的词不分词，出现在哪里都算。
 
 IP 只查 IPv4，内网地址（比如 `10.x`、`192.168.x`）也算；IPv6 不查。本机地址和专门留给文档用的
 几段地址（`192.0.2.0/24` 等三段）不算。浏览器的版本号（比如 `Chrome/120.0.0.0`）不算 IP，
@@ -1062,8 +1064,12 @@ AWS 的 access key id，还有 PEM 私钥。查到了只说是哪一种密钥，
   `--pretty` 或 `--oneline` 的 `git log`、`git show`、`git blame`；`git push`、`fetch`、
   `pull`、`clone`；`git remote -v`；`git config --list`；`wrangler`；用 `gh` 查账号和访问量；
   `gh auth status`；`npm whoami`；`env` 和 `printenv`。在 Claude Code 里，守卫会把命令改成
-  `set -o pipefail; ( <命令> ) 2>&1 | node <yokoten> redact`，退出码还是原命令的。别的 agent
-  的 hook 改不了命令，守卫就拦下它，告诉 agent 该怎么跑。
+  `set -o pipefail; ( <命令> ) 2>&1 | node <yokoten> redact`，退出码还是原命令的。只读的命令
+  直接跑；会改东西或往外发的命令（push、fetch、部署、登录）还是要先问你，让你看到改过的命令再
+  同意。你自己设的权限规则照样有效。
+- **别的 agent 照常跑命令。** 它们的 hook 改不了命令。`doctor` 和会话开头会说一次。想在那边
+  直接拦下这类命令，就在 `yokoten.json` 里设 `"privacy": { "output": "stop" }`，守卫会拦下命令，
+  告诉 agent 过滤后的命令怎么写。
 - **让 git 自己先藏。** `install` 会把 git 全局的 `mailmap.file` 指向
   `~/.config/yokoten/mailmap`，这个文件不在任何仓库里。之后 `git log` 和 `git show` 会把你的
   邮箱显示成 `owner`。你要是已经设了自己的 `mailmap.file`，`install` 不动它，只告诉你要加哪几行。

@@ -1452,8 +1452,17 @@ test('printsAccount: the commands that print account details, past launchers and
     'set -o pipefail; git push 2>&1 | yokoten redact', 'git log | node "$HOME/x/bin/yokoten.ts" redact',
   ];
   for (const command of passed) assert.equal(printsAccount(command), null, command);
-  assert.equal(printsAccount('git log -1'), '`git log` prints author names and emails');
-  assert.equal(printsAccount('git -c a=b push'), '`git push` prints the remote host, in its progress and its errors');
+  assert.deepEqual(printsAccount('git log -1'), { prints: '`git log` prints author names and emails', isReadOnly: true });
+  assert.deepEqual(printsAccount('git -c a=b push'), { prints: '`git push` prints the remote host, in its progress and its errors', isReadOnly: false });
+});
+
+test('printsAccount: reads may run at once; what changes or sends something waits for the user (#390)', () => {
+  const reads = ['git log', 'git show', 'git blame x', 'git shortlog', 'git remote -v', 'git remote get-url origin', 'git config --list', 'git config --get user.email', 'gh auth status', 'npm whoami', 'printenv', 'env', 'gh api user', 'gh api -X GET repos/o/r/traffic/views', 'wrangler whoami', 'npx wrangler whoami'];
+  for (const command of reads) assert.equal(printsAccount(command)?.isReadOnly, true, command);
+  const sends = ['git push', 'git fetch', 'git pull', 'git clone x', 'git ls-remote', 'wrangler deploy', 'wrangler login', 'npx wrangler pages deploy', 'gh api -X PATCH user -f name=x', 'gh api user -f bio=x', 'gh api --method=POST user/emails', 'git log -1 && git push'];
+  for (const command of sends) assert.equal(printsAccount(command)?.isReadOnly, false, command);
+  // Setting a git value prints nothing.
+  assert.equal(printsAccount('git config user.email x'), null);
 });
 
 test('wrapForRedact: keeps the exit code, and a comment or a heredoc still ends where it did (#390)', () => {

@@ -232,6 +232,10 @@ test('hook: Claude Code gets the command rewritten through redact, and the rewri
   assert.equal(result.status, 0, result.stderr);
   const output = JSON.parse(result.stdout).hookSpecificOutput;
   assert.equal(output.permissionDecision, 'allow');
+  // A push still asks the user, with the filtered command to approve.
+  const push = JSON.parse(call('git push origin main').stdout).hookSpecificOutput;
+  assert.equal(push.permissionDecision, 'ask');
+  assert.match(push.updatedInput.command, /^set -o pipefail; \(\ngit push origin main\n\) 2>&1 \| node ".*" redact$/);
   assert.equal(output.permissionDecisionReason, 'yokoten: `git log` prints author names and emails, so its output goes through yokoten redact');
   assert.equal(output.updatedInput.description, 'Show');
   assert.match(output.updatedInput.command, /^set -o pipefail; \(\ngit log -1\n\) 2>&1 \| node ".*yokoten\.ts" redact$/);
@@ -247,9 +251,13 @@ test('hook: Claude Code gets the command rewritten through redact, and the rewri
   assert.equal(call('git push --force').status, 2);
 });
 
-test("hook: an agent that can't rewrite is stopped, and told the command to run (#390)", () => {
+test("hook: an agent that can't rewrite runs the command, or with privacy.output stop is told the filtered one (#390)", () => {
   const sandbox = makeSandbox();
-  const result = sandbox.run(['hook', '--commands-only', '--agent', 'codex'], { input: JSON.stringify({ cwd: sandbox.repo, tool_name: 'Bash', tool_input: { command: 'git remote -v' } }) });
+  const codexCall = () => sandbox.run(['hook', '--commands-only', '--agent', 'codex'], { input: JSON.stringify({ cwd: sandbox.repo, tool_name: 'Bash', tool_input: { command: 'git remote -v' } }) });
+  // By default the command runs as it is: no refusal for every push and fetch.
+  assert.deepEqual(pick(codexCall()), [0, '', '']);
+  sandbox.write('yokoten.json', JSON.stringify({ privacy: { output: 'stop' } }));
+  const result = codexCall();
   assert.equal(result.status, 2);
   assert.equal(result.stdout, '');
   assert.match(result.stderr, /^yokoten: `git remote` prints remote URLs, and this agent can't filter it\./);

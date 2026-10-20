@@ -178,3 +178,11 @@ test('privateRemoteHosts: hosts outside the public forges; local paths name none
     ['build.private-host.dev', 'gitea.home.dev', 'code.corp.dev'],
   );
 });
+
+test('private marks: whole words, as redact matches them; Chinese and Japanese as part of a word (#390)', () => {
+  const hits = (text: string, mark: string) => scanText(text, { file: 'a', marks: [mark] }).length;
+  assert.equal(hits('Ann wrote this', 'ann'), 1);
+  assert.equal(hits('annotate the code', 'ann'), 0);
+  assert.equal(hits('see ann.md and (ann)', 'ann'), 1);
+  assert.equal(hits('住在東京都', '東京'), 1);
+});

@@ -745,5 +745,9 @@ test('privacyNotes: the mailmap, and the kinds of mark yokoten cannot find; neve
   assert.deepEqual(notes(), []);
   execFileSync('git', ['config', '--global', 'mailmap.file', '/elsewhere/mailmap'], { env: { ...process.env, ...env } });
   assert.deepEqual(notes(), ['mailmap: git uses your own mailmap file, not ~/.config/yokoten/mailmap; add the lines of ~/.config/yokoten/mailmap to your file']);
+  // Another agent on this machine: its output is not filtered, and the note says how to opt in.
+  mkdirSync(join(home, '.codex'));
+  assert.equal(notes()[0], 'private-output: only Claude Code hides your details in command output; other agents show it as it is; to stop those commands there instead, set "privacy": { "output": "stop" } in yokoten.json');
+  assert.equal(privacyNotes(env, null, 'stop').length, 1, 'with "stop", only the mailmap note is left');
   rmSync(home, { recursive: true, force: true });
 });

@@ -890,25 +890,50 @@ interface AccountPrinter {
   when?: (args: string[]) => boolean;
   /** What it prints, for the message. */
   prints: string;
+  /**
+   * True when it only reads, so the hook may run the filtered command without asking. A
+   * command that changes or sends something (a push, a deploy, a login) still waits for the
+   * user's OK: a guard never widens what runs without it.
+   */
+  isReadOnly: boolean;
 }
 
 const hasAny = (options: string[]) => (args: string[]) => args.some((arg) => options.some((option) => arg === option || arg.startsWith(`${option}=`)));
 // A log with its own format prints only what the format names.
 const GIT_FORMATS = ['--format', '--pretty', '--oneline'];
+// git config options that read a value; one that sets prints nothing.
+const CONFIG_GETS = ['--list', '-l', 'list', '--get-regexp', '--get', '--get-all', 'get'];
+// An account path in a gh API call: traffic, the user, other users.
+const isAccountPath = (args: string[]) => args.some((arg) => /(^|\/)(traffic|user|users)(\/|$)/.test(arg));
+// gh sends a GET unless a method is named or a field is given (then POST).
+const isGet = (args: string[]) => {
+  const method = args.findIndex((arg) => arg === '-X' || arg === '--method');
+  const named = method === -1 ? /^(?:-X|--method=)(.+)$/.exec(args.find((arg) => /^(?:-X.|--method=)/.test(arg)) ?? '')?.[1] : args[method + 1];
+  return (named === undefined || named.toUpperCase() === 'GET') && !hasAny(['-f', '-F', '--field', '--raw-field', '--input'])(args);
+};
 
+// The first row that matches wins, so a narrow read-only row comes before a wide one.
 export const ACCOUNT_PRINTERS: AccountPrinter[] = [
-  { program: 'git', subcommands: ['log', 'show', 'whatchanged', 'blame', 'shortlog', 'annotate'], when: (args) => !hasAny(GIT_FORMATS)(args), prints: 'author names and emails' },
-  { program: 'git', subcommands: ['push', 'fetch', 'pull', 'clone', 'ls-remote'], prints: 'the remote host, in its progress and its errors' },
-  { program: 'git', subcommands: ['remote'], when: (args) => hasAny(['-v', '--verbose', 'get-url', 'show'])(args), prints: 'remote URLs' },
-  { program: 'git', subcommands: ['config'], when: (args) => hasAny(['--list', '-l', 'list', '--get-regexp'])(args) || args.some((arg) => /^(user|remote|credential|url|sendemail)\./i.test(arg)), prints: 'your name, email and remotes' },
-  { program: 'wrangler', prints: 'the account name and email' },
-  { program: 'gh', subcommands: ['api'], when: (args) => args.some((arg) => /(^|\/)(traffic|user|users)(\/|$)/.test(arg)), prints: 'the login and account details' },
-  { program: 'gh', subcommands: ['auth'], when: (args) => args[0] === 'status', prints: 'the login' },
-  { program: 'npm', subcommands: ['whoami'], prints: 'the login' },
-  { program: 'printenv', prints: 'every environment variable' },
+  { program: 'git', subcommands: ['log', 'show', 'whatchanged', 'blame', 'shortlog', 'annotate'], when: (args) => !hasAny(GIT_FORMATS)(args), prints: 'author names and emails', isReadOnly: true },
+  { program: 'git', subcommands: ['push', 'fetch', 'pull', 'clone', 'ls-remote'], prints: 'the remote host, in its progress and its errors', isReadOnly: false },
+  { program: 'git', subcommands: ['remote'], when: (args) => hasAny(['-v', '--verbose', 'get-url', 'show'])(args), prints: 'remote URLs', isReadOnly: true },
+  { program: 'git', subcommands: ['config'], when: (args) => hasAny(['--list', '-l', 'list', '--get-regexp'])(args) || (hasAny(CONFIG_GETS)(args) && args.some((arg) => /^(user|remote|credential|url|sendemail)\./i.test(arg))), prints: 'your name, email and remotes', isReadOnly: true },
+  { program: 'wrangler', subcommands: ['whoami'], prints: 'the account name and email', isReadOnly: true },
+  { program: 'wrangler', prints: 'the account name and email', isReadOnly: false },
+  { program: 'gh', subcommands: ['api'], when: (args) => isAccountPath(args) && isGet(args), prints: 'the login and account details', isReadOnly: true },
+  { program: 'gh', subcommands: ['api'], when: isAccountPath, prints: 'the login and account details', isReadOnly: false },
+  { program: 'gh', subcommands: ['auth'], when: (args) => args[0] === 'status', prints: 'the login', isReadOnly: true },
+  { program: 'npm', subcommands: ['whoami'], prints: 'the login', isReadOnly: true },
+  { program: 'printenv', prints: 'every environment variable', isReadOnly: true },
   // `env` with no program after it prints the environment; `env X=1 cmd` runs cmd.
-  { program: 'env', prints: 'every environment variable' },
+  { program: 'env', prints: 'every environment variable', isReadOnly: true },
 ];
+
+/** What a command prints about the owner, and whether every part of it only reads. */
+export interface AccountOutput {
+  prints: string;
+  isReadOnly: boolean;
+}
 
 // Runners that start a package's program by name: `npx wrangler`, `pnpm dlx wrangler`.
 const PACKAGE_RUNNERS: Record<string, string[]> = { npx: [], bunx: [], pnpm: ['dlx', 'exec'], yarn: ['dlx', 'exec'] };
@@ -936,7 +961,7 @@ function programWithArgs(words: string[]): { name: string; args: string[] } | nu
 }
 
 /** What one command prints about the owner, from ACCOUNT_PRINTERS, or null. */
-function accountPrinted(words: string[]): string | null {
+function accountPrinted(words: string[]): AccountOutput | null {
   const found = programWithArgs(words);
   if (!found) return null;
   for (const row of ACCOUNT_PRINTERS) {
@@ -947,7 +972,7 @@ function accountPrinted(words: string[]): string | null {
       if (!row.subcommands.includes(args[at])) continue;
       args = args.slice(at + 1);
     }
-    if (!row.when || row.when(args)) return `\`${row.program}${row.subcommands ? ` ${found.args.find((arg) => row.subcommands?.includes(arg))}` : ''}\` prints ${row.prints}`;
+    if (!row.when || row.when(args)) return { prints: `\`${row.program}${row.subcommands ? ` ${found.args.find((arg) => row.subcommands?.includes(arg))}` : ''}\` prints ${row.prints}`, isReadOnly: row.isReadOnly };
   }
   return null;
 }
@@ -957,18 +982,22 @@ const REDACTED = /\byokoten(?:\.ts)?["']?\s+redact\b/;
 
 /**
  * What the command may print about the owner, or null: the first part of it that
- * ACCOUNT_PRINTERS lists. Null too when the command already pipes into `yokoten redact`,
- * or can't be read (the guard refuses that one on its own).
+ * ACCOUNT_PRINTERS lists, and read-only only when every listed part is. Null too when the
+ * command already pipes into `yokoten redact`, or can't be read (the guard refuses that
+ * one on its own).
  */
-export function printsAccount(command: string): string | null {
+export function printsAccount(command: string): AccountOutput | null {
   if (REDACTED.test(command)) return null;
   try {
     return withBudget(command.length, () => {
+      let first: AccountOutput | null = null;
       for (const words of commandWords(command)) {
         const printed = accountPrinted(words);
-        if (printed) return printed;
+        if (!printed) continue;
+        first ??= { ...printed };
+        first.isReadOnly &&= printed.isReadOnly;
       }
-      return null;
+      return first;
     }, true);
   } catch {
     return null;

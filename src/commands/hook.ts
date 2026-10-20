@@ -48,10 +48,11 @@ const RELEASE_FIXES: Record<string, string> = {
   'deepseek-harness': releaseFix(approve('dsh tui --patch .dsh/yokoten.patch.yml')),
 };
 
-// The runtimes whose hook can change a command before it runs (#390). The others get a
-// refusal whose fix is the wrapped command. Codex, Gemini CLI, Antigravity CLI, Muse Code
-// and DeepSeek Harness are not known to take a changed command from a hook.
-const REWRITES: Record<string, (input: unknown, command: string, reason: string) => string> = {
+// The runtimes whose hook can change a command before it runs (#390). In the others the
+// command runs as it is, unless yokoten.json "privacy.output" is "stop": then it is refused,
+// with the wrapped command as the fix. Codex, Gemini CLI, Antigravity CLI, Muse Code and
+// DeepSeek Harness are not known to take a changed command from a hook.
+const REWRITES: Record<string, typeof claudeCode.formatRewrite> = {
   'claude-code': claudeCode.formatRewrite,
 };
 
@@ -180,12 +181,14 @@ export function runHook(): number | Promise<number> {
     if (printed && action.command !== undefined) {
       const wrapped = wrapForRedact(action.command, redactCommand(process.argv[1] ?? 'yokoten', env.HOME));
       if (Object.hasOwn(REWRITES, agent)) {
-        if (json) printJson({ blocked: false, toolCall: true, rewritten: wrapped });
+        // A read runs at once; a push, a deploy or a login still asks the user (`ask`).
+        const decision = printed.isReadOnly ? 'allow' : 'ask';
+        if (json) printJson({ blocked: false, toolCall: true, rewritten: wrapped, decision });
         // Written as it is: hiding the home folder would change the command.
-        else process.stdout.write(REWRITES[agent](input, wrapped, `yokoten: ${printed}, so its output goes through yokoten redact`));
+        else process.stdout.write(REWRITES[agent](input, wrapped, `yokoten: ${printed.prints}, so its output goes through yokoten redact`, decision));
         return 0;
       }
-      found = privateOutput(printed, wrapped);
+      if (config.privacy.output === 'stop') found = privateOutput(printed.prints, wrapped);
     }
     if (json) printJson(found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
     if (!found) return 0;
