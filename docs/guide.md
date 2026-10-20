@@ -788,9 +788,10 @@ commits to come.
 opened or edited. It only reads: it never comments on the issue or renames it. A red run
 tells the author to fix the title.
 
-An agent's title is checked before it is sent. The tool-call guard runs the same check on
-`gh issue create|edit` and `gh pr create|edit` with a title, plain or through
-`yokoten bot`. A bad title stops the command, so CI never sees it.
+An agent's title is checked before it is sent. In a repo with a `yokoten.json`, the
+tool-call guard runs the same check on `gh issue create|edit` and `gh pr create|edit`
+with a title, plain or through `yokoten bot`. A bad title stops the command, so CI never
+sees it. The user-level hook does not check titles: another project has its own rules.
 
 Any lowercase area passes. To limit the areas, list them in `yokoten.json`:
 `"areas": ["doctor", "check", "docs"]`. Pull request titles then use the same list in
@@ -1167,16 +1168,22 @@ The same check catches secrets: GitHub, npm, Slack, Stripe, Google, OpenAI and
 Anthropic tokens, AWS access key ids, and PEM private keys. A hit names the kind of
 secret, never the secret. Deleting it is not enough, since git keeps it: rotate it.
 
-The tool-call guard runs the same check on text an agent is about to post with `gh`:
-`gh issue create|comment|edit`, `gh pr create|comment|edit|review`, `gh release
-create|edit` and `gh api`, also through `yokoten bot -- gh`. It reads `--title`,
-`--body`, `--notes` and their short forms, the files `--body-file`, `--notes-file`
-and `--input` name, and `gh api` fields (`-f body=...`, `-F body=@file`). A body
-in `$(cat <<EOF ... EOF)` is read. A body from stdin (`--body-file -`) is read by
-reading the whole command, so a heredoc fed to it counts. A hit stops the command with
-the same fix as the commit check. A public address goes in `privacy.allow`. The guard
-does not see text built when the command runs: `$(cat notes.md)`, a variable, or a
-pipe from another program.
+The tool-call guard runs the same check on text an agent is about to post with `gh`,
+plain or through `yokoten bot -- gh`:
+
+- `gh issue` `create`, `comment`, `edit` and `close`; `gh pr` `create`, `comment`,
+  `edit`, `review`, `merge` and `close`; `gh release` `create` and `edit`.
+- The text in `--title`, `--body`, `--notes`, `--subject` and a close `--comment`.
+- The files that `--body-file`, `--notes-file` and `-F` name, after any `cd`. A file the
+  guard can't find stops the command: give its full path.
+- A body from stdin: a heredoc, a `<<<` here-string, or a `< file`.
+- `gh api` fields and `--input`, on a call that writes: a POST, PATCH or PUT, or a GraphQL
+  mutation. A read, such as a search or a GraphQL query, passes.
+
+A hit stops the command with the same fix as the commit check. A public address goes in
+`privacy.allow`. The guard does not see text built when the command runs:
+`$(cat notes.md)`, a variable, or a pipe from another program. It reads files of at most
+1 MB, and lets a bigger one through.
 
 A commit also records the time it was made, with your time zone, and a time zone
 narrows down where you live. So the commit check asks for UTC: `init` sets `TZ=UTC` for

@@ -1,11 +1,13 @@
 // Tests for src/rules/pr.ts.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { DEFAULTS } from '../../src/rules/config.ts';
 import { checkCommand } from '../../src/rules/guards.ts';
+import { judge } from '../../src/run/hook.ts';
 import {
   finding,
   type Finding,
@@ -341,7 +343,7 @@ test('titles: limits count the characters a person sees, not code units (#268)',
 // would fail is never opened.
 test('guard: a gh title is checked before it is sent, plain or through the bot (#391)', () => {
   const config = { ...DEFAULTS, areas: ['check', 'doctor'] };
-  const guard = (command: string) => checkCommand(command, { env: {}, config });
+  const guard = (command: string) => checkCommand(command, { env: {}, config, titles: true });
   const unknownArea = guard('gh issue create --title "billing: add invoices" --body ok');
   const [expected] = checkIssueTitle('billing: add invoices', config);
   assert.deepEqual(unknownArea, expected, 'the same finding as the bot gives');
@@ -357,4 +359,18 @@ test('guard: a gh title is checked before it is sent, plain or through the bot (
   assert.equal(guard('yokoten bot -- gh pr create --title "fix(doctor): name the step" --body ok'), null);
   assert.equal(guard('gh pr create --fill'), null, 'no title: CI checks it');
   assert.equal(guard('echo gh issue create --title nonsense'), null, 'not a gh command');
+});
+
+// A title follows its own project's rules (#391 review): only a project hook in a repo
+// with a yokoten.json checks it. The user-level hook runs in every repo, and does not.
+test('guard: titles are checked only by a project hook in a repo with a yokoten.json (#391)', () => {
+  const bad = 'gh issue create --title "Login fails on Safari" --body ok';
+  const action = { command: bad, paths: [], worker: false };
+  const plain = mkdtempSync(join(tmpdir(), 'yokoten-titles-'));
+  assert.equal(judge({ ...action, cwd: plain }, { root: plain, config: DEFAULTS, env: {} }), null, 'no yokoten.json');
+  const project = mkdtempSync(join(tmpdir(), 'yokoten-titles-'));
+  writeFileSync(join(project, 'yokoten.json'), '{}');
+  assert.equal(judge({ ...action, cwd: project }, { root: project, config: DEFAULTS, env: {} })?.id, checkIssueTitle('Login fails on Safari', DEFAULTS)[0].id);
+  assert.equal(judge({ ...action, cwd: project }, { root: project, config: DEFAULTS, env: {}, commandsOnly: true }), null, 'the user-level hook');
+  assert.equal(checkCommand(bad, { env: {} }), null, 'off unless asked for');
 });

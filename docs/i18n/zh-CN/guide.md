@@ -724,8 +724,9 @@ issue 标题先写改哪一块，再写要做什么。这样一排 issue 看下�
 `init` 会加上 `.github/workflows/issue.yml`。有人开 issue 或改 issue 时，它跑一次
 `check --issue`。它只读不写：不会去 issue 下面留言，也不会帮你改标题。跑红了，作者自己改标题就行。
 
-agent 起的标题在发出去之前就查。用 `gh issue create|edit` 或 `gh pr create|edit` 带标题时，
-不管是直接用 gh 还是经过 `yokoten bot`，工具调用守卫都跑同一套检查。标题不对，命令就被拦下，CI 不会看到它。
+agent 起的标题在发出去之前就查。在有 `yokoten.json` 的仓库里，用 `gh issue create|edit` 或
+`gh pr create|edit` 带标题时，不管是直接用 gh 还是经过 `yokoten bot`，工具调用守卫都跑同一套检查。
+标题不对，命令就被拦下，CI 不会看到它。用户级的 hook 不查标题：别的项目有自己的规则。
 
 默认任何小写的模块名都能过。想限定只用哪几个，就在 `yokoten.json` 里列出来：
 `"areas": ["doctor", "check", "docs"]`。列了以后，PR 标题 `type(area): summary` 里的模块名也只能用这几个。
@@ -1053,14 +1054,19 @@ IP 只查 IPv4，内网地址（比如 `10.x`、`192.168.x`）也算；IPv6 不�
 AWS 的 access key id，还有 PEM 私钥。查到了只说是哪一种密钥，不会把密钥本身打印出来。光删掉
 不够，git 历史里还留着，得去把它作废，换一个新的。
 
-agent 用 `gh` 发文字之前，工具调用守卫也跑同一套检查：`gh issue create|comment|edit`、
-`gh pr create|comment|edit|review`、`gh release create|edit` 和 `gh api`，经过
-`yokoten bot -- gh` 的也算。它读 `--title`、`--body`、`--notes` 和它们的短写法，
-读 `--body-file`、`--notes-file`、`--input` 指向的文件，也读 `gh api` 的字段
-（`-f body=...`、`-F body=@file`）。写在 `$(cat <<EOF ... EOF)` 里的正文会读到。
-正文从标准输入来（`--body-file -`）时，它读整条命令，所以喂进去的 heredoc 也算。
+agent 用 `gh` 发文字之前，工具调用守卫也跑同一套检查。直接用 gh 或经过 `yokoten bot -- gh` 都算：
+
+- `gh issue` 的 `create`、`comment`、`edit`、`close`；`gh pr` 的 `create`、`comment`、
+  `edit`、`review`、`merge`、`close`；`gh release` 的 `create`、`edit`。
+- `--title`、`--body`、`--notes`、`--subject` 里的文字，还有关闭时 `--comment` 的文字。
+- `--body-file`、`--notes-file`、`-F` 指向的文件，前面有 `cd` 也跟着找。找不到文件就拦下命令，
+  请写完整路径。
+- 从标准输入来的正文：heredoc、`<<<`、`< 文件`。
+- `gh api` 的字段和 `--input`，只在会写东西的调用里查：POST、PATCH、PUT，或 GraphQL 的
+  mutation。搜索、GraphQL 查询这类只读的调用直接放行。
+
 查到问题就拦下命令，修法和提交检查一样。公开的地址加进 `privacy.allow`。命令运行时才拼出来的
-文字它看不到：`$(cat notes.md)`、变量、别的程序用管道传进来的内容。
+文字它看不到：`$(cat notes.md)`、变量、别的程序用管道传进来的内容。文件最多读 1 MB，更大的放行。
 
 每个提交还会记下提交时间和你的时区，而时区能大致看出你住在哪里。所以提交检查要求用 UTC：
 `init` 会给 agent 会话设好 `TZ=UTC`，你自己提交时，它会告诉你怎么设。

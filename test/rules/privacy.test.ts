@@ -2,6 +2,7 @@
 
 import assert from 'node:assert/strict';
 import {
+  mkdirSync,
   mkdtempSync,
   realpathSync,
   rmSync,
@@ -234,7 +235,7 @@ test('an inline heredoc body is read, with its line', () => {
   const f = post(`gh pr create --title "feat: add t" --body "$(cat <<'EOF'\nSummary\n\nmail ${email}\nEOF\n)"`);
   assert.equal(f?.id, 'email');
   assert.match(f?.what ?? '', /line 4/);
-  // A body from stdin: the whole command is read, so a heredoc fed to it is too.
+  // A body from stdin: the heredoc fed to it is read.
   assert.equal(post(`gh pr create --title "feat: add t" --body-file - <<'EOF'\nmail ${email}\nEOF`)?.id, 'email');
   assert.equal(post(`gh pr create --title "feat: add t" --body-file - <<'EOF'\nall clean\nEOF`), null);
 });
@@ -245,7 +246,6 @@ test('clean text, allowed addresses and other commands pass', () => {
     'gh issue create --title "check: add t" --body "by 12345+bot@users.noreply.github.com"',
     `gh issue create --title "check: add t" --body "ask support${'@'}example.com"`,
     'gh pr create --fill',
-    'gh pr create --body-file missing.md',
     `gh pr view 3 --comments`,
     `echo gh issue create --body "${email}"`,
     `gh pr list --search "${email}"`,
@@ -257,4 +257,70 @@ test('clean text, allowed addresses and other commands pass', () => {
 test('privacy.allow in yokoten.json lets an address through', () => {
   const config = { ...DEFAULTS, privacy: { ...DEFAULTS.privacy, allow: [email] } };
   assert.equal(post(`gh issue create --title "check: add t" --body "${email}"`, config), null);
+});
+
+test('API reads pass; API writes and GraphQL mutations are read (#391 review)', () => {
+  assert.equal(post(`gh api graphql -f query='query { search(query: "${email}") { issueCount } }'`), null);
+  assert.equal(post(`gh api graphql -f query='mutation { addComment(input: {body: "${email}"}) { clientMutationId } }'`)?.id, 'email');
+  assert.equal(post(`gh api search/issues -f q="${email}"`), null);
+  assert.equal(post(`gh api -X GET repos/o/r/issues -f creator="${email}"`), null);
+  assert.equal(post(`gh api -X POST repos/o/r/labels -f description="${email}"`)?.id, 'email');
+  assert.equal(post(`gh api --method=PATCH repos/o/r/issues/1 -f body="${email}"`)?.id, 'email');
+  assert.equal(post(`gh api repos/o/r/issues/1/comments -F body=@- <<'EOF'\nmail ${email}\nEOF`)?.id, 'email');
+});
+
+test('a stdin body: only the heredoc is read, not the rest of the command (#391 review)', () => {
+  assert.equal(post(`cd /srv/quietvale-site && gh pr create --title "feat: add t" --body-file - <<'EOF'\nall clean\nEOF`), null);
+  assert.equal(post(`gh pr comment 3 --body-file - <<'EOF'\nfrom QuietVale\nEOF`)?.id, 'private-mark');
+  assert.equal(post('gh pr comment 3 --body-file -'), null, 'stdin from another program is not seen');
+});
+
+test('a relative body file follows cd; one the guard cannot place stops the command (#391 review)', () => {
+  mkdirSync(join(postDir, 'sub'), { recursive: true });
+  writeFileSync(join(postDir, 'sub', 'note.md'), 'Seen in QuietVale.\n');
+  assert.equal(post('cd sub && gh issue comment 3 --body-file note.md')?.id, 'private-mark');
+  assert.equal(post(`cd ${join(postDir, 'sub')} && gh issue comment 3 --body-file note.md`)?.id, 'private-mark');
+  for (const command of ['cd "$X" && gh issue comment 3 --body-file note.md', 'gh pr create --body-file missing.md', 'cd sub && gh pr create --body-file body.md']) {
+    const f = post(command);
+    assert.equal(f?.id, 'unreadable-command', command);
+    assert.match(f?.fix ?? '', /full path/);
+  }
+});
+
+test('privacy comes before the title, and a file path in a finding hides home and marks (#391 review)', () => {
+  const titled = checkCommand(`gh issue create --title "Mail ${email}" --body ok`, { env: postEnv, config: DEFAULTS, cwd: postDir, titles: true });
+  assert.equal(titled?.id, 'email');
+  mkdirSync(join(postDir, 'quietvale'), { recursive: true });
+  writeFileSync(join(postDir, 'quietvale', 'notes.md'), `ask ${email}\n`);
+  const f = post(`gh pr create --body-file ${join(postDir, 'quietvale', 'notes.md')}`);
+  assert.equal(f?.id, 'email');
+  assert.equal(f?.file, 'notes.md', 'the folder holds a mark, so only the name is shown');
+  writeFileSync(join(postDir, 'plain.md'), `ask ${email}\n`);
+  assert.equal(post(`gh pr create --body-file ${join(postDir, 'plain.md')}`)?.file, '~/plain.md');
+});
+
+test('merge, close and review text is read (#391 review)', () => {
+  for (const command of [
+    `gh pr merge 3 --squash --subject "feat: thank ${email}"`,
+    `gh pr merge 3 --body "${email}"`,
+    `gh issue close 3 --comment "${email}"`,
+    `gh pr close 3 -c "${email}"`,
+    `gh pr review 3 --approve --body "${email}"`,
+  ]) {
+    assert.equal(post(command)?.id, 'email', command);
+  }
+});
+
+test('a < file or a <<< here-string feeding stdin is read (#391 review)', () => {
+  assert.equal(post('gh pr create --title "feat: add t" --body-file - < body.md')?.id, 'private-mark');
+  assert.equal(post('gh pr create --title "feat: add t" --body-file - <body.md')?.id, 'private-mark');
+  assert.equal(post(`gh issue comment 3 -F - <<< "mail ${email}"`)?.id, 'email');
+  assert.equal(post('gh issue comment 3 --body "a < b.md"'), null, 'a quoted < is text');
+});
+
+test('only regular files up to 1 MB are read; others pass unread (#391 review)', () => {
+  mkdirSync(join(postDir, 'folder'), { recursive: true });
+  assert.equal(post('gh pr create --body-file folder'), null);
+  writeFileSync(join(postDir, 'big.md'), `${email}\n${'x'.repeat(1024 * 1024)}`);
+  assert.equal(post('gh pr create --body-file big.md'), null);
 });

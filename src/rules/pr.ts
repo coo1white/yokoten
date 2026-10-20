@@ -682,7 +682,9 @@ export function checkCommandTitle(command: string[], config: Partial<Pick<Config
   if (!found) return [];
   if ('unreadable' in found) {
     const id = found.kind === 'issue' ? 'issue-title' : 'pr-title';
-    return [finding(id, `title: can't read the title in \`${found.unreadable}\``, 'write --title on its own', { why: 'yokoten checks the title before it sends anything' })];
+    // The word itself is never printed: it may hold the title, or a file's path.
+    const where = found.unreadable.startsWith('title=') ? 'the title field reads a file' : 'a run-together short option hides it';
+    return [finding(id, `title: can't read the title: ${where}`, 'write --title on its own', { why: 'yokoten checks the title before it sends anything' })];
   }
   return found.kind === 'issue' ? checkIssueTitle(found.title, config, found.labels) : checkPullRequestTitle(found.title, config);
 }

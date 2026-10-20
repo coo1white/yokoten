@@ -11,9 +11,9 @@
 // - Secrets: tokens and private keys, in secrets.ts. Their hits pass through scanText too,
 //   so every caller (the commit, CI, the history) catches them.
 
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { basename, isAbsolute, join, resolve } from 'node:path';
 import type { Config, Env } from './config.ts';
 import { type Finding, finding, type RuleId } from './message.ts';
 import { findSecrets } from './secrets.ts';
@@ -148,18 +148,23 @@ export const TIME_ZONE_FIX = 'commit with TZ=UTC (`TZ=UTC git commit`, or `expor
  */
 export const POSITIVE_CONTROL = [`contact: someone${'@'}personal-mail.com`, `server: ${[100, 64, 1, 2].join('.')}`].join('\n');
 
-// ---- Text an agent posts ----
+// ---- Text an agent posts (#391) ----
 //
-// Text an agent posts (#391). An issue, a pull request, a comment or a release note is
-// public the moment it is sent, so the tool-call guard runs the privacy check on it first:
-// the same patterns, private marks and secrets as the commit check, with the same fixes.
+// An issue, a pull request, a comment or a release note is public the moment it is sent,
+// so the tool-call guard runs the privacy check on it first: the same patterns, private
+// marks and secrets as the commit check, with the same fixes.
 //
-// It reads the text the command carries: `--title`, `--body`, `--notes` and their short
-// forms, the fields of an API call (`gh` `api -f body=...`), and the files that
-// `--body-file`, `--notes-file`, `-F key=@file` and `--input` name. A body read from
-// stdin (`-`) is not a file: the guard scans the whole command text instead, so a heredoc
-// fed to it is checked too. Text the command builds when it runs (`$(cat notes.md)`, a
-// variable, a pipe from another program) is not seen.
+// It reads the text the command carries: `--title`, `--body`, `--notes`, `--comment`,
+// `--subject` and their short forms, and the files `--body-file`, `--notes-file` and `-F`
+// name. For an API call it reads the fields and the `--input` file, but only on a call
+// that writes: a POST, PATCH or PUT, fields sent with no method to an issue, pull request,
+// comment, release or discussion path, or a GraphQL mutation. A body from stdin is read
+// from a heredoc, a here-string or a `< file` redirect. Text the command builds when it
+// runs (`$(cat notes.md)`, a variable, a pipe from another program) is not seen.
+//
+// A file is read only when it is a regular file of at most 1 MB; another one (a device, a
+// pipe, a large file) is let through unread. A relative file the guard can't place (after
+// `cd "$X"`), or one that is missing, stops the command: an unread body would go out unchecked.
 
 /** One piece of text the command posts: where it comes from, and the text. */
 interface Piece {
@@ -170,21 +175,41 @@ interface Piece {
   text: string;
 }
 
-// The gh commands that post text, by group and subcommand.
+/** A gh command as the guard hands it over: its words after `gh`, without redirects, and what its stdin is. */
+export interface GhCommand {
+  args: string[];
+  /** The file a `< file` redirect feeds to stdin. */
+  stdinFile?: string;
+  /** The text a `<<<` here-string feeds to stdin. */
+  hereString?: string;
+}
+
+// The gh commands that post text, by group and subcommand (`new` is gh's alias for `create`).
 const POSTS: Record<string, string[]> = {
-  issue: ['create', 'comment', 'edit'],
-  pr: ['create', 'comment', 'edit', 'review'],
-  release: ['create', 'edit'],
+  issue: ['create', 'new', 'comment', 'edit', 'close'],
+  pr: ['create', 'new', 'comment', 'edit', 'review', 'merge', 'close'],
+  release: ['create', 'new', 'edit'],
 };
 
 // gh options that hold text to post, and those that name a file of it. `-F` is a file in
 // every one of these commands (`--body-file`, or `--notes-file` for a release).
-const TEXT_OPTIONS = new Set(['--title', '-t', '--body', '-b', '--notes', '-n']);
+const TEXT_OPTIONS = new Set(['--title', '-t', '--body', '-b', '--notes', '-n', '--subject']);
+// `close` takes a comment as text; in `pr review`, `--comment` is a switch.
+const CLOSE_OPTIONS = new Set([...TEXT_OPTIONS, '--comment', '-c']);
 const FILE_OPTIONS = new Set(['--body-file', '--notes-file', '-F']);
 // The api subcommand: each field is key=value; `-F key=@file` reads a file, and `--input` sends one.
 const FIELD_OPTIONS = new Set(['-f', '--raw-field', '-F', '--field']);
+const METHOD_OPTIONS = new Set(['-X', '--method']);
+const INPUT_OPTIONS = new Set(['--input']);
 // gh's global option that takes a value before the subcommand: `gh -R o/r issue create`.
 const GLOBAL_VALUES = new Set(['-R', '--repo']);
+// A path that fields with no method write to (gh then sends a POST). A search reads.
+const WRITE_PATH = /(^|\/)(issues|pulls|comments|releases|discussions)(\/|$|\?)/;
+const WRITE_METHODS = new Set(['POST', 'PATCH', 'PUT']);
+// A GraphQL document that changes something: comments first, then `mutation`.
+const MUTATION = /^\s*(?:#[^\n]*\n\s*)*mutation\b/;
+// The largest file the guard reads.
+const MAX_FILE_BYTES = 1024 * 1024;
 
 const programName = (word: string) => word.slice(Math.max(word.lastIndexOf('/'), word.lastIndexOf('\\')) + 1).replace(/\.exe$/i, '');
 const isYokoten = (name: string) => /^yokoten(\.ts|\.js)?$/.test(name);
@@ -207,66 +232,115 @@ export function ghIndex(words: string[], programs: string[]): number {
 }
 
 /** An option and its value: `--body x`, `--body=x`, `-bx`. Null when `word` is not one of `names`. */
-function optionValue(words: string[], i: number, names: Set<string>): { value: string | undefined; name: string; next: number } | null {
-  const word = words[i];
-  const eq = word.indexOf('=');
-  if (word.startsWith('--') && eq !== -1 && names.has(word.slice(0, eq))) return { name: word.slice(0, eq), value: word.slice(eq + 1), next: i + 1 };
-  if (names.has(word)) return { name: word, value: words[i + 1], next: i + 2 };
+function optionValue(words: string[], index: number, names: Set<string>): { value: string | undefined; name: string; next: number } | null {
+  const word = words[index];
+  const equals = word.indexOf('=');
+  if (word.startsWith('--') && equals !== -1 && names.has(word.slice(0, equals))) return { name: word.slice(0, equals), value: word.slice(equals + 1), next: index + 1 };
+  if (names.has(word)) return { name: word, value: words[index + 1], next: index + 2 };
   // A short option with its value joined on: `-bx`, `-b=x`.
-  if (/^-[A-Za-z]./.test(word) && names.has(word.slice(0, 2))) return { name: word.slice(0, 2), value: word.slice(2).replace(/^=/, ''), next: i + 1 };
+  if (/^-[A-Za-z]./.test(word) && names.has(word.slice(0, 2))) return { name: word.slice(0, 2), value: word.slice(2).replace(/^=/, ''), next: index + 1 };
   return null;
 }
 
-/** The text pieces a gh command posts, or null when it posts nothing. `stdin` is set when a piece comes from stdin. */
-function postedPieces(args: string[], readFile: (path: string) => string | null): { pieces: Piece[]; stdin: boolean } | null {
+/** The bodies of the heredocs in a command's text, in order. Quoting around `<<` is not read: a body found twice is scanned twice. */
+export function heredocBodies(text: string): string[] {
+  const bodies: string[] = [];
+  const lines = text.split('\n');
+  const waiting: { delimiter: string; strip: boolean }[] = [];
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    if (waiting.length) {
+      const { delimiter, strip } = waiting.shift() as { delimiter: string; strip: boolean };
+      const body: string[] = [];
+      for (; index < lines.length; index++) {
+        const candidate = strip ? lines[index].replace(/^\t+/, '') : lines[index];
+        if (candidate === delimiter || candidate.trimEnd() === delimiter) break;
+        body.push(lines[index]);
+      }
+      bodies.push(body.join('\n'));
+      continue;
+    }
+    for (const match of line.matchAll(/(?<!<)<<(-?)\s*(['"]?)([A-Za-z_][\w.-]*)\2/g)) waiting.push({ delimiter: match[3], strip: match[1] === '-' });
+  }
+  return bodies;
+}
+
+/** A file's text, `skip` for a file the guard does not read, or `missing`. */
+type FileRead = { text: string } | 'skip' | 'missing';
+
+/** What a gh command posts: its pieces, or a file the guard can't find. Null when it posts nothing. */
+function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, command: string): { pieces: Piece[] } | { missing: string } | null {
+  const { args } = gh;
   // The group and its subcommand: the first two words that are not options.
   const plain: string[] = [];
-  for (let i = 0; i < args.length && plain.length < 2; i++) {
-    if (GLOBAL_VALUES.has(args[i])) i++;
-    else if (!args[i].startsWith('-')) plain.push(args[i]);
+  for (let index = 0; index < args.length && plain.length < 2; index++) {
+    if (GLOBAL_VALUES.has(args[index])) index++;
+    else if (!args[index].startsWith('-')) plain.push(args[index]);
   }
   const [group, sub] = plain;
   const isApi = group === 'api';
   if (!isApi && !POSTS[group]?.includes(sub)) return null;
   const pieces: Piece[] = [];
-  let stdin = false;
-  const addFile = (path: string | undefined) => {
+  let missing: string | null = null;
+  let method: string | null = null;
+  let hasFields = false;
+  let query: string | null = null;
+  const addFile = (option: string, path: string | undefined, key?: string) => {
     if (path === undefined) return;
     if (path === '-') {
-      stdin = true;
+      // stdin: a here-string, a `< file`, or the heredocs in the command.
+      if (gh.hereString !== undefined) pieces.push({ source: 'the here-string text', isFile: false, text: gh.hereString });
+      else if (gh.stdinFile !== undefined) addFile('<', gh.stdinFile, key);
+      else for (const body of heredocBodies(command)) pieces.push({ source: 'the heredoc text', isFile: false, text: body });
+      if (key === 'query') query = [gh.hereString, ...heredocBodies(command)].filter((text) => text !== undefined).join('\n');
       return;
     }
-    const text = readFile(path);
-    if (text !== null) pieces.push({ source: path, isFile: true, text });
+    const read = readFile(path);
+    if (read === 'missing') missing ??= option;
+    else if (read !== 'skip') {
+      pieces.push({ source: path, isFile: true, text: read.text });
+      if (key === 'query') query = read.text;
+    }
   };
   for (let index = 0; index < args.length; ) {
     if (isApi) {
-      const input = optionValue(args, index, new Set(['--input']));
+      const methodOption = optionValue(args, index, METHOD_OPTIONS);
+      if (methodOption) {
+        method = (methodOption.value ?? '').toUpperCase();
+        index = methodOption.next;
+        continue;
+      }
+      const input = optionValue(args, index, INPUT_OPTIONS);
       if (input) {
-        addFile(input.value);
+        hasFields = true;
+        addFile(input.name, input.value);
         index = input.next;
         continue;
       }
       const field = optionValue(args, index, FIELD_OPTIONS);
       if (field) {
+        hasFields = true;
         const value = field.value ?? '';
-        const eq = value.indexOf('=');
-        const key = eq === -1 ? value : value.slice(0, eq);
-        const content = eq === -1 ? '' : value.slice(eq + 1);
+        const equals = value.indexOf('=');
+        const key = equals === -1 ? value : value.slice(0, equals);
+        const content = equals === -1 ? '' : value.slice(equals + 1);
         // `-F key=@file` reads the file; `-f` always takes the text as it is.
-        if ((field.name === '-F' || field.name === '--field') && content.startsWith('@')) addFile(content.slice(1));
-        else if (content) pieces.push({ source: `the ${key} field`, isFile: false, text: content });
+        if ((field.name === '-F' || field.name === '--field') && content.startsWith('@')) addFile(field.name, content.slice(1), key);
+        else if (content) {
+          pieces.push({ source: `the ${key} field`, isFile: false, text: content });
+          if (key === 'query') query = content;
+        }
         index = field.next;
         continue;
       }
     } else {
       const file = optionValue(args, index, FILE_OPTIONS);
       if (file) {
-        addFile(file.value);
+        addFile(file.name, file.value);
         index = file.next;
         continue;
       }
-      const text = optionValue(args, index, TEXT_OPTIONS);
+      const text = optionValue(args, index, sub === 'close' ? CLOSE_OPTIONS : TEXT_OPTIONS);
       if (text) {
         if (text.value) pieces.push({ source: `the ${text.name} text`, isFile: false, text: text.value });
         index = text.next;
@@ -275,7 +349,28 @@ function postedPieces(args: string[], readFile: (path: string) => string | null)
     }
     index++;
   }
-  return { pieces, stdin };
+  if (isApi && !apiWrites(apiPath(args.slice(args.indexOf('api') + 1)), method, hasFields, query)) return null;
+  return missing === null ? { pieces } : { missing };
+}
+
+// The options of the api subcommand that take a value (gh 2.102 help).
+const API_VALUES = new Set(['-X', '--method', '-f', '--raw-field', '-F', '--field', '-H', '--header', '--input', '-q', '--jq', '-t', '--template', '--hostname', '--cache', '-p', '--preview']);
+
+/** The path an API call names: its first word that is not an option or an option's value. */
+function apiPath(args: string[]): string {
+  for (let index = 0; index < args.length; index++) {
+    if (API_VALUES.has(args[index])) index++;
+    else if (!args[index].startsWith('-')) return args[index];
+  }
+  return '';
+}
+
+/** Whether an API call writes: only then is what it sends posted. */
+function apiWrites(path: string, method: string | null, hasFields: boolean, query: string | null): boolean {
+  if (path.replace(/^\//, '') === 'graphql') return query !== null && MUTATION.test(query);
+  if (method) return WRITE_METHODS.has(method);
+  const plain = path.replace(/^\//, '');
+  return hasFields && !plain.startsWith('search/') && WRITE_PATH.test(plain);
 }
 
 // The commit check's reasons end on what git does; a post is public as soon as it is sent.
@@ -286,39 +381,49 @@ const ALLOW_FIX = 'If it is public on purpose, add it to "privacy.allow" in yoko
 const postFix = (f: Finding) =>
   f.id === 'email' || f.id === 'ip' ? `${f.fix}. ${ALLOW_FIX}` : f.id === 'secret' ? 'take it out of the text, and rotate it if it was ever sent' : f.fix;
 
+/** A file's path as a finding may show it: home as `~`, and only its name, or no name, when the path holds a mark. */
+function shownPath(path: string, env: Env, marks: string[]): string {
+  const hasMark = (text: string) => marks.some((mark) => text.toLowerCase().includes(mark));
+  const shown = hideHome(path, env);
+  if (!hasMark(shown)) return shown;
+  const name = basename(shown);
+  return hasMark(name) ? 'the body file' : name;
+}
+
 /**
- * The first privacy problem in the text a gh command (from `ghAt` in `words`) is about to
- * post, or null. `command` is the whole command text, scanned when a body comes from stdin.
- * `cwd` is where the command runs, for a relative file; null when the guard cannot tell.
+ * The first privacy problem in the text a gh command is about to post, or null. `command`
+ * is the whole command text, for the heredocs that feed stdin. `cwd` is where the command
+ * runs, for a relative file; null when the guard cannot tell.
  */
-export function checkPost(
-  words: string[],
-  ghAt: number,
-  { env, privacy, cwd, command }: { env: Env; privacy?: Pick<Config['privacy'], 'allow'>; cwd: string | null; command: string },
-): Finding | null {
-  const readFile = (path: string): string | null => {
+export function checkPost(gh: GhCommand, { env, privacy, cwd, command }: { env: Env; privacy?: Pick<Config['privacy'], 'allow'>; cwd: string | null; command: string }): Finding | null {
+  const readFile = (path: string): FileRead => {
     const home = env.HOME;
     const full = path.startsWith('~/') && home ? join(home, path.slice(2)) : path;
-    if (!isAbsolute(full) && cwd === null) return null;
+    if (!isAbsolute(full) && cwd === null) return 'missing';
+    const at = resolve(cwd ?? '', full);
     try {
-      return readFileSync(resolve(cwd ?? '', full), 'utf8');
+      const stat = statSync(at);
+      if (!stat.isFile() || stat.size > MAX_FILE_BYTES) return 'skip';
+      return { text: readFileSync(at, 'utf8') };
     } catch {
-      // A missing file: gh fails on its own, and nothing is posted.
-      return null;
+      return 'missing';
     }
   };
-  const posted = postedPieces(words.slice(ghAt + 1), readFile);
+  const posted = postedPieces(gh, readFile, command);
   if (!posted) return null;
-  const { pieces } = posted;
-  if (posted.stdin) pieces.push({ source: 'the command text (its body comes from stdin)', isFile: false, text: command });
-  if (!pieces.length) return null;
+  if ('missing' in posted) {
+    return finding('unreadable-command', `yokoten can't find the file after ${posted.missing} to check it`, 'give its full path', {
+      why: 'the privacy check reads a body before it is posted, and an unread one could hold anything',
+    });
+  }
+  if (!posted.pieces.length) return null;
   const marks = loadMarks(env);
   const allow = privacy?.allow ?? [];
-  for (const piece of pieces) {
+  for (const piece of posted.pieces) {
     const [hit] = scanText(piece.text, { file: piece.source, marks, allow });
     if (!hit) continue;
     const more = { why: postWhy(hit.why) };
-    if (piece.isFile) return finding(hit.id as RuleId, hit.what, postFix(hit), { ...more, file: piece.source, line: hit.line });
+    if (piece.isFile) return finding(hit.id as RuleId, hit.what, postFix(hit), { ...more, file: shownPath(piece.source, env, marks), line: hit.line });
     const line = piece.text.includes('\n') ? `, line ${hit.line},` : '';
     const what = hit.id === 'private-mark' ? `${piece.source}${line} ${hit.what}` : `${piece.source}${line} holds ${hit.what}`;
     return finding(hit.id as RuleId, what, postFix(hit), more);
