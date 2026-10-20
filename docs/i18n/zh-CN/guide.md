@@ -256,7 +256,7 @@ worktree 放在这里，只有里面有会丢的东西时才提，而且就写�
 
 ## 支持哪些 agent
 
-yokoten 能管住七种 AI 编程 agent，它们守的是同一套规矩。下表里写“是”的，都真跑过：在一个
+yokoten 能管住八种 AI 编程 agent，它们守的是同一套规矩。下表里写“是”的，都真跑过：在一个
 用完就删的仓库里让 agent 执行 `git push --tags`，守卫把它拦了下来。光看文档不算数。
 
 | Agent | 钩子写在哪（`init` 负责写） | 怎么拦 | 真跑过吗 | 要注意 |
@@ -267,12 +267,14 @@ yokoten 能管住七种 AI 编程 agent，它们守的是同一套规矩。下�
 | Codex CLI | `.codex/hooks.json`：PreToolUse 和 Stop | 退出码 2，理由写在 stderr | 是，2026-10-19：Codex 0.163.0，`codex exec`，模型用 DeepSeek 的 `deepseek-flash` | 要先信任这个文件夹，再在 `/hooks` 里信任这两个钩子，才会跑。没信任的钩子，`codex exec` 一声不吭地跳过 |
 | Muse Code | `.muse/hooks.json`：PreToolUse 和 Stop | 退出码 2，理由写在 stderr | 是，2026-10-19：Muse Code 1.4.10，`muse exec --trust-workspace`，模型 `muse-spark-1.3-contributor` | 要先信任这个文件夹，才跑钩子：在这里运行 `muse`，选 "Trust and continue"。Muse 不把 `YOKOTEN_ROLE` 传给钩子，所以在 Muse 里每个会话都当成 lead。也没见过它传 `YOKOTEN_RELEASE_APPROVAL`，所以发版要到 Muse 外面去。钩子出错或超时的话，这次调用会放行 |
 | DeepSeek Harness（`dsh`） | `.dsh/hooks.json`：PreToolUse；再用 `.dsh/yokoten.patch.yml` 让 dsh 加载它 | 退出码 2，理由写在 stderr | 是，2026-10-20：dsh 0.2.1-rc.2，`dsh headless --patch .dsh/yokoten.patch.yml`，DeepSeek 的默认模型 | 钩子要靠一个桥接插件才会跑，每个 profile 都得自己装，见 [DeepSeek Harness](#deepseek-harness)。没装插件或启动时没带 patch，dsh 一个钩子都不跑，也不提醒。Windows 上还管不住（#332）。还没有收尾检查 |
+| Grok CLI（`grok`） | `.grok/hooks/yokoten.json`：PreToolUse 和 Stop | 在 stdout 输出 `permissionDecision: "deny"`，退出码 2 | 是，2026-10-20：Grok CLI 1.0.52，`grok -p --trust --always-approve`，默认模型 | 要先信任这个文件夹，才跑项目钩子：在这里运行 `grok`，输入 `/hooks-trust`。没信任就一声不吭地跳过。它也会跑 `.claude/settings.json` 里的钩子，所以一次调用可能查两遍，这是有意的 |
 | Gemini CLI | `.gemini/settings.json`：BeforeTool 和 AfterAgent | 退出码 2，理由写在 stderr | 没有完整跑过：个人 Google 账号 2026-06-18 起不能再登录，要付费 API key 或企业授权 | 谷歌给个人用户的 agent 现在是 Antigravity CLI |
 | 其他 agent | 无 | `AGENTS.md` 里的规则；还有提交检查，不管是谁提交的，坏提交都会被拦下 | | |
 
 用户级的钩子由 `install` 写：会话开头的带路提示，加上命令守卫。它们写进
 `~/.claude/settings.json`；有 `~/.codex`、`~/.gemini` 文件夹的话，也写进
-`~/.codex/hooks.json` 和 `~/.gemini/settings.json`。在 Codex 里，`apply_patch` 要改哪些
+`~/.codex/hooks.json` 和 `~/.gemini/settings.json`。有 `~/.grok` 的话，Grok CLI 只装命令守卫，写进
+`~/.grok/hooks/yokoten.json`：会话开头钩子的输出，Grok 只给你看，不给 agent 看。Grok 的信任检查关掉时（设了 `GROK_FOLDER_TRUST=0`，或者 `~/.grok/config.toml` 里写了 `[folder_trust] enabled = false`），`doctor` 把每个文件夹都当成已信任。在 Codex 里，`apply_patch` 要改哪些
 文件，守卫都会查，在 shell 里跑的也查。
 
 每个工具都要你先信任，项目钩子才会跑：
@@ -290,6 +292,11 @@ yokoten 能管住七种 AI 编程 agent，它们守的是同一套规矩。下�
 - **Muse Code**：工作区要先设成信任，才会跑 `.muse/hooks.json`；没信任就一声不吭地跳过。
   用 `muse exec` 时，加 `--trust-workspace` 就是这一次信任当前文件夹。项目里
   `.agents/skills` 下的技能，也要信任以后才读。
+- **Grok CLI**：文件夹要先设成信任，才跑 `.grok/hooks/`；没信任就一声不吭地跳过。在这里的会话里
+  输入 `/hooks-trust`，或者用 `grok --trust` 启动一次。yokoten 从不替你信任文件夹。信任以后，
+  Grok 也会跑 `.claude/settings.json` 里的钩子，所以一次调用可能查两遍。这是有意的：
+  Grok 自己的钩子可能被跳过，比如文件夹没信任，或者仓库提交了一个空的钩子文件。这时
+  Claude Code 的钩子照样守着。多查一遍大约多花 0.1 秒。
 - **Gemini CLI**：文件夹要先设成信任，项目钩子才会跑。要在仓库根目录启动 Gemini：它只读
   启动时所在文件夹里的 `.gemini/settings.json`。新加或改过的钩子，第一次跑之前它会提醒你一次。
 
@@ -301,8 +308,9 @@ yokoten 能管住七种 AI 编程 agent，它们守的是同一套规矩。下�
 | Copilot CLI | `~/.copilot/config.json` 里的 `trustedFolders`（设了 `$COPILOT_HOME` 就在那里） | 这个文件夹本身，或者它的上级文件夹 |
 | Codex | `~/.codex/config.toml`（设了 `$CODEX_HOME` 就在那里）里的 `[projects]` 和 `[hooks.state]` | 仓库文件夹本身，一个字都不能差；每个钩子也要按现在的内容信任过 |
 | Muse Code | `~/.config/muse/trust.json`（设了 `$XDG_CONFIG_HOME` 就是 `$XDG_CONFIG_HOME/muse/trust.json`） | 仓库文件夹本身，一个字都不能差 |
+| Grok CLI | `~/.grok/trusted_folders.toml`（设了 `$GROK_HOME` 就在那里）里的 `[folders."<文件夹>"]`，`trusted = true` | 仓库文件夹本身，一个字都不能差 |
 
-只有这个工具的主目录在（`~/.copilot`、`~/.codex`、`~/.config/muse`），`doctor` 才查它。
+只有这个工具的主目录在（`~/.copilot`、`~/.codex`、`~/.config/muse`、`~/.grok`），`doctor` 才查它。
 主目录在、文件却没有或读不了时，`doctor` 会说 "can't check"（查不了），不会说 ok。
 
 worker 靠 `YOKOTEN_ROLE=worker` 认出来。在 Codex 里，子 agent 的 `agent_type` 带 worker
@@ -310,7 +318,8 @@ worker 靠 `YOKOTEN_ROLE=worker` 认出来。在 Codex 里，子 agent 的 `agen
 `YOKOTEN_ROLE`。Gemini CLI 开了严格的环境变量清理后，钩子里拿不到 `YOKOTEN_ROLE`。
 这时 yokoten 在 Gemini CLI 里分不出谁是 worker：每个会话都当成 lead，只有 lead 能改的
 文件，worker 改了也拦不住。Muse Code 跑钩子时只留下几个环境变量，`YOKOTEN_ROLE` 不在其中，
-所以在 Muse Code 里也一样：每个会话都当成 lead。服务器上的锁照样有效：代码负责人，还有一个
+所以在 Muse Code 里也一样：每个会话都当成 lead。Grok CLI 会把 `YOKOTEN_ROLE` 传给钩子；子 agent 的
+`subagentType` 带 worker 字样的，也算 worker。服务器上的锁照样有效：代码负责人，还有一个
 改不了 CI 的 bot。
 
 ### DeepSeek Harness
@@ -569,8 +578,9 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 
 另外还在 `.github/` 里放三个文件，默认设置就是安全的：
 
-- `dependabot.yml`：自动更新 CI 用到的 action。一个月只开一个 PR，所有更新都在里面；
-  新版本发布满一周才会用。文件里的注释写了怎么用同样的方式加上你自己的包（npm、pip、Go 等）。
+- `dependabot.yml`：自动更新 CI 用到的 action，还有 `init` 在项目里找到的包（npm、cargo、pip、
+  Go 等，看根目录和下一层文件夹）。每种一个月只开一个 PR；新版本发布满一周才会用。
+  已经有这个文件的话，`init` 不动它，只告诉你哪些包它还没管。
 - `SECURITY.md`：告诉别人发现漏洞要私下报告，不要发公开 issue。要让私下报告能用，得在仓库
   设置里打开 private vulnerability reporting（私下报告漏洞）。`doctor` 会把它和其他安全开关
   一起列出来。
@@ -600,8 +610,8 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 | `learn --ship <id>` | 在 yokoten 里用：把审过的教训搬进 `kit/lessons/` 下的一个分组，以后用这份 yokoten 跑 `doctor`，每个项目都会查它。还有 `TODO(reviewer)` 没填，或者它的测试没过，就不让搬 |
 | `learn --upstream "<发生了什么>" [--area <name>] [--fix <idea>]` | 记下 yokoten 自己的一个毛病，项目和你本人的信息都先藏掉。`--list` 列出这些记录，`--done <id>` 删掉一条。见下面的「问题出在 yokoten 自己身上」 |
 | `check --history` | 对所有分支的每一个提交做隐私检查。私有仓库公开之前跑一遍。浅克隆看不到旧的提交，所以它不扫描、直接报错；在 CI 里要拉下全部历史（`fetch-depth: 0`）。文件里查到问题时，写的是加进这个文件的那次提交，和那次提交里的路径：`文件 @ <提交>`。`git replace` 藏不住提交，它照样读原来的提交；有 grafts 文件时同样不扫描、直接报错。 |
-| `hook [--agent <name>] [--commands-only] [--json]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool，加 `--agent antigravity` 读 Antigravity CLI 的 PreToolUse，加 `--agent muse` 读 Muse Code 的 PreToolUse，加 `--agent deepseek-harness` 读 DeepSeek Harness 的 PreToolUse |
-| `hook --stop [--agent <name>]` | 收尾检查。从标准输入读这一轮结束的事件，检查改过的文件：默认读 Claude Code 的 Stop；加 `--agent codex` 读 Codex 的 Stop，加 `--agent gemini` 读 Gemini CLI 的 AfterAgent。见[收尾检查](#收尾检查) |
+| `hook [--agent <name>] [--commands-only] [--json]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool，加 `--agent antigravity` 读 Antigravity CLI 的 PreToolUse，加 `--agent muse` 读 Muse Code 的 PreToolUse，加 `--agent deepseek-harness` 读 DeepSeek Harness 的 PreToolUse，加 `--agent grok` 读 Grok CLI 的 PreToolUse |
+| `hook --stop [--agent <name>]` | 收尾检查。从标准输入读这一轮结束的事件，检查改过的文件：默认读 Claude Code 的 Stop；加 `--agent codex` 读 Codex 的 Stop，加 `--agent gemini` 读 Gemini CLI 的 AfterAgent，加 `--agent grok` 读 Grok CLI 的 Stop。见[收尾检查](#收尾检查) |
 | `explain [<id>] [--json]` | 讲一条规则或者路上的一步：它是什么、为什么要有、yokoten 怎么检查 |
 | `uninstall` | 撤掉 `install` 装的东西：带 yokoten 管理标记的技能和 agent、`~/.claude/settings.json` 里它加的两个 hook，还有 `~/.local/share/yokoten`。你自己的文件、别的设置和 `~/.config/yokoten`（密钥、私有词表）都留着。再跑一次什么也不会变 |
 | `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。如果命令是 `gh issue` 或 `gh pr` 的 `create`、`edit`，并且带了标题，它会先按 CI 的规则检查标题；标题不合格就直接拒绝，什么都不会发出去。用 `gh api` 改 issue 或 PR 时，标题也照样检查。它只运行 `gh` 和 `git`，所以 `env gh …`、`sh -c …` 这类写法会被拒绝；gh 的别名（alias）它不认，别名里的标题不会被检查。设置方法见 [server.md](../../server.md#3-the-bot-a-github-app) |
