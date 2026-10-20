@@ -8,14 +8,13 @@ import {
 } from 'node:crypto';
 import {
   mkdirSync,
-  mkdtempSync,
   writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { makeTempDir } from '../repo/helpers.ts';
 import {
   DEFAULTS,
   type Env,
@@ -74,7 +73,7 @@ test('token: finds the installation from the repo, then exchanges the JWT', asyn
     res.end(JSON.stringify(req.method === 'GET' ? { id: 77 } : { token: 'ghs_test' }));
   });
   await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const dir = makeTempDir();
   writeFileSync(join(dir, 'bot.pem'), pem);
   const api = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   // With NODE_USE_ENV_PROXY=1, fetch sends even a local call through the shell's proxy,
@@ -104,7 +103,7 @@ test('config: the App ID is required, the key has a default place', () => {
 });
 
 test('config: the keys file gives the bot settings the session does not have (#405)', () => {
-  const home = mkdtempSync(join(tmpdir(), 'yokoten-keys-'));
+  const home = makeTempDir('yokoten-keys-');
   const config = join(home, '.config', 'yokoten');
   mkdirSync(config, { recursive: true });
   assert.equal(hasBot({ HOME: home }), false, 'nothing set up');
@@ -141,7 +140,7 @@ test('config: a keys file value reads as a shell profile line gives it (#405)', 
     ['~user/x', '~user/x'],
   ];
   for (const [raw, value] of cases) assert.equal(shellValue(raw, home), value, raw);
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-keys-'));
+  const dir = makeTempDir('yokoten-keys-');
   mkdirSync(join(dir, '.config', 'yokoten'), { recursive: true });
   writeFileSync(join(dir, '.config', 'yokoten', 'keys.env'), 'export YOKOTEN_BOT_APP_ID=42 # the App ID\nYOKOTEN_BOT_KEY="$HOME/elsewhere.pem"\n');
   const c = botConfig({ HOME: dir });
@@ -168,7 +167,7 @@ test('env: gh gets the token, and git asks gh for github.com instead of the owne
 // A child `node --test` that inherits NODE_TEST_CONTEXT reports to the parent run and exits 0
 // whatever happens (#168). The control proves the trap is real, so the fix is not a no-op.
 test('child env: a failing child node --test fails only once NODE_TEST_CONTEXT is gone (#168)', () => {
-  const file = join(mkdtempSync(join(tmpdir(), 'yokoten-child-')), 'fail.test.ts');
+  const file = join(makeTempDir('yokoten-child-'), 'fail.test.ts');
   writeFileSync(file, "import { test } from 'node:test';\ntest('fails', () => { throw new Error('fails on purpose'); });\n");
   // The parent's own env when this runs under node --test; the same value when run alone.
   const parentEnv = { ...process.env, NODE_TEST_CONTEXT: process.env.NODE_TEST_CONTEXT ?? 'child-v8' };
@@ -514,19 +513,19 @@ test('readLogin: the signed-in login, or null when gh fails or answers something
 
 // #392: the gh login, read from gh's own file on this machine, with no network call.
 test('readLocalLogins: the user under each host in hosts.yml; none when the file is missing', () => {
-  const home = mkdtempSync(join(tmpdir(), 'yokoten-gh-'));
+  const home = makeTempDir('yokoten-gh-');
   assert.deepEqual(readLocalLogins({ HOME: home }), []);
   mkdirSync(join(home, '.config', 'gh'), { recursive: true });
   writeFileSync(join(home, '.config', 'gh', 'hosts.yml'), 'github.com:\n    users:\n        octo-jane:\n    user: octo-jane\n    git_protocol: https\nghe.example.com:\n    user: "jroe"\n');
   assert.deepEqual(readLocalLogins({ HOME: home }), ['octo-jane', 'jroe']);
-  const other = mkdtempSync(join(tmpdir(), 'yokoten-gh-'));
+  const other = makeTempDir('yokoten-gh-');
   writeFileSync(join(other, 'hosts.yml'), 'github.com:\n    user: someone-else\n');
   assert.deepEqual(readLocalLogins({ HOME: home, GH_CONFIG_DIR: other }), ['someone-else'], 'GH_CONFIG_DIR first, as gh reads it');
 });
 
 // #406: the bot reads the branch's files as check --pr reads a pull request's: a rename is its new path.
 test('branch files: changed, renamed and deleted paths since the base, from one local diff (#406)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const dir = makeTempDir('yokoten-');
   const env = { PATH: process.env.PATH, HOME: dir, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(dir, '.gitconfig'), GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' };
   const git = (...args: string[]) => spawnSync('git', args, { cwd: dir, env, encoding: 'utf8' });
   git('init', '-q', '-b', 'main');

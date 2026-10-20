@@ -770,6 +770,10 @@ Full `doctor` lists them under `machine:` as notes. A note never changes the exi
   This happens when a root process makes the folder first, for example after a restart.
   Claude Code then refuses to start. The note prints `sudo rm -rf '<folder>'`, quoted. Run it
   yourself: doctor never deletes anything.
+- **leftover-temp-folders**: `yokoten-*` folders older than a day in the temp folder.
+  Test runs leave them, and thousands of them fill the disk. Full `doctor` counts them.
+  It does not add up their size, so it stays fast. The note prints a `find ... -exec rm -rf`
+  command that removes only the old ones. Run it yourself: doctor never deletes anything.
 
 ### Troubleshooting
 

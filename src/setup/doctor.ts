@@ -34,7 +34,7 @@ import * as muse from '../agents/runtimes/muse.ts';
 import type { FolderTrust } from '../agents/folder-trust.ts';
 import { commentedFile, HAND_ADD, handAddJson, type HookState, mergeHandAdds } from '../agents/hooks-file.ts';
 import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
-import { readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advice/unsaved.ts';
+import { findTempDirs, readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advice/unsaved.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
 import { cliPath, compareCoreRules, compareVersions, isSelf, readCoreRules, summarizeUpdate } from './init.ts';
 import { countOwnMarks, fillMarks, filledLine, trySafely, installedPieces, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
@@ -71,6 +71,7 @@ export function selfTest(): string[] {
   if (compareCoreRules('# old rules\n\n## This project\n', kit).state !== 'behind' || compareCoreRules('# rules\n', kit).state !== "can't compare") failed.push('core rules check');
   failed.push(...coreRulesControl());
   failed.push(...machineControl());
+  failed.push(...leftoverControl());
   return failed;
 }
 
@@ -661,6 +662,76 @@ export function agentTempDirCheck(env: Env, probe: MachineProbe): Practice | nul
   return { name: 'agent-temp-dir', ok: false, finding: finding('agent-temp-dir', `${shown} belongs to uid ${owner}, not to you (uid ${probe.uid}), so Claude Code won't start`, `${fix}; Claude Code makes a new one when it starts`) };
 }
 
+/** A leftover folder is one older than this: a test run that is still going is newer. */
+const LEFTOVER_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** One `yokoten-*` folder in a temp folder, and when it last changed. */
+export interface TempFolderEntry {
+  name: string;
+  mtimeMs: number;
+}
+
+/**
+ * The `yokoten-*` folders in one temp folder: one read of the folder and one lstat per
+ * match. Throws when the folder can't be read.
+ */
+export function readYokotenFolders(dir: string): TempFolderEntry[] {
+  const entries: TempFolderEntry[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.name.startsWith('yokoten-') || !entry.isDirectory()) continue;
+    try {
+      entries.push({ name: entry.name, mtimeMs: lstatSync(join(dir, entry.name)).mtimeMs });
+    } catch {
+      // removed while we read: it no longer counts
+    }
+  }
+  return entries;
+}
+
+/**
+ * The `yokoten-*` folders older than a day in the temp folders (#400): test runs left
+ * them, and thousands of them fill a disk. Full doctor only. A count, no size: adding up
+ * the size of thousands of folders takes a minute. Doctor prints the command, never runs it.
+ * Null when there are none, or nothing can be read. `read` is a parameter so the self-test
+ * can hand in folders that are not on the disk.
+ */
+export function leftoverTempCheck(env: Env, probe: MachineProbe, read: typeof readYokotenFolders = readYokotenFolders): Practice | null {
+  const oldest = probe.now().getTime() - LEFTOVER_AGE_MS;
+  let count = 0;
+  const dirs: string[] = [];
+  for (const dir of findTempDirs(env)) {
+    try {
+      const old = read(dir).filter((entry) => entry.mtimeMs < oldest).length;
+      if (old) dirs.push(dir);
+      count += old;
+    } catch {
+      // a temp folder that can't be read has nothing to say
+    }
+  }
+  if (!count) return null;
+  // A control character or a newline can't be pasted safely: name the folders, print no command.
+  const isPastable = dirs.every((dir) => !/[\u0000-\u001f\u007f]/.test(dir));
+  const where = dirs.map((dir) => (isPastable ? dir : JSON.stringify(dir))).join(' and ');
+  const fix = isPastable
+    ? `run \`find ${dirs.map(quoteForShell).join(' ')} -maxdepth 1 -name 'yokoten-*' -mmin +1440 -exec rm -rf {} +\` yourself; it removes only the ones older than a day`
+    : 'remove the `yokoten-*` folders older than a day from those folders yourself';
+  const folders = count === 1 ? '1 yokoten-* folder' : `${count} yokoten-* folders`;
+  return { name: 'leftover-temp-folders', ok: false, finding: finding('leftover-temp-folders', `${folders} older than a day in ${where}`, fix) };
+}
+
+/**
+ * A temp folder, in memory, with one `yokoten-*` folder two days old and one new: the
+ * leftover check must count the old one only. No disk, so the session self-test stays fast.
+ * `check` is a parameter so a test can hand in a broken one.
+ */
+export function leftoverControl(check: typeof leftoverTempCheck = leftoverTempCheck): string[] {
+  const now = new Date(0);
+  const probe: MachineProbe = { ...REAL_MACHINE, now: () => now };
+  const read = () => [{ name: 'yokoten-old', mtimeMs: -2 * LEFTOVER_AGE_MS }, { name: 'yokoten-new', mtimeMs: 0 }];
+  const note = check({ YOKOTEN_TEMP_DIRS: '/control' }, probe, read);
+  return note?.ok === false && note.finding.what.startsWith('1 yokoten-* folder older') ? [] : ['leftover temp folder check'];
+}
+
 /** A word for a POSIX shell: in single quotes, each single quote inside closed, escaped and reopened. */
 export const quoteForShell = (word: string): string => `'${word.replaceAll("'", "'\\''")}'`;
 
@@ -1188,9 +1259,11 @@ export function doctor(
     lines.push(`  note    ${c.name}: ${stepText(c.finding)}`);
     notes.push(c.finding);
   }
-  // Machine notes (record 0012) never fail doctor: the disk, and the agent's temp folder.
+  // Machine notes (record 0012) never fail doctor: the disk, the agent's temp folder, and
+  // old test folders left in the temp folder (#400).
   const agentTemp = agentTempDirCheck(env, probe);
-  for (const c of [...userAgentHooks(env), ...diskSpaceChecks(root, env, probe, false), ...(agentTemp ? [agentTemp] : [])]) {
+  const leftovers = leftoverTempCheck(env, probe);
+  for (const c of [...userAgentHooks(env), ...diskSpaceChecks(root, env, probe, false), ...(agentTemp ? [agentTemp] : []), ...(leftovers ? [leftovers] : [])]) {
     lines.push(`  ${c.ok ? 'ok     ' : 'note   '} ${c.name}${c.ok ? (c.detail ? `: ${c.detail}` : '') : `: ${stepText(c.finding)}`}`);
     if (!c.ok) notes.push(c.finding);
   }

@@ -381,6 +381,12 @@ export const RULES = {
     check: "full `doctor` compares the owner of Claude Code's temp folder (`claude-<uid>` in the temp folder) with your uid; a note, never a failure, and doctor never deletes it",
     docs: guide('machine-notes'),
   },
+  'leftover-temp-folders': {
+    rule: 'test runs do not leave their folders in the temp folder (#400)',
+    why: 'thousands of old test folders fill the disk, and a full disk stops every session',
+    check: 'full `doctor` reads each temp folder once and counts the `yokoten-*` folders older than a day (one lstat each, no size); a note, never a failure, and doctor prints the command to remove them but never deletes',
+    docs: guide('machine-notes'),
+  },
   'private-output': {
     rule: 'an agent reads command output with your details hidden',
     why: 'output an agent reads goes into the transcript and to the model, and it cannot be taken back',

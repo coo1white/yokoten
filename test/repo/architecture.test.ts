@@ -1,10 +1,10 @@
 // The shape of the code, checked. A rule about structure that no test holds drifts.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { test } from 'node:test';
+import { makeTempDir } from './helpers.ts';
 import { fileURLToPath } from 'node:url';
 import { COMMANDS } from '../../src/run/cli.ts';
 import { findDeclarations, findNameProblems, splitWords, type Token, tokenize } from '../../src/run/names.ts';
@@ -202,6 +202,30 @@ test('code is .ts only: no .js, .mjs, .cjs or .tsx under bin, src or test (#43)'
   const files = execFileSync('git', ['ls-files', 'bin', 'src', 'test'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter(Boolean);
   assert.ok(files.some((f) => f.endsWith('.ts')), 'no .ts found; the scan is broken');
   assert.deepEqual(strayCode(files), [], 'write it as .ts: Node runs it with no build');
+});
+
+// #400: a test made its folder with a bare mkdtempSync and never removed it; one machine
+// held 4,000 of them. makeTempDir (test/repo/helpers.ts) removes each one when its test
+// ends. A line that starts with a quote is text a test writes out, not code that runs here.
+// The [d] keeps this pattern from matching its own line.
+const TEMP_HELPER = 'test/repo/helpers.ts';
+const findBareTempDirs = (files: Record<string, string>) =>
+  Object.entries(files).flatMap(([path, text]) =>
+    path === TEMP_HELPER
+      ? []
+      : text.split('\n').flatMap((line, index) => (!/^\s*["'`]/.test(line) && /\bmk[d]temp(Sync)?\s*\(/.test(line) ? [`${path}:${index + 1}`] : [])));
+
+test('temp folders: tests make them with makeTempDir, not with mkdtempSync alone (#400)', () => {
+  assert.deepEqual(findBareTempDirs({
+    'test/a.test.ts': "const dir = mkdtempSync(join(tmpdir(), 'x-'));\nconst ok = makeTempDir('x-');\n",
+    'test/b.test.ts': "  \"const root = mkdtempSync(join(tmpdir(), 'lesson-'));\",\nawait mkdtemp(prefix);\n",
+    [TEMP_HELPER]:
+      "const parent = mkdtempSync(join(tmpdir(), 'yokoten-test-'));\n",
+  }), ['test/a.test.ts:1', 'test/b.test.ts:2']);
+  const paths = execFileSync('git', ['ls-files', 'test'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter((p) => p.endsWith('.ts'));
+  assert.ok(paths.includes(TEMP_HELPER), 'the helper is not found; the scan is broken');
+  const files = Object.fromEntries(paths.map((p) => [p, readFileSync(join(ROOT, p), 'utf8')]));
+  assert.deepEqual(findBareTempDirs(files), [], `make the folder with makeTempDir from ${TEMP_HELPER}: it is removed when the test ends`);
 });
 
 // ---- The npm package (#31) ----
@@ -504,7 +528,7 @@ test('docs: the guides\' Commands table covers every command and option in COMMA
 // still finds it there; an import the tool cannot place stops it, with a list. The fixture
 // repo has a script and two test files named like the real ones, so the real table places them.
 function makeSplitFixture(files: Record<string, string>): string {
-  const root = mkdtempSync(join(tmpdir(), 'yokoten-split-'));
+  const root = makeTempDir('yokoten-split-');
   const hoisted = "const ROOT = 'root';\nconst CLI = 'cli';\nconst at = '@';\nfunction makeSandbox(): string {\n  return ROOT + CLI + at;\n}\n";
   const all: Record<string, string> = {
     'test/cli.test.ts': `import assert from 'node:assert/strict';\nimport { test } from 'node:test';\n\n${hoisted}\ntest('install: the helpers move', () => {\n  assert.equal(makeSandbox(), 'rootcli@');\n});\n`,
