@@ -1339,6 +1339,10 @@ your name, your city, your domains, your server names. That file stays outside t
 repo, because a list of what must not be published can't itself be published. A hit
 is reported by file and line; the mark itself is never printed.
 
+The project's own public address, such as `support@` at its domain, is found too. Nothing
+is let through on its own. If the address is public on purpose, add it to
+`privacy.allow` in yokoten.json.
+
 The marks file is for the whole machine, so a private project's name belongs in it. That
 project's own repo can still use its name: list the name in `privacy.allow` in its
 yokoten.json. A mark is let through when an entry there is the same string, upper or
