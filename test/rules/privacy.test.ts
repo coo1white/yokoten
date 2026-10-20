@@ -717,7 +717,7 @@ test("the lead's command with a body file on disk: commands that write no file d
   assert.equal(post(lead.replace('node bin/yokoten.ts bot', 'yokoten bot')), null);
   // Loading a file with . or source may run anything, so the file on disk is not trusted.
   plainRefusal(`set -a; . ~/.config/yokoten/keys.env; set +a; ${lead}`);
-  for (const reads of ['git status', 'git log -1', 'git log --oneline -3', 'git config --get user.name', 'git remote get-url origin', 'gh api repos/o/r/pulls', 'gh issue list', 'echo hi', 'true', 'test -f x', 'yokoten bot -- gh run view 1']) {
+  for (const reads of ['git rev-parse HEAD', 'git config --get user.name', 'git remote get-url origin', 'gh issue list', 'gh pr checks 3', 'echo hi', 'true', 'test -f x', 'set -e -o pipefail', 'set +u', 'OWNER=someone', 'export GH_HOST=example.com', 'GH_REPO=o/r gh pr view 1', 'cd sub', 'yokoten bot -- gh run view 1']) {
     assert.equal(post(`${reads} && gh pr comment 3 -F ${body}`), null, reads);
   }
   writeFileSync(body, 'Tested in QuietVale.\n');
@@ -731,6 +731,12 @@ test("the lead's command with a body file on disk: commands that write no file d
     'eval x',
     'f() { :; }',
     'git diff',
+    'git status',
+    'git log -1',
+    'gh api repos/o/r/pulls',
+    'export EDITOR=x',
+    'HOME=/x',
+    'set -a',
     'git log -p',
     'git log --patch',
     'git log -u',
@@ -752,4 +758,89 @@ test("the lead's command with a body file on disk: commands that write no file d
   writeFileSync(join(postDir, 'f.md'), 'clean\n');
   plainRefusal('echo QuietVale > f.md; gh issue comment 3 -F f.md');
   plainRefusal('. ./x.sh; gh issue comment 3 -F f.md');
+});
+
+// More inputs from review (#439). Only these write no file and run nothing: the file on disk
+// is still the one gh posts.
+const writesNothing = new Set(["control: nothing","control: echo","echo -e","heredoc to echo"]);
+const reviewCases2: [string, string][] = [
+  ["control: nothing", "gh issue comment 3 -F f.md"],
+  ["control: echo", "echo hi && gh issue comment 3 -F f.md"],
+  ["control: cp", "cp ev/f.md f.md; gh issue comment 3 -F f.md"],
+  ["cmdsubst in echo", "echo $(cp ev/f.md f.md) && gh issue comment 3 -F f.md"],
+  ["cmdsubst in dq", "echo \"$(cp ev/f.md f.md)\" && gh issue comment 3 -F f.md"],
+  ["backtick", "echo `cp ev/f.md f.md` && gh issue comment 3 -F f.md"],
+  ["test -e $()", "test -e $(cp ev/f.md f.md) ; gh issue comment 3 -F f.md"],
+  ["export X=$()", "export X=$(cp ev/f.md f.md) && gh issue comment 3 -F f.md"],
+  ["assign X=$()", "X=$(cp ev/f.md f.md) gh issue comment 3 -F f.md"],
+  ["procsubst echo", "echo <(cp ev/f.md f.md) >/dev/null; sleep 0.2; gh issue comment 3 -F f.md"],
+  ["procsubst >()", "echo QuietVale > >(cat > f.md); sleep 0.2; gh issue comment 3 -F f.md"],
+  ["procsubst arg", "printf QuietVale >(cat > f.md) ; sleep 0.2; gh issue comment 3 -F f.md"],
+  ["echo >| f", "echo QuietVale >| f.md; gh issue comment 3 -F f.md"],
+  ["echo >& f", "echo QuietVale >&f.md; gh issue comment 3 -F f.md"],
+  [":> f", ":> f.md; gh issue comment 3 -F f.md"],
+  ["true > f", "true > f.md; gh issue comment 3 -F f.md"],
+  ["printf -v", "printf -v X %s y; gh issue comment 3 -F f.md"],
+  ["printf -v subscript", "printf -v 'a[$(cp ev/f.md f.md)]' %s 1; gh issue comment 3 -F f.md"],
+  ["test -v subscript", "test -v 'a[$(cp ev/f.md f.md)]'; gh issue comment 3 -F f.md"],
+  ["[ -v subscript", "[ -v 'a[$(cp ev/f.md f.md)]' ]; gh issue comment 3 -F f.md"],
+  ["arith recursive", "X='a[$(cp ev/f.md f.md)]'; echo $((X)); gh issue comment 3 -F f.md"],
+  ["arith recursive2", "X='a[$(cp ev/f.md f.md)]' && echo $((X+1)) && gh issue comment 3 -F f.md"],
+  ["arith $[]", "X='a[$(cp ev/f.md f.md)]'; echo $[X]; gh issue comment 3 -F f.md"],
+  ["test -eq", "X='a[$(cp ev/f.md f.md)]'; test \"$X\" -eq 0; gh issue comment 3 -F f.md"],
+  ["[[ -v", "[[ -v 'a[$(cp ev/f.md f.md)]' ]]; gh issue comment 3 -F f.md"],
+  ["PS4 xtrace", "export PS4='$(cp ev/f.md f.md)'; set -x; gh issue comment 3 -F f.md"],
+  ["PS4 plain", "PS4='$(cp ev/f.md f.md) ' && set -x && gh issue comment 3 -F f.md"],
+  ["HOME tilde", "HOME=ev; gh issue comment 3 -F ~/f.md"],
+  ["set -o noclobber", "set -o noclobber; gh issue comment 3 -F f.md"],
+  ["cd subdir", "cd sub && gh issue comment 3 -F f.md"],
+  ["gh pr view --web", "gh pr view --web 3; gh issue comment 3 -F f.md"],
+  ["gh run view --log >f", "gh run view 1 --log > f.md; gh issue comment 3 -F f.md"],
+  ["git log --output", "git log --output=f.md; gh issue comment 3 -F f.md"],
+  ["git log -L", "git log -L1,1:f.md; gh issue comment 3 -F f.md"],
+  ["git log -c", "git log -c; gh issue comment 3 -F f.md"],
+  ["git log --cc", "git log --cc; gh issue comment 3 -F f.md"],
+  ["git log -S", "git log -Sx; gh issue comment 3 -F f.md"],
+  ["git status", "git status; gh issue comment 3 -F f.md"],
+  ["git config --get --file", "git config --get --file f.md x; gh issue comment 3 -F f.md"],
+  ["gh api GET", "gh api repos/a/b --jq . ; gh issue comment 3 -F f.md"],
+  ["gh api --cache", "gh api repos/a/b --cache 1h; gh issue comment 3 -F f.md"],
+  ["gh api -t", "gh api repos/a/b -t x; gh issue comment 3 -F f.md"],
+  ["gh api method lowercase", "gh api repos/a/b/issues/3/comments --method=post; gh issue comment 3 -F f.md"],
+  ["gh api -XPOST", "gh api -XPOST repos/a/b/issues/3/comments; gh issue comment 3 -F f.md"],
+  ["yokoten bot -- echo >", "yokoten bot -- echo QuietVale > f.md; gh issue comment 3 -F f.md"],
+  ["yokoten bot -- cp", "yokoten bot -- cp ev/f.md f.md; gh issue comment 3 -F f.md"],
+  ["echo -e", "echo -e 'x' ; gh issue comment 3 -F f.md"],
+  ["set -- $()", "set -- $(cp ev/f.md f.md); gh issue comment 3 -F f.md"],
+  ["cd $()", "cd $(cp ev/f.md f.md; echo .) && gh issue comment 3 -F f.md"],
+  ["bash -c", "bash -c 'cp ev/f.md f.md'; gh issue comment 3 -F f.md"],
+  ["export -f? func", "f() { cp ev/f.md f.md; }; f; gh issue comment 3 -F f.md"],
+  ["pushd", "pushd sub >/dev/null && gh issue comment 3 -F f.md"],
+  ["export BASH_FUNC", "export 'BASH_FUNC_gh%%=() { cp ev/f.md f.md; command gh \"$@\"; }'; gh issue comment 3 -F f.md"],
+  ["assign BASH_FUNC env", "env 'BASH_FUNC_x%%=() { :; }' true; gh issue comment 3 -F f.md"],
+  ["heredoc to echo", "echo <<'EOF' && gh issue comment 3 -F f.md\n$(cp ev/f.md f.md)\nEOF"],
+  ["unquoted heredoc to :", ": <<EOF\n$(cp ev/f.md f.md)\nEOF\ngh issue comment 3 -F f.md"],
+  ["heredoc shape clean + extra", "cat > g.md <<'EOF' && gh issue comment 3 -F f.md\nclean\nEOF"],
+  ["substring offset", "X='a[$(cp ev/f.md f.md)]'; echo ${HOME:X}; gh issue comment 3 -F f.md"],
+  ["subscript var", "X='a[$(cp ev/f.md f.md)]'; echo ${a[X]}; gh issue comment 3 -F f.md"],
+  ["export subscript", "export 'a[$(cp ev/f.md f.md)]=1'; gh issue comment 3 -F f.md"],
+  ["assign subscript", "a[X]=1 && X='b[$(cp ev/f.md f.md)]' && a[X]=2; gh issue comment 3 -F f.md"],
+  ["HOME cd", "HOME=ev; cd; gh issue comment 3 -F f.md"],
+  ["GH_BROWSER repo view", "export GH_BROWSER='sh -c \"cp ev/f.md f.md\" x'; gh repo view a/b --web; gh issue comment 3 -F f.md"],
+  ["BROWSER", "BROWSER='sh -c \"cp ev/f.md f.md\" x' gh repo view a/b --web; gh issue comment 3 -F f.md"],
+  ["test -v subscript", "test -v 'a[$(cp ev/f.md f.md)]'; gh issue comment 3 -F f.md"],
+  ["printf -v subscript", "printf -v 'a[$(cp ev/f.md f.md)]' %s 1; gh issue comment 3 -F f.md"],
+  ["arith $[]", "X='a[$(cp ev/f.md f.md)]'; echo $[X]; gh issue comment 3 -F f.md"],
+  ["PS4 xtrace", "export PS4='$(cp ev/f.md f.md)'; set -x; gh issue comment 3 -F f.md"],
+  ["HOME tilde", "HOME=ev; gh issue comment 3 -F ~/f.md"],
+];
+
+test('a command beside gh is trusted only when it surely writes no file and runs nothing (#439)', () => {
+  mkdirSync(join(postDir, 'sub'), { recursive: true });
+  rmSync(join(postDir, 'sub', 'f.md'), { force: true });
+  writeFileSync(join(postDir, 'f.md'), 'clean\n');
+  for (const [name, command] of reviewCases2) {
+    if (writesNothing.has(name)) assert.equal(post(command), null, name);
+    else assert.ok(post(command) !== null, name);
+  }
 });

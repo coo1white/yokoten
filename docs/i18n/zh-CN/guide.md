@@ -1207,9 +1207,11 @@ agent 用 `gh` 发文字之前，工具调用守卫也跑同一套检查。直�
 - `--body-file`、`--notes-file`、`-F` 指向的文件，前面有 `cd` 也跟着找。检查在命令运行前做，
   所以同一条命令里才写的文件，检查时还不存在。只认一种写法：整条命令就是
   `cat > body.md <<'EOF' && gh … --body-file body.md`，后面跟正文和 `EOF`。路径要简单、两边一样，
-  结束标记要加引号；这时查 heredoc 里的文字，原来就有这个文件的话也一起查。gh 之外，不写文件的命令
-  没关系：赋值、`export`、`set`、`cd`、不带重定向的 `echo`、`gh … view` 或 `list`、`git status` 或不打印 diff 的 `git log`，
-  以及经过 `yokoten bot --` 的这些命令。别的命令都可能改文件，所以找不到文件、或者文件可能被改，都会拦下命令：
+  结束标记要加引号；这时查 heredoc 里的文字，原来就有这个文件的话也一起查。gh 之外，只有肯定不写文件的
+  命令没关系：普通赋值、`export` `GH_REPO`、`GH_HOST` 或 `NODE_USE_ENV_PROXY`、`set -e`、`-u` 或 `-o pipefail`、
+  `cd <文件夹>`、不带重定向的 `echo`、`printf`、`test`、不带 `--web` 的 `gh pr|issue|repo|run view|list|checks`、
+  `git rev-parse`、`git config --get <名字>`、`git remote get-url`，以及经过 `yokoten bot --` 的这些命令。
+  别的命令都可能改文件，所以找不到文件、或者文件可能被改，都会拦下命令：
   请先用一条命令写好文件，下一条命令再发，并写完整路径。
 - 从标准输入来的正文：heredoc、`<<<`、`< 文件`。
 - `gh api` 的字段和 `--input`，只在会写东西的调用里查：POST、PATCH、PUT，或 GraphQL 的
@@ -1217,6 +1219,7 @@ agent 用 `gh` 发文字之前，工具调用守卫也跑同一套检查。直�
 
 查到问题就拦下命令，修法和提交检查一样。公开的地址加进 `privacy.allow`。命令运行时才拼出来的
 文字它看不到：`$(cat notes.md)`、变量、别的程序用管道传进来的内容。文件最多读 1 MB，更大的放行。
+它只看命令，不看你的 shell：shell 配置文件里包住 `cd`、`echo` 的函数或别名，它看不到。
 
 ### agent 读到的东西
 

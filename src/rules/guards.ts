@@ -107,7 +107,7 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
       checkHooksEnvironment(words) ??
       checkPublish(words, env) ??
       checkBlocked(words, config?.commands.block ?? {}) ??
-      checkPosted(words, { env, config, cwd: postCwd, command, titles, files: { heredoc, mayWrite: heredoc !== undefined || writers > (writesNoFile(words) ? 0 : 1) || writesFile(words) } }) ??
+      checkPosted(words, { env, config, cwd: postCwd, command, titles, files: { heredoc, mayWrite: heredoc !== undefined || writers > (writesNoFile(words) ? 0 : 1) || writesFile(words) || isUnsure(words) } }) ??
       (rules ? checkLeadOnlyWrites(words, { env, rules, folder: postCwd }) : null);
     if (reason) return reason;
     postCwd = folderAfter(words, postCwd, env);
@@ -822,37 +822,95 @@ function isPlainLine(line: string): boolean {
   return quote === '';
 }
 
-// Commands that write no file, whatever their words (#439).
-const NO_WRITE = new Set(['export', 'set', 'cd', 'pushd', 'popd', 'true', ':', 'test', '[', 'echo', 'printf']);
-const GH_READS = new Set(['view', 'list', 'checks']);
-const GIT_READS = new Set(['status', 'log', 'rev-parse']);
-// git log options that print diffs, which may run diff.external or a textconv from the repo's config.
-const GIT_DIFFS = /^(-p|-u|--patch|--ext|--text|--output)/;
-// Variables that change which program runs, or what it runs: setting one is no plain assignment.
-const RUNS_VIA = /^(?:PATH|BASH_ENV|ENV|IFS|PROMPT_COMMAND|SHELLOPTS|BASHOPTS|CDPATH|LD_\w*|DYLD_\w*|NODE_OPTIONS|NODE_PATH|GIT_\w*)\+?=/;
+// Commands that surely write no file (#439). Each list allows; anything else may write.
+// Shell variables that change what bash runs or where it looks: setting one is not plain.
+const SHELL_SPECIAL = /^(?:PS\d|PROMPT_\w*|HOME|PATH|CDPATH|IFS|ENV|BASH\w*|SHELLOPTS|BASHOPTS|TMOUT|HIST\w*|histchars|MAIL\w*|GLOBIGNORE|FIGNORE|EXECIGNORE|OLDPWD|PWD|OPTIND|OPTERR|POSIXLY_CORRECT|INPUTRC|TIMEFORMAT|FUNCNEST|COMP\w*|TMPDIR|SHELL|BROWSER|LD_\w*|DYLD_\w*|NODE_\w*|GIT_\w*|GH_\w*|LANG|LC_\w*)$/;
+// The only variables an `export` or a command's own `X=1 cmd` may set.
+const EXPORTS = new Set(['GH_REPO', 'GH_HOST', 'NODE_USE_ENV_PROXY']);
+const NAME_VALUE = /^([A-Za-z_]\w*)=/s;
+// `set` only for these: errexit, nounset and pipefail.
+const SET_FLAGS = /^[-+][eu]+$/;
+// A word the shell may run code from when it reads it as a number: `a[$(x)]`, `$[x]`,
+// `$((x))`, `${x:n}`, `${a[x]}`.
+// One pass, so a word of many [ or ${ costs no more than its length (#226).
+function runsAsNumber(word: string): boolean {
+  if (word.includes('$[') || word.includes('$((')) return true;
+  let inSubscript = false; // after a [, before its ]
+  let inBraces = false; // after a ${, before its }
+  for (let index = 0; index < word.length; index++) {
+    const character = word[index];
+    if (character === '[') {
+      if (inBraces) return true;
+      inSubscript = true;
+    } else if (character === ']') inSubscript = false;
+    else if (character === '}') inBraces = false;
+    else if (character === ':' && inBraces) return true;
+    else if (character === '`' && inSubscript) return true;
+    else if (character === '$' && word[index + 1] === '(' && inSubscript) return true;
+    else if (character === '$' && word[index + 1] === '{') inBraces = true;
+  }
+  return false;
+}
+
+/** Whether a word may run code, or a command's own variables change what it runs (#439). */
+function isUnsure(words: string[]): boolean {
+  if (words.some(runsAsNumber)) return true;
+  const at = ownVariables(words);
+  return at === -1;
+}
+
+// Where the program starts after a command's own `X=1` words, or -1 when one of them sets a
+// variable outside EXPORTS. A command of assignments only gives its length.
+function ownVariables(words: string[]): number {
+  let at = 0;
+  while (at < words.length && NAME_VALUE.test(words[at])) at++;
+  if (at === words.length) return words.every((word) => !SHELL_SPECIAL.test(NAME_VALUE.exec(word)?.[1] ?? '')) ? at : -1;
+  return words.slice(0, at).every((word) => EXPORTS.has(NAME_VALUE.exec(word)?.[1] ?? '')) ? at : -1;
+}
 
 /**
  * Whether a command surely writes no file, so a body file on disk is still the one gh posts
- * (#439): no redirect into a file, and assignments only (a substitution in one is a command
- * of its own, checked the same way), one of NO_WRITE, a gh or git read, or `yokoten bot -- <one of those>`. Anything else may write one.
+ * (#439): no redirect into a file, no word that may run code, and either plain assignments
+ * (a substitution in one is a command of its own, checked the same way) or a read in
+ * `readsOnly`, maybe through `yokoten bot --`. Anything else may write one.
  */
 function writesNoFile(words: string[]): boolean {
-  if (writesFile(words) || words.some((word) => RUNS_VIA.test(word))) return false;
-  let at = 0;
-  while (at < words.length && /^[A-Za-z_]\w*\+?=/.test(words[at])) at++;
+  if (writesFile(words) || isUnsure(words)) return false;
+  const at = ownVariables(words);
   return at === words.length || readsOnly(words.slice(at));
 }
 
 function readsOnly(words: string[]): boolean {
   const [program = '', sub = '', action = ''] = words;
-  if (NO_WRITE.has(program)) return true;
-  if (program === 'gh') {
-    if (sub === 'api') return !words.some((word) => /^(-X|--method|-f|-F|--field|--raw-field|--input)/.test(word));
-    return ['pr', 'issue', 'repo', 'run'].includes(sub) && GH_READS.has(action);
-  }
-  if (program === 'git') {
-    if (words.some((word) => GIT_DIFFS.test(word))) return false;
-    return GIT_READS.has(sub) || (sub === 'config' && action === '--get') || (sub === 'remote' && action === 'get-url');
+  const args = words.slice(1);
+  switch (program) {
+    case 'true':
+    case ':':
+    case 'echo':
+      return true;
+    case 'printf':
+    case 'test':
+    case '[':
+      return !args.includes('-v');
+    case 'set':
+      return args.every((arg, index) => SET_FLAGS.test(arg) || (/^[-+]o$/.test(arg) && args[index + 1] === 'pipefail') || (arg === 'pipefail' && /^[-+]o$/.test(args[index - 1] ?? '')));
+    case 'export':
+      return args.length > 0 && args.every((arg) => EXPORTS.has(NAME_VALUE.exec(arg)?.[1] ?? arg));
+    case 'cd':
+    case 'pushd':
+      // A bare cd goes home, and `cd -` to OLDPWD: not followed.
+      return args.length === 1 && args[0] !== '-' && !args[0].startsWith('-');
+    case 'popd':
+      return true;
+    case 'gh':
+      // `--web` opens a browser, which runs a program.
+      return ['pr', 'issue', 'repo', 'run'].includes(sub) && ['view', 'list', 'checks'].includes(action) && !args.some((arg) => arg === '--web' || /^-[A-Za-z]*w/.test(arg));
+    case 'git':
+      // Most git commands run repo config (fsmonitor, textconv, gpg); these few do not.
+      if (sub === 'rev-parse') return args.slice(1).every((arg) => !arg.startsWith('--output'));
+      if (sub === 'config') return words.length === 4 && action === '--get' && !words[3].startsWith('-');
+      if (sub === 'remote') return words.length === 4 && action === 'get-url';
+      return false;
   }
   // `yokoten bot -- x`, `node bin/yokoten.ts bot -- x`
   const bot = program === 'node' ? 1 : 0;

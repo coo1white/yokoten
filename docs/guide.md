@@ -1353,12 +1353,14 @@ plain or through `yokoten bot -- gh`:
   before the command, so a file the same command writes is not there yet. One shape is
   read: the whole command is `cat > body.md <<'EOF' && gh … --body-file body.md`, then the
   body and `EOF`. The path is plain, the same on both sides, and the delimiter is quoted;
-  the guard checks the heredoc and the file already there, if any. Beside gh, a command
-  that writes no file is fine: assignments, `export`, `set`, `cd`, `echo` with no
-  redirect, a `gh … view` or `list`, a `git status` or `log` (no diff), the same through
-  `yokoten bot --`. Any other command may change the file, so a file the guard can't find,
-  or one such a command may change, stops the command: write the file in one command, then
-  post it in the next, with its full path.
+  the guard checks the heredoc and the file already there, if any. Beside gh, only a
+  command that surely writes no file is fine: a plain assignment, `export` of `GH_REPO`,
+  `GH_HOST` or `NODE_USE_ENV_PROXY`, `set -e`, `-u` or `-o pipefail`, `cd <folder>`,
+  `echo`, `printf` or `test` with no redirect, a `gh pr|issue|repo|run view|list|checks`
+  without `--web`, `git rev-parse`, `git config --get <name>`, `git remote get-url`, and
+  the same through `yokoten bot --`. Any other command may change the file, so a file the
+  guard can't find, or one such a command may change, stops the command: write the file in
+  one command, then post it in the next, with its full path.
 - A body from stdin: a heredoc, a `<<<` here-string, or a `< file`.
 - `gh api` fields and `--input`, on a call that writes: a POST, PATCH or PUT, or a GraphQL
   mutation. A read, such as a search or a GraphQL query, passes.
@@ -1366,7 +1368,8 @@ plain or through `yokoten bot -- gh`:
 A hit stops the command with the same fix as the commit check. A public address goes in
 `privacy.allow`. The guard does not see text built when the command runs:
 `$(cat notes.md)`, a variable, or a pipe from another program. It reads files of at most
-1 MB, and lets a bigger one through.
+1 MB, and lets a bigger one through. It reads the command, not your shell: a function or
+alias from your shell profile that wraps `cd` or `echo` is not seen.
 
 ### What an agent reads
 
