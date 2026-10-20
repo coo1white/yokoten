@@ -1,5 +1,6 @@
 // Tests for src/agents/runtimes/muse.ts.
 
+import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -65,7 +66,7 @@ test('muse readToolCall: the cwd is the call\'s workdir, else the session cwd; a
 test('muse project hooks: init writes the guard and the stop check, keeps other hooks, and doctor notes them', () => {
   const sandbox = makeSandbox();
   const file = join(sandbox.repo, '.muse', 'hooks.json');
-  const cli = '.yokoten/bin/yokoten.ts';
+  const cli = '.yokoten/bin/yokoten.mjs';
   assert.match(sandbox.run(['doctor']).stdout, /note +muse-hook: no tool-call guard or stop check in \.muse\/hooks\.json/, 'reported, not counted as missing');
   sandbox.write('.muse/hooks.json', JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'bash', hooks: [{ type: 'command', command: './lint.sh' }] }] } }));
   const result = sandbox.run(['init']);
@@ -76,7 +77,7 @@ test('muse project hooks: init writes the guard and the stop check, keeps other 
   const written = JSON.parse(readFileSync(file, 'utf8'));
   assert.equal(written.hooks.PreToolUse.length, 2, "another hook's group stays");
   assert.equal(written.hooks.PreToolUse[1].matcher, 'bash|write_file|edit_file|apply_patch', 'named tools: "*" would also match read_skill');
-  assert.match(written.hooks.PreToolUse[1].hooks[0].command, /"\$\(git rev-parse --show-toplevel\)\/\.yokoten\/bin\/yokoten\.ts" hook --agent muse 2>&1/);
+  assert.match(written.hooks.PreToolUse[1].hooks[0].command, /"\$\(git rev-parse --show-toplevel\)\/\.yokoten\/bin\/yokoten\.mjs" hook --agent muse 2>&1/);
   assert.match(written.hooks.Stop[0].hooks[0].command, /hook --stop --agent muse$/);
   assert.deepEqual(projectHooksState(sandbox.repo, cli), { guard: 'same', stop: 'same' });
   // The hooks are in place, and Muse looks unused here: no trust line (#341).

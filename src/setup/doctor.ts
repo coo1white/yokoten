@@ -11,20 +11,21 @@
 // A check that passes everything looks the same as a healthy project, so this comes first.
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statfsSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statfsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, parse } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkCommand, checkEdit } from '../rules/guards.ts';
 import { type Config, DEFAULTS, type Env } from '../rules/config.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
 import { type Finding, finding, formatFinding, type RuleId } from '../rules/message.ts';
-import { homeOf, loadMarks, notUtc, POSITIVE_CONTROL, scanText, systemHome } from '../rules/privacy.ts';
+import { homeOf, loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
+import { judge } from '../run/hook.ts';
 import { countNotes, type LessonPlace, listLessons, runLessons, waitingLine } from '../run/learn.ts';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
-import { hasPlugin, hasProjectHook, hasSessionDoctor, readInstalledPlugin, tempDir as claudeTempDir, userSettingsProblem } from '../agents/runtimes/claude-code.ts';
+import { hasPlugin, hasProjectHook, hasSessionDoctor, readInstalledPlugin, readToolCall, tempDir as claudeTempDir, userSettingsProblem } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
 import * as copilot from '../agents/copilot.ts';
 import * as dsh from '../agents/runtimes/deepseek-harness.ts';
@@ -34,9 +35,9 @@ import * as muse from '../agents/runtimes/muse.ts';
 import type { FolderTrust } from '../agents/folder-trust.ts';
 import { commentedFile, HAND_ADD, handAddJson, type HookState, mergeHandAdds } from '../agents/hooks-file.ts';
 import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
-import { readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advice/unsaved.ts';
+import { findTempDirs, readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advice/unsaved.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
-import { cliPath, compareCoreRules, compareVersions, isSelf, readCoreRules, summarizeUpdate } from './init.ts';
+import { compareCoreRules, compareVersions, hookCliPath, isSelf, readCoreRules, summarizeUpdate, withGitReads } from './init.ts';
 import { countOwnMarks, fillMarks, filledLine, trySafely, installedPieces, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
 import { type Mark, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
 
@@ -60,6 +61,7 @@ export function selfTest(): string[] {
   if (!checkCommand('git commit --no-verify -m x', { env: {} })) failed.push('skip-check guard');
   if (!checkEdit('test/a.test.ts', { config: DEFAULTS, env: { YOKOTEN_FIX_TASK: '1' } })) failed.push('test guard');
   if (!checkEdit('AGENTS.md', { config: DEFAULTS, env: { YOKOTEN_ROLE: 'worker' } })) failed.push('lead-only guard');
+  if (!isShellControlCaught()) failed.push('lead-only shell guard');
   if (scanText(POSITIVE_CONTROL, { file: 'control' }).length < 2) failed.push('privacy check');
   if (scanText(SECRET_CONTROL, { file: 'control' }).length < 2) failed.push('secret check');
   if (!notUtc('A <a@example.com> 1760745600 +0700') || notUtc('A <a@example.com> 1760745600 +0000')) failed.push('time zone check');
@@ -71,7 +73,21 @@ export function selfTest(): string[] {
   if (compareCoreRules('# old rules\n\n## This project\n', kit).state !== 'behind' || compareCoreRules('# rules\n', kit).state !== "can't compare") failed.push('core rules check');
   failed.push(...coreRulesControl());
   failed.push(...machineControl());
+  failed.push(...leftoverControl());
   return failed;
+}
+
+/**
+ * A shell write to AGENTS.md from Claude Code's plugin worker, `yokoten:worker`, with no
+ * YOKOTEN_ROLE (#402): the call must read as a worker's and be stopped, and the same call
+ * from the lead must pass. The repo is the file system's root, taken as given, and
+ * nothing is written.
+ */
+export function isShellControlCaught(): boolean {
+  const root = parse(process.cwd()).root;
+  const call = (agentType?: string) => ({ agent_type: agentType, cwd: root, tool_input: { command: 'sed -i s/a/b/ AGENTS.md' } });
+  const options = { root, config: DEFAULTS, env: {} };
+  return judge(readToolCall(call('yokoten:worker')), options) !== null && judge(readToolCall(call()), options) === null;
 }
 
 /**
@@ -140,7 +156,7 @@ export function agentHooks(root: string, env: Env, platform: string = process.pl
     [...(guard ? [] : ['no tool-call guard']), ...(stop ? [] : ['no stop check'])].join(' and ') + ` in ${file}`;
   const [codexGuard, codexStop] = [codex.hasProjectHook(root), codex.hasProjectStopHook(root)];
   const [geminiGuard, geminiStop] = [gemini.hasProjectHook(root), gemini.hasProjectStopHook(root)];
-  const geminiState = geminiGuard && geminiStop ? null : gemini.projectHooksState(root, cliPath(root));
+  const geminiState = geminiGuard && geminiStop ? null : gemini.projectHooksState(root, hookCliPath(root));
   // Copilot CLI reads Claude Code's hooks: the road checks the file, this line only the trust,
   // and only when Copilot looks used here.
   const copilotTrust = copilot.readTrust(root, env);
@@ -158,10 +174,10 @@ export function agentHooks(root: string, env: Env, platform: string = process.pl
       : practice('codex-hook', 'codex-hook', false, missing(codexGuard, codexStop, '.codex/hooks.json'), '`yokoten init` adds it'),
     (geminiState && handAddPractice('gemini-hook', '.gemini/settings.json', [geminiState.guard, geminiState.stop])) ??
       practice('gemini-hook', 'gemini-hook', geminiGuard && geminiStop, missing(geminiGuard, geminiStop, '.gemini/settings.json'), '`yokoten init` adds it'),
-    antigravityPractice(antigravity.projectHookState(root, cliPath(root))),
-    trustedHooksPractice('muse-hook', 'Muse Code', '.muse/hooks.json', muse.projectHooksState(root, cliPath(root)), () => muse.readTrust(root, env), muse.TRUST_STEP),
-    trustedHooksPractice('grok-hook', 'Grok CLI', grok.HOOKS_FILE, grok.projectHooksState(root, cliPath(root)), () => grok.readTrust(root, env), grok.TRUST_STEP),
-    platform === 'win32' ? practice('deepseek-harness-hook', 'deepseek-harness-hook', false, dsh.WINDOWS_GAP, 'nothing to do yet: issue #332 adds a PowerShell guard') : dshPractice(dsh.projectHooksState(root, cliPath(root)), dsh.profilesWithBridge(env)),
+    antigravityPractice(antigravity.projectHookState(root, hookCliPath(root))),
+    trustedHooksPractice('muse-hook', 'Muse Code', '.muse/hooks.json', muse.projectHooksState(root, hookCliPath(root)), () => muse.readTrust(root, env), muse.TRUST_STEP),
+    trustedHooksPractice('grok-hook', 'Grok CLI', grok.HOOKS_FILE, grok.projectHooksState(root, hookCliPath(root)), () => grok.readTrust(root, env), grok.TRUST_STEP),
+    platform === 'win32' ? practice('deepseek-harness-hook', 'deepseek-harness-hook', false, dsh.WINDOWS_GAP, 'nothing to do yet: issue #332 adds a PowerShell guard') : dshPractice(dsh.projectHooksState(root, hookCliPath(root)), dsh.profilesWithBridge(env)),
   ];
 }
 
@@ -244,7 +260,7 @@ export const OUTPUT_STOP = 'to stop those commands there instead, set "privacy":
 function usesOtherAgent(env: Env, root: string | null): boolean {
   if (codex.hasUserDir(env) || gemini.hasUserDir(env) || grok.hasUserDir(env)) return true;
   if (!root) return false;
-  const cli = cliPath(root);
+  const cli = hookCliPath(root);
   return codex.hasProjectHook(root) || gemini.hasProjectHook(root) || antigravity.projectHookState(root, cli) === 'same' || muse.projectHooksState(root, cli).guard === 'same' || grok.projectHooksState(root, cli).guard === 'same' || dsh.projectHooksState(root, cli).guard === 'same';
 }
 
@@ -410,8 +426,6 @@ export interface MachineProbe {
   readText(path: string): string | null;
   /** Write a file, making its folder. Throws when it can't. */
   writeText(path: string, text: string): void;
-  /** The home folder in the system's user database; the real one when not given. */
-  systemHome?: () => string;
   /** This process's uid, or null where there is none (Windows). */
   uid: number | null;
   now(): Date;
@@ -558,7 +572,7 @@ export interface HostDiskCache {
 /** The last reading, or null when there is none or the file is broken. */
 export function readHostCache(env: Env, probe: MachineProbe): HostDiskCache | null {
   try {
-    const cache = readMachineState(machineStateFile(env, probe.systemHome), probe).hostDisk as HostDiskCache | undefined;
+    const cache = readMachineState(machineStateFile(env), probe).hostDisk as HostDiskCache | undefined;
     return cache && typeof cache.free === 'number' && typeof cache.size === 'number' && typeof cache.readAt === 'string' ? cache : null;
   } catch {
     return null;
@@ -578,7 +592,7 @@ export function readFreshHostCache(env: Env, probe: MachineProbe): HostDiskCache
 /** Keep the last reading. A file that can't be written is left: a session then says nothing about the host. */
 export function saveHostCache(env: Env, probe: MachineProbe, cache: HostDiskCache): void {
   try {
-    saveMachineState(machineStateFile(env, probe.systemHome), probe, 'hostDisk', cache);
+    saveMachineState(machineStateFile(env), probe, 'hostDisk', cache);
   } catch {
     // no home, or a read-only one: the next full doctor reads the host again
   }
@@ -659,6 +673,76 @@ export function agentTempDirCheck(env: Env, probe: MachineProbe): Practice | nul
   const shown = isPastable ? dir : JSON.stringify(dir);
   const fix = isPastable ? `run \`sudo rm -rf ${quoteForShell(dir)}\` yourself` : `remove the folder ${shown} yourself, with sudo`;
   return { name: 'agent-temp-dir', ok: false, finding: finding('agent-temp-dir', `${shown} belongs to uid ${owner}, not to you (uid ${probe.uid}), so Claude Code won't start`, `${fix}; Claude Code makes a new one when it starts`) };
+}
+
+/** A leftover folder is one older than this: a test run that is still going is newer. */
+const LEFTOVER_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** One `yokoten-*` folder in a temp folder, and when it last changed. */
+export interface TempFolderEntry {
+  name: string;
+  mtimeMs: number;
+}
+
+/**
+ * The `yokoten-*` folders in one temp folder: one read of the folder and one lstat per
+ * match. Throws when the folder can't be read.
+ */
+export function readYokotenFolders(dir: string): TempFolderEntry[] {
+  const entries: TempFolderEntry[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.name.startsWith('yokoten-') || !entry.isDirectory()) continue;
+    try {
+      entries.push({ name: entry.name, mtimeMs: lstatSync(join(dir, entry.name)).mtimeMs });
+    } catch {
+      // removed while we read: it no longer counts
+    }
+  }
+  return entries;
+}
+
+/**
+ * The `yokoten-*` folders older than a day in the temp folders (#400): test runs left
+ * them, and thousands of them fill a disk. Full doctor only. A count, no size: adding up
+ * the size of thousands of folders takes a minute. Doctor prints the command, never runs it.
+ * Null when there are none, or nothing can be read. `read` is a parameter so the self-test
+ * can hand in folders that are not on the disk.
+ */
+export function leftoverTempCheck(env: Env, probe: MachineProbe, read: typeof readYokotenFolders = readYokotenFolders): Practice | null {
+  const oldest = probe.now().getTime() - LEFTOVER_AGE_MS;
+  let count = 0;
+  const dirs: string[] = [];
+  for (const dir of findTempDirs(env)) {
+    try {
+      const old = read(dir).filter((entry) => entry.mtimeMs < oldest).length;
+      if (old) dirs.push(dir);
+      count += old;
+    } catch {
+      // a temp folder that can't be read has nothing to say
+    }
+  }
+  if (!count) return null;
+  // A control character or a newline can't be pasted safely: name the folders, print no command.
+  const isPastable = dirs.every((dir) => !/[\u0000-\u001f\u007f]/.test(dir));
+  const where = dirs.map((dir) => (isPastable ? dir : JSON.stringify(dir))).join(' and ');
+  const fix = isPastable
+    ? `run \`find ${dirs.map(quoteForShell).join(' ')} -maxdepth 1 -name 'yokoten-*' -mmin +1440 -exec rm -rf {} +\` yourself; it removes only the ones older than a day`
+    : 'remove the `yokoten-*` folders older than a day from those folders yourself';
+  const folders = count === 1 ? '1 yokoten-* folder' : `${count} yokoten-* folders`;
+  return { name: 'leftover-temp-folders', ok: false, finding: finding('leftover-temp-folders', `${folders} older than a day in ${where}`, fix) };
+}
+
+/**
+ * A temp folder, in memory, with one `yokoten-*` folder two days old and one new: the
+ * leftover check must count the old one only. No disk, so the session self-test stays fast.
+ * `check` is a parameter so a test can hand in a broken one.
+ */
+export function leftoverControl(check: typeof leftoverTempCheck = leftoverTempCheck): string[] {
+  const now = new Date(0);
+  const probe: MachineProbe = { ...REAL_MACHINE, now: () => now };
+  const read = () => [{ name: 'yokoten-old', mtimeMs: -2 * LEFTOVER_AGE_MS }, { name: 'yokoten-new', mtimeMs: 0 }];
+  const note = check({ YOKOTEN_TEMP_DIRS: '/control' }, probe, read);
+  return note?.ok === false && note.finding.what.startsWith('1 yokoten-* folder older') ? [] : ['leftover temp folder check'];
 }
 
 /** A word for a POSIX shell: in single quotes, each single quote inside closed, escaped and reopened. */
@@ -989,8 +1073,13 @@ export interface DoctorReport {
 /** What doctor says when HOME is empty or not a full path, and the system names no home either (#404). */
 export const NO_HOME_NOTE = "no home folder found; yokoten can't read or keep its settings (set HOME to your home folder's full path)";
 
-/** The report, as text lines and as data, and whether doctor found no problem. */
-export function doctor(
+/**
+ * The report, as text lines and as data, and whether doctor found no problem. Each git
+ * answer is kept for the run (`withGitReads`, #408).
+ */
+export const doctor = (root: string | null, options: Parameters<typeof doctorRun>[1]): ReturnType<typeof doctorRun> => withGitReads(() => doctorRun(root, options));
+
+function doctorRun(
   root: string | null,
   { env, config, session = false, gh, fillMarks: isFilling = false, machine: probe = REAL_MACHINE }: { env: Env; config: Config; session?: boolean; gh?: Gh; fillMarks?: boolean; machine?: MachineProbe },
 ): { ok: boolean; lines: string[]; report: DoctorReport } {
@@ -1009,7 +1098,7 @@ export function doctor(
   const where = walk(road(root, env, ROAD, server), config.notNow);
   // Full doctor from the command line adds the obvious marks first (#390); a session writes nothing.
   // With no home folder, the checks that read or keep settings there are skipped, never crash (#404).
-  const hasHome = homeOf(env, probe.systemHome ?? systemHome) !== null;
+  const hasHome = homeOf(env) !== null;
   const filled = isFilling && !session && hasHome ? trySafely('the marks from this machine', () => [filledLine(fillMarks(env, machineMarks(env, { cwd: root, gh })), paths(env).marks)])[0] : null;
   const machine = hasHome ? machineChecks(env) : [];
   const next = where.next ? stepFinding(where.next, root, env, server) : null;
@@ -1117,9 +1206,11 @@ export function doctor(
     lines.push(`  note    ${c.name}: ${stepText(c.finding)}`);
     notes.push(c.finding);
   }
-  // Machine notes (record 0012) never fail doctor: the disk, and the agent's temp folder.
+  // Machine notes (record 0012) never fail doctor: the disk, the agent's temp folder, and
+  // old test folders left in the temp folder (#400).
   const agentTemp = agentTempDirCheck(env, probe);
-  for (const c of [...userAgentHooks(env), ...diskSpaceChecks(root, env, probe, false), ...(agentTemp ? [agentTemp] : [])]) {
+  const leftovers = leftoverTempCheck(env, probe);
+  for (const c of [...userAgentHooks(env), ...diskSpaceChecks(root, env, probe, false), ...(agentTemp ? [agentTemp] : []), ...(leftovers ? [leftovers] : [])]) {
     lines.push(`  ${c.ok ? 'ok     ' : 'note   '} ${c.name}${c.ok ? (c.detail ? `: ${c.detail}` : '') : `: ${stepText(c.finding)}`}`);
     if (!c.ok) notes.push(c.finding);
   }

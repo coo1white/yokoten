@@ -56,6 +56,8 @@ yokoten 把这些经验写成规则，再配上会自己跑的检查：
 | 开 PR | 用你的账号开，权限和你一样大 | 用 bot 账号开；你不点头，什么都合不进去 |
 | 换到另一个项目 | 一切从头来 | 看出这个项目缺什么，问你要不要补上 |
 
+这些保护一装上就开着，人人都有：不用回答问题，也不用改文件。能改变它的每个设置，都能改回默认。[记录 0014](../../records/0014-safe-by-default.md) 写了 yokoten 哪些事自己做、哪些先问你、哪些绝不做。
+
 ## 三道检查，一把锁
 
 ```mermaid
@@ -321,6 +323,22 @@ worker 靠 `YOKOTEN_ROLE=worker` 认出来。在 Codex 里，子 agent 的 `agen
 所以在 Muse Code 里也一样：每个会话都当成 lead。Grok CLI 会把 `YOKOTEN_ROLE` 传给钩子；子 agent 的
 `subagentType` 带 worker 字样的，也算 worker。服务器上的锁照样有效：代码负责人，还有一个
 改不了 CI 的 bot。
+
+worker 用 shell 写只有 lead 能改的文件，守卫也会拦，跟拦编辑一样（#402）。它看这些写法：
+重定向（`>`、`>>`、`>|`、`&>`），`sed -i`、`perl -i`、`tee`、`cp`、`mv`、`install`、`ln`、
+`dd of=`、`truncate`、`rm`，还有 git 的 `checkout`、`restore`、`rm`、`mv` 和 `apply`。
+重定向的文件名加了引号，或者跟前面的词连在一起（`echo x>"AGENTS.md"`），也照样算。
+`git apply` 时，守卫会读补丁，看它改哪些文件，但只读不超过 1 MB 的普通文件；别的补丁文件
+一律拦下 worker。worker 的 `git commit` 如果会提交这类文件，也会被拦。原因是提交检查只能从
+`YOKOTEN_ROLE` 知道谁是 worker，而 Claude Code 的子 agent（比如 `yokoten:worker`）没有这个
+变量。`cat`、`grep` 这种只读不写的命令照常放行。跟拦编辑一样，只在用了 yokoten 的仓库（有
+`yokoten.json`）里才拦。如果任务本来就要改这类文件，lead 启动 worker 时加上
+`YOKOTEN_LEAD_ONLY_OK=AGENTS.md,.github/workflows/ci.yml`：从仓库根目录写起的路径，用逗号
+隔开，带 `*` 的按通配符算。只写一个 `*` 就是放行所有只有 lead 能改的文件。守卫和提交检查
+都会放行这些路径。子 agent 跟 lead 用同一套环境变量，所以这种任务要交给单独开的会话。会话
+开始时，带 `YOKOTEN_ROLE=worker` 的会话会听到 `doctor` 说 "this session is a worker:
+lead-only files are guarded"。单独开的 worker 会话没看到这句话，就是没设这个变量。子 agent
+不会开新会话，所以听不到这句话。
 
 ### DeepSeek Harness
 
@@ -614,7 +632,7 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 | `hook --stop [--agent <name>]` | 收尾检查。从标准输入读这一轮结束的事件，检查改过的文件：默认读 Claude Code 的 Stop；加 `--agent codex` 读 Codex 的 Stop，加 `--agent gemini` 读 Gemini CLI 的 AfterAgent，加 `--agent grok` 读 Grok CLI 的 Stop。见[收尾检查](#收尾检查) |
 | `explain [<id>] [--json]` | 讲一条规则或者路上的一步：它是什么、为什么要有、yokoten 怎么检查 |
 | `uninstall` | 撤掉 `install` 装的东西：带 yokoten 管理标记的技能和 agent、`~/.claude/settings.json` 里它加的两个 hook，还有 `~/.local/share/yokoten`。你自己的文件、别的设置和 `~/.config/yokoten`（密钥、私有词表）都留着。再跑一次什么也不会变 |
-| `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。如果命令是 `gh issue` 或 `gh pr` 的 `create`、`edit`，并且带了标题，它会先按 CI 的规则检查标题；标题不合格就直接拒绝，什么都不会发出去。用 `gh api` 改 issue 或 PR 时，标题也照样检查。它只运行 `gh` 和 `git`，所以 `env gh …`、`sh -c …` 这类写法会被拒绝；gh 的别名（alias）它不认，别名里的标题不会被检查。设置方法见 [server.md](../../server.md#3-the-bot-a-github-app) |
+| `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。如果命令是 `gh issue` 或 `gh pr` 的 `create`、`edit`，并且带了标题，它会先按 CI 的规则检查标题；标题不合格就直接拒绝，什么都不会发出去。用 `gh api` 改 issue 或 PR 时，标题也照样检查。`gh pr create` 和 `gh pr edit` 如果带了 `--body` 或 `--body-file`，正文也会先过一遍：规则和 `check --pr` 里检查正文的那部分一样，看的是这个 PR 的分支改了哪些文件，以及基础分支上的 CODEOWNERS。正文不合格同样直接拒绝，什么都不发出去。它只运行 `gh` 和 `git`，所以 `env gh …`、`sh -c …` 这类写法会被拒绝；gh 的别名（alias）它不认，别名里的标题不会被检查。设置方法见 [server.md](../../server.md#3-the-bot-a-github-app) |
 
 每个命令后面加 `--help` 或 `-h`，就会打出它自己的说明：做什么、有哪些选项、一个例子。
 `yokoten help <命令>` 打出的也一样，`yokoten --help` 列出所有命令，`yokoten version`（或者
@@ -699,6 +717,9 @@ AI 工具还有一条：hook 跑得比它的超时还久，工具就直接放行
   放在 `CLAUDE_CODE_TMPDIR` 里；没设的话放在 `TMPDIR` 里，默认是 `/tmp`。
   常见的情况是重启以后，某个 root 进程先把它建了出来。这时 Claude Code 会拒绝启动。
   提示里会给出 `sudo rm -rf '<文件夹>'`（路径带引号），你自己跑；doctor 从来不删东西。
+- **leftover-temp-folders**：临时文件夹里有放了超过一天的 `yokoten-*` 文件夹。它们是跑测试
+  剩下的，攒到几千个就会把盘占满。完整的 `doctor` 只数个数，不算大小，所以很快。提示里会给出
+  一条 `find ... -exec rm -rf` 命令，只删超过一天的那些，你自己跑；doctor 从来不删东西。
 
 ### 出了问题怎么办
 
@@ -862,20 +883,21 @@ CI。暂存的变更文件里有太长的句子，它也会提醒。还没加进
 commit 或同一个 PR 里。
 
 `check` 会读每个 Markdown 和 HTML 文件的第 1 行，然后看当前分支的提交（只沿第一个父提交
-往回找）：最后一次改译文的提交，和最后一次改英文的提交是同一个，或者更晚，译文就算最新。
-译文改了哪一行都算。
+往回找，找到加进译文的那次提交为止）。有一个提交改了英文、没改译文，译文就落后一个 commit。
+只有后面一个只改译文的提交，才算跟上。英文和译文一起改的提交没问题，但它盖不住前面只改英文
+的提交。所以一个 PR 只改了英文，另一个 PR 两个都改了，不管谁先合，前一个都会被提醒。译文改了
+哪一行都算。
 
 为什么不在这一行记下英文的版本？那样的话，每个改英文的 PR 都得改这一行，两个这样的 PR
 一定会在这一行上冲突。这一行不变，几个 PR 同时改，也只会各改各翻的那几段。
 
-代价是：只改译文的提交也算数。在译文里改个错字，可能就把一处没人翻的英文改动盖过去了。所以
-改错字之前先跑一下 `check`，如果它说译文落后，先把译文补上。
+代价有两个。一是只改译文的提交，算作跟上了它前面所有的英文改动。在译文里改个错字，可能就把
+一处没人翻的英文改动盖过去了。所以改错字之前先跑一下 `check`，如果它说译文落后，先把译文
+补上。二是用 squash 合并时，只改英文的 PR 会一直被提醒，直到有一个只改译文的提交。就算后面
+的 PR 改自己那部分时顺手把它也翻了，提醒也还在。想消掉提醒，就单开一个只改译文的 PR。
 
-还有一个已知的漏洞：一个 PR 只改了英文，先合进去；另一个 PR 英文和译文都改了，后合进去。
-这时 `check` 发现不了。后合的那个是两个文件最后一次的提交，译文看起来是最新的，可前一个 PR
-的英文改动其实没人翻。审只改英文的 PR 时，记得让对方把译文也补上。
-
-工作区里还没提交的改动也这样算：译文改了，就当作更晚的改动；只改了英文、没改译文，译文算落后。
+工作区里还没提交的改动也这样算：只改了译文，就当作更晚的改动；只改了英文，译文算落后；两个
+都改了，就和一个两个都改的提交一样。
 
 译文落后时，`check` 给一条 `translation-behind` 提醒：落后了几个 commit，怎么看英文改了
 什么（`git diff <commit> HEAD -- docs/guide.md`）。提醒不会让 CI 失败。想让它失败，就在
@@ -885,9 +907,10 @@ commit 或同一个 PR 里。
 `<!-- source: docs/guide.md blob 3b18e512dba79e4c8300dd08aeb37f8e728b8dad -->`。
 `check` 照样认。blob 和英文对得上，就算最新；对不上，就按上面的提交来判断。blob 随时可以删掉。
 
-浅克隆里没有 `check` 要比的那些提交。这时 `check` 整次运行只给一条提醒，说译文没检查，
-不会每个文件都报一条。就算设了 `"fail": true`，这条提醒也不会让 CI 失败。CI 里 checkout
-时设 `fetch-depth: 0`，kit 里的 `yokoten.yml` 已经设好了。
+浅克隆里只有最近的几个提交。这些提交够用时，`check` 照常判断；看到的只改英文的提交，就报
+「至少」落后几个 commit。不够用时，`check` 整次运行只给一条提醒，说有几份译文没检查，
+不会每个文件都报一条。就算设了 `"fail": true`，这条提醒也不会让 CI 失败。`check` 从不
+fetch。CI 里 checkout 时设 `fetch-depth: 0`，kit 里的 `yokoten.yml` 已经设好了。
 
 ### 更新规则
 
@@ -1045,6 +1068,7 @@ yokoten learn --upstream "the guard let git push --tags through" --area hook --f
 | 变量 | 管什么 |
 |------|--------|
 | `YOKOTEN_ROLE=worker` | 这个会话是 worker，不能改只有 lead 能改的文件 |
+| `YOKOTEN_LEAD_ONLY_OK` | lead 允许这个 worker 改的那几个文件，从仓库根目录写起，用逗号隔开。见[支持哪些 agent](#支持哪些-agent) |
 | `YOKOTEN_FIX_TASK=1` | 这个会话是修复任务，不能改测试文件 |
 | `YOKOTEN_RELEASE_APPROVAL=1` | 主人允许这个会话发版。没见过 Muse Code 把它传给钩子 |
 | `YOKOTEN_PRIVATE_MARKS` | 私有词表换个路径 |
@@ -1162,6 +1186,10 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 仓库外面，因为「不能公开的东西」这张清单本身也不能公开。查到问题时只报文件和行号，不会把
 词表里的词打印出来。
 
+有些文件本来就要写你的账号名。所以 yokoten 自动加进词表的 forge 登录名，在这几处不算问题：
+CODEOWNERS 里的负责人、`.github/` 里的 `@` 提及、`package.json` 或插件清单里的 author、owner
+这类字段，还有 LICENSE 的版权行。别的地方照样会查出来。你自己写进词表的词，在哪里都会查。
+
 IP 只查 IPv4，内网地址（比如 `10.x`、`192.168.x`）也算；IPv6 不查。本机地址和专门留给文档用的
 几段地址（`192.0.2.0/24` 等三段）不算。浏览器的版本号（比如 `Chrome/120.0.0.0`）不算 IP，
 `logo@2x.png` 这种高清图的文件名也不算邮箱。不过写在 `http://` 后面或者路径里（比如 `api/`
@@ -1240,7 +1268,9 @@ hook 不可能认得所有命令。输出里露出了你的信息，就开一个
 
 - **守卫只看命令文本。** 它看得懂 bash 的写法（引号、heredoc、`bash -c`、`$(...)` 这类替换），
   看不准会跑什么就拦下。但把命令拆开再拼起来，还是能绕过。它防的是失误和走样，不是一把锁。真正
-  的锁在服务器上：分支保护、代码负责人，以及一个没有发版权限、改不了 CI 的 bot。
+  的锁在服务器上：分支保护、代码负责人，以及一个没有发版权限、改不了 CI 的 bot。worker 用
+  shell 写只有 lead 能改的文件，只有命令里写明了这个文件才拦得住：路径来自变量或标准输入
+  （`xargs rm`、`find -exec`、`git apply < x.patch`），或者是脚本自己去写，都拦不住。
 - **服务器设置只能读 GitHub 的。** 换成别的代码托管平台，这几步就标 can't check。bot 的权限 `doctor` 还查不了。
 - **先支持 Claude Code。** agent 按 Claude Code 的格式写。技能用的是公开
   的 SKILL.md 格式，所以 `install` 也会把它们放进 `~/.agents/skills`，Codex、Gemini CLI、

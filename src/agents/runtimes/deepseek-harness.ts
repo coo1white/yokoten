@@ -19,9 +19,9 @@
 //   yokoten writes no stop check here.
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
+import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import { type Added, addHook, checkHooksFile, type HookState, hookState } from '../hooks-file.ts';
 
@@ -105,13 +105,14 @@ export const projectHooksState = (root: string, cli: string): { guard: HookState
 });
 
 /** dsh's home: `DSH_HOME`, else ~/.dsh. */
-export const dshHome = (env: Env): string => env.DSH_HOME || join(env.HOME || homedir(), '.dsh');
+export const dshHome = (env: Env): string => env.DSH_HOME || join(homeIn(env), '.dsh');
 
 /**
  * The profiles that have both packages, read-only; null when there is no dsh home to look
  * in. Having them does not prove the guard runs: only a real deny does.
  */
 export function profilesWithBridge(env: Env): { found: string[]; all: string[] } | null {
+  if (!env.DSH_HOME && !homeOf(env)) return null;
   const profiles = join(dshHome(env), 'profiles');
   let all: string[];
   try {

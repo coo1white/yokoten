@@ -66,6 +66,8 @@ yokoten turns those lessons into something that checks itself:
 | open a pull request | as you, with all your rights | as a bot; nothing merges without you |
 | work in another project | starts from zero | sees what that project is missing, and offers to set it up |
 
+All of this is on from the start, for everyone: you don't answer a question or edit a file to be safe. Every setting that changes it has a way back to the default. [Record 0014](records/0014-safe-by-default.md) says how yokoten decides what it does by itself, what it asks first, and what it never does.
+
 ## Three checks and a lock
 
 ```mermaid
@@ -356,6 +358,24 @@ holds: code owners, and a bot without the rights to change CI. Grok CLI passes
 `YOKOTEN_ROLE` to its hooks, and a subagent whose `subagentType` names a worker is a
 worker too.
 
+The guard stops a worker's shell writes to lead-only files as well as its edits (#402). It
+reads redirects (`>`, `>>`, `>|`, `&>`), `sed -i`, `perl -i`, `tee`, `cp`, `mv`,
+`install`, `ln`, `dd of=`, `truncate`, `rm`, and git's `checkout`, `restore`, `rm`, `mv`
+and `apply`. A redirect counts with its file in quotes or glued to the word before it
+(`echo x>"AGENTS.md"`). For `git apply`, the guard reads the patch to see its files, only
+from a plain file under 1 MB; any other patch file stops a worker. A `git commit` that
+would commit a lead-only file is stopped too: the commit check knows the role only from
+`YOKOTEN_ROLE`, and a Claude Code subagent such as `yokoten:worker` has none. Reads such
+as `cat` and `grep` pass. As for edits, this holds only in a repo that uses yokoten (one
+with a `yokoten.json`). When the brief asks for a change to a lead-only file, the lead
+starts the worker with `YOKOTEN_LEAD_ONLY_OK=AGENTS.md,.github/workflows/ci.yml`: paths
+from the repo root, comma-separated, an entry with `*` read as a glob. `*` alone grants
+every lead-only file. The guard and the commit check let those paths through. A subagent
+shares the lead's environment, so give such a task to a separate session. At session
+start, `doctor` tells a session with `YOKOTEN_ROLE=worker` "this session is a worker:
+lead-only files are guarded". A separate worker session that does not hear it has no role
+set. A subagent starts no session, so it hears nothing.
+
 ### DeepSeek Harness
 
 DeepSeek Harness (`dsh`) runs Claude Code command hooks through a bridge plugin. The
@@ -599,7 +619,11 @@ on `@main`.
 `init` copies the runtime into `.yokoten/` in your project. Commit it: the hooks and CI
 then run with no network and no global install.
 
-`init` keeps a project's own setup working. With a `CLAUDE.md`, it adds an `@AGENTS.md`
+`init` keeps a project's own setup working. An `AGENTS.md` without `## This project` gets
+the core rules on top. Its own text moves under `## This project`, and its headings go one
+level down; nothing else in it changes. `init` prints each heading it moved. When git has
+the old file as it was, `init` prints the command that gives it back. Otherwise it keeps a
+copy in `AGENTS.md.before-yokoten`. YAML front matter stays at the very top. An `AGENTS.md` that is a link stays as it is. With a `CLAUDE.md`, it adds an `@AGENTS.md`
 line at the end, because Claude Code reads `AGENTS.md` only through that import. A
 `.claude/CLAUDE.md` counts too, and gets `@../AGENTS.md` when there is no root one. With
 husky or another `core.hooksPath`, it keeps that folder and adds the commit check to its
@@ -670,7 +694,7 @@ It puts three safe defaults in `.github/` too:
 | `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop event by default, a Codex Stop event with `--agent codex`, a Gemini CLI AfterAgent event with `--agent gemini`, a Grok CLI Stop event with `--agent grok`. See [The stop check](#the-stop-check) |
 | `explain [<id>] [--json]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay. A second run changes nothing |
-| `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
+| `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
 
 Each command prints its own help with `--help` or `-h`: what it does, its options and
 one example. `yokoten help <command>` prints the same, and `yokoten --help` lists the
@@ -763,6 +787,10 @@ Full `doctor` lists them under `machine:` as notes. A note never changes the exi
   This happens when a root process makes the folder first, for example after a restart.
   Claude Code then refuses to start. The note prints `sudo rm -rf '<folder>'`, quoted. Run it
   yourself: doctor never deletes anything.
+- **leftover-temp-folders**: `yokoten-*` folders older than a day in the temp folder.
+  Test runs leave them, and thousands of them fill the disk. Full `doctor` counts them.
+  It does not add up their size, so it stays fast. The note prints a `find ... -exec rm -rf`
+  command that removes only the old ones. Run it yourself: doctor never deletes anything.
 
 ### Troubleshooting
 
@@ -946,27 +974,30 @@ an attribution comment such as `<!-- source: https://example.com/post -->`, or a
 absolute path, is left alone. Write this line once; it never changes. When you change
 the English, update the translation in the same commit or pull request.
 
-`check` reads line 1 of each Markdown and HTML file. Then it compares commits on the
-current branch, first parent only. The translation is current when the last commit that
-changed it is the same as, or later than, the last commit that changed the English. Any
-line of the translation counts.
+`check` reads line 1 of each Markdown and HTML file. Then it reads the commits on the
+current branch, first parent only, back to the commit that added the translation. A
+commit that changes the English but not the translation puts the translation one commit
+behind. Only a later commit that changes only the translation catches up. A commit that
+changes both files is fine, but it does not cover an English-only commit before it. So
+when one pull request changes only the English and another changes both, the first is
+noted, whichever merges first. Any line of the translation counts.
 
 Why not a line that records the English version? Every pull request that changes the
 English would then edit that line. Two such pull requests would always conflict on it.
 With a line that never changes, parallel pull requests touch only the paragraphs they
 translate.
 
-The cost: a commit that changes only the translation also counts. A typo fix in the
-translation can hide an English change that nobody translated. So run `check` before a
-typo fix. If it notes the translation as behind, update the translation first.
+The costs. First, a commit that changes only the translation catches up with every
+English change before it. A typo fix in the translation can hide an English change that
+nobody translated. So run `check` before a typo fix. If it notes the translation as
+behind, update the translation first. Second, with squash merges, an English-only pull
+request stays noted until a commit changes only the translation. This is true even when
+a later pull request translated it along with its own change. To clear the note, update
+the translation in a pull request of its own.
 
-A known gap: a pull request that changes only the English, merged before one that
-changes both files, is not caught. The second one is the last commit for both files, so
-the translation looks current, but the first change was never translated. When you
-review a pull request that changes only the English, ask for the translation too.
-
-In the work tree, an edit to the translation counts as a later change. An edit to the
-English with no edit to the translation makes the translation behind.
+In the work tree, an edit to the translation alone counts as a later change. An edit to
+the English alone makes the translation behind. An edit to both counts as a commit that
+changes both.
 
 When a translation is behind, `check` gives a `translation-behind` note. The note says
 how many commits behind, and how to see the change: `git diff <commit> HEAD -- docs/guide.md`.
@@ -978,16 +1009,18 @@ An older form of line 1 adds the English blob:
 `check` still reads it. A blob equal to the English text is current; otherwise the
 commits decide. You can drop the blob at any time.
 
-A shallow clone does not hold the commits that `check` compares. Then `check` gives one
-note for the whole run, that translations weren't checked, and no note for each file.
-That note never fails, even with `"fail": true`. In CI, use `fetch-depth: 0`; the kit's
-`yokoten.yml` does.
+A shallow clone holds only the newest commits. When they are enough to tell, `check`
+answers as usual; an English-only commit it sees is "at least" that many commits behind.
+When they are not enough, `check` gives one note for the whole run. The note says how
+many translations weren't checked, and there is no note for each file. That note never
+fails, even with `"fail": true`. `check` never fetches. In CI, use `fetch-depth: 0`; the
+kit's `yokoten.yml` does.
 
 ### Updating the rules
 
 When yokoten learns a lesson, its core rules change. `yokoten install` updates the
 skills and agents on your machine. Your project's `AGENTS.md` is your file, so it
-changes only when you ask. `init` never touches it again.
+changes only when you ask. Once it has `## This project`, `init` never touches it again.
 
 `doctor` compares the part of `AGENTS.md` above `## This project` with the core rules
 of the yokoten you run. When they differ, it reports `core-rules`, and a session hears
@@ -1154,6 +1187,7 @@ Environment variables:
 | Variable | What it does |
 |----------|--------------|
 | `YOKOTEN_ROLE=worker` | The session is a worker. It may not change lead-only files |
+| `YOKOTEN_LEAD_ONLY_OK` | The lead-only paths this worker may change, comma-separated, from the repo root. See [Works with](#works-with) |
 | `YOKOTEN_FIX_TASK=1` | The session is a fix task. It may not change test files |
 | `YOKOTEN_RELEASE_APPROVAL=1` | The owner allows a release from this session. Muse Code is not known to pass it to a hook |
 | `YOKOTEN_PRIVATE_MARKS` | Another path for the private-marks file |
@@ -1294,6 +1328,11 @@ your name, your city, your domains, your server names. That file stays outside t
 repo, because a list of what must not be published can't itself be published. A hit
 is reported by file and line; the mark itself is never printed.
 
+Some files must name your account. So the forge login that yokoten added to the marks is
+fine in a CODEOWNERS owner, an `@` mention in `.github/`, an author or owner field of
+`package.json` or a plugin manifest, and a LICENSE copyright line. It is found everywhere
+else. A mark you wrote yourself is found everywhere.
+
 The IP check covers IPv4 only, private ranges such as `10.x` and `192.168.x` included;
 IPv6 is not checked. Localhost and the documentation ranges (`192.0.2.0/24` and its two
 siblings) are fine. Browser version strings such as `Chrome/120.0.0.0` are not
@@ -1392,7 +1431,9 @@ Honest limits:
   substitutions), and they block when they can't tell what runs. A command assembled in
   pieces still gets past them. They catch mistakes and drift; they aren't a lock. The
   lock is on the server: branch protection, code owners, and a bot without the rights to
-  release or change CI.
+  release or change CI. A worker's shell write to a lead-only file is stopped only when
+  the guard sees the file in the command: a path from a variable or stdin (`xargs rm`,
+  `find -exec`, `git apply < x.patch`), or a script that writes it, gets past.
 - **Server settings are read on GitHub only.** Another host shows the server steps as
   **can't check**. `doctor` does not check the bot's rights yet.
 - **Claude Code first.** Agents follow Claude Code's format.

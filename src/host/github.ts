@@ -17,12 +17,11 @@
 import { execFileSync } from 'node:child_process';
 import { createPrivateKey, sign } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { type Finding, finding, formatFinding, place } from '../rules/message.ts';
 import type { CodeOwners, PullRequest } from '../rules/pr.ts';
-import { homeOf } from '../rules/privacy.ts';
+import { homeOf, NO_HOME } from '../rules/privacy.ts';
 import { readGit } from '../run/check.ts';
 import { type Incident, terminalText } from '../run/learn.ts';
 
@@ -39,9 +38,11 @@ export interface BotConfig {
 export function botConfig(env: Env): BotConfig | string {
   const appId = env.YOKOTEN_BOT_APP_ID;
   if (!appId) return 'YOKOTEN_BOT_APP_ID is not set: the App ID from the App\'s settings page (docs/server.md, step 3)';
+  const home = homeOf(env);
+  if (!env.YOKOTEN_BOT_KEY && !home) return `${NO_HOME}: set YOKOTEN_BOT_KEY to the key file's full path`;
   return {
     appId,
-    keyFile: env.YOKOTEN_BOT_KEY || join(env.HOME || homedir(), '.config', 'yokoten', 'bot.pem'),
+    keyFile: env.YOKOTEN_BOT_KEY || join(home as string, '.config', 'yokoten', 'bot.pem'),
     installation: env.YOKOTEN_BOT_INSTALLATION || undefined,
     api: (env.YOKOTEN_GITHUB_API || 'https://api.github.com').replace(/\/$/, ''),
   };
@@ -250,6 +251,31 @@ export function readCodeOwners(root: string, base: string): CodeOwners | null {
     if (existsSync(file)) return { text: readFileSync(file, 'utf8'), from: 'the working tree' };
   }
   return null;
+}
+
+/**
+ * The files a branch changes since it left `base`, as `check --pr` reads them from a pull
+ * request (#406): one `git diff --name-status` of `base...head`, run locally. A rename
+ * counts as its new path, as `--name-only` gives it. Null when git can't read either ref.
+ */
+export function readBranchFiles(root: string, base: string, head: string): { files: string[]; deleted: string[] } | null {
+  let out: string;
+  try {
+    out = execFileSync('git', ['--no-replace-objects', 'diff', '--name-status', '-z', '--end-of-options', `${base}...${head}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch {
+    return null;
+  }
+  const files: string[] = [];
+  const deleted: string[] = [];
+  const parts = out.split('\0');
+  for (let at = 0; at < parts.length - 1; ) {
+    const status = parts[at++];
+    // A rename or a copy names the old path, then the new one.
+    const path = /^[RC]/.test(status) ? parts[(at += 2) - 1] : parts[at++];
+    files.push(path);
+    if (status === 'D') deleted.push(path);
+  }
+  return { files, deleted };
 }
 
 // An issue as GitHub Actions describes it: the event file of an `issues` run. The rule
