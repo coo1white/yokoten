@@ -1604,9 +1604,9 @@ test('init --no-ci: a kit copy with Windows line ends is removed; a symlinked fi
   const sandbox = makeSandbox();
   assert.equal(sandbox.run(['init']).status, 0);
   const workflows = join(sandbox.repo, '.github', 'workflows');
-  // A Windows checkout (core.autocrlf) has CRLF line ends and may lose the last newline.
+  // A Windows checkout (core.autocrlf) has CRLF line ends on every line.
   const pr = join(workflows, 'pr.yml');
-  writeFileSync(pr, readFileSync(pr, 'utf8').replace(/\n/g, '\r\n').replace(/\r\n$/, ''));
+  writeFileSync(pr, readFileSync(pr, 'utf8').replace(/\n/g, '\r\n'));
   // A symlinked file: the file it points at stays, whatever it holds.
   const target = join(sandbox.home, 'issue.yml');
   cpSync(join(workflows, 'issue.yml'), target);
@@ -1802,6 +1802,12 @@ test('init: an AGENTS.md with front matter keeps it on top and says so (#378)', 
 
 const KIT_WORKFLOWS = join(KIT, 'project', '.github', 'workflows');
 
+/** Commit everything in the sandbox repo, so git has the files init may replace. */
+const commitAll = (sandbox: ReturnType<typeof makeSandbox>) => {
+  assert.equal(sandbox.git('add', '-A').status, 0);
+  assert.equal(sandbox.git('commit', '-q', '-m', 'before init').status, 0);
+};
+
 /** The kit's workflow `name` as init writes it into a project. */
 const kitWorkflow = (name: string) => render(readFileSync(join(KIT_WORKFLOWS, name), 'utf8'), { cli: '.yokoten/bin/yokoten.ts', version: VERSION });
 
@@ -1845,10 +1851,11 @@ test('init: updates a kit workflow the project never changed, with its line ends
   // The newest copy with Windows line ends is the same file: kept byte for byte.
   const prCrlf = kitWorkflow('pr.yml').replace(/\n/g, '\r\n');
   sandbox.write('.github/workflows/pr.yml', prCrlf);
+  commitAll(sandbox);
   assert.match(sandbox.run(['doctor']).stdout, /note +kit-workflows: \.github\/workflows\/yokoten\.yml is an older copy of the kit's, and you never changed it; run `yokoten init` to update it/);
   const result = sandbox.run(['init']);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /^updated \.github\/workflows\/yokoten\.yml to the kit's newest copy \(you had not changed it; `git restore \.github\/workflows\/yokoten\.yml` brings the old one back\)$/m);
+  assert.match(result.stdout, /^updated \.github\/workflows\/yokoten\.yml to the kit's newest copy \(you had not changed it; `git restore --source=HEAD -- \.github\/workflows\/yokoten\.yml` brings the old one back\)$/m);
   assert.equal(readFileSync(join(sandbox.repo, '.github/workflows/yokoten.yml'), 'utf8'), kitWorkflow('yokoten.yml').replace(/\n/g, '\r\n'), 'the newest copy, with the line ends the file had');
   assert.match(result.stdout, /^kept \.github\/workflows\/pr\.yml$/m);
   assert.equal(readFileSync(join(sandbox.repo, '.github/workflows/pr.yml'), 'utf8'), prCrlf);
@@ -1890,9 +1897,74 @@ test('compareWorkflow: same, older, changed, missing; Windows line ends compare 
   const hashes = { [rel]: [textHash('old: 1\n'), textHash('new: 2\n')] };
   assert.equal(compareWorkflow(root, rel, 'new: 2\n', hashes), 'missing');
   mkdirSync(join(root, '.github/workflows'), { recursive: true });
-  for (const [text, state] of [['new: 2\r\n', 'same'], ['old: 1\r\n\r\n', 'older'], ['old: 1\nmine: 3\n', 'changed']] as const) {
+  for (const [text, state] of [['new: 2\r\n', 'same'], ['old: 1\r\n', 'older'], ['old: 1\r\n\r\n', 'changed'], ['old: 1\n\n', 'changed'], ['old: 1\nx: 1\r\n', 'changed'], ['old: 1\nmine: 3\n', 'changed']] as const) {
     writeFileSync(join(root, rel), text);
     assert.equal(compareWorkflow(root, rel, 'new: 2\n', hashes), state, JSON.stringify(text));
   }
   assert.equal(compareWorkflow(root, rel, 'new: 2\n', {}), 'changed', 'a file with no list is never taken for a kit copy');
+});
+
+const YML = '.github/workflows/yokoten.yml';
+
+test('init: keeps an old kit workflow that git cannot give back: untracked, or edited since the last commit (#456)', () => {
+  const old = oldYokotenYml();
+  const keptLine = /^kept \.github\/workflows\/yokoten\.yml: it is an older kit copy that is not committed, so commit it and run init again$/m;
+  // Untracked.
+  let sandbox = makeSandbox();
+  sandbox.write(YML, old);
+  let result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, keptLine);
+  assert.equal(readFileSync(join(sandbox.repo, YML), 'utf8'), old);
+  // Tracked, with an uncommitted edit that leaves the text a kit copy: HEAD has other text.
+  sandbox = makeSandbox();
+  sandbox.write(YML, `${old}# committed note\n`);
+  commitAll(sandbox);
+  sandbox.write(YML, old);
+  result = sandbox.run(['init']);
+  assert.match(result.stdout, keptLine);
+  assert.equal(readFileSync(join(sandbox.repo, YML), 'utf8'), old);
+  // Committed, then init, then the way back is true.
+  sandbox = makeSandbox();
+  sandbox.write(YML, old);
+  commitAll(sandbox);
+  result = sandbox.run(['init']);
+  assert.match(result.stdout, /^updated \.github\/workflows\/yokoten\.yml to the kit's newest copy/m);
+  assert.equal(readFileSync(join(sandbox.repo, YML), 'utf8'), kitWorkflow('yokoten.yml'));
+  assert.equal(sandbox.git('restore', '--source=HEAD', '--', YML).status, 0);
+  assert.equal(readFileSync(join(sandbox.repo, YML), 'utf8'), old, 'git restore gives the old text back');
+});
+
+test('init: a file that differs only in line ends or blank lines at the end is the project\'s change, and is kept (#456)', () => {
+  const old = oldYokotenYml();
+  for (const [name, text] of [['one CRLF', old.replace('\n', '\r\n')], ['blank lines at the end', `${old}\n\n`]] as const) {
+    const sandbox = makeSandbox();
+    sandbox.write(YML, text);
+    commitAll(sandbox);
+    const result = sandbox.run(['init']);
+    assert.match(result.stdout, /^kept \.github\/workflows\/yokoten\.yml: it has your changes/m, name);
+    assert.equal(readFileSync(join(sandbox.repo, YML), 'utf8'), text, name);
+  }
+});
+
+test('init: a folder where a kit workflow goes is kept, not a crash (#456)', () => {
+  const sandbox = makeSandbox();
+  mkdirSync(join(sandbox.repo, YML), { recursive: true });
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^kept \.github\/workflows\/yokoten\.yml: it has your changes/m);
+  assert.ok(lstatSync(join(sandbox.repo, YML)).isDirectory());
+});
+
+test('init --no-ci: removes a never-edited old kit workflow, and doctor is quiet about workflows when CI is off (#456)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write(YML, oldYokotenYml());
+  commitAll(sandbox);
+  const result = sandbox.run(['init', '--no-ci']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^removed \.github\/workflows\/yokoten\.yml \(the kit's copy; CI is off\)$/m);
+  assert.ok(!existsSync(join(sandbox.repo, YML)));
+  // An old copy that stays (CI is off, init keeps it): no note to run init.
+  sandbox.write(YML, oldYokotenYml());
+  assert.doesNotMatch(sandbox.run(['doctor']).stdout, /kit-workflows/);
 });

@@ -138,7 +138,21 @@ export const render = (text: string, vars: Record<string, string>): string => te
 /** Text as init compares a project's file with the kit's: Unix line ends, one newline at the end (#456). */
 export const normalizeText = (text: string): string => `${text.replace(/\r\n/g, '\n').replace(/\n*$/, '')}\n`;
 
-/** The SHA-256 of `text` after `normalizeText`, as kit/workflow-hashes.json lists it. */
+/**
+ * A file's text as init compares it with a kit copy: a file whose every line ends in CRLF (a
+ * Windows checkout) in Unix line ends; any other text as it is. A file with one CRLF among LF
+ * lines, or an added blank line at the end, is not the kit's copy (#456).
+ */
+export const lfText = (text: string): string => (text.includes('\r\n') && !/(?:^|[^\r])\n/.test(text) ? text.replace(/\r\n/g, '\n') : text);
+
+/** The SHA-256 of `lfText(text)`: the bytes of a file, except that an all-CRLF file counts as an LF one. */
+export const fileHash = (text: string): string => createHash('sha256').update(lfText(text)).digest('hex');
+
+/**
+ * The SHA-256 of `text` after `normalizeText`, as kit/workflow-hashes.json lists it. A kit
+ * workflow must end in one newline and must not use `{{version}}`: a version in the text
+ * would change its hash with every release and break the old hashes.
+ */
 export const textHash = (text: string): string => createHash('sha256').update(normalizeText(text)).digest('hex');
 
 /** The list of every version of each kit workflow init has written, the newest last (#456). */
