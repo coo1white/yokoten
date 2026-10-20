@@ -83,7 +83,7 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
     // Short flags run together (#290): read as gh reads them, and refused when a letter is unknown.
     await refused(['gh', 'pr', 'create', '-dt', 'feat(host): add a step.'], /title: a full stop at the end\. A commit title has no full stop/);
     await refused(['gh', 'issue', 'create', '-wthost: add a step.'], /title: a full stop at the end\. A title is a name/);
-    await refused(['gh', 'pr', 'create', '-dzt', 'feat(host): add a step'], /title: can't read the title in `-dzt`\. .+\. Write --title on its own\.$/m);
+    await refused(['gh', 'pr', 'create', '-dzt', 'feat(host): add a step'], /title: can't read the title: a run-together short option hides it\. .+\. Write --title on its own\.$/m);
     // gh api on an issue or pull request path (#295): its title= field is checked too.
     await refused(['gh', 'api', 'repos/o/r/issues', '-f', 'title=Broken'], /title: /);
     await refused(['gh', 'api', '-X', 'PATCH', '/repos/o/r/pulls/5', '--field=title=feat(host): add a step.'], /title: a full stop at the end\. A commit title has no full stop/);

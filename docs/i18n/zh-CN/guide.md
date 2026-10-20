@@ -52,6 +52,7 @@ yokoten 把这些经验写成规则，再配上会自己跑的检查：
 | 强推（force push），或者自己打 tag 发版 | 直接就做了 | 还没执行就被拦下，并告诉它为什么 |
 | 测试不过，就去改测试 | 测试通过了，bug 还在 | 修 bug 时不许改测试 |
 | 提交里带上你的邮箱、服务器 IP、所在城市 | 被公开出去 | 提交被拦下；报告只指出哪个文件第几行，不把内容打出来 |
+| 在 issue 或 PR 里贴出你的邮箱或令牌 | 被公开出去 | 发出去之前就被拦下，并告诉它要改什么 |
 | 开 PR | 用你的账号开，权限和你一样大 | 用 bot 账号开；你不点头，什么都合不进去 |
 | 换到另一个项目 | 一切从头来 | 看出这个项目缺什么，问你要不要补上 |
 
@@ -67,7 +68,7 @@ flowchart LR
 
 | | 什么时候跑 | 拦下什么 |
 |-|-----------|---------|
-| **1** | 每次工具调用之前 | 推 tag、强制推送、跳过检查；修复任务里改测试；worker 改规则；项目禁用的程序 |
+| **1** | 每次工具调用之前 | 推 tag、强制推送、跳过检查；修复任务里改测试；worker 改规则；项目禁用的程序；不合标题规则的 issue 或 PR 标题；agent 用 `gh` 发的 issue、PR、评论或发布说明里有个人信息或密钥 |
 | **1b** | Claude Code 的 AI 准备结束这一轮时 | 改过的文件里有没有个人信息、密钥，有没有改了不该改的文件（和提交检查一样）。有问题就把它叫回来改一次 |
 | **2** | 每次提交 | hook 看不到的：用 `sed` 或脚本改的文件、个人信息、超过 7 项的文件夹 |
 | **3** | 每个 PR | 关掉 hook 做出来的提交 |
@@ -724,6 +725,10 @@ issue 标题先写改哪一块，再写要做什么。这样一排 issue 看下�
 `init` 会加上 `.github/workflows/issue.yml`。有人开 issue 或改 issue 时，它跑一次
 `check --issue`。它只读不写：不会去 issue 下面留言，也不会帮你改标题。跑红了，作者自己改标题就行。
 
+agent 起的标题在发出去之前就查。在有 `yokoten.json` 的仓库里，用 `gh issue create|edit` 或
+`gh pr create|edit` 带标题时，不管是直接用 gh 还是经过 `yokoten bot`，工具调用守卫都跑同一套检查。
+标题不对，命令就被拦下，CI 不会看到它。用户级的 hook 不查标题：别的项目有自己的规则。
+
 默认任何小写的模块名都能过。想限定只用哪几个，就在 `yokoten.json` 里列出来：
 `"areas": ["doctor", "check", "docs"]`。列了以后，PR 标题 `type(area): summary` 里的模块名也只能用这几个。
 
@@ -1050,6 +1055,20 @@ IP 只查 IPv4，内网地址（比如 `10.x`、`192.168.x`）也算；IPv6 不�
 这个检查也会查密钥：GitHub、npm、Slack、Stripe、Google、OpenAI 和 Anthropic 的 token，
 AWS 的 access key id，还有 PEM 私钥。查到了只说是哪一种密钥，不会把密钥本身打印出来。光删掉
 不够，git 历史里还留着，得去把它作废，换一个新的。
+
+agent 用 `gh` 发文字之前，工具调用守卫也跑同一套检查。直接用 gh 或经过 `yokoten bot -- gh` 都算：
+
+- `gh issue` 的 `create`、`comment`、`edit`、`close`；`gh pr` 的 `create`、`comment`、
+  `edit`、`review`、`merge`、`close`；`gh release` 的 `create`、`edit`。
+- `--title`、`--body`、`--notes`、`--subject` 里的文字，还有关闭时 `--comment` 的文字。
+- `--body-file`、`--notes-file`、`-F` 指向的文件，前面有 `cd` 也跟着找。找不到文件就拦下命令，
+  请写完整路径。
+- 从标准输入来的正文：heredoc、`<<<`、`< 文件`。
+- `gh api` 的字段和 `--input`，只在会写东西的调用里查：POST、PATCH、PUT，或 GraphQL 的
+  mutation。搜索、GraphQL 查询这类只读的调用直接放行。
+
+查到问题就拦下命令，修法和提交检查一样。公开的地址加进 `privacy.allow`。命令运行时才拼出来的
+文字它看不到：`$(cat notes.md)`、变量、别的程序用管道传进来的内容。文件最多读 1 MB，更大的放行。
 
 ### agent 读到的东西
 

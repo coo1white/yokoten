@@ -579,7 +579,7 @@ test('bash: a heredoc read by a program that is not a shell is data (#196)', () 
   for (const command of [
     'cat > f <<EOF\ngit push --force\nEOF',
     "tee notes.md <<'EOF'\nnpm publish\nEOF",
-    "gh issue create --title x --body-file - <<'EOF'\ngh release create v1\nEOF",
+    "gh issue create --title 'check: add x' --body-file - <<'EOF'\ngh release create v1\nEOF",
     "nice -n 10 node - <<'EOF'\ngit push --tags\nEOF",
     // A word that names a shell or a runner is not the program: a file called sh or script.
     'cat > sh <<EOF\nnpm publish\nEOF',

@@ -17,6 +17,8 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { Config, Env } from './config.ts';
 import { matcher } from './config.ts';
 import { type Finding, finding } from './message.ts';
+import { checkCommandTitle } from './pr.ts';
+import { checkPost, type GhCommand, ghIndex } from './privacy.ts';
 
 /** A file edit, by path relative to the repo root. */
 export function checkEdit(path: string, { config, env }: { config: Config; env: Env }): Finding | null {
@@ -33,9 +35,11 @@ export function checkEdit(path: string, { config, env }: { config: Config; env: 
  * A shell command, as the agent wrote it. `config` brings the programs the project blocks
  * (yokoten.json "commands.block"); without it, only the core rules apply. `cwd` is the
  * folder the command runs in, by default this process's: a change to core.hooksPath reads
- * that repo's setting and hooks.
+ * that repo's setting and hooks. `titles` turns on the title check for gh issues and pull
+ * requests: the hook sets it in a repo with a yokoten.json, never in the user-level hook,
+ * since another project's titles follow its own rules.
  */
-export function checkCommand(command: string, options: { env: Env; config?: Pick<Config, 'commands'>; cwd?: string }): Finding | null {
+export function checkCommand(command: string, options: { env: Env; config?: GuardConfig; cwd?: string; titles?: boolean }): Finding | null {
   // The reader is not a full parser. Whatever goes wrong inside it, the command is refused,
   // never let through: an error here must not open the guard.
   const outerAnswers = gitAnswers;
@@ -50,14 +54,24 @@ export function checkCommand(command: string, options: { env: Env; config?: Pick
 }
 
 // `cwd` is null when the guard cannot tell which repo git works in.
-function checkEachCommand(command: string, { env, config, cwd }: { env: Env; config?: Pick<Config, 'commands'>; cwd: string | null }): Finding | null {
+type GuardConfig = Pick<Config, 'commands'> & Partial<Pick<Config, 'privacy' | 'areas'>>;
+
+function checkEachCommand(command: string, { env, config, cwd, titles = false }: { env: Env; config?: GuardConfig; cwd: string | null; titles?: boolean }): Finding | null {
   const commands = commandWords(command);
+  // Where a gh command reads a relative body file: the folder, followed through each cd.
+  let postCwd = cwd;
   // A command that moves to another folder or repo (`cd x && git config ...`, GIT_DIR=)
   // may change the hooks setting of a repo the guard does not look at.
   if (commands.some(movesRepo)) cwd = null;
   for (const words of commands) {
-    const reason = checkGit(words, { env, config, cwd }) ?? checkHooksEnvironment(words) ?? checkPublish(words, env) ?? checkBlocked(words, config?.commands.block ?? {});
+    const reason =
+      checkGit(words, { env, config, cwd }) ??
+      checkHooksEnvironment(words) ??
+      checkPublish(words, env) ??
+      checkBlocked(words, config?.commands.block ?? {}) ??
+      checkPosted(words, { env, config, cwd: postCwd, command, titles });
     if (reason) return reason;
+    postCwd = folderAfter(words, postCwd, env);
   }
   return null;
 }
@@ -680,6 +694,56 @@ function checkPublish(words: string[], env: Env): Finding | null {
   if (sub !== -1 && gh.slice(sub + 1).some((a) => ['create', 'upload', 'edit'].includes(a))) return release('gh release publishes a release');
   if (after(['npm', 'pnpm', 'yarn']).includes('publish')) return release('this publishes a package');
   return null;
+}
+
+// What a gh command posts (#391). The title of an issue or a pull request gets the title
+// check `yokoten bot` runs, so plain gh can't open one CI then fails. Then the text (an
+// issue, a pull request, a comment, a release note) gets the privacy check: see privacy.ts.
+// The privacy check comes first: a title is checked by it too, and a leak matters more.
+function checkPosted(
+  words: string[],
+  { env, config, cwd, command, titles }: { env: Env; config?: Partial<Pick<Config, 'privacy' | 'areas'>>; cwd: string | null; command: string; titles: boolean },
+): Finding | null {
+  const at = ghIndex(words, findPrograms(words));
+  if (at === -1) return null;
+  const gh = ghCommand(words, at);
+  const leak = checkPost(gh, { env, privacy: config?.privacy, cwd, command });
+  if (leak || !titles) return leak;
+  const [title] = checkCommandTitle([words[at], ...gh.args], config ?? {});
+  return title ?? null;
+}
+
+// The words after gh without the shell's redirects, and what a `< file` or a `<<<` feeds
+// to its stdin. Only an unquoted `<` counts: `--body "<"` is text. The reader does not mark
+// a here-string, so any `<<<` counts: read wrongly, it only adds text to scan.
+function ghCommand(words: string[], at: number): GhCommand {
+  const marks = unquotedRedirects.get(words);
+  const gh: GhCommand = { args: withoutShellRedirects(words, at + 1) };
+  for (let index = at + 1; index < words.length; index++) {
+    if (!marks?.has(index) && !words[index].startsWith('<<<')) continue;
+    const redirect = /^0?(<<<|<)(?![<>&])(.*)$/s.exec(words[index]);
+    if (!redirect) continue;
+    const target = redirect[2] || words[index + 1];
+    if (target === undefined) continue;
+    if (redirect[1] === '<<<') gh.hereString = target;
+    else gh.stdinFile = target;
+  }
+  return gh;
+}
+
+// The folder after a `cd` or `pushd` with a plain path, or null when the guard can't tell:
+// a variable, a substitution, `cd -` or `popd`. Any other command leaves it as it was.
+function folderAfter(words: string[], folder: string | null, env: Env): string | null {
+  const name = programName(words[0] ?? '');
+  if (name === 'popd') return null;
+  if (name !== 'cd' && name !== 'pushd') return folder;
+  const target = words.slice(1).find((word) => !/^-[LPe@]+$/.test(word));
+  if (target === undefined) return env.HOME ?? null;
+  if (target === '-' || /[$`*?[]/.test(target) || /^~[^/]/.test(target)) return null;
+  const path = target.startsWith('~') ? (env.HOME ? join(env.HOME, target.slice(1)) : null) : target;
+  if (path === null) return null;
+  if (isAbsolute(path)) return path;
+  return folder === null ? null : resolve(folder, path);
 }
 
 // ---- Programs the project blocks (#192) ----
