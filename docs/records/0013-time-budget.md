@@ -1,6 +1,6 @@
 # 0013 The hooks have a time budget
 
-Status: accepted; changes the copies part of [0008](0008-npm-package.md)
+Status: accepted
 Date: 2026-10-20 (UTC)
 
 ## Context
@@ -10,18 +10,32 @@ start, and the commit check at every commit. Users feel each millisecond, and th
 says speed matters as much as features (#408).
 
 On a WSL 2 laptop, a guard call took about 88 ms and a session start about 145 ms. A bare
-`node -e ''` took 16 ms. Most of the rest was loading and type-stripping about 45 `.ts`
-modules, not the checks:
+`node -e ''` took 16 ms. Most of the rest was loading yokoten, not the checks:
 
-- Every command loaded every module, doctor and init too.
-- A `.ts` entry loads Node's type stripper first: about 25 ms, before any yokoten code runs.
+- A `.ts` entry makes Node load its type stripper before any yokoten code runs: about
+  25 ms. The compile cache (#286) can't help, because the entry is read before it is on.
+- Every command loaded all of its ~45 modules, doctor and init too.
 - The guard reads each call in a worker thread, so it can stop a read that runs too long
-  (#274). The worker starts a second Node environment and loads the rules again: about
-  30 ms.
-- A session start runs git 16 times, 6 of them to read the same thing again.
+  (#274). The worker starts a second Node environment: about 30 ms, which the hook waited
+  for at the end.
+- A session start asked git the same question three times more than it needed.
 
 ## Decision
 
+- **The agent hooks run `bin/yokoten.mjs`.** It is plain JavaScript, so Node starts it
+  without the type stripper. It turns on the compile cache, then loads the `.ts` command.
+  On a warm run every module comes from the cache, and the stripper never loads.
+  `init` and `install` write the new path, and the plugin uses it too. `bin/yokoten.ts`
+  still works and loads the same file. The git hook, CI and the docs keep it. Doctor and
+  setup find a hook by either name, so `init` updates an old hook in place.
+- **The cache lives in the user's cache folder:** `~/.cache/yokoten` (or
+  `$XDG_CACHE_HOME`), `~/Library/Caches/yokoten` on macOS, `%LOCALAPPDATA%\yokoten\cache`
+  on Windows. A restart may empty the temp folder, and then every hook starts cold.
+  `NODE_COMPILE_CACHE` still names another folder.
+- **Each command loads its own modules only.** A guard call never loads doctor or init.
+- **The guard starts its worker first,** before the command loads. The worker then starts
+  while the hook loads and reads the call.
+- **Doctor asks git each question once per run.**
 - **A budget, checked in CI.** `scripts/bench.ts` makes a new repo with `init` and runs
   each hook entry from its `.yokoten/` copy, as the hooks do: the guard on a Bash call and
   on an Edit call, the session start, and the commit check. It runs at low priority and
@@ -32,40 +46,31 @@ modules, not the checks:
   |---|---|---|
   | Guard (Bash, Edit) | 100 ms | 200 ms |
   | Session start | 130 ms | 260 ms |
-  | Commit check | 100 ms | 200 ms |
+  | Commit check | 150 ms | 300 ms |
 
-  On the laptop above they now take about 75, 90 and 60 ms. The budget leaves room for a
-  slower runner. Lower it when CI shows it can hold less, and when a change below lands.
-- **A copy runs a prebuilt bundle.** `npm run build` (and so `npm pack`) bundles
-  `bin/` and `src/` with esbuild into `bin/bundle/`: `main.mjs` for the command, and
-  `guard.mjs` for the guard's worker. `bin/bundle/` is git-ignored. `install` and `init`
-  copy it only when its `sources.sha256` matches the `.ts` files they copy. A copy (it has
-  a `VERSION` file) runs the bundle when it has one; the repo never does. So the bundle is
-  always the code next to it, and a stale build can't run.
-- **The hook path stays `bin/yokoten.ts`.** No hook, workflow or doc changes.
-- **Each command loads its own modules only.** A guard call never loads doctor or init.
-- **The guard starts its worker first.** The worker starts while the rest of the hook
-  loads and reads the call.
-- esbuild is a dev dependency. yokoten still has no runtime dependency.
+  On the laptop above, a guard call now takes about 0.63 times as long as before, and a
+  session start about 0.7 times. The commit check still runs `yokoten.ts`, so it gains
+  less, and its budget is wider. The budget leaves room for a slower runner. Lower it
+  when CI shows it can hold less.
 
 ## Options not taken
 
-- **Commit the bundle.** It is build output, and it would go stale between builds. The
-  hash check gives the same speed to every copy without that.
+- **A prebuilt bundle in each copy.** Bundling `bin/` and `src/` with esbuild was about
+  10% faster again. But it put a 640 kB generated file in every project's committed
+  `.yokoten/`, so each update would be a diff no one can read. The plugin runs from a
+  clone and could not use it. And it needed a dev dependency and a check that the bundle
+  is current.
 - **Run the guard without a worker.** It is about 30 ms faster, but a read that runs too
   long could no longer be stopped, and the runtimes let the call through on their own
   timeout (#274).
-- **A `.mjs` entry for the hooks.** It saves the type stripper's 25 ms on every call. But
-  every hook command, the plugin, the git hook, the workflows and the docs name
-  `yokoten.ts`, and doctor finds yokoten's hooks by that name. That is its own change.
+- **Switch every path to `yokoten.mjs`.** The commit check would gain too, but the git
+  hook, the workflows and the docs show `yokoten.ts` to people. That is a larger change
+  for less: a commit is rarer than a tool call.
 
 ## Consequences
 
-- A copy is about 640 kB bigger: the bundle holds the code a second time.
-- The Claude Code plugin runs from a clone of the repo, which has no bundle. It gets the
-  lazy imports and the early worker, not the bundle.
-- A copy edited by hand runs its bundle, not the edits. Copies are yokoten's to replace
-  whole, and `init` and `install` write them again.
-- The `.mjs` entry and fewer git calls at session start are the next steps under the
-  budget. Together they would make the guard and session start about twice as fast as
-  before this record.
+- The first call after an update, or after the cache folder is emptied, loads the type
+  stripper and fills the cache; the next ones are fast.
+- A hook that an older yokoten wrote runs `yokoten.ts` until `yokoten init` runs again. It
+  is correct, only slower.
+- `uninstall` leaves the cache folder. It holds only Node's compiled code.

@@ -1,8 +1,9 @@
 Changed
 
-The hooks start faster (#408, record 0013). A copy of yokoten (`install`, `init`) now runs
-a prebuilt bundle of its code. A hook no longer loads and type-strips about 45 `.ts` files.
-Each command loads only its own code, and the guard starts its worker first. On a WSL 2
-laptop, a guard call went from about 100 ms to 75 ms. A session start went from 105 ms to
-90 ms, and the commit check from 80 ms to 60 ms. `scripts/bench.ts` measures them, and CI
-fails when one goes over its budget.
+The hooks start faster (#408, record 0013). The agent hooks now run `bin/yokoten.mjs`,
+which needs no type stripping, and keep Node's compile cache in the user's cache folder.
+Run `yokoten init` (and `yokoten install`) again to move older hooks to it; `yokoten.ts`
+still works. Each command loads only its own code, the guard starts its worker first, and
+doctor asks git each question once. On a WSL 2 laptop, a guard call takes about 0.63 times
+as long as before, and a session start about 0.7 times. `scripts/bench.ts` measures the
+hooks, and CI fails when one goes over its budget.

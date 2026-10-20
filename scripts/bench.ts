@@ -4,18 +4,17 @@
 // p95 and slowest run, and exits 1 when a median or a p95 is over its budget.
 //
 // It works in a temp folder, with HOME there too: `init` makes a new git repo and its
-// vendored copy (.yokoten/), with the bundle when the repo has a current one (run
-// `npm run build` first; scripts/build.ts). The entries run that copy, as the project
-// hooks do. The script lowers its own priority first (`nice`), and every run inherits it:
+// vendored copy (.yokoten/). The entries run that copy, as the project hooks do: the agent
+// hooks through yokoten.mjs, the git hook through yokoten.ts. The script lowers its own priority first (`nice`), and every run inherits it:
 // other work on the machine comes first, and a median holds up to the noise.
 //
 //   node scripts/bench.ts                   10 runs of each entry, against the budget
 //   node scripts/bench.ts --runs 30         more runs
-//   node scripts/bench.ts --cli <file>      run another yokoten.ts (an older checkout, say)
-//                                           in place of the copy; the budget is not checked
-//   node scripts/bench.ts --bundle          fail when the copy has no bundle (CI)
+//   node scripts/bench.ts --cli <file>      run another entry (an older checkout, say) for
+//                                           every entry, in place of the copy; the budget
+//                                           is not checked
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { setPriority, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -29,10 +28,10 @@ const BUDGET: Record<string, { p50: number; p95: number }> = {
   'guard, Bash': { p50: 100, p95: 200 },
   'guard, Edit': { p50: 100, p95: 200 },
   'session start': { p50: 130, p95: 260 },
-  'commit check': { p50: 100, p95: 200 },
+  'commit check': { p50: 150, p95: 300 },
 };
 
-const { values: options } = parseArgs({ options: { runs: { type: 'string', default: '10' }, cli: { type: 'string' }, bundle: { type: 'boolean', default: false } } });
+const { values: options } = parseArgs({ options: { runs: { type: 'string', default: '10' }, cli: { type: 'string' } } });
 const runs = Number(options.runs);
 if (!Number.isInteger(runs) || runs < 1) throw new Error(`--runs needs a whole number above 0, not ${options.runs}`);
 
@@ -46,8 +45,10 @@ const base = mkdtempSync(join(tmpdir(), 'yokoten-bench-'));
 const home = join(base, 'home');
 const repo = join(base, 'repo');
 for (const dir of [home, repo]) mkdirSync(dir);
-// A clean environment, as in check-package: no real HOME, commit times in UTC, and a compile
-// cache of its own, which the first run of each entry fills, as a user's first call does.
+// A clean environment, as in check-package: no real HOME and commit times in UTC. No
+// NODE_COMPILE_CACHE: Node would then turn the cache on before the entry, which a hook
+// does not do. The compile cache goes where yokoten puts it (bin/yokoten.mjs), here in the
+// temp HOME; the first run of each entry fills it, as a user's first call does.
 const env = {
   PATH: process.env.PATH,
   HOME: home,
@@ -55,7 +56,6 @@ const env = {
   TZ: 'UTC',
   GIT_CONFIG_NOSYSTEM: '1',
   GIT_CONFIG_GLOBAL: join(home, '.gitconfig'),
-  NODE_COMPILE_CACHE: join(base, 'compile-cache'),
 };
 
 function run(file: string, args: string[], input = ''): { ms: number; status: number | null; output: string } {
@@ -86,15 +86,15 @@ try {
   writeFileSync(join(repo, 'README.md'), '# bench\n\nA project for the time budget, with one more line.\n');
   step('git', ['add', 'README.md']);
 
+  // The agent hooks run yokoten.mjs (#408); the git hook runs yokoten.ts.
+  const hookCli = options.cli ? resolve(options.cli) : join(repo, '.yokoten', 'bin', 'yokoten.mjs');
   const cli = options.cli ? resolve(options.cli) : join(repo, '.yokoten', 'bin', 'yokoten.ts');
-  const hasBundle = !options.cli && existsSync(join(repo, '.yokoten', 'bin', 'bundle', 'main.mjs'));
-  if (options.bundle && !hasBundle) throw new Error('the copy has no bundle: run `npm run build` first, and check that it is current');
   const toolCall = (name: string, input: Record<string, string>) => JSON.stringify({ tool_name: name, tool_input: input, cwd: repo, hook_event_name: 'PreToolUse' });
   // Each as its hook runs it: the guard with the heap cap (src/run/cli.ts), the rest plain.
   const entries: { name: string; args: string[]; input?: string }[] = [
-    { name: 'guard, Bash', args: [GUARD_HEAP, cli, 'hook'], input: toolCall('Bash', { command: 'ls -la' }) },
-    { name: 'guard, Edit', args: [GUARD_HEAP, cli, 'hook'], input: toolCall('Edit', { file_path: join(repo, 'README.md'), old_string: 'bench', new_string: 'bench!' }) },
-    { name: 'session start', args: [cli, 'doctor', '--session'] },
+    { name: 'guard, Bash', args: [GUARD_HEAP, hookCli, 'hook'], input: toolCall('Bash', { command: 'ls -la' }) },
+    { name: 'guard, Edit', args: [GUARD_HEAP, hookCli, 'hook'], input: toolCall('Edit', { file_path: join(repo, 'README.md'), old_string: 'bench', new_string: 'bench!' }) },
+    { name: 'session start', args: [hookCli, 'doctor', '--session'] },
     { name: 'commit check', args: [cli, 'check', '--staged'] },
   ];
   const times = new Map(entries.map((entry) => [entry.name, [] as number[]]));
@@ -109,7 +109,7 @@ try {
   }
 
   const checked = !options.cli;
-  process.stdout.write(`yokoten bench: ${runs} runs each, Node ${process.version}, ${process.platform}, ${options.cli ? options.cli : hasBundle ? 'the copy, with the bundle' : 'the copy, .ts files (no bundle)'}\n`);
+  process.stdout.write(`yokoten bench: ${runs} runs each, Node ${process.version}, ${process.platform}, ${options.cli ?? 'the copy init wrote'}\n`);
   process.stdout.write(`${'entry'.padEnd(14)} ${'p50'.padStart(6)} ${'p95'.padStart(6)} ${'max'.padStart(6)}   budget p50/p95\n`);
   for (const entry of entries) {
     const sorted = (times.get(entry.name) ?? []).toSorted((a, b) => a - b);

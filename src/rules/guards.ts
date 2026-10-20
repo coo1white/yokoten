@@ -481,11 +481,11 @@ function hooksFolder(root: string, setting: string): string | null {
 // `[ -f <cli> ] || { echo '...' >&2; exit 1; }; node <cli> check` (with `2>/dev/null` after
 // the `]`, as `yokoten init` writes it).
 //
-// The program is yokoten itself: `yokoten` or `yokoten.ts`, bare or quoted, or under
+// The program is yokoten itself: `yokoten`, `yokoten.ts` or `yokoten.mjs` (#408), bare or quoted, or under
 // node_modules/.bin, bin/ or .yokoten/. `./fake-yokoten` is some other program. The check
 // takes only --staged and --json (`check --pr` reads a pull request, not the commit). After
 // it comes nothing, a `;`, or `|| exit` with no code, a code not 0, or `$?`.
-const CLI = String.raw`(?:yokoten(?:\.ts)?|(?:\./)?(?:node_modules/\.bin/yokoten|bin/yokoten(?:\.ts)?|\.yokoten/(?:bin/)?yokoten(?:\.ts)?))`;
+const CLI = String.raw`(?:yokoten(?:\.ts|\.mjs)?|(?:\./)?(?:node_modules/\.bin/yokoten|bin/yokoten(?:\.ts|\.mjs)?|\.yokoten/(?:bin/)?yokoten(?:\.ts|\.mjs)?))`;
 const PROGRAM = String.raw`(?:"${CLI}"|'${CLI}'|${CLI})`;
 const RUNNER = String.raw`(?:(?:npx(?:\s+--no-install|\s+--no(?:\s+--)?)?|pnpm\s+exec|yarn|bunx)\s+)?(?:node\s+)?`;
 const CHECK_TAIL = String.raw`\s+check(?:\s+--(?:staged|json))*(?<stop>\s*\|\|\s*exit(?:\s+(?:[1-9]\d*|\$\?))?)?(?:\s*;)?$`;

@@ -35,7 +35,7 @@ import { commentedFile, HAND_ADD, handAddJson, type HookState, mergeHandAdds } f
 import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
 import { readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advice/unsaved.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
-import { cliPath, compareCoreRules, compareVersions, isSelf, readCoreRules, summarizeUpdate } from './init.ts';
+import { compareCoreRules, compareVersions, hookCliPath, isSelf, readCoreRules, summarizeUpdate, withGitReads } from './init.ts';
 export { machineStateFile } from './install.ts';
 import { countOwnMarks, fillMarks, filledLine, trySafely, installedPieces, machineMarks, machineStateFile, mailmapState, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
 import { type Mark, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
@@ -140,7 +140,7 @@ export function agentHooks(root: string, env: Env, platform: string = process.pl
     [...(guard ? [] : ['no tool-call guard']), ...(stop ? [] : ['no stop check'])].join(' and ') + ` in ${file}`;
   const [codexGuard, codexStop] = [codex.hasProjectHook(root), codex.hasProjectStopHook(root)];
   const [geminiGuard, geminiStop] = [gemini.hasProjectHook(root), gemini.hasProjectStopHook(root)];
-  const geminiState = geminiGuard && geminiStop ? null : gemini.projectHooksState(root, cliPath(root));
+  const geminiState = geminiGuard && geminiStop ? null : gemini.projectHooksState(root, hookCliPath(root));
   // Copilot CLI reads Claude Code's hooks: the road checks the file, this line only the trust,
   // and only when Copilot looks used here.
   const copilotTrust = copilot.readTrust(root, env);
@@ -158,9 +158,9 @@ export function agentHooks(root: string, env: Env, platform: string = process.pl
       : practice('codex-hook', 'codex-hook', false, missing(codexGuard, codexStop, '.codex/hooks.json'), '`yokoten init` adds it'),
     (geminiState && handAddPractice('gemini-hook', '.gemini/settings.json', [geminiState.guard, geminiState.stop])) ??
       practice('gemini-hook', 'gemini-hook', geminiGuard && geminiStop, missing(geminiGuard, geminiStop, '.gemini/settings.json'), '`yokoten init` adds it'),
-    antigravityPractice(antigravity.projectHookState(root, cliPath(root))),
-    musePractice(muse.projectHooksState(root, cliPath(root)), () => muse.readTrust(root, env)),
-    platform === 'win32' ? practice('deepseek-harness-hook', 'deepseek-harness-hook', false, dsh.WINDOWS_GAP, 'nothing to do yet: issue #332 adds a PowerShell guard') : dshPractice(dsh.projectHooksState(root, cliPath(root)), dsh.profilesWithBridge(env)),
+    antigravityPractice(antigravity.projectHookState(root, hookCliPath(root))),
+    musePractice(muse.projectHooksState(root, hookCliPath(root)), () => muse.readTrust(root, env)),
+    platform === 'win32' ? practice('deepseek-harness-hook', 'deepseek-harness-hook', false, dsh.WINDOWS_GAP, 'nothing to do yet: issue #332 adds a PowerShell guard') : dshPractice(dsh.projectHooksState(root, hookCliPath(root)), dsh.profilesWithBridge(env)),
   ];
 }
 
@@ -240,7 +240,7 @@ export const OUTPUT_STOP = 'to stop those commands there instead, set "privacy":
 function usesOtherAgent(env: Env, root: string | null): boolean {
   if (codex.hasUserDir(env) || gemini.hasUserDir(env)) return true;
   if (!root) return false;
-  const cli = cliPath(root);
+  const cli = hookCliPath(root);
   return codex.hasProjectHook(root) || gemini.hasProjectHook(root) || antigravity.projectHookState(root, cli) === 'same' || muse.projectHooksState(root, cli).guard === 'same' || dsh.projectHooksState(root, cli).guard === 'same';
 }
 
@@ -989,8 +989,13 @@ export interface DoctorReport {
   lessons?: { id: string; mark: LessonCheck['mark']; reason?: string; isNew?: boolean }[];
 }
 
-/** The report, as text lines and as data, and whether doctor found no problem. */
-export function doctor(
+/**
+ * The report, as text lines and as data, and whether doctor found no problem. Each git
+ * answer is kept for the run (`withGitReads`, #408).
+ */
+export const doctor = (root: string | null, options: Parameters<typeof doctorRun>[1]): ReturnType<typeof doctorRun> => withGitReads(() => doctorRun(root, options));
+
+function doctorRun(
   root: string | null,
   { env, config, session = false, gh, fillMarks: isFilling = false, machine: probe = REAL_MACHINE }: { env: Env; config: Config; session?: boolean; gh?: Gh; fillMarks?: boolean; machine?: MachineProbe },
 ): { ok: boolean; lines: string[]; report: DoctorReport } {

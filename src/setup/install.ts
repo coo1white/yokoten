@@ -46,7 +46,7 @@ export const paths = (env: Env, system: () => string = systemHome) => {
 };
 
 /** The runtime the user hooks run, and what they say when it is gone. `doctor` compares the hooks with these. */
-export const USER_CLI = '"$HOME/.local/share/yokoten/bin/yokoten.ts"';
+export const USER_CLI = '"$HOME/.local/share/yokoten/bin/yokoten.mjs"';
 export const USER_MISSING = 'yokoten: the runtime at ~/.local/share/yokoten is missing; run the install again';
 
 /** Every place a skill goes: Claude Code's folder, and the shared one other agents read. */

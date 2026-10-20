@@ -5,6 +5,7 @@
 // runtime's own call into an `Action` first.
 
 import { existsSync, realpathSync } from 'node:fs';
+import module from 'node:module';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 import { type Config, DEFAULTS, type Env, type IgnoredPart, loadConfig } from '../rules/config.ts';
@@ -105,18 +106,14 @@ export function guardDeadline(value: string | undefined): number {
 type JudgeOptions = Parameters<typeof judge>[1];
 
 // A worker does not share the main thread's compile cache, so it turns the cache on
-// itself, then loads this module (#286). It starts as plain JavaScript: this module's
-// imports are compiled before any of its code runs, and the cache must be on by then.
-// An error from the cache is ignored, as in bin/yokoten.ts.
-// In the bundle (scripts/build.ts), YOKOTEN_GUARD_WORKER names the worker's own file next
-// to it, which holds the rules and not the whole command (#408). The .ts files leave it
-// undefined, and the worker loads this module.
-declare const YOKOTEN_GUARD_WORKER: string | undefined;
-const WORKER_MODULE = typeof YOKOTEN_GUARD_WORKER === 'string' ? new URL(YOKOTEN_GUARD_WORKER, import.meta.url).href : import.meta.url;
-const WORKER_START = `
+// itself, in the main thread's folder (bin/yokoten.mjs), then loads this module (#286).
+// It starts as plain JavaScript: this module's imports are compiled before any of its
+// code runs, and the cache must be on by then. An error from the cache is ignored, as in
+// bin/yokoten.mjs.
+const workerStart = (cacheDir = module.getCompileCacheDir?.()) => `
 const { enableCompileCache } = require('node:module');
-try { enableCompileCache?.(); } catch {}
-import(${JSON.stringify(WORKER_MODULE)});
+try { enableCompileCache?.(${cacheDir === undefined ? '' : JSON.stringify(cacheDir)}); } catch {}
+import(${JSON.stringify(import.meta.url)});
 `;
 
 /** The guard worker's stack, in MB: about the main thread's. */
@@ -139,7 +136,7 @@ export function startGuard(): Guard {
   // The main thread's stack (V8's default, just under 1 MB), not a worker's default 4 MB:
   // the guard reads a command the same way in the worker as in `judge`, so a command too
   // deep to read there is refused here too, not let through.
-  const worker = new Worker(WORKER_START, { eval: true, workerData: { yokotenJudge: true }, resourceLimits: { stackSizeMb: WORKER_STACK_MB } });
+  const worker = new Worker(workerStart(), { eval: true, workerData: { yokotenJudge: true }, resourceLimits: { stackSizeMb: WORKER_STACK_MB } });
   worker.unref();
   let ended: string | null = null;
   let onEnd: (what: string) => void = () => {};
@@ -169,6 +166,21 @@ export function startGuard(): Guard {
         worker.postMessage({ action, options: { ...options, env: { ...options.env } } });
       }),
   };
+}
+
+// The worker bin/yokoten.mjs starts before it loads the command, for `takeGuard`.
+let early: Guard | null = null;
+
+/** Start the guard's worker for the tool call to come, before anything else loads; `takeGuard` hands it on. */
+export function startGuardEarly(): void {
+  early ??= startGuard();
+}
+
+/** The worker `startGuardEarly` started, once, or else a new one. */
+export function takeGuard(): Guard {
+  const guard = early ?? startGuard();
+  early = null;
+  return guard;
 }
 
 /**

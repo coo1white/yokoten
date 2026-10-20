@@ -30,7 +30,7 @@ import {
   onToolCall,
 } from '../repo/helpers.ts';
 import { hasHook } from '../../src/agents/hooks-file.ts';
-import { BUNDLE, BUNDLE_SOURCES, copyRuntime, sourceHash } from '../../src/setup/files.ts';
+import { copyRuntime } from '../../src/setup/files.ts';
 import { install, machineStateFile, machineUserNames, paths, type UserNameProbe } from '../../src/setup/install.ts';
 import { makeRedactor } from '../../src/rules/privacy.ts';
 
@@ -185,7 +185,7 @@ test('install: the session doctor and the command guard for Codex and Gemini CLI
   mkdirSync(dirname(geminiFile));
   writeFileSync(codexFile, JSON.stringify({ description: 'ours', hooks: mine('PreToolUse') }));
   writeFileSync(geminiFile, JSON.stringify({ theme: 'x', hooks: mine('BeforeTool') }));
-  const cli = '"$HOME/.local/share/yokoten/bin/yokoten.ts"';
+  const cli = '"$HOME/.local/share/yokoten/bin/yokoten.mjs"';
   const line = 'yokoten: the runtime at ~/.local/share/yokoten is missing; run the install again';
   const atStart = (args: string) => `[ -f ${cli} ] 2>/dev/null || { echo '${line}'; exit 0; }; node ${cli} ${args}`;
   const onCall = (args: string) => onToolCall(`[ -f ${cli} ] 2>/dev/null || { echo '${line}' >&2; exit 1; }; `, cli, args);
@@ -423,26 +423,6 @@ test('install: a rename that fails leaves the old copy and no temp folder (#204)
   assert.throws(() => copyRuntime(dest, { withKit: true, rename: failing }), /busy/);
   assert.equal(readFileSync(join(dest, 'VERSION'), 'utf8'), 'old\n', 'the old copy is in place');
   assert.deepEqual(readdirSync(dirname(dest)), ['yokoten'], 'no temp folder is left next to it');
-});
-
-// #408: a copy runs the bundle in place of its .ts files, so the bundle must be built from
-// those same files. A stale one (a source changed after the build) stays behind.
-test('install: a copy takes the bundle only when it was built from the .ts files it copies (#408)', () => {
-  const sandbox = makeSandbox();
-  const home = join(sandbox.home, 'runtime');
-  for (const [path, text] of Object.entries({ 'bin/yokoten.ts': '// entry\n', 'src/a.ts': 'export const a = 1;\n', 'package.json': '{}', 'kit/project/AGENTS.md': '# rules\n', [join(BUNDLE, 'main.mjs')]: '// bundle\n' })) {
-    mkdirSync(dirname(join(home, path)), { recursive: true });
-    writeFileSync(join(home, path), text);
-  }
-  writeFileSync(join(home, BUNDLE, BUNDLE_SOURCES), `${sourceHash(home)}\n`);
-  const dest = join(sandbox.repo, '.yokoten');
-  assert.equal(copyRuntime(dest, { home }), 'wrote');
-  assert.ok(existsSync(join(dest, BUNDLE, 'main.mjs')), 'a current bundle is copied');
-  assert.equal(sourceHash(dest), sourceHash(home), 'the copy has the same .ts files');
-  // Positive control: the same copy after a source changed has no bundle.
-  writeFileSync(join(home, 'src', 'a.ts'), 'export const a = 2;\n');
-  assert.equal(copyRuntime(dest, { home }), 'wrote');
-  assert.ok(existsSync(join(dest, 'src', 'a.ts')) && !existsSync(join(dest, BUNDLE)), 'a stale bundle is left out');
 });
 
 test('install: temp folders that an earlier crash left are removed, and only those (#204)', () => {

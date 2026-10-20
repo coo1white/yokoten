@@ -49,8 +49,8 @@ function main(): number | Promise<number> {
   }
   switch (cmd) {
     case 'hook': {
-      // The tool-call guard starts its worker first, so the worker starts while the rest loads (#408).
-      const guard = args.includes('--stop') ? undefined : import('../src/run/hook.ts').then((m) => m.startGuard());
+      // The tool-call guard's worker, which bin/yokoten.mjs started before this file loaded (#408).
+      const guard = args.includes('--stop') ? undefined : import('../src/run/hook.ts').then((m) => m.takeGuard());
       return Promise.all([guard, import('../src/commands/hook.ts')]).then(([started, m]) => m.runHook(started));
     }
     case 'check':

@@ -5,11 +5,11 @@
 // npx, npx --yes, bunx, pnpm dlx, npm exec. "yokoten-check" or "echo npx yokoten" is not one.
 const PACKAGE_RUN = String.raw`^[ \t]*(?:npx|bunx|pnpm[ \t]+dlx|npm[ \t]+exec)(?:[ \t]+-\S+)*[ \t]+yokoten(?:@[\w.^~-]+)?`;
 
-/** A command that runs yokoten's `<sub>`, by whatever path, or by a package runner (#298). */
-export const runs = (sub: string): RegExp => new RegExp(`(?:yokoten\\.ts"?|${PACKAGE_RUN})\\s+${sub}\\b`, 'm');
+/** A command that runs yokoten's `<sub>`, by whatever path (yokoten.ts or, since #408, yokoten.mjs), or by a package runner (#298). */
+export const runs = (sub: string): RegExp => new RegExp(`(?:yokoten\\.(?:ts|mjs)"?|${PACKAGE_RUN})\\s+${sub}\\b`, 'm');
 
 /** The yokoten subcommand a command runs, if any. The word ends at a `;`, as in a tool-call guard (#260). */
-export const subcommand = (command: string): string | undefined => command.match(/yokoten\.ts"?\s+(\w[\w-]*)/)?.[1];
+export const subcommand = (command: string): string | undefined => command.match(/yokoten\.(?:ts|mjs)"?\s+(\w[\w-]*)/)?.[1];
 
 /**
  * A hook command that runs `node <path> <args>`, with `path` quoted for the shell. When the
