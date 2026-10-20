@@ -544,16 +544,25 @@ node ~/.local/share/yokoten/bin/yokoten.ts init     # this project: adds files, 
 node ~/.local/share/yokoten/bin/yokoten.ts doctor   # the road: where you are, what's next
 ```
 
-A clone install puts no `yokoten` command on your PATH, but yokoten's messages say
-`yokoten init` and `yokoten doctor`. So `install` ends with this line for your shell
-profile (`~/.bashrc` or `~/.zshrc`). Add it yourself, then open a new shell:
+yokoten's messages say `yokoten init` and `yokoten doctor`. So `install` puts a small
+`yokoten` launcher in `~/.local/bin` (`yokoten.cmd` on Windows). That folder is on the
+PATH on most setups, so `yokoten` works in the next shell you open. The launcher runs
+`bin/yokoten.mjs`, the same fast entry the hooks run. The next `install` rewrites a
+launcher that an older install wrote.
+
+When `~/.local/bin` is not on your PATH, `install` asks once:
+`Add ~/.local/bin to your PATH in ~/.bashrc? [Y/n]` (`~/.zshrc` for zsh). On yes, it adds
+this one line to that file. On no, it prints the line for you to add:
 
 ```sh
-alias yokoten='node ~/.local/share/yokoten/bin/yokoten.ts'
+export PATH="$HOME/.local/bin:$PATH" # added by yokoten
 ```
 
-yokoten never edits your shell profile. When a `yokoten` on your PATH already runs this
-copy, `install` leaves the line out.
+yokoten edits your shell profile only after that yes. It never asks, and never edits,
+when no one is at the terminal: in a pipe, a hook or CI. A `~/.local/bin/yokoten` that
+yokoten did not write stays as it is, and `install` names it. `uninstall` removes the
+launcher and the marked line. `doctor` notes when no `yokoten` on your PATH runs the
+installed copy.
 
 These commands, and the npx ones, are also in [docs/facts.json](facts.json), which the
 website reads, so a change to them goes in both places.
@@ -777,7 +786,7 @@ value.
   `history`, `pr` or `issue`. A note never fails the check. When the CI run has no
   pull request or issue, `check --pr` and `check --issue` are ok and add `skipped`, the reason.
 - `doctor --json`: `{ version, ok, selfTest, repo, stage, stages, next, findings, steps,
-  notes, server, lessons }`. The findings of a lesson are in `notes`; a new lesson has `isNew: true`. With `--session`, only the next step, the private-marks finding, and `core-rules` when the rules are behind. Then `notes` holds the work only on this machine, if there is any.
+  notes, server, lessons }`. The findings of a lesson are in `notes`; a new lesson has `isNew: true`. With `--session`, only the next step, the private-marks finding, and `core-rules` when the rules are behind. Then `notes` holds the work only on this machine and the findings of a lesson the session just heard about, if there are any.
 - `hook --json`: `{ blocked: true, finding }` when it blocks, `{ blocked: false, toolCall: true }`
   when it allows, and `{ blocked: false, toolCall: false }` when stdin is not a tool call.
   The runtimes do not use it: they read the exit code and the reason on stderr, as their
@@ -1182,7 +1191,15 @@ project:
 The first time a project's full `doctor` runs a new lesson, it also says so once, even
 when the lesson finds nothing: `note    new lesson: incident-138 (<what>); doctor now
 runs it in this project`. It keeps the lessons it has seen in `.git/yokoten/state.json`,
-so the file is never committed. A session does not write it.
+so the file is never committed.
+
+The session start hears a new lesson too, once, when it finds a problem here. It is one
+line, and it names the command that shows where:
+``yokoten: a new lesson learned in another project found a problem here: <what>. Run
+`yokoten doctor` to see where.`` A later session, or the same one after a compaction, does
+not hear it again. The session runs each new lesson at one start only, and keeps which in
+the same file, so a later start spends no time on it. A problem that comes later is for
+full `doctor` to report.
 
 A note never fails `doctor`. To stop a lesson in one project, add its id to "notNow" in
 `yokoten.json`, with the reason: `"notNow": { "incident-138": "a setup file sets it" }`.
@@ -1410,6 +1427,10 @@ on every commit. On your own machine it also reads `~/.config/yokoten/private-ma
 your name, your city, your domains, your server names. That file stays outside the
 repo, because a list of what must not be published can't itself be published. A hit
 is reported by file and line; the mark itself is never printed.
+
+The project's own public address, such as `support@` at its domain, is found too. Nothing
+is let through on its own. If the address is public on purpose, add it to
+`privacy.allow` in yokoten.json.
 
 The marks file is for the whole machine, so a private project's name belongs in it. That
 project's own repo can still use its name: list the name in `privacy.allow` in its

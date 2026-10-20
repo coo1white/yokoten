@@ -29,7 +29,7 @@ import {
   makeTempDir,
 } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
-import { machineStateFile } from '../../src/setup/install.ts';
+import { launcherDir, machineStateFile, setUpLauncher } from '../../src/setup/install.ts';
 import {
   type BranchRules,
   type Gh,
@@ -51,6 +51,7 @@ import {
   isShellControlCaught,
   isUnsavedControlCaught,
   isWsl,
+  launcherCheck,
   leftoverControl,
   leftoverTempCheck,
   listBoardSteps,
@@ -1341,4 +1342,25 @@ test('doctor: with "notNow" ci the default-branch lookup leaves out the Dependab
   assert.ok(!missingPaths(root, security, off).some((path) => path.includes('dependabot')));
   assert.ok(missingPaths(root, security, off).includes('SECURITY.md'));
   rmSync(root, { recursive: true, force: true });
+});
+
+test('doctor: a note when no yokoten on the PATH runs the installed copy (#433)', () => {
+  const home = makeTempDir('yokoten-launcher-');
+  const runtime = join(home, '.local', 'share', 'yokoten');
+  const env = { HOME: home, PATH: dirname(process.execPath) };
+  // No runtime installed: install's own checks say so, not this note.
+  assert.equal(launcherCheck(env), null);
+  mkdirSync(join(runtime, 'bin'), { recursive: true });
+  writeFileSync(join(runtime, 'bin', 'yokoten.ts'), '\n');
+  const note = launcherCheck(env);
+  assert.equal(note?.what, 'no \`yokoten\` command on your PATH runs the installed copy');
+  assert.match(note?.fix ?? '', /yokoten\.ts install\` in a terminal; it puts a launcher in .*\.local[\\/]bin/);
+  // The launcher in ~/.local/bin, with that folder on the PATH: no note.
+  setUpLauncher(env, runtime, home);
+  assert.notEqual(launcherCheck(env), null, 'a launcher off the PATH still gets the note');
+  assert.equal(launcherCheck({ ...env, PATH: `${launcherDir(home)}:${env.PATH}` }), null);
+  // With the plugin on, its own commands are used: no note.
+  mkdirSync(join(home, '.claude'));
+  writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { 'yokoten@yokoten': true } }));
+  assert.equal(launcherCheck(env), null);
 });
