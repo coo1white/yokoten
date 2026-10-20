@@ -528,7 +528,7 @@ test('cat > file <<EOF && gh --body-file file: the heredoc is checked (#439)', (
   rmSync(join(postDir, 'fresh.md'), { force: true });
   for (const command of [
     `cat > fresh.md <<'EOF' && gh issue create --title "check: add t" --body-file fresh.md\nAll clean.\nEOF`,
-    `cat >fresh.md <<"EOF" && gh pr comment 3 -F fresh.md\nAll clean, $(not run).\nEOF\n`,
+    `cat >fresh.md <<'EOF' && gh pr comment 3 -F fresh.md\nAll clean, $(not run).\nEOF\n`,
     `cat > fresh.md <<'EOF' && gh issue comment 3 --body-file=fresh.md\nAll clean.\nEOF`,
     `cat > fresh.md <<'EOF' && gh issue comment 3 -Ffresh.md\nAll clean.\nEOF`,
     `cat > ~/fresh.md <<'EOF' && gh issue comment 3 -F ~/fresh.md --repo o/r\nAll clean.\nEOF`,
@@ -564,7 +564,9 @@ test('the file on disk is checked too, in case cat cannot replace it (#439)', ()
 test('a file on disk with nothing else in the command is read as before (#439)', () => {
   writeFileSync(join(postDir, 'kept.md'), `mail ${email}\n`);
   assert.equal(post('gh issue comment 3 -F kept.md')?.id, 'email');
-  assert.equal(post(`cd ${postDir} && gh issue comment 3 -F kept.md 2>/dev/null`)?.id, 'email');
+  assert.equal(post(`cd ${postDir} && gh issue comment 3 -F kept.md`)?.id, 'email');
+  // A redirect is not plain, so beside a cd the guard can't tell (#439 round 5).
+  plainRefusal(`cd ${postDir} && gh issue comment 3 -F kept.md 2>/dev/null`);
   writeFileSync(join(postDir, 'kept.md'), 'clean\n');
   assert.equal(post('gh issue comment 3 -F kept.md'), null);
 });
@@ -764,7 +766,7 @@ test("the lead's command with a body file on disk: commands that write no file d
 
 // More inputs from review (#439). Only these write no file and run nothing: the file on disk
 // is still the one gh posts.
-const writesNothing = new Set(["control: nothing","control: echo","echo -e","heredoc to echo"]);
+const writesNothing = new Set(["control: nothing","control: echo","echo -e"]);
 const reviewCases2: [string, string][] = [
   ["control: nothing", "gh issue comment 3 -F f.md"],
   ["control: echo", "echo hi && gh issue comment 3 -F f.md"],
@@ -918,13 +920,11 @@ const writesNothing3: string[] = [
   "git config --get alias.x; gh issue comment 3 -F f.md",
   "git rev-parse --git-path x; gh issue comment 3 -F f.md",
   "gh pr checks 3 --watch; gh issue comment 3 -F f.md",
-  "echo hi | gh issue comment 3 -F f.md",
   "cat > f.md <<'EOF' && gh issue comment 3 -F f.md\nclean\nEOF",
   "cat > f.md <<'EOF' && gh issue comment 3 -F f.md -F f.md\nclean\nEOF",
   "cat >f.md <<'EOF' && gh issue comment 3 -F f.md\nclean\nEOF\n",
   "X=1 Y=2; gh issue comment 3 -F f.md",
   "cd ~; gh issue comment 3 -F f.md",
-  "echo hi & gh issue comment 3 -F f.md",
   "GH_HOST=x gh pr view 3; gh issue comment 3 -F f.md",
   "NODE_USE_ENV_PROXY=1 yokoten bot -- gh pr view 3; gh issue comment 3 -F f.md"
 ];
@@ -946,7 +946,7 @@ test('scanning a line for values the shell fills in stays linear (#439)', () => 
   writeFileSync(join(postDir, 'f.md'), 'clean\n');
   assertLinear(
     'many quotes and words before gh',
-    (n) => `${"echo 'a' \"b\" c\\ d; ".repeat(n / 24)}gh issue comment 3 -F f.md`,
+    (n) => `${"echo 'a' \"b\" c d; ".repeat(n / 24)}gh issue comment 3 -F f.md`,
     (command) => assert.equal(post(command), null),
   );
   assertLinear(
@@ -954,4 +954,70 @@ test('scanning a line for values the shell fills in stays linear (#439)', () => 
     (n) => `echo "${'x '.repeat(n / 2)}`,
     (command) => post(command),
   );
+});
+
+// Round 5 (#439): the guard no longer follows bash's grammar. Beside other commands, a body
+// file on disk is trusted only when the command is one line of plain words joined by ; and &&.
+// Each of these got a file change past a closer reading of heredocs, or follows a cd that
+// never ran in this shell.
+const payload = "X='$(printf changed > f.md)'; true \"${X@P}\"";
+const reviewCases5: string[] = [
+  // A backslash in an unquoted delimiter: `<<true\\` ends at a line `true\`, so the payload runs.
+  `: <<true\\\\\ntrue\\\n${payload}\ngh issue comment 3 -F f.md`,
+  // A here-string is not a heredoc.
+  `: <<<'true'\n${payload}\ngh issue comment 3 -F f.md`,
+  // A backslash-newline in an unquoted body joins two lines, so the next EOF does not end it.
+  `: <<EOF\nx\\\nEOF\ntrue '\nEOF\nX="\\$(printf changed > f.md)"; true "\${X@P}" \\'\ngh issue comment 3 -F f.md`,
+  // \" inside a double-quoted delimiter.
+  `: <<"E\\"F"\nE"F\n${payload}\ngh issue comment 3 -F f.md`,
+  // A cd in a subshell, in the background or in a pipe does not move this shell.
+  '(cd sub) && gh issue comment 3 -F f.md',
+  'cd sub & gh issue comment 3 -F f.md',
+  'cd sub | true; gh issue comment 3 -F f.md',
+  // Each refused character, outside single quotes.
+  'echo hi | gh issue comment 3 -F f.md',
+  'echo hi & gh issue comment 3 -F f.md',
+  'true 2>/dev/null; gh issue comment 3 -F f.md',
+  'echo hi\ngh issue comment 3 -F f.md',
+  'echo a\\ b; gh issue comment 3 -F f.md',
+  'echo a#x; gh issue comment 3 -F f.md',
+  'echo *.md; gh issue comment 3 -F f.md',
+  'echo ?.md; gh issue comment 3 -F f.md',
+  'echo [f].md; gh issue comment 3 -F f.md',
+  'echo {a,b}; gh issue comment 3 -F f.md',
+  'echo a~b; gh issue comment 3 -F f.md',
+  'echo ~; gh issue comment 3 -F f.md',
+  'echo "a#b"; gh issue comment 3 -F f.md',
+  'echo "it\'s"; gh issue comment 3 -F f.md',
+  "echo 'open; gh issue comment 3 -F f.md",
+  'echo hi; gh issue comment 3 -F f.md --title "a (b)"',
+  // The strict shape takes only a name in single quotes.
+  'cat > f.md <<"EOF" && gh issue comment 3 -F f.md\nclean\nEOF',
+  "cat > f.md <<'E-F' && gh issue comment 3 -F f.md\nclean\nE-F",
+  "cat > f.md <<'EOF' && gh issue comment 3 -F f.md 2>/dev/null\nclean\nEOF",
+];
+
+test('beside other commands, only one line of plain words is trusted (#439)', () => {
+  mkdirSync(join(postDir, 'sub'), { recursive: true });
+  rmSync(join(postDir, 'sub', 'f.md'), { force: true });
+  writeFileSync(join(postDir, 'f.md'), 'clean\n');
+  for (const command of reviewCases5) assert.ok(post(command) !== null, JSON.stringify(command));
+  // gh posts ./f.md, since the cd never ran in this shell; the guard must not read sub/f.md.
+  writeFileSync(join(postDir, 'f.md'), 'Seen in QuietVale.\n');
+  writeFileSync(join(postDir, 'sub', 'f.md'), 'clean\n');
+  for (const command of ['(cd sub) && gh issue comment 3 -F f.md', 'cd sub & gh issue comment 3 -F f.md', 'cd sub | true; gh issue comment 3 -F f.md']) {
+    assert.notEqual(post(command), null, command);
+  }
+  writeFileSync(join(postDir, 'f.md'), 'clean\n');
+  rmSync(join(postDir, 'sub', 'f.md'), { force: true });
+  // Plain quotes are fine: a title with spaces, and the lead's own command.
+  const body = join(postDir, 'lead-body.md');
+  writeFileSync(body, 'All clean.\n');
+  for (const command of [
+    `cd ${postDir} && export NODE_USE_ENV_PROXY=1 GH_REPO=o/r; node bin/yokoten.ts bot -- gh pr create --title t --body-file ${body}`,
+    `cd ${postDir} && gh pr create --title "fix: a plain title" --body-file ${body}`,
+    `echo 'any $ text (here)'; gh pr create --title 'a, b' --body-file ${body}`,
+    'cd ~ && gh issue comment 3 -F ~/f.md',
+    'gh pr create --title t --body-file - < f.md',
+  ]) assert.equal(post(command), null, command);
 });

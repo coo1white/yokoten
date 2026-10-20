@@ -101,8 +101,8 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
   // What the rest of the command may do to a file gh reads (#439).
   const heredoc = heredocPost(command, commands);
   const writers = commands.filter((words) => !writesNoFile(words)).length;
-  // Anything the shell fills in may run code; after a cd, `..` goes up from the real folder.
-  const fills = heredoc === undefined && fillsIn(command);
+  // Anything but plain words may run code; after a cd, `..` goes up from the real folder.
+  const fills = heredoc === undefined && !(isPlainCommand(withoutStdin(command, commands)) && tildesPlain(commands));
   const movesFolder = commands.some((words) => ['cd', 'pushd', 'popd'].includes(words[0] ?? ''));
   for (const words of commands) {
     const reason =
@@ -784,20 +784,21 @@ function ghCommand(words: string[], at: number): GhCommand {
 //   ...the body...
 //   EOF
 //
-// The path is plain (letters, digits, . _ / -, or a leading ~/), the delimiter is quoted, and
-// the gh line holds no substitution, variable, glob, redirect or separator outside quotes.
-// The guard then checks the heredoc's text, and the file on disk too when there is one, in
-// case cat can't replace it. Any other command beside gh (but a plain cd) may write a file
-// gh reads, so a file on disk is not trusted then, and the command is refused (record 0014).
+// The path is plain (letters, digits, . _ / -, or a leading ~/), the delimiter is a name in
+// single quotes, the body ends at the first line that is the delimiter, and the gh line passes
+// isPlainCommand. The guard then checks the heredoc's text, and the file on disk too when there
+// is one, in case cat can't replace it. In any other command, a file on disk is trusted only
+// when the whole command is plain and every other command surely writes no file; otherwise
+// the command is refused (record 0014).
 
-const HEREDOC_POST = /^cat[ \t]+>[ \t]*((?:~\/)?[A-Za-z0-9._/][A-Za-z0-9._/-]*)[ \t]+<<(['"])([A-Za-z_]\w*)\2[ \t]*&&[ \t]*(gh[ \t][^\n]*)$/;
+const HEREDOC_POST = /^cat[ \t]+>[ \t]*((?:~\/)?[A-Za-z0-9._/][A-Za-z0-9._/-]*)[ \t]+<<'([A-Za-z_]\w*)'[ \t]*&&[ \t]*(gh[ \t][^\n]*)$/;
 
 /** The path and text of `cat > path <<'EOF' && gh …`, when that is the whole command; otherwise undefined. */
 function heredocPost(command: string, commands: string[][]): { path: string; text: string } | undefined {
   const end = command.indexOf('\n');
   const first = end === -1 ? null : HEREDOC_POST.exec(command.slice(0, end));
-  if (!first || !isPlainLine(first[4])) return undefined;
-  const [, path, , delimiter] = first;
+  if (!first || !isPlainCommand(first[3])) return undefined;
+  const [, path, delimiter] = first;
   const lines = command.slice(end + 1).split('\n');
   const close = lines.indexOf(delimiter);
   // Nothing after the delimiter line but one line end.
@@ -809,22 +810,6 @@ function heredocPost(command: string, commands: string[][]): { path: string; tex
   return { path, text: lines.slice(0, close).join('\n') };
 }
 
-// A gh line the shell takes as written: outside quotes only plain characters, and in "..."
-// no $, backtick, \ or !.
-function isPlainLine(line: string): boolean {
-  let quote = '';
-  for (const character of line) {
-    if (quote === "'") {
-      if (character === "'") quote = '';
-    } else if (quote === '"') {
-      if (character === '"') quote = '';
-      else if ('$`\\!'.includes(character)) return false;
-    } else if (character === "'" || character === '"') quote = character;
-    else if (!/[A-Za-z0-9 \t._/=:,@%+~-]/.test(character)) return false;
-  }
-  return quote === '';
-}
-
 // Commands that surely write no file (#439). Each list allows; anything else may write.
 // Shell variables that change what bash runs or where it looks: setting one is not plain.
 const SHELL_SPECIAL = /^(?:PS\d|PROMPT_\w*|HOME|PATH|CDPATH|IFS|ENV|BASH\w*|SHELLOPTS|BASHOPTS|TMOUT|HIST\w*|histchars|MAIL\w*|GLOBIGNORE|FIGNORE|EXECIGNORE|OLDPWD|PWD|OPTIND|OPTERR|POSIXLY_CORRECT|INPUTRC|TIMEFORMAT|FUNCNEST|COMP\w*|TMPDIR|SHELL|BROWSER|LD_\w*|DYLD_\w*|NODE_\w*|GIT_\w*|GH_\w*|LANG|LC_\w*)$/;
@@ -833,75 +818,51 @@ const EXPORTS = new Set(['GH_REPO', 'GH_HOST', 'NODE_USE_ENV_PROXY']);
 const NAME_VALUE = /^([A-Za-z_]\w*)=/s;
 // `set` only for these: errexit, nounset and pipefail.
 const SET_FLAGS = /^[-+][eu]+$/;
-// Whether the shell fills anything in on this line, or the line holds a CR (#439). Any $ or
-// backtick outside single quotes, any $'...', and a $ or backtick in a heredoc whose
-// delimiter is not quoted: the guard does not judge what the value will be, since bash can
-// run code from a stored string (`${X@P}`, `${!X}`, `$((X))`). A quoted heredoc's body is
-// data. One pass over the text.
-export function fillsIn(text: string): boolean {
+// Characters the shell takes as written, outside quotes and inside "...".
+const PLAIN = /[A-Za-z0-9 \t._/=:,@%+-]/;
+
+// Whether the shell surely takes this command as written (#439): one line of plain words,
+// joined only by ; and &&. Outside single quotes it refuses \, $, backticks, < and > (so no
+// heredoc, redirect or substitution), ( ) { } | and a lone &, #, *, ? and [; ~ only starts a
+// word. "..." holds only plain characters. The guard does not follow bash's grammar any
+// further than this: anything else makes a body file on disk unsure. One pass over the text.
+export function isPlainCommand(text: string): boolean {
   let quote = ''; // '' outside quotes, or ' or "
-  let wordStart = true; // the last character ended a word, so # starts a comment
-  const heredocs: { delimiter: string; strip: boolean; quoted: boolean }[] = [];
+  let wordStart = true;
   for (let index = 0; index < text.length; index++) {
     const character = text[index];
-    if (character === '\r') return true;
+    if (character === '\n' || character === '\r') return false;
     if (quote === "'") {
       if (character === "'") quote = '';
-      continue;
-    }
-    if (character === '\\') {
-      index++;
-      wordStart = false;
-      continue;
-    }
-    if (character === '`' || character === '$') return true;
-    if (quote === '"') {
+    } else if (quote === '"') {
       if (character === '"') quote = '';
-      continue;
-    }
-    if (character === "'" || character === '"') quote = character;
-    else if (character === '#' && wordStart) {
-      while (index + 1 < text.length && text[index + 1] !== '\n') index++;
-    } else if (character === '<' && text[index + 1] === '<' && text[index + 2] !== '<') {
-      // A heredoc: its delimiter word, quoted or not, waits for the line end.
-      let at = index + 2;
-      const strip = text[at] === '-';
-      if (strip) at++;
-      while (text[at] === ' ' || text[at] === '\t') at++;
-      let delimiter = '';
-      let quoted = false;
-      for (; at < text.length && !/[\s;&|()<>]/.test(text[at]); at++) {
-        if (text[at] === '$' || text[at] === '`') return true;
-        if (text[at] === "'" || text[at] === '"') {
-          const end = text.indexOf(text[at], at + 1);
-          if (end === -1) return true;
-          delimiter += text.slice(at + 1, end);
-          quoted = true;
-          at = end;
-        } else if (text[at] === '\\') quoted = true;
-        else delimiter += text[at];
-      }
-      if (delimiter) heredocs.push({ delimiter, strip, quoted });
-      index = at - 1;
-    } else if (character === '\n' && heredocs.length > 0) {
-      // The bodies follow this line, in order.
-      for (const doc of heredocs) {
-        let at = index + 1;
-        while (at <= text.length) {
-          let end = text.indexOf('\n', at);
-          if (end === -1) end = text.length;
-          const line = text.slice(at, end);
-          at = end + 1;
-          if ((doc.strip ? line.replace(/^\t+/, '') : line) === doc.delimiter) break;
-          if (!doc.quoted && /[$`]/.test(line)) return true;
-        }
-        index = at - 1;
-      }
-      heredocs.length = 0;
-    }
-    wordStart = /[\s;&|()]/.test(character);
+      else if (!PLAIN.test(character)) return false;
+    } else if (character === "'" || character === '"') quote = character;
+    else if (character === '&') {
+      if (text[index + 1] !== '&') return false;
+      index++;
+    } else if (character === '~') {
+      if (!wordStart) return false;
+    } else if (character !== ';' && !PLAIN.test(character)) return false;
+    wordStart = quote === '' && /[ \t;&]/.test(character);
   }
-  return false;
+  return quote === '';
+}
+
+// A lone gh that reads its body from a file, `gh … --body-file - < body.md` (#391): the scan
+// skips that one < at the end, since the file it names is the one checked.
+function withoutStdin(command: string, commands: string[][]): string {
+  const at = command.indexOf('<');
+  if (commands.length !== 1 || at === -1 || at !== command.lastIndexOf('<')) return command;
+  return /^[ \t]*[A-Za-z0-9._/-]+[ \t]*$/.test(command.slice(at + 1)) ? command.slice(0, at) : command;
+}
+
+// A word that starts with ~ is the folder of a cd or pushd, or the file after -F,
+// --body-file or --notes-file (#439). The scan already keeps ~ to the start of a word.
+function tildesPlain(commands: string[][]): boolean {
+  return commands.every((words) =>
+    words.every((word, index) => !word.startsWith('~') || (index === 1 && ['cd', 'pushd'].includes(words[0])) || ['-F', '--body-file', '--notes-file'].includes(words[index - 1] ?? '')),
+  );
 }
 
 /** Whether a command's own variables may change what it runs (#439). */
@@ -944,7 +905,7 @@ function readsOnly(words: string[]): boolean {
     case '[':
       return !args.includes('-v');
     case 'set':
-      return args.every((arg, index) => SET_FLAGS.test(arg) || (/^[-+]o$/.test(arg) && args[index + 1] === 'pipefail') || (arg === 'pipefail' && /^[-+]o$/.test(args[index - 1] ?? '')));
+      return args.length > 0 && args.every((arg, index) => SET_FLAGS.test(arg) || (/^[-+]o$/.test(arg) && args[index + 1] === 'pipefail') || (arg === 'pipefail' && /^[-+]o$/.test(args[index - 1] ?? '')));
     case 'export':
       return args.length > 0 && args.every((arg) => EXPORTS.has(NAME_VALUE.exec(arg)?.[1] ?? arg));
     case 'cd':
@@ -2414,7 +2375,19 @@ function heredoc(text: string, index: number, cmd: number, groups: Group[]): { d
       index++;
       continue;
     }
-    if (character === "'" || character === '"') {
+    if (character === '"') {
+      // In "...", a \ before " \ $ or ` is removed: `<<"E\"F"` ends at a line `E"F` (#439).
+      let at = index + 1;
+      while (at < text.length && text[at] !== '"') {
+        if (text[at] === '\\' && '"\\$`'.includes(text[at + 1] ?? '')) at++;
+        delim += text[at];
+        at++;
+      }
+      spend(at - index);
+      if (at >= text.length) return null;
+      quoted = true;
+      index = at + 1;
+    } else if (character === "'") {
       const end = text.indexOf(character, index + 1);
       spend((end === -1 ? text.length : end) - index);
       if (end === -1) return null;

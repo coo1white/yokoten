@@ -1207,15 +1207,26 @@ agent 用 `gh` 发文字之前，工具调用守卫也跑同一套检查。直�
 - `--body-file`、`--notes-file`、`-F` 指向的文件，前面有 `cd` 也跟着找。检查在命令运行前做，
   所以同一条命令里才写的文件，检查时还不存在。只认一种写法：整条命令就是
   `cat > body.md <<'EOF' && gh … --body-file body.md`，后面跟正文和 `EOF`。路径要简单、两边一样，
-  结束标记要加引号；这时查 heredoc 里的文字，原来就有这个文件的话也一起查。gh 之外，只有下面这些
-  肯定不写文件的命令没关系：`true`、`:`、`echo`；不带 `-v` 的 `printf`、`test`、`[`；只带 `-e`、`-u`、
-  `+e`、`+u`（也可以连写，比如 `-eu`）和 `-o pipefail` 的 `set`；只跟一个文件夹的 `cd`、`pushd`，还有 `popd`；
-  普通赋值，但不能给 shell 自己用的名字赋值，比如 `PATH`、`HOME`、`PS4`；只设 `GH_REPO`、`GH_HOST`、
-  `NODE_USE_ENV_PROXY` 的 `export` 或命令前缀；不带 `--web`、`-w` 的 `gh pr|issue|repo|run view|list|checks`；
-  `git rev-parse`、`git config --get <名字>`、`git remote get-url`；以及经过 `yokoten bot --` 的这些命令。
-  这些命令都不能重定向到文件。守卫不猜变量的值：单引号外面有 `$` 或反引号，或者有 `$'…'`，不管在命令的
-  哪里（gh 自己的参数也算），都当作说不准；有 CR，或者 `cd` 之后路径里有 `..`，也一样。找不到文件、
-  或者文件可能被改，都会拦下命令：请先用一条命令写好文件，下一条命令再发，并写完整路径。
+  结束标记是用单引号括起来的名字，这样 shell 会原样保留正文。这时查正文，原来就有这个文件的话也一起查。
+
+  别的写法里，只有整条命令是简单的一行时，才读已经在磁盘上的文件：词之间只用 `;` 或 `&&` 连接，
+  引号只用简单的 `'…'` 或 `"…"`，不能有 `\`、`$`、反引号、`<`、`>`、`|`、单个 `&`、`(`、`)`、`[`、`{`、`}`、`#`、`*`、`?`；
+  只有一条 `gh … --body-file - < body.md` 也可以。
+  `~` 只能出现在 `cd` 的文件夹或文件路径的开头；`cd` 之后，路径里有 `..` 的文件不读。
+  gh 旁边的每条命令都必须是下面这些不写文件的命令之一：
+
+  - `true`、`:`、`echo`、`popd`；没有以 `-v` 开头的参数的 `printf`；不带 `-v` 的 `test`、`[`。
+  - 只带 `-e`、`-u`、`+e`、`+u`（可以单写，也可以连写，比如 `-eu`）和 `-o pipefail`、`+o pipefail` 的 `set`。
+    什么都不带的 `set` 不算。
+  - 只跟一个文件夹的 `cd`、`pushd`。
+  - 普通赋值，但不能给 shell 自己用的名字赋值，比如 `PATH`、`HOME`、`PS4`。
+  - 只设 `GH_REPO`、`GH_HOST`、`NODE_USE_ENV_PROXY` 的 `export` 或命令前缀。
+  - 不带 `--web`、`-w` 的 `gh pr|issue|repo|run view|list|checks`。
+  - `git rev-parse`、`git config --get <名字>`、`git remote get-url`。
+  - 经过 `yokoten bot --` 的上面这些命令。
+
+  不是这样的话，找不到文件、或者文件可能被改，都会拦下命令：请先用一条命令写好文件，
+  下一条命令再发，并写完整路径。
 - 从标准输入来的正文：heredoc、`<<<`、`< 文件`。
 - `gh api` 的字段和 `--input`，只在会写东西的调用里查：POST、PATCH、PUT，或 GraphQL 的
   mutation。搜索、GraphQL 查询这类只读的调用直接放行。

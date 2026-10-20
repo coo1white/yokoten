@@ -1350,22 +1350,33 @@ plain or through `yokoten bot -- gh`:
   `edit`, `review`, `merge` and `close`; `gh release` `create` and `edit`.
 - The text in `--title`, `--body`, `--notes`, `--subject` and a close `--comment`.
 - The files that `--body-file`, `--notes-file` and `-F` name, after any `cd`. The guard runs
-  before the command, so a file the same command writes is not there yet. One shape is
-  read: the whole command is `cat > body.md <<'EOF' && gh … --body-file body.md`, then the
-  body and `EOF`. The path is plain, the same on both sides, and the delimiter is quoted;
-  the guard checks the heredoc and the file already there, if any. Beside gh, only these
-  commands are fine, since they surely write no file: `true`, `:`, `echo`; `printf`,
-  `test` or `[` without `-v`; `set` with only `-e`, `-u`, `+e`, `+u` (or together, as
-  `-eu`) and `-o pipefail`; `cd` or `pushd` with one folder, and `popd`; a plain
-  assignment, but not to a name the shell uses, such as `PATH`, `HOME` or `PS4`; `export`,
-  or a command's own prefix, of only `GH_REPO`, `GH_HOST` and `NODE_USE_ENV_PROXY`;
-  `gh pr|issue|repo|run view|list|checks` without `--web` or `-w`; `git rev-parse`,
-  `git config --get <name>` and `git remote get-url`; and these through `yokoten bot --`.
-  None may redirect into a file. The guard doesn't judge values: a `$` or backtick outside
-  single quotes, or a `$'…'`, anywhere in the command (gh's own words too), makes it unsure,
-  and so do a CR and a `..` in the path after a `cd`. A file the guard can't find, or one
-  the command may change, stops the command: write the file in one command, then post it in
-  the next, with its full path.
+  before the command, so a file the same command writes is not there yet. It reads one
+  shape: the whole command is `cat > body.md <<'EOF' && gh … --body-file body.md`, then the
+  body and `EOF`. The path is plain and the same on both sides, and the delimiter is a name
+  in single quotes, so the shell keeps the body as written. The guard checks the body, and
+  the file already there, if any.
+
+  Any other way, a file on disk is read only when the command is one plain line: words
+  joined by `;` or `&&`, plain `'…'` or `"…"` quotes, and no `\`, `$`, backtick, `<`, `>`,
+  `|`, lone `&`, `(`, `)`, `[`, `{`, `}`, `#`, `*` or `?`; a lone `gh … --body-file - < body.md`
+  is fine too. A `~` may only start a `cd` folder or the file's path, and after a `cd` a path
+  with `..` is not read. Each command beside gh
+  must be one of these, which write no file:
+
+  - `true`, `:`, `echo`, `popd`; `printf` with no argument that starts with `-v`; `test`
+    or `[` without `-v`.
+  - `set` with flags from `-e`, `-u`, `+e` and `+u` (alone or joined, as `-eu`), and
+    `-o pipefail` or `+o pipefail`. A bare `set` doesn't count.
+  - `cd` or `pushd` with one folder.
+  - A plain assignment, but not to a name the shell uses, such as `PATH`, `HOME` or `PS4`.
+  - `export`, or a command's own prefix, of only `GH_REPO`, `GH_HOST` and
+    `NODE_USE_ENV_PROXY`.
+  - `gh pr|issue|repo|run view|list|checks` without `--web` or `-w`.
+  - `git rev-parse`, `git config --get <name>` and `git remote get-url`.
+  - Any of these through `yokoten bot --`.
+
+  Otherwise, a file the guard can't find, or one the command may change, stops the
+  command: write the file in one command, then post it in the next, with its full path.
 - A body from stdin: a heredoc, a `<<<` here-string, or a `< file`.
 - `gh api` fields and `--input`, on a call that writes: a POST, PATCH or PUT, or a GraphQL
   mutation. A read, such as a search or a GraphQL query, passes.
