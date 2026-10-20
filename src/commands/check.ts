@@ -11,7 +11,7 @@ import { check, checkHistory, historyTimeZones, timeZoneNote } from '../run/chec
 import { isCodeFile, nameNotes } from '../run/names.ts';
 import { loadMarks, makeRedactor } from '../rules/privacy.ts';
 import { machineMarks } from '../setup/install.ts';
-import { bullets, env, parse, print, printJson, requireRoot, showOnPullRequest, usage } from './shared.ts';
+import { bullets, env, parse, print, printJson, requireRoot, say, showOnPullRequest, usage } from './shared.ts';
 
 export function runCheck(): number {
   const options = parse('check');
@@ -119,29 +119,57 @@ export function runCheck(): number {
   return problems.length ? 1 : 0;
 }
 
-/** Past this many characters with no line end, the text goes out at its last space, so memory stays small. */
+/** Past this many characters with no line end, the text goes out at its last space or tab, so memory stays small. */
 const MAX_PENDING = 1 << 20;
+
+/** Where to cut text that has no line end yet: after its last space or tab, or the whole of it. Never inside a word. */
+export function cutPoint(pending: string, max: number = MAX_PENDING): number {
+  const line = pending.lastIndexOf('\n') + 1;
+  if (line > 0 || pending.length <= max) return line;
+  const space = Math.max(pending.lastIndexOf(' '), pending.lastIndexOf('\t'));
+  return space === -1 ? pending.length : space + 1;
+}
 
 /**
  * `yokoten redact`: stdin to stdout, with the owner hidden. It works line by line, so a
  * long output streams through. It reads only this machine (no network) and always exits 0:
- * the command it wraps gives the exit code, through pipefail.
+ * the command it wraps gives the exit code, through pipefail. It fails open: when it can't
+ * read the marks, or a piece fails, it says so in one line on stderr and passes the rest
+ * through as it is. Hiding output must never stop the command it wraps.
  */
 export function runRedact(): number | Promise<number> {
   const options = parse('redact');
   if (typeof options === 'string') return usage(options);
-  const found = machineMarks(env, { cwd: process.cwd() });
-  const redact = makeRedactor(
-    {
-      marks: loadMarks(env),
-      owners: found.filter((mark) => mark.kind === 'git name' || mark.kind === 'git email').map((mark) => mark.value),
-      hosts: found.filter((mark) => mark.kind === 'private remote host').map((mark) => mark.value),
-    },
-    env,
-  );
+  let isWarned = false;
+  const warn = (err: unknown) => {
+    if (!isWarned) say(`yokoten redact: output is not hidden, because ${String((err as Error)?.message ?? err).split('\n')[0]}\n`, process.stderr);
+    isWarned = true;
+  };
+  let redact = (text: string) => text;
+  try {
+    const found = machineMarks(env, { cwd: process.cwd() });
+    redact = makeRedactor(
+      {
+        marks: loadMarks(env),
+        owners: found.filter((mark) => mark.kind === 'git name' || mark.kind === 'git email').map((mark) => mark.value),
+        hosts: found.filter((mark) => mark.kind === 'private remote host').map((mark) => mark.value),
+      },
+      env,
+    );
+  } catch (err) {
+    warn(err);
+  }
   // The output is the command's, already redacted (home folder included), so it is written as it is.
   const write = (text: string) => {
-    if (text) process.stdout.write(redact(text));
+    if (!text) return;
+    let out = text;
+    try {
+      out = redact(text);
+    } catch (err) {
+      warn(err);
+      redact = (rest) => rest;
+    }
+    process.stdout.write(out);
   };
   let pending = '';
   return new Promise((settle) => {
@@ -149,8 +177,7 @@ export function runRedact(): number | Promise<number> {
     process.stdin.setEncoding('utf8');
     process.stdin.on('data', (chunk: string) => {
       pending += chunk;
-      let cut = pending.lastIndexOf('\n') + 1;
-      if (cut === 0 && pending.length > MAX_PENDING) cut = Math.max(pending.lastIndexOf(' '), MAX_PENDING);
+      const cut = cutPoint(pending);
       if (cut === 0) return;
       write(pending.slice(0, cut));
       pending = pending.slice(cut);

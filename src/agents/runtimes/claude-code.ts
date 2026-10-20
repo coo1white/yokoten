@@ -40,12 +40,13 @@ export const formatDenial = (reason: string): { stdout: string; exitCode: number
  * `updatedInput`, on exit 0. It replaces the whole tool input, so the other fields
  * (description, timeout) are copied. Claude Code applies `updatedInput` only with a
  * decision. `allow` skips the prompt for a command no permission rule covers; deny and
- * ask rules still apply. `ask` shows the user the rewritten command to approve.
+ * ask rules still apply. The hook rewrites only one plain read, so `allow` runs nothing
+ * that changes or sends anything.
  */
-export function formatRewrite(input: unknown, command: string, reason: string, decision: 'allow' | 'ask'): string {
+export function formatRewrite(input: unknown, command: string, reason: string): string {
   const call = (input ?? {}) as { tool_input?: unknown };
   const tool = call.tool_input && typeof call.tool_input === 'object' ? call.tool_input : {};
-  return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: decision, permissionDecisionReason: reason, updatedInput: { ...tool, command } } });
+  return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: reason, updatedInput: { ...tool, command } } });
 }
 
 /**

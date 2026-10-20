@@ -57,24 +57,28 @@ const REWRITES: Record<string, typeof claudeCode.formatRewrite> = {
 };
 
 /**
- * How the wrapped command runs `yokoten redact`: this same copy of yokoten, by its path,
- * quoted for bash. The home folder is written `$HOME`, so the command names no user.
+ * How the wrapped command runs `yokoten redact`: the node that runs this hook and this
+ * same copy of yokoten, each by its path, quoted for bash. Neither depends on the PATH.
+ * The home folder is written `$HOME`, so the command names no user.
  */
-export function redactCommand(cli: string, home: string | undefined): string {
-  let path = cli.replaceAll('\\', '/');
-  try {
-    path = realpathSync(cli).replaceAll('\\', '/');
-  } catch {}
-  const quote = (text: string) => text.replace(/["$`\\]/g, (mark) => `\\${mark}`);
+export function redactCommand(node: string, cli: string, home: string | undefined): string {
   const homePath = home?.replaceAll('\\', '/').replace(/\/+$/, '');
   let realHome = homePath;
   try {
     if (home) realHome = realpathSync(home).replaceAll('\\', '/');
   } catch {}
-  for (const prefix of [homePath, realHome]) {
-    if (prefix && path.startsWith(`${prefix}/`)) return `node "$HOME/${quote(path.slice(prefix.length + 1))}" redact`;
-  }
-  return `node "${quote(path)}" redact`;
+  const quoted = (file: string) => {
+    let path = file.replaceAll('\\', '/');
+    try {
+      path = realpathSync(file).replaceAll('\\', '/');
+    } catch {}
+    const escape = (text: string) => text.replace(/["$`\\]/g, (mark) => `\\${mark}`);
+    for (const prefix of [homePath, realHome]) {
+      if (prefix && path.startsWith(`${prefix}/`)) return `"$HOME/${escape(path.slice(prefix.length + 1))}"`;
+    }
+    return `"${escape(path)}"`;
+  };
+  return `${quoted(node)} ${quoted(cli)} redact`;
 }
 
 // Each runtime's event for the end of a turn: Claude Code's, Codex's and Muse Code's Stop, Gemini CLI's AfterAgent (#211).
@@ -179,16 +183,14 @@ export function runHook(): number | Promise<number> {
     // A command that may print the owner's details runs through `yokoten redact` (#390).
     const printed = !found && action.command !== undefined ? printsAccount(action.command) : null;
     if (printed && action.command !== undefined) {
-      const wrapped = wrapForRedact(action.command, redactCommand(process.argv[1] ?? 'yokoten', env.HOME));
+      const wrapped = wrapForRedact(action.command, redactCommand(process.execPath, process.argv[1] ?? 'yokoten', env.HOME));
       if (Object.hasOwn(REWRITES, agent)) {
-        // A read runs at once; a push, a deploy or a login still asks the user (`ask`).
-        const decision = printed.isReadOnly ? 'allow' : 'ask';
-        if (json) printJson({ blocked: false, toolCall: true, rewritten: wrapped, decision });
+        if (json) printJson({ blocked: false, toolCall: true, rewritten: wrapped });
         // Written as it is: hiding the home folder would change the command.
-        else process.stdout.write(REWRITES[agent](input, wrapped, `yokoten: ${printed.prints}, so its output goes through yokoten redact`, decision));
+        else process.stdout.write(REWRITES[agent](input, wrapped, `yokoten: ${printed}, so its output goes through yokoten redact`));
         return 0;
       }
-      if (config.privacy.output === 'stop') found = privateOutput(printed.prints, wrapped);
+      if (config.privacy.output === 'stop') found = privateOutput(printed, wrapped);
     }
     if (json) printJson(found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
     if (!found) return 0;

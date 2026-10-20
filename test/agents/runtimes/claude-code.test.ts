@@ -147,9 +147,8 @@ test('hook: a Copilot CLI call, in the Claude-format shape it sends from .claude
   assert.equal(sandbox.run(['hook'], { input: create, extra: { YOKOTEN_ROLE: 'worker' } }).status, 2, "Copilot's create tool names the file in `path`");
 });
 
-test('formatRewrite: the decision given, with the whole tool input, only the command changed (#390)', () => {
-  const out = JSON.parse(formatRewrite({ tool_name: 'Bash', tool_input: { command: 'git push', description: 'Push', timeout: 5 } }, 'wrapped', 'why', 'ask'));
-  assert.deepEqual(out, { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: 'why', updatedInput: { command: 'wrapped', description: 'Push', timeout: 5 } } });
-  assert.equal(JSON.parse(formatRewrite(null, 'w', 'r', 'allow')).hookSpecificOutput.permissionDecision, 'allow');
-  assert.deepEqual(JSON.parse(formatRewrite(null, 'w', 'r', 'allow')).hookSpecificOutput.updatedInput, { command: 'w' });
+test('formatRewrite: allow, with the whole tool input, only the command changed (#390)', () => {
+  const out = JSON.parse(formatRewrite({ tool_name: 'Bash', tool_input: { command: 'git log', description: 'Log', timeout: 5 } }, 'wrapped', 'why'));
+  assert.deepEqual(out, { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: 'why', updatedInput: { command: 'wrapped', description: 'Log', timeout: 5 } } });
+  assert.deepEqual(JSON.parse(formatRewrite(null, 'w', 'r')).hookSpecificOutput.updatedInput, { command: 'w' });
 });

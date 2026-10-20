@@ -1040,8 +1040,7 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 第 11 条规则有检查守着。CI 和每次提交都会扫个人邮箱和 IP 地址。在你自己的电脑上，它还会读
 `~/.config/yokoten/private-marks`，里面是你的名字、所在城市、域名、服务器名。这个文件放在
 仓库外面，因为「不能公开的东西」这张清单本身也不能公开。查到问题时只报文件和行号，不会把
-词表里的词打印出来。英文的词按整个单词算，不分大小写：`ann` 能查出 “Ann wrote”，不会查出
-“annotate”。中文、日文的词不分词，出现在哪里都算。
+词表里的词打印出来。
 
 IP 只查 IPv4，内网地址（比如 `10.x`、`192.168.x`）也算；IPv6 不查。本机地址和专门留给文档用的
 几段地址（`192.0.2.0/24` 等三段）不算。浏览器的版本号（比如 `Chrome/120.0.0.0`）不算 IP，
@@ -1055,31 +1054,44 @@ AWS 的 access key id，还有 PEM 私钥。查到了只说是哪一种密钥，
 ### agent 读到的东西
 
 上面的检查管的是仓库里的内容。agent 还会读命令的输出，这些输出会进对话记录、发给模型，发出去
-就收不回来了。所以 yokoten 在命令跑之前就把你的信息藏起来。
+就收不回来了。所以有些命令跑之前，yokoten 先把你的信息藏起来。
 
-- **`yokoten redact`**：从标准输入读文字，换成占位符再输出。它会藏起私有词表里的词、个人邮箱、
-  git 的 user.name，还有私有远程仓库的主机名。像邮箱的词换成 `<email>`，像域名的换成
-  `<host>`，其他的换成 `<mark>`。没有私有词表也能用，这时只藏邮箱这类格式和 git 知道的信息。
-- **命令守卫会给有风险的命令套一层。** 下面这些命令会打印账号信息：没加 `--format`、
-  `--pretty` 或 `--oneline` 的 `git log`、`git show`、`git blame`；`git push`、`fetch`、
-  `pull`、`clone`；`git remote -v`；`git config --list`；`wrangler`；用 `gh` 查账号和访问量；
-  `gh auth status`；`npm whoami`；`env` 和 `printenv`。在 Claude Code 里，守卫会把命令改成
-  `set -o pipefail; ( <命令> ) 2>&1 | node <yokoten> redact`，退出码还是原命令的。只读的命令
-  直接跑；会改东西或往外发的命令（push、fetch、部署、登录）还是要先问你，让你看到改过的命令再
-  同意。你自己设的权限规则照样有效。
+- **`yokoten redact`**：从标准输入读文字，换成占位符再输出。它会藏起密钥（`<secret>`）、个人
+  邮箱（`<email>`）、git 的 user.name（`<owner>`）、私有远程仓库的主机名（`<host>`），还有私有
+  词表里的词。像域名的词换成 `<host>`，其他的换成 `<mark>`。词表里的词按整个单词算。没有私有
+  词表也能用，这时只藏邮箱、密钥这类格式和 git 知道的信息。它要是启动不了、读不了词表，会用
+  一行字说明，然后原样输出：绝不会让命令停下来。
+- **在 Claude Code 里，守卫会过滤单纯的读命令。** 下面这些命令会打印账号信息：没加
+  `--format`、`--pretty` 或 `--oneline` 的 `git log`、`git show`、`git blame`；`git remote -v`、
+  `get-url`、`show`；`git config --list`，以及读 `user.*`、`remote.*`；`gh auth status`；用 `gh`
+  以 GET 查访问量和账号；`npm whoami`；`wrangler whoami`。整条命令只有其中一条、前后没有别的东西
+  时，守卫会把它改成 `set -o pipefail # yokoten-redact`，再接
+  `( <命令> ) 2>&1 | { <node> <yokoten> redact || cat; }`，退出码还是原命令的。命令里有 `&&`、
+  `;`、管道、重定向、`$(...)`、`sudo` 这类前缀，或者会写文件的选项，就不改，照原样跑。
 - **别的 agent 照常跑命令。** 它们的 hook 改不了命令。`doctor` 和会话开头会说一次。想在那边
   直接拦下这类命令，就在 `yokoten.json` 里设 `"privacy": { "output": "stop" }`，守卫会拦下命令，
   告诉 agent 过滤后的命令怎么写。
 - **让 git 自己先藏。** `install` 会把 git 全局的 `mailmap.file` 指向
   `~/.config/yokoten/mailmap`，这个文件不在任何仓库里。之后 `git log` 和 `git show` 会把你的
-  邮箱显示成 `owner`。你要是已经设了自己的 `mailmap.file`，`install` 不动它，只告诉你要加哪几行。
-- **词表自己补。** `install` 和 `doctor` 会把这台电脑知道的信息加进词表：git 的 user.name 和
-  user.email、`gh` 登录的账号、私有远程仓库的主机名。只往后加，从不打印具体的词。`doctor`
-  还会告诉你还缺哪几类：真名、所在城市、域名。这些只有你自己能加。
+  邮箱显示成 `owner`。文件已经有了的话，`install` 只补缺的行。你要是设了自己的
+  `mailmap.file`，`install` 不动它，只告诉你要加哪几行。
+- **词表自己补。** `install` 和 `doctor` 会把这台电脑知道的信息加进词表：git 的邮箱（noreply
+  邮箱除外）、`gh` 登录的账号、私有远程仓库的主机名。git 显示的名字不加：常见的名字会让每个含有
+  这个词的文件都被查出来。只往后加，从不打印具体的词。`doctor` 还会告诉你还缺哪几类：真名、
+  所在城市、域名。这些只有你自己能加。
 
 套上去的命令要用 bash 跑。在 Windows 上，请在 Git Bash 或 WSL 里用 agent；PowerShell 没有
-`pipefail`。有两点做不到：浏览器页面和截图过滤不了，所以别把账号页面当文字读给 agent。
-hook 也不可能认得所有命令：输出里露出了你的信息，就开一个事故 issue，再给那条命令在
+`pipefail`。
+
+老实说，下面这些藏不住：
+
+- **会改东西或往外发的命令。** `git push`、`fetch`、`pull`、`clone`，还有 `wrangler deploy`、
+  `login`，都照原样跑。push 出错时可能会露出私有主机名。改写它们会让不弹确认的 worker 卡住。
+- **agent 读的文件。** `cat CODEOWNERS`，或者 agent 自己的读文件工具，看到的就是文件原样。
+- **环境变量。** `env` 和 `printenv` 不过滤：它们会打印各种密钥。别在 agent 会话里跑。
+- **浏览器页面和截图。** 别把账号页面当文字读给 agent。
+
+hook 不可能认得所有命令。输出里露出了你的信息，就开一个事故 issue，再给那条命令在
 `ACCOUNT_PRINTERS`（`src/rules/guards.ts`）里加一行。
 
 ### 时区

@@ -16,6 +16,7 @@ import {
   CLI,
   makeSandbox,
 } from '../repo/helpers.ts';
+import { cutPoint } from '../../src/commands/check.ts';
 import { wrapForRedact } from '../../src/rules/guards.ts';
 
 test('check --pr: reads the CI event, lists the changed files from git, notes long prose (#47)', () => {
@@ -415,4 +416,32 @@ test('redact: keeps line ends, a last line with no end, and text that names nobo
   const streamed = sandbox.run(['redact'], { input: long });
   assert.equal(streamed.stdout, `${'line one\n'.repeat(50_000)}<owner>\n`);
   assert.deepEqual([sandbox.run(['redact', '--x']).status], [1]);
+});
+
+test('redact: fails open; a marks file it cannot read passes the output through, with one line (#390)', () => {
+  const { sandbox, wrapped } = ownerSandbox();
+  // A folder where the file should be: reading it fails.
+  const broken = join(sandbox.home, 'marks-folder');
+  mkdirSync(broken);
+  const result = sandbox.run(['redact'], { input: `by ${OWNER}\n`, extra: { YOKOTEN_PRIVATE_MARKS: broken } });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, `by ${OWNER}\n`);
+  assert.match(result.stderr, /^yokoten redact: output is not hidden, because [^\n]*\n$/);
+  // In the wrapper, the command's own exit code still comes through.
+  const pass = spawnSync('bash', ['-c', wrapForRedact('echo hi; exit 5', `node "${CLI}" redact`)], { cwd: sandbox.repo, env: { ...sandbox.env, YOKOTEN_PRIVATE_MARKS: broken }, encoding: 'utf8' });
+  assert.deepEqual([pass.status, pass.stdout], [5, 'hi\n']);
+  assert.equal(wrapped('true').status, 0);
+});
+
+test('redact: a long line is cut only at a space or tab, never inside a value (#390)', () => {
+  assert.equal(cutPoint('a\nb', 10), 2);
+  assert.equal(cutPoint('short', 10), 0);
+  assert.equal(cutPoint('word word longvalue', 10), 10);
+  assert.equal(cutPoint('x'.repeat(20), 10), 20, 'no space: the whole buffer goes, redacted as one');
+  // Through the command: a value at the end of a long run with no line end is still hidden.
+  const { sandbox } = ownerSandbox();
+  // A one-word value: a value with a space in it may be cut at that space.
+  const input = `${'y'.repeat((1 << 20) + 10)} ${LOGIN}`;
+  const result = spawnSync('node', [CLI, 'redact'], { cwd: sandbox.repo, env: sandbox.env, input, encoding: 'utf8', maxBuffer: 8 << 20 });
+  assert.ok(result.stdout === `${'y'.repeat((1 << 20) + 10)} <mark>`, `ends with: ${result.stdout.slice(-20)}`);
 });

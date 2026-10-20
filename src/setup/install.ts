@@ -139,10 +139,15 @@ export function install(env: Env, { cwd, gh }: { cwd?: string; gh?: Gh } = {}): 
   report.push(`${marks} ${target.marks}${marks === 'wrote' ? ' (add your marks to it)' : ''}`);
   // The obvious marks come from the machine; the rest only the owner knows (#390).
   const found = machineMarks(env, { cwd, gh });
-  report.push(filledLine(fillMarks(env, found), target.marks));
-  const missing = missingMarkKinds(loadMarks(env), found);
-  if (missing.length) report.push(`add ${missing.join(', ')} to ${target.marks}, one per line; yokoten can't find these on its own`);
-  report.push(setUpMailmap(env, found));
+  report.push(
+    ...trySafely('the marks from this machine', () => {
+      const lines = [filledLine(fillMarks(env, found), target.marks)];
+      const missing = missingMarkKinds(loadMarks(env), found);
+      if (missing.length) lines.push(`add ${missing.join(', ')} to ${target.marks}, one per line; yokoten can't find these on its own`);
+      return lines;
+    }),
+    ...trySafely('the git mailmap', () => [setUpMailmap(env, found)]),
+  );
   if (!isOnPath(env, target.runtime)) report.push(aliasLine(target.runtime));
   return { ok, lines: report };
 }
@@ -264,7 +269,9 @@ export function fillMarks(env: Env, found: MachineMark[]): string[] {
   const file = marksFile(env);
   const known = new Set(loadMarks(env));
   const added: MachineMark[] = [];
-  for (const mark of found) {
+  // The git display name is left out: as a mark, a common name would flag every file that
+  // holds the word. `redact` still hides it, from git, as a whole word.
+  for (const mark of found.filter((one) => one.kind !== 'git name')) {
     const key = mark.value.toLowerCase();
     if (known.has(key)) continue;
     known.add(key);
@@ -336,13 +343,32 @@ export function mailmapState(env: Env): 'ours' | 'other' | 'unset' {
 export function setUpMailmap(env: Env, found: MachineMark[]): string {
   const emails = [...new Set([...found.filter((mark) => mark.kind === 'git email').map((mark) => mark.value), ...loadMarks(env).filter((mark) => /^[^@\s]+@[^@\s]+$/.test(mark))].map((email) => email.toLowerCase()))];
   const file = join(paths(env).config, 'mailmap');
-  mkdirSync(dirname(file), { recursive: true });
-  const header = '# yokoten: git prints the owner\'s emails as a placeholder. Kept outside every repo; never commit it.\n';
-  writeFileSync(file, header + emails.map((email) => `${MAILMAP_OWNER} <${email}>\n`).join(''), { mode: 0o600 });
+  // The file may hold lines the owner wrote: it only gets the lines it lacks.
+  const before = existsSync(file) ? readFileSync(file, 'utf8') : null;
+  const mapped = new Set([...(before ?? '').matchAll(/<([^<>\s]+)>\s*$/gm)].map((match) => match[1].toLowerCase()));
+  const missing = emails.filter((email) => !mapped.has(email));
+  if (before === null) {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, '# yokoten: git prints the owner\'s emails as a placeholder. Kept outside every repo; never commit it.\n', { mode: 0o600 });
+  }
+  if (missing.length) appendFileSync(file, `${before && !before.endsWith('\n') ? '\n' : ''}${missing.map((email) => `${MAILMAP_OWNER} <${email}>\n`).join('')}`);
   const state = mailmapState(env);
   if (state === 'other') return `kept your own git mailmap.file setting; add the lines of ${file} to that file`;
   // git prints nothing when it sets a value, so the setting is read back to see it took.
   if (state === 'unset') readGitValue(env, ['config', '--global', 'mailmap.file', MAILMAP_SETTING]);
   if (mailmapState(env) !== 'ours') return `skipped the git mailmap: git config could not set mailmap.file; run \`git config --global mailmap.file ${MAILMAP_SETTING}\``;
-  return `${state === 'ours' ? 'updated' : 'wrote'} ${file}, and git log and git show now print your emails as a placeholder`;
+  if (state === 'ours') return missing.length ? `added ${missing.length} line(s) to ${file}` : `kept ${file}: it already maps your emails`;
+  return `${before === null ? 'wrote' : 'kept'} ${file}, and git log and git show now print your emails as a placeholder`;
+}
+
+/**
+ * One privacy step of install or doctor, which never stops them: an error becomes one plain
+ * line that says what was skipped and why.
+ */
+export function trySafely(what: string, step: () => string[]): string[] {
+  try {
+    return step();
+  } catch (err) {
+    return [`skipped ${what}: ${String((err as Error)?.message ?? err).split('\n')[0]}`];
+  }
 }

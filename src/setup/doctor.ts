@@ -35,7 +35,7 @@ import { commentedFile, HAND_ADD, handAddJson, type HookState, mergeHandAdds } f
 import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
 import { cliPath, compareCoreRules, compareVersions, isSelf, readCoreRules, summarizeUpdate } from './init.ts';
-import { countOwnMarks, fillMarks, filledLine, installedPieces, machineMarks, mailmapState, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
+import { countOwnMarks, fillMarks, filledLine, trySafely, installedPieces, machineMarks, mailmapState, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
 import { type Mark, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
 
 /**
@@ -239,7 +239,13 @@ export function privacyNotes(env: Env, root: string | null, output: Config['priv
   const mailmap = mailmapState(env);
   if (mailmap === 'unset') notes.push(practice('mailmap', 'mailmap', false, 'git log and git show print your name and email as they are', 'run `yokoten install`; it sets a git mailmap outside every repo'));
   if (mailmap === 'other') notes.push(practice('mailmap', 'mailmap', false, `git uses your own mailmap file, not ${MAILMAP_SETTING}`, `add the lines of ${MAILMAP_SETTING} to your file`));
-  const missing = missingMarkKinds(loadMarks(env), machineMarks(env, { cwd: root ?? undefined }));
+  let marks: string[] = [];
+  try {
+    marks = loadMarks(env);
+  } catch {
+    // An unreadable file: the private-marks check says so.
+  }
+  const missing = missingMarkKinds(marks, machineMarks(env, { cwd: root ?? undefined }));
   if (missing.length) notes.push(practice('private-mark-kinds', 'private-marks', false, `your private marks may lack ${missing.join(', ')}`, `add them to ${paths(env).marks}, one per line`));
   return notes;
 }
@@ -628,7 +634,7 @@ export function doctor(
   const server: ServerRead = session ? undefined : gh ? readOrigin(root, gh) : { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' };
   const where = walk(road(root, env, ROAD, server), config.notNow);
   // Full doctor from the command line adds the obvious marks first (#390); a session writes nothing.
-  const filled = isFilling && !session ? filledLine(fillMarks(env, machineMarks(env, { cwd: root, gh })), paths(env).marks) : null;
+  const filled = isFilling && !session ? trySafely('the marks from this machine', () => [filledLine(fillMarks(env, machineMarks(env, { cwd: root, gh })), paths(env).marks)])[0] : null;
   const machine = machineChecks(env);
   const next = where.next ? stepFinding(where.next, root, env, server) : null;
   const core = coreRulesCheck(root);

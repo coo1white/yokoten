@@ -27,6 +27,7 @@ import {
   checkEdit,
   commandWords,
   hookFile,
+  isRedacted,
   printsAccount,
   runsCheck,
   wrapForRedact,
@@ -1433,42 +1434,55 @@ test('bash: env -S puts a variable\'s value in place of ${NAME}, which the guard
 
 // ---- Commands that print account details (#390) ----
 
-test('printsAccount: the commands that print account details, past launchers and runners (#390)', () => {
+test('printsAccount: one plain read from the table is caught (#390)', () => {
   const caught = [
-    'git log -3', 'git show HEAD', 'git -C sub blame README.md', 'git shortlog -sn',
-    'git push origin main', 'git fetch', 'git pull --rebase', 'git clone ssh://x/y', 'git ls-remote origin',
-    'git remote -v', 'git remote get-url origin', 'git config --list', 'git config --get user.email', 'git config -l --show-origin',
-    'wrangler whoami', 'npx wrangler deploy', 'pnpm dlx wrangler@3 login',
-    'gh api user', 'gh api repos/o/r/traffic/views', 'gh api users/someone', 'gh auth status',
-    'npm whoami', 'env', 'env -0', 'printenv', 'printenv HOME',
-    'cd sub && git log', 'sudo -u x git push', 'nice -n 10 git fetch 2>/dev/null', 'FOO=1 git show', 'bash -c "git log"',
+    'git log -3', 'git show HEAD', 'git blame README.md', 'git shortlog -sn', 'git whatchanged', '/usr/bin/git log',
+    'git remote -v', 'git remote get-url origin', 'git remote show origin', 'git config --list', 'git config --global --get user.email', 'git config get remote.origin.url',
+    'gh api user', 'gh api repos/o/r/traffic/views --jq .count', 'gh api -X GET users/someone', 'gh api --method=GET user --paginate', 'gh auth status', 'gh auth status --hostname github.com',
+    'npm whoami', 'npm whoami --registry https://registry.npmjs.org', 'wrangler whoami', 'npx wrangler whoami', 'pnpm dlx wrangler@3 whoami',
   ];
   for (const command of caught) assert.ok(printsAccount(command), `not caught: ${command}`);
-  const passed = [
-    'git log --oneline -5', 'git log --format=%H -1', 'git show --pretty=format:%s HEAD', 'git status', 'git diff',
-    'git remote', 'git config core.hooksPath', 'gh api repos/o/r', 'gh pr view 1', 'gh auth token --help',
-    'npm test', 'env FOO=1 node x.js', 'echo git log', 'ls',
-    // Already filtered.
-    'set -o pipefail; git push 2>&1 | yokoten redact', 'git log | node "$HOME/x/bin/yokoten.ts" redact',
+  assert.equal(printsAccount('git log -1'), '`git log` prints author names and emails');
+  assert.equal(printsAccount('git remote show origin'), '`git remote` prints remote URLs');
+});
+
+test('printsAccount: anything more than one plain read is left to the normal flow (#390)', () => {
+  const left = [
+    // More than one command, or shell around it.
+    'cd x && git log', 'git log; ls', 'git log | head', 'git log > out', 'git log 2>/dev/null', 'git log &', 'git log $(echo x)', 'git log `x`', '(git log)', '{ git log; }', 'git log # note', 'git log\ngit push',
+    // A prefix or a launcher.
+    'FOO=1 git log', 'sudo git log', 'env git log', 'nice git log', 'bash -c "git log"', 'npx --yes wrangler whoami',
+    // Options that write a file, run a program, or pick another git.
+    'git -c a=b log', 'git -C x log', 'git log --output=x', 'git log -o x', 'git log --ext-diff', 'git show --textconv x', 'git log --exec-path=/x',
+    // Its own format, or a subcommand only by name further on.
+    'git log --format=%H -1', 'git log --oneline', 'git show --pretty=format:%s', 'git remote add show x', 'git remote rename get-url x', 'git remote',
+    // A write, or something sent.
+    'git config user.email x', 'git config --get core.hooksPath', 'git push', 'git fetch', 'git pull', 'git clone x', 'git ls-remote', 'wrangler deploy', 'wrangler login', 'npx wrangler pages deploy',
+    'gh api -X PATCH user -f name=x', 'gh api user -f bio=x', 'gh api --method=POST user/emails', 'gh api repos/o/r', 'gh auth status --show-token', 'gh auth token',
+    // Not in the table any more: they print secrets, not only the owner.
+    'env', 'printenv', 'printenv HOME',
+    'git status', 'echo git log',
   ];
-  for (const command of passed) assert.equal(printsAccount(command), null, command);
-  assert.deepEqual(printsAccount('git log -1'), { prints: '`git log` prints author names and emails', isReadOnly: true });
-  assert.deepEqual(printsAccount('git -c a=b push'), { prints: '`git push` prints the remote host, in its progress and its errors', isReadOnly: false });
+  for (const command of left) assert.equal(printsAccount(command), null, command);
 });
 
-test('printsAccount: reads may run at once; what changes or sends something waits for the user (#390)', () => {
-  const reads = ['git log', 'git show', 'git blame x', 'git shortlog', 'git remote -v', 'git remote get-url origin', 'git config --list', 'git config --get user.email', 'gh auth status', 'npm whoami', 'printenv', 'env', 'gh api user', 'gh api -X GET repos/o/r/traffic/views', 'wrangler whoami', 'npx wrangler whoami'];
-  for (const command of reads) assert.equal(printsAccount(command)?.isReadOnly, true, command);
-  const sends = ['git push', 'git fetch', 'git pull', 'git clone x', 'git ls-remote', 'wrangler deploy', 'wrangler login', 'npx wrangler pages deploy', 'gh api -X PATCH user -f name=x', 'gh api user -f bio=x', 'gh api --method=POST user/emails', 'git log -1 && git push'];
-  for (const command of sends) assert.equal(printsAccount(command)?.isReadOnly, false, command);
-  // Setting a git value prints nothing.
-  assert.equal(printsAccount('git config user.email x'), null);
+test('isRedacted: the wrapper\'s own first line and the call; a comment that names them is not enough (#390)', () => {
+  const wrapped = wrapForRedact('git log', '"node" "$HOME/y/bin/yokoten.ts" redact');
+  assert.equal(isRedacted(wrapped), true);
+  assert.equal(printsAccount(wrapped), null);
+  assert.equal(isRedacted('git log # yokoten-redact yokoten redact'), false);
+  assert.equal(isRedacted(`echo hi\n${wrapped}`), false);
+  assert.equal(isRedacted(wrapped.replace('yokoten.ts" redact', 'other.ts" redact')), false);
+  assert.equal(wrapped, 'set -o pipefail # yokoten-redact\n(\ngit log\n) 2>&1 | { "node" "$HOME/y/bin/yokoten.ts" redact || cat; }');
 });
 
-test('wrapForRedact: keeps the exit code, and a comment or a heredoc still ends where it did (#390)', () => {
-  const run = (command: string) => spawnSync('bash', ['-c', wrapForRedact(command, 'tr a-z A-Z')], { encoding: 'utf8' });
+test('wrapForRedact: keeps the exit code; a redact that fails passes the output through; a heredoc still ends (#390)', () => {
+  const run = (command: string, redact = 'tr a-z A-Z') => spawnSync('bash', ['-c', wrapForRedact(command, redact)], { encoding: 'utf8' });
   assert.deepEqual([run('echo hi; exit 3').status, run('echo hi; exit 3').stdout], [3, 'HI\n']);
-  assert.deepEqual([run('echo out; echo err >&2 # a comment').status, run('echo out; echo err >&2 # a comment').stdout], [0, 'OUT\nERR\n']);
+  assert.deepEqual([run('echo out; echo err >&2').status, run('echo out; echo err >&2').stdout], [0, 'OUT\nERR\n']);
   assert.equal(run('cat <<EOF\nbody\nEOF').stdout, 'BODY\n');
-  assert.equal(wrapForRedact('git push', 'yokoten redact'), 'set -o pipefail; (\ngit push\n) 2>&1 | yokoten redact');
+  // redact missing or failing: the command still runs, and its output and exit code come through.
+  const broken = run('echo plain; exit 4', '"/nonexistent/node" "/nonexistent/yokoten.ts" redact');
+  assert.deepEqual([broken.status, broken.stdout], [4, 'plain\n']);
+  assert.ok(broken.stderr.split('\n').filter(Boolean).length <= 1, broken.stderr);
 });

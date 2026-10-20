@@ -179,10 +179,22 @@ test('privateRemoteHosts: hosts outside the public forges; local paths name none
   );
 });
 
-test('private marks: whole words, as redact matches them; Chinese and Japanese as part of a word (#390)', () => {
+test('private marks: the commit check matches anywhere in a word; redact only whole words (#390)', () => {
   const hits = (text: string, mark: string) => scanText(text, { file: 'a', marks: [mark] }).length;
   assert.equal(hits('Ann wrote this', 'ann'), 1);
-  assert.equal(hits('annotate the code', 'ann'), 0);
-  assert.equal(hits('see ann.md and (ann)', 'ann'), 1);
-  assert.equal(hits('住在東京都', '東京'), 1);
+  assert.equal(hits('annotate the code', 'ann'), 1, 'the commit check keeps its wider match');
+  const redact = makeRedactor({ marks: ['ann'] }, {});
+  assert.equal(redact('Ann wrote this, then annotate'), '<mark> wrote this, then annotate');
+});
+
+test('makeRedactor: secrets become <secret>, a private key line by line, across pieces (#390)', () => {
+  const token = `${'gh'}p_${'a1B2c3D4e5'.repeat(4).slice(0, 36)}`;
+  const redact = makeRedactor({}, {});
+  assert.equal(redact(`token: ${token} ok\n`), 'token: <secret> ok\n');
+  assert.equal(redact('AKIAIOSFODNN7EXAMPLE is the docs sample\n'), 'AKIAIOSFODNN7EXAMPLE is the docs sample\n');
+  // A key that starts in one piece and ends in the next is hidden whole.
+  assert.equal(redact(`-----BEGIN RSA ${'PRIVATE'} KEY-----\r\nMIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn\n`), '<secret>\r\n<secret>\n');
+  assert.equal(redact(`abcdEFGHijklMNOPqrst\n-----END RSA ${'PRIVATE'} KEY-----\nafter\n`), '<secret>\n<secret>\nafter\n');
+  // Code that names the header is not a key.
+  assert.equal(redact(`if (text.includes('-----BEGIN RSA ${'PRIVATE'} KEY-----')) x\nnext\n`), `if (text.includes('-----BEGIN RSA ${'PRIVATE'} KEY-----')) x\nnext\n`);
 });

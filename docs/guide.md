@@ -1152,9 +1152,7 @@ Rule 11 has a check. It scans for personal email addresses and IP addresses, in 
 on every commit. On your own machine it also reads `~/.config/yokoten/private-marks`:
 your name, your city, your domains, your server names. That file stays outside the
 repo, because a list of what must not be published can't itself be published. A hit
-is reported by file and line; the mark itself is never printed. A mark matches whole
-words, without case: `ann` catches "Ann wrote", not "annotate". A mark in Chinese or
-Japanese matches anywhere, since those scripts put no spaces between words.
+is reported by file and line; the mark itself is never printed.
 
 The IP check covers IPv4 only, private ranges such as `10.x` and `192.168.x` included;
 IPv6 is not checked. Localhost and the documentation ranges (`192.0.2.0/24` and its two
@@ -1170,41 +1168,57 @@ secret, never the secret. Deleting it is not enough, since git keeps it: rotate 
 
 The check above keeps your details out of the repo. An agent also reads command output,
 and that output goes into the transcript and to the model. It can't be taken back. So
-yokoten hides your details before a command runs.
+yokoten hides your details before some commands run.
 
-- **`yokoten redact`** reads text on stdin and writes it with placeholders. It hides your
-  private marks, private email addresses, your git user.name, and the hosts of private
-  remotes. A mark that looks like an address becomes `<email>`. A mark that looks like a
-  domain becomes `<host>`. Any other mark becomes `<mark>`. Without a private-marks
-  file, it still hides the patterns and what git knows.
-- **The tool-call guard wraps risky commands.** These commands print account details:
-  `git log`, `git show` and `git blame` without `--format`, `--pretty` or
-  `--oneline`. Also `git push`, `fetch`, `pull` and `clone`, `git remote -v`,
-  `git config --list`, `wrangler`, account and traffic calls through `gh`,
-  `gh auth status`, `npm whoami`, `env` and `printenv`. In Claude Code, the guard
-  changes such a command to
-  `set -o pipefail; ( <command> ) 2>&1 | node <yokoten> redact`. The exit code stays the
-  command's. A command that only reads runs at once. A command that changes or sends
-  something (a push, a fetch, a deploy, a login) still asks you first, and shows the
-  changed command. Your permission rules still apply.
+- **`yokoten redact`** reads text on stdin and writes it with placeholders. It hides
+  secrets (`<secret>`), private email addresses (`<email>`), your git user.name
+  (`<owner>`), the hosts of private remotes (`<host>`) and your private marks. A mark
+  that looks like a domain becomes `<host>`; any other mark becomes `<mark>`. It matches
+  a mark as a whole word. Without a private-marks file, it still hides the patterns and
+  what git knows. If it can't start or read your marks, it says so in one line and
+  passes the output through: it never stops the command.
+- **In Claude Code, the guard filters plain reads.** These commands print account
+  details: `git log`, `git show` and `git blame` without `--format`, `--pretty` or
+  `--oneline`; `git remote -v`, `get-url` and `show`; `git config --list` and reads of
+  `user.*` and `remote.*`; `gh auth status`; GET calls through `gh` on traffic and user
+  paths; `npm whoami`; `wrangler whoami`. When the whole command is one of these, with
+  nothing around it, the guard changes it to
+  `set -o pipefail # yokoten-redact`, then `( <command> ) 2>&1 | { <node> <yokoten> redact || cat; }`.
+  The exit code stays the command's. A command with `&&`, `;`, a pipe, a redirect, a
+  substitution, a prefix such as `sudo`, or an option that writes a file, is left as it
+  is.
 - **Other agents run the command as it is.** Their hooks can't change a command.
   `doctor` and the session start say so once. To stop such commands there instead, set
   `"privacy": { "output": "stop" }` in `yokoten.json`. Then the guard stops the command
   and shows the filtered command to run.
 - **git hides you at the source.** `install` points git's global `mailmap.file` at
   `~/.config/yokoten/mailmap`, outside every repo. Then `git log` and `git show`
-  print `owner` for your emails. If you set your own `mailmap.file`, `install` keeps
-  it and tells you which lines to add.
-- **Marks fill themselves.** `install` and `doctor` add what this machine knows: git
-  user.name and user.email, the login `gh` uses, and the hosts of private remotes. They
-  only add lines, and never print a value. `doctor` tells you which kinds are still
-  missing: your real name, your city, your domains. Only you can add those.
+  print `owner` for your emails. If the file is there, `install` only adds the lines it
+  lacks. If you set your own `mailmap.file`, `install` keeps it and tells you which lines
+  to add.
+- **Marks fill themselves.** `install` and `doctor` add what this machine knows: your
+  git email (unless it is a noreply address), the login `gh` uses, and the hosts of
+  private remotes. Your git display name is left out: a common name would flag every
+  file that holds the word. They only add lines, and never print a value. `doctor` tells
+  you which kinds are still missing: your real name, your city, your domains. Only you
+  can add those.
 
 The wrapped command needs bash. On Windows, run agents in Git Bash or WSL; PowerShell has
-no `pipefail`. Two limits remain. A browser page or a screenshot can't be filtered, so
-don't read account pages as text. And a hook can't know every command. When output shows
-your details, open an incident, and give the command a row in `ACCOUNT_PRINTERS`
-(`src/rules/guards.ts`).
+no `pipefail`.
+
+What is not hidden, said plainly:
+
+- **Commands that change or send something.** `git push`, `fetch`, `pull` and `clone`,
+  and `wrangler deploy` or `login`, run as they are. A push error can show a private
+  host. Rewriting them would stop a worker that runs without prompts.
+- **Files an agent reads.** `cat CODEOWNERS`, or the agent's own file reader, shows the
+  file as it is.
+- **The environment.** `env` and `printenv` are not filtered: they print secrets of
+  every kind. Don't run them in an agent session.
+- **Browser pages and screenshots.** Don't read account pages as text.
+
+A hook can't know every command. When output shows your details, open an incident, and
+give the command a row in `ACCOUNT_PRINTERS` (`src/rules/guards.ts`).
 
 ### Time zones
 

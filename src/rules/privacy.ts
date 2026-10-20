@@ -16,7 +16,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Env } from './config.ts';
 import { type Finding, finding } from './message.ts';
-import { findSecrets } from './secrets.ts';
+import { findSecrets, makeSecretHider, SECRET } from './secrets.ts';
 
 export const marksFile = (env: Env): string => env.YOKOTEN_PRIVATE_MARKS || join(env.HOME || homedir(), '.config', 'yokoten', 'private-marks');
 
@@ -35,7 +35,8 @@ export function loadMarks(env: Env): string[] {
     .map((line) => line.toLowerCase());
 }
 
-const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
+// A match starts only where a word starts, so a long run with no @ is read once, not once per letter.
+const EMAIL = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
 // A browser version in a user agent (Chrome/120.0.0.0) is not an address. Only the
 // browser product names are skipped, case-sensitive as a user agent writes them: an
 // address in a path (api/192.0.2.1) or a URL (http://192.0.2.1) is still caught.
@@ -76,8 +77,6 @@ export function scanText(text: string, { file, marks = [], allow = [] }: { file:
   const problems: Finding[] = [];
   const lines = text.split('\n');
   const secrets = findSecrets(lines, allow);
-  // Whole words, as `redact` matches them (#390): a mark `ann` does not flag `annotate`.
-  const markPatterns = marks.map((mark) => new RegExp(valuePattern(mark), 'iu'));
   lines.forEach((line, i) => {
     const where = { file, line: i + 1 };
     // The secret itself is never printed either, only its kind.
@@ -92,9 +91,10 @@ export function scanText(text: string, { file, marks = [], allow = [] }: { file:
       if (octets.some((n) => n > 255) || OK_IP.some((re) => re.test(hit)) || allow.includes(hit)) continue;
       problems.push(finding('ip', 'an IP address', 'use a placeholder from 192.0.2.0/24', where));
     }
-    for (const pattern of markPatterns) {
+    const lower = line.toLowerCase();
+    for (const mark of marks) {
       // The mark itself is never printed: the output may land in a CI log or a chat.
-      if (pattern.test(line)) problems.push(finding('private-mark', 'matches a line of your private-marks file', 'remove it or reword the line; the mark itself is never printed', where));
+      if (lower.includes(mark)) problems.push(finding('private-mark', 'matches a line of your private-marks file', 'remove it or reword the line; the mark itself is never printed', where));
     }
   });
   return problems;
@@ -163,7 +163,7 @@ export const POSITIVE_CONTROL = [`contact: someone${'@'}personal-mail.com`, `ser
 // details through `yokoten redact`, which puts a placeholder in place of each value.
 
 /** The placeholders `redact` writes. A placeholder never names what it hides. */
-export const PLACEHOLDERS = { owner: '<owner>', email: '<email>', host: '<host>', mark: '<mark>' } as const;
+export const PLACEHOLDERS = { owner: '<owner>', email: '<email>', host: '<host>', mark: '<mark>', secret: SECRET } as const;
 
 const isEmailShaped = (value: string) => /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(value);
 /** A domain or host name: words joined by dots, ending in a top-level name. */
@@ -195,9 +195,9 @@ function valuePattern(value: string): string {
 }
 
 /**
- * A function that hides the owner in one piece of text: private email addresses (the same
- * test as the privacy check), then every value in `hidden`, then the home folder. Case
- * does not count. Line ends are kept, so it works on output read in pieces.
+ * A function that hides the owner in text read in pieces, in order: secrets (the same
+ * patterns as the privacy check), private email addresses, every value in `hidden` as a
+ * whole word, then the home folder. Case does not count. Line ends are kept.
  */
 export function makeRedactor(hidden: Hidden, env: Env): (text: string) => string {
   const placeholderOf = new Map<string, string>();
@@ -214,9 +214,10 @@ export function makeRedactor(hidden: Hidden, env: Env): (text: string) => string
   // The longest first, so `jane doe` goes before `jane`.
   const values = [...placeholderOf.keys()].sort((a, b) => b.length - a.length);
   const pattern = values.length ? new RegExp(values.map(valuePattern).join('|'), 'giu') : null;
+  const hideSecrets = makeSecretHider();
   return (text) => {
     // An SSH remote at a private host (git@host) names the host, not a person.
-    let out = text.replace(EMAIL, (hit) => (!isPersonalEmail(hit) ? hit : /^git@/i.test(hit) ? `git@${PLACEHOLDERS.host}` : PLACEHOLDERS.email));
+    let out = hideSecrets(text).replace(EMAIL, (hit) => (!isPersonalEmail(hit) ? hit : /^git@/i.test(hit) ? `git@${PLACEHOLDERS.host}` : PLACEHOLDERS.email));
     if (pattern) out = out.replace(pattern, (hit) => placeholderOf.get(hit.toLowerCase()) ?? PLACEHOLDERS.mark);
     return hideHome(out, env);
   };
