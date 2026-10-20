@@ -312,12 +312,12 @@ export interface MachineAllowed {
  * when the file is missing or empty. `dir` null (the guard can't tell where a command
  * runs) is unsure; a repo with no origin gets nothing, and is not unsure.
  */
-export function machineAllowed(env: Env, dir: string | null): MachineAllowed {
+export function machineAllowed(env: Env, dir: string | null, known?: ReturnType<typeof repoKey>): MachineAllowed {
   const read = readMachineAllow(env);
   if ('unsure' in read) return { allow: [], unsure: read.unsure };
   if (!read.entries.length) return { allow: [], unsure: null };
   if (dir === null) return { allow: [], unsure: "yokoten can't tell which repo this runs in" };
-  const key = repoKey(dir);
+  const key = known ?? repoKey(dir);
   if ('unsure' in key) return { allow: [], unsure: key.unsure };
   if ('none' in key) return { allow: [], unsure: null };
   const found = matchingEntries(read.entries, key);
@@ -325,11 +325,34 @@ export function machineAllowed(env: Env, dir: string | null): MachineAllowed {
   return { allow: (found[0]?.allow ?? []).map((mark) => mark.toLowerCase()), unsure: null };
 }
 
-/** The marks to look for in the repo at `root`: the owner's, less those the machine allows there (#447). */
-export function repoMarkKinds(env: Env, root: string): Mark[] {
+/** A name with case, `-`, `_`, `.` and spaces taken out, so `Quiet Vale` and `quiet-vale` compare equal. */
+const plainName = (name: string): string => name.toLowerCase().replace(/[-_.\s]/g, '');
+
+/**
+ * The marks that are the name of the repo they run in, with no setup (#447, record 0014): a
+ * mark that equals the name part of the repo (the last part of its normalized origin remote,
+ * or `hostRepo`, the CI host's own "owner/name"), case, `-`, `_`, `.` and spaces aside. The
+ * whole name only, never a part: `quiet vale` is the repo `quiet-vale`, not `quiet-vale-docs`.
+ * `repo` is what `repoKey` said; when it is unsure, only `hostRepo` can name the repo.
+ */
+export function sameNameMarks(marks: string[], repo: ReturnType<typeof repoKey> | null, hostRepo?: string | null): string[] {
+  const names = new Set<string>();
+  const add = (path: string | null | undefined) => {
+    const plain = plainName(path?.split('/').pop() ?? '');
+    if (plain) names.add(plain);
+  };
+  if (repo && 'remote' in repo) add(repo.remote);
+  add(hostRepo);
+  return marks.filter((mark) => names.has(plainName(mark)));
+}
+
+/** The marks to look for in the repo at `root`: the owner's, less those the repo is named for and those the machine allows there (#447). */
+export function repoMarkKinds(env: Env, root: string, hostRepo?: string | null): Mark[] {
   const kinds = loadMarkKinds(env);
   if (!kinds.length) return kinds;
-  const own = new Set(ownMarks(kinds.map((mark) => mark.value), machineAllowed(env, root).allow));
+  const values = kinds.map((mark) => mark.value);
+  const key = repoKey(root);
+  const own = new Set([...ownMarks(values, machineAllowed(env, root, key).allow), ...sameNameMarks(values, key, hostRepo)]);
   return own.size ? kinds.filter((mark) => !own.has(mark.value)) : kinds;
 }
 
@@ -1108,7 +1131,8 @@ export function checkPost(
   // line's one command (after at most a cd within the same repo) and names no other target.
   const all = loadMarks(env);
   const isHere = all.length > 0 && isPostHere(gh, { env, command, cwd, from });
-  const own = isHere ? ownMarks(all, [...allow, ...machineAllowed(env, cwd).allow]) : [];
+  const key = isHere && cwd !== null ? repoKey(cwd) : null;
+  const own = isHere ? [...ownMarks(all, [...allow, ...machineAllowed(env, cwd, key ?? undefined).allow]), ...sameNameMarks(all, key)] : [];
   const marks = all.filter((mark) => !own.includes(mark));
   for (const piece of posted.pieces) {
     const [hit] = scanText(piece.text, { file: piece.source, marks, allow, ownAllow: [] });

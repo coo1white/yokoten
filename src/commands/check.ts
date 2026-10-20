@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { chmodSync, closeSync, linkSync, mkdirSync, openSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import { readCodeOwners, readIssue, readPullRequest } from '../host/github.ts';
+import { ciRepo, readCodeOwners, readIssue, readPullRequest } from '../host/github.ts';
 import { loadConfig } from '../rules/config.ts';
 import { type Finding, formatFinding } from '../rules/message.ts';
 import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, largeDiff, longSentenceNote, longSentences, splitForDependabot } from '../rules/pr.ts';
@@ -126,7 +126,7 @@ function runMode(mode: string, root: string, config: ReturnType<typeof loadConfi
       printNotes(split.notes, 'pull request rule(s) Dependabot does not meet');
     }
   } else {
-    problems = mode === 'history' ? checkHistory(root, { config, env }) : check(root, { config, env, staged: mode === 'staged', notes });
+    problems = mode === 'history' ? checkHistory(root, { config, env, hostRepo: ciRepo(env) }) : check(root, { config, env, staged: mode === 'staged', notes, hostRepo: ciRepo(env) });
     // A translation behind its English source (#87) is a note, for the whole tree only.
     if (!json) for (const note of notes) print([`${name}: note: ${formatFinding(note)}`]);
     const zones = mode === 'history' && config.privacy.utc ? historyTimeZones(root) : 0;

@@ -13,3 +13,10 @@ issue URL, `GH_REPO`, `GH_HOST`, `gh api`, `gh gist`). The same holds when it is
 command on its line; one `cd` within the same repo before it is fine. When it allows nothing,
 `doctor` says why. `doctor` counts the marks allowed here and says where the allow comes from, never which marks.
 `yokoten marks allow --remove <mark> --here` takes it back.
+
+With no setup, a private mark never blocks the repo it names (#447). If a mark is the name of
+the repo's origin remote (`Quiet Vale` for `someone/quiet-vale`, case, `-`, `_`, `.` and
+spaces aside, the whole name), `check`, the commit hook and `gh` posts skip that one mark
+there; in CI the run's own repo name counts too. Every other mark and every other repo is
+unchanged, and when yokoten can't tell the repo it skips nothing. The allow above is for what
+this can't see.

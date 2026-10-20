@@ -366,6 +366,9 @@ export function readIssue(env: Env): { title: string; labels: string[] } | Unrea
 /** This run is a GitHub Actions job. */
 export const isGitHubActions = (env: Env): boolean => env.GITHUB_ACTIONS === 'true';
 
+/** The repo this CI run is for, "owner/name", or null outside a GitHub Actions job (#447). */
+export const ciRepo = (env: Env): string | null => (isGitHubActions(env) && /^[^/\s]+\/[^/\s]+$/.test(env.GITHUB_REPOSITORY ?? '') ? (env.GITHUB_REPOSITORY as string) : null);
+
 // GitHub shows at most 10 annotations of each kind per step, and 50 per job. The rest
 // are in the log and the summary, so more lines would only make the log longer.
 const MAX_ANNOTATIONS = 50;

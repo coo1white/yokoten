@@ -1340,9 +1340,14 @@ your name, your city, your domains, your server names. That file stays outside t
 repo, because a list of what must not be published can't itself be published. A hit
 is reported by file and line; the mark itself is never printed.
 
-The marks file is for the whole machine, so a private project's name belongs in it. That
-project's own repo can still use its name: list the name in `privacy.allow` in its
-yokoten.json. A mark is let through when an entry there is the same string, upper or
+The marks file is for the whole machine, so a private project's name belongs in it. With no
+setup, a mark never blocks the repo it names: when a mark is the name of the repo's origin
+remote (`Quiet Vale` for `someone/quiet-vale`, case, `-`, `_`, `.` and spaces aside, the whole
+name and not a part), `check`, the commit hook and the guard for `gh` posts skip that one mark
+there. Every other mark still applies, and so does that one in every other repo. When yokoten
+can't tell the repo (two remotes, no origin, a post to another repo), it skips nothing. The
+steps below are for the cases this can't see. A project's own repo can also list the name in
+`privacy.allow` in its yokoten.json. A mark is let through when an entry there is the same string, upper or
 lower case aside; a part or a longer string does not count. It is let through only in
 that repo, by `check`, the commit hook and the guard for `gh` posts. Every other repo
 still stops it. `doctor` says how many of your marks the project allows, never which.

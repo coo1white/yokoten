@@ -784,3 +784,50 @@ test('checkPost: a bare relative cd is unsure because of CDPATH, so no allow app
   assert.equal(post(`cd ./sub && gh issue create ${body}`, { CDPATH: '/elsewhere' }), null, './ is not searched');
   assert.equal(post(`cd ${join(own.repo, 'sub')} && gh issue create ${body}`, { CDPATH: '/elsewhere' }), null, 'absolute is not searched');
 });
+
+// ---- A mark never blocks the repo it names, with no setup (#447) ----
+
+test('a mark that is the repo name is skipped there by default, in a post and in the commit check (#447)', () => {
+  const marksOf = (remote: string | null) => {
+    const r = allowRepo(remote);
+    writeFileSync(r.env.YOKOTEN_PRIVATE_MARKS as string, 'quiet vale\nsecondmark\n');
+    return r;
+  };
+  const body = '--title "check: fix a bug" --body "Quiet Vale ships"';
+  const both = '--title "check: fix a bug" --body "Quiet Vale and SecondMark ship"';
+  const post = (r: ReturnType<typeof allowRepo>, command: string, extra: Env = {}, cwd = r.repo) => checkCommand(command, { env: { ...r.env, ...extra }, cwd });
+  const kept = (r: ReturnType<typeof allowRepo>, hostRepo?: string) => repoMarkKinds(r.env, r.repo, hostRepo).map((mark) => mark.value);
+
+  const named = marksOf('https://example.com/x/quiet-vale.git');
+  assert.equal(post(named, `gh issue create ${body}`), null, 'a post in the repo the mark names passes');
+  const second = post(named, `gh issue create ${both}`);
+  assert.equal(second?.id, 'private-mark', 'a second mark is still refused');
+  assert.ok(!/quiet vale|secondmark/i.test(formatFinding(second)), 'no mark is printed');
+  assert.deepEqual(kept(named), ['secondmark'], 'the commit check skips only that mark');
+
+  for (const remote of ['https://example.com/x/other', 'https://example.com/x/quiet-vale-docs', 'https://example.com/quiet-vale/other']) {
+    const r = marksOf(remote);
+    assert.equal(post(r, `gh issue create ${body}`)?.id, 'private-mark', `post in ${remote}`);
+    assert.deepEqual(kept(r), ['quiet vale', 'secondmark'], `commit check in ${remote}`);
+  }
+  // Case, - _ . and spaces do not matter; the whole name does.
+  assert.equal(post(marksOf('git@example.com:x/QUIET_vale.git'), `gh issue create ${body}`), null);
+  assert.equal(post(marksOf('https://example.com/x/quiet.vale'), `gh issue create ${body}`), null);
+
+  // Unsure targets skip nothing.
+  const two = marksOf('https://example.com/x/quiet-vale');
+  two.git('remote', 'add', 'upstream', 'https://example.com/x/quiet-vale');
+  assert.equal(post(two, `gh issue create ${body}`)?.id, 'private-mark', 'two remotes');
+  assert.deepEqual(kept(two), ['quiet vale', 'secondmark'], 'two remotes, commit check');
+  const none = marksOf(null);
+  assert.equal(post(none, `gh issue create ${body}`)?.id, 'private-mark', 'no origin');
+  assert.equal(post(named, `gh issue create ${body}`, { GH_REPO: 'x/other' })?.id, 'private-mark', 'GH_REPO elsewhere');
+  assert.equal(post(named, `gh issue create -R x/other ${body}`)?.id, 'private-mark', '-R elsewhere');
+  const elsewhere = marksOf('https://example.com/x/other');
+  assert.equal(post(named, `cd ${elsewhere.repo} && gh issue create ${body}`)?.id, 'private-mark', 'cd into another repo');
+  assert.equal(post(elsewhere, `cd ${named.repo} && gh issue create ${body}`)?.id, 'private-mark', 'cd out of the repo');
+
+  // CI: the host's own repo name counts, even where the checkout has no usable origin.
+  assert.deepEqual(kept(none, 'x/quiet-vale'), ['secondmark']);
+  assert.deepEqual(kept(none, 'x/quiet-vale-docs'), ['quiet vale', 'secondmark']);
+});

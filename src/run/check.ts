@@ -258,9 +258,9 @@ function readEntry(root: string, path: string): Buffer | undefined {
  * says translations weren't checked is never a problem (#181). A key in yokoten.json that yokoten
  * does not know (#228) goes in `notes` too.
  */
-export function check(root: string, { config, env, staged = false, notes = [] }: { config: Config; env: Env; staged?: boolean; notes?: Finding[] }): Finding[] {
+export function check(root: string, { config, env, staged = false, notes = [], hostRepo }: { config: Config; env: Env; staged?: boolean; notes?: Finding[]; hostRepo?: string | null }): Finding[] {
   const problems: Finding[] = [];
-  const kinds = repoMarkKinds(env, root); // less what the machine allows here (#447)
+  const kinds = repoMarkKinds(env, root, hostRepo); // less what the repo is named for and the machine allows (#447)
   const marks = kinds.map((mark) => mark.value);
   const logins = autoLogins(kinds);
   const skip = matcher(config.privacy.skip);
@@ -339,7 +339,7 @@ export const changedFiles = (root: string): string[] =>
  */
 export function checkChanged(root: string, { config, env }: { config: Config; env: Env }): Finding[] {
   const problems: Finding[] = [];
-  const kinds = repoMarkKinds(env, root); // less what the machine allows here (#447)
+  const kinds = repoMarkKinds(env, root); // less what the repo is named for and the machine allows (#447)
   const marks = kinds.map((mark) => mark.value);
   const logins = autoLogins(kinds);
   const skip = matcher(config.privacy.skip);
@@ -391,7 +391,7 @@ export function historyTimeZones(root: string): number {
  * older commits, so it is not scanned: one finding says so (#266). A grafts file can hide
  * commits the same way (#284).
  */
-export function checkHistory(root: string, { config, env }: { config: Config; env: Env }): Finding[] {
+export function checkHistory(root: string, { config, env, hostRepo }: { config: Config; env: Env; hostRepo?: string | null }): Finding[] {
   if (isShallow(root)) return [shallowHistory()];
   if (hasGrafts(root, env)) return [graftedHistory()];
   // The same hit in several commits is reported once.
@@ -399,7 +399,7 @@ export function checkHistory(root: string, { config, env }: { config: Config; en
   const add = (found: Finding[]) => {
     for (const f of found) problems.set(JSON.stringify(f), f);
   };
-  const kinds = repoMarkKinds(env, root); // less what the machine allows here (#447)
+  const kinds = repoMarkKinds(env, root, hostRepo); // less what the repo is named for and the machine allows (#447)
   const marks = kinds.map((mark) => mark.value);
   const logins = autoLogins(kinds);
   const skip = matcher(config.privacy.skip);
