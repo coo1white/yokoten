@@ -191,6 +191,18 @@ test("road: with no gh, no network, a non-GitHub remote or a session, the server
   assert.equal(serverFound(hidden)['merge-settings'], null);
 });
 
+test('doctor: a workflow with a run line of 500,000 characters does not throw (#322)', () => {
+  const root = makeTempDir('yokoten-long-run-');
+  execFileSync('git', ['init', '-q', root]);
+  mkdirSync(join(root, '.github', 'workflows'), { recursive: true });
+  const long = `on: pull_request\njobs:\n  t:\n    steps:\n      - run: npx${' -y'.repeat(83_000)} node${' -a'.repeat(83_000)}\n      - run: make${' -C x'.repeat(100_000)}\n`;
+  writeFileSync(join(root, '.github', 'workflows', 'ci.yml'), long);
+  for (const session of [true, false]) {
+    const result = doctor(root, { env: { HOME: root }, config: DEFAULTS, session, gh: () => { throw new Error('no network in this test'); } });
+    for (const key of ['tests', 'ci', 'titles']) assert.notEqual(result.report.steps?.find((s) => s.id === key)?.mark, 'done', key);
+  }
+});
+
 test('doctor: reads the server of a GitHub origin into the road; a step not done fails, a note does not (#7)', () => {
   const root = makeTempDir('yokoten-server-');
   execFileSync('git', ['init', '-q', root]);

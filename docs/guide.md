@@ -714,7 +714,7 @@ It puts three safe defaults in `.github/` too:
 | `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop event by default, a Codex Stop event with `--agent codex`, a Gemini CLI AfterAgent event with `--agent gemini`, a Grok CLI Stop event with `--agent grok`. See [The stop check](#the-stop-check) |
 | `explain [<id>] [--json]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay. A second run changes nothing |
-| `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
+| `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. `gh pr create` without a type or tier label gets them added: the type from the title (`bug` for `fix`), the tier from the body's `tier:` line. A label you pass is kept. A tier label that does not match the body is refused, with the message of `check --pr`. A label the repo does not have is named in a note and left out; the bot never creates labels. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
 
 Each command prints its own help with `--help` or `-h`: what it does, its options and
 one example. `yokoten help <command>` prints the same, and `yokoten --help` lists the
@@ -898,7 +898,7 @@ missing key, a key set to `null`, or a missing file gives the default.
 
 | Key | Must be | Default |
 |-----|---------|---------|
-| `layout` | `{ "maxEntries": 7, "exempt": ["docs/records"] }`: a whole number above 0, and a list of folders | 7, no folder exempt |
+| `layout` | `{ "maxEntries": 7, "exempt": ["docs/records"] }`: a whole number above 0, and a list of folders or globs | 7, no folder exempt |
 | `tests` | a list of globs | `*.test.*`, `*.spec.*`, `*_test.go`, `test/**`, `tests/**` |
 | `leadOnly` | a list of globs | the rules, agent config, hooks and CI |
 | `privacy` | `{ "allow": [], "skip": [], "utc": true, "output": "run" }`: two lists of text, true or false, and `"run"` or `"stop"` | lockfiles skipped, UTC on, output run |
@@ -1190,7 +1190,7 @@ A list you set replaces the default list; it does not add to it.
 | Key | Default | What it does |
 |-----|---------|--------------|
 | `layout.maxEntries` | `7` | The most entries a folder may hold (core rule 10) |
-| `layout.exempt` | none | Folders that may grow past it, such as a log of records |
+| `layout.exempt` | none | Folders that may grow past it. See [Folders that may grow](#folders-that-may-grow) |
 | `tests` | `*.test.*`, `*.spec.*`, `*_test.go`, `test/**`, `tests/**` | The test files a fix task may not change |
 | `leadOnly` | the rules, agent config, `.githooks/**`, `.github/**`, the vendored runtime `.yokoten/**` | The files a worker may not change |
 | `privacy.allow` | none | Exact strings the privacy check lets through, such as a public support address, or this project's own name from your private marks |
@@ -1201,6 +1201,26 @@ A list you set replaces the default list; it does not add to it.
 | `allowBuild` | none | Build output and binaries the commit check lets through |
 | `areas` | any | The areas a title may name. See [Issue titles](#issue-titles) |
 | `translations.fail` | `false` | A translation behind its source fails the check |
+
+#### Folders that may grow
+
+Core rule 10 keeps each folder at 7 entries or fewer. Two kinds of folder may grow past it,
+and `changes/` always may:
+
+- **A log**, such as `docs/records`. Each entry is added once and kept.
+- **A third-party fixture set** that tests read, kept under its upstream names, with its
+  `NOTICE` beside it. Tests, the `NOTICE` and upstream bug reports find a file by its
+  name. Folders would make each lookup and each refresh from upstream harder.
+
+List each such folder in `layout.exempt` by hand. An entry is a path from the root, or a
+glob. In a glob, `*` is one folder and `**` is any number of folders, none too. No other
+character is special. One glob covers every crate of a Rust workspace:
+
+```json
+{ "layout": { "exempt": ["docs/records", "crates/*/tests/data"] } }
+```
+
+`check` and `doctor` note a glob that matches no folder, so a stale entry shows.
 
 Environment variables:
 
