@@ -1,12 +1,12 @@
 // Tests for src/setup/install.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
   cpSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   renameSync,
@@ -19,7 +19,6 @@ import {
   dirname,
   join,
 } from 'node:path';
-import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import {
   at,
@@ -29,12 +28,13 @@ import {
   handAdd,
   JSON_FIX,
   makeSandbox,
+  makeTempDir,
   onToolCall,
 } from '../repo/helpers.ts';
 import { hasHook } from '../../src/agents/hooks-file.ts';
 import { copyRuntime } from '../../src/setup/files.ts';
-import { install, machineStateFile, machineUserNames, paths, uninstall, type UserNameProbe, writeFileAtomic } from '../../src/setup/install.ts';
-import { makeRedactor } from '../../src/rules/privacy.ts';
+import { countOwnMarks, fillMarks, install, machineStateFile, machineUserNames, migrateMarks, paths, uninstall, type UserNameProbe, writeFileAtomic } from '../../src/setup/install.ts';
+import { autoLogins, loadMarkKinds, makeRedactor } from '../../src/rules/privacy.ts';
 
 const BAD_USER_SETTINGS: [content: string, reason: (file: string) => string][] = [
   ['{ not json', (file) => `can't read ${file} ${JSON_FIX('install')}`],
@@ -187,7 +187,7 @@ test('install: the session doctor and the command guard for Codex and Gemini CLI
   mkdirSync(dirname(geminiFile));
   writeFileSync(codexFile, JSON.stringify({ description: 'ours', hooks: mine('PreToolUse') }));
   writeFileSync(geminiFile, JSON.stringify({ theme: 'x', hooks: mine('BeforeTool') }));
-  const cli = '"$HOME/.local/share/yokoten/bin/yokoten.ts"';
+  const cli = '"$HOME/.local/share/yokoten/bin/yokoten.mjs"';
   const line = 'yokoten: the runtime at ~/.local/share/yokoten is missing; run the install again';
   const atStart = (args: string) => `[ -f ${cli} ] 2>/dev/null || { echo '${line}'; exit 0; }; node ${cli} ${args}`;
   const onCall = (args: string) => onToolCall(`[ -f ${cli} ] 2>/dev/null || { echo '${line}' >&2; exit 1; }; `, cli, args);
@@ -469,7 +469,7 @@ test("install: adds the machine's marks and a git mailmap, and never prints a va
   assert.match(result.stdout, /^added to ~\/\.config\/yokoten\/private-marks from this machine: git email, private remote host \(the values are not shown\)$/m);
   assert.match(result.stdout, /^add your real name, your city, your domains to ~\/\.config\/yokoten\/private-marks, one per line; yokoten can't find these on its own$/m);
   assert.match(result.stdout, /^wrote ~\/\.config\/yokoten\/mailmap, and git log and git show now print your emails as a placeholder$/m);
-  assert.match(readFileSync(marks, 'utf8'), /# added by yokoten from this machine\njane@personal-mail\.dev\nbuild\.private-host\.dev\n$/);
+  assert.match(readFileSync(marks, 'utf8'), /# added by yokoten from this machine: git email\njane@personal-mail\.dev\n# added by yokoten from this machine: private remote host\nbuild\.private-host\.dev\n$/);
   assert.equal(statSync(marks).mode & 0o777, 0o600);
   // git prints the placeholder at the source.
   assert.equal(sandbox.git('config', '--global', '--get', 'mailmap.file').stdout, '~/.config/yokoten/mailmap\n');
@@ -609,7 +609,7 @@ test('machineUserNames: USERPROFILE gives the Windows name; a macOS home gives i
 });
 
 test('writeFileAtomic: the whole file or nothing, and no temp file left (#404)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-atomic-'));
+  const dir = makeTempDir('yokoten-atomic-');
   try {
     const file = join(dir, 'sub', 'machine.json');
     writeFileAtomic(file, '{}\n');
@@ -622,13 +622,47 @@ test('writeFileAtomic: the whole file or nothing, and no temp file left (#404)',
 });
 
 test('install and uninstall: with no absolute home they refuse and write nothing (#404)', () => {
-  const result = install({ HOME: '' }, { system: () => '' });
+  const result = install({ HOME: '' });
   assert.equal(result.ok, false);
   assert.match(result.lines.join('\n'), /no home folder/);
-  assert.equal(install({ HOME: 'relative/home' }, { system: () => 'also/relative' }).ok, false);
-  const removed = uninstall({ HOME: '' }, { system: () => '' });
+  assert.equal(install({ HOME: 'relative/home' }).ok, false);
+  assert.equal(install({}).ok, false, 'no HOME: the system home is the CLI entry\'s fallback, not install\'s (#356)');
+  const removed = uninstall({ HOME: '' });
   assert.equal(removed.ok, false);
   assert.match(removed.lines.join('\n'), /no home folder.*run uninstall again/);
-  assert.throws(() => paths({ HOME: '' }, () => ''), /no home folder/);
+  assert.equal(uninstall({}).ok, false, 'no HOME: uninstall does not fall back to the system home (#356)');
+  assert.throws(() => paths({ HOME: '' }), /no home folder/);
   assert.equal(existsSync('relative') || existsSync('.local'), false, 'nothing lands in the folder the test runs in');
+});
+
+test('migrateMarks: an old block is split by kind; a value it cannot place stays strict (#410)', () => {
+  const old = `# mine\nmycity\n# added by yokoten from this machine\nocto-jdoe\njane${at}personal-mail.dev\nnas\nbuild.private-host.dev\nbox\n\n# later\nmyserver\n`;
+  assert.equal(migrateMarks('# mine\nmycity\n', { logins: [], hosts: [] }), null);
+  assert.equal(
+    migrateMarks(old, { logins: ['Octo-Jdoe'], hosts: ['nas'] }),
+    `# mine\nmycity\n# added by yokoten from this machine: forge login\nocto-jdoe\n# added by yokoten from this machine: git email\njane${at}personal-mail.dev\n# added by yokoten from this machine: private remote host\nnas\nbuild.private-host.dev\n# your own marks\nbox\n# later\nmyserver\n`,
+  );
+  // With no login known, a bare name is never taken for one.
+  assert.ok(!migrateMarks(old, { logins: [], hosts: [] })?.includes('forge login'));
+});
+
+test('fillMarks: rewrites an old block in a fake home, by the gh login on file, and keeps mode 600 (#410)', () => {
+  const home = makeTempDir('yokoten-');
+  const env = { HOME: home };
+  const marks = join(home, '.config', 'yokoten', 'private-marks');
+  mkdirSync(dirname(marks), { recursive: true });
+  writeFileSync(marks, '# added by yokoten from this machine\nocto-jdoe\nnas\n', { mode: 0o600 });
+  mkdirSync(join(home, '.config', 'gh'), { recursive: true });
+  writeFileSync(join(home, '.config', 'gh', 'hosts.yml'), 'github.com:\n    user: octo-jdoe\n    git_protocol: https\n');
+  // Before the rewrite, the old block gives no login: a bare name is strict.
+  assert.deepEqual(autoLogins(loadMarkKinds(env)), []);
+  assert.deepEqual(fillMarks(env, []), []);
+  assert.equal(readFileSync(marks, 'utf8'), '# added by yokoten from this machine: forge login\nocto-jdoe\n# your own marks\nnas\n');
+  assert.equal(statSync(marks).mode & 0o777, 0o600);
+  assert.deepEqual(autoLogins(loadMarkKinds(env)), ['octo-jdoe']);
+  assert.equal(countOwnMarks(env), 1);
+  assert.deepEqual(readdirSync(dirname(marks)), ['private-marks'], 'no temp file is left');
+  // A second run changes nothing.
+  fillMarks(env, []);
+  assert.equal(readFileSync(marks, 'utf8'), '# added by yokoten from this machine: forge login\nocto-jdoe\n# your own marks\nnas\n');
 });

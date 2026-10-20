@@ -11,9 +11,9 @@
 // for the user to add by hand (#258).
 
 import { statSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
+import { homeIn } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import type { Action } from '../../run/hook.ts';
 import { type Added, addHook, checkHooks, hasHook, type HookArgs, type HookState, hookState, type ReadOptions } from '../hooks-file.ts';
@@ -90,7 +90,7 @@ export { readStop } from './claude-code.ts';
  */
 export const formatSessionContext = (text: string): string => JSON.stringify({ hookSpecificOutput: { additionalContext: text } });
 
-const userSettings = (env: Env) => join(env.HOME || homedir(), '.gemini', 'settings.json');
+const userSettings = (env: Env) => join(homeIn(env), '.gemini', 'settings.json');
 
 /** The two user hooks, as `addHook`'s arguments: one builder for `addUserHooks` and `userHooksState`. */
 const userHookArgs = (env: Env, cli: string, missing: string): Record<'doctor' | 'guard', HookArgs> => ({

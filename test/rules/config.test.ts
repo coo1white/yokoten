@@ -1,14 +1,14 @@
 // Tests for src/rules/config.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import {
   existsSync,
-  mkdtempSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { makeTempDir } from '../repo/helpers.ts';
 import {
   type Config,
   DEFAULTS,
@@ -61,7 +61,7 @@ test('glob: a slash anchors at the root, no slash matches in any folder', () => 
 });
 
 test('config: missing file means defaults, a key overrides, bad JSON says where', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const dir = makeTempDir();
   assert.deepEqual(loadConfig(dir).layout, DEFAULTS.layout);
   writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ layout: { maxEntries: 9 }, notNow: { ci: 'later' } }));
   const c = loadConfig(dir);
@@ -75,7 +75,7 @@ test('config: missing file means defaults, a key overrides, bad JSON says where'
 });
 
 test('config: "areas" must be a list of names, or loading says so (#156)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const dir = makeTempDir();
   const areas = (value: unknown) => {
     writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ areas: value }));
     return () => loadConfig(dir).areas;
@@ -90,7 +90,7 @@ test('config: "areas" must be a list of names, or loading says so (#156)', () =>
 });
 
 test('config: "commands.block" is read, and a wrong shape is a config problem (#192)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const dir = makeTempDir();
   assert.deepEqual(loadConfig(dir).commands, { block: {} });
   writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ commands: { block: { python3: 'TypeScript only' } } }));
   assert.deepEqual(loadConfig(dir).commands.block, { python3: 'TypeScript only' });
@@ -101,7 +101,7 @@ test('config: "commands.block" is read, and a wrong shape is a config problem (#
 });
 
 test('config: for the hook, a wrong "commands" drops only the block list, said once (#192)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const dir = makeTempDir();
   writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ leadOnly: ['secret/**'], commands: { block: ['python3'] } }));
   const lines: string[] = [];
   const config = loadHookConfig(dir, (line) => lines.push(line));
@@ -128,7 +128,7 @@ test('config: for the hook, a wrong "commands" drops only the block list, said o
 });
 
 test('config: a key with the wrong shape is a config error that names it, and the hook uses its default (#228)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const dir = makeTempDir();
   for (const [path, file] of WRONG_KEYS) {
     const label = JSON.stringify(file);
     writeFileSync(join(dir, 'yokoten.json'), JSON.stringify(file));
@@ -157,7 +157,7 @@ test('config: a key with the wrong shape is a config error that names it, and th
 });
 
 test('config: null is a missing key; check lists every wrong key at once; unknown "commands" fields are notes (#228)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const dir = makeTempDir();
   // null gives the default, as before #228: no problem, no note, no hook line.
   writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ leadOnly: null, notNow: null, layout: null, privacy: { utc: null }, commands: { block: null } }));
   assert.deepEqual(loadConfig(dir), { ...DEFAULTS, privacy: { ...DEFAULTS.privacy } });
@@ -183,7 +183,7 @@ test('config: null is a missing key; check lists every wrong key at once; unknow
 });
 
 test('config: an unknown key is a note, never a problem; yokoten\'s own files and the kit\'s pass with no note (#228)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const dir = makeTempDir();
   writeFileSync(join(dir, 'yokoten.json'), JSON.stringify({ colour: 'blue', layout: { maxEntry: 9 }, tests: ['spec/**'] }));
   assert.deepEqual(loadConfig(dir).tests, ['spec/**']);
   const lines: string[] = [];

@@ -1,5 +1,6 @@
 // Tests for src/rules/guards.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import {
   execFileSync,
@@ -8,16 +9,16 @@ import {
 import {
   chmodSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
-import { makeSandbox } from '../repo/helpers.ts';
+import { makeSandbox, makeTempDir } from '../repo/helpers.ts';
 import {
   DEFAULTS,
   type Env,
@@ -27,6 +28,8 @@ import {
   checkEdit,
   commandWords,
   hookFile,
+  isGranted,
+  isLeadOnly,
   isRedacted,
   printsAccount,
   runsCheck,
@@ -75,7 +78,7 @@ exit $c
 `;
 
 function makeHooksRepo(): string {
-  const root = mkdtempSync(join(tmpdir(), 'yokoten-hooks-'));
+  const root = makeTempDir('yokoten-hooks-');
   const git = (...args: string[]) => execFileSync('git', args, { cwd: root, stdio: 'pipe' });
   git('init', '-q');
   git('config', 'core.hooksPath', 'hooks/own');
@@ -453,6 +456,9 @@ test('hooks setting: only a line that runs yokoten check counts, not a comment (
   assert.equal(runsCheck('npx yokoten check || exit 1\r\n'), true);
   assert.equal(runsCheck('#!/bin/sh\n# yokoten check\nnpm test\n'), false);
   assert.equal(runsCheck('node bin/yokoten.ts checkout\n'), false);
+  // The JavaScript entry the agent hooks run (#408) counts as yokoten too.
+  assert.equal(runsCheck('#!/bin/sh\nnode ".yokoten/bin/yokoten.mjs" check --staged || exit 1\n'), true);
+  assert.equal(runsCheck('#!/bin/sh\nnode ".yokoten/bin/yokoten.mts" check --staged || exit 1\n'), false);
   assert.equal(hookFile('/repo', '.husky/_'), '.husky/pre-commit');
   assert.equal(hookFile('/repo', '../other'), null);
 });
@@ -534,6 +540,294 @@ test('lead-only files: a worker is stopped, the lead is not', () => {
   // A glob with a slash is the root's folder only; one without matches in any folder.
   assert.ok(checkEdit('kit/project/AGENTS.md', { config: DEFAULTS, env: worker }));
   assert.equal(checkEdit('kit/project/.github/workflows/x.yml', { config: DEFAULTS, env: worker }), null);
+});
+
+// A worker's shell writes and commits to lead-only files (#402). The file rules apply in a
+// repo that uses yokoten, as for an edit, so the sandbox gets a yokoten.json.
+const yokotenSandbox = () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', '{}\n');
+  return sandbox;
+};
+
+test('lead-only files: each shell writer form stops a worker, not the lead (#402)', () => {
+  const sandbox = yokotenSandbox();
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  const run = (command: string, env: Env) => checkCommand(command, { env, cwd: sandbox.repo });
+  sandbox.write('fix.patch', 'diff --git a/AGENTS.md b/AGENTS.md\n--- a/AGENTS.md\n+++ b/AGENTS.md\n@@ -1 +1 @@\n-a\n+b\n');
+  for (const command of [
+    'echo x > AGENTS.md',
+    'echo x >>AGENTS.md',
+    'printf x &> CLAUDE.md',
+    'echo x >| yokoten.json',
+    'echo x 2>|CLAUDE.md',
+    'echo x 2>&1 >&AGENTS.md',
+    'cat > AGENTS.md <<EOF\nnew rules\nEOF',
+    'sed -i s/a/b/ AGENTS.md',
+    'sed -i.bak -e s/a/b/ AGENTS.md',
+    'sed --in-place s/a/b/ AGENTS.md',
+    'sed -Ei s/a/b/ src/a.ts AGENTS.md',
+    'echo x | tee AGENTS.md',
+    'echo x | tee -a .github/workflows/ci.yml',
+    'cp /tmp/x AGENTS.md',
+    'cp x y .githooks/',
+    'cp -t .claude x',
+    'mv AGENTS.md notes.md',
+    'mv x .github/workflows/ci.yml',
+    'install -m 755 x .githooks/pre-commit',
+    'ln -sf x CLAUDE.md',
+    'dd if=x of=AGENTS.md',
+    'truncate -s 0 AGENTS.md',
+    'rm AGENTS.md',
+    'rm -rf .github',
+    'perl -pi -e s/a/b/ AGENTS.md',
+    'perl -i.bak -pe s/a/b/ AGENTS.md',
+    'git checkout -- AGENTS.md',
+    'git checkout main -- .github/workflows/ci.yml',
+    'git restore AGENTS.md',
+    'git restore --source main --worktree --staged AGENTS.md',
+    'git rm AGENTS.md',
+    'git mv AGENTS.md RULES.md',
+    'git apply fix.patch',
+    'cd src && cp x ../AGENTS.md',
+    'sudo -u x sed -i s/a/b/ AGENTS.md',
+    'bash -c "echo x > AGENTS.md"',
+    'nice -n 10 tee AGENTS.md < x',
+  ]) {
+    assert.equal(run(command, worker)?.id, 'lead-only', `should stop a worker: ${JSON.stringify(command)}`);
+    assert.equal(run(command, {}), null, `should let the lead: ${JSON.stringify(command)}`);
+  }
+  // The message names the file and how to hand it over.
+  const found = run('sed -i s/a/b/ AGENTS.md', worker);
+  assert.match(found?.what ?? '', /writes AGENTS\.md, which is lead-only/);
+  assert.match(found?.fix ?? '', /hand the change to the lead/);
+});
+
+test('lead-only files: reads, other files and files outside the repo pass a worker (#402)', () => {
+  const sandbox = yokotenSandbox();
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  for (const command of [
+    'cat AGENTS.md',
+    'grep x AGENTS.md',
+    'grep -n ">" AGENTS.md',
+    'echo ">" AGENTS.md',
+    'head -5 AGENTS.md > /dev/null',
+    'sed -n 1,5p AGENTS.md',
+    'perl -ne print AGENTS.md',
+    'cp AGENTS.md notes.md',
+    'diff AGENTS.md CLAUDE.md 2>&1',
+    'echo x > src/a.ts',
+    'sed -i s/a/b/ src/a.ts',
+    'rm -rf dist',
+    'git checkout main',
+    'git checkout -b 402-x',
+    'git restore --staged AGENTS.md',
+    'git diff AGENTS.md',
+    'git log -p -- .github',
+    'echo x > /tmp/AGENTS.md',
+  ]) {
+    assert.equal(checkCommand(command, { env: worker, cwd: sandbox.repo }), null, `should allow: ${JSON.stringify(command)}`);
+  }
+});
+
+test('lead-only files: YOKOTEN_LEAD_ONLY_OK lets the paths it names through, and no others (#402)', () => {
+  const sandbox = yokotenSandbox();
+  const granted = { YOKOTEN_ROLE: 'worker', YOKOTEN_LEAD_ONLY_OK: ' AGENTS.md, ./.github/workflows/*.yml' };
+  const run = (command: string) => checkCommand(command, { env: granted, cwd: sandbox.repo });
+  assert.equal(run('sed -i s/a/b/ AGENTS.md'), null);
+  assert.equal(run('echo x > .github/workflows/ci.yml'), null);
+  assert.equal(run('echo x > CLAUDE.md')?.id, 'lead-only');
+  assert.equal(run('echo x > .github/CODEOWNERS')?.id, 'lead-only');
+  assert.equal(run('rm -rf .github')?.id, 'lead-only', 'a folder that holds more than the grant');
+  assert.equal(checkEdit('AGENTS.md', { config: DEFAULTS, env: granted }), null);
+  assert.ok(checkEdit('CLAUDE.md', { config: DEFAULTS, env: granted }));
+  assert.ok(checkEdit('kit/AGENTS.md', { config: DEFAULTS, env: granted }), 'a path is the one path, not a glob');
+  // A trailing /, \\ for / and empty entries are read as the lead meant them.
+  assert.ok(isGranted('.github/workflows/ci.yml', { YOKOTEN_LEAD_ONLY_OK: ',, .github\\workflows\\ci.yml ,' }, false));
+  assert.ok(isGranted('CLAUDE.md', { YOKOTEN_LEAD_ONLY_OK: 'CLAUDE.md/' }, false));
+  assert.ok(!isGranted('CLAUDE.md', { YOKOTEN_LEAD_ONLY_OK: ' , ' }, false), 'no entry grants nothing');
+  // `*` grants every lead-only file.
+  assert.ok(isGranted('.github/workflows/ci.yml', { YOKOTEN_LEAD_ONLY_OK: '*' }, false));
+  assert.ok(isGranted('AGENTS.md', { YOKOTEN_LEAD_ONLY_OK: '*' }, false));
+});
+
+test('lead-only files: a worker\'s git commit of a lead-only file is stopped, in the guard and the commit check (#402)', () => {
+  const sandbox = yokotenSandbox();
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  sandbox.write('AGENTS.md', 'rules\n');
+  sandbox.write('src/a.ts', 'export {};\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const run = (command: string, env: Env = worker) => checkCommand(command, { env, cwd: sandbox.repo });
+  sandbox.write('AGENTS.md', 'new rules\n');
+  sandbox.write('src/a.ts', 'export const a = 1;\n');
+  // Not staged yet: only -a commits it.
+  assert.equal(run('git commit -m x'), null);
+  assert.equal(run('git commit -am x')?.id, 'lead-only');
+  assert.equal(run('git commit --all -m x')?.id, 'lead-only');
+  assert.equal(run('git commit -m x AGENTS.md')?.id, 'lead-only');
+  sandbox.git('add', '.');
+  const found = run('git commit -m "feat(x): y"');
+  assert.equal(found?.id, 'lead-only');
+  assert.match(found?.what ?? '', /this commit changes AGENTS\.md/);
+  assert.match(found?.fix ?? '', /git restore --staged AGENTS\.md/);
+  assert.equal(run(`git -C ${sandbox.repo} commit -qm x`)?.id, 'lead-only');
+  assert.equal(run(`cd ${join(sandbox.repo, 'src')} && git commit -m x`)?.id, 'lead-only');
+  // Pathspecs commit only what they name.
+  assert.equal(run('git commit -m x src/a.ts'), null);
+  assert.equal(run('git commit -i -m x src/a.ts')?.id, 'lead-only');
+  assert.equal(run('git commit -m x', {}), null, 'the lead');
+  assert.equal(run('git commit -m x', { ...worker, YOKOTEN_LEAD_ONLY_OK: 'AGENTS.md' }), null, 'the grant');
+  // The commit check refuses the same commit for a YOKOTEN_ROLE worker, unless granted.
+  let result = sandbox.run(['check', '--staged'], { extra: worker });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /AGENTS\.md is lead-only/);
+  result = sandbox.run(['check', '--staged'], { extra: { ...worker, YOKOTEN_LEAD_ONLY_OK: 'AGENTS.md' } });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('lead-only files: the hook stops a shell write from the plugin agent yokoten:worker, with no YOKOTEN_ROLE (#402)', () => {
+  // The session folder is reached through a symlink, as /var is /private/var on macOS: git
+  // names the root by its real path, the agent by the link. The full hook rules the session's
+  // repo with no yokoten.json, as it does for an edit.
+  const sandbox = makeSandbox();
+  const link = join(sandbox.home, 'repo-link');
+  symlinkSync(sandbox.repo, link);
+  for (const cwd of [sandbox.repo, link]) {
+    const call = (agentType?: string) =>
+      sandbox.run(['hook'], { cwd, input: JSON.stringify({ cwd, agent_type: agentType, tool_input: { command: 'sed -i s/a/b/ AGENTS.md' } }) });
+    const result = call('yokoten:worker');
+    assert.equal(result.status, 2, `${cwd === link ? 'through the link' : 'the repo'}: ${result.stderr}`);
+    assert.match(result.stderr, /writes AGENTS\.md, which is lead-only/);
+    assert.equal(call().status, 0, 'the lead');
+    assert.equal(call('yokoten:reviewer').status, 0, 'not a worker');
+  }
+});
+
+test('lead-only files: a redirect is read when its operator is unquoted, glued or quoted file and all (#402)', () => {
+  const sandbox = yokotenSandbox();
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  const run = (command: string) => checkCommand(command, { env: worker, cwd: sandbox.repo })?.id ?? null;
+  for (const command of [
+    'echo hi >"AGENTS.md"',
+    "echo hi >'AGENTS.md'",
+    'echo hi >"dir with space/AGENTS.md"',
+    'echo hi>AGENTS.md',
+    'ls>AGENTS.md',
+    'echo hi>>AGENTS.md',
+    'echo x>|AGENTS.md',
+    'echo x >|AGENTS.md | cat',
+    'echo hi&>AGENTS.md',
+    'echo hi 2>AGENTS.md',
+    'echo hi 2>"AGENTS.md"',
+  ]) assert.equal(run(command), 'lead-only', `should stop: ${JSON.stringify(command)}`);
+  // A quoted or escaped operator is text.
+  for (const command of ['echo ">AGENTS.md"', "echo '>AGENTS.md'", 'echo \\>AGENTS.md', 'echo "a>AGENTS.md"', 'grep "x>" AGENTS.md']) {
+    assert.equal(run(command), null, `should allow: ${JSON.stringify(command)}`);
+  }
+});
+
+test('bash: an unquoted > inside a word starts a redirect; quoted text and file-descriptor forms read as before (#402)', () => {
+  assert.deepEqual(commandWords('echo hi>f'), [['echo', 'hi', '>f']]);
+  assert.deepEqual(commandWords('ls>f'), [['ls', '>f']]);
+  assert.deepEqual(commandWords('echo x>|f'), [['echo', 'x', '>|f']]);
+  assert.deepEqual(commandWords('a >| f | b'), [['a', '>|', 'f'], ['b']]);
+  assert.deepEqual(commandWords('echo hi&>f'), [['echo', 'hi', '&>f']]);
+  assert.deepEqual(commandWords('echo hi>>f'), [['echo', 'hi', '>>f']]);
+  // As in bash: unquoted, => and -> redirect too.
+  assert.deepEqual(commandWords('x --arg=a=>b'), [['x', '--arg=a=', '>b']]);
+  // Read as before: quotes, file descriptors, process substitution and && .
+  assert.deepEqual(commandWords('echo "a>b"'), [['echo', 'a>b']]);
+  assert.deepEqual(commandWords("x --arg='a=>b' \"c->d\""), [['x', '--arg=a=>b', 'c->d']]);
+  assert.deepEqual(commandWords('curl "https://example.com/?a>b"'), [['curl', 'https://example.com/?a>b']]);
+  assert.deepEqual(commandWords('x 2>&1'), [['x', '2>&1']]);
+  assert.deepEqual(commandWords('x 2>&1 >f'), [['x', '2>&1', '>f']]);
+  assert.deepEqual(commandWords('x {fd}>f'), [['x', '{fd}>f']]);
+  assert.deepEqual(commandWords('echo a&&b'), [['echo', 'a'], ['b']]);
+  assert.deepEqual(commandWords('diff <(a) >(b)'), [['a'], ['b'], ['diff', '<(a)', '>(b)']]);
+  // The other checks still read a glued redirect away: no file named by it is a value.
+  allowed('git config core.hooksPath>/dev/null');
+  blocked('npm publish>log');
+});
+
+test('lead-only files: a symlink to a lead-only file is that file (#402)', () => {
+  const sandbox = yokotenSandbox();
+  sandbox.write('AGENTS.md', 'rules\n');
+  symlinkSync('AGENTS.md', join(sandbox.repo, 'link.md'));
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  const found = checkCommand('echo x > link.md', { env: worker, cwd: sandbox.repo });
+  assert.equal(found?.id, 'lead-only');
+  assert.match(found?.what ?? '', /writes AGENTS\.md/);
+  assert.equal(checkCommand('echo x > notes.md', { env: worker, cwd: sandbox.repo }), null);
+});
+
+test('lead-only files: on macOS and Windows a name matches in any case (#402)', () => {
+  assert.ok(isLeadOnly('agents.md', DEFAULTS.leadOnly, true));
+  assert.ok(isLeadOnly('.GitHub/workflows/ci.yml', DEFAULTS.leadOnly, true));
+  assert.ok(!isLeadOnly('agents.md', DEFAULTS.leadOnly, false), 'Linux: another file');
+  assert.ok(isGranted('agents.md', { YOKOTEN_LEAD_ONLY_OK: 'AGENTS.md' }, true));
+  assert.ok(!isGranted('agents.md', { YOKOTEN_LEAD_ONLY_OK: 'AGENTS.md' }, false));
+});
+
+test('lead-only files: git apply reads only a plain patch file under 1 MB, and stops a worker on any other (#402)', () => {
+  const sandbox = yokotenSandbox();
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  const run = (command: string) => checkCommand(command, { env: worker, cwd: sandbox.repo });
+  sandbox.write('ok.patch', 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n');
+  assert.equal(run('git apply ok.patch'), null);
+  sandbox.write('big.patch', `diff --git a/src/a.ts b/src/a.ts\n${'+x\n'.repeat(600_000)}`);
+  assert.match(run('git apply big.patch')?.what ?? '', /can't read which files it changes/);
+  assert.equal(run('git apply missing.patch')?.id, 'lead-only');
+  assert.equal(run('git apply /dev/stdin')?.id, 'lead-only', 'a device is never read');
+  if (process.platform !== 'win32') {
+    assert.equal(spawnSync('mkfifo', [join(sandbox.repo, 'pipe.patch')]).status, 0);
+    const start = Date.now();
+    assert.equal(run('git apply pipe.patch')?.id, 'lead-only', 'a FIFO is never read');
+    assert.ok(Date.now() - start < 2000, 'and the guard does not wait on it');
+  }
+  // stdin is a known gap: the guide says so.
+  assert.equal(run('git apply - < ok.patch'), null);
+  assert.equal(checkCommand('git apply big.patch', { env: {}, cwd: sandbox.repo }), null, 'the lead');
+});
+
+
+test('lead-only files: shell writes follow the edit guard\'s scope, only in repos that use yokoten (#402)', () => {
+  const sandbox = makeSandbox();
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  // No yokoten.json and no repo from the hook: yokoten's file list is not this repo's.
+  assert.equal(checkCommand('sed -i s/a/b/ AGENTS.md', { env: worker, cwd: sandbox.repo }), null);
+  assert.equal(checkEdit('AGENTS.md', { config: DEFAULTS, env: worker }) === null, false, 'the edit guard has the same list');
+  const hook = (flags: string[], command: string) => sandbox.run(['hook', ...flags], { input: JSON.stringify({ cwd: sandbox.repo, agent_type: 'yokoten:worker', tool_input: { command } }) });
+  const edit = (flags: string[]) => sandbox.run(['hook', ...flags], { input: JSON.stringify({ cwd: sandbox.repo, agent_type: 'yokoten:worker', tool_input: { file_path: join(sandbox.repo, 'AGENTS.md') } }) });
+  // The user-level hook: neither an edit nor a shell write is stopped outside a yokoten repo...
+  assert.equal(edit(['--commands-only']).status, 0);
+  assert.equal(hook(['--commands-only'], 'echo x > AGENTS.md').status, 0);
+  // ...and both are, once the repo has a yokoten.json.
+  sandbox.write('yokoten.json', '{}\n');
+  assert.equal(edit(['--commands-only']).status, 2);
+  assert.equal(hook(['--commands-only'], 'echo x > AGENTS.md').status, 2);
+  // The repo's own list applies.
+  sandbox.write('yokoten.json', '{ "leadOnly": ["RULES.md"] }\n');
+  assert.equal(hook(['--commands-only'], 'echo x > AGENTS.md').status, 0);
+  assert.equal(hook(['--commands-only'], 'echo x > RULES.md').status, 2);
+  assert.equal(checkCommand('echo x > RULES.md', { env: worker, cwd: sandbox.repo })?.id, 'lead-only', 'found by the walk up');
+  // A repo the hook passes in is ruled as given, with no walk: here the file system's root.
+  const root = join(sandbox.repo, '..');
+  assert.equal(checkCommand('echo x > other/AGENTS.md', { env: worker, cwd: root, repos: [{ root, leadOnly: DEFAULTS.leadOnly }] })?.id, 'lead-only');
+});
+
+test('bash: `>|` is a redirect, and a plain `|` is still a pipe (#402)', () => {
+  assert.deepEqual(commandWords('echo x >| yokoten.json'), [['echo', 'x', '>|', 'yokoten.json']]);
+  assert.deepEqual(commandWords('echo x 2>|a'), [['echo', 'x', '2>|a']]);
+  assert.deepEqual(commandWords('a | b'), [['a'], ['b']]);
+  assert.deepEqual(commandWords('a|b'), [['a'], ['b']]);
+  assert.deepEqual(commandWords('a || b'), [['a'], ['b']]);
+  assert.deepEqual(commandWords('a |& b'), [['a'], ['b']]);
+  // A quoted > is text, so the | after it is a pipe.
+  assert.deepEqual(commandWords("echo '>'|cat"), [['echo', '>'], ['cat']]);
+  for (const command of ['echo "npm publish >"|bash', "echo 'npm publish >'|sh", 'echo npm publish|bash', 'echo npm publish | bash']) blocked(command);
+  allowed('echo x >| out.txt');
+  blocked('echo x >| out.txt && git push --tags');
 });
 
 // Bash syntax (#105). Each row of the issue's table first, then the rest of everyday bash.
@@ -1277,7 +1571,7 @@ test('hooks setting: sudo -D and sudo --chdir move repo, like env -C (#226)', ()
 
 test('hooks setting: one command asks git each question once, however often it sets the folder (#226)', { skip: process.platform === 'win32' }, () => {
   const cwd = makeHooksRepo();
-  const bin = mkdtempSync(join(tmpdir(), 'yokoten-git-'));
+  const bin = makeTempDir('yokoten-git-');
   const log = join(bin, 'log');
   const real = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
   writeHook(join(bin, 'git'), `#!/bin/sh\necho x >> "${log}"\nexec "${real}" "$@"\n`);

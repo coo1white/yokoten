@@ -1,5 +1,6 @@
 // Tests for src/host/github.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
@@ -8,14 +9,13 @@ import {
 } from 'node:crypto';
 import {
   mkdirSync,
-  mkdtempSync,
   writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { makeTempDir } from '../repo/helpers.ts';
 import {
   DEFAULTS,
   type Env,
@@ -24,6 +24,7 @@ import {
   checkIssueTitle,
   checkPullRequestTitle,
 } from '../../src/rules/pr.ts';
+import { GitReadError } from '../../src/run/check.ts';
 import {
   draftLesson,
   type Incident,
@@ -38,6 +39,8 @@ import {
   cleanChildEnv,
   type Gh,
   installationToken,
+  readBranchFiles,
+  readCodeOwners,
   readCommandTitle,
   readIncident,
   readLocalLogins,
@@ -46,6 +49,7 @@ import {
   stepSummary,
 } from '../../src/host/github.ts';
 import { syncBoard } from '../../scripts/board-sync.ts';
+import { makeSandbox } from '../repo/helpers.ts';
 
 // A throwaway key, made for this test run only.
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -68,7 +72,7 @@ test('token: finds the installation from the repo, then exchanges the JWT', asyn
     res.end(JSON.stringify(req.method === 'GET' ? { id: 77 } : { token: 'ghs_test' }));
   });
   await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const dir = makeTempDir();
   writeFileSync(join(dir, 'bot.pem'), pem);
   const api = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   // With NODE_USE_ENV_PROXY=1, fetch sends even a local call through the shell's proxy,
@@ -95,6 +99,9 @@ test('config: the App ID is required, the key has a default place', () => {
   assert.ok(typeof c !== 'string');
   assert.equal(c.keyFile, join('/h', '.config', 'yokoten', 'bot.pem'));
   assert.equal(c.api, 'https://api.github.com');
+  // No HOME: no default key file, rather than one in the folder the command runs in (#356).
+  assert.match(botConfig({ YOKOTEN_BOT_APP_ID: '9' }) as string, /no home folder/);
+  assert.equal((botConfig({ YOKOTEN_BOT_APP_ID: '9', YOKOTEN_BOT_KEY: '/k.pem' }) as { keyFile: string }).keyFile, '/k.pem');
 });
 
 test('repo: read from https and ssh remotes', () => {
@@ -116,7 +123,7 @@ test('env: gh gets the token, and git asks gh for github.com instead of the owne
 // A child `node --test` that inherits NODE_TEST_CONTEXT reports to the parent run and exits 0
 // whatever happens (#168). The control proves the trap is real, so the fix is not a no-op.
 test('child env: a failing child node --test fails only once NODE_TEST_CONTEXT is gone (#168)', () => {
-  const file = join(mkdtempSync(join(tmpdir(), 'yokoten-child-')), 'fail.test.ts');
+  const file = join(makeTempDir('yokoten-child-'), 'fail.test.ts');
   writeFileSync(file, "import { test } from 'node:test';\ntest('fails', () => { throw new Error('fails on purpose'); });\n");
   // The parent's own env when this runs under node --test; the same value when run alone.
   const parentEnv = { ...process.env, NODE_TEST_CONTEXT: process.env.NODE_TEST_CONTEXT ?? 'child-v8' };
@@ -462,12 +469,54 @@ test('readLogin: the signed-in login, or null when gh fails or answers something
 
 // #392: the gh login, read from gh's own file on this machine, with no network call.
 test('readLocalLogins: the user under each host in hosts.yml; none when the file is missing', () => {
-  const home = mkdtempSync(join(tmpdir(), 'yokoten-gh-'));
+  const home = makeTempDir('yokoten-gh-');
   assert.deepEqual(readLocalLogins({ HOME: home }), []);
   mkdirSync(join(home, '.config', 'gh'), { recursive: true });
   writeFileSync(join(home, '.config', 'gh', 'hosts.yml'), 'github.com:\n    users:\n        octo-jane:\n    user: octo-jane\n    git_protocol: https\nghe.example.com:\n    user: "jroe"\n');
   assert.deepEqual(readLocalLogins({ HOME: home }), ['octo-jane', 'jroe']);
-  const other = mkdtempSync(join(tmpdir(), 'yokoten-gh-'));
+  const other = makeTempDir('yokoten-gh-');
   writeFileSync(join(other, 'hosts.yml'), 'github.com:\n    user: someone-else\n');
   assert.deepEqual(readLocalLogins({ HOME: home, GH_CONFIG_DIR: other }), ['someone-else'], 'GH_CONFIG_DIR first, as gh reads it');
+});
+
+// #406: the bot reads the branch's files as check --pr reads a pull request's: a rename is its new path.
+test('branch files: changed, renamed and deleted paths since the base, from one local diff (#406)', () => {
+  const dir = makeTempDir('yokoten-');
+  const env = { PATH: process.env.PATH, HOME: dir, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(dir, '.gitconfig'), GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' };
+  const git = (...args: string[]) => spawnSync('git', args, { cwd: dir, env, encoding: 'utf8' });
+  git('init', '-q', '-b', 'main');
+  mkdirSync(join(dir, 'src'));
+  writeFileSync(join(dir, 'src', 'old.ts'), 'export const long = "a long enough line for git to see a rename";\n');
+  writeFileSync(join(dir, 'gone.md'), 'Gone.\n');
+  writeFileSync(join(dir, 'same.md'), 'Same.\n');
+  git('add', '.');
+  git('commit', '-qm', 'base');
+  git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+  git('mv', 'src/old.ts', 'src/new name.ts');
+  git('rm', '-q', 'gone.md');
+  writeFileSync(join(dir, 'kit.md'), 'New.\n');
+  git('add', '.');
+  git('commit', '-qm', 'head');
+  const read = readBranchFiles(dir, 'origin/main', 'HEAD');
+  assert.deepEqual({ files: read?.files.sort(), deleted: read?.deleted }, { files: ['gone.md', 'kit.md', 'src/new name.ts'], deleted: ['gone.md'] });
+  assert.equal(readBranchFiles(dir, 'origin/none', 'HEAD'), null, 'a base git does not have');
+});
+
+// No answer from git is never "no CODEOWNERS", which would let a pull request lower its tier (#403).
+test('readCodeOwners: the first place the base commit has; a base git can\'t read throws, never null (#403)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('README.md', 'a\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'none');
+  const none = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  sandbox.write('docs/CODEOWNERS', '/docs/ @b\n');
+  sandbox.write('CODEOWNERS', '/kit/ @a\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'owners');
+  const owners = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  // The work tree has another file, which a pull request run must not read.
+  sandbox.write('CODEOWNERS', '');
+  assert.equal(readCodeOwners(sandbox.repo, none), null);
+  assert.deepEqual(readCodeOwners(sandbox.repo, owners), { text: '/kit/ @a\n', from: 'the base branch' });
+  assert.throws(() => readCodeOwners(sandbox.repo, 'f'.repeat(40)), GitReadError);
 });

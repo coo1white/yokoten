@@ -1,6 +1,8 @@
 // `yokoten init`: put the practices into a project. It only adds: a file that is already
 // there is kept, and the report says so. Some files get lines added, never removed: a
-// CLAUDE.md, and a project's own pre-commit and pre-merge-commit (#206, #239). A hook the
+// CLAUDE.md, and a project's own pre-commit and pre-merge-commit (#206, #239). An
+// AGENTS.md without `## This project` gets the core rules on top, and its own text moves
+// under that heading (#378). A hook the
 // clone has in .git/hooks keeps running from .githooks (#256). Deciding
 // what to do with a project's own rules (keep, merge, or say not now) is the yokoten
 // skill's job, not this command's.
@@ -9,19 +11,20 @@
 // AGENTS.md, and only with --write. It is at the end of this file.
 
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
 import { addProjectHook, addProjectStopHook, checkProjectSettings, setProjectEnv } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
-import * as copilot from '../agents/runtimes/copilot.ts';
+import * as copilot from '../agents/copilot.ts';
 import * as dsh from '../agents/runtimes/deepseek-harness.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
+import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
 import { DEFAULTS } from '../rules/config.ts';
+import { systemHome } from '../rules/privacy.ts';
 import { CODEOWNERS_PLACES, type Gh, ghIn, isOrganization, repoOf } from '../host/github.ts';
 import { readOriginUrl } from './plan.ts';
 import { copyRuntime, HOME_DIR, KIT, render, VERSION, writeNew } from './files.ts';
@@ -36,6 +39,12 @@ export const isSelf = (root: string): boolean => {
 };
 
 export const cliPath = (root: string): string => (isSelf(root) ? 'bin/yokoten.ts' : '.yokoten/bin/yokoten.ts');
+
+/**
+ * The entry the agent hooks run: bin/yokoten.mjs, next to `cliPath`. Plain JavaScript, so Node
+ * starts it without its type stripper (#408). The git hook, CI and the docs keep `cliPath`.
+ */
+export const hookCliPath = (root: string): string => cliPath(root).replace(/\.ts$/, '.mjs');
 
 function walk(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
@@ -69,6 +78,7 @@ const ORG_LOOKUP_MS = 5000;
 export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: boolean; lines: string[] } {
   const report: string[] = [];
   const cli = cliPath(root);
+  const hookCli = hookCliPath(root);
   if (!isSelf(root) && root !== HOME_DIR) {
     const copied = copyRuntime(join(root, '.yokoten'));
     report.push(copied === 'kept' ? 'kept .yokoten/ (the copy running now)' : 'wrote .yokoten/ (the runtime the hooks run; commit it)');
@@ -80,6 +90,11 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: bo
     // The hooks are written below. A project with its own hooks folder keeps it, so it gets no .githooks/.
     if (rel.startsWith('.githooks/')) continue;
     const text = render(readFileSync(file, 'utf8'), { cli, version: VERSION });
+    // An AGENTS.md without "## This project" gets the core rules on top of its own text (#378).
+    if (rel === 'AGENTS.md' && existsSync(join(root, rel))) {
+      report.push(...addCoreRules(root, text));
+      continue;
+    }
     if (rel === '.github/dependabot.yml') {
       report.push(writeDependabot(root, text));
       continue;
@@ -97,8 +112,8 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: bo
   const claudeHooks = agentHooks('the Claude Code settings', '.claude/settings.json', () => {
     checkProjectSettings(root);
     return [
-      `${addProjectHook(root, cli)} the tool-call hook in .claude/settings.json`,
-      `${addProjectStopHook(root, cli)} the stop check in .claude/settings.json (changed files, before the agent ends its turn)`,
+      `${addProjectHook(root, hookCli)} the tool-call hook in .claude/settings.json`,
+      `${addProjectStopHook(root, hookCli)} the stop check in .claude/settings.json (changed files, before the agent ends its turn)`,
       `${setProjectEnv(root, 'TZ', 'UTC')} TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)`,
       // Checked with a real run (#30): Copilot CLI reads these hooks, in a folder it trusts.
       // It skips them without a word otherwise (#341), so the line says how to trust it.
@@ -107,43 +122,53 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: bo
     ];
   });
   report.push(...claudeHooks.lines);
-  // Codex, Gemini CLI, Antigravity CLI, Muse Code and DeepSeek Harness get the same guard, whether or not they are
+  // Codex, Gemini CLI, Antigravity CLI, Muse Code, DeepSeek Harness and Grok CLI get the same guard, whether or not they are
   // installed here: small files are easier to predict than a guess about which agents someone uses.
   // A file that won't parse, or has the wrong shape, is named and skipped, never rewritten (#248).
   const codexHooks = agentHooks('the Codex hooks', '.codex/hooks.json', () => {
     codex.checkProjectHooks(root);
     return [
-      `${codex.addProjectHook(root, cli)} the Codex tool-call hook in .codex/hooks.json`,
-      `${codex.addProjectStopHook(root, cli)} the Codex stop check in .codex/hooks.json`,
+      `${codex.addProjectHook(root, hookCli)} the Codex tool-call hook in .codex/hooks.json`,
+      `${codex.addProjectStopHook(root, hookCli)} the Codex stop check in .codex/hooks.json`,
       'Codex runs the hooks in .codex/hooks.json only after you trust this folder and the hooks',
       `to trust them in Codex: ${codex.TRUST_STEP}`,
     ];
   });
   const geminiHooks = agentHooks('the Gemini CLI hooks', '.gemini/settings.json', () => {
-    gemini.checkProjectHooks(root, cli);
+    gemini.checkProjectHooks(root, hookCli);
     return [
-      `${gemini.addProjectHook(root, cli)} the Gemini CLI tool-call hook in .gemini/settings.json`,
-      `${gemini.addProjectStopHook(root, cli)} the Gemini CLI stop check in .gemini/settings.json (AfterAgent)`,
+      `${gemini.addProjectHook(root, hookCli)} the Gemini CLI tool-call hook in .gemini/settings.json`,
+      `${gemini.addProjectStopHook(root, hookCli)} the Gemini CLI stop check in .gemini/settings.json (AfterAgent)`,
     ];
   });
   const antigravityHooks = agentHooks('the Antigravity CLI hook', '.agents/hooks.json', () => [
-    `${antigravity.addProjectHook(root, cli)} the Antigravity CLI tool-call hook in .agents/hooks.json`,
+    `${antigravity.addProjectHook(root, hookCli)} the Antigravity CLI tool-call hook in .agents/hooks.json`,
   ]);
   const museHooks = agentHooks('the Muse Code hooks', '.muse/hooks.json', () => {
-    const added = muse.addProjectHooks(root, cli);
+    const added = muse.addProjectHooks(root, hookCli);
     return [
       `${added.guard} the Muse Code tool-call hook in .muse/hooks.json`,
       `${added.stop} the Muse Code stop check in .muse/hooks.json`,
       `Muse Code runs the hooks in .muse/hooks.json only after you trust this folder: ${muse.TRUST_STEP}`,
     ];
   });
+  // Grok CLI runs the project's hooks only in a folder the user trusts. yokoten never trusts
+  // one for the user: the line says how (#407).
+  const grokHooks = agentHooks('the Grok CLI hooks', grok.HOOKS_FILE, () => {
+    const added = grok.addProjectHooks(root, hookCli);
+    return [
+      `${added.guard} the Grok CLI tool-call hook in ${grok.HOOKS_FILE}`,
+      `${added.stop} the Grok CLI stop check in ${grok.HOOKS_FILE}`,
+      `Grok CLI runs the hooks in ${grok.HOOKS_FILE} only after you trust this folder: ${grok.TRUST_STEP}`,
+    ];
+  });
   // DeepSeek Harness runs the hooks through a bridge each profile needs. init only prints
   // how to add it: it installs nothing and leaves ~/.dsh alone (#334).
   // On Windows the files are still written, ready for #332, but the lines say dsh is not checked.
-  const dshHooks = agentHooks('the DeepSeek Harness hook', dsh.HOOKS_FILE, () => dsh.initLines(dsh.addProjectHooks(root, cli)));
-  report.push(...codexHooks.lines, ...geminiHooks.lines, ...antigravityHooks.lines, ...museHooks.lines, ...dshHooks.lines);
+  const dshHooks = agentHooks('the DeepSeek Harness hook', dsh.HOOKS_FILE, () => dsh.initLines(dsh.addProjectHooks(root, hookCli)));
+  report.push(...codexHooks.lines, ...geminiHooks.lines, ...antigravityHooks.lines, ...museHooks.lines, ...dshHooks.lines, ...grokHooks.lines);
   report.push(...setCommitCheck(root, cli, hooks, blocks));
-  return { ok: claudeHooks.ok && codexHooks.ok && geminiHooks.ok && antigravityHooks.ok && museHooks.ok && dshHooks.ok, lines: report };
+  return { ok: claudeHooks.ok && codexHooks.ok && geminiHooks.ok && antigravityHooks.ok && museHooks.ok && dshHooks.ok && grokHooks.ok, lines: report };
 }
 
 // ---- CODEOWNERS for the lead-only paths (#304) ----
@@ -387,14 +412,39 @@ function importRules(root: string): string | null {
 /** How git runs commit hooks here: yokoten's .githooks, the project's own folder, or no git repo. */
 type HookSetup = { kind: 'plain' } | { kind: 'own'; hooksPath: string } | { kind: 'no repo' };
 
-/** The repo's own core.hooksPath (not the user's global one), '' when unset, or null outside a git repo. */
-function readLocalHooksPath(root: string): string | null {
+// Within one doctor run, several checks ask git the same question: the repo's own
+// core.hooksPath, say. Each answer is kept for the run, so git starts once per
+// question (#408). Only inside `withGitReads`: init writes core.hooksPath, and tests
+// change it between runs, so nothing is kept from one run to the next.
+let gitReads: Map<string, unknown> | null = null;
+
+/** Run `read` with each git answer below kept until it returns. */
+export function withGitReads<T>(read: () => T): T {
+  const outer = gitReads;
+  gitReads ??= new Map();
   try {
-    return execFileSync('git', ['config', '--local', '--get', 'core.hooksPath'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-  } catch (error) {
-    return (error as { status?: number }).status === 1 ? '' : null;
+    return read();
+  } finally {
+    gitReads = outer;
   }
 }
+
+/** The answer `read` gives, kept under `key` while `withGitReads` runs. */
+export function remembered<T>(key: string, read: () => T): T {
+  if (!gitReads) return read();
+  if (!gitReads.has(key)) gitReads.set(key, read());
+  return gitReads.get(key) as T;
+}
+
+/** The repo's own core.hooksPath (not the user's global one), '' when unset, or null outside a git repo. */
+const readLocalHooksPath = (root: string): string | null =>
+  remembered(`local-hooks-path\0${root}`, () => {
+    try {
+      return execFileSync('git', ['config', '--local', '--get', 'core.hooksPath'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch (error) {
+      return (error as { status?: number }).status === 1 ? '' : null;
+    }
+  });
 
 export function readHookSetup(root: string): HookSetup {
   const hooksPath = readLocalHooksPath(root);
@@ -512,8 +562,9 @@ const gitLine = (root: string, args: string[]): string | null => {
 const showPath = (root: string, path: string): string => {
   const rel = relative(root, path);
   if (rel && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)) return rel.split(sep).join('/');
-  const home = homedir();
-  return (path.startsWith(home + sep) ? `~${path.slice(home.length)}` : path).split(sep).join('/');
+  // Display only: the system's home, as hideHome hides it; nothing is read there (#356).
+  const home = systemHome();
+  return (home && path.startsWith(home + sep) ? `~${path.slice(home.length)}` : path).split(sep).join('/');
 };
 
 const sameFile = (a: string, b: string): boolean => {
@@ -729,6 +780,195 @@ const findProjectStart = (text: string): number => text.search(/^## This project
 
 const splitLines = (text: string): string[] => text.split(/\r?\n/);
 
+// ---- The core rules into an AGENTS.md the project already has (#378) ----
+//
+// Without `## This project`, yokoten can't tell the core rules from the project's own, so
+// doctor can only ask the owner to merge the two by hand. init does the merge: the kit's
+// core rules on top, then `## This project`, then the project's text. Its headings go one
+// level down, so they sit under that heading; every other byte stays. A file that has the
+// heading is left to `update`.
+
+/** One heading the move took one level down, as it read before and reads after, ready to print. */
+export interface MovedHeading {
+  before: string;
+  after: string;
+}
+
+/** The new AGENTS.md, and what the move changed in the project's text. */
+export interface MovedRules {
+  text: string;
+  /** The project's lines that moved; 0 for an empty file. */
+  lines: number;
+  headings: MovedHeading[];
+  /** `######` headings: Markdown has no seventh level, so they stay as they are. */
+  deepest: string[];
+  hadBom: boolean;
+  /** Whether the file started with YAML front matter, which stays at the very top. */
+  frontMatter: boolean;
+}
+
+/**
+ * Split off YAML front matter: a first line `---` and a closing `---` or `...` line, with
+ * their line ends. Without a closing line there is no front matter, and `front` is empty.
+ */
+export function splitFrontMatter(text: string): { front: string; rest: string } {
+  const found = /^---[ \t]*\r?\n(?:[^\n]*\n)*?(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/.exec(text);
+  return found ? { front: found[0], rest: text.slice(found[0].length) } : { front: '', rest: text };
+}
+
+const ATX_HEADING = /^( {0,3})(#{1,6})(?=[ \t]|$)/;
+const SETEXT_LINE = /^ {0,3}(?:=+|-+)[ \t]*$/;
+/** A line that can't be the text of a setext heading: a heading or a rule. */
+const NOT_PARAGRAPH = /^ {0,3}(?:#{1,6}(?:[ \t]|$)|(?:[-*_][ \t]*){3,}$)/;
+/** A list item, a quote or HTML: the lines after it, up to a blank line, belong to it, never to a heading. */
+const OTHER_BLOCK = /^ {0,3}(?:[-*+](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$)|>|<)/;
+
+/**
+ * The project's text with each heading one level down: `#` to `##`, a `===` underline to
+ * `---`, and a `---` underline to a `###` line (Markdown has no third underline). Headings
+ * inside fenced code blocks stay. Line endings stay as each line has them.
+ */
+export function demoteHeadings(text: string): { text: string; headings: MovedHeading[]; deepest: string[] } {
+  // Each line with its own ending, so CRLF and LF lines both stay as they are.
+  const lines = (text.match(/[^\n]*\n|[^\n]+$/g) ?? []).map((piece) => {
+    const end = piece.match(/\r?\n$/)?.[0] ?? '';
+    return { body: piece.slice(0, piece.length - end.length), end };
+  });
+  const headings: MovedHeading[] = [];
+  const deepest: string[] = [];
+  const out: { body: string; end: string }[] = [];
+  let fence: { mark: string; length: number } | null = null;
+  // Where the paragraph that ends at the current line starts in `out`, or -1.
+  let paragraph = -1;
+  // Inside a list item, a quote or HTML, where a line under the text is never a heading underline.
+  let other = false;
+  for (const line of lines) {
+    const found = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line.body);
+    if (fence) {
+      if (found && found[1][0] === fence.mark && found[1].length >= fence.length && found[2].trim() === '') fence = null;
+      out.push(line);
+      continue;
+    }
+    if (found && !(found[1][0] === '`' && found[2].includes('`'))) {
+      fence = { mark: found[1][0], length: found[1].length };
+      paragraph = -1;
+      out.push(line);
+      continue;
+    }
+    if (paragraph !== -1 && SETEXT_LINE.test(line.body)) {
+      const words = out.slice(paragraph).map((part) => part.body.trim()).join(' ');
+      const before = `\`${words}\` (underlined with ${line.body.trim()[0]})`;
+      if (line.body.includes('=')) {
+        out.push({ body: line.body.replaceAll('=', '-'), end: line.end });
+        headings.push({ before, after: `\`${words}\` (underlined with -)` });
+      } else {
+        const heading = `### ${words}`;
+        out.splice(paragraph, out.length - paragraph, { body: heading, end: line.end });
+        headings.push({ before, after: `\`${heading}\`` });
+      }
+      paragraph = -1;
+      continue;
+    }
+    const atx = ATX_HEADING.exec(line.body);
+    if (atx) {
+      if (atx[2].length === 6) deepest.push(`\`${line.body.trim()}\``);
+      else {
+        const body = `${atx[1]}#${line.body.slice(atx[1].length)}`;
+        headings.push({ before: `\`${line.body.trim()}\``, after: `\`${body.trim()}\`` });
+        line.body = body;
+      }
+      paragraph = -1;
+      other = false;
+    } else if (line.body.trim() === '') {
+      paragraph = -1;
+      other = false;
+    } else if (NOT_PARAGRAPH.test(line.body) || OTHER_BLOCK.test(line.body)) {
+      paragraph = -1;
+      other = OTHER_BLOCK.test(line.body);
+    } else if (paragraph === -1 && !other) {
+      // Four spaces where no paragraph goes on start a code block, not a paragraph.
+      if (!/^ {4}|^\t/.test(line.body)) paragraph = out.length;
+    }
+    out.push(line);
+  }
+  return { text: out.map((line) => line.body + line.end).join(''), headings, deepest };
+}
+
+/**
+ * The kit's core rules, then `## This project`, then the project's own text with its
+ * headings one level down. `kit` is the kit's AGENTS.md, rendered. The new lines take the
+ * line ending most of the project's lines use. A byte order mark is dropped: the kit
+ * version mark must start the file.
+ */
+export function moveUnderProjectHeading(project: string, kit: string): MovedRules {
+  const hadBom = project.startsWith('\uFEFF');
+  const { front, rest: own } = splitFrontMatter(hadBom ? project.slice(1) : project);
+  const frontMatter = front !== '';
+  const newline = findMainNewline(front + own);
+  // Front matter stays on top, and ends in a newline so the kit's first line starts a line.
+  const top = front === '' || /\n$/.test(front) ? front : front + newline;
+  const kitStart = findProjectStart(kit);
+  if (own.trim() === '') return { text: top + splitLines(kit).join(newline), lines: 0, headings: [], deepest: [], hadBom, frontMatter };
+  const core = splitLines(kit.slice(0, kitStart)).join(newline);
+  const demoted = demoteHeadings(own);
+  return {
+    frontMatter,
+    text: `${top}${core}${PROJECT_HEADING}${newline}${newline}${demoted.text}`,
+    lines: splitLines(own.replace(/\r?\n$/, '')).length,
+    headings: demoted.headings,
+    deepest: demoted.deepest,
+    hadBom,
+  };
+}
+
+/** The name of the copy init keeps of an AGENTS.md that git can't give back. */
+export const AGENTS_BACKUP = 'AGENTS.md.before-yokoten';
+
+/** Whether HEAD has this file with these exact bytes, so git can give it back. */
+function isInHead(root: string, rel: string, bytes: Buffer): boolean {
+  try {
+    const committed = execFileSync('git', ['show', `HEAD:${rel}`], { cwd: root, stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 });
+    return committed.equals(bytes);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Put the core rules into the project's AGENTS.md when it has no `## This project`
+ * heading. Returns the report lines. The old file can always come back: from git when
+ * HEAD has it as it is, or else from a copy next to it.
+ */
+function addCoreRules(root: string, kit: string): string[] {
+  const path = join(root, 'AGENTS.md');
+  if (lstatSync(path).isSymbolicLink()) {
+    return [`kept AGENTS.md: it is a link to ${readlinkSync(path)}, so yokoten did not write the core rules into it. Put them in by hand, above a \`${PROJECT_HEADING}\` heading`];
+  }
+  const bytes = readFileSync(path);
+  const project = bytes.toString('utf8');
+  if (findProjectStart(project) !== -1) return ['kept AGENTS.md (`yokoten update` brings its core rules up to date)'];
+  if (findProjectStart(kit) === -1) return [`kept AGENTS.md: the kit's AGENTS.md has no \`${PROJECT_HEADING}\` heading; report it in an issue at yokoten`];
+  let restore = 'to get the old file back: `git checkout HEAD -- AGENTS.md`';
+  if (!isInHead(root, 'AGENTS.md', bytes)) {
+    const backup = join(root, AGENTS_BACKUP);
+    if (existsSync(backup) && !readFileSync(backup).equals(bytes)) {
+      return [`kept AGENTS.md: it has no \`${PROJECT_HEADING}\` heading, and ${AGENTS_BACKUP} is there already, so yokoten kept both as they are. Move ${AGENTS_BACKUP} away, then run \`yokoten init\` again`];
+    }
+    writeFileSync(backup, bytes);
+    restore = `kept the old file as ${AGENTS_BACKUP}; delete it once the new AGENTS.md reads right`;
+  }
+  const moved = moveUnderProjectHeading(project, kit);
+  writeFileSync(path, moved.text);
+  if (moved.lines === 0) return [`wrote AGENTS.md: it had no text${moved.frontMatter ? ' below its front matter' : ''}, so it now has the core rules and an empty \`${PROJECT_HEADING}\` section (${restore})`];
+  const lines = [`updated AGENTS.md: the core rules are on top, and your ${moved.lines} line(s) moved under \`${PROJECT_HEADING}\`; only their heading levels changed (${restore})`];
+  for (const heading of moved.headings) lines.push(`  heading one level down: ${heading.before} is now ${heading.after}`);
+  if (moved.deepest.length) lines.push(`  kept at level 6 (Markdown has no level 7): ${moved.deepest.join(', ')}`);
+  if (moved.frontMatter) lines.push('  kept the front matter at the very top, as it was');
+  if (moved.hadBom) lines.push('  dropped the byte order mark at the start: the kit version line must come first');
+  lines.push('  read the core rules, and remove any rule of yours under them that says the same thing');
+  return lines;
+}
+
 // ---- The kit version in AGENTS.md (#141) ----
 //
 // The first line of the kit's AGENTS.md says which kit wrote the core rules, as an HTML
@@ -860,7 +1100,9 @@ function compareSections(before: string[], after: string[]): SectionChanges {
  * project's mark is newer than the kit's, it is `newer`, never `behind` (#141). `updated` is the file with the kit's core part and
  * the project's own part as it is.
  */
-export function compareCoreRules(project: string, kit: string): CoreRules {
+export function compareCoreRules(file: string, kit: string): CoreRules {
+  // Front matter above the core rules is the project's: not compared, and kept by an update (#378).
+  const { front, rest: project } = splitFrontMatter(file);
   const kitStart = findProjectStart(kit);
   if (kitStart === -1) return { state: "can't compare", why: `the kit's AGENTS.md has no \`${PROJECT_HEADING}\` heading`, fix: 'report it in an issue at yokoten' };
   const start = findProjectStart(project);
@@ -879,7 +1121,7 @@ export function compareCoreRules(project: string, kit: string): CoreRules {
   if (version !== null && kitVersion !== null && compareVersions(version, kitVersion) === 1) return { state: 'newer', version, kitVersion };
   const kitCore = splitLines(kit.slice(0, kitStart));
   const core = project.slice(0, start).includes('\r\n') ? kitCore.join('\r\n') : kitCore.join('\n');
-  return { state: 'behind', changes: diffLines(before, after), sections: compareSections(before, after), updated: core + project.slice(start) };
+  return { state: 'behind', changes: diffLines(before, after), sections: compareSections(before, after), updated: front + core + project.slice(start) };
 }
 
 /** The kit's AGENTS.md, rendered for this project, or null when this copy of yokoten has no kit. A project's .yokoten/ has this kit file (#145) and the kit's lessons (#77). */

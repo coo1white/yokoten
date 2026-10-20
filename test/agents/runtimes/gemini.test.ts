@@ -1,5 +1,6 @@
 // Tests for src/agents/runtimes/gemini.ts.
 
+import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { test } from 'node:test';

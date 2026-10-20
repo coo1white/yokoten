@@ -1,11 +1,10 @@
 // Tests for src/setup/advice/adopt.ts.
 
+import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import {
-  mkdtempSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
@@ -13,6 +12,7 @@ import {
   FACTS,
   fixture,
   makeSandbox,
+  makeTempDir,
 } from '../../repo/helpers.ts';
 import {
   draft,
@@ -148,7 +148,7 @@ test('adopt draft: no key, a failed call or a bad answer fall back to the rules,
 });
 
 test('adopt draft: facts with an email, a secret, a private mark or a home path are never sent', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-marks-'));
+  const dir = makeTempDir('yokoten-marks-');
   writeFileSync(join(dir, 'marks'), 'secret-city\n');
   const cases = [`write to someone${'@'}personal-mail.com`, `ghp_${'a'.repeat(36)}`, 'from Secret-City', '/home/someone/project', 'C:\\Users\\someone'];
   for (const evidence of cases) {

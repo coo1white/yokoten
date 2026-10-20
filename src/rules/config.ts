@@ -28,7 +28,7 @@ export const DEFAULTS: Config = {
   tests: ['*.test.*', '*.spec.*', '*_test.go', 'test/**', 'tests/**'],
   // What only the lead (the session that reviews and pushes) may change: the rules the
   // agents work under, and the CI that checks them.
-  leadOnly: ['AGENTS.md', 'CLAUDE.md', 'yokoten.json', '.claude/**', '.claude-plugin/**', '.codex/**', '.gemini/**', '.agents/hooks.json', '.muse/**', '.dsh/**', '.githooks/**', '.github/**', '.yokoten/**'],
+  leadOnly: ['AGENTS.md', 'CLAUDE.md', 'yokoten.json', '.claude/**', '.claude-plugin/**', '.codex/**', '.gemini/**', '.agents/hooks.json', '.muse/**', '.dsh/**', '.grok/**', '.githooks/**', '.github/**', '.yokoten/**'],
   // `allow`: literal strings the privacy check lets through (a public support address).
   // `skip`: files it does not read (lockfiles, vendored code).
   // `utc`: commits must record their time in UTC, not the machine's time zone.
@@ -245,8 +245,8 @@ export function globToRegExp(glob: string): RegExp {
   return new RegExp(glob.includes('/') ? `^${re}$` : `(?:^|/)${re}$`);
 }
 
-/** A function that says whether a path matches any of the globs. */
-export function matcher(globs: string[]): (path: string) => boolean {
-  const patterns = globs.map(globToRegExp);
+/** A function that says whether a path matches any of the globs; with `foldsCase`, in any case. */
+export function matcher(globs: string[], { foldsCase = false }: { foldsCase?: boolean } = {}): (path: string) => boolean {
+  const patterns = globs.map((glob) => (foldsCase ? new RegExp(globToRegExp(glob).source, 'i') : globToRegExp(glob)));
   return (path) => patterns.some((re) => re.test(path));
 }

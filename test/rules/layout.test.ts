@@ -1,5 +1,6 @@
 // Tests for src/rules/layout.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { DEFAULTS } from '../../src/rules/config.ts';

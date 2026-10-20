@@ -1,33 +1,48 @@
 // Tests for src/rules/privacy.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import {
   mkdirSync,
-  mkdtempSync,
   realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { at } from '../repo/helpers.ts';
+import { at, makeTempDir } from '../repo/helpers.ts';
 import { DEFAULTS, type Env } from '../../src/rules/config.ts';
 import { checkCommand } from '../../src/rules/guards.ts';
 import { formatFinding } from '../../src/rules/message.ts';
 import {
   hideHome,
+  homeIn,
+  loadMarkKinds,
   loadMarks,
   makeRedactor,
   notUtc,
   POSITIVE_CONTROL,
   privateRemoteHosts,
   scanText,
+  withHome,
 } from '../../src/rules/privacy.ts';
 
 // Samples are built from pieces so this file passes its own check.
 const ip = (...n: number[]) => n.join('.');
+
+test('withHome: only the CLI entry falls back to the system home, and only when HOME is not a full path (#356)', () => {
+  const system = () => '/home/someone';
+  assert.deepEqual(withHome({ HOME: '/h', X: '1' }, system), { HOME: '/h', X: '1' });
+  assert.deepEqual(withHome({ X: '1' }, system), { HOME: '/home/someone', X: '1' });
+  assert.deepEqual(withHome({ HOME: 'relative' }, system), { HOME: '/home/someone' });
+  assert.deepEqual(withHome({ HOME: '' }, () => 'also/relative'), { HOME: '' }, 'no full path anywhere: no home');
+  const env: Env = { PATH: '/bin' };
+  withHome(env, system);
+  assert.deepEqual(env, { PATH: '/bin' }, 'the env it is given stays as it was');
+  assert.equal(homeIn({ HOME: '/h' }), '/h');
+  assert.throws(() => homeIn({}), /no home folder/, 'no fallback outside the CLI entry');
+});
 
 test('positive control: the known-bad sample is caught', () => {
   assert.equal(scanText(POSITIVE_CONTROL, { file: 'x' }).length, 2);
@@ -69,6 +84,62 @@ test('IPs: real ones are caught, documentation ranges and versions are not', () 
   }
 });
 
+test('IPs: spec section numbers and versions are not addresses (#382)', () => {
+  const quad = ip(2, 3, 4, 2);
+  for (const ok of [
+    `§${ip(1, 2, 3, 4)}`,
+    `see § ${ip(1, 2, 3, 4)}`,
+    `section ${ip(4, 2, 1, 3)}`,
+    `Section ${ip(4, 2, 1, 3)} says`,
+    `sec. ${ip(4, 2, 1, 3)}`,
+    `RFC 7230 ${ip(3, 2, 6, 1)}`,
+    `RFC7230, ${ip(3, 2, 6, 1)}`,
+    `v${ip(1, 2, 3, 4)}`,
+    `v ${ip(1, 2, 3, 4)}`,
+    `version ${ip(1, 2, 3, 4)}`,
+    `${ip(1, 2, 3, 4)}-beta`,
+    `${ip(1, 2, 3, 4)}+build.5`,
+    `//! The decompressed dir stream, MS-OVBA ${quad}: project information,`,
+    `/// The dir stream (MS-OVBA ${quad}) does not follow the format.`,
+    `see [MS-XLS] ${quad}`,
+    `ECMA-376 ${quad}`,
+    `ISO 32000-1 ${quad}`,
+    `ISO/IEC 29500 ${quad}`,
+    `/// (MS-OVBA ${ip(2, 3, 1, 15)} to ${ip(2, 3, 1, 17)}). This reports what`,
+    `${ip(2, 3, 1, 15)} to ${ip(2, 3, 1, 17)}`,
+    `${ip(2, 3, 1, 15)} through ${ip(2, 3, 1, 17)}`,
+    `MS-OVBA ${ip(2, 3, 1, 15)} to ${ip(2, 3, 1, 17)}`,
+    `section ${ip(12, 3, 1, 15)} to ${ip(12, 3, 1, 70)}`,
+  ]) {
+    assert.deepEqual(scanText(ok, { file: 'a' }), [], ok);
+  }
+  // Real addresses in prose, private ranges included, are still caught.
+  for (const bad of [
+    `connect to ${ip(8, 8, 8, 8)}`,
+    `connect to ${ip(203, 0, 114, 9)} now`,
+    `host ${ip(10, 0, 0, 5)}`,
+    `gateway ${ip(192, 168, 1, 1)}`,
+    `server ${ip(172, 16, 0, 9)}`,
+    `${ip(10, 0, 0, 5)}-${ip(10, 0, 0, 9)}`,
+    `pool ${ip(10, 0, 0, 1)} to ${ip(10, 0, 0, 9)}`,
+    `${ip(192, 168, 1, 100)} through ${ip(192, 168, 1, 200)}`,
+    // A bare range of public addresses is caught: only small section-shaped numbers are skipped.
+    `${ip(203, 0, 114, 5)} to ${ip(203, 0, 114, 9)}`,
+    `${ip(10, 0, 0, 1)} to ${ip(10, 0, 0, 9)}`,
+    `${ip(8, 8, 8, 8)} to ${ip(8, 8, 8, 9)}`,
+    `${ip(1, 1, 1, 1)} through ${ip(1, 1, 1, 3)}`,
+    `${ip(2, 3, 1, 15)} to ${ip(2, 3, 2, 17)}`,
+    `${ip(2, 3, 1, 15)} to ${ip(2, 3, 1, 99)}`,
+    `dev ${ip(8, 8, 8, 8)}`,
+    `insect. ${ip(8, 8, 8, 8)}`,
+    `${ip(8, 8, 8, 8)}:53`,
+  ]) {
+    assert.ok(scanText(bad, { file: 'a' }).length >= 1, bad);
+  }
+  // Localhost is still fine, as before.
+  assert.deepEqual(scanText(`connect to ${ip(127, 0, 0, 1)}`, { file: 'a' }), []);
+});
+
 test('web strings: retina image names and user agents are not private (#245)', () => {
   const ua = `Mozilla/5.0 (Windows NT 10.0) Chrome/${ip(120, 0, 0, 0)} Safari/537.36`;
   for (const ok of [`url("img/logo${at}2x.png")`, `icons/close${at}3x.webp`, `a${at}2X.JPEG b${at}10x.avif`, ua]) {
@@ -100,11 +171,43 @@ test('private marks: matched without case, never echoed', () => {
 });
 
 test('private marks file: comments and blanks skipped, missing file is empty', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const dir = makeTempDir();
   const file = join(dir, 'marks');
   writeFileSync(file, '# header\n\nMyCity\n  myserver  \n');
   assert.deepEqual(loadMarks({ YOKOTEN_PRIVATE_MARKS: file }), ['mycity', 'myserver']);
   assert.deepEqual(loadMarks({ YOKOTEN_PRIVATE_MARKS: join(dir, 'none') }), []);
+});
+
+test('private marks file: the kind of each added mark, by its header or, under the old header, by shape (#410)', () => {
+  const dir = makeTempDir('yokoten-');
+  const file = join(dir, 'marks');
+  writeFileSync(file, `# mine\nMyCity\n# added by yokoten from this machine: forge login\nOcto-Jdoe\n# added by yokoten from this machine\njane${at}personal-mail.dev\nbuild.private-host.dev\nold-login\n# mine again\nmyserver\n`);
+  assert.deepEqual(loadMarkKinds({ YOKOTEN_PRIVATE_MARKS: file }), [
+    { value: 'mycity', kind: null },
+    { value: 'octo-jdoe', kind: 'forge login' },
+    { value: `jane${at}personal-mail.dev`, kind: 'git email' },
+    { value: 'build.private-host.dev', kind: 'private remote host' },
+    // A bare name under the old header is never taken for a login.
+    { value: 'old-login', kind: null },
+    { value: 'myserver', kind: null },
+  ]);
+});
+
+test('private marks: an added forge login is fine only where a file names accounts (#410)', () => {
+  const scan = (file: string, text: string, logins = ['octo-jdoe']) => scanText(text, { file, marks: ['octo-jdoe'], logins }).filter((f) => f.id === 'private-mark').map((f) => f.line);
+  // CODEOWNERS owners and @ mentions in .github.
+  assert.deepEqual(scan('CODEOWNERS', '* @octo-jdoe @octo-jdoe/team\n# octo-jdoe\n'), [2]);
+  assert.deepEqual(scan('.github/ISSUE_TEMPLATE/bug.md', `cc @octo-jdoe.\nmail x${at}octo-jdoe.dev\n`), [2]);
+  // Person fields of a manifest, nested ones too; not other keys, not a minified file.
+  const manifest = '{\n  "author": {\n    "name": "octo-jdoe",\n    "url": "https://github.com/octo-jdoe"\n  },\n  "maintainers": ["octo-jdoe"],\n  "homepage": "https://octo-jdoe.dev"\n}\n';
+  assert.deepEqual(scan('.claude-plugin/marketplace.json', manifest), [7]);
+  assert.deepEqual(scan('package.json', '{"author": "octo-jdoe"}\n'), [1]);
+  // The copyright line of a license, not its other lines.
+  assert.deepEqual(scan('LICENSE.md', 'Copyright (c) 2026 octo-jdoe\nby octo-jdoe\n'), [2]);
+  // Anywhere else, and for a mark the owner wrote, it is found.
+  assert.deepEqual(scan('src/x.ts', '// @octo-jdoe\n'), [1]);
+  assert.deepEqual(scan('docs/a.md', 'Copyright octo-jdoe\n'), [1]);
+  assert.deepEqual(scan('CODEOWNERS', '* @octo-jdoe\n', []), [1]);
 });
 
 test('commit times: an ident with a non-UTC offset is caught (#40)', () => {
@@ -119,7 +222,7 @@ test('output: the home folder shows as ~ (#25)', () => {
   assert.equal(hideHome('wrote /home/someone/.local/share/yokoten', { HOME: '/home/someone' }), 'wrote ~/.local/share/yokoten');
   assert.equal(hideHome('a /home/someone/ b /home/someone', { HOME: '/home/someone/' }), 'a ~/ b ~');
   assert.equal(hideHome('/x', { HOME: '/' }), '/x', 'a root home hides nothing');
-  const real = mkdtempSync(join(tmpdir(), 'yokoten-home-'));
+  const real = makeTempDir('yokoten-home-');
   const link = `${real}-link`;
   symlinkSync(real, link);
   try {
@@ -240,7 +343,7 @@ test('makeRedactor: secrets become <secret>, a private key line by line, across 
 
 // A sandbox: its own HOME, a marks file, and a folder for body files. The samples are
 // built from pieces so this file does not fail its own commit check.
-const postDir = mkdtempSync(join(tmpdir(), 'yokoten-posts-'));
+const postDir = makeTempDir('yokoten-posts-');
 const postMarks = join(postDir, 'private-marks');
 writeFileSync(postMarks, '# my marks\nquietvale\n');
 const postEnv: Env = { HOME: postDir, YOKOTEN_PRIVATE_MARKS: postMarks };

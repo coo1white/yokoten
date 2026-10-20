@@ -1,6 +1,8 @@
 // Shared by the test files: the CLI's path, the repo root, a throwaway git repo to run it in,
-// and every declaration that two or more test files use. No state: each file imports it.
+// and every declaration that two or more test files use. Each file imports it. The one
+// state is the temp folders below, which it removes when each test ends (#400).
 
+import './home.ts';
 import assert from 'node:assert/strict';
 import {
   execFileSync,
@@ -10,6 +12,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -18,6 +21,11 @@ import {
   join,
 } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  after,
+  afterEach,
+  beforeEach,
+} from 'node:test';
 import { sourceMarker } from '../../src/run/translations.ts';
 import {
   type Gh,
@@ -35,8 +43,40 @@ export const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bi
 
 export const at = '@';
 
+// ---- Temp folders (#400): every test folder goes under one parent per test process. ----
+// A folder made in a test is removed when that test ends, pass or fail. A folder made
+// outside a test (at the top of a file) is removed with the parent when the file ends.
+// Test files must use makeTempDir, never a bare mkdtempSync: the architecture test checks.
+
+let tempParent = '';
+// One list per running test, innermost last: a subtest's folders go before its parent's.
+const testFolders: string[][] = [];
+
+const removeFolder = (path: string) => rmSync(path, { recursive: true, force: true, maxRetries: 3 });
+
+beforeEach(() => {
+  testFolders.push([]);
+});
+afterEach(() => {
+  for (const path of testFolders.pop() ?? []) removeFolder(path);
+});
+const removeParent = () => {
+  if (tempParent) removeFolder(tempParent);
+  tempParent = '';
+};
+after(removeParent);
+process.on('exit', removeParent);
+
+/** A new empty folder in the system temp folder, removed when the test that made it ends. */
+export function makeTempDir(prefix = 'yokoten-'): string {
+  if (!tempParent) tempParent = mkdtempSync(join(tmpdir(), 'yokoten-test-'));
+  const path = mkdtempSync(join(tempParent, prefix));
+  testFolders.at(-1)?.push(path);
+  return path;
+}
+
 export function makeSandbox() {
-  const base = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const base = makeTempDir();
   const home = join(base, 'home');
   const repo = join(base, 'repo');
   mkdirSync(home);
@@ -45,8 +85,9 @@ export function makeSandbox() {
   // whatever the machine's time zone (#40). No proxy either: the shell's proxy is not
   // passed on, and a call to a fake server on this machine goes to it directly (#138).
   // The sandbox lives in the temp folder; YOKOTEN_TEMP_DIRS turns off that note (#365) so the
-  // tests see what they set up.
-  const env = { PATH: process.env.PATH, HOME: home, TZ: 'UTC', YOKOTEN_TEMP_DIRS: '', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' };
+  // tests see what they set up. The compile cache stays in Node's own folder, not in the
+  // sandbox's home, where bin/yokoten.mjs puts it (#408): the tests list what lands there.
+  const env = { PATH: process.env.PATH, HOME: home, NODE_COMPILE_CACHE: join(tmpdir(), 'node-compile-cache'), TZ: 'UTC', YOKOTEN_TEMP_DIRS: '', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' };
   const git = (...args: string[]) => spawnSync('git', args, { cwd: repo, env, encoding: 'utf8' });
   git('init', '-q', '-b', 'main');
   git('config', 'user.name', 'Test');
@@ -198,7 +239,7 @@ export const PLUGIN_ROOT = '${CLAUDE_PLUGIN_ROOT}';
 // ---- Adoption (#6): the facts from files, then a draft from a model or the rules. ----
 
 export function fixture(files: Record<string, string>): string {
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-adopt-'));
+  const dir = makeTempDir('yokoten-adopt-');
   execFileSync('git', ['init', '-q'], { cwd: dir });
   for (const [path, text] of Object.entries(files)) {
     mkdirSync(dirname(join(dir, path)), { recursive: true });
@@ -230,7 +271,7 @@ export const NAMED = [
  * English text as committed. `git` runs in it with no global config, in UTC.
  */
 export function makeTranslatedRepo() {
-  const root = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const root = makeTempDir();
   const env = { PATH: process.env.PATH, HOME: root, TZ: 'UTC', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(root, 'none') };
   const git = (...args: string[]) => execFileSync('git', args, { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   git('init', '-q', '-b', 'main');
