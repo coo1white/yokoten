@@ -632,7 +632,7 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 | `hook --stop [--agent <name>]` | 收尾检查。从标准输入读这一轮结束的事件，检查改过的文件：默认读 Claude Code 的 Stop；加 `--agent codex` 读 Codex 的 Stop，加 `--agent gemini` 读 Gemini CLI 的 AfterAgent，加 `--agent grok` 读 Grok CLI 的 Stop。见[收尾检查](#收尾检查) |
 | `explain [<id>] [--json]` | 讲一条规则或者路上的一步：它是什么、为什么要有、yokoten 怎么检查 |
 | `uninstall` | 撤掉 `install` 装的东西：带 yokoten 管理标记的技能和 agent、`~/.claude/settings.json` 里它加的两个 hook，还有 `~/.local/share/yokoten`。你自己的文件、别的设置和 `~/.config/yokoten`（密钥、私有词表）都留着。再跑一次什么也不会变 |
-| `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。如果命令是 `gh issue` 或 `gh pr` 的 `create`、`edit`，并且带了标题，它会先按 CI 的规则检查标题；标题不合格就直接拒绝，什么都不会发出去。用 `gh api` 改 issue 或 PR 时，标题也照样检查。`gh pr create` 和 `gh pr edit` 如果带了 `--body` 或 `--body-file`，正文也会先过一遍：规则和 `check --pr` 里检查正文的那部分一样，看的是这个 PR 的分支改了哪些文件，以及基础分支上的 CODEOWNERS。正文不合格同样直接拒绝，什么都不发出去。它只运行 `gh` 和 `git`，所以 `env gh …`、`sh -c …` 这类写法会被拒绝；gh 的别名（alias）它不认，别名里的标题不会被检查。设置方法见 [server.md](../../server.md#3-the-bot-a-github-app) |
+| `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。如果命令是 `gh issue` 或 `gh pr` 的 `create`、`edit`，并且带了标题，它会先按 CI 的规则检查标题；标题不合格就直接拒绝，什么都不会发出去。用 `gh api` 改 issue 或 PR 时，标题也照样检查。`gh pr create` 和 `gh pr edit` 如果带了 `--body` 或 `--body-file`，正文也会先过一遍：规则和 `check --pr` 里检查正文的那部分一样，看的是这个 PR 的分支改了哪些文件，以及基础分支上的 CODEOWNERS。正文不合格同样直接拒绝，什么都不发出去。`gh pr create` 没给类型标签或 tier 标签时，bot 会自动补上：类型看标题（`fix` 补 `bug`），tier 看正文第一行的 `tier:`。你自己给的标签保留不动。你给的 tier 标签和正文对不上，就直接拒绝，提示和 `check --pr` 一样。仓库里没有的标签，bot 会说一声然后不加；它从不新建标签。它只运行 `gh` 和 `git`，所以 `env gh …`、`sh -c …` 这类写法会被拒绝；gh 的别名（alias）它不认，别名里的标题不会被检查。设置方法见 [server.md](../../server.md#3-the-bot-a-github-app) |
 
 每个命令后面加 `--help` 或 `-h`，就会打出它自己的说明：做什么、有哪些选项、一个例子。
 `yokoten help <命令>` 打出的也一样，`yokoten --help` 列出所有命令，`yokoten version`（或者
@@ -799,7 +799,7 @@ AGENTS.md 里，它就只是个愿望。把这些程序写进 `yokoten.json`，�
 
 | 设置 | 该怎么写 | 默认值 |
 |------|----------|--------|
-| `layout` | `{ "maxEntries": 7, "exempt": ["docs/records"] }`：一个大于 0 的整数，加一串文件夹 | 7，没有例外的文件夹 |
+| `layout` | `{ "maxEntries": 7, "exempt": ["docs/records"] }`：一个大于 0 的整数，加一串文件夹或通配符 | 7，没有例外的文件夹 |
 | `tests` | 一串通配符 | `*.test.*`、`*.spec.*`、`*_test.go`、`test/**`、`tests/**` |
 | `leadOnly` | 一串通配符 | 规则、agent 配置、钩子和 CI |
 | `privacy` | `{ "allow": [], "skip": [], "utc": true, "output": "run" }`：两串文字，一个 true 或 false，再加 `"run"` 或 `"stop"` | 跳过锁文件，要求 UTC，照常跑 |
@@ -1051,7 +1051,7 @@ yokoten learn --upstream "the guard let git push --tags through" --area hook --f
 | 键 | 默认值 | 管什么 |
 |----|--------|--------|
 | `layout.maxEntries` | `7` | 一个文件夹最多放几项（第 10 条核心规则） |
-| `layout.exempt` | 无 | 可以超过上限的文件夹，比如一项一项往下记的决策记录 |
+| `layout.exempt` | 无 | 可以超过上限的文件夹，见[可以变多的文件夹](#可以变多的文件夹) |
 | `tests` | `*.test.*`、`*.spec.*`、`*_test.go`、`test/**`、`tests/**` | 哪些算测试文件，修复任务不能改 |
 | `leadOnly` | 规则、agent 配置、`.githooks/**`、`.github/**`、项目里那份 yokoten 副本 `.yokoten/**` | worker 不能改的文件 |
 | `privacy.allow` | 无 | 隐私检查放行的原样字符串，比如公开的客服邮箱，或者私密词表里这个项目自己的名字 |
@@ -1062,6 +1062,24 @@ yokoten learn --upstream "the guard let git push --tags through" --area hook --f
 | `allowBuild` | 无 | 提交检查放行的构建产物和二进制文件 |
 | `areas` | 不限 | 标题里能用的模块名，见 [issue 标题](#issue-标题) |
 | `translations.fail` | `false` | 译文落后于原文时，检查直接失败 |
+
+#### 可以变多的文件夹
+
+第 10 条核心规则说，一个文件夹最多放 7 项。有两种文件夹可以超过，`changes/` 也一直可以：
+
+- **一项一项往下记的日志**，比如 `docs/records`。每条加进去就留着。
+- **测试用的第三方样例文件**，沿用上游的文件名，旁边放着它的 `NOTICE`。测试、`NOTICE`
+  和给上游报的 bug 都靠文件名找文件。再分文件夹，查一个文件、从上游更新一次都更麻烦。
+
+这样的文件夹要一个一个手写进 `layout.exempt`。每一项是从根目录起的路径，或者一个通配符。
+通配符里，`*` 代表一层文件夹，`**` 代表任意多层，零层也行；别的字符都按原样匹配。
+Rust 的 workspace 里，一条就能管到每个 crate：
+
+```json
+{ "layout": { "exempt": ["docs/records", "crates/*/tests/data"] } }
+```
+
+哪条通配符一个文件夹都没对上，`check` 和 `doctor` 会提醒一句，过时的条目就看得见了。
 
 环境变量：
 
@@ -1185,6 +1203,9 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 `~/.config/yokoten/private-marks`，里面是你的名字、所在城市、域名、服务器名。这个文件放在
 仓库外面，因为「不能公开的东西」这张清单本身也不能公开。查到问题时只报文件和行号，不会把
 词表里的词打印出来。
+
+项目自己的公开邮箱，比如自家域名下的 `support@`，也会被查出来，yokoten 不会自己放行。如果
+这个邮箱本来就是公开的，把它加进 yokoten.json 的 `privacy.allow`。
 
 这个词表是整台电脑共用的，所以私有项目的名字也该写进去。可这个项目自己的仓库总要用到自己的
 名字：在它的 yokoten.json 里，把名字加进 `privacy.allow` 就行。`privacy.allow` 里有一项和词表

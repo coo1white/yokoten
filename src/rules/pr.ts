@@ -66,9 +66,18 @@ const labelTier = (label: string): string | null => /^tier:? ?([abc])$/i.exec(la
  */
 function checkLabels(labels: string[], tier: string | null): Finding[] {
   const problems: Finding[] = [];
-  if (!labels.some((l) => TYPE_LABELS.has(l.trim().toLowerCase()))) {
+  if (!labels.some(isTypeLabel)) {
     problems.push(finding('pr-labels', 'labels: no type label', `add one type label, such as ${SHOWN_TYPE_LABELS.join(', ')}; the title's type name also counts`));
   }
+  return [...problems, ...checkTierLabel(labels, tier)];
+}
+
+/** Whether a label says a type. */
+const isTypeLabel = (label: string): boolean => TYPE_LABELS.has(label.trim().toLowerCase());
+
+/** Problems with a pull request's tier labels: exactly one, the same as the body's `tier:` line. */
+function checkTierLabel(labels: string[], tier: string | null): Finding[] {
+  const problems: Finding[] = [];
   const tiers = [...new Set(labels.map(labelTier).filter((t) => t !== null))];
   const wanted = tier ? `\`tier ${tier}\`` : '`tier A`, `tier B` or `tier C`, the same as the first line of the body';
   if (!tiers.length) problems.push(finding('pr-labels', 'labels: no tier label', `add the label ${wanted}`));
@@ -670,13 +679,19 @@ export function readCommandTitle(command: string[]): CommandTitle | UnreadableTi
   if (kind === 'api') return readApiTitle(rest.slice(words[0] + 1));
   if ((kind !== 'issue' && kind !== 'pr') || !TITLE_VERBS.has(verb)) return null;
   if (unreadable !== null) return { kind, unreadable };
+  const { title, labels } = readTitleAndLabels(options);
+  return title === null ? null : { kind, title, labels };
+}
+
+/** The title (the last one, as in gh) and every label that one gh command's options set. */
+function readTitleAndLabels(options: ReadArgs['options']): { title: string | null; labels: string[] } {
   let title: string | null = null;
   const labels: string[] = [];
   for (const [name, value] of options) {
     if (TITLE_OPTIONS.has(name)) title = value;
     else if (LABEL_OPTIONS.has(name)) labels.push(...value.split(',').map((label) => label.trim()).filter(Boolean));
   }
-  return title === null ? null : { kind, title, labels };
+  return { title, labels };
 }
 
 /**
@@ -742,4 +757,51 @@ export function readCommandBody(command: string[]): CommandBody | null {
   }
   if (!body) return null;
   return { body, base, repo, head: verb === 'edit' ? (selector ?? null) : head };
+}
+
+// ---- The labels a gh command sets (#422) ----
+//
+// `yokoten bot` adds the type and tier labels `check --pr` asks for when `gh pr create`
+// leaves them out, from the title's type and the body's `tier:` line.
+
+/** The labels `gh pr create` leaves out that `check --pr` asks for, and the problems with those it gives. */
+export interface CommandLabels {
+  /** Each missing label, as the label names that would do, best first. */
+  missing: string[][];
+  /** Problems with the labels the command gives, in the words of `check --pr`. */
+  problems: Finding[];
+  /** The `--repo` value, or null when the command names none. */
+  repo: string | null;
+}
+
+// Aliases that say more than the type, so the bot never picks them for a person.
+const NARROW_TYPE_LABELS = new Set(['hotfix', 'incident']);
+
+/** The label names that say a title's type, best first: the shown one (`bug` for fix), the type, then its aliases. */
+function typeLabelNames(type: string): string[] {
+  const aliases = TYPE_LABEL_ALIASES[type] ?? [];
+  const shown = SHOWN_TYPE_LABELS.find((label) => label === type || aliases.includes(label)) ?? type;
+  return [...new Set([shown, type, ...aliases])].filter((label) => !NARROW_TYPE_LABELS.has(label));
+}
+
+/**
+ * The type and tier labels that `gh pr create` (or `new`) leaves out, from the title's
+ * type and the body's tier line, and the problems with the tier labels it gives. A label
+ * it gives is kept. Null for any other command, or a run-together word it can't read.
+ */
+export function readCommandLabels(command: string[], body: string | null): CommandLabels | null {
+  const [file, ...rest] = command;
+  if (!file || botProgram(file) !== 'gh') return null;
+  const { words, options, unreadable } = readArgs(rest, ISSUE_FLAGS);
+  const [kind, verb] = words.map((index) => rest[index]);
+  if (kind !== 'pr' || (verb !== 'create' && verb !== 'new') || unreadable !== null) return null;
+  const { title, labels } = readTitleAndLabels(options);
+  const repo = options.filter(([name]) => name === '--repo' || name === '-R').at(-1)?.[1] ?? null;
+  const missing: string[][] = [];
+  const type = title === null ? undefined : TITLE.exec(title.trim())?.[1];
+  if (type && !labels.some(isTypeLabel)) missing.push(typeLabelNames(type));
+  const tier = bodyTier(body ?? '');
+  const hasTier = labels.some((label) => labelTier(label) !== null);
+  if (tier && !hasTier) missing.push([`tier ${tier}`, `tier: ${tier}`]);
+  return { missing, problems: hasTier ? checkTierLabel(labels, tier) : [], repo };
 }
