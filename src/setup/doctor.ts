@@ -22,7 +22,7 @@ import { type Finding, finding, formatFinding, type RuleId } from '../rules/mess
 import { loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
-import { type LessonPlace, listLessons, runLessons } from '../run/learn.ts';
+import { countNotes, type LessonPlace, listLessons, runLessons, waitingLine } from '../run/learn.ts';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
 import { hasPlugin, hasProjectHook, hasSessionDoctor, readInstalledPlugin, tempDir as claudeTempDir, userSettingsProblem } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
@@ -906,6 +906,17 @@ function readOrigin(root: string, gh: Gh): ServerSettings | Unread {
   return repo ? readServer(gh, repo) : { unread: 'the origin remote is not on a host yokoten knows (GitHub for now)', fix: 'add a GitHub origin remote, or check these settings by hand' };
 }
 
+/**
+ * In yokoten's own repo only, a note when lessons from other projects wait in the inbox
+ * (#392). Elsewhere nothing: the inbox is for whoever works on yokoten. One readdir and
+ * the package.json read, no child process, so the session start stays fast.
+ */
+export function upstreamNote(root: string, env: Env): Finding | null {
+  if (!isSelf(root)) return null;
+  const line = waitingLine(countNotes(env));
+  return line ? finding('upstream-inbox', line, 'open an issue for each, then remove its note with `yokoten learn --upstream --done <id>`') : null;
+}
+
 /** At most this many notes about unsaved work in a session; full doctor lists them all. */
 const SESSION_UNSAVED_LIMIT = 3;
 
@@ -959,7 +970,8 @@ export interface StepState {
  * fix; `notes` never fail doctor. `ok` is false only for a problem (#208): the self-test,
  * core rules that are behind, a tree finding or a machine check. A road step not taken
  * yet is to do, not a problem, so it never makes `ok` false. A session (`--session`) gets the next step, the
- * private-marks finding and a behind `core-rules` finding only, as its lines do.
+ * private-marks finding, a behind `core-rules` finding and, in yokoten's own repo, the
+ * `upstream-inbox` note only, as its lines do.
  */
 export interface DoctorReport {
   version: string;
@@ -1028,6 +1040,11 @@ export function doctor(
     if (core && isCoreBehind) {
       lines.push(`yokoten: ${formatFinding(core.finding)}`);
       findings.push(core.finding);
+    }
+    const waiting = upstreamNote(root, env);
+    if (waiting) {
+      lines.push(`yokoten: ${waiting.what}`);
+      findings.push(waiting);
     }
     const ok = !failed.length && !isCoreBehind;
     return { ok, lines, report: { ...base, ok, repo: true, stage, next, findings, ...(unsaved.notes.length ? { notes: unsaved.notes } : {}) } };
@@ -1112,6 +1129,11 @@ export function doctor(
   if (double) {
     lines.push(`  note    plugin-and-install: ${stepText(double)}`);
     notes.push(double);
+  }
+  const waiting = upstreamNote(root, env);
+  if (waiting) {
+    lines.push(`  note    upstream-inbox: ${waiting.what}`);
+    notes.push(waiting);
   }
   // The road's stage 5 shows the settings it groups (#7); here are the rest, which never fail doctor.
   const settings = serverChecks(server ?? { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' });

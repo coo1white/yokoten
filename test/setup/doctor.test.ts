@@ -61,6 +61,7 @@ import {
   sessionUnsaved,
   STOPPED_EARLY,
   UNSAVED_OFFER,
+  upstreamNote,
 } from '../../src/setup/doctor.ts';
 import { LABELS } from '../../src/setup/plan.ts';
 import {
@@ -1090,4 +1091,43 @@ test('privacyNotes: the mailmap, and the kinds of mark yokoten cannot find; neve
   assert.equal(notes()[0], 'private-output: only Claude Code hides your details in command output; other agents show it as it is; to stop those commands there instead, set "privacy": { "output": "stop" } in yokoten.json');
   assert.equal(privacyNotes(env, null, 'stop').length, 1, 'with "stop", only the mailmap note is left');
   rmSync(home, { recursive: true, force: true });
+});
+
+// #392: lessons from other projects wait in ~/.config/yokoten/upstream. Only yokoten's own
+// repo, found by its package name, hears about them; another repo hears nothing.
+test('doctor: in the yokoten repo, the session and doctor count the notes from other projects; elsewhere nothing', () => {
+  const sandbox = makeSandbox();
+  const inbox = join(sandbox.home, '.config', 'yokoten', 'upstream');
+  mkdirSync(inbox, { recursive: true });
+  for (const id of ['20261020-120000-aaaa', '20261020-130000-bbbb', '20261020-140000-cccc']) writeFileSync(join(inbox, `${id}.md`), 'when: 2026-10-20T12:00:00Z\npart: unknown\nwhat: x\n');
+  const line = 'yokoten: 3 lessons from other projects wait to become issues: yokoten learn --upstream --list';
+  // Another repo: not a word, though the notes are there.
+  assert.ok(!sandbox.run(['doctor', '--session']).stdout.includes('lessons from other projects'));
+  assert.equal(upstreamNote(sandbox.repo, { HOME: sandbox.home }), null);
+  // A fake yokoten repo: the count, as the session's last line.
+  sandbox.write('package.json', JSON.stringify({ name: 'yokoten' }));
+  sandbox.write('bin/yokoten.ts', '');
+  const session = sandbox.run(['doctor', '--session']);
+  assert.equal(session.status, 0, session.stderr);
+  assert.equal(session.stdout.trimEnd().split('\n').at(-1), line);
+  const note = upstreamNote(sandbox.repo, { HOME: sandbox.home });
+  assert.equal(note?.id, 'upstream-inbox');
+  assert.equal(note?.what, line.replace(/^yokoten: /, ''));
+  // The session's JSON has the finding too, and full doctor a note line and a note.
+  const noGh = () => {
+    throw new Error('no network in this test');
+  };
+  const sessionReport = doctor(sandbox.repo, { env: { HOME: sandbox.home }, config: DEFAULTS, session: true, gh: noGh });
+  assert.deepEqual(sessionReport.report.findings.filter((found) => found.id === 'upstream-inbox'), [note]);
+  const full = doctor(sandbox.repo, { env: { HOME: sandbox.home }, config: DEFAULTS, gh: noGh });
+  assert.ok(full.lines.includes(`  note    upstream-inbox: ${note?.what}`), full.lines.join('\n'));
+  assert.deepEqual(full.report.notes?.filter((found) => found.id === 'upstream-inbox'), [note]);
+  // Elsewhere, full doctor has neither.
+  const other = makeSandbox();
+  assert.ok(!doctor(other.repo, { env: { HOME: sandbox.home }, config: DEFAULTS, gh: noGh }).lines.some((text) => text.includes('upstream-inbox')));
+  // An empty home: no inbox, no line.
+  const empty = mkdtempSync(join(tmpdir(), 'yokoten-empty-'));
+  assert.equal(upstreamNote(sandbox.repo, { HOME: empty }), null);
+  assert.ok(!sandbox.run(['doctor', '--session'], { extra: { HOME: empty } }).stdout.includes('lessons from other projects'));
+  rmSync(empty, { recursive: true, force: true });
 });

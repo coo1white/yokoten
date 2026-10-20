@@ -35,7 +35,8 @@ export const paths = (env: Env) => {
   return {
     runtime: join(home, '.local', 'share', 'yokoten'),
     config: join(home, '.config', 'yokoten'),
-    marks: marksFile(env),
+    // As marksFile gives it, but never throwing: install and doctor name this path (#392).
+    marks: env.YOKOTEN_PRIVATE_MARKS || join(home, '.config', 'yokoten', 'private-marks'),
   };
 };
 

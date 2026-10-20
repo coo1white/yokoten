@@ -140,3 +140,95 @@ test('lessons: learn, write the check, ship, then doctor in a second repo shows 
   result = runCopy(['doctor'], sandbox.repo);
   assert.match(result.stdout, /\n {2}not now lesson incident-9: a sample file, no secret in it\n/);
 });
+
+// #392: `learn --upstream` from a project, run as a person would. The note names neither
+// the project nor the home folder; a token is refused; --list and --done read the inbox.
+test('learn --upstream: keeps a note with the project hidden, refuses a token, and lists and removes notes', () => {
+  const sandbox = makeSandbox();
+  const project = join(sandbox.home, 'work', 'acme-app');
+  mkdirSync(project, { recursive: true });
+  spawnSync('git', ['init', '-q'], { cwd: project, env: sandbox.env });
+  writeFileSync(join(project, 'package.json'), JSON.stringify({ name: '@octo/acme-app' }));
+  // A nested origin on a public forge, and a gh login on this machine: both are hidden.
+  spawnSync('git', ['remote', 'add', 'origin', 'https://gitlab.com/acme-group/acme-sub/acme-app.git'], { cwd: project, env: sandbox.env });
+  mkdirSync(join(sandbox.home, '.config', 'gh'), { recursive: true });
+  writeFileSync(join(sandbox.home, '.config', 'gh', 'hosts.yml'), 'github.com:\n    user: octo-jane\n');
+  const run = (args: string[]) => sandbox.run(['learn', '--upstream', ...args], { cwd: project });
+  const inbox = join(sandbox.home, '.config', 'yokoten', 'upstream');
+  // An empty home: nothing waits, and the inbox is made on the first note.
+  let result = run(['--list']);
+  assert.deepEqual([result.status, result.stdout], [0, 'yokoten learn --upstream: no lessons wait; the inbox is empty.\n']);
+  result = run([`In ${project}/src/a.ts the hook for AcmeApp missed a case; log in ${join(sandbox.home, 'log.txt')}`, '--area', 'hook', '--fix', 'match acme_app flags too']);
+  const owners = run(['octo-jane saw acme-group and acme-sub in the URL']);
+  assert.equal(owners.status, 0, owners.stderr);
+  assert.match(owners.stdout, /\n  <owner> saw <owner> and <owner> in the URL\n/);
+  assert.equal(run(['--done', /kept note (\S+) in/.exec(owners.stdout)?.[1] ?? '']).status, 0);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^yokoten learn --upstream: kept note (\d{8}-\d{6}-[0-9a-f]{4}) in ~\/\.config\/yokoten\/upstream, outside every repo\. It reads:\n  In <project>\/src\/a\.ts the hook for <project> missed a case; log in ~\/log\.txt\n  fix idea: match <project> flags too\n/);
+  const [file] = readdirSync(inbox);
+  const id = file.replace(/\.md$/, '');
+  const text = readFileSync(join(inbox, file), 'utf8');
+  assert.match(text, /^when: \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\npart: hook\nwhat: In <project>\/src\/a\.ts the hook for <project> missed a case; log in ~\/log\.txt\nfix: match <project> flags too\n$/);
+  assert.ok(!text.includes('acme') && !text.includes(sandbox.home), 'neither the name nor the path is kept');
+  // A token: refused by kind, the value never printed, nothing written.
+  const token = `ghp_${'b'.repeat(36)}`;
+  result = run([`the guard printed ${token}`]);
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, 'yokoten learn --upstream: the note was not kept, because it holds a secret (GitHub token). Say what happened without it, and try again.\n');
+  assert.ok(!result.stdout.includes(token) && !result.stderr.includes(token));
+  assert.equal(readdirSync(inbox).length, 1);
+  // --area takes a known area; a note needs words.
+  assert.match(run(['x', '--area', 'nope']).stderr, /--area is one of: doctor, check, hook/);
+  assert.match(run([]).stderr, /say what happened, in a few words/);
+  assert.match(sandbox.run(['learn', '--list'], { cwd: project }).stderr, /--list goes with --upstream/);
+  result = run(['--list']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, new RegExp(`^yokoten learn --upstream: 1 lesson waits to become an issue in the yokoten repo:\\n- ${id} \\(\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d UTC, part: hook\\): In <project>/src/a\\.ts [^\\n]*\\n  fix idea: match <project> flags too\\nOpen an issue for each, then remove its note: yokoten learn --upstream --done <id>\\n$`));
+  result = run(['--done', id]);
+  assert.deepEqual([result.status, result.stdout], [0, `yokoten learn --upstream: removed note ${id}.\n`]);
+  result = run(['--done', id]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /there is no note/);
+  assert.deepEqual(readdirSync(inbox), []);
+});
+
+// #392: no error repeats what was typed, and options that don't fit together are refused.
+test('learn --upstream: errors never repeat the words typed', () => {
+  const sandbox = makeSandbox();
+  const run = (args: string[]) => sandbox.run(['learn', '--upstream', ...args]);
+  let result = run(['--done', '../acme-secret']);
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, 'yokoten learn: that is not a note id; see the ids with `yokoten learn --upstream --list`. Run `yokoten learn --help`.\n');
+  result = run(['--done', '20261020-120000-abcd']);
+  assert.equal(result.status, 1);
+  assert.doesNotMatch(result.stderr, /20261020/);
+  result = run(['first part', 'acme-secret second part']);
+  assert.equal(result.status, 1);
+  assert.doesNotMatch(result.stderr, /acme-secret/);
+  assert.match(result.stderr, /give what happened as one argument, in quotes/);
+  result = run(['-acme-secret']);
+  assert.equal(result.status, 1);
+  assert.doesNotMatch(result.stderr, /acme-secret/);
+  for (const extra of [['--list', '--area', 'hook'], ['--done', '20261020-120000-abcd', '--fix', 'x']]) {
+    result = run(extra);
+    assert.equal(result.status, 1, extra.join(' '));
+    assert.match(result.stderr, /goes with a new note, not with --(list|done)/);
+  }
+});
+
+// #392: with HOME empty or unset, nothing lands in the repo. Only reads and refusals run
+// here: the system's home is the real one, and a test never writes there.
+test('learn --upstream: an empty or missing HOME never writes into the repo', () => {
+  const sandbox = makeSandbox();
+  const noHome: Record<string, string | undefined> = { ...sandbox.env };
+  delete noHome.HOME;
+  const runWith = (env: Record<string, string | undefined>, args: string[]) => spawnSync('node', [CLI, 'learn', '--upstream', ...args], { cwd: sandbox.repo, env, encoding: 'utf8' });
+  for (const env of [{ ...sandbox.env, HOME: '' }, noHome]) {
+    assert.equal(runWith(env, ['--list']).status, 0);
+    const refused = runWith(env, [`printed ghp_${'c'.repeat(36)}`]);
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /a secret \(GitHub token\)/);
+    assert.equal(runWith(env, ['--done', 'nope']).status, 1);
+    assert.ok(!existsSync(join(sandbox.repo, '.config')), 'no inbox inside the repo');
+  }
+});

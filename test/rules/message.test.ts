@@ -81,6 +81,7 @@ import {
   type MachineProbe,
   pluginAgeCheck,
   privacyNotes,
+  upstreamNote,
   userAgentHooks,
 } from '../../src/setup/doctor.ts';
 import {
@@ -186,6 +187,13 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   writeFileSync(join(pluginHome, '.claude', 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'yokoten@yokoten': [{ scope: 'user', installPath: pluginFolder }] } }));
   writeFileSync(join(pluginFolder, 'package.json'), JSON.stringify({ version: '0.0.1' }));
   add(pluginAgeCheck(null, { HOME: pluginHome }));
+  // Lessons from other projects, in a folder that looks like yokoten's own repo (#392).
+  mkdirSync(join(pluginHome, '.config', 'yokoten', 'upstream'), { recursive: true });
+  writeFileSync(join(pluginHome, '.config', 'yokoten', 'upstream', '20261020-120000-abcd.md'), 'what: x\n');
+  writeFileSync(join(pluginFolder, 'package.json'), JSON.stringify({ name: 'yokoten', version: '0.0.1' }));
+  mkdirSync(join(pluginFolder, 'bin'));
+  writeFileSync(join(pluginFolder, 'bin', 'yokoten.ts'), '');
+  add(upstreamNote(pluginFolder, { HOME: pluginHome }));
   // The core rules (#120): behind the kit, and with no heading to compare by.
   for (const rules of ['# old rules\n\n## This project\n', '# rules\n']) {
     writeFileSync(join(dir, 'AGENTS.md'), rules);

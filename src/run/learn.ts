@@ -1,6 +1,7 @@
 // `yokoten learn` (#77): an incident issue becomes a check draft for a person to review.
 // It is the first half of the loop: incident, draft, review. The second half is at the end
 // of this file (#147): a reviewed lesson ships in the kit, and `doctor` runs it in every project.
+// Last comes the inbox for gaps in yokoten itself, found in any project (#392).
 //
 // The draft comes from the issue's own sections, never from a guess: no model is called.
 // Where the issue gives no answer, the draft says TODO and names the missing section. The
@@ -8,10 +9,13 @@
 // draft never passes by itself.
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
-import type { Finding } from '../rules/message.ts';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
+import type { Env } from '../rules/config.ts';
+import { type Finding, finding } from '../rules/message.ts';
+import { homeOf, makeRedactor, NO_HOME, PLACEHOLDERS, scanText } from '../rules/privacy.ts';
 
 /** An incident issue, as the code host gives it. */
 export interface Incident {
@@ -550,3 +554,228 @@ export function runLessons(root: string, place: LessonPlace, skip: (id: string) 
   }
   return runs;
 }
+
+// ---- Lessons for yokoten itself (#392) ----
+//
+// A gap found while yokoten runs in some project belongs in the yokoten repo, but that
+// project's details must not go with it. `learn --upstream` keeps one short note per gap
+// in an inbox outside every repo, with the project's name, its paths and the owner hidden
+// first. In yokoten's own repo, the session start and doctor count the notes, and the lead
+// turns each into an issue. Nothing is sent anywhere: the inbox is a folder on this machine.
+
+/** The inbox, ~/.config/yokoten/upstream, next to the private marks. Null with no home folder. */
+export const upstreamDir = (env: Env): string | null => {
+  const home = homeOf(env);
+  return home ? join(home, '.config', 'yokoten', 'upstream') : null;
+};
+
+/** One note in the inbox. Every text field is already redacted. */
+export interface UpstreamNote {
+  id: string;
+  /** When it was written, in UTC: `2026-10-20T12:00:00Z`. */
+  when: string;
+  /** The yokoten area it is about, or `unknown`. */
+  part: string;
+  what: string;
+  fix?: string;
+}
+
+/** A note's id: its UTC time and four hex digits, `20261020-120000-ab12`. It is also its file name. */
+export const NOTE_ID = /^\d{8}-\d{6}-[0-9a-f]{4}$/;
+const NOTE_FILE = /^\d{8}-\d{6}-[0-9a-f]{4}\.md$/;
+
+/** What the note may hold: the project at hand, the owner, and the marks. */
+export interface NotePlace {
+  /** The project's root folder, or null outside a repo. */
+  root: string | null;
+  /** The project's names: its folder, its package name, its origin repo. */
+  projects: string[];
+  /** The owner's names and the private hosts, as `redact` hides them. */
+  owners: string[];
+  hosts: string[];
+  marks: string[];
+  /** Where a relative path in the note starts: the folder the command runs in. */
+  cwd: string;
+}
+
+/**
+ * Secret shapes refused in a note on top of the commit check's tokens. They are looser
+ * than those, so they stay here: in a commit, `token=` in a test or a doc is common.
+ */
+const NOTE_SECRETS: { kind: string; re: RegExp }[] = [
+  { kind: 'a password in a URL', re: /[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:[^\s/@]+@/i },
+  { kind: 'a password or key after password=, token= or the like', re: /(?<![A-Za-z0-9])(?:password|passwd|secret|token|api_key|apikey)["']?\s*[=:]\s*["']?[^\s"',;]{8,}/i },
+  { kind: 'a JSON web token', re: /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}/ },
+  { kind: 'an OpenAI key', re: /(?<![A-Za-z0-9_-])sk-proj-[A-Za-z0-9_-]{8,}/ },
+];
+
+/** Text on one line, with no control characters: a note is one short line per field. */
+const oneLine = (text: string) => terminalText(text.split(LINE_END).join(' ').replace(CONTROL, ' ')).replace(/\s+/g, ' ').trim();
+
+/**
+ * The spellings of a project name: any case, with `-`, `_`, a space or nothing between its
+ * words, so `secret-proj` also hides `SecretProj` and `secret_proj`. A name of under three
+ * letters gives none: it would hide half the text (a private mark covers it).
+ */
+export function nameVariants(name: string): string[] {
+  const words = name
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[-_.\s]+/)
+    .filter(Boolean)
+    .map((word) => word.toLowerCase());
+  if (words.join('').length < 3) return [];
+  return [...new Set([name.toLowerCase(), ...['-', '_', ' ', ''].map((between) => words.join(between))])];
+}
+
+// A path in the text: absolute, or from ~/, ./ or ../. Not after a letter, a colon or a
+// slash, so `and/or` and `https://` are not paths. It stops at a space, a quote or a colon.
+const PATH_TOKEN = /(?<![\p{L}\p{N}_.~:/-])(?:~|\.{1,2})?\/[^\s'"`<>|;,:(){}[\]]*/gu;
+
+const realOrSelf = (path: string) => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+};
+
+/** The real path of the longest part of `path` that exists, and the parts after it. */
+function longestReal(path: string): { real: string; rest: string[] } | null {
+  const parts = path.split('/');
+  for (let count = parts.length; count > 0; count--) {
+    try {
+      return { real: realpathSync(parts.slice(0, count).join('/') || '/'), rest: parts.slice(count) };
+    } catch {}
+  }
+  return null;
+}
+
+/** `path` from `base`, when it is `base` or inside it; else null. */
+const inside = (path: string, base: string): string | null => {
+  const rel = relative(base, path);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel)) ? rel : null;
+};
+
+/**
+ * Each path in the text, by where it really leads: into the project, it starts with
+ * `<project>`, through a symlink too; else, absolute and into the home folder, with `~`.
+ */
+function hidePaths(text: string, root: string | null, home: string | null, cwd: string): string {
+  const realRoot = root ? realOrSelf(root) : null;
+  const realHome = home ? realOrSelf(home) : null;
+  return text.replace(PATH_TOKEN, (token) => {
+    const trail = /[.!?]+$/.exec(token)?.[0] ?? '';
+    const path = token.slice(0, token.length - trail.length);
+    const full = path.startsWith('~/') ? (home ? join(home, path.slice(2)) : null) : path.startsWith('/') ? path : join(cwd, path);
+    const found = full ? longestReal(full) : null;
+    if (!found) return token;
+    const shown = (start: string, base: string) => {
+      const rel = inside(found.real, base);
+      return rel === null ? null : [start, ...rel.split(sep), ...found.rest].filter(Boolean).join('/') + trail;
+    };
+    return (realRoot && shown(PLACEHOLDERS.project, realRoot)) || (realHome && path.startsWith('/') && shown('~', realHome)) || token;
+  });
+}
+
+/**
+ * The owners and the repo in a remote URL: `https://host/group/sub/repo.git` gives
+ * `group` and `sub` as owners and `repo` as the project. Every owner segment may name a person.
+ */
+export function originParts(url: string): { owners: string[]; project: string | null } {
+  const path = (/^[a-z][a-z0-9+.-]*:\/\/[^/]*\/(.*)$/i.exec(url) ?? /^(?:[^@/\s]+@)?[^/:\s]+:(?!\/\/)(.*)$/.exec(url))?.[1];
+  const parts = (path ?? '').replace(/\.git\/?$|\/$/g, '').split('/').filter(Boolean);
+  return parts.length < 2 ? { owners: [], project: null } : { owners: parts.slice(0, -1), project: parts[parts.length - 1] };
+}
+
+/** A function that hides the project, the home folder and the owner in a field, as a note keeps it. */
+export function makeNoteCleaner(place: NotePlace, env: Env): (text: string) => string {
+  const home = homeOf(env);
+  const projects = place.projects.flatMap(nameVariants);
+  const redact = makeRedactor({ marks: place.marks, owners: place.owners, hosts: place.hosts, projects }, { ...env, HOME: home ?? undefined });
+  return (text) => redact(hidePaths(oneLine(text), place.root, home, place.cwd));
+}
+
+/**
+ * The note's text as it may leave the project: a known secret shape refused, then the
+ * project's paths and names as `<project>`, the home folder as `~`, and the owner as
+ * `redact` hides them. What the privacy check still finds after that refuses the note, by
+ * kind, never by value.
+ */
+export function redactNote(text: string, place: NotePlace, env: Env): { text: string } | { problems: Finding[] } {
+  const line = oneLine(text);
+  // A secret is refused, not hidden: whoever pasted it should know, and may need to rotate it.
+  const secrets = [
+    ...scanText(line, { file: 'the note' }).filter((problem) => problem.id === 'secret'),
+    ...NOTE_SECRETS.filter(({ re }) => re.test(line)).map(({ kind }) => finding('secret', `a secret (${kind})`, 'take it out of the note')),
+  ];
+  if (secrets.length) return { problems: secrets };
+  const out = makeNoteCleaner(place, env)(line);
+  const problems = scanText(out, { file: 'the note', marks: place.marks });
+  return problems.length ? { problems } : { text: out };
+}
+
+/** Write one note to the inbox. With no home folder it throws, never writing in the repo. `now` is there for a test. */
+export function writeNote(env: Env, note: Omit<UpstreamNote, 'id' | 'when'>, now: Date = new Date()): UpstreamNote {
+  const dir = upstreamDir(env);
+  if (!dir) throw new Error(NO_HOME);
+  const when = `${now.toISOString().slice(0, 19)}Z`;
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const stamp = when.replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+  let id = '';
+  do id = `${stamp}-${randomBytes(2).toString('hex')}`;
+  while (existsSync(join(dir, `${id}.md`)));
+  const written: UpstreamNote = { id, when, ...note };
+  const lines = [`when: ${when}`, `part: ${written.part}`, `what: ${written.what}`, ...(written.fix ? [`fix: ${written.fix}`] : [])];
+  writeFileSync(join(dir, `${id}.md`), `${lines.join('\n')}\n`, { mode: 0o600 });
+  return written;
+}
+
+/** How many notes wait. One readdir, no file read, so the session start stays fast. */
+export function countNotes(env: Env): number {
+  const dir = upstreamDir(env);
+  if (!dir) return 0;
+  try {
+    return readdirSync(dir).filter((name) => NOTE_FILE.test(name)).length;
+  } catch {
+    return 0;
+  }
+}
+
+/** The notes, oldest first, as their files hold them. A file that can't be read is left out. */
+export function listNotes(env: Env): UpstreamNote[] {
+  const dir = upstreamDir(env);
+  if (!dir) return [];
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir).filter((name) => NOTE_FILE.test(name)).sort();
+  } catch {
+    return [];
+  }
+  const notes: UpstreamNote[] = [];
+  for (const name of names) {
+    const text = readText(join(dir, name));
+    if (text === null) continue;
+    const field = (key: string) => new RegExp(`^${key}: (.*)$`, 'm').exec(text)?.[1];
+    const fix = field('fix');
+    notes.push({ id: name.slice(0, -3), when: field('when') ?? '', part: field('part') ?? 'unknown', what: field('what') ?? '', ...(fix ? { fix } : {}) });
+  }
+  return notes;
+}
+
+/** Remove one note, after its issue is open. False when there is no such note file. */
+export function removeNote(env: Env, id: string): boolean {
+  const dir = upstreamDir(env);
+  if (!dir || !NOTE_ID.test(id)) return false;
+  const file = join(dir, `${id}.md`);
+  try {
+    if (!lstatSync(file).isFile()) return false;
+  } catch {
+    return false;
+  }
+  rmSync(file);
+  return true;
+}
+
+/** The line the session start and doctor give in yokoten's own repo, or null with no note. */
+export const waitingLine = (count: number): string | null =>
+  count ? `${count} ${count === 1 ? 'lesson' : 'lessons'} from other projects ${count === 1 ? 'waits' : 'wait'} to become ${count === 1 ? 'an issue' : 'issues'}: yokoten learn --upstream --list` : null;

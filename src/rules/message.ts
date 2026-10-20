@@ -375,6 +375,12 @@ export const RULES = {
     check: 'the tool-call guard sends commands known to print account details through `yokoten redact`. In Claude Code it rewrites the command; other agents are stopped and shown the command to run',
     docs: guide('privacy'),
   },
+  'upstream-inbox': {
+    rule: 'a gap in yokoten found in another project becomes an issue in the yokoten repo',
+    why: 'a lesson that stays in a note on one machine never becomes a check',
+    check: 'in the yokoten repo only, the session start and `doctor` count the notes in ~/.config/yokoten/upstream; `yokoten learn --upstream` writes them, with the project and the owner hidden; a note, never a failure',
+    docs: guide('lessons-for-yokoten-itself'),
+  },
   mailmap: {
     rule: 'git prints your name and emails as a placeholder',
     why: 'an agent reads git log and git show, and an author line names you',
