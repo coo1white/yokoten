@@ -26,7 +26,7 @@ import { countNotes, type LessonPlace, listLessons, runLessons, waitingLine } fr
 import * as antigravity from '../agents/runtimes/antigravity.ts';
 import { hasPlugin, hasProjectHook, hasSessionDoctor, readInstalledPlugin, tempDir as claudeTempDir, userSettingsProblem } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
-import * as copilot from '../agents/runtimes/copilot.ts';
+import * as copilot from '../agents/copilot.ts';
 import * as dsh from '../agents/runtimes/deepseek-harness.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import * as muse from '../agents/runtimes/muse.ts';
