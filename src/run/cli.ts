@@ -130,7 +130,7 @@ export const COMMANDS: Command[] = [
       'Adds the practices to the project at [dir] (default: here). It keeps any file that is',
       'already there and says so. It also reads GitHub through gh and says which standard',
       'labels and milestone it would add. It changes GitHub only with --github --yes.',
-      'It leaves out the files of a step that yokoten.json "notNow" names.',
+      'With "notNow" ci in yokoten.json, it writes no workflow and no Dependabot config.',
     ],
     options: [
       { name: '--no-ci', text: 'keep CI off: no workflows or Dependabot, and "notNow" ci in yokoten.json' },

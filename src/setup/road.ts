@@ -11,7 +11,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
-import { type Env, loadConfig } from '../rules/config.ts';
+import { type Config, type Env, loadConfig } from '../rules/config.ts';
 import { matcher } from '../rules/config.ts';
 import { type Finding, finding, type RuleId } from '../rules/message.ts';
 import { CHANGES_DIR, parseCodeOwners } from '../rules/pr.ts';
@@ -40,11 +40,12 @@ export interface Step {
   stage: number;
   /** The step's name, and its key in yokoten.json "notNow". */
   key: string;
-  check: (root: string, env: Env, server: ServerRead) => Found;
+  /** `config` is yokoten.json when the caller has read it already; a step that needs it reads it otherwise. */
+  check: (root: string, env: Env, server: ServerRead, config?: Config) => Found;
   /** What is missing, said when the step is not done. No full stop at the end. */
-  what: (root: string, env: Env, server: ServerRead) => string;
+  what: (root: string, env: Env, server: ServerRead, config?: Config) => string;
   /** What to do about it: a command or an edit. No full stop at the end. */
-  fix: (root: string, env: Env, server: ServerRead) => string;
+  fix: (root: string, env: Env, server: ServerRead, config?: Config) => string;
   /**
    * What covers the step while yokoten.json "notNow" names `ci` (#377): the step needs CI,
    * so it waits with that choice and doctor says this in its place. No full stop at the end.
@@ -349,14 +350,16 @@ const SECURITY_FILES: [string, string[]][] = [
  * The security files the repo lacks. With "notNow" `ci` (#377), the kit's Dependabot
  * config is not asked for: it updates only the actions that CI runs.
  */
-export const securityLacking = (root: string, isOff: boolean = isCiOff(root)) =>
+export const securityLacking = (root: string, isOff: boolean = isCiOff(root)): string[] =>
   SECURITY_FILES.filter(([name, paths]) => !(isOff && name === DEPENDABOT_FILE) && !paths.some((p) => existsSync(join(root, p)))).map(([name]) => name);
 
 /**
  * True when yokoten.json "notNow" names `ci` (#377): the project keeps CI off, and the
  * commit hook and `yokoten check` are its gate. A broken yokoten.json reads as false.
+ * Pass `config` when it is read already (doctor), so the session start reads the file once.
  */
-export function isCiOff(root: string): boolean {
+export function isCiOff(root: string, config?: Config): boolean {
+  if (config) return Object.hasOwn(config.notNow, 'ci');
   try {
     return Object.hasOwn(loadConfig(root).notNow, 'ci');
   } catch {
@@ -430,19 +433,19 @@ const SESSION_UNREAD: Unread = { unread: 'a session never calls the network', fi
  * The checks behind one step, and `server-settings` when nothing could be read. `root` is
  * null for the "can't check" texts: a check that was not read has nothing to leave out.
  */
-const stepChecks = (key: string, root: string | null, server: ServerRead) =>
-  serverChecks(server ?? SESSION_UNREAD, { isCiOff: root !== null && server !== undefined && isCiOff(root) }).filter((c) => c.id === 'server-settings' || SERVER_STEPS[key].includes(c.id));
+const stepChecks = (key: string, root: string | null, server: ServerRead, config?: Config) =>
+  serverChecks(server ?? SESSION_UNREAD, { isCiOff: root !== null && server !== undefined && isCiOff(root, config) }).filter((c) => c.id === 'server-settings' || SERVER_STEPS[key].includes(c.id));
 
 /** Not done when a check is MISSING; can't check when a check is unread; done when all are ok. */
-const judgeServer = (key: string, root: string, server: ServerRead): Found => {
-  const checks = stepChecks(key, root, server);
+const judgeServer = (key: string, root: string, server: ServerRead, config?: Config): Found => {
+  const checks = stepChecks(key, root, server, config);
   if (checks.some((c) => c.mark === 'MISSING')) return false;
   return checks.some((c) => c.mark === "can't check") ? null : true;
 };
 
 /** One field of each check with this mark, joined by "; ", or `fallback` when no check has the mark. */
-const joinChecks = (key: string, root: string | null, server: ServerRead, mark: ServerCheck['mark'], field: 'what' | 'fix', fallback: string) => {
-  const texts = stepChecks(key, root, server).filter((c) => c.mark === mark).map((c) => c.finding[field]);
+const joinChecks = (key: string, root: string | null, server: ServerRead, mark: ServerCheck['mark'], field: 'what' | 'fix', fallback: string, config?: Config) => {
+  const texts = stepChecks(key, root, server, config).filter((c) => c.mark === mark).map((c) => c.finding[field]);
   return texts.length ? [...new Set(texts)].join('; ') : fallback;
 };
 
@@ -450,9 +453,9 @@ const joinChecks = (key: string, root: string | null, server: ServerRead, mark: 
 const serverStep = (key: string, fields: { lacking: string; fix: string; why: string; how: string; standard?: string }): Step => ({
   stage: 5,
   key,
-  check: (root, _, server) => judgeServer(key, root, server),
-  what: (root, _, server) => joinChecks(key, root, server, 'MISSING', 'what', fields.lacking),
-  fix: (root, _, server) => joinChecks(key, root, server, 'MISSING', 'fix', fields.fix),
+  check: (root, _, server, config) => judgeServer(key, root, server, config),
+  what: (root, _, server, config) => joinChecks(key, root, server, 'MISSING', 'what', fields.lacking, config),
+  fix: (root, _, server, config) => joinChecks(key, root, server, 'MISSING', 'fix', fields.fix, config),
   unchecked: (server) => `${joinChecks(key, null, server, "can't check", 'what', 'nothing was read')}; ${joinChecks(key, null, server, "can't check", 'fix', 'run `yokoten doctor`')}`,
   why: fields.why,
   how: fields.how,
@@ -842,14 +845,14 @@ export const ROAD: Step[] = [
   {
     stage: 5,
     key: 'security-files',
-    check: (root) => securityLacking(root).length === 0,
-    what: (root) => `no ${securityLacking(root).join(', no ')}`,
-    fix: (root) => {
-      const lacking = securityLacking(root);
+    check: (...[root, , , config]) => securityLacking(root, isCiOff(root, config)).length === 0,
+    what: (...[root, , , config]) => `no ${securityLacking(root, isCiOff(root, config)).join(', no ')}`,
+    fix: (...[root, , , config]) => {
+      const lacking = securityLacking(root, isCiOff(root, config));
       const license = lacking.includes(LICENSE_FILE);
       const byInit = lacking.length > (license ? 1 : 0);
       // With CI off (#377), init writes no Dependabot config.
-      return [byInit ? `run \`yokoten init\` to add the security policy${isCiOff(root) ? '' : ' and Dependabot'}` : '', license ? 'choose a license and add it as LICENSE' : ''].filter(Boolean).join(', and ');
+      return [byInit ? `run \`yokoten init\` to add the security policy${isCiOff(root, config) ? '' : ' and Dependabot'}` : '', license ? 'choose a license and add it as LICENSE' : ''].filter(Boolean).join(', and ');
     },
     how: 'a SECURITY.md, a Dependabot config and a license file are in the repo',
     why: 'people can then report a hole in private, old dependencies get updates, and others know how they may use the code',
@@ -877,7 +880,7 @@ export const ROAD: Step[] = [
 ];
 
 /** A step not done, as a finding: the step's key is its id. */
-export const stepFinding = (step: Step, root: string, env: Env, server?: ServerRead): Finding => ({ id: step.key, what: step.what(root, env, server), why: step.why, fix: step.fix(root, env, server) });
+export const stepFinding = (step: Step, root: string, env: Env, server?: ServerRead, config?: Config): Finding => ({ id: step.key, what: step.what(root, env, server, config), why: step.why, fix: step.fix(root, env, server, config) });
 
 /** A step not done, as the map and the session say it: what is missing, then the fix. */
 export const stepText = (f: Finding): string => `${f.what}; ${f.fix}`;
@@ -911,6 +914,6 @@ export function walk(found: { step: Step; found: Found }[], notNow: Record<strin
 }
 
 /** Run every check on the road for this project. `server` is what full doctor read from the code host. */
-export function road(root: string, env: Env, steps: Step[] = ROAD, server?: ServerRead): { step: Step; found: Found }[] {
-  return steps.map((step) => ({ step, found: step.check(root, env, server) }));
+export function road(root: string, env: Env, steps: Step[] = ROAD, server?: ServerRead, config?: Config): { step: Step; found: Found }[] {
+  return steps.map((step) => ({ step, found: step.check(root, env, server, config) }));
 }

@@ -599,8 +599,8 @@ yokoten init --no-ci
 - It adds `"ci"` to `"notNow"` in `yokoten.json`, with the reason.
 - It leaves out the three workflows and `.github/dependabot.yml`. Dependabot in the kit
   updates only the actions that CI runs.
-- It removes each of those files that is still the kit's copy. A file you changed is
-  kept, and `init` names it.
+- It removes each of those files that is still the kit's copy. A file you changed, or
+  one reached through a symlink, is kept, and `init` names it.
 
 With `"notNow": { "ci": "<reason>" }`, the road counts the commit hook and `yokoten
 check` as the gate. The steps that need CI wait with it: `tests`, `ci` and `titles`.
@@ -628,11 +628,6 @@ From stage 5, the note also reminds you to end the choice when the repo goes pub
 When full `doctor` reads that the repo is public, it says so. To take CI up again,
 remove `"ci"` from `"notNow"` and run `yokoten init`. It writes the workflows, and the
 steps count CI again.
-
-Any other step in `"notNow"` works the same way for its files. `init` does not write the
-templates for `templates`, `CHANGELOG.md` and `changes/` for `changelog`, `SECURITY.md`
-and Dependabot for `security-files`, `pr.yml` for `titles`, or `CODEOWNERS` for
-`codeowners`. A file that is already there stays.
 
 ### Commands
 

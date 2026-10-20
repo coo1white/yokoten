@@ -241,18 +241,43 @@ export function readNumberedPullRequest(root: string, gh: Gh, number: string): P
   if (!/^[1-9]\d*$/.test(number)) return { problem: finding('pr-read', `"${number}" is not a pull request number`, 'give the number alone, such as `yokoten check --pr 12`') };
   let pr: unknown;
   try {
-    pr = JSON.parse(gh(['pr', 'view', number, '--json', 'title,body,labels,milestone,author,baseRefName,baseRefOid,headRefOid']));
+    pr = JSON.parse(gh(['pr', 'view', number, '--json', 'title,body,labels,milestone,author,baseRefOid,headRefOid']));
   } catch (err) {
+    // gh says this when the repo has no such pull request: a wrong number, not a network problem.
+    if (/Could not resolve to a PullRequest/i.test(String((err as { stderr?: string }).stderr || (err as Error).message))) {
+      return { problem: finding('pr-read', `no pull request ${number} in ${originRepo(root) ?? 'this repo'}`, 'check the number with `gh pr list`, then run it again') };
+    }
     const why = unread(err);
     return { problem: finding('pr-read', `pull request ${number} can't be read: ${why.unread}`, why.fix) };
   }
   if (!isObject(pr)) return { problem: finding('pr-read', `gh gave no pull request ${number}`, 'check the number, then run it again') };
   const base = asText(pr.baseRefOid);
   const head = asText(pr.headRefOid);
-  const fetch = `run \`git fetch origin ${asText(pr.baseRefName) || 'main'} pull/${number}/head\`, then run it again`;
+  // No branch name goes into the hint, so nothing in it needs quoting for a shell.
+  const fetch = `run \`git fetch origin\` and \`git fetch origin pull/${number}/head\`, then run it again`;
   const problem = shasProblem(base, head) ?? commitsProblem(root, base, head, fetch);
   if (problem) return { problem };
-  return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: isObject(pr.author) ? asText(pr.author.login) : '' }, base, head);
+  return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: ghAuthor(pr.author) }, base, head);
+}
+
+/**
+ * The author login as the CI event names it. gh names an app `app/<name>`, where the event
+ * has `<name>[bot]`; the rules match the event's form, such as dependabot[bot].
+ */
+function ghAuthor(author: unknown): string {
+  if (!isObject(author)) return '';
+  const login = asText(author.login);
+  if (login.startsWith('app/')) return `${login.slice('app/'.length)}[bot]`;
+  return author.is_bot === true && login && !login.endsWith('[bot]') ? `${login}[bot]` : login;
+}
+
+/** "owner/name" of the origin remote, or null. */
+function originRepo(root: string): string | null {
+  try {
+    return repoOf(execFileSync('git', ['config', '--get', 'remote.origin.url'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
+  } catch {
+    return null;
+  }
 }
 
 // GitHub reads CODEOWNERS from the first of these places, on the pull request's base

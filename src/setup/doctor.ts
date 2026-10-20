@@ -1023,11 +1023,11 @@ export function doctor(
 
   // Read only, and only in full doctor: a session never calls the network (record 0004).
   const server: ServerRead = session ? undefined : gh ? readOrigin(root, gh) : { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' };
-  const where = walk(road(root, env, ROAD, server), config.notNow);
+  const where = walk(road(root, env, ROAD, server, config), config.notNow);
   // Full doctor from the command line adds the obvious marks first (#390); a session writes nothing.
   const filled = isFilling && !session ? trySafely('the marks from this machine', () => [filledLine(fillMarks(env, machineMarks(env, { cwd: root, gh })), paths(env).marks)])[0] : null;
   const machine = machineChecks(env);
-  const next = where.next ? stepFinding(where.next, root, env, server) : null;
+  const next = where.next ? stepFinding(where.next, root, env, server, config) : null;
   const core = coreRulesCheck(root);
   const isCoreBehind = core?.mark === 'MISSING';
 
@@ -1078,7 +1078,7 @@ export function doctor(
       // A step that needs CI waits with "notNow" `ci` (#377): its reason, then what covers it meanwhile.
       if (mark === 'not now') note = state.reason = Object.hasOwn(config.notNow, step.key) ? config.notNow[step.key] : `${config.notNow.ci} (notNow ci); ${step.withoutCi}`;
       else if (mark === 'next' || mark === 'to do') {
-        const f = stepFinding(step, root, env, server);
+        const f = stepFinding(step, root, env, server, config);
         findings.push(f);
         note = stepText(f);
       } else if (mark === "can't check" && step.unchecked) note = step.unchecked(server);

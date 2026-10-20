@@ -14,6 +14,9 @@ import { loadMarks, makeRedactor } from '../rules/privacy.ts';
 import { machineMarks, machineUserNames } from '../setup/install.ts';
 import { bullets, env, parse, print, printJson, requireRoot, say, showOnPullRequest, usage } from './shared.ts';
 
+/** How long `check --pr <number>` waits for gh. */
+const GH_TIMEOUT_MS = 15000;
+
 export function runCheck(): number {
   const options = parse('check');
   if (typeof options === 'string') return usage(options);
@@ -41,7 +44,7 @@ export function runCheck(): number {
     // An event that can't be read is one finding (#267), so --json and the summary still work.
     problems = 'problem' in issue ? [issue.problem] : checkIssueTitle(issue.title, config, issue.labels);
   } else if (mode === 'pr') {
-    const pr = number === undefined ? readPullRequest(root, env) : readNumberedPullRequest(root, ghIn(root), number);
+    const pr = number === undefined ? readPullRequest(root, env) : readNumberedPullRequest(root, ghIn(root, GH_TIMEOUT_MS), number);
     if (!pr) {
       const skipped = 'no pull request in this run (it reads the CI event); nothing to check';
       if (json) printJson({ check: mode, ok: true, skipped, findings: [], notes: [] });

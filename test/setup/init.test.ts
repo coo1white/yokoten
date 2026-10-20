@@ -6,6 +6,7 @@ import {
   chmodSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -1359,6 +1360,7 @@ test('init: a private repo can keep CI off with --no-ci, finish the road, and ta
     assert.ok(!isThere(file), file);
   }
   assert.match(result.stdout, /^kept \.github\/workflows\/issue\.yml: it is not the kit's copy/m);
+  assert.equal(result.stdout.match(/^kept \.github\/workflows\/issue\.yml/gm)?.length, 1, 'a kept file is named once');
   assert.doesNotMatch(result.stdout, /this repo is private/, 'the choice is made, so no offer');
   assert.deepEqual(notNow(), { ci: NO_CI_REASON });
   rmSync(join(sandbox.repo, '.github', 'workflows', 'issue.yml'));
@@ -1388,17 +1390,64 @@ test('init: a private repo can keep CI off with --no-ci, finish the road, and ta
   assert.doesNotMatch(sandbox.run(['doctor'], { extra: machine }).stdout, /no-ci/);
 });
 
-test('init: a step in "notNow" leaves out its files, unless they are there already (#377)', () => {
+test('init: only "notNow" ci leaves kit files out; other steps in "notNow" keep today\'s files (#377)', () => {
   const sandbox = makeSandbox();
-  sandbox.write('yokoten.json', JSON.stringify({ notNow: { templates: 'later', changelog: 'later', codeowners: 'later', 'security-files': 'later' } }));
-  sandbox.write('CHANGELOG.md', '# ours\n');
+  sandbox.write('yokoten.json', JSON.stringify({ notNow: { templates: 'later', changelog: 'later', codeowners: 'later', 'security-files': 'later', titles: 'later' } }));
   const result = sandbox.run(['init']);
   assert.equal(result.status, 0, result.stderr);
-  for (const file of ['.github/ISSUE_TEMPLATE/task.yml', '.github/pull_request_template.md', 'changes/README.md', '.github/SECURITY.md', '.github/dependabot.yml', '.github/CODEOWNERS']) {
-    assert.match(result.stdout, new RegExp(`^skipped ${file.replaceAll('.', '\\.')} \\(yokoten\\.json "notNow" names `, 'm'));
-    assert.ok(!existsSync(join(sandbox.repo, file)), file);
+  assert.doesNotMatch(result.stdout, /^skipped /m);
+  for (const file of ['.github/ISSUE_TEMPLATE/task.yml', '.github/pull_request_template.md', 'changes/README.md', '.github/SECURITY.md', '.github/dependabot.yml', '.github/CODEOWNERS', '.github/workflows/pr.yml']) {
+    assert.ok(existsSync(join(sandbox.repo, file)), file);
   }
-  assert.match(result.stdout, /^kept CHANGELOG\.md$/m);
-  // The control: CI is not in "notNow", so the workflows are written.
-  assert.ok(existsSync(join(sandbox.repo, '.github', 'workflows', 'yokoten.yml')));
+});
+
+test('init --no-ci: a kit copy with Windows line ends is removed; a symlinked file or folder is kept and named (#377)', { skip: process.platform === 'win32' && 'symlinks need rights on Windows' }, () => {
+  const sandbox = makeSandbox();
+  assert.equal(sandbox.run(['init']).status, 0);
+  const workflows = join(sandbox.repo, '.github', 'workflows');
+  // A Windows checkout (core.autocrlf) has CRLF line ends and may lose the last newline.
+  const pr = join(workflows, 'pr.yml');
+  writeFileSync(pr, readFileSync(pr, 'utf8').replace(/\n/g, '\r\n').replace(/\r\n$/, ''));
+  // A symlinked file: the file it points at stays, whatever it holds.
+  const target = join(sandbox.home, 'issue.yml');
+  cpSync(join(workflows, 'issue.yml'), target);
+  rmSync(join(workflows, 'issue.yml'));
+  symlinkSync(target, join(workflows, 'issue.yml'));
+  let result = sandbox.run(['init', '--no-ci']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^removed \.github\/workflows\/pr\.yml \(the kit's copy; CI is off\)$/m);
+  assert.match(result.stdout, /^kept \.github\/workflows\/issue\.yml: \.github\/workflows\/issue\.yml is a symlink, and init never deletes through one/m);
+  assert.ok(existsSync(target));
+  assert.ok(lstatSync(join(workflows, 'issue.yml')).isSymbolicLink());
+
+  // A symlinked .github/workflows folder: nothing in it is deleted.
+  const other = makeSandbox();
+  assert.equal(other.run(['init']).status, 0);
+  const real = join(other.home, 'workflows');
+  cpSync(join(other.repo, '.github', 'workflows'), real, { recursive: true });
+  rmSync(join(other.repo, '.github', 'workflows'), { recursive: true });
+  symlinkSync(real, join(other.repo, '.github', 'workflows'));
+  result = other.run(['init', '--no-ci']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^kept \.github\/workflows\/yokoten\.yml: \.github\/workflows is a symlink/m);
+  assert.deepEqual(readdirSync(real).sort(), ['issue.yml', 'pr.yml', 'yokoten.yml']);
+  // The control: dependabot.yml is a plain file, the kit's copy, so it goes.
+  assert.match(result.stdout, /^removed \.github\/dependabot\.yml/m);
+});
+
+test('init --no-ci: only the "notNow" key changes in yokoten.json; the rest keeps its formatting (#377)', () => {
+  const sandbox = makeSandbox();
+  const own = '{\n    "areas": ["cli",   "docs"],\n    "notNow": {\n        "bot": "no app yet"\n    }\n}\n';
+  sandbox.write('yokoten.json', own);
+  let result = sandbox.run(['init', '--no-ci']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(join(sandbox.repo, 'yokoten.json'), 'utf8'), `{\n    "areas": ["cli",   "docs"],\n    "notNow": {\n        "ci": ${JSON.stringify(NO_CI_REASON)},\n        "bot": "no app yet"\n    }\n}\n`);
+  // No "notNow" key yet: one is added after the opening brace, and nothing else moves.
+  const other = makeSandbox();
+  other.write('yokoten.json', '{ "areas": ["cli"] }\n');
+  result = other.run(['init', '--no-ci']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(join(other.repo, 'yokoten.json'), 'utf8'), `{ "notNow": { "ci": ${JSON.stringify(NO_CI_REASON)} }, "areas": ["cli"] }\n`);
+  // A second run keeps it.
+  assert.match(other.run(['init', '--no-ci']).stdout, /^kept "notNow" ci in yokoten\.json$/m);
 });
