@@ -96,6 +96,31 @@ const RETINA = /@\d+x\.(png|jpe?g|gif|webp|svg|avif)$/i;
 // Localhost, "any", and the three ranges RFC 5737 keeps for documentation.
 const OK_IP = [/^127\./, /^0\.0\.0\.0$/, /^192\.0\.2\./, /^198\.51\.100\./, /^203\.0\.113\./];
 
+// A dotted quad in a spec citation or a version is not an address (#382). The words next to
+// it decide, read only around a hit, so a large file gets no extra pass:
+// - before it: `§`, "section", "sec." or "sect.", "version", "ver." or "v", or a document
+//   name: "MS-OVBA" or "[MS-OVBA]", "RFC 7230", "ECMA-376", "ISO 32000-1", "ISO/IEC 29500";
+// - after it: a pre-release or build tag, `-beta` or `+build.5`. A `-` and a second address
+//   is a range of addresses, and is caught;
+// - a range of section numbers, `2.3.1.15 to 2.3.1.17`, joined by "to" or "through". If one
+//   end is in a private network (10/8, 172.16/12, 192.168/16, 100.64/10), it is a range of
+//   addresses, and is caught.
+// A bare address in prose ("connect to <address>") is still caught.
+const QUAD = String.raw`\d{1,3}(?:\.\d{1,3}){3}`;
+const SPEC_BEFORE = /(?:§|\b(?:section|sect?\.|version|ver\.|v)|(?:\bMS-[A-Z0-9-]+\]?|\bRFC\s?\d+|\bECMA-\d+|\bISO(?:\/IEC)?\s?\d+(?:-\d+)?)[,:]?)\s*$/i;
+const TAG_AFTER = new RegExp(String.raw`^[-+](?!${QUAD})\w`);
+const RANGE_BEFORE = new RegExp(String.raw`(?<![\w.])(${QUAD})\s+(?:to|through)\s+$`, 'i');
+const RANGE_AFTER = new RegExp(String.raw`^\s+(?:to|through)\s+(${QUAD})(?![\w.])`, 'i');
+const PRIVATE_NETWORK = /^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/;
+/** Whether the dotted quad `hit`, found at `index` in `line`, is a section number or a version. */
+function isSectionNumber(line: string, index: number, hit: string): boolean {
+  const before = line.slice(Math.max(0, index - 40), index);
+  const after = line.slice(index + hit.length, index + hit.length + 40);
+  if (SPEC_BEFORE.test(before) || TAG_AFTER.test(after)) return true;
+  const otherEnd = RANGE_BEFORE.exec(before)?.[1] ?? RANGE_AFTER.exec(after)?.[1];
+  return otherEnd !== undefined && !PRIVATE_NETWORK.test(hit) && !PRIVATE_NETWORK.test(otherEnd);
+}
+
 /** Whether an address found in text may point at a person: not a noreply, team, example or retina name. */
 export const isPersonalEmail = (hit: string, allow: string[] = []): boolean => !OK_EMAIL.some((re) => re.test(hit)) && !isForgeRemote(hit) && !RETINA.test(hit) && !allow.includes(hit);
 
@@ -116,9 +141,9 @@ export function scanText(text: string, { file, marks = [], allow = [] }: { file:
         problems.push(finding('email', 'an email address', 'use your GitHub noreply address, or a placeholder at example.com', where));
       }
     }
-    for (const [hit] of line.matchAll(IPV4)) {
+    for (const { 0: hit, index } of line.matchAll(IPV4)) {
       const octets = hit.split('.').map(Number);
-      if (octets.some((n) => n > 255) || OK_IP.some((re) => re.test(hit)) || allow.includes(hit)) continue;
+      if (octets.some((n) => n > 255) || OK_IP.some((re) => re.test(hit)) || allow.includes(hit) || isSectionNumber(line, index, hit)) continue;
       problems.push(finding('ip', 'an IP address', 'use a placeholder from 192.0.2.0/24', where));
     }
     const lower = line.toLowerCase();
