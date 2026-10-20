@@ -38,6 +38,8 @@ Start the worker with its role in the environment, which it cannot change:
   (add `YOKOTEN_FIX_TASK=1` for a fix task).
 - A subagent: use the `worker` agent. The tool guard treats an agent type named worker
   as a worker.
+- A brief that changes a lead-only file: a separate session with
+  `YOKOTEN_LEAD_ONLY_OK=<path>,<path>` (paths from the repo root); a subagent can't get it.
 
 The worker commits in its worktree. It never pushes, never opens a pull request, and
 never changes lead-only files (the guard stops it).

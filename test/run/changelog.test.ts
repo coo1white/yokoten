@@ -1,5 +1,6 @@
 // Tests for src/run/changelog.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import {
   existsSync,

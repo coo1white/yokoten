@@ -94,7 +94,7 @@ export const RULES = {
   'lead-only': {
     rule: 'a worker does not change lead-only files: the rules, agent config, hooks and CI (core rule 5)',
     why: 'a worker must not change the rules it works under, and a pull request that edits CI runs that CI before anyone reads it',
-    check: 'with YOKOTEN_ROLE=worker, the tool-call guard stops an edit to a file that yokoten.json "leadOnly" matches, and the commit check refuses it',
+    check: 'for a worker (YOKOTEN_ROLE=worker, or a subagent named worker), the tool-call guard stops an edit or a shell write to a file that yokoten.json "leadOnly" matches, and a git commit that changes one; with YOKOTEN_ROLE=worker the commit check refuses it too. YOKOTEN_LEAD_ONLY_OK lists the paths the lead allows',
     docs: guide('the-core-rules'),
   },
   email: {

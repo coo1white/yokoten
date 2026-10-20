@@ -1,5 +1,6 @@
 // Tests for src/rules/privacy.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import {
   mkdirSync,
@@ -16,6 +17,7 @@ import { checkCommand } from '../../src/rules/guards.ts';
 import { formatFinding } from '../../src/rules/message.ts';
 import {
   hideHome,
+  homeIn,
   loadMarkKinds,
   loadMarks,
   makeRedactor,
@@ -24,10 +26,24 @@ import {
   POSITIVE_CONTROL,
   privateRemoteHosts,
   scanText,
+  withHome,
 } from '../../src/rules/privacy.ts';
 
 // Samples are built from pieces so this file passes its own check.
 const ip = (...n: number[]) => n.join('.');
+
+test('withHome: only the CLI entry falls back to the system home, and only when HOME is not a full path (#356)', () => {
+  const system = () => '/home/someone';
+  assert.deepEqual(withHome({ HOME: '/h', X: '1' }, system), { HOME: '/h', X: '1' });
+  assert.deepEqual(withHome({ X: '1' }, system), { HOME: '/home/someone', X: '1' });
+  assert.deepEqual(withHome({ HOME: 'relative' }, system), { HOME: '/home/someone' });
+  assert.deepEqual(withHome({ HOME: '' }, () => 'also/relative'), { HOME: '' }, 'no full path anywhere: no home');
+  const env: Env = { PATH: '/bin' };
+  withHome(env, system);
+  assert.deepEqual(env, { PATH: '/bin' }, 'the env it is given stays as it was');
+  assert.equal(homeIn({ HOME: '/h' }), '/h');
+  assert.throws(() => homeIn({}), /no home folder/, 'no fallback outside the CLI entry');
+});
 
 test('positive control: the known-bad sample is caught', () => {
   assert.equal(scanText(POSITIVE_CONTROL, { file: 'x' }).length, 2);

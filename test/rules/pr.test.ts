@@ -1,5 +1,6 @@
 // Tests for src/rules/pr.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
