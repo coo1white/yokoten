@@ -57,7 +57,9 @@ const testFolders: string[][] = [];
 
 const removeFolder = (path: string) => rmSync(path, { recursive: true, force: true, maxRetries: 3 });
 
-// The running tests' names, innermost last, for a child that is killed (#436).
+// The running tests' names, innermost last, for a child that is killed (#436). Right only while
+// tests in one file run one at a time, as all do today: with `concurrency` or `describe` they
+// would overlap, and the last name might be another test's.
 const testNames: string[] = [];
 
 beforeEach((t) => {
@@ -88,8 +90,8 @@ export function makeTempDir(prefix = 'yokoten-'): string {
 // child that hangs, so it is generous, and the kill is printed with the running test's name:
 // a file that dies later still says which test it was in.
 
-/** How long a test's child may run before it is killed. */
-export const CHILD_TIMEOUT_MS = 300_000;
+/** How long a test's child may run before it is killed: well under the CI job's 10 minutes, so two hangs still print. */
+export const CHILD_TIMEOUT_MS = 120_000;
 
 /** How much output a test's child may print before it is killed. Node's 1 MB default cut a report short (#436). */
 export const CHILD_MAX_BUFFER = 256 * 1024 * 1024;
