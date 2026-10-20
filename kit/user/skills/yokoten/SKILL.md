@@ -50,9 +50,11 @@ a repo that ships to users does. Wait for the user's answer on every row.
 
 ## 3. Put it in
 
-1. `yokoten init` adds what is missing. It never overwrites; it says what it kept.
-2. Merge by hand where the project already had its own file: keep the project's rules
-   in the "This project" section of `AGENTS.md`, and remove any that repeat a core rule.
+1. `yokoten init` adds what is missing. It never overwrites; it says what it kept. An
+   `AGENTS.md` without "This project" gets the core rules on top, and its own text moves
+   under that heading.
+2. Merge by hand where the project already had its own file: in `AGENTS.md`, remove any
+   rule under "This project" that repeats a core rule.
 3. Every "not now" goes into `yokoten.json` under `notNow`, so doctor stops asking:
    `"ci": "no remote yet; look again at the first push"`.
 4. Write the table into `docs/records/` with the `record` skill. That record is the
