@@ -1,5 +1,6 @@
 // Tests for src/commands/bot.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';

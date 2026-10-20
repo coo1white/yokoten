@@ -1,5 +1,6 @@
 // Tests for src/host/github.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
@@ -95,6 +96,9 @@ test('config: the App ID is required, the key has a default place', () => {
   assert.ok(typeof c !== 'string');
   assert.equal(c.keyFile, join('/h', '.config', 'yokoten', 'bot.pem'));
   assert.equal(c.api, 'https://api.github.com');
+  // No HOME: no default key file, rather than one in the folder the command runs in (#356).
+  assert.match(botConfig({ YOKOTEN_BOT_APP_ID: '9' }) as string, /no home folder/);
+  assert.equal((botConfig({ YOKOTEN_BOT_APP_ID: '9', YOKOTEN_BOT_KEY: '/k.pem' }) as { keyFile: string }).keyFile, '/k.pem');
 });
 
 test('repo: read from https and ssh remotes', () => {

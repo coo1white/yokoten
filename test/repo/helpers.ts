@@ -1,6 +1,7 @@
 // Shared by the test files: the CLI's path, the repo root, a throwaway git repo to run it in,
 // and every declaration that two or more test files use. No state: each file imports it.
 
+import './home.ts';
 import assert from 'node:assert/strict';
 import {
   execFileSync,

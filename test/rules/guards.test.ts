@@ -1,5 +1,6 @@
 // Tests for src/rules/guards.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import {
   execFileSync,

@@ -1,5 +1,6 @@
 // Tests for src/setup/install.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
@@ -549,10 +550,11 @@ test('machineUserNames: USERPROFILE gives the Windows name without reading the d
 });
 
 test('install: with no absolute home it refuses and writes nothing (#404)', () => {
-  const result = install({ HOME: '' }, { system: () => '' });
+  const result = install({ HOME: '' });
   assert.equal(result.ok, false);
   assert.match(result.lines.join('\n'), /no home folder/);
-  assert.equal(install({ HOME: 'relative/home' }, { system: () => 'also/relative' }).ok, false);
-  assert.throws(() => paths({ HOME: '' }, () => ''), /no home folder/);
+  assert.equal(install({ HOME: 'relative/home' }).ok, false);
+  assert.equal(install({}).ok, false, 'no HOME: the system home is the CLI entry\'s fallback, not install\'s (#356)');
+  assert.throws(() => paths({ HOME: '' }), /no home folder/);
   assert.equal(existsSync('relative') || existsSync('.local'), false, 'nothing lands in the folder the test runs in');
 });

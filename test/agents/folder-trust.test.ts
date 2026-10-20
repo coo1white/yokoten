@@ -1,5 +1,6 @@
 // Tests for src/agents/folder-trust.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';

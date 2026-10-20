@@ -1,5 +1,6 @@
 // Tests for src/setup/road.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import {
   mkdirSync,

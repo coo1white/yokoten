@@ -17,12 +17,11 @@
 import { execFileSync } from 'node:child_process';
 import { createPrivateKey, sign } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { type Finding, finding, formatFinding, place } from '../rules/message.ts';
 import type { CodeOwners, PullRequest } from '../rules/pr.ts';
-import { homeOf } from '../rules/privacy.ts';
+import { homeOf, NO_HOME } from '../rules/privacy.ts';
 import { type Incident, terminalText } from '../run/learn.ts';
 
 export interface BotConfig {
@@ -38,9 +37,11 @@ export interface BotConfig {
 export function botConfig(env: Env): BotConfig | string {
   const appId = env.YOKOTEN_BOT_APP_ID;
   if (!appId) return 'YOKOTEN_BOT_APP_ID is not set: the App ID from the App\'s settings page (docs/server.md, step 3)';
+  const home = homeOf(env);
+  if (!env.YOKOTEN_BOT_KEY && !home) return `${NO_HOME}: set YOKOTEN_BOT_KEY to the key file's full path`;
   return {
     appId,
-    keyFile: env.YOKOTEN_BOT_KEY || join(env.HOME || homedir(), '.config', 'yokoten', 'bot.pem'),
+    keyFile: env.YOKOTEN_BOT_KEY || join(home as string, '.config', 'yokoten', 'bot.pem'),
     installation: env.YOKOTEN_BOT_INSTALLATION || undefined,
     api: (env.YOKOTEN_GITHUB_API || 'https://api.github.com').replace(/\/$/, ''),
   };

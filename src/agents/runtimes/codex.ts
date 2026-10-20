@@ -7,9 +7,9 @@
 
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import type { Env } from '../../rules/config.ts';
+import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import type { Action } from '../../run/hook.ts';
 import { type FolderTrust, folderKeys, isFolder } from '../folder-trust.ts';
@@ -104,7 +104,7 @@ export const checkProjectHooks = (root: string): void => checkHooksFile(projectH
 /** A Stop event: the same fields as Claude Code's (`cwd`, `stop_hook_active`). */
 export { readStop } from './claude-code.ts';
 
-const userHooks = (env: Env) => join(env.HOME || homedir(), '.codex', 'hooks.json');
+const userHooks = (env: Env) => join(homeIn(env), '.codex', 'hooks.json');
 
 /** The two user hooks, as `addHook`'s arguments: one builder for `addUserHooks` and `userHooksState`. */
 const userHookArgs = (env: Env, cli: string, missing: string): Record<'doctor' | 'guard', HookArgs> => ({
@@ -356,7 +356,9 @@ function mainCheckout(root: string): string | null {
  */
 export function readTrust(root: string, env: Env): CodexTrust {
   const store = env.CODEX_HOME ? '$CODEX_HOME/config.toml' : '~/.codex/config.toml';
-  const home = env.CODEX_HOME || join(env.HOME || homedir(), '.codex');
+  const user = homeOf(env);
+  const home = env.CODEX_HOME || (user ? join(user, '.codex') : '');
+  if (!home) return { state: 'no home', store };
   const file = join(home, 'config.toml');
   if (!isFolder(home)) return { state: 'no home', store };
   if (!existsSync(file)) return { state: 'no store', store };

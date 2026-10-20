@@ -28,15 +28,14 @@ import * as gemini from '../agents/runtimes/gemini.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { copyRuntime, HOME_DIR, KIT, MANAGED, writeManaged, writeNew } from './files.ts';
 import { type Gh, readLogin } from '../host/github.ts';
-import { homeOf, isDomainShaped, isPersonalEmail, loadMarks, marksFile, NO_HOME, privateRemoteHosts, systemHome } from '../rules/privacy.ts';
+import { homeIn, homeOf, isDomainShaped, isPersonalEmail, loadMarks, marksFile, NO_HOME, privateRemoteHosts, systemHome } from '../rules/privacy.ts';
 
 /**
  * Where yokoten keeps its runtime, its config and the private marks. With no absolute home
  * folder it throws NO_HOME: a relative path would land in the folder the command runs in (#404).
  */
-export const paths = (env: Env, system: () => string = systemHome) => {
-  const home = homeOf(env, system);
-  if (!home) throw new Error(NO_HOME);
+export const paths = (env: Env) => {
+  const home = homeIn(env);
   return {
     runtime: join(home, '.local', 'share', 'yokoten'),
     config: join(home, '.config', 'yokoten'),
@@ -101,10 +100,10 @@ function agentHooks(cliName: string, file: string, add: () => string[]): { ok: b
 }
 
 /** One line per thing done, kept or skipped; `ok` is false when a file was skipped (#248). */
-export function install(env: Env, { cwd, gh, system = systemHome }: { cwd?: string; gh?: Gh; system?: () => string } = {}): { ok: boolean; lines: string[] } {
+export function install(env: Env, { cwd, gh }: { cwd?: string; gh?: Gh } = {}): { ok: boolean; lines: string[] } {
   // Refuse before writing anything: with no home, every path below would be relative (#404).
-  if (!homeOf(env, system)) return { ok: false, lines: [`${NO_HOME}. Set HOME to your home folder's full path and run install again`] };
-  const target = paths(env, system);
+  if (!homeOf(env)) return { ok: false, lines: [`${NO_HOME}. Set HOME to your home folder's full path and run install again`] };
+  const target = paths(env);
   const report: string[] = [];
   let ok = true;
   // Run from this copy, install keeps it (#204). The report shows the home folder as ~.

@@ -10,7 +10,6 @@
 
 import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
 import { addProjectHook, addProjectStopHook, checkProjectSettings, setProjectEnv } from '../agents/runtimes/claude-code.ts';
@@ -22,6 +21,7 @@ import * as muse from '../agents/runtimes/muse.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
 import { DEFAULTS } from '../rules/config.ts';
+import { systemHome } from '../rules/privacy.ts';
 import { CODEOWNERS_PLACES, type Gh, ghIn, isOrganization, repoOf } from '../host/github.ts';
 import { readOriginUrl } from './plan.ts';
 import { copyRuntime, HOME_DIR, KIT, render, VERSION, writeNew } from './files.ts';
@@ -401,8 +401,9 @@ const gitLine = (root: string, args: string[]): string | null => {
 const showPath = (root: string, path: string): string => {
   const rel = relative(root, path);
   if (rel && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)) return rel.split(sep).join('/');
-  const home = homedir();
-  return (path.startsWith(home + sep) ? `~${path.slice(home.length)}` : path).split(sep).join('/');
+  // Display only: the system's home, as hideHome hides it; nothing is read there (#356).
+  const home = systemHome();
+  return (home && path.startsWith(home + sep) ? `~${path.slice(home.length)}` : path).split(sep).join('/');
 };
 
 const sameFile = (a: string, b: string): boolean => {
