@@ -87,4 +87,8 @@ test('doctor --session: a worker hears that lead-only files are guarded; the lea
   assert.ok(has(sandbox.run(['doctor', '--session'], { extra: { YOKOTEN_ROLE: 'worker' } })), 'YOKOTEN_ROLE=worker');
   assert.ok(!has(sandbox.run(['doctor', '--session'])), 'the lead');
   assert.ok(!has(sandbox.run(['doctor'], { extra: { YOKOTEN_ROLE: 'worker' } })), 'only at session start');
+  // A compaction drops what the session heard, never the worker's role (#405).
+  const start = (source: string) => sandbox.run(['doctor', '--session'], { extra: { YOKOTEN_ROLE: 'worker', CLAUDE_PROJECT_DIR: sandbox.repo }, input: JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'w-1', source }) });
+  assert.ok(has(start('startup')));
+  assert.ok(has(start('compact')), 'after a compaction too');
 });

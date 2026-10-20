@@ -30,10 +30,11 @@ export function runDoctor(): number {
     else print([...allLines, `yokoten doctor: ${formatFinding(missing)}`], process.stderr);
     return 1;
   }
-  // A worker started with YOKOTEN_ROLE hears that the guard sees it as one (#402). The lead hears nothing.
-  if (root && session && blocks && env.YOKOTEN_ROLE === 'worker') blocks.push([`yokoten: ${WORKER_SESSION}.`]);
   // A compaction start repeats only what changed (#405); any other start says all.
   const lines = root && session && blocks && !options.flags.has('--json') ? blocksToSay(env, agent === 'claude-code' ? readSessionStart() : null, blocks).flat() : allLines;
+  // A worker started with YOKOTEN_ROLE hears that the guard sees it as one (#402), on every
+  // start, a compaction too: its role is safety, never news to drop. The lead hears nothing.
+  if (root && session && blocks && !options.flags.has('--json') && env.YOKOTEN_ROLE === 'worker') lines.push(`yokoten: ${WORKER_SESSION}.`);
   // An agent that can't filter command output hears it at session start, with the opt-in (#390).
   if (root && session && agent !== 'claude-code' && config.privacy.output !== 'stop') lines.push(`yokoten: ${UNFILTERED}. ${OUTPUT_STOP[0].toUpperCase()}${OUTPUT_STOP.slice(1)}.`);
   if (options.flags.has('--json')) printJson(report);
