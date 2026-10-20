@@ -2,10 +2,11 @@
 
 import '../repo/home.ts';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -28,7 +29,7 @@ import {
   makeTempDir,
 } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
-import { machineStateFile } from '../../src/setup/install.ts';
+import { launcherDir, machineStateFile, setUpLauncher } from '../../src/setup/install.ts';
 import {
   type Gh,
   readPlanning,
@@ -39,6 +40,7 @@ import {
 import { unsavedNotes } from '../../src/setup/advice/unsaved.ts';
 import {
   agentTempDirCheck,
+  blocksToSay,
   coreRulesCheck,
   coreRulesControl,
   diskSpaceChecks,
@@ -48,6 +50,7 @@ import {
   isShellControlCaught,
   isUnsavedControlCaught,
   isWsl,
+  launcherCheck,
   leftoverControl,
   leftoverTempCheck,
   listBoardSteps,
@@ -61,6 +64,7 @@ import {
   saveHostCache,
   selfTest,
   SESSION_UNSAVED_BUDGET,
+  sessionsDir,
   sessionUnsaved,
   STOPPED_EARLY,
   UNSAVED_OFFER,
@@ -185,6 +189,18 @@ test("road: with no gh, no network, a non-GitHub remote or a session, the server
   // A setting only an admin can see is can't check too, not done.
   const hidden = readServer(serverGh({ ...GOOD, [`repos/${REPO}`]: { default_branch: 'main' } }).gh, REPO);
   assert.equal(serverFound(hidden)['merge-settings'], null);
+});
+
+test('doctor: a workflow with a run line of 500,000 characters does not throw (#322)', () => {
+  const root = makeTempDir('yokoten-long-run-');
+  execFileSync('git', ['init', '-q', root]);
+  mkdirSync(join(root, '.github', 'workflows'), { recursive: true });
+  const long = `on: pull_request\njobs:\n  t:\n    steps:\n      - run: npx${' -y'.repeat(83_000)} node${' -a'.repeat(83_000)}\n      - run: make${' -C x'.repeat(100_000)}\n`;
+  writeFileSync(join(root, '.github', 'workflows', 'ci.yml'), long);
+  for (const session of [true, false]) {
+    const result = doctor(root, { env: { HOME: root }, config: DEFAULTS, session, gh: () => { throw new Error('no network in this test'); } });
+    for (const key of ['tests', 'ci', 'titles']) assert.notEqual(result.report.steps?.find((s) => s.id === key)?.mark, 'done', key);
+  }
 });
 
 test('doctor: reads the server of a GitHub origin into the road; a step not done fails, a note does not (#7)', () => {
@@ -467,7 +483,16 @@ test('doctor: each stage boundary, from a fresh repo to the end of the road', ()
   assert.match(next(), /stage 4 of 5, a team of agents\. Next: \.github\/CODEOWNERS names no owner yet \(@YOUR_GITHUB_HANDLE\); put your GitHub handle in \.github\/CODEOWNERS/);
   // init wrote CODEOWNERS with the placeholder owner; a real owner finishes the step.
   sandbox.write('.github/CODEOWNERS', '* @octo\n');
-  assert.match(next(), /stage 4 of 5, a team of agents\. Next: no bot on this machine/);
+  assert.match(next(), /stage 4 of 5, a team of agents\. Next: the bot is not set up on this machine: YOKOTEN_BOT_APP_ID is not set, in the environment or in ~\/\.config\/yokoten\/keys\.env;/);
+  // The key file in its default place, but no App ID anywhere: the step names what is missing (#364).
+  const config = join(sandbox.home, '.config', 'yokoten');
+  mkdirSync(config, { recursive: true });
+  writeFileSync(join(config, 'bot.pem'), 'not a real key\n');
+  assert.match(next(), /Next: the bot is not set up on this machine: the bot's key file is here, but YOKOTEN_BOT_APP_ID is not set/);
+  // The App ID in the keys file, as `yokoten bot` reads it, and none in the session (#405).
+  writeFileSync(join(config, 'keys.env'), 'OTHER_KEY=x\nexport YOKOTEN_BOT_APP_ID="1"\n');
+  assert.match(next(), /stage 4 of 5, a team of agents\. Next: the yokoten skills are not in/, 'the keys file counts: no "no bot"');
+  for (const file of ['bot.pem', 'keys.env']) rmSync(join(config, file));
   writeFileSync(key, 'not a real key\n');
   const bot = { YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key };
   assert.match(next(bot), /stage 4 of 5, a team of agents\. Next: the yokoten skills are not in/);
@@ -1186,6 +1211,77 @@ test('doctor: in the yokoten repo, the session and doctor count the notes from o
   rmSync(empty, { recursive: true, force: true });
 });
 
+test('doctor: a file on the default branch, missing on this one, is no "run init" (#405)', () => {
+  const sandbox = makeSandbox();
+  sandbox.git('commit', '-q', '--allow-empty', '-m', 'chore: start');
+  sandbox.git('branch', 'old');
+  sandbox.write('AGENTS.md', '# rules\n');
+  sandbox.write('.claude/settings.json', '{}\n');
+  // A workflow that runs no tests and no yokoten, and one security file of three.
+  sandbox.write('.github/workflows/lint.yml', 'on: push\njobs:\n  lint:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npx eslint .\n');
+  sandbox.write('SECURITY.md', '# Security\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-q', '-m', 'docs: add the rules');
+  const first = (cwd = sandbox.repo) => sandbox.run(['doctor', '--session'], { cwd }).stdout.split('\n')[0];
+  const plain = /Next: no AGENTS\.md, so the agents have no written rules here; `yokoten init` adds one\./;
+  // No origin: init.defaultBranch, else main.
+  assert.equal(sandbox.git('checkout', '-q', 'old').status, 0);
+  assert.equal(first(), 'yokoten: stage 1 of 5, safety net. Next: AGENTS.md is on main, not on this branch (old); work on a branch made from main, or merge main into this one.');
+  const full = sandbox.run(['doctor']).stdout;
+  const line = (key: string) => full.split('\n').find((l) => new RegExp(` ${key}[ :]`).test(l)) ?? '';
+  assert.match(line('rules'), /AGENTS\.md is on main, not on this branch \(old\)/);
+  // A step that checks more than that a file exists keeps its own advice.
+  assert.match(line('tool-hook'), /no tool-call guard in \.claude\/settings\.json; `yokoten init` adds it/);
+  for (const key of ['tests', 'ci', 'titles', 'security-files']) assert.doesNotMatch(line(key), /on main, not on this branch/, key);
+  assert.match(line('security-files'), /no Dependabot config, no license file/, 'SECURITY.md on main does not hide the other two');
+  // A clone: origin/HEAD names the default branch, and the old branch is checked out.
+  assert.equal(sandbox.git('checkout', '-q', 'main').status, 0);
+  const clone = join(dirname(sandbox.repo), 'clone');
+  const inClone = (...args: string[]) => spawnSync('git', args, { cwd: clone, env: sandbox.env }).status;
+  assert.equal(spawnSync('git', ['clone', '-q', sandbox.repo, clone], { env: sandbox.env }).status, 0);
+  assert.equal(inClone('checkout', '-q', 'old'), 0);
+  assert.equal(first(clone), 'yokoten: stage 1 of 5, safety net. Next: AGENTS.md is on origin/main, not on this branch (old); work on a branch made from origin/main, or merge origin/main into this one.');
+  // On the default branch, or at its commit, the file was removed here: merging changes nothing.
+  assert.equal(inClone('checkout', '-q', 'main'), 0);
+  rmSync(join(clone, 'AGENTS.md'));
+  assert.match(first(clone), plain, 'on main');
+  assert.equal(inClone('checkout', '-q', '-b', 'fresh'), 0);
+  assert.match(first(clone), plain, 'a new branch at the default commit');
+  assert.equal(inClone('checkout', '-q', '--detach', 'origin/main'), 0);
+  assert.match(first(clone), plain, 'detached at the default commit');
+  // The packed form of the refs reads the same.
+  assert.equal(inClone('pack-refs', '--all'), 0);
+  assert.equal(inClone('checkout', '-q', '-f', 'main'), 0);
+  rmSync(join(clone, 'AGENTS.md'));
+  assert.match(first(clone), plain, 'on main, packed refs');
+  // A reftable store keeps no ref in a file: then the plain advice, never a guess.
+  assert.equal(inClone('checkout', '-q', '-f', 'old'), 0);
+  mkdirSync(join(clone, '.git', 'reftable'));
+  assert.match(first(clone), plain, 'reftable');
+  // Positive control: when the default branch lacks the file too, init is the fix.
+  rmSync(join(sandbox.repo, 'AGENTS.md'));
+  assert.match(first(), plain);
+});
+
+test('doctor: a compaction start drops what the session was told; files older than a week go (#405)', () => {
+  const home = makeTempDir('yokoten-sessions-');
+  const env = { HOME: home };
+  const blocks = [['a', 'a why'], ['b']];
+  assert.deepEqual(blocksToSay(env, null, blocks), blocks, 'no session: all, and no file');
+  assert.deepEqual(blocksToSay(env, { sessionId: 's1', source: 'startup' }, blocks), blocks, 'a first start says all');
+  assert.deepEqual(blocksToSay(env, { sessionId: 's1', source: 'compact' }, blocks), [], 'nothing new: nothing');
+  assert.deepEqual(blocksToSay(env, { sessionId: 's1', source: 'compact' }, [['a', 'a why'], ['c']]), [['c']], 'only the new block');
+  assert.deepEqual(blocksToSay(env, { sessionId: 's1', source: 'compact' }, [['c']]), [], 'c was said');
+  assert.deepEqual(blocksToSay(env, { sessionId: 's2', source: 'compact' }, blocks), blocks, 'a session with no file says all');
+  assert.deepEqual(blocksToSay(env, { sessionId: 's1', source: 'resume' }, blocks), blocks, 'a resume starts over');
+  // A start other than compaction removes the files of old sessions.
+  const old = join(sessionsDir(env), 's2.json');
+  const longAgo = new Date(Date.now() - 8 * 86_400_000);
+  utimesSync(old, longAgo, longAgo);
+  blocksToSay(env, { sessionId: 's3', source: 'startup' }, blocks);
+  assert.deepEqual(readdirSync(sessionsDir(env)).sort(), ['s1.json', 's3.json']);
+});
+
 test('self-test: a shell write from the plugin agent yokoten:worker is caught, and the lead passes (#402)', () => {
   assert.ok(isShellControlCaught());
   assert.ok(!selfTest().includes('lead-only shell guard'));
@@ -1215,4 +1311,25 @@ test('saveHostCache: keeps the other keys of machine.json, such as the Windows u
   const state = JSON.parse(files.get(machineStateFile(WSL)) ?? '{}');
   assert.deepEqual(state.windowsUsers.names, ['JaneD']);
   assert.equal(state.hostDisk.size, 1);
+});
+
+test('doctor: a note when no yokoten on the PATH runs the installed copy (#433)', () => {
+  const home = makeTempDir('yokoten-launcher-');
+  const runtime = join(home, '.local', 'share', 'yokoten');
+  const env = { HOME: home, PATH: dirname(process.execPath) };
+  // No runtime installed: install's own checks say so, not this note.
+  assert.equal(launcherCheck(env), null);
+  mkdirSync(join(runtime, 'bin'), { recursive: true });
+  writeFileSync(join(runtime, 'bin', 'yokoten.ts'), '\n');
+  const note = launcherCheck(env);
+  assert.equal(note?.what, 'no \`yokoten\` command on your PATH runs the installed copy');
+  assert.match(note?.fix ?? '', /yokoten\.ts install\` in a terminal; it puts a launcher in .*\.local[\\/]bin/);
+  // The launcher in ~/.local/bin, with that folder on the PATH: no note.
+  setUpLauncher(env, runtime, home);
+  assert.notEqual(launcherCheck(env), null, 'a launcher off the PATH still gets the note');
+  assert.equal(launcherCheck({ ...env, PATH: `${launcherDir(home)}:${env.PATH}` }), null);
+  // With the plugin on, its own commands are used: no note.
+  mkdirSync(join(home, '.claude'));
+  writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { 'yokoten@yokoten': true } }));
+  assert.equal(launcherCheck(env), null);
 });
