@@ -64,6 +64,15 @@ export function loadMarks(env: Env): string[] {
     .map((line) => line.toLowerCase());
 }
 
+/**
+ * The marks a project allows in its own repo (#424): those its yokoten.json "privacy.allow"
+ * lists as the same string, case aside. Never a part: allowing `foo` does not allow `foobar`.
+ */
+export function ownMarks(marks: string[], allow: string[] = []): string[] {
+  const allowed = new Set(allow.map((entry) => entry.toLowerCase()));
+  return marks.filter((mark) => allowed.has(mark.toLowerCase()));
+}
+
 // A match starts only where a word starts, so a long run with no @ is read once, not once per letter.
 const EMAIL = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
 // A browser version in a user agent (Chrome/120.0.0.0) is not an address. Only the
@@ -107,6 +116,8 @@ export function scanText(text: string, { file, marks = [], allow = [] }: { file:
   const problems: Finding[] = [];
   const lines = text.split('\n');
   const secrets = findSecrets(lines, allow);
+  const own = ownMarks(marks, allow);
+  const stopped = own.length ? marks.filter((mark) => !own.includes(mark)) : marks;
   lines.forEach((line, i) => {
     const where = { file, line: i + 1 };
     // The secret itself is never printed either, only its kind.
@@ -122,7 +133,7 @@ export function scanText(text: string, { file, marks = [], allow = [] }: { file:
       problems.push(finding('ip', 'an IP address', 'use a placeholder from 192.0.2.0/24', where));
     }
     const lower = line.toLowerCase();
-    for (const mark of marks) {
+    for (const mark of stopped) {
       // The mark itself is never printed: the output may land in a CI log or a chat.
       if (lower.includes(mark)) problems.push(finding('private-mark', 'matches a line of your private-marks file', 'remove it or reword the line; the mark itself is never printed', where));
     }
@@ -563,8 +574,11 @@ export function checkPost(gh: GhCommand, { env, privacy, cwd, command }: { env: 
     });
   }
   if (!posted.pieces.length) return null;
-  const marks = loadMarks(env);
   const allow = privacy?.allow ?? [];
+  // An allowed mark is left out of the path shown too (#424).
+  const all = loadMarks(env);
+  const own = ownMarks(all, allow);
+  const marks = all.filter((mark) => !own.includes(mark));
   for (const piece of posted.pieces) {
     const [hit] = scanText(piece.text, { file: piece.source, marks, allow });
     if (!hit) continue;

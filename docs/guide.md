@@ -1125,7 +1125,7 @@ A list you set replaces the default list; it does not add to it.
 | `layout.exempt` | none | Folders that may grow past it, such as a log of records |
 | `tests` | `*.test.*`, `*.spec.*`, `*_test.go`, `test/**`, `tests/**` | The test files a fix task may not change |
 | `leadOnly` | the rules, agent config, `.githooks/**`, `.github/**`, the vendored runtime `.yokoten/**` | The files a worker may not change |
-| `privacy.allow` | none | Exact strings the privacy check lets through, such as a public support address |
+| `privacy.allow` | none | Exact strings the privacy check lets through, such as a public support address, or this project's own name from your private marks |
 | `privacy.skip` | lock files | Files the privacy check does not read |
 | `privacy.utc` | `true` | Commit times must be in UTC |
 | `privacy.output` | `"run"` | In an agent other than Claude Code, a command that prints account details runs as it is. `"stop"` stops it and shows the filtered command |
@@ -1278,6 +1278,13 @@ on every commit. On your own machine it also reads `~/.config/yokoten/private-ma
 your name, your city, your domains, your server names. That file stays outside the
 repo, because a list of what must not be published can't itself be published. A hit
 is reported by file and line; the mark itself is never printed.
+
+The marks file is for the whole machine, so a private project's name belongs in it. That
+project's own repo can still use its name: list the name in `privacy.allow` in its
+yokoten.json. A mark is let through when an entry there is the same string, upper or
+lower case aside; a part or a longer string does not count. It is let through only in
+that repo, by `check`, the commit hook and the guard for `gh` posts. Every other repo
+still stops it. `doctor` says how many of your marks the project allows, never which.
 
 The IP check covers IPv4 only, private ranges such as `10.x` and `192.168.x` included;
 IPv6 is not checked. Localhost and the documentation ranges (`192.0.2.0/24` and its two

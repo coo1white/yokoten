@@ -757,3 +757,47 @@ test('check --staged: reads the staged change file, not the work tree; plain che
   assert.match(staged.stderr, /changes\/9-new\.md:1: line 1 is not a section/);
   assert.ok(!staged.stderr.includes('8-old'), 'the unstaged file is not read');
 });
+
+// One marks file for the machine, two repos (#424): the private project allows its own name
+// in its yokoten.json, so its check and its commit hook pass; the other repo is stopped.
+test('check and the commit hook: a mark allowed in one repo is stopped in another with the same marks file (#424)', () => {
+  const own = makeSandbox();
+  const other = makeSandbox();
+  const marks = join(own.home, 'shared-marks');
+  writeFileSync(marks, 'quietvale\nquietvale labs\n');
+  const extra = { YOKOTEN_PRIVATE_MARKS: marks };
+  const setup = (sandbox: ReturnType<typeof makeSandbox>, allow: string[]) => {
+    sandbox.write('yokoten.json', JSON.stringify({ privacy: { allow } }));
+    sandbox.write('README.md', 'QuietVale ships\n');
+    assert.equal(sandbox.run(['init'], { extra }).status, 0);
+    sandbox.git('add', '.');
+  };
+  setup(own, ['QUIETVALE']);
+  setup(other, ['quietval', 'quietvale2']); // near misses allow nothing
+  const commit = (sandbox: ReturnType<typeof makeSandbox>) =>
+    spawnSync('git', ['commit', '-qm', 'start'], { cwd: sandbox.repo, env: { ...sandbox.env, ...extra }, encoding: 'utf8' });
+  for (const args of [['check'], ['check', '--staged']]) {
+    assert.equal(own.run(args, { extra }).status, 0, `${args.join(' ')} in the repo that allows it`);
+    const stopped = other.run(args, { extra });
+    assert.equal(stopped.status, 1, `${args.join(' ')} in the other repo`);
+    assert.match(stopped.stderr, /README\.md:1: matches a line of your private-marks file/);
+    assert.ok(!/quietvale/i.test(stopped.stderr + stopped.stdout), 'the mark is never printed');
+  }
+  assert.equal(commit(own).status, 0, 'the commit hook lets the repo that allows it commit');
+  const refused = commit(other);
+  assert.notEqual(refused.status, 0, 'the commit hook stops the other repo');
+  assert.match(refused.stderr, /matches a line of your private-marks file/);
+  assert.ok(!/quietvale/i.test(refused.stderr + refused.stdout));
+  // The longer mark is not allowed by the shorter one.
+  own.write('README.md', 'QuietVale Labs ships\n');
+  own.git('add', '.');
+  assert.equal(own.run(['check', '--staged'], { extra }).status, 1);
+  assert.notEqual(spawnSync('git', ['commit', '-qm', 'labs'], { cwd: own.repo, env: { ...own.env, ...extra }, encoding: 'utf8' }).status, 0);
+  // doctor counts the allowed marks, never names them.
+  own.write('README.md', 'QuietVale ships\n');
+  own.git('add', '.');
+  const doctor = own.run(['doctor'], { extra }).stdout;
+  assert.match(doctor, /own-marks: 1 of your private marks allowed here by privacy\.allow/);
+  assert.ok(!/quietvale/i.test(doctor));
+  assert.doesNotMatch(other.run(['doctor'], { extra }).stdout, /own-marks/);
+});
