@@ -22,6 +22,7 @@ import {
   homeIn,
   loadMarkKinds,
   loadMarks,
+  lonePost,
   machineAllowed,
   machineAllowFile,
   makeRedactor,
@@ -707,25 +708,53 @@ test('checkPost: the allow applies only to a post to the repo the command runs i
     [`gh issue comment https://example.com/octo/public/issues/1 ${body}`],
     ['gh api repos/octo/app/issues -f body="QuietVale ships"'],
     [`cd ${own.repo} && gh issue comment 1 -R octo/public ${body}`],
-    // The same line changes where gh or a push goes, before the post runs.
+    // Anything else on the line could change where gh posts before it runs (record 0014).
     [`gh repo set-default octo/public && gh issue create ${body}`],
     [`git remote set-url origin https://example.com/octo/public && gh issue create ${body}`],
     [`git remote add upstream https://example.com/octo/public; gh issue create ${body}`],
-    [`git config remote.origin.gh-resolved base && gh issue create ${body}`],
-    [`git config remote.pushDefault upstream && gh issue create ${body}`],
-    [`git -c remote.origin.url=https://example.com/octo/public fetch && gh issue create ${body}`],
-    [`GIT_CONFIG_COUNT=1 gh issue create ${body}`],
     [`git push upstream main && gh pr create ${body}`],
-    [`gh repo fork --remote && gh pr create ${body}`],
-    [`gh alias set ship 'issue create' && gh issue create ${body}`],
+    [`git push -u origin main && gh pr create ${body}`],
+    [`env -C ${other.repo} gh issue create ${body}`],
+    [`GIT_COMMON_DIR=${other.repo}/.git gh issue create ${body}`],
+    [`printf '[remote "origin"]\\n\\turl = https://example.com/octo/public\\n' >> .git/config && gh issue create ${body}`],
+    [`sed -i s/app/public/ .git/config && gh issue create ${body}`],
+    [`cp ${other.repo}/.git/config .git/config; gh issue create ${body}`],
+    [`g=git; $g remote set-url origin https://example.com/octo/public && gh issue create ${body}`],
+    [`$(echo git) remote set-url origin https://example.com/octo/public && gh issue create ${body}`],
+    [`echo origin | xargs git remote remove && gh issue create ${body}`],
+    [`sudo gh issue create ${body}`],
+    [`(gh issue create ${body})`],
+    [`gh issue create ${body} | cat`],
+    [`gh issue create --title "x $(git remote remove origin)" --body "QuietVale ships"`],
+    [`gh issue create --title x --body-file - <<EOF\nQuietVale ships $(git remote remove origin)\nEOF`],
+    [`gh issue create --title x --body-file - <<'EOF'\nQuietVale ships\nEOF\ngit remote remove origin`],
+    [`cd ${other.repo} && gh issue create ${body}`],
   ];
   for (const [command, extra] of targets) {
     assert.equal(post(command, own.repo, { extra })?.id, 'private-mark', `machine: ${command}`);
-    assert.equal(post(command, other.repo, { config: allowing, extra })?.id, 'private-mark', `privacy.allow: ${command}`);
+    assert.equal(post(command, own.repo, { config: allowing, extra })?.id, 'private-mark', `privacy.allow: ${command}`);
   }
-  assert.equal(post(`gh issue create ${body}`, other.repo, { config: allowing }), null, 'privacy.allow still lets a post to its own repo through');
-  assert.equal(post(`cd ${own.repo} && gh issue create ${body}`, other.repo), null, 'a cd into the allowed repo posts there');
-  // A push to origin, or with no remote named, leaves the post where it was.
-  assert.equal(post(`git push -u origin main && gh pr create ${body}`, own.repo), null);
-  assert.equal(post(`git push && gh issue create ${body}`, own.repo), null);
+  // The lone post keeps both allows, and so does a cd within the same repo, the bot's form and a quoted heredoc.
+  for (const repo of [own.repo, other.repo]) mkdirSync(join(repo, 'sub'), { recursive: true });
+  for (const command of [
+    `gh issue create ${body}`,
+    `cd sub && gh issue create ${body}`,
+    `yokoten bot -- gh issue create ${body}`,
+    `gh issue create --title x --body-file - <<'EOF'\nQuietVale ships\nEOF`,
+  ]) {
+    assert.equal(post(command, own.repo), null, `machine: ${command}`);
+    assert.equal(post(command, other.repo, { config: allowing }), null, `privacy.allow: ${command}`);
+  }
+  assert.equal(post(`cd ${own.repo} && gh issue create ${body}`, other.repo)?.id, 'private-mark', 'a cd into another repo gets no allow');
+});
+
+test('lonePost: linear on long input (#447)', () => {
+  const inputs: [string, (n: number) => string][] = [
+    ['quotes', (n) => `gh issue create --body "${'a'.repeat(n)}`],
+    ['escapes', (n) => `gh issue create ${'\\'.repeat(n)}`],
+    ['heredoc lines', (n) => `gh issue create --body-file - <<'EOF'\n${'x\n'.repeat(n / 2)}`],
+    ['a long cd', (n) => `cd ${'a'.repeat(n)} gh`],
+    ['a long bot path', (n) => `${'a/'.repeat(n / 2)}yokoten bot -- x`],
+  ];
+  for (const [name, make] of inputs) assertLinear(name, make, (text) => lonePost(text));
 });

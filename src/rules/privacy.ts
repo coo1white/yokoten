@@ -976,35 +976,58 @@ function shownPath(path: string, env: Env, marks: string[]): string {
 }
 
 /**
- * Whether the command line also changes where gh or a push goes (#447), so the repo the
- * guard reads before it runs is not the one the post reaches: a git remote, config or `-c`
- * call, git's config in the environment, a push to a remote other than origin, or gh's
- * repo set-default, repo fork or alias. Read by words, anywhere in the line, so a word in a
- * body counts too: that only takes the allow away.
+ * Whether the command line is one gh post and nothing else (#447): `gh …`, or the bot's
+ * `yokoten bot -- gh …`, optionally after one plain `cd <folder> &&`. No env prefix, no
+ * `env` or `sudo`, no other command, subshell, pipe, `$(…)` or backquote, and no heredoc
+ * that expands one. Anything else on the line could change where gh posts before it runs,
+ * so no allow applies (record 0014). `cd` is true when the line starts with that `cd`.
  */
-function changesTarget(command: string): boolean {
-  if (/\bGIT_(?:CONFIG|DIR|WORK_TREE)/.test(command)) return true;
-  for (const part of command.split(/[;&|()\n]+/)) {
-    const words = part
-      .split(/\s+/)
-      .map((word) => trimEnd(trimStart(word, `'"`), `'"`))
-      .filter(Boolean);
-    const at = (name: string) => words.findIndex((word) => programName(word) === name);
-    const git = at('git');
-    if (git !== -1) {
-      const rest = words.slice(git + 1);
-      if (rest.some((word) => word === 'remote' || word === 'config' || word === '-c' || word.startsWith('--config-env'))) return true;
-      const push = rest.indexOf('push');
-      const remote = push === -1 ? undefined : rest.slice(push + 1).find((word) => !word.startsWith('-'));
-      if (remote !== undefined && remote !== 'origin') return true;
+export function lonePost(command: string): { cd: boolean } | null {
+  let text = trimStart(command, ' \t');
+  const cd = text.match(/^cd[ \t]+('[^'\n]*'|"[^"$`\\\n]*"|[\w./~+@%:,=-]+)[ \t]*&&[ \t]*/);
+  if (cd) text = text.slice(cd[0].length);
+  const start = text.match(/^(?:(?:node[ \t]+)?(?:[\w./~+@%:-]*\/)?yokoten(?:\.ts|\.mjs|\.js)?[ \t]+bot[ \t]+--[ \t]+)?gh[ \t]/);
+  if (!start) return null;
+  let quote: string | null = null;
+  let heredoc: { word: string; expands: boolean; tabs: boolean } | null = null;
+  let index = start[0].length;
+  for (; index < text.length; index++) {
+    const char = text[index];
+    if (quote === "'") {
+      if (char === "'") quote = null;
+      continue;
     }
-    const gh = at('gh');
-    if (gh !== -1) {
-      const rest = words.slice(gh + 1);
-      if (rest.includes('alias') || rest.includes('set-default') || (rest.includes('repo') && rest.includes('fork'))) return true;
+    if (char === '\\') {
+      index++;
+      continue;
     }
+    if (quote === '"') {
+      if (char === '"') quote = null;
+      else if (char === '`' || (char === '$' && text[index + 1] === '(')) return null;
+      continue;
+    }
+    if (char === "'" || char === '"') quote = char;
+    else if (char === '\n') break;
+    else if (';&|`()'.includes(char) || (char === '$' && text[index + 1] === '(')) return null;
+    else if (char === '<' && text[index + 1] === '<' && text[index + 2] !== '<') {
+      if (heredoc) return null; // one heredoc at most
+      const found = text.slice(index, index + 4096).match(/^<<(-?)[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|([\w.-]+))/);
+      if (!found) return null;
+      heredoc = { word: found[2] ?? found[3] ?? found[4], expands: found[4] !== undefined, tabs: found[1] === '-' };
+      index += found[0].length - 1;
+    } else if (char === '<' && text[index + 1] === '<') index += 2; // a here-string: its word is read as any other
   }
-  return false;
+  if (quote) return null;
+  const lone = { cd: cd !== null };
+  if (index >= text.length) return heredoc ? null : lone;
+  // A newline: only a heredoc's body may follow, then nothing.
+  if (!heredoc) return null;
+  const { word, expands, tabs } = heredoc;
+  const lines = text.slice(index + 1).split('\n');
+  const end = lines.findIndex((line) => (tabs ? trimStart(line, '\t') : line) === word);
+  if (end === -1) return null;
+  if (expands && lines.slice(0, end).some((line) => line.includes('$(') || line.includes('`'))) return null;
+  return lines.slice(end + 1).every((line) => !line.trim()) ? lone : null;
 }
 
 /**
@@ -1021,8 +1044,28 @@ export function namesTarget(gh: GhCommand, command: string, env: Env): boolean {
     if (GLOBAL_VALUES.has(args[index])) index++;
     else if (!args[index].startsWith('-')) group = args[index];
   }
-  if (group === 'api' || group === 'gist' || changesTarget(command)) return true;
+  if (group === 'api' || group === 'gist') return true;
   return args.some((arg) => arg === '-R' || arg === '--repo' || arg.startsWith('--repo=') || (arg.startsWith('-R') && arg.length > 2) || /^https?:\/\//i.test(arg));
+}
+
+/** The top folder of the repo at `dir`, links followed, or null. */
+function repoTop(dir: string): string | null {
+  const top = gitAnswer(dir, ['rev-parse', '--show-toplevel']);
+  return 'out' in top && top.out.trim() ? (localKey(top.out.trim()) ?? null) : null;
+}
+
+/**
+ * Whether a gh post goes to the repo it runs in, so an allow for that repo may apply (#447):
+ * the line is the post alone (`lonePost`), it names no other target, and a `cd` before it
+ * stays in the repo the line started in (`from`).
+ */
+function isPostHere(gh: GhCommand, { env, command, cwd, from }: { env: Env; command: string; cwd: string | null; from?: string | null }): boolean {
+  const lone = lonePost(command);
+  if (!lone || namesTarget(gh, command, env)) return false;
+  if (!lone.cd) return true;
+  if (!cwd || !from) return false;
+  const top = repoTop(cwd);
+  return top !== null && top === repoTop(from);
 }
 
 /**
@@ -1030,7 +1073,10 @@ export function namesTarget(gh: GhCommand, command: string, env: Env): boolean {
  * is the whole command text, for the heredocs that feed stdin. `cwd` is where the command
  * runs, for a relative file; null when the guard cannot tell.
  */
-export function checkPost(gh: GhCommand, { env, privacy, cwd, command }: { env: Env; privacy?: Pick<Config['privacy'], 'allow'>; cwd: string | null; command: string }): Finding | null {
+export function checkPost(
+  gh: GhCommand,
+  { env, privacy, cwd, command, from }: { env: Env; privacy?: Pick<Config['privacy'], 'allow'>; cwd: string | null; command: string; from?: string | null },
+): Finding | null {
   const readFile = (path: string): FileRead => {
     const home = env.HOME;
     const full = path.startsWith('~/') && home ? join(home, path.slice(2)) : path;
@@ -1054,10 +1100,10 @@ export function checkPost(gh: GhCommand, { env, privacy, cwd, command }: { env: 
   if (!posted.pieces.length) return null;
   const allow = privacy?.allow ?? [];
   // An allowed mark is left out of the path shown too (#424). The project's and the machine's
-  // allow (#447) are for the repo the command runs in, so a post that names another target
-  // gets neither.
+  // allow (#447) are for the repo the command runs in: a post gets them only when it is the
+  // line's one command (after at most a cd within the same repo) and names no other target.
   const all = loadMarks(env);
-  const isHere = all.length > 0 && !namesTarget(gh, command, env);
+  const isHere = all.length > 0 && isPostHere(gh, { env, command, cwd, from });
   const own = isHere ? ownMarks(all, [...allow, ...machineAllowed(env, cwd).allow]) : [];
   const marks = all.filter((mark) => !own.includes(mark));
   for (const piece of posted.pieces) {

@@ -1205,8 +1205,9 @@ yokoten 拿不准发帖或推送会去哪里时，一个词也不放行，`docto
 `remote.pushDefault` 或 `branch.*.pushRemote`；`origin` 的拉取和推送地址（按 git 的 `insteadOf`
 改写之后）指向不同的仓库；或者有两条记录都对得上。`gh` 发帖可能发到别的仓库时，这里的放行和
 `privacy.allow` 都不算：带 `-R` 或 `--repo`、带 issue 或 PR 的网址、设了 `GH_REPO` 或 `GH_HOST`、
-所有 `gh api` 和 `gh gist`，还有同一行命令里改了远程、git 设置、gh 的默认仓库或别名，或者推送到
-`origin` 以外的远程。`doctor` 会说放行是从哪来的：这台电脑，还是 `privacy.allow`。只有词表里有的词
+还有所有 `gh api` 和 `gh gist`。发帖还必须是这一行里唯一的命令：前面不能加环境变量、`env`、
+`sudo`，也不能有管道或 `$(…)`。前面只允许一个 `cd`，而且要留在同一个仓库里。这一行里有别的
+东西，就可能改了 gh 发到哪里，所以这条帖子按全部词表检查。`doctor` 会说放行是从哪来的：这台电脑，还是 `privacy.allow`。只有词表里有的词
 才能放行。想撤回，运行 `yokoten marks allow --remove <mark> --here`。
 
 有些文件本来就要写你的账号名。所以 yokoten 自动加进词表的 forge 登录名，在这几处不算问题：

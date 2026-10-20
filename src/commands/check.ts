@@ -350,16 +350,23 @@ function takeLock(lock: string): 'taken' | 'busy' | 'unwritable' {
   } catch {
     return make(); // released or taken over meanwhile: one more try decides
   }
+  let isFresh: boolean;
   try {
-    if (!isStale(away)) {
-      linkSync(away, lock);
-      return 'busy';
-    }
+    isFresh = !isStale(away);
   } catch {
     return 'busy';
-  } finally {
-    rmSync(away, { force: true });
   }
+  if (isFresh) {
+    // Another run's live lock: put it back. If that fails, it is left where it is, never deleted.
+    try {
+      linkSync(away, lock);
+      rmSync(away, { force: true });
+    } catch {
+      // busy either way
+    }
+    return 'busy';
+  }
+  rmSync(away, { force: true });
   return make();
 }
 

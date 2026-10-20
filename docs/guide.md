@@ -1362,8 +1362,10 @@ set-default`), `remote.pushDefault` or a `branch.*.pushRemote` is set, or `origi
 or push addresses that name different repos, as git rewrites them with `insteadOf`. It is
 also when two entries match. A `gh` post gets neither allow, this one or `privacy.allow`, when
 it may go to another repo: `-R` or `--repo`, an issue or pull request URL, `GH_REPO` or
-`GH_HOST`, every `gh api` or `gh gist`, and a command line that also changes a remote, git's
-config, gh's default repo or aliases, or pushes to a remote other than `origin`. `doctor` says
+`GH_HOST`, and every `gh api` or `gh gist`. The post must also be the only command on the
+line, with no env prefix, `env`, `sudo`, pipe or `$(…)`. One `cd` within the same repo
+before it is fine. Anything else on the line could change where gh posts, so the post is
+checked against every mark. `doctor` says
 where an allow comes from: this machine or `privacy.allow`. Only a mark in the marks file can
 be allowed. To take it back, run `yokoten marks allow --remove <mark> --here`.
 

@@ -95,6 +95,8 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
   const commands = commandWords(command);
   // Where a gh command reads a relative body file: the folder, followed through each cd.
   let postCwd = cwd;
+  // Where the line starts: a gh post after a cd keeps an allow only within this repo (#447).
+  const from = cwd;
   // A command that moves to another folder or repo (`cd x && git config ...`, GIT_DIR=)
   // may change the hooks setting of a repo the guard does not look at.
   if (commands.some(movesRepo)) cwd = null;
@@ -104,7 +106,7 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
       checkHooksEnvironment(words) ??
       checkPublish(words, env) ??
       checkBlocked(words, config?.commands.block ?? {}) ??
-      checkPosted(words, { env, config, cwd: postCwd, command, titles }) ??
+      checkPosted(words, { env, config, cwd: postCwd, from, command, titles }) ??
       (rules ? checkLeadOnlyWrites(words, { env, rules, folder: postCwd }) : null);
     if (reason) return reason;
     postCwd = folderAfter(words, postCwd, env);
@@ -740,12 +742,12 @@ function checkPublish(words: string[], env: Env): Finding | null {
 // The privacy check comes first: a title is checked by it too, and a leak matters more.
 function checkPosted(
   words: string[],
-  { env, config, cwd, command, titles }: { env: Env; config?: Partial<Pick<Config, 'privacy' | 'areas'>>; cwd: string | null; command: string; titles: boolean },
+  { env, config, cwd, from, command, titles }: { env: Env; config?: Partial<Pick<Config, 'privacy' | 'areas'>>; cwd: string | null; from: string | null; command: string; titles: boolean },
 ): Finding | null {
   const at = ghIndex(words, findPrograms(words));
   if (at === -1) return null;
   const gh = ghCommand(words, at);
-  const leak = checkPost(gh, { env, privacy: config?.privacy, cwd, command });
+  const leak = checkPost(gh, { env, privacy: config?.privacy, cwd, from, command });
   if (leak || !titles) return leak;
   const [title] = checkCommandTitle([words[at], ...gh.args], config ?? {});
   return title ?? null;
