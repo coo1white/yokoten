@@ -17,12 +17,11 @@
 import { execFileSync } from 'node:child_process';
 import { createPrivateKey, sign } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { type Finding, finding, formatFinding, place } from '../rules/message.ts';
 import type { CodeOwners, PullRequest } from '../rules/pr.ts';
-import { homeOf } from '../rules/privacy.ts';
+import { homeOf, NO_HOME } from '../rules/privacy.ts';
 import { readGit } from '../run/check.ts';
 import { type Incident, terminalText } from '../run/learn.ts';
 
@@ -60,10 +59,11 @@ export function shellValue(raw: string, home: string): string {
  * No HOME, no file: then nothing.
  */
 export function readKeysFile(env: Env): Env {
-  if (!env.HOME) return {};
+  const home = homeOf(env);
+  if (!home) return {};
   let text = '';
   try {
-    text = readFileSync(join(env.HOME, '.config', 'yokoten', 'keys.env'), 'utf8');
+    text = readFileSync(join(home, '.config', 'yokoten', 'keys.env'), 'utf8');
   } catch {
     return {};
   }
@@ -71,7 +71,7 @@ export function readKeysFile(env: Env): Env {
   for (const line of text.split(/\r?\n/)) {
     const pair = /^\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
     if (!pair || !BOT_SETTINGS.includes(pair[1])) continue;
-    const value = shellValue(pair[2], env.HOME);
+    const value = shellValue(pair[2], home);
     if (value) found[pair[1]] = value;
   }
   return found;
@@ -86,15 +86,21 @@ export function botConfig(env: Env): BotConfig | string {
   const settings = { ...readKeysFile(env), ...Object.fromEntries(BOT_SETTINGS.filter((name) => env[name]).map((name) => [name, env[name]])) };
   const appId = settings.YOKOTEN_BOT_APP_ID;
   if (!appId) return `YOKOTEN_BOT_APP_ID is not set, in the environment or in ${KEYS_FILE}: the App ID from the App's settings page (docs/server.md, step 3)`;
+  const keyFile = settings.YOKOTEN_BOT_KEY || defaultKeyFile(env);
+  if (!keyFile) return `${NO_HOME}: set YOKOTEN_BOT_KEY to the key file's full path`;
   return {
     appId,
-    keyFile: settings.YOKOTEN_BOT_KEY || defaultKeyFile(env),
+    keyFile,
     installation: settings.YOKOTEN_BOT_INSTALLATION || undefined,
     api: (env.YOKOTEN_GITHUB_API || 'https://api.github.com').replace(/\/$/, ''),
   };
 }
 
-const defaultKeyFile = (env: Env) => join(env.HOME || homedir(), '.config', 'yokoten', 'bot.pem');
+/** The key file's default place, or '' with no home (#356): never the system's home. */
+const defaultKeyFile = (env: Env) => {
+  const home = homeOf(env);
+  return home ? join(home, '.config', 'yokoten', 'bot.pem') : '';
+};
 
 /**
  * What of the bot's setup is missing on this machine, in words, or null when it is all

@@ -1,5 +1,6 @@
 // Tests for src/agents/runtimes/grok.ts.
 
+import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';

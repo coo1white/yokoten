@@ -1,5 +1,6 @@
 // Tests for src/agents/llama.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';

@@ -1,5 +1,6 @@
 // Tests for src/setup/advice/explain.ts.
 
+import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { makeSandbox } from '../../repo/helpers.ts';

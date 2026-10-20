@@ -1,5 +1,6 @@
 // Tests for src/setup/advice/adopt.ts.
 
+import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import {
   writeFileSync,
