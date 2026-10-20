@@ -32,6 +32,7 @@ import {
   handAdd,
   JSON_FIX,
   makeSandbox,
+  makeTempDir,
   MISSING_PROJECT,
   onToolCall,
   pick,
@@ -42,10 +43,12 @@ import { DEFAULTS } from '../../src/rules/config.ts';
 import { parseCodeOwners } from '../../src/rules/pr.ts';
 import { hasHook } from '../../src/agents/hooks-file.ts';
 import { readCodeOwners } from '../../src/host/github.ts';
+import { KIT, readWorkflowHashes, render, textHash, VERSION } from '../../src/setup/files.ts';
 import {
   AGENTS_BACKUP,
   checkLines,
   compareCoreRules,
+  compareWorkflow,
   compareVersions,
   demoteHeadings,
   handOffLines,
@@ -1253,9 +1256,15 @@ test('update: the .yokoten/ copy has the kit\'s AGENTS.md, so doctor and update 
   assert.equal(sandbox.run(['init']).status, 0);
   const vendored = (...args: string[]) => spawnSync('node', ['.yokoten/bin/yokoten.ts', ...args], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
   const kitDir = join(sandbox.repo, '.yokoten', 'kit');
-  // The kit's lessons come too (#77), so doctor from the copy runs them; nothing else of the kit.
+  // The kit's lessons come too (#77), so doctor from the copy runs them, and the kit's
+  // workflows with their hashes (#456), for the command that compares them; nothing else of the kit.
   const kitFiles = readdirSync(kitDir, { recursive: true }).map(String).sort();
-  assert.deepEqual(kitFiles.filter((path) => !path.startsWith('lessons')), ['project', join('project', 'AGENTS.md')], 'one kit file and the lessons, no more');
+  const workflows = join('project', '.github', 'workflows');
+  assert.deepEqual(
+    kitFiles.filter((path) => !path.startsWith('lessons')),
+    ['project', join('project', '.github'), workflows, ...['issue.yml', 'pr.yml', 'yokoten.yml'].map((name) => join(workflows, name)), join('project', 'AGENTS.md'), 'workflow-hashes.json'],
+    'the kit\'s AGENTS.md, workflows and their hashes, and the lessons, no more',
+  );
   assert.ok(kitFiles.includes(join('lessons', 'README.md')), 'the lessons table');
   assert.match(vendored('doctor').stdout, /\n {2}ok +core-rules\n/, 'a fresh project is up to date');
 
@@ -1644,4 +1653,103 @@ test('init: an AGENTS.md with front matter keeps it on top and says so (#378)', 
   assert.ok(text.startsWith('---\ndescription: our rules\n---\n<!-- yokoten kit '), text.slice(0, 80));
   assert.ok(text.endsWith('## This project\n\n## Ours\n'));
   assert.match(sandbox.run(['update']).stdout, /up to date/);
+});
+
+// ---- The kit's workflows: an old copy the project never changed is updated (#456) ----
+
+const KIT_WORKFLOWS = join(KIT, 'project', '.github', 'workflows');
+
+/** The kit's workflow `name` as init writes it into a project. */
+const kitWorkflow = (name: string) => render(readFileSync(join(KIT_WORKFLOWS, name), 'utf8'), { cli: '.yokoten/bin/yokoten.ts', version: VERSION });
+
+/** The kit's yokoten.yml before #451, rebuilt from the newest: one of the versions init wrote. */
+const oldYokotenYml = () =>
+  kitWorkflow('yokoten.yml')
+    .replace(
+      '# A newer run cancels the one still going for the same pull request or branch. On main,\n# the newest run tests everything the older ones would have, so a merge never waits\n# behind runs that no longer matter.\n',
+      '# A new push to a pull request cancels the run still going for it. A push to main gets\n# a group of its own, so a run on main is never cancelled.\n',
+    )
+    .replace("group: ${{ github.workflow }}-${{ github.ref }}", "group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}");
+
+test('init: the list of kit workflow hashes ends with each workflow as it is now (#456)', () => {
+  const hashes = readWorkflowHashes();
+  const names = readdirSync(KIT_WORKFLOWS).sort();
+  assert.deepEqual(Object.keys(hashes).sort(), names.map((name) => `.github/workflows/${name}`), 'one list for each kit workflow, no more');
+  for (const name of names) {
+    const list = hashes[`.github/workflows/${name}`];
+    assert.equal(list.at(-1), textHash(kitWorkflow(name)), `kit/project/.github/workflows/${name} changed: add its new hash at the end of kit/workflow-hashes.json, and keep the old ones`);
+    assert.equal(new Set(list).size, list.length, `${name}: each hash once`);
+  }
+  assert.ok(hashes['.github/workflows/yokoten.yml'].includes(textHash(oldYokotenYml())), 'the old copy the next tests use is one the kit wrote');
+});
+
+test('init: a project with no workflows gets the kit\'s, and a second run keeps them (#456)', () => {
+  const sandbox = makeSandbox();
+  let result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  for (const name of readdirSync(KIT_WORKFLOWS)) {
+    assert.match(result.stdout, new RegExp(`^wrote \\.github/workflows/${name.replace('.', '\\.')}$`, 'm'));
+    assert.equal(readFileSync(join(sandbox.repo, '.github/workflows', name), 'utf8'), kitWorkflow(name));
+  }
+  result = sandbox.run(['init']);
+  for (const name of readdirSync(KIT_WORKFLOWS)) assert.match(result.stdout, new RegExp(`^kept \\.github/workflows/${name.replace('.', '\\.')}$`, 'm'));
+  assert.doesNotMatch(sandbox.run(['doctor']).stdout, /kit-workflows/, 'nothing to say about the kit\'s own copies');
+});
+
+test('init: updates a kit workflow the project never changed, with its line ends (#456)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('.github/workflows/yokoten.yml', oldYokotenYml().replace(/\n/g, '\r\n'));
+  // The newest copy with Windows line ends is the same file: kept byte for byte.
+  const prCrlf = kitWorkflow('pr.yml').replace(/\n/g, '\r\n');
+  sandbox.write('.github/workflows/pr.yml', prCrlf);
+  assert.match(sandbox.run(['doctor']).stdout, /note +kit-workflows: \.github\/workflows\/yokoten\.yml is an older copy of the kit's, and you never changed it; run `yokoten init` to update it/);
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^updated \.github\/workflows\/yokoten\.yml to the kit's newest copy \(you had not changed it; `git restore \.github\/workflows\/yokoten\.yml` brings the old one back\)$/m);
+  assert.equal(readFileSync(join(sandbox.repo, '.github/workflows/yokoten.yml'), 'utf8'), kitWorkflow('yokoten.yml').replace(/\n/g, '\r\n'), 'the newest copy, with the line ends the file had');
+  assert.match(result.stdout, /^kept \.github\/workflows\/pr\.yml$/m);
+  assert.equal(readFileSync(join(sandbox.repo, '.github/workflows/pr.yml'), 'utf8'), prCrlf);
+  assert.doesNotMatch(sandbox.run(['doctor']).stdout, /kit-workflows/);
+});
+
+test('init: keeps a kit workflow with the project\'s changes, and says once how to see the difference (#456)', () => {
+  const sandbox = makeSandbox();
+  const mine = `${oldYokotenYml()}  # our own job goes here\n`;
+  sandbox.write('.github/workflows/yokoten.yml', mine);
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  const diff = 'git diff --no-index .github/workflows/yokoten.yml .yokoten/kit/project/.github/workflows/yokoten.yml';
+  assert.match(result.stdout, new RegExp(`^kept \\.github/workflows/yokoten\\.yml: it has your changes\\. To see how the kit's newest copy differs: \`${diff.replaceAll('.', '\\.')}\`$`, 'm'));
+  assert.equal(readFileSync(join(sandbox.repo, '.github/workflows/yokoten.yml'), 'utf8'), mine, 'kept byte for byte');
+  assert.ok(existsSync(join(sandbox.repo, '.yokoten/kit/project/.github/workflows/yokoten.yml')), 'the command names a file that is there');
+  assert.equal(sandbox.git(...diff.split(' ').slice(1)).status, 1, 'and it shows a difference');
+  const first = sandbox.run(['doctor']).stdout;
+  assert.match(first, /note +kit-workflows: \.github\/workflows\/yokoten\.yml has your changes, and the kit's newest copy differs; to see how: `git diff --no-index/);
+  assert.doesNotMatch(sandbox.run(['doctor']).stdout, /kit-workflows/, 'said once for this kit version');
+});
+
+test('init: never writes through a symlinked kit workflow (#456)', () => {
+  const sandbox = makeSandbox();
+  const target = join(makeTempDir(), 'yokoten.yml');
+  writeFileSync(target, oldYokotenYml());
+  mkdirSync(join(sandbox.repo, '.github/workflows'), { recursive: true });
+  symlinkSync(target, join(sandbox.repo, '.github/workflows/yokoten.yml'));
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^kept \.github\/workflows\/yokoten\.yml: it is a symlink, so yokoten did not write through it$/m);
+  assert.equal(readFileSync(target, 'utf8'), oldYokotenYml());
+  assert.ok(lstatSync(join(sandbox.repo, '.github/workflows/yokoten.yml')).isSymbolicLink());
+});
+
+test('compareWorkflow: same, older, changed, missing; Windows line ends compare as Unix ones (#456)', () => {
+  const root = makeTempDir();
+  const rel = '.github/workflows/ci.yml';
+  const hashes = { [rel]: [textHash('old: 1\n'), textHash('new: 2\n')] };
+  assert.equal(compareWorkflow(root, rel, 'new: 2\n', hashes), 'missing');
+  mkdirSync(join(root, '.github/workflows'), { recursive: true });
+  for (const [text, state] of [['new: 2\r\n', 'same'], ['old: 1\r\n\r\n', 'older'], ['old: 1\nmine: 3\n', 'changed']] as const) {
+    writeFileSync(join(root, rel), text);
+    assert.equal(compareWorkflow(root, rel, 'new: 2\n', hashes), state, JSON.stringify(text));
+  }
+  assert.equal(compareWorkflow(root, rel, 'new: 2\n', {}), 'changed', 'a file with no list is never taken for a kit copy');
 });

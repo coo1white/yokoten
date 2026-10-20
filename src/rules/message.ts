@@ -346,6 +346,12 @@ export const RULES = {
     check: '`doctor` compares everything above `## This project` in AGENTS.md with the kit\'s core rules, and a session hears when they differ; without that heading it can\'t compare, as a note; a `<!-- yokoten kit X.Y.Z -->` mark newer than the yokoten you run is a note to update yokoten itself, and `update` refuses it; `yokoten update` shows the change, and `--write` makes it',
     docs: guide('updating-the-rules'),
   },
+  'kit-workflows': {
+    rule: "the project's CI workflows from the kit are the kit's newest, or the project's own on purpose",
+    why: 'a fix to the kit\'s CI reaches a project only when its workflow file gets the new text',
+    check: "`init` and full `doctor` compare each kit workflow in .github/workflows/ with the kit's list of the versions it wrote; `init` replaces an old copy the project never changed, and a copy with the project's changes is a note with the command that shows the difference",
+    docs: guide('commands'),
+  },
   'session-doctor': {
     rule: 'every session starts with `yokoten doctor --session`',
     why: 'the agent then hears the next step on the road, and a drifted setup shows at once',
