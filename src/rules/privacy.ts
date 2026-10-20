@@ -582,7 +582,16 @@ function optionValue(words: string[], index: number, names: Set<string>): { valu
   return null;
 }
 
-/** The bodies of the heredocs in a command's text, in order. Quoting around `<<` is not read: a body found twice is scanned twice. */
+// A heredoc end word the guard reads exactly: blanks, then a plain name, bare or in single
+// or double quotes, then a blank, an operator or the end of the line. Bash reads more (`<<'E:F'`,
+// `<<"E"OF`, `<<E\` and a new line); the guard does not, and scans the rest of the text instead.
+const END_WORD = /^[ \t]*(?:([A-Za-z_]\w*)|'([A-Za-z_]\w*)'|"([A-Za-z_]\w*)")(?=[ \t;&|<>)]|$)/;
+
+/**
+ * The bodies of the heredocs in a command's text, in order. Quoting around `<<` is not read: a
+ * body found twice is scanned twice. A `<<` whose end word is not a plain name makes the rest
+ * of the text, from the next line, one body: the guard scans more than bash posts, never less.
+ */
 export function heredocBodies(text: string): string[] {
   const bodies: string[] = [];
   const lines = text.split('\n');
@@ -600,7 +609,16 @@ export function heredocBodies(text: string): string[] {
       bodies.push(body.join('\n'));
       continue;
     }
-    for (const match of line.matchAll(/(?<!<)<<(-?)\s*(['"]?)([A-Za-z_][\w.-]*)\2/g)) waiting.push({ delimiter: match[3], strip: match[1] === '-' });
+    for (const match of line.matchAll(/(?<!<)<<(?!<)(-?)/g)) {
+      const rest = line.slice((match.index as number) + match[0].length);
+      const word = END_WORD.exec(rest);
+      if (!word) {
+        // An end word the guard does not read exactly: the body is the rest of the text.
+        bodies.push(lines.slice(index + 1).join('\n'));
+        return bodies;
+      }
+      waiting.push({ delimiter: word[1] ?? word[2] ?? word[3], strip: match[1] === '-' });
+    }
   }
   return bodies;
 }
