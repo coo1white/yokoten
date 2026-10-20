@@ -16,6 +16,8 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from 'node:os';
 import { dirname, join, parse } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { GUARD_HEAP } from '../run/cli.ts';
+import { type GuardCost, guardLine, measureRun } from '../host/light.ts';
 import { checkCommand, checkEdit } from '../rules/guards.ts';
 import { type Config, DEFAULTS, type Env } from '../rules/config.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
@@ -450,6 +452,8 @@ export interface MachineProbe {
   readText(path: string): string | null;
   /** Write a file, making its folder. Throws when it can't. */
   writeText(path: string, text: string): void;
+  /** Runs the tool-call guard once on a trivial command and measures it. Null when it can't run. Left out by a fake machine: then doctor says nothing about it. */
+  measureGuard?(cli: string, root: string): GuardCost | null;
   /** This process's uid, or null where there is none (Windows). */
   uid: number | null;
   now(): Date;
@@ -477,6 +481,8 @@ export const REAL_MACHINE: MachineProbe = {
     }
   },
   writeText: writeFileAtomic,
+  measureGuard: (cli, root) =>
+    measureRun([process.execPath, GUARD_HEAP, cli, 'hook'], JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'true' }, cwd: root, hook_event_name: 'PreToolUse' }), { cwd: root, env: process.env }),
   uid: process.getuid?.() ?? null,
   now: () => new Date(),
 };
@@ -678,6 +684,20 @@ export function diskSpaceChecks(root: string, env: Env, probe: MachineProbe, ses
   const low = diskSpaceNote(HOST_DRIVE, host.space, env, HOST_DISK_FIX);
   checks.push(low ? note('host-disk', low) : fine('host-disk', `${formatSpace(host.space)} on ${HOST_DRIVE}`));
   return checks;
+}
+
+/**
+ * What one guard call costs on this machine (#461): wall time and CPU time, from one real
+ * run of the guard on a trivial command. The project's own copy when it has one, else the
+ * copy that runs doctor. A report line, never a failure; null when there is nothing to run
+ * or the machine can't measure. Full doctor only: a session must start fast.
+ */
+export function guardCostCheck(root: string, probe: MachineProbe): Practice | null {
+  if (!probe.measureGuard) return null;
+  const own = join(root, hookCliPath(root));
+  const cli = existsSync(own) ? own : fileURLToPath(new URL('../../bin/yokoten.mjs', import.meta.url));
+  const cost = probe.measureGuard(cli, root);
+  return cost ? { name: 'guard', ok: true, finding: finding('disk-space', '', ''), detail: guardLine(cost) } : null;
 }
 
 /**
@@ -1371,7 +1391,8 @@ function doctorRun(
   // old test folders left in the temp folder (#400).
   const agentTemp = agentTempDirCheck(env, probe);
   const leftovers = leftoverTempCheck(env, probe);
-  for (const c of [...userAgentHooks(env), ...diskSpaceChecks(root, env, probe, false), ...(agentTemp ? [agentTemp] : []), ...(leftovers ? [leftovers] : [])]) {
+  const guardCost = guardCostCheck(root, probe);
+  for (const c of [...userAgentHooks(env), ...diskSpaceChecks(root, env, probe, false), ...(agentTemp ? [agentTemp] : []), ...(leftovers ? [leftovers] : []), ...(guardCost ? [guardCost] : [])]) {
     lines.push(`  ${c.ok ? 'ok     ' : 'note   '} ${c.name}${c.ok ? (c.detail ? `: ${c.detail}` : '') : `: ${stepText(c.finding)}`}`);
     if (!c.ok) notes.push(c.finding);
   }

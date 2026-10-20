@@ -1,7 +1,10 @@
 // `yokoten check`: the tree, --staged, --history, and in CI --pr and --issue. `--pr <number>`
 // reads one pull request through gh, for a repo without CI (#377). And
-// `yokoten redact`, the privacy check's filter for command output (#390).
+// `yokoten redact`, the privacy check's filter for command output (#390), and
+// `yokoten test`, the tests run light on a shared machine (#461).
 
+import { spawnSync } from 'node:child_process';
+import { cores, freeMemory, isLight, NICE_LEVEL, OFF_SWITCH, onPath, testCommand, testJobs } from '../host/light.ts';
 import { ghIn, readCodeOwners, readIssue, readNumberedPullRequest, readPullRequest } from '../host/github.ts';
 import { loadConfig } from '../rules/config.ts';
 import { type Finding, formatFinding } from '../rules/message.ts';
@@ -11,7 +14,7 @@ import { check, checkHistory, GitReadError, gitReadFinding, historyTimeZones, re
 import { isCodeFile, nameNotes } from '../run/names.ts';
 import { loadMarks, makeRedactor } from '../rules/privacy.ts';
 import { machineMarks, machineUserNames } from '../setup/install.ts';
-import { bullets, env, parse, print, printJson, requireRoot, say, showOnPullRequest, usage } from './shared.ts';
+import { args, bullets, env, parse, print, printJson, requireRoot, say, showOnPullRequest, usage } from './shared.ts';
 
 /** How long `check --pr <number>` waits for gh. */
 const GH_TIMEOUT_MS = 15000;
@@ -207,4 +210,28 @@ export function runRedact(): number | Promise<number> {
     });
     process.stdin.on('error', () => settle(0));
   });
+}
+
+export function runTest(): number {
+  // Everything after `--` is for the test runner, unchanged.
+  const end = args.indexOf('--');
+  const options = parse('test', end === -1 ? args : args.slice(0, end));
+  if (typeof options === 'string') return usage(options);
+  const light = isLight(env) && !options.flags.has('--heavy');
+  const free = freeMemory();
+  const jobs = testJobs(cores(), free);
+  const hasNice = process.platform !== 'win32' && onPath('nice', env);
+  const command = testCommand(end === -1 ? [] : args.slice(end + 1), { light, jobs, hasNice });
+  if (options.flags.has('--print')) {
+    const shown = [command.file, ...command.args].map((word) => (word === process.execPath ? 'node' : word)).join(' ');
+    const why = light ? `light: ${jobs} at once (${cores()} cores, ${(free / 1024 ** 3).toFixed(1)} GB free)${hasNice ? `, nice ${NICE_LEVEL}` : ', no nice here'}; ${OFF_SWITCH}=0 or --heavy turns it off` : 'the light run is off';
+    print([shown, why]);
+    return 0;
+  }
+  const result = spawnSync(command.file, command.args, { stdio: 'inherit', windowsHide: true });
+  if (result.error) {
+    print([`yokoten test: can't run the tests: ${result.error.message}`], process.stderr);
+    return 1;
+  }
+  return result.status ?? 1;
 }

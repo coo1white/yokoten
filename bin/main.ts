@@ -71,6 +71,8 @@ function main(): number | Promise<number> {
       return import('../src/commands/setup.ts').then((m) => m.runInit());
     case 'update':
       return import('../src/commands/setup.ts').then((m) => m.runUpdate());
+    case 'test':
+      return import('../src/commands/check.ts').then((m) => m.runTest());
     case 'bot':
       return import('../src/commands/bot.ts').then((m) => m.runBot());
     case 'install':
