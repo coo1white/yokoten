@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { COMMANDS } from '../../src/run/cli.ts';
 import { findDeclarations, findNameProblems, splitWords, type Token, tokenize } from '../../src/run/names.ts';
 import { HOME_DIR, homeDirOf } from '../../src/setup/files.ts';
-import { assertLinear } from '../../scripts/linear.ts';
+import { assertLinear, assertLinearEach } from '../../scripts/linear.ts';
 import { TEST_HOME } from './home.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -628,6 +628,24 @@ test('assertLinear: a quadratic read fails; a slow spell in one round does not (
     busyWait(7 * (input.length / 1000));
   };
   assertLinear('linear with a slow spell', (n) => 'x'.repeat(n), noisy, 1000);
+});
+
+test('assertLinearEach: one quadratic shape among linear ones fails; a slow spell does not (#442)', () => {
+  const linear = (input: string) => busyWait(0.6 * (input.length / 1000));
+  const quadratic = (input: string) => busyWait(0.6 * (input.length / 1000) ** 2);
+  const shapes = (read: (input: string) => void) => [
+    { name: 'linear a', make: (n: number) => 'a'.repeat(n), read: linear },
+    { name: 'the odd one', make: (n: number) => 'b'.repeat(n), read },
+    { name: 'linear c', make: (n: number) => 'c'.repeat(n), read: linear },
+  ];
+  assert.throws(() => assertLinearEach(shapes(quadratic), 1000), (error: Error) => /^the odd one: .* \d+x; linear is about 8x$/.test(error.message) && !error.message.includes('linear a'));
+  // The odd shape's first big read is 200 ms slower, as on a busy runner: it is measured again, and passes.
+  let bigReads = 0;
+  const noisy = (input: string) => {
+    if (input.length > 1000 && ++bigReads <= 1) busyWait(200);
+    linear(input);
+  };
+  assertLinearEach(shapes(noisy), 1000);
 });
 
 // No test reads or writes the real home folder (#356). test/repo/home.ts points HOME at an
