@@ -599,7 +599,11 @@ on `@main`.
 `init` copies the runtime into `.yokoten/` in your project. Commit it: the hooks and CI
 then run with no network and no global install.
 
-`init` keeps a project's own setup working. With a `CLAUDE.md`, it adds an `@AGENTS.md`
+`init` keeps a project's own setup working. An `AGENTS.md` without `## This project` gets
+the core rules on top. Its own text moves under `## This project`, and its headings go one
+level down; nothing else in it changes. `init` prints each heading it moved. When git has
+the old file as it was, `init` prints the command that gives it back. Otherwise it keeps a
+copy in `AGENTS.md.before-yokoten`. YAML front matter stays at the very top. An `AGENTS.md` that is a link stays as it is. With a `CLAUDE.md`, it adds an `@AGENTS.md`
 line at the end, because Claude Code reads `AGENTS.md` only through that import. A
 `.claude/CLAUDE.md` counts too, and gets `@../AGENTS.md` when there is no root one. With
 husky or another `core.hooksPath`, it keeps that folder and adds the commit check to its
@@ -992,7 +996,7 @@ kit's `yokoten.yml` does.
 
 When yokoten learns a lesson, its core rules change. `yokoten install` updates the
 skills and agents on your machine. Your project's `AGENTS.md` is your file, so it
-changes only when you ask. `init` never touches it again.
+changes only when you ask. Once it has `## This project`, `init` never touches it again.
 
 `doctor` compares the part of `AGENTS.md` above `## This project` with the core rules
 of the yokoten you run. When they differ, it reports `core-rules`, and a session hears
