@@ -4,7 +4,7 @@
 
 import { runAdopt, runDoctor, runExplain } from '../src/commands/advice.ts';
 import { runBot } from '../src/commands/bot.ts';
-import { runCheck } from '../src/commands/check.ts';
+import { runCheck, runRedact } from '../src/commands/check.ts';
 import { runHook } from '../src/commands/hook.ts';
 import { runChangelog, runLearn } from '../src/commands/learn.ts';
 import { runInit, runInstall, runUninstall, runUpdate } from '../src/commands/setup.ts';
@@ -57,6 +57,8 @@ function main(): number | Promise<number> {
       return runHook();
     case 'check':
       return runCheck();
+    case 'redact':
+      return runRedact();
     case 'changelog':
       return runChangelog();
     case 'learn':

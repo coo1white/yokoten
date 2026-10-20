@@ -35,7 +35,7 @@ import { commentedFile, HAND_ADD, handAddJson, type HookState, mergeHandAdds } f
 import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
 import { cliPath, compareCoreRules, compareVersions, isSelf, readCoreRules, summarizeUpdate } from './init.ts';
-import { installedPieces, paths, USER_CLI, USER_MISSING } from './install.ts';
+import { countOwnMarks, fillMarks, filledLine, trySafely, installedPieces, machineMarks, mailmapState, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
 import { type Mark, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
 
 /**
@@ -212,8 +212,42 @@ export function machineChecks(env: Env): Practice[] {
     session,
     // 'runtime' in the text, as before; the id differs from the road's runtime step.
     practice('runtime', 'machine-runtime', runtime === VERSION || (plugin && runtime === null), runtime ? `the installed runtime is ${runtime}, this yokoten is ${VERSION}` : 'no runtime installed', plugin ? 'remove it with `yokoten uninstall`; the plugin brings its own' : 'run `yokoten install` from this copy of yokoten'),
-    practice('private-marks', 'private-marks', loadMarks(env).length > 0, `${target.marks} is missing or empty`, 'add your name, city, domain and server names to it, one per line'),
+    // The marks yokoten found on the machine don't count: only the owner knows a city (#390).
+    practice('private-marks', 'private-marks', countOwnMarks(env) > 0, loadMarks(env).length ? `${target.marks} has only the marks yokoten found on this machine` : `${target.marks} is missing or empty`, 'add your name, city, domain and server names to it, one per line'),
   ];
+}
+
+/** What doctor says when an agent can't filter command output, and how to opt in to the stop (#390). */
+export const UNFILTERED = 'only Claude Code hides your details in command output; other agents show it as it is';
+export const OUTPUT_STOP = 'to stop those commands there instead, set "privacy": { "output": "stop" } in yokoten.json';
+
+/** Whether this machine or project is set up for an agent other than Claude Code. */
+function usesOtherAgent(env: Env, root: string | null): boolean {
+  if (codex.hasUserDir(env) || gemini.hasUserDir(env)) return true;
+  if (!root) return false;
+  const cli = cliPath(root);
+  return codex.hasProjectHook(root) || gemini.hasProjectHook(root) || antigravity.projectHookState(root, cli) === 'same' || muse.projectHooksState(root, cli).guard === 'same' || dsh.projectHooksState(root, cli).guard === 'same';
+}
+
+/**
+ * What keeps the owner out of command output, as notes (#390): the git mailmap, and the
+ * kinds of mark yokoten can't find on its own. Never a failure: both are a guess or a choice.
+ */
+export function privacyNotes(env: Env, root: string | null, output: Config['privacy']['output'] = 'run'): Practice[] {
+  const notes: Practice[] = [];
+  if (output !== 'stop' && usesOtherAgent(env, root)) notes.push(practice('private-output', 'private-output', false, UNFILTERED, OUTPUT_STOP));
+  const mailmap = mailmapState(env);
+  if (mailmap === 'unset') notes.push(practice('mailmap', 'mailmap', false, 'git log and git show print your name and email as they are', 'run `yokoten install`; it sets a git mailmap outside every repo'));
+  if (mailmap === 'other') notes.push(practice('mailmap', 'mailmap', false, `git uses your own mailmap file, not ${MAILMAP_SETTING}`, `add the lines of ${MAILMAP_SETTING} to your file`));
+  let marks: string[] = [];
+  try {
+    marks = loadMarks(env);
+  } catch {
+    // An unreadable file: the private-marks check says so.
+  }
+  const missing = missingMarkKinds(marks, machineMarks(env, { cwd: root ?? undefined }));
+  if (missing.length) notes.push(practice('private-mark-kinds', 'private-marks', false, `your private marks may lack ${missing.join(', ')}`, `add them to ${paths(env).marks}, one per line`));
+  return notes;
 }
 
 /**
@@ -584,7 +618,7 @@ export interface DoctorReport {
 /** The report, as text lines and as data, and whether doctor found no problem. */
 export function doctor(
   root: string | null,
-  { env, config, session = false, gh }: { env: Env; config: Config; session?: boolean; gh?: Gh },
+  { env, config, session = false, gh, fillMarks: isFilling = false }: { env: Env; config: Config; session?: boolean; gh?: Gh; fillMarks?: boolean },
 ): { ok: boolean; lines: string[]; report: DoctorReport } {
   const lines: string[] = [];
   const failed = selfTest();
@@ -599,6 +633,8 @@ export function doctor(
   // Read only, and only in full doctor: a session never calls the network (record 0004).
   const server: ServerRead = session ? undefined : gh ? readOrigin(root, gh) : { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' };
   const where = walk(road(root, env, ROAD, server), config.notNow);
+  // Full doctor from the command line adds the obvious marks first (#390); a session writes nothing.
+  const filled = isFilling && !session ? trySafely('the marks from this machine', () => [filledLine(fillMarks(env, machineMarks(env, { cwd: root, gh })), paths(env).marks)])[0] : null;
   const machine = machineChecks(env);
   const next = where.next ? stepFinding(where.next, root, env, server) : null;
   const core = coreRulesCheck(root);
@@ -680,6 +716,11 @@ export function doctor(
   for (const c of machine) {
     lines.push(`  ${c.ok ? 'ok     ' : 'MISSING'} ${c.name}${c.ok ? '' : `: ${stepText(c.finding)}`}`);
     if (!c.ok) findings.push(c.finding);
+  }
+  if (filled) lines.push(`  note    ${filled}`);
+  for (const c of privacyNotes(env, root, config.privacy.output)) {
+    lines.push(`  note    ${c.name}: ${stepText(c.finding)}`);
+    notes.push(c.finding);
   }
   for (const c of userAgentHooks(env)) {
     lines.push(`  ${c.ok ? 'ok     ' : 'note   '} ${c.name}${c.ok ? '' : `: ${stepText(c.finding)}`}`);

@@ -16,7 +16,8 @@
 // (#208): every message says `yokoten init`, and a clone install puts nothing on the
 // PATH. It prints the alias and never edits the shell profile: that file is the user's.
 
-import { existsSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import type { Env } from '../rules/config.ts';
@@ -26,7 +27,8 @@ import * as codex from '../agents/runtimes/codex.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { copyRuntime, HOME_DIR, KIT, MANAGED, writeManaged, writeNew } from './files.ts';
-import { marksFile } from '../rules/privacy.ts';
+import { type Gh, readLogin } from '../host/github.ts';
+import { isDomainShaped, isPersonalEmail, loadMarks, marksFile, privateRemoteHosts } from '../rules/privacy.ts';
 
 export const paths = (env: Env) => {
   const home = env.HOME || homedir();
@@ -93,7 +95,7 @@ function agentHooks(cliName: string, file: string, add: () => string[]): { ok: b
 }
 
 /** One line per thing done, kept or skipped; `ok` is false when a file was skipped (#248). */
-export function install(env: Env): { ok: boolean; lines: string[] } {
+export function install(env: Env, { cwd, gh }: { cwd?: string; gh?: Gh } = {}): { ok: boolean; lines: string[] } {
   const target = paths(env);
   const report: string[] = [];
   let ok = true;
@@ -135,6 +137,17 @@ export function install(env: Env): { ok: boolean; lines: string[] } {
 
   const marks = writeNew(target.marks, MARKS_HEADER, { mode: 0o600 });
   report.push(`${marks} ${target.marks}${marks === 'wrote' ? ' (add your marks to it)' : ''}`);
+  // The obvious marks come from the machine; the rest only the owner knows (#390).
+  const found = machineMarks(env, { cwd, gh });
+  report.push(
+    ...trySafely('the marks from this machine', () => {
+      const lines = [filledLine(fillMarks(env, found), target.marks)];
+      const missing = missingMarkKinds(loadMarks(env), found);
+      if (missing.length) lines.push(`add ${missing.join(', ')} to ${target.marks}, one per line; yokoten can't find these on its own`);
+      return lines;
+    }),
+    ...trySafely('the git mailmap', () => [setUpMailmap(env, found)]),
+  );
   if (!isOnPath(env, target.runtime)) report.push(aliasLine(target.runtime));
   return { ok, lines: report };
 }
@@ -204,4 +217,158 @@ export function uninstall(env: Env): string[] {
   report.push(`${hadRuntime ? 'removed' : 'not there'} ${target.runtime}`);
   if (existsSync(target.config)) report.push(`kept ${target.config} (your keys and private marks)`);
   return report;
+}
+
+// ---- What this machine knows about its owner (#390) ----
+//
+// The obvious marks are on the machine already: git's user.name and user.email, the login
+// gh is signed in with, the hosts of private remotes. `install` and full `doctor` add the
+// ones the private-marks file lacks, and never print a value. A machine-level mailmap makes
+// `git log` and `git show` print a placeholder for the owner's emails at the source.
+
+/** One git read with the caller's environment (its HOME and global config), or null. Nothing is printed. */
+function readGitValue(env: Env, args: string[], cwd?: string): string | null {
+  try {
+    const value = execFileSync('git', args, { cwd, env: { ...process.env, ...env }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }).trim();
+    return value || null;
+  } catch {
+    return null;
+  }
+}
+
+/** One value this machine knows about its owner, and its kind in plain words. */
+export interface MachineMark {
+  kind: 'git name' | 'git email' | 'forge login' | 'private remote host';
+  value: string;
+}
+
+/**
+ * The owner's values this machine knows: git user.name and user.email (as git reads them in
+ * `cwd`), the login gh is signed in with (only when `gh` is given: it may reach the network),
+ * and the hosts of remotes in `cwd` that are not public forges.
+ */
+export function machineMarks(env: Env, { cwd, gh }: { cwd?: string; gh?: Gh } = {}): MachineMark[] {
+  const found: MachineMark[] = [];
+  const name = readGitValue(env, ['config', '--get', 'user.name'], cwd);
+  if (name) found.push({ kind: 'git name', value: name });
+  const email = readGitValue(env, ['config', '--get', 'user.email'], cwd);
+  // A noreply address is meant to be public; the login in it is added on its own.
+  if (email && isPersonalEmail(email)) found.push({ kind: 'git email', value: email });
+  const login = gh ? readLogin(gh) : null;
+  if (login) found.push({ kind: 'forge login', value: login });
+  const urls = (readGitValue(env, ['config', '--get-regexp', String.raw`^remote\..*\.url$`], cwd) ?? '').split('\n').map((line) => line.split(/\s+/)[1] ?? '');
+  for (const host of privateRemoteHosts(urls)) found.push({ kind: 'private remote host', value: host });
+  return found;
+}
+
+/**
+ * Add the machine's marks that the private-marks file lacks, at its end. It only appends,
+ * and makes the file (mode 600) when it is missing. Returns the kinds it added, never a value.
+ */
+export function fillMarks(env: Env, found: MachineMark[]): string[] {
+  const file = marksFile(env);
+  const known = new Set(loadMarks(env));
+  const added: MachineMark[] = [];
+  // The git display name is left out: as a mark, a common name would flag every file that
+  // holds the word. `redact` still hides it, from git, as a whole word.
+  for (const mark of found.filter((one) => one.kind !== 'git name')) {
+    const key = mark.value.toLowerCase();
+    if (known.has(key)) continue;
+    known.add(key);
+    added.push(mark);
+  }
+  if (!added.length) return [];
+  if (!existsSync(file)) writeNew(file, MARKS_HEADER, { mode: 0o600 });
+  const text = readFileSync(file, 'utf8');
+  appendFileSync(file, `${text === '' || text.endsWith('\n') ? '' : '\n'}${FOUND_HEADER}\n${added.map((mark) => mark.value).join('\n')}\n`);
+  return [...new Set(added.map((mark) => mark.kind))];
+}
+
+/** The comment above the marks `fillMarks` adds. They run to the next comment line. */
+const FOUND_HEADER = '# added by yokoten from this machine';
+
+/** How many marks the owner wrote: the lines of the file outside the parts `fillMarks` added. */
+export function countOwnMarks(env: Env): number {
+  let text = '';
+  try {
+    text = readFileSync(marksFile(env), 'utf8');
+  } catch {
+    return 0;
+  }
+  let isFound = false;
+  let count = 0;
+  for (const line of text.split(/\r?\n/).map((part) => part.trim())) {
+    if (line.startsWith('#')) isFound = line === FOUND_HEADER;
+    else if (line && !isFound) count++;
+  }
+  return count;
+}
+
+/** The line install and doctor print after `fillMarks`: the kinds, never the values. */
+export const filledLine = (kinds: string[], file: string): string =>
+  kinds.length ? `added to ${file} from this machine: ${kinds.join(', ')} (the values are not shown)` : `kept ${file}: it already has what this machine knows`;
+
+/**
+ * The kinds of mark yokoten can't find on its own, which the file seems to lack, in plain
+ * words. A name has a space; a domain has a dot; anything else not from the machine may
+ * be the city. A guess from the shape, so doctor shows it as a note.
+ */
+export function missingMarkKinds(marks: string[], found: MachineMark[]): string[] {
+  const fromMachine = new Set(found.map((mark) => mark.value.toLowerCase()));
+  const own = marks.filter((mark) => !fromMachine.has(mark) && !mark.includes('@'));
+  const missing: string[] = [];
+  if (!own.some((mark) => /\s/.test(mark))) missing.push('your real name');
+  if (!own.some((mark) => !/\s/.test(mark) && !isDomainShaped(mark))) missing.push('your city');
+  if (!own.some(isDomainShaped)) missing.push('your domains');
+  return missing;
+}
+
+/** The mailmap yokoten keeps, outside every repo, as git config names it (git expands `~/`). */
+export const MAILMAP_SETTING = '~/.config/yokoten/mailmap';
+/** The name and address git prints for the owner once the mailmap is set. */
+export const MAILMAP_OWNER = 'owner <owner@noreply.invalid>';
+
+/** Whether git's global mailmap.file is yokoten's, another file, or not set. */
+export function mailmapState(env: Env): 'ours' | 'other' | 'unset' {
+  const value = readGitValue(env, ['config', '--global', '--get', 'mailmap.file']);
+  if (!value) return 'unset';
+  return value === MAILMAP_SETTING || value === join(paths(env).config, 'mailmap') ? 'ours' : 'other';
+}
+
+/**
+ * Write yokoten's mailmap: one line per owner email (git user.email and the marks shaped
+ * like an address), each shown as MAILMAP_OWNER. Then point git's global mailmap.file at
+ * it, unless the user set another file: that one is theirs, so it stays and the line says so.
+ */
+export function setUpMailmap(env: Env, found: MachineMark[]): string {
+  const emails = [...new Set([...found.filter((mark) => mark.kind === 'git email').map((mark) => mark.value), ...loadMarks(env).filter((mark) => /^[^@\s]+@[^@\s]+$/.test(mark))].map((email) => email.toLowerCase()))];
+  const file = join(paths(env).config, 'mailmap');
+  // The file may hold lines the owner wrote: it only gets the lines it lacks.
+  const before = existsSync(file) ? readFileSync(file, 'utf8') : null;
+  const mapped = new Set([...(before ?? '').matchAll(/<([^<>\s]+)>\s*$/gm)].map((match) => match[1].toLowerCase()));
+  const missing = emails.filter((email) => !mapped.has(email));
+  if (before === null) {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, '# yokoten: git prints the owner\'s emails as a placeholder. Kept outside every repo; never commit it.\n', { mode: 0o600 });
+  }
+  if (missing.length) appendFileSync(file, `${before && !before.endsWith('\n') ? '\n' : ''}${missing.map((email) => `${MAILMAP_OWNER} <${email}>\n`).join('')}`);
+  const state = mailmapState(env);
+  if (state === 'other') return `kept your own git mailmap.file setting; add the lines of ${file} to that file`;
+  // git prints nothing when it sets a value, so the setting is read back to see it took.
+  if (state === 'unset') readGitValue(env, ['config', '--global', 'mailmap.file', MAILMAP_SETTING]);
+  if (mailmapState(env) !== 'ours') return `skipped the git mailmap: git config could not set mailmap.file; run \`git config --global mailmap.file ${MAILMAP_SETTING}\``;
+  if (state === 'ours') return missing.length ? `added ${missing.length} line(s) to ${file}` : `kept ${file}: it already maps your emails`;
+  return `${before === null ? 'wrote' : 'kept'} ${file}, and git log and git show now print your emails as a placeholder`;
+}
+
+/**
+ * One privacy step of install or doctor, which never stops them: an error becomes one plain
+ * line that says what was skipped and why.
+ */
+export function trySafely(what: string, step: () => string[]): string[] {
+  try {
+    return step();
+  } catch (err) {
+    return [`skipped ${what}: ${String((err as Error)?.message ?? err).split('\n')[0]}`];
+  }
 }

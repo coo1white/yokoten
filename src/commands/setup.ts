@@ -61,7 +61,8 @@ export function runUpdate(): number {
 export function runInstall(): number {
   const options = parse('install');
   if (typeof options === 'string') return usage(options);
-  const done = install(env);
+  // gh may reach the network for the login: three seconds at most.
+  const done = install(env, { cwd: process.cwd(), gh: ghIn(process.cwd(), 3000) });
   print(done.lines);
   return done.ok ? 0 : 1;
 }
