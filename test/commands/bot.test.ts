@@ -171,18 +171,32 @@ test('bot: a pull request body CI would refuse is refused locally, with CI\'s me
   sandbox.write('src/owned.ts', 'export const a = 1;\n');
   sandbox.git('add', '.');
   sandbox.git('commit', '-qm', 'base');
-  sandbox.git('update-ref', 'refs/remotes/origin/main', 'HEAD');
-  sandbox.git('remote', 'add', 'origin', 'https://github.com/me/repo.git');
+  // origin is a bare repo on this machine, at a path the bot reads as github.com/me/repo,
+  // so `git fetch origin` works and GitHub is never reached.
+  const origin = join(sandbox.home, 'github.com', 'me', 'repo.git');
+  mkdirSync(origin, { recursive: true });
+  sandbox.git('init', '-q', '--bare', origin);
+  sandbox.git('remote', 'add', 'origin', origin);
+  sandbox.git('push', '-q', 'origin', 'main');
   sandbox.git('checkout', '-qb', 'topic');
   sandbox.write('src/owned.ts', 'export const a = 2;\n');
   sandbox.write('kit/a.md', 'A kit file.\n');
   sandbox.write('changes/1-a.md', 'Added\n\nA kit file (#1).\n');
   sandbox.git('add', '.');
   sandbox.git('commit', '-qm', 'head');
+  sandbox.git('push', '-q', 'origin', 'topic');
   const bin = join(sandbox.home, 'bin');
   const log = join(sandbox.home, 'gh.log');
   mkdirSync(bin);
-  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args: process.argv.slice(2), input: require('node:fs').readFileSync(0, 'utf8') }) + '\\n');\n`);
+  // The fake gh answers `pr view` for pull request 5 (branch topic) and 6 (a branch origin
+  // does not have), and logs each view apart from the commands it sends.
+  const views = join(sandbox.home, 'views.log');
+  writeFileSync(join(bin, 'gh'), [
+    '#!/usr/bin/env node',
+    'const fs = require("node:fs"); const args = process.argv.slice(2);',
+    `if (args[0] === "pr" && args[1] === "view") { fs.appendFileSync(${JSON.stringify(views)}, JSON.stringify({ args, token: process.env.GH_TOKEN }) + "\\n"); const n = args[2].split("/").pop(); if (n === "5" || n === "6") { console.log(JSON.stringify({ headRefName: n === "5" ? "topic" : "gone", baseRefName: "main" })); process.exit(0); } process.exit(1); }`,
+    `fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, input: fs.readFileSync(0, "utf8") }) + "\\n");`,
+  ].join('\n'));
   chmodSync(join(bin, 'gh'), 0o755);
   const ran = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
   const server = createServer((req, res) => {
@@ -232,11 +246,14 @@ test('bot: a pull request body CI would refuse is refused locally, with CI\'s me
     await refused(['gh', 'pr', 'create', '-t', 'feat(kit): a', '--body-file', join(sandbox.home, 'body.md')], noKit, /^- body: this changes `kit\/` and does not say so\./);
     await refused(['gh', 'pr', 'edit', '--body-file', '-'], noKit, /kit/, noKit);
     await refused(['gh', 'pr', 'edit', 'topic', `--body=${noKit}`], noKit, /kit/);
-    // A pull request named by number: the body itself is still checked, without the diff.
-    const bare = await run(['gh', 'pr', 'edit', '5', '--body', 'x']);
-    assert.equal(bare.status, 1);
-    assert.match(bare.stderr, /^yokoten bot: 5 problem\(s\) in the body; nothing was sent\./);
-    assert.deepEqual(ran(), []);
+    // A pull request named by number or URL: gh says its branches, with the bot's token, and
+    // every body rule runs on origin/main...origin/topic. A branch not here yet is fetched.
+    sandbox.git('update-ref', '-d', 'refs/remotes/origin/topic');
+    await refused(['gh', 'pr', 'edit', '5', '--body', tierB], tierB, /CODEOWNERS owns/);
+    assert.equal(sandbox.git('rev-parse', 'origin/topic').stdout.trim(), sandbox.git('rev-parse', 'HEAD').stdout.trim(), 'fetched');
+    await refused(['gh', 'pr', 'edit', 'https://github.com/me/repo/pull/5', '--body-file', join(sandbox.home, 'body.md')], noKit, /kit/);
+    const viewed = readFileSync(views, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.deepEqual(viewed, [5, 'https://github.com/me/repo/pull/5'].map((n) => ({ args: ['pr', 'view', String(n), '--json', 'headRefName,baseRefName'], token: 'ghs_test' })));
 
     // (c) A good body passes, and gh gets the command and the body unchanged.
     writeFileSync(join(sandbox.home, 'body.md'), good);
@@ -254,10 +271,13 @@ test('bot: a pull request body CI would refuse is refused locally, with CI\'s me
       assert.equal(r.stderr, '', command.join(' '));
     }
     assert.deepEqual(ran(), passes.map(([command, input]) => ({ args: command.slice(1), input })));
-    // By number, the owned-file rule can't be read locally: the body passes with a note, and CI checks the rest.
-    const byNumber = await run(['gh', 'pr', 'edit', '5', '--body', tierB]);
-    assert.equal(byNumber.status, 0, byNumber.stderr);
-    assert.equal(byNumber.stderr, 'yokoten bot: note: `5` is not a local branch, so the body was checked without the changed files; CI checks the rest\n');
+    // A branch git can't fetch, or a pull request gh can't look up: the body alone is checked, with a note.
+    for (const [n, why] of [['6', "git can't compare origin/gone with origin/main"], ['7', 'gh could not say the branches of pull request `7`']]) {
+      const r = await run(['gh', 'pr', 'edit', n, '--body', good]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stderr, `yokoten bot: note: ${why}, so the body was checked without the changed files; CI checks the rest\n`);
+    }
+    assert.equal(ran().length, passes.length + 2, 'both edits were sent');
   } finally {
     server.close();
   }

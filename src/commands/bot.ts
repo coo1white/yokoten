@@ -5,7 +5,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { botConfig, botEnv, botProgram, installationToken, readBranchFiles, readCodeOwners, repoOf } from '../host/github.ts';
-import { DEFAULTS, loadConfig } from '../rules/config.ts';
+import { DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
 import type { Finding } from '../rules/message.ts';
 import { checkCommandTitle, checkOwnedTier, checkPullRequestBody, readCommandBody } from '../rules/pr.ts';
 import { args, bullets, env, parse, print, requireRoot, rootOf, usage } from './shared.ts';
@@ -23,13 +23,10 @@ async function bot(command: string[]): Promise<number> {
     print([`yokoten bot: ${titleProblems.length} problem(s) in the title; nothing was sent. Fix the title and run it again:`, ...bullets(titleProblems)], process.stderr);
     return 1;
   }
-  // Then a pull request's body (#406), by the body rules of `check --pr`, against this branch.
-  const body = root ? checkCommandBody(command, root) : null;
-  if (body?.problems.length) {
-    print([`yokoten bot: ${body.problems.length} problem(s) in the body; nothing was sent. Fix the body and run it again:`, ...bullets(body.problems)], process.stderr);
-    return 1;
-  }
-  if (body?.note) print([`yokoten bot: note: ${body.note}`], process.stderr);
+  // Then a pull request's body (#406), by the body rules of `check --pr`. A body for this
+  // branch, or one `--head` or `gh pr edit <branch>` names, is checked before anything is sent.
+  const body = root ? readPendingBody(command, root) : null;
+  if (body && !isLookup(body) && refuseBody(checkBody(body, localBranch(body)))) return 1;
   const config = botConfig(env);
   if (typeof config === 'string') {
     print([`yokoten bot: ${config}`], process.stderr);
@@ -48,6 +45,8 @@ async function bot(command: string[]): Promise<number> {
   }
   const token = await installationToken(config, repo);
   const [file, ...rest] = command;
+  // `gh pr edit <number or URL>`: one `gh pr view` with the same token names its branches.
+  if (body && isLookup(body) && refuseBody(checkBody(body, lookupBranch(body, file, botEnv(env, token))))) return 1;
   // A body read from standard input was used up by the check, so gh gets it the same way.
   const input = body?.input;
   const result = spawnSync(file, rest, { stdio: [input === undefined ? 'inherit' : 'pipe', 'inherit', 'inherit'], input, env: botEnv(env, token) });
@@ -64,20 +63,23 @@ async function bot(command: string[]): Promise<number> {
   return result.status ?? 1;
 }
 
-/** The problems in a pull request body a command sets; a note when only the body itself was checked; and the body read from standard input. */
-interface BodyCheck {
-  problems: Finding[];
-  note?: string;
+/** A pull request body a command is about to set, read and not yet checked. */
+interface PendingBody {
+  root: string;
+  text: string;
+  /** The body as read from standard input, which gh then gets the same way. */
   input?: string;
+  base: string | null;
+  head: string | null;
+  repo: string | null;
 }
 
 /**
- * The body rules of `check --pr` on the body `gh pr create` or `gh pr edit` sets (#406),
- * against the files this branch changes since its base, and the base's CODEOWNERS. All local:
- * one git diff and one read of CODEOWNERS. Null when there is no body to check, the repo
- * has no yokoten.json, or the command names another repo.
+ * The body `gh pr create` or `gh pr edit` sets, read from the command, a file or standard
+ * input. Null when there is none, the repo has no yokoten.json, the command names another
+ * repo, or the file can't be read (gh then says why, and sends nothing).
  */
-function checkCommandBody(command: string[], root: string): BodyCheck | null {
+function readPendingBody(command: string[], root: string): PendingBody | null {
   const found = readCommandBody(command);
   if (!found || !existsSync(join(root, 'yokoten.json'))) return null;
   if (found.repo !== null) {
@@ -89,31 +91,75 @@ function checkCommandBody(command: string[], root: string): BodyCheck | null {
     }
     if (origin?.toLowerCase() !== found.repo.replace(/^(https?:\/\/)?github\.com\//, '').toLowerCase()) return null;
   }
-  let text: string;
-  let input: string | undefined;
   try {
-    if ('text' in found.body) text = found.body.text;
-    else if (found.body.file === '-') text = input = readFileSync(0, 'utf8');
-    else text = readFileSync(found.body.file, 'utf8');
+    if ('text' in found.body) return { root, text: found.body.text, base: found.base, head: found.head, repo: found.repo };
+    const input = found.body.file === '-' ? readFileSync(0, 'utf8') : undefined;
+    return { root, text: input ?? readFileSync(found.body.file, 'utf8'), input, base: found.base, head: found.head, repo: found.repo };
   } catch {
-    return null; // gh says why it can't read the file, and sends nothing
+    return null;
   }
-  // The branch: the current one, or the one `--head` or `gh pr edit <branch>` names. A number,
-  // a URL or another owner's branch can't be matched without the network, so only the body
-  // itself is checked then.
-  const head = found.head === null ? 'HEAD' : /^\d+$|^https?:|:/.test(found.head) ? null : found.head;
-  const base = `origin/${found.base ?? 'main'}`;
-  const branch = head === null ? null : readBranchFiles(root, base, head);
-  const config = loadConfig(root);
-  if (!branch) {
-    const why = head === null ? `\`${found.head}\` is not a local branch` : `git can't compare ${head} with ${base}`;
-    return { problems: checkPullRequestBody({ body: text, files: [] }, config), note: `${why}, so the body was checked without the changed files; CI checks the rest`, input };
+}
+
+/** Whether the pull request is named by a number or a URL, so gh must say its branches. */
+const isLookup = (body: PendingBody): boolean => body.head !== null && /^\d+$|^https?:/.test(body.head);
+
+/** The branches to compare, or why the body is checked without the changed files. */
+type Branch = { base: string; head: string; files?: ReturnType<typeof readBranchFiles> } | { why: string };
+
+/** This branch, or the one `--head` or `gh pr edit <branch>` names, against origin/<base>. */
+function localBranch(body: PendingBody): Branch {
+  // Another owner's branch (`owner:branch`) is not here to compare.
+  if (body.head?.includes(':')) return { why: `\`${body.head}\` is another owner's branch` };
+  return { base: `origin/${body.base ?? 'main'}`, head: body.head ?? 'HEAD' };
+}
+
+/**
+ * The branches of the pull request `gh pr edit <number or URL>` names, from one `gh pr view`
+ * with the bot's token (#406). The edit goes to the network anyway. A branch that is not
+ * here yet is fetched from origin, quietly.
+ */
+function lookupBranch(body: PendingBody, gh: string, ghEnv: Env): Branch {
+  const view = spawnSync(gh, ['pr', 'view', body.head ?? '', '--json', 'headRefName,baseRefName', ...(body.repo ? ['--repo', body.repo] : [])], { cwd: body.root, encoding: 'utf8', env: ghEnv, stdio: ['ignore', 'pipe', 'ignore'] });
+  let refs: { headRefName?: unknown; baseRefName?: unknown } = {};
+  try {
+    refs = JSON.parse(view.stdout ?? '');
+  } catch {
+    // said below
   }
-  const pr = { body: text, ...branch };
+  if (view.status !== 0 || typeof refs.headRefName !== 'string' || typeof refs.baseRefName !== 'string') {
+    return { why: `gh could not say the branches of pull request \`${body.head}\`` };
+  }
+  const base = body.base ?? refs.baseRefName;
+  const branch = { base: `origin/${base}`, head: `origin/${refs.headRefName}` };
+  const files = readBranchFiles(body.root, branch.base, branch.head);
+  if (files) return { ...branch, files };
+  spawnSync('git', ['fetch', '--quiet', '--no-tags', 'origin', '--end-of-options', refs.headRefName, base], { cwd: body.root, stdio: 'ignore' });
+  return branch;
+}
+
+/** The problems with a body: every body rule of `check --pr` when the branch's files can be read, else the body alone, with a note. */
+function checkBody(body: PendingBody, branch: Branch): { problems: Finding[]; note?: string } {
+  const config = loadConfig(body.root);
+  const files = 'why' in branch ? null : (branch.files ?? readBranchFiles(body.root, branch.base, branch.head));
+  if ('why' in branch || !files) {
+    const why = 'why' in branch ? branch.why : `git can't compare ${branch.head} with ${branch.base}`;
+    return { problems: checkPullRequestBody({ body: body.text, files: [] }, config), note: `${why}, so the body was checked without the changed files; CI checks the rest` };
+  }
+  const pr = { body: body.text, ...files };
   const problems = checkPullRequestBody(pr, config);
-  const owned = checkOwnedTier(pr, readCodeOwners(root, base));
+  const owned = checkOwnedTier(pr, readCodeOwners(body.root, branch.base));
   if (owned) problems.push(owned);
-  return { problems, input };
+  return { problems };
+}
+
+/** Prints the problems with a body the way the title check does, or its note. True when it refuses. */
+function refuseBody({ problems, note }: { problems: Finding[]; note?: string }): boolean {
+  if (problems.length) {
+    print([`yokoten bot: ${problems.length} problem(s) in the body; nothing was sent. Fix the body and run it again:`, ...bullets(problems)], process.stderr);
+    return true;
+  }
+  if (note) print([`yokoten bot: note: ${note}`], process.stderr);
+  return false;
 }
 
 export function runBot(): number | Promise<number> {
