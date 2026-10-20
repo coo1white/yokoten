@@ -32,6 +32,7 @@ import {
   MISSING_PROJECT,
   onToolCall,
   pick,
+  ROOT,
   stepMark,
 } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
@@ -39,10 +40,13 @@ import { parseCodeOwners } from '../../src/rules/pr.ts';
 import { hasHook } from '../../src/agents/hooks-file.ts';
 import { readCodeOwners } from '../../src/host/github.ts';
 import {
+  AGENTS_BACKUP,
   checkLines,
   compareCoreRules,
   compareVersions,
+  demoteHeadings,
   handOffLines,
+  moveUnderProjectHeading,
   placeHandOff,
   readKitVersion,
 } from '../../src/setup/init.ts';
@@ -132,7 +136,9 @@ test('init: the Gemini hook command runs when Gemini quotes a path with a space 
 
 test('init: adds the practices, keeps what is there, and doctor goes on to stage 4', () => {
   const sandbox = makeSandbox();
-  sandbox.write('AGENTS.md', '# our own rules\n');
+  // An AGENTS.md with `## This project` is left to `update` (#378).
+  const ours = '# our own rules\n\n## This project\n\nours\n';
+  sandbox.write('AGENTS.md', ours);
   sandbox.write('.github/SECURITY.md', '# email us\n');
   // The user's own Codex and Gemini CLI settings stay.
   const mine = (event: string) => ({ [event]: [{ matcher: 'read_file', hooks: [{ type: 'command', command: 'mine' }] }] });
@@ -144,7 +150,7 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /kept AGENTS\.md/);
   assert.match(result.stdout, /wrote \.githooks\/pre-commit/);
-  assert.equal(readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8'), '# our own rules\n');
+  assert.equal(readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8'), ours);
   assert.match(result.stdout, /kept \.github\/SECURITY\.md/);
   assert.equal(readFileSync(join(sandbox.repo, '.github/SECURITY.md'), 'utf8'), '# email us\n', 'the project\'s own policy stays');
   assert.match(result.stdout, /wrote \.github\/dependabot\.yml/);
@@ -1318,4 +1324,116 @@ test('core rules: the kit version mark tells older from newer; no mark compares 
   assert.equal(compareCoreRules(`# rules\n\n${own}`, kit).state, 'same', 'the mark alone is no change');
   assert.equal(compareCoreRules(`<!-- yokoten kit 0.9.0 -->\n# rules\n\n${own}`, kit).state, 'same', 'a newer mark with the same text is up to date');
   assert.equal(compareCoreRules(`<!-- yokoten kit {{version}} -->\n# rules, later\n\n${own}`, kit).state, 'behind', 'a mark that is not a version is unknown');
+});
+
+// ---- The core rules into an AGENTS.md the project already has (#378) ----
+
+const KIT_RULES = '<!-- yokoten kit 1.0.0 -->\n# How work is done here\n\n## Core rules\n\n1. a rule\n\n## This project\n\n<!-- yours here -->\n';
+const KIT_CORE = KIT_RULES.slice(0, KIT_RULES.indexOf('## This project'));
+
+test('core rules into AGENTS.md: headings go one level down, everything else stays byte for byte (#378)', () => {
+  // No headings: the text moves as it is.
+  assert.deepEqual(demoteHeadings('just text\nmore\n'), { text: 'just text\nmore\n', headings: [], deepest: [] });
+  // `# Title` first, and ATX headings at each level; level 6 stays; `#tag` is no heading.
+  const atx = demoteHeadings('# Title\n\nText\n## Sub\n  ### Indented ###\n###### Six\n#tag\n');
+  assert.equal(atx.text, '## Title\n\nText\n### Sub\n  #### Indented ###\n###### Six\n#tag\n');
+  assert.deepEqual(atx.headings.map((h) => h.after), ['`## Title`', '`### Sub`', '`#### Indented ###`']);
+  assert.deepEqual(atx.deepest, ['`###### Six`']);
+  // Setext: `===` becomes `---`; a `---` heading becomes `###`. A rule after a blank line, a
+  // list or a quote is not a heading.
+  const setext = demoteHeadings('Big\n===\n\nSmall\n---\n\n---\n\n- item\n---\n> quote\nlazy\n---\n');
+  assert.equal(setext.text, 'Big\n---\n\n### Small\n\n---\n\n- item\n---\n> quote\nlazy\n---\n');
+  assert.equal(setext.headings.length, 2);
+  // Headings inside fenced code blocks stay, with either fence and a longer closing fence.
+  const fenced = '```md\n# not a heading\nTitle\n===\n```\n~~~~\n# not\n~~~\n## still not\n~~~~~\n# yes\n    # indented code\n';
+  assert.equal(demoteHeadings(fenced).text, fenced.replace('# yes', '## yes'));
+  // CRLF lines keep CRLF; a last line without a newline keeps none.
+  assert.equal(demoteHeadings('# A\r\n\r\nB\r\n---\r\ntext').text, '## A\r\n\r\n### B\r\ntext');
+  assert.equal(demoteHeadings('').text, '');
+});
+
+test('core rules into AGENTS.md: the kit core on top, then `## This project`, then the text (#378)', () => {
+  const moved = moveUnderProjectHeading('# Ours\n\nBuild with make.\n', KIT_RULES);
+  assert.equal(moved.text, `${KIT_CORE}## This project\n\n## Ours\n\nBuild with make.\n`);
+  assert.equal(moved.lines, 3);
+  assert.equal(compareCoreRules(moved.text, KIT_RULES).state, 'same', 'doctor finds the core rules up to date');
+  // CRLF: the new lines take CRLF too, so update compares it as the same.
+  const crlf = moveUnderProjectHeading('# Ours\r\n\r\nrule\r\n', KIT_RULES);
+  assert.equal(crlf.text, `${KIT_CORE.replaceAll('\n', '\r\n')}## This project\r\n\r\n## Ours\r\n\r\nrule\r\n`);
+  assert.equal(compareCoreRules(crlf.text, KIT_RULES).state, 'same');
+  // A byte order mark is dropped, so the kit version line comes first.
+  const bom = moveUnderProjectHeading('﻿# Ours\n', KIT_RULES);
+  assert.ok(bom.hadBom);
+  assert.ok(bom.text.startsWith('<!-- yokoten kit 1.0.0 -->\n'));
+  assert.equal(readKitVersion(bom.text), '1.0.0');
+  // An empty file, or one with blank lines only, gets the kit's file.
+  for (const empty of ['', '\n\n', '﻿']) assert.deepEqual(moveUnderProjectHeading(empty, KIT_RULES), { text: KIT_RULES, lines: 0, headings: [], deepest: [], hadBom: empty === '﻿' });
+});
+
+test('init: an AGENTS.md without `## This project` gets the core rules on top, and a copy of the old file (#378)', () => {
+  const sandbox = makeSandbox();
+  const old = '# Our rules\n\nRun `make test`.\n\n## Style\n\nTabs.\n';
+  sandbox.write('AGENTS.md', old);
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^updated AGENTS\.md: the core rules are on top, and your 7 line\(s\) moved under `## This project`; only their heading levels changed \(kept the old file as AGENTS\.md\.before-yokoten;/m);
+  assert.match(result.stdout, /^ {2}heading one level down: `# Our rules` is now `## Our rules`$/m);
+  assert.match(result.stdout, /^ {2}heading one level down: `## Style` is now `### Style`$/m);
+  const text = readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8');
+  const kit = readFileSync(join(ROOT, 'kit', 'project', 'AGENTS.md'), 'utf8');
+  const kitCore = kit.slice(0, kit.search(/^## This project$/m)).replace('{{version}}', JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version);
+  assert.equal(text, `${kitCore}## This project\n\n## Our rules\n\nRun \`make test\`.\n\n### Style\n\nTabs.\n`);
+  assert.equal(readFileSync(join(sandbox.repo, AGENTS_BACKUP), 'utf8'), old, 'the old file, byte for byte');
+  assert.match(sandbox.run(['update']).stdout, /up to date/);
+  // A second run finds the heading and leaves the file to `update`.
+  const again = sandbox.run(['init']);
+  assert.match(again.stdout, /^kept AGENTS\.md \(`yokoten update` brings its core rules up to date\)$/m);
+  assert.equal(readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8'), text);
+});
+
+test('init: a committed AGENTS.md with CRLF and a BOM moves with no copy; git gives the old one back (#378)', () => {
+  const sandbox = makeSandbox();
+  const old = '﻿Rules\r\n=====\r\n\r\n```sh\r\n# a comment, not a heading\r\n```\r\n';
+  sandbox.write('AGENTS.md', old);
+  sandbox.git('add', 'AGENTS.md');
+  sandbox.git('commit', '-q', '-m', 'rules');
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /to get the old file back: `git checkout HEAD -- AGENTS\.md`/);
+  assert.match(result.stdout, /^ {2}heading one level down: `Rules` \(underlined with =\) is now `Rules` \(underlined with -\)$/m);
+  assert.match(result.stdout, /^ {2}dropped the byte order mark/m);
+  assert.ok(!existsSync(join(sandbox.repo, AGENTS_BACKUP)), 'git has the old file');
+  const text = readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8');
+  assert.ok(text.startsWith('<!-- yokoten kit '));
+  assert.ok(text.endsWith('## This project\r\n\r\nRules\r\n-----\r\n\r\n```sh\r\n# a comment, not a heading\r\n```\r\n'), text.slice(-120));
+  assert.ok(!/(?<!\r)\n/.test(text), 'every line ends in CRLF');
+  sandbox.git('checkout', 'HEAD', '--', 'AGENTS.md');
+  assert.equal(readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8'), old, 'the command it prints gives the old file back');
+});
+
+test('init: an empty AGENTS.md gets the kit file; a different copy already there stops the move (#378)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('AGENTS.md', '');
+  const result = sandbox.run(['init']);
+  assert.match(result.stdout, /^wrote AGENTS\.md: it was empty, so it now has the core rules and an empty `## This project` section/m);
+  assert.match(readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8'), /^## This project$/m);
+
+  const other = makeSandbox();
+  other.write('AGENTS.md', '# mine\n');
+  other.write(AGENTS_BACKUP, '# an older copy\n');
+  const stopped = other.run(['init']);
+  assert.equal(stopped.status, 0, stopped.stderr);
+  assert.match(stopped.stdout, /^kept AGENTS\.md: it has no `## This project` heading, and AGENTS\.md\.before-yokoten is there already/m);
+  assert.equal(readFileSync(join(other.repo, 'AGENTS.md'), 'utf8'), '# mine\n');
+  assert.equal(readFileSync(join(other.repo, AGENTS_BACKUP), 'utf8'), '# an older copy\n');
+});
+
+test('init: an AGENTS.md that is a link is kept, so init never writes through it into CLAUDE.md (#378)', { skip: process.platform === 'win32' && 'a link needs admin rights on Windows' }, () => {
+  const sandbox = makeSandbox();
+  sandbox.write('CLAUDE.md', '# our rules\n');
+  symlinkSync('CLAUDE.md', join(sandbox.repo, 'AGENTS.md'));
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^kept AGENTS\.md: it is a link to CLAUDE\.md/m);
+  assert.doesNotMatch(readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8'), /Core rules/);
 });
