@@ -220,9 +220,6 @@ function lexists(path: string): boolean {
   }
 }
 
-/** The text with LF line ends and one newline at the end, so a Windows checkout compares equal. */
-const normalizeText = (text: string): string => `${text.replace(/\r\n/g, '\n').replace(/\n*$/, '')}\n`;
-
 /** The first of the path's folders below the root, or the file itself, that is a symlink; null when none is. */
 function symlinkOnPath(root: string, rel: string): string | null {
   const parts = rel.split('/');
