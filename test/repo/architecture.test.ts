@@ -425,10 +425,11 @@ test('docs: every install command in docs/facts.json is in the guides and README
   }
   const shown: [string, string[]][] = [
     ['docs/guide.md', ['npx', 'clone']],
-    ['docs/zh-CN/guide.md', ['npx', 'clone']],
+    ['docs/i18n/zh-CN/guide.md', ['npx', 'clone']],
     ['README.md', ['npx']],
-    ['docs/zh-CN/README.md', ['npx']],
-    ['docs/ja/README.md', ['npx']],
+    ['docs/i18n/zh-CN/README.md', ['npx']],
+    ['docs/i18n/ja/README.md', ['npx']],
+    ['docs/i18n/zh-TW/README.md', ['npx']],
   ];
   for (const [file, lists] of shown) {
     assert.deepEqual(missingCommands(facts, lists, readFileSync(join(ROOT, file), 'utf8')), [], `${file} lacks these commands from docs/facts.json; change both`);
@@ -492,7 +493,7 @@ test('docs: the guides\' Commands table covers every command and option in COMMA
 
   const guides: [string, string][] = [
     ['docs/guide.md', '### Commands'],
-    ['docs/zh-CN/guide.md', '### 命令'],
+    ['docs/i18n/zh-CN/guide.md', '### 命令'],
   ];
   for (const [file, heading] of guides) {
     assert.deepEqual(findGuideGaps(readFileSync(join(ROOT, file), 'utf8'), heading, COMMANDS), [], `${file}: its Commands table differs from COMMANDS in src/run/cli.ts`);
