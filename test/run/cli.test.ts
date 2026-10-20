@@ -6,14 +6,12 @@ import { spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import {
   dirname,
   join,
@@ -28,6 +26,7 @@ import {
   MISSING_PROJECT,
   pick,
   PLUGIN_ROOT,
+  makeTempDir,
 } from '../repo/helpers.ts';
 import {
   closestWord,
@@ -307,7 +306,7 @@ test('hooks: a tool-call guard that fails refuses the call; the stop check does 
 // #174: the pitch demo runs end to end, offline, in a temp folder it removes, and never
 // touches this repo's kit.
 test('demo: scripts/demo/loop.ts walks the loop from an incident to a doctor note, and leaves nothing', () => {
-  const temp = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const temp = makeTempDir();
   const kitTable = join(dirname(CLI), '..', 'kit', 'lessons', 'README.md');
   const before = readFileSync(kitTable, 'utf8');
   const result = spawnSync('node', [join(dirname(CLI), '..', 'scripts', 'demo', 'loop.ts')], { env: { PATH: process.env.PATH, HOME: join(temp, 'home'), TMPDIR: temp }, encoding: 'utf8' });

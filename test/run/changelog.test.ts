@@ -5,14 +5,13 @@ import assert from 'node:assert/strict';
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { makeTempDir } from '../repo/helpers.ts';
 import {
   formatChanges,
   mergeChanges,
@@ -47,7 +46,7 @@ const CHANGELOG = [
 
 /** A folder with CHANGELOG.md and the change files given, by name. */
 function makeRepo(files: Record<string, string>): string {
-  const root = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const root = makeTempDir();
   mkdirSync(join(root, 'changes'));
   writeFileSync(join(root, 'CHANGELOG.md'), CHANGELOG);
   writeFileSync(join(root, 'changes', 'README.md'), '# Change files\n\nNot a change.\n');
@@ -77,7 +76,7 @@ test('changes: the collector groups and orders the sections, and skips README.md
   assert.deepEqual(problems, []);
   assert.deepEqual(changes.map((change) => change.file), ['changes/9-a.md', 'changes/10-c.md', 'changes/132-b.md', 'changes/200-d.md'], 'by issue number');
   assert.deepEqual(formatChanges(changes), ['### Added', '', '- C.', '', '### Fixed', '', '- B.', '- D.', '', '### Internal', '', '- A.']);
-  assert.deepEqual(readChanges(mkdtempSync(join(tmpdir(), 'yokoten-'))), { changes: [], problems: [] }, 'no changes/ folder');
+  assert.deepEqual(readChanges(makeTempDir()), { changes: [], problems: [] }, 'no changes/ folder');
 });
 
 test('changes: a link in changes/, dangling or not, is a finding, never a crash (#281)', () => {

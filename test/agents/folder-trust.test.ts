@@ -2,14 +2,14 @@
 
 import '../repo/home.ts';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, realpathSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { makeTempDir } from '../repo/helpers.ts';
 import { folderKeys } from '../../src/agents/folder-trust.ts';
 
 test('folderKeys: the folder as given, without a trailing slash, and its real path behind a symlink (#341)', () => {
-  const base = realpathSync(mkdtempSync(join(tmpdir(), 'yokoten-')));
+  const base = realpathSync(makeTempDir());
   const real = join(base, 'repo');
   mkdirSync(real);
   symlinkSync(real, join(base, 'link'));

@@ -4,17 +4,15 @@ import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import {
   mkdirSync,
-  mkdtempSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import {
   dirname,
   join,
 } from 'node:path';
 import { test } from 'node:test';
-import { fixture } from '../repo/helpers.ts';
+import { fixture, makeTempDir } from '../repo/helpers.ts';
 import { codeOwnersText } from '../../src/setup/init.ts';
 import {
   type Found,
@@ -42,7 +40,7 @@ const marks = (found: Found[], notNow: Record<string, string> = {}) => at(found,
 
 /** The tests step on a scratch repo with these files: whether it is done, and what it says when not. */
 const testsStep = (files: Record<string, string>) => {
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-tests-step-'));
+  const dir = makeTempDir('yokoten-tests-step-');
   try {
     for (const [path, text] of Object.entries(files)) {
       mkdirSync(dirname(join(dir, path)), { recursive: true });
@@ -132,7 +130,7 @@ jobs:
 
 /** Whether the ci and titles steps are done on a scratch repo with this one workflow. */
 const ciSteps = (workflowText: string) => {
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-ci-step-'));
+  const dir = makeTempDir('yokoten-ci-step-');
   try {
     mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
     writeFileSync(join(dir, '.github', 'workflows', 'yokoten.yml'), workflowText);
@@ -252,7 +250,7 @@ test('road: the tests step stays next with only a lint step, and says what is mi
   assert.equal(testsStep(NPM_WS).what, "no workflow runs each package's tests (e.g. `npm test --workspaces`)");
   assert.equal(testsStep(PNPM_WS).what, "no workflow runs each package's tests (e.g. `pnpm -r test`)");
   const tests = ROAD.find((s) => s.key === 'tests');
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-tests-fix-'));
+  const dir = makeTempDir('yokoten-tests-fix-');
   try {
     writeFileSync(join(dir, 'package.json'), NPM_WS['package.json']);
     assert.equal(tests?.fix(dir, {}, undefined), 'add a step that runs `npm test --workspaces` to a workflow in .github/workflows');
@@ -311,7 +309,7 @@ test('road: a license file counts in each form, the Rust dual layout too', () =>
   for (const name of ['LICENSES.md', 'LICENSING.md', 'LICENSES', 'UNLICENSED', 'licenseinfo', 'COPYRIGHT', 'README.md']) {
     assert.ok(!isLicenseName(name), name);
   }
-  const root = mkdtempSync(join(tmpdir(), 'yokoten-license-'));
+  const root = makeTempDir('yokoten-license-');
   try {
     const license = () => securityLacking(root).includes('license file');
     writeFileSync(join(root, 'LICENSING.md'), 'which license applies where\n');

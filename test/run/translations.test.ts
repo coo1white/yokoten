@@ -4,14 +4,12 @@ import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import {
-  mkdtempSync,
   readFileSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { makeTranslatedRepo } from '../repo/helpers.ts';
+import { makeTranslatedRepo, makeTempDir } from '../repo/helpers.ts';
 import {
   DEFAULTS,
   loadConfig,
@@ -81,7 +79,7 @@ test('translations: a shallow clone gives one note for the run, never a note per
   repo.commit('en.md', '# Guide\n\nStep one, changed.\n');
   repo.commit('zh2.md', `${sourceMarker('en.md')}\n# 指南二\n`);
   const shallowClone = (depth: number) => {
-    const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+    const dir = makeTempDir();
     execFileSync('git', ['clone', '-q', '--depth', String(depth), `file://${repo.root}`, dir], { stdio: 'ignore' });
     return dir;
   };
@@ -152,7 +150,7 @@ test('translations: the older marker with a blob still works, and its fix offers
   repo.commit('zh.md', `${blobMarker('en.md', repo.git('hash-object', 'en.md'))}\n# 指南\n\n第一步。\n`);
   assert.deepEqual(translationNotes(repo.root, ['zh.md']), [], 'blob is the English: current');
   // Even in a shallow clone, a blob equal to the English is current.
-  const shallow = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const shallow = makeTempDir();
   execFileSync('git', ['clone', '-q', '--depth', '1', `file://${repo.root}`, shallow], { stdio: 'ignore' });
   assert.deepEqual(translationNotes(shallow, ['zh.md']), []);
   // A stale blob: the history decides. Changed together, current; the English later, behind.
@@ -183,7 +181,7 @@ test('translations: check gives a note, and yokoten.json "translations": { "fail
 test('translations: a shallow clone deep enough to tell gives the answer, never a false current or behind (#181)', () => {
   const repo = makeTranslatedRepo();
   const shallowClone = (depth: number) => {
-    const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+    const dir = makeTempDir();
     execFileSync('git', ['clone', '-q', '--depth', String(depth), `file://${repo.root}`, dir], { stdio: 'ignore' });
     return dir;
   };
@@ -272,7 +270,7 @@ test('translations: git runs a fixed number of times, however many translations 
   repo.git('commit', '-q', '-m', 'many translations');
   repo.commit('en.md', '# Guide\n\nStep one, changed.\n');
   // A git on PATH that counts its runs, then hands over to the real one.
-  const bin = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const bin = makeTempDir();
   const count = join(bin, 'count');
   const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
   writeFileSync(join(bin, 'git'), `#!/bin/sh\necho x >> '${count}'\nexec '${realGit}' "$@"\n`, { mode: 0o755 });

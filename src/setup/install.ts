@@ -19,7 +19,7 @@
 // PATH. It prints the alias and never edits the shell profile: that file is the user's.
 
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import type { Env } from '../rules/config.ts';
@@ -30,8 +30,8 @@ import * as gemini from '../agents/runtimes/gemini.ts';
 import * as grok from '../agents/runtimes/grok.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { copyRuntime, HOME_DIR, KIT, MANAGED, writeManaged, writeNew } from './files.ts';
-import { type Gh, readLogin } from '../host/github.ts';
-import { homeIn, homeOf, isDomainShaped, isPersonalEmail, loadMarks, marksFile, NO_HOME, privateRemoteHosts, systemHome } from '../rules/privacy.ts';
+import { type Gh, readLocalLogins, readLogin } from '../host/github.ts';
+import { FOUND_HEADER, foundHeader, homeIn, homeOf, isDomainShaped, isEmailShaped, OWN_HEADER, isPersonalEmail, loadMarks, marksFile, NO_HOME, privateRemoteHosts, systemHome } from '../rules/privacy.ts';
 
 /**
  * Where yokoten keeps its runtime, its config and the private marks. With no absolute home
@@ -465,11 +465,75 @@ export function machineUserNames(env: Env, probe: UserNameProbe = REAL_USER_PROB
 }
 
 /**
- * Add the machine's marks that the private-marks file lacks, at its end. It only appends,
- * and makes the file (mode 600) when it is missing. Returns the kinds it added, never a value.
+ * The private-marks text with each block under the old plain header (before #410) split
+ * by kind, or null when it has none. A value is a forge login only when it is one of
+ * `logins`; an address is a git email; one of `hosts`, or a value with a dot, is a host.
+ * Anything else goes under OWN_HEADER, so the check treats it as the owner's: strict.
+ * The lines outside those blocks stay as they are.
+ */
+export function migrateMarks(text: string, { logins, hosts }: { logins: string[]; hosts: string[] }): string | null {
+  const lines = text.split('\n');
+  if (!lines.some((line) => line.trim() === FOUND_HEADER)) return null;
+  const loginSet = new Set(logins.map((login) => login.toLowerCase()));
+  const hostSet = new Set(hosts.map((host) => host.toLowerCase()));
+  const kindOf = (value: string): string | null => {
+    const key = value.toLowerCase();
+    if (loginSet.has(key)) return 'forge login';
+    if (isEmailShaped(key)) return 'git email';
+    if (hostSet.has(key) || key.includes('.')) return 'private remote host';
+    return null;
+  };
+  const out: string[] = [];
+  for (let index = 0; index < lines.length; index++) {
+    if (lines[index].trim() !== FOUND_HEADER) {
+      out.push(lines[index]);
+      continue;
+    }
+    // The block runs to the next comment line.
+    const values: string[] = [];
+    while (index + 1 < lines.length && !lines[index + 1].trim().startsWith('#')) {
+      index++;
+      const value = lines[index].replace(/\r$/, '').trim();
+      if (value) values.push(value);
+    }
+    const groups = new Map<string | null, string[]>();
+    for (const value of values) groups.set(kindOf(value), [...(groups.get(kindOf(value)) ?? []), value]);
+    for (const [kind, group] of groups) out.push(kind === null ? OWN_HEADER : foundHeader(kind), ...group);
+  }
+  const joined = out.join('\n');
+  return joined.endsWith('\n') ? joined : `${joined}\n`;
+}
+
+/** Write a file in one step: a temp file next to it, then a rename. It keeps the file's mode. */
+function replaceFile(file: string, text: string): void {
+  const temp = `${file}.${process.pid}.tmp`;
+  let mode = 0o600;
+  try {
+    mode = statSync(file).mode & 0o777;
+  } catch {
+    // a new file: 600
+  }
+  try {
+    writeFileSync(temp, text, { mode });
+    renameSync(temp, file);
+  } finally {
+    rmSync(temp, { force: true });
+  }
+}
+
+/**
+ * Add the machine's marks that the private-marks file lacks, at its end. It makes the file
+ * (mode 600) when it is missing. A block under the old plain header is first split by kind
+ * (`migrateMarks`), in one atomic write. Returns the kinds it added, never a value.
  */
 export function fillMarks(env: Env, found: MachineMark[]): string[] {
   const file = marksFile(env);
+  if (existsSync(file)) {
+    const logins = [...readLocalLogins(env), ...found.filter((mark) => mark.kind === 'forge login').map((mark) => mark.value)];
+    const hosts = found.filter((mark) => mark.kind === 'private remote host').map((mark) => mark.value);
+    const migrated = migrateMarks(readFileSync(file, 'utf8'), { logins, hosts });
+    if (migrated !== null) replaceFile(file, migrated);
+  }
   const known = new Set(loadMarks(env));
   const added: MachineMark[] = [];
   // The git display name is left out: as a mark, a common name would flag every file that
@@ -483,12 +547,12 @@ export function fillMarks(env: Env, found: MachineMark[]): string[] {
   if (!added.length) return [];
   if (!existsSync(file)) writeNew(file, MARKS_HEADER, { mode: 0o600 });
   const text = readFileSync(file, 'utf8');
-  appendFileSync(file, `${text === '' || text.endsWith('\n') ? '' : '\n'}${FOUND_HEADER}\n${added.map((mark) => mark.value).join('\n')}\n`);
-  return [...new Set(added.map((mark) => mark.kind))];
+  // One header per kind, so the check knows a forge login from a mark the owner wrote (#410).
+  const kinds = [...new Set(added.map((mark) => mark.kind))];
+  const blocks = kinds.map((kind) => `${foundHeader(kind)}\n${added.filter((mark) => mark.kind === kind).map((mark) => mark.value).join('\n')}\n`);
+  appendFileSync(file, `${text === '' || text.endsWith('\n') ? '' : '\n'}${blocks.join('')}`);
+  return kinds;
 }
-
-/** The comment above the marks `fillMarks` adds. They run to the next comment line. */
-const FOUND_HEADER = '# added by yokoten from this machine';
 
 /** How many marks the owner wrote: the lines of the file outside the parts `fillMarks` added. */
 export function countOwnMarks(env: Env): number {
@@ -501,7 +565,7 @@ export function countOwnMarks(env: Env): number {
   let isFound = false;
   let count = 0;
   for (const line of text.split(/\r?\n/).map((part) => part.trim())) {
-    if (line.startsWith('#')) isFound = line === FOUND_HEADER;
+    if (line.startsWith('#')) isFound = line === FOUND_HEADER || line.startsWith(`${FOUND_HEADER}: `);
     else if (line && !isFound) count++;
   }
   return count;

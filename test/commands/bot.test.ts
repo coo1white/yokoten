@@ -108,7 +108,7 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
     // A good title, and commands with no title, take the normal bot path.
     const good: string[][] = [
       ['gh', 'issue', 'create', '--title', 'host: check the title', '--label', 'incident', '--body', '-t'],
-      ['gh', 'pr', 'create', '-t', 'feat(host): check the title', '--body', 'x'],
+      ['gh', 'pr', 'create', '-t', 'feat(host): check the title'],
       ['gh', 'issue', '-R', 'me/repo', 'new', '--title', 'host: check the title'],
       ['gh', 'pr', 'new', '-t', 'feat(host): check the title'],
       ['gh', 'pr', 'create', '--fill'],
@@ -158,6 +158,127 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
     assert.equal(killed.status, 1);
     assert.match(killed.stderr, /^yokoten bot: \S*\/killed\/gh was ended by SIGTERM\n$/);
     for (const said of [absent.stderr, killed.stderr]) assert.doesNotMatch(said, /ghs_test|bot\.pem|GH_TOKEN/, 'no token or env');
+  } finally {
+    server.close();
+  }
+});
+
+// #406: the bot checks a pull request's body by the body rules of `check --pr`, against
+// this branch's diff and the base branch's CODEOWNERS, before it sends anything.
+test('bot: a pull request body CI would refuse is refused locally, with CI\'s message (#406)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', JSON.stringify({ areas: ['host', 'kit'] }));
+  sandbox.write('.github/CODEOWNERS', '/src/owned.ts @me\n');
+  sandbox.write('src/owned.ts', 'export const a = 1;\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'base');
+  // origin is a bare repo on this machine, at a path the bot reads as github.com/me/repo,
+  // so `git fetch origin` works and GitHub is never reached.
+  const origin = join(sandbox.home, 'github.com', 'me', 'repo.git');
+  mkdirSync(origin, { recursive: true });
+  sandbox.git('init', '-q', '--bare', origin);
+  sandbox.git('remote', 'add', 'origin', origin);
+  sandbox.git('push', '-q', 'origin', 'main');
+  sandbox.git('checkout', '-qb', 'topic');
+  sandbox.write('src/owned.ts', 'export const a = 2;\n');
+  sandbox.write('kit/a.md', 'A kit file.\n');
+  sandbox.write('changes/1-a.md', 'Added\n\nA kit file (#1).\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'head');
+  sandbox.git('push', '-q', 'origin', 'topic');
+  const bin = join(sandbox.home, 'bin');
+  const log = join(sandbox.home, 'gh.log');
+  mkdirSync(bin);
+  // The fake gh answers `pr view` for pull request 5 (branch topic) and 6 (a branch origin
+  // does not have), and logs each view apart from the commands it sends.
+  const views = join(sandbox.home, 'views.log');
+  writeFileSync(join(bin, 'gh'), [
+    '#!/usr/bin/env node',
+    'const fs = require("node:fs"); const args = process.argv.slice(2);',
+    `if (args[0] === "pr" && args[1] === "view") { fs.appendFileSync(${JSON.stringify(views)}, JSON.stringify({ args, token: process.env.GH_TOKEN }) + "\\n"); const n = args[2].split("/").pop(); if (n === "5" || n === "6") { console.log(JSON.stringify({ headRefName: n === "5" ? "topic" : "gone", baseRefName: "main" })); process.exit(0); } process.exit(1); }`,
+    `fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, input: fs.readFileSync(0, "utf8") }) + "\\n");`,
+  ].join('\n'));
+  chmodSync(join(bin, 'gh'), 0o755);
+  const ran = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+  const server = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(req.method === 'GET' ? { id: 77 } : { token: 'ghs_test' }));
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  const key = join(sandbox.home, 'bot.pem');
+  writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
+  const bot = { PATH: `${bin}:${process.env.PATH}`, YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+  const run = (command: string[], input = '') =>
+    new Promise<{ status: number | null; stderr: string }>((done) => {
+      const child = spawn('node', [CLI, 'bot', '--', ...command], { cwd: sandbox.repo, env: { ...sandbox.env, ...bot } });
+      let stderr = '';
+      child.stderr.on('data', (chunk) => (stderr += chunk));
+      child.on('close', (status) => done({ status, stderr }));
+      child.stdin.end(input);
+    });
+  // What `check --pr` says in CI about the same body on the same branch, under its first line.
+  const ciSays = (body: string) => {
+    const file = join(sandbox.home, 'event.json');
+    const sha = (ref: string) => sandbox.git('rev-parse', ref).stdout.trim();
+    const tier = /^tier: ([ABC])/.exec(body)?.[1] ?? 'A';
+    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat(kit): a', body, labels: [{ name: 'feat' }, { name: `tier ${tier}` }], milestone: { title: 'M0' }, base: { sha: sha('origin/main') }, head: { sha: sha('HEAD') } } }));
+    const r = sandbox.run(['check', '--pr'], { extra: { GITHUB_EVENT_PATH: file } });
+    return r.stderr.trim().split('\n').slice(1);
+  };
+  const good = 'tier: A\nCloses #1\n\n## Why\nx\n\n## What changed\nEvery project gets the new kit file on its next init.\n\n## How tested\nx\n';
+  const refused = async (command: string[], body: string, id: RegExp, input?: string) => {
+    const r = await run(command, input);
+    assert.equal(r.status, 1, command.join(' '));
+    const [head, ...lines] = r.stderr.trim().split('\n');
+    assert.equal(head, 'yokoten bot: 1 problem(s) in the body; nothing was sent. Fix the body and run it again:');
+    assert.match(lines[0], id);
+    assert.deepEqual(lines, ciSays(body), 'the same message CI gives');
+    assert.deepEqual(ran(), [], `gh did not run: ${command.join(' ')}`);
+  };
+  try {
+    assert.deepEqual(ciSays(good), [], 'the good body passes in CI');
+    assert.equal(sandbox.run(['check', '--pr'], { extra: { GITHUB_EVENT_PATH: join(sandbox.home, 'event.json') } }).status, 0);
+    // (a) tier B on a branch that changes a file CODEOWNERS owns.
+    const tierB = good.replace('tier: A', 'tier: B');
+    await refused(['gh', 'pr', 'create', '-t', 'feat(kit): a', '--body', tierB], tierB, /^- body: `tier: B`, and this changes 1 file\(s\) that CODEOWNERS owns \(read from the base branch\): src\/owned\.ts\./);
+    // (b) a kit/ change whose body does not say every project gets it on the next init.
+    const noKit = good.replace('Every project gets the new kit file on its next init.', 'A file.');
+    writeFileSync(join(sandbox.home, 'body.md'), noKit);
+    await refused(['gh', 'pr', 'create', '-t', 'feat(kit): a', '--body-file', join(sandbox.home, 'body.md')], noKit, /^- body: this changes `kit\/` and does not say so\./);
+    await refused(['gh', 'pr', 'edit', '--body-file', '-'], noKit, /kit/, noKit);
+    await refused(['gh', 'pr', 'edit', 'topic', `--body=${noKit}`], noKit, /kit/);
+    // A pull request named by number or URL: gh says its branches, with the bot's token, and
+    // every body rule runs on origin/main...origin/topic. A branch not here yet is fetched.
+    sandbox.git('update-ref', '-d', 'refs/remotes/origin/topic');
+    await refused(['gh', 'pr', 'edit', '5', '--body', tierB], tierB, /CODEOWNERS owns/);
+    assert.equal(sandbox.git('rev-parse', 'origin/topic').stdout.trim(), sandbox.git('rev-parse', 'HEAD').stdout.trim(), 'fetched');
+    await refused(['gh', 'pr', 'edit', 'https://github.com/me/repo/pull/5', '--body-file', join(sandbox.home, 'body.md')], noKit, /kit/);
+    const viewed = readFileSync(views, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.deepEqual(viewed, [5, 'https://github.com/me/repo/pull/5'].map((n) => ({ args: ['pr', 'view', String(n), '--json', 'headRefName,baseRefName'], token: 'ghs_test' })));
+
+    // (c) A good body passes, and gh gets the command and the body unchanged.
+    writeFileSync(join(sandbox.home, 'body.md'), good);
+    const passes: [string[], string][] = [
+      [['gh', 'pr', 'create', '-t', 'feat(kit): a', '--body-file', join(sandbox.home, 'body.md')], ''],
+      [['gh', 'pr', 'create', '-t', 'feat(kit): a', '-F', '-'], good],
+      // (d) No body: a label edit passes through unchanged.
+      [['gh', 'pr', 'edit', '5', '--add-label', 'bug', '--remove-label', 'tier B'], ''],
+      // Another repo has its own rules: not checked here.
+      [['gh', 'pr', 'create', '-R', 'other/repo', '--body', 'x'], ''],
+    ];
+    for (const [command, input] of passes) {
+      const r = await run(command, input);
+      assert.equal(r.status, 0, `${command.join(' ')}: ${r.stderr}`);
+      assert.equal(r.stderr, '', command.join(' '));
+    }
+    assert.deepEqual(ran(), passes.map(([command, input]) => ({ args: command.slice(1), input })));
+    // A branch git can't fetch, or a pull request gh can't look up: the body alone is checked, with a note.
+    for (const [n, why] of [['6', "git can't compare origin/gone with origin/main"], ['7', 'gh could not say the branches of pull request `7`']]) {
+      const r = await run(['gh', 'pr', 'edit', n, '--body', good]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stderr, `yokoten bot: note: ${why}, so the body was checked without the changed files; CI checks the rest\n`);
+    }
+    assert.equal(ran().length, passes.length + 2, 'both edits were sent');
   } finally {
     server.close();
   }
