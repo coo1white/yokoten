@@ -1103,9 +1103,9 @@ kept, the note is cleaned:
   `SecretProj` and `secretproj` alike. A name of under three letters is left alone, as it
   would hide too many words; add it to your private marks if it points at you
 - a path into the project starts with `<project>`, also when it goes through a symlink
-- your home folder becomes `~`
-- your name, emails, gh login, private hosts and private marks become placeholders, as in
-  `yokoten redact`; an email address becomes `<email>`
+- your home folder becomes `~`, also when a line cuts its path short
+- your name, emails, gh login, Linux and Windows user names, private hosts and private
+  marks become placeholders, as in `yokoten redact`; an email address becomes `<email>`
 
 A note with a known secret shape is not kept: a token the commit check knows, a password in
 a URL, `password=`, `token=` or `api_key=` with a value, a JSON web token, or an OpenAI
@@ -1317,12 +1317,13 @@ and that output goes into the transcript and to the model. It can't be taken bac
 yokoten hides your details before some commands run.
 
 - **`yokoten redact`** reads text on stdin and writes it with placeholders. It hides
-  secrets (`<secret>`), private email addresses (`<email>`), your git user.name
-  (`<owner>`), the hosts of private remotes (`<host>`) and your private marks. A mark
-  that looks like a domain becomes `<host>`; any other mark becomes `<mark>`. It matches
-  a mark as a whole word. Without a private-marks file, it still hides the patterns and
-  what git knows. If it can't start or read your marks, it says so in one line and
-  passes the output through: it never stops the command.
+  secrets (`<secret>`), private email addresses (`<email>`), your git user.name and
+  your Linux and Windows user names (`<owner>`), your home folder (`~`), the hosts of
+  private remotes (`<host>`) and your private marks. A mark that looks like a domain
+  becomes `<host>`; any other mark becomes `<mark>`. It matches a mark as a whole word.
+  Without a private-marks file, it still hides the patterns and what git knows. If it
+  can't start or read your marks, it says so in one line and passes the output through:
+  it never stops the command.
 - **In Claude Code, the guard filters plain reads.** These commands print account
   details: `git log`, `git show` and `git blame` without `--format`, `--pretty` or
   `--oneline`; `git remote -v`, `get-url` and `show`; `git config --list` and reads of

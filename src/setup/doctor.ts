@@ -36,7 +36,8 @@ import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '.
 import { findTempDirs, readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advice/unsaved.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
 import { cliPath, compareCoreRules, compareVersions, isSelf, readCoreRules, summarizeUpdate } from './init.ts';
-import { countOwnMarks, fillMarks, filledLine, trySafely, installedPieces, machineMarks, mailmapState, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
+export { machineStateFile } from './install.ts';
+import { countOwnMarks, fillMarks, filledLine, trySafely, installedPieces, machineMarks, machineStateFile, mailmapState, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
 import { type Mark, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
 
 /**
@@ -549,8 +550,6 @@ export interface HostDiskCache {
   version: number;
 }
 
-/** Where yokoten keeps what it read about this machine: outside every repo. */
-export const machineStateFile = (env: Env): string => join(paths(env).config, 'machine.json');
 
 /** The last reading, or null when there is none or the file is broken. */
 export function readHostCache(env: Env, probe: MachineProbe): HostDiskCache | null {
