@@ -233,7 +233,8 @@ test('help: the help table and the parser list the same commands and options (#2
   for (const command of COMMANDS) {
     for (const option of command.options) {
       const r = sandbox.run([command.name, option.name, ...(option.value ? ['x'] : []), '--not-an-option']);
-      assert.match(r.stderr, new RegExp(`unknown option --not-an-option`), `${command.name} ${option.name}`);
+      // `marks` never repeats an unknown word, which may be a mark (#447): it says "an unknown option".
+      assert.match(r.stderr, command.name === 'marks' ? /an unknown option/ : /unknown option --not-an-option/, `${command.name} ${option.name}`);
     }
   }
 });

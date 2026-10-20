@@ -7,6 +7,7 @@ import {
   appendFileSync,
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   realpathSync,
@@ -1006,7 +1007,7 @@ test('marks allow --here: the machine allows a mark in one repo with no yokoten.
 
   // Two entries for the same repo: unsure, so nothing is allowed, and doctor says why.
   const kept = readFileSync(allowFile, 'utf8');
-  writeFileSync(allowFile, JSON.stringify({ repos: [{ remote: 'example.com/octo/app', allow: ['quietvale'] }, { remote: 'git@example.com:octo/app.git', allow: ['quietvale'] }] }));
+  writeFileSync(allowFile, JSON.stringify({ repos: [{ remote: 'example.com/octo/app', allow: ['quietvale'] }, { remote: 'EXAMPLE.com/octo/app', allow: ['quietvale'] }] }));
   assert.equal(run(own, ['check', '--staged']).status, 1, 'two matching entries allow nothing');
   assert.match(run(own, ['doctor']).stdout, /own-marks: this machine allows no private mark here, because two entries in this machine's allow file match this repo/);
   assert.equal(run(own, ['marks', 'allow', 'quietvale', '--here']).status, 1, 'and the command will not guess which to change');
@@ -1040,4 +1041,45 @@ test('marks allow --here: a repo with no remote is allowed by its folder (#447)'
   // Once it has a remote, the folder no longer names it.
   sandbox.git('remote', 'add', 'origin', 'https://example.com/octo/app');
   assert.equal(sandbox.run(['check']).status, 1);
+});
+
+test('marks allow: no mark is echoed, -- takes a mark that starts with -, a linked file stays a link, and a failed save says so plainly (#447)', () => {
+  const sandbox = makeSandbox();
+  const config = join(sandbox.home, '.config', 'yokoten');
+  mkdirSync(config, { recursive: true });
+  writeFileSync(join(config, 'private-marks'), 'quietvale\n-quietvale\n');
+  sandbox.git('remote', 'add', 'origin', 'https://example.com/octo/app');
+  const said: string[] = [];
+  const run = (args: string[]) => {
+    const r = sandbox.run(args);
+    said.push(r.stdout, r.stderr);
+    return r;
+  };
+  const unknown = run(['marks', 'allow', '--quietvale', '--here']);
+  assert.equal(unknown.status, 1);
+  assert.match(unknown.stderr, /an unknown option; to give a mark that starts with -, put it after --/);
+  // The allow file is a link to a file elsewhere: the link is kept, and the file it names changes.
+  const real = join(sandbox.home, 'kept', 'allow.json');
+  mkdirSync(dirname(real));
+  writeFileSync(real, '{"repos": []}\n');
+  symlinkSync(real, join(config, 'private-marks-allow.json'));
+  const dashed = run(['marks', 'allow', '--here', '--', '-quietvale']);
+  assert.equal(dashed.status, 0, dashed.stderr);
+  assert.ok(lstatSync(join(config, 'private-marks-allow.json')).isSymbolicLink(), 'the link is kept');
+  assert.deepEqual(JSON.parse(readFileSync(real, 'utf8')).repos[0].allow, ['-quietvale']);
+  assert.equal(run(['marks', 'allow', '--remove', '--here', '--', '-quietvale']).status, 0);
+  assert.deepEqual(JSON.parse(readFileSync(real, 'utf8')).repos, []);
+  // A folder that can't be written: one plain line, no path.
+  rmSync(join(config, 'private-marks-allow.json'));
+  chmodSync(config, 0o500);
+  try {
+    const failed = run(['marks', 'allow', 'quietvale', '--here']);
+    if (process.getuid?.() !== 0) {
+      assert.equal(failed.status, 1);
+      assert.doesNotMatch(failed.stderr, /\.config|allow\.json|\/tmp/);
+    }
+  } finally {
+    chmodSync(config, 0o700);
+  }
+  assert.ok(!said.some((text) => /quietval/i.test(text)), 'no output holds a mark');
 });

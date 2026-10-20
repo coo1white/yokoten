@@ -1350,10 +1350,18 @@ still stops it. `doctor` says how many of your marks the project allows, never w
 A repo with no yokoten.json can do the same without one, and so can a repo that must not
 name yokoten in public. Run `yokoten marks allow <mark> --here` in it. The allow is kept
 on this machine, in `private-marks-allow.json` beside the marks file, for that repo only:
-its `origin` remote (host and path), or its folder when it has no remote. Nothing is written
-into the repo. A renamed remote is another repo, so the mark is stopped there again. When
-yokoten can't tell which repo it is in (git can't read the remote, or two entries match), it
-allows nothing, and `doctor` says why. `doctor` also says where an allow comes from: this
+its `origin` remote (host and path), or its folder and first commit when it has no remote.
+Nothing is written into the repo. A renamed remote is another repo, so the mark is stopped
+there again. Every fetch and push address of `origin`, as git rewrites them with `insteadOf`,
+must name the same repo. A port other than the usual one is part of the name, and a local
+path is the folder it points to. `git@host:path` and `https://host/path` name the same repo,
+as the forges treat them. Another remote, such as `upstream`, changes nothing: the allow
+stays. A repo with no remote and no commit yet must run the command again after its first
+commit; a new repo made at the same path inherits nothing. When yokoten can't tell which repo
+it is in (git can't read the remote, `origin` has two addresses, or two entries match), it
+allows nothing, and `doctor` says why. A `gh` post gets neither allow, this one or
+`privacy.allow`, when it may go to another repo: `-R` or `--repo`, an issue or pull request
+URL, `GH_REPO` or `GH_HOST`, and every `gh api` or `gh gist`. `doctor` also says where an allow comes from: this
 machine or `privacy.allow`. Only a mark in the marks file can be allowed. To take it back,
 run `yokoten marks allow --remove <mark> --here`.
 

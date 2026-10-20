@@ -12,6 +12,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { assertLinear } from '../../scripts/linear.ts';
 import { at, makeTempDir } from '../repo/helpers.ts';
 import { DEFAULTS, type Env } from '../../src/rules/config.ts';
 import { checkCommand } from '../../src/rules/guards.ts';
@@ -25,6 +26,8 @@ import {
   machineAllowFile,
   makeRedactor,
   normalizeRemote,
+  type RepoKey,
+  repoKey,
   notUtc,
   ownMarks,
   POSITIVE_CONTROL,
@@ -550,10 +553,10 @@ test('checkPost: the project that allows the mark posts; another project with th
 
 // ---- The machine allows a mark in one repo (#447) ----
 
-test('normalizeRemote: host and path, with no scheme, user info, port or .git; the host case aside (#447)', () => {
+test('normalizeRemote: host and path, with no scheme, user info, default port or .git; the host case aside (#447)', () => {
   for (const url of [
     'https://example.com/octo/app',
-    'https://someone:secret@Example.COM:8443/octo/app.git',
+    'https://someone:secret@Example.COM:443/octo/app.git',
     'ssh://git@EXAMPLE.com:22/octo/app.git/',
     'git@example.com:octo/app.git',
     'example.com:octo/app',
@@ -561,11 +564,32 @@ test('normalizeRemote: host and path, with no scheme, user info, port or .git; t
   ]) {
     assert.equal(normalizeRemote(url), 'example.com/octo/app', url);
   }
+  assert.equal(normalizeRemote('https://example.com:8443/octo/app.git'), 'example.com:8443/octo/app', 'another port is another server');
+  assert.equal(normalizeRemote('ssh://git@example.com:2222/octo/app'), 'example.com:2222/octo/app');
   assert.equal(normalizeRemote('https://example.com/Octo/App'), 'example.com/Octo/App', 'the path keeps its case');
-  assert.equal(normalizeRemote('/srv/git/app.git'), '/srv/git/app', 'a local path stays a path');
-  assert.equal(normalizeRemote('file:///srv/git/app.git'), '/srv/git/app');
-  assert.equal(normalizeRemote('C:/git/app.git'), 'C:/git/app', 'a Windows drive is not a host');
+  // A local path is the folder itself: absolute, and a relative one against the repo's top folder.
+  const base = makeTempDir('yokoten-remote-');
+  mkdirSync(join(base, 'one'));
+  mkdirSync(join(base, 'two'));
+  assert.equal(normalizeRemote('/srv/git/app.git'), '/srv/git/app.git');
+  assert.equal(normalizeRemote('file:///srv/git/app.git'), '/srv/git/app.git');
+  assert.equal(normalizeRemote('../up.git', join(base, 'one')), join(realpathSync(base), 'up.git'));
+  assert.notEqual(normalizeRemote('../x', join(base, 'one', 'a')), normalizeRemote('../x', join(base, 'two', 'a')), 'the same relative path from another folder is another repo');
+  assert.equal(normalizeRemote('../x'), null, 'a relative path with no base is unread');
+  assert.ok(!normalizeRemote('C:/git/app.git', base)?.startsWith('c/'), 'a Windows drive is not a host');
   assert.equal(normalizeRemote(''), null);
+  assert.equal(normalizeRemote('https://example.com'), null, 'a host with no path names no repo');
+});
+
+test('normalizeRemote: linear on long input (#447)', () => {
+  const inputs: [string, (n: number) => string][] = [
+    ['trailing slashes', (n) => `example.com:a${'/'.repeat(n)}x`],
+    ['slashes only', (n) => `https://example.com/${'/'.repeat(n)}`],
+    ['at signs', (n) => `${'a@'.repeat(n / 2)}:x`],
+    ['colons', (n) => `${'a:'.repeat(n / 2)}`],
+    ['no colon', (n) => 'a'.repeat(n)],
+  ];
+  for (const [name, make] of inputs) assertLinear(name, make, (text) => normalizeRemote(text, '/base'));
 });
 
 /** A repo with an origin remote, or none, and a marks file and an allow file beside it. */
@@ -573,15 +597,20 @@ function allowRepo(remote: string | null) {
   const base = makeTempDir('yokoten-allow-');
   const repo = join(base, 'repo');
   mkdirSync(repo);
-  const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, env: { PATH: process.env.PATH, HOME: base, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(base, 'gitconfig') }, stdio: 'ignore' });
+  const git = (...args: string[]) =>
+    execFileSync('git', args, { cwd: repo, env: { PATH: process.env.PATH, HOME: base, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(base, 'gitconfig'), TZ: 'UTC' }, stdio: 'ignore' });
   git('init', '-q');
+  git('config', 'user.name', 'Test');
+  git('config', 'user.email', `1+test${at}users.noreply.github.com`);
   if (remote) git('remote', 'add', 'origin', remote);
   const marks = join(base, 'private-marks');
   writeFileSync(marks, 'quietvale\nquietvale labs\n');
   const env: Env = { HOME: base, YOKOTEN_PRIVATE_MARKS: marks };
   const allow = (repos: unknown) => writeFileSync(machineAllowFile(env), typeof repos === 'string' ? repos : JSON.stringify({ repos }));
-  return { repo, env, git, allow };
+  return { base, repo, env, git, allow };
 }
+
+const TWO_ADDRESSES = { allow: [], unsure: 'the origin remote has more than one address' };
 
 test('machineAllowed: the entry for this remote allows its marks; another remote, two entries or a bad file allow nothing (#447)', () => {
   const { repo, env, git, allow } = allowRepo('https://someone@Example.com/octo/app.git');
@@ -589,9 +618,12 @@ test('machineAllowed: the entry for this remote allows its marks; another remote
   allow([{ remote: 'example.com/octo/app', allow: ['QuietVale'] }]);
   assert.deepEqual(machineAllowed(env, repo), { allow: ['quietvale'], unsure: null });
   assert.deepEqual(repoMarkKinds(env, repo).map((mark) => mark.value), ['quietvale labs'], 'the longer mark is still looked for');
-  allow([{ remote: 'example.com/octo/other', allow: ['quietvale'] }, { folder: repo, allow: ['quietvale'] }]);
+  // A second remote with another name is the same repo's business: it changes nothing.
+  git('remote', 'add', 'upstream', 'https://example.com/octo/elsewhere');
+  assert.deepEqual(machineAllowed(env, repo).allow, ['quietvale']);
+  allow([{ remote: 'example.com/octo/other', allow: ['quietvale'] }, { folder: repo, id: 'root:x', allow: ['quietvale'] }]);
   assert.deepEqual(machineAllowed(env, repo).allow, [], 'a repo with a remote is never matched by its folder');
-  allow([{ remote: 'example.com/octo/app', allow: ['quietvale'] }, { remote: 'git@example.com:octo/app.git', allow: ['quietvale'] }]);
+  allow([{ remote: 'example.com/octo/app', allow: ['quietvale'] }, { remote: 'EXAMPLE.com/octo/app', allow: ['quietvale'] }]);
   assert.deepEqual(machineAllowed(env, repo), { allow: [], unsure: "two entries in this machine's allow file match this repo" });
   allow('{"repos": [quietvale');
   const bad = machineAllowed(env, repo);
@@ -605,25 +637,98 @@ test('machineAllowed: the entry for this remote allows its marks; another remote
   assert.deepEqual(machineAllowed(env, repo), { allow: [], unsure: null }, 'a renamed remote is no longer allowed');
 });
 
-test('machineAllowed: a repo with no remote is keyed by its top folder (#447)', () => {
-  const { repo, env, allow } = allowRepo(null);
-  allow([{ folder: realpathSync(repo), allow: ['quietvale'] }]);
-  mkdirSync(join(repo, 'sub'));
-  assert.deepEqual(machineAllowed(env, join(repo, 'sub')).allow, ['quietvale'], 'from a folder inside it too');
-  allow([{ remote: realpathSync(repo), allow: ['quietvale'] }]);
-  assert.deepEqual(machineAllowed(env, repo).allow, [], 'a remote entry never matches a repo with no remote');
+test('machineAllowed: every fetch and push address of origin, as git rewrites them, must name the same repo (#447)', () => {
+  const { repo, env, git, allow } = allowRepo('https://example.com/octo/app');
+  allow([{ remote: 'example.com/octo/app', allow: ['quietvale'] }]);
+  // A second fetch address of the same repo, in another form, is fine; of another repo, unsure.
+  git('remote', 'set-url', '--add', 'origin', 'git@example.com:octo/app.git');
+  assert.deepEqual(machineAllowed(env, repo).allow, ['quietvale']);
+  git('remote', 'set-url', '--add', 'origin', 'https://example.com/octo/public');
+  assert.deepEqual(machineAllowed(env, repo), TWO_ADDRESSES);
+  git('remote', 'set-url', '--delete', 'origin', 'octo/public');
+  assert.deepEqual(machineAllowed(env, repo).allow, ['quietvale']);
+  // A push address elsewhere: a push goes there, so unsure.
+  git('remote', 'set-url', '--push', 'origin', 'https://example.com/octo/public');
+  assert.deepEqual(machineAllowed(env, repo), TWO_ADDRESSES);
+  git('config', '--unset-all', 'remote.origin.pushurl');
+  // insteadOf is applied, as git applies it: the short name reads as the repo it stands for.
+  git('config', 'url.https://example.com/.insteadOf', 'ex:');
+  git('config', '--unset-all', 'remote.origin.url');
+  git('config', 'remote.origin.url', 'ex:octo/app');
+  assert.deepEqual(machineAllowed(env, repo).allow, ['quietvale'], 'insteadOf names the allowed repo');
+  git('config', 'url.https://example.com/octo/public.insteadOf', 'ex:octo/app');
+  assert.deepEqual(machineAllowed(env, repo).allow, [], 'insteadOf to another repo is that repo');
+  git('config', '--unset-all', 'url.https://example.com/octo/public.insteadOf');
+  git('config', 'url.https://example.com/octo/public.pushInsteadOf', 'ex:octo/app');
+  assert.deepEqual(machineAllowed(env, repo), TWO_ADDRESSES, 'pushInsteadOf to another repo is unsure');
 });
 
-test('checkPost: the machine allows a mark in the repo a gh command runs in, and nowhere else (#447)', () => {
+test('machineAllowed: a repo with no remote is keyed by its top folder and its first commit (#447)', () => {
+  const { base, repo, env, git, allow } = allowRepo(null);
+  const keyed = (): RepoKey => {
+    const key = repoKey(repo);
+    assert.ok(!('unsure' in key));
+    return key;
+  };
+  const unborn = keyed();
+  assert.ok('id' in unborn && unborn.id.startsWith('unborn:'));
+  allow([{ ...unborn, allow: ['quietvale'] }]);
+  mkdirSync(join(repo, 'sub'));
+  assert.deepEqual(machineAllowed(env, join(repo, 'sub')).allow, ['quietvale'], 'from a folder inside it too');
+  git('commit', '-q', '--allow-empty', '-m', 'start');
+  assert.deepEqual(machineAllowed(env, repo).allow, [], 'after the first commit, the unborn entry no longer names it');
+  const born = keyed();
+  assert.ok('id' in born && born.id.startsWith('root:'));
+  allow([{ ...born, allow: ['quietvale'] }]);
+  assert.deepEqual(machineAllowed(env, repo).allow, ['quietvale']);
+  allow([{ folder: 'repo', id: born.id, allow: ['quietvale'] }]);
+  assert.equal(machineAllowed(env, repo).unsure, "this machine's allow file is not in the shape yokoten writes", 'a relative folder is refused');
+  allow([{ folder: born.folder, allow: ['quietvale'] }]);
+  assert.ok(machineAllowed(env, repo).unsure, 'a folder entry with no id is refused');
+  allow([{ remote: born.folder, allow: ['quietvale'] }]);
+  assert.deepEqual(machineAllowed(env, repo), { allow: [], unsure: null }, 'a remote entry never matches a repo with no remote');
+  // A new repo made at the same path is another repo.
+  allow([{ ...born, allow: ['quietvale'] }]);
+  rmSync(repo, { recursive: true, force: true });
+  mkdirSync(repo);
+  git('init', '-q');
+  git('config', 'user.name', 'Test');
+  git('config', 'user.email', `1+test${at}users.noreply.github.com`);
+  git('commit', '-q', '--allow-empty', '-m', 'start again');
+  assert.deepEqual(machineAllowed(env, repo).allow, [], 'rm -rf and git init at the same path inherit nothing');
+  assert.ok(base);
+});
+
+test('checkPost: the allow applies only to a post to the repo the command runs in (#447)', () => {
   const own = allowRepo('https://example.com/octo/app');
   const other = allowRepo('https://example.com/octo/other');
   own.allow([{ remote: 'example.com/octo/app', allow: ['quietvale'] }]);
   // The other repo reads the same allow file.
   const env = own.env;
-  const command = 'gh issue create --title "check: fix a bug" --body "QuietVale ships"';
-  assert.equal(checkCommand(command, { env, cwd: own.repo }), null, 'with no yokoten.json, the guard lets it through');
-  const stopped = checkCommand(command, { env, cwd: other.repo });
+  const body = '--title "check: fix a bug" --body "QuietVale ships"';
+  const post = (command: string, cwd: string, { config, extra = {} }: { config?: typeof DEFAULTS; extra?: Env } = {}) => checkCommand(command, { env: { ...env, ...extra }, config, cwd });
+  assert.equal(post(`gh issue create ${body}`, own.repo), null, 'with no yokoten.json, the guard lets it through');
+  const stopped = post(`gh issue create ${body}`, other.repo);
   assert.equal(stopped?.id, 'private-mark');
   assert.ok(!/quietvale/i.test(formatFinding(stopped)), 'the mark is never printed');
-  assert.equal(checkCommand(command.replace('QuietVale', 'QuietVale Labs'), { env, cwd: own.repo })?.id, 'private-mark', 'the longer mark is still stopped');
+  assert.equal(post(`gh issue create ${body.replace('QuietVale', 'QuietVale Labs')}`, own.repo)?.id, 'private-mark', 'the longer mark is still stopped');
+  // A post that names another target gets no allow, from the machine or from yokoten.json (#424).
+  const allowing = { ...DEFAULTS, privacy: { ...DEFAULTS.privacy, allow: ['QuietVale'] } };
+  const targets: [string, Env?][] = [
+    [`gh issue create -R octo/public ${body}`],
+    [`gh issue create --repo=octo/public ${body}`],
+    [`gh -R octo/public issue comment 1 ${body}`],
+    [`GH_REPO=octo/public gh issue create ${body}`],
+    [`env GH_HOST=example.org gh issue create ${body}`],
+    [`gh issue create ${body}`, { GH_REPO: 'octo/public' }],
+    [`gh issue comment https://example.com/octo/public/issues/1 ${body}`],
+    ['gh api repos/octo/app/issues -f body="QuietVale ships"'],
+    [`cd ${own.repo} && gh issue comment 1 -R octo/public ${body}`],
+  ];
+  for (const [command, extra] of targets) {
+    assert.equal(post(command, own.repo, { extra })?.id, 'private-mark', `machine: ${command}`);
+    assert.equal(post(command, other.repo, { config: allowing, extra })?.id, 'private-mark', `privacy.allow: ${command}`);
+  }
+  assert.equal(post(`gh issue create ${body}`, other.repo, { config: allowing }), null, 'privacy.allow still lets a post to its own repo through');
+  assert.equal(post(`cd ${own.repo} && gh issue create ${body}`, other.repo), null, 'a cd into the allowed repo posts there');
 });
