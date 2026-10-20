@@ -3,10 +3,10 @@
 // folder gets its own file here. Claude Code reads only its own folder, in
 // runtimes/claude-code.ts; setup writes every skill to both.
 
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
+import { homeIn } from '../rules/privacy.ts';
 
 /** Where the shared Agent Skills folder keeps a user's skills. */
-export const userDir = (env: Env): string => join(env.HOME || homedir(), '.agents');
+export const userDir = (env: Env): string => join(homeIn(env), '.agents');
 export const skillFile = (env: Env, name: string): string => join(userDir(env), 'skills', name, 'SKILL.md');

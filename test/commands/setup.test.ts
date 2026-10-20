@@ -1,5 +1,6 @@
 // Tests for src/commands/setup.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';

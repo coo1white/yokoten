@@ -3,9 +3,9 @@
 // gets a sibling file with the same tool-call exports (codex.ts, gemini.ts).
 
 import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
+import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import type { Action } from '../../run/hook.ts';
 import { type Added, addHook, checkHooksFile, hasHook, isObject, type Problem, readTable, removeHook, type Settings, UnreadableHooksFile, writeSettings } from '../hooks-file.ts';
@@ -63,7 +63,7 @@ export function readStop(input: unknown): { cwd?: string; active: boolean } | nu
 }
 
 /** Where Claude Code keeps a user's skills, agents and settings. */
-export const userDir = (env: Env): string => join(env.HOME || homedir(), '.claude');
+export const userDir = (env: Env): string => join(homeIn(env), '.claude');
 export const skillFile = (env: Env, name: string): string => join(userDir(env), 'skills', name, 'SKILL.md');
 export const agentFile = (env: Env, file: string): string => join(userDir(env), 'agents', file);
 
@@ -144,8 +144,9 @@ export function addUserHooks(env: Env, cli: string, missing: string): { doctor: 
     guard: addHook(path, 'PreToolUse', 'Bash', guardCommand(cli, 'hook --commands-only', missing, { isToolCall: true })),
   };
 }
-export const hasSessionDoctor = (env: Env): boolean => hasHook(userSettings(env), 'SessionStart', 'doctor');
-export const hasUserGuard = (env: Env): boolean => hasHook(userSettings(env), 'PreToolUse', 'hook');
+// With no home folder there are no user settings to read: nothing is on (#356).
+export const hasSessionDoctor = (env: Env): boolean => homeOf(env) !== null && hasHook(userSettings(env), 'SessionStart', 'doctor');
+export const hasUserGuard = (env: Env): boolean => homeOf(env) !== null && hasHook(userSettings(env), 'PreToolUse', 'hook');
 
 /**
  * Take out the two hooks addUserHooks adds, and nothing else in the file. Null when the
@@ -165,7 +166,8 @@ export function removeUserHooks(env: Env): { doctor: 'removed' | 'not there'; gu
  * hooks, so it stands in for `install` in Claude Code.
  */
 export function hasPlugin(env: Env): boolean {
-  // A settings file yokoten can't read enables nothing.
+  // A settings file yokoten can't read, or none with no home folder, enables nothing.
+  if (!homeOf(env)) return false;
   const table = readTable(userSettings(env), []);
   const enabled = 'problem' in table ? undefined : table.settings.enabledPlugins;
   return typeof enabled === 'object' && enabled !== null && Object.entries(enabled).some(([id, on]) => id.startsWith('yokoten@') && on === true);
@@ -184,6 +186,7 @@ export interface InstalledPlugin {
  * there is no install or the file is not the shape we know.
  */
 export function readInstalledPlugin(env: Env, root: string | null): InstalledPlugin | null {
+  if (!homeOf(env)) return null;
   const plugins = join(userDir(env), 'plugins');
   let installs: unknown;
   try {

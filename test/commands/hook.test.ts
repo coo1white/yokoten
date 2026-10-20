@@ -1,14 +1,13 @@
 // Tests for src/commands/hook.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
-  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import {
   dirname,
   join,
@@ -18,6 +17,7 @@ import {
   at,
   makeSandbox,
   pick,
+  makeTempDir,
 } from '../repo/helpers.ts';
 import { redactCommand } from '../../src/commands/hook.ts';
 
@@ -25,7 +25,7 @@ import { redactCommand } from '../../src/commands/hook.ts';
 // hook: the user-level guard applies the file's own repo's rules, if yokoten is set up there (#307).
 test('hook --commands-only: an edit in a yokoten repo gets its file rules wherever the session started (#307)', () => {
   const sandbox = makeSandbox();
-  const away = mkdtempSync(join(tmpdir(), 'yokoten-away-'));
+  const away = makeTempDir('yokoten-away-');
   const edit = (file_path: string, extra?: Record<string, string>) =>
     sandbox.run(['hook', '--commands-only'], { cwd: away, input: JSON.stringify({ cwd: away, tool_name: 'Edit', tool_input: { file_path } }), extra });
   const worker = { YOKOTEN_ROLE: 'worker' };
@@ -49,7 +49,7 @@ test('hook --commands-only: an edit in a yokoten repo gets its file rules wherev
   result = sandbox.run(['hook', '--commands-only'], { cwd: parent, input: JSON.stringify({ cwd: parent, tool_name: 'Edit', tool_input: { file_path: 'repo/AGENTS.md' } }), extra: worker });
   assert.equal(result.status, 2);
   // A worktree in another folder: its own checkout, the same rules.
-  const tree = join(mkdtempSync(join(tmpdir(), 'yokoten-tree-')), 'wt');
+  const tree = join(makeTempDir('yokoten-tree-'), 'wt');
   sandbox.git('worktree', 'add', '-q', '-b', 'task', tree);
   result = edit(join(tree, 'AGENTS.md'), worker);
   assert.equal(result.status, 2);
@@ -112,7 +112,7 @@ test('hook --stop: sends the agent back once with the findings in changed files,
   for (const k of ['what', 'why', 'fix']) assert.ok(out.findings[0][k]);
   // Not a Stop event, or not a repo: the turn ends.
   for (const input of ['not json', '', 'null', '[1]']) assert.equal(sandbox.run(['hook', '--stop'], { input }).status, 0, input);
-  const away = mkdtempSync(join(tmpdir(), 'yokoten-away-'));
+  const away = makeTempDir('yokoten-away-');
   assert.equal(sandbox.run(['hook', '--stop'], { input: JSON.stringify({ cwd: away }) }).status, 0);
   // Outside a repo the guard still stops a tag push, and git's own error stays hidden:
   // an agent read it as the result of the stopped command.

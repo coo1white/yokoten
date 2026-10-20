@@ -1,22 +1,23 @@
 // Tests for src/setup/road.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import {
   mkdirSync,
-  mkdtempSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import {
   dirname,
   join,
 } from 'node:path';
 import { test } from 'node:test';
-import { fixture } from '../repo/helpers.ts';
-import { codeOwnersText } from '../../src/setup/init.ts';
+import { fixture, makeSandbox, makeTempDir } from '../repo/helpers.ts';
+import { codeOwnersText, withGitReads } from '../../src/setup/init.ts';
 import {
   type Found,
+  gitConfig,
   isLicenseName,
   onPullRequest,
   ROAD,
@@ -41,7 +42,7 @@ const marks = (found: Found[], notNow: Record<string, string> = {}) => at(found,
 
 /** The tests step on a scratch repo with these files: whether it is done, and what it says when not. */
 const testsStep = (files: Record<string, string>) => {
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-tests-step-'));
+  const dir = makeTempDir('yokoten-tests-step-');
   try {
     for (const [path, text] of Object.entries(files)) {
       mkdirSync(dirname(join(dir, path)), { recursive: true });
@@ -131,7 +132,7 @@ jobs:
 
 /** Whether the ci and titles steps are done on a scratch repo with this one workflow. */
 const ciSteps = (workflowText: string) => {
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-ci-step-'));
+  const dir = makeTempDir('yokoten-ci-step-');
   try {
     mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
     writeFileSync(join(dir, '.github', 'workflows', 'yokoten.yml'), workflowText);
@@ -251,7 +252,7 @@ test('road: the tests step stays next with only a lint step, and says what is mi
   assert.equal(testsStep(NPM_WS).what, "no workflow runs each package's tests (e.g. `npm test --workspaces`)");
   assert.equal(testsStep(PNPM_WS).what, "no workflow runs each package's tests (e.g. `pnpm -r test`)");
   const tests = ROAD.find((s) => s.key === 'tests');
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-tests-fix-'));
+  const dir = makeTempDir('yokoten-tests-fix-');
   try {
     writeFileSync(join(dir, 'package.json'), NPM_WS['package.json']);
     assert.equal(tests?.fix(dir, {}, undefined), 'add a step that runs `npm test --workspaces` to a workflow in .github/workflows');
@@ -301,6 +302,22 @@ test("road: init's CODEOWNERS with the placeholder owner is to do; with a real o
   assert.equal(codeowners.what(none, {}, undefined), 'no CODEOWNERS file');
 });
 
+// #408: a session start asked git for core.hooksPath four times. In one doctor run the
+// answer is kept; the next run asks again, so a change in between is seen.
+test('road: inside one doctor run each git answer is kept; the next run asks git again (#408)', () => {
+  const sandbox = makeSandbox();
+  const set = (value: string) => execFileSync('git', ['config', 'core.hooksPath', value], { cwd: sandbox.repo, env: sandbox.env });
+  set('one');
+  const seen = withGitReads(() => {
+    const first = gitConfig(sandbox.repo, 'core.hooksPath');
+    set('two');
+    return [first, gitConfig(sandbox.repo, 'core.hooksPath')];
+  });
+  assert.deepEqual(seen, ['one', 'one'], 'kept within the run');
+  assert.equal(gitConfig(sandbox.repo, 'core.hooksPath'), 'two', 'asked again outside it');
+  assert.deepEqual(withGitReads(() => gitConfig(sandbox.repo, 'core.hooksPath')), 'two', 'a new run asks again');
+});
+
 // ---- The license file (#376): LICENSE, LICENCE and COPYING in any case, with any suffix. ----
 
 test('road: a license file counts in each form, the Rust dual layout too', () => {
@@ -310,7 +327,7 @@ test('road: a license file counts in each form, the Rust dual layout too', () =>
   for (const name of ['LICENSES.md', 'LICENSING.md', 'LICENSES', 'UNLICENSED', 'licenseinfo', 'COPYRIGHT', 'README.md']) {
     assert.ok(!isLicenseName(name), name);
   }
-  const root = mkdtempSync(join(tmpdir(), 'yokoten-license-'));
+  const root = makeTempDir('yokoten-license-');
   try {
     const license = () => securityLacking(root).includes('license file');
     writeFileSync(join(root, 'LICENSING.md'), 'which license applies where\n');

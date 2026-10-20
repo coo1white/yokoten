@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/yokoten.ts\" doctor --session"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/yokoten.mjs\" doctor --session"
           }
         ]
       }
@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "command -v node >/dev/null 2>&1 || { echo 'yokoten: the guard cannot run, because node is not on PATH for this agent; run yokoten doctor in a terminal' >&2; exit 1; }; { err=$( ( node --max-old-space-size=256 \"${CLAUDE_PLUGIN_ROOT}/bin/yokoten.ts\" hook --commands-only 2>&1 1>&3 3>&-; c=$?; printf x; exit $c ) 2>/dev/null ); code=$?; } 3>&1; case $code in 0|2) printf %s \"${err%x}\" >&2;; *) echo \"yokoten's guard failed (exit $code), so the command is refused; run \\`yokoten doctor\\`\" >&2; code=2;; esac; exit $code"
+            "command": "command -v node >/dev/null 2>&1 || { echo 'yokoten: the guard cannot run, because node is not on PATH for this agent; run yokoten doctor in a terminal' >&2; exit 1; }; { err=$( ( node --max-old-space-size=256 \"${CLAUDE_PLUGIN_ROOT}/bin/yokoten.mjs\" hook --commands-only 2>&1 1>&3 3>&-; c=$?; printf x; exit $c ) 2>/dev/null ); code=$?; } 3>&1; case $code in 0|2) printf %s \"${err%x}\" >&2;; *) echo \"yokoten's guard failed (exit $code), so the command is refused; run \\`yokoten doctor\\`\" >&2; code=2;; esac; exit $code"
           }
         ]
       }
