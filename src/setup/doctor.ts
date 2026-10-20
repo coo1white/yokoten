@@ -4,7 +4,8 @@
 // Copying a setup once is not enough; it drifts. So doctor runs at the start of every
 // session (`--session`, via the hook install adds). A beginner can't take in a list of
 // everything missing, so a session hears three lines: the stage, the one next step, and
-// why. Full `doctor` shows the whole map. A project that decided against a step says so
+// why, and once a line about a new kit lesson that finds something here. Full `doctor`
+// shows the whole map. A project that decided against a step says so
 // in yokoten.json "notNow", and doctor stops asking.
 //
 // Doctor first checks itself: it feeds each check a known-bad input and expects a catch.
@@ -908,6 +909,8 @@ export const STATE_FILE = 'yokoten/state.json';
 export interface DoctorState {
   /** The ids of the kit's lessons that full doctor already ran in this clone (#172). */
   seenLessons?: string[];
+  /** The ids of the kit's lessons a session start already ran in this clone (#339). */
+  sessionLessons?: string[];
   [key: string]: unknown;
 }
 
@@ -927,8 +930,11 @@ export function readState(file: string | null): DoctorState {
   try {
     const state: unknown = JSON.parse(readFileSync(file, 'utf8'));
     if (!state || typeof state !== 'object' || Array.isArray(state)) return {};
-    const { seenLessons, ...rest } = state as DoctorState;
-    return Array.isArray(seenLessons) ? { ...rest, seenLessons: seenLessons.filter((id) => typeof id === 'string') } : rest;
+    const { seenLessons, sessionLessons, ...rest } = state as DoctorState;
+    const ids = (list: unknown) => (Array.isArray(list) ? list.filter((id): id is string => typeof id === 'string') : null);
+    const seen = ids(seenLessons);
+    const ran = ids(sessionLessons);
+    return { ...rest, ...(seen ? { seenLessons: seen } : {}), ...(ran ? { sessionLessons: ran } : {}) };
   } catch {
     return {};
   }
@@ -943,6 +949,35 @@ export function saveState(file: string | null, state: DoctorState): void {
   } catch {
     // a read-only git folder: the new-lesson note shows again next time
   }
+}
+
+/**
+ * What a session start hears about the kit's lessons (#339): one line, the first time a
+ * lesson new to this clone finds something here, and nothing after. A lesson is new while
+ * full doctor has not seen it (#172) and no session start has run it. Each new lesson runs
+ * at one session start per clone only, so later starts pay nothing for it. With no state
+ * file there is no "new", so nothing runs. `doctor` names the command that shows it.
+ */
+export function sessionLessonNote(root: string, notNow: Record<string, string>, stateFile: string | null, doctorCommand: string, place: LessonPlace = kitLessons()): { line: string | null; findings: Finding[] } {
+  const none = { line: null, findings: [] };
+  if (!stateFile) return none;
+  const state = readState(stateFile);
+  const ran = state.sessionLessons ?? [];
+  const known = new Set([...(state.seenLessons ?? []), ...ran]);
+  const fresh = new Set(listLessons(place).map(({ id }) => id).filter((id) => !known.has(id) && !Object.hasOwn(notNow, id)));
+  if (!fresh.size) return none;
+  // A lesson that can't run stays new: full doctor reports why, and a later start tries again.
+  const runs = runLessons(root, place, (id) => !fresh.has(id)).filter((run) => !run.error);
+  if (!runs.length) return none;
+  saveState(stateFile, { ...state, sessionLessons: [...ran, ...runs.map((run) => run.id)] });
+  const found = runs.filter((run) => run.findings.length);
+  const findings = found.flatMap((run) => run.findings);
+  if (found.length === 1) {
+    const [{ what, findings: [first] }] = found;
+    return { line: `yokoten: a new lesson learned in another project found a problem here: ${what ?? first.what}. Run ${doctorCommand} to see where.`, findings };
+  }
+  if (found.length > 1) return { line: `yokoten: ${found.length} new lessons learned in other projects found problems here. Run ${doctorCommand} to see them.`, findings };
+  return none;
 }
 
 /**
@@ -1036,15 +1071,17 @@ export const STOPPED_EARLY = 'yokoten: doctor stopped early; `yokoten doctor` li
  * What a session hears about work only on this machine (#365): only what is at risk, a
  * few lines at most, read within the time budget. `clock` is for a test.
  */
-export function sessionUnsaved(root: string, env: Env, clock?: () => number): { lines: string[]; notes: Finding[] } {
+export function sessionUnsaved(root: string, env: Env, clock?: () => number): { lines: string[]; notes: Finding[]; commonDir: string | null } {
   const facts = readUnsaved(root, { env, budget: { ms: SESSION_UNSAVED_BUDGET, ...(clock ? { clock } : {}) } });
+  // The git folder it read on the way, so the session's lesson note asks git no more (#339).
+  const commonDir = facts?.commonDir || null;
   const notes = facts ? unsavedNotes(facts, { home: env.HOME, session: true }) : [];
   const stopped = facts?.isPartial ? [STOPPED_EARLY] : [];
-  if (!notes.length) return { lines: stopped, notes };
+  if (!notes.length) return { lines: stopped, notes, commonDir };
   const more = notes.length - SESSION_UNSAVED_LIMIT;
   const lines = notes.slice(0, SESSION_UNSAVED_LIMIT).map((f) => `yokoten: ${stepText(f)}.`);
   if (more > 0) lines.push(`yokoten: ${more} more like this; \`yokoten doctor\` lists them all.`);
-  return { lines: [...lines, ...stopped, UNSAVED_OFFER], notes };
+  return { lines: [...lines, ...stopped, UNSAVED_OFFER], notes, commonDir };
 }
 
 // A compaction start (#405). The agent keeps a summary of what it heard, so hearing the
@@ -1231,8 +1268,13 @@ function doctorRun(
       blocks.push([`yokoten: ${waiting.what}`]);
       findings.push(waiting);
     }
+    // A lesson new to this clone that finds something here: one line, at one start only (#339).
+    const stateFile = unsaved.commonDir ? join(unsaved.commonDir, STATE_FILE) : findStateFile(root);
+    const lesson = sessionLessonNote(root, config.notNow, stateFile, env.CLAUDE_PLUGIN_ROOT ? '/yokoten:doctor' : '`yokoten doctor`');
+    if (lesson.line) blocks.push([lesson.line]);
+    const notes = [...unsaved.notes, ...lesson.findings];
     const ok = !failed.length && !isCoreBehind;
-    return { ok, lines: blocks.flat(), blocks, report: { ...base, ok, repo: true, stage, next, findings, ...(unsaved.notes.length ? { notes: unsaved.notes } : {}) } };
+    return { ok, lines: blocks.flat(), blocks, report: { ...base, ok, repo: true, stage, next, findings, ...(notes.length ? { notes } : {}) } };
   }
 
   lines.push(`yokoten ${VERSION}, self-test ${failed.length ? 'FAILED' : 'ok'}`);
@@ -1265,7 +1307,7 @@ function doctorRun(
     if (core.mark === 'MISSING') findings.push(core.finding);
     else if (core.mark === 'note') notes.push(core.finding);
   }
-  // Full doctor alone keeps which lessons this clone has seen; a session keeps no lessons.
+  // Full doctor keeps which lessons this clone has seen; a session start keeps only which it ran.
   const stateFile = findStateFile(root);
   const state = readState(stateFile);
   const seenLessons = state.seenLessons ?? [];
