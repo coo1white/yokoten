@@ -5,14 +5,12 @@ import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
@@ -26,6 +24,7 @@ import {
   serverGh,
   stepMark,
   withPlanning,
+  makeTempDir,
 } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
 import {
@@ -46,6 +45,8 @@ import {
   isLowOnSpace,
   isUnsavedControlCaught,
   isWsl,
+  leftoverControl,
+  leftoverTempCheck,
   listBoardSteps,
   type MachineProbe,
   machineControl,
@@ -185,7 +186,7 @@ test("road: with no gh, no network, a non-GitHub remote or a session, the server
 });
 
 test('doctor: reads the server of a GitHub origin into the road; a step not done fails, a note does not (#7)', () => {
-  const root = mkdtempSync(join(tmpdir(), 'yokoten-server-'));
+  const root = makeTempDir('yokoten-server-');
   execFileSync('git', ['init', '-q', root]);
   const run = (routes: Record<string, unknown>) => doctor(root, { env: { HOME: root }, config: DEFAULTS, gh: serverGh(routes).gh });
   let result = run(GOOD);
@@ -278,7 +279,7 @@ test("road: a private repo without rulesets waits for stage 5; nothing read is c
 });
 
 test('doctor: shows the review step in stage 4, and a session never asks gh about it (#59)', () => {
-  const root = mkdtempSync(join(tmpdir(), 'yokoten-review-'));
+  const root = makeTempDir('yokoten-review-');
   execFileSync('git', ['init', '-q', root]);
   execFileSync('git', ['remote', 'add', 'origin', `https://github.com/${REPO}.git`], { cwd: root });
   const full = doctor(root, { env: { HOME: root }, config: DEFAULTS, gh: serverGh({ ...ADMIN, [RULES]: withApprovals(1) }).gh });
@@ -299,7 +300,7 @@ test('doctor: lists the board clicks by hand only when a board is linked, and ne
   assert.deepEqual(lines.map((l) => l.replace(/:.*/, '')), Array(4).fill('  by hand     board "demo"'));
   for (const part of [/views: a Board view grouped by Status/, /"Auto-add to project": on/, /"Item closed": sets Status to Done/, /"Pull request merged": sets Status to Done/]) assert.ok(lines.some((l) => part.test(l)), String(part));
   // Through readServer and doctor: the lines appear, and the result does not change.
-  const root = mkdtempSync(join(tmpdir(), 'yokoten-board-'));
+  const root = makeTempDir('yokoten-board-');
   execFileSync('git', ['init', '-q', root]);
   execFileSync('git', ['remote', 'add', 'origin', `https://github.com/${REPO}.git`], { cwd: root });
   const plain = serverGh(GOOD).gh;
@@ -925,7 +926,7 @@ test('machine: a home that is read-only keeps no reading, and doctor goes on', (
 });
 
 test('machine: the real machine writes its reading under the home it is given, and a read-only one is left', { skip: (process.platform === 'win32' || process.getuid?.() === 0) && 'no read-only folder for root or on Windows' }, () => {
-  const home = mkdtempSync(join(tmpdir(), 'yokoten-machine-'));
+  const home = makeTempDir('yokoten-machine-');
   try {
     const env = { HOME: home };
     const cache = { free: 1, size: 2, readAt: NOW.toISOString(), distro: '<distro>', version: 2 };
@@ -994,6 +995,52 @@ test('self-test: the machine control passes the real checks and fails broken one
   // A host-drive reading that never finds the drive: the Windows drive is missed.
   const noHost: typeof diskSpaceChecks = (root, env, probe, session) => diskSpaceChecks(root, env, { ...probe, runProgram: () => '' }, session);
   assert.deepEqual(machineControl(noHost), ['host drive check']);
+});
+
+// #400: old yokoten-* folders in the temp folder. A note with the command; doctor never deletes.
+const DAY = 24 * 60 * 60 * 1000;
+function makeTempFolder(folders: Record<string, number>): string {
+  const temp = makeTempDir('yokoten-tmp-');
+  for (const [name, ageMs] of Object.entries(folders)) {
+    mkdirSync(join(temp, name));
+    writeFileSync(join(temp, name, 'data'), 'x'.repeat(2048));
+    const when = new Date(NOW.getTime() - ageMs);
+    utimesSync(join(temp, name), when, when);
+  }
+  return temp;
+}
+
+test('machine: yokoten-* folders older than a day are a note with their size and the command to remove them (#400)', () => {
+  const temp = makeTempFolder({ 'yokoten-a1': 2 * DAY, 'yokoten-adopt-b2': 3 * DAY, 'yokoten-new': DAY / 2, 'other-old': 5 * DAY });
+  writeFileSync(join(temp, 'yokoten-file'), 'not a folder');
+  const note = leftoverTempCheck({ YOKOTEN_TEMP_DIRS: temp }, fakeMachine(GB));
+  assert.equal(note?.ok, false);
+  assert.equal(note?.name, 'leftover-temp-folders');
+  assert.equal(note?.finding.what, `2 yokoten-* folder(s) older than a day in ${temp}, 4 KB`);
+  assert.equal(note?.finding.fix, `run \`find '${temp}' -maxdepth 1 -name 'yokoten-*' -mmin +1440 -exec rm -rf {} +\` yourself; it removes only the ones older than a day`);
+  assert.equal(readFileSync(join(temp, 'yokoten-a1', 'data'), 'utf8').length, 2048, 'doctor deletes nothing');
+  // Clean: only new folders, or none, or no temp folder to read: no note.
+  assert.equal(leftoverTempCheck({ YOKOTEN_TEMP_DIRS: makeTempFolder({ 'yokoten-new': DAY / 2 }) }, fakeMachine(GB)), null);
+  assert.equal(leftoverTempCheck({ YOKOTEN_TEMP_DIRS: join(temp, 'missing') }, fakeMachine(GB)), null, 'fails open');
+  assert.equal(leftoverTempCheck({ YOKOTEN_TEMP_DIRS: '' }, fakeMachine(GB)), null, 'empty turns it off');
+});
+
+test('machine: the leftover note shows in full doctor only, and never changes the exit code (#400)', () => {
+  const sandbox = makeSandbox();
+  const temp = makeTempFolder({ 'yokoten-a1': 2 * DAY });
+  const env = { HOME: sandbox.home, YOKOTEN_TEMP_DIRS: temp };
+  const full = doctor(sandbox.repo, { env, config: DEFAULTS, machine: fakeMachine(100 * GB) });
+  const clean = doctor(sandbox.repo, { env: { ...env, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, machine: fakeMachine(100 * GB) });
+  assert.equal(full.ok, clean.ok, 'a note never fails doctor');
+  assert.ok(full.lines.some((line) => line.startsWith('  note    leftover-temp-folders: 1 yokoten-* folder(s) older than a day')), full.lines.join('\n'));
+  assert.ok(!clean.lines.some((line) => line.includes('leftover-temp-folders')), 'a clean temp folder: no note');
+  const session = doctor(sandbox.repo, { env, config: DEFAULTS, machine: fakeMachine(100 * GB), session: true });
+  assert.ok(!session.lines.some((line) => line.includes('yokoten-*')), 'full doctor only');
+});
+
+test('self-test: the leftover control passes the real check and fails a broken one (#400)', () => {
+  assert.deepEqual(leftoverControl(), []);
+  assert.deepEqual(leftoverControl(() => null), ['leftover temp folder check']);
 });
 
 // #365: work only on this machine. Full doctor lists it all; a session hears what is at
@@ -1073,7 +1120,7 @@ test('doctor --session: the unsaved-work read stops at its time budget and says 
 });
 
 test('privacyNotes: the mailmap, and the kinds of mark yokoten cannot find; never a value (#390)', () => {
-  const home = mkdtempSync(join(tmpdir(), 'yokoten-privacy-'));
+  const home = makeTempDir('yokoten-privacy-');
   const env = { HOME: home, GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
   const notes = () => privacyNotes(env, null).map((note) => `${note.name}: ${note.finding.what}; ${note.finding.fix}`);
   assert.deepEqual(notes(), [
@@ -1126,7 +1173,7 @@ test('doctor: in the yokoten repo, the session and doctor count the notes from o
   const other = makeSandbox();
   assert.ok(!doctor(other.repo, { env: { HOME: sandbox.home }, config: DEFAULTS, gh: noGh }).lines.some((text) => text.includes('upstream-inbox')));
   // An empty home: no inbox, no line.
-  const empty = mkdtempSync(join(tmpdir(), 'yokoten-empty-'));
+  const empty = makeTempDir('yokoten-empty-');
   assert.equal(upstreamNote(sandbox.repo, { HOME: empty }), null);
   assert.ok(!sandbox.run(['doctor', '--session'], { extra: { HOME: empty } }).stdout.includes('lessons from other projects'));
   rmSync(empty, { recursive: true, force: true });

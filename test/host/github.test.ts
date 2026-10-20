@@ -8,14 +8,13 @@ import {
 } from 'node:crypto';
 import {
   mkdirSync,
-  mkdtempSync,
   writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { makeTempDir } from '../repo/helpers.ts';
 import {
   DEFAULTS,
   type Env,
@@ -68,7 +67,7 @@ test('token: finds the installation from the repo, then exchanges the JWT', asyn
     res.end(JSON.stringify(req.method === 'GET' ? { id: 77 } : { token: 'ghs_test' }));
   });
   await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const dir = makeTempDir();
   writeFileSync(join(dir, 'bot.pem'), pem);
   const api = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   // With NODE_USE_ENV_PROXY=1, fetch sends even a local call through the shell's proxy,
@@ -116,7 +115,7 @@ test('env: gh gets the token, and git asks gh for github.com instead of the owne
 // A child `node --test` that inherits NODE_TEST_CONTEXT reports to the parent run and exits 0
 // whatever happens (#168). The control proves the trap is real, so the fix is not a no-op.
 test('child env: a failing child node --test fails only once NODE_TEST_CONTEXT is gone (#168)', () => {
-  const file = join(mkdtempSync(join(tmpdir(), 'yokoten-child-')), 'fail.test.ts');
+  const file = join(makeTempDir('yokoten-child-'), 'fail.test.ts');
   writeFileSync(file, "import { test } from 'node:test';\ntest('fails', () => { throw new Error('fails on purpose'); });\n");
   // The parent's own env when this runs under node --test; the same value when run alone.
   const parentEnv = { ...process.env, NODE_TEST_CONTEXT: process.env.NODE_TEST_CONTEXT ?? 'child-v8' };
@@ -462,12 +461,12 @@ test('readLogin: the signed-in login, or null when gh fails or answers something
 
 // #392: the gh login, read from gh's own file on this machine, with no network call.
 test('readLocalLogins: the user under each host in hosts.yml; none when the file is missing', () => {
-  const home = mkdtempSync(join(tmpdir(), 'yokoten-gh-'));
+  const home = makeTempDir('yokoten-gh-');
   assert.deepEqual(readLocalLogins({ HOME: home }), []);
   mkdirSync(join(home, '.config', 'gh'), { recursive: true });
   writeFileSync(join(home, '.config', 'gh', 'hosts.yml'), 'github.com:\n    users:\n        octo-jane:\n    user: octo-jane\n    git_protocol: https\nghe.example.com:\n    user: "jroe"\n');
   assert.deepEqual(readLocalLogins({ HOME: home }), ['octo-jane', 'jroe']);
-  const other = mkdtempSync(join(tmpdir(), 'yokoten-gh-'));
+  const other = makeTempDir('yokoten-gh-');
   writeFileSync(join(other, 'hosts.yml'), 'github.com:\n    user: someone-else\n');
   assert.deepEqual(readLocalLogins({ HOME: home, GH_CONFIG_DIR: other }), ['someone-else'], 'GH_CONFIG_DIR first, as gh reads it');
 });

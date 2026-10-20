@@ -3,14 +3,12 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import {
-  mkdtempSync,
   readFileSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { makeTranslatedRepo } from '../repo/helpers.ts';
+import { makeTranslatedRepo, makeTempDir } from '../repo/helpers.ts';
 import {
   DEFAULTS,
   loadConfig,
@@ -80,7 +78,7 @@ test('translations: a shallow clone gives one note for the run, never a note per
   repo.commit('en.md', '# Guide\n\nStep one, changed.\n');
   repo.commit('zh2.md', `${sourceMarker('en.md')}\n# 指南二\n`);
   const shallowClone = (depth: number) => {
-    const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+    const dir = makeTempDir();
     execFileSync('git', ['clone', '-q', '--depth', String(depth), `file://${repo.root}`, dir], { stdio: 'ignore' });
     return dir;
   };
@@ -150,7 +148,7 @@ test('translations: the older marker with a blob still works, and its fix offers
   repo.commit('zh.md', `${blobMarker('en.md', repo.git('hash-object', 'en.md'))}\n# 指南\n\n第一步。\n`);
   assert.deepEqual(translationNotes(repo.root, ['zh.md']), [], 'blob is the English: current');
   // Even in a shallow clone, a blob equal to the English is current.
-  const shallow = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const shallow = makeTempDir();
   execFileSync('git', ['clone', '-q', '--depth', '1', `file://${repo.root}`, shallow], { stdio: 'ignore' });
   assert.deepEqual(translationNotes(shallow, ['zh.md']), []);
   // A stale blob: the history decides. Changed together, current; the English later, behind.

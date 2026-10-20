@@ -11,7 +11,7 @@
 // A check that passes everything looks the same as a healthy project, so this comes first.
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statfsSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statfsSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,7 +33,7 @@ import * as muse from '../agents/runtimes/muse.ts';
 import type { FolderTrust } from '../agents/folder-trust.ts';
 import { commentedFile, HAND_ADD, handAddJson, type HookState, mergeHandAdds } from '../agents/hooks-file.ts';
 import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
-import { readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advice/unsaved.ts';
+import { findTempDirs, readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advice/unsaved.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
 import { cliPath, compareCoreRules, compareVersions, isSelf, readCoreRules, summarizeUpdate } from './init.ts';
 import { countOwnMarks, fillMarks, filledLine, trySafely, installedPieces, machineMarks, mailmapState, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
@@ -70,6 +70,7 @@ export function selfTest(): string[] {
   if (compareCoreRules('# old rules\n\n## This project\n', kit).state !== 'behind' || compareCoreRules('# rules\n', kit).state !== "can't compare") failed.push('core rules check');
   failed.push(...coreRulesControl());
   failed.push(...machineControl());
+  failed.push(...leftoverControl());
   return failed;
 }
 
@@ -665,6 +666,104 @@ export function agentTempDirCheck(env: Env, probe: MachineProbe): Practice | nul
   return { name: 'agent-temp-dir', ok: false, finding: finding('agent-temp-dir', `${shown} belongs to uid ${owner}, not to you (uid ${probe.uid}), so Claude Code won't start`, `${fix}; Claude Code makes a new one when it starts`) };
 }
 
+/** A leftover folder is one older than this: a test run that is still going is newer. */
+const LEFTOVER_AGE_MS = 24 * 60 * 60 * 1000;
+/** How long full doctor spends adding up the leftovers' size; 4,000 folders take a minute. */
+const LEFTOVER_SIZE_BUDGET_MS = 1000;
+
+const formatBytes = (bytes: number) => (bytes < 1024 ** 2 ? `${Math.ceil(bytes / 1024)} KB` : bytes < GB ? `${Math.round(bytes / 1024 ** 2)} MB` : formatGb(bytes));
+
+/** The bytes of the files under `path`, until `deadline`. `isCut` says it stopped early. */
+function sizeOf(path: string, deadline: number): { bytes: number; isCut: boolean } {
+  let bytes = 0;
+  try {
+    for (const entry of readdirSync(path, { recursive: true, withFileTypes: true })) {
+      if (Date.now() > deadline) return { bytes, isCut: true };
+      if (!entry.isFile()) continue;
+      try {
+        bytes += lstatSync(join(entry.parentPath, entry.name)).size;
+      } catch {
+        // removed while we read: it no longer counts
+      }
+    }
+  } catch {
+    // can't read it: count nothing
+  }
+  return { bytes, isCut: false };
+}
+
+/**
+ * The `yokoten-*` folders older than a day in the temp folders (#400): test runs left
+ * them, and thousands of them fill a disk. Full doctor only: one read of each temp folder
+ * and one stat per folder; the size gets a second. Doctor prints the command, never runs it.
+ * Null when there are none, or nothing can be read.
+ */
+export function leftoverTempCheck(env: Env, probe: MachineProbe): Practice | null {
+  const oldest = probe.now().getTime() - LEFTOVER_AGE_MS;
+  const found: { dir: string; folders: string[] }[] = [];
+  for (const dir of findTempDirs(env)) {
+    try {
+      const folders = readdirSync(dir, { withFileTypes: true })
+        .filter((entry) => entry.name.startsWith('yokoten-') && entry.isDirectory())
+        .map((entry) => join(dir, entry.name))
+        .filter((path) => {
+          try {
+            return lstatSync(path).mtimeMs < oldest;
+          } catch {
+            return false;
+          }
+        });
+      if (folders.length) found.push({ dir, folders });
+    } catch {
+      // a temp folder that can't be read has nothing to say
+    }
+  }
+  const count = found.reduce((sum, { folders }) => sum + folders.length, 0);
+  if (!count) return null;
+  const deadline = Date.now() + LEFTOVER_SIZE_BUDGET_MS;
+  let bytes = 0;
+  let isCut = false;
+  for (const path of found.flatMap(({ folders }) => folders)) {
+    const size = sizeOf(path, deadline);
+    bytes += size.bytes;
+    if (size.isCut) {
+      isCut = true;
+      break;
+    }
+  }
+  const dirs = found.map(({ dir }) => dir);
+  // A control character or a newline can't be pasted safely: name the folders, print no command.
+  const isPastable = dirs.every((dir) => !/[\u0000-\u001f\u007f]/.test(dir));
+  const where = dirs.map((dir) => (isPastable ? dir : JSON.stringify(dir))).join(' and ');
+  const size = `${isCut ? 'more than ' : ''}${formatBytes(bytes)}`;
+  const fix = isPastable
+    ? `run \`find ${dirs.map(quoteForShell).join(' ')} -maxdepth 1 -name 'yokoten-*' -mmin +1440 -exec rm -rf {} +\` yourself; it removes only the ones older than a day`
+    : 'remove the `yokoten-*` folders older than a day from those folders yourself';
+  return { name: 'leftover-temp-folders', ok: false, finding: finding('leftover-temp-folders', `${count} yokoten-* folder(s) older than a day in ${where}, ${size}`, fix) };
+}
+
+/**
+ * A temp folder with one `yokoten-*` folder two days old: the leftover check must catch
+ * it. Empty when there is no temp folder to test in. `check` is a parameter so a test
+ * can hand in a broken one.
+ */
+export function leftoverControl(check: typeof leftoverTempCheck = leftoverTempCheck): string[] {
+  let dir = '';
+  try {
+    dir = mkdtempSync(join(tmpdir(), 'yokoten-control-'));
+    const old = join(dir, 'yokoten-old');
+    mkdirSync(old);
+    writeFileSync(join(old, 'file'), 'x');
+    const twoDaysAgo = new Date(Date.now() - 2 * LEFTOVER_AGE_MS);
+    utimesSync(old, twoDaysAgo, twoDaysAgo);
+    return check({ YOKOTEN_TEMP_DIRS: dir }, REAL_MACHINE)?.ok === false ? [] : ['leftover temp folder check'];
+  } catch {
+    return []; // no temp folder to test in; the other checks still run
+  } finally {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 /** A word for a POSIX shell: in single quotes, each single quote inside closed, escaped and reopened. */
 export const quoteForShell = (word: string): string => `'${word.replaceAll("'", "'\\''")}'`;
 
@@ -1114,9 +1213,11 @@ export function doctor(
     lines.push(`  note    ${c.name}: ${stepText(c.finding)}`);
     notes.push(c.finding);
   }
-  // Machine notes (record 0012) never fail doctor: the disk, and the agent's temp folder.
+  // Machine notes (record 0012) never fail doctor: the disk, the agent's temp folder, and
+  // old test folders left in the temp folder (#400).
   const agentTemp = agentTempDirCheck(env, probe);
-  for (const c of [...userAgentHooks(env), ...diskSpaceChecks(root, env, probe, false), ...(agentTemp ? [agentTemp] : [])]) {
+  const leftovers = leftoverTempCheck(env, probe);
+  for (const c of [...userAgentHooks(env), ...diskSpaceChecks(root, env, probe, false), ...(agentTemp ? [agentTemp] : []), ...(leftovers ? [leftovers] : [])]) {
     lines.push(`  ${c.ok ? 'ok     ' : 'note   '} ${c.name}${c.ok ? (c.detail ? `: ${c.detail}` : '') : `: ${stepText(c.finding)}`}`);
     if (!c.ok) notes.push(c.finding);
   }

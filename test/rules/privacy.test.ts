@@ -3,16 +3,14 @@
 import assert from 'node:assert/strict';
 import {
   mkdirSync,
-  mkdtempSync,
   realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { at } from '../repo/helpers.ts';
+import { at, makeTempDir } from '../repo/helpers.ts';
 import { DEFAULTS, type Env } from '../../src/rules/config.ts';
 import { checkCommand } from '../../src/rules/guards.ts';
 import { formatFinding } from '../../src/rules/message.ts';
@@ -100,7 +98,7 @@ test('private marks: matched without case, never echoed', () => {
 });
 
 test('private marks file: comments and blanks skipped, missing file is empty', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const dir = makeTempDir();
   const file = join(dir, 'marks');
   writeFileSync(file, '# header\n\nMyCity\n  myserver  \n');
   assert.deepEqual(loadMarks({ YOKOTEN_PRIVATE_MARKS: file }), ['mycity', 'myserver']);
@@ -119,7 +117,7 @@ test('output: the home folder shows as ~ (#25)', () => {
   assert.equal(hideHome('wrote /home/someone/.local/share/yokoten', { HOME: '/home/someone' }), 'wrote ~/.local/share/yokoten');
   assert.equal(hideHome('a /home/someone/ b /home/someone', { HOME: '/home/someone/' }), 'a ~/ b ~');
   assert.equal(hideHome('/x', { HOME: '/' }), '/x', 'a root home hides nothing');
-  const real = mkdtempSync(join(tmpdir(), 'yokoten-home-'));
+  const real = makeTempDir('yokoten-home-');
   const link = `${real}-link`;
   symlinkSync(real, link);
   try {
@@ -207,7 +205,7 @@ test('makeRedactor: secrets become <secret>, a private key line by line, across 
 
 // A sandbox: its own HOME, a marks file, and a folder for body files. The samples are
 // built from pieces so this file does not fail its own commit check.
-const postDir = mkdtempSync(join(tmpdir(), 'yokoten-posts-'));
+const postDir = makeTempDir('yokoten-posts-');
 const postMarks = join(postDir, 'private-marks');
 writeFileSync(postMarks, '# my marks\nquietvale\n');
 const postEnv: Env = { HOME: postDir, YOKOTEN_PRIVATE_MARKS: postMarks };
