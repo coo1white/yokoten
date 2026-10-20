@@ -176,6 +176,53 @@ Check: the tool-call guard stops `git push --force`, `-f` and a `+ref`; `--force
 Docs: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#the-core-rules
 ```
 
+### 只在这台机器上的活
+
+停电、死机、硬盘坏了，只存在这台机器上的东西就没了。所以 `doctor` 会把这些列出来，
+每一条都附上能把它保住的那条命令：
+
+| 提醒 | 意思 | 命令 |
+|---|---|---|
+| `uncommitted-changes` | 某个 worktree 里有改了没提交的文件：几个，最早的改了多久 | 在那里 `git add -A`、`git commit`，再推上去 |
+| `unpushed-commits` | 某个分支上有远端没有的提交，或者游离的 HEAD 上有哪个分支都没收着的提交 | `git push`；分支在远端还没有自己的同名分支时，用 `git push -u origin <分支>`；游离的 HEAD 先 `git switch -c <名字>` |
+| `stashes` | 有 stash。stash 从来不会被推上去 | `git stash branch <名字>`，再推上去 |
+| `stale-index-lock` | 死机留下了一个 `index.lock`，仓库里也没有 git 在跑 | 用 `rm` 删掉它 |
+| `repo-on-tmpfs` | 仓库在 tmpfs 上，一重启就清空 | 先 `git push --all origin`，再在不会被清空的地方重新 clone 一份 |
+| `repo-in-temp-folder` | 仓库在临时文件夹里，系统重启时可能会清掉 | 先 `git push --all origin`，再在不会被清空的地方重新 clone 一份 |
+| `finished-worktree` | 某个 worktree 没有改动，而且分支已经合并、远端分支已经没了，或者游离的 HEAD 已经在默认分支里 | `git worktree remove <路径>`，分支还留着 |
+| `missing-worktree` | git 还记着某个 worktree，可它的文件夹已经没了 | `git worktree prune` |
+
+提交了但没推，东西还是只在这台机器上。从 `origin/main` 拉出来的分支会跟踪 main，
+所以它的提交要推到它自己的分支，绝不推到 main。
+
+squash 合并不会在分支历史里留下痕迹，所以远端分支没了，也算作已合并。
+有未提交改动的 worktree，doctor 不会说它可以删。
+拉出来以后一次都没动过的分支或游离 HEAD 是新的，不算已合并。
+
+遇到 `index.lock` 时，doctor 会看有没有 git 进程正在这个仓库里干活。Linux 上能看到每个进程
+在哪个文件夹；macOS 和 Windows 上看不到，所以只要有 git 进程在跑，就说「判断不了」。
+这时 doctor 绝不会叫你删这个文件。凭据缓存这类一直挂着的 git 辅助进程不算。
+tmpfs 是读 `/proc/mounts` 判断的，所以只在 Linux 上查。
+
+临时文件夹指系统自己的那个（`TMPDIR`，Windows 上是 `%TEMP%`）和 `/tmp`。
+WSL 重启时会清空 `/tmp`，哪怕它不是 tmpfs。想多查几个文件夹，就写进 `YOKOTEN_TEMP_DIRS`，
+分隔方式和 `PATH` 一样。设成空的就不查了。
+
+仓库本身放在这种地方，总会单独提一条，因为这是仓库放错了地方。
+worktree 放在这里，只有里面有会丢的东西时才提，而且就写在那条提醒里，比如：
+「../w 有 3 个没提交的文件，最早的改了 2 天，而且它在临时文件夹（/tmp）里，系统重启时可能会清掉」。
+里面没有会丢的东西的 worktree，完整的 `doctor` 只用一行说一共有几个，会话开头不提。
+
+这些都只是提醒，不会让 `doctor` 失败。doctor 在这里只读：不改文件、不动引用、不碰 worktree，
+跑 git 时也关掉了可选的锁。路径都按相对仓库的写法显示，或者从 `~` 开始写。
+
+会话开头只说有风险的，最多三条。没提交的改动要放了一个小时以上才提，
+因为手上正在做的活不会忘。该收拾的 worktree 留给完整的 `doctor` 去说。
+临时文件夹里有两个以上 worktree 存着会丢的东西时，先用一行说一共有几个。
+
+会话开头在这件事上最多花一秒，免得磁盘缓存是冷的时候干等。时间到了，
+就把已经读到的说出来，再加一句「doctor 提前停了」。完整的 `doctor` 不限时间。
+
 ## 四层
 
 | 层 | 管什么 | 怎么装 |
@@ -575,7 +622,7 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
   `pr` 或 `issue`，说明查的是哪一种。`notes` 只是提醒，不会让检查失败。CI 这次跑的不是
   PR 或 issue 时，`check --pr` 和 `check --issue` 直接算通过，多一个 `skipped` 写明原因。
 - `doctor --json`：`{ version, ok, selfTest, repo, stage, stages, next, findings, steps,
-  notes, server, lessons }`。教训查出来的问题放在 `notes` 里，第一次见到的教训带 `isNew: true`。加 `--session` 时只给下一步、私有词表缺失的提醒，以及核心规则落后时的 `core-rules`。
+  notes, server, lessons }`。教训查出来的问题放在 `notes` 里，第一次见到的教训带 `isNew: true`。加 `--session` 时只给下一步、私有词表缺失的提醒，以及核心规则落后时的 `core-rules`；有只在这台机器上的活时，放在 `notes` 里。
 - `hook --json`：拦下时是 `{ blocked: true, finding }`，放行时是 `{ blocked: false, toolCall: true }`；
   标准输入读到的不是工具调用时，是 `{ blocked: false, toolCall: false }`。AI 工具本身不用它：
   它们按各自的 hook 协议，看退出码，再从标准错误读原因。

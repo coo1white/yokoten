@@ -192,6 +192,57 @@ Check: the tool-call guard stops `git push --force`, `-f` and a `+ref`; `--force
 Docs: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#the-core-rules
 ```
 
+### Work only on this machine
+
+A power cut, a crash or a dead disk loses work that lives only on one machine. So
+`doctor` lists that work, each item with the one command that saves it:
+
+| Note | What it means | The command |
+|---|---|---|
+| `uncommitted-changes` | A worktree has changed files: how many, and how old the oldest is | `git add -A` and `git commit` there, then push |
+| `unpushed-commits` | A branch has commits that no remote has, or a detached HEAD has commits that no branch holds | `git push`, or `git push -u origin <branch>` for a branch with no upstream of its own; `git switch -c <name>` first for a detached HEAD |
+| `stashes` | There are stashes. A stash is never pushed | `git stash branch <name>`, then push it |
+| `stale-index-lock` | An `index.lock` is left from a crash, and no git process runs in the repo | `rm` the file |
+| `repo-on-tmpfs` | The repo is on a tmpfs, so a restart empties it | `git push --all origin`, then clone it again in a folder that lasts |
+| `repo-in-temp-folder` | The repo is under the temp folder, which the system may empty on restart | `git push --all origin`, then clone it again in a folder that lasts |
+| `finished-worktree` | A worktree with no changes whose branch is merged, or whose upstream is gone, or whose detached HEAD is in the default branch | `git worktree remove <path>`; the branch stays |
+| `missing-worktree` | git still lists a worktree whose folder is gone | `git worktree prune` |
+
+A commit that is not pushed is still only on this machine. A branch made from
+`origin/main` tracks it, so its commits go to a branch of its own, never to main.
+
+A squash merge leaves no sign in the branch's history. So a branch whose upstream is gone
+counts as merged too. A worktree with uncommitted changes is never called safe to remove.
+A branch, or a detached HEAD, that has not moved since it was made is not called merged: it is new.
+
+For an `index.lock`, doctor looks for a git process that works in the repo. On Linux it
+reads each process's folder. On macOS and Windows it can't, so any git process means "can't
+tell". Then doctor never says to delete the file. git's long-running helpers, such as the
+credential cache, do not count. The tmpfs check reads `/proc/mounts`, so it runs on Linux only.
+
+The temp folders are the system's own (`TMPDIR`, or `%TEMP%` on Windows) and `/tmp`. WSL
+empties `/tmp` on restart, even though it is not a tmpfs. To check other folders, list them
+in `YOKOTEN_TEMP_DIRS`, split like `PATH`. Set it empty to turn the check off.
+
+The repo itself in such a folder always gets a note: that is a setup problem. A worktree
+there is named only when it holds work at risk, and then in that work's own note. For
+example: "../w has 3 uncommitted files, the oldest changed 2 days ago, and is under the temp
+folder (/tmp), which the system may empty on restart". The worktrees there that hold nothing
+at risk get one line in full `doctor`, with the count, and none in a session.
+
+All of these are notes: they never fail `doctor`. Doctor only reads here. It changes no
+file, no ref and no worktree, and git runs with optional locks off. Paths show relative to
+the repo, or from `~`.
+
+A session hears only what is at risk, three items at most. It hears uncommitted changes
+only once the oldest is an hour old, because work going on now is not forgotten. Worktrees
+to tidy up are left to full `doctor`. When two or more worktrees in the temp folder hold work
+at risk, one line gives the count first.
+
+A session spends at most one second on this, because a session must not wait on a cold
+disk. When the time is up, it shows what it read and says "doctor stopped early". Full
+`doctor` has no time limit.
+
 ## Four layers
 
 | Layer | What | How |
@@ -623,7 +674,7 @@ value.
   `history`, `pr` or `issue`. A note never fails the check. When the CI run has no
   pull request or issue, `check --pr` and `check --issue` are ok and add `skipped`, the reason.
 - `doctor --json`: `{ version, ok, selfTest, repo, stage, stages, next, findings, steps,
-  notes, server, lessons }`. The findings of a lesson are in `notes`; a new lesson has `isNew: true`. With `--session`, only the next step, the private-marks finding, and `core-rules` when the rules are behind.
+  notes, server, lessons }`. The findings of a lesson are in `notes`; a new lesson has `isNew: true`. With `--session`, only the next step, the private-marks finding, and `core-rules` when the rules are behind. Then `notes` holds the work only on this machine, if there is any.
 - `hook --json`: `{ blocked: true, finding }` when it blocks, `{ blocked: false, toolCall: true }`
   when it allows, and `{ blocked: false, toolCall: false }` when stdin is not a tool call.
   The runtimes do not use it: they read the exit code and the reason on stderr, as their
