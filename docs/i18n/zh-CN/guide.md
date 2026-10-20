@@ -1204,6 +1204,9 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 仓库外面，因为「不能公开的东西」这张清单本身也不能公开。查到问题时只报文件和行号，不会把
 词表里的词打印出来。
 
+项目自己的公开邮箱，比如自家域名下的 `support@`，也会被查出来，yokoten 不会自己放行。如果
+这个邮箱本来就是公开的，把它加进 yokoten.json 的 `privacy.allow`。
+
 这个词表是整台电脑共用的，所以私有项目的名字也该写进去。可这个项目自己的仓库总要用到自己的
 名字：在它的 yokoten.json 里，把名字加进 `privacy.allow` 就行。`privacy.allow` 里有一项和词表
 里的词一模一样（不管大小写），这个词就放行；只是其中一段、或者更长的字符串，都不算。放行只在

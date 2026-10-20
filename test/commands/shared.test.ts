@@ -116,7 +116,7 @@ test('--json: check, doctor, hook and explain print pure JSON with what, why and
     id: 'email',
     what: 'an email address',
     why: 'an email address points at a person, and git keeps it after the file is gone',
-    fix: 'use your GitHub noreply address, or a placeholder at example.com',
+    fix: 'use your GitHub noreply address, or a placeholder at example.com. If it is your project\'s own public address, such as support@ at its domain, add it to "privacy.allow" in yokoten.json',
     docs: 'https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#privacy',
     file: 'notes/a.md',
     line: 1,
