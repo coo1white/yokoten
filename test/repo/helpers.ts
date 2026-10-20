@@ -90,21 +90,24 @@ export function makeTempDir(prefix = 'yokoten-'): string {
 /** How long a test's child may run before it is killed. */
 export const CHILD_TIMEOUT_MS = 300_000;
 
+/** How much output a test's child may print before it is killed. Node's 1 MB default cut a report short (#436). */
+export const CHILD_MAX_BUFFER = 256 * 1024 * 1024;
+
 /** The line printed when a test's child is killed, or null when it ended by itself. */
 export function killedLine(testName: string | undefined, command: string, timeoutMs: number, result: { signal: NodeJS.Signals | null; error?: Error }): string | null {
-  const timedOut = (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT';
-  if (!result.signal && !timedOut) return null;
-  const why = timedOut ? `after ${timeoutMs} ms` : `by ${result.signal}`;
+  const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
+  if (!result.signal && code !== 'ETIMEDOUT' && code !== 'ENOBUFS') return null;
+  const why = code === 'ETIMEDOUT' ? `after ${timeoutMs} ms` : code === 'ENOBUFS' ? 'for printing more than maxBuffer' : `by ${result.signal}`;
   return `test ${JSON.stringify(testName ?? '(outside a test)')}: its child \`${command}\` was killed ${why}\n`;
 }
 
 /**
- * spawnSync for a test, with text output and CHILD_TIMEOUT_MS unless `timeout` is given.
+ * spawnSync for a test, with text output, CHILD_TIMEOUT_MS and CHILD_MAX_BUFFER unless given.
  * A killed child is printed on stderr with the test that ran it.
  */
 export function runChild(command: string, args: string[], options: Omit<SpawnSyncOptionsWithStringEncoding, 'encoding'> = {}): SpawnSyncReturns<string> {
   const timeout = options.timeout ?? CHILD_TIMEOUT_MS;
-  const result = spawnSync(command, args, { ...options, timeout, encoding: 'utf8' });
+  const result = spawnSync(command, args, { maxBuffer: CHILD_MAX_BUFFER, ...options, timeout, encoding: 'utf8' });
   const line = killedLine(testNames.at(-1), command, timeout, result);
   if (line) process.stderr.write(line);
   return result;

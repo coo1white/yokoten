@@ -252,6 +252,9 @@ test('child processes: a killed child names the test that ran it (#436)', () => 
   assert.deepEqual(written, ['test "child processes: a killed child names the test that ran it (#436)": its child `node` was killed after 100 ms\n']);
   assert.equal(killedLine('a', 'git', 5, { signal: 'SIGKILL' }), 'test "a": its child `git` was killed by SIGKILL\n');
   assert.equal(killedLine('a', 'git', 5, { signal: null }), null, 'a child that ended by itself');
+  const tooMuch = Object.assign(new Error('spawnSync git ENOBUFS'), { code: 'ENOBUFS' });
+  assert.equal(killedLine('a', 'git', 5, { signal: 'SIGTERM', error: tooMuch }), 'test "a": its child `git` was killed for printing more than maxBuffer\n');
+  assert.equal(runChild('node', ['-e', "process.stdout.write('x'.repeat(2 ** 21))"]).stdout.length, 2 ** 21, 'more than Node\'s 1 MB default');
   assert.equal(runChild('node', ['-e', '']).status, 0);
 });
 
