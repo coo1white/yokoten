@@ -589,7 +589,7 @@ then run with no network and no global install.
 the core rules on top. Its own text moves under `## This project`, and its headings go one
 level down; nothing else in it changes. `init` prints each heading it moved. When git has
 the old file as it was, `init` prints the command that gives it back. Otherwise it keeps a
-copy in `AGENTS.md.before-yokoten`. An `AGENTS.md` that is a link stays as it is. With a `CLAUDE.md`, it adds an `@AGENTS.md`
+copy in `AGENTS.md.before-yokoten`. YAML front matter stays at the very top. An `AGENTS.md` that is a link stays as it is. With a `CLAUDE.md`, it adds an `@AGENTS.md`
 line at the end, because Claude Code reads `AGENTS.md` only through that import. A
 `.claude/CLAUDE.md` counts too, and gets `@../AGENTS.md` when there is no root one. With
 husky or another `core.hooksPath`, it keeps that folder and adds the commit check to its

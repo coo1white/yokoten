@@ -649,6 +649,17 @@ export interface MovedRules {
   /** `######` headings: Markdown has no seventh level, so they stay as they are. */
   deepest: string[];
   hadBom: boolean;
+  /** Whether the file started with YAML front matter, which stays at the very top. */
+  frontMatter: boolean;
+}
+
+/**
+ * Split off YAML front matter: a first line `---` and a closing `---` or `...` line, with
+ * their line ends. Without a closing line there is no front matter, and `front` is empty.
+ */
+export function splitFrontMatter(text: string): { front: string; rest: string } {
+  const found = /^---[ \t]*\r?\n(?:[^\n]*\n)*?(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/.exec(text);
+  return found ? { front: found[0], rest: text.slice(found[0].length) } : { front: '', rest: text };
 }
 
 const ATX_HEADING = /^( {0,3})(#{1,6})(?=[ \t]|$)/;
@@ -736,15 +747,19 @@ export function demoteHeadings(text: string): { text: string; headings: MovedHea
  * version mark must start the file.
  */
 export function moveUnderProjectHeading(project: string, kit: string): MovedRules {
-  const hadBom = project.startsWith('﻿');
-  const own = hadBom ? project.slice(1) : project;
-  const newline = findMainNewline(own);
+  const hadBom = project.startsWith('\uFEFF');
+  const { front, rest: own } = splitFrontMatter(hadBom ? project.slice(1) : project);
+  const frontMatter = front !== '';
+  const newline = findMainNewline(front + own);
+  // Front matter stays on top, and ends in a newline so the kit's first line starts a line.
+  const top = front === '' || /\n$/.test(front) ? front : front + newline;
   const kitStart = findProjectStart(kit);
-  if (own.trim() === '') return { text: splitLines(kit).join(newline), lines: 0, headings: [], deepest: [], hadBom };
+  if (own.trim() === '') return { text: top + splitLines(kit).join(newline), lines: 0, headings: [], deepest: [], hadBom, frontMatter };
   const core = splitLines(kit.slice(0, kitStart)).join(newline);
   const demoted = demoteHeadings(own);
   return {
-    text: `${core}${PROJECT_HEADING}${newline}${newline}${demoted.text}`,
+    frontMatter,
+    text: `${top}${core}${PROJECT_HEADING}${newline}${newline}${demoted.text}`,
     lines: splitLines(own.replace(/\r?\n$/, '')).length,
     headings: demoted.headings,
     deepest: demoted.deepest,
@@ -790,10 +805,11 @@ function addCoreRules(root: string, kit: string): string[] {
   }
   const moved = moveUnderProjectHeading(project, kit);
   writeFileSync(path, moved.text);
-  if (moved.lines === 0) return [`wrote AGENTS.md: it was empty, so it now has the core rules and an empty \`${PROJECT_HEADING}\` section (${restore})`];
+  if (moved.lines === 0) return [`wrote AGENTS.md: it had no text${moved.frontMatter ? ' below its front matter' : ''}, so it now has the core rules and an empty \`${PROJECT_HEADING}\` section (${restore})`];
   const lines = [`updated AGENTS.md: the core rules are on top, and your ${moved.lines} line(s) moved under \`${PROJECT_HEADING}\`; only their heading levels changed (${restore})`];
   for (const heading of moved.headings) lines.push(`  heading one level down: ${heading.before} is now ${heading.after}`);
   if (moved.deepest.length) lines.push(`  kept at level 6 (Markdown has no level 7): ${moved.deepest.join(', ')}`);
+  if (moved.frontMatter) lines.push('  kept the front matter at the very top, as it was');
   if (moved.hadBom) lines.push('  dropped the byte order mark at the start: the kit version line must come first');
   lines.push('  read the core rules, and remove any rule of yours under them that says the same thing');
   return lines;
@@ -930,7 +946,9 @@ function compareSections(before: string[], after: string[]): SectionChanges {
  * project's mark is newer than the kit's, it is `newer`, never `behind` (#141). `updated` is the file with the kit's core part and
  * the project's own part as it is.
  */
-export function compareCoreRules(project: string, kit: string): CoreRules {
+export function compareCoreRules(file: string, kit: string): CoreRules {
+  // Front matter above the core rules is the project's: not compared, and kept by an update (#378).
+  const { front, rest: project } = splitFrontMatter(file);
   const kitStart = findProjectStart(kit);
   if (kitStart === -1) return { state: "can't compare", why: `the kit's AGENTS.md has no \`${PROJECT_HEADING}\` heading`, fix: 'report it in an issue at yokoten' };
   const start = findProjectStart(project);
@@ -949,7 +967,7 @@ export function compareCoreRules(project: string, kit: string): CoreRules {
   if (version !== null && kitVersion !== null && compareVersions(version, kitVersion) === 1) return { state: 'newer', version, kitVersion };
   const kitCore = splitLines(kit.slice(0, kitStart));
   const core = project.slice(0, start).includes('\r\n') ? kitCore.join('\r\n') : kitCore.join('\n');
-  return { state: 'behind', changes: diffLines(before, after), sections: compareSections(before, after), updated: core + project.slice(start) };
+  return { state: 'behind', changes: diffLines(before, after), sections: compareSections(before, after), updated: front + core + project.slice(start) };
 }
 
 /** The kit's AGENTS.md, rendered for this project, or null when this copy of yokoten has no kit. A project's .yokoten/ has this kit file (#145) and the kit's lessons (#77). */

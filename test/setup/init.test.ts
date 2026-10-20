@@ -49,6 +49,7 @@ import {
   moveUnderProjectHeading,
   placeHandOff,
   readKitVersion,
+  splitFrontMatter,
 } from '../../src/setup/init.ts';
 
 const guarded = (path: string, args: string) => `[ -f ${path} ] 2>/dev/null || { echo '${MISSING_PROJECT}' >&2; exit 1; }; node ${path} ${args}`;
@@ -1362,12 +1363,12 @@ test('core rules into AGENTS.md: the kit core on top, then `## This project`, th
   assert.equal(crlf.text, `${KIT_CORE.replaceAll('\n', '\r\n')}## This project\r\n\r\n## Ours\r\n\r\nrule\r\n`);
   assert.equal(compareCoreRules(crlf.text, KIT_RULES).state, 'same');
   // A byte order mark is dropped, so the kit version line comes first.
-  const bom = moveUnderProjectHeading('﻿# Ours\n', KIT_RULES);
+  const bom = moveUnderProjectHeading('\uFEFF# Ours\n', KIT_RULES);
   assert.ok(bom.hadBom);
   assert.ok(bom.text.startsWith('<!-- yokoten kit 1.0.0 -->\n'));
   assert.equal(readKitVersion(bom.text), '1.0.0');
   // An empty file, or one with blank lines only, gets the kit's file.
-  for (const empty of ['', '\n\n', '﻿']) assert.deepEqual(moveUnderProjectHeading(empty, KIT_RULES), { text: KIT_RULES, lines: 0, headings: [], deepest: [], hadBom: empty === '﻿' });
+  for (const empty of ['', '\n\n', '\uFEFF']) assert.deepEqual(moveUnderProjectHeading(empty, KIT_RULES), { text: KIT_RULES, lines: 0, headings: [], deepest: [], hadBom: empty === '\uFEFF', frontMatter: false });
 });
 
 test('init: an AGENTS.md without `## This project` gets the core rules on top, and a copy of the old file (#378)', () => {
@@ -1393,7 +1394,7 @@ test('init: an AGENTS.md without `## This project` gets the core rules on top, a
 
 test('init: a committed AGENTS.md with CRLF and a BOM moves with no copy; git gives the old one back (#378)', () => {
   const sandbox = makeSandbox();
-  const old = '﻿Rules\r\n=====\r\n\r\n```sh\r\n# a comment, not a heading\r\n```\r\n';
+  const old = '\uFEFFRules\r\n=====\r\n\r\n```sh\r\n# a comment, not a heading\r\n```\r\n';
   sandbox.write('AGENTS.md', old);
   sandbox.git('add', 'AGENTS.md');
   sandbox.git('commit', '-q', '-m', 'rules');
@@ -1415,7 +1416,7 @@ test('init: an empty AGENTS.md gets the kit file; a different copy already there
   const sandbox = makeSandbox();
   sandbox.write('AGENTS.md', '');
   const result = sandbox.run(['init']);
-  assert.match(result.stdout, /^wrote AGENTS\.md: it was empty, so it now has the core rules and an empty `## This project` section/m);
+  assert.match(result.stdout, /^wrote AGENTS\.md: it had no text, so it now has the core rules and an empty `## This project` section/m);
   assert.match(readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8'), /^## This project$/m);
 
   const other = makeSandbox();
@@ -1436,4 +1437,39 @@ test('init: an AGENTS.md that is a link is kept, so init never writes through it
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^kept AGENTS\.md: it is a link to CLAUDE\.md/m);
   assert.doesNotMatch(readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8'), /Core rules/);
+});
+
+test('core rules into AGENTS.md: YAML front matter stays at the very top, as it was (#378)', () => {
+  // `---` or `...` closes it; nothing inside is demoted, not even a `# comment` line.
+  for (const close of ['---', '...']) {
+    const front = `---\ntitle: Rules\n# a YAML comment\n${close}\n`;
+    const moved = moveUnderProjectHeading(`${front}# Ours\n`, KIT_RULES);
+    assert.ok(moved.frontMatter);
+    assert.equal(moved.text, `${front}${KIT_CORE}## This project\n\n## Ours\n`);
+    assert.deepEqual(moved.headings.map((h) => h.after), ['`## Ours`']);
+    // doctor and update read past it: the core rules are the same, and an update keeps it.
+    assert.equal(compareCoreRules(moved.text, KIT_RULES).state, 'same');
+    const behind = compareCoreRules(moved.text.replace('1. a rule', '1. an old rule'), KIT_RULES);
+    assert.ok(behind.state === 'behind' && behind.updated === moved.text, 'update --write keeps the front matter');
+  }
+  // CRLF, a BOM, and a closing line at the very end of the file.
+  assert.equal(moveUnderProjectHeading('\uFEFF---\r\na: 1\r\n---\r\nText\r\n', KIT_RULES).text, `---\r\na: 1\r\n---\r\n${KIT_CORE.replaceAll('\n', '\r\n')}## This project\r\n\r\nText\r\n`);
+  assert.equal(moveUnderProjectHeading('---\na: 1\n---', KIT_RULES).text, `---\na: 1\n---\n${KIT_RULES}`);
+  // A first line `---` with no closing line is plain text: a rule, then a heading under it.
+  assert.deepEqual(splitFrontMatter('---\n# Rules\n'), { front: '', rest: '---\n# Rules\n' });
+  const plain = moveUnderProjectHeading('---\n# Rules\nText\n', KIT_RULES);
+  assert.ok(!plain.frontMatter);
+  assert.equal(plain.text, `${KIT_CORE}## This project\n\n---\n## Rules\nText\n`);
+});
+
+test('init: an AGENTS.md with front matter keeps it on top and says so (#378)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('AGENTS.md', '---\ndescription: our rules\n---\n# Ours\n');
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^ {2}kept the front matter at the very top, as it was$/m);
+  const text = readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8');
+  assert.ok(text.startsWith('---\ndescription: our rules\n---\n<!-- yokoten kit '), text.slice(0, 80));
+  assert.ok(text.endsWith('## This project\n\n## Ours\n'));
+  assert.match(sandbox.run(['update']).stdout, /up to date/);
 });
