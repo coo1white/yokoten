@@ -668,6 +668,39 @@ The runtimes also let a call through when a hook runs past their timeout, so whe
 a call takes the guard longer than 5 seconds (`YOKOTEN_GUARD_DEADLINE_MS` changes it, up
 to 30 seconds), or fails, the guard refuses the call with 2 (`unreadable-command`).
 
+### Machine notes
+
+Some problems on the machine stop every agent session, and the agent can't see them.
+Full `doctor` lists them under `machine:` as notes. A note never changes the exit code.
+[Record 0012](records/0012-machine-checks.md) says which problems doctor looks for, and why.
+
+- **disk-space**: the disk that holds the repo is low on space. A full disk stops every
+  session. Doctor warns below 20 GB, when that is also under 10% of the disk. Set
+  `YOKOTEN_MIN_FREE_GB` to use another limit, or `0` to turn the warning off. A session
+  hears this note too.
+- **host-disk**, in WSL only: the Windows drive that holds the Linux disk file. Inside
+  WSL, `df` shows the size of the disk file, not the free space on that drive. Full
+  `doctor` reads the drive through `reg.exe`, and waits at most 3 seconds. It keeps the
+  reading in `~/.config/yokoten/machine.json`. A session runs no program: it repeats the
+  last reading when that was low. The Linux disk file only grows. So the note prints
+  the commands that let it give space back. Run them in Windows yourself:
+
+  ```
+  wsl --shutdown
+  wsl --manage <distro> --set-sparse true
+  ```
+
+- **agent-temp-dir**: another user owns Claude Code's temp folder, `/tmp/claude-<uid>`.
+  This happens when a root process makes the folder first, for example after a restart.
+  Claude Code then refuses to start. The note prints `sudo rm -rf <folder>`. Run it
+  yourself: doctor never deletes anything.
+
+### Troubleshooting
+
+**An agent won't start.** Then it can't tell you why. Open a terminal in your project
+and run `npx yokoten doctor`. Read the lines under `machine:`. A full disk and a temp
+folder owned by root are the usual causes. Each note prints the command that fixes it.
+
 ### The stop check
 
 The tool-call hook reads commands. It does not see a file that `sed` or a script
@@ -1022,6 +1055,7 @@ Environment variables:
 | `YOKOTEN_FIX_TASK=1` | The session is a fix task. It may not change test files |
 | `YOKOTEN_RELEASE_APPROVAL=1` | The owner allows a release from this session. Muse Code is not known to pass it to a hook |
 | `YOKOTEN_PRIVATE_MARKS` | Another path for the private-marks file |
+| `YOKOTEN_MIN_FREE_GB` | `doctor` notes a disk with less free space than this, in GB. `0` turns the note off. See [Machine notes](#machine-notes) |
 | `YOKOTEN_BOT_APP_ID`, `YOKOTEN_BOT_KEY`, `YOKOTEN_BOT_INSTALLATION` | The bot. See [server.md](server.md#3-the-bot-a-github-app) |
 | `YOKOTEN_GITHUB_API` | Another GitHub API address, such as GitHub Enterprise Server |
 | `LLAMA_API_KEY` or `MODEL_API_KEY`, `LLAMA_API_BASE`, `LLAMA_MODEL` | The model for `adopt`. See [A first draft of the table](#a-first-draft-of-the-table) |

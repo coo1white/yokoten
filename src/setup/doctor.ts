@@ -11,7 +11,7 @@
 // A check that passes everything looks the same as a healthy project, so this comes first.
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statfsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,7 +24,7 @@ import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
 import { type LessonPlace, listLessons, runLessons } from '../run/learn.ts';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
-import { hasPlugin, hasProjectHook, hasSessionDoctor, readInstalledPlugin, userSettingsProblem } from '../agents/runtimes/claude-code.ts';
+import { hasPlugin, hasProjectHook, hasSessionDoctor, readInstalledPlugin, tempDir as claudeTempDir, userSettingsProblem } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
 import * as copilot from '../agents/runtimes/copilot.ts';
 import * as dsh from '../agents/runtimes/deepseek-harness.ts';
@@ -67,6 +67,7 @@ export function selfTest(): string[] {
   const kit = '# rules\n\n## This project\n';
   if (compareCoreRules('# old rules\n\n## This project\n', kit).state !== 'behind' || compareCoreRules('# rules\n', kit).state !== "can't compare") failed.push('core rules check');
   failed.push(...coreRulesControl());
+  failed.push(...machineControl());
   return failed;
 }
 
@@ -331,6 +332,286 @@ export function doubleInstallCheck(env: Env): Finding | null {
   });
 }
 
+// Machine notes (record 0012): machine state that stops every agent session, where the
+// agent can't see it. Read only and cheap. A session reads one filesystem and one small
+// file, and never runs a child process. Each note is a note, never a failure, and a fix
+// that needs sudo or Windows is printed for the owner to run, never run.
+
+/** Free and total bytes of one filesystem. */
+export interface DiskSpace {
+  free: number;
+  size: number;
+}
+
+/** What the machine notes read, so a test (and the self-test) can hand in a fake machine. */
+export interface MachineProbe {
+  /** The free and total bytes of the filesystem that holds `path`. Throws when it can't read them. */
+  readDiskSpace(path: string): DiskSpace;
+  /** The uid that owns `path`, or null when nothing is there. */
+  readOwner(path: string): number | null;
+  /** A program's stdout. Throws when it fails, or runs longer than `timeoutMs`. */
+  runProgram(file: string, args: string[], timeoutMs: number): string;
+  /** A file's text, or null when it can't be read. */
+  readText(path: string): string | null;
+  /** This process's uid, or null where there is none (Windows). */
+  uid: number | null;
+  now(): Date;
+}
+
+/** The real machine. */
+export const REAL_MACHINE: MachineProbe = {
+  readDiskSpace(path) {
+    const stats = statfsSync(path);
+    return { free: Number(stats.bavail) * Number(stats.bsize), size: Number(stats.blocks) * Number(stats.bsize) };
+  },
+  readOwner(path) {
+    try {
+      return lstatSync(path).uid;
+    } catch {
+      return null;
+    }
+  },
+  runProgram: (file, args, timeoutMs) => execFileSync(file, args, { encoding: 'utf8', timeout: timeoutMs, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }),
+  readText(path) {
+    try {
+      return readFileSync(path, 'utf8');
+    } catch {
+      return null;
+    }
+  },
+  uid: process.getuid?.() ?? null,
+  now: () => new Date(),
+};
+
+const GB = 1024 ** 3;
+
+/** How long full doctor waits for reg.exe. */
+const REGISTRY_TIMEOUT_MS = 3000;
+
+/** The file that tells a Linux process it runs in WSL. */
+const WSL_INTEROP_FILE = '/proc/sys/fs/binfmt_misc/WSLInterop';
+
+/** Where WSL keeps each distro's settings, its disk file's folder among them. */
+const LXSS_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss';
+
+/**
+ * Whether a disk is low on space. The default warns below 20 GB when that is also under
+ * 10% of the disk. So a 250 GB drive with nothing free warns, and a 2 TB drive with
+ * 150 GB free does not; a small disk is not warned at once. YOKOTEN_MIN_FREE_GB, when
+ * set, is the one limit instead, in GB; 0 turns the warning off.
+ */
+export function isLowOnSpace(space: DiskSpace, env: Env): boolean {
+  const limit = Number(env.YOKOTEN_MIN_FREE_GB);
+  if (env.YOKOTEN_MIN_FREE_GB?.trim() && Number.isFinite(limit) && limit >= 0) return space.free < limit * GB;
+  return space.free < 20 * GB && space.free < space.size / 10;
+}
+
+const formatGb = (bytes: number) => `${bytes < 10 * GB ? (bytes / GB).toFixed(1) : Math.round(bytes / GB)} GB`;
+const formatSpace = (space: DiskSpace) => `${formatGb(space.free)} free of ${formatGb(space.size)}`;
+
+/** Whether this Linux runs in WSL: WSL sets WSL_DISTRO_NAME, and the interop file is there. */
+export const isWsl = (env: Env, probe: MachineProbe): boolean => Boolean(env.WSL_DISTRO_NAME) || probe.readText(WSL_INTEROP_FILE) !== null;
+
+/** One WSL distro, as the registry lists it. */
+export interface WslDistro {
+  name: string;
+  basePath: string;
+  /** 1 or 2; WSL 2 when the registry does not say. */
+  version: number;
+}
+
+/** The distros in the output of `reg.exe query <Lxss key> /s`. */
+export function parseLxss(text: string): WslDistro[] {
+  const distros: WslDistro[] = [];
+  for (const block of text.split(/\r?\n(?=HKEY_)/)) {
+    const value = (name: string) => block.match(new RegExp(`^\\s+${name}\\s+REG_\\w+\\s+(.*?)\\s*$`, 'm'))?.[1];
+    const name = value('DistributionName');
+    const basePath = value('BasePath');
+    if (!name || !basePath) continue;
+    distros.push({ name, basePath, version: Number.parseInt(value('Version') ?? '0x2', 16) === 1 ? 1 : 2 });
+  }
+  return distros;
+}
+
+/**
+ * Where Linux mounts a Windows drive, from /proc/mounts: `C:\` on /mnt/c, for example.
+ * Null when it is not mounted. Never a guess: a path that is not the drive would give
+ * this Linux disk's numbers instead.
+ */
+export function findDriveMount(letter: string, mounts: string): string | null {
+  const unescape = (field: string) => field.replace(/\\([0-7]{3})/g, (_, code: string) => String.fromCharCode(Number.parseInt(code, 8)));
+  for (const line of mounts.split('\n')) {
+    const [source, target, type] = line.split(' ');
+    if (!source || !target || !['9p', 'drvfs', 'virtiofs'].includes(type ?? '')) continue;
+    if (unescape(source).toUpperCase().startsWith(`${letter.toUpperCase()}:`)) return unescape(target);
+  }
+  return null;
+}
+
+/** The Windows drive that holds this distro's disk file, as read now; or why it can't be read. */
+export type HostDiskRead = { space: DiskSpace; distro: string; version: number } | { unread: string };
+
+/**
+ * In WSL, the Windows drive that holds this distro's disk file. Linux sees only the disk
+ * file's own size, which can be far more than the drive has. Full doctor only: it runs
+ * reg.exe, with a time cap.
+ */
+export function readHostDisk(env: Env, probe: MachineProbe): HostDiskRead {
+  const distro = env.WSL_DISTRO_NAME;
+  if (!distro) return { unread: 'WSL_DISTRO_NAME is not set' };
+  const mounts = probe.readText('/proc/mounts') ?? '';
+  const systemDrive = findDriveMount('C', mounts);
+  const programs = ['reg.exe', ...(systemDrive ? [join(systemDrive, 'Windows', 'System32', 'reg.exe')] : [])];
+  let text: string | null = null;
+  for (const program of programs) {
+    try {
+      text = probe.runProgram(program, ['query', LXSS_KEY, '/s'], REGISTRY_TIMEOUT_MS);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return { unread: 'reg.exe failed or took too long' };
+    }
+  }
+  if (text === null) return { unread: 'reg.exe is not on the PATH' };
+  const found = parseLxss(text).find((d) => d.name.toLowerCase() === distro.toLowerCase());
+  if (!found) return { unread: 'the registry does not list this distro' };
+  const letter = found.basePath.replace(/^\\\\\?\\/, '').match(/^([A-Za-z]):/)?.[1];
+  if (!letter) return { unread: 'its disk file is not on a drive letter' };
+  const mount = findDriveMount(letter, mounts);
+  if (!mount) return { unread: `drive ${letter.toUpperCase()}: is not mounted in Linux` };
+  try {
+    return { space: probe.readDiskSpace(mount), distro: found.name, version: found.version };
+  } catch {
+    return { unread: `can't read drive ${letter.toUpperCase()}:` };
+  }
+}
+
+/** The last reading of the Windows drive, kept so a session can repeat it without reg.exe. */
+export interface HostDiskCache {
+  free: number;
+  size: number;
+  /** When full doctor read it, in UTC. */
+  readAt: string;
+  distro: string;
+  version: number;
+}
+
+/** Where yokoten keeps what it read about this machine: outside every repo. */
+export const machineStateFile = (env: Env): string => join(paths(env).config, 'machine.json');
+
+/** The last reading, or null when there is none or the file is broken. */
+export function readHostCache(env: Env, probe: MachineProbe): HostDiskCache | null {
+  try {
+    const cache = (JSON.parse(probe.readText(machineStateFile(env)) ?? 'null') as { hostDisk?: HostDiskCache } | null)?.hostDisk;
+    return cache && typeof cache.free === 'number' && typeof cache.size === 'number' && typeof cache.readAt === 'string' ? cache : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Keep the last reading. A file that can't be written is left: a session then says nothing about the host. */
+function saveHostCache(env: Env, cache: HostDiskCache): void {
+  const file = machineStateFile(env);
+  try {
+    let state: Record<string, unknown> = {};
+    try {
+      const old: unknown = JSON.parse(readFileSync(file, 'utf8'));
+      if (old && typeof old === 'object' && !Array.isArray(old)) state = old as Record<string, unknown>;
+    } catch {
+      // no state yet, or a broken file: start a new one
+    }
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify({ ...state, hostDisk: cache }, null, 2)}\n`);
+  } catch {
+    // a read-only home: the next full doctor reads the host again
+  }
+}
+
+const SPACE_FIX = 'free some space: delete caches and build outputs you do not need, or move data to another disk';
+
+/** The note for a disk low on space, or null when it has room. */
+export function diskSpaceNote(where: string, space: DiskSpace, env: Env, fix: string = SPACE_FIX): Finding | null {
+  return isLowOnSpace(space, env) ? finding('disk-space', `${where} has ${formatSpace(space)}`, fix) : null;
+}
+
+/** The fix for a full Windows drive: the disk file only grows, so it says how to let it shrink. */
+function hostDiskFix(distro: string, version: number): string {
+  const sparse = version === 2 ? `. The Linux disk file only grows. To let it give free space back, run this in Windows: \`wsl --shutdown\`, then \`wsl --manage ${distro} --set-sparse true\`` : '';
+  return `free some space on that drive in Windows${sparse}`;
+}
+
+const HOST_DRIVE = 'the Windows drive that holds this Linux disk';
+
+/**
+ * The disk notes: the disk that holds the repo, and in WSL the Windows drive under it.
+ * Full doctor reads the Windows drive with reg.exe and keeps the reading. A session only
+ * repeats the kept reading, and only when it was low.
+ */
+export function diskSpaceChecks(root: string, env: Env, probe: MachineProbe, session: boolean): Practice[] {
+  const checks: Practice[] = [];
+  const note = (name: string, found: Finding): Practice => ({ name, ok: false, finding: found });
+  const fine = (name: string, detail: string): Practice => ({ name, ok: true, finding: finding('disk-space', '', ''), detail });
+  try {
+    const space = probe.readDiskSpace(root);
+    const low = diskSpaceNote('the disk that holds this repo', space, env);
+    checks.push(low ? note('disk-space', low) : fine('disk-space', formatSpace(space)));
+  } catch {
+    checks.push(note('disk-space', finding('disk-space', "can't read the free space of the disk that holds this repo", 'check it with `df -h .`, or in your file manager')));
+  }
+  if (!isWsl(env, probe)) return checks;
+  if (session) {
+    const cache = readHostCache(env, probe);
+    const low = cache && diskSpaceNote(`${HOST_DRIVE} (read ${cache.readAt.slice(0, 16).replace('T', ' ')} UTC)`, cache, env, hostDiskFix(cache.distro, cache.version));
+    if (low) checks.push(note('host-disk', low));
+    return checks;
+  }
+  const host = readHostDisk(env, probe);
+  if ('unread' in host) {
+    checks.push(note('host-disk', finding('disk-space', `can't read ${HOST_DRIVE}: ${host.unread}`, 'check its free space in Windows; when it fills, every session here stops')));
+    return checks;
+  }
+  saveHostCache(env, { free: host.space.free, size: host.space.size, readAt: probe.now().toISOString(), distro: host.distro, version: host.version });
+  const low = diskSpaceNote(HOST_DRIVE, host.space, env, hostDiskFix(host.distro, host.version));
+  checks.push(low ? note('host-disk', low) : fine('host-disk', `${formatSpace(host.space)} on ${HOST_DRIVE}`));
+  return checks;
+}
+
+/**
+ * The note when another user owns Claude Code's temp folder, often root after a restart.
+ * Claude Code then refuses to start, so the user runs full doctor in a terminal. The fix
+ * needs sudo, so doctor prints it and never runs it. Null when there is no uid (Windows)
+ * or no folder; ok when the folder is the user's.
+ */
+export function agentTempDirCheck(env: Env, probe: MachineProbe): Practice | null {
+  if (probe.uid === null) return null;
+  const dir = claudeTempDir(env, probe.uid);
+  const owner = probe.readOwner(dir);
+  if (owner === null) return null;
+  const shown = dir.replaceAll('\\', '/');
+  if (owner === probe.uid) return { name: 'agent-temp-dir', ok: true, finding: finding('agent-temp-dir', '', '') };
+  return { name: 'agent-temp-dir', ok: false, finding: finding('agent-temp-dir', `${shown} belongs to uid ${owner}, not to you (uid ${probe.uid}), so Claude Code won't start`, `run \`sudo rm -rf ${shown}\` yourself; Claude Code makes a new one when it starts`) };
+}
+
+/**
+ * A fake machine with no free space and a temp folder that root owns: both machine checks
+ * must catch it. The checks are parameters so a test can hand in broken ones.
+ */
+export function machineControl(diskCheck: typeof diskSpaceChecks = diskSpaceChecks, tempCheck: typeof agentTempDirCheck = agentTempDirCheck): string[] {
+  const fake: MachineProbe = {
+    readDiskSpace: () => ({ free: 0, size: 250 * GB }),
+    readOwner: () => 0,
+    runProgram: () => {
+      throw new Error('no programs in the control');
+    },
+    readText: () => null,
+    uid: 1000,
+    now: () => new Date(0),
+  };
+  const failed: string[] = [];
+  if (diskCheck('/', {}, fake, true).every((c) => c.ok)) failed.push('disk space check');
+  if (tempCheck({}, fake)?.ok !== false) failed.push('agent temp dir check');
+  return failed;
+}
+
 /** A server with every setting off, no label and only a closed milestone: no server step on the road may pass it (#7, #10). */
 const SERVER_CONTROL: ServerRead = {
   repo: 'octo/demo',
@@ -584,7 +865,7 @@ export interface DoctorReport {
 /** The report, as text lines and as data, and whether doctor found no problem. */
 export function doctor(
   root: string | null,
-  { env, config, session = false, gh }: { env: Env; config: Config; session?: boolean; gh?: Gh },
+  { env, config, session = false, gh, machine: probe = REAL_MACHINE }: { env: Env; config: Config; session?: boolean; gh?: Gh; machine?: MachineProbe },
 ): { ok: boolean; lines: string[]; report: DoctorReport } {
   const lines: string[] = [];
   const failed = selfTest();
@@ -621,6 +902,8 @@ export function doctor(
     if (stale) lines.push(`yokoten: ${formatFinding(stale)}`);
     const double = doubleInstallCheck(env);
     if (double) lines.push(`yokoten: ${formatFinding(double)}`);
+    // A full disk stops every session unseen (record 0012): statfs and one small file, no child process.
+    for (const c of diskSpaceChecks(root, env, probe, true).filter((check) => !check.ok)) lines.push(`yokoten: ${formatFinding(c.finding)}`);
     // A lesson the kit learned reaches the project here: the session hears it (#120).
     if (core && isCoreBehind) {
       lines.push(`yokoten: ${formatFinding(core.finding)}`);
@@ -681,8 +964,10 @@ export function doctor(
     lines.push(`  ${c.ok ? 'ok     ' : 'MISSING'} ${c.name}${c.ok ? '' : `: ${stepText(c.finding)}`}`);
     if (!c.ok) findings.push(c.finding);
   }
-  for (const c of userAgentHooks(env)) {
-    lines.push(`  ${c.ok ? 'ok     ' : 'note   '} ${c.name}${c.ok ? '' : `: ${stepText(c.finding)}`}`);
+  // Machine notes (record 0012) never fail doctor: the disk, and the agent's temp folder.
+  const agentTemp = agentTempDirCheck(env, probe);
+  for (const c of [...userAgentHooks(env), ...diskSpaceChecks(root, env, probe, false), ...(agentTemp ? [agentTemp] : [])]) {
+    lines.push(`  ${c.ok ? 'ok     ' : 'note   '} ${c.name}${c.ok ? (c.detail ? `: ${c.detail}` : '') : `: ${stepText(c.finding)}`}`);
     if (!c.ok) notes.push(c.finding);
   }
   const stale = pluginAgeCheck(root, env);

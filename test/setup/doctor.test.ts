@@ -35,10 +35,19 @@ import {
   type Unread,
 } from '../../src/host/github.ts';
 import {
+  agentTempDirCheck,
   coreRulesCheck,
   coreRulesControl,
+  diskSpaceChecks,
   doctor,
+  findDriveMount,
+  isLowOnSpace,
   listBoardSteps,
+  type MachineProbe,
+  machineControl,
+  machineStateFile,
+  parseLxss,
+  readHostDisk,
   selfTest,
 } from '../../src/setup/doctor.ts';
 import { LABELS } from '../../src/setup/plan.ts';
@@ -728,4 +737,155 @@ test('self-test: the core-rules control passes the real check and fails a broken
     return result.mark === 'note' ? { mark: 'MISSING' as const, finding: result.finding } : result;
   };
   assert.deepEqual(coreRulesControl(noVersion), ['core rules check (newer kit)']);
+});
+
+// Machine notes (record 0012): a fake machine, so no test reads the real disk or runs reg.exe.
+const GB = 1024 ** 3;
+const LXSS = [
+  'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss',
+  '    DefaultDistribution    REG_SZ    {0000}',
+  '',
+  'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{0000}',
+  '    State    REG_DWORD    0x1',
+  '    DistributionName    REG_SZ    <distro>',
+  '    Version    REG_DWORD    0x2',
+  '    BasePath    REG_SZ    \\\\?\\D:\\WSL\\<distro>',
+  '',
+  'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{1111}',
+  '    DistributionName    REG_SZ    <other>',
+  '    Version    REG_DWORD    0x1',
+  '    BasePath    REG_SZ    C:\\WSL\\<other>',
+  '',
+].join('\r\n');
+const MOUNTS = 'none / ext4 rw 0 0\nC:\\134 /mnt/c 9p rw 0 0\nD:\\134 /mnt/d 9p rw 0 0\n';
+
+/** A machine with `free` bytes on every disk, and room to change any part. Running a program throws unless `programs` answers it. */
+function fakeMachine(free: number, more: Partial<MachineProbe> & { programs?: Record<string, string>; ran?: string[] } = {}): MachineProbe {
+  const { programs = {}, ran = [], ...rest } = more;
+  return {
+    readDiskSpace: () => ({ free, size: 250 * GB }),
+    readOwner: () => null,
+    runProgram: (file) => {
+      ran.push(file);
+      if (file in programs) return programs[file];
+      throw Object.assign(new Error('not found'), { code: 'ENOENT' });
+    },
+    readText: (path) => (path === '/proc/mounts' ? MOUNTS : null),
+    uid: 1000,
+    now: () => new Date('2026-10-20T08:30:00Z'),
+    ...rest,
+  };
+}
+
+test('machine: a disk is low below 20 GB when that is also under 10%; YOKOTEN_MIN_FREE_GB is the one limit when set', () => {
+  assert.ok(isLowOnSpace({ free: 0, size: 250 * GB }, {}), 'nothing free on a 250 GB drive');
+  assert.ok(isLowOnSpace({ free: 10 * GB, size: 250 * GB }, {}));
+  assert.ok(!isLowOnSpace({ free: 150 * GB, size: 2048 * GB }, {}), '150 GB on a 2 TB drive is room enough');
+  assert.ok(!isLowOnSpace({ free: 15 * GB, size: 64 * GB }, {}), 'a small disk with a quarter free');
+  assert.ok(isLowOnSpace({ free: 40 * GB, size: 2048 * GB }, { YOKOTEN_MIN_FREE_GB: '50' }));
+  assert.ok(!isLowOnSpace({ free: 0, size: 250 * GB }, { YOKOTEN_MIN_FREE_GB: '0' }), '0 turns it off');
+  assert.ok(isLowOnSpace({ free: 0, size: 250 * GB }, { YOKOTEN_MIN_FREE_GB: 'lots' }), 'a value that is not a number keeps the default');
+});
+
+test('machine: the registry and the mounts give the Windows drive of a distro', () => {
+  assert.deepEqual(parseLxss(LXSS), [
+    { name: '<distro>', basePath: '\\\\?\\D:\\WSL\\<distro>', version: 2 },
+    { name: '<other>', basePath: 'C:\\WSL\\<other>', version: 1 },
+  ]);
+  assert.equal(findDriveMount('d', MOUNTS), '/mnt/d');
+  assert.equal(findDriveMount('E', MOUNTS), null, 'never a guess: /mnt/e would be the Linux disk');
+  assert.equal(findDriveMount('C', 'C:\\134 /mnt/my\\040drive 9p rw 0 0\n'), '/mnt/my drive');
+});
+
+test('machine: reading the Windows drive in WSL, and each way it fails, never a crash', () => {
+  const env = { WSL_DISTRO_NAME: '<distro>' };
+  const read = (machine: MachineProbe, e: Record<string, string> = env) => readHostDisk(e, machine);
+  const asked: string[] = [];
+  const space = (path: string) => {
+    asked.push(path);
+    return { free: GB, size: 250 * GB };
+  };
+  assert.deepEqual(read(fakeMachine(0, { programs: { 'reg.exe': LXSS }, readDiskSpace: space })), { space: { free: GB, size: 250 * GB }, distro: '<distro>', version: 2 });
+  assert.deepEqual(asked, ['/mnt/d'], 'the drive that holds the disk file, not the Linux disk');
+  // reg.exe not on the PATH: the copy on the system drive.
+  const ran: string[] = [];
+  assert.ok('space' in read(fakeMachine(0, { ran, programs: { '/mnt/c/Windows/System32/reg.exe': LXSS } })));
+  assert.deepEqual(ran, ['reg.exe', '/mnt/c/Windows/System32/reg.exe']);
+  const timedOut = fakeMachine(0, {
+    runProgram: () => {
+      throw Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' });
+    },
+  });
+  assert.deepEqual(read(timedOut), { unread: 'reg.exe failed or took too long' });
+  assert.deepEqual(read(fakeMachine(0)), { unread: 'reg.exe is not on the PATH' });
+  assert.deepEqual(read(fakeMachine(0), {}), { unread: 'WSL_DISTRO_NAME is not set' });
+  assert.deepEqual(read(fakeMachine(0, { programs: { 'reg.exe': LXSS } }), { WSL_DISTRO_NAME: '<gone>' }), { unread: 'the registry does not list this distro' });
+  assert.deepEqual(read(fakeMachine(0, { programs: { 'reg.exe': LXSS }, readText: () => 'none / ext4 rw 0 0\n' })), { unread: 'drive D: is not mounted in Linux' });
+});
+
+test('machine: full doctor keeps the Windows drive reading, and a session repeats it without running a program', () => {
+  const home = mkdtempSync(join(tmpdir(), 'yokoten-machine-'));
+  try {
+    const env = { HOME: home, WSL_DISTRO_NAME: '<distro>' };
+    const full = diskSpaceChecks('/repo', env, fakeMachine(0, { programs: { 'reg.exe': LXSS } }), false);
+    assert.deepEqual(full.map((c) => [c.name, c.ok]), [['disk-space', false], ['host-disk', false]]);
+    const host = full[1].finding;
+    assert.equal(host.what, 'the Windows drive that holds this Linux disk has 0.0 GB free of 250 GB');
+    assert.match(host.fix, /`wsl --shutdown`, then `wsl --manage <distro> --set-sparse true`$/, 'printed for the owner, never run');
+    assert.deepEqual(JSON.parse(readFileSync(machineStateFile(env), 'utf8')).hostDisk, { free: 0, size: 250 * GB, readAt: '2026-10-20T08:30:00.000Z', distro: '<distro>', version: 2 });
+    // A session: no program runs, and the kept reading is repeated with its time.
+    const ran: string[] = [];
+    const session = diskSpaceChecks('/repo', env, fakeMachine(100 * GB, { ran, readText: (path) => (path === machineStateFile(env) ? readFileSync(path, 'utf8') : null) }), true);
+    assert.deepEqual(ran, []);
+    assert.deepEqual(session.map((c) => [c.name, c.ok]), [['disk-space', true], ['host-disk', false]]);
+    assert.match(session[1].finding.what, /\(read 2026-10-20 08:30 UTC\) has 0\.0 GB free/);
+    // A reg.exe that fails is "can't read", a note and never ok.
+    const unread = diskSpaceChecks('/repo', env, fakeMachine(100 * GB), false);
+    assert.deepEqual(unread.map((c) => [c.name, c.ok]), [['disk-space', true], ['host-disk', false]]);
+    assert.match(unread[1].finding.what, /^can't read the Windows drive that holds this Linux disk: reg\.exe is not on the PATH$/);
+    // Outside WSL there is no Windows drive to read.
+    assert.deepEqual(diskSpaceChecks('/repo', { HOME: home }, fakeMachine(0), false).map((c) => c.name), ['disk-space']);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("machine: Claude Code's temp folder owned by another user is a note with the command to run, never run", () => {
+  const owned = (owner: number | null) => fakeMachine(GB, { readOwner: (path) => (path === join('/tmp', 'claude-1000') ? owner : null) });
+  const note = agentTempDirCheck({}, owned(0));
+  assert.equal(note?.ok, false);
+  assert.equal(note?.finding.what, "/tmp/claude-1000 belongs to uid 0, not to you (uid 1000), so Claude Code won't start");
+  assert.match(note?.finding.fix ?? '', /^run `sudo rm -rf \/tmp\/claude-1000` yourself/);
+  assert.equal(agentTempDirCheck({}, owned(1000))?.ok, true);
+  assert.equal(agentTempDirCheck({}, owned(null)), null, 'no folder yet');
+  assert.equal(agentTempDirCheck({}, { ...owned(0), uid: null }), null, 'Windows has no uid');
+  // CLAUDE_CODE_TMPDIR, then TMPDIR, moves the folder.
+  const asked: string[] = [];
+  const machine = fakeMachine(GB, { readOwner: (path) => (asked.push(path), null) });
+  agentTempDirCheck({ CLAUDE_CODE_TMPDIR: '/scratch', TMPDIR: '/other' }, machine);
+  agentTempDirCheck({ TMPDIR: '/other' }, machine);
+  assert.deepEqual(asked, [join('/scratch', 'claude-1000'), join('/other', 'claude-1000')]);
+});
+
+test('machine: the notes show in full doctor and never change the exit code; a session hears a low disk', () => {
+  const sandbox = makeSandbox();
+  const env = { HOME: sandbox.home };
+  const machine = fakeMachine(0, { readOwner: () => 0 });
+  const full = doctor(sandbox.repo, { env, config: DEFAULTS, machine });
+  const quiet = doctor(sandbox.repo, { env, config: DEFAULTS, machine: fakeMachine(100 * GB) });
+  assert.equal(full.ok, quiet.ok, 'a note never fails doctor');
+  assert.ok(full.lines.includes('  note    disk-space: the disk that holds this repo has 0.0 GB free of 250 GB; free some space: delete caches and build outputs you do not need, or move data to another disk'), full.lines.join('\n'));
+  assert.ok(full.lines.some((line) => line.startsWith('  note    agent-temp-dir: ')));
+  assert.deepEqual(full.report.notes?.filter((n) => ['disk-space', 'agent-temp-dir'].includes(n.id)).length, 2);
+  assert.ok(quiet.lines.includes('  ok      disk-space: 100 GB free of 250 GB'));
+  const session = doctor(sandbox.repo, { env, config: DEFAULTS, machine, session: true });
+  assert.ok(session.lines.some((line) => line.startsWith('yokoten: the disk that holds this repo has 0.0 GB free')));
+  assert.ok(!session.lines.some((line) => line.includes('claude-1000')), 'the temp folder is full doctor only');
+  assert.ok(!doctor(sandbox.repo, { env, config: DEFAULTS, machine: fakeMachine(100 * GB), session: true }).lines.some((line) => line.includes('disk')), 'room enough: nothing');
+});
+
+test('self-test: the machine control passes the real checks and fails broken ones (record 0012)', () => {
+  assert.deepEqual(machineControl(), []);
+  assert.ok(!selfTest().some((name) => name.includes('disk space') || name.includes('temp dir')));
+  assert.deepEqual(machineControl(() => [], () => null), ['disk space check', 'agent temp dir check']);
 });

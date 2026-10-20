@@ -194,3 +194,11 @@ export function readInstalledPlugin(env: Env, root: string | null): InstalledPlu
   }
   return null;
 }
+
+/**
+ * The folder Claude Code keeps its temp files in: `claude-<uid>` under CLAUDE_CODE_TMPDIR,
+ * else under the system temp folder, as Node's `os.tmpdir()` finds it (read in Claude
+ * Code's own code, 2026-10-20). Claude Code refuses to start when another user owns it.
+ * Windows has no uid, so there is no such folder to check.
+ */
+export const tempDir = (env: Env, uid: number): string => join(env.CLAUDE_CODE_TMPDIR || env.TMPDIR || env.TMP || env.TEMP || '/tmp', `claude-${uid}`);

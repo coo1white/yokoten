@@ -356,6 +356,18 @@ export const RULES = {
     check: '`doctor` reads ~/.config/yokoten/private-marks (or YOKOTEN_PRIVATE_MARKS) and counts its lines',
     docs: guide('privacy'),
   },
+  'disk-space': {
+    rule: 'the disk that holds the repo has room left (record 0012)',
+    why: 'on a full disk, every agent session stops, and the agent cannot tell you why',
+    check: '`doctor` reads the free space of the disk that holds the repo, with no child process; it warns below 20 GB when that is also under 10% of the disk (YOKOTEN_MIN_FREE_GB sets another limit). In WSL, full `doctor` also reads the Windows drive that holds the Linux disk file, and a session repeats the last reading; a note, never a failure',
+    docs: guide('machine-notes'),
+  },
+  'agent-temp-dir': {
+    rule: "the agent's temp folder belongs to you (record 0012)",
+    why: 'Claude Code will not start when another user, such as root, owns its temp folder',
+    check: "full `doctor` compares the owner of Claude Code's temp folder (`claude-<uid>` in the temp folder) with your uid; a note, never a failure, and doctor never deletes it",
+    docs: guide('machine-notes'),
+  },
   'server-settings': {
     rule: 'doctor reads the settings the owner sets on the server, and never changes them',
     why: 'the server is the lock: its settings hold even when a hook is off',

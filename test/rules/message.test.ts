@@ -69,8 +69,11 @@ import {
 } from '../../src/setup/advice/explain.ts';
 import {
   agentHooks,
+  agentTempDirCheck,
   coreRulesCheck,
+  diskSpaceChecks,
   machineChecks,
+  type MachineProbe,
   pluginAgeCheck,
   userAgentHooks,
 } from '../../src/setup/doctor.ts';
@@ -148,6 +151,19 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   // A sandbox home, never the real one: Copilot CLI's line shows only when ~/.copilot is there.
   mkdirSync(join(dir, '.copilot'));
   for (const c of [...agentHooks(dir, { HOME: dir }), ...machineChecks({ HOME: dir, YOKOTEN_PRIVATE_MARKS: join(dir, 'none') })]) add(c.finding);
+  // The machine notes (record 0012), from a fake machine: a full disk, and a temp folder root owns.
+  const fullMachine: MachineProbe = {
+    readDiskSpace: () => ({ free: 0, size: 2 ** 38 }),
+    readOwner: () => 0,
+    runProgram: () => {
+      throw new Error('no programs here');
+    },
+    readText: () => null,
+    uid: 1000,
+    now: () => new Date(0),
+  };
+  for (const c of diskSpaceChecks(dir, { HOME: dir }, fullMachine, false)) add(c.finding);
+  add(agentTempDirCheck({}, fullMachine)?.finding);
   // The Codex and Gemini CLI user hooks (#211): only once their folders exist.
   for (const folder of ['.codex', '.gemini']) mkdirSync(join(dir, folder));
   for (const c of userAgentHooks({ HOME: dir })) add(c.finding);
