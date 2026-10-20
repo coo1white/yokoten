@@ -987,10 +987,7 @@ const reviewCases5: string[] = [
   'echo {a,b}; gh issue comment 3 -F f.md',
   'echo a~b; gh issue comment 3 -F f.md',
   'echo ~; gh issue comment 3 -F f.md',
-  'echo "a#b"; gh issue comment 3 -F f.md',
-  'echo "it\'s"; gh issue comment 3 -F f.md',
   "echo 'open; gh issue comment 3 -F f.md",
-  'echo hi; gh issue comment 3 -F f.md --title "a (b)"',
   // The strict shape takes only a name in single quotes.
   'cat > f.md <<"EOF" && gh issue comment 3 -F f.md\nclean\nEOF',
   "cat > f.md <<'E-F' && gh issue comment 3 -F f.md\nclean\nE-F",
@@ -1020,4 +1017,71 @@ test('beside other commands, only one line of plain words is trusted (#439)', ()
     'cd ~ && gh issue comment 3 -F ~/f.md',
     'gh pr create --title t --body-file - < f.md',
   ]) assert.equal(post(command), null, command);
+});
+
+// Round 6 (#439): a heredoc word with a \ and a line end, a ~ word that is not $HOME, and
+// "..." that holds only literal characters.
+test('a \\ and a line end in a heredoc word is refused, quoted or not (#439)', () => {
+  writeFileSync(join(postDir, 'body.md'), `write to ${email}\n`);
+  // bash ends both bodies at EF, then runs gh.
+  for (const command of [
+    'cat <<"E\\\nF"\nbody\nEF\ngh issue create --title t -F body.md',
+    'cat <<E\\\nF\nbody\nEF\ngh issue create --title t -F body.md',
+    "cat <<'E\\\nF'\nbody\nEF\ngh issue create --title t -F body.md",
+  ]) assert.equal(post(command)?.id, 'unreadable-command', JSON.stringify(command));
+  rmSync(join(postDir, 'body.md'));
+});
+
+test('a ~ word after -F or cd is trusted only as ~ or ~/, unquoted (#439)', () => {
+  const secret = `write to ${email}\n`;
+  for (const dir of ['~', join('sub', '~-')]) mkdirSync(join(postDir, dir), { recursive: true });
+  // bash reads the file with the secret; the guard, reading $HOME or the cd folder, would find a clean one.
+  writeFileSync(join(postDir, 'body.md'), 'clean\n');
+  writeFileSync(join(postDir, '~', 'body.md'), secret);
+  writeFileSync(join(postDir, 'sub', '~-', 'body.md'), secret);
+  const refused = (commands: string[]) => {
+    for (const command of commands) assert.notEqual(post(command), null, JSON.stringify(command));
+  };
+  refused([
+    "gh issue create --title t -F '~/body.md'",
+    'gh issue create --title t -F "~/body.md"',
+    "gh issue create --title t -F ~'/body.md'",
+    "cd sub && gh issue create --title t -F '~-/body.md'",
+    'gh issue create --title t -F ~+/body.md',
+    'gh issue create --title t -F ~root/body.md',
+    'gh issue create --title t -F ~1/body.md',
+    "cd '~' && gh issue create --title t -F body.md",
+  ]);
+  // `~-` is the folder before the cd: bash reads ./body.md, not sub/~-/body.md.
+  writeFileSync(join(postDir, 'body.md'), secret);
+  writeFileSync(join(postDir, 'sub', '~-', 'body.md'), 'clean\n');
+  refused(['cd sub; gh issue create --title t -F ~-/body.md']);
+  // Control: a plain ~ and ~/ are $HOME, and the file there is read.
+  assert.equal(post('cd ~ && gh issue create --title t -F ~/body.md')?.id, 'email');
+  writeFileSync(join(postDir, 'body.md'), 'clean\n');
+  assert.equal(post('cd ~ && gh issue create --title t -F ~/body.md'), null);
+  for (const dir of ['~', 'sub', 'body.md']) rmSync(join(postDir, dir), { recursive: true, force: true });
+});
+
+test('inside "...", only $, backticks, \\ and ! make the line unsure (#439)', () => {
+  const literal = [
+    'gh issue create --title "Fix #12" -F body.md',
+    'echo "a#b"; gh issue create --title t -F body.md',
+    'echo "it\'s"; gh issue create --title t -F body.md',
+    'echo hi; gh issue create --title "a (b) <c> {d} | e & f * ? [g] ~h" -F body.md',
+  ];
+  writeFileSync(join(postDir, 'body.md'), 'clean\n');
+  for (const command of literal) assert.equal(post(command), null, JSON.stringify(command));
+  // The file is read: a mark in it is found.
+  writeFileSync(join(postDir, 'body.md'), 'Seen in QuietVale.\n');
+  for (const command of literal) assert.equal(post(command)?.id, 'private-mark', JSON.stringify(command));
+  writeFileSync(join(postDir, 'body.md'), 'clean\n');
+  for (const command of [
+    'echo "a$b"; gh issue create --title t -F body.md',
+    'echo "a`b`"; gh issue create --title t -F body.md',
+    'echo "a\\b"; gh issue create --title t -F body.md',
+    'echo "a!b"; gh issue create --title t -F body.md',
+    'true 2>/dev/null; gh issue create --title t -F body.md',
+  ]) assert.equal(post(command)?.id, 'unreadable-command', JSON.stringify(command));
+  rmSync(join(postDir, 'body.md'));
 });

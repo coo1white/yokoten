@@ -1354,13 +1354,14 @@ plain or through `yokoten bot -- gh`:
   shape: the whole command is `cat > body.md <<'EOF' && gh … --body-file body.md`, then the
   body and `EOF`. The path is plain and the same on both sides, and the delimiter is a name
   in single quotes, so the shell keeps the body as written. The guard checks the body, and
-  the file already there, if any.
+  the file already there, if any. A heredoc word with a `\` at a line end is refused.
 
   Any other way, a file on disk is read only when the command is one plain line: words
-  joined by `;` or `&&`, plain `'…'` or `"…"` quotes, and no `\`, `$`, backtick, `<`, `>`,
-  `|`, lone `&`, `(`, `)`, `[`, `{`, `}`, `#`, `*` or `?`; a lone `gh … --body-file - < body.md`
-  is fine too. A `~` may only start a `cd` folder or the file's path, and after a `cd` a path
-  with `..` is not read. Each command beside gh
+  joined by `;` or `&&`. Outside quotes there is no `\`, `$`, backtick, `<`, `>`,
+  `|`, lone `&`, `(`, `)`, `[`, `{`, `}`, `#`, `*` or `?`. Inside `"…"` there is no `$`,
+  backtick, `\` or `!`. A lone `gh … --body-file - < body.md` is fine too. A `~` word is
+  only a `cd` folder or the file's path. It is `~` alone or starts with `~/`, outside quotes.
+  After a `cd`, a path with `..` is not read. Each command beside gh
   must be one of these, which write no file:
 
   - `true`, `:`, `echo`, `popd`; `printf` with no argument that starts with `-v`; `test`

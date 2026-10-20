@@ -102,7 +102,7 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
   const heredoc = heredocPost(command, commands);
   const writers = commands.filter((words) => !writesNoFile(words)).length;
   // Anything but plain words may run code; after a cd, `..` goes up from the real folder.
-  const fills = heredoc === undefined && !(isPlainCommand(withoutStdin(command, commands)) && tildesPlain(commands));
+  const fills = heredoc === undefined && !(isPlainCommand(withoutStdin(command, commands)) && tildesPlain(command, commands));
   const movesFolder = commands.some((words) => ['cd', 'pushd', 'popd'].includes(words[0] ?? ''));
   for (const words of commands) {
     const reason =
@@ -818,14 +818,17 @@ const EXPORTS = new Set(['GH_REPO', 'GH_HOST', 'NODE_USE_ENV_PROXY']);
 const NAME_VALUE = /^([A-Za-z_]\w*)=/s;
 // `set` only for these: errexit, nounset and pipefail.
 const SET_FLAGS = /^[-+][eu]+$/;
-// Characters the shell takes as written, outside quotes and inside "...".
+// Characters the shell takes as written outside quotes.
 const PLAIN = /[A-Za-z0-9 \t._/=:,@%+-]/;
+// Characters that are not literal inside "...": a value, a substitution, an escape, history.
+const DOUBLE_QUOTED_SPECIAL = /[$`\\!]/;
 
 // Whether the shell surely takes this command as written (#439): one line of plain words,
-// joined only by ; and &&. Outside single quotes it refuses \, $, backticks, < and > (so no
-// heredoc, redirect or substitution), ( ) { } | and a lone &, #, *, ? and [; ~ only starts a
-// word. "..." holds only plain characters. The guard does not follow bash's grammar any
-// further than this: anything else makes a body file on disk unsure. One pass over the text.
+// joined only by ; and &&. Outside quotes it allows only PLAIN characters: no \, $, backticks,
+// < or > (so no heredoc, redirect or substitution), no ( ) { } |, lone &, #, *, ? or [. A ~
+// only starts a word, alone or before a /. Inside "..." it refuses only $, backticks, \ and !.
+// The guard does not follow bash's grammar any further than this: anything else makes a
+// body file on disk unsure. One pass over the text.
 export function isPlainCommand(text: string): boolean {
   let quote = ''; // '' outside quotes, or ' or "
   let wordStart = true;
@@ -836,13 +839,14 @@ export function isPlainCommand(text: string): boolean {
       if (character === "'") quote = '';
     } else if (quote === '"') {
       if (character === '"') quote = '';
-      else if (!PLAIN.test(character)) return false;
+      else if (DOUBLE_QUOTED_SPECIAL.test(character)) return false;
     } else if (character === "'" || character === '"') quote = character;
     else if (character === '&') {
       if (text[index + 1] !== '&') return false;
       index++;
     } else if (character === '~') {
-      if (!wordStart) return false;
+      // `~+`, `~-`, `~1`, `~user` and `~'/x'` are not $HOME: only `~` and `~/` are.
+      if (!wordStart || !/^(?:[/ \t;&]|$)/.test(text[index + 1] ?? '')) return false;
     } else if (character !== ';' && !PLAIN.test(character)) return false;
     wordStart = quote === '' && /[ \t;&]/.test(character);
   }
@@ -858,10 +862,17 @@ function withoutStdin(command: string, commands: string[][]): string {
 }
 
 // A word that starts with ~ is the folder of a cd or pushd, or the file after -F,
-// --body-file or --notes-file (#439). The scan already keeps ~ to the start of a word.
-function tildesPlain(commands: string[][]): boolean {
+// --body-file or --notes-file (#439). It is `~` or starts `~/`: the guard reads only those
+// as $HOME. The words have lost their quotes, so a '~ or "~ in the command makes any ~
+// word unsure: bash does not expand a quoted ~.
+function tildesPlain(command: string, commands: string[][]): boolean {
+  const isQuoted = /['"]~/.test(command);
   return commands.every((words) =>
-    words.every((word, index) => !word.startsWith('~') || (index === 1 && ['cd', 'pushd'].includes(words[0])) || ['-F', '--body-file', '--notes-file'].includes(words[index - 1] ?? '')),
+    words.every(
+      (word, index) =>
+        !word.startsWith('~') ||
+        (!isQuoted && (word === '~' || word.startsWith('~/')) && ((index === 1 && ['cd', 'pushd'].includes(words[0])) || ['-F', '--body-file', '--notes-file'].includes(words[index - 1] ?? ''))),
+    ),
   );
 }
 
@@ -2365,6 +2376,7 @@ function heredoc(text: string, index: number, cmd: number, groups: Group[]): { d
   const strip = text[index] === '-';
   if (strip) index++;
   while (text[index] === ' ' || text[index] === '\t') index++;
+  const start = index;
   let delim = '';
   let quoted = false;
   // A \r is part of the word, as in bash: `<<EOF\r` ends at a line `EOF\r`.
@@ -2403,8 +2415,13 @@ function heredoc(text: string, index: number, cmd: number, groups: Group[]): { d
       index++;
     }
   }
+  // A \ before a line end in the word, quoted or not: bash may join the two lines
+  // (`<<"E\⏎F"` ends at a line EF). The guard does not follow that, so it refuses (#439).
+  if (text.slice(start, index).includes('\\\n')) throw new UnsureHeredoc('a line end in a heredoc word');
   return delim ? { doc: { delim, strip, quoted, cmd, groups }, end: index } : null;
 }
+
+class UnsureHeredoc extends Error {}
 
 // Reads the heredoc bodies that start at `index`, in order, and returns the index after the
 // last one. A body is data, unless a shell or runner reads it (#196): the program of the
