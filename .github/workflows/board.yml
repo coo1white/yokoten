@@ -21,6 +21,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   sync:
+    # Until the owner adds the bot's BOT_CLIENT_ID variable and BOT_PRIVATE_KEY secret (#364),
+    # skip instead of failing on every issue and push.
+    if: vars.BOT_CLIENT_ID != ''
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
