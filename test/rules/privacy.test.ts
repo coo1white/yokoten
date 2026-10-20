@@ -12,6 +12,7 @@ import {
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { at, makeTempDir } from '../repo/helpers.ts';
+import { assertLinear } from '../../scripts/linear.ts';
 import { DEFAULTS, type Env } from '../../src/rules/config.ts';
 import { checkCommand } from '../../src/rules/guards.ts';
 import { formatFinding } from '../../src/rules/message.ts';
@@ -509,4 +510,100 @@ test('only regular files up to 1 MB are read; others pass unread (#391 review)',
   assert.equal(post('gh pr create --body-file folder'), null);
   writeFileSync(join(postDir, 'big.md'), `${email}\n${'x'.repeat(1024 * 1024)}`);
   assert.equal(post('gh pr create --body-file big.md'), null);
+});
+
+// ---- A body file the same command writes (#439) ----
+
+const plainRefusal = (command: string) => {
+  const f = post(command);
+  assert.equal(f?.id, 'unreadable-command', command);
+  assert.match(f?.what ?? '', /the guard runs/, command);
+  assert.match(f?.fix ?? '', /write the file in one command, then post it in the next/, command);
+};
+
+test('a body file a heredoc writes earlier in the same command is read (#439)', () => {
+  for (const command of [
+    `cat > fresh.md <<'EOF'\nAll clean.\nEOF\ngh issue create --title "check: add t" --body-file fresh.md`,
+    `cat <<'EOF' > fresh.md && gh issue create --title "check: add t" -F fresh.md\nAll clean.\nEOF`,
+    `cd ${postDir} && cat > fresh.md <<'EOF' && gh pr comment 3 --body-file fresh.md\nAll clean.\nEOF`,
+    `tee fresh.md >/dev/null <<'EOF'\nAll clean.\nEOF\ngh issue comment 3 -F fresh.md`,
+    `cat > fresh.md <<EOF\nNo variables here.\nEOF\ngh issue comment 3 -F ./fresh.md`,
+  ]) {
+    assert.equal(post(command), null, command);
+  }
+});
+
+test('a heredoc body file with a private value is stopped, by file and line (#439)', () => {
+  const marked = post(`cat > fresh.md <<'EOF'\nSummary\nTested in QuietVale.\nEOF\ngh issue create --title "check: add t" --body-file fresh.md`);
+  assert.equal(marked?.id, 'private-mark');
+  assert.equal(marked?.line, 2);
+  assert.ok(!formatFinding(marked).toLowerCase().includes('quietvale'));
+  assert.equal(post(`cat > fresh.md <<'EOF'\nmail ${email}\nEOF\ngh pr comment 3 -F fresh.md`)?.id, 'email');
+  // The later of two heredocs to the same file is the one posted.
+  assert.equal(post(`cat > fresh.md <<'EOF'\nclean\nEOF\ncat > fresh.md <<'EOF'\nmail ${email}\nEOF\ngh pr comment 3 -F fresh.md`)?.id, 'email');
+});
+
+test('a variable set earlier in the command is filled into the body file path (#439)', () => {
+  const dir = join(postDir, 'w439');
+  for (const [path, set] of [['$S/x.md', `S=${dir}`], ['"$S/x.md"', `export S=${dir}`], ['${S}/x.md', `S=${dir}`], ['$F', `F=${dir}/x.md`]] as const) {
+    const write = path === '$F' ? '$F' : '$S/x.md';
+    assert.equal(post(`${set}; mkdir -p ${dir}; cat > ${write} <<'EOF'\nclean\nEOF\ngh issue comment 3 --body-file ${path}`), null, path);
+    assert.equal(post(`${set}\ncat > ${write} <<'EOF'\nfrom QuietVale\nEOF\ngh issue comment 3 --body-file ${path}`)?.id, 'private-mark', path);
+  }
+  // A file already on disk, named through the variable.
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'disk.md'), `mail ${email}\n`);
+  assert.equal(post(`S=${dir}; gh issue comment 3 -F $S/disk.md`)?.id, 'email');
+});
+
+test('a body file the guard cannot follow is refused, and the reason says why (#439)', () => {
+  writeFileSync(join(postDir, 'ondisk.md'), 'clean\n');
+  for (const command of [
+    // A file written by something other than a heredoc.
+    'echo hi > out.md; gh issue comment 3 -F out.md',
+    `printf 'mail %s' x > out.md && gh issue comment 3 -F out.md`,
+    'cp other.md ondisk.md && gh issue comment 3 -F ondisk.md',
+    `cat > ondisk.md <<'EOF'\nclean\nEOF\nsed -i s/a/b/ ondisk.md\ngh issue comment 3 -F ondisk.md`,
+    `cat > ondisk.md <<'EOF'\nclean\nEOF\nrm -f *.md\ngh issue comment 3 -F ondisk.md`,
+    // A command substitution.
+    'gh issue comment 3 -F "$(mktemp)"',
+    `cat > $(echo out).md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F out.md`,
+    // A variable from outside the command, one set from another, or one kept as written.
+    'gh issue comment 3 -F $OUTSIDE/x.md',
+    `S=$HOME/w439; cat > $S/x.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F $S/x.md`,
+    `S=${postDir}; gh issue comment 3 -F '$S/ondisk.md'`,
+    `S=${postDir}; read S; gh issue comment 3 -F $S/ondisk.md`,
+    // An unquoted heredoc that fills something in.
+    `cat > out.md <<EOF\nhi $USER\nEOF\ngh issue comment 3 -F out.md`,
+    // A heredoc that may not run before gh does.
+    `cd ${postDir} && cat > out.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F out.md`,
+    `false || cat > out.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F out.md`,
+    `cat > out.md <<'EOF' &\nclean\nEOF\ngh issue comment 3 -F out.md`,
+    `(cat > out.md <<'EOF'\nclean\nEOF\n)\ngh issue comment 3 -F out.md`,
+    `cat >> ondisk.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F ondisk.md`,
+  ]) {
+    plainRefusal(command);
+  }
+  // A missing file says it doesn't exist yet.
+  assert.match(post('gh issue comment 3 -F not-there.md')?.what ?? '', /doesn't exist yet when the guard runs/);
+});
+
+test('following a body file the command writes stays linear (#439)', () => {
+  const chunk = (i: number) => `cat > $S/f${i}.md <<'EOF'\nclean $S\nEOF\n`;
+  assertLinear(
+    'heredoc body files and a gh that names them',
+    (n) => {
+      const parts = [`S=${postDir}\n`];
+      let size = 0;
+      for (let i = 0; size < n; i++) {
+        parts.push(chunk(i % 50));
+        size += 30;
+      }
+      const files = Array.from({ length: Math.ceil(n / 400) }, (_, i) => `-F $S/f${i % 50}.md -F $S$S$S/${i}.md`).join(' ');
+      return `${parts.join('')}gh issue comment 3 ${files}`;
+    },
+    (command) => {
+      post(command);
+    },
+  );
 });

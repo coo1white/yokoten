@@ -1350,7 +1350,10 @@ plain or through `yokoten bot -- gh`:
   `edit`, `review`, `merge` and `close`; `gh release` `create` and `edit`.
 - The text in `--title`, `--body`, `--notes`, `--subject` and a close `--comment`.
 - The files that `--body-file`, `--notes-file` and `-F` name, after any `cd`. A file the
-  guard can't find stops the command: give its full path.
+  same command writes first with `cat > file <<'EOF'` is read from the heredoc, and a
+  variable set earlier in the command (`S=/path; … $S/x.md`) is filled in. A file the guard
+  can't find or can't follow stops the command: the guard runs before the command, so write
+  the file in one command, then post it in the next, with its full path.
 - A body from stdin: a heredoc, a `<<<` here-string, or a `< file`.
 - `gh api` fields and `--input`, on a call that writes: a POST, PATCH or PUT, or a GraphQL
   mutation. A read, such as a search or a GraphQL query, passes.

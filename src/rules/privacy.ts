@@ -491,6 +491,12 @@ export function privateRemoteHosts(urls: string[]): string[] {
 // A file is read only when it is a regular file of at most 1 MB; another one (a device, a
 // pipe, a large file) is let through unread. A relative file the guard can't place (after
 // `cd "$X"`), or one that is missing, stops the command: an unread body would go out unchecked.
+//
+// The guard runs before the command, so a file the same command writes is not there yet
+// (#439). The guard hands over what it knows from the commands before gh (see CommandFiles):
+// the text a heredoc writes to the file, and the variables set earlier in the command. A
+// path it still can't tell, or a file something else writes, stops the command, and the
+// message says why.
 
 /** One piece of text the command posts: where it comes from, and the text. */
 interface Piece {
@@ -591,11 +597,23 @@ export function heredocBodies(text: string): string[] {
   return bodies;
 }
 
-/** A file's text, `skip` for a file the guard does not read, or `missing`. */
-type FileRead = { text: string } | 'skip' | 'missing';
+/** A file's text, `skip` for a file the guard does not read, `missing`, or `unsure`: the command sets the file or its path. */
+type FileRead = { text: string } | 'skip' | 'missing' | 'unsure';
+
+/**
+ * What the commands before gh, in the same command text, tell about its files (#439).
+ * `expand`: a path with the variables set earlier in the command filled in; null when it
+ * holds anything else the shell fills in. `written`: for a full path, the text a heredoc
+ * earlier in the command writes to it, `unsure` when something else there may write it, or
+ * undefined when no command before gh names it.
+ */
+export interface CommandFiles {
+  expand: (path: string) => string | null;
+  written: (path: string) => { text: string } | 'unsure' | undefined;
+}
 
 /** What a gh command posts: its pieces, or a file the guard can't find. Null when it posts nothing. */
-function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, command: string): { pieces: Piece[] } | { missing: string } | null {
+function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, command: string): { pieces: Piece[] } | { missing: string; unsure: boolean } | null {
   const { args } = gh;
   // The group and its subcommand: the first two words that are not options.
   const plain: string[] = [];
@@ -607,7 +625,9 @@ function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, comma
   const isApi = group === 'api';
   if (!isApi && !POSTS[group]?.includes(sub)) return null;
   const pieces: Piece[] = [];
-  let missing: string | null = null;
+  let missing: { missing: string; unsure: boolean } | null = null;
+  // A file named twice is read once: gh posts one of them, and a long body is scanned once.
+  const seen = new Set<string>();
   let method: string | null = null;
   let hasFields = false;
   let query: string | null = null;
@@ -621,8 +641,10 @@ function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, comma
       if (key === 'query') query = [gh.hereString, ...heredocBodies(command)].filter((text) => text !== undefined).join('\n');
       return;
     }
+    if (seen.has(path)) return;
+    seen.add(path);
     const read = readFile(path);
-    if (read === 'missing') missing ??= option;
+    if (read === 'missing' || read === 'unsure') missing ??= { missing: option, unsure: read === 'unsure' };
     else if (read !== 'skip') {
       pieces.push({ source: path, isFile: true, text: read.text });
       if (key === 'query') query = read.text;
@@ -676,7 +698,7 @@ function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, comma
     index++;
   }
   if (isApi && !apiWrites(apiPath(args.slice(args.indexOf('api') + 1)), method, hasFields, query)) return null;
-  return missing === null ? { pieces } : { missing };
+  return missing ?? { pieces };
 }
 
 // The options of the api subcommand that take a value (gh 2.102 help).
@@ -721,12 +743,19 @@ function shownPath(path: string, env: Env, marks: string[]): string {
  * is the whole command text, for the heredocs that feed stdin. `cwd` is where the command
  * runs, for a relative file; null when the guard cannot tell.
  */
-export function checkPost(gh: GhCommand, { env, privacy, cwd, command }: { env: Env; privacy?: Pick<Config['privacy'], 'allow'>; cwd: string | null; command: string }): Finding | null {
-  const readFile = (path: string): FileRead => {
+export function checkPost(
+  gh: GhCommand,
+  { env, privacy, cwd, command, files }: { env: Env; privacy?: Pick<Config['privacy'], 'allow'>; cwd: string | null; command: string; files?: CommandFiles },
+): Finding | null {
+  const readFile = (word: string): FileRead => {
+    const path = files ? files.expand(word) : word;
+    if (path === null) return 'unsure';
     const home = env.HOME;
     const full = path.startsWith('~/') && home ? join(home, path.slice(2)) : path;
-    if (!isAbsolute(full) && cwd === null) return 'missing';
+    if (!isAbsolute(full) && cwd === null) return 'unsure';
     const at = resolve(cwd ?? '', full);
+    const written = files?.written(at);
+    if (written !== undefined) return written;
     try {
       const stat = statSync(at);
       if (!stat.isFile() || stat.size > MAX_FILE_BYTES) return 'skip';
@@ -738,7 +767,12 @@ export function checkPost(gh: GhCommand, { env, privacy, cwd, command }: { env: 
   const posted = postedPieces(gh, readFile, command);
   if (!posted) return null;
   if ('missing' in posted) {
-    return finding('unreadable-command', `yokoten can't find the file after ${posted.missing} to check it`, 'give its full path', {
+    // The guard runs before the command (#439): a file the command writes, or a path only
+    // the running command knows, can't be read yet.
+    const what = posted.unsure
+      ? `yokoten can't tell what the file after ${posted.missing} will hold: the guard runs before the command, and this command sets the file or its path`
+      : `yokoten can't find the file after ${posted.missing} to check it: the file doesn't exist yet when the guard runs`;
+    return finding('unreadable-command', what, 'write the file in one command, then post it in the next, and give its full path', {
       why: 'the privacy check reads a body before it is posted, and an unread one could hold anything',
     });
   }

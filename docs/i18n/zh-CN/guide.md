@@ -1204,8 +1204,10 @@ agent 用 `gh` 发文字之前，工具调用守卫也跑同一套检查。直�
 - `gh issue` 的 `create`、`comment`、`edit`、`close`；`gh pr` 的 `create`、`comment`、
   `edit`、`review`、`merge`、`close`；`gh release` 的 `create`、`edit`。
 - `--title`、`--body`、`--notes`、`--subject` 里的文字，还有关闭时 `--comment` 的文字。
-- `--body-file`、`--notes-file`、`-F` 指向的文件，前面有 `cd` 也跟着找。找不到文件就拦下命令，
-  请写完整路径。
+- `--body-file`、`--notes-file`、`-F` 指向的文件，前面有 `cd` 也跟着找。如果同一条命令先用
+  `cat > 文件 <<'EOF'` 写了这个文件，就直接查 heredoc 里的文字；命令前面设的变量（`S=/路径; … $S/x.md`）
+  也会代进去。找不到文件、或者看不出文件里会是什么，就拦下命令：检查是在命令运行前做的，
+  所以请先用一条命令写好文件，下一条命令再发，并写完整路径。
 - 从标准输入来的正文：heredoc、`<<<`、`< 文件`。
 - `gh api` 的字段和 `--input`，只在会写东西的调用里查：POST、PATCH、PUT，或 GraphQL 的
   mutation。搜索、GraphQL 查询这类只读的调用直接放行。
