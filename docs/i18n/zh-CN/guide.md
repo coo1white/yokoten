@@ -629,13 +629,10 @@ AI 工具还有一条：hook 跑得比它的超时还久，工具就直接放行
 - **host-disk**，只在 WSL 里查：装着 Linux 磁盘文件的那块 Windows 盘。在 WSL 里用 `df`
   看到的是磁盘文件的大小，不是那块 Windows 盘还剩多少。完整的 `doctor` 用 `reg.exe`
   找到那块盘再去读，最多等 3 秒。读到的结果存在 `~/.config/yokoten/machine.json`。
-  会话开头不跑任何程序，只是上次读到的偏少时再说一遍。Linux 磁盘文件只会变大，不会自己
-  变小，所以提示里会给出让它把空间还回去的命令。在 Windows 里自己跑：
-
-  ```
-  wsl --shutdown
-  wsl --manage <distro> --set-sparse true
-  ```
+  会话开头不跑任何程序，只是上次读到的偏少时再说一遍。虚拟机的磁盘文件只会变大；在虚拟机
+  里删文件，Windows 盘上一点空间也空不出来。所以提示会说：先把工作备份到另一块盘，再清理
+  Windows 盘，或者照[微软的说明](https://learn.microsoft.com/windows/wsl/disk-space)把磁盘
+  文件压小、搬走。yokoten 不推荐 WSL 的稀疏模式（sparse），因为 WSL 自己把它标成了不安全。
 
 - **agent-temp-dir**：Claude Code 的临时文件夹 `/tmp/claude-<uid>` 归了别的用户。
   常见的情况是重启以后，某个 root 进程先把它建了出来。这时 Claude Code 会拒绝启动。

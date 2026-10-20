@@ -533,10 +533,16 @@ export function diskSpaceNote(where: string, space: DiskSpace, env: Env, fix: st
   return isLowOnSpace(space, env) ? finding('disk-space', `${where} has ${formatSpace(space)}`, fix) : null;
 }
 
-/** The fix for a full Windows drive: the disk file only grows, so it says how to let it shrink. */
-function hostDiskFix(distro: string, version: number): string {
-  const sparse = version === 2 ? `. The Linux disk file only grows. To let it give free space back, run this in Windows: \`wsl --shutdown\`, then \`wsl --manage ${distro} --set-sparse true\`` : '';
-  return `free some space on that drive in Windows${sparse}`;
+/** Microsoft's guide to a WSL disk file: how to compact it, and how to move it. */
+export const WSL_DISK_GUIDE = 'https://learn.microsoft.com/windows/wsl/disk-space';
+
+/**
+ * The fix for a full Windows drive. A WSL 2 disk file only grows, so the fix points to
+ * Microsoft's guide, never to a command: its sparse mode is marked unsafe (record 0012).
+ */
+function hostDiskFix(version: number): string {
+  if (version !== 2) return 'free some space on that drive in Windows';
+  return `free some space on that drive in Windows. The VM's disk file only grows. Deleting files inside the VM frees nothing on the Windows drive. Back up your work to another drive first. Then free space on the Windows drive, or shrink or move the disk file: ${WSL_DISK_GUIDE}`;
 }
 
 const HOST_DRIVE = 'the Windows drive that holds this Linux disk';
@@ -560,7 +566,7 @@ export function diskSpaceChecks(root: string, env: Env, probe: MachineProbe, ses
   if (!isWsl(env, probe)) return checks;
   if (session) {
     const cache = readHostCache(env, probe);
-    const low = cache && diskSpaceNote(`${HOST_DRIVE} (read ${cache.readAt.slice(0, 16).replace('T', ' ')} UTC)`, cache, env, hostDiskFix(cache.distro, cache.version));
+    const low = cache && diskSpaceNote(`${HOST_DRIVE} (read ${cache.readAt.slice(0, 16).replace('T', ' ')} UTC)`, cache, env, hostDiskFix(cache.version));
     if (low) checks.push(note('host-disk', low));
     return checks;
   }
@@ -570,7 +576,7 @@ export function diskSpaceChecks(root: string, env: Env, probe: MachineProbe, ses
     return checks;
   }
   saveHostCache(env, { free: host.space.free, size: host.space.size, readAt: probe.now().toISOString(), distro: host.distro, version: host.version });
-  const low = diskSpaceNote(HOST_DRIVE, host.space, env, hostDiskFix(host.distro, host.version));
+  const low = diskSpaceNote(HOST_DRIVE, host.space, env, hostDiskFix(host.version));
   checks.push(low ? note('host-disk', low) : fine('host-disk', `${formatSpace(host.space)} on ${HOST_DRIVE}`));
   return checks;
 }

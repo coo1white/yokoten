@@ -36,7 +36,7 @@ The six proposals, against these rules:
 | Proposal | Decision |
 |---|---|
 | Free space on the host drive | Yes |
-| A WSL disk file that can't shrink | Yes, as a hint on the host-drive note |
+| A WSL disk file that can't shrink | Yes, as a hint on the host-drive note. The hint points to Microsoft's guide, not to a command: WSL marks its sparse mode unsafe, after reports of data corruption |
 | Build outputs and caches across worktrees | Later, on top of the worktree notes of #365 |
 | An agent temp folder owned by another user | Yes, in full doctor: the agent can't start, so the user runs `yokoten doctor` in a terminal |
 | A half-written line in an agent's transcript | No: the transcript is the agent's private file. The guide's troubleshooting covers it |

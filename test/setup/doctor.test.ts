@@ -831,7 +831,8 @@ test('machine: full doctor keeps the Windows drive reading, and a session repeat
     assert.deepEqual(full.map((c) => [c.name, c.ok]), [['disk-space', false], ['host-disk', false]]);
     const host = full[1].finding;
     assert.equal(host.what, 'the Windows drive that holds this Linux disk has 0.0 GB free of 250 GB');
-    assert.match(host.fix, /`wsl --shutdown`, then `wsl --manage <distro> --set-sparse true`$/, 'printed for the owner, never run');
+    assert.match(host.fix, /Back up your work to another drive first\. Then free space on the Windows drive, or shrink or move the disk file: https:\/\/learn\.microsoft\.com\/windows\/wsl\/disk-space$/);
+    assert.doesNotMatch(host.fix, /sparse|allow-unsafe/, 'never the flag WSL marks unsafe');
     assert.deepEqual(JSON.parse(readFileSync(machineStateFile(env), 'utf8')).hostDisk, { free: 0, size: 250 * GB, readAt: '2026-10-20T08:30:00.000Z', distro: '<distro>', version: 2 });
     // A session: no program runs, and the kept reading is repeated with its time.
     const ran: string[] = [];

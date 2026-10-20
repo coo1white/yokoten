@@ -682,13 +682,11 @@ Full `doctor` lists them under `machine:` as notes. A note never changes the exi
   WSL, `df` shows the size of the disk file, not the free space on that drive. Full
   `doctor` reads the drive through `reg.exe`, and waits at most 3 seconds. It keeps the
   reading in `~/.config/yokoten/machine.json`. A session runs no program: it repeats the
-  last reading when that was low. The Linux disk file only grows. So the note prints
-  the commands that let it give space back. Run them in Windows yourself:
-
-  ```
-  wsl --shutdown
-  wsl --manage <distro> --set-sparse true
-  ```
+  last reading when that was low. The VM's disk file only grows. Deleting files inside
+  the VM frees nothing on the Windows drive. So the note says: back up your work to
+  another drive first. Then free space on the Windows drive, or shrink or move the disk
+  file with [Microsoft's guide](https://learn.microsoft.com/windows/wsl/disk-space).
+  yokoten does not suggest WSL's sparse mode: WSL marks it unsafe.
 
 - **agent-temp-dir**: another user owns Claude Code's temp folder, `/tmp/claude-<uid>`.
   This happens when a root process makes the folder first, for example after a restart.
