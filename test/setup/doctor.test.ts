@@ -42,6 +42,7 @@ import {
   doctor,
   isUnsavedControlCaught,
   listBoardSteps,
+  privacyNotes,
   selfTest,
   SESSION_UNSAVED_BUDGET,
   sessionUnsaved,
@@ -811,4 +812,25 @@ test('doctor --session: the unsaved-work read stops at its time budget and says 
   assert.ok(!fast.lines.includes(STOPPED_EARLY));
   assert.deepEqual(fast.notes.map((f) => f.id), ['unpushed-commits']);
   assert.equal(fast.lines.at(-1), UNSAVED_OFFER);
+});
+
+test('privacyNotes: the mailmap, and the kinds of mark yokoten cannot find; never a value (#390)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'yokoten-privacy-'));
+  const env = { HOME: home, GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
+  const notes = () => privacyNotes(env, null).map((note) => `${note.name}: ${note.finding.what}; ${note.finding.fix}`);
+  assert.deepEqual(notes(), [
+    'mailmap: git log and git show print your name and email as they are; run `yokoten install`; it sets a git mailmap outside every repo',
+    `private-mark-kinds: your private marks may lack your real name, your city, your domains; add them to ${join(home, '.config', 'yokoten', 'private-marks')}, one per line`,
+  ]);
+  execFileSync('git', ['config', '--global', 'mailmap.file', '~/.config/yokoten/mailmap'], { env: { ...process.env, ...env } });
+  mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(join(home, '.config', 'yokoten', 'private-marks'), 'Jane Example\nFakeville\njanex.dev\n');
+  assert.deepEqual(notes(), []);
+  execFileSync('git', ['config', '--global', 'mailmap.file', '/elsewhere/mailmap'], { env: { ...process.env, ...env } });
+  assert.deepEqual(notes(), ['mailmap: git uses your own mailmap file, not ~/.config/yokoten/mailmap; add the lines of ~/.config/yokoten/mailmap to your file']);
+  // Another agent on this machine: its output is not filtered, and the note says how to opt in.
+  mkdirSync(join(home, '.codex'));
+  assert.equal(notes()[0], 'private-output: only Claude Code hides your details in command output; other agents show it as it is; to stop those commands there instead, set "privacy": { "output": "stop" } in yokoten.json');
+  assert.equal(privacyNotes(env, null, 'stop').length, 1, 'with "stop", only the mailmap note is left');
+  rmSync(home, { recursive: true, force: true });
 });

@@ -1,8 +1,10 @@
 // Tests for src/commands/check.ts.
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import {
   existsSync,
+  mkdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -11,8 +13,11 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   at,
+  CLI,
   makeSandbox,
 } from '../repo/helpers.ts';
+import { cutPoint } from '../../src/commands/check.ts';
+import { wrapForRedact } from '../../src/rules/guards.ts';
 
 test('check --pr: reads the CI event, lists the changed files from git, notes long prose (#47)', () => {
   const sandbox = makeSandbox();
@@ -335,4 +340,108 @@ test('check --pr: a Dependabot pull request passes with notes; the same body fro
   result = sandbox.run(['check', '--pr', '--json'], { extra: { GITHUB_EVENT_PATH: event('dependabot[bot]', 'Bump the actions group with 1 update') } });
   assert.equal(result.status, 1);
   assert.deepEqual(JSON.parse(result.stdout).findings.map((f: { id: string }) => f.id), ['pr-title']);
+});
+
+// ---- redact (#390) ----
+//
+// One session showed the owner's details six times. Each slip is replayed here in a
+// sandbox: the value must come out as a placeholder. All values are made up.
+const OWNER = 'Jane Example';
+const LOGIN = 'janex';
+const CITY = 'Fakeville';
+const HOST = 'build.private-host.dev';
+const EMAIL = `jane${at}personal-mail.dev`;
+
+/** A sandbox whose repo has the owner as git author and a remote at a private host; with marks unless `marks` is false. */
+function ownerSandbox({ marks = true } = {}) {
+  const sandbox = makeSandbox();
+  sandbox.git('config', 'user.name', OWNER);
+  sandbox.git('config', 'user.email', EMAIL);
+  sandbox.git('remote', 'add', 'origin', `ssh://git${at}${HOST}:2222/${LOGIN}/app.git`);
+  sandbox.write('README.md', 'Hello.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'docs: hello');
+  if (marks) {
+    mkdirSync(join(sandbox.home, '.config', 'yokoten'), { recursive: true });
+    writeFileSync(join(sandbox.home, '.config', 'yokoten', 'private-marks'), `# mine\n${OWNER}\n${LOGIN}\n${CITY}\n${HOST}\n`);
+  }
+  // A command as the hook rewrites it, run by bash: its output, and its exit code.
+  const wrapped = (command: string) => spawnSync('bash', ['-c', wrapForRedact(command, `node "${CLI}" redact`)], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
+  return { sandbox, wrapped };
+}
+
+const assertHidden = (output: string, values: string[]) => {
+  for (const value of values) assert.ok(!output.toLowerCase().includes(value.toLowerCase()), `a value was left in: ${output}`);
+};
+
+test('redact: the six slips come out as placeholders (#390)', () => {
+  const { sandbox, wrapped } = ownerSandbox();
+  // 1. A git author line.
+  const log = wrapped('git log -1');
+  assert.equal(log.status, 0, log.stderr);
+  assert.match(log.stdout, /Author: <owner> <<email>>/);
+  // 2. A CODEOWNERS file.
+  sandbox.write('CODEOWNERS', `* @${LOGIN}\n`);
+  assert.equal(wrapped('cat CODEOWNERS').stdout, '* @<mark>\n');
+  // 3. A push error with the private remote: the exit code is the command's.
+  const push = wrapped(`echo "fatal: unable to access 'https://${HOST}/${LOGIN}/app.git/': Could not resolve host: ${HOST}" >&2; exit 128`);
+  assert.equal(push.status, 128);
+  assert.equal(push.stdout, "fatal: unable to access 'https://<host>/<mark>/app.git/': Could not resolve host: <host>\n");
+  // 4. A deploy log with an email.
+  assert.equal(wrapped(`echo "Deployed by ${EMAIL} to ${CITY.toLowerCase()}-worker"`).stdout, 'Deployed by <email> to <mark>-worker\n');
+  // 5. A traffic report with the login in a path.
+  assert.equal(wrapped(`echo '{"path":"/${LOGIN}/app/blob/main/README.md","count":3}'`).stdout, '{"path":"/<mark>/app/blob/main/README.md","count":3}\n');
+  // 6. A page title.
+  assert.equal(wrapped(`echo "${LOGIN}/app: Settings - ${OWNER} from ${CITY}"`).stdout, '<mark>/app: Settings - <owner> from <mark>\n');
+  for (const result of [log, push]) assertHidden(result.stdout, [OWNER, LOGIN, CITY, HOST, EMAIL]);
+});
+
+test('redact: without a private-marks file, git name, email and private hosts are still hidden (#390)', () => {
+  const { wrapped } = ownerSandbox({ marks: false });
+  const log = wrapped('git log -1; git remote -v');
+  assert.equal(log.status, 0, log.stderr);
+  assert.match(log.stdout, /Author: <owner> <<email>>/);
+  assert.match(log.stdout, /origin\tssh:\/\/git@<host>:2222\//);
+  assertHidden(log.stdout, [OWNER, HOST, EMAIL]);
+});
+
+test('redact: keeps line ends, a last line with no end, and text that names nobody (#390)', () => {
+  const { sandbox } = ownerSandbox();
+  const input = `ok\r\nnoreply${at}github.com and logo${at}2x.png\nannual ${OWNER.toUpperCase()}\nlast`;
+  const result = sandbox.run(['redact'], { input });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `ok\r\nnoreply${at}github.com and logo${at}2x.png\nannual <owner>\nlast`);
+  // A long output streams through whole.
+  const long = `${'line one\n'.repeat(50_000)}${OWNER}\n`;
+  const streamed = sandbox.run(['redact'], { input: long });
+  assert.equal(streamed.stdout, `${'line one\n'.repeat(50_000)}<owner>\n`);
+  assert.deepEqual([sandbox.run(['redact', '--x']).status], [1]);
+});
+
+test('redact: fails open; a marks file it cannot read passes the output through, with one line (#390)', () => {
+  const { sandbox, wrapped } = ownerSandbox();
+  // A folder where the file should be: reading it fails.
+  const broken = join(sandbox.home, 'marks-folder');
+  mkdirSync(broken);
+  const result = sandbox.run(['redact'], { input: `by ${OWNER}\n`, extra: { YOKOTEN_PRIVATE_MARKS: broken } });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, `by ${OWNER}\n`);
+  assert.match(result.stderr, /^yokoten redact: output is not hidden, because [^\n]*\n$/);
+  // In the wrapper, the command's own exit code still comes through.
+  const pass = spawnSync('bash', ['-c', wrapForRedact('echo hi; exit 5', `node "${CLI}" redact`)], { cwd: sandbox.repo, env: { ...sandbox.env, YOKOTEN_PRIVATE_MARKS: broken }, encoding: 'utf8' });
+  assert.deepEqual([pass.status, pass.stdout], [5, 'hi\n']);
+  assert.equal(wrapped('true').status, 0);
+});
+
+test('redact: a long line is cut only at a space or tab, never inside a value (#390)', () => {
+  assert.equal(cutPoint('a\nb', 10), 2);
+  assert.equal(cutPoint('short', 10), 0);
+  assert.equal(cutPoint('word word longvalue', 10), 10);
+  assert.equal(cutPoint('x'.repeat(20), 10), 20, 'no space: the whole buffer goes, redacted as one');
+  // Through the command: a value at the end of a long run with no line end is still hidden.
+  const { sandbox } = ownerSandbox();
+  // A one-word value: a value with a space in it may be cut at that space.
+  const input = `${'y'.repeat((1 << 20) + 10)} ${LOGIN}`;
+  const result = spawnSync('node', [CLI, 'redact'], { cwd: sandbox.repo, env: sandbox.env, input, encoding: 'utf8', maxBuffer: 8 << 20 });
+  assert.ok(result.stdout === `${'y'.repeat((1 << 20) + 10)} <mark>`, `ends with: ${result.stdout.slice(-20)}`);
 });

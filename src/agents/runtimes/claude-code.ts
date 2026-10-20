@@ -36,6 +36,20 @@ export function readToolCall(input: unknown): Action {
 export const formatDenial = (reason: string): { stdout: string; exitCode: number } => ({ stdout: JSON.stringify({ permissionDecision: 'deny', permissionDecisionReason: reason }), exitCode: 2 });
 
 /**
+ * How the hook changes a shell command before it runs (#390): PreToolUse's
+ * `updatedInput`, on exit 0. It replaces the whole tool input, so the other fields
+ * (description, timeout) are copied. Claude Code applies `updatedInput` only with a
+ * decision. `allow` skips the prompt for a command no permission rule covers; deny and
+ * ask rules still apply. The hook rewrites only one plain read, so `allow` runs nothing
+ * that changes or sends anything.
+ */
+export function formatRewrite(input: unknown, command: string, reason: string): string {
+  const call = (input ?? {}) as { tool_input?: unknown };
+  const tool = call.tool_input && typeof call.tool_input === 'object' ? call.tool_input : {};
+  return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: reason, updatedInput: { ...tool, command } } });
+}
+
+/**
  * A Stop event (the agent is about to end its turn), or null when the input is not one.
  * `active` is Claude Code's `stop_hook_active`: a stop hook already sent the agent back.
  */

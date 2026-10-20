@@ -23,6 +23,7 @@ import {
 import {
   checkCommand,
   checkEdit,
+  privateOutput,
 } from '../../src/rules/guards.ts';
 import {
   checkBuildOutput,
@@ -76,6 +77,7 @@ import {
   coreRulesCheck,
   machineChecks,
   pluginAgeCheck,
+  privacyNotes,
   userAgentHooks,
 } from '../../src/setup/doctor.ts';
 import {
@@ -155,6 +157,9 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   // The Codex and Gemini CLI user hooks (#211): only once their folders exist.
   for (const folder of ['.codex', '.gemini']) mkdirSync(join(dir, folder));
   for (const c of userAgentHooks({ HOME: dir })) add(c.finding);
+  // Command output (#390): the mailmap note, and the refusal for an agent that can't rewrite.
+  for (const c of privacyNotes({ HOME: dir, GIT_CONFIG_GLOBAL: join(dir, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1' }, null)) add(c.finding);
+  add(privateOutput('`git log` prints author names and emails', 'set -o pipefail; (\ngit log\n) 2>&1 | yokoten redact'));
   // The plugin (#198): enabled, and installed at a version older than this yokoten.
   const pluginHome = mkdtempSync(join(tmpdir(), 'yokoten-'));
   const pluginFolder = join(pluginHome, 'plugin');

@@ -60,6 +60,32 @@ export function findSecrets(lines: string[], allow: string[] = []): [number, str
 }
 
 
+/** What `yokoten redact` writes in place of a secret (#390). */
+export const SECRET = '<secret>';
+
+/**
+ * A function that puts SECRET in place of each token, and of each line of a private key,
+ * in text given to it in order: a key that starts in one piece ends in a later one. A key
+ * starts at a line that is its header, or holds the header and the body (JSON, .env).
+ */
+export function makeSecretHider(): (text: string) => string {
+  let isInKey = false;
+  return (text) =>
+    text
+      .split(/(?<=\n)/)
+      .map((line) => {
+        if (!isInKey && (PEM_INLINE.test(line) || (PEM.test(line) && line.trim().startsWith('-----BEGIN')))) isInKey = true;
+        if (isInKey) {
+          if (/-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----/.test(line)) isInKey = false;
+          return line.replace(/[^\r\n]+/, SECRET);
+        }
+        let out = line;
+        for (const { re } of PATTERNS) out = out.replace(re, (hit) => (PLACEHOLDER.test(hit) ? hit : SECRET));
+        return out;
+      })
+      .join('');
+}
+
 /**
  * A known-bad sample, so the check can prove it still catches secrets. Built from pieces
  * so this file does not fail its own check.

@@ -357,6 +357,18 @@ export const RULES = {
     check: '`doctor` reads ~/.config/yokoten/private-marks (or YOKOTEN_PRIVATE_MARKS) and counts its lines',
     docs: guide('privacy'),
   },
+  'private-output': {
+    rule: 'an agent reads command output with your details hidden',
+    why: 'output an agent reads goes into the transcript and to the model, and it cannot be taken back',
+    check: 'the tool-call guard sends commands known to print account details through `yokoten redact`. In Claude Code it rewrites the command; other agents are stopped and shown the command to run',
+    docs: guide('privacy'),
+  },
+  mailmap: {
+    rule: 'git prints your name and emails as a placeholder',
+    why: 'an agent reads git log and git show, and an author line names you',
+    check: '`doctor` reads the global git setting mailmap.file; `install` points it at ~/.config/yokoten/mailmap unless you set your own',
+    docs: guide('privacy'),
+  },
   'server-settings': {
     rule: 'doctor reads the settings the owner sets on the server, and never changes them',
     why: 'the server is the lock: its settings hold even when a hook is off',
