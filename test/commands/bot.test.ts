@@ -33,7 +33,8 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
   const bin = join(sandbox.home, 'bin');
   const log = join(sandbox.home, 'gh.log');
   mkdirSync(bin);
-  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args: process.argv.slice(2), token: process.env.GH_TOKEN }) + '\\n');\n`);
+  // The fake gh lists no labels (#422: the bot then adds the best names), and logs the rest.
+  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nif (process.argv[2] === 'label') process.exit(1);\nrequire('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args: process.argv.slice(2), token: process.env.GH_TOKEN }) + '\\n');\n`);
   chmodSync(join(bin, 'gh'), 0o755);
   copyFileSync(join(bin, 'gh'), join(bin, 'gh.exe'));
   const ran =() => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
@@ -124,7 +125,9 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
       const r = await run(command);
       assert.equal(r.status, 0, `${command.join(' ')}: ${r.stderr}`);
     }
-    assert.deepEqual(ran(), good.map((command) => ({ args: command.slice(1), token: 'ghs_test' })));
+    // #422: a pull request gets the type label its title says.
+    const added: Record<number, string[]> = { 1: ['--label', 'feat'], 3: ['--label', 'feat'], 7: ['--label', 'feat'], 8: ['--label', 'bug'] };
+    assert.deepEqual(ran(), good.map((command, index) => ({ args: [...command.slice(1), ...(added[index] ?? [])], token: 'ghs_test' })));
     assert.equal(requests.length, good.length * 2, 'one installation lookup and one token per run');
 
     // bot has no options of its own (#203): one before `--` is refused, and nothing runs.
@@ -195,6 +198,7 @@ test('bot: a pull request body CI would refuse is refused locally, with CI\'s me
   writeFileSync(join(bin, 'gh'), [
     '#!/usr/bin/env node',
     'const fs = require("node:fs"); const args = process.argv.slice(2);',
+    'if (args[0] === "label") process.exit(1);',
     `if (args[0] === "pr" && args[1] === "view") { fs.appendFileSync(${JSON.stringify(views)}, JSON.stringify({ args, token: process.env.GH_TOKEN }) + "\\n"); const n = args[2].split("/").pop(); if (n === "5" || n === "6") { console.log(JSON.stringify({ headRefName: n === "5" ? "topic" : "gone", baseRefName: "main" })); process.exit(0); } process.exit(1); }`,
     `fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, input: fs.readFileSync(0, "utf8") }) + "\\n");`,
   ].join('\n'));
@@ -271,7 +275,9 @@ test('bot: a pull request body CI would refuse is refused locally, with CI\'s me
       assert.equal(r.status, 0, `${command.join(' ')}: ${r.stderr}`);
       assert.equal(r.stderr, '', command.join(' '));
     }
-    assert.deepEqual(ran(), passes.map(([command, input]) => ({ args: command.slice(1), input })));
+    // #422: a new pull request also gets the type and tier labels; nothing else changes.
+    const labelled = (args: string[]) => (args[1] === 'create' && !args.includes('-R') ? [...args, '--label', 'feat', '--label', 'tier A'] : args);
+    assert.deepEqual(ran(), passes.map(([command, input]) => ({ args: labelled(command.slice(1)), input })));
     // A branch git can't fetch, or a pull request gh can't look up: the body alone is checked, with a note.
     for (const [n, why] of [['6', "git can't compare origin/gone with origin/main"], ['7', 'gh could not say the branches of pull request `7`']]) {
       const r = await run(['gh', 'pr', 'edit', n, '--body', good]);
@@ -279,6 +285,121 @@ test('bot: a pull request body CI would refuse is refused locally, with CI\'s me
       assert.equal(r.stderr, `yokoten bot: note: ${why}, so the body was checked without the changed files; CI checks the rest\n`);
     }
     assert.equal(ran().length, passes.length + 2, 'both edits were sent');
+  } finally {
+    server.close();
+  }
+});
+
+// #422: `gh pr create` gets the type label its title says and the tier label its body
+// says, by the names the repo has. A fake gh and a local API server stand in for GitHub.
+test('bot: a new pull request gets its type and tier labels; a contradicting one is refused (#422)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', JSON.stringify({ areas: ['host'] }));
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/me/repo.git');
+  const bin = join(sandbox.home, 'bin');
+  const log = join(sandbox.home, 'gh.log');
+  const lists = join(sandbox.home, 'lists.log');
+  const repoLabels = join(sandbox.home, 'labels.json');
+  mkdirSync(bin);
+  // The fake gh answers `label list` from labels.json, and logs it apart from the commands it sends.
+  writeFileSync(join(bin, 'gh'), [
+    '#!/usr/bin/env node',
+    'const fs = require("node:fs"); const args = process.argv.slice(2);',
+    `if (args[0] === "label") { fs.appendFileSync(${JSON.stringify(lists)}, JSON.stringify(args) + "\\n"); process.stdout.write(fs.readFileSync(${JSON.stringify(repoLabels)}, "utf8")); process.exit(0); }`,
+    `fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, input: fs.readFileSync(0, "utf8") }) + "\\n");`,
+  ].join('\n'));
+  chmodSync(join(bin, 'gh'), 0o755);
+  const read = (file: string) => (existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+  const setLabels = (names: string[]) => writeFileSync(repoLabels, JSON.stringify(names.map((name) => ({ name }))));
+  const requests: string[] = [];
+  const server = createServer((req, res) => {
+    requests.push(`${req.method} ${req.url}`);
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(req.method === 'GET' ? { id: 77 } : { token: 'ghs_test' }));
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  const key = join(sandbox.home, 'bot.pem');
+  writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
+  const bot = { PATH: `${bin}:${process.env.PATH}`, YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+  const run = (command: string[], input = '') =>
+    new Promise<{ status: number | null; stderr: string }>((done) => {
+      const child = spawn('node', [CLI, 'bot', '--', ...command], { cwd: sandbox.repo, env: { ...sandbox.env, ...bot } });
+      let stderr = '';
+      child.stderr.on('data', (chunk) => (stderr += chunk));
+      child.on('close', (status) => done({ status, stderr }));
+      child.stdin.end(input);
+    });
+  // The branch can't be compared with origin here, so each body check ends with this note.
+  const note = 'yokoten bot: note: git can\'t compare HEAD with origin/main, so the body was checked without the changed files; CI checks the rest\n';
+  const body = (tier: string) => `tier: ${tier}\nCloses #1\n\n## Why\nx\n\n## What changed\nx\n\n## How tested\nx\n`;
+  const bodyFile = join(sandbox.home, 'body.md');
+  writeFileSync(bodyFile, body('C'));
+  try {
+    setLabels(['bug', 'feat', 'docs', 'tier A', 'tier B', 'tier C']);
+    // (a) Missing labels are added, from --body, --body-file and standard input.
+    const cases: [command: string[], input: string, args: string[]][] = [
+      [['gh', 'pr', 'create', '-t', 'fix(host): a', '--body', body('B')], '', ['--label', 'bug', '--label', 'tier B']],
+      [['gh', 'pr', 'create', '-t', 'docs: a', '--body-file', bodyFile], '', ['--label', 'docs', '--label', 'tier C']],
+      [['gh', 'pr', 'new', '--title=feat: a', '-F', '-'], body('A'), ['--label', 'feat', '--label', 'tier A']],
+      // Only the missing one: a type label the caller gave stays, and is not added twice.
+      [['gh', 'pr', 'create', '-t', 'feat: a', '-l', 'feat', '--body', body('B')], '', ['--label', 'tier B']],
+      [['gh', 'pr', 'create', '-t', 'fix: a', '--label=tier: B', '--body', body('B')], '', ['--label', 'bug']],
+    ];
+    for (const [command, input, args] of cases) {
+      const r = await run(command, input);
+      assert.deepEqual([r.status, r.stderr], [0, note], command.join(' '));
+      assert.deepEqual(read(log).at(-1), { args: [...command.slice(1), ...args], input }, command.join(' '));
+    }
+    assert.equal(read(lists).length, cases.length, 'one label list per run');
+    assert.deepEqual(read(lists)[0], ['label', 'list', '--json', 'name', '--limit', '1000']);
+
+    // (b) Correct labels already given: the command is sent unchanged, and no list is read.
+    const before = read(lists).length;
+    const given = ['gh', 'pr', 'create', '-t', 'fix: a', '--label', 'bug,tier B', '--body', body('B')];
+    const unchanged = await run(given);
+    assert.deepEqual([unchanged.status, unchanged.stderr], [0, note]);
+    assert.deepEqual(read(log).at(-1), { args: given.slice(1), input: '' });
+    assert.equal(read(lists).length, before, 'no label list');
+
+    // (c) A tier label the body contradicts is refused with the message of `check --pr`,
+    // before the token is asked for, and nothing is sent.
+    const sent = read(log).length;
+    const asked = requests.length;
+    for (const [labels, what] of [[['--label', 'tier A'], /^- labels: `tier A` does not match the body's `tier: B`\. .+ Change the label to `tier B`, or the first line of the body to `tier: A`\.$/m], [['-l', 'tier A', '-l', 'tier: C'], /^- labels: 2 tier labels\. .+ Keep one tier label: `tier B`\.$/m]] as const) {
+      const command = ['gh', 'pr', 'create', '-t', 'feat: a', ...labels, '--body', body('B')];
+      const r = await run(command);
+      assert.equal(r.status, 1, command.join(' '));
+      assert.match(r.stderr, /^yokoten bot: note: .+\nyokoten bot: 1 problem\(s\) in the labels; nothing was sent\. Fix the labels and run it again:\n/);
+      assert.match(r.stderr, what);
+    }
+    assert.equal(requests.length, asked, 'no token was asked for');
+    assert.equal(read(log).length, sent, 'gh did not run');
+
+    // (d) A label the repo does not have is said plainly and left out; one it has by another name is used.
+    setLabels(['bug', 'enhancement', 'tier: A']);
+    const other = await run(['gh', 'pr', 'create', '-t', 'feat: a', '--body', body('A')]);
+    assert.deepEqual([other.status, other.stderr], [0, note]);
+    assert.deepEqual(read(log).at(-1)?.args.slice(-4), ['--label', 'enhancement', '--label', 'tier: A']);
+    const absent = await run(['gh', 'pr', 'create', '-t', 'perf: a', '--body', body('B')]);
+    assert.equal(absent.status, 0, absent.stderr);
+    assert.match(absent.stderr, /^yokoten bot: note: the repo has no label `perf`, so the pull request gets none; create it on GitHub, or pass another with --label\. `check --pr` asks for it\nyokoten bot: note: the repo has no label `tier B`, /m);
+    assert.deepEqual(read(log).at(-1)?.args, ['pr', 'create', '-t', 'perf: a', '--body', body('B')], 'no label was created or added');
+
+    // (e) Other gh commands are sent unchanged, with no label list.
+    const lists0 = read(lists).length;
+    const others: string[][] = [
+      ['gh', 'issue', 'create', '-t', 'host: a', '--body', body('B')],
+      ['gh', 'pr', 'list'],
+      ['gh', 'pr', 'edit', '5', '-t', 'feat: a'],
+      ['gh', 'pr', 'create', '-R', 'other/repo', '-t', 'feat: a', '--body', body('B')],
+      ['gh', 'pr', 'create', '--fill'],
+    ];
+    for (const command of others) {
+      const r = await run(command);
+      assert.deepEqual([r.status, r.stderr], [0, ''], command.join(' '));
+      assert.deepEqual(read(log).at(-1)?.args, command.slice(1), command.join(' '));
+    }
+    assert.equal(read(lists).length, lists0, 'no label list');
   } finally {
     server.close();
   }
