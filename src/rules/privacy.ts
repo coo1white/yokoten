@@ -283,7 +283,8 @@ const postWhy = (why: string) => why.replace(/, and git keeps it after the file 
 
 // The commit check's fix, and for an address the way to let a public one through.
 const ALLOW_FIX = 'If it is public on purpose, add it to "privacy.allow" in yokoten.json';
-const postFix = (f: Finding) => (f.id === 'email' || f.id === 'ip' ? `${f.fix}. ${ALLOW_FIX}` : f.fix);
+const postFix = (f: Finding) =>
+  f.id === 'email' || f.id === 'ip' ? `${f.fix}. ${ALLOW_FIX}` : f.id === 'secret' ? 'take it out of the text, and rotate it if it was ever sent' : f.fix;
 
 /**
  * The first privacy problem in the text a gh command (from `ghAt` in `words`) is about to

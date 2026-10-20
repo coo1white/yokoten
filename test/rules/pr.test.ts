@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { DEFAULTS } from '../../src/rules/config.ts';
+import { checkCommand } from '../../src/rules/guards.ts';
 import {
   finding,
   type Finding,
@@ -334,4 +335,26 @@ test('titles: limits count the characters a person sees, not code units (#268)',
   const issueOver = checkIssueTitle(`${issue}字`, AREAS);
   assert.equal(issueOver.length, 1);
   assert.match(formatFinding(issueOver[0]), /^title: 61 characters, over 60\./);
+});
+
+// The tool-call guard runs the bot's title check on plain gh too (#391), so an issue CI
+// would fail is never opened.
+test('guard: a gh title is checked before it is sent, plain or through the bot (#391)', () => {
+  const config = { ...DEFAULTS, areas: ['check', 'doctor'] };
+  const guard = (command: string) => checkCommand(command, { env: {}, config });
+  const unknownArea = guard('gh issue create --title "billing: add invoices" --body ok');
+  const [expected] = checkIssueTitle('billing: add invoices', config);
+  assert.deepEqual(unknownArea, expected, 'the same finding as the bot gives');
+  const long = `check: ${'add a very long title '.repeat(4).trim()}`;
+  assert.ok(long.length > 60);
+  assert.match(guard(`gh issue create --title "${long}" --body ok`)?.what ?? '', /over 60/);
+  assert.deepEqual(guard('gh issue edit 3 -t "nonsense"'), checkIssueTitle('nonsense', config)[0]);
+  assert.equal(guard('gh pr create --title "add things" --body ok')?.id, 'pr-title');
+  assert.deepEqual(guard('gh pr edit 3 --title="feat(billing): add invoices"'), checkPullRequestTitle('feat(billing): add invoices', config)[0]);
+  assert.deepEqual(guard('yokoten bot -- gh issue create --title "billing: add invoices"'), expected);
+  assert.equal(guard('gh issue create --title "doctor: add the review step" --body ok'), null);
+  assert.equal(guard('gh pr create --title "feat(check): read the title" --body ok'), null);
+  assert.equal(guard('yokoten bot -- gh pr create --title "fix(doctor): name the step" --body ok'), null);
+  assert.equal(guard('gh pr create --fill'), null, 'no title: CI checks it');
+  assert.equal(guard('echo gh issue create --title nonsense'), null, 'not a gh command');
 });

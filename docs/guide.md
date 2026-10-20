@@ -78,7 +78,7 @@ flowchart LR
 
 | | Runs | Stops |
 |-|------|-------|
-| **1** | before each tool call | tag pushes, force pushes, skipped checks; test edits in a fix task; a worker editing the rules; a program the project blocks; personal data or a secret in an issue, pull request, comment or release note an agent posts with `gh` |
+| **1** | before each tool call | tag pushes, force pushes, skipped checks; test edits in a fix task; a worker editing the rules; a program the project blocks; an issue or pull request title that breaks the title rules; personal data or a secret in an issue, pull request, comment or release note an agent posts with `gh` |
 | **1b** | when a Claude Code agent ends its turn | the same personal data, secrets and file rules as the commit check, in the changed files. It sends the agent back once with the findings |
 | **2** | on every commit | what the hook can't see: files changed by `sed` or a script, personal data, an overfull folder |
 | **3** | on every pull request | a commit made with the hook off |
@@ -787,6 +787,10 @@ commits to come.
 `init` adds `.github/workflows/issue.yml`. It runs `check --issue` when an issue is
 opened or edited. It only reads: it never comments on the issue or renames it. A red run
 tells the author to fix the title.
+
+An agent's title is checked before it is sent. The tool-call guard runs the same check on
+`gh issue create|edit` and `gh pr create|edit` with a title, plain or through
+`yokoten bot`. A bad title stops the command, so CI never sees it.
 
 Any lowercase area passes. To limit the areas, list them in `yokoten.json`:
 `"areas": ["doctor", "check", "docs"]`. Pull request titles then use the same list in

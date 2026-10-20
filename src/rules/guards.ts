@@ -17,6 +17,7 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { Config, Env } from './config.ts';
 import { matcher } from './config.ts';
 import { type Finding, finding } from './message.ts';
+import { checkCommandTitle } from './pr.ts';
 import { checkPost, ghIndex } from './privacy.ts';
 
 /** A file edit, by path relative to the repo root. */
@@ -36,7 +37,7 @@ export function checkEdit(path: string, { config, env }: { config: Config; env: 
  * folder the command runs in, by default this process's: a change to core.hooksPath reads
  * that repo's setting and hooks.
  */
-export function checkCommand(command: string, options: { env: Env; config?: Pick<Config, 'commands'> & Partial<Pick<Config, 'privacy'>>; cwd?: string }): Finding | null {
+export function checkCommand(command: string, options: { env: Env; config?: Pick<Config, 'commands'> & Partial<Pick<Config, 'privacy' | 'areas'>>; cwd?: string }): Finding | null {
   // The reader is not a full parser. Whatever goes wrong inside it, the command is refused,
   // never let through: an error here must not open the guard.
   const outerAnswers = gitAnswers;
@@ -51,7 +52,7 @@ export function checkCommand(command: string, options: { env: Env; config?: Pick
 }
 
 // `cwd` is null when the guard cannot tell which repo git works in.
-function checkEachCommand(command: string, { env, config, cwd }: { env: Env; config?: Pick<Config, 'commands'> & Partial<Pick<Config, 'privacy'>>; cwd: string | null }): Finding | null {
+function checkEachCommand(command: string, { env, config, cwd }: { env: Env; config?: Pick<Config, 'commands'> & Partial<Pick<Config, 'privacy' | 'areas'>>; cwd: string | null }): Finding | null {
   const commands = commandWords(command);
   // A command that moves to another folder or repo (`cd x && git config ...`, GIT_DIR=)
   // may change the hooks setting of a repo the guard does not look at.
@@ -688,11 +689,14 @@ function checkPublish(words: string[], env: Env): Finding | null {
   return null;
 }
 
-// Text a gh command posts (an issue, a pull request, a comment, a release note) goes
-// through the privacy check first (#391): see privacy.ts.
-function checkPosted(words: string[], { env, config, cwd, command }: { env: Env; config?: Partial<Pick<Config, 'privacy'>>; cwd: string | null; command: string }): Finding | null {
+// What a gh command posts (#391). The title of an issue or a pull request gets the title
+// check `yokoten bot` runs, so plain gh can't open one CI then fails. Then the text (an
+// issue, a pull request, a comment, a release note) gets the privacy check: see privacy.ts.
+function checkPosted(words: string[], { env, config, cwd, command }: { env: Env; config?: Partial<Pick<Config, 'privacy' | 'areas'>>; cwd: string | null; command: string }): Finding | null {
   const at = ghIndex(words, findPrograms(words));
-  return at === -1 ? null : checkPost(words, at, { env, privacy: config?.privacy, cwd, command });
+  if (at === -1) return null;
+  const [title] = checkCommandTitle(words.slice(at), config ?? {});
+  return title ?? checkPost(words, at, { env, privacy: config?.privacy, cwd, command });
 }
 
 // ---- Programs the project blocks (#192) ----

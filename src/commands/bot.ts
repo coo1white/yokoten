@@ -1,29 +1,10 @@
 // `yokoten bot -- <gh or git command>`: runs it as the GitHub App, after checking its title.
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { botConfig, botEnv, botProgram, installationToken, readCommandTitle, repoOf } from '../host/github.ts';
+import { botConfig, botEnv, botProgram, installationToken, repoOf } from '../host/github.ts';
 import { DEFAULTS, loadConfig } from '../rules/config.ts';
-import { finding, type Finding } from '../rules/message.ts';
-import { checkIssueTitle, checkPullRequestTitle } from '../rules/pr.ts';
+import { checkCommandTitle } from '../rules/pr.ts';
 import { args, bullets, env, parse, print, requireRoot, rootOf, usage } from './shared.ts';
-
-/**
- * Problems with the title a bot command is about to set (#117), by the rules CI uses:
- * `check --issue` for an issue, the title part of `check --pr` for a pull request. No
- * title in the command, no problems. A run-together short flag it can't read is a problem
- * (#290), so the title is never sent unchecked. It reads no token and no network.
- */
-function checkCommandTitle(command: string[]): Finding[] {
-  const found = readCommandTitle(command);
-  if (!found) return [];
-  if ('unreadable' in found) {
-    const id = found.kind === 'issue' ? 'issue-title' : 'pr-title';
-    return [finding(id, `title: can't read the title in \`${found.unreadable}\``, 'write --title on its own', { why: 'the bot checks the title before it sends anything' })];
-  }
-  const root = rootOf(process.cwd());
-  const config = root ? loadConfig(root) : DEFAULTS;
-  return found.kind === 'issue' ? checkIssueTitle(found.title, config, found.labels) : checkPullRequestTitle(found.title, config);
-}
 
 async function bot(command: string[]): Promise<number> {
   // gh and git only (#295): a wrapper such as `env gh` or `sh -c` would run a title unchecked.
@@ -32,7 +13,8 @@ async function bot(command: string[]): Promise<number> {
     return 1;
   }
   // The title first: a bad title is refused before anything is sent, so it never needs a rename.
-  const titleProblems = checkCommandTitle(command);
+  const root = rootOf(process.cwd());
+  const titleProblems = checkCommandTitle(command, root ? loadConfig(root) : DEFAULTS);
   if (titleProblems.length) {
     print([`yokoten bot: ${titleProblems.length} problem(s) in the title; nothing was sent. Fix the title and run it again:`, ...bullets(titleProblems)], process.stderr);
     return 1;

@@ -166,7 +166,7 @@ const token = `ghp_${'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'}`;
 const post = (command: string, config: typeof DEFAULTS = DEFAULTS) => checkCommand(command, { env: postEnv, config, cwd: postDir });
 
 test('an inline --body with an email address is stopped, with the same fix as the commit check', () => {
-  const f = post(`gh issue create --title "a bug" --body "write to ${email}"`);
+  const f = post(`gh issue create --title "check: fix a bug" --body "write to ${email}"`);
   assert.equal(f?.id, 'email');
   assert.equal(f?.what, 'the --body text holds an email address');
   const text = formatFinding(f);
@@ -178,13 +178,13 @@ test('an inline --body with an email address is stopped, with the same fix as th
 
 test('the other text options and their forms are read', () => {
   for (const command of [
-    `gh pr create --title "from ${email}" --body ok`,
+    `gh pr create --title "feat: thank ${email}" --body ok`,
     `gh pr comment 3 -b "${email}"`,
     `gh pr comment 3 -b"${email}"`,
     `gh issue edit 3 --body="${email}"`,
     `gh pr review 3 --comment --body "${email}"`,
     `gh -R o/r issue comment 3 --body "${email}"`,
-    `nice gh issue create -t x -b "${email}"`,
+    `nice gh issue create -t "check: add x" -b "${email}"`,
   ]) {
     assert.equal(post(command)?.id, 'email', command);
   }
@@ -192,7 +192,7 @@ test('the other text options and their forms are read', () => {
 
 test('a --body-file with a private mark is stopped, by file and line; the mark is never printed', () => {
   writeFileSync(join(postDir, 'body.md'), 'Summary\n\nTested in QuietVale.\n');
-  for (const command of ['gh pr create --title t --body-file body.md', 'gh issue comment 3 -F body.md', `gh pr create --body-file ${join(postDir, 'body.md')}`]) {
+  for (const command of ['gh pr create --title "feat: add t" --body-file body.md', 'gh issue comment 3 -F body.md', `gh pr create --body-file ${join(postDir, 'body.md')}`]) {
     const f = post(command);
     assert.equal(f?.id, 'private-mark', command);
     assert.equal(f?.line, 3);
@@ -210,7 +210,7 @@ test('release notes are read when a release is allowed', () => {
 
 test('gh api fields and input files are read', () => {
   assert.equal(post(`gh api repos/o/r/issues/1/comments -f body="token ${token}"`)?.id, 'secret');
-  assert.equal(post(`gh api repos/o/r/issues -F title=x -F body="${email}"`)?.id, 'email');
+  assert.equal(post(`gh api repos/o/r/issues -F title="check: add x" -F body="${email}"`)?.id, 'email');
   assert.equal(post(`gh api repos/o/r/issues --raw-field=body=${email}`)?.id, 'email');
   writeFileSync(join(postDir, 'payload.json'), JSON.stringify({ body: email }));
   assert.equal(post('gh api repos/o/r/issues --input payload.json')?.id, 'email');
@@ -225,25 +225,25 @@ test('a secret is named by kind, never printed', () => {
 });
 
 test('yokoten bot -- gh is read the same way', () => {
-  assert.equal(post(`yokoten bot -- gh pr create --title t --body "${email}"`)?.id, 'email');
+  assert.equal(post(`yokoten bot -- gh pr create --title "feat: add t" --body "${email}"`)?.id, 'email');
   assert.equal(post(`node bin/yokoten.ts bot -- gh issue comment 3 --body "${email}"`)?.id, 'email');
-  assert.equal(post('yokoten bot -- gh pr create --title t --body "clean"'), null);
+  assert.equal(post('yokoten bot -- gh pr create --title "feat: add t" --body "clean"'), null);
 });
 
 test('an inline heredoc body is read, with its line', () => {
-  const f = post(`gh pr create --title t --body "$(cat <<'EOF'\nSummary\n\nmail ${email}\nEOF\n)"`);
+  const f = post(`gh pr create --title "feat: add t" --body "$(cat <<'EOF'\nSummary\n\nmail ${email}\nEOF\n)"`);
   assert.equal(f?.id, 'email');
   assert.match(f?.what ?? '', /line 4/);
   // A body from stdin: the whole command is read, so a heredoc fed to it is too.
-  assert.equal(post(`gh pr create --title t --body-file - <<'EOF'\nmail ${email}\nEOF`)?.id, 'email');
-  assert.equal(post(`gh pr create --title t --body-file - <<'EOF'\nall clean\nEOF`), null);
+  assert.equal(post(`gh pr create --title "feat: add t" --body-file - <<'EOF'\nmail ${email}\nEOF`)?.id, 'email');
+  assert.equal(post(`gh pr create --title "feat: add t" --body-file - <<'EOF'\nall clean\nEOF`), null);
 });
 
 test('clean text, allowed addresses and other commands pass', () => {
   for (const command of [
     'gh pr create --title "feat: x" --body "Closes issue #3"',
-    'gh issue create --title t --body "by 12345+bot@users.noreply.github.com"',
-    `gh issue create --title t --body "ask support${'@'}example.com"`,
+    'gh issue create --title "check: add t" --body "by 12345+bot@users.noreply.github.com"',
+    `gh issue create --title "check: add t" --body "ask support${'@'}example.com"`,
     'gh pr create --fill',
     'gh pr create --body-file missing.md',
     `gh pr view 3 --comments`,
@@ -256,5 +256,5 @@ test('clean text, allowed addresses and other commands pass', () => {
 
 test('privacy.allow in yokoten.json lets an address through', () => {
   const config = { ...DEFAULTS, privacy: { ...DEFAULTS.privacy, allow: [email] } };
-  assert.equal(post(`gh issue create --title t --body "${email}"`, config), null);
+  assert.equal(post(`gh issue create --title "check: add t" --body "${email}"`, config), null);
 });
