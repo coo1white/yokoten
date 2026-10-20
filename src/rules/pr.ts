@@ -498,3 +498,193 @@ export function checkOwnedTier(pr: Pick<PullRequest, 'body' | 'files'>, codeOwne
   const shown = owned.slice(0, 5).join(', ') + (owned.length > 5 ? `, and ${owned.length - 5} more` : '');
   return finding('pr-owned', `body: \`tier: ${tier}\`, and this changes ${owned.length} file(s) that CODEOWNERS owns (read from ${codeOwners.from}): ${shown}`, 'make the first line `tier: A`');
 }
+
+// ---- The title a gh command sets (#117, #391) ----
+//
+// `yokoten bot` checks it before it sends anything, and the tool-call guard checks it on
+// plain gh too, so a bad title is stopped before the issue or pull request exists.
+
+/** The title a `gh issue` or `gh pr` command is about to set, and its labels. */
+export interface CommandTitle {
+  kind: 'issue' | 'pr';
+  title: string;
+  labels: string[];
+}
+
+/** A `gh issue` or `gh pr` create or edit with a run-together word the bot can't read (#290). */
+export interface UnreadableTitle {
+  kind: 'issue' | 'pr';
+  /** The word, as in `-dz`. */
+  unreadable: string;
+  /** No title was read, so `found?.title` works on either kind. */
+  title?: never;
+}
+
+// The gh options of `issue`/`pr` `create`/`edit` that take a value. Their value is
+// skipped, so a body of `-t` is not read as the title option, and a repo is not read as
+// the noun or the verb.
+const VALUE_OPTIONS = new Set([
+  '--body', '-b', '--body-file', '-F', '--assignee', '-a', '--milestone', '-m', '--project', '-p', '--repo', '-R', '--template', '-T',
+  '--base', '-B', '--head', '-H', '--reviewer', '-r', '--recover', '--remove-label', '--add-assignee', '--remove-assignee',
+  '--add-project', '--remove-project', '--add-reviewer', '--remove-reviewer', '--attach', '--type', '--parent',
+  '--blocked-by', '--blocking', '--add-blocked-by', '--add-blocking', '--remove-blocked-by', '--remove-blocking',
+  '--add-sub-issue', '--remove-sub-issue',
+]);
+const LABEL_OPTIONS = new Set(['--label', '-l', '--add-label']);
+const TITLE_OPTIONS = new Set(['--title', '-t']);
+/** The options of one gh command: those that take a value, and every short flag (true takes a value). */
+interface Flags {
+  values: Set<string>;
+  short: Map<string, boolean>;
+}
+
+const shortFlags = (values: string, switches: string) => new Map<string, boolean>([
+  ...[...values].map((letter): [string, boolean] => [letter, true]),
+  ...[...switches].map((letter): [string, boolean] => [letter, false]),
+]);
+
+// Every short flag of gh `issue`/`pr` `create`/`edit` (gh 2.102 help, with the inherited
+// `-R`), so a run-together word like `-dt` or `-dlbug` is read as gh reads it (#290).
+const ISSUE_FLAGS: Flags = {
+  values: new Set([...VALUE_OPTIONS, ...LABEL_OPTIONS, ...TITLE_OPTIONS]),
+  short: shortFlags('abFlmpTtRBHr', 'dewf'),
+};
+// The options of gh's `api` command (gh 2.102 help) (#295).
+const API_FLAGS: Flags = {
+  values: new Set(['--method', '-X', '--raw-field', '-f', '--field', '-F', '--header', '-H', '--input', '--jq', '-q', '--template', '-t', '--hostname', '--cache', '--preview', '-p']),
+  short: shortFlags('XfFHqtp', 'i'),
+};
+const FIELD_OPTIONS = new Set(['--raw-field', '-f', '--field', '-F']);
+// A gh's `api` command path that creates or edits an issue or a pull request, with or without the
+// leading slash. `{owner}` and `{repo}` count as names.
+const TITLE_ENDPOINT = /^\/?repos\/[^/]+\/[^/]+\/(issues|pulls)(\/\d+)?(\?.*)?$/;
+// gh's verbs that set a title, by every name gh accepts (`new` is its alias for `create`).
+const TITLE_VERBS = new Set(['create', 'new', 'edit']);
+
+/** The programs `yokoten bot` runs (#295). */
+export type BotProgram = 'gh' | 'git';
+
+/**
+ * `gh` or `git` when the command's first word names one by its base name, so
+ * `/usr/bin/gh` and `gh.exe` count; null for anything else, such as `env` or `sh` (#295).
+ */
+export function botProgram(file: string): BotProgram | null {
+  const base = file.split(/[\\/]/).pop()?.replace(/\.exe$/i, '');
+  return base === 'gh' || base === 'git' ? base : null;
+}
+
+/** The words and the option values of a command line, read with one gh command's flags. */
+interface ReadArgs {
+  /** The index of each word that is not an option or an option's value. */
+  words: number[];
+  options: [name: string, value: string][];
+  /** The first run-together word with a short flag not in the flags (#290). */
+  unreadable: string | null;
+}
+
+function readArgs(args: string[], flags: Flags): ReadArgs {
+  const words: number[] = [];
+  const options: [string, string][] = [];
+  let unreadable: string | null = null;
+  for (let index = 0; index < args.length; index++) {
+    let word = args[index];
+    if (word === '--') break;
+    if (!word.startsWith('-') || word === '-') {
+      words.push(index);
+      continue;
+    }
+    if (!word.startsWith('--') && word.length > 2) {
+      // `-abc`: each letter is a flag until one takes a value, which is the rest of the word.
+      let at = 1;
+      while (at < word.length && flags.short.get(word[at]) === false) at++;
+      if (at === word.length) continue;
+      if (!flags.short.has(word[at])) {
+        unreadable ??= word;
+        continue;
+      }
+      word = `-${word.slice(at)}`;
+    }
+    const equals = word.startsWith('--') ? word.indexOf('=') : -1;
+    const name = equals > 0 ? word.slice(0, equals) : /^-[a-zA-Z]./.test(word) ? word.slice(0, 2) : word;
+    let attached = equals > 0 ? word.slice(equals + 1) : name !== word ? word.slice(2) : null;
+    // gh drops the `=` of an attached short value: `-t=x` is the title `x` (#295).
+    if (equals < 0 && attached?.startsWith('=')) attached = attached.slice(1);
+    if (!flags.values.has(name)) continue;
+    const value = attached ?? args[++index];
+    if (value === undefined) break;
+    options.push([name, value]);
+  }
+  return { words, options, unreadable };
+}
+
+const kindOf = (endpoint: RegExpMatchArray): 'issue' | 'pr' => (endpoint[1] === 'issues' ? 'issue' : 'pr');
+
+/**
+ * The title that gh's `api` command sets with a `title=` field on an issue or pull request path
+ * (#295): `-f title=X`, `-F title=X`, `--field title=X`, `--raw-field=title=X`. A title
+ * gh reads from a file (`-F title=@f`) can't be checked, so it gives UnreadableTitle.
+ */
+function readApiTitle(args: string[]): CommandTitle | UnreadableTitle | null {
+  const { words, options, unreadable } = readArgs(args, API_FLAGS);
+  const paths = words.map((index) => args[index]);
+  const endpoint = paths[0]?.match(TITLE_ENDPOINT);
+  if (!endpoint) {
+    // A word it can't read may hide where the path is: refuse when any word is such a path.
+    const hidden = unreadable === null ? null : paths.map((path) => path.match(TITLE_ENDPOINT)).find(Boolean);
+    return hidden && unreadable !== null ? { kind: kindOf(hidden), unreadable } : null;
+  }
+  const kind = kindOf(endpoint);
+  if (unreadable !== null) return { kind, unreadable };
+  let title: string | null = null;
+  for (const [name, value] of options) {
+    if (!FIELD_OPTIONS.has(name) || !value.startsWith('title=')) continue;
+    title = value.slice('title='.length);
+    if ((name === '-F' || name === '--field') && title.startsWith('@')) return { kind, unreadable: value };
+  }
+  return title === null ? null : { kind, title, labels: [] };
+}
+
+/**
+ * The title that `gh issue create`, `gh issue edit`, `gh pr create` or `gh pr edit` sets
+ * with `--title X`, `--title=X`, `-t X`, `-tX` or `-t=X` (#117, #295). gh also takes `new`
+ * for `create`, and an option before the noun or the verb (`gh issue -R o/r create`), so
+ * they count too (#279). Short flags run together as gh takes them (`-dt X`, `-dtX`); a
+ * run-together word with a letter gh doesn't have there gives UnreadableTitle, so the
+ * caller refuses it (#290). gh's `api` command on an issue or pull request path is read by
+ * readApiTitle (#295). Null for any other command, or when no title is given (`--fill`):
+ * CI checks that title. As in gh, the last one wins. A gh alias is not read.
+ */
+export function readCommandTitle(command: string[]): CommandTitle | UnreadableTitle | null {
+  const [file, ...rest] = command;
+  if (!file || botProgram(file) !== 'gh') return null;
+  const { words, options, unreadable } = readArgs(rest, ISSUE_FLAGS);
+  const [kind, verb] = words.map((index) => rest[index]);
+  if (kind === 'api') return readApiTitle(rest.slice(words[0] + 1));
+  if ((kind !== 'issue' && kind !== 'pr') || !TITLE_VERBS.has(verb)) return null;
+  if (unreadable !== null) return { kind, unreadable };
+  let title: string | null = null;
+  const labels: string[] = [];
+  for (const [name, value] of options) {
+    if (TITLE_OPTIONS.has(name)) title = value;
+    else if (LABEL_OPTIONS.has(name)) labels.push(...value.split(',').map((label) => label.trim()).filter(Boolean));
+  }
+  return title === null ? null : { kind, title, labels };
+}
+
+/**
+ * Problems with the title a gh command is about to set, by the rules CI uses: `check
+ * --issue` for an issue, the title part of `check --pr` for a pull request. No title in
+ * the command, no problems. A run-together short flag it can't read is a problem (#290),
+ * so the title is never sent unchecked. It reads no token and no network.
+ */
+export function checkCommandTitle(command: string[], config: Partial<Pick<Config, 'areas'>>): Finding[] {
+  const found = readCommandTitle(command);
+  if (!found) return [];
+  if ('unreadable' in found) {
+    const id = found.kind === 'issue' ? 'issue-title' : 'pr-title';
+    // The word itself is never printed: it may hold the title, or a file's path.
+    const where = found.unreadable.startsWith('title=') ? 'the title field reads a file' : 'a run-together short option hides it';
+    return [finding(id, `title: can't read the title: ${where}`, 'write --title on its own', { why: 'yokoten checks the title before it sends anything' })];
+  }
+  return found.kind === 'issue' ? checkIssueTitle(found.title, config, found.labels) : checkPullRequestTitle(found.title, config);
+}

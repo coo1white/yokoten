@@ -7,25 +7,31 @@
 
 <br/>
 
-**Everyone can build software the way good teams do.**<br/>
-yokoten guides you through a good team's habits, and guards your AI agents while you learn.
+**Everyone can build software the way good teams do.**
 
-One person and a few AI agents built it that way: every issue, review, and release is in this repo.
+A guide and a guard for you and your AI agents.
 
-**[yokoten.app](https://yokoten.app)** &nbsp;·&nbsp; English | [中文](docs/zh-CN/README.md) | [日本語](docs/ja/README.md)
-
-<br/>
+**[yokoten.app](https://yokoten.app/?from=github)** &nbsp;·&nbsp; English | [简体中文](docs/i18n/zh-CN/README.md) | [繁體中文](docs/i18n/zh-TW/README.md) | [日本語](docs/i18n/ja/README.md)
 
 [![ci](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml/badge.svg)](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml)
-[![built with Claude Code](https://img.shields.io/badge/built%20with-Claude%20Code-D97757?logo=claude&logoColor=white)](https://claude.com/claude-code)
-[![TypeScript](https://img.shields.io/badge/TypeScript-no%20build-3178C6?logo=typescript&logoColor=white)](docs/records/0002-typescript.md)
-[![Node](https://img.shields.io/badge/Node-%E2%89%A522.18-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
-[![dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](package.json)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-
-[Works with](docs/guide.md#works-with) Claude Code, GitHub Copilot CLI, Antigravity CLI, Codex CLI and Gemini CLI.
+[![Node](https://img.shields.io/badge/Node-%E2%89%A522.18-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 
 </div>
+
+## Works with any agent
+
+The guard stops risky actions before they run in these agents
+([setup for each](docs/guide.md#works-with)):
+
+- Claude Code
+- Codex CLI
+- GitHub Copilot CLI
+- Antigravity CLI
+- Muse Code
+- DeepSeek Harness
+
+In any other agent, or with no agent at all, the commit check and CI still stop a bad change.
 
 ## Why
 
@@ -50,14 +56,16 @@ npx yokoten init         # once per project
 npx yokoten doctor       # where you are, and the one next step
 ```
 
-Before your first commit: commit with `TZ=UTC git commit`, or put `export TZ=UTC` in your
-shell profile once. The commit check refuses other time zones, because a commit's time zone
-tells strangers roughly where you live.
+Until the first npm release (October 24), [install from a clone](docs/guide.md#install-from-a-clone).
 
-In Claude Code, you can use the plugin instead: `/plugin marketplace add
-yokoten-labs/yokoten`, then `/plugin install yokoten@yokoten`. Use one way, not both.
-Until the first release is on npm, [install from a clone](docs/guide.md#install-from-a-clone).
-For CI only, [use it as a GitHub Action](docs/guide.md#use-it-as-a-github-action).
+### Good to know
+
+- **Commit in UTC.** Run `TZ=UTC git commit`, or add `export TZ=UTC` to your shell profile once.
+  A commit's time zone tells strangers roughly where you live, so the commit check asks for UTC.
+- **In Claude Code, a plugin is another way in.** Run `/plugin marketplace add yokoten-labs/yokoten`,
+  then `/plugin install yokoten@yokoten`. Use the plugin or `npx`, not both
+  ([more](docs/guide.md#the-claude-code-plugin)).
+- **CI only?** [Use it as a GitHub Action](docs/guide.md#use-it-as-a-github-action).
 
 ## What you see
 
@@ -82,7 +90,7 @@ The [roadmap](docs/guide.md#where-this-is-going) has the five stages. The
 
 ## Learn more
 
-- **[yokoten.app](https://yokoten.app)**: the site, with the guide and the records as pages.
+- **[yokoten.app](https://yokoten.app/?from=github)**: the site, with the guide and the records as pages.
 - **[The guide](docs/guide.md)**: the twelve rules, every command, how it works, and what it can't do.
 - **[Server setup](docs/server.md)**: protect `main` and release tags on GitHub.
 - **[Decisions](docs/records/)**: why it's built this way.

@@ -100,25 +100,25 @@ export const RULES = {
   email: {
     rule: 'no personal email address in the repo (core rule 11)',
     why: 'an email address points at a person, and git keeps it after the file is gone',
-    check: 'the commit check, CI and `check --history` look for email addresses; noreply addresses, example.com and team inboxes at public services pass, and yokoten.json "privacy.allow" lets one through',
+    check: 'the commit check, CI and `check --history` look for email addresses; noreply addresses, example.com and team inboxes at public services pass, and yokoten.json "privacy.allow" lets one through; the tool-call guard also checks the text an agent posts with gh (issues, pull requests, comments, release notes)',
     docs: guide('privacy'),
   },
   ip: {
     rule: 'no IP address in the repo (core rule 11)',
     why: 'an IP address can lead to your server or your home network',
-    check: 'the commit check, CI and `check --history` look for IPv4 addresses; localhost and the documentation ranges pass',
+    check: 'the commit check, CI and `check --history` look for IPv4 addresses; localhost and the documentation ranges pass; the tool-call guard also checks the text an agent posts with gh (issues, pull requests, comments, release notes)',
     docs: guide('privacy'),
   },
   'private-mark': {
     rule: 'nothing in the repo points at you: your name, city, domain or servers (core rule 11)',
     why: 'a line of your private-marks file names something that points at you',
-    check: 'the commit check reads ~/.config/yokoten/private-marks, outside the repo, and looks for each line; CI does not have the file',
+    check: 'the commit check reads ~/.config/yokoten/private-marks, outside the repo, and looks for each line; CI does not have the file; the tool-call guard also checks the text an agent posts with gh (issues, pull requests, comments, release notes)',
     docs: guide('privacy'),
   },
   secret: {
     rule: 'no secret in the repo: no token and no private key (core rule 11)',
     why: 'a secret opens your accounts to anyone who can read the repo, and git keeps it after the file is gone',
-    check: 'the commit check, CI and `check --history` look for the real shape of tokens (GitHub, npm, AWS, Slack, Stripe, Google, Anthropic, OpenAI) and of private keys',
+    check: 'the commit check, CI and `check --history` look for the real shape of tokens (GitHub, npm, AWS, Slack, Stripe, Google, Anthropic, OpenAI) and of private keys; the tool-call guard also checks the text an agent posts with gh (issues, pull requests, comments, release notes)',
     docs: guide('privacy'),
   },
   'shallow-history': {

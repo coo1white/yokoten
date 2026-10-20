@@ -4,8 +4,8 @@
 // The hook knows nothing about any one runtime. An adapter in src/agents/ turns the
 // runtime's own call into an `Action` first.
 
-import { realpathSync } from 'node:fs';
-import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { existsSync, realpathSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 import { type Config, DEFAULTS, type Env, type IgnoredPart, loadConfig } from '../rules/config.ts';
 import { checkCommand, checkEdit } from '../rules/guards.ts';
@@ -62,7 +62,9 @@ export function judge(
   // A command may also edit files (Codex runs apply_patch through the shell): check both.
   // The command runs in the call's folder: a hooks setting is judged in that repo (#217).
   if (action.command !== undefined) {
-    const reason = checkCommand(action.command, { env, config, cwd: action.cwd ?? root ?? undefined });
+    // Titles follow a project's own rules: only its hook checks them, never the user-level one (#391).
+    const titles = !commandsOnly && root !== null && existsSync(join(root, 'yokoten.json'));
+    const reason = checkCommand(action.command, { env, config, cwd: action.cwd ?? root ?? undefined, titles });
     if (reason) return reason;
   }
   const ruled = commandsOnly || !root ? repos : [{ root, config }, ...repos];

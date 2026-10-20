@@ -2,6 +2,18 @@
   "name": "yokoten",
   "version": "0.1.0",
   "description": "Carry what one project learned into every project: rules, guards and skills for AI coding agents.",
+  "keywords": [
+    "ai-agents",
+    "guardrails",
+    "git-hooks",
+    "sdlc",
+    "code-review",
+    "claude-code",
+    "codex",
+    "github-copilot",
+    "antigravity",
+    "deepseek"
+  ],
   "license": "MIT",
   "homepage": "https://yokoten.app",
   "repository": {
