@@ -16,8 +16,10 @@ import { formatFinding } from '../../src/rules/message.ts';
 import {
   hideHome,
   loadMarks,
+  makeRedactor,
   notUtc,
   POSITIVE_CONTROL,
+  privateRemoteHosts,
   scanText,
 } from '../../src/rules/privacy.ts';
 
@@ -148,4 +150,31 @@ test('output: a Windows home is hidden with either slash, any case, and in MSYS 
   assert.equal(hideHome('C:\\Users\\me\\a, c:/users/ME/b, /c/Users/me/c', {}, options), '~\\a, ~/b, ~/c');
   assert.equal(hideHome('C:\\Users\\meg\\a', {}, options), 'C:\\Users\\meg\\a');
   assert.equal(hideHome('/C/USERS/me', {}, { ...options, platform: 'linux' }), '/C/USERS/me', 'case counts off Windows');
+});
+
+// ---- Hiding the owner in command output (#390) ----
+
+test('makeRedactor: patterns only, with no marks: private emails go, noreply and team ones stay', () => {
+  const redact = makeRedactor({}, { HOME: '/home/someone' });
+  assert.equal(redact(`by jane${at}personal-mail.dev and 1+jane${at}users.noreply.github.com\n`), `by <email> and 1+jane${at}users.noreply.github.com\n`);
+  assert.equal(redact(`git${at}github.com:o/r and git${at}build.private-host.dev:o/r`), `git${at}github.com:o/r and git${at}<host>:o/r`);
+  assert.equal(redact('at /home/someone/project'), 'at ~/project');
+});
+
+test('makeRedactor: owners, hosts and marks, by shape, case-insensitive, whole words only', () => {
+  const redact = makeRedactor({ owners: ['Jane Example'], hosts: ['build.private-host.dev'], marks: ['jane example', 'fakeville', 'janex.dev', `me${at}janex.dev`, 'ann', 'xy', '東京'] }, {});
+  assert.equal(redact('JANE EXAMPLE in Fakeville'), '<owner> in <mark>');
+  assert.equal(redact('https://build.private-host.dev/x and www.janex.dev'), 'https://<host>/x and www.<host>');
+  assert.equal(redact(`mail me${at}janex.dev`), 'mail <email>');
+  // Inside a longer word it stays; two letters are too short to hide.
+  assert.equal(redact('annual ann xy'), 'annual <mark> xy');
+  assert.equal(redact('住在東京都'), '住在<mark>都');
+  assert.equal(redact('line\r\nnext\n'), 'line\r\nnext\n');
+});
+
+test('privateRemoteHosts: hosts outside the public forges; local paths name none', () => {
+  assert.deepEqual(
+    privateRemoteHosts(['https://github.com/o/r.git', `git${at}gitlab.com:o/r.git`, `ssh://git${at}Build.Private-Host.dev:2222/o/r.git`, `git${at}gitea.home.dev:o/r`, `https://user${at}code.corp.dev/o/r`, '/srv/git/r.git', '../r', 'C:\\repos\\r', 'file:///srv/r', '']),
+    ['build.private-host.dev', 'gitea.home.dev', 'code.corp.dev'],
+  );
 });

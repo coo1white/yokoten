@@ -19,7 +19,7 @@ export function runDoctor(): number {
   const session = options.flags.has('--session');
   const root = rootOf(process.cwd());
   const config = root ? loadConfig(root) : DEFAULTS;
-  const { ok, lines, report } = doctor(root, { env, config, session, gh: root ? ghIn(root) : undefined });
+  const { ok, lines, report } = doctor(root, { env, config, session, gh: root ? ghIn(root) : undefined, fillMarks: !session });
   // Full doctor outside a repo says so (#205). A session there stays quiet: no noise in a non-repo folder.
   if (!root && !session) {
     const missing = noRootFinding(process.cwd());

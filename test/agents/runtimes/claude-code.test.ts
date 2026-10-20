@@ -17,6 +17,7 @@ import {
   PLUGIN_ROOT,
   ROOT,
 } from '../../repo/helpers.ts';
+import { formatRewrite } from '../../../src/agents/runtimes/claude-code.ts';
 import { refuseOnFailure } from '../../../src/run/cli.ts';
 
 test('plugin: the marketplace and the plugin have the documented fields', () => {
@@ -144,4 +145,10 @@ test('hook: a Copilot CLI call, in the Claude-format shape it sends from .claude
   assert.deepEqual(JSON.parse(result.stdout), { permissionDecision: 'deny', permissionDecisionReason: result.stderr.trimEnd() });
   const create = JSON.stringify({ hook_event_name: 'PreToolUse', cwd: sandbox.repo, tool_name: 'Write', tool_input: { path: join(sandbox.repo, 'AGENTS.md'), file_text: 'x' } });
   assert.equal(sandbox.run(['hook'], { input: create, extra: { YOKOTEN_ROLE: 'worker' } }).status, 2, "Copilot's create tool names the file in `path`");
+});
+
+test('formatRewrite: allow with the whole tool input, only the command changed (#390)', () => {
+  const out = JSON.parse(formatRewrite({ tool_name: 'Bash', tool_input: { command: 'git push', description: 'Push', timeout: 5 } }, 'wrapped', 'why'));
+  assert.deepEqual(out, { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: 'why', updatedInput: { command: 'wrapped', description: 'Push', timeout: 5 } } });
+  assert.deepEqual(JSON.parse(formatRewrite(null, 'w', 'r')).hookSpecificOutput.updatedInput, { command: 'w' });
 });

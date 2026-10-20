@@ -530,6 +530,19 @@ export function isOrganization(gh: Gh, owner: string): boolean | null {
   }
 }
 
+/**
+ * The login gh is signed in with, or null: gh not installed, not signed in, or no answer
+ * (#390). Used only to add it to the private marks; it is never printed.
+ */
+export function readLogin(gh: Gh): string | null {
+  try {
+    const login = gh(['api', 'user', '--jq', '.login']).trim();
+    return /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(login) ? login : null;
+  } catch {
+    return null;
+  }
+}
+
 /** A label as the host keeps it. `color` is six hex digits, with no `#`. */
 export interface Label {
   name: string;

@@ -584,7 +584,7 @@ It puts three safe defaults in `.github/` too:
 
 | Command | What it does |
 |---------|--------------|
-| `install` | Skills into `~/.claude/skills` and `~/.agents/skills`, agents into `~/.claude/agents`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file. The two hooks go to Claude Code, and to Codex and Gemini CLI when `~/.codex` or `~/.gemini` already exists |
+| `install` | Skills into `~/.claude/skills` and `~/.agents/skills`, agents into `~/.claude/agents`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file. The two hooks go to Claude Code, and to Codex and Gemini CLI when `~/.codex` or `~/.gemini` already exists. It adds the marks it finds on this machine, and sets a git mailmap. See [Privacy](#privacy) |
 | `init [dir]` | Puts the practices into a project. Adds files; keeps any that are already there and says so. It also reads GitHub through `gh` and says which standard labels and milestone it would add. It never changes GitHub. Without `gh`, a sign-in or a GitHub remote, it says what it skipped |
 | `init --github --yes [--remove-default-labels] [--board]` | Adds the missing standard labels, and a milestone "First release" when no milestone is open. When a closed milestone already has that title, the new one is "Next release". A closed milestone is never reopened. A standard label that is there gets the standard colour and description. With 8 areas or fewer in `yokoten.json`, it adds one grey label per area. A second run changes nothing. GitHub's default labels outside the set (`question`, `wontfix` and others) are deleted only with `--remove-default-labels`. `--board` also makes a board linked to the repo; it needs the gh token's `project` scope |
 | `update [dir] [--write]` | Shows what this yokoten changes in the core rules of the project's `AGENTS.md`. `--write` replaces them, and keeps the "This project" part as it is. See [Updating the rules](#updating-the-rules) |
@@ -593,6 +593,7 @@ It puts three safe defaults in `.github/` too:
 | `check [--staged] [--json]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries. Each change file is read the way `changelog` reads it, so a wrong one fails at commit. With nothing staged, `--staged` notes it and is ok. For the tree, a translation behind its English source is a note. See [Translations](#translations) |
 | `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
 | `check --issue` | In CI: the issue's title. See [Issue titles](#issue-titles) |
+| `redact` | Reads text on stdin and writes it with your details hidden: `<owner>`, `<email>`, `<host>`, `<mark>`. The tool-call guard sends risky commands through it. See [Privacy](#privacy) |
 | `changelog [--write]` | Shows the entries the files in `changes/` add under `[Unreleased]`. `--write` puts them into `CHANGELOG.md` and deletes the files; run it before a release. See [The changelog](#the-changelog) |
 | `learn <issue> [--write]` | Drafts a check from an incident issue, for a person to review. `--write` adds the files in `lessons/`. See [Learning from an incident](#learning-from-an-incident) |
 | `learn --ship <id>` | In yokoten: moves a reviewed lesson into a group in `kit/lessons/`, where `doctor` from that yokoten runs it in every project. Refused while a `TODO(reviewer)` is left or its test fails |
@@ -1161,6 +1162,43 @@ addresses, and neither is a retina image name such as `logo@2x.png`. An address 
 The same check catches secrets: GitHub, npm, Slack, Stripe, Google, OpenAI and
 Anthropic tokens, AWS access key ids, and PEM private keys. A hit names the kind of
 secret, never the secret. Deleting it is not enough, since git keeps it: rotate it.
+
+### What an agent reads
+
+The check above keeps your details out of the repo. An agent also reads command output,
+and that output goes into the transcript and to the model. It can't be taken back. So
+yokoten hides your details before a command runs.
+
+- **`yokoten redact`** reads text on stdin and writes it with placeholders. It hides your
+  private marks, private email addresses, your git user.name, and the hosts of private
+  remotes. A mark that looks like an address becomes `<email>`. A mark that looks like a
+  domain becomes `<host>`. Any other mark becomes `<mark>`. Without a private-marks
+  file, it still hides the patterns and what git knows.
+- **The tool-call guard wraps risky commands.** These commands print account details:
+  `git log`, `git show` and `git blame` without `--format`, `--pretty` or
+  `--oneline`. Also `git push`, `fetch`, `pull` and `clone`, `git remote -v`,
+  `git config --list`, `wrangler`, account and traffic calls through `gh`,
+  `gh auth status`, `npm whoami`, `env` and `printenv`. In Claude Code, the guard
+  changes such a command to
+  `set -o pipefail; ( <command> ) 2>&1 | node <yokoten> redact`. The exit code stays the
+  command's. Other agents can't change a command from a hook. There the guard stops the
+  command and shows the wrapped command to run.
+- **git hides you at the source.** `install` points git's global `mailmap.file` at
+  `~/.config/yokoten/mailmap`, outside every repo. Then `git log` and `git show`
+  print `owner` for your emails. If you set your own `mailmap.file`, `install` keeps
+  it and tells you which lines to add.
+- **Marks fill themselves.** `install` and `doctor` add what this machine knows: git
+  user.name and user.email, the login `gh` uses, and the hosts of private remotes. They
+  only add lines, and never print a value. `doctor` tells you which kinds are still
+  missing: your real name, your city, your domains. Only you can add those.
+
+The wrapped command needs bash. On Windows, run agents in Git Bash or WSL; PowerShell has
+no `pipefail`. Two limits remain. A browser page or a screenshot can't be filtered, so
+don't read account pages as text. And a hook can't know every command. When output shows
+your details, open an incident, and give the command a row in `ACCOUNT_PRINTERS`
+(`src/rules/guards.ts`).
+
+### Time zones
 
 A commit also records the time it was made, with your time zone, and a time zone
 narrows down where you live. So the commit check asks for UTC: `init` sets `TZ=UTC` for

@@ -20,6 +20,7 @@ import {
 } from 'node:path';
 import { test } from 'node:test';
 import {
+  at,
   COMMENTED,
   commentedGemini,
   doctorHandAdd,
@@ -87,7 +88,8 @@ test('install: skills, agents and hooks once, the user\'s own files untouched', 
   // The installed copy runs on its own.
   const doctor = spawnSync('node', [join(sandbox.home, '.local/share/yokoten/bin/yokoten.ts'), 'doctor', '--session'], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
   assert.equal(doctor.status, 0, doctor.stderr);
-  assert.match(doctor.stdout, /private-marks is missing or empty/);
+  // install added the marks it found; the session still asks for the owner's own (#390).
+  assert.match(doctor.stdout, /private-marks has only the marks yokoten found on this machine/);
   // The home folder names the machine's user; it never shows (#25).
   for (const out of [result.stdout, doctor.stdout]) assert.ok(!out.includes(sandbox.home), 'output shows the home path');
   assert.match(doctor.stdout, /~\/\.config\/yokoten\/private-marks/);
@@ -444,4 +446,38 @@ test('install: prints the alias when no yokoten on the PATH runs this copy, and 
   result = sandbox.run(['install'], { extra: { PATH: `${bin}:${process.env.PATH}` } });
   assert.equal(result.status, 0, result.stderr);
   assert.ok(!result.stdout.includes('alias yokoten'), result.stdout);
+});
+
+test("install: adds the machine's marks and a git mailmap, and never prints a value (#390)", () => {
+  const sandbox = makeSandbox();
+  const email = `jane${at}personal-mail.dev`;
+  sandbox.git('config', 'user.name', 'Jane Example');
+  sandbox.git('config', 'user.email', email);
+  sandbox.git('remote', 'add', 'origin', 'https://build.private-host.dev/jane/app.git');
+  sandbox.write('README.md', 'Hello.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'docs: hello');
+  const marks = join(sandbox.home, '.config', 'yokoten', 'private-marks');
+  let result = sandbox.run(['install']);
+  assert.equal(result.status, 0, result.stderr);
+  for (const value of ['Jane', 'personal-mail', 'private-host']) assert.ok(!(result.stdout + result.stderr).includes(value), 'install printed a value');
+  assert.match(result.stdout, /^added to ~\/\.config\/yokoten\/private-marks from this machine: git name, git email, private remote host \(the values are not shown\)$/m);
+  assert.match(result.stdout, /^add your real name, your city, your domains to ~\/\.config\/yokoten\/private-marks, one per line; yokoten can't find these on its own$/m);
+  assert.match(result.stdout, /^wrote ~\/\.config\/yokoten\/mailmap, and git log and git show now print your emails as a placeholder$/m);
+  assert.match(readFileSync(marks, 'utf8'), /# added by yokoten from this machine\nJane Example\njane@personal-mail\.dev\nbuild\.private-host\.dev\n$/);
+  assert.equal(statSync(marks).mode & 0o777, 0o600);
+  // git prints the placeholder at the source.
+  assert.equal(sandbox.git('config', '--global', '--get', 'mailmap.file').stdout, '~/.config/yokoten/mailmap\n');
+  assert.match(sandbox.git('log', '-1').stdout, /^Author: owner <owner@noreply\.invalid>$/m);
+  // A second run appends nothing.
+  const before = readFileSync(marks, 'utf8');
+  result = sandbox.run(['install']);
+  assert.match(result.stdout, /^kept ~\/\.config\/yokoten\/private-marks: it already has what this machine knows$/m);
+  assert.match(result.stdout, /^updated ~\/\.config\/yokoten\/mailmap/m);
+  assert.equal(readFileSync(marks, 'utf8'), before);
+  // The user's own mailmap.file stays.
+  sandbox.git('config', '--global', 'mailmap.file', '/elsewhere/mailmap');
+  result = sandbox.run(['install']);
+  assert.match(result.stdout, /^kept your own git mailmap.file setting; add the lines of ~\/\.config\/yokoten\/mailmap to that file$/m);
+  assert.equal(sandbox.git('config', '--global', '--get', 'mailmap.file').stdout, '/elsewhere/mailmap\n');
 });

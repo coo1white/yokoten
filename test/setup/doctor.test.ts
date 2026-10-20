@@ -39,6 +39,7 @@ import {
   coreRulesControl,
   doctor,
   listBoardSteps,
+  privacyNotes,
   selfTest,
 } from '../../src/setup/doctor.ts';
 import { LABELS } from '../../src/setup/plan.ts';
@@ -728,4 +729,21 @@ test('self-test: the core-rules control passes the real check and fails a broken
     return result.mark === 'note' ? { mark: 'MISSING' as const, finding: result.finding } : result;
   };
   assert.deepEqual(coreRulesControl(noVersion), ['core rules check (newer kit)']);
+});
+
+test('privacyNotes: the mailmap, and the kinds of mark yokoten cannot find; never a value (#390)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'yokoten-privacy-'));
+  const env = { HOME: home, GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
+  const notes = () => privacyNotes(env, null).map((note) => `${note.name}: ${note.finding.what}; ${note.finding.fix}`);
+  assert.deepEqual(notes(), [
+    'mailmap: git log and git show print your name and email as they are; run `yokoten install`; it sets a git mailmap outside every repo',
+    `private-mark-kinds: your private marks may lack your real name, your city, your domains; add them to ${join(home, '.config', 'yokoten', 'private-marks')}, one per line`,
+  ]);
+  execFileSync('git', ['config', '--global', 'mailmap.file', '~/.config/yokoten/mailmap'], { env: { ...process.env, ...env } });
+  mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(join(home, '.config', 'yokoten', 'private-marks'), 'Jane Example\nFakeville\njanex.dev\n');
+  assert.deepEqual(notes(), []);
+  execFileSync('git', ['config', '--global', 'mailmap.file', '/elsewhere/mailmap'], { env: { ...process.env, ...env } });
+  assert.deepEqual(notes(), ['mailmap: git uses your own mailmap file, not ~/.config/yokoten/mailmap; add the lines of ~/.config/yokoten/mailmap to your file']);
+  rmSync(home, { recursive: true, force: true });
 });

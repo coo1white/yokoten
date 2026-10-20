@@ -19,6 +19,7 @@ import {
   makeSandbox,
   pick,
 } from '../repo/helpers.ts';
+import { redactCommand } from '../../src/commands/hook.ts';
 
 // A session started outside the repo, or a worker in a worktree elsewhere, loads no project
 // hook: the user-level guard applies the file's own repo's rules, if yokoten is set up there (#307).
@@ -215,4 +216,50 @@ test('hook --agent: the release refusal names the agent\'s own command (#350)', 
     assert.match(force.stderr, /git push --force/, `${agent}: a force push`);
     assert.doesNotMatch(force.stderr, /RELEASE_APPROVAL/, `${agent}: a force push`);
   }
+});
+
+// ---- Commands that print account details (#390) ----
+
+test('hook: Claude Code gets the command rewritten through redact, and the rewrite runs (#390)', () => {
+  const sandbox = makeSandbox();
+  sandbox.git('config', 'user.name', 'Jane Example');
+  sandbox.write('README.md', 'Hello.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'docs: hello');
+  const call = (command: string, agent = 'claude-code') =>
+    sandbox.run(['hook', '--commands-only', '--agent', agent], { input: JSON.stringify({ cwd: sandbox.repo, tool_name: 'Bash', tool_input: { command, description: 'Show' } }) });
+  const result = call('git log -1');
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout).hookSpecificOutput;
+  assert.equal(output.permissionDecision, 'allow');
+  assert.equal(output.permissionDecisionReason, 'yokoten: `git log` prints author names and emails, so its output goes through yokoten redact');
+  assert.equal(output.updatedInput.description, 'Show');
+  assert.match(output.updatedInput.command, /^set -o pipefail; \(\ngit log -1\n\) 2>&1 \| node ".*yokoten\.ts" redact$/);
+  // The rewritten command runs, and prints the placeholder.
+  const ran = spawnSync('bash', ['-c', output.updatedInput.command], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
+  assert.equal(ran.status, 0, ran.stderr);
+  assert.match(ran.stdout, /Author: <owner> /);
+  assert.ok(!ran.stdout.includes('Jane'));
+  // A safe command, or one already filtered, is left alone.
+  assert.deepEqual(pick(call('git status')), [0, '', '']);
+  assert.deepEqual(pick(call('git log -1 2>&1 | yokoten redact')), [0, '', '']);
+  // A command the guard refuses is refused, not rewritten.
+  assert.equal(call('git push --force').status, 2);
+});
+
+test("hook: an agent that can't rewrite is stopped, and told the command to run (#390)", () => {
+  const sandbox = makeSandbox();
+  const result = sandbox.run(['hook', '--commands-only', '--agent', 'codex'], { input: JSON.stringify({ cwd: sandbox.repo, tool_name: 'Bash', tool_input: { command: 'git remote -v' } }) });
+  assert.equal(result.status, 2);
+  assert.equal(result.stdout, '');
+  assert.match(result.stderr, /^yokoten: `git remote` prints remote URLs, and this agent can't filter it\./);
+  assert.match(result.stderr, /Run it as `set -o pipefail; \(\ngit remote -v\n\) 2>&1 \| node ".*" redact`\./);
+  const json = sandbox.run(['hook', '--json'], { input: JSON.stringify({ tool_input: { command: 'env' } }) });
+  assert.equal(JSON.parse(json.stdout).rewritten.startsWith('set -o pipefail; (\nenv\n) 2>&1 | node '), true);
+});
+
+test('redactCommand: this copy of yokoten, with the home folder as $HOME (#390)', () => {
+  assert.equal(redactCommand('/home/someone/tools/yokoten/bin/yokoten.ts', '/home/someone'), 'node "$HOME/tools/yokoten/bin/yokoten.ts" redact');
+  assert.equal(redactCommand('/opt/yo$ten/bin/yokoten.ts', '/home/someone'), 'node "/opt/yo\\$ten/bin/yokoten.ts" redact');
+  assert.equal(redactCommand('C:\\Users\\someone\\y\\bin\\yokoten.ts', 'C:\\Users\\someone'), 'node "$HOME/y/bin/yokoten.ts" redact');
 });

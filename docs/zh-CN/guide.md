@@ -537,7 +537,7 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 
 | 命令 | 做什么 |
 |------|--------|
-| `install` | 把技能装进 `~/.claude/skills` 和 `~/.agents/skills`，agent 装进 `~/.claude/agents`，加上会话开头的 `doctor` hook 和用户级命令守卫，再建一个空的私有词表。这两个 hook 给 Claude Code 装一份；已经有 `~/.codex` 或 `~/.gemini` 文件夹的话，Codex 和 Gemini CLI 也各装一份 |
+| `install` | 把技能装进 `~/.claude/skills` 和 `~/.agents/skills`，agent 装进 `~/.claude/agents`，加上会话开头的 `doctor` hook 和用户级命令守卫，再建一个空的私有词表。这两个 hook 给 Claude Code 装一份；已经有 `~/.codex` 或 `~/.gemini` 文件夹的话，Codex 和 Gemini CLI 也各装一份。它还会把这台电脑上能找到的私有词加进词表，并设好 git 的 mailmap。见「隐私」 |
 | `init [dir]` | 把这套做法放进一个项目。只加文件；已有的文件保留，并告诉你保留了哪些。它还会用 `gh` 看一眼 GitHub，告诉你要补哪些标准标签和里程碑，但不会去改 GitHub。没装 `gh`、没登录，或者远程仓库不在 GitHub 上，就说一声跳过了 |
 | `init --github --yes [--remove-default-labels] [--board]` | 补上缺的标准标签；没有打开的里程碑时，建一个叫 "First release" 的；要是已经有一个关掉的里程碑叫这个名字，就叫 "Next release"。关掉的里程碑不会被重新打开。已有的标准标签，颜色和说明改成标准的。`yokoten.json` 里的模块不超过 8 个时，每个模块建一个灰色标签。再跑一次什么也不会变。GitHub 自带的、不在这套里的标签（`question`、`wontfix` 等），只有加上 `--remove-default-labels` 才会删。加 `--board` 还会建一个关联到仓库的看板，要 gh 的令牌带 `project` 权限 |
 | `update [dir] [--write]` | 看看这个版本的 yokoten 会怎么改项目 `AGENTS.md` 里的核心规则。加上 `--write` 才真的替换；「This project」那部分原样保留。见[更新规则](#更新规则) |
@@ -546,6 +546,7 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 | `check [--staged] [--json]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交。提交里不能有构建产物和二进制文件。`changes/` 里的文件按 `changelog` 的读法检查，格式不对，提交时就拦下。什么都没暂存时，`--staged` 提醒一句，算通过。查整个目录时，落后于英文的译文会给一条提醒，见[翻译](#翻译) |
 | `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的变更文件、milestone 和标签，见下面的「更新日志」。改到 CODEOWNERS 里列出的文件，必须写 `tier: A`。改动的文档里句子太长、改动的代码里名字难读、改动超过 400 行，都只提醒，不算失败 |
 | `check --issue` | 在 CI 里检查 issue 的标题，见下面的「issue 标题」 |
+| `redact` | 从标准输入读文字，把你的信息换成占位符再输出：`<owner>`、`<email>`、`<host>`、`<mark>`。命令守卫会让有风险的命令先过一遍它。见「隐私」 |
 | `changelog [--write]` | 列出 `changes/` 里的文件会往 `[Unreleased]` 下面加哪些条目。加上 `--write` 就真的写进 `CHANGELOG.md`，再删掉这些文件；发版前跑。见下面的「更新日志」 |
 | `learn <issue> [--write]` | 从一个事故 issue 起草一条检查，留给人来审。加上 `--write` 才把文件写进 `lessons/`。见下面的「从事故里学」 |
 | `learn --ship <id>` | 在 yokoten 里用：把审过的教训搬进 `kit/lessons/` 下的一个分组，以后用这份 yokoten 跑 `doctor`，每个项目都会查它。还有 `TODO(reviewer)` 没填，或者它的测试没过，就不让搬 |
@@ -1048,6 +1049,34 @@ IP 只查 IPv4，内网地址（比如 `10.x`、`192.168.x`）也算；IPv6 不�
 这个检查也会查密钥：GitHub、npm、Slack、Stripe、Google、OpenAI 和 Anthropic 的 token，
 AWS 的 access key id，还有 PEM 私钥。查到了只说是哪一种密钥，不会把密钥本身打印出来。光删掉
 不够，git 历史里还留着，得去把它作废，换一个新的。
+
+### agent 读到的东西
+
+上面的检查管的是仓库里的内容。agent 还会读命令的输出，这些输出会进对话记录、发给模型，发出去
+就收不回来了。所以 yokoten 在命令跑之前就把你的信息藏起来。
+
+- **`yokoten redact`**：从标准输入读文字，换成占位符再输出。它会藏起私有词表里的词、个人邮箱、
+  git 的 user.name，还有私有远程仓库的主机名。像邮箱的词换成 `<email>`，像域名的换成
+  `<host>`，其他的换成 `<mark>`。没有私有词表也能用，这时只藏邮箱这类格式和 git 知道的信息。
+- **命令守卫会给有风险的命令套一层。** 下面这些命令会打印账号信息：没加 `--format`、
+  `--pretty` 或 `--oneline` 的 `git log`、`git show`、`git blame`；`git push`、`fetch`、
+  `pull`、`clone`；`git remote -v`；`git config --list`；`wrangler`；用 `gh` 查账号和访问量；
+  `gh auth status`；`npm whoami`；`env` 和 `printenv`。在 Claude Code 里，守卫会把命令改成
+  `set -o pipefail; ( <命令> ) 2>&1 | node <yokoten> redact`，退出码还是原命令的。别的 agent
+  的 hook 改不了命令，守卫就拦下它，告诉 agent 该怎么跑。
+- **让 git 自己先藏。** `install` 会把 git 全局的 `mailmap.file` 指向
+  `~/.config/yokoten/mailmap`，这个文件不在任何仓库里。之后 `git log` 和 `git show` 会把你的
+  邮箱显示成 `owner`。你要是已经设了自己的 `mailmap.file`，`install` 不动它，只告诉你要加哪几行。
+- **词表自己补。** `install` 和 `doctor` 会把这台电脑知道的信息加进词表：git 的 user.name 和
+  user.email、`gh` 登录的账号、私有远程仓库的主机名。只往后加，从不打印具体的词。`doctor`
+  还会告诉你还缺哪几类：真名、所在城市、域名。这些只有你自己能加。
+
+套上去的命令要用 bash 跑。在 Windows 上，请在 Git Bash 或 WSL 里用 agent；PowerShell 没有
+`pipefail`。有两点做不到：浏览器页面和截图过滤不了，所以别把账号页面当文字读给 agent。
+hook 也不可能认得所有命令：输出里露出了你的信息，就开一个事故 issue，再给那条命令在
+`ACCOUNT_PRINTERS`（`src/rules/guards.ts`）里加一行。
+
+### 时区
 
 每个提交还会记下提交时间和你的时区，而时区能大致看出你住在哪里。所以提交检查要求用 UTC：
 `init` 会给 agent 会话设好 `TZ=UTC`，你自己提交时，它会告诉你怎么设。

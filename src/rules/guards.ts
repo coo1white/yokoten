@@ -873,6 +873,118 @@ function checkBlocked(words: string[], blockList: Record<string, string>): Findi
   return finding('blocked-command', `\`${name}\` is blocked in this project`, 'use the project\'s own stack instead; yokoten.json "commands.block" lists what is blocked', { why: reason });
 }
 
+// ---- Commands that print account details (#390) ----
+//
+// Some commands print the owner's name, email, login or a private host: a git author line,
+// a push error with the remote, a deploy log, a traffic report. Once that output reaches an
+// agent it can't be taken back, so the hook pipes these commands through `yokoten redact`.
+// One row per kind of command. Add a row when an incident shows a new one.
+
+/** One kind of command that prints account details. */
+interface AccountPrinter {
+  /** The program, by its base name. */
+  program: string;
+  /** Its subcommands that print them; any subcommand when there is no list. */
+  subcommands?: string[];
+  /** For a narrower match: true when these arguments (after the subcommand) print them. */
+  when?: (args: string[]) => boolean;
+  /** What it prints, for the message. */
+  prints: string;
+}
+
+const hasAny = (options: string[]) => (args: string[]) => args.some((arg) => options.some((option) => arg === option || arg.startsWith(`${option}=`)));
+// A log with its own format prints only what the format names.
+const GIT_FORMATS = ['--format', '--pretty', '--oneline'];
+
+export const ACCOUNT_PRINTERS: AccountPrinter[] = [
+  { program: 'git', subcommands: ['log', 'show', 'whatchanged', 'blame', 'shortlog', 'annotate'], when: (args) => !hasAny(GIT_FORMATS)(args), prints: 'author names and emails' },
+  { program: 'git', subcommands: ['push', 'fetch', 'pull', 'clone', 'ls-remote'], prints: 'the remote host, in its progress and its errors' },
+  { program: 'git', subcommands: ['remote'], when: (args) => hasAny(['-v', '--verbose', 'get-url', 'show'])(args), prints: 'remote URLs' },
+  { program: 'git', subcommands: ['config'], when: (args) => hasAny(['--list', '-l', 'list', '--get-regexp'])(args) || args.some((arg) => /^(user|remote|credential|url|sendemail)\./i.test(arg)), prints: 'your name, email and remotes' },
+  { program: 'wrangler', prints: 'the account name and email' },
+  { program: 'gh', subcommands: ['api'], when: (args) => args.some((arg) => /(^|\/)(traffic|user|users)(\/|$)/.test(arg)), prints: 'the login and account details' },
+  { program: 'gh', subcommands: ['auth'], when: (args) => args[0] === 'status', prints: 'the login' },
+  { program: 'npm', subcommands: ['whoami'], prints: 'the login' },
+  { program: 'printenv', prints: 'every environment variable' },
+  // `env` with no program after it prints the environment; `env X=1 cmd` runs cmd.
+  { program: 'env', prints: 'every environment variable' },
+];
+
+// Runners that start a package's program by name: `npx wrangler`, `pnpm dlx wrangler`.
+const PACKAGE_RUNNERS: Record<string, string[]> = { npx: [], bunx: [], pnpm: ['dlx', 'exec'], yarn: ['dlx', 'exec'] };
+
+/** The first word that is not an option, from `index`, skipping the value of each option in `valued`. */
+function firstPlain(words: string[], index: number, valued: Set<string> = new Set()): number {
+  while (index < words.length && words[index].startsWith('-')) index += valued.has(words[index]) ? 2 : 1;
+  return index;
+}
+
+/** The program a command runs and the words after it, past launchers and package runners. Null when it runs none. */
+function programWithArgs(words: string[]): { name: string; args: string[] } | null {
+  const plain = withoutRedirects(words);
+  const [program] = findPrograms(plain);
+  if (program === undefined) return plain.some((word) => programName(word) === 'env') ? { name: 'env', args: [] } : null;
+  let at = plain.indexOf(program);
+  let name = programName(program);
+  if (Object.hasOwn(PACKAGE_RUNNERS, name)) {
+    at = firstPlain(plain, at + 1);
+    if (PACKAGE_RUNNERS[name].includes(plain[at])) at = firstPlain(plain, at + 1);
+    if (at >= plain.length) return null;
+    name = programName(plain[at]).replace(/@.*$/, '');
+  }
+  return { name, args: plain.slice(at + 1) };
+}
+
+/** What one command prints about the owner, from ACCOUNT_PRINTERS, or null. */
+function accountPrinted(words: string[]): string | null {
+  const found = programWithArgs(words);
+  if (!found) return null;
+  for (const row of ACCOUNT_PRINTERS) {
+    if (row.program !== found.name) continue;
+    let args = found.args;
+    if (row.subcommands) {
+      const at = firstPlain(args, 0, row.program === 'git' ? GIT_VALUE_OPTIONS : new Set(['-R', '--repo']));
+      if (!row.subcommands.includes(args[at])) continue;
+      args = args.slice(at + 1);
+    }
+    if (!row.when || row.when(args)) return `\`${row.program}${row.subcommands ? ` ${found.args.find((arg) => row.subcommands?.includes(arg))}` : ''}\` prints ${row.prints}`;
+  }
+  return null;
+}
+
+/** A command that already sends its output through `yokoten redact`. */
+const REDACTED = /\byokoten(?:\.ts)?["']?\s+redact\b/;
+
+/**
+ * What the command may print about the owner, or null: the first part of it that
+ * ACCOUNT_PRINTERS lists. Null too when the command already pipes into `yokoten redact`,
+ * or can't be read (the guard refuses that one on its own).
+ */
+export function printsAccount(command: string): string | null {
+  if (REDACTED.test(command)) return null;
+  try {
+    return withBudget(command.length, () => {
+      for (const words of commandWords(command)) {
+        const printed = accountPrinted(words);
+        if (printed) return printed;
+      }
+      return null;
+    }, true);
+  } catch {
+    return null;
+  }
+}
+
+/** The refusal for an agent whose hook can't change the command: the fix is the wrapped command. */
+export const privateOutput = (printed: string, wrapped: string): Finding => finding('private-output', `${printed}, and this agent can't filter it`, `run it as \`${wrapped}\``);
+
+/**
+ * The command with its output, stderr too, sent through `redact`. `redact` is how to run
+ * `yokoten redact`. pipefail keeps the command's exit code. The command sits on lines of
+ * its own, so a comment or a heredoc in it still ends where it did.
+ */
+export const wrapForRedact = (command: string, redact: string): string => `set -o pipefail; (\n${command}\n) 2>&1 | ${redact}`;
+
 // ---- Reading bash ----
 //
 // A small reader for everyday bash, not a full parser. It turns command text into a list

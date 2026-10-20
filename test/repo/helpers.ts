@@ -47,7 +47,7 @@ export function makeSandbox() {
   const env = { PATH: process.env.PATH, HOME: home, TZ: 'UTC', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' };
   const git = (...args: string[]) => spawnSync('git', args, { cwd: repo, env, encoding: 'utf8' });
   git('init', '-q', '-b', 'main');
-  git('config', 'user.name', 'Test');
+  git('config', 'user.name', 'Sandbox Owner');
   git('config', 'user.email', `1+test${at}users.noreply.github.com`);
   const run = (args: string[], { input, cwd = repo, extra = {}, timeout }: { input?: string; cwd?: string; extra?: Record<string, string>; timeout?: number } = {}) =>
     spawnSync('node', [CLI, ...args], { cwd, env: { ...env, ...extra }, input, encoding: 'utf8', timeout });
@@ -232,7 +232,7 @@ export function makeTranslatedRepo() {
   const env = { PATH: process.env.PATH, HOME: root, TZ: 'UTC', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(root, 'none') };
   const git = (...args: string[]) => execFileSync('git', args, { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   git('init', '-q', '-b', 'main');
-  git('config', 'user.name', 'Test');
+  git('config', 'user.name', 'Sandbox Owner');
   git('config', 'user.email', 'test@example.com');
   const commit = (path: string, text: string) => {
     writeFileSync(join(root, path), text);

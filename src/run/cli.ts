@@ -187,6 +187,18 @@ export const COMMANDS: Command[] = [
     example: 'yokoten check --staged',
   },
   {
+    name: 'redact',
+    summary: 'command output with your name, emails, logins and private hosts hidden',
+    usage: '',
+    text: [
+      'Reads text on stdin and writes it to stdout with placeholders: <owner>, <email>,',
+      '<host> and <mark>. It hides your private marks, private email addresses, git',
+      'user.name and the hosts of private remotes. The tool-call guard pipes risky commands here.',
+    ],
+    options: [],
+    example: 'set -o pipefail; git push 2>&1 | yokoten redact',
+  },
+  {
     name: 'changelog',
     summary: 'the entries the files in changes/ add under [Unreleased]',
     usage: '[--write]',
