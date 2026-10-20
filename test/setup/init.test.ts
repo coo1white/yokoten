@@ -7,9 +7,11 @@ import {
   chmodSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   renameSync,
   rmSync,
   statSync,
@@ -510,6 +512,91 @@ test('init: a .claude/CLAUDE.md that already imports AGENTS.md is left as it is 
     assert.equal(readFileSync(join(sandbox.repo, '.claude', 'CLAUDE.md'), 'utf8'), text);
     assert.equal(stepMark(sandbox, 'rules'), 'done', text);
   }
+});
+
+const NO_SYMLINK = process.platform === 'win32' && 'Windows makes a symlink only with Developer Mode or admin rights';
+
+test('init: a CLAUDE.md that is a link to AGENTS.md reads the rules; init writes nothing through it (#428)', { skip: NO_SYMLINK }, () => {
+  const cases = [
+    [['CLAUDE.md', 'AGENTS.md']],
+    [['.claude/CLAUDE.md', '../AGENTS.md']],
+    [['CLAUDE.md', 'AGENTS.md'], ['.claude/CLAUDE.md', '../AGENTS.md']],
+  ];
+  for (const links of cases) {
+    const sandbox = makeSandbox();
+    // With `## This project`, init leaves AGENTS.md to `update` (#378), so it stays byte for byte.
+    const rules = '# shared rules\n\n## This project\n\nRun the tests first.\n';
+    sandbox.write('AGENTS.md', rules);
+    for (const [file, target] of links) {
+      mkdirSync(dirname(join(sandbox.repo, file)), { recursive: true });
+      symlinkSync(target, join(sandbox.repo, file));
+    }
+    assert.equal(stepMark(sandbox, 'rules'), 'done', `${links}: no rules gap`);
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stdout, /CLAUDE\.md/, `${links}`);
+    assert.equal(readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8'), rules, `${links}: AGENTS.md does not import itself`);
+    for (const [file, target] of links) assert.equal(readlinkSync(join(sandbox.repo, file)), target, `${file} is the same link`);
+    assert.equal(stepMark(sandbox, 'rules'), 'done', `${links}`);
+  }
+});
+
+test('init: a CLAUDE.md link to an AGENTS.md without `## This project` gets the core rules once, and nothing through the link (#378, #428)', { skip: NO_SYMLINK }, () => {
+  for (const [file, target] of [['CLAUDE.md', 'AGENTS.md'], ['.claude/CLAUDE.md', '../AGENTS.md']]) {
+    const sandbox = makeSandbox();
+    sandbox.write('AGENTS.md', '# Our rules\n\nRun the tests first.\n');
+    mkdirSync(dirname(join(sandbox.repo, file)), { recursive: true });
+    symlinkSync(target, join(sandbox.repo, file));
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^updated AGENTS\.md: the core rules are on top, and your 3 line\(s\) moved under `## This project`/m, file);
+    assert.doesNotMatch(result.stdout, /CLAUDE\.md/, `${file}: no import, no note about the link`);
+    const text = readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8');
+    assert.equal(text.match(/^<!-- yokoten kit /gm)?.length, 1, `${file}: the core rules once`);
+    assert.equal(text.match(/^## This project$/gm)?.length, 1, file);
+    assert.ok(text.endsWith('## This project\n\n## Our rules\n\nRun the tests first.\n'), text.slice(-120));
+    assert.doesNotMatch(text, /^@(\.\.\/)?AGENTS\.md$/m, `${file}: AGENTS.md does not import itself`);
+    assert.equal(readlinkSync(join(sandbox.repo, file)), target, `${file} is the same link`);
+    assert.equal(stepMark(sandbox, 'rules'), 'done', file);
+    // A second run changes nothing.
+    const again = sandbox.run(['init']);
+    assert.match(again.stdout, /^kept AGENTS\.md \(`yokoten update` brings its core rules up to date\)$/m);
+    assert.equal(readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8'), text, file);
+  }
+});
+
+test('init: a CLAUDE.md that is a link to another file is left as it is, and init says what to do (#428)', { skip: NO_SYMLINK }, () => {
+  for (const outside of [false, true]) {
+    const sandbox = makeSandbox();
+    sandbox.write('AGENTS.md', '# shared rules\n');
+    const real = outside ? join(dirname(sandbox.repo), 'shared-claude.md') : join(sandbox.repo, 'docs', 'claude.md');
+    const named = outside ? 'a file outside this repo' : 'docs/claude\\.md';
+    mkdirSync(dirname(real), { recursive: true });
+    writeFileSync(real, '# our rules\n');
+    symlinkSync(outside ? real : 'docs/claude.md', join(sandbox.repo, 'CLAUDE.md'));
+    assert.match(sandbox.run(['doctor']).stdout, new RegExp(`rules[^\\n]*CLAUDE\\.md is a link to ${named}: add a line \`@AGENTS\\.md\` to that file`));
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(`left CLAUDE\\.md as it is: it is a link to ${named}`));
+    assert.doesNotMatch(result.stdout, /updated CLAUDE\.md/);
+    assert.equal(readFileSync(real, 'utf8'), '# our rules\n', 'nothing is written through the link');
+    assert.equal(lstatSync(join(sandbox.repo, 'CLAUDE.md')).isSymbolicLink(), true);
+    assert.notEqual(stepMark(sandbox, 'rules'), 'done');
+  }
+});
+
+test('init: with CLAUDE.md a link to another file, a plain .claude/CLAUDE.md gets the import (#428)', { skip: NO_SYMLINK }, () => {
+  const sandbox = makeSandbox();
+  sandbox.write('AGENTS.md', '# shared rules\n');
+  sandbox.write('docs/claude.md', '# linked rules\n');
+  sandbox.write('.claude/CLAUDE.md', '# folder rules\n');
+  symlinkSync('docs/claude.md', join(sandbox.repo, 'CLAUDE.md'));
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /updated \.claude\/CLAUDE\.md: it now reads AGENTS\.md/);
+  assert.equal(readFileSync(join(sandbox.repo, 'docs', 'claude.md'), 'utf8'), '# linked rules\n');
+  assert.match(readFileSync(join(sandbox.repo, '.claude', 'CLAUDE.md'), 'utf8'), /\n@\.\.\/AGENTS\.md\n$/);
+  assert.equal(stepMark(sandbox, 'rules'), 'done');
 });
 
 test('init: an import of another file that starts with AGENTS.md does not count; init adds the real import (#206)', () => {
