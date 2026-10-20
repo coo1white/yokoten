@@ -102,23 +102,38 @@ const OK_IP = [/^127\./, /^0\.0\.0\.0$/, /^192\.0\.2\./, /^198\.51\.100\./, /^20
 //   name: "MS-OVBA" or "[MS-OVBA]", "RFC 7230", "ECMA-376", "ISO 32000-1", "ISO/IEC 29500";
 // - after it: a pre-release or build tag, `-beta` or `+build.5`. A `-` and a second address
 //   is a range of addresses, and is caught;
-// - a range of section numbers, `2.3.1.15 to 2.3.1.17`, joined by "to" or "through". If one
-//   end is in a private network (10/8, 172.16/12, 192.168/16, 100.64/10), it is a range of
-//   addresses, and is caught.
+// - a range joined by "to" or "through" whose first end is skipped by the words before it
+//   ("MS-OVBA 2.3.1.15 to 2.3.1.17"): both ends are skipped;
+// - a bare range that has the shape of section numbers ("2.3.1.15 to 2.3.1.17"): the first
+//   number is 9 or less, every number is below 64, the ends differ only in the last number,
+//   and the first end is not one number four times (as public resolvers are). Any other
+//   range, private or public, is a range of addresses, and is caught.
 // A bare address in prose ("connect to <address>") is still caught.
 const QUAD = String.raw`\d{1,3}(?:\.\d{1,3}){3}`;
 const SPEC_BEFORE = /(?:§|\b(?:section|sect?\.|version|ver\.|v)|(?:\bMS-[A-Z0-9-]+\]?|\bRFC\s?\d+|\bECMA-\d+|\bISO(?:\/IEC)?\s?\d+(?:-\d+)?)[,:]?)\s*$/i;
 const TAG_AFTER = new RegExp(String.raw`^[-+](?!${QUAD})\w`);
 const RANGE_BEFORE = new RegExp(String.raw`(?<![\w.])(${QUAD})\s+(?:to|through)\s+$`, 'i');
 const RANGE_AFTER = new RegExp(String.raw`^\s+(?:to|through)\s+(${QUAD})(?![\w.])`, 'i');
-const PRIVATE_NETWORK = /^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/;
+/** Whether the words just before `index` in `line` cite a spec section or a version. */
+const hasSpecBefore = (line: string, index: number): boolean => SPEC_BEFORE.test(line.slice(Math.max(0, index - 40), index));
+/** Whether the range `first` to `last` has the shape of section numbers, not of addresses. */
+function isSectionRange(first: string, last: string): boolean {
+  const [a, b, c, d] = first.split('.').map(Number);
+  const lastParts = last.split('.').map(Number);
+  const isSmall = [a, b, c, d, ...lastParts].every((n) => n < 64);
+  const isSamePrefix = lastParts[0] === a && lastParts[1] === b && lastParts[2] === c;
+  const isRepeated = a === b && b === c && c === d;
+  return a <= 9 && isSmall && isSamePrefix && !isRepeated;
+}
 /** Whether the dotted quad `hit`, found at `index` in `line`, is a section number or a version. */
 function isSectionNumber(line: string, index: number, hit: string): boolean {
-  const before = line.slice(Math.max(0, index - 40), index);
   const after = line.slice(index + hit.length, index + hit.length + 40);
-  if (SPEC_BEFORE.test(before) || TAG_AFTER.test(after)) return true;
-  const otherEnd = RANGE_BEFORE.exec(before)?.[1] ?? RANGE_AFTER.exec(after)?.[1];
-  return otherEnd !== undefined && !PRIVATE_NETWORK.test(hit) && !PRIVATE_NETWORK.test(otherEnd);
+  if (hasSpecBefore(line, index) || TAG_AFTER.test(after)) return true;
+  const before = line.slice(Math.max(0, index - 40), index);
+  const rangeStart = RANGE_BEFORE.exec(before);
+  if (rangeStart) return hasSpecBefore(line, index - before.length + rangeStart.index) || isSectionRange(rangeStart[1], hit);
+  const rangeEnd = RANGE_AFTER.exec(after);
+  return rangeEnd !== null && isSectionRange(hit, rangeEnd[1]);
 }
 
 /** Whether an address found in text may point at a person: not a noreply, team, example or retina name. */

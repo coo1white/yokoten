@@ -93,6 +93,8 @@ test('IPs: spec section numbers and versions are not addresses (#382)', () => {
     `/// (MS-OVBA ${ip(2, 3, 1, 15)} to ${ip(2, 3, 1, 17)}). This reports what`,
     `${ip(2, 3, 1, 15)} to ${ip(2, 3, 1, 17)}`,
     `${ip(2, 3, 1, 15)} through ${ip(2, 3, 1, 17)}`,
+    `MS-OVBA ${ip(2, 3, 1, 15)} to ${ip(2, 3, 1, 17)}`,
+    `section ${ip(12, 3, 1, 15)} to ${ip(12, 3, 1, 70)}`,
   ]) {
     assert.deepEqual(scanText(ok, { file: 'a' }), [], ok);
   }
@@ -106,6 +108,13 @@ test('IPs: spec section numbers and versions are not addresses (#382)', () => {
     `${ip(10, 0, 0, 5)}-${ip(10, 0, 0, 9)}`,
     `pool ${ip(10, 0, 0, 1)} to ${ip(10, 0, 0, 9)}`,
     `${ip(192, 168, 1, 100)} through ${ip(192, 168, 1, 200)}`,
+    // A bare range of public addresses is caught: only small section-shaped numbers are skipped.
+    `${ip(203, 0, 114, 5)} to ${ip(203, 0, 114, 9)}`,
+    `${ip(10, 0, 0, 1)} to ${ip(10, 0, 0, 9)}`,
+    `${ip(8, 8, 8, 8)} to ${ip(8, 8, 8, 9)}`,
+    `${ip(1, 1, 1, 1)} through ${ip(1, 1, 1, 3)}`,
+    `${ip(2, 3, 1, 15)} to ${ip(2, 3, 2, 17)}`,
+    `${ip(2, 3, 1, 15)} to ${ip(2, 3, 1, 99)}`,
     `dev ${ip(8, 8, 8, 8)}`,
     `insect. ${ip(8, 8, 8, 8)}`,
     `${ip(8, 8, 8, 8)}:53`,
