@@ -146,6 +146,20 @@ test('hook --agent grok: the recorded tag push is refused, with the whole reason
   assert.equal(call(recorded('write', sandbox.repo, (event) => Object.assign(withTool('write', { file_path: 'AGENTS.md', content: 'x' })(event) as object, { subagentType: 'yokoten:worker' }))).status, 2);
 });
 
+test('hook: under Grok, the Claude Code hook exits at once with no answer; Grok\'s own hook still guards (#407)', () => {
+  const sandbox = makeSandbox();
+  const push = JSON.stringify(recorded('push', sandbox.repo));
+  // The positive control: without Grok's variables, the Claude Code hook refuses the push.
+  assert.equal(sandbox.run(['hook'], { input: push }).status, 2);
+  for (const grok of [{ GROK_HOOK_EVENT: 'pre_tool_use' }, { GROK_SESSION_ID: '01a15a11-55e0-7ae1-9c00-6389bfe5c78f' }] as Record<string, string>[]) {
+    for (const args of [['hook'], ['hook', '--commands-only'], ['hook', '--agent', 'claude-code'], ['hook', '--stop']]) {
+      const result = sandbox.run(args, { input: push, extra: grok });
+      assert.deepEqual([result.status, result.stdout, result.stderr], [0, '', ''], `${args.join(' ')} under Grok`);
+    }
+    assert.equal(sandbox.run(['hook', '--agent', 'grok'], { input: push, extra: grok }).status, 2, 'Grok\'s own hook still refuses');
+  }
+});
+
 test('hook --agent grok: a command that prints the owner\'s details is rewritten with updatedInput, keeping the other fields (#390)', () => {
   const sandbox = makeSandbox();
   const result = sandbox.run(['hook', '--agent', 'grok'], { input: JSON.stringify(recorded('ls', sandbox.repo, withTool('run_terminal_command', { command: 'git log -1', description: 'Show the last commit' }))) });
@@ -251,6 +265,14 @@ test('grok trust: doctor says when Grok skips the hooks; ok only when trusted_fo
   assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'untrusted');
   trustFolder(sandbox.home, { [root]: true });
   assert.match(doctor(), /ok +grok-hook\n/);
+  // GROK_FOLDER_TRUST=0 turns Grok's trust gate off: every folder runs its hooks.
+  trustFolder(sandbox.home, { [root]: false });
+  assert.match(doctor(), /note +grok-hook: Grok CLI skips/, 'the positive control');
+  for (const value of ['0', 'false']) {
+    assert.equal(readTrust(root, { HOME: sandbox.home, GROK_FOLDER_TRUST: value }).state, 'trusted');
+    assert.match(sandbox.run(['doctor'], { extra: { GROK_FOLDER_TRUST: value } }).stdout, /ok +grok-hook\n/);
+  }
+  assert.equal(readTrust(root, { HOME: sandbox.home, GROK_FOLDER_TRUST: '1' }).state, 'untrusted');
   // GROK_HOME moves the store.
   const other = join(sandbox.home, 'grok-home');
   mkdirSync(other);

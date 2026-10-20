@@ -10,6 +10,15 @@
 // runs, so the command comes in by a dynamic import, after the cache is on.
 import module from 'node:module';
 
+// Grok CLI also runs Claude Code's hooks (its Claude compatibility), so a Grok tool call
+// would start the guard twice. Under Grok (it sets GROK_HOOK_EVENT and GROK_SESSION_ID for
+// every hook), the Claude Code hook answers nothing and exits at once, before any module
+// loads: Grok's own hook in .grok/hooks/yokoten.json guards the call (#407).
+const words = process.argv.slice(2);
+const agentAt = words.indexOf('--agent');
+const agent = agentAt < 0 ? 'claude-code' : words[agentAt + 1];
+if (words[0] === 'hook' && agent === 'claude-code' && (process.env.GROK_HOOK_EVENT || process.env.GROK_SESSION_ID)) process.exit(0);
+
 try {
   module.enableCompileCache?.();
 } catch {

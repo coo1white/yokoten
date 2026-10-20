@@ -12,8 +12,8 @@
 //   carries `subagentType`. The shell tool is `run_terminal_command`; a file edit is
 //   `write` or `search_replace` (a matcher's `Edit` and `Write` select every edit tool).
 // - Grok also runs the hooks in `.claude/settings.json` and `~/.claude/settings.json`
-//   (its Claude compatibility, on by default). These read the same event, so they guard
-//   Grok too, but with Grok's 5-second default timeout.
+//   (its Claude compatibility, on by default). yokoten's Claude Code hook sees GROK_HOOK_EVENT
+//   there and exits at once (bin/yokoten.ts), so the guard runs once per call, from these hooks.
 // - A hook's default timeout is 5 seconds, and a timed-out hook lets the call run: the
 //   guard's own deadline is 5 seconds, so these hooks set a longer `timeout`.
 // - A deny is `permissionDecision: "deny"` on stdout; at exit 2 its reason, whole, is
@@ -150,7 +150,8 @@ export const hasUserDir = (env: Env): boolean => isFolder(homeDir(env));
 // it in the real run: one `[folders."<folder>"]` table per folder, with `trusted = true` or
 // `false`. `grok --trust` at a repo's root saved the root, with no trailing slash. Trust
 // covers the folders inside the same repo, not a repo nested in it: so doctor compares
-// whole keys, exactly. GROK_FOLDER_TRUST=0 turns the gate off; doctor does not read it.
+// whole keys, exactly. GROK_FOLDER_TRUST=0 (or false) turns the gate off, and then every
+// folder counts as trusted.
 
 /** The one step that makes Grok run the project's hooks. yokoten never trusts a folder for the user. */
 export const TRUST_STEP = 'run `grok` in this folder and type `/hooks-trust`';
@@ -161,6 +162,7 @@ export function readTrust(root: string, env: Env): FolderTrust {
   const home = homeDir(env);
   const file = join(home, 'trusted_folders.toml');
   if (!isFolder(home)) return { state: 'no home', store };
+  if (env.GROK_FOLDER_TRUST === '0' || env.GROK_FOLDER_TRUST?.toLowerCase() === 'false') return { state: 'trusted', store };
   if (!existsSync(file)) return { state: 'no store', store };
   let folders: Map<string, Record<string, unknown>>;
   try {

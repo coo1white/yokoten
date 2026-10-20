@@ -267,14 +267,14 @@ yokoten 能管住八种 AI 编程 agent，它们守的是同一套规矩。下�
 | Codex CLI | `.codex/hooks.json`：PreToolUse 和 Stop | 退出码 2，理由写在 stderr | 是，2026-10-19：Codex 0.163.0，`codex exec`，模型用 DeepSeek 的 `deepseek-flash` | 要先信任这个文件夹，再在 `/hooks` 里信任这两个钩子，才会跑。没信任的钩子，`codex exec` 一声不吭地跳过 |
 | Muse Code | `.muse/hooks.json`：PreToolUse 和 Stop | 退出码 2，理由写在 stderr | 是，2026-10-19：Muse Code 1.4.10，`muse exec --trust-workspace`，模型 `muse-spark-1.3-contributor` | 要先信任这个文件夹，才跑钩子：在这里运行 `muse`，选 "Trust and continue"。Muse 不把 `YOKOTEN_ROLE` 传给钩子，所以在 Muse 里每个会话都当成 lead。也没见过它传 `YOKOTEN_RELEASE_APPROVAL`，所以发版要到 Muse 外面去。钩子出错或超时的话，这次调用会放行 |
 | DeepSeek Harness（`dsh`） | `.dsh/hooks.json`：PreToolUse；再用 `.dsh/yokoten.patch.yml` 让 dsh 加载它 | 退出码 2，理由写在 stderr | 是，2026-10-20：dsh 0.2.1-rc.2，`dsh headless --patch .dsh/yokoten.patch.yml`，DeepSeek 的默认模型 | 钩子要靠一个桥接插件才会跑，每个 profile 都得自己装，见 [DeepSeek Harness](#deepseek-harness)。没装插件或启动时没带 patch，dsh 一个钩子都不跑，也不提醒。Windows 上还管不住（#332）。还没有收尾检查 |
-| Grok CLI（`grok`） | `.grok/hooks/yokoten.json`：PreToolUse 和 Stop | 在 stdout 输出 `permissionDecision: "deny"`，退出码 2 | 是，2026-10-20：Grok CLI 1.0.52，`grok -p --trust --always-approve`，默认模型 | 要先信任这个文件夹，才跑项目钩子：在这里运行 `grok`，输入 `/hooks-trust`。没信任就一声不吭地跳过。它也会跑 `.claude/settings.json` 里的钩子，所以守卫会跑两遍 |
+| Grok CLI（`grok`） | `.grok/hooks/yokoten.json`：PreToolUse 和 Stop | 在 stdout 输出 `permissionDecision: "deny"`，退出码 2 | 是，2026-10-20：Grok CLI 1.0.52，`grok -p --trust --always-approve`，默认模型 | 要先信任这个文件夹，才跑项目钩子：在这里运行 `grok`，输入 `/hooks-trust`。没信任就一声不吭地跳过。它也会跑 `.claude/settings.json` 里的钩子；在 Grok 里，yokoten 的 Claude Code 钩子会直接退出，所以守卫只跑一遍 |
 | Gemini CLI | `.gemini/settings.json`：BeforeTool 和 AfterAgent | 退出码 2，理由写在 stderr | 没有完整跑过：个人 Google 账号 2026-06-18 起不能再登录，要付费 API key 或企业授权 | 谷歌给个人用户的 agent 现在是 Antigravity CLI |
 | 其他 agent | 无 | `AGENTS.md` 里的规则；还有提交检查，不管是谁提交的，坏提交都会被拦下 | | |
 
 用户级的钩子由 `install` 写：会话开头的带路提示，加上命令守卫。它们写进
 `~/.claude/settings.json`；有 `~/.codex`、`~/.gemini` 文件夹的话，也写进
 `~/.codex/hooks.json` 和 `~/.gemini/settings.json`。有 `~/.grok` 的话，Grok CLI 只装命令守卫，写进
-`~/.grok/hooks/yokoten.json`：会话开头钩子的输出，Grok 只给你看，不给 agent 看。在 Codex 里，`apply_patch` 要改哪些
+`~/.grok/hooks/yokoten.json`：会话开头钩子的输出，Grok 只给你看，不给 agent 看。设了 `GROK_FOLDER_TRUST=0`（关掉 Grok 的信任检查）时，`doctor` 把每个文件夹都当成已信任。在 Codex 里，`apply_patch` 要改哪些
 文件，守卫都会查，在 shell 里跑的也查。
 
 每个工具都要你先信任，项目钩子才会跑：
@@ -294,7 +294,8 @@ yokoten 能管住八种 AI 编程 agent，它们守的是同一套规矩。下�
   `.agents/skills` 下的技能，也要信任以后才读。
 - **Grok CLI**：文件夹要先设成信任，才跑 `.grok/hooks/`；没信任就一声不吭地跳过。在这里的会话里
   输入 `/hooks-trust`，或者用 `grok --trust` 启动一次。yokoten 从不替你信任文件夹。信任以后，
-  Grok 也会跑 `.claude/settings.json` 里的钩子，所以每次调用会查两遍。
+  Grok 也会跑 `.claude/settings.json` 里的钩子；yokoten 的 Claude Code 钩子
+  看到 Grok 的环境变量就马上退出，所以每次调用只查一遍。
 - **Gemini CLI**：文件夹要先设成信任，项目钩子才会跑。要在仓库根目录启动 Gemini：它只读
   启动时所在文件夹里的 `.gemini/settings.json`。新加或改过的钩子，第一次跑之前它会提醒你一次。
 
