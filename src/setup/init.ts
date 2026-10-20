@@ -447,14 +447,15 @@ export { withGitReads };
 
 /**
  * The repo's own core.hooksPath (not the user's global one), '' when unset, or null outside
- * a git repo. In a run, from the config list and the git folder, which other checks read too.
+ * a git repo. Files included from .git/config count, as git itself reads them. In a run, from
+ * the config list and the git folder, which other checks read too.
  */
 const readLocalHooksPath = (root: string): string | null => {
   const entries = configEntries(root, 'core.hooksPath');
   if (entries) return gitLine(root, ['rev-parse', '--git-common-dir']) === null ? null : (entries.filter((entry) => entry.scope === 'local').at(-1)?.value ?? '').trim();
   return remembered(`local-hooks-path\0${root}`, () => {
     try {
-      return execFileSync('git', ['config', '--local', '--get', 'core.hooksPath'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      return execFileSync('git', ['config', '--local', '--includes', '--get', 'core.hooksPath'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
     } catch (error) {
       return (error as { status?: number }).status === 1 ? '' : null;
     }
