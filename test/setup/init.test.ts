@@ -524,7 +524,8 @@ test('init: a CLAUDE.md that is a link to AGENTS.md reads the rules; init writes
   ];
   for (const links of cases) {
     const sandbox = makeSandbox();
-    const rules = '# shared rules\n\nRun the tests first.\n';
+    // With `## This project`, init leaves AGENTS.md to `update` (#378), so it stays byte for byte.
+    const rules = '# shared rules\n\n## This project\n\nRun the tests first.\n';
     sandbox.write('AGENTS.md', rules);
     for (const [file, target] of links) {
       mkdirSync(dirname(join(sandbox.repo, file)), { recursive: true });
@@ -537,6 +538,30 @@ test('init: a CLAUDE.md that is a link to AGENTS.md reads the rules; init writes
     assert.equal(readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8'), rules, `${links}: AGENTS.md does not import itself`);
     for (const [file, target] of links) assert.equal(readlinkSync(join(sandbox.repo, file)), target, `${file} is the same link`);
     assert.equal(stepMark(sandbox, 'rules'), 'done', `${links}`);
+  }
+});
+
+test('init: a CLAUDE.md link to an AGENTS.md without `## This project` gets the core rules once, and nothing through the link (#378, #428)', { skip: NO_SYMLINK }, () => {
+  for (const [file, target] of [['CLAUDE.md', 'AGENTS.md'], ['.claude/CLAUDE.md', '../AGENTS.md']]) {
+    const sandbox = makeSandbox();
+    sandbox.write('AGENTS.md', '# Our rules\n\nRun the tests first.\n');
+    mkdirSync(dirname(join(sandbox.repo, file)), { recursive: true });
+    symlinkSync(target, join(sandbox.repo, file));
+    const result = sandbox.run(['init']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^updated AGENTS\.md: the core rules are on top, and your 3 line\(s\) moved under `## This project`/m, file);
+    assert.doesNotMatch(result.stdout, /CLAUDE\.md/, `${file}: no import, no note about the link`);
+    const text = readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8');
+    assert.equal(text.match(/^<!-- yokoten kit /gm)?.length, 1, `${file}: the core rules once`);
+    assert.equal(text.match(/^## This project$/gm)?.length, 1, file);
+    assert.ok(text.endsWith('## This project\n\n## Our rules\n\nRun the tests first.\n'), text.slice(-120));
+    assert.doesNotMatch(text, /^@(\.\.\/)?AGENTS\.md$/m, `${file}: AGENTS.md does not import itself`);
+    assert.equal(readlinkSync(join(sandbox.repo, file)), target, `${file} is the same link`);
+    assert.equal(stepMark(sandbox, 'rules'), 'done', file);
+    // A second run changes nothing.
+    const again = sandbox.run(['init']);
+    assert.match(again.stdout, /^kept AGENTS\.md \(`yokoten update` brings its core rules up to date\)$/m);
+    assert.equal(readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8'), text, file);
   }
 });
 
