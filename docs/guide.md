@@ -62,6 +62,7 @@ yokoten turns those lessons into something that checks itself:
 | force-push, or tag a release | it happens | stopped before it runs, and told why |
 | "fix" a failing test by editing the test | the test passes, the bug stays | not allowed in a fix |
 | commit your email, a server IP, your city | it goes public | the commit stops; the report names the file and line, never the text |
+| post your email or a token in an issue or a pull request | it goes public | stopped before it is sent, and told what to change |
 | open a pull request | as you, with all your rights | as a bot; nothing merges without you |
 | work in another project | starts from zero | sees what that project is missing, and offers to set it up |
 
@@ -77,7 +78,7 @@ flowchart LR
 
 | | Runs | Stops |
 |-|------|-------|
-| **1** | before each tool call | tag pushes, force pushes, skipped checks; test edits in a fix task; a worker editing the rules; a program the project blocks |
+| **1** | before each tool call | tag pushes, force pushes, skipped checks; test edits in a fix task; a worker editing the rules; a program the project blocks; personal data or a secret in an issue, pull request, comment or release note an agent posts with `gh` |
 | **1b** | when a Claude Code agent ends its turn | the same personal data, secrets and file rules as the commit check, in the changed files. It sends the agent back once with the findings |
 | **2** | on every commit | what the hook can't see: files changed by `sed` or a script, personal data, an overfull folder |
 | **3** | on every pull request | a commit made with the hook off |
@@ -1161,6 +1162,17 @@ addresses, and neither is a retina image name such as `logo@2x.png`. An address 
 The same check catches secrets: GitHub, npm, Slack, Stripe, Google, OpenAI and
 Anthropic tokens, AWS access key ids, and PEM private keys. A hit names the kind of
 secret, never the secret. Deleting it is not enough, since git keeps it: rotate it.
+
+The tool-call guard runs the same check on text an agent is about to post with `gh`:
+`gh issue create|comment|edit`, `gh pr create|comment|edit|review`, `gh release
+create|edit` and `gh api`, also through `yokoten bot -- gh`. It reads `--title`,
+`--body`, `--notes` and their short forms, the files `--body-file`, `--notes-file`
+and `--input` name, and `gh api` fields (`-f body=...`, `-F body=@file`). A body
+in `$(cat <<EOF ... EOF)` is read. A body from stdin (`--body-file -`) is read by
+reading the whole command, so a heredoc fed to it counts. A hit stops the command with
+the same fix as the commit check. A public address goes in `privacy.allow`. The guard
+does not see text built when the command runs: `$(cat notes.md)`, a variable, or a
+pipe from another program.
 
 A commit also records the time it was made, with your time zone, and a time zone
 narrows down where you live. So the commit check asks for UTC: `init` sets `TZ=UTC` for

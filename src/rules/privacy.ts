@@ -13,9 +13,9 @@
 
 import { readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
-import type { Env } from './config.ts';
-import { type Finding, finding } from './message.ts';
+import { isAbsolute, join, resolve } from 'node:path';
+import type { Config, Env } from './config.ts';
+import { type Finding, finding, type RuleId } from './message.ts';
 import { findSecrets } from './secrets.ts';
 
 export const marksFile = (env: Env): string => env.YOKOTEN_PRIVATE_MARKS || join(env.HOME || homedir(), '.config', 'yokoten', 'private-marks');
@@ -147,3 +147,180 @@ export const TIME_ZONE_FIX = 'commit with TZ=UTC (`TZ=UTC git commit`, or `expor
  * from pieces so this file does not fail its own check.
  */
 export const POSITIVE_CONTROL = [`contact: someone${'@'}personal-mail.com`, `server: ${[100, 64, 1, 2].join('.')}`].join('\n');
+
+// ---- Text an agent posts ----
+//
+// Text an agent posts (#391). An issue, a pull request, a comment or a release note is
+// public the moment it is sent, so the tool-call guard runs the privacy check on it first:
+// the same patterns, private marks and secrets as the commit check, with the same fixes.
+//
+// It reads the text the command carries: `--title`, `--body`, `--notes` and their short
+// forms, the fields of an API call (`gh` `api -f body=...`), and the files that
+// `--body-file`, `--notes-file`, `-F key=@file` and `--input` name. A body read from
+// stdin (`-`) is not a file: the guard scans the whole command text instead, so a heredoc
+// fed to it is checked too. Text the command builds when it runs (`$(cat notes.md)`, a
+// variable, a pipe from another program) is not seen.
+
+/** One piece of text the command posts: where it comes from, and the text. */
+interface Piece {
+  /** How the message names it: `the --body text`, or a file's path. */
+  source: string;
+  /** Whether `source` is a file, so the finding gives it as `file:line`. */
+  isFile: boolean;
+  text: string;
+}
+
+// The gh commands that post text, by group and subcommand.
+const POSTS: Record<string, string[]> = {
+  issue: ['create', 'comment', 'edit'],
+  pr: ['create', 'comment', 'edit', 'review'],
+  release: ['create', 'edit'],
+};
+
+// gh options that hold text to post, and those that name a file of it. `-F` is a file in
+// every one of these commands (`--body-file`, or `--notes-file` for a release).
+const TEXT_OPTIONS = new Set(['--title', '-t', '--body', '-b', '--notes', '-n']);
+const FILE_OPTIONS = new Set(['--body-file', '--notes-file', '-F']);
+// The api subcommand: each field is key=value; `-F key=@file` reads a file, and `--input` sends one.
+const FIELD_OPTIONS = new Set(['-f', '--raw-field', '-F', '--field']);
+// gh's global option that takes a value before the subcommand: `gh -R o/r issue create`.
+const GLOBAL_VALUES = new Set(['-R', '--repo']);
+
+const programName = (word: string) => word.slice(Math.max(word.lastIndexOf('/'), word.lastIndexOf('\\')) + 1).replace(/\.exe$/i, '');
+const isYokoten = (name: string) => /^yokoten(\.ts|\.js)?$/.test(name);
+
+/**
+ * Where gh starts in a command's words, or -1. `programs` are the programs the command
+ * runs (the guard's findPrograms): gh itself, or yokoten (or node) running `bot -- gh`.
+ */
+export function ghIndex(words: string[], programs: string[]): number {
+  for (const program of programs) {
+    const name = programName(program);
+    const at = words.indexOf(program);
+    if (name === 'gh') return at;
+    if (isYokoten(name) || name === 'node' || name === 'npx') {
+      const bot = words.indexOf('bot', at);
+      if (bot !== -1 && words[bot + 1] === '--' && programName(words[bot + 2] ?? '') === 'gh') return bot + 2;
+    }
+  }
+  return -1;
+}
+
+/** An option and its value: `--body x`, `--body=x`, `-bx`. Null when `word` is not one of `names`. */
+function optionValue(words: string[], i: number, names: Set<string>): { value: string | undefined; name: string; next: number } | null {
+  const word = words[i];
+  const eq = word.indexOf('=');
+  if (word.startsWith('--') && eq !== -1 && names.has(word.slice(0, eq))) return { name: word.slice(0, eq), value: word.slice(eq + 1), next: i + 1 };
+  if (names.has(word)) return { name: word, value: words[i + 1], next: i + 2 };
+  // A short option with its value joined on: `-bx`, `-b=x`.
+  if (/^-[A-Za-z]./.test(word) && names.has(word.slice(0, 2))) return { name: word.slice(0, 2), value: word.slice(2).replace(/^=/, ''), next: i + 1 };
+  return null;
+}
+
+/** The text pieces a gh command posts, or null when it posts nothing. `stdin` is set when a piece comes from stdin. */
+function postedPieces(args: string[], readFile: (path: string) => string | null): { pieces: Piece[]; stdin: boolean } | null {
+  // The group and its subcommand: the first two words that are not options.
+  const plain: string[] = [];
+  for (let i = 0; i < args.length && plain.length < 2; i++) {
+    if (GLOBAL_VALUES.has(args[i])) i++;
+    else if (!args[i].startsWith('-')) plain.push(args[i]);
+  }
+  const [group, sub] = plain;
+  const isApi = group === 'api';
+  if (!isApi && !POSTS[group]?.includes(sub)) return null;
+  const pieces: Piece[] = [];
+  let stdin = false;
+  const addFile = (path: string | undefined) => {
+    if (path === undefined) return;
+    if (path === '-') {
+      stdin = true;
+      return;
+    }
+    const text = readFile(path);
+    if (text !== null) pieces.push({ source: path, isFile: true, text });
+  };
+  for (let index = 0; index < args.length; ) {
+    if (isApi) {
+      const input = optionValue(args, index, new Set(['--input']));
+      if (input) {
+        addFile(input.value);
+        index = input.next;
+        continue;
+      }
+      const field = optionValue(args, index, FIELD_OPTIONS);
+      if (field) {
+        const value = field.value ?? '';
+        const eq = value.indexOf('=');
+        const key = eq === -1 ? value : value.slice(0, eq);
+        const content = eq === -1 ? '' : value.slice(eq + 1);
+        // `-F key=@file` reads the file; `-f` always takes the text as it is.
+        if ((field.name === '-F' || field.name === '--field') && content.startsWith('@')) addFile(content.slice(1));
+        else if (content) pieces.push({ source: `the ${key} field`, isFile: false, text: content });
+        index = field.next;
+        continue;
+      }
+    } else {
+      const file = optionValue(args, index, FILE_OPTIONS);
+      if (file) {
+        addFile(file.value);
+        index = file.next;
+        continue;
+      }
+      const text = optionValue(args, index, TEXT_OPTIONS);
+      if (text) {
+        if (text.value) pieces.push({ source: `the ${text.name} text`, isFile: false, text: text.value });
+        index = text.next;
+        continue;
+      }
+    }
+    index++;
+  }
+  return { pieces, stdin };
+}
+
+// The commit check's reasons end on what git does; a post is public as soon as it is sent.
+const postWhy = (why: string) => why.replace(/, and git keeps it after the file is gone$/, '').replace('read the repo', 'read it').concat(', and a post is public the moment it is sent');
+
+// The commit check's fix, and for an address the way to let a public one through.
+const ALLOW_FIX = 'If it is public on purpose, add it to "privacy.allow" in yokoten.json';
+const postFix = (f: Finding) => (f.id === 'email' || f.id === 'ip' ? `${f.fix}. ${ALLOW_FIX}` : f.fix);
+
+/**
+ * The first privacy problem in the text a gh command (from `ghAt` in `words`) is about to
+ * post, or null. `command` is the whole command text, scanned when a body comes from stdin.
+ * `cwd` is where the command runs, for a relative file; null when the guard cannot tell.
+ */
+export function checkPost(
+  words: string[],
+  ghAt: number,
+  { env, privacy, cwd, command }: { env: Env; privacy?: Pick<Config['privacy'], 'allow'>; cwd: string | null; command: string },
+): Finding | null {
+  const readFile = (path: string): string | null => {
+    const home = env.HOME;
+    const full = path.startsWith('~/') && home ? join(home, path.slice(2)) : path;
+    if (!isAbsolute(full) && cwd === null) return null;
+    try {
+      return readFileSync(resolve(cwd ?? '', full), 'utf8');
+    } catch {
+      // A missing file: gh fails on its own, and nothing is posted.
+      return null;
+    }
+  };
+  const posted = postedPieces(words.slice(ghAt + 1), readFile);
+  if (!posted) return null;
+  const { pieces } = posted;
+  if (posted.stdin) pieces.push({ source: 'the command text (its body comes from stdin)', isFile: false, text: command });
+  if (!pieces.length) return null;
+  const marks = loadMarks(env);
+  const allow = privacy?.allow ?? [];
+  for (const piece of pieces) {
+    const [hit] = scanText(piece.text, { file: piece.source, marks, allow });
+    if (!hit) continue;
+    const more = { why: postWhy(hit.why) };
+    if (piece.isFile) return finding(hit.id as RuleId, hit.what, postFix(hit), { ...more, file: piece.source, line: hit.line });
+    const line = piece.text.includes('\n') ? `, line ${hit.line},` : '';
+    const what = hit.id === 'private-mark' ? `${piece.source}${line} ${hit.what}` : `${piece.source}${line} holds ${hit.what}`;
+    return finding(hit.id as RuleId, what, postFix(hit), more);
+  }
+  return null;
+}
