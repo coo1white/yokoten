@@ -282,7 +282,7 @@ endpoint and model.
 
 ## Works with
 
-yokoten guards seven AI coding agents with the same rules. Each "yes" below is a real
+yokoten guards eight AI coding agents with the same rules. Each "yes" below is a real
 run: the agent tried `git push --tags` in a throwaway repo, and the guard stopped it.
 Docs are not proof.
 
@@ -294,12 +294,17 @@ Docs are not proof.
 | Codex CLI | `.codex/hooks.json`: PreToolUse and Stop | exit 2, the reason on stderr | yes, 2026-10-19: Codex 0.163.0, `codex exec`, on DeepSeek `deepseek-flash` | Runs the hooks only after you trust the folder, and then both hooks in `/hooks`. `codex exec` skips an untrusted hook without a word |
 | Muse Code | `.muse/hooks.json`: PreToolUse and Stop | exit 2, the reason on stderr | yes, 2026-10-19: Muse Code 1.4.10, `muse exec --trust-workspace`, model `muse-spark-1.3-contributor` | Runs the hooks only after you trust the folder: run `muse` there and choose "Trust and continue". Muse passes no `YOKOTEN_ROLE` to a hook, so every Muse session counts as the lead. It is not known to pass `YOKOTEN_RELEASE_APPROVAL` either, so release outside Muse. A hook that fails or times out lets the call go on |
 | DeepSeek Harness (`dsh`) | `.dsh/hooks.json`: PreToolUse, and `.dsh/yokoten.patch.yml` to load it | exit 2, the reason on stderr | yes, 2026-10-20: dsh 0.2.1-rc.2, `dsh headless --patch .dsh/yokoten.patch.yml`, default DeepSeek model | Runs hooks only through a bridge you add to each profile: see [DeepSeek Harness](#deepseek-harness). Without it, or without the patch, dsh runs no hooks and says nothing. Not guarded on Windows yet (#332). No stop check |
+| Grok CLI (`grok`) | `.grok/hooks/yokoten.json`: PreToolUse and Stop | `permissionDecision: "deny"` on stdout, and exit 2 | yes, 2026-10-20: Grok CLI 1.0.52, `grok -p --trust --always-approve`, default model | Runs project hooks only after you trust the folder: run `grok` there and type `/hooks-trust`. Skips them without a word otherwise. Also runs the hooks in `.claude/settings.json`, so the guard may run twice for one call, on purpose |
 | Gemini CLI | `.gemini/settings.json`: BeforeTool and AfterAgent | exit 2, the reason on stderr | not run end to end: personal sign-in retired 2026-06-18; needs a paid API key or an org license | Google's agent for individuals is now Antigravity CLI |
 | Any other agent | none | the rules in `AGENTS.md`, and the commit check, which stops a bad commit whoever made it | | |
 
 `install` writes the user hooks: the guide at the start of each session, and the command
 guard. They go in `~/.claude/settings.json`, and in `~/.codex/hooks.json` and
-`~/.gemini/settings.json` when those folders exist. In Codex, the guard checks the files
+`~/.gemini/settings.json` when those folders exist. Grok CLI gets only the command guard,
+in `~/.grok/hooks/yokoten.json`, when `~/.grok` exists: it shows a session-start hook's
+output to you, not to the agent. `doctor` counts every folder as trusted when
+Grok's trust gate is off: `GROK_FOLDER_TRUST=0`, or `[folder_trust] enabled = false` in
+`~/.grok/config.toml`. In Codex, the guard checks the files
 of an `apply_patch`, also one run through the shell.
 
 Each agent runs a project hook only after you trust it:
@@ -317,6 +322,12 @@ Each agent runs a project hook only after you trust it:
 - **Muse Code** runs `.muse/hooks.json` only in a trusted workspace, and skips it without a
   word otherwise. In `muse exec`, `--trust-workspace` trusts the folder for that run.
   It also reads the project's skills in `.agents/skills` only then.
+- **Grok CLI** runs `.grok/hooks/` only in a trusted folder, and skips it without a word
+  otherwise. Type `/hooks-trust` in a session there, or start it once with `grok --trust`.
+  yokoten never trusts a folder for you. Grok also runs the hooks in `.claude/settings.json`,
+  so a call may be checked twice. That is on purpose. Grok can skip its own hook: in a folder
+  it does not trust, or when a repo commits an empty hook file. The Claude Code hook then
+  still guards the call. The second check costs about 0.1 s.
 - **Gemini CLI** runs project hooks only in a trusted folder. Start Gemini at the repo
   root: it reads `.gemini/settings.json` from the folder it starts in, and nowhere else.
   It warns once before it runs a new or changed hook.
@@ -329,8 +340,9 @@ each agent's own trust store, read-only, and notes a folder it does not trust ye
 | Copilot CLI | `trustedFolders` in `~/.copilot/config.json` (or `$COPILOT_HOME`) | the folder, or a folder above it |
 | Codex | `~/.codex/config.toml` (or `$CODEX_HOME`): `[projects]` and `[hooks.state]` | the repo folder exactly, and each hook as it is now |
 | Muse Code | `~/.config/muse/trust.json` (or `$XDG_CONFIG_HOME/muse/trust.json`) | the repo folder exactly |
+| Grok CLI | `~/.grok/trusted_folders.toml` (or `$GROK_HOME`): `[folders."<folder>"]` with `trusted = true` | the repo folder exactly |
 
-Doctor checks an agent only when its home folder is there (`~/.copilot`, `~/.codex`, `~/.config/muse`).
+Doctor checks an agent only when its home folder is there (`~/.copilot`, `~/.codex`, `~/.config/muse`, `~/.grok`).
 When that folder has no store, or one doctor can't read, it says "can't check", never ok.
 
 A worker is a session with `YOKOTEN_ROLE=worker`. In Codex, a subagent whose
@@ -340,7 +352,9 @@ sanitization removes `YOKOTEN_ROLE` from the hooks. Then yokoten can't tell a wo
 Gemini CLI: every session counts as the lead, and the lead-only guard does not stop a
 worker's edit. Muse Code passes a hook only a short list of variables, and `YOKOTEN_ROLE` is not
 one of them. So in Muse Code, too, every session counts as the lead. The server lock still
-holds: code owners, and a bot without the rights to change CI.
+holds: code owners, and a bot without the rights to change CI. Grok CLI passes
+`YOKOTEN_ROLE` to its hooks, and a subagent whose `subagentType` names a worker is a
+worker too.
 
 ### DeepSeek Harness
 
@@ -621,9 +635,10 @@ request. Add your tests as a job in `yokoten.yml` and to the `needs` list of `ci
 
 It puts three safe defaults in `.github/` too:
 
-- `dependabot.yml` updates the actions that CI runs. It opens one pull request a month,
-  and takes a release only when it is a week old. A comment in the file shows how to
-  add your own packages (npm, pip, Go) the same way.
+- `dependabot.yml` updates the actions that CI runs, and the packages `init` finds (npm,
+  cargo, pip, Go and more, at the root and one folder down). It opens one pull request a
+  month for each, and takes a release only when it is a week old. A file you already have
+  is kept; `init` names the packages it does not update.
 - `SECURITY.md` asks people to report a vulnerability privately, not in a public issue.
   For this, turn on private vulnerability reporting. `doctor` lists it with the other
   security switches.
@@ -655,8 +670,8 @@ It puts three safe defaults in `.github/` too:
 | `learn --ship <id>` | In yokoten: moves a reviewed lesson into a group in `kit/lessons/`, where `doctor` from that yokoten runs it in every project. Refused while a `TODO(reviewer)` is left or its test fails |
 | `learn --upstream "<what happened>" [--area <name>] [--fix <idea>]` | Keeps a note about a gap in yokoten itself, with the project and you hidden. `--list` shows the notes; `--done <id>` removes one. See [Lessons for yokoten itself](#lessons-for-yokoten-itself) |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public. A shallow clone can't see old commits, so it fails without scanning; in CI, check out the whole history (`fetch-depth: 0`). A hit in a file names the commit that added it, and the path in that commit: `file @ <commit>`. It reads commits past `git replace`, and fails the same way when a grafts file can hide commits. |
-| `hook [--agent <name>] [--commands-only] [--json]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini`, an Antigravity CLI PreToolUse call with `--agent antigravity`, a Muse Code PreToolUse call with `--agent muse`, a DeepSeek Harness PreToolUse call with `--agent deepseek-harness` |
-| `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop event by default, a Codex Stop event with `--agent codex`, a Gemini CLI AfterAgent event with `--agent gemini`. See [The stop check](#the-stop-check) |
+| `hook [--agent <name>] [--commands-only] [--json]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini`, an Antigravity CLI PreToolUse call with `--agent antigravity`, a Muse Code PreToolUse call with `--agent muse`, a DeepSeek Harness PreToolUse call with `--agent deepseek-harness`, a Grok CLI PreToolUse call with `--agent grok` |
+| `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop event by default, a Codex Stop event with `--agent codex`, a Gemini CLI AfterAgent event with `--agent gemini`, a Grok CLI Stop event with `--agent grok`. See [The stop check](#the-stop-check) |
 | `explain [<id>] [--json]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay. A second run changes nothing |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |

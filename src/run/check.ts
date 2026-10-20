@@ -16,15 +16,49 @@ import { parseChange, readChanges } from './changelog.ts';
 import { isShallowNote, translationNotes } from './translations.ts';
 
 /**
+ * A git read a check depends on that git could not answer (#403): it failed, was stopped,
+ * or wrote more than the buffer holds. The check stops on it and says so, never reading
+ * no answer as "clean" or "no changes". `gitReadFinding` turns it into the finding.
+ */
+export class GitReadError extends Error {}
+
+/** Why a git call gave no answer, in a few words; git's own first line of stderr when it has one. */
+function whyNoAnswer(result: { error?: Error; status: number | null; signal: NodeJS.Signals | null; stderr: Buffer | string | null }, maxBuffer: number): string {
+  const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
+  if (code === 'ENOBUFS') return `its output is over the ${maxBuffer >= 1 << 20 ? `${maxBuffer >> 20} MB` : `${maxBuffer} bytes`} yokoten reads`;
+  if (code === 'ETIMEDOUT') return 'it took too long and was stopped';
+  if (code === 'ENOENT') return 'git, or the folder it runs in, was not found';
+  if (result.error) return result.error.message.split('\n')[0];
+  if (result.signal) return `it was stopped by ${result.signal}`;
+  const said = String(result.stderr ?? '').split('\n').find((line) => line.trim());
+  return `it exited ${result.status}${said ? `: ${said.trim().replace(/[.\s]+$/, '')}` : ''}`;
+}
+
+/**
  * Git that reads the objects as they are, not as `git replace` shows them. A replace ref
  * makes git show other bytes than the ones it commits, and replace refs are pushed like
  * any ref, so a check that reads through one checks the wrong bytes (#284, #294). Every
- * read of repo content goes through here or `gitBytes`.
+ * read of repo content goes through here. Bytes, not text: a blob may be binary. Any exit
+ * but 0 throws a GitReadError (#403); `okCodes` names other exits that are answers.
  */
-const git = (cwd: string, args: string[]) => execFileSync('git', ['--no-replace-objects', ...args], { cwd, encoding: 'utf8', maxBuffer: 1 << 30 });
-// Bytes, not text: a blob may be binary.
-const gitBytes = (cwd: string, args: string[], input = '', maxBuffer = 1 << 30) => execFileSync('git', ['--no-replace-objects', ...args], { cwd, input, maxBuffer });
+export function runGit(cwd: string, args: string[], { input, maxBuffer = 1 << 30, okCodes = [0] }: { input?: string; maxBuffer?: number; okCodes?: number[] } = {}): { stdout: Buffer; status: number } {
+  const result = spawnSync('git', ['--no-replace-objects', ...args], { cwd, input, maxBuffer });
+  if (result.error || result.status === null || !okCodes.includes(result.status)) {
+    throw new GitReadError(`\`git ${args.join(' ')}\` gave no answer: ${whyNoAnswer(result, maxBuffer)}`);
+  }
+  return { stdout: result.stdout, status: result.status };
+}
+
+/** What git printed, as bytes; see `runGit`. */
+export const readGit = (cwd: string, args: string[], options: { input?: string; maxBuffer?: number } = {}): Buffer => runGit(cwd, args, options).stdout;
+
+const git = (cwd: string, args: string[]) => readGit(cwd, args).toString('utf8');
+const gitBytes = (cwd: string, args: string[], input = '', maxBuffer = 1 << 30) => readGit(cwd, args, { input, maxBuffer });
 const list = (out: string) => out.split('\0').filter(Boolean);
+
+/** A GitReadError as the one finding a check reports in its place (#403). */
+export const gitReadFinding = (err: GitReadError): Finding =>
+  finding('git-read', `git can't answer, so the check stopped without looking: ${err.message}`, 'run that git command yourself to see why, fix it, then run the check again');
 
 // Outside a repo this fails, and the caller handles it. Hide git's own error, or an agent
 // reads it as the result of the command the guard just stopped.
@@ -66,16 +100,19 @@ const OBJECT_ID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
  * merge, so it is dropped.
  */
 function mergeHeads(root: string): string[] {
+  // Where MERGE_HEAD is must be known (#403); only the file itself may be missing.
+  const path = resolve(root, git(root, ['rev-parse', '--git-path', 'MERGE_HEAD']).trim());
   let lines: string[];
   try {
-    lines = readFileSync(resolve(root, git(root, ['rev-parse', '--git-path', 'MERGE_HEAD']).trim()), 'utf8').split('\n').filter(Boolean);
+    lines = readFileSync(path, 'utf8').split('\n').filter(Boolean);
   } catch {
     return [];
   }
   if (!lines.every((line) => OBJECT_ID.test(line))) return [];
-  // Exit 1 is "not an ancestor": a real other parent. 0 is a fast-forward; 128 is an id
-  // git can't read. Both exempt nothing.
-  return lines.filter((head) => spawnSync('git', ['--no-replace-objects', 'merge-base', '--is-ancestor', 'HEAD', head], { cwd: root, stdio: 'ignore' }).status === 1);
+  // Exit 1 is "not an ancestor": a real other parent. 0 is a fast-forward, which exempts
+  // nothing. Anything else is no answer, and the check stops (#403): a head left out here
+  // would also leave out the files only that head had.
+  return lines.filter((head) => runGit(root, ['merge-base', '--is-ancestor', 'HEAD', head], { okCodes: [0, 1] }).status === 1);
 }
 
 /**
@@ -171,7 +208,11 @@ export function readBlobs(root: string, ids: string[], cap = BATCH_CAP): Map<str
   for (const id of over) {
     // Only the start: git is stopped once the buffer is past it.
     const out = spawnSync('git', ['--no-replace-objects', 'cat-file', 'blob', id], { cwd: root, maxBuffer: BINARY_PEEK, stdio: ['ignore', 'pipe', 'ignore'] }).stdout ?? Buffer.alloc(0);
-    blobs.set(id, { bytes: out.subarray(0, BINARY_PEEK), size: sizes.get(id) ?? 0, whole: false });
+    const size = sizes.get(id) ?? 0;
+    // A read shorter than the peek (or the whole blob, if smaller) is git failing (#403): left
+    // out, as a missing blob is, so the entry can't pass unread.
+    if (out.length < Math.min(BINARY_PEEK, size)) continue;
+    blobs.set(id, { bytes: out.subarray(0, BINARY_PEEK), size, whole: false });
   }
   for (const ids of batches) {
     // Each blob comes back as "<id> <type> <size>\n<bytes>\n".

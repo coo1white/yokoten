@@ -17,9 +17,10 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import * as antigravity from '../agents/runtimes/antigravity.ts';
 import { addProjectHook, addProjectStopHook, checkProjectSettings, setProjectEnv } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
-import * as copilot from '../agents/runtimes/copilot.ts';
+import * as copilot from '../agents/copilot.ts';
 import * as dsh from '../agents/runtimes/deepseek-harness.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
+import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
@@ -87,8 +88,11 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: bo
       report.push(...addCoreRules(root, text));
       continue;
     }
-    const result = writeNew(join(root, rel), text);
-    report.push(`${result} ${rel}`);
+    if (rel === '.github/dependabot.yml') {
+      report.push(writeDependabot(root, text));
+      continue;
+    }
+    report.push(`${writeNew(join(root, rel), text)} ${rel}`);
   }
   // Read before .githooks/ is written: whether it can run the hooks this clone has in .git/hooks (#256).
   const blocks = hooks.kind === 'plain' ? handOffBlocks(root) : [];
@@ -111,7 +115,7 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: bo
     ];
   });
   report.push(...claudeHooks.lines);
-  // Codex, Gemini CLI, Antigravity CLI, Muse Code and DeepSeek Harness get the same guard, whether or not they are
+  // Codex, Gemini CLI, Antigravity CLI, Muse Code, DeepSeek Harness and Grok CLI get the same guard, whether or not they are
   // installed here: small files are easier to predict than a guess about which agents someone uses.
   // A file that won't parse, or has the wrong shape, is named and skipped, never rewritten (#248).
   const codexHooks = agentHooks('the Codex hooks', '.codex/hooks.json', () => {
@@ -141,13 +145,23 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: bo
       `Muse Code runs the hooks in .muse/hooks.json only after you trust this folder: ${muse.TRUST_STEP}`,
     ];
   });
+  // Grok CLI runs the project's hooks only in a folder the user trusts. yokoten never trusts
+  // one for the user: the line says how (#407).
+  const grokHooks = agentHooks('the Grok CLI hooks', grok.HOOKS_FILE, () => {
+    const added = grok.addProjectHooks(root, cli);
+    return [
+      `${added.guard} the Grok CLI tool-call hook in ${grok.HOOKS_FILE}`,
+      `${added.stop} the Grok CLI stop check in ${grok.HOOKS_FILE}`,
+      `Grok CLI runs the hooks in ${grok.HOOKS_FILE} only after you trust this folder: ${grok.TRUST_STEP}`,
+    ];
+  });
   // DeepSeek Harness runs the hooks through a bridge each profile needs. init only prints
   // how to add it: it installs nothing and leaves ~/.dsh alone (#334).
   // On Windows the files are still written, ready for #332, but the lines say dsh is not checked.
   const dshHooks = agentHooks('the DeepSeek Harness hook', dsh.HOOKS_FILE, () => dsh.initLines(dsh.addProjectHooks(root, cli)));
-  report.push(...codexHooks.lines, ...geminiHooks.lines, ...antigravityHooks.lines, ...museHooks.lines, ...dshHooks.lines);
+  report.push(...codexHooks.lines, ...geminiHooks.lines, ...antigravityHooks.lines, ...museHooks.lines, ...dshHooks.lines, ...grokHooks.lines);
   report.push(...setCommitCheck(root, cli, hooks, blocks));
-  return { ok: claudeHooks.ok && codexHooks.ok && geminiHooks.ok && antigravityHooks.ok && museHooks.ok && dshHooks.ok, lines: report };
+  return { ok: claudeHooks.ok && codexHooks.ok && geminiHooks.ok && antigravityHooks.ok && museHooks.ok && dshHooks.ok && grokHooks.ok, lines: report };
 }
 
 // ---- CODEOWNERS for the lead-only paths (#304) ----
@@ -202,6 +216,113 @@ function writeCodeOwners(root: string, gh: Gh): string {
   return owner
     ? `wrote .github/CODEOWNERS (the lead-only paths, owned by @${owner})`
     : `wrote .github/CODEOWNERS (the lead-only paths; put your GitHub handle in place of ${OWNER_PLACEHOLDER})`;
+}
+
+// ---- Dependabot for the project's own packages (#379) ----
+//
+// The kit's dependabot.yml updates the actions CI runs. init adds one block for each
+// package manager it finds, from the manifest and lock files at the root and in the
+// folders one level down. An ecosystem at the root gets `/` only: a workspace there (npm,
+// Cargo, Go) covers its members, and a second block for a member would open a second pull
+// request for the same lock file. An ecosystem only in subfolders gets each of them.
+// Only init runs this; the hooks never do. A dependabot.yml that is already there is the
+// project's: init keeps it and names the ecosystems it doesn't update.
+
+/** The Dependabot ecosystems in the order init writes them, each with the files that show it. */
+const ECOSYSTEMS: readonly (readonly [string, (name: string) => boolean])[] = [
+  ['bun', (name) => name === 'bun.lock' || name === 'bun.lockb'],
+  ['npm', (name) => name === 'package.json'],
+  ['cargo', (name) => name === 'Cargo.toml'],
+  ['uv', (name) => name === 'uv.lock'],
+  ['pip', (name) => ['pyproject.toml', 'requirements.txt', 'setup.py', 'setup.cfg', 'Pipfile'].includes(name)],
+  ['gomod', (name) => name === 'go.mod'],
+  ['bundler', (name) => name === 'Gemfile'],
+  ['nuget', (name) => /\.(?:cs|fs|vb)proj$|\.sln$|^packages\.config$|^Directory\.Packages\.props$/.test(name)],
+  ['maven', (name) => name === 'pom.xml'],
+  ['gradle', (name) => /^(?:build|settings)\.gradle(?:\.kts)?$/.test(name)],
+  ['composer', (name) => name === 'composer.json'],
+  ['mix', (name) => name === 'mix.exs'],
+  ['pub', (name) => name === 'pubspec.yaml'],
+  ['swift', (name) => name === 'Package.swift'],
+];
+
+/** Folders that hold built, fetched or tool files, not a project of their own. */
+const NOT_PROJECTS = new Set(['node_modules', 'vendor', 'target', 'dist', 'build', 'out', 'coverage', 'venv', '__pycache__']);
+
+/** The ecosystems that the file names in one folder show. A bun or uv lock file means that manager, not npm or pip. */
+function readFolderEcosystems(names: string[]): Set<string> {
+  const found = new Set(ECOSYSTEMS.filter(([, shows]) => names.some(shows)).map(([name]) => name));
+  if (found.has('bun')) found.delete('npm');
+  if (found.has('uv')) found.delete('pip');
+  return found;
+}
+
+/** Each ecosystem the project uses, with the folders Dependabot reads it in (`/` or `/sub`), in a fixed order. */
+export function findEcosystems(root: string): Map<string, string[]> {
+  const list = (dir: string) => {
+    try {
+      return readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+  };
+  const fileNames = (dir: string) => list(dir).filter((entry) => entry.isFile()).map((entry) => entry.name);
+  const top = list(root);
+  const atRoot = readFolderEcosystems(top.filter((entry) => entry.isFile()).map((entry) => entry.name));
+  const subfolders = top
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.') && !NOT_PROJECTS.has(entry.name))
+    .map((entry) => entry.name)
+    .sort();
+  const inSubfolders = subfolders.map((sub) => [sub, readFolderEcosystems(fileNames(join(root, sub)))] as const);
+  const found = new Map<string, string[]>();
+  for (const [name] of ECOSYSTEMS) {
+    const dirs = atRoot.has(name) ? ['/'] : inSubfolders.filter(([, names]) => names.has(name)).map(([sub]) => `/${sub}`);
+    if (dirs.length > 0) found.set(name, dirs);
+  }
+  return found;
+}
+
+/** One update block in the kit's shape: monthly, a week old, one grouped pull request, prefix chore. */
+export function formatDependabotBlock(ecosystem: string, dirs: string[]): string {
+  const where = dirs.length === 1 ? [`    directory: ${dirs[0]}`] : ['    directories:', ...dirs.map((dir) => `      - ${dir}`)];
+  return [
+    `  - package-ecosystem: ${ecosystem}`,
+    ...where,
+    '    schedule:',
+    '      interval: monthly',
+    '    cooldown:',
+    '      default-days: 7',
+    '    groups:',
+    `      ${ecosystem}:`,
+    "        patterns: ['*']",
+    '    commit-message:',
+    '      prefix: chore',
+    '',
+  ].join('\n');
+}
+
+/** The ecosystems a dependabot.yml names. */
+export const readDependabotEcosystems = (text: string): Set<string> =>
+  new Set([...text.matchAll(/^\s*-?\s*package-ecosystem:\s*["']?([\w-]+)/gm)].map((match) => match[1]));
+
+/**
+ * Write .github/dependabot.yml: the kit's file and a block for each ecosystem found. A
+ * dependabot.yml or .yaml that is there is kept, and the line names what it doesn't update.
+ */
+function writeDependabot(root: string, kitText: string): string {
+  const found = findEcosystems(root);
+  const existing = ['.github/dependabot.yml', '.github/dependabot.yaml'].find((place) => existsSync(join(root, place)));
+  if (existing) {
+    const has = readDependabotEcosystems(readFileSync(join(root, existing), 'utf8'));
+    const missing = [...found.keys()].filter((name) => !has.has(name));
+    if (missing.length === 0) return `kept ${existing}`;
+    return `kept ${existing}; it does not update ${missing.join(', ')}. Copy its github-actions block for each, with prefix chore`;
+  }
+  const blocks = [...found].map(([name, dirs]) => formatDependabotBlock(name, dirs)).join('');
+  writeNew(join(root, '.github', 'dependabot.yml'), kitText.replace(/\n*$/, '\n') + blocks);
+  return found.size === 0
+    ? 'wrote .github/dependabot.yml (the actions CI runs)'
+    : `wrote .github/dependabot.yml (the actions CI runs, and ${[...found.keys()].join(', ')})`;
 }
 
 // ---- A project's own CLAUDE.md and commit hooks (#206) ----
