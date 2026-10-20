@@ -353,6 +353,8 @@ export interface MachineProbe {
   runProgram(file: string, args: string[], timeoutMs: number): string;
   /** A file's text, or null when it can't be read. */
   readText(path: string): string | null;
+  /** Write a file, making its folder. Throws when it can't. */
+  writeText(path: string, text: string): void;
   /** This process's uid, or null where there is none (Windows). */
   uid: number | null;
   now(): Date;
@@ -378,6 +380,10 @@ export const REAL_MACHINE: MachineProbe = {
     } catch {
       return null;
     }
+  },
+  writeText(path, text) {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, text);
   },
   uid: process.getuid?.() ?? null,
   now: () => new Date(),
@@ -508,19 +514,28 @@ export function readHostCache(env: Env, probe: MachineProbe): HostDiskCache | nu
   }
 }
 
+/** A kept reading older than this is not repeated: the drive may have changed since. */
+const MAX_READING_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** The last reading when it is from the last 7 days, or null. */
+export function readFreshHostCache(env: Env, probe: MachineProbe): HostDiskCache | null {
+  const cache = readHostCache(env, probe);
+  const age = cache ? probe.now().getTime() - Date.parse(cache.readAt) : Number.NaN;
+  return cache && Number.isFinite(age) && age >= 0 && age <= MAX_READING_AGE_MS ? cache : null;
+}
+
 /** Keep the last reading. A file that can't be written is left: a session then says nothing about the host. */
-function saveHostCache(env: Env, cache: HostDiskCache): void {
+export function saveHostCache(env: Env, probe: MachineProbe, cache: HostDiskCache): void {
   const file = machineStateFile(env);
+  let state: Record<string, unknown> = {};
   try {
-    let state: Record<string, unknown> = {};
-    try {
-      const old: unknown = JSON.parse(readFileSync(file, 'utf8'));
-      if (old && typeof old === 'object' && !Array.isArray(old)) state = old as Record<string, unknown>;
-    } catch {
-      // no state yet, or a broken file: start a new one
-    }
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, `${JSON.stringify({ ...state, hostDisk: cache }, null, 2)}\n`);
+    const old: unknown = JSON.parse(probe.readText(file) ?? 'null');
+    if (old && typeof old === 'object' && !Array.isArray(old)) state = old as Record<string, unknown>;
+  } catch {
+    // a broken file: start a new one
+  }
+  try {
+    probe.writeText(file, `${JSON.stringify({ ...state, hostDisk: cache }, null, 2)}\n`);
   } catch {
     // a read-only home: the next full doctor reads the host again
   }
@@ -540,10 +555,8 @@ export const WSL_DISK_GUIDE = 'https://learn.microsoft.com/windows/wsl/disk-spac
  * The fix for a full Windows drive. A WSL 2 disk file only grows, so the fix points to
  * Microsoft's guide, never to a command: its sparse mode is marked unsafe (record 0012).
  */
-function hostDiskFix(version: number): string {
-  if (version !== 2) return 'free some space on that drive in Windows';
-  return `free some space on that drive in Windows. The VM's disk file only grows. Deleting files inside the VM frees nothing on the Windows drive. Back up your work to another drive first. Then free space on the Windows drive, or shrink or move the disk file: ${WSL_DISK_GUIDE}`;
-}
+export const HOST_DISK_FIX =
+  `free some space on that drive in Windows. The VM's disk file only grows. Deleting files inside the VM frees nothing on the Windows drive. Back up your work to another drive first. Then free space on the Windows drive, or shrink or move the disk file: ${WSL_DISK_GUIDE}`;
 
 const HOST_DRIVE = 'the Windows drive that holds this Linux disk';
 
@@ -563,20 +576,25 @@ export function diskSpaceChecks(root: string, env: Env, probe: MachineProbe, ses
   } catch {
     checks.push(note('disk-space', finding('disk-space', "can't read the free space of the disk that holds this repo", 'check it with `df -h .`, or in your file manager')));
   }
-  if (!isWsl(env, probe)) return checks;
+  // Without WSL_DISTRO_NAME (under sudo, or from systemd) there is no way to find the
+  // drive, and a note every run would only nag: say nothing about it.
+  if (!isWsl(env, probe) || !env.WSL_DISTRO_NAME) return checks;
   if (session) {
-    const cache = readHostCache(env, probe);
-    const low = cache && diskSpaceNote(`${HOST_DRIVE} (read ${cache.readAt.slice(0, 16).replace('T', ' ')} UTC)`, cache, env, hostDiskFix(cache.version));
+    const cache = readFreshHostCache(env, probe);
+    const when = cache ? new Date(cache.readAt).toISOString().slice(0, 16).replace('T', ' ') : '';
+    const low = cache && cache.version !== 1 && diskSpaceNote(`${HOST_DRIVE} (read ${when} UTC)`, cache, env, `${HOST_DISK_FIX}. Then run \`yokoten doctor\` to read the drive again`);
     if (low) checks.push(note('host-disk', low));
     return checks;
   }
   const host = readHostDisk(env, probe);
+  // WSL 1 has no disk file: the repo's disk is that drive, and its note is above.
+  if ('space' in host && host.version === 1) return checks;
   if ('unread' in host) {
     checks.push(note('host-disk', finding('disk-space', `can't read ${HOST_DRIVE}: ${host.unread}`, 'check its free space in Windows; when it fills, every session here stops')));
     return checks;
   }
-  saveHostCache(env, { free: host.space.free, size: host.space.size, readAt: probe.now().toISOString(), distro: host.distro, version: host.version });
-  const low = diskSpaceNote(HOST_DRIVE, host.space, env, hostDiskFix(host.version));
+  saveHostCache(env, probe, { free: host.space.free, size: host.space.size, readAt: probe.now().toISOString(), distro: host.distro, version: host.version });
+  const low = diskSpaceNote(HOST_DRIVE, host.space, env, HOST_DISK_FIX);
   checks.push(low ? note('host-disk', low) : fine('host-disk', `${formatSpace(host.space)} on ${HOST_DRIVE}`));
   return checks;
 }
@@ -592,14 +610,21 @@ export function agentTempDirCheck(env: Env, probe: MachineProbe): Practice | nul
   const dir = claudeTempDir(env, probe.uid);
   const owner = probe.readOwner(dir);
   if (owner === null) return null;
-  const shown = dir.replaceAll('\\', '/');
   if (owner === probe.uid) return { name: 'agent-temp-dir', ok: true, finding: finding('agent-temp-dir', '', '') };
-  return { name: 'agent-temp-dir', ok: false, finding: finding('agent-temp-dir', `${shown} belongs to uid ${owner}, not to you (uid ${probe.uid}), so Claude Code won't start`, `run \`sudo rm -rf ${shown}\` yourself; Claude Code makes a new one when it starts`) };
+  // A control character or a newline can't be pasted safely: name the folder, print no command.
+  const isPastable = !/[\u0000-\u001f\u007f]/.test(dir);
+  const shown = isPastable ? dir : JSON.stringify(dir);
+  const fix = isPastable ? `run \`sudo rm -rf ${quoteForShell(dir)}\` yourself` : `remove the folder ${shown} yourself, with sudo`;
+  return { name: 'agent-temp-dir', ok: false, finding: finding('agent-temp-dir', `${shown} belongs to uid ${owner}, not to you (uid ${probe.uid}), so Claude Code won't start`, `${fix}; Claude Code makes a new one when it starts`) };
 }
+
+/** A word for a POSIX shell: in single quotes, each single quote inside closed, escaped and reopened. */
+export const quoteForShell = (word: string): string => `'${word.replaceAll("'", "'\\''")}'`;
 
 /**
  * A fake machine with no free space and a temp folder that root owns: both machine checks
- * must catch it. The checks are parameters so a test can hand in broken ones.
+ * must catch it, and in a fake WSL, the full Windows drive under it. The checks are
+ * parameters so a test can hand in broken ones.
  */
 export function machineControl(diskCheck: typeof diskSpaceChecks = diskSpaceChecks, tempCheck: typeof agentTempDirCheck = agentTempDirCheck): string[] {
   const fake: MachineProbe = {
@@ -609,11 +634,22 @@ export function machineControl(diskCheck: typeof diskSpaceChecks = diskSpaceChec
       throw new Error('no programs in the control');
     },
     readText: () => null,
+    writeText: () => {},
     uid: 1000,
     now: () => new Date(0),
   };
   const failed: string[] = [];
   if (diskCheck('/', {}, fake, true).every((c) => c.ok)) failed.push('disk space check');
+  // The Windows drive is full while the Linux disk has room, as in the incident of record 0012.
+  const registry = `${LXSS_KEY}\\{0}\r\n    DistributionName    REG_SZ    control\r\n    Version    REG_DWORD    0x2\r\n    BasePath    REG_SZ    \\\\?\\D:\\WSL\\control\r\n`;
+  const wsl: MachineProbe = {
+    ...fake,
+    readDiskSpace: (path) => ({ free: path === '/mnt/d' ? 0 : 200 * GB, size: 250 * GB }),
+    runProgram: () => registry,
+    readText: (path) => (path === '/proc/mounts' ? 'none / ext4 rw 0 0\nD:\\134 /mnt/d 9p rw 0 0\n' : null),
+  };
+  const host = diskCheck('/', { WSL_DISTRO_NAME: 'control', HOME: '/nonexistent' }, wsl, false).find((c) => c.name === 'host-disk');
+  if (host?.ok !== false || !host.finding.what.startsWith(`${HOST_DRIVE} has`)) failed.push('host drive check');
   if (tempCheck({}, fake)?.ok !== false) failed.push('agent temp dir check');
   return failed;
 }

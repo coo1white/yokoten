@@ -678,19 +678,22 @@ Full `doctor` lists them under `machine:` as notes. A note never changes the exi
   session. Doctor warns below 20 GB, when that is also under 10% of the disk. Set
   `YOKOTEN_MIN_FREE_GB` to use another limit, or `0` to turn the warning off. A session
   hears this note too.
-- **host-disk**, in WSL only: the Windows drive that holds the Linux disk file. Inside
+- **host-disk**, in WSL 2 only: the Windows drive that holds the Linux disk file. Inside
   WSL, `df` shows the size of the disk file, not the free space on that drive. Full
   `doctor` reads the drive through `reg.exe`, and waits at most 3 seconds. It keeps the
   reading in `~/.config/yokoten/machine.json`. A session runs no program: it repeats the
-  last reading when that was low. The VM's disk file only grows. Deleting files inside
+  last reading when that was low and is at most 7 days old. Run `yokoten doctor` to read
+  the drive again. Without `WSL_DISTRO_NAME`, as under `sudo`, doctor can't find the drive
+  and says nothing about it. The VM's disk file only grows. Deleting files inside
   the VM frees nothing on the Windows drive. So the note says: back up your work to
   another drive first. Then free space on the Windows drive, or shrink or move the disk
   file with [Microsoft's guide](https://learn.microsoft.com/windows/wsl/disk-space).
   yokoten does not suggest WSL's sparse mode: WSL marks it unsafe.
 
-- **agent-temp-dir**: another user owns Claude Code's temp folder, `/tmp/claude-<uid>`.
+- **agent-temp-dir**: another user owns Claude Code's temp folder, `claude-<uid>`. The
+  folder is in `CLAUDE_CODE_TMPDIR`, else in `TMPDIR`, by default `/tmp`.
   This happens when a root process makes the folder first, for example after a restart.
-  Claude Code then refuses to start. The note prints `sudo rm -rf <folder>`. Run it
+  Claude Code then refuses to start. The note prints `sudo rm -rf '<folder>'`, quoted. Run it
   yourself: doctor never deletes anything.
 
 ### Troubleshooting

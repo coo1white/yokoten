@@ -626,17 +626,20 @@ AI 工具还有一条：hook 跑得比它的超时还久，工具就直接放行
 - **disk-space**：放仓库的那块盘快满了。盘一满，所有会话都会停。剩下不到 20 GB、
   而且不到整块盘的 10% 时，doctor 才提醒。想换个线，就设 `YOKOTEN_MIN_FREE_GB`；
   设成 `0` 就不提醒。会话开头也会说这一条。
-- **host-disk**，只在 WSL 里查：装着 Linux 磁盘文件的那块 Windows 盘。在 WSL 里用 `df`
+- **host-disk**，只在 WSL 2 里查：装着 Linux 磁盘文件的那块 Windows 盘。在 WSL 里用 `df`
   看到的是磁盘文件的大小，不是那块 Windows 盘还剩多少。完整的 `doctor` 用 `reg.exe`
   找到那块盘再去读，最多等 3 秒。读到的结果存在 `~/.config/yokoten/machine.json`。
-  会话开头不跑任何程序，只是上次读到的偏少时再说一遍。虚拟机的磁盘文件只会变大；在虚拟机
+  会话开头不跑任何程序，只在上次读到的偏少、而且不超过 7 天时再说一遍。想重新读，就跑
+  `yokoten doctor`。没有 `WSL_DISTRO_NAME` 时（比如用 `sudo` 跑），doctor 找不到那块盘，
+  就不提它。虚拟机的磁盘文件只会变大；在虚拟机
   里删文件，Windows 盘上一点空间也空不出来。所以提示会说：先把工作备份到另一块盘，再清理
   Windows 盘，或者照[微软的说明](https://learn.microsoft.com/windows/wsl/disk-space)把磁盘
   文件压小、搬走。yokoten 不推荐 WSL 的稀疏模式（sparse），因为 WSL 自己把它标成了不安全。
 
-- **agent-temp-dir**：Claude Code 的临时文件夹 `/tmp/claude-<uid>` 归了别的用户。
+- **agent-temp-dir**：Claude Code 的临时文件夹 `claude-<uid>` 归了别的用户。这个文件夹
+  放在 `CLAUDE_CODE_TMPDIR` 里；没设的话放在 `TMPDIR` 里，默认是 `/tmp`。
   常见的情况是重启以后，某个 root 进程先把它建了出来。这时 Claude Code 会拒绝启动。
-  提示里会给出 `sudo rm -rf <文件夹>`，你自己跑；doctor 从来不删东西。
+  提示里会给出 `sudo rm -rf '<文件夹>'`（路径带引号），你自己跑；doctor 从来不删东西。
 
 ### 出了问题怎么办
 

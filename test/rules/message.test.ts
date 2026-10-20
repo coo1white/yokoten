@@ -159,6 +159,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
       throw new Error('no programs here');
     },
     readText: () => null,
+    writeText: () => {},
     uid: 1000,
     now: () => new Date(0),
   };
