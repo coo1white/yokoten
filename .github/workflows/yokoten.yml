@@ -80,7 +80,11 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node }}
-      - run: node --test
+      # Four files at a time (Node's default is the CPU count minus one), and one compile
+      # cache for every child node, so each test file strips its TypeScript once (#442).
+      - run: node --test --test-concurrency=4
+        env:
+          NODE_COMPILE_CACHE: ${{ runner.temp }}/node-compile-cache
   # Types are checked here and nowhere else: Node runs the .ts files without them.
   # Skipped on a docs-only pull request.
   typecheck:
