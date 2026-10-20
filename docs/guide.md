@@ -617,9 +617,10 @@ request. Add your tests as a job in `yokoten.yml` and to the `needs` list of `ci
 
 It puts three safe defaults in `.github/` too:
 
-- `dependabot.yml` updates the actions that CI runs. It opens one pull request a month,
-  and takes a release only when it is a week old. A comment in the file shows how to
-  add your own packages (npm, pip, Go) the same way.
+- `dependabot.yml` updates the actions that CI runs, and the packages `init` finds (npm,
+  cargo, pip, Go and more, at the root and one folder down). It opens one pull request a
+  month for each, and takes a release only when it is a week old. A file you already have
+  is kept; `init` names the packages it does not update.
 - `SECURITY.md` asks people to report a vulnerability privately, not in a public issue.
   For this, turn on private vulnerability reporting. `doctor` lists it with the other
   security switches.

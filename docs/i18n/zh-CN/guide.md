@@ -569,8 +569,9 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 
 另外还在 `.github/` 里放三个文件，默认设置就是安全的：
 
-- `dependabot.yml`：自动更新 CI 用到的 action。一个月只开一个 PR，所有更新都在里面；
-  新版本发布满一周才会用。文件里的注释写了怎么用同样的方式加上你自己的包（npm、pip、Go 等）。
+- `dependabot.yml`：自动更新 CI 用到的 action，还有 `init` 在项目里找到的包（npm、cargo、pip、
+  Go 等，看根目录和下一层文件夹）。每种一个月只开一个 PR；新版本发布满一周才会用。
+  已经有这个文件的话，`init` 不动它，只告诉你哪些包它还没管。
 - `SECURITY.md`：告诉别人发现漏洞要私下报告，不要发公开 issue。要让私下报告能用，得在仓库
   设置里打开 private vulnerability reporting（私下报告漏洞）。`doctor` 会把它和其他安全开关
   一起列出来。
