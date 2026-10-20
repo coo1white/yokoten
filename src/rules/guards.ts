@@ -825,17 +825,16 @@ function isPlainLine(line: string): boolean {
 // Commands that write no file, whatever their words (#439).
 const NO_WRITE = new Set(['export', 'set', 'cd', 'pushd', 'popd', 'true', ':', 'test', '[', 'echo', 'printf']);
 const GH_READS = new Set(['view', 'list', 'checks']);
-const GIT_READS = new Set(['status', 'log', 'rev-parse', 'diff']);
-// The keys file the lead loads with `set -a; . ~/.config/yokoten/keys.env; set +a`.
+const GIT_READS = new Set(['status', 'log', 'rev-parse']);
+// git log options that print diffs, which may run diff.external or a textconv from the repo's config.
+const GIT_DIFFS = /^(-p|-u|--patch|--ext|--text|--output)/;
 // Variables that change which program runs, or what it runs: setting one is no plain assignment.
 const RUNS_VIA = /^(?:PATH|BASH_ENV|ENV|IFS|PROMPT_COMMAND|SHELLOPTS|BASHOPTS|CDPATH|LD_\w*|DYLD_\w*|NODE_OPTIONS|NODE_PATH|GIT_\w*)\+?=/;
-const KEYS_FILE = /^(?:~|\$HOME|\$\{HOME\})\/\.config\/yokoten\/[\w.-]+\.env$/;
 
 /**
  * Whether a command surely writes no file, so a body file on disk is still the one gh posts
  * (#439): no redirect into a file, and assignments only (a substitution in one is a command
- * of its own, checked the same way), one of NO_WRITE, the lead's keys file loaded with `.`,
- * a gh or git read, or `yokoten bot -- <one of those>`. Anything else may write one.
+ * of its own, checked the same way), one of NO_WRITE, a gh or git read, or `yokoten bot -- <one of those>`. Anything else may write one.
  */
 function writesNoFile(words: string[]): boolean {
   if (writesFile(words) || words.some((word) => RUNS_VIA.test(word))) return false;
@@ -847,13 +846,12 @@ function writesNoFile(words: string[]): boolean {
 function readsOnly(words: string[]): boolean {
   const [program = '', sub = '', action = ''] = words;
   if (NO_WRITE.has(program)) return true;
-  if (program === '.' || program === 'source') return words.length === 2 && KEYS_FILE.test(sub);
   if (program === 'gh') {
     if (sub === 'api') return !words.some((word) => /^(-X|--method|-f|-F|--field|--raw-field|--input)/.test(word));
     return ['pr', 'issue', 'repo', 'run'].includes(sub) && GH_READS.has(action);
   }
   if (program === 'git') {
-    if (words.some((word) => word.startsWith('--output') || word === '--ext-diff')) return false;
+    if (words.some((word) => GIT_DIFFS.test(word))) return false;
     return GIT_READS.has(sub) || (sub === 'config' && action === '--get') || (sub === 'remote' && action === 'get-url');
   }
   // `yokoten bot -- x`, `node bin/yokoten.ts bot -- x`

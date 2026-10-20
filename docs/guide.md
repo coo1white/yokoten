@@ -1355,7 +1355,7 @@ plain or through `yokoten bot -- gh`:
   body and `EOF`. The path is plain, the same on both sides, and the delimiter is quoted;
   the guard checks the heredoc and the file already there, if any. Beside gh, a command
   that writes no file is fine: assignments, `export`, `set`, `cd`, `echo` with no
-  redirect, a `gh … view` or `list`, a `git status` or `log`, the same through
+  redirect, a `gh … view` or `list`, a `git status` or `log` (no diff), the same through
   `yokoten bot --`. Any other command may change the file, so a file the guard can't find,
   or one such a command may change, stops the command: write the file in one command, then
   post it in the next, with its full path.

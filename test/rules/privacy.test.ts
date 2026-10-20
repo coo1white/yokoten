@@ -711,11 +711,13 @@ test('reading the heredoc shape stays linear (#439)', () => {
 
 test("the lead's command with a body file on disk: commands that write no file don't stop it (#439)", () => {
   const body = join(postDir, 'lead-body.md');
-  const lead = `set -a; . ~/.config/yokoten/keys.env; set +a; export NODE_USE_ENV_PROXY=1 GH_REPO=o/r; OWNER=$(gh pr view 1 -R o/r --json assignees -q '.assignees[0].login'); node bin/yokoten.ts bot -- gh pr create --title t --body-file ${body} --assignee "$OWNER"`;
+  const lead = `export NODE_USE_ENV_PROXY=1 GH_REPO=o/r; OWNER=$(gh pr view 1 -R o/r --json assignees -q '.assignees[0].login'); node bin/yokoten.ts bot -- gh pr create --title t --body-file ${body} --assignee "$OWNER"`;
   writeFileSync(body, 'All clean.\n');
   assert.equal(post(lead), null);
   assert.equal(post(lead.replace('node bin/yokoten.ts bot', 'yokoten bot')), null);
-  for (const reads of ['git status', 'git log -1', 'git config --get user.name', 'git remote get-url origin', 'gh api repos/o/r/pulls', 'gh issue list', 'echo hi', 'true', 'test -f x', 'yokoten bot -- gh run view 1']) {
+  // Loading a file with . or source may run anything, so the file on disk is not trusted.
+  plainRefusal(`set -a; . ~/.config/yokoten/keys.env; set +a; ${lead}`);
+  for (const reads of ['git status', 'git log -1', 'git log --oneline -3', 'git config --get user.name', 'git remote get-url origin', 'gh api repos/o/r/pulls', 'gh issue list', 'echo hi', 'true', 'test -f x', 'yokoten bot -- gh run view 1']) {
     assert.equal(post(`${reads} && gh pr comment 3 -F ${body}`), null, reads);
   }
   writeFileSync(body, 'Tested in QuietVale.\n');
@@ -728,7 +730,13 @@ test("the lead's command with a body file on disk: commands that write no file d
     'source ~/.config/yokoten/x.sh',
     'eval x',
     'f() { :; }',
-    'git diff --output=x',
+    'git diff',
+    'git log -p',
+    'git log --patch',
+    'git log -u',
+    'git log --textconv',
+    'git log --ext-diff',
+    'git log --output=x',
     'gh api -X POST repos/o/r/issues',
     'gh api repos/o/r/issues -f body=x',
     'gh pr checkout 3',
@@ -736,7 +744,7 @@ test("the lead's command with a body file on disk: commands that write no file d
     'yokoten bot -- gh pr merge 3',
     'printf x > out.md',
     'PATH=./bin; git status',
-    'export GIT_EXTERNAL_DIFF=./x; git diff',
+    'export GIT_EXTERNAL_DIFF=./x; git log',
     'NODE_OPTIONS=--require=./x.js node bin/yokoten.ts bot -- gh pr view 1',
   ]) {
     plainRefusal(`${writes}; gh pr comment 3 -F ${body}`);
