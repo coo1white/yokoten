@@ -44,3 +44,11 @@ process.env.HOME = TEST_HOME;
 process.env.USERPROFILE = TEST_HOME;
 process.env.XDG_CONFIG_HOME = join(TEST_HOME, '.config');
 process.on('exit', () => rmSync(TEST_HOME, { recursive: true, force: true }));
+
+/**
+ * The compile cache every child node shares (#442): the one bin/yokoten.mjs turns on, in the
+ * system temp folder, so a CLI child loads its modules type-stripped and compiled after the
+ * first run on this machine, in any test file, and not again in each file's empty home.
+ */
+export const COMPILE_CACHE = join(tmpdir(), 'node-compile-cache');
+process.env.NODE_COMPILE_CACHE = COMPILE_CACHE;

@@ -9,10 +9,11 @@ on:
     branches: [main]
 # No job gets a permission it does not name.
 permissions: {}
-# A new push to a pull request cancels the run still going for it. A push to main gets
-# a group of its own, so a run on main is never cancelled.
+# A newer run cancels the one still going for the same pull request or branch. On main,
+# the newest run tests everything the older ones would have, so a merge never waits
+# behind runs that no longer matter.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   # Which files the pull request changes (#438). It is docs-only when each file is under
