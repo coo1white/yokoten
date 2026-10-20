@@ -87,11 +87,12 @@ const isOurLauncher = (file: string, clis: string[]): boolean => {
 
 /**
  * True when a `yokoten` on the PATH is this copy or the installed runtime: its real path
- * is one of their bin/yokoten.ts, or it is a launcher install wrote for one of them (#433).
+ * is one of their bin/yokoten.ts or bin/yokoten.mjs, or it is a launcher install wrote for
+ * one of them (#433). A launcher from an older install runs yokoten.ts, so it still counts.
  * A shell alias is not on the PATH, so it is not seen.
  */
 export function isOnPath(env: Env, runtime: string, platform: NodeJS.Platform = process.platform): boolean {
-  const clis = [join(runtime, 'bin', 'yokoten.ts'), join(HOME_DIR, 'bin', 'yokoten.ts')];
+  const clis = [runtime, HOME_DIR].flatMap((dir) => [join(dir, 'bin', 'yokoten.mjs'), join(dir, 'bin', 'yokoten.ts')]);
   const ours = clis.map(realPath).filter(Boolean);
   const names = platform === 'win32' ? ['yokoten.cmd', 'yokoten'] : ['yokoten'];
   return (env.PATH ?? '').split(platform === 'win32' ? ';' : delimiter).filter(Boolean).some((dir) =>
@@ -121,9 +122,13 @@ export const launcherDir = (home: string): string => join(home, '.local', 'bin')
 /** The launcher file for this platform. */
 export const launcherFile = (home: string, platform: NodeJS.Platform = process.platform): string => join(launcherDir(home), launcherName(platform));
 
-/** What the launcher holds: it runs the installed runtime with every argument, and carries the managed mark. */
+/**
+ * What the launcher holds: it runs the installed runtime with every argument, and carries the
+ * managed mark. It runs bin/yokoten.mjs, the entry the user hooks run (USER_CLI), which turns on
+ * the compile cache. Install rewrites a launcher from an older install that ran yokoten.ts.
+ */
 export function launcherText(runtime: string, platform: NodeJS.Platform = process.platform): string {
-  const cli = join(runtime, 'bin', 'yokoten.ts');
+  const cli = join(runtime, 'bin', 'yokoten.mjs');
   if (platform === 'win32') return `@echo off\r\nrem ${MANAGED}: \`yokoten uninstall\` removes this file.\r\nnode "${cli}" %*\r\n`;
   // Single quotes keep every character of the path as it is; a ' inside is closed, escaped and reopened.
   return `#!/bin/sh\n# ${MANAGED}: \`yokoten uninstall\` removes this file.\nexec node '${cli.replaceAll("'", "'\\''")}' "$@"\n`;

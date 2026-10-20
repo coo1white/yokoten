@@ -496,7 +496,8 @@ node ~/.local/share/yokoten/bin/yokoten.ts doctor   # 看看走到哪一关，�
 
 yokoten 的提示里写的都是 `yokoten init`、`yokoten doctor`。所以 `install` 会在
 `~/.local/bin` 放一个小小的 `yokoten` 启动脚本（Windows 上是 `yokoten.cmd`）。大多数电脑的
-PATH 里本来就有这个文件夹，所以新开一个终端，`yokoten` 就能用了。
+PATH 里本来就有这个文件夹，所以新开一个终端，`yokoten` 就能用了。这个脚本跑的是
+`bin/yokoten.mjs`，跟钩子用的是同一个入口，启动更快。旧版装的启动脚本，下次 `install` 会直接改写。
 
 要是 PATH 里没有 `~/.local/bin`，`install` 会问你一次：
 `Add ~/.local/bin to your PATH in ~/.bashrc? [Y/n]`（用 zsh 的话是 `~/.zshrc`）。你答应了，

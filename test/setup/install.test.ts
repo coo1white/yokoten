@@ -19,6 +19,8 @@ import {
   delimiter,
   dirname,
   join,
+  relative,
+  sep,
 } from 'node:path';
 import { test } from 'node:test';
 import {
@@ -34,7 +36,7 @@ import {
 } from '../repo/helpers.ts';
 import { hasHook } from '../../src/agents/hooks-file.ts';
 import { copyRuntime } from '../../src/setup/files.ts';
-import { countOwnMarks, fillMarks, install, launcherText, machineStateFile, machineUserNames, migrateMarks, paths, PROFILE_LINE, setUpLauncher, uninstall, type UserNameProbe, writeFileAtomic } from '../../src/setup/install.ts';
+import { countOwnMarks, fillMarks, install, isOnPath, launcherText, machineStateFile, machineUserNames, migrateMarks, paths, PROFILE_LINE, setUpLauncher, uninstall, type UserNameProbe, USER_CLI, writeFileAtomic } from '../../src/setup/install.ts';
 import { autoLogins, loadMarkKinds, makeRedactor } from '../../src/rules/privacy.ts';
 
 const BAD_USER_SETTINGS: [content: string, reason: (file: string) => string][] = [
@@ -466,12 +468,12 @@ test('install: writes the launcher, and with no terminal prints the PATH line an
   assert.ok(!result.stdout.includes('alias yokoten'), result.stdout);
 });
 
-/** A home with a fake runtime whose bin/yokoten.ts prints its arguments, and a PATH without ~/.local/bin. */
+/** A home with a fake runtime whose bin/yokoten.mjs prints its arguments, and a PATH without ~/.local/bin. */
 function launcherHome() {
   const home = makeTempDir('yokoten-launcher-');
   const runtime = join(home, '.local', 'share', 'yokoten');
   mkdirSync(join(runtime, 'bin'), { recursive: true });
-  writeFileSync(join(runtime, 'bin', 'yokoten.ts'), 'console.log(JSON.stringify(process.argv.slice(2)));\n');
+  writeFileSync(join(runtime, 'bin', 'yokoten.mjs'), 'console.log(JSON.stringify(process.argv.slice(2)));\n');
   const env = { HOME: home, PATH: dirname(process.execPath), SHELL: '/usr/bin/zsh' };
   const asked: string[] = [];
   const answer = (reply: string | null) => (question: string) => {
@@ -490,7 +492,23 @@ test('launcher: runs the installed runtime with each argument kept whole (#433)'
   assert.equal(run.status, 0, run.stderr);
   assert.deepEqual(JSON.parse(run.stdout), ['doctor', 'two words', '$HOME']);
   // A runtime path with a quote and a dollar sign still works.
-  assert.match(launcherText("/home/o'neil/$x/yokoten", 'linux'), /exec node '\/home\/o'\\''neil\/\$x\/yokoten\/bin\/yokoten\.ts' "\$@"\n$/);
+  assert.match(launcherText("/home/o'neil/$x/yokoten", 'linux'), /exec node '\/home\/o'\\''neil\/\$x\/yokoten\/bin\/yokoten\.mjs' "\$@"\n$/);
+});
+
+test('launcher: runs the .mjs entry the hooks run, and a launcher from an older install is rewritten (#433, #440)', () => {
+  const { home, runtime, env, launcher } = launcherHome();
+  // The hooks run USER_CLI; the launcher runs the same file in the runtime.
+  assert.equal(USER_CLI, `"$HOME/${relative(home, join(runtime, 'bin', 'yokoten.mjs')).split(sep).join('/')}"`);
+  assert.ok(launcherText(runtime, 'linux').includes(join(runtime, 'bin', 'yokoten.mjs')));
+  // An older install wrote a launcher that ran yokoten.ts.
+  const old = launcherText(runtime, 'linux').replace('yokoten.mjs', 'yokoten.ts');
+  mkdirSync(dirname(launcher), { recursive: true });
+  writeFileSync(launcher, old);
+  // It still counts as ours on the PATH, so doctor does not ask for it again.
+  assert.ok(isOnPath({ PATH: dirname(launcher) }, runtime, 'linux'));
+  const lines = setUpLauncher(env, runtime, home);
+  assert.equal(lines[0], `updated the launcher ${launcher}`);
+  assert.equal(readFileSync(launcher, 'utf8'), launcherText(runtime, 'linux'));
 });
 
 test('launcher: asks once before it adds the PATH line, and only with a terminal (#433)', () => {
@@ -549,7 +567,7 @@ test("launcher: a yokoten in ~/.local/bin that isn't ours is kept and named (#43
 test('launcher: Windows gets yokoten.cmd and steps for the PATH, never an edit (#433)', () => {
   const { home, runtime, env, asked, answer } = launcherHome();
   assert.equal(launcherText('C:\\Users\\o\\.local\\share\\yokoten', 'win32').split('\r\n').slice(0, 2).join('\n'), '@echo off\nrem managed by yokoten: `yokoten uninstall` removes this file.');
-  assert.match(launcherText('C:\\Users\\o\\.local\\share\\yokoten', 'win32'), /\r\nnode "C:\\Users\\o\\.local\\share\\yokoten[\\/]bin[\\/]yokoten\.ts" %\*\r\n$/);
+  assert.match(launcherText('C:\\Users\\o\\.local\\share\\yokoten', 'win32'), /\r\nnode "C:\\Users\\o\\.local\\share\\yokoten[\\/]bin[\\/]yokoten\.mjs" %\*\r\n$/);
   const lines = setUpLauncher(env, runtime, home, { ask: answer('y'), platform: 'win32' });
   assert.equal(readFileSync(join(home, '.local', 'bin', 'yokoten.cmd'), 'utf8'), launcherText(runtime, 'win32'));
   assert.ok(!existsSync(join(home, '.local', 'bin', 'yokoten')));

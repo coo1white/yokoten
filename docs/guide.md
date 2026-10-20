@@ -543,7 +543,9 @@ node ~/.local/share/yokoten/bin/yokoten.ts doctor   # the road: where you are, w
 
 yokoten's messages say `yokoten init` and `yokoten doctor`. So `install` puts a small
 `yokoten` launcher in `~/.local/bin` (`yokoten.cmd` on Windows). That folder is on the
-PATH on most setups, so `yokoten` works in the next shell you open.
+PATH on most setups, so `yokoten` works in the next shell you open. The launcher runs
+`bin/yokoten.mjs`, the same fast entry the hooks run. The next `install` rewrites a
+launcher that an older install wrote.
 
 When `~/.local/bin` is not on your PATH, `install` asks once:
 `Add ~/.local/bin to your PATH in ~/.bashrc? [Y/n]` (`~/.zshrc` for zsh). On yes, it adds
