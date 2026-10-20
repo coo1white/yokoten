@@ -15,8 +15,10 @@ command on its line; one `cd` within the same repo before it is fine. When it al
 `yokoten marks allow --remove <mark> --here` takes it back.
 
 With no setup, a private mark never blocks the repo it names (#447). If a mark is the name of
-the repo's origin remote (`Quiet Vale` for `someone/quiet-vale`, case, `-`, `_`, `.` and
-spaces aside, the whole name), `check`, the commit hook and `gh` posts skip that one mark
-there; in CI the run's own repo name counts too. Every other mark and every other repo is
-unchanged, and when yokoten can't tell the repo it skips nothing. The allow above is for what
-this can't see.
+the repo's origin remote, `check`, the commit hook and `gh` posts skip that one mark there.
+`Quiet Vale` names `someone/quiet-vale`: case aside, and `-`, `_`, `.` and spaces are word
+breaks, so `Li Na` is not `lina`. Every other mark and every other repo is unchanged, and when yokoten
+can't tell the repo it skips nothing. Only origin counts, and a later push to another remote is
+not checked. `doctor` counts the marks skipped this way. `"privacy": { "skipOwnName": false }`
+in yokoten.json turns it off for a repo, and `"skipOwnName": false` in the machine's allow file
+turns it off for every repo on this machine. The allow above is for what this can't see.

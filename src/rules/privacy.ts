@@ -105,8 +105,8 @@ export interface AllowEntry {
   allow: string[];
 }
 
-/** The repo, as the machine allow file names it. */
-export type RepoKey = { remote: string };
+/** The repo, as the machine allow file names it. `local` when origin is a folder on this machine, not a host. */
+export type RepoKey = { remote: string; local?: boolean };
 
 /** The machine allow file: beside the private-marks file. With no home folder, it throws NO_HOME. */
 export const machineAllowFile = (env: Env): string => join(dirname(marksFile(env)), 'private-marks-allow.json');
@@ -153,6 +153,13 @@ function localKey(path: string, base?: string): string | null {
  * a relative one against `base`, the repo's top folder. Null when it can't be read.
  */
 export function normalizeRemote(url: string, base?: string): string | null {
+  const split = splitRemote(url);
+  if (!split) return null;
+  return 'local' in split ? localKey(split.local, base) : hostKey(split.host, split.path);
+}
+
+/** A remote as a host and its path, or as a local path. Null when it is empty. */
+function splitRemote(url: string): { host: string; path: string } | { local: string } | null {
   const text = url.trim();
   if (!text) return null;
   const scheme = text.match(/^([a-z][a-z0-9+.-]*):\/\/(.*)$/i);
@@ -161,21 +168,33 @@ export function normalizeRemote(url: string, base?: string): string | null {
     const rest = scheme[2];
     const slash = rest.indexOf('/');
     const path = slash === -1 ? '' : rest.slice(slash);
-    if (kind === 'file') return localKey(path, base);
+    if (kind === 'file') return { local: path };
     const authority = slash === -1 ? rest : rest.slice(0, slash);
     const hostPort = authority.slice(authority.lastIndexOf('@') + 1);
     const colon = hostPort.lastIndexOf(':');
     const hasPort = colon !== -1 && !hostPort.endsWith(']');
     const host = hasPort ? hostPort.slice(0, colon) : hostPort;
     const port = hasPort ? hostPort.slice(colon + 1) : '';
-    return hostKey(port && port !== DEFAULT_PORTS[kind] ? `${host}:${port}` : host, path);
+    return { host: port && port !== DEFAULT_PORTS[kind] ? `${host}:${port}` : host, path };
   }
   // scp-like `user@host:path`. A path that starts with `/` or `.`, or a Windows drive, is local.
   if (!/^[a-z]:[\\/]/i.test(text) && !/^[/.\\]/.test(text)) {
     const scp = text.match(/^(?:[^@/]+@)?([^:/]+):(.*)$/);
-    if (scp) return hostKey(scp[1], scp[2]);
+    if (scp) return { host: scp[1], path: scp[2] };
   }
-  return localKey(text, base);
+  return { local: text };
+}
+
+/**
+ * Why yokoten can't be sure which repo an origin address names, or null (#447). A `?` or
+ * `#` may hide a part of the address from the key; a host's path must be just
+ * `owner/name` (`.git` optional), or the last part may not be the repo's name.
+ */
+function unsureAddress(url: string): string | null {
+  if (/[?#]/.test(url)) return 'the origin remote\'s address has a ? or a #';
+  const split = splitRemote(url);
+  if (split && 'host' in split && !/^\/?[^/\\]+\/[^/\\]+$/.test(split.path)) return 'the origin remote\'s address is not just owner/name';
+  return null;
 }
 
 function hostKey(host: string, path: string): string | null {
@@ -249,11 +268,18 @@ export function repoKey(dir: string): RepoKey | { unsure: string } | { none: str
   // Fetch addresses through insteadOf. A push goes to pushurl when set, else to the url through pushInsteadOf first.
   const fetch = urls.map((url) => rewriteUrl(url, insteadOf) ?? url);
   const push = pushUrls.length ? pushUrls.map((url) => rewriteUrl(url, insteadOf) ?? url) : urls.map((url) => rewriteUrl(url, pushInsteadOf) ?? rewriteUrl(url, insteadOf) ?? url);
+  const all = [...fetch, ...push];
+  for (const url of all) {
+    const why = unsureAddress(url);
+    if (why) return { unsure: why };
+  }
   const base = localKey(topFolder) ?? topFolder;
-  const keys = new Set([...fetch, ...push].map((url) => normalizeRemote(url, base)));
+  const keys = new Set(all.map((url) => normalizeRemote(url, base)));
   if (keys.has(null)) return { unsure: "the origin remote can't be read" };
   if (keys.size !== 1) return { unsure: 'the origin remote has more than one address' };
-  return { remote: [...keys][0] as string };
+  const remote = [...keys][0] as string;
+  const split = splitRemote(all[0]);
+  return split && 'local' in split ? { remote, local: true } : { remote };
 }
 
 /** Why the machine allow file can't be used, in words that never quote it. */
@@ -261,7 +287,7 @@ export const ALLOW_FILE_UNREADABLE = "this machine's allow file can't be read";
 export const ALLOW_FILE_SHAPE = "this machine's allow file is not in the shape yokoten writes";
 
 /** The entries of the machine allow file: none when it is missing or there is no home folder. */
-export function readMachineAllow(env: Env): { entries: AllowEntry[] } | { unsure: string } {
+export function readMachineAllow(env: Env): { entries: AllowEntry[]; skipOwnName?: false } | { unsure: string } {
   let text: string;
   try {
     text = readFileSync(machineAllowFile(env), 'utf8');
@@ -277,14 +303,15 @@ export function readMachineAllow(env: Env): { entries: AllowEntry[] } | { unsure
   } catch {
     return { unsure: ALLOW_FILE_SHAPE };
   }
-  const repos = (data as { repos?: unknown } | null)?.repos;
+  const { repos, skipOwnName, ...other } = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
   const isEntry = (entry: unknown): entry is AllowEntry => {
     if (!entry || typeof entry !== 'object') return false;
     const { remote, allow, ...rest } = entry as Record<string, unknown>;
     return typeof remote === 'string' && remote !== '' && Array.isArray(allow) && allow.every((mark) => typeof mark === 'string') && !Object.keys(rest).length;
   };
   if (!Array.isArray(repos) || !repos.every(isEntry)) return { unsure: ALLOW_FILE_SHAPE };
-  return { entries: repos };
+  if (Object.keys(other).length || (skipOwnName !== undefined && typeof skipOwnName !== 'boolean')) return { unsure: ALLOW_FILE_SHAPE };
+  return skipOwnName === false ? { entries: repos, skipOwnName } : { entries: repos };
 }
 
 /** Whether `path` is a symbolic link, dangling or not. */
@@ -325,34 +352,46 @@ export function machineAllowed(env: Env, dir: string | null, known?: ReturnType<
   return { allow: (found[0]?.allow ?? []).map((mark) => mark.toLowerCase()), unsure: null };
 }
 
-/** A name with case, `-`, `_`, `.` and spaces taken out, so `Quiet Vale` and `quiet-vale` compare equal. */
-const plainName = (name: string): string => name.toLowerCase().replace(/[-_.\s]/g, '');
+/**
+ * A name as its words, so `Quiet Vale`, `quiet-vale`, `Quiet_Vale` and `quiet.vale` compare
+ * equal: case aside, and each run of `-`, `_`, `.` and spaces one separator. A separator
+ * is never taken out, so `Li Na` is not `lina`. Empty when the name has no letter or digit.
+ */
+const plainName = (name: string): string => (/[\p{L}\p{N}]/u.test(name) ? name.toLowerCase().replace(/[-_.\s]+/g, ' ') : '');
 
 /**
  * The marks that are the name of the repo they run in, with no setup (#447, record 0014): a
- * mark that equals the name part of the repo (the last part of its normalized origin remote,
- * or `hostRepo`, the CI host's own "owner/name"), case, `-`, `_`, `.` and spaces aside. The
- * whole name only, never a part: `quiet vale` is the repo `quiet-vale`, not `quiet-vale-docs`.
- * `repo` is what `repoKey` said; when it is unsure, only `hostRepo` can name the repo.
+ * mark that equals the name part of the repo (the last part of its origin remote, on a host,
+ * as `owner/name`), case and separators aside (`plainName`). The whole name only, never a
+ * part: `quiet vale` is the repo `quiet-vale`, not `quiet-vale-docs`. `repo` is what
+ * `repoKey` said; unsure, no origin or a local folder as origin skip nothing.
  */
-export function sameNameMarks(marks: string[], repo: ReturnType<typeof repoKey> | null, hostRepo?: string | null): string[] {
-  const names = new Set<string>();
-  const add = (path: string | null | undefined) => {
-    const plain = plainName(path?.split('/').pop() ?? '');
-    if (plain) names.add(plain);
-  };
-  if (repo && 'remote' in repo) add(repo.remote);
-  add(hostRepo);
-  return marks.filter((mark) => names.has(plainName(mark)));
+export function sameNameMarks(marks: string[], repo: ReturnType<typeof repoKey> | null): string[] {
+  if (!repo || !('remote' in repo) || repo.local) return [];
+  const name = plainName(repo.remote.split('/').pop() ?? '');
+  return name ? marks.filter((mark) => plainName(mark) === name) : [];
+}
+
+/**
+ * Whether a mark that names the repo is skipped there (#447, record 0014): on by default.
+ * `"privacy": { "skipOwnName": false }` in yokoten.json turns it off for one repo, and
+ * `"skipOwnName": false` in this machine's allow file for every repo here. An allow file
+ * yokoten can't read turns it off too: unsure is never fine.
+ */
+export function skipsOwnName(env: Env, privacy?: Partial<Pick<Config['privacy'], 'skipOwnName'>>): boolean {
+  if (privacy?.skipOwnName === false) return false;
+  const read = readMachineAllow(env);
+  return !('unsure' in read) && read.skipOwnName !== false;
 }
 
 /** The marks to look for in the repo at `root`: the owner's, less those the repo is named for and those the machine allows there (#447). */
-export function repoMarkKinds(env: Env, root: string, hostRepo?: string | null): Mark[] {
+export function repoMarkKinds(env: Env, root: string, privacy?: Partial<Pick<Config['privacy'], 'skipOwnName'>>): Mark[] {
   const kinds = loadMarkKinds(env);
   if (!kinds.length) return kinds;
   const values = kinds.map((mark) => mark.value);
   const key = repoKey(root);
-  const own = new Set([...ownMarks(values, machineAllowed(env, root, key).allow), ...sameNameMarks(values, key, hostRepo)]);
+  const named = skipsOwnName(env, privacy) ? sameNameMarks(values, key) : [];
+  const own = new Set([...ownMarks(values, machineAllowed(env, root, key).allow), ...named]);
   return own.size ? kinds.filter((mark) => !own.has(mark.value)) : kinds;
 }
 
@@ -1001,8 +1040,9 @@ function shownPath(path: string, env: Env, marks: string[]): string {
 /**
  * Whether the command line is one gh post and nothing else (#447): `gh …`, or the bot's
  * `yokoten bot -- gh …`, optionally after one plain `cd <folder> &&`. No env prefix, no
- * `env` or `sudo`, no other command, subshell, pipe, output redirect, `$'…'`, `$(…)` or backquote, and no heredoc
- * that expands one. Anything else on the line could change where gh posts before it runs,
+ * `env` or `sudo`, no other command, subshell, pipe, output redirect, `$'…'`, `$(…)`, `${…}` or backquote,
+ * and no heredoc that expands one. `${` is refused wherever bash expands it, since bash 5.3
+ * runs a command in `${ cmd; }` and `${| cmd; }`. Anything else on the line could change where gh posts before it runs,
  * so no allow applies (record 0014). `cd` is true when the line starts with that `cd`.
  */
 export function lonePost(command: string): { cd: boolean; target?: string } | null {
@@ -1026,13 +1066,13 @@ export function lonePost(command: string): { cd: boolean; target?: string } | nu
     }
     if (quote === '"') {
       if (char === '"') quote = null;
-      else if (char === '`' || (char === '$' && text[index + 1] === '(')) return null;
+      else if (char === '`' || (char === '$' && (text[index + 1] === '(' || text[index + 1] === '{'))) return null;
       continue;
     }
     if (char === "'" || char === '"') quote = char;
     else if (char === '\n') break;
     else if (char === '$' && (text[index + 1] === "'" || text[index + 1] === '"')) return null; // $'…' and $"…": bash reads the quote inside differently
-    else if (char === '>' || ';&|`()'.includes(char) || (char === '$' && text[index + 1] === '(')) return null;
+    else if (char === '>' || ';&|`()'.includes(char) || (char === '$' && (text[index + 1] === '(' || text[index + 1] === '{'))) return null;
     else if (char === '<' && text[index + 1] === '<' && text[index + 2] !== '<') {
       if (heredoc) return null; // one heredoc at most
       const found = text.slice(index, index + 4096).match(/^<<(-?)[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|([\w.-]+))/);
@@ -1050,7 +1090,7 @@ export function lonePost(command: string): { cd: boolean; target?: string } | nu
   const lines = text.slice(index + 1).split('\n');
   const end = lines.findIndex((line) => (tabs ? trimStart(line, '\t') : line) === word);
   if (end === -1) return null;
-  if (expands && lines.slice(0, end).some((line) => line.includes('$(') || line.includes('`'))) return null;
+  if (expands && lines.slice(0, end).some((line) => line.includes('$(') || line.includes('${') || line.includes('`'))) return null;
   return lines.slice(end + 1).every((line) => !line.trim()) ? lone : null;
 }
 
@@ -1089,8 +1129,9 @@ function isPostHere(gh: GhCommand, { env, command, cwd, from }: { env: Env; comm
   if (!lone.cd) return true;
   if (!cwd || !from) return false;
   // bash searches CDPATH for a bare relative folder, and CDPATH may be set in the shell
-  // without being exported, so only /, ~, ./ or ../ say where cd goes.
-  if (lone.target !== undefined && !/^['"]?(?:~|\/|\.\/|\.\.\/)/.test(lone.target)) return false;
+  // without being exported, so only /, ./, ../ or an unquoted ~ or ~/ say where cd goes. A
+  // quoted ~ is not your home: bash keeps it as a folder named ~, and searches CDPATH for it.
+  if (lone.target !== undefined && !/^(?:~(?:\/|$)|['"]?(?:\/|\.\/|\.\.\/))/.test(lone.target)) return false;
   const top = repoTop(cwd);
   return top !== null && top === repoTop(from);
 }
@@ -1102,7 +1143,7 @@ function isPostHere(gh: GhCommand, { env, command, cwd, from }: { env: Env; comm
  */
 export function checkPost(
   gh: GhCommand,
-  { env, privacy, cwd, command, from }: { env: Env; privacy?: Pick<Config['privacy'], 'allow'>; cwd: string | null; command: string; from?: string | null },
+  { env, privacy, cwd, command, from }: { env: Env; privacy?: Partial<Pick<Config['privacy'], 'allow' | 'skipOwnName'>>; cwd: string | null; command: string; from?: string | null },
 ): Finding | null {
   const readFile = (path: string): FileRead => {
     const home = env.HOME;
@@ -1132,7 +1173,8 @@ export function checkPost(
   const all = loadMarks(env);
   const isHere = all.length > 0 && isPostHere(gh, { env, command, cwd, from });
   const key = isHere && cwd !== null ? repoKey(cwd) : null;
-  const own = isHere ? [...ownMarks(all, [...allow, ...machineAllowed(env, cwd, key ?? undefined).allow]), ...sameNameMarks(all, key)] : [];
+  const named = isHere && skipsOwnName(env, privacy) ? sameNameMarks(all, key) : [];
+  const own = isHere ? [...ownMarks(all, [...allow, ...machineAllowed(env, cwd, key ?? undefined).allow]), ...named] : [];
   const marks = all.filter((mark) => !own.includes(mark));
   for (const piece of posted.pieces) {
     const [hit] = scanText(piece.text, { file: piece.source, marks, allow, ownAllow: [] });

@@ -36,6 +36,7 @@ const WRONG_KEYS: [string, Record<string, unknown>][] = [
   ['privacy.allow', { privacy: { allow: 'a' } }],
   ['privacy.skip', { privacy: { skip: [1] } }],
   ['privacy.utc', { privacy: { utc: 'yes' } }],
+  ['privacy.skipOwnName', { privacy: { skipOwnName: 'no' } }],
   ['notNow', { notNow: ['ci'] }],
   ['notNow', { notNow: { ci: 1 } }],
   ['allowBuild', { allowBuild: 'dist/**' }],

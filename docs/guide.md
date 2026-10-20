@@ -893,7 +893,7 @@ missing key, a key set to `null`, or a missing file gives the default.
 | `layout` | `{ "maxEntries": 7, "exempt": ["docs/records"] }`: a whole number above 0, and a list of folders | 7, no folder exempt |
 | `tests` | a list of globs | `*.test.*`, `*.spec.*`, `*_test.go`, `test/**`, `tests/**` |
 | `leadOnly` | a list of globs | the rules, agent config, hooks and CI |
-| `privacy` | `{ "allow": [], "skip": [], "utc": true, "output": "run" }`: two lists of text, true or false, and `"run"` or `"stop"` | lockfiles skipped, UTC on, output run |
+| `privacy` | `{ "allow": [], "skip": [], "utc": true, "output": "run", "skipOwnName": true }`: two lists of text, true or false, `"run"` or `"stop"`, and true or false | lockfiles skipped, UTC on, output run, own name skipped |
 | `notNow` | reasons by step name: `{ "ci": "no remote yet" }` | none |
 | `allowBuild` | a list of globs | none |
 | `areas` | a list of words | any lowercase word |
@@ -1189,6 +1189,7 @@ A list you set replaces the default list; it does not add to it.
 | `privacy.skip` | lock files | Files the privacy check does not read |
 | `privacy.utc` | `true` | Commit times must be in UTC |
 | `privacy.output` | `"run"` | In an agent other than Claude Code, a command that prints account details runs as it is. `"stop"` stops it and shows the filtered command |
+| `privacy.skipOwnName` | `true` | A private mark that is this repo's name is not looked for in this repo. `false` looks for it too |
 | `notNow` | none | Steps not taken up yet, by `doctor`'s name, each with a reason: `{ "ci": "no remote yet" }` |
 | `allowBuild` | none | Build output and binaries the commit check lets through |
 | `areas` | any | The areas a title may name. See [Issue titles](#issue-titles) |
@@ -1342,11 +1343,19 @@ is reported by file and line; the mark itself is never printed.
 
 The marks file is for the whole machine, so a private project's name belongs in it. With no
 setup, a mark never blocks the repo it names: when a mark is the name of the repo's origin
-remote (`Quiet Vale` for `someone/quiet-vale`, case, `-`, `_`, `.` and spaces aside, the whole
-name and not a part), `check`, the commit hook and the guard for `gh` posts skip that one mark
-there. Every other mark still applies, and so does that one in every other repo. When yokoten
-can't tell the repo (two remotes, no origin, a post to another repo), it skips nothing. The
-steps below are for the cases this can't see. A project's own repo can also list the name in
+remote, `check`, the commit hook and the guard for `gh` posts skip that one mark there.
+`Quiet Vale` names `someone/quiet-vale`, `Quiet_Vale` and `quiet.vale`: case aside, and `-`,
+`_`, `.` and spaces each count as a break between words. A break is never dropped, so
+`Li Na` does not name `lina`. It must be the whole name, never a part. Every other mark still
+applies, and so does that one in every other repo. yokoten skips nothing when it can't tell the
+repo: two remotes, no origin, a post to another repo, an origin address with `?` or `#`, a
+host address whose path is not just `owner/name`, or a folder on this machine as origin. Only
+origin counts; in CI too, origin is the repo the job checked out. The commit check trusts origin
+at commit time, so a later push to another remote is not checked. `doctor` says how many
+marks are skipped because they name the repo, never which. To turn this off, set
+`"privacy": { "skipOwnName": false }` in yokoten.json, or `"skipOwnName": false` in
+`private-marks-allow.json` (below) for every repo on this machine. The steps below are for the
+cases this can't see. A project's own repo can also list the name in
 `privacy.allow` in its yokoten.json. A mark is let through when an entry there is the same string, upper or
 lower case aside; a part or a longer string does not count. It is let through only in
 that repo, by `check`, the commit hook and the guard for `gh` posts. Every other repo
@@ -1368,7 +1377,7 @@ or push addresses that name different repos, as git rewrites them with `insteadO
 also when two entries match. A `gh` post gets neither allow, this one or `privacy.allow`, when
 it may go to another repo: `-R` or `--repo`, an issue or pull request URL, `GH_REPO` or
 `GH_HOST`, and every `gh api` or `gh gist`. The post must also be the only command on the
-line, with no env prefix, `env`, `sudo`, pipe or `$(…)`. One `cd` within the same repo
+line, with no env prefix, `env`, `sudo`, pipe, `$(…)` or `${…}`. One `cd` within the same repo
 before it is fine. Anything else on the line could change where gh posts, so the post is
 checked against every mark. `doctor` says
 where an allow comes from: this machine or `privacy.allow`. Only a mark in the marks file can

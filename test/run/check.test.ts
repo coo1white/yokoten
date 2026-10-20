@@ -1025,6 +1025,53 @@ test('marks allow --here: the machine allows a mark in one repo with no yokoten.
   assert.ok(!said.some((text) => /quietval/i.test(text)), 'no output holds a mark');
 });
 
+test('check and doctor: a mark that names the repo is skipped there, counted by doctor, and privacy.skipOwnName turns it off (#447)', () => {
+  const own = makeSandbox();
+  const stranger = makeSandbox();
+  const marks = join(own.home, 'shared-marks');
+  writeFileSync(marks, 'quiet vale\nsecondmark\n');
+  const extra = { YOKOTEN_PRIVATE_MARKS: marks };
+  const said: string[] = [];
+  const run = (sandbox: ReturnType<typeof makeSandbox>, args: string[], more: Record<string, string> = {}) => {
+    const r = sandbox.run(args, { extra: { ...extra, ...more } });
+    said.push(r.stdout, r.stderr);
+    return r;
+  };
+  for (const [sandbox, remote] of [[own, 'https://example.com/octo/quiet-vale.git'], [stranger, 'https://github.com/stranger/other']] as const) {
+    sandbox.git('remote', 'add', 'origin', remote);
+    sandbox.write('README.md', 'Quiet Vale ships\n');
+    sandbox.git('add', 'README.md');
+  }
+  for (const args of [['check'], ['check', '--staged']]) assert.equal(run(own, args).status, 0, `${args.join(' ')} in the repo the mark names`);
+  const doctor = run(own, ['doctor']).stdout;
+  assert.match(doctor, /own-marks: 1 of your private marks skipped here because they name this repo/);
+
+  // CI's repo name is not read: a checkout whose origin is stranger/other is stopped, faked or not.
+  const ci = { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'octo/quiet-vale' };
+  for (const args of [['check'], ['check', '--staged']]) assert.equal(run(stranger, args, ci).status, 1, `${args.join(' ')} with a faked CI repo`);
+  assert.doesNotMatch(run(stranger, ['doctor']).stdout, /own-marks/);
+
+  // The way back: off in yokoten.json looks for the mark again, and doctor no longer counts it.
+  own.write('yokoten.json', JSON.stringify({ privacy: { skipOwnName: false } }));
+  assert.equal(run(own, ['check', '--staged']).status, 1, 'off: stopped');
+  assert.doesNotMatch(run(own, ['doctor']).stdout, /name this repo/);
+  own.write('yokoten.json', JSON.stringify({ privacy: { skipOwnName: true } }));
+  assert.equal(run(own, ['check', '--staged']).status, 0, 'on again');
+  assert.match(run(own, ['doctor']).stdout, /own-marks: 1 of your private marks skipped here because they name this repo/);
+
+  // The machine's switch, kept when `marks allow` writes the file.
+  const allowFile = join(own.home, 'private-marks-allow.json');
+  writeFileSync(allowFile, JSON.stringify({ skipOwnName: false, repos: [] }));
+  assert.equal(run(own, ['check', '--staged']).status, 1, 'off on this machine');
+  assert.doesNotMatch(run(own, ['doctor']).stdout, /name this repo/);
+  assert.equal(run(own, ['marks', 'allow', 'secondmark', '--here']).status, 0);
+  assert.equal(JSON.parse(readFileSync(allowFile, 'utf8')).skipOwnName, false, 'marks allow keeps the switch');
+  rmSync(allowFile);
+  assert.equal(run(own, ['check', '--staged']).status, 0, 'on again with no allow file');
+
+  assert.ok(!said.some((text) => /quiet vale|secondmark/i.test(text)), 'no output holds a mark');
+});
+
 test('marks allow --here: a repo with no origin gets no machine allow; a held lock and a dangling link are refused (#447)', () => {
   const sandbox = makeSandbox();
   const config = join(sandbox.home, '.config', 'yokoten');

@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { chmodSync, closeSync, linkSync, mkdirSync, openSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import { ciRepo, readCodeOwners, readIssue, readPullRequest } from '../host/github.ts';
+import { readCodeOwners, readIssue, readPullRequest } from '../host/github.ts';
 import { loadConfig } from '../rules/config.ts';
 import { type Finding, formatFinding } from '../rules/message.ts';
 import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, largeDiff, longSentenceNote, longSentences, splitForDependabot } from '../rules/pr.ts';
@@ -126,7 +126,7 @@ function runMode(mode: string, root: string, config: ReturnType<typeof loadConfi
       printNotes(split.notes, 'pull request rule(s) Dependabot does not meet');
     }
   } else {
-    problems = mode === 'history' ? checkHistory(root, { config, env, hostRepo: ciRepo(env) }) : check(root, { config, env, staged: mode === 'staged', notes, hostRepo: ciRepo(env) });
+    problems = mode === 'history' ? checkHistory(root, { config, env }) : check(root, { config, env, staged: mode === 'staged', notes });
     // A translation behind its English source (#87) is a note, for the whole tree only.
     if (!json) for (const note of notes) print([`${name}: note: ${formatFinding(note)}`]);
     const zones = mode === 'history' && config.privacy.utc ? historyTimeZones(root) : 0;
@@ -302,7 +302,7 @@ function allowHere(mark: string, { isRemoving }: { isRemoving: boolean }): numbe
       entries = entry ? read.entries.map((one) => (one === entry ? { ...one, allow: [...one.allow, mark] } : one)) : [...read.entries, { remote: key.remote, allow: [mark] }];
     }
     try {
-      save(target, entries);
+      save(target, entries, read.skipOwnName);
     } catch {
       return refuse("the allow file can't be written, so nothing was changed");
     }
@@ -371,10 +371,10 @@ function takeLock(lock: string): 'taken' | 'busy' | 'unwritable' {
 }
 
 /** Write the file whole, readable by its owner only, through a temporary file so a crash never leaves half of it. */
-function save(file: string, entries: AllowEntry[]): void {
+function save(file: string, entries: AllowEntry[], skipOwnName?: false): void {
   const temporary = `${file}.${process.pid}.tmp`;
   try {
-    writeFileSync(temporary, `${JSON.stringify({ repos: entries }, null, 2)}\n`, { mode: 0o600 });
+    writeFileSync(temporary, `${JSON.stringify(skipOwnName === false ? { skipOwnName, repos: entries } : { repos: entries }, null, 2)}\n`, { mode: 0o600 });
     chmodSync(temporary, 0o600);
     renameSync(temporary, file);
   } finally {

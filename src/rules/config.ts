@@ -8,7 +8,7 @@ export interface Config {
   layout: { maxEntries: number; exempt: string[] };
   tests: string[];
   leadOnly: string[];
-  privacy: { allow: string[]; skip: string[]; utc: boolean; output: 'run' | 'stop' };
+  privacy: { allow: string[]; skip: string[]; utc: boolean; output: 'run' | 'stop'; skipOwnName: boolean };
   notNow: Record<string, string>;
   allowBuild: string[];
   areas: string[];
@@ -33,7 +33,8 @@ export const DEFAULTS: Config = {
   // `utc`: commits must record their time in UTC, not the machine's time zone.
   // `output`: in an agent whose hook can't rewrite a command (all but Claude Code), a command
   // that prints account details runs as it is ("run"), or is stopped with the filtered form ("stop") (#390).
-  privacy: { allow: [], skip: ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'go.sum'], utc: true, output: 'run' },
+  // `skipOwnName`: a private mark that is this repo's name is not looked for here (#447); false looks for it too.
+  privacy: { allow: [], skip: ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'go.sum'], utc: true, output: 'run', skipOwnName: true },
   // Practices this project has decided not to take up yet, by doctor's name for them, each
   // with the reason and when to look again: { "ci": "no remote yet; revisit on first push" }.
   notNow: {},
@@ -113,8 +114,8 @@ const SHAPES: Record<keyof Config, Shape | Fields> = {
   tests: textList('["*.test.*", "test/**"]'),
   leadOnly: textList('["AGENTS.md", ".github/**"]'),
   privacy: {
-    example: '{ "allow": [], "skip": ["package-lock.json"], "utc": true, "output": "run" }',
-    fields: { allow: textList('["support@example.com"]'), skip: textList('["package-lock.json"]'), utc: trueOrFalse, output: shape('"run" or "stop"', (value) => value === 'run' || value === 'stop') },
+    example: '{ "allow": [], "skip": ["package-lock.json"], "utc": true, "output": "run", "skipOwnName": true }',
+    fields: { allow: textList('["support@example.com"]'), skip: textList('["package-lock.json"]'), utc: trueOrFalse, output: shape('"run" or "stop"', (value) => value === 'run' || value === 'stop'), skipOwnName: trueOrFalse },
   },
   notNow: shape('an object of reasons by step name, such as { "ci": "no remote yet" }', (value) => isPlainObject(value) && Object.values(value).every((reason) => typeof reason === 'string')),
   allowBuild: textList('["dist/**"]'),

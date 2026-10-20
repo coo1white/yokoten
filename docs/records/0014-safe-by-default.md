@@ -60,3 +60,11 @@ Every action that happens by default, and every advanced option, has a way back:
 - Each new default needs an off switch, an on switch and a test for both.
 - Some features cost more to build. That is the price of a default nobody has to think
   about.
+
+## Defaults under this record
+
+- **A private mark is not looked for in the repo it names** (#447). Do by default: when a
+  mark is the name of the repo's origin remote, `check`, the commit hook and `gh` posts skip
+  it there, and `doctor` counts how many, never which. Off: `"privacy": { "skipOwnName":
+  false }` in yokoten.json for one repo, or `"skipOwnName": false` in
+  `private-marks-allow.json` for every repo on the machine. On: remove it, or set `true`.

@@ -796,7 +796,7 @@ test('a mark that is the repo name is skipped there by default, in a post and in
   const body = '--title "check: fix a bug" --body "Quiet Vale ships"';
   const both = '--title "check: fix a bug" --body "Quiet Vale and SecondMark ship"';
   const post = (r: ReturnType<typeof allowRepo>, command: string, extra: Env = {}, cwd = r.repo) => checkCommand(command, { env: { ...r.env, ...extra }, cwd });
-  const kept = (r: ReturnType<typeof allowRepo>, hostRepo?: string) => repoMarkKinds(r.env, r.repo, hostRepo).map((mark) => mark.value);
+  const kept = (r: ReturnType<typeof allowRepo>, privacy?: { skipOwnName: boolean }) => repoMarkKinds(r.env, r.repo, privacy).map((mark) => mark.value);
 
   const named = marksOf('https://example.com/x/quiet-vale.git');
   assert.equal(post(named, `gh issue create ${body}`), null, 'a post in the repo the mark names passes');
@@ -827,7 +827,117 @@ test('a mark that is the repo name is skipped there by default, in a post and in
   assert.equal(post(named, `cd ${elsewhere.repo} && gh issue create ${body}`)?.id, 'private-mark', 'cd into another repo');
   assert.equal(post(elsewhere, `cd ${named.repo} && gh issue create ${body}`)?.id, 'private-mark', 'cd out of the repo');
 
-  // CI: the host's own repo name counts, even where the checkout has no usable origin.
-  assert.deepEqual(kept(none, 'x/quiet-vale'), ['secondmark']);
-  assert.deepEqual(kept(none, 'x/quiet-vale-docs'), ['quiet vale', 'secondmark']);
+  // Only origin names the repo: CI's GITHUB_REPOSITORY is not read, so it can't be faked (#447).
+  const stranger = marksOf('https://github.com/stranger/other');
+  const ci = { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'x/quiet-vale' };
+  assert.deepEqual(repoMarkKinds({ ...stranger.env, ...ci }, stranger.repo).map((mark) => mark.value), ['quiet vale', 'secondmark'], 'a faked CI repo skips nothing');
+  assert.equal(post(stranger, `gh issue create ${body}`, ci)?.id, 'private-mark', 'a faked CI repo, in a post');
+  assert.deepEqual(kept(none), ['quiet vale', 'secondmark'], 'no origin, no CI fallback');
+});
+
+test('the same-name match keeps word breaks: Li Na is not lina (#447)', () => {
+  const repoFor = (remote: string, marks: string) => {
+    const r = allowRepo(remote);
+    writeFileSync(r.env.YOKOTEN_PRIVATE_MARKS as string, marks);
+    return r;
+  };
+  const names = (r: ReturnType<typeof allowRepo>) => repoMarkKinds(r.env, r.repo).map((mark) => mark.value);
+  for (const remote of ['https://example.com/x/quiet-vale', 'https://example.com/x/Quiet_Vale', 'https://example.com/x/quiet.vale', 'https://example.com/x/QUIET-VALE.git']) {
+    assert.deepEqual(names(repoFor(remote, 'Quiet Vale\n')), [], `Quiet Vale names ${remote}`);
+  }
+  assert.deepEqual(names(repoFor('https://example.com/x/lina', 'Li Na\n')), ['li na'], 'a separator is never taken out');
+  assert.deepEqual(names(repoFor('https://example.com/x/li-na', 'Li Na\n')), [], 'Li Na names li-na');
+  assert.deepEqual(names(repoFor('https://example.com/x/li-na', 'LiNa\n')), ['lina'], 'LiNa is not li-na');
+  assert.deepEqual(names(repoFor('https://example.com/x/quietvale', 'quiet vale\n')), ['quiet vale']);
+  const r = repoFor('https://example.com/x/lina', 'li na\n');
+  assert.equal(checkCommand('gh issue create --title "check: fix" --body "Li Na ships"', { env: r.env, cwd: r.repo })?.id, 'private-mark', 'in a post too');
+});
+
+test('an origin address that may hide the repo skips nothing and allows nothing (#447)', () => {
+  const body = '--title "check: fix a bug" --body "Quiet Vale ships"';
+  for (const remote of ['https://github.com/o/r?x=/quiet-vale', 'https://github.com/o/r#/quiet-vale', 'git@github.com:o/r/quiet-vale', 'https://github.com/o/r/quiet-vale.git', 'ssh://git@github.com/o/r/quiet-vale', 'https://github.com/o/quiet-vale/']) {
+    const r = allowRepo(remote);
+    writeFileSync(r.env.YOKOTEN_PRIVATE_MARKS as string, 'quiet vale\n');
+    assert.deepEqual(repoMarkKinds(r.env, r.repo).map((mark) => mark.value), ['quiet vale'], `commit check, ${remote}`);
+    assert.equal(checkCommand(`gh issue create ${body}`, { env: r.env, cwd: r.repo })?.id, 'private-mark', `post, ${remote}`);
+    r.allow([{ remote: normalizeRemote(remote), allow: ['quiet vale'] }]);
+    const machine = machineAllowed(r.env, r.repo);
+    assert.deepEqual(machine.allow, [], `machine allow, ${remote}`);
+    assert.ok(machine.unsure, `unsure, ${remote}`);
+  }
+  // The plain forms still name the repo.
+  for (const remote of ['https://github.com/o/quiet-vale', 'https://github.com/o/quiet-vale.git', 'git@github.com:o/quiet-vale.git', 'ssh://git@github.com:22/o/quiet-vale']) {
+    const r = allowRepo(remote);
+    writeFileSync(r.env.YOKOTEN_PRIVATE_MARKS as string, 'quiet vale\n');
+    assert.deepEqual(repoMarkKinds(r.env, r.repo).map((mark) => mark.value), [], `skipped, ${remote}`);
+  }
+  // A local folder as origin: no same-name skip, but the machine allow still works.
+  const mirror = makeTempDir('yokoten-mirror-');
+  const bare = join(mirror, 'quiet-vale');
+  execFileSync('git', ['init', '-q', '--bare', bare], { env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: '1', HOME: mirror }, stdio: 'ignore' });
+  const local = allowRepo(bare);
+  writeFileSync(local.env.YOKOTEN_PRIVATE_MARKS as string, 'quiet vale\n');
+  assert.deepEqual(repoMarkKinds(local.env, local.repo).map((mark) => mark.value), ['quiet vale'], 'a local folder named like the mark is not skipped');
+  assert.equal(checkCommand(`gh issue create ${body}`, { env: local.env, cwd: local.repo })?.id, 'private-mark');
+  local.allow([{ remote: realpathSync(bare), allow: ['quiet vale'] }]);
+  assert.deepEqual(machineAllowed(local.env, local.repo), { allow: ['quiet vale'], unsure: null }, 'the machine allow keeps working for a local origin');
+});
+
+test('the same-name skip has a way back: privacy.skipOwnName in yokoten.json, and skipOwnName in the machine allow file (#447, record 0014)', () => {
+  const own = allowRepo('https://example.com/x/quiet-vale');
+  writeFileSync(own.env.YOKOTEN_PRIVATE_MARKS as string, 'quiet vale\n');
+  const body = '--title "check: fix a bug" --body "Quiet Vale ships"';
+  const names = (privacy?: { skipOwnName: boolean }) => repoMarkKinds(own.env, own.repo, privacy).map((mark) => mark.value);
+  const post = (config = DEFAULTS) => checkCommand(`gh issue create ${body}`, { env: own.env, cwd: own.repo, config })?.id ?? null;
+  const off = { ...DEFAULTS, privacy: { ...DEFAULTS.privacy, skipOwnName: false } };
+  const on = { ...DEFAULTS, privacy: { ...DEFAULTS.privacy, skipOwnName: true } };
+  assert.equal(DEFAULTS.privacy.skipOwnName, true, 'on by default');
+  assert.deepEqual(names(), [], 'on: skipped');
+  assert.equal(post(), null, 'on: the post passes');
+  assert.deepEqual(names({ skipOwnName: false }), ['quiet vale'], 'off in yokoten.json: looked for');
+  assert.equal(post(off), 'private-mark', 'off in yokoten.json: the post is stopped');
+  assert.deepEqual(names({ skipOwnName: true }), [], 'on again');
+  assert.equal(post(on), null);
+  // The machine's own switch, for every repo here.
+  writeFileSync(machineAllowFile(own.env), JSON.stringify({ skipOwnName: false, repos: [] }));
+  assert.deepEqual(names(), ['quiet vale'], 'off on this machine');
+  assert.equal(post(on), 'private-mark', 'off on this machine wins over yokoten.json');
+  writeFileSync(machineAllowFile(own.env), JSON.stringify({ skipOwnName: true, repos: [] }));
+  assert.deepEqual(names(), [], 'on again on this machine');
+  writeFileSync(machineAllowFile(own.env), JSON.stringify({ skipOwnName: 'no', repos: [] }));
+  assert.deepEqual(names(), ['quiet vale'], 'an allow file yokoten cannot read skips nothing');
+  assert.equal(machineAllowed(own.env, own.repo).unsure, "this machine's allow file is not in the shape yokoten writes");
+});
+
+test('checkPost: a quoted ~ in cd is not your home, so no allow applies (#447)', () => {
+  const r = allowRepo('https://example.com/x/quiet-vale');
+  writeFileSync(r.env.YOKOTEN_PRIVATE_MARKS as string, 'quiet vale\n');
+  const body = '--title "check: fix a bug" --body "Quiet Vale ships"';
+  const post = (command: string) => checkCommand(command, { env: r.env, cwd: r.repo })?.id ?? null;
+  // The repo is ~/repo here: the unquoted form names it, and the post passes.
+  assert.equal(post(`cd ~/repo && gh issue create ${body}`), null, 'unquoted ~/');
+  for (const target of ['"~/repo"', "'~/repo'", '"~"', '~repo']) {
+    assert.equal(post(`cd ${target} && gh issue create ${body}`), 'private-mark', `cd ${target}`);
+  }
+  assert.equal(post(`cd "~/quiet-vale" && gh issue create ${body}`), 'private-mark', 'the reviewer\'s input');
+  assert.equal(post(`cd "./" && gh issue create ${body}`), null, 'a quoted ./ still names a folder here');
+});
+
+test('lonePost: refuses ${ wherever bash expands it (#447)', () => {
+  for (const command of [
+    'gh issue create --title "${ cd ../other; }" --body x',
+    'gh issue create --title "${| cd ../other; }" --body x',
+    'gh issue create --title "${HOME}" --body x',
+    'gh issue create --title ${x} --body x',
+    'gh issue create --body x <<<"${ cd ..; }"',
+    'gh issue create --title x --body-file - <<EOF\n${ cd ../other; }\nEOF',
+  ]) assert.equal(lonePost(command), null, command);
+  // Single quotes and a quoted heredoc keep it as text.
+  assert.deepEqual(lonePost("gh issue create --title '${ cd ../other; }' --body x"), { cd: false });
+  assert.deepEqual(lonePost("gh issue create --title x --body-file - <<'EOF'\n${ cd ../other; }\nEOF"), { cd: false });
+  assert.deepEqual(lonePost('gh issue create --title "\\${x}" --body x'), { cd: false }, 'an escaped $ is text');
+  const r = allowRepo('https://example.com/x/quiet-vale');
+  writeFileSync(r.env.YOKOTEN_PRIVATE_MARKS as string, 'quiet vale\n');
+  assert.equal(checkCommand('gh issue create --title "${ cd ../other; }" --body "Quiet Vale ships"', { env: r.env, cwd: r.repo })?.id, 'private-mark');
+  assert.equal(checkCommand("gh issue create --title '${ cd ../other; }' --body \"Quiet Vale ships\"", { env: r.env, cwd: r.repo }), null, 'the control: single quotes pass');
 });
