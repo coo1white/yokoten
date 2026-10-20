@@ -1937,7 +1937,7 @@ test('init: keeps an old kit workflow that git cannot give back: untracked, or e
 
 test('init: a file that differs only in line ends or blank lines at the end is the project\'s change, and is kept (#456)', () => {
   const old = oldYokotenYml();
-  for (const [name, text] of [['one CRLF', old.replace('\n', '\r\n')], ['blank lines at the end', `${old}\n\n`]] as const) {
+  for (const [name, text] of [['one CRLF', `${old.slice(0, old.indexOf('\n'))}\r${old.slice(old.indexOf('\n'))}`], ['blank lines at the end', `${old}\n\n`]] as const) {
     const sandbox = makeSandbox();
     sandbox.write(YML, text);
     commitAll(sandbox);
