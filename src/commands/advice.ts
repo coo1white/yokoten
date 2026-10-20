@@ -28,6 +28,9 @@ export function runDoctor(): number {
     return 1;
   }
   // An agent that can't filter command output hears it at session start, with the opt-in (#390).
+  // A worker started with YOKOTEN_ROLE hears that the guard sees it as one (#402). The lead hears nothing.
+  // stdin is never read: a runtime that keeps it open would hang the session start.
+  if (root && session && env.YOKOTEN_ROLE === 'worker') lines.push(`yokoten: ${WORKER_SESSION}.`);
   if (root && session && agent !== 'claude-code' && config.privacy.output !== 'stop') lines.push(`yokoten: ${UNFILTERED}. ${OUTPUT_STOP[0].toUpperCase()}${OUTPUT_STOP.slice(1)}.`);
   if (options.flags.has('--json')) printJson(report);
   // Gemini CLI reads a SessionStart hook's context from JSON only (#211).
@@ -37,6 +40,8 @@ export function runDoctor(): number {
   // A session must start even when doctor found a problem.
   return session || ok ? 0 : 1;
 }
+
+const WORKER_SESSION = 'this session is a worker: lead-only files are guarded';
 
 export function runExplain(): number {
   const options = parse('explain');

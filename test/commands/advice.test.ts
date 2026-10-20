@@ -35,3 +35,12 @@ test('doctor --session: an agent that cannot filter output hears it once, with t
   sandbox.write('yokoten.json', JSON.stringify({ privacy: { output: 'stop' } }));
   assert.ok(!sandbox.run(['doctor', '--session', '--agent', 'codex']).stdout.includes(line), 'opted in to the stop');
 });
+
+test('doctor --session: a worker hears that lead-only files are guarded; the lead hears nothing (#402)', () => {
+  const sandbox = makeSandbox();
+  const line = 'yokoten: this session is a worker: lead-only files are guarded.';
+  const has = (result: { stdout: string }) => result.stdout.split('\n').includes(line);
+  assert.ok(has(sandbox.run(['doctor', '--session'], { extra: { YOKOTEN_ROLE: 'worker' } })), 'YOKOTEN_ROLE=worker');
+  assert.ok(!has(sandbox.run(['doctor', '--session'])), 'the lead');
+  assert.ok(!has(sandbox.run(['doctor'], { extra: { YOKOTEN_ROLE: 'worker' } })), 'only at session start');
+});
