@@ -206,7 +206,7 @@ export const COMMANDS: Command[] = [
     usage: 'allow <mark> --here | allow --remove <mark> --here',
     text: [
       'Keeps an allow on this machine, beside the private-marks file, for the repo you are',
-      'in: its origin remote, or its folder when it has no remote. The mark then passes the',
+      'in, by its origin remote; a repo with no origin cannot have one. The mark then passes the',
       'checks in this repo only, as with "privacy.allow" in yokoten.json, and nothing is',
       'written into the repo. Only a mark in your private-marks file can be allowed.',
       '--remove takes the allow back, so the checks stop the mark here again.',

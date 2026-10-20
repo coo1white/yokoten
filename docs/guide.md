@@ -1349,21 +1349,23 @@ still stops it. `doctor` says how many of your marks the project allows, never w
 
 A repo with no yokoten.json can do the same without one, and so can a repo that must not
 name yokoten in public. Run `yokoten marks allow <mark> --here` in it. The allow is kept
-on this machine, in `private-marks-allow.json` beside the marks file, for that repo only:
-its `origin` remote (host and path), or its folder and first commit when it has no remote.
-Nothing is written into the repo. A renamed remote is another repo, so the mark is stopped
-there again. Every fetch and push address of `origin`, as git rewrites them with `insteadOf`,
-must name the same repo. A port other than the usual one is part of the name, and a local
-path is the folder it points to. `git@host:path` and `https://host/path` name the same repo,
-as the forges treat them. Another remote, such as `upstream`, changes nothing: the allow
-stays. A repo with no remote and no commit yet must run the command again after its first
-commit; a new repo made at the same path inherits nothing. When yokoten can't tell which repo
-it is in (git can't read the remote, `origin` has two addresses, or two entries match), it
-allows nothing, and `doctor` says why. A `gh` post gets neither allow, this one or
-`privacy.allow`, when it may go to another repo: `-R` or `--repo`, an issue or pull request
-URL, `GH_REPO` or `GH_HOST`, and every `gh api` or `gh gist`. `doctor` also says where an allow comes from: this
-machine or `privacy.allow`. Only a mark in the marks file can be allowed. To take it back,
-run `yokoten marks allow --remove <mark> --here`.
+on this machine, in `private-marks-allow.json` beside the marks file, for that repo only,
+by its `origin` remote (host and path). Nothing is written into the repo. A repo with no
+`origin` can't have this allow; it can use `privacy.allow` instead. A renamed remote is
+another repo, so the mark is stopped there again. A port other than the usual one is part of
+the name, and a local path is the folder it points to. `git@host:path` and
+`https://host/path` name the same repo, as the forges treat them.
+
+yokoten allows nothing when it can't be sure where a post or a push goes, and `doctor` says
+why. That is when `origin` is not the only remote, gh has a repo of its own (`gh repo
+set-default`), `remote.pushDefault` or a `branch.*.pushRemote` is set, or `origin` has fetch
+or push addresses that name different repos, as git rewrites them with `insteadOf`. It is
+also when two entries match. A `gh` post gets neither allow, this one or `privacy.allow`, when
+it may go to another repo: `-R` or `--repo`, an issue or pull request URL, `GH_REPO` or
+`GH_HOST`, every `gh api` or `gh gist`, and a command line that also changes a remote, git's
+config, gh's default repo or aliases, or pushes to a remote other than `origin`. `doctor` says
+where an allow comes from: this machine or `privacy.allow`. Only a mark in the marks file can
+be allowed. To take it back, run `yokoten marks allow --remove <mark> --here`.
 
 Some files must name your account. So the forge login that yokoten added to the marks is
 fine in a CODEOWNERS owner, an `@` mention in `.github/`, an author or owner field of

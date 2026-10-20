@@ -10,9 +10,9 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
-  realpathSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import {
@@ -1025,22 +1025,42 @@ test('marks allow --here: the machine allows a mark in one repo with no yokoten.
   assert.ok(!said.some((text) => /quietval/i.test(text)), 'no output holds a mark');
 });
 
-test('marks allow --here: a repo with no remote is allowed by its folder (#447)', () => {
+test('marks allow --here: a repo with no origin gets no machine allow; a held lock and a dangling link are refused (#447)', () => {
   const sandbox = makeSandbox();
-  const marks = join(sandbox.home, '.config', 'yokoten', 'private-marks');
-  mkdirSync(dirname(marks), { recursive: true });
-  writeFileSync(marks, 'quietvale\n');
+  const config = join(sandbox.home, '.config', 'yokoten');
+  mkdirSync(config, { recursive: true });
+  writeFileSync(join(config, 'private-marks'), 'quietvale\n');
+  const allowFile = join(config, 'private-marks-allow.json');
   sandbox.write('README.md', 'QuietVale ships\n');
   sandbox.git('add', 'README.md');
-  assert.equal(sandbox.run(['check']).status, 1);
-  const r = sandbox.run(['marks', 'allow', 'quietvale', '--here']);
-  assert.equal(r.status, 0, r.stderr);
-  const file = JSON.parse(readFileSync(join(dirname(marks), 'private-marks-allow.json'), 'utf8'));
-  assert.equal(file.repos[0].folder, realpathSync(sandbox.repo));
-  assert.equal(sandbox.run(['check']).status, 0);
-  // Once it has a remote, the folder no longer names it.
+  const none = sandbox.run(['marks', 'allow', 'quietvale', '--here']);
+  assert.equal(none.status, 1);
+  assert.match(none.stderr, /because this repo has no origin remote\. .*"privacy\.allow" in yokoten\.json/);
+  assert.equal(existsSync(allowFile), false);
   sandbox.git('remote', 'add', 'origin', 'https://example.com/octo/app');
-  assert.equal(sandbox.run(['check']).status, 1);
+  // A lock another run holds: refused, and the file is not made.
+  writeFileSync(`${allowFile}.lock`, '');
+  const busy = sandbox.run(['marks', 'allow', 'quietvale', '--here']);
+  assert.equal(busy.status, 1);
+  assert.match(busy.stderr, /another `yokoten marks` is changing the allow file/);
+  assert.equal(existsSync(allowFile), false);
+  // A lock left by a run that died is taken over.
+  const old = new Date(Date.now() - 60_000);
+  utimesSync(`${allowFile}.lock`, old, old);
+  const taken = sandbox.run(['marks', 'allow', 'quietvale', '--here']);
+  assert.equal(taken.status, 0, taken.stderr);
+  assert.equal(existsSync(`${allowFile}.lock`), false, 'the lock is released');
+  assert.equal(sandbox.run(['check']).status, 0);
+  // A link to nothing: refused, and the link is left as it is.
+  rmSync(allowFile);
+  symlinkSync(join(sandbox.home, 'gone.json'), allowFile);
+  const dangling = sandbox.run(['marks', 'allow', 'quietvale', '--here']);
+  assert.equal(dangling.status, 1);
+  assert.match(dangling.stderr, /a link to a file that is not there/);
+  assert.doesNotMatch(dangling.stderr, /gone\.json/);
+  assert.ok(lstatSync(allowFile).isSymbolicLink());
+  assert.equal(sandbox.run(['check']).status, 1, 'a dangling link allows nothing');
+  assert.match(sandbox.run(['doctor']).stdout, /own-marks: this machine allows no private mark here, because this machine's allow file can't be read/);
 });
 
 test('marks allow: no mark is echoed, -- takes a mark that starts with -, a linked file stays a link, and a failed save says so plainly (#447)', () => {

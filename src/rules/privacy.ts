@@ -12,7 +12,7 @@
 //   so every caller (the commit, CI, the history) catches them.
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import type { Config, Env } from './config.ts';
@@ -92,26 +92,21 @@ export function ownMarks(marks: string[], allow: string[] = []): string[] {
 
 // ---- The machine's allow, for one repo (#447) ----
 // A repo with no yokoten.json, or one that must not name yokoten in public, can't use
-// "privacy.allow". The same allow is then kept on this machine, beside the marks file,
-// for one repo: the one whose origin remote (or, with no remote, whose top folder and
-// first commit) an entry names. It allows marks only, never an address or a secret, and it
-// never makes a repo count as one with yokoten.json. Unsure (git can't read the repo, the
-// origin has two addresses, the file can't be read, two entries match) allows nothing.
+// "privacy.allow". The same allow is then kept on this machine, beside the marks file, for
+// one repo: the one whose origin remote an entry names. It allows marks only, never an
+// address or a secret, and it never makes a repo count as one with yokoten.json. A repo with
+// no origin gets none. Unsure allows nothing: git can't read the repo; it has a remote other
+// than origin, or gh or a push may go elsewhere (gh-resolved, remote.pushDefault,
+// branch.*.pushRemote); origin has two addresses; the file can't be read; two entries match.
 
-/**
- * One repo's entry in the machine allow file: its normalized origin remote, or, when it has
- * none, its top folder (absolute) and `id`, what tells that repo from a new one made at the
- * same path: `root:<first commits>`, or `unborn:<git folder>` before the first commit.
- */
+/** One repo's entry in the machine allow file: its normalized origin remote, and the marks allowed there. */
 export interface AllowEntry {
-  remote?: string;
-  folder?: string;
-  id?: string;
+  remote: string;
   allow: string[];
 }
 
-/** Where a repo is, as the machine allow file names it: by remote, or by top folder and id. */
-export type RepoKey = { remote: string } | { folder: string; id: string };
+/** The repo, as the machine allow file names it. */
+export type RepoKey = { remote: string };
 
 /** The machine allow file: beside the private-marks file. With no home folder, it throws NO_HOME. */
 export const machineAllowFile = (env: Env): string => join(dirname(marksFile(env)), 'private-marks-allow.json');
@@ -194,54 +189,71 @@ const storedRemote = (key: string): string => {
   return slash <= 0 ? key : `${key.slice(0, slash).toLowerCase()}${key.slice(slash)}`;
 };
 
+
 /** What git says, trimmed, or the error with its exit status. */
 function gitAnswer(dir: string, args: string[]): { out: string } | { status: number | null } {
   try {
-    return { out: execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() };
+    return { out: execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }) };
   } catch (err) {
     return { status: (err as { status?: number | null }).status ?? null };
   }
 }
 
-const nonEmptyLines = (out: string): string[] => out.split('\n').map((line) => line.trim()).filter(Boolean);
-
-/**
- * What tells this repo from a new one made at the same path: its first commits, or before
- * the first commit, its git folder. Null when git can't say.
- */
-function repoId(dir: string): string | null {
-  const head = gitAnswer(dir, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}']);
-  if ('out' in head) {
-    const roots = gitAnswer(dir, ['rev-list', '--max-parents=0', 'HEAD']);
-    return 'out' in roots && roots.out ? `root:${nonEmptyLines(roots.out).sort().join(',')}` : null;
-  }
-  if (head.status !== 1) return null;
-  const gitDir = gitAnswer(dir, ['rev-parse', '--absolute-git-dir']);
-  if (!('out' in gitDir) || !gitDir.out) return null;
-  return `unborn:${localKey(gitDir.out)}`;
+/** `url` rewritten by the longest prefix among `rules` (base → the prefixes it replaces), as git does; null when none applies. */
+function rewriteUrl(url: string, rules: [string, string][]): string | null {
+  let best: [string, string] | null = null;
+  for (const [base, prefix] of rules) if (url.startsWith(prefix) && (!best || prefix.length > best[1].length)) best = [base, prefix];
+  return best ? best[0] + url.slice(best[1].length) : null;
 }
 
+/** Why a repo gets no machine allow because it has no origin: not unsure, nothing to name it by. */
+export const NO_ORIGIN = 'this repo has no origin remote';
+
 /**
- * The repo at `dir`, as the machine allow file keys it, or why yokoten can't tell. The
- * origin's addresses are read as git uses them (insteadOf applied), fetch and push both:
- * each must give the same key. With no origin, the top folder and the repo's id name it.
+ * The repo at `dir`, as the machine allow file keys it, or why yokoten can't tell (#447).
+ * Two git calls: the top folder, and the whole config in one read. origin must be the only
+ * remote, with no gh default (gh-resolved) and no push default elsewhere. Its fetch and push
+ * addresses, rewritten by insteadOf and pushInsteadOf as git does, must give one key.
  */
-export function repoKey(dir: string): RepoKey | { unsure: string } {
+export function repoKey(dir: string): RepoKey | { unsure: string } | { none: string } {
   const top = gitAnswer(dir, ['rev-parse', '--show-toplevel']);
-  if (!('out' in top) || !top.out) return { unsure: "git can't read this repo" };
-  const base = localKey(top.out) ?? top.out;
-  const names = gitAnswer(dir, ['remote']);
-  if (!('out' in names)) return { unsure: "git can't list this repo's remotes" };
-  if (nonEmptyLines(names.out).includes('origin')) {
-    const fetch = gitAnswer(dir, ['remote', 'get-url', '--all', 'origin']);
-    const push = gitAnswer(dir, ['remote', 'get-url', '--push', '--all', 'origin']);
-    if (!('out' in fetch) || !('out' in push)) return { unsure: "the origin remote can't be read" };
-    const keys = new Set([...nonEmptyLines(fetch.out), ...nonEmptyLines(push.out)].map((url) => normalizeRemote(url, base)));
-    if (keys.has(null) || keys.size !== 1) return { unsure: keys.has(null) ? "the origin remote can't be read" : 'the origin remote has more than one address' };
-    return { remote: [...keys][0] as string };
+  const topFolder = 'out' in top ? top.out.trim() : '';
+  if (!topFolder) return { unsure: "git can't read this repo" };
+  const listed = gitAnswer(dir, ['config', '--list', '-z']);
+  if (!('out' in listed)) return { unsure: "git can't read this repo's settings" };
+  const remotes = new Set<string>();
+  const urls: string[] = [];
+  const pushUrls: string[] = [];
+  const insteadOf: [string, string][] = [];
+  const pushInsteadOf: [string, string][] = [];
+  let elsewhere: string | null = null;
+  for (const entry of listed.out.split('\0')) {
+    const cut = entry.indexOf('\n');
+    const key = cut === -1 ? entry : entry.slice(0, cut);
+    const value = cut === -1 ? '' : entry.slice(cut + 1);
+    const lower = key.toLowerCase();
+    if (lower === 'remote.pushdefault' || (lower.startsWith('branch.') && lower.endsWith('.pushremote'))) elsewhere = 'a push may go to another remote (remote.pushDefault or branch.*.pushRemote)';
+    else if (lower.startsWith('remote.') && lower.endsWith('.gh-resolved')) elsewhere = 'gh is set to a repo of its own (gh repo set-default)';
+    else if (lower.startsWith('remote.')) {
+      const last = key.lastIndexOf('.');
+      if (last > 7) remotes.add(key.slice(7, last));
+      if (lower === 'remote.origin.url') urls.push(value);
+      else if (lower === 'remote.origin.pushurl') pushUrls.push(value);
+    } else if (lower.startsWith('url.') && lower.endsWith('.insteadof')) insteadOf.push([key.slice(4, -10), value]);
+    else if (lower.startsWith('url.') && lower.endsWith('.pushinsteadof')) pushInsteadOf.push([key.slice(4, -14), value]);
   }
-  const id = repoId(dir);
-  return id ? { folder: base, id } : { unsure: "git can't tell this repo's first commit" };
+  if (elsewhere) return { unsure: elsewhere };
+  if (!remotes.has('origin')) return remotes.size ? { unsure: 'this repo has a remote other than origin' } : { none: NO_ORIGIN };
+  if (remotes.size > 1) return { unsure: 'this repo has a remote other than origin' };
+  if (!urls.length) return { unsure: "the origin remote can't be read" };
+  // Fetch addresses through insteadOf. A push goes to pushurl when set, else to the url through pushInsteadOf first.
+  const fetch = urls.map((url) => rewriteUrl(url, insteadOf) ?? url);
+  const push = pushUrls.length ? pushUrls.map((url) => rewriteUrl(url, insteadOf) ?? url) : urls.map((url) => rewriteUrl(url, pushInsteadOf) ?? rewriteUrl(url, insteadOf) ?? url);
+  const base = localKey(topFolder) ?? topFolder;
+  const keys = new Set([...fetch, ...push].map((url) => normalizeRemote(url, base)));
+  if (keys.has(null)) return { unsure: "the origin remote can't be read" };
+  if (keys.size !== 1) return { unsure: 'the origin remote has more than one address' };
+  return { remote: [...keys][0] as string };
 }
 
 /** Why the machine allow file can't be used, in words that never quote it. */
@@ -254,7 +266,9 @@ export function readMachineAllow(env: Env): { entries: AllowEntry[] } | { unsure
   try {
     text = readFileSync(machineAllowFile(env), 'utf8');
   } catch (err) {
-    if ((err as Error).message === NO_HOME || (err as NodeJS.ErrnoException).code === 'ENOENT') return { entries: [] };
+    if ((err as Error).message === NO_HOME) return { entries: [] };
+    // Missing is none; a link to nothing is not missing: it can't be read.
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT' && !isLink(machineAllowFile(env))) return { entries: [] };
     return { unsure: ALLOW_FILE_UNREADABLE };
   }
   let data: unknown;
@@ -266,24 +280,25 @@ export function readMachineAllow(env: Env): { entries: AllowEntry[] } | { unsure
   const repos = (data as { repos?: unknown } | null)?.repos;
   const isEntry = (entry: unknown): entry is AllowEntry => {
     if (!entry || typeof entry !== 'object') return false;
-    const { remote, folder, id, allow } = entry as Record<string, unknown>;
-    if (!Array.isArray(allow) || !allow.every((mark) => typeof mark === 'string')) return false;
-    if (remote !== undefined) return typeof remote === 'string' && remote !== '' && folder === undefined && id === undefined;
-    // A folder entry: an absolute folder and the repo's id, so a new repo at that path is not it.
-    return typeof folder === 'string' && isAbsolute(folder) && typeof id === 'string' && id !== '';
+    const { remote, allow, ...rest } = entry as Record<string, unknown>;
+    return typeof remote === 'string' && remote !== '' && Array.isArray(allow) && allow.every((mark) => typeof mark === 'string') && !Object.keys(rest).length;
   };
   if (!Array.isArray(repos) || !repos.every(isEntry)) return { unsure: ALLOW_FILE_SHAPE };
   return { entries: repos };
 }
 
-/**
- * The entries that name this repo: by its remote when it has one, or else by its top folder
- * and its id. `anyId` matches a folder entry by the folder alone: `marks allow` uses it to
- * replace an entry a new repo at the same path has outgrown.
- */
-export function matchingEntries(entries: AllowEntry[], key: RepoKey, { anyId = false }: { anyId?: boolean } = {}): AllowEntry[] {
-  if ('remote' in key) return entries.filter((entry) => entry.remote !== undefined && storedRemote(entry.remote) === key.remote);
-  return entries.filter((entry) => entry.folder !== undefined && entry.folder === key.folder && (anyId || entry.id === key.id));
+/** Whether `path` is a symbolic link, dangling or not. */
+export function isLink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+/** The entries that name this repo's remote. */
+export function matchingEntries(entries: AllowEntry[], key: RepoKey): AllowEntry[] {
+  return entries.filter((entry) => storedRemote(entry.remote) === key.remote);
 }
 
 /** What the machine allows in one repo: the entries' marks, lowercased, or nothing and why when unsure. */
@@ -295,7 +310,7 @@ export interface MachineAllowed {
 /**
  * The marks this machine allows in the repo at `dir` (#447). Nothing, with no git call,
  * when the file is missing or empty. `dir` null (the guard can't tell where a command
- * runs) is unsure.
+ * runs) is unsure; a repo with no origin gets nothing, and is not unsure.
  */
 export function machineAllowed(env: Env, dir: string | null): MachineAllowed {
   const read = readMachineAllow(env);
@@ -304,6 +319,7 @@ export function machineAllowed(env: Env, dir: string | null): MachineAllowed {
   if (dir === null) return { allow: [], unsure: "yokoten can't tell which repo this runs in" };
   const key = repoKey(dir);
   if ('unsure' in key) return { allow: [], unsure: key.unsure };
+  if ('none' in key) return { allow: [], unsure: null };
   const found = matchingEntries(read.entries, key);
   if (found.length > 1) return { allow: [], unsure: "two entries in this machine's allow file match this repo" };
   return { allow: (found[0]?.allow ?? []).map((mark) => mark.toLowerCase()), unsure: null };
@@ -960,6 +976,38 @@ function shownPath(path: string, env: Env, marks: string[]): string {
 }
 
 /**
+ * Whether the command line also changes where gh or a push goes (#447), so the repo the
+ * guard reads before it runs is not the one the post reaches: a git remote, config or `-c`
+ * call, git's config in the environment, a push to a remote other than origin, or gh's
+ * repo set-default, repo fork or alias. Read by words, anywhere in the line, so a word in a
+ * body counts too: that only takes the allow away.
+ */
+function changesTarget(command: string): boolean {
+  if (/\bGIT_(?:CONFIG|DIR|WORK_TREE)/.test(command)) return true;
+  for (const part of command.split(/[;&|()\n]+/)) {
+    const words = part
+      .split(/\s+/)
+      .map((word) => trimEnd(trimStart(word, `'"`), `'"`))
+      .filter(Boolean);
+    const at = (name: string) => words.findIndex((word) => programName(word) === name);
+    const git = at('git');
+    if (git !== -1) {
+      const rest = words.slice(git + 1);
+      if (rest.some((word) => word === 'remote' || word === 'config' || word === '-c' || word.startsWith('--config-env'))) return true;
+      const push = rest.indexOf('push');
+      const remote = push === -1 ? undefined : rest.slice(push + 1).find((word) => !word.startsWith('-'));
+      if (remote !== undefined && remote !== 'origin') return true;
+    }
+    const gh = at('gh');
+    if (gh !== -1) {
+      const rest = words.slice(gh + 1);
+      if (rest.includes('alias') || rest.includes('set-default') || (rest.includes('repo') && rest.includes('fork'))) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Whether a gh command may post somewhere other than the repo it runs in (#447): it names a
  * repo (`-R`, `--repo`, an issue or pull request URL), GH_REPO or GH_HOST is set or appears anywhere in the
  * command, or it runs the api or gist group, whose target the guard does not read. Then no
@@ -973,7 +1021,7 @@ export function namesTarget(gh: GhCommand, command: string, env: Env): boolean {
     if (GLOBAL_VALUES.has(args[index])) index++;
     else if (!args[index].startsWith('-')) group = args[index];
   }
-  if (group === 'api' || group === 'gist') return true;
+  if (group === 'api' || group === 'gist' || changesTarget(command)) return true;
   return args.some((arg) => arg === '-R' || arg === '--repo' || arg.startsWith('--repo=') || (arg.startsWith('-R') && arg.length > 2) || /^https?:\/\//i.test(arg));
 }
 

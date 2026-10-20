@@ -1195,17 +1195,19 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 
 没有 yokoten.json 的仓库也能这样放行，不想公开和 yokoten 有关系的仓库也一样。在那个仓库里运行
 `yokoten marks allow <mark> --here` 就行。放行记在这台电脑上，就在词表旁边的
-`private-marks-allow.json` 里，只对这一个仓库有效：认的是它的 `origin` 远程地址（主机加路径），
-没有远程地址就认它的文件夹和第一个提交。仓库里什么都不写。远程地址改了名，就算另一个仓库，
-这个词又会被拦。`origin` 的每个拉取和推送地址（按 git 的 `insteadOf` 改写之后）都得指向同一个
-仓库。不是默认端口的，端口也算名字的一部分；本地路径认它指向的文件夹。`git@host:path` 和
-`https://host/path` 算同一个仓库，各大代码托管平台也是这么认的。另加一个远程（比如 `upstream`）
-不影响放行。没有远程、还没有提交的仓库，第一次提交以后要再运行一次这个命令；在同一个路径
-重新建的仓库，不会沿用原来的放行。yokoten 认不准是哪个仓库时（git 读不出远程地址、`origin`
-有两个地址，或者有两条都对得上），一个词也不放行，`doctor` 会说原因。`gh` 发帖可能发到别的
-仓库时，这里的放行和 `privacy.allow` 都不算：带 `-R` 或 `--repo`、带 issue 或 PR 的网址、设了
-`GH_REPO` 或 `GH_HOST`，还有所有 `gh api` 和 `gh gist`。`doctor` 还会说放行是从哪来的：这台电脑，还是 `privacy.allow`。只有词表里
-有的词才能放行。想撤回，运行 `yokoten marks allow --remove <mark> --here`。
+`private-marks-allow.json` 里，只对这一个仓库有效，认的是它的 `origin` 远程地址（主机加路径）。
+仓库里什么都不写。没有 `origin` 的仓库用不了这种放行，可以改用 `privacy.allow`。远程地址改了名，
+就算另一个仓库，这个词又会被拦。不是默认端口的，端口也算名字的一部分；本地路径认它指向的文件夹。
+`git@host:path` 和 `https://host/path` 算同一个仓库，各大代码托管平台也是这么认的。
+
+yokoten 拿不准发帖或推送会去哪里时，一个词也不放行，`doctor` 会说原因。这些情况都算拿不准：
+除了 `origin` 还有别的远程；gh 设了自己的默认仓库（`gh repo set-default`）；设了
+`remote.pushDefault` 或 `branch.*.pushRemote`；`origin` 的拉取和推送地址（按 git 的 `insteadOf`
+改写之后）指向不同的仓库；或者有两条记录都对得上。`gh` 发帖可能发到别的仓库时，这里的放行和
+`privacy.allow` 都不算：带 `-R` 或 `--repo`、带 issue 或 PR 的网址、设了 `GH_REPO` 或 `GH_HOST`、
+所有 `gh api` 和 `gh gist`，还有同一行命令里改了远程、git 设置、gh 的默认仓库或别名，或者推送到
+`origin` 以外的远程。`doctor` 会说放行是从哪来的：这台电脑，还是 `privacy.allow`。只有词表里有的词
+才能放行。想撤回，运行 `yokoten marks allow --remove <mark> --here`。
 
 有些文件本来就要写你的账号名。所以 yokoten 自动加进词表的 forge 登录名，在这几处不算问题：
 CODEOWNERS 里的负责人、`.github/` 里的 `@` 提及、`package.json` 或插件清单里的 author、owner

@@ -26,8 +26,6 @@ import {
   machineAllowFile,
   makeRedactor,
   normalizeRemote,
-  type RepoKey,
-  repoKey,
   notUtc,
   ownMarks,
   POSITIVE_CONTROL,
@@ -618,11 +616,8 @@ test('machineAllowed: the entry for this remote allows its marks; another remote
   allow([{ remote: 'example.com/octo/app', allow: ['QuietVale'] }]);
   assert.deepEqual(machineAllowed(env, repo), { allow: ['quietvale'], unsure: null });
   assert.deepEqual(repoMarkKinds(env, repo).map((mark) => mark.value), ['quietvale labs'], 'the longer mark is still looked for');
-  // A second remote with another name is the same repo's business: it changes nothing.
-  git('remote', 'add', 'upstream', 'https://example.com/octo/elsewhere');
-  assert.deepEqual(machineAllowed(env, repo).allow, ['quietvale']);
-  allow([{ remote: 'example.com/octo/other', allow: ['quietvale'] }, { folder: repo, id: 'root:x', allow: ['quietvale'] }]);
-  assert.deepEqual(machineAllowed(env, repo).allow, [], 'a repo with a remote is never matched by its folder');
+  allow([{ remote: 'example.com/octo/app', folder: repo, allow: ['quietvale'] }]);
+  assert.equal(machineAllowed(env, repo).unsure, "this machine's allow file is not in the shape yokoten writes", 'an old folder entry is refused');
   allow([{ remote: 'example.com/octo/app', allow: ['quietvale'] }, { remote: 'EXAMPLE.com/octo/app', allow: ['quietvale'] }]);
   assert.deepEqual(machineAllowed(env, repo), { allow: [], unsure: "two entries in this machine's allow file match this repo" });
   allow('{"repos": [quietvale');
@@ -663,40 +658,28 @@ test('machineAllowed: every fetch and push address of origin, as git rewrites th
   assert.deepEqual(machineAllowed(env, repo), TWO_ADDRESSES, 'pushInsteadOf to another repo is unsure');
 });
 
-test('machineAllowed: a repo with no remote is keyed by its top folder and its first commit (#447)', () => {
-  const { base, repo, env, git, allow } = allowRepo(null);
-  const keyed = (): RepoKey => {
-    const key = repoKey(repo);
-    assert.ok(!('unsure' in key));
-    return key;
-  };
-  const unborn = keyed();
-  assert.ok('id' in unborn && unborn.id.startsWith('unborn:'));
-  allow([{ ...unborn, allow: ['quietvale'] }]);
-  mkdirSync(join(repo, 'sub'));
-  assert.deepEqual(machineAllowed(env, join(repo, 'sub')).allow, ['quietvale'], 'from a folder inside it too');
-  git('commit', '-q', '--allow-empty', '-m', 'start');
-  assert.deepEqual(machineAllowed(env, repo).allow, [], 'after the first commit, the unborn entry no longer names it');
-  const born = keyed();
-  assert.ok('id' in born && born.id.startsWith('root:'));
-  allow([{ ...born, allow: ['quietvale'] }]);
+test('machineAllowed: origin must be the only remote, with no gh default and no push elsewhere (#447)', () => {
+  const { repo, env, git, allow } = allowRepo('https://example.com/octo/app');
+  allow([{ remote: 'example.com/octo/app', allow: ['quietvale'] }]);
   assert.deepEqual(machineAllowed(env, repo).allow, ['quietvale']);
-  allow([{ folder: 'repo', id: born.id, allow: ['quietvale'] }]);
-  assert.equal(machineAllowed(env, repo).unsure, "this machine's allow file is not in the shape yokoten writes", 'a relative folder is refused');
-  allow([{ folder: born.folder, allow: ['quietvale'] }]);
-  assert.ok(machineAllowed(env, repo).unsure, 'a folder entry with no id is refused');
-  allow([{ remote: born.folder, allow: ['quietvale'] }]);
-  assert.deepEqual(machineAllowed(env, repo), { allow: [], unsure: null }, 'a remote entry never matches a repo with no remote');
-  // A new repo made at the same path is another repo.
-  allow([{ ...born, allow: ['quietvale'] }]);
-  rmSync(repo, { recursive: true, force: true });
-  mkdirSync(repo);
-  git('init', '-q');
-  git('config', 'user.name', 'Test');
-  git('config', 'user.email', `1+test${at}users.noreply.github.com`);
-  git('commit', '-q', '--allow-empty', '-m', 'start again');
-  assert.deepEqual(machineAllowed(env, repo).allow, [], 'rm -rf and git init at the same path inherit nothing');
-  assert.ok(base);
+  const unsure = (why: string, label: string) => assert.deepEqual(machineAllowed(env, repo), { allow: [], unsure: why }, label);
+  git('remote', 'add', 'upstream', 'https://example.com/octo/app');
+  unsure('this repo has a remote other than origin', 'a second remote, even to the same repo: gh may pick it');
+  git('remote', 'remove', 'upstream');
+  git('config', 'remote.origin.gh-resolved', 'base');
+  unsure('gh is set to a repo of its own (gh repo set-default)', 'gh-resolved');
+  git('config', '--unset', 'remote.origin.gh-resolved');
+  git('config', 'remote.pushDefault', 'origin');
+  unsure('a push may go to another remote (remote.pushDefault or branch.*.pushRemote)', 'remote.pushDefault');
+  git('config', '--unset', 'remote.pushDefault');
+  git('config', 'branch.main.pushRemote', 'origin');
+  unsure('a push may go to another remote (remote.pushDefault or branch.*.pushRemote)', 'branch.*.pushRemote');
+  git('config', '--unset', 'branch.main.pushRemote');
+  assert.deepEqual(machineAllowed(env, repo).allow, ['quietvale'], 'back to one plain origin');
+  git('remote', 'remove', 'origin');
+  assert.deepEqual(machineAllowed(env, repo), { allow: [], unsure: null }, 'no origin: no machine allow, and nothing unsure');
+  git('remote', 'add', 'other', 'https://example.com/octo/app');
+  unsure('this repo has a remote other than origin', 'only a remote with another name');
 });
 
 test('checkPost: the allow applies only to a post to the repo the command runs in (#447)', () => {
@@ -724,6 +707,17 @@ test('checkPost: the allow applies only to a post to the repo the command runs i
     [`gh issue comment https://example.com/octo/public/issues/1 ${body}`],
     ['gh api repos/octo/app/issues -f body="QuietVale ships"'],
     [`cd ${own.repo} && gh issue comment 1 -R octo/public ${body}`],
+    // The same line changes where gh or a push goes, before the post runs.
+    [`gh repo set-default octo/public && gh issue create ${body}`],
+    [`git remote set-url origin https://example.com/octo/public && gh issue create ${body}`],
+    [`git remote add upstream https://example.com/octo/public; gh issue create ${body}`],
+    [`git config remote.origin.gh-resolved base && gh issue create ${body}`],
+    [`git config remote.pushDefault upstream && gh issue create ${body}`],
+    [`git -c remote.origin.url=https://example.com/octo/public fetch && gh issue create ${body}`],
+    [`GIT_CONFIG_COUNT=1 gh issue create ${body}`],
+    [`git push upstream main && gh pr create ${body}`],
+    [`gh repo fork --remote && gh pr create ${body}`],
+    [`gh alias set ship 'issue create' && gh issue create ${body}`],
   ];
   for (const [command, extra] of targets) {
     assert.equal(post(command, own.repo, { extra })?.id, 'private-mark', `machine: ${command}`);
@@ -731,4 +725,7 @@ test('checkPost: the allow applies only to a post to the repo the command runs i
   }
   assert.equal(post(`gh issue create ${body}`, other.repo, { config: allowing }), null, 'privacy.allow still lets a post to its own repo through');
   assert.equal(post(`cd ${own.repo} && gh issue create ${body}`, other.repo), null, 'a cd into the allowed repo posts there');
+  // A push to origin, or with no remote named, leaves the post where it was.
+  assert.equal(post(`git push -u origin main && gh pr create ${body}`, own.repo), null);
+  assert.equal(post(`git push && gh issue create ${body}`, own.repo), null);
 });

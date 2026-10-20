@@ -4,7 +4,8 @@
 // repo you are in, kept on this machine, never in the repo (#447); `allow --remove` is its way
 // back (record 0014). Issue #434 adds more actions. A mark is never printed or repeated back.
 
-import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { chmodSync, closeSync, linkSync, mkdirSync, openSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 import { readCodeOwners, readIssue, readPullRequest } from '../host/github.ts';
@@ -14,7 +15,7 @@ import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkP
 import { parseChange } from '../run/changelog.ts';
 import { check, checkHistory, GitReadError, gitReadFinding, historyTimeZones, readGit, timeZoneNote } from '../run/check.ts';
 import { isCodeFile, nameNotes } from '../run/names.ts';
-import { type AllowEntry, loadMarks, machineAllowed, machineAllowFile, makeRedactor, matchingEntries, NO_HOME, readMachineAllow, repoKey } from '../rules/privacy.ts';
+import { type AllowEntry, isLink, loadMarks, machineAllowed, machineAllowFile, makeRedactor, matchingEntries, NO_HOME, readMachineAllow, repoKey } from '../rules/privacy.ts';
 import { machineMarks, machineUserNames } from '../setup/install.ts';
 import { args, bullets, env, parse, print, printJson, requireRoot, say, showOnPullRequest, usage } from './shared.ts';
 
@@ -256,34 +257,38 @@ function allowHere(mark: string, { isRemoving }: { isRemoving: boolean }): numbe
   // Only a mark the file holds: anything else is not private to this machine, so nothing to allow.
   if (!isRemoving && !marks.includes(mark)) return refuse('that is not a line of your private-marks file, so there is nothing to allow. Check the spelling, or add it to the file first');
   const key = repoKey(root);
+  if ('none' in key) return refuse(`nothing was changed, because ${key.none}. The allow from this machine is for a repo with one; use "privacy.allow" in yokoten.json instead`);
   if ('unsure' in key) return refuse(`nothing was changed, because ${key.unsure}`);
-  // A link to the file is kept: the file it points to is the one changed.
+  // A link to the file is kept: the file it points to is the one changed. A link to nothing is refused.
   let target = file;
-  try {
-    if (lstatSync(file).isSymbolicLink()) target = realpathSync(file);
-  } catch {
-    // Missing: it is made at `file`.
+  if (isLink(file)) {
+    try {
+      target = realpathSync(file);
+    } catch {
+      return refuse("nothing was changed, because this machine's allow file is a link to a file that is not there. Fix the link or remove it");
+    }
   }
   const lock = `${target}.lock`;
   try {
     mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-    takeLock(lock);
   } catch {
-    return refuse('another `yokoten marks` is changing the allow file, or its folder can\'t be written; nothing was changed. Run this again');
+    return refuse("nothing was changed, because the allow file's folder can't be written");
+  }
+  const locked = takeLock(lock);
+  if (locked !== 'taken') {
+    return refuse(locked === 'busy' ? 'nothing was changed, because another `yokoten marks` is changing the allow file. Run this again' : "nothing was changed, because the allow file's folder can't be written");
   }
   try {
     // Read inside the lock, so a change another run made is kept.
     const read = readMachineAllow(env);
     if ('unsure' in read) return refuse(`nothing was changed, because ${read.unsure}. Fix it or delete it, then run this again`);
-    // A folder entry is found by its folder alone: a new repo at that path replaces it.
-    const found = matchingEntries(read.entries, key, { anyId: true });
+    const found = matchingEntries(read.entries, key);
     if (found.length > 1) return refuse("nothing was changed, because two entries in this machine's allow file match this repo. Delete one, then run this again");
     const entry = found[0];
-    const isSameRepo = entry !== undefined && matchingEntries([entry], key).length === 1;
-    const has = isSameRepo && entry.allow.some((allowed) => allowed.toLowerCase() === mark);
+    const has = entry?.allow.some((allowed) => allowed.toLowerCase() === mark) ?? false;
     let entries: AllowEntry[];
     if (isRemoving) {
-      if (!entry || !entry.allow.some((allowed) => allowed.toLowerCase() === mark)) {
+      if (!entry || !has) {
         print(['yokoten marks: that mark is not allowed here, so nothing changed']);
         return 0;
       }
@@ -294,8 +299,7 @@ function allowHere(mark: string, { isRemoving }: { isRemoving: boolean }): numbe
         print(['yokoten marks: that mark is already allowed here, so nothing changed']);
         return 0;
       }
-      const fresh: AllowEntry = { ...key, allow: isSameRepo ? [...entry.allow, mark] : [mark] };
-      entries = entry ? read.entries.map((one) => (one === entry ? fresh : one)) : [...read.entries, fresh];
+      entries = entry ? read.entries.map((one) => (one === entry ? { ...one, allow: [...one.allow, mark] } : one)) : [...read.entries, { remote: key.remote, allow: [mark] }];
     }
     try {
       save(target, entries);
@@ -311,7 +315,6 @@ function allowHere(mark: string, { isRemoving }: { isRemoving: boolean }): numbe
         ? ['yokoten marks: the allow is taken back; the checks stop that mark in this repo again']
         : [
             'yokoten marks: that mark is allowed in this repo only. The allow is kept on this machine, not in the repo.',
-            ...('folder' in key && key.id.startsWith('unborn:') ? ['This repo has no commit yet: after its first commit, run this again.'] : []),
             'To take it back: yokoten marks allow --remove <mark> --here',
           ],
     );
@@ -321,15 +324,43 @@ function allowHere(mark: string, { isRemoving }: { isRemoving: boolean }): numbe
   }
 }
 
-/** Make the lock file, or throw when another run holds it. One left by a run that died is taken over. */
-function takeLock(lock: string): void {
+/**
+ * Make the lock file: 'taken', 'busy' when another run holds it, or 'unwritable'. A lock left
+ * by a run that died is taken over atomically: it is renamed away under a name of this run's
+ * own, then made again with `wx`, so of two runs that try at once, the one whose `wx` loses is
+ * busy. A lock renamed away that turns out fresh (another run had just taken it over) is put
+ * back with a hard link, which never replaces one made since.
+ */
+function takeLock(lock: string): 'taken' | 'busy' | 'unwritable' {
+  const make = (): 'taken' | 'busy' | 'unwritable' => {
+    try {
+      closeSync(openSync(lock, 'wx', 0o600));
+      return 'taken';
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code === 'EEXIST' ? 'busy' : 'unwritable';
+    }
+  };
+  const first = make();
+  if (first !== 'busy') return first;
+  const isStale = (path: string) => Date.now() - statSync(path).mtimeMs >= STALE_LOCK_MS;
+  const away = `${lock}.${process.pid}.${randomUUID()}.stale`;
   try {
-    closeSync(openSync(lock, 'wx', 0o600));
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'EEXIST' || Date.now() - statSync(lock).mtimeMs < STALE_LOCK_MS) throw err;
-    rmSync(lock, { force: true });
-    closeSync(openSync(lock, 'wx', 0o600));
+    if (!isStale(lock)) return 'busy';
+    renameSync(lock, away);
+  } catch {
+    return make(); // released or taken over meanwhile: one more try decides
   }
+  try {
+    if (!isStale(away)) {
+      linkSync(away, lock);
+      return 'busy';
+    }
+  } catch {
+    return 'busy';
+  } finally {
+    rmSync(away, { force: true });
+  }
+  return make();
 }
 
 /** Write the file whole, readable by its owner only, through a temporary file so a crash never leaves half of it. */
