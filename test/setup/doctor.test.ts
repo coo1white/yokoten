@@ -46,6 +46,7 @@ import {
   doctor,
   findDriveMount,
   isLowOnSpace,
+  isShellControlCaught,
   isUnsavedControlCaught,
   isWsl,
   leftoverControl,
@@ -1265,6 +1266,11 @@ test('doctor: a compaction start drops what the session was told; files older th
   utimesSync(old, longAgo, longAgo);
   blocksToSay(env, { sessionId: 's3', source: 'startup' }, blocks);
   assert.deepEqual(readdirSync(sessionsDir(env)).sort(), ['s1.json', 's3.json']);
+});
+
+test('self-test: a shell write from the plugin agent yokoten:worker is caught, and the lead passes (#402)', () => {
+  assert.ok(isShellControlCaught());
+  assert.ok(!selfTest().includes('lead-only shell guard'));
 });
 
 test('doctor: with no home folder, full and session say so in one note and do not crash (#404)', () => {

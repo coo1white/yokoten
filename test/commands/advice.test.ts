@@ -79,3 +79,12 @@ test('doctor --session: a stdin pipe left open never holds the session start (#4
   assert.deepEqual(await start({ session_id: 's-open', source: 'startup' }), { code: 0, stdout: today });
   assert.deepEqual(await start({ session_id: 's-open', source: 'compact' }), { code: 0, stdout: '' }, 'the event is read without an end of input');
 });
+
+test('doctor --session: a worker hears that lead-only files are guarded; the lead hears nothing (#402)', () => {
+  const sandbox = makeSandbox();
+  const line = 'yokoten: this session is a worker: lead-only files are guarded.';
+  const has = (result: { stdout: string }) => result.stdout.split('\n').includes(line);
+  assert.ok(has(sandbox.run(['doctor', '--session'], { extra: { YOKOTEN_ROLE: 'worker' } })), 'YOKOTEN_ROLE=worker');
+  assert.ok(!has(sandbox.run(['doctor', '--session'])), 'the lead');
+  assert.ok(!has(sandbox.run(['doctor'], { extra: { YOKOTEN_ROLE: 'worker' } })), 'only at session start');
+});

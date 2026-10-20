@@ -30,6 +30,8 @@ export function runDoctor(): number {
     else print([...allLines, `yokoten doctor: ${formatFinding(missing)}`], process.stderr);
     return 1;
   }
+  // A worker started with YOKOTEN_ROLE hears that the guard sees it as one (#402). The lead hears nothing.
+  if (root && session && blocks && env.YOKOTEN_ROLE === 'worker') blocks.push([`yokoten: ${WORKER_SESSION}.`]);
   // A compaction start repeats only what changed (#405); any other start says all.
   const lines = root && session && blocks && !options.flags.has('--json') ? blocksToSay(env, agent === 'claude-code' ? readSessionStart() : null, blocks).flat() : allLines;
   // An agent that can't filter command output hears it at session start, with the opt-in (#390).
@@ -42,6 +44,8 @@ export function runDoctor(): number {
   // A session must start even when doctor found a problem.
   return session || ok ? 0 : 1;
 }
+
+const WORKER_SESSION = 'this session is a worker: lead-only files are guarded';
 
 /** How long a session start waits for the hook's event on stdin, at most. */
 const STDIN_WAIT_MS = 300;
