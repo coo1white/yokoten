@@ -1,10 +1,10 @@
 // Tests for src/rules/pr.ts.
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { makeTempDir } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
 import { checkCommand } from '../../src/rules/guards.ts';
 import { judge } from '../../src/run/hook.ts';
@@ -368,9 +368,9 @@ test('guard: a gh title is checked before it is sent, plain or through the bot (
 test('guard: titles are checked only by a project hook in a repo with a yokoten.json (#391)', () => {
   const bad = 'gh issue create --title "Login fails on Safari" --body ok';
   const action = { command: bad, paths: [], worker: false };
-  const plain = mkdtempSync(join(tmpdir(), 'yokoten-titles-'));
+  const plain = makeTempDir('yokoten-titles-');
   assert.equal(judge({ ...action, cwd: plain }, { root: plain, config: DEFAULTS, env: {} }), null, 'no yokoten.json');
-  const project = mkdtempSync(join(tmpdir(), 'yokoten-titles-'));
+  const project = makeTempDir('yokoten-titles-');
   writeFileSync(join(project, 'yokoten.json'), '{}');
   assert.equal(judge({ ...action, cwd: project }, { root: project, config: DEFAULTS, env: {} })?.id, checkIssueTitle('Login fails on Safari', DEFAULTS)[0].id);
   assert.equal(judge({ ...action, cwd: project }, { root: project, config: DEFAULTS, env: {}, commandsOnly: true }), null, 'the user-level hook');

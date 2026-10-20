@@ -6,7 +6,6 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   renameSync,
@@ -19,7 +18,6 @@ import {
   dirname,
   join,
 } from 'node:path';
-import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import {
   at,
@@ -29,6 +27,7 @@ import {
   handAdd,
   JSON_FIX,
   makeSandbox,
+  makeTempDir,
   onToolCall,
 } from '../repo/helpers.ts';
 import { hasHook } from '../../src/agents/hooks-file.ts';
@@ -609,7 +608,7 @@ test('machineUserNames: USERPROFILE gives the Windows name; a macOS home gives i
 });
 
 test('writeFileAtomic: the whole file or nothing, and no temp file left (#404)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-atomic-'));
+  const dir = makeTempDir('yokoten-atomic-');
   try {
     const file = join(dir, 'sub', 'machine.json');
     writeFileAtomic(file, '{}\n');
@@ -645,7 +644,7 @@ test('migrateMarks: an old block is split by kind; a value it cannot place stays
 });
 
 test('fillMarks: rewrites an old block in a fake home, by the gh login on file, and keeps mode 600 (#410)', () => {
-  const home = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const home = makeTempDir('yokoten-');
   const env = { HOME: home };
   const marks = join(home, '.config', 'yokoten', 'private-marks');
   mkdirSync(dirname(marks), { recursive: true });

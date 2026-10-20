@@ -8,7 +8,6 @@ import {
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -22,7 +21,7 @@ import {
 } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
-import { makeSandbox } from '../repo/helpers.ts';
+import { makeSandbox, makeTempDir } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
 import {
   homeOf,
@@ -97,7 +96,7 @@ const ENV_LESSON_TEST = [
 
 /** A folder that Node reads as ES modules, as yokoten's own folder is. */
 function makeModuleDir(prefix: string): string {
-  const root = mkdtempSync(join(tmpdir(), prefix));
+  const root = makeTempDir(prefix);
   writeFileSync(join(root, 'package.json'), '{ "type": "module" }\n');
   return root;
 }
@@ -246,7 +245,7 @@ test('learn: issue text never becomes code in the draft (positive control: the p
   // Writes the draft to a new folder and imports its lesson.ts there, as the draft's own
   // test does: the import parses the file and runs any code in it.
   const importDraft = (made: ReturnType<typeof draftLesson>) => {
-    const root = mkdtempSync(join(tmpdir(), 'yokoten-learn-hostile-'));
+    const root = makeTempDir('yokoten-learn-hostile-');
     writeDraft(root, made);
     const path = made.files[0].path;
     // The path goes in as an argument, not into the code: the code is fixed text.
@@ -299,7 +298,7 @@ test('learn: bidi controls from the issue are shown as \\uXXXX in the preview an
   const text = formatDraft(incident, draft).join('\n');
   assert.ok(!raw.test(text), 'no raw bidi control in the preview');
   assert.ok(text.includes('repo: tests break \\u202ex\\u2066x\\u2067x\\u2068x\\u2069 end'), 'the preview shows each as \\uXXXX');
-  const root = mkdtempSync(join(tmpdir(), 'yokoten-learn-bidi-'));
+  const root = makeTempDir('yokoten-learn-bidi-');
   writeDraft(root, draft);
   for (const file of draft.files) assert.ok(!raw.test(readFileSync(join(root, file.path), 'utf8')), `no raw bidi control in ${file.path}`);
   const lesson = readFileSync(join(root, draft.files[0].path), 'utf8');
@@ -308,7 +307,7 @@ test('learn: bidi controls from the issue are shown as \\uXXXX in the preview an
 });
 
 test('learn: --write adds the draft\'s files and keeps a file that is there', () => {
-  const root = mkdtempSync(join(tmpdir(), 'yokoten-learn-'));
+  const root = makeTempDir('yokoten-learn-');
   const draft = draftLesson(incidentOf('## Fix\n\nA check.'));
   assert.deepEqual(writeDraft(root, draft), { written: ['lessons/incident-12/lesson.ts', 'lessons/incident-12/lesson.test.ts'], kept: [] });
   writeFileSync(join(root, 'lessons/incident-12/lesson.ts'), 'reviewed\n');
@@ -333,7 +332,7 @@ test('lessons: the table gives each row\'s id, folder, incident and version; oth
 
 // #171: lessons sit in numbered groups, so shipping any number of them never breaks the cap.
 test('lessons: groups take 5 lessons and 2 groups, by levels; 100 lessons keep every folder within the cap', () => {
-  const kit = mkdtempSync(join(tmpdir(), 'yokoten-groups-'));
+  const kit = makeTempDir('yokoten-groups-');
   writeFileSync(join(kit, 'README.md'), '# Lessons\n');
   const folders: string[] = [];
   for (let n = 1; n <= 100; n++) {
@@ -350,8 +349,16 @@ test('lessons: groups take 5 lessons and 2 groups, by levels; 100 lessons keep e
   assert.deepEqual(findLessonFolders(kit).sort(), [...folders].sort(), 'the walk finds each lesson');
 });
 
-test('lessons: --ship refuses a draft with a TODO or a failing test, and moves nothing (positive control)', () => {
+test('lessons: --ship refuses a draft with a TODO or a failing test, and moves nothing (positive control)', (t) => {
   const root = makeModuleDir('yokoten-ship-');
+  // The lesson's test runs in a child that makes its folder in TMPDIR: point it at a folder
+  // that goes away with this test (#400).
+  const savedTmp = process.env.TMPDIR;
+  process.env.TMPDIR = makeTempDir('yokoten-lesson-tmp-');
+  t.after(() => {
+    if (savedTmp === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = savedTmp;
+  });
   const draftDir = join(root, 'lessons/incident-12');
   assert.match(String((shipLesson(root, '12', '0.1.0') as { problems: string[] }).problems), /no kit\/ here/);
   mkdirSync(join(root, 'kit'));
@@ -389,7 +396,7 @@ test('lessons: doctor runs each lesson as a note; a broken lesson is a note for 
   // incident-3 has no code.
   write('incident-4', ENV_LESSON);
   write('incident-5', 'export function findProblems() { return [{ what: 1 }]; }\n');
-  const project = mkdtempSync(join(tmpdir(), 'yokoten-project-'));
+  const project = makeTempDir('yokoten-project-');
   writeFileSync(join(project, '.env'), 'KEY=1\n');
   const place = { dir: kit, codeDir: kit, codeFile: 'lesson.ts' };
   const checks = lessonChecks(project, { 'incident-4': 'we keep a sample .env' }, place);
@@ -404,7 +411,7 @@ test('lessons: doctor runs each lesson as a note; a broken lesson is a note for 
   // The finding takes the lesson's id, whatever the lesson said.
   assert.deepEqual(checks[0].findings, [{ id: 'incident-1', what: 'a .env file is in the repo', why: 'it can hold a secret', fix: 'remove it, and add it to .gitignore' }]);
   // A clean project: ok. No table (a project copy of yokoten has no kit): no lessons.
-  assert.deepEqual(lessonChecks(mkdtempSync(join(tmpdir(), 'yokoten-clean-')), {}, place).map(({ mark }) => mark), ['ok', 'note', 'note', 'ok', 'note']);
+  assert.deepEqual(lessonChecks(makeTempDir('yokoten-clean-'), {}, place).map(({ mark }) => mark), ['ok', 'note', 'note', 'ok', 'note']);
   assert.deepEqual(lessonChecks(project, {}, { ...place, dir: join(kit, 'none') }), []);
 });
 
@@ -416,7 +423,7 @@ test('lessons: doctor runs a lesson in a group and a flat one from an older tabl
     mkdirSync(join(kit, folder), { recursive: true });
     writeFileSync(join(kit, folder, 'lesson.ts'), ENV_LESSON);
   }
-  const project = mkdtempSync(join(tmpdir(), 'yokoten-project-'));
+  const project = makeTempDir('yokoten-project-');
   writeFileSync(join(project, '.env'), 'KEY=1\n');
   const checks = lessonChecks(project, {}, { dir: kit, codeDir: kit, codeFile: 'lesson.ts' });
   assert.deepEqual(checks.map(({ id, mark }) => `${id} ${mark}`), ['incident-1 note', 'incident-2 note']);
@@ -431,7 +438,7 @@ test('lessons: a lesson not yet seen is new, with what it looks for; not now and
     writeFileSync(join(kit, id, 'lesson.ts'), ENV_LESSON);
   }
   const place = { dir: kit, codeDir: kit, codeFile: 'lesson.ts' };
-  const clean = mkdtempSync(join(tmpdir(), 'yokoten-clean-'));
+  const clean = makeTempDir('yokoten-clean-');
   const checks = lessonChecks(clean, { 'incident-3': 'not for us' }, place, ['incident-2']);
   assert.deepEqual(checks.map(({ id, isNew }) => `${id} ${isNew === true}`), ['incident-1 true', 'incident-2 false', 'incident-3 false']);
   assert.deepEqual(formatLessonChecks(checks), [
@@ -461,11 +468,11 @@ test('lessons: a lesson not yet seen is new, with what it looks for; not now and
 });
 
 test('lessons: the state file is in the git folder; missing, broken or unwritable state is empty, never an error', () => {
-  const outside = mkdtempSync(join(tmpdir(), 'yokoten-outside-'));
+  const outside = makeTempDir('yokoten-outside-');
   assert.equal(findStateFile(outside), null, 'outside a git repo: no state');
   assert.deepEqual(readState(null), {});
   saveState(null, { seenLessons: ['incident-1'] });
-  const repo = mkdtempSync(join(tmpdir(), 'yokoten-state-'));
+  const repo = makeTempDir('yokoten-state-');
   execFileSync('git', ['init', '-q'], { cwd: repo });
   const file = findStateFile(repo) as string;
   assert.equal(file, join(realpathSync(repo), '.git', 'yokoten', 'state.json'));
@@ -498,7 +505,8 @@ test('lessons: every lesson the kit ships has a row, its incident, no TODO, and 
     assert.ok(!`${code}${test}`.includes('TODO(reviewer)'), `${id}: no TODO(reviewer) is left`);
     assert.ok(/known-bad case/.test(test), `${id}: lesson.test.ts has a positive control`);
     // Without NODE_TEST_CONTEXT, or the child reports to this run and exits 0 whatever happens.
-    const env = { ...process.env };
+    // TMPDIR: whatever the lesson's test leaves goes away with this test (#400).
+    const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: makeTempDir('yokoten-lesson-tmp-') };
     delete env.NODE_TEST_CONTEXT;
     const run = spawnSync(process.execPath, ['--test', join(kitLessons, folder, 'lesson.test.ts')], { env, encoding: 'utf8' });
     assert.equal(run.status, 0, `${id}: its test passes\n${run.stdout}`);
@@ -510,7 +518,7 @@ const placeIn = (root: string | null, more: Partial<NotePlace> = {}): NotePlace 
 const kindsOf = (result: ReturnType<typeof redactNote>) => ('problems' in result ? result.problems.map((problem) => problem.id) : []);
 
 test('upstream: a note hides the project, home and owner, and refuses a secret or what is left', () => {
-  const home = mkdtempSync(join(tmpdir(), 'yokoten-upstream-'));
+  const home = makeTempDir('yokoten-upstream-');
   const env = { HOME: home };
   const root = join(home, 'work', 'acme-app');
   mkdirSync(root, { recursive: true });
@@ -534,7 +542,7 @@ test('upstream: a note hides the project, home and owner, and refuses a secret o
 });
 
 test('upstream: a symlink into the project, a relative path and a symlink into home are hidden too', () => {
-  const base = realpathSync(mkdtempSync(join(tmpdir(), 'yokoten-upstream-')));
+  const base = realpathSync(makeTempDir('yokoten-upstream-'));
   const home = join(base, 'home');
   const root = join(base, 'code', 'acme-app');
   mkdirSync(join(root, 'src'), { recursive: true });
@@ -583,7 +591,7 @@ test('upstream: a note refuses known secret shapes, by kind and never by value',
 });
 
 test('upstream: the inbox writes, counts, lists and removes notes, from an empty home', () => {
-  const home = mkdtempSync(join(tmpdir(), 'yokoten-upstream-'));
+  const home = makeTempDir('yokoten-upstream-');
   const env = { HOME: home };
   assert.equal(upstreamDir(env), join(home, '.config', 'yokoten', 'upstream'));
   assert.equal(countNotes(env), 0, 'no inbox yet: none');
