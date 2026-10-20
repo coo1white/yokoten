@@ -1,5 +1,6 @@
 // Tests for src/run/cli.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
@@ -341,7 +342,7 @@ test('demo: scripts/demo/loop.ts walks the loop from an incident to a doctor not
   const temp = makeTempDir();
   const kitTable = join(dirname(CLI), '..', 'kit', 'lessons', 'README.md');
   const before = readFileSync(kitTable, 'utf8');
-  const result = spawnSync('node', [join(dirname(CLI), '..', 'scripts', 'demo', 'loop.ts')], { env: { PATH: process.env.PATH, TMPDIR: temp }, encoding: 'utf8' });
+  const result = spawnSync('node', [join(dirname(CLI), '..', 'scripts', 'demo', 'loop.ts')], { env: { PATH: process.env.PATH, HOME: join(temp, 'home'), TMPDIR: temp }, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /\n\$ yokoten learn https:\/\/github\.com\/octo-org\/project-a\/issues\/12\nyokoten learn: a check draft from issue #12, /);
   assert.match(result.stdout, /\nWrote:\n- lessons\/incident-12\/lesson\.ts\n/);

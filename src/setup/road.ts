@@ -16,6 +16,7 @@ import { matcher } from '../rules/config.ts';
 import { type Finding, finding, type RuleId } from '../rules/message.ts';
 import { CHANGES_DIR, parseCodeOwners } from '../rules/pr.ts';
 import { BUILD_DIRS, isBuildOutput } from '../rules/layout.ts';
+import { homeOf } from '../rules/privacy.ts';
 import { hasPlugin, hasProjectHook } from '../agents/runtimes/claude-code.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
 import { CODEOWNERS_PLACES, hasBot, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
@@ -129,6 +130,8 @@ export const hasPrTemplate = (root: string) => ['pull_request_template.md', 'PUL
 export function skillsLacking(env: Env): string[] | null {
   const kitSkills = join(KIT, 'user', 'skills');
   if (!existsSync(kitSkills)) return null;
+  // No home folder (#356): no skills folder to look in, so none is there.
+  if (!homeOf(env)) return ['your home folder (HOME is not set)'];
   const lacking = new Map<string, string[]>();
   for (const name of readdirSync(kitSkills)) {
     for (const file of skillFiles(env, name)) if (!existsSync(file)) lacking.set(skillsDir(file), [...(lacking.get(skillsDir(file)) ?? []), name]);

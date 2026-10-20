@@ -22,9 +22,9 @@
 //   what the model reads (stderr alone gives only its first line).
 
 import { existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import type { Env } from '../../rules/config.ts';
+import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import type { Action } from '../../run/hook.ts';
 import { type FolderTrust, folderKeys, isFolder } from '../folder-trust.ts';
@@ -127,9 +127,13 @@ export const projectHooksState = (root: string, cli: string): { guard: HookState
   stop: hookState(...stopArgs(root, cli)),
 });
 
-/** Grok's home folder: `$GROK_HOME`, or ~/.grok. */
-const homeDir = (env: Env) => env.GROK_HOME || join(env.HOME || homedir(), '.grok');
-const userHooks = (env: Env) => join(homeDir(env), 'hooks', 'yokoten.json');
+/** Grok's home folder: `$GROK_HOME`, or ~/.grok; empty with neither (#356). Read-only uses. */
+const homeDir = (env: Env) => {
+  const user = homeOf(env);
+  return env.GROK_HOME || (user ? join(user, '.grok') : '');
+};
+/** The user hook file; with no home folder it throws NO_HOME, so nothing is written in the repo. */
+const userHooks = (env: Env) => join(env.GROK_HOME || join(homeIn(env), '.grok'), 'hooks', 'yokoten.json');
 /** The user hook file, as the user would type it. */
 export const userHooksFile = (env: Env): string => (env.GROK_HOME ? '$GROK_HOME/hooks/yokoten.json' : '~/.grok/hooks/yokoten.json');
 

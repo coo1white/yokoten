@@ -1,5 +1,6 @@
 // Tests for src/setup/install.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
@@ -621,14 +622,16 @@ test('writeFileAtomic: the whole file or nothing, and no temp file left (#404)',
 });
 
 test('install and uninstall: with no absolute home they refuse and write nothing (#404)', () => {
-  const result = install({ HOME: '' }, { system: () => '' });
+  const result = install({ HOME: '' });
   assert.equal(result.ok, false);
   assert.match(result.lines.join('\n'), /no home folder/);
-  assert.equal(install({ HOME: 'relative/home' }, { system: () => 'also/relative' }).ok, false);
-  const removed = uninstall({ HOME: '' }, { system: () => '' });
+  assert.equal(install({ HOME: 'relative/home' }).ok, false);
+  assert.equal(install({}).ok, false, 'no HOME: the system home is the CLI entry\'s fallback, not install\'s (#356)');
+  const removed = uninstall({ HOME: '' });
   assert.equal(removed.ok, false);
   assert.match(removed.lines.join('\n'), /no home folder.*run uninstall again/);
-  assert.throws(() => paths({ HOME: '' }, () => ''), /no home folder/);
+  assert.equal(uninstall({}).ok, false, 'no HOME: uninstall does not fall back to the system home (#356)');
+  assert.throws(() => paths({ HOME: '' }), /no home folder/);
   assert.equal(existsSync('relative') || existsSync('.local'), false, 'nothing lands in the folder the test runs in');
 });
 

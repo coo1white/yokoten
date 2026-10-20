@@ -2,6 +2,7 @@
 // and every declaration that two or more test files use. Each file imports it. The one
 // state is the temp folders below, which it removes when each test ends (#400).
 
+import './home.ts';
 import assert from 'node:assert/strict';
 import {
   execFileSync,

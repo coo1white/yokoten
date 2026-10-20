@@ -1,5 +1,6 @@
 // Tests for src/run/learn.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import {
   execFileSync,
@@ -16,7 +17,6 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import {
-  isAbsolute,
   join,
 } from 'node:path';
 import { test } from 'node:test';
@@ -619,15 +619,11 @@ test('upstream: the inbox writes, counts, lists and removes notes, from an empty
 });
 
 test('upstream: with no home folder as a full path, there is no inbox and nothing is written', () => {
-  const none = () => '';
-  assert.equal(homeOf({ HOME: '' }, none), null);
-  assert.equal(homeOf({}, none), null);
-  assert.equal(homeOf({ HOME: 'relative/home' }, none), null, 'a relative HOME is no home');
-  assert.equal(homeOf({ HOME: '' }, () => '/home/someone'), '/home/someone', 'the system home, when HOME is empty');
-  assert.equal(homeOf({ HOME: '/h' }, () => '/home/someone'), '/h');
-  // The real lookups give an absolute path, or none.
-  const real = homeOf({ HOME: '' });
-  assert.ok(real === null || isAbsolute(real));
+  assert.equal(homeOf({ HOME: '' }), null);
+  assert.equal(homeOf({}), null, 'no fallback to the system home: only the CLI entry has one (#356)');
+  assert.equal(homeOf({ HOME: 'relative/home' }), null, 'a relative HOME is no home');
+  assert.equal(homeOf({ HOME: '/h' }), '/h');
+  assert.equal(upstreamDir({}), null);
   // marksFile throws rather than name a relative file; loadMarks then reads none.
   assert.equal(marksFile({ HOME: '', YOKOTEN_PRIVATE_MARKS: '/m' }), '/m');
 });

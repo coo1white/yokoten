@@ -1,5 +1,6 @@
 // Tests for src/agents/runtimes/deepseek-harness.ts.
 
+import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';

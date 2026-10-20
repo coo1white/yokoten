@@ -1,5 +1,6 @@
 // Tests for src/agents/runtimes/muse.ts.
 
+import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';

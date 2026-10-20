@@ -13,18 +13,19 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statfsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, parse } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkCommand, checkEdit } from '../rules/guards.ts';
 import { type Config, DEFAULTS, type Env } from '../rules/config.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
 import { type Finding, finding, formatFinding, type RuleId } from '../rules/message.ts';
-import { homeOf, loadMarks, notUtc, POSITIVE_CONTROL, scanText, systemHome } from '../rules/privacy.ts';
+import { homeOf, loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
+import { judge } from '../run/hook.ts';
 import { countNotes, type LessonPlace, listLessons, runLessons, waitingLine } from '../run/learn.ts';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
-import { hasPlugin, hasProjectHook, hasSessionDoctor, readInstalledPlugin, tempDir as claudeTempDir, userSettingsProblem } from '../agents/runtimes/claude-code.ts';
+import { hasPlugin, hasProjectHook, hasSessionDoctor, readInstalledPlugin, readToolCall, tempDir as claudeTempDir, userSettingsProblem } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
 import * as copilot from '../agents/copilot.ts';
 import * as dsh from '../agents/runtimes/deepseek-harness.ts';
@@ -60,6 +61,7 @@ export function selfTest(): string[] {
   if (!checkCommand('git commit --no-verify -m x', { env: {} })) failed.push('skip-check guard');
   if (!checkEdit('test/a.test.ts', { config: DEFAULTS, env: { YOKOTEN_FIX_TASK: '1' } })) failed.push('test guard');
   if (!checkEdit('AGENTS.md', { config: DEFAULTS, env: { YOKOTEN_ROLE: 'worker' } })) failed.push('lead-only guard');
+  if (!isShellControlCaught()) failed.push('lead-only shell guard');
   if (scanText(POSITIVE_CONTROL, { file: 'control' }).length < 2) failed.push('privacy check');
   if (scanText(SECRET_CONTROL, { file: 'control' }).length < 2) failed.push('secret check');
   if (!notUtc('A <a@example.com> 1760745600 +0700') || notUtc('A <a@example.com> 1760745600 +0000')) failed.push('time zone check');
@@ -73,6 +75,19 @@ export function selfTest(): string[] {
   failed.push(...machineControl());
   failed.push(...leftoverControl());
   return failed;
+}
+
+/**
+ * A shell write to AGENTS.md from Claude Code's plugin worker, `yokoten:worker`, with no
+ * YOKOTEN_ROLE (#402): the call must read as a worker's and be stopped, and the same call
+ * from the lead must pass. The repo is the file system's root, taken as given, and
+ * nothing is written.
+ */
+export function isShellControlCaught(): boolean {
+  const root = parse(process.cwd()).root;
+  const call = (agentType?: string) => ({ agent_type: agentType, cwd: root, tool_input: { command: 'sed -i s/a/b/ AGENTS.md' } });
+  const options = { root, config: DEFAULTS, env: {} };
+  return judge(readToolCall(call('yokoten:worker')), options) !== null && judge(readToolCall(call()), options) === null;
 }
 
 /**
@@ -411,8 +426,6 @@ export interface MachineProbe {
   readText(path: string): string | null;
   /** Write a file, making its folder. Throws when it can't. */
   writeText(path: string, text: string): void;
-  /** The home folder in the system's user database; the real one when not given. */
-  systemHome?: () => string;
   /** This process's uid, or null where there is none (Windows). */
   uid: number | null;
   now(): Date;
@@ -559,7 +572,7 @@ export interface HostDiskCache {
 /** The last reading, or null when there is none or the file is broken. */
 export function readHostCache(env: Env, probe: MachineProbe): HostDiskCache | null {
   try {
-    const cache = readMachineState(machineStateFile(env, probe.systemHome), probe).hostDisk as HostDiskCache | undefined;
+    const cache = readMachineState(machineStateFile(env), probe).hostDisk as HostDiskCache | undefined;
     return cache && typeof cache.free === 'number' && typeof cache.size === 'number' && typeof cache.readAt === 'string' ? cache : null;
   } catch {
     return null;
@@ -579,7 +592,7 @@ export function readFreshHostCache(env: Env, probe: MachineProbe): HostDiskCache
 /** Keep the last reading. A file that can't be written is left: a session then says nothing about the host. */
 export function saveHostCache(env: Env, probe: MachineProbe, cache: HostDiskCache): void {
   try {
-    saveMachineState(machineStateFile(env, probe.systemHome), probe, 'hostDisk', cache);
+    saveMachineState(machineStateFile(env), probe, 'hostDisk', cache);
   } catch {
     // no home, or a read-only one: the next full doctor reads the host again
   }
@@ -1085,7 +1098,7 @@ function doctorRun(
   const where = walk(road(root, env, ROAD, server), config.notNow);
   // Full doctor from the command line adds the obvious marks first (#390); a session writes nothing.
   // With no home folder, the checks that read or keep settings there are skipped, never crash (#404).
-  const hasHome = homeOf(env, probe.systemHome ?? systemHome) !== null;
+  const hasHome = homeOf(env) !== null;
   const filled = isFilling && !session && hasHome ? trySafely('the marks from this machine', () => [filledLine(fillMarks(env, machineMarks(env, { cwd: root, gh })), paths(env).marks)])[0] : null;
   const machine = hasHome ? machineChecks(env) : [];
   const next = where.next ? stepFinding(where.next, root, env, server) : null;

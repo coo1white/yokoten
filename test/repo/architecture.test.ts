@@ -1,8 +1,10 @@
 // The shape of the code, checked. A rule about structure that no test holds drifts.
+import './home.ts';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { homedir, tmpdir, userInfo } from 'node:os';
+import { dirname, join, posix, relative } from 'node:path';
 import { test } from 'node:test';
 import { makeTempDir } from './helpers.ts';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +12,7 @@ import { COMMANDS } from '../../src/run/cli.ts';
 import { findDeclarations, findNameProblems, splitWords, type Token, tokenize } from '../../src/run/names.ts';
 import { HOME_DIR, homeDirOf } from '../../src/setup/files.ts';
 import { assertLinear } from '../../scripts/linear.ts';
+import { TEST_HOME } from './home.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SRC = join(ROOT, 'src');
@@ -46,7 +49,7 @@ test('layers: no module imports from a layer above its own', () => {
 // imports, to that module's file, so parallel branches do not meet in one import block.
 // Next to the layer folders, test/ holds repo/: this file and the shared helpers, which
 // check the repo as a whole, not one src module.
-const TEST_TOP = ['repo/architecture.test.ts', 'repo/helpers.ts'];
+const TEST_TOP = ['repo/architecture.test.ts', 'repo/helpers.ts', 'repo/home.ts'];
 // Modules with no test file of their own. Keep it short: a new module gets its test file.
 const NO_TEST_FILE = [
   'agents/agent-skills.ts', // no tests yet (#152)
@@ -210,11 +213,13 @@ test('code is .ts only: no .js, .mjs, .cjs or .tsx under bin, src or test (#43)'
 // #400: a test made its folder with a bare mkdtempSync and never removed it; one machine
 // held 4,000 of them. makeTempDir (test/repo/helpers.ts) removes each one when its test
 // ends. A line that starts with a quote is text a test writes out, not code that runs here.
-// The [d] keeps this pattern from matching its own line.
+// The [d] keeps this pattern from matching its own line. test/repo/home.ts makes the test
+// home folder before any test runs and removes it when the process exits (#356).
 const TEMP_HELPER = 'test/repo/helpers.ts';
+const TEMP_MAKERS = new Set([TEMP_HELPER, 'test/repo/home.ts']);
 const findBareTempDirs = (files: Record<string, string>) =>
   Object.entries(files).flatMap(([path, text]) =>
-    path === TEMP_HELPER
+    TEMP_MAKERS.has(path)
       ? []
       : text.split('\n').flatMap((line, index) => (!/^\s*["'`]/.test(line) && /\bmk[d]temp(Sync)?\s*\(/.test(line) ? [`${path}:${index + 1}`] : [])));
 
@@ -623,6 +628,94 @@ test('assertLinear: a quadratic read fails; a slow spell in one round does not (
     busyWait(7 * (input.length / 1000));
   };
   assertLinear('linear with a slow spell', (n) => 'x'.repeat(n), noisy, 1000);
+});
+
+// No test reads or writes the real home folder (#356). test/repo/home.ts points HOME at an
+// empty temp folder, so it has to load before anything else: it is each test file's first
+// import. A child process inherits that HOME, unless the test gives it an env of its own
+// with no HOME; then the CLI falls back to the system's home, the real one. In src, only
+// privacy.ts asks the system for the home folder; the rest reads HOME from the env it is given.
+const HOME_MODULE = 'repo/home.ts';
+const RUNS_CHILD = /\b(?:spawn|spawnSync|exec|execSync|execFile|execFileSync)\(/;
+
+/** The object literal that starts at `open` (a `{`), braces matched; the rest of the line when it runs on. */
+function literalAt(line: string, open: number): string {
+  let depth = 0;
+  for (let i = open; i < line.length; i++) {
+    if (line[i] === '{') depth++;
+    else if (line[i] === '}' && --depth === 0) return line.slice(open, i + 1);
+  }
+  return line.slice(open);
+}
+
+/** What breaks the rule in the test files, each given by its path inside test/ and its text. */
+function homeProblems(files: Record<string, string>): string[] {
+  const problems: string[] = [];
+  for (const [path, text] of Object.entries(files)) {
+    if (path === HOME_MODULE) continue;
+    const rel = posix.relative(posix.dirname(path), HOME_MODULE);
+    const wanted = `import '${rel.startsWith('.') ? rel : `./${rel}`}';`;
+    const lines = text.split('\n');
+    const first = lines.find((line) => line.startsWith('import '));
+    if (first !== wanted) problems.push(`test/${path}: the first import must be ${wanted}`);
+    lines.forEach((line, i) => {
+      if (!RUNS_CHILD.test(line)) return;
+      for (const match of line.matchAll(/\benv: \{/g)) {
+        const env = literalAt(line, (match.index ?? 0) + match[0].length - 1);
+        if (!/\bHOME\b|\.\.\./.test(env)) problems.push(`test/${path}:${i + 1}: a child process gets an env with no HOME`);
+      }
+    });
+  }
+  return problems;
+}
+
+test('home: the scan finds a test file that loads the temp home late, and a child env with no HOME (#356)', () => {
+  const call = 'spawnSync'; // a variable, so this file's own scan does not read the fixtures as calls
+  const good = "// A test.\nimport '../repo/home.ts';\nimport assert from 'node:assert/strict';\n";
+  assert.deepEqual(homeProblems({
+    'run/good.test.ts': `${good}${call}('node', [CLI], { env: { ...sandbox.env, X: '1' } });\n${call}('node', [], { env: { PATH: '', HOME: temp } });\n`,
+    'repo/helpers.ts': "import './home.ts';\n",
+    'agents/runtimes/x.test.ts': "import '../../repo/home.ts';\n",
+    'repo/home.ts': 'no imports needed\n',
+  }), []);
+  assert.deepEqual(homeProblems({
+    'run/late.test.ts': "import assert from 'node:assert/strict';\nimport '../repo/home.ts';\n",
+    'run/none.test.ts': "import { test } from 'node:test';\n",
+    'run/bare.test.ts': `${good}const out = ${call}('node', [CLI, 'doctor'], { env: { PATH: process.env.PATH, TZ: 'UTC' }, encoding: 'utf8' });\n`,
+  }), [
+    "test/run/late.test.ts: the first import must be import '../repo/home.ts';",
+    "test/run/none.test.ts: the first import must be import '../repo/home.ts';",
+    'test/run/bare.test.ts:4: a child process gets an env with no HOME',
+  ]);
+});
+
+test('home: every test file loads the temp home first, and no child gets an env with no HOME (#356)', () => {
+  const files = Object.fromEntries(filesUnder(join(ROOT, 'test')).filter((path) => path.endsWith('.ts')).map((path) => [path, readFileSync(join(ROOT, 'test', path), 'utf8')]));
+  assert.ok(Object.keys(files).length > 10, 'the test file scan found too few files; it is broken');
+  assert.deepEqual(homeProblems(files), [], 'import test/repo/home.ts first; give a child process HOME, or spread an env that has it');
+});
+
+test('home: in src, only privacy.ts asks the system for the home folder (#356)', () => {
+  const found = filesUnder(SRC).filter((path) => /\bhomedir\(|userInfo\(\)\.homedir/.test(readFileSync(join(SRC, path), 'utf8')));
+  assert.deepEqual(found, ['rules/privacy.ts'], 'read the home folder from env.HOME (homeOf or homeIn); the CLI entry fills it in');
+});
+
+test('home: a test that reads the home folder gets the empty temp one, not the real one (#356)', () => {
+  // The positive control: the plain lookups a careless test would use.
+  assert.equal(homedir(), TEST_HOME);
+  assert.equal(process.env.HOME, TEST_HOME);
+  assert.ok(TEST_HOME.startsWith(tmpdir()), 'the test home is in the temp folder');
+  let real = '';
+  try {
+    real = userInfo().homedir;
+  } catch {
+    // No password entry (some containers): there is no other home to compare with.
+  }
+  if (real) assert.notEqual(homedir(), real, 'homedir() in a test must not be the real home folder');
+  assert.equal(existsSync(join(homedir(), '.config', 'yokoten')), false, 'the test home starts empty');
+  // A child process with no env of its own inherits it.
+  const child = spawnSync(process.execPath, ['-e', "process.stdout.write(require('node:os').homedir())"], { encoding: 'utf8' });
+  assert.equal(child.stdout, TEST_HOME);
 });
 
 // ---- Code given to node -e (#329) ----
