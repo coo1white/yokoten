@@ -186,6 +186,26 @@ test('compile cache: a cache folder that cannot be made does not stop the comman
   assert.match(r.stdout, /^\d+\.\d+\.\d+\n$/);
 });
 
+// #408: a copy of the runtime (it has a VERSION file) runs its bundle; the repo never does,
+// so a bundle left from an old build can't run in place of the .ts files being worked on.
+test('bundle: a copy runs bin/bundle/main.mjs; the repo, and a copy without a bundle, run bin/main.ts (#408)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'yokoten-bundle-'));
+  try {
+    mkdirSync(join(dir, 'bin', 'bundle'), { recursive: true });
+    writeFileSync(join(dir, 'bin', 'yokoten.ts'), readFileSync(CLI));
+    writeFileSync(join(dir, 'bin', 'main.ts'), "process.stdout.write('ts');\n");
+    writeFileSync(join(dir, 'bin', 'bundle', 'main.mjs'), "process.stdout.write('bundle');\n");
+    const run = () => spawnSync(process.execPath, [join(dir, 'bin', 'yokoten.ts')], { encoding: 'utf8' }).stdout;
+    assert.equal(run(), 'ts', 'no VERSION: not a copy');
+    writeFileSync(join(dir, 'VERSION'), '0.0.0\n');
+    assert.equal(run(), 'bundle', 'a copy with a bundle');
+    rmSync(join(dir, 'bin', 'bundle'), { recursive: true });
+    assert.equal(run(), 'ts', 'a copy without a bundle');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('help: the help table and the parser list the same commands and options (#207)', () => {
   // The dispatch is in bin/main.ts; each command's parse call is in its module in src/commands/ (#330).
   const commandsDir = join(dirname(CLI), '..', 'src', 'commands');

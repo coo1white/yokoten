@@ -1,6 +1,7 @@
 // What init and install share: where yokoten itself lives, copying its runtime, and
 // writing files without stepping on what is already there.
 
+import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,12 +9,46 @@ import { fileURLToPath } from 'node:url';
 /**
  * The folder with package.json, kit/, bin/ and src/. This file is src/setup/files.ts in
  * the repo and in a vendored copy. In the npm package it also runs as
- * dist/src/setup/files.js (#31), one level deeper.
+ * dist/src/setup/files.js (#31), one level deeper. In the bundle it runs as a chunk in
+ * bin/bundle/, a .mjs at the same depth as here (#408).
  */
 export const homeDirOf = (moduleFile: string): string => join(dirname(moduleFile), '..', '..', ...(moduleFile.endsWith('.js') ? ['..'] : []));
 export const HOME_DIR = homeDirOf(fileURLToPath(import.meta.url));
 export const VERSION: string = JSON.parse(readFileSync(join(HOME_DIR, 'package.json'), 'utf8')).version;
 export const KIT = join(HOME_DIR, 'kit');
+
+/**
+ * The prebuilt bundle of bin/ and src/ (#408), git-ignored. `npm run build` writes it, and
+ * the npm package ships it. A copy of the runtime runs it in place of the .ts files, so
+ * the hooks skip type stripping and most module loading (bin/yokoten.ts).
+ * `BUNDLE_SOURCES` holds the hash of the .ts files it was built from: `copyRuntime`
+ * copies the bundle only when that hash is the hash of the .ts files it copies.
+ */
+export const BUNDLE = join('bin', 'bundle');
+export const BUNDLE_SOURCES = 'sources.sha256';
+
+/** The hash of the .ts runtime under `home`: every file in bin/ (but the bundle) and src/, by path and bytes. */
+export function sourceHash(home: string): string {
+  const hash = createHash('sha256');
+  for (const top of ['bin', 'src']) {
+    const files = readdirSync(join(home, top), { recursive: true, withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => relative(home, join(entry.parentPath, entry.name)).split(sep).join('/'))
+      .filter((path) => !path.startsWith('bin/bundle/'))
+      .sort();
+    for (const path of files) hash.update(`${path}\0`).update(readFileSync(join(home, path))).update('\0');
+  }
+  return hash.digest('hex');
+}
+
+/** Whether `home` has a bundle built from the .ts files it has now. */
+export function isBundleCurrent(home: string): boolean {
+  try {
+    return readFileSync(join(home, BUNDLE, BUNDLE_SOURCES), 'utf8').trim() === sourceHash(home);
+  } catch {
+    return false;
+  }
+}
 
 /** A line that marks a file yokoten owns. Install replaces such a file; it never touches others. */
 export const MANAGED = 'managed by yokoten';
@@ -56,32 +91,40 @@ function removeLeftovers(dest: string): void {
  * lessons, so `doctor` from the copy runs the lessons the project vendored too (#77).
  * The copy is replaced whole; `VERSION` says which release it is.
  * It copies the .ts files, also from the npm package: `dest` is not under node_modules,
- * so Node runs them there as they are.
+ * so Node runs them there as they are. The bundle (`BUNDLE`) goes along only when it was
+ * built from those same files: a stale one is left out, and the copy runs the .ts files.
  *
  * When `dest` is the running copy, or holds it, nothing is copied: replacing it would
  * delete the files being run (#204). A `dest` inside the running copy gets its own copy,
  * unless it is inside a part that is copied: that copy would hold itself, so it is refused.
  * The new copy goes into a folder next to `dest` first, then takes its place, so a failed
  * copy leaves the old one working. Temp folders that a crash left there are removed first.
- * `copy` and `rename` are there for a test to make a step fail.
+ * `copy` and `rename` are there for a test to make a step fail, and `home` for a test to
+ * copy a runtime of its own.
  */
-export function copyRuntime(dest: string, { withKit = false, copy = cpSync, rename = renameSync }: { withKit?: boolean; copy?: typeof cpSync; rename?: typeof renameSync } = {}): CopyResult {
-  if (isSameOrInside(HOME_DIR, dest)) return 'kept';
+export function copyRuntime(
+  dest: string,
+  { withKit = false, copy = cpSync, rename = renameSync, home = HOME_DIR }: { withKit?: boolean; copy?: typeof cpSync; rename?: typeof renameSync; home?: string } = {},
+): CopyResult {
+  if (isSameOrInside(home, dest)) return 'kept';
   // A yokoten with no lessons yet has no kit/lessons: the project copy then has none either.
   const lessons = join('kit', 'lessons');
-  const parts = ['bin', 'src', 'package.json', ...(withKit ? ['kit'] : [join('kit', 'project', 'AGENTS.md'), lessons])].filter((part) => part !== lessons || existsSync(join(HOME_DIR, part)));
-  const holder = parts.find((part) => isSameOrInside(dest, join(HOME_DIR, part)));
+  const parts = ['bin', 'src', 'package.json', ...(withKit ? ['kit'] : [join('kit', 'project', 'AGENTS.md'), lessons])].filter((part) => part !== lessons || existsSync(join(home, part)));
+  const holder = parts.find((part) => isSameOrInside(dest, join(home, part)));
   if (holder) {
-    const where = relative(resolveReal(HOME_DIR), resolveReal(dest)).split(sep).join('/');
+    const where = relative(resolveReal(home), resolveReal(dest)).split(sep).join('/');
     throw new Error(`cannot copy the runtime to ${where}, because it is inside ${holder}/ of the copy running now. Run yokoten from a copy outside that folder`);
   }
+  const withBundle = isBundleCurrent(home);
+  const bundle = join(home, BUNDLE);
+  const filter = (source: string) => withBundle || (source !== bundle && !source.startsWith(`${bundle}${sep}`));
   removeLeftovers(dest);
   const parent = dirname(resolve(dest));
   mkdirSync(parent, { recursive: true });
   const fresh = mkdtempSync(join(parent, `.${basename(dest)}-new-`));
   let old: string | null = null;
   try {
-    for (const part of parts) copy(join(HOME_DIR, part), join(fresh, part), { recursive: true });
+    for (const part of parts) copy(join(home, part), join(fresh, part), { recursive: true, filter });
     writeFileSync(join(fresh, 'VERSION'), `${VERSION}\n`);
     if (existsSync(dest)) {
       const aside = fresh.replace(/-new-(\w+)$/, '-old-$1');

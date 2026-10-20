@@ -61,7 +61,7 @@ try {
   writeFileSync(join(app, 'package.json'), JSON.stringify({ name: 'check-package-app', private: true }));
   step('npm install <tarball> --offline', 'npm', ['install', '--offline', tarball], app);
   const installed = join(app, 'node_modules', 'yokoten');
-  for (const path of ['dist/bin/yokoten.js', 'bin/yokoten.ts', 'src/setup/files.ts', 'kit/project/AGENTS.md']) assert.ok(existsSync(join(installed, path)), `the package has no ${path}`);
+  for (const path of ['dist/bin/yokoten.js', 'bin/yokoten.ts', 'bin/bundle/main.mjs', 'bin/bundle/guard.mjs', 'src/setup/files.ts', 'kit/project/AGENTS.md']) assert.ok(existsSync(join(installed, path)), `the package has no ${path}`);
   assert.ok(!existsSync(join(installed, 'test')), 'the package ships test/');
   assert.ok(!existsSync(join(installed, 'node_modules')), 'the package installed dependencies');
 
@@ -70,17 +70,24 @@ try {
   assert.equal(step('yokoten --version', bin, ['--version'], app).stdout.trim(), VERSION);
   assert.match(step('npx yokoten help', 'npx', ['--no', 'yokoten', 'help'], app).stdout, /yokoten init/);
 
-  // 4. install: the machine layer, into the temp HOME. The machine copy runs as .ts.
+  // 4. install: the machine layer, into the temp HOME. The machine copy runs the bundle (#408).
   step('yokoten install', bin, ['install'], app);
   const machineCli = join(home, '.local', 'share', 'yokoten', 'bin', 'yokoten.ts');
   assert.ok(existsSync(machineCli), 'install wrote no machine copy');
+  assert.ok(existsSync(join(home, '.local', 'share', 'yokoten', 'bin', 'bundle', 'main.mjs')), 'the machine copy has no bundle: it is not current with the .ts files');
   assert.equal(step('the machine copy runs', process.execPath, [machineCli, '--version'], app).stdout.trim(), VERSION);
 
   // 5. init in a new git repo; then the vendored copy the hooks run, and doctor.
   step('git init', 'git', ['init', '-q', '-b', 'main'], repo);
   step('yokoten init', bin, ['init'], repo);
-  for (const path of ['.yokoten/bin/yokoten.ts', 'AGENTS.md', '.githooks/pre-commit']) assert.ok(existsSync(join(repo, path)), `init wrote no ${path}`);
+  for (const path of ['.yokoten/bin/yokoten.ts', '.yokoten/bin/bundle/main.mjs', '.yokoten/bin/bundle/guard.mjs', 'AGENTS.md', '.githooks/pre-commit']) assert.ok(existsSync(join(repo, path)), `init wrote no ${path}`);
   step('node .yokoten/bin/yokoten.ts check', process.execPath, [join(repo, '.yokoten', 'bin', 'yokoten.ts'), 'check'], repo);
+  // The guard through the bundle: a tag push is refused (exit 2) by its worker, in guard.mjs.
+  const push = JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'git push origin v1.0.0' }, cwd: repo });
+  const guard = spawnSync(process.execPath, [join(repo, '.yokoten', 'bin', 'yokoten.ts'), 'hook', '--json'], { cwd: repo, env, input: push, encoding: 'utf8' });
+  assert.equal(guard.status, 2, `the guard let a tag push through (exit ${guard.status})\n${guard.stdout}${guard.stderr}`);
+  assert.equal(JSON.parse(guard.stdout).finding?.id, 'release', 'the guard did not refuse a tag push as a release');
+  process.stdout.write('ok  the guard, through the bundle\n');
   // doctor exits 1 while the project has steps left, as a new one does. A crash exits 1
   // too, but then stdout holds no report.
   const doctor = step('yokoten doctor', bin, ['doctor', '--json'], repo, { okCodes: [0, 1] });

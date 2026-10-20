@@ -108,56 +108,88 @@ type JudgeOptions = Parameters<typeof judge>[1];
 // itself, then loads this module (#286). It starts as plain JavaScript: this module's
 // imports are compiled before any of its code runs, and the cache must be on by then.
 // An error from the cache is ignored, as in bin/yokoten.ts.
+// In the bundle (scripts/build.ts), YOKOTEN_GUARD_WORKER names the worker's own file next
+// to it, which holds the rules and not the whole command (#408). The .ts files leave it
+// undefined, and the worker loads this module.
+declare const YOKOTEN_GUARD_WORKER: string | undefined;
+const WORKER_MODULE = typeof YOKOTEN_GUARD_WORKER === 'string' ? new URL(YOKOTEN_GUARD_WORKER, import.meta.url).href : import.meta.url;
 const WORKER_START = `
 const { enableCompileCache } = require('node:module');
 try { enableCompileCache?.(); } catch {}
-import(${JSON.stringify(import.meta.url)});
+import(${JSON.stringify(WORKER_MODULE)});
 `;
 
 /** The guard worker's stack, in MB: about the main thread's. */
 const WORKER_STACK_MB = 1;
 
+/** A guard worker, started before the tool call is read (`startGuard`). */
+export interface Guard {
+  /** `judge` in the worker, with a deadline: see `judgeWithDeadline`. Call it once. */
+  judge(action: Action, options: JudgeOptions, deadlineMs: number): Promise<Finding | null>;
+}
+
+/**
+ * Start the guard's worker now, before the tool call is known (#408). A worker takes tens
+ * of milliseconds to start, as long as the rest of the hook; started first, it starts
+ * while the hook loads and reads the call. It does not keep the process alive until
+ * `judge` is called, so a hook that ends early (a usage error, no tool call) just exits.
+ * A failure before `judge` is kept, and `judge` refuses the call with it.
+ */
+export function startGuard(): Guard {
+  // The main thread's stack (V8's default, just under 1 MB), not a worker's default 4 MB:
+  // the guard reads a command the same way in the worker as in `judge`, so a command too
+  // deep to read there is refused here too, not let through.
+  const worker = new Worker(WORKER_START, { eval: true, workerData: { yokotenJudge: true }, resourceLimits: { stackSizeMb: WORKER_STACK_MB } });
+  worker.unref();
+  let ended: string | null = null;
+  let onEnd: (what: string) => void = () => {};
+  const end = (what: string) => {
+    ended ??= what;
+    onEnd(what);
+  };
+  worker.once('error', (err) => end(`the guard failed while reading this tool call: ${err.message}`));
+  worker.once('exit', (code) => end(`the guard stopped (exit ${code}) before it read this tool call`));
+  return {
+    judge: (action, options, deadlineMs) =>
+      new Promise((settle) => {
+        let done = false;
+        const finish = (found: Finding | null) => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          settle(found);
+          void worker.terminate();
+        };
+        const timer = setTimeout(() => finish(lateFinding(action, deadlineMs)), deadlineMs);
+        if (ended !== null) return finish(unreadable(ended));
+        onEnd = (what) => finish(unreadable(what));
+        worker.once('message', (found: Finding | null) => finish(found));
+        worker.ref();
+        // Plain data only: process.env does not cross to a worker as it is.
+        worker.postMessage({ action, options: { ...options, env: { ...options.env } } });
+      }),
+  };
+}
+
 /**
  * `judge`, in a worker thread, with a deadline. The runtimes let a tool call through when
  * the hook runs past their own timeout, so a slow guard would open the gate. A timer in
  * the same thread never fires while the guard reads, so the guard runs in a worker that
- * can be stopped. Past the deadline, or when the worker fails, the call is refused.
+ * can be stopped. Past the deadline, or when the worker fails, the call is refused. The
+ * deadline runs from this call; a worker from `startGuard` may have started before it.
  */
-export function judgeWithDeadline(action: Action, options: JudgeOptions, deadlineMs: number): Promise<Finding | null> {
-  return new Promise((settle) => {
-    // Plain data only: process.env does not cross to a worker as it is.
-    // The main thread's stack (V8's default, just under 1 MB), not a worker's default 4 MB:
-    // the guard reads a command the same way in the worker as in `judge`, so a command too
-    // deep to read there is refused here too, not let through.
-    const worker = new Worker(WORKER_START, {
-      eval: true,
-      workerData: { yokotenJudge: { action, options: { ...options, env: { ...options.env } } } },
-      resourceLimits: { stackSizeMb: WORKER_STACK_MB },
-    });
-    let done = false;
-    const finish = (found: Finding | null) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      settle(found);
-      void worker.terminate();
-    };
-    const refuse = (what: string) => finish(unreadable(what));
-    const timer = setTimeout(() => finish(lateFinding(action, deadlineMs)), deadlineMs);
-    worker.once('message', (found: Finding | null) => finish(found));
-    worker.once('error', (err) => refuse(`the guard failed while reading this tool call: ${err.message}`));
-    worker.once('exit', (code) => refuse(`the guard stopped (exit ${code}) before it read this tool call`));
-  });
+export function judgeWithDeadline(action: Action, options: JudgeOptions, deadlineMs: number, guard: Guard = startGuard()): Promise<Finding | null> {
+  return guard.judge(action, options, deadlineMs);
 }
 
 /** The finding when the guard reads an action past its deadline. */
 export const lateFinding = (action: Action, deadlineMs: number): Finding => unreadable(`the guard took longer than ${deadlineMs} ms to read this ${action.command === undefined ? 'edit' : 'command'}`);
 const unreadable = (what: string): Finding => finding('unreadable-command', what, 'split the command into smaller ones');
 
-// The worker's side: judge one action and send the finding back.
+// The worker's side: wait for one action, judge it and send the finding back.
 if (!isMainThread && parentPort && workerData?.yokotenJudge) {
-  const { action, options } = workerData.yokotenJudge as { action: Action; options: JudgeOptions };
-  parentPort.postMessage(judge(action, options));
+  const port = parentPort;
+  port.once('message', ({ action, options }: { action: Action; options: JudgeOptions }) => port.postMessage(judge(action, options)));
 }
 
 // The real path, through symlinks. git reports the repo root's real path, and a tool may
