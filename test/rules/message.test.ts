@@ -54,6 +54,9 @@ import { parseChange } from '../../src/run/changelog.ts';
 import {
   check,
   checkHistory,
+  GitReadError,
+  gitReadFinding,
+  readGit,
   timeZoneNote,
 } from '../../src/run/check.ts';
 import { lateFinding } from '../../src/run/hook.ts';
@@ -142,6 +145,11 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   found.push(...parseChange('changes/1-a.md', 'Improved\n\nA thing.\n').problems);
   translated.git('update-index', '--add', '--info-only', '--cacheinfo', `100644,${'1'.repeat(40)},ghost.md`);
   add(check(translated.root, { config: DEFAULTS, env: {}, staged: true }).find((f) => f.id === 'missing-blob'));
+  // A git read a gate depends on, which git can't answer (#403).
+  assert.throws(() => readGit(translated.root, ['rev-parse', '--verify', 'no-such-ref']), (err: Error) => {
+    add(err instanceof GitReadError ? gitReadFinding(err) : null);
+    return true;
+  });
   // A CI event that can't be read, and a pull request whose commits are not here (#267).
   const unreadable = (read: unknown) => (read && typeof read === 'object' && 'problem' in read ? (read.problem as Finding) : null);
   add(unreadable(readIssue({ GITHUB_EVENT_PATH: join(translated.root, 'no-event.json') })));

@@ -491,6 +491,12 @@ export const RULES = {
     check: 'every command that reads or writes a project looks for its git repo first, and stops before it writes anything; `doctor --session` and the hooks do not report it, so a session in another folder gets no noise',
     docs: guide('commands'),
   },
+  'git-read': {
+    rule: 'a check stops when git can\'t answer it',
+    why: 'a check that can\'t read git has not looked, so passing would call an unread repo clean',
+    check: 'the commit check, `check`, `check --history` and `check --pr` stop with this finding when a git read they depend on fails, runs out of buffer or is stopped',
+    docs: guide('three-checks-and-a-lock'),
+  },
 } satisfies Record<string, Rule>;
 
 export type RuleId = keyof typeof RULES;
