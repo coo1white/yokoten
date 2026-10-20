@@ -1,5 +1,5 @@
 // What yokoten knows about GitHub Copilot CLI's trust (#341). Copilot reads the hooks in
-// `.claude/settings.json` (see claude-code.ts), but only in a folder the user trusts: in
+// `.claude/settings.json` (see runtimes/claude-code.ts), but only in a folder the user trusts: in
 // any other folder it skips them without a word.
 //
 // Copilot saves trust in `config.json` in `$COPILOT_HOME`, or `~/.copilot`: comment lines
@@ -11,9 +11,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { Env } from '../../rules/config.ts';
-import { type FolderTrust, folderKeys, isFolder } from '../folder-trust.ts';
-import { isObject } from '../hooks-file.ts';
+import type { Env } from '../rules/config.ts';
+import { type FolderTrust, folderKeys, isFolder } from './folder-trust.ts';
+import { isObject } from './hooks-file.ts';
 
 /** The one step that makes Copilot CLI run the project's hooks. */
 export const TRUST_STEP = 'run `copilot` in this folder and choose "Yes, and remember this folder for future sessions"';

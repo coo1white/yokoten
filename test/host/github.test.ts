@@ -23,6 +23,7 @@ import {
   checkIssueTitle,
   checkPullRequestTitle,
 } from '../../src/rules/pr.ts';
+import { GitReadError } from '../../src/run/check.ts';
 import {
   draftLesson,
   type Incident,
@@ -37,6 +38,7 @@ import {
   cleanChildEnv,
   type Gh,
   installationToken,
+  readCodeOwners,
   readCommandTitle,
   readIncident,
   readLocalLogins,
@@ -45,6 +47,7 @@ import {
   stepSummary,
 } from '../../src/host/github.ts';
 import { syncBoard } from '../../scripts/board-sync.ts';
+import { makeSandbox } from '../repo/helpers.ts';
 
 // A throwaway key, made for this test run only.
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -469,4 +472,23 @@ test('readLocalLogins: the user under each host in hosts.yml; none when the file
   const other = makeTempDir('yokoten-gh-');
   writeFileSync(join(other, 'hosts.yml'), 'github.com:\n    user: someone-else\n');
   assert.deepEqual(readLocalLogins({ HOME: home, GH_CONFIG_DIR: other }), ['someone-else'], 'GH_CONFIG_DIR first, as gh reads it');
+});
+
+// No answer from git is never "no CODEOWNERS", which would let a pull request lower its tier (#403).
+test('readCodeOwners: the first place the base commit has; a base git can\'t read throws, never null (#403)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('README.md', 'a\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'none');
+  const none = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  sandbox.write('docs/CODEOWNERS', '/docs/ @b\n');
+  sandbox.write('CODEOWNERS', '/kit/ @a\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'owners');
+  const owners = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  // The work tree has another file, which a pull request run must not read.
+  sandbox.write('CODEOWNERS', '');
+  assert.equal(readCodeOwners(sandbox.repo, none), null);
+  assert.deepEqual(readCodeOwners(sandbox.repo, owners), { text: '/kit/ @a\n', from: 'the base branch' });
+  assert.throws(() => readCodeOwners(sandbox.repo, 'f'.repeat(40)), GitReadError);
 });

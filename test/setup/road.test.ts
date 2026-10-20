@@ -15,9 +15,11 @@ import { fixture, makeTempDir } from '../repo/helpers.ts';
 import { codeOwnersText } from '../../src/setup/init.ts';
 import {
   type Found,
+  isLicenseName,
   onPullRequest,
   ROAD,
   runsTests,
+  securityLacking,
   STAGES,
   type Step,
   walk,
@@ -295,4 +297,27 @@ test("road: init's CODEOWNERS with the placeholder owner is to do; with a real o
   const none = fixture({});
   assert.equal(codeowners.check(none, {}, undefined), false);
   assert.equal(codeowners.what(none, {}, undefined), 'no CODEOWNERS file');
+});
+
+// ---- The license file (#376): LICENSE, LICENCE and COPYING in any case, with any suffix. ----
+
+test('road: a license file counts in each form, the Rust dual layout too', () => {
+  for (const name of ['LICENSE', 'LICENSE.md', 'LICENSE.txt', 'license', 'License.md', 'LICENCE', 'licence.txt', 'COPYING', 'COPYING.LESSER', 'copying.md', 'LICENSE-MIT', 'LICENSE-APACHE', 'LICENSE-APACHE-2.0', 'license-mit.md', 'UNLICENSE', 'unlicense.txt']) {
+    assert.ok(isLicenseName(name), name);
+  }
+  for (const name of ['LICENSES.md', 'LICENSING.md', 'LICENSES', 'UNLICENSED', 'licenseinfo', 'COPYRIGHT', 'README.md']) {
+    assert.ok(!isLicenseName(name), name);
+  }
+  const root = makeTempDir('yokoten-license-');
+  try {
+    const license = () => securityLacking(root).includes('license file');
+    writeFileSync(join(root, 'LICENSING.md'), 'which license applies where\n');
+    mkdirSync(join(root, 'LICENSE'));
+    assert.ok(license(), 'LICENSING.md and a LICENSE folder are no license');
+    writeFileSync(join(root, 'LICENSE-MIT'), 'MIT\n');
+    writeFileSync(join(root, 'LICENSE-APACHE'), 'Apache-2.0\n');
+    assert.ok(!license(), 'LICENSE-MIT and LICENSE-APACHE are a license');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
