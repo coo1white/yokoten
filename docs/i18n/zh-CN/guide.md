@@ -998,8 +998,8 @@ yokoten learn --upstream "the guard let git push --tags through" --area hook --f
 - 项目名换成 `<project>`，不管怎么写：`secret-proj`、`secret_proj`、`SecretProj`、`secretproj`
   都算。不到三个字母的名字不换，不然会误伤太多词；它要是能认出你，就把它加进私密标记
 - 指向项目里的路径，开头换成 `<project>`，绕过软链接的也一样
-- 你的主目录换成 `~`
-- 你的名字、邮箱、gh 登录名、私有主机和私密标记换成占位符，跟 `yokoten redact` 一样；
+- 你的主目录换成 `~`，一行字把路径截断了也一样
+- 你的名字、邮箱、gh 登录名、Linux 和 Windows 的用户名、私有主机和私密标记换成占位符，跟 `yokoten redact` 一样；
   邮箱会变成 `<email>`
 
 带着常见密钥格式的，不存：提交检查认得的 token、URL 里的密码、带值的 `password=`、`token=`、
@@ -1181,7 +1181,8 @@ agent 用 `gh` 发文字之前，工具调用守卫也跑同一套检查。直�
 就收不回来了。所以有些命令跑之前，yokoten 先把你的信息藏起来。
 
 - **`yokoten redact`**：从标准输入读文字，换成占位符再输出。它会藏起密钥（`<secret>`）、个人
-  邮箱（`<email>`）、git 的 user.name（`<owner>`）、私有远程仓库的主机名（`<host>`），还有私有
+  邮箱（`<email>`）、git 的 user.name 和 Linux、Windows 的用户名（`<owner>`）、主目录（`~`）、
+  私有远程仓库的主机名（`<host>`），还有私有
   词表里的词。像域名的词换成 `<host>`，其他的换成 `<mark>`。词表里的词按整个单词算。没有私有
   词表也能用，这时只藏邮箱、密钥这类格式和 git 知道的信息。它要是启动不了、读不了词表，会用
   一行字说明，然后原样输出：绝不会让命令停下来。
