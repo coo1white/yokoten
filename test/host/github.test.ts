@@ -38,6 +38,7 @@ import {
   cleanChildEnv,
   type Gh,
   installationToken,
+  readBranchFiles,
   readCommandTitle,
   readIncident,
   readLocalLogins,
@@ -470,4 +471,27 @@ test('readLocalLogins: the user under each host in hosts.yml; none when the file
   const other = mkdtempSync(join(tmpdir(), 'yokoten-gh-'));
   writeFileSync(join(other, 'hosts.yml'), 'github.com:\n    user: someone-else\n');
   assert.deepEqual(readLocalLogins({ HOME: home, GH_CONFIG_DIR: other }), ['someone-else'], 'GH_CONFIG_DIR first, as gh reads it');
+});
+
+// #406: the bot reads the branch's files as check --pr reads a pull request's: a rename is its new path.
+test('branch files: changed, renamed and deleted paths since the base, from one local diff (#406)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const env = { PATH: process.env.PATH, HOME: dir, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(dir, '.gitconfig'), GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' };
+  const git = (...args: string[]) => spawnSync('git', args, { cwd: dir, env, encoding: 'utf8' });
+  git('init', '-q', '-b', 'main');
+  mkdirSync(join(dir, 'src'));
+  writeFileSync(join(dir, 'src', 'old.ts'), 'export const long = "a long enough line for git to see a rename";\n');
+  writeFileSync(join(dir, 'gone.md'), 'Gone.\n');
+  writeFileSync(join(dir, 'same.md'), 'Same.\n');
+  git('add', '.');
+  git('commit', '-qm', 'base');
+  git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+  git('mv', 'src/old.ts', 'src/new name.ts');
+  git('rm', '-q', 'gone.md');
+  writeFileSync(join(dir, 'kit.md'), 'New.\n');
+  git('add', '.');
+  git('commit', '-qm', 'head');
+  const read = readBranchFiles(dir, 'origin/main', 'HEAD');
+  assert.deepEqual({ files: read?.files.sort(), deleted: read?.deleted }, { files: ['gone.md', 'kit.md', 'src/new name.ts'], deleted: ['gone.md'] });
+  assert.equal(readBranchFiles(dir, 'origin/none', 'HEAD'), null, 'a base git does not have');
 });
