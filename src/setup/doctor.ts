@@ -19,7 +19,7 @@ import { checkCommand, checkEdit } from '../rules/guards.ts';
 import { type Config, DEFAULTS, type Env } from '../rules/config.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
 import { type Finding, finding, formatFinding, type RuleId } from '../rules/message.ts';
-import { homeOf, loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
+import { homeOf, loadMarks, notUtc, ownMarks, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
 import { judge } from '../run/hook.ts';
@@ -250,6 +250,15 @@ export function machineChecks(env: Env): Practice[] {
     // The marks yokoten found on the machine don't count: only the owner knows a city (#390).
     practice('private-marks', 'private-marks', countOwnMarks(env) > 0, loadMarks(env).length ? `${target.marks} has only the marks yokoten found on this machine` : `${target.marks} is missing or empty`, 'add your name, city, domain and server names to it, one per line'),
   ];
+}
+
+/** How many private marks this project allows in its own repo (#424): a count, never the marks. */
+export function allowedMarkCount(env: Env, config: Pick<Config, 'privacy'>): number {
+  try {
+    return ownMarks(loadMarks(env), config.privacy.allow).length;
+  } catch {
+    return 0; // An unreadable file: the private-marks check says so.
+  }
 }
 
 /** What doctor says when an agent can't filter command output, and how to opt in to the stop (#390). */
@@ -1183,6 +1192,8 @@ function doctorRun(
   const checkNotes: Finding[] = [];
   const problems = check(root, { config, env, notes: checkNotes });
   findings.push(...problems);
+  const allowed = allowedMarkCount(env, config);
+  if (allowed) lines.push(`  ok      own-marks: ${allowed} of your private marks allowed here by privacy.allow`);
   lines.push(`  ${problems.length ? 'MISSING' : 'ok     '} tree: ${problems.length ? `${problems.length} problem(s), run \`yokoten check\`` : 'layout and privacy clean'}`);
   // check's own notes (#228), such as an unknown yokoten.json key or a translation behind: worded as check words them, and never a failure.
   for (const n of checkNotes) lines.push(`  note    ${formatFinding(n).replaceAll('\n', '\n        ')}`);
