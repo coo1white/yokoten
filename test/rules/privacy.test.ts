@@ -421,6 +421,44 @@ test('gh api fields and input files are read', () => {
   assert.equal(post('gh api repos/o/r/issues -f body="all clean"'), null);
 });
 
+// The file bash hands gh, with an email; a clean decoy where the guard used to look (#470).
+test('a body file under ~ is refused unless HOME is a full path (#470)', () => {
+  const dir = makeTempDir('yokoten-470-');
+  writeFileSync(join(dir, 'b.md'), `write to ${email}\n`);
+  mkdirSync(join(dir, '~'));
+  writeFileSync(join(dir, '~', 'b.md'), 'clean\n');
+  const postIn = (env: Env, command: string) => checkCommand(command, { env: { YOKOTEN_PRIVATE_MARKS: postMarks, ...env }, config: DEFAULTS, cwd: dir });
+  for (const env of [{}, { HOME: '' }, { HOME: 'relative' }]) {
+    for (const command of ['gh issue create --title "check: a" -F ~/b.md', 'gh issue create --title "check: a" --body-file ~/b.md', 'gh issue create --title "check: a" -F ~other/b.md']) {
+      const f = postIn(env, command);
+      assert.equal(f?.id, 'unreadable-command', `${JSON.stringify(env)} ${command}`);
+      assert.match(formatFinding(f), /full path/);
+    }
+  }
+  assert.equal(postIn({ HOME: dir }, 'gh issue create --title "check: a" -F ~/b.md')?.id, 'email');
+  assert.equal(postIn({ HOME: dir }, 'gh issue create --title "check: a" -F ~other/b.md')?.id, 'unreadable-command');
+});
+
+test('a body file with .. goes up from the real folder, as the kernel does (#470)', () => {
+  const dir = makeTempDir('yokoten-470-');
+  const real = join(dir, 'real');
+  mkdirSync(join(real, 'sub'), { recursive: true });
+  writeFileSync(join(real, 'b.md'), `write to ${email}\n`);
+  writeFileSync(join(dir, 'b.md'), 'clean\n');
+  const link = join(dir, 'link');
+  symlinkSync(join(real, 'sub'), link);
+  const postIn = (env: Env, cwd: string, command: string) => checkCommand(command, { env: { YOKOTEN_PRIVATE_MARKS: postMarks, ...env }, config: DEFAULTS, cwd });
+  // The working folder is a symlink.
+  assert.equal(postIn({ HOME: postDir }, link, 'gh issue create --title "check: a" -F ../b.md')?.id, 'email');
+  assert.equal(postIn({ HOME: postDir }, link, 'gh issue create --title "check: a" --body-file=../b.md')?.id, 'email');
+  assert.equal(postIn({ HOME: postDir, YOKOTEN_RELEASE_APPROVAL: '1' }, link, 'gh release create v1 --notes-file ../b.md')?.id, 'email');
+  assert.equal(postIn({ HOME: postDir }, postDir, `gh issue create --title "check: a" -F ${link}/../b.md`)?.id, 'email');
+  // HOME is a symlink.
+  assert.equal(postIn({ HOME: link }, postDir, 'gh issue create --title "check: a" -F ~/../b.md')?.id, 'email');
+  // Control: no symlink, and `..` still finds the file.
+  assert.equal(postIn({ HOME: postDir }, join(real, 'sub'), 'gh issue create --title "check: a" -F ../b.md')?.id, 'email');
+});
+
 test('a secret is named by kind, never printed', () => {
   const f = post(`gh pr comment 1 --body "use ${token}"`);
   assert.equal(f?.id, 'secret');
