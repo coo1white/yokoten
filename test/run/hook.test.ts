@@ -1,15 +1,17 @@
 // Tests for src/run/hook.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { symlinkSync } from 'node:fs';
+import { symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   CLI,
   makeSandbox,
 } from '../repo/helpers.ts';
-import { guardDeadline } from '../../src/run/hook.ts';
+import { DEFAULTS } from '../../src/rules/config.ts';
+import { guardDeadline, judge, startGuard } from '../../src/run/hook.ts';
 
 test('hook: blocks with exit 2 and a reason, allows with exit 0', () => {
   const sandbox = makeSandbox();
@@ -32,6 +34,25 @@ test('hook: blocks with exit 2 and a reason, allows with exit 0', () => {
   result = sandbox.run(['hook', '--commands-only'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: { file_path: 'CLAUDE.md' } }), extra: { YOKOTEN_ROLE: 'worker' } });
   assert.equal(result.status, 0);
   assert.equal(sandbox.run(['hook'], { input: 'not json' }).status, 0);
+});
+
+// #408: the hook starts the guard's worker before it reads the call, so the two overlap.
+test('hook: a guard started before the call judges it as judge does; one never used lets the process end (#408)', async () => {
+  const action = { command: 'git push --tags', paths: [], worker: false };
+  const options = { root: null, config: DEFAULTS, env: {} };
+  const guard = startGuard();
+  await new Promise((wait) => setTimeout(wait, 50));
+  const found = await guard.judge(action, options, 5000);
+  assert.equal(found?.id, 'release');
+  assert.deepEqual(found, judge(action, options));
+  assert.equal(await startGuard().judge({ ...action, command: 'git status' }, options, 5000), null);
+  // An unused worker does not keep node running: a hook that ends early just exits. A file,
+  // not `-e`: a worker takes node's options, and `--input-type` would change how it starts.
+  const sandbox = makeSandbox();
+  const script = join(sandbox.home, 'unused-guard.mjs');
+  writeFileSync(script, `(await import(${JSON.stringify(new URL('../../src/run/hook.ts', import.meta.url).href)})).startGuard();\n`);
+  const result = spawnSync(process.execPath, [script], { encoding: 'utf8', timeout: 20000 });
+  assert.deepEqual([result.status, result.signal, result.stderr], [0, null, '']);
 });
 
 // The runtimes let a tool call through when the hook runs past their timeout, so a guard

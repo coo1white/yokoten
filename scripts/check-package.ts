@@ -61,7 +61,7 @@ try {
   writeFileSync(join(app, 'package.json'), JSON.stringify({ name: 'check-package-app', private: true }));
   step('npm install <tarball> --offline', 'npm', ['install', '--offline', tarball], app);
   const installed = join(app, 'node_modules', 'yokoten');
-  for (const path of ['dist/bin/yokoten.js', 'bin/yokoten.ts', 'src/setup/files.ts', 'kit/project/AGENTS.md']) assert.ok(existsSync(join(installed, path)), `the package has no ${path}`);
+  for (const path of ['dist/bin/yokoten.js', 'dist/bin/yokoten.mjs', 'bin/yokoten.ts', 'bin/yokoten.mjs', 'src/setup/files.ts', 'kit/project/AGENTS.md']) assert.ok(existsSync(join(installed, path)), `the package has no ${path}`);
   assert.ok(!existsSync(join(installed, 'test')), 'the package ships test/');
   assert.ok(!existsSync(join(installed, 'node_modules')), 'the package installed dependencies');
 
@@ -79,8 +79,14 @@ try {
   // 5. init in a new git repo; then the vendored copy the hooks run, and doctor.
   step('git init', 'git', ['init', '-q', '-b', 'main'], repo);
   step('yokoten init', bin, ['init'], repo);
-  for (const path of ['.yokoten/bin/yokoten.ts', 'AGENTS.md', '.githooks/pre-commit']) assert.ok(existsSync(join(repo, path)), `init wrote no ${path}`);
+  for (const path of ['.yokoten/bin/yokoten.ts', '.yokoten/bin/yokoten.mjs', 'AGENTS.md', '.githooks/pre-commit']) assert.ok(existsSync(join(repo, path)), `init wrote no ${path}`);
   step('node .yokoten/bin/yokoten.ts check', process.execPath, [join(repo, '.yokoten', 'bin', 'yokoten.ts'), 'check'], repo);
+  // The guard as the hooks run it, through yokoten.mjs (#408): a tag push is refused (exit 2).
+  const push = JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'git push origin v1.0.0' }, cwd: repo });
+  const guard = spawnSync(process.execPath, [join(repo, '.yokoten', 'bin', 'yokoten.mjs'), 'hook', '--json'], { cwd: repo, env, input: push, encoding: 'utf8' });
+  assert.equal(guard.status, 2, `the guard let a tag push through (exit ${guard.status})\n${guard.stdout}${guard.stderr}`);
+  assert.equal(JSON.parse(guard.stdout).finding?.id, 'release', 'the guard did not refuse a tag push as a release');
+  process.stdout.write('ok  the guard, through .yokoten/bin/yokoten.mjs\n');
   // doctor exits 1 while the project has steps left, as a new one does. A crash exits 1
   // too, but then stdout holds no report.
   const doctor = step('yokoten doctor', bin, ['doctor', '--json'], repo, { okCodes: [0, 1] });

@@ -8,6 +8,8 @@
 // - PreToolUse (BeforeTool in Gemini CLI) runs `hook --commands-only`: no tag pushes, no
 //   force pushes, no skipped checks, in every repo, adopted or not.
 //
+// Grok CLI gets the PreToolUse guard only, in ~/.grok/hooks/yokoten.json.
+//
 // `yokoten uninstall` takes back what install wrote and marked as its own, for a machine
 // that moves to the Claude Code plugin (#300): the plugin brings the same pieces, and both
 // at once run every hook twice and show every skill twice.
@@ -17,7 +19,7 @@
 // PATH. It prints the alias and never edits the shell profile: that file is the user's.
 
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import type { Env } from '../rules/config.ts';
@@ -25,18 +27,18 @@ import { skillFile as sharedSkillFile } from '../agents/agent-skills.ts';
 import { addUserHooks, agentFile, hasSessionDoctor, hasUserGuard, removeUserHooks, skillFile as claudeSkillFile, userDir } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
+import * as grok from '../agents/runtimes/grok.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { copyRuntime, HOME_DIR, KIT, MANAGED, writeManaged, writeNew } from './files.ts';
-import { type Gh, readLogin } from '../host/github.ts';
-import { homeOf, isDomainShaped, isPersonalEmail, loadMarks, marksFile, NO_HOME, privateRemoteHosts, systemHome } from '../rules/privacy.ts';
+import { type Gh, readLocalLogins, readLogin } from '../host/github.ts';
+import { FOUND_HEADER, foundHeader, homeIn, homeOf, isDomainShaped, isEmailShaped, OWN_HEADER, isPersonalEmail, loadMarks, marksFile, NO_HOME, privateRemoteHosts, systemHome } from '../rules/privacy.ts';
 
 /**
  * Where yokoten keeps its runtime, its config and the private marks. With no absolute home
  * folder it throws NO_HOME: a relative path would land in the folder the command runs in (#404).
  */
-export const paths = (env: Env, system: () => string = systemHome) => {
-  const home = homeOf(env, system);
-  if (!home) throw new Error(NO_HOME);
+export const paths = (env: Env) => {
+  const home = homeIn(env);
   return {
     runtime: join(home, '.local', 'share', 'yokoten'),
     config: join(home, '.config', 'yokoten'),
@@ -46,7 +48,7 @@ export const paths = (env: Env, system: () => string = systemHome) => {
 };
 
 /** The runtime the user hooks run, and what they say when it is gone. `doctor` compares the hooks with these. */
-export const USER_CLI = '"$HOME/.local/share/yokoten/bin/yokoten.ts"';
+export const USER_CLI = '"$HOME/.local/share/yokoten/bin/yokoten.mjs"';
 export const USER_MISSING = 'yokoten: the runtime at ~/.local/share/yokoten is missing; run the install again';
 
 /** Every place a skill goes: Claude Code's folder, and the shared one other agents read. */
@@ -101,10 +103,10 @@ function agentHooks(cliName: string, file: string, add: () => string[]): { ok: b
 }
 
 /** One line per thing done, kept or skipped; `ok` is false when a file was skipped (#248). */
-export function install(env: Env, { cwd, gh, system = systemHome }: { cwd?: string; gh?: Gh; system?: () => string } = {}): { ok: boolean; lines: string[] } {
+export function install(env: Env, { cwd, gh }: { cwd?: string; gh?: Gh } = {}): { ok: boolean; lines: string[] } {
   // Refuse before writing anything: with no home, every path below would be relative (#404).
-  if (!homeOf(env, system)) return { ok: false, lines: [`${NO_HOME}. Set HOME to your home folder's full path and run install again`] };
-  const target = paths(env, system);
+  if (!homeOf(env)) return { ok: false, lines: [`${NO_HOME}. Set HOME to your home folder's full path and run install again`] };
+  const target = paths(env);
   const report: string[] = [];
   let ok = true;
   // Run from this copy, install keeps it (#204). The report shows the home folder as ~.
@@ -142,6 +144,14 @@ export function install(env: Env, { cwd, gh, system = systemHome }: { cwd?: stri
     ok &&= geminiHooks.ok;
     report.push(...geminiHooks.lines);
   } else report.push('skipped Gemini CLI: ~/.gemini not found (run `yokoten install` again after installing Gemini CLI)');
+  // Grok CLI gets the command guard alone: it shows a session-start hook's output only to
+  // the user, never to the agent (#407).
+  if (grok.hasUserDir(env)) {
+    const file = grok.userHooksFile(env);
+    const grokHooks = agentHooks('Grok CLI', file, () => [`${grok.addUserHooks(env, USER_CLI, USER_MISSING).guard} the Grok CLI command guard in ${file}`]);
+    ok &&= grokHooks.ok;
+    report.push(...grokHooks.lines);
+  } else report.push('skipped Grok CLI: ~/.grok not found (run `yokoten install` again after installing Grok CLI)');
 
   const marks = writeNew(target.marks, MARKS_HEADER, { mode: 0o600 });
   report.push(`${marks} ${target.marks}${marks === 'wrote' ? ' (add your marks to it)' : ''}`);
@@ -207,7 +217,9 @@ export function installedPieces(env: Env): string[] {
  * user-level hooks, and the runtime. The keys and the private marks in ~/.config/yokoten
  * stay: the user wrote them. A second run finds nothing and changes nothing.
  */
-export function uninstall(env: Env): string[] {
+export function uninstall(env: Env): { ok: boolean; lines: string[] } {
+  // As install: with no home, every path below would be relative (#404).
+  if (!homeOf(env)) return { ok: false, lines: [`${NO_HOME}. Set HOME to your home folder's full path and run uninstall again`] };
   const target = paths(env);
   const report: string[] = [];
   for (const name of kitSkills()) {
@@ -224,7 +236,7 @@ export function uninstall(env: Env): string[] {
   rmSync(target.runtime, { recursive: true, force: true });
   report.push(`${hadRuntime ? 'removed' : 'not there'} ${target.runtime}`);
   if (existsSync(target.config)) report.push(`kept ${target.config} (your keys and private marks)`);
-  return report;
+  return { ok: true, lines: report };
 }
 
 // ---- What this machine knows about its owner (#390) ----
@@ -269,21 +281,55 @@ export function machineMarks(env: Env, { cwd, gh }: { cwd?: string; gh?: Gh } = 
   return found;
 }
 
-/** Where yokoten keeps what it read about this machine: outside every repo. */
+/** Where yokoten keeps what it read about this machine: outside every repo. Throws NO_HOME with no home. */
 export const machineStateFile = (env: Env): string => join(paths(env).config, 'machine.json');
 
+/**
+ * Write a file whole or not at all: a temp file in the same folder, then a rename. Two
+ * yokoten processes that write at once then never leave half a file (#404).
+ */
+export function writeFileAtomic(path: string, text: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeFileSync(temp, text);
+    renameSync(temp, path);
+  } catch (err) {
+    rmSync(temp, { force: true });
+    throw err;
+  }
+}
+
+/** The file reads and writes machine.json needs: doctor's probe and the user-name probe both have them. */
+interface StateFiles {
+  readText(path: string): string | null;
+  writeText(path: string, text: string): void;
+}
+
+/** What machine.json holds, or an empty object when it is missing or broken. */
+export function readMachineState(file: string, files: StateFiles): Record<string, unknown> {
+  try {
+    const state: unknown = JSON.parse(files.readText(file) ?? 'null');
+    return state && typeof state === 'object' && !Array.isArray(state) ? (state as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Set one key of machine.json and keep the others. Throws when the file can't be written. */
+export function saveMachineState(file: string, files: StateFiles, key: string, value: unknown): void {
+  files.writeText(file, `${JSON.stringify({ ...readMachineState(file, files), [key]: value }, null, 2)}\n`);
+}
+
 /** What `machineUserNames` reads, so a test can give fake values. */
-export interface UserNameProbe {
+export interface UserNameProbe extends StateFiles {
   /** The account name, as the system's user database gives it. May throw. */
   username(): string;
   /** The home folder in the system's user database. */
   systemHome(): string;
   /** The names of the folders in `path`, or null when it can't be read. */
   listFolders(path: string): string[] | null;
-  /** A file's text, or null when it can't be read. */
-  readText(path: string): string | null;
-  /** Write a file, making its folder. May throw. */
-  writeText(path: string, text: string): void;
+  now(): Date;
 }
 
 /** The real machine. It never starts a program. */
@@ -306,17 +352,21 @@ export const REAL_USER_PROBE: UserNameProbe = {
       return null;
     }
   },
-  writeText(path, text) {
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, text);
-  },
+  writeText: writeFileAtomic,
+  now: () => new Date(),
 };
 
-// Account names that every machine of a kind has (a CI runner, a container). They name
-// nobody, and hiding them would hide common words such as "root" and "user".
-const SHARED_ACCOUNTS = new Set(['root', 'runner', 'user', 'users', 'admin', 'administrator', 'ubuntu', 'debian', 'node', 'vscode', 'codespace', 'codespaces', 'guest', 'nobody']);
-// The folders in a Windows Users folder that are not a person's.
-const WINDOWS_SHARED_FOLDERS = new Set(['public', 'default', 'default user', 'all users', 'defaultuser0', 'defaultuser100000', 'wdagutilityaccount']);
+// Account names that every machine of a kind has (a CI runner, a container, a cloud VM).
+// They name nobody, and hiding them would hide common words such as "root" and "test".
+const SHARED_ACCOUNTS = new Set([
+  ...['root', 'runner', 'user', 'users', 'admin', 'administrator', 'guest', 'nobody', 'temp', 'dev', 'test', 'app', 'build'],
+  ...['ubuntu', 'debian', 'node', 'vscode', 'codespace', 'codespaces', 'gitpod', 'vagrant', 'ec2-user', 'jenkins'],
+]);
+// The folders in a Windows Users folder that are not a person's: shared, system and service accounts.
+const WINDOWS_SHARED_FOLDERS = new Set(['public', 'default', 'default user', 'all users', 'wdagutilityaccount', 'temp', 'postgres', 'mysql', 'sshd', 'updatususer', 'wsiaccount', 'defaultapppool']);
+const WINDOWS_SHARED_PATTERN = /^(?:defaultuser\d+|.*\.migrated|\.net v.*|classic \.net apppool|mssql.*|\$.*)$/;
+/** Whether a folder in a Windows Users folder is a person's. */
+const isPersonFolder = (name: string): boolean => !WINDOWS_SHARED_FOLDERS.has(name.toLowerCase()) && !WINDOWS_SHARED_PATTERN.test(name.toLowerCase()) && !SHARED_ACCOUNTS.has(name.toLowerCase());
 // A folder that holds the users' homes: its child is a user name.
 const USERS_FOLDER = /^(?:\/home|\/Users|\/mnt\/[a-z]\/Users|\/[a-z]\/Users|[A-Za-z]:[\\/]Users)$/i;
 
@@ -327,38 +377,64 @@ function homeUserName(home: string | undefined): string | null {
   return split > 0 && USERS_FOLDER.test(path.slice(0, split)) ? path.slice(split + 1) : null;
 }
 
+/** The Windows user names machine.json keeps: the folders found, when, and how long the read took. */
+interface WindowsUsersCache {
+  names: string[];
+  readAt: string;
+  scanMs: number;
+}
+
+/** Kept names older than this are read again: an account may have come or gone. */
+const MAX_NAMES_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+/** A read of the drives slower than this is not repeated when the names go old: a sleeping drive must not slow every redact. */
+const SLOW_SCAN_MS = 50;
+/** What each probe read in this process, for when machine.json can't be written. */
+const namesRead = new WeakMap<UserNameProbe, string[]>();
+
 /**
- * The Windows accounts a WSL distro can see: the folders in `/mnt/<drive>/Users`. Read once,
- * then kept in machine.json as `windowsUsers`, so a later run reads one local file (#404).
+ * The Windows accounts a WSL distro can see: the person folders in `/mnt/<drive>/Users`.
+ * Read once, then kept in machine.json as `windowsUsers` for 30 days, so a later run reads
+ * one local file (#404). With no file, the names are kept for this process only.
  */
 function windowsUserNames(env: Env, probe: UserNameProbe): string[] {
+  const known = namesRead.get(probe);
+  if (known) return known;
   let file: string | null = null;
-  let state: Record<string, unknown> = {};
   try {
     file = machineStateFile(env);
-    const old: unknown = JSON.parse(probe.readText(file) ?? 'null');
-    if (old && typeof old === 'object' && !Array.isArray(old)) state = old as Record<string, unknown>;
   } catch {
-    // no home, or a broken file: read the drives, and start a new file
+    // no home: read the drives, and keep the names in this process
   }
-  const kept = state.windowsUsers;
-  if (Array.isArray(kept) && kept.every((name) => typeof name === 'string')) return kept;
-  const drives = (probe.listFolders('/mnt') ?? []).filter((name) => /^[a-z]$/.test(name));
-  const names = drives.flatMap((drive) => probe.listFolders(`/mnt/${drive}/Users`) ?? []).filter((name) => !WINDOWS_SHARED_FOLDERS.has(name.toLowerCase()));
-  // An empty list is kept too: no drive is mounted, and the next run need not look again.
-  try {
-    if (file) probe.writeText(file, `${JSON.stringify({ ...state, windowsUsers: [...new Set(names)] }, null, 2)}\n`);
-  } catch {
-    // a read-only home: the next run reads the drives again
+  const kept = file ? (readMachineState(file, probe).windowsUsers as Partial<WindowsUsersCache> | undefined) : undefined;
+  const isValid = Array.isArray(kept?.names) && kept.names.every((name) => typeof name === 'string') && typeof kept.readAt === 'string';
+  const age = isValid ? probe.now().getTime() - Date.parse(kept?.readAt ?? '') : Number.NaN;
+  const isFresh = Number.isFinite(age) && age >= 0 && age <= MAX_NAMES_AGE_MS;
+  let names: string[];
+  if (isValid && (isFresh || (kept?.scanMs ?? 0) > SLOW_SCAN_MS)) names = kept?.names ?? [];
+  else {
+    const start = probe.now().getTime();
+    const drives = (probe.listFolders('/mnt') ?? []).filter((name) => /^[a-z]$/.test(name));
+    names = [...new Set(drives.flatMap((drive) => probe.listFolders(`/mnt/${drive}/Users`) ?? []).filter(isPersonFolder))];
+    const cache: WindowsUsersCache = { names, readAt: probe.now().toISOString(), scanMs: probe.now().getTime() - start };
+    // An empty list is kept too: no drive is mounted, and the next run need not look again.
+    try {
+      if (file) saveMachineState(file, probe, 'windowsUsers', cache);
+    } catch {
+      // a read-only home: this process keeps the names below
+    }
   }
-  return names;
+  // Filtered again: a file from an older yokoten, or one edited by hand, may hold a shared folder.
+  const result = names.filter(isPersonFolder);
+  namesRead.set(probe, result);
+  return result;
 }
 
 /**
  * The user names of this machine, which git and the forge do not know (#404): the account
- * name, the last folder of each home under a users folder, and in WSL the Windows user names.
- * Windows names come from USERPROFILE when WSLENV passes it, else from the Windows drives.
- * Shared account names (root, runner) and names of under 3 characters are left out.
+ * name, the last folder of each home under a users folder, and in WSL the Windows user name.
+ * The Windows name comes from USERPROFILE when WSLENV passes it, else from the folders in
+ * `/mnt/<drive>/Users`: the one named like a Linux name, or every person folder when none is.
+ * Shared account names (root, runner, test) and names of under 3 characters are left out.
  * It starts no program.
  */
 export function machineUserNames(env: Env, probe: UserNameProbe = REAL_USER_PROBE): string[] {
@@ -372,7 +448,13 @@ export function machineUserNames(env: Env, probe: UserNameProbe = REAL_USER_PROB
   const names = [env.USER, env.LOGNAME, read(() => probe.username())];
   for (const home of [env.HOME, read(() => probe.systemHome()), env.USERPROFILE]) names.push(homeUserName(home) ?? '');
   const isWsl = Boolean(env.WSL_DISTRO_NAME || env.WSL_INTEROP);
-  if (isWsl && !homeUserName(env.USERPROFILE)) names.push(...windowsUserNames(env, probe));
+  if (isWsl && !homeUserName(env.USERPROFILE)) {
+    const linux = new Set(names.map((name) => (name ?? '').toLowerCase()));
+    const windows = windowsUserNames(env, probe);
+    const same = windows.filter((name) => linux.has(name.toLowerCase()));
+    // No folder named like the Linux user: hide them all, as privacy comes first.
+    names.push(...(same.length ? same : windows));
+  }
   const kept = new Map<string, string>();
   for (const name of names) {
     const trimmed = (name ?? '').trim();
@@ -383,11 +465,75 @@ export function machineUserNames(env: Env, probe: UserNameProbe = REAL_USER_PROB
 }
 
 /**
- * Add the machine's marks that the private-marks file lacks, at its end. It only appends,
- * and makes the file (mode 600) when it is missing. Returns the kinds it added, never a value.
+ * The private-marks text with each block under the old plain header (before #410) split
+ * by kind, or null when it has none. A value is a forge login only when it is one of
+ * `logins`; an address is a git email; one of `hosts`, or a value with a dot, is a host.
+ * Anything else goes under OWN_HEADER, so the check treats it as the owner's: strict.
+ * The lines outside those blocks stay as they are.
+ */
+export function migrateMarks(text: string, { logins, hosts }: { logins: string[]; hosts: string[] }): string | null {
+  const lines = text.split('\n');
+  if (!lines.some((line) => line.trim() === FOUND_HEADER)) return null;
+  const loginSet = new Set(logins.map((login) => login.toLowerCase()));
+  const hostSet = new Set(hosts.map((host) => host.toLowerCase()));
+  const kindOf = (value: string): string | null => {
+    const key = value.toLowerCase();
+    if (loginSet.has(key)) return 'forge login';
+    if (isEmailShaped(key)) return 'git email';
+    if (hostSet.has(key) || key.includes('.')) return 'private remote host';
+    return null;
+  };
+  const out: string[] = [];
+  for (let index = 0; index < lines.length; index++) {
+    if (lines[index].trim() !== FOUND_HEADER) {
+      out.push(lines[index]);
+      continue;
+    }
+    // The block runs to the next comment line.
+    const values: string[] = [];
+    while (index + 1 < lines.length && !lines[index + 1].trim().startsWith('#')) {
+      index++;
+      const value = lines[index].replace(/\r$/, '').trim();
+      if (value) values.push(value);
+    }
+    const groups = new Map<string | null, string[]>();
+    for (const value of values) groups.set(kindOf(value), [...(groups.get(kindOf(value)) ?? []), value]);
+    for (const [kind, group] of groups) out.push(kind === null ? OWN_HEADER : foundHeader(kind), ...group);
+  }
+  const joined = out.join('\n');
+  return joined.endsWith('\n') ? joined : `${joined}\n`;
+}
+
+/** Write a file in one step: a temp file next to it, then a rename. It keeps the file's mode. */
+function replaceFile(file: string, text: string): void {
+  const temp = `${file}.${process.pid}.tmp`;
+  let mode = 0o600;
+  try {
+    mode = statSync(file).mode & 0o777;
+  } catch {
+    // a new file: 600
+  }
+  try {
+    writeFileSync(temp, text, { mode });
+    renameSync(temp, file);
+  } finally {
+    rmSync(temp, { force: true });
+  }
+}
+
+/**
+ * Add the machine's marks that the private-marks file lacks, at its end. It makes the file
+ * (mode 600) when it is missing. A block under the old plain header is first split by kind
+ * (`migrateMarks`), in one atomic write. Returns the kinds it added, never a value.
  */
 export function fillMarks(env: Env, found: MachineMark[]): string[] {
   const file = marksFile(env);
+  if (existsSync(file)) {
+    const logins = [...readLocalLogins(env), ...found.filter((mark) => mark.kind === 'forge login').map((mark) => mark.value)];
+    const hosts = found.filter((mark) => mark.kind === 'private remote host').map((mark) => mark.value);
+    const migrated = migrateMarks(readFileSync(file, 'utf8'), { logins, hosts });
+    if (migrated !== null) replaceFile(file, migrated);
+  }
   const known = new Set(loadMarks(env));
   const added: MachineMark[] = [];
   // The git display name is left out: as a mark, a common name would flag every file that
@@ -401,12 +547,12 @@ export function fillMarks(env: Env, found: MachineMark[]): string[] {
   if (!added.length) return [];
   if (!existsSync(file)) writeNew(file, MARKS_HEADER, { mode: 0o600 });
   const text = readFileSync(file, 'utf8');
-  appendFileSync(file, `${text === '' || text.endsWith('\n') ? '' : '\n'}${FOUND_HEADER}\n${added.map((mark) => mark.value).join('\n')}\n`);
-  return [...new Set(added.map((mark) => mark.kind))];
+  // One header per kind, so the check knows a forge login from a mark the owner wrote (#410).
+  const kinds = [...new Set(added.map((mark) => mark.kind))];
+  const blocks = kinds.map((kind) => `${foundHeader(kind)}\n${added.filter((mark) => mark.kind === kind).map((mark) => mark.value).join('\n')}\n`);
+  appendFileSync(file, `${text === '' || text.endsWith('\n') ? '' : '\n'}${blocks.join('')}`);
+  return kinds;
 }
-
-/** The comment above the marks `fillMarks` adds. They run to the next comment line. */
-const FOUND_HEADER = '# added by yokoten from this machine';
 
 /** How many marks the owner wrote: the lines of the file outside the parts `fillMarks` added. */
 export function countOwnMarks(env: Env): number {
@@ -419,7 +565,7 @@ export function countOwnMarks(env: Env): number {
   let isFound = false;
   let count = 0;
   for (const line of text.split(/\r?\n/).map((part) => part.trim())) {
-    if (line.startsWith('#')) isFound = line === FOUND_HEADER;
+    if (line.startsWith('#')) isFound = line === FOUND_HEADER || line.startsWith(`${FOUND_HEADER}: `);
     else if (line && !isFound) count++;
   }
   return count;

@@ -2,13 +2,12 @@
 // reads one pull request through gh, for a repo without CI (#377). And
 // `yokoten redact`, the privacy check's filter for command output (#390).
 
-import { execFileSync } from 'node:child_process';
 import { ghIn, readCodeOwners, readIssue, readNumberedPullRequest, readPullRequest } from '../host/github.ts';
 import { loadConfig } from '../rules/config.ts';
 import { type Finding, formatFinding } from '../rules/message.ts';
 import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, largeDiff, longSentenceNote, longSentences, splitForDependabot } from '../rules/pr.ts';
 import { parseChange } from '../run/changelog.ts';
-import { check, checkHistory, historyTimeZones, timeZoneNote } from '../run/check.ts';
+import { check, checkHistory, GitReadError, gitReadFinding, historyTimeZones, readGit, timeZoneNote } from '../run/check.ts';
 import { isCodeFile, nameNotes } from '../run/names.ts';
 import { loadMarks, makeRedactor } from '../rules/privacy.ts';
 import { machineMarks, machineUserNames } from '../setup/install.ts';
@@ -33,13 +32,34 @@ export function runCheck(): number {
   const name = `yokoten check${mode === 'pr' || mode === 'issue' ? ` --${mode}` : ''}`;
   const notes: Finding[] = [];
   let problems: Finding[];
+  try {
+    problems = runMode(mode, root, config, notes, { name, json, number });
+  } catch (err) {
+    // A git read the check depends on gave no answer (#403): one finding, and the check fails.
+    if (!(err instanceof GitReadError)) throw err;
+    problems = [gitReadFinding(err)];
+  }
+  if (problems === SKIPPED) return 0;
+  if (json) printJson({ check: mode, ok: !problems.length, findings: problems, notes });
+  else if (!problems.length) print([`${name}: ok${mode === 'history' ? ' (every commit on every branch)' : ''}`]);
+  else print([`${name}: ${problems.length} problem(s)`, ...bullets(problems)], process.stderr);
+  showOnPullRequest(`yokoten check${mode === 'tree' ? '' : ` --${mode}`}`, problems, notes, { json, isPlaceAFile: mode !== 'history' });
+  return problems.length ? 1 : 0;
+}
+
+/** Returned by `runMode` when there is nothing to check; it has already said so. */
+const SKIPPED: Finding[] = [];
+
+/** The problems of one mode of `check`; its notes go into `notes`, and some are printed as they are found. */
+function runMode(mode: string, root: string, config: ReturnType<typeof loadConfig>, notes: Finding[], { name, json, number }: { name: string; json: boolean; number?: string }): Finding[] {
+  let problems: Finding[];
   if (mode === 'issue') {
     const issue = readIssue(env);
     if (!issue) {
       const skipped = 'no issue in this run (it reads the CI event); nothing to check';
       if (json) printJson({ check: mode, ok: true, skipped, findings: [], notes: [] });
       else print([`${name}: ${skipped}`]);
-      return 0;
+      return SKIPPED;
     }
     // An event that can't be read is one finding (#267), so --json and the summary still work.
     problems = 'problem' in issue ? [issue.problem] : checkIssueTitle(issue.title, config, issue.labels);
@@ -49,20 +69,16 @@ export function runCheck(): number {
       const skipped = 'no pull request in this run (it reads the CI event); nothing to check';
       if (json) printJson({ check: mode, ok: true, skipped, findings: [], notes: [] });
       else print([`${name}: ${skipped}`]);
-      return 0;
+      return SKIPPED;
     }
     // An event or commits that can't be read are one finding (#267), never git's raw error.
     if ('problem' in pr) {
       problems = [pr.problem];
     } else {
       // The file as the pull request leaves it, or null when the pull request deletes it.
-      const readAtHead = (file: string): string | null => {
-        try {
-          return execFileSync('git', ['--no-replace-objects', 'show', `${pr.head}:${file}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-        } catch {
-          return null;
-        }
-      };
+      // Any other file git can't show stops the check (#403): never read as deleted.
+      const deleted = new Set(pr.deleted);
+      const readAtHead = (file: string): string | null => (deleted.has(file) ? null : readGit(root, ['show', `${pr.head}:${file}`]).toString('utf8'));
       const printNotes = (found: Finding[], label: string) => {
         if (found.length && !json) print([`${name}: note: ${found.length} ${label}`, ...bullets(found.slice(0, 10)), ...(found.length > 10 ? [`- and ${found.length - 10} more`] : [])]);
       };
@@ -80,8 +96,8 @@ export function runCheck(): number {
       const codeFiles = pr.files.filter(isCodeFile);
       // One diff with renames found, so a moved file is not noted as all new. Fixed
       // prefixes and plain paths, whatever the user's git settings say.
-      const diffArgs = ['--no-replace-objects', '-c', 'core.quotePath=false', 'diff', '-U0', '-M', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', `${pr.base}...${pr.head}`];
-      const added = codeFiles.length ? addedLinesByFile(execFileSync('git', diffArgs, { cwd: root, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })) : new Map<string, Set<number>>();
+      const diffArgs = ['-c', 'core.quotePath=false', 'diff', '-U0', '-M', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', `${pr.base}...${pr.head}`];
+      const added = codeFiles.length ? addedLinesByFile(readGit(root, diffArgs).toString('utf8')) : new Map<string, Set<number>>();
       for (const file of codeFiles) {
         const text = added.has(file) ? readAtHead(file) : null;
         if (text !== null) names.push(...nameNotes(file, text, added.get(file) ?? new Set()));
@@ -119,11 +135,7 @@ export function runCheck(): number {
       if (!json) print([`${name}: note: ${formatFinding(timeZoneNote(zones))}`]);
     }
   }
-  if (json) printJson({ check: mode, ok: !problems.length, findings: problems, notes });
-  else if (!problems.length) print([`${name}: ok${mode === 'history' ? ' (every commit on every branch)' : ''}`]);
-  else print([`${name}: ${problems.length} problem(s)`, ...bullets(problems)], process.stderr);
-  showOnPullRequest(`yokoten check${mode === 'tree' ? '' : ` --${mode}`}`, problems, notes, { json, isPlaceAFile: mode !== 'history' });
-  return problems.length ? 1 : 0;
+  return problems;
 }
 
 /** Past this many characters with no line end, the text goes out at its last space or tab, so memory stays small. */

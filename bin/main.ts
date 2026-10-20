@@ -1,13 +1,8 @@
 // yokoten: carry what one project learned into every project. bin/yokoten.ts turns on
 // the compile cache, then loads this file (#286). This file reads the command and hands it
-// to its module in src/commands/, one per command or small group (#330).
+// to its module in src/commands/, one per command or small group (#330). Each module is
+// imported only when its command runs, so a guard call never loads doctor or init (#408).
 
-import { runAdopt, runDoctor, runExplain } from '../src/commands/advice.ts';
-import { runBot } from '../src/commands/bot.ts';
-import { runCheck, runRedact } from '../src/commands/check.ts';
-import { runHook } from '../src/commands/hook.ts';
-import { runChangelog, runLearn } from '../src/commands/learn.ts';
-import { runInit, runInstall, runUninstall, runUpdate } from '../src/commands/setup.ts';
 import { args, cmd, parse, print, printJsonError, say, usage } from '../src/commands/shared.ts';
 import { closestWord, COMMANDS, commandHelp, findCommand, HELP_OPTIONS, commandList } from '../src/run/cli.ts';
 import { VERSION } from '../src/setup/files.ts';
@@ -53,32 +48,35 @@ function main(): number | Promise<number> {
     return 0;
   }
   switch (cmd) {
-    case 'hook':
-      return runHook();
+    case 'hook': {
+      // The tool-call guard's worker, which bin/yokoten.mjs started before this file loaded (#408).
+      const guard = args.includes('--stop') ? undefined : import('../src/run/hook.ts').then((m) => m.takeGuard());
+      return Promise.all([guard, import('../src/commands/hook.ts')]).then(([started, m]) => m.runHook(started));
+    }
     case 'check':
-      return runCheck();
+      return import('../src/commands/check.ts').then((m) => m.runCheck());
     case 'redact':
-      return runRedact();
+      return import('../src/commands/check.ts').then((m) => m.runRedact());
     case 'changelog':
-      return runChangelog();
+      return import('../src/commands/learn.ts').then((m) => m.runChangelog());
     case 'learn':
-      return runLearn();
+      return import('../src/commands/learn.ts').then((m) => m.runLearn());
     case 'doctor':
-      return runDoctor();
+      return import('../src/commands/advice.ts').then((m) => m.runDoctor());
     case 'explain':
-      return runExplain();
+      return import('../src/commands/advice.ts').then((m) => m.runExplain());
     case 'adopt':
-      return runAdopt();
+      return import('../src/commands/advice.ts').then((m) => m.runAdopt());
     case 'init':
-      return runInit();
+      return import('../src/commands/setup.ts').then((m) => m.runInit());
     case 'update':
-      return runUpdate();
+      return import('../src/commands/setup.ts').then((m) => m.runUpdate());
     case 'bot':
-      return runBot();
+      return import('../src/commands/bot.ts').then((m) => m.runBot());
     case 'install':
-      return runInstall();
+      return import('../src/commands/setup.ts').then((m) => m.runInstall());
     case 'uninstall':
-      return runUninstall();
+      return import('../src/commands/setup.ts').then((m) => m.runUninstall());
     case 'version': {
       const options = parse('version');
       if (typeof options === 'string') return usage(options);

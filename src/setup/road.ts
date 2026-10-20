@@ -16,11 +16,12 @@ import { matcher } from '../rules/config.ts';
 import { type Finding, finding, type RuleId } from '../rules/message.ts';
 import { CHANGES_DIR, parseCodeOwners } from '../rules/pr.ts';
 import { BUILD_DIRS, isBuildOutput } from '../rules/layout.ts';
+import { homeOf } from '../rules/privacy.ts';
 import { hasPlugin, hasProjectHook } from '../agents/runtimes/claude-code.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
 import { CODEOWNERS_PLACES, hasBot, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
-import { claudeReadsRules, cliPath, COMMIT_HOOKS, deadHookNotes, findRulesGap, handOffBlocks, hasHandOff, hookFile, isCommitHook, isExecutable, isSelf, type OldHook, OWNER_PLACEHOLDER, readHookSetup, readOldHooks } from './init.ts';
+import { claudeReadsRules, cliPath, COMMIT_HOOKS, deadHookNotes, findRulesGap, handOffBlocks, hasHandOff, hookFile, isCommitHook, isExecutable, isSelf, type OldHook, OWNER_PLACEHOLDER, readHookSetup, readOldHooks, remembered } from './init.ts';
 import { FIRST_MILESTONE, lackingLabels, pickNewMilestone } from './plan.ts';
 import { skillFiles, skillsDir } from './install.ts';
 
@@ -94,13 +95,15 @@ function orgOnlyOwner(root: string, file: string, server: ServerRead): string | 
   return owners.length > 0 && owners.every((owner) => owner.toLowerCase() === `@${org.toLowerCase()}`) ? org : null;
 }
 
-export const gitConfig = (root: string, key: string) => {
-  try {
-    return execFileSync('git', ['config', '--get', key], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-  } catch {
-    return '';
-  }
-};
+export const gitConfig = (root: string, key: string): string =>
+  remembered(`config\0${root}\0${key}`, () => {
+    try {
+      return execFileSync('git', ['config', '--get', key], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {
+      return '';
+    }
+  });
+
 
 const ciFiles = (root: string): string[] => {
   const dir = join(root, '.github', 'workflows');
@@ -133,6 +136,8 @@ export const hasPrTemplate = (root: string) => ['pull_request_template.md', 'PUL
 export function skillsLacking(env: Env): string[] | null {
   const kitSkills = join(KIT, 'user', 'skills');
   if (!existsSync(kitSkills)) return null;
+  // No home folder (#356): no skills folder to look in, so none is there.
+  if (!homeOf(env)) return ['your home folder (HOME is not set)'];
   const lacking = new Map<string, string[]>();
   for (const name of readdirSync(kitSkills)) {
     for (const file of skillFiles(env, name)) if (!existsSync(file)) lacking.set(skillsDir(file), [...(lacking.get(skillsDir(file)) ?? []), name]);
@@ -325,7 +330,7 @@ const testsFix = (root: string) => {
 const builtFiles = (root: string): string[] | null => {
   let files: string[];
   try {
-    files = execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 1 << 30 }).split('\0').filter(Boolean);
+    files = remembered(`ls-files\0${root}`, () => execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 1 << 30 })).split('\0').filter(Boolean);
   } catch {
     return null;
   }
@@ -340,18 +345,33 @@ const builtFiles = (root: string): string[] | null => {
 
 /** The one security file init does not write: the license is the owner's choice. */
 const LICENSE_FILE = 'license file';
+/**
+ * A license file name, as GitHub's licensee finds one (#376): LICENSE, LICENCE, UNLICENSE or COPYING in
+ * any case, alone or followed by an extension or a suffix such as an SPDX id. So LICENSE.md,
+ * licence.txt, COPYING.LESSER and the Rust dual layout LICENSE-MIT plus LICENSE-APACHE all count.
+ * LICENSES.md and LICENSING.md do not: they explain which license applies where, and are no license.
+ */
+export const isLicenseName = (name: string) => /^((un)?licen[cs]e|copying)([-._].*)?$/i.test(name);
+/** Whether the root has a license file: one readdir, names as the folder lists them. */
+const hasLicense = (root: string) => {
+  try {
+    return readdirSync(root, { withFileTypes: true }).some((entry) => !entry.isDirectory() && isLicenseName(entry.name));
+  } catch {
+    return false;
+  }
+};
 const DEPENDABOT_FILE = 'Dependabot config';
-const SECURITY_FILES: [string, string[]][] = [
-  ['security policy (SECURITY.md)', ['.github/SECURITY.md', 'SECURITY.md']],
-  [DEPENDABOT_FILE, ['.github/dependabot.yml', '.github/dependabot.yaml']],
-  [LICENSE_FILE, ['LICENSE', 'LICENSE.md', 'LICENSE.txt', 'COPYING']],
+const SECURITY_FILES: [string, (root: string) => boolean][] = [
+  ['security policy (SECURITY.md)', (root) => ['.github/SECURITY.md', 'SECURITY.md'].some((p) => existsSync(join(root, p)))],
+  [DEPENDABOT_FILE, (root) => ['.github/dependabot.yml', '.github/dependabot.yaml'].some((p) => existsSync(join(root, p)))],
+  [LICENSE_FILE, hasLicense],
 ];
 /**
  * The security files the repo lacks. With "notNow" `ci` (#377), the kit's Dependabot
  * config is not asked for: it updates only the actions that CI runs.
  */
 export const securityLacking = (root: string, isOff: boolean = isCiOff(root)): string[] =>
-  SECURITY_FILES.filter(([name, paths]) => !(isOff && name === DEPENDABOT_FILE) && !paths.some((p) => existsSync(join(root, p)))).map(([name]) => name);
+  SECURITY_FILES.filter(([name, has]) => !(isOff && name === DEPENDABOT_FILE) && !has(root)).map(([name]) => name);
 
 /**
  * True when yokoten.json "notNow" names `ci` (#377): the project keeps CI off, and the

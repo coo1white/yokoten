@@ -7,9 +7,9 @@
 
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import type { Env } from '../../rules/config.ts';
+import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import type { Action } from '../../run/hook.ts';
 import { type FolderTrust, folderKeys, isFolder } from '../folder-trust.ts';
@@ -104,7 +104,7 @@ export const checkProjectHooks = (root: string): void => checkHooksFile(projectH
 /** A Stop event: the same fields as Claude Code's (`cwd`, `stop_hook_active`). */
 export { readStop } from './claude-code.ts';
 
-const userHooks = (env: Env) => join(env.HOME || homedir(), '.codex', 'hooks.json');
+const userHooks = (env: Env) => join(homeIn(env), '.codex', 'hooks.json');
 
 /** The two user hooks, as `addHook`'s arguments: one builder for `addUserHooks` and `userHooksState`. */
 const userHookArgs = (env: Env, cli: string, missing: string): Record<'doctor' | 'guard', HookArgs> => ({
@@ -235,19 +235,26 @@ function isTableHeader(line: string): boolean {
   return !!path && path[1].startsWith(close!) && /^\s*(#.*)?$/.test(path[1].slice(close!.length));
 }
 
-/**
- * The two tables of config.toml that hold trust, read without a TOML library (no runtime
- * dependencies): `projects` and `hooks.state`, each a map from a folder or hook key to its
- * fields. Table headers, dotted keys and one-line tables, as Codex writes them. Lines
- * inside a multi-line string or array are skipped, but a table header always ends an
- * array: a header is never read as part of the table above it, so a key below it is
- * never put in the wrong project.
- */
+/** The two tables of config.toml that hold trust: `projects` and `hooks.state` (see `readTomlTables`). */
 export function readTrustTables(text: string): { projects: Map<string, Record<string, unknown>>; hookStates: Map<string, Record<string, unknown>> } {
-  const projects = new Map<string, Record<string, unknown>>();
-  const hookStates = new Map<string, Record<string, unknown>>();
+  const [projects, hookStates] = readTomlTables(text, [['projects'], ['hooks', 'state']]);
+  return { projects, hookStates };
+}
+
+/**
+ * The tables below each of `roots` (a dotted key, such as `hooks.state`), read without a
+ * TOML library (no runtime dependencies): for each root, a map from the key below it (a
+ * folder or a hook key) to its fields. Codex's config.toml and Grok CLI's
+ * trusted_folders.toml use it. Table headers, dotted keys and one-line tables, as those
+ * CLIs write them. Lines inside a multi-line string or array are skipped, but a table
+ * header always ends an array: a header is never read as part of the table above it, so
+ * a key below it is never put in the wrong folder.
+ */
+export function readTomlTables(text: string, roots: readonly (readonly string[])[]): Map<string, Record<string, unknown>>[] {
+  const tables = roots.map(() => new Map<string, Record<string, unknown>>());
   const set = (path: string[], value: unknown) => {
-    const [table, at] = path[0] === 'projects' ? [projects, 1] : path[0] === 'hooks' && path[1] === 'state' ? [hookStates, 2] : [null, 0];
+    const index = roots.findIndex((root) => root.every((part, i) => path[i] === part));
+    const [table, at] = index < 0 ? [null, 0] : [tables[index], roots[index].length];
     if (!table || path.length < at + 1) return;
     const key = path[at];
     const fields = table.get(key) ?? {};
@@ -296,7 +303,7 @@ export function readTrustTables(text: string): { projects: Map<string, Record<st
     }
     if (header) set([...header, ...path[0]], readTomlValue(value));
   }
-  return { projects, hookStates };
+  return tables;
 }
 
 /** Keys sorted at every level, as serde_json's `sort_all_objects` leaves them. */
@@ -356,7 +363,9 @@ function mainCheckout(root: string): string | null {
  */
 export function readTrust(root: string, env: Env): CodexTrust {
   const store = env.CODEX_HOME ? '$CODEX_HOME/config.toml' : '~/.codex/config.toml';
-  const home = env.CODEX_HOME || join(env.HOME || homedir(), '.codex');
+  const user = homeOf(env);
+  const home = env.CODEX_HOME || (user ? join(user, '.codex') : '');
+  if (!home) return { state: 'no home', store };
   const file = join(home, 'config.toml');
   if (!isFolder(home)) return { state: 'no home', store };
   if (!existsSync(file)) return { state: 'no store', store };

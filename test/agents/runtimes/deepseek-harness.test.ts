@@ -1,5 +1,6 @@
 // Tests for src/agents/runtimes/deepseek-harness.ts.
 
+import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -55,7 +56,7 @@ test('deepseek-harness readToolCall: the fields, not the name; anything else is 
 test('deepseek-harness project files: init writes the guard and the launch patch, keeps other hooks, and doctor says only a real deny proves it', () => {
   const sandbox = makeSandbox();
   const file = join(sandbox.repo, '.dsh', 'hooks.json');
-  const cli = '.yokoten/bin/yokoten.ts';
+  const cli = '.yokoten/bin/yokoten.mjs';
   const dshHome = join(sandbox.home, 'dsh-home');
   const doctor = () => sandbox.run(['doctor'], { extra: { DSH_HOME: dshHome } }).stdout;
   assert.match(doctor(), /note +deepseek-harness-hook: no tool-call guard in \.dsh\/hooks\.json/, 'reported, not counted as missing');
@@ -70,7 +71,7 @@ test('deepseek-harness project files: init writes the guard and the launch patch
   assert.deepEqual(Object.keys(written.hooks), ['PreToolUse'], 'no Stop hook: the bridge sends it back with no loop guard');
   assert.equal(written.hooks.PreToolUse.length, 2, "another hook's group stays");
   assert.equal(written.hooks.PreToolUse[1].matcher, 'bash|pwsh|edit|write', 'dsh matches the lowercase names exactly');
-  assert.match(written.hooks.PreToolUse[1].hooks[0].command, /"\$\(git rev-parse --show-toplevel\)\/\.yokoten\/bin\/yokoten\.ts" hook --agent deepseek-harness 2>&1/);
+  assert.match(written.hooks.PreToolUse[1].hooks[0].command, /"\$\(git rev-parse --show-toplevel\)\/\.yokoten\/bin\/yokoten\.mjs" hook --agent deepseek-harness 2>&1/);
   const patch = readFileSync(join(sandbox.repo, '.dsh', 'yokoten.patch.yml'), 'utf8');
   assert.equal(patch, PATCH);
   assert.match(patch, /^- insert:\n {4}- id: hooks-claude-code\n {6}name: '@deepseek-ai\/dsh-hooks-claude-code'\n {6}config:\n {8}configPath: \.dsh\/hooks\.json\n$/m);
@@ -104,7 +105,7 @@ test('deepseek-harness on Windows: dsh runs hooks in PowerShell, so doctor notes
     mkdirSync(join(modules, pkg), { recursive: true });
     writeFileSync(join(modules, pkg, 'package.json'), '{}');
   }
-  addProjectHooks(sandbox.repo, '.yokoten/bin/yokoten.ts');
+  addProjectHooks(sandbox.repo, '.yokoten/bin/yokoten.mjs');
   const dshCheck = (platform: string) => agentHooks(sandbox.repo, { DSH_HOME: dshHome }, platform).find((p) => p.name === 'deepseek-harness-hook');
   const windows = dshCheck('win32');
   assert.equal(windows?.ok, false, 'files and bridge in place, but PowerShell cannot run the guard');

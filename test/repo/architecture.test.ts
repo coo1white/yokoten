@@ -1,15 +1,18 @@
 // The shape of the code, checked. A rule about structure that no test holds drifts.
+import './home.ts';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir, userInfo } from 'node:os';
+import { dirname, join, posix, relative } from 'node:path';
 import { test } from 'node:test';
+import { makeTempDir } from './helpers.ts';
 import { fileURLToPath } from 'node:url';
 import { COMMANDS } from '../../src/run/cli.ts';
-import { findDeclarations, findNameProblems, splitWords, tokenize } from '../../src/run/names.ts';
+import { findDeclarations, findNameProblems, splitWords, type Token, tokenize } from '../../src/run/names.ts';
 import { HOME_DIR, homeDirOf } from '../../src/setup/files.ts';
 import { assertLinear } from '../../scripts/linear.ts';
+import { TEST_HOME } from './home.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SRC = join(ROOT, 'src');
@@ -46,7 +49,7 @@ test('layers: no module imports from a layer above its own', () => {
 // imports, to that module's file, so parallel branches do not meet in one import block.
 // Next to the layer folders, test/ holds repo/: this file and the shared helpers, which
 // check the repo as a whole, not one src module.
-const TEST_TOP = ['repo/architecture.test.ts', 'repo/helpers.ts'];
+const TEST_TOP = ['repo/architecture.test.ts', 'repo/helpers.ts', 'repo/home.ts'];
 // Modules with no test file of their own. Keep it short: a new module gets its test file.
 const NO_TEST_FILE = [
   'agents/agent-skills.ts', // no tests yet (#152)
@@ -195,13 +198,42 @@ test('action.yml: check --issue on issues; a notice, not check --pr, on pull_req
 
 // Node runs .ts as it is, so no other code file is needed; one appearing means someone
 // reached for a build-era habit (AGENTS.md, "This project").
-const strayCode = (paths: string[]) => paths.filter((p) => /^(bin|src|test)\//.test(p) && /\.(js|mjs|cjs|jsx|tsx|mts|cts)$/.test(p));
+// One exception: bin/yokoten.mjs, the entry the agent hooks run. A .ts entry makes Node load
+// its type stripper before the compile cache is on, on every hook call (record 0013).
+const ENTRY = 'bin/yokoten.mjs';
+const strayCode = (paths: string[]) => paths.filter((p) => p !== ENTRY && /^(bin|src|test)\//.test(p) && /\.(js|mjs|cjs|jsx|tsx|mts|cts)$/.test(p));
 
 test('code is .ts only: no .js, .mjs, .cjs or .tsx under bin, src or test (#43)', () => {
-  assert.deepEqual(strayCode(['src/a.ts', 'src/b.mjs', 'test/c.tsx', 'bin/d.js', 'kit/e.js', 'docs/f.md']), ['src/b.mjs', 'test/c.tsx', 'bin/d.js']);
+  assert.deepEqual(strayCode(['src/a.ts', 'src/b.mjs', 'test/c.tsx', 'bin/d.js', 'bin/main.mjs', 'kit/e.js', 'docs/f.md', ENTRY]), ['src/b.mjs', 'test/c.tsx', 'bin/d.js', 'bin/main.mjs']);
   const files = execFileSync('git', ['ls-files', 'bin', 'src', 'test'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter(Boolean);
   assert.ok(files.some((f) => f.endsWith('.ts')), 'no .ts found; the scan is broken');
   assert.deepEqual(strayCode(files), [], 'write it as .ts: Node runs it with no build');
+});
+
+// #400: a test made its folder with a bare mkdtempSync and never removed it; one machine
+// held 4,000 of them. makeTempDir (test/repo/helpers.ts) removes each one when its test
+// ends. A line that starts with a quote is text a test writes out, not code that runs here.
+// The [d] keeps this pattern from matching its own line. test/repo/home.ts makes the test
+// home folder before any test runs and removes it when the process exits (#356).
+const TEMP_HELPER = 'test/repo/helpers.ts';
+const TEMP_MAKERS = new Set([TEMP_HELPER, 'test/repo/home.ts']);
+const findBareTempDirs = (files: Record<string, string>) =>
+  Object.entries(files).flatMap(([path, text]) =>
+    TEMP_MAKERS.has(path)
+      ? []
+      : text.split('\n').flatMap((line, index) => (!/^\s*["'`]/.test(line) && /\bmk[d]temp(Sync)?\s*\(/.test(line) ? [`${path}:${index + 1}`] : [])));
+
+test('temp folders: tests make them with makeTempDir, not with mkdtempSync alone (#400)', () => {
+  assert.deepEqual(findBareTempDirs({
+    'test/a.test.ts': "const dir = mkdtempSync(join(tmpdir(), 'x-'));\nconst ok = makeTempDir('x-');\n",
+    'test/b.test.ts': "  \"const root = mkdtempSync(join(tmpdir(), 'lesson-'));\",\nawait mkdtemp(prefix);\n",
+    [TEMP_HELPER]:
+      "const parent = mkdtempSync(join(tmpdir(), 'yokoten-test-'));\n",
+  }), ['test/a.test.ts:1', 'test/b.test.ts:2']);
+  const paths = execFileSync('git', ['ls-files', 'test'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter((p) => p.endsWith('.ts'));
+  assert.ok(paths.includes(TEMP_HELPER), 'the helper is not found; the scan is broken');
+  const files = Object.fromEntries(paths.map((p) => [p, readFileSync(join(ROOT, p), 'utf8')]));
+  assert.deepEqual(findBareTempDirs(files), [], `make the folder with makeTempDir from ${TEMP_HELPER}: it is removed when the test ends`);
 });
 
 // ---- The npm package (#31) ----
@@ -504,7 +536,7 @@ test('docs: the guides\' Commands table covers every command and option in COMMA
 // still finds it there; an import the tool cannot place stops it, with a list. The fixture
 // repo has a script and two test files named like the real ones, so the real table places them.
 function makeSplitFixture(files: Record<string, string>): string {
-  const root = mkdtempSync(join(tmpdir(), 'yokoten-split-'));
+  const root = makeTempDir('yokoten-split-');
   const hoisted = "const ROOT = 'root';\nconst CLI = 'cli';\nconst at = '@';\nfunction makeSandbox(): string {\n  return ROOT + CLI + at;\n}\n";
   const all: Record<string, string> = {
     'test/cli.test.ts': `import assert from 'node:assert/strict';\nimport { test } from 'node:test';\n\n${hoisted}\ntest('install: the helpers move', () => {\n  assert.equal(makeSandbox(), 'rootcli@');\n});\n`,
@@ -596,4 +628,194 @@ test('assertLinear: a quadratic read fails; a slow spell in one round does not (
     busyWait(7 * (input.length / 1000));
   };
   assertLinear('linear with a slow spell', (n) => 'x'.repeat(n), noisy, 1000);
+});
+
+// No test reads or writes the real home folder (#356). test/repo/home.ts points HOME at an
+// empty temp folder, so it has to load before anything else: it is each test file's first
+// import. A child process inherits that HOME, unless the test gives it an env of its own
+// with no HOME; then the CLI falls back to the system's home, the real one. In src, only
+// privacy.ts asks the system for the home folder; the rest reads HOME from the env it is given.
+const HOME_MODULE = 'repo/home.ts';
+const RUNS_CHILD = /\b(?:spawn|spawnSync|exec|execSync|execFile|execFileSync)\(/;
+
+/** The object literal that starts at `open` (a `{`), braces matched; the rest of the line when it runs on. */
+function literalAt(line: string, open: number): string {
+  let depth = 0;
+  for (let i = open; i < line.length; i++) {
+    if (line[i] === '{') depth++;
+    else if (line[i] === '}' && --depth === 0) return line.slice(open, i + 1);
+  }
+  return line.slice(open);
+}
+
+/** What breaks the rule in the test files, each given by its path inside test/ and its text. */
+function homeProblems(files: Record<string, string>): string[] {
+  const problems: string[] = [];
+  for (const [path, text] of Object.entries(files)) {
+    if (path === HOME_MODULE) continue;
+    const rel = posix.relative(posix.dirname(path), HOME_MODULE);
+    const wanted = `import '${rel.startsWith('.') ? rel : `./${rel}`}';`;
+    const lines = text.split('\n');
+    const first = lines.find((line) => line.startsWith('import '));
+    if (first !== wanted) problems.push(`test/${path}: the first import must be ${wanted}`);
+    lines.forEach((line, i) => {
+      if (!RUNS_CHILD.test(line)) return;
+      for (const match of line.matchAll(/\benv: \{/g)) {
+        const env = literalAt(line, (match.index ?? 0) + match[0].length - 1);
+        if (!/\bHOME\b|\.\.\./.test(env)) problems.push(`test/${path}:${i + 1}: a child process gets an env with no HOME`);
+      }
+    });
+  }
+  return problems;
+}
+
+test('home: the scan finds a test file that loads the temp home late, and a child env with no HOME (#356)', () => {
+  const call = 'spawnSync'; // a variable, so this file's own scan does not read the fixtures as calls
+  const good = "// A test.\nimport '../repo/home.ts';\nimport assert from 'node:assert/strict';\n";
+  assert.deepEqual(homeProblems({
+    'run/good.test.ts': `${good}${call}('node', [CLI], { env: { ...sandbox.env, X: '1' } });\n${call}('node', [], { env: { PATH: '', HOME: temp } });\n`,
+    'repo/helpers.ts': "import './home.ts';\n",
+    'agents/runtimes/x.test.ts': "import '../../repo/home.ts';\n",
+    'repo/home.ts': 'no imports needed\n',
+  }), []);
+  assert.deepEqual(homeProblems({
+    'run/late.test.ts': "import assert from 'node:assert/strict';\nimport '../repo/home.ts';\n",
+    'run/none.test.ts': "import { test } from 'node:test';\n",
+    'run/bare.test.ts': `${good}const out = ${call}('node', [CLI, 'doctor'], { env: { PATH: process.env.PATH, TZ: 'UTC' }, encoding: 'utf8' });\n`,
+  }), [
+    "test/run/late.test.ts: the first import must be import '../repo/home.ts';",
+    "test/run/none.test.ts: the first import must be import '../repo/home.ts';",
+    'test/run/bare.test.ts:4: a child process gets an env with no HOME',
+  ]);
+});
+
+test('home: every test file loads the temp home first, and no child gets an env with no HOME (#356)', () => {
+  const files = Object.fromEntries(filesUnder(join(ROOT, 'test')).filter((path) => path.endsWith('.ts')).map((path) => [path, readFileSync(join(ROOT, 'test', path), 'utf8')]));
+  assert.ok(Object.keys(files).length > 10, 'the test file scan found too few files; it is broken');
+  assert.deepEqual(homeProblems(files), [], 'import test/repo/home.ts first; give a child process HOME, or spread an env that has it');
+});
+
+test('home: in src, only privacy.ts asks the system for the home folder (#356)', () => {
+  const found = filesUnder(SRC).filter((path) => /\bhomedir\(|userInfo\(\)\.homedir/.test(readFileSync(join(SRC, path), 'utf8')));
+  assert.deepEqual(found, ['rules/privacy.ts'], 'read the home folder from env.HOME (homeOf or homeIn); the CLI entry fills it in');
+});
+
+test('home: a test that reads the home folder gets the empty temp one, not the real one (#356)', () => {
+  // The positive control: the plain lookups a careless test would use.
+  assert.equal(homedir(), TEST_HOME);
+  assert.equal(process.env.HOME, TEST_HOME);
+  assert.ok(TEST_HOME.startsWith(tmpdir()), 'the test home is in the temp folder');
+  let real = '';
+  try {
+    real = userInfo().homedir;
+  } catch {
+    // No password entry (some containers): there is no other home to compare with.
+  }
+  if (real) assert.notEqual(homedir(), real, 'homedir() in a test must not be the real home folder');
+  assert.equal(existsSync(join(homedir(), '.config', 'yokoten')), false, 'the test home starts empty');
+  // A child process with no env of its own inherits it.
+  const child = spawnSync(process.execPath, ['-e', "process.stdout.write(require('node:os').homedir())"], { encoding: 'utf8' });
+  assert.equal(child.stdout, TEST_HOME);
+});
+
+// ---- Code given to node -e (#329) ----
+//
+// Code built from values is code injection waiting for a hostile value (CodeQL
+// js/bad-code-sanitization). The code a test gives `node -e` is fixed text: string literals,
+// maybe joined. Values go in on stdin or as arguments, which the child reads as data.
+const EVAL_FLAGS = new Set(['-e', '--eval', '-p', '--print']);
+const OPENERS = new Set(['(', '[', '{', '${']);
+const CLOSERS = new Set([')', ']', '}']);
+const FIXED_PUNCTUATION = new Set(['[', ']', ',', '(', ')', '+', '.']);
+
+/** The tokens of the argument that starts at `from`: up to a `,`, `)` or `]` at its own depth. */
+function argumentAt(tokens: Token[], from: number): Token[] {
+  let depth = 0;
+  let end = from;
+  for (; end < tokens.length; end++) {
+    const text = tokens[end].text;
+    if (depth === 0 && [',', ')', ']'].includes(text)) break;
+    if (OPENERS.has(text)) depth++;
+    else if (CLOSERS.has(text)) depth--;
+  }
+  return tokens.slice(from, end);
+}
+
+/** Whether `code` is only string literals, joined; a name is read through its `const`. */
+function isFixedCode(tokens: Token[], code: Token[], before: number): boolean {
+  if (code.length === 1 && code[0].kind === 'name') {
+    const declared = tokens.findLastIndex((token, index) => index < before && token.text === 'const' && tokens[index + 1]?.text === code[0].text && tokens[index + 2]?.text === '=');
+    if (declared === -1) return false;
+    let end = declared + 3;
+    let depth = 0;
+    for (; end < tokens.length && !(depth === 0 && tokens[end].text === ';'); end++) {
+      if (OPENERS.has(tokens[end].text)) depth++;
+      else if (CLOSERS.has(tokens[end].text)) depth--;
+    }
+    return isFixedCode(tokens, tokens.slice(declared + 3, end), -1);
+  }
+  return code.length > 0 && code.every((token) => token.kind === 'string' || (token.kind === 'punct' && FIXED_PUNCTUATION.has(token.text)) || (token.kind === 'name' && token.text === 'join'));
+}
+
+/** The lines of `text` that run node with -e, --eval, -p or --print, and how many give code built from values. */
+function findSplicedCode(text: string): { checked: number; lines: number[] } {
+  const tokens = tokenize(text);
+  const lines: number[] = [];
+  let checked = 0;
+  tokens.forEach((token, index) => {
+    if (token.kind !== 'string' || !EVAL_FLAGS.has(token.text.replace(/^['"]|['"]$/g, '')) || tokens[index + 1]?.text !== ',') return;
+    // Node reads the flag only before a script, so the flag's array holds only flags before
+    // it: `[execPath, 'script.ts', '-p', ...]` is the script's -p.
+    let open = index - 1;
+    while (open >= 0 && (tokens[open].text === ',' || (tokens[open].kind === 'string' && /^['"]-/.test(tokens[open].text)))) open--;
+    if (tokens[open]?.text !== '[' || tokens[open - 1]?.text !== ',') return;
+    // Back to the `(` of the call the array is an argument of: it runs node.
+    let start = open - 1;
+    for (let depth = 0; start > 0; start--) {
+      const text = tokens[start - 1].text;
+      if (text === ';') return;
+      if (CLOSERS.has(text)) depth++;
+      else if (OPENERS.has(text) && depth > 0) depth--;
+      else if (text === '(') break;
+    }
+    const runsNode = tokens.slice(start, open).some((before) => before.text === 'execPath' || /^['"]?node['"]?$/.test(before.text));
+    if (!runsNode) return;
+    checked++;
+    if (!isFixedCode(tokens, argumentAt(tokens, index + 2), index)) lines.push(token.line);
+  });
+  return { checked, lines };
+}
+
+test('node -e: the reader passes fixed code and catches code built from values (#329)', () => {
+  const good = [
+    "spawnSync(process.execPath, ['-e', 'console.log(1)']);",
+    "spawnSync(process.execPath, ['--input-type=module', '-e', 'import(process.argv[1])', pathToFileURL(path).href]);",
+    "const code = ['const input = 1;', `console.log(input)`].join('\\n');",
+    "spawnSync(process.execPath, ['--eval', code], { input: JSON.stringify({ path }) });",
+    "execFileSync('git', ['cat-file', '-e', `${sha}^{commit}`]);",
+    "const shown = ['-e', `${value}`];",
+  ].join('\n');
+  assert.deepEqual(findSplicedCode(good), { checked: 3, lines: [] });
+  const bad = [
+    "spawnSync(process.execPath, ['-e', `import(${JSON.stringify(path)})`]);",
+    "execFileSync('node', ['--eval', 'import(' + JSON.stringify(path) + ')']);",
+    'const code = `const path = ${JSON.stringify(path)};`;',
+    "spawnSync(process.execPath, ['-p', code]);",
+    "const lines = ['const a = 1;', JSON.stringify(path)].join('\\n');",
+    "spawnSync(process.execPath, ['--print', lines]);",
+    "spawnSync(process.execPath, ['-e', options.code]);",
+  ].join('\n');
+  assert.deepEqual(findSplicedCode(bad), { checked: 5, lines: [1, 2, 4, 6, 7] });
+});
+
+test('node -e: bin, src, scripts and test give node fixed code; values go on stdin or argv (#329)', () => {
+  const found: string[] = [];
+  let checked = 0;
+  for (const path of execFileSync('git', ['ls-files', 'bin', 'src', 'scripts', 'test'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter((file) => file.endsWith('.ts'))) {
+    const result = findSplicedCode(readFileSync(join(ROOT, path), 'utf8'));
+    checked += result.checked;
+    for (const line of result.lines) found.push(`${path}:${line}`);
+  }
+  assert.ok(checked >= 2, `only ${checked} node -e calls found; the reader is broken`);
+  assert.deepEqual(found, [], 'make the code fixed text; pass each value on stdin or as an argument, and import a path with import(pathToFileURL(path).href)');
 });

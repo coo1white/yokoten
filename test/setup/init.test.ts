@@ -1,5 +1,6 @@
 // Tests for src/setup/init.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
@@ -33,6 +34,7 @@ import {
   MISSING_PROJECT,
   onToolCall,
   pick,
+  ROOT,
   stepMark,
 } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
@@ -40,13 +42,17 @@ import { parseCodeOwners } from '../../src/rules/pr.ts';
 import { hasHook } from '../../src/agents/hooks-file.ts';
 import { readCodeOwners } from '../../src/host/github.ts';
 import {
+  AGENTS_BACKUP,
   checkLines,
   compareCoreRules,
   compareVersions,
+  demoteHeadings,
   handOffLines,
   NO_CI_REASON,
+  moveUnderProjectHeading,
   placeHandOff,
   readKitVersion,
+  splitFrontMatter,
 } from '../../src/setup/init.ts';
 
 const guarded = (path: string, args: string) => `[ -f ${path} ] 2>/dev/null || { echo '${MISSING_PROJECT}' >&2; exit 1; }; node ${path} ${args}`;
@@ -116,7 +122,7 @@ test('init: the Gemini hook command runs when Gemini quotes a path with a space 
   const groups = JSON.parse(readFileSync(join(repo, '.gemini', 'settings.json'), 'utf8')).hooks.BeforeTool;
   assert.equal(groups.length, 1, 'updated, not added');
   const command: string = groups[0].hooks[0].command;
-  assert.equal(command, guardedCall('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --agent gemini'));
+  assert.equal(command, guardedCall('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.mjs', 'hook --agent gemini'));
   // shell-quote, which Gemini uses, writes a path with a space and no single quote as
   // '…'; a single quote inside would become '\''.
   const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
@@ -134,7 +140,9 @@ test('init: the Gemini hook command runs when Gemini quotes a path with a space 
 
 test('init: adds the practices, keeps what is there, and doctor goes on to stage 4', () => {
   const sandbox = makeSandbox();
-  sandbox.write('AGENTS.md', '# our own rules\n');
+  // An AGENTS.md with `## This project` is left to `update` (#378).
+  const ours = '# our own rules\n\n## This project\n\nours\n';
+  sandbox.write('AGENTS.md', ours);
   sandbox.write('.github/SECURITY.md', '# email us\n');
   // The user's own Codex and Gemini CLI settings stay.
   const mine = (event: string) => ({ [event]: [{ matcher: 'read_file', hooks: [{ type: 'command', command: 'mine' }] }] });
@@ -146,7 +154,7 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /kept AGENTS\.md/);
   assert.match(result.stdout, /wrote \.githooks\/pre-commit/);
-  assert.equal(readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8'), '# our own rules\n');
+  assert.equal(readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8'), ours);
   assert.match(result.stdout, /kept \.github\/SECURITY\.md/);
   assert.equal(readFileSync(join(sandbox.repo, '.github/SECURITY.md'), 'utf8'), '# email us\n', 'the project\'s own policy stays');
   assert.match(result.stdout, /wrote \.github\/dependabot\.yml/);
@@ -173,7 +181,7 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   const settings = JSON.parse(readFileSync(join(sandbox.repo, '.claude', 'settings.json'), 'utf8'));
   assert.equal(settings.hooks.PreToolUse.length, 1);
   assert.match(result.stdout, /same the stop check/);
-  assert.deepEqual(settings.hooks.Stop, [{ hooks: [{ type: 'command', command: guarded('"$CLAUDE_PROJECT_DIR/.yokoten/bin/yokoten.ts"', 'hook --stop') }] }], 'the stop check, once (#92)');
+  assert.deepEqual(settings.hooks.Stop, [{ hooks: [{ type: 'command', command: guarded('"$CLAUDE_PROJECT_DIR/.yokoten/bin/yokoten.mjs"', 'hook --stop') }] }], 'the stop check, once (#92)');
   assert.equal(settings.env.TZ, 'UTC', 'agent commits record no time zone (#40)');
   assert.match(result.stdout, /same the Codex tool-call hook/);
   assert.match(result.stdout, /same the Gemini CLI tool-call hook/);
@@ -181,21 +189,21 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.equal(codex.description, 'ours');
   assert.equal(codex.hooks.PreToolUse.length, 2);
   assert.deepEqual(codex.hooks.PreToolUse[1], {
-    hooks: [{ type: 'command', command: guardedCall('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.ts"', 'hook --agent codex') }],
+    hooks: [{ type: 'command', command: guardedCall('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.mjs"', 'hook --agent codex') }],
     matcher: 'Bash|apply_patch',
   });
   const gemini = JSON.parse(readFileSync(join(sandbox.repo, '.gemini', 'settings.json'), 'utf8'));
   assert.equal(gemini.theme, 'x');
   assert.equal(gemini.hooks.BeforeTool.length, 2);
   assert.deepEqual(gemini.hooks.BeforeTool[1], {
-    hooks: [{ type: 'command', command: guardedCall('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --agent gemini'), name: 'yokoten' }],
+    hooks: [{ type: 'command', command: guardedCall('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.mjs', 'hook --agent gemini'), name: 'yokoten' }],
     matcher: 'run_shell_command|write_file|replace',
   });
   // The stop checks (#211): Codex's Stop and Gemini's AfterAgent take no matcher, once each.
   assert.match(result.stdout, /same the Codex stop check/);
   assert.match(result.stdout, /same the Gemini CLI stop check/);
-  assert.deepEqual(codex.hooks.Stop, [{ hooks: [{ type: 'command', command: guarded('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.ts"', 'hook --stop --agent codex') }] }]);
-  assert.deepEqual(gemini.hooks.AfterAgent, [{ hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --stop --agent gemini'), name: 'yokoten-stop' }] }]);
+  assert.deepEqual(codex.hooks.Stop, [{ hooks: [{ type: 'command', command: guarded('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.mjs"', 'hook --stop --agent codex') }] }]);
+  assert.deepEqual(gemini.hooks.AfterAgent, [{ hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.mjs', 'hook --stop --agent gemini'), name: 'yokoten-stop' }] }]);
   // Codex's hooks are in place; this home has no ~/.codex, so doctor says nothing of its trust (#341).
   assert.match(sandbox.run(['doctor']).stdout, /ok +codex-hook: \.codex\/hooks\.json is in place; trust not checked, no ~\/\.codex\n +ok +gemini-hook\n +ok +antigravity-hook/);
   assert.match(result.stdout, /Codex runs the hooks in \.codex\/hooks\.json only after you trust this folder and the hooks\n.*to trust them in Codex: run `codex` in this folder, trust it, then trust both yokoten hooks in `\/hooks`/);
@@ -203,7 +211,7 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.match(result.stdout, /same the Antigravity CLI tool-call hook in \.agents\/hooks\.json/);
   assert.match(result.stdout, /GitHub Copilot CLI runs the hooks in \.claude\/settings\.json only after you trust this folder\n.*to trust this folder in Copilot CLI: run `copilot` in this folder/);
   const agents = JSON.parse(readFileSync(join(sandbox.repo, '.agents', 'hooks.json'), 'utf8'));
-  assert.deepEqual(agents.yokoten.PreToolUse[0].hooks[0].command, guardedCall('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.ts"', 'hook --agent antigravity'));
+  assert.deepEqual(agents.yokoten.PreToolUse[0].hooks[0].command, guardedCall('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.mjs"', 'hook --agent antigravity'));
   // The pre-commit hook runs the vendored check on a real commit.
   sandbox.git('add', '.');
   const commit = sandbox.git('commit', '-qm', 'adopt yokoten');
@@ -246,6 +254,90 @@ test('init: safe defaults, Dependabot and a security policy; doctor lists the se
   sandbox.write('LICENSE', 'placeholder license\n');
   sandbox.run(['init']);
   assert.match(security(), /^ +done +security-files/);
+});
+
+// Dependabot for the project's own packages (#379): one block per ecosystem init finds.
+const updateBlocks = (text: string) =>
+  text.split(/^(?=  - package-ecosystem:)/m).slice(1).map((block) => ({
+    ecosystem: /package-ecosystem: (\S+)/.exec(block)?.[1],
+    dirs: [...block.matchAll(/^ {4}directory: (\S+)$|^ {6}- (\/\S*)$/gm)].map((match) => match[1] ?? match[2]),
+    block,
+  }));
+
+const initDependabot = (files: Record<string, string>) => {
+  const sandbox = makeSandbox();
+  for (const [path, text] of Object.entries(files)) sandbox.write(path, text);
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  const path = join(sandbox.repo, '.github/dependabot.yml');
+  return { stdout: result.stdout, text: readFileSync(path, 'utf8'), path, sandbox };
+};
+
+test('init: Dependabot updates a Cargo workspace from the root, once (#379)', () => {
+  const { stdout, text } = initDependabot({
+    'Cargo.toml': '[workspace]\nmembers = ["cli", "crates/core"]\n',
+    'Cargo.lock': '',
+    'cli/Cargo.toml': '[package]\nname = "cli"\n',
+    'crates/core/Cargo.toml': '[package]\nname = "core"\n',
+    'target/debug/Cargo.toml': '',
+  });
+  assert.match(stdout, /wrote \.github\/dependabot\.yml \(the actions CI runs, and cargo\)/);
+  const blocks = updateBlocks(text);
+  assert.deepEqual(blocks.map(({ ecosystem, dirs }) => [ecosystem, dirs]), [['github-actions', ['/']], ['cargo', ['/']]], 'the workspace root covers its members');
+  const cargo = blocks[1].block;
+  for (const line of [/interval: monthly/, /default-days: 7/, /^ {6}cargo:\n {8}patterns: \['\*'\]$/m, /prefix: chore/]) assert.match(cargo, line);
+});
+
+test('init: Dependabot updates a Node project, and a bun lock file means bun (#379)', () => {
+  const node = initDependabot({ 'package.json': '{}', 'package-lock.json': '{}', 'node_modules/x/package.json': '{}' });
+  assert.deepEqual(updateBlocks(node.text).map(({ ecosystem, dirs }) => [ecosystem, dirs]), [['github-actions', ['/']], ['npm', ['/']]]);
+  assert.match(node.stdout, /\(the actions CI runs, and npm\)/);
+  const bun = initDependabot({ 'package.json': '{}', 'bun.lock': '' });
+  assert.deepEqual(updateBlocks(bun.text).map(({ ecosystem }) => ecosystem), ['github-actions', 'bun']);
+});
+
+test('init: Dependabot covers each stack in a mixed project, in the root and one folder down (#379)', () => {
+  const { stdout, text } = initDependabot({
+    'go.mod': 'module example.com/demo\n',
+    'web/package.json': '{}',
+    'site/package.json': '{}',
+    'api/pyproject.toml': '[project]\nname = "api"\n',
+    'App/App.csproj': '<Project/>',
+    'android/build.gradle.kts': '',
+    '.cache/Gemfile': '',
+    'docs/readme.md': '# docs\n',
+  });
+  assert.match(stdout, /\(the actions CI runs, and npm, pip, gomod, nuget, gradle\)/);
+  assert.deepEqual(updateBlocks(text).map(({ ecosystem, dirs }) => [ecosystem, dirs]), [
+    ['github-actions', ['/']],
+    ['npm', ['/site', '/web']],
+    ['pip', ['/api']],
+    ['gomod', ['/']],
+    ['nuget', ['/App']],
+    ['gradle', ['/android']],
+  ], 'a hidden folder is not read');
+  assert.match(text, /^ {4}directories:\n {6}- \/site\n {6}- \/web\n {4}schedule:/m, 'two folders, one block');
+});
+
+test('init: Dependabot with no package manager found updates the actions only (#379)', () => {
+  const { stdout, text } = initDependabot({ 'README.md': '# demo\n', 'src/main.c': '' });
+  assert.match(stdout, /wrote \.github\/dependabot\.yml \(the actions CI runs\)/);
+  assert.deepEqual(updateBlocks(text).map(({ ecosystem }) => ecosystem), ['github-actions']);
+});
+
+test('init: a dependabot.yml that is there is kept, and init names what it does not update (#379)', () => {
+  const mine = 'version: 2\nupdates:\n  - package-ecosystem: "npm"\n    directory: /\n    schedule:\n      interval: weekly\n';
+  const { stdout, text, sandbox } = initDependabot({ '.github/dependabot.yml': mine, 'package.json': '{}', 'Cargo.toml': '' });
+  assert.equal(text, mine, 'the file is the project\'s, byte for byte');
+  assert.match(stdout, /kept \.github\/dependabot\.yml; it does not update cargo\. Copy its github-actions block for each, with prefix chore/);
+  assert.doesNotMatch(stdout, /does not update[^\n]*npm/, 'a quoted ecosystem name counts');
+  // A dependabot.yaml counts too: init writes no second file next to it.
+  const other = makeSandbox();
+  other.write('.github/dependabot.yaml', 'version: 2\nupdates:\n  - package-ecosystem: github-actions\n    directory: /\n');
+  const again = other.run(['init']);
+  assert.match(again.stdout, /^kept \.github\/dependabot\.yaml$/m);
+  assert.ok(!existsSync(join(other.repo, '.github/dependabot.yml')));
+  assert.match(sandbox.run(['init']).stdout, /kept \.github\/dependabot\.yml; it does not update cargo/, 'said again on each init');
 });
 
 test("init: a CLAUDE.md gets one line that imports AGENTS.md, and doctor's rules step wants it (#206)", () => {
@@ -1133,14 +1225,14 @@ test('init: a commented .gemini/settings.json is left as it was and gets the hoo
   const add = handAdd(result.stdout, `skipped the Gemini CLI hooks: ${COMMENTED('.gemini/settings.json')}, then run \`yokoten init\` again:`);
   // The tool-call command may carry a fail-closed wrapper (#260); either way it checks for the
   // project runtime first, then runs the yokoten guard with node.
-  const runtimePath = '$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts';
+  const runtimePath = '$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.mjs';
   const guardCall = String((add.BeforeTool?.[0] as { hooks?: { command?: unknown }[] } | undefined)?.hooks?.[0]?.command);
   const missingCheck = guarded(runtimePath, 'x').slice(0, -`node ${runtimePath} x`.length);
   assert.ok(guardCall.startsWith(missingCheck), guardCall);
-  assert.match(guardCall, /\bnode(?: --\S+)* \$GEMINI_PROJECT_DIR\/\.yokoten\/bin\/yokoten\.ts hook --agent gemini(?: |$)/);
+  assert.match(guardCall, /\bnode(?: --\S+)* \$GEMINI_PROJECT_DIR\/\.yokoten\/bin\/yokoten\.mjs hook --agent gemini(?: |$)/);
   assert.deepEqual(add, {
     BeforeTool: [{ hooks: [{ type: 'command', command: guardCall, name: 'yokoten' }], matcher: 'run_shell_command|write_file|replace' }],
-    AfterAgent: [{ hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --stop --agent gemini'), name: 'yokoten-stop' }] }],
+    AfterAgent: [{ hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.mjs', 'hook --stop --agent gemini'), name: 'yokoten-stop' }] }],
   });
   assert.ok(hasHook(join(sandbox.repo, '.codex', 'hooks.json'), 'Stop', 'hook'), 'no Codex stop check');
   assert.deepEqual(doctorHandAdd(sandbox.run(['doctor']).stdout, 'gemini-hook', '.gemini/settings.json'), add);
@@ -1450,4 +1542,151 @@ test('init --no-ci: only the "notNow" key changes in yokoten.json; the rest keep
   assert.equal(readFileSync(join(other.repo, 'yokoten.json'), 'utf8'), `{ "notNow": { "ci": ${JSON.stringify(NO_CI_REASON)} }, "areas": ["cli"] }\n`);
   // A second run keeps it.
   assert.match(other.run(['init', '--no-ci']).stdout, /^kept "notNow" ci in yokoten\.json$/m);
+});
+
+// ---- The core rules into an AGENTS.md the project already has (#378) ----
+
+const KIT_RULES = '<!-- yokoten kit 1.0.0 -->\n# How work is done here\n\n## Core rules\n\n1. a rule\n\n## This project\n\n<!-- yours here -->\n';
+const KIT_CORE = KIT_RULES.slice(0, KIT_RULES.indexOf('## This project'));
+
+test('core rules into AGENTS.md: headings go one level down, everything else stays byte for byte (#378)', () => {
+  // No headings: the text moves as it is.
+  assert.deepEqual(demoteHeadings('just text\nmore\n'), { text: 'just text\nmore\n', headings: [], deepest: [] });
+  // `# Title` first, and ATX headings at each level; level 6 stays; `#tag` is no heading.
+  const atx = demoteHeadings('# Title\n\nText\n## Sub\n  ### Indented ###\n###### Six\n#tag\n');
+  assert.equal(atx.text, '## Title\n\nText\n### Sub\n  #### Indented ###\n###### Six\n#tag\n');
+  assert.deepEqual(atx.headings.map((h) => h.after), ['`## Title`', '`### Sub`', '`#### Indented ###`']);
+  assert.deepEqual(atx.deepest, ['`###### Six`']);
+  // Setext: `===` becomes `---`; a `---` heading becomes `###`. A rule after a blank line, a
+  // list or a quote is not a heading.
+  const setext = demoteHeadings('Big\n===\n\nSmall\n---\n\n---\n\n- item\n---\n> quote\nlazy\n---\n');
+  assert.equal(setext.text, 'Big\n---\n\n### Small\n\n---\n\n- item\n---\n> quote\nlazy\n---\n');
+  assert.equal(setext.headings.length, 2);
+  // Headings inside fenced code blocks stay, with either fence and a longer closing fence.
+  const fenced = '```md\n# not a heading\nTitle\n===\n```\n~~~~\n# not\n~~~\n## still not\n~~~~~\n# yes\n    # indented code\n';
+  assert.equal(demoteHeadings(fenced).text, fenced.replace('# yes', '## yes'));
+  // CRLF lines keep CRLF; a last line without a newline keeps none.
+  assert.equal(demoteHeadings('# A\r\n\r\nB\r\n---\r\ntext').text, '## A\r\n\r\n### B\r\ntext');
+  assert.equal(demoteHeadings('').text, '');
+});
+
+test('core rules into AGENTS.md: the kit core on top, then `## This project`, then the text (#378)', () => {
+  const moved = moveUnderProjectHeading('# Ours\n\nBuild with make.\n', KIT_RULES);
+  assert.equal(moved.text, `${KIT_CORE}## This project\n\n## Ours\n\nBuild with make.\n`);
+  assert.equal(moved.lines, 3);
+  assert.equal(compareCoreRules(moved.text, KIT_RULES).state, 'same', 'doctor finds the core rules up to date');
+  // CRLF: the new lines take CRLF too, so update compares it as the same.
+  const crlf = moveUnderProjectHeading('# Ours\r\n\r\nrule\r\n', KIT_RULES);
+  assert.equal(crlf.text, `${KIT_CORE.replaceAll('\n', '\r\n')}## This project\r\n\r\n## Ours\r\n\r\nrule\r\n`);
+  assert.equal(compareCoreRules(crlf.text, KIT_RULES).state, 'same');
+  // A byte order mark is dropped, so the kit version line comes first.
+  const bom = moveUnderProjectHeading('\uFEFF# Ours\n', KIT_RULES);
+  assert.ok(bom.hadBom);
+  assert.ok(bom.text.startsWith('<!-- yokoten kit 1.0.0 -->\n'));
+  assert.equal(readKitVersion(bom.text), '1.0.0');
+  // An empty file, or one with blank lines only, gets the kit's file.
+  for (const empty of ['', '\n\n', '\uFEFF']) assert.deepEqual(moveUnderProjectHeading(empty, KIT_RULES), { text: KIT_RULES, lines: 0, headings: [], deepest: [], hadBom: empty === '\uFEFF', frontMatter: false });
+});
+
+test('init: an AGENTS.md without `## This project` gets the core rules on top, and a copy of the old file (#378)', () => {
+  const sandbox = makeSandbox();
+  const old = '# Our rules\n\nRun `make test`.\n\n## Style\n\nTabs.\n';
+  sandbox.write('AGENTS.md', old);
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^updated AGENTS\.md: the core rules are on top, and your 7 line\(s\) moved under `## This project`; only their heading levels changed \(kept the old file as AGENTS\.md\.before-yokoten;/m);
+  assert.match(result.stdout, /^ {2}heading one level down: `# Our rules` is now `## Our rules`$/m);
+  assert.match(result.stdout, /^ {2}heading one level down: `## Style` is now `### Style`$/m);
+  const text = readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8');
+  const kit = readFileSync(join(ROOT, 'kit', 'project', 'AGENTS.md'), 'utf8');
+  const kitCore = kit.slice(0, kit.search(/^## This project$/m)).replace('{{version}}', JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version);
+  assert.equal(text, `${kitCore}## This project\n\n## Our rules\n\nRun \`make test\`.\n\n### Style\n\nTabs.\n`);
+  assert.equal(readFileSync(join(sandbox.repo, AGENTS_BACKUP), 'utf8'), old, 'the old file, byte for byte');
+  assert.match(sandbox.run(['update']).stdout, /up to date/);
+  // A second run finds the heading and leaves the file to `update`.
+  const again = sandbox.run(['init']);
+  assert.match(again.stdout, /^kept AGENTS\.md \(`yokoten update` brings its core rules up to date\)$/m);
+  assert.equal(readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8'), text);
+});
+
+test('init: a committed AGENTS.md with CRLF and a BOM moves with no copy; git gives the old one back (#378)', () => {
+  const sandbox = makeSandbox();
+  const old = '\uFEFFRules\r\n=====\r\n\r\n```sh\r\n# a comment, not a heading\r\n```\r\n';
+  sandbox.write('AGENTS.md', old);
+  sandbox.git('add', 'AGENTS.md');
+  sandbox.git('commit', '-q', '-m', 'rules');
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /to get the old file back: `git checkout HEAD -- AGENTS\.md`/);
+  assert.match(result.stdout, /^ {2}heading one level down: `Rules` \(underlined with =\) is now `Rules` \(underlined with -\)$/m);
+  assert.match(result.stdout, /^ {2}dropped the byte order mark/m);
+  assert.ok(!existsSync(join(sandbox.repo, AGENTS_BACKUP)), 'git has the old file');
+  const text = readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8');
+  assert.ok(text.startsWith('<!-- yokoten kit '));
+  assert.ok(text.endsWith('## This project\r\n\r\nRules\r\n-----\r\n\r\n```sh\r\n# a comment, not a heading\r\n```\r\n'), text.slice(-120));
+  assert.ok(!/(?<!\r)\n/.test(text), 'every line ends in CRLF');
+  sandbox.git('checkout', 'HEAD', '--', 'AGENTS.md');
+  assert.equal(readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8'), old, 'the command it prints gives the old file back');
+});
+
+test('init: an empty AGENTS.md gets the kit file; a different copy already there stops the move (#378)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('AGENTS.md', '');
+  const result = sandbox.run(['init']);
+  assert.match(result.stdout, /^wrote AGENTS\.md: it had no text, so it now has the core rules and an empty `## This project` section/m);
+  assert.match(readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8'), /^## This project$/m);
+
+  const other = makeSandbox();
+  other.write('AGENTS.md', '# mine\n');
+  other.write(AGENTS_BACKUP, '# an older copy\n');
+  const stopped = other.run(['init']);
+  assert.equal(stopped.status, 0, stopped.stderr);
+  assert.match(stopped.stdout, /^kept AGENTS\.md: it has no `## This project` heading, and AGENTS\.md\.before-yokoten is there already/m);
+  assert.equal(readFileSync(join(other.repo, 'AGENTS.md'), 'utf8'), '# mine\n');
+  assert.equal(readFileSync(join(other.repo, AGENTS_BACKUP), 'utf8'), '# an older copy\n');
+});
+
+test('init: an AGENTS.md that is a link is kept, so init never writes through it into CLAUDE.md (#378)', { skip: process.platform === 'win32' && 'a link needs admin rights on Windows' }, () => {
+  const sandbox = makeSandbox();
+  sandbox.write('CLAUDE.md', '# our rules\n');
+  symlinkSync('CLAUDE.md', join(sandbox.repo, 'AGENTS.md'));
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^kept AGENTS\.md: it is a link to CLAUDE\.md/m);
+  assert.doesNotMatch(readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8'), /Core rules/);
+});
+
+test('core rules into AGENTS.md: YAML front matter stays at the very top, as it was (#378)', () => {
+  // `---` or `...` closes it; nothing inside is demoted, not even a `# comment` line.
+  for (const close of ['---', '...']) {
+    const front = `---\ntitle: Rules\n# a YAML comment\n${close}\n`;
+    const moved = moveUnderProjectHeading(`${front}# Ours\n`, KIT_RULES);
+    assert.ok(moved.frontMatter);
+    assert.equal(moved.text, `${front}${KIT_CORE}## This project\n\n## Ours\n`);
+    assert.deepEqual(moved.headings.map((h) => h.after), ['`## Ours`']);
+    // doctor and update read past it: the core rules are the same, and an update keeps it.
+    assert.equal(compareCoreRules(moved.text, KIT_RULES).state, 'same');
+    const behind = compareCoreRules(moved.text.replace('1. a rule', '1. an old rule'), KIT_RULES);
+    assert.ok(behind.state === 'behind' && behind.updated === moved.text, 'update --write keeps the front matter');
+  }
+  // CRLF, a BOM, and a closing line at the very end of the file.
+  assert.equal(moveUnderProjectHeading('\uFEFF---\r\na: 1\r\n---\r\nText\r\n', KIT_RULES).text, `---\r\na: 1\r\n---\r\n${KIT_CORE.replaceAll('\n', '\r\n')}## This project\r\n\r\nText\r\n`);
+  assert.equal(moveUnderProjectHeading('---\na: 1\n---', KIT_RULES).text, `---\na: 1\n---\n${KIT_RULES}`);
+  // A first line `---` with no closing line is plain text: a rule, then a heading under it.
+  assert.deepEqual(splitFrontMatter('---\n# Rules\n'), { front: '', rest: '---\n# Rules\n' });
+  const plain = moveUnderProjectHeading('---\n# Rules\nText\n', KIT_RULES);
+  assert.ok(!plain.frontMatter);
+  assert.equal(plain.text, `${KIT_CORE}## This project\n\n---\n## Rules\nText\n`);
+});
+
+test('init: an AGENTS.md with front matter keeps it on top and says so (#378)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('AGENTS.md', '---\ndescription: our rules\n---\n# Ours\n');
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^ {2}kept the front matter at the very top, as it was$/m);
+  const text = readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8');
+  assert.ok(text.startsWith('---\ndescription: our rules\n---\n<!-- yokoten kit '), text.slice(0, 80));
+  assert.ok(text.endsWith('## This project\n\n## Ours\n'));
+  assert.match(sandbox.run(['update']).stdout, /up to date/);
 });

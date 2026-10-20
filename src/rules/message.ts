@@ -94,7 +94,7 @@ export const RULES = {
   'lead-only': {
     rule: 'a worker does not change lead-only files: the rules, agent config, hooks and CI (core rule 5)',
     why: 'a worker must not change the rules it works under, and a pull request that edits CI runs that CI before anyone reads it',
-    check: 'with YOKOTEN_ROLE=worker, the tool-call guard stops an edit to a file that yokoten.json "leadOnly" matches, and the commit check refuses it',
+    check: 'for a worker (YOKOTEN_ROLE=worker, or a subagent named worker), the tool-call guard stops an edit or a shell write to a file that yokoten.json "leadOnly" matches, and a git commit that changes one; with YOKOTEN_ROLE=worker the commit check refuses it too. YOKOTEN_LEAD_ONLY_OK lists the paths the lead allows',
     docs: guide('the-core-rules'),
   },
   email: {
@@ -322,6 +322,12 @@ export const RULES = {
       "`doctor` reads .dsh/hooks.json for a PreToolUse hook on `bash|pwsh|edit|write` that runs `yokoten hook --agent deepseek-harness`. It checks .dsh/yokoten.patch.yml, and looks for both packages in the dsh profiles (read-only). It is a note, not a missing step. Only a real deny proves the guard runs. On Windows it says dsh is not checked yet",
     docs: guide('works-with'),
   },
+  'grok-hook': {
+    rule: "the project has Grok CLI's tool-call guard and stop check, and Grok trusts the folder",
+    why: "without them, Grok CLI's commands and edits in this project are not checked. Grok skips the hooks of a folder it does not trust without a word",
+    check: "`doctor` reads .grok/hooks/yokoten.json for a PreToolUse hook and a Stop hook that each run `yokoten hook --agent grok`, then Grok's trusted_folders.toml for the folder (read-only); a note, not a missing step",
+    docs: guide('works-with'),
+  },
   'codex-user-hook': {
     rule: "Codex runs yokoten's session-start doctor and command guard in every repo",
     why: 'without them, a Codex session does not hear the next step on the road, and a tag push, force push or skipped check in a repo without yokoten is not stopped',
@@ -332,6 +338,12 @@ export const RULES = {
     rule: "Gemini CLI runs yokoten's session-start doctor and command guard in every repo",
     why: 'without them, a Gemini CLI session does not hear the next step on the road, and a tag push, force push or skipped check in a repo without yokoten is not stopped',
     check: "when ~/.gemini is a folder, `doctor` compares the SessionStart and BeforeTool hooks in ~/.gemini/settings.json with what `yokoten install` writes (command, matcher, name, runtime path); a missing or out-of-date hook, or a file it can't read, is a note, not a missing step",
+    docs: guide('works-with'),
+  },
+  'grok-user-hook': {
+    rule: "Grok CLI runs yokoten's command guard in every repo",
+    why: 'without it, a tag push, force push or skipped check by Grok CLI in a repo without yokoten is not stopped',
+    check: "when ~/.grok is a folder, `doctor` compares the PreToolUse hook in ~/.grok/hooks/yokoten.json with what `yokoten install` writes (command, matcher, timeout, runtime path); a missing or out-of-date hook, or a file it can't read, is a note, not a missing step",
     docs: guide('works-with'),
   },
   'core-rules': {
@@ -373,6 +385,12 @@ export const RULES = {
     rule: "the agent's temp folder belongs to you (record 0012)",
     why: 'Claude Code will not start when another user, such as root, owns its temp folder',
     check: "full `doctor` compares the owner of Claude Code's temp folder (`claude-<uid>` in the temp folder) with your uid; a note, never a failure, and doctor never deletes it",
+    docs: guide('machine-notes'),
+  },
+  'leftover-temp-folders': {
+    rule: 'test runs do not leave their folders in the temp folder (#400)',
+    why: 'thousands of old test folders fill the disk, and a full disk stops every session',
+    check: 'full `doctor` reads each temp folder once and counts the `yokoten-*` folders older than a day (one lstat each, no size); a note, never a failure, and doctor prints the command to remove them but never deletes',
     docs: guide('machine-notes'),
   },
   'private-output': {
@@ -502,6 +520,12 @@ export const RULES = {
     why: 'the checks read commits, so yokoten needs git history',
     check: 'every command that reads or writes a project looks for its git repo first, and stops before it writes anything; `doctor --session` and the hooks do not report it, so a session in another folder gets no noise',
     docs: guide('commands'),
+  },
+  'git-read': {
+    rule: 'a check stops when git can\'t answer it',
+    why: 'a check that can\'t read git has not looked, so passing would call an unread repo clean',
+    check: 'the commit check, `check`, `check --history` and `check --pr` stop with this finding when a git read they depend on fails, runs out of buffer or is stopped',
+    docs: guide('three-checks-and-a-lock'),
   },
 } satisfies Record<string, Rule>;
 

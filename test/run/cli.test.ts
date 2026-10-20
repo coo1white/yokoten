@@ -1,18 +1,17 @@
 // Tests for src/run/cli.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import {
   dirname,
   join,
@@ -27,6 +26,7 @@ import {
   MISSING_PROJECT,
   pick,
   PLUGIN_ROOT,
+  makeTempDir,
 } from '../repo/helpers.ts';
 import {
   closestWord,
@@ -34,6 +34,8 @@ import {
   editDistance,
   guardCommand,
   HELP_OPTIONS,
+  runs,
+  subcommand,
 } from '../../src/run/cli.ts';
 
 // The line goes into a single-quoted echo, and into JSON for Gemini CLI, as it is (#204).
@@ -186,6 +188,36 @@ test('compile cache: a cache folder that cannot be made does not stop the comman
   assert.match(r.stdout, /^\d+\.\d+\.\d+\n$/);
 });
 
+// #408: the agent hooks now run yokoten.mjs; hooks an older yokoten wrote run yokoten.ts.
+// Setup and doctor find both, so init updates an old hook in place.
+test('hooks: a hook that runs yokoten.ts or yokoten.mjs is yokoten\'s (#408)', () => {
+  for (const file of ['yokoten.ts', 'yokoten.mjs']) {
+    const command = `node "$CLAUDE_PROJECT_DIR/.yokoten/bin/${file}" hook --stop`;
+    assert.equal(subcommand(command), 'hook', file);
+    assert.ok(runs('hook').test(command), file);
+  }
+  assert.equal(subcommand('node bin/yokoten.mts hook'), undefined);
+});
+
+// #408: the hooks run bin/yokoten.mjs, which keeps the compile cache in the user's cache
+// folder: a restart may empty the temp folder. NODE_COMPILE_CACHE still names another.
+test('compile cache: bin/yokoten.mjs keeps it in the user cache folder, or in NODE_COMPILE_CACHE (#408)', () => {
+  const sandbox = makeSandbox();
+  const entry = join(dirname(CLI), 'yokoten.mjs');
+  const cache = join(sandbox.home, 'xdg-cache');
+  const env: Record<string, string | undefined> = { ...sandbox.env };
+  delete env.NODE_COMPILE_CACHE;
+  const run = (extra: Record<string, string>) => spawnSync(process.execPath, [entry, '--version'], { cwd: sandbox.repo, env: { ...env, ...extra }, encoding: 'utf8' });
+  let r = run({ XDG_CACHE_HOME: cache });
+  assert.deepEqual([r.status, r.stderr], [0, '']);
+  assert.match(r.stdout, /^\d+\.\d+\.\d+\n$/);
+  if (process.platform === 'linux') assert.ok(readdirSync(join(cache, 'yokoten')).length > 0, 'the cache is in $XDG_CACHE_HOME/yokoten');
+  const named = join(sandbox.home, 'named-cache');
+  r = run({ XDG_CACHE_HOME: cache, NODE_COMPILE_CACHE: named });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(existsSync(named), 'NODE_COMPILE_CACHE wins');
+});
+
 test('help: the help table and the parser list the same commands and options (#207)', () => {
   // The dispatch is in bin/main.ts; each command's parse call is in its module in src/commands/ (#330).
   const commandsDir = join(dirname(CLI), '..', 'src', 'commands');
@@ -251,7 +283,8 @@ test('hooks: a tool-call guard that fails refuses the call; the stop check does 
   const pluginRoot = join(base, 'plugin');
   mkdirSync(repo, { recursive: true });
   assert.equal(spawnSync('git', ['init', '-q'], { cwd: repo }).status, 0);
-  const runtimes = [join(repo, '.yokoten', 'bin', 'yokoten.ts'), join(home, '.local', 'share', 'yokoten', 'bin', 'yokoten.ts'), join(pluginRoot, 'bin', 'yokoten.ts')];
+  // The agent hooks run yokoten.mjs (#408).
+  const runtimes = [join(repo, '.yokoten', 'bin', 'yokoten.mjs'), join(home, '.local', 'share', 'yokoten', 'bin', 'yokoten.mjs'), join(pluginRoot, 'bin', 'yokoten.mjs')];
   const runtime = (body: string) => {
     for (const file of runtimes) {
       mkdirSync(dirname(file), { recursive: true });
@@ -306,10 +339,10 @@ test('hooks: a tool-call guard that fails refuses the call; the stop check does 
 // #174: the pitch demo runs end to end, offline, in a temp folder it removes, and never
 // touches this repo's kit.
 test('demo: scripts/demo/loop.ts walks the loop from an incident to a doctor note, and leaves nothing', () => {
-  const temp = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const temp = makeTempDir();
   const kitTable = join(dirname(CLI), '..', 'kit', 'lessons', 'README.md');
   const before = readFileSync(kitTable, 'utf8');
-  const result = spawnSync('node', [join(dirname(CLI), '..', 'scripts', 'demo', 'loop.ts')], { env: { PATH: process.env.PATH, TMPDIR: temp }, encoding: 'utf8' });
+  const result = spawnSync('node', [join(dirname(CLI), '..', 'scripts', 'demo', 'loop.ts')], { env: { PATH: process.env.PATH, HOME: join(temp, 'home'), TMPDIR: temp }, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /\n\$ yokoten learn https:\/\/github\.com\/octo-org\/project-a\/issues\/12\nyokoten learn: a check draft from issue #12, /);
   assert.match(result.stdout, /\nWrote:\n- lessons\/incident-12\/lesson\.ts\n/);
