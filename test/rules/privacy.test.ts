@@ -31,6 +31,8 @@ import {
   ownMarks,
   POSITIVE_CONTROL,
   privateRemoteHosts,
+  readMachineAllow,
+  repoKey,
   repoMarkKinds,
   scanText,
   withHome,
@@ -767,7 +769,7 @@ test('lonePost: refuses what bash reads differently from the guard (#447)', () =
   assert.equal(lonePost('gh issue comment 1 -b hi > ~/.config/gh/hosts.yml'), null, '>');
   for (const redirect of ['>> f', '>| f', '&> f', '2> f']) assert.equal(lonePost(`gh issue comment 1 -b hi ${redirect}`), null, redirect);
   // The plain forms stay allowed: quoted text, a quoted > and a quoted heredoc.
-  assert.deepEqual(lonePost('gh issue comment 1 -b "a > b; $HOME" --title \'x | y\''), { cd: false });
+  assert.deepEqual(lonePost('gh issue comment 1 -b "a > b; c" --title \'x | y $HOME\''), { cd: false });
   assert.deepEqual(lonePost("gh issue create --title x --body-file - <<'EOF'\na > b\nEOF"), { cd: false });
   assert.deepEqual(lonePost('gh issue comment 1 -b "hello world"'), { cd: false });
 });
@@ -935,9 +937,77 @@ test('lonePost: refuses ${ wherever bash expands it (#447)', () => {
   // Single quotes and a quoted heredoc keep it as text.
   assert.deepEqual(lonePost("gh issue create --title '${ cd ../other; }' --body x"), { cd: false });
   assert.deepEqual(lonePost("gh issue create --title x --body-file - <<'EOF'\n${ cd ../other; }\nEOF"), { cd: false });
-  assert.deepEqual(lonePost('gh issue create --title "\\${x}" --body x'), { cd: false }, 'an escaped $ is text');
+  assert.equal(lonePost('gh issue create --title "\\${x}" --body x'), null, 'a backslash in double quotes is refused too');
   const r = allowRepo('https://example.com/x/quiet-vale');
   writeFileSync(r.env.YOKOTEN_PRIVATE_MARKS as string, 'quiet vale\n');
   assert.equal(checkCommand('gh issue create --title "${ cd ../other; }" --body "Quiet Vale ships"', { env: r.env, cwd: r.repo })?.id, 'private-mark');
   assert.equal(checkCommand("gh issue create --title '${ cd ../other; }' --body \"Quiet Vale ships\"", { env: r.env, cwd: r.repo }), null, 'the control: single quotes pass');
+});
+
+test('lonePost: trusts only plain characters outside quotes, so no shell feature can hide a target (#447)', () => {
+  for (const command of [
+    'gh issue comment 1 {--repo,stranger/public} --body "Quiet Vale"', // brace expansion: bash reads --repo stranger/public
+    'gh issue comment 1 --body x{a..b}',
+    'gh issue comment 1 --body-file note*.md',
+    'gh issue comment 1 --body-file note?.md',
+    'gh issue comment 1 --body-file [n]ote.md',
+    'gh issue comment 1 $R --body x',
+    'gh issue comment 1 --body "$R"',
+    'gh issue comment 1 --body "a`b`"',
+    'gh issue comment 1 --body "a\\"b"',
+    'gh issue comment 1 \\--repo x/y --body x',
+    'gh issue comment 1 --body x \\\n--repo x/y',
+    'gh issue comment 1 --body ~stranger',
+    'gh issue comment 1 --body !x',
+    'gh issue comment 1 --body x # --repo',
+    'gh issue comment 1 --body x\r',
+    'gh issue comment 1 --body x < note.md',
+    'gh issue comment 1 --body x & gh issue comment 2',
+    'cd ~/a~b && gh issue comment 1 --body x',
+    'cd {a,b} && gh issue comment 1 --body x',
+  ]) assert.equal(lonePost(command), null, JSON.stringify(command));
+  // The control: a plain post with quoted text, a ~ cd target, a here-string and a heredoc still pass.
+  assert.deepEqual(lonePost('gh issue comment 1 --body "Quiet Vale ships {a,b} *.md !x #1" --title \'$R {x}\''), { cd: false });
+  assert.deepEqual(lonePost('cd ~/repo && gh issue comment 1 --body "ok"'), { cd: true, target: '~/repo' });
+  assert.deepEqual(lonePost('gh issue comment 1 -F - <<< "ok"'), { cd: false });
+  assert.deepEqual(lonePost('gh issue create --title x --body-file - <<-EOF\n\tbody $HOME\n\tEOF'), { cd: false });
+  // In a post: the brace form gets no allow, the plain one does.
+  const r = allowRepo('https://example.com/x/quiet-vale');
+  writeFileSync(r.env.YOKOTEN_PRIVATE_MARKS as string, 'quiet vale\n');
+  assert.equal(checkCommand('gh issue comment 1 {--repo,stranger/public} --body "Quiet Vale"', { env: r.env, cwd: r.repo })?.id, 'private-mark');
+  assert.equal(checkCommand('gh issue comment 1 --body "Quiet Vale"', { env: r.env, cwd: r.repo }), null, 'the control: a plain quoted post passes');
+});
+
+test('an origin that runs a remote helper (transport::address) is unsure: no skip, no allow (#447)', () => {
+  for (const remote of ['ext::ssh -o ProxyCommand=x example.com %S x/quiet-vale', 'gcrypt::https://example.com/x/quiet-vale', 'Custom+v2.x-y::example.com/x/quiet-vale']) {
+    const r = allowRepo(remote);
+    writeFileSync(r.env.YOKOTEN_PRIVATE_MARKS as string, 'quiet vale\n');
+    assert.equal(normalizeRemote(remote), null, `no key, ${remote}`);
+    assert.match((repoKey(r.repo) as { unsure: string }).unsure, /remote helper/, `unsure, ${remote}`);
+    assert.deepEqual(repoMarkKinds(r.env, r.repo).map((mark) => mark.value), ['quiet vale'], `no skip, ${remote}`);
+    r.allow([{ remote: 'example.com/x/quiet-vale', allow: ['quiet vale'] }]);
+    assert.deepEqual(machineAllowed(r.env, r.repo).allow, [], `no allow, ${remote}`);
+  }
+});
+
+test('an origin on this machine by host (localhost, 127.x.x.x, ::1) counts as local: no same-name skip (#447)', () => {
+  for (const remote of ['https://localhost/x/quiet-vale', 'https://LOCALHOST:8443/x/quiet-vale.git', 'ssh://git@127.0.0.1:2222/x/quiet-vale', 'git@127.1.2.3:x/quiet-vale', 'ssh://[::1]/x/quiet-vale', 'git@[::1]:x/quiet-vale', 'ssh://::1/x/quiet-vale']) {
+    const r = allowRepo(remote);
+    writeFileSync(r.env.YOKOTEN_PRIVATE_MARKS as string, 'quiet vale\n');
+    assert.equal((repoKey(r.repo) as { local?: boolean }).local, true, `local, ${remote}`);
+    assert.deepEqual(repoMarkKinds(r.env, r.repo).map((mark) => mark.value), ['quiet vale'], `no skip, ${remote}`);
+  }
+  assert.equal(normalizeRemote('git@[::1]:x/quiet-vale'), '[::1]/x/quiet-vale', 'a bracketed host keeps its brackets in the key');
+  // The control: a host that only starts with localhost is a host.
+  const r = allowRepo('https://localhost.example.com/x/quiet-vale');
+  writeFileSync(r.env.YOKOTEN_PRIVATE_MARKS as string, 'quiet vale\n');
+  assert.deepEqual(repoMarkKinds(r.env, r.repo).map((mark) => mark.value), [], 'skipped on a real host');
+});
+
+test('readMachineAllow: a file with just the switch reads as no repos; a file that is not an object is refused (#447)', () => {
+  const r = allowRepo('https://example.com/x/app');
+  r.allow(JSON.stringify({ skipOwnName: false }));
+  assert.deepEqual(readMachineAllow(r.env), { entries: [], skipOwnName: false });
+  assert.deepEqual(machineAllowed(r.env, r.repo), { allow: [], unsure: null });
+  for (const text of ['[]', 'null', '"x"', '{"repos": null}', '{"repos": {}}']) assert.ok('unsure' in readMachineAllow((r.allow(text), r.env)), text);
 });

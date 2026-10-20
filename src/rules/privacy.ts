@@ -161,7 +161,7 @@ export function normalizeRemote(url: string, base?: string): string | null {
 /** A remote as a host and its path, or as a local path. Null when it is empty. */
 function splitRemote(url: string): { host: string; path: string } | { local: string } | null {
   const text = url.trim();
-  if (!text) return null;
+  if (!text || REMOTE_HELPER.test(text)) return null;
   const scheme = text.match(/^([a-z][a-z0-9+.-]*):\/\/(.*)$/i);
   if (scheme) {
     const kind = scheme[1].toLowerCase();
@@ -179,11 +179,17 @@ function splitRemote(url: string): { host: string; path: string } | { local: str
   }
   // scp-like `user@host:path`. A path that starts with `/` or `.`, or a Windows drive, is local.
   if (!/^[a-z]:[\\/]/i.test(text) && !/^[/.\\]/.test(text)) {
-    const scp = text.match(/^(?:[^@/]+@)?([^:/]+):(.*)$/);
+    const scp = text.match(/^(?:[^@/]+@)?(\[[^\]/]*\]|[^:/]+):(.*)$/);
     if (scp) return { host: scp[1], path: scp[2] };
   }
   return { local: text };
 }
+
+// `ext::`, `gcrypt::` and any other `<transport>::<address>`: git hands it to a remote helper, which may read it any way.
+const REMOTE_HELPER = /^[A-Za-z][\w+.-]*::/;
+
+// A host on this machine: localhost, 127.x.x.x or ::1, with or without a port. It counts as a local folder.
+const LOOPBACK_HOST = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]|::1)(?::\d+)?$/i;
 
 /**
  * Why yokoten can't be sure which repo an origin address names, or null (#447). A `?` or
@@ -191,6 +197,7 @@ function splitRemote(url: string): { host: string; path: string } | { local: str
  * `owner/name` (`.git` optional), or the last part may not be the repo's name.
  */
 function unsureAddress(url: string): string | null {
+  if (REMOTE_HELPER.test(url.trim())) return 'the origin remote runs a remote helper (transport::address)';
   if (/[?#]/.test(url)) return 'the origin remote\'s address has a ? or a #';
   const split = splitRemote(url);
   if (split && 'host' in split && !/^\/?[^/\\]+\/[^/\\]+$/.test(split.path)) return 'the origin remote\'s address is not just owner/name';
@@ -279,7 +286,7 @@ export function repoKey(dir: string): RepoKey | { unsure: string } | { none: str
   if (keys.size !== 1) return { unsure: 'the origin remote has more than one address' };
   const remote = [...keys][0] as string;
   const split = splitRemote(all[0]);
-  return split && 'local' in split ? { remote, local: true } : { remote };
+  return split && ('local' in split || LOOPBACK_HOST.test(split.host)) ? { remote, local: true } : { remote };
 }
 
 /** Why the machine allow file can't be used, in words that never quote it. */
@@ -309,9 +316,11 @@ export function readMachineAllow(env: Env): { entries: AllowEntry[]; skipOwnName
     const { remote, allow, ...rest } = entry as Record<string, unknown>;
     return typeof remote === 'string' && remote !== '' && Array.isArray(allow) && allow.every((mark) => typeof mark === 'string') && !Object.keys(rest).length;
   };
-  if (!Array.isArray(repos) || !repos.every(isEntry)) return { unsure: ALLOW_FILE_SHAPE };
+  // `repos` may be missing, as in a file that holds just `{ "skipOwnName": false }`: no repos.
+  const entries = repos === undefined ? [] : repos;
+  if (!data || typeof data !== 'object' || Array.isArray(data) || !Array.isArray(entries) || !entries.every(isEntry)) return { unsure: ALLOW_FILE_SHAPE };
   if (Object.keys(other).length || (skipOwnName !== undefined && typeof skipOwnName !== 'boolean')) return { unsure: ALLOW_FILE_SHAPE };
-  return skipOwnName === false ? { entries: repos, skipOwnName } : { entries: repos };
+  return skipOwnName === false ? { entries, skipOwnName } : { entries };
 }
 
 /** Whether `path` is a symbolic link, dangling or not. */
@@ -1037,19 +1046,24 @@ function shownPath(path: string, env: Env, marks: string[]): string {
   return hasMark(name) ? 'the body file' : name;
 }
 
+// The characters bash reads as plain text outside quotes: no expansion, glob, brace, operator or comment.
+const PLAIN_WORD = /^[A-Za-z0-9_ \t./:,=+@%-]$/;
+
 /**
  * Whether the command line is one gh post and nothing else (#447): `gh …`, or the bot's
- * `yokoten bot -- gh …`, optionally after one plain `cd <folder> &&`. No env prefix, no
- * `env` or `sudo`, no other command, subshell, pipe, output redirect, `$'…'`, `$(…)`, `${…}` or backquote,
- * and no heredoc that expands one. `${` is refused wherever bash expands it, since bash 5.3
- * runs a command in `${ cmd; }` and `${| cmd; }`. Anything else on the line could change where gh posts before it runs,
- * so no allow applies (record 0014). `cd` is true when the line starts with that `cd`.
+ * `yokoten bot -- gh …`, optionally after one plain `cd <folder> &&`. Outside quotes only
+ * letters, digits, spaces and `_ . / : , = + @ % -` are trusted, plus one heredoc or
+ * here-string. Inside double quotes `$`, backquote and backslash are refused; single quotes
+ * hold anything. A heredoc that expands may hold no `$(`, `${` or backquote. Anything else
+ * could change where gh posts before it runs, so no allow applies (record 0014). Listing
+ * shell features one by one missed one each round, so the check names what it trusts.
+ * `cd` is true when the line starts with that `cd`; its target may start with `~`.
  */
 export function lonePost(command: string): { cd: boolean; target?: string } | null {
   let text = trimStart(command, ' \t');
-  const cd = text.match(/^cd[ \t]+('[^'\n]*'|"[^"$`\\\n]*"|[\w./~+@%:,=-]+)[ \t]*&&[ \t]*/);
+  const cd = text.match(/^cd[ \t]+('[^'\n]*'|"[^"$`\\\n]*"|~?[\w./+@%:,=-]+|~)[ \t]*&&[ \t]*/);
   if (cd) text = text.slice(cd[0].length);
-  const start = text.match(/^(?:(?:node[ \t]+)?(?:[\w./~+@%:-]*\/)?yokoten(?:\.ts|\.mjs|\.js)?[ \t]+bot[ \t]+--[ \t]+)?gh[ \t]/);
+  const start = text.match(/^(?:(?:node[ \t]+)?(?:~?[\w./+@%:-]*\/)?yokoten(?:\.ts|\.mjs|\.js)?[ \t]+bot[ \t]+--[ \t]+)?gh[ \t]/);
   if (!start) return null;
   let quote: string | null = null;
   let heredoc: { word: string; expands: boolean; tabs: boolean } | null = null;
@@ -1060,19 +1074,14 @@ export function lonePost(command: string): { cd: boolean; target?: string } | nu
       if (char === "'") quote = null;
       continue;
     }
-    if (char === '\\') {
-      index++;
-      continue;
-    }
     if (quote === '"') {
       if (char === '"') quote = null;
-      else if (char === '`' || (char === '$' && (text[index + 1] === '(' || text[index + 1] === '{'))) return null;
+      else if (char === '$' || char === '`' || char === '\\') return null;
       continue;
     }
     if (char === "'" || char === '"') quote = char;
     else if (char === '\n') break;
-    else if (char === '$' && (text[index + 1] === "'" || text[index + 1] === '"')) return null; // $'…' and $"…": bash reads the quote inside differently
-    else if (char === '>' || ';&|`()'.includes(char) || (char === '$' && (text[index + 1] === '(' || text[index + 1] === '{'))) return null;
+    else if (PLAIN_WORD.test(char)) continue;
     else if (char === '<' && text[index + 1] === '<' && text[index + 2] !== '<') {
       if (heredoc) return null; // one heredoc at most
       const found = text.slice(index, index + 4096).match(/^<<(-?)[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|([\w.-]+))/);
@@ -1080,6 +1089,7 @@ export function lonePost(command: string): { cd: boolean; target?: string } | nu
       heredoc = { word: found[2] ?? found[3] ?? found[4], expands: found[4] !== undefined, tabs: found[1] === '-' };
       index += found[0].length - 1;
     } else if (char === '<' && text[index + 1] === '<') index += 2; // a here-string: its word is read as any other
+    else return null;
   }
   if (quote) return null;
   const lone = cd ? { cd: true, target: cd[1] } : { cd: false };

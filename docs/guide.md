@@ -1349,12 +1349,13 @@ remote, `check`, the commit hook and the guard for `gh` posts skip that one mark
 `Li Na` does not name `lina`. It must be the whole name, never a part. Every other mark still
 applies, and so does that one in every other repo. yokoten skips nothing when it can't tell the
 repo: two remotes, no origin, a post to another repo, an origin address with `?` or `#`, a
-host address whose path is not just `owner/name`, or a folder on this machine as origin. Only
+host address whose path is not just `owner/name`, a remote helper (`ext::`, `gcrypt::` or any
+`<transport>::`), or a folder or host on this machine as origin (`localhost`, `127.x.x.x`, `::1`). Only
 origin counts; in CI too, origin is the repo the job checked out. The commit check trusts origin
 at commit time, so a later push to another remote is not checked. `doctor` says how many
 marks are skipped because they name the repo, never which. To turn this off, set
-`"privacy": { "skipOwnName": false }` in yokoten.json, or `"skipOwnName": false` in
-`private-marks-allow.json` (below) for every repo on this machine. The steps below are for the
+`"privacy": { "skipOwnName": false }` in yokoten.json. For every repo on this machine, put
+`{ "skipOwnName": false }` in `private-marks-allow.json` (below); it needs no `repos` list. The steps below are for the
 cases this can't see. A project's own repo can also list the name in
 `privacy.allow` in its yokoten.json. A mark is let through when an entry there is the same string, upper or
 lower case aside; a part or a longer string does not count. It is let through only in
@@ -1377,8 +1378,10 @@ or push addresses that name different repos, as git rewrites them with `insteadO
 also when two entries match. A `gh` post gets neither allow, this one or `privacy.allow`, when
 it may go to another repo: `-R` or `--repo`, an issue or pull request URL, `GH_REPO` or
 `GH_HOST`, and every `gh api` or `gh gist`. The post must also be the only command on the
-line, with no env prefix, `env`, `sudo`, pipe, `$(…)` or `${…}`. One `cd` within the same repo
-before it is fine. Anything else on the line could change where gh posts, so the post is
+line. Outside quotes, only letters, digits, spaces and `_ . / : , = + @ % -` count as plain;
+any other character, such as `$`, `{`, `*`, `\`, `;` or `>`, gets no allow. Inside double quotes,
+`$`, `` ` `` and `\` get no allow; single quotes and a quoted heredoc may hold anything. One `cd` within
+the same repo before it is fine. Anything else on the line could change where gh posts, so the post is
 checked against every mark. `doctor` says
 where an allow comes from: this machine or `privacy.allow`. Only a mark in the marks file can
 be allowed. To take it back, run `yokoten marks allow --remove <mark> --here`.

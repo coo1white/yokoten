@@ -1061,11 +1061,14 @@ test('check and doctor: a mark that names the repo is skipped there, counted by 
 
   // The machine's switch, kept when `marks allow` writes the file.
   const allowFile = join(own.home, 'private-marks-allow.json');
-  writeFileSync(allowFile, JSON.stringify({ skipOwnName: false, repos: [] }));
+  // The switch alone, with no repos key, as the guide shows it: read as no repos.
+  writeFileSync(allowFile, JSON.stringify({ skipOwnName: false }));
   assert.equal(run(own, ['check', '--staged']).status, 1, 'off on this machine');
-  assert.doesNotMatch(run(own, ['doctor']).stdout, /name this repo/);
+  const switchedOff = run(own, ['doctor']).stdout;
+  assert.doesNotMatch(switchedOff, /name this repo/);
+  assert.doesNotMatch(switchedOff, /allow file/, 'doctor reads the switch alone as a good file');
   assert.equal(run(own, ['marks', 'allow', 'secondmark', '--here']).status, 0);
-  assert.equal(JSON.parse(readFileSync(allowFile, 'utf8')).skipOwnName, false, 'marks allow keeps the switch');
+  assert.deepEqual(JSON.parse(readFileSync(allowFile, 'utf8')), { skipOwnName: false, repos: [{ remote: 'example.com/octo/quiet-vale', allow: ['secondmark'] }] }, 'marks allow keeps the switch and writes both keys');
   rmSync(allowFile);
   assert.equal(run(own, ['check', '--staged']).status, 0, 'on again with no allow file');
 
