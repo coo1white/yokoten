@@ -626,6 +626,55 @@ body. The `init` workflow in the kit still
 runs `.yokoten/`. It moves to the action after the first release, so it never depends
 on `@main`.
 
+### A private repo without CI
+
+A private repo on a free plan pays for its GitHub Actions minutes. Such a project can
+keep CI off until the repo goes public. Then the commit hook and `yokoten check` are
+the gate.
+
+`init` reads the repo's visibility through `gh`. On a private repo it says that the
+workflows use Actions minutes. It still writes them: `init` never makes this choice
+for you. To keep CI off, run:
+
+```sh
+yokoten init --no-ci
+```
+
+`--no-ci` does three things:
+
+- It adds `"ci"` to `"notNow"` in `yokoten.json`, with the reason.
+- It leaves out the three workflows and `.github/dependabot.yml`. Dependabot in the kit
+  updates only the actions that CI runs.
+- It removes each of those files that is still the kit's copy. A file you changed, or
+  one reached through a symlink, is kept, and `init` names it.
+
+With `"notNow": { "ci": "<reason>" }`, the road counts the commit hook and `yokoten
+check` as the gate. The steps that need CI wait with it: `tests`, `ci` and `titles`.
+The `security-files` step does not ask for Dependabot, and full `doctor` does not ask
+for a required CI check. A later `init`, or `init --github --yes`, writes no workflow
+again.
+
+Without CI, some things are not checked. Full `doctor` says so once, in a `no-ci` note:
+
+- nothing on the server checks pull requests, issue titles or the workflows;
+- no code scanning, such as CodeQL, runs;
+- a commit made with the hook off reaches `main` unchecked.
+
+So check each pull request before you merge it:
+
+```sh
+yokoten check --pr 12
+```
+
+`check --pr <number>` reads that pull request through `gh`. It checks the same things
+as in CI, with the commits in your clone. When a commit is missing, it says what to
+fetch.
+
+From stage 5, the note also reminds you to end the choice when the repo goes public.
+When full `doctor` reads that the repo is public, it says so. To take CI up again,
+remove `"ci"` from `"notNow"` and run `yokoten init`. It writes the workflows, and the
+steps count CI again.
+
 ### Commands
 
 `init` copies the runtime into `.yokoten/` in your project. Commit it: the hooks and CI
@@ -663,7 +712,8 @@ workflow of the project's own that `init` keeps, `doctor` gives the step to add 
 commit check, a lint job with actionlint and zizmor, and one `ci` job to make the required
 check), `pr.yml` and `issue.yml`. Each action is pinned to a commit, each job has a time
 limit, checkout keeps no token, and a new push cancels the old run on the same pull
-request. Add your tests as a job in `yokoten.yml` and to the `needs` list of `ci`.
+request. Add your tests as a job in `yokoten.yml` and to the `needs` list of `ci`. A
+private repo can keep CI off: see [A private repo without CI](#a-private-repo-without-ci).
 
 In `yokoten.yml`, a `changes` job reads which files a pull request changes. The pull
 request is docs-only when each file is under `docs/` or `changes/`, or is a `README.md`
@@ -698,11 +748,13 @@ It puts three safe defaults in `.github/` too:
 | `install` | Skills into `~/.claude/skills` and `~/.agents/skills`, agents into `~/.claude/agents`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file. The two hooks go to Claude Code, and to Codex and Gemini CLI when `~/.codex` or `~/.gemini` already exists. It adds the marks it finds on this machine, and sets a git mailmap. See [Privacy](#privacy) |
 | `init [dir]` | Puts the practices into a project. Adds files; keeps any that are already there and says so. It also reads GitHub through `gh` and says which standard labels and milestone it would add. It never changes GitHub. Without `gh`, a sign-in or a GitHub remote, it says what it skipped |
 | `init --github --yes [--remove-default-labels] [--board]` | Adds the missing standard labels, and a milestone "First release" when no milestone is open. When a closed milestone already has that title, the new one is "Next release". A closed milestone is never reopened. A standard label that is there gets the standard colour and description. With 8 areas or fewer in `yokoten.json`, it adds one grey label per area. A second run changes nothing. GitHub's default labels outside the set (`question`, `wontfix` and others) are deleted only with `--remove-default-labels`. `--board` also makes a board linked to the repo; it needs the gh token's `project` scope |
+| `init --no-ci` | Keeps CI off: adds `"ci"` to `"notNow"` in `yokoten.json`, writes no workflow and no Dependabot config, and removes those files when they are still the kit's copy. See [A private repo without CI](#a-private-repo-without-ci) |
 | `update [dir] [--write]` | Shows what this yokoten changes in the core rules of the project's `AGENTS.md`. `--write` replaces them, and keeps the "This project" part as it is. See [Updating the rules](#updating-the-rules) |
 | `doctor [--session] [--json]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session. With `--agent gemini`, it prints the step as the JSON that Gemini CLI reads |
 | `adopt [--json]` | A draft of the adoption table for an old project: what it does today, and a proposed decision for each step. `--json` prints the rows. Writes nothing |
 | `check [--staged] [--json]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries. Each change file is read the way `changelog` reads it, so a wrong one fails at commit. With nothing staged, `--staged` notes it and is ok. For the tree, a translation behind its English source is a note. See [Translations](#translations) |
 | `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
+| `check --pr <number>` | The same check for one pull request, read through `gh`, for a repo without CI. See [A private repo without CI](#a-private-repo-without-ci) |
 | `check --issue` | In CI: the issue's title. See [Issue titles](#issue-titles) |
 | `redact` | Reads text on stdin and writes it with your details hidden: `<owner>`, `<email>`, `<host>`, `<mark>`. The tool-call guard sends risky commands through it. See [Privacy](#privacy) |
 | `changelog [--write]` | Shows the entries the files in `changes/` add under `[Unreleased]`. `--write` puts them into `CHANGELOG.md` and deletes the files; run it before a release. See [The changelog](#the-changelog) |
@@ -734,7 +786,7 @@ value.
   `history`, `pr` or `issue`. A note never fails the check. When the CI run has no
   pull request or issue, `check --pr` and `check --issue` are ok and add `skipped`, the reason.
 - `doctor --json`: `{ version, ok, selfTest, repo, stage, stages, next, findings, steps,
-  notes, server, lessons }`. The findings of a lesson are in `notes`; a new lesson has `isNew: true`. With `--session`, only the next step, the private-marks finding, and `core-rules` when the rules are behind. Then `notes` holds the work only on this machine, if there is any.
+  notes, server, lessons }`. The findings of a lesson are in `notes`; a new lesson has `isNew: true`. With `--session`, only the next step, the private-marks finding, and `core-rules` when the rules are behind. Then `notes` holds the work only on this machine and the findings of a lesson the session just heard about, if there are any.
 - `hook --json`: `{ blocked: true, finding }` when it blocks, `{ blocked: false, toolCall: true }`
   when it allows, and `{ blocked: false, toolCall: false }` when stdin is not a tool call.
   The runtimes do not use it: they read the exit code and the reason on stderr, as their
@@ -1139,7 +1191,15 @@ project:
 The first time a project's full `doctor` runs a new lesson, it also says so once, even
 when the lesson finds nothing: `note    new lesson: incident-138 (<what>); doctor now
 runs it in this project`. It keeps the lessons it has seen in `.git/yokoten/state.json`,
-so the file is never committed. A session does not write it.
+so the file is never committed.
+
+The session start hears a new lesson too, once, when it finds a problem here. It is one
+line, and it names the command that shows where:
+``yokoten: a new lesson learned in another project found a problem here: <what>. Run
+`yokoten doctor` to see where.`` A later session, or the same one after a compaction, does
+not hear it again. The session runs each new lesson at one start only, and keeps which in
+the same file, so a later start spends no time on it. A problem that comes later is for
+full `doctor` to report.
 
 A note never fails `doctor`. To stop a lesson in one project, add its id to "notNow" in
 `yokoten.json`, with the reason: `"notNow": { "incident-138": "a setup file sets it" }`.
@@ -1426,8 +1486,8 @@ yokoten hides your details before some commands run.
   can't start or read your marks, it says so in one line and passes the output through:
   it never stops the command.
 - **In Claude Code, the guard filters plain reads.** These commands print account
-  details: `git log`, `git show` and `git blame` without `--format`, `--pretty` or
-  `--oneline`; `git remote -v`, `get-url` and `show`; `git config --list` and reads of
+  details: `git log`, `git show`, `git shortlog <revision>`, `git blame` and `git for-each-ref`,
+  with any format; `git cat-file -p`; `git remote -v`, `get-url` and `show`; `git config --list` and reads of
   `user.*` and `remote.*`; `gh auth status`; GET calls through `gh` on traffic and user
   paths; `npm whoami`; `wrangler whoami`. When the whole command is one of these, with
   nothing around it, the guard changes it to

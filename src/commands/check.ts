@@ -1,7 +1,8 @@
-// `yokoten check`: the tree, --staged, --history, and in CI --pr and --issue. And
+// `yokoten check`: the tree, --staged, --history, and in CI --pr and --issue. `--pr <number>`
+// reads one pull request through gh, for a repo without CI (#377). And
 // `yokoten redact`, the privacy check's filter for command output (#390).
 
-import { readCodeOwners, readIssue, readPullRequest } from '../host/github.ts';
+import { ghIn, readCodeOwners, readIssue, readNumberedPullRequest, readPullRequest } from '../host/github.ts';
 import { loadConfig } from '../rules/config.ts';
 import { type Finding, formatFinding } from '../rules/message.ts';
 import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, largeDiff, longSentenceNote, longSentences, splitForDependabot } from '../rules/pr.ts';
@@ -12,12 +13,18 @@ import { loadMarks, makeRedactor } from '../rules/privacy.ts';
 import { machineMarks, machineUserNames } from '../setup/install.ts';
 import { bullets, env, parse, print, printJson, requireRoot, say, showOnPullRequest, usage } from './shared.ts';
 
+/** How long `check --pr <number>` waits for gh. */
+const GH_TIMEOUT_MS = 15000;
+
 export function runCheck(): number {
   const options = parse('check');
   if (typeof options === 'string') return usage(options);
   const modes = ['--staged', '--history', '--pr', '--issue'].filter((m) => options.flags.has(m));
   if (modes.length > 1) return usage(`${modes.join(' and ')} can't be used together`);
   const mode = modes[0]?.slice(2) ?? 'tree';
+  // A number goes with --pr only (#377): that pull request, read through gh.
+  const number = options.positional[0];
+  if (number !== undefined && mode !== 'pr') return usage(`unexpected argument ${number}: a number goes with --pr`);
   const json = options.flags.has('--json');
   const root = requireRoot(process.cwd(), json ? (missing) => ({ check: mode, ok: false, findings: [missing], notes: [] }) : undefined);
   if (!root) return 1;
@@ -26,7 +33,7 @@ export function runCheck(): number {
   const notes: Finding[] = [];
   let problems: Finding[];
   try {
-    problems = runMode(mode, root, config, notes, { name, json });
+    problems = runMode(mode, root, config, notes, { name, json, number });
   } catch (err) {
     // A git read the check depends on gave no answer (#403): one finding, and the check fails.
     if (!(err instanceof GitReadError)) throw err;
@@ -44,7 +51,7 @@ export function runCheck(): number {
 const SKIPPED: Finding[] = [];
 
 /** The problems of one mode of `check`; its notes go into `notes`, and some are printed as they are found. */
-function runMode(mode: string, root: string, config: ReturnType<typeof loadConfig>, notes: Finding[], { name, json }: { name: string; json: boolean }): Finding[] {
+function runMode(mode: string, root: string, config: ReturnType<typeof loadConfig>, notes: Finding[], { name, json, number }: { name: string; json: boolean; number?: string }): Finding[] {
   let problems: Finding[];
   if (mode === 'issue') {
     const issue = readIssue(env);
@@ -57,7 +64,7 @@ function runMode(mode: string, root: string, config: ReturnType<typeof loadConfi
     // An event that can't be read is one finding (#267), so --json and the summary still work.
     problems = 'problem' in issue ? [issue.problem] : checkIssueTitle(issue.title, config, issue.labels);
   } else if (mode === 'pr') {
-    const pr = readPullRequest(root, env);
+    const pr = number === undefined ? readPullRequest(root, env) : readNumberedPullRequest(root, ghIn(root, GH_TIMEOUT_MS), number);
     if (!pr) {
       const skipped = 'no pull request in this run (it reads the CI event); nothing to check';
       if (json) printJson({ check: mode, ok: true, skipped, findings: [], notes: [] });
