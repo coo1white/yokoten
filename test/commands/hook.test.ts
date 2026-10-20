@@ -4,6 +4,7 @@ import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
+  existsSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -234,7 +235,7 @@ test('hook: Claude Code gets a plain read rewritten through redact, with allow, 
   assert.equal(output.permissionDecision, 'allow');
   assert.equal(output.permissionDecisionReason, 'yokoten: `git log` prints author names and emails, so its output goes through yokoten redact');
   assert.equal(output.updatedInput.description, 'Show');
-  assert.match(output.updatedInput.command, /^set -o pipefail # yokoten-redact\n\(\ngit log -1\n\) 2>&1 \| \{ "[^"]+" "[^"]*yokoten\.ts" redact \|\| cat; \}$/);
+  assert.match(output.updatedInput.command, /^set -o pipefail # yokoten-redact\n\(\ngit log --no-ext-diff --no-textconv --no-show-signature -1\n\) 2>&1 \| \{ "[^"]+" "[^"]*yokoten\.ts" redact \|\| cat; \}$/);
   // The rewritten command runs, and prints the placeholder.
   const ran = spawnSync('bash', ['-c', output.updatedInput.command], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
   assert.equal(ran.status, 0, ran.stderr);
@@ -246,6 +247,79 @@ test('hook: Claude Code gets a plain read rewritten through redact, with allow, 
   }
   // A command the guard refuses is refused, not rewritten.
   assert.equal(call('git push --force').status, 2);
+});
+
+test('hook: a custom format, shortlog -sne and blame -e come back rewritten, and the name and email are hidden (#413)', () => {
+  const sandbox = makeSandbox();
+  const email = `jane${at}personal-mail.dev`;
+  sandbox.git('config', 'user.name', 'Jane Example');
+  sandbox.git('config', 'user.email', email);
+  sandbox.write('README.md', 'Hello.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'docs: hello');
+  const call = (command: string) =>
+    sandbox.run(['hook', '--commands-only', '--agent', 'claude-code'], { input: JSON.stringify({ cwd: sandbox.repo, tool_name: 'Bash', tool_input: { command } }) });
+  const commands = ['git log --format=%an', 'git log --pretty=format:%ae', "git log --format='%an <%ae>'", 'git shortlog -sne HEAD', 'git blame -e README.md', "git for-each-ref --format='%(authorname) %(authoremail)'", 'git cat-file -p HEAD'];
+  for (const command of commands) {
+    const result = call(command);
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout).hookSpecificOutput;
+    assert.equal(output.permissionDecision, 'allow', command);
+    // Positive control: the same command, not rewritten, prints the name and email.
+    const plain = spawnSync('bash', ['-c', command], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
+    assert.ok(plain.stdout.includes('Jane') || plain.stdout.includes(email), `${command}: ${plain.stdout}`);
+    const ran = spawnSync('bash', ['-c', output.updatedInput.command], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.match(ran.stdout, /<owner>|<email>/, command);
+    assert.ok(!ran.stdout.includes('Jane') && !ran.stdout.includes(email), `${command}: ${ran.stdout}`);
+  }
+  // A compound or writing command gets no decision.
+  for (const command of ['git log --format=%an | head', "git log --format='%an'; ls", 'git log --format=%an > out', 'git commit --amend --no-edit']) {
+    assert.deepEqual(pick(call(command)), [0, '', ''], command);
+  }
+});
+
+test('hook: a quote that hides a redirect gets no allow, and the file is not written (#413)', () => {
+  const sandbox = makeSandbox();
+  sandbox.git('config', 'user.name', 'Jane Example');
+  sandbox.write('README.md', 'Hello.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'docs: hello');
+  const call = (command: string) =>
+    sandbox.run(['hook', '--commands-only', '--agent', 'claude-code'], { input: JSON.stringify({ cwd: sandbox.repo, tool_name: 'Bash', tool_input: { command } }) });
+  for (const command of [`git log --format="%an %ae'$x" > out.txt --invert-grep --grep='"'`, `git log "'$x" >> out.txt '"'`]) {
+    assert.deepEqual(pick(call(command)), [0, '', ''], command);
+    assert.equal(existsSync(join(sandbox.repo, 'out.txt')), false, command);
+  }
+});
+
+test('hook: a glob that a file name turns into an option gets no allow (#413)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('--output=leak.txt', 'x\n');
+  const result = sandbox.run(['hook', '--commands-only', '--agent', 'claude-code'], { input: JSON.stringify({ cwd: sandbox.repo, tool_name: 'Bash', tool_input: { command: 'git log *' } }) });
+  assert.deepEqual(pick(result), [0, '', '']);
+  assert.equal(existsSync(join(sandbox.repo, 'leak.txt')), false);
+});
+
+test("hook: the rewritten log runs no textconv the repo's config names (#413)", () => {
+  const sandbox = makeSandbox();
+  const marker = join(sandbox.repo, 'ran-textconv');
+  sandbox.write('.gitattributes', '*.txt diff=tc\n');
+  sandbox.write('a.txt', 'one\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'docs: one');
+  sandbox.git('config', 'diff.tc.textconv', `touch '${marker}'; cat`);
+  const result = sandbox.run(['hook', '--commands-only', '--agent', 'claude-code'], { input: JSON.stringify({ cwd: sandbox.repo, tool_name: 'Bash', tool_input: { command: 'git log -p -1' } }) });
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout).hookSpecificOutput;
+  assert.equal(output.permissionDecision, 'allow');
+  const ran = spawnSync('bash', ['-c', output.updatedInput.command], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
+  assert.equal(ran.status, 0, ran.stderr);
+  assert.match(ran.stdout, /\+one/);
+  assert.equal(existsSync(marker), false);
+  // Positive control: the same log, not rewritten, runs the textconv.
+  spawnSync('git', ['log', '-p', '-1'], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
+  assert.equal(existsSync(marker), true);
 });
 
 test("hook: an agent that can't rewrite runs the command, or with privacy.output stop is told the filtered one (#390)", () => {

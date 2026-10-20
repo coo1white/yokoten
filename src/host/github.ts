@@ -259,12 +259,12 @@ function shasProblem(base: string, head: string): Finding | null {
   return null;
 }
 
-/** Why `base...head` can't be read in this checkout, or null when it can. */
-function commitsProblem(root: string, base: string, head: string): Finding | null {
+/** Why `base...head` can't be read in this checkout, or null when it can. `fix` says how to get the commits. */
+function commitsProblem(root: string, base: string, head: string, fix: string = COMMITS_FIX): Finding | null {
   const missing = [['base', base], ['head', head]].filter(([, sha]) => !hasCommit(root, sha)).map(([name]) => name);
-  if (missing.length === 2) return finding('pr-commits', 'the pull request\'s base and head commits are not in this checkout', COMMITS_FIX);
-  if (missing.length === 1) return finding('pr-commits', `the pull request's ${missing[0]} commit is not in this checkout`, COMMITS_FIX);
-  if (!hasMergeBase(root, base, head)) return finding('pr-commits', 'the pull request\'s base and head commits have no common commit in this checkout', COMMITS_FIX);
+  if (missing.length === 2) return finding('pr-commits', 'the pull request\'s base and head commits are not in this checkout', fix);
+  if (missing.length === 1) return finding('pr-commits', `the pull request's ${missing[0]} commit is not in this checkout`, fix);
+  if (!hasMergeBase(root, base, head)) return finding('pr-commits', 'the pull request\'s base and head commits have no common commit in this checkout', fix);
   return null;
 }
 
@@ -280,20 +280,71 @@ export function readPullRequest(root: string, env: Env): PullRequestRead | Unrea
   const head = isObject(pr.head) ? asText(pr.head.sha) : '';
   const problem = shasProblem(base, head) ?? commitsProblem(root, base, head);
   if (problem) return { problem };
+  return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: isObject(pr.user) ? asText(pr.user.login) : '' }, base, head);
+}
+
+const milestoneTitle = (milestone: unknown): string | null => (isObject(milestone) && typeof milestone.title === 'string' ? milestone.title : null);
+
+/** The pull request with the files git lists between `base` and `head`. Both commits must be here. */
+function withDiff(root: string, fields: Omit<PullRequest, 'files' | 'deleted'>, base: string, head: string): PullRequestRead {
   // A diff git can't give throws a GitReadError, and the check stops on it (#403).
   const diff = (...options: string[]) => readGit(root, ['diff', ...options, `${base}...${head}`]).toString('utf8');
   return {
-    title: asText(pr.title),
-    body: asText(pr.body),
+    ...fields,
     files: diff('--name-only', '-z').split('\0').filter(Boolean),
     deleted: diff('--name-only', '--diff-filter=D', '-z').split('\0').filter(Boolean),
-    labels: labelNames(pr.labels),
-    milestone: isObject(pr.milestone) && typeof pr.milestone.title === 'string' ? pr.milestone.title : null,
-    author: isObject(pr.user) ? asText(pr.user.login) : '',
     base,
     head,
     numstat: diff('--numstat', '-z'),
   };
+}
+
+/**
+ * Pull request `number` read through gh (#377), so a lead can run `check --pr <number>` in a
+ * repo without CI. The commits come from this clone; when one is missing, the fix says
+ * what to fetch. What can't be read is one finding, as in CI.
+ */
+export function readNumberedPullRequest(root: string, gh: Gh, number: string): PullRequestRead | Unreadable {
+  if (!/^[1-9]\d*$/.test(number)) return { problem: finding('pr-read', `"${number}" is not a pull request number`, 'give the number alone, such as `yokoten check --pr 12`') };
+  let pr: unknown;
+  try {
+    pr = JSON.parse(gh(['pr', 'view', number, '--json', 'title,body,labels,milestone,author,baseRefOid,headRefOid']));
+  } catch (err) {
+    // gh says this when the repo has no such pull request: a wrong number, not a network problem.
+    if (/Could not resolve to a PullRequest/i.test(String((err as { stderr?: string }).stderr || (err as Error).message))) {
+      return { problem: finding('pr-read', `no pull request ${number} in ${originRepo(root) ?? 'this repo'}`, 'check the number with `gh pr list`, then run it again') };
+    }
+    const why = unread(err);
+    return { problem: finding('pr-read', `pull request ${number} can't be read: ${why.unread}`, why.fix) };
+  }
+  if (!isObject(pr)) return { problem: finding('pr-read', `gh gave no pull request ${number}`, 'check the number, then run it again') };
+  const base = asText(pr.baseRefOid);
+  const head = asText(pr.headRefOid);
+  // No branch name goes into the hint, so nothing in it needs quoting for a shell.
+  const fetch = `run \`git fetch origin\` and \`git fetch origin pull/${number}/head\`, then run it again`;
+  const problem = shasProblem(base, head) ?? commitsProblem(root, base, head, fetch);
+  if (problem) return { problem };
+  return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: ghAuthor(pr.author) }, base, head);
+}
+
+/**
+ * The author login as the CI event names it. gh names an app `app/<name>`, where the event
+ * has `<name>[bot]`; the rules match the event's form, such as dependabot[bot].
+ */
+function ghAuthor(author: unknown): string {
+  if (!isObject(author)) return '';
+  const login = asText(author.login);
+  if (login.startsWith('app/')) return `${login.slice('app/'.length)}[bot]`;
+  return author.is_bot === true && login && !login.endsWith('[bot]') ? `${login}[bot]` : login;
+}
+
+/** "owner/name" of the origin remote, or null. */
+function originRepo(root: string): string | null {
+  try {
+    return repoOf(execFileSync('git', ['config', '--get', 'remote.origin.url'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
+  } catch {
+    return null;
+  }
 }
 
 // GitHub reads CODEOWNERS from the first of these places, on the pull request's base
@@ -453,6 +504,19 @@ export function isOrganization(gh: Gh, owner: string): boolean | null {
   try {
     const type = gh(['api', `users/${owner}`, '--jq', '.type']).trim();
     return type === 'Organization' ? true : type === 'User' ? false : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when GitHub says `repo` ("owner/name") is private, false when it is public, and
+ * null when gh can't tell (#377). One call. A private repo pays for its Actions minutes.
+ */
+export function isPrivateRepo(gh: Gh, repo: string): boolean | null {
+  try {
+    const said = gh(['api', `repos/${repo}`, '--jq', '.private']).trim();
+    return said === 'true' ? true : said === 'false' ? false : null;
   } catch {
     return null;
   }

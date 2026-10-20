@@ -12,7 +12,7 @@
 // AGENTS.md, and only with --write. It is at the end of this file.
 
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
 import { addProjectHook, addProjectStopHook, checkProjectSettings, setProjectEnv } from '../agents/runtimes/claude-code.ts';
@@ -24,10 +24,10 @@ import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
-import { DEFAULTS } from '../rules/config.ts';
+import { DEFAULTS, loadConfig } from '../rules/config.ts';
 import { type Finding, finding } from '../rules/message.ts';
 import { systemHome } from '../rules/privacy.ts';
-import { CODEOWNERS_PLACES, type Gh, ghIn, isOrganization, repoOf } from '../host/github.ts';
+import { CODEOWNERS_PLACES, type Gh, ghIn, isOrganization, isPrivateRepo, repoOf } from '../host/github.ts';
 import { readOriginUrl } from './plan.ts';
 import { copyRuntime, HOME_DIR, KIT, normalizeText, readWorkflowHashes, render, textHash, VERSION, writeNew } from './files.ts';
 
@@ -75,10 +75,12 @@ const ORG_LOOKUP_MS = 5000;
 
 /**
  * One line per thing done, kept or skipped; `ok` is false when a hooks or settings file was
- * skipped (#248, #254). `gh` asks GitHub one thing: whether the remote owner is an organization.
+ * skipped (#248, #254). `gh` asks GitHub two things: whether the remote owner is an
+ * organization, and whether the repo is private (#377). `noCi` keeps CI off: see `keepCiOff`.
  */
-export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: boolean; lines: string[] } {
+export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS), { noCi = false }: { noCi?: boolean } = {}): { ok: boolean; lines: string[] } {
   const report: string[] = [];
+  const isOff = noCi || isCiOffIn(root);
   const cli = cliPath(root);
   const hookCli = hookCliPath(root);
   if (!isSelf(root) && root !== HOME_DIR) {
@@ -91,6 +93,13 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: bo
     const rel = relative(kit, file).split('\\').join('/');
     // The hooks are written below. A project with its own hooks folder keeps it, so it gets no .githooks/.
     if (rel.startsWith('.githooks/')) continue;
+    // With CI off (#377), the CI files are left out. One that is there already is kept,
+    // and with --no-ci, `keepCiOff` says what happens to it.
+    if (isOff && isCiFile(rel)) {
+      if (!lexists(join(root, rel))) report.push(`skipped ${rel} (yokoten.json "notNow" names ci)`);
+      else if (!noCi) report.push(`kept ${rel}`);
+      continue;
+    }
     const text = render(readFileSync(file, 'utf8'), { cli, version: VERSION });
     // An AGENTS.md without "## This project" gets the core rules on top of its own text (#378).
     if (rel === 'AGENTS.md' && existsSync(join(root, rel))) {
@@ -110,6 +119,8 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: bo
   // Read before .githooks/ is written: whether it can run the hooks this clone has in .git/hooks (#256).
   const blocks = hooks.kind === 'plain' ? handOffBlocks(root) : [];
   if (hooks.kind !== 'own') report.push(...writeGithooks(root, cli, kit, blocks.length === 0));
+  if (noCi) report.push(...keepCiOff(root, cli, kit));
+  else if (!isOff) report.push(...privateRepoNote(root, gh));
   report.push(writeCodeOwners(root, gh));
   const imported = importRules(root);
   if (imported) report.push(imported);
@@ -175,6 +186,145 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: bo
   report.push(...codexHooks.lines, ...geminiHooks.lines, ...antigravityHooks.lines, ...museHooks.lines, ...dshHooks.lines, ...grokHooks.lines);
   report.push(...setCommitCheck(root, cli, hooks, blocks));
   return { ok: claudeHooks.ok && codexHooks.ok && geminiHooks.ok && antigravityHooks.ok && museHooks.ok && dshHooks.ok && grokHooks.ok, lines: report };
+}
+
+// ---- A project that keeps CI off (#377) ----
+//
+// A private repo on a free plan pays for its Actions minutes. Such a project can keep CI
+// off: yokoten.json "notNow" then names `ci`, and the commit hook and `yokoten check` are
+// the gate. init never makes that choice itself. On a private repo it says what the
+// workflows cost and how to keep them out; `init --no-ci` makes the choice.
+
+/** The reason `init --no-ci` writes into "notNow". */
+export const NO_CI_REASON = 'CI is off to save Actions minutes; the commit hook and yokoten check are the gate. Look again when the repo goes public';
+
+/** The kit files that only CI uses: the workflows, and Dependabot, which updates only the actions CI runs. */
+const isCiFile = (rel: string): boolean => rel.startsWith('.github/workflows/') || rel === '.github/dependabot.yml';
+
+/** True when yokoten.json "notNow" names `ci`; false when the file is missing or can't be read (`yokoten init` checks it first). */
+function isCiOffIn(root: string): boolean {
+  try {
+    return Object.hasOwn(loadConfig(root).notNow, 'ci');
+  } catch {
+    return false;
+  }
+}
+
+/** True when something is at `path`, a broken symlink too. */
+function lexists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The text with LF line ends and one newline at the end, so a Windows checkout compares equal. */
+const normalizeText = (text: string): string => `${text.replace(/\r\n/g, '\n').replace(/\n*$/, '')}\n`;
+
+/** The first of the path's folders below the root, or the file itself, that is a symlink; null when none is. */
+function symlinkOnPath(root: string, rel: string): string | null {
+  const parts = rel.split('/');
+  for (let i = 1; i <= parts.length; i++) {
+    const part = parts.slice(0, i).join('/');
+    try {
+      if (lstatSync(join(root, part)).isSymbolicLink()) return part;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * The texts init writes for a kit file, line ends aside: the kit's copy, and for
+ * dependabot.yml also the copy with the blocks for this repo's ecosystems (#379).
+ */
+const kitCopies = (root: string, rel: string, kitText: string): string[] =>
+  [kitText, ...(rel === '.github/dependabot.yml' ? [dependabotText(root, kitText).text] : [])].map(normalizeText);
+
+/**
+ * `init --no-ci`: write "notNow" `ci` into yokoten.json, and remove each CI file that is
+ * still the kit's copy (line ends aside), so nobody deletes them by hand. A file the project
+ * changed is kept, and so is one reached through a symlink: init never deletes through one.
+ * Each kept file is named once. Returns the report lines.
+ */
+function keepCiOff(root: string, cli: string, kit: string): string[] {
+  const lines = [recordNotNow(root, 'ci', NO_CI_REASON)];
+  for (const file of walk(kit)) {
+    const rel = relative(kit, file).split('\\').join('/');
+    const path = join(root, rel);
+    if (!isCiFile(rel) || !lexists(path)) continue;
+    const link = symlinkOnPath(root, rel);
+    if (link) lines.push(`kept ${rel}: ${link} is a symlink, and init never deletes through one; delete it yourself if CI stays off`);
+    else if (kitCopies(root, rel, render(readFileSync(file, 'utf8'), { cli, version: VERSION })).includes(normalizeText(readFileSync(path, 'utf8')))) {
+      rmSync(path);
+      lines.push(`removed ${rel} (the kit's copy; CI is off)`);
+    } else lines.push(`kept ${rel}: it is not the kit's copy, so delete it yourself if CI stays off`);
+  }
+  return lines;
+}
+
+/**
+ * Set one key of yokoten.json "notNow", unless it is there. Only the text of that key
+ * changes: the rest of the file keeps its formatting. When the edit can't be placed
+ * safely, the file stays as it is and the line says to add the key by hand.
+ */
+function recordNotNow(root: string, key: string, reason: string): string {
+  const path = join(root, 'yokoten.json');
+  const byHand = `skipped "notNow" ${key} in yokoten.json: add "${key}": ${JSON.stringify(reason)} to "notNow" yourself`;
+  let text = '{}\n';
+  let file: Record<string, unknown>;
+  try {
+    if (existsSync(path)) text = readFileSync(path, 'utf8');
+    file = JSON.parse(text);
+  } catch {
+    return byHand;
+  }
+  const notNow = (file.notNow ?? {}) as Record<string, string>;
+  if (Object.hasOwn(notNow, key)) return `kept "notNow" ${key} in yokoten.json`;
+  const entry = `"${key}": ${JSON.stringify(reason)}`;
+  // After the opening brace of "notNow", or of the file when it has no "notNow": the new
+  // entry goes first, with the same space after it as the next entry has.
+  const insert = (match: RegExpExecArray | null, add: string): string | null => {
+    if (!match) return null;
+    const at = match.index + match[0].length;
+    const space = text.slice(at).match(/^\s*/)?.[0] ?? '';
+    const rest = text.slice(at + space.length);
+    // An empty object: `{ "key": "…" }` on one line, whatever space it had inside.
+    if (rest.startsWith('}')) return `${text.slice(0, at)} ${add} ${rest}`;
+    return `${text.slice(0, at)}${space || ' '}${add},${space || ' '}${rest}`;
+  };
+  const hasKey = Object.hasOwn(file, 'notNow') && file.notNow !== null;
+  const edited = hasKey ? insert(/"notNow"\s*:\s*\{/.exec(text), entry) : insert(/^\s*\{/.exec(text), `"notNow": { ${entry} }`);
+  // The edit counts only when the file reads back as before, plus the one key.
+  try {
+    const after = edited === null ? null : JSON.parse(edited);
+    const expected = { ...file, notNow: { ...notNow, [key]: reason } };
+    if (!after || JSON.stringify(sortKeys(after)) !== JSON.stringify(sortKeys(expected))) return byHand;
+  } catch {
+    return byHand;
+  }
+  writeFileSync(path, edited as string);
+  return `wrote "notNow" ${key} in yokoten.json (to take CI up again, remove it and run \`yokoten init\`)`;
+}
+
+/** A copy with the keys of every object in order, so two readings compare by content. */
+const sortKeys = (value: unknown): unknown =>
+  Array.isArray(value) ? value.map(sortKeys) : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map((k) => [k, sortKeys((value as Record<string, unknown>)[k])])) : value;
+
+/**
+ * On a private repo, a note that the workflows use Actions minutes, and how to keep them
+ * out. Nothing when gh can't tell, or the repo is public. One gh call, only with a GitHub remote.
+ */
+function privateRepoNote(root: string, gh: Gh): string[] {
+  const repo = repoOf(readOriginUrl(root));
+  if (!repo || isPrivateRepo(gh, repo) !== true) return [];
+  return [
+    'note: this repo is private, so the workflows in .github/workflows use Actions minutes from your plan',
+    'to keep CI off, run `yokoten init --no-ci`: it removes the workflows init wrote, and records the choice in yokoten.json',
+  ];
 }
 
 // ---- CODEOWNERS for the lead-only paths (#304) ----
@@ -318,12 +468,19 @@ export function formatDependabotBlock(ecosystem: string, dirs: string[]): string
 export const readDependabotEcosystems = (text: string): Set<string> =>
   new Set([...text.matchAll(/^\s*-?\s*package-ecosystem:\s*["']?([\w-]+)/gm)].map((match) => match[1]));
 
+/** The dependabot.yml init writes here: the kit's file and a block for each ecosystem found. */
+function dependabotText(root: string, kitText: string): { text: string; found: Map<string, string[]> } {
+  const found = findEcosystems(root);
+  const blocks = [...found].map(([name, dirs]) => formatDependabotBlock(name, dirs)).join('');
+  return { text: kitText.replace(/\n*$/, '\n') + blocks, found };
+}
+
 /**
  * Write .github/dependabot.yml: the kit's file and a block for each ecosystem found. A
  * dependabot.yml or .yaml that is there is kept, and the line names what it doesn't update.
  */
 function writeDependabot(root: string, kitText: string): string {
-  const found = findEcosystems(root);
+  const { text, found } = dependabotText(root, kitText);
   const existing = ['.github/dependabot.yml', '.github/dependabot.yaml'].find((place) => existsSync(join(root, place)));
   if (existing) {
     const has = readDependabotEcosystems(readFileSync(join(root, existing), 'utf8'));
@@ -331,8 +488,7 @@ function writeDependabot(root: string, kitText: string): string {
     if (missing.length === 0) return `kept ${existing}`;
     return `kept ${existing}; it does not update ${missing.join(', ')}. Copy its github-actions block for each, with prefix chore`;
   }
-  const blocks = [...found].map(([name, dirs]) => formatDependabotBlock(name, dirs)).join('');
-  writeNew(join(root, '.github', 'dependabot.yml'), kitText.replace(/\n*$/, '\n') + blocks);
+  writeNew(join(root, '.github', 'dependabot.yml'), text);
   return found.size === 0
     ? 'wrote .github/dependabot.yml (the actions CI runs)'
     : `wrote .github/dependabot.yml (the actions CI runs, and ${[...found.keys()].join(', ')})`;
