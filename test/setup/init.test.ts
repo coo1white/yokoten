@@ -1482,6 +1482,18 @@ test('init: a private repo can keep CI off with --no-ci, finish the road, and ta
   assert.doesNotMatch(sandbox.run(['doctor'], { extra: machine }).stdout, /no-ci/);
 });
 
+test('init --no-ci: the dependabot.yml init wrote with an ecosystem block is removed too (#377, #379)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('package.json', '{}\n');
+  let result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(readFileSync(join(sandbox.repo, '.github', 'dependabot.yml'), 'utf8'), /package-ecosystem: npm/);
+  result = sandbox.run(['init', '--no-ci']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^removed \.github\/dependabot\.yml \(the kit's copy; CI is off\)$/m);
+  assert.ok(!existsSync(join(sandbox.repo, '.github', 'dependabot.yml')));
+});
+
 test('init: only "notNow" ci leaves kit files out; other steps in "notNow" keep today\'s files (#377)', () => {
   const sandbox = makeSandbox();
   sandbox.write('yokoten.json', JSON.stringify({ notNow: { templates: 'later', changelog: 'later', codeowners: 'later', 'security-files': 'later', titles: 'later' } }));
