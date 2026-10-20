@@ -216,7 +216,7 @@ export const COMMANDS: Command[] = [
       'reviewed lesson into kit/lessons/, where doctor runs it in every project.',
       '--upstream keeps a note about a gap in yokoten itself, found in any project, in',
       '~/.config/yokoten/upstream/, outside every repo. The project name, its path, your',
-      'home folder and your name are hidden first; a note with a secret is refused.',
+      'home folder and your name are hidden first; a note with a known secret shape is refused.',
     ],
     options: [
       { name: '--write', text: 'put the draft in lessons/ (adds only, never overwrites)' },

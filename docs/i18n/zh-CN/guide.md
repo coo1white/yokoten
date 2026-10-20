@@ -918,12 +918,16 @@ yokoten learn --upstream "the guard let git push --tags through" --area hook --f
 这条记录存在你自己电脑上的 `~/.config/yokoten/upstream/`，不在任何仓库里。
 `--area` 和 `--fix` 可以不写；不写 `--area`，就记成 `unknown`。存之前先清理一遍：
 
-- 项目名和项目文件夹换成 `<project>`
+- 项目名换成 `<project>`，不管怎么写：`secret-proj`、`secret_proj`、`SecretProj`、`secretproj`
+  都算。不到三个字母的名字不换，不然会误伤太多词；它要是能认出你，就把它加进私密标记
+- 指向项目里的路径，开头换成 `<project>`，绕过软链接的也一样
 - 你的主目录换成 `~`
-- 你的名字、邮箱、私有主机和私密标记换成占位符，跟 `yokoten redact` 一样
+- 你的名字、邮箱、gh 登录名、私有主机和私密标记换成占位符，跟 `yokoten redact` 一样；
+  邮箱会变成 `<email>`
 
-清理完还带着邮箱、IP 地址或私密标记的，不存。带着密钥的，也不存。yokoten 只说是哪一类，
-不会把内容打出来。整个过程不联网，什么都不往外发。
+带着常见密钥格式的，不存：提交检查认得的 token、URL 里的密码、带值的 `password=`、`token=`、
+`api_key=`、JWT，还有 OpenAI 的 key。清理完还带着 IP 地址或私密标记的，也不存。yokoten 只说是
+哪一类，不会把内容打出来。整个过程不联网，什么都不往外发。没有主目录（HOME 是空的）就什么都不存。
 
 在 yokoten 自己的仓库里，会话开头和 `doctor` 会说有几条在等：
 `yokoten: 3 lessons from other projects wait to become issues: yokoten learn --upstream --list`。

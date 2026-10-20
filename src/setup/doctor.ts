@@ -607,7 +607,8 @@ export interface StepState {
  * fix; `notes` never fail doctor. `ok` is false only for a problem (#208): the self-test,
  * core rules that are behind, a tree finding or a machine check. A road step not taken
  * yet is to do, not a problem, so it never makes `ok` false. A session (`--session`) gets the next step, the
- * private-marks finding and a behind `core-rules` finding only, as its lines do.
+ * private-marks finding, a behind `core-rules` finding and, in yokoten's own repo, the
+ * `upstream-inbox` note only, as its lines do.
  */
 export interface DoctorReport {
   version: string;
@@ -674,7 +675,10 @@ export function doctor(
       findings.push(core.finding);
     }
     const waiting = upstreamNote(root, env);
-    if (waiting) lines.push(`yokoten: ${waiting.what}`);
+    if (waiting) {
+      lines.push(`yokoten: ${waiting.what}`);
+      findings.push(waiting);
+    }
     const ok = !failed.length && !isCoreBehind;
     return { ok, lines, report: { ...base, ok, repo: true, stage, next, findings } };
   }

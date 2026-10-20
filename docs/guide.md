@@ -1010,13 +1010,19 @@ The note goes to `~/.config/yokoten/upstream/`, on your machine and outside ever
 `--area` and `--fix` are optional; without `--area`, the part is `unknown`. Before it is
 kept, the note is cleaned:
 
-- the project's name and its folder become `<project>`
+- the project's name becomes `<project>`, in any spelling: `secret-proj`, `secret_proj`,
+  `SecretProj` and `secretproj` alike. A name of under three letters is left alone, as it
+  would hide too many words; add it to your private marks if it points at you
+- a path into the project starts with `<project>`, also when it goes through a symlink
 - your home folder becomes `~`
-- your name, emails, private hosts and private marks become placeholders, as in `yokoten redact`
+- your name, emails, gh login, private hosts and private marks become placeholders, as in
+  `yokoten redact`; an email address becomes `<email>`
 
-A note that still holds an email address, an IP address or a private mark is not kept. A
-note with a secret is not kept either. yokoten says which kind of detail it found, never the
-value. Nothing is sent anywhere.
+A note with a known secret shape is not kept: a token the commit check knows, a password in
+a URL, `password=`, `token=` or `api_key=` with a value, a JSON web token, or an OpenAI
+key. A note that still holds an IP address or a private mark after the cleaning is not kept
+either. yokoten says which kind of detail it found, never the value. Nothing is sent
+anywhere. Without a home folder (an empty HOME), nothing is kept.
 
 In the yokoten repo, the session start and `doctor` say how many notes wait:
 `yokoten: 3 lessons from other projects wait to become issues: yokoten learn --upstream --list`.

@@ -22,6 +22,7 @@ import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { type Finding, finding, formatFinding, place } from '../rules/message.ts';
 import type { CodeOwners, PullRequest } from '../rules/pr.ts';
+import { homeOf } from '../rules/privacy.ts';
 import { type Incident, terminalText } from '../run/learn.ts';
 
 export interface BotConfig {
@@ -376,6 +377,23 @@ export function readLogin(gh: Gh): string | null {
     return /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(login) ? login : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * The logins gh is signed in with, from its hosts.yml on this machine, with no network
+ * call (#392): `user:` under each host. GH_CONFIG_DIR, then XDG_CONFIG_HOME/gh, then
+ * ~/.config/gh, as gh looks. None when the file is missing.
+ */
+export function readLocalLogins(env: Env): string[] {
+  const home = homeOf(env);
+  const dir = env.GH_CONFIG_DIR || (env.XDG_CONFIG_HOME ? join(env.XDG_CONFIG_HOME, 'gh') : home ? join(home, '.config', 'gh') : null);
+  if (!dir) return [];
+  try {
+    const text = readFileSync(join(dir, 'hosts.yml'), 'utf8');
+    return [...new Set([...text.matchAll(/^\s+user:\s*["']?([A-Za-z0-9][A-Za-z0-9-]*)["']?\s*$/gm)].map((match) => match[1]))];
+  } catch {
+    return [];
   }
 }
 

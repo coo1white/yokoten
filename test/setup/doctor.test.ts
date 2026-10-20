@@ -773,6 +773,18 @@ test('doctor: in the yokoten repo, the session and doctor count the notes from o
   const note = upstreamNote(sandbox.repo, { HOME: sandbox.home });
   assert.equal(note?.id, 'upstream-inbox');
   assert.equal(note?.what, line.replace(/^yokoten: /, ''));
+  // The session's JSON has the finding too, and full doctor a note line and a note.
+  const noGh = () => {
+    throw new Error('no network in this test');
+  };
+  const sessionReport = doctor(sandbox.repo, { env: { HOME: sandbox.home }, config: DEFAULTS, session: true, gh: noGh });
+  assert.deepEqual(sessionReport.report.findings.filter((found) => found.id === 'upstream-inbox'), [note]);
+  const full = doctor(sandbox.repo, { env: { HOME: sandbox.home }, config: DEFAULTS, gh: noGh });
+  assert.ok(full.lines.includes(`  note    upstream-inbox: ${note?.what}`), full.lines.join('\n'));
+  assert.deepEqual(full.report.notes?.filter((found) => found.id === 'upstream-inbox'), [note]);
+  // Elsewhere, full doctor has neither.
+  const other = makeSandbox();
+  assert.ok(!doctor(other.repo, { env: { HOME: sandbox.home }, config: DEFAULTS, gh: noGh }).lines.some((text) => text.includes('upstream-inbox')));
   // An empty home: no inbox, no line.
   const empty = mkdtempSync(join(tmpdir(), 'yokoten-empty-'));
   assert.equal(upstreamNote(sandbox.repo, { HOME: empty }), null);

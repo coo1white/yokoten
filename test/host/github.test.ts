@@ -7,6 +7,7 @@ import {
   verify,
 } from 'node:crypto';
 import {
+  mkdirSync,
   mkdtempSync,
   writeFileSync,
 } from 'node:fs';
@@ -39,6 +40,7 @@ import {
   installationToken,
   readCommandTitle,
   readIncident,
+  readLocalLogins,
   readLogin,
   repoOf,
   stepSummary,
@@ -456,4 +458,16 @@ test('readLogin: the signed-in login, or null when gh fails or answers something
   assert.equal(readLogin(() => { throw new Error('not signed in'); }), null);
   assert.equal(readLogin(() => '{"message":"Bad credentials"}'), null);
   assert.equal(readLogin(() => ''), null);
+});
+
+// #392: the gh login, read from gh's own file on this machine, with no network call.
+test('readLocalLogins: the user under each host in hosts.yml; none when the file is missing', () => {
+  const home = mkdtempSync(join(tmpdir(), 'yokoten-gh-'));
+  assert.deepEqual(readLocalLogins({ HOME: home }), []);
+  mkdirSync(join(home, '.config', 'gh'), { recursive: true });
+  writeFileSync(join(home, '.config', 'gh', 'hosts.yml'), 'github.com:\n    users:\n        octo-jane:\n    user: octo-jane\n    git_protocol: https\nghe.example.com:\n    user: "jroe"\n');
+  assert.deepEqual(readLocalLogins({ HOME: home }), ['octo-jane', 'jroe']);
+  const other = mkdtempSync(join(tmpdir(), 'yokoten-gh-'));
+  writeFileSync(join(other, 'hosts.yml'), 'github.com:\n    user: someone-else\n');
+  assert.deepEqual(readLocalLogins({ HOME: home, GH_CONFIG_DIR: other }), ['someone-else'], 'GH_CONFIG_DIR first, as gh reads it');
 });

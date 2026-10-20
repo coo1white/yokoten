@@ -12,14 +12,22 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import {
+  isAbsolute,
+  join,
+} from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { makeSandbox } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
+import {
+  homeOf,
+  marksFile,
+} from '../../src/rules/privacy.ts';
 import { checkLayout } from '../../src/rules/layout.ts';
 import {
   countNotes,
@@ -33,7 +41,9 @@ import {
   KIT_LESSONS_DIR,
   LESSONS_TABLE,
   listNotes,
+  nameVariants,
   type NotePlace,
+  originParts,
   readLessonTable,
   redactNote,
   removeNote,
@@ -496,28 +506,80 @@ test('lessons: every lesson the kit ships has a row, its incident, no TODO, and 
 });
 
 // #392: a note for the yokoten repo leaves the project with nothing that points at it.
+const placeIn = (root: string | null, more: Partial<NotePlace> = {}): NotePlace => ({ root, projects: [], owners: [], hosts: [], marks: [], cwd: root ?? tmpdir(), ...more });
+const kindsOf = (result: ReturnType<typeof redactNote>) => ('problems' in result ? result.problems.map((problem) => problem.id) : []);
+
 test('upstream: a note hides the project, home and owner, and refuses a secret or what is left', () => {
   const home = mkdtempSync(join(tmpdir(), 'yokoten-upstream-'));
   const env = { HOME: home };
   const root = join(home, 'work', 'acme-app');
   mkdirSync(root, { recursive: true });
-  const place: NotePlace = { root, projects: ['acme-app', 'acme'], owners: ['Jane Roe'], hosts: ['git.corp.test'], marks: ['secret-city'] };
+  const place = placeIn(root, { projects: ['acme-app'], owners: ['Jane Roe'], hosts: ['git.corp.test'], marks: ['secret-city'] });
   const note = redactNote(`In ${root}/src/x.ts the hook\nfor Acme-App broke; Jane Roe saw it in ${join(home, 'logs')} and ${root}2, near Secret-City, on git.corp.test`, place, env);
-  // `${root}2` is another folder: the path is not hidden as a prefix, though the name `acme` still is.
-  assert.deepEqual(note, { text: 'In <project>/src/x.ts the hook for <project> broke; <owner> saw it in ~/logs and ~/work/<project>-app2, near <mark>, on <host>' });
+  // `${root}2` is another folder: the path is not hidden as a prefix of it.
+  assert.deepEqual(note, { text: 'In <project>/src/x.ts the hook for <project> broke; <owner> saw it in ~/logs and ~/work/acme-app2, near <mark>, on <host>' });
   // A secret is refused, not hidden; the finding names its kind, never the value.
   const token = `ghp_${'a'.repeat(36)}`;
   const refused = redactNote(`the token ${token} leaked`, place, env);
   assert.ok('problems' in refused && refused.problems.every((problem) => problem.id === 'secret' && !JSON.stringify(problem).includes(token)));
   // An IP address is not hidden by redact, so the scan refuses it.
-  const ip = redactNote(`the server ${[10, 1, 2, 3].join('.')} was down`, place, env);
-  assert.deepEqual('problems' in ip ? ip.problems.map((problem) => problem.id) : [], ['ip']);
+  assert.deepEqual(kindsOf(redactNote(`the server ${[10, 1, 2, 3].join('.')} was down`, place, env)), ['ip']);
   // A mark inside a longer word is not a whole word for redact, but the scan still catches it.
-  const inside = redactNote('at secret-cityhall', place, env);
-  assert.deepEqual('problems' in inside ? inside.problems.map((problem) => problem.id) : [], ['private-mark']);
+  assert.deepEqual(kindsOf(redactNote('at secret-cityhall', place, env)), ['private-mark']);
+  // An email address is kept as <email>, not refused.
+  assert.deepEqual(redactNote(`mail jane${'@'}corp-mail.com`, place, env), { text: 'mail <email>' });
   // No repo: the home folder is still hidden.
-  assert.deepEqual(redactNote(`see ${home}/a.txt`, { root: null, projects: [], owners: [], hosts: [], marks: [] }, env), { text: 'see ~/a.txt' });
+  assert.deepEqual(redactNote(`see ${home}/a.txt`, placeIn(null), env), { text: 'see ~/a.txt' });
   rmSync(home, { recursive: true, force: true });
+});
+
+test('upstream: a symlink into the project, a relative path and a symlink into home are hidden too', () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'yokoten-upstream-')));
+  const home = join(base, 'home');
+  const root = join(base, 'code', 'acme-app');
+  mkdirSync(join(root, 'src'), { recursive: true });
+  mkdirSync(join(home, 'docs'), { recursive: true });
+  symlinkSync(root, join(base, 'shortcut'));
+  symlinkSync(join(home, 'docs'), join(base, 'docs-link'));
+  const env = { HOME: home };
+  const place = placeIn(root, { projects: ['acme-app'] });
+  assert.deepEqual(redactNote(`broke at ${base}/shortcut/src/a.ts:12.`, place, env), { text: 'broke at <project>/src/a.ts:12.' });
+  assert.deepEqual(redactNote('see ./src/new.ts and ../acme-app/src', place, env), { text: 'see <project>/src/new.ts and <project>/src' });
+  assert.deepEqual(redactNote(`read ${base}/docs-link/plan.md`, place, env), { text: 'read ~/docs/plan.md' });
+  // A path elsewhere stays, and a URL is not a path.
+  assert.deepEqual(redactNote('ran /usr/bin/env from https://example.com/a/b', place, env), { text: 'ran /usr/bin/env from https://example.com/a/b' });
+  rmSync(base, { recursive: true, force: true });
+});
+
+test('upstream: every spelling of the project name is hidden; a name under three letters is not', () => {
+  assert.deepEqual(nameVariants('secret-proj').sort(), ['secret proj', 'secret-proj', 'secret_proj', 'secretproj']);
+  assert.deepEqual(nameVariants('SecretProj').sort(), ['secret proj', 'secret-proj', 'secret_proj', 'secretproj']);
+  assert.deepEqual(nameVariants('ab'), []);
+  const env = { HOME: tmpdir() };
+  const place = placeIn(null, { projects: ['secret-proj', 'ab'] });
+  assert.deepEqual(redactNote('secret-proj, secret_proj, SecretProj, secretproj, SECRET PROJ and ab', place, env), { text: '<project>, <project>, <project>, <project>, <project> and ab' });
+  assert.deepEqual(redactNote('secret-projector', place, env), { text: 'secret-projector' }, 'a whole name only');
+});
+
+test('upstream: a note refuses known secret shapes, by kind and never by value', () => {
+  const env = { HOME: tmpdir() };
+  const place = placeIn(null);
+  const cases: [string, string][] = [
+    [`https://deploy:${'hunter2pass'}@git.example.com/r`, 'a password in a URL'],
+    [`password=${'correct-horse'}`, 'password='],
+    [`api_key: ${'abcd1234efgh'}`, 'password='],
+    [`TOKEN="${'s3cr3t-value'}"`, 'password='],
+    [`${'eyJ'}hbGciOiJIUzI1NiJ9.${'eyJ'}zdWIiOiIxIn0.c2lnbmF0dXJl`, 'JSON web token'],
+    [`${'sk-proj-'}abc123def456`, 'OpenAI key'],
+  ];
+  for (const [text, kind] of cases) {
+    const result = redactNote(`it printed ${text}`, place, env);
+    assert.ok('problems' in result, text);
+    assert.ok(result.problems.some((problem) => problem.id === 'secret' && problem.what.includes(kind)), `${text}: ${JSON.stringify(result)}`);
+    assert.ok(!JSON.stringify(result).includes(text.slice(-6)), `${text}: the value is never in the finding`);
+  }
+  // Ordinary words pass: a short value, a URL with no password, a word that only starts like one.
+  for (const text of ['the token is short', 'token: abc', 'see https://example.com/a', 'passwords were fine']) assert.ok('text' in redactNote(text, place, env), text);
 });
 
 test('upstream: the inbox writes, counts, lists and removes notes, from an empty home', () => {
@@ -529,16 +591,43 @@ test('upstream: the inbox writes, counts, lists and removes notes, from an empty
   assert.equal(waitingLine(0), null);
   const first = writeNote(env, { part: 'hook', what: 'one', fix: 'two' }, new Date('2026-10-20T12:00:00Z'));
   assert.match(first.id, /^20261020-120000-[0-9a-f]{4}$/);
-  assert.equal(readFileSync(join(upstreamDir(env), `${first.id}.md`), 'utf8'), 'when: 2026-10-20T12:00:00Z\npart: hook\nwhat: one\nfix: two\n');
+  const inbox = join(home, '.config', 'yokoten', 'upstream');
+  assert.equal(readFileSync(join(inbox, `${first.id}.md`), 'utf8'), 'when: 2026-10-20T12:00:00Z\npart: hook\nwhat: one\nfix: two\n');
   const second = writeNote(env, { part: 'unknown', what: 'three' }, new Date('2026-10-20T13:00:00Z'));
-  writeFileSync(join(upstreamDir(env), 'README.txt'), 'not a note\n');
+  writeFileSync(join(inbox, 'README.txt'), 'not a note\n');
   assert.equal(countNotes(env), 2, 'only note files count');
   assert.equal(waitingLine(2), '2 lessons from other projects wait to become issues: yokoten learn --upstream --list');
   assert.equal(waitingLine(1), '1 lesson from other projects waits to become an issue: yokoten learn --upstream --list');
   assert.deepEqual(listNotes(env), [first, second]);
   assert.equal(removeNote(env, '../private-marks'), false, 'an id is never a path');
+  // A folder with a note's name is not a note: no crash, nothing removed.
+  mkdirSync(join(inbox, '20261020-140000-dddd.md'));
+  assert.equal(removeNote(env, '20261020-140000-dddd'), false);
+  assert.ok(existsSync(join(inbox, '20261020-140000-dddd.md')));
   assert.equal(removeNote(env, first.id), true);
   assert.equal(removeNote(env, first.id), false);
-  assert.deepEqual(listNotes(env), [second]);
+  assert.deepEqual(listNotes(env).map((note) => note.id), [second.id]);
   rmSync(home, { recursive: true, force: true });
+});
+
+test('upstream: with no home folder as a full path, there is no inbox and nothing is written', () => {
+  const none = () => '';
+  assert.equal(homeOf({ HOME: '' }, none), null);
+  assert.equal(homeOf({}, none), null);
+  assert.equal(homeOf({ HOME: 'relative/home' }, none), null, 'a relative HOME is no home');
+  assert.equal(homeOf({ HOME: '' }, () => '/home/someone'), '/home/someone', 'the system home, when HOME is empty');
+  assert.equal(homeOf({ HOME: '/h' }, () => '/home/someone'), '/h');
+  // The real lookups give an absolute path, or none.
+  const real = homeOf({ HOME: '' });
+  assert.ok(real === null || isAbsolute(real));
+  // marksFile throws rather than name a relative file; loadMarks then reads none.
+  assert.equal(marksFile({ HOME: '', YOKOTEN_PRIVATE_MARKS: '/m' }), '/m');
+});
+
+test('upstream: every owner segment of a remote URL is an owner; the last one is the project', () => {
+  assert.deepEqual(originParts('https://gitlab.example.com/group/sub/acme-app.git'), { owners: ['group', 'sub'], project: 'acme-app' });
+  assert.deepEqual(originParts(`git${'@'}github.com:octo/acme-app.git`), { owners: ['octo'], project: 'acme-app' });
+  assert.deepEqual(originParts('ssh://git@host.example.test:22/team/acme-app'), { owners: ['team'], project: 'acme-app' });
+  assert.deepEqual(originParts(''), { owners: [], project: null });
+  assert.deepEqual(originParts('/local/path'), { owners: [], project: null });
 });

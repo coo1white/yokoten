@@ -1,17 +1,24 @@
 // `yokoten learn` and `yokoten changelog`: what the project learned, and what it changed.
 
-import { ghIn, readIncident } from '../host/github.ts';
+import { ghIn, readIncident, readLocalLogins } from '../host/github.ts';
 import { formatChanges, readChanges, writeChanges } from '../run/changelog.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { loadConfig } from '../rules/config.ts';
-import { loadMarks } from '../rules/privacy.ts';
-import { draftLesson, formatDraft, KIT_LESSONS_DIR, LESSONS_TABLE, listNotes, type NotePlace, redactNote, removeNote, shipLesson, upstreamDir, writeDraft, writeNote } from '../run/learn.ts';
+import { loadMarks, NO_HOME } from '../rules/privacy.ts';
+import { draftLesson, formatDraft, KIT_LESSONS_DIR, LESSONS_TABLE, listNotes, makeNoteCleaner, NOTE_ID, type NotePlace, originParts, redactNote, removeNote, shipLesson, upstreamDir, writeDraft, writeNote } from '../run/learn.ts';
 import { HOME_DIR, VERSION } from '../setup/files.ts';
 import { isSelf } from '../setup/init.ts';
 import { machineMarks } from '../setup/install.ts';
 import { readOriginUrl } from '../setup/plan.ts';
-import { bullets, env, type Parsed, parse, print, rootOf, usage } from './shared.ts';
+import { args, bullets, env, type Parsed, parse, print, rootOf, usage } from './shared.ts';
+
+/**
+ * A usage error for --upstream that repeats nothing typed (#392): a stray word or a note
+ * that starts with `-` may be the very detail the note must not show.
+ */
+const upstreamUsage = (error: string): string =>
+  error.startsWith('unexpected argument') ? 'give what happened as one argument, in quotes' : error.startsWith('unknown option') && !/^unknown option --[a-z][a-z-]*(?:\. Did you mean --[a-z-]+\?)?$/.test(error) ? 'a note cannot start with -' : error;
 
 export function runChangelog(): number {
   const options = parse('changelog');
@@ -32,7 +39,7 @@ export function runChangelog(): number {
 export function runLearn(): number {
   // A draft for review (#77), never a shipped check: it writes only with --write, and adds only.
   const options = parse('learn');
-  if (typeof options === 'string') return usage(options);
+  if (typeof options === 'string') return usage(args.includes('--upstream') ? upstreamUsage(options) : options);
   const [reference] = options.positional;
   if (options.flags.has('--upstream')) return runUpstream(options);
   for (const option of ['--list', '--done', '--area', '--fix']) {
@@ -83,27 +90,28 @@ export function runLearn(): number {
   return 0;
 }
 
-/** What a note must not carry out of the project at hand (#392). Local git and files only. */
-function notePlace(root: string | null): NotePlace {
+/** What a note must not carry out of the project at hand (#392). Local git and files only, no network. */
+function notePlace(root: string | null, { withProject = true }: { withProject?: boolean } = {}): NotePlace {
   const found = machineMarks(env, { cwd: root ?? process.cwd() });
-  const owners = found.filter((mark) => mark.kind === 'git name' || mark.kind === 'git email').map((mark) => mark.value);
+  const owners = [
+    ...found.filter((mark) => mark.kind === 'git name' || mark.kind === 'git email').map((mark) => mark.value),
+    // The login gh keeps on this machine, read from its config file: gh's own lookup would call the network.
+    ...readLocalLogins(env),
+  ];
   const hosts = found.filter((mark) => mark.kind === 'private remote host').map((mark) => mark.value);
   const projects: string[] = [];
   // In yokoten's own repo, "yokoten" is the subject of the note, not a detail to hide.
-  if (root && !isSelf(root)) {
+  if (withProject && root && !isSelf(root)) {
     projects.push(basename(root));
     try {
       const name: unknown = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).name;
       if (typeof name === 'string') projects.push(name, name.replace(/^@[^/]+\//, ''));
     } catch {}
-    // owner/repo at the end of the origin URL: the repo is the project, the owner may be a person.
-    const origin = /([^/:]+)\/([^/]+?)(?:\.git)?\/?$/.exec(readOriginUrl(root));
-    if (origin) {
-      owners.push(origin[1]);
-      projects.push(origin[2]);
-    }
+    const origin = originParts(readOriginUrl(root));
+    owners.push(...origin.owners);
+    if (origin.project) projects.push(origin.project);
   }
-  return { root, projects, owners, hosts, marks: loadMarks(env) };
+  return { root, projects, owners, hosts, marks: loadMarks(env), cwd: process.cwd() };
 }
 
 /** The areas a note may name: yokoten's own, when this copy has its yokoten.json; else any lowercase word. */
@@ -116,30 +124,46 @@ function runUpstream(options: Parsed): number {
   const [text] = options.positional;
   const inbox = upstreamDir(env);
   for (const option of ['--write', '--ship']) if (options.flags.has(option)) return usage(`--upstream and ${option} don't go together`);
-  if (options.flags.has('--list')) {
-    if (text !== undefined || options.flags.has('--done')) return usage('--list takes nothing more');
+  const isList = options.flags.has('--list');
+  const isDone = options.flags.has('--done');
+  if (isList || isDone) {
+    for (const option of ['--area', '--fix']) if (option in options.values) return usage(`${option} goes with a new note, not with ${isList ? '--list' : '--done'}`);
+  }
+  if (isList) {
+    if (text !== undefined || isDone) return usage('--list takes nothing more');
     const notes = listNotes(env);
     if (!notes.length) {
       print(['yokoten learn --upstream: no lessons wait; the inbox is empty.']);
       return 0;
     }
+    // Cleaned again as they are shown: a file in the inbox may have been edited by hand.
+    const clean = makeNoteCleaner(notePlace(rootOf(process.cwd()), { withProject: false }), env);
     print([
       `yokoten learn --upstream: ${notes.length} ${notes.length === 1 ? 'lesson waits' : 'lessons wait'} to become an issue in the yokoten repo:`,
-      ...notes.flatMap((note) => [`- ${note.id} (${note.when.replace('T', ' ').replace(/:\d\dZ$/, '')} UTC, part: ${note.part}): ${note.what}`, ...(note.fix ? [`  fix idea: ${note.fix}`] : [])]),
+      ...notes.flatMap((note) => [
+        `- ${note.id} (${clean(note.when.replace('T', ' ').replace(/:\d\dZ$/, ''))} UTC, part: ${clean(note.part)}): ${clean(note.what)}`,
+        ...(note.fix ? [`  fix idea: ${clean(note.fix)}`] : []),
+      ]),
       'Open an issue for each, then remove its note: yokoten learn --upstream --done <id>',
     ]);
     return 0;
   }
-  if (options.flags.has('--done')) {
+  if (isDone) {
     if (text === undefined) return usage('name the note to remove, by its id from --list');
+    // The argument is never repeated back: it may be anything that was typed.
+    if (!NOTE_ID.test(text)) return usage('that is not a note id; see the ids with `yokoten learn --upstream --list`');
     if (!removeNote(env, text)) {
-      print([`yokoten learn --upstream: there is no note ${text}. See the ids with: yokoten learn --upstream --list`], process.stderr);
+      print(['yokoten learn --upstream: there is no note with that id. See the ids with: yokoten learn --upstream --list'], process.stderr);
       return 1;
     }
     print([`yokoten learn --upstream: removed note ${text}.`]);
     return 0;
   }
   if (text === undefined || !text.trim()) return usage('say what happened, in a few words: yokoten learn --upstream "<what happened>"');
+  if (!inbox) {
+    print([`yokoten learn --upstream: the note was not kept, because ${NO_HOME}. Set HOME to your home folder, and try again.`], process.stderr);
+    return 1;
+  }
   const area = options.values['--area'];
   if (area !== undefined) {
     const areas = knownAreas();
@@ -148,7 +172,8 @@ function runUpstream(options: Parsed): number {
   const place = notePlace(rootOf(process.cwd()));
   const what = redactNote(text, place, env);
   const fixIdea = options.values['--fix'] === undefined ? undefined : redactNote(options.values['--fix'], place, env);
-  const problems = [...('problems' in what ? what.problems : []), ...(fixIdea && 'problems' in fixIdea ? fixIdea.problems : [])];
+  const part = area === undefined ? undefined : redactNote(area, place, env);
+  const problems = [what, fixIdea, part].flatMap((field) => (field && 'problems' in field ? field.problems : []));
   if (problems.length || !('text' in what)) {
     // The kind of detail only: the value itself is never printed (core rule 11).
     const kinds = [...new Set(problems.map((problem) => (problem.id === 'private-mark' ? 'a line of your private-marks file' : problem.what)))];
@@ -156,7 +181,7 @@ function runUpstream(options: Parsed): number {
     return 1;
   }
   const fix = fixIdea && 'text' in fixIdea && fixIdea.text ? fixIdea.text : undefined;
-  const note = writeNote(env, { part: area ?? 'unknown', what: what.text, ...(fix ? { fix } : {}) });
+  const note = writeNote(env, { part: part && 'text' in part ? part.text : 'unknown', what: what.text, ...(fix ? { fix } : {}) });
   print([
     `yokoten learn --upstream: kept note ${note.id} in ${inbox}, outside every repo. It reads:`,
     `  ${note.what}`,

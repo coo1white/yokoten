@@ -12,13 +12,41 @@
 //   so every caller (the commit, CI, the history) catches them.
 
 import { readFileSync, realpathSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, userInfo } from 'node:os';
 import { basename, isAbsolute, join, resolve } from 'node:path';
 import type { Config, Env } from './config.ts';
 import { type Finding, finding, type RuleId } from './message.ts';
 import { findSecrets, makeSecretHider, SECRET } from './secrets.ts';
 
-export const marksFile = (env: Env): string => env.YOKOTEN_PRIVATE_MARKS || join(env.HOME || homedir(), '.config', 'yokoten', 'private-marks');
+/** Where the system says the home folder is, with no $HOME: the password file. Empty when it can't tell. */
+export const systemHome = (): string => {
+  try {
+    return homedir() || userInfo().homedir || '';
+  } catch {
+    return '';
+  }
+};
+
+/**
+ * The home folder: $HOME, else the system's, the first that is an absolute path. Null when
+ * neither is (#392): then there is no place outside the repo, and a relative `.config`
+ * would land in the folder the command runs in.
+ */
+export function homeOf(env: Env, system: () => string = systemHome): string | null {
+  for (const home of [env.HOME, system()]) if (home && isAbsolute(home)) return home;
+  return null;
+}
+
+/** Thrown when there is no home folder, so nothing outside the repo can be read or written. */
+export const NO_HOME = 'yokoten finds no home folder (HOME is empty or not a full path), so it has no place outside the repo';
+
+/** The private-marks file. With no home folder (and no YOKOTEN_PRIVATE_MARKS), it throws NO_HOME. */
+export function marksFile(env: Env): string {
+  if (env.YOKOTEN_PRIVATE_MARKS) return env.YOKOTEN_PRIVATE_MARKS;
+  const home = homeOf(env);
+  if (!home) throw new Error(NO_HOME);
+  return join(home, '.config', 'yokoten', 'private-marks');
+}
 
 /** The owner's marks, lowercased. An empty list when the file is missing. */
 export function loadMarks(env: Env): string[] {
@@ -26,6 +54,7 @@ export function loadMarks(env: Env): string[] {
   try {
     text = readFileSync(marksFile(env), 'utf8');
   } catch (err) {
+    if ((err as Error).message === NO_HOME) return [];
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
   }
   return text
@@ -131,8 +160,8 @@ function homeForms(home: string | undefined): string[] {
  * its path ends, so /data/u never touches /data/users. On Windows `\` and `/` match each
  * other, and case does not count.
  */
-export function hideHome(text: string, env: Env, { platform = process.platform as string, systemHome = homedir() } = {}): string {
-  const homes = [...new Set([...homeForms(env.HOME), ...homeForms(systemHome)])].sort((a, b) => b.length - a.length);
+export function hideHome(text: string, env: Env, { platform = process.platform as string, systemHome: system = systemHome() } = {}): string {
+  const homes = [...new Set([...homeForms(env.HOME), ...homeForms(system)])].sort((a, b) => b.length - a.length);
   if (!homes.length) return text;
   const isWindows = platform === 'win32';
   const pattern = homes.map((home) => escapeRegExp(home).replace(/\\\\|\//g, String.raw`[\\/]`)).join('|');
