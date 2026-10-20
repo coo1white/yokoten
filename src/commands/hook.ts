@@ -13,7 +13,7 @@ import { loadConfig } from '../rules/config.ts';
 import { printsAccount, privateOutput, releaseFix, wrapForRedact } from '../rules/guards.ts';
 import { type Finding, formatFinding } from '../rules/message.ts';
 import { checkChanged } from '../run/check.ts';
-import { type Action, guardDeadline, judgeWithDeadline, loadHookConfig, type Repo } from '../run/hook.ts';
+import { type Action, type Guard, guardDeadline, judgeWithDeadline, loadHookConfig, type Repo } from '../run/hook.ts';
 import { bullets, env, parse, print, printJson, rootOf, say, usage } from './shared.ts';
 
 // Each runtime sends its tool call in its own shape; its adapter turns it into an Action.
@@ -158,7 +158,8 @@ function stopHook(json: boolean, read: typeof claudeCode.readStop): number {
   return 2;
 }
 
-export function runHook(): number | Promise<number> {
+/** `guard`: the guard's worker, when bin/main.ts started it early (#408). */
+export function runHook(guard?: Guard): number | Promise<number> {
   const options = parse('hook');
   if (typeof options === 'string') return usage(options);
   const json = options.flags.has('--json');
@@ -184,7 +185,7 @@ export function runHook(): number | Promise<number> {
   const config = loadHookConfig(root, (line) => say(`${line}\n`, process.stderr));
   const commandsOnly = options.flags.has('--commands-only');
   const repos = editRepos(action, action.cwd ?? root ?? process.cwd(), root ? { root, config } : null, commandsOnly);
-  const judged = judgeWithDeadline(action, { root, config, env, commandsOnly, repos }, guardDeadline(env.YOKOTEN_GUARD_DEADLINE_MS));
+  const judged = judgeWithDeadline(action, { root, config, env, commandsOnly, repos }, guardDeadline(env.YOKOTEN_GUARD_DEADLINE_MS), guard);
   return judged.then((judgedFinding) => {
     // The guard names no agent; the hook knows which one it runs for.
     let found = judgedFinding?.id === 'release' && Object.hasOwn(RELEASE_FIXES, agent) ? { ...judgedFinding, fix: RELEASE_FIXES[agent] } : judgedFinding;

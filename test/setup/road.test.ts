@@ -2,6 +2,7 @@
 
 import '../repo/home.ts';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import {
   mkdirSync,
   rmSync,
@@ -12,10 +13,11 @@ import {
   join,
 } from 'node:path';
 import { test } from 'node:test';
-import { fixture, makeTempDir } from '../repo/helpers.ts';
-import { codeOwnersText } from '../../src/setup/init.ts';
+import { fixture, makeSandbox, makeTempDir } from '../repo/helpers.ts';
+import { codeOwnersText, withGitReads } from '../../src/setup/init.ts';
 import {
   type Found,
+  gitConfig,
   isLicenseName,
   onPullRequest,
   ROAD,
@@ -298,6 +300,22 @@ test("road: init's CODEOWNERS with the placeholder owner is to do; with a real o
   const none = fixture({});
   assert.equal(codeowners.check(none, {}, undefined), false);
   assert.equal(codeowners.what(none, {}, undefined), 'no CODEOWNERS file');
+});
+
+// #408: a session start asked git for core.hooksPath four times. In one doctor run the
+// answer is kept; the next run asks again, so a change in between is seen.
+test('road: inside one doctor run each git answer is kept; the next run asks git again (#408)', () => {
+  const sandbox = makeSandbox();
+  const set = (value: string) => execFileSync('git', ['config', 'core.hooksPath', value], { cwd: sandbox.repo, env: sandbox.env });
+  set('one');
+  const seen = withGitReads(() => {
+    const first = gitConfig(sandbox.repo, 'core.hooksPath');
+    set('two');
+    return [first, gitConfig(sandbox.repo, 'core.hooksPath')];
+  });
+  assert.deepEqual(seen, ['one', 'one'], 'kept within the run');
+  assert.equal(gitConfig(sandbox.repo, 'core.hooksPath'), 'two', 'asked again outside it');
+  assert.deepEqual(withGitReads(() => gitConfig(sandbox.repo, 'core.hooksPath')), 'two', 'a new run asks again');
 });
 
 // ---- The license file (#376): LICENSE, LICENCE and COPYING in any case, with any suffix. ----

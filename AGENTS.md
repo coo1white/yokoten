@@ -92,7 +92,8 @@ yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
   Only the npm package is built: `npm pack` emits `dist/` (git-ignored), because Node
   does not strip types under `node_modules` (record 0008). So only syntax it can erase
   (`erasableSyntaxOnly`): no `enum`, no `namespace`, no parameter properties. Imports
-  name the `.ts` file. Code is `.ts` only: no `.js`, `.mjs`, `.cjs` or `.tsx`
+  name the `.ts` file. Code is `.ts` only: no `.js`, `.mjs`, `.cjs` or `.tsx`, except
+  `bin/yokoten.mjs`, the hook entry that turns on the compile cache first (record 0013)
   (`test/repo/architecture.test.ts` holds this). No Python, no shell beyond the one-line git
   hook.
 - **Layers.** `src/` has six, lowest first; a module imports only from its own

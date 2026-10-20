@@ -456,6 +456,9 @@ test('hooks setting: only a line that runs yokoten check counts, not a comment (
   assert.equal(runsCheck('npx yokoten check || exit 1\r\n'), true);
   assert.equal(runsCheck('#!/bin/sh\n# yokoten check\nnpm test\n'), false);
   assert.equal(runsCheck('node bin/yokoten.ts checkout\n'), false);
+  // The JavaScript entry the agent hooks run (#408) counts as yokoten too.
+  assert.equal(runsCheck('#!/bin/sh\nnode ".yokoten/bin/yokoten.mjs" check --staged || exit 1\n'), true);
+  assert.equal(runsCheck('#!/bin/sh\nnode ".yokoten/bin/yokoten.mts" check --staged || exit 1\n'), false);
   assert.equal(hookFile('/repo', '.husky/_'), '.husky/pre-commit');
   assert.equal(hookFile('/repo', '../other'), null);
 });
