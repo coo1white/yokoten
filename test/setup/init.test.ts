@@ -120,7 +120,7 @@ test('init: the Gemini hook command runs when Gemini quotes a path with a space 
   const groups = JSON.parse(readFileSync(join(repo, '.gemini', 'settings.json'), 'utf8')).hooks.BeforeTool;
   assert.equal(groups.length, 1, 'updated, not added');
   const command: string = groups[0].hooks[0].command;
-  assert.equal(command, guardedCall('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --agent gemini'));
+  assert.equal(command, guardedCall('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.mjs', 'hook --agent gemini'));
   // shell-quote, which Gemini uses, writes a path with a space and no single quote as
   // '…'; a single quote inside would become '\''.
   const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
@@ -179,7 +179,7 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   const settings = JSON.parse(readFileSync(join(sandbox.repo, '.claude', 'settings.json'), 'utf8'));
   assert.equal(settings.hooks.PreToolUse.length, 1);
   assert.match(result.stdout, /same the stop check/);
-  assert.deepEqual(settings.hooks.Stop, [{ hooks: [{ type: 'command', command: guarded('"$CLAUDE_PROJECT_DIR/.yokoten/bin/yokoten.ts"', 'hook --stop') }] }], 'the stop check, once (#92)');
+  assert.deepEqual(settings.hooks.Stop, [{ hooks: [{ type: 'command', command: guarded('"$CLAUDE_PROJECT_DIR/.yokoten/bin/yokoten.mjs"', 'hook --stop') }] }], 'the stop check, once (#92)');
   assert.equal(settings.env.TZ, 'UTC', 'agent commits record no time zone (#40)');
   assert.match(result.stdout, /same the Codex tool-call hook/);
   assert.match(result.stdout, /same the Gemini CLI tool-call hook/);
@@ -187,21 +187,21 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.equal(codex.description, 'ours');
   assert.equal(codex.hooks.PreToolUse.length, 2);
   assert.deepEqual(codex.hooks.PreToolUse[1], {
-    hooks: [{ type: 'command', command: guardedCall('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.ts"', 'hook --agent codex') }],
+    hooks: [{ type: 'command', command: guardedCall('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.mjs"', 'hook --agent codex') }],
     matcher: 'Bash|apply_patch',
   });
   const gemini = JSON.parse(readFileSync(join(sandbox.repo, '.gemini', 'settings.json'), 'utf8'));
   assert.equal(gemini.theme, 'x');
   assert.equal(gemini.hooks.BeforeTool.length, 2);
   assert.deepEqual(gemini.hooks.BeforeTool[1], {
-    hooks: [{ type: 'command', command: guardedCall('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --agent gemini'), name: 'yokoten' }],
+    hooks: [{ type: 'command', command: guardedCall('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.mjs', 'hook --agent gemini'), name: 'yokoten' }],
     matcher: 'run_shell_command|write_file|replace',
   });
   // The stop checks (#211): Codex's Stop and Gemini's AfterAgent take no matcher, once each.
   assert.match(result.stdout, /same the Codex stop check/);
   assert.match(result.stdout, /same the Gemini CLI stop check/);
-  assert.deepEqual(codex.hooks.Stop, [{ hooks: [{ type: 'command', command: guarded('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.ts"', 'hook --stop --agent codex') }] }]);
-  assert.deepEqual(gemini.hooks.AfterAgent, [{ hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --stop --agent gemini'), name: 'yokoten-stop' }] }]);
+  assert.deepEqual(codex.hooks.Stop, [{ hooks: [{ type: 'command', command: guarded('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.mjs"', 'hook --stop --agent codex') }] }]);
+  assert.deepEqual(gemini.hooks.AfterAgent, [{ hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.mjs', 'hook --stop --agent gemini'), name: 'yokoten-stop' }] }]);
   // Codex's hooks are in place; this home has no ~/.codex, so doctor says nothing of its trust (#341).
   assert.match(sandbox.run(['doctor']).stdout, /ok +codex-hook: \.codex\/hooks\.json is in place; trust not checked, no ~\/\.codex\n +ok +gemini-hook\n +ok +antigravity-hook/);
   assert.match(result.stdout, /Codex runs the hooks in \.codex\/hooks\.json only after you trust this folder and the hooks\n.*to trust them in Codex: run `codex` in this folder, trust it, then trust both yokoten hooks in `\/hooks`/);
@@ -209,7 +209,7 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.match(result.stdout, /same the Antigravity CLI tool-call hook in \.agents\/hooks\.json/);
   assert.match(result.stdout, /GitHub Copilot CLI runs the hooks in \.claude\/settings\.json only after you trust this folder\n.*to trust this folder in Copilot CLI: run `copilot` in this folder/);
   const agents = JSON.parse(readFileSync(join(sandbox.repo, '.agents', 'hooks.json'), 'utf8'));
-  assert.deepEqual(agents.yokoten.PreToolUse[0].hooks[0].command, guardedCall('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.ts"', 'hook --agent antigravity'));
+  assert.deepEqual(agents.yokoten.PreToolUse[0].hooks[0].command, guardedCall('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.mjs"', 'hook --agent antigravity'));
   // The pre-commit hook runs the vendored check on a real commit.
   sandbox.git('add', '.');
   const commit = sandbox.git('commit', '-qm', 'adopt yokoten');
@@ -1223,14 +1223,14 @@ test('init: a commented .gemini/settings.json is left as it was and gets the hoo
   const add = handAdd(result.stdout, `skipped the Gemini CLI hooks: ${COMMENTED('.gemini/settings.json')}, then run \`yokoten init\` again:`);
   // The tool-call command may carry a fail-closed wrapper (#260); either way it checks for the
   // project runtime first, then runs the yokoten guard with node.
-  const runtimePath = '$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts';
+  const runtimePath = '$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.mjs';
   const guardCall = String((add.BeforeTool?.[0] as { hooks?: { command?: unknown }[] } | undefined)?.hooks?.[0]?.command);
   const missingCheck = guarded(runtimePath, 'x').slice(0, -`node ${runtimePath} x`.length);
   assert.ok(guardCall.startsWith(missingCheck), guardCall);
-  assert.match(guardCall, /\bnode(?: --\S+)* \$GEMINI_PROJECT_DIR\/\.yokoten\/bin\/yokoten\.ts hook --agent gemini(?: |$)/);
+  assert.match(guardCall, /\bnode(?: --\S+)* \$GEMINI_PROJECT_DIR\/\.yokoten\/bin\/yokoten\.mjs hook --agent gemini(?: |$)/);
   assert.deepEqual(add, {
     BeforeTool: [{ hooks: [{ type: 'command', command: guardCall, name: 'yokoten' }], matcher: 'run_shell_command|write_file|replace' }],
-    AfterAgent: [{ hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.ts', 'hook --stop --agent gemini'), name: 'yokoten-stop' }] }],
+    AfterAgent: [{ hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.mjs', 'hook --stop --agent gemini'), name: 'yokoten-stop' }] }],
   });
   assert.ok(hasHook(join(sandbox.repo, '.codex', 'hooks.json'), 'Stop', 'hook'), 'no Codex stop check');
   assert.deepEqual(doctorHandAdd(sandbox.run(['doctor']).stdout, 'gemini-hook', '.gemini/settings.json'), add);

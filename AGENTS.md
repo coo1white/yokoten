@@ -92,7 +92,8 @@ yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
   Only the npm package is built: `npm pack` emits `dist/` (git-ignored), because Node
   does not strip types under `node_modules` (record 0008). So only syntax it can erase
   (`erasableSyntaxOnly`): no `enum`, no `namespace`, no parameter properties. Imports
-  name the `.ts` file. Code is `.ts` only: no `.js`, `.mjs`, `.cjs` or `.tsx`
+  name the `.ts` file. Code is `.ts` only: no `.js`, `.mjs`, `.cjs` or `.tsx`, except
+  `bin/yokoten.mjs`, the hook entry that turns on the compile cache first (record 0013)
   (`test/repo/architecture.test.ts` holds this). No Python, no shell beyond the one-line git
   hook.
 - **Layers.** `src/` has six, lowest first; a module imports only from its own
@@ -127,6 +128,9 @@ yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
   exception is an `AGENTS.md` without `## This project`, which gets the core rules on top
   and its own text moved under that heading, once. After that the core rules in it change when the project runs
   `yokoten update --write`; `doctor` says when they are behind. Say so in the pull request.
+- **Safe by default, with a way back** (record 0014): every user gets the safe action
+  with no question. Each new action names its tier (do by default, ask first, never,
+  unsure) and its way back (off, on, kept, uninstall) in its issue, before the code.
 - **Every new check gets a positive control**: a test (and, for doctor, a self-test
   case) that feeds it a known-bad input and expects a catch.
 - **Examples use placeholders**: `example.com` addresses and `192.0.2.0/24` IPs. A

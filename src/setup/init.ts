@@ -40,6 +40,12 @@ export const isSelf = (root: string): boolean => {
 
 export const cliPath = (root: string): string => (isSelf(root) ? 'bin/yokoten.ts' : '.yokoten/bin/yokoten.ts');
 
+/**
+ * The entry the agent hooks run: bin/yokoten.mjs, next to `cliPath`. Plain JavaScript, so Node
+ * starts it without its type stripper (#408). The git hook, CI and the docs keep `cliPath`.
+ */
+export const hookCliPath = (root: string): string => cliPath(root).replace(/\.ts$/, '.mjs');
+
 function walk(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const full = join(dir, name);
@@ -72,6 +78,7 @@ const ORG_LOOKUP_MS = 5000;
 export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: boolean; lines: string[] } {
   const report: string[] = [];
   const cli = cliPath(root);
+  const hookCli = hookCliPath(root);
   if (!isSelf(root) && root !== HOME_DIR) {
     const copied = copyRuntime(join(root, '.yokoten'));
     report.push(copied === 'kept' ? 'kept .yokoten/ (the copy running now)' : 'wrote .yokoten/ (the runtime the hooks run; commit it)');
@@ -105,8 +112,8 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: bo
   const claudeHooks = agentHooks('the Claude Code settings', '.claude/settings.json', () => {
     checkProjectSettings(root);
     return [
-      `${addProjectHook(root, cli)} the tool-call hook in .claude/settings.json`,
-      `${addProjectStopHook(root, cli)} the stop check in .claude/settings.json (changed files, before the agent ends its turn)`,
+      `${addProjectHook(root, hookCli)} the tool-call hook in .claude/settings.json`,
+      `${addProjectStopHook(root, hookCli)} the stop check in .claude/settings.json (changed files, before the agent ends its turn)`,
       `${setProjectEnv(root, 'TZ', 'UTC')} TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)`,
       // Checked with a real run (#30): Copilot CLI reads these hooks, in a folder it trusts.
       // It skips them without a word otherwise (#341), so the line says how to trust it.
@@ -121,24 +128,24 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: bo
   const codexHooks = agentHooks('the Codex hooks', '.codex/hooks.json', () => {
     codex.checkProjectHooks(root);
     return [
-      `${codex.addProjectHook(root, cli)} the Codex tool-call hook in .codex/hooks.json`,
-      `${codex.addProjectStopHook(root, cli)} the Codex stop check in .codex/hooks.json`,
+      `${codex.addProjectHook(root, hookCli)} the Codex tool-call hook in .codex/hooks.json`,
+      `${codex.addProjectStopHook(root, hookCli)} the Codex stop check in .codex/hooks.json`,
       'Codex runs the hooks in .codex/hooks.json only after you trust this folder and the hooks',
       `to trust them in Codex: ${codex.TRUST_STEP}`,
     ];
   });
   const geminiHooks = agentHooks('the Gemini CLI hooks', '.gemini/settings.json', () => {
-    gemini.checkProjectHooks(root, cli);
+    gemini.checkProjectHooks(root, hookCli);
     return [
-      `${gemini.addProjectHook(root, cli)} the Gemini CLI tool-call hook in .gemini/settings.json`,
-      `${gemini.addProjectStopHook(root, cli)} the Gemini CLI stop check in .gemini/settings.json (AfterAgent)`,
+      `${gemini.addProjectHook(root, hookCli)} the Gemini CLI tool-call hook in .gemini/settings.json`,
+      `${gemini.addProjectStopHook(root, hookCli)} the Gemini CLI stop check in .gemini/settings.json (AfterAgent)`,
     ];
   });
   const antigravityHooks = agentHooks('the Antigravity CLI hook', '.agents/hooks.json', () => [
-    `${antigravity.addProjectHook(root, cli)} the Antigravity CLI tool-call hook in .agents/hooks.json`,
+    `${antigravity.addProjectHook(root, hookCli)} the Antigravity CLI tool-call hook in .agents/hooks.json`,
   ]);
   const museHooks = agentHooks('the Muse Code hooks', '.muse/hooks.json', () => {
-    const added = muse.addProjectHooks(root, cli);
+    const added = muse.addProjectHooks(root, hookCli);
     return [
       `${added.guard} the Muse Code tool-call hook in .muse/hooks.json`,
       `${added.stop} the Muse Code stop check in .muse/hooks.json`,
@@ -148,7 +155,7 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: bo
   // Grok CLI runs the project's hooks only in a folder the user trusts. yokoten never trusts
   // one for the user: the line says how (#407).
   const grokHooks = agentHooks('the Grok CLI hooks', grok.HOOKS_FILE, () => {
-    const added = grok.addProjectHooks(root, cli);
+    const added = grok.addProjectHooks(root, hookCli);
     return [
       `${added.guard} the Grok CLI tool-call hook in ${grok.HOOKS_FILE}`,
       `${added.stop} the Grok CLI stop check in ${grok.HOOKS_FILE}`,
@@ -158,7 +165,7 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS)): { ok: bo
   // DeepSeek Harness runs the hooks through a bridge each profile needs. init only prints
   // how to add it: it installs nothing and leaves ~/.dsh alone (#334).
   // On Windows the files are still written, ready for #332, but the lines say dsh is not checked.
-  const dshHooks = agentHooks('the DeepSeek Harness hook', dsh.HOOKS_FILE, () => dsh.initLines(dsh.addProjectHooks(root, cli)));
+  const dshHooks = agentHooks('the DeepSeek Harness hook', dsh.HOOKS_FILE, () => dsh.initLines(dsh.addProjectHooks(root, hookCli)));
   report.push(...codexHooks.lines, ...geminiHooks.lines, ...antigravityHooks.lines, ...museHooks.lines, ...dshHooks.lines, ...grokHooks.lines);
   report.push(...setCommitCheck(root, cli, hooks, blocks));
   return { ok: claudeHooks.ok && codexHooks.ok && geminiHooks.ok && antigravityHooks.ok && museHooks.ok && dshHooks.ok && grokHooks.ok, lines: report };
@@ -405,14 +412,39 @@ function importRules(root: string): string | null {
 /** How git runs commit hooks here: yokoten's .githooks, the project's own folder, or no git repo. */
 type HookSetup = { kind: 'plain' } | { kind: 'own'; hooksPath: string } | { kind: 'no repo' };
 
-/** The repo's own core.hooksPath (not the user's global one), '' when unset, or null outside a git repo. */
-function readLocalHooksPath(root: string): string | null {
+// Within one doctor run, several checks ask git the same question: the repo's own
+// core.hooksPath, say. Each answer is kept for the run, so git starts once per
+// question (#408). Only inside `withGitReads`: init writes core.hooksPath, and tests
+// change it between runs, so nothing is kept from one run to the next.
+let gitReads: Map<string, unknown> | null = null;
+
+/** Run `read` with each git answer below kept until it returns. */
+export function withGitReads<T>(read: () => T): T {
+  const outer = gitReads;
+  gitReads ??= new Map();
   try {
-    return execFileSync('git', ['config', '--local', '--get', 'core.hooksPath'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-  } catch (error) {
-    return (error as { status?: number }).status === 1 ? '' : null;
+    return read();
+  } finally {
+    gitReads = outer;
   }
 }
+
+/** The answer `read` gives, kept under `key` while `withGitReads` runs. */
+export function remembered<T>(key: string, read: () => T): T {
+  if (!gitReads) return read();
+  if (!gitReads.has(key)) gitReads.set(key, read());
+  return gitReads.get(key) as T;
+}
+
+/** The repo's own core.hooksPath (not the user's global one), '' when unset, or null outside a git repo. */
+const readLocalHooksPath = (root: string): string | null =>
+  remembered(`local-hooks-path\0${root}`, () => {
+    try {
+      return execFileSync('git', ['config', '--local', '--get', 'core.hooksPath'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch (error) {
+      return (error as { status?: number }).status === 1 ? '' : null;
+    }
+  });
 
 export function readHookSetup(root: string): HookSetup {
   const hooksPath = readLocalHooksPath(root);

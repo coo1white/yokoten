@@ -66,6 +66,8 @@ yokoten turns those lessons into something that checks itself:
 | open a pull request | as you, with all your rights | as a bot; nothing merges without you |
 | work in another project | starts from zero | sees what that project is missing, and offers to set it up |
 
+All of this is on from the start, for everyone: you don't answer a question or edit a file to be safe. Every setting that changes it has a way back to the default. [Record 0014](records/0014-safe-by-default.md) says how yokoten decides what it does by itself, what it asks first, and what it never does.
+
 ## Three checks and a lock
 
 ```mermaid

@@ -188,7 +188,7 @@ test('install: the session doctor and the command guard for Codex and Gemini CLI
   mkdirSync(dirname(geminiFile));
   writeFileSync(codexFile, JSON.stringify({ description: 'ours', hooks: mine('PreToolUse') }));
   writeFileSync(geminiFile, JSON.stringify({ theme: 'x', hooks: mine('BeforeTool') }));
-  const cli = '"$HOME/.local/share/yokoten/bin/yokoten.ts"';
+  const cli = '"$HOME/.local/share/yokoten/bin/yokoten.mjs"';
   const line = 'yokoten: the runtime at ~/.local/share/yokoten is missing; run the install again';
   const atStart = (args: string) => `[ -f ${cli} ] 2>/dev/null || { echo '${line}'; exit 0; }; node ${cli} ${args}`;
   const onCall = (args: string) => onToolCall(`[ -f ${cli} ] 2>/dev/null || { echo '${line}' >&2; exit 1; }; `, cli, args);

@@ -85,8 +85,9 @@ export function makeSandbox() {
   // whatever the machine's time zone (#40). No proxy either: the shell's proxy is not
   // passed on, and a call to a fake server on this machine goes to it directly (#138).
   // The sandbox lives in the temp folder; YOKOTEN_TEMP_DIRS turns off that note (#365) so the
-  // tests see what they set up.
-  const env = { PATH: process.env.PATH, HOME: home, TZ: 'UTC', YOKOTEN_TEMP_DIRS: '', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' };
+  // tests see what they set up. The compile cache stays in Node's own folder, not in the
+  // sandbox's home, where bin/yokoten.mjs puts it (#408): the tests list what lands there.
+  const env = { PATH: process.env.PATH, HOME: home, NODE_COMPILE_CACHE: join(tmpdir(), 'node-compile-cache'), TZ: 'UTC', YOKOTEN_TEMP_DIRS: '', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' };
   const git = (...args: string[]) => spawnSync('git', args, { cwd: repo, env, encoding: 'utf8' });
   git('init', '-q', '-b', 'main');
   git('config', 'user.name', 'Test');
