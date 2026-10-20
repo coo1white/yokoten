@@ -124,8 +124,9 @@ yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
   it. Decisions go in `docs/records/`; what went wrong and what check now holds it goes
   in an issue labelled `incident`, and the rule's "why" in `AGENTS.md` points to it.
 - **`kit/` is what other projects get.** `install` replaces the skills and agents it
-  manages on each machine. `init` adds only missing files, so it never changes a
-  project's `AGENTS.md` again. The core rules in it change when the project runs
+  manages on each machine. `init` adds only missing files; the one
+  exception is an `AGENTS.md` without `## This project`, which gets the core rules on top
+  and its own text moved under that heading, once. After that the core rules in it change when the project runs
   `yokoten update --write`; `doctor` says when they are behind. Say so in the pull request.
 - **Every new check gets a positive control**: a test (and, for doctor, a self-test
   case) that feeds it a known-bad input and expects a catch.

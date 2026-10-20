@@ -7,6 +7,7 @@ import * as claudeCode from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
 import * as deepseekHarness from '../agents/runtimes/deepseek-harness.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
+import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import { loadConfig } from '../rules/config.ts';
 import { printsAccount, privateOutput, releaseFix, wrapForRedact } from '../rules/guards.ts';
@@ -23,14 +24,17 @@ export const READERS: Record<string, (input: unknown) => Action> = {
   antigravity: antigravity.readToolCall,
   muse: muse.readToolCall,
   'deepseek-harness': deepseekHarness.readToolCall,
+  grok: grok.readToolCall,
 };
 
 // What a runtime reads on stdout when a call is refused, and the exit code it wants. The
 // others take the reason on stderr and exit 2, with nothing on stdout. Muse Code takes
-// either; stderr and exit 2 is the simpler one, and the model sees the same reason.
+// either; stderr and exit 2 is the simpler one, and the model sees the same reason. Grok CLI
+// shows the model only stderr's first line, so it gets the whole reason on stdout too.
 const DENIALS: Record<string, (reason: string) => { stdout: string; exitCode: number }> = {
   'claude-code': claudeCode.formatDenial,
   antigravity: antigravity.formatDenial,
+  grok: grok.formatDenial,
 };
 
 // How the owner approves a release in each runtime (#350): the command that starts it with
@@ -46,14 +50,17 @@ const RELEASE_FIXES: Record<string, string> = {
   antigravity: releaseFix(approve('agy')),
   muse: 'Muse Code is not known to pass YOKOTEN_RELEASE_APPROVAL to its hooks: it passes them only a short list of variables, and YOKOTEN_ROLE is lost. If the owner asked for this, stop and tell them to release outside Muse Code; do not look for another way',
   'deepseek-harness': releaseFix(approve('dsh tui --patch .dsh/yokoten.patch.yml')),
+  grok: releaseFix(approve('grok')),
 };
 
 // The runtimes whose hook can change a command before it runs (#390). In the others the
 // command runs as it is, unless yokoten.json "privacy.output" is "stop": then it is refused,
 // with the wrapped command as the fix. Codex, Gemini CLI, Antigravity CLI, Muse Code and
-// DeepSeek Harness are not known to take a changed command from a hook.
+// DeepSeek Harness are not known to take a changed command from a hook. Grok CLI takes
+// `updatedInput`, as Claude Code does.
 const REWRITES: Record<string, typeof claudeCode.formatRewrite> = {
   'claude-code': claudeCode.formatRewrite,
+  grok: grok.formatRewrite,
 };
 
 /**
@@ -81,12 +88,13 @@ export function redactCommand(node: string, cli: string, home: string | undefine
   return `${quoted(node)} ${quoted(cli)} redact`;
 }
 
-// Each runtime's event for the end of a turn: Claude Code's, Codex's and Muse Code's Stop, Gemini CLI's AfterAgent (#211).
+// Each runtime's event for the end of a turn: Claude Code's, Codex's, Muse Code's and Grok CLI's Stop, Gemini CLI's AfterAgent (#211).
 const STOP_READERS: Record<string, typeof claudeCode.readStop> = {
   'claude-code': claudeCode.readStop,
   codex: codex.readStop,
   gemini: gemini.readStop,
   muse: muse.readStop,
+  grok: grok.readStop,
 };
 
 /**

@@ -8,7 +8,6 @@ import {
 import {
   chmodSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -17,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
-import { makeSandbox } from '../repo/helpers.ts';
+import { makeSandbox, makeTempDir } from '../repo/helpers.ts';
 import {
   DEFAULTS,
   type Env,
@@ -75,7 +74,7 @@ exit $c
 `;
 
 function makeHooksRepo(): string {
-  const root = mkdtempSync(join(tmpdir(), 'yokoten-hooks-'));
+  const root = makeTempDir('yokoten-hooks-');
   const git = (...args: string[]) => execFileSync('git', args, { cwd: root, stdio: 'pipe' });
   git('init', '-q');
   git('config', 'core.hooksPath', 'hooks/own');
@@ -1280,7 +1279,7 @@ test('hooks setting: sudo -D and sudo --chdir move repo, like env -C (#226)', ()
 
 test('hooks setting: one command asks git each question once, however often it sets the folder (#226)', { skip: process.platform === 'win32' }, () => {
   const cwd = makeHooksRepo();
-  const bin = mkdtempSync(join(tmpdir(), 'yokoten-git-'));
+  const bin = makeTempDir('yokoten-git-');
   const log = join(bin, 'log');
   const real = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
   writeHook(join(bin, 'git'), `#!/bin/sh\necho x >> "${log}"\nexec "${real}" "$@"\n`);
