@@ -256,10 +256,12 @@ test('child processes: a killed child names the test that ran it (#436)', () => 
 });
 
 // #436: one gh call in 100 left a telemetry sender running, which wrote its device id into
-// the sandbox's home after the test removed it, so removing the sandbox failed.
-test('child processes: gh sends no telemetry from a test, in the sandbox or out (#436)', () => {
-  assert.equal(makeSandbox().env.GH_TELEMETRY, '0');
+// the sandbox's home after the test removed it, so removing the sandbox failed. Git's
+// background maintenance can race a test the same way (#442).
+test('child processes: no gh telemetry or git maintenance runs on after a test (#436)', () => {
+  assert.equal((makeSandbox().env as Record<string, string>).GH_TELEMETRY, '0');
   assert.equal(process.env.GH_TELEMETRY, '0');
+  assert.equal(execFileSync('git', ['config', 'maintenance.auto'], { encoding: 'utf8' }).trim(), 'false', 'no background git maintenance either');
 });
 
 // ---- The npm package (#31) ----

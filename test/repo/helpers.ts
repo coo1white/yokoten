@@ -122,13 +122,13 @@ export function makeSandbox() {
   // The sandbox lives in the temp folder; YOKOTEN_TEMP_DIRS turns off that note (#365) so the
   // tests see what they set up. The compile cache stays in Node's own folder, not in the
   // sandbox's home, where bin/yokoten.mjs puts it (#408): the tests list what lands there.
-  // GH_TELEMETRY=0: a gh call sometimes leaves a sender running that writes its device id
-  // into the home folder after the test removed it (#436).
-  const env = { PATH: process.env.PATH, HOME: home, NODE_COMPILE_CACHE: join(tmpdir(), 'node-compile-cache'), TZ: 'UTC', YOKOTEN_TEMP_DIRS: '', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost', GH_TELEMETRY: '0' };
-  const git = (...args: string[]) => runChild('git', args, { cwd: repo, env });
+  const env = { PATH: process.env.PATH, HOME: home, NODE_COMPILE_CACHE: join(tmpdir(), 'node-compile-cache'), TZ: 'UTC', YOKOTEN_TEMP_DIRS: '', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' };
+  const git = (...args: string[]) => spawnSync('git', args, { cwd: repo, env, encoding: 'utf8' });
   git('init', '-q', '-b', 'main');
   git('config', 'user.name', 'Test');
   git('config', 'user.email', `1+test${at}users.noreply.github.com`);
+  // No gh telemetry (#436): see test/repo/home.ts.
+  Object.assign(env, { GH_TELEMETRY: '0' });
   const run = (args: string[], { input, cwd = repo, extra = {}, timeout }: { input?: string; cwd?: string; extra?: Record<string, string>; timeout?: number } = {}) =>
     runChild('node', [CLI, ...args], { cwd, env: { ...env, ...extra }, input, timeout });
   const write = (path: string, text: string) => {
