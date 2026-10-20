@@ -603,7 +603,7 @@ export function heredocBodies(text: string): string[] {
       const body: string[] = [];
       for (; index < lines.length; index++) {
         const candidate = strip ? lines[index].replace(/^\t+/, '') : lines[index];
-        if (candidate === delimiter || candidate.trimEnd() === delimiter) break;
+        if (candidate === delimiter) break; // exactly, as bash: `EOF ` or `EOF\r` does not end it
         body.push(lines[index]);
       }
       bodies.push(body.join('\n'));

@@ -488,6 +488,9 @@ test('a heredoc whose end word the guard does not read exactly: the rest of the 
     `${head}<<'E'OF\nclean\nE\nfrom QuietVale\nEOF`,
     // A line continuation inside the end word.
     `${head}<<E\\\nF\nclean\nE\nfrom QuietVale\nEF`,
+    // bash ends the body only at a line that is the word exactly: `EOF ` and `EOF\r` don't.
+    `${head}<<'EOF'\nclean\nEOF \nfrom QuietVale\nEOF`,
+    `${head}<<'EOF'\nclean\nEOF\r\nfrom QuietVale\nEOF`,
   ]) {
     assert.equal(post(command)?.id, 'private-mark', command);
   }
