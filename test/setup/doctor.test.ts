@@ -188,7 +188,7 @@ test("road: with no gh, no network, a non-GitHub remote or a session, the server
 test('doctor: reads the server of a GitHub origin into the road; a step not done fails, a note does not (#7)', () => {
   const root = makeTempDir('yokoten-server-');
   execFileSync('git', ['init', '-q', root]);
-  const run = (routes: Record<string, unknown>) => doctor(root, { env: { HOME: root }, config: DEFAULTS, gh: serverGh(routes).gh });
+  const run = (routes: Record<string, unknown>) => doctor(root, { env: { HOME: root, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, gh: serverGh(routes).gh });
   let result = run(GOOD);
   const text = () => result.lines.join('\n');
   // No origin remote at all: say so, and say "can't check" once (#208).
@@ -212,7 +212,7 @@ test('doctor: reads the server of a GitHub origin into the road; a step not done
   assert.deepEqual(result.report.server?.find((s) => s.id === 'main-rules'), { id: 'main-rules', mark: 'MISSING' });
   assert.match(result.report.findings.find((f) => f.id === 'protection')?.what ?? '', /no CI check must pass before a merge/);
   // A session never calls gh, so the server steps never hold its stage.
-  const session = doctor(root, { env: { HOME: root }, config: DEFAULTS, session: true, gh: () => { throw new Error('a session called gh'); } });
+  const session = doctor(root, { env: { HOME: root, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, session: true, gh: () => { throw new Error('a session called gh'); } });
   assert.notEqual(session.report.next?.id, 'protection');
 });
 
@@ -282,10 +282,10 @@ test('doctor: shows the review step in stage 4, and a session never asks gh abou
   const root = makeTempDir('yokoten-review-');
   execFileSync('git', ['init', '-q', root]);
   execFileSync('git', ['remote', 'add', 'origin', `https://github.com/${REPO}.git`], { cwd: root });
-  const full = doctor(root, { env: { HOME: root }, config: DEFAULTS, gh: serverGh({ ...ADMIN, [RULES]: withApprovals(1) }).gh });
+  const full = doctor(root, { env: { HOME: root, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, gh: serverGh({ ...ADMIN, [RULES]: withApprovals(1) }).gh });
   assert.deepEqual(full.report.steps?.find((s) => s.id === 'review'), { id: 'review', stage: 4, mark: 'done', standard: 'Scorecard: Code-Review' });
   assert.deepEqual(full.report.selfTest, { ok: true, failed: [] }, 'the server control still passes no step');
-  const session = doctor(root, { env: { HOME: root }, config: DEFAULTS, session: true, gh: () => { throw new Error('a session called gh'); } });
+  const session = doctor(root, { env: { HOME: root, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, session: true, gh: () => { throw new Error('a session called gh'); } });
   assert.notEqual(session.report.next?.id, 'review');
   rmSync(root, { recursive: true, force: true });
 });
@@ -306,8 +306,8 @@ test('doctor: lists the board clicks by hand only when a board is linked, and ne
   const plain = serverGh(GOOD).gh;
   const withBoard: Gh = (args) => (args[1] === 'graphql' ? JSON.stringify({ data: { repository: { projectsV2: { nodes: [{ number: 1, title: 'demo' }] } } } }) : plain(args));
   assert.deepEqual((readServer(withBoard, REPO) as ServerSettings).boards, [{ number: 1, title: 'demo' }]);
-  const plainResult = doctor(root, { env: { HOME: root }, config: DEFAULTS, gh: plain });
-  const boardResult = doctor(root, { env: { HOME: root }, config: DEFAULTS, gh: withBoard });
+  const plainResult = doctor(root, { env: { HOME: root, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, gh: plain });
+  const boardResult = doctor(root, { env: { HOME: root, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, gh: withBoard });
   assert.ok(!plainResult.lines.some((l) => /by hand {5}board/.test(l)));
   assert.equal(boardResult.lines.filter((l) => /^ {2}by hand {5}board "demo": /.test(l)).length, 4);
   assert.equal(boardResult.ok, plainResult.ok);
@@ -973,7 +973,7 @@ test('machine: the printed command quotes the temp folder, so a space or $(...) 
 
 test('machine: the notes show in full doctor and never change the exit code; a session hears a low disk', () => {
   const sandbox = makeSandbox();
-  const env = { HOME: sandbox.home };
+  const env = { HOME: sandbox.home, YOKOTEN_TEMP_DIRS: '' };
   const machine = fakeMachine(0, { readOwner: () => 0 });
   const full = doctor(sandbox.repo, { env, config: DEFAULTS, machine });
   const quiet = doctor(sandbox.repo, { env, config: DEFAULTS, machine: fakeMachine(100 * GB) });
@@ -984,7 +984,10 @@ test('machine: the notes show in full doctor and never change the exit code; a s
   assert.ok(quiet.lines.includes('  ok      disk-space: 100 GB free of 250 GB'));
   const session = doctor(sandbox.repo, { env, config: DEFAULTS, machine, session: true });
   assert.ok(session.lines.some((line) => line.startsWith('yokoten: the disk that holds this repo has 0.0 GB free')));
-  assert.ok(!session.lines.some((line) => line.includes('claude-1000')), 'the temp folder is full doctor only');
+  // The agent-temp-dir note's own text, so a temp path that happens to hold claude-1000 does not matter.
+  const agentTemp = full.report.notes?.find((n) => n.id === 'agent-temp-dir');
+  assert.ok(agentTemp, 'full doctor has the agent-temp-dir note');
+  assert.ok(!session.lines.some((line) => line.includes(agentTemp.what)), 'the temp folder is full doctor only');
   assert.ok(!doctor(sandbox.repo, { env, config: DEFAULTS, machine: fakeMachine(100 * GB), session: true }).lines.some((line) => line.includes('disk')), 'room enough: nothing');
 });
 
@@ -1010,13 +1013,13 @@ function makeTempFolder(folders: Record<string, number>): string {
   return temp;
 }
 
-test('machine: yokoten-* folders older than a day are a note with their size and the command to remove them (#400)', () => {
+test('machine: yokoten-* folders older than a day are a note with their count and the command to remove them (#400)', () => {
   const temp = makeTempFolder({ 'yokoten-a1': 2 * DAY, 'yokoten-adopt-b2': 3 * DAY, 'yokoten-new': DAY / 2, 'other-old': 5 * DAY });
   writeFileSync(join(temp, 'yokoten-file'), 'not a folder');
   const note = leftoverTempCheck({ YOKOTEN_TEMP_DIRS: temp }, fakeMachine(GB));
   assert.equal(note?.ok, false);
   assert.equal(note?.name, 'leftover-temp-folders');
-  assert.equal(note?.finding.what, `2 yokoten-* folder(s) older than a day in ${temp}, 4 KB`);
+  assert.equal(note?.finding.what, `2 yokoten-* folders older than a day in ${temp}`);
   assert.equal(note?.finding.fix, `run \`find '${temp}' -maxdepth 1 -name 'yokoten-*' -mmin +1440 -exec rm -rf {} +\` yourself; it removes only the ones older than a day`);
   assert.equal(readFileSync(join(temp, 'yokoten-a1', 'data'), 'utf8').length, 2048, 'doctor deletes nothing');
   // Clean: only new folders, or none, or no temp folder to read: no note.
@@ -1032,7 +1035,7 @@ test('machine: the leftover note shows in full doctor only, and never changes th
   const full = doctor(sandbox.repo, { env, config: DEFAULTS, machine: fakeMachine(100 * GB) });
   const clean = doctor(sandbox.repo, { env: { ...env, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, machine: fakeMachine(100 * GB) });
   assert.equal(full.ok, clean.ok, 'a note never fails doctor');
-  assert.ok(full.lines.some((line) => line.startsWith('  note    leftover-temp-folders: 1 yokoten-* folder(s) older than a day')), full.lines.join('\n'));
+  assert.ok(full.lines.some((line) => line === `  note    leftover-temp-folders: 1 yokoten-* folder older than a day in ${temp}; run \`find '${temp}' -maxdepth 1 -name 'yokoten-*' -mmin +1440 -exec rm -rf {} +\` yourself; it removes only the ones older than a day`), full.lines.join('\n'));
   assert.ok(!clean.lines.some((line) => line.includes('leftover-temp-folders')), 'a clean temp folder: no note');
   const session = doctor(sandbox.repo, { env, config: DEFAULTS, machine: fakeMachine(100 * GB), session: true });
   assert.ok(!session.lines.some((line) => line.includes('yokoten-*')), 'full doctor only');
@@ -1041,6 +1044,8 @@ test('machine: the leftover note shows in full doctor only, and never changes th
 test('self-test: the leftover control passes the real check and fails a broken one (#400)', () => {
   assert.deepEqual(leftoverControl(), []);
   assert.deepEqual(leftoverControl(() => null), ['leftover temp folder check']);
+  // A check that counts the new folder too is caught.
+  assert.deepEqual(leftoverControl((env, probe, read) => leftoverTempCheck(env, { ...probe, now: () => new Date(Date.now() + 365 * DAY) }, read)), ['leftover temp folder check']);
 });
 
 // #365: work only on this machine. Full doctor lists it all; a session hears what is at
@@ -1164,14 +1169,14 @@ test('doctor: in the yokoten repo, the session and doctor count the notes from o
   const noGh = () => {
     throw new Error('no network in this test');
   };
-  const sessionReport = doctor(sandbox.repo, { env: { HOME: sandbox.home }, config: DEFAULTS, session: true, gh: noGh });
+  const sessionReport = doctor(sandbox.repo, { env: { HOME: sandbox.home, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, session: true, gh: noGh });
   assert.deepEqual(sessionReport.report.findings.filter((found) => found.id === 'upstream-inbox'), [note]);
-  const full = doctor(sandbox.repo, { env: { HOME: sandbox.home }, config: DEFAULTS, gh: noGh });
+  const full = doctor(sandbox.repo, { env: { HOME: sandbox.home, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, gh: noGh });
   assert.ok(full.lines.includes(`  note    upstream-inbox: ${note?.what}`), full.lines.join('\n'));
   assert.deepEqual(full.report.notes?.filter((found) => found.id === 'upstream-inbox'), [note]);
   // Elsewhere, full doctor has neither.
   const other = makeSandbox();
-  assert.ok(!doctor(other.repo, { env: { HOME: sandbox.home }, config: DEFAULTS, gh: noGh }).lines.some((text) => text.includes('upstream-inbox')));
+  assert.ok(!doctor(other.repo, { env: { HOME: sandbox.home, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, gh: noGh }).lines.some((text) => text.includes('upstream-inbox')));
   // An empty home: no inbox, no line.
   const empty = makeTempDir('yokoten-empty-');
   assert.equal(upstreamNote(sandbox.repo, { HOME: empty }), null);

@@ -372,7 +372,7 @@ export const RULES = {
   'leftover-temp-folders': {
     rule: 'test runs do not leave their folders in the temp folder (#400)',
     why: 'thousands of old test folders fill the disk, and a full disk stops every session',
-    check: 'full `doctor` reads each temp folder once and counts the `yokoten-*` folders older than a day, with their size; a note, never a failure, and doctor prints the command to remove them but never deletes',
+    check: 'full `doctor` reads each temp folder once and counts the `yokoten-*` folders older than a day (one lstat each, no size); a note, never a failure, and doctor prints the command to remove them but never deletes',
     docs: guide('machine-notes'),
   },
   'private-output': {

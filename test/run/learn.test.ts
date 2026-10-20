@@ -349,8 +349,16 @@ test('lessons: groups take 5 lessons and 2 groups, by levels; 100 lessons keep e
   assert.deepEqual(findLessonFolders(kit).sort(), [...folders].sort(), 'the walk finds each lesson');
 });
 
-test('lessons: --ship refuses a draft with a TODO or a failing test, and moves nothing (positive control)', () => {
+test('lessons: --ship refuses a draft with a TODO or a failing test, and moves nothing (positive control)', (t) => {
   const root = makeModuleDir('yokoten-ship-');
+  // The lesson's test runs in a child that makes its folder in TMPDIR: point it at a folder
+  // that goes away with this test (#400).
+  const savedTmp = process.env.TMPDIR;
+  process.env.TMPDIR = makeTempDir('yokoten-lesson-tmp-');
+  t.after(() => {
+    if (savedTmp === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = savedTmp;
+  });
   const draftDir = join(root, 'lessons/incident-12');
   assert.match(String((shipLesson(root, '12', '0.1.0') as { problems: string[] }).problems), /no kit\/ here/);
   mkdirSync(join(root, 'kit'));
@@ -497,7 +505,8 @@ test('lessons: every lesson the kit ships has a row, its incident, no TODO, and 
     assert.ok(!`${code}${test}`.includes('TODO(reviewer)'), `${id}: no TODO(reviewer) is left`);
     assert.ok(/known-bad case/.test(test), `${id}: lesson.test.ts has a positive control`);
     // Without NODE_TEST_CONTEXT, or the child reports to this run and exits 0 whatever happens.
-    const env = { ...process.env };
+    // TMPDIR: whatever the lesson's test leaves goes away with this test (#400).
+    const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: makeTempDir('yokoten-lesson-tmp-') };
     delete env.NODE_TEST_CONTEXT;
     const run = spawnSync(process.execPath, ['--test', join(kitLessons, folder, 'lesson.test.ts')], { env, encoding: 'utf8' });
     assert.equal(run.status, 0, `${id}: its test passes\n${run.stdout}`);
