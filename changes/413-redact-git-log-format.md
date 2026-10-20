@@ -6,4 +6,4 @@ so `git log --format=%an` or `--pretty=format:%ae` no longer shows your name or 
 `git shortlog -sne` with a revision such as `HEAD`. A format in plain quotes, such as
 `--format='%an <%ae>'`, counts as one plain command. As before, only a single plain read
 is rewritten. A command with an unclosed quote, a `$` inside double quotes, or a glob such as
-`*` is not. The rewritten `git log`, `git show` and `git blame` run no textconv or external diff.
+`*` is not. The rewritten `git log`, `git show` and `git blame` run no textconv, external diff or signature check.

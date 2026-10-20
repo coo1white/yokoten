@@ -235,7 +235,7 @@ test('hook: Claude Code gets a plain read rewritten through redact, with allow, 
   assert.equal(output.permissionDecision, 'allow');
   assert.equal(output.permissionDecisionReason, 'yokoten: `git log` prints author names and emails, so its output goes through yokoten redact');
   assert.equal(output.updatedInput.description, 'Show');
-  assert.match(output.updatedInput.command, /^set -o pipefail # yokoten-redact\n\(\ngit log --no-ext-diff --no-textconv -1\n\) 2>&1 \| \{ "[^"]+" "[^"]*yokoten\.ts" redact \|\| cat; \}$/);
+  assert.match(output.updatedInput.command, /^set -o pipefail # yokoten-redact\n\(\ngit log --no-ext-diff --no-textconv --no-show-signature -1\n\) 2>&1 \| \{ "[^"]+" "[^"]*yokoten\.ts" redact \|\| cat; \}$/);
   // The rewritten command runs, and prints the placeholder.
   const ran = spawnSync('bash', ['-c', output.updatedInput.command], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
   assert.equal(ran.status, 0, ran.stderr);

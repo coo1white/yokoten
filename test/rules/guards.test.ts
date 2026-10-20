@@ -1756,7 +1756,7 @@ test('printsAccount: anything more than one plain read is left to the normal flo
     // A prefix or a launcher.
     'FOO=1 git log', 'sudo git log', 'env git log', 'nice git log', 'bash -c "git log"', 'npx --yes wrangler whoami',
     // Options that write a file, run a program, or pick another git.
-    'git -c a=b log', 'git -C x log', 'git log --output=x', 'git log -o x', 'git log --ext-diff', 'git show --textconv x', 'git log --exec-path=/x',
+    'git -c a=b log', 'git -C x log', 'git log --output=x', 'git log -o x', 'git log --ext-diff', 'git show --textconv x', 'git log --exec-path=/x', 'git log --show-signature', 'git show --show-signature HEAD',
     // A subcommand only by name further on.
     'git remote add show x', 'git remote rename get-url x', 'git remote',
     // A write, or something sent.
@@ -1784,9 +1784,9 @@ test('printsAccount: anything more than one plain read is left to the normal flo
 });
 
 test('hardenRead: a log, show or blame runs no textconv or external diff; other reads stay as they are (#413)', () => {
-  assert.equal(hardenRead('git log -1'), 'git log --no-ext-diff --no-textconv -1');
-  assert.equal(hardenRead('git show'), 'git show --no-ext-diff --no-textconv');
-  assert.equal(hardenRead('/usr/bin/git whatchanged -p'), '/usr/bin/git whatchanged --no-ext-diff --no-textconv -p');
+  assert.equal(hardenRead('git log -1'), 'git log --no-ext-diff --no-textconv --no-show-signature -1');
+  assert.equal(hardenRead('git show'), 'git show --no-ext-diff --no-textconv --no-show-signature');
+  assert.equal(hardenRead('/usr/bin/git whatchanged -p'), '/usr/bin/git whatchanged --no-ext-diff --no-textconv --no-show-signature -p');
   assert.equal(hardenRead('git blame -e README.md'), 'git blame --no-textconv -e README.md');
   for (const command of ['git shortlog -sn HEAD', 'git cat-file -p HEAD', 'git remote -v', 'npm whoami', 'git status']) assert.equal(hardenRead(command), command);
 });

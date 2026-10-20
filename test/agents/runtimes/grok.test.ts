@@ -169,7 +169,7 @@ test('hook --agent grok: a command that prints the owner\'s details is rewritten
   assert.equal(reply.hookEventName, 'PreToolUse');
   assert.equal(reply.permissionDecision, undefined, 'no decision: the rewrite approves nothing');
   assert.equal(reply.updatedInput.description, 'Show the last commit');
-  assert.match(reply.updatedInput.command, /^set -o pipefail # yokoten-redact\n\(\ngit log --no-ext-diff --no-textconv -1\n\) 2>&1 \| \{ .* redact \|\| cat; \}$/);
+  assert.match(reply.updatedInput.command, /^set -o pipefail # yokoten-redact\n\(\ngit log --no-ext-diff --no-textconv --no-show-signature -1\n\) 2>&1 \| \{ .* redact \|\| cat; \}$/);
   assert.match(reply.additionalContext, /goes through yokoten redact/);
 });
 

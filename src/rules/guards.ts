@@ -1395,11 +1395,12 @@ interface AccountPrinter {
 // Options that make a git read write a file or run another program. A format option keeps
 // it a read: `--format=%an` prints the author with no "Author:" line, and redact hides the
 // value wherever it stands (#413).
-const GIT_UNSAFE = /^(?:--output|-o|--ext-diff|--exec-path|--textconv|--filters)/;
+const GIT_UNSAFE = /^(?:--output|-o|--ext-diff|--exec-path|--textconv|--filters|--show-signature)/;
 const isGitRead = (args: string[]) => !args.some((arg) => GIT_UNSAFE.test(arg));
-// A diff in a log can run a program the repo's config names: a textconv or an external diff.
-// The rewrite turns both off, so an allowed read runs only git (#413).
-const NO_DIFF_PROGRAMS = ['--no-ext-diff', '--no-textconv'];
+// A log can run a program the repo's config names: a textconv, an external diff, or gpg to
+// check a signature (log.showSignature). The rewrite turns them off, so an allowed read runs
+// only git (#413).
+const NO_DIFF_PROGRAMS = ['--no-ext-diff', '--no-textconv', '--no-show-signature'];
 // `git shortlog` with no revision reads a log from stdin when stdin is no terminal, as in the
 // rewrite: so it is rewritten only with a revision, `git shortlog -sne HEAD` (#413). The word
 // after an option that takes one is no revision, nor is a path after `--`.
