@@ -12,10 +12,10 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { accessSync, constants, readFileSync, statSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Config, Env } from './config.ts';
-import { matcher } from './config.ts';
+import { DEFAULTS, matcher } from './config.ts';
 import { type Finding, finding } from './message.ts';
 import { checkCommandTitle } from './pr.ts';
 import { checkPost, type GhCommand, ghIndex } from './privacy.ts';
@@ -25,10 +25,22 @@ export function checkEdit(path: string, { config, env }: { config: Config; env: 
   if (env.YOKOTEN_FIX_TASK === '1' && matcher(config.tests)(path)) {
     return finding('test-file', `${path} is a test file, and this is a fix task (YOKOTEN_FIX_TASK=1)`, 'if the test is wrong, stop and say so in your report');
   }
-  if (env.YOKOTEN_ROLE === 'worker' && matcher(config.leadOnly)(path)) {
-    return finding('lead-only', `${path} is lead-only (yokoten.json "leadOnly")`, 'stop and hand the change to the lead');
+  if (env.YOKOTEN_ROLE === 'worker' && matcher(config.leadOnly)(path) && !isGranted(path, env)) {
+    return finding('lead-only', `${path} is lead-only (yokoten.json "leadOnly")`, LEAD_ONLY_FIX);
   }
   return null;
+}
+
+const LEAD_ONLY_FIX = 'stop and hand the change to the lead: say in your report what to change in it, or ask the lead to start you with YOKOTEN_LEAD_ONLY_OK=<path>';
+
+/**
+ * Whether the lead lets this worker change a lead-only path: YOKOTEN_LEAD_ONLY_OK, a
+ * comma-separated list of paths from the repo root, set when the worker starts. An entry
+ * with a `*` is a glob, as in yokoten.json; any other entry is that one path.
+ */
+export function isGranted(path: string, env: Env): boolean {
+  const entries = (env.YOKOTEN_LEAD_ONLY_OK ?? '').split(',').map((entry) => entry.trim().replace(/^\.\//, '')).filter(Boolean);
+  return entries.some((entry) => (entry.includes('*') ? matcher([entry])(path) : entry === path));
 }
 
 /**
@@ -54,7 +66,7 @@ export function checkCommand(command: string, options: { env: Env; config?: Guar
 }
 
 // `cwd` is null when the guard cannot tell which repo git works in.
-type GuardConfig = Pick<Config, 'commands'> & Partial<Pick<Config, 'privacy' | 'areas'>>;
+type GuardConfig = Pick<Config, 'commands'> & Partial<Pick<Config, 'privacy' | 'areas' | 'leadOnly'>>;
 
 function checkEachCommand(command: string, { env, config, cwd, titles = false }: { env: Env; config?: GuardConfig; cwd: string | null; titles?: boolean }): Finding | null {
   const commands = commandWords(command);
@@ -69,7 +81,8 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false }:
       checkHooksEnvironment(words) ??
       checkPublish(words, env) ??
       checkBlocked(words, config?.commands.block ?? {}) ??
-      checkPosted(words, { env, config, cwd: postCwd, command, titles });
+      checkPosted(words, { env, config, cwd: postCwd, command, titles }) ??
+      checkLeadOnlyWrites(words, { env, leadOnly: config?.leadOnly ?? DEFAULTS.leadOnly, folder: postCwd });
     if (reason) return reason;
     postCwd = folderAfter(words, postCwd, env);
   }
@@ -261,6 +274,8 @@ function configValues(words: string[]): Map<string, string> {
 // `git config core.hooksPath '>x'` still sets the value ">x". Words that never went through
 // the reader (an `env -S` string, the rough cut) have no marks, and keep every word.
 const unquotedRedirects = new WeakMap<string[], Set<number>>();
+// The word lists the reader made: in them, a redirect with no mark is quoted text.
+const readWords = new WeakSet<string[]>();
 
 // The words of `words` from `from` on, with each unquoted redirect and its file taken out.
 function withoutShellRedirects(words: string[], from: number): string[] {
@@ -744,6 +759,299 @@ function folderAfter(words: string[], folder: string | null, env: Env): string |
   if (path === null) return null;
   if (isAbsolute(path)) return path;
   return folder === null ? null : resolve(folder, path);
+}
+
+// ---- Lead-only files a worker's command writes (#402) ----
+//
+// The edit guard stops a worker's edit tool on a lead-only file. A shell write gets the
+// same answer here: a redirect (`>`, `>>`, `&>`, `<>`, `>&file`), the files of the common
+// writers in WRITERS, git's own writes (checkout, restore, rm, mv, apply), and the files
+// a `git commit` would commit. A read (`cat`, `grep`, `sed -n`) writes nothing and passes.
+// The commit check refuses the same commit only when the session has YOKOTEN_ROLE=worker,
+// so for a subagent named worker the guard is what stops it. Like the rest of the guard
+// it reads text: a target from a variable or stdin (`xargs rm`, `find -exec ... {}`,
+// `git apply < x.patch`), or a script's own writes, gets past it.
+
+/** A file a command writes, as written, and the folder it is relative to (null: unknown). */
+type WriteTarget = { path: string; from: string | null };
+
+// A redirect that writes its file. `>&2` copies a stream; `>&file` writes a file.
+const WRITE_REDIRECT = /^(?:\d+|\{[A-Za-z_]\w*\}|&)?(>>|>\||<>|>&|>)(.*)$/s;
+
+function checkLeadOnlyWrites(words: string[], { env, leadOnly, folder }: { env: Env; leadOnly: string[]; folder: string | null }): Finding | null {
+  if (env.YOKOTEN_ROLE !== 'worker') return null;
+  const isLeadOnly = matcher(leadOnly);
+  // A folder counts when a lead-only file may be in it: `rm -r .github`.
+  const isStopped = (path: string) => (isLeadOnly(path) || isLeadOnly(`${path}/-`)) && !isGranted(path, env);
+  for (const target of writeTargets(words, folder)) {
+    const path = repoPath(target, env);
+    if (path !== null && isStopped(path)) return finding('lead-only', `this command writes ${path}, which is lead-only (yokoten.json "leadOnly")`, LEAD_ONLY_FIX);
+  }
+  for (const target of commitTargets(words, folder)) {
+    const path = repoPath(target, env);
+    if (path !== null && isStopped(path)) return finding('lead-only', `this commit changes ${path}, which is lead-only (yokoten.json "leadOnly")`, `unstage it with \`git restore --staged ${path}\`, then ${LEAD_ONLY_FIX}`);
+  }
+  return null;
+}
+
+/**
+ * Where a target is, from its repo's root: the repo is the nearest folder above it with a
+ * `.git`. Outside a repo it is from the command's folder, and a file outside that folder
+ * is no business of the guard. With the folder unknown, a relative path is taken as
+ * written. Null for stdin and for a path the guard leaves alone.
+ */
+function repoPath({ path, from }: WriteTarget, env: Env): string | null {
+  if (path === '' || path === '-') return null;
+  const expanded = /^~(?=\/|$)/.test(path) && env.HOME ? join(env.HOME, path.slice(1)) : path;
+  if (from === null && !isAbsolute(expanded)) return expanded.replace(/\\/g, '/').replace(/^(\.\/)+/, '');
+  const full = resolve(from ?? '/', expanded);
+  const root = repoRoot(dirname(full)) ?? from;
+  if (root === null) return null;
+  const inRepo = relative(root, full).split(sep).join('/');
+  return inRepo === '' || inRepo.startsWith('..') || isAbsolute(inRepo) ? null : inRepo;
+}
+
+function repoRoot(folder: string): string | null {
+  for (let dir = folder; ; dir = dirname(dir)) {
+    if (existsSync(join(dir, '.git'))) return dir;
+    if (dirname(dir) === dir) return null;
+  }
+}
+
+function writeTargets(words: string[], folder: string | null): WriteTarget[] {
+  const targets: WriteTarget[] = [];
+  const marks = unquotedRedirects.get(words);
+  for (const [index, word] of words.entries()) {
+    // Words the reader did not make (the rough cut) have no marks: any redirect counts.
+    if (readWords.has(words) ? !marks?.has(index) : !REDIRECT.test(word)) continue;
+    const redirect = WRITE_REDIRECT.exec(word);
+    const path = redirect && (redirect[2] || words[index + 1]);
+    if (!path || (redirect[1] === '>&' && /^(\d+|-)$/.test(path))) continue;
+    targets.push({ path, from: folder });
+  }
+  let from = 0;
+  for (const program of findPrograms(words)) {
+    const at = words.indexOf(program, from);
+    if (at === -1) continue; // from an `env -S` string
+    from = at + 1;
+    const name = programName(program);
+    const args = withoutShellRedirects(words, at + 1);
+    if (isGit(program)) targets.push(...gitWrites(args, folder));
+    else if (Object.hasOwn(WRITERS, name)) targets.push(...WRITERS[name](args, folder).map((path) => ({ path, from: folder })));
+  }
+  return targets;
+}
+
+/**
+ * The words that are no option, in order: after `--` every word is one. `valued` are the
+ * options whose value is the next word.
+ */
+function plainArgs(args: string[], valued: string[] = []): string[] {
+  const plain: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const word = args[index];
+    if (word === '--') return [...plain, ...args.slice(index + 1)];
+    if (valued.includes(word)) index++;
+    else if (!word.startsWith('-') || word === '-') plain.push(word);
+  }
+  return plain;
+}
+
+/** The value of the first of `names` in `args`: `-t x`, `-tx`, `--target-directory=x`. */
+function optionValue(args: string[], names: string[]): string | undefined {
+  for (const [index, word] of args.entries()) {
+    for (const name of names) {
+      if (word === name) return args[index + 1];
+      if (name.startsWith('--') ? word.startsWith(`${name}=`) : word.startsWith(name) && word.length > 2) return word.slice(name.length + (name.startsWith('--') ? 1 : 0));
+    }
+  }
+  return undefined;
+}
+
+// cp, mv, install and ln write their destination, and each source's name inside it when
+// it is a folder: named by -t, ending in /, given more than one source, or one on disk.
+// mv also removes its sources.
+function copyTargets(args: string[], { valued, isMove, folder }: { valued: string[]; isMove: boolean; folder: string | null }): string[] {
+  const plain = plainArgs(args, valued);
+  const named = optionValue(args, ['-t', '--target-directory']);
+  const sources = named === undefined ? plain.slice(0, -1) : plain;
+  const into = named ?? plain.at(-1);
+  if (into === undefined) return [];
+  const isFolder = named !== undefined || into.endsWith('/') || sources.length > 1 || isFolderOnDisk(folder, into);
+  return [...(isMove ? sources : []), into, ...(isFolder ? sources.map((source) => `${into}/${base(source)}`) : [])];
+}
+
+function isFolderOnDisk(folder: string | null, path: string): boolean {
+  try {
+    return statSync(resolve(folder ?? '.', path)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+// `sed -i`: the files after the script. A short option cluster ends at `i` (its suffix
+// follows) or at e, f or l (their value follows).
+function sedTargets(args: string[]): string[] {
+  let isInPlace = false;
+  let hasScript = false;
+  const plain: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const word = args[index];
+    if (word === '--') {
+      plain.push(...args.slice(index + 1));
+      break;
+    }
+    if (word.startsWith('--')) {
+      if (/^--in-place(=|$)/.test(word)) isInPlace = true;
+      if (/^--(expression|file)(=|$)/.test(word)) hasScript = true;
+      if (/^--(expression|file|line-length)$/.test(word)) index++;
+    } else if (word.startsWith('-') && word !== '-') {
+      for (const [at, letter] of [...word].entries()) {
+        if (at === 0) continue;
+        if (letter === 'i') isInPlace = true;
+        if (letter === 'e' || letter === 'f') hasScript = true;
+        if ('efl'.includes(letter) && at === word.length - 1) index++;
+        if ('iefl'.includes(letter)) break;
+      }
+    } else plain.push(word);
+  }
+  if (!isInPlace) return [];
+  return hasScript ? plain : plain.slice(1);
+}
+
+// `perl -i` (`-pi`, `-i.bak`): the files after the script. Options end at the first plain
+// word. In a cluster, e and E take the next word; I, M, m, F, C, x, d, D, l and 0 take
+// the rest of the word.
+function perlTargets(args: string[]): string[] {
+  let isInPlace = false;
+  let hasScript = false;
+  let index = 0;
+  for (; index < args.length; index++) {
+    const word = args[index];
+    if (word === '--') {
+      index++;
+      break;
+    }
+    if (!word.startsWith('-') || word === '-') break;
+    for (const [at, letter] of [...word].entries()) {
+      if (at === 0) continue;
+      if (letter === 'i') isInPlace = true;
+      if (letter === 'e' || letter === 'E') {
+        hasScript = true;
+        if (at === word.length - 1) index++;
+      }
+      if ('ieEIMmFCxdDl0'.includes(letter)) break;
+    }
+  }
+  if (!isInPlace) return [];
+  return hasScript ? args.slice(index) : args.slice(index + 1);
+}
+
+const COPY_VALUES = ['-t', '--target-directory', '-S', '--suffix'];
+// Each writer by name, with the files it writes. Every other program is a read here.
+const WRITERS: Record<string, (args: string[], folder: string | null) => string[]> = {
+  tee: (args) => plainArgs(args),
+  truncate: (args) => plainArgs(args, ['-s', '--size', '-r', '--reference']),
+  rm: (args) => plainArgs(args),
+  rmdir: (args) => plainArgs(args),
+  unlink: (args) => plainArgs(args),
+  shred: (args) => plainArgs(args, ['-n', '--iterations', '-s', '--size']),
+  sed: sedTargets,
+  perl: perlTargets,
+  cp: (args, folder) => copyTargets(args, { valued: COPY_VALUES, isMove: false, folder }),
+  ln: (args, folder) => copyTargets(args, { valued: COPY_VALUES, isMove: false, folder }),
+  mv: (args, folder) => copyTargets(args, { valued: COPY_VALUES, isMove: true, folder }),
+  install: (args, folder) => copyTargets(args, { valued: [...COPY_VALUES, '-m', '--mode', '-o', '--owner', '-g', '--group', '--strip-program'], isMove: false, folder }),
+  dd: (args) => args.filter((arg) => arg.startsWith('of=')).map((arg) => arg.slice('of='.length)),
+};
+
+/** git's subcommand, its arguments and the folder it works in (null: unknown), from the git word on. */
+function gitParts(args: string[], folder: string | null): { sub: string | undefined; args: string[]; dir: string | null } {
+  let dir = folder;
+  let index = 0;
+  while (index < args.length && args[index].startsWith('-')) {
+    if (args[index] === '-C') dir = dir === null ? null : resolve(dir, args[index + 1] ?? '');
+    if (/^--(git-dir|work-tree)(=|$)/.test(args[index])) dir = null;
+    index += GIT_VALUE_OPTIONS.has(args[index]) ? 2 : 1;
+  }
+  return { sub: args[index], args: args.slice(index + 1), dir };
+}
+
+// git's own writes to files in the work tree. A patch's files are read from the patch.
+function gitWrites(words: string[], folder: string | null): WriteTarget[] {
+  const { sub, args, dir } = gitParts(words, folder);
+  const at = (paths: string[]) => paths.map((path) => ({ path, from: dir }));
+  if (sub === 'checkout') return at(args.includes('--') ? args.slice(args.indexOf('--') + 1) : plainArgs(args, ['-b', '-B', '--orphan']));
+  // `git restore --staged` alone changes only what is staged: the way to undo a `git add`.
+  const isIndexOnly = args.some((arg) => arg === '--staged' || arg === '-S') && !args.some((arg) => arg === '--worktree' || arg === '-W');
+  if (sub === 'restore') return isIndexOnly ? [] : at(plainArgs(args, ['-s', '--source']));
+  if (sub === 'rm') return at(plainArgs(args));
+  if (sub === 'mv') return at(copyTargets(args, { valued: [], isMove: true, folder: dir }));
+  if (sub !== 'apply' || dir === null) return [];
+  const root = readGit(dir, ['rev-parse', '--show-toplevel']);
+  if (!root) return [];
+  const paths = plainArgs(args, ['-p', '--exclude', '--include', '--directory']).flatMap((patch) => patchFiles(readText(resolve(dir, patch))));
+  return paths.map((path) => ({ path: join(root, path), from: root }));
+}
+
+// The files a patch names: `diff --git a/x b/y`, `--- a/x` and `+++ b/y`.
+function patchFiles(patch: string): string[] {
+  const files: string[] = [];
+  for (const line of patch.split('\n')) {
+    const header = /^diff --git a\/(\S+) b\/(\S+)/.exec(line);
+    if (header) files.push(header[1], header[2]);
+    const side = /^(?:---|\+\+\+) (?:[ab]\/)?(\S+)/.exec(line);
+    if (side && side[1] !== '/dev/null') files.push(side[1]);
+  }
+  return files;
+}
+
+// `git commit` options whose value is the next word.
+const COMMIT_VALUES = new Set(['--message', '--file', '--reuse-message', '--reedit-message', '--fixup', '--squash', '--author', '--date', '--cleanup', '--template', '--trailer', '--pathspec-from-file']);
+
+/**
+ * The files a `git commit` commits, as full paths: its pathspecs when it names any, else
+ * what is staged, and with -a what is changed too. In a short option cluster, m, F, C, c
+ * and t take a value; S and u take the rest of the word.
+ */
+function commitTargets(words: string[], folder: string | null): WriteTarget[] {
+  const start = words.findIndex(isGit);
+  if (start === -1) return [];
+  const { sub, args, dir } = gitParts(withoutShellRedirects(words, start + 1), folder);
+  if (sub !== 'commit' || dir === null) return [];
+  let isAll = false;
+  let isInclude = false;
+  const named: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const word = args[index];
+    if (word === '--') {
+      named.push(...args.slice(index + 1));
+      break;
+    }
+    if (word.startsWith('--')) {
+      if (word === '--all') isAll = true;
+      if (word === '--include') isInclude = true;
+      if (COMMIT_VALUES.has(word)) index++;
+    } else if (word.startsWith('-') && word !== '-') {
+      for (const [at, letter] of [...word].entries()) {
+        if (at === 0) continue;
+        if (letter === 'a') isAll = true;
+        if (letter === 'i') isInclude = true;
+        if ('mFCct'.includes(letter) && at === word.length - 1) index++;
+        if ('mFCctSu'.includes(letter)) break;
+      }
+    } else named.push(word);
+  }
+  const root = readGit(dir, ['rev-parse', '--show-toplevel']);
+  if (!root) return [];
+  const targets = named.map((path) => ({ path, from: dir }));
+  if (named.length > 0 && !isInclude) return targets;
+  const changed = (args: string[]) =>
+    (readGit(dir, ['--no-optional-locks', 'diff', ...args, '--name-only', '--no-renames', '-z']) ?? '')
+      .split('\0')
+      .filter(Boolean)
+      .map((path) => ({ path: join(root, path), from: root }));
+  return [...targets, ...changed(['--cached']), ...(isAll ? changed([]) : [])];
 }
 
 // ---- Programs the project blocks (#192) ----
@@ -1402,6 +1710,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
     const isFirst = isLeading;
     if (ended !== null) {
       words.push(ended);
+      readWords.add(words);
       if (!isQuoted && REDIRECT.test(ended)) {
         const marks = unquotedRedirects.get(words) ?? new Set<number>();
         marks.add(words.length - 1);

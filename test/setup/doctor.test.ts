@@ -44,6 +44,7 @@ import {
   doctor,
   findDriveMount,
   isLowOnSpace,
+  isShellControlCaught,
   isUnsavedControlCaught,
   isWsl,
   listBoardSteps,
@@ -1130,4 +1131,9 @@ test('doctor: in the yokoten repo, the session and doctor count the notes from o
   assert.equal(upstreamNote(sandbox.repo, { HOME: empty }), null);
   assert.ok(!sandbox.run(['doctor', '--session'], { extra: { HOME: empty } }).stdout.includes('lessons from other projects'));
   rmSync(empty, { recursive: true, force: true });
+});
+
+test('self-test: a shell write from the plugin agent yokoten:worker is caught, and the lead passes (#402)', () => {
+  assert.ok(isShellControlCaught());
+  assert.ok(!selfTest().includes('lead-only shell guard'));
 });

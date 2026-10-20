@@ -13,7 +13,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statfsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, parse } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkCommand, checkEdit } from '../rules/guards.ts';
 import { type Config, DEFAULTS, type Env } from '../rules/config.ts';
@@ -22,9 +22,10 @@ import { type Finding, finding, formatFinding, type RuleId } from '../rules/mess
 import { loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
+import { judge } from '../run/hook.ts';
 import { countNotes, type LessonPlace, listLessons, runLessons, waitingLine } from '../run/learn.ts';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
-import { hasPlugin, hasProjectHook, hasSessionDoctor, readInstalledPlugin, tempDir as claudeTempDir, userSettingsProblem } from '../agents/runtimes/claude-code.ts';
+import { hasPlugin, hasProjectHook, hasSessionDoctor, readInstalledPlugin, readToolCall, tempDir as claudeTempDir, userSettingsProblem } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
 import * as copilot from '../agents/runtimes/copilot.ts';
 import * as dsh from '../agents/runtimes/deepseek-harness.ts';
@@ -59,6 +60,7 @@ export function selfTest(): string[] {
   if (!checkCommand('git commit --no-verify -m x', { env: {} })) failed.push('skip-check guard');
   if (!checkEdit('test/a.test.ts', { config: DEFAULTS, env: { YOKOTEN_FIX_TASK: '1' } })) failed.push('test guard');
   if (!checkEdit('AGENTS.md', { config: DEFAULTS, env: { YOKOTEN_ROLE: 'worker' } })) failed.push('lead-only guard');
+  if (!isShellControlCaught()) failed.push('lead-only shell guard');
   if (scanText(POSITIVE_CONTROL, { file: 'control' }).length < 2) failed.push('privacy check');
   if (scanText(SECRET_CONTROL, { file: 'control' }).length < 2) failed.push('secret check');
   if (!notUtc('A <a@example.com> 1760745600 +0700') || notUtc('A <a@example.com> 1760745600 +0000')) failed.push('time zone check');
@@ -71,6 +73,18 @@ export function selfTest(): string[] {
   failed.push(...coreRulesControl());
   failed.push(...machineControl());
   return failed;
+}
+
+/**
+ * A shell write to AGENTS.md from Claude Code's plugin worker, `yokoten:worker`, with no
+ * YOKOTEN_ROLE (#402): the call must read as a worker's and be stopped, and the same call
+ * from the lead must pass. It runs in the file system's root, which is no repo, and
+ * nothing is written.
+ */
+export function isShellControlCaught(): boolean {
+  const call = (agentType?: string) => ({ agent_type: agentType, cwd: parse(process.cwd()).root, tool_input: { command: 'sed -i s/a/b/ AGENTS.md' } });
+  const options = { root: null, config: DEFAULTS, env: {} };
+  return judge(readToolCall(call('yokoten:worker')), options) !== null && judge(readToolCall(call()), options) === null;
 }
 
 /**

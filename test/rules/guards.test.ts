@@ -536,6 +536,142 @@ test('lead-only files: a worker is stopped, the lead is not', () => {
   assert.equal(checkEdit('kit/project/.github/workflows/x.yml', { config: DEFAULTS, env: worker }), null);
 });
 
+// A worker's shell writes and commits to lead-only files (#402).
+test('lead-only files: each shell writer form stops a worker, not the lead (#402)', () => {
+  const sandbox = makeSandbox();
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  const run = (command: string, env: Env) => checkCommand(command, { env, cwd: sandbox.repo });
+  for (const command of [
+    'echo x > AGENTS.md',
+    'echo x >>AGENTS.md',
+    'printf x &> CLAUDE.md',
+    'echo x 2>&1 >&AGENTS.md',
+    'cat > AGENTS.md <<EOF\nnew rules\nEOF',
+    'sed -i s/a/b/ AGENTS.md',
+    'sed -i.bak -e s/a/b/ AGENTS.md',
+    'sed --in-place s/a/b/ AGENTS.md',
+    'sed -Ei s/a/b/ src/a.ts AGENTS.md',
+    'echo x | tee AGENTS.md',
+    'echo x | tee -a .github/workflows/ci.yml',
+    'cp /tmp/x AGENTS.md',
+    'cp x y .githooks/',
+    'cp -t .claude x',
+    'mv AGENTS.md notes.md',
+    'mv x .github/workflows/ci.yml',
+    'install -m 755 x .githooks/pre-commit',
+    'ln -sf x CLAUDE.md',
+    'dd if=x of=AGENTS.md',
+    'truncate -s 0 AGENTS.md',
+    'rm AGENTS.md',
+    'rm -rf .github',
+    'perl -pi -e s/a/b/ AGENTS.md',
+    'perl -i.bak -pe s/a/b/ AGENTS.md',
+    'git checkout -- AGENTS.md',
+    'git checkout main -- .github/workflows/ci.yml',
+    'git restore AGENTS.md',
+    'git restore --source main --worktree --staged AGENTS.md',
+    'git rm AGENTS.md',
+    'git mv AGENTS.md RULES.md',
+    'cd src && cp x ../AGENTS.md',
+    'sudo -u x sed -i s/a/b/ AGENTS.md',
+    'bash -c "echo x > AGENTS.md"',
+    'nice -n 10 tee AGENTS.md < x',
+  ]) {
+    assert.equal(run(command, worker)?.id, 'lead-only', `should stop a worker: ${JSON.stringify(command)}`);
+    assert.equal(run(command, {}), null, `should let the lead: ${JSON.stringify(command)}`);
+  }
+  // The message names the file and how to hand it over.
+  const found = run('sed -i s/a/b/ AGENTS.md', worker);
+  assert.match(found?.what ?? '', /writes AGENTS\.md, which is lead-only/);
+  assert.match(found?.fix ?? '', /hand the change to the lead/);
+});
+
+test('lead-only files: reads, other files and files outside the repo pass a worker (#402)', () => {
+  const sandbox = makeSandbox();
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  for (const command of [
+    'cat AGENTS.md',
+    'grep x AGENTS.md',
+    'grep -n ">" AGENTS.md',
+    'echo ">" AGENTS.md',
+    'head -5 AGENTS.md > /dev/null',
+    'sed -n 1,5p AGENTS.md',
+    'perl -ne print AGENTS.md',
+    'cp AGENTS.md notes.md',
+    'diff AGENTS.md CLAUDE.md 2>&1',
+    'echo x > src/a.ts',
+    'sed -i s/a/b/ src/a.ts',
+    'rm -rf dist',
+    'git checkout main',
+    'git checkout -b 402-x',
+    'git restore --staged AGENTS.md',
+    'git diff AGENTS.md',
+    'git log -p -- .github',
+    'echo x > /tmp/AGENTS.md',
+  ]) {
+    assert.equal(checkCommand(command, { env: worker, cwd: sandbox.repo }), null, `should allow: ${JSON.stringify(command)}`);
+  }
+});
+
+test('lead-only files: YOKOTEN_LEAD_ONLY_OK lets the paths it names through, and no others (#402)', () => {
+  const sandbox = makeSandbox();
+  const granted = { YOKOTEN_ROLE: 'worker', YOKOTEN_LEAD_ONLY_OK: ' AGENTS.md, ./.github/workflows/*.yml' };
+  const run = (command: string) => checkCommand(command, { env: granted, cwd: sandbox.repo });
+  assert.equal(run('sed -i s/a/b/ AGENTS.md'), null);
+  assert.equal(run('echo x > .github/workflows/ci.yml'), null);
+  assert.equal(run('echo x > CLAUDE.md')?.id, 'lead-only');
+  assert.equal(run('echo x > .github/CODEOWNERS')?.id, 'lead-only');
+  assert.equal(run('rm -rf .github')?.id, 'lead-only', 'a folder that holds more than the grant');
+  assert.equal(checkEdit('AGENTS.md', { config: DEFAULTS, env: granted }), null);
+  assert.ok(checkEdit('CLAUDE.md', { config: DEFAULTS, env: granted }));
+  assert.ok(checkEdit('kit/AGENTS.md', { config: DEFAULTS, env: granted }), 'a path is the one path, not a glob');
+});
+
+test('lead-only files: a worker\'s git commit of a lead-only file is stopped, in the guard and the commit check (#402)', () => {
+  const sandbox = makeSandbox();
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  sandbox.write('AGENTS.md', 'rules\n');
+  sandbox.write('src/a.ts', 'export {};\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const run = (command: string, env: Env = worker) => checkCommand(command, { env, cwd: sandbox.repo });
+  sandbox.write('AGENTS.md', 'new rules\n');
+  sandbox.write('src/a.ts', 'export const a = 1;\n');
+  // Not staged yet: only -a commits it.
+  assert.equal(run('git commit -m x'), null);
+  assert.equal(run('git commit -am x')?.id, 'lead-only');
+  assert.equal(run('git commit --all -m x')?.id, 'lead-only');
+  assert.equal(run('git commit -m x AGENTS.md')?.id, 'lead-only');
+  sandbox.git('add', '.');
+  const found = run('git commit -m "feat(x): y"');
+  assert.equal(found?.id, 'lead-only');
+  assert.match(found?.what ?? '', /this commit changes AGENTS\.md/);
+  assert.match(found?.fix ?? '', /git restore --staged AGENTS\.md/);
+  assert.equal(run(`git -C ${sandbox.repo} commit -qm x`)?.id, 'lead-only');
+  assert.equal(run(`cd ${join(sandbox.repo, 'src')} && git commit -m x`)?.id, 'lead-only');
+  // Pathspecs commit only what they name.
+  assert.equal(run('git commit -m x src/a.ts'), null);
+  assert.equal(run('git commit -i -m x src/a.ts')?.id, 'lead-only');
+  assert.equal(run('git commit -m x', {}), null, 'the lead');
+  assert.equal(run('git commit -m x', { ...worker, YOKOTEN_LEAD_ONLY_OK: 'AGENTS.md' }), null, 'the grant');
+  // The commit check refuses the same commit for a YOKOTEN_ROLE worker, unless granted.
+  let result = sandbox.run(['check', '--staged'], { extra: worker });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /AGENTS\.md is lead-only/);
+  result = sandbox.run(['check', '--staged'], { extra: { ...worker, YOKOTEN_LEAD_ONLY_OK: 'AGENTS.md' } });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('lead-only files: the hook stops a shell write from the plugin agent yokoten:worker, with no YOKOTEN_ROLE (#402)', () => {
+  const sandbox = makeSandbox();
+  const call = (agentType?: string) => sandbox.run(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, agent_type: agentType, tool_input: { command: 'sed -i s/a/b/ AGENTS.md' } }) });
+  const result = call('yokoten:worker');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /writes AGENTS\.md, which is lead-only/);
+  assert.equal(call().status, 0, 'the lead');
+  assert.equal(call('yokoten:reviewer').status, 0, 'not a worker');
+});
+
 // Bash syntax (#105). Each row of the issue's table first, then the rest of everyday bash.
 test('bash: words in quotes or a heredoc are data, not commands (#105)', () => {
   allowed('git commit -m "docs: explain when to run npm publish"');

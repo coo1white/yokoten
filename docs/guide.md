@@ -342,6 +342,18 @@ worker's edit. Muse Code passes a hook only a short list of variables, and `YOKO
 one of them. So in Muse Code, too, every session counts as the lead. The server lock still
 holds: code owners, and a bot without the rights to change CI.
 
+The guard stops a worker's shell writes to lead-only files as well as its edits (#402).
+It reads redirects (`>`, `>>`, `&>`), `sed -i`, `perl -i`, `tee`, `cp`, `mv`, `install`,
+`ln`, `dd of=`, `truncate`, `rm`, and git's `checkout`, `restore`, `rm`, `mv` and
+`apply`. A `git commit` that would commit a lead-only file is stopped too: the commit
+check knows the role only from `YOKOTEN_ROLE`, and a Claude Code subagent such as
+`yokoten:worker` has none. Reads such as `cat` and `grep` pass. When the brief asks for a
+change to a lead-only file, the lead starts the worker with
+`YOKOTEN_LEAD_ONLY_OK=AGENTS.md,.github/workflows/ci.yml`: paths from the repo root,
+comma-separated, an entry with `*` read as a glob. The guard and the commit check let
+those paths through. A subagent shares the lead's environment, so give such a task to a
+separate session.
+
 ### DeepSeek Harness
 
 DeepSeek Harness (`dsh`) runs Claude Code command hooks through a bridge plugin. The
@@ -1139,6 +1151,7 @@ Environment variables:
 | Variable | What it does |
 |----------|--------------|
 | `YOKOTEN_ROLE=worker` | The session is a worker. It may not change lead-only files |
+| `YOKOTEN_LEAD_ONLY_OK` | The lead-only paths this worker may change, comma-separated, from the repo root. See [Works with](#works-with) |
 | `YOKOTEN_FIX_TASK=1` | The session is a fix task. It may not change test files |
 | `YOKOTEN_RELEASE_APPROVAL=1` | The owner allows a release from this session. Muse Code is not known to pass it to a hook |
 | `YOKOTEN_PRIVATE_MARKS` | Another path for the private-marks file |
@@ -1376,7 +1389,9 @@ Honest limits:
   substitutions), and they block when they can't tell what runs. A command assembled in
   pieces still gets past them. They catch mistakes and drift; they aren't a lock. The
   lock is on the server: branch protection, code owners, and a bot without the rights to
-  release or change CI.
+  release or change CI. A worker's shell write to a lead-only file is stopped only when
+  the guard sees the file in the command: a path from a variable or stdin (`xargs rm`,
+  `find -exec`, `git apply < x.patch`), or a script that writes it, gets past.
 - **Server settings are read on GitHub only.** Another host shows the server steps as
   **can't check**. `doctor` does not check the bot's rights yet.
 - **Claude Code first.** Agents follow Claude Code's format.
