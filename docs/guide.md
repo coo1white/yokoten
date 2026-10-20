@@ -688,7 +688,7 @@ It puts three safe defaults in `.github/` too:
 | `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop event by default, a Codex Stop event with `--agent codex`, a Gemini CLI AfterAgent event with `--agent gemini`, a Grok CLI Stop event with `--agent grok`. See [The stop check](#the-stop-check) |
 | `explain [<id>] [--json]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay. A second run changes nothing |
-| `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
+| `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
 
 Each command prints its own help with `--help` or `-h`: what it does, its options and
 one example. `yokoten help <command>` prints the same, and `yokoten --help` lists the
@@ -1317,6 +1317,11 @@ on every commit. On your own machine it also reads `~/.config/yokoten/private-ma
 your name, your city, your domains, your server names. That file stays outside the
 repo, because a list of what must not be published can't itself be published. A hit
 is reported by file and line; the mark itself is never printed.
+
+Some files must name your account. So the forge login that yokoten added to the marks is
+fine in a CODEOWNERS owner, an `@` mention in `.github/`, an author or owner field of
+`package.json` or a plugin manifest, and a LICENSE copyright line. It is found everywhere
+else. A mark you wrote yourself is found everywhere.
 
 The IP check covers IPv4 only, private ranges such as `10.x` and `192.168.x` included;
 IPv6 is not checked. Localhost and the documentation ranges (`192.0.2.0/24` and its two

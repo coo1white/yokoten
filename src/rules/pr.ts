@@ -195,8 +195,19 @@ export function checkPullRequestTitle(rawTitle: string, config: Partial<Pick<Con
 
 /** Problems with a pull request. An empty list means it meets the standard. */
 export function checkPullRequest(pr: PullRequest, config: Pick<Config, 'tests'> & Partial<Pick<Config, 'areas'>>): Finding[] {
-  const problems = checkPullRequestTitle(pr.title, config);
+  const problems = [...checkPullRequestTitle(pr.title, config), ...checkPullRequestBody(pr, config)];
+  if (!pr.milestone) problems.push(finding('pr-milestone', 'milestone: none set', 'set one'));
+  problems.push(...checkLabels(pr.labels, bodyTier(pr.body ?? '')));
+  return problems;
+}
 
+/**
+ * Problems with a pull request's body against the files it changes: the tier line, the
+ * sections, the linked issue, the change file and the kit line. `checkPullRequest` and
+ * the bot use it (#406). With no files, only the body itself is checked.
+ */
+export function checkPullRequestBody(pr: Pick<PullRequest, 'body' | 'files' | 'deleted'>, config: Pick<Config, 'tests'>): Finding[] {
+  const problems: Finding[] = [];
   const body = pr.body ?? '';
   const tier = bodyTier(body);
   if (!tier) {
@@ -236,9 +247,6 @@ export function checkPullRequest(pr: PullRequest, config: Pick<Config, 'tests'> 
   if (pr.files.some((f) => f.startsWith('kit/')) && !/\bkit\b/i.test(body)) {
     problems.push(finding('pr-kit', 'body: this changes `kit/` and does not say so', 'say in the body that every project gets this change on its next init'));
   }
-
-  if (!pr.milestone) problems.push(finding('pr-milestone', 'milestone: none set', 'set one'));
-  problems.push(...checkLabels(pr.labels, tier));
   return problems;
 }
 
@@ -687,4 +695,51 @@ export function checkCommandTitle(command: string[], config: Partial<Pick<Config
     return [finding(id, `title: can't read the title: ${where}`, 'write --title on its own', { why: 'yokoten checks the title before it sends anything' })];
   }
   return found.kind === 'issue' ? checkIssueTitle(found.title, config, found.labels) : checkPullRequestTitle(found.title, config);
+}
+
+// ---- The body a gh command sets (#406) ----
+//
+// `yokoten bot` checks the body of `gh pr create` and `gh pr edit` by the body rules of
+// `check --pr`, before it sends anything, so a body CI would refuse is never sent.
+
+/** The body a `gh pr create` or `gh pr edit` command is about to set, and where to diff. */
+export interface CommandBody {
+  /** The body text, or the file gh reads it from (`-` is standard input). */
+  body: { text: string } | { file: string };
+  /** The `--base` branch, or null for the default. */
+  base: string | null;
+  /** The `--repo` value, or null when the command names none. */
+  repo: string | null;
+  /** The `--head` branch of `gh pr create`, or the pull request `gh pr edit` names (a number, a URL or a branch); null for the current branch. */
+  head: string | null;
+}
+
+const BODY_OPTIONS = new Set(['--body', '-b']);
+const BODY_FILE_OPTIONS = new Set(['--body-file', '-F']);
+
+/**
+ * The body that `gh pr create` (or `new`) or `gh pr edit` sets with `--body`, `-b`,
+ * `--body-file` or `-F`, in any spelling gh takes. As in gh, the last one wins. Null for
+ * any other command, for one with no body (`--fill`, a label edit), or with a run-together
+ * word the title check refuses (#290).
+ */
+export function readCommandBody(command: string[]): CommandBody | null {
+  const [file, ...rest] = command;
+  if (!file || botProgram(file) !== 'gh') return null;
+  const { words, options, unreadable } = readArgs(rest, ISSUE_FLAGS);
+  const [kind, verb, selector] = words.map((index) => rest[index]);
+  if (kind !== 'pr' || !TITLE_VERBS.has(verb) || unreadable !== null) return null;
+  let body: CommandBody['body'] | null = null;
+  let base: string | null = null;
+  let repo: string | null = null;
+  let head: string | null = null;
+  for (const [name, value] of options) {
+    if (BODY_OPTIONS.has(name)) body = { text: value };
+    else if (BODY_FILE_OPTIONS.has(name)) body = { file: value };
+    else if (name === '--base' || name === '-B') base = value;
+    else if (name === '--repo' || name === '-R') repo = value;
+    else if (name === '--head' || name === '-H') head = value;
+  }
+  if (!body) return null;
+  return { body, base, repo, head: verb === 'edit' ? (selector ?? null) : head };
 }
