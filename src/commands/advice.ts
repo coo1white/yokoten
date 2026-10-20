@@ -1,5 +1,6 @@
 // `yokoten doctor`, `explain` and `adopt`: they read a project and advise; none writes a file.
 
+import { fstatSync, readFileSync } from 'node:fs';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import { ghIn } from '../host/github.ts';
 import { DEFAULTS, loadConfig } from '../rules/config.ts';
@@ -28,6 +29,8 @@ export function runDoctor(): number {
     return 1;
   }
   // An agent that can't filter command output hears it at session start, with the opt-in (#390).
+  // A worker hears that the guard sees it as one, so a missing role shows up (#402). The lead hears nothing.
+  if (root && session && isWorkerSession(agent)) lines.push(`yokoten: ${WORKER_SESSION}.`);
   if (root && session && agent !== 'claude-code' && config.privacy.output !== 'stop') lines.push(`yokoten: ${UNFILTERED}. ${OUTPUT_STOP[0].toUpperCase()}${OUTPUT_STOP.slice(1)}.`);
   if (options.flags.has('--json')) printJson(report);
   // Gemini CLI reads a SessionStart hook's context from JSON only (#211).
@@ -36,6 +39,25 @@ export function runDoctor(): number {
   } else print(lines);
   // A session must start even when doctor found a problem.
   return session || ok ? 0 : 1;
+}
+
+const WORKER_SESSION = 'this session is a worker: lead-only files are guarded';
+
+/**
+ * Whether the session is a worker: YOKOTEN_ROLE=worker, or a hook call whose agent type
+ * names a worker, read by the agent's own tool-call reader. The hook's input is read from
+ * stdin only when it is a pipe, a socket or a file, never a terminal, which would wait for
+ * typing.
+ */
+function isWorkerSession(agent: string): boolean {
+  if (env.YOKOTEN_ROLE === 'worker') return true;
+  try {
+    const stdin = fstatSync(0);
+    if (!stdin.isFIFO() && !stdin.isFile() && !stdin.isSocket()) return false;
+    return READERS[agent](JSON.parse(readFileSync(0, 'utf8'))).worker;
+  } catch {
+    return false;
+  }
 }
 
 export function runExplain(): number {

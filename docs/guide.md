@@ -343,16 +343,18 @@ one of them. So in Muse Code, too, every session counts as the lead. The server 
 holds: code owners, and a bot without the rights to change CI.
 
 The guard stops a worker's shell writes to lead-only files as well as its edits (#402).
-It reads redirects (`>`, `>>`, `&>`), `sed -i`, `perl -i`, `tee`, `cp`, `mv`, `install`,
+It reads redirects (`>`, `>>`, `>|`, `&>`), `sed -i`, `perl -i`, `tee`, `cp`, `mv`, `install`,
 `ln`, `dd of=`, `truncate`, `rm`, and git's `checkout`, `restore`, `rm`, `mv` and
 `apply`. A `git commit` that would commit a lead-only file is stopped too: the commit
 check knows the role only from `YOKOTEN_ROLE`, and a Claude Code subagent such as
-`yokoten:worker` has none. Reads such as `cat` and `grep` pass. When the brief asks for a
+`yokoten:worker` has none. Reads such as `cat` and `grep` pass. As for edits, this holds
+only in a repo that uses yokoten (one with a `yokoten.json`). When the brief asks for a
 change to a lead-only file, the lead starts the worker with
 `YOKOTEN_LEAD_ONLY_OK=AGENTS.md,.github/workflows/ci.yml`: paths from the repo root,
 comma-separated, an entry with `*` read as a glob. The guard and the commit check let
 those paths through. A subagent shares the lead's environment, so give such a task to a
-separate session.
+separate session. At session start, `doctor` tells a worker "this session is a worker:
+lead-only files are guarded". If a worker does not hear it, the guard does not see its role.
 
 ### DeepSeek Harness
 

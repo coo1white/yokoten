@@ -314,14 +314,16 @@ worker 靠 `YOKOTEN_ROLE=worker` 认出来。在 Codex 里，子 agent 的 `agen
 改不了 CI 的 bot。
 
 worker 用 shell 写只有 lead 能改的文件，守卫也会拦，跟拦编辑一样（#402）。它看这些写法：
-重定向（`>`、`>>`、`&>`），`sed -i`、`perl -i`、`tee`、`cp`、`mv`、`install`、`ln`、
+重定向（`>`、`>>`、`>|`、`&>`），`sed -i`、`perl -i`、`tee`、`cp`、`mv`、`install`、`ln`、
 `dd of=`、`truncate`、`rm`，还有 git 的 `checkout`、`restore`、`rm`、`mv` 和 `apply`。
 worker 的 `git commit` 如果会提交这类文件，也会被拦。原因是提交检查只能从 `YOKOTEN_ROLE`
 知道谁是 worker，而 Claude Code 的子 agent（比如 `yokoten:worker`）没有这个变量。`cat`、
-`grep` 这种只读不写的命令照常放行。如果任务本来就要改这类文件，lead 启动 worker 时加上
+`grep` 这种只读不写的命令照常放行。跟拦编辑一样，只在用了 yokoten 的仓库（有 `yokoten.json`）
+里才拦。如果任务本来就要改这类文件，lead 启动 worker 时加上
 `YOKOTEN_LEAD_ONLY_OK=AGENTS.md,.github/workflows/ci.yml`：从仓库根目录写起的路径，用逗号
 隔开，带 `*` 的按通配符算。守卫和提交检查都会放行这些路径。子 agent 跟 lead 用同一套环境
-变量，所以这种任务要交给单独开的会话。
+变量，所以这种任务要交给单独开的会话。会话开始时，`doctor` 会对 worker 说 "this session is a
+worker: lead-only files are guarded"。worker 没看到这句话，就说明守卫没认出它是 worker。
 
 ### DeepSeek Harness
 

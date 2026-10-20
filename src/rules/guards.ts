@@ -15,7 +15,7 @@ import { createHash } from 'node:crypto';
 import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Config, Env } from './config.ts';
-import { DEFAULTS, matcher } from './config.ts';
+import { loadConfig, matcher } from './config.ts';
 import { type Finding, finding } from './message.ts';
 import { checkCommandTitle } from './pr.ts';
 import { checkPost, type GhCommand, ghIndex } from './privacy.ts';
@@ -49,15 +49,19 @@ export function isGranted(path: string, env: Env): boolean {
  * folder the command runs in, by default this process's: a change to core.hooksPath reads
  * that repo's setting and hooks. `titles` turns on the title check for gh issues and pull
  * requests: the hook sets it in a repo with a yokoten.json, never in the user-level hook,
- * since another project's titles follow its own rules.
+ * since another project's titles follow its own rules. `repos` are the repos whose file rules
+ * the hook applies to an edit (see `judge`): a worker's shell write is checked against the
+ * same ones, and against a repo with a yokoten.json it finds above the file.
  */
-export function checkCommand(command: string, options: { env: Env; config?: GuardConfig; cwd?: string; titles?: boolean }): Finding | null {
+export function checkCommand(command: string, options: { env: Env; config?: GuardConfig; cwd?: string; titles?: boolean; repos?: RuledRepo[] }): Finding | null {
   // The reader is not a full parser. Whatever goes wrong inside it, the command is refused,
   // never let through: an error here must not open the guard.
   const outerAnswers = gitAnswers;
   try {
     gitAnswers = outerAnswers ?? new Map();
-    return withBudget(command.length, () => checkEachCommand(command, { ...options, cwd: options.cwd ?? process.cwd() }));
+    // The file rules are looked up once per call, and only for a worker.
+    const rules = options.env.YOKOTEN_ROLE === 'worker' ? fileRules(options.repos ?? []) : undefined;
+    return withBudget(command.length, () => checkEachCommand(command, { ...options, cwd: options.cwd ?? process.cwd(), rules }));
   } catch {
     return finding('unreadable-command', 'yokoten could not read this command', 'split it into simpler commands, one per call');
   } finally {
@@ -66,9 +70,14 @@ export function checkCommand(command: string, options: { env: Env; config?: Guar
 }
 
 // `cwd` is null when the guard cannot tell which repo git works in.
-type GuardConfig = Pick<Config, 'commands'> & Partial<Pick<Config, 'privacy' | 'areas' | 'leadOnly'>>;
+type GuardConfig = Pick<Config, 'commands'> & Partial<Pick<Config, 'privacy' | 'areas'>>;
 
-function checkEachCommand(command: string, { env, config, cwd, titles = false }: { env: Env; config?: GuardConfig; cwd: string | null; titles?: boolean }): Finding | null {
+/** A repo whose file rules apply, by its root, with its yokoten.json "leadOnly". */
+export type RuledRepo = { root: string; leadOnly: string[] };
+
+type EachOptions = { env: Env; config?: GuardConfig; cwd: string | null; titles?: boolean; rules?: FileRules };
+
+function checkEachCommand(command: string, { env, config, cwd, titles = false, rules }: EachOptions): Finding | null {
   const commands = commandWords(command);
   // Where a gh command reads a relative body file: the folder, followed through each cd.
   let postCwd = cwd;
@@ -77,12 +86,12 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false }:
   if (commands.some(movesRepo)) cwd = null;
   for (const words of commands) {
     const reason =
-      checkGit(words, { env, config, cwd }) ??
+      checkGit(words, { env, config, cwd, rules }) ??
       checkHooksEnvironment(words) ??
       checkPublish(words, env) ??
       checkBlocked(words, config?.commands.block ?? {}) ??
       checkPosted(words, { env, config, cwd: postCwd, command, titles }) ??
-      checkLeadOnlyWrites(words, { env, leadOnly: config?.leadOnly ?? DEFAULTS.leadOnly, folder: postCwd });
+      (rules ? checkLeadOnlyWrites(words, { env, rules, folder: postCwd }) : null);
     if (reason) return reason;
     postCwd = folderAfter(words, postCwd, env);
   }
@@ -136,7 +145,7 @@ const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--config-env', '--git-dir', '--w
 
 // Each check looks for its program anywhere in the command, so a prefix such as FOO=1,
 // sudo, env, command, exec, time, nice, nohup, timeout or xargs does not hide it.
-function checkGit(words: string[], { env, config, cwd }: { env: Env; config?: Pick<Config, 'commands'>; cwd: string | null }): Finding | null {
+function checkGit(words: string[], { env, config, cwd, rules }: { env: Env; config?: Pick<Config, 'commands'>; cwd: string | null; rules?: FileRules }): Finding | null {
   const start = words.findIndex(isGit);
   if (start === -1) return null;
   const settings: string[] = [];
@@ -165,7 +174,7 @@ function checkGit(words: string[], { env, config, cwd }: { env: Env; config?: Pi
   // `git -c alias.x='!cmd' x` runs cmd through a shell.
   for (const s of settings) {
     const alias = /^alias\.[^=]*=!(.*)$/is.exec(s);
-    const reason = alias && checkEachCommand(alias[1], { env, config, cwd });
+    const reason = alias && checkEachCommand(alias[1], { env, config, cwd, rules });
     if (reason) return reason;
   }
   if (sub === 'push') {
@@ -771,6 +780,9 @@ function folderAfter(words: string[], folder: string | null, env: Env): string |
 // so for a subagent named worker the guard is what stops it. Like the rest of the guard
 // it reads text: a target from a variable or stdin (`xargs rm`, `find -exec ... {}`,
 // `git apply < x.patch`), or a script's own writes, gets past it.
+//
+// The rules apply where the edit guard's do: in the repos the hook rules (`judge`), and in
+// a repo with a yokoten.json above the file. A worker in any other repo is not stopped.
 
 /** A file a command writes, as written, and the folder it is relative to (null: unknown). */
 type WriteTarget = { path: string; from: string | null };
@@ -778,47 +790,90 @@ type WriteTarget = { path: string; from: string | null };
 // A redirect that writes its file. `>&2` copies a stream; `>&file` writes a file.
 const WRITE_REDIRECT = /^(?:\d+|\{[A-Za-z_]\w*\}|&)?(>>|>\||<>|>&|>)(.*)$/s;
 
-function checkLeadOnlyWrites(words: string[], { env, leadOnly, folder }: { env: Env; leadOnly: string[]; folder: string | null }): Finding | null {
-  if (env.YOKOTEN_ROLE !== 'worker') return null;
-  const isLeadOnly = matcher(leadOnly);
+function checkLeadOnlyWrites(words: string[], { env, rules, folder }: { env: Env; rules: FileRules; folder: string | null }): Finding | null {
   // A folder counts when a lead-only file may be in it: `rm -r .github`.
-  const isStopped = (path: string) => (isLeadOnly(path) || isLeadOnly(`${path}/-`)) && !isGranted(path, env);
-  for (const target of writeTargets(words, folder)) {
-    const path = repoPath(target, env);
-    if (path !== null && isStopped(path)) return finding('lead-only', `this command writes ${path}, which is lead-only (yokoten.json "leadOnly")`, LEAD_ONLY_FIX);
+  const stopped = (target: WriteTarget): string | null => {
+    const ruled = rules.ruled(target, env);
+    if (!ruled) return null;
+    const isLeadOnly = matcher(ruled.leadOnly);
+    return (isLeadOnly(ruled.path) || isLeadOnly(`${ruled.path}/-`)) && !isGranted(ruled.path, env) ? ruled.path : null;
+  };
+  for (const target of writeTargets(words, folder, rules.rootOf)) {
+    const path = stopped(target);
+    if (path !== null) return finding('lead-only', `this command writes ${path}, which is lead-only (yokoten.json "leadOnly")`, LEAD_ONLY_FIX);
   }
-  for (const target of commitTargets(words, folder)) {
-    const path = repoPath(target, env);
-    if (path !== null && isStopped(path)) return finding('lead-only', `this commit changes ${path}, which is lead-only (yokoten.json "leadOnly")`, `unstage it with \`git restore --staged ${path}\`, then ${LEAD_ONLY_FIX}`);
+  for (const target of commitTargets(words, folder, rules.rootOf)) {
+    const path = stopped(target);
+    if (path !== null) return finding('lead-only', `this commit changes ${path}, which is lead-only (yokoten.json "leadOnly")`, `unstage it with \`git restore --staged ${path}\`, then ${LEAD_ONLY_FIX}`);
   }
   return null;
 }
 
 /**
- * Where a target is, from its repo's root: the repo is the nearest folder above it with a
- * `.git`. Outside a repo it is from the command's folder, and a file outside that folder
- * is no business of the guard. With the folder unknown, a relative path is taken as
- * written. Null for stdin and for a path the guard leaves alone.
+ * `ruled`: a target's path from its repo's root, and that repo's lead-only list; null when
+ * no file rules apply. `rootOf`: the git root at or above a folder, from the same walks.
  */
-function repoPath({ path, from }: WriteTarget, env: Env): string | null {
-  if (path === '' || path === '-') return null;
-  const expanded = /^~(?=\/|$)/.test(path) && env.HOME ? join(env.HOME, path.slice(1)) : path;
-  if (from === null && !isAbsolute(expanded)) return expanded.replace(/\\/g, '/').replace(/^(\.\/)+/, '');
-  const full = resolve(from ?? '/', expanded);
-  const root = repoRoot(dirname(full)) ?? from;
-  if (root === null) return null;
-  const inRepo = relative(root, full).split(sep).join('/');
-  return inRepo === '' || inRepo.startsWith('..') || isAbsolute(inRepo) ? null : inRepo;
+type FileRules = {
+  ruled: (target: WriteTarget, env: Env) => { path: string; leadOnly: string[] } | null;
+  rootOf: (folder: string) => string | null;
+};
+
+/**
+ * The file rules for one guard call. A file takes the deepest of `repos` that holds it, as
+ * in `judge`; with the folder unknown, a relative path is taken as written, in the first
+ * (the session's repo). A file outside them all takes the repo above it, found by one walk
+ * up to its `.git`, when that repo has a yokoten.json. Walks and configs are kept for the
+ * call, so a second file in the same folders reads nothing again.
+ */
+function fileRules(repos: RuledRepo[]): FileRules {
+  const rootAbove = new Map<string, string | null>(); // folder → the git root above it
+  const leadOnlyAt = new Map<string, string[] | null>(); // git root → its list, null without yokoten.json
+  const rootOf = (folder: string) => gitRootAbove(folder, rootAbove);
+  const ruled: FileRules['ruled'] = ({ path, from }, env) => {
+    if (path === '' || path === '-') return null;
+    const expanded = /^~(?=\/|$)/.test(path) && env.HOME ? join(env.HOME, path.slice(1)) : path;
+    if (from === null && !isAbsolute(expanded)) {
+      return repos.length ? { path: expanded.replace(/\\/g, '/').replace(/^(\.\/)+/, ''), leadOnly: repos[0].leadOnly } : null;
+    }
+    const full = resolve(from ?? '/', expanded);
+    let best: { path: string; leadOnly: string[] } | null = null;
+    for (const repo of repos) {
+      const inRepo = relative(repo.root, full);
+      if (inRepo === '' || inRepo.startsWith('..') || isAbsolute(inRepo)) continue;
+      if (!best || inRepo.length < best.path.length) best = { path: inRepo, leadOnly: repo.leadOnly };
+    }
+    if (best) return { ...best, path: best.path.split(sep).join('/') };
+    const root = rootOf(dirname(full));
+    if (root === null) return null;
+    if (!leadOnlyAt.has(root)) leadOnlyAt.set(root, existsSync(join(root, 'yokoten.json')) ? loadConfig(root, { onProblem: () => {} }).leadOnly : null);
+    const leadOnly = leadOnlyAt.get(root);
+    return leadOnly ? { path: relative(root, full).split(sep).join('/'), leadOnly } : null;
+  };
+  return { ruled, rootOf };
 }
 
-function repoRoot(folder: string): string | null {
+// The nearest folder at or above `folder` with a `.git`. Each folder walked is kept, so a
+// later walk stops where an earlier one passed.
+function gitRootAbove(folder: string, known: Map<string, string | null>): string | null {
+  const walked: string[] = [];
+  let found: string | null = null;
   for (let dir = folder; ; dir = dirname(dir)) {
-    if (existsSync(join(dir, '.git'))) return dir;
-    if (dirname(dir) === dir) return null;
+    if (known.has(dir)) {
+      found = known.get(dir) ?? null;
+      break;
+    }
+    walked.push(dir);
+    if (existsSync(join(dir, '.git'))) {
+      found = dir;
+      break;
+    }
+    if (dirname(dir) === dir) break;
   }
+  for (const dir of walked) known.set(dir, found);
+  return found;
 }
 
-function writeTargets(words: string[], folder: string | null): WriteTarget[] {
+function writeTargets(words: string[], folder: string | null, rootOf: FileRules['rootOf']): WriteTarget[] {
   const targets: WriteTarget[] = [];
   const marks = unquotedRedirects.get(words);
   for (const [index, word] of words.entries()) {
@@ -836,7 +891,7 @@ function writeTargets(words: string[], folder: string | null): WriteTarget[] {
     from = at + 1;
     const name = programName(program);
     const args = withoutShellRedirects(words, at + 1);
-    if (isGit(program)) targets.push(...gitWrites(args, folder));
+    if (isGit(program)) targets.push(...gitWrites(args, folder, rootOf));
     else if (Object.hasOwn(WRITERS, name)) targets.push(...WRITERS[name](args, folder).map((path) => ({ path, from: folder })));
   }
   return targets;
@@ -978,7 +1033,7 @@ function gitParts(args: string[], folder: string | null): { sub: string | undefi
 }
 
 // git's own writes to files in the work tree. A patch's files are read from the patch.
-function gitWrites(words: string[], folder: string | null): WriteTarget[] {
+function gitWrites(words: string[], folder: string | null, rootOf: FileRules['rootOf']): WriteTarget[] {
   const { sub, args, dir } = gitParts(words, folder);
   const at = (paths: string[]) => paths.map((path) => ({ path, from: dir }));
   if (sub === 'checkout') return at(args.includes('--') ? args.slice(args.indexOf('--') + 1) : plainArgs(args, ['-b', '-B', '--orphan']));
@@ -988,7 +1043,7 @@ function gitWrites(words: string[], folder: string | null): WriteTarget[] {
   if (sub === 'rm') return at(plainArgs(args));
   if (sub === 'mv') return at(copyTargets(args, { valued: [], isMove: true, folder: dir }));
   if (sub !== 'apply' || dir === null) return [];
-  const root = readGit(dir, ['rev-parse', '--show-toplevel']);
+  const root = rootOf(dir);
   if (!root) return [];
   const paths = plainArgs(args, ['-p', '--exclude', '--include', '--directory']).flatMap((patch) => patchFiles(readText(resolve(dir, patch))));
   return paths.map((path) => ({ path: join(root, path), from: root }));
@@ -1014,7 +1069,7 @@ const COMMIT_VALUES = new Set(['--message', '--file', '--reuse-message', '--reed
  * what is staged, and with -a what is changed too. In a short option cluster, m, F, C, c
  * and t take a value; S and u take the rest of the word.
  */
-function commitTargets(words: string[], folder: string | null): WriteTarget[] {
+function commitTargets(words: string[], folder: string | null, rootOf: FileRules['rootOf']): WriteTarget[] {
   const start = words.findIndex(isGit);
   if (start === -1) return [];
   const { sub, args, dir } = gitParts(withoutShellRedirects(words, start + 1), folder);
@@ -1042,10 +1097,11 @@ function commitTargets(words: string[], folder: string | null): WriteTarget[] {
       }
     } else named.push(word);
   }
-  const root = readGit(dir, ['rev-parse', '--show-toplevel']);
-  if (!root) return [];
   const targets = named.map((path) => ({ path, from: dir }));
   if (named.length > 0 && !isInclude) return targets;
+  // git names staged files from the repo's root. The root is found by a walk, not a second git.
+  const root = rootOf(dir);
+  if (root === null) return targets;
   const changed = (args: string[]) =>
     (readGit(dir, ['--no-optional-locks', 'diff', ...args, '--name-only', '--no-renames', '-z']) ?? '')
       .split('\0')
@@ -1953,6 +2009,10 @@ function read(text: string, start: number, closer: string, depth: number, out: s
         endCommand();
         index += next === '&' ? 2 : 1;
       }
+    } else if (character === '|' && !isQuoted && /^(\d+|\{[A-Za-z_]\w*\}|&)?>$/.test(word)) {
+      // `>|` writes its file even with noclobber on: a redirect, not a pipe (#402).
+      word += character;
+      index++;
     } else if (character === '|') {
       endCommand(next !== '|');
       index += next === '|' || next === '&' ? 2 : 1;

@@ -536,15 +536,25 @@ test('lead-only files: a worker is stopped, the lead is not', () => {
   assert.equal(checkEdit('kit/project/.github/workflows/x.yml', { config: DEFAULTS, env: worker }), null);
 });
 
-// A worker's shell writes and commits to lead-only files (#402).
-test('lead-only files: each shell writer form stops a worker, not the lead (#402)', () => {
+// A worker's shell writes and commits to lead-only files (#402). The file rules apply in a
+// repo that uses yokoten, as for an edit, so the sandbox gets a yokoten.json.
+const yokotenSandbox = () => {
   const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', '{}\n');
+  return sandbox;
+};
+
+test('lead-only files: each shell writer form stops a worker, not the lead (#402)', () => {
+  const sandbox = yokotenSandbox();
   const worker = { YOKOTEN_ROLE: 'worker' };
   const run = (command: string, env: Env) => checkCommand(command, { env, cwd: sandbox.repo });
+  sandbox.write('fix.patch', 'diff --git a/AGENTS.md b/AGENTS.md\n--- a/AGENTS.md\n+++ b/AGENTS.md\n@@ -1 +1 @@\n-a\n+b\n');
   for (const command of [
     'echo x > AGENTS.md',
     'echo x >>AGENTS.md',
     'printf x &> CLAUDE.md',
+    'echo x >| yokoten.json',
+    'echo x 2>|CLAUDE.md',
     'echo x 2>&1 >&AGENTS.md',
     'cat > AGENTS.md <<EOF\nnew rules\nEOF',
     'sed -i s/a/b/ AGENTS.md',
@@ -572,6 +582,7 @@ test('lead-only files: each shell writer form stops a worker, not the lead (#402
     'git restore --source main --worktree --staged AGENTS.md',
     'git rm AGENTS.md',
     'git mv AGENTS.md RULES.md',
+    'git apply fix.patch',
     'cd src && cp x ../AGENTS.md',
     'sudo -u x sed -i s/a/b/ AGENTS.md',
     'bash -c "echo x > AGENTS.md"',
@@ -587,7 +598,7 @@ test('lead-only files: each shell writer form stops a worker, not the lead (#402
 });
 
 test('lead-only files: reads, other files and files outside the repo pass a worker (#402)', () => {
-  const sandbox = makeSandbox();
+  const sandbox = yokotenSandbox();
   const worker = { YOKOTEN_ROLE: 'worker' };
   for (const command of [
     'cat AGENTS.md',
@@ -614,7 +625,7 @@ test('lead-only files: reads, other files and files outside the repo pass a work
 });
 
 test('lead-only files: YOKOTEN_LEAD_ONLY_OK lets the paths it names through, and no others (#402)', () => {
-  const sandbox = makeSandbox();
+  const sandbox = yokotenSandbox();
   const granted = { YOKOTEN_ROLE: 'worker', YOKOTEN_LEAD_ONLY_OK: ' AGENTS.md, ./.github/workflows/*.yml' };
   const run = (command: string) => checkCommand(command, { env: granted, cwd: sandbox.repo });
   assert.equal(run('sed -i s/a/b/ AGENTS.md'), null);
@@ -628,7 +639,7 @@ test('lead-only files: YOKOTEN_LEAD_ONLY_OK lets the paths it names through, and
 });
 
 test('lead-only files: a worker\'s git commit of a lead-only file is stopped, in the guard and the commit check (#402)', () => {
-  const sandbox = makeSandbox();
+  const sandbox = yokotenSandbox();
   const worker = { YOKOTEN_ROLE: 'worker' };
   sandbox.write('AGENTS.md', 'rules\n');
   sandbox.write('src/a.ts', 'export {};\n');
@@ -670,6 +681,45 @@ test('lead-only files: the hook stops a shell write from the plugin agent yokote
   assert.match(result.stderr, /writes AGENTS\.md, which is lead-only/);
   assert.equal(call().status, 0, 'the lead');
   assert.equal(call('yokoten:reviewer').status, 0, 'not a worker');
+});
+
+test('lead-only files: shell writes follow the edit guard\'s scope, only in repos that use yokoten (#402)', () => {
+  const sandbox = makeSandbox();
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  // No yokoten.json and no repo from the hook: yokoten's file list is not this repo's.
+  assert.equal(checkCommand('sed -i s/a/b/ AGENTS.md', { env: worker, cwd: sandbox.repo }), null);
+  assert.equal(checkEdit('AGENTS.md', { config: DEFAULTS, env: worker }) === null, false, 'the edit guard has the same list');
+  const hook = (flags: string[], command: string) => sandbox.run(['hook', ...flags], { input: JSON.stringify({ cwd: sandbox.repo, agent_type: 'yokoten:worker', tool_input: { command } }) });
+  const edit = (flags: string[]) => sandbox.run(['hook', ...flags], { input: JSON.stringify({ cwd: sandbox.repo, agent_type: 'yokoten:worker', tool_input: { file_path: join(sandbox.repo, 'AGENTS.md') } }) });
+  // The user-level hook: neither an edit nor a shell write is stopped outside a yokoten repo...
+  assert.equal(edit(['--commands-only']).status, 0);
+  assert.equal(hook(['--commands-only'], 'echo x > AGENTS.md').status, 0);
+  // ...and both are, once the repo has a yokoten.json.
+  sandbox.write('yokoten.json', '{}\n');
+  assert.equal(edit(['--commands-only']).status, 2);
+  assert.equal(hook(['--commands-only'], 'echo x > AGENTS.md').status, 2);
+  // The repo's own list applies.
+  sandbox.write('yokoten.json', '{ "leadOnly": ["RULES.md"] }\n');
+  assert.equal(hook(['--commands-only'], 'echo x > AGENTS.md').status, 0);
+  assert.equal(hook(['--commands-only'], 'echo x > RULES.md').status, 2);
+  assert.equal(checkCommand('echo x > RULES.md', { env: worker, cwd: sandbox.repo })?.id, 'lead-only', 'found by the walk up');
+  // A repo the hook passes in is ruled as given, with no walk: here the file system's root.
+  const root = join(sandbox.repo, '..');
+  assert.equal(checkCommand('echo x > other/AGENTS.md', { env: worker, cwd: root, repos: [{ root, leadOnly: DEFAULTS.leadOnly }] })?.id, 'lead-only');
+});
+
+test('bash: `>|` is a redirect, and a plain `|` is still a pipe (#402)', () => {
+  assert.deepEqual(commandWords('echo x >| yokoten.json'), [['echo', 'x', '>|', 'yokoten.json']]);
+  assert.deepEqual(commandWords('echo x 2>|a'), [['echo', 'x', '2>|a']]);
+  assert.deepEqual(commandWords('a | b'), [['a'], ['b']]);
+  assert.deepEqual(commandWords('a|b'), [['a'], ['b']]);
+  assert.deepEqual(commandWords('a || b'), [['a'], ['b']]);
+  assert.deepEqual(commandWords('a |& b'), [['a'], ['b']]);
+  // A quoted > is text, so the | after it is a pipe.
+  assert.deepEqual(commandWords("echo '>'|cat"), [['echo', '>'], ['cat']]);
+  for (const command of ['echo "npm publish >"|bash', "echo 'npm publish >'|sh", 'echo npm publish|bash', 'echo npm publish | bash']) blocked(command);
+  allowed('echo x >| out.txt');
+  blocked('echo x >| out.txt && git push --tags');
 });
 
 // Bash syntax (#105). Each row of the issue's table first, then the rest of everyday bash.
