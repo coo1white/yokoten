@@ -15,6 +15,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import {
+  delimiter,
   dirname,
   join,
 } from 'node:path';
@@ -32,7 +33,7 @@ import {
 } from '../repo/helpers.ts';
 import { hasHook } from '../../src/agents/hooks-file.ts';
 import { copyRuntime } from '../../src/setup/files.ts';
-import { countOwnMarks, fillMarks, install, machineStateFile, machineUserNames, migrateMarks, paths, uninstall, type UserNameProbe, writeFileAtomic } from '../../src/setup/install.ts';
+import { countOwnMarks, fillMarks, install, launcherText, machineStateFile, machineUserNames, migrateMarks, paths, PROFILE_LINE, setUpLauncher, uninstall, type UserNameProbe, writeFileAtomic } from '../../src/setup/install.ts';
 import { autoLogins, loadMarkKinds, makeRedactor } from '../../src/rules/privacy.ts';
 
 const BAD_USER_SETTINGS: [content: string, reason: (file: string) => string][] = [
@@ -435,21 +436,148 @@ test('install: temp folders that an earlier crash left are removed, and only tho
   assert.deepEqual(readdirSync(parent).sort(), [...kept, 'yokoten'].sort());
 });
 
-// #208: a clone install puts no `yokoten` on the PATH, so install says how to call it.
-test('install: prints the alias when no yokoten on the PATH runs this copy, and edits no shell file (#208)', () => {
+// #208, #433: a clone install puts a launcher in ~/.local/bin, and with no terminal it edits no shell file.
+test('install: writes the launcher, and with no terminal prints the PATH line and edits no profile (#433)', () => {
   const sandbox = makeSandbox();
-  const alias = "alias yokoten='node ~/.local/share/yokoten/bin/yokoten.ts'";
-  let result = sandbox.run(['install']);
+  let result = sandbox.run(['install'], { extra: { SHELL: '/bin/bash' } });
   assert.equal(result.status, 0, result.stderr);
-  assert.ok(result.stdout.trimEnd().endsWith(`then open a new shell: ${alias}`), result.stdout);
-  for (const file of ['.bashrc', '.zshrc', '.profile', '.local/bin']) assert.ok(!existsSync(join(sandbox.home, file)), `${file} was written`);
-  // A yokoten on the PATH that runs the installed copy: the line is left out.
+  assert.match(result.stdout, /^wrote the launcher ~\/\.local\/bin\/yokoten$/m);
+  assert.ok(result.stdout.trimEnd().endsWith(`~/.local/bin is not on your PATH. Add this line to ~/.bashrc, then open a new shell: ${PROFILE_LINE}`), result.stdout);
+  assert.ok(!result.stdout.includes('alias yokoten'), result.stdout);
+  for (const file of ['.bashrc', '.zshrc', '.profile']) assert.ok(!existsSync(join(sandbox.home, file)), `${file} was written`);
+  // The launcher runs the installed copy, with every argument as it was given.
+  const launcher = join(sandbox.home, '.local/bin/yokoten');
+  assert.equal(statSync(launcher).mode & 0o111, 0o111, 'the launcher can be run');
+  const help = spawnSync(launcher, ['install', '--help'], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /install/);
+  // ~/.local/bin on the PATH: no PATH line, and nothing more to do.
+  result = sandbox.run(['install'], { extra: { SHELL: '/bin/bash', PATH: `${join(sandbox.home, '.local/bin')}:${process.env.PATH}` } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^same the launcher ~\/\.local\/bin\/yokoten$/m);
+  assert.ok(!result.stdout.includes('PATH'), result.stdout);
+  // A yokoten on the PATH that runs the installed copy another way: no alias line either.
   const bin = join(sandbox.home, 'bin');
   mkdirSync(bin);
   symlinkSync(join(sandbox.home, '.local/share/yokoten/bin/yokoten.ts'), join(bin, 'yokoten'));
   result = sandbox.run(['install'], { extra: { PATH: `${bin}:${process.env.PATH}` } });
   assert.equal(result.status, 0, result.stderr);
   assert.ok(!result.stdout.includes('alias yokoten'), result.stdout);
+});
+
+/** A home with a fake runtime whose bin/yokoten.ts prints its arguments, and a PATH without ~/.local/bin. */
+function launcherHome() {
+  const home = makeTempDir('yokoten-launcher-');
+  const runtime = join(home, '.local', 'share', 'yokoten');
+  mkdirSync(join(runtime, 'bin'), { recursive: true });
+  writeFileSync(join(runtime, 'bin', 'yokoten.ts'), 'console.log(JSON.stringify(process.argv.slice(2)));\n');
+  const env = { HOME: home, PATH: dirname(process.execPath), SHELL: '/usr/bin/zsh' };
+  const asked: string[] = [];
+  const answer = (reply: string | null) => (question: string) => {
+    asked.push(question);
+    return reply;
+  };
+  return { home, runtime, env, asked, answer, profile: join(home, '.zshrc'), launcher: join(home, '.local', 'bin', 'yokoten') };
+}
+
+test('launcher: runs the installed runtime with each argument kept whole (#433)', () => {
+  const { home, runtime, env, launcher } = launcherHome();
+  setUpLauncher(env, runtime, home);
+  assert.equal(readFileSync(launcher, 'utf8'), launcherText(runtime, 'linux'));
+  assert.match(readFileSync(launcher, 'utf8'), /^#!\/bin\/sh\n# managed by yokoten/);
+  const run = spawnSync(launcher, ['doctor', 'two words', '$HOME'], { env, encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout), ['doctor', 'two words', '$HOME']);
+  // A runtime path with a quote and a dollar sign still works.
+  assert.match(launcherText("/home/o'neil/$x/yokoten", 'linux'), /exec node '\/home\/o'\\''neil\/\$x\/yokoten\/bin\/yokoten\.ts' "\$@"\n$/);
+});
+
+test('launcher: asks once before it adds the PATH line, and only with a terminal (#433)', () => {
+  // Yes: one marked line at the end of the profile, the user's lines kept.
+  let home = launcherHome();
+  writeFileSync(home.profile, 'export EDITOR=vi');
+  let lines = setUpLauncher(home.env, home.runtime, home.home, { ask: home.answer('') });
+  assert.deepEqual(home.asked, ['Add ~/.local/bin to your PATH in ~/.zshrc? [Y/n]']);
+  assert.equal(readFileSync(home.profile, 'utf8'), `export EDITOR=vi\n${PROFILE_LINE}\n`);
+  assert.equal(lines.at(-1), `added ${join(home.home, '.local', 'bin')} to the PATH in ${home.profile}; open a new shell, then run \`yokoten\``);
+  // A second run finds the line: it neither asks nor adds.
+  lines = setUpLauncher(home.env, home.runtime, home.home, { ask: home.answer('y') });
+  assert.equal(home.asked.length, 1);
+  assert.equal(readFileSync(home.profile, 'utf8'), `export EDITOR=vi\n${PROFILE_LINE}\n`);
+  assert.match(lines.at(-1) ?? '', /already adds .* to the PATH; open a new shell/);
+
+  // No: the profile stays as it was, and the line is printed.
+  home = launcherHome();
+  lines = setUpLauncher(home.env, home.runtime, home.home, { ask: home.answer('n') });
+  assert.equal(home.asked.length, 1);
+  assert.ok(!existsSync(home.profile));
+  assert.equal(lines.at(-1), `${join(home.home, '.local', 'bin')} is not on your PATH. Add this line to ${home.profile}, then open a new shell: ${PROFILE_LINE}`);
+  // End of input counts as no.
+  setUpLauncher(home.env, home.runtime, home.home, { ask: home.answer(null) });
+  assert.ok(!existsSync(home.profile));
+
+  // No terminal: nothing is asked and nothing is edited.
+  home = launcherHome();
+  lines = setUpLauncher(home.env, home.runtime, home.home);
+  assert.ok(!existsSync(home.profile));
+  assert.match(lines.at(-1) ?? '', /is not on your PATH\. Add this line to .*\.zshrc/);
+  // A shell yokoten does not know: no profile is guessed.
+  home = launcherHome();
+  lines = setUpLauncher({ ...home.env, SHELL: '/usr/bin/fish' }, home.runtime, home.home, { ask: home.answer('y') });
+  assert.deepEqual(home.asked, []);
+  assert.match(lines.at(-1) ?? '', /Add this line to your shell profile, then open a new shell/);
+  // ~/.local/bin already on the PATH: nothing to ask.
+  home = launcherHome();
+  lines = setUpLauncher({ ...home.env, PATH: `${join(home.home, '.local', 'bin')}${delimiter}${home.env.PATH}` }, home.runtime, home.home, { ask: home.answer('y') });
+  assert.deepEqual([home.asked, lines], [[], [`wrote the launcher ${home.launcher}`]]);
+  assert.ok(!existsSync(home.profile));
+});
+
+test("launcher: a yokoten in ~/.local/bin that isn't ours is kept and named (#433)", () => {
+  const { home, runtime, env, asked, answer, launcher, profile } = launcherHome();
+  mkdirSync(dirname(launcher), { recursive: true });
+  writeFileSync(launcher, '#!/bin/sh\necho mine\n');
+  const lines = setUpLauncher(env, runtime, home, { ask: answer('y') });
+  assert.equal(readFileSync(launcher, 'utf8'), '#!/bin/sh\necho mine\n');
+  assert.equal(lines[0], `kept ${launcher}: it is not yokoten's launcher, so install left it as it is`);
+  assert.match(lines[1], /alias yokoten=/);
+  assert.deepEqual(asked, []);
+  assert.ok(!existsSync(profile));
+});
+
+test('launcher: Windows gets yokoten.cmd and steps for the PATH, never an edit (#433)', () => {
+  const { home, runtime, env, asked, answer } = launcherHome();
+  assert.equal(launcherText('C:\\Users\\o\\.local\\share\\yokoten', 'win32').split('\r\n').slice(0, 2).join('\n'), '@echo off\nrem managed by yokoten: `yokoten uninstall` removes this file.');
+  assert.match(launcherText('C:\\Users\\o\\.local\\share\\yokoten', 'win32'), /\r\nnode "C:\\Users\\o\\.local\\share\\yokoten[\\/]bin[\\/]yokoten\.ts" %\*\r\n$/);
+  const lines = setUpLauncher(env, runtime, home, { ask: answer('y'), platform: 'win32' });
+  assert.equal(readFileSync(join(home, '.local', 'bin', 'yokoten.cmd'), 'utf8'), launcherText(runtime, 'win32'));
+  assert.ok(!existsSync(join(home, '.local', 'bin', 'yokoten')));
+  assert.deepEqual(asked, []);
+  assert.match(lines.at(-1) ?? '', /is not on your PATH\. Add it to the Path for your account/);
+  for (const name of ['.bashrc', '.zshrc']) assert.ok(!existsSync(join(home, name)));
+});
+
+test('uninstall: removes the launcher and the marked PATH line, and keeps the rest of the profile (#433)', () => {
+  const sandbox = makeSandbox();
+  assert.equal(sandbox.run(['install']).status, 0);
+  const launcher = join(sandbox.home, '.local/bin/yokoten');
+  assert.ok(existsSync(launcher));
+  writeFileSync(join(sandbox.home, '.bashrc'), `export EDITOR=vi\n${PROFILE_LINE}\nalias ll='ls -l'\n`);
+  writeFileSync(join(sandbox.home, '.zshrc'), `${PROFILE_LINE}\n`);
+  const result = sandbox.run(['uninstall']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^removed the launcher ~\/\.local\/bin\/yokoten$/m);
+  assert.match(result.stdout, /^removed the PATH line from ~\/\.bashrc$/m);
+  assert.match(result.stdout, /^removed the PATH line from ~\/\.zshrc$/m);
+  assert.ok(!existsSync(launcher));
+  assert.equal(readFileSync(join(sandbox.home, '.bashrc'), 'utf8'), "export EDITOR=vi\nalias ll='ls -l'\n");
+  assert.equal(readFileSync(join(sandbox.home, '.zshrc'), 'utf8'), '');
+  // A launcher of the user's own is kept.
+  writeFileSync(launcher, '#!/bin/sh\necho mine\n');
+  const again = sandbox.run(['uninstall']);
+  assert.match(again.stdout, /^kept \(yours\) the launcher ~\/\.local\/bin\/yokoten$/m);
+  assert.doesNotMatch(again.stdout, /PATH line/);
+  assert.equal(readFileSync(launcher, 'utf8'), '#!/bin/sh\necho mine\n');
 });
 
 test("install: adds the machine's marks and a git mailmap, and never prints a value (#390)", () => {

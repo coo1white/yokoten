@@ -14,14 +14,15 @@
 // that moves to the Claude Code plugin (#300): the plugin brings the same pieces, and both
 // at once run every hook twice and show every skill twice.
 //
-// It ends by saying how to call `yokoten` when no `yokoten` on the PATH runs this copy
-// (#208): every message says `yokoten init`, and a clone install puts nothing on the
-// PATH. It prints the alias and never edits the shell profile: that file is the user's.
+// It puts a small `yokoten` launcher in ~/.local/bin (#433): every message says
+// `yokoten init`, and a clone install has no other command on the PATH (#208). That
+// folder is on the PATH on most setups. When it is not, install asks once before it adds
+// one marked line to the shell profile, and never edits the profile in a run with no terminal.
 
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
-import { delimiter, dirname, join } from 'node:path';
+import { basename, delimiter, dirname, join, relative, resolve, sep } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { skillFile as sharedSkillFile } from '../agents/agent-skills.ts';
 import { addUserHooks, agentFile, hasSessionDoctor, hasUserGuard, removeUserHooks, skillFile as claudeSkillFile, userDir } from '../agents/runtimes/claude-code.ts';
@@ -72,21 +73,132 @@ const realPath = (file: string): string | null => {
   }
 };
 
+/** The launcher's file name: a `.cmd` on Windows, a shell script everywhere else. */
+const launcherName = (platform: NodeJS.Platform): string => (platform === 'win32' ? 'yokoten.cmd' : 'yokoten');
+
+/** Whether `file` is a launcher yokoten wrote that runs one of `clis`. */
+const isOurLauncher = (file: string, clis: string[]): boolean => {
+  try {
+    const text = readFileSync(file, 'utf8');
+    return text.includes(MANAGED) && clis.some((cli) => text.includes(cli));
+  } catch {
+    return false;
+  }
+};
+
 /**
  * True when a `yokoten` on the PATH is this copy or the installed runtime: its real path
- * is one of their bin/yokoten.ts. A shell alias is not on the PATH, so it is not seen.
+ * is one of their bin/yokoten.ts, or it is a launcher install wrote for one of them (#433).
+ * A shell alias is not on the PATH, so it is not seen.
  */
-export function isOnPath(env: Env, runtime: string): boolean {
-  const ours = [join(runtime, 'bin', 'yokoten.ts'), join(HOME_DIR, 'bin', 'yokoten.ts')].map(realPath).filter(Boolean);
-  return (env.PATH ?? '').split(delimiter).filter(Boolean).some((dir) => {
-    const found = realPath(join(dir, 'yokoten'));
-    return found !== null && ours.includes(found);
-  });
+export function isOnPath(env: Env, runtime: string, platform: NodeJS.Platform = process.platform): boolean {
+  const clis = [join(runtime, 'bin', 'yokoten.ts'), join(HOME_DIR, 'bin', 'yokoten.ts')];
+  const ours = clis.map(realPath).filter(Boolean);
+  const names = platform === 'win32' ? ['yokoten.cmd', 'yokoten'] : ['yokoten'];
+  return (env.PATH ?? '').split(platform === 'win32' ? ';' : delimiter).filter(Boolean).some((dir) =>
+    names.some((name) => {
+      const found = realPath(join(dir, name));
+      return found !== null && (ours.includes(found) || isOurLauncher(found, clis));
+    }),
+  );
 }
 
 /** The line that tells the user how to call `yokoten` when the PATH has no copy that runs this one. */
 export const aliasLine = (runtime: string): string =>
   `no \`yokoten\` command on your PATH runs this copy. Add this line to your shell profile (~/.bashrc or ~/.zshrc), then open a new shell: alias yokoten='node ${join(runtime, 'bin', 'yokoten.ts')}'`;
+
+// ---- The launcher on the PATH (#433) ----
+
+/** The mark on the one line install adds to a shell profile; uninstall removes the lines that end with it. */
+export const PROFILE_MARK = '# added by yokoten';
+/** The line install adds to the shell profile, when the user says yes. */
+export const PROFILE_LINE = `export PATH="$HOME/.local/bin:$PATH" ${PROFILE_MARK}`;
+/** The profiles uninstall looks in for the marked line. */
+const PROFILES = ['.bashrc', '.zshrc'];
+
+/** The folder the launcher goes in: ~/.local/bin, on the PATH on most setups. */
+export const launcherDir = (home: string): string => join(home, '.local', 'bin');
+
+/** The launcher file for this platform. */
+export const launcherFile = (home: string, platform: NodeJS.Platform = process.platform): string => join(launcherDir(home), launcherName(platform));
+
+/** What the launcher holds: it runs the installed runtime with every argument, and carries the managed mark. */
+export function launcherText(runtime: string, platform: NodeJS.Platform = process.platform): string {
+  const cli = join(runtime, 'bin', 'yokoten.ts');
+  if (platform === 'win32') return `@echo off\r\nrem ${MANAGED}: \`yokoten uninstall\` removes this file.\r\nnode "${cli}" %*\r\n`;
+  // Single quotes keep every character of the path as it is; a ' inside is closed, escaped and reopened.
+  return `#!/bin/sh\n# ${MANAGED}: \`yokoten uninstall\` removes this file.\nexec node '${cli.replaceAll("'", "'\\''")}' "$@"\n`;
+}
+
+/** The profile of the user's shell, from $SHELL: ~/.bashrc for bash, ~/.zshrc for zsh, else null. */
+export function shellProfile(env: Env, home: string): string | null {
+  const shell = basename(env.SHELL ?? '');
+  if (shell === 'bash') return join(home, '.bashrc');
+  if (shell === 'zsh') return join(home, '.zshrc');
+  return null;
+}
+
+/** Whether `dir` is one of the folders on the PATH. */
+function isDirOnPath(env: Env, dir: string, platform: NodeJS.Platform): boolean {
+  const wanted = realPath(dir) ?? resolve(dir);
+  return (env.PATH ?? '').split(platform === 'win32' ? ';' : delimiter).filter(Boolean).some((entry) => (realPath(entry) ?? resolve(entry)) === wanted);
+}
+
+/** Whether a profile already has the marked line. */
+const hasProfileLine = (profile: string): boolean => existsSync(profile) && readFileSync(profile, 'utf8').split('\n').some((line) => line.trimEnd().endsWith(PROFILE_MARK));
+
+/**
+ * The question install asks, and the answer: the line typed, or null when nobody can answer.
+ * Only a run with a terminal on stdin and stdout passes one.
+ */
+export type Ask = (question: string) => string | null;
+
+/** Whether an answer to a [Y/n] question is yes: Enter alone, y or yes. */
+const isYes = (answer: string | null): boolean => answer !== null && /^\s*(y|yes)?\s*$/i.test(answer);
+
+/**
+ * Write the launcher and make sure the shell finds it. A file at that place without the
+ * managed mark is the user's: it stays and is named. When ~/.local/bin is not on the PATH,
+ * it asks once (only with `ask`) before it adds PROFILE_LINE to the shell's profile; on no,
+ * or with no terminal, it prints the line instead. Windows gets the steps, never an edit.
+ */
+export function setUpLauncher(env: Env, runtime: string, home: string, { ask, platform = process.platform }: { ask?: Ask; platform?: NodeJS.Platform } = {}): string[] {
+  const file = launcherFile(home, platform);
+  const dir = launcherDir(home);
+  const written = writeManaged(file, launcherText(runtime, platform));
+  if (written === 'kept (yours)') {
+    const lines = [`kept ${file}: it is not yokoten's launcher, so install left it as it is`];
+    return isOnPath(env, runtime, platform) ? lines : [...lines, aliasLine(runtime)];
+  }
+  if (platform !== 'win32') chmodSync(file, 0o755);
+  const lines = [`${written} the launcher ${file}`];
+  if (isDirOnPath(env, dir, platform)) return lines;
+  if (platform === 'win32') return [...lines, `${dir} is not on your PATH. Add it to the Path for your account (search Windows for "environment variables for your account"), then open a new terminal`];
+  const profile = shellProfile(env, home);
+  if (!profile) return [...lines, `${dir} is not on your PATH. Add this line to your shell profile, then open a new shell: ${PROFILE_LINE}`];
+  if (hasProfileLine(profile)) return [...lines, `${profile} already adds ${dir} to the PATH; open a new shell, then run \`yokoten\``];
+  const shown = (path: string): string => `~/${relative(home, path).split(sep).join('/')}`;
+  if (ask && isYes(ask(`Add ${shown(dir)} to your PATH in ${shown(profile)}? [Y/n]`))) {
+    const before = existsSync(profile) ? readFileSync(profile, 'utf8') : '';
+    appendFileSync(profile, `${before === '' || before.endsWith('\n') ? '' : '\n'}${PROFILE_LINE}\n`);
+    return [...lines, `added ${dir} to the PATH in ${profile}; open a new shell, then run \`yokoten\``];
+  }
+  return [...lines, `${dir} is not on your PATH. Add this line to ${profile}, then open a new shell: ${PROFILE_LINE}`];
+}
+
+/** Take back the launcher and the marked profile lines: one report line for each thing removed or kept. */
+function removeLauncher(home: string, platform: NodeJS.Platform): string[] {
+  const file = launcherFile(home, platform);
+  const lines = [`${removeManaged(file)} the launcher ${file}`];
+  for (const name of PROFILES) {
+    const profile = join(home, name);
+    if (!hasProfileLine(profile)) continue;
+    const text = readFileSync(profile, 'utf8');
+    replaceFile(profile, text.split('\n').filter((line) => !line.trimEnd().endsWith(PROFILE_MARK)).join('\n'));
+    lines.push(`removed the PATH line from ${profile}`);
+  }
+  return lines;
+}
 
 /**
  * One agent's two user hooks, or one skip line when its file won't parse or has the wrong
@@ -104,7 +216,7 @@ function agentHooks(cliName: string, file: string, add: () => string[]): { ok: b
 }
 
 /** One line per thing done, kept or skipped; `ok` is false when a file was skipped (#248). */
-export function install(env: Env, { cwd, gh, system = systemHome }: { cwd?: string; gh?: Gh; system?: () => string } = {}): { ok: boolean; lines: string[] } {
+export function install(env: Env, { cwd, gh, system = systemHome, ask, platform }: { cwd?: string; gh?: Gh; system?: () => string; ask?: Ask; platform?: NodeJS.Platform } = {}): { ok: boolean; lines: string[] } {
   // Refuse before writing anything: with no home, every path below would be relative (#404).
   if (!homeOf(env, system)) return { ok: false, lines: [`${NO_HOME}. Set HOME to your home folder's full path and run install again`] };
   const target = paths(env, system);
@@ -167,7 +279,8 @@ export function install(env: Env, { cwd, gh, system = systemHome }: { cwd?: stri
     }),
     ...trySafely('the git mailmap', () => [setUpMailmap(env, found)]),
   );
-  if (!isOnPath(env, target.runtime)) report.push(aliasLine(target.runtime));
+  // Last, so the way to call `yokoten` is the line the user reads at the end.
+  report.push(...trySafely('the launcher', () => setUpLauncher(env, target.runtime, homeOf(env, system) as string, { ask, platform })));
   return { ok, lines: report };
 }
 
@@ -218,7 +331,7 @@ export function installedPieces(env: Env): string[] {
  * user-level hooks, and the runtime. The keys and the private marks in ~/.config/yokoten
  * stay: the user wrote them. A second run finds nothing and changes nothing.
  */
-export function uninstall(env: Env, { system = systemHome }: { system?: () => string } = {}): { ok: boolean; lines: string[] } {
+export function uninstall(env: Env, { system = systemHome, platform = process.platform }: { system?: () => string; platform?: NodeJS.Platform } = {}): { ok: boolean; lines: string[] } {
   // As install: with no home, every path below would be relative (#404).
   if (!homeOf(env, system)) return { ok: false, lines: [`${NO_HOME}. Set HOME to your home folder's full path and run uninstall again`] };
   const target = paths(env, system);
@@ -233,6 +346,7 @@ export function uninstall(env: Env, { system = systemHome }: { system?: () => st
   if (hooks) report.push(`${hooks.doctor} the SessionStart doctor`, `${hooks.guard} the user-level command guard`);
   else report.push(`kept ${settings}: it is not JSON, so the two hooks are still in it; take them out by hand`);
 
+  report.push(...trySafely('the launcher', () => removeLauncher(homeOf(env, system) as string, platform)));
   const hadRuntime = existsSync(target.runtime);
   rmSync(target.runtime, { recursive: true, force: true });
   report.push(`${hadRuntime ? 'removed' : 'not there'} ${target.runtime}`);
