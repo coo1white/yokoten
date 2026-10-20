@@ -665,6 +665,36 @@ AI 工具还有一条：hook 跑得比它的超时还久，工具就直接放行
 （可以用 `YOKOTEN_GUARD_DEADLINE_MS` 改，最多 30 秒），或者读的时候出错，都会拒绝这次
 调用，给 2（`unreadable-command`）。
 
+### 本机提示
+
+有些毛病出在电脑上：它一来，所有 AI 会话都停了，AI 自己却看不见。
+完整的 `doctor` 把它们列在 `machine:` 下面，都是提示，不影响退出码。
+查哪些、为什么这样查，见[记录 0012](../../records/0012-machine-checks.md)（英文）。
+
+- **disk-space**：放仓库的那块盘快满了。盘一满，所有会话都会停。剩下不到 20 GB、
+  而且不到整块盘的 10% 时，doctor 才提醒。想换个线，就设 `YOKOTEN_MIN_FREE_GB`；
+  设成 `0` 就不提醒。会话开头也会说这一条。
+- **host-disk**，只在 WSL 2 里查：装着 Linux 磁盘文件的那块 Windows 盘。在 WSL 里用 `df`
+  看到的是磁盘文件的大小，不是那块 Windows 盘还剩多少。完整的 `doctor` 用 `reg.exe`
+  找到那块盘再去读，最多等 3 秒。读到的结果存在 `~/.config/yokoten/machine.json`。
+  会话开头不跑任何程序，只在上次读到的偏少、而且不超过 7 天时再说一遍。想重新读，就跑
+  `yokoten doctor`。没有 `WSL_DISTRO_NAME` 时（比如用 `sudo` 跑），doctor 找不到那块盘，
+  就不提它。虚拟机的磁盘文件只会变大；在虚拟机
+  里删文件，Windows 盘上一点空间也空不出来。所以提示会说：先把工作备份到另一块盘，再清理
+  Windows 盘，或者照[微软的说明](https://learn.microsoft.com/windows/wsl/disk-space)把磁盘
+  文件压小、搬走。yokoten 不推荐 WSL 的稀疏模式（sparse），因为 WSL 自己把它标成了不安全。
+
+- **agent-temp-dir**：Claude Code 的临时文件夹 `claude-<uid>` 归了别的用户。这个文件夹
+  放在 `CLAUDE_CODE_TMPDIR` 里；没设的话放在 `TMPDIR` 里，默认是 `/tmp`。
+  常见的情况是重启以后，某个 root 进程先把它建了出来。这时 Claude Code 会拒绝启动。
+  提示里会给出 `sudo rm -rf '<文件夹>'`（路径带引号），你自己跑；doctor 从来不删东西。
+
+### 出了问题怎么办
+
+**AI 工具打不开。** 它打不开，也就没法告诉你为什么。在项目里开一个终端，跑
+`npx yokoten doctor`，看 `machine:` 下面那几行。最常见的是盘满了，或者临时文件夹归了
+root。每条提示都写着修好它的命令。
+
 ### 收尾检查
 
 工具调用 hook 只看命令。AI 用 `sed` 或脚本改了文件，它看不到。提交检查看得到，但要等到
@@ -981,6 +1011,7 @@ issue，写你自己的检查。
 | `YOKOTEN_FIX_TASK=1` | 这个会话是修复任务，不能改测试文件 |
 | `YOKOTEN_RELEASE_APPROVAL=1` | 主人允许这个会话发版。没见过 Muse Code 把它传给钩子 |
 | `YOKOTEN_PRIVATE_MARKS` | 私有词表换个路径 |
+| `YOKOTEN_MIN_FREE_GB` | 盘上剩的空间少于这么多 GB 时，`doctor` 提醒；`0` 就不提醒。见[本机提示](#本机提示) |
 | `YOKOTEN_BOT_APP_ID`、`YOKOTEN_BOT_KEY`、`YOKOTEN_BOT_INSTALLATION` | bot 的设置，见 [server.md](../../server.md#3-the-bot-a-github-app) |
 | `YOKOTEN_GITHUB_API` | 换一个 GitHub API 地址，比如自建的 GitHub Enterprise Server |
 | `LLAMA_API_KEY` 或 `MODEL_API_KEY`、`LLAMA_API_BASE`、`LLAMA_MODEL` | `adopt` 用的模型，见[先拿一份草稿](#先拿一份草稿) |
