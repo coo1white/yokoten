@@ -9,7 +9,7 @@ import { loadMarks, NO_HOME } from '../rules/privacy.ts';
 import { draftLesson, formatDraft, KIT_LESSONS_DIR, LESSONS_TABLE, listNotes, makeNoteCleaner, NOTE_ID, type NotePlace, originParts, redactNote, removeNote, shipLesson, upstreamDir, writeDraft, writeNote } from '../run/learn.ts';
 import { HOME_DIR, VERSION } from '../setup/files.ts';
 import { isSelf } from '../setup/init.ts';
-import { machineMarks } from '../setup/install.ts';
+import { machineMarks, machineUserNames } from '../setup/install.ts';
 import { readOriginUrl } from '../setup/plan.ts';
 import { args, bullets, env, type Parsed, parse, print, rootOf, usage } from './shared.ts';
 
@@ -97,6 +97,8 @@ function notePlace(root: string | null, { withProject = true }: { withProject?: 
     ...found.filter((mark) => mark.kind === 'git name' || mark.kind === 'git email').map((mark) => mark.value),
     // The login gh keeps on this machine, read from its config file: gh's own lookup would call the network.
     ...readLocalLogins(env),
+    // The Linux and Windows user names, which git and gh may not know (#404).
+    ...machineUserNames(env),
   ];
   const hosts = found.filter((mark) => mark.kind === 'private remote host').map((mark) => mark.value);
   const projects: string[] = [];

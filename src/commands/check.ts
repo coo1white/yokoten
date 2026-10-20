@@ -10,7 +10,7 @@ import { parseChange } from '../run/changelog.ts';
 import { check, checkHistory, historyTimeZones, timeZoneNote } from '../run/check.ts';
 import { isCodeFile, nameNotes } from '../run/names.ts';
 import { loadMarks, makeRedactor } from '../rules/privacy.ts';
-import { machineMarks } from '../setup/install.ts';
+import { machineMarks, machineUserNames } from '../setup/install.ts';
 import { bullets, env, parse, print, printJson, requireRoot, say, showOnPullRequest, usage } from './shared.ts';
 
 export function runCheck(): number {
@@ -151,7 +151,7 @@ export function runRedact(): number | Promise<number> {
     redact = makeRedactor(
       {
         marks: loadMarks(env),
-        owners: found.filter((mark) => mark.kind === 'git name' || mark.kind === 'git email').map((mark) => mark.value),
+        owners: [...found.filter((mark) => mark.kind === 'git name' || mark.kind === 'git email').map((mark) => mark.value), ...machineUserNames(env)],
         hosts: found.filter((mark) => mark.kind === 'private remote host').map((mark) => mark.value),
       },
       env,
