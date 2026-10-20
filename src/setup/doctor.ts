@@ -19,7 +19,7 @@ import { checkCommand, checkEdit } from '../rules/guards.ts';
 import { type Config, DEFAULTS, type Env } from '../rules/config.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
 import { type Finding, finding, formatFinding, type RuleId } from '../rules/message.ts';
-import { loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
+import { homeOf, loadMarks, notUtc, POSITIVE_CONTROL, scanText, systemHome } from '../rules/privacy.ts';
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
 import { countNotes, type LessonPlace, listLessons, runLessons, waitingLine } from '../run/learn.ts';
@@ -36,8 +36,7 @@ import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '.
 import { readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advice/unsaved.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
 import { cliPath, compareCoreRules, compareVersions, isSelf, readCoreRules, summarizeUpdate } from './init.ts';
-export { machineStateFile } from './install.ts';
-import { countOwnMarks, fillMarks, filledLine, trySafely, installedPieces, machineMarks, machineStateFile, mailmapState, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
+import { countOwnMarks, fillMarks, filledLine, trySafely, installedPieces, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
 import { type Mark, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
 
 /**
@@ -403,6 +402,8 @@ export interface MachineProbe {
   readText(path: string): string | null;
   /** Write a file, making its folder. Throws when it can't. */
   writeText(path: string, text: string): void;
+  /** The home folder in the system's user database; the real one when not given. */
+  systemHome?: () => string;
   /** This process's uid, or null where there is none (Windows). */
   uid: number | null;
   now(): Date;
@@ -429,10 +430,7 @@ export const REAL_MACHINE: MachineProbe = {
       return null;
     }
   },
-  writeText(path, text) {
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, text);
-  },
+  writeText: writeFileAtomic,
   uid: process.getuid?.() ?? null,
   now: () => new Date(),
 };
@@ -549,11 +547,10 @@ export interface HostDiskCache {
   version: number;
 }
 
-
 /** The last reading, or null when there is none or the file is broken. */
 export function readHostCache(env: Env, probe: MachineProbe): HostDiskCache | null {
   try {
-    const cache = (JSON.parse(probe.readText(machineStateFile(env)) ?? 'null') as { hostDisk?: HostDiskCache } | null)?.hostDisk;
+    const cache = readMachineState(machineStateFile(env, probe.systemHome), probe).hostDisk as HostDiskCache | undefined;
     return cache && typeof cache.free === 'number' && typeof cache.size === 'number' && typeof cache.readAt === 'string' ? cache : null;
   } catch {
     return null;
@@ -572,18 +569,10 @@ export function readFreshHostCache(env: Env, probe: MachineProbe): HostDiskCache
 
 /** Keep the last reading. A file that can't be written is left: a session then says nothing about the host. */
 export function saveHostCache(env: Env, probe: MachineProbe, cache: HostDiskCache): void {
-  const file = machineStateFile(env);
-  let state: Record<string, unknown> = {};
   try {
-    const old: unknown = JSON.parse(probe.readText(file) ?? 'null');
-    if (old && typeof old === 'object' && !Array.isArray(old)) state = old as Record<string, unknown>;
+    saveMachineState(machineStateFile(env, probe.systemHome), probe, 'hostDisk', cache);
   } catch {
-    // a broken file: start a new one
-  }
-  try {
-    probe.writeText(file, `${JSON.stringify({ ...state, hostDisk: cache }, null, 2)}\n`);
-  } catch {
-    // a read-only home: the next full doctor reads the host again
+    // no home, or a read-only one: the next full doctor reads the host again
   }
 }
 
@@ -989,6 +978,9 @@ export interface DoctorReport {
   lessons?: { id: string; mark: LessonCheck['mark']; reason?: string; isNew?: boolean }[];
 }
 
+/** What doctor says when HOME is empty or not a full path, and the system names no home either (#404). */
+export const NO_HOME_NOTE = "no home folder found; yokoten can't read or keep its settings (set HOME to your home folder's full path)";
+
 /** The report, as text lines and as data, and whether doctor found no problem. */
 export function doctor(
   root: string | null,
@@ -1008,8 +1000,10 @@ export function doctor(
   const server: ServerRead = session ? undefined : gh ? readOrigin(root, gh) : { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' };
   const where = walk(road(root, env, ROAD, server), config.notNow);
   // Full doctor from the command line adds the obvious marks first (#390); a session writes nothing.
-  const filled = isFilling && !session ? trySafely('the marks from this machine', () => [filledLine(fillMarks(env, machineMarks(env, { cwd: root, gh })), paths(env).marks)])[0] : null;
-  const machine = machineChecks(env);
+  // With no home folder, the checks that read or keep settings there are skipped, never crash (#404).
+  const hasHome = homeOf(env, probe.systemHome ?? systemHome) !== null;
+  const filled = isFilling && !session && hasHome ? trySafely('the marks from this machine', () => [filledLine(fillMarks(env, machineMarks(env, { cwd: root, gh })), paths(env).marks)])[0] : null;
+  const machine = hasHome ? machineChecks(env) : [];
   const next = where.next ? stepFinding(where.next, root, env, server) : null;
   const core = coreRulesCheck(root);
   const isCoreBehind = core?.mark === 'MISSING';
@@ -1029,7 +1023,8 @@ export function doctor(
     // A stale plugin keeps old guard rules running; the session hears it (#198).
     const stale = pluginAgeCheck(root, env);
     if (stale) lines.push(`yokoten: ${formatFinding(stale)}`);
-    const double = doubleInstallCheck(env);
+    if (!hasHome) lines.push(`yokoten: ${NO_HOME_NOTE}`);
+    const double = hasHome ? doubleInstallCheck(env) : null;
     if (double) lines.push(`yokoten: ${formatFinding(double)}`);
     // A full disk stops every session unseen (record 0012): statfs and one small file, no child process.
     for (const c of diskSpaceChecks(root, env, probe, true).filter((check) => !check.ok)) lines.push(`yokoten: ${formatFinding(c.finding)}`);
@@ -1108,8 +1103,9 @@ export function doctor(
     lines.push(`  ${c.ok ? 'ok     ' : 'MISSING'} ${c.name}${c.ok ? '' : `: ${stepText(c.finding)}`}`);
     if (!c.ok) findings.push(c.finding);
   }
+  if (!hasHome) lines.push(`  note    ${NO_HOME_NOTE}`);
   if (filled) lines.push(`  note    ${filled}`);
-  for (const c of privacyNotes(env, root, config.privacy.output)) {
+  for (const c of hasHome ? privacyNotes(env, root, config.privacy.output) : []) {
     lines.push(`  note    ${c.name}: ${stepText(c.finding)}`);
     notes.push(c.finding);
   }
@@ -1124,7 +1120,7 @@ export function doctor(
     lines.push(`  note    plugin: ${stepText(stale)}`);
     notes.push(stale);
   }
-  const double = doubleInstallCheck(env);
+  const double = hasHome ? doubleInstallCheck(env) : null;
   if (double) {
     lines.push(`  note    plugin-and-install: ${stepText(double)}`);
     notes.push(double);
