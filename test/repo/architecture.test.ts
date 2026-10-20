@@ -6,12 +6,12 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { homedir, tmpdir, userInfo } from 'node:os';
 import { dirname, join, posix, relative } from 'node:path';
 import { test } from 'node:test';
-import { makeSandbox, makeTempDir } from './helpers.ts';
+import { killedLine, makeSandbox, makeTempDir, runChild } from './helpers.ts';
 import { fileURLToPath } from 'node:url';
 import { COMMANDS } from '../../src/run/cli.ts';
 import { findDeclarations, findNameProblems, splitWords, type Token, tokenize } from '../../src/run/names.ts';
 import { HOME_DIR, homeDirOf } from '../../src/setup/files.ts';
-import { assertLinear } from '../../scripts/linear.ts';
+import { assertLinear, assertLinearEach } from '../../scripts/linear.ts';
 import { TEST_HOME } from './home.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -234,6 +234,37 @@ test('temp folders: tests make them with makeTempDir, not with mkdtempSync alone
   assert.ok(paths.includes(TEMP_HELPER), 'the helper is not found; the scan is broken');
   const files = Object.fromEntries(paths.map((p) => [p, readFileSync(join(ROOT, p), 'utf8')]));
   assert.deepEqual(findBareTempDirs(files), [], `make the folder with makeTempDir from ${TEMP_HELPER}: it is removed when the test ends`);
+});
+
+// #436: a child killed by its timeout showed only `actual: null`, and a file that died later
+// named no test. runChild prints the kill with the running test's name.
+test('child processes: a killed child names the test that ran it (#436)', () => {
+  const written: string[] = [];
+  const write = process.stderr.write;
+  process.stderr.write = ((text: string | Uint8Array) => written.push(String(text)) > 0) as typeof process.stderr.write;
+  let result;
+  try {
+    result = runChild('node', ['-e', 'setTimeout(() => {}, 60_000)'], { timeout: 100 });
+  } finally {
+    process.stderr.write = write;
+  }
+  assert.equal(result.signal, 'SIGTERM');
+  assert.deepEqual(written, ['test "child processes: a killed child names the test that ran it (#436)": its child `node` was killed after 100 ms\n']);
+  assert.equal(killedLine('a', 'git', 5, { signal: 'SIGKILL' }), 'test "a": its child `git` was killed by SIGKILL\n');
+  assert.equal(killedLine('a', 'git', 5, { signal: null }), null, 'a child that ended by itself');
+  const tooMuch = Object.assign(new Error('spawnSync git ENOBUFS'), { code: 'ENOBUFS' });
+  assert.equal(killedLine('a', 'git', 5, { signal: 'SIGTERM', error: tooMuch }), 'test "a": its child `git` was killed for printing more than maxBuffer\n');
+  assert.equal(runChild('node', ['-e', "process.stdout.write('x'.repeat(2 ** 21))"]).stdout.length, 2 ** 21, 'more than Node\'s 1 MB default');
+  assert.equal(runChild('node', ['-e', '']).status, 0);
+});
+
+// #436: one gh call in 100 left a telemetry sender running, which wrote its device id into
+// the sandbox's home after the test removed it, so removing the sandbox failed. Git's
+// background maintenance can race a test the same way (#442).
+test('child processes: no gh telemetry or git maintenance runs on after a test (#436)', () => {
+  assert.equal((makeSandbox().env as Record<string, string>).GH_TELEMETRY, '0');
+  assert.equal(process.env.GH_TELEMETRY, '0');
+  assert.equal(execFileSync('git', ['config', 'maintenance.auto'], { encoding: 'utf8' }).trim(), 'false', 'no background git maintenance either');
 });
 
 // ---- The npm package (#31) ----
@@ -763,6 +794,24 @@ test('assertLinear: a quadratic read fails; a slow spell in one round does not (
     busyWait(7 * (input.length / 1000));
   };
   assertLinear('linear with a slow spell', (n) => 'x'.repeat(n), noisy, 1000);
+});
+
+test('assertLinearEach: one quadratic shape among linear ones fails; a slow spell does not (#442)', () => {
+  const linear = (input: string) => busyWait(0.6 * (input.length / 1000));
+  const quadratic = (input: string) => busyWait(0.6 * (input.length / 1000) ** 2);
+  const shapes = (read: (input: string) => void) => [
+    { name: 'linear a', make: (n: number) => 'a'.repeat(n), read: linear },
+    { name: 'the odd one', make: (n: number) => 'b'.repeat(n), read },
+    { name: 'linear c', make: (n: number) => 'c'.repeat(n), read: linear },
+  ];
+  assert.throws(() => assertLinearEach(shapes(quadratic), 1000), (error: Error) => /^the odd one: .* \d+x; linear is about 8x$/.test(error.message) && !error.message.includes('linear a'));
+  // The odd shape's first big read is 200 ms slower, as on a busy runner: it is measured again, and passes.
+  let bigReads = 0;
+  const noisy = (input: string) => {
+    if (input.length > 1000 && ++bigReads <= 1) busyWait(200);
+    linear(input);
+  };
+  assertLinearEach(shapes(noisy), 1000);
 });
 
 // No test reads or writes the real home folder (#356). test/repo/home.ts points HOME at an

@@ -3,9 +3,12 @@
 // state is the temp folders below, which it removes when each test ends (#400).
 
 import './home.ts';
+import { COMPILE_CACHE } from './home.ts';
 import assert from 'node:assert/strict';
 import {
   execFileSync,
+  type SpawnSyncOptionsWithStringEncoding,
+  type SpawnSyncReturns,
   spawnSync,
 } from 'node:child_process';
 import {
@@ -54,10 +57,17 @@ const testFolders: string[][] = [];
 
 const removeFolder = (path: string) => rmSync(path, { recursive: true, force: true, maxRetries: 3 });
 
-beforeEach(() => {
+// The running tests' names, innermost last, for a child that is killed (#436). Right only while
+// tests in one file run one at a time, as all do today: with `concurrency` or `describe` they
+// would overlap, and the last name might be another test's.
+const testNames: string[] = [];
+
+beforeEach((t) => {
   testFolders.push([]);
+  testNames.push('fullName' in t ? t.fullName : t.name);
 });
 afterEach(() => {
+  testNames.pop();
   for (const path of testFolders.pop() ?? []) removeFolder(path);
 });
 const removeParent = () => {
@@ -75,6 +85,37 @@ export function makeTempDir(prefix = 'yokoten-'): string {
   return path;
 }
 
+// ---- Child processes (#436): a loaded machine runs them slowly, never wrongly. ----
+// A test judges what a child did, not how fast: no wall-clock limit. The timeout only stops a
+// child that hangs, so it is generous, and the kill is printed with the running test's name:
+// a file that dies later still says which test it was in.
+
+/** How long a test's child may run before it is killed: well under the CI job's 10 minutes, so two hangs still print. */
+export const CHILD_TIMEOUT_MS = 120_000;
+
+/** How much output a test's child may print before it is killed. Node's 1 MB default cut a report short (#436). */
+export const CHILD_MAX_BUFFER = 256 * 1024 * 1024;
+
+/** The line printed when a test's child is killed, or null when it ended by itself. */
+export function killedLine(testName: string | undefined, command: string, timeoutMs: number, result: { signal: NodeJS.Signals | null; error?: Error }): string | null {
+  const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
+  if (!result.signal && code !== 'ETIMEDOUT' && code !== 'ENOBUFS') return null;
+  const why = code === 'ETIMEDOUT' ? `after ${timeoutMs} ms` : code === 'ENOBUFS' ? 'for printing more than maxBuffer' : `by ${result.signal}`;
+  return `test ${JSON.stringify(testName ?? '(outside a test)')}: its child \`${command}\` was killed ${why}\n`;
+}
+
+/**
+ * spawnSync for a test, with text output, CHILD_TIMEOUT_MS and CHILD_MAX_BUFFER unless given.
+ * A killed child is printed on stderr with the test that ran it.
+ */
+export function runChild(command: string, args: string[], options: Omit<SpawnSyncOptionsWithStringEncoding, 'encoding'> = {}): SpawnSyncReturns<string> {
+  const timeout = options.timeout ?? CHILD_TIMEOUT_MS;
+  const result = spawnSync(command, args, { maxBuffer: CHILD_MAX_BUFFER, ...options, timeout, encoding: 'utf8' });
+  const line = killedLine(testNames.at(-1), command, timeout, result);
+  if (line) process.stderr.write(line);
+  return result;
+}
+
 export function makeSandbox() {
   const base = makeTempDir();
   const home = join(base, 'home');
@@ -87,13 +128,16 @@ export function makeSandbox() {
   // The sandbox lives in the temp folder; YOKOTEN_TEMP_DIRS turns off that note (#365) so the
   // tests see what they set up. The compile cache stays in Node's own folder, not in the
   // sandbox's home, where bin/yokoten.mjs puts it (#408): the tests list what lands there.
-  const env = { PATH: process.env.PATH, HOME: home, NODE_COMPILE_CACHE: join(tmpdir(), 'node-compile-cache'), TZ: 'UTC', YOKOTEN_TEMP_DIRS: '', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' };
-  const git = (...args: string[]) => spawnSync('git', args, { cwd: repo, env, encoding: 'utf8' });
+  // No automatic maintenance (#442): git runs it after a commit, in the background on newer
+  // versions, and a worktree prune there can delete a `git worktree add` still being made.
+  // No gh telemetry (#436): see test/repo/home.ts.
+  const env = { PATH: process.env.PATH, HOME: home, NODE_COMPILE_CACHE: COMPILE_CACHE, TZ: 'UTC', YOKOTEN_TEMP_DIRS: '', GH_TELEMETRY: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'maintenance.auto', GIT_CONFIG_VALUE_0: 'false', GIT_CONFIG_KEY_1: 'gc.auto', GIT_CONFIG_VALUE_1: '0', NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' };
+  const git = (...args: string[]) => runChild('git', args, { cwd: repo, env });
   git('init', '-q', '-b', 'main');
   git('config', 'user.name', 'Test');
   git('config', 'user.email', `1+test${at}users.noreply.github.com`);
   const run = (args: string[], { input, cwd = repo, extra = {}, timeout }: { input?: string; cwd?: string; extra?: Record<string, string>; timeout?: number } = {}) =>
-    spawnSync('node', [CLI, ...args], { cwd, env: { ...env, ...extra }, input, encoding: 'utf8', timeout });
+    runChild('node', [CLI, ...args], { cwd, env: { ...env, ...extra }, input, timeout });
   const write = (path: string, text: string) => {
     mkdirSync(dirname(join(repo, path)), { recursive: true });
     writeFileSync(join(repo, path), text);

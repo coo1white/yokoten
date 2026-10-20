@@ -596,6 +596,9 @@ function isSectionNumber(line: string, index: number, hit: string): boolean {
   return rangeEnd !== null && isSectionRange(hit, rangeEnd[1]);
 }
 
+/** The email finding's fix. A project's own public address, such as support@ at its domain, is still found: the project lets it through (#380). */
+export const EMAIL_FIX = 'use your GitHub noreply address, or a placeholder at example.com. If it is your project\'s own public address, such as support@ at its domain, add it to "privacy.allow" in yokoten.json';
+
 /** Whether an address found in text may point at a person: not a noreply, team, example or retina name. */
 export const isPersonalEmail = (hit: string, allow: string[] = []): boolean => !OK_EMAIL.some((re) => re.test(hit)) && !isForgeRemote(hit) && !RETINA.test(hit) && !allow.includes(hit);
 
@@ -621,7 +624,7 @@ export function scanText(
     for (const [at, kind] of secrets) if (at === index) problems.push(finding('secret', `a secret (${kind})`, 'remove it, rotate it, and keep it outside the repo', where));
     for (const [hit] of line.matchAll(EMAIL)) {
       if (isPersonalEmail(hit, allow)) {
-        problems.push(finding('email', 'an email address', 'use your GitHub noreply address, or a placeholder at example.com', where));
+        problems.push(finding('email', 'an email address', EMAIL_FIX, where));
       }
     }
     for (const { 0: hit, index } of line.matchAll(IPV4)) {
@@ -1032,10 +1035,11 @@ function apiWrites(path: string, method: string | null, hasFields: boolean, quer
 // The commit check's reasons end on what git does; a post is public as soon as it is sent.
 const postWhy = (why: string) => why.replace(/, and git keeps it after the file is gone$/, '').replace('read the repo', 'read it').concat(', and a post is public the moment it is sent');
 
-// The commit check's fix, and for an address the way to let a public one through.
+// The commit check's fix, and for an IP address the way to let a public one through.
+// The email fix names privacy.allow already (EMAIL_FIX).
 const ALLOW_FIX = 'If it is public on purpose, add it to "privacy.allow" in yokoten.json';
 const postFix = (f: Finding) =>
-  f.id === 'email' || f.id === 'ip' ? `${f.fix}. ${ALLOW_FIX}` : f.id === 'secret' ? 'take it out of the text, and rotate it if it was ever sent' : f.fix;
+  f.id === 'ip' ? `${f.fix}. ${ALLOW_FIX}` : f.id === 'secret' ? 'take it out of the text, and rotate it if it was ever sent' : f.fix;
 
 /** A file's path as a finding may show it: home as `~`, and only its name, or no name, when the path holds a mark. */
 function shownPath(path: string, env: Env, marks: string[]): string {

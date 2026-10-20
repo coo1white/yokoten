@@ -10,7 +10,7 @@ import * as gemini from '../agents/runtimes/gemini.ts';
 import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import { loadConfig } from '../rules/config.ts';
-import { printsAccount, privateOutput, releaseFix, wrapForRedact } from '../rules/guards.ts';
+import { hardenRead, printsAccount, privateOutput, releaseFix, wrapForRedact } from '../rules/guards.ts';
 import { type Finding, formatFinding } from '../rules/message.ts';
 import { checkChanged } from '../run/check.ts';
 import { type Action, type Guard, guardDeadline, judgeWithDeadline, loadHookConfig, type Repo } from '../run/hook.ts';
@@ -192,7 +192,7 @@ export function runHook(guard?: Guard): number | Promise<number> {
     // A command that may print the owner's details runs through `yokoten redact` (#390).
     const printed = !found && action.command !== undefined ? printsAccount(action.command) : null;
     if (printed && action.command !== undefined) {
-      const wrapped = wrapForRedact(action.command, redactCommand(process.execPath, process.argv[1] ?? 'yokoten', env.HOME));
+      const wrapped = wrapForRedact(hardenRead(action.command), redactCommand(process.execPath, process.argv[1] ?? 'yokoten', env.HOME));
       if (Object.hasOwn(REWRITES, agent)) {
         if (json) printJson({ blocked: false, toolCall: true, rewritten: wrapped });
         // Written as it is: hiding the home folder would change the command.

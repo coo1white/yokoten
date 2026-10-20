@@ -128,17 +128,17 @@ test('check and the stop hook read a symlink as its link text, never its target 
   symlinkSync('../outside.txt', join(sandbox.repo, 'out'));
   symlinkSync('/dev/zero', join(sandbox.repo, 'zero'));
   sandbox.git('add', '.');
-  const stop = () => sandbox.run(['hook', '--stop'], { input: JSON.stringify({ cwd: sandbox.repo, stop_hook_active: false }), timeout: 10000 });
+  const stop = () => sandbox.run(['hook', '--stop'], { input: JSON.stringify({ cwd: sandbox.repo, stop_hook_active: false }) });
   let result = stop();
   assert.deepEqual([result.status, result.stderr], [0, ''], 'staged, before the commit');
   sandbox.git('commit', '-qm', 'links');
-  result = sandbox.run(['check'], { timeout: 10000 });
+  result = sandbox.run(['check']);
   assert.equal(result.status, 0, result.stderr);
   // A link whose text is itself an email is still caught.
   symlinkSync(`me${at}gmail.com`, join(sandbox.repo, 'mail'));
   sandbox.git('add', 'mail');
   assert.match(stop().stderr, /mail:1: an email/);
-  assert.match(sandbox.run(['check'], { timeout: 10000 }).stderr, /mail:1: an email/);
+  assert.match(sandbox.run(['check']).stderr, /mail:1: an email/);
 });
 
 test('check --staged: binary is decided from the bytes, not .gitattributes (#244)', () => {
@@ -765,6 +765,25 @@ test('check --staged: reads the staged change file, not the work tree; plain che
   assert.equal(staged.status, 1);
   assert.match(staged.stderr, /changes\/9-new\.md:1: line 1 is not a section/);
   assert.ok(!staged.stderr.includes('8-old'), 'the unstaged file is not read');
+});
+
+test('check: a stale exempt glob is a note for the tree and the doctor, never at a commit (#381)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', JSON.stringify({ layout: { maxEntries: 7, exempt: ['crates/*/tests/data'] } }));
+  sandbox.git('add', '.');
+  const note = /note: yokoten\.json: layout\.exempt "crates\/\*\/tests\/data" matches no folder/;
+  const tree = sandbox.run(['check']);
+  assert.match(tree.stdout, note);
+  assert.equal(tree.status, 0, 'a note never fails the check');
+  const staged = sandbox.run(['check', '--staged']);
+  assert.doesNotMatch(staged.stdout + staged.stderr, /matches no folder/);
+  assert.match(sandbox.run(['doctor']).stdout, /note +yokoten\.json: layout\.exempt "crates\/\*\/tests\/data" matches no folder/);
+  // Once a crate has the folder, the note goes.
+  for (let index = 0; index < 9; index++) sandbox.write(`crates/app-core/tests/data/f${index}.xls`, 'x\n');
+  sandbox.git('add', '.');
+  const covered = sandbox.run(['check']);
+  assert.doesNotMatch(covered.stdout, /matches no folder/);
+  assert.equal(covered.status, 0);
 });
 
 // One marks file for the machine, two repos (#424): the private project allows its own name

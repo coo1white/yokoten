@@ -67,6 +67,21 @@ test('emails: personal ones are caught, noreply and examples are fine', () => {
   assert.deepEqual(scanText(`help${at}company.com`, { file: 'a', allow: [`help${at}company.com`] }), []);
 });
 
+test('emails: the fix names privacy.allow for a project\'s own public address, and the address is still found (#380)', () => {
+  const address = `support${at}myproject.dev`;
+  const found = scanText(`write to ${address}`, { file: 'SECURITY.md' });
+  assert.equal(found.length, 1, 'nothing is allowed on its own');
+  assert.equal(found[0].id, 'email');
+  const text = formatFinding(found[0]);
+  assert.match(text, /noreply address, or a placeholder at example\.com\. If it is your project's own public address, such as support@ at its domain, add it to "privacy\.allow" in yokoten\.json\.\n/);
+  assert.match(text, /\n {2}docs: https:\/\/github\.com\/yokoten-labs\/yokoten\/blob\/main\/docs\/guide\.md#privacy$/);
+  assert.ok(!text.includes(address), 'the address itself is never printed');
+  // A post names privacy.allow once, not twice.
+  const home = makeTempDir('yokoten-380-');
+  const posted = formatFinding(checkCommand(`gh issue create --title "check: a" --body "${address}"`, { env: { HOME: home }, config: DEFAULTS, cwd: home })!);
+  assert.equal(posted.split('privacy.allow').length, 2, posted);
+});
+
 test('emails: role addresses, forge SSH remotes and .local point at no person (#11)', () => {
   for (const ok of [
     `contact support${at}github.com`,

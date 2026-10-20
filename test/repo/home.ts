@@ -29,7 +29,26 @@ export const HOME_VARIABLES = [
 export const TEST_HOME = mkdtempSync(join(tmpdir(), 'yokoten-home-'));
 
 for (const name of HOME_VARIABLES) delete process.env[name];
+// Nothing a child leaves running may write into a test's folder after the test removed it
+// (#436). gh sends telemetry from a process it leaves behind, which writes into the home
+// folder. Git runs automatic maintenance after a commit, in the background on newer
+// versions, and its worktree prune can race a `git worktree add` (#442). makeSandbox sets
+// the same for its own environment.
+process.env.GH_TELEMETRY = '0';
+process.env.GIT_CONFIG_COUNT = '2';
+process.env.GIT_CONFIG_KEY_0 = 'maintenance.auto';
+process.env.GIT_CONFIG_VALUE_0 = 'false';
+process.env.GIT_CONFIG_KEY_1 = 'gc.auto';
+process.env.GIT_CONFIG_VALUE_1 = '0';
 process.env.HOME = TEST_HOME;
 process.env.USERPROFILE = TEST_HOME;
 process.env.XDG_CONFIG_HOME = join(TEST_HOME, '.config');
 process.on('exit', () => rmSync(TEST_HOME, { recursive: true, force: true }));
+
+/**
+ * The compile cache every child node shares (#442): the one bin/yokoten.mjs turns on, in the
+ * system temp folder, so a CLI child loads its modules type-stripped and compiled after the
+ * first run on this machine, in any test file, and not again in each file's empty home.
+ */
+export const COMPILE_CACHE = join(tmpdir(), 'node-compile-cache');
+process.env.NODE_COMPILE_CACHE = COMPILE_CACHE;
