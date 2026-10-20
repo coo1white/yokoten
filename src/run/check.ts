@@ -11,7 +11,7 @@ import { checkEdit } from '../rules/guards.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
 import { type Finding, finding } from '../rules/message.ts';
 import { isChangeFile, longSentenceNote, longSentences } from '../rules/pr.ts';
-import { loadMarks, notUtc, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
+import { autoLogins, loadMarkKinds, notUtc, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
 import { parseChange, readChanges } from './changelog.ts';
 import { isShallowNote, translationNotes } from './translations.ts';
 
@@ -260,11 +260,13 @@ function readEntry(root: string, path: string): Buffer | undefined {
  */
 export function check(root: string, { config, env, staged = false, notes = [] }: { config: Config; env: Env; staged?: boolean; notes?: Finding[] }): Finding[] {
   const problems: Finding[] = [];
-  const marks = loadMarks(env);
+  const kinds = loadMarkKinds(env);
+  const marks = kinds.map((mark) => mark.value);
+  const logins = autoLogins(kinds);
   const skip = matcher(config.privacy.skip);
   const privacy = (path: string, buf: Buffer) => {
     if (skip(path) || looksBinary(buf)) return;
-    problems.push(...scanText(buf.toString('utf8'), { file: path, marks, allow: config.privacy.allow }));
+    problems.push(...scanText(buf.toString('utf8'), { file: path, marks, logins, allow: config.privacy.allow }));
   };
   if (staged) {
     const files = stagedFiles(root);
@@ -337,14 +339,16 @@ export const changedFiles = (root: string): string[] =>
  */
 export function checkChanged(root: string, { config, env }: { config: Config; env: Env }): Finding[] {
   const problems: Finding[] = [];
-  const marks = loadMarks(env);
+  const kinds = loadMarkKinds(env);
+  const marks = kinds.map((mark) => mark.value);
+  const logins = autoLogins(kinds);
   const skip = matcher(config.privacy.skip);
   for (const path of changedFiles(root)) {
     const reason = checkEdit(path, { config, env });
     if (reason) problems.push(reason);
     if (skip(path)) continue;
     const buf = readEntry(root, path); // none if deleted, or a folder (a submodule)
-    if (buf && !looksBinary(buf)) problems.push(...scanText(buf.toString('utf8'), { file: path, marks, allow: config.privacy.allow }));
+    if (buf && !looksBinary(buf)) problems.push(...scanText(buf.toString('utf8'), { file: path, marks, logins, allow: config.privacy.allow }));
   }
   return problems;
 }
@@ -395,7 +399,9 @@ export function checkHistory(root: string, { config, env }: { config: Config; en
   const add = (found: Finding[]) => {
     for (const f of found) problems.set(JSON.stringify(f), f);
   };
-  const marks = loadMarks(env);
+  const kinds = loadMarkKinds(env);
+  const marks = kinds.map((mark) => mark.value);
+  const logins = autoLogins(kinds);
   const skip = matcher(config.privacy.skip);
   const opts = { marks, allow: config.privacy.allow };
 
@@ -421,7 +427,8 @@ export function checkHistory(root: string, { config, env }: { config: Config; en
   const found = new Map<string, Finding[]>();
   for (const [sha, { bytes, whole }] of readBlobs(root, wanted, BATCH_CAP)) {
     if (!whole || looksBinary(bytes)) continue;
-    const hits = scanText(bytes.toString('utf8'), { file: '', ...opts });
+    // The blob's path places an added forge login (#410); the finding is named below.
+    const hits = scanText(bytes.toString('utf8'), { file: blobs.get(sha) ?? '', ...opts, logins });
     if (hits.length) found.set(sha, hits);
   }
   // Name each blob by the commit that added it (#208), read only when there is a hit.

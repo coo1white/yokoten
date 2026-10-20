@@ -18,12 +18,14 @@ import {
   checkIssueTitle,
   checkOwnedTier,
   checkPullRequest,
+  checkPullRequestBody,
   checkPullRequestTitle,
   isChangeFile,
   largeDiff,
   longSentences,
   ownersOf,
   parseCodeOwners,
+  readCommandBody,
   type PullRequest,
   splitForDependabot,
   visibleLength,
@@ -373,4 +375,28 @@ test('guard: titles are checked only by a project hook in a repo with a yokoten.
   assert.equal(judge({ ...action, cwd: project }, { root: project, config: DEFAULTS, env: {} })?.id, checkIssueTitle('Login fails on Safari', DEFAULTS)[0].id);
   assert.equal(judge({ ...action, cwd: project }, { root: project, config: DEFAULTS, env: {}, commandsOnly: true }), null, 'the user-level hook');
   assert.equal(checkCommand(bad, { env: {} }), null, 'off unless asked for');
+});
+
+// #406: the bot checks a pull request's body with the body part of the CI rules.
+test('pull request body: the body rules of check --pr, without the title, milestone or labels (#406)', () => {
+  const body = { body: goodPr().body, files: goodPr().files };
+  assert.deepEqual(checkPullRequestBody(body, DEFAULTS), []);
+  assert.deepEqual(checkPullRequestBody({ ...body, body: 'x' }, DEFAULTS).map((p) => p.id), ['pr-tier', 'pr-section', 'pr-section', 'pr-section', 'pr-issue']);
+  assert.deepEqual(checkPullRequestBody({ ...body, files: ['kit/a.md'] }, DEFAULTS).map((p) => p.id), ['pr-kit']);
+  // checkPullRequest still gives every finding, in the same order as before.
+  const all = checkPullRequest({ ...goodPr(), title: 'x', body: 'x', files: ['kit/a.ts'], labels: [], milestone: null }, DEFAULTS).map((p) => p.id);
+  assert.deepEqual(all, ['pr-title', 'pr-tier', 'pr-section', 'pr-section', 'pr-section', 'pr-issue', 'pr-changelog', 'pr-kit', 'pr-milestone', 'pr-labels', 'pr-labels']);
+});
+
+test('pull request body: read from gh pr create and edit, in every spelling gh takes (#406)', () => {
+  const none = { base: null, repo: null, head: null };
+  assert.deepEqual(readCommandBody(['gh', 'pr', 'create', '--body', 'tier: A']), { ...none, body: { text: 'tier: A' } });
+  assert.deepEqual(readCommandBody(['gh', 'pr', 'new', '-b', 'a', '--body-file', 'f.md']), { ...none, body: { file: 'f.md' } }, 'the last one wins');
+  assert.deepEqual(readCommandBody(['gh', 'pr', 'create', '-F-', '-B', 'dev', '-H', 'topic']), { ...none, body: { file: '-' }, base: 'dev', head: 'topic' });
+  assert.deepEqual(readCommandBody(['gh', '-R', 'o/r', 'pr', 'edit', '12', '--body=x', '--base=dev']), { body: { text: 'x' }, base: 'dev', repo: 'o/r', head: '12' });
+  assert.deepEqual(readCommandBody(['gh', 'pr', 'edit', '-dzbx']), null, 'a run-together word the title check refuses');
+  // No body, or not a pull request create or edit: nothing to check.
+  for (const command of [['gh', 'pr', 'edit', '5', '--add-label', 'bug'], ['gh', 'pr', 'create', '--fill'], ['gh', 'issue', 'create', '--body', 'x'], ['gh', 'pr', 'comment', '5', '--body', 'x'], ['git', 'push'], ['gh', 'pr', 'create', '--title', 'feat: a', '--', '--body', 'x']]) {
+    assert.equal(readCommandBody(command), null, command.join(' '));
+  }
 });

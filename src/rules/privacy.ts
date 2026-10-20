@@ -64,6 +64,126 @@ export function loadMarks(env: Env): string[] {
     .map((line) => line.toLowerCase());
 }
 
+/** The comment above the marks yokoten adds from this machine. They run to the next comment line. */
+export const FOUND_HEADER = '# added by yokoten from this machine';
+
+/** The comment above the marks yokoten adds of one kind: `# added by yokoten from this machine: forge login`. */
+export const foundHeader = (kind: string): string => `${FOUND_HEADER}: ${kind}`;
+
+/** The comment above marks yokoten moved out of an old block because it could not tell their kind: they count as the owner's. */
+export const OWN_HEADER = '# your own marks';
+
+/** One line of the private-marks file: the mark, lowercased, and the kind yokoten added it as, or null for one the owner wrote. */
+export interface Mark {
+  value: string;
+  kind: string | null;
+}
+
+/**
+ * The owner's marks with where each came from (#410). A mark under `# added by yokoten from
+ * this machine: <kind>` has that kind. Under the plain header, which yokoten wrote before it
+ * named the kind and which `fillMarks` rewrites, an address is a git email and a domain a
+ * remote host. Anything else there, and every other line, is the owner's own: null. So a
+ * bare host name is never taken for a login.
+ */
+export function loadMarkKinds(env: Env): Mark[] {
+  let text = '';
+  try {
+    text = readFileSync(marksFile(env), 'utf8');
+  } catch (err) {
+    if ((err as Error).message === NO_HOME) return [];
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+  const marks: Mark[] = [];
+  let section: string | null = null;
+  for (const line of text.split(/\r?\n/).map((part) => part.trim())) {
+    if (line.startsWith('#')) {
+      section = line === FOUND_HEADER ? '' : line.startsWith(`${FOUND_HEADER}: `) ? line.slice(FOUND_HEADER.length + 2).trim() : null;
+      continue;
+    }
+    if (!line) continue;
+    const value = line.toLowerCase();
+    const kind = section === null ? null : section || (isEmailShaped(value) ? 'git email' : isDomainShaped(value) ? 'private remote host' : null);
+    marks.push({ value, kind });
+  }
+  return marks;
+}
+
+/** The forge logins yokoten added to the marks, lowercased: the places that name accounts may hold them (#410). */
+export const autoLogins = (marks: Mark[]): string[] => marks.filter((mark) => mark.kind === 'forge login').map((mark) => mark.value);
+
+// ---- Where an added forge login is fine (#410) ----
+//
+// Some files exist to name an account: CODEOWNERS, the author of a package or plugin, the
+// copyright line of a license. There the login yokoten added from this machine is not a
+// leak. The place is told by the file's path and the line's shape alone: no git call.
+
+const CODEOWNERS_FILE = /(^|\/)CODEOWNERS$/;
+const GITHUB_FILE = /^\.github\//;
+const LICENSE_FILE = /(^|\/)(LICEN[CS]E|COPYING)([.-][^/]*)?$/i;
+const MANIFEST_FILE = /(^|\/)(package|plugin|marketplace)\.json$/;
+const COPYRIGHT_LINE = /^\s*(copyright\b|\(c\)|©|spdx-filecopyrighttext:)/i;
+// The manifest keys whose value names a person or an account.
+const PERSON_KEYS = new Set(['author', 'authors', 'owner', 'owners', 'maintainer', 'maintainers', 'publisher']);
+const KEY_LINE = /^\s*"([^"\\]+)"\s*:/;
+
+/**
+ * For each line of a JSON manifest, whether it sits in a person field: the line opens with
+ * such a key, or it is inside the object or list such a key holds. A minified file is one
+ * line that opens with `{`, so it never counts.
+ */
+function personLines(lines: string[]): boolean[] {
+  const inside: boolean[] = [];
+  const stack: boolean[] = [];
+  const top = () => stack.length > 0 && stack[stack.length - 1];
+  let isString = false;
+  let isEscaped = false;
+  let current = '';
+  let lastString = '';
+  let key: string | null = null;
+  for (const line of lines) {
+    const opens = KEY_LINE.exec(line)?.[1];
+    inside.push(top() || (opens !== undefined && PERSON_KEYS.has(opens.toLowerCase())));
+    for (const char of line) {
+      if (isString) {
+        if (isEscaped) isEscaped = false;
+        else if (char === '\\') isEscaped = true;
+        else if (char === '"') {
+          isString = false;
+          lastString = current;
+        } else current += char;
+      } else if (char === '"') {
+        isString = true;
+        current = '';
+      } else if (char === ':') key = lastString;
+      else if (char === '{' || char === '[') {
+        stack.push(top() || (key !== null && PERSON_KEYS.has(key.toLowerCase())));
+        key = null;
+      } else if (char === '}' || char === ']') stack.pop();
+      else if (char === ',') key = null;
+    }
+  }
+  return inside;
+}
+
+/**
+ * For a file with places that name accounts: a function that gives a lowercased line back
+ * without the places where `login` is fine. Null when the file has no such place.
+ */
+function loginPlaces(file: string, lines: string[]): ((lower: string, index: number, login: string) => string) | null {
+  const isMentions = CODEOWNERS_FILE.test(file) || GITHUB_FILE.test(file);
+  const isLicense = LICENSE_FILE.test(file);
+  const persons = MANIFEST_FILE.test(file) ? personLines(lines) : null;
+  if (!isMentions && !isLicense && !persons) return null;
+  return (lower, index, login) => {
+    if (isLicense && COPYRIGHT_LINE.test(lower)) return '';
+    if (persons?.[index]) return '';
+    // `@login` and `@login/team`, but not the login in the domain of an email address.
+    if (isMentions) return lower.replace(new RegExp(String.raw`(?<![\w.+-])@${escapeRegExp(login)}(?![\w-]|\.\w)`, 'g'), '');
+    return lower;
+  };
+}
+
 // A match starts only where a word starts, so a long run with no @ is read once, not once per letter.
 const EMAIL = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
 // A browser version in a user agent (Chrome/120.0.0.0) is not an address. Only the
@@ -96,6 +216,46 @@ const RETINA = /@\d+x\.(png|jpe?g|gif|webp|svg|avif)$/i;
 // Localhost, "any", and the three ranges RFC 5737 keeps for documentation.
 const OK_IP = [/^127\./, /^0\.0\.0\.0$/, /^192\.0\.2\./, /^198\.51\.100\./, /^203\.0\.113\./];
 
+// A dotted quad in a spec citation or a version is not an address (#382). The words next to
+// it decide, read only around a hit, so a large file gets no extra pass:
+// - before it: `§`, "section", "sec." or "sect.", "version", "ver." or "v", or a document
+//   name: "MS-OVBA" or "[MS-OVBA]", "RFC 7230", "ECMA-376", "ISO 32000-1", "ISO/IEC 29500";
+// - after it: a pre-release or build tag, `-beta` or `+build.5`. A `-` and a second address
+//   is a range of addresses, and is caught;
+// - a range joined by "to" or "through" whose first end is skipped by the words before it
+//   ("MS-OVBA 2.3.1.15 to 2.3.1.17"): both ends are skipped;
+// - a bare range that has the shape of section numbers ("2.3.1.15 to 2.3.1.17"): the first
+//   number is 9 or less, every number is below 64, the ends differ only in the last number,
+//   and the first end is not one number four times (as public resolvers are). Any other
+//   range, private or public, is a range of addresses, and is caught.
+// A bare address in prose ("connect to <address>") is still caught.
+const QUAD = String.raw`\d{1,3}(?:\.\d{1,3}){3}`;
+const SPEC_BEFORE = /(?:§|\b(?:section|sect?\.|version|ver\.|v)|(?:\bMS-[A-Z0-9-]+\]?|\bRFC\s?\d+|\bECMA-\d+|\bISO(?:\/IEC)?\s?\d+(?:-\d+)?)[,:]?)\s*$/i;
+const TAG_AFTER = new RegExp(String.raw`^[-+](?!${QUAD})\w`);
+const RANGE_BEFORE = new RegExp(String.raw`(?<![\w.])(${QUAD})\s+(?:to|through)\s+$`, 'i');
+const RANGE_AFTER = new RegExp(String.raw`^\s+(?:to|through)\s+(${QUAD})(?![\w.])`, 'i');
+/** Whether the words just before `index` in `line` cite a spec section or a version. */
+const hasSpecBefore = (line: string, index: number): boolean => SPEC_BEFORE.test(line.slice(Math.max(0, index - 40), index));
+/** Whether the range `first` to `last` has the shape of section numbers, not of addresses. */
+function isSectionRange(first: string, last: string): boolean {
+  const [a, b, c, d] = first.split('.').map(Number);
+  const lastParts = last.split('.').map(Number);
+  const isSmall = [a, b, c, d, ...lastParts].every((n) => n < 64);
+  const isSamePrefix = lastParts[0] === a && lastParts[1] === b && lastParts[2] === c;
+  const isRepeated = a === b && b === c && c === d;
+  return a <= 9 && isSmall && isSamePrefix && !isRepeated;
+}
+/** Whether the dotted quad `hit`, found at `index` in `line`, is a section number or a version. */
+function isSectionNumber(line: string, index: number, hit: string): boolean {
+  const after = line.slice(index + hit.length, index + hit.length + 40);
+  if (hasSpecBefore(line, index) || TAG_AFTER.test(after)) return true;
+  const before = line.slice(Math.max(0, index - 40), index);
+  const rangeStart = RANGE_BEFORE.exec(before);
+  if (rangeStart) return hasSpecBefore(line, index - before.length + rangeStart.index) || isSectionRange(rangeStart[1], hit);
+  const rangeEnd = RANGE_AFTER.exec(after);
+  return rangeEnd !== null && isSectionRange(hit, rangeEnd[1]);
+}
+
 /** Whether an address found in text may point at a person: not a noreply, team, example or retina name. */
 export const isPersonalEmail = (hit: string, allow: string[] = []): boolean => !OK_EMAIL.some((re) => re.test(hit)) && !isForgeRemote(hit) && !RETINA.test(hit) && !allow.includes(hit);
 
@@ -103,28 +263,32 @@ export const isPersonalEmail = (hit: string, allow: string[] = []): boolean => !
  * Problems in one file's text. `allow` holds literal strings the project has said are
  * fine (yokoten.json "privacy.allow"), such as a public support address.
  */
-export function scanText(text: string, { file, marks = [], allow = [] }: { file: string; marks?: string[]; allow?: string[] }): Finding[] {
+export function scanText(text: string, { file, marks = [], allow = [], logins = [] }: { file: string; marks?: string[]; allow?: string[]; logins?: string[] }): Finding[] {
   const problems: Finding[] = [];
   const lines = text.split('\n');
+  // `logins`: the forge logins yokoten added to the marks, fine where a file names accounts (#410).
+  const places = logins.length && marks.length ? loginPlaces(file, lines) : null;
   const secrets = findSecrets(lines, allow);
-  lines.forEach((line, i) => {
-    const where = { file, line: i + 1 };
+  lines.forEach((line, index) => {
+    const where = { file, line: index + 1 };
     // The secret itself is never printed either, only its kind.
-    for (const [at, kind] of secrets) if (at === i) problems.push(finding('secret', `a secret (${kind})`, 'remove it, rotate it, and keep it outside the repo', where));
+    for (const [at, kind] of secrets) if (at === index) problems.push(finding('secret', `a secret (${kind})`, 'remove it, rotate it, and keep it outside the repo', where));
     for (const [hit] of line.matchAll(EMAIL)) {
       if (isPersonalEmail(hit, allow)) {
         problems.push(finding('email', 'an email address', 'use your GitHub noreply address, or a placeholder at example.com', where));
       }
     }
-    for (const [hit] of line.matchAll(IPV4)) {
+    for (const { 0: hit, index } of line.matchAll(IPV4)) {
       const octets = hit.split('.').map(Number);
-      if (octets.some((n) => n > 255) || OK_IP.some((re) => re.test(hit)) || allow.includes(hit)) continue;
+      if (octets.some((n) => n > 255) || OK_IP.some((re) => re.test(hit)) || allow.includes(hit) || isSectionNumber(line, index, hit)) continue;
       problems.push(finding('ip', 'an IP address', 'use a placeholder from 192.0.2.0/24', where));
     }
     const lower = line.toLowerCase();
     for (const mark of marks) {
       // The mark itself is never printed: the output may land in a CI log or a chat.
-      if (lower.includes(mark)) problems.push(finding('private-mark', 'matches a line of your private-marks file', 'remove it or reword the line; the mark itself is never printed', where));
+      if (!lower.includes(mark)) continue;
+      if (places && logins.includes(mark) && !places(lower, index, mark).includes(mark)) continue;
+      problems.push(finding('private-mark', 'matches a line of your private-marks file', 'remove it or reword the line; the mark itself is never printed', where));
     }
   });
   return problems;
@@ -218,7 +382,7 @@ export const POSITIVE_CONTROL = [`contact: someone${'@'}personal-mail.com`, `ser
 /** The placeholders `redact` writes. A placeholder never names what it hides. */
 export const PLACEHOLDERS = { owner: '<owner>', project: '<project>', email: '<email>', host: '<host>', mark: '<mark>', secret: SECRET } as const;
 
-const isEmailShaped = (value: string) => /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(value);
+export const isEmailShaped = (value: string): boolean => /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(value);
 /** A domain or host name: words joined by dots, ending in a top-level name. */
 export const isDomainShaped = (value: string): boolean => /^(?:[a-z0-9-]+\.)+[a-z]{2,}$/i.test(value);
 
