@@ -1,11 +1,12 @@
 // Tests for src/setup/doctor.ts.
 
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -13,7 +14,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import {
   fakeGh,
@@ -38,6 +39,7 @@ import {
 import { unsavedNotes } from '../../src/setup/advice/unsaved.ts';
 import {
   agentTempDirCheck,
+  blocksToSay,
   coreRulesCheck,
   coreRulesControl,
   diskSpaceChecks,
@@ -58,6 +60,7 @@ import {
   saveHostCache,
   selfTest,
   SESSION_UNSAVED_BUDGET,
+  sessionsDir,
   sessionUnsaved,
   STOPPED_EARLY,
   UNSAVED_OFFER,
@@ -464,7 +467,16 @@ test('doctor: each stage boundary, from a fresh repo to the end of the road', ()
   assert.match(next(), /stage 4 of 5, a team of agents\. Next: \.github\/CODEOWNERS names no owner yet \(@YOUR_GITHUB_HANDLE\); put your GitHub handle in \.github\/CODEOWNERS/);
   // init wrote CODEOWNERS with the placeholder owner; a real owner finishes the step.
   sandbox.write('.github/CODEOWNERS', '* @octo\n');
-  assert.match(next(), /stage 4 of 5, a team of agents\. Next: no bot on this machine/);
+  assert.match(next(), /stage 4 of 5, a team of agents\. Next: the bot is not set up on this machine: YOKOTEN_BOT_APP_ID is not set, in the environment or in ~\/\.config\/yokoten\/keys\.env;/);
+  // The key file in its default place, but no App ID anywhere: the step names what is missing (#364).
+  const config = join(sandbox.home, '.config', 'yokoten');
+  mkdirSync(config, { recursive: true });
+  writeFileSync(join(config, 'bot.pem'), 'not a real key\n');
+  assert.match(next(), /Next: the bot is not set up on this machine: the bot's key file is here, but YOKOTEN_BOT_APP_ID is not set/);
+  // The App ID in the keys file, as `yokoten bot` reads it, and none in the session (#405).
+  writeFileSync(join(config, 'keys.env'), 'OTHER_KEY=x\nexport YOKOTEN_BOT_APP_ID="1"\n');
+  assert.match(next(), /stage 4 of 5, a team of agents\. Next: the yokoten skills are not in/, 'the keys file counts: no "no bot"');
+  for (const file of ['bot.pem', 'keys.env']) rmSync(join(config, file));
   writeFileSync(key, 'not a real key\n');
   const bot = { YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key };
   assert.match(next(bot), /stage 4 of 5, a team of agents\. Next: the yokoten skills are not in/);
@@ -1130,4 +1142,49 @@ test('doctor: in the yokoten repo, the session and doctor count the notes from o
   assert.equal(upstreamNote(sandbox.repo, { HOME: empty }), null);
   assert.ok(!sandbox.run(['doctor', '--session'], { extra: { HOME: empty } }).stdout.includes('lessons from other projects'));
   rmSync(empty, { recursive: true, force: true });
+});
+
+test('doctor: a file on the default branch, missing on this one, is no "run init" (#405)', () => {
+  const sandbox = makeSandbox();
+  sandbox.git('commit', '-q', '--allow-empty', '-m', 'chore: start');
+  sandbox.git('branch', 'old');
+  sandbox.write('AGENTS.md', '# rules\n');
+  sandbox.write('.claude/settings.json', '{}\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-q', '-m', 'docs: add the rules');
+  const first = (cwd = sandbox.repo) => sandbox.run(['doctor', '--session'], { cwd }).stdout.split('\n')[0];
+  // No origin: init.defaultBranch, else main.
+  assert.equal(sandbox.git('checkout', '-q', 'old').status, 0);
+  assert.equal(first(), 'yokoten: stage 1 of 5, safety net. Next: AGENTS.md is on main, not on this branch (old); work on a branch made from main, or merge main into this one.');
+  const full = sandbox.run(['doctor']).stdout;
+  assert.match(full, /^ +to do +tool-hook: \.claude\/settings\.json is on main, not on this branch \(old\);/m, 'full doctor says it for each step');
+  assert.doesNotMatch(full.split('\n').filter((line) => / (rules \(|tool-hook:)/.test(line)).join('\n'), /yokoten init/);
+  // A clone: origin/HEAD names the default branch, and the old branch is checked out.
+  assert.equal(sandbox.git('checkout', '-q', 'main').status, 0);
+  const clone = join(dirname(sandbox.repo), 'clone');
+  assert.equal(spawnSync('git', ['clone', '-q', sandbox.repo, clone], { env: sandbox.env }).status, 0);
+  assert.equal(spawnSync('git', ['checkout', '-q', 'old'], { cwd: clone, env: sandbox.env }).status, 0);
+  assert.equal(first(clone), 'yokoten: stage 1 of 5, safety net. Next: AGENTS.md is on origin/main, not on this branch (old); work on a branch made from origin/main, or merge origin/main into this one.');
+  // Positive control: when the default branch lacks the file too, init is the fix.
+  rmSync(join(sandbox.repo, 'AGENTS.md'));
+  assert.match(first(), /Next: no AGENTS\.md, so the agents have no written rules here; `yokoten init` adds one\./);
+});
+
+test('doctor: a compaction start drops what the session was told; files older than a week go (#405)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'yokoten-sessions-'));
+  const env = { HOME: home };
+  const blocks = [['a', 'a why'], ['b']];
+  assert.deepEqual(blocksToSay(env, null, blocks), blocks, 'no session: all, and no file');
+  assert.deepEqual(blocksToSay(env, { sessionId: 's1', source: 'startup' }, blocks), blocks, 'a first start says all');
+  assert.deepEqual(blocksToSay(env, { sessionId: 's1', source: 'compact' }, blocks), [], 'nothing new: nothing');
+  assert.deepEqual(blocksToSay(env, { sessionId: 's1', source: 'compact' }, [['a', 'a why'], ['c']]), [['c']], 'only the new block');
+  assert.deepEqual(blocksToSay(env, { sessionId: 's1', source: 'compact' }, [['c']]), [], 'c was said');
+  assert.deepEqual(blocksToSay(env, { sessionId: 's2', source: 'compact' }, blocks), blocks, 'a session with no file says all');
+  assert.deepEqual(blocksToSay(env, { sessionId: 's1', source: 'resume' }, blocks), blocks, 'a resume starts over');
+  // A start other than compaction removes the files of old sessions.
+  const old = join(sessionsDir(env), 's2.json');
+  const longAgo = new Date(Date.now() - 8 * 86_400_000);
+  utimesSync(old, longAgo, longAgo);
+  blocksToSay(env, { sessionId: 's3', source: 'startup' }, blocks);
+  assert.deepEqual(readdirSync(sessionsDir(env)).sort(), ['s1.json', 's3.json']);
 });

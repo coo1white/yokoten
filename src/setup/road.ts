@@ -18,7 +18,7 @@ import { CHANGES_DIR, parseCodeOwners } from '../rules/pr.ts';
 import { BUILD_DIRS, isBuildOutput } from '../rules/layout.ts';
 import { hasPlugin, hasProjectHook } from '../agents/runtimes/claude-code.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
-import { CODEOWNERS_PLACES, hasBot, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
+import { CODEOWNERS_PLACES, hasBot, KEYS_FILE, missingBotSetup, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
 import { claudeReadsRules, cliPath, COMMIT_HOOKS, deadHookNotes, findRulesGap, handOffBlocks, hasHandOff, hookFile, isCommitHook, isExecutable, isSelf, type OldHook, OWNER_PLACEHOLDER, readHookSetup, readOldHooks } from './init.ts';
 import { FIRST_MILESTONE, lackingLabels, pickNewMilestone } from './plan.ts';
@@ -57,7 +57,14 @@ export interface Step {
    * have read is named.
    */
   standard?: string;
+  /**
+   * The files the step looks for, relative to the root. When one is missing here but is on
+   * the default branch, doctor says so in place of the fix (#405). Any one of them is enough.
+   */
+  paths?: string[];
 }
+
+const WORKFLOWS = '.github/workflows';
 
 const read = (path: string) => {
   try {
@@ -595,6 +602,7 @@ export const ROAD: Step[] = [
   {
     stage: 1,
     key: 'rules',
+    paths: ['AGENTS.md'],
     check: (root) => existsSync(join(root, 'AGENTS.md')) && claudeReadsRules(root),
     what: (root) => {
       const gap = findRulesGap(root);
@@ -611,6 +619,7 @@ export const ROAD: Step[] = [
   {
     stage: 1,
     key: 'tool-hook',
+    paths: ['.claude/settings.json'],
     check: (root) => hasProjectHook(root),
     what: () => 'no tool-call guard in .claude/settings.json',
     fix: () => '`yokoten init` adds it',
@@ -620,6 +629,7 @@ export const ROAD: Step[] = [
   {
     stage: 1,
     key: 'commit-check',
+    paths: ['.githooks/pre-commit', '.githooks/pre-merge-commit'],
     check: (root) => uncheckedHooks(root)?.length === 0 && droppedHooks(root).length === 0,
     what: (root) => {
       const hooks = uncheckedHooks(root);
@@ -658,6 +668,7 @@ export const ROAD: Step[] = [
   {
     stage: 1,
     key: 'runtime',
+    paths: ['.yokoten/VERSION'],
     check: (root) => isSelf(root) || runtimeVersion(join(root, '.yokoten')) === VERSION,
     what: (root) => {
       const vendored = runtimeVersion(join(root, '.yokoten'));
@@ -670,6 +681,7 @@ export const ROAD: Step[] = [
   {
     stage: 1,
     key: 'tests',
+    paths: [WORKFLOWS],
     check: (root) => ciRunsTests(root),
     what: noTests,
     fix: testsFix,
@@ -680,6 +692,7 @@ export const ROAD: Step[] = [
   {
     stage: 2,
     key: 'ci',
+    paths: [WORKFLOWS],
     // `check --pr` is the titles step, and `check --issue` checks issues; this one wants the tree check itself.
     check: (root) => ciRuns(ciText(root), runs('check(?!\\s+--(?:pr|issue))')) || ciFiles(root).some((f) => yokotenActions(f).length > 0),
     what: () => 'CI does not run `yokoten check`',
@@ -701,6 +714,7 @@ export const ROAD: Step[] = [
   {
     stage: 2,
     key: 'templates',
+    paths: ['.github/ISSUE_TEMPLATE', '.github/pull_request_template.md', '.github/PULL_REQUEST_TEMPLATE.md'],
     check: (root) => hasIssueTemplate(root) && hasPrTemplate(root),
     what: (root) => {
       const lacking = [hasIssueTemplate(root) ? '' : 'issue templates', hasPrTemplate(root) ? '' : 'pull request template'].filter(Boolean);
@@ -742,6 +756,7 @@ export const ROAD: Step[] = [
   {
     stage: 3,
     key: 'changelog',
+    paths: ['CHANGELOG.md', CHANGES_DIR],
     // A changes/ folder (#132) counts too: its files become the Unreleased lines at a release.
     check: (root) => /^#+\s*\[?Unreleased\]?/im.test(read(join(root, 'CHANGELOG.md'))) || existsSync(join(root, CHANGES_DIR)),
     what: () => `no CHANGELOG.md with an "Unreleased" section, and no ${CHANGES_DIR}/ folder`,
@@ -753,6 +768,7 @@ export const ROAD: Step[] = [
   {
     stage: 3,
     key: 'titles',
+    paths: [WORKFLOWS],
     check: (root) => ciRuns(ciText(root), runs('check --pr')) || ciFiles(root).some((f) => onPullRequest(f) && yokotenActions(f).some((a) => a.prCheck)),
     what: () => 'CI does not check pull requests (`yokoten check --pr`)',
     fix: (root) => keptWorkflow(root, 'pr.yml', 'check --pr', 'actions/checkout with `fetch-depth: 0` and actions/setup-node, in a job that runs on pull_request'),
@@ -763,6 +779,7 @@ export const ROAD: Step[] = [
   {
     stage: 4,
     key: 'codeowners',
+    paths: CODEOWNERS_PLACES,
     check: (root, _, server) => {
       const file = codeOwnersFile(root);
       return file !== null && !hasPlaceholder(root, file) && !orgOnlyOwner(root, file, server);
@@ -787,10 +804,11 @@ export const ROAD: Step[] = [
     stage: 4,
     key: 'bot',
     check: (_, env) => hasBot(env),
-    what: () => 'no bot on this machine (YOKOTEN_BOT_APP_ID and its key file)',
+    // Names the piece that is missing (#364, #405), as `yokoten bot` finds it.
+    what: (_, env) => `the bot is not set up on this machine: ${missingBotSetup(env) ?? 'nothing is missing'}`,
     fix: () => 'yokoten\'s docs/server.md shows how to set one up',
     why: 'when the bot opens pull requests, you review work you did not write, as a team does',
-    how: 'YOKOTEN_BOT_APP_ID is set on this machine, and the key file it names exists',
+    how: `YOKOTEN_BOT_APP_ID is set, in the environment or in ${KEYS_FILE}, and the key file exists (YOKOTEN_BOT_KEY, or ~/.config/yokoten/bot.pem): the same lookup as \`yokoten bot\``,
   },
   {
     stage: 4,
@@ -809,6 +827,7 @@ export const ROAD: Step[] = [
   {
     stage: 5,
     key: 'security-files',
+    paths: SECURITY_FILES.flatMap(([, paths]) => paths),
     check: (root) => securityLacking(root).length === 0,
     what: (root) => `no ${securityLacking(root).join(', no ')}`,
     fix: (root) => {
@@ -842,8 +861,78 @@ export const ROAD: Step[] = [
   }),
 ];
 
-/** A step not done, as a finding: the step's key is its id. */
-export const stepFinding = (step: Step, root: string, env: Env, server?: ServerRead): Finding => ({ id: step.key, what: step.what(root, env, server), why: step.why, fix: step.fix(root, env, server) });
+// The default branch (#405). A checkout on an old branch lacks files that the default
+// branch has. Then "run init" is wrong: the files are there, on another branch. The refs
+// are read from files, and the tree with one `git ls-tree`, so a session stays fast.
+
+/** Files missing here that the default branch has, and the names to say. */
+export interface DefaultBranchFiles {
+  /** The default branch as the report names it: origin/main, or main. */
+  name: string;
+  /** This checkout's branch, or "detached HEAD". */
+  branch: string;
+  paths: Set<string>;
+}
+
+/** The repo's own git folder and the folder its worktrees share. Files only; null when unreadable. */
+function gitFolders(root: string): { gitDir: string; commonDir: string } | null {
+  const dotGit = join(root, '.git');
+  try {
+    const pointer = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, 'utf8'));
+    if (!pointer) return null;
+    const gitDir = resolve(root, pointer[1].trim());
+    const common = read(join(gitDir, 'commondir')).trim();
+    return { gitDir, commonDir: common ? resolve(gitDir, common) : gitDir };
+  } catch {
+    return existsSync(dotGit) ? { gitDir: dotGit, commonDir: dotGit } : null;
+  }
+}
+
+/** The paths of `steps` that are missing here, each once. */
+export const missingPaths = (root: string, steps: Step[]): string[] =>
+  [...new Set(steps.flatMap((step) => step.paths ?? []))].filter((path) => !existsSync(join(root, path)));
+
+/**
+ * Which of `paths` the default branch has. The default branch is origin/HEAD, else
+ * init.defaultBranch, else main. Never the network. Null when there is nothing to ask,
+ * this checkout is on the default branch, or git can't tell.
+ */
+export function readDefaultBranchFiles(root: string, paths: string[]): DefaultBranchFiles | null {
+  if (!paths.length) return null;
+  const folders = gitFolders(root);
+  if (!folders) return null;
+  const head = /^ref: refs\/heads\/(.+)$/m.exec(read(join(folders.gitDir, 'HEAD')));
+  const branch = head ? head[1].trim() : 'detached HEAD';
+  // origin/HEAD is a loose file even in a packed repo. Another ref store goes through git.
+  const originHead = /^ref: refs\/remotes\/(.+)$/m.exec(read(join(folders.commonDir, 'refs', 'remotes', 'origin', 'HEAD')));
+  let ref: string;
+  let name: string;
+  if (originHead) {
+    name = originHead[1].trim();
+    ref = `refs/remotes/${name}`;
+  } else {
+    name = gitConfig(root, 'init.defaultBranch') || 'main';
+    if (name === branch) return null;
+    ref = `refs/heads/${name}`;
+  }
+  try {
+    const listed = execFileSync('git', ['--no-optional-locks', 'ls-tree', '--name-only', ref, '--', ...paths], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const found = new Set(listed.split('\n').filter((path) => paths.includes(path)));
+    return found.size ? { name, branch, paths: found } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A step not done, as a finding: the step's key is its id. `elsewhere` is what the default branch has. */
+export function stepFinding(step: Step, root: string, env: Env, server?: ServerRead, elsewhere?: DefaultBranchFiles | null): Finding {
+  const there = elsewhere ? (step.paths ?? []).filter((path) => elsewhere.paths.has(path) && !existsSync(join(root, path))) : [];
+  if (elsewhere && there.length) {
+    const files = there.length > 1 ? `${there.slice(0, -1).join(', ')} and ${there.at(-1)} are` : `${there[0]} is`;
+    return { id: step.key, what: `${files} on ${elsewhere.name}, not on this branch (${elsewhere.branch})`, why: step.why, fix: `work on a branch made from ${elsewhere.name}, or merge ${elsewhere.name} into this one` };
+  }
+  return { id: step.key, what: step.what(root, env, server), why: step.why, fix: step.fix(root, env, server) };
+}
 
 /** A step not done, as the map and the session say it: what is missing, then the fix. */
 export const stepText = (f: Finding): string => `${f.what}; ${f.fix}`;

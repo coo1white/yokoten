@@ -37,6 +37,7 @@ import {
   botProgram,
   cleanChildEnv,
   type Gh,
+  hasBot,
   installationToken,
   readCommandTitle,
   readIncident,
@@ -95,6 +96,27 @@ test('config: the App ID is required, the key has a default place', () => {
   assert.ok(typeof c !== 'string');
   assert.equal(c.keyFile, join('/h', '.config', 'yokoten', 'bot.pem'));
   assert.equal(c.api, 'https://api.github.com');
+});
+
+test('config: the keys file gives the bot settings the session does not have (#405)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'yokoten-keys-'));
+  const config = join(home, '.config', 'yokoten');
+  mkdirSync(config, { recursive: true });
+  assert.equal(hasBot({ HOME: home }), false, 'nothing set up');
+  writeFileSync(join(config, 'bot.pem'), 'not a real key\n');
+  assert.equal(hasBot({ HOME: home }), false, 'a key file with no App ID is no bot: `yokoten bot` would stop too');
+  writeFileSync(join(config, 'keys.env'), '# keys\nOTHER_API_KEY=placeholder\nexport YOKOTEN_BOT_APP_ID="42"\nYOKOTEN_BOT_INSTALLATION=\x277\x27\n');
+  const c = botConfig({ HOME: home });
+  assert.ok(typeof c !== 'string', 'the App ID comes from the keys file');
+  assert.deepEqual([c.appId, c.installation, c.keyFile], ['42', '7', join(config, 'bot.pem')]);
+  assert.equal(hasBot({ HOME: home }), true, 'the road and `yokoten bot` agree');
+  assert.equal(Object.hasOwn(c, 'OTHER_API_KEY'), false);
+  // The environment comes first.
+  const fromEnv = botConfig({ HOME: home, YOKOTEN_BOT_APP_ID: '9' });
+  assert.ok(typeof fromEnv !== 'string');
+  assert.equal(fromEnv.appId, '9');
+  // No HOME: the keys file is not read.
+  assert.equal(typeof botConfig({}), 'string');
 });
 
 test('repo: read from https and ssh remotes', () => {

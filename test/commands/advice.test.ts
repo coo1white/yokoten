@@ -35,3 +35,20 @@ test('doctor --session: an agent that cannot filter output hears it once, with t
   sandbox.write('yokoten.json', JSON.stringify({ privacy: { output: 'stop' } }));
   assert.ok(!sandbox.run(['doctor', '--session', '--agent', 'codex']).stdout.includes(line), 'opted in to the stop');
 });
+
+test('doctor --session: after a compaction, Claude Code hears only what changed (#405)', () => {
+  const sandbox = makeSandbox();
+  const today = sandbox.run(['doctor', '--session']).stdout;
+  const hook = { CLAUDE_PROJECT_DIR: sandbox.repo };
+  const start = (event: Record<string, string>) => sandbox.run(['doctor', '--session'], { input: JSON.stringify({ hook_event_name: 'SessionStart', ...event }), extra: hook }).stdout;
+  assert.equal(start({ session_id: 's-1', source: 'startup' }), today, 'a first start prints as today');
+  assert.equal(start({ session_id: 's-1', source: 'compact' }), '', 'a compaction start with nothing new prints nothing');
+  sandbox.write('AGENTS.md', '# rules\n');
+  const changed = start({ session_id: 's-1', source: 'compact' });
+  assert.match(changed, /^yokoten: stage 1 of 5, safety net\. Next: no tool-call guard/);
+  assert.match(changed, /^Tell the user in plain words/m, 'a changed step keeps its offer line');
+  assert.doesNotMatch(changed, /private-marks/, 'a note the session heard is not repeated');
+  // No session id, or no hook: as today.
+  assert.equal(start({ source: 'compact' }), sandbox.run(['doctor', '--session']).stdout);
+  assert.equal(sandbox.run(['doctor', '--session'], { input: JSON.stringify({ session_id: 's-1', source: 'compact' }) }).stdout, sandbox.run(['doctor', '--session']).stdout, 'stdin is read only in a Claude Code hook');
+});
