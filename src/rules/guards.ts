@@ -1390,11 +1390,15 @@ interface AccountPrinter {
   prints: string;
 }
 
-// A log with its own format prints only what the format names.
-const GIT_FORMAT = /^(?:--format|--pretty|--oneline)(?:=|$)/;
-// Options that make a git read write a file or run another program.
-const GIT_UNSAFE = /^(?:--output|-o|--ext-diff|--exec-path|--textconv)/;
-const isGitRead = (args: string[]) => !args.some((arg) => GIT_FORMAT.test(arg) || GIT_UNSAFE.test(arg));
+// Options that make a git read write a file or run another program. A format option keeps
+// it a read: `--format=%an` prints the author with no "Author:" line, and redact hides the
+// value wherever it stands (#413).
+const GIT_UNSAFE = /^(?:--output|-o|--ext-diff|--exec-path|--textconv|--filters)/;
+const isGitRead = (args: string[]) => !args.some((arg) => GIT_UNSAFE.test(arg));
+
+// `git cat-file -p <object>`, or `git cat-file commit|tag <object>`: one object, printed. A
+// commit or a tag names its author. A batch reads object names from stdin: not rewritten.
+const isCatFileRead = (args: string[]) => args.length === 2 && ['-p', 'commit', 'tag'].includes(args[0]) && !args[1].startsWith('-');
 
 // `git remote -v`, or `git remote get-url|show <name>`: never add, remove or set.
 const isRemoteRead = (args: string[]) =>
@@ -1438,7 +1442,8 @@ const takesOnly = (valued: string[], flags: string[] = []) => (args: string[]) =
 };
 
 export const ACCOUNT_PRINTERS: AccountPrinter[] = [
-  { program: 'git', subcommands: ['log', 'show', 'whatchanged', 'blame', 'shortlog', 'annotate'], accepts: isGitRead, prints: 'author names and emails' },
+  { program: 'git', subcommands: ['log', 'show', 'whatchanged', 'blame', 'shortlog', 'annotate', 'for-each-ref'], accepts: isGitRead, prints: 'author names and emails' },
+  { program: 'git', subcommands: ['cat-file'], accepts: isCatFileRead, prints: 'author names and emails' },
   { program: 'git', subcommands: ['remote'], accepts: isRemoteRead, prints: 'remote URLs' },
   { program: 'git', subcommands: ['config'], accepts: isConfigRead, prints: 'your name, email and remotes' },
   { program: 'gh', subcommands: ['api'], accepts: isAccountGet, prints: 'the login and account details' },
@@ -1450,6 +1455,11 @@ export const ACCOUNT_PRINTERS: AccountPrinter[] = [
 // Shell text that makes more than one plain command: separators, pipes, background, redirects,
 // substitutions, groups, a line end, an escape or a comment.
 const NOT_SIMPLE = /[;&|<>`$(){}\\\n#]/;
+// Quoted text bash reads as it is: '...', or "..." with no $, ` or \ inside. A format such as
+// '%(authorname) <%ae>' is one word, not a group or a redirect (#413). The search runs from
+// the left, as bash reads, and a backslash before a quote is left outside, so NOT_SIMPLE refuses it.
+const LITERAL_QUOTED = /'[^'\n]*'|"[^"$`\\\n]*"/g;
+const isSimple = (command: string) => !NOT_SIMPLE.test(command.replace(LITERAL_QUOTED, 'x'));
 // Runners that start a package's program by name: `npx wrangler`, `pnpm dlx wrangler`.
 const PACKAGE_RUNNERS: Record<string, string[]> = { npx: [], bunx: [], pnpm: ['dlx', 'exec'], yarn: ['dlx', 'exec'] };
 
@@ -1468,7 +1478,7 @@ export const isRedacted = (command: string): boolean => command.startsWith(`set 
  * `git remote add show x` is no `git remote show`.
  */
 export function printsAccount(command: string): string | null {
-  if (isRedacted(command) || NOT_SIMPLE.test(command)) return null;
+  if (isRedacted(command) || !isSimple(command)) return null;
   let words: string[];
   try {
     const commands = commandWords(command);

@@ -248,6 +248,36 @@ test('hook: Claude Code gets a plain read rewritten through redact, with allow, 
   assert.equal(call('git push --force').status, 2);
 });
 
+test('hook: a custom format, shortlog -sne and blame -e come back rewritten, and the name and email are hidden (#413)', () => {
+  const sandbox = makeSandbox();
+  const email = `jane${at}personal-mail.dev`;
+  sandbox.git('config', 'user.name', 'Jane Example');
+  sandbox.git('config', 'user.email', email);
+  sandbox.write('README.md', 'Hello.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'docs: hello');
+  const call = (command: string) =>
+    sandbox.run(['hook', '--commands-only', '--agent', 'claude-code'], { input: JSON.stringify({ cwd: sandbox.repo, tool_name: 'Bash', tool_input: { command } }) });
+  const commands = ['git log --format=%an', 'git log --pretty=format:%ae', "git log --format='%an <%ae>'", 'git shortlog -sne HEAD', 'git blame -e README.md', "git for-each-ref --format='%(authorname) %(authoremail)'", 'git cat-file -p HEAD'];
+  for (const command of commands) {
+    const result = call(command);
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout).hookSpecificOutput;
+    assert.equal(output.permissionDecision, 'allow', command);
+    // Positive control: the same command, not rewritten, prints the name and email.
+    const plain = spawnSync('bash', ['-c', command], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
+    assert.ok(plain.stdout.includes('Jane') || plain.stdout.includes(email), `${command}: ${plain.stdout}`);
+    const ran = spawnSync('bash', ['-c', output.updatedInput.command], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.match(ran.stdout, /<owner>|<email>/, command);
+    assert.ok(!ran.stdout.includes('Jane') && !ran.stdout.includes(email), `${command}: ${ran.stdout}`);
+  }
+  // A compound or writing command gets no decision.
+  for (const command of ['git log --format=%an | head', "git log --format='%an'; ls", 'git log --format=%an > out', 'git commit --amend --no-edit']) {
+    assert.deepEqual(pick(call(command)), [0, '', ''], command);
+  }
+});
+
 test("hook: an agent that can't rewrite runs the command, or with privacy.output stop is told the filtered one (#390)", () => {
   const sandbox = makeSandbox();
   const codexCall = (command = 'git remote -v') => sandbox.run(['hook', '--commands-only', '--agent', 'codex'], { input: JSON.stringify({ cwd: sandbox.repo, tool_name: 'Bash', tool_input: { command } }) });
