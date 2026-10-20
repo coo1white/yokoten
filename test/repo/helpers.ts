@@ -129,7 +129,7 @@ export function makeSandbox() {
   // No automatic maintenance (#442): git runs it after a commit, in the background on newer
   // versions, and a worktree prune there can delete a `git worktree add` still being made.
   const env = { PATH: process.env.PATH, HOME: home, NODE_COMPILE_CACHE: COMPILE_CACHE, TZ: 'UTC', YOKOTEN_TEMP_DIRS: '', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'maintenance.auto', GIT_CONFIG_VALUE_0: 'false', GIT_CONFIG_KEY_1: 'gc.auto', GIT_CONFIG_VALUE_1: '0', NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' };
-  const git = (...args: string[]) => spawnSync('git', args, { cwd: repo, env, encoding: 'utf8' });
+  const git = (...args: string[]) => runChild('git', args, { cwd: repo, env });
   git('init', '-q', '-b', 'main');
   git('config', 'user.name', 'Test');
   git('config', 'user.email', `1+test${at}users.noreply.github.com`);
