@@ -18,6 +18,7 @@ import { checkCommand } from '../../src/rules/guards.ts';
 import { formatFinding } from '../../src/rules/message.ts';
 import {
   hideHome,
+  loadMarkKinds,
   loadMarks,
   makeRedactor,
   notUtc,
@@ -105,6 +106,37 @@ test('private marks file: comments and blanks skipped, missing file is empty', (
   writeFileSync(file, '# header\n\nMyCity\n  myserver  \n');
   assert.deepEqual(loadMarks({ YOKOTEN_PRIVATE_MARKS: file }), ['mycity', 'myserver']);
   assert.deepEqual(loadMarks({ YOKOTEN_PRIVATE_MARKS: join(dir, 'none') }), []);
+});
+
+test('private marks file: the kind of each added mark, by its header or, under the old header, by shape (#410)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const file = join(dir, 'marks');
+  writeFileSync(file, `# mine\nMyCity\n# added by yokoten from this machine: forge login\nOcto-Jdoe\n# added by yokoten from this machine\njane${at}personal-mail.dev\nbuild.private-host.dev\nold-login\n# mine again\nmyserver\n`);
+  assert.deepEqual(loadMarkKinds({ YOKOTEN_PRIVATE_MARKS: file }), [
+    { value: 'mycity', kind: null },
+    { value: 'octo-jdoe', kind: 'forge login' },
+    { value: `jane${at}personal-mail.dev`, kind: 'git email' },
+    { value: 'build.private-host.dev', kind: 'private remote host' },
+    { value: 'old-login', kind: 'forge login' },
+    { value: 'myserver', kind: null },
+  ]);
+});
+
+test('private marks: an added forge login is fine only where a file names accounts (#410)', () => {
+  const scan = (file: string, text: string, logins = ['octo-jdoe']) => scanText(text, { file, marks: ['octo-jdoe'], logins }).filter((f) => f.id === 'private-mark').map((f) => f.line);
+  // CODEOWNERS owners and @ mentions in .github.
+  assert.deepEqual(scan('CODEOWNERS', '* @octo-jdoe @octo-jdoe/team\n# octo-jdoe\n'), [2]);
+  assert.deepEqual(scan('.github/ISSUE_TEMPLATE/bug.md', `cc @octo-jdoe.\nmail x${at}octo-jdoe.dev\n`), [2]);
+  // Person fields of a manifest, nested ones too; not other keys, not a minified file.
+  const manifest = '{\n  "author": {\n    "name": "octo-jdoe",\n    "url": "https://github.com/octo-jdoe"\n  },\n  "maintainers": ["octo-jdoe"],\n  "homepage": "https://octo-jdoe.dev"\n}\n';
+  assert.deepEqual(scan('.claude-plugin/marketplace.json', manifest), [7]);
+  assert.deepEqual(scan('package.json', '{"author": "octo-jdoe"}\n'), [1]);
+  // The copyright line of a license, not its other lines.
+  assert.deepEqual(scan('LICENSE.md', 'Copyright (c) 2026 octo-jdoe\nby octo-jdoe\n'), [2]);
+  // Anywhere else, and for a mark the owner wrote, it is found.
+  assert.deepEqual(scan('src/x.ts', '// @octo-jdoe\n'), [1]);
+  assert.deepEqual(scan('docs/a.md', 'Copyright octo-jdoe\n'), [1]);
+  assert.deepEqual(scan('CODEOWNERS', '* @octo-jdoe\n', []), [1]);
 });
 
 test('commit times: an ident with a non-UTC offset is caught (#40)', () => {

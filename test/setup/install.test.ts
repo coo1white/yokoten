@@ -467,7 +467,7 @@ test("install: adds the machine's marks and a git mailmap, and never prints a va
   assert.match(result.stdout, /^added to ~\/\.config\/yokoten\/private-marks from this machine: git email, private remote host \(the values are not shown\)$/m);
   assert.match(result.stdout, /^add your real name, your city, your domains to ~\/\.config\/yokoten\/private-marks, one per line; yokoten can't find these on its own$/m);
   assert.match(result.stdout, /^wrote ~\/\.config\/yokoten\/mailmap, and git log and git show now print your emails as a placeholder$/m);
-  assert.match(readFileSync(marks, 'utf8'), /# added by yokoten from this machine\njane@personal-mail\.dev\nbuild\.private-host\.dev\n$/);
+  assert.match(readFileSync(marks, 'utf8'), /# added by yokoten from this machine: git email\njane@personal-mail\.dev\n# added by yokoten from this machine: private remote host\nbuild\.private-host\.dev\n$/);
   assert.equal(statSync(marks).mode & 0o777, 0o600);
   // git prints the placeholder at the source.
   assert.equal(sandbox.git('config', '--global', '--get', 'mailmap.file').stdout, '~/.config/yokoten/mailmap\n');

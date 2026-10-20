@@ -64,6 +64,122 @@ export function loadMarks(env: Env): string[] {
     .map((line) => line.toLowerCase());
 }
 
+/** The comment above the marks yokoten adds from this machine. They run to the next comment line. */
+export const FOUND_HEADER = '# added by yokoten from this machine';
+
+/** The comment above the marks yokoten adds of one kind: `# added by yokoten from this machine: forge login`. */
+export const foundHeader = (kind: string): string => `${FOUND_HEADER}: ${kind}`;
+
+/** One line of the private-marks file: the mark, lowercased, and the kind yokoten added it as, or null for one the owner wrote. */
+export interface Mark {
+  value: string;
+  kind: string | null;
+}
+
+/**
+ * The owner's marks with where each came from (#410). A mark under `# added by yokoten from
+ * this machine: <kind>` has that kind. Under the plain header, which yokoten wrote before it
+ * named the kind, the kind is read from the shape: an address is a git email, a domain a
+ * remote host, anything else the forge login. Every other line is the owner's own: null.
+ */
+export function loadMarkKinds(env: Env): Mark[] {
+  let text = '';
+  try {
+    text = readFileSync(marksFile(env), 'utf8');
+  } catch (err) {
+    if ((err as Error).message === NO_HOME) return [];
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+  const marks: Mark[] = [];
+  let section: string | null = null;
+  for (const line of text.split(/\r?\n/).map((part) => part.trim())) {
+    if (line.startsWith('#')) {
+      section = line === FOUND_HEADER ? '' : line.startsWith(`${FOUND_HEADER}: `) ? line.slice(FOUND_HEADER.length + 2).trim() : null;
+      continue;
+    }
+    if (!line) continue;
+    const value = line.toLowerCase();
+    const kind = section === null ? null : section || (isEmailShaped(value) ? 'git email' : isDomainShaped(value) ? 'private remote host' : 'forge login');
+    marks.push({ value, kind });
+  }
+  return marks;
+}
+
+/** The forge logins yokoten added to the marks, lowercased: the places that name accounts may hold them (#410). */
+export const autoLogins = (marks: Mark[]): string[] => marks.filter((mark) => mark.kind === 'forge login').map((mark) => mark.value);
+
+// ---- Where an added forge login is fine (#410) ----
+//
+// Some files exist to name an account: CODEOWNERS, the author of a package or plugin, the
+// copyright line of a license. There the login yokoten added from this machine is not a
+// leak. The place is told by the file's path and the line's shape alone: no git call.
+
+const CODEOWNERS_FILE = /(^|\/)CODEOWNERS$/;
+const GITHUB_FILE = /^\.github\//;
+const LICENSE_FILE = /(^|\/)(LICEN[CS]E|COPYING)([.-][^/]*)?$/i;
+const MANIFEST_FILE = /(^|\/)(package|plugin|marketplace)\.json$/;
+const COPYRIGHT_LINE = /^\s*(copyright\b|\(c\)|©|spdx-filecopyrighttext:)/i;
+// The manifest keys whose value names a person or an account.
+const PERSON_KEYS = new Set(['author', 'authors', 'owner', 'owners', 'maintainer', 'maintainers', 'publisher']);
+const KEY_LINE = /^\s*"([^"\\]+)"\s*:/;
+
+/**
+ * For each line of a JSON manifest, whether it sits in a person field: the line opens with
+ * such a key, or it is inside the object or list such a key holds. A minified file is one
+ * line that opens with `{`, so it never counts.
+ */
+function personLines(lines: string[]): boolean[] {
+  const inside: boolean[] = [];
+  const stack: boolean[] = [];
+  const top = () => stack.length > 0 && stack[stack.length - 1];
+  let isString = false;
+  let isEscaped = false;
+  let current = '';
+  let lastString = '';
+  let key: string | null = null;
+  for (const line of lines) {
+    const opens = KEY_LINE.exec(line)?.[1];
+    inside.push(top() || (opens !== undefined && PERSON_KEYS.has(opens.toLowerCase())));
+    for (const char of line) {
+      if (isString) {
+        if (isEscaped) isEscaped = false;
+        else if (char === '\\') isEscaped = true;
+        else if (char === '"') {
+          isString = false;
+          lastString = current;
+        } else current += char;
+      } else if (char === '"') {
+        isString = true;
+        current = '';
+      } else if (char === ':') key = lastString;
+      else if (char === '{' || char === '[') {
+        stack.push(top() || (key !== null && PERSON_KEYS.has(key.toLowerCase())));
+        key = null;
+      } else if (char === '}' || char === ']') stack.pop();
+      else if (char === ',') key = null;
+    }
+  }
+  return inside;
+}
+
+/**
+ * For a file with places that name accounts: a function that gives a lowercased line back
+ * without the places where `login` is fine. Null when the file has no such place.
+ */
+function loginPlaces(file: string, lines: string[]): ((lower: string, index: number, login: string) => string) | null {
+  const isMentions = CODEOWNERS_FILE.test(file) || GITHUB_FILE.test(file);
+  const isLicense = LICENSE_FILE.test(file);
+  const persons = MANIFEST_FILE.test(file) ? personLines(lines) : null;
+  if (!isMentions && !isLicense && !persons) return null;
+  return (lower, index, login) => {
+    if (isLicense && COPYRIGHT_LINE.test(lower)) return '';
+    if (persons?.[index]) return '';
+    // `@login` and `@login/team`, but not the login in the domain of an email address.
+    if (isMentions) return lower.replace(new RegExp(String.raw`(?<![\w.+-])@${escapeRegExp(login)}(?![\w-]|\.\w)`, 'g'), '');
+    return lower;
+  };
+}
+
 // A match starts only where a word starts, so a long run with no @ is read once, not once per letter.
 const EMAIL = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
 // A browser version in a user agent (Chrome/120.0.0.0) is not an address. Only the
@@ -103,14 +219,16 @@ export const isPersonalEmail = (hit: string, allow: string[] = []): boolean => !
  * Problems in one file's text. `allow` holds literal strings the project has said are
  * fine (yokoten.json "privacy.allow"), such as a public support address.
  */
-export function scanText(text: string, { file, marks = [], allow = [] }: { file: string; marks?: string[]; allow?: string[] }): Finding[] {
+export function scanText(text: string, { file, marks = [], allow = [], logins = [] }: { file: string; marks?: string[]; allow?: string[]; logins?: string[] }): Finding[] {
   const problems: Finding[] = [];
   const lines = text.split('\n');
+  // `logins`: the forge logins yokoten added to the marks, fine where a file names accounts (#410).
+  const places = logins.length && marks.length ? loginPlaces(file, lines) : null;
   const secrets = findSecrets(lines, allow);
-  lines.forEach((line, i) => {
-    const where = { file, line: i + 1 };
+  lines.forEach((line, index) => {
+    const where = { file, line: index + 1 };
     // The secret itself is never printed either, only its kind.
-    for (const [at, kind] of secrets) if (at === i) problems.push(finding('secret', `a secret (${kind})`, 'remove it, rotate it, and keep it outside the repo', where));
+    for (const [at, kind] of secrets) if (at === index) problems.push(finding('secret', `a secret (${kind})`, 'remove it, rotate it, and keep it outside the repo', where));
     for (const [hit] of line.matchAll(EMAIL)) {
       if (isPersonalEmail(hit, allow)) {
         problems.push(finding('email', 'an email address', 'use your GitHub noreply address, or a placeholder at example.com', where));
@@ -124,7 +242,9 @@ export function scanText(text: string, { file, marks = [], allow = [] }: { file:
     const lower = line.toLowerCase();
     for (const mark of marks) {
       // The mark itself is never printed: the output may land in a CI log or a chat.
-      if (lower.includes(mark)) problems.push(finding('private-mark', 'matches a line of your private-marks file', 'remove it or reword the line; the mark itself is never printed', where));
+      if (!lower.includes(mark)) continue;
+      if (places && logins.includes(mark) && !places(lower, index, mark).includes(mark)) continue;
+      problems.push(finding('private-mark', 'matches a line of your private-marks file', 'remove it or reword the line; the mark itself is never printed', where));
     }
   });
   return problems;

@@ -1279,6 +1279,11 @@ your name, your city, your domains, your server names. That file stays outside t
 repo, because a list of what must not be published can't itself be published. A hit
 is reported by file and line; the mark itself is never printed.
 
+Some files must name your account. So the forge login that yokoten added to the marks is
+fine in a CODEOWNERS owner, an `@` mention in `.github/`, an author or owner field of
+`package.json` or a plugin manifest, and a LICENSE copyright line. It is found everywhere
+else. A mark you wrote yourself is found everywhere.
+
 The IP check covers IPv4 only, private ranges such as `10.x` and `192.168.x` included;
 IPv6 is not checked. Localhost and the documentation ranges (`192.0.2.0/24` and its two
 siblings) are fine. Browser version strings such as `Chrome/120.0.0.0` are not

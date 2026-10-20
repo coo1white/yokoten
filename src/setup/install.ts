@@ -28,7 +28,7 @@ import * as gemini from '../agents/runtimes/gemini.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { copyRuntime, HOME_DIR, KIT, MANAGED, writeManaged, writeNew } from './files.ts';
 import { type Gh, readLogin } from '../host/github.ts';
-import { homeOf, isDomainShaped, isPersonalEmail, loadMarks, marksFile, NO_HOME, privateRemoteHosts, systemHome } from '../rules/privacy.ts';
+import { FOUND_HEADER, foundHeader, homeOf, isDomainShaped, isPersonalEmail, loadMarks, marksFile, NO_HOME, privateRemoteHosts, systemHome } from '../rules/privacy.ts';
 
 /**
  * Where yokoten keeps its runtime, its config and the private marks. With no absolute home
@@ -401,12 +401,12 @@ export function fillMarks(env: Env, found: MachineMark[]): string[] {
   if (!added.length) return [];
   if (!existsSync(file)) writeNew(file, MARKS_HEADER, { mode: 0o600 });
   const text = readFileSync(file, 'utf8');
-  appendFileSync(file, `${text === '' || text.endsWith('\n') ? '' : '\n'}${FOUND_HEADER}\n${added.map((mark) => mark.value).join('\n')}\n`);
-  return [...new Set(added.map((mark) => mark.kind))];
+  // One header per kind, so the check knows a forge login from a mark the owner wrote (#410).
+  const kinds = [...new Set(added.map((mark) => mark.kind))];
+  const blocks = kinds.map((kind) => `${foundHeader(kind)}\n${added.filter((mark) => mark.kind === kind).map((mark) => mark.value).join('\n')}\n`);
+  appendFileSync(file, `${text === '' || text.endsWith('\n') ? '' : '\n'}${blocks.join('')}`);
+  return kinds;
 }
-
-/** The comment above the marks `fillMarks` adds. They run to the next comment line. */
-const FOUND_HEADER = '# added by yokoten from this machine';
 
 /** How many marks the owner wrote: the lines of the file outside the parts `fillMarks` added. */
 export function countOwnMarks(env: Env): number {
@@ -419,7 +419,7 @@ export function countOwnMarks(env: Env): number {
   let isFound = false;
   let count = 0;
   for (const line of text.split(/\r?\n/).map((part) => part.trim())) {
-    if (line.startsWith('#')) isFound = line === FOUND_HEADER;
+    if (line.startsWith('#')) isFound = line === FOUND_HEADER || line.startsWith(`${FOUND_HEADER}: `);
     else if (line && !isFound) count++;
   }
   return count;
