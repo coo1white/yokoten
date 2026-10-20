@@ -88,7 +88,9 @@ export function makeSandbox() {
   // The sandbox lives in the temp folder; YOKOTEN_TEMP_DIRS turns off that note (#365) so the
   // tests see what they set up. The compile cache stays in Node's own folder, not in the
   // sandbox's home, where bin/yokoten.mjs puts it (#408): the tests list what lands there.
-  const env = { PATH: process.env.PATH, HOME: home, NODE_COMPILE_CACHE: COMPILE_CACHE, TZ: 'UTC', YOKOTEN_TEMP_DIRS: '', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' };
+  // No automatic maintenance (#442): git runs it after a commit, in the background on newer
+  // versions, and a worktree prune there can delete a `git worktree add` still being made.
+  const env = { PATH: process.env.PATH, HOME: home, NODE_COMPILE_CACHE: COMPILE_CACHE, TZ: 'UTC', YOKOTEN_TEMP_DIRS: '', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'maintenance.auto', GIT_CONFIG_VALUE_0: 'false', GIT_CONFIG_KEY_1: 'gc.auto', GIT_CONFIG_VALUE_1: '0', NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' };
   const git = (...args: string[]) => spawnSync('git', args, { cwd: repo, env, encoding: 'utf8' });
   git('init', '-q', '-b', 'main');
   git('config', 'user.name', 'Test');
