@@ -1,3 +1,3 @@
 Fixed
 
-The command guard now checks a body file that the same command writes with a heredoc: `cat > body.md <<'EOF' … EOF`, then `gh issue create --body-file body.md`. It also fills in a variable set earlier in the command, as in `S=/path; … --body-file $S/x.md`. When it still can't tell what the file will hold, the guard refuses as before, and now says why: the file doesn't exist yet when the guard runs, so write it in one command and post it in the next (#439).
+The command guard now reads a body file that the same command writes, in one shape: the whole command is `cat > body.md <<'EOF' && gh issue create --body-file body.md`, then the body and `EOF`. It checks the heredoc, and the file already on disk too. In any other shape, it refuses a body file that another command beside gh may change. The refusal now says why: the guard runs before the command, so write the file in one command and post it in the next (#439).

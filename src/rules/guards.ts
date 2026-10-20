@@ -98,19 +98,18 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
   // A command that moves to another folder or repo (`cd x && git config ...`, GIT_DIR=)
   // may change the hooks setting of a repo the guard does not look at.
   if (commands.some(movesRepo)) cwd = null;
-  // The files and variables the commands before each gh set (#439).
-  const files = new SameCommandFiles(env);
-  for (const [index, words] of commands.entries()) {
-    files.enter(words, index);
+  // What the rest of the command may do to a file gh reads (#439).
+  const heredoc = heredocPost(command, commands);
+  const others = commands.filter((words) => !isPlainCd(words)).length;
+  for (const words of commands) {
     const reason =
       checkGit(words, { env, config, cwd, rules }) ??
       checkHooksEnvironment(words) ??
       checkPublish(words, env) ??
       checkBlocked(words, config?.commands.block ?? {}) ??
-      checkPosted(words, { env, config, cwd: postCwd, command, titles, files }) ??
+      checkPosted(words, { env, config, cwd: postCwd, command, titles, files: { heredoc, mayWrite: heredoc !== undefined || others > (isPlainCd(words) ? 0 : 1) || writesFile(words) } }) ??
       (rules ? checkLeadOnlyWrites(words, { env, rules, folder: postCwd }) : null);
     if (reason) return reason;
-    files.leave(words, index, postCwd);
     postCwd = folderAfter(words, postCwd, env);
   }
   return null;
@@ -303,14 +302,6 @@ function configValues(words: string[]): Map<string, string> {
 const unquotedRedirects = new WeakMap<string[], Set<number>>();
 // The word lists the reader made: in them, a redirect with no mark is quoted text.
 const readWords = new WeakSet<string[]>();
-// For a body file the same command writes (#439). How each command the reader is sure runs
-// in turn joins the one before (see `read`): only these may set a variable or write a file
-// the guard follows. The heredoc bodies fed to each command. The words with a `$` the shell
-// keeps as written ('$x', \$x, "\$x"), so the guard does not fill in a variable there.
-type Joined = 'start' | '&&' | '||';
-const topLevel = new WeakMap<string[], Joined>();
-const heredocInputs = new WeakMap<string[], { body: string; quoted: boolean }[]>();
-const literalDollars = new WeakMap<string[], Set<number>>();
 
 // The words of `words` from `from` on, with each unquoted redirect and its file taken out.
 function withoutShellRedirects(words: string[], from: number): string[] {
@@ -752,12 +743,12 @@ function checkPublish(words: string[], env: Env): Finding | null {
 // The privacy check comes first: a title is checked by it too, and a leak matters more.
 function checkPosted(
   words: string[],
-  { env, config, cwd, command, titles, files }: { env: Env; config?: Partial<Pick<Config, 'privacy' | 'areas'>>; cwd: string | null; command: string; titles: boolean; files: SameCommandFiles },
+  { env, config, cwd, command, titles, files }: { env: Env; config?: Partial<Pick<Config, 'privacy' | 'areas'>>; cwd: string | null; command: string; titles: boolean; files: CommandFiles },
 ): Finding | null {
   const at = ghIndex(words, findPrograms(words));
   if (at === -1) return null;
   const gh = ghCommand(words, at);
-  const leak = checkPost(gh, { env, privacy: config?.privacy, cwd, command, files: files.forGh(words) });
+  const leak = checkPost(gh, { env, privacy: config?.privacy, cwd, command, files });
   if (leak || !titles) return leak;
   const [title] = checkCommandTitle([words[at], ...gh.args], config ?? {});
   return title ?? null;
@@ -781,6 +772,71 @@ function ghCommand(words: string[], at: number): GhCommand {
   return gh;
 }
 
+// ---- A body file the same command writes (#439) ----
+//
+// The guard runs before the command, so a file the command writes on its way to gh is not
+// there yet. It follows one shape only, the whole command:
+//
+//   cat > body.md <<'EOF' && gh issue create --title "..." --body-file body.md
+//   ...the body...
+//   EOF
+//
+// The path is plain (letters, digits, . _ / -, or a leading ~/), the delimiter is quoted, and
+// the gh line holds no substitution, variable, glob, redirect or separator outside quotes.
+// The guard then checks the heredoc's text, and the file on disk too when there is one, in
+// case cat can't replace it. Any other command beside gh (but a plain cd) may write a file
+// gh reads, so a file on disk is not trusted then, and the command is refused (record 0014).
+
+const HEREDOC_POST = /^cat[ \t]+>[ \t]*((?:~\/)?[A-Za-z0-9._/][A-Za-z0-9._/-]*)[ \t]+<<(['"])([A-Za-z_]\w*)\2[ \t]*&&[ \t]*(gh[ \t][^\n]*)$/;
+
+/** The path and text of `cat > path <<'EOF' && gh …`, when that is the whole command; otherwise undefined. */
+function heredocPost(command: string, commands: string[][]): { path: string; text: string } | undefined {
+  const end = command.indexOf('\n');
+  const first = end === -1 ? null : HEREDOC_POST.exec(command.slice(0, end));
+  if (!first || !isPlainLine(first[4])) return undefined;
+  const [, path, , delimiter] = first;
+  const lines = command.slice(end + 1).split('\n');
+  const close = lines.indexOf(delimiter);
+  // Nothing after the delimiter line but one line end.
+  if (close === -1 || lines.length > close + 2 || (lines.length === close + 2 && lines[close + 1] !== '')) return undefined;
+  // The reader agrees: cat writes the path, then gh runs, and nothing else.
+  const [cat, post] = commands;
+  const writes = cat?.[0] === 'cat' && ((cat.length === 3 && cat[1] === '>' && cat[2] === path) || (cat.length === 2 && cat[1] === `>${path}`));
+  if (commands.length !== 2 || !writes || post[0] !== 'gh') return undefined;
+  return { path, text: lines.slice(0, close).join('\n') };
+}
+
+// A gh line the shell takes as written: outside quotes only plain characters, and in "..."
+// no $, backtick, \ or !.
+function isPlainLine(line: string): boolean {
+  let quote = '';
+  for (const character of line) {
+    if (quote === "'") {
+      if (character === "'") quote = '';
+    } else if (quote === '"') {
+      if (character === '"') quote = '';
+      else if ('$`\\!'.includes(character)) return false;
+    } else if (character === "'" || character === '"') quote = character;
+    else if (!/[A-Za-z0-9 \t._/=:,@%+~-]/.test(character)) return false;
+  }
+  return quote === '';
+}
+
+// `cd`, `pushd` or `popd` with no redirect: it writes no file.
+function isPlainCd(words: string[]): boolean {
+  return ['cd', 'pushd', 'popd'].includes(words[0] ?? '') && !unquotedRedirects.get(words)?.size;
+}
+
+// Whether a command's own redirects write a file: `gh … > body.md` empties it before gh reads it.
+function writesFile(words: string[]): boolean {
+  for (const index of unquotedRedirects.get(words) ?? []) {
+    const redirect = WRITE_REDIRECT.exec(words[index]);
+    const path = redirect && (redirect[2] || words[index + 1]);
+    if (path && path !== '/dev/null' && !(redirect[1] === '>&' && /^(\d+|-)$/.test(path))) return true;
+  }
+  return false;
+}
+
 // The folder after a `cd` or `pushd` with a plain path, or null when the guard can't tell:
 // a variable, a substitution, `cd -` or `popd`. Any other command leaves it as it was.
 function folderAfter(words: string[], folder: string | null, env: Env): string | null {
@@ -794,192 +850,6 @@ function folderAfter(words: string[], folder: string | null, env: Env): string |
   if (path === null) return null;
   if (isAbsolute(path)) return path;
   return folder === null ? null : resolve(folder, path);
-}
-
-// ---- A body file the same command writes (#439) ----
-//
-// The guard runs before the command, so a file the command writes on its way to gh is not
-// there yet: `cat > body.md <<'EOF' ... EOF`, then `gh issue create --body-file body.md`.
-// The guard follows the commands before gh, in order, and knows two things:
-// - A variable set on its own (`S=/path`, `export S=/path`) to a plain value, by a command it
-//   is sure runs. It fills it into the path of a body file. A variable set any other way, from
-//   another variable, or from outside the command, is not known.
-// - The text a heredoc writes with `cat > file` (or `cat - > file`, `tee file >/dev/null`), by
-//   a command it is sure runs, or one in the same && chain as gh. An unquoted heredoc that
-//   fills in a variable or a substitution is not known.
-// Any other command before gh that names the file, and any word after the heredoc the guard
-// can't follow (a substitution, a glob, a variable it doesn't know), may change the file:
-// then the guard is unsure, and the command is refused (record 0014). Each lookup is by key,
-// so the work stays linear in the command.
-
-const MAX_PATH = 4096;
-const ASSIGNMENT = /^([A-Za-z_]\w*)(\+?)=(.*)$/s;
-const DECLARERS = new Set(['export', 'declare', 'typeset', 'local', 'readonly']);
-// $NAME and ${NAME}; ${NAME with more after it (${S:-x}, ${S:=x}) may set it.
-const VARIABLE = /\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))/g;
-const VARIABLE_FORM = /\$\{[#!]?([A-Za-z_]\w*)(?!\w|\})/g;
-// A word the shell fills in or expands in ways the guard does not follow.
-const UNFOLLOWED = /`|\$\(|\*/;
-// A redirect of stdout to a file: `>f`, `1> f`, `>|f`.
-const STDOUT_TO = /^1?>\|?(?![>&])(.*)$/s;
-
-class SameCommandFiles {
-  private readonly vars = new Map<string, string | null>();
-  private readonly written = new Map<string, { text: string | null; at: number; inChain: boolean }>();
-  /** For a file name, the last command that names it. */
-  private readonly named = new Map<string, number>();
-  /** The last command with a word the guard can't follow. */
-  private unsureAt = -1;
-  /** The last command the reader is sure of that does not follow an &&. */
-  private chainAt = -1;
-  /** The command now surely runs, once the ones before it ran; and the one before can't fail. */
-  private isSure = true;
-  private wasCertain = true;
-
-  private readonly env: Env;
-
-  constructor(env: Env) {
-    this.env = env;
-  }
-
-  /** Before the checks of a command: where its && chain starts, and whether it surely runs. */
-  enter(words: string[], index: number): void {
-    const joined = topLevel.get(words);
-    if (joined === undefined) return;
-    if (joined !== '&&') this.chainAt = index;
-    this.isSure = joined === 'start' || (joined === '&&' && this.isSure && this.wasCertain);
-  }
-
-  /** After the checks of a command, run in `folder`: what it sets, writes and names. */
-  leave(words: string[], index: number, folder: string | null): void {
-    const joined = topLevel.get(words);
-    const assigned = joined === undefined ? null : assignments(words);
-    for (const [name, value] of assigned ?? []) this.vars.set(name, this.isSure ? value : null);
-    if (joined !== undefined) this.wasCertain = assigned !== null;
-    const writes = joined === undefined ? null : this.heredocWrite(words, folder);
-    if (writes) this.written.set(writes.path, { text: joined === '||' ? null : writes.text, at: index, inChain: !this.isSure });
-    for (const word of words) {
-      const file = word.replace(REDIRECT_OPERATOR, '');
-      this.named.set(basename(file), index);
-      const value = file.slice(file.indexOf('=') + 1).replace(/^@/, '');
-      if (value !== file) this.named.set(basename(value), index);
-      // A variable set or read in any other way may change: `read S`, `for S in`, `${S:=x}`.
-      if (assigned === null) {
-        const set = ASSIGNMENT.exec(word);
-        if (set) this.vars.set(set[1], null);
-        if (this.vars.has(word)) this.vars.set(word, null);
-      }
-      for (const form of word.matchAll(VARIABLE_FORM)) this.vars.set(form[1], null);
-      if (!this.follows(word, index)) this.unsureAt = index;
-    }
-    if (writes) this.named.set(basename(writes.path), index);
-  }
-
-  /** What the guard knows for the gh command `words`. */
-  forGh(words: string[]): CommandFiles {
-    const isTop = topLevel.has(words);
-    // A path with a $ the shell keeps as written is not filled in: `-F '$S/x.md'`.
-    const literal = new Set<string>();
-    for (const at of literalDollars.get(words) ?? []) {
-      const word = words[at];
-      for (const form of [word, word.slice(1), word.slice(2), word.slice(word.indexOf('=') + 1), word.slice(word.indexOf('=') + 2)]) literal.add(form);
-    }
-    return {
-      expand: (path) => (literal.has(path) ? null : this.fill(path)),
-      written: (path) => this.lookup(path, isTop),
-    };
-  }
-
-  // Whether the guard can fill in the word: no substitution or glob, and every variable known.
-  // A variable it knows names the file its value names too.
-  private follows(word: string, index: number): boolean {
-    if (UNFOLLOWED.test(word)) return false;
-    if (!word.includes('$')) return true;
-    for (const match of word.matchAll(VARIABLE)) {
-      const value = this.vars.get(match[1] ?? match[2]);
-      if (value === undefined || value === null) return false;
-      this.named.set(basename(value), index);
-    }
-    return !word.replace(VARIABLE, '').includes('$');
-  }
-
-  // The word with the variables filled in, or null when it holds anything else the shell
-  // fills in, or comes out longer than a path can be. It counts the length before it builds.
-  private fill(word: string): string | null {
-    if (UNFOLLOWED.test(word)) return null;
-    if (!word.includes('$')) return word;
-    const matches = [...word.matchAll(VARIABLE)];
-    let length = word.length;
-    for (const match of matches) {
-      const value = this.vars.get(match[1] ?? match[2]);
-      if (value === undefined || value === null) return null;
-      length += value.length - match[0].length;
-    }
-    if (length > MAX_PATH) return null;
-    let out = '';
-    let last = 0;
-    for (const match of matches) {
-      out += word.slice(last, match.index) + (this.vars.get(match[1] ?? match[2]) ?? '');
-      last = match.index + match[0].length;
-    }
-    out += word.slice(last);
-    return out.includes('$') ? null : out;
-  }
-
-  // The file a `cat > file <<EOF` or `tee file <<EOF` writes, as a full path, and its text
-  // (null when the shell fills something in). Null for any other command.
-  private heredocWrite(words: string[], folder: string | null): { path: string; text: string | null } | null {
-    const inputs = heredocInputs.get(words);
-    const name = programName(words[0] ?? '');
-    if (inputs?.length !== 1 || (name !== 'cat' && name !== 'tee')) return null;
-    const marks = unquotedRedirects.get(words) ?? new Set<number>();
-    const args = withoutShellRedirects(words, 1);
-    let target: { word: string; at: number } | null = null;
-    for (const at of marks) {
-      const redirect = STDOUT_TO.exec(words[at]);
-      if (!redirect) return null;
-      const file = redirect[1] ? { word: redirect[1], at } : { word: words[at + 1] ?? '', at: at + 1 };
-      if (name === 'tee' && file.word !== '/dev/null') return null;
-      if (name === 'cat' && target !== null) return null;
-      target = file;
-    }
-    if (name === 'tee') {
-      if (args.length !== 1 || args[0].startsWith('-')) return null;
-      target = { word: args[0], at: words.indexOf(args[0], 1) };
-    } else if (target === null || args.some((arg) => arg !== '-') || args.length > 1) return null;
-    if (literalDollars.get(words)?.has(target.at)) return null;
-    const path = this.fill(target.word);
-    if (path === null || path === '') return null;
-    const full = path.startsWith('~/') && this.env.HOME ? join(this.env.HOME, path.slice(2)) : path;
-    if (!isAbsolute(full) && folder === null) return null;
-    const [{ body, quoted }] = inputs;
-    return { path: resolve(folder ?? '', full), text: quoted || !/[$`]/.test(body) ? body : null };
-  }
-
-  private lookup(path: string, isTop: boolean): { text: string } | 'unsure' | undefined {
-    const write = this.written.get(path);
-    const last = this.named.get(basename(path));
-    if (!write) return last === undefined ? undefined : 'unsure';
-    if (write.text === null || last !== write.at || this.unsureAt > write.at) return 'unsure';
-    if (write.inChain && (this.chainAt > write.at || !isTop)) return 'unsure';
-    return { text: write.text };
-  }
-}
-
-// The variables a command sets on its own, `S=x` or `export S=x`, each with its value, or null
-// for a value the guard doesn't follow. Null when the command does anything else.
-function assignments(words: string[]): [string, string | null][] | null {
-  const from = DECLARERS.has(words[0] ?? '') ? 1 : 0;
-  if (from === words.length) return null;
-  const set: [string, string | null][] = [];
-  for (const word of words.slice(from)) {
-    const match = ASSIGNMENT.exec(word);
-    if (!match) return null;
-    const [, name, append, value] = match;
-    // A value with a $ (as written or not), a ~ or a glob, or longer than a path, is not followed.
-    set.push([name, append || value.length > MAX_PATH || /[$`~*?[]/.test(value) ? null : value]);
-  }
-  return set;
 }
 
 // ---- Lead-only files a worker's command writes (#402) ----
@@ -2030,9 +1900,6 @@ function read(text: string, start: number, closer: string, depth: number, out: s
   let cases = 0; // how many `case ... in` are open
   let isPattern = false; // reading a case pattern, up to its )
   let alternative = 0; // words in the pattern since the last |: more than one is no pattern
-  let joined: Joined = 'start'; // how the next command joins the one before it
-  let isBackground = false; // the command ending now ends with a single &
-  let hasLiteralDollar = false; // the word has a $ the shell keeps as written
 
   const endWord = () => {
     const ended = inWord ? word : null;
@@ -2041,11 +1908,6 @@ function read(text: string, start: number, closer: string, depth: number, out: s
     if (ended !== null) {
       words.push(ended);
       readWords.add(words);
-      if (hasLiteralDollar) {
-        const marks = literalDollars.get(words) ?? new Set<number>();
-        marks.add(words.length - 1);
-        literalDollars.set(words, marks);
-      }
       // A redirect whose operator is unquoted, whatever its file: `>"AGENTS.md"` (#402).
       if (REDIRECT.test(ended) && (!isQuoted || (REDIRECT_OPERATOR.exec(ended)?.[0].length ?? Infinity) <= quotedAt)) {
         const marks = unquotedRedirects.get(words) ?? new Set<number>();
@@ -2057,7 +1919,6 @@ function read(text: string, start: number, closer: string, depth: number, out: s
     word = '';
     inWord = false;
     isQuoted = false;
-    hasLiteralDollar = false;
     if (ended === null) return;
     if (isPattern && ++alternative > 1) isPattern = false; // `a b)` is no pattern: read it as a command
     if (!isKeyword) return;
@@ -2122,11 +1983,6 @@ function read(text: string, start: number, closer: string, depth: number, out: s
   const endCommand = (pipe = false) => {
     endWord();
     spend(words.length);
-    const wasBackground = isBackground;
-    isBackground = false;
-    // A command the guard is sure runs on its own, in order: in the text itself, in no group,
-    // pipe, case or background (#439).
-    if (words.length > 0 && depth === 0 && groups.length === 0 && cases === 0 && !pipe && piped === null && !wasBackground) topLevel.set(words, joined);
     line.push(words);
     pipes.push(pipe);
     settle(pipe);
@@ -2201,10 +2057,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       endWord();
       index++;
     } else if (character === '\n') {
-      // `a &&` at a line end joins the next line's command to a.
-      const hasCommand = inWord || words.length > 0;
       endCommand();
-      if (hasCommand) joined = 'start';
       index = pending.length ? bodies(text, index + 1, pending, { line, pipes, groups }, depth, out) : index + 1;
       pending = [];
       line = [];
@@ -2216,7 +2069,6 @@ function read(text: string, start: number, closer: string, depth: number, out: s
     } else if (character === '\\') {
       if (next !== '\n') {
         quote();
-        if (next === '$') hasLiteralDollar = true;
         word += next ?? character;
         inWord = true;
       }
@@ -2231,7 +2083,6 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       else {
         const body = text.slice(open + 1, end);
         quote();
-        if (body.includes('$')) hasLiteralDollar = true;
         word += ansi ? body.replace(/\\(.)/gs, '$1') : body;
         inWord = true;
         index = end + 1;
@@ -2243,8 +2094,6 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       else if (!quoted) index = open + 1; // unclosed: drop the quote and read on
       else {
         quote();
-        // \$ in "..." is a $ as written.
-        if (text.slice(open + 1, quoted.end).includes('\\$')) hasLiteralDollar = true;
         word += quoted.value;
         inWord = true;
         index = quoted.end;
@@ -2291,7 +2140,6 @@ function read(text: string, start: number, closer: string, depth: number, out: s
     } else if (character === ')' || character === ';' || (character === '}' && !inWord && /[\s;]|^$/.test(next ?? ''))) {
       // A brace inside a word (${x}, a{b,c}) does not cut.
       endCommand();
-      if (character === ';') joined = 'start';
       index++;
     } else if (character === '&') {
       if (next === '>' || word.endsWith('>')) {
@@ -2301,9 +2149,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
         inWord = true;
         index++;
       } else {
-        isBackground = next !== '&';
         endCommand();
-        joined = next === '&' ? '&&' : 'start';
         index += next === '&' ? 2 : 1;
       }
     } else if (character === '|' && !isQuoted && /^(\d+|\{[A-Za-z_]\w*\}|&)?>$/.test(word)) {
@@ -2312,7 +2158,6 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       index++;
     } else if (character === '|') {
       endCommand(next !== '|');
-      joined = next === '|' ? '||' : 'start';
       index += next === '|' || next === '&' ? 2 : 1;
     } else if (character === '<' && next === '<' && text[index + 2] === '<') {
       // A here-string is one more word. A shell that reads it is a runner, so it is read.
@@ -2484,13 +2329,6 @@ function bodies(text: string, index: number, docs: Heredoc[], { line, pipes, gro
       lines.push(ln);
     }
     const body = lines.join('\n');
-    // The body is the input of its command, for a body file the command writes (#439).
-    const fed = doc.group ? undefined : line[doc.cmd];
-    if (fed !== undefined && fed.length > 0) {
-      const inputs = heredocInputs.get(fed) ?? [];
-      inputs.push({ body, quoted: doc.quoted });
-      heredocInputs.set(fed, inputs);
-    }
     // `xargs git <<EOF`: the body's words are the program's words.
     if (!handedTo.has(doc.cmd)) handedTo.set(doc.cmd, xargsCommand(line[doc.cmd] ?? []));
     const handed = handedTo.get(doc.cmd) ?? null;

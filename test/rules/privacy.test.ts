@@ -3,6 +3,7 @@
 import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import {
+  chmodSync,
   mkdirSync,
   realpathSync,
   rmSync,
@@ -513,6 +514,8 @@ test('only regular files up to 1 MB are read; others pass unread (#391 review)',
 });
 
 // ---- A body file the same command writes (#439) ----
+//
+// Only `cat > path <<'EOF' && gh … path`, as the whole command, is followed.
 
 const plainRefusal = (command: string) => {
   const f = post(command);
@@ -521,89 +524,187 @@ const plainRefusal = (command: string) => {
   assert.match(f?.fix ?? '', /write the file in one command, then post it in the next/, command);
 };
 
-test('a body file a heredoc writes earlier in the same command is read (#439)', () => {
+test('cat > file <<EOF && gh --body-file file: the heredoc is checked (#439)', () => {
+  rmSync(join(postDir, 'fresh.md'), { force: true });
   for (const command of [
-    `cat > fresh.md <<'EOF'\nAll clean.\nEOF\ngh issue create --title "check: add t" --body-file fresh.md`,
-    `cat <<'EOF' > fresh.md && gh issue create --title "check: add t" -F fresh.md\nAll clean.\nEOF`,
-    `cd ${postDir} && cat > fresh.md <<'EOF' && gh pr comment 3 --body-file fresh.md\nAll clean.\nEOF`,
-    `tee fresh.md >/dev/null <<'EOF'\nAll clean.\nEOF\ngh issue comment 3 -F fresh.md`,
-    `cat > fresh.md <<EOF\nNo variables here.\nEOF\ngh issue comment 3 -F ./fresh.md`,
+    `cat > fresh.md <<'EOF' && gh issue create --title "check: add t" --body-file fresh.md\nAll clean.\nEOF`,
+    `cat >fresh.md <<"EOF" && gh pr comment 3 -F fresh.md\nAll clean, $(not run).\nEOF\n`,
+    `cat > fresh.md <<'EOF' && gh issue comment 3 --body-file=fresh.md\nAll clean.\nEOF`,
+    `cat > fresh.md <<'EOF' && gh issue comment 3 -Ffresh.md\nAll clean.\nEOF`,
+    `cat > ~/fresh.md <<'EOF' && gh issue comment 3 -F ~/fresh.md --repo o/r\nAll clean.\nEOF`,
   ]) {
     assert.equal(post(command), null, command);
   }
 });
 
-test('a heredoc body file with a private value is stopped, by file and line (#439)', () => {
-  const marked = post(`cat > fresh.md <<'EOF'\nSummary\nTested in QuietVale.\nEOF\ngh issue create --title "check: add t" --body-file fresh.md`);
+test('a heredoc body with a private value is stopped, by file and line (#439)', () => {
+  rmSync(join(postDir, 'fresh.md'), { force: true });
+  const marked = post(`cat > fresh.md <<'EOF' && gh issue create --title "check: add t" --body-file fresh.md\nSummary\nTested in QuietVale.\nEOF`);
   assert.equal(marked?.id, 'private-mark');
   assert.equal(marked?.line, 2);
   assert.ok(!formatFinding(marked).toLowerCase().includes('quietvale'));
-  assert.equal(post(`cat > fresh.md <<'EOF'\nmail ${email}\nEOF\ngh pr comment 3 -F fresh.md`)?.id, 'email');
-  // The later of two heredocs to the same file is the one posted.
-  assert.equal(post(`cat > fresh.md <<'EOF'\nclean\nEOF\ncat > fresh.md <<'EOF'\nmail ${email}\nEOF\ngh pr comment 3 -F fresh.md`)?.id, 'email');
+  assert.equal(post(`cat > fresh.md <<'EOF' && gh pr comment 3 -F fresh.md\nmail ${email}\nEOF`)?.id, 'email');
 });
 
-test('a variable set earlier in the command is filled into the body file path (#439)', () => {
-  const dir = join(postDir, 'w439');
-  for (const [path, set] of [['$S/x.md', `S=${dir}`], ['"$S/x.md"', `export S=${dir}`], ['${S}/x.md', `S=${dir}`], ['$F', `F=${dir}/x.md`]] as const) {
-    const write = path === '$F' ? '$F' : '$S/x.md';
-    assert.equal(post(`${set}; mkdir -p ${dir}; cat > ${write} <<'EOF'\nclean\nEOF\ngh issue comment 3 --body-file ${path}`), null, path);
-    assert.equal(post(`${set}\ncat > ${write} <<'EOF'\nfrom QuietVale\nEOF\ngh issue comment 3 --body-file ${path}`)?.id, 'private-mark', path);
-  }
-  // A file already on disk, named through the variable.
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'disk.md'), `mail ${email}\n`);
-  assert.equal(post(`S=${dir}; gh issue comment 3 -F $S/disk.md`)?.id, 'email');
+test('the file on disk is checked too, in case cat cannot replace it (#439)', () => {
+  writeFileSync(join(postDir, 'old.md'), 'Seen in QuietVale.\n');
+  assert.equal(post(`cat > old.md <<'EOF' && gh issue comment 3 -F old.md\nAll clean.\nEOF`)?.id, 'private-mark');
+  writeFileSync(join(postDir, 'old.md'), 'clean\n');
+  assert.equal(post(`cat > old.md <<'EOF' && gh issue comment 3 -F old.md\nAll clean.\nEOF`), null);
+  // A read-only file (chmod 444): cat can't replace it, so what is there now is checked.
+  writeFileSync(join(postDir, 'ro.md'), 'Seen in QuietVale.\n');
+  chmodSync(join(postDir, 'ro.md'), 0o444);
+  assert.equal(post(`cat > ro.md <<'EOF' && gh issue comment 3 -F ro.md\nAll clean.\nEOF`)?.id, 'private-mark');
+  chmodSync(join(postDir, 'ro.md'), 0o644);
+  // A folder there: cat fails, and the guard can't tell.
+  mkdirSync(join(postDir, 'adir.md'), { recursive: true });
+  plainRefusal(`cat > adir.md <<'EOF' && gh issue comment 3 -F adir.md\nclean\nEOF`);
 });
 
-test('a body file the guard cannot follow is refused, and the reason says why (#439)', () => {
-  writeFileSync(join(postDir, 'ondisk.md'), 'clean\n');
-  for (const command of [
-    // A file written by something other than a heredoc.
-    'echo hi > out.md; gh issue comment 3 -F out.md',
-    `printf 'mail %s' x > out.md && gh issue comment 3 -F out.md`,
-    'cp other.md ondisk.md && gh issue comment 3 -F ondisk.md',
-    `cat > ondisk.md <<'EOF'\nclean\nEOF\nsed -i s/a/b/ ondisk.md\ngh issue comment 3 -F ondisk.md`,
-    `cat > ondisk.md <<'EOF'\nclean\nEOF\nrm -f *.md\ngh issue comment 3 -F ondisk.md`,
-    // A command substitution.
-    'gh issue comment 3 -F "$(mktemp)"',
-    `cat > $(echo out).md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F out.md`,
-    // A variable from outside the command, one set from another, or one kept as written.
-    'gh issue comment 3 -F $OUTSIDE/x.md',
-    `S=$HOME/w439; cat > $S/x.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F $S/x.md`,
-    `S=${postDir}; gh issue comment 3 -F '$S/ondisk.md'`,
-    `S=${postDir}; read S; gh issue comment 3 -F $S/ondisk.md`,
-    // An unquoted heredoc that fills something in.
-    `cat > out.md <<EOF\nhi $USER\nEOF\ngh issue comment 3 -F out.md`,
-    // A heredoc that may not run before gh does.
-    `cd ${postDir} && cat > out.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F out.md`,
-    `false || cat > out.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F out.md`,
-    `cat > out.md <<'EOF' &\nclean\nEOF\ngh issue comment 3 -F out.md`,
-    `(cat > out.md <<'EOF'\nclean\nEOF\n)\ngh issue comment 3 -F out.md`,
-    `cat >> ondisk.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F ondisk.md`,
-  ]) {
-    plainRefusal(command);
+test('a file on disk with nothing else in the command is read as before (#439)', () => {
+  writeFileSync(join(postDir, 'kept.md'), `mail ${email}\n`);
+  assert.equal(post('gh issue comment 3 -F kept.md')?.id, 'email');
+  assert.equal(post(`cd ${postDir} && gh issue comment 3 -F kept.md 2>/dev/null`)?.id, 'email');
+  writeFileSync(join(postDir, 'kept.md'), 'clean\n');
+  assert.equal(post('gh issue comment 3 -F kept.md'), null);
+});
+
+// Every other shape is refused: these came from review, and each one gets a body past a
+// more general reading of the command.
+const reviewCases: [string, string][] = [
+  ["backslash-newline unquoted", "cat > f.md <<EOF\nQuiet\\\nVale\nEOF\ngh issue comment 3 -F f.md"],
+  ["baseline clean", "cat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["baseline mark", "cat > f.md <<'EOF'\nQuietVale\nEOF\ngh issue comment 3 -F f.md"],
+  ["brace expansion tee", "cat > f.md <<'EOF'\nclean\nEOF\necho QuietVale | tee {f,g}.md\ngh issue comment 3 -F f.md"],
+  ["glob ? redirect", "cat > f.md <<'EOF'\nclean\nEOF\necho QuietVale > ?.md\ngh issue comment 3 -F f.md"],
+  ["glob [] cp", "cat > f.md <<'EOF'\nclean\nEOF\ncp src.txt [f].md\ngh issue comment 3 -F f.md"],
+  ["function cat", "cat() { printf QuietVale; }\ncat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["function cat2", "function cat { printf QuietVale; }\ncat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["noclobber", "set -C\ncat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["readonly existing (plain)", "cat > ro.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F ro.md"],
+  ["CRLF delim", "cat > f.md <<'EOF'\nclean\nEOF\r\nQuietVale\nEOF\ngh issue comment 3 -F f.md"],
+  ["trailing space delim", "cat > f.md <<'EOF'\nclean\nEOF \nQuietVale\nEOF\ngh issue comment 3 -F f.md"],
+  ["<<- tabs", "cat > f.md <<-'EOF'\n\tQuietVale\n\tEOF\ngh issue comment 3 -F f.md"],
+  ["two heredocs same file", "cat > f.md <<'EOF'\nQuietVale\nEOF\ncat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["two heredocs one cmd", "cat > f.md <<'A' <<'B'\nQuietVale\nA\nclean\nB\ngh issue comment 3 -F f.md"],
+  ["var reassign", "S=/x/f.md\nS=f.md\ncat > $S <<'EOF'\nclean\nEOF\nS=g.md\ngh issue comment 3 -F $S"],
+  ["S=a S=b", "S=a.md S=f.md\ncat > $S <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["S=a S=b gh", "S=a.md S=f.md\ncat > $S <<'EOF'\nQuietVale\nEOF\ngh issue comment 3 -F $S"],
+  ["subshell export", "S=f.md\n(S=g.md; export S)\ncat > g.md <<'EOF'\nQuietVale\nEOF\ncat > $S <<'EOF'\nclean\nEOF\ngh issue comment 3 -F $S"],
+  ["eval assign", "S=f.md\neval S=g.md\ncat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F $S"],
+  ["eval gh", "cat > f.md <<'EOF'\nQuietVale\nEOF\neval gh issue comment 3 -F f.md"],
+  ["command gh", "cat > f.md <<'EOF'\nQuietVale\nEOF\ncommand gh issue comment 3 -F f.md"],
+  ["env gh", "cat > f.md <<'EOF'\nQuietVale\nEOF\nenv gh issue comment 3 -F f.md"],
+  ["xargs gh", "cat > f.md <<'EOF'\nQuietVale\nEOF\necho f.md | xargs gh issue comment 3 -F"],
+  ["-Ff", "cat > f.md <<'EOF'\nQuietVale\nEOF\ngh issue comment 3 -Ff.md"],
+  ["--body-file=", "cat > f.md <<'EOF'\nQuietVale\nEOF\ngh issue comment 3 --body-file=f.md"],
+  ["process subst", "gh issue comment 3 -F <(echo QuietVale)"],
+  ["${S:-x}", "cat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F ${S:-g.md}"],
+  ["IFS", "IFS=.\nS=f.md\ncat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F $S"],
+  ["tilde", "cat > ~/f.md <<'EOF'\nQuietVale\nEOF\ngh issue comment 3 -F $HOME/f.md"],
+  ["cd between", "cat > f.md <<'EOF'\nclean\nEOF\ncd sub\ngh issue comment 3 -F f.md"],
+  ["unquoted with $(..)", "cat > f.md <<EOF\n$(echo Quiet)Vale\nEOF\ngh issue comment 3 -F f.md"],
+  ["unquoted backslash-dollar", "cat > f.md <<EOF\nQuiet\\Vale\nEOF\ngh issue comment 3 -F f.md"],
+  ["case-fold", "cat > F.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["symlink other name", "cat > target.md <<'EOF'\nQuietVale\nEOF\ngh issue comment 3 -F link.md"],
+  ["writer in if", "if true; then cat > f.md <<'EOF'\nQuietVale\nEOF\nfi\ngh issue comment 3 -F f.md"],
+  ["source", "cat > f.md <<'EOF'\nclean\nEOF\nsource x.sh\ngh issue comment 3 -F f.md"],
+  ["mv dir", "cat > f.md <<'EOF'\nclean\nEOF\ncp -r ev/. .\ngh issue comment 3 -F f.md"],
+  ["exec redirect", "cat > f.md <<'EOF'\nclean\nEOF\nexec 3>f.md\ngh issue comment 3 -F f.md"],
+  ["fd write without naming", "exec 3>f.md\ncat > f.md <<'EOF'\nclean\nEOF\necho QuietVale >&3\ngh issue comment 3 -F f.md"],
+  ["alias", "shopt -s expand_aliases\nalias cat='printf QuietVale'\ncat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["trap", "trap 'echo QuietVale > f.md' DEBUG\ncat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["background earlier", "sleep 1 && echo QuietVale > f\\.md &\ncat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["bg loop", "(sleep 0.1; cp ev/f.md .) &\ncat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["sh -c var", "S=f.md bash -c 'echo QuietVale > $S'\ncat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["space split gh", "S='x -F f.md'\ncat > \"$S\" <<'EOF'\nclean\nEOF\ngh issue comment 3 -F $S"],
+  ["ambiguous redirect", "S='a b.md'\ncat > $S <<'EOF'\nclean\nEOF\ngh issue comment 3 -F \"$S\""],
+  ["source sets var", "S=g.md\ncat > g.md <<'EOF'\nclean\nEOF\n. ./x.sh\ngh issue comment 3 -F $S"],
+  ["delim \"EOF\"", "cat > f.md <<\"EOF\"\n$(printf Quiet)Vale\nEOF\ngh issue comment 3 -F f.md"],
+  ["delim \\EOF", "cat > f.md <<\\EOF\n$(printf Quiet)Vale\nEOF\ngh issue comment 3 -F f.md"],
+  ["delim E'O'F", "cat > f.md <<E'O'F\n$(printf Quiet)Vale\nEOF\ngh issue comment 3 -F f.md"],
+  ["delim space 'EOF'", "cat > f.md << 'EOF'\n$(printf Quiet)Vale\nEOF\ngh issue comment 3 -F f.md"],
+  ["delim $X", "cat > f.md <<$X\n$(printf Quiet)Vale\n$X\ngh issue comment 3 -F f.md"],
+  ["two docs two cmds one line", "cat > f.md <<'A'; cat > g.md <<'B'\nclean\nA\nQuietVale\nB\ngh issue comment 3 -F f.md"],
+  ["two docs two cmds swap", "cat > g.md <<'A'; cat > f.md <<'B'\nclean\nA\nQuietVale\nB\ngh issue comment 3 -F f.md"],
+  ["bg gh then write", "cat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md &\nprintf QuietVale > f.md; wait"],
+  ["bg writer race", "(sleep 0.05; cp ev/f.md .) &\ncat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md; wait"],
+  ["heredoc in && with gh before body", "cat > f.md <<'EOF' && gh issue comment 3 -F f.md\nQuietVale\nEOF"],
+  ["line continuation in cmd", "cat > f.\\\nmd <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["unicode delim", "cat > f.md <<'EOF'\nclean\nEOF \nQuietVale\nEOF\ngh issue comment 3 -F f.md"],
+  ["semicolon after delim", "cat > f.md <<'EOF'\nclean\nEOF;\nQuietVale\nEOF\ngh issue comment 3 -F f.md"],
+  ["nested $( heredoc", "X=$(cat <<'EOF'\nclean\nEOF\n)\ncat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["comment hides heredoc", "cat > f.md <<'EOF' # <<'X'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["heredoc op in comment", "cat > f.md # <<'EOF'\nQuietVale\nEOF\ngh issue comment 3 -F f.md"],
+  ["writer w/ var target null HOME", "cat > $HOME/f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  [">| target", "set -C\ncat >| f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["cat 1>", "cat 1> f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["redirect before cat", "> f.md cat <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["assign prefix cat", "LC_ALL=C cat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["quoted cat", "'cat' > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["/bin/cat", "/bin/cat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["./cat", "./cat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["PATH cat", "PATH=./bin\ncat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["hash -p", "hash -p ./bin/cat cat\ncat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["enable -n", "enable -f x cat\ncat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["ulimit", "ulimit -f 0\ncat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["mkdir f.md first?", "cat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["readonly var", "S=g.md\nreadonly S\nS=f.md\ncat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F $S"],
+  ["declare -i", "declare -i S\nS=f.md\ncat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F $S"],
+  ["declare -u", "declare -l S\nS=F.md\ncat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["declare -u gh", "declare -u S\nS=f.md\ncat > F.MD <<'EOF'\nclean\nEOF\ngh issue comment 3 -F $S"],
+  ["export -n etc", "S=f.md; set -u; cat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F $S"],
+  ["brace in gh word", "cat > '{x,f.md}' <<'EOF'\nclean\nEOF\ngh issue comment 3 -F{x,f.md}"],
+  ["PATH prepend", "PATH=$PWD/bin:$PATH\ncat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md"],
+  ["readonly var disk", "S=g.md.old\nreadonly S\nS=f.md\ncat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F $S"],
+  ["IFS split", "S=f.md\nIFS=.\ncat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F $S"],
+  ['background gh', "cat > f.md <<'EOF' && gh issue comment 3 -F f.md &\nQuietVale\nEOF"],
+  ['variable in the path', "S=f.md; cat > $S <<'EOF' && gh issue comment 3 -F $S\nclean\nEOF"],
+  ['quoted path', "cat > 'f.md' <<'EOF' && gh issue comment 3 -F f.md\nclean\nEOF"],
+  ['unquoted delimiter', "cat > f.md <<EOF && gh issue comment 3 -F f.md\nclean\nEOF"],
+  ['other path to the same file', "cat > f.md <<'EOF' && gh issue comment 3 -F ./f.md\nclean\nEOF"],
+  ['substitution in the gh line', "cat > f.md <<'EOF' && gh issue comment 3 --title \"$(date)\" -F f.md\nclean\nEOF"],
+  ['a third command', "cat > f.md <<'EOF' && gh issue comment 3 -F f.md && echo done\nclean\nEOF"],
+  ['text after the delimiter', "cat > f.md <<'EOF' && gh issue comment 3 -F f.md\nclean\nEOF\necho QuietVale > f.md"],
+  ['gh redirect into the file', "gh issue comment 3 -F kept.md > kept.md"],
+  ['env prefix', "cat > f.md <<'EOF' && env gh issue comment 3 -F f.md\nclean\nEOF"],
+];
+
+test('every other way to write a body file in the same command is refused (#439)', () => {
+  mkdirSync(join(postDir, 'sub'), { recursive: true });
+  for (const onDisk of [false, true]) {
+    for (const name of ['f.md', 'g.md', 'ro.md', 'F.md', 'F.MD', 'target.md', 'link.md', 'kept.md']) {
+      if (onDisk) writeFileSync(join(postDir, name), 'clean\n');
+      else rmSync(join(postDir, name), { force: true });
+    }
+    for (const [name, command] of reviewCases) {
+      const f = post(command);
+      assert.ok(f !== null, `${name} (file on disk: ${onDisk})`);
+    }
   }
-  // A missing file says it doesn't exist yet.
+  // An unclosed heredoc swallows the gh line: gh never runs, and nothing is posted.
+  assert.equal(post("cat > f.md <<'EOF'\nclean\ngh issue comment 3 -F f.md"), null);
+  // Each answer that is not about the text itself gives the plain reason.
+  rmSync(join(postDir, 'f.md'), { force: true });
+  plainRefusal(`cat > f.md <<'EOF'\nclean\nEOF\ngh issue comment 3 -F f.md`);
+  plainRefusal('gh issue comment 3 -F "$(mktemp)"');
+  plainRefusal('gh issue comment 3 -F $OUTSIDE/x.md');
+  writeFileSync(join(postDir, 'f.md'), 'clean\n');
+  plainRefusal(`cat > f.md <<'EOF'\nQuietVale\nEOF\ngh issue comment 3 -F f.md`);
+  plainRefusal('echo QuietVale > f.md; gh issue comment 3 -F f.md');
   assert.match(post('gh issue comment 3 -F not-there.md')?.what ?? '', /doesn't exist yet when the guard runs/);
 });
 
-test('following a body file the command writes stays linear (#439)', () => {
-  const chunk = (i: number) => `cat > $S/f${i}.md <<'EOF'\nclean $S\nEOF\n`;
+test('reading the heredoc shape stays linear (#439)', () => {
+  rmSync(join(postDir, 'fresh.md'), { force: true });
   assertLinear(
-    'heredoc body files and a gh that names them',
-    (n) => {
-      const parts = [`S=${postDir}\n`];
-      let size = 0;
-      for (let i = 0; size < n; i++) {
-        parts.push(chunk(i % 50));
-        size += 30;
-      }
-      const files = Array.from({ length: Math.ceil(n / 400) }, (_, i) => `-F $S/f${i % 50}.md -F $S$S$S/${i}.md`).join(' ');
-      return `${parts.join('')}gh issue comment 3 ${files}`;
-    },
-    (command) => {
-      post(command);
-    },
+    'a long heredoc body and a long gh line',
+    (n) => `cat > fresh.md <<'EOF' && gh issue comment 3 ${'-F fresh.md '.repeat(n / 24)}--title "${'t'.repeat(n / 4)}"\n${'clean line\n'.repeat(n / 22)}EOF`,
+    (command) => assert.equal(post(command), null),
+  );
+  assertLinear(
+    'many commands before a gh with a body file',
+    (n) => `${'cd . && '.repeat(n / 16)}gh issue comment 3 -F not-there.md`,
+    (command) => assert.equal(post(command)?.id, 'unreadable-command'),
   );
 });
