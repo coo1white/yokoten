@@ -806,6 +806,46 @@ test('check and the commit hook: a mark allowed in one repo is stopped in anothe
   assert.doesNotMatch(other.run(['doctor'], { extra }).stdout, /own-marks/);
 });
 
+test('check: an added forge login is fine where a file names accounts, and found everywhere else (#410)', () => {
+  const sandbox = makeSandbox();
+  const marks = join(sandbox.home, '.config', 'yokoten', 'private-marks');
+  mkdirSync(dirname(marks), { recursive: true });
+  writeFileSync(marks, '# my own\nmycity\n# added by yokoten from this machine: forge login\nocto-jdoe\n');
+  sandbox.write('.github/CODEOWNERS', '* @octo-jdoe\n/docs/ @octo-jdoe/docs-team\n');
+  sandbox.write('.claude-plugin/plugin.json', '{\n  "name": "x",\n  "author": {\n    "name": "octo-jdoe",\n    "url": "https://github.com/octo-jdoe"\n  }\n}\n');
+  sandbox.write('package.json', '{\n  "name": "x",\n  "author": "octo-jdoe"\n}\n');
+  sandbox.write('LICENSE', 'MIT License\n\nCopyright (c) 2026 octo-jdoe\n');
+  sandbox.write('README.md', 'Hello.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'docs: hello');
+  let result = sandbox.run(['check']);
+  assert.equal(result.status, 0, result.stderr);
+  // Anywhere else, the same login is still found, and never printed.
+  sandbox.write('src/x.ts', "const who = 'octo-jdoe';\n");
+  sandbox.write('docs/a.md', 'Ask @octo-jdoe.\n');
+  sandbox.write('LICENSE', 'MIT License\n\nCopyright (c) 2026 octo-jdoe\nWritten by octo-jdoe.\n');
+  sandbox.write('package.json', '{\n  "name": "x",\n  "description": "by octo-jdoe",\n  "author": "octo-jdoe"\n}\n');
+  sandbox.git('add', '.');
+  result = sandbox.run(['check']);
+  assert.equal(result.status, 1);
+  for (const place of ['src/x.ts:1', 'docs/a.md:1', 'LICENSE:4', 'package.json:3']) assert.match(result.stderr, new RegExp(`${place.replace('.', '\\.')}: matches a line of your private-marks file`));
+  assert.ok(!/LICENSE:3|package\.json:4/.test(result.stderr), result.stderr);
+  assert.ok(!/octo-jdoe/i.test(result.stdout + result.stderr), 'check printed the login');
+});
+
+test('check: a mark the owner wrote is found in CODEOWNERS too (#410)', () => {
+  const sandbox = makeSandbox();
+  const marks = join(sandbox.home, '.config', 'yokoten', 'private-marks');
+  mkdirSync(dirname(marks), { recursive: true });
+  writeFileSync(marks, 'octo-jdoe\n');
+  sandbox.write('.github/CODEOWNERS', '* @octo-jdoe\n');
+  sandbox.git('add', '.');
+  const result = sandbox.run(['check']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /\.github\/CODEOWNERS:1: matches a line of your private-marks file/);
+  assert.ok(!/octo-jdoe/i.test(result.stdout + result.stderr));
+});
+
 // A gate that can't read git stops and says so (#403): never "clean", never "no changes".
 test('check: every gate refuses when git can\'t answer, never passes as clean (#403)', () => {
   const sandbox = makeSandbox();

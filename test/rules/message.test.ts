@@ -4,17 +4,16 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import {
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   makeTranslatedRepo,
   NAMED,
+  makeTempDir,
 } from '../repo/helpers.ts';
 import {
   DEFAULTS,
@@ -79,6 +78,7 @@ import {
   agentHooks,
   agentTempDirCheck,
   coreRulesCheck,
+  leftoverTempCheck,
   diskSpaceChecks,
   machineChecks,
   type MachineProbe,
@@ -139,7 +139,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   translated.commit('en.md', '# Guide\n\nStep one, changed.\n');
   add(translationNotes(translated.root, ['zh.md'])[0]);
   // `check --history` in a shallow clone (#266).
-  const shallow = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const shallow = makeTempDir();
   execFileSync('git', ['clone', '-q', '--depth', '1', `file://${translated.root}`, shallow], { stdio: 'ignore' });
   found.push(...checkHistory(shallow, { config: DEFAULTS, env: {} }));
   found.push(...parseChange('changes/1-a.md', 'Improved\n\nA thing.\n').problems);
@@ -157,7 +157,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   writeFileSync(event, JSON.stringify({ pull_request: { base: { sha: 'f'.repeat(40) }, head: { sha: translated.git('rev-parse', 'HEAD') } } }));
   add(unreadable(readPullRequest(translated.root, { GITHUB_EVENT_PATH: event })));
   // The road and the machine, from an empty folder and an empty home.
-  const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const dir = makeTempDir();
   for (const step of ROAD) add(stepFinding(step, dir, { HOME: dir }));
   add(notRepoFinding(dir));
   writeFileSync(join(dir, 'yokoten.json'), '{ "colour": "blue" }');
@@ -180,6 +180,10 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   };
   for (const c of diskSpaceChecks(dir, { HOME: dir }, fullMachine, false)) add(c.finding);
   add(agentTempDirCheck({}, fullMachine)?.finding);
+  // An old test folder in the temp folder (#400): seen from two days on.
+  const temp = makeTempDir();
+  mkdirSync(join(temp, 'yokoten-old'));
+  add(leftoverTempCheck({ YOKOTEN_TEMP_DIRS: temp }, { ...fullMachine, now: () => new Date(Date.now() + 2 * 24 * 60 * 60 * 1000) })?.finding);
   // The Codex and Gemini CLI user hooks (#211): only once their folders exist.
   for (const folder of ['.codex', '.gemini', '.grok']) mkdirSync(join(dir, folder));
   for (const c of userAgentHooks({ HOME: dir })) add(c.finding);
@@ -187,7 +191,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   for (const c of privacyNotes({ HOME: dir, GIT_CONFIG_GLOBAL: join(dir, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1' }, null)) add(c.finding);
   add(privateOutput('`git log` prints author names and emails', 'set -o pipefail; (\ngit log\n) 2>&1 | yokoten redact'));
   // The plugin (#198): enabled, and installed at a version older than this yokoten.
-  const pluginHome = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const pluginHome = makeTempDir();
   const pluginFolder = join(pluginHome, 'plugin');
   mkdirSync(join(pluginHome, '.claude', 'plugins'), { recursive: true });
   mkdirSync(pluginFolder);

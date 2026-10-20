@@ -1,13 +1,13 @@
 // The shape of the code, checked. A rule about structure that no test holds drifts.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { test } from 'node:test';
+import { makeTempDir } from './helpers.ts';
 import { fileURLToPath } from 'node:url';
 import { COMMANDS } from '../../src/run/cli.ts';
-import { findDeclarations, findNameProblems, splitWords, tokenize } from '../../src/run/names.ts';
+import { findDeclarations, findNameProblems, splitWords, type Token, tokenize } from '../../src/run/names.ts';
 import { HOME_DIR, homeDirOf } from '../../src/setup/files.ts';
 import { assertLinear } from '../../scripts/linear.ts';
 
@@ -202,6 +202,30 @@ test('code is .ts only: no .js, .mjs, .cjs or .tsx under bin, src or test (#43)'
   const files = execFileSync('git', ['ls-files', 'bin', 'src', 'test'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter(Boolean);
   assert.ok(files.some((f) => f.endsWith('.ts')), 'no .ts found; the scan is broken');
   assert.deepEqual(strayCode(files), [], 'write it as .ts: Node runs it with no build');
+});
+
+// #400: a test made its folder with a bare mkdtempSync and never removed it; one machine
+// held 4,000 of them. makeTempDir (test/repo/helpers.ts) removes each one when its test
+// ends. A line that starts with a quote is text a test writes out, not code that runs here.
+// The [d] keeps this pattern from matching its own line.
+const TEMP_HELPER = 'test/repo/helpers.ts';
+const findBareTempDirs = (files: Record<string, string>) =>
+  Object.entries(files).flatMap(([path, text]) =>
+    path === TEMP_HELPER
+      ? []
+      : text.split('\n').flatMap((line, index) => (!/^\s*["'`]/.test(line) && /\bmk[d]temp(Sync)?\s*\(/.test(line) ? [`${path}:${index + 1}`] : [])));
+
+test('temp folders: tests make them with makeTempDir, not with mkdtempSync alone (#400)', () => {
+  assert.deepEqual(findBareTempDirs({
+    'test/a.test.ts': "const dir = mkdtempSync(join(tmpdir(), 'x-'));\nconst ok = makeTempDir('x-');\n",
+    'test/b.test.ts': "  \"const root = mkdtempSync(join(tmpdir(), 'lesson-'));\",\nawait mkdtemp(prefix);\n",
+    [TEMP_HELPER]:
+      "const parent = mkdtempSync(join(tmpdir(), 'yokoten-test-'));\n",
+  }), ['test/a.test.ts:1', 'test/b.test.ts:2']);
+  const paths = execFileSync('git', ['ls-files', 'test'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter((p) => p.endsWith('.ts'));
+  assert.ok(paths.includes(TEMP_HELPER), 'the helper is not found; the scan is broken');
+  const files = Object.fromEntries(paths.map((p) => [p, readFileSync(join(ROOT, p), 'utf8')]));
+  assert.deepEqual(findBareTempDirs(files), [], `make the folder with makeTempDir from ${TEMP_HELPER}: it is removed when the test ends`);
 });
 
 // ---- The npm package (#31) ----
@@ -504,7 +528,7 @@ test('docs: the guides\' Commands table covers every command and option in COMMA
 // still finds it there; an import the tool cannot place stops it, with a list. The fixture
 // repo has a script and two test files named like the real ones, so the real table places them.
 function makeSplitFixture(files: Record<string, string>): string {
-  const root = mkdtempSync(join(tmpdir(), 'yokoten-split-'));
+  const root = makeTempDir('yokoten-split-');
   const hoisted = "const ROOT = 'root';\nconst CLI = 'cli';\nconst at = '@';\nfunction makeSandbox(): string {\n  return ROOT + CLI + at;\n}\n";
   const all: Record<string, string> = {
     'test/cli.test.ts': `import assert from 'node:assert/strict';\nimport { test } from 'node:test';\n\n${hoisted}\ntest('install: the helpers move', () => {\n  assert.equal(makeSandbox(), 'rootcli@');\n});\n`,
@@ -596,4 +620,106 @@ test('assertLinear: a quadratic read fails; a slow spell in one round does not (
     busyWait(7 * (input.length / 1000));
   };
   assertLinear('linear with a slow spell', (n) => 'x'.repeat(n), noisy, 1000);
+});
+
+// ---- Code given to node -e (#329) ----
+//
+// Code built from values is code injection waiting for a hostile value (CodeQL
+// js/bad-code-sanitization). The code a test gives `node -e` is fixed text: string literals,
+// maybe joined. Values go in on stdin or as arguments, which the child reads as data.
+const EVAL_FLAGS = new Set(['-e', '--eval', '-p', '--print']);
+const OPENERS = new Set(['(', '[', '{', '${']);
+const CLOSERS = new Set([')', ']', '}']);
+const FIXED_PUNCTUATION = new Set(['[', ']', ',', '(', ')', '+', '.']);
+
+/** The tokens of the argument that starts at `from`: up to a `,`, `)` or `]` at its own depth. */
+function argumentAt(tokens: Token[], from: number): Token[] {
+  let depth = 0;
+  let end = from;
+  for (; end < tokens.length; end++) {
+    const text = tokens[end].text;
+    if (depth === 0 && [',', ')', ']'].includes(text)) break;
+    if (OPENERS.has(text)) depth++;
+    else if (CLOSERS.has(text)) depth--;
+  }
+  return tokens.slice(from, end);
+}
+
+/** Whether `code` is only string literals, joined; a name is read through its `const`. */
+function isFixedCode(tokens: Token[], code: Token[], before: number): boolean {
+  if (code.length === 1 && code[0].kind === 'name') {
+    const declared = tokens.findLastIndex((token, index) => index < before && token.text === 'const' && tokens[index + 1]?.text === code[0].text && tokens[index + 2]?.text === '=');
+    if (declared === -1) return false;
+    let end = declared + 3;
+    let depth = 0;
+    for (; end < tokens.length && !(depth === 0 && tokens[end].text === ';'); end++) {
+      if (OPENERS.has(tokens[end].text)) depth++;
+      else if (CLOSERS.has(tokens[end].text)) depth--;
+    }
+    return isFixedCode(tokens, tokens.slice(declared + 3, end), -1);
+  }
+  return code.length > 0 && code.every((token) => token.kind === 'string' || (token.kind === 'punct' && FIXED_PUNCTUATION.has(token.text)) || (token.kind === 'name' && token.text === 'join'));
+}
+
+/** The lines of `text` that run node with -e, --eval, -p or --print, and how many give code built from values. */
+function findSplicedCode(text: string): { checked: number; lines: number[] } {
+  const tokens = tokenize(text);
+  const lines: number[] = [];
+  let checked = 0;
+  tokens.forEach((token, index) => {
+    if (token.kind !== 'string' || !EVAL_FLAGS.has(token.text.replace(/^['"]|['"]$/g, '')) || tokens[index + 1]?.text !== ',') return;
+    // Node reads the flag only before a script, so the flag's array holds only flags before
+    // it: `[execPath, 'script.ts', '-p', ...]` is the script's -p.
+    let open = index - 1;
+    while (open >= 0 && (tokens[open].text === ',' || (tokens[open].kind === 'string' && /^['"]-/.test(tokens[open].text)))) open--;
+    if (tokens[open]?.text !== '[' || tokens[open - 1]?.text !== ',') return;
+    // Back to the `(` of the call the array is an argument of: it runs node.
+    let start = open - 1;
+    for (let depth = 0; start > 0; start--) {
+      const text = tokens[start - 1].text;
+      if (text === ';') return;
+      if (CLOSERS.has(text)) depth++;
+      else if (OPENERS.has(text) && depth > 0) depth--;
+      else if (text === '(') break;
+    }
+    const runsNode = tokens.slice(start, open).some((before) => before.text === 'execPath' || /^['"]?node['"]?$/.test(before.text));
+    if (!runsNode) return;
+    checked++;
+    if (!isFixedCode(tokens, argumentAt(tokens, index + 2), index)) lines.push(token.line);
+  });
+  return { checked, lines };
+}
+
+test('node -e: the reader passes fixed code and catches code built from values (#329)', () => {
+  const good = [
+    "spawnSync(process.execPath, ['-e', 'console.log(1)']);",
+    "spawnSync(process.execPath, ['--input-type=module', '-e', 'import(process.argv[1])', pathToFileURL(path).href]);",
+    "const code = ['const input = 1;', `console.log(input)`].join('\\n');",
+    "spawnSync(process.execPath, ['--eval', code], { input: JSON.stringify({ path }) });",
+    "execFileSync('git', ['cat-file', '-e', `${sha}^{commit}`]);",
+    "const shown = ['-e', `${value}`];",
+  ].join('\n');
+  assert.deepEqual(findSplicedCode(good), { checked: 3, lines: [] });
+  const bad = [
+    "spawnSync(process.execPath, ['-e', `import(${JSON.stringify(path)})`]);",
+    "execFileSync('node', ['--eval', 'import(' + JSON.stringify(path) + ')']);",
+    'const code = `const path = ${JSON.stringify(path)};`;',
+    "spawnSync(process.execPath, ['-p', code]);",
+    "const lines = ['const a = 1;', JSON.stringify(path)].join('\\n');",
+    "spawnSync(process.execPath, ['--print', lines]);",
+    "spawnSync(process.execPath, ['-e', options.code]);",
+  ].join('\n');
+  assert.deepEqual(findSplicedCode(bad), { checked: 5, lines: [1, 2, 4, 6, 7] });
+});
+
+test('node -e: bin, src, scripts and test give node fixed code; values go on stdin or argv (#329)', () => {
+  const found: string[] = [];
+  let checked = 0;
+  for (const path of execFileSync('git', ['ls-files', 'bin', 'src', 'scripts', 'test'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter((file) => file.endsWith('.ts'))) {
+    const result = findSplicedCode(readFileSync(join(ROOT, path), 'utf8'));
+    checked += result.checked;
+    for (const line of result.lines) found.push(`${path}:${line}`);
+  }
+  assert.ok(checked >= 2, `only ${checked} node -e calls found; the reader is broken`);
+  assert.deepEqual(found, [], 'make the code fixed text; pass each value on stdin or as an argument, and import a path with import(pathToFileURL(path).href)');
 });

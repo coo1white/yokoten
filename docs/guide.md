@@ -599,7 +599,11 @@ on `@main`.
 `init` copies the runtime into `.yokoten/` in your project. Commit it: the hooks and CI
 then run with no network and no global install.
 
-`init` keeps a project's own setup working. With a `CLAUDE.md`, it adds an `@AGENTS.md`
+`init` keeps a project's own setup working. An `AGENTS.md` without `## This project` gets
+the core rules on top. Its own text moves under `## This project`, and its headings go one
+level down; nothing else in it changes. `init` prints each heading it moved. When git has
+the old file as it was, `init` prints the command that gives it back. Otherwise it keeps a
+copy in `AGENTS.md.before-yokoten`. YAML front matter stays at the very top. An `AGENTS.md` that is a link stays as it is. With a `CLAUDE.md`, it adds an `@AGENTS.md`
 line at the end, because Claude Code reads `AGENTS.md` only through that import. A
 `.claude/CLAUDE.md` counts too, and gets `@../AGENTS.md` when there is no root one. With
 husky or another `core.hooksPath`, it keeps that folder and adds the commit check to its
@@ -670,7 +674,7 @@ It puts three safe defaults in `.github/` too:
 | `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop event by default, a Codex Stop event with `--agent codex`, a Gemini CLI AfterAgent event with `--agent gemini`, a Grok CLI Stop event with `--agent grok`. See [The stop check](#the-stop-check) |
 | `explain [<id>] [--json]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay. A second run changes nothing |
-| `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
+| `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
 
 Each command prints its own help with `--help` or `-h`: what it does, its options and
 one example. `yokoten help <command>` prints the same, and `yokoten --help` lists the
@@ -763,6 +767,10 @@ Full `doctor` lists them under `machine:` as notes. A note never changes the exi
   This happens when a root process makes the folder first, for example after a restart.
   Claude Code then refuses to start. The note prints `sudo rm -rf '<folder>'`, quoted. Run it
   yourself: doctor never deletes anything.
+- **leftover-temp-folders**: `yokoten-*` folders older than a day in the temp folder.
+  Test runs leave them, and thousands of them fill the disk. Full `doctor` counts them.
+  It does not add up their size, so it stays fast. The note prints a `find ... -exec rm -rf`
+  command that removes only the old ones. Run it yourself: doctor never deletes anything.
 
 ### Troubleshooting
 
@@ -946,27 +954,30 @@ an attribution comment such as `<!-- source: https://example.com/post -->`, or a
 absolute path, is left alone. Write this line once; it never changes. When you change
 the English, update the translation in the same commit or pull request.
 
-`check` reads line 1 of each Markdown and HTML file. Then it compares commits on the
-current branch, first parent only. The translation is current when the last commit that
-changed it is the same as, or later than, the last commit that changed the English. Any
-line of the translation counts.
+`check` reads line 1 of each Markdown and HTML file. Then it reads the commits on the
+current branch, first parent only, back to the commit that added the translation. A
+commit that changes the English but not the translation puts the translation one commit
+behind. Only a later commit that changes only the translation catches up. A commit that
+changes both files is fine, but it does not cover an English-only commit before it. So
+when one pull request changes only the English and another changes both, the first is
+noted, whichever merges first. Any line of the translation counts.
 
 Why not a line that records the English version? Every pull request that changes the
 English would then edit that line. Two such pull requests would always conflict on it.
 With a line that never changes, parallel pull requests touch only the paragraphs they
 translate.
 
-The cost: a commit that changes only the translation also counts. A typo fix in the
-translation can hide an English change that nobody translated. So run `check` before a
-typo fix. If it notes the translation as behind, update the translation first.
+The costs. First, a commit that changes only the translation catches up with every
+English change before it. A typo fix in the translation can hide an English change that
+nobody translated. So run `check` before a typo fix. If it notes the translation as
+behind, update the translation first. Second, with squash merges, an English-only pull
+request stays noted until a commit changes only the translation. This is true even when
+a later pull request translated it along with its own change. To clear the note, update
+the translation in a pull request of its own.
 
-A known gap: a pull request that changes only the English, merged before one that
-changes both files, is not caught. The second one is the last commit for both files, so
-the translation looks current, but the first change was never translated. When you
-review a pull request that changes only the English, ask for the translation too.
-
-In the work tree, an edit to the translation counts as a later change. An edit to the
-English with no edit to the translation makes the translation behind.
+In the work tree, an edit to the translation alone counts as a later change. An edit to
+the English alone makes the translation behind. An edit to both counts as a commit that
+changes both.
 
 When a translation is behind, `check` gives a `translation-behind` note. The note says
 how many commits behind, and how to see the change: `git diff <commit> HEAD -- docs/guide.md`.
@@ -978,16 +989,18 @@ An older form of line 1 adds the English blob:
 `check` still reads it. A blob equal to the English text is current; otherwise the
 commits decide. You can drop the blob at any time.
 
-A shallow clone does not hold the commits that `check` compares. Then `check` gives one
-note for the whole run, that translations weren't checked, and no note for each file.
-That note never fails, even with `"fail": true`. In CI, use `fetch-depth: 0`; the kit's
-`yokoten.yml` does.
+A shallow clone holds only the newest commits. When they are enough to tell, `check`
+answers as usual; an English-only commit it sees is "at least" that many commits behind.
+When they are not enough, `check` gives one note for the whole run. The note says how
+many translations weren't checked, and there is no note for each file. That note never
+fails, even with `"fail": true`. `check` never fetches. In CI, use `fetch-depth: 0`; the
+kit's `yokoten.yml` does.
 
 ### Updating the rules
 
 When yokoten learns a lesson, its core rules change. `yokoten install` updates the
 skills and agents on your machine. Your project's `AGENTS.md` is your file, so it
-changes only when you ask. `init` never touches it again.
+changes only when you ask. Once it has `## This project`, `init` never touches it again.
 
 `doctor` compares the part of `AGENTS.md` above `## This project` with the core rules
 of the yokoten you run. When they differ, it reports `core-rules`, and a session hears
@@ -1300,6 +1313,11 @@ yokoten.json. A mark is let through when an entry there is the same string, uppe
 lower case aside; a part or a longer string does not count. It is let through only in
 that repo, by `check`, the commit hook and the guard for `gh` posts. Every other repo
 still stops it. `doctor` says how many of your marks the project allows, never which.
+
+Some files must name your account. So the forge login that yokoten added to the marks is
+fine in a CODEOWNERS owner, an `@` mention in `.github/`, an author or owner field of
+`package.json` or a plugin manifest, and a LICENSE copyright line. It is found everywhere
+else. A mark you wrote yourself is found everywhere.
 
 The IP check covers IPv4 only, private ranges such as `10.x` and `192.168.x` included;
 IPv6 is not checked. Localhost and the documentation ranges (`192.0.2.0/24` and its two
