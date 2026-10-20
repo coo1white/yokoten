@@ -1056,11 +1056,13 @@ const PLAIN_WORD = /^[A-Za-z0-9_ \t./:,=+@%-]$/;
 /**
  * Whether the command line is one gh post and nothing else (#447): `gh …`, or the bot's
  * `yokoten bot -- gh …`, optionally after one plain `cd <folder> &&`. Outside quotes only
- * letters, digits, spaces and `_ . / : , = + @ % -` are trusted, plus one heredoc or
- * here-string. Inside double quotes `$`, backquote and backslash are refused; single quotes
- * hold anything. A heredoc that expands may hold no `$(`, `${` or backquote. Anything else
- * could change where gh posts before it runs, so no allow applies (record 0014). Listing
- * shell features one by one missed one each round, so the check names what it trusts.
+ * letters, digits, spaces and `_ . / : , = + @ % -` are trusted, plus one here-string or
+ * one heredoc whose end word is a name in single quotes (`<<'EOF'` or `<<-'EOF'`). Bash
+ * expands nothing in that body, and the body ends at the first line that is the name alone.
+ * After that line only blank lines (spaces and tabs) may follow. Inside double quotes `$`,
+ * backquote and backslash are refused; single quotes hold anything. Anything else could
+ * change where gh posts before it runs, so no allow applies (record 0014). Listing shell
+ * features one by one missed one each round, so the check names what it trusts.
  * `cd` is true when the line starts with that `cd`; its target may start with `~`.
  */
 export function lonePost(command: string): { cd: boolean; target?: string } | null {
@@ -1070,7 +1072,7 @@ export function lonePost(command: string): { cd: boolean; target?: string } | nu
   const start = text.match(/^(?:(?:node[ \t]+)?(?:~?[\w./+@%:-]*\/)?yokoten(?:\.ts|\.mjs|\.js)?[ \t]+bot[ \t]+--[ \t]+)?gh[ \t]/);
   if (!start) return null;
   let quote: string | null = null;
-  let heredoc: { word: string; expands: boolean; tabs: boolean } | null = null;
+  let heredoc: { word: string; tabs: boolean } | null = null;
   let index = start[0].length;
   for (; index < text.length; index++) {
     const char = text[index];
@@ -1088,9 +1090,12 @@ export function lonePost(command: string): { cd: boolean; target?: string } | nu
     else if (PLAIN_WORD.test(char)) continue;
     else if (char === '<' && text[index + 1] === '<' && text[index + 2] !== '<') {
       if (heredoc) return null; // one heredoc at most
-      const found = text.slice(index, index + 4096).match(/^<<(-?)[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|([\w.-]+))/);
+      // Only <<'NAME' or <<-'NAME', then a space, tab or newline, so bash reads the same end word.
+      const quotedName = /<<(-?)'([A-Za-z_][A-Za-z0-9_]*)'(?=[ \t\n]|$)/y;
+      quotedName.lastIndex = index;
+      const found = quotedName.exec(text);
       if (!found) return null;
-      heredoc = { word: found[2] ?? found[3] ?? found[4], expands: found[4] !== undefined, tabs: found[1] === '-' };
+      heredoc = { word: found[2], tabs: found[1] === '-' };
       index += found[0].length - 1;
     } else if (char === '<' && text[index + 1] === '<') index += 2; // a here-string: its word is read as any other
     else return null;
@@ -1100,12 +1105,11 @@ export function lonePost(command: string): { cd: boolean; target?: string } | nu
   if (index >= text.length) return heredoc ? null : lone;
   // A newline: only a heredoc's body may follow, then nothing.
   if (!heredoc) return null;
-  const { word, expands, tabs } = heredoc;
+  const { word, tabs } = heredoc;
   const lines = text.slice(index + 1).split('\n');
   const end = lines.findIndex((line) => (tabs ? trimStart(line, '\t') : line) === word);
   if (end === -1) return null;
-  if (expands && lines.slice(0, end).some((line) => line.includes('$(') || line.includes('${') || line.includes('`'))) return null;
-  return lines.slice(end + 1).every((line) => !line.trim()) ? lone : null;
+  return lines.slice(end + 1).every((line) => /^[ \t]*$/.test(line)) ? lone : null;
 }
 
 /**

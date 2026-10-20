@@ -1473,7 +1473,8 @@ it may go to another repo: `-R` or `--repo`, an issue or pull request URL, `GH_R
 `GH_HOST`, and every `gh api` or `gh gist`. The post must also be the only command on the
 line. Outside quotes, only letters, digits, spaces and `_ . / : , = + @ % -` count as plain;
 any other character, such as `$`, `{`, `*`, `\`, `;` or `>`, gets no allow. Inside double quotes,
-`$`, `` ` `` and `\` get no allow; single quotes and a quoted heredoc may hold anything. One `cd` within
+`$`, `` ` `` and `\` get no allow; single quotes may hold anything. One heredoc is fine when its
+end word is a name in single quotes, such as `<<'EOF'`; its body may then hold anything. One `cd` within
 the same repo before it is fine. Anything else on the line could change where gh posts, so the post is
 checked against every mark. `doctor` says
 where an allow comes from: this machine or `privacy.allow`. Only a mark in the marks file can

@@ -985,12 +985,45 @@ test('lonePost: trusts only plain characters outside quotes, so no shell feature
   assert.deepEqual(lonePost('gh issue comment 1 --body "Quiet Vale ships {a,b} *.md !x #1" --title \'$R {x}\''), { cd: false });
   assert.deepEqual(lonePost('cd ~/repo && gh issue comment 1 --body "ok"'), { cd: true, target: '~/repo' });
   assert.deepEqual(lonePost('gh issue comment 1 -F - <<< "ok"'), { cd: false });
-  assert.deepEqual(lonePost('gh issue create --title x --body-file - <<-EOF\n\tbody $HOME\n\tEOF'), { cd: false });
+  assert.equal(lonePost('gh issue create --title x --body-file - <<-EOF\n\tbody $HOME\n\tEOF'), null, 'an unquoted heredoc end word');
+  assert.deepEqual(lonePost("gh issue create --title x --body-file - <<-'EOF'\n\tbody $HOME\n\tEOF"), { cd: false });
   // In a post: the brace form gets no allow, the plain one does.
   const r = allowRepo('https://example.com/x/quiet-vale');
   writeFileSync(r.env.YOKOTEN_PRIVATE_MARKS as string, 'quiet vale\n');
   assert.equal(checkCommand('gh issue comment 1 {--repo,stranger/public} --body "Quiet Vale"', { env: r.env, cwd: r.repo })?.id, 'private-mark');
   assert.equal(checkCommand('gh issue comment 1 --body "Quiet Vale"', { env: r.env, cwd: r.repo }), null, 'the control: a plain quoted post passes');
+});
+
+test('lonePost: trusts a heredoc only when its end word is a name in single quotes (#447)', () => {
+  const after = 'builtin cd ~T/other && gh issue create --title x --body "Quiet Vale"';
+  const refused = [
+    // bash ends the body at E:F, so the line after it runs as a command
+    `gh issue create --title t -F - <<E:F\nQuiet Vale ships\nE:F\n${after}\nE`,
+    `gh issue create --title t -F - <<"E"OF\nQuiet Vale ships\nEOF\n${after}\nE`,
+    `gh issue create --title t -F - <<E'OF'\nQuiet Vale ships\nEOF\n${after}\nE`,
+    `gh issue create --title t -F - <<'E'OF\nQuiet Vale ships\nEOF\n${after}\nE`,
+    `gh issue create --title "Quiet Vale" -F - <<'E:F'\nQuiet Vale ships\nE:F`,
+    // an unquoted body: $\ then a newline then (cmd) is $(cmd) to bash
+    'gh issue create --title t -F - <<EOF\nQuiet Vale ships $\\\n(cd ~T/other)\nEOF',
+    'gh issue create --title t -F - <<EOF\nQuiet Vale ships\nEOF',
+    // only spaces and tabs may follow the end word
+    "gh issue create --title t -F - <<'EOF'\nQuiet Vale ships\nEOF\n\r",
+    "gh issue create --title t -F - <<'EOF'\nQuiet Vale ships\nEOF\n\f",
+  ];
+  const r = allowRepo('https://example.com/x/quiet-vale');
+  writeFileSync(r.env.YOKOTEN_PRIVATE_MARKS as string, 'quiet vale\n');
+  for (const command of refused) {
+    assert.equal(lonePost(command), null, JSON.stringify(command));
+    assert.equal(checkCommand(command, { env: r.env, cwd: r.repo })?.id, 'private-mark', JSON.stringify(command));
+  }
+  // The controls: a quoted name keeps $HOME, backquotes and $\ as text.
+  for (const command of [
+    "gh issue create --title t -F - <<'EOF'\nQuiet Vale ships $HOME `id` $\\\n(x)\nEOF",
+    "gh issue create --title t -F - <<-'EOF'\n\tQuiet Vale ships $HOME `id` $\\\n\t(x)\n\tEOF\n \t\n",
+  ]) {
+    assert.deepEqual(lonePost(command), { cd: false }, JSON.stringify(command));
+    assert.equal(checkCommand(command, { env: r.env, cwd: r.repo }), null, JSON.stringify(command));
+  }
 });
 
 test('an origin that runs a remote helper (transport::address) is unsure: no skip, no allow (#447)', () => {

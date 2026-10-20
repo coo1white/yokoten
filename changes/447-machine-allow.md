@@ -24,7 +24,7 @@ in yokoten.json turns it off for a repo, and `"skipOwnName": false` in the machi
 turns it off for every repo on this machine. The allow above is for what this can't see.
 
 A `gh` post now gets an allow only when its line holds plain text outside quotes: letters,
-digits, spaces and `_ . / : , = + @ % -`, plus quoted text, one `cd` and one heredoc (#447).
+digits, spaces and `_ . / : , = + @ % -`, plus quoted text, one `cd` and one heredoc whose end word is a name in single quotes (#447).
 Brace expansion such as `{--repo,x/y}`, globs and `$` could hide a target, so any of them gets
 no allow. An origin that is a remote helper (`ext::`, `gcrypt::`) skips and allows nothing. An
 origin on `localhost`, `127.x.x.x` or `::1` counts as a local folder. A machine allow file may
