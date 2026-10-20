@@ -36,6 +36,7 @@ import {
   onToolCall,
   pick,
   ROOT,
+  runChild,
   stepMark,
 } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
@@ -1019,7 +1020,7 @@ test('init: the hand-off has no switch, and a .git/hooks link to .githooks does 
   assert.equal(sandbox.run(['init']).status, 0);
   sandbox.git('add', '.');
   const commit = (message: string, extra: Record<string, string> = {}) =>
-    spawnSync('git', ['commit', '-qm', message], { cwd: sandbox.repo, env: { ...sandbox.env, ...extra }, encoding: 'utf8', timeout: 60_000 });
+    runChild('git', ['commit', '-qm', message], { cwd: sandbox.repo, env: { ...sandbox.env, ...extra } });
   let result = commit('adopt yokoten', { YOKOTEN_OLD_HOOK: '1' });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(readFileSync(join(gitDir, 'old-hook-ran'), 'utf8'), 'x\n', 'YOKOTEN_OLD_HOOK=1 does not skip the old hook');
@@ -1035,7 +1036,7 @@ test('init: the hand-off has no switch, and a .git/hooks link to .githooks does 
   sandbox.write('b.md', 'fine\n');
   sandbox.git('add', 'b.md');
   for (const shell of SHELLS) {
-    const run = spawnSync(shell, ['.git/hooks/pre-commit'], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8', timeout: 60_000 });
+    const run = runChild(shell, ['.git/hooks/pre-commit'], { cwd: sandbox.repo, env: sandbox.env });
     assert.equal(run.status, 0, `${shell}: ${run.stderr}`);
     assert.equal((`${run.stdout}${run.stderr}`.match(/yokoten check: ok/g) ?? []).length, 1, `${shell}: the check ran once`);
   }

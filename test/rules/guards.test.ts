@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
-import { makeSandbox, makeTempDir } from '../repo/helpers.ts';
+import { makeSandbox, makeTempDir, runChild } from '../repo/helpers.ts';
 import {
   DEFAULTS,
   type Env,
@@ -782,9 +782,17 @@ test('lead-only files: git apply reads only a plain patch file under 1 MB, and s
   assert.equal(run('git apply /dev/stdin')?.id, 'lead-only', 'a device is never read');
   if (process.platform !== 'win32') {
     assert.equal(spawnSync('mkfifo', [join(sandbox.repo, 'pipe.patch')]).status, 0);
-    const start = Date.now();
-    assert.equal(run('git apply pipe.patch')?.id, 'lead-only', 'a FIFO is never read');
-    assert.ok(Date.now() - start < 2000, 'and the guard does not wait on it');
+    // A guard that opened the FIFO would wait for a writer forever, so it runs in a child:
+    // a hang is killed and named, and no clock is read (#436).
+    const code = [
+      "import { readFileSync } from 'node:fs';",
+      "const { guards, command, cwd } = JSON.parse(readFileSync(0, 'utf8'));",
+      'const { checkCommand } = await import(guards);',
+      "process.stdout.write(String(checkCommand(command, { env: { YOKOTEN_ROLE: 'worker' }, cwd })?.id));",
+    ].join('\n');
+    const guards = pathToFileURL(join(import.meta.dirname, '../..', 'src', 'rules', 'guards.ts')).href;
+    const child = runChild(process.execPath, ['--input-type=module', '-e', code], { input: JSON.stringify({ guards, command: 'git apply pipe.patch', cwd: sandbox.repo }) });
+    assert.deepEqual([child.status, child.stdout], [0, 'lead-only'], `a FIFO is never read, nor waited on: ${child.stderr}`);
   }
   // stdin is a known gap: the guide says so.
   assert.equal(run('git apply - < ok.patch'), null);
@@ -1122,10 +1130,9 @@ test('bash: a command the reader cannot read is refused with exit 2, not let thr
   // So many commands in one shell string that reading them throws (too many to spread).
   const tooBig = `bash -c "${':;'.repeat(300000)}"`;
   assert.equal(checkCommand(tooBig, { env: {} })?.id, 'unreadable-command');
-  const hook = spawnSync(process.execPath, [join(import.meta.dirname, '../..', 'bin', 'yokoten.ts'), 'hook'], {
+  const hook = runChild(process.execPath, [join(import.meta.dirname, '../..', 'bin', 'yokoten.ts'), 'hook'], {
     cwd: tmpdir(),
     input: JSON.stringify({ cwd: tmpdir(), hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: tooBig } }),
-    encoding: 'utf8',
   });
   assert.equal(hook.status, 2, hook.stderr);
   assert.match(hook.stderr, /yokoten could not read this command/);
