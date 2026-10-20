@@ -1065,8 +1065,9 @@ function isPostHere(gh: GhCommand, { env, command, cwd, from }: { env: Env; comm
   if (!lone || namesTarget(gh, command, env)) return false;
   if (!lone.cd) return true;
   if (!cwd || !from) return false;
-  // With CDPATH set, bash may go to $CDPATH/<target>, not the folder the guard resolved.
-  if (env.CDPATH && lone.target !== undefined && !/^['"]?(?:~|\/|\.\/|\.\.\/)/.test(lone.target)) return false;
+  // bash searches CDPATH for a bare relative folder, and CDPATH may be set in the shell
+  // without being exported, so only /, ~, ./ or ../ say where cd goes.
+  if (lone.target !== undefined && !/^['"]?(?:~|\/|\.\/|\.\.\/)/.test(lone.target)) return false;
   const top = repoTop(cwd);
   return top !== null && top === repoTop(from);
 }

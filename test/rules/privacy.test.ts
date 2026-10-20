@@ -738,7 +738,7 @@ test('checkPost: the allow applies only to a post to the repo the command runs i
   for (const repo of [own.repo, other.repo]) mkdirSync(join(repo, 'sub'), { recursive: true });
   for (const command of [
     `gh issue create ${body}`,
-    `cd sub && gh issue create ${body}`,
+    `cd ./sub && gh issue create ${body}`,
     `yokoten bot -- gh issue create ${body}`,
     `gh issue create --title x --body-file - <<'EOF'\nQuietVale ships\nEOF`,
   ]) {
@@ -772,14 +772,14 @@ test('lonePost: refuses what bash reads differently from the guard (#447)', () =
   assert.deepEqual(lonePost('gh issue comment 1 -b "hello world"'), { cd: false });
 });
 
-test('checkPost: CDPATH makes a relative cd unsure, so no allow applies (#447)', () => {
+test('checkPost: a bare relative cd is unsure because of CDPATH, so no allow applies (#447)', () => {
   const own = allowRepo('https://example.com/octo/app');
   own.allow([{ remote: 'example.com/octo/app', allow: ['quietvale'] }]);
   mkdirSync(join(own.repo, 'sub'), { recursive: true });
   const body = '--title "check: fix a bug" --body "QuietVale ships"';
   const post = (command: string, extra: Env) => checkCommand(command, { env: { ...own.env, ...extra }, cwd: own.repo });
-  assert.equal(post(`cd sub && gh issue create ${body}`, {}), null, 'no CDPATH: allowed');
-  assert.equal(post(`cd sub && gh issue create ${body}`, { CDPATH: '' }), null, 'empty CDPATH: allowed');
+  assert.equal(post(`cd sub && gh issue create ${body}`, {})?.id, 'private-mark', 'no CDPATH in env: still refused, the shell may set it');
+  assert.equal(post(`cd sub && gh issue create ${body}`, { CDPATH: '' })?.id, 'private-mark', 'empty CDPATH: refused');
   assert.equal(post(`cd sub && gh issue create ${body}`, { CDPATH: '/elsewhere' })?.id, 'private-mark', 'CDPATH set: refused');
   assert.equal(post(`cd ./sub && gh issue create ${body}`, { CDPATH: '/elsewhere' }), null, './ is not searched');
   assert.equal(post(`cd ${join(own.repo, 'sub')} && gh issue create ${body}`, { CDPATH: '/elsewhere' }), null, 'absolute is not searched');
