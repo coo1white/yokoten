@@ -38,6 +38,7 @@ import {
   botProgram,
   cleanChildEnv,
   type Gh,
+  hasBot,
   installationToken,
   readBranchFiles,
   readCodeOwners,
@@ -46,6 +47,7 @@ import {
   readLocalLogins,
   readLogin,
   repoOf,
+  shellValue,
   stepSummary,
 } from '../../src/host/github.ts';
 import { syncBoard } from '../../scripts/board-sync.ts';
@@ -102,6 +104,52 @@ test('config: the App ID is required, the key has a default place', () => {
   // No HOME: no default key file, rather than one in the folder the command runs in (#356).
   assert.match(botConfig({ YOKOTEN_BOT_APP_ID: '9' }) as string, /no home folder/);
   assert.equal((botConfig({ YOKOTEN_BOT_APP_ID: '9', YOKOTEN_BOT_KEY: '/k.pem' }) as { keyFile: string }).keyFile, '/k.pem');
+});
+
+test('config: the keys file gives the bot settings the session does not have (#405)', () => {
+  const home = makeTempDir('yokoten-keys-');
+  const config = join(home, '.config', 'yokoten');
+  mkdirSync(config, { recursive: true });
+  assert.equal(hasBot({ HOME: home }), false, 'nothing set up');
+  writeFileSync(join(config, 'bot.pem'), 'not a real key\n');
+  assert.equal(hasBot({ HOME: home }), false, 'a key file with no App ID is no bot: `yokoten bot` would stop too');
+  writeFileSync(join(config, 'keys.env'), '# keys\nOTHER_API_KEY=placeholder\nexport YOKOTEN_BOT_APP_ID="42"\nYOKOTEN_BOT_INSTALLATION=\x277\x27\n');
+  const c = botConfig({ HOME: home });
+  assert.ok(typeof c !== 'string', 'the App ID comes from the keys file');
+  assert.deepEqual([c.appId, c.installation, c.keyFile], ['42', '7', join(config, 'bot.pem')]);
+  assert.equal(hasBot({ HOME: home }), true, 'the road and `yokoten bot` agree');
+  assert.equal(Object.hasOwn(c, 'OTHER_API_KEY'), false);
+  // The environment comes first.
+  const fromEnv = botConfig({ HOME: home, YOKOTEN_BOT_APP_ID: '9' });
+  assert.ok(typeof fromEnv !== 'string');
+  assert.equal(fromEnv.appId, '9');
+  // No HOME: the keys file is not read.
+  assert.equal(typeof botConfig({}), 'string');
+});
+
+test('config: a keys file value reads as a shell profile line gives it (#405)', () => {
+  const home = '/home/someone';
+  const cases: [string, string][] = [
+    ['42', '42'],
+    ['42 # the App ID', '42'],
+    ['a#b', 'a#b'],
+    ['"42" # quoted', '42'],
+    ["'42'", '42'],
+    ['"a # b"', 'a # b'],
+    ['~/keys/bot.pem', '/home/someone/keys/bot.pem'],
+    ['$HOME/keys/bot.pem # moved', '/home/someone/keys/bot.pem'],
+    ['"${HOME}/keys/bot.pem"', '/home/someone/keys/bot.pem'],
+    ["'$HOME/x'", '$HOME/x'],
+    ['"~/x"', '~/x'],
+    ['~user/x', '~user/x'],
+  ];
+  for (const [raw, value] of cases) assert.equal(shellValue(raw, home), value, raw);
+  const dir = makeTempDir('yokoten-keys-');
+  mkdirSync(join(dir, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(join(dir, '.config', 'yokoten', 'keys.env'), 'export YOKOTEN_BOT_APP_ID=42 # the App ID\nYOKOTEN_BOT_KEY="$HOME/elsewhere.pem"\n');
+  const c = botConfig({ HOME: dir });
+  assert.ok(typeof c !== 'string');
+  assert.deepEqual([c.appId, c.keyFile], ['42', join(dir, 'elsewhere.pem')]);
 });
 
 test('repo: read from https and ssh remotes', () => {

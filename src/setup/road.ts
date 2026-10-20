@@ -19,7 +19,7 @@ import { BUILD_DIRS, isBuildOutput } from '../rules/layout.ts';
 import { homeOf } from '../rules/privacy.ts';
 import { hasPlugin, hasProjectHook } from '../agents/runtimes/claude-code.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
-import { CODEOWNERS_PLACES, hasBot, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
+import { CODEOWNERS_PLACES, hasBot, KEYS_FILE, missingBotSetup, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
 import { claudeReadsRules, cliPath, COMMIT_HOOKS, deadHookNotes, findRulesGap, handOffBlocks, hasHandOff, hookFile, isCommitHook, isExecutable, isSelf, type OldHook, OWNER_PLACEHOLDER, readHookSetup, readOldHooks, remembered } from './init.ts';
 import { FIRST_MILESTONE, lackingLabels, pickNewMilestone } from './plan.ts';
@@ -64,6 +64,12 @@ export interface Step {
    * have read is named.
    */
   standard?: string;
+  /**
+   * Only for a step whose whole check is that files exist: groups of paths, relative to the
+   * root, and any one path of a group is enough. When every group missing here is on the
+   * default branch, doctor says so in place of the fix (#405).
+   */
+  paths?: string[][] | ((root: string, config?: Config) => string[][]);
 }
 
 const read = (path: string) => {
@@ -361,17 +367,21 @@ const hasLicense = (root: string) => {
   }
 };
 const DEPENDABOT_FILE = 'Dependabot config';
-const SECURITY_FILES: [string, (root: string) => boolean][] = [
-  ['security policy (SECURITY.md)', (root) => ['.github/SECURITY.md', 'SECURITY.md'].some((p) => existsSync(join(root, p)))],
-  [DEPENDABOT_FILE, (root) => ['.github/dependabot.yml', '.github/dependabot.yaml'].some((p) => existsSync(join(root, p)))],
-  [LICENSE_FILE, hasLicense],
-];
 /**
- * The security files the repo lacks. With "notNow" `ci` (#377), the kit's Dependabot
- * config is not asked for: it updates only the actions that CI runs.
+ * Each security file: its name, the paths the default-branch lookup asks for (#405), and how
+ * to tell the root has it when any of those paths is not enough. A license has many names
+ * (#376); the lookup asks for the common ones.
  */
+const SECURITY_FILES: [string, string[], ((root: string) => boolean)?][] = [
+  ['security policy (SECURITY.md)', ['.github/SECURITY.md', 'SECURITY.md']],
+  [DEPENDABOT_FILE, ['.github/dependabot.yml', '.github/dependabot.yaml']],
+  [LICENSE_FILE, ['LICENSE', 'LICENSE.md', 'LICENSE.txt', 'LICENCE', 'COPYING'], hasLicense],
+];
+/** The security files asked for. With "notNow" `ci` (#377), not the kit's Dependabot config: it updates only the actions that CI runs. */
+const securityFiles = (isOff: boolean) => SECURITY_FILES.filter(([name]) => !(isOff && name === DEPENDABOT_FILE));
+/** The security files the repo lacks. */
 export const securityLacking = (root: string, isOff: boolean = isCiOff(root)): string[] =>
-  SECURITY_FILES.filter(([name, has]) => !(isOff && name === DEPENDABOT_FILE) && !has(root)).map(([name]) => name);
+  securityFiles(isOff).filter(([, paths, has]) => !(has ? has(root) : paths.some((p) => existsSync(join(root, p))))).map(([name]) => name);
 
 /**
  * True when yokoten.json "notNow" names `ci` (#377): the project keeps CI off, and the
@@ -648,6 +658,7 @@ export const ROAD: Step[] = [
   {
     stage: 1,
     key: 'rules',
+    paths: [['AGENTS.md']],
     check: (root) => existsSync(join(root, 'AGENTS.md')) && claudeReadsRules(root),
     what: (root) => {
       const gap = findRulesGap(root);
@@ -756,6 +767,7 @@ export const ROAD: Step[] = [
   {
     stage: 2,
     key: 'templates',
+    paths: [['.github/ISSUE_TEMPLATE'], ['.github/pull_request_template.md', '.github/PULL_REQUEST_TEMPLATE.md']],
     check: (root) => hasIssueTemplate(root) && hasPrTemplate(root),
     what: (root) => {
       const lacking = [hasIssueTemplate(root) ? '' : 'issue templates', hasPrTemplate(root) ? '' : 'pull request template'].filter(Boolean);
@@ -797,6 +809,8 @@ export const ROAD: Step[] = [
   {
     stage: 3,
     key: 'changelog',
+    // changes/ alone passes; a CHANGELOG.md must also have an Unreleased section.
+    paths: [[CHANGES_DIR]],
     // A changes/ folder (#132) counts too: its files become the Unreleased lines at a release.
     check: (root) => /^#+\s*\[?Unreleased\]?/im.test(read(join(root, 'CHANGELOG.md'))) || existsSync(join(root, CHANGES_DIR)),
     what: () => `no CHANGELOG.md with an "Unreleased" section, and no ${CHANGES_DIR}/ folder`,
@@ -843,10 +857,11 @@ export const ROAD: Step[] = [
     stage: 4,
     key: 'bot',
     check: (_, env) => hasBot(env),
-    what: () => 'no bot on this machine (YOKOTEN_BOT_APP_ID and its key file)',
+    // Names the piece that is missing (#364, #405), as `yokoten bot` finds it.
+    what: (_, env) => `the bot is not set up on this machine: ${missingBotSetup(env) ?? 'nothing is missing'}`,
     fix: () => 'yokoten\'s docs/server.md shows how to set one up',
     why: 'when the bot opens pull requests, you review work you did not write, as a team does',
-    how: 'YOKOTEN_BOT_APP_ID is set on this machine, and the key file it names exists',
+    how: `YOKOTEN_BOT_APP_ID is set, in the environment or in ${KEYS_FILE}, and the key file exists (YOKOTEN_BOT_KEY, or ~/.config/yokoten/bot.pem): the same lookup as \`yokoten bot\``,
   },
   {
     stage: 4,
@@ -865,6 +880,7 @@ export const ROAD: Step[] = [
   {
     stage: 5,
     key: 'security-files',
+    paths: (root, config) => securityFiles(isCiOff(root, config)).map(([, paths]) => paths),
     check: (...[root, , , config]) => securityLacking(root, isCiOff(root, config)).length === 0,
     what: (...[root, , , config]) => `no ${securityLacking(root, isCiOff(root, config)).join(', no ')}`,
     fix: (...[root, , , config]) => {
@@ -899,8 +915,105 @@ export const ROAD: Step[] = [
   }),
 ];
 
-/** A step not done, as a finding: the step's key is its id. */
-export const stepFinding = (step: Step, root: string, env: Env, server?: ServerRead, config?: Config): Finding => ({ id: step.key, what: step.what(root, env, server, config), why: step.why, fix: step.fix(root, env, server, config) });
+// The default branch (#405). A checkout on an old branch lacks files that the default
+// branch has. Then "run init" is wrong: the files are there, on another branch. The refs
+// are read from files, and the tree with one `git ls-tree`, so a session stays fast.
+
+/** Files missing here that the default branch has, and the names to say. */
+export interface DefaultBranchFiles {
+  /** The default branch as the report names it: origin/main, or main. */
+  name: string;
+  /** This checkout's branch, or "detached HEAD". */
+  branch: string;
+  paths: Set<string>;
+}
+
+/** The repo's own git folder and the folder its worktrees share. Files only; null when unreadable. */
+function gitFolders(root: string): { gitDir: string; commonDir: string } | null {
+  const dotGit = join(root, '.git');
+  try {
+    const pointer = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, 'utf8'));
+    if (!pointer) return null;
+    const gitDir = resolve(root, pointer[1].trim());
+    const common = read(join(gitDir, 'commondir')).trim();
+    return { gitDir, commonDir: common ? resolve(gitDir, common) : gitDir };
+  } catch {
+    return existsSync(dotGit) ? { gitDir: dotGit, commonDir: dotGit } : null;
+  }
+}
+
+/** The path groups of a step with no path here. */
+const groupsLacking = (root: string, step: Step, config?: Config): string[][] => (typeof step.paths === 'function' ? step.paths(root, config) : (step.paths ?? [])).filter((group) => !group.some((path) => existsSync(join(root, path))));
+
+/** The paths of `steps` whose group has no path here, each once. */
+export const missingPaths = (root: string, steps: Step[], config?: Config): string[] => [...new Set(steps.flatMap((step) => groupsLacking(root, step, config).flat()))];
+
+/** A ref's commit, from its loose file or packed-refs. Files only; null when not found. */
+function readCommit(commonDir: string, ref: string): string | null {
+  const loose = read(join(commonDir, ref)).trim();
+  if (/^[0-9a-f]{40,64}$/.test(loose)) return loose;
+  for (const line of read(join(commonDir, 'packed-refs')).split('\n')) {
+    const [commit, name] = line.trim().split(' ');
+    if (name === ref && /^[0-9a-f]{40,64}$/.test(commit)) return commit;
+  }
+  return null;
+}
+
+/**
+ * Which of `paths` the default branch has. The default branch is origin/HEAD, else
+ * init.defaultBranch, else main. Never the network. Null when there is nothing to ask,
+ * this checkout is the default branch (by name or by commit), or git can't tell.
+ */
+export function readDefaultBranchFiles(root: string, paths: string[]): DefaultBranchFiles | null {
+  if (!paths.length) return null;
+  const folders = gitFolders(root);
+  // The reftable store keeps no ref in a file; then say nothing rather than guess.
+  if (!folders || existsSync(join(folders.commonDir, 'reftable'))) return null;
+  const headFile = read(join(folders.gitDir, 'HEAD')).trim();
+  const head = /^ref: refs\/heads\/(.+)$/.exec(headFile);
+  const branch = head ? head[1] : 'detached HEAD';
+  const headCommit = head ? readCommit(folders.commonDir, `refs/heads/${head[1]}`) : /^[0-9a-f]{40,64}$/.test(headFile) ? headFile : null;
+  // origin/HEAD is always a loose file in the files store, even after `git pack-refs`.
+  const originHead = /^ref: refs\/remotes\/(.+)$/m.exec(read(join(folders.commonDir, 'refs', 'remotes', 'origin', 'HEAD')));
+  const name = originHead ? originHead[1].trim() : gitConfig(root, 'init.defaultBranch') || 'main';
+  const ref = originHead ? `refs/remotes/${name}` : `refs/heads/${name}`;
+  // On the default branch, or at its commit, merging it changes nothing: the file was removed here.
+  if (branch === name.replace(/^origin\//, '')) return null;
+  const defaultCommit = readCommit(folders.commonDir, ref);
+  if (headCommit && headCommit === defaultCommit) return null;
+  try {
+    const listed = execFileSync('git', ['--no-optional-locks', 'ls-tree', '--name-only', ref, '--', ...paths], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const found = new Set(listed.split('\n').filter((path) => paths.includes(path)));
+    return found.size ? { name, branch, paths: found } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What a step's finding may use beyond the step: what the code host said (`server`, full
+ * doctor only), yokoten.json when it is read already (`config`, #377), and what the default
+ * branch has (`elsewhere`, #405).
+ */
+export interface FindingContext {
+  server?: ServerRead;
+  config?: Config;
+  elsewhere?: DefaultBranchFiles | null;
+}
+
+/**
+ * A step not done, as a finding: the step's key is its id. When the default branch has a
+ * path of every group missing here, the finding names that branch.
+ */
+export function stepFinding(step: Step, root: string, env: Env, { server, config, elsewhere }: FindingContext = {}): Finding {
+  const lacking = elsewhere ? groupsLacking(root, step, config) : [];
+  const there = lacking.map((group) => group.find((path) => elsewhere?.paths.has(path)));
+  if (elsewhere && lacking.length && there.every((path) => path !== undefined)) {
+    const files = there.length > 1 ? `${there.slice(0, -1).join(', ')} and ${there.at(-1)} are` : `${there[0]} is`;
+    return { id: step.key, what: `${files} on ${elsewhere.name}, not on this branch (${elsewhere.branch})`, why: step.why, fix: `work on a branch made from ${elsewhere.name}, or merge ${elsewhere.name} into this one` };
+  }
+  return { id: step.key, what: step.what(root, env, server, config), why: step.why, fix: step.fix(root, env, server, config) };
+}
 
 /** A step not done, as the map and the session say it: what is missing, then the fix. */
 export const stepText = (f: Finding): string => `${f.what}; ${f.fix}`;

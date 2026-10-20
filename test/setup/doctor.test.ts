@@ -2,10 +2,11 @@
 
 import '../repo/home.ts';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -40,6 +41,7 @@ import {
 import { unsavedNotes } from '../../src/setup/advice/unsaved.ts';
 import {
   agentTempDirCheck,
+  blocksToSay,
   coreRulesCheck,
   coreRulesControl,
   diskSpaceChecks,
@@ -62,6 +64,7 @@ import {
   saveHostCache,
   selfTest,
   SESSION_UNSAVED_BUDGET,
+  sessionsDir,
   sessionUnsaved,
   STOPPED_EARLY,
   UNSAVED_OFFER,
@@ -166,7 +169,7 @@ test('road: each server step catches its setting off, and says what and the fix 
     const found = serverFound(server);
     assert.equal(found[key], false, `${key} lets ${Object.keys(change)[0]} through`);
     assert.equal(Object.values(found).filter((f) => f === false).length, 1, `only ${key} fails`);
-    const f = stepFinding(ROAD.find((s) => s.key === key)!, '.', {}, server);
+    const f = stepFinding(ROAD.find((s) => s.key === key)!, '.', {}, { server });
     assert.match(f.what, what);
     assert.match(f.fix, /^in Settings, /);
   }
@@ -235,7 +238,7 @@ test('road: the review step catches a merge with no approval, and says how to se
     const server = readServer(serverGh({ ...ADMIN, [RULES]: rules }).gh, REPO);
     assert.equal(review.check('.', {}, server), false, JSON.stringify(rules));
   }
-  const f = stepFinding(review, '.', {}, readServer(serverGh(ADMIN).gh, REPO));
+  const f = stepFinding(review, '.', {}, { server: readServer(serverGh(ADMIN).gh, REPO) });
   assert.equal(f.what, 'a merge to the default branch needs no approving review');
   assert.match(f.fix, /"Required approvals" to 1/);
   assert.match(f.fix, /can't approve your own pull request, so let the bot open them/);
@@ -246,7 +249,7 @@ test('road: the review step is not done while a workflow may approve a pull requ
   // With the Actions setting on, a workflow the bot pushes could approve the bot's own pull request.
   const on = readServer(serverGh({ ...ADMIN, [RULES]: withApprovals(1), [ACTIONS]: { can_approve_pull_request_reviews: true } }).gh, REPO);
   assert.equal(review.check('.', {}, on), false);
-  const f = stepFinding(review, '.', {}, on);
+  const f = stepFinding(review, '.', {}, { server: on });
   assert.match(f.what, /^a workflow may approve a pull request/);
   assert.match(f.fix, /turn off "Allow GitHub Actions to create and approve pull requests"/);
   // Unreadable is can't check, never done.
@@ -324,7 +327,7 @@ test('road: the labels and milestone steps are stage 2; missing labels or no ope
   assert.deepEqual(planningFound(withPlanning(all)), { labels: true, milestone: true });
   const lacking = withPlanning(readPlanning(fakeGh(LABELS.filter((l) => l.name !== 'hotfix'), ['closed v1']).gh, 'me/repo'));
   assert.deepEqual(planningFound(lacking), { labels: false, milestone: false });
-  assert.equal(stepFinding(ROAD.find((s) => s.key === 'labels')!, '.', {}, lacking).what, 'the standard labels are not all on the server (no hotfix)');
+  assert.equal(stepFinding(ROAD.find((s) => s.key === 'labels')!, '.', {}, { server: lacking }).what, 'the standard labels are not all on the server (no hotfix)');
   // A session, no gh, or a server read without them: can't check, never done.
   for (const server of [undefined, readServer(() => { throw said(401); }, REPO), withPlanning(undefined), withPlanning({ unread: 'gh is not signed in', fix: 'run `gh auth login`' })]) {
     assert.deepEqual(planningFound(server), { labels: null, milestone: null });
@@ -470,7 +473,16 @@ test('doctor: each stage boundary, from a fresh repo to the end of the road', ()
   assert.match(next(), /stage 4 of 5, a team of agents\. Next: \.github\/CODEOWNERS names no owner yet \(@YOUR_GITHUB_HANDLE\); put your GitHub handle in \.github\/CODEOWNERS/);
   // init wrote CODEOWNERS with the placeholder owner; a real owner finishes the step.
   sandbox.write('.github/CODEOWNERS', '* @octo\n');
-  assert.match(next(), /stage 4 of 5, a team of agents\. Next: no bot on this machine/);
+  assert.match(next(), /stage 4 of 5, a team of agents\. Next: the bot is not set up on this machine: YOKOTEN_BOT_APP_ID is not set, in the environment or in ~\/\.config\/yokoten\/keys\.env;/);
+  // The key file in its default place, but no App ID anywhere: the step names what is missing (#364).
+  const config = join(sandbox.home, '.config', 'yokoten');
+  mkdirSync(config, { recursive: true });
+  writeFileSync(join(config, 'bot.pem'), 'not a real key\n');
+  assert.match(next(), /Next: the bot is not set up on this machine: the bot's key file is here, but YOKOTEN_BOT_APP_ID is not set/);
+  // The App ID in the keys file, as `yokoten bot` reads it, and none in the session (#405).
+  writeFileSync(join(config, 'keys.env'), 'OTHER_KEY=x\nexport YOKOTEN_BOT_APP_ID="1"\n');
+  assert.match(next(), /stage 4 of 5, a team of agents\. Next: the yokoten skills are not in/, 'the keys file counts: no "no bot"');
+  for (const file of ['bot.pem', 'keys.env']) rmSync(join(config, file));
   writeFileSync(key, 'not a real key\n');
   const bot = { YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key };
   assert.match(next(bot), /stage 4 of 5, a team of agents\. Next: the yokoten skills are not in/);
@@ -1204,6 +1216,77 @@ test('doctor: the no-ci note says what is not checked, and from stage 5 or on a 
   const off: ServerSettings = { ...server, branch: { ...(server.branch as BranchRules), requiredChecks: [] } };
   assert.equal(marks(off)['required-checks'], 'MISSING');
   assert.ok(!serverChecks(off, { isCiOff: true }).some((c) => c.id === 'required-checks'));
+});
+
+test('doctor: a file on the default branch, missing on this one, is no "run init" (#405)', () => {
+  const sandbox = makeSandbox();
+  sandbox.git('commit', '-q', '--allow-empty', '-m', 'chore: start');
+  sandbox.git('branch', 'old');
+  sandbox.write('AGENTS.md', '# rules\n');
+  sandbox.write('.claude/settings.json', '{}\n');
+  // A workflow that runs no tests and no yokoten, and one security file of three.
+  sandbox.write('.github/workflows/lint.yml', 'on: push\njobs:\n  lint:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npx eslint .\n');
+  sandbox.write('SECURITY.md', '# Security\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-q', '-m', 'docs: add the rules');
+  const first = (cwd = sandbox.repo) => sandbox.run(['doctor', '--session'], { cwd }).stdout.split('\n')[0];
+  const plain = /Next: no AGENTS\.md, so the agents have no written rules here; `yokoten init` adds one\./;
+  // No origin: init.defaultBranch, else main.
+  assert.equal(sandbox.git('checkout', '-q', 'old').status, 0);
+  assert.equal(first(), 'yokoten: stage 1 of 5, safety net. Next: AGENTS.md is on main, not on this branch (old); work on a branch made from main, or merge main into this one.');
+  const full = sandbox.run(['doctor']).stdout;
+  const line = (key: string) => full.split('\n').find((l) => new RegExp(` ${key}[ :]`).test(l)) ?? '';
+  assert.match(line('rules'), /AGENTS\.md is on main, not on this branch \(old\)/);
+  // A step that checks more than that a file exists keeps its own advice.
+  assert.match(line('tool-hook'), /no tool-call guard in \.claude\/settings\.json; `yokoten init` adds it/);
+  for (const key of ['tests', 'ci', 'titles', 'security-files']) assert.doesNotMatch(line(key), /on main, not on this branch/, key);
+  assert.match(line('security-files'), /no Dependabot config, no license file/, 'SECURITY.md on main does not hide the other two');
+  // A clone: origin/HEAD names the default branch, and the old branch is checked out.
+  assert.equal(sandbox.git('checkout', '-q', 'main').status, 0);
+  const clone = join(dirname(sandbox.repo), 'clone');
+  const inClone = (...args: string[]) => spawnSync('git', args, { cwd: clone, env: sandbox.env }).status;
+  assert.equal(spawnSync('git', ['clone', '-q', sandbox.repo, clone], { env: sandbox.env }).status, 0);
+  assert.equal(inClone('checkout', '-q', 'old'), 0);
+  assert.equal(first(clone), 'yokoten: stage 1 of 5, safety net. Next: AGENTS.md is on origin/main, not on this branch (old); work on a branch made from origin/main, or merge origin/main into this one.');
+  // On the default branch, or at its commit, the file was removed here: merging changes nothing.
+  assert.equal(inClone('checkout', '-q', 'main'), 0);
+  rmSync(join(clone, 'AGENTS.md'));
+  assert.match(first(clone), plain, 'on main');
+  assert.equal(inClone('checkout', '-q', '-b', 'fresh'), 0);
+  assert.match(first(clone), plain, 'a new branch at the default commit');
+  assert.equal(inClone('checkout', '-q', '--detach', 'origin/main'), 0);
+  assert.match(first(clone), plain, 'detached at the default commit');
+  // The packed form of the refs reads the same.
+  assert.equal(inClone('pack-refs', '--all'), 0);
+  assert.equal(inClone('checkout', '-q', '-f', 'main'), 0);
+  rmSync(join(clone, 'AGENTS.md'));
+  assert.match(first(clone), plain, 'on main, packed refs');
+  // A reftable store keeps no ref in a file: then the plain advice, never a guess.
+  assert.equal(inClone('checkout', '-q', '-f', 'old'), 0);
+  mkdirSync(join(clone, '.git', 'reftable'));
+  assert.match(first(clone), plain, 'reftable');
+  // Positive control: when the default branch lacks the file too, init is the fix.
+  rmSync(join(sandbox.repo, 'AGENTS.md'));
+  assert.match(first(), plain);
+});
+
+test('doctor: a compaction start drops what the session was told; files older than a week go (#405)', () => {
+  const home = makeTempDir('yokoten-sessions-');
+  const env = { HOME: home };
+  const blocks = [['a', 'a why'], ['b']];
+  assert.deepEqual(blocksToSay(env, null, blocks), blocks, 'no session: all, and no file');
+  assert.deepEqual(blocksToSay(env, { sessionId: 's1', source: 'startup' }, blocks), blocks, 'a first start says all');
+  assert.deepEqual(blocksToSay(env, { sessionId: 's1', source: 'compact' }, blocks), [], 'nothing new: nothing');
+  assert.deepEqual(blocksToSay(env, { sessionId: 's1', source: 'compact' }, [['a', 'a why'], ['c']]), [['c']], 'only the new block');
+  assert.deepEqual(blocksToSay(env, { sessionId: 's1', source: 'compact' }, [['c']]), [], 'c was said');
+  assert.deepEqual(blocksToSay(env, { sessionId: 's2', source: 'compact' }, blocks), blocks, 'a session with no file says all');
+  assert.deepEqual(blocksToSay(env, { sessionId: 's1', source: 'resume' }, blocks), blocks, 'a resume starts over');
+  // A start other than compaction removes the files of old sessions.
+  const old = join(sessionsDir(env), 's2.json');
+  const longAgo = new Date(Date.now() - 8 * 86_400_000);
+  utimesSync(old, longAgo, longAgo);
+  blocksToSay(env, { sessionId: 's3', source: 'startup' }, blocks);
+  assert.deepEqual(readdirSync(sessionsDir(env)).sort(), ['s1.json', 's3.json']);
 });
 
 test('self-test: a shell write from the plugin agent yokoten:worker is caught, and the lead passes (#402)', () => {

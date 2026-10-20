@@ -34,24 +34,88 @@ export interface BotConfig {
   api: string;
 }
 
-/** The bot's settings from the environment, or the reason they are not usable. */
-export function botConfig(env: Env): BotConfig | string {
-  const appId = env.YOKOTEN_BOT_APP_ID;
-  if (!appId) return 'YOKOTEN_BOT_APP_ID is not set: the App ID from the App\'s settings page (docs/server.md, step 3)';
+/** The keys file, as the reports name it. */
+export const KEYS_FILE = '~/.config/yokoten/keys.env';
+
+/** The bot's own settings, the only names read from the keys file. */
+const BOT_SETTINGS = ['YOKOTEN_BOT_APP_ID', 'YOKOTEN_BOT_KEY', 'YOKOTEN_BOT_INSTALLATION'];
+
+/**
+ * A value as a shell profile line gives it: quotes taken off, a ` # comment` after an
+ * unquoted value dropped, and a leading `~/` or `$HOME/` made the home folder. Single
+ * quotes keep `$HOME` as it is, and quotes keep `~`, as in a shell.
+ */
+export function shellValue(raw: string, home: string): string {
+  const quoted = /^(["'])(.*?)\1\s*(?:#.*)?$/.exec(raw.trim());
+  if (quoted?.[1] === "'") return quoted[2];
+  if (quoted) return quoted[2].replace(/^\$(?:HOME|\{HOME\})(?=\/|$)/, home);
+  return raw.replace(/(?:^|\s+)#.*$/, '').trim().replace(/^(?:~|\$HOME|\$\{HOME\})(?=\/|$)/, home);
+}
+
+/**
+ * The bot's settings in the keys file (#405): `NAME=value` lines, `export` and quotes
+ * allowed. A session's environment often does not load this file, so the bot reads it
+ * itself. Only the bot's own names are read; other keys in the file are never touched.
+ * No HOME, no file: then nothing.
+ */
+export function readKeysFile(env: Env): Env {
   const home = homeOf(env);
-  if (!env.YOKOTEN_BOT_KEY && !home) return `${NO_HOME}: set YOKOTEN_BOT_KEY to the key file's full path`;
+  if (!home) return {};
+  let text = '';
+  try {
+    text = readFileSync(join(home, '.config', 'yokoten', 'keys.env'), 'utf8');
+  } catch {
+    return {};
+  }
+  const found: Env = {};
+  for (const line of text.split(/\r?\n/)) {
+    const pair = /^\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
+    if (!pair || !BOT_SETTINGS.includes(pair[1])) continue;
+    const value = shellValue(pair[2], home);
+    if (value) found[pair[1]] = value;
+  }
+  return found;
+}
+
+/**
+ * The bot's settings, or the reason they are not usable. The environment comes first,
+ * then the keys file. `yokoten bot` and the road's bot step both read them here, so
+ * they always agree (#405).
+ */
+export function botConfig(env: Env): BotConfig | string {
+  const settings = { ...readKeysFile(env), ...Object.fromEntries(BOT_SETTINGS.filter((name) => env[name]).map((name) => [name, env[name]])) };
+  const appId = settings.YOKOTEN_BOT_APP_ID;
+  if (!appId) return `YOKOTEN_BOT_APP_ID is not set, in the environment or in ${KEYS_FILE}: the App ID from the App's settings page (docs/server.md, step 3)`;
+  const keyFile = settings.YOKOTEN_BOT_KEY || defaultKeyFile(env);
+  if (!keyFile) return `${NO_HOME}: set YOKOTEN_BOT_KEY to the key file's full path`;
   return {
     appId,
-    keyFile: env.YOKOTEN_BOT_KEY || join(home as string, '.config', 'yokoten', 'bot.pem'),
-    installation: env.YOKOTEN_BOT_INSTALLATION || undefined,
+    keyFile,
+    installation: settings.YOKOTEN_BOT_INSTALLATION || undefined,
     api: (env.YOKOTEN_GITHUB_API || 'https://api.github.com').replace(/\/$/, ''),
   };
 }
 
+/** The key file's default place, or '' with no home (#356): never the system's home. */
+const defaultKeyFile = (env: Env) => {
+  const home = homeOf(env);
+  return home ? join(home, '.config', 'yokoten', 'bot.pem') : '';
+};
+
+/**
+ * What of the bot's setup is missing on this machine, in words, or null when it is all
+ * here. Names a setting or a file, never a value. Reads no network.
+ */
+export function missingBotSetup(env: Env): string | null {
+  const config = botConfig(env);
+  if (typeof config !== 'string') return existsSync(config.keyFile) ? null : `the bot's key file is missing (${env.YOKOTEN_BOT_KEY || readKeysFile(env).YOKOTEN_BOT_KEY ? 'YOKOTEN_BOT_KEY' : '~/.config/yokoten/bot.pem'})`;
+  const isKeyHere = existsSync(defaultKeyFile(env));
+  return `${isKeyHere ? "the bot's key file is here, but " : ''}YOKOTEN_BOT_APP_ID is not set, in the environment or in ${KEYS_FILE}`;
+}
+
 /** A bot is set up on this machine: its App ID is set and its key file is there. Reads no network. */
 export function hasBot(env: Env): boolean {
-  const config = botConfig(env);
-  return typeof config !== 'string' && existsSync(config.keyFile);
+  return missingBotSetup(env) === null;
 }
 
 const b64url =(data: string | Buffer) => Buffer.from(data).toString('base64url');

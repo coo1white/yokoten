@@ -237,7 +237,7 @@ test('milestone: init and the road use one rule, an open milestone; a closed one
   const fake = fakeGh([...LABELS], ['closed First release']);
   const server = () => withPlanning(readPlanning(fake.gh, 'me/repo'));
   assert.equal(planningFound(server()).milestone, false);
-  assert.equal(stepFinding(milestoneStep, '.', {}, server()).fix, '`yokoten init --github --yes` makes one called "Next release"', 'doctor names what init makes');
+  assert.equal(stepFinding(milestoneStep, '.', {}, { server: server() }).fix, '`yokoten init --github --yes` makes one called "Next release"', 'doctor names what init makes');
   const planned = setUpPlanning(fake.gh, REMOTE, DRY);
   assert.ok(planned.lines.includes('- make milestone "Next release"'), planned.lines.join('\n'));
   assert.ok(!planned.lines.includes('- a milestone is open; kept'));

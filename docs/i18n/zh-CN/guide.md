@@ -1056,7 +1056,7 @@ yokoten learn --upstream "the guard let git push --tags through" --area hook --f
 | `layout.exempt` | 无 | 可以超过上限的文件夹，比如一项一项往下记的决策记录 |
 | `tests` | `*.test.*`、`*.spec.*`、`*_test.go`、`test/**`、`tests/**` | 哪些算测试文件，修复任务不能改 |
 | `leadOnly` | 规则、agent 配置、`.githooks/**`、`.github/**`、项目里那份 yokoten 副本 `.yokoten/**` | worker 不能改的文件 |
-| `privacy.allow` | 无 | 隐私检查放行的原样字符串，比如公开的客服邮箱 |
+| `privacy.allow` | 无 | 隐私检查放行的原样字符串，比如公开的客服邮箱，或者私密词表里这个项目自己的名字 |
 | `privacy.skip` | 各种 lock 文件 | 隐私检查不读的文件 |
 | `privacy.utc` | `true` | 提交时间必须用 UTC |
 | `privacy.output` | `"run"` | 在 Claude Code 以外的 agent 里，会打印账号信息的命令照常跑；设成 `"stop"` 就拦下，告诉 agent 过滤后的命令 |
@@ -1187,6 +1187,12 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 `~/.config/yokoten/private-marks`，里面是你的名字、所在城市、域名、服务器名。这个文件放在
 仓库外面，因为「不能公开的东西」这张清单本身也不能公开。查到问题时只报文件和行号，不会把
 词表里的词打印出来。
+
+这个词表是整台电脑共用的，所以私有项目的名字也该写进去。可这个项目自己的仓库总要用到自己的
+名字：在它的 yokoten.json 里，把名字加进 `privacy.allow` 就行。`privacy.allow` 里有一项和词表
+里的词一模一样（不管大小写），这个词就放行；只是其中一段、或者更长的字符串，都不算。放行只在
+这个仓库里有效，`check`、提交钩子和 `gh` 发帖前的检查都放行；别的仓库照样拦。`doctor` 会说这个
+项目放行了你几个词，只报个数，不说是哪几个。
 
 有些文件本来就要写你的账号名。所以 yokoten 自动加进词表的 forge 登录名，在这几处不算问题：
 CODEOWNERS 里的负责人、`.github/` 里的 `@` 提及、`package.json` 或插件清单里的 author、owner
