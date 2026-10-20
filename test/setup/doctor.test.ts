@@ -73,6 +73,7 @@ import {
 } from '../../src/setup/doctor.ts';
 import { LABELS } from '../../src/setup/plan.ts';
 import {
+  missingPaths,
   road,
   ROAD,
   serverChecks,
@@ -1318,4 +1319,14 @@ test('saveHostCache: keeps the other keys of machine.json, such as the Windows u
   const state = JSON.parse(files.get(machineStateFile(WSL)) ?? '{}');
   assert.deepEqual(state.windowsUsers.names, ['JaneD']);
   assert.equal(state.hostDisk.size, 1);
+});
+
+test('doctor: with "notNow" ci the default-branch lookup leaves out the Dependabot config (#377, #405)', () => {
+  const root = makeTempDir('yokoten-noci-paths-');
+  const security = [ROAD.find((s) => s.key === 'security-files')!];
+  const off = { ...DEFAULTS, notNow: { ci: 'private repo' } };
+  assert.ok(missingPaths(root, security, DEFAULTS).includes('.github/dependabot.yml'), 'positive control: CI on asks for it');
+  assert.ok(!missingPaths(root, security, off).some((path) => path.includes('dependabot')));
+  assert.ok(missingPaths(root, security, off).includes('SECURITY.md'));
+  rmSync(root, { recursive: true, force: true });
 });
