@@ -136,7 +136,7 @@ export const RULES = {
   layout: {
     rule: 'no folder holds more than 7 entries; the root is not counted (core rule 10)',
     why: 'a flat folder grows until nobody can find anything',
-    check: 'the commit check and CI count the entries of each folder below the root; changes/ and the folders in yokoten.json "layout.exempt" may grow',
+    check: 'the commit check and CI count the entries of each folder below the root; changes/ and the folders in yokoten.json "layout.exempt" (paths, or globs with `*` and `**`) may grow',
     docs: guide('the-core-rules'),
   },
   'build-output': {

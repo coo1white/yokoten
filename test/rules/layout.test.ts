@@ -9,7 +9,7 @@ import {
   checkLayout,
   isBuildOutput,
 } from '../../src/rules/layout.ts';
-import { formatFinding } from '../../src/rules/message.ts';
+import { type Finding, formatFinding } from '../../src/rules/message.ts';
 
 test('layout: a folder over the cap is reported once, the root never', () => {
   const eight = Array.from({ length: 8 }, (_, i) => `docs/f${i}.md`);
@@ -23,6 +23,56 @@ test('layout: a folder over the cap is reported once, the root never', () => {
 test('layout: an exempt folder may grow', () => {
   const records = Array.from({ length: 30 }, (_, i) => `docs/records/${i}.md`);
   assert.deepEqual(checkLayout(records, { layout: { maxEntries: 7, exempt: ['docs/records/'] } }), []);
+});
+
+test('layout: the message offers exempt for a log or a fixture set, not only a log (#381)', () => {
+  const problems = checkLayout(Array.from({ length: 8 }, (_, i) => `fixtures/f${i}.xls`), DEFAULTS);
+  assert.match(formatFinding(problems[0]), /layout\.exempt in yokoten\.json if it may grow: a log, or a third-party fixture set/);
+});
+
+const many = (dir: string, count = 9) => Array.from({ length: count }, (_, i) => `${dir}/f${i}.xls`);
+
+test('layout: an exempt glob covers every crate of a Rust workspace, one segment per * (#381)', () => {
+  const files = [...many('crates/app-core/tests/data'), ...many('crates/app-csv/tests/data')];
+  const notes: Finding[] = [];
+  assert.deepEqual(checkLayout(files, { layout: { maxEntries: 7, exempt: ['crates/*/tests/data'] } }, notes), []);
+  assert.deepEqual(notes, []);
+  // `*` is one whole folder: it does not reach two levels down, nor match part of a name.
+  const deeper = checkLayout(many('crates/app-core/extra/tests/data'), { layout: { maxEntries: 7, exempt: ['crates/*/tests/data'] } });
+  assert.equal(deeper.length, 1);
+  assert.equal(checkLayout(many('crates/app-core/tests/data'), { layout: { maxEntries: 7, exempt: ['crates/app-*/tests/data'] } }).length, 1);
+});
+
+test('layout: ** in an exempt glob is any number of folders, none too (#381)', () => {
+  const exempt = { layout: { maxEntries: 7, exempt: ['vendor/**/fixtures'] } };
+  assert.deepEqual(checkLayout([...many('vendor/fixtures'), ...many('vendor/a/b/c/fixtures')], exempt), []);
+  // The folders on the way stay counted.
+  assert.equal(checkLayout(many('vendor/a'), exempt).length, 1);
+});
+
+test('layout: a near miss of an exempt glob is still counted (#381)', () => {
+  const exempt = { layout: { maxEntries: 7, exempt: ['crates/*/tests/data'] } };
+  for (const dir of ['crates/app-core/tests/data2', 'crates/app-core/test/data', 'crates/tests/data', 'other/app-core/tests/data', 'crates/app-core/tests']) {
+    assert.equal(checkLayout(many(dir), exempt).length, 1, dir);
+  }
+  // A dot is a dot, not any character.
+  assert.equal(checkLayout(many('docsxrecords'), { layout: { maxEntries: 7, exempt: ['docs.records'] } }).length, 1);
+});
+
+test('layout: an exempt glob that matches no folder is a note, an exact path is not (#381)', () => {
+  const notes: Finding[] = [];
+  const problems = checkLayout(many('docs/records'), { layout: { maxEntries: 7, exempt: ['docs/records', 'crates/*/tests/data', 'docs/old'] } }, notes);
+  assert.deepEqual(problems, []);
+  assert.equal(notes.length, 1);
+  assert.match(formatFinding(notes[0]), /^yokoten\.json: layout\.exempt "crates\/\*\/tests\/data" matches no folder/);
+  // Without a notes list, nothing is noted and nothing fails.
+  assert.deepEqual(checkLayout([], { layout: { maxEntries: 7, exempt: ['crates/*/tests/data'] } }), []);
+});
+
+test('layout: exact exempt paths work as before, with or without a trailing slash (#381)', () => {
+  assert.deepEqual(checkLayout(many('docs/records'), { layout: { maxEntries: 7, exempt: ['docs/records'] } }), []);
+  assert.deepEqual(checkLayout(many('docs/records'), { layout: { maxEntries: 7, exempt: ['./docs/records/'] } }), []);
+  assert.equal(checkLayout(many('a/docs/records'), { layout: { maxEntries: 7, exempt: ['docs/records'] } }).length, 1, 'anchored at the root');
 });
 
 test('layout: changes/ may grow, since a release empties it (#132)', () => {

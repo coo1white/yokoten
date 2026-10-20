@@ -532,16 +532,38 @@ function removeCode(text: string): string {
 const findClaudeFiles = (root: string) => CLAUDE_FILES.filter((entry) => existsSync(join(root, entry.file)));
 
 /**
- * The CLAUDE.md file that should import AGENTS.md, with its import line, or null when
- * Claude Code reads AGENTS.md here: there is no CLAUDE.md, or one of them imports it.
+ * Where a CLAUDE.md really is, when it is a link or sits in a linked folder: `rules` when
+ * it is the project's AGENTS.md, so Claude Code reads the rules through it (#428); the
+ * other file in this repo, or `outside`; null when it is a plain file here.
  */
-export function findRulesGap(root: string): { file: string; line: string } | null {
-  const found = findClaudeFiles(root);
-  if (found.length === 0 || found.some((entry) => entry.imports.test(removeCode(readFileSync(join(root, entry.file), 'utf8'))))) return null;
-  return { file: found[0].file, line: `@${found[0].rules}` };
+function followLink(root: string, file: string): { kind: 'rules' } | { kind: 'file'; path: string } | { kind: 'outside' } | null {
+  const path = join(root, file);
+  const real = realpathSync(path);
+  const rules = join(root, 'AGENTS.md');
+  if (existsSync(rules) && real === realpathSync(rules)) return { kind: 'rules' };
+  const realRoot = realpathSync(root);
+  const inside = relative(realRoot, real);
+  if (inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)) return { kind: 'outside' };
+  if (!lstatSync(path).isSymbolicLink() && real === join(realRoot, file)) return null;
+  return { kind: 'file', path: inside.split(sep).join('/') };
 }
 
-/** True when Claude Code reads AGENTS.md here: there is no CLAUDE.md, or one imports AGENTS.md. */
+/**
+ * The CLAUDE.md file that should import AGENTS.md, with its import line, or null when
+ * Claude Code reads AGENTS.md here: there is no CLAUDE.md, one of them imports it, or one
+ * is a link to it (#428). A plain file gets the import, root first. When every CLAUDE.md
+ * is a link to another file, `link` says where it points, and init writes nothing through it.
+ */
+export function findRulesGap(root: string): { file: string; line: string; link?: string } | null {
+  const found = findClaudeFiles(root).map((entry) => ({ ...entry, link: followLink(root, entry.file) }));
+  if (found.length === 0 || found.some((entry) => entry.link?.kind === 'rules')) return null;
+  if (found.some((entry) => entry.imports.test(removeCode(readFileSync(join(root, entry.file), 'utf8'))))) return null;
+  const target = found.find((entry) => entry.link === null) ?? found[0];
+  const link = target.link === null ? undefined : target.link.kind === 'file' ? target.link.path : 'a file outside this repo';
+  return { file: target.file, line: `@${target.rules}`, ...(link === undefined ? {} : { link }) };
+}
+
+/** True when Claude Code reads AGENTS.md here: there is no CLAUDE.md, or one imports AGENTS.md or is a link to it. */
 export const claudeReadsRules = (root: string): boolean => findRulesGap(root) === null;
 
 /** The line ending most lines of the text use: CRLF or LF, LF on a tie. */
@@ -555,6 +577,8 @@ function findMainNewline(text: string): string {
 function importRules(root: string): string | null {
   const gap = findRulesGap(root);
   if (!gap) return null;
+  // A link is the owner's to change: writing through it would change the file it points to (#428).
+  if (gap.link) return `left ${gap.file} as it is: it is a link to ${gap.link}, so Claude Code does not read AGENTS.md; add a line \`${gap.line}\` to that file, or make ${gap.file} a plain file`;
   const path = join(root, gap.file);
   const text = readFileSync(path, 'utf8');
   const newline = findMainNewline(text);

@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { botConfig, botEnv, botProgram, installationToken, readBranchFiles, readCodeOwners, repoOf } from '../host/github.ts';
 import { DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
 import type { Finding } from '../rules/message.ts';
-import { checkCommandTitle, checkOwnedTier, checkPullRequestBody, readCommandBody } from '../rules/pr.ts';
+import { type CommandLabels, checkCommandTitle, checkOwnedTier, checkPullRequestBody, readCommandBody, readCommandLabels } from '../rules/pr.ts';
 import { args, bullets, env, parse, print, requireRoot, rootOf, usage } from './shared.ts';
 
 async function bot(command: string[]): Promise<number> {
@@ -27,6 +27,12 @@ async function bot(command: string[]): Promise<number> {
   // branch, or one `--head` or `gh pr edit <branch>` names, is checked before anything is sent.
   const body = root ? readPendingBody(command, root) : null;
   if (body && !isLookup(body) && refuseBody(checkBody(body, localBranch(body)))) return 1;
+  // Then the labels of `gh pr create` (#422): a tier label the body contradicts is refused.
+  const labels = root ? readPendingLabels(command, root, body) : null;
+  if (labels?.problems.length) {
+    print([`yokoten bot: ${labels.problems.length} problem(s) in the labels; nothing was sent. Fix the labels and run it again:`, ...bullets(labels.problems)], process.stderr);
+    return 1;
+  }
   const config = botConfig(env);
   if (typeof config === 'string') {
     print([`yokoten bot: ${config}`], process.stderr);
@@ -44,7 +50,9 @@ async function bot(command: string[]): Promise<number> {
     return 1;
   }
   const token = await installationToken(config, repo);
-  const [file, ...rest] = command;
+  const [file, ...given] = command;
+  // The type and tier labels the command leaves out, by the names the repo has (#422).
+  const rest = labels?.missing.length ? addLabels(given, chooseLabels(labels, file, botEnv(env, token))) : given;
   // `gh pr edit <number or URL>`: one `gh pr view` with the same token names its branches.
   if (body && isLookup(body) && refuseBody(checkBody(body, lookupBranch(body, file, botEnv(env, token))))) return 1;
   // A body read from standard input was used up by the check, so gh gets it the same way.
@@ -81,16 +89,7 @@ interface PendingBody {
  */
 function readPendingBody(command: string[], root: string): PendingBody | null {
   const found = readCommandBody(command);
-  if (!found || !existsSync(join(root, 'yokoten.json'))) return null;
-  if (found.repo !== null) {
-    let origin: string | null = null;
-    try {
-      origin = repoOf(execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
-    } catch {
-      // no origin: the named repo is another one
-    }
-    if (origin?.toLowerCase() !== found.repo.replace(/^(https?:\/\/)?github\.com\//, '').toLowerCase()) return null;
-  }
+  if (!found || !existsSync(join(root, 'yokoten.json')) || !isOrigin(root, found.repo)) return null;
   try {
     if ('text' in found.body) return { root, text: found.body.text, base: found.base, head: found.head, repo: found.repo };
     const input = found.body.file === '-' ? readFileSync(0, 'utf8') : undefined;
@@ -98,6 +97,60 @@ function readPendingBody(command: string[], root: string): PendingBody | null {
   } catch {
     return null;
   }
+}
+
+/** Whether `--repo` names this repo's origin, or no repo at all. */
+function isOrigin(root: string, repo: string | null): boolean {
+  if (repo === null) return true;
+  let origin: string | null = null;
+  try {
+    origin = repoOf(execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
+  } catch {
+    // no origin: the named repo is another one
+  }
+  return origin?.toLowerCase() === repo.replace(/^(https?:\/\/)?github\.com\//, '').toLowerCase();
+}
+
+/**
+ * The labels `gh pr create` leaves out, and the problems with those it gives, by `check
+ * --pr` (#422). Null when the repo has no yokoten.json, or the command names another repo.
+ */
+function readPendingLabels(command: string[], root: string, body: PendingBody | null): CommandLabels | null {
+  if (!existsSync(join(root, 'yokoten.json'))) return null;
+  const labels = readCommandLabels(command, body?.text ?? null);
+  return labels && isOrigin(root, labels.repo) ? labels : null;
+}
+
+/**
+ * For each missing label, the first name the repo has, from one `gh label list` with the
+ * bot's token. A label the repo does not have is said plainly and left out; the bot never
+ * creates one. When gh can't list the labels, the best name is used, and gh says the rest.
+ */
+function chooseLabels(labels: CommandLabels, gh: string, ghEnv: Env): string[] {
+  const list = spawnSync(gh, ['label', 'list', '--json', 'name', '--limit', '1000', ...(labels.repo ? ['--repo', labels.repo] : [])], { encoding: 'utf8', env: ghEnv, stdio: ['ignore', 'pipe', 'ignore'] });
+  let names: string[] | null = null;
+  try {
+    const parsed: unknown = JSON.parse(list.stdout ?? '');
+    if (list.status === 0 && Array.isArray(parsed)) names = parsed.map((label: { name?: unknown }) => String(label?.name ?? ''));
+  } catch {
+    // gh said no list: use the best names
+  }
+  if (!names) return labels.missing.map(([best]) => best);
+  const known = new Map(names.map((name) => [name.toLowerCase(), name]));
+  const chosen: string[] = [];
+  for (const wanted of labels.missing) {
+    const found = wanted.map((name) => known.get(name.toLowerCase())).find((name) => name !== undefined);
+    if (found !== undefined) chosen.push(found);
+    else print([`yokoten bot: note: the repo has no label \`${wanted[0]}\`, so the pull request gets none; create it on GitHub, or pass another with --label. \`check --pr\` asks for it`], process.stderr);
+  }
+  return chosen;
+}
+
+/** The gh arguments with one `--label` for each name, before any `--`. */
+function addLabels(args: string[], names: string[]): string[] {
+  const end = args.indexOf('--');
+  const added = names.flatMap((name) => ['--label', name]);
+  return end === -1 ? [...args, ...added] : [...args.slice(0, end), ...added, ...args.slice(end)];
 }
 
 /** Whether the pull request is named by a number or a URL, so gh must say its branches. */
