@@ -711,12 +711,14 @@ test('reading the heredoc shape stays linear (#439)', () => {
 
 test("the lead's command with a body file on disk: commands that write no file don't stop it (#439)", () => {
   const body = join(postDir, 'lead-body.md');
-  const lead = `export NODE_USE_ENV_PROXY=1 GH_REPO=o/r; OWNER=$(gh pr view 1 -R o/r --json assignees -q '.assignees[0].login'); node bin/yokoten.ts bot -- gh pr create --title t --body-file ${body} --assignee "$OWNER"`;
+  const lead = `cd ${postDir} && export NODE_USE_ENV_PROXY=1 GH_REPO=o/r; node bin/yokoten.ts bot -- gh pr create --title t --body-file ${body}`;
   writeFileSync(body, 'All clean.\n');
   assert.equal(post(lead), null);
   assert.equal(post(lead.replace('node bin/yokoten.ts bot', 'yokoten bot')), null);
   // Loading a file with . or source may run anything, so the file on disk is not trusted.
   plainRefusal(`set -a; . ~/.config/yokoten/keys.env; set +a; ${lead}`);
+  // A `$` the shell fills in may run code, so the older form with $(…) is refused too.
+  plainRefusal(`OWNER=$(gh pr view 1 --json assignees -q '.assignees[0].login'); ${lead} --assignee "$OWNER"`);
   for (const reads of ['git rev-parse HEAD', 'git config --get user.name', 'git remote get-url origin', 'gh issue list', 'gh pr checks 3', 'echo hi', 'true', 'test -f x', 'set -e -o pipefail', 'set +u', 'OWNER=someone', 'export GH_HOST=example.com', 'GH_REPO=o/r gh pr view 1', 'cd sub', 'yokoten bot -- gh run view 1']) {
     assert.equal(post(`${reads} && gh pr comment 3 -F ${body}`), null, reads);
   }
@@ -843,4 +845,113 @@ test('a command beside gh is trusted only when it surely writes no file and runs
     if (writesNothing.has(name)) assert.equal(post(command), null, name);
     else assert.ok(post(command) !== null, name);
   }
+});
+
+// Inputs from the fourth review (#439). The shell may fill in any `$` or backtick outside single
+// quotes by running code (`${X@P}`, `${!X}`, an `a[…]` name read as a number), so each one
+// makes the line unsure. So do `$'…'`, a CR, `--web` or `-w`, and `..` after a cd.
+const reviewCases3: string[] = [
+  "X='a[$(cp ev/f.md f.md)]'; echo \"${!X}\"; gh issue comment 3 -F f.md",
+  "X='a[$(cp ev/f.md f.md)]'; echo ${!X}; gh issue comment 3 -F f.md",
+  "X='$(cp ev/f.md f.md)'; cd \"${X@P}\"; gh issue comment 3 -F ~/f.md",
+  "X='$(cp ev/f.md f.md)'; : ${X@P}; gh issue comment 3 -F f.md",
+  "X='$(cp ev/f.md f.md)'; test -n \"${X@P}\"; gh issue comment 3 -F f.md",
+  "X='$(cp ev/f.md f.md)'; gh pr view \"${X@P}\"; gh issue comment 3 -F f.md",
+  "X='$(cp ev/f.md f.md)'; export GH_HOST=\"${X@P}\"; gh issue comment 3 -F f.md",
+  "X='$(cp ev/f.md f.md)'; Y=${X@P}; gh issue comment 3 -F f.md",
+  "X='$(cp ev/f.md f.md)'; Y=${X@P} gh issue comment 3 -F f.md",
+  "X='$(cp ev/f.md f.md)' Y=${X@P}; gh issue comment 3 -F f.md",
+  "X='$(cp ev/f.md f.md)'; gh issue comment 3 -F f.md --title \"${X@P}\"",
+  "X='$(cp ev/f.md f.md)'; gh issue comment 3 -F f.md \"${X@P}\"",
+  "cd lnk; gh issue comment 3 -F ../f.md",
+  "gh issue comment 3 -F f.md\r",
+  "B=[; X=a${B}'$(cp ev/f.md f.md)]'; echo ${!X}; gh issue comment 3 -F f.md",
+  "B='['; X=\"a${B}\\$(cp ev/f.md f.md)]\"; echo \"${!X}\"; gh issue comment 3 -F f.md",
+  "X='$(cp ev/f.md f.md)'; echo \"${X@P}\"; gh issue comment 3 -F f.md",
+  "X='\\$(cp ev/f.md f.md)'; echo \"${X@P}\"; gh issue comment 3 -F f.md",
+  "B=[; Y=-v; X=a${B}'$(cp ev/f.md f.md)]'; test \"$Y\" \"$X\"; gh issue comment 3 -F f.md",
+  "B=[; X=a${B}'$(cp ev/f.md f.md)]'; printf -v\"$X\" %s 1; gh issue comment 3 -F f.md",
+  "B=[; X=a${B}'$(cp ev/f.md f.md)]'; echo $((X)); gh issue comment 3 -F f.md",
+  "cp ev/f.md f.md; gh issue comment 3 -F f.md",
+  "X='$(cp ev/f.md f.md)'; echo ${X@P}; gh issue comment 3 -F f.md",
+  "Y=-v; X='a[$(cp ev/f.md f.md)]'; test \"$Y\" \"$X\"; gh issue comment 3 -F f.md",
+  "Y=-v; X='a[$(cp ev/f.md f.md)]'; [ $Y $X ]; gh issue comment 3 -F f.md",
+  "X='a[$(cp ev/f.md f.md)]'; printf -v\"$X\" %s 1; gh issue comment 3 -F f.md",
+  "X='a[$(cp ev/f.md f.md)]'; printf -v$X %s 1; gh issue comment 3 -F f.md",
+  "gh pr view 3 --web=true; gh issue comment 3 -F f.md",
+  "echo x 1<>f.md; gh issue comment 3 -F f.md",
+  "echo x {fd}>f.md; gh issue comment 3 -F f.md",
+  "echo x &>f.md; gh issue comment 3 -F f.md",
+  "echo x &>>f.md; gh issue comment 3 -F f.md",
+  "echo x >\\\nf.md; gh issue comment 3 -F f.md",
+  "pushd sub; pushd ev; pushd +1; gh issue comment 3 -F f.md",
+  "echo ${X=$(cp ev/f.md f.md)}; gh issue comment 3 -F f.md",
+  "echo ${X/a/$(cp ev/f.md f.md)}; gh issue comment 3 -F f.md",
+  "echo $'\\x24(cp ev/f.md f.md)'; gh issue comment 3 -F f.md",
+  "true\r\ncp ev/f.md f.md\r\ngh issue comment 3 -F f.md",
+  "set -eu -o pipefail -o noclobber; gh issue comment 3 -F f.md",
+  "set -o pipefail -o errtrace; gh issue comment 3 -F f.md",
+  "set -e -o pipefail -o xtrace; gh issue comment 3 -F f.md",
+  "cd -- ev; gh issue comment 3 -F f.md",
+  "cd ev; gh issue comment 3 -F ../f.md",
+  "trap 'cp ev/f.md f.md' EXIT; gh issue comment 3 -F f.md",
+  "echo $(</dev/null) && gh issue comment 3 -F f.md",
+  "cat > f.md <<'EOF' && gh issue comment 3 -F f.md\nQuietVale\nEOF",
+  "cat > f.md <<'EOF' && gh issue comment 3 -F f.md\nclean\nEOF\ncp ev/f.md f.md",
+  "f.md=1; gh issue comment 3 -F f.md",
+  "OLDPWD=ev; cd - ; gh issue comment 3 -F f.md",
+  "X=ev; cd $X; gh issue comment 3 -F f.md",
+  "export GH_REPO=a/b GH_HOST=$(cp ev/f.md f.md); gh issue comment 3 -F f.md",
+  "X='$(cp ev/f.md f.md)'; Y=${X@P}; gh issue comment 3 -F f.md --title \"${X@P}\"",
+  "gh pr view 3 -w; gh issue comment 3 -F f.md",
+  "gh pr view 3 -cw; gh issue comment 3 -F f.md",
+  "gh pr view 3 --web=false; gh issue comment 3 -F f.md",
+  "cd sub && gh issue comment 3 -F sub/../f.md",
+  "echo '$(x)' $'\\x41'; gh issue comment 3 -F f.md",
+  "echo hi;\rgh issue comment 3 -F f.md"
+];
+
+// Each of these runs nothing and writes no file, so the file on disk is still what gh posts.
+const writesNothing3: string[] = [
+  "gh issue comment 3 -F f.md",
+  "cd ev\tgh issue comment 3 -F f.md",
+  "git config --get alias.x; gh issue comment 3 -F f.md",
+  "git rev-parse --git-path x; gh issue comment 3 -F f.md",
+  "gh pr checks 3 --watch; gh issue comment 3 -F f.md",
+  "echo hi | gh issue comment 3 -F f.md",
+  "cat > f.md <<'EOF' && gh issue comment 3 -F f.md\nclean\nEOF",
+  "cat > f.md <<'EOF' && gh issue comment 3 -F f.md -F f.md\nclean\nEOF",
+  "cat >f.md <<'EOF' && gh issue comment 3 -F f.md\nclean\nEOF\n",
+  "X=1 Y=2; gh issue comment 3 -F f.md",
+  "cd ~; gh issue comment 3 -F f.md",
+  "echo hi & gh issue comment 3 -F f.md",
+  "GH_HOST=x gh pr view 3; gh issue comment 3 -F f.md",
+  "NODE_USE_ENV_PROXY=1 yokoten bot -- gh pr view 3; gh issue comment 3 -F f.md"
+];
+
+test('a `$` the shell fills in, a CR, --web or .. after a cd makes the line unsure (#439)', () => {
+  for (const dir of ['sub', 'ev', 'lnk-target']) mkdirSync(join(postDir, dir), { recursive: true });
+  writeFileSync(join(postDir, 'f.md'), 'clean\n');
+  writeFileSync(join(postDir, 'ev', 'f.md'), 'QuietVale\n');
+  rmSync(join(postDir, 'lnk'), { force: true });
+  symlinkSync(join(postDir, 'ev'), join(postDir, 'lnk'));
+  for (const command of reviewCases3) assert.ok(post(command) !== null, JSON.stringify(command));
+  for (const command of writesNothing3) assert.equal(post(command), null, JSON.stringify(command));
+  // A `$` inside single quotes is text, not a value the shell fills in.
+  assert.equal(post("echo '$(cp ev/f.md f.md)' && gh issue comment 3 -F f.md"), null);
+  assert.equal(post("cat > g.md <<'EOF' && gh issue comment 3 -F g.md\n$(cp ev/f.md f.md)\nEOF"), null);
+});
+
+test('scanning a line for values the shell fills in stays linear (#439)', () => {
+  writeFileSync(join(postDir, 'f.md'), 'clean\n');
+  assertLinear(
+    'many quotes and words before gh',
+    (n) => `${"echo 'a' \"b\" c\\ d; ".repeat(n / 24)}gh issue comment 3 -F f.md`,
+    (command) => assert.equal(post(command), null),
+  );
+  assertLinear(
+    'an unclosed quote',
+    (n) => `echo "${'x '.repeat(n / 2)}`,
+    (command) => post(command),
+  );
 });

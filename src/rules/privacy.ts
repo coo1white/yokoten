@@ -606,6 +606,8 @@ type FileRead = { texts: string[] } | 'skip' | 'missing' | 'unsure';
 export interface CommandFiles {
   heredoc?: { path: string; text: string };
   mayWrite: boolean;
+  /** A cd in the command: a path with `..` goes up from the real folder, behind any symlink. */
+  movesFolder?: boolean;
 }
 
 /** What a gh command posts: its pieces, or a file the guard can't find. Null when it posts nothing. */
@@ -751,6 +753,7 @@ export function checkPost(
     const home = env.HOME;
     const full = path.startsWith('~/') && home ? join(home, path.slice(2)) : path;
     if (!isAbsolute(full) && cwd === null) return 'unsure';
+    if (files?.movesFolder && full.split(/[\\/]/).includes('..')) return 'unsure';
     const at = resolve(cwd ?? '', full);
     let stat: ReturnType<typeof statSync> | null = null;
     try {

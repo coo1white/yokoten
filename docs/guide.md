@@ -1353,14 +1353,19 @@ plain or through `yokoten bot -- gh`:
   before the command, so a file the same command writes is not there yet. One shape is
   read: the whole command is `cat > body.md <<'EOF' && gh … --body-file body.md`, then the
   body and `EOF`. The path is plain, the same on both sides, and the delimiter is quoted;
-  the guard checks the heredoc and the file already there, if any. Beside gh, only a
-  command that surely writes no file is fine: a plain assignment, `export` of `GH_REPO`,
-  `GH_HOST` or `NODE_USE_ENV_PROXY`, `set -e`, `-u` or `-o pipefail`, `cd <folder>`,
-  `echo`, `printf` or `test` with no redirect, a `gh pr|issue|repo|run view|list|checks`
-  without `--web`, `git rev-parse`, `git config --get <name>`, `git remote get-url`, and
-  the same through `yokoten bot --`. Any other command may change the file, so a file the
-  guard can't find, or one such a command may change, stops the command: write the file in
-  one command, then post it in the next, with its full path.
+  the guard checks the heredoc and the file already there, if any. Beside gh, only these
+  commands are fine, since they surely write no file: `true`, `:`, `echo`; `printf`,
+  `test` or `[` without `-v`; `set` with only `-e`, `-u`, `+e`, `+u` (or together, as
+  `-eu`) and `-o pipefail`; `cd` or `pushd` with one folder, and `popd`; a plain
+  assignment, but not to a name the shell uses, such as `PATH`, `HOME` or `PS4`; `export`,
+  or a command's own prefix, of only `GH_REPO`, `GH_HOST` and `NODE_USE_ENV_PROXY`;
+  `gh pr|issue|repo|run view|list|checks` without `--web` or `-w`; `git rev-parse`,
+  `git config --get <name>` and `git remote get-url`; and these through `yokoten bot --`.
+  None may redirect into a file. The guard doesn't judge values: a `$` or backtick outside
+  single quotes, or a `$'…'`, anywhere in the command (gh's own words too), makes it unsure,
+  and so do a CR and a `..` in the path after a `cd`. A file the guard can't find, or one
+  the command may change, stops the command: write the file in one command, then post it in
+  the next, with its full path.
 - A body from stdin: a heredoc, a `<<<` here-string, or a `< file`.
 - `gh api` fields and `--input`, on a call that writes: a POST, PATCH or PUT, or a GraphQL
   mutation. A read, such as a search or a GraphQL query, passes.

@@ -101,13 +101,16 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
   // What the rest of the command may do to a file gh reads (#439).
   const heredoc = heredocPost(command, commands);
   const writers = commands.filter((words) => !writesNoFile(words)).length;
+  // Anything the shell fills in may run code; after a cd, `..` goes up from the real folder.
+  const fills = heredoc === undefined && fillsIn(command);
+  const movesFolder = commands.some((words) => ['cd', 'pushd', 'popd'].includes(words[0] ?? ''));
   for (const words of commands) {
     const reason =
       checkGit(words, { env, config, cwd, rules }) ??
       checkHooksEnvironment(words) ??
       checkPublish(words, env) ??
       checkBlocked(words, config?.commands.block ?? {}) ??
-      checkPosted(words, { env, config, cwd: postCwd, command, titles, files: { heredoc, mayWrite: heredoc !== undefined || writers > (writesNoFile(words) ? 0 : 1) || writesFile(words) || isUnsure(words) } }) ??
+      checkPosted(words, { env, config, cwd: postCwd, command, titles, files: { heredoc, mayWrite: heredoc !== undefined || fills || writers > (writesNoFile(words) ? 0 : 1) || writesFile(words) || isUnsure(words), movesFolder } }) ??
       (rules ? checkLeadOnlyWrites(words, { env, rules, folder: postCwd }) : null);
     if (reason) return reason;
     postCwd = folderAfter(words, postCwd, env);
@@ -830,33 +833,80 @@ const EXPORTS = new Set(['GH_REPO', 'GH_HOST', 'NODE_USE_ENV_PROXY']);
 const NAME_VALUE = /^([A-Za-z_]\w*)=/s;
 // `set` only for these: errexit, nounset and pipefail.
 const SET_FLAGS = /^[-+][eu]+$/;
-// A word the shell may run code from when it reads it as a number: `a[$(x)]`, `$[x]`,
-// `$((x))`, `${x:n}`, `${a[x]}`.
-// One pass, so a word of many [ or ${ costs no more than its length (#226).
-function runsAsNumber(word: string): boolean {
-  if (word.includes('$[') || word.includes('$((')) return true;
-  let inSubscript = false; // after a [, before its ]
-  let inBraces = false; // after a ${, before its }
-  for (let index = 0; index < word.length; index++) {
-    const character = word[index];
-    if (character === '[') {
-      if (inBraces) return true;
-      inSubscript = true;
-    } else if (character === ']') inSubscript = false;
-    else if (character === '}') inBraces = false;
-    else if (character === ':' && inBraces) return true;
-    else if (character === '`' && inSubscript) return true;
-    else if (character === '$' && word[index + 1] === '(' && inSubscript) return true;
-    else if (character === '$' && word[index + 1] === '{') inBraces = true;
+// Whether the shell fills anything in on this line, or the line holds a CR (#439). Any $ or
+// backtick outside single quotes, any $'...', and a $ or backtick in a heredoc whose
+// delimiter is not quoted: the guard does not judge what the value will be, since bash can
+// run code from a stored string (`${X@P}`, `${!X}`, `$((X))`). A quoted heredoc's body is
+// data. One pass over the text.
+export function fillsIn(text: string): boolean {
+  let quote = ''; // '' outside quotes, or ' or "
+  let wordStart = true; // the last character ended a word, so # starts a comment
+  const heredocs: { delimiter: string; strip: boolean; quoted: boolean }[] = [];
+  for (let index = 0; index < text.length; index++) {
+    const character = text[index];
+    if (character === '\r') return true;
+    if (quote === "'") {
+      if (character === "'") quote = '';
+      continue;
+    }
+    if (character === '\\') {
+      index++;
+      wordStart = false;
+      continue;
+    }
+    if (character === '`' || character === '$') return true;
+    if (quote === '"') {
+      if (character === '"') quote = '';
+      continue;
+    }
+    if (character === "'" || character === '"') quote = character;
+    else if (character === '#' && wordStart) {
+      while (index + 1 < text.length && text[index + 1] !== '\n') index++;
+    } else if (character === '<' && text[index + 1] === '<' && text[index + 2] !== '<') {
+      // A heredoc: its delimiter word, quoted or not, waits for the line end.
+      let at = index + 2;
+      const strip = text[at] === '-';
+      if (strip) at++;
+      while (text[at] === ' ' || text[at] === '\t') at++;
+      let delimiter = '';
+      let quoted = false;
+      for (; at < text.length && !/[\s;&|()<>]/.test(text[at]); at++) {
+        if (text[at] === '$' || text[at] === '`') return true;
+        if (text[at] === "'" || text[at] === '"') {
+          const end = text.indexOf(text[at], at + 1);
+          if (end === -1) return true;
+          delimiter += text.slice(at + 1, end);
+          quoted = true;
+          at = end;
+        } else if (text[at] === '\\') quoted = true;
+        else delimiter += text[at];
+      }
+      if (delimiter) heredocs.push({ delimiter, strip, quoted });
+      index = at - 1;
+    } else if (character === '\n' && heredocs.length > 0) {
+      // The bodies follow this line, in order.
+      for (const doc of heredocs) {
+        let at = index + 1;
+        while (at <= text.length) {
+          let end = text.indexOf('\n', at);
+          if (end === -1) end = text.length;
+          const line = text.slice(at, end);
+          at = end + 1;
+          if ((doc.strip ? line.replace(/^\t+/, '') : line) === doc.delimiter) break;
+          if (!doc.quoted && /[$`]/.test(line)) return true;
+        }
+        index = at - 1;
+      }
+      heredocs.length = 0;
+    }
+    wordStart = /[\s;&|()]/.test(character);
   }
   return false;
 }
 
-/** Whether a word may run code, or a command's own variables change what it runs (#439). */
+/** Whether a command's own variables may change what it runs (#439). */
 function isUnsure(words: string[]): boolean {
-  if (words.some(runsAsNumber)) return true;
-  const at = ownVariables(words);
-  return at === -1;
+  return ownVariables(words) === -1;
 }
 
 // Where the program starts after a command's own `X=1` words, or -1 when one of them sets a
@@ -889,6 +939,7 @@ function readsOnly(words: string[]): boolean {
     case 'echo':
       return true;
     case 'printf':
+      return !args.some((arg) => arg.startsWith('-v'));
     case 'test':
     case '[':
       return !args.includes('-v');
@@ -898,13 +949,13 @@ function readsOnly(words: string[]): boolean {
       return args.length > 0 && args.every((arg) => EXPORTS.has(NAME_VALUE.exec(arg)?.[1] ?? arg));
     case 'cd':
     case 'pushd':
-      // A bare cd goes home, and `cd -` to OLDPWD: not followed.
-      return args.length === 1 && args[0] !== '-' && !args[0].startsWith('-');
+      // A bare cd goes home, `cd -` to OLDPWD, and `pushd +1` round the stack: not followed.
+      return args.length === 1 && !/^[-+]/.test(args[0]);
     case 'popd':
       return true;
     case 'gh':
       // `--web` opens a browser, which runs a program.
-      return ['pr', 'issue', 'repo', 'run'].includes(sub) && ['view', 'list', 'checks'].includes(action) && !args.some((arg) => arg === '--web' || /^-[A-Za-z]*w/.test(arg));
+      return ['pr', 'issue', 'repo', 'run'].includes(sub) && ['view', 'list', 'checks'].includes(action) && !args.some((arg) => /^--web(=|$)/.test(arg) || /^-[A-Za-z]*w/.test(arg));
     case 'git':
       // Most git commands run repo config (fsmonitor, textconv, gpg); these few do not.
       if (sub === 'rev-parse') return args.slice(1).every((arg) => !arg.startsWith('--output'));
