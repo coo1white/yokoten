@@ -235,7 +235,7 @@ test('hook: Claude Code gets a plain read rewritten through redact, with allow, 
   assert.equal(output.permissionDecision, 'allow');
   assert.equal(output.permissionDecisionReason, 'yokoten: `git log` prints author names and emails, so its output goes through yokoten redact');
   assert.equal(output.updatedInput.description, 'Show');
-  assert.match(output.updatedInput.command, /^set -o pipefail # yokoten-redact\n\(\ngit log -1\n\) 2>&1 \| \{ "[^"]+" "[^"]*yokoten\.ts" redact \|\| cat; \}$/);
+  assert.match(output.updatedInput.command, /^set -o pipefail # yokoten-redact\n\(\ngit log --no-ext-diff --no-textconv -1\n\) 2>&1 \| \{ "[^"]+" "[^"]*yokoten\.ts" redact \|\| cat; \}$/);
   // The rewritten command runs, and prints the placeholder.
   const ran = spawnSync('bash', ['-c', output.updatedInput.command], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
   assert.equal(ran.status, 0, ran.stderr);
@@ -291,6 +291,35 @@ test('hook: a quote that hides a redirect gets no allow, and the file is not wri
     assert.deepEqual(pick(call(command)), [0, '', ''], command);
     assert.equal(existsSync(join(sandbox.repo, 'out.txt')), false, command);
   }
+});
+
+test('hook: a glob that a file name turns into an option gets no allow (#413)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('--output=leak.txt', 'x\n');
+  const result = sandbox.run(['hook', '--commands-only', '--agent', 'claude-code'], { input: JSON.stringify({ cwd: sandbox.repo, tool_name: 'Bash', tool_input: { command: 'git log *' } }) });
+  assert.deepEqual(pick(result), [0, '', '']);
+  assert.equal(existsSync(join(sandbox.repo, 'leak.txt')), false);
+});
+
+test("hook: the rewritten log runs no textconv the repo's config names (#413)", () => {
+  const sandbox = makeSandbox();
+  const marker = join(sandbox.repo, 'ran-textconv');
+  sandbox.write('.gitattributes', '*.txt diff=tc\n');
+  sandbox.write('a.txt', 'one\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'docs: one');
+  sandbox.git('config', 'diff.tc.textconv', `touch '${marker}'; cat`);
+  const result = sandbox.run(['hook', '--commands-only', '--agent', 'claude-code'], { input: JSON.stringify({ cwd: sandbox.repo, tool_name: 'Bash', tool_input: { command: 'git log -p -1' } }) });
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout).hookSpecificOutput;
+  assert.equal(output.permissionDecision, 'allow');
+  const ran = spawnSync('bash', ['-c', output.updatedInput.command], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
+  assert.equal(ran.status, 0, ran.stderr);
+  assert.match(ran.stdout, /\+one/);
+  assert.equal(existsSync(marker), false);
+  // Positive control: the same log, not rewritten, runs the textconv.
+  spawnSync('git', ['log', '-p', '-1'], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
+  assert.equal(existsSync(marker), true);
 });
 
 test("hook: an agent that can't rewrite runs the command, or with privacy.output stop is told the filtered one (#390)", () => {

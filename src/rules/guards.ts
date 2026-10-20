@@ -1388,6 +1388,8 @@ interface AccountPrinter {
   accepts: (args: string[]) => boolean;
   /** What it prints, for the message. */
   prints: string;
+  /** Options the rewrite adds after the subcommand, so the read runs no program the repo names. */
+  harden?: string[];
 }
 
 // Options that make a git read write a file or run another program. A format option keeps
@@ -1395,9 +1397,22 @@ interface AccountPrinter {
 // value wherever it stands (#413).
 const GIT_UNSAFE = /^(?:--output|-o|--ext-diff|--exec-path|--textconv|--filters)/;
 const isGitRead = (args: string[]) => !args.some((arg) => GIT_UNSAFE.test(arg));
+// A diff in a log can run a program the repo's config names: a textconv or an external diff.
+// The rewrite turns both off, so an allowed read runs only git (#413).
+const NO_DIFF_PROGRAMS = ['--no-ext-diff', '--no-textconv'];
 // `git shortlog` with no revision reads a log from stdin when stdin is no terminal, as in the
-// rewrite: so it is rewritten only with a revision, `git shortlog -sne HEAD` (#413).
-const isShortlogRead = (args: string[]) => isGitRead(args) && args.some((arg) => !arg.startsWith('-'));
+// rewrite: so it is rewritten only with a revision, `git shortlog -sne HEAD` (#413). The word
+// after an option that takes one is no revision, nor is a path after `--`.
+const SHORTLOG_VALUED = new Set(['--group', '--format', '-w']);
+function isShortlogRead(args: string[]): boolean {
+  if (!isGitRead(args)) return false;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--') return false;
+    if (SHORTLOG_VALUED.has(args[i])) i++;
+    else if (!args[i].startsWith('-')) return true;
+  }
+  return false;
+}
 
 // `git cat-file -p <object>`, or `git cat-file commit|tag <object>`: one object, printed. A
 // commit or a tag names its author. A batch reads object names from stdin: not rewritten.
@@ -1445,7 +1460,9 @@ const takesOnly = (valued: string[], flags: string[] = []) => (args: string[]) =
 };
 
 export const ACCOUNT_PRINTERS: AccountPrinter[] = [
-  { program: 'git', subcommands: ['log', 'show', 'whatchanged', 'blame', 'annotate', 'for-each-ref'], accepts: isGitRead, prints: 'author names and emails' },
+  { program: 'git', subcommands: ['log', 'show', 'whatchanged'], accepts: isGitRead, prints: 'author names and emails', harden: NO_DIFF_PROGRAMS },
+  { program: 'git', subcommands: ['blame', 'annotate'], accepts: isGitRead, prints: 'author names and emails', harden: ['--no-textconv'] },
+  { program: 'git', subcommands: ['for-each-ref'], accepts: isGitRead, prints: 'author names and emails' },
   { program: 'git', subcommands: ['shortlog'], accepts: isShortlogRead, prints: 'author names and emails' },
   { program: 'git', subcommands: ['cat-file'], accepts: isCatFileRead, prints: 'author names and emails' },
   { program: 'git', subcommands: ['remote'], accepts: isRemoteRead, prints: 'remote URLs' },
@@ -1457,8 +1474,9 @@ export const ACCOUNT_PRINTERS: AccountPrinter[] = [
 ];
 
 // Shell text that makes more than one plain command: separators, pipes, background, redirects,
-// substitutions, groups, a line end, an escape or a comment.
-const NOT_SIMPLE = /[;&|<>`$(){}\\\n#]/;
+// substitutions, groups, a line end, an escape, a comment, or a glob: `git log *` in a folder
+// with a file named `--output=x` passes that option (#413).
+const NOT_SIMPLE = /[;&|<>`$(){}\\\n#*?[]/;
 // Quoted text bash reads as it is: '...', or "..." with no $, ` or \ inside. A format such as
 // '%(authorname) <%ae>' is one word, not a group or a redirect (#413). The search runs from
 // the left, as bash reads. A quote left after it means the search and bash may not agree on
@@ -1483,12 +1501,8 @@ const RUNS_REDACT = /\byokoten(?:\.ts|\.js)?["']?\s+redact\b/;
  */
 export const isRedacted = (command: string): boolean => command.startsWith(`set -o pipefail ${REDACT_MARKER}\n`) && RUNS_REDACT.test(command);
 
-/**
- * What the command prints about the owner, or null. Not null only when the whole command
- * is one plain command that a row of ACCOUNT_PRINTERS lists, its subcommand in place:
- * `git remote add show x` is no `git remote show`.
- */
-export function printsAccount(command: string): string | null {
+/** What a plain read from ACCOUNT_PRINTERS prints, and the command as the rewrite runs it. */
+function readAccount(command: string): { printed: string; hardened: string } | null {
   if (isRedacted(command) || !isSimple(command)) return null;
   let words: string[];
   try {
@@ -1508,8 +1522,27 @@ export function printsAccount(command: string): string | null {
   }
   const subcommand = words[at + 1];
   const row = ACCOUNT_PRINTERS.find((printer) => printer.program === name && printer.subcommands.includes(subcommand) && printer.accepts(words.slice(at + 2)));
-  return row ? `\`${row.program} ${subcommand}\` prints ${row.prints}` : null;
+  if (!row) return null;
+  let hardened = command;
+  if (row.harden) {
+    // The options go right after the subcommand. Both words must stand unquoted at the start,
+    // or the place is unclear, and the command is not rewritten.
+    const head = /^(\s*)(\S+)(\s+)(\S+)(?=\s|$)/.exec(command);
+    if (at !== 0 || !head || head[2] !== words[0] || head[4] !== subcommand) return null;
+    hardened = `${head[0]} ${row.harden.join(' ')}${command.slice(head[0].length)}`;
+  }
+  return { printed: `\`${row.program} ${subcommand}\` prints ${row.prints}`, hardened };
 }
+
+/**
+ * What the command prints about the owner, or null. Not null only when the whole command
+ * is one plain command that a row of ACCOUNT_PRINTERS lists, its subcommand in place:
+ * `git remote add show x` is no `git remote show`.
+ */
+export const printsAccount = (command: string): string | null => readAccount(command)?.printed ?? null;
+
+/** The command as the rewrite runs it: a git log or blame with no textconv or external diff (#413). */
+export const hardenRead = (command: string): string => readAccount(command)?.hardened ?? command;
 
 /** The refusal for an agent whose hook can't change the command, with yokoten.json "privacy.output" "stop": the fix is the wrapped command. */
 export const privateOutput = (printed: string, wrapped: string): Finding => finding('private-output', `${printed}, and this agent can't filter it`, `run it as \`${wrapped}\``);
