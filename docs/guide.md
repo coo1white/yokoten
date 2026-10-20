@@ -656,6 +656,14 @@ check), `pr.yml` and `issue.yml`. Each action is pinned to a commit, each job ha
 limit, checkout keeps no token, and a new push cancels the old run on the same pull
 request. Add your tests as a job in `yokoten.yml` and to the `needs` list of `ci`.
 
+In `yokoten.yml`, a `changes` job reads which files a pull request changes. The pull
+request is docs-only when each file is under `docs/` or `changes/`, or is a `README.md`
+or `CHANGELOG.md`. A job of yours can then skip a docs-only pull request; the comment
+above `ci` shows the two lines to add. `ci` counts that skip as green. The commit check
+and the lint job always run. A push to main runs every job. So does a pull request whose
+file list can't be read: a warning says so. In yokoten's own CI, a docs-only pull request
+runs the tests once, on Ubuntu with Node 24, and skips `typecheck` and the Action job.
+
 It puts three safe defaults in `.github/` too:
 
 - `dependabot.yml` updates the actions that CI runs, and the packages `init` finds (npm,

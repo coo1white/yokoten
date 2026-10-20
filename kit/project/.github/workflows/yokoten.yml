@@ -15,6 +15,48 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: true
 jobs:
+  # Which files the pull request changes (#438). It is docs-only when each file is under
+  # docs/ or changes/, or is a README.md or CHANGELOG.md outside kit/. Then the jobs that
+  # Markdown can't break are skipped. A push to main is a full run. So is a file list
+  # that can't be read: docs_only is true only when the list was read and every file fits.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      docs_only: ${{ steps.files.outputs.docs_only }}
+    steps:
+      # The whole history, so the base commit is there to compare with. A failed checkout
+      # does not stop the job: the diff below then fails, and the run is full.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        continue-on-error: true
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: files
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          docs_only=false
+          if [ "$EVENT" != pull_request ]; then
+            echo "Not a pull request, so every job runs."
+          elif [ -z "$BASE_SHA" ] || [ -z "$HEAD_SHA" ] || ! files=$(git diff --name-only "$BASE_SHA...$HEAD_SHA" --) || [ -z "$files" ]; then
+            echo "::warning::The pull request's changed files could not be read, so every job runs."
+          else
+            docs_only=true
+            while IFS= read -r file; do
+              case "$file" in
+                kit/*) docs_only=false ;;
+                docs/*|changes/*|README.md|*/README.md|CHANGELOG.md|*/CHANGELOG.md) ;;
+                *) docs_only=false ;;
+              esac
+            done <<< "$files"
+          fi
+          echo "docs_only=$docs_only"
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
   # The same check as the commit hook, for commits made without it.
   check:
     runs-on: ubuntu-latest
@@ -59,14 +101,24 @@ jobs:
         with:
           advanced-security: false
           annotations: true
+  # Your own jobs go here. To skip one on a docs-only pull request, give it these lines.
+  # `!cancelled()` means it still runs if `changes` failed.
+  #   needs: changes
+  #   if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
+  #
   # The one required check. It runs even when a job it needs failed. It goes red if
-  # any of them did not succeed (failed, cancelled or skipped).
+  # any of them did not succeed (failed, cancelled or skipped). The one exception: on a
+  # docs-only pull request, your own jobs may be skipped. `check` and `lint` always run.
   ci:
     if: always()
-    needs: [check, lint]
+    needs: [changes, check, lint]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions: {}
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
+      - if: >-
+          contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') ||
+          (contains(needs.*.result, 'skipped') && needs.changes.outputs.docs_only != 'true') ||
+          needs.changes.result != 'success' || needs.check.result != 'success' ||
+          needs.lint.result != 'success'
         run: exit 1
