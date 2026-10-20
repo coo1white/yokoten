@@ -19,7 +19,7 @@ import { checkCommand, checkEdit } from '../rules/guards.ts';
 import { type Config, DEFAULTS, type Env } from '../rules/config.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
 import { type Finding, finding, formatFinding, type RuleId } from '../rules/message.ts';
-import { homeOf, loadMarks, notUtc, POSITIVE_CONTROL, scanText, systemHome } from '../rules/privacy.ts';
+import { homeOf, loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
 import { judge } from '../run/hook.ts';
@@ -426,8 +426,6 @@ export interface MachineProbe {
   readText(path: string): string | null;
   /** Write a file, making its folder. Throws when it can't. */
   writeText(path: string, text: string): void;
-  /** The home folder in the system's user database; the real one when not given. */
-  systemHome?: () => string;
   /** This process's uid, or null where there is none (Windows). */
   uid: number | null;
   now(): Date;
@@ -574,7 +572,7 @@ export interface HostDiskCache {
 /** The last reading, or null when there is none or the file is broken. */
 export function readHostCache(env: Env, probe: MachineProbe): HostDiskCache | null {
   try {
-    const cache = readMachineState(machineStateFile(env, probe.systemHome), probe).hostDisk as HostDiskCache | undefined;
+    const cache = readMachineState(machineStateFile(env), probe).hostDisk as HostDiskCache | undefined;
     return cache && typeof cache.free === 'number' && typeof cache.size === 'number' && typeof cache.readAt === 'string' ? cache : null;
   } catch {
     return null;
@@ -594,7 +592,7 @@ export function readFreshHostCache(env: Env, probe: MachineProbe): HostDiskCache
 /** Keep the last reading. A file that can't be written is left: a session then says nothing about the host. */
 export function saveHostCache(env: Env, probe: MachineProbe, cache: HostDiskCache): void {
   try {
-    saveMachineState(machineStateFile(env, probe.systemHome), probe, 'hostDisk', cache);
+    saveMachineState(machineStateFile(env), probe, 'hostDisk', cache);
   } catch {
     // no home, or a read-only one: the next full doctor reads the host again
   }
@@ -1095,7 +1093,7 @@ export function doctor(
   const where = walk(road(root, env, ROAD, server), config.notNow);
   // Full doctor from the command line adds the obvious marks first (#390); a session writes nothing.
   // With no home folder, the checks that read or keep settings there are skipped, never crash (#404).
-  const hasHome = homeOf(env, probe.systemHome ?? systemHome) !== null;
+  const hasHome = homeOf(env) !== null;
   const filled = isFilling && !session && hasHome ? trySafely('the marks from this machine', () => [filledLine(fillMarks(env, machineMarks(env, { cwd: root, gh })), paths(env).marks)])[0] : null;
   const machine = hasHome ? machineChecks(env) : [];
   const next = where.next ? stepFinding(where.next, root, env, server) : null;

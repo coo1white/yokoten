@@ -9,9 +9,9 @@
 // letters (`/a/par` for `/a/parent`) does not count. `copilot config` can't set the list.
 
 import { existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
+import { homeOf } from '../rules/privacy.ts';
 import { type FolderTrust, folderKeys, isFolder } from './folder-trust.ts';
 import { isObject } from './hooks-file.ts';
 
@@ -28,7 +28,9 @@ const isInside = (folder: string, trusted: string) => trusted === '' || folder =
 /** Whether Copilot CLI trusts the project at `root`, from its config file. Read-only. */
 export function readTrust(root: string, env: Env): FolderTrust {
   const store = env.COPILOT_HOME ? '$COPILOT_HOME/config.json' : '~/.copilot/config.json';
-  const home = env.COPILOT_HOME || join(env.HOME || homedir(), '.copilot');
+  const user = homeOf(env);
+  const home = env.COPILOT_HOME || (user ? join(user, '.copilot') : '');
+  if (!home) return { state: 'no home', store };
   const file = join(home, 'config.json');
   if (!isFolder(home)) return { state: 'no home', store };
   if (!existsSync(file)) return { state: 'no store', store };

@@ -1,5 +1,6 @@
 // Tests for src/setup/doctor.ts.
 
+import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import {
@@ -1194,7 +1195,7 @@ test('doctor: with no home folder, full and session say so in one note and do no
   const sandbox = makeSandbox();
   const root = sandbox.repo;
   try {
-    const machine = fakeMachine(250 * GB, { systemHome: () => '' });
+    const machine = fakeMachine(250 * GB);
     const note = /no home folder found; yokoten can't read or keep its settings/;
     const full = doctor(root, { env: { HOME: '' }, config: DEFAULTS, machine, fillMarks: true });
     assert.equal(full.lines.filter((line) => note.test(line)).length, 1, full.lines.join('\n'));

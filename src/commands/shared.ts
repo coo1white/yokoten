@@ -4,12 +4,13 @@
 import { appendFileSync, existsSync } from 'node:fs';
 import { annotations, isGitHubActions, stepSummary } from '../host/github.ts';
 import { finding, type Finding, formatFinding, notRepoFinding } from '../rules/message.ts';
-import { hideHome } from '../rules/privacy.ts';
+import { hideHome, withHome } from '../rules/privacy.ts';
 import { gitRoot } from '../run/check.ts';
 import { closestWord, findCommand, HELP_OPTIONS } from '../run/cli.ts';
 
 export const [cmd, ...args] = process.argv.slice(2);
-export const env = process.env;
+// The one place HOME falls back to the system's home (#356): every module below reads it from env.
+export const env = withHome(process.env);
 
 /** The command line, read strictly: an unknown option is refused, never ignored. */
 export interface Parsed {

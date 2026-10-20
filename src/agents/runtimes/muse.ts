@@ -11,9 +11,9 @@
 // - `matcher: "*"` also matches Muse's own tools (read_skill...), so the matcher names the tools.
 
 import { existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
+import { homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import type { Action } from '../../run/hook.ts';
 import { type FolderTrust, folderKeys, isFolder } from '../folder-trust.ts';
@@ -81,7 +81,10 @@ export const TRUST_STEP = 'run `muse` in this folder and choose "Trust and conti
 /** Whether Muse trusts the project at `root`, from its trust store. Read-only. */
 export function readTrust(root: string, env: Env): FolderTrust {
   const store = env.XDG_CONFIG_HOME ? '$XDG_CONFIG_HOME/muse/trust.json' : '~/.config/muse/trust.json';
-  const home = join(env.XDG_CONFIG_HOME || join(env.HOME || homedir(), '.config'), 'muse');
+  const user = homeOf(env);
+  const config = env.XDG_CONFIG_HOME || (user ? join(user, '.config') : '');
+  if (!config) return { state: 'no home', store };
+  const home = join(config, 'muse');
   const file = join(home, 'trust.json');
   if (!isFolder(home)) return { state: 'no home', store };
   if (!existsSync(file)) return { state: 'no store', store };
