@@ -30,6 +30,7 @@
 - Antigravity CLI
 - Muse Code
 - DeepSeek Harness
+- Grok CLI
 
 用别的 agent，或者根本不用 agent，提交检查和 CI 照样会拦下坏的改动。
 

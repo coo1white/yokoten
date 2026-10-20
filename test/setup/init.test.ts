@@ -246,6 +246,90 @@ test('init: safe defaults, Dependabot and a security policy; doctor lists the se
   assert.match(security(), /^ +done +security-files/);
 });
 
+// Dependabot for the project's own packages (#379): one block per ecosystem init finds.
+const updateBlocks = (text: string) =>
+  text.split(/^(?=  - package-ecosystem:)/m).slice(1).map((block) => ({
+    ecosystem: /package-ecosystem: (\S+)/.exec(block)?.[1],
+    dirs: [...block.matchAll(/^ {4}directory: (\S+)$|^ {6}- (\/\S*)$/gm)].map((match) => match[1] ?? match[2]),
+    block,
+  }));
+
+const initDependabot = (files: Record<string, string>) => {
+  const sandbox = makeSandbox();
+  for (const [path, text] of Object.entries(files)) sandbox.write(path, text);
+  const result = sandbox.run(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  const path = join(sandbox.repo, '.github/dependabot.yml');
+  return { stdout: result.stdout, text: readFileSync(path, 'utf8'), path, sandbox };
+};
+
+test('init: Dependabot updates a Cargo workspace from the root, once (#379)', () => {
+  const { stdout, text } = initDependabot({
+    'Cargo.toml': '[workspace]\nmembers = ["cli", "crates/core"]\n',
+    'Cargo.lock': '',
+    'cli/Cargo.toml': '[package]\nname = "cli"\n',
+    'crates/core/Cargo.toml': '[package]\nname = "core"\n',
+    'target/debug/Cargo.toml': '',
+  });
+  assert.match(stdout, /wrote \.github\/dependabot\.yml \(the actions CI runs, and cargo\)/);
+  const blocks = updateBlocks(text);
+  assert.deepEqual(blocks.map(({ ecosystem, dirs }) => [ecosystem, dirs]), [['github-actions', ['/']], ['cargo', ['/']]], 'the workspace root covers its members');
+  const cargo = blocks[1].block;
+  for (const line of [/interval: monthly/, /default-days: 7/, /^ {6}cargo:\n {8}patterns: \['\*'\]$/m, /prefix: chore/]) assert.match(cargo, line);
+});
+
+test('init: Dependabot updates a Node project, and a bun lock file means bun (#379)', () => {
+  const node = initDependabot({ 'package.json': '{}', 'package-lock.json': '{}', 'node_modules/x/package.json': '{}' });
+  assert.deepEqual(updateBlocks(node.text).map(({ ecosystem, dirs }) => [ecosystem, dirs]), [['github-actions', ['/']], ['npm', ['/']]]);
+  assert.match(node.stdout, /\(the actions CI runs, and npm\)/);
+  const bun = initDependabot({ 'package.json': '{}', 'bun.lock': '' });
+  assert.deepEqual(updateBlocks(bun.text).map(({ ecosystem }) => ecosystem), ['github-actions', 'bun']);
+});
+
+test('init: Dependabot covers each stack in a mixed project, in the root and one folder down (#379)', () => {
+  const { stdout, text } = initDependabot({
+    'go.mod': 'module example.com/demo\n',
+    'web/package.json': '{}',
+    'site/package.json': '{}',
+    'api/pyproject.toml': '[project]\nname = "api"\n',
+    'App/App.csproj': '<Project/>',
+    'android/build.gradle.kts': '',
+    '.cache/Gemfile': '',
+    'docs/readme.md': '# docs\n',
+  });
+  assert.match(stdout, /\(the actions CI runs, and npm, pip, gomod, nuget, gradle\)/);
+  assert.deepEqual(updateBlocks(text).map(({ ecosystem, dirs }) => [ecosystem, dirs]), [
+    ['github-actions', ['/']],
+    ['npm', ['/site', '/web']],
+    ['pip', ['/api']],
+    ['gomod', ['/']],
+    ['nuget', ['/App']],
+    ['gradle', ['/android']],
+  ], 'a hidden folder is not read');
+  assert.match(text, /^ {4}directories:\n {6}- \/site\n {6}- \/web\n {4}schedule:/m, 'two folders, one block');
+});
+
+test('init: Dependabot with no package manager found updates the actions only (#379)', () => {
+  const { stdout, text } = initDependabot({ 'README.md': '# demo\n', 'src/main.c': '' });
+  assert.match(stdout, /wrote \.github\/dependabot\.yml \(the actions CI runs\)/);
+  assert.deepEqual(updateBlocks(text).map(({ ecosystem }) => ecosystem), ['github-actions']);
+});
+
+test('init: a dependabot.yml that is there is kept, and init names what it does not update (#379)', () => {
+  const mine = 'version: 2\nupdates:\n  - package-ecosystem: "npm"\n    directory: /\n    schedule:\n      interval: weekly\n';
+  const { stdout, text, sandbox } = initDependabot({ '.github/dependabot.yml': mine, 'package.json': '{}', 'Cargo.toml': '' });
+  assert.equal(text, mine, 'the file is the project\'s, byte for byte');
+  assert.match(stdout, /kept \.github\/dependabot\.yml; it does not update cargo\. Copy its github-actions block for each, with prefix chore/);
+  assert.doesNotMatch(stdout, /does not update[^\n]*npm/, 'a quoted ecosystem name counts');
+  // A dependabot.yaml counts too: init writes no second file next to it.
+  const other = makeSandbox();
+  other.write('.github/dependabot.yaml', 'version: 2\nupdates:\n  - package-ecosystem: github-actions\n    directory: /\n');
+  const again = other.run(['init']);
+  assert.match(again.stdout, /^kept \.github\/dependabot\.yaml$/m);
+  assert.ok(!existsSync(join(other.repo, '.github/dependabot.yml')));
+  assert.match(sandbox.run(['init']).stdout, /kept \.github\/dependabot\.yml; it does not update cargo/, 'said again on each init');
+});
+
 test("init: a CLAUDE.md gets one line that imports AGENTS.md, and doctor's rules step wants it (#206)", () => {
   const sandbox = makeSandbox();
   sandbox.write('CLAUDE.md', '# our rules\n\nRun the tests first.\n');

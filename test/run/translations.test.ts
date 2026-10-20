@@ -84,19 +84,20 @@ test('translations: a shallow clone gives one note for the run, never a note per
     execFileSync('git', ['clone', '-q', '--depth', String(depth), `file://${repo.root}`, dir], { stdio: 'ignore' });
     return dir;
   };
-  // CI's default checkout: one commit, which seems to add every file. Deeper is still shallow.
-  for (const depth of [1, 2]) {
+  // CI's default checkout: one commit, which seems to add every file, so neither can be told.
+  // At depth 2, zh2.md was added on its own at HEAD, so it is current; zh.md still can't be told.
+  for (const [depth, what] of [[1, "2 translations weren't checked: this clone is shallow"], [2, "1 translation wasn't checked: this clone is shallow"]] as const) {
     const shallow = shallowClone(depth);
     const notes = translationNotes(shallow, ['en.md', 'zh.md', 'zh2.md']);
     assert.equal(notes.length, 1, `depth ${depth}: ${notes.map((n) => n.what).join('; ')}`);
     assert.equal(notes[0].file, undefined, 'not about one file');
-    assert.equal(notes[0].what, "translations weren't checked: this clone is shallow");
+    assert.equal(notes[0].what, what);
     assert.match(notes[0].fix, /fetch-depth: 0/);
     // Even with "fail": a note, never a problem.
     const found: Finding[] = [];
     const problems = check(shallow, { config: { ...DEFAULTS, translations: { fail: true } }, env: {}, notes: found });
     assert.deepEqual(problems.filter((f) => f.id === 'translation-behind'), []);
-    assert.deepEqual(found.map((f) => f.what), ["translations weren't checked: this clone is shallow"]);
+    assert.deepEqual(found.map((f) => f.what), [what]);
   }
   // A translation edited in the work tree needs no history: no note.
   const shallow = shallowClone(1);
@@ -176,4 +177,112 @@ test('translations: check gives a note, and yokoten.json "translations": { "fail
   assert.deepEqual(check(repo.root, { config: strict, env: {} }).map((f) => f.id), ['translation-behind']);
   writeFileSync(join(repo.root, 'yokoten.json'), '{ "translations": { "fail": true } }');
   assert.equal(loadConfig(repo.root).translations.fail, true);
+});
+
+test('translations: a shallow clone deep enough to tell gives the answer, never a false current or behind (#181)', () => {
+  const repo = makeTranslatedRepo();
+  const shallowClone = (depth: number) => {
+    const dir = mkdtempSync(join(tmpdir(), 'yokoten-'));
+    execFileSync('git', ['clone', '-q', '--depth', String(depth), `file://${repo.root}`, dir], { stdio: 'ignore' });
+    return dir;
+  };
+  repo.commit('en.md', '# Guide\n\nStep one, changed.\n');
+  repo.commit('zh.md', `${sourceMarker('en.md')}\n# 指南\n\n第一步，改了。\n`);
+  // The translation-only commit is inside the clone: current, and no note for the run.
+  assert.deepEqual(translationNotes(shallowClone(2), ['en.md', 'zh.md']), []);
+  // An English-only commit before the cut: behind, as far as the clone can see.
+  repo.commit('en.md', '# Guide\n\nStep one, changed again.\n');
+  const notes = translationNotes(shallowClone(2), ['en.md', 'zh.md']);
+  assert.deepEqual(notes.map((n) => [n.file, n.what]), [['zh.md', 'is behind en.md by at least 1 commit']]);
+  // The whole history counts it exactly.
+  assert.deepEqual(translationNotes(repo.root, ['zh.md']).map((n) => n.what), ['is behind en.md by 1 commit']);
+});
+
+test('translations: a pull request that changed only the English stays noted, whichever merges first (#181)', () => {
+  const english = (top: string, bottom: string) => `# Guide\n\n${top}\n\nMiddle.\n\n${bottom}\n`;
+  const translation = (top: string) => `${sourceMarker('en.md')}\n# 指南\n\n${top}\n\n中。\n\n下。\n`;
+  // Branch a changes the top of both files; branch b changes only the bottom of the English.
+  const setUp = () => {
+    const repo = makeTranslatedRepo();
+    const change = (files: Record<string, string>, message: string) => {
+      for (const [path, text] of Object.entries(files)) writeFileSync(join(repo.root, path), text);
+      repo.git('add', ...Object.keys(files));
+      repo.git('commit', '-q', '-m', message);
+    };
+    change({ 'en.md': english('Top.', 'Bottom.'), 'zh.md': translation('上。') }, 'base');
+    repo.git('checkout', '-q', '-b', 'a');
+    change({ 'en.md': english('Top, A.', 'Bottom.'), 'zh.md': translation('上，A。') }, 'a');
+    repo.git('checkout', '-q', '-b', 'b', 'main');
+    change({ 'en.md': english('Top.', 'Bottom, B.') }, 'b');
+    repo.git('checkout', '-q', 'main');
+    return repo;
+  };
+  for (const order of [['b', 'a'], ['a', 'b']]) {
+    for (const how of ['squash', 'merge']) {
+      const repo = setUp();
+      for (const branch of order) {
+        if (how === 'squash') {
+          repo.git('merge', '-q', '--squash', branch);
+          repo.git('commit', '-q', '-m', `squash ${branch}`);
+        } else repo.git('merge', '-q', '--no-ff', '-m', `merge ${branch}`, branch);
+      }
+      const label = `${how} ${order.join(' then ')}`;
+      assert.equal(readFileSync(join(repo.root, 'en.md'), 'utf8'), english('Top, A.', 'Bottom, B.'), label);
+      assert.deepEqual(translationNotes(repo.root, ['en.md', 'zh.md']).map((n) => n.what), ['is behind en.md by 1 commit'], label);
+      // Translated in a commit that changes only the translation: current.
+      repo.commit('zh.md', `${sourceMarker('en.md')}\n# 指南\n\n上，A。\n\n中。\n\n下，B。\n`);
+      assert.deepEqual(translationNotes(repo.root, ['zh.md']), [], label);
+    }
+  }
+  // In the work tree, an edit to both files is like a commit that changes both: still behind.
+  const repo = setUp();
+  for (const branch of ['b', 'a']) {
+    repo.git('merge', '-q', '--squash', branch);
+    repo.git('commit', '-q', '-m', `squash ${branch}`);
+  }
+  writeFileSync(join(repo.root, 'en.md'), english('Top, A, again.', 'Bottom, B.'));
+  writeFileSync(join(repo.root, 'zh.md'), translation('上，A，再改。'));
+  assert.deepEqual(translationNotes(repo.root, ['zh.md']).map((n) => n.what), ['is behind en.md by 1 commit']);
+});
+
+test('translations: English-only commits before the translation was added, or moved, are not counted (#181)', () => {
+  const repo = makeTranslatedRepo();
+  repo.commit('en.md', '# Guide\n\nStep one, changed.\n');
+  // Added (here, moved to a new path) in the same commit as an English change: current.
+  repo.git('mv', 'zh.md', 'zh-CN.md');
+  writeFileSync(join(repo.root, 'en.md'), '# Guide\n\nStep one, changed again.\n');
+  writeFileSync(join(repo.root, 'zh-CN.md'), `${sourceMarker('en.md')}\n# 指南\n\n第一步，又改了。\n`);
+  repo.git('add', 'en.md', 'zh-CN.md');
+  repo.git('commit', '-q', '-m', 'move and translate');
+  assert.deepEqual(translationNotes(repo.root, ['en.md', 'zh-CN.md']), []);
+  repo.commit('en.md', '# Guide\n\nStep one, changed a third time.\n');
+  assert.deepEqual(translationNotes(repo.root, ['zh-CN.md']).map((n) => n.what), ['is behind en.md by 1 commit']);
+});
+
+test('translations: git runs a fixed number of times, however many translations (#181)', { skip: process.platform === 'win32' && 'counts runs with a shell script on PATH' }, () => {
+  const repo = makeTranslatedRepo();
+  const files = ['en.md', 'zh.md'];
+  for (let i = 0; i < 20; i += 1) {
+    const file = `zh${i}.md`;
+    writeFileSync(join(repo.root, file), `${sourceMarker('en.md')}\n# 指南 ${i}\n`);
+    files.push(file);
+  }
+  repo.git('add', '.');
+  repo.git('commit', '-q', '-m', 'many translations');
+  repo.commit('en.md', '# Guide\n\nStep one, changed.\n');
+  // A git on PATH that counts its runs, then hands over to the real one.
+  const bin = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const count = join(bin, 'count');
+  const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+  writeFileSync(join(bin, 'git'), `#!/bin/sh\necho x >> '${count}'\nexec '${realGit}' "$@"\n`, { mode: 0o755 });
+  const path = process.env.PATH;
+  process.env.PATH = `${bin}:${path}`;
+  try {
+    const notes = translationNotes(repo.root, files);
+    assert.equal(notes.length, 21);
+  } finally {
+    process.env.PATH = path;
+  }
+  const runs = readFileSync(count, 'utf8').split('\n').filter(Boolean).length;
+  assert.ok(runs <= 4, `${runs} git runs`);
 });

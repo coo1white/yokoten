@@ -30,6 +30,7 @@ The guard stops risky actions before they run in these agents
 - Antigravity CLI
 - Muse Code
 - DeepSeek Harness
+- Grok CLI
 
 In any other agent, or with no agent at all, the commit check and CI still stop a bad change.
 
