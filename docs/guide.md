@@ -836,7 +836,7 @@ missing key, a key set to `null`, or a missing file gives the default.
 
 | Key | Must be | Default |
 |-----|---------|---------|
-| `layout` | `{ "maxEntries": 7, "exempt": ["docs/records"] }`: a whole number above 0, and a list of folders | 7, no folder exempt |
+| `layout` | `{ "maxEntries": 7, "exempt": ["docs/records"] }`: a whole number above 0, and a list of folders or globs | 7, no folder exempt |
 | `tests` | a list of globs | `*.test.*`, `*.spec.*`, `*_test.go`, `test/**`, `tests/**` |
 | `leadOnly` | a list of globs | the rules, agent config, hooks and CI |
 | `privacy` | `{ "allow": [], "skip": [], "utc": true, "output": "run" }`: two lists of text, true or false, and `"run"` or `"stop"` | lockfiles skipped, UTC on, output run |
@@ -1123,7 +1123,7 @@ A list you set replaces the default list; it does not add to it.
 | Key | Default | What it does |
 |-----|---------|--------------|
 | `layout.maxEntries` | `7` | The most entries a folder may hold (core rule 10) |
-| `layout.exempt` | none | Folders that may grow past it, such as a log of records |
+| `layout.exempt` | none | Folders that may grow past it. See [Folders that may grow](#folders-that-may-grow) |
 | `tests` | `*.test.*`, `*.spec.*`, `*_test.go`, `test/**`, `tests/**` | The test files a fix task may not change |
 | `leadOnly` | the rules, agent config, `.githooks/**`, `.github/**`, the vendored runtime `.yokoten/**` | The files a worker may not change |
 | `privacy.allow` | none | Exact strings the privacy check lets through, such as a public support address |
@@ -1134,6 +1134,26 @@ A list you set replaces the default list; it does not add to it.
 | `allowBuild` | none | Build output and binaries the commit check lets through |
 | `areas` | any | The areas a title may name. See [Issue titles](#issue-titles) |
 | `translations.fail` | `false` | A translation behind its source fails the check |
+
+#### Folders that may grow
+
+Core rule 10 keeps each folder at 7 entries or fewer. Two kinds of folder may grow past it,
+and `changes/` always may:
+
+- **A log**, such as `docs/records`. Each entry is added once and kept.
+- **A third-party fixture set** that tests read, kept under its upstream names, with its
+  `NOTICE` beside it. Tests, the `NOTICE` and upstream bug reports find a file by its
+  name. Folders would make each lookup and each refresh from upstream harder.
+
+List each such folder in `layout.exempt` by hand. An entry is a path from the root, or a
+glob. In a glob, `*` is one folder and `**` is any number of folders, none too. No other
+character is special. One glob covers every crate of a Rust workspace:
+
+```json
+{ "layout": { "exempt": ["docs/records", "crates/*/tests/data"] } }
+```
+
+`check` and `doctor` note a glob that matches no folder, so a stale entry shows.
 
 Environment variables:
 

@@ -21,7 +21,8 @@ export type Env = Record<string, string | undefined>;
 
 export const DEFAULTS: Config = {
   // At most this many entries in a folder. The root is never counted: tools expect their
-  // files there. A folder in `exempt` is a log (records, root-cause reports) and may grow.
+  // files there. A folder in `exempt` may grow: a log (records, root-cause reports), or a
+  // third-party fixture set kept under its upstream names. An entry may be a glob (#381).
   layout: { maxEntries: 7, exempt: [] },
   // What counts as a test file. A fix task must not change one.
   tests: ['*.test.*', '*.spec.*', '*_test.go', 'test/**', 'tests/**'],

@@ -277,7 +277,8 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
     // sentences are noted only for the files a commit changes, as `check --pr` does.
     problems.push(...readChanges(root).problems);
   }
-  problems.push(...checkLayout(indexFiles(root), config));
+  // An exempt glob that matches nothing is a note for the tree, not at each commit (#381).
+  problems.push(...checkLayout(indexFiles(root), config, staged ? undefined : notes));
   return problems;
 }
 

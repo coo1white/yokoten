@@ -757,3 +757,22 @@ test('check --staged: reads the staged change file, not the work tree; plain che
   assert.match(staged.stderr, /changes\/9-new\.md:1: line 1 is not a section/);
   assert.ok(!staged.stderr.includes('8-old'), 'the unstaged file is not read');
 });
+
+test('check: a stale exempt glob is a note for the tree and the doctor, never at a commit (#381)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', JSON.stringify({ layout: { maxEntries: 7, exempt: ['crates/*/tests/data'] } }));
+  sandbox.git('add', '.');
+  const note = /note: yokoten\.json: layout\.exempt "crates\/\*\/tests\/data" matches no folder/;
+  const tree = sandbox.run(['check']);
+  assert.match(tree.stdout, note);
+  assert.equal(tree.status, 0, 'a note never fails the check');
+  const staged = sandbox.run(['check', '--staged']);
+  assert.doesNotMatch(staged.stdout + staged.stderr, /matches no folder/);
+  assert.match(sandbox.run(['doctor']).stdout, /note +yokoten\.json: layout\.exempt "crates\/\*\/tests\/data" matches no folder/);
+  // Once a crate has the folder, the note goes.
+  for (let index = 0; index < 9; index++) sandbox.write(`crates/app-core/tests/data/f${index}.xls`, 'x\n');
+  sandbox.git('add', '.');
+  const covered = sandbox.run(['check']);
+  assert.doesNotMatch(covered.stdout, /matches no folder/);
+  assert.equal(covered.status, 0);
+});
