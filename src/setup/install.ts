@@ -18,7 +18,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { userInfo } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { skillFile as sharedSkillFile } from '../agents/agent-skills.ts';
@@ -28,10 +28,15 @@ import * as gemini from '../agents/runtimes/gemini.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { copyRuntime, HOME_DIR, KIT, MANAGED, writeManaged, writeNew } from './files.ts';
 import { type Gh, readLogin } from '../host/github.ts';
-import { isDomainShaped, isPersonalEmail, loadMarks, marksFile, privateRemoteHosts } from '../rules/privacy.ts';
+import { homeOf, isDomainShaped, isPersonalEmail, loadMarks, marksFile, NO_HOME, privateRemoteHosts, systemHome } from '../rules/privacy.ts';
 
-export const paths = (env: Env) => {
-  const home = env.HOME || homedir();
+/**
+ * Where yokoten keeps its runtime, its config and the private marks. With no absolute home
+ * folder it throws NO_HOME: a relative path would land in the folder the command runs in (#404).
+ */
+export const paths = (env: Env, system: () => string = systemHome) => {
+  const home = homeOf(env, system);
+  if (!home) throw new Error(NO_HOME);
   return {
     runtime: join(home, '.local', 'share', 'yokoten'),
     config: join(home, '.config', 'yokoten'),
@@ -96,8 +101,10 @@ function agentHooks(cliName: string, file: string, add: () => string[]): { ok: b
 }
 
 /** One line per thing done, kept or skipped; `ok` is false when a file was skipped (#248). */
-export function install(env: Env, { cwd, gh }: { cwd?: string; gh?: Gh } = {}): { ok: boolean; lines: string[] } {
-  const target = paths(env);
+export function install(env: Env, { cwd, gh, system = systemHome }: { cwd?: string; gh?: Gh; system?: () => string } = {}): { ok: boolean; lines: string[] } {
+  // Refuse before writing anything: with no home, every path below would be relative (#404).
+  if (!homeOf(env, system)) return { ok: false, lines: [`${NO_HOME}. Set HOME to your home folder's full path and run install again`] };
+  const target = paths(env, system);
   const report: string[] = [];
   let ok = true;
   // Run from this copy, install keeps it (#204). The report shows the home folder as ~.
@@ -260,6 +267,119 @@ export function machineMarks(env: Env, { cwd, gh }: { cwd?: string; gh?: Gh } = 
   const urls = (readGitValue(env, ['config', '--get-regexp', String.raw`^remote\..*\.url$`], cwd) ?? '').split('\n').map((line) => line.split(/\s+/)[1] ?? '');
   for (const host of privateRemoteHosts(urls)) found.push({ kind: 'private remote host', value: host });
   return found;
+}
+
+/** Where yokoten keeps what it read about this machine: outside every repo. */
+export const machineStateFile = (env: Env): string => join(paths(env).config, 'machine.json');
+
+/** What `machineUserNames` reads, so a test can give fake values. */
+export interface UserNameProbe {
+  /** The account name, as the system's user database gives it. May throw. */
+  username(): string;
+  /** The home folder in the system's user database. */
+  systemHome(): string;
+  /** The names of the folders in `path`, or null when it can't be read. */
+  listFolders(path: string): string[] | null;
+  /** A file's text, or null when it can't be read. */
+  readText(path: string): string | null;
+  /** Write a file, making its folder. May throw. */
+  writeText(path: string, text: string): void;
+}
+
+/** The real machine. It never starts a program. */
+export const REAL_USER_PROBE: UserNameProbe = {
+  username: () => userInfo().username,
+  systemHome,
+  listFolders(path) {
+    try {
+      return readdirSync(path, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name);
+    } catch {
+      return null;
+    }
+  },
+  readText(path) {
+    try {
+      return readFileSync(path, 'utf8');
+    } catch {
+      return null;
+    }
+  },
+  writeText(path, text) {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, text);
+  },
+};
+
+// Account names that every machine of a kind has (a CI runner, a container). They name
+// nobody, and hiding them would hide common words such as "root" and "user".
+const SHARED_ACCOUNTS = new Set(['root', 'runner', 'user', 'users', 'admin', 'administrator', 'ubuntu', 'debian', 'node', 'vscode', 'codespace', 'codespaces', 'guest', 'nobody']);
+// The folders in a Windows Users folder that are not a person's.
+const WINDOWS_SHARED_FOLDERS = new Set(['public', 'default', 'default user', 'all users', 'defaultuser0', 'defaultuser100000', 'wdagutilityaccount']);
+// A folder that holds the users' homes: its child is a user name.
+const USERS_FOLDER = /^(?:\/home|\/Users|\/mnt\/[a-z]\/Users|\/[a-z]\/Users|[A-Za-z]:[\\/]Users)$/i;
+
+/** The user name in a home path such as `/home/<name>` or `C:\Users\<name>`, or null for any other path. */
+function homeUserName(home: string | undefined): string | null {
+  const path = (home ?? '').replace(/[\\/]+$/, '');
+  const split = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  return split > 0 && USERS_FOLDER.test(path.slice(0, split)) ? path.slice(split + 1) : null;
+}
+
+/**
+ * The Windows accounts a WSL distro can see: the folders in `/mnt/<drive>/Users`. Read once,
+ * then kept in machine.json as `windowsUsers`, so a later run reads one local file (#404).
+ */
+function windowsUserNames(env: Env, probe: UserNameProbe): string[] {
+  let file: string | null = null;
+  let state: Record<string, unknown> = {};
+  try {
+    file = machineStateFile(env);
+    const old: unknown = JSON.parse(probe.readText(file) ?? 'null');
+    if (old && typeof old === 'object' && !Array.isArray(old)) state = old as Record<string, unknown>;
+  } catch {
+    // no home, or a broken file: read the drives, and start a new file
+  }
+  const kept = state.windowsUsers;
+  if (Array.isArray(kept) && kept.every((name) => typeof name === 'string')) return kept;
+  const drives = (probe.listFolders('/mnt') ?? []).filter((name) => /^[a-z]$/.test(name));
+  const names = drives.flatMap((drive) => probe.listFolders(`/mnt/${drive}/Users`) ?? []).filter((name) => !WINDOWS_SHARED_FOLDERS.has(name.toLowerCase()));
+  // An empty list is kept too: no drive is mounted, and the next run need not look again.
+  try {
+    if (file) probe.writeText(file, `${JSON.stringify({ ...state, windowsUsers: [...new Set(names)] }, null, 2)}\n`);
+  } catch {
+    // a read-only home: the next run reads the drives again
+  }
+  return names;
+}
+
+/**
+ * The user names of this machine, which git and the forge do not know (#404): the account
+ * name, the last folder of each home under a users folder, and in WSL the Windows user names.
+ * Windows names come from USERPROFILE when WSLENV passes it, else from the Windows drives.
+ * Shared account names (root, runner) and names of under 3 characters are left out.
+ * It starts no program.
+ */
+export function machineUserNames(env: Env, probe: UserNameProbe = REAL_USER_PROBE): string[] {
+  const read = (get: () => string): string => {
+    try {
+      return get();
+    } catch {
+      return '';
+    }
+  };
+  const names = [env.USER, env.LOGNAME, read(() => probe.username())];
+  for (const home of [env.HOME, read(() => probe.systemHome()), env.USERPROFILE]) names.push(homeUserName(home) ?? '');
+  const isWsl = Boolean(env.WSL_DISTRO_NAME || env.WSL_INTEROP);
+  if (isWsl && !homeUserName(env.USERPROFILE)) names.push(...windowsUserNames(env, probe));
+  const kept = new Map<string, string>();
+  for (const name of names) {
+    const trimmed = (name ?? '').trim();
+    const key = trimmed.toLowerCase();
+    if (trimmed.length >= 3 && !SHARED_ACCOUNTS.has(key) && !kept.has(key)) kept.set(key, trimmed);
+  }
+  return [...kept.values()];
 }
 
 /**

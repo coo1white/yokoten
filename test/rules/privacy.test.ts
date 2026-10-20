@@ -156,6 +156,15 @@ test('output: a Windows home is hidden with either slash, any case, and in MSYS 
   assert.equal(hideHome('/C/USERS/me', {}, { ...options, platform: 'linux' }), '/C/USERS/me', 'case counts off Windows');
 });
 
+test('output: a home path cut short at the end of a line is hidden (#404)', () => {
+  const options = { systemHome: '/home/jonathan' };
+  assert.equal(hideHome('see /home/jona\nsee /home/jonat', {}, options), 'see ~\nsee ~');
+  assert.equal(hideHome('see /home/jonath\r\nnext', {}, options), 'see ~\r\nnext');
+  // Fewer than 4 characters of the name, or a cut path inside a line, stays.
+  assert.equal(hideHome('see /home/jon\nat /home/jona and on', {}, options), 'see /home/jon\nat /home/jona and on');
+  assert.equal(hideHome('/home/jonas', {}, options), '/home/jonas', 'a longer name is another folder');
+});
+
 // ---- Hiding the owner in command output (#390) ----
 
 test('makeRedactor: patterns only, with no marks: private emails go, noreply and team ones stay', () => {
@@ -174,6 +183,13 @@ test('makeRedactor: owners, hosts and marks, by shape, case-insensitive, whole w
   assert.equal(redact('annual ann xy'), 'annual <mark> xy');
   assert.equal(redact('住在東京都'), '住在<mark>都');
   assert.equal(redact('line\r\nnext\n'), 'line\r\nnext\n');
+});
+
+test('makeRedactor: the home goes before the names, so /home/<name>/x becomes ~/x (#404)', () => {
+  const redact = makeRedactor({ owners: ['jdoe'] }, { HOME: '/home/jdoe' });
+  assert.equal(redact('at /home/jdoe/x\n'), 'at ~/x\n');
+  assert.equal(redact('/mnt/c/Users/jdoe/x, C:\\Users\\jdoe\\x, "C:\\\\Users\\\\jdoe", jdoe'), '/mnt/c/Users/<owner>/x, C:\\Users\\<owner>\\x, "C:\\\\Users\\\\<owner>", <owner>');
+  assert.equal(redact('jdoes and xjdoe stay'), 'jdoes and xjdoe stay', 'a longer word that holds the name is kept');
 });
 
 test('privateRemoteHosts: hosts outside the public forges; local paths name none', () => {

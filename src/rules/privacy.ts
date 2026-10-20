@@ -153,19 +153,36 @@ function homeForms(home: string | undefined): string[] {
 }
 
 /**
+ * The starts of a home path that a line cut short may leave: the parent folder and 4 or
+ * more characters of the last part, but not all of it (#404). Empty when the last part is
+ * 4 characters or fewer.
+ */
+function cutForms(home: string): string[] {
+  const split = Math.max(home.lastIndexOf('/'), home.lastIndexOf('\\'));
+  const last = home.slice(split + 1);
+  const forms: string[] = [];
+  for (let length = 4; length < last.length; length++) forms.push(home.slice(0, split + 1 + length));
+  return forms;
+}
+
+/**
  * Text as yokoten may show it: the home folder, which names the machine's user, becomes
  * `~`. Everything yokoten prints passes through this. Both homes are hidden: $HOME and the
  * system's (they differ under sudo, in CI, or with HOME=/tmp/x), each also by its real path
  * (on macOS a temp or home folder resolves to /private/...). A home is replaced only where
  * its path ends, so /data/u never touches /data/users. On Windows `\` and `/` match each
- * other, and case does not count.
+ * other, and case does not count. A home path cut short at the end of a line or the text
+ * (`/home/jonat`) becomes `~` too, when it keeps 4 or more characters of the last part (#404).
  */
 export function hideHome(text: string, env: Env, { platform = process.platform as string, systemHome: system = systemHome() } = {}): string {
   const homes = [...new Set([...homeForms(env.HOME), ...homeForms(system)])].sort((a, b) => b.length - a.length);
   if (!homes.length) return text;
   const isWindows = platform === 'win32';
-  const pattern = homes.map((home) => escapeRegExp(home).replace(/\\\\|\//g, String.raw`[\\/]`)).join('|');
-  return text.replace(new RegExp(`${BEFORE_HOME}(?:${pattern})${AFTER_HOME}`, isWindows ? 'giu' : 'gu'), '~');
+  const asPattern = (paths: string[]) => paths.map((home) => escapeRegExp(home).replace(/\\\\|\//g, String.raw`[\\/]`)).join('|');
+  const flags = isWindows ? 'giu' : 'gu';
+  const whole = text.replace(new RegExp(`${BEFORE_HOME}(?:${asPattern(homes)})${AFTER_HOME}`, flags), '~');
+  const cuts = [...new Set(homes.flatMap(cutForms))].sort((a, b) => b.length - a.length);
+  return cuts.length ? whole.replace(new RegExp(`${BEFORE_HOME}(?:${asPattern(cuts)})(?=\r?$)`, `${flags}m`), '~') : whole;
 }
 
 /**
@@ -203,7 +220,7 @@ export const isDomainShaped = (value: string): boolean => /^(?:[a-z0-9-]+\.)+[a-
 export interface Hidden {
   /** Lines of the private-marks file. */
   marks?: string[];
-  /** The owner's own names on this machine: git user.name, the forge login. */
+  /** The owner's own names on this machine: git user.name, the forge login, the Linux and Windows user names. */
   owners?: string[];
   /** Hosts of remotes outside the public forges. */
   hosts?: string[];
@@ -228,8 +245,9 @@ function valuePattern(value: string): string {
 
 /**
  * A function that hides the owner in text read in pieces, in order: secrets (the same
- * patterns as the privacy check), private email addresses, every value in `hidden` as a
- * whole word, then the home folder. Case does not count. Line ends are kept.
+ * patterns as the privacy check), private email addresses, the home folder, then every
+ * value in `hidden` as a whole word. The home goes before the names, so `/home/<name>/x`
+ * becomes `~/x` (#404). Case does not count. Line ends are kept.
  */
 export function makeRedactor(hidden: Hidden, env: Env): (text: string) => string {
   const placeholderOf = new Map<string, string>();
@@ -251,8 +269,8 @@ export function makeRedactor(hidden: Hidden, env: Env): (text: string) => string
   return (text) => {
     // An SSH remote at a private host (git@host) names the host, not a person.
     let out = hideSecrets(text).replace(EMAIL, (hit) => (!isPersonalEmail(hit) ? hit : /^git@/i.test(hit) ? `git@${PLACEHOLDERS.host}` : PLACEHOLDERS.email));
-    if (pattern) out = out.replace(pattern, (hit) => placeholderOf.get(hit.toLowerCase()) ?? PLACEHOLDERS.mark);
-    return hideHome(out, env);
+    out = hideHome(out, env);
+    return pattern ? out.replace(pattern, (hit) => placeholderOf.get(hit.toLowerCase()) ?? PLACEHOLDERS.mark) : out;
   };
 }
 

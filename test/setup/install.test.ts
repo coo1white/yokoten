@@ -31,6 +31,8 @@ import {
 } from '../repo/helpers.ts';
 import { hasHook } from '../../src/agents/hooks-file.ts';
 import { copyRuntime } from '../../src/setup/files.ts';
+import { install, machineStateFile, machineUserNames, paths, type UserNameProbe } from '../../src/setup/install.ts';
+import { makeRedactor } from '../../src/rules/privacy.ts';
 
 const BAD_USER_SETTINGS: [content: string, reason: (file: string) => string][] = [
   ['{ not json', (file) => `can't read ${file} ${JSON_FIX('install')}`],
@@ -501,4 +503,56 @@ test('install: an existing mailmap keeps its lines and gets only the missing one
   assert.match(result.stdout, /^skipped the marks from this machine: /m);
   assert.match(result.stdout, /^skipped the git mailmap: /m);
   assert.match(result.stdout, /skill /, 'the rest of install ran');
+});
+
+// ---- The machine's user names (#404) ----
+
+/** A fake machine for machineUserNames: its account name, its home, its folders and files. */
+function fakeUsers(username: string, home: string, folders: Record<string, string[]> = {}): UserNameProbe & { files: Map<string, string>; listed: string[] } {
+  const files = new Map<string, string>();
+  const listed: string[] = [];
+  return {
+    files,
+    listed,
+    username: () => username,
+    systemHome: () => home,
+    listFolders(path) {
+      listed.push(path);
+      return folders[path] ?? null;
+    },
+    readText: (path) => files.get(path) ?? null,
+    writeText: (path, text) => void files.set(path, text),
+  };
+}
+
+test('machineUserNames: the Linux and Windows user names, though no git or forge list has them (#404)', () => {
+  const env = { HOME: '/home/jdoe', WSL_DISTRO_NAME: '<distro>' };
+  const probe = fakeUsers('jdoe', '/home/jdoe', { '/mnt': ['c', 'd', 'wslg'], '/mnt/c/Users': ['Public', 'Default', 'JaneD'], '/mnt/d/Users': null as unknown as string[] });
+  const names = machineUserNames(env, probe);
+  assert.deepEqual(names, ['jdoe', 'JaneD']);
+  // Read once: the second run reads machine.json, not the drives.
+  assert.deepEqual(JSON.parse(probe.files.get(machineStateFile(env)) ?? '{}').windowsUsers, ['JaneD']);
+  probe.listed.length = 0;
+  assert.deepEqual(machineUserNames(env, probe), ['jdoe', 'JaneD']);
+  assert.deepEqual(probe.listed, []);
+  const redact = makeRedactor({ owners: names }, { HOME: '/home/jdoe' });
+  const text = ['/home/jdoe/x', '/mnt/c/Users/janed/y', 'C:\\Users\\JaneD\\z', '"C:\\\\Users\\\\JaneD"', 'jdoe and JaneD', 'jdoes and janedoe stay'].join('\n');
+  assert.equal(redact(text), ['~/x', '/mnt/c/Users/<owner>/y', 'C:\\Users\\<owner>\\z', '"C:\\\\Users\\\\<owner>"', '<owner> and <owner>', 'jdoes and janedoe stay'].join('\n'));
+});
+
+test('machineUserNames: USERPROFILE gives the Windows name without reading the drives; shared and short names stay out (#404)', () => {
+  const probe = fakeUsers('runner', '/root', { '/mnt': ['c'] });
+  assert.deepEqual(machineUserNames({ HOME: '/home/jd', WSL_INTEROP: '/run/x', USERPROFILE: 'C:\\Users\\JaneD' }, probe), ['JaneD']);
+  assert.deepEqual(probe.listed, []);
+  assert.deepEqual(machineUserNames({ HOME: '/tmp/tmp.AbCd' }, probe), [], 'a home outside a users folder names nobody; no WSL, no drives');
+  assert.deepEqual(probe.listed, []);
+});
+
+test('install: with no absolute home it refuses and writes nothing (#404)', () => {
+  const result = install({ HOME: '' }, { system: () => '' });
+  assert.equal(result.ok, false);
+  assert.match(result.lines.join('\n'), /no home folder/);
+  assert.equal(install({ HOME: 'relative/home' }, { system: () => 'also/relative' }).ok, false);
+  assert.throws(() => paths({ HOME: '' }, () => ''), /no home folder/);
+  assert.equal(existsSync('relative') || existsSync('.local'), false, 'nothing lands in the folder the test runs in');
 });
