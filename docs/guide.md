@@ -1375,7 +1375,7 @@ yokoten hides your details before some commands run.
   can't start or read your marks, it says so in one line and passes the output through:
   it never stops the command.
 - **In Claude Code, the guard filters plain reads.** These commands print account
-  details: `git log`, `git show`, `git shortlog`, `git blame` and `git for-each-ref`,
+  details: `git log`, `git show`, `git shortlog <revision>`, `git blame` and `git for-each-ref`,
   with any format; `git cat-file -p`; `git remote -v`, `get-url` and `show`; `git config --list` and reads of
   `user.*` and `remote.*`; `gh auth status`; GET calls through `gh` on traffic and user
   paths; `npm whoami`; `wrangler whoami`. When the whole command is one of these, with

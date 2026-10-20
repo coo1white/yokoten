@@ -4,6 +4,7 @@ import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
+  existsSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -275,6 +276,20 @@ test('hook: a custom format, shortlog -sne and blame -e come back rewritten, and
   // A compound or writing command gets no decision.
   for (const command of ['git log --format=%an | head', "git log --format='%an'; ls", 'git log --format=%an > out', 'git commit --amend --no-edit']) {
     assert.deepEqual(pick(call(command)), [0, '', ''], command);
+  }
+});
+
+test('hook: a quote that hides a redirect gets no allow, and the file is not written (#413)', () => {
+  const sandbox = makeSandbox();
+  sandbox.git('config', 'user.name', 'Jane Example');
+  sandbox.write('README.md', 'Hello.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'docs: hello');
+  const call = (command: string) =>
+    sandbox.run(['hook', '--commands-only', '--agent', 'claude-code'], { input: JSON.stringify({ cwd: sandbox.repo, tool_name: 'Bash', tool_input: { command } }) });
+  for (const command of [`git log --format="%an %ae'$x" > out.txt --invert-grep --grep='"'`, `git log "'$x" >> out.txt '"'`]) {
+    assert.deepEqual(pick(call(command)), [0, '', ''], command);
+    assert.equal(existsSync(join(sandbox.repo, 'out.txt')), false, command);
   }
 });
 

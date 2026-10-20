@@ -1730,14 +1730,16 @@ test('bash: env -S puts a variable\'s value in place of ${NAME}, which the guard
 
 test('printsAccount: one plain read from the table is caught (#390)', () => {
   const caught = [
-    'git log -3', 'git show HEAD', 'git blame README.md', 'git shortlog -sn', 'git whatchanged', '/usr/bin/git log',
+    'git log -3', 'git show HEAD', 'git blame README.md', 'git shortlog -sn HEAD', 'git whatchanged', '/usr/bin/git log',
     'git remote -v', 'git remote get-url origin', 'git remote show origin', 'git config --list', 'git config --global --get user.email', 'git config get remote.origin.url',
     'gh api user', 'gh api repos/o/r/traffic/views --jq .count', 'gh api -X GET users/someone', 'gh api --method=GET user --paginate', 'gh auth status', 'gh auth status --hostname github.com',
     'npm whoami', 'npm whoami --registry https://registry.npmjs.org', 'wrangler whoami', 'npx wrangler whoami', 'pnpm dlx wrangler@3 whoami',
     // Any format: the author can print with no "Author:" line (#413).
     'git log --format=%an', 'git log --pretty=format:%ae', 'git log --oneline', 'git show --pretty=format:%s', 'git log --format=%H -1',
-    "git log --format='%an <%ae>'", 'git log --format="%cn <%ce>" -3', 'git shortlog -sne', 'git shortlog -s -n -e HEAD', 'git blame -e README.md',
+    "git log --format='%an <%ae>'", 'git log --format="%cn <%ce>" -3', 'git shortlog -sne HEAD', 'git shortlog -s -n -e main', 'git blame -e README.md',
     "git for-each-ref --format='%(authorname) %(refname)'", 'git for-each-ref refs/tags', 'git cat-file -p HEAD', 'git cat-file commit HEAD', 'git cat-file tag v1',
+    // A quote inside the other kind is plain text.
+    `git log '"'`, `git log "'"`,
   ];
   for (const command of caught) assert.ok(printsAccount(command), `not caught: ${command}`);
   assert.equal(printsAccount('git log -1'), '`git log` prints author names and emails');
@@ -1762,6 +1764,12 @@ test('printsAccount: anything more than one plain read is left to the normal flo
     // A format in a compound command, or quoted text bash still reads (#413).
     "git log --format='%an'; ls", 'git log --format=%an | head', 'git log --format="$(id)"', 'git log --format="`id`"', "git log \\'x;ls'", "git log 'a'\\';ls'", 'git log --format=%an > out', "git log '%an' && git push",
     // A cat-file that is not one object printed: a batch reads stdin, a filter runs a program.
+    // A quote the plain-text search can't match to bash's own reading: it could hide a redirect (#413).
+    `git log --format="%an %ae'$x" > out.txt --invert-grep --grep='"'`, `git log "'$x" >> ~/.bashrc '"'`, `git log 'x`, `git log "x`, `git log "a\\"b"`,
+    // A word that reads as a redirect, even quoted.
+    `git log '>' out`, `git log '2>&1'`, `git log '&>' x`,
+    // A shortlog with no revision reads stdin.
+    'git shortlog -sne', 'git shortlog -sn',
     'git cat-file --batch', 'git cat-file -p', 'git cat-file --filters HEAD:x', 'git cat-file -t HEAD', 'git cat-file -p HEAD extra',
     'git status', 'echo git log',
   ];

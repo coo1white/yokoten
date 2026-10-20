@@ -1395,6 +1395,9 @@ interface AccountPrinter {
 // value wherever it stands (#413).
 const GIT_UNSAFE = /^(?:--output|-o|--ext-diff|--exec-path|--textconv|--filters)/;
 const isGitRead = (args: string[]) => !args.some((arg) => GIT_UNSAFE.test(arg));
+// `git shortlog` with no revision reads a log from stdin when stdin is no terminal, as in the
+// rewrite: so it is rewritten only with a revision, `git shortlog -sne HEAD` (#413).
+const isShortlogRead = (args: string[]) => isGitRead(args) && args.some((arg) => !arg.startsWith('-'));
 
 // `git cat-file -p <object>`, or `git cat-file commit|tag <object>`: one object, printed. A
 // commit or a tag names its author. A batch reads object names from stdin: not rewritten.
@@ -1442,7 +1445,8 @@ const takesOnly = (valued: string[], flags: string[] = []) => (args: string[]) =
 };
 
 export const ACCOUNT_PRINTERS: AccountPrinter[] = [
-  { program: 'git', subcommands: ['log', 'show', 'whatchanged', 'blame', 'shortlog', 'annotate', 'for-each-ref'], accepts: isGitRead, prints: 'author names and emails' },
+  { program: 'git', subcommands: ['log', 'show', 'whatchanged', 'blame', 'annotate', 'for-each-ref'], accepts: isGitRead, prints: 'author names and emails' },
+  { program: 'git', subcommands: ['shortlog'], accepts: isShortlogRead, prints: 'author names and emails' },
   { program: 'git', subcommands: ['cat-file'], accepts: isCatFileRead, prints: 'author names and emails' },
   { program: 'git', subcommands: ['remote'], accepts: isRemoteRead, prints: 'remote URLs' },
   { program: 'git', subcommands: ['config'], accepts: isConfigRead, prints: 'your name, email and remotes' },
@@ -1457,9 +1461,16 @@ export const ACCOUNT_PRINTERS: AccountPrinter[] = [
 const NOT_SIMPLE = /[;&|<>`$(){}\\\n#]/;
 // Quoted text bash reads as it is: '...', or "..." with no $, ` or \ inside. A format such as
 // '%(authorname) <%ae>' is one word, not a group or a redirect (#413). The search runs from
-// the left, as bash reads, and a backslash before a quote is left outside, so NOT_SIMPLE refuses it.
+// the left, as bash reads. A quote left after it means the search and bash may not agree on
+// where a string ends: a "..." with a $ inside, an escaped or an unclosed quote. Then the
+// command is not plain, so a quote can never hide a redirect.
 const LITERAL_QUOTED = /'[^'\n]*'|"[^"$`\\\n]*"/g;
-const isSimple = (command: string) => !NOT_SIMPLE.test(command.replace(LITERAL_QUOTED, 'x'));
+function isSimple(command: string): boolean {
+  const rest = command.replace(LITERAL_QUOTED, 'x');
+  return !/['"]/.test(rest) && !NOT_SIMPLE.test(rest);
+}
+// A word that reads as a redirect: a second check, in case a quote was read wrong.
+const REDIRECT_WORD = /^\d*[<>]|^&>/;
 // Runners that start a package's program by name: `npx wrangler`, `pnpm dlx wrangler`.
 const PACKAGE_RUNNERS: Record<string, string[]> = { npx: [], bunx: [], pnpm: ['dlx', 'exec'], yarn: ['dlx', 'exec'] };
 
@@ -1487,7 +1498,7 @@ export function printsAccount(command: string): string | null {
   } catch {
     return null;
   }
-  if (!words.length || isAssignment(words[0])) return null;
+  if (!words.length || isAssignment(words[0]) || words.some((word) => REDIRECT_WORD.test(word))) return null;
   let at = 0;
   let name = programName(words[0]);
   if (Object.hasOwn(PACKAGE_RUNNERS, name)) {
