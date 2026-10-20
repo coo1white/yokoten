@@ -117,7 +117,8 @@ test('private marks file: the kind of each added mark, by its header or, under t
     { value: 'octo-jdoe', kind: 'forge login' },
     { value: `jane${at}personal-mail.dev`, kind: 'git email' },
     { value: 'build.private-host.dev', kind: 'private remote host' },
-    { value: 'old-login', kind: 'forge login' },
+    // A bare name under the old header is never taken for a login.
+    { value: 'old-login', kind: null },
     { value: 'myserver', kind: null },
   ]);
 });

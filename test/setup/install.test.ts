@@ -6,6 +6,7 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
   renameSync,
@@ -18,6 +19,7 @@ import {
   dirname,
   join,
 } from 'node:path';
+import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import {
   at,
@@ -31,8 +33,8 @@ import {
 } from '../repo/helpers.ts';
 import { hasHook } from '../../src/agents/hooks-file.ts';
 import { copyRuntime } from '../../src/setup/files.ts';
-import { install, machineStateFile, machineUserNames, paths, type UserNameProbe } from '../../src/setup/install.ts';
-import { makeRedactor } from '../../src/rules/privacy.ts';
+import { countOwnMarks, fillMarks, install, machineStateFile, machineUserNames, migrateMarks, paths, type UserNameProbe } from '../../src/setup/install.ts';
+import { autoLogins, loadMarkKinds, makeRedactor } from '../../src/rules/privacy.ts';
 
 const BAD_USER_SETTINGS: [content: string, reason: (file: string) => string][] = [
   ['{ not json', (file) => `can't read ${file} ${JSON_FIX('install')}`],
@@ -555,4 +557,36 @@ test('install: with no absolute home it refuses and writes nothing (#404)', () =
   assert.equal(install({ HOME: 'relative/home' }, { system: () => 'also/relative' }).ok, false);
   assert.throws(() => paths({ HOME: '' }, () => ''), /no home folder/);
   assert.equal(existsSync('relative') || existsSync('.local'), false, 'nothing lands in the folder the test runs in');
+});
+
+test('migrateMarks: an old block is split by kind; a value it cannot place stays strict (#410)', () => {
+  const old = `# mine\nmycity\n# added by yokoten from this machine\nocto-jdoe\njane${at}personal-mail.dev\nnas\nbuild.private-host.dev\nbox\n\n# later\nmyserver\n`;
+  assert.equal(migrateMarks('# mine\nmycity\n', { logins: [], hosts: [] }), null);
+  assert.equal(
+    migrateMarks(old, { logins: ['Octo-Jdoe'], hosts: ['nas'] }),
+    `# mine\nmycity\n# added by yokoten from this machine: forge login\nocto-jdoe\n# added by yokoten from this machine: git email\njane${at}personal-mail.dev\n# added by yokoten from this machine: private remote host\nnas\nbuild.private-host.dev\n# your own marks\nbox\n# later\nmyserver\n`,
+  );
+  // With no login known, a bare name is never taken for one.
+  assert.ok(!migrateMarks(old, { logins: [], hosts: [] })?.includes('forge login'));
+});
+
+test('fillMarks: rewrites an old block in a fake home, by the gh login on file, and keeps mode 600 (#410)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'yokoten-'));
+  const env = { HOME: home };
+  const marks = join(home, '.config', 'yokoten', 'private-marks');
+  mkdirSync(dirname(marks), { recursive: true });
+  writeFileSync(marks, '# added by yokoten from this machine\nocto-jdoe\nnas\n', { mode: 0o600 });
+  mkdirSync(join(home, '.config', 'gh'), { recursive: true });
+  writeFileSync(join(home, '.config', 'gh', 'hosts.yml'), 'github.com:\n    user: octo-jdoe\n    git_protocol: https\n');
+  // Before the rewrite, the old block gives no login: a bare name is strict.
+  assert.deepEqual(autoLogins(loadMarkKinds(env)), []);
+  assert.deepEqual(fillMarks(env, []), []);
+  assert.equal(readFileSync(marks, 'utf8'), '# added by yokoten from this machine: forge login\nocto-jdoe\n# your own marks\nnas\n');
+  assert.equal(statSync(marks).mode & 0o777, 0o600);
+  assert.deepEqual(autoLogins(loadMarkKinds(env)), ['octo-jdoe']);
+  assert.equal(countOwnMarks(env), 1);
+  assert.deepEqual(readdirSync(dirname(marks)), ['private-marks'], 'no temp file is left');
+  // A second run changes nothing.
+  fillMarks(env, []);
+  assert.equal(readFileSync(marks, 'utf8'), '# added by yokoten from this machine: forge login\nocto-jdoe\n# your own marks\nnas\n');
 });

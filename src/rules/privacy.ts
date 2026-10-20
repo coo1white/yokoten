@@ -70,6 +70,9 @@ export const FOUND_HEADER = '# added by yokoten from this machine';
 /** The comment above the marks yokoten adds of one kind: `# added by yokoten from this machine: forge login`. */
 export const foundHeader = (kind: string): string => `${FOUND_HEADER}: ${kind}`;
 
+/** The comment above marks yokoten moved out of an old block because it could not tell their kind: they count as the owner's. */
+export const OWN_HEADER = '# your own marks';
+
 /** One line of the private-marks file: the mark, lowercased, and the kind yokoten added it as, or null for one the owner wrote. */
 export interface Mark {
   value: string;
@@ -79,8 +82,9 @@ export interface Mark {
 /**
  * The owner's marks with where each came from (#410). A mark under `# added by yokoten from
  * this machine: <kind>` has that kind. Under the plain header, which yokoten wrote before it
- * named the kind, the kind is read from the shape: an address is a git email, a domain a
- * remote host, anything else the forge login. Every other line is the owner's own: null.
+ * named the kind and which `fillMarks` rewrites, an address is a git email and a domain a
+ * remote host. Anything else there, and every other line, is the owner's own: null. So a
+ * bare host name is never taken for a login.
  */
 export function loadMarkKinds(env: Env): Mark[] {
   let text = '';
@@ -99,7 +103,7 @@ export function loadMarkKinds(env: Env): Mark[] {
     }
     if (!line) continue;
     const value = line.toLowerCase();
-    const kind = section === null ? null : section || (isEmailShaped(value) ? 'git email' : isDomainShaped(value) ? 'private remote host' : 'forge login');
+    const kind = section === null ? null : section || (isEmailShaped(value) ? 'git email' : isDomainShaped(value) ? 'private remote host' : null);
     marks.push({ value, kind });
   }
   return marks;
@@ -332,7 +336,7 @@ export const POSITIVE_CONTROL = [`contact: someone${'@'}personal-mail.com`, `ser
 /** The placeholders `redact` writes. A placeholder never names what it hides. */
 export const PLACEHOLDERS = { owner: '<owner>', project: '<project>', email: '<email>', host: '<host>', mark: '<mark>', secret: SECRET } as const;
 
-const isEmailShaped = (value: string) => /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(value);
+export const isEmailShaped = (value: string): boolean => /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(value);
 /** A domain or host name: words joined by dots, ending in a top-level name. */
 export const isDomainShaped = (value: string): boolean => /^(?:[a-z0-9-]+\.)+[a-z]{2,}$/i.test(value);
 
