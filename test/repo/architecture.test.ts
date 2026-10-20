@@ -6,12 +6,12 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { homedir, tmpdir, userInfo } from 'node:os';
 import { dirname, join, posix, relative } from 'node:path';
 import { test } from 'node:test';
-import { makeTempDir } from './helpers.ts';
+import { killedLine, makeSandbox, makeTempDir, runChild } from './helpers.ts';
 import { fileURLToPath } from 'node:url';
 import { COMMANDS } from '../../src/run/cli.ts';
 import { findDeclarations, findNameProblems, splitWords, type Token, tokenize } from '../../src/run/names.ts';
 import { HOME_DIR, homeDirOf } from '../../src/setup/files.ts';
-import { assertLinear } from '../../scripts/linear.ts';
+import { assertLinear, assertLinearEach } from '../../scripts/linear.ts';
 import { TEST_HOME } from './home.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -236,6 +236,37 @@ test('temp folders: tests make them with makeTempDir, not with mkdtempSync alone
   assert.deepEqual(findBareTempDirs(files), [], `make the folder with makeTempDir from ${TEMP_HELPER}: it is removed when the test ends`);
 });
 
+// #436: a child killed by its timeout showed only `actual: null`, and a file that died later
+// named no test. runChild prints the kill with the running test's name.
+test('child processes: a killed child names the test that ran it (#436)', () => {
+  const written: string[] = [];
+  const write = process.stderr.write;
+  process.stderr.write = ((text: string | Uint8Array) => written.push(String(text)) > 0) as typeof process.stderr.write;
+  let result;
+  try {
+    result = runChild('node', ['-e', 'setTimeout(() => {}, 60_000)'], { timeout: 100 });
+  } finally {
+    process.stderr.write = write;
+  }
+  assert.equal(result.signal, 'SIGTERM');
+  assert.deepEqual(written, ['test "child processes: a killed child names the test that ran it (#436)": its child `node` was killed after 100 ms\n']);
+  assert.equal(killedLine('a', 'git', 5, { signal: 'SIGKILL' }), 'test "a": its child `git` was killed by SIGKILL\n');
+  assert.equal(killedLine('a', 'git', 5, { signal: null }), null, 'a child that ended by itself');
+  const tooMuch = Object.assign(new Error('spawnSync git ENOBUFS'), { code: 'ENOBUFS' });
+  assert.equal(killedLine('a', 'git', 5, { signal: 'SIGTERM', error: tooMuch }), 'test "a": its child `git` was killed for printing more than maxBuffer\n');
+  assert.equal(runChild('node', ['-e', "process.stdout.write('x'.repeat(2 ** 21))"]).stdout.length, 2 ** 21, 'more than Node\'s 1 MB default');
+  assert.equal(runChild('node', ['-e', '']).status, 0);
+});
+
+// #436: one gh call in 100 left a telemetry sender running, which wrote its device id into
+// the sandbox's home after the test removed it, so removing the sandbox failed. Git's
+// background maintenance can race a test the same way (#442).
+test('child processes: no gh telemetry or git maintenance runs on after a test (#436)', () => {
+  assert.equal((makeSandbox().env as Record<string, string>).GH_TELEMETRY, '0');
+  assert.equal(process.env.GH_TELEMETRY, '0');
+  assert.equal(execFileSync('git', ['config', 'maintenance.auto'], { encoding: 'utf8' }).trim(), 'false', 'no background git maintenance either');
+});
+
 // ---- The npm package (#31) ----
 //
 // The hooks run on a fresh machine with nothing but Node, and `npx yokoten` installs one
@@ -355,6 +386,141 @@ test('workflows: every workflow, in the kit and here, meets the standard; a bad 
   assert.ok(jobs(kitWorkflow).some((j) => j.name === 'lint' && /actionlint/.test(j.block)), `${dir}/yokoten.yml: no \`lint\` job that runs actionlint`);
   const dependabot = readFileSync(join(ROOT, 'kit/project/.github/dependabot.yml'), 'utf8');
   assert.match(dependabot, /package-ecosystem: github-actions/, 'kit/project/.github/dependabot.yml: Dependabot must keep the actions bumped');
+});
+
+// ---- A short CI for a docs-only pull request (#438) ----
+//
+// The `changes` job's script runs here as CI runs it, in a real git repo. The `if:` and
+// matrix expressions are read from the file and evaluated in JS: `&&`, `||`, `==`, `!=`
+// and quoted strings mean the same in both. An unknown function throws, so the read can't
+// pass by accident.
+const WORKFLOWS = ['.github/workflows/yokoten.yml', 'kit/project/.github/workflows/yokoten.yml'];
+const jobBlock = (text: string, name: string) => jobs(text).find((job) => job.name === name)?.block ?? '';
+const changesScript = (text: string) => (jobBlock(text, 'changes').match(/^ {8}run: \|\n((?: {10}.*\n|\n)+)/m)?.[1] ?? '').replace(/^ {10}/gm, '');
+type Needs = Record<string, { result: string; outputs?: Record<string, string> }>;
+const evaluate = (expression: string, needs: Needs): unknown => {
+  const code = expression
+    .replace(/contains\(needs\.\*\.result, '(\w+)'\)/g, "contains('$1')")
+    .replace(/needs\.([\w-]+)\.outputs\.([\w-]+)/g, "(needs['$1'].outputs?.['$2'] ?? '')")
+    .replace(/needs\.([\w-]+)\.result/g, "needs['$1'].result");
+  const contains = (value: string) => Object.values(needs).some((job) => job.result === value);
+  return new Function('needs', 'contains', 'fromJSON', 'cancelled', `return (${code});`)(needs, contains, JSON.parse, () => false);
+};
+const inBraces = (block: string, pattern: RegExp) => {
+  const found = block.match(pattern)?.[1];
+  assert.ok(found, `no match for ${pattern}; the read is broken`);
+  return found;
+};
+const jobCondition = (block: string) => inBraces(block, /^ {4}if: \$\{\{ (.+) \}\}$/m);
+const ciRule = (text: string) => inBraces(jobBlock(text, 'ci'), /^ {6}- if: >-\n((?: {10}.*\n)+)/m).replace(/\s*\n\s*/g, ' ').trim();
+// The results `ci` sees: `changes` with its output, then each job's result.
+const results = (docsOnly: string, jobResults: Record<string, string>): Needs => ({
+  changes: { result: docsOnly === '' ? 'failure' : 'success', outputs: docsOnly === '' ? {} : { docs_only: docsOnly } },
+  ...Object.fromEntries(Object.entries(jobResults).map(([name, result]) => [name, { result }])),
+});
+
+test('ci: `changes` finds a docs-only pull request; other files, a push, or an unread list run in full (#438)', { skip: process.platform === 'win32' && 'the script is bash' }, () => {
+  const [ours, kit] = WORKFLOWS.map((path) => readFileSync(join(ROOT, path), 'utf8'));
+  const script = changesScript(ours);
+  assert.match(script, /docs_only=/, 'no `changes` script found; the read is broken');
+  assert.equal(changesScript(kit), script, 'the kit and this repo run the same `changes` script');
+  for (const text of [ours, kit]) {
+    const block = jobBlock(text, 'changes');
+    assert.match(block, /^ {4}permissions:\n {6}contents: read\n {4}outputs:/m, '`changes` reads the repo and nothing else');
+    assert.match(block, /continue-on-error: true\n/, 'a failed checkout makes a full run, not a red `changes`');
+  }
+  const sandbox = makeSandbox();
+  sandbox.write('README.md', '# demo\n');
+  sandbox.write('src/a.ts', 'export {};\n');
+  sandbox.git('add', '-A');
+  sandbox.git('commit', '-qm', 'base');
+  const base = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  // A pull request from `base` that changes these files; its head commit.
+  const pullRequest = (paths: string[]) => {
+    sandbox.git('checkout', '-qB', 'topic', base);
+    for (const path of paths) sandbox.write(path, `${path} changed\n`);
+    sandbox.git('add', '-A');
+    sandbox.git('commit', '-qm', 'change');
+    return sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  };
+  const runChanges = (env: Record<string, string>) => {
+    const output = join(sandbox.home, 'github-output');
+    writeFileSync(output, '');
+    const result = spawnSync('bash', ['--noprofile', '--norc', '-e', '-c', script], { cwd: sandbox.repo, env: { ...sandbox.env, GITHUB_OUTPUT: output, ...env }, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return { output: readFileSync(output, 'utf8'), stdout: result.stdout };
+  };
+  const onPullRequest = (paths: string[]) => runChanges({ EVENT: 'pull_request', BASE_SHA: base, HEAD_SHA: pullRequest(paths) }).output;
+  // Docs-only: the short run.
+  assert.equal(onPullRequest(['docs/guide.md', 'changes/1-a.md', 'README.md', 'docs/i18n/README.md', 'CHANGELOG.md', 'src/CHANGELOG.md']), 'docs_only=true\n');
+  // One file that is not docs: the full run.
+  assert.equal(onPullRequest(['docs/guide.md', 'src/a.ts']), 'docs_only=false\n');
+  assert.equal(onPullRequest(['kit/project/README.md']), 'docs_only=false\n', 'kit/ is what other projects get');
+  assert.equal(onPullRequest(['AGENTS.md']), 'docs_only=false\n');
+  assert.equal(onPullRequest(['.github/workflows/yokoten.yml']), 'docs_only=false\n');
+  assert.equal(onPullRequest(['package.json']), 'docs_only=false\n');
+  // A push to main: the full run.
+  assert.equal(runChanges({ EVENT: 'push', BASE_SHA: '', HEAD_SHA: '' }).output, 'docs_only=false\n');
+  // The file list can't be read: the full run, and a warning says why.
+  const head = pullRequest(['docs/guide.md']);
+  for (const [baseSha, headSha] of [['0'.repeat(40), head], ['', head], [base, ''], [head, head]]) {
+    const run = runChanges({ EVENT: 'pull_request', BASE_SHA: baseSha, HEAD_SHA: headSha });
+    assert.equal(run.output, 'docs_only=false\n', `base ${baseSha || '(none)'}, head ${headSha || '(none)'}`);
+    assert.match(run.stdout, /^::warning::The pull request's changed files could not be read, so every job runs\.$/m);
+  }
+});
+
+test('ci: a docs-only pull request runs one test job, skips typecheck and action, and `ci` is green (#438)', () => {
+  const text = readFileSync(join(ROOT, WORKFLOWS[0]), 'utf8');
+  const testJob = jobBlock(text, 'test');
+  const matrix = (docsOnly: string) => {
+    const needs = results(docsOnly, {});
+    const nodes = evaluate(inBraces(testJob, /^ {8}node: \$\{\{ (.+) \}\}$/m), needs) as string[];
+    const extra = evaluate(inBraces(testJob, /^ {8}include: \$\{\{ (.+) \}\}$/m), needs) as { os: string; node: string }[];
+    return [...nodes.map((node) => `ubuntu-latest ${node}`), ...extra.map((entry) => `${entry.os} ${entry.node}`)];
+  };
+  assert.deepEqual(matrix('true'), ['ubuntu-latest 24']);
+  const full = ['ubuntu-latest 22.18.0', 'ubuntu-latest 24', 'macos-latest 24'];
+  assert.deepEqual(matrix('false'), full);
+  assert.deepEqual(matrix(''), full, '`changes` failed: the full run');
+  assert.equal(evaluate(jobCondition(testJob), results('true', {})), true, 'test runs on every pull request');
+  for (const name of ['typecheck', 'action']) {
+    const condition = jobCondition(jobBlock(text, name));
+    assert.equal(evaluate(condition, results('true', {})), false, `${name} is skipped on a docs-only pull request`);
+    assert.equal(evaluate(condition, results('false', {})), true, `${name} runs in full`);
+    assert.equal(evaluate(condition, results('', {})), true, `${name} runs when \`changes\` failed`);
+  }
+  for (const name of ['check', 'lint']) assert.doesNotMatch(jobBlock(text, name), /^ {4}(?:if|needs):/m, `${name} runs as before, on every pull request`);
+  // `ci` is red when this is true.
+  const isRed = (docsOnly: string, jobResults: Record<string, string>) => evaluate(ciRule(text), results(docsOnly, jobResults));
+  const green = { test: 'success', typecheck: 'success', check: 'success', lint: 'success', action: 'success' };
+  const docsRun = { ...green, typecheck: 'skipped', action: 'skipped' };
+  assert.equal(isRed('true', docsRun), false, 'docs-only: typecheck and action skipped on purpose');
+  assert.equal(isRed('false', green), false);
+  assert.equal(isRed('false', docsRun), true, 'skipped on a full run is red');
+  assert.equal(isRed('true', { ...docsRun, test: 'skipped' }), true, 'test always runs');
+  assert.equal(isRed('true', { ...docsRun, lint: 'skipped' }), true, 'lint always runs');
+  assert.equal(isRed('true', { ...docsRun, check: 'failure' }), true);
+  assert.equal(isRed('true', { ...docsRun, test: 'cancelled' }), true);
+  assert.equal(isRed('', green), true, '`changes` failed: red, though the rest ran in full');
+});
+
+test('ci: the kit lets a project skip its own jobs on a docs-only pull request; check and lint always run (#438)', () => {
+  const text = readFileSync(join(ROOT, WORKFLOWS[1]), 'utf8');
+  // The lines the kit tells a project to give its own jobs.
+  const example = inBraces(text, /^ {2}# {3}if: \$\{\{ (.+) \}\}$/m);
+  assert.match(text, /^ {2}# {3}needs: changes$/m);
+  assert.equal(evaluate(example, results('true', {})), false);
+  assert.equal(evaluate(example, results('false', {})), true);
+  assert.equal(evaluate(example, results('', {})), true, 'runs when `changes` failed');
+  const isRed = (docsOnly: string, jobResults: Record<string, string>) => evaluate(ciRule(text), results(docsOnly, jobResults));
+  const green = { check: 'success', lint: 'success', build: 'success' };
+  assert.equal(isRed('false', green), false);
+  assert.equal(isRed('true', { ...green, build: 'skipped' }), false, 'a project job skipped on a docs-only pull request');
+  assert.equal(isRed('false', { ...green, build: 'skipped' }), true);
+  assert.equal(isRed('true', { ...green, check: 'skipped' }), true, 'check always runs');
+  assert.equal(isRed('true', { ...green, lint: 'skipped' }), true, 'lint always runs');
+  assert.equal(isRed('true', { ...green, build: 'failure' }), true);
 });
 
 // ---- Names (#109, record 0006) ----
@@ -628,6 +794,24 @@ test('assertLinear: a quadratic read fails; a slow spell in one round does not (
     busyWait(7 * (input.length / 1000));
   };
   assertLinear('linear with a slow spell', (n) => 'x'.repeat(n), noisy, 1000);
+});
+
+test('assertLinearEach: one quadratic shape among linear ones fails; a slow spell does not (#442)', () => {
+  const linear = (input: string) => busyWait(0.6 * (input.length / 1000));
+  const quadratic = (input: string) => busyWait(0.6 * (input.length / 1000) ** 2);
+  const shapes = (read: (input: string) => void) => [
+    { name: 'linear a', make: (n: number) => 'a'.repeat(n), read: linear },
+    { name: 'the odd one', make: (n: number) => 'b'.repeat(n), read },
+    { name: 'linear c', make: (n: number) => 'c'.repeat(n), read: linear },
+  ];
+  assert.throws(() => assertLinearEach(shapes(quadratic), 1000), (error: Error) => /^the odd one: .* \d+x; linear is about 8x$/.test(error.message) && !error.message.includes('linear a'));
+  // The odd shape's first big read is 200 ms slower, as on a busy runner: it is measured again, and passes.
+  let bigReads = 0;
+  const noisy = (input: string) => {
+    if (input.length > 1000 && ++bigReads <= 1) busyWait(200);
+    linear(input);
+  };
+  assertLinearEach(shapes(noisy), 1000);
 });
 
 // No test reads or writes the real home folder (#356). test/repo/home.ts points HOME at an

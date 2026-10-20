@@ -80,6 +80,15 @@ export function loadMarks(env: Env): string[] {
     .map((line) => line.toLowerCase());
 }
 
+/**
+ * The marks a project allows in its own repo (#424): those its yokoten.json "privacy.allow"
+ * lists as the same string, case aside. Never a part: allowing `foo` does not allow `foobar`.
+ */
+export function ownMarks(marks: string[], allow: string[] = []): string[] {
+  const allowed = new Set(allow.map((entry) => entry.toLowerCase()));
+  return marks.filter((mark) => allowed.has(mark.toLowerCase()));
+}
+
 /** The comment above the marks yokoten adds from this machine. They run to the next comment line. */
 export const FOUND_HEADER = '# added by yokoten from this machine';
 
@@ -272,6 +281,9 @@ function isSectionNumber(line: string, index: number, hit: string): boolean {
   return rangeEnd !== null && isSectionRange(hit, rangeEnd[1]);
 }
 
+/** The email finding's fix. A project's own public address, such as support@ at its domain, is still found: the project lets it through (#380). */
+export const EMAIL_FIX = 'use your GitHub noreply address, or a placeholder at example.com. If it is your project\'s own public address, such as support@ at its domain, add it to "privacy.allow" in yokoten.json';
+
 /** Whether an address found in text may point at a person: not a noreply, team, example or retina name. */
 export const isPersonalEmail = (hit: string, allow: string[] = []): boolean => !OK_EMAIL.some((re) => re.test(hit)) && !isForgeRemote(hit) && !RETINA.test(hit) && !allow.includes(hit);
 
@@ -285,13 +297,15 @@ export function scanText(text: string, { file, marks = [], allow = [], logins = 
   // `logins`: the forge logins yokoten added to the marks, fine where a file names accounts (#410).
   const places = logins.length && marks.length ? loginPlaces(file, lines) : null;
   const secrets = findSecrets(lines, allow);
+  const own = ownMarks(marks, allow);
+  const stopped = own.length ? marks.filter((mark) => !own.includes(mark)) : marks;
   lines.forEach((line, index) => {
     const where = { file, line: index + 1 };
     // The secret itself is never printed either, only its kind.
     for (const [at, kind] of secrets) if (at === index) problems.push(finding('secret', `a secret (${kind})`, 'remove it, rotate it, and keep it outside the repo', where));
     for (const [hit] of line.matchAll(EMAIL)) {
       if (isPersonalEmail(hit, allow)) {
-        problems.push(finding('email', 'an email address', 'use your GitHub noreply address, or a placeholder at example.com', where));
+        problems.push(finding('email', 'an email address', EMAIL_FIX, where));
       }
     }
     for (const { 0: hit, index } of line.matchAll(IPV4)) {
@@ -300,7 +314,7 @@ export function scanText(text: string, { file, marks = [], allow = [], logins = 
       problems.push(finding('ip', 'an IP address', 'use a placeholder from 192.0.2.0/24', where));
     }
     const lower = line.toLowerCase();
-    for (const mark of marks) {
+    for (const mark of stopped) {
       // The mark itself is never printed: the output may land in a CI log or a chat.
       if (!lower.includes(mark)) continue;
       if (places && logins.includes(mark) && !places(lower, index, mark).includes(mark)) continue;
@@ -726,10 +740,11 @@ function apiWrites(path: string, method: string | null, hasFields: boolean, quer
 // The commit check's reasons end on what git does; a post is public as soon as it is sent.
 const postWhy = (why: string) => why.replace(/, and git keeps it after the file is gone$/, '').replace('read the repo', 'read it').concat(', and a post is public the moment it is sent');
 
-// The commit check's fix, and for an address the way to let a public one through.
+// The commit check's fix, and for an IP address the way to let a public one through.
+// The email fix names privacy.allow already (EMAIL_FIX).
 const ALLOW_FIX = 'If it is public on purpose, add it to "privacy.allow" in yokoten.json';
 const postFix = (f: Finding) =>
-  f.id === 'email' || f.id === 'ip' ? `${f.fix}. ${ALLOW_FIX}` : f.id === 'secret' ? 'take it out of the text, and rotate it if it was ever sent' : f.fix;
+  f.id === 'ip' ? `${f.fix}. ${ALLOW_FIX}` : f.id === 'secret' ? 'take it out of the text, and rotate it if it was ever sent' : f.fix;
 
 /** A file's path as a finding may show it: home as `~`, and only its name, or no name, when the path holds a mark. */
 function shownPath(path: string, env: Env, marks: string[]): string {
@@ -785,8 +800,11 @@ export function checkPost(
     });
   }
   if (!posted.pieces.length) return null;
-  const marks = loadMarks(env);
   const allow = privacy?.allow ?? [];
+  // An allowed mark is left out of the path shown too (#424).
+  const all = loadMarks(env);
+  const own = ownMarks(all, allow);
+  const marks = all.filter((mark) => !own.includes(mark));
   for (const piece of posted.pieces) {
     const [hit] = scanText(piece.text, { file: piece.source, marks, allow });
     if (!hit) continue;

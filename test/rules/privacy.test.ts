@@ -24,6 +24,7 @@ import {
   loadMarks,
   makeRedactor,
   notUtc,
+  ownMarks,
   POSITIVE_CONTROL,
   privateRemoteHosts,
   scanText,
@@ -57,6 +58,21 @@ test('emails: personal ones are caught, noreply and examples are fine', () => {
     assert.deepEqual(scanText(ok, { file: 'a' }), [], ok);
   }
   assert.deepEqual(scanText(`help${at}company.com`, { file: 'a', allow: [`help${at}company.com`] }), []);
+});
+
+test('emails: the fix names privacy.allow for a project\'s own public address, and the address is still found (#380)', () => {
+  const address = `support${at}myproject.dev`;
+  const found = scanText(`write to ${address}`, { file: 'SECURITY.md' });
+  assert.equal(found.length, 1, 'nothing is allowed on its own');
+  assert.equal(found[0].id, 'email');
+  const text = formatFinding(found[0]);
+  assert.match(text, /noreply address, or a placeholder at example\.com\. If it is your project's own public address, such as support@ at its domain, add it to "privacy\.allow" in yokoten\.json\.\n/);
+  assert.match(text, /\n {2}docs: https:\/\/github\.com\/yokoten-labs\/yokoten\/blob\/main\/docs\/guide\.md#privacy$/);
+  assert.ok(!text.includes(address), 'the address itself is never printed');
+  // A post names privacy.allow once, not twice.
+  const home = makeTempDir('yokoten-380-');
+  const posted = formatFinding(checkCommand(`gh issue create --title "check: a" --body "${address}"`, { env: { HOME: home }, config: DEFAULTS, cwd: home })!);
+  assert.equal(posted.split('privacy.allow').length, 2, posted);
 });
 
 test('emails: role addresses, forge SSH remotes and .local point at no person (#11)', () => {
@@ -1084,4 +1100,35 @@ test('inside "...", only $, backticks, \\ and ! make the line unsure (#439)', ()
     'true 2>/dev/null; gh issue create --title t -F body.md',
   ]) assert.equal(post(command)?.id, 'unreadable-command', JSON.stringify(command));
   rmSync(join(postDir, 'body.md'));
+});
+
+// ---- A project allows its own name (#424) ----
+
+test('ownMarks and scanText: a mark the project allows, same string case aside, is not reported (#424)', () => {
+  const marks = ['quietvale', 'quietvale labs', 'vale'];
+  assert.deepEqual(ownMarks(marks, ['QuietVale']), ['quietvale']);
+  const hits = (text: string, allow: string[]) => scanText(text, { file: 'a', marks: ['quietvale'], allow }).length;
+  assert.equal(hits('QuietVale ships', ['QUIETVALE']), 0, 'case does not matter');
+  assert.equal(hits('QuietVale ships', []), 1, 'with no allow, it is stopped');
+  // Near misses: a part, a longer string, or spaces around it allow nothing.
+  for (const allow of [['quiet'], ['quietvale2'], ['quietvale labs'], [' quietvale'], ['quietval'], ['xquietvale']]) {
+    assert.equal(hits('QuietVale ships', allow), 1, JSON.stringify(allow));
+  }
+  // Allowing one mark leaves the longer and shorter marks that hold it.
+  const all = (text: string) => scanText(text, { file: 'a', marks, allow: ['quietvale'] }).length;
+  assert.equal(all('QuietVale ships'), 1, 'the shorter mark vale still matches');
+  assert.equal(all('QuietVale Labs ships'), 2, 'quietvale labs and vale still match');
+  const finding = scanText('QuietVale Labs', { file: 'a', marks, allow: ['quietvale'] }).map((f) => formatFinding(f)).join('\n');
+  assert.ok(!/quietvale|vale/i.test(finding), 'no mark is printed');
+});
+
+test('checkPost: the project that allows the mark posts; another project with the same marks file is stopped (#424)', () => {
+  const allowing = { ...DEFAULTS, privacy: { ...DEFAULTS.privacy, allow: ['QuietVale'] } };
+  const command = 'gh issue create --title "check: fix a bug" --body "QuietVale ships"';
+  assert.equal(post(command, allowing), null);
+  const stopped = post(command);
+  assert.equal(stopped?.id, 'private-mark');
+  assert.ok(!/quietvale/i.test(formatFinding(stopped)), 'the mark is never printed');
+  // A near miss in privacy.allow allows nothing.
+  assert.equal(post(command, { ...DEFAULTS, privacy: { ...DEFAULTS.privacy, allow: ['QuietVal'] } })?.id, 'private-mark');
 });

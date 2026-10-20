@@ -9,22 +9,67 @@ on:
     branches: [main]
 # No job gets a permission it does not name.
 permissions: {}
-# A new push to a pull request cancels the run still going for it. Every other run
-# (a push to main) gets a group of its own, so nothing on main is ever cancelled.
+# A newer run cancels the one still going for the same pull request or branch. On main,
+# the newest run tests everything the older ones would have, so a merge never waits
+# behind runs that no longer matter (macOS runners are few and shared).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  # Which files the pull request changes (#438). It is docs-only when each file is under
+  # docs/ or changes/, or is a README.md or CHANGELOG.md outside kit/. Then the jobs that
+  # Markdown can't break are skipped. A push to main is a full run. So is a file list
+  # that can't be read: docs_only is true only when the list was read and every file fits.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      docs_only: ${{ steps.files.outputs.docs_only }}
+    steps:
+      # The whole history, so the base commit is there to compare with. A failed checkout
+      # does not stop the job: the diff below then fails, and the run is full.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        continue-on-error: true
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: files
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          docs_only=false
+          if [ "$EVENT" != pull_request ]; then
+            echo "Not a pull request, so every job runs."
+          elif [ -z "$BASE_SHA" ] || [ -z "$HEAD_SHA" ] || ! files=$(git diff --name-only "$BASE_SHA...$HEAD_SHA" --) || [ -z "$files" ]; then
+            echo "::warning::The pull request's changed files could not be read, so every job runs."
+          else
+            docs_only=true
+            while IFS= read -r file; do
+              case "$file" in
+                kit/*) docs_only=false ;;
+                docs/*|changes/*|README.md|*/README.md|CHANGELOG.md|*/CHANGELOG.md) ;;
+                *) docs_only=false ;;
+              esac
+            done <<< "$files"
+          fi
+          echo "docs_only=$docs_only"
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+  # On a docs-only pull request, one run (ubuntu, Node 24): the architecture and
+  # translation tests read the docs. `!cancelled()`: if `changes` failed, run in full.
   test:
+    needs: changes
+    if: ${{ !cancelled() }}
     strategy:
       matrix:
         os: [ubuntu-latest]
         # The oldest Node that runs .ts as it is (package.json "engines"), and the current LTS.
-        node: ['22.18.0', '24']
+        node: ${{ fromJSON(needs.changes.outputs.docs_only == 'true' && '["24"]' || '["22.18.0","24"]') }}
         # One macOS run: paths there go through symlinks (/var), which hid a real bug (#1).
-        include:
-          - os: macos-latest
-            node: '24'
+        include: ${{ fromJSON(needs.changes.outputs.docs_only == 'true' && '[]' || '[{"os":"macos-latest","node":"24"}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     permissions:
@@ -36,9 +81,16 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node }}
-      - run: node --test
+      # Four files at a time (Node's default is the CPU count minus one), and one compile
+      # cache for every child node, so each test file strips its TypeScript once (#442).
+      - run: node --test --test-concurrency=4
+        env:
+          NODE_COMPILE_CACHE: ${{ runner.temp }}/node-compile-cache
   # Types are checked here and nowhere else: Node runs the .ts files without them.
+  # Skipped on a docs-only pull request.
   typecheck:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -105,7 +157,10 @@ jobs:
   # The action other repos use (action.yml, #106), run here as they would run it. No
   # `check --pr`: this workflow does not run again when the title or labels change, so a
   # fixed title would leave `ci` red. The `pr` workflow checks the pull request.
+  # Skipped on a docs-only pull request.
   action:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -120,13 +175,18 @@ jobs:
         with:
           pr-check: false
   # The one required check. It runs even when a job it needs failed, and goes red if
-  # any of them did not succeed (failed, cancelled or skipped).
+  # any of them did not succeed (failed, cancelled or skipped). The one exception: on a
+  # docs-only pull request, `typecheck` and `action` are skipped on purpose (#438).
   ci:
     if: always()
-    needs: [test, typecheck, check, lint, action]
+    needs: [changes, test, typecheck, check, lint, action]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions: {}
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
+      - if: >-
+          contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') ||
+          (contains(needs.*.result, 'skipped') && needs.changes.outputs.docs_only != 'true') ||
+          needs.changes.result != 'success' || needs.test.result != 'success' ||
+          needs.check.result != 'success' || needs.lint.result != 'success'
         run: exit 1

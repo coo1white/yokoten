@@ -108,7 +108,9 @@ test('lessons: full doctor notes a new lesson on the first run only; a session, 
   const newNote = /\n {2}note {4}new lesson: incident-138 \(a test calls a server on this machine and does not set NO_PROXY\); doctor now runs it in this project\n {2}ok {6}lesson incident-138\n/;
   let result = sandbox.run(['doctor', '--session']);
   assert.equal(result.status, 0, result.stderr);
-  assert.ok(!existsSync(stateFile), 'a session writes nothing');
+  // A session keeps only the lessons it ran (#339), never the ones full doctor has seen.
+  assert.deepEqual(JSON.parse(readFileSync(stateFile, 'utf8')), { sessionLessons: ['incident-138'] });
+  rmSync(stateFile);
   // Not now: no new note, and the lesson is not marked seen.
   sandbox.write('yokoten.json', JSON.stringify({ notNow: { 'incident-138': 'no local servers here' } }));
   result = sandbox.run(['doctor']);
@@ -130,6 +132,51 @@ test('lessons: full doctor notes a new lesson on the first run only; a session, 
   assert.equal(result.stderr, '');
   assert.deepEqual(JSON.parse(result.stdout).lessons.find((lesson: { id: string }) => lesson.id === 'incident-138'), { id: 'incident-138', mark: 'ok', isNew: true });
   assert.deepEqual(JSON.parse(readFileSync(stateFile, 'utf8')), { seenLessons: ['incident-138'] });
+});
+
+// #339: a session start hears one line the first time a lesson new to this clone finds
+// something here, and nothing after: not at the next start, and not after a compaction.
+test('lessons: a session hears a new lesson that finds something once; a project without the problem never does', () => {
+  const line = 'yokoten: a new lesson learned in another project found a problem here: a test calls a server on this machine and does not set NO_PROXY. Run `yokoten doctor` to see where.';
+  const sandbox = makeSandbox();
+  const stateFile = join(sandbox.repo, '.git', 'yokoten', 'state.json');
+  const hook = { CLAUDE_PROJECT_DIR: sandbox.repo };
+  const start = (event: Record<string, string>) => sandbox.run(['doctor', '--session'], { input: JSON.stringify({ hook_event_name: 'SessionStart', ...event }), extra: hook });
+  // Without the problem: no line, at the first start or any later one.
+  for (let i = 0; i < 2; i++) {
+    const result = start({ session_id: `clean-${i}`, source: 'startup' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(!result.stdout.includes('new lesson'), result.stdout);
+  }
+  // The lesson ran at the first start, so a problem added later is full doctor's to report.
+  assert.deepEqual(JSON.parse(readFileSync(stateFile, 'utf8')), { sessionLessons: ['incident-138'] });
+
+  // Positive control: a project with the incident-138 pattern hears it at the first start.
+  const found = makeSandbox();
+  const foundState = join(found.repo, '.git', 'yokoten', 'state.json');
+  found.write('test/api.test.ts', "await fetch('http://127.0.0.1:8080/');\n");
+  const startFound = (event: Record<string, string>) => found.run(['doctor', '--session'], { input: JSON.stringify({ hook_event_name: 'SessionStart', ...event }), extra: { CLAUDE_PROJECT_DIR: found.repo } });
+  let result = startFound({ session_id: 's-1', source: 'startup' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.split('\n').filter((text) => text.includes('new lesson')).length, 1, result.stdout);
+  assert.ok(result.stdout.includes(`${line}\n`), result.stdout);
+  // A compaction start does not repeat it, from the state or from what the session heard.
+  assert.ok(!startFound({ session_id: 's-1', source: 'compact' }).stdout.includes('new lesson'));
+  rmSync(foundState);
+  assert.ok(!startFound({ session_id: 's-1', source: 'compact' }).stdout.includes('new lesson'), 'the session heard it already');
+  // A later session: nothing; full doctor still notes the lesson as new, and its problem.
+  result = startFound({ session_id: 's-2', source: 'startup' });
+  assert.ok(!result.stdout.includes('new lesson'), result.stdout);
+  assert.match(found.run(['doctor']).stdout, /\n {2}note {4}new lesson: incident-138 [^\n]*\n {2}note {4}lesson incident-138: test\/api\.test\.ts/);
+  // After full doctor has seen it, a fresh session state never brings it back.
+  writeFileSync(foundState, JSON.stringify({ seenLessons: ['incident-138'] }));
+  assert.ok(!startFound({ session_id: 's-3', source: 'startup' }).stdout.includes('new lesson'));
+  // The plugin names its own command; "not now" silences the line.
+  rmSync(foundState);
+  assert.ok(found.run(['doctor', '--session'], { extra: { CLAUDE_PLUGIN_ROOT: found.repo } }).stdout.includes('Run /yokoten:doctor to see where.'));
+  rmSync(foundState);
+  found.write('yokoten.json', JSON.stringify({ notNow: { 'incident-138': 'no proxy on this team' } }));
+  assert.ok(!found.run(['doctor', '--session']).stdout.includes('new lesson'));
 });
 
 test('learn: the draft takes what, why and the fix from the issue\'s sections', () => {

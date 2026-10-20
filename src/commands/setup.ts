@@ -1,11 +1,11 @@
 // `yokoten init`, `update`, `install` and `uninstall`: they write yokoten into a project or a machine.
 
-import { existsSync } from 'node:fs';
+import { existsSync, readSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { ghIn } from '../host/github.ts';
 import { loadConfig } from '../rules/config.ts';
 import { init, updateCoreRules } from '../setup/init.ts';
-import { install, uninstall } from '../setup/install.ts';
+import { type Ask, install, uninstall } from '../setup/install.ts';
 import { readOriginUrl, setUpPlanning } from '../setup/plan.ts';
 import { env, parse, print, requireRoot, usage } from './shared.ts';
 
@@ -25,7 +25,7 @@ export function runInit(): number {
   if (!root) return 1;
   // Read first: a broken yokoten.json stops init before it writes a file.
   const { areas } = loadConfig(root);
-  const done = init(root);
+  const done = init(root, undefined, { noCi: options.flags.has('--no-ci') });
   print(done.lines);
   // The host is changed only when asked (#10): it is a remote, and other people see it.
   // Without --yes, init only reads it and says what it would do, or what it skipped.
@@ -58,11 +58,35 @@ export function runUpdate(): number {
   return ok ? 0 : 1;
 }
 
+/**
+ * Ask one question on the terminal and read one line back, or null at end of input. Install
+ * is synchronous, so it reads stdin a byte at a time; it is used only when stdin is a terminal.
+ */
+const askOnTerminal: Ask = (question) => {
+  process.stdout.write(`${question} `);
+  const byte = Buffer.alloc(1);
+  const bytes: number[] = [];
+  for (;;) {
+    let count: number;
+    try {
+      count = readSync(0, byte, 0, 1, null);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EAGAIN') continue;
+      return null;
+    }
+    if (count === 0) return bytes.length ? Buffer.from(bytes).toString('utf8') : null;
+    if (byte[0] === 10) return Buffer.from(bytes).toString('utf8').replace(/\r$/, '');
+    bytes.push(byte[0]);
+  }
+};
+
 export function runInstall(): number {
   const options = parse('install');
   if (typeof options === 'string') return usage(options);
+  // The PATH question needs someone to answer it: never in a pipe, a hook or CI (#433).
+  const ask = process.stdin.isTTY && process.stdout.isTTY ? askOnTerminal : undefined;
   // gh may reach the network for the login: three seconds at most.
-  const done = install(env, { cwd: process.cwd(), gh: ghIn(process.cwd(), 3000) });
+  const done = install(env, { cwd: process.cwd(), gh: ghIn(process.cwd(), 3000), ask });
   print(done.lines);
   return done.ok ? 0 : 1;
 }

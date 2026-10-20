@@ -2,13 +2,13 @@
 
 import '../repo/home.ts';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import { symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   CLI,
   makeSandbox,
+  runChild,
 } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
 import { guardDeadline, judge, startGuard } from '../../src/run/hook.ts';
@@ -51,7 +51,7 @@ test('hook: a guard started before the call judges it as judge does; one never u
   const sandbox = makeSandbox();
   const script = join(sandbox.home, 'unused-guard.mjs');
   writeFileSync(script, `(await import(${JSON.stringify(new URL('../../src/run/hook.ts', import.meta.url).href)})).startGuard();\n`);
-  const result = spawnSync(process.execPath, [script], { encoding: 'utf8', timeout: 20000 });
+  const result = runChild(process.execPath, [script]);
   assert.deepEqual([result.status, result.signal, result.stderr], [0, null, '']);
 });
 
@@ -83,12 +83,10 @@ test('hook: past the deadline the call is refused, in text and JSON (#274)', () 
 test('hook: a command the guard reads too slowly is refused within the deadline (#274)', () => {
   const sandbox = makeSandbox();
   // A large command, still being read when a 1 ms deadline passes, however fast the reader:
-  // the busy worker is stopped and the hook exits at once, in little memory.
+  // the busy worker is stopped and the hook exits at once, in little memory. The deadline's
+  // own message proves it fired; the test reads no clock, which a loaded machine slows (#436).
   const input = JSON.stringify({ cwd: sandbox.repo, tool_input: { command: `find . ${'-exec env '.repeat(30000)}` } });
-  const start = Date.now();
-  const result = spawnSync('node', ['--max-old-space-size=256', CLI, 'hook'], { cwd: sandbox.repo, env: { ...sandbox.env, YOKOTEN_GUARD_DEADLINE_MS: '1' }, input, encoding: 'utf8', timeout: 20000 });
-  const took = Date.now() - start;
-  assert.ok(took < 10000, `the hook took ${took} ms`);
+  const result = runChild('node', ['--max-old-space-size=256', CLI, 'hook'], { cwd: sandbox.repo, env: { ...sandbox.env, YOKOTEN_GUARD_DEADLINE_MS: '1' }, input });
   assert.equal(result.status, 2);
   assert.match(result.stderr, /took longer than 1 ms/);
 });

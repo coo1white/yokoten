@@ -124,17 +124,17 @@ test('check and the stop hook read a symlink as its link text, never its target 
   symlinkSync('../outside.txt', join(sandbox.repo, 'out'));
   symlinkSync('/dev/zero', join(sandbox.repo, 'zero'));
   sandbox.git('add', '.');
-  const stop = () => sandbox.run(['hook', '--stop'], { input: JSON.stringify({ cwd: sandbox.repo, stop_hook_active: false }), timeout: 10000 });
+  const stop = () => sandbox.run(['hook', '--stop'], { input: JSON.stringify({ cwd: sandbox.repo, stop_hook_active: false }) });
   let result = stop();
   assert.deepEqual([result.status, result.stderr], [0, ''], 'staged, before the commit');
   sandbox.git('commit', '-qm', 'links');
-  result = sandbox.run(['check'], { timeout: 10000 });
+  result = sandbox.run(['check']);
   assert.equal(result.status, 0, result.stderr);
   // A link whose text is itself an email is still caught.
   symlinkSync(`me${at}gmail.com`, join(sandbox.repo, 'mail'));
   sandbox.git('add', 'mail');
   assert.match(stop().stderr, /mail:1: an email/);
-  assert.match(sandbox.run(['check'], { timeout: 10000 }).stderr, /mail:1: an email/);
+  assert.match(sandbox.run(['check']).stderr, /mail:1: an email/);
 });
 
 test('check --staged: binary is decided from the bytes, not .gitattributes (#244)', () => {
@@ -761,6 +761,69 @@ test('check --staged: reads the staged change file, not the work tree; plain che
   assert.equal(staged.status, 1);
   assert.match(staged.stderr, /changes\/9-new\.md:1: line 1 is not a section/);
   assert.ok(!staged.stderr.includes('8-old'), 'the unstaged file is not read');
+});
+
+test('check: a stale exempt glob is a note for the tree and the doctor, never at a commit (#381)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', JSON.stringify({ layout: { maxEntries: 7, exempt: ['crates/*/tests/data'] } }));
+  sandbox.git('add', '.');
+  const note = /note: yokoten\.json: layout\.exempt "crates\/\*\/tests\/data" matches no folder/;
+  const tree = sandbox.run(['check']);
+  assert.match(tree.stdout, note);
+  assert.equal(tree.status, 0, 'a note never fails the check');
+  const staged = sandbox.run(['check', '--staged']);
+  assert.doesNotMatch(staged.stdout + staged.stderr, /matches no folder/);
+  assert.match(sandbox.run(['doctor']).stdout, /note +yokoten\.json: layout\.exempt "crates\/\*\/tests\/data" matches no folder/);
+  // Once a crate has the folder, the note goes.
+  for (let index = 0; index < 9; index++) sandbox.write(`crates/app-core/tests/data/f${index}.xls`, 'x\n');
+  sandbox.git('add', '.');
+  const covered = sandbox.run(['check']);
+  assert.doesNotMatch(covered.stdout, /matches no folder/);
+  assert.equal(covered.status, 0);
+});
+
+// One marks file for the machine, two repos (#424): the private project allows its own name
+// in its yokoten.json, so its check and its commit hook pass; the other repo is stopped.
+test('check and the commit hook: a mark allowed in one repo is stopped in another with the same marks file (#424)', () => {
+  const own = makeSandbox();
+  const other = makeSandbox();
+  const marks = join(own.home, 'shared-marks');
+  writeFileSync(marks, 'quietvale\nquietvale labs\n');
+  const extra = { YOKOTEN_PRIVATE_MARKS: marks };
+  const setup = (sandbox: ReturnType<typeof makeSandbox>, allow: string[]) => {
+    sandbox.write('yokoten.json', JSON.stringify({ privacy: { allow } }));
+    sandbox.write('README.md', 'QuietVale ships\n');
+    assert.equal(sandbox.run(['init'], { extra }).status, 0);
+    sandbox.git('add', '.');
+  };
+  setup(own, ['QUIETVALE']);
+  setup(other, ['quietval', 'quietvale2']); // near misses allow nothing
+  const commit = (sandbox: ReturnType<typeof makeSandbox>) =>
+    spawnSync('git', ['commit', '-qm', 'start'], { cwd: sandbox.repo, env: { ...sandbox.env, ...extra }, encoding: 'utf8' });
+  for (const args of [['check'], ['check', '--staged']]) {
+    assert.equal(own.run(args, { extra }).status, 0, `${args.join(' ')} in the repo that allows it`);
+    const stopped = other.run(args, { extra });
+    assert.equal(stopped.status, 1, `${args.join(' ')} in the other repo`);
+    assert.match(stopped.stderr, /README\.md:1: matches a line of your private-marks file/);
+    assert.ok(!/quietvale/i.test(stopped.stderr + stopped.stdout), 'the mark is never printed');
+  }
+  assert.equal(commit(own).status, 0, 'the commit hook lets the repo that allows it commit');
+  const refused = commit(other);
+  assert.notEqual(refused.status, 0, 'the commit hook stops the other repo');
+  assert.match(refused.stderr, /matches a line of your private-marks file/);
+  assert.ok(!/quietvale/i.test(refused.stderr + refused.stdout));
+  // The longer mark is not allowed by the shorter one.
+  own.write('README.md', 'QuietVale Labs ships\n');
+  own.git('add', '.');
+  assert.equal(own.run(['check', '--staged'], { extra }).status, 1);
+  assert.notEqual(spawnSync('git', ['commit', '-qm', 'labs'], { cwd: own.repo, env: { ...own.env, ...extra }, encoding: 'utf8' }).status, 0);
+  // doctor counts the allowed marks, never names them.
+  own.write('README.md', 'QuietVale ships\n');
+  own.git('add', '.');
+  const doctor = own.run(['doctor'], { extra }).stdout;
+  assert.match(doctor, /own-marks: 1 of your private marks allowed here by privacy\.allow/);
+  assert.ok(!/quietvale/i.test(doctor));
+  assert.doesNotMatch(other.run(['doctor'], { extra }).stdout, /own-marks/);
 });
 
 test('check: an added forge login is fine where a file names accounts, and found everywhere else (#410)', () => {

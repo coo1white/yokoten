@@ -18,7 +18,7 @@ import {
   PLUGIN_ROOT,
   ROOT,
 } from '../../repo/helpers.ts';
-import { formatRewrite } from '../../../src/agents/runtimes/claude-code.ts';
+import { formatRewrite, hasSessionInput, readSessionStart } from '../../../src/agents/runtimes/claude-code.ts';
 import { refuseOnFailure } from '../../../src/run/cli.ts';
 
 test('plugin: the marketplace and the plugin have the documented fields', () => {
@@ -152,4 +152,13 @@ test('formatRewrite: allow, with the whole tool input, only the command changed 
   const out = JSON.parse(formatRewrite({ tool_name: 'Bash', tool_input: { command: 'git log', description: 'Log', timeout: 5 } }, 'wrapped', 'why'));
   assert.deepEqual(out, { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: 'why', updatedInput: { command: 'wrapped', description: 'Log', timeout: 5 } } });
   assert.deepEqual(JSON.parse(formatRewrite(null, 'w', 'r')).hookSpecificOutput.updatedInput, { command: 'w' });
+});
+
+test('session start: the id and the source, and stdin only in a hook (#405)', () => {
+  assert.deepEqual(readSessionStart({ session_id: 'a1-b2_c3', source: 'compact', hook_event_name: 'SessionStart' }), { sessionId: 'a1-b2_c3', source: 'compact' });
+  assert.deepEqual(readSessionStart({ session_id: 'a1' }), { sessionId: 'a1', source: '' });
+  for (const input of [null, [], 'x', {}, { session_id: '' }, { session_id: '../a' }, { session_id: 7 }]) assert.equal(readSessionStart(input), null, JSON.stringify(input));
+  assert.equal(hasSessionInput({ CLAUDE_PROJECT_DIR: '/p' }, false), true);
+  assert.equal(hasSessionInput({ CLAUDE_PROJECT_DIR: '/p' }, true), false, 'a terminal is never read');
+  assert.equal(hasSessionInput({}, false), false, 'not a Claude Code hook');
 });

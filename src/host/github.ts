@@ -34,24 +34,88 @@ export interface BotConfig {
   api: string;
 }
 
-/** The bot's settings from the environment, or the reason they are not usable. */
-export function botConfig(env: Env): BotConfig | string {
-  const appId = env.YOKOTEN_BOT_APP_ID;
-  if (!appId) return 'YOKOTEN_BOT_APP_ID is not set: the App ID from the App\'s settings page (docs/server.md, step 3)';
+/** The keys file, as the reports name it. */
+export const KEYS_FILE = '~/.config/yokoten/keys.env';
+
+/** The bot's own settings, the only names read from the keys file. */
+const BOT_SETTINGS = ['YOKOTEN_BOT_APP_ID', 'YOKOTEN_BOT_KEY', 'YOKOTEN_BOT_INSTALLATION'];
+
+/**
+ * A value as a shell profile line gives it: quotes taken off, a ` # comment` after an
+ * unquoted value dropped, and a leading `~/` or `$HOME/` made the home folder. Single
+ * quotes keep `$HOME` as it is, and quotes keep `~`, as in a shell.
+ */
+export function shellValue(raw: string, home: string): string {
+  const quoted = /^(["'])(.*?)\1\s*(?:#.*)?$/.exec(raw.trim());
+  if (quoted?.[1] === "'") return quoted[2];
+  if (quoted) return quoted[2].replace(/^\$(?:HOME|\{HOME\})(?=\/|$)/, home);
+  return raw.replace(/(?:^|\s+)#.*$/, '').trim().replace(/^(?:~|\$HOME|\$\{HOME\})(?=\/|$)/, home);
+}
+
+/**
+ * The bot's settings in the keys file (#405): `NAME=value` lines, `export` and quotes
+ * allowed. A session's environment often does not load this file, so the bot reads it
+ * itself. Only the bot's own names are read; other keys in the file are never touched.
+ * No HOME, no file: then nothing.
+ */
+export function readKeysFile(env: Env): Env {
   const home = homeOf(env);
-  if (!env.YOKOTEN_BOT_KEY && !home) return `${NO_HOME}: set YOKOTEN_BOT_KEY to the key file's full path`;
+  if (!home) return {};
+  let text = '';
+  try {
+    text = readFileSync(join(home, '.config', 'yokoten', 'keys.env'), 'utf8');
+  } catch {
+    return {};
+  }
+  const found: Env = {};
+  for (const line of text.split(/\r?\n/)) {
+    const pair = /^\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
+    if (!pair || !BOT_SETTINGS.includes(pair[1])) continue;
+    const value = shellValue(pair[2], home);
+    if (value) found[pair[1]] = value;
+  }
+  return found;
+}
+
+/**
+ * The bot's settings, or the reason they are not usable. The environment comes first,
+ * then the keys file. `yokoten bot` and the road's bot step both read them here, so
+ * they always agree (#405).
+ */
+export function botConfig(env: Env): BotConfig | string {
+  const settings = { ...readKeysFile(env), ...Object.fromEntries(BOT_SETTINGS.filter((name) => env[name]).map((name) => [name, env[name]])) };
+  const appId = settings.YOKOTEN_BOT_APP_ID;
+  if (!appId) return `YOKOTEN_BOT_APP_ID is not set, in the environment or in ${KEYS_FILE}: the App ID from the App's settings page (docs/server.md, step 3)`;
+  const keyFile = settings.YOKOTEN_BOT_KEY || defaultKeyFile(env);
+  if (!keyFile) return `${NO_HOME}: set YOKOTEN_BOT_KEY to the key file's full path`;
   return {
     appId,
-    keyFile: env.YOKOTEN_BOT_KEY || join(home as string, '.config', 'yokoten', 'bot.pem'),
-    installation: env.YOKOTEN_BOT_INSTALLATION || undefined,
+    keyFile,
+    installation: settings.YOKOTEN_BOT_INSTALLATION || undefined,
     api: (env.YOKOTEN_GITHUB_API || 'https://api.github.com').replace(/\/$/, ''),
   };
 }
 
+/** The key file's default place, or '' with no home (#356): never the system's home. */
+const defaultKeyFile = (env: Env) => {
+  const home = homeOf(env);
+  return home ? join(home, '.config', 'yokoten', 'bot.pem') : '';
+};
+
+/**
+ * What of the bot's setup is missing on this machine, in words, or null when it is all
+ * here. Names a setting or a file, never a value. Reads no network.
+ */
+export function missingBotSetup(env: Env): string | null {
+  const config = botConfig(env);
+  if (typeof config !== 'string') return existsSync(config.keyFile) ? null : `the bot's key file is missing (${env.YOKOTEN_BOT_KEY || readKeysFile(env).YOKOTEN_BOT_KEY ? 'YOKOTEN_BOT_KEY' : '~/.config/yokoten/bot.pem'})`;
+  const isKeyHere = existsSync(defaultKeyFile(env));
+  return `${isKeyHere ? "the bot's key file is here, but " : ''}YOKOTEN_BOT_APP_ID is not set, in the environment or in ${KEYS_FILE}`;
+}
+
 /** A bot is set up on this machine: its App ID is set and its key file is there. Reads no network. */
 export function hasBot(env: Env): boolean {
-  const config = botConfig(env);
-  return typeof config !== 'string' && existsSync(config.keyFile);
+  return missingBotSetup(env) === null;
 }
 
 const b64url =(data: string | Buffer) => Buffer.from(data).toString('base64url');
@@ -195,12 +259,12 @@ function shasProblem(base: string, head: string): Finding | null {
   return null;
 }
 
-/** Why `base...head` can't be read in this checkout, or null when it can. */
-function commitsProblem(root: string, base: string, head: string): Finding | null {
+/** Why `base...head` can't be read in this checkout, or null when it can. `fix` says how to get the commits. */
+function commitsProblem(root: string, base: string, head: string, fix: string = COMMITS_FIX): Finding | null {
   const missing = [['base', base], ['head', head]].filter(([, sha]) => !hasCommit(root, sha)).map(([name]) => name);
-  if (missing.length === 2) return finding('pr-commits', 'the pull request\'s base and head commits are not in this checkout', COMMITS_FIX);
-  if (missing.length === 1) return finding('pr-commits', `the pull request's ${missing[0]} commit is not in this checkout`, COMMITS_FIX);
-  if (!hasMergeBase(root, base, head)) return finding('pr-commits', 'the pull request\'s base and head commits have no common commit in this checkout', COMMITS_FIX);
+  if (missing.length === 2) return finding('pr-commits', 'the pull request\'s base and head commits are not in this checkout', fix);
+  if (missing.length === 1) return finding('pr-commits', `the pull request's ${missing[0]} commit is not in this checkout`, fix);
+  if (!hasMergeBase(root, base, head)) return finding('pr-commits', 'the pull request\'s base and head commits have no common commit in this checkout', fix);
   return null;
 }
 
@@ -216,20 +280,71 @@ export function readPullRequest(root: string, env: Env): PullRequestRead | Unrea
   const head = isObject(pr.head) ? asText(pr.head.sha) : '';
   const problem = shasProblem(base, head) ?? commitsProblem(root, base, head);
   if (problem) return { problem };
+  return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: isObject(pr.user) ? asText(pr.user.login) : '' }, base, head);
+}
+
+const milestoneTitle = (milestone: unknown): string | null => (isObject(milestone) && typeof milestone.title === 'string' ? milestone.title : null);
+
+/** The pull request with the files git lists between `base` and `head`. Both commits must be here. */
+function withDiff(root: string, fields: Omit<PullRequest, 'files' | 'deleted'>, base: string, head: string): PullRequestRead {
   // A diff git can't give throws a GitReadError, and the check stops on it (#403).
   const diff = (...options: string[]) => readGit(root, ['diff', ...options, `${base}...${head}`]).toString('utf8');
   return {
-    title: asText(pr.title),
-    body: asText(pr.body),
+    ...fields,
     files: diff('--name-only', '-z').split('\0').filter(Boolean),
     deleted: diff('--name-only', '--diff-filter=D', '-z').split('\0').filter(Boolean),
-    labels: labelNames(pr.labels),
-    milestone: isObject(pr.milestone) && typeof pr.milestone.title === 'string' ? pr.milestone.title : null,
-    author: isObject(pr.user) ? asText(pr.user.login) : '',
     base,
     head,
     numstat: diff('--numstat', '-z'),
   };
+}
+
+/**
+ * Pull request `number` read through gh (#377), so a lead can run `check --pr <number>` in a
+ * repo without CI. The commits come from this clone; when one is missing, the fix says
+ * what to fetch. What can't be read is one finding, as in CI.
+ */
+export function readNumberedPullRequest(root: string, gh: Gh, number: string): PullRequestRead | Unreadable {
+  if (!/^[1-9]\d*$/.test(number)) return { problem: finding('pr-read', `"${number}" is not a pull request number`, 'give the number alone, such as `yokoten check --pr 12`') };
+  let pr: unknown;
+  try {
+    pr = JSON.parse(gh(['pr', 'view', number, '--json', 'title,body,labels,milestone,author,baseRefOid,headRefOid']));
+  } catch (err) {
+    // gh says this when the repo has no such pull request: a wrong number, not a network problem.
+    if (/Could not resolve to a PullRequest/i.test(String((err as { stderr?: string }).stderr || (err as Error).message))) {
+      return { problem: finding('pr-read', `no pull request ${number} in ${originRepo(root) ?? 'this repo'}`, 'check the number with `gh pr list`, then run it again') };
+    }
+    const why = unread(err);
+    return { problem: finding('pr-read', `pull request ${number} can't be read: ${why.unread}`, why.fix) };
+  }
+  if (!isObject(pr)) return { problem: finding('pr-read', `gh gave no pull request ${number}`, 'check the number, then run it again') };
+  const base = asText(pr.baseRefOid);
+  const head = asText(pr.headRefOid);
+  // No branch name goes into the hint, so nothing in it needs quoting for a shell.
+  const fetch = `run \`git fetch origin\` and \`git fetch origin pull/${number}/head\`, then run it again`;
+  const problem = shasProblem(base, head) ?? commitsProblem(root, base, head, fetch);
+  if (problem) return { problem };
+  return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: ghAuthor(pr.author) }, base, head);
+}
+
+/**
+ * The author login as the CI event names it. gh names an app `app/<name>`, where the event
+ * has `<name>[bot]`; the rules match the event's form, such as dependabot[bot].
+ */
+function ghAuthor(author: unknown): string {
+  if (!isObject(author)) return '';
+  const login = asText(author.login);
+  if (login.startsWith('app/')) return `${login.slice('app/'.length)}[bot]`;
+  return author.is_bot === true && login && !login.endsWith('[bot]') ? `${login}[bot]` : login;
+}
+
+/** "owner/name" of the origin remote, or null. */
+function originRepo(root: string): string | null {
+  try {
+    return repoOf(execFileSync('git', ['config', '--get', 'remote.origin.url'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
+  } catch {
+    return null;
+  }
 }
 
 // GitHub reads CODEOWNERS from the first of these places, on the pull request's base
@@ -389,6 +504,19 @@ export function isOrganization(gh: Gh, owner: string): boolean | null {
   try {
     const type = gh(['api', `users/${owner}`, '--jq', '.type']).trim();
     return type === 'Organization' ? true : type === 'User' ? false : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when GitHub says `repo` ("owner/name") is private, false when it is public, and
+ * null when gh can't tell (#377). One call. A private repo pays for its Actions minutes.
+ */
+export function isPrivateRepo(gh: Gh, repo: string): boolean | null {
+  try {
+    const said = gh(['api', `repos/${repo}`, '--jq', '.private']).trim();
+    return said === 'true' ? true : said === 'false' ? false : null;
   } catch {
     return null;
   }

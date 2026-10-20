@@ -4,14 +4,15 @@
 // Copying a setup once is not enough; it drifts. So doctor runs at the start of every
 // session (`--session`, via the hook install adds). A beginner can't take in a list of
 // everything missing, so a session hears three lines: the stage, the one next step, and
-// why. Full `doctor` shows the whole map. A project that decided against a step says so
+// why, and once a line about a new kit lesson that finds something here. Full `doctor`
+// shows the whole map. A project that decided against a step says so
 // in yokoten.json "notNow", and doctor stops asking.
 //
 // Doctor first checks itself: it feeds each check a known-bad input and expects a catch.
 // A check that passes everything looks the same as a healthy project, so this comes first.
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statfsSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statfsSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, parse } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,7 +20,7 @@ import { checkCommand, checkEdit } from '../rules/guards.ts';
 import { type Config, DEFAULTS, type Env } from '../rules/config.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
 import { type Finding, finding, formatFinding, type RuleId } from '../rules/message.ts';
-import { homeOf, loadMarks, notUtc, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
+import { homeIn, homeOf, loadMarks, notUtc, ownMarks, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
 import { judge } from '../run/hook.ts';
@@ -38,8 +39,8 @@ import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '.
 import { findTempDirs, readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advice/unsaved.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
 import { compareCoreRules, compareVersions, hookCliPath, isSelf, readCoreRules, summarizeUpdate, withGitReads } from './init.ts';
-import { countOwnMarks, fillMarks, filledLine, trySafely, installedPieces, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
-import { type Mark, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
+import { countOwnMarks, fillMarks, filledLine, trySafely, installedPieces, isOnPath, launcherDir, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
+import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
 
 /**
  * One check outside the road: its name in the report, whether it is in place, and the
@@ -252,6 +253,15 @@ export function machineChecks(env: Env): Practice[] {
   ];
 }
 
+/** How many private marks this project allows in its own repo (#424): a count, never the marks. */
+export function allowedMarkCount(env: Env, config: Pick<Config, 'privacy'>): number {
+  try {
+    return ownMarks(loadMarks(env), config.privacy.allow).length;
+  } catch {
+    return 0; // An unreadable file: the private-marks check says so.
+  }
+}
+
 /** What doctor says when an agent can't filter command output, and how to opt in to the stop (#390). */
 export const UNFILTERED = 'only Claude Code hides your details in command output; other agents show it as it is';
 export const OUTPUT_STOP = 'to stop those commands there instead, set "privacy": { "output": "stop" } in yokoten.json';
@@ -400,6 +410,20 @@ export function doubleInstallCheck(env: Env): Finding | null {
   if (!pieces.length) return null;
   return finding('machine-runtime', `the yokoten plugin is on, and \`yokoten install\` put these here too: ${pieces.join('; ')}`, 'remove them with `yokoten uninstall`; the plugin brings its own', {
     why: 'with both, the guard and the session doctor run twice and every skill shows up twice',
+  });
+}
+
+/**
+ * A note when install's runtime is here but no `yokoten` on the PATH runs it (#433): every
+ * message says `yokoten init`, and that command is then not found. With the plugin on,
+ * the plugin's own commands are used, so there is no note.
+ */
+export function launcherCheck(env: Env): Finding | null {
+  if (hasPlugin(env)) return null;
+  const { runtime } = paths(env);
+  if (!existsSync(runtime) || isOnPath(env, runtime)) return null;
+  return finding('machine-runtime', 'no `yokoten` command on your PATH runs the installed copy', `run \`node ${join(runtime, 'bin', 'yokoten.ts')} install\` in a terminal; it puts a launcher in ${launcherDir(homeIn(env))} and offers to add that folder to your PATH`, {
+    why: 'yokoten\'s messages say `yokoten init` and `yokoten doctor`',
   });
 }
 
@@ -885,6 +909,8 @@ export const STATE_FILE = 'yokoten/state.json';
 export interface DoctorState {
   /** The ids of the kit's lessons that full doctor already ran in this clone (#172). */
   seenLessons?: string[];
+  /** The ids of the kit's lessons a session start already ran in this clone (#339). */
+  sessionLessons?: string[];
   [key: string]: unknown;
 }
 
@@ -904,8 +930,11 @@ export function readState(file: string | null): DoctorState {
   try {
     const state: unknown = JSON.parse(readFileSync(file, 'utf8'));
     if (!state || typeof state !== 'object' || Array.isArray(state)) return {};
-    const { seenLessons, ...rest } = state as DoctorState;
-    return Array.isArray(seenLessons) ? { ...rest, seenLessons: seenLessons.filter((id) => typeof id === 'string') } : rest;
+    const { seenLessons, sessionLessons, ...rest } = state as DoctorState;
+    const ids = (list: unknown) => (Array.isArray(list) ? list.filter((id): id is string => typeof id === 'string') : null);
+    const seen = ids(seenLessons);
+    const ran = ids(sessionLessons);
+    return { ...rest, ...(seen ? { seenLessons: seen } : {}), ...(ran ? { sessionLessons: ran } : {}) };
   } catch {
     return {};
   }
@@ -920,6 +949,35 @@ export function saveState(file: string | null, state: DoctorState): void {
   } catch {
     // a read-only git folder: the new-lesson note shows again next time
   }
+}
+
+/**
+ * What a session start hears about the kit's lessons (#339): one line, the first time a
+ * lesson new to this clone finds something here, and nothing after. A lesson is new while
+ * full doctor has not seen it (#172) and no session start has run it. Each new lesson runs
+ * at one session start per clone only, so later starts pay nothing for it. With no state
+ * file there is no "new", so nothing runs. `doctor` names the command that shows it.
+ */
+export function sessionLessonNote(root: string, notNow: Record<string, string>, stateFile: string | null, doctorCommand: string, place: LessonPlace = kitLessons()): { line: string | null; findings: Finding[] } {
+  const none = { line: null, findings: [] };
+  if (!stateFile) return none;
+  const state = readState(stateFile);
+  const ran = state.sessionLessons ?? [];
+  const known = new Set([...(state.seenLessons ?? []), ...ran]);
+  const fresh = new Set(listLessons(place).map(({ id }) => id).filter((id) => !known.has(id) && !Object.hasOwn(notNow, id)));
+  if (!fresh.size) return none;
+  // A lesson that can't run stays new: full doctor reports why, and a later start tries again.
+  const runs = runLessons(root, place, (id) => !fresh.has(id)).filter((run) => !run.error);
+  if (!runs.length) return none;
+  saveState(stateFile, { ...state, sessionLessons: [...ran, ...runs.map((run) => run.id)] });
+  const found = runs.filter((run) => run.findings.length);
+  const findings = found.flatMap((run) => run.findings);
+  if (found.length === 1) {
+    const [{ what, findings: [first] }] = found;
+    return { line: `yokoten: a new lesson learned in another project found a problem here: ${what ?? first.what}. Run ${doctorCommand} to see where.`, findings };
+  }
+  if (found.length > 1) return { line: `yokoten: ${found.length} new lessons learned in other projects found problems here. Run ${doctorCommand} to see them.`, findings };
+  return none;
 }
 
 /**
@@ -997,6 +1055,23 @@ export function upstreamNote(root: string, env: Env): Finding | null {
   return line ? finding('upstream-inbox', line, 'open an issue for each, then remove its note with `yokoten learn --upstream --done <id>`') : null;
 }
 
+/** What a project with CI off leaves unchecked (#377): said once, in full doctor, so the trade-off stays visible. */
+export const NO_CI_GAPS = 'CI is off ("notNow" names `ci`), so nothing on the server checks pull requests, issue titles or the workflows, no code scanning such as CodeQL runs, and a commit made with the hook off reaches main unchecked';
+
+/**
+ * The note for a project that keeps CI off (#377), or null when "notNow" does not name
+ * `ci`. Its fix says what to run by hand instead. From stage 5, or when full doctor read
+ * that the repo is public, it also says how to end the choice.
+ */
+export function noCiNote(notNow: Record<string, string>, stage: number | null, server: ServerRead): Finding | null {
+  if (!Object.hasOwn(notNow, 'ci')) return null;
+  const isPublic = server !== undefined && !('unread' in server) && server.isPrivate === false;
+  const end = 'remove "ci" from "notNow" in yokoten.json, then run `yokoten init` to add the workflows';
+  if (isPublic) return finding('no-ci', NO_CI_GAPS, `this repo is public now, and Actions cost no minutes on a public repo: ${end}`);
+  const byHand = 'before each merge, run `yokoten check --pr <number>` and the tests';
+  return finding('no-ci', NO_CI_GAPS, stage === null || stage >= 5 ? `${byHand}; when the repo goes public, ${end}` : byHand);
+}
+
 /** At most this many notes about unsaved work in a session; full doctor lists them all. */
 const SESSION_UNSAVED_LIMIT = 3;
 
@@ -1013,15 +1088,81 @@ export const STOPPED_EARLY = 'yokoten: doctor stopped early; `yokoten doctor` li
  * What a session hears about work only on this machine (#365): only what is at risk, a
  * few lines at most, read within the time budget. `clock` is for a test.
  */
-export function sessionUnsaved(root: string, env: Env, clock?: () => number): { lines: string[]; notes: Finding[] } {
+export function sessionUnsaved(root: string, env: Env, clock?: () => number): { lines: string[]; notes: Finding[]; commonDir: string | null } {
   const facts = readUnsaved(root, { env, budget: { ms: SESSION_UNSAVED_BUDGET, ...(clock ? { clock } : {}) } });
+  // The git folder it read on the way, so the session's lesson note asks git no more (#339).
+  const commonDir = facts?.commonDir || null;
   const notes = facts ? unsavedNotes(facts, { home: env.HOME, session: true }) : [];
   const stopped = facts?.isPartial ? [STOPPED_EARLY] : [];
-  if (!notes.length) return { lines: stopped, notes };
+  if (!notes.length) return { lines: stopped, notes, commonDir };
   const more = notes.length - SESSION_UNSAVED_LIMIT;
   const lines = notes.slice(0, SESSION_UNSAVED_LIMIT).map((f) => `yokoten: ${stepText(f)}.`);
   if (more > 0) lines.push(`yokoten: ${more} more like this; \`yokoten doctor\` lists them all.`);
-  return { lines: [...lines, ...stopped, UNSAVED_OFFER], notes };
+  return { lines: [...lines, ...stopped, UNSAVED_OFFER], notes, commonDir };
+}
+
+// A compaction start (#405). The agent keeps a summary of what it heard, so hearing the
+// same notes again after each compaction is noise. Each session keeps what it was told in
+// a small file, by the agent's session id; a compaction start then says only what is new.
+
+/** How the agent says a session started. `source` "compact" is a start after a compaction. */
+export interface SessionStart {
+  sessionId: string;
+  source: string;
+}
+
+/** A session's file is removed after this many days. */
+const SESSION_FILE_DAYS = 7;
+
+/** The folder of the per-session files. Throws NO_HOME with no home folder. */
+export const sessionsDir = (env: Env): string => join(paths(env).config, 'sessions');
+
+/**
+ * The blocks to print at this start. A compaction start drops the blocks this session
+ * was already told; any other start prints all, as before. Every start adds what it
+ * prints to the session's file. With no session, or a file that can't be read or
+ * written, it prints all.
+ */
+export function blocksToSay(env: Env, start: SessionStart | null, blocks: string[][], now = Date.now()): string[][] {
+  if (!start) return blocks;
+  try {
+    const dir = sessionsDir(env);
+    const file = join(dir, `${start.sessionId}.json`);
+    const isCompact = start.source === 'compact';
+    let said: string[] = [];
+    if (isCompact) {
+      try {
+        const saved = JSON.parse(readFileSync(file, 'utf8'));
+        if (Array.isArray(saved?.said)) said = saved.said.filter((text: unknown) => typeof text === 'string');
+      } catch {
+        // no file yet: the first start was before this version, so say all
+      }
+    } else removeOldSessionFiles(dir, now);
+    const isSaid = new Set(said);
+    const fresh = blocks.filter((block) => !isSaid.has(block.join('\n')));
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(file, `${JSON.stringify({ said: [...said, ...fresh.map((block) => block.join('\n'))] })}\n`);
+    return fresh;
+  } catch {
+    return blocks;
+  }
+}
+
+/** Removes the session files not written to for SESSION_FILE_DAYS. A file that can't be removed stays. */
+function removeOldSessionFiles(dir: string, now: number): void {
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of names.filter((n) => n.endsWith('.json'))) {
+    try {
+      if (now - statSync(join(dir, name)).mtimeMs > SESSION_FILE_DAYS * 86_400_000) rmSync(join(dir, name));
+    } catch {
+      // gone already, or not ours to remove
+    }
+  }
 }
 
 /** What a session hears when the road is done, as far as yokoten can check. */
@@ -1082,7 +1223,7 @@ export const doctor = (root: string | null, options: Parameters<typeof doctorRun
 function doctorRun(
   root: string | null,
   { env, config, session = false, gh, fillMarks: isFilling = false, machine: probe = REAL_MACHINE }: { env: Env; config: Config; session?: boolean; gh?: Gh; fillMarks?: boolean; machine?: MachineProbe },
-): { ok: boolean; lines: string[]; report: DoctorReport } {
+): { ok: boolean; lines: string[]; blocks?: string[][]; report: DoctorReport } {
   const lines: string[] = [];
   const failed = selfTest();
   const findings: Finding[] = [];
@@ -1095,50 +1236,62 @@ function doctorRun(
 
   // Read only, and only in full doctor: a session never calls the network (record 0004).
   const server: ServerRead = session ? undefined : gh ? readOrigin(root, gh) : { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' };
-  const where = walk(road(root, env, ROAD, server), config.notNow);
+  const where = walk(road(root, env, ROAD, server, config), config.notNow);
   // Full doctor from the command line adds the obvious marks first (#390); a session writes nothing.
   // With no home folder, the checks that read or keep settings there are skipped, never crash (#404).
   const hasHome = homeOf(env) !== null;
   const filled = isFilling && !session && hasHome ? trySafely('the marks from this machine', () => [filledLine(fillMarks(env, machineMarks(env, { cwd: root, gh })), paths(env).marks)])[0] : null;
   const machine = hasHome ? machineChecks(env) : [];
-  const next = where.next ? stepFinding(where.next, root, env, server) : null;
+  // A file missing here may be on the default branch (#405): one git call for every step
+  // left. A session asks only when the step it names misses a file.
+  const left = where.steps.filter((w) => w.mark === 'next' || w.mark === 'to do').map((w) => w.step);
+  const isAsked = missingPaths(root, session ? left.slice(0, 1) : left, config).length > 0;
+  const elsewhere = isAsked ? readDefaultBranchFiles(root, missingPaths(root, left, config)) : null;
+  const next = where.next ? stepFinding(where.next, root, env, { server, config, elsewhere }) : null;
   const core = coreRulesCheck(root);
   const isCoreBehind = core?.mark === 'MISSING';
 
   // A session reads files only, never the network, so it starts fast and works offline.
   if (session) {
+    // Each note is a block of lines: a compaction start repeats only the blocks that changed (#405).
+    const blocks: string[][] = lines.map((line) => [line]);
     const { stage } = where;
-    if (stage && next) lines.push(`yokoten: stage ${stage} of ${STAGES.length}, ${STAGES[stage - 1]}. Next: ${stepText(next)}.`, `Why: ${next.why}.`, env.CLAUDE_PLUGIN_ROOT ? `${OFFER} ${PLUGIN_COMMANDS}` : OFFER);
-    else lines.push(ROAD_DONE);
+    if (stage && next) blocks.push([`yokoten: stage ${stage} of ${STAGES.length}, ${STAGES[stage - 1]}. Next: ${stepText(next)}.`, `Why: ${next.why}.`, env.CLAUDE_PLUGIN_ROOT ? `${OFFER} ${PLUGIN_COMMANDS}` : OFFER]);
+    else blocks.push([ROAD_DONE]);
     if (next) findings.push(next);
     // Not a step on the road, but the privacy check is weaker until it is fixed.
     const marks = machine.find((c) => c.name === 'private-marks' && !c.ok);
     if (marks) {
-      lines.push(`yokoten: ${formatFinding(marks.finding)}`);
+      blocks.push([`yokoten: ${formatFinding(marks.finding)}`]);
       findings.push(marks.finding);
     }
     // A stale plugin keeps old guard rules running; the session hears it (#198).
     const stale = pluginAgeCheck(root, env);
-    if (stale) lines.push(`yokoten: ${formatFinding(stale)}`);
-    if (!hasHome) lines.push(`yokoten: ${NO_HOME_NOTE}`);
+    if (stale) blocks.push([`yokoten: ${formatFinding(stale)}`]);
+    if (!hasHome) blocks.push([`yokoten: ${NO_HOME_NOTE}`]);
     const double = hasHome ? doubleInstallCheck(env) : null;
-    if (double) lines.push(`yokoten: ${formatFinding(double)}`);
+    if (double) blocks.push([`yokoten: ${formatFinding(double)}`]);
     // A full disk stops every session unseen (record 0012): statfs and one small file, no child process.
-    for (const c of diskSpaceChecks(root, env, probe, true).filter((check) => !check.ok)) lines.push(`yokoten: ${formatFinding(c.finding)}`);
+    for (const c of diskSpaceChecks(root, env, probe, true).filter((check) => !check.ok)) blocks.push([`yokoten: ${formatFinding(c.finding)}`]);
     const unsaved = sessionUnsaved(root, env);
-    lines.push(...unsaved.lines);
+    if (unsaved.lines.length) blocks.push(unsaved.lines);
     // A lesson the kit learned reaches the project here: the session hears it (#120).
     if (core && isCoreBehind) {
-      lines.push(`yokoten: ${formatFinding(core.finding)}`);
+      blocks.push([`yokoten: ${formatFinding(core.finding)}`]);
       findings.push(core.finding);
     }
     const waiting = upstreamNote(root, env);
     if (waiting) {
-      lines.push(`yokoten: ${waiting.what}`);
+      blocks.push([`yokoten: ${waiting.what}`]);
       findings.push(waiting);
     }
+    // A lesson new to this clone that finds something here: one line, at one start only (#339).
+    const stateFile = unsaved.commonDir ? join(unsaved.commonDir, STATE_FILE) : findStateFile(root);
+    const lesson = sessionLessonNote(root, config.notNow, stateFile, env.CLAUDE_PLUGIN_ROOT ? '/yokoten:doctor' : '`yokoten doctor`');
+    if (lesson.line) blocks.push([lesson.line]);
+    const notes = [...unsaved.notes, ...lesson.findings];
     const ok = !failed.length && !isCoreBehind;
-    return { ok, lines, report: { ...base, ok, repo: true, stage, next, findings, ...(unsaved.notes.length ? { notes: unsaved.notes } : {}) } };
+    return { ok, lines: blocks.flat(), blocks, report: { ...base, ok, repo: true, stage, next, findings, ...(notes.length ? { notes } : {}) } };
   }
 
   lines.push(`yokoten ${VERSION}, self-test ${failed.length ? 'FAILED' : 'ok'}`);
@@ -1150,9 +1303,10 @@ function doctorRun(
       const state: StepState = { id: step.key, stage: step.stage, mark };
       if (step.standard) state.standard = step.standard;
       let note = '';
-      if (mark === 'not now') note = state.reason = config.notNow[step.key];
+      // A step that needs CI waits with "notNow" `ci` (#377): its reason, then what covers it meanwhile.
+      if (mark === 'not now') note = state.reason = Object.hasOwn(config.notNow, step.key) ? config.notNow[step.key] : `${config.notNow.ci} (notNow ci); ${step.withoutCi}`;
       else if (mark === 'next' || mark === 'to do') {
-        const f = stepFinding(step, root, env, server);
+        const f = stepFinding(step, root, env, { server, config, elsewhere });
         findings.push(f);
         note = stepText(f);
       } else if (mark === "can't check" && step.unchecked) note = step.unchecked(server);
@@ -1171,7 +1325,12 @@ function doctorRun(
     if (core.mark === 'MISSING') findings.push(core.finding);
     else if (core.mark === 'note') notes.push(core.finding);
   }
-  // Full doctor alone keeps which lessons this clone has seen; a session writes nothing.
+  const noCi = noCiNote(config.notNow, where.stage, server);
+  if (noCi) {
+    lines.push(`  note    no-ci: ${stepText(noCi)}`);
+    notes.push(noCi);
+  }
+  // Full doctor keeps which lessons this clone has seen; a session start keeps only which it ran.
   const stateFile = findStateFile(root);
   const state = readState(stateFile);
   const seenLessons = state.seenLessons ?? [];
@@ -1183,6 +1342,8 @@ function doctorRun(
   const checkNotes: Finding[] = [];
   const problems = check(root, { config, env, notes: checkNotes });
   findings.push(...problems);
+  const allowed = allowedMarkCount(env, config);
+  if (allowed) lines.push(`  ok      own-marks: ${allowed} of your private marks allowed here by privacy.allow`);
   lines.push(`  ${problems.length ? 'MISSING' : 'ok     '} tree: ${problems.length ? `${problems.length} problem(s), run \`yokoten check\`` : 'layout and privacy clean'}`);
   // check's own notes (#228), such as an unknown yokoten.json key or a translation behind: worded as check words them, and never a failure.
   for (const n of checkNotes) lines.push(`  note    ${formatFinding(n).replaceAll('\n', '\n        ')}`);
@@ -1224,13 +1385,18 @@ function doctorRun(
     lines.push(`  note    plugin-and-install: ${stepText(double)}`);
     notes.push(double);
   }
+  const launcher = hasHome ? launcherCheck(env) : null;
+  if (launcher) {
+    lines.push(`  note    command: ${stepText(launcher)}`);
+    notes.push(launcher);
+  }
   const waiting = upstreamNote(root, env);
   if (waiting) {
     lines.push(`  note    upstream-inbox: ${waiting.what}`);
     notes.push(waiting);
   }
   // The road's stage 5 shows the settings it groups (#7); here are the rest, which never fail doctor.
-  const settings = serverChecks(server ?? { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' });
+  const settings = serverChecks(server ?? { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' }, { isCiOff: Object.hasOwn(config.notNow, 'ci') });
   lines.push('server (read only; the owner sets these once per repo):');
   for (const c of settings.filter((c) => !ROAD_SERVER_IDS.includes(c.id))) {
     lines.push(`  ${c.mark.padEnd(11)} ${c.id}${c.mark === 'ok' ? '' : `: ${stepText(c.finding)}`}`);

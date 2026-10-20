@@ -50,6 +50,25 @@ export function formatRewrite(input: unknown, command: string, reason: string): 
 }
 
 /**
+ * A SessionStart event, or null when the input is not one or has no usable session id
+ * (#405). `source` is startup, resume, clear or compact. The id names a file, so only
+ * letters, digits, `-` and `_` pass.
+ */
+export function readSessionStart(input: unknown): { sessionId: string; source: string } | null {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const event = input as { session_id?: unknown; source?: unknown };
+  if (typeof event.session_id !== 'string' || !/^[\w-]{1,128}$/.test(event.session_id)) return null;
+  return { sessionId: event.session_id, source: typeof event.source === 'string' ? event.source : '' };
+}
+
+/**
+ * Whether a SessionStart hook's input waits on stdin: Claude Code sets CLAUDE_PROJECT_DIR
+ * for its hooks and writes the event to stdin. A terminal never has it, so doctor run by
+ * hand never waits.
+ */
+export const hasSessionInput = (env: Env, isTerminal: boolean): boolean => Boolean(env.CLAUDE_PROJECT_DIR) && !isTerminal;
+
+/**
  * A Stop event (the agent is about to end its turn), or null when the input is not one.
  * `active` is Claude Code's `stop_hook_active`: a stop hook already sent the agent back.
  */
