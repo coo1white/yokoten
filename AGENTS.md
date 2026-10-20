@@ -127,6 +127,9 @@ yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
   exception is an `AGENTS.md` without `## This project`, which gets the core rules on top
   and its own text moved under that heading, once. After that the core rules in it change when the project runs
   `yokoten update --write`; `doctor` says when they are behind. Say so in the pull request.
+- **Safe by default, with a way back** (record 0014): every user gets the safe action
+  with no question. Each new action names its tier (do by default, ask first, never,
+  unsure) and its way back (off, on, kept, uninstall) in its issue, before the code.
 - **Every new check gets a positive control**: a test (and, for doctor, a self-test
   case) that feeds it a known-bad input and expects a catch.
 - **Examples use placeholders**: `example.com` addresses and `192.0.2.0/24` IPs. A
