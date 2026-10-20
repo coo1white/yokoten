@@ -622,6 +622,7 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 | `check [--staged] [--json]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交。提交里不能有构建产物和二进制文件。`changes/` 里的文件按 `changelog` 的读法检查，格式不对，提交时就拦下。什么都没暂存时，`--staged` 提醒一句，算通过。查整个目录时，落后于英文的译文会给一条提醒，见[翻译](#翻译) |
 | `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的变更文件、milestone 和标签，见下面的「更新日志」。改到 CODEOWNERS 里列出的文件，必须写 `tier: A`。改动的文档里句子太长、改动的代码里名字难读、改动超过 400 行，都只提醒，不算失败 |
 | `check --issue` | 在 CI 里检查 issue 的标题，见下面的「issue 标题」 |
+| `marks allow <mark> --here` | 让词表里的一个词只在这个仓库放行，不需要 yokoten.json。放行记在这台电脑上，不写进仓库。`--remove` 撤回。见「隐私」 |
 | `redact` | 从标准输入读文字，把你的信息换成占位符再输出：`<owner>`、`<email>`、`<host>`、`<mark>`。命令守卫会让有风险的命令先过一遍它。见「隐私」 |
 | `changelog [--write]` | 列出 `changes/` 里的文件会往 `[Unreleased]` 下面加哪些条目。加上 `--write` 就真的写进 `CHANGELOG.md`，再删掉这些文件；发版前跑。见下面的「更新日志」 |
 | `learn <issue> [--write]` | 从一个事故 issue 起草一条检查，留给人来审。加上 `--write` 才把文件写进 `lessons/`。见下面的「从事故里学」 |
@@ -1191,6 +1192,14 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 里的词一模一样（不管大小写），这个词就放行；只是其中一段、或者更长的字符串，都不算。放行只在
 这个仓库里有效，`check`、提交钩子和 `gh` 发帖前的检查都放行；别的仓库照样拦。`doctor` 会说这个
 项目放行了你几个词，只报个数，不说是哪几个。
+
+没有 yokoten.json 的仓库也能这样放行，不想公开和 yokoten 有关系的仓库也一样。在那个仓库里运行
+`yokoten marks allow <mark> --here` 就行。放行记在这台电脑上，就在词表旁边的
+`private-marks-allow.json` 里，只对这一个仓库有效：认的是它的 `origin` 远程地址（主机加路径），
+没有远程地址就认它的文件夹。仓库里什么都不写。远程地址改了名，就算另一个仓库，这个词又会被拦。
+yokoten 认不准是哪个仓库时（git 读不出远程地址，或者有两条都对得上），一个词也不放行，
+`doctor` 会说原因。`doctor` 还会说放行是从哪来的：这台电脑，还是 `privacy.allow`。只有词表里
+有的词才能放行。想撤回，运行 `yokoten marks allow --remove <mark> --here`。
 
 有些文件本来就要写你的账号名。所以 yokoten 自动加进词表的 forge 登录名，在这几处不算问题：
 CODEOWNERS 里的负责人、`.github/` 里的 `@` 提及、`package.json` 或插件清单里的 author、owner

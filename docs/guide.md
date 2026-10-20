@@ -696,6 +696,7 @@ It puts three safe defaults in `.github/` too:
 | `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
 | `check --issue` | In CI: the issue's title. See [Issue titles](#issue-titles) |
 | `redact` | Reads text on stdin and writes it with your details hidden: `<owner>`, `<email>`, `<host>`, `<mark>`. The tool-call guard sends risky commands through it. See [Privacy](#privacy) |
+| `marks allow <mark> --here` | Lets one of your private marks through in this repo only, with no yokoten.json. The allow is kept on this machine, never in the repo. `--remove` takes it back. See [Privacy](#privacy) |
 | `changelog [--write]` | Shows the entries the files in `changes/` add under `[Unreleased]`. `--write` puts them into `CHANGELOG.md` and deletes the files; run it before a release. See [The changelog](#the-changelog) |
 | `learn <issue> [--write]` | Drafts a check from an incident issue, for a person to review. `--write` adds the files in `lessons/`. See [Learning from an incident](#learning-from-an-incident) |
 | `learn --ship <id>` | In yokoten: moves a reviewed lesson into a group in `kit/lessons/`, where `doctor` from that yokoten runs it in every project. Refused while a `TODO(reviewer)` is left or its test fails |
@@ -1345,6 +1346,16 @@ yokoten.json. A mark is let through when an entry there is the same string, uppe
 lower case aside; a part or a longer string does not count. It is let through only in
 that repo, by `check`, the commit hook and the guard for `gh` posts. Every other repo
 still stops it. `doctor` says how many of your marks the project allows, never which.
+
+A repo with no yokoten.json can do the same without one, and so can a repo that must not
+name yokoten in public. Run `yokoten marks allow <mark> --here` in it. The allow is kept
+on this machine, in `private-marks-allow.json` beside the marks file, for that repo only:
+its `origin` remote (host and path), or its folder when it has no remote. Nothing is written
+into the repo. A renamed remote is another repo, so the mark is stopped there again. When
+yokoten can't tell which repo it is in (git can't read the remote, or two entries match), it
+allows nothing, and `doctor` says why. `doctor` also says where an allow comes from: this
+machine or `privacy.allow`. Only a mark in the marks file can be allowed. To take it back,
+run `yokoten marks allow --remove <mark> --here`.
 
 Some files must name your account. So the forge login that yokoten added to the marks is
 fine in a CODEOWNERS owner, an `@` mention in `.github/`, an author or owner field of

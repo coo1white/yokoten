@@ -11,9 +11,10 @@
 // - Secrets: tokens and private keys, in secrets.ts. Their hits pass through scanText too,
 //   so every caller (the commit, CI, the history) catches them.
 
+import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
-import { basename, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import type { Config, Env } from './config.ts';
 import { type Finding, finding, type RuleId } from './message.ts';
 import { findSecrets, makeSecretHider, SECRET } from './secrets.ts';
@@ -87,6 +88,150 @@ export function loadMarks(env: Env): string[] {
 export function ownMarks(marks: string[], allow: string[] = []): string[] {
   const allowed = new Set(allow.map((entry) => entry.toLowerCase()));
   return marks.filter((mark) => allowed.has(mark.toLowerCase()));
+}
+
+// ---- The machine's allow, for one repo (#447) ----
+// A repo with no yokoten.json, or one that must not name yokoten in public, can't use
+// "privacy.allow". The same allow is then kept on this machine, beside the marks file,
+// for one repo: the one whose origin remote (or, with no remote, whose top folder) an
+// entry names. It allows marks only, never an address or a secret, and it never makes a
+// repo count as one with yokoten.json. Unsure (git can't read the repo, the file can't
+// be read, two entries match) allows nothing.
+
+/** One repo's entry in the machine allow file: its normalized origin remote, or its top folder when it has none. */
+export interface AllowEntry {
+  remote?: string;
+  folder?: string;
+  allow: string[];
+}
+
+/** Where a repo is, as the machine allow file names it: by remote, or by top folder. */
+export type RepoKey = { remote: string } | { folder: string };
+
+/** The machine allow file: beside the private-marks file. With no home folder, it throws NO_HOME. */
+export const machineAllowFile = (env: Env): string => join(dirname(marksFile(env)), 'private-marks-allow.json');
+
+/**
+ * An origin remote as the machine allow file keys it: host and path, with no scheme, no
+ * user info, no port and no `.git`. The host is lowercased; the path keeps its case. A
+ * local path stays a path. Null for an empty one.
+ */
+export function normalizeRemote(url: string): string | null {
+  const text = url.trim();
+  if (!text) return null;
+  let host = '';
+  let path = text;
+  const scheme = text.match(/^([a-z][a-z0-9+.-]*):\/\/(.*)$/i);
+  if (scheme) {
+    const rest = scheme[2];
+    const slash = rest.indexOf('/');
+    path = slash === -1 ? '' : rest.slice(slash);
+    if (scheme[1].toLowerCase() !== 'file') {
+      const authority = slash === -1 ? rest : rest.slice(0, slash);
+      host = authority.slice(authority.lastIndexOf('@') + 1).replace(/:\d*$/, '');
+    }
+  } else {
+    // scp-like `user@host:path`; a Windows drive (`C:\` or `C:/`) is a path.
+    const scp = /^[a-z]:[\\/]/i.test(text) ? null : text.match(/^(?:[^@/]+@)?([^:/]+):(.*)$/);
+    if (scp) [, host, path] = scp;
+  }
+  path = path.replace(/[\\/]+$/, '').replace(/\.git$/i, '').replace(/[\\/]+$/, '');
+  if (!host) return path || null;
+  return `${host.toLowerCase()}/${path.replace(/^\/+/, '')}`;
+}
+
+/** What git says, trimmed, or the error with its exit status. */
+function gitAnswer(dir: string, args: string[]): { out: string } | { status: number | null } {
+  try {
+    return { out: execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() };
+  } catch (err) {
+    return { status: (err as { status?: number | null }).status ?? null };
+  }
+}
+
+/** The repo at `dir`, as the machine allow file keys it, or why yokoten can't tell. */
+export function repoKey(dir: string): RepoKey | { unsure: string } {
+  const top = gitAnswer(dir, ['rev-parse', '--show-toplevel']);
+  if (!('out' in top) || !top.out) return { unsure: "git can't read this repo" };
+  const remote = gitAnswer(dir, ['config', '--get', 'remote.origin.url']);
+  if ('out' in remote) {
+    const key = normalizeRemote(remote.out);
+    return key ? { remote: key } : { unsure: "the origin remote can't be read" };
+  }
+  // git config exits 1 when the key is not set: no origin, so the top folder names the repo.
+  if (remote.status !== 1) return { unsure: "the origin remote can't be read" };
+  try {
+    return { folder: realpathSync(top.out) };
+  } catch {
+    return { unsure: "this repo's folder can't be read" };
+  }
+}
+
+/** Why the machine allow file can't be used, in words that never quote it. */
+export const ALLOW_FILE_UNREADABLE = "this machine's allow file can't be read";
+export const ALLOW_FILE_SHAPE = "this machine's allow file is not in the shape yokoten writes";
+
+/** The entries of the machine allow file: none when it is missing or there is no home folder. */
+export function readMachineAllow(env: Env): { entries: AllowEntry[] } | { unsure: string } {
+  let text: string;
+  try {
+    text = readFileSync(machineAllowFile(env), 'utf8');
+  } catch (err) {
+    if ((err as Error).message === NO_HOME || (err as NodeJS.ErrnoException).code === 'ENOENT') return { entries: [] };
+    return { unsure: ALLOW_FILE_UNREADABLE };
+  }
+  let data: unknown;
+  try {
+    data = JSON.parse(text); // its error quotes the text, so it is never shown
+  } catch {
+    return { unsure: ALLOW_FILE_SHAPE };
+  }
+  const repos = (data as { repos?: unknown } | null)?.repos;
+  const isEntry = (entry: unknown): entry is AllowEntry => {
+    if (!entry || typeof entry !== 'object') return false;
+    const { remote, folder, allow } = entry as Record<string, unknown>;
+    const names = [remote, folder].filter((value) => value !== undefined);
+    return names.length === 1 && typeof names[0] === 'string' && Array.isArray(allow) && allow.every((mark) => typeof mark === 'string');
+  };
+  if (!Array.isArray(repos) || !repos.every(isEntry)) return { unsure: ALLOW_FILE_SHAPE };
+  return { entries: repos };
+}
+
+/** The entries that name this repo: by its remote when it has one, or else by its top folder. */
+export function matchingEntries(entries: AllowEntry[], key: RepoKey): AllowEntry[] {
+  if ('remote' in key) return entries.filter((entry) => entry.remote !== undefined && normalizeRemote(entry.remote) === key.remote);
+  return entries.filter((entry) => entry.folder !== undefined && resolve(entry.folder) === key.folder);
+}
+
+/** What the machine allows in one repo: the entries' marks, lowercased, or nothing and why when unsure. */
+export interface MachineAllowed {
+  allow: string[];
+  unsure: string | null;
+}
+
+/**
+ * The marks this machine allows in the repo at `dir` (#447). Nothing, with no git call,
+ * when the file is missing or empty. `dir` null (the guard can't tell where a command
+ * runs) is unsure.
+ */
+export function machineAllowed(env: Env, dir: string | null): MachineAllowed {
+  const read = readMachineAllow(env);
+  if ('unsure' in read) return { allow: [], unsure: read.unsure };
+  if (!read.entries.length) return { allow: [], unsure: null };
+  if (dir === null) return { allow: [], unsure: "yokoten can't tell which repo this runs in" };
+  const key = repoKey(dir);
+  if ('unsure' in key) return { allow: [], unsure: key.unsure };
+  const found = matchingEntries(read.entries, key);
+  if (found.length > 1) return { allow: [], unsure: "two entries in this machine's allow file match this repo" };
+  return { allow: (found[0]?.allow ?? []).map((mark) => mark.toLowerCase()), unsure: null };
+}
+
+/** The marks to look for in the repo at `root`: the owner's, less those the machine allows there (#447). */
+export function repoMarkKinds(env: Env, root: string): Mark[] {
+  const kinds = loadMarkKinds(env);
+  if (!kinds.length) return kinds;
+  const own = new Set(ownMarks(kinds.map((mark) => mark.value), machineAllowed(env, root).allow));
+  return own.size ? kinds.filter((mark) => !own.has(mark.value)) : kinds;
 }
 
 /** The comment above the marks yokoten adds from this machine. They run to the next comment line. */
@@ -757,7 +902,8 @@ export function checkPost(gh: GhCommand, { env, privacy, cwd, command }: { env: 
   const allow = privacy?.allow ?? [];
   // An allowed mark is left out of the path shown too (#424).
   const all = loadMarks(env);
-  const own = ownMarks(all, allow);
+  // And those the machine allows in the repo the command runs in (#447).
+  const own = ownMarks(all, [...allow, ...(all.length ? machineAllowed(env, cwd).allow : [])]);
   const marks = all.filter((mark) => !own.includes(mark));
   for (const piece of posted.pieces) {
     const [hit] = scanText(piece.text, { file: piece.source, marks, allow });

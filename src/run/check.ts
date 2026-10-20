@@ -11,7 +11,7 @@ import { checkEdit } from '../rules/guards.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
 import { type Finding, finding } from '../rules/message.ts';
 import { isChangeFile, longSentenceNote, longSentences } from '../rules/pr.ts';
-import { autoLogins, loadMarkKinds, notUtc, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
+import { autoLogins, notUtc, repoMarkKinds, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
 import { parseChange, readChanges } from './changelog.ts';
 import { isShallowNote, translationNotes } from './translations.ts';
 
@@ -260,7 +260,7 @@ function readEntry(root: string, path: string): Buffer | undefined {
  */
 export function check(root: string, { config, env, staged = false, notes = [] }: { config: Config; env: Env; staged?: boolean; notes?: Finding[] }): Finding[] {
   const problems: Finding[] = [];
-  const kinds = loadMarkKinds(env);
+  const kinds = repoMarkKinds(env, root); // less what the machine allows here (#447)
   const marks = kinds.map((mark) => mark.value);
   const logins = autoLogins(kinds);
   const skip = matcher(config.privacy.skip);
@@ -339,7 +339,7 @@ export const changedFiles = (root: string): string[] =>
  */
 export function checkChanged(root: string, { config, env }: { config: Config; env: Env }): Finding[] {
   const problems: Finding[] = [];
-  const kinds = loadMarkKinds(env);
+  const kinds = repoMarkKinds(env, root); // less what the machine allows here (#447)
   const marks = kinds.map((mark) => mark.value);
   const logins = autoLogins(kinds);
   const skip = matcher(config.privacy.skip);
@@ -399,7 +399,7 @@ export function checkHistory(root: string, { config, env }: { config: Config; en
   const add = (found: Finding[]) => {
     for (const f of found) problems.set(JSON.stringify(f), f);
   };
-  const kinds = loadMarkKinds(env);
+  const kinds = repoMarkKinds(env, root); // less what the machine allows here (#447)
   const marks = kinds.map((mark) => mark.value);
   const logins = autoLogins(kinds);
   const skip = matcher(config.privacy.skip);

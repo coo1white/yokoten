@@ -1,5 +1,11 @@
 // `yokoten check`: the tree, --staged, --history, and in CI --pr and --issue. And
-// `yokoten redact`, the privacy check's filter for command output (#390).
+// `yokoten redact`, the privacy check's filter for command output (#390). And `yokoten marks`,
+// the private marks from the command line: for now `allow`, which lets one mark through in the
+// repo you are in, kept on this machine, never in the repo (#447); `allow --remove` is its way
+// back (record 0014). Issue #434 adds more actions. A mark is never printed or repeated back.
+
+import { chmodSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 import { readCodeOwners, readIssue, readPullRequest } from '../host/github.ts';
 import { loadConfig } from '../rules/config.ts';
@@ -8,7 +14,7 @@ import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkP
 import { parseChange } from '../run/changelog.ts';
 import { check, checkHistory, GitReadError, gitReadFinding, historyTimeZones, readGit, timeZoneNote } from '../run/check.ts';
 import { isCodeFile, nameNotes } from '../run/names.ts';
-import { loadMarks, makeRedactor } from '../rules/privacy.ts';
+import { type AllowEntry, loadMarks, machineAllowFile, makeRedactor, matchingEntries, NO_HOME, readMachineAllow, repoKey } from '../rules/privacy.ts';
 import { machineMarks, machineUserNames } from '../setup/install.ts';
 import { bullets, env, parse, print, printJson, requireRoot, say, showOnPullRequest, usage } from './shared.ts';
 
@@ -200,4 +206,83 @@ export function runRedact(): number | Promise<number> {
     });
     process.stdin.on('error', () => settle(0));
   });
+}
+
+// ---- `yokoten marks` (#447) ----
+
+const MARK_ACTIONS = ['allow'];
+const SHAPE = '`yokoten marks allow <mark> --here`, or `yokoten marks allow --remove <mark> --here`';
+
+/** One line on stderr, and exit 1. */
+function refuse(text: string): number {
+  print([`yokoten marks: ${text}`], process.stderr);
+  return 1;
+}
+
+export function runMarks(): number {
+  const options = parse('marks');
+  // The parser repeats an extra word; here it may be a mark, so it is never shown.
+  if (typeof options === 'string') return usage(options.startsWith('unexpected argument') ? `too many words; give one mark, as in ${SHAPE}` : options);
+  const [action, mark] = options.positional;
+  if (action === undefined) return usage(`say what to do: ${SHAPE}`);
+  if (!MARK_ACTIONS.includes(action)) return usage(`the action is \`allow\`: ${SHAPE}`);
+  if (mark === undefined || !mark.trim()) return usage(`give the mark: ${SHAPE}`);
+  if (!options.flags.has('--here')) return usage(`add --here: an allow is always for one repo, the one you are in`);
+  return allowHere(mark.trim().toLowerCase(), { isRemoving: options.flags.has('--remove') });
+}
+
+/** Add the mark to this repo's entry in the machine allow file, or with `isRemoving`, take it out. */
+function allowHere(mark: string, { isRemoving }: { isRemoving: boolean }): number {
+  const root = requireRoot(process.cwd());
+  if (!root) return 1;
+  let file: string;
+  let marks: string[];
+  try {
+    file = machineAllowFile(env);
+    marks = loadMarks(env);
+  } catch (err) {
+    if ((err as Error).message === NO_HOME) return refuse(`${NO_HOME}. Set HOME to your home folder`);
+    return refuse("your private-marks file can't be read, so nothing was changed");
+  }
+  const key = repoKey(root);
+  if ('unsure' in key) return refuse(`nothing was changed, because ${key.unsure}`);
+  const read = readMachineAllow(env);
+  if ('unsure' in read) return refuse(`nothing was changed, because ${read.unsure}. Fix it or delete it, then run this again`);
+  const found = matchingEntries(read.entries, key);
+  if (found.length > 1) return refuse("nothing was changed, because two entries in this machine's allow file match this repo. Delete one, then run this again");
+  const entry = found[0];
+  const has = entry?.allow.some((allowed) => allowed.toLowerCase() === mark) ?? false;
+  let entries: AllowEntry[];
+  if (isRemoving) {
+    if (!entry || !has) {
+      print(['yokoten marks: that mark is not allowed here, so nothing changed']);
+      return 0;
+    }
+    const left = entry.allow.filter((allowed) => allowed.toLowerCase() !== mark);
+    entries = left.length ? read.entries.map((one) => (one === entry ? { ...one, allow: left } : one)) : read.entries.filter((one) => one !== entry);
+  } else {
+    // Only a mark the file holds: anything else is not private to this machine, so nothing to allow.
+    if (!marks.includes(mark)) return refuse('that is not a line of your private-marks file, so there is nothing to allow. Check the spelling, or add it to the file first');
+    if (has) {
+      print(['yokoten marks: that mark is already allowed here, so nothing changed']);
+      return 0;
+    }
+    entries = entry ? read.entries.map((one) => (one === entry ? { ...one, allow: [...one.allow, mark] } : one)) : [...read.entries, { ...key, allow: [mark] }];
+  }
+  save(file, entries);
+  print(
+    isRemoving
+      ? ['yokoten marks: the allow is taken back; the checks stop that mark in this repo again']
+      : ['yokoten marks: that mark is allowed in this repo only. The allow is kept on this machine, not in the repo.', 'To take it back: yokoten marks allow --remove <mark> --here'],
+  );
+  return 0;
+}
+
+/** Write the file whole, readable by its owner only, through a temporary file so a crash never leaves half of it. */
+function save(file: string, entries: AllowEntry[]): void {
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+  const temporary = `${file}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify({ repos: entries }, null, 2)}\n`, { mode: 0o600 });
+  chmodSync(temporary, 0o600);
+  renameSync(temporary, file);
 }
