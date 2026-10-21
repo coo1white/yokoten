@@ -18,7 +18,7 @@ import type { Config, Env } from './config.ts';
 import { loadConfig, matcher } from './config.ts';
 import { type Finding, finding } from './message.ts';
 import { checkCommandTitle } from './pr.ts';
-import { type CommandFiles, checkPost, type GhCommand, ghIndex, PIPE_READERS, type Risk, withoutReadPipe } from './privacy.ts';
+import { type CommandFiles, checkPost, type GhCommand, ghIndex, isBotProgram, PIPE_READERS, type Risk, withoutReadPipe } from './privacy.ts';
 
 /** A file edit, by path relative to the repo root. */
 export function checkEdit(path: string, { config, env }: { config: Config; env: Env }): Finding | null {
@@ -999,18 +999,15 @@ function tildesPlain(command: string, commands: string[][]): boolean {
         !word.startsWith('~') ||
         (!isQuoted &&
           (word === '~' || word.startsWith('~/')) &&
-          ((index === 1 && ['cd', 'pushd'].includes(words[0])) || ['-F', '--body-file', '--notes-file'].includes(words[index - 1] ?? '') || isBotProgram(words, index))),
+          ((index === 1 && ['cd', 'pushd'].includes(words[0])) || ['-F', '--body-file', '--notes-file'].includes(words[index - 1] ?? '') || isBotCallAt(words, index))),
     ),
   );
 }
 
-// `~/…/yokoten`, `.ts` or `.mjs`, in plain path characters.
-const HOME_YOKOTEN = /^~\/(?:[\w.+@%:,=-]+\/)*yokoten(?:\.ts|\.mjs)?$/;
-
 // Whether the word at `index` is the yokoten of `yokoten bot --` or `node yokoten.ts bot --`,
 // after only the command's own variables. Which yokoten runs does not change the file gh reads.
-function isBotProgram(words: string[], index: number): boolean {
-  if (!HOME_YOKOTEN.test(words[index]) || words[index + 1] !== 'bot' || words[index + 2] !== '--') return false;
+function isBotCallAt(words: string[], index: number): boolean {
+  if (!isBotProgram(words[index]) || words[index + 1] !== 'bot' || words[index + 2] !== '--') return false;
   const start = ownVariables(words);
   return index === start || (index === start + 1 && words[start] === 'node');
 }
@@ -1092,7 +1089,7 @@ function readsOnly(words: string[]): boolean {
   }
   // `yokoten bot -- x`, `node bin/yokoten.ts bot -- x`
   const bot = program === 'node' ? 1 : 0;
-  if (/^yokoten(\.ts|\.mjs)?$/.test(base(words[bot] ?? '')) && words[bot + 1] === 'bot' && words[bot + 2] === '--') return readsOnly(words.slice(bot + 3));
+  if (isBotProgram(words[bot] ?? '') && words[bot + 1] === 'bot' && words[bot + 2] === '--') return readsOnly(words.slice(bot + 3));
   return false;
 }
 

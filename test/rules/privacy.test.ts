@@ -1355,6 +1355,20 @@ test('a project allow still applies after NODE_USE_ENV_PROXY=1 and a ~/ yokoten 
   assert.equal(post(`NODE_USE_ENV_PROXY=$X node bin/yokoten.ts ${comment}`, allowing)?.id, 'private-mark');
 });
 
+test('a lone post trusts the same yokoten paths as the body-file path (#506)', () => {
+  const allowing = { ...DEFAULTS, privacy: { ...DEFAULTS.privacy, allow: ['QuietVale'] } };
+  const comment = 'bot -- gh issue create --title "check: fix a bug" --body "QuietVale ships"';
+  for (const program of ['yokoten', 'node bin/yokoten.ts', 'node ./bin/yokoten.mjs', 'node ~/x/bin/yokoten.ts', '~/x/bin/yokoten', 'node ~/yokoten.mjs', 'node /opt/x/bin/yokoten.ts']) {
+    assert.ok(lonePost(`${program} ${comment}`), program);
+    assert.equal(post(`${program} ${comment}`, allowing), null, program);
+  }
+  // `~other`, `~+` and `~-` are not your home: no lone post, so no allow.
+  for (const program of ['node ~other/bin/yokoten.ts', '~other/x/yokoten', 'node ~+/bin/yokoten.ts', 'node ~-/bin/yokoten.ts', 'node ~/x/bin/yokoten.js']) {
+    assert.equal(lonePost(`${program} ${comment}`), null, program);
+    assert.equal(post(`${program} ${comment}`, allowing)?.id, 'private-mark', program);
+  }
+});
+
 test('reading a pipe at the end stays linear (#498)', () => {
   const body = join(postDir, 'piped.md');
   writeFileSync(body, 'All clean.\n');

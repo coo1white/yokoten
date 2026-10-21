@@ -1200,9 +1200,24 @@ function shownPath(path: string, env: Env, marks: string[]): string {
 // The characters bash reads as plain text outside quotes: no expansion, glob, brace, operator or comment.
 const PLAIN_WORD = /^[A-Za-z0-9_ \t./:,=+@%-]$/;
 
+// The yokoten of `yokoten bot --` the guard trusts (#506): a plain `yokoten`, a path such as
+// `bin/yokoten.ts` or `/opt/x/bin/yokoten.ts`, or one under `~/`, in plain path characters.
+// `~user`, `~+` and `~-` are not your home folder, so the guard can't tell which yokoten runs.
+const BOT_PROGRAM = String.raw`(?:~?\/)?(?:[\w.+@%:,=-]+\/)*yokoten(?:\.ts|\.mjs)?`;
+const BOT_PROGRAM_WORD = new RegExp(`^${BOT_PROGRAM}$`);
+
+/** Whether a word, quotes removed, is a yokoten the guard trusts as the bot's program (#506). */
+export function isBotProgram(word: string): boolean {
+  return BOT_PROGRAM_WORD.test(word);
+}
+
+// The start of a lone post: the allowed variables, then `gh` or the bot's `yokoten bot -- gh`.
+const LONE_POST_START = new RegExp(String.raw`^(?:(?:NODE_USE_ENV_PROXY|GH_REPO|GH_HOST)=[\w./:@-]*[ \t]+)*(?:(?:node[ \t]+)?${BOT_PROGRAM}[ \t]+bot[ \t]+--[ \t]+)?gh[ \t]`);
+
 /**
  * Whether the command line is one gh post and nothing else (#447): `gh …`, or the bot's
- * `yokoten bot -- gh …`, optionally after one plain `cd <folder> &&`. Before it, only
+ * `yokoten bot -- gh …` with a yokoten `isBotProgram` trusts (#506), optionally after one
+ * plain `cd <folder> &&`. Before it, only
  * NODE_USE_ENV_PROXY, GH_REPO or GH_HOST may be set, to a plain value (#498); GH_REPO and
  * GH_HOST name another target, so namesTarget still keeps the allow. Outside quotes only
  * letters, digits, spaces and `_ . / : , = + @ % -` are trusted, plus one here-string or
@@ -1218,7 +1233,7 @@ export function lonePost(command: string): { cd: boolean; target?: string } | nu
   let text = trimStart(command, ' \t');
   const cd = text.match(/^cd[ \t]+('[^'\n]*'|"[^"$`\\\n]*"|~?[\w./+@%:,=-]+|~)[ \t]*&&[ \t]*/);
   if (cd) text = text.slice(cd[0].length);
-  const start = text.match(/^(?:(?:NODE_USE_ENV_PROXY|GH_REPO|GH_HOST)=[\w./:@-]*[ \t]+)*(?:(?:node[ \t]+)?(?:~?[\w./+@%:-]*\/)?yokoten(?:\.ts|\.mjs|\.js)?[ \t]+bot[ \t]+--[ \t]+)?gh[ \t]/);
+  const start = text.match(LONE_POST_START);
   if (!start) return null;
   let quote: string | null = null;
   let heredoc: { word: string; tabs: boolean } | null = null;
