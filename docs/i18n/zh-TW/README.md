@@ -96,4 +96,4 @@ agent 想 force push，yokoten 把它擋下來，說明原因，再給出修正�
 
 ---
 
-<p align="center"><sub>MIT · 由 <a href="https://coolwhite.us/">coolwhite</a> 打造，許多想法來自工廠現場的經驗。</sub></p>
+<p align="center"><sub>MIT · 由 <a href="https://coolwhite.us/">coolwhite</a> 與 Claude（透過 Claude Code）一起打造，許多想法來自工廠現場的經驗。<br>方向和決定來自 coolwhite，大部分程式碼和審查由 Claude 完成。</sub></p>

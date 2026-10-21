@@ -94,4 +94,4 @@ agent 想强推，yokoten 把它拦下，说清为什么，再给出改法。接
 
 ---
 
-<p align="center"><sub>MIT · <a href="https://coolwhite.us/">coolwhite</a> 做的。里面不少东西，是在工厂车间里学来的。</sub></p>
+<p align="center"><sub>MIT · <a href="https://coolwhite.us/">coolwhite</a> 和 Claude（通过 Claude Code）一起做的。里面不少东西，是在工厂车间里学来的。<br>方向和决定来自 coolwhite，大部分代码和审查由 Claude 完成。</sub></p>

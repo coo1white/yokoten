@@ -572,16 +572,17 @@ test('upstream: a note hides the project, home and owner, and refuses a secret o
   mkdirSync(root, { recursive: true });
   const place = placeIn(root, { projects: ['acme-app'], owners: ['Jane Roe'], hosts: ['git.corp.test'], marks: ['secret-city'] });
   const note = redactNote(`In ${root}/src/x.ts the hook\nfor Acme-App broke; Jane Roe saw it in ${join(home, 'logs')} and ${root}2, near Secret-City, on git.corp.test`, place, env);
-  // `${root}2` is another folder: the path is not hidden as a prefix of it.
-  assert.deepEqual(note, { text: 'In <project>/src/x.ts the hook for <project> broke; <owner> saw it in ~/logs and ~/work/acme-app2, near <mark>, on <host>' });
+  // `${root}2` is another folder: the path is not hidden as a prefix of it. The name in it is,
+  // as the check finds it: a digit is not a letter (#434).
+  assert.deepEqual(note, { text: 'In <project>/src/x.ts the hook for <project> broke; <owner> saw it in ~/logs and ~/work/<project>2, near <mark>, on <host>' });
   // A secret is refused, not hidden; the finding names its kind, never the value.
   const token = `ghp_${'a'.repeat(36)}`;
   const refused = redactNote(`the token ${token} leaked`, place, env);
   assert.ok('problems' in refused && refused.problems.every((problem) => problem.id === 'secret' && !JSON.stringify(problem).includes(token)));
   // An IP address is not hidden by redact, so the scan refuses it.
   assert.deepEqual(kindsOf(redactNote(`the server ${[10, 1, 2, 3].join('.')} was down`, place, env)), ['ip']);
-  // A mark inside a longer word is not a whole word for redact, but the scan still catches it.
-  assert.deepEqual(kindsOf(redactNote('at secret-cityhall', place, env)), ['private-mark']);
+  // A mark with a - is found as a part: redact hides it where the scan would find it (#434).
+  assert.deepEqual(redactNote('at secret-cityhall', place, env), { text: 'at <mark>hall' });
   // An email address is kept as <email>, not refused.
   assert.deepEqual(redactNote(`mail jane${'@'}corp-mail.com`, place, env), { text: 'mail <email>' });
   // No repo: the home folder is still hidden.
@@ -614,7 +615,8 @@ test('upstream: every spelling of the project name is hidden; a name under three
   const env = { HOME: tmpdir() };
   const place = placeIn(null, { projects: ['secret-proj', 'ab'] });
   assert.deepEqual(redactNote('secret-proj, secret_proj, SecretProj, secretproj, SECRET PROJ and ab', place, env), { text: '<project>, <project>, <project>, <project>, <project> and ab' });
-  assert.deepEqual(redactNote('secret-projector', place, env), { text: 'secret-projector' }, 'a whole name only');
+  // A name with a - is found as a part, by the check and by redact alike (#434).
+  assert.deepEqual(redactNote('secret-projector', place, env), { text: '<project>ector' });
 });
 
 test('upstream: a note refuses known secret shapes, by kind and never by value', () => {

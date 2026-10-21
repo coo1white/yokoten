@@ -36,7 +36,7 @@ import {
 } from '../repo/helpers.ts';
 import { hasHook } from '../../src/agents/hooks-file.ts';
 import { copyRuntime } from '../../src/setup/files.ts';
-import { countOwnMarks, fillMarks, install, isOnPath, launcherText, machineStateFile, machineUserNames, migrateMarks, paths, PROFILE_LINE, setUpLauncher, uninstall, type UserNameProbe, USER_CLI, writeFileAtomic } from '../../src/setup/install.ts';
+import { countOwnMarks, fillMarks, filledLines, install, isOnPath, launcherText, machineStateFile, machineUserNames, migrateMarks, paths, PROFILE_LINE, setUpLauncher, uninstall, type UserNameProbe, USER_CLI, writeFileAtomic } from '../../src/setup/install.ts';
 import { autoLogins, loadMarkKinds, makeRedactor } from '../../src/rules/privacy.ts';
 
 const BAD_USER_SETTINGS: [content: string, reason: (file: string) => string][] = [
@@ -615,10 +615,11 @@ test("install: adds the machine's marks and a git mailmap, and never prints a va
   let result = await sandbox.call(['install']);
   assert.equal(result.status, 0, result.stderr);
   for (const value of ['Jane', 'personal-mail', 'private-host']) assert.ok(!(result.stdout + result.stderr).includes(value), 'install printed a value');
+  assert.match(result.stdout, /^added your git name to the private marks \(not shown\)$/m);
   assert.match(result.stdout, /^added to ~\/\.config\/yokoten\/private-marks from this machine: git email, private remote host \(the values are not shown\)$/m);
-  assert.match(result.stdout, /^add your real name, your city, your domains to ~\/\.config\/yokoten\/private-marks, one per line; yokoten can't find these on its own$/m);
+  assert.match(result.stdout, /^yokoten can't find your city or your domains on its own; to add one, run `yokoten marks add` and type it \(it is not shown\)$/m);
   assert.match(result.stdout, /^wrote ~\/\.config\/yokoten\/mailmap, and git log and git show now print your emails as a placeholder$/m);
-  assert.match(readFileSync(marks, 'utf8'), /# added by yokoten from this machine: git email\njane@personal-mail\.dev\n# added by yokoten from this machine: private remote host\nbuild\.private-host\.dev\n$/);
+  assert.match(readFileSync(marks, 'utf8'), /# added by yokoten from this machine: git name\nJane Example\n# added by yokoten from this machine: git email\njane@personal-mail\.dev\n# added by yokoten from this machine: private remote host\nbuild\.private-host\.dev\n$/);
   assert.equal(statSync(marks).mode & 0o777, 0o600);
   // git prints the placeholder at the source.
   assert.equal(sandbox.git('config', '--global', '--get', 'mailmap.file').stdout, '~/.config/yokoten/mailmap\n');
@@ -814,4 +815,79 @@ test('fillMarks: rewrites an old block in a fake home, by the gh login on file, 
   // A second run changes nothing.
   fillMarks(env, []);
   assert.equal(readFileSync(marks, 'utf8'), '# added by yokoten from this machine: forge login\nocto-jdoe\n# your own marks\nnas\n');
+});
+
+// ---- The git name as a mark (#434) ----
+//
+// Samples are built from pieces, so this file passes its own privacy check.
+const SAMPLE_NAME = ['Ann', 'Sample'].join(' ');
+const SAMPLE_LOGIN = ['octo', 'sample'].join('-');
+const GIT_NAME_BLOCK = `# added by yokoten from this machine: git name\n${SAMPLE_NAME}\n`;
+
+/** How many lines of the text are `value`, case aside. */
+const linesOf = (text: string, value: string) => text.split('\n').filter((line) => line.trim().toLowerCase() === value.toLowerCase()).length;
+
+test('install: adds the git name as a mark of its own, never prints it, and not twice (#434)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.git('config', 'user.name', SAMPLE_NAME);
+  const marks = join(sandbox.home, '.config', 'yokoten', 'private-marks');
+  const said: string[] = [];
+  let result = await sandbox.call(['install']);
+  said.push(result.stdout, result.stderr);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^added your git name to the private marks \(not shown\)$/m);
+  assert.doesNotMatch(result.stdout, /add your real name/, 'no nudge to add the name by hand');
+  assert.match(readFileSync(marks, 'utf8'), new RegExp(`${GIT_NAME_BLOCK}$`));
+  assert.deepEqual(loadMarkKinds({ HOME: sandbox.home }).filter((mark) => mark.kind === 'git name').map((mark) => mark.value), [SAMPLE_NAME.toLowerCase()]);
+  // A second run adds nothing, and says so.
+  result = await sandbox.call(['install']);
+  said.push(result.stdout, result.stderr);
+  assert.doesNotMatch(result.stdout, /added your git name/);
+  assert.match(result.stdout, /^kept ~\/\.config\/yokoten\/private-marks: it already has what this machine knows$/m);
+  assert.equal(linesOf(readFileSync(marks, 'utf8'), SAMPLE_NAME), 1);
+  assert.ok(!said.some((text) => /ann|sample/i.test(text)), 'no output holds the name');
+});
+
+test('install: a git name that equals the forge login is not added twice (#434)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.git('config', 'user.name', SAMPLE_LOGIN.toUpperCase());
+  const marks = join(sandbox.home, '.config', 'yokoten', 'private-marks');
+  mkdirSync(dirname(marks), { recursive: true });
+  writeFileSync(marks, `# added by yokoten from this machine: forge login\n${SAMPLE_LOGIN}\n`, { mode: 0o600 });
+  const result = await sandbox.call(['install']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /added your git name/);
+  assert.equal(readFileSync(marks, 'utf8'), `# added by yokoten from this machine: forge login\n${SAMPLE_LOGIN}\n`);
+  assert.ok(!(result.stdout + result.stderr).toLowerCase().includes(SAMPLE_LOGIN));
+});
+
+test('fillMarks: the git name with no name set, one word, a shared name, a name already there, and a login found now (#434)', () => {
+  const home = makeTempDir('yokoten-');
+  const env = { HOME: home };
+  const marks = join(home, '.config', 'yokoten', 'private-marks');
+  // No git name: nothing is added, and no file is made.
+  assert.deepEqual(fillMarks(env, []), []);
+  assert.ok(!existsSync(marks));
+  // A shared account name, or one under 3 letters, names nobody.
+  assert.deepEqual(fillMarks(env, [{ kind: 'git name', value: 'Test' }, { kind: 'git name', value: 'Al' }]), []);
+  // An address, or a placeholder from a tutorial, names nobody either.
+  const placeholders = ['Your Name', 'John  Doe', 'jane doe', 'User', 'name', 'Admin', `ann${'@'}sample-mail.dev`];
+  assert.deepEqual(fillMarks(env, placeholders.map((value) => ({ kind: 'git name' as const, value }))), []);
+  // One word is a name too.
+  assert.deepEqual(fillMarks(env, [{ kind: 'git name', value: 'Annsample' }]), ['git name']);
+  assert.equal(readFileSync(marks, 'utf8').endsWith('# added by yokoten from this machine: git name\nAnnsample\n'), true);
+  // A name the file has already, as the owner wrote it, is not added again.
+  writeFileSync(marks, `${readFileSync(marks, 'utf8')}# mine\n${SAMPLE_NAME.toLowerCase()}\n`);
+  assert.deepEqual(fillMarks(env, [{ kind: 'git name', value: SAMPLE_NAME }]), []);
+  // A login found in the same run covers a git name that equals it: the login's mark is added.
+  assert.deepEqual(fillMarks(env, [{ kind: 'git name', value: SAMPLE_LOGIN }, { kind: 'forge login', value: SAMPLE_LOGIN }]), ['forge login']);
+  assert.equal(linesOf(readFileSync(marks, 'utf8'), SAMPLE_LOGIN), 1);
+  // The positive control: a new name is still added.
+  assert.deepEqual(fillMarks(env, [{ kind: 'git name', value: 'Bo Example' }]), ['git name']);
+});
+
+test('filledLines: the git name has a line of its own, with no value; the other kinds keep theirs (#434)', () => {
+  assert.deepEqual(filledLines(['git name', 'git email'], '~/m'), ['added your git name to the private marks (not shown)', 'added to ~/m from this machine: git email (the values are not shown)']);
+  assert.deepEqual(filledLines(['git name'], '~/m'), ['added your git name to the private marks (not shown)']);
+  assert.deepEqual(filledLines([], '~/m'), ['kept ~/m: it already has what this machine knows']);
 });

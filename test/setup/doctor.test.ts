@@ -1221,7 +1221,8 @@ test('privacyNotes: the mailmap, and the kinds of mark yokoten cannot find; neve
   const notes = () => privacyNotes(env, null).map((note) => `${note.name}: ${note.finding.what}; ${note.finding.fix}`);
   assert.deepEqual(notes(), [
     'mailmap: git log and git show print your name and email as they are; run `yokoten install`; it sets a git mailmap outside every repo',
-    `private-mark-kinds: your private marks may lack your real name, your city, your domains; add them to ${join(home, '.config', 'yokoten', 'private-marks')}, one per line`,
+    // The name is not asked for: install adds the git name (#434).
+    'private-mark-kinds: your private marks may lack your city, your domains; run `yokoten marks add` and type one; it is not shown',
   ]);
   execFileSync('git', ['config', '--global', 'mailmap.file', '~/.config/yokoten/mailmap'], { env: { ...process.env, ...env } });
   mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });

@@ -41,7 +41,7 @@ import { findTempDirs, readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advi
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
 import { compareCoreRules, compareVersions, hookCliPath, isSelf, readCoreRules, summarizeUpdate, withGitReads, workflowNotes } from './init.ts';
 import { assumeEmptyFolder, gitConfig } from '../run/check.ts';
-import { countOwnMarks, fillMarks, filledLine, trySafely, installedPieces, isOnPath, launcherDir, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
+import { countOwnMarks, fillMarks, filledLines, trySafely, installedPieces, isOnPath, launcherDir, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
 import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, uncheckedText, walk } from './road.ts';
 
 /**
@@ -251,7 +251,7 @@ export function machineChecks(env: Env): Practice[] {
     // 'runtime' in the text, as before; the id differs from the road's runtime step.
     practice('runtime', 'machine-runtime', runtime === VERSION || (plugin && runtime === null), runtime ? `the installed runtime is ${runtime}, this yokoten is ${VERSION}` : 'no runtime installed', plugin ? 'remove it with `yokoten uninstall`; the plugin brings its own' : 'run `yokoten install` from this copy of yokoten'),
     // The marks yokoten found on the machine don't count: only the owner knows a city (#390).
-    practice('private-marks', 'private-marks', countOwnMarks(env) > 0, loadMarks(env).length ? `${target.marks} has only the marks yokoten found on this machine` : `${target.marks} is missing or empty`, 'add your name, city, domain and server names to it, one per line'),
+    practice('private-marks', 'private-marks', countOwnMarks(env) > 0, loadMarks(env).length ? `${target.marks} has only the marks yokoten found on this machine` : `${target.marks} is missing or empty`, 'run `yokoten marks add` and type your city, a domain or a server name, and your real name if git does not have it; it is not shown'),
   ];
 }
 
@@ -304,7 +304,7 @@ export function privacyNotes(env: Env, root: string | null, output: Config['priv
     // An unreadable file: the private-marks check says so.
   }
   const missing = missingMarkKinds(marks, machineMarks(env, { cwd: root ?? undefined }));
-  if (missing.length) notes.push(practice('private-mark-kinds', 'private-marks', false, `your private marks may lack ${missing.join(', ')}`, `add them to ${paths(env).marks}, one per line`));
+  if (missing.length) notes.push(practice('private-mark-kinds', 'private-marks', false, `your private marks may lack ${missing.join(', ')}`, 'run `yokoten marks add` and type one; it is not shown'));
   return notes;
 }
 
@@ -1257,7 +1257,7 @@ function doctorRun(
   // Full doctor from the command line adds the obvious marks first (#390); a session writes nothing.
   // With no home folder, the checks that read or keep settings there are skipped, never crash (#404).
   const hasHome = homeOf(env) !== null;
-  const filled = isFilling && !session && hasHome ? trySafely('the marks from this machine', () => [filledLine(fillMarks(env, machineMarks(env, { cwd: root, gh })), paths(env).marks)])[0] : null;
+  const filled = isFilling && !session && hasHome ? trySafely('the marks from this machine', () => filledLines(fillMarks(env, machineMarks(env, { cwd: root, gh })), paths(env).marks)) : [];
   const machine = hasHome ? machineChecks(env) : [];
   // A file missing here may be on the default branch (#405): one git call for every step
   // left. A session asks only when the step it names misses a file.
@@ -1392,7 +1392,7 @@ function doctorRun(
     if (!c.ok) findings.push(c.finding);
   }
   if (!hasHome) lines.push(`  note    ${NO_HOME_NOTE}`);
-  if (filled) lines.push(`  note    ${filled}`);
+  for (const line of filled) lines.push(`  note    ${line}`);
   for (const c of hasHome ? privacyNotes(env, root, config.privacy.output) : []) {
     lines.push(`  note    ${c.name}: ${stepText(c.finding)}`);
     notes.push(c.finding);
