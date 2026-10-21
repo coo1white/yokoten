@@ -111,4 +111,4 @@ agent 想 force push，yokoten 把它擋下來，說明原因，再給出修正�
 
 ---
 
-<p align="center"><sub>MIT · 由 <a href="https://coolwhite.us/">coolwhite</a> 與 AI agent 一起打造：v0.1.0 由 Claude（在 Claude Code 裡）打底，從 v0.1.1 起由 Muse Code 帶隊開發。許多想法來自工廠現場的經驗。</sub></p>
+<p align="center"><sub>MIT · 由 <a href="https://coolwhite.us/">coolwhite</a> 和一支 AI agent 團隊（Claude Code、Muse Code）依照 yokoten 自己的規矩打造，許多想法來自工廠現場的經驗。</sub></p>
