@@ -98,4 +98,4 @@ The [roadmap](docs/guide.md#where-this-is-going) has the five stages. The
 
 ---
 
-<p align="center"><sub>MIT · Built by <a href="https://coolwhite.us/">coolwhite</a> together with Claude (via Claude Code), with lessons from the factory floor.<br>coolwhite sets the direction and makes the calls; Claude writes much of the code and reviews it.</sub></p>
+<p align="center"><sub>MIT · Built by <a href="https://coolwhite.us/">coolwhite</a> together with Claude (via Claude Code), with lessons from the factory floor.</sub></p>
