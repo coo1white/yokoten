@@ -808,38 +808,47 @@ const busyWait = (ms: number) => {
   while (performance.now() < end);
 };
 
+// A simulated clock for the controls (#493): a wait adds to the time instead of spinning, so a control gives
+// the same result on every run, however busy the runner, and takes no real time.
+const simulated = () => {
+  let now = 0;
+  return { clock: { now: () => now }, wait: (ms: number) => void (now += ms) };
+};
+
 test('assertLinear: a quadratic read fails; a slow spell in one round does not (#343)', () => {
-  // 1,000 chars take 0.6 ms; 8,000 take 64 times that when the cost is quadratic.
-  const quadratic = (input: string) => busyWait(0.6 * (input.length / 1000) ** 2);
-  assert.throws(() => assertLinear('quadratic', (n) => 'x'.repeat(n), quadratic, 1000), /linear is about 8x/);
+  const { clock, wait } = simulated();
+  // 1,000 chars take 0.6 ms; 8,000 take 64 times that when the cost is quadratic. The time is simulated.
+  const quadratic = (input: string) => wait(0.6 * (input.length / 1000) ** 2);
+  assert.throws(() => assertLinear('quadratic', (n) => 'x'.repeat(n), quadratic, 1000, clock), /linear is about 8x/);
   // Linear, but every big read of the first round is 200 ms slower, as on a busy runner. A round
   // has as many reads as fit in 20 ms, from one timed read, so a busy runner cuts the count
   // (#359). A 7 ms read is past 20 / 3 ms: every round has 3 reads, however busy the runner.
   let bigReads = 0;
   const noisy = (input: string) => {
-    if (input.length > 1000 && ++bigReads <= 3) busyWait(200);
-    busyWait(7 * (input.length / 1000));
+    if (input.length > 1000 && ++bigReads <= 3) wait(200);
+    wait(7 * (input.length / 1000));
   };
-  assertLinear('linear with a slow spell', (n) => 'x'.repeat(n), noisy, 1000);
+  assertLinear('linear with a slow spell', (n) => 'x'.repeat(n), noisy, 1000, clock);
 });
 
 test('assertLinearEach: one quadratic shape among linear ones fails; a slow spell does not (#442)', () => {
-  // 2 ms per 1000 chars when linear. The controls ask for a base of 2 ms, not 20: a quadratic read grown to 20 ms would take 64x that per big read.
-  const linear = (input: string) => busyWait(2 * (input.length / 1000));
-  const quadratic = (input: string) => busyWait(2 * (input.length / 1000) ** 2);
+  const { clock, wait } = simulated();
+  // 2 ms per 1000 chars when linear, on a simulated clock. The controls ask for a base of 2 ms, not 20: a quadratic read grown to 20 ms would take 64x that per big read.
+  const linear = (input: string) => wait(2 * (input.length / 1000));
+  const quadratic = (input: string) => wait(2 * (input.length / 1000) ** 2);
   const shapes = (read: (input: string) => void) => [
     { name: 'linear a', make: (n: number) => 'a'.repeat(n), read: linear },
     { name: 'the odd one', make: (n: number) => 'b'.repeat(n), read },
     { name: 'linear c', make: (n: number) => 'c'.repeat(n), read: linear },
   ];
-  assert.throws(() => assertLinearEach(shapes(quadratic), 1000, 2), (error: Error) => /^the odd one: .* \d+x; linear is about 8x$/.test(error.message) && !error.message.includes('linear a'));
+  assert.throws(() => assertLinearEach(shapes(quadratic), 1000, 2, clock), (error: Error) => /^the odd one: .* \d+x; linear is about 8x$/.test(error.message) && !error.message.includes('linear a'));
   // The odd shape's first big read is 200 ms slower, as on a busy runner: it is measured again, and passes.
   let bigReads = 0;
   const noisy = (input: string) => {
-    if (input.length > 1000 && ++bigReads <= 1) busyWait(200);
+    if (input.length > 1000 && ++bigReads <= 1) wait(200);
     linear(input);
   };
-  assertLinearEach(shapes(noisy), 1000, 2);
+  assertLinearEach(shapes(noisy), 1000, 2, clock);
 });
 
 test('assertLinearEach: a real nested loop over the input fails, and a slow spell sends a linear one to a grown second round (#474)', () => {

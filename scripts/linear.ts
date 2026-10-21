@@ -17,11 +17,12 @@ const MIN_BASE_MS = 20;
  * limit, it measures again and fails only when that round is over too: a quadratic read is over
  * every time, a noisy runner is not. 30 s on one read catches a hang.
  */
-export const assertLinear = (name: string, make: (n: number) => string, read: (input: string) => void, size = 1 << 16) => {
+// The clock is there for the controls, which pass a simulated one; the real checks pass none.
+export const assertLinear = (name: string, make: (n: number) => string, read: (input: string) => void, size = 1 << 16, clock: { now: () => number } = performance) => {
   const time = (input: string) => {
-    const start = performance.now();
+    const start = clock.now();
     read(input);
-    const ms = performance.now() - start;
+    const ms = clock.now() - start;
     assert.ok(ms < 30_000, `${name}: ${ms.toFixed(0)} ms for ${input.length} chars, a hang`);
     return ms;
   };
@@ -71,11 +72,12 @@ export type LinearCase = { name: string; make: (n: number) => string; read: (inp
  * the second round pay for it; the many that pass do not (see the controls in
  * test/repo/architecture.test.ts).
  */
-export const assertLinearEach = (cases: LinearCase[], size: number, baseMs = MIN_BASE_MS) => {
+// The clock is there for the controls, which pass a simulated one; the real checks pass none.
+export const assertLinearEach = (cases: LinearCase[], size: number, baseMs = MIN_BASE_MS, clock: { now: () => number } = performance) => {
   const time = (shape: LinearCase, input: string) => {
-    const start = performance.now();
+    const start = clock.now();
     shape.read(input);
-    const ms = performance.now() - start;
+    const ms = clock.now() - start;
     assert.ok(ms < 30_000, `${shape.name}: ${ms.toFixed(0)} ms for ${input.length} chars, a hang`);
     return ms;
   };
