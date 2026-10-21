@@ -1605,9 +1605,10 @@ yokoten hides your details before some commands run.
   `gh` uses, and the hosts of private remotes. A git name that is your login is added
   once, as the login. They only add lines, and never print a value. Unlike the login, the
   git name is found in a LICENSE line and an author field too: you may hide your real name
-  behind a noreply address and the mailmap. `doctor` tells you which kinds are still
-  missing, such as your city and your domains. Only you can add those, and your real name
-  if git does not have it.
+  behind a noreply address and the mailmap. When the file has a mark, of any kind, the
+  `private-marks` check is ok. Only a file with no marks is missing. `doctor` then offers
+  the kinds it can't find, such as your city and your domains, as an optional note. Only
+  you can add those, and your real name if git does not have it.
 - **More control: `yokoten marks`.** Alone, it counts your marks by kind, never the values.
   `yokoten marks add` adds one of your own: type it in the terminal, where it is not shown,
   or pipe it in. It is never a word on the command line, which your shell history keeps.

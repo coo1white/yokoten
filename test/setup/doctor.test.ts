@@ -612,6 +612,34 @@ test('doctor: exits 0 on a set-up project with steps to do, and 1 on a problem (
   assert.equal(sandbox.run(['doctor', '--session']).status, 0, 'a session always starts');
 });
 
+// #522: install fills the git name, so the marks are in place. One run gives one answer.
+test('install then doctor: the private-marks lines agree, in full doctor and a session (#522)', async () => {
+  const sandbox = makeSandbox();
+  const name = ['Kit', 'Sample'].join(' ');
+  sandbox.git('config', 'user.name', name);
+  const installed = await sandbox.call(['install']);
+  assert.equal(installed.status, 0, installed.stderr);
+  const marksLines = (text: string) => text.split('\n').filter((line) => /private.marks?|private marks/.test(line));
+  const said = [installed.stdout, installed.stderr];
+  const full = await sandbox.call(['doctor']);
+  said.push(full.stdout, full.stderr);
+  const lines = marksLines(full.stdout);
+  assert.ok(lines.some((line) => /^ +ok +private-marks$/.test(line)), lines.join('\n'));
+  assert.match(lines.join('\n'), /^ +note +private-mark-kinds: optional: add your city or your domains too/m);
+  for (const line of [...lines, ...marksLines(installed.stdout)]) assert.doesNotMatch(line, /MISSING|missing|may lack|already has what/, line);
+  const session = await sandbox.call(['doctor', '--session']);
+  said.push(session.stdout, session.stderr);
+  assert.deepEqual(marksLines(session.stdout), [], 'a session says nothing about marks that are in place');
+  const json = JSON.parse((await sandbox.call(['doctor', '--json'])).stdout) as { findings: { id: string }[] };
+  assert.ok(!json.findings.some((found) => found.id === 'private-marks'), 'no private-marks finding');
+  assert.ok(!said.some((text) => /kit|sample/i.test(text)), 'no output holds the name');
+  // The positive control: a file with no marks is missing, in both. A shared name is never added.
+  sandbox.git('config', 'user.name', 'Test');
+  writeFileSync(join(sandbox.home, '.config/yokoten/private-marks'), '# only a comment\n');
+  assert.match((await sandbox.call(['doctor'])).stdout, /^ +MISSING private-marks: ~\/\.config\/yokoten\/private-marks is missing or has no marks; run `(npx )?yokoten marks add`/m);
+  assert.match((await sandbox.call(['doctor', '--session'])).stdout, /private-marks is missing or has no marks/);
+});
+
 test('doctor: the plugin, when on, stands in for install', async () => {
   const sandbox = makeSandbox();
   const machine = async () => (await sandbox.call(['doctor'])).stdout;
@@ -1221,13 +1249,13 @@ test('privacyNotes: the mailmap, and the kinds of mark yokoten cannot find; neve
   const home = makeTempDir('yokoten-privacy-');
   const env = { HOME: home, GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
   const notes = () => privacyNotes(env, null).map((note) => `${note.name}: ${note.finding.what}; ${note.finding.fix}`);
-  assert.deepEqual(notes(), [
-    'mailmap: git log and git show print your name and email as they are; run `yokoten install`; it sets a git mailmap outside every repo',
-    // The name is not asked for: install adds the git name (#434).
-    'private-mark-kinds: your private marks may lack your city, your domains; run `yokoten marks add` and type one; it is not shown',
-  ]);
+  // No marks at all: the private-marks check says so, and no offer adds a second answer (#522).
+  assert.deepEqual(notes(), ['mailmap: git log and git show print your name and email as they are; run `yokoten install`; it sets a git mailmap outside every repo']);
   execFileSync('git', ['config', '--global', 'mailmap.file', '~/.config/yokoten/mailmap'], { env: { ...process.env, ...env } });
   mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
+  // Only the name install found: the other kinds are an optional offer. The name is not asked for (#434).
+  writeFileSync(join(home, '.config', 'yokoten', 'private-marks'), '# added by yokoten from this machine: git name\nJane Example\n');
+  assert.deepEqual(notes(), ["private-mark-kinds: optional: add your city or your domains too; yokoten can't find them on its own; run `yokoten marks add` and type one; it is not shown"]);
   writeFileSync(join(home, '.config', 'yokoten', 'private-marks'), 'Jane Example\nFakeville\njanex.dev\n');
   assert.deepEqual(notes(), []);
   execFileSync('git', ['config', '--global', 'mailmap.file', '/elsewhere/mailmap'], { env: { ...process.env, ...env } });
