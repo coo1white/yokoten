@@ -18,7 +18,7 @@ import { place } from '../../rules/message.ts';
 import { loadMarks, scanText } from '../../rules/privacy.ts';
 import { chat, KEY_HINT, type LlamaConfig, llamaConfig, type Message } from '../../agents/llama.ts';
 import { findRulesGap } from '../init.ts';
-import { orList, testLanguages } from './test-commands.ts';
+import { languagesWithTests, orList, testLanguages } from './test-commands.ts';
 import { type Found, gitConfig, hasIssueTemplate, hasPrTemplate, ROAD, road, securityLacking, todoFiles } from '../road.ts';
 
 /** `unknown`: yokoten can't check the step from here (a server setting, in a session). */
@@ -94,14 +94,17 @@ function ownCi(root: string): string[] {
   ];
 }
 
-/** A test command the project has, said in a few words; empty when none is found. */
+/**
+ * A test command the project has, said in a few words; empty when none is found. A project
+ * file alone is no test command: only a test folder, test files, or a test script counts (#551).
+ */
 function testCommand(root: string): string {
   const scripts = packageJson(root).scripts as Record<string, unknown> | undefined;
   const test = typeof scripts?.test === 'string' ? scripts.test : '';
   // npm init writes a test script that only fails.
   if (test && !/no test specified/.test(test)) return 'package.json has a test script';
   // The same table as doctor's tests step, so both name the same command.
-  const found = testLanguages(root);
+  const found = languagesWithTests(root);
   return found.length ? `${orList(found.map((l) => l.runner))} (${found.map((l) => l.language).join(', ')})` : '';
 }
 
@@ -133,7 +136,12 @@ export function facts(root: string, env: Env): Fact[] {
   plain('runtime', '.yokoten/ is this version', existsSync(join(root, '.yokoten')) ? '.yokoten/ is another version' : 'no .yokoten/ runtime');
 
   const tests = testCommand(root);
-  add('tests', tests ? 'done' : 'missing', tests || 'no test command found (package.json, Makefile or a project file such as go.mod)');
+  if (tests) add('tests', 'done', tests);
+  else {
+    // A project file alone is no tests: name the command to use once tests exist (#551).
+    const found = testLanguages(root);
+    add('tests', 'missing', found.length ? `${orList(found.map((l) => l.runner))} (${found.map((l) => l.language).join(', ')}) once tests exist` : 'no test command found (package.json, Makefile or a project file such as go.mod)');
+  }
 
   const ci = ownCi(root);
   if (found.get('ci')) add('ci', 'done', 'CI runs `yokoten check`');
