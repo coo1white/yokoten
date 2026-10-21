@@ -423,6 +423,44 @@ test('gh api fields and input files are read', () => {
   assert.equal(post('gh api repos/o/r/issues -f body="all clean"'), null);
 });
 
+// The file bash hands gh, with an email; a clean decoy where the guard used to look (#470).
+test('a body file under ~ is refused unless HOME is a full path (#470)', () => {
+  const dir = makeTempDir('yokoten-470-');
+  writeFileSync(join(dir, 'b.md'), `write to ${email}\n`);
+  mkdirSync(join(dir, '~'));
+  writeFileSync(join(dir, '~', 'b.md'), 'clean\n');
+  const postIn = (env: Env, command: string) => checkCommand(command, { env: { YOKOTEN_PRIVATE_MARKS: postMarks, ...env }, config: DEFAULTS, cwd: dir });
+  for (const env of [{}, { HOME: '' }, { HOME: 'relative' }]) {
+    for (const command of ['gh issue create --title "check: a" -F ~/b.md', 'gh issue create --title "check: a" --body-file ~/b.md', 'gh issue create --title "check: a" -F ~other/b.md']) {
+      const f = postIn(env, command);
+      assert.equal(f?.id, 'unreadable-command', `${JSON.stringify(env)} ${command}`);
+      assert.match(formatFinding(f), /full path/);
+    }
+  }
+  assert.equal(postIn({ HOME: dir }, 'gh issue create --title "check: a" -F ~/b.md')?.id, 'email');
+  assert.equal(postIn({ HOME: dir }, 'gh issue create --title "check: a" -F ~other/b.md')?.id, 'unreadable-command');
+});
+
+test('a body file with .. goes up from the real folder, as the kernel does (#470)', () => {
+  const dir = makeTempDir('yokoten-470-');
+  const real = join(dir, 'real');
+  mkdirSync(join(real, 'sub'), { recursive: true });
+  writeFileSync(join(real, 'b.md'), `write to ${email}\n`);
+  writeFileSync(join(dir, 'b.md'), 'clean\n');
+  const link = join(dir, 'link');
+  symlinkSync(join(real, 'sub'), link);
+  const postIn = (env: Env, cwd: string, command: string) => checkCommand(command, { env: { YOKOTEN_PRIVATE_MARKS: postMarks, ...env }, config: DEFAULTS, cwd });
+  // The working folder is a symlink.
+  assert.equal(postIn({ HOME: postDir }, link, 'gh issue create --title "check: a" -F ../b.md')?.id, 'email');
+  assert.equal(postIn({ HOME: postDir }, link, 'gh issue create --title "check: a" --body-file=../b.md')?.id, 'email');
+  assert.equal(postIn({ HOME: postDir, YOKOTEN_RELEASE_APPROVAL: '1' }, link, 'gh release create v1 --notes-file ../b.md')?.id, 'email');
+  assert.equal(postIn({ HOME: postDir }, postDir, `gh issue create --title "check: a" -F ${link}/../b.md`)?.id, 'email');
+  // HOME is a symlink.
+  assert.equal(postIn({ HOME: link }, postDir, 'gh issue create --title "check: a" -F ~/../b.md')?.id, 'email');
+  // Control: no symlink, and `..` still finds the file.
+  assert.equal(postIn({ HOME: postDir }, join(real, 'sub'), 'gh issue create --title "check: a" -F ../b.md')?.id, 'email');
+});
+
 test('a secret is named by kind, never printed', () => {
   const f = post(`gh pr comment 1 --body "use ${token}"`);
   assert.equal(f?.id, 'secret');
@@ -477,6 +515,32 @@ test('a stdin body: only the heredoc is read, not the rest of the command (#391 
   assert.equal(post(`cd /srv/quietvale-site && gh pr create --title "feat: add t" --body-file - <<'EOF'\nall clean\nEOF`), null);
   assert.equal(post(`gh pr comment 3 --body-file - <<'EOF'\nfrom QuietVale\nEOF`)?.id, 'private-mark');
   assert.equal(post('gh pr comment 3 --body-file -'), null, 'stdin from another program is not seen');
+});
+
+test('a heredoc whose end word the guard does not read exactly: the rest of the text is scanned (#466)', () => {
+  const head = 'gh issue create --title t -F - ';
+  for (const command of [
+    // bash ends the body at `E:F`; the guard reads no plain name, so it scans to the end.
+    `${head}<<'E:F'\nfrom QuietVale\nE:F`,
+    // bash ends the body at `EOF`, not at a line `E`: the lines after `E` are posted too.
+    `${head}<<"E"OF\nclean\nE\nfrom QuietVale\nEOF`,
+    `${head}<<E'OF'\nclean\nE\nfrom QuietVale\nEOF`,
+    `${head}<<'E'OF\nclean\nE\nfrom QuietVale\nEOF`,
+    // bash ends the body only at a line that is the word exactly: `EOF ` and `EOF\r` don't.
+    `${head}<<'EOF'\nclean\nEOF \nfrom QuietVale\nEOF`,
+    `${head}<<'EOF'\nclean\nEOF\r\nfrom QuietVale\nEOF`,
+  ]) {
+    assert.equal(post(command)?.id, 'private-mark', command);
+  }
+  // Plain end words, bare or quoted, with a space or a dash before them.
+  for (const word of ["'EOF'", '"EOF"', 'EOF', "-'EOF'", " 'EOF'", '- EOF']) {
+    assert.equal(post(`${head}<<${word}\nfrom QuietVale\nEOF`)?.id, 'private-mark', word);
+    assert.equal(post(`${head}<<${word}\nall clean\nEOF`), null, word);
+  }
+  // A line continuation inside the end word: the whole command is refused (#439).
+  assert.equal(post(`${head}<<E\\\nF\nclean\nE\nfrom QuietVale\nEF`)?.id, 'unreadable-command');
+  // A here-string is not a heredoc.
+  assert.equal(post(`${head}<<< 'all clean'\necho done`), null);
 });
 
 test('a relative body file follows cd; one the guard cannot place stops the command (#391 review)', () => {

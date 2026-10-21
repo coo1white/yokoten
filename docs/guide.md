@@ -715,6 +715,14 @@ limit, checkout keeps no token, and a new push cancels the old run on the same p
 request. Add your tests as a job in `yokoten.yml` and to the `needs` list of `ci`. A
 private repo can keep CI off: see [A private repo without CI](#a-private-repo-without-ci).
 
+When a workflow is already there, `init` checks whether you changed it. The kit keeps a
+list of every version it wrote. A file that matches one of them, Windows line ends or not,
+is a copy you never changed. `init` then updates it to the newest version and says so.
+`init` never commits, so `git restore <file>` brings the old one back. A file with your
+changes is kept as it is. `init` and full `doctor` show the command that compares it with
+the kit's newest copy; `doctor` says it once for each kit version. A symlink is kept too:
+`init` never writes through one.
+
 In `yokoten.yml`, a `changes` job reads which files a pull request changes. The pull
 request is docs-only when each file is under `docs/` or `changes/`, or is a `README.md`
 or `CHANGELOG.md`. A job of yours can then skip a docs-only pull request; the comment
@@ -746,7 +754,7 @@ It puts three safe defaults in `.github/` too:
 | Command | What it does |
 |---------|--------------|
 | `install` | Skills into `~/.claude/skills` and `~/.agents/skills`, agents into `~/.claude/agents`, a SessionStart `doctor` hook, a user-level command guard, and an empty private-marks file. The two hooks go to Claude Code, and to Codex and Gemini CLI when `~/.codex` or `~/.gemini` already exists. It adds the marks it finds on this machine, and sets a git mailmap. See [Privacy](#privacy) |
-| `init [dir]` | Puts the practices into a project. Adds files; keeps any that are already there and says so. It also reads GitHub through `gh` and says which standard labels and milestone it would add. It never changes GitHub. Without `gh`, a sign-in or a GitHub remote, it says what it skipped |
+| `init [dir]` | Puts the practices into a project. Adds files; keeps any that are already there and says so. A kit workflow you never changed gets the newest version. It also reads GitHub through `gh` and says which standard labels and milestone it would add. It never changes GitHub. Without `gh`, a sign-in or a GitHub remote, it says what it skipped |
 | `init --github --yes [--remove-default-labels] [--board]` | Adds the missing standard labels, and a milestone "First release" when no milestone is open. When a closed milestone already has that title, the new one is "Next release". A closed milestone is never reopened. A standard label that is there gets the standard colour and description. With 8 areas or fewer in `yokoten.json`, it adds one grey label per area. A second run changes nothing. GitHub's default labels outside the set (`question`, `wontfix` and others) are deleted only with `--remove-default-labels`. `--board` also makes a board linked to the repo; it needs the gh token's `project` scope |
 | `init --no-ci` | Keeps CI off: adds `"ci"` to `"notNow"` in `yokoten.json`, writes no workflow and no Dependabot config, and removes those files when they are still the kit's copy. See [A private repo without CI](#a-private-repo-without-ci) |
 | `update [dir] [--write]` | Shows what this yokoten changes in the core rules of the project's `AGENTS.md`. `--write` replaces them, and keeps the "This project" part as it is. See [Updating the rules](#updating-the-rules) |
