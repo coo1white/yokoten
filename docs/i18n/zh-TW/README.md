@@ -16,6 +16,7 @@
 
 [![ci](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml/badge.svg)](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue)](../../../LICENSE)
+[![npm](https://img.shields.io/npm/v/yokoten?logo=npm)](https://www.npmjs.com/package/yokoten)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A522.18-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 
 </div>
@@ -89,9 +90,10 @@ agent 想 force push，yokoten 把它擋下來，說明原因，再給出修正�
 - **[使用指南](../../guide.md)**：12 條規則、所有指令、運作方式，還有它做不到的事（英文；也有[簡體中文版](../zh-CN/guide.md)）。
 - **[伺服器設定](../../server.md)**：在 GitHub 上保護 `main` 分支和發布用的 tag（英文）。
 - **[決策紀錄](../../records/)**：為什麼這樣設計（英文）。
+- **[更新紀錄](../../../CHANGELOG.md)**：每個版本改了什麼（英文）。
 - **[參與開發](../../../AGENTS.md)**：參與 yokoten 開發要遵守的規則（英文）。
 - **[資安](../../../.github/SECURITY.md)**：發現資安問題時怎麼回報（英文）。
 
 ---
 
-<p align="center"><sub>MIT · 由 <a href="https://coolwhite.us/">coolwhite</a> 與 Claude（透過 Claude Code）一起打造，許多想法來自工廠現場的經驗。<br>方向和決定來自 coolwhite，大部分程式碼和審查由 Claude 完成。</sub></p>
+<p align="center"><sub>MIT · 由 <a href="https://coolwhite.us/">coolwhite</a> 與 Claude（透過 Claude Code）一起打造，許多想法來自工廠現場的經驗。</sub></p>
