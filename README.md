@@ -15,6 +15,7 @@ A guide and a guard for you and your AI agents.
 
 [![ci](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml/badge.svg)](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![npm](https://img.shields.io/npm/v/yokoten?logo=npm)](https://www.npmjs.com/package/yokoten)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A522.18-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 
 </div>
@@ -93,6 +94,7 @@ The [roadmap](docs/guide.md#where-this-is-going) has the five stages. The
 - **[The guide](docs/guide.md)**: the twelve rules, every command, how it works, and what it can't do.
 - **[Server setup](docs/server.md)**: protect `main` and release tags on GitHub.
 - **[Decisions](docs/records/)**: why it's built this way.
+- **[Changelog](CHANGELOG.md)**: what each version changed.
 - **[Contributing](AGENTS.md)**: the rules for working on yokoten.
 - **[Security](.github/SECURITY.md)**: how to report a security problem.
 
