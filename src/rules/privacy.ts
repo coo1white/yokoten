@@ -905,7 +905,16 @@ function optionValue(words: string[], index: number, names: Set<string>): { valu
   return null;
 }
 
-/** The bodies of the heredocs in a command's text, in order. Quoting around `<<` is not read: a body found twice is scanned twice. */
+// A heredoc end word the guard reads exactly: blanks, then a plain name, bare or in single
+// or double quotes, then a blank, an operator or the end of the line. Bash reads more (`<<'E:F'`,
+// `<<"E"OF`, `<<E\` and a new line); the guard does not, and scans the rest of the text instead.
+const END_WORD = /^[ \t]*(?:([A-Za-z_]\w*)|'([A-Za-z_]\w*)'|"([A-Za-z_]\w*)")(?=[ \t;&|<>)]|$)/;
+
+/**
+ * The bodies of the heredocs in a command's text, in order. Quoting around `<<` is not read: a
+ * body found twice is scanned twice. A `<<` whose end word is not a plain name makes the rest
+ * of the text, from the next line, one body: the guard scans more than bash posts, never less.
+ */
 export function heredocBodies(text: string): string[] {
   const bodies: string[] = [];
   const lines = text.split('\n');
@@ -917,13 +926,22 @@ export function heredocBodies(text: string): string[] {
       const body: string[] = [];
       for (; index < lines.length; index++) {
         const candidate = strip ? lines[index].replace(/^\t+/, '') : lines[index];
-        if (candidate === delimiter || candidate.trimEnd() === delimiter) break;
+        if (candidate === delimiter) break; // exactly, as bash: `EOF ` or `EOF\r` does not end it
         body.push(lines[index]);
       }
       bodies.push(body.join('\n'));
       continue;
     }
-    for (const match of line.matchAll(/(?<!<)<<(-?)\s*(['"]?)([A-Za-z_][\w.-]*)\2/g)) waiting.push({ delimiter: match[3], strip: match[1] === '-' });
+    for (const match of line.matchAll(/(?<!<)<<(?!<)(-?)/g)) {
+      const rest = line.slice((match.index as number) + match[0].length);
+      const word = END_WORD.exec(rest);
+      if (!word) {
+        // An end word the guard does not read exactly: the body is the rest of the text.
+        bodies.push(lines.slice(index + 1).join('\n'));
+        return bodies;
+      }
+      waiting.push({ delimiter: word[1] ?? word[2] ?? word[3], strip: match[1] === '-' });
+    }
   }
   return bodies;
 }
@@ -1167,11 +1185,20 @@ export function checkPost(
   gh: GhCommand,
   { env, privacy, cwd, command, from }: { env: Env; privacy?: Partial<Pick<Config['privacy'], 'allow' | 'skipOwnName'>>; cwd: string | null; command: string; from?: string | null },
 ): Finding | null {
+  // The path goes to the kernel as bash hands it to gh, never normalized: join and resolve
+  // drop `..` as text, but the kernel goes up from the real folder when the working folder
+  // or home is a symlink (#470).
   const readFile = (path: string): FileRead => {
-    const home = env.HOME;
-    const full = path.startsWith('~/') && home ? join(home, path.slice(2)) : path;
+    let full = path;
+    if (path.startsWith('~')) {
+      // Bash takes `~` from HOME, or from the system when HOME is unset; only a full HOME
+      // tells the guard which, and `~name` is another user's home (#470).
+      const home = homeOf(env);
+      if (!home || (path !== '~' && !path.startsWith('~/'))) return 'missing';
+      full = `${home}/${path.slice(2)}`;
+    }
     if (!isAbsolute(full) && cwd === null) return 'missing';
-    const at = resolve(cwd ?? '', full);
+    const at = isAbsolute(full) || !cwd ? full : `${cwd}/${full}`;
     try {
       const stat = statSync(at);
       if (!stat.isFile() || stat.size > MAX_FILE_BYTES) return 'skip';

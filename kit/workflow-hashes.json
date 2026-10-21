@@ -1,0 +1,19 @@
+{
+  "about": "Every version of each kit workflow that init has written, oldest first, the newest last (#456). Each is the SHA-256 of the file as init wrote it ({{cli}} filled in, Unix line ends, one newline at the end). init replaces a project's copy that matches one of these; a test fails when a kit workflow changes and its new hash is not added at the end.",
+  "files": {
+    ".github/workflows/issue.yml": [
+      "facb4835349a8f753333d6bdb479f710abb670a5984d5f93564e08a0bc2019ba"
+    ],
+    ".github/workflows/pr.yml": [
+      "9a34f87bb843d8a7bd0943fdd9e833ba2559d64db4420ebe986ee414494c6282"
+    ],
+    ".github/workflows/yokoten.yml": [
+      "c3391dbb07f079e3032fd556e2ded40a5fdf56c0ef0ce85b82d7d3925d323140",
+      "4ec62098d7f0f42a611beb524739d69488115698c28d2fec0ce51c165a95e909",
+      "2cca6861bf652596968f26814958bcff1c2ad22b610231c48e98cc8d9fc81e91",
+      "b55287f73e6f4258f776bdda200fe576ea1089ce12742e0aab2ae0462751d8f7",
+      "defd4acdfa6868cd5275d0a1fbacdafc54c9a000d065a04b8a416bd92762cbd8",
+      "a5b384b7309c0bd58f44edb0aa9c86d709fd0e244be988c6442d3429901962d9"
+    ]
+  }
+}

@@ -1,6 +1,7 @@
 // What init and install share: where yokoten itself lives, copying its runtime, and
 // writing files without stepping on what is already there.
 
+import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -53,7 +54,8 @@ function removeLeftovers(dest: string): void {
  * no global install. The machine copy also takes the kit, which install and the machine
  * checks read. A project's copy takes the kit's AGENTS.md, so `doctor` and `update` in
  * CI and the hooks compare against the kit the project vendored (#145), and the kit's
- * lessons, so `doctor` from the copy runs the lessons the project vendored too (#77).
+ * lessons, so `doctor` from the copy runs the lessons the project vendored too (#77), and the
+ * kit's workflows with their list of hashes, so `doctor` can tell an old copy from an edited one (#456).
  * The copy is replaced whole; `VERSION` says which release it is.
  * It copies the .ts files, also from the npm package: `dest` is not under node_modules,
  * so Node runs them there as they are.
@@ -69,7 +71,7 @@ export function copyRuntime(dest: string, { withKit = false, copy = cpSync, rena
   if (isSameOrInside(HOME_DIR, dest)) return 'kept';
   // A yokoten with no lessons yet has no kit/lessons: the project copy then has none either.
   const lessons = join('kit', 'lessons');
-  const parts = ['bin', 'src', 'package.json', ...(withKit ? ['kit'] : [join('kit', 'project', 'AGENTS.md'), lessons])].filter((part) => part !== lessons || existsSync(join(HOME_DIR, part)));
+  const parts = ['bin', 'src', 'package.json', ...(withKit ? ['kit'] : [join('kit', 'project', 'AGENTS.md'), join('kit', 'project', '.github', 'workflows'), join('kit', 'workflow-hashes.json'), lessons])].filter((part) => part !== lessons || existsSync(join(HOME_DIR, part)));
   const holder = parts.find((part) => isSameOrInside(dest, join(HOME_DIR, part)));
   if (holder) {
     const where = relative(resolveReal(HOME_DIR), resolveReal(dest)).split(sep).join('/');
@@ -132,3 +134,35 @@ export function writeManaged(path: string, content: string): 'wrote' | 'updated'
 
 /** Fill `{{name}}` in a template. */
 export const render = (text: string, vars: Record<string, string>): string => text.replace(/\{\{(\w+)\}\}/g, (m, k) => (k in vars ? vars[k] : m));
+
+/** Text as init compares a project's file with the kit's: Unix line ends, one newline at the end (#456). */
+export const normalizeText = (text: string): string => `${text.replace(/\r\n/g, '\n').replace(/\n*$/, '')}\n`;
+
+/**
+ * A file's text as init compares it with a kit copy: a file whose every line ends in CRLF (a
+ * Windows checkout) in Unix line ends; any other text as it is. A file with one CRLF among LF
+ * lines, or an added blank line at the end, is not the kit's copy (#456).
+ */
+export const lfText = (text: string): string => (text.includes('\r\n') && !/(?:^|[^\r])\n/.test(text) ? text.replace(/\r\n/g, '\n') : text);
+
+/** The SHA-256 of `lfText(text)`: the bytes of a file, except that an all-CRLF file counts as an LF one. */
+export const fileHash = (text: string): string => createHash('sha256').update(lfText(text)).digest('hex');
+
+/**
+ * The SHA-256 of `text` after `normalizeText`, as kit/workflow-hashes.json lists it. A kit
+ * workflow must end in one newline and must not use `{{version}}`: a version in the text
+ * would change its hash with every release and break the old hashes.
+ */
+export const textHash = (text: string): string => createHash('sha256').update(normalizeText(text)).digest('hex');
+
+/** The list of every version of each kit workflow init has written, the newest last (#456). */
+export const WORKFLOW_HASHES = join(KIT, 'workflow-hashes.json');
+
+/** The hashes in kit/workflow-hashes.json by the file's path in a project; empty when this copy has no list. */
+export function readWorkflowHashes(file: string = WORKFLOW_HASHES): Record<string, string[]> {
+  try {
+    return JSON.parse(readFileSync(file, 'utf8')).files ?? {};
+  } catch {
+    return {};
+  }
+}
