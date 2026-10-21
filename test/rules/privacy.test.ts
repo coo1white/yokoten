@@ -13,7 +13,7 @@ import {
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { assertLinear } from '../../scripts/linear.ts';
-import { at, makeTempDir } from '../repo/helpers.ts';
+import { at, makeRepoTemplate, makeTempDir } from '../repo/helpers.ts';
 import { DEFAULTS, type Env } from '../../src/rules/config.ts';
 import { checkCommand } from '../../src/rules/guards.ts';
 import { formatFinding } from '../../src/rules/message.ts';
@@ -675,16 +675,25 @@ test('normalizeRemote: linear on long input (#447)', () => {
   for (const [name, make] of inputs) assertLinear(name, make, (text) => normalizeRemote(text, '/base'));
 });
 
+/** git in `repo`, with `base` as its home and no global config. */
+const allowGit = (base: string, repo: string) => (...args: string[]) =>
+  execFileSync('git', args, { cwd: repo, env: { PATH: process.env.PATH, HOME: base, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(base, 'gitconfig'), TZ: 'UTC' }, stdio: 'ignore' });
+
+// The repo before its remote, built once per test process (#475).
+const copyAllowRepo = makeRepoTemplate((repo) => {
+  const git = allowGit(repo, repo);
+  git('init', '-q');
+  git('config', 'user.name', 'Test');
+  git('config', 'user.email', `1+test${at}users.noreply.github.com`);
+});
+
 /** A repo with an origin remote, or none, and a marks file and an allow file beside it. */
 function allowRepo(remote: string | null) {
   const base = makeTempDir('yokoten-allow-');
   const repo = join(base, 'repo');
   mkdirSync(repo);
-  const git = (...args: string[]) =>
-    execFileSync('git', args, { cwd: repo, env: { PATH: process.env.PATH, HOME: base, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(base, 'gitconfig'), TZ: 'UTC' }, stdio: 'ignore' });
-  git('init', '-q');
-  git('config', 'user.name', 'Test');
-  git('config', 'user.email', `1+test${at}users.noreply.github.com`);
+  copyAllowRepo(repo);
+  const git = allowGit(base, repo);
   if (remote) git('remote', 'add', 'origin', remote);
   const marks = join(base, 'private-marks');
   writeFileSync(marks, 'quietvale\nquietvale labs\n');
