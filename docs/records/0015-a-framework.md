@@ -72,6 +72,11 @@ changed. A change never stops updates to the parts the user did not change.
    (0014's "Never" tier).
 4. **The five stages still pace it.** A user meets one stage at a time; nothing is
    locked ([0004](0004-the-road.md)).
+5. **Lessons flow back.** The method goes down to every project through the kit. What a
+   project learns comes back up: a gap, a guard that missed, a manual step, or a
+   better way of working is noted with `yokoten learn --upstream`, becomes a yokoten
+   issue, and once it lands, reaches every project on the next update. That is
+   *yokoten*: what one project learns, every project gets.
 
 ## How we check it
 
