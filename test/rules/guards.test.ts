@@ -2098,3 +2098,23 @@ test('worker list: a listed path stays a worker with .git moved away (#566)', ()
   addWorkerPath(env, other);
   assert.deepEqual(loadWorkerPaths(env), [realpathSync(other)], 'the next mark drops the gone entry');
 });
+
+// #566: `yokoten worker unmark` is the lead's: the command guard refuses it for a
+// worker-role session, whatever folder the command names, and lets the lead through.
+test('worker list: the guard refuses `yokoten worker unmark` for a worker, not the lead (#566)', () => {
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  for (const command of [
+    'yokoten worker unmark /tmp/wt',
+    'cd /tmp && yokoten worker unmark /tmp/wt',
+    'node bin/yokoten.ts worker unmark /tmp/wt',
+    'npx yokoten worker unmark /tmp/wt',
+    'yokoten worker unmark',
+  ]) {
+    const found = checkCommand(command, { env: worker, cwd: process.cwd() });
+    assert.equal(found?.id, 'worker-mark', `should refuse: ${command}`);
+    assert.match(found?.what ?? '', /only the lead unmarks a worktree/, command);
+  }
+  assert.equal(checkCommand('yokoten worker unmark /tmp/wt', { env: {}, cwd: process.cwd() }), null, 'the lead');
+  assert.equal(checkCommand('yokoten worker mark /tmp/wt', { env: worker, cwd: process.cwd() }), null, 'mark is not unmark');
+  assert.equal(checkCommand('yokoten bot -- echo hi', { env: worker, cwd: process.cwd() })?.id, 'worker-push', 'bot keeps its own refusal');
+});

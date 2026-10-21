@@ -239,7 +239,7 @@ export function runWorker(invocation: Invocation): number {
   const options = parse('worker', invocation.args);
   if (typeof options === 'string') return usage(invocation, options);
   const [action, dir] = options.positional;
-  if ((action !== 'mark' && action !== 'unmark') || dir === undefined) return usage(invocation, 'say what to do and where: yokoten worker mark <dir>');
+  if ((action !== 'mark' && action !== 'unmark') || dir === undefined) return usage(invocation, `say what to do and where: yokoten worker ${action === 'unmark' ? 'unmark' : 'mark'} <dir>`);
   const fail = (line: string) => {
     print(invocation, [`yokoten worker: ${line}`], invocation.stderr);
     return 1;

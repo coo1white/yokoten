@@ -443,6 +443,28 @@ function checkWorkerSends(words: string[]): Finding | null {
   return null;
 }
 
+/**
+ * For a worker: `yokoten worker unmark`, which would clear its own worker mark (#566),
+ * or null. The role is the session's own, set from its folders before the command runs,
+ * so a `cd` away inside the command never evades it. Only the lead unmarks a worktree.
+ */
+function checkWorkerUnmark(words: string[]): Finding | null {
+  let from = 0;
+  for (const program of findPrograms(words)) {
+    const at = words.indexOf(program, from);
+    if (at === -1) continue;
+    from = at + 1;
+    const name = programName(program);
+    const cli = YOKOTEN_CLI.test(name) ? at : SCRIPT_RUNNERS.has(name) ? words.findIndex((word, index) => index > at && YOKOTEN_CLI.test(programName(word))) : -1;
+    if (cli === -1) continue;
+    const plain = plainArgs(withoutShellRedirects(words, cli + 1));
+    if (plain[0] === 'worker' && plain[1] === 'unmark') {
+      return finding('worker-mark', '`yokoten worker unmark` clears a worker mark, and only the lead unmarks a worktree', 'commit in your worktree and report; the lead unmarks after review');
+    }
+  }
+  return null;
+}
+
 // gh `api` options that take the next word as their value, besides the method and fields.
 const API_VALUES = new Set(['-H', '--header', '-q', '--jq', '-t', '--template', '--hostname', '-p', '--preview', '--cache']);
 
@@ -557,8 +579,8 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
     const saw = (isMarked: (word: string) => boolean) => writeRisk(words, { heredoc, plainText, plainAt, fills, writers, isMarked });
     const reason =
       checkGit(words, { env, config, cwd, rules }) ??
-      // A worker hears its own rule first: what it may not send, and the git folder (#555).
-      (env.YOKOTEN_ROLE === 'worker' ? (checkWorkerSends(words) ?? checkWorkerWrites(words, { folder: postCwd, command })) : null) ??
+      // A worker hears its own rule first: what it may not send, its own unmark, and the git folder (#555, #566).
+      (env.YOKOTEN_ROLE === 'worker' ? (checkWorkerSends(words) ?? checkWorkerUnmark(words) ?? checkWorkerWrites(words, { folder: postCwd, command })) : null) ??
       checkHooksEnvironment(words) ??
       checkPublish(words, env) ??
       checkBlocked(words, config?.commands.block ?? {}) ??

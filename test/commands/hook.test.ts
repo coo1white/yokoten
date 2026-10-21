@@ -630,3 +630,33 @@ test('worker list: mark keeps the role with .git moved away; unmark clears it (#
   assert.equal((await muse({ path: join(tree, 'AGENTS.md') })).status, 0);
   assert.equal((await muse({ command: 'git push' })).status, 0);
 });
+
+// #566: `worker unmark` is the lead's: from a marked tree with no YOKOTEN_ROLE (a Muse
+// session), even `cd /tmp && yokoten worker unmark <tree>` is refused, since the role
+// comes from the session's folders, never from the command text.
+test('worker list: a marked worker cannot unmark its own worktree, even after cd-ing away (#566)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', '{}\n');
+  sandbox.write('AGENTS.md', '# rules\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const tree = join(makeTempDir('yokoten-tree-'), 'wt');
+  sandbox.git('worktree', 'add', '-q', '-b', 'task', tree);
+  const top = realpathSync(tree);
+  assert.equal((await sandbox.call(['worker', 'mark', tree])).status, 0);
+  // A Muse call: no YOKOTEN_ROLE, the hook's cwd in the marked tree.
+  const muse = (command: string, folder = tree) =>
+    sandbox.call(['hook', '--agent', 'muse'], { cwd: folder, input: JSON.stringify({ cwd: folder, hook_event_name: 'PreToolUse', tool_name: 'bash', tool_input: { command } }) });
+  // Positive controls: the plain unmark, and one that cds away first.
+  for (const command of [`yokoten worker unmark ${top}`, `cd /tmp && yokoten worker unmark ${top}`]) {
+    const result = await muse(command);
+    assert.equal(result.status, 2, command);
+    assert.match(result.stderr, /only the lead unmarks a worktree/, command);
+  }
+  // Negative control: the lead, in an unmarked checkout with no worker role, passes.
+  assert.equal((await muse(`yokoten worker unmark ${top}`, sandbox.repo)).status, 0);
+  // The mark is still there: nothing was cleared.
+  const gitDir = runChild('git', ['rev-parse', '--absolute-git-dir'], { cwd: tree }).stdout.trim();
+  assert.ok(existsSync(join(gitDir, 'yokoten-worker')));
+  sandbox.git('worktree', 'remove', '--force', tree);
+});

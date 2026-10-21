@@ -108,7 +108,7 @@ export const RULES = {
   'worker-mark': {
     rule: 'a worker does not change the worker mark on its worktree',
     why: 'some agents pass their hooks no YOKOTEN_ROLE, so the mark is what tells the guard that the session is a worker',
-    check: 'for a worker, the tool-call guard stops a command that writes, moves, removes, links or changes the mode of a file in a git folder (a glob that can match .git or the mark counts) or redirects into one, git with GIT_DIR or --git-dir, `git worktree` other than `list`, and an edit inside a git folder, by real path. A read that names .git passes. A .git link it cannot read makes the session a worker. These are the plain ways; the server and keeping credentials away from the worker are the lock',
+    check: 'for a worker, the tool-call guard stops a command that writes, moves, removes, links or changes the mode of a file in a git folder (a glob that can match .git or the mark counts) or redirects into one, git with GIT_DIR or --git-dir, `git worktree` other than `list`, `yokoten worker unmark`, and an edit inside a git folder, by real path. A read that names .git passes. A .git link it cannot read makes the session a worker. These are the plain ways; the server and keeping credentials away from the worker are the lock',
     docs: guide('managing-agents-like-a-team'),
   },
   email: {
