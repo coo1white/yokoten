@@ -1,0 +1,35 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f \"$(git rev-parse --show-toplevel)/bin/yokoten.ts\" ] 2>/dev/null || { echo 'yokoten: the hook cannot run, because bin/yokoten.ts is missing. Restore it from git' >&2; exit 1; }; command -v node >/dev/null 2>&1 || { echo 'yokoten: the guard cannot run, because node is not on PATH for this agent; run yokoten doctor in a terminal' >&2; exit 1; }; { err=$( ( node --max-old-space-size=256 \"$(git rev-parse --show-toplevel)/bin/yokoten.ts\" hook --agent muse 2>&1 1>&3 3>&-; c=$?; printf x; exit $c ) 2>/dev/null ); code=$?; } 3>&1; case $code in 0|2) printf %s \"${err%x}\" >&2;; *) echo \"yokoten's guard failed (exit $code), so the command is refused; run \\`yokoten doctor\\`\" >&2; code=2;; esac; exit $code"
+          }
+        ],
+        "matcher": "bash|write_file|edit_file|apply_patch"
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f \"$(git rev-parse --show-toplevel)/bin/yokoten.ts\" ] 2>/dev/null || { echo 'yokoten: the hook cannot run, because bin/yokoten.ts is missing. Restore it from git' >&2; exit 1; }; node \"$(git rev-parse --show-toplevel)/bin/yokoten.ts\" hook --stop --agent muse"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f \"$(git rev-parse --show-toplevel)/bin/yokoten.ts\" ] 2>/dev/null || { echo 'yokoten: the hook cannot run, because bin/yokoten.ts is missing. Restore it from git' >&2; exit 1; }; node \"$(git rev-parse --show-toplevel)/bin/yokoten.ts\" doctor --session --agent muse"
+          }
+        ]
+      }
+    ]
+  }
+}
