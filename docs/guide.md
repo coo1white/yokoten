@@ -122,6 +122,14 @@ The last three are server settings. Full `doctor` reads them through `gh api`, a
 Without `gh`, a sign-in, the network or a GitHub remote, they are **can't check**, never done.
 A session never calls the network, so there they are always **can't check**.
 
+**Another host.** doctor reads the host from the `origin` remote. On GitHub it reads the
+server as above. On another host, such as Gitea or GitLab, the core works the same: the
+rules, the guard and the commit check. The steps that only the host can judge are `tests`,
+`ci`, `labels`, `milestone`, `titles`, `codeowners`, `bot`, `review` and the three server
+steps. There each one is **can't check**, and says what it asks, so you can set it up by
+hand. They never hold the stage. A self-hosted server's name is never printed: doctor calls
+it "this host". A Gitea adapter comes next (issue #505).
+
 `labels` and `milestone` in stage 2 are read the same way. The standard labels are `bug`, `feat`,
 `docs`, `refactor`, `ci`, `owner`, `incident`, `good first issue`, `hotfix`, and the tier labels
 `tier A`, `tier B` and `tier C`. `init` shows which are missing, and `init --github --yes` adds
@@ -1643,8 +1651,8 @@ Honest limits:
   release or change CI. A worker's shell write to a lead-only file is stopped only when
   the guard sees the file in the command: a path from a variable or stdin (`xargs rm`,
   `find -exec`, `git apply < x.patch`), or a script that writes it, gets past.
-- **Server settings are read on GitHub only.** Another host shows the server steps as
-  **can't check**. `doctor` does not check the bot's rights yet.
+- **Server settings are read on GitHub only.** Another host shows the steps that only the
+  host can judge as **can't check**, with what each one asks ([What a session sees](#what-a-session-sees)). `doctor` does not check the bot's rights yet.
 - **Claude Code first.** Agents follow Claude Code's format.
   Skills are the open SKILL.md format, so `install` also puts them in `~/.agents/skills`,
   where Codex, Gemini CLI, Copilot, Cursor and other agents find them. The tool-call

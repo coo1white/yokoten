@@ -35,13 +35,14 @@ import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import type { FolderTrust } from '../agents/folder-trust.ts';
 import { commentedFile, HAND_ADD, handAddJson, type HookState, mergeHandAdds } from '../agents/hooks-file.ts';
-import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
+import { type Gh, readServer, type ServerSettings, type Unread } from '../host/github.ts';
+import { type Host, hostOf, isNoAdapter, noAdapter } from '../host/hosts.ts';
 import { findTempDirs, readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advice/unsaved.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
 import { compareCoreRules, compareVersions, hookCliPath, isSelf, readCoreRules, summarizeUpdate, withGitReads, workflowNotes } from './init.ts';
 import { assumeEmptyFolder, gitConfig } from '../run/check.ts';
 import { countOwnMarks, fillMarks, filledLines, trySafely, installedPieces, isOnPath, launcherDir, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
-import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
+import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, uncheckedText, walk } from './road.ts';
 
 /**
  * One check outside the road: its name in the report, whether it is in place, and the
@@ -1052,12 +1053,10 @@ export function listBoardSteps(server: ServerRead): string[] {
   return server.boards.flatMap((board) => BOARD_BY_HAND.map((step) => `  by hand     board "${board.title}": ${step}`));
 }
 
-/** The server settings of the project's origin remote, or why they can't be read. */
-function readOrigin(root: string, gh: Gh, env: Env): ServerSettings | Unread {
-  const remote = gitConfig(root, 'remote.origin.url', env);
-  if (!remote) return { unread: 'there is no origin remote yet', fix: 'add one on GitHub to check the server settings, or check them by hand' };
-  const repo = repoOf(remote);
-  return repo ? readServer(gh, repo) : { unread: 'the origin remote is not on a host yokoten knows (GitHub for now)', fix: 'add a GitHub origin remote, or check these settings by hand' };
+/** The server settings of the origin's host, or why they can't be read. A host with no adapter is read without the network (#504). */
+function readOrigin(host: Host, gh: Gh): ServerSettings | Unread {
+  if (host.kind === 'none') return { unread: 'there is no origin remote yet', fix: 'add one on GitHub to check the server settings, or check them by hand' };
+  return host.kind === 'github' ? readServer(gh, host.repo) : noAdapter(host);
 }
 
 /**
@@ -1251,7 +1250,9 @@ function doctorRun(
   if (!root) return { ok: !failed.length, lines, report: { ...base, ok: !failed.length, repo: false, stage: null, next: null, findings } };
 
   // Read only, and only in full doctor: a session never calls the network (record 0004).
-  const server: ServerRead = session ? undefined : gh ? readOrigin(root, gh, env) : { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' };
+  // A host with no adapter needs no network, so a session knows it too (#504).
+  const host = hostOf(gitConfig(root, 'remote.origin.url', env));
+  const server: ServerRead = host.kind === 'other' ? noAdapter(host) : session ? undefined : gh ? readOrigin(host, gh) : { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' };
   const where = walk(road(root, env, ROAD, server, config), config.notNow);
   // Full doctor from the command line adds the obvious marks first (#390); a session writes nothing.
   // With no home folder, the checks that read or keep settings there are skipped, never crash (#404).
@@ -1325,7 +1326,7 @@ function doctorRun(
         const f = stepFinding(step, root, env, { server, config, elsewhere });
         findings.push(f);
         note = stepText(f);
-      } else if (mark === "can't check" && step.unchecked) note = step.unchecked(server);
+      } else if (mark === "can't check") note = uncheckedText(step, server);
       steps.push(state);
       lines.push(`    ${mark.padEnd(11)} ${step.key}${step.standard ? ` (${step.standard})` : ''}${note ? `: ${note}` : ''}`);
     }
@@ -1431,8 +1432,11 @@ function doctorRun(
     lines.push(`  ${c.mark.padEnd(11)} ${c.id}${c.mark === 'ok' ? '' : `: ${stepText(c.finding)}`}`);
     if (c.mark !== 'ok') notes.push(c.finding);
   }
-  if (settings[0].id === 'server-settings') lines.push('  check these by hand:', ...BY_HAND.map((s) => `    ${s}`));
-  lines.push(...OWNER_STEPS.map((s) => `  not checked ${s}`));
+  // On a host with no adapter, each road step says what it asks; these lists name GitHub's menus (#504).
+  if (!isNoAdapter(server)) {
+    if (settings[0].id === 'server-settings') lines.push('  check these by hand:', ...BY_HAND.map((s) => `    ${s}`));
+    lines.push(...OWNER_STEPS.map((s) => `  not checked ${s}`));
+  }
   lines.push(...listBoardSteps(server));
   // The road has no failed mark: a step is done, to do, not now or can't check. Steps
   // left are the way ahead, not problems, so they never fail doctor (#208).
