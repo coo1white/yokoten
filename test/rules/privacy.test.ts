@@ -20,7 +20,10 @@ import { checkCommand } from '../../src/rules/guards.ts';
 import { formatFinding } from '../../src/rules/message.ts';
 import {
   describeMark,
+  foldLine,
+  foldText,
   hasMark,
+  isBotProgram,
   hideHome,
   homeIn,
   loadMarkKinds,
@@ -2053,6 +2056,89 @@ test('makeRedactor: hides a mark in any Unicode form, and keeps the rest of the 
   // The check and redact agree.
   for (const text of [`by ${DECOMPOSED}`, WIDE(SHORT), `s​am`, DOTTED.toUpperCase(), `${WIDE(SHORT)}ple`, `${DOTTED}x`]) {
     assert.equal(redact(text) === text, !scanText(text, { file: 'a', marks: [FULL, ACCENTED, DOTTED.toLowerCase(), SHORT] }).length, `redact and the check disagree on ${text}`);
+  }
+});
+
+// ---- The fold after the adversarial review (#507) ----
+
+// A run of combining marks of mixed classes: a normalize of one long run grows with its square.
+const MIXED_MARKS = (n: number) => `a${'̖́'.repeat(n / 2)}`;
+
+test('the fold: a long run of mixed combining marks stays linear (#507)', () => {
+  const redact = makeRedactor({ marks: [FULL] }, {});
+  assertLinear('hasMark', MIXED_MARKS, (text) => hasMark(text, FULL), 1 << 12);
+  assertLinear('scanText', MIXED_MARKS, (text) => scanText(text, { file: 'a.md', marks: [FULL] }), 1 << 12);
+  assertLinear('redact', MIXED_MARKS, redact, 1 << 12);
+  // The reviewer's input, through the guard: 240k characters, then the mark.
+  const body = join(postDir, 'marks-run.md');
+  writeFileSync(body, `${MIXED_MARKS(240_000)}\nQuietVale\n`);
+  const start = performance.now();
+  assert.equal(post(`gh issue create --title t --body-file ${body}`)?.id, 'private-mark');
+  const ms = performance.now() - start;
+  assert.ok(ms < 1000, `${ms.toFixed(0)} ms for 240k characters`);
+  rmSync(body);
+});
+
+test('the fold: the fast fold of the check gives the same text as the fold of redact (#507)', () => {
+  const pieces = ['a', 'é', '̖', '́', '​', 'ｓ', 'ᄀ', 'ᅡ', 'ᆫ', 'ｶ', 'ﾞ', '你', '，', 'İ', '𝅥', 'x', ' '];
+  let seed = 7;
+  const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648);
+  for (let round = 0; round < 500; round++) {
+    let text = '';
+    for (let i = next() % 80; i > 0; i--) text += pieces[next() % pieces.length];
+    assert.equal(foldLine(text).text, foldText(text).text, JSON.stringify(text));
+  }
+  for (const text of [MIXED_MARKS(100), `x${'́'.repeat(31)}y`, '́'.repeat(62)]) assert.equal(foldLine(text).text, foldText(text).text);
+});
+
+test('the fold: what the check found before the fold, it still finds (#507)', () => {
+  const part = `${SHORT}_1a`;
+  const hangul = String.fromCharCode(0xc11c, 0xc544);
+  const cases: [string, string][] = [
+    // A zero-width character next to a name is an edge, as before.
+    [`x​${SHORT} y`, SHORT],
+    [`ab​${FULL}`, FULL],
+    [`${SHORT}​́`, SHORT],
+    // An accent or a final consonant on the last letter of a mark found as a part.
+    [`${part}́`, part],
+    [`user ${part}á x`, part],
+    [`${hangul}ᆫ`, hangul],
+    [String.fromCharCode(0xc11c, 0xc548), hangul],
+  ];
+  for (const [text, mark] of cases) {
+    assert.ok(hasMark(text, mark), `hasMark: ${JSON.stringify(text)}`);
+    assert.equal(scanText(text, { file: 'a.md', marks: [mark] }).length, 1, `scanText: ${JSON.stringify(text)}`);
+    assert.notEqual(makeRedactor({ marks: [mark] }, {})(text), text, `redact: ${JSON.stringify(text)}`);
+  }
+  // Still whole words: a letter with an accent after a name blocks it.
+  assert.ok(!hasMark(`${SHORT.slice(0, 2)}ḿ`, SHORT));
+});
+
+test('the fold: a mark of only zero-width characters is no mark, and the longest folded mark goes first (#507)', () => {
+  assert.equal(hasMark('nothing here', '​'), false);
+  assert.deepEqual(scanText('nothing here', { file: 'a.md', marks: ['​‍'] }), []);
+  assert.equal(makeRedactor({ marks: ['​​​', DOMAIN] }, {})(`by me at ${DOMAIN} ok`), 'by me at <host> ok');
+  assert.equal(makeRedactor({ marks: [`${SHORT}${'​'.repeat(5)}`, FULL] }, {})(`by ${FULL} ok`), 'by <mark> ok');
+});
+
+test('a refusal folds the marks before it names a program (#507)', () => {
+  const dir = makeTempDir('yokoten-wide-marks-');
+  const marks = join(dir, 'private-marks');
+  writeFileSync(marks, `${WIDE('quietvale')}\n`);
+  const body = join(dir, 'body.md');
+  writeFileSync(body, 'All clean.\n');
+  const bot = `node bin/yokoten.ts bot -- gh pr create --title t --body-file ${body}`;
+  const run = (command: string) => checkCommand(command, { env: { HOME: dir, YOKOTEN_PRIVATE_MARKS: marks }, config: DEFAULTS, cwd: dir });
+  assert.ok(run(`${bot} | quietvale-tool x`)?.what.includes('and a pipe in this command'));
+  assert.ok(run(`quietvale-tool x; ${bot}`)?.what.includes('and a command in this command'));
+  rmSync(dir, { recursive: true });
+});
+
+test('the bot program is never a variable: no `=` or `,` in its path (#506)', () => {
+  for (const program of ['GH_REPO=evil/yokoten', 'LD_PRELOAD=x/yokoten', 'PATH=/tmp/x/yokoten', 'a,b/yokoten']) {
+    assert.equal(isBotProgram(program), false, program);
+    const command = `${program} bot -- gh issue create --title t --body "QuietVale ships"`;
+    assert.equal(lonePost(command), null, program);
   }
 });
 
