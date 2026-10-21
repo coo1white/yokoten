@@ -7,26 +7,26 @@ import { loadConfig } from '../rules/config.ts';
 import { init, updateCoreRules } from '../setup/init.ts';
 import { type Ask, install, uninstall } from '../setup/install.ts';
 import { readOriginUrl, setUpPlanning } from '../setup/plan.ts';
-import { env, parse, print, requireRoot, usage } from './shared.ts';
+import { type Invocation, type Output, parse, print, requireRoot, usage } from './shared.ts';
 
-export function runInit(): number {
-  const options = parse('init');
-  if (typeof options === 'string') return usage(options);
-  if (options.flags.has('--yes') && !options.flags.has('--github')) return usage('--yes goes with --github');
-  if (options.flags.has('--remove-default-labels') && !options.flags.has('--github')) return usage('--remove-default-labels goes with --github');
-  if (options.flags.has('--board') && !options.flags.has('--github')) return usage('--board goes with --github');
-  const dir = resolve(options.positional[0] ?? '.');
+export function runInit(invocation: Invocation): number {
+  const options = parse('init', invocation.args);
+  if (typeof options === 'string') return usage(invocation, options);
+  if (options.flags.has('--yes') && !options.flags.has('--github')) return usage(invocation, '--yes goes with --github');
+  if (options.flags.has('--remove-default-labels') && !options.flags.has('--github')) return usage(invocation, '--remove-default-labels goes with --github');
+  if (options.flags.has('--board') && !options.flags.has('--github')) return usage(invocation, '--board goes with --github');
+  const dir = resolve(invocation.cwd, options.positional[0] ?? '.');
   // Checked before anything is written (#205): a typo never becomes a new folder.
   if (!existsSync(dir)) {
-    print([`yokoten init: ${options.positional[0]} does not exist; nothing was written. Create it and run \`git init\` there first.`], process.stderr);
+    print(invocation, [`yokoten init: ${options.positional[0]} does not exist; nothing was written. Create it and run \`git init\` there first.`], invocation.stderr);
     return 1;
   }
-  const root = requireRoot(dir);
+  const root = requireRoot(invocation, dir);
   if (!root) return 1;
   // Read first: a broken yokoten.json stops init before it writes a file.
   const { areas } = loadConfig(root);
   const done = init(root, undefined, { noCi: options.flags.has('--no-ci') });
-  print(done.lines);
+  print(invocation, done.lines);
   // The host is changed only when asked (#10): it is a remote, and other people see it.
   // Without --yes, init only reads it and says what it would do, or what it skipped.
   const planning = setUpPlanning(ghIn(root), readOriginUrl(root), {
@@ -37,24 +37,24 @@ export function runInit(): number {
   });
   // --github --yes asked for changes on GitHub; a skip made none, so it fails (#208).
   const isRefused = planning.skipped && options.flags.has('--yes');
-  print(planning.lines, planning.ok && !isRefused ? process.stdout : process.stderr);
-  if (isRefused) print(['yokoten init: --github --yes changed nothing on GitHub (the reason is above). The project files are as listed above.'], process.stderr);
+  print(invocation, planning.lines, planning.ok && !isRefused ? invocation.stdout : invocation.stderr);
+  if (isRefused) print(invocation, ['yokoten init: --github --yes changed nothing on GitHub (the reason is above). The project files are as listed above.'], invocation.stderr);
   return planning.ok && !isRefused && done.ok ? 0 : 1;
 }
 
-export function runUpdate(): number {
+export function runUpdate(invocation: Invocation): number {
   // Its own command, not an init flag: init promises to add only, never to overwrite (#120).
-  const options = parse('update');
-  if (typeof options === 'string') return usage(options);
-  const dir = resolve(options.positional[0] ?? '.');
+  const options = parse('update', invocation.args);
+  if (typeof options === 'string') return usage(invocation, options);
+  const dir = resolve(invocation.cwd, options.positional[0] ?? '.');
   if (!existsSync(dir)) {
-    print([`yokoten update: ${options.positional[0]} does not exist; nothing to update.`], process.stderr);
+    print(invocation, [`yokoten update: ${options.positional[0]} does not exist; nothing to update.`], invocation.stderr);
     return 1;
   }
-  const root = requireRoot(dir);
+  const root = requireRoot(invocation, dir);
   if (!root) return 1;
   const { ok, lines } = updateCoreRules(root, { write: options.flags.has('--write') });
-  print([`yokoten update: ${lines[0]}`, ...lines.slice(1)], ok ? process.stdout : process.stderr);
+  print(invocation, [`yokoten update: ${lines[0]}`, ...lines.slice(1)], ok ? invocation.stdout : invocation.stderr);
   return ok ? 0 : 1;
 }
 
@@ -62,8 +62,8 @@ export function runUpdate(): number {
  * Ask one question on the terminal and read one line back, or null at end of input. Install
  * is synchronous, so it reads stdin a byte at a time; it is used only when stdin is a terminal.
  */
-const askOnTerminal: Ask = (question) => {
-  process.stdout.write(`${question} `);
+const askOnTerminal = (stdout: Output): Ask => (question) => {
+  stdout.write(`${question} `);
   const byte = Buffer.alloc(1);
   const bytes: number[] = [];
   for (;;) {
@@ -80,21 +80,21 @@ const askOnTerminal: Ask = (question) => {
   }
 };
 
-export function runInstall(): number {
-  const options = parse('install');
-  if (typeof options === 'string') return usage(options);
+export function runInstall(invocation: Invocation): number {
+  const options = parse('install', invocation.args);
+  if (typeof options === 'string') return usage(invocation, options);
   // The PATH question needs someone to answer it: never in a pipe, a hook or CI (#433).
-  const ask = process.stdin.isTTY && process.stdout.isTTY ? askOnTerminal : undefined;
+  const ask = process.stdin.isTTY && invocation.stdout.isTTY ? askOnTerminal(invocation.stdout) : undefined;
   // gh may reach the network for the login: three seconds at most.
-  const done = install(env, { cwd: process.cwd(), gh: ghIn(process.cwd(), 3000), ask });
-  print(done.lines);
+  const done = install(invocation.env, { cwd: invocation.cwd, gh: ghIn(invocation.cwd, 3000), ask });
+  print(invocation, done.lines);
   return done.ok ? 0 : 1;
 }
 
-export function runUninstall(): number {
-  const options = parse('uninstall');
-  if (typeof options === 'string') return usage(options);
-  const done = uninstall(env);
-  print(done.lines);
+export function runUninstall(invocation: Invocation): number {
+  const options = parse('uninstall', invocation.args);
+  if (typeof options === 'string') return usage(invocation, options);
+  const done = uninstall(invocation.env);
+  print(invocation, done.lines);
   return done.ok ? 0 : 1;
 }

@@ -53,10 +53,12 @@ const sayIgnored = (ignored: IgnoredPart) =>
  * worktree in another folder, or a session started above the repo, loads no project hook,
  * yet still gets the file's own repo's file rules. A file takes the rules of the deepest
  * repo that holds it.
+ *
+ * `cwd` is the folder the hook runs in, for an action that names no folder and has no root.
  */
 export function judge(
   action: Action,
-  { root, config, env, commandsOnly = false, repos = [] }: { root: string | null; config: Config; env: Env; commandsOnly?: boolean; repos?: Repo[] },
+  { root, config, env, cwd, commandsOnly = false, repos = [] }: { root: string | null; config: Config; env: Env; cwd?: string; commandsOnly?: boolean; repos?: Repo[] },
 ): Finding | null {
   // Set before the command check: the lead-only check on shell writes reads it (#402).
   if (action.worker) env = { ...env, YOKOTEN_ROLE: 'worker' };
@@ -68,13 +70,13 @@ export function judge(
     // Titles follow a project's own rules: only its hook checks them, never the user-level one (#391).
     const titles = !commandsOnly && root !== null && existsSync(join(root, 'yokoten.json'));
     const ruledRepos = ruled.map((repo) => ({ root: repo.root, leadOnly: repo.config.leadOnly }));
-    const reason = checkCommand(action.command, { env, config, cwd: action.cwd ?? root ?? undefined, titles, repos: ruledRepos });
+    const reason = checkCommand(action.command, { env, config, cwd: action.cwd ?? root ?? cwd, titles, repos: ruledRepos });
     if (reason) return reason;
   }
   if (!ruled.length) return null;
   const reals = ruled.map((repo) => ({ config: repo.config, real: real(repo.root) }));
   for (const p of action.paths) {
-    const file = real(resolve(action.cwd ?? root ?? process.cwd(), p));
+    const file = real(resolve(action.cwd ?? root ?? cwd ?? process.cwd(), p));
     let best: { rel: string; config: Config } | null = null;
     for (const repo of reals) {
       const rel = relative(repo.real, file);
@@ -178,9 +180,12 @@ export function startGuardEarly(): void {
   early ??= startGuard();
 }
 
-/** The worker `startGuardEarly` started, once, or else a new one. */
-export function takeGuard(): Guard {
-  const guard = early ?? startGuard();
+/**
+ * The worker `startGuardEarly` started, once, or undefined when none was: `judgeWithDeadline`
+ * then starts one only when it judges. A command run in-process, as in a test, starts none early.
+ */
+export function takeGuard(): Guard | undefined {
+  const guard = early ?? undefined;
   early = null;
   return guard;
 }

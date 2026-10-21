@@ -81,11 +81,11 @@ export function selfTest(): string[] {
 /**
  * A shell write to AGENTS.md from Claude Code's plugin worker, `yokoten:worker`, with no
  * YOKOTEN_ROLE (#402): the call must read as a worker's and be stopped, and the same call
- * from the lead must pass. The repo is the file system's root, taken as given, and
- * nothing is written.
+ * from the lead must pass. The repo is the root of the file system yokoten runs from, taken
+ * as given, and nothing is written.
  */
 export function isShellControlCaught(): boolean {
-  const root = parse(process.cwd()).root;
+  const root = parse(HOME_DIR).root;
   const call = (agentType?: string) => ({ agent_type: agentType, cwd: root, tool_input: { command: 'sed -i s/a/b/ AGENTS.md' } });
   const options = { root, config: DEFAULTS, env: {} };
   return judge(readToolCall(call('yokoten:worker')), options) !== null && judge(readToolCall(call()), options) === null;

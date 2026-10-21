@@ -18,39 +18,39 @@ import { check, checkHistory, GitReadError, gitReadFinding, historyTimeZones, re
 import { isCodeFile, nameNotes } from '../run/names.ts';
 import { type AllowEntry, isLink, loadMarks, machineAllowed, machineAllowFile, makeRedactor, matchingEntries, NO_HOME, readMachineAllow, repoKey } from '../rules/privacy.ts';
 import { machineMarks, machineUserNames } from '../setup/install.ts';
-import { args, bullets, env, parse, print, printJson, requireRoot, say, showOnPullRequest, usage } from './shared.ts';
+import { bullets, type Invocation, parse, print, printJson, requireRoot, say, showOnPullRequest, usage } from './shared.ts';
 
 /** How long `check --pr <number>` waits for gh. */
 const GH_TIMEOUT_MS = 15000;
 
-export function runCheck(): number {
-  const options = parse('check');
-  if (typeof options === 'string') return usage(options);
+export function runCheck(invocation: Invocation): number {
+  const options = parse('check', invocation.args);
+  if (typeof options === 'string') return usage(invocation, options);
   const modes = ['--staged', '--history', '--pr', '--issue'].filter((m) => options.flags.has(m));
-  if (modes.length > 1) return usage(`${modes.join(' and ')} can't be used together`);
+  if (modes.length > 1) return usage(invocation, `${modes.join(' and ')} can't be used together`);
   const mode = modes[0]?.slice(2) ?? 'tree';
   // A number goes with --pr only (#377): that pull request, read through gh.
   const number = options.positional[0];
-  if (number !== undefined && mode !== 'pr') return usage(`unexpected argument ${number}: a number goes with --pr`);
+  if (number !== undefined && mode !== 'pr') return usage(invocation, `unexpected argument ${number}: a number goes with --pr`);
   const json = options.flags.has('--json');
-  const root = requireRoot(process.cwd(), json ? (missing) => ({ check: mode, ok: false, findings: [missing], notes: [] }) : undefined);
+  const root = requireRoot(invocation, invocation.cwd, json ? (missing) => ({ check: mode, ok: false, findings: [missing], notes: [] }) : undefined);
   if (!root) return 1;
   const config = loadConfig(root);
   const name = `yokoten check${mode === 'pr' || mode === 'issue' ? ` --${mode}` : ''}`;
   const notes: Finding[] = [];
   let problems: Finding[];
   try {
-    problems = runMode(mode, root, config, notes, { name, json, number });
+    problems = runMode(invocation, mode, root, config, notes, { name, json, number });
   } catch (err) {
     // A git read the check depends on gave no answer (#403): one finding, and the check fails.
     if (!(err instanceof GitReadError)) throw err;
     problems = [gitReadFinding(err)];
   }
   if (problems === SKIPPED) return 0;
-  if (json) printJson({ check: mode, ok: !problems.length, findings: problems, notes });
-  else if (!problems.length) print([`${name}: ok${mode === 'history' ? ' (every commit on every branch)' : ''}`]);
-  else print([`${name}: ${problems.length} problem(s)`, ...bullets(problems)], process.stderr);
-  showOnPullRequest(`yokoten check${mode === 'tree' ? '' : ` --${mode}`}`, problems, notes, { json, isPlaceAFile: mode !== 'history' });
+  if (json) printJson(invocation, { check: mode, ok: !problems.length, findings: problems, notes });
+  else if (!problems.length) print(invocation, [`${name}: ok${mode === 'history' ? ' (every commit on every branch)' : ''}`]);
+  else print(invocation, [`${name}: ${problems.length} problem(s)`, ...bullets(problems)], invocation.stderr);
+  showOnPullRequest(invocation, `yokoten check${mode === 'tree' ? '' : ` --${mode}`}`, problems, notes, { json, isPlaceAFile: mode !== 'history' });
   return problems.length ? 1 : 0;
 }
 
@@ -58,14 +58,15 @@ export function runCheck(): number {
 const SKIPPED: Finding[] = [];
 
 /** The problems of one mode of `check`; its notes go into `notes`, and some are printed as they are found. */
-function runMode(mode: string, root: string, config: ReturnType<typeof loadConfig>, notes: Finding[], { name, json, number }: { name: string; json: boolean; number?: string }): Finding[] {
+function runMode(invocation: Invocation, mode: string, root: string, config: ReturnType<typeof loadConfig>, notes: Finding[], { name, json, number }: { name: string; json: boolean; number?: string }): Finding[] {
+  const { env } = invocation;
   let problems: Finding[];
   if (mode === 'issue') {
     const issue = readIssue(env);
     if (!issue) {
       const skipped = 'no issue in this run (it reads the CI event); nothing to check';
-      if (json) printJson({ check: mode, ok: true, skipped, findings: [], notes: [] });
-      else print([`${name}: ${skipped}`]);
+      if (json) printJson(invocation, { check: mode, ok: true, skipped, findings: [], notes: [] });
+      else print(invocation, [`${name}: ${skipped}`]);
       return SKIPPED;
     }
     // An event that can't be read is one finding (#267), so --json and the summary still work.
@@ -74,8 +75,8 @@ function runMode(mode: string, root: string, config: ReturnType<typeof loadConfi
     const pr = number === undefined ? readPullRequest(root, env) : readNumberedPullRequest(root, ghIn(root, GH_TIMEOUT_MS), number);
     if (!pr) {
       const skipped = 'no pull request in this run (it reads the CI event); nothing to check';
-      if (json) printJson({ check: mode, ok: true, skipped, findings: [], notes: [] });
-      else print([`${name}: ${skipped}`]);
+      if (json) printJson(invocation, { check: mode, ok: true, skipped, findings: [], notes: [] });
+      else print(invocation, [`${name}: ${skipped}`]);
       return SKIPPED;
     }
     // An event or commits that can't be read are one finding (#267), never git's raw error.
@@ -87,7 +88,7 @@ function runMode(mode: string, root: string, config: ReturnType<typeof loadConfi
       const deleted = new Set(pr.deleted);
       const readAtHead = (file: string): string | null => (deleted.has(file) ? null : readGit(root, ['show', `${pr.head}:${file}`]).toString('utf8'));
       const printNotes = (found: Finding[], label: string) => {
-        if (found.length && !json) print([`${name}: note: ${found.length} ${label}`, ...bullets(found.slice(0, 10)), ...(found.length > 10 ? [`- and ${found.length - 10} more`] : [])]);
+        if (found.length && !json) print(invocation, [`${name}: note: ${found.length} ${label}`, ...bullets(found.slice(0, 10)), ...(found.length > 10 ? [`- and ${found.length - 10} more`] : [])]);
       };
       // Plain English (record 0005): long sentences in changed Markdown are notes, never failures.
       const long: Finding[] = [];
@@ -115,7 +116,7 @@ function runMode(mode: string, root: string, config: ReturnType<typeof loadConfi
       const large = largeDiff(changedLines(pr.numstat));
       if (large) {
         notes.push(large);
-        if (!json) print([`${name}: note: ${formatFinding(large)}`]);
+        if (!json) print(invocation, [`${name}: note: ${formatFinding(large)}`]);
       }
       problems = checkPullRequest(pr, config);
       // Each change file the pull request leaves (#132) must be one `yokoten changelog` can read.
@@ -135,11 +136,11 @@ function runMode(mode: string, root: string, config: ReturnType<typeof loadConfi
   } else {
     problems = mode === 'history' ? checkHistory(root, { config, env }) : check(root, { config, env, staged: mode === 'staged', notes });
     // A translation behind its English source (#87) is a note, for the whole tree only.
-    if (!json) for (const note of notes) print([`${name}: note: ${formatFinding(note)}`]);
-    const zones = mode === 'history' && config.privacy.utc ? historyTimeZones(root) : 0;
+    if (!json) for (const note of notes) print(invocation, [`${name}: note: ${formatFinding(note)}`]);
+    const zones = mode === 'history' && config.privacy.utc ? historyTimeZones(root, env) : 0;
     if (zones) {
       notes.push(timeZoneNote(zones));
-      if (!json) print([`${name}: note: ${formatFinding(timeZoneNote(zones))}`]);
+      if (!json) print(invocation, [`${name}: note: ${formatFinding(timeZoneNote(zones))}`]);
     }
   }
   return problems;
@@ -163,17 +164,18 @@ export function cutPoint(pending: string, max: number = MAX_PENDING): number {
  * read the marks, or a piece fails, it says so in one line on stderr and passes the rest
  * through as it is. Hiding output must never stop the command it wraps.
  */
-export function runRedact(): number | Promise<number> {
-  const options = parse('redact');
-  if (typeof options === 'string') return usage(options);
+export function runRedact(invocation: Invocation): number | Promise<number> {
+  const { env, stdout } = invocation;
+  const options = parse('redact', invocation.args);
+  if (typeof options === 'string') return usage(invocation, options);
   let isWarned = false;
   const warn = (err: unknown) => {
-    if (!isWarned) say(`yokoten redact: output is not hidden, because ${String((err as Error)?.message ?? err).split('\n')[0]}\n`, process.stderr);
+    if (!isWarned) say(invocation, `yokoten redact: output is not hidden, because ${String((err as Error)?.message ?? err).split('\n')[0]}\n`, invocation.stderr);
     isWarned = true;
   };
   let redact = (text: string) => text;
   try {
-    const found = machineMarks(env, { cwd: process.cwd() });
+    const found = machineMarks(env, { cwd: invocation.cwd });
     redact = makeRedactor(
       {
         marks: loadMarks(env),
@@ -195,11 +197,11 @@ export function runRedact(): number | Promise<number> {
       warn(err);
       redact = (rest) => rest;
     }
-    process.stdout.write(out);
+    stdout.write(out);
   };
   let pending = '';
   return new Promise((settle) => {
-    process.stdout.on('error', () => settle(0));
+    stdout.on('error', () => settle(0));
     process.stdin.setEncoding('utf8');
     process.stdin.on('data', (chunk: string) => {
       pending += chunk;
@@ -222,35 +224,37 @@ const MARK_ACTIONS = ['allow'];
 const SHAPE = '`yokoten marks allow <mark> --here`, or `yokoten marks allow --remove <mark> --here`';
 
 /** One line on stderr, and exit 1. */
-function refuse(text: string): number {
-  print([`yokoten marks: ${text}`], process.stderr);
+function refuse(invocation: Invocation, text: string): number {
+  print(invocation, [`yokoten marks: ${text}`], invocation.stderr);
   return 1;
 }
 
-export function runMarks(): number {
+export function runMarks(invocation: Invocation): number {
+  const { args } = invocation;
   // After `--`, every word is a word, so a mark may start with `-`.
   const end = args.indexOf('--');
   const options = parse('marks', end === -1 ? args : args.slice(0, end));
   // The parser repeats the word it can't read; here it may be a mark, so it is never shown.
   if (typeof options === 'string') {
-    return usage(options.startsWith('unknown option') ? `an unknown option; to give a mark that starts with -, put it after --, as in yokoten marks allow --here -- <mark>` : `too many words; give one mark, as in ${SHAPE}`);
+    return usage(invocation, options.startsWith('unknown option') ? `an unknown option; to give a mark that starts with -, put it after --, as in yokoten marks allow --here -- <mark>` : `too many words; give one mark, as in ${SHAPE}`);
   }
   const words = [...options.positional, ...(end === -1 ? [] : args.slice(end + 1))];
-  if (words.length > 2) return usage(`too many words; give one mark, as in ${SHAPE}`);
+  if (words.length > 2) return usage(invocation, `too many words; give one mark, as in ${SHAPE}`);
   const [action, mark] = words;
-  if (action === undefined) return usage(`say what to do: ${SHAPE}`);
-  if (!MARK_ACTIONS.includes(action)) return usage(`the action is \`allow\`: ${SHAPE}`);
-  if (mark === undefined || !mark.trim()) return usage(`give the mark: ${SHAPE}`);
-  if (!options.flags.has('--here')) return usage(`add --here: an allow is always for one repo, the one you are in`);
-  return allowHere(mark.trim().toLowerCase(), { isRemoving: options.flags.has('--remove') });
+  if (action === undefined) return usage(invocation, `say what to do: ${SHAPE}`);
+  if (!MARK_ACTIONS.includes(action)) return usage(invocation, `the action is \`allow\`: ${SHAPE}`);
+  if (mark === undefined || !mark.trim()) return usage(invocation, `give the mark: ${SHAPE}`);
+  if (!options.flags.has('--here')) return usage(invocation, `add --here: an allow is always for one repo, the one you are in`);
+  return allowHere(invocation, mark.trim().toLowerCase(), { isRemoving: options.flags.has('--remove') });
 }
 
 /** Past this age, a lock file is from a run that died, and is taken over. */
 const STALE_LOCK_MS = 30_000;
 
 /** Add the mark to this repo's entry in the machine allow file, or with `isRemoving`, take it out. */
-function allowHere(mark: string, { isRemoving }: { isRemoving: boolean }): number {
-  const root = requireRoot(process.cwd());
+function allowHere(invocation: Invocation, mark: string, { isRemoving }: { isRemoving: boolean }): number {
+  const { env } = invocation;
+  const root = requireRoot(invocation, invocation.cwd);
   if (!root) return 1;
   let file: string;
   let marks: string[];
@@ -258,52 +262,52 @@ function allowHere(mark: string, { isRemoving }: { isRemoving: boolean }): numbe
     file = machineAllowFile(env);
     marks = loadMarks(env);
   } catch (err) {
-    if ((err as Error).message === NO_HOME) return refuse(`${NO_HOME}. Set HOME to your home folder`);
-    return refuse("your private-marks file can't be read, so nothing was changed");
+    if ((err as Error).message === NO_HOME) return refuse(invocation, `${NO_HOME}. Set HOME to your home folder`);
+    return refuse(invocation, "your private-marks file can't be read, so nothing was changed");
   }
   // Only a mark the file holds: anything else is not private to this machine, so nothing to allow.
-  if (!isRemoving && !marks.includes(mark)) return refuse('that is not a line of your private-marks file, so there is nothing to allow. Check the spelling, or add it to the file first');
+  if (!isRemoving && !marks.includes(mark)) return refuse(invocation, 'that is not a line of your private-marks file, so there is nothing to allow. Check the spelling, or add it to the file first');
   const key = repoKey(root);
-  if ('none' in key) return refuse(`nothing was changed, because ${key.none}. The allow from this machine is for a repo with one; use "privacy.allow" in yokoten.json instead`);
-  if ('unsure' in key) return refuse(`nothing was changed, because ${key.unsure}`);
+  if ('none' in key) return refuse(invocation, `nothing was changed, because ${key.none}. The allow from this machine is for a repo with one; use "privacy.allow" in yokoten.json instead`);
+  if ('unsure' in key) return refuse(invocation, `nothing was changed, because ${key.unsure}`);
   // A link to the file is kept: the file it points to is the one changed. A link to nothing is refused.
   let target = file;
   if (isLink(file)) {
     try {
       target = realpathSync(file);
     } catch {
-      return refuse("nothing was changed, because this machine's allow file is a link to a file that is not there. Fix the link or remove it");
+      return refuse(invocation, "nothing was changed, because this machine's allow file is a link to a file that is not there. Fix the link or remove it");
     }
   }
   const lock = `${target}.lock`;
   try {
     mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
   } catch {
-    return refuse("nothing was changed, because the allow file's folder can't be written");
+    return refuse(invocation, "nothing was changed, because the allow file's folder can't be written");
   }
   const locked = takeLock(lock);
   if (locked !== 'taken') {
-    return refuse(locked === 'busy' ? 'nothing was changed, because another `yokoten marks` is changing the allow file. Run this again' : "nothing was changed, because the allow file's folder can't be written");
+    return refuse(invocation, locked === 'busy' ? 'nothing was changed, because another `yokoten marks` is changing the allow file. Run this again' : "nothing was changed, because the allow file's folder can't be written");
   }
   try {
     // Read inside the lock, so a change another run made is kept.
     const read = readMachineAllow(env);
-    if ('unsure' in read) return refuse(`nothing was changed, because ${read.unsure}. Fix it or delete it, then run this again`);
+    if ('unsure' in read) return refuse(invocation, `nothing was changed, because ${read.unsure}. Fix it or delete it, then run this again`);
     const found = matchingEntries(read.entries, key);
-    if (found.length > 1) return refuse("nothing was changed, because two entries in this machine's allow file match this repo. Delete one, then run this again");
+    if (found.length > 1) return refuse(invocation, "nothing was changed, because two entries in this machine's allow file match this repo. Delete one, then run this again");
     const entry = found[0];
     const has = entry?.allow.some((allowed) => allowed.toLowerCase() === mark) ?? false;
     let entries: AllowEntry[];
     if (isRemoving) {
       if (!entry || !has) {
-        print(['yokoten marks: that mark is not allowed here, so nothing changed']);
+        print(invocation, ['yokoten marks: that mark is not allowed here, so nothing changed']);
         return 0;
       }
       const left = entry.allow.filter((allowed) => allowed.toLowerCase() !== mark);
       entries = left.length ? read.entries.map((one) => (one === entry ? { ...one, allow: left } : one)) : read.entries.filter((one) => one !== entry);
     } else {
       if (has) {
-        print(['yokoten marks: that mark is already allowed here, so nothing changed']);
+        print(invocation, ['yokoten marks: that mark is already allowed here, so nothing changed']);
         return 0;
       }
       entries = entry ? read.entries.map((one) => (one === entry ? { ...one, allow: [...one.allow, mark] } : one)) : [...read.entries, { remote: key.remote, allow: [mark] }];
@@ -311,13 +315,14 @@ function allowHere(mark: string, { isRemoving }: { isRemoving: boolean }): numbe
     try {
       save(target, entries, read.skipOwnName);
     } catch {
-      return refuse("the allow file can't be written, so nothing was changed");
+      return refuse(invocation, "the allow file can't be written, so nothing was changed");
     }
     // Say what the file now says, never what was meant to happen.
     const now = machineAllowed(env, root);
     const isAllowed = now.allow.includes(mark);
-    if (now.unsure || isAllowed === isRemoving) return refuse(`the allow file does not say what was asked; run \`yokoten doctor\` to see why`);
+    if (now.unsure || isAllowed === isRemoving) return refuse(invocation, `the allow file does not say what was asked; run \`yokoten doctor\` to see why`);
     print(
+      invocation,
       isRemoving
         ? ['yokoten marks: the allow is taken back; the checks stop that mark in this repo again']
         : [
