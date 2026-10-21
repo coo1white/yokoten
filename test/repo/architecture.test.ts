@@ -48,9 +48,9 @@ test('layers: no module imports from a layer above its own', () => {
 // test/run/check.test.ts (#152). A branch that changes a module adds its tests, and their
 // imports, to that module's file, so parallel branches do not meet in one import block.
 // Next to the layer folders, test/ holds repo/: this file and the shared helpers, which
-// check the repo as a whole, not one src module, and invoke.ts, which runs a command
-// in-process (#475).
-const TEST_TOP = ['repo/architecture.test.ts', 'repo/helpers.ts', 'repo/home.ts', 'repo/invoke.ts'];
+// check the repo as a whole, not one src module, git-template.ts, which copies a test repo,
+// and invoke.ts, which runs a command in-process (#475).
+const TEST_TOP = ['repo/architecture.test.ts', 'repo/git-template.ts', 'repo/helpers.ts', 'repo/home.ts', 'repo/invoke.ts'];
 // Modules with no test file of their own. Keep it short: a new module gets its test file.
 const NO_TEST_FILE = [
   'agents/agent-skills.ts', // no tests yet (#152)
@@ -235,6 +235,25 @@ test('temp folders: tests make them with makeTempDir, not with mkdtempSync alone
   assert.ok(paths.includes(TEMP_HELPER), 'the helper is not found; the scan is broken');
   const files = Object.fromEntries(paths.map((p) => [p, readFileSync(join(ROOT, p), 'utf8')]));
   assert.deepEqual(findBareTempDirs(files), [], `make the folder with makeTempDir from ${TEMP_HELPER}: it is removed when the test ends`);
+});
+
+// #475: each sandbox repo is a copy of one template. A copy that shared objects or a path
+// with the template would let one test's commit show up in the next test's repo.
+test('sandbox repos: each is its own copy, on main with the test user, and holds no path to the template (#475)', () => {
+  const first = makeSandbox();
+  const second = makeSandbox();
+  assert.equal(first.git('symbolic-ref', 'HEAD').stdout, 'refs/heads/main\n');
+  assert.equal(first.git('config', 'user.name').stdout, 'Test\n');
+  first.write('a.md', 'a\n');
+  first.git('add', '.');
+  assert.equal(first.git('commit', '-qm', 'a').status, 0);
+  assert.equal(second.git('rev-parse', '-q', '--verify', 'HEAD').status, 1, 'the commit stays in its own copy');
+  assert.equal(makeSandbox().git('rev-parse', '-q', '--verify', 'HEAD').status, 1, 'and is not in the template');
+  for (const sandbox of [first, second]) {
+    const files = readdirSync(join(sandbox.repo, '.git'), { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile());
+    const named = files.filter((entry) => readFileSync(join(entry.parentPath, entry.name), 'utf8').includes(tmpdir()));
+    assert.deepEqual(named, [], 'no file in .git names a temp folder');
+  }
 });
 
 // #436: a child killed by its timeout showed only `actual: null`, and a file that died later

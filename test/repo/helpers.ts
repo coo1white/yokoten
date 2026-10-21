@@ -1,6 +1,7 @@
 // Shared by the test files: the CLI's path, the repo root, a throwaway git repo to run it in,
-// and every declaration that two or more test files use. Each file imports it. The one
-// state is the temp folders below, which it removes when each test ends (#400).
+// and every declaration that two or more test files use. Each file imports it. Its state is
+// the temp folders below, which it removes when each test ends (#400), and the template
+// repos the tests copy, made once per file and removed when it ends (#475).
 
 import './home.ts';
 import { COMPILE_CACHE } from './home.ts';
@@ -29,6 +30,7 @@ import {
   afterEach,
   beforeEach,
 } from 'node:test';
+import { templateRepo } from './git-template.ts';
 import { sourceMarker } from '../../src/run/translations.ts';
 import {
   type Gh,
@@ -85,6 +87,12 @@ export function makeTempDir(prefix = 'yokoten-'): string {
   return path;
 }
 
+/** A new empty folder that outlives the test that made it, removed when the file ends: for a template (#475). */
+function makeFileTempDir(prefix = 'yokoten-template-'): string {
+  if (!tempParent) tempParent = mkdtempSync(join(tmpdir(), 'yokoten-test-'));
+  return mkdtempSync(join(tempParent, prefix));
+}
+
 // ---- Child processes (#436): a loaded machine runs them slowly, never wrongly. ----
 // A test judges what a child did, not how fast: no wall-clock limit. The timeout only stops a
 // child that hangs, so it is generous, and the kill is printed with the running test's name:
@@ -116,26 +124,43 @@ export function runChild(command: string, args: string[], options: Omit<SpawnSyn
   return result;
 }
 
+// A clean environment: no real HOME, no real marks, no role, and commit times in UTC
+// whatever the machine's time zone (#40). No proxy either: the shell's proxy is not
+// passed on, and a call to a fake server on this machine goes to it directly (#138).
+// The sandbox lives in the temp folder; YOKOTEN_TEMP_DIRS turns off that note (#365) so the
+// tests see what they set up. The compile cache stays in Node's own folder, not in the
+// sandbox's home, where bin/yokoten.mjs puts it (#408): the tests list what lands there.
+// No automatic maintenance (#442): git runs it after a commit, in the background on newer
+// versions, and a worktree prune there can delete a `git worktree add` still being made.
+// No gh telemetry (#436): see test/repo/home.ts.
+const sandboxEnv = (home: string) => ({ PATH: process.env.PATH, HOME: home, NODE_COMPILE_CACHE: COMPILE_CACHE, TZ: 'UTC', YOKOTEN_TEMP_DIRS: '', GH_TELEMETRY: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'maintenance.auto', GIT_CONFIG_VALUE_0: 'false', GIT_CONFIG_KEY_1: 'gc.auto', GIT_CONFIG_VALUE_1: '0', NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' });
+
+/** A repo built once per test process by `build`, copied into each folder given (#475): see git-template.ts. */
+export const makeRepoTemplate = (build: (dir: string) => void) => templateRepo(makeFileTempDir, build);
+
+/** Runs git in `cwd` for a template, and fails loudly if it does not work. */
+const templateGit = (cwd: string, env: Record<string, string | undefined>, ...args: string[]) => {
+  const result = runChild('git', args, { cwd, env });
+  assert.equal(result.status, 0, `git ${args.join(' ')}: ${result.stderr}`);
+};
+
+// The sandbox's repo (#475): on main, with a user name and email, and no commit.
+const copySandboxRepo = makeRepoTemplate((repo) => {
+  const env = sandboxEnv(makeFileTempDir('yokoten-template-home-'));
+  templateGit(repo, env, 'init', '-q', '-b', 'main');
+  templateGit(repo, env, 'config', 'user.name', 'Test');
+  templateGit(repo, env, 'config', 'user.email', `1+test${at}users.noreply.github.com`);
+});
+
 export function makeSandbox() {
   const base = makeTempDir();
   const home = join(base, 'home');
   const repo = join(base, 'repo');
   mkdirSync(home);
   mkdirSync(repo);
-  // A clean environment: no real HOME, no real marks, no role, and commit times in UTC
-  // whatever the machine's time zone (#40). No proxy either: the shell's proxy is not
-  // passed on, and a call to a fake server on this machine goes to it directly (#138).
-  // The sandbox lives in the temp folder; YOKOTEN_TEMP_DIRS turns off that note (#365) so the
-  // tests see what they set up. The compile cache stays in Node's own folder, not in the
-  // sandbox's home, where bin/yokoten.mjs puts it (#408): the tests list what lands there.
-  // No automatic maintenance (#442): git runs it after a commit, in the background on newer
-  // versions, and a worktree prune there can delete a `git worktree add` still being made.
-  // No gh telemetry (#436): see test/repo/home.ts.
-  const env = { PATH: process.env.PATH, HOME: home, NODE_COMPILE_CACHE: COMPILE_CACHE, TZ: 'UTC', YOKOTEN_TEMP_DIRS: '', GH_TELEMETRY: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'maintenance.auto', GIT_CONFIG_VALUE_0: 'false', GIT_CONFIG_KEY_1: 'gc.auto', GIT_CONFIG_VALUE_1: '0', NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' };
+  copySandboxRepo(repo);
+  const env = sandboxEnv(home);
   const git = (...args: string[]) => runChild('git', args, { cwd: repo, env });
-  git('init', '-q', '-b', 'main');
-  git('config', 'user.name', 'Test');
-  git('config', 'user.email', `1+test${at}users.noreply.github.com`);
   const run = (args: string[], { input, cwd = repo, extra = {}, timeout }: { input?: string; cwd?: string; extra?: Record<string, string>; timeout?: number } = {}) =>
     runChild('node', [CLI, ...args], { cwd, env: { ...env, ...extra }, input, timeout });
   const write = (path: string, text: string) => {
@@ -282,9 +307,12 @@ export const PLUGIN_ROOT = '${CLAUDE_PLUGIN_ROOT}';
 
 // ---- Adoption (#6): the facts from files, then a draft from a model or the rules. ----
 
+// A bare `git init`, made once per test process (#475).
+const copyFixtureRepo = makeRepoTemplate((dir) => execFileSync('git', ['init', '-q'], { cwd: dir }));
+
 export function fixture(files: Record<string, string>): string {
   const dir = makeTempDir('yokoten-adopt-');
-  execFileSync('git', ['init', '-q'], { cwd: dir });
+  copyFixtureRepo(dir);
   for (const [path, text] of Object.entries(files)) {
     mkdirSync(dirname(join(dir, path)), { recursive: true });
     writeFileSync(join(dir, path), text);
@@ -316,17 +344,27 @@ export const NAMED = [
  */
 export function makeTranslatedRepo() {
   const root = makeTempDir();
+  copyTranslatedRepo(root);
+  return translatedRepoIn(root);
+}
+
+function translatedRepoIn(root: string) {
   const env = { PATH: process.env.PATH, HOME: root, TZ: 'UTC', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(root, 'none') };
   const git = (...args: string[]) => execFileSync('git', args, { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-  git('init', '-q', '-b', 'main');
-  git('config', 'user.name', 'Test');
-  git('config', 'user.email', 'test@example.com');
   const commit = (path: string, text: string) => {
     writeFileSync(join(root, path), text);
     git('add', path);
     git('commit', '-q', '-m', `change ${path}`);
   };
-  commit('en.md', '# Guide\n\nStep one.\n');
-  commit('zh.md', `${sourceMarker('en.md')}\n# 指南\n\n第一步。\n`);
   return { root, git, commit };
 }
+
+// Built once per test process (#475): the two commits keep the same ids in every copy.
+const copyTranslatedRepo = makeRepoTemplate((root) => {
+  const { git, commit } = translatedRepoIn(root);
+  git('init', '-q', '-b', 'main');
+  git('config', 'user.name', 'Test');
+  git('config', 'user.email', 'test@example.com');
+  commit('en.md', '# Guide\n\nStep one.\n');
+  commit('zh.md', `${sourceMarker('en.md')}\n# 指南\n\n第一步。\n`);
+});
