@@ -407,6 +407,12 @@ export const RULES = {
     check: "full `doctor` compares the owner of Claude Code's temp folder (`claude-<uid>` in the temp folder) with your uid; a note, never a failure, and doctor never deletes it",
     docs: guide('machine-notes'),
   },
+  'node-security': {
+    rule: 'the Node that runs yokoten has the security fixes of 2026-10-21 (#572)',
+    why: 'older releases have known holes, among them TLS checks that the HTTPS calls to GitHub rely on',
+    check: 'full `doctor` compares the running Node with the first fixed release of its line (22.23.4, 24.22.1 or 26.12.1); a line that gets no more fixes is not supported; a note, never a failure',
+    docs: guide('machine-notes'),
+  },
   'leftover-temp-folders': {
     rule: 'test runs do not leave their folders in the temp folder (#400)',
     why: 'thousands of old test folders fill the disk, and a full disk stops every session',

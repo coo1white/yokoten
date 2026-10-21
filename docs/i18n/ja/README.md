@@ -17,7 +17,7 @@
 [![ci](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml/badge.svg)](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue)](../../../LICENSE)
 [![npm](https://img.shields.io/npm/v/yokoten?logo=npm)](https://www.npmjs.com/package/yokoten)
-[![Node](https://img.shields.io/badge/Node-%E2%89%A522.18-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![Node](https://img.shields.io/badge/Node-%E2%89%A522.23.4-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 
 </div>
 
@@ -39,7 +39,7 @@
 
 ## どの言語でも使える
 
-yokoten 自体は Node 22.18 以降で動きます（手元のマシンでも CI でも）が、プロジェクトの言語は問いません。
+yokoten 自体は Node 22.23.4 以降で動きます（手元のマシンでも CI でも）が、プロジェクトの言語は問いません。
 番人、個人情報と秘密情報のチェック、CI、issue と pull request のチェックは、どの言語でも同じように動きます。
 
 言語を見るのは一か所だけです。`doctor` がテストのコマンドを探します。
@@ -64,7 +64,9 @@ force push、テストを書き換えて通す、個人情報の公開といっ�
 
 ## インストール
 
-必要なのは [Node](https://nodejs.org/) 22.18 以降だけです。
+必要なのは [Node](https://nodejs.org/) 22.23.4 以降だけです（Node 24 なら 24.22.1 以降、Node 26 なら 26.12.1 以降）。
+22.18〜22.23.3 でも yokoten は動きますが、使わないでください。これらにはセキュリティの穴があり、Node が 2026 年 10 月 21 日に修正しました（[公式の告知](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases)）。
+インストール時に npm が警告を出すのも、`yokoten doctor` が更新を勧めるのも、このためです。
 
 ```sh
 npx yokoten install      # PC ごとに一度

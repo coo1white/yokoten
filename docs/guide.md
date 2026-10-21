@@ -489,7 +489,11 @@ Codex 0.163.0 refuses `wire_api = "chat"`. It warns that it has no metadata for
 
 ## Install and commands
 
-Requires Node 22.18 or later, which runs TypeScript as it is. No dependencies. There
+Requires Node 22.23.4 or later (24.22.1 or later on Node 24, 26.12.1 or later on Node 26),
+which runs TypeScript as it is. Releases 22.18 to 22.23.3 run TypeScript too, but do not
+use them: they have security holes that Node fixed on 2026-10-21
+([advisory](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases)). So npm warns about them, and
+full `doctor` notes them under `machine:`. No dependencies. There
 are two ways to install: the Claude Code plugin, or the `install` command, from npm or
 from a clone. Use one, not both. The hook commands that yokoten writes need a POSIX shell:
 on Windows, use Git Bash.
@@ -649,7 +653,8 @@ action skips `check --pr` and leaves a notice: the pull request check runs on
   and the head commit, so it needs both.
 - **Permissions**: `contents: read` is enough. The action takes no token.
 - **Inputs**: `pr-check` (default `true`), `issue-check` (default `true`) and
-  `node-version` (default `22`, at least 22.18). Set `pr-check: false` to skip the pull
+  `node-version` (default `^22.23.4`, the first Node 22 with the October 2026 security
+  fixes). Set `pr-check: false` to skip the pull
   request standard, `issue-check: false` to skip the issue title standard.
 - **Node**: the action sets up Node for the rest of the job too.
 
@@ -907,6 +912,10 @@ Full `doctor` lists them under `machine:` as notes. A note never changes the exi
   Test runs leave them, and thousands of them fill the disk. Full `doctor` counts them.
   It does not add up their size, so it stays fast. The note prints a `find ... -exec rm -rf`
   command that removes only the old ones. Run it yourself: doctor never deletes anything.
+- **node-security**: the Node that runs yokoten lacks the security fixes of 2026-10-21.
+  A release older than the fix in its line (22.23.4, 24.22.1, 26.12.1) has known holes.
+  A line that gets no more fixes, such as 23, 25 or anything below 22, is not supported.
+  The note names the version to install. Full `doctor` only, and never a failure.
 
 ### Troubleshooting
 

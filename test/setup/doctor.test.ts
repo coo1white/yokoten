@@ -44,6 +44,7 @@ import {
 import { unsavedNotes } from '../../src/setup/advice/unsaved.ts';
 import {
   agentTempDirCheck,
+  nodeSecurityCheck,
   blocksToSay,
   coreRulesCheck,
   coreRulesControl,
@@ -918,6 +919,7 @@ function fakeMachine(free: number, more: Partial<MachineProbe> & { programs?: Re
     writeText: (path, text) => void files.set(path, text),
     uid: 1000,
     now: () => NOW,
+    nodeVersion: '24.22.1',
     ...rest,
   };
 }
@@ -1119,6 +1121,46 @@ test('self-test: the machine control passes the real checks and fails broken one
   // A host-drive reading that never finds the drive: the Windows drive is missed.
   const noHost: typeof diskSpaceChecks = (root, env, probe, session) => diskSpaceChecks(root, env, { ...probe, runProgram: () => '' }, session);
   assert.deepEqual(machineControl(noHost), ['host drive check']);
+  // A Node check that passes everything, or nothing, is caught (#572).
+  const passAll: typeof nodeSecurityCheck = (probe) => nodeSecurityCheck({ ...probe, nodeVersion: '24.22.1' });
+  const failAll: typeof nodeSecurityCheck = (probe) => nodeSecurityCheck({ ...probe, nodeVersion: '20.19.0' });
+  assert.deepEqual(machineControl(diskSpaceChecks, agentTempDirCheck, passAll), ['node security check']);
+  assert.deepEqual(machineControl(diskSpaceChecks, agentTempDirCheck, failAll), ['node security check']);
+});
+
+// #572: a Node without the security fixes of 2026-10-21 is a note that says why and what to install.
+test('machine: a Node release older than its line fix, or a line with no more fixes, is a note', () => {
+  const check = (nodeVersion: string) => nodeSecurityCheck({ nodeVersion });
+  const advisory = 'https://nodejs.org/en/blog/vulnerability/october-2026-security-releases';
+  assert.deepEqual(check('24.21.0').finding.what, 'Node 24.21.0 has known security holes that Node fixed in October 2026');
+  assert.equal(check('24.21.0').finding.fix, `upgrade Node to 24.22.1 or later; the advisory: ${advisory}`);
+  assert.equal(check('v22.18.0').finding.what, 'Node 22.18.0 has known security holes that Node fixed in October 2026');
+  assert.match(check('22.18.0').finding.fix, /^upgrade Node to 22\.23\.4 or later; /);
+  assert.equal(check('22.23.3').ok, false, 'one release short of the fix');
+  assert.equal(check('26.12.0').ok, false);
+  for (const fixed of ['24.22.1', '22.23.4', '26.12.1', '22.24.0', '24.30.2', '28.1.0']) {
+    assert.equal(check(fixed).ok, true, fixed);
+    assert.equal(check(fixed).detail, `Node ${fixed}`);
+  }
+  for (const [version, line] of [['23.11.1', 23], ['20.19.5', 20], ['25.9.0', 25], ['18.20.8', 18]] as const) {
+    const note = check(version);
+    assert.equal(note.ok, false, version);
+    assert.equal(note.finding.what, `Node ${version} is not supported, because Node ${line} gets no more security fixes`);
+    assert.equal(note.finding.fix, `install Node 26.12.1 or later (or 22.23.4 or 24.22.1); the advisory: ${advisory}`);
+  }
+});
+
+test('machine: full doctor shows the Node note and never fails on it; a session does not', () => {
+  const sandbox = makeSandbox();
+  const env = { HOME: sandbox.home, YOKOTEN_TEMP_DIRS: '' };
+  const old = doctor(sandbox.repo, { env, config: DEFAULTS, machine: fakeMachine(100 * GB, { nodeVersion: '24.21.0' }) });
+  const fixed = doctor(sandbox.repo, { env, config: DEFAULTS, machine: fakeMachine(100 * GB) });
+  assert.equal(old.ok, fixed.ok, 'a note never fails doctor');
+  assert.ok(old.lines.some((line) => line.startsWith('  note    node-security: Node 24.21.0 has known security holes')), old.lines.join('\n'));
+  assert.ok(old.report.notes?.some((n) => n.id === 'node-security'));
+  assert.ok(fixed.lines.includes('  ok      node-security: Node 24.22.1'), fixed.lines.join('\n'));
+  const session = doctor(sandbox.repo, { env, config: DEFAULTS, machine: fakeMachine(100 * GB, { nodeVersion: '24.21.0' }), session: true });
+  assert.ok(!session.lines.some((line) => line.includes('security holes')), 'full doctor only');
 });
 
 // #400: old yokoten-* folders in the temp folder. A note with the command; doctor never deletes.
