@@ -949,24 +949,30 @@ export function heredocBodies(text: string): string[] {
   return bodies;
 }
 
-/** A file's texts, `skip` for a file the guard does not read, `missing`, or `unsure`: the command may change the file. */
-type FileRead = { texts: string[] } | 'skip' | 'missing' | 'unsure';
+/**
+ * A file's texts, `skip` for a file the guard does not read, `missing`, or `unsure`: the
+ * command may change the file. `saw` is unsure too, and names what in the command (#498).
+ */
+type FileRead = { texts: string[] } | { saw: string } | 'skip' | 'missing' | 'unsure';
 
 /**
  * What the rest of the command does to the files gh reads (#439). `heredoc`: the command is
  * exactly `cat > path <<'EOF' && gh …`, and this is the path, as written, and the heredoc's
  * text. `mayWrite`: another command in it may write a file, so a file on disk is not read
- * as the one gh will post.
+ * as the one gh will post. `saw` names what may write it, for the message (#498).
  */
 export interface CommandFiles {
   heredoc?: { path: string; text: string };
   mayWrite: boolean;
+  saw?: string;
   /** A cd in the command: a path with `..` goes up from the real folder, behind any symlink. */
   movesFolder?: boolean;
 }
 
 /** What a gh command posts: its pieces, or a file the guard can't find. Null when it posts nothing. */
-function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, command: string): { pieces: Piece[] } | { missing: string; unsure: boolean } | null {
+type Missing = { missing: string; unsure: boolean; saw?: string };
+
+function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, command: string): { pieces: Piece[] } | Missing | null {
   const { args } = gh;
   // The group and its subcommand: the first two words that are not options.
   const plain: string[] = [];
@@ -978,7 +984,7 @@ function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, comma
   const isApi = group === 'api';
   if (!isApi && !POSTS[group]?.includes(sub)) return null;
   const pieces: Piece[] = [];
-  let missing: { missing: string; unsure: boolean } | null = null;
+  let missing: Missing | null = null;
   // A file named twice is read once: gh posts one of them, and a long body is scanned once.
   const seen = new Set<string>();
   let method: string | null = null;
@@ -1002,7 +1008,9 @@ function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, comma
     seen.add(path);
     const read = readFile(path);
     if (read === 'missing' || read === 'unsure') missing ??= { missing: option, unsure: read === 'unsure' };
-    else if (read !== 'skip') {
+    else if (read === 'skip') return;
+    else if ('saw' in read) missing ??= { missing: option, unsure: true, saw: read.saw };
+    else {
       for (const text of read.texts) pieces.push({ source: path, isFile: true, text });
       if (key === 'query') query = read.texts.join('\n');
     }
@@ -1158,6 +1166,69 @@ export function lonePost(command: string): { cd: boolean; target?: string } | nu
   return lines.slice(end + 1).every((line) => /^[ \t]*$/.test(line)) ? lone : null;
 }
 
+// The programs a pipe at the end of a gh line may feed (#498): each only reads its input.
+// sort, uniq and sed count only with the options readsOnly in guards.ts checks.
+export const PIPE_READERS = new Set(['tail', 'head', 'grep', 'cut', 'wc', 'sort', 'uniq', 'tr', 'sed']);
+const PIPE_PROGRAM = /[ \t]*([a-z]+)(?=[ \t]|$)/y;
+
+/**
+ * The command without a pipe at its end into programs that only read (#498):
+ * `gh … 2>&1 | tail -2` gives `gh …`. The commands of a pipe run beside gh and leave this
+ * shell's folder alone, so the file gh reads and where it posts stay the same. One shape
+ * only: from the first `|` outside quotes to the end of the one line, each command starts
+ * with a program in PIPE_READERS and holds only the characters lonePost trusts, plus
+ * `$NAME` inside "...". A `2>&1` right before the pipe, or at the end of a line with no
+ * pipe, goes too. Any other command comes back as it was, for the rest of the guard to read.
+ */
+export function withoutReadPipe(command: string): string {
+  let quote = '';
+  let at = -1;
+  for (let index = 0; index < command.length && at === -1; index++) {
+    const char = command[index];
+    if (char === '\n' || (char === '\\' && quote !== "'")) return command;
+    if (quote) {
+      if (char === quote) quote = '';
+    } else if (char === "'" || char === '"') quote = char;
+    else if (char === '|') at = index;
+  }
+  if (at !== -1 && !isReadPipe(command, at)) return command;
+  return withoutStderrRedirect(at === -1 ? command : command.slice(0, at));
+}
+
+// The text without a `2>&1` at its end: stderr goes where stdout goes, and no file is
+// opened. Only spaces and tabs count as blanks: bash reads any other character as a word.
+function withoutStderrRedirect(text: string): string {
+  let end = text.length;
+  while (end > 0 && (text[end - 1] === ' ' || text[end - 1] === '\t')) end--;
+  if (end < 5 || !text.startsWith('2>&1', end - 4)) return text;
+  const before = text[end - 5];
+  return before === ' ' || before === '\t' ? text.slice(0, end - 4) : text;
+}
+
+// Whether the text from `at`, a `|`, to the end is a pipe into PIPE_READERS in plain words.
+function isReadPipe(text: string, at: number): boolean {
+  let quote = '';
+  for (let index = at; index < text.length; index++) {
+    const char = text[index];
+    if (quote === "'") {
+      if (char === "'") quote = '';
+      else if (char === '\n' || char === '\r') return false;
+    } else if (quote === '"') {
+      if (char === '"') quote = '';
+      // A `$NAME` inside "..." is one word of text: it runs nothing. `$(`, `${` and the rest may.
+      else if (char === '$' && !/[A-Za-z_]/.test(text[index + 1] ?? '')) return false;
+      else if ('`\\!\n\r'.includes(char)) return false;
+    } else if (char === '|') {
+      PIPE_PROGRAM.lastIndex = index + 1;
+      const program = PIPE_PROGRAM.exec(text);
+      if (!program || !PIPE_READERS.has(program[1])) return false;
+      index += program[0].length;
+    } else if (char === "'" || char === '"') quote = char;
+    else if (!PLAIN_WORD.test(char)) return false;
+  }
+  return quote === '';
+}
+
 /**
  * Whether a gh command may post somewhere other than the repo it runs in (#447): it names a
  * repo (`-R`, `--repo`, an issue or pull request URL), GH_REPO or GH_HOST is set or appears anywhere in the
@@ -1188,7 +1259,7 @@ function repoTop(dir: string, env: Env): string | null {
  * stays in the repo the line started in (`from`).
  */
 function isPostHere(gh: GhCommand, { env, command, cwd, from }: { env: Env; command: string; cwd: string | null; from?: string | null }): boolean {
-  const lone = lonePost(command);
+  const lone = lonePost(withoutReadPipe(command));
   if (!lone || namesTarget(gh, command, env)) return false;
   if (!lone.cd) return true;
   if (!cwd || !from) return false;
@@ -1222,7 +1293,7 @@ export function checkPost(
       full = `${home}/${path.slice(2)}`;
     }
     if (!isAbsolute(full) && cwd === null) return 'unsure';
-    if (files?.movesFolder && full.split(/[\\/]/).includes('..')) return 'unsure';
+    if (files?.movesFolder && full.split(/[\\/]/).includes('..')) return { saw: 'a `cd` before a path with `..`' };
     const at = isAbsolute(full) || !cwd ? full : `${cwd}/${full}`;
     let stat: ReturnType<typeof statSync> | null = null;
     try {
@@ -1238,7 +1309,7 @@ export function checkPost(
       return isReadable ? { texts: [files.heredoc.text, readFileSync(at, 'utf8')] } : 'unsure';
     }
     if (stat === null) return 'missing';
-    if (files?.mayWrite) return 'unsure';
+    if (files?.mayWrite) return files.saw ? { saw: files.saw } : 'unsure';
     return isReadable ? { texts: [readFileSync(at, 'utf8')] } : 'skip';
   };
   const posted = postedPieces(gh, readFile, command);
@@ -1246,10 +1317,13 @@ export function checkPost(
   if ('missing' in posted) {
     // The guard runs before the command (#439): a file the command writes, or a path only
     // the running command knows, can't be read yet.
-    const what = posted.unsure
-      ? `yokoten can't tell what the file after ${posted.missing} will hold: the guard runs before the command, and this command may change the file or where it is`
-      : `yokoten can't find the file after ${posted.missing} to check it: the file doesn't exist yet when the guard runs`;
-    return finding('unreadable-command', what, 'write the file in one command, then post it in the next, and give its full path', {
+    // What the guard saw is named, so the agent knows what to change (#498).
+    const { saw } = posted;
+    const what = !posted.unsure
+      ? `yokoten can't find the file after ${posted.missing} to check it: the file doesn't exist yet when the guard runs`
+      : `yokoten can't tell what the file after ${posted.missing} will hold: the guard runs before the command, and ${saw ? `${saw} in this command` : 'this command'} may change the file or where it is`;
+    const fix = `${saw ? `leave out ${saw}, or ` : ''}write the file in one command, then post it in the next, and give its full path`;
+    return finding('unreadable-command', what, fix, {
       why: 'the privacy check reads a body before it is posted, and an unread one could hold anything',
     });
   }

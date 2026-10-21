@@ -1,0 +1,3 @@
+Fixed
+
+A post with `--body-file` is no longer refused when its output goes through a pipe that only reads, as in `gh pr create … --body-file body.md 2>&1 | tail -2`. The pipe must end the line, and each program in it must be `tail`, `head`, `grep`, `cut`, `wc`, `sort`, `uniq`, `tr` or `sed`. `sed` counts only without `-i` or `-f`, and with `s/…/…/` scripts that have no `w` or `e` flag. A `2>&1` at the end passes too. A project's own allow still applies through such a pipe. A refusal of a body file now names what the guard saw. Examples are "a pipe to `tee`", "a `cd` before a path with `..`" and "a command substitution `$(…)`" (#498).
