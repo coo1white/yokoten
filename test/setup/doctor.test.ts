@@ -214,10 +214,12 @@ test('doctor: reads the server of a GitHub origin into the road; a step not done
   const run = (routes: Record<string, unknown>) => doctor(root, { env: { HOME: root, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, gh: serverGh(routes).gh });
   let result = run(GOOD);
   const text = () => result.lines.join('\n');
-  // No origin remote at all: say so, and say "can't check" once (#208).
-  assert.match(text(), /^ {2}can't check server-settings: there is no origin remote yet; add one on GitHub to check the server settings/m);
-  assert.match(text(), /^ {4}can't check protection \(Scorecard: Branch-Protection\): there is no origin remote yet/m);
+  // No origin remote at all: say so, in one line for every step that reads the server (#208, #502).
+  const cant = result.lines.filter((l) => /can't check/.test(l));
+  assert.equal(cant.length, 1, cant.join('\n'));
+  assert.match(text(), /^ {4}can't check [a-z, -]*protection[a-z, -]*: there is no origin remote yet, so doctor can't read the server; run `git remote add origin <url>`/m);
   assert.ok(!/can't check.*can't check/.test(text()), 'no line says "can\'t check" twice');
+  assert.equal(result.report.steps?.find((s) => s.id === 'protection')?.mark, "can't check", 'the data still has each step');
   execFileSync('git', ['remote', 'add', 'origin', 'https://gitea.example.com/me/repo.git'], { cwd: root });
   result = run(GOOD);
   assert.match(text(), /^ {2}can't check server-settings: the origin remote is not on a host yokoten knows/m);

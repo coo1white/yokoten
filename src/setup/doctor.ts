@@ -1088,10 +1088,14 @@ export function listBoardSteps(server: ServerRead): string[] {
   return server.boards.flatMap((board) => BOARD_BY_HAND.map((step) => `  by hand     board "${board.title}": ${step}`));
 }
 
+/** Why the server can't be read in a repo with no origin remote; the road shows it once (#502). */
+const NO_REMOTE = 'there is no origin remote yet';
+const NO_REMOTE_FIX = 'run `git remote add origin <url>` with the url of the repo on GitHub, then run `yokoten doctor` again';
+
 /** The server settings of the project's origin remote, or why they can't be read. */
 function readOrigin(root: string, gh: Gh, env: Env): ServerSettings | Unread {
   const remote = gitConfig(root, 'remote.origin.url', env);
-  if (!remote) return { unread: 'there is no origin remote yet', fix: 'add one on GitHub to check the server settings, or check them by hand' };
+  if (!remote) return { unread: NO_REMOTE, fix: NO_REMOTE_FIX };
   const repo = repoOf(remote);
   return repo ? readServer(gh, repo) : { unread: 'the origin remote is not on a host yokoten knows (GitHub for now)', fix: 'add a GitHub origin remote, or check these settings by hand' };
 }
@@ -1353,6 +1357,9 @@ function doctorRun(
   lines.push(`yokoten ${VERSION}, self-test ${failed.length ? 'FAILED' : 'ok'}`);
   lines.push(where.stage ? `the road: stage ${where.stage} of ${STAGES.length}, ${STAGES[where.stage - 1]}` : `the road: ${ROAD_DONE.replace(/^yokoten: /, '')}`);
   const steps: StepState[] = [];
+  // With no origin remote, the steps that read the server say so in one line, not one each (#502).
+  const noRemote = server !== undefined && 'unread' in server && server.unread === NO_REMOTE;
+  const needRemote = noRemote ? where.steps.filter(({ step, mark }) => mark === "can't check" && step.unchecked?.(server).includes(NO_REMOTE)).map(({ step }) => step.key) : [];
   STAGES.forEach((name, i) => {
     lines.push(`  ${i + 1}. ${name}`);
     for (const { step, mark } of where.steps.filter((w) => w.step.stage === i + 1)) {
@@ -1367,6 +1374,10 @@ function doctorRun(
         note = stepText(f);
       } else if (mark === "can't check" && step.unchecked) note = step.unchecked(server);
       steps.push(state);
+      if (needRemote.includes(step.key)) {
+        if (step.key === needRemote[0]) lines.push(`    can't check ${needRemote.join(', ')}: ${NO_REMOTE}, so doctor can't read the server; ${NO_REMOTE_FIX}`);
+        continue;
+      }
       lines.push(`    ${mark.padEnd(11)} ${step.key}${step.standard ? ` (${step.standard})` : ''}${note ? `: ${note}` : ''}`);
     }
   });
@@ -1467,7 +1478,7 @@ function doctorRun(
   // The road's stage 5 shows the settings it groups (#7); here are the rest, which never fail doctor.
   const settings = serverChecks(server ?? { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' }, { isCiOff: Object.hasOwn(config.notNow, 'ci') });
   lines.push('server (read only; the owner sets these once per repo):');
-  for (const c of settings.filter((c) => !ROAD_SERVER_IDS.includes(c.id))) {
+  for (const c of settings.filter((c) => !ROAD_SERVER_IDS.includes(c.id) && !(noRemote && c.id === 'server-settings'))) {
     lines.push(`  ${c.mark.padEnd(11)} ${c.id}${c.mark === 'ok' ? '' : `: ${stepText(c.finding)}`}`);
     if (c.mark !== 'ok') notes.push(c.finding);
   }
