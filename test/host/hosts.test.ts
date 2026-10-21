@@ -11,11 +11,11 @@ test('hostOf: GitHub in each remote form, another host by name, and no remote (#
     assert.deepEqual(hostOf(remote), { kind: 'github', repo: 'me/repo' }, remote);
   }
   const other = (name: string, label = 'this host') => ({ kind: 'other', name, label });
-  assert.deepEqual(hostOf('https://gitea.example.com/me/repo.git'), other('gitea.example.com'));
-  assert.deepEqual(hostOf(`https://user${at}Gitea.Example.com:3000/me/repo.git`), other('gitea.example.com'));
-  assert.deepEqual(hostOf(`ssh://git${at}gitea.example.com:2222/me/repo.git`), other('gitea.example.com'));
-  assert.deepEqual(hostOf(`git${at}gitea.example.com:me/repo.git`), other('gitea.example.com'));
-  assert.deepEqual(hostOf('gitea.example.com:me/repo.git'), other('gitea.example.com'));
+  assert.deepEqual(hostOf('https://forgebox.example.com/me/repo.git'), other('forgebox.example.com'));
+  assert.deepEqual(hostOf(`https://user${at}Forgebox.Example.com:3000/me/repo.git`), other('forgebox.example.com'));
+  assert.deepEqual(hostOf(`ssh://git${at}forgebox.example.com:2222/me/repo.git`), other('forgebox.example.com'));
+  assert.deepEqual(hostOf(`git${at}forgebox.example.com:me/repo.git`), other('forgebox.example.com'));
+  assert.deepEqual(hostOf('forgebox.example.com:me/repo.git'), other('forgebox.example.com'));
   assert.deepEqual(hostOf('https://gitlab.com/me/repo.git'), other('gitlab.com', 'GitLab'));
   assert.deepEqual(hostOf('git@codeberg.org:me/repo.git'), other('codeberg.org', 'Codeberg'));
   // A folder on this machine is a host with no adapter, and no name.
@@ -25,13 +25,13 @@ test('hostOf: GitHub in each remote form, another host by name, and no remote (#
 });
 
 test('noAdapter: an unread that names the host as doctor says it, never its address (#504)', () => {
-  const host = hostOf('https://gitea.example.com/me/repo.git');
+  const host = hostOf('https://forgebox.example.com/me/repo.git');
   assert.equal(host.kind, 'other');
   if (host.kind !== 'other') return;
   const read = noAdapter(host);
   assert.ok(isNoAdapter(read));
   assert.equal(read.otherHost, 'this host');
-  assert.ok(!JSON.stringify(read).includes('example.com'));
+  assert.ok(!JSON.stringify(read).includes('forgebox'));
   assert.ok(!isNoAdapter({ unread: 'there is no origin remote yet', fix: 'x' }));
   assert.ok(!isNoAdapter(undefined));
 });

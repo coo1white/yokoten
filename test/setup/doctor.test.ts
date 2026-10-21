@@ -220,7 +220,7 @@ test('doctor: reads the server of a GitHub origin into the road; a step not done
   assert.match(text(), /^ {4}can't check protection \(Scorecard: Branch-Protection\): there is no origin remote yet/m);
   assert.ok(!/can't check.*can't check/.test(text()), 'no line says "can\'t check" twice');
   assert.ok(result.lines.some((l) => /secret scanning with push protection/.test(l)), 'the by-hand list when nothing is read');
-  execFileSync('git', ['remote', 'add', 'origin', 'https://gitea.example.com/me/repo.git'], { cwd: root });
+  execFileSync('git', ['remote', 'add', 'origin', 'https://forgebox.example.com/me/repo.git'], { cwd: root });
   result = run(GOOD);
   // Another host (#504): the doctor-other-host test has the rest.
   assert.match(text(), /^ {2}can't check server-settings: yokoten can't read the server settings on this host yet/m);
@@ -252,17 +252,18 @@ test('doctor: on another host, each forge step says once what it asks, with no G
   execFileSync('git', ['init', '-q', root]);
   const noGh: Gh = () => { throw new Error('doctor called gh for a host with no adapter'); };
   const remotes: [string, string][] = [
-    ['https://gitea.example.com/me/repo.git', 'this host'],
-    [`ssh://git${at}gitea.example.com:2222/me/repo.git`, 'this host'],
-    [`git${at}gitea.example.com:me/repo.git`, 'this host'],
+    ['https://forgebox.example.com/me/repo.git', 'this host'],
+    [`ssh://git${at}forgebox.example.com:2222/me/repo.git`, 'this host'],
+    [`git${at}forgebox.example.com:me/repo.git`, 'this host'],
     ['https://gitlab.com/me/repo.git', 'GitLab'],
   ];
   for (const [remote, label] of remotes) {
+    const quoted = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     execFileSync('git', ['remote', 'add', 'origin', remote], { cwd: root });
     for (const session of [false, true]) {
       const result = doctor(root, { env: { HOME: root, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, session, gh: noGh });
       const text = result.lines.join('\n');
-      assert.ok(!text.includes('example.com'), `${remote}: a self-hosted server is never named`);
+      assert.ok(!text.includes('forgebox'), `${remote}: a self-hosted server is never named`);
       assert.ok(!GITHUB_ONLY.test(text), `${remote}: no GitHub-only instruction: ${GITHUB_ONLY.exec(text)?.[0]}`);
       assert.ok(!FORGE_STEPS.includes(result.report.next?.id ?? ''), `${remote}: a forge step is never the next step`);
       assert.ok(!result.report.findings.some((f) => FORGE_STEPS.includes(f.id)), `${remote}: a forge step is never a finding`);
@@ -271,9 +272,9 @@ test('doctor: on another host, each forge step says once what it asks, with no G
         assert.equal(result.report.steps?.find((s) => s.id === key)?.mark, "can't check", `${remote}: ${key}`);
         const lines = result.lines.filter((line) => new RegExp(`^ {4}can't check ${key}\\b`).test(line));
         assert.equal(lines.length, 1, `${remote}: ${key} has one line`);
-        assert.match(lines[0], new RegExp(`: yokoten can't check this on ${label} yet; do it by hand: \\S`), `${remote}: ${key}`);
+        assert.match(lines[0], new RegExp(`: yokoten can't check this on ${quoted} yet; do it by hand: \\S`), `${remote}: ${key}`);
       }
-      assert.match(text, new RegExp(`^ {2}can't check server-settings: yokoten can't read the server settings on ${label} yet; the steps marked can't check say`, 'm'));
+      assert.match(text, new RegExp(`^ {2}can't check server-settings: yokoten can't read the server settings on ${quoted} yet; the steps marked can't check say`, 'm'));
       assert.ok(!text.includes('check these by hand') && !text.includes('not checked '), `${remote}: the GitHub by-hand lists are left out`);
     }
     execFileSync('git', ['remote', 'remove', 'origin'], { cwd: root });
@@ -290,7 +291,7 @@ test('doctor: on another host, each forge step says once what it asks, with no G
 
 test('doctor: the command on a Gitea-like remote shows the forge steps as can\'t check (#504)', async () => {
   const sandbox = makeSandbox();
-  sandbox.git('remote', 'add', 'origin', `git${at}gitea.example.com:me/repo.git`);
+  sandbox.git('remote', 'add', 'origin', `git${at}forgebox.example.com:me/repo.git`);
   const steps = JSON.parse((await sandbox.call(['doctor', '--json'])).stdout).steps as { id: string; mark: string }[];
   for (const key of FORGE_STEPS) assert.equal(steps.find((step) => step.id === key)?.mark, "can't check", key);
   assert.equal(steps.find((step) => step.id === 'rules')?.mark, 'next', 'the core is judged as on any host');
