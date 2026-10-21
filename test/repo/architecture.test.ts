@@ -518,11 +518,11 @@ test('ci: a docs-only pull request runs one test job, skips typecheck and action
   assert.match(testJob, /--test-shard=\$\{\{ matrix\.shard \}\}\/\$\{\{ matrix\.of \}\}/, 'the run step uses the shard');
   assert.match(text, /^  schedule:\n    - cron: '[^']+'$/m, 'the full matrix runs on a schedule (#568)');
   assert.match(jobBlock(text, 'ci'), /never started/, '`ci` names jobs that never got a runner (#568)');
-  assert.deepEqual(matrix('true', 'pull_request').setups, ['ubuntu-latest 24']);
-  const full = ['ubuntu-latest 22.18.0', 'ubuntu-latest 24', 'macos-latest 24'];
+  assert.deepEqual(matrix('true', 'pull_request').setups, ['ubuntu-latest ^24.22.1']);
+  const full = ['ubuntu-latest 22.23.4', 'ubuntu-latest ^24.22.1', 'macos-latest ^24.22.1'];
   const pr = matrix('false', 'pull_request');
   assert.deepEqual(pr.setups, full);
-  assert.deepEqual(pr.whole, ['macos-latest 24 1/1'], 'a pull request runs the whole suite in one macOS job (#568)');
+  assert.deepEqual(pr.whole, ['macos-latest ^24.22.1 1/1'], 'a pull request runs the whole suite in one macOS job (#568)');
   for (const event of ['push', 'schedule']) {
     const run = matrix('false', event);
     assert.deepEqual(run.setups, full);

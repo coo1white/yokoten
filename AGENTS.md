@@ -83,7 +83,7 @@ agent, understands without scrolling back. The yokoten guide says why:
 yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
 `yokoten init`, and the hooks here run `bin/yokoten.ts` directly.
 
-- **Test**: `node --test` (Node 22.18 or later). **Types**: `npm run typecheck`.
+- **Test**: `node --test` (Node 22.23.4 or later, or 24.22.1 / 26.12.1, for the October 2026 security fixes). **Types**: `npm run typecheck`.
   **Check**: `node bin/yokoten.ts check`.
 - **No runtime dependencies.** Node's standard library only. A hook that needs
   `npm install` first is a hook that does not run on a fresh machine. TypeScript and
