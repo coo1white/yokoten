@@ -1275,3 +1275,29 @@ test('marks allow: no mark is echoed, -- takes a mark that starts with -, a link
   }
   assert.ok(!said.some((text) => /quietval/i.test(text)), 'no output holds a mark');
 });
+
+// #503: a stopped commit says how to take the named files out of it, and that they stay on disk.
+test('check --staged: a stopped commit says how to unstage the files it names (#503)', async () => {
+  const sandbox = makeSandbox();
+  // No commit yet: there is no HEAD to restore from, so the command is git rm --cached.
+  sandbox.write('dist/app.js', 'console.log(1);\n');
+  // A name with a space is quoted.
+  writeFileSync(join(sandbox.repo, 'my tool'), Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0, 1, 2, 0]));
+  sandbox.git('add', '.');
+  let result = await sandbox.call(['check', '--staged']);
+  assert.match(result.stderr, /To take these files out of the commit, run `git rm --cached dist\/app\.js 'my tool'`\. They stay on disk, with your changes\./);
+  // After a commit: git restore --staged.
+  sandbox.write('yokoten.json', JSON.stringify({ allowBuild: ['dist/**'] }));
+  sandbox.git('add', '.');
+  sandbox.git('rm', '-q', '--cached', 'dist/app.js', 'my tool');
+  sandbox.git('commit', '-q', '-m', 'chore: start');
+  writeFileSync(join(sandbox.repo, 'tool'), Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0, 1, 2, 0]));
+  sandbox.git('add', 'tool');
+  result = await sandbox.call(['check', '--staged']);
+  assert.match(result.stderr, /To take this file out of the commit, run `git restore --staged tool`\. It stays on disk, with your changes\./);
+  assert.equal(readFileSync(join(sandbox.repo, 'tool')).length, 8, 'the check changes nothing on disk');
+  // A clean commit has no such line, and neither does a problem that names no staged file.
+  sandbox.git('restore', '--staged', 'tool');
+  result = await sandbox.call(['check', '--staged']);
+  assert.doesNotMatch(result.stderr, /out of the commit/);
+});

@@ -329,7 +329,7 @@ test('road: the tests step stays next with only a lint step, and says what is mi
   const dir = makeTempDir('yokoten-tests-fix-');
   try {
     writeFileSync(join(dir, 'package.json'), NPM_WS['package.json']);
-    assert.equal(tests?.fix(dir, {}, undefined), 'add a step that runs `npm test --workspaces` to a workflow in .github/workflows');
+    assert.match(tests?.fix(dir, {}, undefined) ?? '', /\{run: npm test --workspaces\}\]\}`\. Then add `tests` to the `needs` list of the `ci` job/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -417,5 +417,26 @@ test('road: a license file counts in each form, the Rust dual layout too', () =>
     assert.ok(!license(), 'LICENSE-MIT and LICENSE-APACHE are a license');
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// #501: the tests step says where the CI job goes, shows it, and names the `needs` list of `ci`.
+test('road: the tests step names the workflow file, the job to add and the needs list of ci (#501)', () => {
+  const tests = ROAD.find((s) => s.key === 'tests');
+  const dir = makeTempDir('yokoten-tests-where-');
+  try {
+    const fix = () => tests?.fix(dir, {}, undefined) ?? '';
+    // No workflow file yet: init adds it first. No package.json: a placeholder command.
+    assert.equal(fix(), 'run `yokoten init` to add .github/workflows/yokoten.yml, then in it, add this job under `jobs:`. Copy the `uses:` lines from the other jobs, because they are pinned: `tests: {runs-on: ubuntu-latest, steps: [<the checkout step of the other jobs>, {run: <your test command>}]}`. Then add `tests` to the `needs` list of the `ci` job, so a failing test blocks the merge');
+    // A test script and a lock file: npm test, after npm ci.
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { test: 'vitest run' } }));
+    writeFileSync(join(dir, 'package-lock.json'), '{}');
+    mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
+    writeFileSync(join(dir, '.github', 'workflows', 'yokoten.yml'), 'jobs: {}\n');
+    assert.equal(fix(), 'in .github/workflows/yokoten.yml, add this job under `jobs:`. Copy the `uses:` lines from the other jobs, because they are pinned: `tests: {runs-on: ubuntu-latest, steps: [<the checkout and setup-node steps of the other jobs>, {run: npm ci}, {run: npm test}]}`. Then add `tests` to the `needs` list of the `ci` job, so a failing test blocks the merge');
+    // The job line is valid flow YAML on one line: it can sit in a session start.
+    assert.ok(!fix().includes('\n'));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

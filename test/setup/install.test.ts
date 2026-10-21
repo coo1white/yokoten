@@ -108,7 +108,7 @@ test('install: skills, agents and hooks once, the user\'s own files untouched', 
   const skillsLine = async () => (await sandbox.call(['doctor'])).stdout.split('\n').find((l) => / skills/.test(l)) ?? '';
   assert.match(await skillsLine(), /^\s+done\s+skills$/);
   rmSync(join(shared, 'skills', 'inspect'), { recursive: true });
-  assert.match(await skillsLine(), /^\s+(next|to do)\s+skills: the yokoten skills are not in ~\/\.agents\/skills \(inspect\); run `yokoten install`, or install the Claude Code plugin$/);
+  assert.match(await skillsLine(), /^\s+(next|to do)\s+skills: the yokoten skills are not in ~\/\.agents\/skills \(inspect\); run `npx yokoten install`, or install the Claude Code plugin$/);
 });
 
 test('uninstall: takes back what install wrote, keeps the user\'s own files and settings (#300)', async () => {

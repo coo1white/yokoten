@@ -41,7 +41,7 @@ import { findTempDirs, readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advi
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
 import { compareCoreRules, compareVersions, hookCliPath, isSelf, readCoreRules, summarizeUpdate, withGitReads, workflowNotes } from './init.ts';
 import { assumeEmptyFolder, gitConfig } from '../run/check.ts';
-import { countOwnMarks, fillMarks, filledLines, trySafely, installedPieces, isOnPath, launcherDir, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
+import { countOwnMarks, fillMarks, launcherFile, PROFILE_LINE, filledLines, trySafely, installedPieces, isOnPath, launcherDir, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
 import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, uncheckedText, walk } from './road.ts';
 
 /**
@@ -435,9 +435,45 @@ export function launcherCheck(env: Env): Finding | null {
   if (hasPlugin(env)) return null;
   const { runtime } = paths(env);
   if (!existsSync(runtime) || isOnPath(env, runtime)) return null;
-  return finding('machine-runtime', 'no `yokoten` command on your PATH runs the installed copy', `run \`node ${join(runtime, 'bin', 'yokoten.ts')} install\` in a terminal; it puts a launcher in ${launcherDir(homeIn(env))} and offers to add that folder to your PATH`, {
-    why: 'yokoten\'s messages say `yokoten init` and `yokoten doctor`',
+  const home = homeIn(env);
+  const meanwhile = 'until then, `npx yokoten` runs yokoten';
+  let fix = `run \`npx yokoten install\`; it puts a launcher in ${launcherDir(home)} and offers to add that folder to your PATH`;
+  if (existsSync(launcherFile(home))) {
+    fix = process.platform === 'win32'
+      ? `add ${launcherDir(home)} to the Path for your account (search Windows for "environment variables for your account"), then open a new terminal; ${meanwhile}`
+      : `add this line to your shell profile (~/.bashrc or ~/.zshrc), then open a new terminal: ${PROFILE_LINE}; ${meanwhile}`;
+  }
+  return finding('machine-runtime', 'the yokoten launcher is not on your PATH, so a bare yokoten command is not found', fix, {
+    why: 'doctor names commands to run, and a command that is not found stops a beginner',
   });
+}
+
+/**
+ * The one way to run yokoten in doctor's text (#500). Messages are written as `yokoten init`.
+ * When no launcher on the PATH runs yokoten, that command is not found, so the text says
+ * `npx yokoten init`, which works from anywhere. That is so when install's runtime is here but
+ * off the PATH, and when this run is itself `npx` (npm sets `npm_command=exec`). With the plugin
+ * on, its own commands are used. A command inside a hook that doctor shows for you to add by hand,
+ * where the backtick has a backslash before it, stays as written: it must match the hook install writes.
+ * Null when the messages stay as written.
+ */
+export function commandWording(env: Env): ((text: string) => string) | null {
+  if (hasPlugin(env) || env.CLAUDE_PLUGIN_ROOT || homeOf(env) === null) return null;
+  const { runtime } = paths(env);
+  const isNpx = env.npm_command === 'exec';
+  if (!isNpx && (!existsSync(runtime) || isOnPath(env, runtime))) return null;
+  if (isNpx && isOnPath(env, runtime)) return null;
+  return (text) => text.replace(/(?<!\\)`yokoten((?: [^`]*)?)`/g, '`npx yokoten$1`');
+}
+
+/** `value` with `reword` applied to every string in it (plain arrays and objects only). */
+function rewordStrings<T>(value: T, reword: (text: string) => string): T {
+  if (typeof value === 'string') return reword(value) as T;
+  if (Array.isArray(value)) return value.map((item) => rewordStrings(item, reword)) as T;
+  if (value !== null && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, rewordStrings(item, reword)])) as T;
+  }
+  return value;
 }
 
 // Machine notes (record 0012): machine state that stops every agent session, where the
@@ -1053,9 +1089,13 @@ export function listBoardSteps(server: ServerRead): string[] {
   return server.boards.flatMap((board) => BOARD_BY_HAND.map((step) => `  by hand     board "${board.title}": ${step}`));
 }
 
+/** Why the server can't be read in a repo with no origin remote; the road shows it once (#502). */
+const NO_REMOTE = 'there is no origin remote yet';
+const NO_REMOTE_FIX = 'run `git remote add origin <url>` with the url of the repo on your code host, then run `yokoten doctor` again';
+
 /** The server settings of the origin's host, or why they can't be read. A host with no adapter is read without the network (#504). */
 function readOrigin(host: Host, gh: Gh): ServerSettings | Unread {
-  if (host.kind === 'none') return { unread: 'there is no origin remote yet', fix: 'add one on GitHub to check the server settings, or check them by hand' };
+  if (host.kind === 'none') return { unread: NO_REMOTE, fix: NO_REMOTE_FIX };
   return host.kind === 'github' ? readServer(gh, host.repo) : noAdapter(host);
 }
 
@@ -1233,7 +1273,11 @@ export const NO_HOME_NOTE = "no home folder found; yokoten can't read or keep it
  * The report, as text lines and as data, and whether doctor found no problem. Each git
  * answer is kept for the run (`withGitReads`, #408).
  */
-export const doctor = (root: string | null, options: Parameters<typeof doctorRun>[1]): ReturnType<typeof doctorRun> => withGitReads(() => doctorRun(root, options));
+export const doctor = (root: string | null, options: Parameters<typeof doctorRun>[1]): ReturnType<typeof doctorRun> => {
+  const result = withGitReads(() => doctorRun(root, options));
+  const reword = commandWording(options.env);
+  return reword ? rewordStrings(result, reword) : result;
+};
 
 function doctorRun(
   root: string | null,
@@ -1314,6 +1358,9 @@ function doctorRun(
   lines.push(`yokoten ${VERSION}, self-test ${failed.length ? 'FAILED' : 'ok'}`);
   lines.push(where.stage ? `the road: stage ${where.stage} of ${STAGES.length}, ${STAGES[where.stage - 1]}` : `the road: ${ROAD_DONE.replace(/^yokoten: /, '')}`);
   const steps: StepState[] = [];
+  // With no origin remote, the steps that read the server say so in one line, not one each (#502).
+  const noRemote = server !== undefined && 'unread' in server && server.unread === NO_REMOTE;
+  const needRemote = noRemote ? where.steps.filter(({ step, mark }) => mark === "can't check" && step.unchecked?.(server).includes(NO_REMOTE)).map(({ step }) => step.key) : [];
   STAGES.forEach((name, i) => {
     lines.push(`  ${i + 1}. ${name}`);
     for (const { step, mark } of where.steps.filter((w) => w.step.stage === i + 1)) {
@@ -1328,6 +1375,10 @@ function doctorRun(
         note = stepText(f);
       } else if (mark === "can't check") note = uncheckedText(step, server);
       steps.push(state);
+      if (needRemote.includes(step.key)) {
+        if (step.key === needRemote[0]) lines.push(`    can't check ${needRemote.join(', ')}: ${NO_REMOTE}, so doctor can't read the server; ${NO_REMOTE_FIX}`);
+        continue;
+      }
       lines.push(`    ${mark.padEnd(11)} ${step.key}${step.standard ? ` (${step.standard})` : ''}${note ? `: ${note}` : ''}`);
     }
   });
@@ -1428,7 +1479,7 @@ function doctorRun(
   // The road's stage 5 shows the settings it groups (#7); here are the rest, which never fail doctor.
   const settings = serverChecks(server ?? { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' }, { isCiOff: Object.hasOwn(config.notNow, 'ci') });
   lines.push('server (read only; the owner sets these once per repo):');
-  for (const c of settings.filter((c) => !ROAD_SERVER_IDS.includes(c.id))) {
+  for (const c of settings.filter((c) => !ROAD_SERVER_IDS.includes(c.id) && !(noRemote && c.id === 'server-settings'))) {
     lines.push(`  ${c.mark.padEnd(11)} ${c.id}${c.mark === 'ok' ? '' : `: ${stepText(c.finding)}`}`);
     if (c.mark !== 'ok') notes.push(c.finding);
   }

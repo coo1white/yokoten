@@ -214,6 +214,28 @@ function stagedFiles(root: string, env: Env): Staged[] {
   return files;
 }
 
+/** A path as a shell word: as it is when it has only plain characters, else in single quotes. */
+const shellWord = (path: string): string => (/^[\w./@+=,-]+$/.test(path) ? path : `'${path.replaceAll("'", "'\\''")}'`);
+
+/**
+ * The line a stopped commit ends with (#503): the one command that takes the staged files the
+ * problems name out of the commit, and that they stay on disk. Null when no problem names a staged
+ * file. With no commit yet there is no HEAD to restore from, so it is `git rm --cached`.
+ */
+export function unstageHint(root: string, env: Env, problems: Finding[]): string | null {
+  const staged = new Set(stagedFiles(root, env).map((entry) => entry.path));
+  const named = [...new Set(problems.flatMap((problem) => (problem.file !== undefined && staged.has(problem.file) ? [problem.file] : [])))];
+  if (!named.length) return null;
+  let hasHead = true;
+  try {
+    git(root, env, ['rev-parse', '--verify', '--quiet', 'HEAD']);
+  } catch {
+    hasHead = false;
+  }
+  const command = hasHead ? 'git restore --staged' : 'git rm --cached';
+  return `To take ${named.length > 1 ? 'these files' : 'this file'} out of the commit, run \`${command} ${named.map(shellWord).join(' ')}\`. ${named.length > 1 ? 'They stay' : 'It stays'} on disk, with your changes.`;
+}
+
 /** A full object id: SHA-1 or SHA-256. */
 const OBJECT_ID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 

@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { test } from 'node:test';
 import {
   at,
@@ -215,10 +215,12 @@ test('doctor: reads the server of a GitHub origin into the road; a step not done
   const run = (routes: Record<string, unknown>) => doctor(root, { env: { HOME: root, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, gh: serverGh(routes).gh });
   let result = run(GOOD);
   const text = () => result.lines.join('\n');
-  // No origin remote at all: say so, and say "can't check" once (#208).
-  assert.match(text(), /^ {2}can't check server-settings: there is no origin remote yet; add one on GitHub to check the server settings/m);
-  assert.match(text(), /^ {4}can't check protection \(Scorecard: Branch-Protection\): there is no origin remote yet/m);
+  // No origin remote at all: say so, in one line for every step that reads the server (#208, #502).
+  const cant = result.lines.filter((l) => /can't check/.test(l));
+  assert.equal(cant.length, 1, cant.join('\n'));
+  assert.match(text(), /^ {4}can't check [a-z, -]*protection[a-z, -]*: there is no origin remote yet, so doctor can't read the server; run `git remote add origin <url>`/m);
   assert.ok(!/can't check.*can't check/.test(text()), 'no line says "can\'t check" twice');
+  assert.equal(result.report.steps?.find((s) => s.id === 'protection')?.mark, "can't check", 'the data still has each step');
   assert.ok(result.lines.some((l) => /secret scanning with push protection/.test(l)), 'the by-hand list when nothing is read');
   execFileSync('git', ['remote', 'add', 'origin', 'https://forgebox.example.com/me/repo.git'], { cwd: root });
   result = run(GOOD);
@@ -698,24 +700,24 @@ test('doctor: a missing, out-of-date or unreadable Codex or Gemini CLI user hook
     };
     // Only the guard missing: its exact line, and "it".
     edit((s) => delete s.hooks[guardEvent]);
-    assert.match((await sandbox.call(['doctor'])).stdout, line(`no command guard in ~/${dir}/${file}; \`yokoten install\` adds it`));
+    assert.match((await sandbox.call(['doctor'])).stdout, line(`no command guard in ~/${dir}/${file}; \`npx yokoten install\` adds it`));
     // The doctor hook from an older runtime path: out of date, not ok.
     edit((s) => {
       const hook = s.hooks.SessionStart[0].hooks[0];
       hook.command = hook.command.replace('.local/share/yokoten', '.yokoten');
     });
-    assert.match((await sandbox.call(['doctor'])).stdout, line(`the session-start doctor in ~/${dir}/${file} is out of date; \`yokoten install\` updates it`));
+    assert.match((await sandbox.call(['doctor'])).stdout, line(`the session-start doctor in ~/${dir}/${file} is out of date; \`npx yokoten install\` updates it`));
     // The guard on another matcher: out of date too.
     edit((s) => {
       s.hooks[guardEvent][0].matcher = 'other';
     });
-    assert.match((await sandbox.call(['doctor'])).stdout, line(`the command guard in ~/${dir}/${file} is out of date; \`yokoten install\` updates it`));
+    assert.match((await sandbox.call(['doctor'])).stdout, line(`the command guard in ~/${dir}/${file} is out of date; \`npx yokoten install\` updates it`));
     assert.match((await sandbox.call(['install'])).stdout, /^updated the .* command guard in /m);
     assert.match((await sandbox.call(['doctor'])).stdout, new RegExp(`^  ok {6}${name}$`, 'm'));
     // A file that won't parse: can't read it, never "missing".
     writeFileSync(path, '{ not json');
     const unread = await sandbox.call(['doctor']);
-    assert.match(unread.stdout, line(`can't read ~/${dir}/${file}; make it valid JSON, then run \`yokoten install\``));
+    assert.match(unread.stdout, line(`can't read ~/${dir}/${file}; make it valid JSON, then run \`npx yokoten install\``));
     assert.doesNotMatch(unread.stdout, new RegExp(`${name}: no `));
     // A ~/.codex that is a file: not a folder, so doctor says nothing and install skips it.
     rmSync(join(sandbox.home, dir), { recursive: true });
@@ -1414,11 +1416,16 @@ test('doctor: a note when no yokoten on the PATH runs the installed copy (#433)'
   mkdirSync(join(runtime, 'bin'), { recursive: true });
   writeFileSync(join(runtime, 'bin', 'yokoten.ts'), '\n');
   const note = launcherCheck(env);
-  assert.equal(note?.what, 'no \`yokoten\` command on your PATH runs the installed copy');
-  assert.match(note?.fix ?? '', /yokoten\.ts install\` in a terminal; it puts a launcher in .*\.local[\\/]bin/);
+  assert.equal(note?.what, 'the yokoten launcher is not on your PATH, so a bare yokoten command is not found');
+  // No launcher yet: the one fix is install, run the way that works now. No line says to type the runtime's path (#500).
+  assert.match(note?.fix ?? '', /^run \`npx yokoten install\`; it puts a launcher in .*\.local[\\/]bin/);
   // The launcher in ~/.local/bin, with that folder on the PATH: no note.
   setUpLauncher(env, runtime, home);
-  assert.notEqual(launcherCheck(env), null, 'a launcher off the PATH still gets the note');
+  const off = launcherCheck(env);
+  assert.notEqual(off, null, 'a launcher off the PATH still gets the note');
+  // The launcher is there: the fix is the one line for the PATH, and says npx works meanwhile.
+  assert.match(off?.fix ?? '', /^add this line to your shell profile .* then open a new terminal: export PATH=.*; until then, \`npx yokoten\` runs yokoten$/);
+  assert.doesNotMatch(`${off?.what} ${off?.fix} ${off?.why}`, /yokoten\.ts/);
   assert.equal(launcherCheck({ ...env, PATH: `${launcherDir(home)}:${env.PATH}` }), null);
   // With the plugin on, its own commands are used: no note.
   mkdirSync(join(home, '.claude'));
@@ -1455,4 +1462,35 @@ test('doctor: full doctor in an empty repo starts each git read once, nine child
   }
   assert.deepEqual(runs.filter((run, i) => runs.indexOf(run) !== i), [], `a git read ran twice:\n${runs.join('\n')}`);
   assert.equal(runs.length, 9, runs.join('\n'));
+});
+
+// #500: after a fresh install, every line that names a command uses one way to run yokoten.
+test('doctor: with the launcher off the PATH, every command in the text is `npx yokoten`; on the PATH, `yokoten` (#500)', () => {
+  const home = makeTempDir('yokoten-one-way-');
+  const root = join(home, 'repo');
+  mkdirSync(root);
+  execFileSync('git', ['init', '-q', root]);
+  const runtime = join(home, '.local', 'share', 'yokoten');
+  mkdirSync(join(runtime, 'bin'), { recursive: true });
+  writeFileSync(join(runtime, 'bin', 'yokoten.ts'), '\n');
+  const gitDir = dirname(execFileSync(process.platform === 'win32' ? 'where' : 'which', ['git'], { encoding: 'utf8' }).trim().split('\n')[0]);
+  const env = { HOME: home, PATH: [dirname(process.execPath), gitDir].join(delimiter), YOKOTEN_TEMP_DIRS: '' };
+  setUpLauncher(env, runtime, home);
+  const run = (e: Record<string, string>, session = false) => doctor(root, { env: e, config: DEFAULTS, session, gh: () => { throw new Error('no network'); } });
+  for (const session of [false, true]) {
+    const text = JSON.stringify(run(env, session));
+    assert.doesNotMatch(text, /`yokoten[ `]/, 'no bare yokoten command while the launcher is off the PATH');
+    assert.match(text, /`npx yokoten init`/);
+    assert.doesNotMatch(text, /node [^"]*yokoten\.ts install/);
+  }
+  const full = run(env).lines.join('\n');
+  assert.match(full, /note +command: the yokoten launcher is not on your PATH.*until then, `npx yokoten` runs yokoten/);
+  // The launcher is on the PATH: the messages stay as written, and there is no note.
+  const onPath = run({ ...env, PATH: `${launcherDir(home)}${delimiter}${env.PATH}` }).lines.join('\n');
+  assert.match(onPath, /`yokoten init`/);
+  assert.doesNotMatch(onPath, /npx yokoten|launcher is not on your PATH/);
+  // Run by npx with nothing installed: `npx yokoten` too.
+  const bare = makeTempDir('yokoten-npx-');
+  const viaNpx = doctor(root, { env: { HOME: bare, npm_command: 'exec', PATH: env.PATH, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, gh: () => { throw new Error('no network'); } });
+  assert.match(viaNpx.lines.join('\n'), /`npx yokoten init`/);
 });
