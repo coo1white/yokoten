@@ -57,8 +57,6 @@ npx yokoten init         # once per project
 npx yokoten doctor       # where you are, and the one next step
 ```
 
-Until the first npm release (October 24), [install from a clone](docs/guide.md#install-from-a-clone).
-
 ### Good to know
 
 - **Commit in UTC.** Run `TZ=UTC git commit`, or add `export TZ=UTC` to your shell profile once.
