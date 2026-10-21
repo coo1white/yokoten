@@ -75,6 +75,26 @@ export const RULES = {
     check: 'the tool-call guard lets every read of core.hooksPath through. In the repo\'s own config, `git config` may set .githooks, the value already set, or a folder whose pre-commit runs `yokoten check` (husky: .husky/pre-commit). It stops any other change: `--unset`, `--global`, `git -c`, `--config-env` and GIT_CONFIG_KEY_n. The commit-check step looks at the setting',
     docs: guide('the-core-rules'),
   },
+  alias: {
+    rule: 'no alias in a command: the guard refuses it instead of parsing it',
+    why: 'an alias runs another command under a new name, so the guard cannot check what it runs',
+    check: 'the tool-call guard stops the `alias` program, `git -c alias.*` and `git config alias.*` unless it only reads one (`--get`, `--list`); run the full command instead',
+  },
+  'remove-git': {
+    rule: 'no removing the .git folder',
+    why: 'the .git folder holds the repo history, so removing it throws away every commit',
+    check: 'the tool-call guard stops `rm`, `rmdir`, `unlink` and `shred` on a path that can be .git; delete only the files you mean, or clone the repo again to start over',
+  },
+  'delete-default-branch': {
+    rule: 'no deleting the default branch',
+    why: 'the default branch holds the work every branch builds on, so deleting it throws that work away',
+    check: 'the tool-call guard stops `git branch -d`, `-D` and `--delete`, `git update-ref -d` and `git push --delete` (or `:<branch>`) on the default branch: refs/remotes/origin/HEAD when git names it, else main and master; delete only the branch you mean',
+  },
+  'pipe-to-shell': {
+    rule: 'no piping a download into a shell',
+    why: 'a download piped into a shell runs code nobody read, so the guard cannot check what it runs',
+    check: 'the tool-call guard stops a pipeline that feeds `curl` or `wget` into a shell; save the file first, read it, then run it',
+  },
   'blocked-command': {
     rule: 'an agent does not run a program the project blocks in yokoten.json "commands.block"',
     why: 'the project chose its stack, and an agent forgets a rule written only in prose',

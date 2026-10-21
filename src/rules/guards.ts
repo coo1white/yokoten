@@ -468,14 +468,21 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
   const movesFolder = commands.some((words) => ['cd', 'pushd', 'popd'].includes(words[0] ?? ''));
   // The words have lost their quotes: a quote or \ next to any ~ makes a ~ folder unsure (#465).
   const isTildeQuoted = QUOTED_TILDE.test(command);
+  // A download piped into a shell runs code nobody read (#560).
+  const piped = checkPipeToShell(command);
+  if (piped) return piped;
   for (const words of commands) {
     const mayWrite = heredoc !== undefined || fills || writesFile(words) || isUnsure(words) || writers.some((other) => other !== words);
     // The name is built only on a refusal (#498).
     const saw = (isMarked: (word: string) => boolean) => writeRisk(words, { heredoc, plainText, plainAt, fills, writers, isMarked });
     const reason =
+      checkShellAlias(words) ??
       checkGit(words, { env, config, cwd, rules }) ??
       // A worker hears its own rule first: what it may not send, and the git folder (#555).
       (env.YOKOTEN_ROLE === 'worker' ? (checkWorkerSends(words) ?? checkWorkerWrites(words, { folder: postCwd, command })) : null) ??
+      // Removing the .git folder throws away every commit (#560). For a worker the
+      // mark rule above already answers, with its own id.
+      checkRemoveGit(words) ??
       checkHooksEnvironment(words) ??
       checkPublish(words, env) ??
       checkBlocked(words, config?.commands.block ?? {}) ??
@@ -560,7 +567,13 @@ function checkGit(words: string[], { env, config, cwd, rules }: { env: Env; conf
   if (settings.some((s) => /^push\.followtags/i.test(s)) && !env.YOKOTEN_RELEASE_APPROVAL) {
     return release('git -c push.followTags pushes tags');
   }
-  // `git -c alias.x='!cmd' x` runs cmd through a shell.
+  // `git -c alias.x=...` makes an alias, which can run another command under a new name:
+  // refused, not parsed, so the guard never reads a hidden command as safe (#560). For a
+  // worker the worker rule below still answers first, with its own id.
+  const aliasSetting = [...settings, ...fromEnvironment].find((text) => /^alias\./i.test(text.trim()));
+  if (aliasSetting && env.YOKOTEN_ROLE !== 'worker') {
+    return aliasFinding(`git with \`${aliasSetting.split('=')[0].trim()}\` makes an alias, which can run another command under a new name`);
+  }
   for (const s of settings) {
     const alias = /^alias\.[^=]*=!(.*)$/is.exec(s);
     const reason = alias && checkEachCommand(alias[1], { env, config, cwd, rules });
@@ -581,6 +594,18 @@ function checkGit(words: string[], { env, config, cwd, rules }: { env: Env; conf
     if (force) return finding('force-push', `git push ${force} forces the push`, 'use --force-with-lease, which stops when the remote has work you have not seen');
     // A worker commits in its worktree; the lead reviews and pushes (#555).
     if (env.YOKOTEN_ROLE === 'worker') return sends('a worker does not push');
+    const pushed = findPushedDeletes(withoutShellRedirects(words, argsAt));
+    const gone = pushed?.find((name) => isDefaultBranch(name, directory, env));
+    if (gone !== undefined) return deleteBranchFinding(`\`git push\` deletes the default branch \`${gone}\` on the remote`);
+  }
+  if (sub === 'branch') {
+    const names = findDeletedBranches(withoutShellRedirects(words, argsAt));
+    const gone = names?.find((name) => isDefaultBranch(name, directory, env));
+    if (gone !== undefined) return deleteBranchFinding(`\`git branch\` deletes the default branch \`${gone}\``);
+  }
+  if (sub === 'update-ref') {
+    const ref = findDeletedRef(withoutShellRedirects(words, argsAt));
+    if (ref !== null && isDefaultBranch(ref, directory, env)) return deleteBranchFinding(`\`git update-ref -d ${ref}\` deletes the default branch directly`);
   }
   const skip = args.includes('--no-verify') ? '--no-verify' : sub === 'commit' ? args.find((a) => /^-[a-z]*n[a-z]*$/i.test(a)) : undefined;
   if (skip) return finding('skip-check', `git ${sub} ${skip} skips the commit check`, 'fix what the check reports instead');
@@ -606,6 +631,181 @@ function checkWorkerGit(words: string[], { options, settings, sub, args }: { opt
     return sends('git config alias.* sets an alias in the config every worktree shares, which can run a push under another name');
   }
   return null;
+}
+
+// ---- Commands that lose work (#560) ----
+//
+// An alias runs another command under a new name, removing .git throws away every
+// commit, deleting the default branch throws away the line every branch builds on,
+// and a download piped into a shell runs code nobody read. Each refusal names the
+// safe way instead. For a worker the worker rules above still answer first.
+
+const ALIAS_FIX = 'run the full command instead of making an alias, so the guard can check it';
+const aliasFinding = (what: string) => finding('alias', what, ALIAS_FIX);
+
+/** The `alias` program defines a shortcut, so a later command runs what the guard cannot see. */
+function checkShellAlias(words: string[]): Finding | null {
+  const runs = findPrograms(words).some((program) => programName(program) === 'alias');
+  return runs ? aliasFinding('`alias` defines a shortcut, so a later command runs what the guard cannot see') : null;
+}
+
+const REMOVE_PROGRAMS = new Set(['rm', 'rmdir', 'unlink', 'shred']);
+const REMOVE_GIT_FIX = 'delete only the files you mean (a tracked file with `git rm <path>`); to start over, clone the repo again';
+
+/** `rm` and friends on a path that can be `.git`. For a worker the mark rule answers first. */
+function checkRemoveGit(words: string[]): Finding | null {
+  let from = 0;
+  for (const program of findPrograms(words)) {
+    const at = words.indexOf(program, from);
+    if (at === -1) continue;
+    from = at + 1;
+    if (!REMOVE_PROGRAMS.has(programName(program))) continue;
+    const target = plainArgs(withoutShellRedirects(words, at + 1)).find((word) => word.split(PATH_BREAKS).filter(Boolean).some(mayBeDotGit));
+    if (target !== undefined) {
+      return finding('remove-git', `\`${programName(program)}\` on \`${target}\` can delete the .git folder, which holds the repo history`, REMOVE_GIT_FIX);
+    }
+  }
+  return null;
+}
+
+const DELETE_BRANCH_FIX = 'delete only the branch you mean (`git branch -d <branch>`), and leave the default branch alone';
+const deleteBranchFinding = (what: string) => finding('delete-default-branch', what, DELETE_BRANCH_FIX);
+
+/** The branches a `git branch -d`, `-D` or `--delete` removes, or null when it removes none. */
+function findDeletedBranches(args: string[]): string[] | null {
+  const deletes = args.some((arg) => arg === '--delete' || (/^-[A-Za-z]+$/.test(arg) && /[dD]/.test(arg)));
+  return deletes ? plainArgs(args) : null;
+}
+
+/** The branches a `git push --delete` (or `-d`) or `git push <remote> :<branch>` deletes, or null. */
+function findPushedDeletes(args: string[]): string[] | null {
+  if (args.includes('--delete') || args.includes('-d')) return plainArgs(args).map((name) => name.replace(/^:/, ''));
+  const colon = plainArgs(args).filter((name) => name.startsWith(':')).map((name) => name.slice(1));
+  return colon.length > 0 ? colon : null;
+}
+
+/** The ref a `git update-ref -d <ref>` deletes, or null. */
+function findDeletedRef(args: string[]): string | null {
+  if (!args.includes('-d')) return null;
+  const refs = plainArgs(args, ['-m', '--message']);
+  return refs.length > 0 ? refs[0] : null;
+}
+
+/** The default branch: what refs/remotes/origin/HEAD names, else main and master. */
+function readDefaultBranches(dir: string | null, env: Env): Set<string> {
+  if (dir !== null) {
+    const head = readGit(dir, ['symbolic-ref', 'refs/remotes/origin/HEAD'], env);
+    const branch = head === null ? undefined : /^refs\/remotes\/[^/]+\/(.+)$/.exec(head)?.[1];
+    if (branch) return new Set([branch]);
+  }
+  return new Set(['main', 'master']);
+}
+
+/** Whether `name` is the default branch, as a bare name or under refs/heads/. */
+function isDefaultBranch(name: string, dir: string | null, env: Env): boolean {
+  const branches = readDefaultBranches(dir, env);
+  const short = name.startsWith('refs/heads/') ? name.slice('refs/heads/'.length) : name;
+  return branches.has(name) || branches.has(short);
+}
+
+const PIPE_SHELL_FIX = 'save it first (`curl -fsSL <url> -o <file>`), read it, then run it (`sh <file>`)';
+
+/** A pipeline that feeds a download into a shell runs code nobody read. */
+function checkPipeToShell(command: string): Finding | null {
+  const downloads = new Set(['curl', 'wget']);
+  for (const pipeline of splitPipelines(command)) {
+    const segments = splitPipeSegments(pipeline);
+    if (segments.length < 2) continue;
+    const programs = segments.map((segment) => commandWords(segment).flatMap(findPrograms).map(programName));
+    for (let at = 1; at < programs.length; at++) {
+      const shell = programs[at][0] ?? '';
+      if (shell !== 'powershell' && !isShell(shell)) continue;
+      const downloader = programs.slice(0, at).flat().find((program) => downloads.has(program));
+      if (downloader !== undefined) {
+        return finding('pipe-to-shell', `\`${downloader} | ${shell}\` runs a download without letting you read it first`, PIPE_SHELL_FIX);
+      }
+    }
+  }
+  return null;
+}
+
+/** The command's pipelines: cut at ; && || and line ends, outside quotes and groups. */
+function splitPipelines(command: string): string[] {
+  const pipelines: string[] = [];
+  let current = '';
+  let quote = '';
+  let depth = 0;
+  const push = () => {
+    pipelines.push(current);
+    current = '';
+  };
+  for (let at = 0; at < command.length; at++) {
+    spend(1);
+    const character = command[at];
+    const next = command[at + 1] ?? '';
+    if (quote === "'") {
+      current += character;
+      if (character === "'") quote = '';
+    } else if (quote === '"') {
+      current += character;
+      if (character === '\\' && at + 1 < command.length) current += command[++at];
+      else if (character === '"') quote = '';
+    } else if (character === '\\') {
+      current += character;
+      if (at + 1 < command.length) current += command[++at];
+    } else if (character === "'" || character === '"') {
+      quote = character;
+      current += character;
+    } else if (character === '(') {
+      depth++;
+      current += character;
+    } else if (character === ')') {
+      depth = Math.max(0, depth - 1);
+      current += character;
+    } else if ((character === ';' || character === '\n' || character === '\r') && depth === 0) {
+      push();
+    } else if ((character === '&' && next === '&') || (character === '|' && next === '|')) {
+      if (depth === 0) {
+        push();
+        at++;
+      } else current += character;
+    } else current += character;
+  }
+  pipelines.push(current);
+  return pipelines;
+}
+
+/** One pipeline's pipe segments: cut at | and |&, outside quotes. */
+function splitPipeSegments(pipeline: string): string[] {
+  const segments: string[] = [];
+  let current = '';
+  let quote = '';
+  for (let at = 0; at < pipeline.length; at++) {
+    spend(1);
+    const character = pipeline[at];
+    if (quote !== '') {
+      current += character;
+      if (character === '\\' && quote === '"' && at + 1 < pipeline.length) current += pipeline[++at];
+      else if (character === quote) quote = '';
+    } else if (character === '\\') {
+      current += character;
+      if (at + 1 < pipeline.length) current += pipeline[++at];
+    } else if (character === "'" || character === '"') {
+      quote = character;
+      current += character;
+    } else if (character === '|') {
+      if (pipeline[at + 1] === '|') {
+        current += '||';
+        at++;
+      } else {
+        segments.push(current);
+        current = '';
+        if (pipeline[at + 1] === '&') at++;
+      }
+    } else current += character;
+  }
+  segments.push(current);
+  return segments;
 }
 
 // ---- The hooks setting (#114) ----
@@ -799,6 +999,16 @@ function checkConfig(args: string[], directory: string | null, env: Env): Findin
     return include ? includes(`git config ${section} to ${include}`) : null;
   }
   const key = plain[0] ?? '';
+  // `git config alias.x=...` defines an alias, which can run another command under a
+  // new name: refused, not parsed (#560). A read passes. For a worker the worker rule
+  // in checkGit still answers first, with its own id.
+  if (/^alias\./i.test(key)) {
+    const value = plain[1];
+    const isSet = subcommand !== undefined || actions.some((a) => a === '--add' || a === '--replace-all');
+    const removes = actions.some((a) => CONFIG_REMOVES.has(a));
+    const isRead = actions.some((a) => CONFIG_READS.has(a)) || (value === undefined && !isSet && !removes);
+    return isRead ? null : aliasFinding(`\`git config ${key}\` changes an alias, which can run another command under a new name`);
+  }
   if (!isHooksPath(key) && !isInclude(key)) return null;
   const remove = actions.find((a) => CONFIG_REMOVES.has(a));
   if (remove) return isInclude(key) ? null : hooksPath(`git config ${remove} core.hooksPath turns off the commit check`);
