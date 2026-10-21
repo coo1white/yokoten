@@ -78,4 +78,5 @@ jobs:
       # Pinned to one version, so it is not ad hoc in practice.
       - run: npm install --global npm@11.21.0 # zizmor: ignore[adhoc-packages]
       - name: Publish
-        run: npm publish package/*.tgz --provenance --access public
+        # `./` makes npm read a file: it reads `package/x.tgz` as a GitHub repo and clones it.
+        run: npm publish ./package/*.tgz --provenance --access public

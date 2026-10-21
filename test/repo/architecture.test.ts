@@ -1337,3 +1337,12 @@ test('suite time: it reads the report node --test writes on this Node (#475)', (
   assert.ok(ms > 0);
   assert.deepEqual(tests.map((test) => test.name), ['one: it runs']);
 });
+
+test('the release workflow publishes the tarball as a file, not a GitHub repo name', () => {
+  // `npm publish package/x.tgz` reads `package/x.tgz` as a GitHub `user/repo` and clones it:
+  // the v0.1.0 publish failed so. A path starting with `./` is a file.
+  const workflow = readFileSync(join(ROOT, '.github/workflows/release.yml'), 'utf8');
+  const publish = workflow.split('\n').filter((line) => /\bnpm publish\b/.test(line) && !line.trim().startsWith('#'));
+  assert.ok(publish.length > 0, 'the release workflow runs npm publish');
+  for (const line of publish) assert.match(line, /npm publish \.\//, line.trim());
+});
