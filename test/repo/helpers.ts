@@ -357,7 +357,10 @@ export function makeTranslatedRepo() {
 }
 
 function translatedRepoIn(root: string) {
-  const env = { PATH: process.env.PATH, HOME: root, TZ: 'UTC', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(root, 'none') };
+  // No automatic gc or maintenance (#516). Newer git (CI has 2.55) runs maintenance in the background
+  // after a commit, and this env leaves out the test home's settings that turn it off; it then wrote
+  // into the template while a test copied it (ENOENT in cpSync, twice, both from this template).
+  const env = { PATH: process.env.PATH, HOME: root, TZ: 'UTC', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(root, 'none'), GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'maintenance.auto', GIT_CONFIG_VALUE_0: 'false', GIT_CONFIG_KEY_1: 'gc.auto', GIT_CONFIG_VALUE_1: '0' };
   const git = (...args: string[]) => execFileSync('git', args, { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   const commit = (path: string, text: string) => {
     writeFileSync(join(root, path), text);

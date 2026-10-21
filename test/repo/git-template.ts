@@ -15,9 +15,13 @@ import { cpSync, existsSync } from 'node:fs';
 export function templateRepo(makeFolder: () => string, build: (dir: string) => void): (dest: string) => void {
   let template = '';
   return (dest) => {
+    // The template is kept only once it is fully built: a build that threw used to leave a
+    // half-made one for later calls to copy (#516).
     if (!template || !existsSync(template)) {
-      template = makeFolder();
-      build(template);
+      template = '';
+      const folder = makeFolder();
+      build(folder);
+      template = folder;
     }
     cpSync(template, dest, { recursive: true });
   };
