@@ -476,9 +476,16 @@ test('ci: a docs-only pull request runs one test job, skips typecheck and action
   const matrix = (docsOnly: string) => {
     const needs = results(docsOnly, {});
     const nodes = evaluate(inBraces(testJob, /^ {8}node: \$\{\{ (.+) \}\}$/m), needs) as string[];
-    const extra = evaluate(inBraces(testJob, /^ {8}include: \$\{\{ (.+) \}\}$/m), needs) as { os: string; node: string }[];
-    return [...nodes.map((node) => `ubuntu-latest ${node}`), ...extra.map((entry) => `${entry.os} ${entry.node}`)];
+    const extra = evaluate(inBraces(testJob, /^ {8}include: \$\{\{ (.+) \}\}$/m), needs) as { os: string; node: string; shard: number }[];
+    // Every setup runs each of the three shards (#472).
+    const shards = JSON.parse(inBraces(testJob, /^ {8}shard: (\[.+\])$/m)) as number[];
+    assert.deepEqual(shards, [1, 2, 3]);
+    for (const setup of new Set(extra.map((entry) => `${entry.os} ${entry.node}`))) {
+      assert.deepEqual(extra.filter((entry) => `${entry.os} ${entry.node}` === setup).map((entry) => entry.shard), shards, `${setup} runs every shard`);
+    }
+    return [...new Set([...nodes.map((node) => `ubuntu-latest ${node}`), ...extra.map((entry) => `${entry.os} ${entry.node}`)])];
   };
+  assert.match(testJob, /--test-shard=\$\{\{ matrix\.shard \}\}\/3/, 'the run step uses the shard');
   assert.deepEqual(matrix('true'), ['ubuntu-latest 24']);
   const full = ['ubuntu-latest 22.18.0', 'ubuntu-latest 24', 'macos-latest 24'];
   assert.deepEqual(matrix('false'), full);

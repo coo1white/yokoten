@@ -58,18 +58,23 @@ jobs:
           fi
           echo "docs_only=$docs_only"
           echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
-  # On a docs-only pull request, one run (ubuntu, Node 24): the architecture and
+  # On a docs-only pull request, ubuntu and Node 24 only: the architecture and
   # translation tests read the docs. `!cancelled()`: if `changes` failed, run in full.
+  # Each setup runs in three shards, a third of the test files each, so a pull request
+  # waits for the slowest third, not the whole suite (#472). `fail-fast: false`: one red
+  # shard does not cancel the others, so a run shows every failure at once.
   test:
     needs: changes
     if: ${{ !cancelled() }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest]
+        shard: [1, 2, 3]
         # The oldest Node that runs .ts as it is (package.json "engines"), and the current LTS.
         node: ${{ fromJSON(needs.changes.outputs.docs_only == 'true' && '["24"]' || '["22.18.0","24"]') }}
         # One macOS run: paths there go through symlinks (/var), which hid a real bug (#1).
-        include: ${{ fromJSON(needs.changes.outputs.docs_only == 'true' && '[]' || '[{"os":"macos-latest","node":"24"}]') }}
+        include: ${{ fromJSON(needs.changes.outputs.docs_only == 'true' && '[]' || '[{"os":"macos-latest","node":"24","shard":1},{"os":"macos-latest","node":"24","shard":2},{"os":"macos-latest","node":"24","shard":3}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     permissions:
@@ -83,7 +88,8 @@ jobs:
           node-version: ${{ matrix.node }}
       # Four files at a time (Node's default is the CPU count minus one), and one compile
       # cache for every child node, so each test file strips its TypeScript once (#442).
-      - run: node --test --test-concurrency=4
+      # The spec reporter on every Node, so the logs read alike (Node 22 defaults to TAP).
+      - run: node --test --test-concurrency=4 --test-reporter=spec --test-shard=${{ matrix.shard }}/3
         env:
           NODE_COMPILE_CACHE: ${{ runner.temp }}/node-compile-cache
   # Types are checked here and nowhere else: Node runs the .ts files without them.
