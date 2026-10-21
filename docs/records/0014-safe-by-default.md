@@ -71,7 +71,9 @@ Every action that happens by default, and every advanced option, has a way back:
 - **A worker's worktree is marked** (#555). Do by default: the `dispatch` skill runs
   `yokoten worker mark <dir>` on each worktree it makes. The guard then treats every agent
   there as a worker, even one whose runtime drops `YOKOTEN_ROLE` (Muse Code). The mark only
-  makes the guard stricter, and the worker can't remove it. The main checkout is never
+  makes the guard stricter. The guard refuses a worker's plain ways to remove it and fails
+  closed on a `.git` link it can't read; it reads text, so the server and credentials kept
+  from the worker are the real lock. The main checkout is never
   marked. Off: `git worktree remove <dir>` after the merge removes the mark with the
   worktree; the lead may also delete `.git/worktrees/<name>/yokoten-worker`. On: run
   `yokoten worker mark <dir>` again.
