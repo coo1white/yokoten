@@ -31,7 +31,9 @@ export const readInput = ({ fd, text }: Input): string => text ?? (fd === null ?
  * One run of one command, as plain data (#475). bin/main.ts makes it from the process once;
  * a test makes its own. Below bin/main.ts, nothing reads process.argv, process.env,
  * process.cwd() or the process's streams: a command reads them from here. It holds values only,
- * never a method or a cache, so it cannot grow into a bag every module reaches into.
+ * never a method or a cache, so it cannot grow into a bag every module reaches into. The one
+ * exception is `stdin.stream`, a getter, so the process's stdin is made only when read: never
+ * spread or copy `stdin`, or the hook makes it and fd 0 turns non-blocking (see Input).
  */
 export interface Invocation {
   /** The first word after `yokoten`, or undefined when there is none. */

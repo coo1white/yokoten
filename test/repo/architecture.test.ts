@@ -962,7 +962,11 @@ test('home: a test that reads the home folder gets the empty temp one, not the r
 // this process in a test. Comments may name them; code may not.
 const PROCESS_READS = new Set(['argv', 'env', 'cwd', 'stdin', 'stdout', 'stderr']);
 
-/** Each `process.<argv|env|cwd|stdin|stdout|stderr>` and `readFileSync(0` / `readSync(0` in the code, as "line: what". */
+/**
+ * Each `process.<argv|env|cwd|stdin|stdout|stderr>`, `readFileSync(0` / `readSync(0` and `/dev/stdin` in the code, as
+ * "line: what". So no read slips past by another road, `process` used as a value (`= process`,
+ * `process[...]`) and an import of `node:process` count too.
+ */
 function processReads(text: string): string[] {
   const tokens = tokenize(text);
   const found: string[] = [];
@@ -971,6 +975,11 @@ function processReads(text: string): string[] {
     const after = tokens[index + 2];
     if (token.text === 'process' && (next?.text === '.' || next?.text === '?.') && after && PROCESS_READS.has(after.text)) found.push(`${token.line}: process.${after.text}`);
     if ((token.text === 'readFileSync' || token.text === 'readSync') && next?.text === '(' && after?.text === '0') found.push(`${token.line}: ${token.text}(0`);
+    const before = tokens[index - 1];
+    const member = before?.text === '.' || before?.text === '?.';
+    if (token.kind === 'name' && token.text === 'process' && !member && next?.text !== '.' && next?.text !== '?.') found.push(`${token.line}: process as a value`);
+    if (token.kind === 'string' && /^['"`](?:node:)?process['"`]$/.test(token.text)) found.push(`${token.line}: node:process`);
+    if (token.kind === 'string' && token.text.slice(1, -1) === '/dev/stdin') found.push(`${token.line}: /dev/stdin`);
   });
   return found;
 }
@@ -985,8 +994,13 @@ test('process: the scan finds each read of the process, and not one in a comment
     'const all = readFileSync(0, "utf8");',
     'readSync(0, buffer);',
     'const exit = process.exitCode;',
+    'const { env } = process;',
+    "import { cwd } from 'node:process';",
+    "const home = process['env'];",
+    "const all = readFileSync('/dev/stdin', 'utf8');",
+    'const kind = options.process;',
   ].join('\n');
-  assert.deepEqual(processReads(text), ['3: process.env', '4: process.cwd', '5: process.stdin', '6: readFileSync(0', '7: readSync(0']);
+  assert.deepEqual(processReads(text), ['3: process.env', '4: process.cwd', '5: process.stdin', '6: readFileSync(0', '7: readSync(0', '9: process as a value', '10: node:process', '11: process as a value', '12: /dev/stdin']);
 });
 
 test('process: below bin/main.ts, src/ reads no env, folder or stream of the process (#475)', () => {
