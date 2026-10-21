@@ -11,7 +11,7 @@ import { checkEdit } from '../rules/guards.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
 import { type Finding, finding } from '../rules/message.ts';
 import { isChangeFile, longSentenceNote, longSentences } from '../rules/pr.ts';
-import { autoLogins, notUtc, repoMarkKinds, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
+import { accountMarks, notUtc, repoMarkKinds, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
 import { parseChange, readChanges } from './changelog.ts';
 import { isShallowNote, translationNotes } from './translations.ts';
 
@@ -390,7 +390,7 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
   const indexed = () => (index ??= indexFiles(root, env));
   const kinds = repoMarkKinds(env, root, config.privacy); // less what the repo is named for and the machine allows (#447)
   const marks = kinds.map((mark) => mark.value);
-  const logins = autoLogins(kinds);
+  const logins = accountMarks(kinds); // the forge login and the git name, fine where a file names accounts (#410, #434)
   const skip = matcher(config.privacy.skip);
   const privacy = (path: string, buf: Buffer) => {
     if (skip(path) || looksBinary(buf)) return;
@@ -470,7 +470,7 @@ export function checkChanged(root: string, { config, env }: { config: Config; en
   const problems: Finding[] = [];
   const kinds = repoMarkKinds(env, root, config.privacy); // less what the repo is named for and the machine allows (#447)
   const marks = kinds.map((mark) => mark.value);
-  const logins = autoLogins(kinds);
+  const logins = accountMarks(kinds); // the forge login and the git name, fine where a file names accounts (#410, #434)
   const skip = matcher(config.privacy.skip);
   for (const path of changedFiles(root, env)) {
     const reason = checkEdit(path, { config, env });
@@ -530,7 +530,7 @@ export function checkHistory(root: string, { config, env }: { config: Config; en
   };
   const kinds = repoMarkKinds(env, root, config.privacy); // less what the repo is named for and the machine allows (#447)
   const marks = kinds.map((mark) => mark.value);
-  const logins = autoLogins(kinds);
+  const logins = accountMarks(kinds); // the forge login and the git name, fine where a file names accounts (#410, #434)
   const skip = matcher(config.privacy.skip);
   const opts = { marks, allow: config.privacy.allow };
 

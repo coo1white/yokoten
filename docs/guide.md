@@ -1582,11 +1582,20 @@ yokoten hides your details before some commands run.
   lacks. If you set your own `mailmap.file`, `install` keeps it and tells you which lines
   to add.
 - **Marks fill themselves.** `install` and `doctor` add what this machine knows: your
-  git email (unless it is a noreply address), the login `gh` uses, and the hosts of
-  private remotes. Your git display name is left out: a common name would flag every
-  file that holds the word. They only add lines, and never print a value. `doctor` tells
-  you which kinds are still missing: your real name, your city, your domains. Only you
-  can add those.
+  git name (`user.name`, unless it is a shared name such as `test`), your git email
+  (unless it is a noreply address), the login `gh` uses, and the hosts of private
+  remotes. A git name that is your login is added once, as the login. They only add
+  lines, and never print a value. Like the login, the git name is fine in a LICENSE
+  copyright line and an author field. `doctor` tells you which kinds are still missing,
+  such as your city and your domains. Only you can add those.
+- **More control: `yokoten marks`.** Alone, it counts your marks by kind, never the values.
+  `yokoten marks add` adds one of your own: type it in the terminal, where it is not shown,
+  or pipe it in. It is never a word on the command line, which your shell history keeps.
+  `yokoten marks remove` takes one out the same way. `yokoten marks off git-name` (or
+  `git-email`, `forge-login`) stops `install` adding that kind and removes the marks it
+  added for it. The choice is kept in `~/.config/yokoten/machine.json`. To go back to the
+  default, run `yokoten marks on git-name`: it adds the name again. Marks you added
+  yourself are never touched.
 
 The wrapped command needs bash. On Windows, run agents in Git Bash or WSL; PowerShell has
 no `pipefail`.

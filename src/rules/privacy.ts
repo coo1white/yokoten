@@ -438,23 +438,33 @@ export function loadMarkKinds(env: Env): Mark[] {
     if ((err as Error).message === NO_HOME) return [];
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
   }
-  const marks: Mark[] = [];
+  return markLines(text).flatMap((mark) => (mark ? [mark] : []));
+}
+
+/**
+ * Each line of the private-marks text, as `loadMarkKinds` reads it: the mark with its kind,
+ * or null for a comment or a blank line. `yokoten marks` uses it to remove lines by kind (#434).
+ */
+export function markLines(text: string): (Mark | null)[] {
   let section: string | null = null;
-  for (const line of text.split(/\r?\n/).map((part) => part.trim())) {
+  return text.split('\n').map((raw) => {
+    const line = raw.trim();
     if (line.startsWith('#')) {
       section = line === FOUND_HEADER ? '' : line.startsWith(`${FOUND_HEADER}: `) ? line.slice(FOUND_HEADER.length + 2).trim() : null;
-      continue;
+      return null;
     }
-    if (!line) continue;
+    if (!line) return null;
     const value = line.toLowerCase();
     const kind = section === null ? null : section || (isEmailShaped(value) ? 'git email' : isDomainShaped(value) ? 'private remote host' : null);
-    marks.push({ value, kind });
-  }
-  return marks;
+    return { value, kind };
+  });
 }
 
 /** The forge logins yokoten added to the marks, lowercased: the places that name accounts may hold them (#410). */
 export const autoLogins = (marks: Mark[]): string[] => marks.filter((mark) => mark.kind === 'forge login').map((mark) => mark.value);
+
+/** The marks yokoten added that name an account or a person: the forge login and the git name. A file that names accounts may hold them (#410, #434). */
+export const accountMarks = (marks: Mark[]): string[] => marks.filter((mark) => mark.kind === 'forge login' || mark.kind === 'git name').map((mark) => mark.value);
 
 // ---- Where an added forge login is fine (#410) ----
 //
