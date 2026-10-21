@@ -463,9 +463,6 @@ export function markLines(text: string): (Mark | null)[] {
 /** The forge logins yokoten added to the marks, lowercased: the places that name accounts may hold them (#410). */
 export const autoLogins = (marks: Mark[]): string[] => marks.filter((mark) => mark.kind === 'forge login').map((mark) => mark.value);
 
-/** The marks yokoten added that name an account or a person: the forge login and the git name. A file that names accounts may hold them (#410, #434). */
-export const accountMarks = (marks: Mark[]): string[] => marks.filter((mark) => mark.kind === 'forge login' || mark.kind === 'git name').map((mark) => mark.value);
-
 // ---- Where an added forge login is fine (#410) ----
 //
 // Some files exist to name an account: CODEOWNERS, the author of a package or plugin, the
@@ -524,17 +521,17 @@ function personLines(lines: string[]): boolean[] {
  * For a file with places that name accounts: a function that gives a lowercased line back
  * without the places where `login` is fine. Null when the file has no such place.
  */
-function loginPlaces(file: string, lines: string[]): ((lower: string, index: number, login: string) => string) | null {
+function loginPlaces(file: string, lines: string[]): ((line: string, index: number, login: string) => string) | null {
   const isMentions = CODEOWNERS_FILE.test(file) || GITHUB_FILE.test(file);
   const isLicense = LICENSE_FILE.test(file);
   const persons = MANIFEST_FILE.test(file) ? personLines(lines) : null;
   if (!isMentions && !isLicense && !persons) return null;
-  return (lower, index, login) => {
-    if (isLicense && COPYRIGHT_LINE.test(lower)) return '';
+  return (line, index, login) => {
+    if (isLicense && COPYRIGHT_LINE.test(line)) return '';
     if (persons?.[index]) return '';
     // `@login` and `@login/team`, but not the login in the domain of an email address.
-    if (isMentions) return lower.replace(new RegExp(String.raw`(?<![\w.+-])@${escapeRegExp(login)}(?![\w-]|\.\w)`, 'g'), '');
-    return lower;
+    if (isMentions) return line.replace(new RegExp(String.raw`(?<![\w.+-])@${escapeRegExp(login)}(?![\w-]|\.\w)`, 'gi'), '');
+    return line;
   };
 }
 
@@ -618,33 +615,67 @@ export const isPersonalEmail = (hit: string, allow: string[] = []): boolean => !
 
 // ---- How a mark is found in text (#434) ----
 //
-// A mark made of letters and spaces is a name or a place: it is found as whole words only, so
-// `sam` is not found in `sample`. Any other character on either side of it ends a word, so
-// `sam_dev`, `sam-example` and `@sam` are still found. The words of a mark of more than one may
-// have any run of spaces, `-`, `_` or `.` between them, as `plainName` reads a repo's name. A
-// mark with any other character (a domain, an address, a number) is found as a part, as before.
-// So is a name in a script written with no space between words, where a word has no edge.
+// A mark made of letters and spaces is a name or a place: it is found as whole words, so
+// `sam` is not found in `sample`. Only a letter next to it blocks a match. A digit, `_`, `-`,
+// `.`, `/`, `@`, a quote, a backslash escape (`\n`, `\u00e9`), a URL-encoded slash, backslash
+// or space (`%2F`, `%5C`, `%20`) and a change from a small letter to a capital (`githubNick`,
+// `NickDev`) are edges. The words of a longer mark may have any run of spaces, `.`, `_` or `-`
+// between them, or none: `sam smith` is found in `samsmith` and `Sam_Smith`. Any other mark (a
+// domain, an address, a number) is found as a part, and so is a name in a script that joins
+// words or particles onto a name (Chinese, Japanese, Korean, Thai, Arabic, Hebrew). The check
+// and `redact` build their patterns here, so they never disagree.
 
+// A slash, a backslash or a space as a URL writes it (`%2F`, `%5C`, `%20`), in either case (#404).
+const ENCODED_EDGE = '%(?:2[Ff]|5[Cc]|20)';
 const NAME_SHAPED = /^[\p{L}\p{M}]+(?: [\p{L}\p{M}]+)*$/u;
-const UNSPACED_SCRIPT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}]/u;
-/** Each mark's test, made once per process: the scan runs it on every line. */
-const markTests = new Map<string, (lower: string) => boolean>();
+const JOINED_SCRIPT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}\p{Script=Arabic}\p{Script=Hebrew}]/u;
+const LETTER = String.raw`[\p{L}\p{M}]`;
+// What may sit right before a name: no letter, or a letter that ends an escape or an encoded
+// edge, or a small letter before the name's capital.
+const NAME_START = String.raw`(?:(?<!${LETTER})|(?<=\\[ntrbf])|(?<=\\u[0-9A-Fa-f]{4})|(?<=${ENCODED_EDGE})|(?<=\p{Ll})(?=\p{Lu}))`;
+// What may sit right after it: no letter, or a capital after the name's small letter.
+const NAME_END = String.raw`(?:(?!${LETTER})|(?<=\p{Ll})(?=\p{Lu}))`;
+const NAME_JOINER = String.raw`[\s._-]*`;
 
-/** Whether the lowercased `lower` holds `mark` (lowercased, as `loadMarks` gives it). The one test every scan uses. */
-export function hasMark(lower: string, mark: string): boolean {
+/** A value as a pattern that matches it in any case, with no `i` flag, so the edges can tell a capital from a small letter. */
+const caseless = (value: string): string =>
+  [...value]
+    .map((char) => {
+      const [low, up] = [char.toLowerCase(), char.toUpperCase()];
+      if (low === up) return escapeRegExp(char);
+      return [...low].length === 1 && [...up].length === 1 ? `[${escapeRegExp(low)}${escapeRegExp(up)}]` : `(?:${escapeRegExp(low)}|${escapeRegExp(up)})`;
+    })
+    .join('');
+
+/** The words of a mark found as whole words, or null for a mark found as a part. */
+function nameWords(mark: string): string[] | null {
+  const words = mark.trim().toLowerCase().split(/\s+/);
+  return NAME_SHAPED.test(words.join(' ')) && !JOINED_SCRIPT.test(mark) ? words : null;
+}
+
+/** The one pattern for a mark, for the check and for `redact` (use flag `u`, never `i`). */
+export function markPattern(mark: string): string {
+  const words = nameWords(mark);
+  return words ? `${NAME_START}${words.map(caseless).join(NAME_JOINER)}${NAME_END}` : caseless(mark.trim().toLowerCase());
+}
+
+/** Each mark's test, made once per process: the scan runs it on every line. */
+const markTests = new Map<string, (text: string, lower: string) => boolean>();
+
+/** Whether `text` holds `mark` (lowercased, as `loadMarks` gives it). `lower` is `text` lowercased, when the caller has it. The one test every scan uses. */
+export function hasMark(text: string, mark: string, lower: string = text.toLowerCase()): boolean {
   let test = markTests.get(mark);
   if (!test) {
-    const words = mark.trim().split(/\s+/);
-    if (!NAME_SHAPED.test(words.join(' ')) || UNSPACED_SCRIPT.test(mark)) test = (text) => text.includes(mark);
+    const words = nameWords(mark);
+    if (!words) test = (_, low) => low.includes(mark);
     else {
-      const edge = String.raw`[\p{L}\p{M}\p{N}]`;
-      const pattern = new RegExp(`(?<!${edge})${words.map(escapeRegExp).join(String.raw`[\s._-]+`)}(?!${edge})`, 'u');
+      const pattern = new RegExp(markPattern(mark), 'u');
       // The first word as a part comes first: most lines have none, and includes is fast.
-      test = (text) => text.includes(words[0]) && pattern.test(text);
+      test = (whole, low) => low.includes(words[0]) && pattern.test(whole);
     }
     markTests.set(mark, test);
   }
-  return test(lower);
+  return test(text, lower);
 }
 
 /**
@@ -680,8 +711,8 @@ export function scanText(
     const lower = line.toLowerCase();
     for (const mark of stopped) {
       // The mark itself is never printed: the output may land in a CI log or a chat.
-      if (!hasMark(lower, mark)) continue;
-      if (places && logins.includes(mark) && !hasMark(places(lower, index, mark), mark)) continue;
+      if (!hasMark(line, mark, lower)) continue;
+      if (places && logins.includes(mark) && !hasMark(places(line, index, mark), mark)) continue;
       problems.push(finding('private-mark', 'matches a line of your private-marks file', 'remove it or reword the line; the mark itself is never printed', where));
     }
   });
@@ -693,8 +724,6 @@ export function scanText(
 const PATH_CHAR = String.raw`[\p{L}\p{N}_\-+@%~#$]`;
 const BEFORE_HOME = String.raw`(?<!${PATH_CHAR}|[.\\/])`;
 const AFTER_HOME = String.raw`(?!${PATH_CHAR}|\.${PATH_CHAR})`;
-// A slash, a backslash or a space as a URL writes it (`%2F`, `%5C`, `%20`), in either case (#404).
-const ENCODED_EDGE = '%(?:2[Ff]|5[Cc]|20)';
 // Where a cut home path ends: the end of a line, maybe after `…`, `...` or spaces (#404).
 const CUT_END = String.raw`(?=(?:…|\.\.\.)?[ \t]*\r?$)`;
 
@@ -796,19 +825,6 @@ export interface Hidden {
 const markPlaceholder = (mark: string) => (isEmailShaped(mark) ? PLACEHOLDERS.email : isDomainShaped(mark) ? PLACEHOLDERS.host : PLACEHOLDERS.mark);
 
 /**
- * One value as a pattern. Where the value starts or ends with a letter or digit, the
- * text next to it must not be one, so a mark `ann` leaves `annual` alone. A value in a
- * script with no spaces between words (Chinese, Japanese) has no such edge.
- */
-function valuePattern(value: string): string {
-  const escaped = escapeRegExp(value);
-  // A URL-encoded slash, backslash or space next to it is an edge too: `C:%5CUsers%5C<name>%5Cx`.
-  const before = /^[A-Za-z0-9]/.test(value) ? String.raw`(?:(?<=${ENCODED_EDGE})|(?<![\p{L}\p{N}]))` : '';
-  const after = /[A-Za-z0-9]$/.test(value) ? String.raw`(?:(?=${ENCODED_EDGE})|(?![\p{L}\p{N}]))` : '';
-  return `${before}${escaped}${after}`;
-}
-
-/**
  * A function that hides the owner in text read in pieces, in order: secrets (the same
  * patterns as the privacy check), private email addresses, the home folder, then every
  * value in `hidden` as a whole word. The home goes before the names, so `/home/<name>/x`
@@ -829,13 +845,15 @@ export function makeRedactor(hidden: Hidden, env: Env): (text: string) => string
   for (const mark of hidden.marks ?? []) add(mark, markPlaceholder(mark));
   // The longest first, so `jane doe` goes before `jane`.
   const values = [...placeholderOf.keys()].sort((a, b) => b.length - a.length);
-  const pattern = values.length ? new RegExp(values.map(valuePattern).join('|'), 'giu') : null;
+  // One group per value, by the same pattern as the check (#434): a hit names its placeholder by its group.
+  const pattern = values.length ? new RegExp(values.map((value) => `(${markPattern(value)})`).join('|'), 'gu') : null;
+  const placeholders = values.map((value) => placeholderOf.get(value) ?? PLACEHOLDERS.mark);
   const hideSecrets = makeSecretHider();
   return (text) => {
     // An SSH remote at a private host (git@host) names the host, not a person.
     let out = hideSecrets(text).replace(EMAIL, (hit) => (!isPersonalEmail(hit) ? hit : /^git@/i.test(hit) ? `git@${PLACEHOLDERS.host}` : PLACEHOLDERS.email));
     out = hideHome(out, env);
-    return pattern ? out.replace(pattern, (hit) => placeholderOf.get(hit.toLowerCase()) ?? PLACEHOLDERS.mark) : out;
+    return pattern ? out.replace(pattern, (...groups: unknown[]) => placeholders[groups.slice(1, values.length + 1).findIndex((group) => group !== undefined)] ?? PLACEHOLDERS.mark) : out;
   };
 }
 
@@ -1130,7 +1148,7 @@ const postFix = (f: Finding) =>
 
 /** A file's path as a finding may show it: home as `~`, and only its name, or no name, when the path holds a mark. */
 function shownPath(path: string, env: Env, marks: string[]): string {
-  const holdsMark = (text: string) => marks.some((mark) => hasMark(text.toLowerCase(), mark));
+  const holdsMark = (text: string) => marks.some((mark) => hasMark(text, mark));
   const shown = hideHome(path, env);
   if (!holdsMark(shown)) return shown;
   const name = basename(shown);

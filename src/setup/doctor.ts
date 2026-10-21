@@ -250,7 +250,7 @@ export function machineChecks(env: Env): Practice[] {
     // 'runtime' in the text, as before; the id differs from the road's runtime step.
     practice('runtime', 'machine-runtime', runtime === VERSION || (plugin && runtime === null), runtime ? `the installed runtime is ${runtime}, this yokoten is ${VERSION}` : 'no runtime installed', plugin ? 'remove it with `yokoten uninstall`; the plugin brings its own' : 'run `yokoten install` from this copy of yokoten'),
     // The marks yokoten found on the machine don't count: only the owner knows a city (#390).
-    practice('private-marks', 'private-marks', countOwnMarks(env) > 0, loadMarks(env).length ? `${target.marks} has only the marks yokoten found on this machine` : `${target.marks} is missing or empty`, 'run `yokoten marks add` and type your city, a domain or a server name; it is not shown'),
+    practice('private-marks', 'private-marks', countOwnMarks(env) > 0, loadMarks(env).length ? `${target.marks} has only the marks yokoten found on this machine` : `${target.marks} is missing or empty`, 'run `yokoten marks add` and type your city, a domain or a server name, and your real name if git does not have it; it is not shown'),
   ];
 }
 

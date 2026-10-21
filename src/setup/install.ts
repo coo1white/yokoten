@@ -60,9 +60,10 @@ export const skillFiles = (env: Env, name: string): string[] => [claudeSkillFile
 export const skillsDir = (file: string): string => dirname(dirname(file));
 
 export const MARKS_HEADER = `# yokoten private marks: words that must never be published.
-# One per line, matched without case; a name only as whole words. yokoten adds your git
-# name, git email and forge login by itself; \`yokoten marks add\` adds your city, domain,
-# server names, other account names.
+# One per line, matched without case. A name or a city (letters and spaces) is found as
+# whole words: a letter next to it hides it, a digit or _ - . / @ does not. yokoten adds
+# your git name, git email and forge login by itself; \`yokoten marks add\` adds your city,
+# domain, server names, other account names.
 # This file stays on this machine; never commit it or paste it anywhere.
 `;
 
@@ -716,12 +717,19 @@ export function filledLines(kinds: string[], file: string): string[] {
 /** What install says when it adds the git name: never the name. */
 export const GIT_NAME_ADDED = 'added your git name to the private marks (not shown)';
 
+// Names a tutorial or a template puts in user.name: they name nobody.
+const PLACEHOLDER_NAMES = new Set(['your name', 'john doe', 'jane doe', 'user', 'name', 'admin', 'first last', 'firstname lastname']);
+
 /**
  * Whether a git user.name names a person, so install adds it as a mark: 3 characters or
- * more, and not an account name every machine of a kind has (`root`, `test`). One word
- * counts too: it may be all the name the owner uses.
+ * more, not an address, not a placeholder (`your name`, `john doe`), and not an account
+ * name every machine of a kind has (`root`, `test`). One word counts too: it may be all
+ * the name the owner uses.
  */
-export const isPersonName = (name: string): boolean => name.trim().length >= 3 && !SHARED_ACCOUNTS.has(name.trim().toLowerCase());
+export function isPersonName(name: string): boolean {
+  const key = name.trim().toLowerCase().replace(/\s+/g, ' ');
+  return key.length >= 3 && !key.includes('@') && !PLACEHOLDER_NAMES.has(key) && !SHARED_ACCOUNTS.has(key);
+}
 
 // ---- The kinds of mark the owner can turn off (#434) ----
 

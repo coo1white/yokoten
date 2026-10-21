@@ -1191,7 +1191,7 @@ test('ownMarks and scanText: a mark the project allows, same string case aside, 
   // Allowing one mark leaves the longer and shorter marks that hold it.
   const all = (text: string) => scanText(text, { file: 'a', marks, allow: ['quietvale'] }).length;
   assert.equal(all('QuietVale ships from the vale'), 1, 'the shorter mark vale still matches');
-  assert.equal(all('QuietVale Labs ships'), 1, 'quietvale labs still matches; vale inside a word does not (#434)');
+  assert.equal(all('QuietVale Labs ships'), 2, 'quietvale labs still matches, and so does vale after a small letter (#434)');
   const finding = scanText('QuietVale Labs', { file: 'a', marks, allow: ['quietvale'] }).map((f) => formatFinding(f)).join('\n');
   assert.ok(!/quietvale|vale/i.test(finding), 'no mark is printed');
 });
@@ -1714,28 +1714,45 @@ test('readMachineAllow: a file with just the switch reads as no repos; a file th
 
 // ---- A name mark matches whole words only (#434) ----
 //
-// Samples are built from pieces so this file passes its own check.
+// Samples are built from pieces so this file passes its own check. All are made up.
 const SHORT = ['s', 'am'].join('');
 const FULL = [SHORT, ['exa', 'mple'].join('')].join(' ');
+const NICK = ['ni', 'ck'].join('');
+const JOINED = [SHORT, 'x'].join('');
+const PAIR = [SHORT, ['sm', 'ith'].join('')].join(' ');
 const DOMAIN = ['example', 'com'].join('.');
 
-test('hasMark: a name is found as whole words, with any break between them; a domain is found as a part (#434)', () => {
-  const found = (text: string, mark: string) => hasMark(text.toLowerCase(), mark);
-  // Caught: on its own, and beside a mark that is not a letter or digit.
-  for (const text of [`hi ${'S'}am`, `${SHORT}_dev`, `@${SHORT}`, `S${'am'}.`, `${SHORT}-example`, `"${SHORT}"`, SHORT, `path/${SHORT}/x`]) assert.ok(found(text, SHORT), `not found in ${text}`);
+test('hasMark: a name is found as whole words; only a letter blocks it (#434)', () => {
+  const found = (text: string, mark: string) => hasMark(text, mark);
+  // Caught: on its own, and beside anything that is not a letter, digits included.
+  for (const text of [`hi ${'S'}am`, `${SHORT}_dev`, `@${SHORT}`, `S${'am'}.`, `${SHORT}-example`, `"${SHORT}"`, SHORT, `path/${SHORT}/x`, `${SHORT}1`, `${SHORT}2`]) assert.ok(found(text, SHORT), `not found in ${text}`);
+  for (const text of [`${NICK}97`, `2${NICK}`]) assert.ok(found(text, NICK), `not found in ${text}`);
+  // A small letter then a capital is an edge, in the text as it is: camelCase and PascalCase.
+  for (const text of [`${'N'}ickDev`, `github${'N'}ick`]) assert.ok(found(text, NICK), `not found in ${text}`);
   // Not caught: inside a longer word.
-  for (const text of [`${SHORT}ple`, `${SHORT}e`, `${SHORT}sung`, `bal${SHORT}ic`, `${SHORT}2`]) assert.ok(!found(text, SHORT), `found in ${text}`);
-  // Words of a mark of more than one: any run of spaces, -, _ or . between them.
-  for (const text of [`${SHORT}-example`, `${SHORT}  Example`, `${SHORT}_example`, `${SHORT}.example!`, `by ${SHORT} example.`]) assert.ok(found(text, FULL), `not found in ${text}`);
-  for (const text of [`${SHORT}example`, `${SHORT} examples`, `x${SHORT} example`]) assert.ok(!found(text, FULL), `found in ${text}`);
+  for (const text of [`${SHORT}ple`, `${SHORT}e`, `${SHORT}sung`, `bal${SHORT}ic`, `${NICK}dev`, `${NICK.toUpperCase()}DEV`]) assert.ok(!found(text, text.includes(SHORT) ? SHORT : NICK), `found in ${text}`);
+  // An escape or a URL-encoded slash, backslash or space before or after it is an edge.
+  for (const [text, mark] of [[`"hi\\n${FULL}"`, FULL], [`\\t${JOINED}`, JOINED], [`c%3a%5cusers%5c${JOINED}%5cdoc`, JOINED], [`C:%5CUsers%5C${JOINED}%5CDoc`, JOINED], [`hello%20${SHORT}`, SHORT], [`a%2f${SHORT}`, SHORT], [`\\u00e9${SHORT}`, SHORT], [`\\r${SHORT}\\b`, SHORT]] as const) {
+    assert.ok(found(text, mark), `not found in ${text}`);
+  }
+  // Words of a longer mark: any run of spaces, -, _ or ., or none.
+  for (const text of [`${SHORT}-example`, `${SHORT}  Example`, `${SHORT}_example`, `${SHORT}.example!`, `by ${SHORT} example.`, `${SHORT}example`]) assert.ok(found(text, FULL), `not found in ${text}`);
+  assert.ok(found(`${SHORT}smith`, PAIR) && found(`S${'am'}_Smith`, PAIR));
+  for (const text of [`${SHORT} examples`, `x${SHORT} example`]) assert.ok(!found(text, FULL), `found in ${text}`);
   // Any other character keeps the part match: a domain, an address, a number.
   assert.ok(found(`mail.${DOMAIN}`, DOMAIN));
   assert.ok(found('build1234x', '1234'));
-  // Unicode letters are letters: no edge inside a word.
-  assert.ok(found('é sam', SHORT) && !found(`é${SHORT}`, SHORT));
-  // A script with no space between words keeps the part match.
+  // Unicode letters are letters.
+  assert.ok(found(`é ${SHORT}`, SHORT) && !found(`é${SHORT}`, SHORT));
+  // A script that joins words or particles onto a name keeps the part match.
   const han = ['张', '三'].join('');
   assert.ok(found(`今天${han}来了`, han));
+  const hangul = ['김', '민수'].join('');
+  assert.ok(found(`${hangul}가`, hangul));
+  const hebrew = ['ד', 'וד'].join('');
+  assert.ok(found(`ה${hebrew}`, hebrew));
+  const arabic = ['سا', 'مي'].join('');
+  assert.ok(found(`وال${arabic}`, arabic));
 });
 
 test('scanText: a name mark stops a line with the word, not one with a longer word (#434)', () => {
@@ -1744,11 +1761,27 @@ test('scanText: a name mark stops a line with the word, not one with a longer wo
   assert.deepEqual(ids(`a ${SHORT}ple\nthe ${SHORT}e\nhi ${SHORT}\n${SHORT}_dev\nby ${SHORT}--example\n`), [3, 4, 5, 5]);
 });
 
+test('makeRedactor: hides a name by the same rules as the check (#434)', () => {
+  const redact = makeRedactor({ owners: [FULL], marks: [JOINED] }, {});
+  for (const text of [`S${'am'}_Example`, `${SHORT}.example`, `S${'am'}Example`]) assert.equal(redact(`by ${text}.`), 'by <owner>.', text);
+  assert.equal(redact(`S${'am'}X97`), '<mark>97');
+  assert.equal(redact(`C:%5C${JOINED}`), 'C:%5C<mark>');
+  // A longer word stays, as in the check.
+  assert.equal(redact(`${JOINED}ylophone`), `${JOINED}ylophone`);
+  for (const text of [`by ${'S'}am_Example`, `S${'am'}X97`, `%5C${JOINED}`, `${JOINED}ylophone`]) {
+    assert.equal(redact(text) === text, !scanText(text, { file: 'a', marks: [FULL, JOINED] }).length, `redact and the check disagree on ${text}`);
+  }
+});
+
 test('hasMark: linear on long input (#434)', () => {
   const inputs: [string, (n: number) => string][] = [
     ['the first word, again and again', (n) => `${SHORT} `.repeat(n / 4)],
     ['the first word, then a long break', (n) => `${SHORT}${'-'.repeat(n)}x`],
+    ['joined words, again and again', (n) => `${SHORT}`.repeat(n / 3)],
+    ['small letters then capitals', (n) => 'aB'.repeat(n / 2)],
+    ['escapes', (n) => '\\n'.repeat(n / 2)],
     ['letters only', (n) => 's'.repeat(n)],
   ];
   for (const [name, make] of inputs) assertLinear(name, make, (text) => hasMark(text, FULL));
+  for (const [name, make] of inputs) assertLinear(`camel: ${name}`, make, (text) => hasMark(text, NICK));
 });

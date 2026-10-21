@@ -870,6 +870,9 @@ test('fillMarks: the git name with no name set, one word, a shared name, a name 
   assert.ok(!existsSync(marks));
   // A shared account name, or one under 3 letters, names nobody.
   assert.deepEqual(fillMarks(env, [{ kind: 'git name', value: 'Test' }, { kind: 'git name', value: 'Al' }]), []);
+  // An address, or a placeholder from a tutorial, names nobody either.
+  const placeholders = ['Your Name', 'John  Doe', 'jane doe', 'User', 'name', 'Admin', `ann${'@'}sample-mail.dev`];
+  assert.deepEqual(fillMarks(env, placeholders.map((value) => ({ kind: 'git name' as const, value }))), []);
   // One word is a name too.
   assert.deepEqual(fillMarks(env, [{ kind: 'git name', value: 'Annsample' }]), ['git name']);
   assert.equal(readFileSync(marks, 'utf8').endsWith('# added by yokoten from this machine: git name\nAnnsample\n'), true);

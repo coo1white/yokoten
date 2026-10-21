@@ -1438,11 +1438,15 @@ your name, your city, your domains, your server names. That file stays outside t
 repo, because a list of what must not be published can't itself be published. A hit
 is reported by file and line; the mark itself is never printed.
 
-A mark of letters and spaces, such as a name or a city, is found as whole words: `sam` is
-found in `hi Sam`, `sam_dev` and `@sam`, but not in `sample`. The words of a longer mark
-may have spaces, `-`, `_` or `.` between them, so `sam example` is found in `sam-example`.
+A mark of letters and spaces, such as a name or a city, is found as whole words. Only a
+letter next to it hides it: `sam` is found in `hi Sam`, `sam_dev`, `@sam` and `sam97`, but
+not in `sample`. A backslash escape such as `\n`, a URL-encoded `%2F`, `%5C` or `%20`, and a
+change from a small letter to a capital (`githubSam`, `SamDev`) count as edges too. The
+words of a longer mark may have spaces, `-`, `_` or `.` between them, or nothing, so `sam
+example` is found in `sam-example` and `samexample`. `redact` hides a mark by the same rules.
 Any other mark, such as a domain, an address or a number, is found anywhere, even inside a
-word. So is a name in a script with no spaces between words, such as Chinese or Japanese.
+word. So is a name in a script that joins words or particles onto a name: Chinese,
+Japanese, Korean, Thai, Arabic or Hebrew.
 
 The project's own public address, such as `support@` at its domain, is found too. Nothing
 is let through on its own. If the address is public on purpose, add it to
@@ -1564,7 +1568,7 @@ yokoten hides your details before some commands run.
   secrets (`<secret>`), private email addresses (`<email>`), your git user.name and
   your Linux and Windows user names (`<owner>`), your home folder (`~`), the hosts of
   private remotes (`<host>`) and your private marks. A mark that looks like a domain
-  becomes `<host>`; any other mark becomes `<mark>`. It matches a mark as a whole word.
+  becomes `<host>`; any other mark becomes `<mark>`. It finds a mark as the check does (see above).
   Without a private-marks file, it still hides the patterns and what git knows. If it
   can't start or read your marks, it says so in one line and passes the output through:
   it never stops the command.
@@ -1588,12 +1592,14 @@ yokoten hides your details before some commands run.
   lacks. If you set your own `mailmap.file`, `install` keeps it and tells you which lines
   to add.
 - **Marks fill themselves.** `install` and `doctor` add what this machine knows: your
-  git name (`user.name`, unless it is a shared name such as `test`), your git email
-  (unless it is a noreply address), the login `gh` uses, and the hosts of private
-  remotes. A git name that is your login is added once, as the login. They only add
-  lines, and never print a value. Like the login, the git name is fine in a LICENSE
-  copyright line and an author field. `doctor` tells you which kinds are still missing,
-  such as your city and your domains. Only you can add those.
+  git name (`user.name`, unless it is an address, a placeholder such as `your name`, or a
+  shared name such as `test`), your git email (unless it is a noreply address), the login
+  `gh` uses, and the hosts of private remotes. A git name that is your login is added
+  once, as the login. They only add lines, and never print a value. Unlike the login, the
+  git name is found in a LICENSE line and an author field too: you may hide your real name
+  behind a noreply address and the mailmap. `doctor` tells you which kinds are still
+  missing, such as your city and your domains. Only you can add those, and your real name
+  if git does not have it.
 - **More control: `yokoten marks`.** Alone, it counts your marks by kind, never the values.
   `yokoten marks add` adds one of your own: type it in the terminal, where it is not shown,
   or pipe it in. It is never a word on the command line, which your shell history keeps.
