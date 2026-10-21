@@ -89,6 +89,9 @@ Tell the user in plain words, one step at a time, and offer to do it (as-is, lig
 会话里一次只说一步：在第几关、下一步做什么、为什么要做。第几关不存在哪里，每次都是看项目
 里有哪些文件现算的。你说过「暂不」的步骤会跳过。顺序只是建议：后面关里的步骤提前做了，也算
 做完。所有步骤都做完了，或者都说了「暂不」，会话里就只有一行，告诉你路走完了。
+某个文件这里没有、但默认分支上有，提示会写明是默认分支上的，不再让你 `init`。
+Claude Code 压缩上下文之后，会话只会再听到变了的提示。
+每个会话听过什么，记在 `~/.config/yokoten/sessions/` 里，超过 7 天的文件会被删掉。
 
 AI 会用你的语言跟你讲。yokoten 自己的提示用英文写，因为 AI 读英文最不容易出错。
 
@@ -107,6 +110,12 @@ not now（暂不，后面跟着你给的原因）或者 can't check（这里查�
 后三步是服务器上的设置。完整的 `doctor` 用 `gh api` 去读，只读不改。
 没装 `gh`、没登录、没网，或者远程仓库不在 GitHub 上，这三步就标 can't check，绝不会算作做完。
 会话开头不联网，所以那里这三步总是 can't check。
+
+**别的托管平台。** doctor 从 `origin` 远程仓库看出托管平台。在 GitHub 上，服务器设置照上面的办法读。
+在 Gitea、GitLab 这类别的平台上，核心照常工作：规则、守卫、提交检查都一样。只有平台自己才判断得了的
+步骤，是 `tests`、`ci`、`labels`、`milestone`、`titles`、`codeowners`、`bot`、`review`，以及那三步
+服务器设置。这些步骤在那里都标 **can't check**，并写明它在问什么，你可以自己动手设好。
+它们不会卡住关卡。自建服务器的名字从不打印，doctor 一律叫它 "this host"。接下来会做 Gitea 适配（issue #505）。
 
 第 2 关的 `labels` 和 `milestone` 也这样读。标准标签是 `bug`、`feat`、`docs`、`refactor`、`ci`、
 `owner`、`incident`、`good first issue`、`hotfix`，还有三个 tier 标签 `tier A`、`tier B`、`tier C`。
@@ -574,7 +583,10 @@ kit 里 `init` 放的 workflow 暂时还是跑 `.yokoten/` 里的那份，等第
 `init` 会把 yokoten 运行要用的文件复制到项目的 `.yokoten/` 里。把它一起提交：这样不联网、
 不全局安装，hook 和 CI 也能跑。
 
-项目原来的设置，`init` 会保住。有 `CLAUDE.md` 的，它在文件末尾加一行 `@AGENTS.md`：有
+项目原来的设置，`init` 会保住。`AGENTS.md` 里没有 `## This project` 的，`init` 把核心规则加在最上面，
+原来的内容整个挪到 `## This project` 下面，里面的标题各降一级，别的一个字不改。`init` 会打印它挪了哪些标题。
+如果 git 里有原来那个文件，`init` 会打印把它找回来的命令；没有的话，就留一份副本在
+`AGENTS.md.before-yokoten`。YAML 头信息（front matter）仍在最顶上。`AGENTS.md` 是链接的，就原样不动。有 `CLAUDE.md` 的，它在文件末尾加一行 `@AGENTS.md`：有
 `CLAUDE.md` 时，Claude Code 只通过这一行才会读 `AGENTS.md`。`.claude/CLAUDE.md` 也算：
 根目录没有 `CLAUDE.md` 的话，就在它末尾加 `@../AGENTS.md`。用 husky 或者别的
 `core.hooksPath` 的，它不换掉那个目录，而是把提交检查加进那里的 `pre-commit`。项目自己的
@@ -600,6 +612,11 @@ job 用 actionlint 和 zizmor 查 workflow 本身；还有一个 `ci` job，设�
 `pr.yml` 和 `issue.yml`。每个 action 都固定到某一次提交，每个 job 都有超时，checkout 不留
 token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你自己的测试，加成 `yokoten.yml` 里
 的一个 job，再把它写进 `ci` 的 `needs`。
+
+`yokoten.yml` 里有个 `changes` job，会看 PR 改了哪些文件。每个文件都在 `docs/` 或 `changes/` 下，或者是
+`README.md`、`CHANGELOG.md`，这个 PR 就算只改文档。你自己的 job 可以跳过只改文档的 PR；`ci` 上面的
+注释写了要加的两行。`ci` 把这种跳过算作通过。提交检查和 lint job 一直会跑。往 main 推送时，所有 job 都跑。
+读不到文件列表的 PR 也是所有 job 都跑，并给一条警告。yokoten 自己的 CI 里，只改文档的 PR 把测试只跑一遍（Ubuntu、Node 24），跳过 `typecheck` 和 Action 的 job。
 
 如果项目里已经有这几个 workflow，`init` 会先看你有没有改过。kit 记着自己写出过的每一个版本。
 文件和其中一个一模一样（换行是 Windows 的也算），就说明你没改过，`init` 会把它换成最新版，
@@ -648,7 +665,7 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 | `hook --stop [--agent <name>]` | 收尾检查。从标准输入读这一轮结束的事件，检查改过的文件：默认读 Claude Code 的 Stop；加 `--agent codex` 读 Codex 的 Stop，加 `--agent gemini` 读 Gemini CLI 的 AfterAgent，加 `--agent grok` 读 Grok CLI 的 Stop。见[收尾检查](#收尾检查) |
 | `explain [<id>] [--json]` | 讲一条规则或者路上的一步：它是什么、为什么要有、yokoten 怎么检查 |
 | `uninstall` | 撤掉 `install` 装的东西：带 yokoten 管理标记的技能和 agent、`~/.claude/settings.json` 里它加的两个 hook，还有 `~/.local/share/yokoten`。你自己的文件、别的设置和 `~/.config/yokoten`（密钥、私有词表）都留着。再跑一次什么也不会变 |
-| `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。如果命令是 `gh issue` 或 `gh pr` 的 `create`、`edit`，并且带了标题，它会先按 CI 的规则检查标题；标题不合格就直接拒绝，什么都不会发出去。用 `gh api` 改 issue 或 PR 时，标题也照样检查。`gh pr create` 和 `gh pr edit` 如果带了 `--body` 或 `--body-file`，正文也会先过一遍：规则和 `check --pr` 里检查正文的那部分一样，看的是这个 PR 的分支改了哪些文件，以及基础分支上的 CODEOWNERS。正文不合格同样直接拒绝，什么都不发出去。`gh pr create` 没给类型标签或 tier 标签时，bot 会自动补上：类型看标题（`fix` 补 `bug`），tier 看正文第一行的 `tier:`。你自己给的标签保留不动。你给的 tier 标签和正文对不上，就直接拒绝，提示和 `check --pr` 一样。仓库里没有的标签，bot 会说一声然后不加；它从不新建标签。它只运行 `gh` 和 `git`，所以 `env gh …`、`sh -c …` 这类写法会被拒绝；gh 的别名（alias）它不认，别名里的标题不会被检查。设置方法见 [server.md](../../server.md#3-the-bot-a-github-app) |
+| `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。如果命令是 `gh issue` 或 `gh pr` 的 `create`、`edit`，并且带了标题，它会先按 CI 的规则检查标题；标题不合格就直接拒绝，什么都不会发出去。用 `gh api` 改 issue 或 PR 时，标题也照样检查。`gh pr create` 和 `gh pr edit` 如果带了 `--body` 或 `--body-file`，正文也会先过一遍：规则和 `check --pr` 里检查正文的那部分一样，看的是这个 PR 的分支改了哪些文件，以及基础分支上的 CODEOWNERS。正文不合格同样直接拒绝，什么都不发出去。`gh pr create` 没给类型标签或 tier 标签时，bot 会自动补上：类型看标题（`fix` 补 `bug`），tier 看正文第一行的 `tier:`。你自己给的标签保留不动。你给的 tier 标签和正文对不上，就直接拒绝，提示和 `check --pr` 一样。仓库里没有的标签，bot 会说一声然后不加；它从不新建标签。`gh pr create` 没带 `--milestone` 时，bot 会用第一个关联 issue（`Closes #N`、`Part of #N`）的里程碑；这些 issue 都没有里程碑，就直接拒绝，什么都不发出去，请自己加上 `--milestone`。gh 读不到那个 issue 时，PR 照发，不带里程碑，只留一条提示。它只运行 `gh` 和 `git`，所以 `env gh …`、`sh -c …` 这类写法会被拒绝；gh 的别名（alias）它不认，别名里的标题不会被检查。设置方法见 [server.md](../../server.md#3-the-bot-a-github-app) |
 
 每个命令后面加 `--help` 或 `-h`，就会打出它自己的说明：做什么、有哪些选项、一个例子。
 `yokoten help <命令>` 打出的也一样，`yokoten --help` 列出所有命令，`yokoten version`（或者
@@ -667,7 +684,7 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
   `pr` 或 `issue`，说明查的是哪一种。`notes` 只是提醒，不会让检查失败。CI 这次跑的不是
   PR 或 issue 时，`check --pr` 和 `check --issue` 直接算通过，多一个 `skipped` 写明原因。
 - `doctor --json`：`{ version, ok, selfTest, repo, stage, stages, next, findings, steps,
-  notes, server, lessons }`。教训查出来的问题放在 `notes` 里，第一次见到的教训带 `isNew: true`。加 `--session` 时只给下一步、私有词表缺失的提醒，以及核心规则落后时的 `core-rules`；有只在这台机器上的活时，放在 `notes` 里。
+  notes, server, lessons }`。教训查出来的问题放在 `notes` 里，第一次见到的教训带 `isNew: true`。加 `--session` 时只给下一步、私有词表缺失的提醒，以及核心规则落后时的 `core-rules`；有只在这台机器上的活，或者会话刚听到的某一课查出的问题时，放在 `notes` 里。
 - `hook --json`：拦下时是 `{ blocked: true, finding }`，放行时是 `{ blocked: false, toolCall: true }`；
   标准输入读到的不是工具调用时，是 `{ blocked: false, toolCall: false }`。AI 工具本身不用它：
   它们按各自的 hook 协议，看退出码，再从标准错误读原因。
@@ -931,7 +948,7 @@ fetch。CI 里 checkout 时设 `fetch-depth: 0`，kit 里的 `yokoten.yml` 已�
 ### 更新规则
 
 yokoten 每学到一个教训，核心规则就会改。`yokoten install` 会更新你电脑上的技能和 agent。
-项目里的 `AGENTS.md` 是你自己的文件，你不开口，它就不会变；`init` 也不会再去动它。
+项目里的 `AGENTS.md` 是你自己的文件，你不开口，它就不会变；有了 `## This project` 以后，`init` 也不会再去动它。
 
 `doctor` 会拿 `AGENTS.md` 里 `## This project` 上面的部分，跟你正在用的 yokoten
 自带的核心规则比。两边不一样，它就报 `core-rules`，会话开头也会提一句。
@@ -1022,7 +1039,13 @@ project:
 
 项目里第一次跑完整的 `doctor` 碰到一课新的，会单独说一次，哪怕没查出问题：
 `note    new lesson: incident-138 (<what>); doctor now runs it in this project`。
-见过哪些课记在 `.git/yokoten/state.json` 里，这个文件不会被提交。会话开头跑的 doctor 不写它。
+见过哪些课记在 `.git/yokoten/state.json` 里，这个文件不会被提交。
+
+会话开头也会听到新的一课，只说一次，前提是它在这里查出了问题。就一行，还写明用哪条命令看在哪里：
+``yokoten: a new lesson learned in another project found a problem here: <what>. Run
+`yokoten doctor` to see where.`` 之后的会话，或者同一个会话压缩上下文之后，都不会再说。
+每一课只在某一次会话开头跑一回，跑过没有也记在同一个文件里，所以以后的会话开头不花时间在这上面。
+之后才出现的问题，留给完整的 `doctor` 去报。
 
 提醒不会让 `doctor` 失败。某个项目不想查这一课，就在 `yokoten.json` 的 "notNow" 里写上它的编号和理由，
 比如 `"notNow": { "incident-138": "a setup file sets it" }`。
@@ -1107,7 +1130,7 @@ Rust 的 workspace 里，一条就能管到每个 crate：
 | `YOKOTEN_RELEASE_APPROVAL=1` | 主人允许这个会话发版。没见过 Muse Code 把它传给钩子 |
 | `YOKOTEN_PRIVATE_MARKS` | 私有词表换个路径 |
 | `YOKOTEN_MIN_FREE_GB` | 盘上剩的空间少于这么多 GB 时，`doctor` 提醒；`0` 就不提醒。见[本机提示](#本机提示) |
-| `YOKOTEN_BOT_APP_ID`、`YOKOTEN_BOT_KEY`、`YOKOTEN_BOT_INSTALLATION` | bot 的设置，见 [server.md](../../server.md#3-the-bot-a-github-app) |
+| `YOKOTEN_BOT_APP_ID`、`YOKOTEN_BOT_KEY`、`YOKOTEN_BOT_INSTALLATION` | bot 的设置，也可以写成 `~/.config/yokoten/keys.env` 里的几行。见 [server.md](../../server.md#3-the-bot-a-github-app) |
 | `YOKOTEN_GITHUB_API` | 换一个 GitHub API 地址，比如自建的 GitHub Enterprise Server |
 | `LLAMA_API_KEY` 或 `MODEL_API_KEY`、`LLAMA_API_BASE`、`LLAMA_MODEL` | `adopt` 用的模型，见[先拿一份草稿](#先拿一份草稿) |
 
@@ -1220,6 +1243,14 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 仓库外面，因为「不能公开的东西」这张清单本身也不能公开。查到问题时只报文件和行号，不会把
 词表里的词打印出来。
 
+只有字母和空格的词，比如名字或城市，按整个单词查。前后紧挨着别的字母时，才不算查到：`sam` 能在
+`hi Sam`、`sam_dev`、`@sam`、`sam97` 里查到，在 `sample` 里查不到。反斜杠转义（如 `\n`）、URL 编码的
+`%2F`、`%5C`、`%20`，以及小写字母变大写（`githubSam`、`SamDev`），也都算词的边界。较长的词，
+各个单词之间可以有空格、`-`、`_`、`.`，也可以什么都没有，所以 `sam example` 能在 `sam-example` 和
+`samexample` 里查到。`redact` 藏词用同样的规则。别的词，比如域名、地址、数字，在哪儿都查，
+就算在单词里面。名字用的文字要是会把词或助词连在名字上，也一样在哪儿都查：中文、日文、韩文、泰文、
+阿拉伯文、希伯来文。
+
 项目自己的公开邮箱，比如自家域名下的 `support@`，也会被查出来，yokoten 不会自己放行。如果
 这个邮箱本来就是公开的，把它加进 yokoten.json 的 `privacy.allow`。
 
@@ -1305,11 +1336,11 @@ agent 用 `gh` 发文字之前，工具调用守卫也跑同一套检查。直�
 - **`yokoten redact`**：从标准输入读文字，换成占位符再输出。它会藏起密钥（`<secret>`）、个人
   邮箱（`<email>`）、git 的 user.name 和 Linux、Windows 的用户名（`<owner>`）、主目录（`~`）、
   私有远程仓库的主机名（`<host>`），还有私有
-  词表里的词。像域名的词换成 `<host>`，其他的换成 `<mark>`。词表里的词按整个单词算。没有私有
+  词表里的词。像域名的词换成 `<host>`，其他的换成 `<mark>`。查词的办法和上面的检查一样。没有私有
   词表也能用，这时只藏邮箱、密钥这类格式和 git 知道的信息。它要是启动不了、读不了词表，会用
   一行字说明，然后原样输出：绝不会让命令停下来。
-- **在 Claude Code 里，守卫会过滤单纯的读命令。** 下面这些命令会打印账号信息：没加
-  `--format`、`--pretty` 或 `--oneline` 的 `git log`、`git show`、`git blame`；`git remote -v`、
+- **在 Claude Code 里，守卫会过滤单纯的读命令。** 下面这些命令会打印账号信息：`git log`、`git show`、
+  `git shortlog <revision>`、`git blame`、`git for-each-ref`（不管带什么格式），`git cat-file -p`；`git remote -v`、
   `get-url`、`show`；`git config --list`，以及读 `user.*`、`remote.*`；`gh auth status`；用 `gh`
   以 GET 查访问量和账号；`npm whoami`；`wrangler whoami`。整条命令只有其中一条、前后没有别的东西
   时，守卫会把它改成 `set -o pipefail # yokoten-redact`，再接
@@ -1322,10 +1353,18 @@ agent 用 `gh` 发文字之前，工具调用守卫也跑同一套检查。直�
   `~/.config/yokoten/mailmap`，这个文件不在任何仓库里。之后 `git log` 和 `git show` 会把你的
   邮箱显示成 `owner`。文件已经有了的话，`install` 只补缺的行。你要是设了自己的
   `mailmap.file`，`install` 不动它，只告诉你要加哪几行。
-- **词表自己补。** `install` 和 `doctor` 会把这台电脑知道的信息加进词表：git 的邮箱（noreply
-  邮箱除外）、`gh` 登录的账号、私有远程仓库的主机名。git 显示的名字不加：常见的名字会让每个含有
-  这个词的文件都被查出来。只往后加，从不打印具体的词。`doctor` 还会告诉你还缺哪几类：真名、
-  所在城市、域名。这些只有你自己能加。
+- **词表自己补。** `install` 和 `doctor` 会把这台电脑知道的信息加进词表：git 的名字（`user.name`，
+  地址、`your name` 这样的占位符、`test` 这样大家都在用的名字除外）、git 的邮箱（noreply 邮箱除外）、
+  `gh` 登录的账号、私有远程仓库的主机名。git 名字要是就是你的登录名，只加一次，按登录名加。
+  只往后加，从不打印具体的词。和登录名不同，git 名字在 LICENSE 的一行和作者字段里也会被查出来：
+  真名可以藏在 noreply 邮箱和 mailmap 后面。`doctor` 还会告诉你还缺哪几类，比如所在城市、
+  域名。这些只有你自己能加；git 里没有真名的话，真名也要你自己加。
+- **想自己管：`yokoten marks`。** 单独运行，只按类别数一数你有多少个词，不显示词本身。
+  `yokoten marks add` 加一个你自己的词：在终端里敲（不会显示出来），或者用管道传进去。
+  绝不写在命令行上，因为 shell 的历史会留着它。`yokoten marks remove` 用同样的办法删一个。
+  `yokoten marks off git-name`（或 `git-email`、`forge-login`）让 `install` 不再加这一类，
+  并把它为这一类加过的词删掉。这个选择记在 `~/.config/yokoten/machine.json` 里。想改回默认，
+  运行 `yokoten marks on git-name`，名字会重新加上。你自己加的词，它从不动。
 
 套上去的命令要用 bash 跑。在 Windows 上，请在 Git Bash 或 WSL 里用 agent；PowerShell 没有
 `pipefail`。
@@ -1355,7 +1394,7 @@ hook 不可能认得所有命令。输出里露出了你的信息，就开一个
   的锁在服务器上：分支保护、代码负责人，以及一个没有发版权限、改不了 CI 的 bot。worker 用
   shell 写只有 lead 能改的文件，只有命令里写明了这个文件才拦得住：路径来自变量或标准输入
   （`xargs rm`、`find -exec`、`git apply < x.patch`），或者是脚本自己去写，都拦不住。
-- **服务器设置只能读 GitHub 的。** 换成别的代码托管平台，这几步就标 can't check。bot 的权限 `doctor` 还查不了。
+- **服务器设置只能读 GitHub 的。** 换成别的代码托管平台，只有平台自己才判断得了的步骤会标 can't check，并写明各自在问什么（见[会话里看到的是什么](#会话里看到的是什么)）。bot 的权限 `doctor` 还查不了。
 - **先支持 Claude Code。** agent 按 Claude Code 的格式写。技能用的是公开
   的 SKILL.md 格式，所以 `install` 也会把它们放进 `~/.agents/skills`，Codex、Gemini CLI、
   Copilot、Cursor 这些 AI 会去那里找。工具调用守卫在 Copilot CLI、Antigravity CLI、Codex、Muse Code、
