@@ -44,6 +44,7 @@ import {
   readCodeOwners,
   readCommandTitle,
   readIncident,
+  readIssueMilestone,
   readLocalLogins,
   readLogin,
   repoOf,
@@ -567,4 +568,24 @@ test('readCodeOwners: the first place the base commit has; a base git can\'t rea
   assert.equal(readCodeOwners(sandbox.repo, none, process.env), null);
   assert.deepEqual(readCodeOwners(sandbox.repo, owners, process.env), { text: '/kit/ @a\n', from: 'the base branch' });
   assert.throws(() => readCodeOwners(sandbox.repo, 'f'.repeat(40), process.env), GitReadError);
+});
+
+// #512: an issue's milestone, from one `gh issue view`; a fake gh stands in for GitHub.
+test('readIssueMilestone: the title, null for none, undefined when gh cannot read it (#512)', () => {
+  const calls: string[][] = [];
+  const answer = (said: string): Gh => (args) => {
+    calls.push(args);
+    return said;
+  };
+  assert.equal(readIssueMilestone(answer(JSON.stringify({ milestone: { number: 1, title: 'v0.1.0' } })), 5, null), 'v0.1.0');
+  assert.deepEqual(calls, [['issue', 'view', '5', '--json', 'milestone']]);
+  assert.equal(readIssueMilestone(answer(JSON.stringify({ milestone: null })), 5, 'o/r'), null);
+  assert.deepEqual(calls.at(-1), ['issue', 'view', '5', '--json', 'milestone', '--repo', 'o/r']);
+  for (const said of ['', 'not json', '{}', '[]', JSON.stringify({ milestone: { title: '' } })]) {
+    assert.equal(readIssueMilestone(answer(said), 5, null), undefined, said);
+  }
+  const failing: Gh = () => {
+    throw new Error('gh: network');
+  };
+  assert.equal(readIssueMilestone(failing, 5, null), undefined);
 });

@@ -523,6 +523,22 @@ export function isPrivateRepo(gh: Gh, repo: string): boolean | null {
 }
 
 /**
+ * The milestone title of issue `number`, from one `gh issue view` (#512): null when the
+ * issue has none, undefined when gh can't read it. `repo` is the `--repo` value, if any.
+ */
+export function readIssueMilestone(gh: Gh, number: number, repo: string | null): string | null | undefined {
+  try {
+    const said: unknown = JSON.parse(gh(['issue', 'view', String(number), '--json', 'milestone', ...(repo ? ['--repo', repo] : [])]));
+    if (!isObject(said) || !('milestone' in said)) return undefined;
+    const milestone = said.milestone;
+    if (milestone === null) return null;
+    return isObject(milestone) && typeof milestone.title === 'string' && milestone.title ? milestone.title : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * The login gh is signed in with, or null: gh not installed, not signed in, or no answer
  * (#390). Used only to add it to the private marks; it is never printed.
  */

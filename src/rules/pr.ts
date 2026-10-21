@@ -805,3 +805,49 @@ export function readCommandLabels(command: string[], body: string | null): Comma
   if (tier && !hasTier) missing.push([`tier ${tier}`, `tier: ${tier}`]);
   return { missing, problems: hasTier ? checkTierLabel(labels, tier) : [], repo };
 }
+
+// ---- The milestone a gh command sets (#512) ----
+//
+// `yokoten bot` gives `gh pr create` its linked issue's milestone when the command names
+// none, so `check --pr` never fails on "milestone: none set" after the post.
+
+/** The issues a `gh pr create` body links, when the command gives no milestone. */
+export interface CommandMilestone {
+  /** The linked issue numbers, in the order the body names them, each once. */
+  issues: number[];
+  /** The `--repo` value, or null when the command names none. */
+  repo: string | null;
+}
+
+// The words that link an issue, as the body check reads them.
+const LINKED_ISSUE = /\b(?:closes|fixes|resolves|refs|part of) #(\d+)/gi;
+
+/** The issue numbers a body links with `Closes #N`, `Part of #N` and the like, in order, each once. */
+export function readLinkedIssues(body: string): number[] {
+  return [...new Set([...body.matchAll(LINKED_ISSUE)].map((match) => Number(match[1])))];
+}
+
+/**
+ * The issues whose milestone `gh pr create` (or `new`) should take: null for any other
+ * command, one that gives `--milestone` or `-m`, a run-together word it can't read, or a
+ * body that links no issue (the body check says so).
+ */
+export function readCommandMilestone(command: string[], body: string | null): CommandMilestone | null {
+  const [file, ...rest] = command;
+  if (!file || botProgram(file) !== 'gh' || body === null) return null;
+  const { words, options, unreadable } = readArgs(rest, ISSUE_FLAGS);
+  const [kind, verb] = words.map((index) => rest[index]);
+  if (kind !== 'pr' || (verb !== 'create' && verb !== 'new') || unreadable !== null) return null;
+  if (options.some(([name]) => name === '--milestone' || name === '-m')) return null;
+  const issues = readLinkedIssues(body);
+  if (!issues.length) return null;
+  const repo = options.filter(([name]) => name === '--repo' || name === '-R').at(-1)?.[1] ?? null;
+  return { issues, repo };
+}
+
+/** The problem when no linked issue has a milestone to copy (#512). */
+export function noMilestoneFinding(issues: number[]): Finding {
+  const named = issues.map((issue) => `#${issue}`).join(', ');
+  const which = issues.length === 1 ? `the linked issue ${named} has none` : `none of the linked issues ${named} has one`;
+  return finding('pr-milestone', `milestone: none given, and ${which}`, 'add `--milestone <name>`, or set a milestone on the issue');
+}
