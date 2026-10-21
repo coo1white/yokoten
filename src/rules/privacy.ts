@@ -625,16 +625,16 @@ export const isPersonalEmail = (hit: string, allow: string[] = []): boolean => !
 // when an accent or a final consonant joins its last letter in the text, as it was before
 // the fold. A mark drops U+200B to U+200D and U+2060; the text keeps them, and the pattern
 // lets them sit between any two letters of a mark, so one inside a word is skipped and one
-// next to a name is still an edge (`x​sam`). The text keeps its case after the fold,
+// next to a name is still an edge (`x\u200Bsam`). The text keeps its case after the fold,
 // because a change from a small letter to a capital is an edge; its pattern ignores case
 // instead (`caseless`). Homoglyphs, such as a Cyrillic letter that looks Latin, stay out.
 
-const ZERO_WIDTH = /[​-‍⁠]/g;
+const ZERO_WIDTH = /[\u200B-\u200D\u2060]/g;
 const ZERO_WIDTH_RUN = '[\\u200B-\\u200D\\u2060]*';
 const NON_ASCII = /[^\x00-\x7f]/;
 // A character that NFKD may join onto the one before it: a combining mark, a Hangul vowel or
 // final consonant, a half-width voicing mark. It is folded with that character.
-const JOINER = /^[\p{M}ᅠ-ᇿﾞﾟ]/u;
+const JOINER = /^[\p{M}\u1160-\u11FF\uFF9E\uFF9F]/u;
 // At most 30 such characters are folded with one letter, the stream-safe limit of Unicode
 // (UAX #15): a normalize of a longer run takes time that grows with its square. A text with
 // a longer run is folded piece by piece, with the run cut every 30.

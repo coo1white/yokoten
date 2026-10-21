@@ -2001,7 +2001,7 @@ test('hasMark: linear on long input (#434)', () => {
     ['full-width letters', (n) => 'ｓ'.repeat(n)],
     ['decomposed letters', (n) => 'é'.repeat(n / 2)],
     ['one letter, many marks', (n) => `e${'́'.repeat(n)}`],
-    ['zero-width between letters', (n) => 's​'.repeat(n / 2)],
+    ['zero-width between letters', (n) => 's\u200B'.repeat(n / 2)],
   ];
   for (const [name, make] of folded) assertLinear(`fold: ${name}`, make, (text) => hasMark(text, FULL));
   for (const [name, make] of folded) assertLinear(`fold, redact: ${name}`, make, makeRedactor({ marks: [FULL] }, {}));
@@ -2029,7 +2029,7 @@ test('hasMark and scanText: a mark is found in any Unicode form (#507)', () => {
   assert.ok(found(`${WIDE(SHORT)} example`, FULL));
   assert.ok(!found(WIDE(`${SHORT}ple`), SHORT), 'still whole words');
   // A zero-width space, joiner, non-joiner or word joiner, inside a word or between words.
-  for (const zero of ['​', '‌', '‍', '⁠']) {
+  for (const zero of ['\u200B', '\u200C', '\u200D', '\u2060']) {
     assert.ok(found(`hi s${zero}am`, SHORT), `U+${zero.codePointAt(0)!.toString(16)} inside`);
     assert.ok(found(`${SHORT}${zero}example`, FULL), `U+${zero.codePointAt(0)!.toString(16)} between`);
     assert.ok(found(`${zero}${SHORT}${zero}`, SHORT), `U+${zero.codePointAt(0)!.toString(16)} around`);
@@ -2050,11 +2050,11 @@ test('makeRedactor: hides a mark in any Unicode form, and keeps the rest of the 
   assert.equal(redact(`İİ ${DOTTED}, ${DOTTED.toUpperCase()} and ${DOTTED}\n`), 'İİ <mark>, <mark> and <mark>\n');
   assert.equal(redact(`café by ${DECOMPOSED}, é ${ACCENTED}.`), 'café by <mark>, é <mark>.');
   assert.equal(redact(`！ by ${WIDE(SHORT)} ！`), '！ by <mark> ！');
-  assert.equal(redact(`！ ${WIDE(SHORT)}​${WIDE('example')}!`), '！ <owner>!');
-  assert.equal(redact(`by s​am, ​ and s‍am.`), 'by <mark>, ​ and <mark>.');
+  assert.equal(redact(`！ ${WIDE(SHORT)}\u200B${WIDE('example')}!`), '！ <owner>!');
+  assert.equal(redact(`by s\u200Bam, \u200B and s\u200Dam.`), 'by <mark>, \u200B and <mark>.');
   assert.equal(redact(`${WIDE(SHORT)}ple é`), `${WIDE(SHORT)}ple é`, 'a longer word stays');
   // The check and redact agree.
-  for (const text of [`by ${DECOMPOSED}`, WIDE(SHORT), `s​am`, DOTTED.toUpperCase(), `${WIDE(SHORT)}ple`, `${DOTTED}x`]) {
+  for (const text of [`by ${DECOMPOSED}`, WIDE(SHORT), `s\u200Bam`, DOTTED.toUpperCase(), `${WIDE(SHORT)}ple`, `${DOTTED}x`]) {
     assert.equal(redact(text) === text, !scanText(text, { file: 'a', marks: [FULL, ACCENTED, DOTTED.toLowerCase(), SHORT] }).length, `redact and the check disagree on ${text}`);
   }
 });
@@ -2080,7 +2080,7 @@ test('the fold: a long run of mixed combining marks stays linear (#507)', () => 
 });
 
 test('the fold: the fast fold of the check gives the same text as the fold of redact (#507)', () => {
-  const pieces = ['a', 'é', '̖', '́', '​', 'ｓ', 'ᄀ', 'ᅡ', 'ᆫ', 'ｶ', 'ﾞ', '你', '，', 'İ', '𝅥', 'x', ' '];
+  const pieces = ['a', 'é', '̖', '́', '\u200B', 'ｓ', 'ᄀ', 'ᅡ', 'ᆫ', 'ｶ', '\uFF9E', '你', '，', 'İ', '𝅥', 'x', ' '];
   let seed = 7;
   const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648);
   for (let round = 0; round < 500; round++) {
@@ -2096,9 +2096,9 @@ test('the fold: what the check found before the fold, it still finds (#507)', ()
   const hangul = String.fromCharCode(0xc11c, 0xc544);
   const cases: [string, string][] = [
     // A zero-width character next to a name is an edge, as before.
-    [`x​${SHORT} y`, SHORT],
-    [`ab​${FULL}`, FULL],
-    [`${SHORT}​́`, SHORT],
+    [`x\u200B${SHORT} y`, SHORT],
+    [`ab\u200B${FULL}`, FULL],
+    [`${SHORT}\u200B́`, SHORT],
     // An accent or a final consonant on the last letter of a mark found as a part.
     [`${part}́`, part],
     [`user ${part}á x`, part],
@@ -2115,10 +2115,10 @@ test('the fold: what the check found before the fold, it still finds (#507)', ()
 });
 
 test('the fold: a mark of only zero-width characters is no mark, and the longest folded mark goes first (#507)', () => {
-  assert.equal(hasMark('nothing here', '​'), false);
-  assert.deepEqual(scanText('nothing here', { file: 'a.md', marks: ['​‍'] }), []);
-  assert.equal(makeRedactor({ marks: ['​​​', DOMAIN] }, {})(`by me at ${DOMAIN} ok`), 'by me at <host> ok');
-  assert.equal(makeRedactor({ marks: [`${SHORT}${'​'.repeat(5)}`, FULL] }, {})(`by ${FULL} ok`), 'by <mark> ok');
+  assert.equal(hasMark('nothing here', '\u200B'), false);
+  assert.deepEqual(scanText('nothing here', { file: 'a.md', marks: ['\u200B\u200D'] }), []);
+  assert.equal(makeRedactor({ marks: ['\u200B\u200B\u200B', DOMAIN] }, {})(`by me at ${DOMAIN} ok`), 'by me at <host> ok');
+  assert.equal(makeRedactor({ marks: [`${SHORT}${'\u200B'.repeat(5)}`, FULL] }, {})(`by ${FULL} ok`), 'by <mark> ok');
 });
 
 test('a refusal folds the marks before it names a program (#507)', () => {
