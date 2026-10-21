@@ -1218,8 +1218,8 @@ test('a pipe or a command that may change the body file is refused, by name (#49
     [`${bot} | uniq - ${body}`, 'a `uniq` with a second file'],
     [`${bot} | tail -2 > ${body}`, 'a pipe to `tail` that does not end the line'],
     [`${bot} | tail -2; cd /tmp`, 'a pipe to `tail` that does not end the line'],
-    [`${bot} | sed "s/$(id)/x/"`, 'a pipe to `sed` that does not end the line'],
-    [`${bot} | sed "s/\${X}/x/"`, 'a pipe to `sed` that does not end the line'],
+    [`${bot} | tail -2 | grep "$(id)"`, 'a pipe to `tail` that does not end the line'],
+    [`${bot} | grep "\${X}"`, 'a pipe to `grep` that does not end the line'],
     [`${bot} | xargs tail`, 'a pipe to `xargs`'],
     [`${bot} | (cat > ${body})`, 'a pipe'],
     [`${bot} |& tail -2`, 'a pipe'],
@@ -1255,6 +1255,9 @@ test('a `$` anywhere in a sed after the post is refused: bash fills it in before
     `${bot} | sed -e "s/x/y/$FLAGS"`,
     `${bot} | sed "$S"`,
     `${bot} | sed s/x/y/ "$F"`,
+    `${bot} | sed 's/x$/y/'`,
+    `${bot} | sed "s/$(id)/x/"`,
+    `${bot} | sed "s/\${X}/x/"`,
   ]) {
     const f = post(command);
     assert.equal(f?.id, 'unreadable-command', command);
@@ -1292,7 +1295,12 @@ test('a project allow still applies through a read-only pipe, and not through an
   const allowing = { ...DEFAULTS, privacy: { ...DEFAULTS.privacy, allow: ['QuietVale'] } };
   const command = 'gh issue create --title "check: fix a bug" --body "QuietVale ships"';
   assert.equal(post(`${command} 2>&1 | tail -2`, allowing), null);
-  assert.equal(post(`${command} | sed "s/$OWNER/<owner>/g"`, allowing), null);
+  assert.equal(post(`${command} | sed "s/someone/<owner>/g"`, allowing), null);
+  assert.equal(post(`${command} | grep -v "$OWNER"`, allowing), null);
+  // A `$` in a sed, in any quotes, is not a read-only pipe: no allow, as on the body-file path.
+  for (const sed of ['sed "s/$OWNER/<owner>/g"', "sed 's/x$/y/'", 'tail -2 | sed -e "s/x/$Y/"']) {
+    assert.equal(post(`${command} | ${sed}`, allowing)?.id, 'private-mark', sed);
+  }
   assert.equal(post(`${command} | tee out.txt`, allowing)?.id, 'private-mark');
   assert.equal(post(`${command} | tail -2; true`, allowing)?.id, 'private-mark');
 });

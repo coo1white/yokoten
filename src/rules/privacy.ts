@@ -1213,10 +1213,14 @@ function withoutStderrRedirect(text: string): string {
 }
 
 // Whether the text from `at`, a `|`, to the end is a pipe into PIPE_READERS in plain words.
+// A sed may hold no `$` at all, in any quotes: bash fills in a value before sed reads its
+// script, and a value can hold the delimiter and then `w` (see sedReadsOnly in guards.ts).
 function isReadPipe(text: string, at: number): boolean {
   let quote = '';
+  let program = '';
   for (let index = at; index < text.length; index++) {
     const char = text[index];
+    if (char === '$' && program === 'sed') return false;
     if (quote === "'") {
       if (char === "'") quote = '';
       else if (char === '\n' || char === '\r') return false;
@@ -1227,9 +1231,10 @@ function isReadPipe(text: string, at: number): boolean {
       else if ('`\\!\n\r'.includes(char)) return false;
     } else if (char === '|') {
       PIPE_PROGRAM.lastIndex = index + 1;
-      const program = PIPE_PROGRAM.exec(text);
-      if (!program || !PIPE_READERS.has(program[1])) return false;
-      index += program[0].length;
+      const found = PIPE_PROGRAM.exec(text);
+      if (!found || !PIPE_READERS.has(found[1])) return false;
+      program = found[1];
+      index += found[0].length;
     } else if (char === "'" || char === '"') quote = char;
     else if (!PLAIN_WORD.test(char)) return false;
   }

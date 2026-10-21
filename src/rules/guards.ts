@@ -887,6 +887,7 @@ type RiskInput = { heredoc?: object; plainText: string; plainAt: number; fills: 
 
 function writeRisk(words: string[], { heredoc, plainText, plainAt, fills, writers, isMarked }: RiskInput): Risk | undefined {
   if (heredoc !== undefined) return { what: 'a `cat >` heredoc' };
+  if (fills && hasSedValue(plainText)) return SED_VALUE_RISK;
   if (fills) return { what: plainAt === -1 ? TILDE_RISK : breakName(plainText, plainAt, isMarked) };
   if (writesFile(words)) return { what: 'a redirect into a file' };
   if (isUnsure(words)) return { what: variableRisk(words) };
@@ -938,6 +939,14 @@ function breakName(text: string, at: number, isMarked: (word: string) => boolean
   return 'a character the guard does not trust';
 }
 
+const SED_VALUE_RISK: Risk = { what: 'a `$` value in a `sed` command', fix: 'type the value into the sed script in place of the `$`, or leave out the pipe' };
+
+// Whether a sed after a pipe holds a `$`. This only picks the name, so it splits at every
+// `|`, quoted or not: the pipe scan has already refused the command.
+function hasSedValue(text: string): boolean {
+  return text.split('|').some((part, index) => index > 0 && /^[ \t]*sed[ \t]/.test(part) && part.includes('$'));
+}
+
 function pipeName(text: string, at: number, isMarked: (word: string) => boolean): string {
   PIPE_TARGET.lastIndex = at + 1;
   const program = base(PIPE_TARGET.exec(text)?.[1] ?? '');
@@ -956,7 +965,7 @@ function writerRisk(words: string[], isMarked: (word: string) => boolean): Risk 
   if (writesFile(words)) return { what: 'a redirect into a file' };
   const program = base(words[at] ?? '');
   if (program === 'sed' && words.some((word) => word.includes('$'))) {
-    return { what: 'a `$` value in a `sed` command', fix: 'type the value into the sed script in place of the `$`, or leave out the pipe' };
+    return SED_VALUE_RISK;
   }
   if (program === 'sed') return { what: 'a `sed` with `-i`, `-f` or a script other than s/…/…/' };
   if (program === 'uniq') return { what: 'a `uniq` with a second file, which it writes' };
