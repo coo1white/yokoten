@@ -1,6 +1,7 @@
 // The test command of each language (#546), in one table. doctor's tests step reads it for
-// the commands that count as running the tests in CI, and for the command its advice names;
-// `yokoten adopt` reads it for the test command a project has. So both give one answer.
+// the commands that count as running the tests in CI, for whether a workflow runs them,
+// and for the command its advice names; `yokoten adopt` reads it for the test command a
+// project has. So both give one answer. `yokoten init` reads it for the tests job (#550).
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -200,6 +201,93 @@ export const TEST_RUNS: Pattern[] = TEST_LANGUAGES.flatMap((l) => l.runs);
 
 /** The commands that count in this project only, because it defines them. */
 export const scriptedRuns = (root: string): Pattern[] => TEST_LANGUAGES.flatMap((l) => (l.scripted?.has(root) ? l.scripted.runs : []));
+
+/**
+ * The shell lines that the workflows run: each `run:` value, one line, or each line of a
+ * `run: |` block. A job id, a matrix item or a comment is never a command. Each line is
+ * matched on its own, so no pattern can run across a newline.
+ */
+export const runLines = (ci: string): string[] => {
+  const lines: string[] = [];
+  const text = ci.split(/\r?\n/);
+  for (let i = 0; i < text.length; i++) {
+    const key = /^([ \t]*(?:-[ \t]+)?)run:(?:[ \t]+(.*))?$/.exec(text[i]);
+    if (!key) continue;
+    const value = (key[2] ?? '').trim();
+    if (/^[|>][-+0-9]*(?:[ \t]+#.*)?$/.test(value)) {
+      // A block: the lines indented more than the `run` key, with `\` continuations joined.
+      let line = '';
+      for (; i + 1 < text.length && (text[i + 1].trim() === '' || /^[ \t]*/.exec(text[i + 1])![0].length > key[1].length); i++) {
+        const next = text[i + 1].trim();
+        if (!next) continue;
+        line = line ? `${line} ${next}` : next;
+        if (!line.endsWith('\\')) {
+          lines.push(line);
+          line = '';
+        }
+      }
+      if (line) lines.push(line);
+    } else if (!value.startsWith('#')) lines.push(value.replace(/^(["'])(.*)\1$/, '$2'));
+  }
+  return lines;
+};
+// What a command may start with before its name: an opening "(", a `VAR=value`, `env`, `time`.
+// One is matched at a time, from where the last one ended (#322).
+const PREFIX = /\(\s*|[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+|(env\s+)|time\s+/y;
+const ENV_FLAG = /-\S+\s+/y;
+/** Where the command name starts: past the prefixes, each matched in a loop, so the time is linear in the line. */
+const prefixEnd = (command: string) => {
+  let at = 0;
+  for (;;) {
+    PREFIX.lastIndex = at;
+    const prefix = PREFIX.exec(command);
+    if (!prefix) return at;
+    at = PREFIX.lastIndex;
+    // `env` may take flags before the command: env -i node --test.
+    for (ENV_FLAG.lastIndex = at; prefix[1] && ENV_FLAG.exec(command); ) at = ENV_FLAG.lastIndex;
+  }
+};
+/**
+ * The simple commands in a shell line: split at ;, &, |, with an opening "(" and any
+ * `VAR=value`, `env` or `time` before the command taken off. Comments go.
+ */
+export const commands = (line: string): string[] =>
+  line
+    .split(/[;&|]+/)
+    .map((c) => c.trim())
+    .map((c) => c.slice(prefixEnd(c)))
+    .filter((c) => c && !c.startsWith('#'));
+/** A command that only asks a tool about itself. */
+const ASKS = /\s--(?:version|help)(?=\s|$)/;
+/** The package.json "test" script, run by its package manager. */
+const RUNS_SCRIPT = sequence(word('npm', 'pnpm', 'yarn', 'bun'), optional(word('run')), word('test', 't'));
+const WORKSPACES_FLAGS = ['--workspace', '--workspaces', '-ws', '-w'];
+const isWorkspacesFlag = (w: string) => WORKSPACES_FLAGS.some((flag) => w === flag || w.startsWith(`${flag}=`));
+/** Only when a later word is a workspaces flag. */
+const NPM_WORKSPACES: Pattern = (words, at) => (words.slice(1).some(isWorkspacesFlag) ? at : []);
+/** In a workspaces repo, commands that run each package's "test" script; the root may have none. */
+const RUNS_WORKSPACES: Pattern[] = [
+  // npm takes its flags anywhere: npm test --workspaces, npm -w app test, npm run test -ws.
+  sequence(word('npm'), NPM_WORKSPACES, VALUED, optional(word('run')), word('test', 't')),
+  sequence(word('pnpm'), VALUED, either(word('-r', '--recursive'), wordIf((w) => w.startsWith('--filter=') && w.length > '--filter='.length), sequence(word('--filter', '-F'), anyWord)), VALUED, optional(word('run')), word('test')),
+  sequence(word('yarn'), word('workspaces'), optional(word('foreach'), VALUED), word('run'), word('test')),
+];
+/**
+ * Whether the workflow text runs the tests: the package.json "test" script (`script`, or
+ * empty), each package's script in a workspaces repo, or a test runner named outright.
+ * `scripted` adds the commands that count in this project only, such as `composer test`.
+ */
+export const runsTests = (ci: string, script: string, workspaces: boolean, scripted: Pattern[] = []) => {
+  const lines = runLines(ci);
+  const run = lines
+    .flatMap(commands)
+    .filter((c) => !ASKS.test(c))
+    .map((c) => c.split(/\s+/));
+  const runners = scripted.length ? [...TEST_RUNS, ...scripted] : TEST_RUNS;
+  if (run.some((words) => runners.some((r) => matches(r, words)))) return true;
+  if (script !== '' && (run.some((words) => matches(RUNS_SCRIPT, words)) || lines.some((l) => l.includes(script)))) return true;
+  return workspaces && run.some((words) => RUNS_WORKSPACES.some((r) => matches(r, words)));
+};
 
 const runnerOf = (l: TestLanguage, root: string) => (typeof l.runner === 'string' ? l.runner : l.runner(root));
 

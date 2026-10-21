@@ -30,6 +30,8 @@ import { type Finding, finding } from '../rules/message.ts';
 import { systemHome } from '../rules/privacy.ts';
 import { CODEOWNERS_PLACES, type Gh, ghIn, isOrganization, isPrivateRepo, repoOf } from '../host/github.ts';
 import { readOriginUrl } from './plan.ts';
+import { writeTestsJob } from './advice/tests-job.ts';
+import type { Ask } from './install.ts';
 import { copyRuntime, fileHash, HOME_DIR, KIT, lfText, normalizeText, readWorkflowHashes, render, textHash, VERSION, writeNew } from './files.ts';
 
 /** yokoten's own repo runs its own bin; every other project runs a vendored copy. */
@@ -78,13 +80,14 @@ const ORG_LOOKUP_MS = 5000;
  * One line per thing done, kept or skipped; `ok` is false when a hooks or settings file was
  * skipped (#248, #254). `gh` asks GitHub two things: whether the remote owner is an
  * organization, and whether the repo is private (#377). `noCi` keeps CI off: see `keepCiOff`.
- * Each git answer is kept for the run, until init sets core.hooksPath (#453).
+ * `ask` is the terminal question for the tests job (#550); without one, init only says
+ * what it would add. Each git answer is kept for the run, until init sets core.hooksPath (#453).
  */
-export function init(root: string, env: Env, gh: Gh = ghIn(root, env, ORG_LOOKUP_MS), { noCi = false }: { noCi?: boolean } = {}): { ok: boolean; lines: string[] } {
-  return withGitReads(() => initRun(root, env, gh, noCi));
+export function init(root: string, env: Env, gh: Gh = ghIn(root, env, ORG_LOOKUP_MS), { noCi = false, ask }: { noCi?: boolean; ask?: Ask } = {}): { ok: boolean; lines: string[] } {
+  return withGitReads(() => initRun(root, env, gh, noCi, ask));
 }
 
-function initRun(root: string, env: Env, gh: Gh, noCi: boolean): { ok: boolean; lines: string[] } {
+function initRun(root: string, env: Env, gh: Gh, noCi: boolean, ask?: Ask): { ok: boolean; lines: string[] } {
   const report: string[] = [];
   const isOff = noCi || isCiOffIn(root);
   const cli = cliPath(root);
@@ -122,6 +125,9 @@ function initRun(root: string, env: Env, gh: Gh, noCi: boolean): { ok: boolean; 
     }
     report.push(`${writeNew(join(root, rel), text)} ${rel}`);
   }
+  // The tests job for the project's language (#550): asked first, never overwritten. With
+  // CI off there are no workflows, so nothing to add it to.
+  if (!isOff) report.push(...writeTestsJob(root, { ask }));
   // Read before .githooks/ is written: whether it can run the hooks this clone has in .git/hooks (#256).
   const blocks = hooks.kind === 'plain' ? handOffBlocks(root, env) : [];
   if (hooks.kind !== 'own') report.push(...writeGithooks(root, cli, kit, blocks.length === 0, env));
