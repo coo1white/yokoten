@@ -4,10 +4,10 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { botConfig, botEnv, botProgram, installationToken, readBranchFiles, readCodeOwners, repoOf } from '../host/github.ts';
+import { botConfig, botEnv, botProgram, type Gh, installationToken, readBranchFiles, readCodeOwners, readIssueMilestone, repoOf } from '../host/github.ts';
 import { DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
 import type { Finding } from '../rules/message.ts';
-import { type CommandLabels, checkCommandTitle, checkOwnedTier, checkPullRequestBody, readCommandBody, readCommandLabels } from '../rules/pr.ts';
+import { type CommandLabels, type CommandMilestone, checkCommandTitle, checkOwnedTier, checkPullRequestBody, noMilestoneFinding, readCommandBody, readCommandLabels, readCommandMilestone } from '../rules/pr.ts';
 import { bullets, type Invocation, type Output, parse, print, readInput, requireRoot, rootOf, usage } from './shared.ts';
 
 async function bot(invocation: Invocation, command: string[]): Promise<number> {
@@ -53,7 +53,12 @@ async function bot(invocation: Invocation, command: string[]): Promise<number> {
   const token = await installationToken(config, repo);
   const [file, ...given] = command;
   // The type and tier labels the command leaves out, by the names the repo has (#422).
-  const rest = labels?.missing.length ? addLabels(given, chooseLabels(invocation, labels, file, botEnv(env, token))) : given;
+  const withLabels = labels?.missing.length ? addArgs(given, chooseLabels(invocation, labels, file, botEnv(env, token)).flatMap((name) => ['--label', name])) : given;
+  // A new pull request with no milestone takes its linked issue's (#512): one `gh issue view`.
+  const wanted = body && !isLookup(body) ? readCommandMilestone(command, body.text) : null;
+  const milestone = wanted ? chooseMilestone(invocation, wanted, ghWith(file, cwd, botEnv(env, token))) : null;
+  if (milestone === false) return 1;
+  const rest = milestone ? addArgs(withLabels, ['--milestone', milestone]) : withLabels;
   // `gh pr edit <number or URL>`: one `gh pr view` with the same token names its branches.
   if (body && isLookup(body) && refuseBody(invocation, checkBody(body, lookupBranch(body, file, botEnv(env, token), env), env))) return 1;
   // A body read from standard input was used up by the check, so gh gets it the same way.
@@ -155,11 +160,37 @@ function chooseLabels(invocation: Invocation, labels: CommandLabels, gh: string,
   return chosen;
 }
 
-/** The gh arguments with one `--label` for each name, before any `--`. */
-function addLabels(args: string[], names: string[]): string[] {
+/** The gh arguments with `added` before any `--`. */
+function addArgs(args: string[], added: string[]): string[] {
   const end = args.indexOf('--');
-  const added = names.flatMap((name) => ['--label', name]);
   return end === -1 ? [...args, ...added] : [...args.slice(0, end), ...added, ...args.slice(end)];
+}
+
+/** Runs the gh the command names, with the bot's token. It throws when gh fails. */
+const ghWith =
+  (file: string, cwd: string, ghEnv: Env): Gh =>
+  (args) =>
+    execFileSync(file, args, { cwd, env: ghEnv, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+
+/**
+ * The milestone of the first linked issue that has one (#512). False, after saying why,
+ * when every linked issue was read and none has one. Null, with a note, when gh can't read
+ * an issue: a network hiccup never stops a post, and `check --pr` still asks for it.
+ */
+function chooseMilestone(invocation: Invocation, wanted: CommandMilestone, gh: Gh): string | null | false {
+  const unread: number[] = [];
+  for (const issue of wanted.issues) {
+    const milestone = readIssueMilestone(gh, issue, wanted.repo);
+    if (milestone) return milestone;
+    if (milestone === undefined) unread.push(issue);
+  }
+  if (unread.length) {
+    const named = unread.map((issue) => `#${issue}`).join(', ');
+    print(invocation, [`yokoten bot: note: gh could not read the milestone of issue ${named}, so the pull request gets none; pass --milestone. \`check --pr\` asks for it`], invocation.stderr);
+    return null;
+  }
+  print(invocation, ['yokoten bot: 1 problem(s) in the milestone; nothing was sent. Fix the command and run it again:', ...bullets([noMilestoneFinding(wanted.issues)])], invocation.stderr);
+  return false;
 }
 
 /** Whether the pull request is named by a number or a URL, so gh must say its branches. */

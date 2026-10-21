@@ -203,6 +203,8 @@ test('bot: a pull request body CI would refuse is refused locally, with CI\'s me
     '#!/usr/bin/env node',
     'const fs = require("node:fs"); const args = process.argv.slice(2);',
     'if (args[0] === "label") process.exit(1);',
+    // #512: issue 1 has the milestone M0, which a new pull request takes.
+    'if (args[0] === "issue" && args[1] === "view") { console.log(JSON.stringify({ milestone: { title: "M0" } })); process.exit(0); }',
     `if (args[0] === "pr" && args[1] === "view") { fs.appendFileSync(${JSON.stringify(views)}, JSON.stringify({ args, token: process.env.GH_TOKEN }) + "\\n"); const n = args[2].split("/").pop(); if (n === "5" || n === "6") { console.log(JSON.stringify({ headRefName: n === "5" ? "topic" : "gone", baseRefName: "main" })); process.exit(0); } process.exit(1); }`,
     `fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, input: fs.readFileSync(0, "utf8") }) + "\\n");`,
   ].join('\n'));
@@ -272,8 +274,8 @@ test('bot: a pull request body CI would refuse is refused locally, with CI\'s me
       assert.equal(r.status, 0, `${command.join(' ')}: ${r.stderr}`);
       assert.equal(r.stderr, '', command.join(' '));
     }
-    // #422: a new pull request also gets the type and tier labels; nothing else changes.
-    const labelled = (args: string[]) => (args[1] === 'create' && !args.includes('-R') ? [...args, '--label', 'feat', '--label', 'tier A'] : args);
+    // #422, #512: a new pull request also gets the type and tier labels and its issue's milestone; nothing else changes.
+    const labelled = (args: string[]) => (args[1] === 'create' && !args.includes('-R') ? [...args, '--label', 'feat', '--label', 'tier A', '--milestone', 'M0'] : args);
     assert.deepEqual(ran(), passes.map(([command, input]) => ({ args: labelled(command.slice(1)), input })));
     // A branch git can't fetch, or a pull request gh can't look up: the body alone is checked, with a note.
     for (const [n, why] of [['6', "git can't compare origin/gone with origin/main"], ['7', 'gh could not say the branches of pull request `7`']]) {
@@ -302,6 +304,8 @@ test('bot: a new pull request gets its type and tier labels; a contradicting one
   writeFileSync(join(bin, 'gh'), [
     '#!/usr/bin/env node',
     'const fs = require("node:fs"); const args = process.argv.slice(2);',
+    // #512: issue 1 has the milestone M0, which a new pull request takes.
+    'if (args[0] === "issue" && args[1] === "view") { console.log(JSON.stringify({ milestone: { title: "M0" } })); process.exit(0); }',
     `if (args[0] === "label") { fs.appendFileSync(${JSON.stringify(lists)}, JSON.stringify(args) + "\\n"); process.stdout.write(fs.readFileSync(${JSON.stringify(repoLabels)}, "utf8")); process.exit(0); }`,
     `fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, input: fs.readFileSync(0, "utf8") }) + "\\n");`,
   ].join('\n'));
@@ -338,14 +342,14 @@ test('bot: a new pull request gets its type and tier labels; a contradicting one
     for (const [command, input, args] of cases) {
       const r = await run(command, input);
       assert.deepEqual([r.status, r.stderr], [0, note], command.join(' '));
-      assert.deepEqual(read(log).at(-1), { args: [...command.slice(1), ...args], input }, command.join(' '));
+      assert.deepEqual(read(log).at(-1), { args: [...command.slice(1), ...args, '--milestone', 'M0'], input }, command.join(' '));
     }
     assert.equal(read(lists).length, cases.length, 'one label list per run');
     assert.deepEqual(read(lists)[0], ['label', 'list', '--json', 'name', '--limit', '1000']);
 
-    // (b) Correct labels already given: the command is sent unchanged, and no list is read.
+    // (b) Correct labels and a milestone already given: the command is sent unchanged, and no list is read.
     const before = read(lists).length;
-    const given = ['gh', 'pr', 'create', '-t', 'fix: a', '--label', 'bug,tier B', '--body', body('B')];
+    const given = ['gh', 'pr', 'create', '-t', 'fix: a', '--label', 'bug,tier B', '-m', 'M1', '--body', body('B')];
     const unchanged = await run(given);
     assert.deepEqual([unchanged.status, unchanged.stderr], [0, note]);
     assert.deepEqual(read(log).at(-1), { args: given.slice(1), input: '' });
@@ -369,11 +373,11 @@ test('bot: a new pull request gets its type and tier labels; a contradicting one
     setLabels(['bug', 'enhancement', 'tier: A']);
     const other = await run(['gh', 'pr', 'create', '-t', 'feat: a', '--body', body('A')]);
     assert.deepEqual([other.status, other.stderr], [0, note]);
-    assert.deepEqual(read(log).at(-1)?.args.slice(-4), ['--label', 'enhancement', '--label', 'tier: A']);
+    assert.deepEqual(read(log).at(-1)?.args.slice(-6, -2), ['--label', 'enhancement', '--label', 'tier: A']);
     const absent = await run(['gh', 'pr', 'create', '-t', 'perf: a', '--body', body('B')]);
     assert.equal(absent.status, 0, absent.stderr);
     assert.match(absent.stderr, /^yokoten bot: note: the repo has no label `perf`, so the pull request gets none; create it on GitHub, or pass another with --label\. `check --pr` asks for it\nyokoten bot: note: the repo has no label `tier B`, /m);
-    assert.deepEqual(read(log).at(-1)?.args, ['pr', 'create', '-t', 'perf: a', '--body', body('B')], 'no label was created or added');
+    assert.deepEqual(read(log).at(-1)?.args, ['pr', 'create', '-t', 'perf: a', '--body', body('B'), '--milestone', 'M0'], 'no label was created or added');
 
     // (e) Other gh commands are sent unchanged, with no label list.
     const lists0 = read(lists).length;
@@ -408,6 +412,7 @@ test('bot --body-file -: in-process, the body comes from the given stdin and gh 
     '#!/usr/bin/env node',
     'const fs = require("node:fs"); const args = process.argv.slice(2);',
     'if (args[0] === "label") { process.stdout.write(JSON.stringify([{ name: "docs" }, { name: "tier C" }])); process.exit(0); }',
+    'if (args[0] === "issue" && args[1] === "view") { console.log(JSON.stringify({ milestone: { title: "M0" } })); process.exit(0); }',
     `fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, input: fs.readFileSync(0, "utf8") }) + "\\n");`,
     'process.stdout.write("created\\n"); process.stderr.write("a gh note\\n");',
   ].join('\n'));
@@ -434,7 +439,78 @@ test('bot --body-file -: in-process, the body comes from the given stdin and gh 
     assert.equal(sent.stdout, 'created\n');
     assert.match(sent.stderr, /a gh note\n$/);
     const [ran] = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-    assert.deepEqual(ran, { args: ['pr', 'create', '-t', 'docs: a', '--body-file', '-', '--label', 'docs', '--label', 'tier C'], input: body });
+    assert.deepEqual(ran, { args: ['pr', 'create', '-t', 'docs: a', '--body-file', '-', '--label', 'docs', '--label', 'tier C', '--milestone', 'M0'], input: body });
+  } finally {
+    server.close();
+  }
+});
+
+// #512: `gh pr create` with no milestone takes its linked issue's, from one `gh issue view`.
+// A fake gh and a local API server stand in for GitHub.
+test('bot: a new pull request takes its issue\'s milestone; none anywhere is refused (#512)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', JSON.stringify({ areas: ['host'] }));
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/me/repo.git');
+  const bin = join(sandbox.home, 'bin');
+  const log = join(sandbox.home, 'gh.log');
+  const views = join(sandbox.home, 'views.log');
+  mkdirSync(bin);
+  // Issue 1 has the milestone M1, issue 2 has none, and gh can't read issue 3.
+  writeFileSync(join(bin, 'gh'), [
+    '#!/usr/bin/env node',
+    'const fs = require("node:fs"); const args = process.argv.slice(2);',
+    'if (args[0] === "label") { process.stdout.write(JSON.stringify([{ name: "feat" }, { name: "tier B" }])); process.exit(0); }',
+    `if (args[0] === "issue" && args[1] === "view") { fs.appendFileSync(${JSON.stringify(views)}, JSON.stringify(args) + "\\n"); if (args[2] === "3") process.exit(1); console.log(JSON.stringify({ milestone: args[2] === "1" ? { number: 1, title: "M1" } : null })); process.exit(0); }`,
+    `fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");`,
+  ].join('\n'));
+  chmodSync(join(bin, 'gh'), 0o755);
+  const read = (file: string) => (existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+  const server = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(req.method === 'GET' ? { id: 77 } : { token: 'ghs_test' }));
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  const key = join(sandbox.home, 'bot.pem');
+  writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
+  const bot = { PATH: `${bin}:${process.env.PATH}`, YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+  const run = (command: string[]) => sandbox.call(['bot', '--', ...command], { extra: bot });
+  const note = 'yokoten bot: note: git can\'t compare HEAD with origin/main, so the body was checked without the changed files; CI checks the rest\n';
+  const body = (links: string) => `tier: B\n${links}\n\n## Why\nx\n\n## What changed\nx\n\n## How tested\nx\n`;
+  const labels = ['--label', 'feat', '--label', 'tier B'];
+  try {
+    // (1) The milestone is copied from the linked issue, by --body and --body-file.
+    const closes = await run(['gh', 'pr', 'create', '-t', 'feat: a', '--body', body('Closes #1')]);
+    assert.deepEqual([closes.status, closes.stderr], [0, note]);
+    assert.deepEqual(read(log).at(-1), ['pr', 'create', '-t', 'feat: a', '--body', body('Closes #1'), ...labels, '--milestone', 'M1']);
+    assert.deepEqual(read(views), [['issue', 'view', '1', '--json', 'milestone']], 'one gh issue view');
+    const bodyFile = join(sandbox.home, 'body.md');
+    writeFileSync(bodyFile, body('Part of #2\nCloses #1'));
+    const first = await run(['gh', 'pr', 'create', '-t', 'feat: a', '--body-file', bodyFile, '--', 'extra']);
+    assert.deepEqual([first.status, first.stderr], [0, note]);
+    assert.deepEqual(read(log).at(-1), ['pr', 'create', '-t', 'feat: a', '--body-file', bodyFile, ...labels, '--milestone', 'M1', '--', 'extra'], 'the first linked issue that has one, before any --');
+    assert.equal(readFileSync(bodyFile, 'utf8'), body('Part of #2\nCloses #1'), 'the body file is not changed');
+
+    // (2) No linked issue has a milestone: nothing is sent, and the message names --milestone.
+    const sent = read(log).length;
+    const none = await run(['gh', 'pr', 'create', '-t', 'feat: a', '--body', body('Part of #2')]);
+    assert.equal(none.status, 1);
+    assert.equal(none.stderr, `${note}yokoten bot: 1 problem(s) in the milestone; nothing was sent. Fix the command and run it again:\n- milestone: none given, and the linked issue #2 has none. The board and the roadmap show work by milestone. Add \`--milestone <name>\`, or set a milestone on the issue.\n  docs: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#the-core-rules\n`);
+    assert.equal(read(log).length, sent, 'gh pr create did not run');
+
+    // (3) An explicit milestone is kept, with no gh issue view.
+    const viewed = read(views).length;
+    for (const given of [['--milestone', 'M9'], ['-m', 'M9'], ['--milestone=M9']]) {
+      const command = ['gh', 'pr', 'create', '-t', 'feat: a', ...given, '--body', body('Part of #2')];
+      const r = await run(command);
+      assert.deepEqual([r.status, r.stderr], [0, note], command.join(' '));
+      assert.deepEqual(read(log).at(-1), [...command.slice(1), ...labels], command.join(' '));
+    }
+    assert.equal(read(views).length, viewed, 'no gh issue view');
+
+    // (4) gh can't read the issue: the pull request is sent without a milestone, with a note.
+    const unread = await run(['gh', 'pr', 'create', '-t', 'feat: a', '--body', body('Closes #3')]);
+    assert.deepEqual([unread.status, unread.stderr], [0, `${note}yokoten bot: note: gh could not read the milestone of issue #3, so the pull request gets none; pass --milestone. \`check --pr\` asks for it\n`]);
+    assert.deepEqual(read(log).at(-1), ['pr', 'create', '-t', 'feat: a', '--body', body('Closes #3'), ...labels]);
   } finally {
     server.close();
   }

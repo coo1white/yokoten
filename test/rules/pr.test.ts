@@ -26,7 +26,10 @@ import {
   longSentences,
   ownersOf,
   parseCodeOwners,
+  noMilestoneFinding,
   readCommandBody,
+  readCommandMilestone,
+  readLinkedIssues,
   type PullRequest,
   splitForDependabot,
   visibleLength,
@@ -400,4 +403,26 @@ test('pull request body: read from gh pr create and edit, in every spelling gh t
   for (const command of [['gh', 'pr', 'edit', '5', '--add-label', 'bug'], ['gh', 'pr', 'create', '--fill'], ['gh', 'issue', 'create', '--body', 'x'], ['gh', 'pr', 'comment', '5', '--body', 'x'], ['git', 'push'], ['gh', 'pr', 'create', '--title', 'feat: a', '--', '--body', 'x']]) {
     assert.equal(readCommandBody(command), null, command.join(' '));
   }
+});
+
+// #512: the issues whose milestone `gh pr create` takes, read without the network.
+test('readCommandMilestone: the linked issues of a new pull request with no milestone (#512)', () => {
+  const body = 'tier: B\nPart of #4\nCloses #7, refs #4\n';
+  assert.deepEqual(readLinkedIssues(body), [4, 7]);
+  assert.deepEqual(readCommandMilestone(['gh', 'pr', 'create', '-t', 'feat: a'], body), { issues: [4, 7], repo: null });
+  assert.deepEqual(readCommandMilestone(['gh', 'pr', 'new', '-R', 'o/r'], body), { issues: [4, 7], repo: 'o/r' });
+  // Positive controls: a milestone the command gives, in each spelling, is kept.
+  for (const given of [['--milestone', 'M1'], ['--milestone=M1'], ['-m', 'M1'], ['-mM1'], ['-dm', 'M1']]) {
+    assert.equal(readCommandMilestone(['gh', 'pr', 'create', ...given], body), null, given.join(' '));
+  }
+  // Not a new pull request, no body, or no linked issue: nothing to do.
+  assert.equal(readCommandMilestone(['gh', 'pr', 'edit', '5'], body), null);
+  assert.equal(readCommandMilestone(['gh', 'issue', 'create'], body), null);
+  assert.equal(readCommandMilestone(['git', 'push'], body), null);
+  assert.equal(readCommandMilestone(['gh', 'pr', 'create'], null), null);
+  assert.equal(readCommandMilestone(['gh', 'pr', 'create'], 'tier: B\n'), null);
+  // The refusal names the flag to add.
+  assert.match(noMilestoneFinding([2]).what, /^milestone: none given, and the linked issue #2 has none$/);
+  assert.match(noMilestoneFinding([2, 3]).what, /none of the linked issues #2, #3 has one/);
+  assert.match(noMilestoneFinding([2]).fix, /--milestone/);
 });
