@@ -20,7 +20,7 @@ import { checkCommand, checkEdit } from '../rules/guards.ts';
 import { type Config, DEFAULTS, type Env } from '../rules/config.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
 import { type Finding, finding, formatFinding, type RuleId } from '../rules/message.ts';
-import { homeIn, homeOf, loadMarks, notUtc, ownMarks, POSITIVE_CONTROL, scanText } from '../rules/privacy.ts';
+import { homeIn, homeOf, loadMarks, machineAllowed, notUtc, ownMarks, POSITIVE_CONTROL, repoKey, sameNameMarks, scanText, skipsOwnName } from '../rules/privacy.ts';
 import { SECRET_CONTROL } from '../rules/secrets.ts';
 import { check } from '../run/check.ts';
 import { judge } from '../run/hook.ts';
@@ -254,13 +254,24 @@ export function machineChecks(env: Env): Practice[] {
   ];
 }
 
-/** How many private marks this project allows in its own repo (#424): a count, never the marks. */
-export function allowedMarkCount(env: Env, config: Pick<Config, 'privacy'>): number {
+/**
+ * How many private marks are allowed in this repo, by where the allow comes from: its
+ * yokoten.json (#424) and this machine (#447), and how many are skipped because they are
+ * the repo's name (#447, record 0014). Counts, never the marks. `unsure` says why the
+ * machine allows nothing here when yokoten can't tell.
+ */
+export function allowedMarkCount(env: Env, config: Pick<Config, 'privacy'>, root: string): { project: number; machine: number; ownName: number; unsure: string | null } {
+  let marks: string[];
   try {
-    return ownMarks(loadMarks(env), config.privacy.allow).length;
+    marks = loadMarks(env);
   } catch {
-    return 0; // An unreadable file: the private-marks check says so.
+    return { project: 0, machine: 0, ownName: 0, unsure: null }; // An unreadable file: the private-marks check says so.
   }
+  if (!marks.length) return { project: 0, machine: 0, ownName: 0, unsure: null };
+  const key = repoKey(root);
+  const machine = machineAllowed(env, root, key);
+  const ownName = skipsOwnName(env, config.privacy) ? sameNameMarks(marks, key).length : 0;
+  return { project: ownMarks(marks, config.privacy.allow).length, machine: ownMarks(marks, machine.allow).length, ownName, unsure: machine.unsure };
 }
 
 /** What doctor says when an agent can't filter command output, and how to opt in to the stop (#390). */
@@ -1358,8 +1369,11 @@ function doctorRun(
   const checkNotes: Finding[] = [];
   const problems = check(root, { config, env, notes: checkNotes });
   findings.push(...problems);
-  const allowed = allowedMarkCount(env, config);
-  if (allowed) lines.push(`  ok      own-marks: ${allowed} of your private marks allowed here by privacy.allow`);
+  const allowed = allowedMarkCount(env, config, root);
+  if (allowed.project) lines.push(`  ok      own-marks: ${allowed.project} of your private marks allowed here by privacy.allow`);
+  if (allowed.machine) lines.push(`  ok      own-marks: ${allowed.machine} of your private marks allowed here by this machine (\`yokoten marks allow\`)`);
+  if (allowed.ownName) lines.push(`  ok      own-marks: ${allowed.ownName} of your private marks skipped here because they name this repo ("privacy": { "skipOwnName": false } turns this off)`);
+  if (allowed.unsure) lines.push(`  note    own-marks: this machine allows no private mark here, because ${allowed.unsure}`);
   lines.push(`  ${problems.length ? 'MISSING' : 'ok     '} tree: ${problems.length ? `${problems.length} problem(s), run \`yokoten check\`` : 'layout and privacy clean'}`);
   // check's own notes (#228), such as an unknown yokoten.json key or a translation behind: worded as check words them, and never a failure.
   for (const n of checkNotes) lines.push(`  note    ${formatFinding(n).replaceAll('\n', '\n        ')}`);

@@ -637,6 +637,7 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 | `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的变更文件、milestone 和标签，见下面的「更新日志」。改到 CODEOWNERS 里列出的文件，必须写 `tier: A`。改动的文档里句子太长、改动的代码里名字难读、改动超过 400 行，都只提醒，不算失败 |
 | `check --pr <number>` | 同样的检查，但通过 `gh` 读这个编号的 PR，没有 CI 的仓库合并前自己跑 |
 | `check --issue` | 在 CI 里检查 issue 的标题，见下面的「issue 标题」 |
+| `marks allow <mark> --here` | 让词表里的一个词只在这个仓库放行，不需要 yokoten.json。放行记在这台电脑上，不写进仓库。`--remove` 撤回。见「隐私」 |
 | `redact` | 从标准输入读文字，把你的信息换成占位符再输出：`<owner>`、`<email>`、`<host>`、`<mark>`。命令守卫会让有风险的命令先过一遍它。见「隐私」 |
 | `changelog [--write]` | 列出 `changes/` 里的文件会往 `[Unreleased]` 下面加哪些条目。加上 `--write` 就真的写进 `CHANGELOG.md`，再删掉这些文件；发版前跑。见下面的「更新日志」 |
 | `learn <issue> [--write]` | 从一个事故 issue 起草一条检查，留给人来审。加上 `--write` 才把文件写进 `lessons/`。见下面的「从事故里学」 |
@@ -1227,6 +1228,23 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 里的词一模一样（不管大小写），这个词就放行；只是其中一段、或者更长的字符串，都不算。放行只在
 这个仓库里有效，`check`、提交钩子和 `gh` 发帖前的检查都放行；别的仓库照样拦。`doctor` 会说这个
 项目放行了你几个词，只报个数，不说是哪几个。
+
+没有 yokoten.json 的仓库也能这样放行，不想公开和 yokoten 有关系的仓库也一样。在那个仓库里运行
+`yokoten marks allow <mark> --here` 就行。放行记在这台电脑上，就在词表旁边的
+`private-marks-allow.json` 里，只对这一个仓库有效，认的是它的 `origin` 远程地址（主机加路径）。
+仓库里什么都不写。没有 `origin` 的仓库用不了这种放行，可以改用 `privacy.allow`。远程地址改了名，
+就算另一个仓库，这个词又会被拦。不是默认端口的，端口也算名字的一部分；本地路径认它指向的文件夹。
+`git@host:path` 和 `https://host/path` 算同一个仓库，各大代码托管平台也是这么认的。
+
+yokoten 拿不准发帖或推送会去哪里时，一个词也不放行，`doctor` 会说原因。这些情况都算拿不准：
+除了 `origin` 还有别的远程；gh 设了自己的默认仓库（`gh repo set-default`）；设了
+`remote.pushDefault` 或 `branch.*.pushRemote`；`origin` 的拉取和推送地址（按 git 的 `insteadOf`
+改写之后）指向不同的仓库；或者有两条记录都对得上。`gh` 发帖可能发到别的仓库时，这里的放行和
+`privacy.allow` 都不算：带 `-R` 或 `--repo`、带 issue 或 PR 的网址、设了 `GH_REPO` 或 `GH_HOST`、
+还有所有 `gh api` 和 `gh gist`。发帖还必须是这一行里唯一的命令：前面不能加环境变量、`env`、
+`sudo`，也不能有管道或 `$(…)`。heredoc 最多一个，结束词要写成单引号里的名字，比如 `<<'EOF'`。前面只允许一个 `cd`，而且要留在同一个仓库里。这一行里有别的
+东西，就可能改了 gh 发到哪里，所以这条帖子按全部词表检查。`doctor` 会说放行是从哪来的：这台电脑，还是 `privacy.allow`。只有词表里有的词
+才能放行。想撤回，运行 `yokoten marks allow --remove <mark> --here`。
 
 有些文件本来就要写你的账号名。所以 yokoten 自动加进词表的 forge 登录名，在这几处不算问题：
 CODEOWNERS 里的负责人、`.github/` 里的 `@` 提及、`package.json` 或插件清单里的 author、owner

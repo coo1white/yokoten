@@ -57,6 +57,8 @@ function main(): number | Promise<number> {
       return import('../src/commands/check.ts').then((m) => m.runCheck());
     case 'redact':
       return import('../src/commands/check.ts').then((m) => m.runRedact());
+    case 'marks':
+      return import('../src/commands/check.ts').then((m) => m.runMarks());
     case 'changelog':
       return import('../src/commands/learn.ts').then((m) => m.runChangelog());
     case 'learn':
