@@ -477,6 +477,32 @@ test('a stdin body: only the heredoc is read, not the rest of the command (#391 
   assert.equal(post('gh pr comment 3 --body-file -'), null, 'stdin from another program is not seen');
 });
 
+test('a heredoc whose end word the guard does not read exactly: the rest of the text is scanned (#466)', () => {
+  const head = 'gh issue create --title t -F - ';
+  for (const command of [
+    // bash ends the body at `E:F`; the guard reads no plain name, so it scans to the end.
+    `${head}<<'E:F'\nfrom QuietVale\nE:F`,
+    // bash ends the body at `EOF`, not at a line `E`: the lines after `E` are posted too.
+    `${head}<<"E"OF\nclean\nE\nfrom QuietVale\nEOF`,
+    `${head}<<E'OF'\nclean\nE\nfrom QuietVale\nEOF`,
+    `${head}<<'E'OF\nclean\nE\nfrom QuietVale\nEOF`,
+    // A line continuation inside the end word.
+    `${head}<<E\\\nF\nclean\nE\nfrom QuietVale\nEF`,
+    // bash ends the body only at a line that is the word exactly: `EOF ` and `EOF\r` don't.
+    `${head}<<'EOF'\nclean\nEOF \nfrom QuietVale\nEOF`,
+    `${head}<<'EOF'\nclean\nEOF\r\nfrom QuietVale\nEOF`,
+  ]) {
+    assert.equal(post(command)?.id, 'private-mark', command);
+  }
+  // Plain end words, bare or quoted, with a space or a dash before them.
+  for (const word of ["'EOF'", '"EOF"', 'EOF', "-'EOF'", " 'EOF'", '- EOF']) {
+    assert.equal(post(`${head}<<${word}\nfrom QuietVale\nEOF`)?.id, 'private-mark', word);
+    assert.equal(post(`${head}<<${word}\nall clean\nEOF`), null, word);
+  }
+  // A here-string is not a heredoc.
+  assert.equal(post(`${head}<<< 'all clean'\necho done`), null);
+});
+
 test('a relative body file follows cd; one the guard cannot place stops the command (#391 review)', () => {
   mkdirSync(join(postDir, 'sub'), { recursive: true });
   writeFileSync(join(postDir, 'sub', 'note.md'), 'Seen in QuietVale.\n');
