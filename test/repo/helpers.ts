@@ -163,6 +163,14 @@ export function makeSandbox() {
   const git = (...args: string[]) => runChild('git', args, { cwd: repo, env });
   const run = (args: string[], { input, cwd = repo, extra = {}, timeout }: { input?: string; cwd?: string; extra?: Record<string, string>; timeout?: number } = {}) =>
     runChild('node', [CLI, ...args], { cwd, env: { ...env, ...extra }, input, timeout });
+  // The same as run, in this process (#475): no child, so no second strip of every file's types.
+  // Its result has run's shape. invoke.ts is loaded on the first call, so a file that never
+  // calls it does not load every command. Keep one or two run tests per command for the entry.
+  const call = async (args: string[], { input, cwd = repo, extra = {} }: { input?: string; cwd?: string; extra?: Record<string, string> } = {}) => {
+    const { invoke } = await import('./invoke.ts');
+    const done = await invoke(args, { env: { ...env, ...extra }, cwd, stdin: input });
+    return { status: done.code, stdout: done.stdout, stderr: done.stderr };
+  };
   const write = (path: string, text: string) => {
     mkdirSync(dirname(join(repo, path)), { recursive: true });
     writeFileSync(join(repo, path), text);
@@ -172,7 +180,7 @@ export function makeSandbox() {
     write('package.json', JSON.stringify({ scripts: { test: 'node --test' } }));
     write('.github/workflows/test.yml', 'on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm test\n');
   };
-  return { home, repo, env, git, run, write, withTests };
+  return { home, repo, env, git, run, call, write, withTests };
 }
 
 export const ROOT = join(dirname(CLI), '..');
