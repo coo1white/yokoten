@@ -459,9 +459,10 @@ const testsFix = (root: string) => {
   const isNode = testScript(root) !== '' || isWorkspaces(root);
   const command = isWorkspaces(root) ? workspacesTest(root).replaceAll('`', '') : testScript(root) ? 'npm test' : '<your test command>';
   const install = isNode && existsSync(join(root, 'package-lock.json')) ? ', {run: npm ci}' : '';
-  const steps = `[{uses: actions/checkout@v4}${isNode ? ', {uses: actions/setup-node@v4}' : ''}${install}, {run: ${command}}]`;
+  const uses = isNode ? 'the checkout and setup-node steps of the other jobs' : 'the checkout step of the other jobs';
+  const steps = `[<${uses}>${install}, {run: ${command}}]`;
   const start = existsSync(join(root, file)) ? `in ${file}` : `run \`yokoten init\` to add ${file}, then in it`;
-  return `${start}, add this job under \`jobs:\`: \`tests: {runs-on: ubuntu-latest, steps: ${steps}}\`. Then add \`tests\` to the \`needs\` list of the \`ci\` job, so a failing test blocks the merge`;
+  return `${start}, add this job under \`jobs:\`. Copy the \`uses:\` lines from the other jobs, because they are pinned: \`tests: {runs-on: ubuntu-latest, steps: ${steps}}\`. Then add \`tests\` to the \`needs\` list of the \`ci\` job, so a failing test blocks the merge`;
 };
 
 /** Tracked build output, as yokoten.json lets it through; null outside a git repo. */

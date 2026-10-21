@@ -427,13 +427,13 @@ test('road: the tests step names the workflow file, the job to add and the needs
   try {
     const fix = () => tests?.fix(dir, {}, undefined) ?? '';
     // No workflow file yet: init adds it first. No package.json: a placeholder command.
-    assert.equal(fix(), 'run `yokoten init` to add .github/workflows/yokoten.yml, then in it, add this job under `jobs:`: `tests: {runs-on: ubuntu-latest, steps: [{uses: actions/checkout@v4}, {run: <your test command>}]}`. Then add `tests` to the `needs` list of the `ci` job, so a failing test blocks the merge');
+    assert.equal(fix(), 'run `yokoten init` to add .github/workflows/yokoten.yml, then in it, add this job under `jobs:`. Copy the `uses:` lines from the other jobs, because they are pinned: `tests: {runs-on: ubuntu-latest, steps: [<the checkout step of the other jobs>, {run: <your test command>}]}`. Then add `tests` to the `needs` list of the `ci` job, so a failing test blocks the merge');
     // A test script and a lock file: npm test, after npm ci.
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { test: 'vitest run' } }));
     writeFileSync(join(dir, 'package-lock.json'), '{}');
     mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
     writeFileSync(join(dir, '.github', 'workflows', 'yokoten.yml'), 'jobs: {}\n');
-    assert.equal(fix(), 'in .github/workflows/yokoten.yml, add this job under `jobs:`: `tests: {runs-on: ubuntu-latest, steps: [{uses: actions/checkout@v4}, {uses: actions/setup-node@v4}, {run: npm ci}, {run: npm test}]}`. Then add `tests` to the `needs` list of the `ci` job, so a failing test blocks the merge');
+    assert.equal(fix(), 'in .github/workflows/yokoten.yml, add this job under `jobs:`. Copy the `uses:` lines from the other jobs, because they are pinned: `tests: {runs-on: ubuntu-latest, steps: [<the checkout and setup-node steps of the other jobs>, {run: npm ci}, {run: npm test}]}`. Then add `tests` to the `needs` list of the `ci` job, so a failing test blocks the merge');
     // The job line is valid flow YAML on one line: it can sit in a session start.
     assert.ok(!fix().includes('\n'));
   } finally {
