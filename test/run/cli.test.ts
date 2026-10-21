@@ -370,3 +370,12 @@ test('demo: scripts/demo/loop.ts walks the loop from an incident to a doctor not
   assert.equal(readFileSync(kitTable, 'utf8'), before, 'the real kit is not touched');
   rmSync(temp, { recursive: true, force: true });
 });
+
+test('sandbox: call runs a command in this process with the same result as run (#475)', async () => {
+  const sandbox = makeSandbox();
+  for (const words of [['help'], ['check'], ['no-such-command']]) {
+    const child = sandbox.run(words);
+    const same = await sandbox.call(words);
+    assert.deepEqual({ status: same.status, stdout: same.stdout, stderr: same.stderr }, { status: child.status, stdout: child.stdout, stderr: child.stderr }, `yokoten ${words.join(' ')}`);
+  }
+});
