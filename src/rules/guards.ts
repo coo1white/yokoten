@@ -970,7 +970,8 @@ function withoutStdin(command: string, commands: string[][]): string {
 }
 
 // A word that starts with ~ is the folder of a cd or pushd, or the file after -F,
-// --body-file or --notes-file (#439). It is `~` or starts `~/`: the guard reads only those
+// --body-file or --notes-file (#439), or the yokoten of a `yokoten bot --` (#498), as in
+// `node ~/x/bin/yokoten.ts bot -- gh …`. It is `~` or starts `~/`: the guard reads only those
 // as $HOME. The words have lost their quotes, so a '~ or "~ in the command makes any ~
 // word unsure: bash does not expand a quoted ~.
 function tildesPlain(command: string, commands: string[][]): boolean {
@@ -979,9 +980,22 @@ function tildesPlain(command: string, commands: string[][]): boolean {
     words.every(
       (word, index) =>
         !word.startsWith('~') ||
-        (!isQuoted && (word === '~' || word.startsWith('~/')) && ((index === 1 && ['cd', 'pushd'].includes(words[0])) || ['-F', '--body-file', '--notes-file'].includes(words[index - 1] ?? ''))),
+        (!isQuoted &&
+          (word === '~' || word.startsWith('~/')) &&
+          ((index === 1 && ['cd', 'pushd'].includes(words[0])) || ['-F', '--body-file', '--notes-file'].includes(words[index - 1] ?? '') || isBotProgram(words, index))),
     ),
   );
+}
+
+// `~/…/yokoten`, `.ts` or `.mjs`, in plain path characters.
+const HOME_YOKOTEN = /^~\/(?:[\w.+@%:,=-]+\/)*yokoten(?:\.ts|\.mjs)?$/;
+
+// Whether the word at `index` is the yokoten of `yokoten bot --` or `node yokoten.ts bot --`,
+// after only the command's own variables. Which yokoten runs does not change the file gh reads.
+function isBotProgram(words: string[], index: number): boolean {
+  if (!HOME_YOKOTEN.test(words[index]) || words[index + 1] !== 'bot' || words[index + 2] !== '--') return false;
+  const start = ownVariables(words);
+  return index === start || (index === start + 1 && words[start] === 'node');
 }
 
 /** Whether a command's own variables may change what it runs (#439). */

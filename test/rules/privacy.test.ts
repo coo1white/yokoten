@@ -1256,6 +1256,47 @@ test('a project allow still applies through a read-only pipe, and not through an
   assert.equal(post(`${command} | tail -2; true`, allowing)?.id, 'private-mark');
 });
 
+test('a ~/ path to yokoten and the allowed variables before it still read the body file (#498)', () => {
+  const body = join(postDir, 'c-505.md');
+  writeFileSync(body, 'All clean.\n');
+  const comment = `bot -- gh issue comment 505 --body-file ${body}`;
+  const passes = [
+    `NODE_USE_ENV_PROXY=1 GH_REPO=o/r node ~/x/yokoten/bin/yokoten.ts ${comment}`,
+    `node ~/x/yokoten/bin/yokoten.ts ${comment}`,
+    `node ~/yokoten.mjs ${comment} | tail -2`,
+    `~/x/bin/yokoten ${comment}`,
+    `NODE_USE_ENV_PROXY=1 GH_REPO=o/r node bin/yokoten.ts ${comment}`,
+    `node /opt/x/bin/yokoten.ts ${comment}`,
+  ];
+  for (const command of passes) assert.equal(post(command), null, command);
+  writeFileSync(body, 'Seen in QuietVale.\n');
+  for (const command of passes) assert.equal(post(command)?.id, 'private-mark', command);
+  writeFileSync(body, 'All clean.\n');
+  // A ~ elsewhere, a quoted ~, a ~ that is not $HOME, or another program stays refused.
+  for (const command of [
+    `node ~/x/bin/other.ts ${comment}`,
+    `node '~/x/bin/yokoten.ts' ${comment}`,
+    `node ~root/bin/yokoten.ts ${comment}`,
+    `node ~/x/bin/yokoten.ts ~/y ${comment}`,
+    `echo ~/x/bin/yokoten.ts bot -- x; gh issue comment 505 --body-file ${body}`,
+  ]) assert.equal(post(command)?.id, 'unreadable-command', command);
+  // A variable outside GH_REPO, GH_HOST and NODE_USE_ENV_PROXY reaches node and gh: refused, by name.
+  const other = post(`A=1 node bin/yokoten.ts ${comment}`);
+  assert.ok(other?.what.includes('a variable other than GH_REPO'), other?.what);
+  rmSync(body);
+});
+
+test('a project allow still applies after NODE_USE_ENV_PROXY=1 and a ~/ yokoten (#498)', () => {
+  const allowing = { ...DEFAULTS, privacy: { ...DEFAULTS.privacy, allow: ['QuietVale'] } };
+  const comment = 'bot -- gh issue create --title "check: fix a bug" --body "QuietVale ships"';
+  assert.equal(post(`NODE_USE_ENV_PROXY=1 node ~/x/bin/yokoten.ts ${comment}`, allowing), null);
+  assert.equal(post(`NODE_USE_ENV_PROXY=1 node bin/yokoten.ts ${comment} 2>&1 | tail -2`, allowing), null);
+  // GH_REPO names another target, and any other variable is not trusted: no allow.
+  assert.equal(post(`GH_REPO=o/r node bin/yokoten.ts ${comment}`, allowing)?.id, 'private-mark');
+  assert.equal(post(`A=1 node bin/yokoten.ts ${comment}`, allowing)?.id, 'private-mark');
+  assert.equal(post(`NODE_USE_ENV_PROXY=$X node bin/yokoten.ts ${comment}`, allowing)?.id, 'private-mark');
+});
+
 test('reading a pipe at the end stays linear (#498)', () => {
   const body = join(postDir, 'piped.md');
   writeFileSync(body, 'All clean.\n');

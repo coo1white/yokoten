@@ -1109,7 +1109,9 @@ const PLAIN_WORD = /^[A-Za-z0-9_ \t./:,=+@%-]$/;
 
 /**
  * Whether the command line is one gh post and nothing else (#447): `gh …`, or the bot's
- * `yokoten bot -- gh …`, optionally after one plain `cd <folder> &&`. Outside quotes only
+ * `yokoten bot -- gh …`, optionally after one plain `cd <folder> &&`. Before it, only
+ * NODE_USE_ENV_PROXY, GH_REPO or GH_HOST may be set, to a plain value (#498); GH_REPO and
+ * GH_HOST name another target, so namesTarget still keeps the allow. Outside quotes only
  * letters, digits, spaces and `_ . / : , = + @ % -` are trusted, plus one here-string or
  * one heredoc whose end word is a name in single quotes (`<<'EOF'` or `<<-'EOF'`). Bash
  * expands nothing in that body, and the body ends at the first line that is the name alone.
@@ -1123,7 +1125,7 @@ export function lonePost(command: string): { cd: boolean; target?: string } | nu
   let text = trimStart(command, ' \t');
   const cd = text.match(/^cd[ \t]+('[^'\n]*'|"[^"$`\\\n]*"|~?[\w./+@%:,=-]+|~)[ \t]*&&[ \t]*/);
   if (cd) text = text.slice(cd[0].length);
-  const start = text.match(/^(?:(?:node[ \t]+)?(?:~?[\w./+@%:-]*\/)?yokoten(?:\.ts|\.mjs|\.js)?[ \t]+bot[ \t]+--[ \t]+)?gh[ \t]/);
+  const start = text.match(/^(?:(?:NODE_USE_ENV_PROXY|GH_REPO|GH_HOST)=[\w./:@-]*[ \t]+)*(?:(?:node[ \t]+)?(?:~?[\w./+@%:-]*\/)?yokoten(?:\.ts|\.mjs|\.js)?[ \t]+bot[ \t]+--[ \t]+)?gh[ \t]/);
   if (!start) return null;
   let quote: string | null = null;
   let heredoc: { word: string; tabs: boolean } | null = null;
