@@ -41,7 +41,7 @@ The README is also in [中文](https://github.com/yokoten-labs/yokoten/blob/v0.1
 
 - The guard runs the same checks on issues, pull requests, comments and release notes an agent posts with `gh`.
 - It reads inline text, body files and heredocs, and refuses a body file it can't be sure of, with the reason.
-- A post with a read-only pipe, such as `| tail -2`, is no longer refused.
+- A read-only pipe after a post, such as `| tail -2`, is fine: the body is still checked.
 - `yokoten bot -- gh pr create` checks the body before sending, adds the type and tier labels, and takes the linked issue's milestone.
 
 **Know where you stand**
