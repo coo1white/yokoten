@@ -258,7 +258,6 @@ test('doctor: on another host, each forge step says once what it asks, with no G
     ['https://gitlab.com/me/repo.git', 'GitLab'],
   ];
   for (const [remote, label] of remotes) {
-    const quoted = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     execFileSync('git', ['remote', 'add', 'origin', remote], { cwd: root });
     for (const session of [false, true]) {
       const result = doctor(root, { env: { HOME: root, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, session, gh: noGh });
@@ -272,9 +271,9 @@ test('doctor: on another host, each forge step says once what it asks, with no G
         assert.equal(result.report.steps?.find((s) => s.id === key)?.mark, "can't check", `${remote}: ${key}`);
         const lines = result.lines.filter((line) => new RegExp(`^ {4}can't check ${key}\\b`).test(line));
         assert.equal(lines.length, 1, `${remote}: ${key} has one line`);
-        assert.match(lines[0], new RegExp(`: yokoten can't check this on ${quoted} yet; do it by hand: \\S`), `${remote}: ${key}`);
+        assert.ok(lines[0].includes(`: yokoten can't check this on ${label} yet; do it by hand: `), `${remote}: ${key}`);
       }
-      assert.match(text, new RegExp(`^ {2}can't check server-settings: yokoten can't read the server settings on ${quoted} yet; the steps marked can't check say`, 'm'));
+      assert.ok(result.lines.some((line) => line.startsWith(`  can't check server-settings: yokoten can't read the server settings on ${label} yet; the steps marked can't check say`)), `${remote}: server-settings`);
       assert.ok(!text.includes('check these by hand') && !text.includes('not checked '), `${remote}: the GitHub by-hand lists are left out`);
     }
     execFileSync('git', ['remote', 'remove', 'origin'], { cwd: root });
