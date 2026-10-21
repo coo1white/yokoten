@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { addProjectHooks, projectHooksState, readToolCall, readTrust } from '../../../src/agents/runtimes/muse.ts';
+import { addProjectHooks, isGuardOff, projectHooksState, readToolCall, readTrust } from '../../../src/agents/runtimes/muse.ts';
 import { makeSandbox } from '../../repo/helpers.ts';
 
 /** Write Muse's trust store in `home`, in the shape Muse Code 1.4.10 saved it (#341). */
@@ -104,22 +104,31 @@ test('muse trust (#341): doctor says when Muse skips the hooks; ok only when tru
   // No Muse home: no trust line, and no claim that Muse trusts the folder.
   assert.doesNotMatch(await doctor(), /muse-hook: can't check|Muse Code skips/);
   assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'no home');
-  // A home without a store: can't check, never ok.
+  assert.match(await doctor(), /done +tool-hook\n/);
+  // A home without a store: the guard is off, and it is a step on the road (#554), not a note.
   mkdirSync(join(sandbox.home, '.config', 'muse'), { recursive: true });
-  assert.match(await doctor(), /note +muse-hook: can't check whether Muse Code trusts this folder: no ~\/\.config\/muse\/trust\.json; if you use Muse Code: run `muse` in this folder and choose "Trust and continue"/);
+  const off = /(next|to do) +tool-hook: the guard is off in Muse Code until you trust this folder; run `muse` in this folder and choose "Trust and continue", or pass `--trust-workspace` to `muse exec`/;
+  assert.match(await doctor(), off);
+  assert.doesNotMatch(await doctor(), /muse-hook: (can't check|Muse Code skips)/);
+  assert.equal(isGuardOff(root, { HOME: sandbox.home }), true);
   // The positive control: a store that trusts another folder.
   const file = trustFolder(sandbox.home, '/somewhere/else');
-  assert.match(await doctor(), /note +muse-hook: Muse Code skips \.muse\/hooks\.json until you trust this folder; run `muse` in this folder and choose "Trust and continue"/);
+  assert.match(await doctor(), off);
   // Checked with Muse 1.4.10: a trusted parent folder, or the key with a trailing slash, trusts nothing.
   trustFolder(sandbox.home, dirname(root), `${root}/`);
   assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'untrusted');
   trustFolder(sandbox.home, root);
   assert.match(await doctor(), /ok +muse-hook\n/);
+  assert.match(await doctor(), /done +tool-hook\n/);
+  assert.equal(isGuardOff(root, { HOME: sandbox.home }), false);
   // Another decision, a file that won't parse, and a schema doctor does not know: never ok.
   writeFileSync(file, JSON.stringify({ schema_version: 1, projects: { [root]: { decision: 'untrusted' } } }));
   assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'untrusted');
+  assert.match(await doctor(), off);
   writeFileSync(file, '{ not json');
   assert.match(await doctor(), /note +muse-hook: can't check whether Muse Code trusts this folder: can't read ~\/\.config\/muse\/trust\.json/);
+  assert.equal(isGuardOff(root, { HOME: sandbox.home }), false, "a store doctor can't read is a note, not a step");
+  assert.equal(isGuardOff(join(sandbox.home, 'none'), { HOME: sandbox.home }), false, 'no .muse/hooks.json, no step');
   writeFileSync(file, JSON.stringify({ schema_version: 2, projects: { [root]: { decision: 'trusted' } } }));
   assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'unreadable');
   // XDG_CONFIG_HOME moves the store: the one under ~/.config no longer counts. The note names the variable, not the path.

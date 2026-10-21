@@ -78,6 +78,21 @@ export const projectHooksState = (root: string, cli: string): { guard: HookState
 /** The one step that makes Muse run the project's hooks. */
 export const TRUST_STEP = 'run `muse` in this folder and choose "Trust and continue"';
 
+/** The fix when the guard is off: both ways to trust a folder (#554). */
+export const TRUST_FIX = `${TRUST_STEP}, or pass \`--trust-workspace\` to \`muse exec\``;
+
+/**
+ * Whether the project's Muse guard is off because the folder is not trusted (#554). True
+ * when .muse/hooks.json is there and Muse's trust store does not list the folder, or is not
+ * there at all. False when Muse looks unused on this machine (no config folder), or when the
+ * store can't be read: doctor can't tell, and says so as a note.
+ */
+export function isGuardOff(root: string, env: Env): boolean {
+  if (!existsSync(projectHooks(root))) return false;
+  const { state } = readTrust(root, env);
+  return state === 'untrusted' || state === 'no store';
+}
+
 /** Whether Muse trusts the project at `root`, from its trust store. Read-only. */
 export function readTrust(root: string, env: Env): FolderTrust {
   const store = env.XDG_CONFIG_HOME ? '$XDG_CONFIG_HOME/muse/trust.json' : '~/.config/muse/trust.json';
