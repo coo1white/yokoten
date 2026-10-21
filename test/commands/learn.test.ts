@@ -23,36 +23,37 @@ import {
   makeSandbox,
 } from '../repo/helpers.ts';
 
-test('changelog: previews the change files, and --write moves them into CHANGELOG.md (#132)', () => {
+test('changelog: previews the change files, and --write moves them into CHANGELOG.md (#132)', async () => {
   const sandbox = makeSandbox();
-  let result = sandbox.run(['changelog']);
+  // The entry, through the real binary; the rest runs in this process.
+  let result: Pick<ReturnType<typeof sandbox.run>, 'status' | 'stdout' | 'stderr'> = sandbox.run(['changelog']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /no change files in changes\//);
   sandbox.write('CHANGELOG.md', '# Changelog\n\n## [Unreleased]\n\n## [0.1.0] - 2026-10-18\n\n### Added\n\n- The first release.\n');
   sandbox.write('changes/README.md', '# Change files\n');
   sandbox.write('changes/2-b.md', 'Fixed\n\nA fix.\n');
   sandbox.write('changes/1-a.md', 'Added\n\nA thing.\n');
-  result = sandbox.run(['changelog']);
+  result = await sandbox.call(['changelog']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /2 change\(s\); `--write` adds these under \[Unreleased\] in CHANGELOG\.md:\n\n### Added\n\n- A thing\.\n\n### Fixed\n\n- A fix\.\n$/);
   assert.ok(existsSync(join(sandbox.repo, 'changes/1-a.md')), 'a preview writes nothing');
   // A bad file stops the write, and says so on stderr.
   sandbox.write('changes/3-c.md', 'Added\n');
-  result = sandbox.run(['changelog', '--write']);
+  result = await sandbox.call(['changelog', '--write']);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /1 problem\(s\); nothing was written:\n- changes\/3-c\.md:1: no entry after the section/);
   rmSync(join(sandbox.repo, 'changes/3-c.md'));
-  result = sandbox.run(['changelog', '--write']);
+  result = await sandbox.call(['changelog', '--write']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /wrote 2 change\(s\) under \[Unreleased\] in CHANGELOG\.md, and deleted:\n- changes\/1-a\.md\n- changes\/2-b\.md/);
   assert.equal(readFileSync(join(sandbox.repo, 'CHANGELOG.md'), 'utf8'), '# Changelog\n\n## [Unreleased]\n\n### Added\n\n- A thing.\n\n### Fixed\n\n- A fix.\n\n## [0.1.0] - 2026-10-18\n\n### Added\n\n- The first release.\n');
   assert.deepEqual(readdirSync(join(sandbox.repo, 'changes')), ['README.md']);
-  assert.equal(sandbox.run(['changelog', '--wrote']).status, 1, 'an unknown option is refused');
+  assert.equal((await sandbox.call(['changelog', '--wrote'])).status, 1, 'an unknown option is refused');
 });
 
 // #77: `learn` turns an incident issue into a check draft. A fake gh first on PATH gives the
 // issue; the real gh and GitHub are never reached.
-test('learn: previews a check draft from an incident, writes it with --write, and never overwrites', () => {
+test('learn: previews a check draft from an incident, writes it with --write, and never overwrites', async () => {
   const sandbox = makeSandbox();
   const bin = join(sandbox.home, 'bin');
   mkdirSync(bin);
@@ -60,23 +61,24 @@ test('learn: previews a check draft from an incident, writes it with --write, an
   writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nif (process.argv[4] !== '7') { console.error('no such issue'); process.exit(1); }\nconsole.log(${JSON.stringify(JSON.stringify(issue))});\n`);
   chmodSync(join(bin, 'gh'), 0o755);
   const extra = { PATH: `${bin}:${process.env.PATH}` };
-  let result = sandbox.run(['learn', '7'], { extra });
+  // The entry, through the real binary, with the fake gh on its PATH; the rest runs in this process.
+  let result: Pick<ReturnType<typeof sandbox.run>, 'status' | 'stdout' | 'stderr'> = sandbox.run(['learn', '7'], { extra });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^yokoten learn: a check draft from issue #7, "repo: a test fails behind a proxy"\.\nThe issue left 1 field\(s\) open, each a TODO\(reviewer\):\n- why: the issue has no "Why it matters" section\nThe reviewer also writes the check \(findProblems\) and the cases in its test, each a TODO\(reviewer\) too\.\n/);
   assert.match(result.stdout, /\n--- lessons\/incident-7\/lesson\.ts\n[^]*fix: 'the test sets NO_PROXY',[^]*\n--- lessons\/incident-7\/lesson\.test\.ts\n/);
   assert.match(result.stdout, /Nothing was written\. `yokoten learn 7 --write` adds these files for review\.\n$/);
   assert.ok(!existsSync(join(sandbox.repo, 'lessons')), 'a preview writes nothing');
-  result = sandbox.run(['learn', '7', '--write'], { extra });
+  result = await sandbox.call(['learn', '7', '--write'], { extra });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Wrote:\n- lessons\/incident-7\/lesson\.ts\n- lessons\/incident-7\/lesson\.test\.ts\nReview the draft/);
   assert.ok(!/--- lessons/.test(result.stdout), '--write lists the files, not their text');
   assert.match(readFileSync(join(sandbox.repo, 'lessons/incident-7/lesson.ts'), 'utf8'), /id: 'incident-7',/);
-  result = sandbox.run(['learn', '7', '--write'], { extra });
+  result = await sandbox.call(['learn', '7', '--write'], { extra });
   assert.match(result.stdout, /Kept, already there:\n- lessons\/incident-7\/lesson\.ts\n/);
-  result = sandbox.run(['learn', '8'], { extra });
+  result = await sandbox.call(['learn', '8'], { extra });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /^yokoten learn: gh can't read issue 8 \(no such issue\)/);
-  result = sandbox.run(['learn'], { extra });
+  result = await sandbox.call(['learn'], { extra });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /name an incident issue/);
 });
@@ -95,6 +97,7 @@ test('lessons: learn, write the check, ship, then doctor in a second repo shows 
   const issue = { number: 9, title: 'repo: a .env file was committed', body: '## What happened\n\nA .env file reached main.\n\n## Why it matters\n\nA .env file can hold a secret.\n\n## Fix\n\nRemove it, and add it to .gitignore.\n', url: 'https://example.com/issues/9', labels: [{ name: 'incident' }] };
   writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nconsole.log(${JSON.stringify(JSON.stringify(issue))});\n`);
   chmodSync(join(bin, 'gh'), 0o755);
+  // Both stay child processes: they run other copies of yokoten (this one and .yokoten/), not this code.
   const cli = join(yokoten, 'bin', 'yokoten.ts');
   const runCopy = (args: string[], cwd: string, extra: Record<string, string> = {}) => spawnSync('node', [cli, ...args], { cwd, env: { ...sandbox.env, PATH: `${bin}:${process.env.PATH}`, ...extra }, encoding: 'utf8' });
 
@@ -144,7 +147,7 @@ test('lessons: learn, write the check, ship, then doctor in a second repo shows 
 
 // #392: `learn --upstream` from a project, run as a person would. The note names neither
 // the project nor the home folder; a token is refused; --list and --done read the inbox.
-test('learn --upstream: keeps a note with the project hidden, refuses a token, and lists and removes notes', () => {
+test('learn --upstream: keeps a note with the project hidden, refuses a token, and lists and removes notes', async () => {
   const sandbox = makeSandbox();
   const project = join(sandbox.home, 'work', 'acme-app');
   mkdirSync(project, { recursive: true });
@@ -154,16 +157,16 @@ test('learn --upstream: keeps a note with the project hidden, refuses a token, a
   spawnSync('git', ['remote', 'add', 'origin', 'https://gitlab.com/acme-group/acme-sub/acme-app.git'], { cwd: project, env: sandbox.env });
   mkdirSync(join(sandbox.home, '.config', 'gh'), { recursive: true });
   writeFileSync(join(sandbox.home, '.config', 'gh', 'hosts.yml'), 'github.com:\n    user: octo-jane\n');
-  const run = (args: string[]) => sandbox.run(['learn', '--upstream', ...args], { cwd: project });
+  const upstream = (args: string[]) => sandbox.call(['learn', '--upstream', ...args], { cwd: project });
   const inbox = join(sandbox.home, '.config', 'yokoten', 'upstream');
   // An empty home: nothing waits, and the inbox is made on the first note.
-  let result = run(['--list']);
+  let result = await upstream(['--list']);
   assert.deepEqual([result.status, result.stdout], [0, 'yokoten learn --upstream: no lessons wait; the inbox is empty.\n']);
-  result = run([`In ${project}/src/a.ts the hook for AcmeApp missed a case; log in ${join(sandbox.home, 'log.txt')}`, '--area', 'hook', '--fix', 'match acme_app flags too']);
-  const owners = run(['octo-jane saw acme-group and acme-sub in the URL']);
+  result = await upstream([`In ${project}/src/a.ts the hook for AcmeApp missed a case; log in ${join(sandbox.home, 'log.txt')}`, '--area', 'hook', '--fix', 'match acme_app flags too']);
+  const owners = await upstream(['octo-jane saw acme-group and acme-sub in the URL']);
   assert.equal(owners.status, 0, owners.stderr);
   assert.match(owners.stdout, /\n  <owner> saw <owner> and <owner> in the URL\n/);
-  assert.equal(run(['--done', /kept note (\S+) in/.exec(owners.stdout)?.[1] ?? '']).status, 0);
+  assert.equal((await upstream(['--done', /kept note (\S+) in/.exec(owners.stdout)?.[1] ?? ''])).status, 0);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^yokoten learn --upstream: kept note (\d{8}-\d{6}-[0-9a-f]{4}) in ~\/\.config\/yokoten\/upstream, outside every repo\. It reads:\n  In <project>\/src\/a\.ts the hook for <project> missed a case; log in ~\/log\.txt\n  fix idea: match <project> flags too\n/);
   const [file] = readdirSync(inbox);
@@ -173,45 +176,45 @@ test('learn --upstream: keeps a note with the project hidden, refuses a token, a
   assert.ok(!text.includes('acme') && !text.includes(sandbox.home), 'neither the name nor the path is kept');
   // A token: refused by kind, the value never printed, nothing written.
   const token = `ghp_${'b'.repeat(36)}`;
-  result = run([`the guard printed ${token}`]);
+  result = await upstream([`the guard printed ${token}`]);
   assert.equal(result.status, 1);
   assert.equal(result.stderr, 'yokoten learn --upstream: the note was not kept, because it holds a secret (GitHub token). Say what happened without it, and try again.\n');
   assert.ok(!result.stdout.includes(token) && !result.stderr.includes(token));
   assert.equal(readdirSync(inbox).length, 1);
   // --area takes a known area; a note needs words.
-  assert.match(run(['x', '--area', 'nope']).stderr, /--area is one of: doctor, check, hook/);
-  assert.match(run([]).stderr, /say what happened, in a few words/);
-  assert.match(sandbox.run(['learn', '--list'], { cwd: project }).stderr, /--list goes with --upstream/);
-  result = run(['--list']);
+  assert.match((await upstream(['x', '--area', 'nope'])).stderr, /--area is one of: doctor, check, hook/);
+  assert.match((await upstream([])).stderr, /say what happened, in a few words/);
+  assert.match((await sandbox.call(['learn', '--list'], { cwd: project })).stderr, /--list goes with --upstream/);
+  result = await upstream(['--list']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, new RegExp(`^yokoten learn --upstream: 1 lesson waits to become an issue in the yokoten repo:\\n- ${id} \\(\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d UTC, part: hook\\): In <project>/src/a\\.ts [^\\n]*\\n  fix idea: match <project> flags too\\nOpen an issue for each, then remove its note: yokoten learn --upstream --done <id>\\n$`));
-  result = run(['--done', id]);
+  result = await upstream(['--done', id]);
   assert.deepEqual([result.status, result.stdout], [0, `yokoten learn --upstream: removed note ${id}.\n`]);
-  result = run(['--done', id]);
+  result = await upstream(['--done', id]);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /there is no note/);
   assert.deepEqual(readdirSync(inbox), []);
 });
 
 // #392: no error repeats what was typed, and options that don't fit together are refused.
-test('learn --upstream: errors never repeat the words typed', () => {
+test('learn --upstream: errors never repeat the words typed', async () => {
   const sandbox = makeSandbox();
-  const run = (args: string[]) => sandbox.run(['learn', '--upstream', ...args]);
-  let result = run(['--done', '../acme-secret']);
+  const upstream = (args: string[]) => sandbox.call(['learn', '--upstream', ...args]);
+  let result = await upstream(['--done', '../acme-secret']);
   assert.equal(result.status, 1);
   assert.equal(result.stderr, 'yokoten learn: that is not a note id; see the ids with `yokoten learn --upstream --list`. Run `yokoten learn --help`.\n');
-  result = run(['--done', '20261020-120000-abcd']);
+  result = await upstream(['--done', '20261020-120000-abcd']);
   assert.equal(result.status, 1);
   assert.doesNotMatch(result.stderr, /20261020/);
-  result = run(['first part', 'acme-secret second part']);
+  result = await upstream(['first part', 'acme-secret second part']);
   assert.equal(result.status, 1);
   assert.doesNotMatch(result.stderr, /acme-secret/);
   assert.match(result.stderr, /give what happened as one argument, in quotes/);
-  result = run(['-acme-secret']);
+  result = await upstream(['-acme-secret']);
   assert.equal(result.status, 1);
   assert.doesNotMatch(result.stderr, /acme-secret/);
   for (const extra of [['--list', '--area', 'hook'], ['--done', '20261020-120000-abcd', '--fix', 'x']]) {
-    result = run(extra);
+    result = await upstream(extra);
     assert.equal(result.status, 1, extra.join(' '));
     assert.match(result.stderr, /goes with a new note, not with --(list|done)/);
   }
@@ -223,6 +226,7 @@ test('learn --upstream: an empty or missing HOME never writes into the repo', ()
   const sandbox = makeSandbox();
   const noHome: Record<string, string | undefined> = { ...sandbox.env };
   delete noHome.HOME;
+  // A child process: only the CLI entry falls back to the system home when HOME is empty or unset (#356).
   const runWith = (env: Record<string, string | undefined>, args: string[]) => spawnSync('node', [CLI, 'learn', '--upstream', ...args], { cwd: sandbox.repo, env, encoding: 'utf8' });
   for (const env of [{ ...sandbox.env, HOME: '' }, noHome]) {
     assert.equal(runWith(env, ['--list']).status, 0);

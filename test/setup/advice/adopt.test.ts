@@ -34,18 +34,19 @@ const GOOD = [
   { key: 'codeowners', decision: 'not-now', reason: 'One person; look again at the first outside contributor.' },
 ];
 
-test('adopt: with no key, the rule-based draft and how to set the key; it changes no file (#6)', () => {
+test('adopt: with no key, the rule-based draft and how to set the key; it changes no file (#6)', async () => {
   const sandbox = makeSandbox();
   sandbox.write('CLAUDE.md', '# rules\n');
   sandbox.write('package.json', JSON.stringify({ scripts: { test: 'node --test' } }));
   const before = sandbox.git('status', '--porcelain', '--ignored').stdout;
+  // The entry, through the real binary; the rest runs in this process.
   const r = sandbox.run(['adopt']);
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /^\| Practice \| The project today \| Draft \| Why \|/);
   assert.match(r.stdout, /\| rules \| partial: no AGENTS\.md, but CLAUDE\.md \| lighter \|/);
   assert.match(r.stdout, /set MODEL_API_KEY \(or LLAMA_API_KEY\)/);
   assert.match(r.stdout, /You decide every row/);
-  const json = sandbox.run(['adopt', '--json']);
+  const json = await sandbox.call(['adopt', '--json']);
   const rows = JSON.parse(json.stdout) as { key: string; decision: string }[];
   assert.equal(rows.find((row) => row.key === 'tests')?.decision, 'as-is');
   assert.match(json.stderr, /drafted by rules/);
