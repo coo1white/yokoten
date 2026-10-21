@@ -5,11 +5,14 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
   appendFileSync,
+  chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import {
@@ -19,6 +22,7 @@ import {
 import { test } from 'node:test';
 import {
   at,
+  CLI,
   makeSandbox,
   makeTranslatedRepo,
 } from '../repo/helpers.ts';
@@ -946,4 +950,225 @@ test('check --staged: reads 5,000 staged files in full, past the default buffer 
   // All 5,000 were read: the layout rule counts every one of them.
   assert.deepEqual(report.findings.map((f: { id: string }) => f.id), ['layout']);
   assert.match(report.findings[0].what, /^5000 entries, over the cap of 7/);
+});
+
+// The machine allows a mark for one repo (#447): neither repo has yokoten.json, and the
+// allow is kept beside the marks file, keyed by the origin remote. The allowing repo's check
+// and commit hook pass; another repo with the same marks is stopped; a renamed remote, two
+// matching entries and the way back all stop it again. No output holds the mark.
+test('marks allow --here: the machine allows a mark in one repo with no yokoten.json, and only there (#447)', () => {
+  const own = makeSandbox();
+  const other = makeSandbox();
+  const marks = join(own.home, 'shared-marks');
+  writeFileSync(marks, 'quietvale\nquietvale labs\n');
+  const extra = { YOKOTEN_PRIVATE_MARKS: marks };
+  const allowFile = join(own.home, 'private-marks-allow.json');
+  const said: string[] = [];
+  const run = (sandbox: ReturnType<typeof makeSandbox>, args: string[]) => {
+    const r = sandbox.run(args, { extra });
+    said.push(r.stdout, r.stderr);
+    return r;
+  };
+  const commit = (sandbox: ReturnType<typeof makeSandbox>, message: string) => {
+    const r = spawnSync('git', ['commit', '-qm', message], { cwd: sandbox.repo, env: { ...sandbox.env, ...extra }, encoding: 'utf8' });
+    said.push(r.stdout, r.stderr);
+    return r;
+  };
+  for (const [sandbox, remote] of [[own, 'https://someone@Example.COM/octo/app.git'], [other, 'git@example.com:octo/other.git']] as const) {
+    sandbox.git('remote', 'add', 'origin', remote);
+    sandbox.write('README.md', 'QuietVale ships\n');
+    // The commit hook, as a project with no yokoten.json may run it by hand.
+    sandbox.write('.git/hooks/pre-commit', `#!/bin/sh\nexec node "${CLI}" check --staged\n`);
+    chmodSync(join(sandbox.repo, '.git/hooks/pre-commit'), 0o755);
+    sandbox.git('add', 'README.md');
+  }
+
+  // Only a mark in the marks file can be allowed; the refusal never echoes a mark.
+  const refused = run(own, ['marks', 'allow', 'quietval', '--here']);
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /not a line of your private-marks file/);
+  assert.equal(existsSync(allowFile), false, 'a refused allow writes nothing');
+  assert.equal(run(own, ['marks', 'allow', 'quietvale']).status, 1, '--here is needed');
+  assert.equal(run(own, ['marks', 'allow', 'quietvale', 'extra', '--here']).status, 1);
+
+  const allowed = run(own, ['marks', 'allow', 'QuietVale', '--here']);
+  assert.equal(allowed.status, 0, allowed.stderr);
+  assert.match(allowed.stdout, /allowed in this repo only/);
+  assert.deepEqual(JSON.parse(readFileSync(allowFile, 'utf8')), { repos: [{ remote: 'example.com/octo/app', allow: ['quietvale'] }] });
+  assert.equal(existsSync(join(own.repo, 'yokoten.json')), false, 'the repo still has no yokoten.json');
+  assert.equal(own.git('status', '--porcelain', '--untracked-files=all').stdout.trim(), 'A  README.md', 'nothing is written into the repo');
+  assert.equal(run(own, ['marks', 'allow', 'quietvale', '--here']).status, 0, 'a second allow changes nothing');
+
+  for (const args of [['check'], ['check', '--staged']]) {
+    assert.equal(run(own, args).status, 0, `${args.join(' ')} in the repo the machine allows it in`);
+    const stopped = run(other, args);
+    assert.equal(stopped.status, 1, `${args.join(' ')} in the other repo`);
+    assert.match(stopped.stderr, /README\.md:1: matches a line of your private-marks file/);
+  }
+  const doctor = run(own, ['doctor']).stdout;
+  assert.match(doctor, /own-marks: 1 of your private marks allowed here by this machine/);
+  assert.doesNotMatch(doctor, /by privacy\.allow/);
+  assert.doesNotMatch(run(other, ['doctor']).stdout, /own-marks/);
+  assert.equal(commit(own, 'start').status, 0, 'the commit hook lets the allowed repo commit');
+  assert.notEqual(commit(other, 'start').status, 0, 'the commit hook stops the other repo');
+
+  // The longer mark is not allowed by the shorter one.
+  own.write('README.md', 'QuietVale Labs ships\n');
+  own.git('add', 'README.md');
+  assert.equal(run(own, ['check', '--staged']).status, 1);
+  own.write('README.md', 'QuietVale ships, again\n');
+  own.git('add', 'README.md');
+
+  // A renamed remote is another repo: no longer allowed.
+  own.git('remote', 'set-url', 'origin', 'https://example.com/octo/renamed.git');
+  assert.equal(run(own, ['check', '--staged']).status, 1, 'a renamed remote is stopped');
+  own.git('remote', 'set-url', 'origin', 'https://example.com/octo/app');
+
+  // Two entries for the same repo: unsure, so nothing is allowed, and doctor says why.
+  const kept = readFileSync(allowFile, 'utf8');
+  writeFileSync(allowFile, JSON.stringify({ repos: [{ remote: 'example.com/octo/app', allow: ['quietvale'] }, { remote: 'EXAMPLE.com/octo/app', allow: ['quietvale'] }] }));
+  assert.equal(run(own, ['check', '--staged']).status, 1, 'two matching entries allow nothing');
+  assert.match(run(own, ['doctor']).stdout, /own-marks: this machine allows no private mark here, because two entries in this machine's allow file match this repo/);
+  assert.equal(run(own, ['marks', 'allow', 'quietvale', '--here']).status, 1, 'and the command will not guess which to change');
+  writeFileSync(allowFile, kept);
+  assert.equal(run(own, ['check', '--staged']).status, 0);
+
+  // The way back: the mark is stopped here again, and the entry is gone.
+  const removed = run(own, ['marks', 'allow', '--remove', 'quietvale', '--here']);
+  assert.equal(removed.status, 0, removed.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(allowFile, 'utf8')), { repos: [] });
+  assert.equal(run(own, ['check', '--staged']).status, 1);
+  assert.notEqual(commit(own, 'again').status, 0, 'the commit hook stops it again');
+  assert.match(run(own, ['marks', 'allow', '--remove', 'quietvale', '--here']).stdout, /not allowed here, so nothing changed/);
+
+  assert.ok(!said.some((text) => /quietval/i.test(text)), 'no output holds a mark');
+});
+
+test('check and doctor: a mark that names the repo is skipped there, counted by doctor, and privacy.skipOwnName turns it off (#447)', () => {
+  const own = makeSandbox();
+  const stranger = makeSandbox();
+  const marks = join(own.home, 'shared-marks');
+  writeFileSync(marks, 'quiet vale\nsecondmark\n');
+  const extra = { YOKOTEN_PRIVATE_MARKS: marks };
+  const said: string[] = [];
+  const run = (sandbox: ReturnType<typeof makeSandbox>, args: string[], more: Record<string, string> = {}) => {
+    const r = sandbox.run(args, { extra: { ...extra, ...more } });
+    said.push(r.stdout, r.stderr);
+    return r;
+  };
+  for (const [sandbox, remote] of [[own, 'https://example.com/octo/quiet-vale.git'], [stranger, 'https://github.com/stranger/other']] as const) {
+    sandbox.git('remote', 'add', 'origin', remote);
+    sandbox.write('README.md', 'Quiet Vale ships\n');
+    sandbox.git('add', 'README.md');
+  }
+  for (const args of [['check'], ['check', '--staged']]) assert.equal(run(own, args).status, 0, `${args.join(' ')} in the repo the mark names`);
+  const doctor = run(own, ['doctor']).stdout;
+  assert.match(doctor, /own-marks: 1 of your private marks skipped here because they name this repo/);
+
+  // CI's repo name is not read: a checkout whose origin is stranger/other is stopped, faked or not.
+  const ci = { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'octo/quiet-vale' };
+  for (const args of [['check'], ['check', '--staged']]) assert.equal(run(stranger, args, ci).status, 1, `${args.join(' ')} with a faked CI repo`);
+  assert.doesNotMatch(run(stranger, ['doctor']).stdout, /own-marks/);
+
+  // The way back: off in yokoten.json looks for the mark again, and doctor no longer counts it.
+  own.write('yokoten.json', JSON.stringify({ privacy: { skipOwnName: false } }));
+  assert.equal(run(own, ['check', '--staged']).status, 1, 'off: stopped');
+  assert.doesNotMatch(run(own, ['doctor']).stdout, /name this repo/);
+  own.write('yokoten.json', JSON.stringify({ privacy: { skipOwnName: true } }));
+  assert.equal(run(own, ['check', '--staged']).status, 0, 'on again');
+  assert.match(run(own, ['doctor']).stdout, /own-marks: 1 of your private marks skipped here because they name this repo/);
+
+  // The machine's switch, kept when `marks allow` writes the file.
+  const allowFile = join(own.home, 'private-marks-allow.json');
+  // The switch alone, with no repos key, as the guide shows it: read as no repos.
+  writeFileSync(allowFile, JSON.stringify({ skipOwnName: false }));
+  assert.equal(run(own, ['check', '--staged']).status, 1, 'off on this machine');
+  const switchedOff = run(own, ['doctor']).stdout;
+  assert.doesNotMatch(switchedOff, /name this repo/);
+  assert.doesNotMatch(switchedOff, /allow file/, 'doctor reads the switch alone as a good file');
+  assert.equal(run(own, ['marks', 'allow', 'secondmark', '--here']).status, 0);
+  assert.deepEqual(JSON.parse(readFileSync(allowFile, 'utf8')), { skipOwnName: false, repos: [{ remote: 'example.com/octo/quiet-vale', allow: ['secondmark'] }] }, 'marks allow keeps the switch and writes both keys');
+  rmSync(allowFile);
+  assert.equal(run(own, ['check', '--staged']).status, 0, 'on again with no allow file');
+
+  assert.ok(!said.some((text) => /quiet vale|secondmark/i.test(text)), 'no output holds a mark');
+});
+
+test('marks allow --here: a repo with no origin gets no machine allow; a held lock and a dangling link are refused (#447)', () => {
+  const sandbox = makeSandbox();
+  const config = join(sandbox.home, '.config', 'yokoten');
+  mkdirSync(config, { recursive: true });
+  writeFileSync(join(config, 'private-marks'), 'quietvale\n');
+  const allowFile = join(config, 'private-marks-allow.json');
+  sandbox.write('README.md', 'QuietVale ships\n');
+  sandbox.git('add', 'README.md');
+  const none = sandbox.run(['marks', 'allow', 'quietvale', '--here']);
+  assert.equal(none.status, 1);
+  assert.match(none.stderr, /because this repo has no origin remote\. .*"privacy\.allow" in yokoten\.json/);
+  assert.equal(existsSync(allowFile), false);
+  sandbox.git('remote', 'add', 'origin', 'https://example.com/octo/app');
+  // A lock another run holds: refused, and the file is not made.
+  writeFileSync(`${allowFile}.lock`, '');
+  const busy = sandbox.run(['marks', 'allow', 'quietvale', '--here']);
+  assert.equal(busy.status, 1);
+  assert.match(busy.stderr, /another `yokoten marks` is changing the allow file/);
+  assert.equal(existsSync(allowFile), false);
+  // A lock left by a run that died is taken over.
+  const old = new Date(Date.now() - 60_000);
+  utimesSync(`${allowFile}.lock`, old, old);
+  const taken = sandbox.run(['marks', 'allow', 'quietvale', '--here']);
+  assert.equal(taken.status, 0, taken.stderr);
+  assert.equal(existsSync(`${allowFile}.lock`), false, 'the lock is released');
+  assert.equal(sandbox.run(['check']).status, 0);
+  // A link to nothing: refused, and the link is left as it is.
+  rmSync(allowFile);
+  symlinkSync(join(sandbox.home, 'gone.json'), allowFile);
+  const dangling = sandbox.run(['marks', 'allow', 'quietvale', '--here']);
+  assert.equal(dangling.status, 1);
+  assert.match(dangling.stderr, /a link to a file that is not there/);
+  assert.doesNotMatch(dangling.stderr, /gone\.json/);
+  assert.ok(lstatSync(allowFile).isSymbolicLink());
+  assert.equal(sandbox.run(['check']).status, 1, 'a dangling link allows nothing');
+  assert.match(sandbox.run(['doctor']).stdout, /own-marks: this machine allows no private mark here, because this machine's allow file can't be read/);
+});
+
+test('marks allow: no mark is echoed, -- takes a mark that starts with -, a linked file stays a link, and a failed save says so plainly (#447)', () => {
+  const sandbox = makeSandbox();
+  const config = join(sandbox.home, '.config', 'yokoten');
+  mkdirSync(config, { recursive: true });
+  writeFileSync(join(config, 'private-marks'), 'quietvale\n-quietvale\n');
+  sandbox.git('remote', 'add', 'origin', 'https://example.com/octo/app');
+  const said: string[] = [];
+  const run = (args: string[]) => {
+    const r = sandbox.run(args);
+    said.push(r.stdout, r.stderr);
+    return r;
+  };
+  const unknown = run(['marks', 'allow', '--quietvale', '--here']);
+  assert.equal(unknown.status, 1);
+  assert.match(unknown.stderr, /an unknown option; to give a mark that starts with -, put it after --/);
+  // The allow file is a link to a file elsewhere: the link is kept, and the file it names changes.
+  const real = join(sandbox.home, 'kept', 'allow.json');
+  mkdirSync(dirname(real));
+  writeFileSync(real, '{"repos": []}\n');
+  symlinkSync(real, join(config, 'private-marks-allow.json'));
+  const dashed = run(['marks', 'allow', '--here', '--', '-quietvale']);
+  assert.equal(dashed.status, 0, dashed.stderr);
+  assert.ok(lstatSync(join(config, 'private-marks-allow.json')).isSymbolicLink(), 'the link is kept');
+  assert.deepEqual(JSON.parse(readFileSync(real, 'utf8')).repos[0].allow, ['-quietvale']);
+  assert.equal(run(['marks', 'allow', '--remove', '--here', '--', '-quietvale']).status, 0);
+  assert.deepEqual(JSON.parse(readFileSync(real, 'utf8')).repos, []);
+  // A folder that can't be written: one plain line, no path.
+  rmSync(join(config, 'private-marks-allow.json'));
+  chmodSync(config, 0o500);
+  try {
+    const failed = run(['marks', 'allow', 'quietvale', '--here']);
+    if (process.getuid?.() !== 0) {
+      assert.equal(failed.status, 1);
+      assert.doesNotMatch(failed.stderr, /\.config|allow\.json|\/tmp/);
+    }
+  } finally {
+    chmodSync(config, 0o700);
+  }
+  assert.ok(!said.some((text) => /quietval/i.test(text)), 'no output holds a mark');
 });

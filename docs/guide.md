@@ -765,6 +765,7 @@ It puts three safe defaults in `.github/` too:
 | `check --pr <number>` | The same check for one pull request, read through `gh`, for a repo without CI. See [A private repo without CI](#a-private-repo-without-ci) |
 | `check --issue` | In CI: the issue's title. See [Issue titles](#issue-titles) |
 | `redact` | Reads text on stdin and writes it with your details hidden: `<owner>`, `<email>`, `<host>`, `<mark>`. The tool-call guard sends risky commands through it. See [Privacy](#privacy) |
+| `marks allow <mark> --here` | Lets one of your private marks through in this repo only, with no yokoten.json. The allow is kept on this machine, never in the repo. `--remove` takes it back. See [Privacy](#privacy) |
 | `changelog [--write]` | Shows the entries the files in `changes/` add under `[Unreleased]`. `--write` puts them into `CHANGELOG.md` and deletes the files; run it before a release. See [The changelog](#the-changelog) |
 | `learn <issue> [--write]` | Drafts a check from an incident issue, for a person to review. `--write` adds the files in `lessons/`. See [Learning from an incident](#learning-from-an-incident) |
 | `learn --ship <id>` | In yokoten: moves a reviewed lesson into a group in `kit/lessons/`, where `doctor` from that yokoten runs it in every project. Refused while a `TODO(reviewer)` is left or its test fails |
@@ -961,7 +962,7 @@ missing key, a key set to `null`, or a missing file gives the default.
 | `layout` | `{ "maxEntries": 7, "exempt": ["docs/records"] }`: a whole number above 0, and a list of folders or globs | 7, no folder exempt |
 | `tests` | a list of globs | `*.test.*`, `*.spec.*`, `*_test.go`, `test/**`, `tests/**` |
 | `leadOnly` | a list of globs | the rules, agent config, hooks and CI |
-| `privacy` | `{ "allow": [], "skip": [], "utc": true, "output": "run" }`: two lists of text, true or false, and `"run"` or `"stop"` | lockfiles skipped, UTC on, output run |
+| `privacy` | `{ "allow": [], "skip": [], "utc": true, "output": "run", "skipOwnName": true }`: two lists of text, true or false, `"run"` or `"stop"`, and true or false | lockfiles skipped, UTC on, output run, own name skipped |
 | `notNow` | reasons by step name: `{ "ci": "no remote yet" }` | none |
 | `allowBuild` | a list of globs | none |
 | `areas` | a list of words | any lowercase word |
@@ -1265,6 +1266,7 @@ A list you set replaces the default list; it does not add to it.
 | `privacy.skip` | lock files | Files the privacy check does not read |
 | `privacy.utc` | `true` | Commit times must be in UTC |
 | `privacy.output` | `"run"` | In an agent other than Claude Code, a command that prints account details runs as it is. `"stop"` stops it and shows the filtered command |
+| `privacy.skipOwnName` | `true` | A private mark that is this repo's name is not looked for in this repo. `false` looks for it too |
 | `notNow` | none | Steps not taken up yet, by `doctor`'s name, each with a reason: `{ "ci": "no remote yet" }` |
 | `allowBuild` | none | Build output and binaries the commit check lets through |
 | `areas` | any | The areas a title may name. See [Issue titles](#issue-titles) |
@@ -1440,12 +1442,51 @@ The project's own public address, such as `support@` at its domain, is found too
 is let through on its own. If the address is public on purpose, add it to
 `privacy.allow` in yokoten.json.
 
-The marks file is for the whole machine, so a private project's name belongs in it. That
-project's own repo can still use its name: list the name in `privacy.allow` in its
-yokoten.json. A mark is let through when an entry there is the same string, upper or
+The marks file is for the whole machine, so a private project's name belongs in it. With no
+setup, a mark never blocks the repo it names: when a mark is the name of the repo's origin
+remote, `check`, the commit hook and the guard for `gh` posts skip that one mark there.
+`Quiet Vale` names `someone/quiet-vale`, `Quiet_Vale` and `quiet.vale`: case aside, and `-`,
+`_`, `.` and spaces each count as a break between words. A break is never dropped, so
+`Li Na` does not name `lina`. It must be the whole name, never a part. Every other mark still
+applies, and so does that one in every other repo. yokoten skips nothing when it can't tell the
+repo: two remotes, no origin, a post to another repo, an origin address with `?` or `#`, a
+host address whose path is not just `owner/name`, a remote helper (`ext::`, `gcrypt::` or any
+`<transport>::`), or a folder or host on this machine as origin (`localhost`, `127.x.x.x`, `::1`). Only
+origin counts; in CI too, origin is the repo the job checked out. The commit check trusts origin
+at commit time, so a later push to another remote is not checked. `doctor` says how many
+marks are skipped because they name the repo, never which. To turn this off, set
+`"privacy": { "skipOwnName": false }` in yokoten.json. For every repo on this machine, put
+`{ "skipOwnName": false }` in `private-marks-allow.json` (below); it needs no `repos` list. The steps below are for the
+cases this can't see. A project's own repo can also list the name in
+`privacy.allow` in its yokoten.json. A mark is let through when an entry there is the same string, upper or
 lower case aside; a part or a longer string does not count. It is let through only in
 that repo, by `check`, the commit hook and the guard for `gh` posts. Every other repo
 still stops it. `doctor` says how many of your marks the project allows, never which.
+
+A repo with no yokoten.json can do the same without one, and so can a repo that must not
+name yokoten in public. Run `yokoten marks allow <mark> --here` in it. The allow is kept
+on this machine, in `private-marks-allow.json` beside the marks file, for that repo only,
+by its `origin` remote (host and path). Nothing is written into the repo. A repo with no
+`origin` can't have this allow; it can use `privacy.allow` instead. A renamed remote is
+another repo, so the mark is stopped there again. A port other than the usual one is part of
+the name, and a local path is the folder it points to. `git@host:path` and
+`https://host/path` name the same repo, as the forges treat them.
+
+yokoten allows nothing when it can't be sure where a post or a push goes, and `doctor` says
+why. That is when `origin` is not the only remote, gh has a repo of its own (`gh repo
+set-default`), `remote.pushDefault` or a `branch.*.pushRemote` is set, or `origin` has fetch
+or push addresses that name different repos, as git rewrites them with `insteadOf`. It is
+also when two entries match. A `gh` post gets neither allow, this one or `privacy.allow`, when
+it may go to another repo: `-R` or `--repo`, an issue or pull request URL, `GH_REPO` or
+`GH_HOST`, and every `gh api` or `gh gist`. The post must also be the only command on the
+line. Outside quotes, only letters, digits, spaces and `_ . / : , = + @ % -` count as plain;
+any other character, such as `$`, `{`, `*`, `\`, `;` or `>`, gets no allow. Inside double quotes,
+`$`, `` ` `` and `\` get no allow; single quotes may hold anything. One heredoc is fine when its
+end word is a name in single quotes, such as `<<'EOF'`; its body may then hold anything. One `cd` within
+the same repo before it is fine. Anything else on the line could change where gh posts, so the post is
+checked against every mark. `doctor` says
+where an allow comes from: this machine or `privacy.allow`. Only a mark in the marks file can
+be allowed. To take it back, run `yokoten marks allow --remove <mark> --here`.
 
 Some files must name your account. So the forge login that yokoten added to the marks is
 fine in a CODEOWNERS owner, an `@` mention in `.github/`, an author or owner field of

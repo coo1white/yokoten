@@ -11,9 +11,10 @@
 // - Secrets: tokens and private keys, in secrets.ts. Their hits pass through scanText too,
 //   so every caller (the commit, CI, the history) catches them.
 
-import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
-import { basename, isAbsolute, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import type { Config, Env } from './config.ts';
 import { type Finding, finding, type RuleId } from './message.ts';
 import { findSecrets, makeSecretHider, SECRET } from './secrets.ts';
@@ -87,6 +88,324 @@ export function loadMarks(env: Env): string[] {
 export function ownMarks(marks: string[], allow: string[] = []): string[] {
   const allowed = new Set(allow.map((entry) => entry.toLowerCase()));
   return marks.filter((mark) => allowed.has(mark.toLowerCase()));
+}
+
+// ---- The machine's allow, for one repo (#447) ----
+// A repo with no yokoten.json, or one that must not name yokoten in public, can't use
+// "privacy.allow". The same allow is then kept on this machine, beside the marks file, for
+// one repo: the one whose origin remote an entry names. It allows marks only, never an
+// address or a secret, and it never makes a repo count as one with yokoten.json. A repo with
+// no origin gets none. Unsure allows nothing: git can't read the repo; it has a remote other
+// than origin, or gh or a push may go elsewhere (gh-resolved, remote.pushDefault,
+// branch.*.pushRemote); origin has two addresses; the file can't be read; two entries match.
+
+/** One repo's entry in the machine allow file: its normalized origin remote, and the marks allowed there. */
+export interface AllowEntry {
+  remote: string;
+  allow: string[];
+}
+
+/** The repo, as the machine allow file names it. `local` when origin is a folder on this machine, not a host. */
+export type RepoKey = { remote: string; local?: boolean };
+
+/** The machine allow file: beside the private-marks file. With no home folder, it throws NO_HOME. */
+export const machineAllowFile = (env: Env): string => join(dirname(marksFile(env)), 'private-marks-allow.json');
+
+/** The port each scheme uses when the URL names none: such a port is left out of the key. */
+const DEFAULT_PORTS: Record<string, string> = { https: '443', http: '80', ssh: '22', 'git+ssh': '22', 'ssh+git': '22', git: '9418' };
+
+/** `text` without any of `chars` at its end. A loop, so it is linear on any input. */
+function trimEnd(text: string, chars: string): string {
+  let end = text.length;
+  while (end > 0 && chars.includes(text[end - 1])) end--;
+  return text.slice(0, end);
+}
+
+/** `text` without any of `chars` at its start. */
+function trimStart(text: string, chars: string): string {
+  let start = 0;
+  while (start < text.length && chars.includes(text[start])) start++;
+  return text.slice(start);
+}
+
+/** A path with no slash and no `.git` at its end. */
+function withoutGit(path: string): string {
+  const bare = trimEnd(path, '/\\');
+  return trimEnd(bare.toLowerCase().endsWith('.git') ? bare.slice(0, -4) : bare, '/\\');
+}
+
+/** A local path as a key: absolute, links followed, against `base` when relative. Null for a relative one with no base. */
+function localKey(path: string, base?: string): string | null {
+  if (!path || (!isAbsolute(path) && !base)) return null;
+  const full = resolve(base ?? '', path);
+  // The deepest folder that exists, with links followed, then the rest: a link such as
+  // macOS's /var gives one key whether or not the path exists yet.
+  for (let head = full, rest = ''; ; rest = rest ? join(basename(head), rest) : basename(head), head = dirname(head)) {
+    try {
+      return rest ? join(realpathSync(head), rest) : realpathSync(head);
+    } catch {
+      if (dirname(head) === head) return full;
+    }
+  }
+}
+
+/**
+ * An origin remote as the machine allow file keys it: host and path, with no scheme, no
+ * user info and no `.git`. The host is lowercased and keeps a port other than its scheme's
+ * default; the path keeps its case. `git@host:path` and `ssh://host/path` give the same
+ * key, as the forges treat them. A local path (or `file://`) becomes its absolute real path,
+ * a relative one against `base`, the repo's top folder. Null when it can't be read.
+ */
+export function normalizeRemote(url: string, base?: string): string | null {
+  const split = splitRemote(url);
+  if (!split) return null;
+  return 'local' in split ? localKey(split.local, base) : hostKey(split.host, split.path);
+}
+
+/** A remote as a host and its path, or as a local path. Null when it is empty. */
+function splitRemote(url: string): { host: string; path: string } | { local: string } | null {
+  const text = url.trim();
+  if (!text || REMOTE_HELPER.test(text)) return null;
+  const scheme = text.match(/^([a-z][a-z0-9+.-]*):\/\/(.*)$/i);
+  if (scheme) {
+    const kind = scheme[1].toLowerCase();
+    const rest = scheme[2];
+    const slash = rest.indexOf('/');
+    const path = slash === -1 ? '' : rest.slice(slash);
+    if (kind === 'file') return { local: path };
+    const authority = slash === -1 ? rest : rest.slice(0, slash);
+    const hostPort = authority.slice(authority.lastIndexOf('@') + 1);
+    const colon = hostPort.lastIndexOf(':');
+    const hasPort = colon !== -1 && !hostPort.endsWith(']');
+    const host = hasPort ? hostPort.slice(0, colon) : hostPort;
+    const port = hasPort ? hostPort.slice(colon + 1) : '';
+    return { host: port && port !== DEFAULT_PORTS[kind] ? `${host}:${port}` : host, path };
+  }
+  // scp-like `user@host:path`. A path that starts with `/` or `.`, or a Windows drive, is local.
+  if (!/^[a-z]:[\\/]/i.test(text) && !/^[/.\\]/.test(text)) {
+    const scp = text.match(/^(?:[^@/]+@)?(\[[^\]/]*\]|[^:/]+):(.*)$/);
+    if (scp) return { host: scp[1], path: scp[2] };
+  }
+  return { local: text };
+}
+
+// `ext::`, `gcrypt::` and any other `<transport>::<address>`: git hands it to a remote helper, which may read it any way.
+const REMOTE_HELPER = /^[A-Za-z][\w+.-]*::/;
+
+// A host on this machine: localhost, 127.x.x.x or ::1, with or without a port. It counts as a local folder.
+const LOOPBACK_HOST = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]|::1)(?::\d+)?$/i;
+
+/**
+ * Why yokoten can't be sure which repo an origin address names, or null (#447). A `?` or
+ * `#` may hide a part of the address from the key; a host's path must be just
+ * `owner/name` (`.git` optional), or the last part may not be the repo's name.
+ */
+function unsureAddress(url: string): string | null {
+  if (REMOTE_HELPER.test(url.trim())) return 'the origin remote runs a remote helper (transport::address)';
+  if (/[?#]/.test(url)) return 'the origin remote\'s address has a ? or a #';
+  const split = splitRemote(url);
+  if (split && 'host' in split && !/^\/?[^/\\]+\/[^/\\]+$/.test(split.path)) return 'the origin remote\'s address is not just owner/name';
+  return null;
+}
+
+function hostKey(host: string, path: string): string | null {
+  const rest = trimStart(withoutGit(path), '/');
+  return host && rest ? `${host.toLowerCase()}/${rest}` : null;
+}
+
+/** A remote key as stored, with its host lowercased, so a hand-edited case still matches. */
+const storedRemote = (key: string): string => {
+  const slash = key.indexOf('/');
+  return slash <= 0 ? key : `${key.slice(0, slash).toLowerCase()}${key.slice(slash)}`;
+};
+
+
+/** What git says, trimmed, or the error with its exit status. */
+function gitAnswer(dir: string, args: string[]): { out: string } | { status: number | null } {
+  try {
+    return { out: execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }) };
+  } catch (err) {
+    return { status: (err as { status?: number | null }).status ?? null };
+  }
+}
+
+/** `url` rewritten by the longest prefix among `rules` (base → the prefixes it replaces), as git does; null when none applies. */
+function rewriteUrl(url: string, rules: [string, string][]): string | null {
+  let best: [string, string] | null = null;
+  for (const [base, prefix] of rules) if (url.startsWith(prefix) && (!best || prefix.length > best[1].length)) best = [base, prefix];
+  return best ? best[0] + url.slice(best[1].length) : null;
+}
+
+/** Why a repo gets no machine allow because it has no origin: not unsure, nothing to name it by. */
+export const NO_ORIGIN = 'this repo has no origin remote';
+
+/**
+ * The repo at `dir`, as the machine allow file keys it, or why yokoten can't tell (#447).
+ * Two git calls: the top folder, and the whole config in one read. origin must be the only
+ * remote, with no gh default (gh-resolved) and no push default elsewhere. Its fetch and push
+ * addresses, rewritten by insteadOf and pushInsteadOf as git does, must give one key.
+ */
+export function repoKey(dir: string): RepoKey | { unsure: string } | { none: string } {
+  const top = gitAnswer(dir, ['rev-parse', '--show-toplevel']);
+  const topFolder = 'out' in top ? top.out.trim() : '';
+  if (!topFolder) return { unsure: "git can't read this repo" };
+  const listed = gitAnswer(dir, ['config', '--list', '-z']);
+  if (!('out' in listed)) return { unsure: "git can't read this repo's settings" };
+  const remotes = new Set<string>();
+  const urls: string[] = [];
+  const pushUrls: string[] = [];
+  const insteadOf: [string, string][] = [];
+  const pushInsteadOf: [string, string][] = [];
+  let elsewhere: string | null = null;
+  for (const entry of listed.out.split('\0')) {
+    const cut = entry.indexOf('\n');
+    const key = cut === -1 ? entry : entry.slice(0, cut);
+    const value = cut === -1 ? '' : entry.slice(cut + 1);
+    const lower = key.toLowerCase();
+    if (lower === 'remote.pushdefault' || (lower.startsWith('branch.') && lower.endsWith('.pushremote'))) elsewhere = 'a push may go to another remote (remote.pushDefault or branch.*.pushRemote)';
+    else if (lower.startsWith('remote.') && lower.endsWith('.gh-resolved')) elsewhere = 'gh is set to a repo of its own (gh repo set-default)';
+    else if (lower.startsWith('remote.')) {
+      const last = key.lastIndexOf('.');
+      if (last > 7) remotes.add(key.slice(7, last));
+      if (lower === 'remote.origin.url') urls.push(value);
+      else if (lower === 'remote.origin.pushurl') pushUrls.push(value);
+    } else if (lower.startsWith('url.') && lower.endsWith('.insteadof')) insteadOf.push([key.slice(4, -10), value]);
+    else if (lower.startsWith('url.') && lower.endsWith('.pushinsteadof')) pushInsteadOf.push([key.slice(4, -14), value]);
+  }
+  if (elsewhere) return { unsure: elsewhere };
+  if (!remotes.has('origin')) return remotes.size ? { unsure: 'this repo has a remote other than origin' } : { none: NO_ORIGIN };
+  if (remotes.size > 1) return { unsure: 'this repo has a remote other than origin' };
+  if (!urls.length) return { unsure: "the origin remote can't be read" };
+  // Fetch addresses through insteadOf. A push goes to pushurl when set, else to the url through pushInsteadOf first.
+  const fetch = urls.map((url) => rewriteUrl(url, insteadOf) ?? url);
+  const push = pushUrls.length ? pushUrls.map((url) => rewriteUrl(url, insteadOf) ?? url) : urls.map((url) => rewriteUrl(url, pushInsteadOf) ?? rewriteUrl(url, insteadOf) ?? url);
+  const all = [...fetch, ...push];
+  for (const url of all) {
+    const why = unsureAddress(url);
+    if (why) return { unsure: why };
+  }
+  const base = localKey(topFolder) ?? topFolder;
+  const keys = new Set(all.map((url) => normalizeRemote(url, base)));
+  if (keys.has(null)) return { unsure: "the origin remote can't be read" };
+  if (keys.size !== 1) return { unsure: 'the origin remote has more than one address' };
+  const remote = [...keys][0] as string;
+  const split = splitRemote(all[0]);
+  return split && ('local' in split || LOOPBACK_HOST.test(split.host)) ? { remote, local: true } : { remote };
+}
+
+/** Why the machine allow file can't be used, in words that never quote it. */
+export const ALLOW_FILE_UNREADABLE = "this machine's allow file can't be read";
+export const ALLOW_FILE_SHAPE = "this machine's allow file is not in the shape yokoten writes";
+
+/** The entries of the machine allow file: none when it is missing or there is no home folder. */
+export function readMachineAllow(env: Env): { entries: AllowEntry[]; skipOwnName?: false } | { unsure: string } {
+  let text: string;
+  try {
+    text = readFileSync(machineAllowFile(env), 'utf8');
+  } catch (err) {
+    if ((err as Error).message === NO_HOME) return { entries: [] };
+    // Missing is none; a link to nothing is not missing: it can't be read.
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT' && !isLink(machineAllowFile(env))) return { entries: [] };
+    return { unsure: ALLOW_FILE_UNREADABLE };
+  }
+  let data: unknown;
+  try {
+    data = JSON.parse(text); // its error quotes the text, so it is never shown
+  } catch {
+    return { unsure: ALLOW_FILE_SHAPE };
+  }
+  const { repos, skipOwnName, ...other } = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+  const isEntry = (entry: unknown): entry is AllowEntry => {
+    if (!entry || typeof entry !== 'object') return false;
+    const { remote, allow, ...rest } = entry as Record<string, unknown>;
+    return typeof remote === 'string' && remote !== '' && Array.isArray(allow) && allow.every((mark) => typeof mark === 'string') && !Object.keys(rest).length;
+  };
+  // `repos` may be missing, as in a file that holds just `{ "skipOwnName": false }`: no repos.
+  const entries = repos === undefined ? [] : repos;
+  if (!data || typeof data !== 'object' || Array.isArray(data) || !Array.isArray(entries) || !entries.every(isEntry)) return { unsure: ALLOW_FILE_SHAPE };
+  if (Object.keys(other).length || (skipOwnName !== undefined && typeof skipOwnName !== 'boolean')) return { unsure: ALLOW_FILE_SHAPE };
+  return skipOwnName === false ? { entries, skipOwnName } : { entries };
+}
+
+/** Whether `path` is a symbolic link, dangling or not. */
+export function isLink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+/** The entries that name this repo's remote. */
+export function matchingEntries(entries: AllowEntry[], key: RepoKey): AllowEntry[] {
+  return entries.filter((entry) => storedRemote(entry.remote) === key.remote);
+}
+
+/** What the machine allows in one repo: the entries' marks, lowercased, or nothing and why when unsure. */
+export interface MachineAllowed {
+  allow: string[];
+  unsure: string | null;
+}
+
+/**
+ * The marks this machine allows in the repo at `dir` (#447). Nothing, with no git call,
+ * when the file is missing or empty. `dir` null (the guard can't tell where a command
+ * runs) is unsure; a repo with no origin gets nothing, and is not unsure.
+ */
+export function machineAllowed(env: Env, dir: string | null, known?: ReturnType<typeof repoKey>): MachineAllowed {
+  const read = readMachineAllow(env);
+  if ('unsure' in read) return { allow: [], unsure: read.unsure };
+  if (!read.entries.length) return { allow: [], unsure: null };
+  if (dir === null) return { allow: [], unsure: "yokoten can't tell which repo this runs in" };
+  const key = known ?? repoKey(dir);
+  if ('unsure' in key) return { allow: [], unsure: key.unsure };
+  if ('none' in key) return { allow: [], unsure: null };
+  const found = matchingEntries(read.entries, key);
+  if (found.length > 1) return { allow: [], unsure: "two entries in this machine's allow file match this repo" };
+  return { allow: (found[0]?.allow ?? []).map((mark) => mark.toLowerCase()), unsure: null };
+}
+
+/**
+ * A name as its words, so `Quiet Vale`, `quiet-vale`, `Quiet_Vale` and `quiet.vale` compare
+ * equal: case aside, and each run of `-`, `_`, `.` and spaces one separator. A separator
+ * is never taken out, so `Li Na` is not `lina`. Empty when the name has no letter or digit.
+ */
+const plainName = (name: string): string => (/[\p{L}\p{N}]/u.test(name) ? name.toLowerCase().replace(/[-_.\s]+/g, ' ') : '');
+
+/**
+ * The marks that are the name of the repo they run in, with no setup (#447, record 0014): a
+ * mark that equals the name part of the repo (the last part of its origin remote, on a host,
+ * as `owner/name`), case and separators aside (`plainName`). The whole name only, never a
+ * part: `quiet vale` is the repo `quiet-vale`, not `quiet-vale-docs`. `repo` is what
+ * `repoKey` said; unsure, no origin or a local folder as origin skip nothing.
+ */
+export function sameNameMarks(marks: string[], repo: ReturnType<typeof repoKey> | null): string[] {
+  if (!repo || !('remote' in repo) || repo.local) return [];
+  const name = plainName(repo.remote.split('/').pop() ?? '');
+  return name ? marks.filter((mark) => plainName(mark) === name) : [];
+}
+
+/**
+ * Whether a mark that names the repo is skipped there (#447, record 0014): on by default.
+ * `"privacy": { "skipOwnName": false }` in yokoten.json turns it off for one repo, and
+ * `"skipOwnName": false` in this machine's allow file for every repo here. An allow file
+ * yokoten can't read turns it off too: unsure is never fine.
+ */
+export function skipsOwnName(env: Env, privacy?: Partial<Pick<Config['privacy'], 'skipOwnName'>>): boolean {
+  if (privacy?.skipOwnName === false) return false;
+  const read = readMachineAllow(env);
+  return !('unsure' in read) && read.skipOwnName !== false;
+}
+
+/** The marks to look for in the repo at `root`: the owner's, less those the repo is named for and those the machine allows there (#447). */
+export function repoMarkKinds(env: Env, root: string, privacy?: Partial<Pick<Config['privacy'], 'skipOwnName'>>): Mark[] {
+  const kinds = loadMarkKinds(env);
+  if (!kinds.length) return kinds;
+  const values = kinds.map((mark) => mark.value);
+  const key = repoKey(root);
+  const named = skipsOwnName(env, privacy) ? sameNameMarks(values, key) : [];
+  const own = new Set([...ownMarks(values, machineAllowed(env, root, key).allow), ...named]);
+  return own.size ? kinds.filter((mark) => !own.has(mark.value)) : kinds;
 }
 
 /** The comment above the marks yokoten adds from this machine. They run to the next comment line. */
@@ -291,13 +610,17 @@ export const isPersonalEmail = (hit: string, allow: string[] = []): boolean => !
  * Problems in one file's text. `allow` holds literal strings the project has said are
  * fine (yokoten.json "privacy.allow"), such as a public support address.
  */
-export function scanText(text: string, { file, marks = [], allow = [], logins = [] }: { file: string; marks?: string[]; allow?: string[]; logins?: string[] }): Finding[] {
+export function scanText(
+  text: string,
+  { file, marks = [], allow = [], logins = [], ownAllow = allow }: { file: string; marks?: string[]; allow?: string[]; logins?: string[]; ownAllow?: string[] },
+): Finding[] {
   const problems: Finding[] = [];
   const lines = text.split('\n');
   // `logins`: the forge logins yokoten added to the marks, fine where a file names accounts (#410).
   const places = logins.length && marks.length ? loginPlaces(file, lines) : null;
   const secrets = findSecrets(lines, allow);
-  const own = ownMarks(marks, allow);
+  // `ownAllow`: what may allow a mark, `allow` unless the caller says otherwise (a gh post to another repo, #447).
+  const own = ownMarks(marks, ownAllow);
   const stopped = own.length ? marks.filter((mark) => !own.includes(mark)) : marks;
   lines.forEach((line, index) => {
     const where = { file, line: index + 1 };
@@ -773,6 +1096,110 @@ function shownPath(path: string, env: Env, marks: string[]): string {
   return hasMark(name) ? 'the body file' : name;
 }
 
+// The characters bash reads as plain text outside quotes: no expansion, glob, brace, operator or comment.
+const PLAIN_WORD = /^[A-Za-z0-9_ \t./:,=+@%-]$/;
+
+/**
+ * Whether the command line is one gh post and nothing else (#447): `gh …`, or the bot's
+ * `yokoten bot -- gh …`, optionally after one plain `cd <folder> &&`. Outside quotes only
+ * letters, digits, spaces and `_ . / : , = + @ % -` are trusted, plus one here-string or
+ * one heredoc whose end word is a name in single quotes (`<<'EOF'` or `<<-'EOF'`). Bash
+ * expands nothing in that body, and the body ends at the first line that is the name alone.
+ * After that line only blank lines (spaces and tabs) may follow. Inside double quotes `$`,
+ * backquote and backslash are refused; single quotes hold anything. Anything else could
+ * change where gh posts before it runs, so no allow applies (record 0014). Listing shell
+ * features one by one missed one each round, so the check names what it trusts.
+ * `cd` is true when the line starts with that `cd`; its target may start with `~`.
+ */
+export function lonePost(command: string): { cd: boolean; target?: string } | null {
+  let text = trimStart(command, ' \t');
+  const cd = text.match(/^cd[ \t]+('[^'\n]*'|"[^"$`\\\n]*"|~?[\w./+@%:,=-]+|~)[ \t]*&&[ \t]*/);
+  if (cd) text = text.slice(cd[0].length);
+  const start = text.match(/^(?:(?:node[ \t]+)?(?:~?[\w./+@%:-]*\/)?yokoten(?:\.ts|\.mjs|\.js)?[ \t]+bot[ \t]+--[ \t]+)?gh[ \t]/);
+  if (!start) return null;
+  let quote: string | null = null;
+  let heredoc: { word: string; tabs: boolean } | null = null;
+  let index = start[0].length;
+  for (; index < text.length; index++) {
+    const char = text[index];
+    if (quote === "'") {
+      if (char === "'") quote = null;
+      continue;
+    }
+    if (quote === '"') {
+      if (char === '"') quote = null;
+      else if (char === '$' || char === '`' || char === '\\') return null;
+      continue;
+    }
+    if (char === "'" || char === '"') quote = char;
+    else if (char === '\n') break;
+    else if (PLAIN_WORD.test(char)) continue;
+    else if (char === '<' && text[index + 1] === '<' && text[index + 2] !== '<') {
+      if (heredoc) return null; // one heredoc at most
+      // Only <<'NAME' or <<-'NAME', then a space, tab or newline, so bash reads the same end word.
+      const quotedName = /<<(-?)'([A-Za-z_][A-Za-z0-9_]*)'(?=[ \t\n]|$)/y;
+      quotedName.lastIndex = index;
+      const found = quotedName.exec(text);
+      if (!found) return null;
+      heredoc = { word: found[2], tabs: found[1] === '-' };
+      index += found[0].length - 1;
+    } else if (char === '<' && text[index + 1] === '<') index += 2; // a here-string: its word is read as any other
+    else return null;
+  }
+  if (quote) return null;
+  const lone = cd ? { cd: true, target: cd[1] } : { cd: false };
+  if (index >= text.length) return heredoc ? null : lone;
+  // A newline: only a heredoc's body may follow, then nothing.
+  if (!heredoc) return null;
+  const { word, tabs } = heredoc;
+  const lines = text.slice(index + 1).split('\n');
+  const end = lines.findIndex((line) => (tabs ? trimStart(line, '\t') : line) === word);
+  if (end === -1) return null;
+  return lines.slice(end + 1).every((line) => /^[ \t]*$/.test(line)) ? lone : null;
+}
+
+/**
+ * Whether a gh command may post somewhere other than the repo it runs in (#447): it names a
+ * repo (`-R`, `--repo`, an issue or pull request URL), GH_REPO or GH_HOST is set or appears anywhere in the
+ * command, or it runs the api or gist group, whose target the guard does not read. Then no
+ * allow for this repo applies.
+ */
+export function namesTarget(gh: GhCommand, command: string, env: Env): boolean {
+  if (env.GH_REPO || env.GH_HOST || /\bGH_(?:REPO|HOST)\b/.test(command)) return true;
+  const { args } = gh;
+  let group: string | undefined;
+  for (let index = 0; index < args.length && group === undefined; index++) {
+    if (GLOBAL_VALUES.has(args[index])) index++;
+    else if (!args[index].startsWith('-')) group = args[index];
+  }
+  if (group === 'api' || group === 'gist') return true;
+  return args.some((arg) => arg === '-R' || arg === '--repo' || arg.startsWith('--repo=') || (arg.startsWith('-R') && arg.length > 2) || /^https?:\/\//i.test(arg));
+}
+
+/** The top folder of the repo at `dir`, links followed, or null. */
+function repoTop(dir: string): string | null {
+  const top = gitAnswer(dir, ['rev-parse', '--show-toplevel']);
+  return 'out' in top && top.out.trim() ? (localKey(top.out.trim()) ?? null) : null;
+}
+
+/**
+ * Whether a gh post goes to the repo it runs in, so an allow for that repo may apply (#447):
+ * the line is the post alone (`lonePost`), it names no other target, and a `cd` before it
+ * stays in the repo the line started in (`from`).
+ */
+function isPostHere(gh: GhCommand, { env, command, cwd, from }: { env: Env; command: string; cwd: string | null; from?: string | null }): boolean {
+  const lone = lonePost(command);
+  if (!lone || namesTarget(gh, command, env)) return false;
+  if (!lone.cd) return true;
+  if (!cwd || !from) return false;
+  // bash searches CDPATH for a bare relative folder, and CDPATH may be set in the shell
+  // without being exported, so only /, ./, ../ or an unquoted ~ or ~/ say where cd goes. A
+  // quoted ~ is not your home: bash keeps it as a folder named ~, and searches CDPATH for it.
+  if (lone.target !== undefined && !/^(?:~(?:\/|$)|['"]?(?:\/|\.\/|\.\.\/))/.test(lone.target)) return false;
+  const top = repoTop(cwd);
+  return top !== null && top === repoTop(from);
+}
+
 /**
  * The first privacy problem in the text a gh command is about to post, or null. `command`
  * is the whole command text, for the heredocs that feed stdin. `cwd` is where the command
@@ -780,7 +1207,7 @@ function shownPath(path: string, env: Env, marks: string[]): string {
  */
 export function checkPost(
   gh: GhCommand,
-  { env, privacy, cwd, command, files }: { env: Env; privacy?: Pick<Config['privacy'], 'allow'>; cwd: string | null; command: string; files?: CommandFiles },
+  { env, privacy, cwd, command, from, files }: { env: Env; privacy?: Partial<Pick<Config['privacy'], 'allow' | 'skipOwnName'>>; cwd: string | null; command: string; from?: string | null; files?: CommandFiles },
 ): Finding | null {
   // The path goes to the kernel as bash hands it to gh, never normalized: join and resolve
   // drop `..` as text, but the kernel goes up from the real folder when the working folder
@@ -828,12 +1255,17 @@ export function checkPost(
   }
   if (!posted.pieces.length) return null;
   const allow = privacy?.allow ?? [];
-  // An allowed mark is left out of the path shown too (#424).
+  // An allowed mark is left out of the path shown too (#424). The project's and the machine's
+  // allow (#447) are for the repo the command runs in: a post gets them only when it is the
+  // line's one command (after at most a cd within the same repo) and names no other target.
   const all = loadMarks(env);
-  const own = ownMarks(all, allow);
+  const isHere = all.length > 0 && isPostHere(gh, { env, command, cwd, from });
+  const key = isHere && cwd !== null ? repoKey(cwd) : null;
+  const named = isHere && skipsOwnName(env, privacy) ? sameNameMarks(all, key) : [];
+  const own = isHere ? [...ownMarks(all, [...allow, ...machineAllowed(env, cwd, key ?? undefined).allow]), ...named] : [];
   const marks = all.filter((mark) => !own.includes(mark));
   for (const piece of posted.pieces) {
-    const [hit] = scanText(piece.text, { file: piece.source, marks, allow });
+    const [hit] = scanText(piece.text, { file: piece.source, marks, allow, ownAllow: [] });
     if (!hit) continue;
     const more = { why: postWhy(hit.why) };
     if (piece.isFile) return finding(hit.id as RuleId, hit.what, postFix(hit), { ...more, file: shownPath(piece.source, env, marks), line: hit.line });
