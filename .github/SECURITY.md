@@ -6,7 +6,7 @@ Please don't open a public issue. Report it privately: the repo's **Security** t
 **Report a vulnerability**. Only the owner sees the report.
 
 It helps to include what you ran, what happened, what you expected, and the version
-(`node bin/yokoten.ts version`). You'll usually get an answer within a week.
+(`npx yokoten --version`). You'll usually get an answer within a week.
 
 ## What counts
 
