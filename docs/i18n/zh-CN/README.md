@@ -37,18 +37,18 @@
 
 ## 用什么语言都行
 
-yokoten 自己需要 Node 22.18 或更高版本，但你的项目用什么语言都可以。
+yokoten 自己需要 Node 22.18 或更高版本（你的电脑和 CI 上都要），但你的项目用什么语言都可以。
 守卫、隐私和密钥检查、CI、issue 和 PR 检查，在所有语言里都一样工作。
 
 只有一步要看语言：`doctor` 会找你的测试命令。
 
 | | 语言 |
 |---|---|
-| 能找到测试命令 | JavaScript 和 TypeScript（npm、Deno）、Python、Go、Rust、Java（Maven、Gradle），以及有 `make test` 的项目 |
-| 正在做（[#546](https://github.com/yokoten-labs/yokoten/issues/546)） | .NET、Ruby、PHP、Swift、Elixir、Dart 和 Flutter |
+| 能找到测试命令 | JavaScript 和 TypeScript（npm、Deno）、Python、Go、Rust、Java（Maven、Gradle）、.NET、Ruby、PHP、Swift、Elixir、Dart 和 Flutter，以及有 `make test` 的项目 |
+| 正在做（[#550](https://github.com/yokoten-labs/yokoten/issues/550)） | 替你写好跑测试的 CI 任务，不用自己手写 |
 
+前几步（install、init、doctor）已经在 Python、Go、Rust、.NET、Ruby 和 PHP 项目上试过。
 目前从安装到发版的整条路，只在 TypeScript 项目上完整走过。
-Issue #546 会在其他语言的项目上也走一遍。
 
 ## 为什么做它
 

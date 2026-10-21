@@ -18,6 +18,7 @@ import { place } from '../../rules/message.ts';
 import { loadMarks, scanText } from '../../rules/privacy.ts';
 import { chat, KEY_HINT, type LlamaConfig, llamaConfig, type Message } from '../../agents/llama.ts';
 import { findRulesGap } from '../init.ts';
+import { orList, testLanguages } from './test-commands.ts';
 import { type Found, gitConfig, hasIssueTemplate, hasPrTemplate, ROAD, road, securityLacking, todoFiles } from '../road.ts';
 
 /** `unknown`: yokoten can't check the step from here (a server setting, in a session). */
@@ -99,13 +100,9 @@ function testCommand(root: string): string {
   const test = typeof scripts?.test === 'string' ? scripts.test : '';
   // npm init writes a test script that only fails.
   if (test && !/no test specified/.test(test)) return 'package.json has a test script';
-  if (/^test\s*:/m.test(read(join(root, 'Makefile')))) return 'the Makefile has a test target';
-  const tool = [
-    ['Cargo.toml', 'cargo test'],
-    ['go.mod', 'go test'],
-    ['pyproject.toml', 'a Python project (pyproject.toml)'],
-  ].find(([file]) => existsSync(join(root, file)));
-  return tool ? `${tool[1]} works with no script` : '';
+  // The same table as doctor's tests step, so both name the same command.
+  const found = testLanguages(root);
+  return found.length ? `${orList(found.map((l) => l.runner))} (${found.map((l) => l.language).join(', ')})` : '';
 }
 
 const TESTS_WHY = 'a test command lets an agent check its own work before you read it';
@@ -136,7 +133,7 @@ export function facts(root: string, env: Env): Fact[] {
   plain('runtime', '.yokoten/ is this version', existsSync(join(root, '.yokoten')) ? '.yokoten/ is another version' : 'no .yokoten/ runtime');
 
   const tests = testCommand(root);
-  add('tests', tests ? 'done' : 'missing', tests || 'no test command found (package.json, Makefile)');
+  add('tests', tests ? 'done' : 'missing', tests || 'no test command found (package.json, Makefile or a project file such as go.mod)');
 
   const ci = ownCi(root);
   if (found.get('ci')) add('ci', 'done', 'CI runs `yokoten check`');

@@ -39,18 +39,18 @@
 
 ## 用哪種語言都可以
 
-yokoten 本身需要 Node 22.18 或更新版本，但你的專案用哪種語言都可以。
+yokoten 本身需要 Node 22.18 或更新版本（你的電腦和 CI 上都要），但你的專案用哪種語言都可以。
 守衛、隱私與密鑰檢查、CI、issue 和 PR 檢查，在每種語言裡都一樣運作。
 
 只有一個步驟會看語言：`doctor` 會找你的測試指令。
 
 | | 語言 |
 |---|---|
-| 找得到測試指令 | JavaScript 和 TypeScript（npm、Deno）、Python、Go、Rust、Java（Maven、Gradle），以及有 `make test` 的專案 |
-| 開發中（[#546](https://github.com/yokoten-labs/yokoten/issues/546)） | .NET、Ruby、PHP、Swift、Elixir、Dart 和 Flutter |
+| 找得到測試指令 | JavaScript 和 TypeScript（npm、Deno）、Python、Go、Rust、Java（Maven、Gradle）、.NET、Ruby、PHP、Swift、Elixir、Dart 和 Flutter，以及有 `make test` 的專案 |
+| 開發中（[#550](https://github.com/yokoten-labs/yokoten/issues/550)） | 幫你寫好跑測試的 CI 工作，不必自己手寫 |
 
+前幾步（install、init、doctor）已經在 Python、Go、Rust、.NET、Ruby 和 PHP 專案上試過。
 目前從安裝到發版的整條路，只在 TypeScript 專案上完整走過。
-Issue #546 會在其他語言的專案上也走一遍。
 
 ## 為什麼做這個
 

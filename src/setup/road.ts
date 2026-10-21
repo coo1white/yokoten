@@ -28,6 +28,7 @@ import { claudeReadsRules, cliPath, COMMIT_HOOKS, deadHookNotes, findRulesGap, h
 import { gitConfig } from '../run/check.ts';
 import { indexFiles } from '../run/check.ts';
 import { FIRST_MILESTONE, lackingLabels, pickNewMilestone } from './plan.ts';
+import { anyWord, either, FALLBACK_RUNNERS, matches, optional, orList, type Pattern, scriptedRuns, sequence, TEST_RUNS, testLanguages, VALUED, word, wordIf } from './advice/test-commands.ts';
 import { skillFiles, skillsDir } from './install.ts';
 
 /** The stage names, in order. A step's `stage` is its number here, from 1. */
@@ -222,100 +223,8 @@ const commands = (line: string): string[] =>
     .filter((c) => c && !c.startsWith('#'));
 /** A command that only asks a tool about itself. */
 const ASKS = /\s--(?:version|help)(?=\s|$)/;
-
-/**
- * A command pattern, matched one word at a time (#322): from the word indexes a match can
- * be at, the indexes it can be at after this part. A regex that repeats a group over a long
- * line backtracks once per repeat, and V8 throws a RangeError on a big enough line.
- */
-type Pattern = (words: string[], at: number[]) => number[];
-/** One word, by a test on it. */
-const wordIf =
-  (isMatch: (word: string) => boolean): Pattern =>
-  (words, at) =>
-    at.filter((i) => i < words.length && isMatch(words[i])).map((i) => i + 1);
-/** One of these words, whole: "make test-deps" and "jest-preview" are not runs. */
-const word = (...names: string[]) => wordIf((w) => names.includes(w));
-const anyWord = wordIf(() => true);
-const sequence =
-  (...parts: Pattern[]): Pattern =>
-  (words, at) =>
-    parts.reduce((from, part) => part(words, from), at);
-/** Any of the parts. The indexes stay in order with no repeats, merged in one pass. */
-const either =
-  (...parts: Pattern[]): Pattern =>
-  (words, at) => {
-    const results = parts.map((part) => part(words, at)).filter((result) => result.length > 0);
-    if (results.length < 2) return results[0] ?? [];
-    const isFound = new Uint8Array(words.length + 1);
-    for (const result of results) for (const i of result) isFound[i] = 1;
-    const found: number[] = [];
-    for (let i = 0; i <= words.length; i++) if (isFound[i]) found.push(i);
-    return found;
-  };
-const optional = (...parts: Pattern[]) => either(sequence(), sequence(...parts));
-/**
- * Zero or more steps. `step` names the indexes one step reaches from index `i`, each past `i`.
- * One pass from the first index to the last one reached, so the time is linear.
- */
-const repeated =
-  (step: (words: string[], i: number, reach: (after: number) => void) => void): Pattern =>
-  (words, at) => {
-    if (at.length === 0) return at;
-    const isReached = new Uint8Array(words.length + 1);
-    for (const i of at) isReached[i] = 1;
-    let last = at[at.length - 1];
-    const reach = (after: number) => {
-      isReached[after] = 1;
-      last = Math.max(last, after);
-    };
-    const found: number[] = [];
-    for (let i = at[0]; i <= last; i++) {
-      if (!isReached[i]) continue;
-      found.push(i);
-      step(words, i, reach);
-    }
-    return found;
-  };
-const isFlag = (word: string | undefined) => word !== undefined && word.length > 1 && word.startsWith('-');
-// Flags with no value, as tools take them before the command: npx --yes, node --experimental-strip-types.
-const FLAGS = repeated((words, i, reach) => {
-  if (isFlag(words[i])) reach(i + 1);
-});
-// Flags that may take a value: npm -w app, pnpm --filter app.
-const VALUED = repeated((words, i, reach) => {
-  if (!isFlag(words[i])) return;
-  reach(i + 1);
-  if (i + 1 < words.length && !words[i + 1].startsWith('-')) reach(i + 2);
-});
-// make's flags, and `-C dir` with its folder as the next word.
-const MAKE_FLAGS = repeated((words, i, reach) => {
-  if (isFlag(words[i])) reach(i + 1);
-  if (words[i] === '-C' && i + 1 < words.length) reach(i + 2);
-});
-/** Whether `pattern` matches at the start of a command, split into its words at whitespace, as `\s` does. */
-const matches = (pattern: Pattern, words: string[]) => pattern(words, [0]).length > 0;
 /** The package.json "test" script, run by its package manager. */
 const RUNS_SCRIPT = sequence(word('npm', 'pnpm', 'yarn', 'bun'), optional(word('run')), word('test', 't'));
-// Tools that start a Node runner: npx, bunx, npm exec, pnpm (exec, dlx), yarn (run).
-const NODE_EXEC = optional(either(sequence(word('npx', 'bunx'), FLAGS), sequence(word('npm'), word('exec'), FLAGS, optional(word('--'))), sequence(word('pnpm', 'yarn'), optional(word('exec', 'dlx', 'run')))));
-// Tools that start a Python runner: uv run, uvx, pipx run, poetry run, pipenv run.
-const PY_EXEC = optional(either(word('uvx'), sequence(word('uv', 'pipx', 'poetry', 'pipenv'), word('run'))), FLAGS);
-// A Python module run as a program: python -m, coverage run -m.
-const PY_M = sequence(either(word('python', 'python3'), sequence(word('coverage'), word('run'))), word('-m'));
-/** Test runners that need no package.json script, one entry per runner. Each is matched at the start of a command. */
-const RUNNERS: Pattern[] = [
-  sequence(word('node'), FLAGS, word('--test')),
-  sequence(word('deno'), word('test')),
-  sequence(word('go'), word('test')),
-  sequence(word('cargo'), word('test')),
-  sequence(word('mvn', 'mvnw', './mvn', './mvnw'), FLAGS, word('test')),
-  sequence(word('gradle', 'gradlew', './gradle', './gradlew'), FLAGS, word('test')),
-  sequence(PY_EXEC, optional(PY_M), word('pytest', 'tox', 'nox')),
-  sequence(PY_EXEC, PY_M, word('unittest')),
-  sequence(word('make'), MAKE_FLAGS, word('test', 'tests')),
-  sequence(NODE_EXEC, word('vitest', 'jest')),
-];
 const WORKSPACES_FLAGS = ['--workspace', '--workspaces', '-ws', '-w'];
 const isWorkspacesFlag = (w: string) => WORKSPACES_FLAGS.some((flag) => w === flag || w.startsWith(`${flag}=`));
 /** Only when a later word is a workspaces flag. */
@@ -339,14 +248,16 @@ const isWorkspaces = (root: string) => Boolean(packageJson(root)?.workspaces) ||
 /**
  * Whether the workflow text runs the tests: the package.json "test" script (`script`, or
  * empty), each package's script in a workspaces repo, or a test runner named outright.
+ * `scripted` adds the commands that count in this project only, such as `composer test`.
  */
-export const runsTests = (ci: string, script: string, workspaces: boolean) => {
+export const runsTests = (ci: string, script: string, workspaces: boolean, scripted: Pattern[] = []) => {
   const lines = runLines(ci);
   const run = lines
     .flatMap(commands)
     .filter((c) => !ASKS.test(c))
     .map((c) => c.split(/\s+/));
-  if (run.some((words) => RUNNERS.some((r) => matches(r, words)))) return true;
+  const runners = scripted.length ? [...TEST_RUNS, ...scripted] : TEST_RUNS;
+  if (run.some((words) => runners.some((r) => matches(r, words)))) return true;
   if (script !== '' && (run.some((words) => matches(RUNS_SCRIPT, words)) || lines.some((l) => l.includes(script)))) return true;
   return workspaces && run.some((words) => RUNS_WORKSPACES.some((r) => matches(r, words)));
 };
@@ -433,20 +344,17 @@ export const catchLongLines =
     }
   };
 const WORKFLOW_TOO_LONG = 'a line in .github/workflows is too long to read; make it shorter and run doctor again';
-const ciRunsTests = (root: string) => runsTests(ciText(root), testScript(root), isWorkspaces(root));
-// What runs the tests in each kind of project, by a file at the root; the first three when none is found.
-const PROJECT_RUNNERS: [string[], string][] = [
-  [['go.mod'], 'go test'],
-  [['pyproject.toml', 'setup.py', 'setup.cfg', 'tox.ini', 'requirements.txt'], 'pytest'],
-  [['Cargo.toml'], 'cargo test'],
-  [['pom.xml'], 'mvn test'],
-  [['build.gradle', 'build.gradle.kts'], 'gradle test'],
-  [['deno.json', 'deno.jsonc'], 'deno test'],
-];
-const runnersFor = (root: string) => {
-  const found = PROJECT_RUNNERS.filter(([files]) => files.some((f) => existsSync(join(root, f)))).map(([, runner]) => runner);
-  const named = (found.length ? found : PROJECT_RUNNERS.slice(0, 3).map(([, runner]) => runner)).map((r) => `\`${r}\``);
-  return named.length > 1 ? `${named.slice(0, -1).join(', ')} or ${named.at(-1)}` : named[0];
+const ciRunsTests = (root: string) => runsTests(ciText(root), testScript(root), isWorkspaces(root), scriptedRuns(root));
+/**
+ * Why no workflow runs the tests, naming the language found by the files at the root
+ * (test-commands.ts), so the reader sees doctor knows the project; the usual three when none is.
+ */
+const describeNoTestRun = (root: string) => {
+  const found = testLanguages(root);
+  if (!found.length) return `no workflow runs a test command such as ${orList(FALLBACK_RUNNERS)}`;
+  const languages = found.map((l) => l.language);
+  const named = languages.length > 1 ? `${languages.slice(0, -1).join(', ')} and ${languages.at(-1)}` : languages[0];
+  return `this looks like a ${named} project, and no workflow runs its tests with ${orList(found.map((l) => l.runner))}`;
 };
 /** The command that runs each package's tests in this workspaces repo. */
 const workspacesTest = (root: string) => (existsSync(join(root, 'pnpm-workspace.yaml')) ? '`pnpm -r test`' : '`npm test --workspaces`');
@@ -455,7 +363,7 @@ const noTests = (root: string) => {
   if (testScript(root)) return 'CI does not run the tests';
   if (isWorkspaces(root)) return `no workflow runs each package's tests (e.g. ${workspacesTest(root)})`;
   if (packageJson(root)) return 'no test command: no "test" script in package.json, and no workflow runs a test runner';
-  return `no workflow runs a test command such as ${runnersFor(root)}`;
+  return describeNoTestRun(root);
 };
 /**
  * The fix for the tests step (#501): the file, the job to add, and the `needs` list of `ci`.
