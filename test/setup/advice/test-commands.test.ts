@@ -39,7 +39,7 @@ const COMPOSER_TEST = JSON.stringify({ scripts: { test: 'phpunit' } });
 // Each case: the language, its files, the command doctor and adopt name, and CI commands that run its tests.
 const CASES: { language: string; files: Record<string, string>; runner: string; runs: string[] }[] = [
   { language: 'Go', files: { 'go.mod': 'module example.com/x\n' }, runner: 'go test', runs: ['go test ./...'] },
-  { language: 'Python', files: { 'setup.py': '' }, runner: 'pytest', runs: ['pytest', 'uv run pytest', 'python -m unittest'] },
+  { language: 'Python', files: { 'setup.py': '' }, runner: 'pytest', runs: ['pytest', 'uv run pytest', 'python -m unittest', '.venv/bin/python -m pytest', 'venv/bin/pytest', '.venv/bin/python3 -m unittest'] },
   { language: 'Rust', files: { 'Cargo.toml': '[package]\n' }, runner: 'cargo test', runs: ['cargo test --all'] },
   { language: 'Maven', files: { 'pom.xml': '<project/>\n' }, runner: 'mvn test', runs: ['./mvnw -B test'] },
   { language: 'Gradle', files: { 'build.gradle.kts': '' }, runner: 'gradle test', runs: ['./gradlew test'] },
@@ -63,7 +63,7 @@ const CASES: { language: string; files: Record<string, string>; runner: string; 
 
 // Commands that look like a test run and are not one: a build, an install, a look-alike, a question.
 const NOT_RUNS = ['dotnet build', 'dotnet tool install x', 'swift build', 'mix compile', 'mix deps.get', 'flutter build apk', 'flutter pub get', 'dart analyze', 'dart pub get', 'rake build',
-  'bundle install', 'gem install rspec', 'composer install', 'phpunit --version', 'echo dotnet test', 'rspec-lint', 'swift-test'];
+  'bundle install', 'gem install rspec', 'composer install', 'phpunit --version', 'echo dotnet test', 'rspec-lint', 'swift-test', 'bin/pytest-watch', '.venv/bin/python -m pip install pytest'];
 
 test('test commands: every language with files has a case here', () => {
   const covered = new Set(CASES.map((c) => c.language));

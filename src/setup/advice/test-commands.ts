@@ -125,8 +125,10 @@ const hasFile = (found: string[], file: string) => (file.startsWith('*') ? found
 const NODE_EXEC = optional(either(sequence(word('npx', 'bunx'), FLAGS), sequence(word('npm'), word('exec'), FLAGS, optional(word('--'))), sequence(word('pnpm', 'yarn'), optional(word('exec', 'dlx', 'run')))));
 // Tools that start a Python runner: uv run, uvx, pipx run, poetry run, pipenv run.
 const PY_EXEC = optional(either(word('uvx'), sequence(word('uv', 'pipx', 'poetry', 'pipenv'), word('run'))), FLAGS);
+/** A program by name, or by a path to it, as a virtualenv runs it: `.venv/bin/python`. */
+const program = (...names: string[]) => wordIf((w) => names.some((name) => w === name || w.endsWith(`/${name}`)));
 // A Python module run as a program: python -m, coverage run -m.
-const PY_M = sequence(either(word('python', 'python3'), sequence(word('coverage'), word('run'))), word('-m'));
+const PY_M = sequence(either(program('python', 'python3'), sequence(program('coverage'), word('run'))), word('-m'));
 // Ruby's tools, run alone or through Bundler: bundle exec rspec.
 const BUNDLE = optional(word('bundle'), word('exec'));
 
@@ -153,7 +155,7 @@ export const TEST_LANGUAGES: TestLanguage[] = [
     language: 'Python',
     files: ['pyproject.toml', 'setup.py', 'setup.cfg', 'tox.ini', 'requirements.txt'],
     runner: 'pytest',
-    runs: [sequence(PY_EXEC, optional(PY_M), word('pytest', 'tox', 'nox')), sequence(PY_EXEC, PY_M, word('unittest'))],
+    runs: [sequence(PY_EXEC, optional(PY_M), program('pytest', 'tox', 'nox')), sequence(PY_EXEC, PY_M, word('unittest'))],
   },
   { language: 'Rust', files: ['Cargo.toml'], runner: 'cargo test', runs: [sequence(word('cargo'), word('test'))] },
   { language: 'Maven', files: ['pom.xml'], runner: 'mvn test', runs: [sequence(word('mvn', 'mvnw', './mvn', './mvnw'), FLAGS, word('test'))] },
