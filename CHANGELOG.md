@@ -30,10 +30,12 @@ The README is also in [中文](https://github.com/yokoten-labs/yokoten/blob/v0.1
 - `yokoten check` runs before each commit and in CI, so a bad commit stops whoever made it.
 - It catches personal emails, IP addresses and secrets, and names the file and line, never the text.
 - When it stops a commit, it says how to take the stopped files out of it.
+- A staged `node_modules` or other dependency folder is one finding, with the command that takes it out.
 - Add your own private words, such as your name or city, to a list kept outside the repo.
 - `yokoten install` adds your git name, git email and forge login to that list for you.
 - `yokoten marks` counts your private words, and lets you add, remove or turn off a kind.
 - A private word is found as a whole word, so `sam` stops `hi Sam` but not `sample`.
+- A stopped line names the kind of private word, never the word, and how to let it through.
 - A project can let its own name, public email or a mark through, in `yokoten.json` or on your machine only.
 - `yokoten check --history` checks every old commit before a private repo goes public.
 
@@ -60,6 +62,7 @@ The README is also in [中文](https://github.com/yokoten-labs/yokoten/blob/v0.1
 - `yokoten install` puts a `yokoten` command on your PATH, and `yokoten uninstall` removes it.
 - `yokoten init` adds the rules, hooks, CI and templates to a project, and never overwrites your files.
 - `init` keeps a project's own `AGENTS.md` and moves it under the core rules.
+- `init` adds your package managers' folders, such as `node_modules/`, to `.gitignore`, and only adds missing lines.
 - `init` updates a CI workflow you never changed, and keeps one you did.
 - `init` writes a Dependabot config for your project's own packages, and a short CI for docs-only pull requests.
 - A private repo can skip CI with `init --no-ci`.
