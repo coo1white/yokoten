@@ -18,6 +18,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import {
+  at,
   fakeGh,
   GOOD,
   makeSandbox,
@@ -218,11 +219,12 @@ test('doctor: reads the server of a GitHub origin into the road; a step not done
   assert.match(text(), /^ {2}can't check server-settings: there is no origin remote yet; add one on GitHub to check the server settings/m);
   assert.match(text(), /^ {4}can't check protection \(Scorecard: Branch-Protection\): there is no origin remote yet/m);
   assert.ok(!/can't check.*can't check/.test(text()), 'no line says "can\'t check" twice');
+  assert.ok(result.lines.some((l) => /secret scanning with push protection/.test(l)), 'the by-hand list when nothing is read');
   execFileSync('git', ['remote', 'add', 'origin', 'https://gitea.example.com/me/repo.git'], { cwd: root });
   result = run(GOOD);
-  assert.match(text(), /^ {2}can't check server-settings: the origin remote is not on a host yokoten knows/m);
+  // Another host (#504): the doctor-other-host test has the rest.
+  assert.match(text(), /^ {2}can't check server-settings: yokoten can't read the server settings on this host yet/m);
   execFileSync('git', ['remote', 'remove', 'origin'], { cwd: root });
-  assert.ok(result.lines.some((l) => /secret scanning with push protection/.test(l)), 'the by-hand list when nothing is read');
   execFileSync('git', ['remote', 'add', 'origin', `https://github.com/${REPO}.git`], { cwd: root });
   result = run(GOOD);
   for (const key of SERVER_KEYS) assert.equal(result.report.steps?.find((s) => s.id === key)?.mark, 'done', key);
@@ -237,6 +239,61 @@ test('doctor: reads the server of a GitHub origin into the road; a step not done
   // A session never calls gh, so the server steps never hold its stage.
   const session = doctor(root, { env: { HOME: root, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, session: true, gh: () => { throw new Error('a session called gh'); } });
   assert.notEqual(session.report.next?.id, 'protection');
+});
+
+// The steps that only the code host can judge (#504): on a host with no adapter, each says what it asks.
+const FORGE_STEPS = ['tests', 'ci', 'labels', 'milestone', 'titles', 'codeowners', 'bot', 'review', 'protection', 'merge-settings', 'security-settings'];
+// What only GitHub has: its menus, its CLI, init's GitHub flag, the GitHub App. A standard's name ("GitHub community profile") and yokoten's own docs are not instructions.
+const GITHUB_ONLY = /github\.com(?!\/yokoten-labs\/yokoten\/)|\bgh\b|--github|in Settings, |GitHub App|Rulesets|Dependabot alerts/;
+
+test('doctor: on another host, each forge step says once what it asks, with no GitHub instruction, and never holds the stage (#504)', () => {
+  assert.deepEqual(ROAD.filter((step) => step.byHand).map((step) => step.key), FORGE_STEPS);
+  const root = makeTempDir('yokoten-other-host-');
+  execFileSync('git', ['init', '-q', root]);
+  const noGh: Gh = () => { throw new Error('doctor called gh for a host with no adapter'); };
+  const remotes: [string, string][] = [
+    ['https://gitea.example.com/me/repo.git', 'this host'],
+    [`ssh://git${at}gitea.example.com:2222/me/repo.git`, 'this host'],
+    [`git${at}gitea.example.com:me/repo.git`, 'this host'],
+    ['https://gitlab.com/me/repo.git', 'GitLab'],
+  ];
+  for (const [remote, label] of remotes) {
+    execFileSync('git', ['remote', 'add', 'origin', remote], { cwd: root });
+    for (const session of [false, true]) {
+      const result = doctor(root, { env: { HOME: root, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, session, gh: noGh });
+      const text = result.lines.join('\n');
+      assert.ok(!text.includes('example.com'), `${remote}: a self-hosted server is never named`);
+      assert.ok(!GITHUB_ONLY.test(text), `${remote}: no GitHub-only instruction: ${GITHUB_ONLY.exec(text)?.[0]}`);
+      assert.ok(!FORGE_STEPS.includes(result.report.next?.id ?? ''), `${remote}: a forge step is never the next step`);
+      assert.ok(!result.report.findings.some((f) => FORGE_STEPS.includes(f.id)), `${remote}: a forge step is never a finding`);
+      if (session) continue;
+      for (const key of FORGE_STEPS) {
+        assert.equal(result.report.steps?.find((s) => s.id === key)?.mark, "can't check", `${remote}: ${key}`);
+        const lines = result.lines.filter((line) => new RegExp(`^ {4}can't check ${key}\\b`).test(line));
+        assert.equal(lines.length, 1, `${remote}: ${key} has one line`);
+        assert.match(lines[0], new RegExp(`: yokoten can't check this on ${label} yet; do it by hand: \\S`), `${remote}: ${key}`);
+      }
+      assert.match(text, new RegExp(`^ {2}can't check server-settings: yokoten can't read the server settings on ${label} yet; the steps marked can't check say`, 'm'));
+      assert.ok(!text.includes('check these by hand') && !text.includes('not checked '), `${remote}: the GitHub by-hand lists are left out`);
+    }
+    execFileSync('git', ['remote', 'remove', 'origin'], { cwd: root });
+  }
+  // No remote is its own case: no line for another host.
+  const none = doctor(root, { env: { HOME: root, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, gh: noGh });
+  assert.ok(!none.lines.some((line) => line.includes('yokoten can\'t check this on')), 'no remote: no other-host lines');
+  // A GitHub remote: the steps are judged as before; codeowners is a file check there.
+  execFileSync('git', ['remote', 'add', 'origin', `https://github.com/${REPO}.git`], { cwd: root });
+  const github = doctor(root, { env: { HOME: root, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, gh: serverGh(GOOD).gh });
+  assert.equal(github.report.steps?.find((s) => s.id === 'protection')?.mark, 'done');
+  assert.equal(github.report.steps?.find((s) => s.id === 'codeowners')?.mark, 'to do');
+});
+
+test('doctor: the command on a Gitea-like remote shows the forge steps as can\'t check (#504)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.git('remote', 'add', 'origin', `git${at}gitea.example.com:me/repo.git`);
+  const steps = JSON.parse((await sandbox.call(['doctor', '--json'])).stdout).steps as { id: string; mark: string }[];
+  for (const key of FORGE_STEPS) assert.equal(steps.find((step) => step.id === key)?.mark, "can't check", key);
+  assert.equal(steps.find((step) => step.id === 'rules')?.mark, 'next', 'the core is judged as on any host');
 });
 
 test('road: the review step is stage 4, done when a merge needs at least one approval (#59)', () => {
