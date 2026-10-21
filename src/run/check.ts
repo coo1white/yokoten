@@ -11,7 +11,7 @@ import { checkEdit } from '../rules/guards.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
 import { type Finding, finding } from '../rules/message.ts';
 import { isChangeFile, longSentenceNote, longSentences } from '../rules/pr.ts';
-import { autoLogins, notUtc, repoMarkKinds, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
+import { autoLogins, mapMarkKinds, notUtc, repoMarkKinds, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
 import { parseChange, readChanges } from './changelog.ts';
 import { isShallowNote, translationNotes } from './translations.ts';
 
@@ -413,10 +413,11 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
   const kinds = repoMarkKinds(env, root, config.privacy); // less what the repo is named for and the machine allows (#447)
   const marks = kinds.map((mark) => mark.value);
   const logins = autoLogins(kinds);
+  const markKinds = mapMarkKinds(kinds);
   const skip = matcher(config.privacy.skip);
   const privacy = (path: string, buf: Buffer) => {
     if (skip(path) || looksBinary(buf)) return;
-    problems.push(...scanText(buf.toString('utf8'), { file: path, marks, logins, allow: config.privacy.allow }));
+    problems.push(...scanText(buf.toString('utf8'), { file: path, marks, logins, allow: config.privacy.allow, kinds: markKinds }));
   };
   if (staged) {
     const files = stagedFiles(root, env);
@@ -493,13 +494,14 @@ export function checkChanged(root: string, { config, env }: { config: Config; en
   const kinds = repoMarkKinds(env, root, config.privacy); // less what the repo is named for and the machine allows (#447)
   const marks = kinds.map((mark) => mark.value);
   const logins = autoLogins(kinds);
+  const markKinds = mapMarkKinds(kinds);
   const skip = matcher(config.privacy.skip);
   for (const path of changedFiles(root, env)) {
     const reason = checkEdit(path, { config, env });
     if (reason) problems.push(reason);
     if (skip(path)) continue;
     const buf = readEntry(root, path); // none if deleted, or a folder (a submodule)
-    if (buf && !looksBinary(buf)) problems.push(...scanText(buf.toString('utf8'), { file: path, marks, logins, allow: config.privacy.allow }));
+    if (buf && !looksBinary(buf)) problems.push(...scanText(buf.toString('utf8'), { file: path, marks, logins, allow: config.privacy.allow, kinds: markKinds }));
   }
   return problems;
 }
@@ -553,8 +555,9 @@ export function checkHistory(root: string, { config, env }: { config: Config; en
   const kinds = repoMarkKinds(env, root, config.privacy); // less what the repo is named for and the machine allows (#447)
   const marks = kinds.map((mark) => mark.value);
   const logins = autoLogins(kinds);
+  const markKinds = mapMarkKinds(kinds);
   const skip = matcher(config.privacy.skip);
-  const opts = { marks, allow: config.privacy.allow };
+  const opts = { marks, allow: config.privacy.allow, kinds: markKinds };
 
   const log = git(root, env, ['log', '--all', '--format=%h%x00%ae%x00%ce%x00%B%x1e']);
   for (const entry of log.split('\x1e')) {

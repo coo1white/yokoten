@@ -197,12 +197,12 @@ test('check in GitHub Actions: annotations and a job summary, place but never co
   const lines = result.stdout.trimEnd().split('\n');
   assert.equal(lines.length, 3);
   assert.match(lines[0], /^::error file=notes\/b\.md,line=2,title=yokoten email::an email address\. .+\. .+\.%0A  docs: https:\/\/\S+#privacy$/);
-  assert.match(lines[1], /^::error file=notes\/b\.md,line=3,title=yokoten private-mark::matches a line of your private-marks file\. /);
+  assert.match(lines[1], /^::error file=notes\/b\.md,line=3,title=yokoten private-mark::matches a word you added to your private marks\. /);
   assert.match(lines[2], /^::error file=notes\/b\.md,line=4,title=yokoten secret::a secret \(GitHub token\)\. /);
   const text = readFileSync(summary, 'utf8');
   assert.match(text, /^### yokoten check: 3 problems\n\n\| Place \| Rule \| What \| Why \| Fix \|\n/);
   assert.match(text, /\| notes\/b\.md:2 \| \[email\]\(https:\/\/\S+#privacy\) \| an email address \| .+ \| .+ \|/);
-  assert.match(text, /\| notes\/b\.md:3 \| \[private-mark\]\(\S+\) \| matches a line of your private-marks file \|/);
+  assert.match(text, /\| notes\/b\.md:3 \| \[private-mark\]\(\S+\) \| matches a word you added to your private marks \|/);
   assert.match(text, /\| notes\/b\.md:4 \| \[secret\]\(\S+\) \| a secret \(GitHub token\) \|/);
   // The positive control: the place is there, the matched text is not (core rule 11).
   for (const out of [result.stdout, text]) {
@@ -633,4 +633,32 @@ test('marks: an unknown kind or action is refused without repeating the word; al
   assert.match(action.stderr, /the action is add, remove, off, on or allow/);
   assert.match((await call(['marks', 'add', '--here'], HAND_MARK)).stderr, /--here and --remove go with allow only/);
   assert.ok(!said.some((text) => VALUES.test(text)), 'no output holds a mark');
+});
+
+// #523: a stopped line names the kind of mark from the marks file's headers, in text and
+// --json, and the value is never printed.
+test('check: a stopped line names the kind of private mark, never the mark (#523)', async () => {
+  const sandbox = makeSandbox();
+  const name = ['Rue', 'Sample'].join(' ');
+  const email = `ruex${at}personal-mail.dev`;
+  const marks = join(sandbox.home, '.config', 'yokoten', 'private-marks');
+  mkdirSync(join(sandbox.home, '.config', 'yokoten'), { recursive: true });
+  const header = (kind: string) => `# added by yokoten from this machine: ${kind}`;
+  writeFileSync(marks, [header('git name'), name, header('git email'), email, header('forge login'), 'octo-ruex', header('private remote host'), 'build.rue-host.dev', '# my own', 'quietvale', ''].join('\n'));
+  sandbox.write('notes.md', [`by ${name}`, `mail ${email}`, 'ask @octo-ruex', 'see build.rue-host.dev', 'from QuietVale', ''].join('\n'));
+  sandbox.git('add', '.');
+  const text = await sandbox.call(['check']);
+  assert.equal(text.status, 1);
+  assert.match(text.stderr, /notes\.md:1: matches your git name \(a private mark yokoten added by itself\)/);
+  assert.match(text.stderr, /notes\.md:2: matches your git email \(a private mark yokoten added by itself\)/);
+  assert.match(text.stderr, /notes\.md:3: matches your forge login \(a private mark yokoten added by itself\)/);
+  assert.match(text.stderr, /notes\.md:4: matches the name of a private server in your git remotes/);
+  assert.match(text.stderr, /notes\.md:5: matches a word you added to your private marks/);
+  assert.match(text.stderr, /`yokoten marks off git-name`/);
+  const json = await sandbox.call(['check', '--json']);
+  const stopped = (JSON.parse(json.stdout).findings as { id: string; line: number; what: string }[]).filter((found) => found.id === 'private-mark').map((found) => [found.line, found.what]);
+  assert.equal(stopped.length, 5, json.stdout);
+  assert.match(stopped[0][1] as string, /your git name/);
+  const said = (text.stdout + text.stderr + json.stdout + json.stderr).toLowerCase();
+  for (const part of ['sample', 'personal-mail', 'octo-ruex', 'rue-host', 'quietvale']) assert.ok(!said.includes(part), `check printed ${part.length} letters of a mark`);
 });
