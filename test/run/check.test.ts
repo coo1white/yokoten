@@ -133,17 +133,17 @@ test('check and the stop hook read a symlink as its link text, never its target 
   symlinkSync('../outside.txt', join(sandbox.repo, 'out'));
   symlinkSync('/dev/zero', join(sandbox.repo, 'zero'));
   sandbox.git('add', '.');
-  const stop = () => sandbox.run(['hook', '--stop'], { input: JSON.stringify({ cwd: sandbox.repo, stop_hook_active: false }), timeout: 10000 });
+  const stop = () => sandbox.run(['hook', '--stop'], { input: JSON.stringify({ cwd: sandbox.repo, stop_hook_active: false }) });
   let result = stop();
   assert.deepEqual([result.status, result.stderr], [0, ''], 'staged, before the commit');
   sandbox.git('commit', '-qm', 'links');
-  result = sandbox.run(['check'], { timeout: 10000 });
+  result = sandbox.run(['check']);
   assert.equal(result.status, 0, result.stderr);
   // A link whose text is itself an email is still caught.
   symlinkSync(`me${at}gmail.com`, join(sandbox.repo, 'mail'));
   sandbox.git('add', 'mail');
   assert.match(stop().stderr, /mail:1: an email/);
-  assert.match(sandbox.run(['check'], { timeout: 10000 }).stderr, /mail:1: an email/);
+  assert.match(sandbox.run(['check']).stderr, /mail:1: an email/);
 });
 
 test('check --staged: binary is decided from the bytes, not .gitattributes (#244)', () => {

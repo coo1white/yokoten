@@ -601,6 +601,12 @@ job 用 actionlint 和 zizmor 查 workflow 本身；还有一个 `ci` job，设�
 token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你自己的测试，加成 `yokoten.yml` 里
 的一个 job，再把它写进 `ci` 的 `needs`。
 
+如果项目里已经有这几个 workflow，`init` 会先看你有没有改过。kit 记着自己写出过的每一个版本。
+文件和其中一个一模一样（换行是 Windows 的也算），就说明你没改过，`init` 会把它换成最新版，
+并告诉你换了哪个。`init` 从来不提交，所以想要回旧文件，用 `git restore <文件>` 就行。
+你改过的文件原样保留；`init` 和完整的 `doctor` 会给出一条命令，让你对比它和 kit 最新版的区别。
+同一个 kit 版本，`doctor` 只提醒一次。符号链接也原样保留：`init` 从不顺着链接去写。
+
 另外还在 `.github/` 里放三个文件，默认设置就是安全的：
 
 - `dependabot.yml`：自动更新 CI 用到的 action，还有 `init` 在项目里找到的包（npm、cargo、pip、
@@ -621,7 +627,7 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 | 命令 | 做什么 |
 |------|--------|
 | `install` | 把技能装进 `~/.claude/skills` 和 `~/.agents/skills`，agent 装进 `~/.claude/agents`，加上会话开头的 `doctor` hook 和用户级命令守卫，再建一个空的私有词表。这两个 hook 给 Claude Code 装一份；已经有 `~/.codex` 或 `~/.gemini` 文件夹的话，Codex 和 Gemini CLI 也各装一份。它还会把这台电脑上能找到的私有词加进词表，并设好 git 的 mailmap。见「隐私」 |
-| `init [dir]` | 把这套做法放进一个项目。只加文件；已有的文件保留，并告诉你保留了哪些。它还会用 `gh` 看一眼 GitHub，告诉你要补哪些标准标签和里程碑，但不会去改 GitHub。没装 `gh`、没登录，或者远程仓库不在 GitHub 上，就说一声跳过了 |
+| `init [dir]` | 把这套做法放进一个项目。只加文件；已有的文件保留，并告诉你保留了哪些。kit 的 workflow 你没改过的，会换成最新版。它还会用 `gh` 看一眼 GitHub，告诉你要补哪些标准标签和里程碑，但不会去改 GitHub。没装 `gh`、没登录，或者远程仓库不在 GitHub 上，就说一声跳过了 |
 | `init --github --yes [--remove-default-labels] [--board]` | 补上缺的标准标签；没有打开的里程碑时，建一个叫 "First release" 的；要是已经有一个关掉的里程碑叫这个名字，就叫 "Next release"。关掉的里程碑不会被重新打开。已有的标准标签，颜色和说明改成标准的。`yokoten.json` 里的模块不超过 8 个时，每个模块建一个灰色标签。再跑一次什么也不会变。GitHub 自带的、不在这套里的标签（`question`、`wontfix` 等），只有加上 `--remove-default-labels` 才会删。加 `--board` 还会建一个关联到仓库的看板，要 gh 的令牌带 `project` 权限 |
 | `init --no-ci` | 不用 CI：在 `yokoten.json` 的 `"notNow"` 里记下 `"ci"`，不写 workflow，也不写 Dependabot 配置；这些文件如果还是 kit 原样，就删掉。私有仓库的 Actions 按分钟收费，用这个省下来 |
 | `update [dir] [--write]` | 看看这个版本的 yokoten 会怎么改项目 `AGENTS.md` 里的核心规则。加上 `--write` 才真的替换；「This project」那部分原样保留。见[更新规则](#更新规则) |

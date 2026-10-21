@@ -90,6 +90,7 @@ import {
   upstreamNote,
   userAgentHooks,
 } from '../../src/setup/doctor.ts';
+import { workflowNotes } from '../../src/setup/init.ts';
 import {
   ROAD,
   serverChecks,
@@ -218,6 +219,10 @@ test('messages: every check and guard says what, why and the fix, in text and JS
     writeFileSync(join(dir, 'AGENTS.md'), rules);
     add(coreRulesCheck(dir)?.finding);
   }
+  // A kit workflow with the project's changes (#456).
+  mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
+  writeFileSync(join(dir, '.github', 'workflows', 'yokoten.yml'), 'on: push\n');
+  for (const { note } of workflowNotes(dir)) add(note);
   // The server, with every setting off, and with nothing readable.
   const off = { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false, approvals: 0 };
   const security = { secretScanning: false, pushProtection: false, privateReporting: false, dependabotAlerts: false };
