@@ -96,8 +96,20 @@ export const RULES = {
   'lead-only': {
     rule: 'a worker does not change lead-only files: the rules, agent config, hooks and CI (core rule 5)',
     why: 'a worker must not change the rules it works under, and a pull request that edits CI runs that CI before anyone reads it',
-    check: 'for a worker (YOKOTEN_ROLE=worker, or a subagent named worker), the tool-call guard stops an edit or a shell write to a file that yokoten.json "leadOnly" matches, and a git commit that changes one; with YOKOTEN_ROLE=worker the commit check refuses it too. YOKOTEN_LEAD_ONLY_OK lists the paths the lead allows',
+    check: 'for a worker (YOKOTEN_ROLE=worker, a subagent named worker, or any agent in a worktree `yokoten worker mark` marked), the tool-call guard stops an edit or a shell write to a file that yokoten.json "leadOnly" matches, and a git commit that changes one; with YOKOTEN_ROLE=worker the commit check refuses it too. YOKOTEN_LEAD_ONLY_OK lists the paths the lead allows',
     docs: guide('the-core-rules'),
+  },
+  'worker-push': {
+    rule: 'a worker commits in its worktree and never pushes',
+    why: 'the lead reviews the work before it leaves the machine, and pushes it as the bot',
+    check: 'for a worker, the tool-call guard stops `git push`; branch protection on the server is the lock',
+    docs: guide('managing-agents-like-a-team'),
+  },
+  'worker-mark': {
+    rule: 'a worker does not change the worker mark on its worktree',
+    why: 'some agents pass their hooks no YOKOTEN_ROLE, so the mark is what tells the guard that the session is a worker',
+    check: 'for a worker, the tool-call guard stops a command that names the mark, a .git folder or a git folder option, an edit inside a .git folder, and `git worktree` other than `list`',
+    docs: guide('managing-agents-like-a-team'),
   },
   email: {
     rule: 'no personal email address in the repo (core rule 11)',

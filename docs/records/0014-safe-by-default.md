@@ -68,3 +68,10 @@ Every action that happens by default, and every advanced option, has a way back:
   it there, and `doctor` counts how many, never which. Off: `"privacy": { "skipOwnName":
   false }` in yokoten.json for one repo, or `"skipOwnName": false` in
   `private-marks-allow.json` for every repo on the machine. On: remove it, or set `true`.
+- **A worker's worktree is marked** (#555). Do by default: the `dispatch` skill runs
+  `yokoten worker mark <dir>` on each worktree it makes. The guard then treats every agent
+  there as a worker, even one whose runtime drops `YOKOTEN_ROLE` (Muse Code). The mark only
+  makes the guard stricter, and the worker can't remove it. The main checkout is never
+  marked. Off: `git worktree remove <dir>` after the merge removes the mark with the
+  worktree; the lead may also delete `.git/worktrees/<name>/yokoten-worker`. On: run
+  `yokoten worker mark <dir>` again.

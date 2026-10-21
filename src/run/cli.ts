@@ -275,6 +275,20 @@ export const COMMANDS: Command[] = [
     example: `echo '{"tool_input":{"command":"git status"}}' | yokoten hook`,
   },
   {
+    name: 'worker',
+    summary: "mark a worktree as a worker's, so the guard treats every agent there as a worker",
+    usage: 'mark <dir>',
+    text: [
+      "Marks the worktree at <dir> as a worker's. The guard then treats every agent there as",
+      'a worker, even one whose runtime passes no YOKOTEN_ROLE to its hooks (Muse Code).',
+      "The mark is a file in the worktree's own git folder, which the worker may not touch.",
+      '`git worktree remove <dir>` removes it. The main checkout is never marked.',
+    ],
+    options: [],
+    arguments: ['action', 'dir'],
+    example: 'yokoten worker mark ../app-42',
+  },
+  {
     name: 'explain',
     summary: 'a rule or a step: what it is, why, and how it is checked',
     usage: '[<id>] [--json]',

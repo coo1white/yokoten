@@ -1,6 +1,6 @@
 // `yokoten hook`: the tool-call guard, and with --stop the end-of-turn check.
 
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
 import * as claudeCode from '../agents/runtimes/claude-code.ts';
@@ -10,9 +10,9 @@ import * as gemini from '../agents/runtimes/gemini.ts';
 import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import { loadConfig } from '../rules/config.ts';
-import { hardenRead, printsAccount, privateOutput, releaseFix, wrapForRedact } from '../rules/guards.ts';
-import { type Finding, formatFinding } from '../rules/message.ts';
-import { checkChanged } from '../run/check.ts';
+import { hardenRead, hasWorkerMark, printsAccount, privateOutput, realPath, releaseFix, withWorkerMark, WORKER_MARK, wrapForRedact } from '../rules/guards.ts';
+import { type Finding, formatFinding, notRepoFinding } from '../rules/message.ts';
+import { checkChanged, readGit } from '../run/check.ts';
 import { type Action, type Guard, guardDeadline, judgeWithDeadline, loadHookConfig, type Repo } from '../run/hook.ts';
 import { bullets, type Invocation, parse, print, printJson, readInput, rootOf, say, usage } from './shared.ts';
 
@@ -161,7 +161,7 @@ function stopHook(invocation: Invocation, json: boolean, read: typeof claudeCode
 
 /** `guard`: the guard's worker, when bin/main.ts started it early (#408). */
 export function runHook(invocation: Invocation, guard?: Guard): number | Promise<number> {
-  const { env, cwd } = invocation;
+  const { cwd } = invocation;
   const options = parse('hook', invocation.args);
   if (typeof options === 'string') return usage(invocation, options);
   const json = options.flags.has('--json');
@@ -183,7 +183,10 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
     return 0;
   }
   const action = read(input);
-  const root = rootOf(action.cwd ?? cwd, env);
+  const root = rootOf(action.cwd ?? cwd, invocation.env);
+  // A worktree the lead marked makes every agent in it a worker, whatever env it passes (#555).
+  // Both folders count: a call may name another folder (Muse's `workdir`) than the hook's own.
+  const env = withWorkerMark(invocation.env, [resolve(cwd, action.cwd ?? '.'), cwd]);
   const config = loadHookConfig(root, (line) => say(invocation, `${line}\n`, invocation.stderr));
   const commandsOnly = options.flags.has('--commands-only');
   const repos = editRepos(invocation, action, action.cwd ?? root ?? cwd, root ? { root, config } : null, commandsOnly);
@@ -212,4 +215,38 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
     if (!json && denial.stdout) say(invocation, denial.stdout, invocation.stdout);
     return json ? 2 : denial.exitCode;
   });
+}
+
+/**
+ * `worker mark <dir>`: mark the worktree at <dir> as a worker's (#555). The guard then
+ * treats every agent there as a worker, whatever env its runtime passes to the hook. The
+ * mark is a file in the worktree's own git folder; `git worktree remove` removes it with
+ * the worktree. The main checkout is the lead's, so it is never marked.
+ */
+export function runWorker(invocation: Invocation): number {
+  const options = parse('worker', invocation.args);
+  if (typeof options === 'string') return usage(invocation, options);
+  const [action, dir] = options.positional;
+  if (action !== 'mark' || dir === undefined) return usage(invocation, 'say what to do and where: yokoten worker mark <dir>');
+  const folder = resolve(invocation.cwd, dir);
+  let answer: string[];
+  try {
+    answer = readGit(folder, ['rev-parse', '--absolute-git-dir', '--git-common-dir'], { env: invocation.env }).toString('utf8').trim().split('\n');
+  } catch {
+    print(invocation, [`yokoten worker: ${formatFinding(notRepoFinding(folder))}`], invocation.stderr);
+    return 1;
+  }
+  const [gitDir, commonDir] = [answer[0], resolve(folder, answer[1] ?? '')];
+  if (realPath(gitDir) === realPath(commonDir)) {
+    print(invocation, [`yokoten worker: ${dir} is the main checkout, the lead's. Mark a worktree: \`git worktree add <dir> -b <branch>\`, then \`yokoten worker mark <dir>\`.`], invocation.stderr);
+    return 1;
+  }
+  writeFileSync(join(gitDir, WORKER_MARK), "A worker's worktree: yokoten's guard treats every agent here as a worker. `git worktree remove` removes this mark.\n");
+  // The guard finds the mark without git; check that it does here.
+  if (!hasWorkerMark(folder)) {
+    print(invocation, [`yokoten worker: the mark is written, but the guard can't find it from ${dir}. Run it with the worktree's top folder.`], invocation.stderr);
+    return 1;
+  }
+  print(invocation, [`yokoten worker: marked ${dir}. The guard now treats every agent there as a worker. \`git worktree remove ${dir}\` removes the mark.`]);
+  return 0;
 }

@@ -26,6 +26,7 @@ import {
 import {
   checkCommand,
   checkEdit,
+  checkWorkerMarkEdit,
   commandWords,
   hardenRead,
   hookFile,
@@ -34,6 +35,7 @@ import {
   isRedacted,
   printsAccount,
   runsCheck,
+  withWorkerMark,
   wrapForRedact,
 } from '../../src/rules/guards.ts';
 import { judge } from '../../src/run/hook.ts';
@@ -1835,4 +1837,35 @@ test('wrapForRedact: keeps the exit code; a redact that fails passes the output 
   const broken = run('echo plain; exit 4', '"/nonexistent/node" "/nonexistent/yokoten.ts" redact');
   assert.deepEqual([broken.status, broken.stdout], [4, 'plain\n']);
   assert.ok(broken.stderr.split('\n').filter(Boolean).length <= 1, broken.stderr);
+});
+
+// #555: a worker does not push, and does not touch the worker mark; the lead may do both.
+test('guard: a worker does not push or touch the worker mark; the lead may (#555)', () => {
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  for (const command of [
+    'git push',
+    'git push -u origin task',
+    'nice git -C . push',
+    'rm .git/worktrees/wt/yokoten-worker',
+    'cat ../repo/.git/worktrees/wt/YOKOTEN-WORKER',
+    'rm -rf .git',
+    'ls "$(git rev-parse --git-common-dir)"',
+    'git rev-parse --git-path yokoten-worker',
+    'GIT_DIR=x git status',
+    'git worktree remove ../wt',
+    'git worktree add ../other -b other',
+  ]) {
+    blocked(command, worker);
+    assert.match(checkCommand(command, { cwd: process.cwd(), env: worker })?.id ?? '', /^worker-(push|mark)$/, command);
+  }
+  for (const command of ['git push -u origin task', 'rm .git/worktrees/wt/yokoten-worker', 'git worktree remove ../wt']) allowed(command);
+  // Near misses a worker still runs.
+  for (const command of ['cat .gitignore .gitattributes', 'ls .github/workflows', 'git clone https://example.com/a/b.git', 'git worktree list', 'git status', 'npm test']) allowed(command, worker);
+  assert.equal(checkWorkerMarkEdit('/w/.git/worktrees/wt/yokoten-worker')?.id, 'worker-mark');
+  assert.equal(checkWorkerMarkEdit('/w/wt/.git')?.id, 'worker-mark');
+  assert.equal(checkWorkerMarkEdit('/w/wt/src/git.ts'), null);
+  assert.equal(checkWorkerMarkEdit('/w/wt/.github/x.yml'), null);
+  // The mark only adds the role: env says worker, so no folder is read.
+  assert.equal(withWorkerMark(worker, ['/nowhere']), worker);
+  assert.deepEqual(withWorkerMark({ YOKOTEN_ROLE: 'lead' }, [makeTempDir()]), { YOKOTEN_ROLE: 'lead' });
 });

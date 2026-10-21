@@ -19,6 +19,7 @@ import {
   makeSandbox,
   pick,
   makeTempDir,
+  runChild,
 } from '../repo/helpers.ts';
 import { invoke } from '../repo/invoke.ts';
 import { redactCommand } from '../../src/commands/hook.ts';
@@ -369,4 +370,86 @@ test('hook: in-process, the tool call and the end-of-turn event come from the gi
   assert.equal(sentBack.code, 2);
   assert.match(sentBack.stderr, /out\.txt:1: a secret/);
   assert.deepEqual(await stop(true), { code: 0, stdout: '', stderr: '' });
+});
+
+// #555: Muse Code passes its hooks no YOKOTEN_ROLE. A worktree the lead marks makes every
+// agent in it a worker, whatever env reaches the hook; the lead's main checkout is not affected.
+test('worker mark: a marked worktree is a worker for every agent; the worker cannot remove the mark (#555)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', '{}\n');
+  sandbox.write('AGENTS.md', '# rules\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const tree = join(makeTempDir('yokoten-tree-'), 'wt');
+  sandbox.git('worktree', 'add', '-q', '-b', 'task', tree);
+  // A Muse call: no YOKOTEN_ROLE, the hook's cwd at the workspace root.
+  const muse = (toolInput: Record<string, string>, folder = tree, extra?: Record<string, string>) => {
+    const name = 'command' in toolInput ? 'bash' : 'write_file';
+    return sandbox.call(['hook', '--agent', 'muse'], { cwd: folder, input: JSON.stringify({ cwd: folder, hook_event_name: 'PreToolUse', tool_name: name, tool_input: toolInput }), extra });
+  };
+  // Before the mark, a Muse worker looks like the lead: the gap #555 closes.
+  assert.equal((await muse({ path: join(tree, 'AGENTS.md') })).status, 0);
+  // The main checkout is the lead's: it is never marked.
+  let result = await sandbox.call(['worker', 'mark', sandbox.repo]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /main checkout/);
+  assert.equal((await sandbox.call(['worker', 'mark'])).status, 1, 'no folder is a usage error');
+  result = await sandbox.call(['worker', 'mark', tree]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /git worktree remove/);
+  // Positive controls: with the mark and no env, a lead-only edit and a push are refused.
+  result = await muse({ path: join(tree, 'AGENTS.md') });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /lead-only/);
+  result = await muse({ command: 'git push -u origin task' });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /worker does not push/);
+  assert.equal((await muse({ command: 'yokoten bot -- git push' })).status, 2, 'through the bot too');
+  // A call that names another folder (Muse's workdir) is still the worker's: the hook runs in the worktree.
+  result = await sandbox.call(['hook', '--agent', 'muse'], { cwd: tree, input: JSON.stringify({ cwd: tree, tool_name: 'bash', tool_input: { command: 'git push', workdir: sandbox.repo } }) });
+  assert.equal(result.status, 2);
+  // The mark only adds the role: a session that says it is the lead is still a worker.
+  assert.equal((await muse({ path: join(tree, 'AGENTS.md') }, tree, { YOKOTEN_ROLE: 'lead' })).status, 2);
+  // Claude Code, in a subfolder of the worktree, is a worker too.
+  const sub = join(tree, 'src');
+  result = await sandbox.call(['hook'], { cwd: tree, input: JSON.stringify({ cwd: sub, tool_name: 'Edit', tool_input: { file_path: join(tree, 'AGENTS.md') } }) });
+  assert.equal(result.status, 2);
+  // Work goes on: code edits, commits and reads pass.
+  assert.equal((await muse({ path: join(tree, 'src', 'a.ts') })).status, 0);
+  assert.equal((await muse({ command: 'git commit -qm "fix: a"' })).status, 0);
+  assert.equal((await muse({ command: 'git status && cat .gitignore' })).status, 0);
+  assert.equal((await muse({ command: 'git worktree list' })).status, 0);
+  // The worker cannot remove or change the mark.
+  const gitDir = runChild('git', ['rev-parse', '--absolute-git-dir'], { cwd: tree }).stdout.trim();
+  const mark = join(gitDir, 'yokoten-worker');
+  assert.ok(existsSync(mark));
+  for (const command of [
+    `rm ${mark}`,
+    'rm "$(git rev-parse --git-dir)/yokoten-worker"',
+    'rm -rf "$(git rev-parse --absolute-git-dir)"',
+    `rm -rf ${join(sandbox.repo, '.git', 'worktrees')}`,
+    'echo "gitdir: ../repo/.git" > .git',
+    'GIT_DIR=../repo/.git git status',
+    `git worktree remove --force ${tree}`,
+    'git worktree prune',
+    'git -C ../repo worktree move wt wt2',
+  ]) {
+    result = await muse({ command });
+    assert.equal(result.status, 2, command);
+    assert.match(result.stderr, /worker mark|does not push/, command);
+  }
+  for (const path of [mark, join(tree, '.git'), join(sandbox.repo, '.git', 'config')]) {
+    result = await muse({ path });
+    assert.equal(result.status, 2, path);
+    assert.match(result.stderr, /worker mark/, path);
+  }
+  assert.ok(existsSync(mark), 'the mark is still there');
+  // The lead in the main checkout, with no mark, is not affected.
+  const lead = (toolInput: Record<string, string>) => muse(toolInput, sandbox.repo);
+  assert.equal((await lead({ path: join(sandbox.repo, 'AGENTS.md') })).status, 0);
+  assert.equal((await lead({ command: 'git push -u origin task' })).status, 0);
+  assert.equal((await lead({ command: `git worktree remove ${tree}` })).status, 0);
+  // The way back: removing the worktree removes the mark.
+  sandbox.git('worktree', 'remove', '--force', tree);
+  assert.ok(!existsSync(mark));
 });

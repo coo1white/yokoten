@@ -33,6 +33,79 @@ export function checkEdit(path: string, { config, env }: { config: Config; env: 
 
 const LEAD_ONLY_FIX = 'stop and hand the change to the lead: say in your report what to change in it, or ask the lead to start you with YOKOTEN_LEAD_ONLY_OK=<path>';
 
+// ---- The worker mark (#555) ----
+//
+// Some runtimes pass their hooks only a few variables, so YOKOTEN_ROLE is lost (Muse Code).
+// The lead marks a worker's worktree instead (`yokoten worker mark <dir>`): a file in the
+// worktree's own git folder (`.git/worktrees/<name>/`), outside the files an agent edits.
+// The guard finds it through the `.git` file, with no git process (#408). The mark only adds
+// the worker role, never takes it away. Removing the worktree removes the mark.
+//
+// A worker may not touch it: a command that names the mark, a git folder or git's options
+// that print one is refused, and so is an edit inside a git folder and `git worktree`. Like
+// the rest of the guard this reads text; it refuses what it can't read, it does not parse it.
+
+/** The mark's file name, in the worktree's own git folder. */
+export const WORKER_MARK = 'yokoten-worker';
+
+/**
+ * The git folder of the checkout at or above `folder`, read from its `.git` (a folder, or
+ * a file with `gitdir: <path>`), or null outside one. No git process runs.
+ */
+export function gitDirAbove(folder: string): string | null {
+  for (let dir = resolve(folder); ; dir = dirname(dir)) {
+    const dotGit = join(dir, '.git');
+    let isFolder: boolean | null = null;
+    try {
+      isFolder = statSync(dotGit).isDirectory();
+    } catch {}
+    if (isFolder) return dotGit;
+    if (isFolder === false) {
+      try {
+        const line = /^gitdir:[ \t]*(.+?)[ \t\r]*$/m.exec(readFileSync(dotGit, 'utf8'));
+        return line ? resolve(dir, line[1]) : null;
+      } catch {
+        return null;
+      }
+    }
+    if (dirname(dir) === dir) return null;
+  }
+}
+
+/** Whether the checkout at or above `folder` carries the worker mark. */
+export function hasWorkerMark(folder: string): boolean {
+  const gitDir = gitDirAbove(folder);
+  return gitDir !== null && existsSync(join(gitDir, WORKER_MARK));
+}
+
+/** `env` with YOKOTEN_ROLE=worker when any of `folders` is in a marked worktree; else `env` as it is. */
+export function withWorkerMark(env: Env, folders: string[]): Env {
+  if (env.YOKOTEN_ROLE === 'worker') return env;
+  return [...new Set(folders)].some(hasWorkerMark) ? { ...env, YOKOTEN_ROLE: 'worker' } : env;
+}
+
+// The text a worker's command may not hold: the mark's name, a `.git` path, git's options
+// and variables that name a git folder, and `git rev-parse --git-path`.
+const MARK_WORDS = [
+  { pattern: new RegExp(WORKER_MARK, 'i'), what: `names ${WORKER_MARK}, the worker mark` },
+  { pattern: /(^|[\s'"=:/\\(`;&|<>])\.git(?=$|[\s'"/\;&|)`<>])/, what: 'names a .git folder, where the worker mark is kept' },
+  { pattern: /--(absolute-)?git-(dir|common-dir|path)\b|\bGIT_(DIR|COMMON_DIR)\b/, what: 'names a git folder, where the worker mark is kept' },
+];
+const MARK_FIX = 'leave the git folder and the worker mark as they are; if your task needs them, stop and tell the lead';
+
+/** For a worker: a command that may change the worker mark (#555), or null. */
+export function checkWorkerMarkCommand(command: string): Finding | null {
+  const found = MARK_WORDS.find(({ pattern }) => pattern.test(command));
+  return found ? finding('worker-mark', `this command ${found.what}`, MARK_FIX) : null;
+}
+
+/** For a worker: an edit inside a git folder, or of the mark (#555), or null. `path` is absolute. */
+export function checkWorkerMarkEdit(path: string): Finding | null {
+  const parts = path.split(/[/\\]+/);
+  if (parts.includes('.git') || parts.at(-1)?.toLowerCase() === WORKER_MARK) return finding('worker-mark', 'this edit is inside a .git folder, where the worker mark is kept', MARK_FIX);
+  return null;
+}
+
 // On macOS and Windows a file name is the same file in any case: `agents.md` is AGENTS.md.
 const FOLDS_CASE = process.platform === 'darwin' || process.platform === 'win32';
 
@@ -73,8 +146,11 @@ export function checkCommand(command: string, options: { env: Env; config?: Guar
   const outerAnswers = gitAnswers;
   try {
     gitAnswers = outerAnswers ?? new Map();
+    const isWorker = options.env.YOKOTEN_ROLE === 'worker';
+    const mark = isWorker ? checkWorkerMarkCommand(command) : null;
+    if (mark) return mark;
     // The file rules are looked up once per call, and only for a worker.
-    const rules = options.env.YOKOTEN_ROLE === 'worker' ? fileRules(options.repos ?? []) : undefined;
+    const rules = isWorker ? fileRules(options.repos ?? []) : undefined;
     return withBudget(command.length, () => checkEachCommand(command, { ...options, rules }));
   } catch {
     return finding('unreadable-command', 'yokoten could not read this command', 'split it into simpler commands, one per call');
@@ -205,6 +281,10 @@ function checkGit(words: string[], { env, config, cwd, rules }: { env: Env; conf
     const reason = alias && checkEachCommand(alias[1], { env, config, cwd, rules });
     if (reason) return reason;
   }
+  // Removing or moving its worktree removes a worker's mark, and a new one has none (#555).
+  if (sub === 'worktree' && env.YOKOTEN_ROLE === 'worker' && args[0] !== 'list') {
+    return finding('worker-mark', `git worktree ${args[0] ?? ''} changes a worktree, which carries the worker mark`, MARK_FIX);
+  }
   if (sub === 'push') {
     if (!env.YOKOTEN_RELEASE_APPROVAL) {
       const tagFlag = args.find((a) => ['--tags', '--follow-tags', '--mirror'].includes(a));
@@ -214,6 +294,8 @@ function checkGit(words: string[], { env, config, cwd, rules }: { env: Env; conf
     }
     const force = args.find((a) => a === '--force' || /^-[a-z]*f[a-z]*$/i.test(a) || a.startsWith('+'));
     if (force) return finding('force-push', `git push ${force} forces the push`, 'use --force-with-lease, which stops when the remote has work you have not seen');
+    // A worker commits in its worktree; the lead reviews and pushes (#555).
+    if (env.YOKOTEN_ROLE === 'worker') return finding('worker-push', 'a worker does not push', 'commit in your worktree and say so in your report; the lead pushes after review');
   }
   const skip = args.includes('--no-verify') ? '--no-verify' : sub === 'commit' ? args.find((a) => /^-[a-z]*n[a-z]*$/i.test(a)) : undefined;
   if (skip) return finding('skip-check', `git ${sub} ${skip} skips the commit check`, 'fix what the check reports instead');

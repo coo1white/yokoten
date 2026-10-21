@@ -5,7 +5,7 @@
 // What the real runs showed, past the docs page:
 // - Muse loads `.muse/hooks.json` only in a trusted workspace; otherwise it skips it without a word.
 // - It runs a hook with `/bin/bash -c`, its cwd at the workspace root, and a short env:
-//   no project-dir variable, and no YOKOTEN_ROLE, so a worker can't be told from the lead.
+//   no project-dir variable, and no YOKOTEN_ROLE: the worker mark on its worktree tells a worker (#555).
 // - Exit 2 with the reason on stderr refuses the call. Any other failure (exit 1, a
 //   timeout, a hooks.json that won't parse) lets the call run.
 // - `matcher: "*"` also matches Muse's own tools (read_skill...), so the matcher names the tools.
@@ -35,7 +35,7 @@ export function readToolCall(input: unknown): Action {
     command: name === SHELL ? text(tool.command) : undefined,
     paths: EDITS.has(name) && path ? [path] : [],
     cwd: (name === SHELL ? text(tool.workdir) : undefined) ?? text(call.cwd),
-    // Muse names no subagent role, and cuts YOKOTEN_ROLE from the hook's env.
+    // Muse names no subagent role, and cuts YOKOTEN_ROLE from the hook's env: the worker mark decides (#555).
     worker: false,
   };
 }
