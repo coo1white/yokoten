@@ -33,7 +33,7 @@ import * as grok from '../agents/runtimes/grok.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { copyRuntime, HOME_DIR, KIT, MANAGED, writeManaged, writeNew } from './files.ts';
 import { type Gh, readLocalLogins, readLogin } from '../host/github.ts';
-import { FOUND_HEADER, foundHeader, homeIn, homeOf, isDomainShaped, isEmailShaped, OWN_HEADER, isPersonalEmail, loadMarks, marksFile, NO_HOME, privateRemoteHosts, systemHome } from '../rules/privacy.ts';
+import { FOUND_HEADER, foundHeader, homeIn, loadMarkKinds, markLines, type Mark, homeOf, isDomainShaped, isEmailShaped, OWN_HEADER, isPersonalEmail, loadMarks, marksFile, NO_HOME, privateRemoteHosts, systemHome } from '../rules/privacy.ts';
 
 /**
  * Where yokoten keeps its runtime, its config and the private marks. With no absolute home
@@ -59,9 +59,12 @@ export const skillFiles = (env: Env, name: string): string[] => [claudeSkillFile
 /** The skills folder a skill file is in, for the report: `~/.claude/skills`. */
 export const skillsDir = (file: string): string => dirname(dirname(file));
 
-const MARKS_HEADER = `# yokoten private marks: words that must never be published.
-# One per line, matched without case. Your real name, city, domain, server names, other
-# account names. This file stays on this machine; never commit it or paste it anywhere.
+export const MARKS_HEADER = `# yokoten private marks: words that must never be published.
+# One per line, matched without case. A name or a city (letters and spaces) is found as
+# whole words: a letter next to it hides it, a digit or _ - . / @ does not. yokoten adds
+# your git name, git email and forge login by itself; \`yokoten marks add\` adds your city,
+# domain, server names, other account names.
+# This file stays on this machine; never commit it or paste it anywhere.
 `;
 
 /** The real path of a file, or null when it is not there. */
@@ -272,14 +275,14 @@ export function install(env: Env, { cwd, gh, ask, platform }: { cwd?: string; gh
   } else report.push('skipped Grok CLI: ~/.grok not found (run `yokoten install` again after installing Grok CLI)');
 
   const marks = writeNew(target.marks, MARKS_HEADER, { mode: 0o600 });
-  report.push(`${marks} ${target.marks}${marks === 'wrote' ? ' (add your marks to it)' : ''}`);
+  report.push(`${marks} ${target.marks}${marks === 'wrote' ? ' (`yokoten marks add` adds one of your own)' : ''}`);
   // The obvious marks come from the machine; the rest only the owner knows (#390).
   const found = machineMarks(env, { cwd, gh });
   report.push(
     ...trySafely('the marks from this machine', () => {
-      const lines = [filledLine(fillMarks(env, found), target.marks)];
+      const lines = filledLines(fillMarks(env, found), target.marks);
       const missing = missingMarkKinds(loadMarks(env), found);
-      if (missing.length) lines.push(`add ${missing.join(', ')} to ${target.marks}, one per line; yokoten can't find these on its own`);
+      if (missing.length) lines.push(`yokoten can't find ${missing.join(' or ')} on its own; to add one, run \`yokoten marks add\` and type it (it is not shown)`);
       return lines;
     }),
     ...trySafely('the git mailmap', () => [setUpMailmap(env, found)]),
@@ -657,19 +660,21 @@ function replaceFile(file: string, text: string): void {
  */
 export function fillMarks(env: Env, found: MachineMark[]): string[] {
   const file = marksFile(env);
+  const logins = found.filter((mark) => mark.kind === 'forge login').map((mark) => mark.value);
   if (existsSync(file)) {
-    const logins = [...readLocalLogins(env), ...found.filter((mark) => mark.kind === 'forge login').map((mark) => mark.value)];
     const hosts = found.filter((mark) => mark.kind === 'private remote host').map((mark) => mark.value);
-    const migrated = migrateMarks(readFileSync(file, 'utf8'), { logins, hosts });
+    const migrated = migrateMarks(readFileSync(file, 'utf8'), { logins: [...readLocalLogins(env), ...logins], hosts });
     if (migrated !== null) replaceFile(file, migrated);
   }
   const known = new Set(loadMarks(env));
+  const off = new Set(kindsTurnedOff(env));
+  // A git name that is a login is covered by the login's mark (#410, #434): the one added now, or one the file has.
+  const loginSet = new Set([...(off.has('forge login') ? [] : logins.map((login) => login.toLowerCase())), ...loadMarkKinds(env).filter((mark) => mark.kind === 'forge login').map((mark) => mark.value)]);
   const added: MachineMark[] = [];
-  // The git display name is left out: as a mark, a common name would flag every file that
-  // holds the word. `redact` still hides it, from git, as a whole word.
-  for (const mark of found.filter((one) => one.kind !== 'git name')) {
+  for (const mark of found.filter((one) => !off.has(one.kind))) {
     const key = mark.value.toLowerCase();
     if (known.has(key)) continue;
+    if (mark.kind === 'git name' && (!isPersonName(mark.value) || loginSet.has(key))) continue;
     known.add(key);
     added.push(mark);
   }
@@ -700,20 +705,122 @@ export function countOwnMarks(env: Env): number {
   return count;
 }
 
-/** The line install and doctor print after `fillMarks`: the kinds, never the values. */
-export const filledLine = (kinds: string[], file: string): string =>
-  kinds.length ? `added to ${file} from this machine: ${kinds.join(', ')} (the values are not shown)` : `kept ${file}: it already has what this machine knows`;
+/** The lines install and doctor print after `fillMarks`: the kinds, never the values. The git name has a line of its own (#434). */
+export function filledLines(kinds: string[], file: string): string[] {
+  const others = kinds.filter((kind) => kind !== 'git name');
+  const lines = kinds.includes('git name') ? [GIT_NAME_ADDED] : [];
+  if (others.length) lines.push(`added to ${file} from this machine: ${others.join(', ')} (the values are not shown)`);
+  else if (!lines.length) lines.push(`kept ${file}: it already has what this machine knows`);
+  return lines;
+}
+
+/** What install says when it adds the git name: never the name. */
+export const GIT_NAME_ADDED = 'added your git name to the private marks (not shown)';
+
+// Names a tutorial or a template puts in user.name: they name nobody.
+const PLACEHOLDER_NAMES = new Set(['your name', 'john doe', 'jane doe', 'user', 'name', 'admin', 'first last', 'firstname lastname']);
+
+/**
+ * Whether a git user.name names a person, so install adds it as a mark: 3 characters or
+ * more, not an address, not a placeholder (`your name`, `john doe`), and not an account
+ * name every machine of a kind has (`root`, `test`). One word counts too: it may be all
+ * the name the owner uses.
+ */
+export function isPersonName(name: string): boolean {
+  const key = name.trim().toLowerCase().replace(/\s+/g, ' ');
+  return key.length >= 3 && !key.includes('@') && !PLACEHOLDER_NAMES.has(key) && !SHARED_ACCOUNTS.has(key);
+}
+
+// ---- The kinds of mark the owner can turn off (#434) ----
+
+/** The kinds install adds by itself that `yokoten marks off` can turn off, as the command line names them. */
+export const SWITCHED_KINDS: Record<string, MachineMark['kind']> = { 'git-name': 'git name', 'git-email': 'git email', 'forge-login': 'forge login' };
+
+/** The kinds the owner turned off with `yokoten marks off`, from machine.json: install and doctor don't add them. */
+export function kindsTurnedOff(env: Env): string[] {
+  let file: string;
+  try {
+    file = machineStateFile(env);
+  } catch {
+    return [];
+  }
+  const off = readMachineState(file, REAL_USER_PROBE).marksOff;
+  const known = Object.values(SWITCHED_KINDS) as string[];
+  return Array.isArray(off) ? off.filter((kind): kind is string => typeof kind === 'string' && known.includes(kind)) : [];
+}
+
+/** Turn one kind off or back on in machine.json, keeping the other keys. Throws when the file can't be written. */
+export function setKindOff(env: Env, kind: string, isOff: boolean): void {
+  const rest = kindsTurnedOff(env).filter((one) => one !== kind);
+  saveMachineState(machineStateFile(env), REAL_USER_PROBE, 'marksOff', isOff ? [...rest, kind] : rest);
+}
+
+/**
+ * Add one mark the owner gives, as their own (`yokoten marks add`): at the end of the file,
+ * under `# your own marks` when the last part is one yokoten added. It makes the file (mode
+ * 600) when it is missing. False when the file has the mark already.
+ */
+export function addOwnMark(env: Env, value: string): boolean {
+  const file = marksFile(env);
+  if (loadMarks(env).includes(value.toLowerCase())) return false;
+  if (!existsSync(file)) writeNew(file, MARKS_HEADER, { mode: 0o600 });
+  const text = readFileSync(file, 'utf8');
+  const last = text.split('\n').map((line) => line.trim()).filter((line) => line.startsWith('#')).at(-1) ?? '';
+  const isFound = last === FOUND_HEADER || last.startsWith(`${FOUND_HEADER}: `);
+  appendFileSync(file, `${text === '' || text.endsWith('\n') ? '' : '\n'}${isFound ? `${OWN_HEADER}\n` : ''}${value}\n`);
+  return true;
+}
+
+/**
+ * Take out the marks `drop` picks, and a header yokoten wrote that has no mark left under it.
+ * An old plain block is split by kind first, as `fillMarks` does. The owner's comments stay.
+ * Returns the marks taken out, never printed.
+ */
+export function removeMarks(env: Env, drop: (mark: Mark) => boolean): Mark[] {
+  const file = marksFile(env);
+  if (!existsSync(file)) return [];
+  const before = readFileSync(file, 'utf8');
+  const text = migrateMarks(before, { logins: readLocalLogins(env), hosts: [] }) ?? before;
+  const lines = text.split('\n');
+  const read = markLines(text);
+  const removed: Mark[] = [];
+  const kept = lines.filter((_, index) => {
+    const mark = read[index];
+    if (!mark || !drop(mark)) return true;
+    removed.push(mark);
+    return false;
+  });
+  if (!removed.length) {
+    if (text !== before) replaceFile(file, text);
+    return [];
+  }
+  // A header of yokoten's own with only blank lines or another comment after it is left empty: it goes too.
+  const isOurs = (line: string) => line.trim() === FOUND_HEADER || line.trim().startsWith(`${FOUND_HEADER}: `) || line.trim() === OWN_HEADER;
+  const out = kept.filter((line, index) => {
+    if (!isOurs(line)) return true;
+    const next = kept.slice(index + 1).find((after) => after.trim() !== '');
+    return next !== undefined && !next.trim().startsWith('#');
+  });
+  replaceFile(file, out.join('\n'));
+  return removed;
+}
+
+/** How many marks the file holds of each kind, the owner's as `by hand`. Never the values. */
+export function countMarkKinds(env: Env): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const mark of loadMarkKinds(env)) counts.set(mark.kind ?? 'by hand', (counts.get(mark.kind ?? 'by hand') ?? 0) + 1);
+  return counts;
+}
 
 /**
  * The kinds of mark yokoten can't find on its own, which the file seems to lack, in plain
- * words. A name has a space; a domain has a dot; anything else not from the machine may
- * be the city. A guess from the shape, so doctor shows it as a note.
+ * words. A domain has a dot; anything else not from the machine may be the city. The name
+ * is not asked for: install adds the git name (#434). A guess from the shape, so doctor shows it as a note.
  */
 export function missingMarkKinds(marks: string[], found: MachineMark[]): string[] {
   const fromMachine = new Set(found.map((mark) => mark.value.toLowerCase()));
   const own = marks.filter((mark) => !fromMachine.has(mark) && !mark.includes('@'));
   const missing: string[] = [];
-  if (!own.some((mark) => /\s/.test(mark))) missing.push('your real name');
   if (!own.some((mark) => !/\s/.test(mark) && !isDomainShaped(mark))) missing.push('your city');
   if (!own.some(isDomainShaped)) missing.push('your domains');
   return missing;

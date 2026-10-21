@@ -3,6 +3,8 @@
 //
 // The server steps (#7) and the planning steps (#10) judge what the host adapter read. Only full doctor reads the host;
 // a session passes nothing, so those steps are "can't check" there and never hold the stage.
+// On a host with no adapter (#504), every step with `byHand` is "can't check" too, and
+// says what it asks in plain words: the step names the idea, the adapter knows the host.
 //
 // The stage is worked out from what the project has, never saved: it is the stage of the
 // first step that is neither done nor "not now". The order is advice, not a gate: a later
@@ -19,6 +21,7 @@ import { BUILD_DIRS, isBuildOutput } from '../rules/layout.ts';
 import { homeOf } from '../rules/privacy.ts';
 import { hasPlugin, hasProjectHook } from '../agents/runtimes/claude-code.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
+import { isNoAdapter } from '../host/hosts.ts';
 import { CODEOWNERS_PLACES, hasBot, KEYS_FILE, missingBotSetup, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
 import { claudeReadsRules, cliPath, COMMIT_HOOKS, deadHookNotes, findRulesGap, handOffBlocks, hasHandOff, hookFile, isCommitHook, isExecutable, isSelf, type OldHook, OWNER_PLACEHOLDER, readHookSetup, readOldHooks } from './init.ts';
@@ -56,6 +59,12 @@ export interface Step {
   withoutCi?: string;
   /** Why yokoten can't check the step here, and what to do. Server steps and workflow steps have it. No full stop at the end. */
   unchecked?: (server: ServerRead) => string;
+  /**
+   * What the step asks of the code host, in plain words with no host's menus or commands
+   * (#504). On a host yokoten has no adapter for, doctor can't check the step, and says
+   * this so the user can do it by hand. Steps that only the host can judge have it. No full stop at the end.
+   */
+  byHand?: string;
   /** Why the step matters, in one plain sentence. No full stop at the end. */
   why: string;
   /** How yokoten checks it, for `yokoten explain`. No full stop at the end. */
@@ -613,13 +622,14 @@ const joinChecks = (key: string, root: string | null, server: ServerRead, mark: 
 };
 
 /** A stage 5 step made from server checks. `lacking` and `fix` are said when no check has its own words. */
-const serverStep = (key: string, fields: { lacking: string; fix: string; why: string; how: string; standard?: string }): Step => ({
+const serverStep = (key: string, fields: { lacking: string; fix: string; byHand: string; why: string; how: string; standard?: string }): Step => ({
   stage: 5,
   key,
   check: (root, _, server, config) => judgeServer(key, root, server, config),
   what: (root, _, server, config) => joinChecks(key, root, server, 'MISSING', 'what', fields.lacking, config),
   fix: (root, _, server, config) => joinChecks(key, root, server, 'MISSING', 'fix', fields.fix, config),
   unchecked: (server) => `${joinChecks(key, null, server, "can't check", 'what', 'nothing was read')}; ${joinChecks(key, null, server, "can't check", 'fix', 'run `yokoten doctor`')}`,
+  byHand: fields.byHand,
   why: fields.why,
   how: fields.how,
   ...(fields.standard ? { standard: fields.standard } : {}),
@@ -670,6 +680,7 @@ const reviewStep: Step = {
     if ('unread' in read) return `${read.unread}; ${read.fix}`;
     return read.approvals >= 1 && read.actionsCanApprove === null ? `the Actions setting ${ACTIONS_SETTING} can be read only by an admin; sign in to gh as a repo admin and run doctor again` : '';
   },
+  byHand: 'a merge to the default branch needs one approving review; let the bot open the pull requests, so you can approve them, and let no CI job approve one',
   why: 'the bot opens the pull requests, so you approve work you did not write, and nothing merges unread',
   how: 'through the code host\'s API, in full doctor only: a ruleset (or the old branch protection) on the default branch asks for at least 1 approving review, and the Actions setting that lets a workflow approve a pull request is off; a private repo without rulesets waits for stage 5',
   standard: 'Scorecard: Code-Review',
@@ -875,6 +886,7 @@ export const ROAD: Step[] = [
     unchecked: () => WORKFLOW_TOO_LONG,
     what: noTests,
     fix: testsFix,
+    byHand: 'your host\'s CI runs the tests on every push and on every pull request',
     why: 'tests that run on every push catch a broken change before it reaches main',
     how: 'package.json has a real "test" script and a `run:` step in .github/workflows runs it, or a `run:` step starts a test runner such as `node --test`, `go test`, `pytest`, `tox`, `make test` or `npx vitest`; in a workspaces repo, `npm test --workspaces` or `pnpm -r test` counts too',
     standard: 'Best Practices: test',
@@ -888,6 +900,7 @@ export const ROAD: Step[] = [
     unchecked: () => WORKFLOW_TOO_LONG,
     what: () => 'CI does not run `yokoten check`',
     fix: (root) => keptWorkflow(root, 'yokoten.yml', 'check', 'actions/checkout and actions/setup-node'),
+    byHand: 'your host\'s CI runs `yokoten check` on every push and on every pull request',
     why: 'a commit made with the hook off would reach main unchecked',
     how: 'a workflow in .github/workflows runs `yokoten check` (by its path, or with npx, bunx or pnpm dlx), or has a step that uses yokoten-labs/yokoten',
     standard: 'Scorecard: CI-Tests',
@@ -920,12 +933,14 @@ export const ROAD: Step[] = [
   planningStep('labels', (planning) => lackingLabels(planning.labels.map((l) => l.name)).length === 0, {
     what: (...[, , server]) => `the standard labels are not all on the server (no ${lackingNames(server).join(', ')})`,
     fix: () => '`yokoten init` shows what it would add, and `yokoten init --github --yes` adds them',
+    byHand: `the repo has the labels ${lackingLabels([]).map((l) => l.name).join(', ')}`,
     why: 'a label says what kind of change a pull request is, and the pull request check asks for one',
     how: 'through the code host\'s API, in full doctor only: the repo has the labels bug, feat, docs, refactor, ci, owner, incident, good first issue, hotfix, tier A, tier B and tier C',
   }),
   planningStep('milestone', (planning) => pickNewMilestone(planning.milestones) === null, {
     what: () => 'no open milestone on the server',
     fix: (...[, , server]) => `\`yokoten init --github --yes\` makes one called "${newMilestoneOf(server)}"`,
+    byHand: 'the repo has an open milestone for the next release',
     why: 'a milestone says when a change ships, and the pull request check asks for one',
     how: 'through the code host\'s API, in full doctor only: the repo has at least one open milestone',
   }),
@@ -965,6 +980,7 @@ export const ROAD: Step[] = [
     unchecked: () => WORKFLOW_TOO_LONG,
     what: () => 'CI does not check pull requests (`yokoten check --pr`)',
     fix: (root) => keptWorkflow(root, 'pr.yml', 'check --pr', 'actions/checkout with `fetch-depth: 0` and actions/setup-node, in a job that runs on pull_request'),
+    byHand: 'before a pull request merges, its title has the commit form (`feat: ...`, `fix: ...`) and says what changed',
     why: 'a pull request title becomes the commit on main, so it must say what changed and why',
     how: 'a workflow in .github/workflows runs `yokoten check --pr`, or runs on pull requests with a step that uses yokoten-labs/yokoten and does not set `pr-check: false`',
     standard: 'Conventional Commits 1.0.0',
@@ -989,6 +1005,7 @@ export const ROAD: Step[] = [
       if (org) return `put a person's handle or @${org}/<team> in ${file}`;
       return file ? `put your GitHub handle in ${file}` : '`yokoten init` writes .github/CODEOWNERS for the lead-only paths; or add one with a line `<path> @<your account>` for each path where a mistake is hard to undo: the rules, CI, agent config';
     },
+    byHand: 'a CODEOWNERS file, where your host reads one, names you for the rules, CI and agent config, and a pull request that changes them needs your review',
     why: 'the host then asks you to review a pull request that changes those paths, and `check --pr` makes it tier A',
     how: `a CODEOWNERS file is in .github/, at the root or in docs/, and the first one GitHub reads names an owner, not init's placeholder ${OWNER_PLACEHOLDER}; full doctor also reads whether the repo belongs to an organization, and an organization alone (@org, not @org/team) is not an owner`,
     standard: 'Scorecard: Branch-Protection',
@@ -1000,6 +1017,7 @@ export const ROAD: Step[] = [
     // Names the piece that is missing (#364, #405), as `yokoten bot` finds it.
     what: (_, env) => `the bot is not set up on this machine: ${missingBotSetup(env) ?? 'nothing is missing'}`,
     fix: () => 'yokoten\'s docs/server.md shows how to set one up',
+    byHand: 'a bot account with its own token and write access opens the pull requests; it can\'t change CI, create tags or approve',
     why: 'when the bot opens pull requests, you review work you did not write, as a team does',
     how: `YOKOTEN_BOT_APP_ID is set, in the environment or in ${KEYS_FILE}, and the key file exists (YOKOTEN_BOT_KEY, or ~/.config/yokoten/bot.pem): the same lookup as \`yokoten bot\``,
   },
@@ -1037,6 +1055,7 @@ export const ROAD: Step[] = [
   serverStep('protection', {
     lacking: 'the default branch and the v* tags are not locked on the server',
     fix: 'in Settings, Rules, Rulesets, add a ruleset on the default branch and one on v* tags',
+    byHand: 'the default branch takes changes only through a pull request with CI passed and code owner review, and no force push or deletion; only you can create, move or delete a v* release tag',
     why: 'the guards catch an agent\'s mistakes, but only the server stops a push that gets past them',
     how: 'through the code host\'s API, in full doctor only: the default branch needs a pull request, a named CI check, code owner review, no force push and no deletion; an active ruleset on v* tags restricts creation, update and deletion',
     standard: 'Scorecard: Branch-Protection',
@@ -1044,12 +1063,14 @@ export const ROAD: Step[] = [
   serverStep('merge-settings', {
     lacking: 'pull requests can merge in more than one way, or merged branches stay',
     fix: 'in Settings, General, Pull Requests, allow squash merging only and turn on "Automatically delete head branches"',
+    byHand: 'a pull request merges by squash only, and its branch is deleted when it merges',
     why: 'one pull request becomes one commit on main, and no merged branch is left behind',
     how: 'through the code host\'s API, in full doctor only: the repo (or its ruleset) allows squash merges only, and deletes a branch when its pull request merges',
   }),
   serverStep('security-settings', {
     lacking: 'some security switches are off on the server',
     fix: 'in Settings, Advanced Security, turn on secret scanning, push protection, private vulnerability reporting and Dependabot alerts',
+    byHand: 'the host stops a pushed secret, people can report a security hole in private, and you hear of a dependency with a known hole, as far as your host can do these',
     why: 'the host then stops a pushed secret, and people can report a hole in private',
     how: 'through the code host\'s API, in full doctor only: secret scanning, push protection, private vulnerability reporting and Dependabot alerts are on; some are visible only to a repo admin',
   }),
@@ -1186,7 +1207,18 @@ export function walk(found: { step: Step; found: Found }[], notNow: Record<strin
   return { stage: first ? first.stage : null, next: first, steps };
 }
 
-/** Run every check on the road for this project. `server` is what full doctor read from the code host. */
+/**
+ * Run every check on the road for this project. `server` is what full doctor read from the
+ * code host. On a host with no adapter (#504), a step that only the host can judge is
+ * "can't check": it never holds the stage, and doctor says what it asks.
+ */
 export function road(root: string, env: Env, steps: Step[] = ROAD, server?: ServerRead, config?: Config): { step: Step; found: Found }[] {
-  return steps.map((step) => ({ step, found: step.check(root, env, server, config) }));
+  const isOtherHost = isNoAdapter(server);
+  return steps.map((step) => ({ step, found: isOtherHost && step.byHand ? null : step.check(root, env, server, config) }));
+}
+
+/** What the map says after a "can't check" step: why, and what to do; empty when the step has no words for it. */
+export function uncheckedText(step: Step, server: ServerRead): string {
+  if (isNoAdapter(server) && step.byHand) return `yokoten can't check this on ${server.otherHost} yet; do it by hand: ${step.byHand}`;
+  return step.unchecked?.(server) ?? '';
 }

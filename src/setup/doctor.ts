@@ -35,13 +35,14 @@ import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import type { FolderTrust } from '../agents/folder-trust.ts';
 import { commentedFile, HAND_ADD, handAddJson, type HookState, mergeHandAdds } from '../agents/hooks-file.ts';
-import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
+import { type Gh, readServer, type ServerSettings, type Unread } from '../host/github.ts';
+import { type Host, hostOf, isNoAdapter, noAdapter } from '../host/hosts.ts';
 import { findTempDirs, readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advice/unsaved.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
 import { compareCoreRules, compareVersions, hookCliPath, isSelf, readCoreRules, summarizeUpdate, withGitReads, workflowNotes } from './init.ts';
 import { assumeEmptyFolder, gitConfig } from '../run/check.ts';
-import { countOwnMarks, fillMarks, launcherFile, PROFILE_LINE, filledLine, trySafely, installedPieces, isOnPath, launcherDir, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
-import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
+import { countOwnMarks, fillMarks, launcherFile, PROFILE_LINE, filledLines, trySafely, installedPieces, isOnPath, launcherDir, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
+import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, uncheckedText, walk } from './road.ts';
 
 /**
  * One check outside the road: its name in the report, whether it is in place, and the
@@ -250,7 +251,7 @@ export function machineChecks(env: Env): Practice[] {
     // 'runtime' in the text, as before; the id differs from the road's runtime step.
     practice('runtime', 'machine-runtime', runtime === VERSION || (plugin && runtime === null), runtime ? `the installed runtime is ${runtime}, this yokoten is ${VERSION}` : 'no runtime installed', plugin ? 'remove it with `yokoten uninstall`; the plugin brings its own' : 'run `yokoten install` from this copy of yokoten'),
     // The marks yokoten found on the machine don't count: only the owner knows a city (#390).
-    practice('private-marks', 'private-marks', countOwnMarks(env) > 0, loadMarks(env).length ? `${target.marks} has only the marks yokoten found on this machine` : `${target.marks} is missing or empty`, 'add your name, city, domain and server names to it, one per line'),
+    practice('private-marks', 'private-marks', countOwnMarks(env) > 0, loadMarks(env).length ? `${target.marks} has only the marks yokoten found on this machine` : `${target.marks} is missing or empty`, 'run `yokoten marks add` and type your city, a domain or a server name, and your real name if git does not have it; it is not shown'),
   ];
 }
 
@@ -303,7 +304,7 @@ export function privacyNotes(env: Env, root: string | null, output: Config['priv
     // An unreadable file: the private-marks check says so.
   }
   const missing = missingMarkKinds(marks, machineMarks(env, { cwd: root ?? undefined }));
-  if (missing.length) notes.push(practice('private-mark-kinds', 'private-marks', false, `your private marks may lack ${missing.join(', ')}`, `add them to ${paths(env).marks}, one per line`));
+  if (missing.length) notes.push(practice('private-mark-kinds', 'private-marks', false, `your private marks may lack ${missing.join(', ')}`, 'run `yokoten marks add` and type one; it is not shown'));
   return notes;
 }
 
@@ -1092,12 +1093,10 @@ export function listBoardSteps(server: ServerRead): string[] {
 const NO_REMOTE = 'there is no origin remote yet';
 const NO_REMOTE_FIX = 'run `git remote add origin <url>` with the url of the repo on your code host, then run `yokoten doctor` again';
 
-/** The server settings of the project's origin remote, or why they can't be read. */
-function readOrigin(root: string, gh: Gh, env: Env): ServerSettings | Unread {
-  const remote = gitConfig(root, 'remote.origin.url', env);
-  if (!remote) return { unread: NO_REMOTE, fix: NO_REMOTE_FIX };
-  const repo = repoOf(remote);
-  return repo ? readServer(gh, repo) : { unread: 'the origin remote is not on a host yokoten knows (GitHub for now)', fix: 'add a GitHub origin remote, or check these settings by hand' };
+/** The server settings of the origin's host, or why they can't be read. A host with no adapter is read without the network (#504). */
+function readOrigin(host: Host, gh: Gh): ServerSettings | Unread {
+  if (host.kind === 'none') return { unread: NO_REMOTE, fix: NO_REMOTE_FIX };
+  return host.kind === 'github' ? readServer(gh, host.repo) : noAdapter(host);
 }
 
 /**
@@ -1295,12 +1294,14 @@ function doctorRun(
   if (!root) return { ok: !failed.length, lines, report: { ...base, ok: !failed.length, repo: false, stage: null, next: null, findings } };
 
   // Read only, and only in full doctor: a session never calls the network (record 0004).
-  const server: ServerRead = session ? undefined : gh ? readOrigin(root, gh, env) : { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' };
+  // A host with no adapter needs no network, so a session knows it too (#504).
+  const host = hostOf(gitConfig(root, 'remote.origin.url', env));
+  const server: ServerRead = host.kind === 'other' ? noAdapter(host) : session ? undefined : gh ? readOrigin(host, gh) : { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' };
   const where = walk(road(root, env, ROAD, server, config), config.notNow);
   // Full doctor from the command line adds the obvious marks first (#390); a session writes nothing.
   // With no home folder, the checks that read or keep settings there are skipped, never crash (#404).
   const hasHome = homeOf(env) !== null;
-  const filled = isFilling && !session && hasHome ? trySafely('the marks from this machine', () => [filledLine(fillMarks(env, machineMarks(env, { cwd: root, gh })), paths(env).marks)])[0] : null;
+  const filled = isFilling && !session && hasHome ? trySafely('the marks from this machine', () => filledLines(fillMarks(env, machineMarks(env, { cwd: root, gh })), paths(env).marks)) : [];
   const machine = hasHome ? machineChecks(env) : [];
   // A file missing here may be on the default branch (#405): one git call for every step
   // left. A session asks only when the step it names misses a file.
@@ -1372,7 +1373,7 @@ function doctorRun(
         const f = stepFinding(step, root, env, { server, config, elsewhere });
         findings.push(f);
         note = stepText(f);
-      } else if (mark === "can't check" && step.unchecked) note = step.unchecked(server);
+      } else if (mark === "can't check") note = uncheckedText(step, server);
       steps.push(state);
       if (needRemote.includes(step.key)) {
         if (step.key === needRemote[0]) lines.push(`    can't check ${needRemote.join(', ')}: ${NO_REMOTE}, so doctor can't read the server; ${NO_REMOTE_FIX}`);
@@ -1442,7 +1443,7 @@ function doctorRun(
     if (!c.ok) findings.push(c.finding);
   }
   if (!hasHome) lines.push(`  note    ${NO_HOME_NOTE}`);
-  if (filled) lines.push(`  note    ${filled}`);
+  for (const line of filled) lines.push(`  note    ${line}`);
   for (const c of hasHome ? privacyNotes(env, root, config.privacy.output) : []) {
     lines.push(`  note    ${c.name}: ${stepText(c.finding)}`);
     notes.push(c.finding);
@@ -1482,8 +1483,11 @@ function doctorRun(
     lines.push(`  ${c.mark.padEnd(11)} ${c.id}${c.mark === 'ok' ? '' : `: ${stepText(c.finding)}`}`);
     if (c.mark !== 'ok') notes.push(c.finding);
   }
-  if (settings[0].id === 'server-settings') lines.push('  check these by hand:', ...BY_HAND.map((s) => `    ${s}`));
-  lines.push(...OWNER_STEPS.map((s) => `  not checked ${s}`));
+  // On a host with no adapter, each road step says what it asks; these lists name GitHub's menus (#504).
+  if (!isNoAdapter(server)) {
+    if (settings[0].id === 'server-settings') lines.push('  check these by hand:', ...BY_HAND.map((s) => `    ${s}`));
+    lines.push(...OWNER_STEPS.map((s) => `  not checked ${s}`));
+  }
   lines.push(...listBoardSteps(server));
   // The road has no failed mark: a step is done, to do, not now or can't check. Steps
   // left are the way ahead, not problems, so they never fail doctor (#208).

@@ -529,3 +529,108 @@ console.log(${JSON.stringify(JSON.stringify({ title, body: prBody, labels: [{ na
   assert.equal(result.status, 1);
   assert.match(JSON.parse(result.stdout).findings[0].what, /"main" is not a pull request number/);
 });
+
+// ---- yokoten marks: add, remove, off, on (#434) ----
+
+// Samples are built from pieces, so this file passes its own privacy check.
+const NAME = ['Ann', 'Sample'].join(' ');
+const HAND_MARK = ['quiet', 'harbor'].join('');
+const OTHER = ['far', 'meadow'].join('');
+const VALUES = /ann|sample|quietharbor|farmeadow/i;
+
+/** A sandbox with a git name, its marks file path, and a call that keeps every output to check for values. */
+function marksSandbox() {
+  const sandbox = makeSandbox();
+  sandbox.git('config', 'user.name', NAME);
+  const file = join(sandbox.home, '.config', 'yokoten', 'private-marks');
+  const said: string[] = [];
+  const call = async (args: string[], input?: string) => {
+    const result = await sandbox.call(args, { input });
+    said.push(result.stdout, result.stderr);
+    return result;
+  };
+  const marks = () => readFileSync(file, 'utf8');
+  return { sandbox, file, said, call, marks };
+}
+
+test('marks add, marks and marks remove: one value from stdin, never in stdout or stderr (#434)', async () => {
+  const { said, call, marks } = marksSandbox();
+  // Not a terminal: the mark is read from stdin, and the file is made.
+  const added = await call(['marks', 'add'], `${HAND_MARK}\n`);
+  assert.equal(added.status, 0, added.stderr);
+  assert.equal(added.stdout, 'yokoten marks: added the mark to your private marks (not shown)\n');
+  assert.ok(marks().endsWith(`\n${HAND_MARK}\n`));
+  const again = await call(['marks', 'add'], HAND_MARK.toUpperCase());
+  assert.match(again.stdout, /already in your private marks, so nothing changed/);
+  // The counts by kind, never a value.
+  const counts = await call(['marks']);
+  assert.equal(counts.status, 0, counts.stderr);
+  assert.match(counts.stdout, /^yokoten marks: 1 in ~\/\.config\/yokoten\/private-marks \(the values are never shown\)$/m);
+  assert.match(counts.stdout, /^ {2}by hand: +1$/m);
+  assert.match(counts.stdout, /^ {2}git name: +0$/m);
+  // A mark is never a word on the command line, and is not repeated when it is.
+  const worded = await call(['marks', 'add', OTHER]);
+  assert.equal(worded.status, 1);
+  assert.match(worded.stderr, /never a word on the command line/);
+  // Nothing, two lines, or a comment: refused, nothing changed.
+  const before = marks();
+  for (const input of ['', `${HAND_MARK}\n${OTHER}\n`, `# ${OTHER}`]) assert.equal((await call(['marks', 'add'], input)).status, 1);
+  assert.equal(marks(), before);
+  // Remove: the same way in, and gone from the file.
+  const removed = await call(['marks', 'remove'], `${HAND_MARK}\n`);
+  assert.equal(removed.stdout, 'yokoten marks: removed the mark from your private marks\n');
+  assert.ok(!marks().includes(HAND_MARK));
+  assert.match((await call(['marks', 'remove'], HAND_MARK)).stdout, /not in your private marks, so nothing changed/);
+  assert.ok(!said.some((text) => VALUES.test(text)), 'no output holds a mark');
+});
+
+test('marks add: a mark after one yokoten added goes under a header of its own, so it counts as the owner\'s (#434)', async () => {
+  const { file, call, marks } = marksSandbox();
+  mkdirSync(join(file, '..'), { recursive: true });
+  writeFileSync(file, `# added by yokoten from this machine: git email\nann${'@'}sample-mail.dev\n`, { mode: 0o600 });
+  assert.equal((await call(['marks', 'add'], OTHER)).status, 0);
+  assert.equal(marks(), `# added by yokoten from this machine: git email\nann${'@'}sample-mail.dev\n# your own marks\n${OTHER}\n`);
+  assert.match((await call(['marks'])).stdout, /^ {2}git email: +1\n(?:.*\n)* {2}by hand: +1$/m);
+});
+
+test('marks off git-name: removed, install no longer adds it, hand-added marks untouched; marks on git-name adds it back (#434)', async () => {
+  const { sandbox, said, call, marks } = marksSandbox();
+  assert.equal((await call(['install'])).status, 0);
+  // A mark the owner added by hand, and the same name written by hand too.
+  assert.equal((await call(['marks', 'add'], HAND_MARK)).status, 0);
+  writeFileSync(join(sandbox.home, '.config', 'yokoten', 'private-marks'), `${marks()}# mine\n${OTHER}\n`);
+  assert.match(marks(), new RegExp(`# added by yokoten from this machine: git name\\n${NAME}\\n`));
+  const off = await call(['marks', 'off', 'git-name']);
+  assert.equal(off.status, 0, off.stderr);
+  assert.equal(
+    off.stdout,
+    'yokoten marks: install no longer adds your git name, and removed the 1 mark(s) it had added for it. Marks you added yourself are kept.\nTo go back to the default: yokoten marks on git-name\n',
+  );
+  assert.ok(!marks().includes(NAME) && !marks().includes('from this machine: git name'), 'the git name and its header are gone');
+  assert.ok(marks().includes(`\n${HAND_MARK}\n`) && marks().includes(`\n${OTHER}\n`), 'hand-added marks are kept');
+  assert.deepEqual(JSON.parse(readFileSync(join(sandbox.home, '.config', 'yokoten', 'machine.json'), 'utf8')).marksOff, ['git name']);
+  // install respects it, and `yokoten marks` says the kind is off.
+  const install = await call(['install']);
+  assert.doesNotMatch(install.stdout, /added your git name/);
+  assert.ok(!marks().includes(NAME));
+  assert.match((await call(['marks'])).stdout, /^ {2}git name: +0 {2}off: install does not add it; `yokoten marks on git-name` adds it again$/m);
+  // Back to the default: the name is added again, with no value shown.
+  const on = await call(['marks', 'on', 'git-name']);
+  assert.equal(on.stdout, 'yokoten marks: install adds your git name again, and it is in your private marks now (not shown)\n');
+  assert.match(marks(), new RegExp(`# added by yokoten from this machine: git name\\n${NAME}\\n$`));
+  assert.deepEqual(JSON.parse(readFileSync(join(sandbox.home, '.config', 'yokoten', 'machine.json'), 'utf8')).marksOff, []);
+  assert.ok(marks().includes(`\n${HAND_MARK}\n`) && marks().includes(`\n${OTHER}\n`), 'still kept');
+  assert.ok(!said.some((text) => VALUES.test(text)), 'no output holds a mark');
+});
+
+test('marks: an unknown kind or action is refused without repeating the word; allow keeps its own options (#434)', async () => {
+  const { said, call } = marksSandbox();
+  const kind = await call(['marks', 'off', HAND_MARK]);
+  assert.equal(kind.status, 1);
+  assert.match(kind.stderr, /name the kind: git-name, git-email, forge-login/);
+  const action = await call(['marks', HAND_MARK]);
+  assert.equal(action.status, 1);
+  assert.match(action.stderr, /the action is add, remove, off, on or allow/);
+  assert.match((await call(['marks', 'add', '--here'], HAND_MARK)).stderr, /--here and --remove go with allow only/);
+  assert.ok(!said.some((text) => VALUES.test(text)), 'no output holds a mark');
+});

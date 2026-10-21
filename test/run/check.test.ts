@@ -867,6 +867,23 @@ test('check: an added forge login is fine where a file names accounts, and found
   assert.ok(!/octo-jdoe/i.test(result.stdout + result.stderr), 'check printed the login');
 });
 
+test('check: the git name install added is found in a LICENSE copyright line and an author field too; only the login is fine there (#434)', async () => {
+  const sandbox = makeSandbox();
+  const name = ['Ann', 'Sample'].join(' ');
+  const marks = join(sandbox.home, '.config', 'yokoten', 'private-marks');
+  mkdirSync(dirname(marks), { recursive: true });
+  writeFileSync(marks, `# added by yokoten from this machine: git name\n${name}\n`);
+  sandbox.write('LICENSE', `MIT License\n\nCopyright (c) 2026 ${name}\n`);
+  sandbox.write('package.json', `{\n  "name": "x",\n  "author": "${name}"\n}\n`);
+  sandbox.write('docs/a.md', `Written by ${name}.\n`);
+  sandbox.git('add', '.');
+  const result = await sandbox.call(['check']);
+  assert.equal(result.status, 1);
+  // The owner may hide the real name behind a noreply address and a mailmap: safe by default.
+  for (const place of ['LICENSE:3', 'package.json:3', 'docs/a.md:1']) assert.match(result.stderr, new RegExp(`${place.replace('.', '\\.')}: matches a line of your private-marks file`));
+  assert.ok(!/ann|sample/i.test(result.stdout + result.stderr), 'check printed the name');
+});
+
 test('check: a mark the owner wrote is found in CODEOWNERS too (#410)', async () => {
   const sandbox = makeSandbox();
   const marks = join(sandbox.home, '.config', 'yokoten', 'private-marks');

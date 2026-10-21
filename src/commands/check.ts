@@ -1,9 +1,13 @@
 // `yokoten check`: the tree, --staged, --history, and in CI --pr and --issue. `--pr <number>`
 // reads one pull request through gh, for a repo without CI (#377). And
 // `yokoten redact`, the privacy check's filter for command output (#390). And `yokoten marks`,
-// the private marks from the command line: for now `allow`, which lets one mark through in the
+// the private marks from the command line: `allow`, which lets one mark through in the
 // repo you are in, kept on this machine, never in the repo (#447); `allow --remove` is its way
-// back (record 0014). Issue #434 adds more actions. A mark is never printed or repeated back.
+// back (record 0014). Alone it counts the marks by kind; `add` and `remove` take one value
+// from the terminal with no echo, or from stdin, so it never lands in the shell history;
+// `off <kind>` and `on <kind>` stop and start install adding a kind, kept in machine.json
+// (#434). A mark is never printed, logged or repeated back. Marks the owner added are never
+// touched by `off`, `on` or install.
 
 import { randomUUID } from 'node:crypto';
 import { chmodSync, closeSync, linkSync, mkdirSync, openSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -16,9 +20,9 @@ import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkP
 import { parseChange } from '../run/changelog.ts';
 import { check, checkHistory, GitReadError, gitReadFinding, historyTimeZones, readGit, timeZoneNote, unstageHint } from '../run/check.ts';
 import { isCodeFile, nameNotes } from '../run/names.ts';
-import { type AllowEntry, isLink, loadMarks, machineAllowed, machineAllowFile, makeRedactor, matchingEntries, NO_HOME, readMachineAllow, repoKey } from '../rules/privacy.ts';
-import { machineMarks, machineUserNames } from '../setup/install.ts';
-import { bullets, type Invocation, parse, print, printJson, requireRoot, say, showOnPullRequest, usage } from './shared.ts';
+import { type AllowEntry, isLink, loadMarks, type Mark, marksFile, machineAllowed, machineAllowFile, makeRedactor, matchingEntries, NO_HOME, readMachineAllow, repoKey } from '../rules/privacy.ts';
+import { addOwnMark, countMarkKinds, fillMarks, kindsTurnedOff, machineMarks, machineUserNames, paths, removeMarks, setKindOff, SWITCHED_KINDS } from '../setup/install.ts';
+import { bullets, type Invocation, parse, print, printJson, readInput, requireRoot, say, showOnPullRequest, usage } from './shared.ts';
 
 /** How long `check --pr <number>` waits for gh. */
 const GH_TIMEOUT_MS = 15000;
@@ -232,7 +236,7 @@ export function runRedact(invocation: Invocation): number | Promise<number> {
 
 // ---- `yokoten marks` (#447) ----
 
-const MARK_ACTIONS = ['allow'];
+const MARK_ACTIONS = ['allow', 'add', 'remove', 'off', 'on'];
 const SHAPE = '`yokoten marks allow <mark> --here`, or `yokoten marks allow --remove <mark> --here`';
 
 /** One line on stderr, and exit 1. */
@@ -241,7 +245,7 @@ function refuse(invocation: Invocation, text: string): number {
   return 1;
 }
 
-export function runMarks(invocation: Invocation): number {
+export function runMarks(invocation: Invocation): number | Promise<number> {
   const { args } = invocation;
   // After `--`, every word is a word, so a mark may start with `-`.
   const end = args.indexOf('--');
@@ -253,11 +257,175 @@ export function runMarks(invocation: Invocation): number {
   const words = [...options.positional, ...(end === -1 ? [] : args.slice(end + 1))];
   if (words.length > 2) return usage(invocation, `too many words; give one mark, as in ${SHAPE}`);
   const [action, mark] = words;
-  if (action === undefined) return usage(invocation, `say what to do: ${SHAPE}`);
-  if (!MARK_ACTIONS.includes(action)) return usage(invocation, `the action is \`allow\`: ${SHAPE}`);
+  // The other actions, and `yokoten marks` alone, which counts the marks (#434).
+  if (action === undefined || (MARK_ACTIONS.includes(action) && action !== 'allow')) {
+    if (options.flags.size) return usage(invocation, `--here and --remove go with allow only: ${SHAPE}`);
+    return runMarkAction(invocation, action, mark);
+  }
+  if (!MARK_ACTIONS.includes(action)) return usage(invocation, `the action is add, remove, off, on or allow; run \`yokoten marks\` alone to count your marks`);
   if (mark === undefined || !mark.trim()) return usage(invocation, `give the mark: ${SHAPE}`);
   if (!options.flags.has('--here')) return usage(invocation, `add --here: an allow is always for one repo, the one you are in`);
   return allowHere(invocation, mark.trim().toLowerCase(), { isRemoving: options.flags.has('--remove') });
+}
+
+/** The kinds `yokoten marks` counts, in the order it shows them. */
+const SHOWN_KINDS = ['git name', 'git email', 'forge login', 'private remote host', 'by hand'];
+/** The word the command line uses for a kind: `git name` is `git-name`. */
+const kindWord = (kind: string): string => kind.replace(/ /g, '-');
+const KIND_WORDS = Object.keys(SWITCHED_KINDS).join(', ');
+/** Where install reads each kind, for when this machine has none to add. */
+const SOURCES: Record<string, string> = {
+  'git name': 'git has no user.name here',
+  'git email': 'git has no user.email here, or it is a noreply address, which is public',
+  'forge login': 'gh is not signed in here',
+};
+
+/** Run `yokoten marks [add | remove | off <kind> | on <kind>]`. `word` is the second word, if any. */
+export function runMarkAction(invocation: Invocation, action: string | undefined, word: string | undefined): number | Promise<number> {
+  try {
+    marksFile(invocation.env);
+  } catch {
+    return refuse(invocation, `${NO_HOME}. Set HOME to your home folder`);
+  }
+  if (action === undefined) return showCounts(invocation);
+  if (action === 'add' || action === 'remove') {
+    // A mark on the command line would land in the shell history, so it is refused, and never repeated.
+    if (word !== undefined) return usage(invocation, `the mark is never a word on the command line, where your shell history keeps it. Run \`yokoten marks ${action}\` and type it, or pipe it in`);
+    return readHidden(invocation).then((value) => changeOne(invocation, action, value));
+  }
+  const kind = word === undefined ? undefined : SWITCHED_KINDS[word];
+  if (!kind) return usage(invocation, `name the kind: ${KIND_WORDS}, as in \`yokoten marks ${action} git-name\``);
+  return action === 'off' ? turnOff(invocation, kind) : turnOn(invocation, kind);
+}
+
+/** `yokoten marks`: how many marks of each kind, and which kinds are off. Never a value. */
+function showCounts(invocation: Invocation): number {
+  let counts: Map<string, number>;
+  try {
+    counts = countMarkKinds(invocation.env);
+  } catch {
+    return refuse(invocation, "your private-marks file can't be read");
+  }
+  const off = new Set(kindsTurnedOff(invocation.env));
+  const total = [...counts.values()].reduce((sum, count) => sum + count, 0);
+  const kinds = [...SHOWN_KINDS, ...[...counts.keys()].filter((kind) => !SHOWN_KINDS.includes(kind))];
+  const width = Math.max(...kinds.map((kind) => kind.length)) + 1;
+  const lines = [`yokoten marks: ${total} in ${paths(invocation.env).marks} (the values are never shown)`];
+  for (const kind of kinds) {
+    const note = off.has(kind) ? `  off: install does not add it; \`yokoten marks on ${kindWord(kind)}\` adds it again` : '';
+    lines.push(`  ${`${kind}:`.padEnd(width + 1)} ${counts.get(kind) ?? 0}${note}`);
+  }
+  lines.push('To add one: yokoten marks add. To stop install adding a kind: yokoten marks off <kind>.');
+  print(invocation, lines);
+  return 0;
+}
+
+/**
+ * The one value the user gives: typed in a terminal with no echo, or all of stdin when it is
+ * not a terminal. Null when the user stops it (Ctrl-C). The terminal part is kept thin: it
+ * can only be tried by hand.
+ */
+function readHidden(invocation: Invocation): Promise<string | null> {
+  const stream = invocation.stdin.stream as NodeJS.ReadStream;
+  if (!stream.isTTY || typeof stream.setRawMode !== 'function') return Promise.resolve(readInput(invocation.stdin));
+  say(invocation, 'Type the mark, then press Enter (it is not shown): ', invocation.stderr);
+  return new Promise((settle) => {
+    let value = '';
+    const finish = (result: string | null) => {
+      stream.off('data', onData);
+      stream.setRawMode(false);
+      stream.pause();
+      say(invocation, '\n', invocation.stderr);
+      settle(result);
+    };
+    const onData = (chunk: string) => {
+      for (const char of chunk) {
+        if (char === '\r' || char === '\n' || char === '\u0004') return finish(value);
+        if (char === '\u0003') return finish(null);
+        if (char === '\u007f' || char === '\b') value = value.slice(0, -1);
+        else if (char >= ' ') value += char;
+      }
+    };
+    stream.setEncoding('utf8');
+    stream.setRawMode(true);
+    stream.on('data', onData);
+    stream.resume();
+  });
+}
+
+/** `marks add` or `marks remove` with the value read. */
+function changeOne(invocation: Invocation, action: 'add' | 'remove', value: string | null): number {
+  if (value === null) return refuse(invocation, 'stopped, so nothing changed');
+  const lines = value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (!lines.length) return refuse(invocation, `no mark was given, so nothing changed. Run \`yokoten marks ${action}\` and type it, or pipe it in`);
+  if (lines.length > 1) return refuse(invocation, 'give one mark at a time, so nothing changed');
+  const [mark] = lines;
+  if (mark.startsWith('#')) return refuse(invocation, "a mark can't start with #: the file reads that line as a comment. Nothing changed");
+  const { env } = invocation;
+  if (action === 'add') {
+    let isAdded: boolean;
+    try {
+      isAdded = addOwnMark(env, mark);
+    } catch {
+      return refuse(invocation, "your private-marks file can't be written, so nothing changed");
+    }
+    print(invocation, [isAdded ? 'yokoten marks: added the mark to your private marks (not shown)' : 'yokoten marks: that mark is already in your private marks, so nothing changed']);
+    return 0;
+  }
+  let removed: Mark[];
+  try {
+    removed = removeMarks(env, (one) => one.value === mark.toLowerCase());
+  } catch {
+    return refuse(invocation, "your private-marks file can't be changed, so nothing changed");
+  }
+  if (!removed.length) {
+    print(invocation, ['yokoten marks: that mark is not in your private marks, so nothing changed']);
+    return 0;
+  }
+  const said = ['yokoten marks: removed the mark from your private marks'];
+  const off = new Set(kindsTurnedOff(env));
+  const from = removed.map((one) => one.kind).find((kind): kind is string => kind !== null && !off.has(kind));
+  if (from && (Object.values(SWITCHED_KINDS) as string[]).includes(from)) said.push(`It came from this machine (your ${from}), so install adds it again. To stop that: yokoten marks off ${kindWord(from)}`);
+  else if (from) said.push(`It came from this machine (a ${from}), so install adds it again while this machine has it.`);
+  print(invocation, said);
+  return 0;
+}
+
+/** `marks off <kind>`: kept in machine.json, and the marks install added of that kind taken out. */
+function turnOff(invocation: Invocation, kind: string): number {
+  const { env } = invocation;
+  let removed: Mark[];
+  try {
+    setKindOff(env, kind, true);
+    removed = removeMarks(env, (mark) => mark.kind === kind);
+  } catch {
+    return refuse(invocation, "the machine state or your private-marks file can't be written, so the kind may still be on. Run this again");
+  }
+  print(invocation, [
+    `yokoten marks: install no longer adds your ${kind}, and removed the ${removed.length} mark(s) it had added for it. Marks you added yourself are kept.`,
+    `To go back to the default: yokoten marks on ${kindWord(kind)}`,
+  ]);
+  return 0;
+}
+
+/** `marks on <kind>`: the default again, and the kind filled from this machine now. */
+function turnOn(invocation: Invocation, kind: string): number {
+  const { env, cwd } = invocation;
+  let added: string[];
+  let found: number;
+  try {
+    setKindOff(env, kind, false);
+    // gh may reach the network for the login: three seconds at most, and only for that kind.
+    const marks = machineMarks(env, { cwd, gh: kind === 'forge login' ? ghIn(cwd, env, 3000) : undefined }).filter((mark) => mark.kind === kind);
+    found = marks.length;
+    added = fillMarks(env, marks);
+  } catch {
+    return refuse(invocation, "the machine state or your private-marks file can't be written. Run this again");
+  }
+  const back = `yokoten marks: install adds your ${kind} again`;
+  if (added.length) print(invocation, [`${back}, and it is in your private marks now (not shown)`]);
+  else print(invocation, [found ? `${back}; there is nothing new to add now` : `${back}, but there is none to add now: ${SOURCES[kind]}`]);
+  return 0;
 }
 
 /** Past this age, a lock file is from a run that died, and is taken over. */
