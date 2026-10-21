@@ -1176,6 +1176,199 @@ test('inside "...", only $, backticks, \\ and ! make the line unsure (#439)', ()
   rmSync(join(postDir, 'body.md'));
 });
 
+// ---- A read-only pipe after a post (#498) ----
+//
+// `bot -- gh … --body-file <full path> 2>&1 | tail -2` was refused, and the message named
+// the file, not the pipe. A pipe at the end into a program that only reads now passes.
+
+test('a pipe at the end into tail, head, grep, sed s/// and the like still reads the body file (#498)', () => {
+  const body = join(postDir, 'piped.md');
+  writeFileSync(body, 'All clean.\n');
+  const bot = `node bin/yokoten.ts bot -- gh pr create --title "fix: a plain title" --body-file ${body}`;
+  const passes = [
+    `${bot} 2>&1 | tail -2`,
+    `${bot} | tail -2`,
+    `${bot} | sed "s/x/y/g"`,
+    `${bot} 2>&1 | sed "s/someone/<owner>/g" | tail -2`,
+    `${bot} | sed -n -e 's|a|b|gp' -e 's/c/d/'`,
+    `${bot} | grep -v x | head -n 5 | cut -c1-80 | wc -l`,
+    `${bot} | sort -rk2,2 | uniq -c | tr a-z A-Z`,
+    `${bot} 2>&1`,
+    `cd ${postDir} && ${bot} | tail -2`,
+  ];
+  for (const command of passes) assert.equal(post(command), null, command);
+  // The file is still read: a mark in it is found through the pipe.
+  writeFileSync(body, 'Seen in QuietVale.\n');
+  for (const command of passes) assert.equal(post(command)?.id, 'private-mark', command);
+  rmSync(body);
+});
+
+test('a pipe or a command that may change the body file is refused, by name (#498)', () => {
+  const body = join(postDir, 'piped.md');
+  writeFileSync(body, 'All clean.\n');
+  mkdirSync(join(postDir, 'sub'), { recursive: true });
+  const bot = `node bin/yokoten.ts bot -- gh pr create --title t --body-file ${body}`;
+  const refused: [string, string][] = [
+    [`${bot} | tee ${body}`, 'a pipe to `tee`'],
+    [`${bot} | sed -i s/x/y/ ${body}`, 'a `sed` with `-i`'],
+    [`${bot} | sed --in-place s/x/y/ ${body}`, 'a `sed` with `-i`'],
+    [`${bot} | sed 's/x/y/w ${body}'`, 'a `sed` with `-i`'],
+    [`${bot} | sed 's/x/y/e'`, 'a `sed` with `-i`'],
+    [`${bot} | sed -f script.sed`, 'a `sed` with `-i`'],
+    [`${bot} | sort -o ${body}`, 'a `sort` with an option'],
+    [`${bot} | sort "$X"`, 'a `sort` with an option'],
+    [`${bot} | uniq - ${body}`, 'a `uniq` with a second file'],
+    [`${bot} | tail -2 > ${body}`, 'a pipe to `tail` that does not end the line'],
+    [`${bot} | tail -2; cd /tmp`, 'a pipe to `tail` that does not end the line'],
+    [`${bot} | tail -2 | grep "$(id)"`, 'a pipe to `tail` that does not end the line'],
+    [`${bot} | grep "\${X}"`, 'a pipe to `grep` that does not end the line'],
+    [`${bot} | xargs tail`, 'a pipe to `xargs`'],
+    [`${bot} | (cat > ${body})`, 'a pipe'],
+    [`${bot} |& tail -2`, 'a pipe'],
+    [`${bot} || tail -2`, 'a `||`'],
+    [`echo x | tail -2; ${bot}`, 'a pipe to `tail` that does not end the line'],
+    [`cd sub && gh pr create --title t --body-file ../piped.md | tail -2`, 'a `cd` before a path with `..`'],
+    [`cd -; ${bot}`, 'a `cd` the guard can'],
+    [`mv a.md ${body}; ${bot} | tail -2`, 'a `mv`'],
+    [`export A=1 B=2; ${bot}`, 'an `export` of a name other than GH_REPO'],
+    [`OWNER=$(gh pr view 3 -q .x); ${bot}`, 'a command substitution `$(…)`'],
+    [`[ -n x ] || exit 1; ${bot}`, 'a `[ … ]` test'],
+    [`${bot} > ${body}`, 'a redirect `>`'],
+    [`${bot} 2>&1 > ${body}`, 'a redirect `>`'],
+    [`X=1 ${bot}`, 'a variable other than GH_REPO'],
+  ];
+  for (const [command, saw] of refused) {
+    const f = post(command);
+    assert.equal(f?.id, 'unreadable-command', command);
+    assert.ok(f?.what.includes(`and ${saw}`), `${command}: ${f?.what}`);
+    assert.ok(f?.fix.startsWith(`leave out ${saw}`), `${command}: ${f?.fix}`);
+    assert.match(f?.fix ?? '', /write the file in one command, then post it in the next/);
+  }
+  rmSync(body);
+});
+
+test('a `$` anywhere in a sed after the post is refused: bash fills it in before sed reads the script (#498)', () => {
+  const body = join(postDir, 'piped.md');
+  writeFileSync(body, 'All clean.\n');
+  const bot = `node bin/yokoten.ts bot -- gh pr create --title t --body-file ${body}`;
+  for (const command of [
+    `${bot} 2>&1 | sed "s/$OWNER/<owner>/g" | tail -2`,
+    `${bot} | sed "s/x/$NAME/"`,
+    `${bot} | sed -e "s/x/y/$FLAGS"`,
+    `${bot} | sed "$S"`,
+    `${bot} | sed s/x/y/ "$F"`,
+    `${bot} | sed 's/x$/y/'`,
+    `${bot} | sed "s/$(id)/x/"`,
+    `${bot} | sed "s/\${X}/x/"`,
+  ]) {
+    const f = post(command);
+    assert.equal(f?.id, 'unreadable-command', command);
+    assert.ok(f?.what.includes('and a `$` value in a `sed` command in this command'), `${command}: ${f?.what}`);
+    assert.equal(f?.fix, 'type the value into the sed script in place of the `$`, or leave out the pipe, or write the file in one command, then post it in the next, and give its full path');
+  }
+  // grep may take a value: it writes no file whatever the value holds.
+  assert.equal(post(`${bot} | grep -v "$OWNER"`), null);
+  rmSync(body);
+});
+
+test('a refusal never names a program that holds a private mark (#498)', () => {
+  const body = join(postDir, 'piped.md');
+  writeFileSync(body, 'All clean.\n');
+  const bot = `node bin/yokoten.ts bot -- gh pr create --title t --body-file ${body}`;
+  const named = [
+    [`${bot} | quietvale-tool x`, 'a pipe'],
+    [`${bot} | /opt/QuietVale/bin/send`, 'a pipe to `send`'],
+    [`quietvale-tool x; ${bot}`, 'a command'],
+    [`QuietVale x; ${bot}`, 'a command'],
+  ];
+  for (const [command, saw] of named) {
+    const f = post(command);
+    assert.equal(f?.id, 'unreadable-command', command);
+    assert.ok(f?.what.includes(`and ${saw} in this command`), `${command}: ${f?.what}`);
+    assert.ok(!/quietvale/i.test(formatFinding(f)), `${command}: the mark is never printed`);
+  }
+  // Control: a program with no mark in it is named.
+  assert.ok(post(`${bot} | tee x`)?.what.includes('a pipe to `tee`'));
+  assert.ok(post(`othertool x; ${bot}`)?.what.includes('a `othertool`'));
+  rmSync(body);
+});
+
+test('a project allow still applies through a read-only pipe, and not through any other (#498)', () => {
+  const allowing = { ...DEFAULTS, privacy: { ...DEFAULTS.privacy, allow: ['QuietVale'] } };
+  const command = 'gh issue create --title "check: fix a bug" --body "QuietVale ships"';
+  assert.equal(post(`${command} 2>&1 | tail -2`, allowing), null);
+  assert.equal(post(`${command} | sed "s/someone/<owner>/g"`, allowing), null);
+  assert.equal(post(`${command} | grep -v "$OWNER"`, allowing), null);
+  // A `$` in a sed, in any quotes, is not a read-only pipe: no allow, as on the body-file path.
+  for (const sed of ['sed "s/$OWNER/<owner>/g"', "sed 's/x$/y/'", 'tail -2 | sed -e "s/x/$Y/"']) {
+    assert.equal(post(`${command} | ${sed}`, allowing)?.id, 'private-mark', sed);
+  }
+  assert.equal(post(`${command} | tee out.txt`, allowing)?.id, 'private-mark');
+  assert.equal(post(`${command} | tail -2; true`, allowing)?.id, 'private-mark');
+});
+
+test('a ~/ path to yokoten and the allowed variables before it still read the body file (#498)', () => {
+  const body = join(postDir, 'c-505.md');
+  writeFileSync(body, 'All clean.\n');
+  const comment = `bot -- gh issue comment 505 --body-file ${body}`;
+  const passes = [
+    `NODE_USE_ENV_PROXY=1 GH_REPO=o/r node ~/x/yokoten/bin/yokoten.ts ${comment}`,
+    `node ~/x/yokoten/bin/yokoten.ts ${comment}`,
+    `node ~/yokoten.mjs ${comment} | tail -2`,
+    `~/x/bin/yokoten ${comment}`,
+    `NODE_USE_ENV_PROXY=1 GH_REPO=o/r node bin/yokoten.ts ${comment}`,
+    `node /opt/x/bin/yokoten.ts ${comment}`,
+  ];
+  for (const command of passes) assert.equal(post(command), null, command);
+  writeFileSync(body, 'Seen in QuietVale.\n');
+  for (const command of passes) assert.equal(post(command)?.id, 'private-mark', command);
+  writeFileSync(body, 'All clean.\n');
+  // A ~ elsewhere, a quoted ~, a ~ that is not $HOME, or another program stays refused.
+  for (const command of [
+    `node ~/x/bin/other.ts ${comment}`,
+    `node '~/x/bin/yokoten.ts' ${comment}`,
+    `node ~root/bin/yokoten.ts ${comment}`,
+    `node ~/x/bin/yokoten.ts ~/y ${comment}`,
+    `echo ~/x/bin/yokoten.ts bot -- x; gh issue comment 505 --body-file ${body}`,
+  ]) assert.equal(post(command)?.id, 'unreadable-command', command);
+  // `~root` is another user's home: the guard can't tell which yokoten runs there, so it says so.
+  const root = post(`node ~root/bin/yokoten.ts ${comment}`);
+  assert.ok(root?.what.includes('and a `~` that may not be your home folder in this command'), root?.what);
+  // A variable outside GH_REPO, GH_HOST and NODE_USE_ENV_PROXY reaches node and gh: refused, by name.
+  const other = post(`A=1 node bin/yokoten.ts ${comment}`);
+  assert.ok(other?.what.includes('a variable other than GH_REPO'), other?.what);
+  rmSync(body);
+});
+
+test('a project allow still applies after NODE_USE_ENV_PROXY=1 and a ~/ yokoten (#498)', () => {
+  const allowing = { ...DEFAULTS, privacy: { ...DEFAULTS.privacy, allow: ['QuietVale'] } };
+  const comment = 'bot -- gh issue create --title "check: fix a bug" --body "QuietVale ships"';
+  assert.equal(post(`NODE_USE_ENV_PROXY=1 node ~/x/bin/yokoten.ts ${comment}`, allowing), null);
+  assert.equal(post(`NODE_USE_ENV_PROXY=1 node bin/yokoten.ts ${comment} 2>&1 | tail -2`, allowing), null);
+  // GH_REPO names another target, and any other variable is not trusted: no allow.
+  assert.equal(post(`GH_REPO=o/r node bin/yokoten.ts ${comment}`, allowing)?.id, 'private-mark');
+  assert.equal(post(`GH_HOST=example.com node bin/yokoten.ts ${comment}`, allowing)?.id, 'private-mark');
+  assert.equal(post(`NODE_USE_ENV_PROXY=1 GH_HOST=example.com node ~/x/bin/yokoten.ts ${comment}`, allowing)?.id, 'private-mark');
+  assert.equal(post(`A=1 node bin/yokoten.ts ${comment}`, allowing)?.id, 'private-mark');
+  assert.equal(post(`NODE_USE_ENV_PROXY=$X node bin/yokoten.ts ${comment}`, allowing)?.id, 'private-mark');
+});
+
+test('reading a pipe at the end stays linear (#498)', () => {
+  const body = join(postDir, 'piped.md');
+  writeFileSync(body, 'All clean.\n');
+  assertLinear(
+    'many read-only pipes',
+    (n) => `gh pr create --title t --body-file ${body}${' | tail -2'.repeat(n / 10)}`,
+    (command) => assert.equal(post(command), null),
+  );
+  assertLinear(
+    'blanks before 2>&1',
+    (n) => `gh pr create --title t --body-file ${body}${' '.repeat(n)}2>&1${' '.repeat(n)}`,
+    (command) => assert.equal(post(command), null),
+  );
+  rmSync(body);
+});
+
 // ---- A project allows its own name (#424) ----
 
 test('ownMarks and scanText: a mark the project allows, same string case aside, is not reported (#424)', () => {

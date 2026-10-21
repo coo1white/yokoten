@@ -18,7 +18,7 @@ import type { Config, Env } from './config.ts';
 import { loadConfig, matcher } from './config.ts';
 import { type Finding, finding } from './message.ts';
 import { checkCommandTitle } from './pr.ts';
-import { type CommandFiles, checkPost, type GhCommand, ghIndex } from './privacy.ts';
+import { type CommandFiles, checkPost, type GhCommand, ghIndex, PIPE_READERS, type Risk, withoutReadPipe } from './privacy.ts';
 
 /** A file edit, by path relative to the repo root. */
 export function checkEdit(path: string, { config, env }: { config: Config; env: Env }): Finding | null {
@@ -102,17 +102,23 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
   if (commands.some(movesRepo)) cwd = null;
   // What the rest of the command may do to a file gh reads (#439).
   const heredoc = heredocPost(command, commands);
-  const writers = commands.filter((words) => !writesNoFile(words)).length;
+  const writers = commands.filter((words) => !writesNoFile(words));
   // Anything but plain words may run code; after a cd, `..` goes up from the real folder.
-  const fills = heredoc === undefined && !(isPlainCommand(withoutStdin(command, commands)) && tildesPlain(command, commands));
+  // A read-only pipe at the end is left out first (#498).
+  const plainText = heredoc === undefined ? withoutStdin(withoutReadPipe(command), commands) : '';
+  const plainAt = heredoc === undefined ? plainBreak(plainText) : -1;
+  const fills = heredoc === undefined && (plainAt !== -1 || !tildesPlain(command, commands));
   const movesFolder = commands.some((words) => ['cd', 'pushd', 'popd'].includes(words[0] ?? ''));
   for (const words of commands) {
+    const mayWrite = heredoc !== undefined || fills || writesFile(words) || isUnsure(words) || writers.some((other) => other !== words);
+    // The name is built only on a refusal (#498).
+    const saw = (isMarked: (word: string) => boolean) => writeRisk(words, { heredoc, plainText, plainAt, fills, writers, isMarked });
     const reason =
       checkGit(words, { env, config, cwd, rules }) ??
       checkHooksEnvironment(words) ??
       checkPublish(words, env) ??
       checkBlocked(words, config?.commands.block ?? {}) ??
-      checkPosted(words, { env, config, cwd: postCwd, from, command, titles, files: { heredoc, mayWrite: heredoc !== undefined || fills || writers > (writesNoFile(words) ? 0 : 1) || writesFile(words) || isUnsure(words), movesFolder } }) ??
+      checkPosted(words, { env, config, cwd: postCwd, from, command, titles, files: { heredoc, mayWrite, saw, movesFolder } }) ??
       (rules ? checkLeadOnlyWrites(words, { env, rules, folder: postCwd }) : null);
     if (reason) return reason;
     postCwd = folderAfter(words, postCwd, env);
@@ -832,27 +838,142 @@ const DOUBLE_QUOTED_SPECIAL = /[$`\\!]/;
 // The guard does not follow bash's grammar any further than this: anything else makes a
 // body file on disk unsure. One pass over the text.
 export function isPlainCommand(text: string): boolean {
+  return plainBreak(text) === -1;
+}
+
+// Where the text stops being plain (see isPlainCommand): the index of the first character
+// the guard does not trust, the text's length for a quote left open, or -1 when it is plain.
+function plainBreak(text: string): number {
   let quote = ''; // '' outside quotes, or ' or "
   let wordStart = true;
   for (let index = 0; index < text.length; index++) {
     const character = text[index];
-    if (character === '\n' || character === '\r') return false;
+    if (character === '\n' || character === '\r') return index;
     if (quote === "'") {
       if (character === "'") quote = '';
     } else if (quote === '"') {
       if (character === '"') quote = '';
-      else if (DOUBLE_QUOTED_SPECIAL.test(character)) return false;
+      else if (DOUBLE_QUOTED_SPECIAL.test(character)) return index;
     } else if (character === "'" || character === '"') quote = character;
     else if (character === '&') {
-      if (text[index + 1] !== '&') return false;
+      if (text[index + 1] !== '&') return index;
       index++;
     } else if (character === '~') {
       // `~+`, `~-`, `~1`, `~user` and `~'/x'` are not $HOME: only `~` and `~/` are.
-      if (!wordStart || !/^(?:[/ \t;&]|$)/.test(text[index + 1] ?? '')) return false;
-    } else if (character !== ';' && !PLAIN.test(character)) return false;
+      if (!wordStart || !/^(?:[/ \t;&]|$)/.test(text[index + 1] ?? '')) return index;
+    } else if (character !== ';' && !PLAIN.test(character)) return index;
     wordStart = quote === '' && /[ \t;&]/.test(character);
   }
-  return quote === '';
+  return quote === '' ? -1 : text.length;
+}
+
+// ---- Naming what may write a body file (#498) ----
+//
+// A refusal names what the guard saw, so the agent knows what to leave out. The name only
+// reports; the checks above decide.
+
+const VARIABLE_RISK = 'a variable other than GH_REPO, GH_HOST or NODE_USE_ENV_PROXY set for a command';
+const SHELL_VARIABLE_RISK = 'a shell variable, such as PATH or IFS, that changes what bash runs';
+const TILDE_RISK = 'a `~` that may not be your home folder';
+// The word after a `|`, to name the program.
+const PIPE_TARGET = /[ \t]*([^\s|;&<>()'"`$\\]*)/y;
+const SHOWN_PROGRAM = /^[\w.+-]{1,40}$/;
+
+/** What may change a body file on disk before the gh in `words` reads it, or undefined (#439). */
+// `plainText` is the command as the plain check reads it, and `plainAt` where it stops being
+// plain (-1: all plain, so the `~` check failed). A word that holds a private mark is not
+// named (`isMarked`).
+type RiskInput = { heredoc?: object; plainText: string; plainAt: number; fills: boolean; writers: string[][]; isMarked: (word: string) => boolean };
+
+function writeRisk(words: string[], { heredoc, plainText, plainAt, fills, writers, isMarked }: RiskInput): Risk | undefined {
+  if (heredoc !== undefined) return { what: 'a `cat >` heredoc' };
+  if (fills && hasSedValue(plainText)) return SED_VALUE_RISK;
+  if (fills) return { what: plainAt === -1 ? TILDE_RISK : breakName(plainText, plainAt, isMarked) };
+  if (writesFile(words)) return { what: 'a redirect into a file' };
+  if (isUnsure(words)) return { what: variableRisk(words) };
+  const other = writers.find((command) => command !== words);
+  return other && writerRisk(other, isMarked);
+}
+
+function breakName(text: string, at: number, isMarked: (word: string) => boolean): string {
+  if (at >= text.length) return 'a quote that is not closed';
+  const character = text[at];
+  const next = text[at + 1] ?? '';
+  switch (character) {
+    case '$':
+      return next === '(' ? 'a command substitution `$(…)`' : 'a `$` value the shell fills in';
+    case '`':
+      return 'a command substitution in backquotes';
+    case '|':
+      return next === '|' ? 'a `||`' : pipeName(text, at, isMarked);
+    case '>':
+    case '<':
+      return `a redirect \`${character}\``;
+    case '&':
+      return 'a `&` that runs a command in the background';
+    case '(':
+    case ')':
+      return 'a subshell `( … )`';
+    case '{':
+    case '}':
+      return 'a `{ … }` group or brace expansion';
+    case '\n':
+      return 'a second line';
+    case '\r':
+      return 'a carriage return';
+    case '\\':
+      return 'a backslash';
+    case '!':
+      return 'a `!` inside "..."';
+    case '~':
+      return TILDE_RISK;
+    case '#':
+      return 'a `#` comment';
+    case '[':
+      if (/^[ \t]/.test(next) && (at === 0 || /[ \t;&]/.test(text[at - 1]))) return 'a `[ … ]` test';
+      return 'a pattern `[` the shell expands';
+    case '*':
+    case '?':
+      return `a pattern \`${character}\` the shell expands`;
+  }
+  return 'a character the guard does not trust';
+}
+
+const SED_VALUE_RISK: Risk = { what: 'a `$` value in a `sed` command', fix: 'type the value into the sed script in place of the `$`, or leave out the pipe' };
+
+// Whether a sed after a pipe holds a `$`. This only picks the name, so it splits at every
+// `|`, quoted or not: the pipe scan has already refused the command.
+function hasSedValue(text: string): boolean {
+  return text.split('|').some((part, index) => index > 0 && /^[ \t]*sed[ \t]/.test(part) && part.includes('$'));
+}
+
+function pipeName(text: string, at: number, isMarked: (word: string) => boolean): string {
+  PIPE_TARGET.lastIndex = at + 1;
+  const program = base(PIPE_TARGET.exec(text)?.[1] ?? '');
+  if (PIPE_READERS.has(program)) return `a pipe to \`${program}\` that does not end the line in plain words`;
+  return SHOWN_PROGRAM.test(program) && !isMarked(program) ? `a pipe to \`${program}\`` : 'a pipe';
+}
+
+function variableRisk(words: string[]): string {
+  return words.every((word) => NAME_VALUE.test(word)) ? SHELL_VARIABLE_RISK : VARIABLE_RISK;
+}
+
+// A command that may write a file, by name.
+function writerRisk(words: string[], isMarked: (word: string) => boolean): Risk {
+  const at = ownVariables(words);
+  if (at === -1) return { what: variableRisk(words) };
+  if (writesFile(words)) return { what: 'a redirect into a file' };
+  const program = base(words[at] ?? '');
+  if (program === 'sed' && words.some((word) => word.includes('$'))) {
+    return SED_VALUE_RISK;
+  }
+  if (program === 'sed') return { what: 'a `sed` with `-i`, `-f` or a script other than s/…/…/' };
+  if (program === 'uniq') return { what: 'a `uniq` with a second file, which it writes' };
+  if (PIPE_READERS.has(program)) return { what: `a \`${program}\` with an option that may write a file` };
+  if (MOVERS.has(program)) return { what: `a \`${program}\` the guard can't follow` };
+  if (program === 'export') return { what: 'an `export` of a name other than GH_REPO, GH_HOST or NODE_USE_ENV_PROXY' };
+  if (isMarked(program)) return { what: 'a command' };
+  return { what: SHOWN_PROGRAM.test(program) ? `a \`${program}\`` : 'a command the guard does not know' };
 }
 
 // A lone gh that reads its body from a file, `gh … --body-file - < body.md` (#391): the scan
@@ -864,7 +985,8 @@ function withoutStdin(command: string, commands: string[][]): string {
 }
 
 // A word that starts with ~ is the folder of a cd or pushd, or the file after -F,
-// --body-file or --notes-file (#439). It is `~` or starts `~/`: the guard reads only those
+// --body-file or --notes-file (#439), or the yokoten of a `yokoten bot --` (#498), as in
+// `node ~/x/bin/yokoten.ts bot -- gh …`. It is `~` or starts `~/`: the guard reads only those
 // as $HOME. The words have lost their quotes, so a '~ or "~ in the command makes any ~
 // word unsure: bash does not expand a quoted ~.
 function tildesPlain(command: string, commands: string[][]): boolean {
@@ -873,9 +995,22 @@ function tildesPlain(command: string, commands: string[][]): boolean {
     words.every(
       (word, index) =>
         !word.startsWith('~') ||
-        (!isQuoted && (word === '~' || word.startsWith('~/')) && ((index === 1 && ['cd', 'pushd'].includes(words[0])) || ['-F', '--body-file', '--notes-file'].includes(words[index - 1] ?? ''))),
+        (!isQuoted &&
+          (word === '~' || word.startsWith('~/')) &&
+          ((index === 1 && ['cd', 'pushd'].includes(words[0])) || ['-F', '--body-file', '--notes-file'].includes(words[index - 1] ?? '') || isBotProgram(words, index))),
     ),
   );
+}
+
+// `~/…/yokoten`, `.ts` or `.mjs`, in plain path characters.
+const HOME_YOKOTEN = /^~\/(?:[\w.+@%:,=-]+\/)*yokoten(?:\.ts|\.mjs)?$/;
+
+// Whether the word at `index` is the yokoten of `yokoten bot --` or `node yokoten.ts bot --`,
+// after only the command's own variables. Which yokoten runs does not change the file gh reads.
+function isBotProgram(words: string[], index: number): boolean {
+  if (!HOME_YOKOTEN.test(words[index]) || words[index + 1] !== 'bot' || words[index + 2] !== '--') return false;
+  const start = ownVariables(words);
+  return index === start || (index === start + 1 && words[start] === 'node');
 }
 
 /** Whether a command's own variables may change what it runs (#439). */
@@ -927,6 +1062,22 @@ function readsOnly(words: string[]): boolean {
       return args.length === 1 && !/^[-+]/.test(args[0]);
     case 'popd':
       return true;
+    // The programs a read-only pipe may feed (#498). These have no option that writes a file.
+    case 'tail':
+    case 'head':
+    case 'grep':
+    case 'cut':
+    case 'wc':
+    case 'tr':
+      return true;
+    // These have one, so each word is checked. A word with a `$` may hold an option.
+    case 'sort':
+      return args.every((arg) => !arg.includes('$') && (!arg.startsWith('-') || SORT_OPTION.test(arg) || SORT_LONG_OPTIONS.has(arg)));
+    case 'uniq':
+      // `uniq input output` writes output; a lone `-` is the input.
+      return args.every((arg) => !arg.includes('$') && (!arg.startsWith('-') || UNIQ_OPTION.test(arg))) && args.filter((arg) => arg === '-' || !arg.startsWith('-')).length <= 1;
+    case 'sed':
+      return sedReadsOnly(args);
     case 'gh':
       // `--web` opens a browser, which runs a program.
       return ['pr', 'issue', 'repo', 'run'].includes(sub) && ['view', 'list', 'checks'].includes(action) && !args.some((arg) => /^--web(=|$)/.test(arg) || /^-[A-Za-z]*w/.test(arg));
@@ -941,6 +1092,60 @@ function readsOnly(words: string[]): boolean {
   const bot = program === 'node' ? 1 : 0;
   if (/^yokoten(\.ts|\.mjs)?$/.test(base(words[bot] ?? '')) && words[bot + 1] === 'bot' && words[bot + 2] === '--') return readsOnly(words.slice(bot + 3));
   return false;
+}
+
+// sort's options that write nothing and run nothing: no -o, -T or --compress-program (#498).
+// Flags, then at most one key (`-rk2,2n`) or one `-t`: the flags hold no `k` or `t`, so the parts
+// can't overlap and the test stays linear (CodeQL found the older form exponential).
+const SORT_OPTION = /^-[bdfghiMnRrsuVz]*(?:t.?|k[\d.,bdfghiMnRrV]*)?$/;
+const SORT_LONG_OPTIONS = new Set(['--reverse', '--numeric-sort', '--unique', '--human-numeric-sort', '--version-sort', '--ignore-case', '--stable']);
+const UNIQ_OPTION = /^-[cdDiuz]*(?:[fsw]\d*)?$/;
+// sed's options that write nothing: no -i, --in-place or -f (a script from a file).
+const SED_OPTION = /^-[nErsuz]+$/;
+const SED_LONG_OPTIONS = new Set(['--posix', '--debug', '--sandbox', '--quiet', '--silent', '--regexp-extended', '--separate', '--unbuffered', '--null-data']);
+
+// Whether a sed only prints (#498): the options above, and scripts that are only
+// s/…/…/ commands, joined by `;`, with no w or e flag. Any other script is refused,
+// since `w` writes a file and `e` runs one. A `$` anywhere is refused: bash fills in a
+// value before sed reads the script, and a value can hold the delimiter and then `w`.
+function sedReadsOnly(args: string[]): boolean {
+  if (args.some((arg) => arg.includes('$'))) return false;
+  let hasScript = false;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === '-e' || arg.startsWith('--expression=')) {
+      const script = arg === '-e' ? args[++index] : arg.slice('--expression='.length);
+      if (script === undefined || !isSubstitution(script)) return false;
+      hasScript = true;
+    } else if (arg.startsWith('-')) {
+      if (!SED_OPTION.test(arg) && !SED_LONG_OPTIONS.has(arg)) return false;
+    } else if (!hasScript) {
+      if (!isSubstitution(arg)) return false;
+      hasScript = true;
+    }
+  }
+  return hasScript;
+}
+
+// Whether a sed script is only s/…/…/ commands, joined by `;`. Flags: g, p, i, I, m, M, digits.
+function isSubstitution(script: string): boolean {
+  let index = 0;
+  for (;;) {
+    if (script[index] !== 's') return false;
+    const delimiter = script[index + 1] ?? '';
+    if (!delimiter || /[\s\\$A-Za-z0-9]/.test(delimiter)) return false;
+    index += 2;
+    for (let part = 0; part < 2; part++) {
+      while (index < script.length && script[index] !== delimiter) index += script[index] === '\\' ? 2 : 1;
+      if (script[index] !== delimiter) return false;
+      index++;
+    }
+    while (index < script.length && /[gpiImM0-9]/.test(script[index])) index++;
+    if (index === script.length) return true;
+    if (script[index] !== ';') return false;
+    index++;
+    while (script[index] === ' ') index++;
+  }
 }
 
 // Whether a command's own redirects write a file: `gh … > body.md` empties it before gh reads it.
