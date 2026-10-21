@@ -109,4 +109,4 @@ agent 想强推，yokoten 把它拦下，说清为什么，再给出改法。接
 
 ---
 
-<p align="center"><sub>MIT · <a href="https://coolwhite.us/">coolwhite</a> 和一支 AI agent 团队（Claude Code、Muse Code）按 yokoten 自己的规矩做出来的。里面不少东西，是在工厂车间里学来的。</sub></p>
+<p align="center"><sub>MIT · <a href="https://coolwhite.us/">coolwhite</a> 和一支 AI agent 团队按 yokoten 自己的规矩做出来的：v0.1.0 由 Claude Code 打底，v0.1.1 由 Muse Code 主导。里面不少东西，是在工厂车间里学来的。</sub></p>

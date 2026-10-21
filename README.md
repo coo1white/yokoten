@@ -116,4 +116,4 @@ The [roadmap](docs/guide.md#where-this-is-going) has the five stages. The
 
 ---
 
-<p align="center"><sub>MIT · Built by <a href="https://coolwhite.us/">coolwhite</a> and a team of AI agents (Claude Code, Muse Code), under yokoten’s own rules. With lessons from the factory floor.</sub></p>
+<p align="center"><sub>MIT · Built by <a href="https://coolwhite.us/">coolwhite</a> and a team of AI agents, under yokoten’s own rules: Claude Code built v0.1.0, and Muse Code leads v0.1.1. With lessons from the factory floor.</sub></p>
