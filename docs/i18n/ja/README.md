@@ -57,8 +57,6 @@ npx yokoten init         # プロジェクトごとに一度
 npx yokoten doctor       # 今いる関所と、次の一手
 ```
 
-npm での最初のリリース（10 月 24 日）までは、[clone からインストール](../../guide.md#install-from-a-clone)してください（英語）。
-
 ### 知っておくと良いこと
 
 - **コミットは UTC で。** `TZ=UTC git commit` でコミットするか、シェルの設定ファイルに `export TZ=UTC` を一度書いておきます。

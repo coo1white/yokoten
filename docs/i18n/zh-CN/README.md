@@ -54,8 +54,6 @@ npx yokoten init         # 每个项目做一次
 npx yokoten doctor       # 看看走到了第几关、下一步做什么
 ```
 
-npm 上的第一个版本（10 月 24 日）出来之前，先[从 clone 下来的仓库装](guide.md#从-clone-下来的仓库装)。
-
 ### 先知道这几件事
 
 - **提交用 UTC 时间。** 用 `TZ=UTC git commit` 提交，或者在 shell 配置文件里加一行 `export TZ=UTC`。
