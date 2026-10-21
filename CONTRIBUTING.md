@@ -36,6 +36,11 @@ agents. The short version:
 
 You need Node 22.18 or later. There are no runtime dependencies.
 
+## Be kind
+
+Everyone here follows the [code of conduct](CODE_OF_CONDUCT.md). To report a problem
+with someone's behavior, write to [conduct@yokoten.app](mailto:conduct@yokoten.app).
+
 ## Learn more
 
 - [The guide](docs/guide.md): what yokoten does, and every command.
