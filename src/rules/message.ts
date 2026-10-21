@@ -259,6 +259,12 @@ export const RULES = {
     check: '`yokoten check --issue` in CI reads the issue when it is opened or edited',
     docs: guide('issue-titles'),
   },
+  'issue-labels': {
+    rule: 'an issue has one type label and one tier label, when the repo has those labels (core rule 8)',
+    why: 'a reviewer filters on labels to find what kind of work it is and what needs the owner',
+    check: '`yokoten check --issue` in CI reads the labels with the title, and `yokoten bot` refuses a `gh issue create` without them; a repo without type or tier labels gets no line',
+    docs: guide('issue-titles'),
+  },
   'long-sentence': {
     rule: 'plain English: a sentence has at most 25 words (record 0005)',
     why: 'beginners, second-language readers and agents misread long sentences',

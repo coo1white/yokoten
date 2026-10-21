@@ -1,6 +1,8 @@
 # yokoten as a GitHub Action (#106): one step runs yokoten's checks in the caller's CI.
-# It runs yokoten from this action's own copy, in the caller's workspace. Nothing leaves
-# the job: no token, no network call from yokoten.
+# It runs yokoten from this action's own copy, in the caller's workspace. It only reads:
+# `check --issue` lists the repo's labels through `gh`, to know which kinds it has.
+# When that fails, only the title is checked. Nothing else leaves the job: no token is
+# handed to yokoten, and it never comments, labels or renames.
 #
 # The caller's checkout needs the whole history (`fetch-depth: 0`) for `check --pr`: it
 # lists the files between the base and the head commit. The job needs only

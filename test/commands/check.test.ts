@@ -177,6 +177,65 @@ test('check --issue: reads the issue from the CI event; a bad title fails, a goo
   assert.deepEqual(JSON.parse(result.stdout).skipped, 'no issue in this run (it reads the CI event); nothing to check');
 });
 
+// #544: `check --issue` also checks the labels: one type label and one tier label,
+// when the repo has those labels. A repo without a kind gets no line for it.
+test('check --issue: an issue needs the type and tier labels its repo has (#544)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', JSON.stringify({ areas: ['doctor'] }));
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/octo/app.git');
+  // A gh first on PATH that answers `label list` from labels.json; every other call fails.
+  const bin = join(sandbox.home, 'bin');
+  mkdirSync(bin);
+  const labelsFile = join(sandbox.home, 'labels.json');
+  writeFileSync(
+    join(bin, 'gh'),
+    `#!/usr/bin/env node\nconst fs = require("node:fs");\nif (process.argv.slice(2, 4).join(" ") === "label list") { process.stdout.write(fs.readFileSync(${JSON.stringify(labelsFile)}, "utf8")); process.exit(0); }\nprocess.exit(1);\n`,
+    { mode: 0o755 },
+  );
+  const extra = { PATH: `${bin}:${process.env.PATH}` };
+  const setLabels = (names: string[]) => writeFileSync(labelsFile, JSON.stringify(names.map((name) => ({ name }))));
+  const event = (labels: string[]) => {
+    const file = join(sandbox.home, 'event.json');
+    writeFileSync(file, JSON.stringify({ action: 'opened', issue: { title: 'doctor: add the review step', labels: labels.map((name) => ({ name })) } }));
+    return { GITHUB_EVENT_PATH: file, ...extra };
+  };
+  setLabels(['feat', 'bug', 'docs', 'tier A', 'tier B', 'tier C']);
+  // Both: none.
+  let result = await sandbox.call(['check', '--issue'], { extra: event(['bug', 'tier B']) });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /check --issue: ok/);
+  // No type label: one line (the positive control).
+  result = await sandbox.call(['check', '--issue'], { extra: event(['tier B']) });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /check --issue: 1 problem\(s\)\n- labels: no type label\. .*Add one type label, such as feat, bug, docs\./);
+  assert.match(result.stderr, /docs: \S+#issue-titles/);
+  assert.doesNotMatch(result.stderr, /tier B.*no tier label/, 'the tier label it has is not named');
+  // No tier label: one line (the positive control).
+  result = await sandbox.call(['check', '--issue'], { extra: event(['bug']) });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /check --issue: 1 problem\(s\)\n- labels: no tier label\. .*Add one tier label/);
+  // Both missing: one line each.
+  result = await sandbox.call(['check', '--issue'], { extra: event(['kit']) });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /check --issue: 2 problem\(s\)/);
+  // A repo without tier labels: no line for the tier.
+  setLabels(['feat', 'bug', 'docs']);
+  result = await sandbox.call(['check', '--issue'], { extra: event(['bug']) });
+  assert.equal(result.status, 0, result.stderr);
+  // A repo without type labels: no line for the type.
+  setLabels(['tier A', 'tier B']);
+  result = await sandbox.call(['check', '--issue'], { extra: event(['tier A']) });
+  assert.equal(result.status, 0, result.stderr);
+  // gh can't list the labels: only the title is checked.
+  const bare = makeSandbox();
+  bare.write('yokoten.json', JSON.stringify({ areas: ['doctor'] }));
+  const bareEvent = join(bare.home, 'event.json');
+  writeFileSync(bareEvent, JSON.stringify({ action: 'opened', issue: { title: 'doctor: add the review step', labels: [] } }));
+  result = await bare.call(['check', '--issue'], { extra: { GITHUB_EVENT_PATH: bareEvent } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /check --issue: ok/);
+});
+
 // #91: in GitHub Actions, the findings show on the pull request page: an annotation per
 // finding on stdout, and a job summary. The finding text is reused, so no private value.
 test('check in GitHub Actions: annotations and a job summary, place but never content (#91)', async () => {

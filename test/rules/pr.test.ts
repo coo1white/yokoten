@@ -16,6 +16,7 @@ import {
 } from '../../src/rules/message.ts';
 import {
   changedLines,
+  checkIssueLabels,
   checkIssueTitle,
   checkOwnedTier,
   checkPullRequest,
@@ -28,6 +29,7 @@ import {
   parseCodeOwners,
   noMilestoneFinding,
   readCommandBody,
+  readCommandIssueLabels,
   readCommandMilestone,
   readLinkedIssues,
   type PullRequest,
@@ -300,6 +302,45 @@ test('issue title: each break fails with what, why and the fix', () => {
   one('doctor check: add a step', 'issue-area', /does not start with an area/);
   one('area: add the review step', 'issue-area', /placeholder `area`/, {});
   one('site: turn off analytics', 'issue-area', /not in yokoten\.json "areas"\. .+Use one of: doctor, check, kit\.\n  docs: \S+#issue-titles$/);
+});
+
+// #544: an issue has one type label and one tier label, but only the kinds the repo
+// has. Each missing one is one line that names it.
+test('issue labels: one type and one tier, only the kinds the repo has (#544)', () => {
+  const repo = ['feat', 'bug', 'docs', 'tier A', 'tier B', 'tier C'];
+  // Both: none.
+  assert.deepEqual(checkIssueLabels(['feat', 'tier B'], repo), []);
+  // No type label: one line (the positive control).
+  const noType = checkIssueLabels(['tier B'], repo);
+  assert.equal(noType.length, 1);
+  assert.equal(noType[0].id, 'issue-labels');
+  assert.match(formatFinding(noType[0]), /^labels: no type label\. .*Add one type label, such as feat, bug, docs\./);
+  // No tier label: one line (the positive control).
+  const noTier = checkIssueLabels(['bug'], repo);
+  assert.equal(noTier.length, 1);
+  assert.equal(noTier[0].id, 'issue-labels');
+  assert.match(formatFinding(noTier[0]), /^labels: no tier label\. .*Add one tier label: `tier A`, `tier B` or `tier C`\./);
+  // Both missing: one line each.
+  assert.equal(checkIssueLabels([], repo).length, 2, 'each missing kind is one line');
+  // A name the repo uses for the kind counts: an alias, `tier:` with a colon, any case.
+  assert.deepEqual(checkIssueLabels(['enhancement', 'tier: B'], repo), []);
+  assert.deepEqual(checkIssueLabels(['incident', 'Tier C'], repo), []);
+  // A repo without a kind gets no line for it, even when the issue lacks it too.
+  assert.deepEqual(checkIssueLabels(['bug'], ['bug', 'feat']), [], 'the repo has no tier labels');
+  assert.deepEqual(checkIssueLabels(['tier A'], ['tier A', 'tier B']), [], 'the repo has no type labels');
+  assert.deepEqual(checkIssueLabels(['kit'], []), [], 'the repo has no labels at all');
+  // The repo's labels can't be read: only the title is checked, never the labels.
+  assert.deepEqual(checkIssueLabels([], null), []);
+});
+
+test('readCommandIssueLabels: the labels of gh issue create, in every spelling (#544)', () => {
+  assert.deepEqual(readCommandIssueLabels(['gh', 'issue', 'create', '-t', 'a', '-l', 'bug']), { labels: ['bug'], repo: null });
+  assert.deepEqual(readCommandIssueLabels(['gh', 'issue', 'new', '--title=x', '--label', 'bug, tier A', '-R', 'o/r']), { labels: ['bug', 'tier A'], repo: 'o/r' });
+  assert.deepEqual(readCommandIssueLabels(['gh', '-R', 'o/r', 'issue', 'create', '--add-label', 'tier B']), { labels: ['tier B'], repo: 'o/r' });
+  // Not an issue create, or a run-together word it can't read: nothing to check.
+  for (const command of [['gh', 'issue', 'edit', '5', '--add-label', 'bug'], ['gh', 'issue', 'create', '-dzbx'], ['gh', 'pr', 'create', '-t', 'a'], ['gh', 'issue', 'list'], ['git', 'push']]) {
+    assert.equal(readCommandIssueLabels(command), null, command.join(' '));
+  }
 });
 
 test('pull request: an area outside the configured list fails; no list lets any through', () => {

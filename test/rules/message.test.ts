@@ -40,6 +40,7 @@ import {
   RULES,
 } from '../../src/rules/message.ts';
 import {
+  checkIssueLabels,
   checkIssueTitle,
   checkOwnedTier,
   checkPullRequest,
@@ -138,6 +139,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   found.push(...checkPullRequest({ title: `Bad title (#1) ${'x'.repeat(70)}.`, body: '## Why\n\n', files: ['src/a.ts', 'kit/x'], labels: [], milestone: null }, DEFAULTS));
   add(checkOwnedTier({ body: 'tier: B\n', files: ['kit/x'] }, { text: '/kit/ @owner\n', from: 'the base branch' }));
   found.push(...checkIssueTitle('Bad title (#1) that runs on well past the sixty character limit.', {}));
+  found.push(...checkIssueLabels([], ['feat', 'tier A']));
   add(largeDiff(500));
   add(longSentenceNote('a.md', { line: 3, words: 30 }));
   found.push(...nameNotes('a.ts', NAMED, new Set([1, 2])));

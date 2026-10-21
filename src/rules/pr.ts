@@ -432,6 +432,24 @@ export function checkIssueTitle(title: string, config: Partial<Pick<Config, 'are
   return problems;
 }
 
+/**
+ * Problems with an issue's labels: one type label and one tier label, but only the
+ * kinds the repo has. A repo without type or tier labels of its own gets no line, and
+ * neither does an issue when the repo's labels can't be read (null).
+ */
+export function checkIssueLabels(issueLabels: string[], repoLabels: string[] | null): Finding[] {
+  if (repoLabels === null) return [];
+  const problems: Finding[] = [];
+  if (repoLabels.some(isTypeLabel) && !issueLabels.some(isTypeLabel)) {
+    problems.push(finding('issue-labels', 'labels: no type label', 'add one type label, such as feat, bug, docs'));
+  }
+  const isTierLabel = (label: string): boolean => labelTier(label) !== null;
+  if (repoLabels.some(isTierLabel) && !issueLabels.some(isTierLabel)) {
+    problems.push(finding('issue-labels', 'labels: no tier label', 'add one tier label: `tier A`, `tier B` or `tier C`'));
+  }
+  return problems;
+}
+
 // The owner rule. CODEOWNERS names the paths where a mistake is hard to undo, and the
 // people who must review them. Record 0004's tiers say the same thing from the other
 // side: tier A needs the owner. So a pull request that changes an owned file is tier A.
@@ -804,6 +822,27 @@ export function readCommandLabels(command: string[], body: string | null): Comma
   const hasTier = labels.some((label) => labelTier(label) !== null);
   if (tier && !hasTier) missing.push([`tier ${tier}`, `tier: ${tier}`]);
   return { missing, problems: hasTier ? checkTierLabel(labels, tier) : [], repo };
+}
+
+/** The labels a `gh issue create` command gives, and its `--repo` value. */
+export interface CommandIssueLabels {
+  labels: string[];
+  /** The `--repo` value, or null when the command names none. */
+  repo: string | null;
+}
+
+/**
+ * The labels that `gh issue create` (or `new`) gives with `--label`, `-l` or
+ * `--add-label`. Null for any other command, or a run-together word it can't read.
+ */
+export function readCommandIssueLabels(command: string[]): CommandIssueLabels | null {
+  const [file, ...rest] = command;
+  if (!file || botProgram(file) !== 'gh') return null;
+  const { words, options, unreadable } = readArgs(rest, ISSUE_FLAGS);
+  const [kind, verb] = words.map((index) => rest[index]);
+  if (kind !== 'issue' || (verb !== 'create' && verb !== 'new') || unreadable !== null) return null;
+  const repo = options.filter(([name]) => name === '--repo' || name === '-R').at(-1)?.[1] ?? null;
+  return { labels: readTitleAndLabels(options).labels, repo };
 }
 
 // ---- The milestone a gh command sets (#512) ----
