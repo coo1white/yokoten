@@ -346,7 +346,7 @@ test('titles: limits count the characters a person sees, not code units (#268)',
 // would fail is never opened.
 test('guard: a gh title is checked before it is sent, plain or through the bot (#391)', () => {
   const config = { ...DEFAULTS, areas: ['check', 'doctor'] };
-  const guard = (command: string) => checkCommand(command, { env: {}, config, titles: true });
+  const guard = (command: string) => checkCommand(command, { cwd: process.cwd(), env: {}, config, titles: true });
   const unknownArea = guard('gh issue create --title "billing: add invoices" --body ok');
   const [expected] = checkIssueTitle('billing: add invoices', config);
   assert.deepEqual(unknownArea, expected, 'the same finding as the bot gives');
@@ -370,12 +370,12 @@ test('guard: titles are checked only by a project hook in a repo with a yokoten.
   const bad = 'gh issue create --title "Login fails on Safari" --body ok';
   const action = { command: bad, paths: [], worker: false };
   const plain = makeTempDir('yokoten-titles-');
-  assert.equal(judge({ ...action, cwd: plain }, { root: plain, config: DEFAULTS, env: {} }), null, 'no yokoten.json');
+  assert.equal(judge({ ...action, cwd: plain }, { root: plain, config: DEFAULTS, env: {}, cwd: process.cwd() }), null, 'no yokoten.json');
   const project = makeTempDir('yokoten-titles-');
   writeFileSync(join(project, 'yokoten.json'), '{}');
-  assert.equal(judge({ ...action, cwd: project }, { root: project, config: DEFAULTS, env: {} })?.id, checkIssueTitle('Login fails on Safari', DEFAULTS)[0].id);
-  assert.equal(judge({ ...action, cwd: project }, { root: project, config: DEFAULTS, env: {}, commandsOnly: true }), null, 'the user-level hook');
-  assert.equal(checkCommand(bad, { env: {} }), null, 'off unless asked for');
+  assert.equal(judge({ ...action, cwd: project }, { root: project, config: DEFAULTS, env: {}, cwd: process.cwd() })?.id, checkIssueTitle('Login fails on Safari', DEFAULTS)[0].id);
+  assert.equal(judge({ ...action, cwd: project }, { root: project, config: DEFAULTS, env: {}, cwd: process.cwd(), commandsOnly: true }), null, 'the user-level hook');
+  assert.equal(checkCommand(bad, { cwd: process.cwd(), env: {} }), null, 'off unless asked for');
 });
 
 // #406: the bot checks a pull request's body with the body part of the CI rules.

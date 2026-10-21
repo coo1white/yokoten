@@ -1681,7 +1681,7 @@ test('an origin that runs a remote helper (transport::address) is unsure: no ski
     const r = allowRepo(remote);
     writeFileSync(r.env.YOKOTEN_PRIVATE_MARKS as string, 'quiet vale\n');
     assert.equal(normalizeRemote(remote), null, `no key, ${remote}`);
-    assert.match((repoKey(r.repo) as { unsure: string }).unsure, /remote helper/, `unsure, ${remote}`);
+    assert.match((repoKey(r.repo, process.env) as { unsure: string }).unsure, /remote helper/, `unsure, ${remote}`);
     assert.deepEqual(repoMarkKinds(r.env, r.repo).map((mark) => mark.value), ['quiet vale'], `no skip, ${remote}`);
     r.allow([{ remote: 'example.com/x/quiet-vale', allow: ['quiet vale'] }]);
     assert.deepEqual(machineAllowed(r.env, r.repo).allow, [], `no allow, ${remote}`);
@@ -1692,7 +1692,7 @@ test('an origin on this machine by host (localhost, 127.x.x.x, ::1) counts as lo
   for (const remote of ['https://localhost/x/quiet-vale', 'https://LOCALHOST:8443/x/quiet-vale.git', 'ssh://git@127.0.0.1:2222/x/quiet-vale', 'git@127.1.2.3:x/quiet-vale', 'ssh://[::1]/x/quiet-vale', 'git@[::1]:x/quiet-vale', 'ssh://::1/x/quiet-vale']) {
     const r = allowRepo(remote);
     writeFileSync(r.env.YOKOTEN_PRIVATE_MARKS as string, 'quiet vale\n');
-    assert.equal((repoKey(r.repo) as { local?: boolean }).local, true, `local, ${remote}`);
+    assert.equal((repoKey(r.repo, process.env) as { local?: boolean }).local, true, `local, ${remote}`);
     assert.deepEqual(repoMarkKinds(r.env, r.repo).map((mark) => mark.value), ['quiet vale'], `no skip, ${remote}`);
   }
   assert.equal(normalizeRemote('git@[::1]:x/quiet-vale'), '[::1]/x/quiet-vale', 'a bracketed host keeps its brackets in the key');

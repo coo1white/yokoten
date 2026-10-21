@@ -58,7 +58,7 @@ const sayIgnored = (ignored: IgnoredPart) =>
  */
 export function judge(
   action: Action,
-  { root, config, env, cwd, commandsOnly = false, repos = [] }: { root: string | null; config: Config; env: Env; cwd?: string; commandsOnly?: boolean; repos?: Repo[] },
+  { root, config, env, cwd, commandsOnly = false, repos = [] }: { root: string | null; config: Config; env: Env; cwd: string; commandsOnly?: boolean; repos?: Repo[] },
 ): Finding | null {
   // Set before the command check: the lead-only check on shell writes reads it (#402).
   if (action.worker) env = { ...env, YOKOTEN_ROLE: 'worker' };
@@ -76,7 +76,7 @@ export function judge(
   if (!ruled.length) return null;
   const reals = ruled.map((repo) => ({ config: repo.config, real: real(repo.root) }));
   for (const p of action.paths) {
-    const file = real(resolve(action.cwd ?? root ?? cwd ?? process.cwd(), p));
+    const file = real(resolve(action.cwd ?? root ?? cwd, p));
     let best: { rel: string; config: Config } | null = null;
     for (const repo of reals) {
       const rel = relative(repo.real, file);

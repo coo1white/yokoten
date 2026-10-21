@@ -23,6 +23,7 @@ import {
   CLI,
   makeSandbox,
 } from '../repo/helpers.ts';
+import { invoke } from '../repo/invoke.ts';
 
 // #117: the bot checks a title before it sends anything, by the rules CI uses. A fake gh
 // and a local API server stand in for GitHub; the real ones are never reached.
@@ -400,6 +401,51 @@ test('bot: a new pull request gets its type and tier labels; a contradicting one
       assert.deepEqual(read(log).at(-1)?.args, command.slice(1), command.join(' '));
     }
     assert.equal(read(lists).length, lists0, 'no label list');
+  } finally {
+    server.close();
+  }
+});
+
+// #475: in this process, `--body-file -` reads the body from the invocation's stdin, and
+// gh's own output lands on the invocation's streams, not the test runner's.
+test('bot --body-file -: in-process, the body comes from the given stdin and gh writes to the given streams (#475)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', JSON.stringify({ areas: ['host'] }));
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/me/repo.git');
+  const bin = join(sandbox.home, 'bin');
+  const log = join(sandbox.home, 'gh.log');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'gh'), [
+    '#!/usr/bin/env node',
+    'const fs = require("node:fs"); const args = process.argv.slice(2);',
+    'if (args[0] === "label") { process.stdout.write(JSON.stringify([{ name: "docs" }, { name: "tier C" }])); process.exit(0); }',
+    `fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, input: fs.readFileSync(0, "utf8") }) + "\\n");`,
+    'process.stdout.write("created\\n"); process.stderr.write("a gh note\\n");',
+  ].join('\n'));
+  chmodSync(join(bin, 'gh'), 0o755);
+  const server = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(req.method === 'GET' ? { id: 77 } : { token: 'ghs_test' }));
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  const key = join(sandbox.home, 'bot.pem');
+  writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
+  const env = { ...sandbox.env, PATH: `${bin}:${process.env.PATH}`, YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+  const body = 'tier: C\nCloses #1\n\n## Why\nx\n\n## What changed\nx\n\n## How tested\nx\n';
+  const command = ['bot', '--', 'gh', 'pr', 'create', '-t', 'docs: a', '--body-file', '-'];
+  try {
+    // A body CI would refuse, given on stdin: refused before anything is sent.
+    const refused = await invoke(command, { env, cwd: sandbox.repo, stdin: body.replace('## How tested\nx\n', '') });
+    assert.equal(refused.code, 1);
+    assert.match(refused.stderr, /^yokoten bot: 1 problem\(s\) in the body; nothing was sent/);
+    assert.equal(existsSync(log), false, 'gh did not run');
+    // A good one: gh gets it the same way, and what gh prints is the command's output.
+    const sent = await invoke(command, { env, cwd: sandbox.repo, stdin: body });
+    assert.equal(sent.code, 0, sent.stderr);
+    assert.equal(sent.stdout, 'created\n');
+    assert.match(sent.stderr, /a gh note\n$/);
+    const [ran] = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    assert.deepEqual(ran, { args: ['pr', 'create', '-t', 'docs: a', '--body-file', '-', '--label', 'docs', '--label', 'tier C'], input: body });
   } finally {
     server.close();
   }

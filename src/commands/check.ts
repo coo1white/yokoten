@@ -72,7 +72,7 @@ function runMode(invocation: Invocation, mode: string, root: string, config: Ret
     // An event that can't be read is one finding (#267), so --json and the summary still work.
     problems = 'problem' in issue ? [issue.problem] : checkIssueTitle(issue.title, config, issue.labels);
   } else if (mode === 'pr') {
-    const pr = number === undefined ? readPullRequest(root, env) : readNumberedPullRequest(root, ghIn(root, GH_TIMEOUT_MS), number);
+    const pr = number === undefined ? readPullRequest(root, env) : readNumberedPullRequest(root, ghIn(root, env, GH_TIMEOUT_MS), number, env);
     if (!pr) {
       const skipped = 'no pull request in this run (it reads the CI event); nothing to check';
       if (json) printJson(invocation, { check: mode, ok: true, skipped, findings: [], notes: [] });
@@ -86,7 +86,7 @@ function runMode(invocation: Invocation, mode: string, root: string, config: Ret
       // The file as the pull request leaves it, or null when the pull request deletes it.
       // Any other file git can't show stops the check (#403): never read as deleted.
       const deleted = new Set(pr.deleted);
-      const readAtHead = (file: string): string | null => (deleted.has(file) ? null : readGit(root, ['show', `${pr.head}:${file}`]).toString('utf8'));
+      const readAtHead = (file: string): string | null => (deleted.has(file) ? null : readGit(root, ['show', `${pr.head}:${file}`], { env }).toString('utf8'));
       const printNotes = (found: Finding[], label: string) => {
         if (found.length && !json) print(invocation, [`${name}: note: ${found.length} ${label}`, ...bullets(found.slice(0, 10)), ...(found.length > 10 ? [`- and ${found.length - 10} more`] : [])]);
       };
@@ -105,7 +105,7 @@ function runMode(invocation: Invocation, mode: string, root: string, config: Ret
       // One diff with renames found, so a moved file is not noted as all new. Fixed
       // prefixes and plain paths, whatever the user's git settings say.
       const diffArgs = ['-c', 'core.quotePath=false', 'diff', '-U0', '-M', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', `${pr.base}...${pr.head}`];
-      const added = codeFiles.length ? addedLinesByFile(readGit(root, diffArgs).toString('utf8')) : new Map<string, Set<number>>();
+      const added = codeFiles.length ? addedLinesByFile(readGit(root, diffArgs, { env }).toString('utf8')) : new Map<string, Set<number>>();
       for (const file of codeFiles) {
         const text = added.has(file) ? readAtHead(file) : null;
         if (text !== null) names.push(...nameNotes(file, text, added.get(file) ?? new Set()));
@@ -125,7 +125,7 @@ function runMode(invocation: Invocation, mode: string, root: string, config: Ret
         if (text !== null) problems.push(...parseChange(file, text).problems);
       }
       // Owned paths set the lowest tier, from the base branch's CODEOWNERS.
-      const owned = checkOwnedTier(pr, readCodeOwners(root, pr.base));
+      const owned = checkOwnedTier(pr, readCodeOwners(root, pr.base, env));
       if (owned) problems.push(owned);
       // Dependabot can't write our body (#299): those rules are notes for it, never a silent skip.
       const split = splitForDependabot(pr, problems);
@@ -202,19 +202,20 @@ export function runRedact(invocation: Invocation): number | Promise<number> {
   let pending = '';
   return new Promise((settle) => {
     stdout.on('error', () => settle(0));
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('data', (chunk: string) => {
+    const { stream } = invocation.stdin;
+    stream.setEncoding('utf8');
+    stream.on('data', (chunk: string) => {
       pending += chunk;
       const cut = cutPoint(pending);
       if (cut === 0) return;
       write(pending.slice(0, cut));
       pending = pending.slice(cut);
     });
-    process.stdin.on('end', () => {
+    stream.on('end', () => {
       write(pending);
       settle(0);
     });
-    process.stdin.on('error', () => settle(0));
+    stream.on('error', () => settle(0));
   });
 }
 
@@ -267,7 +268,7 @@ function allowHere(invocation: Invocation, mark: string, { isRemoving }: { isRem
   }
   // Only a mark the file holds: anything else is not private to this machine, so nothing to allow.
   if (!isRemoving && !marks.includes(mark)) return refuse(invocation, 'that is not a line of your private-marks file, so there is nothing to allow. Check the spelling, or add it to the file first');
-  const key = repoKey(root);
+  const key = repoKey(root, env);
   if ('none' in key) return refuse(invocation, `nothing was changed, because ${key.none}. The allow from this machine is for a repo with one; use "privacy.allow" in yokoten.json instead`);
   if ('unsure' in key) return refuse(invocation, `nothing was changed, because ${key.unsure}`);
   // A link to the file is kept: the file it points to is the one changed. A link to nothing is refused.

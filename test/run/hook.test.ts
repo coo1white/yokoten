@@ -39,7 +39,7 @@ test('hook: blocks with exit 2 and a reason, allows with exit 0', () => {
 // #408: the hook starts the guard's worker before it reads the call, so the two overlap.
 test('hook: a guard started before the call judges it as judge does; one never used lets the process end (#408)', async () => {
   const action = { command: 'git push --tags', paths: [], worker: false };
-  const options = { root: null, config: DEFAULTS, env: {} };
+  const options = { root: null, config: DEFAULTS, env: {}, cwd: process.cwd() };
   const guard = startGuard();
   await new Promise((wait) => setTimeout(wait, 50));
   const found = await guard.judge(action, options, 5000);

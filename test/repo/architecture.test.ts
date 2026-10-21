@@ -955,6 +955,47 @@ test('home: a test that reads the home folder gets the empty temp one, not the r
   assert.equal(child.stdout, TEST_HOME);
 });
 
+// ---- The process, read once (#475) ----
+//
+// bin/main.ts's runFromProcess makes the one Invocation from the process. Below it, a module
+// reads the command line, env, folder and streams from there, so every command can run in
+// this process in a test. Comments may name them; code may not.
+const PROCESS_READS = new Set(['argv', 'env', 'cwd', 'stdin', 'stdout', 'stderr']);
+
+/** Each `process.<argv|env|cwd|stdin|stdout|stderr>` and `readFileSync(0` / `readSync(0` in the code, as "line: what". */
+function processReads(text: string): string[] {
+  const tokens = tokenize(text);
+  const found: string[] = [];
+  tokens.forEach((token, index) => {
+    const next = tokens[index + 1];
+    const after = tokens[index + 2];
+    if (token.text === 'process' && (next?.text === '.' || next?.text === '?.') && after && PROCESS_READS.has(after.text)) found.push(`${token.line}: process.${after.text}`);
+    if ((token.text === 'readFileSync' || token.text === 'readSync') && next?.text === '(' && after?.text === '0') found.push(`${token.line}: ${token.text}(0`);
+  });
+  return found;
+}
+
+test('process: the scan finds each read of the process, and not one in a comment or a string (#475)', () => {
+  const text = [
+    "// process.env in a comment, and readSync(0 too",
+    "const said = 'process.cwd()';",
+    'const home = process.env.HOME;',
+    'const here = process.cwd();',
+    'process.stdin.on("data", () => {});',
+    'const all = readFileSync(0, "utf8");',
+    'readSync(0, buffer);',
+    'const exit = process.exitCode;',
+  ].join('\n');
+  assert.deepEqual(processReads(text), ['3: process.env', '4: process.cwd', '5: process.stdin', '6: readFileSync(0', '7: readSync(0']);
+});
+
+test('process: below bin/main.ts, src/ reads no env, folder or stream of the process (#475)', () => {
+  const found = filesUnder(SRC)
+    .filter((path) => path.endsWith('.ts'))
+    .flatMap((path) => processReads(readFileSync(join(SRC, path), 'utf8')).map((read) => `src/${path}:${read}`));
+  assert.deepEqual(found, [], 'read it from the Invocation (bin/main.ts makes it), or pass it in as an argument');
+});
+
 // ---- Code given to node -e (#329) ----
 //
 // Code built from values is code injection waiting for a hostile value (CodeQL

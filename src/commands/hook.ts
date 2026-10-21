@@ -1,6 +1,6 @@
 // `yokoten hook`: the tool-call guard, and with --stop the end-of-turn check.
 
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
 import * as claudeCode from '../agents/runtimes/claude-code.ts';
@@ -14,7 +14,7 @@ import { hardenRead, printsAccount, privateOutput, releaseFix, wrapForRedact } f
 import { type Finding, formatFinding } from '../rules/message.ts';
 import { checkChanged } from '../run/check.ts';
 import { type Action, type Guard, guardDeadline, judgeWithDeadline, loadHookConfig, type Repo } from '../run/hook.ts';
-import { bullets, type Invocation, parse, print, printJson, rootOf, say, usage } from './shared.ts';
+import { bullets, type Invocation, parse, print, printJson, readInput, rootOf, say, usage } from './shared.ts';
 
 // Each runtime sends its tool call in its own shape; its adapter turns it into an Action.
 export const READERS: Record<string, (input: unknown) => Action> = {
@@ -112,7 +112,7 @@ function editRepos(invocation: Invocation, action: Action, base: string, session
   for (const path of action.paths) {
     let folder = dirname(resolve(base, path));
     while (!existsSync(folder) && dirname(folder) !== folder) folder = dirname(folder);
-    if (!rootByFolder.has(folder)) rootByFolder.set(folder, rootOf(folder));
+    if (!rootByFolder.has(folder)) rootByFolder.set(folder, rootOf(folder, invocation.env));
     const root = rootByFolder.get(folder);
     if (!root || repos.has(root)) continue;
     repos.set(root, existsSync(join(root, 'yokoten.json')) ? { root, config: loadHookConfig(root, (line) => say(invocation, `${line}\n`, invocation.stderr)) } : null);
@@ -131,7 +131,7 @@ function stopHook(invocation: Invocation, json: boolean, read: typeof claudeCode
   const { env } = invocation;
   let event: ReturnType<typeof claudeCode.readStop>;
   try {
-    event = read(JSON.parse(readFileSync(0, 'utf8')));
+    event = read(JSON.parse(readInput(invocation.stdin)));
   } catch {
     event = null;
   }
@@ -145,7 +145,7 @@ function stopHook(invocation: Invocation, json: boolean, read: typeof claudeCode
   }
   let findings: Finding[];
   try {
-    const root = rootOf(event.cwd ?? invocation.cwd);
+    const root = rootOf(event.cwd ?? invocation.cwd, env);
     findings = root ? checkChanged(root, { config: loadConfig(root), env }) : [];
   } catch (err) {
     say(invocation, `yokoten hook --stop: skipped, ${((err as Error).message ?? String(err)).split('\n')[0]}\n`, invocation.stderr);
@@ -175,7 +175,7 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
   if (!read) return usage(invocation, `unknown --agent ${agent}; use one of: ${Object.keys(READERS).join(', ')}`);
   let input: unknown;
   try {
-    input = JSON.parse(readFileSync(0, 'utf8'));
+    input = JSON.parse(readInput(invocation.stdin));
   } catch {
     // Not a tool call; nothing to judge. A runtime never sends one, and blocking here
     // would stop every tool call the day a runtime changes its input.
@@ -183,7 +183,7 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
     return 0;
   }
   const action = read(input);
-  const root = rootOf(action.cwd ?? cwd);
+  const root = rootOf(action.cwd ?? cwd, env);
   const config = loadHookConfig(root, (line) => say(invocation, `${line}\n`, invocation.stderr));
   const commandsOnly = options.flags.has('--commands-only');
   const repos = editRepos(invocation, action, action.cwd ?? root ?? cwd, root ? { root, config } : null, commandsOnly);

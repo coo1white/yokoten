@@ -5,7 +5,7 @@ import { readSync } from 'node:fs';
 import * as claudeCode from '../agents/runtimes/claude-code.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import { ghIn } from '../host/github.ts';
-import { DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
+import { DEFAULTS, loadConfig } from '../rules/config.ts';
 import { formatFinding } from '../rules/message.ts';
 import { hideHome } from '../rules/privacy.ts';
 import { draft, facts, table } from '../setup/advice/adopt.ts';
@@ -21,18 +21,18 @@ export function runDoctor(invocation: Invocation): number {
   const agent = options.values['--agent'] ?? 'claude-code';
   if (!Object.hasOwn(READERS, agent)) return usage(invocation, `unknown --agent ${agent}; use one of: ${Object.keys(READERS).join(', ')}`);
   const session = options.flags.has('--session');
-  const root = rootOf(cwd);
+  const root = rootOf(cwd, invocation.env);
   const config = root ? loadConfig(root) : DEFAULTS;
-  const { ok, lines: allLines, blocks, report } = doctor(root, { env, config, session, gh: root ? ghIn(root) : undefined, fillMarks: !session });
+  const { ok, lines: allLines, blocks, report } = doctor(root, { env, config, session, gh: root ? ghIn(root, env) : undefined, fillMarks: !session });
   // Full doctor outside a repo says so (#205). A session there stays quiet: no noise in a non-repo folder.
   if (!root && !session) {
-    const missing = noRootFinding(cwd);
+    const missing = noRootFinding(cwd, invocation.env);
     if (options.flags.has('--json')) printJson(invocation, { ...report, ok: false, findings: [...report.findings, missing] });
     else print(invocation, [...allLines, `yokoten doctor: ${formatFinding(missing)}`], invocation.stderr);
     return 1;
   }
   // A compaction start repeats only what changed (#405); any other start says all.
-  const lines = root && session && blocks && !options.flags.has('--json') ? blocksToSay(env, agent === 'claude-code' ? readSessionStart(env) : null, blocks).flat() : allLines;
+  const lines = root && session && blocks && !options.flags.has('--json') ? blocksToSay(env, agent === 'claude-code' ? readSessionStart(invocation) : null, blocks).flat() : allLines;
   // A worker started with YOKOTEN_ROLE hears that the guard sees it as one (#402), on every
   // start, a compaction too: its role is safety, never news to drop. The lead hears nothing.
   if (root && session && blocks && !options.flags.has('--json') && env.YOKOTEN_ROLE === 'worker') lines.push(`yokoten: ${WORKER_SESSION}.`);
@@ -58,25 +58,29 @@ const STDIN_LIMIT = 1 << 20;
  * The SessionStart event Claude Code writes to stdin, or null when it gives none. It never
  * waits on a terminal, and never longer than STDIN_WAIT_MS on a pipe that stays open.
  */
-function readSessionStart(env: Env): SessionStart | null {
-  // Reading process.stdin opens stdin as a stream first. For a pipe, libuv then puts the fd
+function readSessionStart({ env, stdin }: Invocation): SessionStart | null {
+  // Reading the process's stdin stream opens it first. For a pipe, libuv then puts the fd
   // in non-blocking mode, so readSync below throws EAGAIN in place of waiting for a writer
   // that never closes. A file, such as /dev/null, reads to its end at once.
-  if (!claudeCode.hasSessionInput(env, process.stdin.isTTY === true)) return null;
-  const chunks: Buffer[] = [];
-  const buffer = Buffer.alloc(64 * 1024);
-  const deadline = Date.now() + STDIN_WAIT_MS;
-  const parsed = () => {
+  if (!claudeCode.hasSessionInput(env, stdin.stream.isTTY === true)) return null;
+  const { fd } = stdin;
+  const toEvent = (text: string) => {
     try {
-      return claudeCode.readSessionStart(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      return claudeCode.readSessionStart(JSON.parse(text));
     } catch {
       return null;
     }
   };
+  // A test's stdin is its text, all there at once.
+  if (fd === null) return toEvent(stdin.text ?? '');
+  const chunks: Buffer[] = [];
+  const buffer = Buffer.alloc(64 * 1024);
+  const deadline = Date.now() + STDIN_WAIT_MS;
+  const parsed = () => toEvent(Buffer.concat(chunks).toString('utf8'));
   for (let size = 0; size < STDIN_LIMIT; ) {
     let count = 0;
     try {
-      count = readSync(0, buffer);
+      count = readSync(fd, buffer);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EAGAIN') break;
       // Nothing to read yet: a whole event read so far is enough; else wait a little.

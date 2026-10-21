@@ -60,14 +60,14 @@ export function isGranted(path: string, env: Env, foldsCase = FOLDS_CASE): boole
 /**
  * A shell command, as the agent wrote it. `config` brings the programs the project blocks
  * (yokoten.json "commands.block"); without it, only the core rules apply. `cwd` is the
- * folder the command runs in, by default this process's: a change to core.hooksPath reads
+ * folder the command runs in, null when it is not known: a change to core.hooksPath reads
  * that repo's setting and hooks. `titles` turns on the title check for gh issues and pull
  * requests: the hook sets it in a repo with a yokoten.json, never in the user-level hook,
  * since another project's titles follow its own rules. `repos` are the repos whose file rules
  * the hook applies to an edit (see `judge`): a worker's shell write is checked against the
  * same ones, and against a repo with a yokoten.json it finds above the file.
  */
-export function checkCommand(command: string, options: { env: Env; config?: GuardConfig; cwd?: string; titles?: boolean; repos?: RuledRepo[] }): Finding | null {
+export function checkCommand(command: string, options: { env: Env; config?: GuardConfig; cwd: string | null; titles?: boolean; repos?: RuledRepo[] }): Finding | null {
   // The reader is not a full parser. Whatever goes wrong inside it, the command is refused,
   // never let through: an error here must not open the guard.
   const outerAnswers = gitAnswers;
@@ -75,7 +75,7 @@ export function checkCommand(command: string, options: { env: Env; config?: Guar
     gitAnswers = outerAnswers ?? new Map();
     // The file rules are looked up once per call, and only for a worker.
     const rules = options.env.YOKOTEN_ROLE === 'worker' ? fileRules(options.repos ?? []) : undefined;
-    return withBudget(command.length, () => checkEachCommand(command, { ...options, cwd: options.cwd ?? process.cwd(), rules }));
+    return withBudget(command.length, () => checkEachCommand(command, { ...options, rules }));
   } catch {
     return finding('unreadable-command', 'yokoten could not read this command', 'split it into simpler commands, one per call');
   } finally {
@@ -211,7 +211,7 @@ function checkGit(words: string[], { env, config, cwd, rules }: { env: Env; conf
   }
   const skip = args.includes('--no-verify') ? '--no-verify' : sub === 'commit' ? args.find((a) => /^-[a-z]*n[a-z]*$/i.test(a)) : undefined;
   if (skip) return finding('skip-check', `git ${sub} ${skip} skips the commit check`, 'fix what the check reports instead');
-  if (sub === 'config') return checkConfig(withoutShellRedirects(words, argsAt), directory);
+  if (sub === 'config') return checkConfig(withoutShellRedirects(words, argsAt), directory, env);
   return null;
 }
 
@@ -380,7 +380,7 @@ function splitConfig(args: string[], isOldForm: boolean): { options: string[]; p
 
 // `git config`: a read passes; a change to core.hooksPath passes only to .githooks, or as
 // checkHooksFolder allows. `directory` is the folder git works in, or null when unknown.
-function checkConfig(args: string[], directory: string | null): Finding | null {
+function checkConfig(args: string[], directory: string | null, env: Env): Finding | null {
   let { options, plain } = splitConfig(args, true);
   const subcommand = CONFIG_SUBCOMMANDS.has(plain[0]) ? plain[0] : undefined;
   if (subcommand) {
@@ -418,7 +418,7 @@ function checkConfig(args: string[], directory: string | null): Finding | null {
   if (isInclude(key)) return includes(`git config ${key}`);
   if (value === HOOKS_DIR) return null;
   if (value === undefined) return hooksPath('git config set core.hooksPath with no value turns off the commit check');
-  return checkHooksFolder(value, options, directory);
+  return checkHooksFolder(value, options, directory, env);
 }
 
 // Config that is not this repo's own: a change there reaches other repos, or none.
@@ -428,14 +428,14 @@ const OTHER_SCOPES = new Set(['--global', '--system', '-f', '--file', '--blob', 
 // A new core.hooksPath in the repo's own config passes when it is the value already set,
 // or when git runs the folder's pre-commit (an executable file whose first line names sh,
 // bash, dash or zsh) and the script runs `yokoten check` (for husky, .husky/pre-commit).
-function checkHooksFolder(value: string, options: string[], directory: string | null): Finding | null {
+function checkHooksFolder(value: string, options: string[], directory: string | null, env: Env): Finding | null {
   const scope = options.find((o) => OTHER_SCOPES.has(o.split('=')[0]));
   if (scope) return hooksPath(`git config ${scope} core.hooksPath changes the hooks folder outside this repo's own config, which can turn off the commit check`);
   // git expands these, and the guard does not: it cannot tell which folder they name.
   if (value.startsWith('~') || value.startsWith('%(')) return hooksPath(`core.hooksPath ${value} names a folder git expands, which the guard cannot check`);
-  const root = directory === null ? null : readGit(directory, ['rev-parse', '--show-toplevel']);
+  const root = directory === null ? null : readGit(directory, ['rev-parse', '--show-toplevel'], env);
   if (root === null) return hooksPath('changing core.hooksPath where the guard cannot find the repo can turn off the commit check');
-  if (readGit(root, ['config', '--get', 'core.hooksPath']) === value) return null;
+  if (readGit(root, ['config', '--get', 'core.hooksPath'], env) === value) return null;
   const file = hookFile(root, value);
   if (file === null) return hooksPath(`core.hooksPath ${value} is outside this repo, so the commit check does not run`);
   // git runs the folder's own pre-commit only when it is an executable file; husky's
@@ -706,12 +706,12 @@ function withoutSubstitutions(text: string): string {
 // twice for each.
 let gitAnswers: Map<string, string | null> | null = null;
 
-function readGit(directory: string, args: string[]): string | null {
+function readGit(directory: string, args: string[], env: Env): string | null {
   const key = [directory, ...args].join('\0');
   if (gitAnswers?.has(key)) return gitAnswers.get(key) ?? null;
   let answer: string | null;
   try {
-    answer = execFileSync('git', args, { cwd: directory, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    answer = execFileSync('git', args, { cwd: directory, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch {
     answer = null;
   }
@@ -1013,7 +1013,7 @@ function checkLeadOnlyWrites(words: string[], { env, rules, folder }: { env: Env
     const path = stopped(target);
     if (path !== null) return finding('lead-only', `this command writes ${path}, which is lead-only (yokoten.json "leadOnly")`, LEAD_ONLY_FIX);
   }
-  for (const target of commitTargets(words, folder, rules.rootOf)) {
+  for (const target of commitTargets(words, folder, rules.rootOf, env)) {
     const path = stopped(target);
     if (path !== null) return finding('lead-only', `this commit changes ${path}, which is lead-only (yokoten.json "leadOnly")`, `unstage it with \`git restore --staged ${path}\`, then ${LEAD_ONLY_FIX}`);
   }
@@ -1315,7 +1315,7 @@ const COMMIT_VALUES = new Set(['--message', '--file', '--reuse-message', '--reed
  * what is staged, and with -a what is changed too. In a short option cluster, m, F, C, c
  * and t take a value; S and u take the rest of the word.
  */
-function commitTargets(words: string[], folder: string | null, rootOf: FileRules['rootOf']): WriteTarget[] {
+function commitTargets(words: string[], folder: string | null, rootOf: FileRules['rootOf'], env: Env): WriteTarget[] {
   const start = words.findIndex(isGit);
   if (start === -1) return [];
   const { sub, args, dir } = gitParts(withoutShellRedirects(words, start + 1), folder);
@@ -1349,7 +1349,7 @@ function commitTargets(words: string[], folder: string | null, rootOf: FileRules
   const root = rootOf(dir);
   if (root === null) return targets;
   const changed = (args: string[]) =>
-    (readGit(dir, ['--no-optional-locks', 'diff', ...args, '--name-only', '--no-renames', '-z']) ?? '')
+    (readGit(dir, ['--no-optional-locks', 'diff', ...args, '--name-only', '--no-renames', '-z'], env) ?? '')
       .split('\0')
       .filter(Boolean)
       .map((path) => ({ path: join(root, path), from: root }));

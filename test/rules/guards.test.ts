@@ -39,9 +39,9 @@ import {
 import { judge } from '../../src/run/hook.ts';
 import { assertLinear, assertLinearEach } from '../../scripts/linear.ts';
 
-const blocked = (command: string, env: Env = {}) => assert.ok(checkCommand(command, { env }), `should block: ${command}`);
+const blocked = (command: string, env: Env = {}) => assert.ok(checkCommand(command, { cwd: process.cwd(), env }), `should block: ${command}`);
 
-const allowed = (command: string, env: Env = {}) => assert.equal(checkCommand(command, { env }), null, `should allow: ${command}`);
+const allowed = (command: string, env: Env = {}) => assert.equal(checkCommand(command, { cwd: process.cwd(), env }), null, `should allow: ${command}`);
 
 // The hooks setting in a project with its own hooks folder (#217). A repo with husky's
 // pre-commit running the check (and husky's own `.husky/_/pre-commit`, which git runs), a
@@ -95,7 +95,7 @@ function makeHooksRepo(): string {
 // #192: a project blocks programs in yokoten.json "commands.block", each with its reason.
 const pythonBlocked = { commands: { block: { python: 'TypeScript only', python3: 'this project is TypeScript only (AGENTS.md).' } } };
 
-const isBlockedByList = (command: string, config: { commands: { block: Record<string, string> } } = pythonBlocked) => checkCommand(command, { env: {}, config })?.id === 'blocked-command';
+const isBlockedByList = (command: string, config: { commands: { block: Record<string, string> } } = pythonBlocked) => checkCommand(command, { cwd: process.cwd(), env: {}, config })?.id === 'blocked-command';
 
 // #226: gaps the reviews of #195 and #199 left. The blocked name is built from pieces.
 const py = ['py', 'thon3'].join('');
@@ -116,11 +116,11 @@ const setHooks = (folder: string) => `${['git config core', 'hooksPath'].join('.
 
 // #283: heredoc shapes bash runs that the guard skipped. Each was run in bash (with a
 // harmless command in place of the push) to see where bash ends the body and what it runs.
-const refusedAs = (command: string, id: string) => assert.equal(checkCommand(command, { env: {} })?.id, id, `should refuse as ${id}: ${JSON.stringify(command)}`);
+const refusedAs = (command: string, id: string) => assert.equal(checkCommand(command, { cwd: process.cwd(), env: {} })?.id, id, `should refuse as ${id}: ${JSON.stringify(command)}`);
 
 test('the bot is not a way around the guard', () => {
-  assert.ok(checkCommand('node .yokoten/bin/yokoten.ts bot -- git push --tags', { env: {} }));
-  assert.ok(checkCommand('yokoten bot -- gh release create v1', { env: {} }));
+  assert.ok(checkCommand('node .yokoten/bin/yokoten.ts bot -- git push --tags', { cwd: process.cwd(), env: {} }));
+  assert.ok(checkCommand('yokoten bot -- gh release create v1', { cwd: process.cwd(), env: {} }));
 });
 
 // .yokoten/ is the copy of yokoten the hooks and CI run: a worker that changes it can turn the checks off (#297).
@@ -170,7 +170,7 @@ test('release: the owner\'s approval lets it through', () => {
 });
 
 test('release: without an agent, the fix names none (#350)', () => {
-  assert.equal(checkCommand('git push --tags', { env: {} })?.fix, 'if the owner asked for this, they start a new session of their agent with YOKOTEN_RELEASE_APPROVAL=1; do not look for another way');
+  assert.equal(checkCommand('git push --tags', { cwd: process.cwd(), env: {} })?.fix, 'if the owner asked for this, they start a new session of their agent with YOKOTEN_RELEASE_APPROVAL=1; do not look for another way');
 });
 
 test('approval in the command text does not count', () => {
@@ -312,7 +312,7 @@ test('hooks setting: git config --edit blocks in any scope, with any editor (#35
     'git config --edi --global',
     'bash -c "git config --edit"',
   ]) blocked(command);
-  const edit = checkCommand('git config --edit', { env: {} });
+  const edit = checkCommand('git config --edit', { cwd: process.cwd(), env: {} });
   assert.match(edit?.what ?? '', /core\.hooksPath/);
   assert.match(edit?.fix ?? '', /git config --get/);
 });
@@ -440,7 +440,7 @@ test('hooks setting: a folder whose pre-commit runs the check, or the value alre
 test('hooks setting: the hook judges it in the folder the command runs in (#217, #218)', () => {
   const repo = makeHooksRepo();
   const command = 'git config core.hooksPath .husky/_';
-  const judgeFrom = (cwd: string | undefined, root: string | null) => judge({ command, paths: [], cwd, worker: false }, { root, config: DEFAULTS, env: {} });
+  const judgeFrom = (cwd: string | undefined, root: string | null) => judge({ command, paths: [], cwd, worker: false }, { root, config: DEFAULTS, env: {}, cwd: process.cwd() });
   try {
     // The session runs elsewhere; the agent's command runs in the repo.
     assert.equal(judgeFrom(repo, null), null, 'the call\'s cwd');
@@ -896,7 +896,7 @@ test('bash: a heredoc read by a program that is not a shell is data (#196)', () 
     'cat <<A <<"B"\nnpm publish\nA\ngit push --tags\nB',
   ]) allowed(command);
   // The same text read by the block list: python is stopped by its own name, not its body.
-  assert.equal(checkCommand("python3 - <<'EOF'\nprint(1)\nEOF", { env: {}, config: { commands: { block: { python3: 'TypeScript only' } } } })?.id, 'blocked-command');
+  assert.equal(checkCommand("python3 - <<'EOF'\nprint(1)\nEOF", { cwd: process.cwd(), env: {}, config: { commands: { block: { python3: 'TypeScript only' } } } })?.id, 'blocked-command');
 });
 
 test('bash: a heredoc read by a shell is commands, and so are the lines after it (#196)', () => {
@@ -990,7 +990,7 @@ test('blocked commands: the program is stopped by its name, with any folder or .
     'timeout 5 python3 x.py',
     'ls | xargs -n 1 python3',
   ]) assert.ok(isBlockedByList(command), `should block: ${command}`);
-  const found = checkCommand('python3 --version', { env: {}, config: pythonBlocked });
+  const found = checkCommand('python3 --version', { cwd: process.cwd(), env: {}, config: pythonBlocked });
   assert.equal(found?.what, '`python3` is blocked in this project');
   assert.equal(found?.why, 'this project is TypeScript only (AGENTS.md)', 'the reason from yokoten.json, with no full stop');
   assert.match(found?.fix ?? '', /project's own stack/);
@@ -1034,7 +1034,7 @@ test('blocked commands: a word that only holds the name passes, and so does no l
   }
   // Positive control: the same commands pass without the list.
   for (const command of ['python3 --version', 'env X=1 python3 x.py']) {
-    assert.equal(checkCommand(command, { env: {} }), null, command);
+    assert.equal(checkCommand(command, { cwd: process.cwd(), env: {} }), null, command);
     assert.equal(isBlockedByList(command, { commands: { block: {} } }), false, command);
   }
   assert.equal(isBlockedByList('toString x'), false, 'only the list\'s own keys');
@@ -1129,7 +1129,7 @@ test('bash: a heredoc in a group or subshell that pipes into a shell is commands
 test('bash: a command the reader cannot read is refused with exit 2, not let through (#226)', () => {
   // So many commands in one shell string that reading them throws (too many to spread).
   const tooBig = `bash -c "${':;'.repeat(300000)}"`;
-  assert.equal(checkCommand(tooBig, { env: {} })?.id, 'unreadable-command');
+  assert.equal(checkCommand(tooBig, { cwd: process.cwd(), env: {} })?.id, 'unreadable-command');
   const hook = runChild(process.execPath, [join(import.meta.dirname, '../..', 'bin', 'yokoten.ts'), 'hook'], {
     cwd: tmpdir(),
     input: JSON.stringify({ cwd: tmpdir(), hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: tooBig } }),
@@ -1162,8 +1162,8 @@ test('blocked commands: a find inside a find is read once, fast, and a huge list
   assertLinear('a find chain of echo', (depth) => chain('-exec echo {} ', depth), (command) => assert.equal(isBlockedByList(command), false, 'a chain that runs no blocked program'), 18);
   shouldBlock([`find . -exec nice ${py} {} +`, `find . -exec echo {} \\; -ok ${py} {} \\;`]);
   const many = `find . ${'-exec echo {} \\; '.repeat(300)}`;
-  assert.equal(checkCommand(many, { env: {}, config: pythonBlocked })?.id, 'unreadable-command');
-  assert.equal(checkCommand(many, { env: {} }), null, 'without a block list, nothing to look for');
+  assert.equal(checkCommand(many, { cwd: process.cwd(), env: {}, config: pythonBlocked })?.id, 'unreadable-command');
+  assert.equal(checkCommand(many, { cwd: process.cwd(), env: {} }), null, 'without a block list, nothing to look for');
 });
 
 test('bash: a quoted or escaped case is no keyword, so nothing after it is a pattern (#226)', () => {
@@ -1207,7 +1207,7 @@ test('bash: a command of 100k words is read in linear time (#226)', () => {
     ['GIT_CONFIG_KEY_0', (n) => `${'GIT_CONFIG_KEY_0=x '.repeat(n)}git status`],
   ];
   for (const [name, make] of commands) {
-    assertLinear(`${name} words`, make, (command) => assert.equal(checkCommand(command, { env: {}, config: pythonBlocked }), null, name), 3125);
+    assertLinear(`${name} words`, make, (command) => assert.equal(checkCommand(command, { cwd: process.cwd(), env: {}, config: pythonBlocked }), null, name), 3125);
   }
   blocked(`echo ${'a '.repeat(100000)}; ${force}`);
 });
@@ -1231,7 +1231,7 @@ test('bash: an unclosed $( is read once, not again at each level (#226)', () => 
   blocked(`${'echo $(a '.repeat(30)}; ${force}`);
   // From 1250 repeats to 10k, the time grows like the text.
   for (const shape of ['echo $(a ', 'echo "$(a ', 'cat <(a ', '((', 'echo `a ']) {
-    assertLinear(`${shape} unclosed`, (n) => `${shape.repeat(n)}; ${force}`, (command) => assert.ok(checkCommand(command, { env: {} }), `${shape} unclosed then a force push should block`), 1250);
+    assertLinear(`${shape} unclosed`, (n) => `${shape.repeat(n)}; ${force}`, (command) => assert.ok(checkCommand(command, { cwd: process.cwd(), env: {} }), `${shape} unclosed then a force push should block`), 1250);
   }
   // What an unclosed $( holds is still read: a force push inside it blocks, a read passes.
   blocked(`echo $(${force}`);
@@ -1241,8 +1241,8 @@ test('bash: an unclosed $( is read once, not again at each level (#226)', () => 
 test('bash: a heredoc pipeline is read in linear time (#226)', () => {
   // From 1000 heredocs to 8000.
   const pipeline = (reader: string, body: string, n: number) => `${'cat <<E | '.repeat(n)}${reader}\n${`${body}\nE\n`.repeat(n)}`;
-  assertLinear('a heredoc pipeline into cat', (n) => pipeline('cat', force, n), (command) => assert.equal(checkCommand(command, { env: {} }), null, 'bodies piped into cat are data'), 1000);
-  assertLinear('a heredoc pipeline into bash', (n) => pipeline('bash', force, n), (command) => assert.equal(checkCommand(command, { env: {} })?.id, 'force-push', 'bodies piped into bash are commands'), 1000);
+  assertLinear('a heredoc pipeline into cat', (n) => pipeline('cat', force, n), (command) => assert.equal(checkCommand(command, { cwd: process.cwd(), env: {} }), null, 'bodies piped into cat are data'), 1000);
+  assertLinear('a heredoc pipeline into bash', (n) => pipeline('bash', force, n), (command) => assert.equal(checkCommand(command, { cwd: process.cwd(), env: {} })?.id, 'force-push', 'bodies piped into bash are commands'), 1000);
 });
 
 // Shapes that nest or chain, each alone, before a force push and after one.
@@ -1270,7 +1270,7 @@ const nestedCases = nestedShapes.flatMap((shape) =>
     const read = (command: string) => {
       let result: ReturnType<typeof checkCommand> = null;
       assert.doesNotThrow(() => {
-        result = checkCommand(command, { env: {}, config: pythonBlocked });
+        result = checkCommand(command, { cwd: process.cwd(), env: {}, config: pythonBlocked });
       }, name);
       if (command.startsWith(force)) assert.ok(result, `${name} should block`);
     };
@@ -1600,14 +1600,12 @@ test('hooks setting: one command asks git each question once, however often it s
   const log = join(bin, 'log');
   const real = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
   writeHook(join(bin, 'git'), `#!/bin/sh\necho x >> "${log}"\nexec "${real}" "$@"\n`);
-  const path = process.env.PATH;
-  process.env.PATH = `${bin}:${path}`;
   try {
-    assert.equal(checkCommand(`${setHooks('.husky/_')}; `.repeat(50), { env: {}, cwd }), null);
+    // The guard's git gets the env the guard is given: here, a PATH with the logging git first.
+    assert.equal(checkCommand(`${setHooks('.husky/_')}; `.repeat(50), { env: { PATH: `${bin}:${process.env.PATH}` }, cwd }), null);
     const calls = readFileSync(log, 'utf8').split('\n').filter(Boolean).length;
     assert.equal(calls, 2, 'rev-parse --show-toplevel and config --get, once each');
   } finally {
-    process.env.PATH = path;
     rmSync(cwd, { recursive: true, force: true });
     rmSync(bin, { recursive: true, force: true });
   }

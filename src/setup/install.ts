@@ -23,7 +23,7 @@ import { execFileSync } from 'node:child_process';
 import { configEntries } from '../run/check.ts';
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
-import { basename, delimiter, dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, delimiter, dirname, join, parse, relative, resolve, sep } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { skillFile as sharedSkillFile } from '../agents/agent-skills.ts';
 import { addUserHooks, agentFile, hasSessionDoctor, hasUserGuard, removeUserHooks, skillFile as claudeSkillFile, userDir } from '../agents/runtimes/claude-code.ts';
@@ -366,10 +366,13 @@ export function uninstall(env: Env, { platform = process.platform }: { platform?
 // ones the private-marks file lacks, and never print a value. A machine-level mailmap makes
 // `git log` and `git show` print a placeholder for the owner's emails at the source.
 
-/** One git read with the caller's environment (its HOME and global config), or null. Nothing is printed. */
-function readGitValue(env: Env, args: string[], cwd?: string): string | null {
+/** A folder in no repo, the root of the file system, for a git read of the machine's own config. */
+const OUTSIDE_REPOS = parse(process.execPath).root;
+
+/** One git read with the caller's environment (its HOME and global config), in `cwd` or outside every repo, or null. Nothing is printed. */
+function readGitValue(env: Env, args: string[], cwd: string = OUTSIDE_REPOS): string | null {
   try {
-    const value = execFileSync('git', args, { cwd, env: { ...process.env, ...env }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }).trim();
+    const value = execFileSync('git', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }).trim();
     return value || null;
   } catch {
     return null;
@@ -384,13 +387,13 @@ export interface MachineMark {
 
 /**
  * The owner's values this machine knows: git user.name and user.email (as git reads them in
- * `cwd`), the login gh is signed in with (only when `gh` is given: it may reach the network),
+ * `cwd`, or outside every repo without one), the login gh is signed in with (only when `gh` is given: it may reach the network),
  * and the hosts of remotes in `cwd` that are not public forges.
  */
 export function machineMarks(env: Env, { cwd, gh }: { cwd?: string; gh?: Gh } = {}): MachineMark[] {
   const found: MachineMark[] = [];
   // In a run (full doctor), one config list kept for the run holds all three (#453).
-  const listed = (match: string | RegExp) => configEntries(cwd ?? process.cwd(), match, { ...process.env, ...env })?.map((entry) => entry.value.trim()) ?? null;
+  const listed = (match: string | RegExp) => configEntries(cwd ?? OUTSIDE_REPOS, match, env)?.map((entry) => entry.value.trim()) ?? null;
   const lastOf = (key: string) => {
     const values = listed(key);
     return values ? values.at(-1) || null : readGitValue(env, ['config', '--get', key], cwd);

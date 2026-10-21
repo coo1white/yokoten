@@ -10,6 +10,7 @@
 // fails, because the user asked for changes on GitHub and none were made (#208). An area
 // label is never deleted or changed.
 
+import type { Env } from '../rules/config.ts';
 import { gitConfig } from '../run/check.ts';
 import {
   type Board,
@@ -97,8 +98,8 @@ export const lackingLabels = (names: string[]): Label[] => {
 };
 
 /** The origin remote's URL, or '' when there is none. */
-export function readOriginUrl(root: string): string {
-  return gitConfig(root, 'remote.origin.url');
+export function readOriginUrl(root: string, env: Env): string {
+  return gitConfig(root, 'remote.origin.url', env);
 }
 
 export interface PlanningOptions {
