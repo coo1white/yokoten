@@ -95,7 +95,7 @@ The [roadmap](docs/guide.md#where-this-is-going) has the five stages. The
 - **[Server setup](docs/server.md)**: protect `main` and release tags on GitHub.
 - **[Decisions](docs/records/)**: why it's built this way.
 - **[Changelog](CHANGELOG.md)**: what each version changed.
-- **[Contributing](AGENTS.md)**: the rules for working on yokoten.
+- **[Contributing](CONTRIBUTING.md)**: how to report a problem or send a change.
 - **[Security](.github/SECURITY.md)**: how to report a security problem.
 
 ---
