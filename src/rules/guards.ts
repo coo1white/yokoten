@@ -109,6 +109,8 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
   const plainAt = heredoc === undefined ? plainBreak(plainText) : -1;
   const fills = heredoc === undefined && (plainAt !== -1 || !tildesPlain(command, commands));
   const movesFolder = commands.some((words) => ['cd', 'pushd', 'popd'].includes(words[0] ?? ''));
+  // The words have lost their quotes: a quote or \ next to any ~ makes a ~ folder unsure (#465).
+  const isTildeQuoted = QUOTED_TILDE.test(command);
   for (const words of commands) {
     const mayWrite = heredoc !== undefined || fills || writesFile(words) || isUnsure(words) || writers.some((other) => other !== words);
     // The name is built only on a refusal (#498).
@@ -121,7 +123,7 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
       checkPosted(words, { env, config, cwd: postCwd, from, command, titles, files: { heredoc, mayWrite, saw, movesFolder } }) ??
       (rules ? checkLeadOnlyWrites(words, { env, rules, folder: postCwd }) : null);
     if (reason) return reason;
-    postCwd = folderAfter(words, postCwd, env);
+    postCwd = folderAfter(words, postCwd, { env, isTildeQuoted });
   }
   return null;
 }
@@ -1158,15 +1160,20 @@ function writesFile(words: string[]): boolean {
   return false;
 }
 
+// A quote or backslash before or after a ~: bash then does not read that ~ as the home folder.
+const QUOTED_TILDE = /[\\'"]~|~[\\'"]/;
+
 // The folder after a `cd` or `pushd` with a plain path, or null when the guard can't tell:
-// a variable, a substitution, `cd -` or `popd`. Any other command leaves it as it was.
-function folderAfter(words: string[], folder: string | null, env: Env): string | null {
+// a variable, a substitution, `cd -`, `popd`, or a ~ that was quoted (`isTildeQuoted`, #465):
+// bash keeps a quoted ~ as a folder named ~. Any other command leaves the folder as it was.
+function folderAfter(words: string[], folder: string | null, { env, isTildeQuoted }: { env: Env; isTildeQuoted: boolean }): string | null {
   const name = programName(words[0] ?? '');
   if (name === 'popd') return null;
   if (name !== 'cd' && name !== 'pushd') return folder;
   const target = words.slice(1).find((word) => !/^-[LPe@]+$/.test(word));
   if (target === undefined) return env.HOME ?? null;
   if (target === '-' || /[$`*?[]/.test(target) || /^~[^/]/.test(target)) return null;
+  if (target.startsWith('~') && isTildeQuoted) return null;
   const path = target.startsWith('~') ? (env.HOME ? join(env.HOME, target.slice(1)) : null) : target;
   if (path === null) return null;
   if (isAbsolute(path)) return path;
