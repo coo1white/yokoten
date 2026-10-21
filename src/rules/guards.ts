@@ -18,7 +18,7 @@ import type { Config, Env } from './config.ts';
 import { loadConfig, matcher } from './config.ts';
 import { type Finding, finding } from './message.ts';
 import { checkCommandTitle } from './pr.ts';
-import { checkPost, type GhCommand, ghIndex } from './privacy.ts';
+import { type CommandFiles, checkPost, type GhCommand, ghIndex } from './privacy.ts';
 
 /** A file edit, by path relative to the repo root. */
 export function checkEdit(path: string, { config, env }: { config: Config; env: Env }): Finding | null {
@@ -100,13 +100,19 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
   // A command that moves to another folder or repo (`cd x && git config ...`, GIT_DIR=)
   // may change the hooks setting of a repo the guard does not look at.
   if (commands.some(movesRepo)) cwd = null;
+  // What the rest of the command may do to a file gh reads (#439).
+  const heredoc = heredocPost(command, commands);
+  const writers = commands.filter((words) => !writesNoFile(words)).length;
+  // Anything but plain words may run code; after a cd, `..` goes up from the real folder.
+  const fills = heredoc === undefined && !(isPlainCommand(withoutStdin(command, commands)) && tildesPlain(command, commands));
+  const movesFolder = commands.some((words) => ['cd', 'pushd', 'popd'].includes(words[0] ?? ''));
   for (const words of commands) {
     const reason =
       checkGit(words, { env, config, cwd, rules }) ??
       checkHooksEnvironment(words) ??
       checkPublish(words, env) ??
       checkBlocked(words, config?.commands.block ?? {}) ??
-      checkPosted(words, { env, config, cwd: postCwd, from, command, titles }) ??
+      checkPosted(words, { env, config, cwd: postCwd, from, command, titles, files: { heredoc, mayWrite: heredoc !== undefined || fills || writers > (writesNoFile(words) ? 0 : 1) || writesFile(words) || isUnsure(words), movesFolder } }) ??
       (rules ? checkLeadOnlyWrites(words, { env, rules, folder: postCwd }) : null);
     if (reason) return reason;
     postCwd = folderAfter(words, postCwd, env);
@@ -742,12 +748,12 @@ function checkPublish(words: string[], env: Env): Finding | null {
 // The privacy check comes first: a title is checked by it too, and a leak matters more.
 function checkPosted(
   words: string[],
-  { env, config, cwd, from, command, titles }: { env: Env; config?: Partial<Pick<Config, 'privacy' | 'areas'>>; cwd: string | null; from: string | null; command: string; titles: boolean },
+  { env, config, cwd, from, command, titles, files }: { env: Env; config?: Partial<Pick<Config, 'privacy' | 'areas'>>; cwd: string | null; from: string | null; command: string; titles: boolean; files: CommandFiles },
 ): Finding | null {
   const at = ghIndex(words, findPrograms(words));
   if (at === -1) return null;
   const gh = ghCommand(words, at);
-  const leak = checkPost(gh, { env, privacy: config?.privacy, cwd, from, command });
+  const leak = checkPost(gh, { env, privacy: config?.privacy, cwd, from, command, files });
   if (leak || !titles) return leak;
   const [title] = checkCommandTitle([words[at], ...gh.args], config ?? {});
   return title ?? null;
@@ -769,6 +775,182 @@ function ghCommand(words: string[], at: number): GhCommand {
     else gh.stdinFile = target;
   }
   return gh;
+}
+
+// ---- A body file the same command writes (#439) ----
+//
+// The guard runs before the command, so a file the command writes on its way to gh is not
+// there yet. It follows one shape only, the whole command:
+//
+//   cat > body.md <<'EOF' && gh issue create --title "..." --body-file body.md
+//   ...the body...
+//   EOF
+//
+// The path is plain (letters, digits, . _ / -, or a leading ~/), the delimiter is a name in
+// single quotes, the body ends at the first line that is the delimiter, and the gh line passes
+// isPlainCommand. The guard then checks the heredoc's text, and the file on disk too when there
+// is one, in case cat can't replace it. In any other command, a file on disk is trusted only
+// when the whole command is plain and every other command surely writes no file; otherwise
+// the command is refused (record 0014).
+
+const HEREDOC_POST = /^cat[ \t]+>[ \t]*((?:~\/)?[A-Za-z0-9._/][A-Za-z0-9._/-]*)[ \t]+<<'([A-Za-z_]\w*)'[ \t]*&&[ \t]*(gh[ \t][^\n]*)$/;
+
+/** The path and text of `cat > path <<'EOF' && gh …`, when that is the whole command; otherwise undefined. */
+function heredocPost(command: string, commands: string[][]): { path: string; text: string } | undefined {
+  const end = command.indexOf('\n');
+  const first = end === -1 ? null : HEREDOC_POST.exec(command.slice(0, end));
+  if (!first || !isPlainCommand(first[3])) return undefined;
+  const [, path, delimiter] = first;
+  const lines = command.slice(end + 1).split('\n');
+  const close = lines.indexOf(delimiter);
+  // Nothing after the delimiter line but one line end.
+  if (close === -1 || lines.length > close + 2 || (lines.length === close + 2 && lines[close + 1] !== '')) return undefined;
+  // The reader agrees: cat writes the path, then gh runs, and nothing else.
+  const [cat, post] = commands;
+  const writes = cat?.[0] === 'cat' && ((cat.length === 3 && cat[1] === '>' && cat[2] === path) || (cat.length === 2 && cat[1] === `>${path}`));
+  if (commands.length !== 2 || !writes || post[0] !== 'gh') return undefined;
+  return { path, text: lines.slice(0, close).join('\n') };
+}
+
+// Commands that surely write no file (#439). Each list allows; anything else may write.
+// Shell variables that change what bash runs or where it looks: setting one is not plain.
+const SHELL_SPECIAL = /^(?:PS\d|PROMPT_\w*|HOME|PATH|CDPATH|IFS|ENV|BASH\w*|SHELLOPTS|BASHOPTS|TMOUT|HIST\w*|histchars|MAIL\w*|GLOBIGNORE|FIGNORE|EXECIGNORE|OLDPWD|PWD|OPTIND|OPTERR|POSIXLY_CORRECT|INPUTRC|TIMEFORMAT|FUNCNEST|COMP\w*|TMPDIR|SHELL|BROWSER|LD_\w*|DYLD_\w*|NODE_\w*|GIT_\w*|GH_\w*|LANG|LC_\w*)$/;
+// The only variables an `export` or a command's own `X=1 cmd` may set.
+const EXPORTS = new Set(['GH_REPO', 'GH_HOST', 'NODE_USE_ENV_PROXY']);
+const NAME_VALUE = /^([A-Za-z_]\w*)=/s;
+// `set` only for these: errexit, nounset and pipefail.
+const SET_FLAGS = /^[-+][eu]+$/;
+// Characters the shell takes as written outside quotes.
+const PLAIN = /[A-Za-z0-9 \t._/=:,@%+-]/;
+// Characters that are not literal inside "...": a value, a substitution, an escape, history.
+const DOUBLE_QUOTED_SPECIAL = /[$`\\!]/;
+
+// Whether the shell surely takes this command as written (#439): one line of plain words,
+// joined only by ; and &&. Outside quotes it allows only PLAIN characters: no \, $, backticks,
+// < or > (so no heredoc, redirect or substitution), no ( ) { } |, lone &, #, *, ? or [. A ~
+// only starts a word, alone or before a /. Inside "..." it refuses only $, backticks, \ and !.
+// The guard does not follow bash's grammar any further than this: anything else makes a
+// body file on disk unsure. One pass over the text.
+export function isPlainCommand(text: string): boolean {
+  let quote = ''; // '' outside quotes, or ' or "
+  let wordStart = true;
+  for (let index = 0; index < text.length; index++) {
+    const character = text[index];
+    if (character === '\n' || character === '\r') return false;
+    if (quote === "'") {
+      if (character === "'") quote = '';
+    } else if (quote === '"') {
+      if (character === '"') quote = '';
+      else if (DOUBLE_QUOTED_SPECIAL.test(character)) return false;
+    } else if (character === "'" || character === '"') quote = character;
+    else if (character === '&') {
+      if (text[index + 1] !== '&') return false;
+      index++;
+    } else if (character === '~') {
+      // `~+`, `~-`, `~1`, `~user` and `~'/x'` are not $HOME: only `~` and `~/` are.
+      if (!wordStart || !/^(?:[/ \t;&]|$)/.test(text[index + 1] ?? '')) return false;
+    } else if (character !== ';' && !PLAIN.test(character)) return false;
+    wordStart = quote === '' && /[ \t;&]/.test(character);
+  }
+  return quote === '';
+}
+
+// A lone gh that reads its body from a file, `gh … --body-file - < body.md` (#391): the scan
+// skips that one < at the end, since the file it names is the one checked.
+function withoutStdin(command: string, commands: string[][]): string {
+  const at = command.indexOf('<');
+  if (commands.length !== 1 || at === -1 || at !== command.lastIndexOf('<')) return command;
+  return /^[ \t]*[A-Za-z0-9._/-]+[ \t]*$/.test(command.slice(at + 1)) ? command.slice(0, at) : command;
+}
+
+// A word that starts with ~ is the folder of a cd or pushd, or the file after -F,
+// --body-file or --notes-file (#439). It is `~` or starts `~/`: the guard reads only those
+// as $HOME. The words have lost their quotes, so a '~ or "~ in the command makes any ~
+// word unsure: bash does not expand a quoted ~.
+function tildesPlain(command: string, commands: string[][]): boolean {
+  const isQuoted = /['"]~/.test(command);
+  return commands.every((words) =>
+    words.every(
+      (word, index) =>
+        !word.startsWith('~') ||
+        (!isQuoted && (word === '~' || word.startsWith('~/')) && ((index === 1 && ['cd', 'pushd'].includes(words[0])) || ['-F', '--body-file', '--notes-file'].includes(words[index - 1] ?? ''))),
+    ),
+  );
+}
+
+/** Whether a command's own variables may change what it runs (#439). */
+function isUnsure(words: string[]): boolean {
+  return ownVariables(words) === -1;
+}
+
+// Where the program starts after a command's own `X=1` words, or -1 when one of them sets a
+// variable outside EXPORTS. A command of assignments only gives its length.
+function ownVariables(words: string[]): number {
+  let at = 0;
+  while (at < words.length && NAME_VALUE.test(words[at])) at++;
+  if (at === words.length) return words.every((word) => !SHELL_SPECIAL.test(NAME_VALUE.exec(word)?.[1] ?? '')) ? at : -1;
+  return words.slice(0, at).every((word) => EXPORTS.has(NAME_VALUE.exec(word)?.[1] ?? '')) ? at : -1;
+}
+
+/**
+ * Whether a command surely writes no file, so a body file on disk is still the one gh posts
+ * (#439): no redirect into a file, no word that may run code, and either plain assignments
+ * (a substitution in one is a command of its own, checked the same way) or a read in
+ * `readsOnly`, maybe through `yokoten bot --`. Anything else may write one.
+ */
+function writesNoFile(words: string[]): boolean {
+  if (writesFile(words) || isUnsure(words)) return false;
+  const at = ownVariables(words);
+  return at === words.length || readsOnly(words.slice(at));
+}
+
+function readsOnly(words: string[]): boolean {
+  const [program = '', sub = '', action = ''] = words;
+  const args = words.slice(1);
+  switch (program) {
+    case 'true':
+    case ':':
+    case 'echo':
+      return true;
+    case 'printf':
+      return !args.some((arg) => arg.startsWith('-v'));
+    case 'test':
+    case '[':
+      return !args.includes('-v');
+    case 'set':
+      return args.length > 0 && args.every((arg, index) => SET_FLAGS.test(arg) || (/^[-+]o$/.test(arg) && args[index + 1] === 'pipefail') || (arg === 'pipefail' && /^[-+]o$/.test(args[index - 1] ?? '')));
+    case 'export':
+      return args.length > 0 && args.every((arg) => EXPORTS.has(NAME_VALUE.exec(arg)?.[1] ?? arg));
+    case 'cd':
+    case 'pushd':
+      // A bare cd goes home, `cd -` to OLDPWD, and `pushd +1` round the stack: not followed.
+      return args.length === 1 && !/^[-+]/.test(args[0]);
+    case 'popd':
+      return true;
+    case 'gh':
+      // `--web` opens a browser, which runs a program.
+      return ['pr', 'issue', 'repo', 'run'].includes(sub) && ['view', 'list', 'checks'].includes(action) && !args.some((arg) => /^--web(=|$)/.test(arg) || /^-[A-Za-z]*w/.test(arg));
+    case 'git':
+      // Most git commands run repo config (fsmonitor, textconv, gpg); these few do not.
+      if (sub === 'rev-parse') return args.slice(1).every((arg) => !arg.startsWith('--output'));
+      if (sub === 'config') return words.length === 4 && action === '--get' && !words[3].startsWith('-');
+      if (sub === 'remote') return words.length === 4 && action === 'get-url';
+      return false;
+  }
+  // `yokoten bot -- x`, `node bin/yokoten.ts bot -- x`
+  const bot = program === 'node' ? 1 : 0;
+  if (/^yokoten(\.ts|\.mjs)?$/.test(base(words[bot] ?? '')) && words[bot + 1] === 'bot' && words[bot + 2] === '--') return readsOnly(words.slice(bot + 3));
+  return false;
+}
+
+// Whether a command's own redirects write a file: `gh … > body.md` empties it before gh reads it.
+function writesFile(words: string[]): boolean {
+  for (const index of unquotedRedirects.get(words) ?? []) {
+    const redirect = WRITE_REDIRECT.exec(words[index]);
+    const path = redirect && (redirect[2] || words[index + 1]);
+    if (path && path !== '/dev/null' && !(redirect[1] === '>&' && /^(\d+|-)$/.test(path))) return true;
+  }
+  return false;
 }
 
 // The folder after a `cd` or `pushd` with a plain path, or null when the guard can't tell:
@@ -2251,6 +2433,7 @@ function heredoc(text: string, index: number, cmd: number, groups: Group[]): { d
   const strip = text[index] === '-';
   if (strip) index++;
   while (text[index] === ' ' || text[index] === '\t') index++;
+  const start = index;
   let delim = '';
   let quoted = false;
   // A \r is part of the word, as in bash: `<<EOF\r` ends at a line `EOF\r`.
@@ -2261,7 +2444,19 @@ function heredoc(text: string, index: number, cmd: number, groups: Group[]): { d
       index++;
       continue;
     }
-    if (character === "'" || character === '"') {
+    if (character === '"') {
+      // In "...", a \ before " \ $ or ` is removed: `<<"E\"F"` ends at a line `E"F` (#439).
+      let at = index + 1;
+      while (at < text.length && text[at] !== '"') {
+        if (text[at] === '\\' && '"\\$`'.includes(text[at + 1] ?? '')) at++;
+        delim += text[at];
+        at++;
+      }
+      spend(at - index);
+      if (at >= text.length) return null;
+      quoted = true;
+      index = at + 1;
+    } else if (character === "'") {
       const end = text.indexOf(character, index + 1);
       spend((end === -1 ? text.length : end) - index);
       if (end === -1) return null;
@@ -2277,8 +2472,13 @@ function heredoc(text: string, index: number, cmd: number, groups: Group[]): { d
       index++;
     }
   }
+  // A \ before a line end in the word, quoted or not: bash may join the two lines
+  // (`<<"E\⏎F"` ends at a line EF). The guard does not follow that, so it refuses (#439).
+  if (text.slice(start, index).includes('\\\n')) throw new UnsureHeredoc('a line end in a heredoc word');
   return delim ? { doc: { delim, strip, quoted, cmd, groups }, end: index } : null;
 }
+
+class UnsureHeredoc extends Error {}
 
 // Reads the heredoc bodies that start at `index`, in order, and returns the index after the
 // last one. A body is data, unless a shell or runner reads it (#196): the program of the

@@ -1264,14 +1264,38 @@ agent 用 `gh` 发文字之前，工具调用守卫也跑同一套检查。直�
 - `gh issue` 的 `create`、`comment`、`edit`、`close`；`gh pr` 的 `create`、`comment`、
   `edit`、`review`、`merge`、`close`；`gh release` 的 `create`、`edit`。
 - `--title`、`--body`、`--notes`、`--subject` 里的文字，还有关闭时 `--comment` 的文字。
-- `--body-file`、`--notes-file`、`-F` 指向的文件，前面有 `cd` 也跟着找。找不到文件就拦下命令，
-  请写完整路径。
+- `--body-file`、`--notes-file`、`-F` 指向的文件，前面有 `cd` 也跟着找。检查在命令运行前做，
+  所以同一条命令里才写的文件，检查时还不存在。只认一种写法：整条命令就是
+  `cat > body.md <<'EOF' && gh … --body-file body.md`，后面跟正文和 `EOF`。路径要简单、两边一样，
+  结束标记是用单引号括起来的名字，这样 shell 会原样保留正文。这时查正文，原来就有这个文件的话也一起查。
+  heredoc 的结束标记里有 `\` 加换行的，直接拒绝。
+
+  别的写法里，只有整条命令是简单的一行时，才读已经在磁盘上的文件：词之间只用 `;` 或 `&&` 连接。
+  引号外面不能有 `\`、`$`、反引号、`<`、`>`、`|`、单个 `&`、`(`、`)`、`[`、`{`、`}`、`#`、`*`、`?`；
+  `"…"` 里面不能有 `$`、反引号、`\`、`!`。只有一条 `gh … --body-file - < body.md` 也可以。
+  以 `~` 开头的词只能是 `cd` 的文件夹或文件路径，而且只能是单独一个 `~` 或以 `~/` 开头，不加引号。
+  `cd` 之后，路径里有 `..` 的文件不读。
+  gh 旁边的每条命令都必须是下面这些不写文件的命令之一：
+
+  - `true`、`:`、`echo`、`popd`；没有以 `-v` 开头的参数的 `printf`；不带 `-v` 的 `test`、`[`。
+  - 只带 `-e`、`-u`、`+e`、`+u`（可以单写，也可以连写，比如 `-eu`）和 `-o pipefail`、`+o pipefail` 的 `set`。
+    什么都不带的 `set` 不算。
+  - 只跟一个文件夹的 `cd`、`pushd`。
+  - 普通赋值，但不能给 shell 自己用的名字赋值，比如 `PATH`、`HOME`、`PS4`。
+  - 只设 `GH_REPO`、`GH_HOST`、`NODE_USE_ENV_PROXY` 的 `export` 或命令前缀。
+  - 不带 `--web`、`-w` 的 `gh pr|issue|repo|run view|list|checks`。
+  - `git rev-parse`、`git config --get <名字>`、`git remote get-url`。
+  - 经过 `yokoten bot --` 的上面这些命令。
+
+  不是这样的话，找不到文件、或者文件可能被改，都会拦下命令：请先用一条命令写好文件，
+  下一条命令再发，并写完整路径。
 - 从标准输入来的正文：heredoc、`<<<`、`< 文件`。
 - `gh api` 的字段和 `--input`，只在会写东西的调用里查：POST、PATCH、PUT，或 GraphQL 的
   mutation。搜索、GraphQL 查询这类只读的调用直接放行。
 
 查到问题就拦下命令，修法和提交检查一样。公开的地址加进 `privacy.allow`。命令运行时才拼出来的
 文字它看不到：`$(cat notes.md)`、变量、别的程序用管道传进来的内容。文件最多读 1 MB，更大的放行。
+它只看命令，不看你的 shell：shell 配置文件里包住 `cd`、`echo` 的函数或别名，它看不到。
 
 ### agent 读到的东西
 
