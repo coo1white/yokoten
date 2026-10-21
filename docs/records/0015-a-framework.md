@@ -11,6 +11,9 @@ beginner, can organize and manage code like a professional developer, and run th
 like a technical program manager (plan, track, review, decide what ships and when). So a
 newcomer gets the whole way this repo is run, not only the guard.
 
+The owner is the first such user. The method he built up while making yokoten should
+come with him to his next project, so he reuses it instead of working it out again.
+
 On 2026-10-21 the owner set up a second project with yokoten as a new user would. Three
 things showed up:
 
@@ -19,8 +22,12 @@ things showed up:
   request, every issue with a milestone, type, tier, assignee and board item, an hourly
   board sync, a full CODEOWNERS map, a merge order when several pull requests wait, and
   work split between workers by difficulty. Some live only in this repo's files. Some
-  live only in the lead session's notes. That is the failure 0001 was written to stop:
-  what is not carried is missing.
+  live only in the lead session's notes, together with working rules the owner taught
+  it: automate by default and treat a manual step as the exception, fix the cause the
+  second time a problem shows up, merge only when every check is green, write titles
+  for people, discuss before changing files, say what you think instead of agreeing.
+  A session in a new project may not have those notes. That is the failure 0001 was
+  written to stop: what is not carried is missing.
 - **0001 has no rule for changes a user makes.** A user can say "as-is", "lighter" or
   "not now" to a step. But a user who edits a skill that `install` manages loses the edit
   on the next install. That breaks "theirs is theirs" in [0014](0014-safe-by-default.md).
@@ -49,7 +56,9 @@ changed. A change never stops updates to the parts the user did not change.
 1. **This repo runs only on what yokoten ships.** Each practice this repo uses is either
    in the kit, or listed in `yokoten.json` as specific to yokoten the product (npm
    release, the site, translations, the plugin marketplace). Nothing lives only in a
-   session's notes.
+   session's notes: a working rule that any project could use becomes a core rule or a
+   skill in the kit. What is personal (one person's private marks, the language of
+   their reports) becomes a key, never a default.
 2. **Four ways to change a part**, from light to heavy:
    - **Keys** in `yokoten.json` for choices (which stages, the board on or off, the
      language of reports, how many workers).
