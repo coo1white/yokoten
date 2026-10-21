@@ -37,6 +37,21 @@
 
 ほかのエージェントでも、エージェントなしでも、コミットのチェックと CI が問題のある変更を止めます。
 
+## どの言語でも使える
+
+yokoten 自体は Node 22.18 以降で動きますが、プロジェクトの言語は問いません。
+番人、個人情報と秘密情報のチェック、CI、issue と pull request のチェックは、どの言語でも同じように動きます。
+
+言語を見るのは一か所だけです。`doctor` がテストのコマンドを探します。
+
+| | 言語 |
+|---|---|
+| テストのコマンドを見つけられる | JavaScript と TypeScript（npm、Deno）、Python、Go、Rust、Java（Maven、Gradle）、`make test` があるプロジェクト |
+| 開発中（[#546](https://github.com/yokoten-labs/yokoten/issues/546)） | .NET、Ruby、PHP、Swift、Elixir、Dart と Flutter |
+
+インストールからリリースまでの道のりを最後まで通したのは、今のところ TypeScript のプロジェクトだけです。
+Issue #546 で、ほかの言語のプロジェクトでも通します。
+
 ## なぜ作ったのか
 
 良いチームでは、どの変更にも理由があり、テストがあり、レビューを通っています。
