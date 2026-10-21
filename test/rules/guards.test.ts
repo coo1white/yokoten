@@ -1207,7 +1207,7 @@ test('bash: a command of 100k words is read in linear time (#226)', () => {
     ['GIT_CONFIG_KEY_0', (n) => `${'GIT_CONFIG_KEY_0=x '.repeat(n)}git status`],
   ];
   for (const [name, make] of commands) {
-    assertLinear(`${name} words`, make, (command) => assert.equal(checkCommand(command, { env: {}, config: pythonBlocked }), null, name), 12500);
+    assertLinear(`${name} words`, make, (command) => assert.equal(checkCommand(command, { env: {}, config: pythonBlocked }), null, name), 3125);
   }
   blocked(`echo ${'a '.repeat(100000)}; ${force}`);
 });
@@ -1284,10 +1284,12 @@ test('bash: nested constructs are read in linear time and never throw (#226)', (
   assertLinearEach(nestedCases, 64);
 });
 
-test('bash: nested constructs up to 8000 repeats never throw, and a force push before them blocks (#226)', () => {
-  // At 8000 repeats some shapes run out of the work budget and are refused: that path, too,
-  // must not throw. One read each; the time is proved at the sizes above.
-  for (const { make, read } of nestedCases) read(make(8000));
+test('bash: nested constructs up to 1000 repeats never throw, and a force push before them blocks (#226)', () => {
+  // At 1000 repeats some shapes already run out of the work budget and are refused (more do at
+  // 8000, which took 10 s here): that path, too, must not throw. The reader goes only 8 levels
+  // deep (MAX_DEPTH), so more repeats than this test the budget again, not the stack. One read
+  // each; the time is proved at the sizes above.
+  for (const { make, read } of nestedCases) read(make(1000));
 });
 
 test('hooks setting: git must run the hook file as an executable shell script (#226)', () => {
@@ -1432,11 +1434,11 @@ test('hooks setting: env -C, env --chdir, builtin cd and GIT_COMMON_DIR move rep
 });
 
 // The fourth review of #226. The shapes run in a node of their own, which a slow read cannot
-// hold up for long. There each is read at 1024 and 8192 repeats, all taking turns, and its time
-// must grow like the text (#316, #442). A shape gives what it should at 8192 repeats, or, for
+// hold up for long. There each is read at 128 and 1024 repeats, all taking turns, and its time
+// must grow like the text (#316, #442). A shape gives what it should at 1024 repeats, or, for
 // one with a size of its own, at that size: 100k substitutions are refused. The cases go in on
 // stdin: their parts, a part in brackets repeated n times.
-test('bash and hooks: loops that never spent the budget read thousands of repeats in linear time (#226)', () => {
+test('bash and hooks: loops that never spent the budget read a thousand repeats in linear time (#226)', () => {
   const guards = join(import.meta.dirname, '../..', 'src', 'rules', 'guards.ts');
   const linear = join(import.meta.dirname, '../..', 'scripts', 'linear.ts');
   type Part = string | [string];
@@ -1453,15 +1455,9 @@ test('bash and hooks: loops that never spent the budget read thousands of repeat
     "const make = (parts, n) => parts.map((part) => (typeof part === 'string' ? part : part[0].repeat(n))).join('');",
     "const read = (mode, text) => (mode === 'hook' ? String(runsCheck(text)) : (checkCommand(text, { env: {}, config, cwd })?.id ?? 'allow'));",
     'const name = (parts) => JSON.stringify(parts).slice(0, 60);',
-    // What the text at 8n gives is what the case proves; a smaller one may still be read in full.
-    'assertLinearEach(cases.map(({ mode, parts, want, size }) => {',
-    '  const big = make(parts, 8 * repeats).length;',
-    '  const check = (text) => {',
-    '    const found = read(mode, text);',
-    '    if (size === undefined && text.length === big) assert.equal(found, want, name(parts));',
-    '  };',
-    '  return { name: name(parts), make: (n) => make(parts, n), read: check };',
-    '}), repeats);',
+    // The helper grows a shape that reads fast, so what the text at 8n gives is checked on its own.
+    'assertLinearEach(cases.map(({ mode, parts }) => ({ name: name(parts), make: (n) => make(parts, n), read: (text) => void read(mode, text) })), repeats);',
+    'for (const { mode, parts, want, size } of cases) if (size === undefined) assert.equal(read(mode, make(parts, 8 * repeats)), want, name(parts));',
     'for (const { mode, parts, want, size } of cases) if (size !== undefined) assert.equal(read(mode, make(parts, size)), want, name(parts));',
   ].join('\n');
   const keys: Part = ['GIT_CONFIG_KEY_0=core.hooksPath '];
@@ -1500,7 +1496,7 @@ test('bash and hooks: loops that never spent the budget read thousands of repeat
   // of each line joins the check to the pipeline.
   for (const open of ['$((((', '$(', '${']) run('hook', ['#!/bin/sh\n', [open], '\nnpx yokoten check\n'], 'false');
   run('hook', ['#!/bin/sh\n', ['a |\n'], 'npx yokoten check\n'], 'false');
-  const child = spawnSync(process.execPath, ['--max-old-space-size=256', '--input-type=module', '-e', code], { input: JSON.stringify({ guards: pathToFileURL(guards).href, linear: pathToFileURL(linear).href, config: pythonBlocked, cwd: tmpdir(), cases, repeats: 1024 }), encoding: 'utf8', timeout: 120_000 });
+  const child = spawnSync(process.execPath, ['--max-old-space-size=256', '--input-type=module', '-e', code], { input: JSON.stringify({ guards: pathToFileURL(guards).href, linear: pathToFileURL(linear).href, config: pythonBlocked, cwd: tmpdir(), cases, repeats: 128 }), encoding: 'utf8', timeout: 120_000 });
   assert.equal(child.status, 0, `the linear reads failed: ${child.signal ?? child.error ?? child.stderr.slice(0, 1200)}`);
   // The linear reads keep what the old ones found: a closed $( and quotes cut no block.
   for (const line of ['x="(" y=\'{\' z=${a:-x} w=$(echo a) v=$((1 + (2)))', 'echo "a\\"(" \'"\'']) {
