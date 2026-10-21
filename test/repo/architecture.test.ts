@@ -48,8 +48,9 @@ test('layers: no module imports from a layer above its own', () => {
 // test/run/check.test.ts (#152). A branch that changes a module adds its tests, and their
 // imports, to that module's file, so parallel branches do not meet in one import block.
 // Next to the layer folders, test/ holds repo/: this file and the shared helpers, which
-// check the repo as a whole, not one src module.
-const TEST_TOP = ['repo/architecture.test.ts', 'repo/git-template.ts', 'repo/helpers.ts', 'repo/home.ts'];
+// check the repo as a whole, not one src module, git-template.ts, which copies a test repo,
+// and invoke.ts, which runs a command in-process (#475).
+const TEST_TOP = ['repo/architecture.test.ts', 'repo/git-template.ts', 'repo/helpers.ts', 'repo/home.ts', 'repo/invoke.ts'];
 // Modules with no test file of their own. Keep it short: a new module gets its test file.
 const NO_TEST_FILE = [
   'agents/agent-skills.ts', // no tests yet (#152)
@@ -823,21 +824,47 @@ test('assertLinear: a quadratic read fails; a slow spell in one round does not (
 });
 
 test('assertLinearEach: one quadratic shape among linear ones fails; a slow spell does not (#442)', () => {
-  const linear = (input: string) => busyWait(0.6 * (input.length / 1000));
-  const quadratic = (input: string) => busyWait(0.6 * (input.length / 1000) ** 2);
+  // 2 ms per 1000 chars when linear. The controls ask for a base of 2 ms, not 20: a quadratic read grown to 20 ms would take 64x that per big read.
+  const linear = (input: string) => busyWait(2 * (input.length / 1000));
+  const quadratic = (input: string) => busyWait(2 * (input.length / 1000) ** 2);
   const shapes = (read: (input: string) => void) => [
     { name: 'linear a', make: (n: number) => 'a'.repeat(n), read: linear },
     { name: 'the odd one', make: (n: number) => 'b'.repeat(n), read },
     { name: 'linear c', make: (n: number) => 'c'.repeat(n), read: linear },
   ];
-  assert.throws(() => assertLinearEach(shapes(quadratic), 1000), (error: Error) => /^the odd one: .* \d+x; linear is about 8x$/.test(error.message) && !error.message.includes('linear a'));
+  assert.throws(() => assertLinearEach(shapes(quadratic), 1000, 2), (error: Error) => /^the odd one: .* \d+x; linear is about 8x$/.test(error.message) && !error.message.includes('linear a'));
   // The odd shape's first big read is 200 ms slower, as on a busy runner: it is measured again, and passes.
   let bigReads = 0;
   const noisy = (input: string) => {
     if (input.length > 1000 && ++bigReads <= 1) busyWait(200);
     linear(input);
   };
-  assertLinearEach(shapes(noisy), 1000);
+  assertLinearEach(shapes(noisy), 1000, 2);
+});
+
+test('assertLinearEach: a real nested loop over the input fails, and a slow spell sends a linear one to a grown second round (#474)', () => {
+  // Counts pairs of equal characters: n * n steps, with no wait in it.
+  const nested = (input: string) => {
+    let pairs = 0;
+    for (let i = 0; i < input.length; i++) for (let j = 0; j < input.length; j++) if (input.charCodeAt(i) === input.charCodeAt(j)) pairs++;
+    assert.ok(pairs > 0);
+  };
+  const linear = (input: string) => {
+    let sum = 0;
+    for (let i = 0; i < input.length; i++) sum += input.charCodeAt(i);
+    assert.ok(sum > 0);
+  };
+  assert.throws(() => assertLinearEach([{ name: 'nested', make: (n) => 'x'.repeat(n), read: nested }], 1000, 2), (error: Error) => /^nested: .* \d+x; linear is about 8x$/.test(error.message));
+  // A linear read that a slow spell sends to the second round is grown there, and passes.
+  const sizes = new Set<number>();
+  let slow = 0;
+  const spell = (input: string) => {
+    sizes.add(input.length);
+    if (input.length === 8000 && ++slow <= 3) busyWait(30);
+    linear(input);
+  };
+  assertLinearEach([{ name: 'summed', make: (n) => 'x'.repeat(n), read: spell }], 1000);
+  assert.ok(Math.max(...sizes) > 8000, 'the shape was grown past its starting size');
 });
 
 // No test reads or writes the real home folder (#356). test/repo/home.ts points HOME at an

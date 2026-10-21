@@ -407,27 +407,27 @@ test('lessons: --ship refuses a draft with a TODO or a failing test, and moves n
     else process.env.TMPDIR = savedTmp;
   });
   const draftDir = join(root, 'lessons/incident-12');
-  assert.match(String((shipLesson(root, '12', '0.1.0') as { problems: string[] }).problems), /no kit\/ here/);
+  assert.match(String((shipLesson(root, '12', '0.1.0', process.env) as { problems: string[] }).problems), /no kit\/ here/);
   mkdirSync(join(root, 'kit'));
-  assert.match(String((shipLesson(root, '12', '0.1.0') as { problems: string[] }).problems), /no lesson in lessons\/incident-12: run `yokoten learn <issue> --write` first/);
-  assert.match(String((shipLesson(root, '../x', '0.1.0') as { problems: string[] }).problems), /is not a lesson id/);
+  assert.match(String((shipLesson(root, '12', '0.1.0', process.env) as { problems: string[] }).problems), /no lesson in lessons\/incident-12: run `yokoten learn <issue> --write` first/);
+  assert.match(String((shipLesson(root, '../x', '0.1.0', process.env) as { problems: string[] }).problems), /is not a lesson id/);
   // A fresh draft: TODOs in both files.
   writeDraft(root, draftLesson(incidentOf('## Why it matters\n\nA leak.\n\n## Fix\n\nA check.\n')));
-  let shipped = shipLesson(root, '12', '0.1.0') as { problems: string[] };
+  let shipped = shipLesson(root, '12', '0.1.0', process.env) as { problems: string[] };
   assert.deepEqual(shipped.problems.map((problem) => problem.replace(/\d+ TODO/, 'N TODO')), ['lessons/incident-12/lesson.ts still has N TODO(reviewer): fill each one in', 'lessons/incident-12/lesson.test.ts still has N TODO(reviewer): fill each one in']);
   // No TODO left, but the check finds nothing: its positive control fails.
   writeFileSync(join(draftDir, 'lesson.ts'), ENV_LESSON.replace("existsSync(join(root, '.env')) ? [lesson] : []", '[]'));
   writeFileSync(join(draftDir, 'lesson.test.ts'), ENV_LESSON_TEST);
-  shipped = shipLesson(root, 'incident-12', '0.1.0') as { problems: string[] };
+  shipped = shipLesson(root, 'incident-12', '0.1.0', process.env) as { problems: string[] };
   assert.deepEqual(shipped.problems, ['the lesson\'s test fails: run `node --test lessons/incident-12/lesson.test.ts` to see why, and fix the check']);
   assert.ok(existsSync(join(draftDir, 'lesson.ts')) && !existsSync(join(root, 'kit/lessons')), 'nothing moved');
   // Reviewed: it moves, with a row in the table, and the empty drafts folder goes.
   writeFileSync(join(draftDir, 'lesson.ts'), ENV_LESSON);
-  assert.deepEqual(shipLesson(root, '12', '0.1.0'), { lesson: { id: 'incident-12', folder: '1/incident-12', url: 'https://example.com/issues/12', version: '0.1.0' } });
+  assert.deepEqual(shipLesson(root, '12', '0.1.0', process.env), { lesson: { id: 'incident-12', folder: '1/incident-12', url: 'https://example.com/issues/12', version: '0.1.0' } });
   assert.ok(existsSync(join(root, 'kit/lessons/1/incident-12/lesson.test.ts')) && !existsSync(join(root, 'lessons')));
   assert.deepEqual(readLessonTable(readFileSync(join(root, 'kit/lessons/README.md'), 'utf8')).map((row) => row.id), ['incident-12']);
   writeDraft(root, draftLesson(incidentOf('')));
-  assert.match(String((shipLesson(root, '12', '0.1.0') as { problems: string[] }).problems), /kit\/lessons\/1\/incident-12 is already there/);
+  assert.match(String((shipLesson(root, '12', '0.1.0', process.env) as { problems: string[] }).problems), /kit\/lessons\/1\/incident-12 is already there/);
 });
 
 test('lessons: doctor runs each lesson as a note; a broken lesson is a note for itself alone; not now skips one', () => {

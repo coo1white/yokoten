@@ -2,8 +2,12 @@
 // the compile cache, then loads this file (#286). This file reads the command and hands it
 // to its module in src/commands/, one per command or small group (#330). Each module is
 // imported only when its command runs, so a guard call never loads doctor or init (#408).
+//
+// Loading this file runs nothing. bin/yokoten.mjs calls `runFromProcess`, which makes the one
+// invocation from the process; a test calls `main` with its own, in-process (#475).
 
-import { args, cmd, parse, print, printJsonError, say, usage } from '../src/commands/shared.ts';
+import { withHome } from '../src/rules/privacy.ts';
+import { type Invocation, parse, print, printJsonError, say, usage } from '../src/commands/shared.ts';
 import { closestWord, COMMANDS, commandHelp, findCommand, HELP_OPTIONS, commandList } from '../src/run/cli.ts';
 import { VERSION } from '../src/setup/files.ts';
 
@@ -24,10 +28,10 @@ const HELP = [
 ].join('\n');
 
 /** An unknown command: the closest one when it is near, or else the list. Exit 1. */
-function unknownCommand(name: string): number {
+function unknownCommand(invocation: Invocation, name: string): number {
   const near = closestWord(name, COMMANDS.map((command) => command.name));
   const hint = near ? `Did you mean "${near}"?` : `Commands: ${COMMANDS.map((command) => command.name).join(', ')}.`;
-  print([`yokoten: unknown command "${name}". ${hint} Run \`yokoten help\`.`], process.stderr);
+  print(invocation, [`yokoten: unknown command "${name}". ${hint} Run \`yokoten help\`.`], invocation.stderr);
   return 1;
 }
 
@@ -40,63 +44,64 @@ function isHelpAsked(words: string[]): boolean {
   return (end === -1 ? words : words.slice(0, end)).some((word) => HELP_OPTIONS.includes(word));
 }
 
-function main(): number | Promise<number> {
+function dispatch(invocation: Invocation): number | Promise<number> {
+  const { command: cmd, args } = invocation;
   // `<command> --help` prints that command's help and does nothing else (#207).
   const command = cmd === undefined ? undefined : findCommand(cmd);
   if (command && isHelpAsked(args)) {
-    print(commandHelp(command));
+    print(invocation, commandHelp(command));
     return 0;
   }
   switch (cmd) {
     case 'hook': {
       // The tool-call guard's worker, which bin/yokoten.mjs started before this file loaded (#408).
       const guard = args.includes('--stop') ? undefined : import('../src/run/hook.ts').then((m) => m.takeGuard());
-      return Promise.all([guard, import('../src/commands/hook.ts')]).then(([started, m]) => m.runHook(started));
+      return Promise.all([guard, import('../src/commands/hook.ts')]).then(([started, m]) => m.runHook(invocation, started));
     }
     case 'check':
-      return import('../src/commands/check.ts').then((m) => m.runCheck());
+      return import('../src/commands/check.ts').then((m) => m.runCheck(invocation));
     case 'redact':
-      return import('../src/commands/check.ts').then((m) => m.runRedact());
+      return import('../src/commands/check.ts').then((m) => m.runRedact(invocation));
     case 'marks':
-      return import('../src/commands/check.ts').then((m) => m.runMarks());
+      return import('../src/commands/check.ts').then((m) => m.runMarks(invocation));
     case 'changelog':
-      return import('../src/commands/learn.ts').then((m) => m.runChangelog());
+      return import('../src/commands/learn.ts').then((m) => m.runChangelog(invocation));
     case 'learn':
-      return import('../src/commands/learn.ts').then((m) => m.runLearn());
+      return import('../src/commands/learn.ts').then((m) => m.runLearn(invocation));
     case 'doctor':
-      return import('../src/commands/advice.ts').then((m) => m.runDoctor());
+      return import('../src/commands/advice.ts').then((m) => m.runDoctor(invocation));
     case 'explain':
-      return import('../src/commands/advice.ts').then((m) => m.runExplain());
+      return import('../src/commands/advice.ts').then((m) => m.runExplain(invocation));
     case 'adopt':
-      return import('../src/commands/advice.ts').then((m) => m.runAdopt());
+      return import('../src/commands/advice.ts').then((m) => m.runAdopt(invocation));
     case 'init':
-      return import('../src/commands/setup.ts').then((m) => m.runInit());
+      return import('../src/commands/setup.ts').then((m) => m.runInit(invocation));
     case 'update':
-      return import('../src/commands/setup.ts').then((m) => m.runUpdate());
+      return import('../src/commands/setup.ts').then((m) => m.runUpdate(invocation));
     case 'bot':
-      return import('../src/commands/bot.ts').then((m) => m.runBot());
+      return import('../src/commands/bot.ts').then((m) => m.runBot(invocation));
     case 'install':
-      return import('../src/commands/setup.ts').then((m) => m.runInstall());
+      return import('../src/commands/setup.ts').then((m) => m.runInstall(invocation));
     case 'uninstall':
-      return import('../src/commands/setup.ts').then((m) => m.runUninstall());
+      return import('../src/commands/setup.ts').then((m) => m.runUninstall(invocation));
     case 'version': {
-      const options = parse('version');
-      if (typeof options === 'string') return usage(options);
-      print([VERSION]);
+      const options = parse('version', args);
+      if (typeof options === 'string') return usage(invocation, options);
+      print(invocation, [VERSION]);
       return 0;
     }
     case '--version':
     case '-v':
-      print([VERSION]);
+      print(invocation, [VERSION]);
       return 0;
     case 'help': {
-      const options = parse('help');
-      if (typeof options === 'string') return usage(options);
+      const options = parse('help', args);
+      if (typeof options === 'string') return usage(invocation, options);
       const [name] = options.positional;
       if (name === undefined) break;
       const named = findCommand(name);
-      if (!named) return unknownCommand(name);
-      print(commandHelp(named));
+      if (!named) return unknownCommand(invocation, name);
+      print(invocation, commandHelp(named));
       return 0;
     }
     case undefined:
@@ -104,22 +109,29 @@ function main(): number | Promise<number> {
     case '-h':
       break;
     default:
-      return unknownCommand(cmd);
+      return unknownCommand(invocation, cmd);
   }
-  print([HELP]);
+  print(invocation, [HELP]);
   return 0;
 }
 
-// Exit 1, not 2, on an error: a broken guard should be seen, not block every tool call.
-Promise.resolve()
-  .then(main)
-  .then(
-    (code) => {
-      process.exitCode = code;
-    },
-    (err: Error) => {
-      printJsonError(String(err?.message ?? err).split('\n')[0]);
-      say(`yokoten ${cmd}: ${err.message}\n`, process.stderr);
-      process.exitCode = 1;
-    },
-  );
+/** Run one command line, and give its exit code. Exit 1, not 2, on an error: a broken guard should be seen, not block every tool call. */
+export function main(invocation: Invocation): Promise<number> {
+  return Promise.resolve(invocation)
+    .then(dispatch)
+    .catch((err: Error) => {
+      printJsonError(invocation, String(err?.message ?? err).split('\n')[0]);
+      say(invocation, `yokoten ${invocation.command}: ${err.message}\n`, invocation.stderr);
+      return 1;
+    });
+}
+
+/** Run the command line this process was started with. Only here are process.argv, process.env and the streams read. */
+export function runFromProcess(): Promise<void> {
+  const [command, ...args] = process.argv.slice(2);
+  // The one place HOME falls back to the system's home (#356): every module below reads it from env.
+  const invocation: Invocation = { command, args, env: withHome(process.env), cwd: process.cwd(), stdout: process.stdout, stderr: process.stderr, script: process.argv[1] ?? 'yokoten' };
+  return main(invocation).then((code) => {
+    process.exitCode = code;
+  });
+}
