@@ -96,19 +96,19 @@ export const RULES = {
   'lead-only': {
     rule: 'a worker does not change lead-only files: the rules, agent config, hooks and CI (core rule 5)',
     why: 'a worker must not change the rules it works under, and a pull request that edits CI runs that CI before anyone reads it',
-    check: 'for a worker (YOKOTEN_ROLE=worker, a subagent named worker, or any agent in a worktree `yokoten worker mark` marked), the tool-call guard stops an edit or a shell write to a file that yokoten.json "leadOnly" matches, and a git commit that changes one; with YOKOTEN_ROLE=worker the commit check refuses it too. YOKOTEN_LEAD_ONLY_OK lists the paths the lead allows',
+    check: 'for a worker (YOKOTEN_ROLE=worker, a subagent named worker, or any agent in a worktree `yokoten worker mark` marked), the tool-call guard stops an edit or a shell write to a file that yokoten.json "leadOnly" matches, and a git commit that changes one; for a worker by YOKOTEN_ROLE=worker or the mark, the commit check refuses it too. YOKOTEN_LEAD_ONLY_OK lists the paths the lead allows',
     docs: guide('the-core-rules'),
   },
   'worker-push': {
-    rule: 'a worker commits in its worktree and never pushes',
-    why: 'the lead reviews the work before it leaves the machine, and pushes it as the bot',
-    check: 'for a worker, the tool-call guard stops `git push`; branch protection on the server is the lock',
+    rule: 'a worker commits in its worktree and never pushes or posts',
+    why: 'the lead reviews the work before it leaves the machine, and pushes and posts it as the bot',
+    check: 'for a worker, the tool-call guard stops `git push`, `git send-pack`, `git subtree push`, a git alias (`git config alias.*`, `git -c alias.*`), `yokoten bot`, `gh pr create|merge|edit|close|comment|review|ready|reopen` and `gh` `api` with a write method or fields (a GraphQL query that reads passes). It reads text, so it is no lock: branch protection on the server, and a worker that holds no push or bot credentials, are',
     docs: guide('managing-agents-like-a-team'),
   },
   'worker-mark': {
     rule: 'a worker does not change the worker mark on its worktree',
     why: 'some agents pass their hooks no YOKOTEN_ROLE, so the mark is what tells the guard that the session is a worker',
-    check: 'for a worker, the tool-call guard stops a command that names the mark, a .git folder or a git folder option, an edit inside a .git folder, and `git worktree` other than `list`',
+    check: 'for a worker, the tool-call guard stops a command that writes, moves, removes, links or changes the mode of a file in a git folder (a glob that can match .git or the mark counts) or redirects into one, git with GIT_DIR or --git-dir, `git worktree` other than `list`, and an edit inside a git folder, by real path. A read that names .git passes. A .git link it cannot read makes the session a worker. These are the plain ways; the server and keeping credentials away from the worker are the lock',
     docs: guide('managing-agents-like-a-team'),
   },
   email: {

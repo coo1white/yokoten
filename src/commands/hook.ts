@@ -1,6 +1,6 @@
 // `yokoten hook`: the tool-call guard, and with --stop the end-of-turn check.
 
-import { existsSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
 import * as claudeCode from '../agents/runtimes/claude-code.ts';
@@ -10,7 +10,7 @@ import * as gemini from '../agents/runtimes/gemini.ts';
 import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import { loadConfig } from '../rules/config.ts';
-import { hardenRead, hasWorkerMark, printsAccount, privateOutput, realPath, releaseFix, withWorkerMark, WORKER_MARK, wrapForRedact } from '../rules/guards.ts';
+import { hardenRead, markNote, printsAccount, privateOutput, realPath, releaseFix, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
 import { type Finding, formatFinding, notRepoFinding } from '../rules/message.ts';
 import { checkChanged, readGit } from '../run/check.ts';
 import { type Action, type Guard, guardDeadline, judgeWithDeadline, loadHookConfig, type Repo } from '../run/hook.ts';
@@ -146,7 +146,8 @@ function stopHook(invocation: Invocation, json: boolean, read: typeof claudeCode
   let findings: Finding[];
   try {
     const root = rootOf(event.cwd ?? invocation.cwd, env);
-    findings = root ? checkChanged(root, { config: loadConfig(root), env }) : [];
+    // A worker by YOKOTEN_ROLE or by the mark on its worktree: the one role check (#555).
+    findings = root ? checkChanged(root, { config: loadConfig(root), env: withWorkerMark(env, [root, invocation.cwd]) }) : [];
   } catch (err) {
     say(invocation, `yokoten hook --stop: skipped, ${((err as Error).message ?? String(err)).split('\n')[0]}\n`, invocation.stderr);
     if (json) printJson(invocation, { blocked: false, stop: true, skipped: 'the check failed', findings: [] });
@@ -186,7 +187,9 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
   const root = rootOf(action.cwd ?? cwd, invocation.env);
   // A worktree the lead marked makes every agent in it a worker, whatever env it passes (#555).
   // Both folders count: a call may name another folder (Muse's `workdir`) than the hook's own.
-  const env = withWorkerMark(invocation.env, [resolve(cwd, action.cwd ?? '.'), cwd]);
+  const folders = [resolve(cwd, action.cwd ?? '.'), cwd];
+  const role = workerRole(invocation.env, folders);
+  const env = role === 'mark' ? { ...invocation.env, YOKOTEN_ROLE: 'worker' } : invocation.env;
   const config = loadHookConfig(root, (line) => say(invocation, `${line}\n`, invocation.stderr));
   const commandsOnly = options.flags.has('--commands-only');
   const repos = editRepos(invocation, action, action.cwd ?? root ?? cwd, root ? { root, config } : null, commandsOnly);
@@ -206,6 +209,8 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
       }
       if (config.privacy.output === 'stop') found = privateOutput(printed, wrapped);
     }
+    // A worker by the mark hears why, and where the lead works (#555).
+    if (found && role === 'mark' && WORKER_RULES.has(found.id)) found = { ...found, fix: `${found.fix}. ${capital(markNote(folders))}` };
     if (json) printJson(invocation, found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
     if (!found) return 0;
     // The runtimes read the reason from stderr when the hook exits 2; some read stdout (DENIALS).
@@ -216,6 +221,10 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
     return json ? 2 : denial.exitCode;
   });
 }
+
+// The rules that apply to a worker only: a refusal by one of them names the mark, when the role came from it.
+const WORKER_RULES = new Set(['lead-only', 'worker-push', 'worker-mark']);
+const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
 /**
  * `worker mark <dir>`: mark the worktree at <dir> as a worker's (#555). The guard then
@@ -228,25 +237,35 @@ export function runWorker(invocation: Invocation): number {
   if (typeof options === 'string') return usage(invocation, options);
   const [action, dir] = options.positional;
   if (action !== 'mark' || dir === undefined) return usage(invocation, 'say what to do and where: yokoten worker mark <dir>');
+  const fail = (line: string) => {
+    print(invocation, [`yokoten worker: ${line}`], invocation.stderr);
+    return 1;
+  };
   const folder = resolve(invocation.cwd, dir);
+  let isFolder = false;
+  try {
+    isFolder = statSync(folder).isDirectory();
+  } catch {}
+  if (!isFolder) return fail(`${dir} is not a folder. Make the worktree first: \`git worktree add ${dir} -b <branch>\`, then \`yokoten worker mark ${dir}\`.`);
   let answer: string[];
   try {
-    answer = readGit(folder, ['rev-parse', '--absolute-git-dir', '--git-common-dir'], { env: invocation.env }).toString('utf8').trim().split('\n');
+    // --show-superproject-working-tree prints nothing outside a submodule, so it comes last.
+    answer = readGit(folder, ['rev-parse', '--show-toplevel', '--absolute-git-dir', '--git-common-dir', '--show-superproject-working-tree'], { env: invocation.env }).toString('utf8').trim().split('\n');
   } catch {
-    print(invocation, [`yokoten worker: ${formatFinding(notRepoFinding(folder))}`], invocation.stderr);
-    return 1;
+    return fail(formatFinding(notRepoFinding(folder)));
   }
-  const [gitDir, commonDir] = [answer[0], resolve(folder, answer[1] ?? '')];
-  if (realPath(gitDir) === realPath(commonDir)) {
-    print(invocation, [`yokoten worker: ${dir} is the main checkout, the lead's. Mark a worktree: \`git worktree add <dir> -b <branch>\`, then \`yokoten worker mark <dir>\`.`], invocation.stderr);
-    return 1;
+  const [top, gitDir, common, superproject] = answer;
+  if (realPath(gitDir) === realPath(resolve(folder, common ?? ''))) {
+    if (superproject) return fail(`${top} is a submodule's checkout, not a worktree. Mark a worktree: \`git worktree add <dir> -b <branch>\`, then \`yokoten worker mark <dir>\`.`);
+    return fail(`${top} is the main checkout, the lead's. Mark a worktree: \`git worktree add <dir> -b <branch>\`, then \`yokoten worker mark <dir>\`.`);
   }
-  writeFileSync(join(gitDir, WORKER_MARK), "A worker's worktree: yokoten's guard treats every agent here as a worker. `git worktree remove` removes this mark.\n");
+  try {
+    writeFileSync(join(gitDir, WORKER_MARK), "A worker's worktree: yokoten's guard treats every agent here as a worker. `git worktree remove` removes this mark.\n");
+  } catch (error) {
+    return fail(`can't write the mark in ${gitDir} (${(error as NodeJS.ErrnoException).code ?? 'error'}). Check that the lead can write there, then run it again.`);
+  }
   // The guard finds the mark without git; check that it does here.
-  if (!hasWorkerMark(folder)) {
-    print(invocation, [`yokoten worker: the mark is written, but the guard can't find it from ${dir}. Run it with the worktree's top folder.`], invocation.stderr);
-    return 1;
-  }
-  print(invocation, [`yokoten worker: marked ${dir}. The guard now treats every agent there as a worker. \`git worktree remove ${dir}\` removes the mark.`]);
+  if (workerMarkAt(folder) !== 'mark') return fail(`the mark is written in ${gitDir}, but the guard can't find it from ${top}.`);
+  print(invocation, [`yokoten worker: marked the worktree at ${top}. The guard now treats every agent there as a worker. \`git worktree remove ${top}\` removes the mark.`]);
   return 0;
 }

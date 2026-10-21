@@ -4,7 +4,7 @@
 // `env` is the guard's own environment, which the session sets and the agent cannot change.
 // The command text is never read for it: `YOKOTEN_FIX_TASK=0 git commit` inside a command
 // changes nothing. A session is the lead unless whoever started it set YOKOTEN_ROLE=worker
-// (the dispatch skill does, for each worker it starts).
+// (the dispatch skill does, for each worker it starts), or the lead marked its worktree (#555).
 //
 // This is a guard against mistakes and drift, not a lock. It reads command text, so a
 // command built up in pieces gets past it. The lock is on the server: branch protection,
@@ -12,7 +12,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync, type Stats, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Config, Env } from './config.ts';
 import { loadConfig, matcher } from './config.ts';
@@ -41,69 +41,352 @@ const LEAD_ONLY_FIX = 'stop and hand the change to the lead: say in your report 
 // The guard finds it through the `.git` file, with no git process (#408). The mark only adds
 // the worker role, never takes it away. Removing the worktree removes the mark.
 //
-// A worker may not touch it: a command that names the mark, a git folder or git's options
-// that print one is refused, and so is an edit inside a git folder and `git worktree`. Like
-// the rest of the guard this reads text; it refuses what it can't read, it does not parse it.
+// It fails closed: a `.git` that is not a folder (a linked worktree's or a submodule's) and
+// can't be read as a small file, or that names a git folder that is gone or can't be read,
+// makes the session a worker. A worker's plain ways to change the mark are refused (see
+// checkWorkerWrites). Like the rest of the guard this reads text, so it is no lock: the lock
+// is the server, and credentials kept away from the worker.
 
 /** The mark's file name, in the worktree's own git folder. */
 export const WORKER_MARK = 'yokoten-worker';
 
+/** The largest `.git` file read: a real one is one line. */
+const DOT_GIT_LIMIT = 4096;
+
 /**
- * The git folder of the checkout at or above `folder`, read from its `.git` (a folder, or
- * a file with `gitdir: <path>`), or null outside one. No git process runs.
+ * What the `.git` at or above `folder` says, with no git process: `folder`, a main checkout's
+ * git folder; `file`, the git folder a linked worktree's or a submodule's `.git` names (it may
+ * be gone); `broken`, a `.git` that is no folder and no small readable file with a gitdir
+ * line; null outside a checkout.
  */
-export function gitDirAbove(folder: string): string | null {
+export type GitLink = { kind: 'folder' | 'file'; top: string; gitDir: string } | { kind: 'broken'; top: string } | null;
+
+export function gitLinkAbove(folder: string): GitLink {
   for (let dir = resolve(folder); ; dir = dirname(dir)) {
     const dotGit = join(dir, '.git');
-    let isFolder: boolean | null = null;
+    let stats: Stats | undefined;
     try {
-      isFolder = statSync(dotGit).isDirectory();
-    } catch {}
-    if (isFolder) return dotGit;
-    if (isFolder === false) {
-      try {
-        const line = /^gitdir:[ \t]*(.+?)[ \t\r]*$/m.exec(readFileSync(dotGit, 'utf8'));
-        return line ? resolve(dir, line[1]) : null;
-      } catch {
-        return null;
-      }
+      stats = lstatSync(dotGit);
+    } catch (error) {
+      // Gone is the usual answer: walk up. Anything else, the guard can't tell.
+      if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return { kind: 'broken', top: dir };
+    }
+    if (stats) {
+      if (stats.isDirectory() || (stats.isSymbolicLink() && isFolder(dotGit))) return { kind: 'folder', top: dir, gitDir: dotGit };
+      const text = readSmallFile(dotGit);
+      const line = text === null ? null : /^gitdir:[ \t]*(.+?)[ \t\r]*$/m.exec(text);
+      return line ? { kind: 'file', top: dir, gitDir: resolve(dir, line[1]) } : { kind: 'broken', top: dir };
     }
     if (dirname(dir) === dir) return null;
   }
 }
 
-/** Whether the checkout at or above `folder` carries the worker mark. */
-export function hasWorkerMark(folder: string): boolean {
-  const gitDir = gitDirAbove(folder);
-  return gitDir !== null && existsSync(join(gitDir, WORKER_MARK));
+function isFolder(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
-/** `env` with YOKOTEN_ROLE=worker when any of `folders` is in a marked worktree; else `env` as it is. */
-export function withWorkerMark(env: Env, folders: string[]): Env {
-  if (env.YOKOTEN_ROLE === 'worker') return env;
-  return [...new Set(folders)].some(hasWorkerMark) ? { ...env, YOKOTEN_ROLE: 'worker' } : env;
+// A regular file of at most DOT_GIT_LIMIT bytes, or null. It is opened without waiting, and
+// checked after the open: a FIFO or a device named `.git` never blocks the guard.
+function readSmallFile(path: string): string | null {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+    const stats = fstatSync(fd);
+    if (!stats.isFile() || stats.size > DOT_GIT_LIMIT) return null;
+    const buffer = Buffer.alloc(stats.size);
+    const read = readSync(fd, buffer, 0, stats.size, 0);
+    return buffer.toString('utf8', 0, read);
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
-// The text a worker's command may not hold: the mark's name, a `.git` path, git's options
-// and variables that name a git folder, and `git rev-parse --git-path`.
-const MARK_WORDS = [
-  { pattern: new RegExp(WORKER_MARK, 'i'), what: `names ${WORKER_MARK}, the worker mark` },
-  { pattern: /(^|[\s'"=:/\\(`;&|<>])\.git(?=$|[\s'"/\;&|)`<>])/, what: 'names a .git folder, where the worker mark is kept' },
-  { pattern: /--(absolute-)?git-(dir|common-dir|path)\b|\bGIT_(DIR|COMMON_DIR)\b/, what: 'names a git folder, where the worker mark is kept' },
-];
-const MARK_FIX = 'leave the git folder and the worker mark as they are; if your task needs them, stop and tell the lead';
-
-/** For a worker: a command that may change the worker mark (#555), or null. */
-export function checkWorkerMarkCommand(command: string): Finding | null {
-  const found = MARK_WORDS.find(({ pattern }) => pattern.test(command));
-  return found ? finding('worker-mark', `this command ${found.what}`, MARK_FIX) : null;
-}
-
-/** For a worker: an edit inside a git folder, or of the mark (#555), or null. `path` is absolute. */
-export function checkWorkerMarkEdit(path: string): Finding | null {
-  const parts = path.split(/[/\\]+/);
-  if (parts.includes('.git') || parts.at(-1)?.toLowerCase() === WORKER_MARK) return finding('worker-mark', 'this edit is inside a .git folder, where the worker mark is kept', MARK_FIX);
+/**
+ * Why the checkout at or above `folder` makes a session a worker: `mark`, its git folder
+ * holds the mark; `broken`, its `.git` or the git folder it names can't be read, so the
+ * guard fails closed; null, it does not (a main checkout, an unmarked worktree, no checkout).
+ */
+export function workerMarkAt(folder: string): 'mark' | 'broken' | null {
+  const link = gitLinkAbove(folder);
+  if (link === null || link.kind === 'folder') return null;
+  if (link.kind === 'broken') return 'broken';
+  try {
+    statSync(join(link.gitDir, WORKER_MARK));
+    return 'mark';
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return 'broken';
+  }
+  // No mark: the git folder itself must be there and readable, or the guard can't tell.
+  try {
+    if (!statSync(link.gitDir).isDirectory()) return 'broken';
+    accessSync(link.gitDir, constants.R_OK | constants.X_OK);
+  } catch {
+    return 'broken';
+  }
   return null;
+}
+
+/** Whether the checkout at or above `folder` makes a session a worker: the mark, or a link the guard can't read. */
+export const hasWorkerMark = (folder: string): boolean => workerMarkAt(folder) !== null;
+
+/**
+ * The one place that decides a worker (#555): `env` when YOKOTEN_ROLE=worker, `mark` when
+ * any of `folders` is in a marked worktree (or one whose link can't be read), else null.
+ * The tool guard, the stop check, the commit check and the session start all ask here.
+ */
+export function workerRole(env: Env, folders: string[]): 'env' | 'mark' | null {
+  if (env.YOKOTEN_ROLE === 'worker') return 'env';
+  return [...new Set(folders)].some(hasWorkerMark) ? 'mark' : null;
+}
+
+/** `env` with YOKOTEN_ROLE=worker when `workerRole` says so; else `env` as it is. */
+export function withWorkerMark(env: Env, folders: string[]): Env {
+  return workerRole(env, folders) === 'mark' ? { ...env, YOKOTEN_ROLE: 'worker' } : env;
+}
+
+/**
+ * What a refusal adds when the worker role came from the mark (#555): why this session is a
+ * worker, and where the lead works. `folders` are the ones `workerRole` read.
+ */
+export function markNote(folders: string[]): string {
+  for (const folder of new Set(folders)) {
+    const why = workerMarkAt(folder);
+    if (why === null) continue;
+    const link = gitLinkAbove(folder);
+    const main = link?.kind === 'file' ? mainCheckout(link.gitDir) : null;
+    const lead = main ? `the lead works in the main checkout, ${main}` : 'the lead works in the main checkout';
+    if (why === 'broken') return `yokoten treats this session as a worker because the .git link in ${link?.top ?? folder} can't be read; ${lead}`;
+    return `this worktree (${link?.top ?? folder}) carries the worker mark, so every agent in it is a worker whatever YOKOTEN_ROLE says; ${lead}`;
+  }
+  return '';
+}
+
+// The main checkout of a linked worktree's git folder, from its `commondir`, or null.
+function mainCheckout(gitDir: string): string | null {
+  const common = readSmallFile(join(gitDir, 'commondir'))?.trim();
+  if (!common) return null;
+  const dir = resolve(gitDir, common);
+  return basename(dir) === '.git' ? dirname(dir) : dir;
+}
+
+/** The git folders a worker in `folder` may not change: its own, and the shared one, by real path. */
+function protectedGitDirs(folder: string): string[] {
+  const link = gitLinkAbove(folder);
+  if (link === null || link.kind === 'broken') return [];
+  const common = link.kind === 'file' ? readSmallFile(join(link.gitDir, 'commondir'))?.trim() : undefined;
+  return [...new Set([link.gitDir, ...(common ? [resolve(link.gitDir, common)] : [])].map(realPath))];
+}
+
+const MARK_FIX = 'leave the git folder and the worker mark as they are; if your task needs them, stop and tell the lead';
+const markFinding = (what: string) => finding('worker-mark', what, MARK_FIX);
+
+// Whether the shell glob `pattern` matches `name`, case aside: `*`, `?`, `[...]` and `{a,b}`
+// as bash reads them. A leading dot is matched only by a dot, as with bash's dotglob off.
+// It evaluates the glob, so `.gi?` is `.git`; it does not guess at text.
+function globMatches(pattern: string, name: string): boolean {
+  if (pattern.toLowerCase() === name) return true;
+  if (!/[*?[{]/.test(pattern)) return false;
+  return braceForms(pattern, 0).some((form) => {
+    if (name.startsWith('.') && !form.startsWith('.') && !form.startsWith('\\.')) return false;
+    let source = '';
+    for (let at = 0; at < form.length; at++) {
+      const char = form[at];
+      if (char === '\\' && at + 1 < form.length) source += escapeRegExp(form[++at]);
+      else if (char === '*') source += '.*';
+      else if (char === '?') source += '.';
+      else if (char === '[') {
+        const close = form.indexOf(']', at + 2);
+        if (close === -1) source += '\\[';
+        else {
+          const inner = form.slice(at + 1, close).replace(/^[!^]/, '^').replace(/\\/g, '\\\\');
+          source += `[${inner}]`;
+          at = close;
+        }
+      } else source += escapeRegExp(char);
+    }
+    try {
+      return new RegExp(`^${source}$`, 'is').test(name);
+    } catch {
+      return true; // a class the guard can't read may match
+    }
+  });
+}
+
+// The words a brace expansion makes, at most 64; `{a,b}` with no nesting.
+function braceForms(pattern: string, depth: number): string[] {
+  const brace = /\{([^{}]*,[^{}]*)\}/.exec(pattern);
+  if (!brace || depth > 6) return [pattern];
+  const head = pattern.slice(0, brace.index);
+  const tail = pattern.slice(brace.index + brace[0].length);
+  return brace[1].split(',').flatMap((part) => braceForms(`${head}${part}${tail}`, depth + 1)).slice(0, 64);
+}
+
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+
+// Text that names a git folder: the mark, a `.git` part, git's options and variables for one.
+const NAMES_GIT_DIR = new RegExp(`${WORKER_MARK}|(^|[\\s'"=:/\\\\(\`;&|<>])\\.git(?=$|[\\s'"/\\\;&|)\`<>])|--(absolute-)?git-(dir|common-dir|path)\\b|\\bGIT_(DIR|COMMON_DIR)\\b|gitdir`, 'i');
+
+/** Whether `name`, one part of a path as the shell reads it (a glob too), can be `.git`. */
+const mayBeDotGit = (name: string) => globMatches(name, '.git');
+
+// Where a path, or a command's text, breaks into parts: folders, words, substitutions.
+const PATH_BREAKS = /[\s/\\()'"`$;|&<>=:]+/;
+
+/**
+ * Whether `path`, as written, may name a `.git` folder or the worker mark: a part that can be
+ * `.git`, the mark by name, or a glob that can be the mark in a path the guard can't read
+ * (`$(...)/yokoten-w*`) or in a git folder's `worktrees`. A glob alone (`rm dist/*`) is not.
+ */
+function mayBeGitPath(path: string): boolean {
+  const parts = path.split(PATH_BREAKS).filter(Boolean);
+  if (parts.some((part) => mayBeDotGit(part) || part.toLowerCase() === WORKER_MARK)) return true;
+  const unread = /[$`]/.test(path) || parts.some((part) => part.toLowerCase() === 'worktrees');
+  return unread && parts.some((part) => globMatches(part, WORKER_MARK));
+}
+
+/**
+ * Whether a command names a git folder or the mark, in text or by a glob that can match one.
+ * A glob for the mark needs a letter of its own: a bare `*` names nothing.
+ */
+const namesGitDir = (command: string) =>
+  NAMES_GIT_DIR.test(command) || command.split(PATH_BREAKS).some((part) => mayBeDotGit(part) || (/[a-z]/i.test(part) && globMatches(part, WORKER_MARK)));
+
+// Programs that change files beyond WRITERS: their plain words are their files. ln also
+// names the file it links to.
+const MARK_WRITERS = new Set(['chmod', 'chown', 'chgrp', 'chattr', 'setfacl', 'touch', 'mkdir', 'mkfifo', 'mknod', 'rsync', 'ln']);
+// Programs that run code given to them: what that code changes is not read.
+const RUNS_CODE = /^(python[\d.]*|node|nodejs|deno|bun|perl|ruby|php|lua|osascript|pwsh|powershell|sh|bash|zsh|dash|ksh|fish)$/;
+const FIND_WRITES = /^-(delete|fprint0?|fprintf|fls)$/;
+
+/**
+ * For a worker: a command that writes, moves, removes, links or changes the mode of a file in
+ * a git folder, or redirects into one (#555), or null. A read that names `.git` passes
+ * (`grep --exclude-dir=.git`, `find . -path ./.git -prune`, `grep GIT_DIR`). A target counts
+ * when it may be a `.git` folder or the mark (see mayBeGitPath), when its real path is in the
+ * worker's own git folders, and when the guard can't read it (`$(...)`, `$x`, `xargs rm`,
+ * `find -exec rm`, inline code) in a command that names a git folder.
+ */
+function checkWorkerWrites(words: string[], { folder, command }: { folder: string | null; command: string }): Finding | null {
+  const known = new Map<string, string | null>();
+  const targets = writeTargets(words, folder, (dir) => gitRootAbove(dir, known)).map((target) => target.path);
+  const names: string[] = [];
+  let from = 0;
+  for (const program of findPrograms(words)) {
+    const at = words.indexOf(program, from);
+    if (at === -1) continue;
+    from = at + 1;
+    const name = programName(program);
+    names.push(name);
+    if (MARK_WRITERS.has(name)) targets.push(...plainArgs(withoutShellRedirects(words, at + 1)));
+  }
+  const writes = (name: string) => Object.hasOwn(WRITERS, name) || MARK_WRITERS.has(name) || RUNS_CODE.test(name);
+  // Files the guard can't see: a program fed by xargs or find, a find that writes, inline code.
+  const fed = words.some((word) => programName(word) === 'xargs') || names.includes('find');
+  const blind = names.some((name) => RUNS_CODE.test(name)) || (fed && names.some(writes)) || (names.includes('find') && words.some((word) => FIND_WRITES.test(word)));
+  if (blind && namesGitDir(command)) return markFinding("this command names a git folder, and yokoten can't read which files it changes there");
+  let dirs: string[] | undefined;
+  for (const target of targets) {
+    if (mayBeGitPath(target)) return markFinding(`this command changes ${target}, which may be a .git folder or the worker mark`);
+    if (/[$`]/.test(target)) {
+      if (namesGitDir(command)) return markFinding(`this command changes ${target}, a path yokoten can't read, and names a git folder`);
+      continue;
+    }
+    if (folder === null && !isAbsolute(target)) continue;
+    dirs ??= folder === null ? [] : protectedGitDirs(folder);
+    if (!dirs.length) continue;
+    const full = realPath(resolve(folder ?? '/', target));
+    if (dirs.some((dir) => full === dir || full.startsWith(dir + sep))) return markFinding(`this command changes ${target}, which is inside a git folder, where the worker mark is kept`);
+  }
+  return null;
+}
+
+/**
+ * For a worker: an edit inside a git folder, or of the mark (#555), or null. `path` is
+ * absolute. It is compared by real path too, so a symlink to a git folder counts; `folder` is
+ * where the worker works, whose git folders count wherever they are.
+ */
+export function checkWorkerMarkEdit(path: string, folder?: string): Finding | null {
+  const what = 'this edit is inside a .git folder, where the worker mark is kept';
+  const full = realPath(path);
+  for (const form of [path, full]) {
+    const parts = form.split(/[/\\]+/);
+    if (parts.some((part) => part.toLowerCase() === '.git') || parts.at(-1)?.toLowerCase() === WORKER_MARK) return markFinding(what);
+  }
+  const dirs = folder === undefined ? [] : protectedGitDirs(folder);
+  if (dirs.some((dir) => full === dir || full.startsWith(dir + sep))) return markFinding(what);
+  return null;
+}
+
+// ---- What a worker sends (#555) ----
+//
+// A worker commits in its worktree and reports; the lead reviews, then pushes and posts. So
+// for a worker the guard refuses, past `git push`: `yokoten bot` in any form, `git send-pack`,
+// `git subtree push`, an alias (`git config alias.*`, `git -c alias.*`), gh's pull request
+// writes, and gh's `api` with a write method or fields. A GraphQL query that reads passes.
+
+const SEND_FIX = 'commit in your worktree and report; the lead pushes after review';
+const sends = (what: string) => finding('worker-push', what, SEND_FIX);
+const YOKOTEN_CLI = /^yokoten(\.ts|\.js|\.mjs|\.cjs)?$/i;
+// Programs that run another program's script or package: `node bin/yokoten.ts`, `npx yokoten`.
+const SCRIPT_RUNNERS = new Set(['node', 'nodejs', 'npx', 'bunx', 'bun', 'deno', 'tsx', 'pnpm', 'pnpx', 'yarn', 'npm']);
+const PR_WRITES = new Set(['create', 'merge', 'edit', 'close', 'comment', 'review', 'ready', 'reopen']);
+
+/** For a worker: a command that pushes or posts for the lead, or null. */
+function checkWorkerSends(words: string[]): Finding | null {
+  const programs = findPrograms(words);
+  let from = 0;
+  for (const program of programs) {
+    const at = words.indexOf(program, from);
+    if (at === -1) continue;
+    from = at + 1;
+    const name = programName(program);
+    const cli = YOKOTEN_CLI.test(name) ? at : SCRIPT_RUNNERS.has(name) ? words.findIndex((word, index) => index > at && YOKOTEN_CLI.test(programName(word))) : -1;
+    if (cli !== -1 && words.slice(cli + 1).find((word) => !word.startsWith('-')) === 'bot') {
+      return sends('`yokoten bot` runs a command as the bot, which pushes and posts for the lead');
+    }
+  }
+  const at = ghIndex(words, programs);
+  if (at === -1) return null;
+  const args = withoutShellRedirects(words, at + 1);
+  const plain = plainArgs(args, ['-R', '--repo', '--hostname']);
+  if (plain[0] === 'pr' && PR_WRITES.has(plain[1] ?? '')) return sends(`gh pr ${plain[1]} changes a pull request on the host`);
+  if (plain[0] === 'api') return checkGhApi(args.slice(args.indexOf('api') + 1));
+  return null;
+}
+
+// gh `api` options that take the next word as their value, besides the method and fields.
+const API_VALUES = new Set(['-H', '--header', '-q', '--jq', '-t', '--template', '--hostname', '-p', '--preview', '--cache']);
+
+/** gh's `api`: a write method, or fields (gh then sends a POST), except a GraphQL query that reads. */
+function checkGhApi(args: string[]): Finding | null {
+  let method: string | undefined;
+  let endpoint: string | undefined;
+  const fields: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const word = args[index];
+    if (word === '-X' || word === '--method') method = args[++index] ?? '';
+    else if (word.startsWith('--method=')) method = word.slice('--method='.length);
+    else if (/^-X./.test(word)) method = word.slice(2);
+    else if (['-f', '-F', '--field', '--raw-field'].includes(word)) fields.push(args[++index] ?? '');
+    else if (/^--(raw-)?field=/.test(word)) fields.push(word.slice(word.indexOf('=') + 1));
+    else if (/^-[fF]./.test(word)) fields.push(word.slice(2));
+    else if (word === '--input' || word.startsWith('--input=')) {
+      fields.push('@');
+      if (word === '--input') index++;
+    } else if (API_VALUES.has(word)) index++;
+    else if (!word.startsWith('-') && endpoint === undefined) endpoint = word;
+  }
+  if (method !== undefined) return ['GET', 'HEAD'].includes(method.toUpperCase()) ? null : sends(`gh's \`api --method ${method}\` writes to the host`);
+  if (!fields.length) return null;
+  // A GraphQL read sends its query as a field. A mutation, or a query the guard can't read, counts.
+  const isRead = endpoint === 'graphql' && fields.every((field) => field !== '@' && !(/^query=/.test(field) && /^query=[@$`]|\bmutation\b/i.test(field)));
+  return isRead ? null : sends('`gh` `api` with fields sends a POST, which writes to the host');
 }
 
 // On macOS and Windows a file name is the same file in any case: `agents.md` is AGENTS.md.
@@ -147,8 +430,6 @@ export function checkCommand(command: string, options: { env: Env; config?: Guar
   try {
     gitAnswers = outerAnswers ?? new Map();
     const isWorker = options.env.YOKOTEN_ROLE === 'worker';
-    const mark = isWorker ? checkWorkerMarkCommand(command) : null;
-    if (mark) return mark;
     // The file rules are looked up once per call, and only for a worker.
     const rules = isWorker ? fileRules(options.repos ?? []) : undefined;
     return withBudget(command.length, () => checkEachCommand(command, { ...options, rules }));
@@ -191,6 +472,8 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
     const saw = (isMarked: (word: string) => boolean) => writeRisk(words, { heredoc, plainText, plainAt, fills, writers, isMarked });
     const reason =
       checkGit(words, { env, config, cwd, rules }) ??
+      // A worker hears its own rule first: what it may not send, and the git folder (#555).
+      (env.YOKOTEN_ROLE === 'worker' ? (checkWorkerSends(words) ?? checkWorkerWrites(words, { folder: postCwd, command })) : null) ??
       checkHooksEnvironment(words) ??
       checkPublish(words, env) ??
       checkBlocked(words, config?.commands.block ?? {}) ??
@@ -281,9 +564,9 @@ function checkGit(words: string[], { env, config, cwd, rules }: { env: Env; conf
     const reason = alias && checkEachCommand(alias[1], { env, config, cwd, rules });
     if (reason) return reason;
   }
-  // Removing or moving its worktree removes a worker's mark, and a new one has none (#555).
-  if (sub === 'worktree' && env.YOKOTEN_ROLE === 'worker' && args[0] !== 'list') {
-    return finding('worker-mark', `git worktree ${args[0] ?? ''} changes a worktree, which carries the worker mark`, MARK_FIX);
+  if (env.YOKOTEN_ROLE === 'worker') {
+    const reason = checkWorkerGit(words, { options: words.slice(start + 1, argsAt - 1), settings: [...settings, ...fromEnvironment], sub, args: withoutShellRedirects(words, argsAt) });
+    if (reason) return reason;
   }
   if (sub === 'push') {
     if (!env.YOKOTEN_RELEASE_APPROVAL) {
@@ -295,11 +578,31 @@ function checkGit(words: string[], { env, config, cwd, rules }: { env: Env; conf
     const force = args.find((a) => a === '--force' || /^-[a-z]*f[a-z]*$/i.test(a) || a.startsWith('+'));
     if (force) return finding('force-push', `git push ${force} forces the push`, 'use --force-with-lease, which stops when the remote has work you have not seen');
     // A worker commits in its worktree; the lead reviews and pushes (#555).
-    if (env.YOKOTEN_ROLE === 'worker') return finding('worker-push', 'a worker does not push', 'commit in your worktree and say so in your report; the lead pushes after review');
+    if (env.YOKOTEN_ROLE === 'worker') return sends('a worker does not push');
   }
   const skip = args.includes('--no-verify') ? '--no-verify' : sub === 'commit' ? args.find((a) => /^-[a-z]*n[a-z]*$/i.test(a)) : undefined;
   if (skip) return finding('skip-check', `git ${sub} ${skip} skips the commit check`, 'fix what the check reports instead');
   if (sub === 'config') return checkConfig(withoutShellRedirects(words, argsAt), directory, env);
+  return null;
+}
+
+/**
+ * For a worker: git's ways to push, to make an alias that can hide a push, to work in another
+ * git folder, and to change a worktree (#555), or null. `start` is git's word; `options` its
+ * own options, before the subcommand.
+ */
+function checkWorkerGit(words: string[], { options, settings, sub, args }: { options: string[]; settings: string[]; sub: string | undefined; args: string[] }): Finding | null {
+  if (words.some((word) => /^GIT_(DIR|COMMON_DIR)=/.test(word)) || options.some((word) => /^--git-dir(=|$)/.test(word))) {
+    return markFinding('git with GIT_DIR or --git-dir works in another git folder, where the worker mark may be');
+  }
+  // Removing or moving its worktree removes a worker's mark, and a new one has none.
+  if (sub === 'worktree' && args[0] !== 'list') return markFinding(`git worktree ${args[0] ?? ''} changes a worktree, which carries the worker mark`);
+  if (sub === 'send-pack') return sends('git send-pack pushes');
+  if (sub === 'subtree' && args.find((arg) => !arg.startsWith('-')) === 'push') return sends('git subtree push pushes');
+  if (settings.some((setting) => /^alias\./i.test(setting.trim()))) return sends('git -c alias.* makes an alias, which can run a push under another name');
+  if (sub === 'config' && args.some((arg) => /^alias\./i.test(arg)) && !args.some((arg) => CONFIG_READS.has(arg))) {
+    return sends('git config alias.* sets an alias in the config every worktree shares, which can run a push under another name');
+  }
   return null;
 }
 

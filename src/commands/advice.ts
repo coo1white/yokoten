@@ -6,6 +6,7 @@ import * as claudeCode from '../agents/runtimes/claude-code.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import { ghIn } from '../host/github.ts';
 import { DEFAULTS, loadConfig } from '../rules/config.ts';
+import { workerRole } from '../rules/guards.ts';
 import { formatFinding } from '../rules/message.ts';
 import { hideHome } from '../rules/privacy.ts';
 import { draft, facts, table } from '../setup/advice/adopt.ts';
@@ -33,9 +34,11 @@ export function runDoctor(invocation: Invocation): number {
   }
   // A compaction start repeats only what changed (#405); any other start says all.
   const lines = root && session && blocks && !options.flags.has('--json') ? blocksToSay(env, agent === 'claude-code' ? readSessionStart(invocation) : null, blocks).flat() : allLines;
-  // A worker started with YOKOTEN_ROLE hears that the guard sees it as one (#402), on every
-  // start, a compaction too: its role is safety, never news to drop. The lead hears nothing.
-  if (root && session && blocks && !options.flags.has('--json') && env.YOKOTEN_ROLE === 'worker') lines.push(`yokoten: ${WORKER_SESSION}.`);
+  // A worker, by YOKOTEN_ROLE or by the mark on its worktree (#555), hears that the guard sees
+  // it as one (#402), on every start, a compaction too: its role is safety, never news to
+  // drop. The lead hears nothing.
+  const role = root && session && blocks && !options.flags.has('--json') ? workerRole(env, [cwd]) : null;
+  if (role) lines.push(`yokoten: ${role === 'mark' ? WORKER_MARKED : WORKER_SESSION}.`);
   // An agent that can't filter command output hears it at session start, with the opt-in (#390).
   if (root && session && agent !== 'claude-code' && config.privacy.output !== 'stop') lines.push(`yokoten: ${UNFILTERED}. ${OUTPUT_STOP[0].toUpperCase()}${OUTPUT_STOP.slice(1)}.`);
   if (options.flags.has('--json')) printJson(invocation, report);
@@ -48,6 +51,7 @@ export function runDoctor(invocation: Invocation): number {
 }
 
 const WORKER_SESSION = 'this session is a worker: lead-only files are guarded';
+const WORKER_MARKED = 'this session is a worker, because its worktree carries the worker mark: lead-only files are guarded, and the lead pushes after review';
 
 /** How long a session start waits for the hook's event on stdin, at most. */
 const STDIN_WAIT_MS = 300;

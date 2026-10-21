@@ -281,8 +281,10 @@ export const COMMANDS: Command[] = [
     text: [
       "Marks the worktree at <dir> as a worker's. The guard then treats every agent there as",
       'a worker, even one whose runtime passes no YOKOTEN_ROLE to its hooks (Muse Code).',
-      "The mark is a file in the worktree's own git folder, which the worker may not touch.",
-      '`git worktree remove <dir>` removes it. The main checkout is never marked.',
+      "The mark is a file in the worktree's own git folder. The guard refuses a worker's plain",
+      "ways to remove it; the server and credentials kept from the worker are the real lock.",
+      'Given a subfolder, it marks the worktree it is in, and names it.',
+      '`git worktree remove <dir>` removes it. The main checkout and a submodule are never marked.',
     ],
     options: [],
     arguments: ['action', 'dir'],

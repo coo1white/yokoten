@@ -75,8 +75,9 @@ export function judge(
   }
   // A worker's edit inside a git folder may change the worker mark (#555), in any repo.
   if (env.YOKOTEN_ROLE === 'worker') {
+    const folder = resolve(action.cwd ?? root ?? cwd);
     for (const p of action.paths) {
-      const reason = checkWorkerMarkEdit(resolve(action.cwd ?? root ?? cwd, p));
+      const reason = checkWorkerMarkEdit(resolve(folder, p), folder);
       if (reason) return reason;
     }
   }
