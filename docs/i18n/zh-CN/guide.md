@@ -1241,7 +1241,9 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 第 11 条规则有检查守着。CI 和每次提交都会扫个人邮箱和 IP 地址。在你自己的电脑上，它还会读
 `~/.config/yokoten/private-marks`，里面是你的名字、所在城市、域名、服务器名。这个文件放在
 仓库外面，因为「不能公开的东西」这张清单本身也不能公开。查到问题时只报文件和行号，不会把
-词表里的词打印出来。
+词表里的词打印出来。报告会说是哪一类词，比如 `matches your git name (a private mark yokoten added by itself)`，
+或者 `matches a word you added to your private marks`。后面的修复提示告诉你怎么改这个词：
+yokoten 自己加的那一类用 `yokoten marks off git-name`，你自己加的词用 `yokoten marks remove`。
 
 只有字母和空格的词，比如名字或城市，按整个单词查。前后紧挨着别的字母时，才不算查到：`sam` 能在
 `hi Sam`、`sam_dev`、`@sam`、`sam97` 里查到，在 `sample` 里查不到。反斜杠转义（如 `\n`）、URL 编码的
@@ -1357,8 +1359,9 @@ agent 用 `gh` 发文字之前，工具调用守卫也跑同一套检查。直�
   地址、`your name` 这样的占位符、`test` 这样大家都在用的名字除外）、git 的邮箱（noreply 邮箱除外）、
   `gh` 登录的账号、私有远程仓库的主机名。git 名字要是就是你的登录名，只加一次，按登录名加。
   只往后加，从不打印具体的词。和登录名不同，git 名字在 LICENSE 的一行和作者字段里也会被查出来：
-  真名可以藏在 noreply 邮箱和 mailmap 后面。`doctor` 还会告诉你还缺哪几类，比如所在城市、
-  域名。这些只有你自己能加；git 里没有真名的话，真名也要你自己加。
+  真名可以藏在 noreply 邮箱和 mailmap 后面。词表里只要有一个词，不管哪一类，
+  `private-marks` 检查就是 ok；只有词表里一个词也没有，才算缺。另外 `doctor` 会把它找不到的类别
+  列成一条可选的提示，比如所在城市、域名。这些只有你自己能加；git 里没有真名的话，真名也要你自己加。
 - **想自己管：`yokoten marks`。** 单独运行，只按类别数一数你有多少个词，不显示词本身。
   `yokoten marks add` 加一个你自己的词：在终端里敲（不会显示出来），或者用管道传进去。
   绝不写在命令行上，因为 shell 的历史会留着它。`yokoten marks remove` 用同样的办法删一个。
