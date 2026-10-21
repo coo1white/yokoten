@@ -513,6 +513,8 @@ export interface MachineProbe {
   /** This process's uid, or null where there is none (Windows). */
   uid: number | null;
   now(): Date;
+  /** The running Node's version, as in `process.versions.node`. */
+  nodeVersion: string;
 }
 
 /** The real machine. */
@@ -539,6 +541,7 @@ export const REAL_MACHINE: MachineProbe = {
   writeText: writeFileAtomic,
   uid: process.getuid?.() ?? null,
   now: () => new Date(),
+  nodeVersion: process.versions.node,
 };
 
 const GB = 1024 ** 3;
@@ -759,6 +762,38 @@ export function agentTempDirCheck(env: Env, probe: MachineProbe): Practice | nul
   return { name: 'agent-temp-dir', ok: false, finding: finding('agent-temp-dir', `${shown} belongs to uid ${owner}, not to you (uid ${probe.uid}), so Claude Code won't start`, `${fix}; Claude Code makes a new one when it starts`) };
 }
 
+/**
+ * The first release of each supported Node line with the security fixes of 2026-10-21
+ * (#572). Among them are TLS hostname checks, which yokoten's HTTPS calls to GitHub rely on:
+ * https://nodejs.org/en/blog/vulnerability/october-2026-security-releases
+ * package.json "engines" and the docs name the same versions. A line not in this table and
+ * older than the newest line in it (an odd line, or one past its end of life) gets no fixes.
+ */
+export const NODE_ADVISORY = 'https://nodejs.org/en/blog/vulnerability/october-2026-security-releases';
+export const NODE_FIXED: Readonly<Record<number, string>> = { 22: '22.23.4', 24: '24.22.1', 26: '26.12.1' };
+
+/**
+ * The note when the running Node lacks the security fixes of October 2026 (#572): a
+ * release older than its line's fix, or a line that gets no fixes at all. A Node line
+ * newer than the table is fine: it came out after the fixes.
+ */
+export function nodeSecurityCheck(probe: Pick<MachineProbe, 'nodeVersion'>): Practice {
+  const version = probe.nodeVersion.replace(/^v/, '');
+  const line = Number.parseInt(version, 10);
+  const fixed = NODE_FIXED[line];
+  const lines = Object.keys(NODE_FIXED).map(Number);
+  const newestLine = Math.max(...lines);
+  const advisoryLink = `the advisory: ${NODE_ADVISORY}`;
+  if (fixed && (compareVersions(version, fixed) ?? -1) < 0) {
+    return { name: 'node-security', ok: false, finding: finding('node-security', `Node ${version} has known security holes that Node fixed in October 2026`, `upgrade Node to ${fixed} or later; ${advisoryLink}`) };
+  }
+  if (!fixed && line < newestLine) {
+    const others = lines.filter((other) => other !== newestLine).map((other) => NODE_FIXED[other]).join(' or ');
+    return { name: 'node-security', ok: false, finding: finding('node-security', `Node ${version} is not supported, because Node ${line} gets no more security fixes`, `install Node ${NODE_FIXED[newestLine]} or later (or ${others}); ${advisoryLink}`) };
+  }
+  return { name: 'node-security', ok: true, finding: finding('node-security', '', ''), detail: `Node ${version}` };
+}
+
 /** A leftover folder is one older than this: a test run that is still going is newer. */
 const LEFTOVER_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -837,7 +872,7 @@ export const quoteForShell = (word: string): string => `'${word.replaceAll("'", 
  * must catch it, and in a fake WSL, the full Windows drive under it. The checks are
  * parameters so a test can hand in broken ones.
  */
-export function machineControl(diskCheck: typeof diskSpaceChecks = diskSpaceChecks, tempCheck: typeof agentTempDirCheck = agentTempDirCheck): string[] {
+export function machineControl(diskCheck: typeof diskSpaceChecks = diskSpaceChecks, tempCheck: typeof agentTempDirCheck = agentTempDirCheck, nodeCheck: typeof nodeSecurityCheck = nodeSecurityCheck): string[] {
   const fake: MachineProbe = {
     readDiskSpace: () => ({ free: 0, size: 250 * GB }),
     readOwner: () => 0,
@@ -848,6 +883,7 @@ export function machineControl(diskCheck: typeof diskSpaceChecks = diskSpaceChec
     writeText: () => {},
     uid: 1000,
     now: () => new Date(0),
+    nodeVersion: '22.23.3',
   };
   const failed: string[] = [];
   if (diskCheck('/', {}, fake, true).every((c) => c.ok)) failed.push('disk space check');
@@ -862,6 +898,7 @@ export function machineControl(diskCheck: typeof diskSpaceChecks = diskSpaceChec
   const host = diskCheck('/', { WSL_DISTRO_NAME: 'control', HOME: '/nonexistent' }, wsl, false).find((c) => c.name === 'host-disk');
   if (host?.ok !== false || !host.finding.what.startsWith(`${HOST_DRIVE} has`)) failed.push('host drive check');
   if (tempCheck({}, fake)?.ok !== false) failed.push('agent temp dir check');
+  if (nodeCheck(fake).ok || !nodeCheck({ nodeVersion: '24.22.1' }).ok) failed.push('node security check');
   return failed;
 }
 
@@ -1459,11 +1496,11 @@ function doctorRun(
     lines.push(`  note    ${c.name}: ${stepText(c.finding)}`);
     notes.push(c.finding);
   }
-  // Machine notes (record 0012) never fail doctor: the disk, the agent's temp folder, and
-  // old test folders left in the temp folder (#400).
+  // Machine notes (record 0012) never fail doctor: the disk, the agent's temp folder, old
+  // test folders left in the temp folder (#400), and a Node without the security fixes (#572).
   const agentTemp = agentTempDirCheck(env, probe);
   const leftovers = leftoverTempCheck(env, probe);
-  for (const c of [...userAgentHooks(env), ...diskSpaceChecks(root, env, probe, false), ...(agentTemp ? [agentTemp] : []), ...(leftovers ? [leftovers] : [])]) {
+  for (const c of [...userAgentHooks(env), ...diskSpaceChecks(root, env, probe, false), ...(agentTemp ? [agentTemp] : []), ...(leftovers ? [leftovers] : []), nodeSecurityCheck(probe)]) {
     lines.push(`  ${c.ok ? 'ok     ' : 'note   '} ${c.name}${c.ok ? (c.detail ? `: ${c.detail}` : '') : `: ${stepText(c.finding)}`}`);
     if (!c.ok) notes.push(c.finding);
   }

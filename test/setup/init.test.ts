@@ -1819,7 +1819,9 @@ const oldYokotenYml = () =>
       '# A newer run cancels the one still going for the same pull request or branch. On main,\n# the newest run tests everything the older ones would have, so a merge never waits\n# behind runs that no longer matter.\n',
       '# A new push to a pull request cancels the run still going for it. A push to main gets\n# a group of its own, so a run on main is never cancelled.\n',
     )
-    .replace("group: ${{ github.workflow }}-${{ github.ref }}", "group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}");
+    .replace("group: ${{ github.workflow }}-${{ github.ref }}", "group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}")
+    // Before #572, the kit set up Node by its line alone.
+    .replace("node-version: '^22.23.4'", 'node-version: 22');
 
 test('init: the list of kit workflow hashes ends with each workflow as it is now (#456)', () => {
   const hashes = readWorkflowHashes();

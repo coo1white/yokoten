@@ -16,7 +16,7 @@ A guide and a guard for you and your AI agents.
 [![ci](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml/badge.svg)](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![npm](https://img.shields.io/npm/v/yokoten?logo=npm)](https://www.npmjs.com/package/yokoten)
-[![Node](https://img.shields.io/badge/Node-%E2%89%A522.18-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![Node](https://img.shields.io/badge/Node-%E2%89%A522.23.4-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 
 </div>
 
@@ -37,7 +37,7 @@ In any other agent, or with no agent at all, the commit check and CI still stop 
 
 ## Works with any language
 
-yokoten itself runs on Node 22.18 or later, on your machine and in CI, but your project can be in any language.
+yokoten itself runs on Node 22.23.4 or later, on your machine and in CI, but your project can be in any language.
 The guard, the privacy and secrets check, CI, and the issue and pull request checks
 work the same in every language.
 
@@ -65,7 +65,11 @@ offers the check to every other project.
 
 ## Install
 
-You need [Node](https://nodejs.org/) 22.18 or later. Nothing else.
+You need [Node](https://nodejs.org/) 22.23.4 or later (on Node 24, 24.22.1 or later; on
+Node 26, 26.12.1 or later). Nothing else. Releases 22.18 to 22.23.3 still run yokoten,
+but do not use them: they have security holes that Node fixed on 2026-10-21
+([advisory](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases)). That is why npm warns about
+them when you install, and why `yokoten doctor` asks you to upgrade.
 
 ```sh
 npx yokoten install      # once per computer
