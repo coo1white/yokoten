@@ -103,6 +103,8 @@ export interface Command {
   options: CommandOption[];
   /** The one positional argument it takes, if any. */
   argument?: string;
+  /** The positional arguments it takes, in order, when it takes more than one: an action, then its word (#447). */
+  arguments?: string[];
   example: string;
 }
 
@@ -201,6 +203,24 @@ export const COMMANDS: Command[] = [
     ],
     options: [],
     example: 'git log -1 2>&1 | yokoten redact',
+  },
+  {
+    name: 'marks',
+    summary: 'let one of your private marks through in this repo only',
+    usage: 'allow <mark> --here | allow --remove <mark> --here',
+    text: [
+      'Keeps an allow on this machine, beside the private-marks file, for the repo you are',
+      'in, by its origin remote; a repo with no origin cannot have one. The mark then passes the',
+      'checks in this repo only, as with "privacy.allow" in yokoten.json, and nothing is',
+      'written into the repo. Only a mark in your private-marks file can be allowed.',
+      '--remove takes the allow back, so the checks stop the mark here again.',
+    ],
+    options: [
+      { name: '--here', text: 'for the repo you are in (needed: an allow is always for one repo)' },
+      { name: '--remove', text: 'take the allow back' },
+    ],
+    arguments: ['action', 'mark'],
+    example: 'yokoten marks allow quietvale --here',
   },
   {
     name: 'changelog',
