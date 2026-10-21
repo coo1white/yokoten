@@ -97,4 +97,4 @@ npm での最初のリリース（10 月 24 日）までは、[clone からイ�
 
 ---
 
-<p align="center"><sub>MIT · <a href="https://coolwhite.us/">coolwhite</a> が作りました。工場の現場から学んだ教訓とともに。</sub></p>
+<p align="center"><sub>MIT · <a href="https://coolwhite.us/">coolwhite</a> が Claude（Claude Code 経由）と一緒に作りました。工場の現場から学んだ教訓とともに。<br>方向と判断は coolwhite が決め、コードの多くとレビューは Claude が担当しています。</sub></p>
