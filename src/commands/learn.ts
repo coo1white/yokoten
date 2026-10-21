@@ -24,7 +24,7 @@ export function runChangelog(invocation: Invocation): number {
   const { cwd } = invocation;
   const options = parse('changelog', invocation.args);
   if (typeof options === 'string') return usage(invocation, options);
-  const root = rootOf(cwd) ?? cwd;
+  const root = rootOf(cwd, invocation.env) ?? cwd;
   const isWrite = options.flags.has('--write');
   const { changes, problems } = isWrite ? writeChanges(root) : readChanges(root);
   if (problems.length) {
@@ -47,7 +47,7 @@ export function runLearn(invocation: Invocation): number {
   for (const option of ['--list', '--done', '--area', '--fix']) {
     if (options.flags.has(option) || option in options.values) return usage(invocation, `${option} goes with --upstream`);
   }
-  const root = rootOf(cwd) ?? cwd;
+  const root = rootOf(cwd, invocation.env) ?? cwd;
   // A reviewed lesson ships in the kit (#147): doctor then runs it in every project.
   if (options.flags.has('--ship')) {
     if (options.flags.has('--write')) return usage(invocation, '--ship and --write are two steps: write the draft, review it, then ship it');
@@ -70,7 +70,7 @@ export function runLearn(invocation: Invocation): number {
     return 0;
   }
   if (reference === undefined) return usage(invocation, 'name an incident issue, by its number or its URL');
-  const incident = readIncident(ghIn(root), reference);
+  const incident = readIncident(ghIn(root, invocation.env), reference);
   if (typeof incident === 'string') {
     print(invocation, [`yokoten learn: ${incident}`], invocation.stderr);
     return 1;
@@ -111,7 +111,7 @@ function notePlace({ env, cwd }: Invocation, root: string | null, { withProject 
       const name: unknown = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).name;
       if (typeof name === 'string') projects.push(name, name.replace(/^@[^/]+\//, ''));
     } catch {}
-    const origin = originParts(readOriginUrl(root));
+    const origin = originParts(readOriginUrl(root, env));
     owners.push(...origin.owners);
     if (origin.project) projects.push(origin.project);
   }
@@ -142,7 +142,7 @@ function runUpstream(invocation: Invocation, options: Parsed): number {
       return 0;
     }
     // Cleaned again as they are shown: a file in the inbox may have been edited by hand.
-    const clean = makeNoteCleaner(notePlace(invocation, rootOf(cwd), { withProject: false }), env);
+    const clean = makeNoteCleaner(notePlace(invocation, rootOf(cwd, invocation.env), { withProject: false }), env);
     print(invocation, [
       `yokoten learn --upstream: ${notes.length} ${notes.length === 1 ? 'lesson waits' : 'lessons wait'} to become an issue in the yokoten repo:`,
       ...notes.flatMap((note) => [
@@ -174,7 +174,7 @@ function runUpstream(invocation: Invocation, options: Parsed): number {
     const areas = knownAreas();
     if (areas.length ? !areas.includes(area) : !/^[a-z][a-z0-9-]*$/.test(area)) return usage(invocation, areas.length ? `--area is one of: ${areas.join(', ')}` : '--area is one lowercase word, such as hook');
   }
-  const place = notePlace(invocation, rootOf(cwd));
+  const place = notePlace(invocation, rootOf(cwd, invocation.env));
   const what = redactNote(text, place, env);
   const fixIdea = options.values['--fix'] === undefined ? undefined : redactNote(options.values['--fix'], place, env);
   const part = area === undefined ? undefined : redactNote(area, place, env);

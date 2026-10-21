@@ -25,11 +25,11 @@ export function runInit(invocation: Invocation): number {
   if (!root) return 1;
   // Read first: a broken yokoten.json stops init before it writes a file.
   const { areas } = loadConfig(root);
-  const done = init(root, undefined, { noCi: options.flags.has('--no-ci') });
+  const done = init(root, invocation.env, undefined, { noCi: options.flags.has('--no-ci') });
   print(invocation, done.lines);
   // The host is changed only when asked (#10): it is a remote, and other people see it.
   // Without --yes, init only reads it and says what it would do, or what it skipped.
-  const planning = setUpPlanning(ghIn(root), readOriginUrl(root), {
+  const planning = setUpPlanning(ghIn(root, invocation.env), readOriginUrl(root, invocation.env), {
     apply: options.flags.has('--yes'),
     removeDefaults: options.flags.has('--remove-default-labels'),
     areas,
@@ -62,14 +62,14 @@ export function runUpdate(invocation: Invocation): number {
  * Ask one question on the terminal and read one line back, or null at end of input. Install
  * is synchronous, so it reads stdin a byte at a time; it is used only when stdin is a terminal.
  */
-const askOnTerminal = (stdout: Output): Ask => (question) => {
+const askOnTerminal = (stdout: Output, fd: number): Ask => (question) => {
   stdout.write(`${question} `);
   const byte = Buffer.alloc(1);
   const bytes: number[] = [];
   for (;;) {
     let count: number;
     try {
-      count = readSync(0, byte, 0, 1, null);
+      count = readSync(fd, byte, 0, 1, null);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'EAGAIN') continue;
       return null;
@@ -84,9 +84,10 @@ export function runInstall(invocation: Invocation): number {
   const options = parse('install', invocation.args);
   if (typeof options === 'string') return usage(invocation, options);
   // The PATH question needs someone to answer it: never in a pipe, a hook or CI (#433).
-  const ask = process.stdin.isTTY && invocation.stdout.isTTY ? askOnTerminal(invocation.stdout) : undefined;
+  const { stdin, stdout } = invocation;
+  const ask = stdin.fd !== null && stdin.stream.isTTY && stdout.isTTY ? askOnTerminal(stdout, stdin.fd) : undefined;
   // gh may reach the network for the login: three seconds at most.
-  const done = install(invocation.env, { cwd: invocation.cwd, gh: ghIn(invocation.cwd, 3000), ask });
+  const done = install(invocation.env, { cwd: invocation.cwd, gh: ghIn(invocation.cwd, invocation.env, 3000), ask });
   print(invocation, done.lines);
   return done.ok ? 0 : 1;
 }

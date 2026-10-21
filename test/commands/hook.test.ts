@@ -20,6 +20,7 @@ import {
   pick,
   makeTempDir,
 } from '../repo/helpers.ts';
+import { invoke } from '../repo/invoke.ts';
 import { redactCommand } from '../../src/commands/hook.ts';
 
 // A session started outside the repo, or a worker in a worktree elsewhere, loads no project
@@ -343,4 +344,25 @@ test('redactCommand: this node and this copy of yokoten, with the home folder as
   assert.equal(redactCommand('/usr/bin/node', '/home/someone/tools/yokoten/bin/yokoten.ts', '/home/someone'), '"/usr/bin/node" "$HOME/tools/yokoten/bin/yokoten.ts" redact');
   assert.equal(redactCommand('/home/someone/.nvm/node', '/opt/yo$ten/bin/yokoten.ts', '/home/someone'), '"$HOME/.nvm/node" "/opt/yo\\$ten/bin/yokoten.ts" redact');
   assert.equal(redactCommand('C:\\Program Files\\nodejs\\node.exe', 'C:\\Users\\someone\\y\\bin\\yokoten.ts', 'C:\\Users\\someone'), '"C:/Program Files/nodejs/node.exe" "$HOME/y/bin/yokoten.ts" redact');
+});
+
+// #475: in this process, the hook reads the tool call from the invocation's stdin, never the
+// test runner's. The child-process tests above keep the real entry covered.
+test('hook: in-process, the tool call and the end-of-turn event come from the given stdin (#475)', async () => {
+  const sandbox = makeSandbox();
+  const run = (args: string[], stdin: string) => invoke(['hook', ...args], { env: sandbox.env, cwd: sandbox.repo, stdin });
+  const call = (command: string) => JSON.stringify({ cwd: sandbox.repo, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } });
+  const force = await run([], call('git push --force'));
+  assert.equal(force.code, 2);
+  assert.match(force.stderr, /^yokoten: git push --force forces the push\./);
+  assert.deepEqual(await run([], call('git status')), { code: 0, stdout: '', stderr: '' });
+  assert.deepEqual(await run(['--json'], 'not json'), { code: 0, stdout: `${JSON.stringify({ blocked: false, toolCall: false }, null, 2)}\n`, stderr: '' });
+  // The stop check: a secret in a changed file sends the agent back, once.
+  const key = `${'AK'}IA${'Q7W3R9T2Y5Q7W3R9'}`;
+  sandbox.write('out.txt', `${key}\n`);
+  const stop = (active: boolean) => run(['--stop'], JSON.stringify({ cwd: sandbox.repo, hook_event_name: 'Stop', stop_hook_active: active }));
+  const sentBack = await stop(false);
+  assert.equal(sentBack.code, 2);
+  assert.match(sentBack.stderr, /out\.txt:1: a secret/);
+  assert.deepEqual(await stop(true), { code: 0, stdout: '', stderr: '' });
 });

@@ -123,9 +123,9 @@ test('messages: every check and guard says what, why and the fix, in text and JS
     found.push(f);
   };
   const env = { YOKOTEN_FIX_TASK: '1', YOKOTEN_ROLE: 'worker' };
-  for (const c of ['git push --tags', 'git push origin v1.0.0', 'git -c push.followTags=true push', 'gh release create v1', 'npm publish', 'git push --force', 'git commit --no-verify -m x', 'git commit -nm x', 'git config core.hooksPath /dev/null']) add(checkCommand(c, { env: {} }));
-  add(checkCommand('python3 --version', { env: {}, config: { commands: { block: { python3: 'this project is TypeScript only' } } } }));
-  add(checkCommand(`bash -c "${':;'.repeat(300000)}"`, { env: {} })); // too many commands to read
+  for (const c of ['git push --tags', 'git push origin v1.0.0', 'git -c push.followTags=true push', 'gh release create v1', 'npm publish', 'git push --force', 'git commit --no-verify -m x', 'git commit -nm x', 'git config core.hooksPath /dev/null']) add(checkCommand(c, { cwd: process.cwd(), env: {} }));
+  add(checkCommand('python3 --version', { cwd: process.cwd(), env: {}, config: { commands: { block: { python3: 'this project is TypeScript only' } } } }));
+  add(checkCommand(`bash -c "${':;'.repeat(300000)}"`, { cwd: process.cwd(), env: {} })); // too many commands to read
   add(checkEdit('test/a.test.ts', { config: DEFAULTS, env }));
   add(checkEdit('AGENTS.md', { config: DEFAULTS, env }));
   add(lateFinding({ command: 'ls', paths: [], worker: false }, 5000));
@@ -141,7 +141,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   add(timeZoneNote(2));
   const translated = makeTranslatedRepo();
   translated.commit('en.md', '# Guide\n\nStep one, changed.\n');
-  add(translationNotes(translated.root, ['zh.md'])[0]);
+  add(translationNotes(translated.root, ['zh.md'], process.env)[0]);
   // `check --history` in a shallow clone (#266).
   const shallow = makeTempDir();
   execFileSync('git', ['clone', '-q', '--depth', '1', `file://${translated.root}`, shallow], { stdio: 'ignore' });
@@ -150,7 +150,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   translated.git('update-index', '--add', '--info-only', '--cacheinfo', `100644,${'1'.repeat(40)},ghost.md`);
   add(check(translated.root, { config: DEFAULTS, env: {}, staged: true }).find((f) => f.id === 'missing-blob'));
   // A git read a gate depends on, which git can't answer (#403).
-  assert.throws(() => readGit(translated.root, ['rev-parse', '--verify', 'no-such-ref']), (err: Error) => {
+  assert.throws(() => readGit(translated.root, ['rev-parse', '--verify', 'no-such-ref'], { env: process.env }), (err: Error) => {
     add(err instanceof GitReadError ? gitReadFinding(err) : null);
     return true;
   });
@@ -212,7 +212,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   add(upstreamNote(pluginFolder, { HOME: pluginHome }));
   // A repo that keeps CI off (#377): the note, and a pull request read by number that fails.
   add(noCiNote({ ci: 'private repo' }, 5, undefined));
-  const numbered = readNumberedPullRequest(dir, () => { throw new Error('no gh here'); }, '12');
+  const numbered = readNumberedPullRequest(dir, () => { throw new Error('no gh here'); }, '12', process.env);
   add('problem' in numbered ? numbered.problem : undefined);
   // The core rules (#120): behind the kit, and with no heading to compare by.
   for (const rules of ['# old rules\n\n## This project\n', '# rules\n']) {

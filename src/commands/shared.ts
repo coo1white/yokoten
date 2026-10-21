@@ -1,7 +1,7 @@
 // What every command uses: the command line, the parser, the repo root, and the output.
 // Everything yokoten prints goes through `print`, `say` or `printJson` (core rule 11).
 
-import { appendFileSync, existsSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { annotations, isGitHubActions, stepSummary } from '../host/github.ts';
 import type { Env } from '../rules/config.ts';
 import { finding, type Finding, formatFinding, notRepoFinding } from '../rules/message.ts';
@@ -9,14 +9,31 @@ import { hideHome } from '../rules/privacy.ts';
 import { gitRoot } from '../run/check.ts';
 import { closestWord, findCommand, HELP_OPTIONS } from '../run/cli.ts';
 
-/** A stream a command writes to: the process's own, or a test's stand-in. */
-export type Output = NodeJS.WritableStream & { isTTY?: boolean };
+/** A stream a command writes to: the process's own, or a test's stand-in. A real stream has its `fd`. */
+export type Output = NodeJS.WritableStream & { isTTY?: boolean; fd?: number };
+
+/**
+ * A command's standard input (#475): `fd` 0 for the process, `text` for a test. `stream` is
+ * the same input as a stream, for a command that reads it as it comes (redact) or asks
+ * whether it is a terminal. The process's stream is made only when a command reads it:
+ * making it puts a pipe in non-blocking mode, and costs a guard call time (#408).
+ */
+export interface Input {
+  fd: number | null;
+  text: string | null;
+  readonly stream: NodeJS.ReadableStream & { isTTY?: boolean };
+}
+
+/** All of stdin as text: the test's, or the process's read to its end. */
+export const readInput = ({ fd, text }: Input): string => text ?? (fd === null ? '' : readFileSync(fd, 'utf8'));
 
 /**
  * One run of one command, as plain data (#475). bin/main.ts makes it from the process once;
  * a test makes its own. Below bin/main.ts, nothing reads process.argv, process.env,
- * process.cwd() or process.stdout: a command reads them from here. It holds values only,
- * never a method or a cache, so it cannot grow into a bag every module reaches into.
+ * process.cwd() or the process's streams: a command reads them from here. It holds values only,
+ * never a method or a cache, so it cannot grow into a bag every module reaches into. The one
+ * exception is `stdin.stream`, a getter, so the process's stdin is made only when read: never
+ * spread or copy `stdin`, or the hook makes it and fd 0 turns non-blocking (see Input).
  */
 export interface Invocation {
   /** The first word after `yokoten`, or undefined when there is none. */
@@ -28,6 +45,7 @@ export interface Invocation {
   cwd: string;
   stdout: Output;
   stderr: Output;
+  stdin: Input;
   /** The path of the yokoten entry that runs, for a command that runs yokoten again (the redact wrapper). */
   script: string;
 }
@@ -90,9 +108,9 @@ export function usage(invocation: Invocation, error: string): number {
 // A git call that fails because git itself was not found, not because of the folder.
 const isGitMissingError = (err: unknown, dir: string): boolean => (err as NodeJS.ErrnoException).code === 'ENOENT' && existsSync(dir);
 
-export const rootOf = (dir: string): string | null => {
+export const rootOf = (dir: string, env: Env): string | null => {
   try {
-    return gitRoot(dir);
+    return gitRoot(dir, env);
   } catch {
     return null;
   }
@@ -102,10 +120,10 @@ export const rootOf = (dir: string): string | null => {
  * Why there is no repo root: git is missing, or the folder is not in a repo. Call it after
  * rootOf. It asks git once more, so no state is kept from one command to the next.
  */
-export function noRootFinding(dir: string): Finding {
+export function noRootFinding(dir: string, env: Env): Finding {
   let isGitMissing = false;
   try {
-    gitRoot(dir);
+    gitRoot(dir, env);
   } catch (err) {
     isGitMissing = isGitMissingError(err, dir);
   }
@@ -117,9 +135,9 @@ export function noRootFinding(dir: string): Finding {
  * repo calls this before it writes anything. With --json, `json` shapes the output.
  */
 export function requireRoot(invocation: Invocation, dir: string, json?: (missing: Finding) => unknown): string | null {
-  const root = rootOf(dir);
+  const root = rootOf(dir, invocation.env);
   if (root) return root;
-  const missing = noRootFinding(dir);
+  const missing = noRootFinding(dir, invocation.env);
   if (json) printJson(invocation, json(missing));
   else print(invocation, [`yokoten ${invocation.command}: ${formatFinding(missing)}`], invocation.stderr);
   return null;

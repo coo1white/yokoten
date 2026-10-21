@@ -221,9 +221,9 @@ const storedRemote = (key: string): string => {
 
 
 /** What git says, trimmed, or the error with its exit status. */
-function gitAnswer(dir: string, args: string[]): { out: string } | { status: number | null } {
+function gitAnswer(dir: string, args: string[], env: Env): { out: string } | { status: number | null } {
   try {
-    return { out: execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }) };
+    return { out: execFileSync('git', args, { cwd: dir, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }) };
   } catch (err) {
     return { status: (err as { status?: number | null }).status ?? null };
   }
@@ -245,11 +245,11 @@ export const NO_ORIGIN = 'this repo has no origin remote';
  * remote, with no gh default (gh-resolved) and no push default elsewhere. Its fetch and push
  * addresses, rewritten by insteadOf and pushInsteadOf as git does, must give one key.
  */
-export function repoKey(dir: string): RepoKey | { unsure: string } | { none: string } {
-  const top = gitAnswer(dir, ['rev-parse', '--show-toplevel']);
+export function repoKey(dir: string, env: Env): RepoKey | { unsure: string } | { none: string } {
+  const top = gitAnswer(dir, ['rev-parse', '--show-toplevel'], env);
   const topFolder = 'out' in top ? top.out.trim() : '';
   if (!topFolder) return { unsure: "git can't read this repo" };
-  const listed = gitAnswer(dir, ['config', '--list', '-z']);
+  const listed = gitAnswer(dir, ['config', '--list', '-z'], env);
   if (!('out' in listed)) return { unsure: "git can't read this repo's settings" };
   const remotes = new Set<string>();
   const urls: string[] = [];
@@ -357,7 +357,7 @@ export function machineAllowed(env: Env, dir: string | null, known?: ReturnType<
   if ('unsure' in read) return { allow: [], unsure: read.unsure };
   if (!read.entries.length) return { allow: [], unsure: null };
   if (dir === null) return { allow: [], unsure: "yokoten can't tell which repo this runs in" };
-  const key = known ?? repoKey(dir);
+  const key = known ?? repoKey(dir, env);
   if ('unsure' in key) return { allow: [], unsure: key.unsure };
   if ('none' in key) return { allow: [], unsure: null };
   const found = matchingEntries(read.entries, key);
@@ -402,7 +402,7 @@ export function repoMarkKinds(env: Env, root: string, privacy?: Partial<Pick<Con
   const kinds = loadMarkKinds(env);
   if (!kinds.length) return kinds;
   const values = kinds.map((mark) => mark.value);
-  const key = repoKey(root);
+  const key = repoKey(root, env);
   const named = skipsOwnName(env, privacy) ? sameNameMarks(values, key) : [];
   const own = new Set([...ownMarks(values, machineAllowed(env, root, key).allow), ...named]);
   return own.size ? kinds.filter((mark) => !own.has(mark.value)) : kinds;
@@ -1177,8 +1177,8 @@ export function namesTarget(gh: GhCommand, command: string, env: Env): boolean {
 }
 
 /** The top folder of the repo at `dir`, links followed, or null. */
-function repoTop(dir: string): string | null {
-  const top = gitAnswer(dir, ['rev-parse', '--show-toplevel']);
+function repoTop(dir: string, env: Env): string | null {
+  const top = gitAnswer(dir, ['rev-parse', '--show-toplevel'], env);
   return 'out' in top && top.out.trim() ? (localKey(top.out.trim()) ?? null) : null;
 }
 
@@ -1196,8 +1196,8 @@ function isPostHere(gh: GhCommand, { env, command, cwd, from }: { env: Env; comm
   // without being exported, so only /, ./, ../ or an unquoted ~ or ~/ say where cd goes. A
   // quoted ~ is not your home: bash keeps it as a folder named ~, and searches CDPATH for it.
   if (lone.target !== undefined && !/^(?:~(?:\/|$)|['"]?(?:\/|\.\/|\.\.\/))/.test(lone.target)) return false;
-  const top = repoTop(cwd);
-  return top !== null && top === repoTop(from);
+  const top = repoTop(cwd, env);
+  return top !== null && top === repoTop(from, env);
 }
 
 /**
@@ -1260,7 +1260,7 @@ export function checkPost(
   // line's one command (after at most a cd within the same repo) and names no other target.
   const all = loadMarks(env);
   const isHere = all.length > 0 && isPostHere(gh, { env, command, cwd, from });
-  const key = isHere && cwd !== null ? repoKey(cwd) : null;
+  const key = isHere && cwd !== null ? repoKey(cwd, env) : null;
   const named = isHere && skipsOwnName(env, privacy) ? sameNameMarks(all, key) : [];
   const own = isHere ? [...ownMarks(all, [...allow, ...machineAllowed(env, cwd, key ?? undefined).allow]), ...named] : [];
   const marks = all.filter((mark) => !own.includes(mark));

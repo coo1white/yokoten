@@ -3,12 +3,12 @@
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { botConfig, botEnv, botProgram, installationToken, readBranchFiles, readCodeOwners, repoOf } from '../host/github.ts';
 import { DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
 import type { Finding } from '../rules/message.ts';
 import { type CommandLabels, checkCommandTitle, checkOwnedTier, checkPullRequestBody, readCommandBody, readCommandLabels } from '../rules/pr.ts';
-import { bullets, type Invocation, parse, print, requireRoot, rootOf, usage } from './shared.ts';
+import { bullets, type Invocation, type Output, parse, print, readInput, requireRoot, rootOf, usage } from './shared.ts';
 
 async function bot(invocation: Invocation, command: string[]): Promise<number> {
   const { env, cwd } = invocation;
@@ -18,7 +18,7 @@ async function bot(invocation: Invocation, command: string[]): Promise<number> {
     return 1;
   }
   // The title first: a bad title is refused before anything is sent, so it never needs a rename.
-  const root = rootOf(cwd);
+  const root = rootOf(cwd, env);
   const titleProblems = checkCommandTitle(command, root ? loadConfig(root) : DEFAULTS);
   if (titleProblems.length) {
     print(invocation, [`yokoten bot: ${titleProblems.length} problem(s) in the title; nothing was sent. Fix the title and run it again:`, ...bullets(titleProblems)], invocation.stderr);
@@ -26,10 +26,10 @@ async function bot(invocation: Invocation, command: string[]): Promise<number> {
   }
   // Then a pull request's body (#406), by the body rules of `check --pr`. A body for this
   // branch, or one `--head` or `gh pr edit <branch>` names, is checked before anything is sent.
-  const body = root ? readPendingBody(command, root) : null;
-  if (body && !isLookup(body) && refuseBody(invocation, checkBody(body, localBranch(body)))) return 1;
+  const body = root ? readPendingBody(invocation, command, root) : null;
+  if (body && !isLookup(body) && refuseBody(invocation, checkBody(body, localBranch(body), env))) return 1;
   // Then the labels of `gh pr create` (#422): a tier label the body contradicts is refused.
-  const labels = root ? readPendingLabels(command, root, body) : null;
+  const labels = root ? readPendingLabels(command, root, body, env) : null;
   if (labels?.problems.length) {
     print(invocation, [`yokoten bot: ${labels.problems.length} problem(s) in the labels; nothing was sent. Fix the labels and run it again:`, ...bullets(labels.problems)], invocation.stderr);
     return 1;
@@ -44,7 +44,7 @@ async function bot(invocation: Invocation, command: string[]): Promise<number> {
     return 1;
   }
   if (!requireRoot(invocation, cwd)) return 1;
-  const remote = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd, encoding: 'utf8' });
+  const remote = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd, env, encoding: 'utf8' });
   const repo = repoOf(remote);
   if (!repo) {
     print(invocation, ['yokoten bot: the origin remote is not a GitHub repo'], invocation.stderr);
@@ -55,10 +55,15 @@ async function bot(invocation: Invocation, command: string[]): Promise<number> {
   // The type and tier labels the command leaves out, by the names the repo has (#422).
   const rest = labels?.missing.length ? addLabels(given, chooseLabels(invocation, labels, file, botEnv(env, token))) : given;
   // `gh pr edit <number or URL>`: one `gh pr view` with the same token names its branches.
-  if (body && isLookup(body) && refuseBody(invocation, checkBody(body, lookupBranch(body, file, botEnv(env, token))))) return 1;
+  if (body && isLookup(body) && refuseBody(invocation, checkBody(body, lookupBranch(body, file, botEnv(env, token), env), env))) return 1;
   // A body read from standard input was used up by the check, so gh gets it the same way.
   const input = body?.input;
-  const result = spawnSync(file, rest, { cwd, stdio: [input === undefined ? 'inherit' : 'pipe', 'inherit', 'inherit'], input, env: botEnv(env, token) });
+  const { stdin, stdout, stderr } = invocation;
+  const piped = input ?? (stdin.fd === null ? (stdin.text ?? '') : undefined);
+  const result = spawnSync(file, rest, { cwd, stdio: [piped === undefined ? (stdin.fd ?? 'pipe') : 'pipe', childStream(stdout), childStream(stderr)], input: piped, env: botEnv(env, token), maxBuffer: 1 << 30 });
+  // What gh said, for a stream that is not the process's own: written as it is, as a terminal would show it.
+  if (result.stdout) stdout.write(result.stdout);
+  if (result.stderr) stderr.write(result.stderr);
   // A command that never ran, or that a signal ended, says so (#282). Only the file and the
   // code or signal are named: never the token or the environment.
   if (result.error) {
@@ -71,6 +76,9 @@ async function bot(invocation: Invocation, command: string[]): Promise<number> {
   }
   return result.status ?? 1;
 }
+
+/** The process's own stream by its fd, so gh writes to it straight; else a pipe, copied after (#475). */
+const childStream = (stream: Output): number | 'pipe' => (typeof stream.fd === 'number' ? stream.fd : 'pipe');
 
 /** A pull request body a command is about to set, read and not yet checked. */
 interface PendingBody {
@@ -88,24 +96,24 @@ interface PendingBody {
  * input. Null when there is none, the repo has no yokoten.json, the command names another
  * repo, or the file can't be read (gh then says why, and sends nothing).
  */
-function readPendingBody(command: string[], root: string): PendingBody | null {
+function readPendingBody(invocation: Invocation, command: string[], root: string): PendingBody | null {
   const found = readCommandBody(command);
-  if (!found || !existsSync(join(root, 'yokoten.json')) || !isOrigin(root, found.repo)) return null;
+  if (!found || !existsSync(join(root, 'yokoten.json')) || !isOrigin(root, found.repo, invocation.env)) return null;
   try {
     if ('text' in found.body) return { root, text: found.body.text, base: found.base, head: found.head, repo: found.repo };
-    const input = found.body.file === '-' ? readFileSync(0, 'utf8') : undefined;
-    return { root, text: input ?? readFileSync(found.body.file, 'utf8'), input, base: found.base, head: found.head, repo: found.repo };
+    const input = found.body.file === '-' ? readInput(invocation.stdin) : undefined;
+    return { root, text: input ?? readFileSync(resolve(invocation.cwd, found.body.file), 'utf8'), input, base: found.base, head: found.head, repo: found.repo };
   } catch {
     return null;
   }
 }
 
 /** Whether `--repo` names this repo's origin, or no repo at all. */
-function isOrigin(root: string, repo: string | null): boolean {
+function isOrigin(root: string, repo: string | null, env: Env): boolean {
   if (repo === null) return true;
   let origin: string | null = null;
   try {
-    origin = repoOf(execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
+    origin = repoOf(execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
   } catch {
     // no origin: the named repo is another one
   }
@@ -116,10 +124,10 @@ function isOrigin(root: string, repo: string | null): boolean {
  * The labels `gh pr create` leaves out, and the problems with those it gives, by `check
  * --pr` (#422). Null when the repo has no yokoten.json, or the command names another repo.
  */
-function readPendingLabels(command: string[], root: string, body: PendingBody | null): CommandLabels | null {
+function readPendingLabels(command: string[], root: string, body: PendingBody | null, env: Env): CommandLabels | null {
   if (!existsSync(join(root, 'yokoten.json'))) return null;
   const labels = readCommandLabels(command, body?.text ?? null);
-  return labels && isOrigin(root, labels.repo) ? labels : null;
+  return labels && isOrigin(root, labels.repo, env) ? labels : null;
 }
 
 /**
@@ -172,7 +180,7 @@ function localBranch(body: PendingBody): Branch {
  * with the bot's token (#406). The edit goes to the network anyway. A branch that is not
  * here yet is fetched from origin, quietly.
  */
-function lookupBranch(body: PendingBody, gh: string, ghEnv: Env): Branch {
+function lookupBranch(body: PendingBody, gh: string, ghEnv: Env, env: Env): Branch {
   const view = spawnSync(gh, ['pr', 'view', body.head ?? '', '--json', 'headRefName,baseRefName', ...(body.repo ? ['--repo', body.repo] : [])], { cwd: body.root, encoding: 'utf8', env: ghEnv, stdio: ['ignore', 'pipe', 'ignore'] });
   let refs: { headRefName?: unknown; baseRefName?: unknown } = {};
   try {
@@ -185,23 +193,23 @@ function lookupBranch(body: PendingBody, gh: string, ghEnv: Env): Branch {
   }
   const base = body.base ?? refs.baseRefName;
   const branch = { base: `origin/${base}`, head: `origin/${refs.headRefName}` };
-  const files = readBranchFiles(body.root, branch.base, branch.head);
+  const files = readBranchFiles(body.root, branch.base, branch.head, env);
   if (files) return { ...branch, files };
-  spawnSync('git', ['fetch', '--quiet', '--no-tags', 'origin', '--end-of-options', refs.headRefName, base], { cwd: body.root, stdio: 'ignore' });
+  spawnSync('git', ['fetch', '--quiet', '--no-tags', 'origin', '--end-of-options', refs.headRefName, base], { cwd: body.root, env, stdio: 'ignore' });
   return branch;
 }
 
 /** The problems with a body: every body rule of `check --pr` when the branch's files can be read, else the body alone, with a note. */
-function checkBody(body: PendingBody, branch: Branch): { problems: Finding[]; note?: string } {
+function checkBody(body: PendingBody, branch: Branch, env: Env): { problems: Finding[]; note?: string } {
   const config = loadConfig(body.root);
-  const files = 'why' in branch ? null : (branch.files ?? readBranchFiles(body.root, branch.base, branch.head));
+  const files = 'why' in branch ? null : (branch.files ?? readBranchFiles(body.root, branch.base, branch.head, env));
   if ('why' in branch || !files) {
     const why = 'why' in branch ? branch.why : `git can't compare ${branch.head} with ${branch.base}`;
     return { problems: checkPullRequestBody({ body: body.text, files: [] }, config), note: `${why}, so the body was checked without the changed files; CI checks the rest` };
   }
   const pr = { body: body.text, ...files };
   const problems = checkPullRequestBody(pr, config);
-  const owned = checkOwnedTier(pr, readCodeOwners(body.root, branch.base));
+  const owned = checkOwnedTier(pr, readCodeOwners(body.root, branch.base, env));
   if (owned) problems.push(owned);
   return { problems };
 }

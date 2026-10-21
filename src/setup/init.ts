@@ -25,7 +25,7 @@ import * as muse from '../agents/runtimes/muse.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
 import { configEntries, forgetGitReads, remembered, withGitReads } from '../run/check.ts';
-import { DEFAULTS, loadConfig } from '../rules/config.ts';
+import { DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
 import { type Finding, finding } from '../rules/message.ts';
 import { systemHome } from '../rules/privacy.ts';
 import { CODEOWNERS_PLACES, type Gh, ghIn, isOrganization, isPrivateRepo, repoOf } from '../host/github.ts';
@@ -80,11 +80,11 @@ const ORG_LOOKUP_MS = 5000;
  * organization, and whether the repo is private (#377). `noCi` keeps CI off: see `keepCiOff`.
  * Each git answer is kept for the run, until init sets core.hooksPath (#453).
  */
-export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS), { noCi = false }: { noCi?: boolean } = {}): { ok: boolean; lines: string[] } {
-  return withGitReads(() => initRun(root, gh, noCi));
+export function init(root: string, env: Env, gh: Gh = ghIn(root, env, ORG_LOOKUP_MS), { noCi = false }: { noCi?: boolean } = {}): { ok: boolean; lines: string[] } {
+  return withGitReads(() => initRun(root, env, gh, noCi));
 }
 
-function initRun(root: string, gh: Gh, noCi: boolean): { ok: boolean; lines: string[] } {
+function initRun(root: string, env: Env, gh: Gh, noCi: boolean): { ok: boolean; lines: string[] } {
   const report: string[] = [];
   const isOff = noCi || isCiOffIn(root);
   const cli = cliPath(root);
@@ -93,7 +93,7 @@ function initRun(root: string, gh: Gh, noCi: boolean): { ok: boolean; lines: str
     const copied = copyRuntime(join(root, '.yokoten'));
     report.push(copied === 'kept' ? 'kept .yokoten/ (the copy running now)' : 'wrote .yokoten/ (the runtime the hooks run; commit it)');
   }
-  const hooks = readHookSetup(root);
+  const hooks = readHookSetup(root, env);
   const kit = join(KIT, 'project');
   for (const file of walk(kit)) {
     const rel = relative(kit, file).split('\\').join('/');
@@ -109,7 +109,7 @@ function initRun(root: string, gh: Gh, noCi: boolean): { ok: boolean; lines: str
     const text = render(readFileSync(file, 'utf8'), { cli, version: VERSION });
     // An AGENTS.md without "## This project" gets the core rules on top of its own text (#378).
     if (rel === 'AGENTS.md' && existsSync(join(root, rel))) {
-      report.push(...addCoreRules(root, text));
+      report.push(...addCoreRules(root, text, env));
       continue;
     }
     if (rel === '.github/dependabot.yml') {
@@ -117,17 +117,17 @@ function initRun(root: string, gh: Gh, noCi: boolean): { ok: boolean; lines: str
       continue;
     }
     if (rel.startsWith(WORKFLOWS_DIR)) {
-      report.push(writeWorkflow(root, rel, text));
+      report.push(writeWorkflow(root, rel, text, env));
       continue;
     }
     report.push(`${writeNew(join(root, rel), text)} ${rel}`);
   }
   // Read before .githooks/ is written: whether it can run the hooks this clone has in .git/hooks (#256).
-  const blocks = hooks.kind === 'plain' ? handOffBlocks(root) : [];
-  if (hooks.kind !== 'own') report.push(...writeGithooks(root, cli, kit, blocks.length === 0));
+  const blocks = hooks.kind === 'plain' ? handOffBlocks(root, env) : [];
+  if (hooks.kind !== 'own') report.push(...writeGithooks(root, cli, kit, blocks.length === 0, env));
   if (noCi) report.push(...keepCiOff(root, cli, kit));
-  else if (!isOff) report.push(...privateRepoNote(root, gh));
-  report.push(writeCodeOwners(root, gh));
+  else if (!isOff) report.push(...privateRepoNote(root, gh, env));
+  report.push(writeCodeOwners(root, gh, env));
   const imported = importRules(root);
   if (imported) report.push(imported);
   // Claude Code's settings, the file people edit by hand most: skipped as one, never
@@ -190,7 +190,7 @@ function initRun(root: string, gh: Gh, noCi: boolean): { ok: boolean; lines: str
   // On Windows the files are still written, ready for #332, but the lines say dsh is not checked.
   const dshHooks = agentHooks('the DeepSeek Harness hook', dsh.HOOKS_FILE, () => dsh.initLines(dsh.addProjectHooks(root, hookCli)));
   report.push(...codexHooks.lines, ...geminiHooks.lines, ...antigravityHooks.lines, ...museHooks.lines, ...dshHooks.lines, ...grokHooks.lines);
-  report.push(...setCommitCheck(root, cli, hooks, blocks));
+  report.push(...setCommitCheck(root, cli, hooks, blocks, env));
   return { ok: claudeHooks.ok && codexHooks.ok && geminiHooks.ok && antigravityHooks.ok && museHooks.ok && dshHooks.ok && grokHooks.ok, lines: report };
 }
 
@@ -332,8 +332,8 @@ const sortKeys = (value: unknown): unknown =>
  * On a private repo, a note that the workflows use Actions minutes, and how to keep them
  * out. Nothing when gh can't tell, or the repo is public. One gh call, only with a GitHub remote.
  */
-function privateRepoNote(root: string, gh: Gh): string[] {
-  const repo = repoOf(readOriginUrl(root));
+function privateRepoNote(root: string, gh: Gh, env: Env): string[] {
+  const repo = repoOf(readOriginUrl(root, env));
   if (!repo || isPrivateRepo(gh, repo) !== true) return [];
   return [
     'note: this repo is private, so the workflows in .github/workflows use Actions minutes from your plan',
@@ -374,7 +374,7 @@ export function codeOwnersText(owner: string | null, org?: string): string {
 }
 
 /** The GitHub account in the origin remote's URL, or null without a GitHub remote. */
-const readRemoteOwner = (root: string): string | null => repoOf(readOriginUrl(root))?.split('/')[0] ?? null;
+const readRemoteOwner = (root: string, env: Env): string | null => repoOf(readOriginUrl(root, env))?.split('/')[0] ?? null;
 
 /**
  * Write .github/CODEOWNERS unless the project has one in any place GitHub reads. Returns
@@ -382,10 +382,10 @@ const readRemoteOwner = (root: string): string | null => repoOf(readOriginUrl(ro
  * remote owner is one, the file gets the placeholder (#313). When gh can't tell, the
  * remote owner stays: most repos belong to a person.
  */
-function writeCodeOwners(root: string, gh: Gh): string {
+function writeCodeOwners(root: string, gh: Gh, env: Env): string {
   const found = CODEOWNERS_PLACES.find((place) => existsSync(join(root, place)));
   if (found) return `kept ${found}`;
-  const remote = readRemoteOwner(root);
+  const remote = readRemoteOwner(root, env);
   const org = remote !== null && isOrganization(gh, remote) === true;
   const owner = org ? null : remote;
   writeNew(join(root, '.github', 'CODEOWNERS'), codeOwnersText(owner, org ? remote : undefined));
@@ -556,7 +556,7 @@ export function compareWorkflow(root: string, rel: string, kitText: string, hash
 export const workflowDiffCommand = (root: string, rel: string): string => `git diff --no-index ${rel} ${isSelf(root) ? '' : '.yokoten/'}kit/project/${rel}`;
 
 /** Write one kit workflow: new, or in place of an old kit copy; a changed copy or a symlink is kept. */
-function writeWorkflow(root: string, rel: string, kitText: string): string {
+function writeWorkflow(root: string, rel: string, kitText: string, env: Env): string {
   const state = compareWorkflow(root, rel, kitText);
   if (state === 'missing') return `${writeNew(join(root, rel), kitText)} ${rel}`;
   if (state === 'same') return `kept ${rel}`;
@@ -566,7 +566,7 @@ function writeWorkflow(root: string, rel: string, kitText: string): string {
   // Replace the file only when git can give the old one back: tracked, and the same as HEAD
   // (record 0014: unsure means keep).
   const bytes = readFileSync(path);
-  if (!isInHead(root, rel, bytes)) return `kept ${rel}: it is an older kit copy that is not committed, so commit it and run init again`;
+  if (!isInHead(root, rel, bytes, env)) return `kept ${rel}: it is an older kit copy that is not committed, so commit it and run init again`;
   // A file with Windows line ends keeps them, so git shows only the lines that changed.
   const isCrlf = bytes.includes('\r\n');
   writeFileSync(path, isCrlf ? normalizeText(kitText).replace(/\n/g, '\r\n') : kitText);
@@ -713,20 +713,20 @@ export { withGitReads };
  * a git repo. Files included from .git/config count, as git itself reads them. In a run, from
  * the config list and the git folder, which other checks read too.
  */
-const readLocalHooksPath = (root: string): string | null => {
-  const entries = configEntries(root, 'core.hooksPath');
-  if (entries) return gitLine(root, ['rev-parse', '--git-common-dir']) === null ? null : (entries.filter((entry) => entry.scope === 'local').at(-1)?.value ?? '').trim();
+const readLocalHooksPath = (root: string, env: Env): string | null => {
+  const entries = configEntries(root, 'core.hooksPath', env);
+  if (entries) return gitLine(root, ['rev-parse', '--git-common-dir'], env) === null ? null : (entries.filter((entry) => entry.scope === 'local').at(-1)?.value ?? '').trim();
   return remembered(`local-hooks-path\0${root}`, () => {
     try {
-      return execFileSync('git', ['config', '--local', '--includes', '--get', 'core.hooksPath'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      return execFileSync('git', ['config', '--local', '--includes', '--get', 'core.hooksPath'], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
     } catch (error) {
       return (error as { status?: number }).status === 1 ? '' : null;
     }
   });
 };
 
-export function readHookSetup(root: string): HookSetup {
-  const hooksPath = readLocalHooksPath(root);
+export function readHookSetup(root: string, env: Env): HookSetup {
+  const hooksPath = readLocalHooksPath(root, env);
   if (hooksPath === null) return { kind: 'no repo' };
   const isHusky = existsSync(join(root, '.husky'));
   if (!isHusky && (hooksPath === '' || hookFile(root, hooksPath) === '.githooks/pre-commit')) return { kind: 'plain' };
@@ -830,10 +830,10 @@ export interface OldHook {
 }
 
 /** What git prints for `args` in `root`, trimmed, or null when it fails; kept for the run. */
-const gitLine = (root: string, args: string[]): string | null =>
+const gitLine = (root: string, args: string[], env: Env): string | null =>
   remembered(`line\0${root}\0${args.join('\0')}`, () => {
     try {
-      return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      return execFileSync('git', args, { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
     } catch {
       return null;
     }
@@ -857,10 +857,10 @@ const sameFile = (a: string, b: string): boolean => {
 };
 
 /** Whether a core.hooksPath comes from the global or system config. */
-const hasOtherHooksPath = (root: string): boolean => {
-  const entries = configEntries(root, 'core.hooksPath');
+const hasOtherHooksPath = (root: string, env: Env): boolean => {
+  const entries = configEntries(root, 'core.hooksPath', env);
   if (entries) return entries.some((entry) => ['global', 'system', 'command'].includes(entry.scope));
-  return (gitLine(root, ['config', '--show-scope', '--get-all', 'core.hooksPath']) ?? '').split('\n').some((line) => /^(?:global|system|command)\t/.test(line));
+  return (gitLine(root, ['config', '--show-scope', '--get-all', 'core.hooksPath'], env) ?? '').split('\n').some((line) => /^(?:global|system|command)\t/.test(line));
 };
 
 /**
@@ -869,15 +869,15 @@ const hasOtherHooksPath = (root: string): boolean => {
  * global core.hooksPath decides which hooks run, the files in .git/hooks are dead, so they
  * are not counted; that folder's own commit hooks are, as hooks .githooks can't run.
  */
-export function readOldHooks(root: string): OldHook[] {
-  const hooksPath = readLocalHooksPath(root);
-  const common = hooksPath === null ? null : gitLine(root, ['rev-parse', '--git-common-dir']);
+export function readOldHooks(root: string, env: Env): OldHook[] {
+  const hooksPath = readLocalHooksPath(root, env);
+  const common = hooksPath === null ? null : gitLine(root, ['rev-parse', '--git-common-dir'], env);
   if (common === null) return [];
   const ownDir = resolve(root, common, 'hooks');
-  if (hasOtherHooksPath(root)) {
+  if (hasOtherHooksPath(root, env)) {
     // With core.hooksPath set here too, the global one decided before it was set.
     if (hooksPath !== '') return [];
-    const dir = gitLine(root, ['rev-parse', '--git-path', 'hooks']);
+    const dir = gitLine(root, ['rev-parse', '--git-path', 'hooks'], env);
     if (dir !== null && !sameFile(resolve(root, dir), ownDir)) {
       return COMMIT_HOOKS.flatMap((hook): OldHook[] => {
         const path = resolve(root, dir, hook);
@@ -950,8 +950,8 @@ export function placeHandOff(text: string, hook: string): string | null {
  * Why .githooks can't take over from the old hooks here, one line each, with what to do;
  * empty when it can. Read before init writes .githooks, and by doctor.
  */
-export function handOffBlocks(root: string, olds: OldHook[] = readOldHooks(root)): string[] {
-  const thenSet = readLocalHooksPath(root) === '' ? '; then run `git config core.hooksPath .githooks`' : '';
+export function handOffBlocks(root: string, env: Env, olds: OldHook[] = readOldHooks(root, env)): string[] {
+  const thenSet = readLocalHooksPath(root, env) === '' ? '; then run `git config core.hooksPath .githooks`' : '';
   return olds.flatMap((old): string[] => {
     const own = `.githooks/${old.hook}`;
     if (old.handOff === 'not executable') return [];
@@ -984,8 +984,8 @@ const HOOK_MANAGERS = ['lefthook.yml', 'lefthook.yaml', '.lefthook.yml', '.lefth
  * the check and then the hand-off; a new other hook only hands off. One that is there is
  * kept, and gets the check when it is a commit hook that lacks it (#239, #256), and the hand-off.
  */
-function writeGithooks(root: string, cli: string, kit: string, handOff: boolean): string[] {
-  const olds = handOff ? readOldHooks(root).filter((old) => old.handOff === 'yes') : [];
+function writeGithooks(root: string, cli: string, kit: string, handOff: boolean, env: Env): string[] {
+  const olds = handOff ? readOldHooks(root, env).filter((old) => old.handOff === 'yes') : [];
   const lines: string[] = [];
   const others = olds.map((old) => old.hook).filter((hook) => !isCommitHook(hook));
   for (const hook of [...COMMIT_HOOKS, ...others]) {
@@ -1017,11 +1017,11 @@ function writeGithooks(root: string, cli: string, kit: string, handOff: boolean)
 }
 
 /** Point git at the commit check: set .githooks, or add the check to the project's own pre-commit. */
-function setCommitCheck(root: string, cli: string, hooks: HookSetup, blocks: string[]): string[] {
+function setCommitCheck(root: string, cli: string, hooks: HookSetup, blocks: string[], env: Env): string[] {
   if (hooks.kind === 'no repo') return ['not a git repo: run `git init`, then `git config core.hooksPath .githooks`'];
   if (hooks.kind === 'plain') {
-    const unset = readLocalHooksPath(root) === '';
-    const olds = readOldHooks(root);
+    const unset = readLocalHooksPath(root, env) === '';
+    const olds = readOldHooks(root, env);
     const dead = deadHookNotes(olds).map((line) => `note: ${line}`);
     const managers = HOOK_MANAGERS.filter((name) => existsSync(join(root, name))).join(' and ');
     if (blocks.length) {
@@ -1032,7 +1032,7 @@ function setCommitCheck(root: string, cli: string, hooks: HookSetup, blocks: str
     const handed = olds.filter((old) => old.handOff === 'yes' && hasHandOff(readFileSync(join(root, '.githooks', old.hook), 'utf8'), old.hook));
     const list = handed.map((old) => `${old.file}${isCommitHook(old.hook) ? ' (after the check)' : ''}`).join(', ');
     const note = handed.length && managers ? [`note: ${managers} is here; .githooks runs these hooks in .git/hooks: ${list}. A hook it installs later does not run until \`yokoten init\` hands off to it, and \`yokoten doctor\` names it`] : [];
-    execFileSync('git', ['config', 'core.hooksPath', '.githooks'], { cwd: root, stdio: 'pipe' });
+    execFileSync('git', ['config', 'core.hooksPath', '.githooks'], { cwd: root, env, stdio: 'pipe' });
     // The answers kept so far name the old value.
     forgetGitReads();
     return ['set git core.hooksPath to .githooks (the commit check)', ...note, ...dead];
@@ -1211,9 +1211,9 @@ export function moveUnderProjectHeading(project: string, kit: string): MovedRule
 export const AGENTS_BACKUP = 'AGENTS.md.before-yokoten';
 
 /** Whether HEAD has this file with these exact bytes, so git can give it back. */
-function isInHead(root: string, rel: string, bytes: Buffer): boolean {
+function isInHead(root: string, rel: string, bytes: Buffer, env: Env): boolean {
   try {
-    const committed = execFileSync('git', ['show', `HEAD:${rel}`], { cwd: root, stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 });
+    const committed = execFileSync('git', ['show', `HEAD:${rel}`], { cwd: root, env, stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 });
     return committed.equals(bytes);
   } catch {
     return false;
@@ -1225,7 +1225,7 @@ function isInHead(root: string, rel: string, bytes: Buffer): boolean {
  * heading. Returns the report lines. The old file can always come back: from git when
  * HEAD has it as it is, or else from a copy next to it.
  */
-function addCoreRules(root: string, kit: string): string[] {
+function addCoreRules(root: string, kit: string, env: Env): string[] {
   const path = join(root, 'AGENTS.md');
   if (lstatSync(path).isSymbolicLink()) {
     return [`kept AGENTS.md: it is a link to ${readlinkSync(path)}, so yokoten did not write the core rules into it. Put them in by hand, above a \`${PROJECT_HEADING}\` heading`];
@@ -1235,7 +1235,7 @@ function addCoreRules(root: string, kit: string): string[] {
   if (findProjectStart(project) !== -1) return ['kept AGENTS.md (`yokoten update` brings its core rules up to date)'];
   if (findProjectStart(kit) === -1) return [`kept AGENTS.md: the kit's AGENTS.md has no \`${PROJECT_HEADING}\` heading; report it in an issue at yokoten`];
   let restore = 'to get the old file back: `git checkout HEAD -- AGENTS.md`';
-  if (!isInHead(root, 'AGENTS.md', bytes)) {
+  if (!isInHead(root, 'AGENTS.md', bytes, env)) {
     const backup = join(root, AGENTS_BACKUP);
     if (existsSync(backup) && !readFileSync(backup).equals(bytes)) {
       return [`kept AGENTS.md: it has no \`${PROJECT_HEADING}\` heading, and ${AGENTS_BACKUP} is there already, so yokoten kept both as they are. Move ${AGENTS_BACKUP} away, then run \`yokoten init\` again`];

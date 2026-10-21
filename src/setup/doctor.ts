@@ -59,8 +59,8 @@ const practice = (name: string, id: RuleId, ok: boolean, what: string, fix: stri
 /** The checks that must catch a known-bad input. Returns the names of any that did not. */
 export function selfTest(): string[] {
   const failed: string[] = [];
-  if (!checkCommand('git push origin --tags', { env: {} })) failed.push('release guard');
-  if (!checkCommand('git commit --no-verify -m x', { env: {} })) failed.push('skip-check guard');
+  if (!checkCommand('git push origin --tags', { env: {}, cwd: null })) failed.push('release guard');
+  if (!checkCommand('git commit --no-verify -m x', { env: {}, cwd: null })) failed.push('skip-check guard');
   if (!checkEdit('test/a.test.ts', { config: DEFAULTS, env: { YOKOTEN_FIX_TASK: '1' } })) failed.push('test guard');
   if (!checkEdit('AGENTS.md', { config: DEFAULTS, env: { YOKOTEN_ROLE: 'worker' } })) failed.push('lead-only guard');
   if (!isShellControlCaught()) failed.push('lead-only shell guard');
@@ -88,7 +88,7 @@ export function selfTest(): string[] {
 export function isShellControlCaught(): boolean {
   const root = parse(HOME_DIR).root;
   const call = (agentType?: string) => ({ agent_type: agentType, cwd: root, tool_input: { command: 'sed -i s/a/b/ AGENTS.md' } });
-  const options = { root, config: DEFAULTS, env: {} };
+  const options = { root, config: DEFAULTS, env: {}, cwd: root };
   return judge(readToolCall(call('yokoten:worker')), options) !== null && judge(readToolCall(call()), options) === null;
 }
 
@@ -268,7 +268,7 @@ export function allowedMarkCount(env: Env, config: Pick<Config, 'privacy'>, root
     return { project: 0, machine: 0, ownName: 0, unsure: null }; // An unreadable file: the private-marks check says so.
   }
   if (!marks.length) return { project: 0, machine: 0, ownName: 0, unsure: null };
-  const key = repoKey(root);
+  const key = repoKey(root, env);
   const machine = machineAllowed(env, root, key);
   const ownName = skipsOwnName(env, config.privacy) ? sameNameMarks(marks, key).length : 0;
   return { project: ownMarks(marks, config.privacy.allow).length, machine: ownMarks(marks, machine.allow).length, ownName, unsure: machine.unsure };
@@ -368,10 +368,10 @@ const DEFAULT_BRANCH_REFS = ['refs/remotes/origin/HEAD', 'refs/remotes/origin/ma
  * The commit at the tip of the default branch in `root`: `origin/HEAD`, else `origin/main`,
  * else `main`, whichever exists locally. Null when none does, or outside a git repo.
  */
-function readDefaultBranch(root: string): string | null {
+function readDefaultBranch(root: string, env: Env): string | null {
   for (const ref of DEFAULT_BRANCH_REFS) {
     try {
-      return execFileSync('git', ['rev-parse', '--verify', '-q', `${ref}^{commit}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      return execFileSync('git', ['rev-parse', '--verify', '-q', `${ref}^{commit}`], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
     } catch {
       // Not here; try the next one.
     }
@@ -380,9 +380,9 @@ function readDefaultBranch(root: string): string | null {
 }
 
 /** Whether `older` is in the history of `newer` in `root`. False when git doesn't know `older`. */
-function isAncestor(root: string, older: string, newer: string): boolean {
+function isAncestor(root: string, older: string, newer: string, env: Env): boolean {
   try {
-    execFileSync('git', ['merge-base', '--is-ancestor', older, newer], { cwd: root, stdio: 'ignore' });
+    execFileSync('git', ['merge-base', '--is-ancestor', older, newer], { cwd: root, env, stdio: 'ignore' });
     return true;
   } catch {
     return false;
@@ -406,8 +406,8 @@ export function pluginAgeCheck(root: string | null, env: Env): Finding | null {
   const note = (older: string, newer: string) => finding('plugin-version', `the yokoten plugin is older than this yokoten (${older} < ${newer})`, `update it: ${PLUGIN_UPDATE}`);
   if (plugin.version && compareVersions(plugin.version, VERSION) === -1) return note(plugin.version, VERSION);
   if (!root || !plugin.commit || !isSelf(root)) return null;
-  const tip = readDefaultBranch(root);
-  if (!tip || tip === plugin.commit || !isAncestor(root, plugin.commit, tip)) return null;
+  const tip = readDefaultBranch(root, env);
+  if (!tip || tip === plugin.commit || !isAncestor(root, plugin.commit, tip, env)) return null;
   return note(plugin.commit.slice(0, 12), tip.slice(0, 12));
 }
 
@@ -844,8 +844,9 @@ function roadControl(): string[] {
     writeFileSync(join(dir, 'TODO.md'), '- an item\n');
     const folder = dir;
     return withGitReads(() => {
-      assumeEmptyFolder(folder);
-      return road(folder, { HOME: folder }, ROAD, SERVER_CONTROL)
+      const env = { HOME: folder };
+      assumeEmptyFolder(folder, env);
+      return road(folder, env, ROAD, SERVER_CONTROL)
         .filter((r) => r.found === true)
         .map((r) => `the ${r.step.key} step`);
     });
@@ -934,9 +935,9 @@ export interface DoctorState {
 }
 
 /** The state file of the clone at `root`, or null outside a git repo. */
-export function findStateFile(root: string): string | null {
+export function findStateFile(root: string, env: Env): string | null {
   try {
-    const gitDir = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const gitDir = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
     return gitDir ? join(gitDir, STATE_FILE) : null;
   } catch {
     return null;
@@ -1052,8 +1053,8 @@ export function listBoardSteps(server: ServerRead): string[] {
 }
 
 /** The server settings of the project's origin remote, or why they can't be read. */
-function readOrigin(root: string, gh: Gh): ServerSettings | Unread {
-  const remote = gitConfig(root, 'remote.origin.url');
+function readOrigin(root: string, gh: Gh, env: Env): ServerSettings | Unread {
+  const remote = gitConfig(root, 'remote.origin.url', env);
   if (!remote) return { unread: 'there is no origin remote yet', fix: 'add one on GitHub to check the server settings, or check them by hand' };
   const repo = repoOf(remote);
   return repo ? readServer(gh, repo) : { unread: 'the origin remote is not on a host yokoten knows (GitHub for now)', fix: 'add a GitHub origin remote, or check these settings by hand' };
@@ -1250,7 +1251,7 @@ function doctorRun(
   if (!root) return { ok: !failed.length, lines, report: { ...base, ok: !failed.length, repo: false, stage: null, next: null, findings } };
 
   // Read only, and only in full doctor: a session never calls the network (record 0004).
-  const server: ServerRead = session ? undefined : gh ? readOrigin(root, gh) : { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' };
+  const server: ServerRead = session ? undefined : gh ? readOrigin(root, gh, env) : { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' };
   const where = walk(road(root, env, ROAD, server, config), config.notNow);
   // Full doctor from the command line adds the obvious marks first (#390); a session writes nothing.
   // With no home folder, the checks that read or keep settings there are skipped, never crash (#404).
@@ -1261,7 +1262,7 @@ function doctorRun(
   // left. A session asks only when the step it names misses a file.
   const left = where.steps.filter((w) => w.mark === 'next' || w.mark === 'to do').map((w) => w.step);
   const isAsked = missingPaths(root, session ? left.slice(0, 1) : left, config).length > 0;
-  const elsewhere = isAsked ? readDefaultBranchFiles(root, missingPaths(root, left, config)) : null;
+  const elsewhere = isAsked ? readDefaultBranchFiles(root, missingPaths(root, left, config), env) : null;
   const next = where.next ? stepFinding(where.next, root, env, { server, config, elsewhere }) : null;
   const core = coreRulesCheck(root);
   const isCoreBehind = core?.mark === 'MISSING';
@@ -1301,7 +1302,7 @@ function doctorRun(
       findings.push(waiting);
     }
     // A lesson new to this clone that finds something here: one line, at one start only (#339).
-    const stateFile = unsaved.commonDir ? join(unsaved.commonDir, STATE_FILE) : findStateFile(root);
+    const stateFile = unsaved.commonDir ? join(unsaved.commonDir, STATE_FILE) : findStateFile(root, env);
     const lesson = sessionLessonNote(root, config.notNow, stateFile, env.CLAUDE_PLUGIN_ROOT ? '/yokoten:doctor' : '`yokoten doctor`');
     if (lesson.line) blocks.push([lesson.line]);
     const notes = [...unsaved.notes, ...lesson.findings];
@@ -1349,7 +1350,7 @@ function doctorRun(
     notes.push(noCi);
   }
   // Full doctor keeps which lessons this clone has seen; a session start keeps only which it ran.
-  const stateFile = unsaved?.commonDir ? join(unsaved.commonDir, STATE_FILE) : findStateFile(root);
+  const stateFile = unsaved?.commonDir ? join(unsaved.commonDir, STATE_FILE) : findStateFile(root, env);
   const state = readState(stateFile);
   const seenLessons = state.seenLessons ?? [];
   const lessons = lessonChecks(root, config.notNow, undefined, stateFile ? seenLessons : null);

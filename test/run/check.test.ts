@@ -688,12 +688,12 @@ test('readBlobs: batches under the cap; a blob over it is read only for its star
   const small = [10, 20, 30].map((n) => blob(Buffer.alloc(n, String(n))));
   const big = blob(Buffer.concat([Buffer.alloc(9000, 'a'), Buffer.alloc(1)]));
   const missing = 'f'.repeat(40);
-  const read = readBlobs(repo.root, [...small, small[0], big, missing], 40);
+  const read = readBlobs(repo.root, [...small, small[0], big, missing], process.env, 40);
   assert.deepEqual([...read.keys()].sort(), [...small, big].sort(), 'a missing blob is left out; a repeat is read once');
   for (const [i, n] of [10, 20, 30].entries()) assert.deepEqual(read.get(small[i]), { bytes: Buffer.alloc(n, String(n)), size: n, whole: true });
   const start = read.get(big);
   assert.deepEqual([start?.bytes.length, start?.size, start?.whole], [8000, 9001, false], 'only the first 8000 bytes, enough to tell binary');
-  assert.deepEqual(readBlobs(repo.root, []), new Map());
+  assert.deepEqual(readBlobs(repo.root, [], process.env), new Map());
 });
 
 // Every read of repo content ignores `git replace` (#284, #294): readBlobs too, in the batch
@@ -712,7 +712,7 @@ test('readBlobs: reads the bytes as stored, past a replace ref, in the batch and
   repo.git('replace', big, bigShown);
   const first = (read: Map<string, { bytes: Buffer }>, id: string) => read.get(id)?.bytes.subarray(0, 1).toString();
   assert.equal(repo.git('cat-file', '-p', stored), 'replacement', 'git itself shows the replacement');
-  const read = readBlobs(repo.root, [stored, big], 100);
+  const read = readBlobs(repo.root, [stored, big], process.env, 100);
   assert.deepEqual([read.get(stored)?.bytes.toString(), first(read, big)], ['stored bytes\n', 'a'], 'the bytes as stored');
 });
 
@@ -928,10 +928,10 @@ test('check: every gate refuses when git can\'t answer, never passes as clean (#
 
 test('readGit: no answer is a GitReadError, whatever the reason (#403)', () => {
   const repo = makeTranslatedRepo();
-  assert.throws(() => readGit(repo.root, ['rev-parse', '--verify', 'nothing-here']), (err: Error) => err instanceof GitReadError && /`git rev-parse --verify nothing-here` gave no answer: it exited 128: fatal: /.test(err.message));
-  assert.throws(() => readGit(repo.root, ['ls-files', '-z'], { maxBuffer: 2 }), (err: Error) => err instanceof GitReadError && /its output is over the 2 bytes yokoten reads/.test(err.message));
-  assert.throws(() => readGit(join(repo.root, 'no-such-folder'), ['status']), GitReadError);
-  assert.equal(readGit(repo.root, ['rev-parse', '--is-inside-work-tree']).toString().trim(), 'true');
+  assert.throws(() => readGit(repo.root, ['rev-parse', '--verify', 'nothing-here'], { env: process.env }), (err: Error) => err instanceof GitReadError && /`git rev-parse --verify nothing-here` gave no answer: it exited 128: fatal: /.test(err.message));
+  assert.throws(() => readGit(repo.root, ['ls-files', '-z'], { env: process.env, maxBuffer: 2 }), (err: Error) => err instanceof GitReadError && /its output is over the 2 bytes yokoten reads/.test(err.message));
+  assert.throws(() => readGit(join(repo.root, 'no-such-folder'), ['status'], { env: process.env }), GitReadError);
+  assert.equal(readGit(repo.root, ['rev-parse', '--is-inside-work-tree'], { env: process.env }).toString().trim(), 'true');
 });
 
 // The case from #403: a status read hidden by a user setting, or cut off by a buffer.
@@ -943,7 +943,7 @@ test('changedFiles: reads 5,000 new files in full, past status.showUntrackedFile
   mkdirSync(join(sandbox.repo, 'many'));
   for (let i = 0; i < 5000; i++) writeFileSync(join(sandbox.repo, 'many', `${long}-${i}.txt`), '');
   assert.equal(sandbox.git('status', '--porcelain').stdout, '', 'the setting hides them from a plain status');
-  const files = changedFiles(sandbox.repo);
+  const files = changedFiles(sandbox.repo, process.env);
   assert.equal(files.length, 5000);
   assert.ok(files.includes(`many/${long}-4999.txt`));
 });
@@ -1018,23 +1018,23 @@ test('git reads: in a run, the values git config --get gives, from one list', ()
     } catch {
       // not set
     }
-    assert.equal(withGitReads(() => gitConfig(sandbox.repo, key)), expected, key);
-    assert.equal(gitConfig(sandbox.repo, key), expected, `${key}, outside a run`);
+    assert.equal(withGitReads(() => gitConfig(sandbox.repo, key, process.env)), expected, key);
+    assert.equal(gitConfig(sandbox.repo, key, process.env), expected, `${key}, outside a run`);
   }
-  const scopes = withGitReads(() => configEntries(sandbox.repo, 'x.many')?.map((entry) => `${entry.scope} ${entry.value}`));
+  const scopes = withGitReads(() => configEntries(sandbox.repo, 'x.many', process.env)?.map((entry) => `${entry.scope} ${entry.value}`));
   assert.deepEqual(scopes, ['local first', 'local second']);
-  assert.equal(configEntries(sandbox.repo, 'x.many'), null, 'outside a run, no list: the caller asks per key');
+  assert.equal(configEntries(sandbox.repo, 'x.many', process.env), null, 'outside a run, no list: the caller asks per key');
 });
 
 test('git reads: the folder of a self-test reads as no repo and no config, only in the run', () => {
   const dir = makeTempDir();
   withGitReads(() => {
-    assumeEmptyFolder(dir);
-    assert.deepEqual(configEntries(dir, /./), []);
+    assumeEmptyFolder(dir, process.env);
+    assert.deepEqual(configEntries(dir, /./, process.env), []);
     assert.throws(() => remembered(`ls-files\0${dir}`, () => ['a file']), /not in a git repository/);
   });
-  assumeEmptyFolder(dir);
-  assert.equal(configEntries(dir, /./), null);
+  assumeEmptyFolder(dir, process.env);
+  assert.equal(configEntries(dir, /./, process.env), null);
 });
 
 // The machine allows a mark for one repo (#447): neither repo has yokoten.json, and the

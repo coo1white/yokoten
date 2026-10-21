@@ -516,12 +516,12 @@ test('lessons: a lesson not yet seen is new, with what it looks for; not now and
 
 test('lessons: the state file is in the git folder; missing, broken or unwritable state is empty, never an error', () => {
   const outside = makeTempDir('yokoten-outside-');
-  assert.equal(findStateFile(outside), null, 'outside a git repo: no state');
+  assert.equal(findStateFile(outside, process.env), null, 'outside a git repo: no state');
   assert.deepEqual(readState(null), {});
   saveState(null, { seenLessons: ['incident-1'] });
   const repo = makeTempDir('yokoten-state-');
   execFileSync('git', ['init', '-q'], { cwd: repo });
-  const file = findStateFile(repo) as string;
+  const file = findStateFile(repo, process.env) as string;
   assert.equal(file, join(realpathSync(repo), '.git', 'yokoten', 'state.json'));
   assert.deepEqual(readState(file), {}, 'missing');
   for (const broken of ['{ not json', '[1]', 'null', '{"seenLessons": "incident-1"}']) {

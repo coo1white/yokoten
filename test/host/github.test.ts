@@ -545,9 +545,9 @@ test('branch files: changed, renamed and deleted paths since the base, from one 
   writeFileSync(join(dir, 'kit.md'), 'New.\n');
   git('add', '.');
   git('commit', '-qm', 'head');
-  const read = readBranchFiles(dir, 'origin/main', 'HEAD');
+  const read = readBranchFiles(dir, 'origin/main', 'HEAD', process.env);
   assert.deepEqual({ files: read?.files.sort(), deleted: read?.deleted }, { files: ['gone.md', 'kit.md', 'src/new name.ts'], deleted: ['gone.md'] });
-  assert.equal(readBranchFiles(dir, 'origin/none', 'HEAD'), null, 'a base git does not have');
+  assert.equal(readBranchFiles(dir, 'origin/none', 'HEAD', process.env), null, 'a base git does not have');
 });
 
 // No answer from git is never "no CODEOWNERS", which would let a pull request lower its tier (#403).
@@ -564,7 +564,7 @@ test('readCodeOwners: the first place the base commit has; a base git can\'t rea
   const owners = sandbox.git('rev-parse', 'HEAD').stdout.trim();
   // The work tree has another file, which a pull request run must not read.
   sandbox.write('CODEOWNERS', '');
-  assert.equal(readCodeOwners(sandbox.repo, none), null);
-  assert.deepEqual(readCodeOwners(sandbox.repo, owners), { text: '/kit/ @a\n', from: 'the base branch' });
-  assert.throws(() => readCodeOwners(sandbox.repo, 'f'.repeat(40)), GitReadError);
+  assert.equal(readCodeOwners(sandbox.repo, none, process.env), null);
+  assert.deepEqual(readCodeOwners(sandbox.repo, owners, process.env), { text: '/kit/ @a\n', from: 'the base branch' });
+  assert.throws(() => readCodeOwners(sandbox.repo, 'f'.repeat(40), process.env), GitReadError);
 });

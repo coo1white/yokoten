@@ -126,11 +126,19 @@ export function main(invocation: Invocation): Promise<number> {
     });
 }
 
-/** Run the command line this process was started with. Only here are process.argv, process.env and the streams read. */
+/** Run the command line this process was started with. Only here are process.argv, process.env, process.cwd() and the streams read. */
 export function runFromProcess(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
   // The one place HOME falls back to the system's home (#356): every module below reads it from env.
-  const invocation: Invocation = { command, args, env: withHome(process.env), cwd: process.cwd(), stdout: process.stdout, stderr: process.stderr, script: process.argv[1] ?? 'yokoten' };
+  // stdin is read by its fd; its stream is made only when a command reads it (see Input).
+  const stdin = {
+    fd: 0,
+    text: null,
+    get stream() {
+      return process.stdin;
+    },
+  };
+  const invocation: Invocation = { command, args, env: withHome(process.env), cwd: process.cwd(), stdout: process.stdout, stderr: process.stderr, stdin, script: process.argv[1] ?? 'yokoten' };
   return main(invocation).then((code) => {
     process.exitCode = code;
   });

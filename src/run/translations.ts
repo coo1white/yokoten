@@ -35,6 +35,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, posix, resolve } from 'node:path';
+import type { Env } from '../rules/config.ts';
 import { type Finding, finding } from '../rules/message.ts';
 
 const MARKER = /^<!--\s*source:\s*(\S+?)(?:\s+blob\s+([0-9a-f]{7,64}))?\s*-->\s*$/;
@@ -54,13 +55,13 @@ export function parseSourceMarker(text: string): { source: string; blob: string 
 
 // Git with no shell; paths are literal, never patterns. Its own error text is hidden:
 // the note says what went wrong.
-const git = (root: string, args: string[]) =>
-  execFileSync('git', ['--literal-pathspecs', ...args], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 1 << 28 });
+const git = (root: string, args: string[], env: Env) =>
+  execFileSync('git', ['--literal-pathspecs', ...args], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 1 << 28 });
 
 /** Git's output, or null when git fails (no such path, no commits yet). */
-function tryGit(root: string, args: string[]): string | null {
+function tryGit(root: string, args: string[], env: Env): string | null {
   try {
-    return git(root, args);
+    return git(root, args, env);
   } catch {
     return null;
   }
@@ -69,23 +70,23 @@ function tryGit(root: string, args: string[]): string | null {
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
 /** The blob of each path in the work tree, as git would store it: one call, or one per path when a path can't be read. */
-function workTreeBlobs(root: string, paths: string[]): Map<string, string> {
+function workTreeBlobs(root: string, paths: string[], env: Env): Map<string, string> {
   const blobs = new Map<string, string>();
-  const all = tryGit(root, ['hash-object', '--', ...paths]);
+  const all = tryGit(root, ['hash-object', '--', ...paths], env);
   if (all !== null) {
     all.trim().split('\n').forEach((blob, i) => blobs.set(paths[i], blob));
     return blobs;
   }
   for (const path of paths) {
-    const blob = tryGit(root, ['hash-object', '--', path]);
+    const blob = tryGit(root, ['hash-object', '--', path], env);
     if (blob !== null) blobs.set(path, blob.trim());
   }
   return blobs;
 }
 
 /** The blob of each path HEAD holds, or null when there is no HEAD. */
-function headBlobs(root: string, paths: string[]): Map<string, string> | null {
-  const out = tryGit(root, ['ls-tree', '-r', '-z', 'HEAD', '--', ...paths]);
+function headBlobs(root: string, paths: string[], env: Env): Map<string, string> | null {
+  const out = tryGit(root, ['ls-tree', '-r', '-z', 'HEAD', '--', ...paths], env);
   if (out === null) return null;
   const blobs = new Map<string, string>();
   for (const entry of out.split('\0')) {
@@ -99,9 +100,9 @@ function headBlobs(root: string, paths: string[]): Map<string, string> | null {
 type Commit = { hash: string; parent: string | undefined; paths: Map<string, string> };
 
 /** First-parent history from HEAD, newest first, with how each commit changed the given paths. Null when git fails. */
-function history(root: string, paths: string[]): Commit[] | null {
+function history(root: string, paths: string[], env: Env): Commit[] | null {
   // Each commit: \x01<hash> <parents>\0, then for each path it changed, <status>\0<path>\0.
-  const out = tryGit(root, ['log', '--first-parent', '-m', '--no-renames', '--name-status', '-z', '--format=%x01%H %P', 'HEAD', '--', ...paths]);
+  const out = tryGit(root, ['log', '--first-parent', '-m', '--no-renames', '--name-status', '-z', '--format=%x01%H %P', 'HEAD', '--', ...paths], env);
   if (out === null) return null;
   return out.split('\x01').filter(Boolean).map((chunk) => {
     const [header, ...fields] = chunk.split('\0');
@@ -113,8 +114,8 @@ function history(root: string, paths: string[]): Commit[] | null {
 }
 
 /** The commits where a shallow clone's history stops, or null when the clone is whole. */
-function shallowCuts(root: string): Set<string> | null {
-  const [isShallow, file] = (tryGit(root, ['rev-parse', '--is-shallow-repository', '--git-path', 'shallow']) ?? '').split('\n');
+function shallowCuts(root: string, env: Env): Set<string> | null {
+  const [isShallow, file] = (tryGit(root, ['rev-parse', '--is-shallow-repository', '--git-path', 'shallow'], env) ?? '').split('\n');
   if (isShallow !== 'true') return null;
   try {
     return new Set(readFileSync(resolve(root, file), 'utf8').split('\n').filter(Boolean));
@@ -158,7 +159,7 @@ export const isShallowNote = (note: Finding): boolean => note.id === 'translatio
  * `files` are the repo's files; only the ones whose first line names a source are read.
  * In a shallow clone, one note without a file says which translations weren't checked.
  */
-export function translationNotes(root: string, files: string[]): Finding[] {
+export function translationNotes(root: string, files: string[], env: Env): Finding[] {
   const notes: Finding[] = [];
   const entries: Entry[] = [];
   for (const file of files.filter((f) => TRANSLATION_FILE.test(f))) {
@@ -180,8 +181,8 @@ export function translationNotes(root: string, files: string[]): Finding[] {
   if (entries.length === 0) return notes;
 
   const paths = [...new Set(entries.flatMap((e) => [e.path, e.file]))];
-  const now = workTreeBlobs(root, paths);
-  const head = headBlobs(root, paths);
+  const now = workTreeBlobs(root, paths, env);
+  const head = headBlobs(root, paths, env);
   let commits: Commit[] | null | undefined;
   let cuts: Set<string> | null = null;
   let unchecked = 0;
@@ -206,8 +207,8 @@ export function translationNotes(root: string, files: string[]): Finding[] {
     }
     if (head === null) continue; // no commits yet: nothing to fall behind
     if (commits === undefined) {
-      cuts = shallowCuts(root);
-      commits = history(root, paths);
+      cuts = shallowCuts(root, env);
+      commits = history(root, paths, env);
     }
     if (commits === null) {
       note(`may be behind ${path}: git history can't tell`, `compare it with ${path}, bring the translation up to date, ${update}`);

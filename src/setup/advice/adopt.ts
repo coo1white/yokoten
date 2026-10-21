@@ -71,14 +71,14 @@ const listed = (dir: string) => {
 };
 
 /** Commit hooks the project runs on its own, by tool name. */
-function ownHooks(root: string): string[] {
+function ownHooks(root: string, env: Env): string[] {
   const pkg = packageJson(root);
   const found: string[] = [];
   if (existsSync(join(root, '.husky')) || 'husky' in pkg) found.push('husky');
   if (has(root, ['lefthook.yml', 'lefthook.yaml', '.lefthook.yml', '.lefthook.yaml']).length) found.push('lefthook');
   if (has(root, ['.pre-commit-config.yaml', '.pre-commit-config.yml']).length) found.push('pre-commit');
   if ('simple-git-hooks' in pkg) found.push('simple-git-hooks');
-  const hooksPath = gitConfig(root, 'core.hooksPath');
+  const hooksPath = gitConfig(root, 'core.hooksPath', env);
   if (!found.length && hooksPath) found.push('core.hooksPath');
   if (!found.length && existsSync(join(root, '.githooks', 'pre-commit'))) found.push('.githooks/pre-commit');
   return found;
@@ -129,7 +129,7 @@ export function facts(root: string, env: Env): Fact[] {
 
   plain('tool-hook', 'the tool-call guard is in .claude/settings.json', 'no tool-call guard');
 
-  const hooks = ownHooks(root);
+  const hooks = ownHooks(root, env);
   if (found.get('commit-check')) add('commit-check', 'done', 'commits run `yokoten check`');
   else add('commit-check', hooks.length ? 'partial' : 'missing', hooks.length ? `commits run the project's own hooks (${hooks.join(', ')}), not \`yokoten check\`` : 'no commit hook');
 

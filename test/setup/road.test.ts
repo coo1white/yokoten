@@ -388,13 +388,13 @@ test('road: inside one doctor run each git answer is kept; the next run asks git
   const set = (value: string) => execFileSync('git', ['config', 'core.hooksPath', value], { cwd: sandbox.repo, env: sandbox.env });
   set('one');
   const seen = withGitReads(() => {
-    const first = gitConfig(sandbox.repo, 'core.hooksPath');
+    const first = gitConfig(sandbox.repo, 'core.hooksPath', process.env);
     set('two');
-    return [first, gitConfig(sandbox.repo, 'core.hooksPath')];
+    return [first, gitConfig(sandbox.repo, 'core.hooksPath', process.env)];
   });
   assert.deepEqual(seen, ['one', 'one'], 'kept within the run');
-  assert.equal(gitConfig(sandbox.repo, 'core.hooksPath'), 'two', 'asked again outside it');
-  assert.deepEqual(withGitReads(() => gitConfig(sandbox.repo, 'core.hooksPath')), 'two', 'a new run asks again');
+  assert.equal(gitConfig(sandbox.repo, 'core.hooksPath', process.env), 'two', 'asked again outside it');
+  assert.deepEqual(withGitReads(() => gitConfig(sandbox.repo, 'core.hooksPath', process.env)), 'two', 'a new run asks again');
 });
 
 // ---- The license file (#376): LICENSE, LICENCE and COPYING in any case, with any suffix. ----

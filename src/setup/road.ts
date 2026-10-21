@@ -455,10 +455,10 @@ const testsFix = (root: string) => {
 };
 
 /** Tracked build output, as yokoten.json lets it through; null outside a git repo. */
-const builtFiles = (root: string): string[] | null => {
+const builtFiles = (root: string, env: Env): string[] | null => {
   let files: string[];
   try {
-    files = indexFiles(root);
+    files = indexFiles(root, env);
   } catch {
     return null;
   }
@@ -700,8 +700,8 @@ const newMilestoneOf = (server: ServerRead) => {
 };
 
 /** The pre-commit git runs here, by core.hooksPath, relative to the root; null when that is unset or outside the repo. */
-const commitHook = (root: string): string | null => {
-  const hooksPath = gitConfig(root, 'core.hooksPath');
+const commitHook = (root: string, env: Env): string | null => {
+  const hooksPath = gitConfig(root, 'core.hooksPath', env);
   return hooksPath ? hookFile(root, hooksPath) : null;
 };
 
@@ -715,9 +715,9 @@ interface UncheckedHook {
 }
 
 /** The commit hooks here (pre-commit and pre-merge-commit) that do not run the check (#239); null when git runs none from this repo. */
-const uncheckedHooks = (root: string): UncheckedHook[] | null => {
-  const hooksPath = gitConfig(root, 'core.hooksPath');
-  if (!hooksPath || commitHook(root) === null) return null;
+const uncheckedHooks = (root: string, env: Env): UncheckedHook[] | null => {
+  const hooksPath = gitConfig(root, 'core.hooksPath', env);
+  if (!hooksPath || commitHook(root, env) === null) return null;
   // husky 9's folder (.husky/_) runs .husky/pre-commit with `sh`, so that file needs no execute bit (#256).
   const runsWithSh = relative(root, resolve(root, hooksPath)).split('\\').join('/').startsWith('.husky/');
   const unchecked: UncheckedHook[] = [];
@@ -760,9 +760,9 @@ const ownHookFix = (hooks: UncheckedHook[], cli: string): string => {
  * .githooks and .githooks does not hand off to them (#256). Empty for any other hooks folder:
  * the project chose that one itself.
  */
-const droppedHooks = (root: string): OldHook[] => {
-  if (!gitConfig(root, 'core.hooksPath') || readHookSetup(root).kind !== 'plain') return [];
-  return readOldHooks(root).filter((old) => old.handOff === 'yes' && !hasHandOff(read(join(root, '.githooks', old.hook)), old.hook));
+const droppedHooks = (root: string, env: Env): OldHook[] => {
+  if (!gitConfig(root, 'core.hooksPath', env) || readHookSetup(root, env).kind !== 'plain') return [];
+  return readOldHooks(root, env).filter((old) => old.handOff === 'yes' && !hasHandOff(read(join(root, '.githooks', old.hook)), old.hook));
 };
 
 /**
@@ -810,32 +810,32 @@ export const ROAD: Step[] = [
   {
     stage: 1,
     key: 'commit-check',
-    check: (root) => uncheckedHooks(root)?.length === 0 && droppedHooks(root).length === 0,
-    what: (root) => {
-      const hooks = uncheckedHooks(root);
-      const dropped = droppedHooks(root).map((old) => `${old.file} no longer runs: .githooks/${old.hook} does not run it`);
+    check: (root, env) => uncheckedHooks(root, env)?.length === 0 && droppedHooks(root, env).length === 0,
+    what: (root, env) => {
+      const hooks = uncheckedHooks(root, env);
+      const dropped = droppedHooks(root, env).map((old) => `${old.file} no longer runs: .githooks/${old.hook} does not run it`);
       if (hooks?.length) {
         // Only pre-merge-commit: ordinary commits are still checked, merge commits are not.
         const which = hooks.every((h) => h.file.endsWith('pre-merge-commit')) ? 'merge commits' : 'commits';
         return `${which} are not checked: ${[...hooks.map((h) => HOOK_PROBLEM[h.problem](h.file)), ...dropped].join('; ')}`;
       }
       if (hooks) return `a hook this clone had is switched off: ${dropped.join('; ')}`;
-      return gitConfig(root, 'core.hooksPath') ? 'commits are not checked: core.hooksPath is outside this repo' : 'commits are not checked: core.hooksPath is not set';
+      return gitConfig(root, 'core.hooksPath', env) ? 'commits are not checked: core.hooksPath is outside this repo' : 'commits are not checked: core.hooksPath is not set';
     },
-    fix: (root) => {
-      if (!gitConfig(root, 'core.hooksPath') && existsSync(join(root, '.husky'))) return 'run `npm install` so husky sets core.hooksPath, then `yokoten init`';
+    fix: (root, env) => {
+      if (!gitConfig(root, 'core.hooksPath', env) && existsSync(join(root, '.husky'))) return 'run `npm install` so husky sets core.hooksPath, then `yokoten init`';
       // A hook in .git/hooks that .githooks can't run: init leaves it be, so the fix is by hand (#256).
-      const blocks = readHookSetup(root).kind === 'plain' ? handOffBlocks(root) : [];
+      const blocks = readHookSetup(root, env).kind === 'plain' ? handOffBlocks(root, env) : [];
       if (blocks.length) return blocks.join('; ');
-      const hooks = uncheckedHooks(root);
+      const hooks = uncheckedHooks(root, env);
       const files = hooks?.map((h) => h.file) ?? [];
-      const dropped = droppedHooks(root);
+      const dropped = droppedHooks(root, env);
       if (hooks && !files.length && dropped.length) {
         return `\`yokoten init\` makes ${dropped.map((old) => `.githooks/${old.hook} run ${old.file}${isCommitHook(old.hook) ? ' after the check' : ''}`).join(' and ')}`;
       }
       if (!files.length || files.includes('.githooks/pre-commit')) {
         // A hook git skips today is not a reason to wait; init sets .githooks and says how to keep it (#256).
-        const dead = readHookSetup(root).kind === 'plain' ? deadHookNotes(readOldHooks(root)) : [];
+        const dead = readHookSetup(root, env).kind === 'plain' ? deadHookNotes(readOldHooks(root, env)) : [];
         return ['`yokoten init` sets it up', ...dead.map((line) => `note: ${line}`)].join('; ');
       }
       if (files.join() === '.githooks/pre-merge-commit') return '`yokoten init` sets up .githooks/pre-merge-commit';
@@ -921,12 +921,12 @@ export const ROAD: Step[] = [
   {
     stage: 2,
     key: 'no-build-output',
-    check: (root) => {
-      const built = builtFiles(root);
+    check: (root, env) => {
+      const built = builtFiles(root, env);
       return built && built.length === 0;
     },
-    what: (root) => {
-      const built = builtFiles(root) ?? [];
+    what: (root, env) => {
+      const built = builtFiles(root, env) ?? [];
       return `build output in the repo (${built.slice(0, 3).join(', ')}${built.length > 3 ? `, and ${built.length - 3} more` : ''})`;
     },
     fix: () => `remove it with \`git rm --cached\` and add ${BUILD_DIRS.map((d) => `${d}/`).join(', ')} to .gitignore`,
@@ -1093,7 +1093,7 @@ function readCommit(commonDir: string, ref: string): string | null {
  * init.defaultBranch, else main. Never the network. Null when there is nothing to ask,
  * this checkout is the default branch (by name or by commit), or git can't tell.
  */
-export function readDefaultBranchFiles(root: string, paths: string[]): DefaultBranchFiles | null {
+export function readDefaultBranchFiles(root: string, paths: string[], env: Env): DefaultBranchFiles | null {
   if (!paths.length) return null;
   const folders = gitFolders(root);
   // The reftable store keeps no ref in a file; then say nothing rather than guess.
@@ -1104,14 +1104,14 @@ export function readDefaultBranchFiles(root: string, paths: string[]): DefaultBr
   const headCommit = head ? readCommit(folders.commonDir, `refs/heads/${head[1]}`) : /^[0-9a-f]{40,64}$/.test(headFile) ? headFile : null;
   // origin/HEAD is always a loose file in the files store, even after `git pack-refs`.
   const originHead = /^ref: refs\/remotes\/(.+)$/m.exec(read(join(folders.commonDir, 'refs', 'remotes', 'origin', 'HEAD')));
-  const name = originHead ? originHead[1].trim() : gitConfig(root, 'init.defaultBranch') || 'main';
+  const name = originHead ? originHead[1].trim() : gitConfig(root, 'init.defaultBranch', env) || 'main';
   const ref = originHead ? `refs/remotes/${name}` : `refs/heads/${name}`;
   // On the default branch, or at its commit, merging it changes nothing: the file was removed here.
   if (branch === name.replace(/^origin\//, '')) return null;
   const defaultCommit = readCommit(folders.commonDir, ref);
   if (headCommit && headCommit === defaultCommit) return null;
   try {
-    const listed = execFileSync('git', ['--no-optional-locks', 'ls-tree', '--name-only', ref, '--', ...paths], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const listed = execFileSync('git', ['--no-optional-locks', 'ls-tree', '--name-only', ref, '--', ...paths], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
     const found = new Set(listed.split('\n').filter((path) => paths.includes(path)));
     return found.size ? { name, branch, paths: found } : null;
   } catch {

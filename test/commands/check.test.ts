@@ -17,6 +17,7 @@ import {
   CLI,
   makeSandbox,
 } from '../repo/helpers.ts';
+import { invoke } from '../repo/invoke.ts';
 import { cutPoint } from '../../src/commands/check.ts';
 import { wrapForRedact } from '../../src/rules/guards.ts';
 
@@ -417,6 +418,17 @@ test('redact: keeps line ends, a last line with no end, and text that names nobo
   const streamed = sandbox.run(['redact'], { input: long });
   assert.equal(streamed.stdout, `${'line one\n'.repeat(50_000)}<owner>\n`);
   assert.deepEqual([sandbox.run(['redact', '--x']).status], [1]);
+});
+
+// #475: in this process, redact reads the output from the invocation's stdin as a stream,
+// and writes what it hid to the invocation's stdout.
+test('redact: in-process, the given stdin comes out hidden, a long one streamed whole (#475)', async () => {
+  const { sandbox } = ownerSandbox();
+  const run = (stdin: string) => invoke(['redact'], { env: sandbox.env, cwd: sandbox.repo, stdin });
+  assert.deepEqual(await run(`by ${OWNER} at ${HOST}\nlast`), { code: 0, stdout: 'by <owner> at <host>\nlast', stderr: '' });
+  const long = `${'line one\n'.repeat(50_000)}${EMAIL}\n`;
+  assert.equal((await run(long)).stdout, `${'line one\n'.repeat(50_000)}<email>\n`);
+  assert.deepEqual(await run(''), { code: 0, stdout: '', stderr: '' });
 });
 
 test('redact: fails open; a marks file it cannot read passes the output through, with one line (#390)', () => {

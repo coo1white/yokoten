@@ -377,7 +377,7 @@ test('init: writes .github/CODEOWNERS for every lead-only path, owned by the Git
   const result = sandbox.run(['init'], { extra: { PATH: `${bin}:${process.env.PATH}` } });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /wrote \.github\/CODEOWNERS \(the lead-only paths, owned by @octo\)/);
-  const owners = readCodeOwners(sandbox.repo, '');
+  const owners = readCodeOwners(sandbox.repo, '', process.env);
   assert.equal(owners?.from, 'the working tree');
   const rules = parseCodeOwners(owners!.text);
   assert.deepEqual(rules.map((rule) => rule.pattern), leadOnlyPaths());
