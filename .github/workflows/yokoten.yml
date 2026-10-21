@@ -89,9 +89,13 @@ jobs:
       # Four files at a time (Node's default is the CPU count minus one), and one compile
       # cache for every child node, so each test file strips its TypeScript once (#442).
       # The spec reporter on every Node, so the logs read alike (Node 22 defaults to TAP).
-      - run: node --test --test-concurrency=4 --test-reporter=spec --test-shard=${{ matrix.shard }}/3
+      # A TAP copy of the report goes to a file, for the time check below.
+      - run: node --test --test-concurrency=4 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination=${{ runner.temp }}/tests.tap --test-shard=${{ matrix.shard }}/3
         env:
           NODE_COMPILE_CACHE: ${{ runner.temp }}/node-compile-cache
+      # The time and the slowest tests go in the job summary. It fails far above the slowest shard
+      # seen: 180 s, or 90 s on Node 24 on Linux, the fastest setup (#475).
+      - run: node scripts/time/suite.ts ${{ runner.temp }}/tests.tap ${{ matrix.os == 'ubuntu-latest' && matrix.node == '24' && '--budget 90' || '' }}
   # Types are checked here and nowhere else: Node runs the .ts files without them.
   # Skipped on a docs-only pull request.
   typecheck:
