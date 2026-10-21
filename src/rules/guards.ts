@@ -18,7 +18,7 @@ import type { Config, Env } from './config.ts';
 import { loadConfig, matcher } from './config.ts';
 import { type Finding, finding } from './message.ts';
 import { checkCommandTitle } from './pr.ts';
-import { type CommandFiles, checkPost, type GhCommand, ghIndex, PIPE_READERS, withoutReadPipe } from './privacy.ts';
+import { type CommandFiles, checkPost, type GhCommand, ghIndex, PIPE_READERS, type Risk, withoutReadPipe } from './privacy.ts';
 
 /** A file edit, by path relative to the repo root. */
 export function checkEdit(path: string, { config, env }: { config: Config; env: Env }): Finding | null {
@@ -105,16 +105,20 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
   const writers = commands.filter((words) => !writesNoFile(words));
   // Anything but plain words may run code; after a cd, `..` goes up from the real folder.
   // A read-only pipe at the end is left out first (#498).
-  const fills = heredoc === undefined ? unplainPart(withoutStdin(withoutReadPipe(command), commands), command, commands) : undefined;
+  const plainText = heredoc === undefined ? withoutStdin(withoutReadPipe(command), commands) : '';
+  const plainAt = heredoc === undefined ? plainBreak(plainText) : -1;
+  const fills = heredoc === undefined && (plainAt !== -1 || !tildesPlain(command, commands));
   const movesFolder = commands.some((words) => ['cd', 'pushd', 'popd'].includes(words[0] ?? ''));
   for (const words of commands) {
-    const saw = writeRisk(words, { heredoc, fills, writers });
+    const mayWrite = heredoc !== undefined || fills || writesFile(words) || isUnsure(words) || writers.some((other) => other !== words);
+    // The name is built only on a refusal (#498).
+    const saw = (isMarked: (word: string) => boolean) => writeRisk(words, { heredoc, plainText, plainAt, fills, writers, isMarked });
     const reason =
       checkGit(words, { env, config, cwd, rules }) ??
       checkHooksEnvironment(words) ??
       checkPublish(words, env) ??
       checkBlocked(words, config?.commands.block ?? {}) ??
-      checkPosted(words, { env, config, cwd: postCwd, from, command, titles, files: { heredoc, mayWrite: saw !== undefined, saw, movesFolder } }) ??
+      checkPosted(words, { env, config, cwd: postCwd, from, command, titles, files: { heredoc, mayWrite, saw, movesFolder } }) ??
       (rules ? checkLeadOnlyWrites(words, { env, rules, folder: postCwd }) : null);
     if (reason) return reason;
     postCwd = folderAfter(words, postCwd, env);
@@ -876,23 +880,21 @@ const PIPE_TARGET = /[ \t]*([^\s|;&<>()'"`$\\]*)/y;
 const SHOWN_PROGRAM = /^[\w.+-]{1,40}$/;
 
 /** What may change a body file on disk before the gh in `words` reads it, or undefined (#439). */
-function writeRisk(words: string[], { heredoc, fills, writers }: { heredoc?: object; fills?: string; writers: string[][] }): string | undefined {
-  if (heredoc !== undefined) return 'a `cat >` heredoc';
-  if (fills) return fills;
-  if (writesFile(words)) return 'a redirect into a file';
-  if (isUnsure(words)) return variableRisk(words);
+// `plainText` is the command as the plain check reads it, and `plainAt` where it stops being
+// plain (-1: all plain, so the `~` check failed). A word that holds a private mark is not
+// named (`isMarked`).
+type RiskInput = { heredoc?: object; plainText: string; plainAt: number; fills: boolean; writers: string[][]; isMarked: (word: string) => boolean };
+
+function writeRisk(words: string[], { heredoc, plainText, plainAt, fills, writers, isMarked }: RiskInput): Risk | undefined {
+  if (heredoc !== undefined) return { what: 'a `cat >` heredoc' };
+  if (fills) return { what: plainAt === -1 ? TILDE_RISK : breakName(plainText, plainAt, isMarked) };
+  if (writesFile(words)) return { what: 'a redirect into a file' };
+  if (isUnsure(words)) return { what: variableRisk(words) };
   const other = writers.find((command) => command !== words);
-  return other && writerName(other);
+  return other && writerRisk(other, isMarked);
 }
 
-// The first part of the text that is not plain, by name, or undefined when all of it is.
-function unplainPart(text: string, command: string, commands: string[][]): string | undefined {
-  const at = plainBreak(text);
-  if (at !== -1) return breakName(text, at);
-  return tildesPlain(command, commands) ? undefined : TILDE_RISK;
-}
-
-function breakName(text: string, at: number): string {
+function breakName(text: string, at: number, isMarked: (word: string) => boolean): string {
   if (at >= text.length) return 'a quote that is not closed';
   const character = text[at];
   const next = text[at + 1] ?? '';
@@ -902,7 +904,7 @@ function breakName(text: string, at: number): string {
     case '`':
       return 'a command substitution in backquotes';
     case '|':
-      return next === '|' ? 'a `||`' : pipeName(text, at);
+      return next === '|' ? 'a `||`' : pipeName(text, at, isMarked);
     case '>':
     case '<':
       return `a redirect \`${character}\``;
@@ -936,11 +938,11 @@ function breakName(text: string, at: number): string {
   return 'a character the guard does not trust';
 }
 
-function pipeName(text: string, at: number): string {
+function pipeName(text: string, at: number, isMarked: (word: string) => boolean): string {
   PIPE_TARGET.lastIndex = at + 1;
   const program = base(PIPE_TARGET.exec(text)?.[1] ?? '');
   if (PIPE_READERS.has(program)) return `a pipe to \`${program}\` that does not end the line in plain words`;
-  return SHOWN_PROGRAM.test(program) ? `a pipe to \`${program}\`` : 'a pipe';
+  return SHOWN_PROGRAM.test(program) && !isMarked(program) ? `a pipe to \`${program}\`` : 'a pipe';
 }
 
 function variableRisk(words: string[]): string {
@@ -948,17 +950,21 @@ function variableRisk(words: string[]): string {
 }
 
 // A command that may write a file, by name.
-function writerName(words: string[]): string {
+function writerRisk(words: string[], isMarked: (word: string) => boolean): Risk {
   const at = ownVariables(words);
-  if (at === -1) return variableRisk(words);
-  if (writesFile(words)) return 'a redirect into a file';
+  if (at === -1) return { what: variableRisk(words) };
+  if (writesFile(words)) return { what: 'a redirect into a file' };
   const program = base(words[at] ?? '');
-  if (program === 'sed') return 'a `sed` with `-i`, `-f` or a script other than s/…/…/';
-  if (program === 'uniq') return 'a `uniq` with a second file, which it writes';
-  if (PIPE_READERS.has(program)) return `a \`${program}\` with an option that may write a file`;
-  if (MOVERS.has(program)) return `a \`${program}\` the guard can't follow`;
-  if (program === 'export') return 'an `export` of a name other than GH_REPO, GH_HOST or NODE_USE_ENV_PROXY';
-  return SHOWN_PROGRAM.test(program) ? `a \`${program}\`` : 'a command the guard does not know';
+  if (program === 'sed' && words.some((word) => word.includes('$'))) {
+    return { what: 'a `$` value in a `sed` command', fix: 'type the value into the sed script in place of the `$`, or leave out the pipe' };
+  }
+  if (program === 'sed') return { what: 'a `sed` with `-i`, `-f` or a script other than s/…/…/' };
+  if (program === 'uniq') return { what: 'a `uniq` with a second file, which it writes' };
+  if (PIPE_READERS.has(program)) return { what: `a \`${program}\` with an option that may write a file` };
+  if (MOVERS.has(program)) return { what: `a \`${program}\` the guard can't follow` };
+  if (program === 'export') return { what: 'an `export` of a name other than GH_REPO, GH_HOST or NODE_USE_ENV_PROXY' };
+  if (isMarked(program)) return { what: 'a command' };
+  return { what: SHOWN_PROGRAM.test(program) ? `a \`${program}\`` : 'a command the guard does not know' };
 }
 
 // A lone gh that reads its body from a file, `gh … --body-file - < body.md` (#391): the scan
@@ -1089,8 +1095,10 @@ const SED_LONG_OPTIONS = new Set(['--posix', '--debug', '--sandbox', '--quiet', 
 
 // Whether a sed only prints (#498): the options above, and scripts that are only
 // s/…/…/ commands, joined by `;`, with no w or e flag. Any other script is refused,
-// since `w` writes a file and `e` runs one.
+// since `w` writes a file and `e` runs one. A `$` anywhere is refused: bash fills in a
+// value before sed reads the script, and a value can hold the delimiter and then `w`.
 function sedReadsOnly(args: string[]): boolean {
+  if (args.some((arg) => arg.includes('$'))) return false;
   let hasScript = false;
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
@@ -1103,7 +1111,7 @@ function sedReadsOnly(args: string[]): boolean {
     } else if (!hasScript) {
       if (!isSubstitution(arg)) return false;
       hasScript = true;
-    } else if (arg.includes('$')) return false; // a file name from a value may be an option
+    }
   }
   return hasScript;
 }

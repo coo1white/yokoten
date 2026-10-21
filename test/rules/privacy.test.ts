@@ -1187,7 +1187,7 @@ test('a pipe at the end into tail, head, grep, sed s/// and the like still reads
     `${bot} 2>&1 | tail -2`,
     `${bot} | tail -2`,
     `${bot} | sed "s/x/y/g"`,
-    `${bot} 2>&1 | sed "s/$OWNER/<owner>/g" | tail -2`,
+    `${bot} 2>&1 | sed "s/someone/<owner>/g" | tail -2`,
     `${bot} | sed -n -e 's|a|b|gp' -e 's/c/d/'`,
     `${bot} | grep -v x | head -n 5 | cut -c1-80 | wc -l`,
     `${bot} | sort -rk2,2 | uniq -c | tr a-z A-Z`,
@@ -1213,8 +1213,6 @@ test('a pipe or a command that may change the body file is refused, by name (#49
     [`${bot} | sed 's/x/y/w ${body}'`, 'a `sed` with `-i`'],
     [`${bot} | sed 's/x/y/e'`, 'a `sed` with `-i`'],
     [`${bot} | sed -f script.sed`, 'a `sed` with `-i`'],
-    [`${bot} | sed "$S"`, 'a `sed` with `-i`'],
-    [`${bot} | sed s/x/y/ "$F"`, 'a `sed` with `-i`'],
     [`${bot} | sort -o ${body}`, 'a `sort` with an option'],
     [`${bot} | sort "$X"`, 'a `sort` with an option'],
     [`${bot} | uniq - ${body}`, 'a `uniq` with a second file'],
@@ -1244,6 +1242,49 @@ test('a pipe or a command that may change the body file is refused, by name (#49
     assert.ok(f?.fix.startsWith(`leave out ${saw}`), `${command}: ${f?.fix}`);
     assert.match(f?.fix ?? '', /write the file in one command, then post it in the next/);
   }
+  rmSync(body);
+});
+
+test('a `$` anywhere in a sed after the post is refused: bash fills it in before sed reads the script (#498)', () => {
+  const body = join(postDir, 'piped.md');
+  writeFileSync(body, 'All clean.\n');
+  const bot = `node bin/yokoten.ts bot -- gh pr create --title t --body-file ${body}`;
+  for (const command of [
+    `${bot} 2>&1 | sed "s/$OWNER/<owner>/g" | tail -2`,
+    `${bot} | sed "s/x/$NAME/"`,
+    `${bot} | sed -e "s/x/y/$FLAGS"`,
+    `${bot} | sed "$S"`,
+    `${bot} | sed s/x/y/ "$F"`,
+  ]) {
+    const f = post(command);
+    assert.equal(f?.id, 'unreadable-command', command);
+    assert.ok(f?.what.includes('and a `$` value in a `sed` command in this command'), `${command}: ${f?.what}`);
+    assert.equal(f?.fix, 'type the value into the sed script in place of the `$`, or leave out the pipe, or write the file in one command, then post it in the next, and give its full path');
+  }
+  // grep may take a value: it writes no file whatever the value holds.
+  assert.equal(post(`${bot} | grep -v "$OWNER"`), null);
+  rmSync(body);
+});
+
+test('a refusal never names a program that holds a private mark (#498)', () => {
+  const body = join(postDir, 'piped.md');
+  writeFileSync(body, 'All clean.\n');
+  const bot = `node bin/yokoten.ts bot -- gh pr create --title t --body-file ${body}`;
+  const named = [
+    [`${bot} | quietvale-tool x`, 'a pipe'],
+    [`${bot} | /opt/QuietVale/bin/send`, 'a pipe to `send`'],
+    [`quietvale-tool x; ${bot}`, 'a command'],
+    [`QuietVale x; ${bot}`, 'a command'],
+  ];
+  for (const [command, saw] of named) {
+    const f = post(command);
+    assert.equal(f?.id, 'unreadable-command', command);
+    assert.ok(f?.what.includes(`and ${saw} in this command`), `${command}: ${f?.what}`);
+    assert.ok(!/quietvale/i.test(formatFinding(f)), `${command}: the mark is never printed`);
+  }
+  // Control: a program with no mark in it is named.
+  assert.ok(post(`${bot} | tee x`)?.what.includes('a pipe to `tee`'));
+  assert.ok(post(`othertool x; ${bot}`)?.what.includes('a `othertool`'));
   rmSync(body);
 });
 
@@ -1280,6 +1321,9 @@ test('a ~/ path to yokoten and the allowed variables before it still read the bo
     `node ~/x/bin/yokoten.ts ~/y ${comment}`,
     `echo ~/x/bin/yokoten.ts bot -- x; gh issue comment 505 --body-file ${body}`,
   ]) assert.equal(post(command)?.id, 'unreadable-command', command);
+  // `~root` is another user's home: the guard can't tell which yokoten runs there, so it says so.
+  const root = post(`node ~root/bin/yokoten.ts ${comment}`);
+  assert.ok(root?.what.includes('and a `~` that may not be your home folder in this command'), root?.what);
   // A variable outside GH_REPO, GH_HOST and NODE_USE_ENV_PROXY reaches node and gh: refused, by name.
   const other = post(`A=1 node bin/yokoten.ts ${comment}`);
   assert.ok(other?.what.includes('a variable other than GH_REPO'), other?.what);
@@ -1293,6 +1337,8 @@ test('a project allow still applies after NODE_USE_ENV_PROXY=1 and a ~/ yokoten 
   assert.equal(post(`NODE_USE_ENV_PROXY=1 node bin/yokoten.ts ${comment} 2>&1 | tail -2`, allowing), null);
   // GH_REPO names another target, and any other variable is not trusted: no allow.
   assert.equal(post(`GH_REPO=o/r node bin/yokoten.ts ${comment}`, allowing)?.id, 'private-mark');
+  assert.equal(post(`GH_HOST=example.com node bin/yokoten.ts ${comment}`, allowing)?.id, 'private-mark');
+  assert.equal(post(`NODE_USE_ENV_PROXY=1 GH_HOST=example.com node ~/x/bin/yokoten.ts ${comment}`, allowing)?.id, 'private-mark');
   assert.equal(post(`A=1 node bin/yokoten.ts ${comment}`, allowing)?.id, 'private-mark');
   assert.equal(post(`NODE_USE_ENV_PROXY=$X node bin/yokoten.ts ${comment}`, allowing)?.id, 'private-mark');
 });

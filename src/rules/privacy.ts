@@ -953,24 +953,29 @@ export function heredocBodies(text: string): string[] {
  * A file's texts, `skip` for a file the guard does not read, `missing`, or `unsure`: the
  * command may change the file. `saw` is unsure too, and names what in the command (#498).
  */
-type FileRead = { texts: string[] } | { saw: string } | 'skip' | 'missing' | 'unsure';
+type FileRead = { texts: string[] } | { saw: Risk } | 'skip' | 'missing' | 'unsure';
+
+/** What in a command may change a body file (#498): its name, and a fix when "leave out" is not the one. */
+export type Risk = { what: string; fix?: string };
 
 /**
  * What the rest of the command does to the files gh reads (#439). `heredoc`: the command is
  * exactly `cat > path <<'EOF' && gh …`, and this is the path, as written, and the heredoc's
  * text. `mayWrite`: another command in it may write a file, so a file on disk is not read
- * as the one gh will post. `saw` names what may write it, for the message (#498).
+ * as the one gh will post. `saw` names what may write it, for the message (#498). It runs
+ * only on a refusal, so the marks file is read only then; `isMarked` keeps a private mark
+ * out of the name.
  */
 export interface CommandFiles {
   heredoc?: { path: string; text: string };
   mayWrite: boolean;
-  saw?: string;
+  saw?: (isMarked: (word: string) => boolean) => Risk | undefined;
   /** A cd in the command: a path with `..` goes up from the real folder, behind any symlink. */
   movesFolder?: boolean;
 }
 
 /** What a gh command posts: its pieces, or a file the guard can't find. Null when it posts nothing. */
-type Missing = { missing: string; unsure: boolean; saw?: string };
+type Missing = { missing: string; unsure: boolean; saw?: Risk };
 
 function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, command: string): { pieces: Piece[] } | Missing | null {
   const { args } = gh;
@@ -1285,6 +1290,10 @@ export function checkPost(
   // The path goes to the kernel as bash hands it to gh, never normalized: join and resolve
   // drop `..` as text, but the kernel goes up from the real folder when the working folder
   // or home is a symlink (#470).
+  // A word in a refusal is tested against the marks as a path is in shownPath (#498). The
+  // marks file is read only when a refusal names a word.
+  let namedMarks: string[] | undefined;
+  const isMarked = (word: string) => (namedMarks ??= loadMarks(env)).some((mark) => word.toLowerCase().includes(mark));
   const readFile = (path: string): FileRead => {
     let full = path;
     if (path.startsWith('~')) {
@@ -1295,7 +1304,7 @@ export function checkPost(
       full = `${home}/${path.slice(2)}`;
     }
     if (!isAbsolute(full) && cwd === null) return 'unsure';
-    if (files?.movesFolder && full.split(/[\\/]/).includes('..')) return { saw: 'a `cd` before a path with `..`' };
+    if (files?.movesFolder && full.split(/[\\/]/).includes('..')) return { saw: { what: 'a `cd` before a path with `..`' } };
     const at = isAbsolute(full) || !cwd ? full : `${cwd}/${full}`;
     let stat: ReturnType<typeof statSync> | null = null;
     try {
@@ -1311,7 +1320,10 @@ export function checkPost(
       return isReadable ? { texts: [files.heredoc.text, readFileSync(at, 'utf8')] } : 'unsure';
     }
     if (stat === null) return 'missing';
-    if (files?.mayWrite) return files.saw ? { saw: files.saw } : 'unsure';
+    if (files?.mayWrite) {
+      const risk = files.saw?.(isMarked);
+      return risk ? { saw: risk } : 'unsure';
+    }
     return isReadable ? { texts: [readFileSync(at, 'utf8')] } : 'skip';
   };
   const posted = postedPieces(gh, readFile, command);
@@ -1323,8 +1335,8 @@ export function checkPost(
     const { saw } = posted;
     const what = !posted.unsure
       ? `yokoten can't find the file after ${posted.missing} to check it: the file doesn't exist yet when the guard runs`
-      : `yokoten can't tell what the file after ${posted.missing} will hold: the guard runs before the command, and ${saw ? `${saw} in this command` : 'this command'} may change the file or where it is`;
-    const fix = `${saw ? `leave out ${saw}, or ` : ''}write the file in one command, then post it in the next, and give its full path`;
+      : `yokoten can't tell what the file after ${posted.missing} will hold: the guard runs before the command, and ${saw ? `${saw.what} in this command` : 'this command'} may change the file or where it is`;
+    const fix = `${saw ? `${saw.fix ?? `leave out ${saw.what}`}, or ` : ''}write the file in one command, then post it in the next, and give its full path`;
     return finding('unreadable-command', what, fix, {
       why: 'the privacy check reads a body before it is posted, and an unread one could hold anything',
     });
