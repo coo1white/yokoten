@@ -13,27 +13,34 @@ import {
 import { DEFAULTS } from '../../src/rules/config.ts';
 import { guardDeadline, judge, startGuard } from '../../src/run/hook.ts';
 
-test('hook: blocks with exit 2 and a reason, allows with exit 0', () => {
+test('hook: blocks with exit 2 and a reason, allows with exit 0', async () => {
   const sandbox = makeSandbox();
-  const call = (tool_input: object, extra?: Record<string, string>) => sandbox.run(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input }), extra });
-  let result = call({ command: 'git push --tags' });
+  const tool = (tool_input: object) => JSON.stringify({ cwd: sandbox.repo, tool_input });
+  const call = (tool_input: object, extra?: Record<string, string>) => sandbox.call(['hook'], { input: tool(tool_input), extra });
+  // The entry, on a child (#475): exit 2 with the reason, and exit 0, through the real binary.
+  let child = sandbox.run(['hook'], { input: tool({ command: 'git push --tags' }) });
+  assert.equal(child.status, 2);
+  assert.match(child.stderr, /owner decides when to release/);
+  child = sandbox.run(['hook'], { input: tool({ command: 'git status' }) });
+  assert.equal(child.status, 0);
+  let result = await call({ command: 'git push --tags' });
   assert.equal(result.status, 2);
   assert.match(result.stderr, /owner decides when to release/);
-  assert.equal(call({ command: 'git status' }).status, 0);
+  assert.equal((await call({ command: 'git status' })).status, 0);
   // A heredoc body is data, unless a shell reads it (#105).
-  assert.equal(call({ command: "ego-browser nodejs <<'EOF'\nawait page.fill('#q', 'npm publish');\nEOF" }).status, 0);
-  assert.equal(call({ command: 'bash <<EOF\nnpm publish\nEOF' }).status, 2);
-  assert.equal(call({ file_path: join(sandbox.repo, 'AGENTS.md') }).status, 0);
-  result = call({ file_path: join(sandbox.repo, 'AGENTS.md') }, { YOKOTEN_ROLE: 'worker' });
+  assert.equal((await call({ command: "ego-browser nodejs <<'EOF'\nawait page.fill('#q', 'npm publish');\nEOF" })).status, 0);
+  assert.equal((await call({ command: 'bash <<EOF\nnpm publish\nEOF' })).status, 2);
+  assert.equal((await call({ file_path: join(sandbox.repo, 'AGENTS.md') })).status, 0);
+  result = await call({ file_path: join(sandbox.repo, 'AGENTS.md') }, { YOKOTEN_ROLE: 'worker' });
   assert.equal(result.status, 2);
   assert.match(result.stderr, /lead-only/);
   // A worker subagent is a worker even in a lead session.
-  result = sandbox.run(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, agent_type: 'worker', tool_input: { file_path: 'CLAUDE.md' } }) });
+  result = await sandbox.call(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, agent_type: 'worker', tool_input: { file_path: 'CLAUDE.md' } }) });
   assert.equal(result.status, 2);
   // The user-level guard leaves files to the project.
-  result = sandbox.run(['hook', '--commands-only'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: { file_path: 'CLAUDE.md' } }), extra: { YOKOTEN_ROLE: 'worker' } });
+  result = await sandbox.call(['hook', '--commands-only'], { input: tool({ file_path: 'CLAUDE.md' }), extra: { YOKOTEN_ROLE: 'worker' } });
   assert.equal(result.status, 0);
-  assert.equal(sandbox.run(['hook'], { input: 'not json' }).status, 0);
+  assert.equal((await sandbox.call(['hook'], { input: 'not json' })).status, 0);
 });
 
 // #408: the hook starts the guard's worker before it reads the call, so the two overlap.
@@ -57,23 +64,23 @@ test('hook: a guard started before the call judges it as judge does; one never u
 
 // The runtimes let a tool call through when the hook runs past their timeout, so a guard
 // that reads too long is stopped and the call refused (#274).
-test('hook: past the deadline the call is refused, in text and JSON (#274)', () => {
+test('hook: past the deadline the call is refused, in text and JSON (#274)', async () => {
   const sandbox = makeSandbox();
   const input = JSON.stringify({ cwd: sandbox.repo, tool_input: { command: `npm run build -- ${'--flag value '.repeat(200)}` } });
   const late = { YOKOTEN_GUARD_DEADLINE_MS: '1' };
-  let result = sandbox.run(['hook'], { input, extra: late });
+  let result = await sandbox.call(['hook'], { input, extra: late });
   assert.equal(result.status, 2);
   assert.match(result.stderr, /^yokoten: the guard took longer than 1 ms to read this command\. .*Split the command into smaller ones\./);
-  result = sandbox.run(['hook', '--json'], { input, extra: late });
+  result = await sandbox.call(['hook', '--json'], { input, extra: late });
   assert.equal(result.status, 2);
   const out = JSON.parse(result.stdout);
   assert.equal(out.blocked, true);
   assert.equal(out.finding.id, 'unreadable-command');
   // The default deadline: a plain command passes, and the guard still blocks.
-  const call = (command: string) => sandbox.run(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: { command } }) });
-  assert.equal(call('ls').status, 0);
-  assert.equal(call('git push --force origin main').status, 2);
-  assert.equal(sandbox.run(['hook'], { input, extra: { YOKOTEN_GUARD_DEADLINE_MS: 'soon' } }).status, 0, 'a bad value keeps the default');
+  const call = (command: string) => sandbox.call(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: { command } }) });
+  assert.equal((await call('ls')).status, 0);
+  assert.equal((await call('git push --force origin main')).status, 2);
+  assert.equal((await sandbox.call(['hook'], { input, extra: { YOKOTEN_GUARD_DEADLINE_MS: 'soon' } })).status, 0, 'a bad value keeps the default');
   // The setting can never turn the deadline off, nor set a timer Node can't hold.
   for (const [value, ms] of [['', 5000], ['0', 5000], ['-5', 5000], ['0x10', 5000], ['1e9', 5000], ['2.5', 5000], ['Infinity', 5000], ['250', 250], ['90000', 30_000], ['3000000000', 30_000]] as const) {
     assert.equal(guardDeadline(value), ms, `YOKOTEN_GUARD_DEADLINE_MS=${value}`);
@@ -86,67 +93,68 @@ test('hook: a command the guard reads too slowly is refused within the deadline 
   // the busy worker is stopped and the hook exits at once, in little memory. The deadline's
   // own message proves it fired; the test reads no clock, which a loaded machine slows (#436).
   const input = JSON.stringify({ cwd: sandbox.repo, tool_input: { command: `find . ${'-exec env '.repeat(30000)}` } });
+  // A child, not in-process (#475): the heap limit is node's option, as the hook config runs it.
   const result = runChild('node', ['--max-old-space-size=256', CLI, 'hook'], { cwd: sandbox.repo, env: { ...sandbox.env, YOKOTEN_GUARD_DEADLINE_MS: '1' }, input });
   assert.equal(result.status, 2);
   assert.match(result.stderr, /took longer than 1 ms/);
 });
 
 // The Stop event is shaped as Claude Code's hook docs show it (code.claude.com/docs/en/hooks#stop).
-test('hook: bad JSON in yokoten.json gives the defaults and one line, and check still fails (#218)', () => {
+test('hook: bad JSON in yokoten.json gives the defaults and one line, and check still fails (#218)', async () => {
   const sandbox = makeSandbox();
   sandbox.write('yokoten.json', '{ "layout": ');
-  const call = (command: string) => sandbox.run(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: { command } }) });
+  const call = (command: string) => sandbox.call(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: { command } }) });
   const line = /^yokoten hook: yokoten\.json was ignored, so the defaults apply; the core checks still run\. yokoten\.json: [^\n]+\n/;
-  let result = call('git push --force');
+  let result = await call('git push --force');
   assert.equal(result.status, 2, result.stderr);
   assert.match(result.stderr, line);
   assert.match(result.stderr, /\nyokoten: [^\n]*force/);
   assert.ok(!result.stderr.includes(sandbox.repo), 'no absolute path');
-  result = call('git status');
+  result = await call('git status');
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stderr, line);
   assert.equal(result.stderr.split('\n').filter(Boolean).length, 1, 'one line');
   // check and doctor still see a config problem.
-  result = sandbox.run(['check']);
+  result = await sandbox.call(['check']);
   assert.equal(result.status, 1);
   assert.match(result.stdout + result.stderr, /yokoten\.json:/);
 });
 
-test('hook: a key with the wrong shape gets its default and one line; check names the key; an unknown key is a note (#228)', () => {
+test('hook: a key with the wrong shape gets its default and one line; check names the key; an unknown key is a note (#228)', async () => {
   const sandbox = makeSandbox();
   // Positive control: before #228, this made the hook crash on an edit (exit 1, guard open).
   sandbox.write('yokoten.json', '{ "leadOnly": "x" }');
-  const call = (toolInput: Record<string, string>) => sandbox.run(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: toolInput }), extra: { YOKOTEN_ROLE: 'worker' } });
+  const call = (toolInput: Record<string, string>) => sandbox.call(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: toolInput }), extra: { YOKOTEN_ROLE: 'worker' } });
   const line = /^yokoten hook: yokoten\.json "leadOnly" was ignored, so its default applies; the core checks still run\. yokoten\.json: "leadOnly" must be a list of text, such as [^\n]+\n/;
   for (const toolInput of [{ file_path: 'AGENTS.md' }, { command: 'git push --force' }] as Record<string, string>[]) {
-    const result = call(toolInput);
+    const result = await call(toolInput);
     assert.equal(result.status, 2, result.stderr);
     assert.match(result.stderr, line);
     assert.equal(result.stderr.match(/^yokoten hook:/gm)?.length, 1, 'one line');
   }
-  let result = sandbox.run(['check']);
+  let result = await sandbox.call(['check']);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /^yokoten check: yokoten\.json: "leadOnly" must be a list of text/);
   // An unknown key is a note, and check passes.
   sandbox.write('yokoten.json', '{ "colour": "blue" }');
-  result = sandbox.run(['check']);
+  result = await sandbox.call(['check']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^yokoten check: note: yokoten\.json: "colour" is not a key this version of yokoten knows/m);
-  assert.equal(call({ command: 'git status' }).stderr, '', 'the hook says nothing');
+  assert.equal((await call({ command: 'git status' })).stderr, '', 'the hook says nothing');
   // Every wrong key in one run.
   sandbox.write('yokoten.json', '{ "leadOnly": "x", "tests": 5, "notNow": null }');
-  result = sandbox.run(['check']);
+  result = await sandbox.call(['check']);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /^yokoten check: yokoten\.json: 2 keys have the wrong shape:\n- "tests" must be [^\n]+\n- "leadOnly" must be /);
 });
 
-test('hook: a repo reached through a symlink gets the same file rules (#1)', () => {
+test('hook: a repo reached through a symlink gets the same file rules (#1)', async () => {
   const sandbox = makeSandbox();
   const link = join(sandbox.home, 'link');
   symlinkSync(sandbox.repo, link);
-  const call = (file_path: string) => sandbox.run(['hook'], { input: JSON.stringify({ cwd: link, tool_input: { file_path } }), extra: { YOKOTEN_ROLE: 'worker' } });
-  assert.equal(call(join(link, 'AGENTS.md')).status, 2, 'absolute path through the link');
-  assert.equal(call('AGENTS.md').status, 2, 'relative to a cwd through the link');
-  assert.equal(call(join(link, '.github', 'new', 'x.yml')).status, 2, 'a file in a folder that does not exist yet');
-  assert.equal(call(join(sandbox.home, 'elsewhere.md')).status, 0, 'outside the repo');
+  const call = (file_path: string) => sandbox.call(['hook'], { input: JSON.stringify({ cwd: link, tool_input: { file_path } }), extra: { YOKOTEN_ROLE: 'worker' } });
+  assert.equal((await call(join(link, 'AGENTS.md'))).status, 2, 'absolute path through the link');
+  assert.equal((await call('AGENTS.md')).status, 2, 'relative to a cwd through the link');
+  assert.equal((await call(join(link, '.github', 'new', 'x.yml'))).status, 2, 'a file in a folder that does not exist yet');
+  assert.equal((await call(join(sandbox.home, 'elsewhere.md'))).status, 0, 'outside the repo');
 });

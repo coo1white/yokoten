@@ -51,8 +51,11 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
   writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
   const path = { PATH: `${bin}:${process.env.PATH}` };
   const bot = { ...path, YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
-  // Not spawnSync: the server must answer while the CLI runs.
-  const run = (command: string[], extra: Record<string, string> = bot, before: string[] = []) =>
+  // In this process (#475): the server answers while the command runs.
+  const run = (command: string[], extra: Record<string, string> = bot, before: string[] = []) => sandbox.call(['bot', ...before, '--', ...command], { extra });
+  // The entry, on a child (#475): exit code and output through the real binary. Not spawnSync:
+  // the server must answer while the CLI runs.
+  const viaChild = (command: string[], extra: Record<string, string> = bot, before: string[] = []) =>
     new Promise<{ status: number | null; stderr: string }>((done) => {
       const child = spawn('node', [CLI, 'bot', ...before, '--', ...command], { cwd: sandbox.repo, env: { ...sandbox.env, ...extra } });
       let stderr = '';
@@ -132,12 +135,12 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
     assert.equal(requests.length, good.length * 2, 'one installation lookup and one token per run');
 
     // bot has no options of its own (#203): one before `--` is refused, and nothing runs.
-    const unknown = await run(['echo'], bot, ['--x']);
+    const unknown = await viaChild(['echo'], bot, ['--x']);
     assert.deepEqual([unknown.status, unknown.stderr], [1, 'yokoten bot: unknown option --x. Run `yokoten bot --help`.\n']);
     assert.equal(ran().length, good.length, 'gh did not run');
     assert.equal(requests.length, good.length * 2, 'no token was asked for');
     // Everything after `--` is the command's, passed on unchanged.
-    const passed = await run(['gh', '--anything', 'issue', 'list']);
+    const passed = await viaChild(['gh', '--anything', 'issue', 'list']);
     assert.equal(passed.status, 0, passed.stderr);
     assert.deepEqual(ran().at(-1), { args: ['--anything', 'issue', 'list'], token: 'ghs_test' });
     // --help after `--` is the command's own (#207): gh runs, and yokoten prints no help.
@@ -213,21 +216,14 @@ test('bot: a pull request body CI would refuse is refused locally, with CI\'s me
   const key = join(sandbox.home, 'bot.pem');
   writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
   const bot = { PATH: `${bin}:${process.env.PATH}`, YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
-  const run = (command: string[], input = '') =>
-    new Promise<{ status: number | null; stderr: string }>((done) => {
-      const child = spawn('node', [CLI, 'bot', '--', ...command], { cwd: sandbox.repo, env: { ...sandbox.env, ...bot } });
-      let stderr = '';
-      child.stderr.on('data', (chunk) => (stderr += chunk));
-      child.on('close', (status) => done({ status, stderr }));
-      child.stdin.end(input);
-    });
+  const run = (command: string[], input = '') => sandbox.call(['bot', '--', ...command], { input, extra: bot });
   // What `check --pr` says in CI about the same body on the same branch, under its first line.
-  const ciSays = (body: string) => {
+  const ciSays = async (body: string) => {
     const file = join(sandbox.home, 'event.json');
     const sha = (ref: string) => sandbox.git('rev-parse', ref).stdout.trim();
     const tier = /^tier: ([ABC])/.exec(body)?.[1] ?? 'A';
     writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat(kit): a', body, labels: [{ name: 'feat' }, { name: `tier ${tier}` }], milestone: { title: 'M0' }, base: { sha: sha('origin/main') }, head: { sha: sha('HEAD') } } }));
-    const r = sandbox.run(['check', '--pr'], { extra: { GITHUB_EVENT_PATH: file } });
+    const r = await sandbox.call(['check', '--pr'], { extra: { GITHUB_EVENT_PATH: file } });
     return r.stderr.trim().split('\n').slice(1);
   };
   const good = 'tier: A\nCloses #1\n\n## Why\nx\n\n## What changed\nEvery project gets the new kit file on its next init.\n\n## How tested\nx\n';
@@ -237,12 +233,12 @@ test('bot: a pull request body CI would refuse is refused locally, with CI\'s me
     const [head, ...lines] = r.stderr.trim().split('\n');
     assert.equal(head, 'yokoten bot: 1 problem(s) in the body; nothing was sent. Fix the body and run it again:');
     assert.match(lines[0], id);
-    assert.deepEqual(lines, ciSays(body), 'the same message CI gives');
+    assert.deepEqual(lines, await ciSays(body), 'the same message CI gives');
     assert.deepEqual(ran(), [], `gh did not run: ${command.join(' ')}`);
   };
   try {
-    assert.deepEqual(ciSays(good), [], 'the good body passes in CI');
-    assert.equal(sandbox.run(['check', '--pr'], { extra: { GITHUB_EVENT_PATH: join(sandbox.home, 'event.json') } }).status, 0);
+    assert.deepEqual(await ciSays(good), [], 'the good body passes in CI');
+    assert.equal((await sandbox.call(['check', '--pr'], { extra: { GITHUB_EVENT_PATH: join(sandbox.home, 'event.json') } })).status, 0);
     // (a) tier B on a branch that changes a file CODEOWNERS owns.
     const tierB = good.replace('tier: A', 'tier: B');
     await refused(['gh', 'pr', 'create', '-t', 'feat(kit): a', '--body', tierB], tierB, /^- body: `tier: B`, and this changes 1 file\(s\) that CODEOWNERS owns \(read from the base branch\): src\/owned\.ts\./);
@@ -322,14 +318,7 @@ test('bot: a new pull request gets its type and tier labels; a contradicting one
   const key = join(sandbox.home, 'bot.pem');
   writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
   const bot = { PATH: `${bin}:${process.env.PATH}`, YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
-  const run = (command: string[], input = '') =>
-    new Promise<{ status: number | null; stderr: string }>((done) => {
-      const child = spawn('node', [CLI, 'bot', '--', ...command], { cwd: sandbox.repo, env: { ...sandbox.env, ...bot } });
-      let stderr = '';
-      child.stderr.on('data', (chunk) => (stderr += chunk));
-      child.on('close', (status) => done({ status, stderr }));
-      child.stdin.end(input);
-    });
+  const run = (command: string[], input = '') => sandbox.call(['bot', '--', ...command], { input, extra: bot });
   // The branch can't be compared with origin here, so each body check ends with this note.
   const note = 'yokoten bot: note: git can\'t compare HEAD with origin/main, so the body was checked without the changed files; CI checks the rest\n';
   const body = (tier: string) => `tier: ${tier}\nCloses #1\n\n## Why\nx\n\n## What changed\nx\n\n## How tested\nx\n`;
