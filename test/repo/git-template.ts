@@ -15,24 +15,14 @@ import { cpSync, existsSync } from 'node:fs';
 export function templateRepo(makeFolder: () => string, build: (dir: string) => void): (dest: string) => void {
   let template = '';
   return (dest) => {
-    // #516: one CI run (Node 22) got ENOENT inside this copy, in a test that did nothing else
-    // wrong, and no run since has shown it again. Node 22's cpSync lists a folder, then copies
-    // each entry, and fails if the template changed or went in between. So the template is only
-    // kept once it is fully built (a build that threw used to leave a half-made one to copy), and
-    // a copy that hits ENOENT starts again, with a new template if the old one is gone.
-    for (let attempt = 1; ; attempt++) {
-      try {
-        if (!template || !existsSync(template)) {
-          template = '';
-          const folder = makeFolder();
-          build(folder);
-          template = folder;
-        }
-        cpSync(template, dest, { recursive: true });
-        return;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || attempt === 3) throw error;
-      }
+    // The template is kept only once it is fully built: a build that threw used to leave a
+    // half-made one for later calls to copy (#516).
+    if (!template || !existsSync(template)) {
+      template = '';
+      const folder = makeFolder();
+      build(folder);
+      template = folder;
     }
+    cpSync(template, dest, { recursive: true });
   };
 }
