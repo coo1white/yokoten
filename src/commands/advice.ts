@@ -11,9 +11,12 @@ import { formatFinding } from '../rules/message.ts';
 import { hideHome } from '../rules/privacy.ts';
 import { draft, facts, table } from '../setup/advice/adopt.ts';
 import { explain, explainLines, ids } from '../setup/advice/explain.ts';
-import { blocksToSay, doctor, OUTPUT_STOP, type SessionStart, UNFILTERED } from '../setup/doctor.ts';
+import { blocksToSay, doctor, OUTPUT_STOP, SERVER_TIMEOUT_MS, type SessionStart, UNFILTERED } from '../setup/doctor.ts';
 import { READERS } from './hook.ts';
 import { type Invocation, noRootFinding, parse, print, printJson, requireRoot, rootOf, say, usage } from './shared.ts';
+
+/** What full doctor says while the slow reads run: the server read and (in WSL) the drive read. */
+const SLOW_READ_LINE = 'reading GitHub settings...';
 
 export function runDoctor(invocation: Invocation): number {
   const { env, cwd } = invocation;
@@ -24,7 +27,10 @@ export function runDoctor(invocation: Invocation): number {
   const session = options.flags.has('--session');
   const root = rootOf(cwd, invocation.env);
   const config = root ? loadConfig(root) : DEFAULTS;
-  const { ok, lines: allLines, blocks, report } = doctor(root, { env, config, session, gh: root ? ghIn(root, env) : undefined, fillMarks: !session });
+  // One line while the slow reads run. A session never reads the server, and --json
+  // keeps stdout to the report, so the line shows on a terminal only, in full doctor.
+  if (root && !session && !options.flags.has('--json') && invocation.stdout.isTTY === true) say(invocation, `${SLOW_READ_LINE}\n`, invocation.stdout);
+  const { ok, lines: allLines, blocks, report } = doctor(root, { env, config, session, gh: root ? ghIn(root, env, SERVER_TIMEOUT_MS) : undefined, fillMarks: !session });
   // Full doctor outside a repo says so (#205). A session there stays quiet: no noise in a non-repo folder.
   if (!root && !session) {
     const missing = noRootFinding(cwd, invocation.env);

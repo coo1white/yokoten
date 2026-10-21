@@ -1137,6 +1137,9 @@ export function listBoardSteps(server: ServerRead): string[] {
   return server.boards.flatMap((board) => BOARD_BY_HAND.map((step) => `  by hand     board "${board.title}": ${step}`));
 }
 
+/** How long full doctor waits for one GitHub read: past it, the server steps say they can't check, and why (#561). */
+export const SERVER_TIMEOUT_MS = 3000;
+
 /** Why the server can't be read in a repo with no origin remote; the road shows it once (#502). */
 const NO_REMOTE = 'there is no origin remote yet';
 const NO_REMOTE_FIX = 'run `git remote add origin <url>` with the url of the repo on your code host, then run `yokoten doctor` again';

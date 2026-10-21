@@ -36,6 +36,7 @@ import { launcherDir, machineStateFile, setUpLauncher } from '../../src/setup/in
 import {
   type BranchRules,
   type Gh,
+  ghIn,
   readPlanning,
   readServer,
   type ServerSettings,
@@ -68,6 +69,7 @@ import {
   readHostDisk,
   saveHostCache,
   selfTest,
+  SERVER_TIMEOUT_MS,
   SESSION_UNSAVED_BUDGET,
   sessionsDir,
   sessionUnsaved,
@@ -242,6 +244,25 @@ test('doctor: reads the server of a GitHub origin into the road; a step not done
   // A session never calls gh, so the server steps never hold its stage.
   const session = doctor(root, { env: { HOME: root, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, session: true, gh: () => { throw new Error('a session called gh'); } });
   assert.notEqual(session.report.next?.id, 'protection');
+});
+
+// #561: a server read that hangs stops at its time cap, and the step says why. The cap's
+// own message proves it fired; the test reads no clock, which a loaded machine slows (#436).
+test("doctor: a slow server read stops in time, and each step says it can't be checked and why (#561)", { skip: process.platform === 'win32' && 'a shell stub needs an execute bit' }, () => {
+  const dir = makeTempDir('yokoten-slow-gh-');
+  const stub = join(dir, 'gh');
+  // Answers the login read at once, and sleeps on every other read: only the server read is slow.
+  writeFileSync(stub, '#!/bin/sh\nfor word in "$@"; do if [ "$word" = user ]; then echo \'{"login":"octo"}\'; exit 0; fi; done\nexec /bin/sleep 30\n');
+  chmodSync(stub, 0o755);
+  const root = makeTempDir('yokoten-slow-server-');
+  execFileSync('git', ['init', '-q', root]);
+  execFileSync('git', ['remote', 'add', 'origin', `https://github.com/${REPO}.git`], { cwd: root });
+  const env = { HOME: root, YOKOTEN_TEMP_DIRS: '', PATH: `${dir}${delimiter}${process.env.PATH ?? ''}` };
+  const result = doctor(root, { env, config: DEFAULTS, gh: ghIn(root, env, SERVER_TIMEOUT_MS) });
+  for (const key of SERVER_KEYS) assert.equal(result.report.steps?.find((s) => s.id === key)?.mark, "can't check", key);
+  const line = result.lines.find((l) => /can't check/.test(l) && /protection/.test(l)) ?? '';
+  assert.match(line, /GitHub took too long to answer/, 'the cap fired, not the stub');
+  assert.match(line, /check the network, then run doctor again/);
 });
 
 // The steps that only the code host can judge (#504): on a host with no adapter, each says what it asks.
