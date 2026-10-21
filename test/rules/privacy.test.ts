@@ -1993,6 +1993,67 @@ test('hasMark: linear on long input (#434)', () => {
   ];
   for (const [name, make] of inputs) assertLinear(name, make, (text) => hasMark(text, FULL));
   for (const [name, make] of inputs) assertLinear(`camel: ${name}`, make, (text) => hasMark(text, NICK));
+  // The fold (#507): full-width letters, combining marks, zero-width characters.
+  const folded: [string, (n: number) => string][] = [
+    ['full-width letters', (n) => 'ｓ'.repeat(n)],
+    ['decomposed letters', (n) => 'é'.repeat(n / 2)],
+    ['one letter, many marks', (n) => `e${'́'.repeat(n)}`],
+    ['zero-width between letters', (n) => 's​'.repeat(n / 2)],
+  ];
+  for (const [name, make] of folded) assertLinear(`fold: ${name}`, make, (text) => hasMark(text, FULL));
+  for (const [name, make] of folded) assertLinear(`fold, redact: ${name}`, make, makeRedactor({ marks: [FULL] }, {}));
+});
+
+// ---- A mark is found in any Unicode form (#507) ----
+//
+// Made up, built from pieces. ACCENTED ends in é as one code point; DECOMPOSED is e plus U+0301.
+const ACCENTED = ['vel', 'é'].join('');
+const DECOMPOSED = ['vel', 'é'].join('');
+const WIDE = (text: string) => [...text].map((char) => String.fromCodePoint(char.codePointAt(0)! + 0xfee0)).join('');
+// A capital dotted I, whose lowercase is i plus U+0307: two code units for one.
+const DOTTED = ['İ', 'lvo'].join('');
+const DOTLESS = ['ı', 'lvo'].join('');
+
+test('hasMark and scanText: a mark is found in any Unicode form (#507)', () => {
+  const found = (text: string, mark: string) => hasMark(text, mark.toLowerCase()) && scanText(text, { file: 'a.md', marks: [mark.toLowerCase()] }).length === 1;
+  // Composed in the mark, decomposed in the text, and the other way round.
+  assert.ok(found(`by ${DECOMPOSED}.`, ACCENTED) && found(`by ${ACCENTED}.`, DECOMPOSED));
+  assert.ok(found(DECOMPOSED.toUpperCase(), ACCENTED));
+  assert.ok(!found(`${DECOMPOSED}x`, ACCENTED), 'still whole words');
+  // Full-width Latin, in the text or in the mark, either case.
+  for (const text of [`by ${WIDE(SHORT)}.`, WIDE(SHORT.toUpperCase()), `${WIDE(SHORT)}＿${WIDE('example')}`]) assert.ok(found(text, SHORT), `not found in ${text}`);
+  assert.ok(found(`by ${SHORT}.`, WIDE(SHORT)));
+  assert.ok(found(`${WIDE(SHORT)} example`, FULL));
+  assert.ok(!found(WIDE(`${SHORT}ple`), SHORT), 'still whole words');
+  // A zero-width space, joiner, non-joiner or word joiner, inside a word or between words.
+  for (const zero of ['​', '‌', '‍', '⁠']) {
+    assert.ok(found(`hi s${zero}am`, SHORT), `U+${zero.codePointAt(0)!.toString(16)} inside`);
+    assert.ok(found(`${SHORT}${zero}example`, FULL), `U+${zero.codePointAt(0)!.toString(16)} between`);
+    assert.ok(found(`${zero}${SHORT}${zero}`, SHORT), `U+${zero.codePointAt(0)!.toString(16)} around`);
+  }
+  // A domain, found as a part, folds too.
+  assert.ok(found(`mail.${WIDE(DOMAIN)}`, DOMAIN));
+  // Turkish dotted and dotless I: both sides are lowercased the same way.
+  for (const text of [DOTTED, `by ${DOTTED}.`, DOTTED.toUpperCase(), `${DOTTED.toLowerCase()}!`]) assert.ok(found(text, DOTTED), `not found in ${text}`);
+  assert.ok(found(`by ${DOTLESS}.`, DOTLESS));
+  assert.ok(!found(`${DOTTED}x`, DOTTED), 'still whole words');
+  // A line with no mark is not stopped.
+  assert.ok(!found(`by ${WIDE('other')} é`, SHORT));
+});
+
+test('makeRedactor: hides a mark in any Unicode form, and keeps the rest of the line as it was (#507)', () => {
+  const redact = makeRedactor({ owners: [FULL], marks: [ACCENTED, DOTTED.toLowerCase(), SHORT] }, {});
+  // The lowercase of each İ before a mark is two code units: the place to cut must still be right.
+  assert.equal(redact(`İİ ${DOTTED}, ${DOTTED.toUpperCase()} and ${DOTTED}\n`), 'İİ <mark>, <mark> and <mark>\n');
+  assert.equal(redact(`café by ${DECOMPOSED}, é ${ACCENTED}.`), 'café by <mark>, é <mark>.');
+  assert.equal(redact(`！ by ${WIDE(SHORT)} ！`), '！ by <mark> ！');
+  assert.equal(redact(`！ ${WIDE(SHORT)}​${WIDE('example')}!`), '！ <owner>!');
+  assert.equal(redact(`by s​am, ​ and s‍am.`), 'by <mark>, ​ and <mark>.');
+  assert.equal(redact(`${WIDE(SHORT)}ple é`), `${WIDE(SHORT)}ple é`, 'a longer word stays');
+  // The check and redact agree.
+  for (const text of [`by ${DECOMPOSED}`, WIDE(SHORT), `s​am`, DOTTED.toUpperCase(), `${WIDE(SHORT)}ple`, `${DOTTED}x`]) {
+    assert.equal(redact(text) === text, !scanText(text, { file: 'a', marks: [FULL, ACCENTED, DOTTED.toLowerCase(), SHORT] }).length, `redact and the check disagree on ${text}`);
+  }
 });
 
 // #523: a stopped line names the kind of mark, never its value, and how to change it.

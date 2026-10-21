@@ -616,6 +616,69 @@ export const EMAIL_FIX = 'use your GitHub noreply address, or a placeholder at e
 /** Whether an address found in text may point at a person: not a noreply, team, example or retina name. */
 export const isPersonalEmail = (hit: string, allow: string[] = []): boolean => !OK_EMAIL.some((re) => re.test(hit)) && !isForgeRemote(hit) && !RETINA.test(hit) && !allow.includes(hit);
 
+// ---- One form for marks and text (#507) ----
+//
+// The same letters can be written in more than one Unicode form: é as one code point or as
+// e plus a combining accent, full-width Latin (`ｓａｍ`), a zero-width space inside a word. The
+// check and `redact` fold the mark and the text the same way before they match: NFKC, then
+// no U+200B to U+200D or U+2060, then lowercase. The text keeps its case after the fold,
+// because a change from a small letter to a capital is an edge; its pattern ignores case
+// instead (`caseless`). Homoglyphs, such as a Cyrillic letter that looks Latin, stay out.
+
+const ZERO_WIDTH = /[\u200B-\u200D\u2060]/;
+const NON_ASCII = /[^\x00-\x7f]/;
+// A character that NFKC may join onto the one before it: a combining mark, a Hangul vowel or
+// final consonant, a half-width voicing mark. It is folded with that character.
+const JOINS_BEFORE = /^[\p{M}\u1160-\u11FF\uFF9E\uFF9F]/u;
+
+/**
+ * Text after the fold, case kept. `starts[i]` and `ends[i]` are where the piece of the
+ * original that gave code unit `i` starts and ends, so a match maps back to the original.
+ * Both are null when the fold changes nothing: the positions are the same.
+ */
+export interface FoldedText {
+  text: string;
+  starts: number[] | null;
+  ends: number[] | null;
+}
+
+/** The one fold of text, for the check and for `redact` (#507). A line of ASCII costs one test. */
+export function foldText(text: string): FoldedText {
+  if (!NON_ASCII.test(text) || (!ZERO_WIDTH.test(text) && text.normalize('NFKC') === text)) return { text, starts: null, ends: null };
+  let folded = '';
+  const starts: number[] = [];
+  const ends: number[] = [];
+  for (let start = 0; start < text.length; ) {
+    let end = start + (text.codePointAt(start)! > 0xffff ? 2 : 1);
+    if (ZERO_WIDTH.test(text[start])) {
+      start = end;
+      continue;
+    }
+    while (end < text.length && JOINS_BEFORE.test(text.slice(end, end + 2))) end += text.codePointAt(end)! > 0xffff ? 2 : 1;
+    const piece = text.slice(start, end).normalize('NFKC');
+    folded += piece;
+    for (let i = 0; i < piece.length; i++) {
+      starts.push(start);
+      ends.push(end);
+    }
+    start = end;
+  }
+  return { text: folded, starts, ends };
+}
+
+/** A mark as the check matches it: folded and lowercased (#507). */
+export const foldMark = (mark: string): string => foldText(mark.trim()).text.toLowerCase();
+
+/** One line folded for the check: the text with its case, and lowercased. Fold a line once, for all its marks. */
+export interface FoldedLine {
+  text: string;
+  lower: string;
+}
+export const foldLine = (line: string): FoldedLine => {
+  const { text } = foldText(line);
+  return { text, lower: text.toLowerCase() };
+};
+
 // ---- How a mark is found in text (#434) ----
 //
 // A mark made of letters and spaces is a name or a place: it is found as whole words, so
@@ -640,8 +703,16 @@ const NAME_START = String.raw`(?:(?<!${LETTER})|(?<=\\[ntrbf])|(?<=\\u[0-9A-Fa-f
 const NAME_END = String.raw`(?:(?!${LETTER})|(?<=\p{Ll})(?=\p{Lu}))`;
 const NAME_JOINER = String.raw`[\s._-]*`;
 
-/** A value as a pattern that matches it in any case, with no `i` flag, so the edges can tell a capital from a small letter. */
-const caseless = (value: string): string =>
+// The lowercase of the capital İ (U+0130) is two code units: i and a combining dot above.
+const DOTTED_I = 'i\u0307';
+const DOTTED_I_PATTERN = '(?:[iI]\u0307|\u0130)';
+
+/**
+ * A lowercased value as a pattern that matches it in any case, with no `i` flag, so the
+ * edges can tell a capital from a small letter. A dotted i also matches İ (#507).
+ */
+const caseless = (value: string): string => value.split(DOTTED_I).map(caselessPart).join(DOTTED_I_PATTERN);
+const caselessPart = (value: string): string =>
   [...value]
     .map((char) => {
       const [low, up] = [char.toLowerCase(), char.toUpperCase()];
@@ -652,25 +723,30 @@ const caseless = (value: string): string =>
 
 /** The words of a mark found as whole words, or null for a mark found as a part. */
 function nameWords(mark: string): string[] | null {
-  const words = mark.trim().toLowerCase().split(/\s+/);
+  const words = mark.split(/\s+/);
   return NAME_SHAPED.test(words.join(' ')) && !JOINED_SCRIPT.test(mark) ? words : null;
 }
 
-/** The one pattern for a mark, for the check and for `redact` (use flag `u`, never `i`). */
+/** The one pattern for a mark, for the check and for `redact` (use flag `u`, never `i`). It matches text folded by `foldText`. */
 export function markPattern(mark: string): string {
-  const words = nameWords(mark);
-  return words ? `${NAME_START}${words.map(caseless).join(NAME_JOINER)}${NAME_END}` : caseless(mark.trim().toLowerCase());
+  const value = foldMark(mark);
+  const words = nameWords(value);
+  return words ? `${NAME_START}${words.map(caseless).join(NAME_JOINER)}${NAME_END}` : caseless(value);
 }
 
 /** Each mark's test, made once per process: the scan runs it on every line. */
 const markTests = new Map<string, (text: string, lower: string) => boolean>();
 
-/** Whether `text` holds `mark` (lowercased, as `loadMarks` gives it). `lower` is `text` lowercased, when the caller has it. The one test every scan uses. */
-export function hasMark(text: string, mark: string, lower: string = text.toLowerCase()): boolean {
+/**
+ * Whether `text` holds `mark`, in any Unicode form (#507). `folded` is `foldLine(text)`,
+ * when the caller has it: a scan folds each line once, for all its marks. The one test every scan uses.
+ */
+export function hasMark(text: string, mark: string, folded: FoldedLine = foldLine(text)): boolean {
   let test = markTests.get(mark);
   if (!test) {
-    const words = nameWords(mark);
-    if (!words) test = (_, low) => low.includes(mark);
+    const value = foldMark(mark);
+    const words = nameWords(value);
+    if (!words) test = (_, low) => low.includes(value);
     else {
       const pattern = new RegExp(markPattern(mark), 'u');
       // The first word as a part comes first: most lines have none, and includes is fast.
@@ -678,7 +754,7 @@ export function hasMark(text: string, mark: string, lower: string = text.toLower
     }
     markTests.set(mark, test);
   }
-  return test(text, lower);
+  return test(folded.text, folded.lower);
 }
 
 // ---- What a stopped mark is (#523) ----
@@ -736,10 +812,10 @@ export function scanText(
       if (octets.some((n) => n > 255) || OK_IP.some((re) => re.test(hit)) || allow.includes(hit) || isSectionNumber(line, index, hit)) continue;
       problems.push(finding('ip', 'an IP address', 'use a placeholder from 192.0.2.0/24', where));
     }
-    const lower = line.toLowerCase();
+    const folded = stopped.length ? foldLine(line) : null;
     for (const mark of stopped) {
       // The mark itself is never printed: the output may land in a CI log or a chat.
-      if (!hasMark(line, mark, lower)) continue;
+      if (!hasMark(line, mark, folded!)) continue;
       if (places && logins.includes(mark) && !hasMark(places(line, index, mark), mark)) continue;
       const { what, fix } = describeMark(kinds && kinds.has(mark) ? kinds.get(mark) : undefined);
       problems.push(finding('private-mark', what, fix, where));
@@ -877,12 +953,29 @@ export function makeRedactor(hidden: Hidden, env: Env): (text: string) => string
   // One group per value, by the same pattern as the check (#434): a hit names its placeholder by its group.
   const pattern = values.length ? new RegExp(values.map((value) => `(${markPattern(value)})`).join('|'), 'gu') : null;
   const placeholders = values.map((value) => placeholderOf.get(value) ?? PLACEHOLDERS.mark);
+  const placeholderFor = (groups: unknown[]) => placeholders[groups.slice(0, values.length).findIndex((group) => group !== undefined)] ?? PLACEHOLDERS.mark;
+  // The marks are found in the folded text (#507), and each hit replaces the pieces of the original it came from.
+  const hideMarks = (text: string) => {
+    if (!pattern) return text;
+    const { text: folded, starts, ends } = foldText(text);
+    if (!starts || !ends) return text.replace(pattern, (...groups: unknown[]) => placeholderFor(groups.slice(1)));
+    let out = '';
+    let last = 0;
+    for (const hit of folded.matchAll(pattern)) {
+      // Two hits in one piece (a ligature, say) hide that piece once.
+      const end = ends[hit.index + hit[0].length - 1];
+      if (end <= last) continue;
+      const start = Math.max(last, starts[hit.index]);
+      out += text.slice(last, start) + placeholderFor(hit.slice(1));
+      last = end;
+    }
+    return out + text.slice(last);
+  };
   const hideSecrets = makeSecretHider();
   return (text) => {
     // An SSH remote at a private host (git@host) names the host, not a person.
-    let out = hideSecrets(text).replace(EMAIL, (hit) => (!isPersonalEmail(hit) ? hit : /^git@/i.test(hit) ? `git@${PLACEHOLDERS.host}` : PLACEHOLDERS.email));
-    out = hideHome(out, env);
-    return pattern ? out.replace(pattern, (...groups: unknown[]) => placeholders[groups.slice(1, values.length + 1).findIndex((group) => group !== undefined)] ?? PLACEHOLDERS.mark) : out;
+    const out = hideSecrets(text).replace(EMAIL, (hit) => (!isPersonalEmail(hit) ? hit : /^git@/i.test(hit) ? `git@${PLACEHOLDERS.host}` : PLACEHOLDERS.email));
+    return hideMarks(hideHome(out, env));
   };
 }
 
@@ -1190,7 +1283,10 @@ const postFix = (f: Finding) =>
 
 /** A file's path as a finding may show it: home as `~`, and only its name, or no name, when the path holds a mark. */
 function shownPath(path: string, env: Env, marks: string[]): string {
-  const holdsMark = (text: string) => marks.some((mark) => hasMark(text, mark));
+  const holdsMark = (text: string) => {
+    const folded = foldLine(text);
+    return marks.some((mark) => hasMark(text, mark, folded));
+  };
   const shown = hideHome(path, env);
   if (!holdsMark(shown)) return shown;
   const name = basename(shown);
