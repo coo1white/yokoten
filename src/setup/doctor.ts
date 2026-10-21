@@ -178,10 +178,20 @@ export function agentHooks(root: string, env: Env, platform: string = process.pl
     (geminiState && handAddPractice('gemini-hook', '.gemini/settings.json', [geminiState.guard, geminiState.stop])) ??
       practice('gemini-hook', 'gemini-hook', geminiGuard && geminiStop, missing(geminiGuard, geminiStop, '.gemini/settings.json'), '`yokoten init` adds it'),
     antigravityPractice(antigravity.projectHookState(root, hookCliPath(root))),
-    trustedHooksPractice('muse-hook', 'Muse Code', '.muse/hooks.json', muse.projectHooksState(root, hookCliPath(root)), () => muse.readTrust(root, env), muse.TRUST_STEP),
+    ...museLine(root, env),
     trustedHooksPractice('grok-hook', 'Grok CLI', grok.HOOKS_FILE, grok.projectHooksState(root, hookCliPath(root)), () => grok.readTrust(root, env), grok.TRUST_STEP),
     platform === 'win32' ? practice('deepseek-harness-hook', 'deepseek-harness-hook', false, dsh.WINDOWS_GAP, 'nothing to do yet: issue #332 adds a PowerShell guard') : dshPractice(dsh.projectHooksState(root, hookCliPath(root)), dsh.profilesWithBridge(env)),
   ];
+}
+
+/**
+ * Muse Code's line. An untrusted folder with the hooks in place is a step on the road
+ * (`tool-hook`, #554), so it gets no second line here.
+ */
+function museLine(root: string, env: Env): Practice[] {
+  const states = muse.projectHooksState(root, hookCliPath(root));
+  if (states.guard === 'same' && states.stop === 'same' && muse.isGuardOff(root, env)) return [];
+  return [trustedHooksPractice('muse-hook', 'Muse Code', '.muse/hooks.json', states, () => muse.readTrust(root, env), muse.TRUST_STEP)];
 }
 
 /** Antigravity CLI's guard in .agents/hooks.json: one hook, no stop check (its Stop event has no `stop_hook_active`). */

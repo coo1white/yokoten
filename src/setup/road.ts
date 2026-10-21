@@ -20,6 +20,7 @@ import { CHANGES_DIR, parseCodeOwners } from '../rules/pr.ts';
 import { BUILD_DIRS, isBuildOutput } from '../rules/layout.ts';
 import { homeOf } from '../rules/privacy.ts';
 import { hasPlugin, hasProjectHook } from '../agents/runtimes/claude-code.ts';
+import { isGuardOff, TRUST_FIX } from '../agents/runtimes/muse.ts';
 import { type CommandTest, commitCheckLine, runs } from '../run/cli.ts';
 import { isNoAdapter } from '../host/hosts.ts';
 import { CODEOWNERS_PLACES, hasBot, KEYS_FILE, missingBotSetup, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
@@ -731,11 +732,11 @@ export const ROAD: Step[] = [
   {
     stage: 1,
     key: 'tool-hook',
-    check: (root) => hasProjectHook(root),
-    what: () => 'no tool-call guard in .claude/settings.json',
-    fix: () => '`yokoten init` adds it',
+    check: (root, env) => hasProjectHook(root) && !isGuardOff(root, env),
+    what: (root, env) => (hasProjectHook(root) && isGuardOff(root, env) ? 'the guard is off in Muse Code until you trust this folder' : 'no tool-call guard in .claude/settings.json'),
+    fix: (root, env) => (hasProjectHook(root) && isGuardOff(root, env) ? TRUST_FIX : '`yokoten init` adds it'),
     why: 'the guard stops a risky command, like a force push, before the agent runs it',
-    how: '.claude/settings.json has a PreToolUse hook that runs `yokoten hook`',
+    how: '.claude/settings.json has a PreToolUse hook that runs `yokoten hook`. With a .muse/hooks.json, Muse Code must also trust the folder: doctor reads its trust.json, read-only',
   },
   {
     stage: 1,

@@ -188,7 +188,7 @@ export const COMMANDS: Command[] = [
     options: [
       { name: '--session', text: 'only the next step, for the start of a session' },
       { name: '--json', text: 'the report as JSON on stdout' },
-      { name: '--agent', value: 'name', text: 'with --session: claude-code (the default), codex, or gemini for Gemini CLI JSON' },
+      { name: '--agent', value: 'name', text: 'with --session: claude-code (the default), codex, muse, or gemini for Gemini CLI JSON' },
     ],
     example: 'yokoten doctor --session',
   },

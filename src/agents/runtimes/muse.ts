@@ -51,13 +51,18 @@ const guardArgs = (root: string, cli: string) =>
   [projectHooks(root), 'PreToolUse', MATCHER, guardCommand(at(cli), 'hook --agent muse', missingProjectRuntime(cli), { isToolCall: true })] as const;
 const stopArgs = (root: string, cli: string) => [projectHooks(root), 'Stop', undefined, guardCommand(at(cli), 'hook --stop --agent muse', missingProjectRuntime(cli))] as const;
 
+// Muse 1.4.11 runs a SessionStart hook and gives its output to the model (#556), as Claude Code does.
+const sessionArgs = (root: string, cli: string) =>
+  [projectHooks(root), 'SessionStart', undefined, guardCommand(at(cli), 'doctor --session --agent muse', missingProjectRuntime(cli), { isSessionStart: true })] as const;
+
 /**
- * Write the tool-call guard and the stop check into `.muse/hooks.json`, keeping every
- * other hook. A file yokoten can't edit throws `UnreadableHooksFile` and stays as it was.
+ * Write the session doctor, the tool-call guard and the stop check into `.muse/hooks.json`,
+ * keeping every other hook. A file yokoten can't edit throws `UnreadableHooksFile` and
+ * stays as it was.
  */
-export function addProjectHooks(root: string, cli: string): { guard: Added; stop: Added } {
-  checkHooksFile(projectHooks(root), ['PreToolUse', 'Stop']);
-  return { guard: addHook(...guardArgs(root, cli)), stop: addHook(...stopArgs(root, cli)) };
+export function addProjectHooks(root: string, cli: string): { guard: Added; stop: Added; doctor: Added } {
+  checkHooksFile(projectHooks(root), ['PreToolUse', 'Stop', 'SessionStart']);
+  return { guard: addHook(...guardArgs(root, cli)), stop: addHook(...stopArgs(root, cli)), doctor: addHook(...sessionArgs(root, cli)) };
 }
 
 /** What `addProjectHooks` would do, read-only, for each hook (see `hookState`). */
@@ -77,6 +82,21 @@ export const projectHooksState = (root: string, cli: string): { guard: HookState
 
 /** The one step that makes Muse run the project's hooks. */
 export const TRUST_STEP = 'run `muse` in this folder and choose "Trust and continue"';
+
+/** The fix when the guard is off: both ways to trust a folder (#554). */
+export const TRUST_FIX = `${TRUST_STEP}, or pass \`--trust-workspace\` to \`muse exec\``;
+
+/**
+ * Whether the project's Muse guard is off because the folder is not trusted (#554). True
+ * when .muse/hooks.json is there and Muse's trust store does not list the folder, or is not
+ * there at all. False when Muse looks unused on this machine (no config folder), or when the
+ * store can't be read: doctor can't tell, and says so as a note.
+ */
+export function isGuardOff(root: string, env: Env): boolean {
+  if (!existsSync(projectHooks(root))) return false;
+  const { state } = readTrust(root, env);
+  return state === 'untrusted' || state === 'no store';
+}
 
 /** Whether Muse trusts the project at `root`, from its trust store. Read-only. */
 export function readTrust(root: string, env: Env): FolderTrust {

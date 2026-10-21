@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { addProjectHooks, projectHooksState, readToolCall, readTrust } from '../../../src/agents/runtimes/muse.ts';
+import { addProjectHooks, isGuardOff, projectHooksState, readToolCall, readTrust } from '../../../src/agents/runtimes/muse.ts';
 import { makeSandbox } from '../../repo/helpers.ts';
 
 /** Write Muse's trust store in `home`, in the shape Muse Code 1.4.10 saved it (#341). */
@@ -73,6 +73,7 @@ test('muse project hooks: init writes the guard and the stop check, keeps other 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /added the Muse Code tool-call hook in \.muse\/hooks\.json/);
   assert.match(result.stdout, /added the Muse Code stop check in \.muse\/hooks\.json/);
+  assert.match(result.stdout, /added the Muse Code session doctor in \.muse\/hooks\.json/);
   assert.match(result.stdout, /Muse Code runs the hooks in \.muse\/hooks\.json only after you trust this folder/);
   const written = JSON.parse(readFileSync(file, 'utf8'));
   assert.equal(written.hooks.PreToolUse.length, 2, "another hook's group stays");
@@ -80,6 +81,9 @@ test('muse project hooks: init writes the guard and the stop check, keeps other 
   assert.match(written.hooks.PreToolUse[1].hooks[0].command, /"\$\(git rev-parse --show-toplevel\)\/\.yokoten\/bin\/yokoten\.mjs" hook --agent muse 2>&1/);
   assert.match(written.hooks.Stop[0].hooks[0].command, /hook --stop --agent muse$/);
   assert.deepEqual(projectHooksState(sandbox.repo, cli), { guard: 'same', stop: 'same' });
+  assert.equal(written.hooks.SessionStart.length, 1);
+  assert.match(written.hooks.SessionStart[0].hooks[0].command, /"\$\(git rev-parse --show-toplevel\)\/\.yokoten\/bin\/yokoten\.mjs" doctor --session --agent muse$/);
+  assert.equal(written.hooks.SessionStart[0].matcher, undefined);
   // The hooks are in place, and Muse looks unused here: no trust line (#341).
   assert.match((await sandbox.call(['doctor'])).stdout, /ok +muse-hook: \.muse\/hooks\.json is in place; trust not checked, no ~\/\.config\/muse\n/);
   trustFolder(sandbox.home, realpathSync(sandbox.repo));
@@ -89,7 +93,7 @@ test('muse project hooks: init writes the guard and the stop check, keeps other 
   sandbox.write('.muse/hooks.json', JSON.stringify(written));
   assert.equal(projectHooksState(sandbox.repo, cli).stop, 'updated');
   assert.match((await sandbox.call(['doctor'])).stdout, /note +muse-hook: the hooks in \.muse\/hooks\.json are out of date/);
-  assert.deepEqual(addProjectHooks(sandbox.repo, cli), { guard: 'same', stop: 'updated' });
+  assert.deepEqual(addProjectHooks(sandbox.repo, cli), { guard: 'same', stop: 'updated', doctor: 'same' });
   sandbox.write('.muse/hooks.json', '{ not json');
   assert.match((await sandbox.call(['doctor'])).stdout, /note +muse-hook: can't read \.muse\/hooks\.json/);
   assert.throws(() => addProjectHooks(sandbox.repo, cli), /can't read/);
@@ -104,22 +108,31 @@ test('muse trust (#341): doctor says when Muse skips the hooks; ok only when tru
   // No Muse home: no trust line, and no claim that Muse trusts the folder.
   assert.doesNotMatch(await doctor(), /muse-hook: can't check|Muse Code skips/);
   assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'no home');
-  // A home without a store: can't check, never ok.
+  assert.match(await doctor(), /done +tool-hook\n/);
+  // A home without a store: the guard is off, and it is a step on the road (#554), not a note.
   mkdirSync(join(sandbox.home, '.config', 'muse'), { recursive: true });
-  assert.match(await doctor(), /note +muse-hook: can't check whether Muse Code trusts this folder: no ~\/\.config\/muse\/trust\.json; if you use Muse Code: run `muse` in this folder and choose "Trust and continue"/);
+  const off = /(next|to do) +tool-hook: the guard is off in Muse Code until you trust this folder; run `muse` in this folder and choose "Trust and continue", or pass `--trust-workspace` to `muse exec`/;
+  assert.match(await doctor(), off);
+  assert.doesNotMatch(await doctor(), /muse-hook: (can't check|Muse Code skips)/);
+  assert.equal(isGuardOff(root, { HOME: sandbox.home }), true);
   // The positive control: a store that trusts another folder.
   const file = trustFolder(sandbox.home, '/somewhere/else');
-  assert.match(await doctor(), /note +muse-hook: Muse Code skips \.muse\/hooks\.json until you trust this folder; run `muse` in this folder and choose "Trust and continue"/);
+  assert.match(await doctor(), off);
   // Checked with Muse 1.4.10: a trusted parent folder, or the key with a trailing slash, trusts nothing.
   trustFolder(sandbox.home, dirname(root), `${root}/`);
   assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'untrusted');
   trustFolder(sandbox.home, root);
   assert.match(await doctor(), /ok +muse-hook\n/);
+  assert.match(await doctor(), /done +tool-hook\n/);
+  assert.equal(isGuardOff(root, { HOME: sandbox.home }), false);
   // Another decision, a file that won't parse, and a schema doctor does not know: never ok.
   writeFileSync(file, JSON.stringify({ schema_version: 1, projects: { [root]: { decision: 'untrusted' } } }));
   assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'untrusted');
+  assert.match(await doctor(), off);
   writeFileSync(file, '{ not json');
   assert.match(await doctor(), /note +muse-hook: can't check whether Muse Code trusts this folder: can't read ~\/\.config\/muse\/trust\.json/);
+  assert.equal(isGuardOff(root, { HOME: sandbox.home }), false, "a store doctor can't read is a note, not a step");
+  assert.equal(isGuardOff(join(sandbox.home, 'none'), { HOME: sandbox.home }), false, 'no .muse/hooks.json, no step');
   writeFileSync(file, JSON.stringify({ schema_version: 2, projects: { [root]: { decision: 'trusted' } } }));
   assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'unreadable');
   // XDG_CONFIG_HOME moves the store: the one under ~/.config no longer counts. The note names the variable, not the path.
@@ -127,4 +140,24 @@ test('muse trust (#341): doctor says when Muse skips the hooks; ok only when tru
   assert.deepEqual(readTrust(root, { HOME: sandbox.home, XDG_CONFIG_HOME: join(sandbox.home, 'xdg') }), { state: 'no home', store: '$XDG_CONFIG_HOME/muse/trust.json' });
   mkdirSync(join(sandbox.home, 'xdg', 'muse'), { recursive: true });
   assert.deepEqual(readTrust(root, { HOME: sandbox.home, XDG_CONFIG_HOME: join(sandbox.home, 'xdg') }), { state: 'no store', store: '$XDG_CONFIG_HOME/muse/trust.json' });
+});
+
+test('muse session doctor (#556): a new project gets it; an existing file keeps the user\'s hooks and gets it once', async () => {
+  const sandbox = makeSandbox();
+  const file = join(sandbox.repo, '.muse', 'hooks.json');
+  const mine = { matcher: 'bash', hooks: [{ type: 'command', command: './lint.sh' }] };
+  const own = { hooks: { SessionStart: [{ hooks: [{ type: 'command', command: './hello.sh' }] }], PreToolUse: [mine] } };
+  sandbox.write('.muse/hooks.json', JSON.stringify(own));
+  assert.equal((await sandbox.call(['init'])).status, 0);
+  assert.equal((await sandbox.call(['init'])).status, 0);
+  const written = JSON.parse(readFileSync(file, 'utf8'));
+  assert.equal(written.hooks.SessionStart.length, 2, 'the user\'s own SessionStart hook stays, ours is added once');
+  assert.deepEqual(written.hooks.SessionStart[0], own.hooks.SessionStart[0]);
+  assert.match(written.hooks.SessionStart[1].hooks[0].command, /doctor --session --agent muse$/);
+  assert.deepEqual(written.hooks.PreToolUse[0], mine);
+  assert.equal(written.hooks.PreToolUse.length, 2);
+  // The hook itself runs the session doctor: plain text on stdout, exit 0, as Muse reads it.
+  const run = await sandbox.call(['doctor', '--session', '--agent', 'muse']);
+  assert.equal(run.status, 0);
+  assert.match(run.stdout, /yokoten/);
 });

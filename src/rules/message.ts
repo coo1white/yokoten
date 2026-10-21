@@ -314,7 +314,7 @@ export const RULES = {
   'muse-hook': {
     rule: "the project has Muse Code's tool-call guard and stop check, and Muse trusts the folder",
     why: "without them, Muse Code's commands and edits in this project are not checked. Muse skips the hooks of a folder it does not trust without a word",
-    check: "`doctor` reads .muse/hooks.json for a PreToolUse hook and a Stop hook that each run `yokoten hook --agent muse`, then Muse's trust.json for the folder (read-only); a note, not a missing step",
+    check: "`doctor` reads .muse/hooks.json for a PreToolUse hook and a Stop hook that each run `yokoten hook --agent muse`, then Muse's trust.json for the folder (read-only); a note, not a missing step. A folder Muse does not trust is a to-do under `tool-hook`",
     docs: guide('works-with'),
   },
   'deepseek-harness-hook': {
