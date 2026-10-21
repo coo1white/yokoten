@@ -40,7 +40,7 @@ import { findTempDirs, readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advi
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
 import { compareCoreRules, compareVersions, hookCliPath, isSelf, readCoreRules, summarizeUpdate, withGitReads, workflowNotes } from './init.ts';
 import { assumeEmptyFolder, gitConfig } from '../run/check.ts';
-import { countOwnMarks, fillMarks, filledLine, trySafely, installedPieces, isOnPath, launcherDir, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
+import { countOwnMarks, fillMarks, launcherFile, PROFILE_LINE, filledLine, trySafely, installedPieces, isOnPath, launcherDir, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
 import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
 
 /**
@@ -434,9 +434,45 @@ export function launcherCheck(env: Env): Finding | null {
   if (hasPlugin(env)) return null;
   const { runtime } = paths(env);
   if (!existsSync(runtime) || isOnPath(env, runtime)) return null;
-  return finding('machine-runtime', 'no `yokoten` command on your PATH runs the installed copy', `run \`node ${join(runtime, 'bin', 'yokoten.ts')} install\` in a terminal; it puts a launcher in ${launcherDir(homeIn(env))} and offers to add that folder to your PATH`, {
-    why: 'yokoten\'s messages say `yokoten init` and `yokoten doctor`',
+  const home = homeIn(env);
+  const meanwhile = 'until then, `npx yokoten` runs yokoten';
+  let fix = `run \`npx yokoten install\`; it puts a launcher in ${launcherDir(home)} and offers to add that folder to your PATH`;
+  if (existsSync(launcherFile(home))) {
+    fix = process.platform === 'win32'
+      ? `add ${launcherDir(home)} to the Path for your account (search Windows for "environment variables for your account"), then open a new terminal; ${meanwhile}`
+      : `add this line to your shell profile (~/.bashrc or ~/.zshrc), then open a new terminal: ${PROFILE_LINE}; ${meanwhile}`;
+  }
+  return finding('machine-runtime', 'the yokoten launcher is not on your PATH, so a bare yokoten command is not found', fix, {
+    why: 'doctor names commands to run, and a command that is not found stops a beginner',
   });
+}
+
+/**
+ * The one way to run yokoten in doctor's text (#500). Messages are written as `yokoten init`.
+ * When no launcher on the PATH runs yokoten, that command is not found, so the text says
+ * `npx yokoten init`, which works from anywhere. That is so when install's runtime is here but
+ * off the PATH, and when this run is itself `npx` (npm sets `npm_command=exec`). With the plugin
+ * on, its own commands are used. A command inside a hook that doctor shows for you to add by hand,
+ * where the backtick has a backslash before it, stays as written: it must match the hook install writes.
+ * Null when the messages stay as written.
+ */
+export function commandWording(env: Env): ((text: string) => string) | null {
+  if (hasPlugin(env) || env.CLAUDE_PLUGIN_ROOT || homeOf(env) === null) return null;
+  const { runtime } = paths(env);
+  const isNpx = env.npm_command === 'exec';
+  if (!isNpx && (!existsSync(runtime) || isOnPath(env, runtime))) return null;
+  if (isNpx && isOnPath(env, runtime)) return null;
+  return (text) => text.replace(/(?<!\\)`yokoten((?: [^`]*)?)`/g, '`npx yokoten$1`');
+}
+
+/** `value` with `reword` applied to every string in it (plain arrays and objects only). */
+function rewordStrings<T>(value: T, reword: (text: string) => string): T {
+  if (typeof value === 'string') return reword(value) as T;
+  if (Array.isArray(value)) return value.map((item) => rewordStrings(item, reword)) as T;
+  if (value !== null && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, rewordStrings(item, reword)])) as T;
+  }
+  return value;
 }
 
 // Machine notes (record 0012): machine state that stops every agent session, where the
@@ -1234,7 +1270,11 @@ export const NO_HOME_NOTE = "no home folder found; yokoten can't read or keep it
  * The report, as text lines and as data, and whether doctor found no problem. Each git
  * answer is kept for the run (`withGitReads`, #408).
  */
-export const doctor = (root: string | null, options: Parameters<typeof doctorRun>[1]): ReturnType<typeof doctorRun> => withGitReads(() => doctorRun(root, options));
+export const doctor = (root: string | null, options: Parameters<typeof doctorRun>[1]): ReturnType<typeof doctorRun> => {
+  const result = withGitReads(() => doctorRun(root, options));
+  const reword = commandWording(options.env);
+  return reword ? rewordStrings(result, reword) : result;
+};
 
 function doctorRun(
   root: string | null,

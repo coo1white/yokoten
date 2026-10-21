@@ -1563,11 +1563,11 @@ test('init: a private repo can keep CI off with --no-ci, finish the road, and ta
   const full = (await sandbox.call(['doctor'], { extra: machine })).stdout;
   assert.match(full, /^ +not now +tests \(Best Practices: test\): CI is off to save Actions minutes[^\n]*\(notNow ci\); run the tests yourself before each merge$/m);
   assert.match(full, /^ +not now +ci \(Scorecard: CI-Tests\): CI is off to save Actions minutes/m);
-  assert.match(full, /^ +not now +titles \([^)]*\): [^\n]*; run `yokoten check --pr <number>` before each merge$/m);
+  assert.match(full, /^ +not now +titles \([^)]*\): [^\n]*; run `npx yokoten check --pr <number>` before each merge$/m);
   assert.match(full, /^ +done +security-files/m, 'no Dependabot config is asked for');
   // The trade-off, said once: what is not checked, and when to end the choice.
   assert.equal(full.match(/no-ci: /g)?.length, 1, full);
-  assert.match(full, /^ +note +no-ci: CI is off \("notNow" names `ci`\), so nothing on the server checks pull requests, issue titles or the workflows, no code scanning such as CodeQL runs[^\n]*; before each merge, run `yokoten check --pr <number>` and the tests; when the repo goes public, remove "ci" from "notNow"/m);
+  assert.match(full, /^ +note +no-ci: CI is off \("notNow" names `ci`\), so nothing on the server checks pull requests, issue titles or the workflows, no code scanning such as CodeQL runs[^\n]*; before each merge, run `npx yokoten check --pr <number>` and the tests; when the repo goes public, remove "ci" from "notNow"/m);
 
   // Taking CI up again: remove the choice, and init brings the workflows back.
   sandbox.write('yokoten.json', JSON.stringify({ notNow: {} }));
