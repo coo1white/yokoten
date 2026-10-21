@@ -35,7 +35,7 @@ function collect(): { stream: Writable; text: () => string } {
   const chunks: string[] = [];
   const stream = new Writable({
     decodeStrings: false,
-    write(chunk: string | Buffer, _encoding, done) {
+    write(chunk: string | Buffer, _, done) {
       chunks.push(String(chunk));
       done();
     },
