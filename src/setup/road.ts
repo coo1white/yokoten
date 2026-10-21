@@ -448,10 +448,20 @@ const noTests = (root: string) => {
   if (packageJson(root)) return 'no test command: no "test" script in package.json, and no workflow runs a test runner';
   return `no workflow runs a test command such as ${runnersFor(root)}`;
 };
+/**
+ * The fix for the tests step (#501): the file, the job to add, and the `needs` list of `ci`.
+ * The job is one line of YAML, so the session start can show it. The command is `npm test`
+ * when package.json has a test script, the workspaces command in a workspaces repo, else a
+ * placeholder for the user's own.
+ */
 const testsFix = (root: string) => {
-  if (testScript(root)) return 'add a step that runs `npm test` (or your test command) to a workflow in .github/workflows';
-  if (isWorkspaces(root)) return `add a step that runs ${workspacesTest(root)} to a workflow in .github/workflows`;
-  return 'add tests and a CI step that runs them';
+  const file = '.github/workflows/yokoten.yml';
+  const isNode = testScript(root) !== '' || isWorkspaces(root);
+  const command = isWorkspaces(root) ? workspacesTest(root).replaceAll('`', '') : testScript(root) ? 'npm test' : '<your test command>';
+  const install = isNode && existsSync(join(root, 'package-lock.json')) ? ', {run: npm ci}' : '';
+  const steps = `[{uses: actions/checkout@v4}${isNode ? ', {uses: actions/setup-node@v4}' : ''}${install}, {run: ${command}}]`;
+  const start = existsSync(join(root, file)) ? `in ${file}` : `run \`yokoten init\` to add ${file}, then in it`;
+  return `${start}, add this job under \`jobs:\`: \`tests: {runs-on: ubuntu-latest, steps: ${steps}}\`. Then add \`tests\` to the \`needs\` list of the \`ci\` job, so a failing test blocks the merge`;
 };
 
 /** Tracked build output, as yokoten.json lets it through; null outside a git repo. */
