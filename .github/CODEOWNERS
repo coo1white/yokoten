@@ -23,6 +23,7 @@
 /yokoten.json @coo1white
 /.githooks/ @coo1white
 /.claude/ @coo1white
+/.muse/ @coo1white
 
 # CI, review owners, and dependency updates.
 /.github/workflows/ @coo1white
