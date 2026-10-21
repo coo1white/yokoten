@@ -20,6 +20,7 @@
 // one marked line to the shell profile, and never edits the profile in a run with no terminal.
 
 import { execFileSync } from 'node:child_process';
+import { configEntries } from '../run/check.ts';
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { basename, delimiter, dirname, join, relative, resolve, sep } from 'node:path';
@@ -388,14 +389,20 @@ export interface MachineMark {
  */
 export function machineMarks(env: Env, { cwd, gh }: { cwd?: string; gh?: Gh } = {}): MachineMark[] {
   const found: MachineMark[] = [];
-  const name = readGitValue(env, ['config', '--get', 'user.name'], cwd);
+  // In a run (full doctor), one config list kept for the run holds all three (#453).
+  const listed = (match: string | RegExp) => configEntries(cwd ?? process.cwd(), match, { ...process.env, ...env })?.map((entry) => entry.value.trim()) ?? null;
+  const lastOf = (key: string) => {
+    const values = listed(key);
+    return values ? values.at(-1) || null : readGitValue(env, ['config', '--get', key], cwd);
+  };
+  const name = lastOf('user.name');
   if (name) found.push({ kind: 'git name', value: name });
-  const email = readGitValue(env, ['config', '--get', 'user.email'], cwd);
+  const email = lastOf('user.email');
   // A noreply address is meant to be public; the login in it is added on its own.
   if (email && isPersonalEmail(email)) found.push({ kind: 'git email', value: email });
   const login = gh ? readLogin(gh) : null;
   if (login) found.push({ kind: 'forge login', value: login });
-  const urls = (readGitValue(env, ['config', '--get-regexp', String.raw`^remote\..*\.url$`], cwd) ?? '').split('\n').map((line) => line.split(/\s+/)[1] ?? '');
+  const urls = listed(/^remote\..*\.url$/)?.map((value) => value.split(/\s+/)[0]) ?? (readGitValue(env, ['config', '--get-regexp', String.raw`^remote\..*\.url$`], cwd) ?? '').split('\n').map((line) => line.split(/\s+/)[1] ?? '');
   for (const host of privateRemoteHosts(urls)) found.push({ kind: 'private remote host', value: host });
   return found;
 }

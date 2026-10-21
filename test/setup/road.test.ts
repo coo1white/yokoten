@@ -29,7 +29,7 @@ import {
   walk,
   yokotenActions,
 } from '../../src/setup/road.ts';
-import { assertLinear } from '../../scripts/linear.ts';
+import { assertLinearEach } from '../../scripts/linear.ts';
 
 const step = (stage: number, key: string): Step => ({ stage, key, check: () => false, what: () => key, fix: () => key, why: key, how: key });
 
@@ -247,11 +247,14 @@ test('road: the tests step reads a big workflow in linear time (#257)', () => {
     ['make -C flags', (n) => `- run: make ${'-Cx '.repeat(n / 4)}`],
     ['npm workspaces flags', (n) => `- run: npm -w ${'-a b '.repeat(n / 5)}`],
   ];
-  for (const [name, make] of inputs) {
-    for (const workspaces of [false, true]) {
-      assertLinear(`${name}, workspaces ${workspaces}`, make, (ci) => assert.equal(runsTests(ci, 'vitest run x', workspaces), false, name));
-    }
-  }
+  // From 4096 characters to 32,768, the shapes taking turns (#474). A reader that goes over the text
+  // again for each character is thousands of times over at that size.
+  assertLinearEach(
+    inputs.flatMap(([name, make]) =>
+      [false, true].map((workspaces) => ({ name: `${name}, workspaces ${workspaces}`, make, read: (ci: string) => assert.equal(runsTests(ci, 'vitest run x', workspaces), false, name) })),
+    ),
+    4096,
+  );
 });
 
 // Each pattern that repeats over a line, as one `run:` line of about n characters (#322).
@@ -278,28 +281,30 @@ for (const [name, start, repeat] of [
 ]) {
   LONG_LINES.push([name, (n) => `${start}${repeat.repeat(n / repeat.length)}`]);
 }
-// The big input of assertLinear is 8x this: 500,000 characters.
-const LONG_LINE_SIZE = 500_000 / 8;
+// The linear proof reads 8192 characters and 8x that (#474); each line is then read once at 500,000
+// characters, for the RangeError a long input can raise (#322).
+const LONG_LINE_SIZE = 8192;
+const LONG_LINE_BIG = 500_000;
 
 test('road: a run line of 500,000 characters reads in linear time, with no RangeError (#322)', () => {
-  for (const [name, make] of LONG_LINES) {
-    assertLinear(
-      name,
-      (n) => `- run: ${make(n)}`,
-      (ci) => {
-        for (const workspaces of [false, true]) assert.equal(runsTests(ci, 'vitest run x', workspaces), false, name);
-        assert.equal(ciSteps(ci).ci, false, name);
-      },
-      LONG_LINE_SIZE,
-    );
-  }
+  const readLine = (name: string) => (ci: string) => {
+    for (const workspaces of [false, true]) assert.equal(runsTests(ci, 'vitest run x', workspaces), false, name);
+    assert.equal(ciSteps(ci).ci, false, name);
+  };
+  const lines = LONG_LINES.map(([name, make]) => ({ name, make: (n: number) => `- run: ${make(n)}`, read: readLine(name) }));
+  assertLinearEach(lines, LONG_LINE_SIZE);
+  for (const { make, read } of lines) read(make(LONG_LINE_BIG));
   // The same line still counts when the runner comes at its end.
   assert.equal(runsTests(`- run: node${' -a'.repeat(150_000)} --test`, '', false), true);
   assert.equal(runsTests(`- run: pnpm${' -a b'.repeat(100_000)} -r test`, '', true), true);
   assert.equal(runsTests(`- run: ${'A=b '.repeat(125_000)}go test`, '', false), true);
   // A uses line whose ref has up to 250,000 words.
-  assertLinear('a uses ref of words', (n) => `- uses: yokoten-labs/yokoten@${'a '.repeat(n / 2)}"`, (ci) => assert.deepEqual(yokotenActions(ci), []), LONG_LINE_SIZE);
-  assertLinear('a uses ref of words and a comment', (n) => `- uses: yokoten-labs/yokoten@${'a '.repeat(n / 2)}# v1`, (ci) => assert.deepEqual(yokotenActions(ci), [{ prCheck: true }]), LONG_LINE_SIZE);
+  const refs = [
+    { name: 'a uses ref of words', make: (n: number) => `- uses: yokoten-labs/yokoten@${'a '.repeat(n / 2)}"`, read: (ci: string) => assert.deepEqual(yokotenActions(ci), []) },
+    { name: 'a uses ref of words and a comment', make: (n: number) => `- uses: yokoten-labs/yokoten@${'a '.repeat(n / 2)}# v1`, read: (ci: string) => assert.deepEqual(yokotenActions(ci), [{ prCheck: true }]) },
+  ];
+  assertLinearEach(refs, LONG_LINE_SIZE);
+  for (const { make, read } of refs) read(make(LONG_LINE_BIG));
 });
 
 test('road: a workflow check that throws a RangeError is "can\'t check", and other errors still throw (#322)', () => {
@@ -345,13 +350,18 @@ test('road: the Action and its trigger read a big workflow in linear time (#298)
     ['npx flags', (n) => `- run: npx ${'-y '.repeat(n / 3)}`],
     ['a uses ref of words', (n) => `- uses: yokoten-labs/yokoten@${'a '.repeat(n / 2)}"`],
   ];
-  for (const [name, make] of inputs) {
-    assertLinear(name, make, (ci) => {
-      assert.deepEqual(yokotenActions(ci), [], name);
-      assert.equal(onPullRequest(ci), false, name);
-      assert.equal(ciSteps(ci).ci, false, name);
-    });
-  }
+  assertLinearEach(
+    inputs.map(([name, make]) => ({
+      name,
+      make,
+      read: (ci: string) => {
+        assert.deepEqual(yokotenActions(ci), [], name);
+        assert.equal(onPullRequest(ci), false, name);
+        assert.equal(ciSteps(ci).ci, false, name);
+      },
+    })),
+    4096,
+  );
 });
 
 test("road: init's CODEOWNERS with the placeholder owner is to do; with a real owner, or a project's own file, it is done (#304)", () => {
