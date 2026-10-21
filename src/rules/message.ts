@@ -37,6 +37,8 @@ export interface Rule {
  * pages (#85) can replace it here, in one place.
  */
 export const DOCS_URL = 'https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md';
+/** A link to a yokoten docs file on GitHub, for a message: a user who installed from npm has no such file (#524). */
+export const docsLink = (file: string, section = ''): string => `https://github.com/yokoten-labs/yokoten/blob/main/docs/${file}${section ? `#${section}` : ''}`;
 const guide = (section: string) => `${DOCS_URL}#${section}`;
 
 const RELEASE_WHY = 'only the owner decides when to release';
@@ -251,13 +253,13 @@ export const RULES = {
     check: '`check --pr` notes long sentences in changed Markdown, and `check --staged` in staged change files, skipping code, tables and headings; a note never fails CI',
   },
   'name-short': {
-    rule: 'a one-letter name is used within 10 lines and not exported (record 0006; docs/guide.md#naming)',
+    rule: 'a one-letter name is used within 10 lines and not exported (record 0006)',
     why: 'a reader must scroll back to learn what a far-off letter holds',
     check: '`check --pr` notes a one-letter name used more than 10 lines after it is declared, or exported, on lines added to TypeScript and JavaScript files; `_` for an unused parameter passes; a note never fails CI',
     docs: guide('naming'),
   },
   'name-long': {
-    rule: 'a name has at most 4 words (record 0006; docs/guide.md#naming)',
+    rule: 'a name has at most 4 words (record 0006)',
     why: 'a long name is slow to read, and the words that matter get lost',
     check: '`check --pr` notes a name of more than 4 words on lines added to TypeScript and JavaScript files; camelCase, PascalCase and snake_case words count, an acronym as one; a note never fails CI',
     docs: guide('naming'),
