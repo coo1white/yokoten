@@ -413,19 +413,19 @@ test('workflows: every workflow, in the kit and here, meets the standard; a bad 
 //
 // The `changes` job's script runs here as CI runs it, in a real git repo. The `if:` and
 // matrix expressions are read from the file and evaluated in JS: `&&`, `||`, `==`, `!=`
-// and quoted strings mean the same in both. An unknown function throws, so the read can't
-// pass by accident.
+// and quoted strings mean the same in both, and `github` carries the event name. An
+// unknown name throws, so the read can't pass by accident.
 const WORKFLOWS = ['.github/workflows/yokoten.yml', 'kit/project/.github/workflows/yokoten.yml'];
 const jobBlock = (text: string, name: string) => jobs(text).find((job) => job.name === name)?.block ?? '';
 const changesScript = (text: string) => (jobBlock(text, 'changes').match(/^ {8}run: \|\n((?: {10}.*\n|\n)+)/m)?.[1] ?? '').replace(/^ {10}/gm, '');
 type Needs = Record<string, { result: string; outputs?: Record<string, string> }>;
-const evaluate = (expression: string, needs: Needs): unknown => {
+const evaluate = (expression: string, needs: Needs, github: { event_name: string } = { event_name: '' }): unknown => {
   const code = expression
     .replace(/contains\(needs\.\*\.result, '(\w+)'\)/g, "contains('$1')")
     .replace(/needs\.([\w-]+)\.outputs\.([\w-]+)/g, "(needs['$1'].outputs?.['$2'] ?? '')")
     .replace(/needs\.([\w-]+)\.result/g, "needs['$1'].result");
   const contains = (value: string) => Object.values(needs).some((job) => job.result === value);
-  return new Function('needs', 'contains', 'fromJSON', 'cancelled', `return (${code});`)(needs, contains, JSON.parse, () => false);
+  return new Function('needs', 'contains', 'fromJSON', 'cancelled', 'github', `return (${code});`)(needs, contains, JSON.parse, () => false, github);
 };
 const inBraces = (block: string, pattern: RegExp) => {
   const found = block.match(pattern)?.[1];
@@ -494,23 +494,41 @@ test('ci: `changes` finds a docs-only pull request; other files, a push, or an u
 test('ci: a docs-only pull request runs one test job, skips typecheck and action, and `ci` is green (#438)', () => {
   const text = readFileSync(join(ROOT, WORKFLOWS[0]), 'utf8');
   const testJob = jobBlock(text, 'test');
-  const matrix = (docsOnly: string) => {
+  const matrix = (docsOnly: string, event: string) => {
+    const github = { event_name: event };
     const needs = results(docsOnly, {});
-    const nodes = evaluate(inBraces(testJob, /^ {8}node: \$\{\{ (.+) \}\}$/m), needs) as string[];
-    const extra = evaluate(inBraces(testJob, /^ {8}include: \$\{\{ (.+) \}\}$/m), needs) as { os: string; node: string; shard: number }[];
-    // Every setup runs each of the three shards (#472).
+    const nodes = evaluate(inBraces(testJob, /^ {8}node: \$\{\{ (.+) \}\}$/m), needs, github) as string[];
+    const extra = evaluate(inBraces(testJob, /^ {8}include: \$\{\{ (.+) \}\}$/m), needs, github) as { os: string; node: string; shard: number; of: number }[];
+    // Every setup runs each of its shards: three, or the whole suite in one macOS job
+    // on a pull request, so the shared runners stay free (#568).
     const shards = JSON.parse(inBraces(testJob, /^ {8}shard: (\[.+\])$/m)) as number[];
     assert.deepEqual(shards, [1, 2, 3]);
+    const ofAxis = JSON.parse(inBraces(testJob, /^ {8}of: (\[.+\])$/m)) as number[];
+    assert.deepEqual(ofAxis, [3]);
     for (const setup of new Set(extra.map((entry) => `${entry.os} ${entry.node}`))) {
-      assert.deepEqual(extra.filter((entry) => `${entry.os} ${entry.node}` === setup).map((entry) => entry.shard), shards, `${setup} runs every shard`);
+      const runs = extra.filter((entry) => `${entry.os} ${entry.node}` === setup);
+      assert.ok(runs.every((entry) => entry.of === runs[0].of), `${setup}: mixed shard counts`);
+      assert.deepEqual(runs.map((entry) => entry.shard), shards.slice(0, runs[0].of), `${setup} runs every shard`);
     }
-    return [...new Set([...nodes.map((node) => `ubuntu-latest ${node}`), ...extra.map((entry) => `${entry.os} ${entry.node}`)])];
+    return {
+      setups: [...new Set([...nodes.map((node) => `ubuntu-latest ${node}`), ...extra.map((entry) => `${entry.os} ${entry.node}`)])],
+      whole: extra.filter((entry) => entry.of === 1).map((entry) => `${entry.os} ${entry.node} ${entry.shard}/${entry.of}`),
+    };
   };
-  assert.match(testJob, /--test-shard=\$\{\{ matrix\.shard \}\}\/3/, 'the run step uses the shard');
-  assert.deepEqual(matrix('true'), ['ubuntu-latest 24']);
+  assert.match(testJob, /--test-shard=\$\{\{ matrix\.shard \}\}\/\$\{\{ matrix\.of \}\}/, 'the run step uses the shard');
+  assert.match(text, /^  schedule:\n    - cron: '[^']+'$/m, 'the full matrix runs on a schedule (#568)');
+  assert.match(jobBlock(text, 'ci'), /never started/, '`ci` names jobs that never got a runner (#568)');
+  assert.deepEqual(matrix('true', 'pull_request').setups, ['ubuntu-latest 24']);
   const full = ['ubuntu-latest 22.18.0', 'ubuntu-latest 24', 'macos-latest 24'];
-  assert.deepEqual(matrix('false'), full);
-  assert.deepEqual(matrix(''), full, '`changes` failed: the full run');
+  const pr = matrix('false', 'pull_request');
+  assert.deepEqual(pr.setups, full);
+  assert.deepEqual(pr.whole, ['macos-latest 24 1/1'], 'a pull request runs the whole suite in one macOS job (#568)');
+  for (const event of ['push', 'schedule']) {
+    const run = matrix('false', event);
+    assert.deepEqual(run.setups, full);
+    assert.deepEqual(run.whole, [], `${event}: the full macOS matrix (#568)`);
+  }
+  assert.deepEqual(matrix('', 'pull_request').setups, full, '`changes` failed: the full run');
   assert.equal(evaluate(jobCondition(testJob), results('true', {})), true, 'test runs on every pull request');
   for (const name of ['typecheck', 'action']) {
     const condition = jobCondition(jobBlock(text, name));
