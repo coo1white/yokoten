@@ -29,7 +29,7 @@ function compileExemptGlob(folder: string): RegExp | undefined {
 const EXEMPT_FIX = 'or add it to layout.exempt in yokoten.json if it may grow: a log, or a third-party fixture set kept under its upstream names with its NOTICE beside it';
 
 /** Whether a folder is, or is inside, a folder of fetched files. The build output check names those (#521); counting their entries only repeats it. */
-const isFetched = (dir: string): boolean => dir.split('/').some((part) => ['node_modules', '.venv', 'venv', '__pycache__'].includes(part));
+const isFetched = (dir: string): boolean => dir.split('/').some((part) => FETCHED_DIRS.includes(part));
 
 /**
  * Problems for a list of file paths (relative, forward slashes), one per folder over the cap.
@@ -102,6 +102,9 @@ const fix = (path: string) => `remove it with \`git rm --cached ${path}\` and ad
 /** Folders that hold fetched or generated files, not the project's own (#521). One finding covers the folder. */
 export const DEPENDENCY_DIRS = ['node_modules', 'vendor', '.venv', 'venv', 'target', '__pycache__'];
 
+/** The dependency folders no project commits, so every file in them counts. A committed vendor/ (Go) can be on purpose. */
+const FETCHED_DIRS = ['node_modules', '.venv', 'venv', '__pycache__'];
+
 const folderFix = (folder: string) =>
   `run \`git rm -r --cached ${folder}\` (it stays on disk) and add \`${folder}/\` to .gitignore, or list the path in allowBuild in yokoten.json`;
 
@@ -119,8 +122,9 @@ export function checkBuildOutput(files: { path: string; binary: boolean }[], { a
     const at = parts.findIndex((d) => DEPENDENCY_DIRS.includes(d) || BUILD_DIRS.includes(d));
     const dir = parts.find((d) => BUILD_DIRS.includes(d));
     const isBuild = dir !== undefined;
-    if (!isBuild && !BUILT.test(path) && !(binary && !MEDIA.test(path))) continue;
     const isDependency = at >= 0 && DEPENDENCY_DIRS.includes(parts[at]);
+    const isFetchedFile = isDependency && FETCHED_DIRS.includes(parts[at]);
+    if (!isFetchedFile && !isBuild && !BUILT.test(path) && !(binary && !MEDIA.test(path))) continue;
     flagged.push({ path, id: isBuild ? 'build-output' : 'binary', folder: at >= 0 ? parts.slice(0, at + 1).join('/') : undefined, isDependency, dir });
   }
   const count = new Map<string, number>();

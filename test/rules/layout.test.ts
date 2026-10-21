@@ -107,6 +107,9 @@ test('build output: many files under one folder make one finding for the folder 
   const built = checkBuildOutput(files('dist/a.js', 'dist/b.js', 'out/c.js'), DEFAULTS);
   assert.deepEqual(built.map((problem) => problem.file), ['dist/', 'out/c.js']);
   assert.match(formatFinding(built[0]), /^dist\/: build output, with 2 files in a dist\/ folder\..*git rm -r --cached dist/);
+  // Every file in node_modules counts, not only built ones; a vendor/ file only when it is built.
+  assert.match(formatFinding(checkBuildOutput(files('node_modules/a/index.js', 'node_modules/a/package.json'), DEFAULTS)[0]), /with 2 of its files/);
+  assert.deepEqual(checkBuildOutput(files('vendor/lib/a.go'), DEFAULTS), []);
   // allowBuild still lets a path through.
   assert.deepEqual(checkBuildOutput(files('node_modules/a.js'), { allowBuild: ['node_modules/**'] }), []);
 });

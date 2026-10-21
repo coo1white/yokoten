@@ -142,7 +142,7 @@ export const RULES = {
   'build-output': {
     rule: 'no build output in a commit',
     why: 'a build makes it again from the source, so a committed copy goes stale',
-    check: 'the commit check refuses a file in a dist/, build/ or out/ folder; yokoten.json "allowBuild" lets a path through',
+    check: 'the commit check refuses a file in a dist/, build/ or out/ folder, and a dependency folder such as node_modules/ as one finding; yokoten.json "allowBuild" lets a path through',
   },
   'missing-blob': {
     rule: 'the commit check reads every staged file',
