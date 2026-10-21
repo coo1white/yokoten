@@ -1969,3 +1969,33 @@ test('init --no-ci: removes a never-edited old kit workflow, and doctor is quiet
   sandbox.write(YML, oldYokotenYml());
   assert.doesNotMatch((await sandbox.call(['doctor'])).stdout, /kit-workflows/);
 });
+
+test('init: a .gitignore for the dependency folders, only adding missing lines (#521)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('package.json', '{"name":"app"}\n');
+  let result = await sandbox.call(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /wrote \.gitignore \(node_modules\/\)/);
+  assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), 'node_modules/\n');
+  // Again: nothing changes.
+  result = await sandbox.call(['init']);
+  assert.match(result.stdout, /kept \.gitignore/);
+  assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), 'node_modules/\n');
+  // The project's own lines stay, in order; a line that is there in another form counts.
+  sandbox.write('.gitignore', '.env\n/node_modules');
+  result = await sandbox.call(['init']);
+  assert.match(result.stdout, /kept \.gitignore/);
+  assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), '.env\n/node_modules');
+  sandbox.write('.gitignore', '.env\ncoverage');
+  sandbox.write('Cargo.toml', '[package]\nname = "x"\n');
+  result = await sandbox.call(['init']);
+  assert.match(result.stdout, /added to \.gitignore: node_modules\/, target\//);
+  assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), '.env\ncoverage\nnode_modules/\ntarget/\n');
+});
+
+test('init: no .gitignore when no package manager shows (#521)', async () => {
+  const sandbox = makeSandbox();
+  const result = await sandbox.call(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(join(sandbox.repo, '.gitignore')), false);
+});

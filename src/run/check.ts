@@ -223,17 +223,20 @@ const shellWord = (path: string): string => (/^[\w./@+=,-]+$/.test(path) ? path 
  * file. With no commit yet there is no HEAD to restore from, so it is `git rm --cached`.
  */
 export function unstageHint(root: string, env: Env, problems: Finding[]): string | null {
-  const staged = new Set(stagedFiles(root, env).map((entry) => entry.path));
-  const named = [...new Set(problems.flatMap((problem) => (problem.file !== undefined && staged.has(problem.file) ? [problem.file] : [])))];
+  const staged = stagedFiles(root, env).map((entry) => entry.path);
+  // A finding for a folder (#521) ends in a slash: the hint names the folder, never its files.
+  const isStaged = (file: string) => (file.endsWith('/') ? staged.some((path) => path.startsWith(file)) : staged.includes(file));
+  const named = [...new Set(problems.flatMap((problem) => (problem.file !== undefined && isStaged(problem.file) ? [problem.file] : [])))];
   if (!named.length) return null;
+  const hasFolder = named.some((file) => file.endsWith('/'));
   let hasHead = true;
   try {
     git(root, env, ['rev-parse', '--verify', '--quiet', 'HEAD']);
   } catch {
     hasHead = false;
   }
-  const command = hasHead ? 'git restore --staged' : 'git rm --cached';
-  return `To take ${named.length > 1 ? 'these files' : 'this file'} out of the commit, run \`${command} ${named.map(shellWord).join(' ')}\`. ${named.length > 1 ? 'They stay' : 'It stays'} on disk, with your changes.`;
+  const command = hasHead ? 'git restore --staged' : hasFolder ? 'git rm -r --cached' : 'git rm --cached';
+  return `To take ${hasFolder ? (named.length > 1 ? 'these paths' : 'this folder') : named.length > 1 ? 'these files' : 'this file'} out of the commit, run \`${command} ${named.map(shellWord).join(' ')}\`. ${named.length > 1 ? 'They stay' : 'It stays'} on disk, with your changes.`;
 }
 
 /** A full object id: SHA-1 or SHA-256. */

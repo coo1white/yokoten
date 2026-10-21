@@ -1301,3 +1301,16 @@ test('check --staged: a stopped commit says how to unstage the files it names (#
   result = await sandbox.call(['check', '--staged']);
   assert.doesNotMatch(result.stderr, /out of the commit/);
 });
+
+// #521: a staged dependency folder is one finding, and the hint names the folder, not its files.
+test('check --staged: a staged node_modules is one line with the untrack command (#521)', async () => {
+  const sandbox = makeSandbox();
+  for (let i = 0; i < 30; i += 1) sandbox.write(`node_modules/pkg/dist/f${i}.js`, `module.exports = ${i};\n`);
+  sandbox.git('add', '.');
+  let result = await sandbox.call(['check', '--staged']);
+  assert.match(result.stderr, /: 1 problem\(s\)/);
+  assert.match(result.stderr, /node_modules\/: a dependency folder, with 30 of its files in the commit/);
+  assert.match(result.stderr, /git rm -r --cached node_modules.*add `node_modules\/` to \.gitignore/);
+  assert.match(result.stderr, /To take this folder out of the commit, run `git rm -r --cached node_modules\/`\. It stays on disk/);
+  assert.doesNotMatch(result.stderr, /f29\.js/);
+});
