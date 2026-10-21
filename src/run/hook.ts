@@ -9,7 +9,7 @@ import module from 'node:module';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 import { type Config, DEFAULTS, type Env, type IgnoredPart, loadConfig } from '../rules/config.ts';
-import { checkCommand, checkEdit, realPath as real } from '../rules/guards.ts';
+import { checkCommand, checkEdit, checkWorkerMarkEdit, realPath as real } from '../rules/guards.ts';
 import { type Finding, finding } from '../rules/message.ts';
 
 /** What an agent is about to do, in no runtime's terms. */
@@ -72,6 +72,14 @@ export function judge(
     const ruledRepos = ruled.map((repo) => ({ root: repo.root, leadOnly: repo.config.leadOnly }));
     const reason = checkCommand(action.command, { env, config, cwd: action.cwd ?? root ?? cwd, titles, repos: ruledRepos });
     if (reason) return reason;
+  }
+  // A worker's edit inside a git folder may change the worker mark (#555), in any repo.
+  if (env.YOKOTEN_ROLE === 'worker') {
+    const folder = resolve(action.cwd ?? root ?? cwd);
+    for (const p of action.paths) {
+      const reason = checkWorkerMarkEdit(resolve(folder, p), folder);
+      if (reason) return reason;
+    }
   }
   if (!ruled.length) return null;
   const reals = ruled.map((repo) => ({ config: repo.config, real: real(repo.root) }));

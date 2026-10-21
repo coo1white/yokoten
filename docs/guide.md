@@ -305,7 +305,7 @@ Docs are not proof.
 | GitHub Copilot CLI | the same `.claude/settings.json`: Copilot reads it | exit 2, and the reason as JSON on stdout | yes, 2026-10-19: Copilot CLI 1.0.98, `copilot -p`, model `gpt-6-luna` (Auto) | Runs repo hooks only after you trust the folder: run `copilot` there and choose "Yes, and remember this folder for future sessions". Skips them without a word otherwise. A hook that times out lets the call go on |
 | Antigravity CLI (`agy`) | `.agents/hooks.json`: the `yokoten` entry, PreToolUse | `{"decision": "deny"}` on stdout | yes, 2026-10-19: agy 1.4.2, `agy -p`, model `gemini-3.8-flash-high` | No stop check yet. Without `.yokoten/`, every call is refused: agy fails closed |
 | Codex CLI | `.codex/hooks.json`: PreToolUse and Stop | exit 2, the reason on stderr | yes, 2026-10-19: Codex 0.163.0, `codex exec`, on DeepSeek `deepseek-flash` | Runs the hooks only after you trust the folder, and then both hooks in `/hooks`. `codex exec` skips an untrusted hook without a word |
-| Muse Code | `.muse/hooks.json`: PreToolUse and Stop | exit 2, the reason on stderr | yes, 2026-10-19: Muse Code 1.4.10, `muse exec --trust-workspace`, model `muse-spark-1.3-contributor` | Runs the hooks only after you trust the folder: run `muse` there and choose "Trust and continue". Muse passes no `YOKOTEN_ROLE` to a hook, so every Muse session counts as the lead. It is not known to pass `YOKOTEN_RELEASE_APPROVAL` either, so release outside Muse. A hook that fails or times out lets the call go on |
+| Muse Code | `.muse/hooks.json`: PreToolUse and Stop | exit 2, the reason on stderr | yes, 2026-10-19: Muse Code 1.4.10, `muse exec --trust-workspace`, model `muse-spark-1.3-contributor` | Runs the hooks only after you trust the folder: run `muse` there and choose "Trust and continue". Muse passes no `YOKOTEN_ROLE` to a hook, so mark a worker's worktree with `yokoten worker mark <dir>`. It is not known to pass `YOKOTEN_RELEASE_APPROVAL` either, so release outside Muse. A hook that fails or times out lets the call go on |
 | DeepSeek Harness (`dsh`) | `.dsh/hooks.json`: PreToolUse, and `.dsh/yokoten.patch.yml` to load it | exit 2, the reason on stderr | yes, 2026-10-20: dsh 0.2.1-rc.2, `dsh headless --patch .dsh/yokoten.patch.yml`, default DeepSeek model | Runs hooks only through a bridge you add to each profile: see [DeepSeek Harness](#deepseek-harness). Without it, or without the patch, dsh runs no hooks and says nothing. Not guarded on Windows yet (#332). No stop check |
 | Grok CLI (`grok`) | `.grok/hooks/yokoten.json`: PreToolUse and Stop | `permissionDecision: "deny"` on stdout, and exit 2 | yes, 2026-10-20: Grok CLI 1.0.52, `grok -p --trust --always-approve`, default model | Runs project hooks only after you trust the folder: run `grok` there and type `/hooks-trust`. Skips them without a word otherwise. Also runs the hooks in `.claude/settings.json`, so the guard may run twice for one call, on purpose |
 | Gemini CLI | `.gemini/settings.json`: BeforeTool and AfterAgent | exit 2, the reason on stderr | not run end to end: personal sign-in retired 2026-06-18; needs a paid API key or an org license | Google's agent for individuals is now Antigravity CLI |
@@ -364,10 +364,36 @@ subagent role in a hook call, nor does DeepSeek Harness: `YOKOTEN_ROLE` decides.
 sanitization removes `YOKOTEN_ROLE` from the hooks. Then yokoten can't tell a worker in
 Gemini CLI: every session counts as the lead, and the lead-only guard does not stop a
 worker's edit. Muse Code passes a hook only a short list of variables, and `YOKOTEN_ROLE` is not
-one of them. So in Muse Code, too, every session counts as the lead. The server lock still
-holds: code owners, and a bot without the rights to change CI. Grok CLI passes
-`YOKOTEN_ROLE` to its hooks, and a subagent whose `subagentType` names a worker is a
-worker too.
+one of them. Grok CLI passes `YOKOTEN_ROLE` to its hooks, and a subagent whose
+`subagentType` names a worker is a worker too.
+
+So the lead also marks each worker's worktree: `yokoten worker mark <dir>` (#555). The guard
+then treats every agent in that worktree as a worker, in Gemini CLI and Muse Code too. The
+mark is a file in the worktree's own git folder (`.git/worktrees/<name>/yokoten-worker`).
+The guard finds it with no git process. The mark only adds the worker role: with the mark,
+`YOKOTEN_ROLE=lead` is still a worker. The tool guard, the stop check, the commit check and
+the session start all read it. It fails closed: a `.git` file the guard can't read (a mode it
+can't open, a FIFO, no `gitdir:` line), or a git folder it names that is gone or can't be
+read, makes the session a worker. A refusal that comes from the mark says so, and names the
+main checkout, where the lead works.
+
+The guard refuses a worker's plain ways to change the mark: a command that writes, moves,
+removes, links or changes the mode of a file in a git folder, or redirects into one. A glob
+counts when it can match `.git` or the mark (`chmod 000 .gi?`). So do git with `GIT_DIR` or
+`--git-dir`, `git worktree` other than `list`, and an edit inside a git folder, by real path.
+A read that names `.git` passes (`grep --exclude-dir=.git`, `find . -path ./.git -prune`).
+This reads text, like the rest of the guard, so a worker that builds a command in pieces
+gets past it. The real lock is the server and the credentials: branch protection and code
+owners, and a worker that holds no push or bot token.
+
+A worker commits and reports; the lead pushes and posts after review. For a worker the
+guard refuses `git push`, `git send-pack`, `git subtree push`, a git alias (`git config
+alias.*`, `git -c alias.*`), `yokoten bot` in any form, `gh pr`
+`create|merge|edit|close|comment|review|ready|reopen`, and `gh api` with a write method or
+fields (a GraphQL query that reads passes). The main checkout is never marked, so the lead
+there is not affected. In a marked worktree the lead counts as a worker too. `git worktree
+remove <dir>` removes the mark with the worktree. Without a mark, an agent that drops
+`YOKOTEN_ROLE` counts as the lead.
 
 The guard stops a worker's shell writes to lead-only files as well as its edits (#402). It
 reads redirects (`>`, `>>`, `>|`, `&>`), `sed -i`, `perl -i`, `tee`, `cp`, `mv`,
@@ -782,6 +808,7 @@ It puts three safe defaults in `.github/` too:
 | `hook [--agent <name>] [--commands-only] [--json]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini`, an Antigravity CLI PreToolUse call with `--agent antigravity`, a Muse Code PreToolUse call with `--agent muse`, a DeepSeek Harness PreToolUse call with `--agent deepseek-harness`, a Grok CLI PreToolUse call with `--agent grok` |
 | `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop event by default, a Codex Stop event with `--agent codex`, a Gemini CLI AfterAgent event with `--agent gemini`, a Grok CLI Stop event with `--agent grok`. See [The stop check](#the-stop-check) |
 | `explain [<id>] [--json]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
+| `worker mark <dir>` | Marks the worktree at `<dir>` as a worker's. The guard then treats every agent there as a worker, even one whose runtime drops `YOKOTEN_ROLE` (Muse Code). The guard refuses a worker's plain ways to remove it, and a `.git` link it can't read counts as marked; the server and credentials kept from the worker are the real lock. `git worktree remove <dir>` removes the mark. Given a subfolder, it marks the worktree's top folder and says which. The main checkout and a submodule are never marked. See [Works with](#works-with) |
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay. A second run changes nothing |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. `gh pr create` without a type or tier label gets them added: the type from the title (`bug` for `fix`), the tier from the body's `tier:` line. A label you pass is kept. A tier label that does not match the body is refused, with the message of `check --pr`. A label the repo does not have is named in a note and left out; the bot never creates labels. `gh pr create` without `--milestone` gets the milestone of the first linked issue (`Closes #N`, `Part of #N`) that has one. When no linked issue has one, it is refused, and nothing is sent; add `--milestone`. When gh can't read the issue, the pull request is sent without a milestone, with a note. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
 

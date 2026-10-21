@@ -26,6 +26,7 @@ import {
 import {
   checkCommand,
   checkEdit,
+  checkWorkerMarkEdit,
   commandWords,
   hardenRead,
   hookFile,
@@ -34,6 +35,9 @@ import {
   isRedacted,
   printsAccount,
   runsCheck,
+  withWorkerMark,
+  workerMarkAt,
+  workerRole,
   wrapForRedact,
 } from '../../src/rules/guards.ts';
 import { judge } from '../../src/run/hook.ts';
@@ -1835,4 +1839,187 @@ test('wrapForRedact: keeps the exit code; a redact that fails passes the output 
   const broken = run('echo plain; exit 4', '"/nonexistent/node" "/nonexistent/yokoten.ts" redact');
   assert.deepEqual([broken.status, broken.stdout], [4, 'plain\n']);
   assert.ok(broken.stderr.split('\n').filter(Boolean).length <= 1, broken.stderr);
+});
+
+// #555: a worker does not push or post, and does not change a git folder, where the worker
+// mark is kept; the lead may do all of it. A read that names .git passes.
+test('guard: a worker does not push, post or change a git folder; the lead may (#555)', () => {
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  const refusals: Record<string, string[]> = {
+    'worker-push': [
+      'git push',
+      'git push -u origin task',
+      'nice git -C . push',
+      'git send-pack origin HEAD:main',
+      'git subtree push --prefix=docs origin pages',
+      'git config alias.p push',
+      "git config --global alias.p '!git push'",
+      'git config set alias.p push',
+      'git -c alias.p=push p',
+      'git --config-env alias.p=X p',
+      'yokoten bot -- gh pr create --fill',
+      'yokoten bot -- git status',
+      'node bin/yokoten.ts bot -- gh issue list',
+      'npx yokoten bot -- gh pr merge 1',
+      'gh pr create --fill',
+      'gh -R a/b pr merge 1 --squash',
+      'gh pr edit 1 --title x',
+      'gh pr close 1',
+      'gh pr comment 1 --body x',
+      'gh api -X PUT repos/a/b/pulls/1/merge',
+      'gh api --method=DELETE repos/a/b/git/refs/heads/x',
+      'gh api -XPATCH repos/a/b/pulls/1',
+      'gh api --method post repos/a/b/issues',
+      'gh api repos/a/b/issues -f title=x',
+      'gh api repos/a/b/issues/1/comments -F body=@note.md',
+      'gh api repos/a/b/pulls --input body.json',
+      "gh api graphql -f query='mutation { addComment(input: {}) { clientMutationId } }'",
+      'gh api graphql -F query=@q.graphql',
+    ],
+    'worker-mark': [
+      'rm .git/worktrees/wt/yokoten-worker',
+      'rm -rf .git',
+      'rm "$(sed "s/gitdir: //" .gi?)"/yokoten-w*',
+      'rm "$(git rev-parse --git-dir)/yokoten-worker"',
+      'rm -rf "$(git rev-parse --absolute-git-dir)"',
+      'rm -rf "$(cut -c9- .gi?)"',
+      'rm ../repo/.g*/worktrees/*/yokoten-*',
+      'chmod 000 .gi?',
+      'chmod 000 .[g]it',
+      'mv .gi? x',
+      'mv .{git,x} y',
+      'mkfifo .git',
+      'ln -s ../repo/.git g',
+      'echo "gitdir: ../repo/.git" > .git',
+      'cat x >> .gi?/config',
+      'touch ../repo/.git/worktrees/wt/locked',
+      "find . -name 'yokoten-w*' -delete",
+      'find .git -exec chmod 000 {} +',
+      'find . -name yokoten-worker | xargs rm',
+      `python3 -c "import os; os.remove('.git')"`,
+      "bash -c 'rm .gi?'",
+      'GIT_DIR=x git status',
+      'git --git-dir=../repo/.git config user.name x',
+      'git worktree remove ../wt',
+      'git worktree add ../other -b other',
+    ],
+  };
+  for (const [id, commands] of Object.entries(refusals)) {
+    for (const command of commands) {
+      assert.equal(checkCommand(command, { cwd: process.cwd(), env: worker })?.id, id, command);
+      // The lead may: the same command is not refused for these rules.
+      assert.ok(!['worker-push', 'worker-mark'].includes(checkCommand(command, { cwd: process.cwd(), env: {} })?.id ?? ''), `the lead may: ${command}`);
+    }
+  }
+  assert.match(checkCommand('gh api -X PUT x', { cwd: process.cwd(), env: worker })?.fix ?? '', /commit in your worktree and report; the lead pushes after review/);
+  // Reads that name .git, GIT_DIR or the mark, and near misses: a worker runs them.
+  for (const command of [
+    'grep -rn foo --exclude-dir=.git .',
+    'find . -path ./.git -prune -o -print',
+    "find . -name '*.ts' -not -path './.git/*'",
+    'grep -rn GIT_DIR src',
+    'tree -I .git',
+    'cat ../repo/.git/worktrees/wt/YOKOTEN-WORKER',
+    'ls "$(git rev-parse --git-common-dir)"',
+    'git rev-parse --git-path yokoten-worker',
+    'cat .gitignore .gitattributes',
+    'ls .github/workflows',
+    'rm -rf dist/* node_modules',
+    'rm "$TMPDIR/out.txt"',
+    'git clone https://example.com/a/b.git',
+    'git worktree list',
+    'git status',
+    "git log --format='%h %s' -3",
+    'git config --get alias.p',
+    'git config user.name',
+    'npm test',
+    'node --test',
+    'gh pr view 1',
+    'gh pr list --state open',
+    'gh issue list',
+    'gh api repos/a/b/pulls',
+    'gh api -X GET search/issues -f q=is:open',
+    "gh api graphql -f query='query { viewer { login } }'",
+    'yokoten check',
+    'node bin/yokoten.ts check',
+  ]) allowed(command, worker);
+});
+
+// #555: the mark is found with no git process, and it fails closed: a .git link the guard
+// can't read makes the session a worker. A FIFO named .git never blocks it.
+test('worker mark: found from .git, fails closed on a link it cannot read (#555)', () => {
+  const base = makeTempDir('yokoten-mark-');
+  const store = join(base, 'store');
+  mkdirSync(store);
+  const tree = join(base, 'wt');
+  mkdirSync(join(tree, 'src'), { recursive: true });
+  const link = (text: string) => writeFileSync(join(tree, '.git'), text);
+  // Negative control: an unmarked worktree is the lead's; a main checkout too.
+  link(`gitdir: ${store}\n`);
+  assert.equal(workerMarkAt(join(tree, 'src')), null);
+  assert.deepEqual(withWorkerMark({}, [join(tree, 'src')]), {});
+  const main = join(base, 'main');
+  mkdirSync(join(main, '.git'), { recursive: true });
+  assert.equal(workerMarkAt(main), null);
+  assert.equal(workerRole({}, [main, base]), null);
+  // Positive control: the mark.
+  writeFileSync(join(store, 'yokoten-worker'), 'x');
+  assert.equal(workerMarkAt(join(tree, 'src')), 'mark');
+  assert.equal(workerRole({}, [main, join(tree, 'src')]), 'mark');
+  assert.deepEqual(withWorkerMark({}, [tree]), { YOKOTEN_ROLE: 'worker' });
+  assert.equal(workerRole({ YOKOTEN_ROLE: 'worker' }, ['/nowhere']), 'env');
+  rmSync(join(store, 'yokoten-worker'));
+  // Fails closed: a gitdir that is gone, a .git with no gitdir line, one too big to be real.
+  link(`gitdir: ${join(base, 'gone')}\n`);
+  assert.equal(workerMarkAt(tree), 'broken');
+  link('not a link\n');
+  assert.equal(workerMarkAt(tree), 'broken');
+  link(`gitdir: ${store}\n${'#'.repeat(5000)}\n`);
+  assert.equal(workerMarkAt(tree), 'broken');
+  link(`gitdir: ${store}\n`);
+  assert.equal(workerMarkAt(tree), null);
+  // Modes need a user that file modes stop: not root, not Windows.
+  if (process.platform !== 'win32' && process.getuid?.() !== 0) {
+    chmodSync(join(tree, '.git'), 0o000);
+    assert.equal(workerMarkAt(tree), 'broken', 'a .git it cannot read');
+    chmodSync(join(tree, '.git'), 0o644);
+    chmodSync(store, 0o000);
+    assert.equal(workerMarkAt(tree), 'broken', 'a git folder it cannot read');
+    chmodSync(store, 0o755);
+    assert.equal(workerMarkAt(tree), null);
+  }
+  // A FIFO named .git: not read, so nothing waits on a writer; and it fails closed.
+  if (process.platform !== 'win32') {
+    rmSync(join(tree, '.git'));
+    runChild('mkfifo', [join(tree, '.git')]);
+    const started = Date.now();
+    assert.equal(workerMarkAt(tree), 'broken');
+    assert.ok(Date.now() - started < 1000);
+    rmSync(join(tree, '.git'));
+    // A symlink to a git folder is a main checkout's .git.
+    symlinkSync(join(main, '.git'), join(tree, '.git'));
+    assert.equal(workerMarkAt(tree), null);
+  }
+});
+
+// #555: an edit inside a git folder is a worker's way to change the mark, through a symlink too.
+test('checkWorkerMarkEdit: a git folder by name or by real path (#555)', () => {
+  assert.equal(checkWorkerMarkEdit('/w/.git/worktrees/wt/yokoten-worker')?.id, 'worker-mark');
+  assert.equal(checkWorkerMarkEdit('/w/wt/.git')?.id, 'worker-mark');
+  assert.equal(checkWorkerMarkEdit('/w/wt/src/git.ts'), null);
+  assert.equal(checkWorkerMarkEdit('/w/wt/.github/x.yml'), null);
+  if (process.platform === 'win32') return;
+  const base = makeTempDir('yokoten-edit-');
+  const store = join(base, 'store'); // a worktree's git folder, not named .git
+  const tree = join(base, 'wt');
+  mkdirSync(join(base, 'repo', '.git'), { recursive: true });
+  mkdirSync(store);
+  mkdirSync(join(tree, 'src'), { recursive: true });
+  writeFileSync(join(tree, '.git'), `gitdir: ${store}\n`);
+  symlinkSync(join(base, 'repo', '.git'), join(tree, 'g'));
+  symlinkSync(store, join(tree, 'h'));
+  assert.equal(checkWorkerMarkEdit(join(tree, 'g', 'config'), tree)?.id, 'worker-mark', 'a symlink to a .git folder');
+  assert.equal(checkWorkerMarkEdit(join(tree, 'h', 'yokoten-worker2'), tree)?.id, 'worker-mark', "a symlink to the worktree's git folder");
+  assert.equal(checkWorkerMarkEdit(join(tree, 'src', 'a.ts'), tree), null);
+  assert.equal(checkWorkerMarkEdit(join(tree, 'h', 'x'), join(base, 'repo')), null, 'another checkout: its git folder is not this one');
 });

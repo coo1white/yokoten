@@ -7,7 +7,7 @@ import { existsSync, lstatSync, readFileSync, readlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { Config, Env } from '../rules/config.ts';
 import { findUnknownKeys, matcher } from '../rules/config.ts';
-import { checkEdit } from '../rules/guards.ts';
+import { checkEdit, withWorkerMark } from '../rules/guards.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
 import { type Finding, finding } from '../rules/message.ts';
 import { isChangeFile, longSentenceNote, longSentences } from '../rules/pr.ts';
@@ -438,8 +438,10 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
     const touched = [...new Set(files.flatMap((f) => (f.from === undefined || f.status !== 'R' ? [f.path] : [f.from, f.path])))];
     // A file only the other branch had, removed during the merge, is the worker's too.
     const heads = mergeHeads(root, env);
+    // A worker by YOKOTEN_ROLE or by the mark on its worktree, which a runtime's env can't drop (#555).
+    const roleEnv = withWorkerMark(env, [root]);
     for (const path of [...new Set([...mergeMade(root, touched, heads, env), ...mergeRemoved(root, heads, env)])]) {
-      const reason = checkEdit(path, { config, env });
+      const reason = checkEdit(path, { config, env: roleEnv });
       if (reason) problems.push(reason);
     }
     // A deleted file has no blob, and a submodule's lives in its own repo.
