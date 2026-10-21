@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import {
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -281,4 +282,24 @@ test('docs: a finding carries its rule\'s link, in text, JSON and explain (#94)'
   assert.equal(explained && explainLines(explained).at(-1), `Docs: ${link}`);
   const step = explain('commit-check');
   assert.ok(step && step.docs === undefined && !explainLines(step).some((line) => line.startsWith('Docs:')), 'a step has no link yet');
+});
+
+test('docs: no message names a docs/<file>.md path without a link (#524)', () => {
+  // A user who installed from npm has no docs/ folder to open: a message links to GitHub instead.
+  const sources: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) walk(join(dir, entry.name));
+      else if (entry.name.endsWith('.ts')) sources.push(join(dir, entry.name));
+    }
+  };
+  walk('src');
+  const bare: string[] = [];
+  for (const file of sources) {
+    for (const [index, line] of readFileSync(file, 'utf8').split('\n').entries()) {
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+      if (/(?<!blob\/main\/)\bdocs\/[\w.-]+\.md/.test(line)) bare.push(`${file}:${index + 1}`);
+    }
+  }
+  assert.deepEqual(bare, []);
 });

@@ -36,7 +36,7 @@ import {
 } from '../repo/helpers.ts';
 import { hasHook } from '../../src/agents/hooks-file.ts';
 import { copyRuntime } from '../../src/setup/files.ts';
-import { countOwnMarks, fillMarks, filledLines, install, isOnPath, launcherText, machineStateFile, machineUserNames, migrateMarks, paths, PROFILE_LINE, setUpLauncher, uninstall, type UserNameProbe, USER_CLI, writeFileAtomic } from '../../src/setup/install.ts';
+import { countMarkKinds, fillMarks, filledLines, hasMarks, install, isOnPath, launcherText, machineStateFile, machineUserNames, migrateMarks, paths, PROFILE_LINE, setUpLauncher, uninstall, type UserNameProbe, USER_CLI, writeFileAtomic } from '../../src/setup/install.ts';
 import { autoLogins, loadMarkKinds, makeRedactor } from '../../src/rules/privacy.ts';
 
 const BAD_USER_SETTINGS: [content: string, reason: (file: string) => string][] = [
@@ -99,7 +99,7 @@ test('install: skills, agents and hooks once, the user\'s own files untouched', 
   // The installed copy runs on its own.
   const doctor = spawnSync('node', [join(sandbox.home, '.local/share/yokoten/bin/yokoten.ts'), 'doctor', '--session'], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' });
   assert.equal(doctor.status, 0, doctor.stderr);
-  assert.match(doctor.stdout, /private-marks is missing or empty/);
+  assert.match(doctor.stdout, /private-marks is missing or has no marks/);
   // The home folder names the machine's user; it never shows (#25).
   for (const out of [result.stdout, doctor.stdout]) assert.ok(!out.includes(sandbox.home), 'output shows the home path');
   assert.match(doctor.stdout, /~\/\.config\/yokoten\/private-marks/);
@@ -617,7 +617,7 @@ test("install: adds the machine's marks and a git mailmap, and never prints a va
   for (const value of ['Jane', 'personal-mail', 'private-host']) assert.ok(!(result.stdout + result.stderr).includes(value), 'install printed a value');
   assert.match(result.stdout, /^added your git name to the private marks \(not shown\)$/m);
   assert.match(result.stdout, /^added to ~\/\.config\/yokoten\/private-marks from this machine: git email, private remote host \(the values are not shown\)$/m);
-  assert.match(result.stdout, /^yokoten can't find your city or your domains on its own; to add one, run `yokoten marks add` and type it \(it is not shown\)$/m);
+  assert.match(result.stdout, /^optional: add your city or your domains too; yokoten can't find them on its own; run `yokoten marks add` and type one; it is not shown$/m);
   assert.match(result.stdout, /^wrote ~\/\.config\/yokoten\/mailmap, and git log and git show now print your emails as a placeholder$/m);
   assert.match(readFileSync(marks, 'utf8'), /# added by yokoten from this machine: git name\nJane Example\n# added by yokoten from this machine: git email\njane@personal-mail\.dev\n# added by yokoten from this machine: private remote host\nbuild\.private-host\.dev\n$/);
   assert.equal(statSync(marks).mode & 0o777, 0o600);
@@ -627,7 +627,8 @@ test("install: adds the machine's marks and a git mailmap, and never prints a va
   // A second run appends nothing.
   const before = readFileSync(marks, 'utf8');
   result = await sandbox.call(['install']);
-  assert.match(result.stdout, /^kept ~\/\.config\/yokoten\/private-marks: it already has what this machine knows$/m);
+  assert.match(result.stdout, /^kept ~\/\.config\/yokoten\/private-marks$/m);
+  assert.doesNotMatch(result.stdout, /already has what/, 'the file is named once');
   assert.match(result.stdout, /^kept ~\/\.config\/yokoten\/mailmap: it already maps your emails$/m);
   assert.equal(readFileSync(marks, 'utf8'), before);
   // The user's own mailmap.file stays.
@@ -810,7 +811,7 @@ test('fillMarks: rewrites an old block in a fake home, by the gh login on file, 
   assert.equal(readFileSync(marks, 'utf8'), '# added by yokoten from this machine: forge login\nocto-jdoe\n# your own marks\nnas\n');
   assert.equal(statSync(marks).mode & 0o777, 0o600);
   assert.deepEqual(autoLogins(loadMarkKinds(env)), ['octo-jdoe']);
-  assert.equal(countOwnMarks(env), 1);
+  assert.equal(countMarkKinds(env).get('by hand'), 1, 'the block yokoten could not tell is the owner\'s');
   assert.deepEqual(readdirSync(dirname(marks)), ['private-marks'], 'no temp file is left');
   // A second run changes nothing.
   fillMarks(env, []);
@@ -843,7 +844,7 @@ test('install: adds the git name as a mark of its own, never prints it, and not 
   result = await sandbox.call(['install']);
   said.push(result.stdout, result.stderr);
   assert.doesNotMatch(result.stdout, /added your git name/);
-  assert.match(result.stdout, /^kept ~\/\.config\/yokoten\/private-marks: it already has what this machine knows$/m);
+  assert.match(result.stdout, /^kept ~\/\.config\/yokoten\/private-marks$/m);
   assert.equal(linesOf(readFileSync(marks, 'utf8'), SAMPLE_NAME), 1);
   assert.ok(!said.some((text) => /ann|sample/i.test(text)), 'no output holds the name');
 });
@@ -886,8 +887,20 @@ test('fillMarks: the git name with no name set, one word, a shared name, a name 
   assert.deepEqual(fillMarks(env, [{ kind: 'git name', value: 'Bo Example' }]), ['git name']);
 });
 
+test('hasMarks: any mark counts, the ones yokoten found too; a comment or no file does not (#522)', () => {
+  const home = makeTempDir('yokoten-');
+  const env = { HOME: home };
+  const marks = join(home, '.config', 'yokoten', 'private-marks');
+  assert.equal(hasMarks(env), false, 'no file');
+  mkdirSync(dirname(marks), { recursive: true });
+  writeFileSync(marks, '# only a comment\n\n');
+  assert.equal(hasMarks(env), false, 'no mark');
+  writeFileSync(marks, `# added by yokoten from this machine: git name\n${SAMPLE_NAME}\n`);
+  assert.equal(hasMarks(env), true, 'a mark install found');
+});
+
 test('filledLines: the git name has a line of its own, with no value; the other kinds keep theirs (#434)', () => {
   assert.deepEqual(filledLines(['git name', 'git email'], '~/m'), ['added your git name to the private marks (not shown)', 'added to ~/m from this machine: git email (the values are not shown)']);
   assert.deepEqual(filledLines(['git name'], '~/m'), ['added your git name to the private marks (not shown)']);
-  assert.deepEqual(filledLines([], '~/m'), ['kept ~/m: it already has what this machine knows']);
+  assert.deepEqual(filledLines([], '~/m'), [], 'nothing added: the private-marks check gives the state, once (#522)');
 });

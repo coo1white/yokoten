@@ -281,8 +281,11 @@ export function install(env: Env, { cwd, gh, ask, platform }: { cwd?: string; gh
   report.push(
     ...trySafely('the marks from this machine', () => {
       const lines = filledLines(fillMarks(env, found), target.marks);
-      const missing = missingMarkKinds(loadMarks(env), found);
-      if (missing.length) lines.push(`yokoten can't find ${missing.join(' or ')} on its own; to add one, run \`yokoten marks add\` and type it (it is not shown)`);
+      // One answer, as doctor gives it (#522): no marks at all, or an optional offer.
+      const marks = loadMarks(env);
+      const missing = missingMarkKinds(marks, found);
+      if (!marks.length) lines.push(`${target.marks} has no marks yet; ${EMPTY_MARKS_FIX}`);
+      else if (missing.length) lines.push(`${offerMarkKinds(missing)}; ${OFFER_MARKS_FIX}`);
       return lines;
     }),
     ...trySafely('the git mailmap', () => [setUpMailmap(env, found)]),
@@ -688,29 +691,34 @@ export function fillMarks(env: Env, found: MachineMark[]): string[] {
   return kinds;
 }
 
-/** How many marks the owner wrote: the lines of the file outside the parts `fillMarks` added. */
-export function countOwnMarks(env: Env): number {
-  let text = '';
+/**
+ * Whether the private-marks file has a mark, of any kind: the ones install found count too
+ * (#522). False when the file is missing or can't be read.
+ */
+export function hasMarks(env: Env): boolean {
   try {
-    text = readFileSync(marksFile(env), 'utf8');
+    return loadMarks(env).length > 0;
   } catch {
-    return 0;
+    return false;
   }
-  let isFound = false;
-  let count = 0;
-  for (const line of text.split(/\r?\n/).map((part) => part.trim())) {
-    if (line.startsWith('#')) isFound = line === FOUND_HEADER || line.startsWith(`${FOUND_HEADER}: `);
-    else if (line && !isFound) count++;
-  }
-  return count;
 }
 
-/** The lines install and doctor print after `fillMarks`: the kinds, never the values. The git name has a line of its own (#434). */
+/** What doctor and install say to do when the private-marks file has no mark. */
+export const EMPTY_MARKS_FIX = 'run `yokoten marks add` and type your name, your city or a domain; it is not shown';
+
+/** The offer of the kinds yokoten can't find, when the file has marks: optional, never missing (#522). */
+export const offerMarkKinds = (missing: string[]): string => `optional: add ${missing.join(' or ')} too; yokoten can't find them on its own`;
+export const OFFER_MARKS_FIX = 'run `yokoten marks add` and type one; it is not shown';
+
+/**
+ * The lines install and doctor print after `fillMarks`: the kinds, never the values. The git
+ * name has a line of its own (#434). Nothing when nothing was added: the private-marks check
+ * gives the file's state, once (#522).
+ */
 export function filledLines(kinds: string[], file: string): string[] {
   const others = kinds.filter((kind) => kind !== 'git name');
   const lines = kinds.includes('git name') ? [GIT_NAME_ADDED] : [];
   if (others.length) lines.push(`added to ${file} from this machine: ${others.join(', ')} (the values are not shown)`);
-  else if (!lines.length) lines.push(`kept ${file}: it already has what this machine knows`);
   return lines;
 }
 

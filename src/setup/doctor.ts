@@ -41,7 +41,7 @@ import { findTempDirs, readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advi
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
 import { compareCoreRules, compareVersions, hookCliPath, isSelf, readCoreRules, summarizeUpdate, withGitReads, workflowNotes } from './init.ts';
 import { assumeEmptyFolder, gitConfig } from '../run/check.ts';
-import { countOwnMarks, fillMarks, launcherFile, PROFILE_LINE, filledLines, trySafely, installedPieces, isOnPath, launcherDir, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
+import { EMPTY_MARKS_FIX, fillMarks, hasMarks, OFFER_MARKS_FIX, offerMarkKinds, launcherFile, PROFILE_LINE, filledLines, trySafely, installedPieces, isOnPath, launcherDir, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
 import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, uncheckedText, walk } from './road.ts';
 
 /**
@@ -250,8 +250,8 @@ export function machineChecks(env: Env): Practice[] {
     session,
     // 'runtime' in the text, as before; the id differs from the road's runtime step.
     practice('runtime', 'machine-runtime', runtime === VERSION || (plugin && runtime === null), runtime ? `the installed runtime is ${runtime}, this yokoten is ${VERSION}` : 'no runtime installed', plugin ? 'remove it with `yokoten uninstall`; the plugin brings its own' : 'run `yokoten install` from this copy of yokoten'),
-    // The marks yokoten found on the machine don't count: only the owner knows a city (#390).
-    practice('private-marks', 'private-marks', countOwnMarks(env) > 0, loadMarks(env).length ? `${target.marks} has only the marks yokoten found on this machine` : `${target.marks} is missing or empty`, 'run `yokoten marks add` and type your city, a domain or a server name, and your real name if git does not have it; it is not shown'),
+    // Any mark counts, the ones install found too: only a file with none is missing (#522).
+    practice('private-marks', 'private-marks', hasMarks(env), `${target.marks} is missing or has no marks`, EMPTY_MARKS_FIX),
   ];
 }
 
@@ -303,8 +303,9 @@ export function privacyNotes(env: Env, root: string | null, output: Config['priv
   } catch {
     // An unreadable file: the private-marks check says so.
   }
-  const missing = missingMarkKinds(marks, machineMarks(env, { cwd: root ?? undefined }));
-  if (missing.length) notes.push(practice('private-mark-kinds', 'private-marks', false, `your private marks may lack ${missing.join(', ')}`, 'run `yokoten marks add` and type one; it is not shown'));
+  // An offer, only when the file has marks: with none, the private-marks check says what to do (#522).
+  const missing = marks.length ? missingMarkKinds(marks, machineMarks(env, { cwd: root ?? undefined })) : [];
+  if (missing.length) notes.push(practice('private-mark-kinds', 'private-marks', false, offerMarkKinds(missing), OFFER_MARKS_FIX));
   return notes;
 }
 

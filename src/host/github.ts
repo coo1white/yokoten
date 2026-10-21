@@ -19,7 +19,7 @@ import { createPrivateKey, sign } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
-import { type Finding, finding, formatFinding, place } from '../rules/message.ts';
+import { docsLink, type Finding, finding, formatFinding, place } from '../rules/message.ts';
 import type { CodeOwners, PullRequest } from '../rules/pr.ts';
 import { homeOf, NO_HOME } from '../rules/privacy.ts';
 import { readGit } from '../run/check.ts';
@@ -85,7 +85,7 @@ export function readKeysFile(env: Env): Env {
 export function botConfig(env: Env): BotConfig | string {
   const settings = { ...readKeysFile(env), ...Object.fromEntries(BOT_SETTINGS.filter((name) => env[name]).map((name) => [name, env[name]])) };
   const appId = settings.YOKOTEN_BOT_APP_ID;
-  if (!appId) return `YOKOTEN_BOT_APP_ID is not set, in the environment or in ${KEYS_FILE}: the App ID from the App's settings page (docs/server.md, step 3)`;
+  if (!appId) return `YOKOTEN_BOT_APP_ID is not set, in the environment or in ${KEYS_FILE}: the App ID from the App's settings page (step 3 of ${docsLink('server.md')})`;
   const keyFile = settings.YOKOTEN_BOT_KEY || defaultKeyFile(env);
   if (!keyFile) return `${NO_HOME}: set YOKOTEN_BOT_KEY to the key file's full path`;
   return {

@@ -19,6 +19,7 @@ import { DEFAULTS, type Env } from '../../src/rules/config.ts';
 import { checkCommand } from '../../src/rules/guards.ts';
 import { formatFinding } from '../../src/rules/message.ts';
 import {
+  describeMark,
   hasMark,
   hideHome,
   homeIn,
@@ -28,6 +29,7 @@ import {
   machineAllowed,
   machineAllowFile,
   makeRedactor,
+  mapMarkKinds,
   normalizeRemote,
   notUtc,
   ownMarks,
@@ -1977,4 +1979,41 @@ test('hasMark: linear on long input (#434)', () => {
   ];
   for (const [name, make] of inputs) assertLinear(name, make, (text) => hasMark(text, FULL));
   for (const [name, make] of inputs) assertLinear(`camel: ${name}`, make, (text) => hasMark(text, NICK));
+});
+
+// #523: a stopped line names the kind of mark, never its value, and how to change it.
+test('scanText: a private-mark finding names the kind of mark, never the value (#523)', () => {
+  const name = ['Rue', 'Sample'].join(' ');
+  const email = `ruex${at}personal-mail.dev`;
+  const text = [`by ${name}`, `mail ${email}`, 'ask @octo-ruex', 'see build.rue-host.dev', 'from QuietVale'].join('\n');
+  const marks = [
+    { value: name.toLowerCase(), kind: 'git name' },
+    { value: email, kind: 'git email' },
+    { value: 'octo-ruex', kind: 'forge login' },
+    { value: 'build.rue-host.dev', kind: 'private remote host' },
+    { value: 'quietvale', kind: null },
+  ];
+  const found = scanText(text, { file: 'a.md', marks: marks.map((mark) => mark.value), kinds: mapMarkKinds(marks) }).filter((hit) => hit.id === 'private-mark');
+  assert.deepEqual(
+    found.map((hit) => [hit.line, hit.what]),
+    [
+      [1, 'matches your git name (a private mark yokoten added by itself)'],
+      [2, 'matches your git email (a private mark yokoten added by itself)'],
+      [3, 'matches your forge login (a private mark yokoten added by itself)'],
+      [4, 'matches the name of a private server in your git remotes (a private mark yokoten added by itself)'],
+      [5, 'matches a word you added to your private marks'],
+    ],
+  );
+  // The fix says how to change it: turn a kind off, take the mark out, or allow it here.
+  assert.match(found[0].fix, /`yokoten marks off git-name`/);
+  assert.match(found[1].fix, /`yokoten marks off git-email`/);
+  assert.match(found[2].fix, /`yokoten marks off forge-login`/);
+  assert.match(found[3].fix, /`yokoten marks allow <mark> --here`/);
+  assert.match(found[4].fix, /`yokoten marks allow <mark> --here`[^]*`yokoten marks remove`/);
+  const said = JSON.stringify(found).toLowerCase();
+  for (const mark of marks) assert.ok(!said.includes(mark.value), 'a finding holds a mark');
+  for (const part of ['sample', 'personal-mail', 'octo-ruex', 'rue-host', 'quietvale']) assert.ok(!said.includes(part), `a finding holds ${part.length} letters of a mark`);
+  // With no kinds, as before: the line of the file.
+  assert.equal(scanText('from QuietVale', { file: 'a.md', marks: ['quietvale'] })[0].what, 'matches a line of your private-marks file');
+  assert.equal(describeMark('some new kind').what, 'matches your some new kind (a private mark yokoten added by itself)');
 });

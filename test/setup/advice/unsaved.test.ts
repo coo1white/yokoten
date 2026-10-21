@@ -461,3 +461,16 @@ test('unsaved: every note is plain, with sentences of at most 25 words, and no f
     for (const sentence of text.split(/[.;] /)) assert.ok(sentence.split(/\s+/).length <= 25, sentence);
   }
 });
+
+test('unsaved: with no remote no advice says push on its own (#524)', () => {
+  const sandbox = makeSandbox();
+  writeFileSync(join(sandbox.repo, 'a.txt'), 'a\n');
+  sandbox.git('add', '-A');
+  sandbox.git('commit', '-qm', 'first');
+  writeFileSync(join(sandbox.repo, 'a.txt'), 'changed\n');
+  const found = unsavedNotes(readUnsaved(sandbox.repo, { env: sandbox.env, readMounts: () => null, tempDirs: [] })!, { home: sandbox.home });
+  assert.deepEqual(ids(found), ['uncommitted-changes', 'unpushed-commits']);
+  assert.equal(found[0].fix, 'commit them: `git -C . add -A && git -C . commit`; once the repo has a remote, push it');
+  assert.equal(found[1].fix, 'add a remote first: `git remote add origin <url>`; then push: `git push -u origin --all`');
+  for (const note of found) assert.doesNotMatch(note.fix, /, then push|and push/, 'push comes after a remote is added');
+});
