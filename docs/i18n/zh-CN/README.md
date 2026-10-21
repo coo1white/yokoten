@@ -35,6 +35,21 @@
 
 用别的 agent，或者根本不用 agent，提交检查和 CI 照样会拦下坏的改动。
 
+## 用什么语言都行
+
+yokoten 自己需要 Node 22.18 或更高版本，但你的项目用什么语言都可以。
+守卫、隐私和密钥检查、CI、issue 和 PR 检查，在所有语言里都一样工作。
+
+只有一步要看语言：`doctor` 会找你的测试命令。
+
+| | 语言 |
+|---|---|
+| 能找到测试命令 | JavaScript 和 TypeScript（npm、Deno）、Python、Go、Rust、Java（Maven、Gradle），以及有 `make test` 的项目 |
+| 正在做（[#546](https://github.com/yokoten-labs/yokoten/issues/546)） | .NET、Ruby、PHP、Swift、Elixir、Dart 和 Flutter |
+
+目前从安装到发版的整条路，只在 TypeScript 项目上完整走过。
+Issue #546 会在其他语言的项目上也走一遍。
+
 ## 为什么做它
 
 好团队里，每次改动都有原因、有测试、有人审过。这些习惯，很多人要干上好几年、吃过几次亏才学会。
