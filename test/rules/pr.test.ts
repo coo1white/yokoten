@@ -18,6 +18,7 @@ import {
   changedLines,
   checkIssueTitle,
   checkOwnedTier,
+  hasMadeWith,
   checkPullRequest,
   checkPullRequestBody,
   checkPullRequestTitle,
@@ -37,7 +38,7 @@ import {
 
 const goodPr = (): PullRequest => ({
   title: 'feat(kit): a pull request standard, checked in CI',
-  body: 'tier: B\nCloses #47\n\n## Why\nNothing checks it.\n\n## What changed\n- a rule\n\n## How tested\n`node --test`: 50 pass.\n',
+  body: 'tier: B\nCloses #47\n\n## Why\nNothing checks it.\n\n## What changed\n- a rule\n\n## How tested\n`node --test`: 50 pass.\n\nMade with worker (opus)\n',
   files: ['src/rules/pr.ts', 'CHANGELOG.md'],
   labels: ['feat', 'tier B'],
   milestone: 'M0 pre-hackathon',
@@ -104,7 +105,8 @@ test('pull request: each missing part fails with what to do (#47)', () => {
   one({ body: goodPr().body.replace('## How tested\n`node --test`: 50 pass.\n', '') }, /[Aa]dd a `## How tested`/);
   one({ body: goodPr().body.replace('Nothing checks it.', '<!-- say why -->') }, /`## Why` section is empty/);
   // A comment that never closes hides the rest on GitHub's page, so the check skips it too.
-  one({ body: goodPr().body.replace('`node --test`', '<!-- how\n`node --test`') }, /`## How tested` section is empty/);
+  // It hides the `Made with` line as well, so the check names that too.
+  assert.deepEqual(checkPullRequest({ ...goodPr(), body: goodPr().body.replace('`node --test`', '<!-- how\n`node --test`') }, DEFAULTS).map((p) => p.id), ['pr-section', 'pr-made-with']);
   // A comment rebuilt from pieces is text on GitHub's page, and to the check.
   assert.deepEqual(checkPullRequest({ ...goodPr(), body: goodPr().body.replace('Nothing checks it.', '<!<!---->-- Nothing checks it.') }, DEFAULTS), []);
   // Inside code, `<!--` is only text: in a code span, and in a fenced block.
@@ -153,9 +155,29 @@ test('pull request: Closes, Fixes, Part of and Refs each link the issue (#82)', 
   }
 });
 
+// #570: every pull request names the AI and model that made it, on its last line.
+test('pull request body: the last line is `Made with <agent> (<model>)` (#570)', () => {
+  const made = '\nMade with worker (opus)\n';
+  const bodies = (body: string) => checkPullRequestBody({ body, files: goodPr().files }, DEFAULTS).map((p) => p.id);
+  // Positive controls: with the line the body passes, without it only this fails.
+  assert.deepEqual(bodies(goodPr().body), [], 'with the line');
+  assert.deepEqual(bodies(goodPr().body.replace(made, '\n')), ['pr-made-with'], 'without the line');
+  assert.ok(hasMadeWith(goodPr().body));
+  assert.equal(hasMadeWith(goodPr().body.replace(made, '\n')), false);
+  // Blank lines after it are fine; anything else is not.
+  assert.deepEqual(bodies(`${goodPr().body}\n\n`), [], 'trailing blank lines');
+  assert.deepEqual(bodies(goodPr().body.replace(made, `${made}Thanks\n`)), ['pr-made-with'], 'text after the line');
+  assert.deepEqual(bodies(goodPr().body.replace(made, '\nMade with worker ()\n')), ['pr-made-with'], 'no model');
+  assert.deepEqual(bodies(goodPr().body.replace(made, '\nMade with worker\n')), ['pr-made-with'], 'no model in brackets');
+  assert.deepEqual(bodies(goodPr().body.replace(made, '\nMade by worker (opus)\n')), ['pr-made-with'], 'another wording');
+  // A commented line counts neither way: hidden credit is no credit.
+  assert.deepEqual(bodies(goodPr().body.replace(made, '\n<!-- Made with worker (opus) -->\n')), ['pr-made-with'], 'a comment hides it');
+  assert.deepEqual(bodies(`${goodPr().body}<!-- a note -->\n`), [], 'a trailing comment is set aside');
+});
+
 test('pull request: docs, tests and CI need no changelog line; a reason lets code through (#47)', () => {
   assert.deepEqual(checkPullRequest({ ...goodPr(), files: ['docs/guide.md', 'test/a.test.ts', '.github/workflows/pr.yml'] }, DEFAULTS), []);
-  assert.deepEqual(checkPullRequest({ ...goodPr(), files: ['src/a.ts'], body: `${goodPr().body}No changelog: a comment only\n` }, DEFAULTS), []);
+  assert.deepEqual(checkPullRequest({ ...goodPr(), files: ['src/a.ts'], body: `${goodPr().body.replace('\nMade with worker (opus)\n', '\nNo changelog: a comment only\n\nMade with worker (opus)\n')}` }, DEFAULTS), []);
 });
 
 test('pull request: a file in changes/ counts as the changelog entry (#132)', () => {
@@ -182,12 +204,12 @@ test('pull request: Dependabot gets the title check, and the body rules as notes
     assert.deepEqual(checkPullRequestTitle(title, DEFAULTS), [], title);
   }
   const found = checkPullRequest(dependabotPr(), DEFAULTS);
-  assert.deepEqual(found.map((f) => f.id), ['pr-tier', 'pr-section', 'pr-section', 'pr-section', 'pr-issue', 'pr-milestone', 'pr-labels', 'pr-labels'], 'the rules find the same things');
+  assert.deepEqual(found.map((f) => f.id), ['pr-tier', 'pr-section', 'pr-section', 'pr-section', 'pr-issue', 'pr-made-with', 'pr-milestone', 'pr-labels', 'pr-labels'], 'the rules find the same things');
   const owned = checkOwnedTier({ files: ['.github/workflows/ci.yml'], body: 'tier: B\n' }, { text: '/.github/ @owner\n', from: 'the base branch' });
   assert.ok(owned);
   const split = splitForDependabot(dependabotPr(), [...found, owned]);
   assert.deepEqual(split.problems, [], 'nothing fails');
-  assert.deepEqual(split.notes.map((f) => f.id), ['pr-tier', 'pr-section', 'pr-section', 'pr-section', 'pr-issue', 'pr-milestone', 'pr-labels', 'pr-labels', 'pr-owned'], 'every one is still shown');
+  assert.deepEqual(split.notes.map((f) => f.id), ['pr-tier', 'pr-section', 'pr-section', 'pr-section', 'pr-issue', 'pr-made-with', 'pr-milestone', 'pr-labels', 'pr-labels', 'pr-owned'], 'every one is still shown');
   assert.match(formatFinding(split.notes[0]), /Dependabot opened this pull request, so it is a note./);
   for (const id of ['pr-labels', 'pr-changelog', 'pr-kit'] as const) assert.equal(splitForDependabot(dependabotPr(), [finding(id, 'x', 'y')]).notes.length, 1, id);
 
@@ -385,11 +407,11 @@ test('guard: titles are checked only by a project hook in a repo with a yokoten.
 test('pull request body: the body rules of check --pr, without the title, milestone or labels (#406)', () => {
   const body = { body: goodPr().body, files: goodPr().files };
   assert.deepEqual(checkPullRequestBody(body, DEFAULTS), []);
-  assert.deepEqual(checkPullRequestBody({ ...body, body: 'x' }, DEFAULTS).map((p) => p.id), ['pr-tier', 'pr-section', 'pr-section', 'pr-section', 'pr-issue']);
+  assert.deepEqual(checkPullRequestBody({ ...body, body: 'x' }, DEFAULTS).map((p) => p.id), ['pr-tier', 'pr-section', 'pr-section', 'pr-section', 'pr-issue', 'pr-made-with']);
   assert.deepEqual(checkPullRequestBody({ ...body, files: ['kit/a.md'] }, DEFAULTS).map((p) => p.id), ['pr-kit']);
   // checkPullRequest still gives every finding, in the same order as before.
   const all = checkPullRequest({ ...goodPr(), title: 'x', body: 'x', files: ['kit/a.ts'], labels: [], milestone: null }, DEFAULTS).map((p) => p.id);
-  assert.deepEqual(all, ['pr-title', 'pr-tier', 'pr-section', 'pr-section', 'pr-section', 'pr-issue', 'pr-changelog', 'pr-kit', 'pr-milestone', 'pr-labels', 'pr-labels']);
+  assert.deepEqual(all, ['pr-title', 'pr-tier', 'pr-section', 'pr-section', 'pr-section', 'pr-issue', 'pr-made-with', 'pr-changelog', 'pr-kit', 'pr-milestone', 'pr-labels', 'pr-labels']);
 });
 
 test('pull request body: read from gh pr create and edit, in every spelling gh takes (#406)', () => {

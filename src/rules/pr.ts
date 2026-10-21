@@ -231,6 +231,11 @@ export function checkPullRequestBody(pr: Pick<PullRequest, 'body' | 'files' | 'd
   if (!readLinkedIssues(body).length) {
     problems.push(finding('pr-issue', 'body: no linked issue', 'link the issue with `Closes #N`, or `Part of #N` when it does not finish it'));
   }
+  // Every pull request names the AI and model that made it (#570), on its last
+  // line, so the credit reads the same each time.
+  if (!hasMadeWith(body)) {
+    problems.push(finding('pr-made-with', 'body: no `Made with` line at the end', 'end the body with `Made with <agent> (<model>)`, for example `Made with worker (opus)`'));
+  }
 
   // `yokoten changelog` reads only the files right in changes/, and refuses a folder there,
   // so a new file deeper down would pass here and stop the release.
@@ -268,7 +273,7 @@ export function checkPullRequestBody(pr: Pick<PullRequest, 'body' | 'files' | 'd
 
 /** The login GitHub gives Dependabot's pull requests. */
 export const DEPENDABOT = 'dependabot[bot]';
-const DEPENDABOT_NOTES = new Set(['pr-tier', 'pr-section', 'pr-issue', 'pr-changelog', 'pr-kit', 'pr-milestone', 'pr-labels', 'pr-owned']);
+const DEPENDABOT_NOTES = new Set(['pr-tier', 'pr-section', 'pr-issue', 'pr-made-with', 'pr-changelog', 'pr-kit', 'pr-milestone', 'pr-labels', 'pr-owned']);
 
 /**
  * The pull request findings, split into problems and notes. For a pull request Dependabot
@@ -825,6 +830,16 @@ const LINKED_ISSUE = /\b(?:closes|fixes|resolves|refs|part of) #(\d+)/gi;
 /** The issue numbers a body links with `Closes #N`, `Part of #N` and the like, in order, each once. */
 export function readLinkedIssues(body: string): number[] {
   return [...new Set([...body.matchAll(LINKED_ISSUE)].map((match) => Number(match[1])))];
+}
+
+/**
+ * Whether a body ends with `Made with <agent> (<model>)` (#570): its last line
+ * that is not blank. HTML comments are set aside first, so a commented line
+ * counts neither for nor against, and neither does one inside a code block.
+ */
+export function hasMadeWith(body: string): boolean {
+  const lines = blankComments(body).split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '');
+  return /^Made with [^()]+ \([^()]+\)$/.test(lines.at(-1) ?? '');
 }
 
 /**

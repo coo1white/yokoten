@@ -541,7 +541,7 @@ test('check --pr: a base or head commit not in the checkout is one finding, neve
   sandbox.git('add', '.');
   sandbox.git('commit', '-qm', 'head');
   const head = sandbox.git('rev-parse', 'HEAD').stdout.trim();
-  const body = 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\nNo changelog: a test\n';
+  const body = 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\nNo changelog: a test\nMade with worker (opus)\n';
   const event = (shas: { base: string; head: string }) => {
     const file = join(sandbox.home, 'event.json');
     writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: { title: 'M0' }, base: { sha: shas.base }, head: { sha: shas.head } } }));
@@ -909,7 +909,7 @@ test('check: every gate refuses when git can\'t answer, never passes as clean (#
   sandbox.git('commit', '-qm', 'b');
   const head = sandbox.git('rev-parse', 'HEAD').stdout.trim();
   const event = join(sandbox.home, 'event.json');
-  writeFileSync(event, JSON.stringify({ pull_request: { title: 'fix(check): a', body: 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\n', labels: [{ name: 'fix' }, { name: 'tier B' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
+  writeFileSync(event, JSON.stringify({ pull_request: { title: 'fix(check): a', body: 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\nMade with worker (opus)\n', labels: [{ name: 'fix' }, { name: 'tier B' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
   const gates = [['check'], ['check', '--staged'], ['check', '--history'], ['check', '--pr']];
   const pr = { GITHUB_EVENT_PATH: event };
   // The positive control: each gate passes when git answers.
