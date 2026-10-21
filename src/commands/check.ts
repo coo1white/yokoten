@@ -14,7 +14,7 @@ import { loadConfig } from '../rules/config.ts';
 import { type Finding, formatFinding } from '../rules/message.ts';
 import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, largeDiff, longSentenceNote, longSentences, splitForDependabot } from '../rules/pr.ts';
 import { parseChange } from '../run/changelog.ts';
-import { check, checkHistory, GitReadError, gitReadFinding, historyTimeZones, readGit, timeZoneNote } from '../run/check.ts';
+import { check, checkHistory, GitReadError, gitReadFinding, historyTimeZones, readGit, timeZoneNote, unstageHint } from '../run/check.ts';
 import { isCodeFile, nameNotes } from '../run/names.ts';
 import { type AllowEntry, isLink, loadMarks, machineAllowed, machineAllowFile, makeRedactor, matchingEntries, NO_HOME, readMachineAllow, repoKey } from '../rules/privacy.ts';
 import { machineMarks, machineUserNames } from '../setup/install.ts';
@@ -49,9 +49,20 @@ export function runCheck(invocation: Invocation): number {
   if (problems === SKIPPED) return 0;
   if (json) printJson(invocation, { check: mode, ok: !problems.length, findings: problems, notes });
   else if (!problems.length) print(invocation, [`${name}: ok${mode === 'history' ? ' (every commit on every branch)' : ''}`]);
-  else print(invocation, [`${name}: ${problems.length} problem(s)`, ...bullets(problems)], invocation.stderr);
+  else print(invocation, [`${name}: ${problems.length} problem(s)`, ...bullets(problems), ...unstageLines(root, invocation.env, mode, problems)], invocation.stderr);
   showOnPullRequest(invocation, `yokoten check${mode === 'tree' ? '' : ` --${mode}`}`, problems, notes, { json, isPlaceAFile: mode !== 'history' });
   return problems.length ? 1 : 0;
+}
+
+/** For a stopped commit, the line that says how to unstage the files it names (#503). Nothing for other modes. */
+function unstageLines(root: string, env: Invocation['env'], mode: string, problems: Finding[]): string[] {
+  if (mode !== 'staged') return [];
+  try {
+    const hint = unstageHint(root, env, problems);
+    return hint ? [hint] : [];
+  } catch {
+    return []; // git can't answer now: the problems above already stand
+  }
 }
 
 /** Returned by `runMode` when there is nothing to check; it has already said so. */
