@@ -97,22 +97,22 @@ export interface TestLanguage {
   scripted?: { has: (root: string) => boolean; runs: Pattern[] };
 }
 
-const read = (path: string) => {
+const readText = (path: string) => {
   try {
     return readFileSync(path, 'utf8');
   } catch {
     return '';
   }
 };
-const json = (path: string): Record<string, unknown> => {
+const readJson = (path: string): Record<string, unknown> => {
   try {
-    const value = JSON.parse(read(path) || 'null');
+    const value = JSON.parse(readText(path) || 'null');
     return value && typeof value === 'object' ? value : {};
   } catch {
     return {};
   }
 };
-const names = (root: string): string[] => {
+const listNames = (root: string): string[] => {
   try {
     return readdirSync(root);
   } catch {
@@ -128,22 +128,24 @@ const PY_EXEC = optional(either(word('uvx'), sequence(word('uv', 'pipx', 'poetry
 /** A program by name, or by a path to it, as a virtualenv runs it: `.venv/bin/python`. */
 const program = (...names: string[]) => wordIf((w) => names.some((name) => w === name || w.endsWith(`/${name}`)));
 // A Python module run as a program: python -m, coverage run -m.
-const PY_M = sequence(either(program('python', 'python3'), sequence(program('coverage'), word('run'))), word('-m'));
+const isPython = (w: string) => /^(?:.*\/)?python(?:3(?:\.\d+)?)?$/.test(w);
+const PY_M = sequence(either(wordIf(isPython), sequence(program('coverage'), word('run'))), word('-m'));
 // Ruby's tools, run alone or through Bundler: bundle exec rspec.
 const BUNDLE = optional(word('bundle'), word('exec'));
 
 const MAKEFILES = ['Makefile', 'makefile', 'GNUmakefile'];
 const makeTarget = (root: string) => {
-  const text = MAKEFILES.map((f) => read(join(root, f))).join('\n');
+  const text = MAKEFILES.map((f) => readText(join(root, f))).join('\n');
   return /^test\s*:/m.test(text) ? 'test' : /^tests\s*:/m.test(text) ? 'tests' : '';
 };
 const composerTest = (root: string) => {
-  const scripts = json(join(root, 'composer.json')).scripts;
+  const scripts = readJson(join(root, 'composer.json')).scripts;
   return Boolean(scripts && typeof scripts === 'object' && Object.hasOwn(scripts, 'test'));
 };
 // A Flutter app or package names the Flutter SDK as a dependency: `flutter: {sdk: flutter}`.
-const isFlutter = (root: string) => /^\s+sdk:\s*["']?flutter["']?\s*(?:#.*)?$/m.test(read(join(root, 'pubspec.yaml')));
-const hasRspec = (root: string) => names(root).some((n) => n === '.rspec' || n === 'spec');
+// Spaces and tabs only: `\s+` would cross blank lines, and the time would grow with their square.
+const isFlutter = (root: string) => /^[ \t]+sdk:[ \t]*["']?flutter["']?[ \t]*(?:#.*)?$/m.test(readText(join(root, 'pubspec.yaml')));
+const hasRspec = (root: string) => listNames(root).some((n) => n === '.rspec' || n === 'spec');
 
 /**
  * The languages, in the order doctor names them. The first three are its suggestion when
@@ -166,17 +168,21 @@ export const TEST_LANGUAGES: TestLanguage[] = [
     language: 'Ruby',
     files: ['Gemfile', 'Rakefile'],
     runner: (root) => {
-      const bundled = names(root).includes('Gemfile') ? 'bundle exec ' : '';
+      const bundled = listNames(root).includes('Gemfile') ? 'bundle exec ' : '';
       return `${bundled}${hasRspec(root) ? 'rspec' : 'rake test'}`;
     },
     // rspec, rake test or spec, rails test; each also as bin/ binstubs and through bundle exec.
-    runs: [sequence(BUNDLE, either(word('rspec', 'bin/rspec'), sequence(word('rake', 'bin/rake'), word('test', 'spec')), sequence(word('rails', 'bin/rails'), word('test'))))],
+    runs: [sequence(BUNDLE, either(word('rspec', 'bin/rspec', './bin/rspec'), sequence(word('rake', 'bin/rake', './bin/rake'), word('test', 'spec')), sequence(word('rails', 'bin/rails', './bin/rails'), word('test'))))],
   },
   {
     language: 'PHP',
     files: ['composer.json', 'phpunit.xml', 'phpunit.xml.dist', 'phpunit.dist.xml'],
     runner: (root) => (composerTest(root) ? 'composer test' : 'vendor/bin/phpunit'),
-    runs: [sequence(optional(word('php')), word('phpunit', 'vendor/bin/phpunit', './vendor/bin/phpunit'))],
+    // phpunit or Pest, alone or through php with its flags (php -d memory_limit=-1); Laravel's artisan test.
+    runs: [
+      sequence(optional(word('php'), VALUED), word('phpunit', 'vendor/bin/phpunit', './vendor/bin/phpunit', 'pest', 'vendor/bin/pest', './vendor/bin/pest')),
+      sequence(word('php'), word('artisan'), word('test')),
+    ],
     // composer test runs the test script of composer.json, and fails with none.
     scripted: { has: composerTest, runs: [sequence(word('composer'), optional(word('run', 'run-script')), word('test'))] },
   },
@@ -199,7 +205,7 @@ const runnerOf = (l: TestLanguage, root: string) => (typeof l.runner === 'string
 
 /** The languages this project is in, by the files at its root, each with the command to suggest. */
 export const testLanguages = (root: string): { language: string; runner: string }[] => {
-  const found = names(root);
+  const found = listNames(root);
   return TEST_LANGUAGES.filter((l) => l.files.some((f) => hasFile(found, f)) && (l.is?.(root) ?? true)).map((l) => ({ language: l.language, runner: runnerOf(l, root) }));
 };
 

@@ -318,8 +318,8 @@ test('road: the tests step stays next with only a lint step, and says what is mi
   const lint = testsStep({ 'package.json': JSON.stringify({ scripts: { lint: 'eslint .' } }), ...workflow('npm run lint') });
   assert.deepEqual(lint, { done: false, what: 'no test command: no "test" script in package.json, and no workflow runs a test runner' });
   const go = testsStep({ 'go.mod': 'module example.com/x\n' });
-  assert.deepEqual(go, { done: false, what: 'no workflow runs a test command such as `go test`' });
-  assert.equal(testsStep({ 'pyproject.toml': '[project]\nname = "x"\n' }).what, 'no workflow runs a test command such as `pytest`');
+  assert.deepEqual(go, { done: false, what: 'this looks like a Go project, and no workflow runs its tests with `go test`' });
+  assert.equal(testsStep({ 'pyproject.toml': '[project]\nname = "x"\n' }).what, 'this looks like a Python project, and no workflow runs its tests with `pytest`');
   assert.equal(testsStep({}).what, 'no workflow runs a test command such as `go test`, `pytest` or `cargo test`');
   for (const files of [{ 'go.mod': '' }, { 'pyproject.toml': '' }, {}] as Record<string, string>[]) assert.doesNotMatch(testsStep(files).what, /package\.json/);
   // A workspaces root with no script: each package's tests, not a root script.

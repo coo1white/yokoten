@@ -39,7 +39,7 @@ const COMPOSER_TEST = JSON.stringify({ scripts: { test: 'phpunit' } });
 // Each case: the language, its files, the command doctor and adopt name, and CI commands that run its tests.
 const CASES: { language: string; files: Record<string, string>; runner: string; runs: string[] }[] = [
   { language: 'Go', files: { 'go.mod': 'module example.com/x\n' }, runner: 'go test', runs: ['go test ./...'] },
-  { language: 'Python', files: { 'setup.py': '' }, runner: 'pytest', runs: ['pytest', 'uv run pytest', 'python -m unittest', '.venv/bin/python -m pytest', 'venv/bin/pytest', '.venv/bin/python3 -m unittest'] },
+  { language: 'Python', files: { 'setup.py': '' }, runner: 'pytest', runs: ['pytest', 'uv run pytest', 'python -m unittest', '.venv/bin/python -m pytest', 'venv/bin/pytest', '.venv/bin/python3 -m unittest', 'python3.12 -m pytest'] },
   { language: 'Rust', files: { 'Cargo.toml': '[package]\n' }, runner: 'cargo test', runs: ['cargo test --all'] },
   { language: 'Maven', files: { 'pom.xml': '<project/>\n' }, runner: 'mvn test', runs: ['./mvnw -B test'] },
   { language: 'Gradle', files: { 'build.gradle.kts': '' }, runner: 'gradle test', runs: ['./gradlew test'] },
@@ -48,10 +48,11 @@ const CASES: { language: string; files: Record<string, string>; runner: string; 
   { language: '.NET', files: { 'App.sln': '' }, runner: 'dotnet test', runs: ['dotnet test'] },
   { language: '.NET', files: { 'Lib.fsproj': '' }, runner: 'dotnet test', runs: ['dotnet test'] },
   { language: '.NET', files: { 'Lib.vbproj': '' }, runner: 'dotnet test', runs: ['dotnet test'] },
-  { language: 'Ruby', files: { Gemfile: '', 'spec/a_spec.rb': '' }, runner: 'bundle exec rspec', runs: ['bundle exec rspec', 'rspec', 'bin/rspec'] },
-  { language: 'Ruby', files: { Gemfile: '' }, runner: 'bundle exec rake test', runs: ['bundle exec rake test', 'bin/rails test', 'bundle exec rails test'] },
+  { language: '.NET', files: { 'App.slnx': '' }, runner: 'dotnet test', runs: ['dotnet test'] },
+  { language: 'Ruby', files: { Gemfile: '', 'spec/a_spec.rb': '' }, runner: 'bundle exec rspec', runs: ['bundle exec rspec', 'rspec', 'bin/rspec', './bin/rspec'] },
+  { language: 'Ruby', files: { Gemfile: '' }, runner: 'bundle exec rake test', runs: ['bundle exec rake test', 'bin/rails test', 'bundle exec rails test', './bin/rails test'] },
   { language: 'Ruby', files: { Rakefile: '' }, runner: 'rake test', runs: ['rake test', 'rake spec'] },
-  { language: 'PHP', files: { 'composer.json': '{}' }, runner: 'vendor/bin/phpunit', runs: ['vendor/bin/phpunit', './vendor/bin/phpunit', 'phpunit', 'php vendor/bin/phpunit'] },
+  { language: 'PHP', files: { 'composer.json': '{}' }, runner: 'vendor/bin/phpunit', runs: ['vendor/bin/phpunit', './vendor/bin/phpunit', 'phpunit', 'php vendor/bin/phpunit', 'php -d memory_limit=-1 vendor/bin/phpunit', 'vendor/bin/pest', 'php artisan test'] },
   { language: 'PHP', files: { 'composer.json': COMPOSER_TEST }, runner: 'composer test', runs: ['composer test', 'composer run test', 'composer run-script test'] },
   { language: 'PHP', files: { 'phpunit.xml.dist': '<phpunit/>\n' }, runner: 'vendor/bin/phpunit', runs: ['vendor/bin/phpunit'] },
   { language: 'Swift', files: { 'Package.swift': '' }, runner: 'swift test', runs: ['swift test', 'swift test --parallel'] },
@@ -63,7 +64,7 @@ const CASES: { language: string; files: Record<string, string>; runner: string; 
 
 // Commands that look like a test run and are not one: a build, an install, a look-alike, a question.
 const NOT_RUNS = ['dotnet build', 'dotnet tool install x', 'swift build', 'mix compile', 'mix deps.get', 'flutter build apk', 'flutter pub get', 'dart analyze', 'dart pub get', 'rake build',
-  'bundle install', 'gem install rspec', 'composer install', 'phpunit --version', 'echo dotnet test', 'rspec-lint', 'swift-test', 'bin/pytest-watch', '.venv/bin/python -m pip install pytest'];
+  'bundle install', 'gem install rspec', 'composer install', 'phpunit --version', 'echo dotnet test', 'rspec-lint', 'swift-test', 'bin/pytest-watch', '.venv/bin/python -m pip install pytest', 'php artisan serve', 'python3x -m pytest'];
 
 test('test commands: every language with files has a case here', () => {
   const covered = new Set(CASES.map((c) => c.language));
@@ -74,7 +75,7 @@ test('test commands: doctor names the runner of each language, and adopt names t
   for (const { language, files, runner } of CASES) {
     const name = `${language}: ${Object.keys(files).join(', ')}`;
     assert.deepEqual(testLanguages(project(files)), [{ language, runner }], name);
-    assert.equal(testsStep(files).what, `no workflow runs a test command such as \`${runner}\``, name);
+    assert.equal(testsStep(files).what, `this looks like a ${language} project, and no workflow runs its tests with \`${runner}\``, name);
     const adopt = adoptTests(files);
     assert.equal(adopt?.status, 'done', name);
     assert.equal(adopt?.evidence, `\`${runner}\` (${language})`, name);
@@ -115,7 +116,7 @@ test('test commands: a pubspec.yaml is Flutter only when it depends on the Flutt
 
 test('test commands: a project in two languages gets both runners, in table order (#546)', () => {
   const files = { 'mix.exs': '', 'go.mod': '' };
-  assert.equal(testsStep(files).what, 'no workflow runs a test command such as `go test` or `mix test`');
+  assert.equal(testsStep(files).what, 'this looks like a Go and Elixir project, and no workflow runs its tests with `go test` or `mix test`');
   assert.equal(adoptTests(files)?.evidence, '`go test` or `mix test` (Go, Elixir)');
 });
 
@@ -124,4 +125,11 @@ test('test commands: composer test counts only when composer.json has a test scr
   assert.equal(testsStep({ 'composer.json': '{}', ...workflow('composer test') }).done, false);
   assert.equal(testsStep({ 'composer.json': JSON.stringify({ scripts: { lint: 'phpcs' } }), ...workflow('composer test') }).done, false);
   assert.equal(testsStep(workflow('composer test')).done, false);
+});
+
+test('test commands: a pubspec.yaml with many blank lines is read in linear time (#546)', () => {
+  const pubspec = `name: app\n${'\n'.repeat(200_000)}x`;
+  const started = performance.now();
+  assert.deepEqual(testLanguages(project({ 'pubspec.yaml': pubspec })), [{ language: 'Dart', runner: 'dart test' }]);
+  assert.ok(performance.now() - started < 500, 'a blank-line run must not make the Flutter check slow');
 });

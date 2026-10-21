@@ -345,10 +345,16 @@ export const catchLongLines =
   };
 const WORKFLOW_TOO_LONG = 'a line in .github/workflows is too long to read; make it shorter and run doctor again';
 const ciRunsTests = (root: string) => runsTests(ciText(root), testScript(root), isWorkspaces(root), scriptedRuns(root));
-/** What runs the tests in this project, by the files at its root (test-commands.ts); the usual three when none is found. */
-const runnersFor = (root: string) => {
-  const found = testLanguages(root).map((l) => l.runner);
-  return orList(found.length ? found : FALLBACK_RUNNERS);
+/**
+ * Why no workflow runs the tests, naming the language found by the files at the root
+ * (test-commands.ts), so the reader sees doctor knows the project; the usual three when none is.
+ */
+const describeNoTestRun = (root: string) => {
+  const found = testLanguages(root);
+  if (!found.length) return `no workflow runs a test command such as ${orList(FALLBACK_RUNNERS)}`;
+  const languages = found.map((l) => l.language);
+  const named = languages.length > 1 ? `${languages.slice(0, -1).join(', ')} and ${languages.at(-1)}` : languages[0];
+  return `this looks like a ${named} project, and no workflow runs its tests with ${orList(found.map((l) => l.runner))}`;
 };
 /** The command that runs each package's tests in this workspaces repo. */
 const workspacesTest = (root: string) => (existsSync(join(root, 'pnpm-workspace.yaml')) ? '`pnpm -r test`' : '`npm test --workspaces`');
@@ -357,7 +363,7 @@ const noTests = (root: string) => {
   if (testScript(root)) return 'CI does not run the tests';
   if (isWorkspaces(root)) return `no workflow runs each package's tests (e.g. ${workspacesTest(root)})`;
   if (packageJson(root)) return 'no test command: no "test" script in package.json, and no workflow runs a test runner';
-  return `no workflow runs a test command such as ${runnersFor(root)}`;
+  return describeNoTestRun(root);
 };
 /**
  * The fix for the tests step (#501): the file, the job to add, and the `needs` list of `ci`.
