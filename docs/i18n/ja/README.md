@@ -16,6 +16,7 @@
 
 [![ci](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml/badge.svg)](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue)](../../../LICENSE)
+[![npm](https://img.shields.io/npm/v/yokoten?logo=npm)](https://www.npmjs.com/package/yokoten)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A522.18-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 
 </div>
@@ -90,6 +91,7 @@ npx yokoten doctor       # 今いる関所と、次の一手
 - **[ガイド](../../guide.md)**：12 のルール、すべてのコマンド、仕組み、そしてできないこと（英語）。
 - **[サーバーの設定](../../server.md)**：GitHub で `main` とリリースタグを保護する（英語）。
 - **[決定記録](../../records/)**：なぜこう作ったのか（英語）。
+- **[変更履歴](../../../CHANGELOG.md)**：各バージョンで何が変わったか（英語）。
 - **[コントリビュート](../../../AGENTS.md)**：yokoten の開発に参加するときのルール（英語）。
 - **[セキュリティ](../../../.github/SECURITY.md)**：セキュリティ上の問題の報告方法（英語）。
 

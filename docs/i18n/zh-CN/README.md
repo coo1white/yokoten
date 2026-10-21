@@ -16,6 +16,7 @@
 
 [![ci](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml/badge.svg)](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue)](../../../LICENSE)
+[![npm](https://img.shields.io/npm/v/yokoten?logo=npm)](https://www.npmjs.com/package/yokoten)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A522.18-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 
 </div>
@@ -87,6 +88,7 @@ agent 想强推，yokoten 把它拦下，说清为什么，再给出改法。接
 - **[使用指南](guide.md)**：12 条规则、所有命令、它怎么工作，还有它做不到的事。
 - **[服务器设置](../../server.md)**：在 GitHub 上保护 `main` 分支和发版 tag（英文）。
 - **[决定记录](../../records/)**：为什么这样做（英文）。
+- **[更新记录](../../../CHANGELOG.md)**：每个版本改了什么（英文）。
 - **[参与开发](../../../AGENTS.md)**：给 yokoten 干活要守的规矩（英文）。
 - **[安全](../../../.github/SECURITY.md)**：发现安全问题怎么报告（英文）。
 
