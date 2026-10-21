@@ -37,6 +37,7 @@ import {
   wrapForRedact,
 } from '../../src/rules/guards.ts';
 import { judge } from '../../src/run/hook.ts';
+import { invoke } from '../repo/invoke.ts';
 import { assertLinear, assertLinearEach } from '../../scripts/linear.ts';
 
 const blocked = (command: string, env: Env = {}) => assert.ok(checkCommand(command, { cwd: process.cwd(), env }), `should block: ${command}`);
@@ -124,20 +125,20 @@ test('the bot is not a way around the guard', () => {
 });
 
 // .yokoten/ is the copy of yokoten the hooks and CI run: a worker that changes it can turn the checks off (#297).
-test('the vendored .yokoten/ runtime is lead-only: the hook and check --staged stop a worker, not the lead (#297)', () => {
+test('the vendored .yokoten/ runtime is lead-only: the hook and check --staged stop a worker, not the lead (#297)', async () => {
   const sandbox = makeSandbox();
   const worker = { YOKOTEN_ROLE: 'worker' };
-  const edit = (extra?: Record<string, string>) => sandbox.run(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: { file_path: join(sandbox.repo, '.yokoten', 'src', 'run', 'check.ts') } }), extra });
-  let result = edit(worker);
+  const edit = (extra?: Record<string, string>) => sandbox.call(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: { file_path: join(sandbox.repo, '.yokoten', 'src', 'run', 'check.ts') } }), extra });
+  let result = await edit(worker);
   assert.equal(result.status, 2);
   assert.match(result.stderr, /\.yokoten\/src\/run\/check\.ts is lead-only/);
-  assert.equal(edit().status, 0, 'the lead may edit it');
+  assert.equal((await edit()).status, 0, 'the lead may edit it');
   sandbox.write('.yokoten/src/run/check.ts', 'export {};\n');
   sandbox.git('add', '.');
-  result = sandbox.run(['check', '--staged'], { extra: worker });
+  result = await sandbox.call(['check', '--staged'], { extra: worker });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /\.yokoten\/src\/run\/check\.ts is lead-only/);
-  result = sandbox.run(['check', '--staged']);
+  result = await sandbox.call(['check', '--staged']);
   assert.equal(result.status, 0, result.stderr);
 });
 
@@ -652,7 +653,7 @@ test('lead-only files: YOKOTEN_LEAD_ONLY_OK lets the paths it names through, and
   assert.ok(isGranted('AGENTS.md', { YOKOTEN_LEAD_ONLY_OK: '*' }, false));
 });
 
-test('lead-only files: a worker\'s git commit of a lead-only file is stopped, in the guard and the commit check (#402)', () => {
+test('lead-only files: a worker\'s git commit of a lead-only file is stopped, in the guard and the commit check (#402)', async () => {
   const sandbox = yokotenSandbox();
   const worker = { YOKOTEN_ROLE: 'worker' };
   sandbox.write('AGENTS.md', 'rules\n');
@@ -680,14 +681,14 @@ test('lead-only files: a worker\'s git commit of a lead-only file is stopped, in
   assert.equal(run('git commit -m x', {}), null, 'the lead');
   assert.equal(run('git commit -m x', { ...worker, YOKOTEN_LEAD_ONLY_OK: 'AGENTS.md' }), null, 'the grant');
   // The commit check refuses the same commit for a YOKOTEN_ROLE worker, unless granted.
-  let result = sandbox.run(['check', '--staged'], { extra: worker });
+  let result = await sandbox.call(['check', '--staged'], { extra: worker });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /AGENTS\.md is lead-only/);
-  result = sandbox.run(['check', '--staged'], { extra: { ...worker, YOKOTEN_LEAD_ONLY_OK: 'AGENTS.md' } });
+  result = await sandbox.call(['check', '--staged'], { extra: { ...worker, YOKOTEN_LEAD_ONLY_OK: 'AGENTS.md' } });
   assert.equal(result.status, 0, result.stderr);
 });
 
-test('lead-only files: the hook stops a shell write from the plugin agent yokoten:worker, with no YOKOTEN_ROLE (#402)', () => {
+test('lead-only files: the hook stops a shell write from the plugin agent yokoten:worker, with no YOKOTEN_ROLE (#402)', async () => {
   // The session folder is reached through a symlink, as /var is /private/var on macOS: git
   // names the root by its real path, the agent by the link. The full hook rules the session's
   // repo with no yokoten.json, as it does for an edit.
@@ -696,12 +697,12 @@ test('lead-only files: the hook stops a shell write from the plugin agent yokote
   symlinkSync(sandbox.repo, link);
   for (const cwd of [sandbox.repo, link]) {
     const call = (agentType?: string) =>
-      sandbox.run(['hook'], { cwd, input: JSON.stringify({ cwd, agent_type: agentType, tool_input: { command: 'sed -i s/a/b/ AGENTS.md' } }) });
-    const result = call('yokoten:worker');
+      sandbox.call(['hook'], { cwd, input: JSON.stringify({ cwd, agent_type: agentType, tool_input: { command: 'sed -i s/a/b/ AGENTS.md' } }) });
+    const result = await call('yokoten:worker');
     assert.equal(result.status, 2, `${cwd === link ? 'through the link' : 'the repo'}: ${result.stderr}`);
     assert.match(result.stderr, /writes AGENTS\.md, which is lead-only/);
-    assert.equal(call().status, 0, 'the lead');
-    assert.equal(call('yokoten:reviewer').status, 0, 'not a worker');
+    assert.equal((await call()).status, 0, 'the lead');
+    assert.equal((await call('yokoten:reviewer')).status, 0, 'not a worker');
   }
 });
 
@@ -800,25 +801,25 @@ test('lead-only files: git apply reads only a plain patch file under 1 MB, and s
 });
 
 
-test('lead-only files: shell writes follow the edit guard\'s scope, only in repos that use yokoten (#402)', () => {
+test('lead-only files: shell writes follow the edit guard\'s scope, only in repos that use yokoten (#402)', async () => {
   const sandbox = makeSandbox();
   const worker = { YOKOTEN_ROLE: 'worker' };
   // No yokoten.json and no repo from the hook: yokoten's file list is not this repo's.
   assert.equal(checkCommand('sed -i s/a/b/ AGENTS.md', { env: worker, cwd: sandbox.repo }), null);
   assert.equal(checkEdit('AGENTS.md', { config: DEFAULTS, env: worker }) === null, false, 'the edit guard has the same list');
-  const hook = (flags: string[], command: string) => sandbox.run(['hook', ...flags], { input: JSON.stringify({ cwd: sandbox.repo, agent_type: 'yokoten:worker', tool_input: { command } }) });
-  const edit = (flags: string[]) => sandbox.run(['hook', ...flags], { input: JSON.stringify({ cwd: sandbox.repo, agent_type: 'yokoten:worker', tool_input: { file_path: join(sandbox.repo, 'AGENTS.md') } }) });
+  const hook = (flags: string[], command: string) => sandbox.call(['hook', ...flags], { input: JSON.stringify({ cwd: sandbox.repo, agent_type: 'yokoten:worker', tool_input: { command } }) });
+  const edit = (flags: string[]) => sandbox.call(['hook', ...flags], { input: JSON.stringify({ cwd: sandbox.repo, agent_type: 'yokoten:worker', tool_input: { file_path: join(sandbox.repo, 'AGENTS.md') } }) });
   // The user-level hook: neither an edit nor a shell write is stopped outside a yokoten repo...
-  assert.equal(edit(['--commands-only']).status, 0);
-  assert.equal(hook(['--commands-only'], 'echo x > AGENTS.md').status, 0);
+  assert.equal((await edit(['--commands-only'])).status, 0);
+  assert.equal((await hook(['--commands-only'], 'echo x > AGENTS.md')).status, 0);
   // ...and both are, once the repo has a yokoten.json.
   sandbox.write('yokoten.json', '{}\n');
-  assert.equal(edit(['--commands-only']).status, 2);
-  assert.equal(hook(['--commands-only'], 'echo x > AGENTS.md').status, 2);
+  assert.equal((await edit(['--commands-only'])).status, 2);
+  assert.equal((await hook(['--commands-only'], 'echo x > AGENTS.md')).status, 2);
   // The repo's own list applies.
   sandbox.write('yokoten.json', '{ "leadOnly": ["RULES.md"] }\n');
-  assert.equal(hook(['--commands-only'], 'echo x > AGENTS.md').status, 0);
-  assert.equal(hook(['--commands-only'], 'echo x > RULES.md').status, 2);
+  assert.equal((await hook(['--commands-only'], 'echo x > AGENTS.md')).status, 0);
+  assert.equal((await hook(['--commands-only'], 'echo x > RULES.md')).status, 2);
   assert.equal(checkCommand('echo x > RULES.md', { env: worker, cwd: sandbox.repo })?.id, 'lead-only', 'found by the walk up');
   // A repo the hook passes in is ruled as given, with no walk: here the file system's root.
   const root = join(sandbox.repo, '..');
@@ -1126,14 +1127,16 @@ test('bash: a heredoc in a group or subshell that pipes into a shell is commands
   assert.ok(isBlockedByList(`( (${py} x) )`), 'a subshell in a subshell');
 });
 
-test('bash: a command the reader cannot read is refused with exit 2, not let through (#226)', () => {
+test('bash: a command the reader cannot read is refused with exit 2, not let through (#226)', async () => {
   // So many commands in one shell string that reading them throws (too many to spread).
   const tooBig = `bash -c "${':;'.repeat(300000)}"`;
   assert.equal(checkCommand(tooBig, { cwd: process.cwd(), env: {} })?.id, 'unreadable-command');
-  const hook = runChild(process.execPath, [join(import.meta.dirname, '../..', 'bin', 'yokoten.ts'), 'hook'], {
+  const done = await invoke(['hook'], {
+    env: { ...process.env },
     cwd: tmpdir(),
-    input: JSON.stringify({ cwd: tmpdir(), hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: tooBig } }),
+    stdin: JSON.stringify({ cwd: tmpdir(), hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: tooBig } }),
   });
+  const hook = { status: done.code, stderr: done.stderr };
   assert.equal(hook.status, 2, hook.stderr);
   assert.match(hook.stderr, /yokoten could not read this command/);
   assert.match(hook.stderr, /split it into simpler commands/i);
