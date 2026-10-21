@@ -15,7 +15,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { type Config, type Env, loadConfig } from '../rules/config.ts';
 import { matcher } from '../rules/config.ts';
-import { type Finding, finding, type RuleId } from '../rules/message.ts';
+import { docsLink, type Finding, finding, type RuleId } from '../rules/message.ts';
 import { CHANGES_DIR, parseCodeOwners } from '../rules/pr.ts';
 import { BUILD_DIRS, isBuildOutput } from '../rules/layout.ts';
 import { homeOf } from '../rules/privacy.ts';
@@ -1016,7 +1016,7 @@ export const ROAD: Step[] = [
     check: (_, env) => hasBot(env),
     // Names the piece that is missing (#364, #405), as `yokoten bot` finds it.
     what: (_, env) => `the bot is not set up on this machine: ${missingBotSetup(env) ?? 'nothing is missing'}`,
-    fix: () => 'yokoten\'s docs/server.md shows how to set one up',
+    fix: () => `the server guide shows how to set one up: ${docsLink('server.md')}`,
     byHand: 'a bot account with its own token and write access opens the pull requests; it can\'t change CI, create tags or approve',
     why: 'when the bot opens pull requests, you review work you did not write, as a team does',
     how: `YOKOTEN_BOT_APP_ID is set, in the environment or in ${KEYS_FILE}, and the key file exists (YOKOTEN_BOT_KEY, or ~/.config/yokoten/bot.pem): the same lookup as \`yokoten bot\``,

@@ -1155,7 +1155,7 @@ test('doctor: lists the work only on this machine; a session hears at most three
   assert.match((await sandbox.call(['doctor'], { extra })).stdout, /^unsaved work \(only on this machine\):\n {2}note {4}uncommitted-changes: \. has 1 uncommitted file, the oldest changed 1 minute ago; /m);
   const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
   utimesSync(join(sandbox.repo, 'a.txt'), old, old);
-  assert.deepEqual((await session()).slice(3), ['yokoten: . has 1 uncommitted file, the oldest changed 2 days ago; commit them: `git -C . add -A && git -C . commit`, then push.', UNSAVED_OFFER]);
+  assert.deepEqual((await session()).slice(3), ['yokoten: . has 1 uncommitted file, the oldest changed 2 days ago; commit them: `git -C . add -A && git -C . commit`; once the repo has a remote, push it.', UNSAVED_OFFER]);
   const json = JSON.parse((await sandbox.call(['doctor', '--session', '--json'], { extra })).stdout);
   assert.deepEqual(json.notes.map((n: { id: string }) => n.id), ['uncommitted-changes']);
   assert.equal(json.ok, true, 'a note never fails doctor');
