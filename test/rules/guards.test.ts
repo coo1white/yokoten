@@ -10,6 +10,8 @@ import {
   chmodSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -24,6 +26,7 @@ import {
   type Env,
 } from '../../src/rules/config.ts';
 import {
+  addWorkerPath,
   checkCommand,
   checkEdit,
   checkWorkerMarkEdit,
@@ -33,7 +36,11 @@ import {
   isGranted,
   isLeadOnly,
   isRedacted,
+  listedWorker,
+  loadWorkerPaths,
+  markNote,
   printsAccount,
+  removeWorkerPath,
   runsCheck,
   withWorkerMark,
   workerMarkAt,
@@ -2038,4 +2045,56 @@ test('checkWorkerMarkEdit: a git folder by name or by real path (#555)', () => {
   assert.equal(checkWorkerMarkEdit(join(tree, 'h', 'yokoten-worker2'), tree)?.id, 'worker-mark', "a symlink to the worktree's git folder");
   assert.equal(checkWorkerMarkEdit(join(tree, 'src', 'a.ts'), tree), null);
   assert.equal(checkWorkerMarkEdit(join(tree, 'h', 'x'), join(base, 'repo')), null, 'another checkout: its git folder is not this one');
+});
+
+// #566: the worker list keeps the role when `.git` is moved away. `worker mark` writes the
+// worktree's path outside the worktree, under yokoten's config folder; the guard treats a
+// listed folder, or one inside it, as a worker's with no `.git` at all. Removing the
+// worktree leaves an entry whose folder is gone, which never matches; `worker unmark`
+// clears an entry outright.
+test('worker list: a listed path stays a worker with .git moved away (#566)', () => {
+  const base = makeTempDir('yokoten-list-');
+  const home = join(base, 'home');
+  mkdirSync(home);
+  const env = { HOME: home };
+  const store = join(base, 'store');
+  mkdirSync(store);
+  const tree = join(base, 'wt');
+  mkdirSync(join(tree, 'src'), { recursive: true });
+  writeFileSync(join(tree, '.git'), `gitdir: ${store}\n`);
+  // Negative control: no mark and no list entry is the lead's.
+  assert.equal(workerMarkAt(join(tree, 'src'), env), null);
+  assert.equal(workerRole(env, [join(tree, 'src')]), null);
+  assert.equal(listedWorker(join(tree, 'src'), env), null);
+  // Mark the worktree: the git-folder mark and the list entry.
+  writeFileSync(join(store, 'yokoten-worker'), 'x');
+  addWorkerPath(env, tree);
+  addWorkerPath(env, tree);
+  const top = realpathSync(tree);
+  assert.deepEqual(loadWorkerPaths(env), [top], 'marking twice keeps one entry');
+  assert.equal(workerMarkAt(join(tree, 'src'), env), 'mark');
+  assert.equal(workerRole(env, [join(tree, 'src')]), 'mark');
+  assert.deepEqual(withWorkerMark(env, [tree]), { ...env, YOKOTEN_ROLE: 'worker' });
+  // Positive control: with `.git` moved away, the list still makes it a worker.
+  renameSync(join(tree, '.git'), join(base, 'dot-git-moved'));
+  assert.equal(workerMarkAt(join(tree, 'src'), env), 'mark');
+  assert.equal(workerRole(env, [join(tree, 'src')]), 'mark');
+  assert.match(markNote([join(tree, 'src')], env), /worker list/);
+  // A folder outside the listed worktree is not a worker.
+  assert.equal(workerMarkAt(base, env), null);
+  assert.equal(workerRole(env, [base]), null);
+  // Unmark clears it: the lead again.
+  removeWorkerPath(env, tree);
+  assert.deepEqual(loadWorkerPaths(env), []);
+  assert.equal(workerMarkAt(join(tree, 'src'), env), null);
+  assert.equal(workerRole(env, [join(tree, 'src')]), null);
+  // A removed worktree's entry never matches, and the next mark drops it.
+  addWorkerPath(env, tree);
+  rmSync(tree, { recursive: true, force: true });
+  assert.equal(listedWorker(tree, env), null, 'an entry whose folder is gone never matches');
+  assert.equal(workerMarkAt(tree, env), null);
+  const other = join(base, 'other');
+  mkdirSync(other);
+  addWorkerPath(env, other);
+  assert.deepEqual(loadWorkerPaths(env), [realpathSync(other)], 'the next mark drops the gone entry');
 });
