@@ -38,7 +38,7 @@ import { commentedFile, HAND_ADD, handAddJson, type HookState, mergeHandAdds } f
 import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
 import { findTempDirs, readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advice/unsaved.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
-import { compareCoreRules, compareVersions, hookCliPath, isSelf, readCoreRules, summarizeUpdate, withGitReads } from './init.ts';
+import { compareCoreRules, compareVersions, hookCliPath, isSelf, readCoreRules, summarizeUpdate, withGitReads, workflowNotes } from './init.ts';
 import { countOwnMarks, fillMarks, filledLine, trySafely, installedPieces, isOnPath, launcherDir, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
 import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
 
@@ -911,6 +911,8 @@ export interface DoctorState {
   seenLessons?: string[];
   /** The ids of the kit's lessons a session start already ran in this clone (#339). */
   sessionLessons?: string[];
+  /** The kit workflows with the project's changes that full doctor already noted, as "file kit-hash" (#456). */
+  seenWorkflows?: string[];
   [key: string]: unknown;
 }
 
@@ -930,11 +932,12 @@ export function readState(file: string | null): DoctorState {
   try {
     const state: unknown = JSON.parse(readFileSync(file, 'utf8'));
     if (!state || typeof state !== 'object' || Array.isArray(state)) return {};
-    const { seenLessons, sessionLessons, ...rest } = state as DoctorState;
+    const { seenLessons, sessionLessons, seenWorkflows, ...rest } = state as DoctorState;
     const ids = (list: unknown) => (Array.isArray(list) ? list.filter((id): id is string => typeof id === 'string') : null);
     const seen = ids(seenLessons);
     const ran = ids(sessionLessons);
-    return { ...rest, ...(seen ? { seenLessons: seen } : {}), ...(ran ? { sessionLessons: ran } : {}) };
+    const workflows = ids(seenWorkflows);
+    return { ...rest, ...(seen ? { seenLessons: seen } : {}), ...(ran ? { sessionLessons: ran } : {}), ...(workflows ? { seenWorkflows: workflows } : {}) };
   } catch {
     return {};
   }
@@ -1336,7 +1339,16 @@ function doctorRun(
   const seenLessons = state.seenLessons ?? [];
   const lessons = lessonChecks(root, config.notNow, undefined, stateFile ? seenLessons : null);
   const nextSeen = seenAfter(seenLessons, lessons);
-  if (nextSeen.length > seenLessons.length) saveState(stateFile, { ...state, seenLessons: nextSeen });
+  // A kit workflow that is an old copy, or has the project's changes (#456): a note, never a
+  // failure. A changed copy is noted once per kit version in this clone.
+  const seenWorkflows = state.seenWorkflows ?? [];
+  const workflows = workflowNotes(root).filter((w) => w.seen === undefined || !seenWorkflows.includes(w.seen));
+  for (const { note } of workflows) {
+    lines.push(`  note    kit-workflows: ${stepText(note)}`);
+    notes.push(note);
+  }
+  const nextWorkflows = [...seenWorkflows, ...workflows.flatMap((w) => (w.seen === undefined ? [] : [w.seen]))];
+  if (nextSeen.length > seenLessons.length || nextWorkflows.length > seenWorkflows.length) saveState(stateFile, { ...state, seenLessons: nextSeen, ...(nextWorkflows.length ? { seenWorkflows: nextWorkflows } : {}) });
   lines.push(...formatLessonChecks(lessons));
   notes.push(...lessons.flatMap((lesson) => lesson.findings));
   const checkNotes: Finding[] = [];

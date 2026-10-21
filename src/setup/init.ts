@@ -2,7 +2,8 @@
 // there is kept, and the report says so. Some files get lines added, never removed: a
 // CLAUDE.md, and a project's own pre-commit and pre-merge-commit (#206, #239). An
 // AGENTS.md without `## This project` gets the core rules on top, and its own text moves
-// under that heading (#378). A hook the
+// under that heading (#378). A kit workflow the project never changed is replaced by the
+// kit's newest (#456). A hook the
 // clone has in .git/hooks keeps running from .githooks (#256). Deciding
 // what to do with a project's own rules (keep, merge, or say not now) is the yokoten
 // skill's job, not this command's.
@@ -24,10 +25,11 @@ import * as muse from '../agents/runtimes/muse.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
 import { DEFAULTS, loadConfig } from '../rules/config.ts';
+import { type Finding, finding } from '../rules/message.ts';
 import { systemHome } from '../rules/privacy.ts';
 import { CODEOWNERS_PLACES, type Gh, ghIn, isOrganization, isPrivateRepo, repoOf } from '../host/github.ts';
 import { readOriginUrl } from './plan.ts';
-import { copyRuntime, HOME_DIR, KIT, render, VERSION, writeNew } from './files.ts';
+import { copyRuntime, fileHash, HOME_DIR, KIT, lfText, normalizeText, readWorkflowHashes, render, textHash, VERSION, writeNew } from './files.ts';
 
 /** yokoten's own repo runs its own bin; every other project runs a vendored copy. */
 export const isSelf = (root: string): boolean => {
@@ -106,6 +108,10 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS), { noCi = 
     }
     if (rel === '.github/dependabot.yml') {
       report.push(writeDependabot(root, text));
+      continue;
+    }
+    if (rel.startsWith(WORKFLOWS_DIR)) {
+      report.push(writeWorkflow(root, rel, text));
       continue;
     }
     report.push(`${writeNew(join(root, rel), text)} ${rel}`);
@@ -214,9 +220,6 @@ function lexists(path: string): boolean {
   }
 }
 
-/** The text with LF line ends and one newline at the end, so a Windows checkout compares equal. */
-const normalizeText = (text: string): string => `${text.replace(/\r\n/g, '\n').replace(/\n*$/, '')}\n`;
-
 /** The first of the path's folders below the root, or the file itself, that is a symlink; null when none is. */
 function symlinkOnPath(root: string, rel: string): string | null {
   const parts = rel.split('/');
@@ -232,11 +235,22 @@ function symlinkOnPath(root: string, rel: string): string | null {
 }
 
 /**
- * The texts init writes for a kit file, line ends aside: the kit's copy, and for
- * dependabot.yml also the copy with the blocks for this repo's ecosystems (#379).
+ * The texts init writes for a kit file: the kit's copy, and for dependabot.yml also the
+ * copy with the blocks for this repo's ecosystems (#379).
  */
 const kitCopies = (root: string, rel: string, kitText: string): string[] =>
-  [kitText, ...(rel === '.github/dependabot.yml' ? [dependabotText(root, kitText).text] : [])].map(normalizeText);
+  [kitText, ...(rel === '.github/dependabot.yml' ? [dependabotText(root, kitText).text] : [])];
+
+/** True when the file at `path` is a copy init wrote: the kit's newest, or (a workflow) an older one in the hash list. A folder or another odd file is not. */
+function isKitCopy(root: string, rel: string, path: string, kitText: string): boolean {
+  try {
+    if (!lstatSync(path).isFile()) return false;
+    const text = lfText(readFileSync(path, 'utf8'));
+    return kitCopies(root, rel, kitText).includes(text) || (readWorkflowHashes()[rel] ?? []).includes(fileHash(text));
+  } catch {
+    return false;
+  }
+}
 
 /**
  * `init --no-ci`: write "notNow" `ci` into yokoten.json, and remove each CI file that is
@@ -252,7 +266,7 @@ function keepCiOff(root: string, cli: string, kit: string): string[] {
     if (!isCiFile(rel) || !lexists(path)) continue;
     const link = symlinkOnPath(root, rel);
     if (link) lines.push(`kept ${rel}: ${link} is a symlink, and init never deletes through one; delete it yourself if CI stays off`);
-    else if (kitCopies(root, rel, render(readFileSync(file, 'utf8'), { cli, version: VERSION })).includes(normalizeText(readFileSync(path, 'utf8')))) {
+    else if (isKitCopy(root, rel, path, render(readFileSync(file, 'utf8'), { cli, version: VERSION }))) {
       rmSync(path);
       lines.push(`removed ${rel} (the kit's copy; CI is off)`);
     } else lines.push(`kept ${rel}: it is not the kit's copy, so delete it yourself if CI stays off`);
@@ -486,6 +500,99 @@ function writeDependabot(root: string, kitText: string): string {
   return found.size === 0
     ? 'wrote .github/dependabot.yml (the actions CI runs)'
     : `wrote .github/dependabot.yml (the actions CI runs, and ${[...found.keys()].join(', ')})`;
+}
+
+// ---- The kit's workflows: update a copy the project never changed (#456) ----
+//
+// A project set up by an older yokoten has that kit's workflows. When its copy is byte for
+// byte one the kit wrote (kit/workflow-hashes.json lists each version), init replaces it
+// with the newest: there is nothing of the project's to keep, and git has the old file,
+// because init never commits (record 0014). A copy with the project's changes is kept, and
+// init and full doctor say how to see the difference. A symlink is never written through.
+
+const WORKFLOWS_DIR = '.github/workflows/';
+
+/** How a project's copy of a kit workflow compares with the kit's newest one. */
+export type WorkflowState = 'missing' | 'same' | 'older' | 'changed' | 'link';
+
+/** The first part of `rel`, a folder or the file itself, that is a symlink in `root`; null when none is. */
+function findLinkOnPath(root: string, rel: string): string | null {
+  const parts = rel.split('/');
+  for (let depth = 1; depth <= parts.length; depth++) {
+    const part = parts.slice(0, depth).join('/');
+    try {
+      if (lstatSync(join(root, part)).isSymbolicLink()) return part;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/** The state of the project's `rel` against `kitText`, the kit's file rendered for this project. */
+export function compareWorkflow(root: string, rel: string, kitText: string, hashes: Record<string, string[]> = readWorkflowHashes()): WorkflowState {
+  if (findLinkOnPath(root, rel)) return 'link';
+  const path = join(root, rel);
+  let stat;
+  try {
+    stat = lstatSync(path);
+  } catch {
+    return 'missing';
+  }
+  // A folder or another odd thing at the path is not a copy of the kit's: keep it.
+  if (!stat.isFile()) return 'changed';
+  const text = lfText(readFileSync(path, 'utf8'));
+  if (text === kitText) return 'same';
+  return (hashes[rel] ?? []).includes(fileHash(text)) ? 'older' : 'changed';
+}
+
+/** The command that shows how the project's `rel` differs from the kit's copy in its .yokoten/ (or in yokoten itself). */
+export const workflowDiffCommand = (root: string, rel: string): string => `git diff --no-index ${rel} ${isSelf(root) ? '' : '.yokoten/'}kit/project/${rel}`;
+
+/** Write one kit workflow: new, or in place of an old kit copy; a changed copy or a symlink is kept. */
+function writeWorkflow(root: string, rel: string, kitText: string): string {
+  const state = compareWorkflow(root, rel, kitText);
+  if (state === 'missing') return `${writeNew(join(root, rel), kitText)} ${rel}`;
+  if (state === 'same') return `kept ${rel}`;
+  if (state === 'link') return `kept ${rel}: it is a symlink, so yokoten did not write through it`;
+  if (state === 'changed') return `kept ${rel}: it has your changes. To see how the kit's newest copy differs: \`${workflowDiffCommand(root, rel)}\``;
+  const path = join(root, rel);
+  // Replace the file only when git can give the old one back: tracked, and the same as HEAD
+  // (record 0014: unsure means keep).
+  const bytes = readFileSync(path);
+  if (!isInHead(root, rel, bytes)) return `kept ${rel}: it is an older kit copy that is not committed, so commit it and run init again`;
+  // A file with Windows line ends keeps them, so git shows only the lines that changed.
+  const isCrlf = bytes.includes('\r\n');
+  writeFileSync(path, isCrlf ? normalizeText(kitText).replace(/\n/g, '\r\n') : kitText);
+  return `updated ${rel} to the kit's newest copy (you had not changed it; \`git restore --source=HEAD -- ${rel}\` brings the old one back)`;
+}
+
+/** The kit's workflows, by path in a project, rendered for `root`; empty when this copy of yokoten has none. */
+function readKitWorkflows(root: string): Map<string, string> {
+  const dir = join(KIT, 'project', WORKFLOWS_DIR);
+  if (!existsSync(dir)) return new Map();
+  return new Map(readdirSync(dir).sort().map((name) => [`${WORKFLOWS_DIR}${name}`, render(readFileSync(join(dir, name), 'utf8'), { cli: cliPath(root), version: VERSION })]));
+}
+
+/**
+ * For full doctor: one note for each kit workflow that is an old copy, or has the project's
+ * changes. A changed copy's note has a `seen` key, the file and the kit's version, so doctor
+ * can say it once per kit version (#456); an old copy is noted each time, until init updates it.
+ */
+export function workflowNotes(root: string): { note: Finding; seen?: string }[] {
+  const notes: { note: Finding; seen?: string }[] = [];
+  // With CI off init keeps the workflows, so there is nothing to tell the user to run init for.
+  if (isCiOffIn(root)) return notes;
+  const hashes = readWorkflowHashes();
+  for (const [rel, kitText] of readKitWorkflows(root)) {
+    const state = compareWorkflow(root, rel, kitText, hashes);
+    if (state === 'older') notes.push({ note: finding('kit-workflows', `${rel} is an older copy of the kit's, and you never changed it`, 'run `yokoten init` to update it') });
+    if (state === 'changed') {
+      const note = finding('kit-workflows', `${rel} has your changes, and the kit's newest copy differs`, `to see how: \`${workflowDiffCommand(root, rel)}\`; copy what you want by hand`);
+      notes.push({ note, seen: `${rel} ${textHash(kitText)}` });
+    }
+  }
+  return notes;
 }
 
 // ---- A project's own CLAUDE.md and commit hooks (#206) ----
