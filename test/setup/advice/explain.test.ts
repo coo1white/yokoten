@@ -10,18 +10,19 @@ import {
   ids,
 } from '../../../src/setup/advice/explain.ts';
 
-test('explain with no id lists the ids on stdout and exits 0; --json gives { ids } (#247)', () => {
+test('explain with no id lists the ids on stdout and exits 0; --json gives { ids } (#247)', async () => {
   const sandbox = makeSandbox();
-  let result = sandbox.run(['explain']);
+  // The entry, through the real binary; the rest runs in this process.
+  let result: Pick<ReturnType<typeof sandbox.run>, 'status' | 'stdout' | 'stderr'> = sandbox.run(['explain']);
   assert.deepEqual([result.status, result.stderr], [0, '']);
   assert.match(result.stdout, /^Ids: release, .*\bsecret\b.*\n$/);
-  result = sandbox.run(['explain', '--json']);
+  result = await sandbox.call(['explain', '--json']);
   assert.deepEqual([result.status, result.stderr], [0, '']);
   const listed = JSON.parse(result.stdout);
   assert.deepEqual(Object.keys(listed), ['ids']);
   assert.ok(listed.ids.includes('release') && listed.ids.includes('secret'));
   // An unknown id is still an error.
-  result = sandbox.run(['explain', 'nope']);
+  result = await sandbox.call(['explain', 'nope']);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /no rule or step is called nope\.\nIds: release, /);
 });
