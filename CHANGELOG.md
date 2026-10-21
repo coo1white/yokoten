@@ -6,7 +6,7 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-10-24
+## [0.1.0] - 2026-10-21
 
 The first release. yokoten guides you through a good team's habits, and guards your AI agents while you learn.
 To start, read the [guide](https://github.com/yokoten-labs/yokoten/blob/v0.1.0/docs/guide.md).
