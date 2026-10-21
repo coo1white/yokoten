@@ -1095,7 +1095,9 @@ function readsOnly(words: string[]): boolean {
 }
 
 // sort's options that write nothing and run nothing: no -o, -T or --compress-program (#498).
-const SORT_OPTION = /^-(?:[bdfghiMnRrsuVz]|k[\d.,bdfghiMnRrV]*)*(?:t.?)?$/;
+// Flags, then at most one key (`-rk2,2n`) or one `-t`: the flags hold no `k` or `t`, so the parts
+// can't overlap and the test stays linear (CodeQL found the older form exponential).
+const SORT_OPTION = /^-[bdfghiMnRrsuVz]*(?:t.?|k[\d.,bdfghiMnRrV]*)?$/;
 const SORT_LONG_OPTIONS = new Set(['--reverse', '--numeric-sort', '--unique', '--human-numeric-sort', '--version-sort', '--ignore-case', '--stable']);
 const UNIQ_OPTION = /^-[cdDiuz]*(?:[fsw]\d*)?$/;
 // sed's options that write nothing: no -i, --in-place or -f (a script from a file).
