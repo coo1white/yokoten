@@ -7,8 +7,10 @@
 //
 // The budget is for one CI shard: a third of the test files, four at a time. A runner can be
 // twice as slow as another, so the budget sits well above the slowest shard seen (about
-// 110 s, Node 22): it catches a suite that drifts back to slow, not a slow runner. The stable
-// check is the child-process cap in test/repo/architecture.test.ts; this one is the backstop.
+// 110 s, Node 22): it catches a suite that drifts back to slow, not a slow runner. The Node 24
+// jobs on Linux, the fastest, pass --budget 90: their slowest shard seen took about 60 s.
+// The stable check is the child-process cap in test/repo/architecture.test.ts; this one is
+// the backstop.
 import { appendFileSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,7 +49,7 @@ export function judgeSuite(tap: string, budget = SUITE_BUDGET): { isOver: boolea
   const slowest = tests.toSorted((a, b) => b.ms - a.ms).slice(0, SLOWEST);
   const text = [
     isOver
-      ? `The tests took ${seconds(ms)}, over the budget of ${budget} s. Find what made them slow: most often a new child process per test (use sandbox.call), or a large stress input.`
+      ? `The tests took ${seconds(ms)}, over the budget of ${budget} s by ${seconds(ms - budget * 1000)}. Find what made them slow: most often a new child process per test (use sandbox.call), or a large stress input.`
       : `The tests took ${seconds(ms)}, under the budget of ${budget} s.`,
     ...(slowest.length ? ['', 'The slowest tests:', ...slowest.map((test) => `- ${seconds(test.ms)}: ${test.name}`)] : []),
   ].join('\n');

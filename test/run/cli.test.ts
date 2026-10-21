@@ -45,7 +45,7 @@ test('guardCommand: refuses a missing-runtime line with a quote or a backslash (
   assert.doesNotThrow(() => guardCommand('p', 'hook', 'yokoten: gone; run the install again'));
 });
 
-test('hooks: a missing runtime says one plain line with no path, never a stack trace (#204)', () => {
+test('hooks: a missing runtime says one plain line with no path, never a stack trace (#204)', async () => {
   const sandbox = makeSandbox();
   // A hook from before #204 is updated in place, never added twice.
   const old = 'node "$HOME/.local/share/yokoten/bin/yokoten.ts" doctor --session';
@@ -54,8 +54,8 @@ test('hooks: a missing runtime says one plain line with no path, never a stack t
   mkdirSync(join(sandbox.home, '.codex'));
   mkdirSync(join(sandbox.home, '.gemini'));
   writeFileSync(join(sandbox.home, '.claude', 'settings.json'), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: old }] }] } }));
-  assert.match(sandbox.run(['install']).stdout, /^updated the SessionStart doctor$/m);
-  assert.equal(sandbox.run(['init']).status, 0);
+  assert.match((await sandbox.call(['install'])).stdout, /^updated the SessionStart doctor$/m);
+  assert.equal((await sandbox.call(['init'])).status, 0);
   rmSync(join(sandbox.home, '.local', 'share', 'yokoten'), { recursive: true });
   rmSync(join(sandbox.repo, '.yokoten'), { recursive: true });
   const shell = (command: string, extra: Record<string, string> = {}) =>
@@ -271,12 +271,12 @@ test('help: a typo in a command or an option names the closest one; a far one li
 // A guard that crashes, runs out of memory or is killed must refuse the call: the agents
 // run a call on any exit but 2 (#260). Each tool-call hook, as init, install and the plugin
 // write it, runs through sh with its runtime replaced by a script that ends one way.
-test('hooks: a tool-call guard that fails refuses the call; the stop check does not (#260)', () => {
+test('hooks: a tool-call guard that fails refuses the call; the stop check does not (#260)', async () => {
   const sandbox = makeSandbox();
   // Codex and Gemini CLI are installed, so install writes their home hooks too.
   for (const dir of ['.codex', '.gemini']) mkdirSync(join(sandbox.home, dir), { recursive: true });
-  assert.equal(sandbox.run(['install']).status, 0);
-  assert.equal(sandbox.run(['init']).status, 0);
+  assert.equal((await sandbox.call(['install'])).status, 0);
+  assert.equal((await sandbox.call(['init'])).status, 0);
   const commands = (file: string) => {
     const hooks = JSON.parse(readFileSync(file, 'utf8')).hooks as Record<string, { hooks: { command: string }[] }[]>;
     return Object.fromEntries(Object.entries(hooks).map(([event, groups]) => [event, groups.flatMap((g) => g.hooks.map((h) => h.command))]));
