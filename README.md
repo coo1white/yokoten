@@ -35,6 +35,22 @@ The guard stops risky actions before they run in these agents
 
 In any other agent, or with no agent at all, the commit check and CI still stop a bad change.
 
+## Works with any language
+
+yokoten itself runs on Node 22.18 or later, but your project can be in any language.
+The guard, the privacy and secrets check, CI, and the issue and pull request checks
+work the same in every language.
+
+One step reads your language: `doctor` looks for your test command.
+
+| | Languages |
+|---|---|
+| Finds your test command | JavaScript and TypeScript (npm, Deno), Python, Go, Rust, Java (Maven, Gradle), and any project with `make test` |
+| In progress ([#546](https://github.com/yokoten-labs/yokoten/issues/546)) | .NET, Ruby, PHP, Swift, Elixir, Dart and Flutter |
+
+So far the whole road, from install to release, has been run on TypeScript projects.
+Issue #546 runs it on projects in the other languages too.
+
 ## Why
 
 On a good team, every change has a reason, a test and a review. Most people learn
