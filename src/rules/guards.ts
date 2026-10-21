@@ -1546,8 +1546,10 @@ function writesFile(words: string[]): boolean {
 const QUOTED_TILDE = /[\\'"]~|~[\\'"]/;
 
 // The folder after a `cd` or `pushd` with a plain path, or null when the guard can't tell:
-// a variable, a substitution, `cd -`, `popd`, or a ~ that was quoted (`isTildeQuoted`, #465):
-// bash keeps a quoted ~ as a folder named ~. Any other command leaves the folder as it was.
+// a variable, a substitution, `cd -`, `popd`, a ~ that was quoted (`isTildeQuoted`, #465):
+// bash keeps a quoted ~ as a folder named ~, or a bare relative folder (#559): bash
+// searches CDPATH for one, and CDPATH may be set in the shell without being exported.
+// Any other command leaves the folder as it was.
 function folderAfter(words: string[], folder: string | null, { env, isTildeQuoted }: { env: Env; isTildeQuoted: boolean }): string | null {
   const name = programName(words[0] ?? '');
   if (name === 'popd') return null;
@@ -1559,6 +1561,9 @@ function folderAfter(words: string[], folder: string | null, { env, isTildeQuote
   const path = target.startsWith('~') ? (env.HOME ? join(env.HOME, target.slice(1)) : null) : target;
   if (path === null) return null;
   if (isAbsolute(path)) return path;
+  // Only `/`, `./`, `../` and `.` and `..` alone say where a relative `cd` goes: bash
+  // searches CDPATH for the rest, even with a `/` inside (`cd sub/dir`).
+  if (target !== '.' && target !== '..' && !target.startsWith('./') && !target.startsWith('../')) return null;
   return folder === null ? null : resolve(folder, path);
 }
 
@@ -1589,6 +1594,17 @@ const PATCH_LIMIT = 1 << 20;
 // A redirect that writes its file. `>&2` copies a stream; `>&file` writes a file.
 const WRITE_REDIRECT = /^(?:\d+|\{[A-Za-z_]\w*\}|&)?(>>|>\||<>|>&|>)(.*)$/s;
 
+const UNSURE_FOLDER_FIX = 'write the file by its full path, or first move to a folder the guard can read (an absolute folder, `./`, `../` or `~`), then write again';
+
+// Whether a write target may be anywhere: a relative path from an unknown folder (#559).
+// A `~` that names home is read as home, as in `ruled` below; anything else relative stays
+// unsure, so unsure means refused wherever the folder is used.
+function isUnsureTarget(target: WriteTarget, env: Env): boolean {
+  if (target.from !== null || target.path === '' || target.path === '-') return false;
+  const expanded = /^~(?=\/|$)/.test(target.path) && env.HOME ? join(env.HOME, target.path.slice(1)) : target.path;
+  return !isAbsolute(expanded);
+}
+
 function checkLeadOnlyWrites(words: string[], { env, rules, folder }: { env: Env; rules: FileRules; folder: string | null }): Finding | null {
   // A folder counts when a lead-only file may be in it: `rm -r .github`.
   const stopped = (target: WriteTarget): string | null => {
@@ -1604,10 +1620,16 @@ function checkLeadOnlyWrites(words: string[], { env, rules, folder }: { env: Env
       }
       continue;
     }
+    if (isUnsureTarget(target, env)) {
+      return finding('lead-only', `this command writes ${target.path}, and yokoten can't tell which file that is from an unknown folder`, UNSURE_FOLDER_FIX);
+    }
     const path = stopped(target);
     if (path !== null) return finding('lead-only', `this command writes ${path}, which is lead-only (yokoten.json "leadOnly")`, LEAD_ONLY_FIX);
   }
   for (const target of commitTargets(words, folder, rules.rootOf, env)) {
+    if (isUnsureTarget(target, env)) {
+      return finding('lead-only', `this commit changes ${target.path}, and yokoten can't tell which file that is from an unknown folder`, UNSURE_FOLDER_FIX);
+    }
     const path = stopped(target);
     if (path !== null) return finding('lead-only', `this commit changes ${path}, which is lead-only (yokoten.json "leadOnly")`, `unstage it with \`git restore --staged ${path}\`, then ${LEAD_ONLY_FIX}`);
   }
@@ -1913,7 +1935,7 @@ function commitTargets(words: string[], folder: string | null, rootOf: FileRules
   const start = words.findIndex(isGit);
   if (start === -1) return [];
   const { sub, args, dir } = gitParts(withoutShellRedirects(words, start + 1), folder);
-  if (sub !== 'commit' || dir === null) return [];
+  if (sub !== 'commit') return [];
   let isAll = false;
   let isInclude = false;
   const named: string[] = [];
@@ -1939,6 +1961,9 @@ function commitTargets(words: string[], folder: string | null, rootOf: FileRules
   }
   const targets = named.map((path) => ({ path, from: dir }));
   if (named.length > 0 && !isInclude) return targets;
+  // From an unknown folder the staged files are unknowable: only the named ones count, and
+  // the guard refuses a relative one as unsure where the folder is used (#559).
+  if (dir === null) return targets;
   // git names staged files from the repo's root. The root is found by a walk, not a second git.
   const root = rootOf(dir);
   if (root === null) return targets;

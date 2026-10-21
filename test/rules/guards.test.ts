@@ -625,6 +625,29 @@ test('lead-only files: a cd to a quoted ~ is not the home folder, so a worker st
   assert.equal(run('cd ~/"x" && echo x > AGENTS.md'), undefined);
 });
 
+test('lead-only files: a worker relative write after an unknown cd is refused (#559)', () => {
+  const sandbox = yokotenSandbox();
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  const run = (command: string) => checkCommand(command, { env: worker, cwd: sandbox.repo })?.id;
+  // `cd src` may land anywhere through CDPATH, so the folder is unknown and every
+  // relative write is unsure, whatever the file is named: unsure means refused.
+  for (const command of [
+    'cd src && echo x > AGENTS.md',
+    'cd src && echo x > notes.md',
+    'cd src && cp x ../AGENTS.md',
+    'cd src && git checkout -- notes.md',
+    'cd src && git commit -m x AGENTS.md',
+  ]) {
+    assert.equal(run(command), 'lead-only', `should stop a worker: ${JSON.stringify(command)}`);
+  }
+  const found = checkCommand('cd src && echo x > notes.md', { env: worker, cwd: sandbox.repo });
+  assert.match(found?.what ?? '', /can't tell which file that is from an unknown folder/);
+  // Controls: a write by full path, and one after a `cd` the guard can read, still pass.
+  assert.equal(run(`echo x > ${join(sandbox.repo, 'notes.md')}`), undefined);
+  assert.equal(run('cd ./src && echo x > notes.md'), undefined);
+  assert.equal(run(`cd ${join(sandbox.repo, 'src')} && echo x > notes.md`), undefined);
+});
+
 test('lead-only files: reads, other files and files outside the repo pass a worker (#402)', () => {
   const sandbox = yokotenSandbox();
   const worker = { YOKOTEN_ROLE: 'worker' };

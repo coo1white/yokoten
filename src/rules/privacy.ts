@@ -1578,8 +1578,10 @@ export function checkPost(
       if (!home || (path !== '~' && !path.startsWith('~/'))) return 'missing';
       full = `${home}/${path.slice(2)}`;
     }
-    if (!isAbsolute(full) && cwd === null) return 'unsure';
+    // A `..` past a `cd` escapes whatever folder the command lands in, so it is named
+    // even from an unknown one: the file stays unreadable either way (#559).
     if (files?.movesFolder && full.split(/[\\/]/).includes('..')) return { saw: { what: 'a `cd` before a path with `..`' } };
+    if (!isAbsolute(full) && cwd === null) return 'unsure';
     const at = isAbsolute(full) || !cwd ? full : `${cwd}/${full}`;
     let stat: ReturnType<typeof statSync> | null = null;
     try {
