@@ -174,6 +174,7 @@ function initRun(root: string, env: Env, gh: Gh, noCi: boolean): { ok: boolean; 
     return [
       `${added.guard} the Muse Code tool-call hook in .muse/hooks.json`,
       `${added.stop} the Muse Code stop check in .muse/hooks.json`,
+      `${added.doctor} the Muse Code session doctor in .muse/hooks.json`,
       `Muse Code runs the hooks in .muse/hooks.json only after you trust this folder: ${muse.TRUST_STEP}`,
     ];
   });
