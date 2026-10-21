@@ -616,6 +616,121 @@ export const EMAIL_FIX = 'use your GitHub noreply address, or a placeholder at e
 /** Whether an address found in text may point at a person: not a noreply, team, example or retina name. */
 export const isPersonalEmail = (hit: string, allow: string[] = []): boolean => !OK_EMAIL.some((re) => re.test(hit)) && !isForgeRemote(hit) && !RETINA.test(hit) && !allow.includes(hit);
 
+// ---- One form for marks and text (#507) ----
+//
+// The same letters can be written in more than one Unicode form: é as one code point or as
+// e plus a combining accent, full-width Latin (`ｓａｍ`), a zero-width space inside a word. The
+// check and `redact` fold the mark and the text the same way before they match: NFKD, then
+// lowercase. NFKD, not NFKC: a mark found as a part (`sam_1a`, a Hangul name) is still found
+// when an accent or a final consonant joins its last letter in the text, as it was before
+// the fold. A mark drops U+200B to U+200D and U+2060; the text keeps them, and the pattern
+// lets them sit between any two letters of a mark, so one inside a word is skipped and one
+// next to a name is still an edge (`x\u200Bsam`). The text keeps its case after the fold,
+// because a change from a small letter to a capital is an edge; its pattern ignores case
+// instead (`caseless`). Homoglyphs, such as a Cyrillic letter that looks Latin, stay out.
+
+const ZERO_WIDTH = /[\u200B-\u200D\u2060]/g;
+const ZERO_WIDTH_RUN = '[\\u200B-\\u200D\\u2060]*';
+const NON_ASCII = /[^\x00-\x7f]/;
+// A character that NFKD may join onto the one before it: a combining mark, a Hangul vowel or
+// final consonant, a half-width voicing mark. It is folded with that character.
+const JOINER = /^[\p{M}\u1160-\u11FF\uFF9E\uFF9F]/u;
+// At most 30 such characters are folded with one letter, the stream-safe limit of Unicode
+// (UAX #15): a normalize of a longer run takes time that grows with its square. A text with
+// a longer run is folded piece by piece, with the run cut every 30.
+const MAX_JOINED = 30;
+// Whether each character below U+10000 joins, found the first time it is seen: a test of
+// `JOINER` on every character of a long line costs more than the normalize (#507).
+const joinsKnown = new Uint8Array(0x10000);
+
+/** How many code units the character at `index` takes when it joins the one before it, or 0. */
+function joinerWidth(text: string, index: number): number {
+  const code = text.charCodeAt(index);
+  if (code < 0x300) return 0;
+  if (code >= 0xd800 && code <= 0xdbff) return JOINER.test(text.slice(index, index + 2)) ? 2 : 0;
+  if (!joinsKnown[code]) joinsKnown[code] = JOINER.test(text[index]) ? 2 : 1;
+  return joinsKnown[code] === 2 ? 1 : 0;
+}
+
+// Whether NFKD leaves each character below U+10000 as it is, found the first time it is seen:
+// most characters of a long line need no normalize of their own.
+const stableKnown = new Uint8Array(0x10000);
+
+/** Whether NFKD leaves the one code unit at `index` as it is (a surrogate never). */
+function isStable(text: string, index: number): boolean {
+  const code = text.charCodeAt(index);
+  if (code < 0xa0) return true;
+  if (code >= 0xd800 && code <= 0xdfff) return false;
+  if (!stableKnown[code]) stableKnown[code] = text[index].normalize('NFKD') === text[index] ? 2 : 1;
+  return stableKnown[code] === 2;
+}
+
+/** Whether `text` has a run of more than `MAX_JOINED` characters that join. */
+function hasLongJoin(text: string): boolean {
+  for (let index = 0, run = 0; index < text.length; ) {
+    const width = joinerWidth(text, index);
+    if (!width) run = 0;
+    else if (++run > MAX_JOINED) return true;
+    index += width || 1;
+  }
+  return false;
+}
+
+/**
+ * Text after the fold, case kept. `starts[i]` and `ends[i]` are where the piece of the
+ * original that gave code unit `i` starts and ends, so a match maps back to the original.
+ * Both are null when the fold changes nothing: the positions are the same.
+ */
+export interface FoldedText {
+  text: string;
+  starts: number[] | null;
+  ends: number[] | null;
+}
+
+/**
+ * The fold with no positions, for the check: one normalize of the whole text when no run of
+ * joined characters is over the limit. It gives the same text as `foldText`: NFKD of a text
+ * cut before each character that does not join is NFKD of its pieces.
+ */
+function foldPlain(text: string): string {
+  if (!NON_ASCII.test(text)) return text;
+  return hasLongJoin(text) ? foldText(text).text : text.normalize('NFKD');
+}
+
+/** The one fold of text, for the check and for `redact` (#507). A line of ASCII costs one test. */
+export function foldText(text: string): FoldedText {
+  if (!NON_ASCII.test(text) || (!hasLongJoin(text) && text.normalize('NFKD') === text)) return { text, starts: null, ends: null };
+  let folded = '';
+  const starts: number[] = [];
+  const ends: number[] = [];
+  for (let start = 0; start < text.length; ) {
+    let end = start + (text.codePointAt(start)! > 0xffff ? 2 : 1);
+    for (let joined = 0, width = 0; joined < MAX_JOINED && end < text.length && (width = joinerWidth(text, end)); joined++) end += width;
+    const piece = end === start + 1 && isStable(text, start) ? text[start] : text.slice(start, end).normalize('NFKD');
+    folded += piece;
+    for (let i = 0; i < piece.length; i++) {
+      starts.push(start);
+      ends.push(end);
+    }
+    start = end;
+  }
+  return { text: folded, starts, ends };
+}
+
+/** A mark as the check matches it: folded, with no zero-width characters, and lowercased (#507). Empty for a mark of only those. */
+export const foldMark = (mark: string): string => foldPlain(mark).replace(ZERO_WIDTH, '').trim().toLowerCase();
+
+/** One line folded for the check: the text with its case and zero-width characters, and lowercased without them. Fold a line once, for all its marks. */
+export interface FoldedLine {
+  text: string;
+  lower: string;
+}
+export const foldLine = (line: string): FoldedLine => {
+  if (!NON_ASCII.test(line)) return { text: line, lower: line.toLowerCase() };
+  const text = hasLongJoin(line) ? foldText(line).text : line.normalize('NFKD');
+  return { text, lower: text.replace(ZERO_WIDTH, '').toLowerCase() };
+};
+
 // ---- How a mark is found in text (#434) ----
 //
 // A mark made of letters and spaces is a name or a place: it is found as whole words, so
@@ -638,39 +753,58 @@ const LETTER = String.raw`[\p{L}\p{M}]`;
 const NAME_START = String.raw`(?:(?<!${LETTER})|(?<=\\[ntrbf])|(?<=\\u[0-9A-Fa-f]{4})|(?<=${ENCODED_EDGE})|(?<=\p{Ll})(?=\p{Lu}))`;
 // What may sit right after it: no letter, or a capital after the name's small letter.
 const NAME_END = String.raw`(?:(?!${LETTER})|(?<=\p{Ll})(?=\p{Lu}))`;
-const NAME_JOINER = String.raw`[\s._-]*`;
+const NAME_JOINER = String.raw`[\s._\u200B-\u200D\u2060-]*`;
 
-/** A value as a pattern that matches it in any case, with no `i` flag, so the edges can tell a capital from a small letter. */
-const caseless = (value: string): string =>
+// The lowercase of the capital İ (U+0130) is two code units: i and a combining dot above.
+const DOTTED_I = 'i\u0307';
+const DOTTED_I_PATTERN = `(?:[iI]${ZERO_WIDTH_RUN}\u0307|\u0130)`;
+
+/**
+ * A lowercased value as a pattern that matches it in any case, with no `i` flag, so the
+ * edges can tell a capital from a small letter. A dotted i also matches İ, and a zero-width
+ * character may sit between any two letters (#507).
+ */
+const caseless = (value: string): string => value.split(DOTTED_I).map(caselessPart).join(`${ZERO_WIDTH_RUN}${DOTTED_I_PATTERN}${ZERO_WIDTH_RUN}`);
+const caselessPart = (value: string): string =>
   [...value]
     .map((char) => {
       const [low, up] = [char.toLowerCase(), char.toUpperCase()];
       if (low === up) return escapeRegExp(char);
       return [...low].length === 1 && [...up].length === 1 ? `[${escapeRegExp(low)}${escapeRegExp(up)}]` : `(?:${escapeRegExp(low)}|${escapeRegExp(up)})`;
     })
-    .join('');
+    .join(ZERO_WIDTH_RUN);
 
 /** The words of a mark found as whole words, or null for a mark found as a part. */
 function nameWords(mark: string): string[] | null {
-  const words = mark.trim().toLowerCase().split(/\s+/);
+  const words = mark.split(/\s+/);
   return NAME_SHAPED.test(words.join(' ')) && !JOINED_SCRIPT.test(mark) ? words : null;
 }
 
-/** The one pattern for a mark, for the check and for `redact` (use flag `u`, never `i`). */
+/**
+ * The one pattern for a mark, for the check and for `redact` (use flag `u`, never `i`). It
+ * matches text folded by `foldText`. A mark that folds to nothing matches nothing.
+ */
 export function markPattern(mark: string): string {
-  const words = nameWords(mark);
-  return words ? `${NAME_START}${words.map(caseless).join(NAME_JOINER)}${NAME_END}` : caseless(mark.trim().toLowerCase());
+  const value = foldMark(mark);
+  if (!value) return '(?!)';
+  const words = nameWords(value);
+  return words ? `${NAME_START}${words.map(caseless).join(NAME_JOINER)}${NAME_END}` : caseless(value);
 }
 
 /** Each mark's test, made once per process: the scan runs it on every line. */
 const markTests = new Map<string, (text: string, lower: string) => boolean>();
 
-/** Whether `text` holds `mark` (lowercased, as `loadMarks` gives it). `lower` is `text` lowercased, when the caller has it. The one test every scan uses. */
-export function hasMark(text: string, mark: string, lower: string = text.toLowerCase()): boolean {
+/**
+ * Whether `text` holds `mark`, in any Unicode form (#507). `folded` is `foldLine(text)`,
+ * when the caller has it: a scan folds each line once, for all its marks. The one test every scan uses.
+ */
+export function hasMark(text: string, mark: string, folded: FoldedLine = foldLine(text)): boolean {
   let test = markTests.get(mark);
   if (!test) {
-    const words = nameWords(mark);
-    if (!words) test = (_, low) => low.includes(mark);
+    const value = foldMark(mark);
+    const words = nameWords(value);
+    if (!value) test = () => false;
+    else if (!words) test = (_, low) => low.includes(value);
     else {
       const pattern = new RegExp(markPattern(mark), 'u');
       // The first word as a part comes first: most lines have none, and includes is fast.
@@ -678,7 +812,7 @@ export function hasMark(text: string, mark: string, lower: string = text.toLower
     }
     markTests.set(mark, test);
   }
-  return test(text, lower);
+  return test(folded.text, folded.lower);
 }
 
 // ---- What a stopped mark is (#523) ----
@@ -736,10 +870,10 @@ export function scanText(
       if (octets.some((n) => n > 255) || OK_IP.some((re) => re.test(hit)) || allow.includes(hit) || isSectionNumber(line, index, hit)) continue;
       problems.push(finding('ip', 'an IP address', 'use a placeholder from 192.0.2.0/24', where));
     }
-    const lower = line.toLowerCase();
+    const folded = stopped.length ? foldLine(line) : null;
     for (const mark of stopped) {
       // The mark itself is never printed: the output may land in a CI log or a chat.
-      if (!hasMark(line, mark, lower)) continue;
+      if (!hasMark(line, mark, folded!)) continue;
       if (places && logins.includes(mark) && !hasMark(places(line, index, mark), mark)) continue;
       const { what, fix } = describeMark(kinds && kinds.has(mark) ? kinds.get(mark) : undefined);
       problems.push(finding('private-mark', what, fix, where));
@@ -862,7 +996,9 @@ const markPlaceholder = (mark: string) => (isEmailShaped(mark) ? PLACEHOLDERS.em
 export function makeRedactor(hidden: Hidden, env: Env): (text: string) => string {
   const placeholderOf = new Map<string, string>();
   const add = (value: string, placeholder: string) => {
-    const key = value.trim().toLowerCase();
+    // Folded first (#507): a mark of only zero-width characters is no mark, and the length
+    // that orders the values is the length that is matched.
+    const key = foldMark(value);
     // One or two Latin letters would hide half the output, and say little about anyone.
     // Two characters in Chinese or Japanese can be a whole name or city.
     const isTooShort = key.length < 3 && /^[\x20-\x7e]*$/.test(key);
@@ -877,12 +1013,30 @@ export function makeRedactor(hidden: Hidden, env: Env): (text: string) => string
   // One group per value, by the same pattern as the check (#434): a hit names its placeholder by its group.
   const pattern = values.length ? new RegExp(values.map((value) => `(${markPattern(value)})`).join('|'), 'gu') : null;
   const placeholders = values.map((value) => placeholderOf.get(value) ?? PLACEHOLDERS.mark);
+  const placeholderFor = (groups: unknown[]) => placeholders[groups.slice(0, values.length).findIndex((group) => group !== undefined)] ?? PLACEHOLDERS.mark;
+  // The marks are found in the folded text (#507), and each hit replaces the pieces of the original it came from.
+  const hideMarks = (text: string) => {
+    // Most text holds no mark: the fast fold says so, with no positions to keep.
+    if (!pattern || foldPlain(text).search(pattern) === -1) return text;
+    const { text: folded, starts, ends } = foldText(text);
+    if (!starts || !ends) return text.replace(pattern, (...groups: unknown[]) => placeholderFor(groups.slice(1)));
+    let out = '';
+    let last = 0;
+    for (const hit of folded.matchAll(pattern)) {
+      // Two hits in one piece (a ligature, say) hide that piece once.
+      const end = ends[hit.index + hit[0].length - 1];
+      if (end <= last) continue;
+      const start = Math.max(last, starts[hit.index]);
+      out += text.slice(last, start) + placeholderFor(hit.slice(1));
+      last = end;
+    }
+    return out + text.slice(last);
+  };
   const hideSecrets = makeSecretHider();
   return (text) => {
     // An SSH remote at a private host (git@host) names the host, not a person.
-    let out = hideSecrets(text).replace(EMAIL, (hit) => (!isPersonalEmail(hit) ? hit : /^git@/i.test(hit) ? `git@${PLACEHOLDERS.host}` : PLACEHOLDERS.email));
-    out = hideHome(out, env);
-    return pattern ? out.replace(pattern, (...groups: unknown[]) => placeholders[groups.slice(1, values.length + 1).findIndex((group) => group !== undefined)] ?? PLACEHOLDERS.mark) : out;
+    const out = hideSecrets(text).replace(EMAIL, (hit) => (!isPersonalEmail(hit) ? hit : /^git@/i.test(hit) ? `git@${PLACEHOLDERS.host}` : PLACEHOLDERS.email));
+    return hideMarks(hideHome(out, env));
   };
 }
 
@@ -1190,7 +1344,10 @@ const postFix = (f: Finding) =>
 
 /** A file's path as a finding may show it: home as `~`, and only its name, or no name, when the path holds a mark. */
 function shownPath(path: string, env: Env, marks: string[]): string {
-  const holdsMark = (text: string) => marks.some((mark) => hasMark(text, mark));
+  const holdsMark = (text: string) => {
+    const folded = foldLine(text);
+    return marks.some((mark) => hasMark(text, mark, folded));
+  };
   const shown = hideHome(path, env);
   if (!holdsMark(shown)) return shown;
   const name = basename(shown);
@@ -1200,9 +1357,27 @@ function shownPath(path: string, env: Env, marks: string[]): string {
 // The characters bash reads as plain text outside quotes: no expansion, glob, brace, operator or comment.
 const PLAIN_WORD = /^[A-Za-z0-9_ \t./:,=+@%-]$/;
 
+// The yokoten of `yokoten bot --` the guard trusts (#506): a plain `yokoten`, a path such as
+// `bin/yokoten.ts` or `/opt/x/bin/yokoten.ts`, or one under `~/`, in plain path characters.
+// `~user`, `~+` and `~-` are not your home folder, so the guard can't tell which yokoten runs.
+// No `=` or `,`: `GH_REPO=x/yokoten` or `LD_PRELOAD=x/yokoten` sets a variable, it is no program.
+// An absolute path or one with `..` is trusted on purpose: no looser than before #506, and the
+// guard can't see what a program file holds, whatever its path.
+const BOT_PROGRAM = String.raw`(?:~?\/)?(?:[\w.+@%:-]+\/)*yokoten(?:\.ts|\.mjs)?`;
+const BOT_PROGRAM_WORD = new RegExp(`^${BOT_PROGRAM}$`);
+
+/** Whether a word, quotes removed, is a yokoten the guard trusts as the bot's program (#506). */
+export function isBotProgram(word: string): boolean {
+  return BOT_PROGRAM_WORD.test(word);
+}
+
+// The start of a lone post: the allowed variables, then `gh` or the bot's `yokoten bot -- gh`.
+const LONE_POST_START = new RegExp(String.raw`^(?:(?:NODE_USE_ENV_PROXY|GH_REPO|GH_HOST)=[\w./:@-]*[ \t]+)*(?:(?:node[ \t]+)?${BOT_PROGRAM}[ \t]+bot[ \t]+--[ \t]+)?gh[ \t]`);
+
 /**
  * Whether the command line is one gh post and nothing else (#447): `gh …`, or the bot's
- * `yokoten bot -- gh …`, optionally after one plain `cd <folder> &&`. Before it, only
+ * `yokoten bot -- gh …` with a yokoten `isBotProgram` trusts (#506), optionally after one
+ * plain `cd <folder> &&`. Before it, only
  * NODE_USE_ENV_PROXY, GH_REPO or GH_HOST may be set, to a plain value (#498); GH_REPO and
  * GH_HOST name another target, so namesTarget still keeps the allow. Outside quotes only
  * letters, digits, spaces and `_ . / : , = + @ % -` are trusted, plus one here-string or
@@ -1218,7 +1393,7 @@ export function lonePost(command: string): { cd: boolean; target?: string } | nu
   let text = trimStart(command, ' \t');
   const cd = text.match(/^cd[ \t]+('[^'\n]*'|"[^"$`\\\n]*"|~?[\w./+@%:,=-]+|~)[ \t]*&&[ \t]*/);
   if (cd) text = text.slice(cd[0].length);
-  const start = text.match(/^(?:(?:NODE_USE_ENV_PROXY|GH_REPO|GH_HOST)=[\w./:@-]*[ \t]+)*(?:(?:node[ \t]+)?(?:~?[\w./+@%:-]*\/)?yokoten(?:\.ts|\.mjs|\.js)?[ \t]+bot[ \t]+--[ \t]+)?gh[ \t]/);
+  const start = text.match(LONE_POST_START);
   if (!start) return null;
   let quote: string | null = null;
   let heredoc: { word: string; tabs: boolean } | null = null;
@@ -1386,7 +1561,14 @@ export function checkPost(
   // A word in a refusal is tested against the marks as a path is in shownPath (#498). The
   // marks file is read only when a refusal names a word.
   let namedMarks: string[] | undefined;
-  const isMarked = (word: string) => (namedMarks ??= loadMarks(env)).some((mark) => word.toLowerCase().includes(mark));
+  // Folded as the scan folds it (#507).
+  const isMarked = (word: string) => {
+    const { lower } = foldLine(word);
+    return (namedMarks ??= loadMarks(env)).some((mark) => {
+      const value = foldMark(mark);
+      return value !== '' && lower.includes(value);
+    });
+  };
   const readFile = (path: string): FileRead => {
     let full = path;
     if (path.startsWith('~')) {

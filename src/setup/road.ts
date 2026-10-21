@@ -21,7 +21,7 @@ import { BUILD_DIRS, isBuildOutput } from '../rules/layout.ts';
 import { homeOf } from '../rules/privacy.ts';
 import { hasPlugin, hasProjectHook } from '../agents/runtimes/claude-code.ts';
 import { isGuardOff, TRUST_FIX } from '../agents/runtimes/muse.ts';
-import { commitCheckLine, runs } from '../run/cli.ts';
+import { type CommandTest, commitCheckLine, runs } from '../run/cli.ts';
 import { isNoAdapter } from '../host/hosts.ts';
 import { CODEOWNERS_PLACES, hasBot, KEYS_FILE, missingBotSetup, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
@@ -266,7 +266,7 @@ export const runsTests = (ci: string, script: string, workspaces: boolean, scrip
  * Whether the workflows run a yokoten command: anywhere in the text by its path, or as a
  * command in a `run:` step, where `- run: npx yokoten check` starts after the key (#298).
  */
-const ciRuns = (ci: string, command: RegExp) => command.test(ci) || runLines(ci).flatMap(commands).some((c) => command.test(c));
+const ciRuns = (ci: string, command: CommandTest) => command.test(ci) || runLines(ci).flatMap(commands).some((c) => command.test(c));
 const indentOf = (line: string) => /^[ \t]*/.exec(line)![0].length;
 // A step that uses yokoten's own Action, at any ref (even the guide's "<full commit SHA>"), quoted or not, with a comment or not.
 // The ref is read one word at a time, so a long line takes linear time and no RangeError (#322).

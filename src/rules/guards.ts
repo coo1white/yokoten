@@ -18,7 +18,7 @@ import type { Config, Env } from './config.ts';
 import { loadConfig, matcher } from './config.ts';
 import { type Finding, finding } from './message.ts';
 import { checkCommandTitle } from './pr.ts';
-import { type CommandFiles, checkPost, type GhCommand, ghIndex, PIPE_READERS, type Risk, withoutReadPipe } from './privacy.ts';
+import { type CommandFiles, checkPost, type GhCommand, ghIndex, isBotProgram, PIPE_READERS, type Risk, withoutReadPipe } from './privacy.ts';
 
 /** A file edit, by path relative to the repo root. */
 export function checkEdit(path: string, { config, env }: { config: Config; env: Env }): Finding | null {
@@ -466,6 +466,8 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
   const plainAt = heredoc === undefined ? plainBreak(plainText) : -1;
   const fills = heredoc === undefined && (plainAt !== -1 || !tildesPlain(command, commands));
   const movesFolder = commands.some((words) => ['cd', 'pushd', 'popd'].includes(words[0] ?? ''));
+  // The words have lost their quotes: a quote or \ next to any ~ makes a ~ folder unsure (#465).
+  const isTildeQuoted = QUOTED_TILDE.test(command);
   for (const words of commands) {
     const mayWrite = heredoc !== undefined || fills || writesFile(words) || isUnsure(words) || writers.some((other) => other !== words);
     // The name is built only on a refusal (#498).
@@ -480,7 +482,7 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
       checkPosted(words, { env, config, cwd: postCwd, from, command, titles, files: { heredoc, mayWrite, saw, movesFolder } }) ??
       (rules ? checkLeadOnlyWrites(words, { env, rules, folder: postCwd }) : null);
     if (reason) return reason;
-    postCwd = folderAfter(words, postCwd, env);
+    postCwd = folderAfter(words, postCwd, { env, isTildeQuoted });
   }
   return null;
 }
@@ -1382,18 +1384,15 @@ function tildesPlain(command: string, commands: string[][]): boolean {
         !word.startsWith('~') ||
         (!isQuoted &&
           (word === '~' || word.startsWith('~/')) &&
-          ((index === 1 && ['cd', 'pushd'].includes(words[0])) || ['-F', '--body-file', '--notes-file'].includes(words[index - 1] ?? '') || isBotProgram(words, index))),
+          ((index === 1 && ['cd', 'pushd'].includes(words[0])) || ['-F', '--body-file', '--notes-file'].includes(words[index - 1] ?? '') || isBotCallAt(words, index))),
     ),
   );
 }
 
-// `~/…/yokoten`, `.ts` or `.mjs`, in plain path characters.
-const HOME_YOKOTEN = /^~\/(?:[\w.+@%:,=-]+\/)*yokoten(?:\.ts|\.mjs)?$/;
-
 // Whether the word at `index` is the yokoten of `yokoten bot --` or `node yokoten.ts bot --`,
 // after only the command's own variables. Which yokoten runs does not change the file gh reads.
-function isBotProgram(words: string[], index: number): boolean {
-  if (!HOME_YOKOTEN.test(words[index]) || words[index + 1] !== 'bot' || words[index + 2] !== '--') return false;
+function isBotCallAt(words: string[], index: number): boolean {
+  if (!isBotProgram(words[index]) || words[index + 1] !== 'bot' || words[index + 2] !== '--') return false;
   const start = ownVariables(words);
   return index === start || (index === start + 1 && words[start] === 'node');
 }
@@ -1475,7 +1474,7 @@ function readsOnly(words: string[]): boolean {
   }
   // `yokoten bot -- x`, `node bin/yokoten.ts bot -- x`
   const bot = program === 'node' ? 1 : 0;
-  if (/^yokoten(\.ts|\.mjs)?$/.test(base(words[bot] ?? '')) && words[bot + 1] === 'bot' && words[bot + 2] === '--') return readsOnly(words.slice(bot + 3));
+  if (isBotProgram(words[bot] ?? '') && words[bot + 1] === 'bot' && words[bot + 2] === '--') return readsOnly(words.slice(bot + 3));
   return false;
 }
 
@@ -1543,15 +1542,20 @@ function writesFile(words: string[]): boolean {
   return false;
 }
 
+// A quote or backslash before or after a ~: bash then does not read that ~ as the home folder.
+const QUOTED_TILDE = /[\\'"]~|~[\\'"]/;
+
 // The folder after a `cd` or `pushd` with a plain path, or null when the guard can't tell:
-// a variable, a substitution, `cd -` or `popd`. Any other command leaves it as it was.
-function folderAfter(words: string[], folder: string | null, env: Env): string | null {
+// a variable, a substitution, `cd -`, `popd`, or a ~ that was quoted (`isTildeQuoted`, #465):
+// bash keeps a quoted ~ as a folder named ~. Any other command leaves the folder as it was.
+function folderAfter(words: string[], folder: string | null, { env, isTildeQuoted }: { env: Env; isTildeQuoted: boolean }): string | null {
   const name = programName(words[0] ?? '');
   if (name === 'popd') return null;
   if (name !== 'cd' && name !== 'pushd') return folder;
   const target = words.slice(1).find((word) => !/^-[LPe@]+$/.test(word));
   if (target === undefined) return env.HOME ?? null;
   if (target === '-' || /[$`*?[]/.test(target) || /^~[^/]/.test(target)) return null;
+  if (target.startsWith('~') && isTildeQuoted) return null;
   const path = target.startsWith('~') ? (env.HOME ? join(env.HOME, target.slice(1)) : null) : target;
   if (path === null) return null;
   if (isAbsolute(path)) return path;

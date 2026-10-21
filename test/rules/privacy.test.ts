@@ -20,7 +20,10 @@ import { checkCommand } from '../../src/rules/guards.ts';
 import { formatFinding } from '../../src/rules/message.ts';
 import {
   describeMark,
+  foldLine,
+  foldText,
   hasMark,
+  isBotProgram,
   hideHome,
   homeIn,
   loadMarkKinds,
@@ -1355,6 +1358,20 @@ test('a project allow still applies after NODE_USE_ENV_PROXY=1 and a ~/ yokoten 
   assert.equal(post(`NODE_USE_ENV_PROXY=$X node bin/yokoten.ts ${comment}`, allowing)?.id, 'private-mark');
 });
 
+test('a lone post trusts the same yokoten paths as the body-file path (#506)', () => {
+  const allowing = { ...DEFAULTS, privacy: { ...DEFAULTS.privacy, allow: ['QuietVale'] } };
+  const comment = 'bot -- gh issue create --title "check: fix a bug" --body "QuietVale ships"';
+  for (const program of ['yokoten', 'node bin/yokoten.ts', 'node ./bin/yokoten.mjs', 'node ~/x/bin/yokoten.ts', '~/x/bin/yokoten', 'node ~/yokoten.mjs', 'node /opt/x/bin/yokoten.ts']) {
+    assert.ok(lonePost(`${program} ${comment}`), program);
+    assert.equal(post(`${program} ${comment}`, allowing), null, program);
+  }
+  // `~other`, `~+` and `~-` are not your home: no lone post, so no allow.
+  for (const program of ['node ~other/bin/yokoten.ts', '~other/x/yokoten', 'node ~+/bin/yokoten.ts', 'node ~-/bin/yokoten.ts', 'node ~/x/bin/yokoten.js']) {
+    assert.equal(lonePost(`${program} ${comment}`), null, program);
+    assert.equal(post(`${program} ${comment}`, allowing)?.id, 'private-mark', program);
+  }
+});
+
 test('reading a pipe at the end stays linear (#498)', () => {
   const body = join(postDir, 'piped.md');
   writeFileSync(body, 'All clean.\n');
@@ -1979,6 +1996,150 @@ test('hasMark: linear on long input (#434)', () => {
   ];
   for (const [name, make] of inputs) assertLinear(name, make, (text) => hasMark(text, FULL));
   for (const [name, make] of inputs) assertLinear(`camel: ${name}`, make, (text) => hasMark(text, NICK));
+  // The fold (#507): full-width letters, combining marks, zero-width characters.
+  const folded: [string, (n: number) => string][] = [
+    ['full-width letters', (n) => 'ｓ'.repeat(n)],
+    ['decomposed letters', (n) => 'é'.repeat(n / 2)],
+    ['one letter, many marks', (n) => `e${'́'.repeat(n)}`],
+    ['zero-width between letters', (n) => 's\u200B'.repeat(n / 2)],
+  ];
+  for (const [name, make] of folded) assertLinear(`fold: ${name}`, make, (text) => hasMark(text, FULL));
+  for (const [name, make] of folded) assertLinear(`fold, redact: ${name}`, make, makeRedactor({ marks: [FULL] }, {}));
+});
+
+// ---- A mark is found in any Unicode form (#507) ----
+//
+// Made up, built from pieces. ACCENTED ends in é as one code point; DECOMPOSED is e plus U+0301.
+const ACCENTED = ['vel', 'é'].join('');
+const DECOMPOSED = ['vel', 'é'].join('');
+const WIDE = (text: string) => [...text].map((char) => String.fromCodePoint(char.codePointAt(0)! + 0xfee0)).join('');
+// A capital dotted I, whose lowercase is i plus U+0307: two code units for one.
+const DOTTED = ['İ', 'lvo'].join('');
+const DOTLESS = ['ı', 'lvo'].join('');
+
+test('hasMark and scanText: a mark is found in any Unicode form (#507)', () => {
+  const found = (text: string, mark: string) => hasMark(text, mark.toLowerCase()) && scanText(text, { file: 'a.md', marks: [mark.toLowerCase()] }).length === 1;
+  // Composed in the mark, decomposed in the text, and the other way round.
+  assert.ok(found(`by ${DECOMPOSED}.`, ACCENTED) && found(`by ${ACCENTED}.`, DECOMPOSED));
+  assert.ok(found(DECOMPOSED.toUpperCase(), ACCENTED));
+  assert.ok(!found(`${DECOMPOSED}x`, ACCENTED), 'still whole words');
+  // Full-width Latin, in the text or in the mark, either case.
+  for (const text of [`by ${WIDE(SHORT)}.`, WIDE(SHORT.toUpperCase()), `${WIDE(SHORT)}＿${WIDE('example')}`]) assert.ok(found(text, SHORT), `not found in ${text}`);
+  assert.ok(found(`by ${SHORT}.`, WIDE(SHORT)));
+  assert.ok(found(`${WIDE(SHORT)} example`, FULL));
+  assert.ok(!found(WIDE(`${SHORT}ple`), SHORT), 'still whole words');
+  // A zero-width space, joiner, non-joiner or word joiner, inside a word or between words.
+  for (const zero of ['\u200B', '\u200C', '\u200D', '\u2060']) {
+    assert.ok(found(`hi s${zero}am`, SHORT), `U+${zero.codePointAt(0)!.toString(16)} inside`);
+    assert.ok(found(`${SHORT}${zero}example`, FULL), `U+${zero.codePointAt(0)!.toString(16)} between`);
+    assert.ok(found(`${zero}${SHORT}${zero}`, SHORT), `U+${zero.codePointAt(0)!.toString(16)} around`);
+  }
+  // A domain, found as a part, folds too.
+  assert.ok(found(`mail.${WIDE(DOMAIN)}`, DOMAIN));
+  // Turkish dotted and dotless I: both sides are lowercased the same way.
+  for (const text of [DOTTED, `by ${DOTTED}.`, DOTTED.toUpperCase(), `${DOTTED.toLowerCase()}!`]) assert.ok(found(text, DOTTED), `not found in ${text}`);
+  assert.ok(found(`by ${DOTLESS}.`, DOTLESS));
+  assert.ok(!found(`${DOTTED}x`, DOTTED), 'still whole words');
+  // A line with no mark is not stopped.
+  assert.ok(!found(`by ${WIDE('other')} é`, SHORT));
+});
+
+test('makeRedactor: hides a mark in any Unicode form, and keeps the rest of the line as it was (#507)', () => {
+  const redact = makeRedactor({ owners: [FULL], marks: [ACCENTED, DOTTED.toLowerCase(), SHORT] }, {});
+  // The lowercase of each İ before a mark is two code units: the place to cut must still be right.
+  assert.equal(redact(`İİ ${DOTTED}, ${DOTTED.toUpperCase()} and ${DOTTED}\n`), 'İİ <mark>, <mark> and <mark>\n');
+  assert.equal(redact(`café by ${DECOMPOSED}, é ${ACCENTED}.`), 'café by <mark>, é <mark>.');
+  assert.equal(redact(`！ by ${WIDE(SHORT)} ！`), '！ by <mark> ！');
+  assert.equal(redact(`！ ${WIDE(SHORT)}\u200B${WIDE('example')}!`), '！ <owner>!');
+  assert.equal(redact(`by s\u200Bam, \u200B and s\u200Dam.`), 'by <mark>, \u200B and <mark>.');
+  assert.equal(redact(`${WIDE(SHORT)}ple é`), `${WIDE(SHORT)}ple é`, 'a longer word stays');
+  // The check and redact agree.
+  for (const text of [`by ${DECOMPOSED}`, WIDE(SHORT), `s\u200Bam`, DOTTED.toUpperCase(), `${WIDE(SHORT)}ple`, `${DOTTED}x`]) {
+    assert.equal(redact(text) === text, !scanText(text, { file: 'a', marks: [FULL, ACCENTED, DOTTED.toLowerCase(), SHORT] }).length, `redact and the check disagree on ${text}`);
+  }
+});
+
+// ---- The fold after the adversarial review (#507) ----
+
+// A run of combining marks of mixed classes: a normalize of one long run grows with its square.
+const MIXED_MARKS = (n: number) => `a${'̖́'.repeat(n / 2)}`;
+
+test('the fold: a long run of mixed combining marks stays linear (#507)', () => {
+  const redact = makeRedactor({ marks: [FULL] }, {});
+  assertLinear('hasMark', MIXED_MARKS, (text) => hasMark(text, FULL), 1 << 12);
+  assertLinear('scanText', MIXED_MARKS, (text) => scanText(text, { file: 'a.md', marks: [FULL] }), 1 << 12);
+  assertLinear('redact', MIXED_MARKS, redact, 1 << 12);
+  // The reviewer's input, through the guard: 240k characters, then the mark.
+  const body = join(postDir, 'marks-run.md');
+  writeFileSync(body, `${MIXED_MARKS(240_000)}\nQuietVale\n`);
+  const start = performance.now();
+  assert.equal(post(`gh issue create --title t --body-file ${body}`)?.id, 'private-mark');
+  const ms = performance.now() - start;
+  assert.ok(ms < 1000, `${ms.toFixed(0)} ms for 240k characters`);
+  rmSync(body);
+});
+
+test('the fold: the fast fold of the check gives the same text as the fold of redact (#507)', () => {
+  const pieces = ['a', 'é', '̖', '́', '\u200B', 'ｓ', 'ᄀ', 'ᅡ', 'ᆫ', 'ｶ', '\uFF9E', '你', '，', 'İ', '𝅥', 'x', ' '];
+  let seed = 7;
+  const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648);
+  for (let round = 0; round < 500; round++) {
+    let text = '';
+    for (let i = next() % 80; i > 0; i--) text += pieces[next() % pieces.length];
+    assert.equal(foldLine(text).text, foldText(text).text, JSON.stringify(text));
+  }
+  for (const text of [MIXED_MARKS(100), `x${'́'.repeat(31)}y`, '́'.repeat(62)]) assert.equal(foldLine(text).text, foldText(text).text);
+});
+
+test('the fold: what the check found before the fold, it still finds (#507)', () => {
+  const part = `${SHORT}_1a`;
+  const hangul = String.fromCharCode(0xc11c, 0xc544);
+  const cases: [string, string][] = [
+    // A zero-width character next to a name is an edge, as before.
+    [`x\u200B${SHORT} y`, SHORT],
+    [`ab\u200B${FULL}`, FULL],
+    [`${SHORT}\u200B́`, SHORT],
+    // An accent or a final consonant on the last letter of a mark found as a part.
+    [`${part}́`, part],
+    [`user ${part}á x`, part],
+    [`${hangul}ᆫ`, hangul],
+    [String.fromCharCode(0xc11c, 0xc548), hangul],
+  ];
+  for (const [text, mark] of cases) {
+    assert.ok(hasMark(text, mark), `hasMark: ${JSON.stringify(text)}`);
+    assert.equal(scanText(text, { file: 'a.md', marks: [mark] }).length, 1, `scanText: ${JSON.stringify(text)}`);
+    assert.notEqual(makeRedactor({ marks: [mark] }, {})(text), text, `redact: ${JSON.stringify(text)}`);
+  }
+  // Still whole words: a letter with an accent after a name blocks it.
+  assert.ok(!hasMark(`${SHORT.slice(0, 2)}ḿ`, SHORT));
+});
+
+test('the fold: a mark of only zero-width characters is no mark, and the longest folded mark goes first (#507)', () => {
+  assert.equal(hasMark('nothing here', '\u200B'), false);
+  assert.deepEqual(scanText('nothing here', { file: 'a.md', marks: ['\u200B\u200D'] }), []);
+  assert.equal(makeRedactor({ marks: ['\u200B\u200B\u200B', DOMAIN] }, {})(`by me at ${DOMAIN} ok`), 'by me at <host> ok');
+  assert.equal(makeRedactor({ marks: [`${SHORT}${'\u200B'.repeat(5)}`, FULL] }, {})(`by ${FULL} ok`), 'by <mark> ok');
+});
+
+test('a refusal folds the marks before it names a program (#507)', () => {
+  const dir = makeTempDir('yokoten-wide-marks-');
+  const marks = join(dir, 'private-marks');
+  writeFileSync(marks, `${WIDE('quietvale')}\n`);
+  const body = join(dir, 'body.md');
+  writeFileSync(body, 'All clean.\n');
+  const bot = `node bin/yokoten.ts bot -- gh pr create --title t --body-file ${body}`;
+  const run = (command: string) => checkCommand(command, { env: { HOME: dir, YOKOTEN_PRIVATE_MARKS: marks }, config: DEFAULTS, cwd: dir });
+  assert.ok(run(`${bot} | quietvale-tool x`)?.what.includes('and a pipe in this command'));
+  assert.ok(run(`quietvale-tool x; ${bot}`)?.what.includes('and a command in this command'));
+  rmSync(dir, { recursive: true });
+});
+
+test('the bot program is never a variable: no `=` or `,` in its path (#506)', () => {
+  for (const program of ['GH_REPO=evil/yokoten', 'LD_PRELOAD=x/yokoten', 'PATH=/tmp/x/yokoten', 'a,b/yokoten']) {
+    assert.equal(isBotProgram(program), false, program);
+    const command = `${program} bot -- gh issue create --title t --body "QuietVale ships"`;
+    assert.equal(lonePost(command), null, program);
+  }
 });
 
 // #523: a stopped line names the kind of mark, never its value, and how to change it.

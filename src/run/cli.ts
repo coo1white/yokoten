@@ -3,10 +3,33 @@
 
 // A package runner that starts the published yokoten at the start of a line or a command:
 // npx, npx --yes, bunx, pnpm dlx, npm exec. "yokoten-check" or "echo npx yokoten" is not one.
-const PACKAGE_RUN = String.raw`^[ \t]*(?:npx|bunx|pnpm[ \t]+dlx|npm[ \t]+exec)(?:[ \t]+-\S+)*[ \t]+yokoten(?:@[\w.^~-]+)?`;
+// The flags are read one word at a time, so a long line takes linear time and never throws
+// (#431): a regex that repeats a group over the whole line ran out of stack.
+const RUNNER_HEAD = /^[ \t]*(?:npx|bunx|pnpm[ \t]+dlx|npm[ \t]+exec)/gm;
+const RUNNER_FLAG = /[ \t]+-\S+/y;
+
+/** A test of a command, as `runs` gives it: true when the text holds the command. */
+export interface CommandTest {
+  test: (text: string) => boolean;
+}
+
+/** Whether a package runner at a line start, after its flags, runs what `rest` (a sticky regex) matches. */
+function runsByRunner(text: string, rest: RegExp): boolean {
+  for (const head of text.matchAll(RUNNER_HEAD)) {
+    let at = head.index + head[0].length;
+    for (RUNNER_FLAG.lastIndex = at; RUNNER_FLAG.test(text); RUNNER_FLAG.lastIndex = at) at = RUNNER_FLAG.lastIndex;
+    rest.lastIndex = at;
+    if (rest.test(text)) return true;
+  }
+  return false;
+}
 
 /** A command that runs yokoten's `<sub>`, by whatever path (yokoten.ts or, since #408, yokoten.mjs), or by a package runner (#298). */
-export const runs = (sub: string): RegExp => new RegExp(`(?:yokoten\\.(?:ts|mjs)"?|${PACKAGE_RUN})\\s+${sub}\\b`, 'm');
+export const runs = (sub: string): CommandTest => {
+  const byPath = new RegExp(`yokoten\\.(?:ts|mjs)"?\\s+${sub}\\b`);
+  const afterRunner = new RegExp(String.raw`[ \t]+yokoten(?:@[\w.^~-]+)?\s+${sub}\b`, 'y');
+  return { test: (text) => byPath.test(text) || runsByRunner(text, afterRunner) };
+};
 
 /** The yokoten subcommand a command runs, if any. The word ends at a `;`, as in a tool-call guard (#260). */
 export const subcommand = (command: string): string | undefined => command.match(/yokoten\.(?:ts|mjs)"?\s+(\w[\w-]*)/)?.[1];

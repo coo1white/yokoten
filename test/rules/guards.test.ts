@@ -609,6 +609,22 @@ test('lead-only files: each shell writer form stops a worker, not the lead (#402
   assert.match(found?.fix ?? '', /hand the change to the lead/);
 });
 
+test('lead-only files: a cd to a quoted ~ is not the home folder, so a worker stays stopped (#465)', () => {
+  const sandbox = yokotenSandbox();
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  // HOME is outside the repo: read as home, the write would land there and pass. The hook
+  // passes the repo it runs in, so a write from a folder the guard can't tell is read there.
+  const env = { ...worker, HOME: tmpdir() };
+  const repos = [{ root: sandbox.repo, leadOnly: DEFAULTS.leadOnly }];
+  const run = (command: string) => checkCommand(command, { env, cwd: sandbox.repo, repos })?.id;
+  for (const target of ['"~/x"', "'~/x'", '\\~/x', '~"/x"', '"~"/x', '~""/x', '"~"']) {
+    assert.equal(run(`cd ${target} && echo x > AGENTS.md`), 'lead-only', `should stop: cd ${target}`);
+  }
+  // An unquoted ~ is the home folder, outside the repo: the write there passes, as before.
+  assert.equal(run('cd ~/x && echo x > AGENTS.md'), undefined);
+  assert.equal(run('cd ~/"x" && echo x > AGENTS.md'), undefined);
+});
+
 test('lead-only files: reads, other files and files outside the repo pass a worker (#402)', () => {
   const sandbox = yokotenSandbox();
   const worker = { YOKOTEN_ROLE: 'worker' };
