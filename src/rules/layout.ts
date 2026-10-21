@@ -28,6 +28,9 @@ function compileExemptGlob(folder: string): RegExp | undefined {
 
 const EXEMPT_FIX = 'or add it to layout.exempt in yokoten.json if it may grow: a log, or a third-party fixture set kept under its upstream names with its NOTICE beside it';
 
+/** Whether a folder is, or is inside, a folder of fetched files. The build output check names those (#521); counting their entries only repeats it. */
+const isFetched = (dir: string): boolean => dir.split('/').some((part) => ['node_modules', '.venv', 'venv', '__pycache__'].includes(part));
+
 /**
  * Problems for a list of file paths (relative, forward slashes), one per folder over the cap.
  * With `notes`, each exempt glob that matches no folder adds a note, so a stale entry shows.
@@ -63,7 +66,7 @@ export function checkLayout(files: string[], { layout }: Pick<Config, 'layout'>,
   };
   const problems: Finding[] = [];
   for (const [dir, names] of [...children].sort(([a], [b]) => a.localeCompare(b))) {
-    if (isExempt(dir) || names.size <= layout.maxEntries) continue;
+    if (isFetched(dir) || isExempt(dir) || names.size <= layout.maxEntries) continue;
     problems.push(
       finding('layout', `${names.size} entries, over the cap of ${layout.maxEntries}: ${[...names].sort().join(', ')}`, `group them into a new folder, ${EXEMPT_FIX}`, { file: `${dir}/` }),
     );
@@ -96,15 +99,46 @@ export function isBuildOutput(path: string, allow: (path: string) => boolean = (
 
 const fix = (path: string) => `remove it with \`git rm --cached ${path}\` and add it to .gitignore, or list the path in allowBuild in yokoten.json`;
 
-/** Problems for the files a commit adds or changes, each with whether git sees it as binary. */
+/** Folders that hold fetched or generated files, not the project's own (#521). One finding covers the folder. */
+export const DEPENDENCY_DIRS = ['node_modules', 'vendor', '.venv', 'venv', 'target', '__pycache__'];
+
+const folderFix = (folder: string) =>
+  `run \`git rm -r --cached ${folder}\` (it stays on disk) and add \`${folder}/\` to .gitignore, or list the path in allowBuild in yokoten.json`;
+
+/**
+ * Problems for the files a commit adds or changes, each with whether git sees it as binary.
+ * Files under one dependency folder, or two or more under one build folder, make one finding
+ * for the folder; its file is the folder (#521).
+ */
 export function checkBuildOutput(files: { path: string; binary: boolean }[], { allowBuild }: Pick<Config, 'allowBuild'>): Finding[] {
   const allow = matcher(allowBuild);
-  const problems: Finding[] = [];
+  const flagged: { path: string; id: 'build-output' | 'binary'; folder?: string; isDependency: boolean; dir?: string }[] = [];
   for (const { path, binary } of files) {
     if (allow(path)) continue;
-    const dir = path.split('/').slice(0, -1).find((d) => BUILD_DIRS.includes(d));
-    if (dir) problems.push(finding('build-output', `build output, in a ${dir}/ folder`, fix(path), { file: path }));
-    else if (BUILT.test(path) || (binary && !MEDIA.test(path))) problems.push(finding('binary', 'a binary file', fix(path), { file: path }));
+    const parts = path.split('/').slice(0, -1);
+    const at = parts.findIndex((d) => DEPENDENCY_DIRS.includes(d) || BUILD_DIRS.includes(d));
+    const dir = parts.find((d) => BUILD_DIRS.includes(d));
+    const isBuild = dir !== undefined;
+    if (!isBuild && !BUILT.test(path) && !(binary && !MEDIA.test(path))) continue;
+    const isDependency = at >= 0 && DEPENDENCY_DIRS.includes(parts[at]);
+    flagged.push({ path, id: isBuild ? 'build-output' : 'binary', folder: at >= 0 ? parts.slice(0, at + 1).join('/') : undefined, isDependency, dir });
+  }
+  const count = new Map<string, number>();
+  for (const { folder } of flagged) if (folder) count.set(folder, (count.get(folder) ?? 0) + 1);
+  const problems: Finding[] = [];
+  const seen = new Set<string>();
+  for (const { path, id, folder, isDependency, dir } of flagged) {
+    const isGrouped = folder !== undefined && (isDependency || (count.get(folder) ?? 0) > 1);
+    if (isGrouped) {
+      if (seen.has(folder)) continue;
+      seen.add(folder);
+      const n = count.get(folder);
+      const what = isDependency
+        ? `a dependency folder, with ${n} of its files in the commit`
+        : `build output, with ${n} files in a ${dir}/ folder`;
+      problems.push(finding(isDependency ? 'build-output' : id, what, folderFix(folder), { file: `${folder}/` }));
+    } else if (id === 'build-output') problems.push(finding(id, `build output, in a ${dir}/ folder`, fix(path), { file: path }));
+    else problems.push(finding(id, 'a binary file', fix(path), { file: path }));
   }
   return problems;
 }

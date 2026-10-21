@@ -12,7 +12,7 @@
 // AGENTS.md, and only with --write. It is at the end of this file.
 
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
 import { addProjectHook, addProjectStopHook, checkProjectSettings, setProjectEnv } from '../agents/runtimes/claude-code.ts';
@@ -128,6 +128,8 @@ function initRun(root: string, env: Env, gh: Gh, noCi: boolean): { ok: boolean; 
   if (noCi) report.push(...keepCiOff(root, cli, kit));
   else if (!isOff) report.push(...privateRepoNote(root, gh, env));
   report.push(writeCodeOwners(root, gh, env));
+  const ignored = writeGitignore(root);
+  if (ignored) report.push(ignored);
   const imported = importRules(root);
   if (imported) report.push(imported);
   // Claude Code's settings, the file people edit by hand most: skipped as one, never
@@ -457,6 +459,49 @@ export function findEcosystems(root: string): Map<string, string[]> {
     if (dirs.length > 0) found.set(name, dirs);
   }
   return found;
+}
+
+// ---- A .gitignore for the project's dependency folders (#521) ----
+//
+// Without one, `git add -A` stages node_modules. init reads the same package managers as
+// Dependabot and writes the folders each one fills. It only adds lines that are missing.
+
+/** The folders each package manager fills with fetched or built files. */
+const IGNORED_FOLDERS: Record<string, string[]> = {
+  bun: ['node_modules/'],
+  npm: ['node_modules/'],
+  cargo: ['target/'],
+  uv: ['.venv/', '__pycache__/'],
+  pip: ['.venv/', '__pycache__/'],
+  bundler: ['vendor/bundle/'],
+  composer: ['vendor/'],
+  maven: ['target/'],
+  gradle: ['.gradle/', 'build/'],
+  nuget: ['bin/', 'obj/'],
+  mix: ['_build/', 'deps/'],
+  pub: ['.dart_tool/'],
+  swift: ['.build/'],
+};
+
+/** A .gitignore line as a bare folder name, so `/node_modules` and `node_modules/` count as the same. */
+const folderOf = (line: string): string => line.trim().replace(/^\//, '').replace(/\/$/, '');
+
+/** Add the dependency and build folders of the project's package managers to .gitignore. Null when there is nothing to add. */
+function writeGitignore(root: string): string | null {
+  const wanted = [...new Set([...findEcosystems(root).keys()].flatMap((name) => IGNORED_FOLDERS[name] ?? []))];
+  if (wanted.length === 0) return null;
+  const path = join(root, '.gitignore');
+  const old = existsSync(path) ? readFileSync(path, 'utf8') : null;
+  const have = new Set((old ?? '').split(/\r?\n/).map(folderOf));
+  const missing = wanted.filter((line) => !have.has(folderOf(line)));
+  if (old === null) {
+    writeNew(path, `${missing.join('\n')}\n`);
+    return `wrote .gitignore (${missing.join(', ')})`;
+  }
+  if (missing.length === 0) return 'kept .gitignore';
+  const lead = old === '' || old.endsWith('\n') ? '' : '\n';
+  appendFileSync(path, `${lead}${missing.join('\n')}\n`);
+  return `added to .gitignore: ${missing.join(', ')}`;
 }
 
 /** One update block in the kit's shape: monthly, a week old, one grouped pull request, prefix chore. */
