@@ -8,9 +8,9 @@
 // hooks through yokoten.mjs, the git hook through yokoten.ts. The script lowers its own priority first (`nice`), and every run inherits it:
 // other work on the machine comes first, and a median holds up to the noise.
 //
-//   node scripts/bench.ts                   10 runs of each entry, against the budget
-//   node scripts/bench.ts --runs 30         more runs
-//   node scripts/bench.ts --cli <file>      run another entry (an older checkout, say) for
+//   node scripts/time/bench.ts              10 runs of each entry, against the budget
+//   node scripts/time/bench.ts --runs 30    more runs
+//   node scripts/time/bench.ts --cli <file> run another entry (an older checkout, say) for
 //                                           every entry, in place of the copy; the budget
 //                                           is not checked
 import { spawnSync } from 'node:child_process';
@@ -19,9 +19,9 @@ import { setPriority, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { GUARD_HEAP } from '../src/run/cli.ts';
+import { GUARD_HEAP } from '../../src/run/cli.ts';
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 /** The budget of each entry, in ms, on a CI Linux runner (record 0013). */
 const BUDGET: Record<string, { p50: number; p95: number }> = {

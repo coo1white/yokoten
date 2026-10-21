@@ -12,6 +12,7 @@ import { COMMANDS } from '../../src/run/cli.ts';
 import { findDeclarations, findNameProblems, splitWords, type Token, tokenize } from '../../src/run/names.ts';
 import { HOME_DIR, homeDirOf } from '../../src/setup/files.ts';
 import { assertLinear, assertLinearEach } from '../../scripts/linear.ts';
+import { judgeSuite, readReport, SUITE_BUDGET } from '../../scripts/time/suite.ts';
 import { TEST_HOME } from './home.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -1119,4 +1120,219 @@ test('node -e: bin, src, scripts and test give node fixed code; values go on std
   }
   assert.ok(checked >= 2, `only ${checked} node -e calls found; the reader is broken`);
   assert.deepEqual(found, [], 'make the code fixed text; pass each value on stdin or as an argument, and import a path with import(pathToFileURL(path).href)');
+});
+
+// ---- Child processes per test file (#475) ----
+//
+// A child node costs a start and a strip of every file's types; sandbox.call runs the same
+// command in this process for neither. With a child per command test the suite took about
+// 365 s summed on CI; with most of them in-process, about 58 s. So a test file starts few:
+// one or two entry tests per command, each with a comment saying why it needs the child.
+// A child is a sandbox's .run(, a spawn of node or process.execPath, a spawn that names the
+// CLI or a yokoten.ts, or a call of a function that wraps one (stepMark, a local runCopy).
+const CHILD_STARTERS = new Set(['spawn', 'spawnSync', 'execFile', 'execFileSync', 'runChild', 'fork']);
+
+/** Whether the call whose `(` is at `open` starts a node: node or process.execPath first, or the CLI or a yokoten.ts in its arguments. */
+function startsNode(tokens: Token[], open: number): boolean {
+  const first = argumentAt(tokens, open + 1).map((token) => token.text).join('');
+  if (first === "'node'" || first === '"node"' || first === 'process.execPath') return true;
+  let depth = 0;
+  for (let index = open; index < tokens.length; index++) {
+    const token = tokens[index];
+    if (OPENERS.has(token.text)) depth++;
+    else if (CLOSERS.has(token.text) && --depth === 0) return false;
+    if ((token.kind === 'name' && token.text === 'CLI') || (token.kind === 'string' && /yokoten\.(?:ts|mjs)/.test(token.text))) return true;
+  }
+  return false;
+}
+
+/** The name of the `const NAME = (...) =>` that the token at `at` is in, if any: then each call of NAME starts the child. */
+function wrapperAt(tokens: Token[], at: number): { name: string; exported: boolean; from: number; to: number } | undefined {
+  let depth = 0;
+  let start = at;
+  for (; start > 0; start--) {
+    const text = tokens[start - 1].text;
+    if (CLOSERS.has(text)) depth++;
+    else if (OPENERS.has(text) && depth > 0) depth--;
+    else if (OPENERS.has(text) && (text === '{' || text === '${') && tokens[start - 2]?.text !== '=>') break;
+    else if (depth === 0 && (text === ';' || text === 'const' || text === 'let')) {
+      if (text !== ';') start--;
+      break;
+    }
+  }
+  const [keyword, name, equals] = tokens.slice(start, start + 3);
+  if (!['const', 'let'].includes(keyword?.text) || name?.kind !== 'name' || equals?.text !== '=') return undefined;
+  if (!tokens.slice(start + 3, at).some((token) => token.text === '=>')) return undefined;
+  // Its calls are the ones in its own block: another test may give its own wrapper the name.
+  let to = start;
+  for (let depth = 0; to < tokens.length; to++) {
+    if (OPENERS.has(tokens[to].text)) depth++;
+    else if (CLOSERS.has(tokens[to].text) && --depth < 0) break;
+  }
+  return { name: name.text, exported: tokens[start - 1]?.text === 'export', from: start + 2, to };
+}
+
+/** The lines of `text` that start a child node, a wrapper's calls in place of its body; and the wrappers it exports. */
+function childStarts(text: string, imported: string[] = []): { lines: number[]; wrappers: string[] } {
+  const tokens = tokenize(text);
+  const sites: number[] = [];
+  tokens.forEach((token, index) => {
+    const open = tokens[index + 1]?.text === '(';
+    if (token.text === 'run' && tokens[index - 1]?.text === '.' && open) sites.push(index);
+    else if (CHILD_STARTERS.has(token.text) && open && tokens[index - 1]?.text !== 'function' && startsNode(tokens, index + 1)) sites.push(index);
+  });
+  const lines: number[] = [];
+  const scopes = new Map(imported.map((name) => [name, { name, from: 0, to: tokens.length }]));
+  const wrappers: string[] = [];
+  for (const site of sites) {
+    const wrapper = wrapperAt(tokens, site);
+    if (!wrapper) lines.push(tokens[site].line);
+    else scopes.set(`${wrapper.name}@${wrapper.from}`, wrapper);
+    if (wrapper?.exported) wrappers.push(wrapper.name);
+  }
+  for (const { name, from, to } of scopes.values()) {
+    for (let index = from; index < to; index++) {
+      const before = tokens[index - 1]?.text;
+      if (tokens[index].text === name && tokens[index + 1]?.text === '(' && !['.', '?.', 'function'].includes(before)) lines.push(tokens[index].line);
+    }
+  }
+  return { lines: lines.sort((a, b) => a - b), wrappers };
+}
+
+/** The most child processes a test file starts, but the few on CHILD_ALLOWANCE. */
+const CHILD_CAP = 8;
+// Files that start more, each at today's count: the count may only go down. Keep it short;
+// a file leaves the table once it is at CHILD_CAP or under.
+const CHILD_ALLOWANCE: Record<string, { cap: number; reason: string }> = {
+  'test/commands/hook.test.ts': { cap: 47, reason: 'the guard tests still run the hook as a child; not moved to sandbox.call yet' },
+  'test/commands/learn.test.ts': { cap: 15, reason: 'the full lesson loop runs two other copies of yokoten (the clone and .yokoten/), and the system-home fallback is in the CLI entry' },
+  'test/rules/guards.test.ts': { cap: 18, reason: 'a guard that could hang (a FIFO, a heap cap) runs in a child; the rest run the hook as a child, not moved yet' },
+  'test/run/cli.test.ts': { cap: 12, reason: 'it tests bin/yokoten.ts itself: the entry, its compile cache and the demo loop' },
+  'test/run/hook.test.ts': { cap: 28, reason: 'the hook tests still run the guard as a child; not moved to sandbox.call yet' },
+  'test/setup/init.test.ts': { cap: 54, reason: 'stepMark runs doctor --json as a child for each step it reads; not moved to sandbox.call yet' },
+};
+const CHILD_FIX = 'use sandbox.call in place of sandbox.run, or call the function; keep a child only for the entry, with a comment saying why';
+
+/** What is wrong with the child processes of `files` (test path to source), given the wrappers helpers.ts exports. */
+function childProblems(files: Record<string, string>, helpers: string[], allowance = CHILD_ALLOWANCE): string[] {
+  const problems: string[] = [];
+  for (const [path, text] of Object.entries(files)) {
+    const { lines } = childStarts(text, helpers);
+    const allowed = allowance[path];
+    const cap = allowed?.cap ?? CHILD_CAP;
+    if (lines.length > cap) problems.push(`${path} starts ${lines.length} child processes (lines ${lines.join(', ')}), over its cap of ${cap}: ${CHILD_FIX}`);
+    else if (allowed && lines.length < cap) problems.push(`${path} starts ${lines.length} child processes, under its allowance of ${cap}: lower it in CHILD_ALLOWANCE to ${lines.length}${lines.length <= CHILD_CAP ? ', or take the file off it' : ''}`);
+  }
+  for (const path of Object.keys(allowance)) if (!(path in files)) problems.push(`CHILD_ALLOWANCE names ${path}, which is not a test file`);
+  return problems;
+}
+
+test('child processes: the count finds each child node, through a wrapper too, and not git, a comment or another test\'s wrapper (#475)', () => {
+  const text = [
+    "// sandbox.run(['init']) in a comment, and spawnSync('node') too",
+    "const said = \"sandbox.run(['doctor'])\";",
+    "const result = sandbox.run(['init']);",
+    "spawnSync('git', ['init', '-q']);",
+    "const child = spawnSync('node', ['-e', '']);",
+    "runChild(process.execPath, [script]);",
+    "execFileSync(launcher, [CLI, 'doctor']);",
+    "spawnSync('node', ['.yokoten/bin/yokoten.ts', 'init']);",
+    "test('a', () => {",
+    "  const hook = (command: string) => sandbox.run(['hook'], { input: command });",
+    "  hook('git status');",
+    "  hook('git push');",
+    "});",
+    "test('b', async () => {",
+    "  const hook = (command: string) => sandbox.call(['hook'], { input: command });",
+    "  await hook('git status');",
+    "  assert.equal(stepMark(sandbox, 'rules'), 'done');",
+    "});",
+    "function runChild(command: string, args: string[]) {",
+    "  return spawnSync(command, args);",
+    "}",
+  ].join('\n');
+  assert.deepEqual(childStarts(text, ['stepMark']), { lines: [3, 5, 6, 7, 8, 11, 12, 17], wrappers: [] });
+  assert.deepEqual(childStarts("export const mark = (sandbox: Sandbox) =>\n  JSON.parse(sandbox.run(['doctor', '--json']).stdout);\nconst run = () => runChild('node', [CLI]);\n").wrappers, ['mark'], 'an exported wrapper counts where it is called; a local one only where it is');
+});
+
+test('child processes: a test file over its cap fails with the fix, one at it passes, and an allowance only goes down (#475)', () => {
+  const runs = (count: number) => Array.from({ length: count }, (_, index) => `sandbox.run(['doctor', '${index}']);`).join('\n');
+  assert.deepEqual(childProblems({ 'test/a.test.ts': runs(CHILD_CAP), 'test/b.test.ts': '' }, [], {}), []);
+  assert.deepEqual(childProblems({ 'test/a.test.ts': runs(CHILD_CAP + 1) }, [], {}), [
+    `test/a.test.ts starts ${CHILD_CAP + 1} child processes (lines ${Array.from({ length: CHILD_CAP + 1 }, (_, index) => index + 1).join(', ')}), over its cap of ${CHILD_CAP}: ${CHILD_FIX}`,
+  ]);
+  const allowance = { 'test/a.test.ts': { cap: 10, reason: 'r' }, 'test/gone.test.ts': { cap: 9, reason: 'r' } };
+  assert.deepEqual(childProblems({ 'test/a.test.ts': runs(10) }, [], { 'test/a.test.ts': allowance['test/a.test.ts'] }), []);
+  assert.deepEqual(childProblems({ 'test/a.test.ts': runs(9) }, [], allowance), [
+    'test/a.test.ts starts 9 child processes, under its allowance of 10: lower it in CHILD_ALLOWANCE to 9',
+    'CHILD_ALLOWANCE names test/gone.test.ts, which is not a test file',
+  ]);
+  assert.match(childProblems({ 'test/a.test.ts': runs(2) }, [], allowance)[0], /to 2, or take the file off it$/);
+});
+
+test('child processes: each test file starts at most CHILD_CAP, or its allowance (#475)', () => {
+  const helpers = childStarts(readFileSync(join(ROOT, 'test/repo/helpers.ts'), 'utf8')).wrappers;
+  assert.deepEqual(helpers, ['stepMark'], 'the helpers that start a child; a new one counts where it is called');
+  const paths = execFileSync('git', ['ls-files', 'test'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter((path) => path.endsWith('.test.ts'));
+  const files = Object.fromEntries(paths.map((path) => [path, readFileSync(join(ROOT, path), 'utf8')]));
+  assert.ok(childStarts(files['test/setup/install.test.ts'] ?? '', helpers).lines.length > 0, 'no child found in install.test.ts; the count is broken');
+  assert.deepEqual(childProblems(files, helpers), []);
+});
+
+// ---- The suite's time budget (#475) ----
+//
+// CI checks each shard's run time against a budget with scripts/time/suite.ts, from a TAP
+// copy of the report. The budget is far above a slow runner; the child cap above is the
+// stable check.
+const tapReport = (ms: number) => [
+  'TAP version 13',
+  '# Subtest: install: the copy runs',
+  '    # Subtest: inner step',
+  '    ok 1 - inner step',
+  '      ---',
+  '      duration_ms: 99999',
+  '      ...',
+  'ok 1 - install: the copy runs',
+  '  ---',
+  '  duration_ms: 4200.5',
+  "  type: 'test'",
+  '  ...',
+  'ok 2 - names: a \\# in a name # SKIP not on this platform',
+  '  ---',
+  '  duration_ms: 0.4',
+  '  ...',
+  'not ok 3 - check: a slow one',
+  '  ---',
+  '  duration_ms: 12000',
+  '  ...',
+  '1..3',
+  '# tests 3',
+  `# duration_ms ${ms}`,
+  '',
+].join('\n');
+
+test('suite time: a run over the budget fails and says why; one under passes; the slowest tests are named (#475)', () => {
+  assert.deepEqual(readReport(tapReport(30_000)), { ms: 30_000, tests: [{ name: 'install: the copy runs', ms: 4200.5 }, { name: 'names: a # in a name', ms: 0.4 }, { name: 'check: a slow one', ms: 12_000 }] });
+  const under = judgeSuite(tapReport(30_000));
+  assert.equal(under.isOver, false);
+  assert.equal(under.text, `The tests took 30.0 s, under the budget of ${SUITE_BUDGET} s.\n\nThe slowest tests:\n- 12.0 s: check: a slow one\n- 4.2 s: install: the copy runs\n- 0.0 s: names: a # in a name\n`);
+  const over = judgeSuite(tapReport(SUITE_BUDGET * 1000 + 1));
+  assert.equal(over.isOver, true);
+  assert.match(over.text, new RegExp(`^The tests took ${SUITE_BUDGET}\\.0 s, over the budget of ${SUITE_BUDGET} s\\. Find what made them slow: .*use sandbox\\.call`));
+  assert.equal(judgeSuite(tapReport(60_000), 50).isOver, true, 'a budget of its own');
+  assert.throws(() => readReport('TAP version 13\nok 1 - cut off\n'), /no '# duration_ms' line/);
+});
+
+test('suite time: it reads the report node --test writes on this Node (#475)', () => {
+  const dir = makeTempDir('yokoten-suite-');
+  writeFileSync(join(dir, 'one.test.ts'), "import { test } from 'node:test';\ntest('one: it runs', () => {});\n");
+  const report = join(dir, 'report.tap');
+  // A child: the report is node --test's own output. Without NODE_TEST_CONTEXT, or it reports to this run.
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const run = runChild(process.execPath, ['--test', '--test-reporter=tap', `--test-reporter-destination=${report}`, join(dir, 'one.test.ts')], { env });
+  assert.equal(run.status, 0, run.stderr);
+  const { ms, tests } = readReport(readFileSync(report, 'utf8'));
+  assert.ok(ms > 0);
+  assert.deepEqual(tests.map((test) => test.name), ['one: it runs']);
 });
