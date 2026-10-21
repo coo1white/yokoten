@@ -228,7 +228,7 @@ export function checkPullRequestBody(pr: Pick<PullRequest, 'body' | 'files' | 'd
     else if (!text || /^<[^>]*>$/.test(text)) problems.push(finding('pr-section', `body: the \`## ${name}\` section is empty`, 'fill it in'));
   }
   // Only Closes, Fixes and Resolves close the issue; Part of and Refs link it and leave it open.
-  if (!/\b(closes|fixes|resolves|refs|part of) #\d+/i.test(body)) {
+  if (!readLinkedIssues(body).length) {
     problems.push(finding('pr-issue', 'body: no linked issue', 'link the issue with `Closes #N`, or `Part of #N` when it does not finish it'));
   }
 
@@ -819,7 +819,7 @@ export interface CommandMilestone {
   repo: string | null;
 }
 
-// The words that link an issue, as the body check reads them.
+// The words that link an issue. The body check and the milestone step both read them here.
 const LINKED_ISSUE = /\b(?:closes|fixes|resolves|refs|part of) #(\d+)/gi;
 
 /** The issue numbers a body links with `Closes #N`, `Part of #N` and the like, in order, each once. */
