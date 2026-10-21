@@ -266,9 +266,9 @@ export const onToolCall = (check: string, path: string, args: string) =>
 
 export const pick = (result: { status: number | null; stdout: string; stderr: string }) => [result.status, result.stdout, result.stderr];
 
-/** The doctor --json mark of one road step. */
-export const stepMark = (sandbox: ReturnType<typeof makeSandbox>, id: string, extra?: Record<string, string>) =>
-  (JSON.parse(sandbox.run(['doctor', '--json'], { extra }).stdout).steps as { id: string; mark: string }[]).find((step) => step.id === id)?.mark;
+/** The doctor --json mark of one road step, read in this process (#475). */
+export const stepMark = async (sandbox: ReturnType<typeof makeSandbox>, id: string, extra?: Record<string, string>) =>
+  (JSON.parse((await sandbox.call(['doctor', '--json'], { extra })).stdout).steps as { id: string; mark: string }[]).find((step) => step.id === id)?.mark;
 
 // #258: Gemini CLI reads settings.json with comments allowed (strip-json-comments), but
 // not trailing commas. yokoten reads it the same way, and never rewrites a commented file:

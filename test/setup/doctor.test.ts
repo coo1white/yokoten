@@ -396,17 +396,17 @@ test('doctor: a hook in the project\'s folder that is not executable is not chec
   const sandbox = makeSandbox();
   sandbox.git('config', 'core.hooksPath', 'tools/hooks');
   assert.equal((await sandbox.call(['init'])).status, 0);
-  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  assert.equal(await stepMark(sandbox, 'commit-check'), 'done');
   const mergeHook = join(sandbox.repo, 'tools/hooks/pre-merge-commit');
   chmodSync(mergeHook, 0o644);
-  assert.notEqual(stepMark(sandbox, 'commit-check'), 'done', 'the check is in the file, but git does not run it');
+  assert.notEqual(await stepMark(sandbox, 'commit-check'), 'done', 'the check is in the file, but git does not run it');
   let doctor = (await sandbox.call(['doctor'])).stdout;
   assert.match(doctor, /commit-check \(OSPS-BR-07\.01\): merge commits are not checked: tools\/hooks\/pre-merge-commit is not executable, so git skips it/);
   assert.match(doctor, /run `chmod \+x tools\/hooks\/pre-merge-commit`, or `yokoten init`/);
   const result = await sandbox.call(['init']);
   assert.match(result.stdout, /made executable tools\/hooks\/pre-merge-commit/);
   assert.ok(statSync(mergeHook).mode & 0o100, 'executable');
-  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  assert.equal(await stepMark(sandbox, 'commit-check'), 'done');
   // A pre-commit without the check and without the execute bit: add the line, and chmod.
   const preCommit = join(sandbox.repo, 'tools/hooks/pre-commit');
   writeFileSync(preCommit, '#!/bin/sh\necho own\n');

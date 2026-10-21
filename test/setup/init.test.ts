@@ -349,7 +349,7 @@ test("init: a CLAUDE.md gets one line that imports AGENTS.md, and doctor's rules
   const sandbox = makeSandbox();
   sandbox.write('CLAUDE.md', '# our rules\n\nRun the tests first.\n');
   sandbox.write('AGENTS.md', '# shared rules\n');
-  assert.notEqual(stepMark(sandbox, 'rules'), 'done', 'AGENTS.md that Claude Code does not read is not done');
+  assert.notEqual(await stepMark(sandbox, 'rules'), 'done', 'AGENTS.md that Claude Code does not read is not done');
   assert.match((await sandbox.call(['doctor'])).stdout, /rules[^\n]*: CLAUDE\.md does not import AGENTS\.md[^\n]*; add a line `@AGENTS\.md`/);
   rmSync(join(sandbox.repo, 'AGENTS.md'));
   let result = await sandbox.call(['init']);
@@ -359,7 +359,7 @@ test("init: a CLAUDE.md gets one line that imports AGENTS.md, and doctor's rules
   const claude = readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8');
   assert.ok(claude.startsWith('# our rules\n\nRun the tests first.\n\n'), 'the project\'s own lines stay');
   assert.match(claude, /\n<!--[^\n]*-->\n@AGENTS\.md\n$/, 'a comment line, then the import, at the end');
-  assert.equal(stepMark(sandbox, 'rules'), 'done');
+  assert.equal(await stepMark(sandbox, 'rules'), 'done');
   // Again: one import, not two.
   result = await sandbox.call(['init']);
   assert.doesNotMatch(result.stdout, /updated CLAUDE\.md/);
@@ -382,7 +382,7 @@ test('init: writes .github/CODEOWNERS for every lead-only path, owned by the Git
   const rules = parseCodeOwners(owners!.text);
   assert.deepEqual(rules.map((rule) => rule.pattern), leadOnlyPaths());
   for (const rule of rules) assert.deepEqual(rule.owners, [`${at}octo`], rule.pattern);
-  assert.equal(stepMark(sandbox, 'codeowners', { PATH: `${bin}:${process.env.PATH}` }), 'done');
+  assert.equal(await stepMark(sandbox, 'codeowners', { PATH: `${bin}:${process.env.PATH}` }), 'done');
   // check --pr reads the file from the base branch, and a change under .yokoten/ needs tier A.
   sandbox.git('add', '.');
   sandbox.git('commit', '-qm', 'base');
@@ -432,11 +432,11 @@ test('init: an organization is no CODEOWNERS owner, so init writes the placehold
   for (const rule of rules) assert.deepEqual(rule.owners, ['@YOUR_GITHUB_HANDLE'], rule.pattern);
   // A file owned by the organization alone locks nothing on GitHub: full doctor says so.
   sandbox.write('.github/CODEOWNERS', '/AGENTS.md @octo\n/.github/ @Octo\n');
-  assert.equal(stepMark(sandbox, 'codeowners', extra), 'to do');
+  assert.equal(await stepMark(sandbox, 'codeowners', extra), 'to do');
   assert.match((await sandbox.call(['doctor'], { extra })).stdout, /\.github\/CODEOWNERS names only @octo, an organization, and GitHub takes no organization as an owner; put a person's handle or @octo\/<team> in \.github\/CODEOWNERS/);
   // A team of the organization, or a person, is an owner.
   sandbox.write('.github/CODEOWNERS', '/AGENTS.md @octo/leads\n');
-  assert.equal(stepMark(sandbox, 'codeowners', extra), 'done');
+  assert.equal(await stepMark(sandbox, 'codeowners', extra), 'done');
 });
 
 test('init: when gh fails, the CODEOWNERS owner is the remote owner, as before (#313)', async () => {
@@ -475,7 +475,7 @@ test('init: a CLAUDE.md that already imports AGENTS.md is left as it is (#206)',
     assert.equal(result.status, 0, result.stderr);
     assert.doesNotMatch(result.stdout, /CLAUDE\.md/, text);
     assert.equal(readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8'), text);
-    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+    assert.equal(await stepMark(sandbox, 'rules'), 'done', text);
   }
 });
 
@@ -483,7 +483,7 @@ test("init: a .claude/CLAUDE.md alone gets `@../AGENTS.md`, and doctor's rules s
   const sandbox = makeSandbox();
   sandbox.write('.claude/CLAUDE.md', '# our rules\n');
   sandbox.write('AGENTS.md', '# shared rules\n');
-  assert.notEqual(stepMark(sandbox, 'rules'), 'done', 'Claude Code reads .claude/CLAUDE.md instead of AGENTS.md');
+  assert.notEqual(await stepMark(sandbox, 'rules'), 'done', 'Claude Code reads .claude/CLAUDE.md instead of AGENTS.md');
   assert.match((await sandbox.call(['doctor'])).stdout, /rules[^\n]*: \.claude\/CLAUDE\.md does not import AGENTS\.md[^\n]*; add a line `@\.\.\/AGENTS\.md`/);
   const result = await sandbox.call(['init']);
   assert.equal(result.status, 0, result.stderr);
@@ -491,7 +491,7 @@ test("init: a .claude/CLAUDE.md alone gets `@../AGENTS.md`, and doctor's rules s
   // Claude Code resolves an import relative to the file that holds it, so this is the root AGENTS.md.
   assert.match(readFileSync(join(sandbox.repo, '.claude', 'CLAUDE.md'), 'utf8'), /^# our rules\n\n<!--[^\n]*-->\n@\.\.\/AGENTS\.md\n$/);
   assert.equal(existsSync(join(sandbox.repo, 'CLAUDE.md')), false, 'no root CLAUDE.md is made');
-  assert.equal(stepMark(sandbox, 'rules'), 'done');
+  assert.equal(await stepMark(sandbox, 'rules'), 'done');
 });
 
 test('init: CLAUDE.md and .claude/CLAUDE.md, neither importing AGENTS.md: the root one gets the import (#206)', async () => {
@@ -504,7 +504,7 @@ test('init: CLAUDE.md and .claude/CLAUDE.md, neither importing AGENTS.md: the ro
   assert.doesNotMatch(result.stdout, /updated \.claude\/CLAUDE\.md/);
   assert.match(readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8'), /\n@AGENTS\.md\n$/);
   assert.equal(readFileSync(join(sandbox.repo, '.claude', 'CLAUDE.md'), 'utf8'), '# folder rules\n');
-  assert.equal(stepMark(sandbox, 'rules'), 'done');
+  assert.equal(await stepMark(sandbox, 'rules'), 'done');
 });
 
 test('init: a .claude/CLAUDE.md that already imports AGENTS.md is left as it is (#206)', async () => {
@@ -515,7 +515,7 @@ test('init: a .claude/CLAUDE.md that already imports AGENTS.md is left as it is 
     assert.equal(result.status, 0, result.stderr);
     assert.doesNotMatch(result.stdout, /CLAUDE\.md/, text);
     assert.equal(readFileSync(join(sandbox.repo, '.claude', 'CLAUDE.md'), 'utf8'), text);
-    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+    assert.equal(await stepMark(sandbox, 'rules'), 'done', text);
   }
 });
 
@@ -536,13 +536,13 @@ test('init: a CLAUDE.md that is a link to AGENTS.md reads the rules; init writes
       mkdirSync(dirname(join(sandbox.repo, file)), { recursive: true });
       symlinkSync(target, join(sandbox.repo, file));
     }
-    assert.equal(stepMark(sandbox, 'rules'), 'done', `${links}: no rules gap`);
+    assert.equal(await stepMark(sandbox, 'rules'), 'done', `${links}: no rules gap`);
     const result = await sandbox.call(['init']);
     assert.equal(result.status, 0, result.stderr);
     assert.doesNotMatch(result.stdout, /CLAUDE\.md/, `${links}`);
     assert.equal(readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8'), rules, `${links}: AGENTS.md does not import itself`);
     for (const [file, target] of links) assert.equal(readlinkSync(join(sandbox.repo, file)), target, `${file} is the same link`);
-    assert.equal(stepMark(sandbox, 'rules'), 'done', `${links}`);
+    assert.equal(await stepMark(sandbox, 'rules'), 'done', `${links}`);
   }
 });
 
@@ -562,7 +562,7 @@ test('init: a CLAUDE.md link to an AGENTS.md without `## This project` gets the 
     assert.ok(text.endsWith('## This project\n\n## Our rules\n\nRun the tests first.\n'), text.slice(-120));
     assert.doesNotMatch(text, /^@(\.\.\/)?AGENTS\.md$/m, `${file}: AGENTS.md does not import itself`);
     assert.equal(readlinkSync(join(sandbox.repo, file)), target, `${file} is the same link`);
-    assert.equal(stepMark(sandbox, 'rules'), 'done', file);
+    assert.equal(await stepMark(sandbox, 'rules'), 'done', file);
     // A second run changes nothing.
     const again = await sandbox.call(['init']);
     assert.match(again.stdout, /^kept AGENTS\.md \(`yokoten update` brings its core rules up to date\)$/m);
@@ -586,7 +586,7 @@ test('init: a CLAUDE.md that is a link to another file is left as it is, and ini
     assert.doesNotMatch(result.stdout, /updated CLAUDE\.md/);
     assert.equal(readFileSync(real, 'utf8'), '# our rules\n', 'nothing is written through the link');
     assert.equal(lstatSync(join(sandbox.repo, 'CLAUDE.md')).isSymbolicLink(), true);
-    assert.notEqual(stepMark(sandbox, 'rules'), 'done');
+    assert.notEqual(await stepMark(sandbox, 'rules'), 'done');
   }
 });
 
@@ -601,7 +601,7 @@ test('init: with CLAUDE.md a link to another file, a plain .claude/CLAUDE.md get
   assert.match(result.stdout, /updated \.claude\/CLAUDE\.md: it now reads AGENTS\.md/);
   assert.equal(readFileSync(join(sandbox.repo, 'docs', 'claude.md'), 'utf8'), '# linked rules\n');
   assert.match(readFileSync(join(sandbox.repo, '.claude', 'CLAUDE.md'), 'utf8'), /\n@\.\.\/AGENTS\.md\n$/);
-  assert.equal(stepMark(sandbox, 'rules'), 'done');
+  assert.equal(await stepMark(sandbox, 'rules'), 'done');
 });
 
 test('init: an import of another file that starts with AGENTS.md does not count; init adds the real import (#206)', async () => {
@@ -614,14 +614,14 @@ test('init: an import of another file that starts with AGENTS.md does not count;
     const sandbox = makeSandbox();
     sandbox.write(file, text);
     sandbox.write('AGENTS.md', '# shared rules\n');
-    assert.notEqual(stepMark(sandbox, 'rules'), 'done', text);
+    assert.notEqual(await stepMark(sandbox, 'rules'), 'done', text);
     const result = await sandbox.call(['init']);
     assert.equal(result.status, 0, result.stderr);
     assert.ok(result.stdout.includes(`updated ${file}: it now reads AGENTS.md`), result.stdout);
     const after = readFileSync(join(sandbox.repo, file), 'utf8');
     assert.ok(after.startsWith(text), 'the old line stays');
     assert.ok(after.endsWith(`-->\n${line}\n`), after);
-    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+    assert.equal(await stepMark(sandbox, 'rules'), 'done', text);
   }
 });
 
@@ -636,14 +636,14 @@ test('init: a Markdown link to AGENTS.md is not an import; init adds the import 
     const sandbox = makeSandbox();
     sandbox.write(file, text);
     sandbox.write('AGENTS.md', '# shared rules\n');
-    assert.notEqual(stepMark(sandbox, 'rules'), 'done', text);
+    assert.notEqual(await stepMark(sandbox, 'rules'), 'done', text);
     assert.match((await sandbox.call(['doctor'])).stdout, /rules[^\n]*does not import AGENTS\.md/, text);
     const result = await sandbox.call(['init']);
     assert.equal(result.status, 0, result.stderr);
     const after = readFileSync(join(sandbox.repo, file), 'utf8');
     assert.ok(after.startsWith(text), 'the link stays');
     assert.ok(after.endsWith(`-->\n${line}\n`), after);
-    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+    assert.equal(await stepMark(sandbox, 'rules'), 'done', text);
   }
 });
 
@@ -660,13 +660,13 @@ test('init: an import inside a code span or fenced block is not an import; init 
     const sandbox = makeSandbox();
     sandbox.write('CLAUDE.md', text);
     sandbox.write('AGENTS.md', '# shared rules\n');
-    assert.notEqual(stepMark(sandbox, 'rules'), 'done', text);
+    assert.notEqual(await stepMark(sandbox, 'rules'), 'done', text);
     const result = await sandbox.call(['init']);
     assert.equal(result.status, 0, result.stderr);
     const after = readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8');
     assert.ok(after.startsWith(text.replace(/\n$/, '')), 'the example stays');
     assert.ok(after.endsWith(`-->\n${at}AGENTS.md\n`), after);
-    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+    assert.equal(await stepMark(sandbox, 'rules'), 'done', text);
   }
 });
 
@@ -683,7 +683,7 @@ test('init: a real import next to a fenced or quoted example is left as it is (#
     assert.equal(result.status, 0, result.stderr);
     assert.doesNotMatch(result.stdout, /CLAUDE\.md/, text);
     assert.equal(readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8'), text);
-    assert.equal(stepMark(sandbox, 'rules'), 'done', text);
+    assert.equal(await stepMark(sandbox, 'rules'), 'done', text);
   }
 });
 
@@ -723,7 +723,7 @@ test("init: husky keeps its hooks folder; .husky/pre-commit gets the check and k
   const hook = readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8');
   assert.equal(hook, `#!/bin/sh\n${checkLines('.yokoten/bin/yokoten.ts').join('\n')}\ntouch own-hook-ran\n`);
   assert.match(hook, /\n\[ -f "\.yokoten\/bin\/yokoten\.ts" \] 2>\/dev\/null \|\| \{ echo [^\n]* >&2; exit 1; \}; node "\.yokoten\/bin\/yokoten\.ts" check --staged \|\| exit 1\n/);
-  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  assert.equal(await stepMark(sandbox, 'commit-check'), 'done');
   // Again: the hook already runs yokoten.
   result = await sandbox.call(['init']);
   assert.match(result.stdout, /same \.husky\/pre-commit/);
@@ -759,10 +759,10 @@ test('init: husky not yet installed in this clone; init leaves core.hooksPath un
   sandbox.write('.husky/pre-commit', before);
   assert.match((await sandbox.call(['init'])).stdout, /^same \.husky\/pre-commit/m);
   assert.equal(readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8'), before);
-  assert.notEqual(stepMark(sandbox, 'commit-check'), 'done', 'git runs no hook yet');
+  assert.notEqual(await stepMark(sandbox, 'commit-check'), 'done', 'git runs no hook yet');
   assert.match((await sandbox.call(['doctor'])).stdout, /run `npm install` so husky sets core\.hooksPath/);
   sandbox.git('config', 'core.hooksPath', '.husky/_');
-  assert.equal(stepMark(sandbox, 'commit-check'), 'done', "husky 9's folder runs .husky/pre-commit");
+  assert.equal(await stepMark(sandbox, 'commit-check'), 'done', "husky 9's folder runs .husky/pre-commit");
 });
 
 // git runs pre-merge-commit, not pre-commit, for a merge it commits itself (#239).
@@ -775,7 +775,7 @@ test('init: a merge commit runs the commit check too (#239)', async () => {
   const hook = readFileSync(mergeHook, 'utf8');
   assert.equal(hook, readFileSync(join(sandbox.repo, '.githooks', 'pre-commit'), 'utf8'), 'the same check as pre-commit');
   assert.ok(statSync(mergeHook).mode & 0o100, 'executable');
-  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  assert.equal(await stepMark(sandbox, 'commit-check'), 'done');
   // Again: nothing changes.
   result = await sandbox.call(['init']);
   assert.match(result.stdout, /kept \.githooks\/pre-merge-commit/);
@@ -800,7 +800,7 @@ test('init: a merge commit runs the commit check too (#239)', async () => {
   assert.equal(sandbox.git('rev-list', '--count', '--merges', 'HEAD').stdout.trim(), '1');
   // Doctor names a missing pre-merge-commit, and init writes it back.
   rmSync(mergeHook);
-  assert.notEqual(stepMark(sandbox, 'commit-check'), 'done');
+  assert.notEqual(await stepMark(sandbox, 'commit-check'), 'done');
   const doctor = (await sandbox.call(['doctor'])).stdout;
   // Ordinary commits are still checked; only merge commits are not.
   assert.match(doctor, /merge commits are not checked: there is no \.githooks\/pre-merge-commit/);
@@ -812,7 +812,7 @@ test('init: a merge commit runs the commit check too (#239)', async () => {
   result = await sandbox.call(['init']);
   assert.match(result.stdout, /added the check to \.githooks\/pre-merge-commit/);
   assert.equal(readFileSync(mergeHook, 'utf8'), `#!/bin/sh\n${checkLines('.yokoten/bin/yokoten.ts').join('\n')}\necho own\n`);
-  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  assert.equal(await stepMark(sandbox, 'commit-check'), 'done');
 });
 
 test('init: a core.hooksPath outside the repo is kept, and the advice is the line init would write (#204)', async () => {
@@ -844,7 +844,7 @@ test("init: another core.hooksPath is kept, and its pre-commit is made with the 
     assert.equal(readFileSync(path, 'utf8'), `#!/bin/sh\n${checkLines('.yokoten/bin/yokoten.ts').join('\n')}\n`, hook);
     assert.ok(statSync(path).mode & 0o100, `${hook} is executable`);
   }
-  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  assert.equal(await stepMark(sandbox, 'commit-check'), 'done');
   sandbox.git('add', '.');
   assert.equal(sandbox.git('commit', '-qm', 'adopt yokoten').status, 0);
   sandbox.write('leak.md', `me${at}gmail.com\n`);
@@ -880,7 +880,7 @@ test('init: a pre-commit in .git/hooks keeps running, after the check, from .git
   assert.match(result.stdout, /^set git core\.hooksPath to \.githooks/m);
   assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '.githooks');
   assert.ok(existsSync(join(gitDir, 'hooks', 'pre-commit')), 'the old hook stays where it was');
-  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  assert.equal(await stepMark(sandbox, 'commit-check'), 'done');
   // A real commit runs the check, then the old hook.
   sandbox.git('add', '.');
   let commit = sandbox.git('commit', '-qm', 'adopt yokoten');
@@ -914,12 +914,12 @@ test('init: a pre-commit in .git/hooks keeps running, after the check, from .git
   // A clone that ran an older init: .githooks/pre-commit without the hand-off drops the old hook, and doctor says so.
   const kitHook = readFileSync(join(CLI, '..', '..', 'kit', 'project', '.githooks', 'pre-commit'), 'utf8').replaceAll('{{cli}}', '.yokoten/bin/yokoten.ts');
   writeFileSync(join(sandbox.repo, '.githooks', 'pre-commit'), kitHook);
-  assert.notEqual(stepMark(sandbox, 'commit-check'), 'done', 'the old pre-commit would be dropped');
+  assert.notEqual(await stepMark(sandbox, 'commit-check'), 'done', 'the old pre-commit would be dropped');
   const doctor = (await sandbox.call(['doctor'])).stdout;
   assert.match(doctor, /commit-check \(OSPS-BR-07\.01\): a hook this clone had is switched off: \.git\/hooks\/pre-commit no longer runs: \.githooks\/pre-commit does not run it; `yokoten init` makes \.githooks\/pre-commit run \.git\/hooks\/pre-commit after the check/);
   result = await sandbox.call(['init']);
   assert.match(result.stdout, /^updated \.githooks\/pre-commit$/m);
-  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  assert.equal(await stepMark(sandbox, 'commit-check'), 'done');
   const hook = readFileSync(join(sandbox.repo, '.githooks', 'pre-commit'), 'utf8');
   assert.match(hook, /^node "\.yokoten\/bin\/yokoten\.ts" check --staged \|\| exit 1\n# yokoten: then the pre-commit/m, 'the kit\'s `exec` goes, so the hand-off runs after the check');
   rmSync(join(gitDir, 'old-hook-ran'));
@@ -942,12 +942,12 @@ test('init: a pre-commit in .git/hooks that git skips does not hold the check ba
   assert.ok(result.stdout.includes(`\n${note}\n`), result.stdout);
   assert.doesNotMatch(result.stdout, /kept your/);
   assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '.githooks');
-  assert.equal(stepMark(sandbox, 'commit-check'), 'done', 'a hook git skipped is not dropped');
+  assert.equal(await stepMark(sandbox, 'commit-check'), 'done', 'a hook git skipped is not dropped');
   // Made executable, the next init hands off to it.
   chmodSync(join(sandbox.repo, '.git', 'hooks', 'pre-commit'), 0o755);
-  assert.notEqual(stepMark(sandbox, 'commit-check'), 'done', 'now it would be dropped');
+  assert.notEqual(await stepMark(sandbox, 'commit-check'), 'done', 'now it would be dropped');
   assert.match((await sandbox.call(['init'])).stdout, /^kept your \.git\/hooks\/pre-commit: \.githooks\/pre-commit runs it after the check$/m);
-  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  assert.equal(await stepMark(sandbox, 'commit-check'), 'done');
 });
 
 test('init: every other hook in .git/hooks keeps running from .githooks, with its arguments and stdin (#256)', { skip: NO_EXEC_BIT }, async () => {
@@ -979,7 +979,7 @@ test('init: every other hook in .git/hooks keeps running from .githooks, with it
   assert.ok(!existsSync(join(sandbox.repo, '.githooks', 'pre-commit.old')), 'a file git never runs is not a hook');
   assert.equal(readFileSync(join(sandbox.repo, '.githooks', 'prepare-commit-msg'), 'utf8'), ['#!/bin/sh', ...handOffLines('prepare-commit-msg'), 'echo own >> "$1"', ''].join('\n'));
   assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '.githooks');
-  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  assert.equal(await stepMark(sandbox, 'commit-check'), 'done');
   // A real commit runs them, with git's arguments.
   sandbox.git('add', '.');
   const commit = sandbox.git('commit', '-qm', 'adopt yokoten');
@@ -996,11 +996,11 @@ test('init: every other hook in .git/hooks keeps running from .githooks, with it
   assert.match(readFileSync(join(sandbox.repo, '.git', 'pre-push-ran'), 'utf8'), /^refs\/heads\/main [0-9a-f]{40} refs\/heads\/main /);
   // A clone that ran an older init: no .githooks/commit-msg, so the old one is dropped, and doctor counts it.
   rmSync(join(sandbox.repo, '.githooks', 'commit-msg'));
-  assert.notEqual(stepMark(sandbox, 'commit-check'), 'done');
+  assert.notEqual(await stepMark(sandbox, 'commit-check'), 'done');
   const doctor = (await sandbox.call(['doctor'])).stdout;
   assert.match(doctor, /commit-check \(OSPS-BR-07\.01\): a hook this clone had is switched off: \.git\/hooks\/commit-msg no longer runs: \.githooks\/commit-msg does not run it; `yokoten init` makes \.githooks\/commit-msg run \.git\/hooks\/commit-msg\n/);
   assert.match((await sandbox.call(['init'])).stdout, /^wrote \.githooks\/commit-msg$/m);
-  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  assert.equal(await stepMark(sandbox, 'commit-check'), 'done');
 });
 
 test('init: an old hook that reads stdin, next to a .githooks one of the project\'s own, is left to the owner (#256)', { skip: NO_EXEC_BIT }, async () => {
@@ -1096,7 +1096,7 @@ test('init: with a global core.hooksPath, the files in .git/hooks are dead and a
   // A clone an older init set up: core.hooksPath is .githooks here, and the global one decided before.
   sandbox.git('config', 'core.hooksPath', '.githooks');
   assert.equal((await sandbox.call(['init'])).status, 0);
-  assert.equal(stepMark(sandbox, 'commit-check'), 'done', 'a dead hook is not dropped');
+  assert.equal(await stepMark(sandbox, 'commit-check'), 'done', 'a dead hook is not dropped');
   sandbox.git('config', '--unset', 'core.hooksPath');
   rmSync(join(sandbox.repo, '.githooks'), { recursive: true });
   const result = await sandbox.call(['init']);
@@ -1108,7 +1108,7 @@ test('init: with a global core.hooksPath, the files in .git/hooks are dead and a
   sandbox.git('add', '.');
   const commit = sandbox.git('commit', '-qm', 'adopt yokoten');
   assert.equal(commit.status, 0, commit.stderr);
-  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  assert.equal(await stepMark(sandbox, 'commit-check'), 'done');
 });
 
 // doctor's advice must be true: when it says init sets it up, init does (#256).
@@ -1124,7 +1124,7 @@ test('init: a .githooks/pre-commit of the project\'s own gets the check, and a k
   const path = join(sandbox.repo, '.githooks/pre-commit');
   const hook = readFileSync(path, 'utf8');
   assert.equal(hook, `#!/bin/sh\n${checkLines('.yokoten/bin/yokoten.ts').join('\n')}\necho own\n`);
-  assert.equal(stepMark(sandbox, 'commit-check'), 'done');
+  assert.equal(await stepMark(sandbox, 'commit-check'), 'done');
   const mode = statSync(path).mode & 0o777;
   // Again: the file is kept as it is, mode too.
   result = await sandbox.call(['init']);
@@ -1146,7 +1146,7 @@ test('init: a file under .husky/ keeps its mode; husky 9 runs it with sh (#256)'
   for (const hook of ['pre-commit', 'pre-merge-commit']) {
     assert.equal(statSync(join(sandbox.repo, '.husky', hook)).mode & 0o777, 0o644, `.husky/${hook} keeps its mode`);
   }
-  assert.equal(stepMark(sandbox, 'commit-check'), 'done', 'husky 9 needs no execute bit on .husky/pre-commit');
+  assert.equal(await stepMark(sandbox, 'commit-check'), 'done', 'husky 9 needs no execute bit on .husky/pre-commit');
 });
 
 // A lesson added to the kit's core rules reaches a project that already ran init (#120).
