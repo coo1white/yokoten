@@ -48,8 +48,9 @@ test('layers: no module imports from a layer above its own', () => {
 // test/run/check.test.ts (#152). A branch that changes a module adds its tests, and their
 // imports, to that module's file, so parallel branches do not meet in one import block.
 // Next to the layer folders, test/ holds repo/: this file and the shared helpers, which
-// check the repo as a whole, not one src module.
-const TEST_TOP = ['repo/architecture.test.ts', 'repo/helpers.ts', 'repo/home.ts'];
+// check the repo as a whole, not one src module, and invoke.ts, which runs a command
+// in-process (#475).
+const TEST_TOP = ['repo/architecture.test.ts', 'repo/helpers.ts', 'repo/home.ts', 'repo/invoke.ts'];
 // Modules with no test file of their own. Keep it short: a new module gets its test file.
 const NO_TEST_FILE = [
   'agents/agent-skills.ts', // no tests yet (#152)

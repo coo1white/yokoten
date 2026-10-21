@@ -457,9 +457,10 @@ const readSourceUrl = (text: string): string | null => /^\/\/ (https?:\/\/\S+)\s
 /**
  * Move a reviewed lesson from `lessons/<id>/` into a group of `kit/lessons/`, and add its row
  * to the lessons table. It refuses, and moves nothing, when a TODO(reviewer) is left or the
- * lesson's test fails: an unreviewed check never ships. `reference` is the id or the issue number.
+ * lesson's test fails: an unreviewed check never ships. `reference` is the id or the issue number;
+ * the test runs with `env`.
  */
-export function shipLesson(root: string, reference: string, version: string): { lesson: ShippedLesson } | { problems: string[] } {
+export function shipLesson(root: string, reference: string, version: string, env: Env): { lesson: ShippedLesson } | { problems: string[] } {
   const id = /^\d+$/.test(reference) ? `incident-${reference}` : reference;
   if (!LESSON_ID.test(id)) return { problems: [`${reference} is not a lesson id: give its number or its id, for example incident-138`] };
   if (!existsSync(join(root, 'kit'))) return { problems: ['there is no kit/ here: a lesson ships in a copy of yokoten, where kit/ is what other projects get'] };
@@ -484,9 +485,9 @@ export function shipLesson(root: string, reference: string, version: string): { 
   if (problems.length) return { problems };
   // The positive control must pass here, before the lesson reaches any other project.
   // Without NODE_TEST_CONTEXT: inside a test run, it makes the child report to the parent and exit 0.
-  const env = { ...process.env };
-  delete env.NODE_TEST_CONTEXT;
-  const run = spawnSync(process.execPath, ['--test', join(draftDir, 'lesson.test.ts')], { cwd: root, env, encoding: 'utf8' });
+  const testEnv = { ...env };
+  delete testEnv.NODE_TEST_CONTEXT;
+  const run = spawnSync(process.execPath, ['--test', join(draftDir, 'lesson.test.ts')], { cwd: root, env: testEnv, encoding: 'utf8' });
   if (run.status !== 0) return { problems: [`the lesson's test fails: run \`node --test ${draftDir}/lesson.test.ts\` to see why, and fix the check`] };
 
   const group = findLessonGroup(kitDir);

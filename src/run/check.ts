@@ -489,7 +489,7 @@ const isShallow = (root: string): boolean => git(root, ['rev-parse', '--is-shall
  * Whether git reads a grafts file, which can hide commits from git (#284): one named by
  * GIT_GRAFT_FILE, or `info/grafts` where git looks for it (#294).
  */
-const hasGrafts = (root: string, env: Env = process.env): boolean =>
+const hasGrafts = (root: string, env: Env): boolean =>
   Boolean(env.GIT_GRAFT_FILE) || existsSync(resolve(root, git(root, ['rev-parse', '--git-path', 'info/grafts']).trim()));
 
 /** What `check --history` reports in a shallow clone, in place of a scan (#266). */
@@ -504,10 +504,10 @@ const graftedHistory = (): Finding =>
  * How many commits on every branch record a time zone other than UTC. History can't be
  * changed without a force push, which is the owner's call, so this is a count to know,
  * not a problem that fails the check. A shallow clone can't count them: 0, and
- * `checkHistory` says why.
+ * `checkHistory` says why. `env` names a grafts file, as for `checkHistory`.
  */
-export function historyTimeZones(root: string): number {
-  if (isShallow(root) || hasGrafts(root)) return 0;
+export function historyTimeZones(root: string, env: Env): number {
+  if (isShallow(root) || hasGrafts(root, env)) return 0;
   return git(root, ['log', '--all', '--format=%ad|%cd', '--date=format:%z'])
     .split('\n')
     .filter((line) => line && line.split('|').some((zone) => notUtc(` ${zone}`))).length;

@@ -28,6 +28,7 @@ import {
   PLUGIN_ROOT,
   makeTempDir,
 } from '../repo/helpers.ts';
+import { invoke } from '../repo/invoke.ts';
 import {
   closestWord,
   COMMANDS,
@@ -98,26 +99,33 @@ test('hooks: a missing runtime says one plain line with no path, never a stack t
 });
 
 // #42: stdout is data and stderr is for people; --json prints pure JSON. Exit codes are
-// written down once (docs/guide.md, "Exit codes") and held here.
-test('exit codes: 0 ok, 1 problems or a usage error, 2 the hook blocked (#42)', () => {
+// written down once (docs/guide.md, "Exit codes") and held here. The hook runs as a real
+// child of bin/yokoten.ts, end to end; the rest runs in-process (#475).
+test('exit codes: 0 ok, 1 problems or a usage error, 2 the hook blocked (#42)', async () => {
   const sandbox = makeSandbox();
+  // The hook reads stdin, so it runs as a child.
+  const run = async (words: string[]) => {
+    if (words[0] !== 'hook') return invoke(words, { env: sandbox.env, cwd: sandbox.repo });
+    const child = sandbox.run(words, { input: '{}' });
+    return { code: child.status, stdout: child.stdout, stderr: child.stderr };
+  };
   const hook = (command: string) => sandbox.run(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: { command } }) });
   sandbox.write('a.md', 'fine\n');
   sandbox.git('add', '.');
-  assert.equal(sandbox.run(['check']).status, 0);
+  assert.equal((await run(['check'])).code, 0);
   assert.equal(hook('git status').status, 0);
-  assert.equal(sandbox.run(['doctor', '--session']).status, 0, 'a session always starts');
-  assert.equal(sandbox.run(['explain', 'release']).status, 0);
-  assert.equal(sandbox.run(['doctor']).status, 1, 'nothing is installed on this machine: a problem');
+  assert.equal((await run(['doctor', '--session'])).code, 0, 'a session always starts');
+  assert.equal((await run(['explain', 'release'])).code, 0);
+  assert.equal((await run(['doctor'])).code, 1, 'nothing is installed on this machine: a problem');
   sandbox.write('b.md', `me${at}gmail.com\n`);
   sandbox.git('add', '.');
-  assert.equal(sandbox.run(['check']).status, 1);
-  assert.equal(sandbox.run(['explain', 'nope']).status, 1);
+  assert.equal((await run(['check'])).code, 1);
+  assert.equal((await run(['explain', 'nope'])).code, 1);
   assert.equal(hook('git push --tags').status, 2);
   // A usage error is refused, never ignored: no fake success.
   for (const args of [['nope'], ['check', '--stagd'], ['check', '--staged', '--pr'], ['check', 'extra'], ['doctor', '--sesion'], ['hook', '--agent'], ['explain', 'a', 'b']]) {
-    const r = sandbox.run(args, { input: '{}' });
-    assert.equal(r.status, 1, args.join(' '));
+    const r = await run(args);
+    assert.equal(r.code, 1, args.join(' '));
     assert.equal(r.stdout, '', `${args.join(' ')}: nothing on stdout`);
     assert.notEqual(r.stderr, '', `${args.join(' ')}: says why on stderr`);
   }
@@ -133,8 +141,8 @@ test('exit codes: 0 ok, 1 problems or a usage error, 2 the hook blocked (#42)', 
     ['hook', '--json', '--agent'],
   ];
   for (const args of jsonErrors) {
-    const r = sandbox.run(args, { input: '{}' });
-    assert.equal(r.status, 1, args.join(' '));
+    const r = await run(args);
+    assert.equal(r.code, 1, args.join(' '));
     const out = JSON.parse(r.stdout);
     assert.deepEqual(Object.keys(out), ['command', 'ok', 'error'], args.join(' '));
     assert.equal(out.command, args[0]);
@@ -145,15 +153,16 @@ test('exit codes: 0 ok, 1 problems or a usage error, 2 the hook blocked (#42)', 
   // An error past the parser, caught at the top, is JSON too. A broken yokoten.json is
   // such an error: the config is read before any check runs.
   sandbox.write('yokoten.json', '{\n');
-  const crashed = sandbox.run(['check', '--json']);
-  assert.equal(crashed.status, 1);
+  const crashed = await run(['check', '--json']);
+  assert.equal(crashed.code, 1);
   assert.deepEqual({ ...JSON.parse(crashed.stdout), error: 'x' }, { command: 'check', ok: false, error: 'x' });
   assert.match(JSON.parse(crashed.stdout).error, /^yokoten\.json: [^\n]+$/);
   assert.match(crashed.stderr, /^yokoten check: yokoten\.json: /);
 });
 
-test('help: every command has --help, -h and `help <command>`; each exits 0 and writes nothing (#207)', () => {
+test('help: every command has --help, -h and `help <command>`; each exits 0 and writes nothing (#207)', async () => {
   const sandbox = makeSandbox();
+  const run = (words: string[]) => invoke(words, { env: sandbox.env, cwd: sandbox.repo });
   sandbox.write('a.md', 'fine\n');
   sandbox.git('add', '.');
   sandbox.git('commit', '-qm', 'start');
@@ -161,8 +170,8 @@ test('help: every command has --help, -h and `help <command>`; each exits 0 and 
   const start = before();
   for (const command of COMMANDS) {
     for (const args of [[command.name, '--help'], [command.name, '-h'], ['help', command.name], [command.name, '--nope', '--help']]) {
-      const r = sandbox.run(args, { input: '{}' });
-      assert.deepEqual([r.status, r.stderr], [0, ''], args.join(' '));
+      const r = await run(args);
+      assert.deepEqual([r.code, r.stderr], [0, ''], args.join(' '));
       assert.match(r.stdout, new RegExp(`^Usage: yokoten ${command.name}\\b`), args.join(' '));
       for (const option of [...command.options.map((o) => o.name), ...HELP_OPTIONS]) assert.ok(r.stdout.includes(option), `${args.join(' ')}: names ${option}`);
       assert.match(r.stdout, /\nExample:\n {2}\S/, `${args.join(' ')}: one example`);
@@ -171,11 +180,11 @@ test('help: every command has --help, -h and `help <command>`; each exits 0 and 
   assert.deepEqual(before(), start, '--help writes nothing');
   // The command list names every command, and -h and -v work alone.
   for (const args of [[], ['--help'], ['-h'], ['help']]) {
-    const r = sandbox.run(args);
-    assert.equal(r.status, 0, args.join(' '));
+    const r = await run(args);
+    assert.equal(r.code, 0, args.join(' '));
     for (const command of COMMANDS) assert.match(r.stdout, new RegExp(`^ {2}${command.name} `, 'm'), `${args.join(' ')}: lists ${command.name}`);
   }
-  assert.equal(sandbox.run(['-v']).stdout, sandbox.run(['--version']).stdout);
+  assert.equal((await run(['-v'])).stdout, (await run(['--version'])).stdout);
 });
 
 test('compile cache: a cache folder that cannot be made does not stop the command (#286)', () => {
@@ -218,7 +227,7 @@ test('compile cache: bin/yokoten.mjs keeps it in the user cache folder, or in NO
   assert.ok(existsSync(named), 'NODE_COMPILE_CACHE wins');
 });
 
-test('help: the help table and the parser list the same commands and options (#207)', () => {
+test('help: the help table and the parser list the same commands and options (#207)', async () => {
   // The dispatch is in bin/main.ts; each command's parse call is in its module in src/commands/ (#330).
   const commandsDir = join(dirname(CLI), '..', 'src', 'commands');
   const source = [join(dirname(CLI), 'main.ts'), ...readdirSync(commandsDir).map((file) => join(commandsDir, file))].map((file) => readFileSync(file, 'utf8')).join('\n');
@@ -232,24 +241,28 @@ test('help: the help table and the parser list the same commands and options (#2
   const sandbox = makeSandbox();
   for (const command of COMMANDS) {
     for (const option of command.options) {
-      const r = sandbox.run([command.name, option.name, ...(option.value ? ['x'] : []), '--not-an-option']);
+      const r = await invoke([command.name, option.name, ...(option.value ? ['x'] : []), '--not-an-option'], { env: sandbox.env, cwd: sandbox.repo });
       // `marks` never repeats an unknown word, which may be a mark (#447): it says "an unknown option".
       assert.match(r.stderr, command.name === 'marks' ? /an unknown option/ : /unknown option --not-an-option/, `${command.name} ${option.name}`);
     }
   }
 });
 
-test('help: a typo in a command or an option names the closest one; a far one lists the commands (#207)', () => {
+test('help: a typo in a command or an option names the closest one; a far one lists the commands (#207)', async () => {
   const sandbox = makeSandbox();
+  const run = (words: string[]) => invoke(words, { env: sandbox.env, cwd: sandbox.repo });
   const cases: [string[], string][] = [
     [['docter'], 'yokoten: unknown command "docter". Did you mean "doctor"? Run `yokoten help`.\n'],
     [['help', 'chek'], 'yokoten: unknown command "chek". Did you mean "check"? Run `yokoten help`.\n'],
     [['check', '--stagd'], 'yokoten check: unknown option --stagd. Did you mean --staged? Run `yokoten check --help`.\n'],
     [['doctor', '--hepl'], 'yokoten doctor: unknown option --hepl. Did you mean --help? Run `yokoten doctor --help`.\n'],
   ];
-  for (const [args, stderr] of cases) assert.deepEqual(pick(sandbox.run(args, { input: '{}' })), [1, '', stderr], args.join(' '));
-  const far = sandbox.run(['zzzzzz']);
-  assert.deepEqual([far.status, far.stdout], [1, '']);
+  for (const [args, stderr] of cases) {
+    const r = await run(args);
+    assert.deepEqual([r.code, r.stdout, r.stderr], [1, '', stderr], args.join(' '));
+  }
+  const far = await run(['zzzzzz']);
+  assert.deepEqual([far.code, far.stdout], [1, '']);
   assert.match(far.stderr, /^yokoten: unknown command "zzzzzz"\. Commands: install, init, .*version\. Run `yokoten help`\.\n$/);
   assert.equal(editDistance('docter', 'doctor'), 1);
   assert.equal(closestWord('xyz', ['doctor', 'check']), undefined, 'more than two edits: no guess');
