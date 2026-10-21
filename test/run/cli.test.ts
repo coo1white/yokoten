@@ -208,6 +208,26 @@ test('hooks: a hook that runs yokoten.ts or yokoten.mjs is yokoten\'s (#408)', (
   assert.equal(subcommand('node bin/yokoten.mts hook'), undefined);
 });
 
+// #298: a package runner that starts the published yokoten counts, with its flags.
+test('runs: a package runner with flags runs yokoten; another command does not (#298, #431)', () => {
+  for (const command of ['npx yokoten check', 'npx --yes yokoten check', 'npx -y yokoten@0.1.0 check', '  bunx yokoten check', 'pnpm dlx yokoten check', 'npm exec -- yokoten check', 'run: |\n  npx -y yokoten check\n']) {
+    assert.ok(runs('check').test(command), command);
+  }
+  for (const command of ['echo npx yokoten check', 'npx yokoten-check', 'npx yokoten checker', 'npx -yyokoten check', 'npxyokoten check']) {
+    assert.ok(!runs('check').test(command), command);
+  }
+  assert.ok(runs('check --pr').test('npx -y yokoten check --pr'));
+  assert.ok(!runs('check(?!\\s+--(?:pr|issue))').test('npx -y yokoten check --pr'));
+});
+
+// #431: the flags are read one word at a time. A regex that repeated a group over the line
+// threw a RangeError here. About 40 MB per line: one byte a character.
+test('runs: a 40,000,000-character line of flags does not throw (#431)', () => {
+  const flags = ' -y'.repeat(40_000_000 / 3);
+  assert.equal(runs('check').test(`npx${flags} yokoten check`), true);
+  assert.equal(runs('check').test(`npx${flags} other check`), false);
+});
+
 // #408: the hooks run bin/yokoten.mjs, which keeps the compile cache in the user's cache
 // folder: a restart may empty the temp folder. NODE_COMPILE_CACHE still names another.
 test('compile cache: bin/yokoten.mjs keeps it in the user cache folder, or in NODE_COMPILE_CACHE (#408)', () => {
