@@ -73,7 +73,7 @@ test('check --staged: stops a commit with a personal email or a private mark', (
   const r = sandbox.run(['check', '--staged'], { extra: { YOKOTEN_PRIVATE_MARKS: marks } });
   assert.equal(r.status, 1);
   assert.match(r.stderr, /src\/b\.md:1: an email/);
-  assert.match(r.stderr, /src\/b\.md:2: matches a line of your private-marks file/);
+  assert.match(r.stderr, /src\/b\.md:2: matches a word you added to your private marks/);
   assert.ok(!/mycity/i.test(r.stderr));
 });
 
@@ -818,13 +818,13 @@ test('check and the commit hook: a mark allowed in one repo is stopped in anothe
     assert.equal((await own.call(args, { extra })).status, 0, `${args.join(' ')} in the repo that allows it`);
     const stopped = await other.call(args, { extra });
     assert.equal(stopped.status, 1, `${args.join(' ')} in the other repo`);
-    assert.match(stopped.stderr, /README\.md:1: matches a line of your private-marks file/);
+    assert.match(stopped.stderr, /README\.md:1: matches a word you added to your private marks/);
     assert.ok(!/quietvale/i.test(stopped.stderr + stopped.stdout), 'the mark is never printed');
   }
   assert.equal(commit(own).status, 0, 'the commit hook lets the repo that allows it commit');
   const refused = commit(other);
   assert.notEqual(refused.status, 0, 'the commit hook stops the other repo');
-  assert.match(refused.stderr, /matches a line of your private-marks file/);
+  assert.match(refused.stderr, /matches a word you added to your private marks/);
   assert.ok(!/quietvale/i.test(refused.stderr + refused.stdout));
   // The longer mark is not allowed by the shorter one.
   own.write('README.md', 'QuietVale Labs ships\n');
@@ -862,7 +862,7 @@ test('check: an added forge login is fine where a file names accounts, and found
   sandbox.git('add', '.');
   result = await sandbox.call(['check']);
   assert.equal(result.status, 1);
-  for (const place of ['src/x.ts:1', 'docs/a.md:1', 'LICENSE:4', 'package.json:3']) assert.match(result.stderr, new RegExp(`${place.replace('.', '\\.')}: matches a line of your private-marks file`));
+  for (const place of ['src/x.ts:1', 'docs/a.md:1', 'LICENSE:4', 'package.json:3']) assert.match(result.stderr, new RegExp(`${place.replace('.', '\\.')}: matches your forge login \\(a private mark yokoten added by itself\\)`));
   assert.ok(!/LICENSE:3|package\.json:4/.test(result.stderr), result.stderr);
   assert.ok(!/octo-jdoe/i.test(result.stdout + result.stderr), 'check printed the login');
 });
@@ -880,7 +880,7 @@ test('check: the git name install added is found in a LICENSE copyright line and
   const result = await sandbox.call(['check']);
   assert.equal(result.status, 1);
   // The owner may hide the real name behind a noreply address and a mailmap: safe by default.
-  for (const place of ['LICENSE:3', 'package.json:3', 'docs/a.md:1']) assert.match(result.stderr, new RegExp(`${place.replace('.', '\\.')}: matches a line of your private-marks file`));
+  for (const place of ['LICENSE:3', 'package.json:3', 'docs/a.md:1']) assert.match(result.stderr, new RegExp(`${place.replace('.', '\\.')}: matches your git name \\(a private mark yokoten added by itself\\)`));
   assert.ok(!/ann|sample/i.test(result.stdout + result.stderr), 'check printed the name');
 });
 
@@ -893,7 +893,7 @@ test('check: a mark the owner wrote is found in CODEOWNERS too (#410)', async ()
   sandbox.git('add', '.');
   const result = await sandbox.call(['check']);
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /\.github\/CODEOWNERS:1: matches a line of your private-marks file/);
+  assert.match(result.stderr, /\.github\/CODEOWNERS:1: matches a word you added to your private marks/);
   assert.ok(!/octo-jdoe/i.test(result.stdout + result.stderr));
 });
 
@@ -1106,7 +1106,7 @@ test('marks allow --here: the machine allows a mark in one repo with no yokoten.
     assert.equal((await run(own, args)).status, 0, `${args.join(' ')} in the repo the machine allows it in`);
     const stopped = await run(other, args);
     assert.equal(stopped.status, 1, `${args.join(' ')} in the other repo`);
-    assert.match(stopped.stderr, /README\.md:1: matches a line of your private-marks file/);
+    assert.match(stopped.stderr, /README\.md:1: matches a word you added to your private marks/);
   }
   const doctor = (await run(own, ['doctor'])).stdout;
   assert.match(doctor, /own-marks: 1 of your private marks allowed here by this machine/);

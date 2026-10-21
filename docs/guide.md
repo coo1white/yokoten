@@ -1444,7 +1444,10 @@ Rule 11 has a check. It scans for personal email addresses and IP addresses, in 
 on every commit. On your own machine it also reads `~/.config/yokoten/private-marks`:
 your name, your city, your domains, your server names. That file stays outside the
 repo, because a list of what must not be published can't itself be published. A hit
-is reported by file and line; the mark itself is never printed.
+is reported by file and line; the mark itself is never printed. The hit names the kind
+of mark, such as `matches your git name (a private mark yokoten added by itself)` or
+`matches a word you added to your private marks`. Its fix says how to change the mark:
+`yokoten marks off git-name` for a kind yokoten adds, `yokoten marks remove` for your own.
 
 A mark of letters and spaces, such as a name or a city, is found as whole words. Only a
 letter next to it hides it: `sam` is found in `hi Sam`, `sam_dev`, `@sam` and `sam97`, but

@@ -460,6 +460,9 @@ export function markLines(text: string): (Mark | null)[] {
   });
 }
 
+/** Each mark's kind, by its value, for `scanText` to name it (#523). */
+export const mapMarkKinds = (marks: Mark[]): Map<string, string | null> => new Map(marks.map((mark) => [mark.value, mark.kind]));
+
 /** The forge logins yokoten added to the marks, lowercased: the places that name accounts may hold them (#410). */
 export const autoLogins = (marks: Mark[]): string[] => marks.filter((mark) => mark.kind === 'forge login').map((mark) => mark.value);
 
@@ -678,13 +681,38 @@ export function hasMark(text: string, mark: string, lower: string = text.toLower
   return test(text, lower);
 }
 
+// ---- What a stopped mark is (#523) ----
+// A finding names the kind of mark, never its value, so the owner knows which line to look at.
+
+const MARK_KINDS: Record<string, { name: string; off?: string }> = {
+  'git name': { name: 'your git name', off: 'git-name' },
+  'git email': { name: 'your git email', off: 'git-email' },
+  'forge login': { name: 'your forge login', off: 'forge-login' },
+  'private remote host': { name: 'the name of a private server in your git remotes' },
+};
+const MARK_REWORD = 'remove it or reword the line; the mark itself is never printed';
+const MARK_ALLOW = 'If this repo may name it, run `yokoten marks allow <mark> --here`';
+
+/**
+ * The text of a private-mark finding for a mark of `kind`, as `Mark` gives it: null for one
+ * the owner wrote, undefined when the caller does not know. The fix says how to change it.
+ */
+export function describeMark(kind: string | null | undefined): { what: string; fix: string } {
+  if (kind === undefined) return { what: 'matches a line of your private-marks file', fix: MARK_REWORD };
+  if (kind === null) return { what: 'matches a word you added to your private marks', fix: `${MARK_REWORD}. ${MARK_ALLOW}. To take the mark out, run \`yokoten marks remove\`` };
+  const known = MARK_KINDS[kind];
+  const what = `matches ${known?.name ?? `your ${kind}`} (a private mark yokoten added by itself)`;
+  return { what, fix: known?.off ? `${MARK_REWORD}. To stop checking ${known.name}, run \`yokoten marks off ${known.off}\`` : `${MARK_REWORD}. ${MARK_ALLOW}` };
+}
+
 /**
  * Problems in one file's text. `allow` holds literal strings the project has said are
- * fine (yokoten.json "privacy.allow"), such as a public support address.
+ * fine (yokoten.json "privacy.allow"), such as a public support address. `kinds` gives
+ * each mark's kind, as `loadMarkKinds` reads it, so a finding can name it (#523).
  */
 export function scanText(
   text: string,
-  { file, marks = [], allow = [], logins = [], ownAllow = allow }: { file: string; marks?: string[]; allow?: string[]; logins?: string[]; ownAllow?: string[] },
+  { file, marks = [], allow = [], logins = [], ownAllow = allow, kinds }: { file: string; marks?: string[]; allow?: string[]; logins?: string[]; ownAllow?: string[]; kinds?: ReadonlyMap<string, string | null> },
 ): Finding[] {
   const problems: Finding[] = [];
   const lines = text.split('\n');
@@ -713,7 +741,8 @@ export function scanText(
       // The mark itself is never printed: the output may land in a CI log or a chat.
       if (!hasMark(line, mark, lower)) continue;
       if (places && logins.includes(mark) && !hasMark(places(line, index, mark), mark)) continue;
-      problems.push(finding('private-mark', 'matches a line of your private-marks file', 'remove it or reword the line; the mark itself is never printed', where));
+      const { what, fix } = describeMark(kinds && kinds.has(mark) ? kinds.get(mark) : undefined);
+      problems.push(finding('private-mark', what, fix, where));
     }
   });
   return problems;
@@ -1410,14 +1439,16 @@ export function checkPost(
   // An allowed mark is left out of the path shown too (#424). The project's and the machine's
   // allow (#447) are for the repo the command runs in: a post gets them only when it is the
   // line's one command (after at most a cd within the same repo) and names no other target.
-  const all = loadMarks(env);
+  const withKinds = loadMarkKinds(env);
+  const kinds = mapMarkKinds(withKinds);
+  const all = withKinds.map((mark) => mark.value);
   const isHere = all.length > 0 && isPostHere(gh, { env, command, cwd, from });
   const key = isHere && cwd !== null ? repoKey(cwd, env) : null;
   const named = isHere && skipsOwnName(env, privacy) ? sameNameMarks(all, key) : [];
   const own = isHere ? [...ownMarks(all, [...allow, ...machineAllowed(env, cwd, key ?? undefined).allow]), ...named] : [];
   const marks = all.filter((mark) => !own.includes(mark));
   for (const piece of posted.pieces) {
-    const [hit] = scanText(piece.text, { file: piece.source, marks, allow, ownAllow: [] });
+    const [hit] = scanText(piece.text, { file: piece.source, marks, allow, ownAllow: [], kinds });
     if (!hit) continue;
     const more = { why: postWhy(hit.why) };
     if (piece.isFile) return finding(hit.id as RuleId, hit.what, postFix(hit), { ...more, file: shownPath(piece.source, env, marks), line: hit.line });
