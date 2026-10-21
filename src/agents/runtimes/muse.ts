@@ -51,13 +51,18 @@ const guardArgs = (root: string, cli: string) =>
   [projectHooks(root), 'PreToolUse', MATCHER, guardCommand(at(cli), 'hook --agent muse', missingProjectRuntime(cli), { isToolCall: true })] as const;
 const stopArgs = (root: string, cli: string) => [projectHooks(root), 'Stop', undefined, guardCommand(at(cli), 'hook --stop --agent muse', missingProjectRuntime(cli))] as const;
 
+// Muse 1.4.11 runs a SessionStart hook and gives its output to the model (#556), as Claude Code does.
+const sessionArgs = (root: string, cli: string) =>
+  [projectHooks(root), 'SessionStart', undefined, guardCommand(at(cli), 'doctor --session --agent muse', missingProjectRuntime(cli), { isSessionStart: true })] as const;
+
 /**
- * Write the tool-call guard and the stop check into `.muse/hooks.json`, keeping every
- * other hook. A file yokoten can't edit throws `UnreadableHooksFile` and stays as it was.
+ * Write the session doctor, the tool-call guard and the stop check into `.muse/hooks.json`,
+ * keeping every other hook. A file yokoten can't edit throws `UnreadableHooksFile` and
+ * stays as it was.
  */
-export function addProjectHooks(root: string, cli: string): { guard: Added; stop: Added } {
-  checkHooksFile(projectHooks(root), ['PreToolUse', 'Stop']);
-  return { guard: addHook(...guardArgs(root, cli)), stop: addHook(...stopArgs(root, cli)) };
+export function addProjectHooks(root: string, cli: string): { guard: Added; stop: Added; doctor: Added } {
+  checkHooksFile(projectHooks(root), ['PreToolUse', 'Stop', 'SessionStart']);
+  return { guard: addHook(...guardArgs(root, cli)), stop: addHook(...stopArgs(root, cli)), doctor: addHook(...sessionArgs(root, cli)) };
 }
 
 /** What `addProjectHooks` would do, read-only, for each hook (see `hookState`). */

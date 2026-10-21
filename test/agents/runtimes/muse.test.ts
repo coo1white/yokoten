@@ -73,6 +73,7 @@ test('muse project hooks: init writes the guard and the stop check, keeps other 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /added the Muse Code tool-call hook in \.muse\/hooks\.json/);
   assert.match(result.stdout, /added the Muse Code stop check in \.muse\/hooks\.json/);
+  assert.match(result.stdout, /added the Muse Code session doctor in \.muse\/hooks\.json/);
   assert.match(result.stdout, /Muse Code runs the hooks in \.muse\/hooks\.json only after you trust this folder/);
   const written = JSON.parse(readFileSync(file, 'utf8'));
   assert.equal(written.hooks.PreToolUse.length, 2, "another hook's group stays");
@@ -80,6 +81,9 @@ test('muse project hooks: init writes the guard and the stop check, keeps other 
   assert.match(written.hooks.PreToolUse[1].hooks[0].command, /"\$\(git rev-parse --show-toplevel\)\/\.yokoten\/bin\/yokoten\.mjs" hook --agent muse 2>&1/);
   assert.match(written.hooks.Stop[0].hooks[0].command, /hook --stop --agent muse$/);
   assert.deepEqual(projectHooksState(sandbox.repo, cli), { guard: 'same', stop: 'same' });
+  assert.equal(written.hooks.SessionStart.length, 1);
+  assert.match(written.hooks.SessionStart[0].hooks[0].command, /"\$\(git rev-parse --show-toplevel\)\/\.yokoten\/bin\/yokoten\.mjs" doctor --session --agent muse$/);
+  assert.equal(written.hooks.SessionStart[0].matcher, undefined);
   // The hooks are in place, and Muse looks unused here: no trust line (#341).
   assert.match((await sandbox.call(['doctor'])).stdout, /ok +muse-hook: \.muse\/hooks\.json is in place; trust not checked, no ~\/\.config\/muse\n/);
   trustFolder(sandbox.home, realpathSync(sandbox.repo));
@@ -89,7 +93,7 @@ test('muse project hooks: init writes the guard and the stop check, keeps other 
   sandbox.write('.muse/hooks.json', JSON.stringify(written));
   assert.equal(projectHooksState(sandbox.repo, cli).stop, 'updated');
   assert.match((await sandbox.call(['doctor'])).stdout, /note +muse-hook: the hooks in \.muse\/hooks\.json are out of date/);
-  assert.deepEqual(addProjectHooks(sandbox.repo, cli), { guard: 'same', stop: 'updated' });
+  assert.deepEqual(addProjectHooks(sandbox.repo, cli), { guard: 'same', stop: 'updated', doctor: 'same' });
   sandbox.write('.muse/hooks.json', '{ not json');
   assert.match((await sandbox.call(['doctor'])).stdout, /note +muse-hook: can't read \.muse\/hooks\.json/);
   assert.throws(() => addProjectHooks(sandbox.repo, cli), /can't read/);
@@ -136,4 +140,24 @@ test('muse trust (#341): doctor says when Muse skips the hooks; ok only when tru
   assert.deepEqual(readTrust(root, { HOME: sandbox.home, XDG_CONFIG_HOME: join(sandbox.home, 'xdg') }), { state: 'no home', store: '$XDG_CONFIG_HOME/muse/trust.json' });
   mkdirSync(join(sandbox.home, 'xdg', 'muse'), { recursive: true });
   assert.deepEqual(readTrust(root, { HOME: sandbox.home, XDG_CONFIG_HOME: join(sandbox.home, 'xdg') }), { state: 'no store', store: '$XDG_CONFIG_HOME/muse/trust.json' });
+});
+
+test('muse session doctor (#556): a new project gets it; an existing file keeps the user\'s hooks and gets it once', async () => {
+  const sandbox = makeSandbox();
+  const file = join(sandbox.repo, '.muse', 'hooks.json');
+  const mine = { matcher: 'bash', hooks: [{ type: 'command', command: './lint.sh' }] };
+  const own = { hooks: { SessionStart: [{ hooks: [{ type: 'command', command: './hello.sh' }] }], PreToolUse: [mine] } };
+  sandbox.write('.muse/hooks.json', JSON.stringify(own));
+  assert.equal((await sandbox.call(['init'])).status, 0);
+  assert.equal((await sandbox.call(['init'])).status, 0);
+  const written = JSON.parse(readFileSync(file, 'utf8'));
+  assert.equal(written.hooks.SessionStart.length, 2, 'the user\'s own SessionStart hook stays, ours is added once');
+  assert.deepEqual(written.hooks.SessionStart[0], own.hooks.SessionStart[0]);
+  assert.match(written.hooks.SessionStart[1].hooks[0].command, /doctor --session --agent muse$/);
+  assert.deepEqual(written.hooks.PreToolUse[0], mine);
+  assert.equal(written.hooks.PreToolUse.length, 2);
+  // The hook itself runs the session doctor: plain text on stdout, exit 0, as Muse reads it.
+  const run = await sandbox.call(['doctor', '--session', '--agent', 'muse']);
+  assert.equal(run.status, 0);
+  assert.match(run.stdout, /yokoten/);
 });
