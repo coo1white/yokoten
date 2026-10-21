@@ -112,4 +112,4 @@ npx yokoten doctor       # 今いる関所と、次の一手
 
 ---
 
-<p align="center"><sub>MIT · <a href="https://coolwhite.us/">coolwhite</a> が Claude（Claude Code 経由）と一緒に作りました。工場の現場から学んだ教訓とともに。</sub></p>
+<p align="center"><sub>MIT · <a href="https://coolwhite.us/">coolwhite</a> が AI エージェントと一緒に作りました。v0.1.0 は Claude（Claude Code）が土台を作り、v0.1.1 からは Muse Code が開発を率いています。工場の現場から学んだ教訓とともに。</sub></p>
