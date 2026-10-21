@@ -616,6 +616,37 @@ export const EMAIL_FIX = 'use your GitHub noreply address, or a placeholder at e
 /** Whether an address found in text may point at a person: not a noreply, team, example or retina name. */
 export const isPersonalEmail = (hit: string, allow: string[] = []): boolean => !OK_EMAIL.some((re) => re.test(hit)) && !isForgeRemote(hit) && !RETINA.test(hit) && !allow.includes(hit);
 
+// ---- How a mark is found in text (#434) ----
+//
+// A mark made of letters and spaces is a name or a place: it is found as whole words only, so
+// `sam` is not found in `sample`. Any other character on either side of it ends a word, so
+// `sam_dev`, `sam-example` and `@sam` are still found. The words of a mark of more than one may
+// have any run of spaces, `-`, `_` or `.` between them, as `plainName` reads a repo's name. A
+// mark with any other character (a domain, an address, a number) is found as a part, as before.
+// So is a name in a script written with no space between words, where a word has no edge.
+
+const NAME_SHAPED = /^[\p{L}\p{M}]+(?: [\p{L}\p{M}]+)*$/u;
+const UNSPACED_SCRIPT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}]/u;
+/** Each mark's test, made once per process: the scan runs it on every line. */
+const markTests = new Map<string, (lower: string) => boolean>();
+
+/** Whether the lowercased `lower` holds `mark` (lowercased, as `loadMarks` gives it). The one test every scan uses. */
+export function hasMark(lower: string, mark: string): boolean {
+  let test = markTests.get(mark);
+  if (!test) {
+    const words = mark.trim().split(/\s+/);
+    if (!NAME_SHAPED.test(words.join(' ')) || UNSPACED_SCRIPT.test(mark)) test = (text) => text.includes(mark);
+    else {
+      const edge = String.raw`[\p{L}\p{M}\p{N}]`;
+      const pattern = new RegExp(`(?<!${edge})${words.map(escapeRegExp).join(String.raw`[\s._-]+`)}(?!${edge})`, 'u');
+      // The first word as a part comes first: most lines have none, and includes is fast.
+      test = (text) => text.includes(words[0]) && pattern.test(text);
+    }
+    markTests.set(mark, test);
+  }
+  return test(lower);
+}
+
 /**
  * Problems in one file's text. `allow` holds literal strings the project has said are
  * fine (yokoten.json "privacy.allow"), such as a public support address.
@@ -649,8 +680,8 @@ export function scanText(
     const lower = line.toLowerCase();
     for (const mark of stopped) {
       // The mark itself is never printed: the output may land in a CI log or a chat.
-      if (!lower.includes(mark)) continue;
-      if (places && logins.includes(mark) && !places(lower, index, mark).includes(mark)) continue;
+      if (!hasMark(lower, mark)) continue;
+      if (places && logins.includes(mark) && !hasMark(places(lower, index, mark), mark)) continue;
       problems.push(finding('private-mark', 'matches a line of your private-marks file', 'remove it or reword the line; the mark itself is never printed', where));
     }
   });
@@ -1099,11 +1130,11 @@ const postFix = (f: Finding) =>
 
 /** A file's path as a finding may show it: home as `~`, and only its name, or no name, when the path holds a mark. */
 function shownPath(path: string, env: Env, marks: string[]): string {
-  const hasMark = (text: string) => marks.some((mark) => text.toLowerCase().includes(mark));
+  const holdsMark = (text: string) => marks.some((mark) => hasMark(text.toLowerCase(), mark));
   const shown = hideHome(path, env);
-  if (!hasMark(shown)) return shown;
+  if (!holdsMark(shown)) return shown;
   const name = basename(shown);
-  return hasMark(name) ? 'the body file' : name;
+  return holdsMark(name) ? 'the body file' : name;
 }
 
 // The characters bash reads as plain text outside quotes: no expansion, glob, brace, operator or comment.

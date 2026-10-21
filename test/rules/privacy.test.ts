@@ -19,6 +19,7 @@ import { DEFAULTS, type Env } from '../../src/rules/config.ts';
 import { checkCommand } from '../../src/rules/guards.ts';
 import { formatFinding } from '../../src/rules/message.ts';
 import {
+  hasMark,
   hideHome,
   homeIn,
   loadMarkKinds,
@@ -345,10 +346,11 @@ test('privateRemoteHosts: hosts outside the public forges; local paths name none
   );
 });
 
-test('private marks: the commit check matches anywhere in a word; redact only whole words (#390)', () => {
+test('private marks: a name is found as a whole word, by the commit check and by redact (#390, #434)', () => {
   const hits = (text: string, mark: string) => scanText(text, { file: 'a', marks: [mark] }).length;
   assert.equal(hits('Ann wrote this', 'ann'), 1);
-  assert.equal(hits('annotate the code', 'ann'), 1, 'the commit check keeps its wider match');
+  assert.equal(hits('annotate the code', 'ann'), 0, 'a name inside a longer word is not the name');
+  assert.equal(hits('see ann_notes', 'ann'), 1, 'but _ ends a word');
   const redact = makeRedactor({ marks: ['ann'] }, {});
   assert.equal(redact('Ann wrote this, then annotate'), '<mark> wrote this, then annotate');
 });
@@ -1188,8 +1190,8 @@ test('ownMarks and scanText: a mark the project allows, same string case aside, 
   }
   // Allowing one mark leaves the longer and shorter marks that hold it.
   const all = (text: string) => scanText(text, { file: 'a', marks, allow: ['quietvale'] }).length;
-  assert.equal(all('QuietVale ships'), 1, 'the shorter mark vale still matches');
-  assert.equal(all('QuietVale Labs ships'), 2, 'quietvale labs and vale still match');
+  assert.equal(all('QuietVale ships from the vale'), 1, 'the shorter mark vale still matches');
+  assert.equal(all('QuietVale Labs ships'), 1, 'quietvale labs still matches; vale inside a word does not (#434)');
   const finding = scanText('QuietVale Labs', { file: 'a', marks, allow: ['quietvale'] }).map((f) => formatFinding(f)).join('\n');
   assert.ok(!/quietvale|vale/i.test(finding), 'no mark is printed');
 });
@@ -1708,4 +1710,45 @@ test('readMachineAllow: a file with just the switch reads as no repos; a file th
   assert.deepEqual(readMachineAllow(r.env), { entries: [], skipOwnName: false });
   assert.deepEqual(machineAllowed(r.env, r.repo), { allow: [], unsure: null });
   for (const text of ['[]', 'null', '"x"', '{"repos": null}', '{"repos": {}}']) assert.ok('unsure' in readMachineAllow((r.allow(text), r.env)), text);
+});
+
+// ---- A name mark matches whole words only (#434) ----
+//
+// Samples are built from pieces so this file passes its own check.
+const SHORT = ['s', 'am'].join('');
+const FULL = [SHORT, ['exa', 'mple'].join('')].join(' ');
+const DOMAIN = ['example', 'com'].join('.');
+
+test('hasMark: a name is found as whole words, with any break between them; a domain is found as a part (#434)', () => {
+  const found = (text: string, mark: string) => hasMark(text.toLowerCase(), mark);
+  // Caught: on its own, and beside a mark that is not a letter or digit.
+  for (const text of [`hi ${'S'}am`, `${SHORT}_dev`, `@${SHORT}`, `S${'am'}.`, `${SHORT}-example`, `"${SHORT}"`, SHORT, `path/${SHORT}/x`]) assert.ok(found(text, SHORT), `not found in ${text}`);
+  // Not caught: inside a longer word.
+  for (const text of [`${SHORT}ple`, `${SHORT}e`, `${SHORT}sung`, `bal${SHORT}ic`, `${SHORT}2`]) assert.ok(!found(text, SHORT), `found in ${text}`);
+  // Words of a mark of more than one: any run of spaces, -, _ or . between them.
+  for (const text of [`${SHORT}-example`, `${SHORT}  Example`, `${SHORT}_example`, `${SHORT}.example!`, `by ${SHORT} example.`]) assert.ok(found(text, FULL), `not found in ${text}`);
+  for (const text of [`${SHORT}example`, `${SHORT} examples`, `x${SHORT} example`]) assert.ok(!found(text, FULL), `found in ${text}`);
+  // Any other character keeps the part match: a domain, an address, a number.
+  assert.ok(found(`mail.${DOMAIN}`, DOMAIN));
+  assert.ok(found('build1234x', '1234'));
+  // Unicode letters are letters: no edge inside a word.
+  assert.ok(found('é sam', SHORT) && !found(`é${SHORT}`, SHORT));
+  // A script with no space between words keeps the part match.
+  const han = ['张', '三'].join('');
+  assert.ok(found(`今天${han}来了`, han));
+});
+
+test('scanText: a name mark stops a line with the word, not one with a longer word (#434)', () => {
+  const ids = (text: string) => scanText(text, { file: 'a.md', marks: [SHORT, FULL] }).map((f) => f.line);
+  // Line 5 holds both marks, so it is found once for each.
+  assert.deepEqual(ids(`a ${SHORT}ple\nthe ${SHORT}e\nhi ${SHORT}\n${SHORT}_dev\nby ${SHORT}--example\n`), [3, 4, 5, 5]);
+});
+
+test('hasMark: linear on long input (#434)', () => {
+  const inputs: [string, (n: number) => string][] = [
+    ['the first word, again and again', (n) => `${SHORT} `.repeat(n / 4)],
+    ['the first word, then a long break', (n) => `${SHORT}${'-'.repeat(n)}x`],
+    ['letters only', (n) => 's'.repeat(n)],
+  ];
+  for (const [name, make] of inputs) assertLinear(name, make, (text) => hasMark(text, FULL));
 });

@@ -1438,6 +1438,12 @@ your name, your city, your domains, your server names. That file stays outside t
 repo, because a list of what must not be published can't itself be published. A hit
 is reported by file and line; the mark itself is never printed.
 
+A mark of letters and spaces, such as a name or a city, is found as whole words: `sam` is
+found in `hi Sam`, `sam_dev` and `@sam`, but not in `sample`. The words of a longer mark
+may have spaces, `-`, `_` or `.` between them, so `sam example` is found in `sam-example`.
+Any other mark, such as a domain, an address or a number, is found anywhere, even inside a
+word. So is a name in a script with no spaces between words, such as Chinese or Japanese.
+
 The project's own public address, such as `support@` at its domain, is found too. Nothing
 is let through on its own. If the address is public on purpose, add it to
 `privacy.allow` in yokoten.json.

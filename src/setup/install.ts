@@ -60,8 +60,9 @@ export const skillFiles = (env: Env, name: string): string[] => [claudeSkillFile
 export const skillsDir = (file: string): string => dirname(dirname(file));
 
 export const MARKS_HEADER = `# yokoten private marks: words that must never be published.
-# One per line, matched without case. yokoten adds your git name, git email and forge login
-# by itself; \`yokoten marks add\` adds your city, domain, server names, other account names.
+# One per line, matched without case; a name only as whole words. yokoten adds your git
+# name, git email and forge login by itself; \`yokoten marks add\` adds your city, domain,
+# server names, other account names.
 # This file stays on this machine; never commit it or paste it anywhere.
 `;
 
