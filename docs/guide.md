@@ -1488,7 +1488,8 @@ check.
 
 An approval is for one commit, and it must come from a code owner of the pull
 request's changed files: the owner's login approves as a collaborator, so the account
-never counts, only CODEOWNERS membership does. `yokoten bot` refuses `gh pr merge` of
+never counts, only CODEOWNERS membership does. When the changed files name no owner,
+any owner named anywhere in CODEOWNERS counts. `yokoten bot` refuses `gh pr merge` of
 a tier A pull request whose newest code-owner review is not an Approve on the head. A
 newer changes-requested or dismissed review refuses too, while other reviews never
 count. When the head is newer, the merge goes on only for a clean merge of the base

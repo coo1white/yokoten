@@ -10,6 +10,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:http';
@@ -796,6 +797,97 @@ test('bot: gh pr merge needs the owner Approve on the head; gh pr status shows i
     } finally {
       server.close();
     }
+  }
+});
+
+// #612: a tier A pull request with files CODEOWNERS owns none of still merges on
+// a repo owner's Approve on the head. An older Approve refuses plainly.
+test('bot: gh pr merge of unowned files needs the repo owner Approve on the head (#612)', async () => {
+  const sandbox = makeSandbox();
+  const origin = join(sandbox.home, 'github.com', 'me', 'repo.git');
+  mkdirSync(origin, { recursive: true });
+  sandbox.git('init', '-q', '--bare', origin);
+  sandbox.git('remote', 'add', 'origin', origin);
+  sandbox.write('CODEOWNERS', '/a.txt @friend\n');
+  sandbox.write('a.txt', 'a\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'base');
+  sandbox.git('push', '-q', 'origin', 'main');
+  sandbox.git('checkout', '-qb', 'topic');
+  sandbox.write('docs-note.txt', 'words\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qam', 'docs');
+  const approved = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  sandbox.write('more-note.txt', 'more\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'more docs');
+  sandbox.git('push', '-q', 'origin', 'topic');
+  const head = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  const base = sandbox.git('rev-parse', 'origin/main').stdout.trim();
+  const bin = join(sandbox.home, 'bin');
+  const log = join(sandbox.home, 'gh.log');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(
+    join(bin, 'gh'),
+    [
+      '#!/usr/bin/env node',
+      'const fs = require("node:fs"); const args = process.argv.slice(2);',
+      'const views = JSON.parse(process.env.GH_VIEWS); const reviews = JSON.parse(process.env.GH_REVIEWS); const files = JSON.parse(process.env.GH_FILES);',
+      'const say = (o) => fs.appendFileSync(process.env.GH_LOG, JSON.stringify(o) + "\\n");',
+      'if (args[0] === "pr" && args[1] === "merge") { say({ args, token: process.env.GH_TOKEN }); process.exit(0); }',
+      'if (args[0] === "api") { const match = /^repos\\/me\\/repo\\/pulls\\/(\\d+)(\\/(reviews|files))?$/.exec(args[1]);',
+      '  if (match) { const got = match[2] === "/reviews" ? reviews[match[1]] : match[2] ? files[match[1]] : views[match[1]];',
+      '    if (got === undefined) process.exit(1); console.log(typeof got === "string" ? got : JSON.stringify(got)); process.exit(0); } }',
+      'process.exit(1);',
+    ].join('\n'),
+  );
+  chmodSync(join(bin, 'gh'), 0o755);
+  const merged = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : []);
+  const server = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(req.method === 'GET' ? { id: 77 } : { token: 'ghs_test' }));
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  const key = join(sandbox.home, 'bot.pem');
+  writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
+  const view = (sha: string) => ({ body: 'tier: A\n', labels: [{ name: 'tier A' }], head: { sha, ref: 'topic' }, base: { sha: base, ref: 'main' } });
+  const friendAt = (commit: string) => JSON.stringify({ login: 'friend', assoc: 'COLLABORATOR', state: 'APPROVED', commit, at: '2026-10-22T10:00:00Z' });
+  const unowned = ['docs-note.txt', 'more-note.txt'];
+  const botEnvExtra = {
+    PATH: `${bin}:${process.env.PATH}`,
+    YOKOTEN_BOT_APP_ID: '1',
+    YOKOTEN_BOT_KEY: key,
+    YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+    GH_LOG: log,
+    GH_LIST: '[]',
+    GH_TABLE: 'TABLE',
+  };
+  try {
+    // The Approve is on the head: the merge runs, although no rule owns the files.
+    const freshBot = {
+      ...botEnvExtra,
+      GH_VIEWS: JSON.stringify({ 26: view(head) }),
+      GH_REVIEWS: JSON.stringify({ 26: friendAt(head) }),
+      GH_FILES: JSON.stringify({ 26: unowned }),
+    };
+    const fresh = await sandbox.call(['bot', '--', 'gh', 'pr', 'merge', '26'], { extra: freshBot });
+    assert.deepEqual([fresh.status, fresh.stderr], [0, ''], fresh.stderr);
+    assert.deepEqual(merged().map((m) => m.args), [['pr', 'merge', '26']]);
+    // The Approve is on an older commit: refused with the plain message.
+    rmSync(log, { force: true });
+    const staleBot = {
+      ...botEnvExtra,
+      GH_VIEWS: JSON.stringify({ 27: view(head) }),
+      GH_REVIEWS: JSON.stringify({ 27: friendAt(approved) }),
+      GH_FILES: JSON.stringify({ 27: unowned }),
+    };
+    const stale = `the Approve is on ${approved.slice(0, 7)}; 1 commit with changes came after it; ask the owner to approve again`;
+    const refused = await sandbox.call(['bot', '--', 'gh', 'pr', 'merge', '27'], { extra: staleBot });
+    assert.equal(refused.status, 1);
+    assert.equal(refused.stderr, `yokoten bot: ${stale}. Nothing was merged\n`);
+    assert.deepEqual(merged(), [], 'a refused merge never reaches gh');
+  } finally {
+    server.close();
   }
 });
 

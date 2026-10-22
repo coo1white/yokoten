@@ -754,6 +754,54 @@ test('approval: a team member Approve counts; an unexpandable team is unsure (#6
   });
 });
 
+// #612: files CODEOWNERS names no owner for fall back to every user it names.
+// GitHub enforces nothing file-specific there, so any repo owner is stronger.
+test('approval: unowned files fall back to every CODEOWNERS user (#612)', () => {
+  const dir = makeTempDir('yokoten-');
+  const env = { PATH: process.env.PATH, HOME: dir, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(dir, '.gitconfig'), GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' };
+  const git = (...args: string[]) => spawnSync('git', args, { cwd: dir, env, encoding: 'utf8' });
+  git('init', '-q', '-b', 'main');
+  writeFileSync(join(dir, 'CODEOWNERS'), '/a.txt @friend\n');
+  writeFileSync(join(dir, 'a.txt'), 'a\n');
+  git('add', '.');
+  git('commit', '-qm', 'base');
+  const base = git('rev-parse', 'HEAD').stdout.trim();
+  git('checkout', '-qb', 'topic');
+  writeFileSync(join(dir, 'docs-note.txt'), 'words\n');
+  git('add', '.');
+  git('commit', '-qam', 'docs');
+  const approved = git('rev-parse', 'HEAD').stdout.trim();
+  writeFileSync(join(dir, 'more-note.txt'), 'more\n');
+  git('add', '.');
+  git('commit', '-qm', 'more docs');
+  const head = git('rev-parse', 'HEAD').stdout.trim();
+  const view = { body: 'tier: A\n', labels: [{ name: 'tier A' }], head: { sha: head, ref: 'topic' }, base: { sha: base, ref: 'main' } };
+  const review = (login: string, commit: string, at: string) => JSON.stringify({ login, assoc: 'COLLABORATOR', state: 'APPROVED', commit, at });
+  const fakeGh = (reviews: string): Gh => (args) => {
+    const path = args[1] ?? '';
+    if (path === 'repos/me/repo/pulls/31') return JSON.stringify(view);
+    if (path === 'repos/me/repo/pulls/31/files') return JSON.stringify(['docs-note.txt', 'more-note.txt']);
+    if (path === 'repos/me/repo/pulls/31/reviews') return reviews;
+    throw new Error(`unexpected gh call: ${args.join(' ')}`);
+  };
+  // The repo owner's Approve counts on the head, although no rule owns the files.
+  assert.deepEqual(readApprovalState(fakeGh(review('friend', head, '2026-10-22T11:00:00Z')), dir, env, 31, 'me/repo'), {
+    tier: 'A',
+    head,
+    approved: head,
+    after: 0,
+    sameDiff: true,
+  });
+  // The same Approve on an older commit refuses: one commit with changes came after.
+  assert.deepEqual(readApprovalState(fakeGh(review('friend', approved, '2026-10-22T10:00:00Z')), dir, env, 31, 'me/repo'), {
+    tier: 'A',
+    head,
+    approved,
+    after: 1,
+    sameDiff: false,
+  });
+});
+
 // #601: the board's pull requests, from one `gh pr list`; a fake gh stands in for GitHub.
 test('readBoardPulls: each row as its stages; a row with no number is skipped', () => {
   const calls: string[][] = [];

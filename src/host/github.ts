@@ -520,7 +520,12 @@ export function readApprovalState(gh: Gh, root: string, env: Env, number: number
   }
   if (!owners) return { unsure: `no CODEOWNERS file covers pull request ${number}, so no code owner can approve it` };
   const rules = parseCodeOwners(owners.text);
-  const entries = [...new Set(files.flatMap((file) => ownersOf(rules, file)))];
+  let entries = [...new Set(files.flatMap((file) => ownersOf(rules, file)))];
+  if (!entries.length) {
+    // GitHub's code-owner rule enforces nothing file-specific on unowned files,
+    // so requiring any repo owner is strictly stronger than GitHub there.
+    entries = [...new Set(rules.flatMap((rule) => rule.owners))];
+  }
   const { users, teams } = splitOwners(entries);
   const eligible = new Set(users);
   for (const team of teams) {
