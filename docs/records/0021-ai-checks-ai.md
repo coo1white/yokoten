@@ -1,7 +1,7 @@
 # 0021 AI checks AI: no agent writes, reviews and merges its own work
 
 Status: accepted
-Date: 2026-10-23 (UTC)
+Date: 2026-10-22 (UTC)
 
 ## Context
 
@@ -14,7 +14,7 @@ Three records now say what yokoten is, one layer each:
 3. This record: **what holds it together** when agents from many vendors work on one
    project.
 
-On 2026-10-23 one day of work showed why a third layer is needed:
+On 2026-10-22 one day of work showed why a third layer is needed:
 
 - A Claude worker reviewed a DeepSeek commit for issue #616 and found four problems. One
   was a privacy hole: an inline ignore comment in a `gh` post let an email address
@@ -41,7 +41,7 @@ how the work is split, not from more reading.
 
 ## Decision
 
-On 2026-10-23 the owner set yokoten's north star: **separation of powers between AIs.**
+On 2026-10-22 the owner set yokoten's north star: **separation of powers between AIs.**
 No agent writes, reviews and merges its own work, and a person decides.
 
 1. **Three hands on every change.** One agent writes. An agent from another vendor
