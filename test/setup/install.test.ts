@@ -6,9 +6,11 @@ import { spawnSync } from 'node:child_process';
 import {
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   renameSync,
   rmSync,
   statSync,
@@ -80,6 +82,12 @@ test('install: skills, agents and hooks once, the user\'s own files untouched', 
     assert.ok(existsSync(join(shared, 'skills', name, 'SKILL.md')), `~/.agents/skills/${name}`);
     assert.match(result.stdout, new RegExp(`wrote skill ${name} in ~/\\.claude/skills`));
   }
+  // The shared folder holds one link per skill to Claude Code's copy, so Muse, which reads
+  // both folders, sees each skill once and warns about none (#557).
+  for (const name of kitSkills.filter((n) => n !== 'rca')) {
+    assert.match(result.stdout, new RegExp(`linked skill ${name} in ~/\\.agents/skills`));
+    assert.equal(readlinkSync(join(shared, 'skills', name)), join(claude, 'skills', name), `~/.agents/skills/${name}`);
+  }
   assert.match(result.stdout, /kept \(yours\) skill rca in ~\/\.agents\/skills/);
   assert.equal(readFileSync(join(shared, 'skills', 'rca', 'SKILL.md'), 'utf8'), 'my own rca\n');
   assert.ok(!existsSync(join(shared, 'agents')), 'agents stay Claude-only');
@@ -129,6 +137,9 @@ test('uninstall: takes back what install wrote, keeps the user\'s own files and 
   const result = sandbox.run(['uninstall']);
   assert.equal(result.status, 0, result.stderr);
   for (const name of before) assert.match(result.stdout, new RegExp(`^removed skill ${name} in ~/\\.claude/skills$`, 'm'));
+  // The shared links are removed, never followed: only the user's own skill is left there.
+  for (const name of before.filter((n) => n !== 'rca')) assert.match(result.stdout, new RegExp(`^removed skill ${name} in ~/\\.agents/skills$`, 'm'));
+  assert.deepEqual(readdirSync(join(sandbox.home, '.agents', 'skills')), ['rca']);
   assert.match(result.stdout, /^kept \(yours\) skill rca in ~\/\.agents\/skills$/m);
   assert.match(result.stdout, /^removed agent worker$/m);
   assert.match(result.stdout, /^removed the SessionStart doctor$/m);
@@ -160,6 +171,32 @@ test('uninstall: takes back what install wrote, keeps the user\'s own files and 
   assert.equal(broken.status, 0, broken.stderr);
   assert.match(broken.stdout, /^kept ~\/\.claude\/settings\.json: it is not JSON/m);
   assert.equal(readFileSync(join(claude, 'settings.json'), 'utf8'), 'not json');
+});
+
+// A shared skill folder with the user's own files in it stays a real folder: replacing it
+// with a link would throw their files away (#557). Install only syncs the skill file, and
+// uninstall keeps the folder.
+test('install: a shared skill folder with your own files in it stays real', async () => {
+  const sandbox = makeSandbox();
+  const shared = join(sandbox.home, '.agents', 'skills', 'release');
+  assert.equal((await sandbox.call(['install'])).status, 0);
+  assert.ok(lstatSync(shared).isSymbolicLink(), 'first install links it');
+  // The user's own file next to a managed copy: the folder goes back to real files.
+  const managed = readFileSync(join(sandbox.home, '.claude', 'skills', 'release', 'SKILL.md'), 'utf8');
+  rmSync(shared);
+  mkdirSync(shared, { recursive: true });
+  writeFileSync(join(shared, 'SKILL.md'), managed);
+  writeFileSync(join(shared, 'notes.txt'), 'mine\n');
+  const result = await sandbox.call(['install']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^same skill release in ~\/\.agents\/skills$/m);
+  assert.ok(!lstatSync(shared).isSymbolicLink(), 'still a real folder');
+  assert.equal(readFileSync(join(shared, 'SKILL.md'), 'utf8'), managed);
+  assert.equal(readFileSync(join(shared, 'notes.txt'), 'utf8'), 'mine\n');
+  const uninstalled = await sandbox.call(['uninstall']);
+  assert.equal(uninstalled.status, 0, uninstalled.stderr);
+  assert.equal(readFileSync(join(shared, 'notes.txt'), 'utf8'), 'mine\n', 'uninstall keeps the user file');
+  assert.ok(!existsSync(join(shared, 'SKILL.md')), 'but takes the managed file');
 });
 
 // The guide says: run install again to update, and init again to refresh .yokoten/. Run

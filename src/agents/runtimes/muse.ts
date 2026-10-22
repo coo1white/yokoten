@@ -1,6 +1,6 @@
 // What yokoten knows about Meta's Muse Code: the shape of its PreToolUse and Stop events,
 // and where its project hooks live. Source: https://dev.meta.ai/docs/muse-code/extending,
-// checked against Muse Code 1.4.10 on 2026-10-19.
+// checked against Muse Code 1.4.11 on 2026-10-22.
 //
 // What the real runs showed, past the docs page:
 // - Muse loads `.muse/hooks.json` only in a trusted workspace; otherwise it skips it without a word.
@@ -13,11 +13,11 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
-import { homeOf } from '../../rules/privacy.ts';
+import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import type { Action } from '../../run/hook.ts';
 import { type FolderTrust, folderKeys, isFolder } from '../folder-trust.ts';
-import { type Added, addHook, checkHooksFile, type HookState, hookState, isObject } from '../hooks-file.ts';
+import { type Added, addHook, checkHooksFile, type HookArgs, type HookState, hookState, isObject } from '../hooks-file.ts';
 
 // bash takes `command` and `workdir`; the edit tools take `path`.
 const SHELL = 'bash';
@@ -74,7 +74,7 @@ export const projectHooksState = (root: string, cli: string): { guard: HookState
 // ---- Trust (#341) ----
 //
 // Muse saves trust in `trust.json` in its config folder: `$XDG_CONFIG_HOME/muse`, or
-// `~/.config/muse`. Its shape, from Muse Code 1.4.10 on 2026-10-20:
+// `~/.config/muse`. Its shape, as Muse Code 1.4.11 wrote it on 2026-10-22:
 // `{ "schema_version": 1, "projects": { "<folder>": { "decision": "trusted" } } }`.
 // The folder is the git root: a session in a subfolder of a trusted repo is not asked
 // again. A trusted folder does not cover a folder inside it that is not in a repo, and a
@@ -121,4 +121,55 @@ export function readTrust(root: string, env: Env): FolderTrust {
     return isObject(entry) && entry.decision === 'trusted';
   });
   return { state: isTrusted ? 'trusted' : 'untrusted', store };
+}
+
+// ---- The user's hooks (#557) ----
+//
+// Muse reads a `hooks` block in its user settings, `$XDG_CONFIG_HOME/muse/settings.json`
+// or `~/.config/muse/settings.json`, in every repo: a SessionStart hook's plain stdout
+// reaches the model, as a PreToolUse refusal stops the call. Checked against Muse Code
+// 1.4.11 on 2026-10-22: a SessionStart hook in that file fired in a headless run.
+
+/** Muse's config folder: `$XDG_CONFIG_HOME/muse`, or `~/.config/muse`. */
+const configDir = (env: Env): string => join(env.XDG_CONFIG_HOME || join(homeIn(env), '.config'), 'muse');
+
+/** The user's settings file. With no home folder it throws NO_HOME, so nothing is written. */
+const userSettings = (env: Env): string => join(configDir(env), 'settings.json');
+
+/** The user's settings file, as the user would type it. */
+export const userSettingsFile = (env: Env): string => (env.XDG_CONFIG_HOME ? '$XDG_CONFIG_HOME/muse/settings.json' : '~/.config/muse/settings.json');
+
+/** The two user hooks, as `addHook`'s arguments: one builder for `addUserHooks` and `userHooksState`. */
+const userHookArgs = (env: Env, cli: string, missing: string): Record<'doctor' | 'guard', HookArgs> => ({
+  doctor: [userSettings(env), 'SessionStart', undefined, guardCommand(cli, 'doctor --session --agent muse', missing, { isSessionStart: true })],
+  guard: [userSettings(env), 'PreToolUse', SHELL, guardCommand(cli, 'hook --agent muse --commands-only', missing, { isToolCall: true })],
+});
+
+/**
+ * The user's hooks, in every repo: doctor at session start, and the command guard on
+ * shell calls. `missing` is what they say when `cli` is gone. A settings file yokoten
+ * can't edit throws `UnreadableHooksFile` before either hook is written.
+ */
+export function addUserHooks(env: Env, cli: string, missing: string): { doctor: Added; guard: Added } {
+  const args = userHookArgs(env, cli, missing);
+  checkHooksFile(args.doctor[0], [args.doctor[1], args.guard[1]]);
+  return { doctor: addHook(...args.doctor), guard: addHook(...args.guard) };
+}
+
+/** Whether Muse Code looks used on this machine: its config folder is there. */
+export function hasUserDir(env: Env): boolean {
+  try {
+    return isFolder(configDir(env));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The user's hooks against what `addUserHooks` would write with the same `cli` and
+ * `missing`, read-only (see `hookState`).
+ */
+export function userHooksState(env: Env, cli: string, missing: string): { doctor: HookState; guard: HookState } {
+  const args = userHookArgs(env, cli, missing);
+  return { doctor: hookState(...args.doctor), guard: hookState(...args.guard) };
 }

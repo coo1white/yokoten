@@ -2,13 +2,13 @@
 
 import '../../repo/home.ts';
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { addProjectHooks, isGuardOff, projectHooksState, readToolCall, readTrust } from '../../../src/agents/runtimes/muse.ts';
+import { addProjectHooks, addUserHooks, hasUserDir, isGuardOff, projectHooksState, readToolCall, readTrust, userHooksState, userSettingsFile } from '../../../src/agents/runtimes/muse.ts';
 import { makeSandbox } from '../../repo/helpers.ts';
 
-/** Write Muse's trust store in `home`, in the shape Muse Code 1.4.10 saved it (#341). */
+/** Write Muse's trust store in `home`, in the shape Muse Code 1.4.11 writes it (#341). */
 function trustFolder(home: string, ...folders: string[]): string {
   const file = join(home, '.config', 'muse', 'trust.json');
   mkdirSync(dirname(file), { recursive: true });
@@ -130,7 +130,11 @@ test('muse trust (#341): doctor says when Muse skips the hooks; ok only when tru
   assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'untrusted');
   assert.match(await doctor(), off);
   writeFileSync(file, '{ not json');
-  assert.match(await doctor(), /note +muse-hook: can't check whether Muse Code trusts this folder: can't read ~\/\.config\/muse\/trust\.json/);
+  // A store doctor can't read is a note, and the note names the headless way to trust (#557).
+  assert.match(
+    await doctor(),
+    /note +muse-hook: can't check whether Muse Code trusts this folder: can't read ~\/\.config\/muse\/trust\.json; if you use Muse Code: run `muse` in this folder and choose "Trust and continue", or pass `--trust-workspace` to `muse exec`/,
+  );
   assert.equal(isGuardOff(root, { HOME: sandbox.home }), false, "a store doctor can't read is a note, not a step");
   assert.equal(isGuardOff(join(sandbox.home, 'none'), { HOME: sandbox.home }), false, 'no .muse/hooks.json, no step');
   writeFileSync(file, JSON.stringify({ schema_version: 2, projects: { [root]: { decision: 'trusted' } } }));
@@ -160,4 +164,37 @@ test('muse session doctor (#556): a new project gets it; an existing file keeps 
   const run = await sandbox.call(['doctor', '--session', '--agent', 'muse']);
   assert.equal(run.status, 0);
   assert.match(run.stdout, /yokoten/);
+});
+
+test('muse user hooks (#557): install writes the doctor and the guard in its settings only when its config folder is there, and doctor compares them', async () => {
+  const sandbox = makeSandbox();
+  const file = join(sandbox.home, '.config', 'muse', 'settings.json');
+  assert.equal(hasUserDir({ HOME: sandbox.home }), false);
+  assert.equal(userSettingsFile({ HOME: sandbox.home }), '~/.config/muse/settings.json');
+  assert.equal(userSettingsFile({ HOME: sandbox.home, XDG_CONFIG_HOME: join(sandbox.home, 'xdg') }), '$XDG_CONFIG_HOME/muse/settings.json');
+  let result = await sandbox.call(['install']);
+  assert.match(result.stdout, /^skipped Muse Code: ~\/\.config\/muse not found \(run `yokoten install` again after installing Muse Code\)$/m);
+  assert.ok(!existsSync(join(sandbox.home, '.config', 'muse')), 'no config folder made');
+  mkdirSync(join(sandbox.home, '.config', 'muse'));
+  assert.equal(hasUserDir({ HOME: sandbox.home }), true);
+  // The doctor names both hooks as missing, and install adds them, twice safe. The runtime
+  // is installed by now, so doctor says `npx yokoten install`, which works from anywhere.
+  assert.match((await sandbox.call(['doctor'])).stdout, /note +muse-user-hook: no session-start doctor and no command guard in ~\/\.config\/muse\/settings\.json; `npx yokoten install` adds them/);
+  result = await sandbox.call(['install']);
+  assert.match(result.stdout, /^added the Muse Code SessionStart doctor in ~\/\.config\/muse\/settings\.json$/m);
+  assert.match(result.stdout, /^added the Muse Code command guard in ~\/\.config\/muse\/settings\.json$/m);
+  const written = JSON.parse(readFileSync(file, 'utf8'));
+  assert.match(written.hooks.SessionStart[0].hooks[0].command, /doctor --session --agent muse$/);
+  assert.equal(written.hooks.PreToolUse[0].matcher, 'bash');
+  assert.match(written.hooks.PreToolUse[0].hooks[0].command, /hook --agent muse --commands-only/);
+  assert.match((await sandbox.call(['doctor'])).stdout, /ok +muse-user-hook/);
+  const explainUser = (await sandbox.call(['explain', 'muse-user-hook'])).stdout;
+  assert.match(explainUser, /session-start doctor and command guard/);
+  assert.match(explainUser, /compares the SessionStart and PreToolUse hooks in its settings\.json/);
+  assert.match((await sandbox.call(['install'])).stdout, /^same the Muse Code command guard in ~\/\.config\/muse\/settings\.json$/m);
+  // The positive control: another runtime path is out of date, for both hooks.
+  const env = { HOME: sandbox.home };
+  assert.deepEqual(userHooksState(env, '/elsewhere/bin/yokoten.ts', 'gone'), { doctor: 'updated', guard: 'updated' });
+  assert.deepEqual(addUserHooks(env, '/elsewhere/bin/yokoten.ts', 'gone'), { doctor: 'updated', guard: 'updated' });
+  assert.match((await sandbox.call(['doctor'])).stdout, /note +muse-user-hook: the session-start doctor and the command guard in ~\/\.config\/muse\/settings\.json are out of date/);
 });
