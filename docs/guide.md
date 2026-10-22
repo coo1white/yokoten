@@ -818,6 +818,7 @@ It puts three safe defaults in `.github/` too:
 | `worker mark <dir>` | Marks the worktree at `<dir>` as a worker's. The guard then treats every agent there as a worker, even one whose runtime drops `YOKOTEN_ROLE` (Muse Code). The guard refuses a worker's plain ways to remove it, and a `.git` link it can't read counts as marked; the server and credentials kept from the worker are the real lock. `git worktree remove <dir>` removes the mark. Given a subfolder, it marks the worktree's top folder and says which. The main checkout and a submodule are never marked. See [Works with](#works-with) |
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay. A second run changes nothing |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. A body whose last line is not `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, is refused too: each pull request names each AI and model that made it. `gh pr create` without a type or tier label gets them added: the type from the title (`bug` for `fix`), the tier from the body's `tier:` line. A label you pass is kept. A tier label that does not match the body is refused, with the message of `check --pr`. A label the repo does not have is named in a note and left out; the bot never creates labels. `gh pr create` without `--milestone` gets the milestone of the first linked issue (`Closes #N`, `Part of #N`) that has one. When no linked issue has one, it is refused, and nothing is sent; add `--milestone`. When gh can't read the issue, the pull request is sent without a milestone, with a note. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
+| `board [--text]` | Serves a live page on this machine only, with each agent, each pull request stage, and each worktree. It prints the link and runs until you stop it. The page refreshes every 15 seconds. `--text` prints the same data as plain text. See [The team board](#the-team-board) |
 
 Each command prints its own help with `--help` or `-h`: what it does, its options and
 one example. `yokoten help <command>` prints the same, and `yokoten --help` lists the
@@ -1475,6 +1476,36 @@ The tier label is `tier A`, `tier B` or `tier C` (`tier: B` also counts). It mus
 the `tier:` line in the body. Each missing or wrong label gets its own message.
 
 Server setup, step by step: [`docs/server.md`](server.md).
+
+### The team board
+
+`yokoten board` shows the team at a glance. It serves a page on this machine only.
+It prints a link. Open it in a browser.
+
+The page shows three tables. Agents: name, vendor, task, worktree, and what each
+does now. Pull requests: number, title, branch, checks, tier, and stage. Worktrees:
+path and branch. The page refreshes every 15 seconds. Stop the command with Ctrl-C.
+
+`yokoten board --text` prints the same data as plain text.
+
+An agent joins by writing one JSON file. It leaves by removing the file. The folder
+is `~/.config/yokoten/board/`, outside every repo. The file name is `<name>.json`.
+Any agent can write it, whatever vendor it runs on. The format is open: other tools
+may read it too.
+
+| Field | Means |
+|-------|-------|
+| `name` | The agent's name. Without it, the file's own name is used |
+| `vendor` | Which vendor it runs on, such as `claude-code` |
+| `task` | What it works on, such as `issue 601` |
+| `worktree` | The worktree it works in |
+| `doing` | What it does now, in a few words |
+| `updated` | When it last wrote, such as `2026-10-22T10:00:00Z`. The board shows how long ago that was |
+
+Every field is text. Every field may be missing. A file that is not JSON is skipped.
+
+The page reads `/data` as JSON. That is the board's interface. The page is only one
+view of it.
 
 ## Privacy
 
