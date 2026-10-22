@@ -111,4 +111,4 @@ npx yokoten doctor       # 今いる関所と、次の一手
 
 ---
 
-<p align="center"><sub>MIT · <a href="https://coolwhite.us/">coolwhite</a> と AI エージェントのチームが、yokoten 自身のルールのもとで作りました。v0.1.0 は Claude Code が土台を作り、v0.1.1 は Muse Code が主導しています。工場の現場から学んだ教訓とともに。</sub></p>
+<p align="center"><sub>MIT · <a href="https://coolwhite.us/">coolwhite</a> と AI エージェントのチームが作りました。工場の現場から学んだ教訓とともに。</sub></p>
