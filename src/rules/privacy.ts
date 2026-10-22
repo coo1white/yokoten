@@ -134,10 +134,11 @@ export interface AllowEntry {
 export type RepoKey = { remote: string; local?: boolean };
 
 /**
- * The machine allow file: beside the private-marks file, or beside the one YOKOTEN_PRIVATE_MARKS
- * names, as before #656. With neither a home folder nor the setting, it throws NO_HOME.
+ * The machine allow file: beside the default private-marks file, never beside the one
+ * YOKOTEN_PRIVATE_MARKS names, so the setting can't bring its own allow (#656). With no home
+ * folder it is beside the setting's file; with neither, it throws NO_HOME.
  */
-export const machineAllowFile = (env: Env): string => join(dirname(env.YOKOTEN_PRIVATE_MARKS || marksFile(env)), 'private-marks-allow.json');
+export const machineAllowFile = (env: Env): string => join(dirname(marksFile(env)), 'private-marks-allow.json');
 
 /** The port each scheme uses when the URL names none: such a port is left out of the key. */
 const DEFAULT_PORTS: Record<string, string> = { https: '443', http: '80', ssh: '22', 'git+ssh': '22', 'ssh+git': '22', git: '9418' };

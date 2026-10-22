@@ -1692,6 +1692,8 @@ of mark, such as `matches your git name (a private mark yokoten added by itself)
 every mark in them. So the setting can only add marks, never remove them. When
 `~/.config/yokoten/private-marks` is there but can't be read, the check fails, whatever the
 setting says. `yokoten marks add` and `install` still write to the file in your home folder.
+The machine allow file (below) is read only from `~/.config/yokoten`, never from beside the
+setting's file.
 
 A mark of letters and spaces, such as a name or a city, is found as whole words. Only a
 letter next to it hides it: `sam` is found in `hi Sam`, `sam_dev`, `@sam` and `sam97`, but
@@ -1730,7 +1732,7 @@ still stops it. `doctor` says how many of your marks the project allows, never w
 
 A repo with no yokoten.json can do the same without one, and so can a repo that must not
 name yokoten in public. Run `yokoten marks allow <mark> --here` in it. The allow is kept
-on this machine, in `private-marks-allow.json` beside the marks file, for that repo only,
+on this machine, in `~/.config/yokoten/private-marks-allow.json`, for that repo only,
 by its `origin` remote (host and path). Nothing is written into the repo. A repo with no
 `origin` can't have this allow; it can use `privacy.allow` instead. A renamed remote is
 another repo, so the mark is stopped there again. A port other than the usual one is part of

@@ -1318,6 +1318,7 @@ yokoten 自己加的那一类用 `yokoten marks off git-name`，你自己加的�
 `YOKOTEN_PRIVATE_MARKS` 指向第二个词表文件。检查两个文件都读，里面的词都算。所以这个设置只能多加词，
 不能少。`~/.config/yokoten/private-marks` 在但读不了时，不管这个设置怎么写，检查都会失败。
 `yokoten marks add` 和 `install` 还是写进你家目录里的那个文件。
+这台电脑的放行文件（见下文）只从 `~/.config/yokoten` 读，不会去读这个设置所指文件旁边的。
 
 只有字母和空格的词，比如名字或城市，按整个单词查。前后紧挨着别的字母时，才不算查到：`sam` 能在
 `hi Sam`、`sam_dev`、`@sam`、`sam97` 里查到，在 `sample` 里查不到。反斜杠转义（如 `\n`）、URL 编码的
@@ -1337,8 +1338,8 @@ yokoten 自己加的那一类用 `yokoten marks off git-name`，你自己加的�
 项目放行了你几个词，只报个数，不说是哪几个。
 
 没有 yokoten.json 的仓库也能这样放行，不想公开和 yokoten 有关系的仓库也一样。在那个仓库里运行
-`yokoten marks allow <mark> --here` 就行。放行记在这台电脑上，就在词表旁边的
-`private-marks-allow.json` 里，只对这一个仓库有效，认的是它的 `origin` 远程地址（主机加路径）。
+`yokoten marks allow <mark> --here` 就行。放行记在这台电脑上，就在
+`~/.config/yokoten/private-marks-allow.json` 里，只对这一个仓库有效，认的是它的 `origin` 远程地址（主机加路径）。
 仓库里什么都不写。没有 `origin` 的仓库用不了这种放行，可以改用 `privacy.allow`。远程地址改了名，
 就算另一个仓库，这个词又会被拦。不是默认端口的，端口也算名字的一部分；本地路径认它指向的文件夹。
 `git@host:path` 和 `https://host/path` 算同一个仓库，各大代码托管平台也是这么认的。

@@ -1553,7 +1553,7 @@ const copyAllowRepo = makeRepoTemplate((repo) => {
   git('config', 'user.email', `1+test${at}users.noreply.github.com`);
 });
 
-/** A repo with an origin remote, or none, and a marks file and an allow file beside it. */
+/** A repo with an origin remote, or none, a marks file the setting names, and the folder of the allow file. */
 function allowRepo(remote: string | null) {
   const base = makeTempDir('yokoten-allow-');
   const repo = join(base, 'repo');
@@ -1564,6 +1564,8 @@ function allowRepo(remote: string | null) {
   const marks = join(base, 'private-marks');
   writeFileSync(marks, 'quietvale\nquietvale labs\n');
   const env: Env = { HOME: base, YOKOTEN_PRIVATE_MARKS: marks };
+  // The allow file is beside the default marks file, never the setting's (#656).
+  mkdirSync(join(base, '.config', 'yokoten'), { recursive: true });
   const allow = (repos: unknown) => writeFileSync(machineAllowFile(env), typeof repos === 'string' ? repos : JSON.stringify({ repos }));
   return { base, repo, env, git, allow };
 }
@@ -1590,6 +1592,25 @@ test('machineAllowed: the entry for this remote allows its marks; another remote
   assert.deepEqual(machineAllowed(env, null).allow, [], 'a guard that cannot tell where it runs allows nothing');
   git('remote', 'set-url', 'origin', 'https://example.com/octo/renamed.git');
   assert.deepEqual(machineAllowed(env, repo), { allow: [], unsure: null }, 'a renamed remote is no longer allowed');
+});
+
+test('machineAllowed: an allow file beside the setting\'s marks file never allows a mark of the default file (#656)', () => {
+  const { base, repo, env } = allowRepo('https://example.com/octo/app');
+  writeFileSync(join(base, '.config', 'yokoten', 'private-marks'), 'quietvale\n');
+  // The setting names an empty file in a folder that holds its own allow file.
+  const agent = join(base, 'agent');
+  mkdirSync(agent);
+  const setting = join(agent, 'private-marks');
+  writeFileSync(setting, '');
+  const entries = JSON.stringify({ repos: [{ remote: 'example.com/octo/app', allow: ['quietvale'] }] });
+  writeFileSync(join(agent, 'private-marks-allow.json'), entries);
+  const agentEnv: Env = { ...env, YOKOTEN_PRIVATE_MARKS: setting };
+  const post = () => checkCommand('gh issue create --title "check: fix a bug" --body "QuietVale ships"', { env: agentEnv, cwd: repo })?.id ?? null;
+  assert.deepEqual(machineAllowed(agentEnv, repo), { allow: [], unsure: null });
+  assert.equal(post(), 'private-mark', 'the mark is still caught');
+  // The same entry beside the default file allows it: the repo and the entry are good.
+  writeFileSync(machineAllowFile(agentEnv), entries);
+  assert.equal(post(), null);
 });
 
 test('machineAllowed: every fetch and push address of origin, as git rewrites them, must name the same repo (#447)', () => {

@@ -1101,7 +1101,9 @@ test('marks allow --here: the machine allows a mark in one repo with no yokoten.
   const marks = join(own.home, 'shared-marks');
   writeFileSync(marks, 'quietvale\nquietvale labs\n');
   const extra = { YOKOTEN_PRIVATE_MARKS: marks };
-  const allowFile = join(own.home, 'private-marks-allow.json');
+  // The allow file is beside the default marks file, never the setting's (#656).
+  const allowFile = join(own.home, '.config', 'yokoten', 'private-marks-allow.json');
+  mkdirSync(dirname(allowFile), { recursive: true });
   const said: string[] = [];
   const run = async (sandbox: ReturnType<typeof makeSandbox>, args: string[]) => {
     const r = await sandbox.call(args, { extra });
@@ -1218,7 +1220,9 @@ test('check and doctor: a mark that names the repo is skipped there, counted by 
   assert.match((await run(own, ['doctor'])).stdout, /own-marks: 1 of your private marks skipped here because they name this repo/);
 
   // The machine's switch, kept when `marks allow` writes the file.
-  const allowFile = join(own.home, 'private-marks-allow.json');
+  // The allow file is beside the default marks file, never the setting's (#656).
+  const allowFile = join(own.home, '.config', 'yokoten', 'private-marks-allow.json');
+  mkdirSync(dirname(allowFile), { recursive: true });
   // The switch alone, with no repos key, as the guide shows it: read as no repos.
   writeFileSync(allowFile, JSON.stringify({ skipOwnName: false }));
   assert.equal((await run(own, ['check', '--staged'])).status, 1, 'off on this machine');
