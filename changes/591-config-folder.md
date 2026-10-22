@@ -6,9 +6,11 @@ The guard no longer tries to read every way bash can spell a path. A worker now 
 
 - `cd`, `pushd` and `popd` take one plain path that stays inside the worker's worktree. A plain path has only letters, digits, `.`, `_`, `/`, `-` and a leading `~`. A `cd` in a subshell, a pipe or the background is refused.
 - `$'...'` and `${...@...}` are refused.
-- Settings before a command, after `env`, or in `export` come from a short list: `TZ`, `CI`, `NODE_ENV`, `NO_COLOR`, `FORCE_COLOR`, `DEBUG`, `LANG` and `LC_ALL`. Options to `env`, `read`, `printf -v` and `eval` are refused.
+- Settings before a command, after `env`, or in `export` (`NAME=` and `NAME+=`) come from a short list: `TZ`, `CI`, `NODE_ENV`, `NO_COLOR`, `FORCE_COLOR`, `DEBUG`, `LANG` and `LC_ALL`. Options to `env`, `read`, `printf -v` and `eval` are refused.
 - git takes no option before its subcommand (`--no-pager` is fine). `git config` only reads, and `--output` is refused.
 - `less` and `file` may not write a file (`less -o`, `--log-file`, `file -C`).
-- A command that names the home config folder passes only when every program in it only reads. A repo's own `.config/` folder is not the home one.
+- `alias` definitions are refused, and so is a `find -L` that changes files or runs a program.
+- A command that does more than read may not name a path that is or holds the config folder, by real path: a symlink in the worktree, `~+` or a glob counts, for any program (`gzip`, `sort -o`, `npm --prefix`, `git archive -o`).
+- A command that names the home config folder, a glob such as `~/.c*/yokoten` too, passes only when every program in it only reads. A repo's own `.config/` folder is not the home one.
 
 Known limits: the guard reads command text. A script that the worker writes and then runs (`node x.mjs`) is out of its reach. The real lock is the operating system sandbox (issue #589).

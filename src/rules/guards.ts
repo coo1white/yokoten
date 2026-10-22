@@ -103,8 +103,12 @@ function namesConfigFolder(command: string): boolean {
   return false;
 }
 
-/** `path` with a leading `~`, `$HOME` or `${HOME}` read as `home`; as it is with no home. */
-function withHomeRead(path: string, home: string | null): string {
+/**
+ * `path` with a leading `~`, `$HOME` or `${HOME}` read as `home`, and a leading `~+` (the
+ * shell's `$PWD`) as `folder`; as it is when that one is unknown.
+ */
+function withHomeRead(path: string, home: string | null, folder: string | null = null): string {
+  if (folder !== null && /^~\+(?=[\\/]|$)/.test(path)) return folder + path.slice(2);
   if (home === null) return path;
   const lead = /^(~|\$HOME|\$\{HOME\})(?=[\\/]|$)/.exec(path);
   return lead ? home + path.slice(lead[0].length) : path;
@@ -162,7 +166,7 @@ type ConfigContext = { folder: string | null; command: string; words: string[]; 
  */
 function configTargetRefusal(target: string, context: ConfigContext, { does = 'changes', shown = target } = {}): Finding | null {
   const { folder, command, words, home, forms } = context;
-  const expanded = withHomeRead(target, home);
+  const expanded = withHomeRead(target, home, folder);
   const globbed = expanded.replace(UNKNOWN_PART, ANY_PART);
   const isStartRead = !globbed.startsWith(ANY_PART) && !globbed.startsWith('~') && !/[$`]/.test(globbed) && (folder !== null || isAbsolute(globbed));
   if (isStartRead && forms.length) {
@@ -591,7 +595,7 @@ function gitWorkFolders(args: string[], folder: string | null, home: string | nu
   const folders: { path: string; written: string }[] = [];
   let base = folder;
   const place = (path: string) => {
-    const expanded = withHomeRead(path, home);
+    const expanded = withHomeRead(path, home, base);
     if (/[$`]/.test(expanded) || expanded.startsWith('~')) return path;
     return base === null ? (isAbsolute(expanded) ? expanded : path) : resolve(base, expanded);
   };
@@ -619,14 +623,14 @@ function gitWorkFolders(args: string[], folder: string | null, home: string | nu
 }
 
 // GIT_WORK_TREE= and GIT_DIR= anywhere in a command: before git, after `env`, or in an `export`.
-const GIT_FOLDER_SETTING = /(?:^|[\s;&|(])GIT_(?:WORK_TREE|DIR)=("[^"]*"|'[^']*'|[^\s;&|)]*)/g;
+const GIT_FOLDER_SETTING = /(?:^|[\s;&|(])GIT_(?:WORK_TREE|DIR)\+?=("[^"]*"|'[^']*'|[^\s;&|)]*)/g;
 
 /** The folders the command's GIT_WORK_TREE and GIT_DIR settings name, placed from `folder` (#591). */
 function gitEnvironmentFolders(command: string, folder: string | null, home: string | null): { path: string; written: string }[] {
   const folders: { path: string; written: string }[] = [];
   for (const [, value] of command.matchAll(GIT_FOLDER_SETTING)) {
     const written = /^["']/.test(value) ? value.slice(1, -1) : value;
-    const expanded = withHomeRead(written, home);
+    const expanded = withHomeRead(written, home, folder);
     const isRead = !/[$`]/.test(expanded) && !expanded.startsWith('~') && (folder !== null || isAbsolute(expanded));
     folders.push({ path: isRead ? resolve(folder ?? '/', expanded) : written, written: written || '""' });
   }
@@ -687,7 +691,7 @@ function workerSettingAt(words: string[], start: number, limit = words.length): 
       const word = words[index];
       if (word === undefined || index >= limit) return null;
       if (isAssignment(word)) {
-        if (!WORKER_SETTINGS.has(word.slice(0, word.indexOf('=')))) return word;
+        if (!WORKER_SETTINGS.has(word.slice(0, word.indexOf('=')).replace(/\+$/, ''))) return word;
         index++;
       } else if (KEYWORDS.has(word)) index++;
       else if (redirectLength(words, index) > 0) index += redirectLength(words, index);
@@ -697,7 +701,7 @@ function workerSettingAt(words: string[], start: number, limit = words.length): 
     const name = programName(words[index]);
     if (DECLARERS.has(name)) {
       for (const arg of words.slice(index + 1, limit)) {
-        const setting = arg.split('=')[0];
+        const setting = arg.split('=')[0].replace(/\+$/, '');
         if (arg.startsWith('-') || !/^[A-Za-z_]\w*$/.test(setting) || !WORKER_SETTINGS.has(setting)) return arg;
       }
       return null;
@@ -739,12 +743,15 @@ function checkWorkerBox(command: string, commands: string[][], { cwd, env }: { c
   if (movesFolder && /[(){}`]|(^|[^|])\|(?!\|)|(^|[^&>])&(?![&>])/.test(withoutQuoted(command))) {
     return boxFinding("a worker's cd may not run in a subshell, a pipe or the background; run it on its own, joined with && or ;");
   }
+  const forms = config === null ? [] : configForms(config);
   for (const words of commands) {
+    const reach = configReach(words, { folder, home, forms });
+    if (reach !== null) return reach;
     const setting = workerSettingAt(words, 0);
-    if (setting !== null) return boxFinding(`a worker can't set ${setting.split('=')[0]}: only ${[...WORKER_SETTINGS].join(', ')} may be set, so no setting moves a folder or runs a program`);
+    if (setting !== null) return boxFinding(`a worker can't set ${setting.split('=')[0].replace(/\+$/, '')}: only ${[...WORKER_SETTINGS].join(', ')} may be set, so no setting moves a folder or runs a program`);
     for (const action of words.flatMap((word, at) => (FIND_ACTIONS.has(word) ? [at + 1] : []))) {
       const inner = workerSettingAt(words, action);
-      if (inner !== null) return boxFinding(`a worker can't set ${inner.split('=')[0]}: only ${[...WORKER_SETTINGS].join(', ')} may be set`);
+      if (inner !== null) return boxFinding(`a worker can't set ${inner.split('=')[0].replace(/\+$/, '')}: only ${[...WORKER_SETTINGS].join(', ')} may be set`);
     }
     let from = 0;
     for (const program of findPrograms(words)) {
@@ -794,6 +801,10 @@ function checkWorkerBox(command: string, commands: string[][], { cwd, env }: { c
         return boxFinding("a worker's less may not write a log file or run start-up commands (-o, -O, --log-file, +)");
       }
       if (name === 'file' && args.some((arg) => hasShortOption(arg, 'C') || isLongOption(arg, 'compile'))) return boxFinding("a worker's file may not compile a magic file (-C)");
+      if (name === 'alias' && args.some((arg) => arg.includes('='))) return boxFinding("a worker can't define an alias, which can run any program under another name; run the program by its own name");
+      if (name === 'find' && args.some((arg) => /^-(L|follow)$/.test(arg)) && args.some((arg) => FIND_WRITES.test(arg) || FIND_ACTIONS.has(arg))) {
+        return configFinding("a worker's find that changes files or runs a program may not follow symlinks (-L, -follow): a link can lead into yokoten's config folder (~/.config/yokoten), where the worker list and the bot's keys are kept");
+      }
     }
   }
   return null;
@@ -804,7 +815,7 @@ function checkWorkerBox(command: string, commands: string[][], { cwd, env }: { c
 // The home config folder by `~`, `$HOME` or `${HOME}`, a path that climbs out with `..`, or the worker list.
 const POINTS_AT_CONFIG = /(~|\$HOME|\$\{HOME\})[/\\]+\.config(?=[/\\]|$|[\s;&|)`<>'"])|\.\.[/\\](?:[^\s'"`;&|<>]*[/\\])?\.config(?=[/\\]|$|[\s;&|)`<>'"])|yokoten[/\\]+workers/i;
 // Programs that only read and run nothing else.
-const PLAIN_READERS = new Set(['cat', 'ls', 'head', 'tail', 'wc', 'stat', 'file', 'grep', 'egrep', 'fgrep', 'rg', 'less', 'find', 'git', 'cd', 'pwd', 'echo']);
+const PLAIN_READERS = new Set(['cat', 'ls', 'head', 'tail', 'wc', 'stat', 'file', 'grep', 'egrep', 'fgrep', 'rg', 'less', 'find', 'git', 'cd', 'pwd', 'echo', 'tr', 'true']);
 const GIT_READS = new Set(['status', 'log', 'diff', 'show']);
 
 /** Whether the text names the home config folder: as POINTS_AT_CONFIG, or by the home path itself. */
@@ -813,6 +824,51 @@ function namesHomeConfig(text: string, home: string | null): boolean {
   if (home === null) return false;
   const tidy = text.replace(/[/\\]+(\.[/\\]+)*/g, '/').toLowerCase();
   return tidy.includes(`${home.replace(/[/\\]+/g, '/').toLowerCase()}/.config`);
+}
+
+/**
+ * Whether every program in `words` only reads: PLAIN_READERS, a find that runs and deletes
+ * nothing, `rg` without `--pre`, and git with only status, log, diff or show; and the words
+ * redirect into no file.
+ */
+function onlyReads(words: string[]): boolean {
+  if (writesFile(words)) return false;
+  for (const program of findPrograms(words)) {
+    const name = programName(program);
+    if (!PLAIN_READERS.has(name)) return false;
+    const args = words.slice(words.indexOf(program) + 1);
+    if (name === 'find' && args.some((arg) => FIND_WRITES.test(arg) || FIND_ACTIONS.has(arg))) return false;
+    if (name === 'rg' && args.some((arg) => /^--pre(=|$)/.test(arg))) return false;
+    if (name === 'git' && !GIT_READS.has(args.find((arg) => !GIT_PLAIN_OPTIONS.has(arg)) ?? '')) return false;
+  }
+  return true;
+}
+
+/**
+ * For a worker: a word of a command that does more than read (see onlyReads) whose path is
+ * yokoten's config folder, is in it, or holds it, by real path (#591). So a program that no
+ * writer list knows (`gzip`, `sort -o`, `npm --prefix`, `git archive -o`) can't reach the
+ * folder through a symlink in the worktree, `~+` or a glob. Each word counts, an option's
+ * `=value` and a setting's value too; a word the guard can't read (`$x`) is left to
+ * checkWorkerPointers. `folder` is where the words run.
+ */
+function configReach(words: string[], { folder, home, forms }: { folder: string | null; home: string | null; forms: string[][] }): Finding | null {
+  if (!forms.length || onlyReads(words)) return null;
+  for (const word of words) {
+    let path = REDIRECT.exec(word)?.[1] ?? word;
+    if (path.startsWith('-') || isAssignment(path)) {
+      const value = path.indexOf('=');
+      if (value === -1) continue;
+      path = path.slice(value + 1);
+    }
+    if (!path || path.includes('\n')) continue;
+    const expanded = withHomeRead(path, home, folder);
+    if (/[$`]/.test(expanded) || expanded.startsWith('~') || (folder === null && !isAbsolute(expanded))) continue;
+    if (touchesConfig(resolve(folder ?? '/', expanded), forms)) {
+      return configFinding(`this command does more than read and works on ${path}, which is or holds yokoten's config folder (~/.config/yokoten), where the worker list and the bot's keys are kept`);
+    }
+  }
+  return null;
 }
 
 /**
@@ -826,25 +882,14 @@ function namesHomeConfig(text: string, home: string | null): boolean {
 function checkWorkerPointers(command: string, commands: string[][], env: Env): Finding | null {
   const home = homeOf(env);
   const bare = command.replace(/['"\\]/g, '');
-  if (![command, bare].some((text) => namesHomeConfig(text, home))) return null;
+  if (![command, bare].some((text) => namesHomeConfig(text, home) || namesConfigFolder(text))) return null;
   const refusal = finding(
     'worker-mark',
-    "a worker can't run commands that point at yokoten's config folder (~/.config/yokoten), unless every program in it only reads",
-    'run plain reads only (cat, ls, grep, git status); if your task needs more there, stop and ask the lead',
+    "a worker can't run commands that point at yokoten's config folder (~/.config/yokoten), where the worker list and the bot's keys are kept, unless every program in it only reads",
+    "run plain reads only there (cat, ls, grep, git status): only the lead changes the worker list and the bot's keys; if your task needs more, stop and tell the lead",
   );
   if (/\$\(|`|[<>]\(/.test(command)) return refusal;
-  for (const words of commands) {
-    if (writesFile(words)) return refusal;
-    for (const program of findPrograms(words)) {
-      const name = programName(program);
-      if (!PLAIN_READERS.has(name)) return refusal;
-      const args = words.slice(words.indexOf(program) + 1);
-      if (name === 'find' && args.some((arg) => FIND_WRITES.test(arg) || FIND_ACTIONS.has(arg))) return refusal;
-      if (name === 'rg' && args.some((arg) => /^--pre(=|$)/.test(arg))) return refusal;
-      if (name === 'git' && !GIT_READS.has(args.find((arg) => !GIT_PLAIN_OPTIONS.has(arg)) ?? '')) return refusal;
-    }
-  }
-  return null;
+  return commands.every(onlyReads) ? null : refusal;
 }
 
 /**
@@ -1233,7 +1278,8 @@ function checkHooksSettings(settings: string[], fromEnvironment: string[]): Find
 // An assignment counts when it stands before the program, after env, sudo or export, or
 // anywhere before a git word. So `grep GIT_CONFIG_KEY_0=core.hooksPath file` is a read.
 const ASSIGNERS = new Set(['env', 'sudo', 'doas', 'export', 'declare', 'typeset', 'readonly', 'local']);
-const isAssignment = (word: string) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
+// `NAME+=value` adds to a setting: it is an assignment too.
+const isAssignment = (word: string) => /^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(word);
 
 function checkHooksEnvironment(words: string[]): Finding | null {
   const lastGit = words.findLastIndex(isGit);
