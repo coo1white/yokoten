@@ -1,8 +1,9 @@
 // The test command of each language (#546), in one table. doctor's tests step reads it for
 // the commands that count as running the tests in CI, and for the command its advice names;
-// `yokoten adopt` reads it for the test command a project has. So both give one answer.
+// `yokoten adopt` reads it for the test command a project has, and whether it has tests
+// (#551). So both give one answer.
 
-import { readdirSync, readFileSync } from 'node:fs';
+import { type Dirent, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 // ---- Command patterns. road.ts builds its npm and workspaces patterns from these too. ----
@@ -95,6 +96,13 @@ export interface TestLanguage {
   runs: Pattern[];
   /** Commands that count only when the project defines them, as a package.json script does for npm. */
   scripted?: { has: (root: string) => boolean; runs: Pattern[] };
+  /**
+   * Whether the project has tests for this language: a test folder, test files, or a
+   * test script. A project file alone (go.mod, Gemfile, ...) is not enough (#551). Runs
+   * on one scan of the project. None means the files alone are enough: a Makefile with
+   * a test target, found only with one.
+   */
+  hasTests?: (root: string, scan: TestScan) => boolean;
 }
 
 const readText = (path: string) => {
@@ -147,23 +155,95 @@ const composerTest = (root: string) => {
 const isFlutter = (root: string) => /^[ \t]+sdk:[ \t]*["']?flutter["']?[ \t]*(?:#.*)?$/m.test(readText(join(root, 'pubspec.yaml')));
 const hasRspec = (root: string) => listNames(root).some((n) => n === '.rspec' || n === 'spec');
 
+// ---- Finding the tests themselves (#551). ----
+
+/** Folder names that hold tests in any language, compared in lowercase. */
+const TEST_FOLDERS = ['test', 'tests', 'spec', '__tests__'];
+
+/** Folders the test scan never enters: installs and build output (dot folders never hold tests either). */
+const SCAN_SKIP = new Set(['node_modules', 'vendor', 'target', 'dist', 'build', '_build', '__pycache__', '.dart_tool', 'Pods', 'DerivedData']);
+
+/** What a scan of the project found: folder names in lowercase, and file paths with `/`. */
+export interface TestScan {
+  folders: string[];
+  files: string[];
+}
+
+/** Every folder and file under the root, leaving out version control, installs, and build output. Links are not followed. */
+export const scanTests = (root: string): TestScan => {
+  const folders: string[] = [];
+  const files: string[] = [];
+  const visit = (dir: string, relative: string) => {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        if (entry.name.startsWith('.') || SCAN_SKIP.has(entry.name)) continue;
+        folders.push(entry.name.toLowerCase());
+        visit(join(dir, entry.name), `${relative}${entry.name}/`);
+      } else if (entry.isFile()) {
+        files.push(`${relative}${entry.name}`);
+      }
+    }
+  };
+  visit(root, '');
+  return { folders, files };
+};
+
+/** The file name in a scanned path. */
+const baseName = (path: string) => path.slice(path.lastIndexOf('/') + 1);
+/** Whether the scan found a test folder (`test`, `tests`, `spec`, `__tests__`), at any depth. */
+const hasTestFolder = (scan: TestScan) => scan.folders.some((folder) => TEST_FOLDERS.includes(folder));
+/** Whether the scan found a file with a test name. */
+const hasTestFile = (scan: TestScan, isTest: (name: string) => boolean) => scan.files.some((path) => isTest(baseName(path)));
+/**
+ * A test name in the suffix style (`FooTest.java`, `FooTests.cs`, `Foo.Test.csproj`): ends
+ * with Test(s) after a word of its own, so `contest` and `latest` do not count.
+ */
+const isSuffixTest = (name: string) => /(?:^|[._-]|\p{Ll})Tests?\.[^.]+$/u.test(name);
+
 /**
  * The languages, in the order doctor names them. The first three are its suggestion when
  * no file is found. A project found in more than one language gets each runner.
  */
 export const TEST_LANGUAGES: TestLanguage[] = [
-  { language: 'Go', files: ['go.mod'], runner: 'go test', runs: [sequence(word('go'), word('test'))] },
+  {
+    language: 'Go', files: ['go.mod'], runner: 'go test', runs: [sequence(word('go'), word('test'))],
+    hasTests: (_, scan) => hasTestFolder(scan) || hasTestFile(scan, (name) => name.endsWith('_test.go')),
+  },
   {
     language: 'Python',
     files: ['pyproject.toml', 'setup.py', 'setup.cfg', 'tox.ini', 'requirements.txt'],
     runner: 'pytest',
     runs: [sequence(PY_EXEC, optional(PY_M), program('pytest', 'tox', 'nox')), sequence(PY_EXEC, PY_M, word('unittest'))],
+    hasTests: (_, scan) => hasTestFolder(scan) || hasTestFile(scan, (name) => /(?:^test_.*|.*_test|conftest)\.py$/.test(name)),
   },
-  { language: 'Rust', files: ['Cargo.toml'], runner: 'cargo test', runs: [sequence(word('cargo'), word('test'))] },
-  { language: 'Maven', files: ['pom.xml'], runner: 'mvn test', runs: [sequence(word('mvn', 'mvnw', './mvn', './mvnw'), FLAGS, word('test'))] },
-  { language: 'Gradle', files: ['build.gradle', 'build.gradle.kts'], runner: 'gradle test', runs: [sequence(word('gradle', 'gradlew', './gradle', './gradlew'), FLAGS, word('test'))] },
-  { language: 'Deno', files: ['deno.json', 'deno.jsonc'], runner: 'deno test', runs: [sequence(word('deno'), word('test'))] },
-  { language: '.NET', files: ['*.csproj', '*.fsproj', '*.vbproj', '*.sln', '*.slnx'], runner: 'dotnet test', runs: [sequence(word('dotnet'), word('test'))] },
+  {
+    language: 'Rust', files: ['Cargo.toml'], runner: 'cargo test', runs: [sequence(word('cargo'), word('test'))],
+    // Unit tests live in the sources, so a `#[test]` in any Rust file counts too.
+    hasTests: (root, scan) => hasTestFolder(scan) || hasTestFile(scan, (name) => name.endsWith('_test.rs')) || scan.files.some((path) => path.endsWith('.rs') && readText(join(root, path)).includes('#[test]')),
+  },
+  {
+    language: 'Maven', files: ['pom.xml'], runner: 'mvn test', runs: [sequence(word('mvn', 'mvnw', './mvn', './mvnw'), FLAGS, word('test'))],
+    hasTests: (_, scan) => hasTestFolder(scan) || hasTestFile(scan, (name) => isSuffixTest(name) || name.endsWith('IT.java')),
+  },
+  {
+    language: 'Gradle', files: ['build.gradle', 'build.gradle.kts'], runner: 'gradle test', runs: [sequence(word('gradle', 'gradlew', './gradle', './gradlew'), FLAGS, word('test'))],
+    hasTests: (_, scan) => hasTestFolder(scan) || hasTestFile(scan, (name) => isSuffixTest(name) || name.endsWith('IT.java')),
+  },
+  {
+    language: 'Deno', files: ['deno.json', 'deno.jsonc'], runner: 'deno test', runs: [sequence(word('deno'), word('test'))],
+    hasTests: (_, scan) => hasTestFolder(scan) || hasTestFile(scan, (name) => /^(?:test|tests|.*[._]test)\.(?:mts|cts|ts|tsx|mjs|cjs|js|jsx)$/.test(name)),
+  },
+  {
+    language: '.NET', files: ['*.csproj', '*.fsproj', '*.vbproj', '*.sln', '*.slnx'], runner: 'dotnet test', runs: [sequence(word('dotnet'), word('test'))],
+    hasTests: (_, scan) => hasTestFolder(scan) || hasTestFile(scan, isSuffixTest),
+  },
   {
     language: 'Ruby',
     files: ['Gemfile', 'Rakefile'],
@@ -173,6 +253,7 @@ export const TEST_LANGUAGES: TestLanguage[] = [
     },
     // rspec, rake test or spec, rails test; each also as bin/ binstubs and through bundle exec.
     runs: [sequence(BUNDLE, either(word('rspec', 'bin/rspec', './bin/rspec'), sequence(word('rake', 'bin/rake', './bin/rake'), word('test', 'spec')), sequence(word('rails', 'bin/rails', './bin/rails'), word('test'))))],
+    hasTests: (_, scan) => hasTestFolder(scan) || hasTestFile(scan, (name) => /(?:_spec|_test)\.rb$/.test(name)),
   },
   {
     language: 'PHP',
@@ -185,11 +266,25 @@ export const TEST_LANGUAGES: TestLanguage[] = [
     ],
     // composer test runs the test script of composer.json, and fails with none.
     scripted: { has: composerTest, runs: [sequence(word('composer'), optional(word('run', 'run-script')), word('test'))] },
+    // A composer test script is a test script, and counts with no test files (#551).
+    hasTests: (root, scan) => composerTest(root) || hasTestFolder(scan) || hasTestFile(scan, isSuffixTest),
   },
-  { language: 'Swift', files: ['Package.swift'], runner: 'swift test', runs: [sequence(word('swift'), word('test'))] },
-  { language: 'Elixir', files: ['mix.exs'], runner: 'mix test', runs: [sequence(word('mix'), word('test'))] },
-  { language: 'Flutter', files: ['pubspec.yaml'], is: isFlutter, runner: 'flutter test', runs: [sequence(word('flutter'), word('test'))] },
-  { language: 'Dart', files: ['pubspec.yaml'], is: (root) => !isFlutter(root), runner: 'dart test', runs: [sequence(word('dart'), optional(word('run')), word('test'))] },
+  {
+    language: 'Swift', files: ['Package.swift'], runner: 'swift test', runs: [sequence(word('swift'), word('test'))],
+    hasTests: (_, scan) => hasTestFolder(scan) || hasTestFile(scan, isSuffixTest),
+  },
+  {
+    language: 'Elixir', files: ['mix.exs'], runner: 'mix test', runs: [sequence(word('mix'), word('test'))],
+    hasTests: (_, scan) => hasTestFolder(scan) || hasTestFile(scan, (name) => name.endsWith('_test.exs')),
+  },
+  {
+    language: 'Flutter', files: ['pubspec.yaml'], is: isFlutter, runner: 'flutter test', runs: [sequence(word('flutter'), word('test'))],
+    hasTests: (_, scan) => hasTestFolder(scan) || hasTestFile(scan, (name) => name.endsWith('_test.dart')),
+  },
+  {
+    language: 'Dart', files: ['pubspec.yaml'], is: (root) => !isFlutter(root), runner: 'dart test', runs: [sequence(word('dart'), optional(word('run')), word('test'))],
+    hasTests: (_, scan) => hasTestFolder(scan) || hasTestFile(scan, (name) => name.endsWith('_test.dart')),
+  },
   { language: 'Makefile', files: MAKEFILES, is: (root) => makeTarget(root) !== '', runner: (root) => `make ${makeTarget(root)}`, runs: [sequence(word('make'), MAKE_FLAGS, word('test', 'tests'))] },
   // Node runners that need no package.json script. A Node project is found by its script, not here.
   { language: 'Node.js', files: [], runner: '', runs: [sequence(word('node'), FLAGS, word('--test')), sequence(NODE_EXEC, word('vitest', 'jest'))] },
@@ -203,10 +298,23 @@ export const scriptedRuns = (root: string): Pattern[] => TEST_LANGUAGES.flatMap(
 
 const runnerOf = (l: TestLanguage, root: string) => (typeof l.runner === 'string' ? l.runner : l.runner(root));
 
+/** The languages this project is in, by the files at its root. */
+const detectedLanguages = (root: string, found: string[]): TestLanguage[] =>
+  TEST_LANGUAGES.filter((l) => l.files.some((f) => hasFile(found, f)) && (l.is?.(root) ?? true));
+
 /** The languages this project is in, by the files at its root, each with the command to suggest. */
-export const testLanguages = (root: string): { language: string; runner: string }[] => {
-  const found = listNames(root);
-  return TEST_LANGUAGES.filter((l) => l.files.some((f) => hasFile(found, f)) && (l.is?.(root) ?? true)).map((l) => ({ language: l.language, runner: runnerOf(l, root) }));
+export const testLanguages = (root: string): { language: string; runner: string }[] =>
+  detectedLanguages(root, listNames(root)).map((l) => ({ language: l.language, runner: runnerOf(l, root) }));
+
+/**
+ * The languages this project is in that have tests: a test folder, test files, or a test
+ * script for the language (#551). Reads the project once, and only when a language is found.
+ */
+export const languagesWithTests = (root: string): { language: string; runner: string }[] => {
+  const found = detectedLanguages(root, listNames(root));
+  if (!found.length) return [];
+  const scan = scanTests(root);
+  return found.filter((l) => l.hasTests?.(root, scan) ?? true).map((l) => ({ language: l.language, runner: runnerOf(l, root) }));
 };
 
 /** The suggestion when no file is found: the first three runners. */
