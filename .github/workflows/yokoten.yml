@@ -5,6 +5,9 @@
 name: yokoten
 on:
   pull_request:
+  # A merge queue runs the same checks as a pull request: every job below also runs
+  # on a merge group. Turn the queue on in the repo settings.
+  merge_group:
   push:
     branches: [main]
   # The full matrix, macOS shards included, runs on main every day: a pull request
@@ -22,8 +25,9 @@ concurrency:
 jobs:
   # Which files the pull request changes (#438). It is docs-only when each file is under
   # docs/ or changes/, or is a README.md or CHANGELOG.md outside kit/. Then the jobs that
-  # Markdown can't break are skipped. A push to main is a full run. So is a file list
-  # that can't be read: docs_only is true only when the list was read and every file fits.
+  # Markdown can't break are skipped. A push to main is a full run, and so is a merge
+  # queue group. So is a file list that can't be read: docs_only is true only when the
+  # list was read and every file fits.
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5

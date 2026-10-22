@@ -2094,9 +2094,20 @@ function heredocPost(command: string, commands: string[][]): { path: string; tex
 // Commands that surely write no file (#439). Each list allows; anything else may write.
 // Shell variables that change what bash runs or where it looks: setting one is not plain.
 const SHELL_SPECIAL = /^(?:PS\d|PROMPT_\w*|HOME|PATH|CDPATH|IFS|ENV|BASH\w*|SHELLOPTS|BASHOPTS|TMOUT|HIST\w*|histchars|MAIL\w*|GLOBIGNORE|FIGNORE|EXECIGNORE|OLDPWD|PWD|OPTIND|OPTERR|POSIXLY_CORRECT|INPUTRC|TIMEFORMAT|FUNCNEST|COMP\w*|TMPDIR|SHELL|BROWSER|LD_\w*|DYLD_\w*|NODE_\w*|GIT_\w*|GH_\w*|LANG|LC_\w*)$/;
-// The only variables an `export` or a command's own `X=1 cmd` may set.
+// The only variables an `export` or a command's own `X=1 cmd` may set. TZ only as
+// TZ=UTC (#488): gh sends it as its Time-Zone header, so UTC keeps merges on UTC.
 const EXPORTS = new Set(['GH_REPO', 'GH_HOST', 'NODE_USE_ENV_PROXY']);
 const NAME_VALUE = /^([A-Za-z_]\w*)=/s;
+
+/**
+ * Whether a word sets a variable the guard trusts next to a gh post: a name in EXPORTS,
+ * or TZ to UTC. A bare `export TZ` names a value the guard can't see, so it is refused.
+ */
+function isTrustedVariable(word: string): boolean {
+  const name = NAME_VALUE.exec(word)?.[1] ?? word;
+  if (EXPORTS.has(name)) return true;
+  return name === 'TZ' && word.slice('TZ='.length) === 'UTC';
+}
 // `set` only for these: errexit, nounset and pipefail.
 const SET_FLAGS = /^[-+][eu]+$/;
 // Characters the shell takes as written outside quotes.
@@ -2145,7 +2156,7 @@ function plainBreak(text: string): number {
 // A refusal names what the guard saw, so the agent knows what to leave out. The name only
 // reports; the checks above decide.
 
-const VARIABLE_RISK = 'a variable other than GH_REPO, GH_HOST or NODE_USE_ENV_PROXY set for a command';
+const VARIABLE_RISK = 'a variable other than GH_REPO, GH_HOST, NODE_USE_ENV_PROXY or TZ=UTC set for a command';
 const SHELL_VARIABLE_RISK = 'a shell variable, such as PATH or IFS, that changes what bash runs';
 const TILDE_RISK = 'a `~` that may not be your home folder';
 // The word after a `|`, to name the program.
@@ -2244,7 +2255,7 @@ function writerRisk(words: string[], isMarked: (word: string) => boolean): Risk 
   if (program === 'uniq') return { what: 'a `uniq` with a second file, which it writes' };
   if (PIPE_READERS.has(program)) return { what: `a \`${program}\` with an option that may write a file` };
   if (MOVERS.has(program)) return { what: `a \`${program}\` the guard can't follow` };
-  if (program === 'export') return { what: 'an `export` of a name other than GH_REPO, GH_HOST or NODE_USE_ENV_PROXY' };
+  if (program === 'export') return { what: 'an `export` of a name other than GH_REPO, GH_HOST, NODE_USE_ENV_PROXY or TZ=UTC' };
   if (isMarked(program)) return { what: 'a command' };
   return { what: SHOWN_PROGRAM.test(program) ? `a \`${program}\`` : 'a command the guard does not know' };
 }
@@ -2294,7 +2305,7 @@ function ownVariables(words: string[]): number {
   let at = 0;
   while (at < words.length && NAME_VALUE.test(words[at])) at++;
   if (at === words.length) return words.every((word) => !SHELL_SPECIAL.test(NAME_VALUE.exec(word)?.[1] ?? '')) ? at : -1;
-  return words.slice(0, at).every((word) => EXPORTS.has(NAME_VALUE.exec(word)?.[1] ?? '')) ? at : -1;
+  return words.slice(0, at).every(isTrustedVariable) ? at : -1;
 }
 
 /**
@@ -2325,7 +2336,7 @@ function readsOnly(words: string[]): boolean {
     case 'set':
       return args.length > 0 && args.every((arg, index) => SET_FLAGS.test(arg) || (/^[-+]o$/.test(arg) && args[index + 1] === 'pipefail') || (arg === 'pipefail' && /^[-+]o$/.test(args[index - 1] ?? '')));
     case 'export':
-      return args.length > 0 && args.every((arg) => EXPORTS.has(NAME_VALUE.exec(arg)?.[1] ?? arg));
+      return args.length > 0 && args.every(isTrustedVariable);
     case 'cd':
     case 'pushd':
       // A bare cd goes home, `cd -` to OLDPWD, and `pushd +1` round the stack: not followed.
