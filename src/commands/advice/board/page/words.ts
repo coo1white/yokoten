@@ -1,6 +1,7 @@
 // The board page's words in each language it speaks (#603). The page picks the browser's
 // language, and the owner can change it in the top bar. `{name}` marks a value the page
-// puts in; a key ending in `.one` is the English singular. What agents write is never
+// puts in; a key ending in a plural form (`.one`, and `.few` or `.many` for a language that
+// has them, as Intl.PluralRules names them) is that form of the key. What agents write is never
 // translated: it shows as they wrote it.
 
 /** The languages the board speaks, by their tag. */
@@ -109,7 +110,7 @@ const EN = {
 };
 
 /** One word key. Every language has every key; a test holds this. */
-export type WordKey = Exclude<keyof typeof EN, `${string}.one`>;
+export type WordKey = Exclude<keyof typeof EN, `${string}.${'zero' | 'one' | 'two' | 'few' | 'many'}`>;
 
 const ZH_CN: Record<WordKey, string> = {
   lead: '负责人',

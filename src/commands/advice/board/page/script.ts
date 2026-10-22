@@ -64,10 +64,12 @@ export function icon(name: string, small = false): SVGElement {
   return svg;
 }
 
-/** A word in the page's language, with its values put in. A count of 1 takes the `.one` form where there is one. */
+/** A word in the page's language, with its values put in. A count picks its plural form, such as `.one`, where the language has one. */
 export function say(state: PageState, key: string, values: Record<string, string | number> = {}): string {
-  const words = state.words[state.ui.lang] ?? state.words.en;
-  const text = (values.n === 1 ? words[`${key}.one`] : undefined) ?? words[key] ?? state.words.en[key] ?? key;
+  const lang = state.words[state.ui.lang] ? state.ui.lang : 'en';
+  const words = state.words[lang];
+  const form = typeof values.n === 'number' ? new Intl.PluralRules(lang).select(values.n) : '';
+  const text = (form ? words[`${key}.${form}`] : undefined) ?? words[key] ?? state.words.en[key] ?? key;
   return text.replace(/\{(\w+)\}/g, (_, name: string) => String(values[name] ?? ''));
 }
 
