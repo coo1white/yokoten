@@ -471,6 +471,20 @@ test('release notes are read when a release is allowed', () => {
   assert.equal(approved('gh release create v1 --notes "clean notes"'), null);
 });
 
+test('a joined short-option cluster in gh api is refused, so a hidden field is not posted (#650)', () => {
+  assert.equal(post('gh api -if body=x repos/o/r/issues/1/comments')?.id, 'run-remove');
+  assert.equal(post(`gh api -iF body="${email}" repos/o/r/issues`)?.id, 'run-remove');
+  assert.equal(post(`gh api -iXPOST repos/o/r/issues -f body="${email}"`)?.id, 'run-remove');
+});
+
+test('gh after a launcher value is still the program, and a jq value is not a method (#650)', () => {
+  assert.equal(post(`env -u gh gh issue create --title t --body "${email}"`)?.id, 'email');
+  assert.equal(post(`sudo -u gh gh issue comment 3 -b "${email}"`)?.id, 'email');
+  assert.equal(post(`xargs -a gh gh issue comment 3 --body "${email}"`)?.id, 'email');
+  assert.equal(post(`gh api -X POST -q -XGET repos/o/r/issues -f body="${email}"`)?.id, 'email');
+  assert.equal(post(`gh api -X GET -q -XPOST repos/o/r/issues -f body="${email}"`), null);
+});
+
 test('gh api fields and input files are read', () => {
   assert.equal(post(`gh api repos/o/r/issues/1/comments -f body="token ${token}"`)?.id, 'secret');
   assert.equal(post(`gh api repos/o/r/issues -F title="check: add x" -F body="${email}"`)?.id, 'email');

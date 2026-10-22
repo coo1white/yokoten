@@ -404,6 +404,16 @@ Cancelling or deleting an Actions run is refused for the lead and for a worker.
 The guard stops `gh run cancel`, `gh run delete`, and the same call through `gh api`
 or `yokoten bot`. `gh run rerun`, `view`, `list` and `watch` still pass. Ask the
 owner, who can cancel or delete the run on the Actions page.
+A `repositories/<id>` path is the same call. A path with `.` or `..` is read after those are resolved.
+The route words match in any case, so `Actions` and `Cancel` are the same call.
+A cluster of short options in `gh api` is refused, unless it is one option with its value joined.
+A method or a path taken from the shell is refused when it can name a run.
+A `gh run` subcommand taken from the shell is refused.
+`gh` must name one of its own commands. `gh extension install`, `upgrade`, `exec` and `browse` are refused.
+`exec` runs an installed extension. `browse` can install one.
+A non-GET call is refused when the path after `repos/` or `repositories/` is only a variable.
+`gh config set aliases` is refused. `gh alias list` and `gh extension list` still pass.
+`gh alias set` and `gh alias import` are refused for both roles. Ask the owner to add an alias by hand.
 
 The guard stops a worker's shell writes to lead-only files as well as its edits (#402). It
 reads redirects (`>`, `>>`, `>|`, `&>`), `sed -i`, `perl -i`, `tee`, `cp`, `mv`,

@@ -36,6 +36,7 @@ import * as muse from '../agents/runtimes/muse.ts';
 import type { FolderTrust } from '../agents/folder-trust.ts';
 import { commentedFile, HAND_ADD, handAddJson, type HookState, mergeHandAdds } from '../agents/hooks-file.ts';
 import { type Gh, readServer, type ServerSettings, type Unread } from '../host/github/index.ts';
+import { hostGuardMisses } from '../host/gh-commands.ts';
 import { type Host, hostOf, isNoAdapter, noAdapter } from '../host/hosts.ts';
 import { findTempDirs, readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advice/unsaved.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
@@ -61,7 +62,7 @@ const practice = (name: string, id: RuleId, ok: boolean, what: string, fix: stri
 export function selfTest(): string[] {
   const failed: string[] = [];
   if (!checkCommand('git push origin --tags', { env: {}, cwd: null })) failed.push('release guard');
-  if (!checkCommand('gh run cancel 1', { env: {}, cwd: null })) failed.push('run-cancel guard');
+  failed.push(...hostGuardMisses((command) => checkCommand(command, { env: {}, cwd: null })));
   if (!checkCommand('git commit --no-verify -m x', { env: {}, cwd: null })) failed.push('skip-check guard');
   if (!checkEdit('test/a.test.ts', { config: DEFAULTS, env: { YOKOTEN_FIX_TASK: '1' } })) failed.push('test guard');
   if (!checkEdit('AGENTS.md', { config: DEFAULTS, env: { YOKOTEN_ROLE: 'worker' } })) failed.push('lead-only guard');
