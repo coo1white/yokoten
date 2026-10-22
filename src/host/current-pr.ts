@@ -32,7 +32,7 @@ const API_TIMEOUT_MS = 15000;
 const CURRENT_FIX = 'give the step `GITHUB_TOKEN: ${{ github.token }}` and the job `pull-requests: read`, then run the job again';
 
 /** The workflow asked `check --pr` to read the pull request as it is now. */
-export const readsCurrentPullRequest = (env: Env): boolean => Boolean(env.YOKOTEN_PR_LIVE);
+export const readsCurrentPullRequest = (env: Env): boolean => env.YOKOTEN_PR_LIVE === '1';
 
 /** The API's address can carry a token: https, or plain http to this machine only. */
 function isSafeApi(api: string): boolean {

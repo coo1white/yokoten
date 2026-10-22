@@ -270,8 +270,8 @@ export const RULES = {
   'pr-current': {
     rule: 'when its workflow asks, `check --pr` reads the pull request as it is now, from the API',
     why: 'runs can start in any order, and the event file keeps the labels and milestone of its own moment, so only the pull request as it is now gives the true result',
-    check: `${PR_CHECK}; with YOKOTEN_PR_LIVE set, it reads the title, body, labels and milestone with the job's GITHUB_TOKEN, and fails when it can't`,
-    docs: guide('use-it-as-a-github-action'),
+    check: `${PR_CHECK}; with YOKOTEN_PR_LIVE=1, it reads the title, body, labels and milestone with the job's GITHUB_TOKEN, and fails when it can't`,
+    docs: guide('commands'),
   },
   'pr-read': {
     rule: '`check --pr <number>` reads that pull request through gh',

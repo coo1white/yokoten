@@ -35,10 +35,11 @@ async function fakeApi(statuses: number[], pull: Record<string, unknown>) {
 
 const what = (read: unknown) => (read && typeof read === 'object' && 'problem' in read ? (read.problem as { id: string; what: string }) : null);
 
-test('current pull request: only YOKOTEN_PR_LIVE turns it on; a token alone does not (#645)', () => {
+test('current pull request: only YOKOTEN_PR_LIVE=1 turns it on; a token alone does not (#645)', () => {
   assert.equal(readsCurrentPullRequest({ GITHUB_TOKEN: TOKEN }), false);
   assert.equal(readsCurrentPullRequest({ YOKOTEN_PR_LIVE: '1' }), true);
   assert.equal(readsCurrentPullRequest({ YOKOTEN_PR_LIVE: '' }), false);
+  assert.equal(readsCurrentPullRequest({ YOKOTEN_PR_LIVE: '0' }), false, 'only 1 turns it on, like the other YOKOTEN_ switches');
 });
 
 test('current pull request: the fields as GitHub has them now, read once with the token (#645)', async () => {
