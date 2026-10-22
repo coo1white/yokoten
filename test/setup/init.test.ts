@@ -1337,7 +1337,7 @@ test('init: a commented .gemini/settings.json is left as it was and gets the hoo
   assert.ok(hasHook(join(sandbox.repo, '.codex', 'hooks.json'), 'Stop', 'hook'), 'no Codex stop check');
   assert.deepEqual(doctorHandAdd((await sandbox.call(['doctor'])).stdout, 'gemini-hook', '.gemini/settings.json'), add);
 
-  const after = commentedGemini(JSON.stringify(add, null, 2));
+  const after = commentedGemini(JSON.stringify(add, null, 2)).replace(/\n}\n$/, `,\n  "security": {\n    "disableYoloMode": true\n  }\n}\n`);
   writeFileSync(file, after);
   const again = await sandbox.call(['init']);
   assert.equal(again.status, 0, again.stdout + again.stderr);
@@ -2073,4 +2073,55 @@ test('init: .gitignore holds .worktrees/ and the board agent file with no packag
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /wrote \.gitignore \(\.worktrees\/, \.yokoten-agent\.json\)/);
   assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), '.worktrees/\n.yokoten-agent.json\n');
+});
+
+test('init: writes each agent sandbox, and a second run changes nothing (#589)', async () => {
+  const sandbox = makeSandbox();
+  const result = await sandbox.call(['init']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^added the Claude Code sandbox in \.claude\/settings\.json \(shell commands stay in the project/m);
+  assert.match(result.stdout, /^added the Codex sandbox in \.codex\/config\.toml \(writes stay in the project/m);
+  assert.match(result.stdout, /^added the Gemini sandbox in \.gemini\/settings\.json \(YOLO mode/m);
+  assert.match(result.stdout, /^added the Grok sandbox in \.grok\/sandbox\.toml \(the yokoten profile/m);
+  const claude = JSON.parse(readFileSync(join(sandbox.repo, '.claude', 'settings.json'), 'utf8'));
+  assert.deepEqual(claude.sandbox, { enabled: true });
+  assert.ok(claude.hooks.PreToolUse.length === 1, 'the sandbox keeps the hooks');
+  assert.equal(claude.env.TZ, 'UTC');
+  const codex = readFileSync(join(sandbox.repo, '.codex', 'config.toml'), 'utf8');
+  assert.match(codex, /^sandbox_mode = "workspace-write"$/m);
+  assert.match(codex, /^approval_policy = "on-request"$/m);
+  assert.match(codex, /^\[sandbox_workspace_write\]$/m);
+  assert.match(codex, /^network_access = false$/m);
+  const gemini = JSON.parse(readFileSync(join(sandbox.repo, '.gemini', 'settings.json'), 'utf8'));
+  assert.deepEqual(gemini.security, { disableYoloMode: true });
+  assert.ok(gemini.hooks.BeforeTool.length >= 1, 'the sandbox keeps the hooks');
+  const grok = readFileSync(join(sandbox.repo, '.grok', 'sandbox.toml'), 'utf8');
+  assert.match(grok, /^\[profiles\.yokoten\]$/m);
+  assert.match(grok, /^extends = "workspace"$/m);
+  const again = await sandbox.call(['init']);
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.match(again.stdout, /^same the Claude Code sandbox in \.claude\/settings\.json$/m);
+  assert.match(again.stdout, /^same the Codex sandbox in \.codex\/config\.toml$/m);
+  assert.match(again.stdout, /^same the Gemini sandbox in \.gemini\/settings\.json$/m);
+  assert.match(again.stdout, /^same the Grok sandbox in \.grok\/sandbox\.toml$/m);
+  assert.deepEqual(JSON.parse(readFileSync(join(sandbox.repo, '.claude', 'settings.json'), 'utf8')).sandbox, { enabled: true });
+});
+
+test('init: keeps a sandbox the user set, and still exits 0 (#589)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('.claude/settings.json', JSON.stringify({ sandbox: { enabled: false } }));
+  sandbox.write('.gemini/settings.json', JSON.stringify({ security: { disableYoloMode: false } }));
+  sandbox.write('.codex/config.toml', 'sandbox_mode = "danger-full-access"\napproval_policy = "on-request"\n\n[sandbox_workspace_write]\nnetwork_access = false\n');
+  sandbox.write('.grok/sandbox.toml', '[profiles.yokoten]\nextends = "devbox"\n');
+  const result = await sandbox.call(['init']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^kept your Claude Code sandbox in \.claude\/settings\.json \(doctor names what differs\)$/m);
+  assert.match(result.stdout, /^kept your Codex sandbox in \.codex\/config\.toml \(doctor names what differs\)$/m);
+  assert.match(result.stdout, /^kept your Gemini sandbox in \.gemini\/settings\.json \(doctor names what differs\)$/m);
+  assert.match(result.stdout, /^kept your Grok sandbox in \.grok\/sandbox\.toml \(doctor names what differs\)$/m);
+  assert.deepEqual(JSON.parse(readFileSync(join(sandbox.repo, '.claude', 'settings.json'), 'utf8')).sandbox, { enabled: false });
+  assert.ok(hasHook(join(sandbox.repo, '.claude', 'settings.json'), 'PreToolUse', 'hook'), 'the hooks still go in');
+  assert.deepEqual(JSON.parse(readFileSync(join(sandbox.repo, '.gemini', 'settings.json'), 'utf8')).security, { disableYoloMode: false });
+  assert.match(readFileSync(join(sandbox.repo, '.codex', 'config.toml'), 'utf8'), /^sandbox_mode = "danger-full-access"$/m);
+  assert.match(readFileSync(join(sandbox.repo, '.grok', 'sandbox.toml'), 'utf8'), /^extends = "devbox"$/m);
 });

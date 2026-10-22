@@ -25,6 +25,9 @@ instead (record 0019).
    `git worktree add .worktrees/<issue> -b <issue>-<slug>`, then
    `yokoten worker mark .worktrees/<issue>`
    Never under `/tmp`: the system may wipe it on restart, with every unpushed change.
+4. Start the worker in the worktree, so its sandbox covers it. The project
+   holds the sandbox settings. `yokoten init` writes them. `yokoten doctor`
+   checks them in the `sandbox` step.
 
 ## The brief
 
@@ -54,9 +57,18 @@ The mark makes the worker a worker in every agent, even one that passes its hook
 another. Never guess a model name from another agent (`opus`, `sonnet`): it may not
 exist here. Also start it with its role in the environment:
 
-- A separate session: `YOKOTEN_ROLE=worker YOKOTEN_DONE_WHEN='<command>' claude -p "<brief>"`
-  in the worktree (add `YOKOTEN_FIX_TASK=1` for a fix task). The stop hook runs that
-  command when the worker ends the task. With no command, it checks the changed files.
+- A separate session in the worktree (add `YOKOTEN_FIX_TASK=1` for a fix task),
+  with `YOKOTEN_DONE_WHEN='<command>'`:
+  - Claude Code: `YOKOTEN_ROLE=worker YOKOTEN_DONE_WHEN='<command>' claude -p "<brief>"`.
+    The sandbox is on from `.claude/settings.json`. No flag.
+  - Codex: `YOKOTEN_ROLE=worker YOKOTEN_DONE_WHEN='<command>' codex exec --sandbox workspace-write -c approval_policy=on-request "<brief>"`.
+    This matches `.codex/config.toml`.
+  - Gemini: `YOKOTEN_ROLE=worker YOKOTEN_DONE_WHEN='<command>' gemini -p "<brief>"` without `--yolo`.
+    The project blocks YOLO in `.gemini/settings.json`. Start at the worktree root.
+  - Grok: `YOKOTEN_ROLE=worker YOKOTEN_DONE_WHEN='<command>' grok --sandbox yokoten -p "<brief>"`.
+    This selects `[profiles.yokoten]` in `.grok/sandbox.toml`.
+  The stop hook runs that command when the worker ends the task. With no command,
+  it checks the changed files.
 - A subagent: use the `worker` agent. The guard counts a type as a worker only when it
   is `worker`, or when it ends with `:worker`.
 - A subagent shares the lead's folder and environment. It does not get its own

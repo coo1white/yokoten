@@ -115,7 +115,7 @@ listed:
 | **1 · Safety net** | `rules`, `tool-hook`, `commit-check`, `runtime`, `tests` (a test command, and CI runs it) |
 | **2 · Issues and pull requests** | `ci` (CI runs `check`, or uses the yokoten Action), `issues` (no todo file), `templates`, `labels` (the standard set), `milestone` (an open one), `no-build-output` (nothing in `dist/`, `build/` or `out/`, no built binaries) |
 | **3 · Release** | `changelog`, `titles` (CI runs `check --pr`, or uses the Action on pull requests without `pr-check: false`) |
-| **4 · A team of agents** | `codeowners`, `bot`, `skills`, `review` (a merge to the default branch needs one approval) |
+| **4 · A team of agents** | `codeowners`, `bot`, `skills`, `sandbox` (each agent may write the worktree, and nothing wider), `review` (a merge to the default branch needs one approval) |
 | **5 · Going public** | `security-files` (a security policy, Dependabot, a license), `protection` (rulesets on the default branch and `v*` tags), `merge-settings` (squash only, delete branch on merge), `security-settings` (secret scanning, push protection, private reporting, Dependabot alerts) |
 
 The last three are server settings. Full `doctor` reads them through `gh api`, and only reads.
@@ -417,6 +417,22 @@ shares the lead's environment, so give such a task to a separate session. At ses
 start, `doctor` tells a session with `YOKOTEN_ROLE=worker` "this session is a worker:
 lead-only files are guarded". A separate worker session that does not hear it has no role
 set. A subagent starts no session, so it hears nothing.
+
+### Sandboxes
+
+`init` writes each agent's sandbox for the project. `doctor` checks it in the
+`sandbox` step. Start the worker in its worktree, so the sandbox covers it.
+
+| Agent | What `init` writes | Why |
+|---|---|---|
+| Claude Code | `.claude/settings.json`: `sandbox.enabled` is `true` | Shell commands stay in the worktree. New network hosts ask first |
+| Codex | `.codex/config.toml`: `sandbox_mode` is `workspace-write`, `approval_policy` is `on-request`, `network_access` is `false` | Writes stay in the worktree. Network stays off. Codex asks before it goes beyond |
+| Gemini | `.gemini/settings.json`: `security.disableYoloMode` is `true` | YOLO mode, which approves everything, stays off |
+| Grok | `.grok/sandbox.toml`: `[profiles.yokoten]` builds on `workspace` | The `yokoten` profile keeps writes in the worktree. Workers run with `grok --sandbox yokoten` |
+
+A value you set stays. `doctor` names what differs, with one fix.
+
+Muse Code, DeepSeek Harness, Antigravity and Copilot have no project-writable sandbox, so `init` writes none for them. Muse has no project settings file for one. DeepSeek Harness and Antigravity keep only hooks in the project, and Copilot's own sandbox is user-level.
 
 ### DeepSeek Harness
 

@@ -5,8 +5,8 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { addProjectHooks, addUserHooks, EDIT_TOOLS, projectHooksState, readStop, readToolCall, readTrust, userHooksState } from '../../../src/agents/runtimes/grok.ts';
-import { makeSandbox } from '../../repo/helpers.ts';
+import { addProjectHooks, addProjectSandbox, addUserHooks, EDIT_TOOLS, projectHooksState, readStop, readToolCall, readTrust, sandboxProblem, userHooksState } from '../../../src/agents/runtimes/grok.ts';
+import { makeSandbox, makeTempDir } from '../../repo/helpers.ts';
 
 // The events Grok CLI 1.0.52 sent its hooks in the real run of #407 (2026-10-20), as
 // recorded. Only the placeholders differ: `<repo>` is the throwaway repo, and the
@@ -334,4 +334,76 @@ test('grok user hook: install writes the command guard in ~/.grok/hooks only whe
   assert.deepEqual(userHooksState(env, '/elsewhere/bin/yokoten.ts', 'gone'), { guard: 'updated' }, 'another runtime path is out of date');
   assert.deepEqual(addUserHooks(env, '/elsewhere/bin/yokoten.ts', 'gone'), { guard: 'updated' });
   assert.match((await sandbox.call(['doctor'])).stdout, /note +grok-user-hook: the command guard in ~\/\.grok\/hooks\/yokoten\.json is out of date/);
+});
+
+// ---- The project's sandbox (#589) ----
+
+/** A project folder with `.grok/sandbox.toml` holding `text`. */
+function sandboxProject(text: string): string {
+  const root = makeTempDir('yokoten-grok-');
+  mkdirSync(join(root, '.grok'), { recursive: true });
+  writeFileSync(join(root, '.grok', 'sandbox.toml'), text);
+  return root;
+}
+
+/** A home outside the temp folder: makeTempDir lives under it, which would pass as temp. */
+const OUTSIDE_HOME = { HOME: '/nonexistent-yokoten-home' };
+
+test('sandbox write: the yokoten profile is added, and a profile the user set stays', () => {
+  const root = makeTempDir('yokoten-grok-');
+  assert.equal(addProjectSandbox(root), 'added');
+  const path = join(root, '.grok', 'sandbox.toml');
+  assert.match(readFileSync(path, 'utf8'), /\[profiles\.yokoten\]\nextends = "workspace"\n/);
+  assert.equal(addProjectSandbox(root), 'same');
+  // Another profile stays, and the table joins it.
+  const other = sandboxProject('[profiles.mine]\nextends = "workspace"\n');
+  assert.equal(addProjectSandbox(other), 'added');
+  const text = readFileSync(join(other, '.grok', 'sandbox.toml'), 'utf8');
+  assert.match(text, /\[profiles\.mine\]/);
+  assert.match(text, /\[profiles\.yokoten\]/);
+  // A base the user chose stays, even devbox: doctor names what differs.
+  assert.equal(addProjectSandbox(sandboxProject('[profiles.yokoten]\nextends = "devbox"\n')), 'kept');
+  // A quoted table reads, so nothing is written twice.
+  assert.equal(addProjectSandbox(sandboxProject('["profiles"."yokoten"]\nextends = "workspace"\n')), 'same');
+  // `profiles` taken by a key blocks the table: writing it would break the file.
+  const blocked = sandboxProject('profiles = "kept"\n');
+  assert.equal(addProjectSandbox(blocked), 'kept');
+  assert.doesNotMatch(readFileSync(join(blocked, '.grok', 'sandbox.toml'), 'utf8'), /\[profiles\.yokoten\]/);
+});
+
+test('sandbox write: a quoted header reads as empty and an array header blocks, never doubled (#589)', () => {
+  // A quoted header without a base means workspace, as Grok reads it: same, and doctor passes.
+  const quoted = '["profiles"."yokoten"]\n';
+  const quotedRoot = sandboxProject(quoted);
+  assert.equal(addProjectSandbox(quotedRoot), 'same', 'quoted: the table is already there');
+  const quotedAfter = readFileSync(join(quotedRoot, '.grok', 'sandbox.toml'), 'utf8');
+  assert.equal(quotedAfter, quoted, 'quoted: the file is left byte for byte');
+  assert.equal(quotedAfter.split('yokoten').length - 1, 1, 'quoted: one header, still valid TOML');
+  assert.equal(sandboxProblem(quotedRoot, OUTSIDE_HOME), null, 'quoted: no base means workspace');
+  // An array header blocks the table: writing next to it would corrupt the file.
+  const array = '[[profiles.yokoten]]\n';
+  const arrayRoot = sandboxProject(array);
+  assert.equal(addProjectSandbox(arrayRoot), 'kept', 'array: the table is skipped, not doubled');
+  const arrayAfter = readFileSync(join(arrayRoot, '.grok', 'sandbox.toml'), 'utf8');
+  assert.equal(arrayAfter, array, 'array: the file is left byte for byte');
+  assert.equal(arrayAfter.split('yokoten').length - 1, 1, 'array: one header, still valid TOML');
+  assert.deepEqual(sandboxProblem(arrayRoot, OUTSIDE_HOME), { what: '.grok/sandbox.toml has an unexpected shape', fix: 'fix it, then run `yokoten init`' }, 'array: doctor flags the shape');
+});
+
+test('sandbox problem: missing, narrow, wide and outside writes, each with its one fix', () => {
+  assert.deepEqual(sandboxProblem(makeTempDir('yokoten-grok-'), OUTSIDE_HOME), { what: 'no Grok sandbox profile in .grok/sandbox.toml', fix: '`yokoten init` adds it' });
+  assert.equal(sandboxProblem(sandboxProject('[profiles.yokoten]\nextends = "workspace"\n'), OUTSIDE_HOME), null);
+  assert.equal(sandboxProblem(sandboxProject('[profiles.yokoten]\nextends = "strict"\n'), OUTSIDE_HOME), null, 'strict writes the same folder');
+  assert.equal(sandboxProblem(sandboxProject('[profiles.yokoten]\n'), OUTSIDE_HOME), null, 'no base means workspace, as Grok reads it');
+  const problem = (text: string) => sandboxProblem(sandboxProject(text), OUTSIDE_HOME);
+  assert.deepEqual(problem('[profiles.mine]\nextends = "workspace"\n'), { what: 'no Grok sandbox profile in .grok/sandbox.toml', fix: '`yokoten init` adds it' });
+  assert.deepEqual(problem('[profiles.yokoten]\nextends = "devbox"\n'), {
+    what: 'the Grok sandbox profile writes almost everywhere (devbox)',
+    fix: 'set extends to "workspace" in .grok/sandbox.toml',
+  });
+  assert.deepEqual(problem('[profiles.yokoten]\nextends = "read-only"\n')?.what, "the Grok sandbox profile is read-only, so workers can't write");
+  assert.deepEqual(problem('[profiles.yokoten]\nextends = "mine"\n')?.what, 'the Grok sandbox profile does not build on workspace or strict');
+  assert.deepEqual(problem('[profiles.yokoten]\nextends = "workspace"\nread_write = ["/"]\n')?.what, 'the Grok sandbox profile may write outside the project (read_write)');
+  assert.equal(problem('[profiles.yokoten]\nextends = "workspace"\nread_write = ["sub"]\n'), null, 'a path that stays in');
+  assert.deepEqual(problem('profiles = "kept"\n')?.what, '.grok/sandbox.toml has an unexpected shape');
 });

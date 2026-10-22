@@ -21,15 +21,15 @@
 // - A deny is `permissionDecision: "deny"` on stdout; at exit 2 its reason, whole, is
 //   what the model reads (stderr alone gives only its first line).
 
-import { existsSync, readFileSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import type { Env } from '../../rules/config.ts';
 import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import { type Action, isWorkerType, readStopFields, type StopEvent } from '../../run/hook.ts';
 import { type FolderTrust, folderKeys, isFolder } from '../folder-trust.ts';
 import { type Added, addHook, checkHooksFile, type HookState, hookState, isObject } from '../hooks-file.ts';
-import { readTomlTables } from './codex.ts';
+import { blankedToml, hasTomlArray, hasTomlHeader, hasTomlKey, hasTomlTable, isInsideProject, parseToml, readTomlTables } from './codex.ts';
 import type { RuntimeEnv } from '../agent-env.ts';
 
 // The shell tool takes `command` (and may take `cwd`); the edit tools take `file_path`.
@@ -190,6 +190,111 @@ export function readTrust(root: string, env: Env): FolderTrust {
   }
   const isTrusted = folderKeys(root).some((key) => folders.get(key)?.trusted === true);
   return { state: isTrusted ? 'trusted' : 'untrusted', store };
+}
+
+// ---- The project's sandbox (#589) ----
+//
+// Grok keeps custom sandbox profiles in `.grok/sandbox.toml` in the project
+// (`~/.grok/docs/user-guide/18-sandbox.md`, Grok CLI 1.0.52): `[profiles.<name>]` with
+// `extends` naming a built-in. The built-in `workspace` is the recommended dev profile:
+// writes stay in the working directory, reads go anywhere, child processes keep network.
+// A project can't select the profile (`[sandbox] profile` is user-level), so workers run
+// with `--sandbox yokoten`. `strict` also passes doctor: it writes the same folder with
+// tighter reads; `devbox` and `read-only` don't, one too wide and one too narrow.
+
+// The project's sandbox file, relative to the root.
+export const SANDBOX_FILE = '.grok/sandbox.toml';
+
+// The profile init writes, and what it builds on.
+const PROFILE = 'yokoten';
+const PROFILE_BASE = 'workspace';
+
+// The file init writes when `.grok/sandbox.toml` is missing.
+const FRESH_SANDBOX = `# The Grok sandbox profile for this project, written by yokoten init. Workers run with
+# \`grok --sandbox yokoten\`: writes stay in the project. Your other profiles stay.
+[profiles.yokoten]
+extends = "workspace"
+`;
+
+/**
+ * The `[profiles.yokoten]` table: parsed, `blocked` when `profiles` or `yokoten` is taken
+ * in another shape (writing the table would corrupt the file), or null when missing. A
+ * quoted header reads as empty (no base means workspace); an array header (`[[x]]`) is
+ * blocked, as writing the table next to it would corrupt the file.
+ */
+function readProfile(text: string): Record<string, unknown> | 'blocked' | null {
+  const parsed = parseToml(text);
+  if (parsed.profiles !== undefined && !isObject(parsed.profiles)) return 'blocked';
+  const yokoten = isObject(parsed.profiles) ? parsed.profiles.yokoten : undefined;
+  if (yokoten !== undefined && !isObject(yokoten)) return 'blocked';
+  if (isObject(yokoten)) return yokoten;
+  if (hasTomlArray(text, ['profiles', PROFILE])) return 'blocked';
+  if (hasTomlHeader(text, ['profiles', PROFILE])) return {};
+  const blanked = blankedToml(text);
+  return hasTomlTable(blanked, ['profiles', PROFILE]) || hasTomlKey(blanked, PROFILE) ? {} : null;
+}
+
+/**
+ * Write the project's Grok sandbox: the `[profiles.yokoten]` table when it is missing,
+ * and nothing else. A table the user set stays, even when it differs (`kept`).
+ */
+export function addProjectSandbox(root: string): 'added' | 'same' | 'kept' | 'unreadable' {
+  const path = join(root, SANDBOX_FILE);
+  if (!existsSync(path)) {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, FRESH_SANDBOX);
+    return 'added';
+  }
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch {
+    return 'unreadable';
+  }
+  const profile = readProfile(text);
+  if (profile === 'blocked') return 'kept';
+  if (profile !== null) return profile.extends === undefined || profile.extends === PROFILE_BASE ? 'same' : 'kept';
+  const newline = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = text.split(/\r?\n/);
+  while (lines.length > 0 && lines.at(-1) === '') lines.pop();
+  lines.push('', '[profiles.yokoten]', `extends = "${PROFILE_BASE}"`, '');
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, lines.join(newline));
+  return 'added';
+}
+
+/**
+ * The Grok sandbox against what init writes, or null when the profile is in place: a
+ * missing table (`yokoten init` adds it), a base that is too wide (`devbox`) or too
+ * narrow (`read-only`), and writes outside the project (`read_write`). Never prints a
+ * path: it may hold the user's home folder.
+ */
+export function sandboxProblem(root: string, env: Env): { what: string; fix: string } | null {
+  const file = SANDBOX_FILE;
+  if (!existsSync(join(root, file))) return { what: `no Grok sandbox profile in ${file}`, fix: '`yokoten init` adds it' };
+  let text: string;
+  try {
+    text = readFileSync(join(root, file), 'utf8');
+  } catch {
+    return { what: `can't read ${file}`, fix: 'make it readable, then run `yokoten init`' };
+  }
+  const profile = readProfile(text);
+  if (profile === null) return { what: `no Grok sandbox profile in ${file}`, fix: '`yokoten init` adds it' };
+  if (profile === 'blocked') return { what: `${file} has an unexpected shape`, fix: 'fix it, then run `yokoten init`' };
+  const base = profile.extends;
+  if (base === undefined) {
+    if (hasTomlKey(blankedToml(text), 'extends')) return { what: `the Grok sandbox profile does not build on workspace or strict`, fix: `set extends to "${PROFILE_BASE}" in ${file}` };
+  } else if (base === 'devbox') return { what: `the Grok sandbox profile writes almost everywhere (devbox)`, fix: `set extends to "${PROFILE_BASE}" in ${file}` };
+  else if (base === 'read-only') return { what: `the Grok sandbox profile is read-only, so workers can't write`, fix: `set extends to "${PROFILE_BASE}" in ${file}` };
+  else if (base !== 'workspace' && base !== 'strict') return { what: `the Grok sandbox profile does not build on workspace or strict`, fix: `set extends to "${PROFILE_BASE}" in ${file}` };
+  const extra = profile.read_write;
+  if (extra !== undefined || hasTomlKey(blankedToml(text), 'read_write')) {
+    const entries = Array.isArray(extra) ? extra : null;
+    if (entries === null || entries.some((entry) => typeof entry !== 'string' || !isInsideProject(entry, root, env))) {
+      return { what: `the Grok sandbox profile may write outside the project (read_write)`, fix: `keep only project paths in read_write in ${file}` };
+    }
+  }
+  return null;
 }
 
 /** The names this runtime's agent gets on top of the shared ones (#613). Grok CLI takes an xAI API key. */

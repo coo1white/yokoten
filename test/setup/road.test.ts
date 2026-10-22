@@ -420,6 +420,69 @@ test('road: a license file counts in each form, the Rust dual layout too', () =>
   }
 });
 
+// ---- The sandbox step (#589): missing, good, and too wide, each with its one fix. ----
+
+/** A scratch project with these sandbox files: the path and the text to write. */
+function sandboxProject(files: Record<string, string>): string {
+  const dir = makeTempDir('yokoten-sandbox-step-');
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, path)), { recursive: true });
+    writeFileSync(join(dir, path), text);
+  }
+  return dir;
+}
+
+/** The four sandbox files as init writes them. */
+function goodSandboxFiles(): Record<string, string> {
+  return {
+    '.claude/settings.json': JSON.stringify({ sandbox: { enabled: true } }),
+    '.codex/config.toml': 'sandbox_mode = "workspace-write"\napproval_policy = "on-request"\n\n[sandbox_workspace_write]\nnetwork_access = false\n',
+    '.gemini/settings.json': JSON.stringify({ security: { disableYoloMode: true } }),
+    '.grok/sandbox.toml': '[profiles.yokoten]\nextends = "workspace"\n',
+  };
+}
+
+test('road: the sandbox step is missing, then done, then names each too-wide value (#589)', () => {
+  const found = ROAD.find((entry) => entry.key === 'sandbox');
+  assert.ok(found);
+  assert.equal(found.stage, 4);
+  const env = { HOME: makeTempDir('yokoten-sandbox-home-') };
+  try {
+    const empty = sandboxProject({});
+    try {
+      assert.equal(found.check(empty, env, undefined), false);
+      assert.equal(found.what(empty, env, undefined), 'no sandbox in .claude/settings.json');
+      assert.equal(found.fix(empty, env, undefined), '`yokoten init` adds it');
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+    }
+    const good = sandboxProject(goodSandboxFiles());
+    try {
+      assert.equal(found.check(good, env, undefined), true);
+    } finally {
+      rmSync(good, { recursive: true, force: true });
+    }
+    const cases: [string, Record<string, string>, RegExp, RegExp][] = [
+      ['claude allows every host', { ...goodSandboxFiles(), '.claude/settings.json': JSON.stringify({ sandbox: { enabled: true, network: { allowedDomains: ['*'] } } }) }, /allows every network host/, /allowedDomains/],
+      ['codex runs without a sandbox', { ...goodSandboxFiles(), '.codex/config.toml': 'sandbox_mode = "danger-full-access"\napproval_policy = "on-request"\n\n[sandbox_workspace_write]\nnetwork_access = false\n' }, /danger-full-access/, /workspace-write/],
+      ['gemini allows YOLO mode', { ...goodSandboxFiles(), '.gemini/settings.json': JSON.stringify({ security: { disableYoloMode: false } }) }, /YOLO mode is allowed/, /disableYoloMode/],
+      ['grok writes almost everywhere', { ...goodSandboxFiles(), '.grok/sandbox.toml': '[profiles.yokoten]\nextends = "devbox"\n' }, /devbox/, /workspace/],
+    ];
+    for (const [name, files, what, fix] of cases) {
+      const dir = sandboxProject(files);
+      try {
+        assert.equal(found.check(dir, env, undefined), false, name);
+        assert.match(found.what(dir, env, undefined), what, name);
+        assert.match(found.fix(dir, env, undefined), fix, name);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  } finally {
+    rmSync(env.HOME, { recursive: true, force: true });
+  }
+});
+
 // #501: the tests step says where the CI job goes, shows it, and names the `needs` list of `ci`.
 test('road: the tests step names the workflow file, the job to add and the needs list of ci (#501)', () => {
   const tests = ROAD.find((s) => s.key === 'tests');

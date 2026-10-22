@@ -15,14 +15,14 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
-import { addProjectHook, addProjectStopHook, checkProjectSettings, setProjectEnv } from '../agents/runtimes/claude-code.ts';
+import { addProjectHook, addProjectSandbox as addClaudeSandbox, addProjectStopHook, checkProjectSettings, setProjectEnv } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
 import * as copilot from '../agents/copilot.ts';
 import * as dsh from '../agents/runtimes/deepseek-harness.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
-import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
+import { type Problem, skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
 import { configEntries, forgetGitReads, remembered, withGitReads } from '../run/check.ts';
 import { AGENT_STATUS_FILE } from '../run/hook.ts';
@@ -73,6 +73,37 @@ function agentHooks(name: string, file: string, add: () => string[]): { ok: bool
     if (!(err instanceof UnreadableHooksFile)) throw err;
     return { ok: false, lines: [`skipped ${name}: ${skippedBecause(file, err.problem, 'init')}`] };
   }
+}
+
+/** What init did with one agent's project sandbox: added, same, kept (yours differs), or why it skipped. */
+type SandboxWrite = 'added' | 'same' | 'kept' | 'hand' | 'unreadable' | Problem;
+
+/** One init line for one agent's sandbox (#589). */
+function sandboxLine(agent: string, file: string, why: string, write: SandboxWrite): string {
+  if (write === 'added') return `added the ${agent} sandbox in ${file} (${why})`;
+  if (write === 'same') return `same the ${agent} sandbox in ${file}`;
+  if (write === 'kept') return `kept your ${agent} sandbox in ${file} (doctor names what differs)`;
+  if (write === 'hand') return `skipped the ${agent} sandbox: ${file} has comments, so add ${gemini.SANDBOX_HAND_ADD} by hand, then run \`yokoten init\` again`;
+  if (write === 'unreadable') return `skipped the ${agent} sandbox: can't read ${file} (make it readable, then run \`yokoten init\` again)`;
+  return `skipped the ${agent} sandbox: ${skippedBecause(file, write, 'init')}`;
+}
+
+/**
+ * The project sandboxes init writes (#589): Claude's, Codex's, Gemini's YOLO block and
+ * Grok's profile. Written whether or not the agent is installed here, like the hooks.
+ * `ok` is false when a sandbox file was skipped; a sandbox the user set stays (`kept`).
+ */
+function sandboxLines(root: string): { ok: boolean; lines: string[] } {
+  const writes: [string, string, string, SandboxWrite][] = [
+    ['Claude Code', '.claude/settings.json', 'shell commands stay in the project; new network hosts ask first', addClaudeSandbox(root)],
+    ['Codex', '.codex/config.toml', 'writes stay in the project; network is off; Codex asks before going beyond', codex.addProjectSandbox(root)],
+    ['Gemini', '.gemini/settings.json', 'YOLO mode, which approves everything, stays off', gemini.addProjectSandbox(root)],
+    ['Grok', '.grok/sandbox.toml', 'the yokoten profile keeps writes in the project', grok.addProjectSandbox(root)],
+  ];
+  return {
+    ok: writes.every(([, , , write]) => write === 'added' || write === 'same' || write === 'kept'),
+    lines: writes.map(([agent, file, why, write]) => sandboxLine(agent, file, why, write)),
+  };
 }
 
 /** How long init waits for GitHub to say whether the remote owner is an organization. */
@@ -200,8 +231,10 @@ function initRun(root: string, env: Env, gh: Gh, noCi: boolean, ask?: Ask): { ok
   // On Windows the files are still written, ready for #332, but the lines say dsh is not checked.
   const dshHooks = agentHooks('the DeepSeek Harness hook', dsh.HOOKS_FILE, () => dsh.initLines(dsh.addProjectHooks(root, hookCli)));
   report.push(...codexHooks.lines, ...geminiHooks.lines, ...antigravityHooks.lines, ...museHooks.lines, ...dshHooks.lines, ...grokHooks.lines);
+  const sandboxes = sandboxLines(root);
+  report.push(...sandboxes.lines);
   report.push(...setCommitCheck(root, cli, hooks, blocks, env));
-  return { ok: claudeHooks.ok && codexHooks.ok && geminiHooks.ok && antigravityHooks.ok && museHooks.ok && dshHooks.ok && grokHooks.ok, lines: report };
+  return { ok: claudeHooks.ok && codexHooks.ok && geminiHooks.ok && antigravityHooks.ok && museHooks.ok && dshHooks.ok && grokHooks.ok && sandboxes.ok, lines: report };
 }
 
 // ---- A project that keeps CI off (#377) ----

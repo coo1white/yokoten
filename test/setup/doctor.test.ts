@@ -67,6 +67,7 @@ import {
   quoteForShell,
   REAL_MACHINE,
   readHostDisk,
+  sandboxControl,
   saveHostCache,
   selfTest,
   SERVER_TIMEOUT_MS,
@@ -1232,6 +1233,15 @@ test('self-test: the leftover control passes the real check and fails a broken o
   assert.deepEqual(leftoverControl((env, probe, read) => leftoverTempCheck(env, { ...probe, now: () => new Date(Date.now() + 365 * DAY) }, read)), ['leftover temp folder check']);
 });
 
+test('self-test: the sandbox control passes the real checks and fails broken ones (#589)', () => {
+  assert.deepEqual(sandboxControl(), []);
+  assert.ok(!selfTest().some((name) => name.toLowerCase().includes('sandbox')));
+  const passAll = () => null;
+  assert.deepEqual(sandboxControl(passAll, passAll, passAll, passAll), ['Claude Code sandbox check', 'Codex sandbox check', 'Gemini CLI sandbox check', 'Grok sandbox check'], 'checks that pass everything');
+  const failAll = () => ({ what: 'broken', fix: 'fix it' });
+  assert.deepEqual(sandboxControl(failAll, failAll, failAll, failAll), ['sandbox check (a good set passes)'], 'checks that fail everything');
+});
+
 // #365: work only on this machine. Full doctor lists it all; a session hears what is at
 // risk, three items at most. The cases themselves are tested in test/setup/advice/unsaved.test.ts.
 test('doctor: lists the work only on this machine; a session hears at most three items (#365)', async () => {
@@ -1553,6 +1563,21 @@ test('doctor: full doctor in an empty repo starts each git read once, nine child
   }
   assert.deepEqual(runs.filter((run, i) => runs.indexOf(run) !== i), [], `a git read ran twice:\n${runs.join('\n')}`);
   assert.equal(runs.length, 9, runs.join('\n'));
+});
+
+// ---- The sandbox step (#589): doctor names the one missing or too-wide sandbox. ----
+
+test('doctor: the sandbox step is to do, then done after init, then names a too-wide value (#589)', async () => {
+  const sandbox = makeSandbox();
+  assert.notEqual(await stepMark(sandbox, 'sandbox'), 'done');
+  assert.match((await sandbox.call(['doctor'])).stdout, /^ {4}(next|to do) +sandbox: no sandbox in \.claude\/settings\.json; `yokoten init` adds it$/m);
+  assert.equal((await sandbox.call(['init'])).status, 0);
+  assert.equal(await stepMark(sandbox, 'sandbox'), 'done');
+  assert.match((await sandbox.call(['doctor'])).stdout, /^ {4}done +sandbox$/m);
+  sandbox.write('.gemini/settings.json', JSON.stringify({ security: { disableYoloMode: false } }));
+  assert.notEqual(await stepMark(sandbox, 'sandbox'), 'done');
+  const doctor = (await sandbox.call(['doctor'])).stdout;
+  assert.match(doctor, /^ {4}(next|to do) +sandbox: Gemini YOLO mode is allowed in \.gemini\/settings\.json; set security\.disableYoloMode to true in \.gemini\/settings\.json$/m);
 });
 
 // #500: after a fresh install, every line that names a command uses one way to run yokoten.

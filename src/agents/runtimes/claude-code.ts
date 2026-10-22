@@ -248,5 +248,88 @@ export function readInstalledPlugin(env: Env, root: string | null): InstalledPlu
  */
 export const tempDir = (env: Env, uid: number): string => join(env.CLAUDE_CODE_TMPDIR || env.TMPDIR || env.TMP || env.TEMP || '/tmp', `claude-${uid}`);
 
+// ---- The project's sandbox (#589) ----
+//
+// Claude Code runs shell commands inside an OS sandbox when `sandbox.enabled` is true
+// (https://code.claude.com/docs/en/sandboxing): writes stay in the working directory and
+// the temp folder, and network goes through a proxy whose allowlist starts empty, so a new
+// host asks first. `.worktrees/` is inside the project, so a worker's worktree is covered.
+// Copilot CLI reads this file's hooks too, but its own sandbox is user-level (#589).
+
+/** The project's sandbox file, relative to the root. */
+export const SANDBOX_FILE = '.claude/settings.json';
+
+/** The settings with a well-shaped `sandbox` block, or the shape problem. */
+function withSandbox(settings: Settings): { settings: Settings } | { problem: { kind: 'shape'; hint: string } } {
+  if (settings.sandbox !== undefined && !isObject(settings.sandbox)) return { problem: { kind: 'shape', hint: '`sandbox` should be an object' } };
+  return { settings };
+}
+
+/**
+ * Write the project's Claude sandbox: the block when it is missing, `enabled` when the
+ * block lacks it, and nothing else. `false` stays: the user's explicit choice is theirs,
+ * and doctor names what differs. Returns what that took, or why the file was skipped.
+ */
+export function addProjectSandbox(root: string): 'added' | 'same' | 'kept' | Problem {
+  const path = projectSettings(root);
+  const table = readTable(path, PROJECT_EVENTS);
+  if ('problem' in table) return table.problem;
+  const envChecked = withEnv(table);
+  if ('problem' in envChecked) return envChecked.problem;
+  const shaped = withSandbox(envChecked.settings);
+  if ('problem' in shaped) return shaped.problem;
+  const sandbox = shaped.settings.sandbox as Record<string, unknown> | undefined;
+  if (sandbox === undefined) {
+    table.settings.sandbox = { enabled: true };
+    writeSettings(path, table.settings);
+    return 'added';
+  }
+  if (!Object.hasOwn(sandbox, 'enabled')) {
+    sandbox.enabled = true;
+    writeSettings(path, table.settings);
+    return 'added';
+  }
+  return sandbox.enabled === true ? 'same' : 'kept';
+}
+
+/**
+ * The Claude sandbox against what init writes, or null when it is in place: a missing or
+ * switched-off block (`yokoten init` turns a missing one on), and wider values (filesystem
+ * isolation off, or `*` in the network allowlist). Other sandbox keys stay the user's own.
+ */
+export function sandboxProblem(root: string): { what: string; fix: string } | null {
+  const file = SANDBOX_FILE;
+  const table = readTable(join(root, file), PROJECT_EVENTS);
+  if ('problem' in table) {
+    // readTable never reports comments (only checkHooks builds that one): json or shape.
+    const problem = table.problem as { kind: 'json' } | { kind: 'shape'; hint: string };
+    return problem.kind === 'json'
+      ? { what: `can't read ${file}`, fix: 'make it valid JSON, then run `yokoten init`' }
+      : { what: `${file} has an unexpected shape`, fix: `${problem.hint}; fix it, then run \`yokoten init\`` };
+  }
+  const envChecked = withEnv(table);
+  if ('problem' in envChecked) {
+    const problem = envChecked.problem as { kind: 'shape'; hint: string };
+    return { what: `${file} has an unexpected shape`, fix: `${problem.hint}; fix it, then run \`yokoten init\`` };
+  }
+  const shaped = withSandbox(envChecked.settings);
+  if ('problem' in shaped) return { what: `${file} has an unexpected shape`, fix: `${shaped.problem.hint}; fix it, then run \`yokoten init\`` };
+  const sandbox = shaped.settings.sandbox as Record<string, unknown> | undefined;
+  if (sandbox === undefined || !Object.hasOwn(sandbox, 'enabled')) return { what: `no sandbox in ${file}`, fix: '`yokoten init` adds it' };
+  if (sandbox.enabled !== true) return { what: `the sandbox in ${file} is off`, fix: `set sandbox.enabled to true in ${file}` };
+  const filesystem = sandbox.filesystem as Record<string, unknown> | undefined;
+  if (isObject(filesystem) && filesystem.disabled === true) return { what: `the sandbox in ${file} has filesystem isolation off`, fix: `take sandbox.filesystem.disabled out of ${file}` };
+  const network = sandbox.network as Record<string, unknown> | undefined;
+  // Only a bare `*` in the list is a problem: it allows every host, likely by mistake. A
+  // scoped wildcard (`*.example.com`) is the user's explicit choice, like a named host. A
+  // non-list `allowedDomains` allows nothing: the proxy's allowlist starts empty, so another
+  // shape is not a silent widening.
+  const allowed = isObject(network) && Array.isArray(network.allowedDomains) ? network.allowedDomains : null;
+  if (allowed?.some((host) => typeof host === 'string' && host.trim() === '*')) {
+    return { what: `the sandbox in ${file} allows every network host (*)`, fix: `list only the hosts the project needs in sandbox.network.allowedDomains in ${file}` };
+  }
+  return null;
+}
+
 /** The names this runtime's agent gets on top of the shared ones (#613). Claude Code signs in with its own login file; these are for an API key or a long-lived login token. */
 export const AGENT_ENV: RuntimeEnv = { login: ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'], config: ['CLAUDE_CONFIG_DIR'] };

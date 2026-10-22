@@ -16,7 +16,7 @@ import type { Env } from '../../rules/config.ts';
 import { homeIn } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import type { Action } from '../../run/hook.ts';
-import { type Added, addHook, checkHooks, hasHook, type HookArgs, type HookState, hookState, type ReadOptions } from '../hooks-file.ts';
+import { type Added, addHook, checkHooks, hasHook, type HookArgs, type HookState, hookState, isObject, type Problem, readTable, type ReadOptions, type Settings, writeSettings } from '../hooks-file.ts';
 import type { RuntimeEnv } from '../agent-env.ts';
 
 /** How yokoten reads a Gemini CLI settings file: comments allowed, as Gemini CLI allows them. */
@@ -127,6 +127,73 @@ export function hasUserDir(env: Env): boolean {
 export function userHooksState(env: Env, cli: string, missing: string): { doctor: HookState; guard: HookState } {
   const args = userHookArgs(env, cli, missing);
   return { doctor: hookState(...args.doctor), guard: hookState(...args.guard) };
+}
+
+// ---- The project's sandbox (#589) ----
+//
+// Gemini CLI reads `.gemini/settings.json` from the folder it starts in, and refuses YOLO
+// mode (approve everything) when `security.disableYoloMode` is true: read in its own code
+// (`settings.security?.disableYoloMode`, @google/gemini-cli 0.64.0). yokoten pins that. Its
+// container sandbox (`tools.sandbox`) stays the user's own: `true` with neither Docker nor
+// Podman installed is a fatal error, not a run without a sandbox, so no safe default fits
+// every machine.
+
+/** The project's sandbox file, relative to the root. */
+export const SANDBOX_FILE = '.gemini/settings.json';
+
+/** The sandbox block for a commented settings file, to add by hand. */
+export const SANDBOX_HAND_ADD = '{"security": {"disableYoloMode": true}}';
+
+/** The hook events init writes: the sandbox read respects their shape too, so a bad hooks table skips both. */
+const PROJECT_EVENTS = ['BeforeTool', 'AfterAgent'];
+
+/** The settings with a well-shaped `security` block, or the shape problem. */
+function withSecurity(settings: Settings): { settings: Settings } | { problem: { kind: 'shape'; hint: string } } {
+  if (settings.security !== undefined && !isObject(settings.security)) return { problem: { kind: 'shape', hint: '`security` should be an object' } };
+  return { settings };
+}
+
+/**
+ * Write the project's Gemini sandbox: `security.disableYoloMode` when it is missing, and
+ * nothing else. `false` stays: the user's explicit choice is theirs. A commented file
+ * without the key is `hand`: yokoten won't rewrite comments, so init prints what to add.
+ */
+export function addProjectSandbox(root: string): 'added' | 'same' | 'kept' | 'hand' | Problem {
+  const path = projectSettings(root);
+  const table = readTable(path, PROJECT_EVENTS, READ);
+  if ('problem' in table) return table.problem;
+  const shaped = withSecurity(table.settings);
+  if ('problem' in shaped) return shaped.problem;
+  const security = table.settings.security as Record<string, unknown> | undefined;
+  if (security !== undefined && Object.hasOwn(security, 'disableYoloMode')) return security.disableYoloMode === true ? 'same' : 'kept';
+  if (table.commented) return 'hand';
+  table.settings.security = { ...security, disableYoloMode: true };
+  writeSettings(path, table.settings);
+  return 'added';
+}
+
+/**
+ * The Gemini sandbox against what init writes, or null when YOLO mode is blocked: a
+ * missing or allowed key, or a commented file that needs the block by hand.
+ */
+export function sandboxProblem(root: string): { what: string; fix: string } | null {
+  const file = SANDBOX_FILE;
+  const table = readTable(join(root, file), PROJECT_EVENTS, READ);
+  if ('problem' in table) {
+    // readTable never reports comments (only checkHooks builds that one): json or shape.
+    const problem = table.problem as { kind: 'json' } | { kind: 'shape'; hint: string };
+    return problem.kind === 'json'
+      ? { what: `can't read ${file}`, fix: 'make it valid JSON, then run `yokoten init`' }
+      : { what: `${file} has an unexpected shape`, fix: `${problem.hint}; fix it, then run \`yokoten init\`` };
+  }
+  const shaped = withSecurity(table.settings);
+  if ('problem' in shaped) return { what: `${file} has an unexpected shape`, fix: `${shaped.problem.hint}; fix it, then run \`yokoten init\`` };
+  const security = table.settings.security as Record<string, unknown> | undefined;
+  if (security !== undefined && Object.hasOwn(security, 'disableYoloMode')) {
+    return security.disableYoloMode === true ? null : { what: `Gemini YOLO mode is allowed in ${file}`, fix: `set security.disableYoloMode to true in ${file}` };
+  }
+  if (table.commented) return { what: `${file} has comments and no YOLO block`, fix: `add ${SANDBOX_HAND_ADD} to ${file} by hand` };
+  return { what: `nothing blocks Gemini YOLO mode in ${file}`, fix: '`yokoten init` blocks it' };
 }
 
 /** The names this runtime's agent gets on top of the shared ones (#613). Gemini CLI: only its own key. GOOGLE_API_KEY and GOOGLE_APPLICATION_CREDENTIALS open all of Google Cloud, so a Vertex AI setup needs the lead to pass them on purpose. */

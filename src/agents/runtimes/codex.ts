@@ -6,7 +6,8 @@
 // command has to be trusted again.
 
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import type { Env } from '../../rules/config.ts';
 import { homeIn, homeOf } from '../../rules/privacy.ts';
@@ -410,6 +411,579 @@ export function readTrust(root: string, env: Env): CodexTrust {
   }
   if (!states.length) return { state: 'hooks untrusted', store };
   return { state: (['hooks off', 'hooks untrusted', 'hooks changed'] as const).find((state) => states.includes(state)) ?? 'trusted', store };
+}
+
+// ---- The project's sandbox (#589) ----
+//
+// Codex reads `.codex/config.toml` in a trusted project: checked with `codex doctor --json`
+// in a scratch CODEX_HOME on 2026-10-22 (codex-cli 0.163.0), a project model and sandbox_mode
+// showed in the report once the folder was trusted, and not before. yokoten pins the safe
+// mode there: writes stay in the workspace, network stays off, and Codex asks before going
+// beyond. init only adds keys that are missing; a key the user set stays, and doctor names
+// what differs.
+
+/** The project's sandbox file, relative to the root. */
+export const SANDBOX_FILE = '.codex/config.toml';
+
+/** A TOML value init and doctor read: a string, boolean, number, list, or table. */
+export type TomlValue = string | boolean | number | TomlValue[] | { [key: string]: TomlValue };
+
+/**
+ * The text as logical lines without comments: a newline inside `[]` or `{}` or a
+ * triple-quoted string continues the line, so a multi-line list or string reads as one;
+ * a `#` outside a string skips to the physical line's end (comments read inside lists
+ * too). Line ends are LF.
+ */
+function logicalLines(text: string): string[] {
+  const lines: string[] = [];
+  let line = '';
+  let depth = 0;
+  let quote: string | null = null;
+  let triple: string | null = null;
+  let escaped = false;
+  const chars = text.replace(/\r\n/g, '\n');
+  for (let index = 0; index < chars.length; index++) {
+    const char = chars[index];
+    if (escaped) {
+      line += char;
+      escaped = false;
+      continue;
+    }
+    if (quote !== null) {
+      line += char;
+      if (quote === '"' && char === '\\') escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (triple !== null) {
+      if (triple === '"""' && char === '\\') {
+        line += char + (chars[index + 1] ?? '');
+        index++;
+        continue;
+      }
+      if (chars.startsWith(triple, index)) {
+        line += triple;
+        index += 2;
+        triple = null;
+        continue;
+      }
+      line += char;
+      continue;
+    }
+    if (char === '#') {
+      // Skip to the newline, then let it run: it still ends (or joins) the line.
+      const end = chars.indexOf('\n', index);
+      index = (end < 0 ? chars.length : end) - 1;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      const marks = char.repeat(3);
+      if (chars.startsWith(marks, index)) {
+        triple = marks;
+        line += marks;
+        index += 2;
+        continue;
+      }
+      quote = char;
+      line += char;
+      continue;
+    }
+    if (char === '[' || char === '{') depth++;
+    if (char === ']' || char === '}') depth = Math.max(0, depth - 1);
+    if (char === '\n' && depth === 0) {
+      lines.push(line);
+      line = '';
+      continue;
+    }
+    line += char;
+  }
+  lines.push(line);
+  return lines;
+}
+
+/** A comma-separated list split at its top-level commas; strings and nested brackets stay whole. */
+function splitItems(text: string): string[] {
+  const items: string[] = [];
+  let item = '';
+  let depth = 0;
+  let quote: string | null = null;
+  let escaped = false;
+  for (const char of text) {
+    if (escaped) {
+      item += char;
+      escaped = false;
+      continue;
+    }
+    if (quote !== null) {
+      item += char;
+      if (quote === '"' && char === '\\') escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      item += char;
+    } else if (char === '[' || char === '{') {
+      depth++;
+      item += char;
+    } else if (char === ']' || char === '}') {
+      depth = Math.max(0, depth - 1);
+      item += char;
+    } else if (char === ',' && depth === 0) {
+      items.push(item);
+      item = '';
+    } else item += char;
+  }
+  items.push(item);
+  return items;
+}
+
+/** The first `=` outside a string: the key before it and the value after it. */
+function splitPair(line: string): [string, string] | null {
+  let quote: string | null = null;
+  let escaped = false;
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote !== null) {
+      if (quote === '"' && char === '\\') escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'") quote = char;
+    else if (char === '=') return [line.slice(0, index), line.slice(index + 1)];
+  }
+  return null;
+}
+
+/** A basic triple-quoted string with its escapes read; enough for the values here. */
+function unescapeBasic(text: string): string {
+  return text.replace(/\\(\\|"|n|t|r)/g, (_, mark: string) => ({ '\\': '\\', '"': '"', n: '\n', t: '\t', r: '\r' })[mark] ?? mark);
+}
+
+/**
+ * One TOML value: a string (triple-quoted too), boolean, number, list, or inline table.
+ * Undefined when it does not parse: the caller skips the line, never throws.
+ */
+function parseTomlValue(text: string): TomlValue | undefined {
+  const value = text.trim();
+  if (value === '') return undefined;
+  const first = value[0];
+  if (first === '"' || first === "'") {
+    const marks = first.repeat(3);
+    if (value.startsWith(marks)) {
+      const end = value.indexOf(marks, 3);
+      if (end < 0 || value.slice(end + 3).trim() !== '') return undefined;
+      const raw = value.slice(3, end);
+      return first === '"' ? unescapeBasic(raw) : raw;
+    }
+    const key = readTomlKey(value);
+    return key && key[1].trim() === '' ? key[0] : undefined;
+  }
+  if (value === 'true' || value === 'false') return value === 'true';
+  if (/^-?\d+(\.\d+)?$/.test(value)) return Number(value);
+  if (value.startsWith('[') && value.endsWith(']')) {
+    const items: TomlValue[] = [];
+    for (const item of splitItems(value.slice(1, -1))) {
+      if (item.trim() === '') continue;
+      const parsed = parseTomlValue(item);
+      if (parsed === undefined) return undefined;
+      items.push(parsed);
+    }
+    return items;
+  }
+  if (value.startsWith('{') && value.endsWith('}')) {
+    const table: Record<string, TomlValue> = {};
+    for (const item of splitItems(value.slice(1, -1))) {
+      if (item.trim() === '') continue;
+      const pair = splitPair(item);
+      const path = pair && readTomlPath(pair[0]);
+      const parsed = pair && parseTomlValue(pair[1]);
+      if (!path || path[1].trim() !== '' || parsed === null || parsed === undefined || !placeValue(table, path[0], parsed)) return undefined;
+    }
+    return table;
+  }
+  return undefined;
+}
+
+/** Put `value` at `path` in `table`, making tables on the way. False when a scalar is in the way. */
+function placeValue(table: Record<string, TomlValue>, path: string[], value: TomlValue): boolean {
+  let at = table;
+  for (const part of path.slice(0, -1)) {
+    const next = at[part];
+    if (next === undefined) at[part] = {};
+    else if (typeof next !== 'object' || next === null || Array.isArray(next)) return false;
+    at = at[part] as Record<string, TomlValue>;
+  }
+  at[path.at(-1) as string] = value;
+  return true;
+}
+
+/**
+ * The file as nested tables, read without a TOML library (no runtime dependencies):
+ * `[a.b]` with `c = 1` reads as `tables.a.b.c`. Comments, dotted keys, inline tables,
+ * quoted keys and multi-line lists read; an array-of-tables header (`[[x]]`) skips its
+ * section, and a line that does not parse is skipped, never an error. So doctor never
+ * crashes on a user's file.
+ */
+export function parseToml(text: string): Record<string, TomlValue> {
+  const tables: Record<string, TomlValue> = {};
+  let header: string[] | null = [];
+  for (const line of logicalLines(text)) {
+    const clean = line.trim();
+    if (clean === '') continue;
+    if (clean.startsWith('[[')) {
+      header = null;
+      continue;
+    }
+    if (clean.startsWith('[')) {
+      const inner = /^\[([^\]]+)\]\s*$/.exec(clean)?.[1];
+      const path = inner === undefined ? null : readTomlPath(inner);
+      header = path && path[1].trim() === '' ? path[0] : null;
+      continue;
+    }
+    if (header === null) continue;
+    const pair = splitPair(clean);
+    const path = pair && readTomlPath(pair[0]);
+    const parsed = pair && parseTomlValue(pair[1]);
+    if (!path || path[1].trim() !== '' || parsed === null || parsed === undefined) continue;
+    placeValue(tables, [...header, ...path[0]], parsed);
+  }
+  return tables;
+}
+
+/**
+ * The text with strings and comments turned into spaces (a newline stays a newline), so a
+ * key search never matches inside them. init uses it to tell a key that is really missing
+ * from one set in a form the parser skips: only a name nowhere in the file is added, so
+ * init never writes a key twice, which TOML reads as an error.
+ */
+export function blankedToml(text: string): string {
+  let out = '';
+  let index = 0;
+  const chars = text.replace(/\r\n/g, '\n');
+  while (index < chars.length) {
+    const char = chars[index];
+    if (char === '"' || char === "'") {
+      const marks = char.repeat(3);
+      if (chars.startsWith(marks, index)) {
+        const end = chars.indexOf(marks, index + 3);
+        const stop = end < 0 ? chars.length : end + 3;
+        out += chars.slice(index, stop).replace(/[^\n]/g, ' ');
+        index = stop;
+        continue;
+      }
+      let end = index + 1;
+      while (end < chars.length && chars[end] !== char && chars[end] !== '\n') end += char === '"' && chars[end] === '\\' ? 2 : 1;
+      if (chars[end] === char) end++;
+      out += ' '.repeat(end - index);
+      index = end;
+      continue;
+    }
+    if (char === '#') {
+      const end = chars.indexOf('\n', index);
+      const stop = end < 0 ? chars.length : end;
+      out += ' '.repeat(stop - index);
+      index = stop;
+      continue;
+    }
+    out += char;
+    index++;
+  }
+  return out;
+}
+
+/**
+ * Whether `key` is set anywhere in blanked TOML text: `key =`, quoted, dotted (`a.key =`)
+ * or in an inline table. Our keys are letters and `_`, so the name needs no escaping.
+ */
+export function hasTomlKey(blanked: string, key: string): boolean {
+  return new RegExp(`(^|[\\s,{.])["']?${key}["']?\\s*=`, 'm').test(blanked);
+}
+
+/**
+ * Whether blanked TOML text holds a `[a.b.c]` header (`[[x]]` never). Quoted parts don't
+ * match: blanking clears strings, so the parser reads those and this only catches what
+ * the parser skips.
+ */
+export function hasTomlTable(blanked: string, path: readonly string[]): boolean {
+  const header = path.map((part) => `["']?${part}["']?`).join(String.raw`\s*\.\s*`);
+  return new RegExp(`^\\s*\\[\\s*${header}\\s*\\]\\s*$`, 'm').test(blanked);
+}
+
+/** A `[table.path]` header line as its path, or null for `[[x]]` and other lines. Blanked text only. */
+function headerPath(line: string): string[] | null {
+  const inner = /^\s*\[([^[\]]+)\]\s*$/.exec(line)?.[1];
+  if (inner === undefined) return null;
+  return inner.split('.').map((part) => part.trim().replace(/^["'](.*)["']$/, '$1'));
+}
+
+/** A header line as its path and whether it is an array (`[[x]]`), or null. Reads the original line, so quoted parts parse. */
+function headerShape(line: string): { path: string[]; isArray: boolean } | null {
+  const trimmed = line.trim();
+  const isArray = trimmed.startsWith('[[');
+  const close = isArray ? ']]' : trimmed.startsWith('[') ? ']' : null;
+  if (!close) return null;
+  const path = readTomlPath(trimmed.slice(close.length));
+  if (!path || !path[1].startsWith(close)) return null;
+  if (!/^\s*(#.*)?$/.test(path[1].slice(close.length))) return null;
+  return { path: path[0], isArray };
+}
+
+/** Whether the text holds the header for `path`, single or array. Only lines that are really headers (blanked still starts with `[`) count, so strings and comments never match. */
+function hasHeaderShape(text: string, path: readonly string[], wantArray: boolean): boolean {
+  const blanked = blankedToml(text).split('\n');
+  return text.split('\n').some((line, index) => {
+    if (!(blanked[index] ?? '').trimStart().startsWith('[')) return false;
+    const header = headerShape(line);
+    return !!header && header.isArray === wantArray && header.path.length === path.length && header.path.every((part, at) => part === path[at]);
+  });
+}
+
+/**
+ * Whether the text holds a `[a.b]` header for `path`, quoted or not. Blanked text misses quoted names, so this reads the original lines. Shared with Grok's profile (#589).
+ */
+export function hasTomlHeader(text: string, path: readonly string[]): boolean {
+  return hasHeaderShape(text, path, false);
+}
+
+/**
+ * Whether the text holds a `[[a.b]]` array header for `path`, quoted or not. An array where a table belongs is always the wrong shape. Shared with Grok's profile (#589).
+ */
+export function hasTomlArray(text: string, path: readonly string[]): boolean {
+  return hasHeaderShape(text, path, true);
+}
+
+/** The sandbox keys init writes: top-level pairs, and the one table with its pair. */
+const TOP_SANDBOX: (readonly [string, string])[] = [
+  ['sandbox_mode', '"workspace-write"'],
+  ['approval_policy', '"on-request"'],
+];
+const TABLE_SANDBOX: readonly [readonly string[], string, string] = [['sandbox_workspace_write'], 'network_access', 'false'];
+
+/** The file init writes when `.codex/config.toml` is missing. */
+const FRESH_SANDBOX = `# The Codex sandbox for this project, written by yokoten init. Writes stay in the
+# project, network stays off, and Codex asks before going beyond. Your other keys stay.
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+
+[sandbox_workspace_write]
+network_access = false
+`;
+
+/** Whether a top-level key is set: parsed (quoted keys too), or in a form the parser skips. */
+function isTopSet(parsed: Record<string, TomlValue>, blanked: string, key: string): boolean {
+  return Object.hasOwn(parsed, key) || hasTomlKey(blanked, key);
+}
+
+/** Whether `name` is set at top level, outside any table: `name =` or `name.x =`. */
+function isTopNameSet(blanked: string, name: string): boolean {
+  const lines = blanked.split('\n');
+  const firstHeader = lines.findIndex((line) => /^\s*\[/.test(line));
+  const top = firstHeader < 0 ? lines : lines.slice(0, firstHeader);
+  return top.some((line) => new RegExp(`^\\s*["']?${name}["']?\\s*(=|\\.)`).test(line));
+}
+
+/** Whether `name` is taken twice, at top level and by a table header: the file won't parse. */
+function isTakenTwice(blanked: string, name: string): boolean {
+  return isTopNameSet(blanked, name) && blanked.split('\n').some((line) => headerPath(line)?.[0] === name);
+}
+
+/** Whether a top-level `key =` can't be added: a table header already takes the name. */
+function isTopBlocked(parsed: Record<string, TomlValue>, blanked: string, key: string): boolean {
+  return !isTopSet(parsed, blanked, key) && blanked.split('\n').some((line) => headerPath(line)?.[0] === key);
+}
+
+/** Whether `network_access` is set: parsed in its table (quoted keys too), or in a form the parser skips. */
+function isTableSet(parsed: Record<string, TomlValue>, blanked: string): boolean {
+  const table = TABLE_SANDBOX[0].reduce<unknown>((at, part) => (isObject(at) ? at[part] : undefined), parsed);
+  return (isObject(table) && Object.hasOwn(table, TABLE_SANDBOX[1])) || hasTomlKey(blanked, TABLE_SANDBOX[1]);
+}
+
+/** Whether `network_access` can't be added: `sandbox_workspace_write` is a key, not a table. */
+function isTableBlocked(parsed: Record<string, TomlValue>, blanked: string): boolean {
+  if (isTableSet(parsed, blanked) || hasTomlTable(blanked, TABLE_SANDBOX[0])) return false;
+  const lines = blanked.split('\n');
+  const firstHeader = lines.findIndex((line) => /^\s*\[/.test(line));
+  const top = firstHeader < 0 ? lines : lines.slice(0, firstHeader);
+  const name = TABLE_SANDBOX[0].join('.');
+  return top.some((line) => new RegExp(`^\\s*["']?${name}["']?\\s*=`).test(line));
+}
+
+/** Whether the table header exists in a form the blanked search misses: quoted (`["a"]`) or an array (`[[a]]`). Writing the table again would corrupt the file. */
+function hasMissedTable(text: string, blanked: string): boolean {
+  return (hasTomlHeader(text, TABLE_SANDBOX[0]) || hasTomlArray(text, TABLE_SANDBOX[0])) && !hasTomlTable(blanked, TABLE_SANDBOX[0]);
+}
+
+/**
+ * Write the project's Codex sandbox: the keys that are missing, and only those. A key the
+ * user set stays, even when it differs (`kept`); a key set in a form the parser skips
+ * counts as set too, so init never writes a key twice. Returns what that took, or
+ * `unreadable` when the file can't be read.
+ */
+export function addProjectSandbox(root: string): 'added' | 'same' | 'kept' | 'unreadable' {
+  const path = join(root, SANDBOX_FILE);
+  if (!existsSync(path)) {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, FRESH_SANDBOX);
+    return 'added';
+  }
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch {
+    return 'unreadable';
+  }
+  const parsed = parseToml(text);
+  const blanked = blankedToml(text);
+  // A name anywhere in the file counts as set: adding it again would write a key twice.
+  // A name taken in another shape blocks its insert: writing there would corrupt the file.
+  // Doctor calls that a shape problem, so init and doctor agree on what is missing.
+  const [tablePath, tableKey, tableValue] = TABLE_SANDBOX;
+  const missingTop = TOP_SANDBOX.filter(([key]) => !isTopSet(parsed, blanked, key) && !isTopBlocked(parsed, blanked, key));
+  const needsTableKey = !isTableSet(parsed, blanked) && !isTableBlocked(parsed, blanked) && !hasMissedTable(text, blanked);
+  if (missingTop.length === 0 && !needsTableKey) {
+    const tableParsed = tablePath.reduce<unknown>((at, part) => (isObject(at) ? at[part] : undefined), parsed);
+    const network = isObject(tableParsed) ? tableParsed[tableKey] : undefined;
+    return parsed.sandbox_mode === 'workspace-write' && parsed.approval_policy === 'on-request' && network === false ? 'same' : 'kept';
+  }
+  const newline = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = text.split(/\r?\n/);
+  // Each search reads the lines as they are now, after the insert before it.
+  const blankedNow = (): string[] => blankedToml(lines.join('\n')).split('\n');
+  const isHeader = (line: string): boolean => /^\s*\[/.test(line);
+  const isTable = (line: string): boolean => {
+    const found = headerPath(line);
+    return found !== null && found.length === tablePath.length && found.every((part, index) => part === tablePath[index]);
+  };
+  // Top-level keys go before the first table header; a file with no header takes them at the end.
+  if (missingTop.length > 0) {
+    const at = blankedNow().findIndex(isHeader);
+    const insert = missingTop.map(([key, value]) => `${key} = ${value}`);
+    if (at < 0) {
+      while (lines.length > 0 && lines.at(-1) === '') lines.pop();
+      lines.push(...insert, '');
+    } else lines.splice(at, 0, ...insert);
+  }
+  if (needsTableKey) {
+    const at = blankedNow().findIndex(isTable);
+    if (at < 0) {
+      while (lines.length > 0 && lines.at(-1) === '') lines.pop();
+      lines.push('', `[${tablePath.join('.')}]`, `${tableKey} = ${tableValue}`, '');
+    } else lines.splice(at + 1, 0, `${tableKey} = ${tableValue}`);
+  }
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, lines.join(newline));
+  return 'added';
+}
+
+/**
+ * Whether a writable root stays inside the project or the temp folder: an absolute path
+ * inside the root, or a relative one that stays in it. `~` grows from HOME, and `$VAR`
+ * from the environment. Anything yokoten can't place (an unknown variable, a path that
+ * escapes) is outside: unsure is not fine. Shared with Grok's `read_write` (#589).
+ */
+export function isInsideProject(entry: string, root: string, env: Env): boolean {
+  let path = entry.trim();
+  if (path === '') return false;
+  if (path.startsWith('~')) {
+    const home = homeOf(env);
+    if (!home) return false;
+    path = join(home, path.slice(1).replace(/^\/+/, ''));
+  }
+  path = path.replace(/\$(\w+)|\$\{(\w+)\}/g, (_, one: string, two: string) => env[one ?? two] ?? '');
+  if (path.includes('$')) return false;
+  if (!isAbsolute(path)) path = resolve(root, path);
+  const real = (dir: string): string => {
+    try {
+      return realpathSync(dir);
+    } catch {
+      // A root need not exist yet: resolve the nearest parent that does, then
+      // re-append the rest, so a symlinked parent (/tmp on macOS) still compares.
+      const rest: string[] = [];
+      let parent = resolve(dir);
+      for (;;) {
+        const next = dirname(parent);
+        if (next === parent) return parent;
+        rest.unshift(parent.slice(next.length + (next.endsWith(sep) ? 0 : sep.length)));
+        parent = next;
+        try {
+          return join(realpathSync(parent), ...rest);
+        } catch {
+          // Keep climbing.
+        }
+      }
+    }
+  };
+  const inside = (dir: string, parent: string): boolean => dir === parent || dir.startsWith(`${parent}${sep}`);
+  const resolved = real(path);
+  if (inside(resolved, real(root))) return true;
+  return [tmpdir(), '/tmp', '/var/tmp'].some((temp) => inside(resolved, real(temp)));
+}
+
+/**
+ * The Codex sandbox against what init writes, or null when it is in place: missing keys
+ * (`yokoten init` adds them), values the user must change by hand (init keeps what the
+ * user set), and wider values (a mode with no sandbox, network on, or writes outside the
+ * project). Never prints a writable root: it may hold the user's home folder.
+ */
+export function sandboxProblem(root: string, env: Env): { what: string; fix: string } | null {
+  const file = SANDBOX_FILE;
+  if (!existsSync(join(root, file))) return { what: `no Codex sandbox in ${file}`, fix: '`yokoten init` adds it' };
+  let text: string;
+  try {
+    text = readFileSync(join(root, file), 'utf8');
+  } catch {
+    return { what: `can't read ${file}`, fix: 'make it readable, then run `yokoten init`' };
+  }
+  const parsed = parseToml(text);
+  const blanked = blankedToml(text);
+  const table = TABLE_SANDBOX[0].reduce<unknown>((at, part) => (isObject(at) ? at[part] : undefined), parsed);
+  const network = isObject(table) ? table[TABLE_SANDBOX[1]] : undefined;
+  const mode = parsed.sandbox_mode;
+  if (typeof mode === 'string') {
+    if (mode === 'danger-full-access') return { what: `the Codex sandbox is danger-full-access, so nothing is contained`, fix: `set sandbox_mode to "workspace-write" in ${file}` };
+    if (mode === 'read-only') return { what: `the Codex sandbox is read-only, so workers can't write`, fix: `set sandbox_mode to "workspace-write" in ${file}` };
+    if (mode !== 'workspace-write') return { what: `the Codex sandbox has an unknown mode`, fix: `set sandbox_mode to "workspace-write" in ${file}` };
+    // A table on the name reads below, as a shape problem; anything else set is unknown.
+  } else if ((mode === undefined && hasTomlKey(blanked, 'sandbox_mode')) || (mode !== undefined && !isObject(mode))) {
+    return { what: `the Codex sandbox has an unknown mode`, fix: `set sandbox_mode to "workspace-write" in ${file}` };
+  }
+  if (network === true) return { what: `the Codex sandbox allows network (network_access)`, fix: `set network_access to false in ${file}` };
+  if (network !== false && isTableSet(parsed, blanked)) return { what: `the Codex sandbox may allow network (network_access)`, fix: `set network_access to false in ${file}` };
+  const roots = isObject(table) ? table.writable_roots : undefined;
+  if (roots !== undefined || hasTomlKey(blanked, 'writable_roots')) {
+    const entries = Array.isArray(roots) ? roots : null;
+    if (entries === null || entries.some((entry) => typeof entry !== 'string' || !isInsideProject(entry, root, env))) {
+      return { what: `the Codex sandbox may write outside the project (writable_roots)`, fix: `keep only project paths in writable_roots in ${file}` };
+    }
+  }
+  const approval = parsed.approval_policy;
+  if (approval === 'never') return { what: `Codex never asks before risky commands (approval_policy is never)`, fix: `set approval_policy to "on-request" in ${file}` };
+  // A table on the name reads below, as a shape problem; anything else set is judged here.
+  if (approval !== 'on-request' && !isObject(approval) && isTopSet(parsed, blanked, 'approval_policy')) {
+    return { what: `the Codex approval_policy is not "on-request"`, fix: `set approval_policy to "on-request" in ${file}` };
+  }
+  if (
+    isObject(parsed.sandbox_mode) ||
+    isObject(parsed.approval_policy) ||
+    isTopBlocked(parsed, blanked, 'sandbox_mode') ||
+    isTopBlocked(parsed, blanked, 'approval_policy') ||
+    isTableBlocked(parsed, blanked) ||
+    (hasMissedTable(text, blanked) && !isTableSet(parsed, blanked)) ||
+    isTakenTwice(blanked, 'sandbox_mode') ||
+    isTakenTwice(blanked, 'approval_policy') ||
+    isTakenTwice(blanked, 'sandbox_workspace_write')
+  ) {
+    return { what: `${file} has an unexpected shape`, fix: 'fix it, then run `yokoten init`' };
+  }
+  const missing = ['sandbox_mode', 'approval_policy'].filter((key) => !isTopSet(parsed, blanked, key));
+  if (!isTableSet(parsed, blanked)) missing.push('network_access');
+  if (missing.length > 0) return { what: `the Codex sandbox in ${file} is missing ${missing.join(', ')}`, fix: '`yokoten init` adds it' };
+  return null;
 }
 
 /** The names this runtime's agent gets on top of the shared ones (#613). Codex signs in with its own login file; these are for an API key. */
