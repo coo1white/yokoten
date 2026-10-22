@@ -2,13 +2,13 @@
 
 import '../../../repo/home.ts';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, realpathSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, realpathSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { dirname, join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { test } from 'node:test';
 import { CLI, makeSandbox } from '../../../repo/helpers.ts';
-import { browserCommand, runBoard, startBoardServer } from '../../../../src/commands/advice/board/server.ts';
+import { boardHostName, boardPort, browserCommand, runBoard, startBoardServer } from '../../../../src/commands/advice/board/server.ts';
 import { type BoardData, createBoardGitHub } from '../../../../src/commands/advice/board/view.ts';
 import type { Invocation, Output } from '../../../../src/commands/shared.ts';
 import { type Gh, ghLaterIn } from '../../../../src/host/github/index.ts';
@@ -82,8 +82,8 @@ test('board --text: pull requests with each stage, read-only', async () => {
 function boardGet(target: string, headers: Record<string, string> = {}): Promise<{ status: number; kind: string; headers: Record<string, string>; text: string }> {
   const url = new URL(target);
   return new Promise((done, failed) => {
-    const socket = connect(Number(url.port), url.hostname, () => {
-      socket.write(`GET ${url.pathname}${url.search} HTTP/1.1\r\nHost: ${headers.host ?? url.host}\r\nConnection: close\r\n\r\n`);
+    const socket = connect(Number(url.port), '127.0.0.1', () => {
+      socket.write(`GET ${url.pathname}${url.search} HTTP/1.1\r\nHost: ${headers.host ?? url.host}\r\n${headers.cookie ? `Cookie: ${headers.cookie}\r\n` : ''}Connection: close\r\n\r\n`);
     });
     const parts: Buffer[] = [];
     socket.on('data', (chunk) => parts.push(chunk));
@@ -114,11 +114,12 @@ test('board server: the right Host and token see the page and the data', async (
     const address = server.address();
     assert.ok(typeof address === 'object' && address !== null);
     assert.equal(address.address, '127.0.0.1', 'this machine only');
-    assert.match(url, /^http:\/\/127\.0\.0\.1:\d+\/\?t=[0-9a-f]{32}$/, 'the link holds a random token');
+    assert.match(url, /^http:\/\/[a-z0-9-]+\.localhost:\d+\/\?t=[0-9a-f]{32}$/, 'the link holds a random token');
     const base = url.split('?')[0];
     const token = new URL(url).searchParams.get('t') ?? '';
     const dataUrl = `${base}data?t=${token}`;
-    const page = await boardGet(url);
+    const cookie = `yokoten_board=${token}`;
+    const page = await boardGet(base, { cookie });
     assert.equal(page.status, 200);
     assert.equal(page.kind, 'text/html; charset=utf-8');
     // Only the page's own script runs: its nonce is in the policy, and each load gets a new one.
@@ -126,7 +127,7 @@ test('board server: the right Host and token see the page and the data', async (
     assert.ok(nonce.length >= 20, 'the script carries a nonce');
     assert.match(page.headers['content-security-policy'] ?? '', new RegExp(`^default-src 'none'; script-src 'nonce-${nonce.replace(/[+/=]/g, (c) => `\\${c}`)}';`));
     assert.match(page.headers['content-security-policy'] ?? '', /frame-ancestors 'none'/);
-    assert.notEqual(/<script nonce="([^"]+)">/.exec((await boardGet(url)).text)?.[1], nonce, 'a new nonce on each load');
+    assert.notEqual(/<script nonce="([^"]+)">/.exec((await boardGet(base, { cookie })).text)?.[1], nonce, 'a new nonce on each load');
     assert.equal(page.headers['x-content-type-options'], 'nosniff');
     const data = await boardGet(dataUrl);
     assert.equal(data.status, 200);
@@ -149,7 +150,7 @@ test('board server: the right Host and token see the page and the data', async (
       assert.equal(answer.headers['referrer-policy'], 'no-referrer', 'no referrer leaves the page');
     }
     // localhost names the same server, so its Host is welcome too.
-    assert.equal((await boardGet(url, { host: `localhost:${address.port}` })).status, 200);
+    assert.equal((await boardGet(base, { host: `localhost:${address.port}`, cookie })).status, 200);
     assert.equal((await boardGet(`${base}missing?t=${token}`)).status, 404);
     assert.doesNotThrow(() => server.emit('error', new Error('EADDRINUSE')), 'a server error is handled, never an uncaught throw');
   } finally {
@@ -233,7 +234,7 @@ function boardSend(target: string, options: { method?: string; headers?: Record<
   const method = options.method ?? 'GET';
   const body = options.body ?? '';
   return new Promise((done, failed) => {
-    const socket = connect(Number(url.port), url.hostname, () => {
+    const socket = connect(Number(url.port), '127.0.0.1', () => {
       const rows = [`${method} ${url.pathname}${url.search} HTTP/1.1`, `Host: ${options.headers?.host ?? url.host}`, 'Connection: close'];
       for (const [key, value] of Object.entries(options.headers ?? {})) {
         if (key.toLowerCase() !== 'host') rows.push(`${key}: ${value}`);
@@ -566,7 +567,7 @@ test('board server: /data answers at once while gh sleeps', async () => {
     assert.equal(shown.issues, 'reading GitHub…');
     assert.deepEqual(shown.github, { isReading: true, readAt: '', failed: '' });
     const page = performance.now();
-    assert.equal((await boardGet(url)).status, 200);
+    assert.equal((await boardGet(url)).status, 303);
     assert.ok(performance.now() - page < 200, 'the page answers at once too');
   } finally {
     await new Promise<void>((done) => server.close(() => done()));
@@ -635,4 +636,56 @@ test('board: the browser opener for each system', () => {
   assert.deepEqual(browserCommand(url, 'linux', { WSL_DISTRO_NAME: 'Ubuntu' }), ['explorer.exe', url], 'WSL opens the Windows browser');
   assert.deepEqual(browserCommand(url, 'win32', {}), ['rundll32', 'url.dll,FileProtocolHandler', url]);
   assert.equal(browserCommand(url, 'aix', {}), null);
+});
+
+// #693: the board lives at <repo>.localhost on a port that stays the same, so it can be bookmarked.
+test('board server: a stable address named after the repo', async () => {
+  const sandbox = makeSandbox();
+  const gh: Gh = () => '[]';
+  assert.equal(boardHostName('/x/My Repo_2'), 'my-repo-2.localhost');
+  assert.equal(boardHostName('/x/___'), 'board.localhost');
+  const port = boardPort(sandbox.repo);
+  assert.ok(port >= 41000 && port < 42000, `port ${port} in the board's range`);
+  assert.equal(boardPort(sandbox.repo), port, 'the same repo gets the same port');
+  const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh);
+  const second = await startBoardServer(sandbox.repo, sandbox.env, gh);
+  try {
+    const name = boardHostName(sandbox.repo);
+    assert.equal(new URL(url).host, `${name}:${port}`);
+    assert.notEqual(new URL(second.url).port, String(port), 'a busy port falls back to a free one');
+    assert.equal(new URL(second.url).searchParams.get('t'), new URL(url).searchParams.get('t'), 'the token is kept between runs');
+    const kept = join(sandbox.repo, '.git', 'yokoten-board-token');
+    assert.equal(statSync(kept).mode & 0o777, 0o600, 'only this user reads the kept token');
+    assert.equal((await boardGet(url, { host: `other.localhost:${port}` })).status, 403, 'another .localhost name');
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+    await new Promise<void>((done) => second.server.close(() => done()));
+  }
+});
+
+// #693: the first visit moves the token into a cookie only the page gets; the clean address works after.
+test('board server: the token moves to a cookie and the address is clean', async () => {
+  const sandbox = makeSandbox();
+  const gh: Gh = () => '[]';
+  const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh, { port: 0 });
+  try {
+    const base = url.split('?')[0];
+    const token = new URL(url).searchParams.get('t') ?? '';
+    const first = await boardGet(url);
+    assert.equal(first.status, 303);
+    assert.equal(first.headers.location, '/');
+    assert.match(first.headers['set-cookie'] ?? '', new RegExp(`^yokoten_board=${token}; HttpOnly; SameSite=Strict; Path=/`));
+    assert.doesNotMatch(first.text, new RegExp(token), 'the answer body never holds the token');
+    const cookie = `yokoten_board=${token}`;
+    const page = await boardGet(base, { cookie });
+    assert.equal(page.status, 200);
+    assert.doesNotMatch(page.text, new RegExp(token), 'the page never holds the token');
+    assert.equal((await boardGet(`${base}data`, { cookie })).status, 200, '/data by the cookie');
+    assert.equal((await boardGet(`${base}data?t=`, { cookie })).status, 200, 'an empty t falls back to the cookie');
+    assert.equal((await boardGet(`${base}data`, { cookie: `yokoten_board=${'0'.repeat(32)}` })).status, 403, 'a wrong cookie');
+    assert.equal((await boardGet(`${base}data`, { cookie: `other=${token}` })).status, 403, 'the token under another cookie name');
+    assert.equal((await boardGet(`${base}data`)).status, 403, 'no cookie, no token');
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+  }
 });

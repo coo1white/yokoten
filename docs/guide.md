@@ -1701,6 +1701,8 @@ desk, read-only. Use it only for an agent you trust with the words.
 It opens the page in your browser and prints the link (`--no-open` only prints it).
 The link holds a random token, so only someone who reads this terminal can open the page.
 
+The address is named after your repo and keeps its port, for example `http://yokoten.localhost:41234/`. The first visit carries a token; the board moves it into a cookie only this page gets, so after that the plain address is enough. Bookmark it, or install it from the browser to open the board in its own window.
+
 The page has three columns:
 
 - **Left:** what needs you first (a tier A pull request ready for your Approve, or an
