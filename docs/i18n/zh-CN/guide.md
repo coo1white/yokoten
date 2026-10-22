@@ -675,7 +675,8 @@ token。在 `yokoten.yml` 里，同一个 PR 推了新提交，还在跑的那�
 | `hook --stop [--agent <name>]` | 收尾检查。从标准输入读这一轮结束的事件，检查改过的文件：默认读 Claude Code 的 Stop；加 `--agent codex` 读 Codex 的 Stop，加 `--agent gemini` 读 Gemini CLI 的 AfterAgent，加 `--agent grok` 读 Grok CLI 的 Stop。见[收尾检查](#收尾检查) |
 | `explain [<id>] [--json]` | 讲一条规则或者路上的一步：它是什么、为什么要有、yokoten 怎么检查 |
 | `worker mark <目录>` | 把 `<目录>` 这个 worktree 标成 worker 的。之后在这里干活的 agent，护栏一律当 worker 看待，哪怕它的运行环境没把 `YOKOTEN_ROLE` 传给钩子（比如 Muse Code）。worker 用常见的办法删这个标记，护栏都会拦下；`.git` 读不出来的时候，也照样当 worker。护栏只看命令文字，真正的锁是服务器，还有别把推送和机器人的凭据交给 worker。`git worktree remove <目录>` 会连同 worktree 一起删掉标记。给的是子目录时，它标的是所在的 worktree，并说出是哪个。主检出和子模块永远不会被标记 |
-| `worker env [运行环境]` | 列出 yokoten 给 agent 准备环境变量时，会从这个 shell 留下哪些变量名，并数出去掉了几个。加上运行环境名，会把它自己的登录变量也算进去。从不显示值。现在还没有命令用它启动 agent。见 [agent 拿到的环境变量](#agent-拿到的环境变量) |
+| `worker env [运行环境]` | 列出 yokoten 给 agent 准备环境变量时，会从这个 shell 留下哪些变量名，并数出去掉了几个。加上运行环境名，会把它自己的登录变量也算进去。从不显示值。`desk` 就用它启动 agent。见 [agent 拿到的环境变量](#agent-拿到的环境变量) |
+| `desk <agent> <文件夹> [--read <路径>] [--host <主机>] [--marks] -- <命令>` | 把 worker 的 agent 放进一个围起来的工位里启动：只有它自己的克隆、自己的状态文件夹，除了模型的 API 不能上网。只有 lead 跑它。见 [工位](#工位) |
 | `uninstall` | 撤掉 `install` 装的东西：带 yokoten 管理标记的技能和 agent、`~/.claude/settings.json` 里它加的两个 hook，还有 `~/.local/share/yokoten`。你自己的文件、别的设置和 `~/.config/yokoten`（密钥、私有词表）都留着。再跑一次什么也不会变 |
 | `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。如果命令是 `gh issue` 或 `gh pr` 的 `create`、`edit`，并且带了标题，它会先按 CI 的规则检查标题；标题不合格就直接拒绝，什么都不会发出去。用 `gh api` 改 issue 或 PR 时，标题也照样检查。`gh pr create` 和 `gh pr edit` 如果带了 `--body` 或 `--body-file`，正文也会先过一遍：规则和 `check --pr` 里检查正文的那部分一样，看的是这个 PR 的分支改了哪些文件，以及基础分支上的 CODEOWNERS。正文不合格同样直接拒绝，什么都不发出去。正文最后一行不是 `🤖 Made with <agent> (<model>)`（可写一个或多个逗号分隔的组合）的同样直接拒绝：每个 PR 都要写明做出它的每个 AI 和模型。评论（`gh pr comment`、`gh issue comment`）、带正文的审查（`gh pr review --body`）和新建的 issue（`gh issue create --body`）也要带上这一行：最后一行不是 `Made with` 行的正文同样直接拒绝。带 `--attach` 的正文会被拒绝：上传的文件会落在 `Made with` 行之后。只改正文的编辑（`gh pr edit --body`、`gh issue edit --body`）保持原样。`gh pr create` 没给类型标签或 tier 标签时，bot 会自动补上：类型看标题（`fix` 补 `bug`），tier 看正文第一行的 `tier:`。你自己给的标签保留不动。你给的 tier 标签和正文对不上，就直接拒绝，提示和 `check --pr` 一样。仓库里没有的标签，bot 会说一声然后不加；它从不新建标签。`gh pr create` 没带 `--milestone` 时，bot 会用第一个关联 issue（`Closes #N`、`Part of #N`）的里程碑；这些 issue 都没有里程碑，就直接拒绝，什么都不发出去，请自己加上 `--milestone`。gh 读不到那个 issue 时，PR 照发，不带里程碑，只留一条提示。它只运行 `gh` 和 `git`，所以 `env gh …`、`sh -c …` 这类写法会被拒绝；gh 的别名（alias）它不认，别名里的标题不会被检查。设置方法见 [server.md](../../server.md#3-the-bot-a-github-app) |
 | `board [--text]` | 只在这台电脑上开一个实时页面：按 issue 分组的 agent、选中的 agent、每个 PR 的状态。在页面上，owner 还能启动和停掉 agent，看到在等什么。启动后打印链接，按 Ctrl-C 停掉。页面每 15 秒刷新一次。加 `--text` 就在终端里用纯文本打印 agent、PR 和 worktree，见「团队看板」 |
@@ -1253,6 +1254,61 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 
 服务器怎么设置，一步一步写在 [`docs/server.md`](../../server.md)。
 
+### 工位
+
+工位就是给一个 worker 围起来的一块地方，不管是哪家的 agent，都一样（#637）。lead 用一条命令
+把 worker 的 agent 放进去：
+
+```sh
+git clone ../yokoten ../desks/42
+yokoten desk claude-code ../desks/42 -- claude -p "$(cat brief.md)"
+```
+
+围栏只有一套规矩，每个系统用自己的办法做到：
+
+| 规矩 | 工位里是什么样 |
+|---|---|
+| 写 | 只能写工位文件夹（包括 `.git`，所以 worker 能提交）和这个 agent 自己的状态文件夹 |
+| 读 | agent 看得到的其他东西都只能读 |
+| 别的项目 | 看不到。你的主目录和工位的上一级文件夹都藏起来了。Linux 上 `/run` 也藏起来：那里的 socket 能通到外面，在 WSL2 里还有一个能直接启动 Windows 程序。Node、agent 程序和 yokoten 会重新放进来，只能读 |
+| 子进程 | 能跑，管道也能用，所以测试可以启动程序 |
+| 网络 | 命令一律上不了网。agent 程序只能通过工位外面的代理，连到它的模型 API |
+| 环境变量 | `YOKOTEN_ROLE=worker`、`TZ=UTC`。你 shell 里的 token 和密钥都不带进来（见 [agent 拿到的环境变量](#agent-拿到的环境变量)） |
+
+工位必须是单独 `git clone` 出来的。worktree 的 git 文件夹在另一个检出里，工位会把它藏起来，
+所以 worktree 不行，命令会拒绝。
+
+| agent | `<agent>` | 状态文件夹 | API 主机 | 在工位里跑的命令 |
+|---|---|---|---|---|
+| Claude Code | `claude-code` | `~/.claude`、`~/.claude.json` | `api.anthropic.com` 和它的登录主机 | `claude -p "<任务说明>"` |
+| Codex，以及通过 Codex 用 DeepSeek | `codex` | `$CODEX_HOME` 或 `~/.codex` | `api.openai.com`、`chatgpt.com`、`auth.openai.com`、`api.deepseek.com` | `codex exec --sandbox danger-full-access "<任务说明>"` |
+| Grok | `grok` | `$GROK_HOME` 或 `~/.grok` | `api.x.ai` | `grok -p "<任务说明>"` |
+| Muse Code | `muse` | `~/.config/muse`、`~/.local/share/muse` | `api.meta.ai`、`dev.meta.ai`、`auth.meta.com` | `muse exec "<任务说明>"` |
+
+- **Codex** 在工位里要用 `--sandbox danger-full-access`。它自己的 `workspace-write` 沙箱会把
+  `.git` 设成只读，还会挡住测试要用的管道。工位本身就是围栏，用不着它那一层。
+- **Grok**：如果 `--sandbox` 挡住了提交或测试，在工位里把它关掉。
+- **加主机**：`--host <主机>` 让 agent 多连一个 API 主机（443 端口）。几个主机用逗号隔开。
+- **加文件**：`--read <路径>` 多放一个路径进来，只能读。会把主目录或藏起来的文件夹露出来的路径，
+  命令会拒绝。
+
+**代理。** 四个 agent 的程序里都认 `HTTPS_PROXY`。工位会把 `HTTPS_PROXY`、`HTTP_PROXY`、
+`ALL_PROXY` 的大写和小写都设好，还设 `NODE_USE_ENV_PROXY=1`，这样 Node 自带的 `fetch` 也走代理。
+代理只接受 `CONNECT`，只放行名单上的主机，从不看传的内容。它拒绝了哪个主机，工位结束时会说出来。
+
+**提交检查和你的私有词表。** 提交检查要读你的私有词表。agent 能读这个文件，就能把它打印出来。
+所以工位默认把它藏起来，工位里的检查看不到你的词。在词表改成存哈希之前（#665），推送前请你自己
+在工位外面跑一次提交检查：`node bin/yokoten.ts check --staged`，或者在你自己的检出里 `git commit`。
+`--marks` 会把这个文件放进工位，只能读。只有你放心让它看到这些词的 agent，才这样用。
+
+**系统。**
+
+- **Linux 和 WSL2**：用 `bwrap`（bubblewrap）。用 `sudo apt install bubblewrap` 安装。工位有自己的
+  空网络，里面有个小桥，把 agent 连代理的请求转给外面的代理。
+- **macOS**：用系统自带的 `sandbox-exec`，每个工位现写一份规则。还没在 Mac 上跑过：请在 Mac 上跑一次
+  `node --test test/agents/desk/start.test.ts`，检查这套规矩。
+- **原生 Windows**：还没有工位（#669）。请在 WSL2 里用 yokoten。原生 Windows 上只有守卫在把关。
+
 ### 团队看板
 
 `yokoten board` 一眼看到整个团队。它只在这台电脑上开一个页面，
@@ -1463,9 +1519,8 @@ hook 不可能认得所有命令。输出里露出了你的信息，就开一个
 所以 yokoten 有一个函数，专门给 agent 准备一份干净的环境变量，所有运行环境都用它（#613）。
 这个函数现在就有，`yokoten worker env` 可以看它的结果。
 
-不过现在还没有哪个 yokoten 命令会启动 agent，所以这个函数暂时没人调用。看板的「启动 agent」
-（#603）会是第一个用它的地方。在那之前，agent 拿到的是启动它的会话的全部环境变量。
-所以 lead 的会话要从不带 token 的 shell 里启动。
+`yokoten desk` 就用这份环境变量启动 agent（见 [工位](#工位)）。用别的办法启动的 agent，拿到的是
+启动它的会话的全部环境变量。所以 lead 的会话要从不带 token 的 shell 里启动。
 
 这个函数留下什么、去掉什么：
 

@@ -15,7 +15,8 @@ import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import { type Action, isWorkerType } from '../../run/hook.ts';
 import { type FolderTrust, folderKeys, isFolder } from '../folder-trust.ts';
 import { type Added, addHook, checkHooksFile, hasHook, type HookArgs, type HookState, hookState, isObject } from '../hooks-file.ts';
-import type { RuntimeEnv } from '../agent-env.ts';
+import type { RuntimeEnv } from '../desk/agent-env.ts';
+import type { RuntimeDesk } from '../desk/desk.ts';
 
 // The docs: "Bash and apply_patch use tool_input.command", and unified exec reports as Bash.
 const SHELL = 'Bash';
@@ -988,3 +989,14 @@ export function sandboxProblem(root: string, env: Env): { what: string; fix: str
 
 /** The names this runtime's agent gets on top of the shared ones (#613). Codex signs in with its own login file; these are for an API key. */
 export const AGENT_ENV: RuntimeEnv = { login: ['OPENAI_API_KEY', 'CODEX_API_KEY'], config: ['CODEX_HOME'] };
+
+/**
+ * What a desk (#637) gives Codex: CODEX_HOME (or `~/.codex`) writable, and the OpenAI
+ * API and ChatGPT login hosts, plus DeepSeek's API, which yokoten's DeepSeek workers reach
+ * through Codex. The binary names HTTPS_PROXY and ALL_PROXY. Inside the desk Codex runs
+ * with `--sandbox danger-full-access`: its own sandbox blocks `.git` and the pipes tests use.
+ */
+export const DESK: RuntimeDesk = {
+  state: (env) => [{ path: env.CODEX_HOME || join(homeIn(env), '.codex') }],
+  hosts: ['api.openai.com', 'chatgpt.com', 'auth.openai.com', 'api.deepseek.com'],
+};

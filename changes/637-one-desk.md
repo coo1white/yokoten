@@ -1,0 +1,3 @@
+Added
+
+`yokoten desk <agent> <folder> -- <command>` starts a worker's agent in a fenced desk, the same for Claude Code, Codex (and DeepSeek through it), Grok and Muse Code. The agent writes only in its own clone and its own state folder. Your home and other projects are hidden. Commands have no network, and the agent reaches only its model's API through a proxy. `YOKOTEN_ROLE=worker` and `TZ=UTC` are set, and no token is passed in. Linux and WSL2 use `bwrap`; macOS uses `sandbox-exec` (not yet run on a Mac); native Windows is not built yet (#669). Your private marks stay out of the desk unless you pass `--marks`, so run the commit check outside until #665 (#637).

@@ -18,7 +18,8 @@ import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import type { Action } from '../../run/hook.ts';
 import { type FolderTrust, folderKeys, isFolder } from '../folder-trust.ts';
 import { type Added, addHook, checkHooksFile, type HookArgs, type HookState, hookState, isObject } from '../hooks-file.ts';
-import type { RuntimeEnv } from '../agent-env.ts';
+import type { RuntimeEnv } from '../desk/agent-env.ts';
+import type { RuntimeDesk } from '../desk/desk.ts';
 
 // bash takes `command` and `workdir`; the edit tools take `path`.
 const SHELL = 'bash';
@@ -183,3 +184,12 @@ export function userHooksState(env: Env, cli: string, missing: string): { doctor
 
 /** The names this runtime's agent gets on top of the shared ones (#613). Muse Code: Meta's docs name the model API key MODEL_API_KEY. Its config is under XDG_CONFIG_HOME, which every agent gets. */
 export const AGENT_ENV: RuntimeEnv = { login: ['MODEL_API_KEY'], config: [] };
+
+/**
+ * What a desk (#637) gives Muse Code: its config and data folders writable, and Meta's
+ * API and login hosts. The binary names HTTPS_PROXY, ALL_PROXY and MUSE_HTTP_PROXY.
+ */
+export const DESK: RuntimeDesk = {
+  state: (env) => [{ path: configDir(env) }, { path: join(env.XDG_DATA_HOME || join(homeIn(env), '.local', 'share'), 'muse') }],
+  hosts: ['api.meta.ai', 'dev.meta.ai', 'auth.meta.com'],
+};

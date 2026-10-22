@@ -9,7 +9,8 @@ import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import { type Action, isWorkerType, readStopFields, type StopEvent } from '../../run/hook.ts';
 import { type Added, addHook, checkHooksFile, hasHook, isObject, type Problem, readTable, removeHook, type Settings, UnreadableHooksFile, writeSettings } from '../hooks-file.ts';
-import type { RuntimeEnv } from '../agent-env.ts';
+import type { RuntimeEnv } from '../desk/agent-env.ts';
+import type { RuntimeDesk } from '../desk/desk.ts';
 
 /**
  * A PreToolUse call, as an Action. The guard reads the fields, not the tool's name:
@@ -333,3 +334,12 @@ export function sandboxProblem(root: string): { what: string; fix: string } | nu
 
 /** The names this runtime's agent gets on top of the shared ones (#613). Claude Code signs in with its own login file; these are for an API key or a long-lived login token. */
 export const AGENT_ENV: RuntimeEnv = { login: ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'], config: ['CLAUDE_CONFIG_DIR'] };
+
+/**
+ * What a desk (#637) gives Claude Code: its config folder and `~/.claude.json` writable,
+ * and its API and login hosts. The binary names HTTPS_PROXY and NODE_USE_ENV_PROXY.
+ */
+export const DESK: RuntimeDesk = {
+  state: (env) => [{ path: env.CLAUDE_CONFIG_DIR || join(homeIn(env), '.claude') }, { path: join(homeIn(env), '.claude.json'), isFile: true }],
+  hosts: ['api.anthropic.com', 'console.anthropic.com', 'platform.claude.com', 'claude.ai'],
+};

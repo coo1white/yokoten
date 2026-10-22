@@ -1,0 +1,101 @@
+// Tests for src/agents/desk/desk.ts: the contract turned into a plan. The contract on a
+// real system is checked in start.test.ts.
+
+import '../../repo/home.ts';
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { test } from 'node:test';
+import { DESK_RUNTIMES, findProgram, hiddenFolders, isInside, OWN_RUNTIME, planDesk, programFolders, proxyEnv } from '../../../src/agents/desk/desk.ts';
+import { makeTempDir } from '../../repo/helpers.ts';
+import { TEST_HOME } from '../../repo/home.ts';
+
+/** A desk: a clone of a fresh repo, in a projects folder of its own. */
+function makeDesk(): { projects: string; desk: string } {
+  const projects = realpathSync(makeTempDir('projects-'));
+  execFileSync('git', ['init', '-q', join(projects, 'origin')]);
+  execFileSync('git', ['-C', join(projects, 'origin'), '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-q', '--allow-empty', '-m', 'start']);
+  execFileSync('git', ['clone', '-q', join(projects, 'origin'), join(projects, 'desk')]);
+  return { projects, desk: join(projects, 'desk') };
+}
+
+const env = () => ({ HOME: TEST_HOME, PATH: dirname(process.execPath), GH_TOKEN: 'not-a-real-token', SECRET_THING: 'x' });
+
+test('isInside: the folder itself and what is under it, not a name that only starts the same', () => {
+  assert.ok(isInside('/a/b', '/a/b'));
+  assert.ok(isInside('/a/b/c', '/a/b'));
+  assert.ok(!isInside('/a/bc', '/a/b'));
+});
+
+test('findProgram: a name on PATH, a path as it is, null when missing', () => {
+  const folder = makeTempDir('bin-');
+  writeFileSync(join(folder, 'agent'), '');
+  assert.equal(findProgram('agent', `relative:${folder}`), join(folder, 'agent'));
+  assert.equal(findProgram(join(folder, 'agent'), ''), join(folder, 'agent'));
+  assert.equal(findProgram('missing', folder), null);
+});
+
+test('programFolders: the folder named, and the package the real file is in', () => {
+  const root = realpathSync(makeTempDir('program-'));
+  mkdirSync(join(root, 'lib', 'agent', 'bin'), { recursive: true });
+  writeFileSync(join(root, 'lib', 'agent', 'package.json'), '{}');
+  writeFileSync(join(root, 'lib', 'agent', 'bin', 'agent.js'), '');
+  mkdirSync(join(root, 'bin'));
+  symlinkSync(join(root, 'lib', 'agent', 'bin', 'agent.js'), join(root, 'bin', 'agent'));
+  assert.deepEqual(programFolders(join(root, 'bin', 'agent')), [join(root, 'bin'), join(root, 'lib', 'agent')]);
+});
+
+test('hiddenFolders: every home, other drives, and the desk parent; only those that are there', () => {
+  const desk = join(makeTempDir('projects-'), 'desk');
+  const linux = hiddenFolders('linux', TEST_HOME, desk);
+  assert.ok(linux.includes(TEST_HOME) && linux.includes(dirname(desk)));
+  for (const folder of hiddenFolders('darwin', TEST_HOME, desk)) assert.ok(!['/home', '/mnt'].includes(folder));
+});
+
+test('planDesk: the desk and state writable, a token dropped, role and time zone fixed', () => {
+  const { projects, desk } = makeDesk();
+  const plan = planDesk({ runtime: 'claude-code', desk, command: ['node', 'x.js'], env: env(), extraHosts: ['api.deepseek.com'] });
+  assert.equal(plan.desk, desk);
+  assert.deepEqual(plan.state, [join(realpathSync(TEST_HOME), '.claude')]);
+  assert.ok(plan.hidden.includes(projects) && plan.hidden.includes(realpathSync(TEST_HOME)));
+  assert.ok(plan.readable.includes(dirname(dirname(realpathSync(process.execPath)))), 'Node is shown');
+  assert.ok(plan.readable.includes(OWN_RUNTIME[1]), "yokoten's src is shown");
+  assert.ok(!plan.readable.some((path) => plan.hidden.some((folder) => isInside(folder, path))), 'no readable path opens a hidden folder');
+  assert.deepEqual(plan.hosts, [...DESK_RUNTIMES['claude-code'].hosts, 'api.deepseek.com']);
+  assert.equal(plan.env.YOKOTEN_ROLE, 'worker');
+  assert.equal(plan.env.TZ, 'UTC');
+  assert.equal(plan.env.GH_TOKEN, undefined);
+  assert.equal(plan.env.SECRET_THING, undefined);
+  assert.deepEqual(plan.locked, []);
+});
+
+test('planDesk: the marks file only with --marks; the worker mark is locked', () => {
+  const { desk } = makeDesk();
+  const marks = join(makeTempDir('config-'), 'private-marks');
+  writeFileSync(marks, 'x\n');
+  writeFileSync(join(desk, '.git', 'yokoten-worker'), 'mark\n');
+  assert.ok(!planDesk({ runtime: 'grok', desk, command: ['node'], env: env() }).readable.includes(realpathSync(marks)));
+  const plan = planDesk({ runtime: 'grok', desk, command: ['node'], env: env(), marks });
+  assert.ok(plan.readable.includes(realpathSync(marks)));
+  assert.deepEqual(plan.locked, [join(desk, '.git', 'yokoten-worker')]);
+});
+
+test('planDesk: refuses an unknown agent, a worktree, a folder that is no clone, and a path that opens a hidden folder', () => {
+  const { projects, desk } = makeDesk();
+  assert.throws(() => planDesk({ runtime: 'gemini', desk, command: ['node'], env: env() }), /DeepSeek runs through codex/);
+  assert.throws(() => planDesk({ runtime: 'codex', desk: projects, command: ['node'], env: env() }), /not a git clone/);
+  execFileSync('git', ['-C', desk, 'worktree', 'add', '-q', join(projects, 'tree')]);
+  assert.throws(() => planDesk({ runtime: 'codex', desk: join(projects, 'tree'), command: ['node'], env: env() }), /is a worktree/);
+  assert.throws(() => planDesk({ runtime: 'codex', desk, command: ['node'], env: env(), extraReadable: [projects] }), /would open a hidden folder/);
+  assert.throws(() => planDesk({ runtime: 'codex', desk, command: ['node'], env: env(), extraReadable: ['/'] }), /whole system/);
+  assert.throws(() => planDesk({ runtime: 'codex', desk, command: ['no-such-agent'], env: env() }), /can't find no-such-agent/);
+  assert.throws(() => planDesk({ runtime: 'codex', desk, command: ['node'], env: { ...env(), CODEX_HOME: TEST_HOME } }), /state folder .* would open a hidden folder/);
+});
+
+test('proxyEnv: every proxy name in both cases, and Node told to read them', () => {
+  const names = proxyEnv('http://127.0.0.1:3128');
+  for (const name of ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy']) assert.equal(names[name], 'http://127.0.0.1:3128');
+  assert.equal(names.NODE_USE_ENV_PROXY, '1');
+  assert.equal(names.NO_PROXY, '');
+});
