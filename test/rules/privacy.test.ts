@@ -13,7 +13,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { assertLinear } from '../../scripts/linear.ts';
+import { assertLinear, assertLinearEach } from '../../scripts/linear.ts';
 import { at, makeRepoTemplate, makeTempDir } from '../repo/helpers.ts';
 import { DEFAULTS, type Env } from '../../src/rules/config.ts';
 import { checkCommand } from '../../src/rules/guards.ts';
@@ -1464,7 +1464,8 @@ test('normalizeRemote: linear on long input (#447)', () => {
     ['colons', (n) => `${'a:'.repeat(n / 2)}`],
     ['no colon', (n) => 'a'.repeat(n)],
   ];
-  for (const [name, make] of inputs) assertLinear(name, make, (text) => normalizeRemote(text, '/base'));
+  // One call for every shape: a noisy first round grows to a 20 ms base (#594).
+  assertLinearEach(inputs.map(([name, make]) => ({ name, make, read: (text: string) => normalizeRemote(text, '/base') })), 1 << 16);
 });
 
 /** git in `repo`, with `base` as its home and no global config. */
