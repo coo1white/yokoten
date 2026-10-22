@@ -1,7 +1,7 @@
 // `yokoten hook`: the tool-call guard, and with --stop the end-of-turn check.
 
 import { existsSync, lstatSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
 import * as claudeCode from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
@@ -424,7 +424,7 @@ const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
  * The board calls this for the worktree it makes or reuses, so runtimes that drop
  * YOKOTEN_ROLE still run as workers. Returns the worktree root, or the plain reason.
  */
-export function markWorktree(cwd: string, dir: string, env: Env): { top: string } | { fail: string } {
+export function markWorktree(cwd: string, dir: string, env: Env): { top: string; kind: 'worktree' | 'clone' } | { fail: string } {
   const folder = resolve(cwd, dir);
   let isFolder = false;
   try {
@@ -439,12 +439,19 @@ export function markWorktree(cwd: string, dir: string, env: Env): { top: string 
     return { fail: formatFinding(notRepoFinding(folder)) };
   }
   const [top, gitDir, common, superproject] = answer;
-  if (realPath(gitDir) === realPath(resolve(folder, common ?? ''))) {
+  const kind = realPath(gitDir) === realPath(resolve(folder, common ?? '')) ? 'clone' : 'worktree';
+  if (kind === 'clone') {
     if (superproject) return { fail: `${top} is a submodule's checkout, not a worktree. Mark a worktree: \`git worktree add <dir> -b <branch>\`, then \`yokoten worker mark <dir>\`.` };
-    return { fail: `${top} is the main checkout, the lead's. Mark a worktree: \`git worktree add <dir> -b <branch>\`, then \`yokoten worker mark <dir>\`.` };
+    // A plain clone is a worker's desk (#672), unless the lead works in it: the session runs
+    // there, or worktrees hang off it. Those are the main checkout, never marked.
+    const here = realPath(cwd);
+    const base = realPath(top);
+    const isLeadHere = here === base || here.startsWith(base + sep);
+    if (isLeadHere || hasLinkedWorktrees(folder, env)) return { fail: `${top} is the main checkout, the lead's. Mark a worktree (\`git worktree add <dir> -b <branch>\`) or a clone of its own (\`git clone <repo> <dir>\`), then \`yokoten worker mark <dir>\`.` };
   }
   try {
-    writeFileSync(join(gitDir, WORKER_MARK), "A worker's worktree: yokoten's guard treats every agent here as a worker. `git worktree remove` removes this mark.\n");
+    const note = kind === 'clone' ? "A worker's clone: yokoten's guard treats every agent here as a worker. Removing the clone removes this mark.\n" : "A worker's worktree: yokoten's guard treats every agent here as a worker. `git worktree remove` removes this mark.\n";
+    writeFileSync(join(gitDir, WORKER_MARK), note);
   } catch (error) {
     return { fail: `can't write the mark in ${gitDir} (${(error as NodeJS.ErrnoException).code ?? 'error'}). Check that the lead can write there, then run it again.` };
   }
@@ -455,7 +462,18 @@ export function markWorktree(cwd: string, dir: string, env: Env): { top: string 
   }
   // The guard finds the mark without git; check that it does here.
   if (workerMarkAt(folder, env) !== 'mark') return { fail: `the mark is written in ${gitDir}, but the guard can't find it from ${top}.` };
-  return { top };
+  return { top, kind };
+}
+
+// Whether other worktrees hang off the checkout at `folder`: then it is a main checkout.
+function hasLinkedWorktrees(folder: string, env: Env): boolean {
+  try {
+    const list = readGit(folder, ['worktree', 'list', '--porcelain'], { env }).toString('utf8');
+    return list.split('\n').filter((line) => line.startsWith('worktree ')).length > 1;
+  } catch {
+    // Git can't list them: the guard can't tell, so the checkout stays the lead's.
+    return true;
+  }
 }
 
 export function runWorker(invocation: Invocation): number | Promise<number> {
@@ -471,7 +489,8 @@ export function runWorker(invocation: Invocation): number | Promise<number> {
   if (action === 'unmark') return runUnmark(invocation, dir, fail);
   const marked = markWorktree(invocation.cwd, dir, invocation.env);
   if ('fail' in marked) return fail(marked.fail);
-  print(invocation, [`yokoten worker: marked the worktree at ${marked.top}. The guard now treats every agent there as a worker. \`git worktree remove ${marked.top}\` removes the mark. \`yokoten worker unmark ${marked.top}\` clears it sooner.`]);
+  const removes = marked.kind === 'clone' ? 'Removing the clone removes the mark.' : `\`git worktree remove ${marked.top}\` removes the mark.`;
+  print(invocation, [`yokoten worker: marked the ${marked.kind} at ${marked.top}. The guard now treats every agent there as a worker. ${removes} \`yokoten worker unmark ${marked.top}\` clears it sooner.`]);
   return 0;
 }
 

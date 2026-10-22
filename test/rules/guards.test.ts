@@ -2158,6 +2158,31 @@ test('worker mark: found from .git, fails closed on a link it cannot read (#555)
 });
 
 // #555: an edit inside a git folder is a worker's way to change the mark, through a symlink too.
+// #672: a desk is a plain clone, so its mark sits in its own `.git` folder.
+test('worker mark: a plain clone with the mark in its .git is a worker; without it, the lead (#672)', () => {
+  const clone = makeTempDir('yokoten-clone-');
+  mkdirSync(join(clone, '.git'));
+  mkdirSync(join(clone, 'src'));
+  // Negative control: an unmarked clone is the lead's.
+  assert.equal(workerMarkAt(join(clone, 'src')), null);
+  // Positive control: the mark, found from a subfolder too.
+  writeFileSync(join(clone, '.git', 'yokoten-worker'), 'x');
+  assert.equal(workerMarkAt(join(clone, 'src')), 'mark');
+  assert.deepEqual(withWorkerMark({}, [clone]), { YOKOTEN_ROLE: 'worker' });
+  assert.match(markNote([clone]), /^this clone \(.*\) carries the worker mark/);
+  // Fails closed: a .git folder the guard can't search. Modes need a user they stop.
+  if (process.platform !== 'win32' && process.getuid?.() !== 0) {
+    chmodSync(join(clone, '.git'), 0o000);
+    try {
+      assert.equal(workerMarkAt(clone), 'broken');
+    } finally {
+      chmodSync(join(clone, '.git'), 0o755);
+    }
+  }
+  rmSync(join(clone, '.git', 'yokoten-worker'));
+  assert.equal(workerMarkAt(clone), null);
+});
+
 test('checkWorkerMarkEdit: a git folder by name or by real path (#555)', () => {
   assert.equal(checkWorkerMarkEdit('/w/.git/worktrees/wt/yokoten-worker')?.id, 'worker-mark');
   assert.equal(checkWorkerMarkEdit('/w/wt/.git')?.id, 'worker-mark');

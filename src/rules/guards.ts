@@ -319,15 +319,26 @@ function readSmallFile(path: string): string | null {
 
 /**
  * Why the checkout at or above `folder` makes a session a worker: `mark`, its git folder
- * holds the mark or its path is on the worker list (#566); `broken`, its `.git` or the
- * git folder it names can't be read, so the guard fails closed; null, it does not (a main
- * checkout, an unmarked worktree, no checkout). `env` finds the worker list; without a
+ * holds the mark (a worktree's, or a marked clone's own `.git`, #672) or its path is on the
+ * worker list (#566); `broken`, its `.git` or the git folder it names can't be read, so the
+ * guard fails closed; null, it does not (an unmarked main checkout or worktree, no checkout). `env` finds the worker list; without a
  * home folder there is no list, and only the mark counts.
  */
 export function workerMarkAt(folder: string, env: Env = {}): 'mark' | 'broken' | null {
   const link = gitLinkAbove(folder);
-  if (link === null || link.kind === 'folder') return listedWorker(folder, env) ? 'mark' : null;
+  if (link === null) return listedWorker(folder, env) ? 'mark' : null;
   if (link.kind === 'broken') return 'broken';
+  if (link.kind === 'folder') {
+    // A plain clone the lead marked, such as a desk (#672): the mark is in its own `.git`.
+    // Muse Code drops YOKOTEN_ROLE from its hooks, so there this file alone makes a worker.
+    try {
+      statSync(join(link.gitDir, WORKER_MARK));
+      return 'mark';
+    } catch (error) {
+      if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return 'broken';
+    }
+    return listedWorker(folder, env) ? 'mark' : null;
+  }
   try {
     statSync(join(link.gitDir, WORKER_MARK));
     return 'mark';
@@ -375,6 +386,9 @@ export function markNote(folders: string[], env: Env = {}): string {
     const main = link?.kind === 'file' ? mainCheckout(link.gitDir) : null;
     const lead = main ? `the lead works in the main checkout, ${main}` : 'the lead works in the main checkout';
     if (why === 'broken') return `yokoten treats this session as a worker because the .git link in ${link?.top ?? folder} can't be read; ${lead}`;
+    if (link?.kind === 'folder' && existsSync(join(link.gitDir, WORKER_MARK))) {
+      return `this clone (${link.top}) carries the worker mark, so every agent in it is a worker whatever YOKOTEN_ROLE says; the lead works outside it`;
+    }
     if (link?.kind === 'file') return `this worktree (${link?.top ?? folder}) carries the worker mark, so every agent in it is a worker whatever YOKOTEN_ROLE says; ${lead}`;
     return `this folder (${folder}) is on the worker list, so every agent in it is a worker whatever YOKOTEN_ROLE says; ${lead}`;
   }
