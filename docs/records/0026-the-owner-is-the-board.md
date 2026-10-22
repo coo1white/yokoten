@@ -21,6 +21,18 @@ The owner decided: "我们有5个项目经理，完全可以放权的", and appr
 
 ## Decision
 
+The team is run as an organization with separate powers. The owner approved this table on 2026-10-23:
+
+| Power | Who | What it does |
+|---|---|---|
+| Founder | The owner | The constitution, the vision, the budget, the stop switch. Reads one summary a day |
+| Executive | The lead | Turns the vision into a roadmap, gives out engineer seats by the rules, sets the merge order |
+| Five departments | The five area leads (0022) | Approve, merge and set priorities in their own area. They check each other: work written by one vendor is approved by another vendor's lead |
+| Workforce | Fifteen engineers | Do the work; tasks go by track record (0021 rule 5) |
+| Courts | The guard and cross-vendor review | Rule of law: the same rules for every agent, no exceptions |
+| Audit | git, the Made-with line, the rule log | Every action is signed, traceable and can be undone |
+| Legislature | Rules improve from use (0018) | The team proposes rule changes: stricter ones go the normal way, looser ones need the owner |
+
 1. **The owner is the board.** He sets the direction, the budget, the hard lines and the taste. He is not asked to approve a single change unless a hard line says so.
 2. **Area leads approve in their area.** Each of the five area leads in 0022 approves the pull requests of its area. This changes 0021 rule 1: an agent may approve, under these limits.
    - **Never its own vendor's work.** Work written by an agent of the lead's own model line is approved by another area lead. One vendor writes, another approves.
