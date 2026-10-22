@@ -141,11 +141,12 @@ interface PendingNote {
 }
 
 // The options of `issue`/`pr` `comment`, `pr review` and `issue create` that take a value,
-// so their value is not read as the noun or the verb. A run-together word expands letter
+// so their value is not read as the noun or the verb. Gh's host flag is here too, so a
+// host before the noun is not read as the noun. A run-together word expands letter
 // by letter, the way gh reads it; a value that looks like another flag is not consumed,
 // the way `parse` reads yokoten's own options. `--attach` uploads land after the body,
 // so any `--attach` is refused rather than checked.
-const NOTE_VALUES = new Set(['--body', '-b', '--body-file', '-F', '--repo', '-R', '--title', '-t', '--label', '-l', '--add-label', '--milestone', '-m', '--project', '-p', '--assignee', '-a', '--reviewer', '-r', '--base', '-B', '--head', '-H', '--template', '-T', '--type', '--attach']);
+const NOTE_VALUES = new Set(['--body', '-b', '--body-file', '-F', '--repo', '-R', '--hostname', '--title', '-t', '--label', '-l', '--add-label', '--milestone', '-m', '--project', '-p', '--assignee', '-a', '--reviewer', '-r', '--base', '-B', '--head', '-H', '--template', '-T', '--type', '--attach']);
 const NOTE_SHORT_VALUES = 'bFRtlmarBHpT';
 // On `gh pr review`, `-a` (`--approve`) and `-r` (`--request-changes`) are booleans, and
 // there is no assignee or reviewer: those four spellings take no value there.

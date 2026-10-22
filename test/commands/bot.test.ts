@@ -806,6 +806,9 @@ test('bot: a note body gh posts is always checked, whatever the spelling (#609)'
     // A value flag swallowing the body flag: gh still posts the body.
     await refused(['gh', 'pr', 'comment', '5', '-t', '--body', 'A note.\n']);
     await refused(['gh', 'pr', 'comment', '5', '--title', '--body', 'A note.\n']);
+    // A gh global flag before the noun: its value is not the noun, so the body is still checked.
+    await refused(['gh', '--hostname', 'example.com', 'pr', 'comment', '5', '--body', 'A note.\n']);
+    await refused(['gh', '--hostname', 'example.com', 'pr', 'review', '5', '--comment', '-b', 'A review.\n']);
     await refused(['gh', 'issue', 'create', '-t', 'host: a', '-l', 'bug,tier B', '-r', '--body', 'An issue.\n']);
     await refused(['gh', 'issue', 'create', '-t', 'host: a', '-l', 'bug,tier B', '--assignee', '--body', 'An issue.\n']);
     // A run-together word starting with a boolean letter: gh expands it.
@@ -814,6 +817,11 @@ test('bot: a note body gh posts is always checked, whatever the spelling (#609)'
     // On `pr review`, `-a` and `-r` are booleans, not values.
     await refused(['gh', 'pr', 'review', '5', '--comment', '-a', '-b', 'A review.\n']);
     await refused(['gh', 'pr', 'review', '5', '--comment', '-rb', 'A review.\n']);
+    // With the line, a global flag before the noun passes through unchanged.
+    const good = 'A note.\n\nMade with worker (opus)\n';
+    const sent = await run(['gh', '--hostname', 'example.com', 'pr', 'comment', '5', '--body', good]);
+    assert.deepEqual([sent.status, sent.stderr], [0, ''], sent.stderr);
+    assert.deepEqual(ran().at(-1), { args: ['--hostname', 'example.com', 'pr', 'comment', '5', '--body', good], input: '' });
   } finally {
     server.close();
   }
