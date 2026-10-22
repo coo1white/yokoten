@@ -448,7 +448,7 @@ export function checkIssueLabels(issueLabels: string[], repoLabels: string[] | n
   if (repoLabels.some(isTypeLabel) && !issueLabels.some(isTypeLabel)) {
     problems.push(finding('issue-labels', 'labels: no type label', 'add one type label, such as feat, bug, docs'));
   }
-  const isTierLabel = (label: string): boolean => labelTier(label) !== null;
+  const isTierLabel = (label: string): boolean => readLabelTier(label) !== null;
   if (repoLabels.some(isTierLabel) && !issueLabels.some(isTierLabel)) {
     problems.push(finding('issue-labels', 'labels: no tier label', 'add one tier label: `tier A`, `tier B` or `tier C`'));
   }
