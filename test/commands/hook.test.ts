@@ -9,6 +9,7 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -484,6 +485,9 @@ test('worker mark: a marked worktree is a worker for every agent; the plain ways
   const dotGit = join(tree, '.git');
   const link = readFileSync(dotGit, 'utf8');
   rmSync(mark);
+  // The mark has two parts since #566 (the file and the worker list): `unmark` drops both.
+  result = await sandbox.call(['worker', 'unmark', tree]);
+  assert.equal(result.status, 0, result.stderr);
   assert.equal((await muse({ command: 'git push' })).status, 0, 'negative control: unmarked, the push passes');
   if (process.getuid?.() !== 0) {
     chmodSync(dotGit, 0o000);
@@ -579,4 +583,80 @@ test('worker mark: a missing folder, a submodule and an unwritable git folder ea
   assert.equal(result.status, 1);
   assert.match(result.stderr, /^yokoten worker: can't write the mark in .*\(EACCES\)/);
   assert.equal(result.stderr.trim().split('\n').length, 1, result.stderr);
+});
+
+// #566: `worker mark` keeps the role on the worker list when `.git` is moved away;
+// `worker unmark` clears it, and only the lead runs it.
+test('worker list: mark keeps the role with .git moved away; unmark clears it (#566)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', '{}\n');
+  sandbox.write('AGENTS.md', '# rules\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const tree = join(makeTempDir('yokoten-tree-'), 'wt');
+  sandbox.git('worktree', 'add', '-q', '-b', 'task', tree);
+  // A Muse call: no YOKOTEN_ROLE, the hook's cwd at the workspace root.
+  const muse = (toolInput: Record<string, string>, folder = tree, extra?: Record<string, string>) => {
+    const name = 'command' in toolInput ? 'bash' : 'write_file';
+    return sandbox.call(['hook', '--agent', 'muse'], { cwd: folder, input: JSON.stringify({ cwd: folder, hook_event_name: 'PreToolUse', tool_name: name, tool_input: toolInput }), extra });
+  };
+  // `mark` writes the worktree's path outside the worktree, under yokoten's config folder.
+  let result = await sandbox.call(['worker', 'mark', tree]);
+  assert.equal(result.status, 0, result.stderr);
+  const top = realpathSync(tree);
+  const workers = readFileSync(join(sandbox.home, '.config', 'yokoten', 'workers'), 'utf8');
+  assert.ok(workers.includes(top), workers);
+  assert.match(result.stdout, /`yokoten worker unmark/);
+  // Positive control: with `.git` moved away, the session is still a worker.
+  renameSync(join(tree, '.git'), join(tree, 'dot-git-moved'));
+  result = await muse({ command: 'git push' });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /worker does not push/);
+  assert.match(result.stderr, /worker list/);
+  // `unmark` is the lead's: a worker's session is refused.
+  result = await sandbox.call(['worker', 'unmark', tree], { extra: { YOKOTEN_ROLE: 'worker' } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /only the lead/);
+  // With `.git` moved away, `unmark` still clears the list entry by path.
+  result = await sandbox.call(['worker', 'unmark', tree]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /unmarked/);
+  assert.ok(!readFileSync(join(sandbox.home, '.config', 'yokoten', 'workers'), 'utf8').includes(top));
+  // Back to a plain worktree: restore `.git`, unmark again to drop the mark file too.
+  renameSync(join(tree, 'dot-git-moved'), join(tree, '.git'));
+  result = await sandbox.call(['worker', 'unmark', tree]);
+  assert.equal(result.status, 0, result.stderr);
+  // Negative control: unmarked, the session is the lead's again.
+  assert.equal((await muse({ path: join(tree, 'AGENTS.md') })).status, 0);
+  assert.equal((await muse({ command: 'git push' })).status, 0);
+});
+
+// #566: `worker unmark` is the lead's: from a marked tree with no YOKOTEN_ROLE (a Muse
+// session), even `cd /tmp && yokoten worker unmark <tree>` is refused, since the role
+// comes from the session's folders, never from the command text.
+test('worker list: a marked worker cannot unmark its own worktree, even after cd-ing away (#566)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', '{}\n');
+  sandbox.write('AGENTS.md', '# rules\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const tree = join(makeTempDir('yokoten-tree-'), 'wt');
+  sandbox.git('worktree', 'add', '-q', '-b', 'task', tree);
+  const top = realpathSync(tree);
+  assert.equal((await sandbox.call(['worker', 'mark', tree])).status, 0);
+  // A Muse call: no YOKOTEN_ROLE, the hook's cwd in the marked tree.
+  const muse = (command: string, folder = tree) =>
+    sandbox.call(['hook', '--agent', 'muse'], { cwd: folder, input: JSON.stringify({ cwd: folder, hook_event_name: 'PreToolUse', tool_name: 'bash', tool_input: { command } }) });
+  // Positive controls: the plain unmark, and one that cds away first.
+  for (const command of [`yokoten worker unmark ${top}`, `cd /tmp && yokoten worker unmark ${top}`]) {
+    const result = await muse(command);
+    assert.equal(result.status, 2, command);
+    assert.match(result.stderr, /only the lead unmarks a worktree/, command);
+  }
+  // Negative control: the lead, in an unmarked checkout with no worker role, passes.
+  assert.equal((await muse(`yokoten worker unmark ${top}`, sandbox.repo)).status, 0);
+  // The mark is still there: nothing was cleared.
+  const gitDir = runChild('git', ['rev-parse', '--absolute-git-dir'], { cwd: tree }).stdout.trim();
+  assert.ok(existsSync(join(gitDir, 'yokoten-worker')));
+  sandbox.git('worktree', 'remove', '--force', tree);
 });
