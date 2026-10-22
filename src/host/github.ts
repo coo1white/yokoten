@@ -926,13 +926,52 @@ export interface BoardPull {
 /** A check conclusion that turns the pull request red. */
 const FAILED_CHECK = new Set(['FAILURE', 'TIMED_OUT', 'ACTION_REQUIRED']);
 
-/** The checks of one pull request, from gh's statusCheckRollup. */
+/** The checks of one pull request, from gh's statusCheckRollup. Each check counts by its latest run, so a green rerun clears an old failure. */
 function rollupState(rollup: unknown): BoardPull['checks'] {
   const entries = Array.isArray(rollup) ? rollup.filter(isObject) : [];
   if (!entries.length) return 'none';
-  if (entries.some((entry) => typeof entry.conclusion === 'string' && FAILED_CHECK.has(entry.conclusion))) return 'fail';
-  if (entries.some((entry) => typeof entry.status === 'string' && entry.status !== 'COMPLETED')) return 'running';
+  const latest = keepLatestRuns(entries);
+  if (latest.some((entry) => typeof entry.conclusion === 'string' && FAILED_CHECK.has(entry.conclusion))) return 'fail';
+  if (latest.some((entry) => typeof entry.status === 'string' && entry.status !== 'COMPLETED')) return 'running';
   return 'pass';
+}
+
+/** One run's time: completedAt, else startedAt, else NaN when neither parses. */
+function readRunTime(entry: Record<string, unknown>): number {
+  for (const key of ['completedAt', 'startedAt']) {
+    const value = entry[key];
+    if (typeof value !== 'string' || !value) continue;
+    const time = Date.parse(value);
+    if (!Number.isNaN(time)) return time;
+  }
+  return NaN;
+}
+
+/**
+ * One run per check name: the latest by run time. An entry with no name is its own
+ * check, since nothing says it reruns another. A dateless run never beats a dated one;
+ * ties keep file order.
+ */
+function keepLatestRuns(entries: Record<string, unknown>[]): Record<string, unknown>[] {
+  const byName = new Map<string, Record<string, unknown>>();
+  const nameless: Record<string, unknown>[] = [];
+  for (const entry of entries) {
+    const name = entry.name;
+    if (typeof name !== 'string' || !name) {
+      nameless.push(entry);
+      continue;
+    }
+    const seen = byName.get(name);
+    if (seen === undefined) {
+      byName.set(name, entry);
+      continue;
+    }
+    const seenTime = readRunTime(seen);
+    const entryTime = readRunTime(entry);
+    if (Number.isNaN(entryTime)) continue;
+    if (Number.isNaN(seenTime) || entryTime > seenTime) byName.set(name, entry);
+  }
+  return [...byName.values(), ...nameless];
 }
 
 /** The tier from the label names (`tier A`, `tier: b`), or '' when there is none. */

@@ -644,3 +644,25 @@ test('readBoardPulls: a fail wins over running; odd rows are reasons or blanks, 
   };
   assert.equal(readBoardPulls(refused, 'o/r'), 'gh can\'t list the pull requests (HTTP 401: Bad credentials): run `gh auth login`, and check the repo');
 });
+
+test('readBoardPulls: each check counts by its latest run, so a green rerun reads pass (#601)', () => {
+  const ghWith = (rows: unknown): Gh => () => JSON.stringify(rows);
+  const row = { number: 1, title: 't', headRefName: 'b', url: '', state: 'OPEN', reviewDecision: '', isDraft: false, labels: [] };
+  const checksOf = (rollup: unknown) => (readBoardPulls(ghWith([{ ...row, statusCheckRollup: rollup }]), 'o/r') as { checks: string }[])[0].checks;
+  const oldFail = { name: 'tests', conclusion: 'FAILURE', status: 'COMPLETED', completedAt: '2026-10-20T10:00:00Z' };
+  const newPass = { name: 'tests', conclusion: 'SUCCESS', status: 'COMPLETED', completedAt: '2026-10-21T10:00:00Z' };
+  assert.equal(checksOf([oldFail, newPass]), 'pass', 'a failure with a green rerun');
+  assert.equal(checksOf([newPass, oldFail]), 'pass', 'the dates decide, not the file order');
+  const oldPass = { ...oldFail, conclusion: 'SUCCESS' };
+  const newFail = { ...newPass, conclusion: 'FAILURE' };
+  assert.equal(checksOf([oldPass, newFail]), 'fail', 'a pass with a red rerun');
+  assert.equal(checksOf([newFail, oldPass]), 'fail', 'the dates decide, not the file order');
+  // startedAt stands in when completedAt is missing, as on a running check.
+  assert.equal(checksOf([oldFail, { name: 'tests', conclusion: '', status: 'IN_PROGRESS', startedAt: '2026-10-21T10:00:00Z' }]), 'running', 'a running rerun of a failed check');
+  // Missing dates never crash: a dateless run never beats a dated one.
+  assert.equal(checksOf([{ name: 'tests', conclusion: 'FAILURE', status: 'COMPLETED' }, newPass]), 'pass');
+  assert.equal(checksOf([{ name: 'tests', conclusion: 'FAILURE', status: 'COMPLETED' }, { name: 'tests', conclusion: 'SUCCESS', status: 'COMPLETED' }]), 'fail', 'two dateless runs keep file order');
+  assert.equal(checksOf([{ name: 'tests', conclusion: 'SUCCESS', status: 'COMPLETED', completedAt: 'not a date' }]), 'pass', 'an odd date reads as no date');
+  // Distinct names still each count.
+  assert.equal(checksOf([newPass, { name: 'lint', conclusion: 'FAILURE', status: 'COMPLETED', completedAt: '2026-10-20T10:00:00Z' }]), 'fail');
+});
