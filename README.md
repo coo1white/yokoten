@@ -1,15 +1,12 @@
 <div align="center">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
-  <img src="docs/assets/banner-light.svg" width="100%" alt="yokoten · 横展. A guide for the journey. A guard at the bridge. A road climbs through the mountains past five numbered stages to a bridge, where a lantern keeps watch.">
-</picture>
+# yokoten · 横展
 
-<br/>
+### A guide for the journey. A guard at the bridge.
 
-**Everyone can build software the way good teams do.**
+**Anyone can build software the way good teams do.**
 
-A guide and a guard for you and your AI agents.
+A free tool that puts a good team's process into your project. Its checks run in your repo and CI, for people and AI agents alike.
 
 **[yokoten.app](https://yokoten.app/?from=github)** &nbsp;·&nbsp; English | [简体中文](docs/i18n/zh-CN/README.md) | [繁體中文](docs/i18n/zh-TW/README.md) | [日本語](docs/i18n/ja/README.md)
 
@@ -37,7 +34,7 @@ In any other agent, or with no agent at all, the commit check and CI still stop 
 
 ## Works with any language
 
-yokoten itself runs on Node 22.23.4 or later, on your machine and in CI, but your project can be in any language.
+yokoten itself runs on Node 22.23.4, 24.22.1 or 26.12.1 (or a newer 22, 24 or 26 release), on your machine and in CI, but your project can be in any language.
 The guard, the privacy and secrets check, CI, and the issue and pull request checks
 work the same in every language.
 

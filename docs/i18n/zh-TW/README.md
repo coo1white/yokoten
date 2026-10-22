@@ -1,16 +1,13 @@
 <!-- source: README.md -->
 <div align="center">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="../../assets/banner-dark.svg">
-  <img src="../../assets/banner-light.svg" width="100%" alt="yokoten · 橫展。一路幫你帶路，在橋頭替你把關。一條路穿過群山，經過標著 1 到 5 的五關，通到一座橋，橋頭有一盞燈守著。">
-</picture>
+# yokoten · 横展
 
-<br/>
+### 帶你上路，替你守橋。
 
-**人人都能像好團隊那樣開發軟體。**
+**誰都能像好團隊一樣做軟體。**
 
-一路帶你上手，也替你看好 AI。
+一個免費工具，把好團隊的做事流程放進你的專案。檢查在你的儲存庫和 CI 裡執行，程式碼是人寫的還是 AI 寫的都一樣。
 
 **[yokoten.app](https://yokoten.app/?from=github)** &nbsp;·&nbsp; [English](../../../README.md) | [简体中文](../zh-CN/README.md) | 繁體中文 | [日本語](../ja/README.md)
 
@@ -39,7 +36,7 @@
 
 ## 用哪種語言都可以
 
-yokoten 本身需要 Node 22.23.4 或更新版本（你的電腦和 CI 上都要），但你的專案用哪種語言都可以。
+yokoten 本身需要 Node 22.23.4、24.22.1 或 26.12.1，或同一大版本裡更新的版本（你的電腦和 CI 上都要），但你的專案用哪種語言都可以。
 守衛、隱私與密鑰檢查、CI、issue 和 PR 檢查，在每種語言裡都一樣運作。
 
 只有一個步驟會看語言：`doctor` 會找你的測試指令。
