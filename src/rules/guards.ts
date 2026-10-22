@@ -640,6 +640,53 @@ function withHomeShown(path: string, home: string | null): string {
   return path.startsWith(home + sep) ? `~${path.slice(home.length)}` : path;
 }
 
+// ---- The blunt rule for a worker (#591) ----
+//
+// The checks above read where a command writes, and each review found a new bash trick
+// past them (`git config core.worktree`, `read GIT_WORK_TREE <<<`, `xargs git -C`). So the
+// guard stops reading grammar here: a worker's command that points at a config folder, or
+// moves the folder git works in, passes only when every program in it is a plain reader.
+
+// A `.config` path part, or the worker list.
+const POINTS_AT_CONFIG = /(^|[\s/\\=:(`;&|<>])\.config([/\\]|$|[\s;&|)`<>])|yokoten[/\\]+workers/i;
+// What moves the folder git works in, or the folder a program runs in.
+const MOVES_WORK_FOLDER = /\bGIT_(WORK_TREE|DIR)\b|\bcore\.worktree\b|--chdir\b|(^|[\s;&|(`])env((\s+-[^\sC]\S*)|(\s+\w+=\S*))*\s+-[A-Za-z]*C/i;
+// Programs that only read and run nothing else.
+const PLAIN_READERS = new Set(['cat', 'ls', 'head', 'tail', 'wc', 'stat', 'file', 'grep', 'egrep', 'fgrep', 'rg', 'less', 'find', 'git', 'cd', 'pwd', 'echo']);
+const GIT_READS = new Set(['status', 'log', 'diff', 'show']);
+
+/**
+ * For a worker: a command that names a `.config` folder or the worker list, or moves git's
+ * work folder (GIT_WORK_TREE, GIT_DIR, core.worktree, `--chdir`, `env -C`), read case aside
+ * and with quotes and backslashes taken off, unless each program in it is a plain reader:
+ * PLAIN_READERS, a find that runs and deletes nothing, `rg` without `--pre`, and git with
+ * only status, log, diff or show and no option before it. A command that moves git's work
+ * folder may not run git at all; one with a substitution or a file redirect never passes.
+ */
+function checkWorkerPointers(command: string, commands: string[][]): Finding | null {
+  const bare = command.replace(/['"\\]/g, '');
+  const movesFolder = [command, bare].some((text) => MOVES_WORK_FOLDER.test(text));
+  if (!movesFolder && ![command, bare].some((text) => POINTS_AT_CONFIG.test(text))) return null;
+  const refusal = finding(
+    'worker-mark',
+    "a worker can't run commands that point at yokoten's config folder (~/.config/yokoten) or move the folder git works in, unless every program in it only reads",
+    'run plain reads only (cat, ls, grep, git status); if your task needs more there, stop and ask the lead',
+  );
+  if (/\$\(|`|[<>]\(/.test(command)) return refusal;
+  for (const words of commands) {
+    if (writesFile(words)) return refusal;
+    for (const program of findPrograms(words)) {
+      const name = programName(program);
+      if (!PLAIN_READERS.has(name)) return refusal;
+      const args = words.slice(words.indexOf(program) + 1);
+      if (name === 'find' && args.some((arg) => FIND_WRITES.test(arg) || FIND_ACTIONS.has(arg))) return refusal;
+      if (name === 'rg' && args.some((arg) => /^--pre(=|$)/.test(arg))) return refusal;
+      if (name === 'git' && (movesFolder || !GIT_READS.has(args[0] ?? ''))) return refusal;
+    }
+  }
+  return null;
+}
+
 /**
  * For a worker: an edit inside a git folder, or of the mark (#555), or null. `path` is
  * absolute. It is compared by real path too, so a symlink to a git folder counts; `folder` is
@@ -855,7 +902,7 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
     postCwd = folderAfter(words, postCwd, { env, isTildeQuoted });
     nearCwd = folderAfter(words, nearCwd, { env, isTildeQuoted, isCdPathSkipped: true });
   }
-  return null;
+  return env.YOKOTEN_ROLE === 'worker' ? checkWorkerPointers(command, commands) : null;
 }
 
 /**

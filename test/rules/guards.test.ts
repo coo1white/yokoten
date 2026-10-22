@@ -2277,8 +2277,6 @@ test('guard: a worker does not change yokoten config folder; the lead may (#591)
     'grep x ~/.config/yokoten/workers',
     'find ~/.config/yokoten -name workers',
     'cat ~/.config/yokoten/workers | grep wt',
-    'mkdir -p ~/.config/other',
-    'echo x > ~/.config/other/file',
     'rm -rf ~/.cache/yokoten',
     'rm -rf dist/*',
     'echo x > notes.txt',
@@ -2294,7 +2292,6 @@ test('guard: a worker does not change yokoten config folder; the lead may (#591)
     'git -C . status',
     'git status',
     'git clean -fdx',
-    'GIT_WORK_TREE=. git status',
     'cd src && git status',
     'cd ~/.config/yokoten && cat workers',
     'git clone https://example.com/a/b.git',
@@ -2354,4 +2351,60 @@ test('checkWorkerMarkEdit: yokoten config folder by path or real path (#591)', (
   const paths = [join(home, '.config', 'yokoten', 'workers')];
   assert.equal(judge({ paths, cwd: tree, worker: true }, { root: null, config: DEFAULTS, env, cwd: tree })?.id, 'worker-mark');
   assert.equal(judge({ paths, cwd: tree, worker: false }, { root: null, config: DEFAULTS, env, cwd: tree }), null);
+});
+
+// #591, third review: the guard stops reading bash grammar for a worker's command that points
+// at a .config folder or moves git's work folder. It passes only when every program reads.
+test('guard: a worker command that points at a config folder runs only plain reads (#591)', () => {
+  const base = makeTempDir('yokoten-blunt-');
+  const home = join(base, 'home');
+  mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
+  const worker = { YOKOTEN_ROLE: 'worker', HOME: home };
+  const lead = { HOME: home };
+  for (const command of [
+    'git config core.worktree ~/.config/yokoten',
+    'git -c core.worktree=/tmp/x clean -fdx',
+    'GIT_WORK_TREE=~/.config/"yokoten" git clean -fdx',
+    'GIT_WORK_TREE=~/.con\\fig/yokoten git clean -fdx',
+    'env -C ~/.config/yokoten git clean -fdx',
+    'env --chdir=/tmp/x git clean -fdx',
+    'read GIT_WORK_TREE <<< ~/.config/yokoten; export GIT_WORK_TREE; git clean -fdx',
+    'printf -v GIT_WORK_TREE %s /tmp/x; git clean -fdx',
+    'echo ~/.config/yokoten | xargs -I{} git -C {} clean -fdx',
+    'cat ~/.CONFIG/yokoten/workers > /tmp/w',
+    'cat "$(echo ~/.config/yokoten/workers)"',
+    'cp ~/.config/yokoten/workers /tmp/w',
+    'git -C ~/.config/yokoten status',
+    "find ~/.config -exec cat {} +",
+    // Writes elsewhere under .config: the blunt rule refuses them too.
+    'mkdir -p ~/.config/other',
+    'echo x > ~/.config/other/file',
+    'npm test --prefix ~/.config/x',
+    // Blunt: any git next to GIT_WORK_TREE, even one that points at the worktree.
+    'GIT_WORK_TREE=. git status',
+  ]) {
+    const found = checkCommand(command, { cwd: process.cwd(), env: worker });
+    assert.equal(found?.id, 'worker-mark', command);
+    assert.notEqual(checkCommand(command, { cwd: process.cwd(), env: lead })?.id, 'worker-mark', `the lead may: ${command}`);
+  }
+  assert.match(checkCommand('git config core.worktree x', { cwd: process.cwd(), env: worker })?.fix ?? '', /ask the lead/);
+  for (const command of [
+    'cat ~/.config/yokoten/workers',
+    'ls ~/.config',
+    'grep x ~/.config/yokoten/workers',
+    'cat ~/.config/yokoten/workers | grep wt',
+    'cd ~/.config/yokoten && cat workers',
+    'git log -- ~/.config/yokoten',
+    'grep -rn GIT_WORK_TREE src',
+    'git status',
+    'git clean -fdx',
+    'cd src && git status',
+    'GIT_PAGER=cat git log',
+    'npm test',
+    "sed -i 's/a/b/' src/config.ts",
+    'rm -rf config/',
+    'cat .configrc',
+    'find ~/.config -name workers -print0',
+    'cat webpack.config.js',
+  ]) allowed(command, worker);
 });
