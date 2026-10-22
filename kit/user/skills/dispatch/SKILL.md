@@ -17,6 +17,9 @@ colleague: a clear brief, its own desk, and a report you check.
    Then mark it, so the guard treats every agent there as a worker:
    `git worktree add ../<repo>-<issue> -b <issue>-<slug>`, then
    `yokoten worker mark ../<repo>-<issue>`
+4. Start the worker in the worktree, so its sandbox covers it. The project
+   holds the sandbox settings. `yokoten init` writes them. `yokoten doctor`
+   checks them in the `sandbox` step. The `../` path stays until #571 moves it.
 
 ## The brief
 
@@ -37,8 +40,15 @@ Report: what you changed, the commands you ran with their output, what you are u
 The mark makes the worker a worker in every agent, even one that passes its hooks no
 `YOKOTEN_ROLE` (Muse Code). Also start it with its role in the environment:
 
-- A separate session: `YOKOTEN_ROLE=worker claude -p "<brief>"` in the worktree
-  (add `YOKOTEN_FIX_TASK=1` for a fix task).
+- A separate session in the worktree (add `YOKOTEN_FIX_TASK=1` for a fix task):
+  - Claude Code: `YOKOTEN_ROLE=worker claude -p "<brief>"`. The sandbox is on
+    from `.claude/settings.json`. No flag.
+  - Codex: `YOKOTEN_ROLE=worker codex exec --sandbox workspace-write -c approval_policy=on-request "<brief>"`.
+    This matches `.codex/config.toml`.
+  - Gemini: `YOKOTEN_ROLE=worker gemini -p "<brief>"` without `--yolo`. The project
+    blocks YOLO in `.gemini/settings.json`. Start at the worktree root.
+  - Grok: `YOKOTEN_ROLE=worker grok --sandbox yokoten -p "<brief>"`. This selects
+    `[profiles.yokoten]` in `.grok/sandbox.toml`.
 - A subagent: use the `worker` agent. The tool guard treats an agent type named worker
   as a worker.
 - A brief that changes a lead-only file: a separate session with
