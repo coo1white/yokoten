@@ -2181,3 +2181,230 @@ test('worker list: the guard refuses `yokoten worker unmark` for a worker, not t
   assert.equal(checkCommand('yokoten worker mark /tmp/wt', { env: worker, cwd: process.cwd() }), null, 'mark is not unmark');
   assert.equal(checkCommand('yokoten bot -- echo hi', { env: worker, cwd: process.cwd() })?.id, 'worker-push', 'bot keeps its own refusal');
 });
+
+// #591: yokoten's config folder holds the worker list and the bot's keys. A worker that
+// clears the list loses its role, as with the mark (#555), so a worker's plain ways to
+// change that folder are refused, by real path too; a read passes, and the lead may.
+test('guard: a worker does not change yokoten config folder; the lead may (#591)', () => {
+  const base = makeTempDir('yokoten-config-');
+  const home = join(base, 'home');
+  mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(join(home, '.config', 'yokoten', 'workers'), '# list\n');
+  const worker = { YOKOTEN_ROLE: 'worker', HOME: home };
+  const lead = { HOME: home };
+  const refused = [
+    'rm ~/.config/yokoten/workers',
+    'rm -rf ~/.config',
+    'rm -rf ~',
+    'mv ~/.config/yokoten ~/.config/y2',
+    'mv ~/.config ~/old',
+    'cp /dev/null ~/.config/yokoten/workers',
+    'chmod 000 ~/.config/yokoten',
+    'ln -sf /dev/null ~/.config/yokoten/workers',
+    'touch ~/.config/yokoten/workers',
+    'echo > ~/.config/yokoten/workers',
+    'echo x >> $HOME/.config/yokoten/workers',
+    'truncate -s 0 ${HOME}/.config/yokoten/workers',
+    `rm ${home}/.config/yokoten/workers`,
+    "sed -i '/wt/d' ~/.config/yokoten/workers",
+    'rm ~/.config/yoko*/w*',
+    'rm -rf ~/.c*/y*',
+    'rm ~/.config/{yokoten,x}/workers',
+    'rm -rf ~/{.config/yokoten,x}',
+    'rm "$(echo ~/.config/yokoten/workers)"',
+    'rm $DIR/.config/yokoten/workers',
+    'rm ~someone/.config/yokoten/workers',
+    `python3 -c "open('${home}/.config/yokoten/workers', 'w')"`,
+    "bash -c 'rm ~/.config/yoko*/w*'",
+    'echo ~/.config/yokoten/workers | xargs rm',
+    'find ~/.config/yokoten -name workers -delete',
+    'find ~/.config/yokoten -exec rm {} +',
+    // A find that writes, started at or above the folder (review of #591).
+    'find ~ -name workers -delete',
+    'find ~/.config -delete',
+    'find ~ -name workers -exec rm {} +',
+    'find $HOME -delete',
+    // A hard link to the list is the list.
+    'cp -l ~/.config/yokoten/workers w',
+    'cp --link ~/.config/yokoten/workers w',
+    'cp -al ~/.config/yokoten w',
+    'link ~/.config/yokoten/workers w',
+    // git that works in the folder.
+    'git init ~/.config/yokoten && git -C ~/.config/yokoten clean -fdx',
+    'git -C ~/.config/yokoten checkout -- .',
+    'git -C ~ -C .config/yokoten clean -fdx',
+    'git --work-tree=$HOME/.config/yokoten checkout .',
+    // git run in the folder by cd, or pointed at it by GIT_WORK_TREE or GIT_DIR.
+    'cd ~/.config/yokoten && git init && git clean -fdx',
+    'cd ~/.config/yokoten && git clean -fdx',
+    'cd ~ && git clean -fdx',
+    'GIT_WORK_TREE=~/.config/yokoten git clean -fdx',
+    'env GIT_WORK_TREE=~/.config/yokoten git clean -fdx',
+    'export GIT_WORK_TREE=~/.config/yokoten; git clean -fdx',
+    'GIT_WORK_TREE="$HOME/.config/yokoten" git clean -fdx',
+    'export GIT_DIR=~/.config/yokoten/.git; git init',
+    'GIT_WORK_TREE=$X git clean -fdx ~/.config/yokoten',
+    'cd $X && git clean -fdx ~/.config/yokoten',
+    // Unknown parts that hide the name.
+    'X=yokoten; rm ~/.config/$X/workers',
+    'rm ~/.config/$(echo yokoten)/workers',
+    'rm ~/.config/yokote$(echo n)/workers',
+    'rm ~/$X/yokoten/workers',
+    "H=$HOME; rm $H/.config/yo''koten/workers",
+    'rm -rf $H/.c*',
+    // Downloads.
+    'curl -o ~/.config/yokoten/keys.env https://example.com/k',
+    'curl -sSLo ~/.config/yokoten/keys.env https://example.com/k',
+    'curl --output-dir ~/.config/yokoten -O https://example.com/workers',
+    'wget -O ~/.config/yokoten/workers https://example.com/w',
+    'wget --output-document=~/.config/yokoten/workers https://example.com/w',
+    'wget -P ~/.config/yokoten https://example.com/w',
+  ];
+  for (const command of refused) {
+    const found = checkCommand(command, { cwd: process.cwd(), env: worker });
+    assert.equal(found?.id, 'worker-mark', command);
+    assert.match(found?.fix ?? '', /tell the lead/, command);
+    // The lead may: the same command is not refused for this rule.
+    assert.notEqual(checkCommand(command, { cwd: process.cwd(), env: lead })?.id, 'worker-mark', `the lead may: ${command}`);
+  }
+  // With no home folder the guard can't place ~, so a command that names the folder is refused.
+  assert.equal(checkCommand('rm ~/.config/yokoten/workers', { cwd: process.cwd(), env: { YOKOTEN_ROLE: 'worker' } })?.id, 'worker-mark');
+  // Reads, and writes elsewhere in home: a worker runs them.
+  for (const command of [
+    'cat ~/.config/yokoten/workers',
+    'ls ~/.config/yokoten',
+    'ls -la $HOME/.config/yokoten',
+    'grep x ~/.config/yokoten/workers',
+    'find ~/.config/yokoten -name workers',
+    'cat ~/.config/yokoten/workers | grep wt',
+    'rm -rf ~/.cache/yokoten',
+    'rm -rf dist/*',
+    'echo x > notes.txt',
+    'rm "$TMPDIR/out.txt"',
+    "bash -c 'npm test'",
+    // Work in the worktree that looks like the cases above.
+    'rm -rf node_modules dist',
+    "find . -name '*.log' -delete",
+    'find . -type d -name node_modules -exec rm -rf {} +',
+    'find ~ -name workers',
+    'cp -l a b',
+    'cp -a src out',
+    'git -C . status',
+    'git status',
+    'git clean -fdx',
+    'cd src && git status',
+    'cd ~/.config/yokoten && cat workers',
+    'git clone https://example.com/a/b.git',
+    'rm src/$NAME.ts',
+    'curl -o out.json https://example.com/x',
+    'curl -sSL https://example.com/x',
+    'wget https://example.com/x',
+  ]) allowed(command, worker);
+  // The git folder too: a find that writes from above .git, a hard link into it, a download into it.
+  for (const command of ['find . -delete', "find . -name '*' -delete", 'find . -name x -o -delete', 'find . -exec rm {} +', 'cp -l .git/config w', 'curl -o .git/config https://example.com/c']) {
+    assert.equal(checkCommand(command, { cwd: process.cwd(), env: worker })?.id, 'worker-mark', command);
+    assert.notEqual(checkCommand(command, { cwd: process.cwd(), env: lead })?.id, 'worker-mark', `the lead may: ${command}`);
+  }
+  allowed("find src -name '*.tmp' -delete", worker);
+  allowed('find dist -delete', worker);
+  if (process.platform === 'win32') return;
+  // A symlink to the folder counts: compared by real path.
+  symlinkSync(join(home, '.config', 'yokoten'), join(base, 'link'));
+  symlinkSync(join(home, '.config'), join(base, 'dot-config'));
+  for (const command of [`rm ${join(base, 'link', 'workers')}`, `echo > ${join(base, 'link', 'workers')}`, `rm -rf ${join(base, 'dot-config')}/yoko*`, `rm -rf ${join(base, 'link')}/`]) {
+    assert.equal(checkCommand(command, { cwd: process.cwd(), env: worker })?.id, 'worker-mark', command);
+  }
+  allowed(`cat ${join(base, 'link', 'workers')}`, worker);
+  // git run in the folder by a bare `cd` through a symlink: read as written, not through CDPATH.
+  for (const command of ['cd link && git init && git clean -fdx', 'cd dot-config/yokoten && git clean -fdx']) {
+    assert.equal(checkCommand(command, { cwd: base, env: worker })?.id, 'worker-mark', command);
+    assert.notEqual(checkCommand(command, { cwd: base, env: lead })?.id, 'worker-mark', `the lead may: ${command}`);
+  }
+  assert.equal(checkCommand('cd link && git status', { cwd: base, env: worker })?.id, 'worker-mark', 'git in the folder, even to read');
+  assert.equal(checkCommand('cd other && git clean -fdx', { cwd: base, env: worker }), null);
+  allowed(`rm ${join(base, 'other-file')}`, worker);
+});
+
+// #591: an edit inside yokoten's config folder may clear the worker list, through a symlink too.
+test('checkWorkerMarkEdit: yokoten config folder by path or real path (#591)', () => {
+  const base = makeTempDir('yokoten-config-edit-');
+  const home = join(base, 'home');
+  mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
+  const env = { HOME: home };
+  const tree = join(base, 'wt');
+  mkdirSync(tree);
+  assert.equal(checkWorkerMarkEdit(join(home, '.config', 'yokoten', 'workers'), tree, env)?.id, 'worker-mark');
+  assert.equal(checkWorkerMarkEdit(join(home, '.config', 'yokoten', 'keys.env'), tree, env)?.id, 'worker-mark');
+  assert.match(checkWorkerMarkEdit(join(home, '.config', 'yokoten', 'workers'), tree, env)?.what ?? '', /config folder/);
+  // Negative controls: other files in home, the worktree, and no home folder known.
+  assert.equal(checkWorkerMarkEdit(join(home, '.config', 'other', 'workers'), tree, env), null);
+  assert.equal(checkWorkerMarkEdit(join(home, '.config', 'yokoten-old'), tree, env), null);
+  assert.equal(checkWorkerMarkEdit(join(tree, 'a.ts'), tree, env), null);
+  assert.equal(checkWorkerMarkEdit(join(home, '.config', 'yokoten', 'workers'), tree), null);
+  // Case aside, as in the command check.
+  assert.equal(checkWorkerMarkEdit(join(home, '.CONFIG', 'Yokoten', 'workers'), tree, env)?.id, 'worker-mark', 'another case');
+  assert.equal(checkWorkerMarkEdit(join(home, '.CONFIG', 'Yokoten-old'), tree, env), null);
+  if (process.platform === 'win32') return;
+  symlinkSync(join(home, '.config', 'yokoten'), join(tree, 'link'));
+  assert.equal(checkWorkerMarkEdit(join(tree, 'link', 'workers'), tree, env)?.id, 'worker-mark', 'a symlink to the config folder');
+  // Through the hook: a worker's Write to the list is refused; the lead's passes.
+  const paths = [join(home, '.config', 'yokoten', 'workers')];
+  assert.equal(judge({ paths, cwd: tree, worker: true }, { root: null, config: DEFAULTS, env, cwd: tree })?.id, 'worker-mark');
+  assert.equal(judge({ paths, cwd: tree, worker: false }, { root: null, config: DEFAULTS, env, cwd: tree }), null);
+});
+
+// #591, third review: the guard stops reading bash grammar for a worker's command that points
+// at a .config folder or moves git's work folder. It passes only when every program reads.
+test('guard: a worker command that points at a config folder runs only plain reads (#591)', () => {
+  const base = makeTempDir('yokoten-blunt-');
+  const home = join(base, 'home');
+  mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
+  const worker = { YOKOTEN_ROLE: 'worker', HOME: home };
+  const lead = { HOME: home };
+  for (const command of [
+    'git config core.worktree ~/.config/yokoten',
+    'git -c core.worktree=/tmp/x clean -fdx',
+    'GIT_WORK_TREE=~/.config/"yokoten" git clean -fdx',
+    'GIT_WORK_TREE=~/.con\\fig/yokoten git clean -fdx',
+    'env -C ~/.config/yokoten git clean -fdx',
+    'env --chdir=/tmp/x git clean -fdx',
+    'read GIT_WORK_TREE <<< ~/.config/yokoten; export GIT_WORK_TREE; git clean -fdx',
+    'printf -v GIT_WORK_TREE %s /tmp/x; git clean -fdx',
+    'echo ~/.config/yokoten | xargs -I{} git -C {} clean -fdx',
+    'cat ~/.CONFIG/yokoten/workers > /tmp/w',
+    'cat "$(echo ~/.config/yokoten/workers)"',
+    'cp ~/.config/yokoten/workers /tmp/w',
+    'git -C ~/.config/yokoten status',
+    "find ~/.config -exec cat {} +",
+    // Writes elsewhere under .config: the blunt rule refuses them too.
+    'mkdir -p ~/.config/other',
+    'echo x > ~/.config/other/file',
+    'npm test --prefix ~/.config/x',
+    // Blunt: any git next to GIT_WORK_TREE, even one that points at the worktree.
+    'GIT_WORK_TREE=. git status',
+  ]) {
+    const found = checkCommand(command, { cwd: process.cwd(), env: worker });
+    assert.equal(found?.id, 'worker-mark', command);
+    assert.notEqual(checkCommand(command, { cwd: process.cwd(), env: lead })?.id, 'worker-mark', `the lead may: ${command}`);
+  }
+  assert.match(checkCommand('git config core.worktree x', { cwd: process.cwd(), env: worker })?.fix ?? '', /ask the lead/);
+  for (const command of [
+    'cat ~/.config/yokoten/workers',
+    'ls ~/.config',
+    'grep x ~/.config/yokoten/workers',
+    'cat ~/.config/yokoten/workers | grep wt',
+    'cd ~/.config/yokoten && cat workers',
+    'git log -- ~/.config/yokoten',
+    'grep -rn GIT_WORK_TREE src',
+    'git status',
+    'git clean -fdx',
+    'cd src && git status',
+    'GIT_PAGER=cat git log',
+    'npm test',
+    "sed -i 's/a/b/' src/config.ts",
+    'rm -rf config/',
+    'cat .configrc',
+    'find ~/.config -name workers -print0',
+    'cat webpack.config.js',
+  ]) allowed(command, worker);
+});

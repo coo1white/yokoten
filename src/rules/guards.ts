@@ -18,7 +18,7 @@ import type { Config, Env } from './config.ts';
 import { loadConfig, matcher } from './config.ts';
 import { type Finding, finding } from './message.ts';
 import { checkCommandTitle } from './pr.ts';
-import { type CommandFiles, checkPost, type GhCommand, ghIndex, homeIn, isBotProgram, PIPE_READERS, type Risk, withoutReadPipe } from './privacy.ts';
+import { type CommandFiles, checkPost, type GhCommand, ghIndex, homeIn, homeOf, isBotProgram, PIPE_READERS, type Risk, withoutReadPipe } from './privacy.ts';
 
 /** A file edit, by path relative to the repo root. */
 export function checkEdit(path: string, { config, env }: { config: Config; env: Env }): Finding | null {
@@ -64,6 +64,113 @@ export const WORKER_MARK = 'yokoten-worker';
 /** The file that lists marked worktree paths, under yokoten's config folder. */
 export function workersFile(env: Env): string {
   return join(homeIn(env), '.config', 'yokoten', 'workers');
+}
+
+// ---- yokoten's config folder (#591) ----
+//
+// The worker list and the bot's keys are in `~/.config/yokoten`. A worker that clears the
+// list loses its role, as with the mark (#555), so a worker's plain ways to change that
+// folder are refused too: see checkWorkerWrites and checkWorkerMarkEdit. Reads pass.
+
+/** yokoten's config folder, which holds the worker list and the bot's keys; null with no home folder. */
+export function configFolder(env: Env): string | null {
+  const home = homeOf(env);
+  return home ? join(home, '.config', 'yokoten') : null;
+}
+
+const CONFIG_FIX = "leave yokoten's config folder (~/.config/yokoten) as it is: only the lead changes the worker list and the bot's keys; if your task needs a change there, stop and tell the lead";
+const configFinding = (what: string) => finding('worker-mark', what, CONFIG_FIX);
+
+// Text that names yokoten's config folder or the worker list.
+const NAMES_CONFIG = /\.config[\\/]+yokoten|yokoten[\\/]+workers/i;
+
+/**
+ * Whether a command names yokoten's config folder or the worker list, in text or by a glob
+ * that can match `.config/yokoten` or `yokoten/workers`. A pair of bare globs (`*` `/` `*`)
+ * names nothing.
+ */
+function namesConfigFolder(command: string): boolean {
+  if (NAMES_CONFIG.test(command)) return true;
+  for (const word of command.split(/[\s'"`;|&<>()=:]+/)) {
+    const parts = word.split(/[\\/]+/);
+    for (let at = 0; at + 1 < parts.length; at++) {
+      const pair = [parts[at], parts[at + 1]];
+      if (!pair.some((part) => /[a-z]/i.test(part))) continue;
+      if (globMatches(pair[0], '.config') && globMatches(pair[1], 'yokoten')) return true;
+      if (globMatches(pair[0], 'yokoten') && globMatches(pair[1], 'workers')) return true;
+    }
+  }
+  return false;
+}
+
+/** `path` with a leading `~`, `$HOME` or `${HOME}` read as `home`; as it is with no home. */
+function withHomeRead(path: string, home: string | null): string {
+  if (home === null) return path;
+  const lead = /^(~|\$HOME|\$\{HOME\})(?=[\\/]|$)/.exec(path);
+  return lead ? home + path.slice(lead[0].length) : path;
+}
+
+/** The folders a path may not be, be in, or hold: the config folder as written and by real path. */
+function configForms(config: string): string[][] {
+  return [...new Set([config, realPath(config)])].map((form) => form.split(/[\\/]+/).filter(Boolean));
+}
+
+/**
+ * Whether the absolute `path` is yokoten's config folder, inside it, or a folder that holds
+ * it (`~/.config`, `~`). It is compared by real path, so a symlink counts. A glob part
+ * (`yoko*`, `{yokoten,x}`) counts when it can match the folder's part in the same place.
+ */
+function touchesConfig(path: string, forms: string[][]): boolean {
+  for (const form of braceForms(path, 0)) {
+    const parts = form.split(/[\\/]+/).filter(Boolean);
+    const firstGlob = parts.findIndex((part) => /[*?[{]/.test(part));
+    const candidates =
+      firstGlob === -1
+        ? [parts, realPath(form).split(/[\\/]+/).filter(Boolean)]
+        : [parts, [...realPath(`/${parts.slice(0, firstGlob).join('/')}`).split(/[\\/]+/).filter(Boolean), ...parts.slice(firstGlob)]];
+    for (const candidate of candidates) {
+      for (const config of forms) {
+        const shared = Math.min(candidate.length, config.length);
+        let isMatch = true;
+        for (let at = 0; at < shared && isMatch; at++) isMatch = globMatches(candidate[at], config[at].toLowerCase());
+        if (isMatch) return true;
+      }
+    }
+  }
+  return false;
+}
+
+// A part of a path the guard can't read: a variable, `${...}`, `$(...)` or `...`.
+const UNKNOWN_PART = /\$\((?:[^()]|\([^()]*\))*\)|`[^`]*`|\$\{[^}]*\}|\$[A-Za-z_]\w*|\$[0-9@*#?$!-]/g;
+// What an unknown part may be: any name, a dot name too (`*` alone skips those).
+const ANY_PART = '{*,.*}';
+
+/** Whether a path whose start can't be read goes on with `.config` and, if more, `yokoten` (`$H/.c*`, `$H/.config/yo*`). */
+function hasConfigTail(path: string): boolean {
+  const parts = path.split(/[\\/]+/);
+  return parts.some((part, at) => /[a-z]/i.test(part) && globMatches(part, '.config') && (at + 1 === parts.length || !parts[at + 1] || globMatches(parts[at + 1], 'yokoten')));
+}
+
+type ConfigContext = { folder: string | null; command: string; words: string[]; home: string | null; forms: string[][] };
+
+/**
+ * For a worker: why `target` may change yokoten's config folder (#591), or null. `does` is
+ * what the command does to it; `shown` is the path as the command wrote it. `~`, `$HOME` and `${HOME}` are read as home; any other
+ * unknown part (`$X`, `$(...)`) may be any name. A target whose start can't be read (`$H/...`,
+ * `~user`, a relative path from an unknown folder) counts when the command, its words with
+ * quotes taken off, or the target itself names the config folder or the worker list.
+ */
+function configTargetRefusal(target: string, context: ConfigContext, { does = 'changes', shown = target } = {}): Finding | null {
+  const { folder, command, words, home, forms } = context;
+  const expanded = withHomeRead(target, home);
+  const globbed = expanded.replace(UNKNOWN_PART, ANY_PART);
+  const isStartRead = !globbed.startsWith(ANY_PART) && !globbed.startsWith('~') && !/[$`]/.test(globbed) && (folder !== null || isAbsolute(globbed));
+  if (isStartRead && forms.length) {
+    const full = resolve(folder ?? '/', globbed);
+    return touchesConfig(full, forms) ? configFinding(`this command ${does} ${shown}, which is or holds yokoten's config folder (~/.config/yokoten), where the worker list and the bot's keys are kept`) : null;
+  }
+  const isNamed = namesConfigFolder(command) || namesConfigFolder(words.join(' ')) || namesConfigFolder(globbed) || (!isStartRead && hasConfigTail(globbed));
+  return isNamed ? configFinding(`this command ${does} ${shown}, a path yokoten can't read, and names yokoten's config folder, where the worker list is kept`) : null;
 }
 
 /** What the workers file starts with: what it is, and what clears an entry. */
@@ -353,12 +460,18 @@ const FIND_WRITES = /^-(delete|fprint0?|fprintf|fls)$/;
  * (`grep --exclude-dir=.git`, `find . -path ./.git -prune`, `grep GIT_DIR`). A target counts
  * when it may be a `.git` folder or the mark (see mayBeGitPath), when its real path is in the
  * worker's own git folders, and when the guard can't read it (`$(...)`, `$x`, `xargs rm`,
- * `find -exec rm`, inline code) in a command that names a git folder.
+ * `find -exec rm`, inline code) in a command that names a git folder. The same holds for
+ * yokoten's config folder, where the worker list is kept (#591): see configTargetRefusal.
  */
-function checkWorkerWrites(words: string[], { folder, command }: { folder: string | null; command: string }): Finding | null {
+function checkWorkerWrites(words: string[], { folder, near = folder, command, env = {} }: { folder: string | null; near?: string | null; command: string; env?: Env }): Finding | null {
   const known = new Map<string, string | null>();
   const targets = writeTargets(words, folder, (dir) => gitRootAbove(dir, known)).map((target) => target.path);
   const names: string[] = [];
+  const writes = (name: string) => Object.hasOwn(WRITERS, name) || MARK_WRITERS.has(name) || RUNS_CODE.test(name);
+  // The folders a find that writes starts in, with its arguments; the folders git works in.
+  const finds: { starts: string[]; args: string[] }[] = [];
+  const gitFolders: { path: string; written: string }[] = [];
+  const home = homeOf(env);
   let from = 0;
   for (const program of findPrograms(words)) {
     const at = words.indexOf(program, from);
@@ -366,15 +479,52 @@ function checkWorkerWrites(words: string[], { folder, command }: { folder: strin
     from = at + 1;
     const name = programName(program);
     names.push(name);
-    if (MARK_WRITERS.has(name)) targets.push(...plainArgs(withoutShellRedirects(words, at + 1)));
+    const args = withoutShellRedirects(words, at + 1);
+    if (MARK_WRITERS.has(name)) targets.push(...plainArgs(args));
+    // A hard link to a file is that file: `cp -l list w` then `: > w` empties the list.
+    if (name === 'link' || (name === 'cp' && args.some((arg) => arg === '--link' || /^-[A-Za-z]*l[A-Za-z]*$/.test(arg)))) targets.push(...plainArgs(args, COPY_VALUES));
+    if (name === 'find') {
+      const found = findWrites(args, writes);
+      if (found) {
+        finds.push(found);
+        targets.push(...found.starts);
+      }
+    }
+    if (isGit(program)) {
+      gitFolders.push(...gitWorkFolders(args, folder, home), ...gitEnvironmentFolders(command, folder, home));
+      if (near !== folder) gitFolders.push(...gitWorkFolders(args, near, home), ...gitEnvironmentFolders(command, near, home));
+    }
   }
-  const writes = (name: string) => Object.hasOwn(WRITERS, name) || MARK_WRITERS.has(name) || RUNS_CODE.test(name);
   // Files the guard can't see: a program fed by xargs or find, a find that writes, inline code.
   const fed = words.some((word) => programName(word) === 'xargs') || names.includes('find');
   const blind = names.some((name) => RUNS_CODE.test(name)) || (fed && names.some(writes)) || (names.includes('find') && words.some((word) => FIND_WRITES.test(word)));
+  const isConfigNamed = () => namesConfigFolder(command) || namesConfigFolder(words.join(' '));
   if (blind && namesGitDir(command)) return markFinding("this command names a git folder, and yokoten can't read which files it changes there");
+  if (blind && isConfigNamed()) return configFinding("this command names yokoten's config folder, where the worker list is kept, and yokoten can't read which files it changes there");
+  const config = configFolder(env);
+  const context: ConfigContext = { folder, command, words, home, forms: config === null ? [] : configForms(config) };
+  for (const { path, written } of gitFolders) {
+    const refusal = configTargetRefusal(path, context, { does: 'runs git in', shown: written });
+    if (refusal) return refusal;
+  }
   let dirs: string[] | undefined;
+  // A find that writes, started at or above a git folder, may reach the mark unless its
+  // names keep it away (`find . -name '*.log' -delete`).
+  for (const { starts, args } of finds) {
+    if (folder === null || !mayReachGitFolder(args)) continue;
+    dirs ??= protectedGitDirs(folder);
+    const top = gitLinkAbove(folder);
+    const held = [...dirs, ...(top ? [realPath(join(top.top, '.git'))] : [])];
+    for (const start of starts) {
+      if (/[$`~]/.test(start)) continue;
+      const full = realPath(resolve(folder, start));
+      const inside = full.endsWith(sep) ? full : full + sep;
+      if (held.some((dir) => dir === full || dir.startsWith(inside))) return markFinding(`this command changes files under ${start}, which holds a git folder, where the worker mark is kept`);
+    }
+  }
   for (const target of targets) {
+    const refusal = configTargetRefusal(target, context);
+    if (refusal) return refusal;
     if (mayBeGitPath(target)) return markFinding(`this command changes ${target}, which may be a .git folder or the worker mark`);
     if (/[$`]/.test(target)) {
       if (namesGitDir(command)) return markFinding(`this command changes ${target}, a path yokoten can't read, and names a git folder`);
@@ -389,14 +539,173 @@ function checkWorkerWrites(words: string[], { folder, command }: { folder: strin
   return null;
 }
 
+// find's options before its start folders, and the actions that pick or join what it matches.
+const FIND_LEAD_OPTIONS = /^-([HLP]|O\d*)$/;
+const FIND_NAME_TESTS = new Set(['-name', '-iname']);
+const FIND_PATH_TESTS = new Set(['-path', '-ipath', '-wholename', '-iwholename', '-regex', '-iregex']);
+const FIND_JOINS = new Set(['-o', '-or', '!', '-not', ',']);
+
+/**
+ * A find's start folders (`.` when it names none) and its arguments, when it writes: an
+ * action in FIND_WRITES, or -exec and its kin running a writer. Null for a find that reads.
+ */
+function findWrites(args: string[], writes: (name: string) => boolean): { starts: string[]; args: string[] } | null {
+  const isWriting = args.some((arg, at) => FIND_WRITES.test(arg) || (FIND_ACTIONS.has(arg) && writes(programName(args[at + 1] ?? ''))));
+  if (!isWriting) return null;
+  let at = 0;
+  while (at < args.length && (FIND_LEAD_OPTIONS.test(args[at]) || args[at] === '-D')) at += args[at] === '-D' ? 2 : 1;
+  const starts: string[] = [];
+  for (; at < args.length && !/^[-(!),]/.test(args[at]); at++) starts.push(args[at]);
+  return { starts: starts.length ? starts : ['.'], args };
+}
+
+/**
+ * Whether a find that writes may reach `.git` or the mark below its start: unless every
+ * name test (`-name`, `-path`, ...) is one that can't match them, with no `-o` or `!` to
+ * turn it around. find's `*` matches a leading dot too.
+ */
+function mayReachGitFolder(args: string[]): boolean {
+  if (args.some((arg) => FIND_JOINS.has(arg))) return true;
+  let isNamed = false;
+  for (const [at, arg] of args.entries()) {
+    const pattern = args[at + 1] ?? '';
+    if (FIND_NAME_TESTS.has(arg)) {
+      isNamed = true;
+      if ([WORKER_MARK, '.git'].some((name) => globMatches(`_${pattern}`, `_${name}`))) return true;
+    }
+    if (FIND_PATH_TESTS.has(arg)) {
+      isNamed = true;
+      if (namesGitDir(pattern) || !/[a-z]/i.test(pattern)) return true;
+    }
+  }
+  return !isNamed;
+}
+
+/**
+ * The folders git works in from its words after `git`, each with the path as written: each
+ * `-C` (from the one before), or with none the folder the command runs in (after a `cd`; `.`
+ * when unknown), `--work-tree` and `--git-dir`, and the folder `git init` or `git clone`
+ * makes. A path the guard can't read is kept as written.
+ */
+function gitWorkFolders(args: string[], folder: string | null, home: string | null): { path: string; written: string }[] {
+  const folders: { path: string; written: string }[] = [];
+  let base = folder;
+  const place = (path: string) => {
+    const expanded = withHomeRead(path, home);
+    if (/[$`]/.test(expanded) || expanded.startsWith('~')) return path;
+    return base === null ? (isAbsolute(expanded) ? expanded : path) : resolve(base, expanded);
+  };
+  let at = 0;
+  for (; at < args.length && args[at].startsWith('-'); at++) {
+    const [option, joined] = args[at].split(/=(.*)/s);
+    const value = joined ?? args[at + 1] ?? '';
+    if (option === '-C') {
+      const placed = place(value);
+      folders.push({ path: placed, written: value });
+      base = isAbsolute(placed) ? placed : null;
+    } else if (option === '--work-tree' || option === '--git-dir') folders.push({ path: place(value), written: value });
+    if (joined === undefined && GIT_VALUE_OPTIONS.has(option)) at++;
+  }
+  if (!args.slice(0, at).some((arg) => arg === '-C')) folders.push({ path: folder ?? '.', written: folder === null ? '.' : withHomeShown(folder, home) });
+  const sub = args[at];
+  if (sub === 'init' || sub === 'clone') {
+    for (const arg of args.slice(at + 1)) {
+      const [option, joined] = arg.split(/=(.*)/s);
+      if (!arg.startsWith('-')) folders.push({ path: place(arg), written: arg });
+      else if (option === '--separate-git-dir' && joined !== undefined) folders.push({ path: place(joined), written: joined });
+    }
+  }
+  return folders;
+}
+
+// GIT_WORK_TREE= and GIT_DIR= anywhere in a command: before git, after `env`, or in an `export`.
+const GIT_FOLDER_SETTING = /(?:^|[\s;&|(])GIT_(?:WORK_TREE|DIR)=("[^"]*"|'[^']*'|[^\s;&|)]*)/g;
+
+/** The folders the command's GIT_WORK_TREE and GIT_DIR settings name, placed from `folder` (#591). */
+function gitEnvironmentFolders(command: string, folder: string | null, home: string | null): { path: string; written: string }[] {
+  const folders: { path: string; written: string }[] = [];
+  for (const [, value] of command.matchAll(GIT_FOLDER_SETTING)) {
+    const written = /^["']/.test(value) ? value.slice(1, -1) : value;
+    const expanded = withHomeRead(written, home);
+    const isRead = !/[$`]/.test(expanded) && !expanded.startsWith('~') && (folder !== null || isAbsolute(expanded));
+    folders.push({ path: isRead ? resolve(folder ?? '/', expanded) : written, written: written || '""' });
+  }
+  return folders;
+}
+
+/** `path` with the home folder shown as `~`, so a message never prints it. */
+function withHomeShown(path: string, home: string | null): string {
+  if (home === null) return path;
+  if (path === home) return '~';
+  return path.startsWith(home + sep) ? `~${path.slice(home.length)}` : path;
+}
+
+// ---- The blunt rule for a worker (#591) ----
+//
+// The checks above read where a command writes, and each review found a new bash trick
+// past them (`git config core.worktree`, `read GIT_WORK_TREE <<<`, `xargs git -C`). So the
+// guard stops reading grammar here: a worker's command that points at a config folder, or
+// moves the folder git works in, passes only when every program in it is a plain reader.
+
+// A `.config` path part, or the worker list.
+const POINTS_AT_CONFIG = /(^|[\s/\\=:(`;&|<>])\.config([/\\]|$|[\s;&|)`<>])|yokoten[/\\]+workers/i;
+// What moves the folder git works in, or the folder a program runs in.
+const MOVES_WORK_FOLDER = /\bGIT_(WORK_TREE|DIR)\b|\bcore\.worktree\b|--chdir\b|(^|[\s;&|(`])env((\s+-[^\sC]\S*)|(\s+\w+=\S*))*\s+-[A-Za-z]*C/i;
+// Programs that only read and run nothing else.
+const PLAIN_READERS = new Set(['cat', 'ls', 'head', 'tail', 'wc', 'stat', 'file', 'grep', 'egrep', 'fgrep', 'rg', 'less', 'find', 'git', 'cd', 'pwd', 'echo']);
+const GIT_READS = new Set(['status', 'log', 'diff', 'show']);
+
+/**
+ * For a worker: a command that names a `.config` folder or the worker list, or moves git's
+ * work folder (GIT_WORK_TREE, GIT_DIR, core.worktree, `--chdir`, `env -C`), read case aside
+ * and with quotes and backslashes taken off, unless each program in it is a plain reader:
+ * PLAIN_READERS, a find that runs and deletes nothing, `rg` without `--pre`, and git with
+ * only status, log, diff or show and no option before it. A command that moves git's work
+ * folder may not run git at all; one with a substitution or a file redirect never passes.
+ */
+function checkWorkerPointers(command: string, commands: string[][]): Finding | null {
+  const bare = command.replace(/['"\\]/g, '');
+  const movesFolder = [command, bare].some((text) => MOVES_WORK_FOLDER.test(text));
+  if (!movesFolder && ![command, bare].some((text) => POINTS_AT_CONFIG.test(text))) return null;
+  const refusal = finding(
+    'worker-mark',
+    "a worker can't run commands that point at yokoten's config folder (~/.config/yokoten) or move the folder git works in, unless every program in it only reads",
+    'run plain reads only (cat, ls, grep, git status); if your task needs more there, stop and ask the lead',
+  );
+  if (/\$\(|`|[<>]\(/.test(command)) return refusal;
+  for (const words of commands) {
+    if (writesFile(words)) return refusal;
+    for (const program of findPrograms(words)) {
+      const name = programName(program);
+      if (!PLAIN_READERS.has(name)) return refusal;
+      const args = words.slice(words.indexOf(program) + 1);
+      if (name === 'find' && args.some((arg) => FIND_WRITES.test(arg) || FIND_ACTIONS.has(arg))) return refusal;
+      if (name === 'rg' && args.some((arg) => /^--pre(=|$)/.test(arg))) return refusal;
+      if (name === 'git' && (movesFolder || !GIT_READS.has(args[0] ?? ''))) return refusal;
+    }
+  }
+  return null;
+}
+
 /**
  * For a worker: an edit inside a git folder, or of the mark (#555), or null. `path` is
  * absolute. It is compared by real path too, so a symlink to a git folder counts; `folder` is
- * where the worker works, whose git folders count wherever they are.
+ * where the worker works, whose git folders count wherever they are. `env` finds yokoten's
+ * config folder, where the worker list is kept (#591): an edit inside it counts too.
  */
-export function checkWorkerMarkEdit(path: string, folder?: string): Finding | null {
+export function checkWorkerMarkEdit(path: string, folder?: string, env: Env = {}): Finding | null {
   const what = 'this edit is inside a .git folder, where the worker mark is kept';
   const full = realPath(path);
+  const config = configFolder(env);
+  if (config !== null) {
+    // Case aside, as in the command check: on macOS and Windows the names fold case.
+    const edited = [full, resolve(path)].map((form) => form.toLowerCase());
+    for (const base of new Set([resolve(config), realPath(config)].map((form) => form.toLowerCase()))) {
+      if (edited.some((form) => form === base || form.startsWith(base + sep))) {
+        return configFinding("this edit is inside yokoten's config folder (~/.config/yokoten), where the worker list and the bot's keys are kept");
+      }
+    }
+  }
   for (const form of [path, full]) {
     const parts = form.split(/[/\\]+/);
     if (parts.some((part) => part.toLowerCase() === '.git') || parts.at(-1)?.toLowerCase() === WORKER_MARK) return markFinding(what);
@@ -557,6 +866,9 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
   const commands = commandWords(command);
   // Where a gh command reads a relative body file: the folder, followed through each cd.
   let postCwd = cwd;
+  // The same, with a bare relative `cd` read as written, not through CDPATH: where git most
+  // likely runs, for the worker's config-folder check (#591).
+  let nearCwd = cwd;
   // Where the line starts: a gh post after a cd keeps an allow only within this repo (#447).
   const from = cwd;
   // A command that moves to another folder or repo (`cd x && git config ...`, GIT_DIR=)
@@ -580,7 +892,7 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
     const reason =
       checkGit(words, { env, config, cwd, rules }) ??
       // A worker hears its own rule first: what it may not send, its own unmark, and the git folder (#555, #566).
-      (env.YOKOTEN_ROLE === 'worker' ? (checkWorkerSends(words) ?? checkWorkerUnmark(words) ?? checkWorkerWrites(words, { folder: postCwd, command })) : null) ??
+      (env.YOKOTEN_ROLE === 'worker' ? (checkWorkerSends(words) ?? checkWorkerUnmark(words) ?? checkWorkerWrites(words, { folder: postCwd, near: nearCwd, command, env })) : null) ??
       checkHooksEnvironment(words) ??
       checkPublish(words, env) ??
       checkBlocked(words, config?.commands.block ?? {}) ??
@@ -588,8 +900,9 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
       (rules ? checkLeadOnlyWrites(words, { env, rules, folder: postCwd }) : null);
     if (reason) return reason;
     postCwd = folderAfter(words, postCwd, { env, isTildeQuoted });
+    nearCwd = folderAfter(words, nearCwd, { env, isTildeQuoted, isCdPathSkipped: true });
   }
-  return null;
+  return env.YOKOTEN_ROLE === 'worker' ? checkWorkerPointers(command, commands) : null;
 }
 
 /**
@@ -1655,7 +1968,7 @@ const QUOTED_TILDE = /[\\'"]~|~[\\'"]/;
 // bash keeps a quoted ~ as a folder named ~, or a bare relative folder (#559): bash
 // searches CDPATH for one, and CDPATH may be set in the shell without being exported.
 // Any other command leaves the folder as it was.
-function folderAfter(words: string[], folder: string | null, { env, isTildeQuoted }: { env: Env; isTildeQuoted: boolean }): string | null {
+function folderAfter(words: string[], folder: string | null, { env, isTildeQuoted, isCdPathSkipped = false }: { env: Env; isTildeQuoted: boolean; isCdPathSkipped?: boolean }): string | null {
   const name = programName(words[0] ?? '');
   if (name === 'popd') return null;
   if (name !== 'cd' && name !== 'pushd') return folder;
@@ -1668,7 +1981,8 @@ function folderAfter(words: string[], folder: string | null, { env, isTildeQuote
   if (isAbsolute(path)) return path;
   // Only `/`, `./`, `../` and `.` and `..` alone say where a relative `cd` goes: bash
   // searches CDPATH for the rest, even with a `/` inside (`cd sub/dir`).
-  if (target !== '.' && target !== '..' && !target.startsWith('./') && !target.startsWith('../')) return null;
+  // `isCdPathSkipped` reads it as written instead: the likely folder, never a sure one.
+  if (!isCdPathSkipped && target !== '.' && target !== '..' && !target.startsWith('./') && !target.startsWith('../')) return null;
   return folder === null ? null : resolve(folder, path);
 }
 
@@ -1974,7 +2288,28 @@ const WRITERS: Record<string, (args: string[], folder: string | null) => string[
   mv: (args, folder) => copyTargets(args, { valued: COPY_VALUES, isMove: true, folder }),
   install: (args, folder) => copyTargets(args, { valued: [...COPY_VALUES, '-m', '--mode', '-o', '--owner', '-g', '--group', '--strip-program'], isMove: false, folder }),
   dd: (args) => args.filter((arg) => arg.startsWith('of=')).map((arg) => arg.slice('of='.length)),
+  // A download writes its output file, or into its output folder (#591).
+  curl: (args) => optionValues(args, ['o'], ['--output', '--output-dir']),
+  wget: (args) => optionValues(args, ['O', 'o', 'a', 'P'], ['--output-document', '--output-file', '--append-output', '--directory-prefix']),
 };
+
+/**
+ * Every value of the options named: `--long value`, `--long=value`, `-x value`, `-xvalue`,
+ * and `-abx value`, where `x` ends a group of short options. `letters` are the short ones.
+ */
+function optionValues(args: string[], letters: string[], longs: string[]): string[] {
+  const values: string[] = [];
+  for (const [at, arg] of args.entries()) {
+    if (arg === '--') break;
+    const long = longs.find((name) => arg === name || arg.startsWith(`${name}=`));
+    if (long) values.push(arg === long ? (args[at + 1] ?? '') : arg.slice(long.length + 1));
+    else if (/^-[A-Za-z]/.test(arg)) {
+      if (letters.includes(arg[1]) && arg.length > 2) values.push(arg.slice(2));
+      else if (letters.some((letter) => arg.endsWith(letter) && /^-[A-Za-z]+$/.test(arg))) values.push(args[at + 1] ?? '');
+    }
+  }
+  return values.filter(Boolean);
+}
 
 /** git's subcommand, its arguments and the folder it works in (null: unknown), from the git word on. */
 function gitParts(args: string[], folder: string | null): { sub: string | undefined; args: string[]; dir: string | null } {
