@@ -1555,6 +1555,21 @@ test('doctor: full doctor in an empty repo starts each git read once, nine child
   assert.equal(runs.length, 9, runs.join('\n'));
 });
 
+// ---- The sandbox step (#589): doctor names the one missing or too-wide sandbox. ----
+
+test('doctor: the sandbox step is to do, then done after init, then names a too-wide value (#589)', async () => {
+  const sandbox = makeSandbox();
+  assert.notEqual(await stepMark(sandbox, 'sandbox'), 'done');
+  assert.match((await sandbox.call(['doctor'])).stdout, /^ {4}(next|to do) +sandbox: no sandbox in \.claude\/settings\.json; `yokoten init` adds it$/m);
+  assert.equal((await sandbox.call(['init'])).status, 0);
+  assert.equal(await stepMark(sandbox, 'sandbox'), 'done');
+  assert.match((await sandbox.call(['doctor'])).stdout, /^ {4}done +sandbox$/m);
+  sandbox.write('.gemini/settings.json', JSON.stringify({ security: { disableYoloMode: false } }));
+  assert.notEqual(await stepMark(sandbox, 'sandbox'), 'done');
+  const doctor = (await sandbox.call(['doctor'])).stdout;
+  assert.match(doctor, /^ {4}(next|to do) +sandbox: Gemini YOLO mode is allowed in \.gemini\/settings\.json; set security\.disableYoloMode to true in \.gemini\/settings\.json$/m);
+});
+
 // #500: after a fresh install, every line that names a command uses one way to run yokoten.
 test('doctor: with the launcher off the PATH, every command in the text is `npx yokoten`; on the PATH, `yokoten` (#500)', () => {
   const home = makeTempDir('yokoten-one-way-');
