@@ -80,7 +80,7 @@ flowchart LR
 
 | | Runs | Stops |
 |-|------|-------|
-| **1** | before each tool call | tag pushes, force pushes, skipped checks; test edits in a fix task; a worker editing the rules; a program the project blocks; an issue or pull request title that breaks the title rules; personal data or a secret in an issue, pull request, comment or release note an agent posts with `gh` |
+| **1** | before each tool call | tag pushes, force pushes, skipped checks; test edits in a fix task; a worker editing the rules; a program the project blocks; an issue or pull request title that breaks the title rules; personal data or a secret in an issue, pull request, comment or release note an agent posts with `gh`; cancelling or deleting an Actions run |
 | **1b** | when a Claude Code agent ends its turn | the same personal data, secrets and file rules as the commit check, in the changed files. It sends the agent back once with the findings |
 | **2** | on every commit | what the hook can't see: files changed by `sed` or a script, personal data, an overfull folder |
 | **3** | on every pull request | a commit made with the hook off |
@@ -399,6 +399,21 @@ fields (a GraphQL query that reads passes). The main checkout is never marked, s
 there is not affected. In a marked worktree the lead counts as a worker too. `git worktree
 remove <dir>` removes the mark with the worktree. Without a mark, an agent that drops
 `YOKOTEN_ROLE` counts as the lead.
+
+Cancelling or deleting an Actions run is refused for the lead and for a worker.
+The guard stops `gh run cancel`, `gh run delete`, and the same call through `gh api`
+or `yokoten bot`. `gh run rerun`, `view`, `list` and `watch` still pass. Ask the
+owner, who can cancel or delete the run on the Actions page.
+A `repositories/<id>` path is the same call. A path with `.` or `..` is read after those are resolved.
+The route words match in any case, so `Actions` and `Cancel` are the same call.
+A cluster of short options in `gh api` is refused, unless it is one option with its value joined.
+A method or a path taken from the shell is refused when it can name a run.
+A `gh run` subcommand taken from the shell is refused.
+`gh` must name one of its own commands. `gh extension install`, `upgrade`, `exec` and `browse` are refused.
+`exec` runs an installed extension. `browse` can install one.
+A non-GET call is refused when the path after `repos/` or `repositories/` is only a variable.
+`gh config set aliases` is refused. `gh alias list` and `gh extension list` still pass.
+`gh alias set` and `gh alias import` are refused for both roles. Ask the owner to add an alias by hand.
 
 The guard stops a worker's shell writes to lead-only files as well as its edits (#402). It
 reads redirects (`>`, `>>`, `>|`, `&>`), `sed -i`, `perl -i`, `tee`, `cp`, `mv`,

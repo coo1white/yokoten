@@ -679,6 +679,10 @@ export function judgeWithDeadline(action: Action, options: JudgeOptions, deadlin
 export const lateFinding = (action: Action, deadlineMs: number): Finding => unreadable(`the guard took longer than ${deadlineMs} ms to read this ${action.command === undefined ? 'edit' : 'command'}`);
 const unreadable = (what: string): Finding => finding('unreadable-command', what, 'split the command into smaller ones');
 
+// The guard worker loads this file alone. This layer cannot import the host layer
+// (record 0004). Load the host command list before the worker reads a call.
+await import('../host/gh-commands.ts');
+
 // The worker's side: wait for one action, judge it and send the finding back.
 if (!isMainThread && parentPort && workerData?.yokotenJudge) {
   const port = parentPort;

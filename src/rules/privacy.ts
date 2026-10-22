@@ -1148,7 +1148,6 @@ const CLOSE_OPTIONS = new Set([...TEXT_OPTIONS, '--comment', '-c']);
 const FILE_OPTIONS = new Set(['--body-file', '--notes-file', '-F']);
 // The api subcommand: each field is key=value; `-F key=@file` reads a file, and `--input` sends one.
 const FIELD_OPTIONS = new Set(['-f', '--raw-field', '-F', '--field']);
-const METHOD_OPTIONS = new Set(['-X', '--method']);
 const INPUT_OPTIONS = new Set(['--input']);
 // gh's global option that takes a value before the subcommand: `gh -R o/r issue create`.
 const GLOBAL_VALUES = new Set(['-R', '--repo']);
@@ -1164,16 +1163,18 @@ const programName = (word: string) => word.slice(Math.max(word.lastIndexOf('/'),
 const isYokoten = (name: string) => /^yokoten(\.ts|\.js)?$/.test(name);
 
 /**
- * Where gh starts in a command's words, or -1. `programs` are the programs the command
- * runs (the guard's findPrograms): gh itself, or yokoten (or node) running `bot -- gh`.
+ * Where gh starts in a command's words, or -1. `places` are the programs the command
+ * runs, each with its index in `words` (the guard's findPrograms): gh itself, or yokoten
+ * (or node) running `bot -- gh`. An index below 0 is an `env -S` program, which has no
+ * word in `words`. The index is the program's place, not the first word equal to its name.
  */
-export function ghIndex(words: string[], programs: string[]): number {
-  for (const program of programs) {
-    const name = programName(program);
-    const at = words.indexOf(program);
-    if (name === 'gh') return at;
+export function ghIndex(words: string[], places: { word: string; index: number }[]): number {
+  for (const place of places) {
+    if (place.index < 0 || place.index >= words.length) continue;
+    const name = programName(words[place.index]);
+    if (name === 'gh') return place.index;
     if (isYokoten(name) || name === 'node' || name === 'npx') {
-      const bot = words.indexOf('bot', at);
+      const bot = words.indexOf('bot', place.index + 1);
       if (bot !== -1 && words[bot + 1] === '--' && programName(words[bot + 2] ?? '') === 'gh') return bot + 2;
     }
   }
@@ -1181,7 +1182,7 @@ export function ghIndex(words: string[], programs: string[]): number {
 }
 
 /** An option and its value: `--body x`, `--body=x`, `-bx`. Null when `word` is not one of `names`. */
-function optionValue(words: string[], index: number, names: Set<string>): { value: string | undefined; name: string; next: number } | null {
+export function optionValue(words: string[], index: number, names: Set<string>): { value: string | undefined; name: string; next: number } | null {
   const word = words[index];
   const equals = word.indexOf('=');
   if (word.startsWith('--') && equals !== -1 && names.has(word.slice(0, equals))) return { name: word.slice(0, equals), value: word.slice(equals + 1), next: index + 1 };
@@ -1189,6 +1190,54 @@ function optionValue(words: string[], index: number, names: Set<string>): { valu
   // A short option with its value joined on: `-bx`, `-b=x`.
   if (/^-[A-Za-z]./.test(word) && names.has(word.slice(0, 2))) return { name: word.slice(0, 2), value: word.slice(2).replace(/^=/, ''), next: index + 1 };
   return null;
+}
+
+/** A host API call as the adapter reads it. The guard does not know which host this is. */
+export interface HostApiCall {
+  /** Upper case, or empty when the call names no method. */
+  method: string;
+  /** The endpoint word as written, before the path is normalized. */
+  rawPath: string;
+  /** The endpoint with the URL, query, `.` and `..` removed. */
+  path: string;
+  /** Whether the call sends a field or an input file. */
+  hasFields: boolean;
+  /** Whether short options are joined, so the method is not clear. */
+  cluster: boolean;
+}
+
+/** How a host adapter reads its API command. */
+export interface HostApi {
+  read(args: string[]): HostApiCall;
+  clusterFinding(): Finding;
+  values(): Set<string>;
+}
+
+/** No adapter yet. Until one loads, the guard refuses every `gh` command (see guards.ts). */
+let hostApi: HostApi | undefined;
+
+/** No API options until a host adapter registers. */
+const NO_API_VALUES = new Set<string>();
+
+/** The host adapter registers how to read its API command, once: a second registration is refused. */
+export function useHostApi(reader: HostApi): void {
+  if (hostApi && hostApi !== reader) throw new Error('the host API reader is already registered');
+  hostApi = reader;
+}
+
+/** The API call in `args`, or undefined when no host adapter has registered. */
+export function readHostApi(args: string[]): HostApiCall | undefined {
+  return hostApi?.read(args);
+}
+
+/** The finding for joined short options, or undefined when no host adapter has registered. */
+export function hostApiClusterFinding(): Finding | undefined {
+  return hostApi?.clusterFinding();
+}
+
+/** Options of the host API command that take a value. Empty until an adapter registers. */
+export function hostApiValues(): Set<string> {
+  return hostApi?.values() ?? NO_API_VALUES;
 }
 
 // A heredoc end word the guard reads exactly: blanks, then a plain name, bare or in single
@@ -1257,10 +1306,10 @@ export interface CommandFiles {
   movesFolder?: boolean;
 }
 
-/** What a gh command posts: its pieces, or a file the guard can't find. Null when it posts nothing. */
+/** What a gh command posts: its pieces, a file the guard can't find, or a short-option cluster. Null when it posts nothing. */
 type Missing = { missing: string; unsure: boolean; saw?: Risk };
 
-function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, command: string): { pieces: Piece[] } | Missing | null {
+function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, command: string): { pieces: Piece[] } | Missing | { cluster: true } | null {
   const { args } = gh;
   // The group and its subcommand: the first two words that are not options.
   const plain: string[] = [];
@@ -1275,8 +1324,6 @@ function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, comma
   let missing: Missing | null = null;
   // A file named twice is read once: gh posts one of them, and a long body is scanned once.
   const seen = new Set<string>();
-  let method: string | null = null;
-  let hasFields = false;
   let query: string | null = null;
   const addFile = (option: string, path: string | undefined, key?: string) => {
     // No file after the option: the shell took it as a redirect, as in `-F <(echo x)` (#439).
@@ -1305,33 +1352,23 @@ function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, comma
   };
   for (let index = 0; index < args.length; ) {
     if (isApi) {
-      const methodOption = optionValue(args, index, METHOD_OPTIONS);
-      if (methodOption) {
-        method = (methodOption.value ?? '').toUpperCase();
-        index = methodOption.next;
-        continue;
-      }
-      const input = optionValue(args, index, INPUT_OPTIONS);
-      if (input) {
-        hasFields = true;
-        addFile(input.name, input.value);
-        index = input.next;
-        continue;
-      }
-      const field = optionValue(args, index, FIELD_OPTIONS);
-      if (field) {
-        hasFields = true;
-        const value = field.value ?? '';
-        const equals = value.indexOf('=');
-        const key = equals === -1 ? value : value.slice(0, equals);
-        const content = equals === -1 ? '' : value.slice(equals + 1);
-        // `-F key=@file` reads the file; `-f` always takes the text as it is.
-        if ((field.name === '-F' || field.name === '--field') && content.startsWith('@')) addFile(field.name, content.slice(1), key);
-        else if (content) {
-          pieces.push({ source: `the ${key} field`, isFile: false, text: content });
-          if (key === 'query') query = content;
+      // The host's option list: a value such as `-q -XGET` is not a method.
+      const option = optionValue(args, index, hostApiValues());
+      if (option) {
+        if (INPUT_OPTIONS.has(option.name)) addFile(option.name, option.value);
+        else if (FIELD_OPTIONS.has(option.name)) {
+          const value = option.value ?? '';
+          const equals = value.indexOf('=');
+          const key = equals === -1 ? value : value.slice(0, equals);
+          const content = equals === -1 ? '' : value.slice(equals + 1);
+          // `-F key=@file` reads the file; `-f` always takes the text as it is.
+          if ((option.name === '-F' || option.name === '--field') && content.startsWith('@')) addFile(option.name, content.slice(1), key);
+          else if (content) {
+            pieces.push({ source: `the ${key} field`, isFile: false, text: content });
+            if (key === 'query') query = content;
+          }
         }
-        index = field.next;
+        index = option.next;
         continue;
       }
     } else {
@@ -1350,20 +1387,14 @@ function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, comma
     }
     index++;
   }
-  if (isApi && !apiWrites(apiPath(args.slice(args.indexOf('api') + 1)), method, hasFields, query)) return null;
-  return missing ?? { pieces };
-}
-
-// The options of the api subcommand that take a value (gh 2.102 help).
-const API_VALUES = new Set(['-X', '--method', '-f', '--raw-field', '-F', '--field', '-H', '--header', '--input', '-q', '--jq', '-t', '--template', '--hostname', '--cache', '-p', '--preview']);
-
-/** The path an API call names: its first word that is not an option or an option's value. */
-function apiPath(args: string[]): string {
-  for (let index = 0; index < args.length; index++) {
-    if (API_VALUES.has(args[index])) index++;
-    else if (!args[index].startsWith('-')) return args[index];
+  if (isApi) {
+    const apiAt = args.indexOf('api');
+    const call = readHostApi(apiAt === -1 ? args : args.slice(apiAt + 1));
+    // The same walk as the path. A cluster is refused here too, so a hidden field is not a quiet read.
+    if (call?.cluster) return { cluster: true };
+    if (call && !apiWrites(call.rawPath, call.method === '' ? null : call.method, call.hasFields, query)) return null;
   }
-  return '';
+  return missing ?? { pieces };
 }
 
 /** Whether an API call writes: only then is what it sends posted. */
@@ -1646,6 +1677,7 @@ export function checkPost(
   };
   const posted = postedPieces(gh, readFile, command);
   if (!posted) return null;
+  if ('cluster' in posted) return hostApiClusterFinding() ?? finding('run-remove', 'this host call joins short options, so its method is not clear', 'write each short option as its own word, so the guard can read the method');
   if ('missing' in posted) {
     // The guard runs before the command (#439): a file the command writes, or a path only
     // the running command knows, can't be read yet.

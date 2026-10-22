@@ -78,7 +78,7 @@ export const RULES = {
   alias: {
     rule: 'no alias in a command: the guard refuses it instead of parsing it',
     why: 'an alias runs another command under a new name, so the guard cannot check what it runs',
-    check: 'the tool-call guard stops the `alias` program, `git -c alias.*` and `git config alias.*` unless it only reads one (`--get`, `--list`); run the full command instead',
+    check: 'the tool-call guard stops the `alias` program, `git -c alias.*` and `git config alias.*` unless it only reads one (`--get`, `--list`); it also stops `gh alias set` and `gh alias import`, a `gh` word that is not one of gh\'s own commands, `gh extension install`, `upgrade`, `exec` and `browse`, and `gh config set aliases`. Run the full command, or ask the owner to add a gh alias by hand',
   },
   'remove-git': {
     rule: 'no removing the .git folder',
@@ -94,6 +94,12 @@ export const RULES = {
     rule: 'no piping a download into a shell',
     why: 'a download piped into a shell runs code nobody read, so the guard cannot check what it runs',
     check: 'the tool-call guard stops a pipeline that feeds `curl` or `wget` into a shell; save the file first, read it, then run it',
+  },
+  'run-remove': {
+    rule: 'no agent cancels or deletes an Actions run',
+    why: 'a cancelled run turns a check red and blocks the merge, and a deleted log is evidence gone',
+    check: 'the tool-call guard stops `gh run cancel`, `gh run delete`, and the host API calls that do the same, for the lead and for a worker, including through `yokoten bot`. It also stops a short-option cluster, a method or a path from the shell, a `gh run` subcommand from the shell, and those paths in any case. `gh run rerun`, `view`, `list` and `watch` pass',
+    docs: guide('three-checks-and-a-lock'),
   },
   'blocked-command': {
     rule: 'an agent does not run a program the project blocks in yokoten.json "commands.block"',
