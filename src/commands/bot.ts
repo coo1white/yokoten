@@ -529,8 +529,18 @@ function mergeRequest(gh: Gh, args: string[], origin: string | null): { number: 
   }
   const digits = /^(\d+)$/.exec(target);
   if (digits) return { number: Number(digits[1]), repo };
-  const fromUrl = /\/pull\/(\d+)(?:[/#?]|$)/.exec(target);
-  if (fromUrl) return { number: Number(fromUrl[1]), repo };
+  // A URL names its own repo: `github.com/owner/name/pull/12`, or the API form
+  // `repos/owner/name/pulls/12`. Any other `/pull/12` keeps the old answer below.
+  const urlRepo = /(?:github\.com\/|repos\/)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/pulls?\/\d+(?:[/#?]|$)/i.exec(target);
+  const fromUrl = /\/pulls?\/(\d+)(?:[/#?]|$)/.exec(target);
+  if (fromUrl) {
+    if (urlRepo) {
+      const named = urlRepo[1];
+      if (origin && normalizeRepoName(named) !== normalizeRepoName(origin)) return { unsure: `${named} is not this checkout, so its commits are not here` };
+      return { number: Number(fromUrl[1]), repo: named };
+    }
+    return { number: Number(fromUrl[1]), repo };
+  }
   if (words.length > 3) return { unsure: 'more than one pull request is named; merge one at a time' };
   // A branch: gh says its pull request's number.
   const number = viewedNumber(gh, ['pr', 'view', target, '--json', 'number', ...repoArgs]);
@@ -554,9 +564,12 @@ function apiMerge(args: string[]): { number: number; repo: string } | null {
   const found = before.find((word) => API_MERGE_ENDPOINT.test(word));
   const endpoint = found && API_MERGE_ENDPOINT.exec(found);
   if (!endpoint) return null;
+  // A run-together word expands letter by letter, the way gh reads it (`-sF` is
+  // `-s -F`), so any write letter in it counts, mirroring the note parser.
   const writes = before.some((word) => {
-    const name = word.startsWith('--') ? word.split('=')[0] : word.slice(0, 2);
-    return API_WRITE_OPTIONS.has(word) || API_WRITE_OPTIONS.has(name);
+    if (!word.startsWith('-') || word === '-') return false;
+    if (word.startsWith('--')) return API_WRITE_OPTIONS.has(word.split('=')[0]);
+    return [...word.slice(1)].some((letter) => API_WRITE_OPTIONS.has(`-${letter}`));
   });
   if (!writes) return null;
   return { number: Number(endpoint[3]), repo: `${endpoint[1]}/${endpoint[2]}` };

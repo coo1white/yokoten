@@ -363,6 +363,8 @@ const DECIDING_STATES = new Set(['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED']);
  */
 function latestOwnerDecision(text: string, eligible: Set<string>): OwnerReview | null {
   let newest: OwnerReview | null = null;
+  // The states decided in the newest second: more than one means a tie.
+  const newestStates = new Set<string>();
   for (const line of text.split('\n')) {
     if (!line.trim()) continue;
     let review: unknown;
@@ -375,8 +377,19 @@ function latestOwnerDecision(text: string, eligible: Set<string>): OwnerReview |
     if (typeof review.commit !== 'string' || !review.commit || typeof review.at !== 'string' || !review.at) continue;
     const login = asText(review.login);
     if (!login || !eligible.has(login.toLowerCase())) continue;
-    if (!newest || review.at > newest.at) newest = { login, state: asText(review.state), commit: review.commit, at: review.at };
+    const state = asText(review.state);
+    if (!newest || review.at > newest.at) {
+      newest = { login, state, commit: review.commit, at: review.at };
+      newestStates.clear();
+      newestStates.add(state);
+    } else if (review.at.slice(0, 19) === newest.at.slice(0, 19)) {
+      newestStates.add(state);
+    }
   }
+  // Two deciding reviews sharing the newest second with different states: neither
+  // wins by being listed first, so there is no decision. The caller refuses with
+  // the plain message, the way it does with no Approve.
+  if (newest && newestStates.size > 1) return null;
   return newest;
 }
 

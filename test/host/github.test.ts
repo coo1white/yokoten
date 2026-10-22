@@ -890,3 +890,37 @@ test('readBoardPulls: each check counts by its latest run, so a green rerun read
   // Distinct names still each count.
   assert.equal(checksOf([newPass, { name: 'lint', conclusion: 'FAILURE', status: 'COMPLETED', completedAt: '2026-10-20T10:00:00Z' }]), 'fail');
 });
+
+// #612: two deciding reviews by owners sharing the newest second with different
+// states decide nothing: fail closed with the plain message, never first-in-list.
+test('approval: a shared newest second with different states is no Approve (#612)', () => {
+  const dir = makeTempDir('yokoten-');
+  const env = { PATH: process.env.PATH, HOME: dir, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(dir, '.gitconfig'), GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' };
+  const git = (...args: string[]) => spawnSync('git', args, { cwd: dir, env, encoding: 'utf8' });
+  git('init', '-q', '-b', 'main');
+  writeFileSync(join(dir, 'CODEOWNERS'), '/a.txt @friend\n');
+  writeFileSync(join(dir, 'a.txt'), 'a\n');
+  git('add', '.');
+  git('commit', '-qm', 'base');
+  const base = git('rev-parse', 'HEAD').stdout.trim();
+  git('checkout', '-qb', 'topic');
+  writeFileSync(join(dir, 'a.txt'), 'b\n');
+  git('commit', '-qam', 'change');
+  const head = git('rev-parse', 'HEAD').stdout.trim();
+  const view = { body: 'tier: A\n', labels: [{ name: 'tier A' }], head: { sha: head, ref: 'topic' }, base: { sha: base, ref: 'main' } };
+  const review = (login: string, state: string, commit: string, at: string) => JSON.stringify({ login, assoc: 'COLLABORATOR', state, commit, at });
+  const fakeGh = (reviews: string): Gh => (args) => {
+    const path = args[1] ?? '';
+    if (path === 'repos/me/repo/pulls/32') return JSON.stringify(view);
+    if (path === 'repos/me/repo/pulls/32/files') return JSON.stringify(['a.txt']);
+    if (path === 'repos/me/repo/pulls/32/reviews') return reviews;
+    throw new Error(`unexpected gh call: ${args.join(' ')}`);
+  };
+  const at = '2026-10-22T11:00:00Z';
+  // The Approve is listed first, but the same-second changes-requested ties it.
+  const tied = [review('friend', 'APPROVED', head, at), review('friend', 'CHANGES_REQUESTED', head, at)].join('\n');
+  assert.deepEqual(readApprovalState(fakeGh(tied), dir, env, 32, 'me/repo'), { tier: 'A', head, approved: null, after: 0, sameDiff: true });
+  // The same second with the same state still stands.
+  const agreed = [review('friend', 'APPROVED', head, at), review('friend', 'APPROVED', head, at)].join('\n');
+  assert.deepEqual(readApprovalState(fakeGh(agreed), dir, env, 32, 'me/repo'), { tier: 'A', head, approved: head, after: 0, sameDiff: true });
+});
