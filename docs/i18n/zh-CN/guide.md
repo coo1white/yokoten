@@ -1408,6 +1408,15 @@ agent 用 `gh` 发文字之前，工具调用守卫也跑同一套检查。直�
 查到问题就拦下命令，修法和提交检查一样。公开的地址加进 `privacy.allow`。命令运行时才拼出来的
 文字它看不到：`$(cat notes.md)`、变量、别的程序用管道传进来的内容。文件最多读 1 MB，更大的放行。
 它只看命令，不看你的 shell：shell 配置文件里包住 `cd`、`echo` 的函数或别名，它看不到。
+`gh api` 的某个选项后面跟着一个像选项的词（比如 `-H -f`），正文照样会查（#659）。
+
+gh 的令牌不给任何 agent 看，lead 和 worker 都一样（#659、#668）。拿到令牌，`curl` 或脚本就能
+直接调 GitHub，绕开上面所有规则。gh 和 `yokoten bot` 自己会用令牌，不用看到它。所以守卫拦下
+`gh auth token`、`gh auth status --show-token`（`-t`）、`gh auth git-credential`、
+`gh config get oauth_token` 和 `git credential fill`；也拦下用到 `$GH_TOKEN`、`$GITHUB_TOKEN`、
+`$GH_ENTERPRISE_TOKEN`、`$GITHUB_ENTERPRISE_TOKEN` 的命令，以及写了这几个名字的
+`node`、`python` 等会跑代码的程序。`gh auth status`、`gh pr view`、`curl https://example.com`
+照常放行。
 
 ### agent 读到的东西
 
@@ -1509,6 +1518,9 @@ hook 不可能认得所有命令。输出里露出了你的信息，就开一个
   的锁在服务器上：分支保护、代码负责人，以及一个没有发版权限、改不了 CI 的 bot。worker 用
   shell 写只有 lead 能改的文件，只有命令里写明了这个文件才拦得住：路径来自变量或标准输入
   （`xargs rm`、`find -exec`、`git apply < x.patch`），或者是脚本自己去写，都拦不住。
+- **gh 的令牌只在普通命令里藏得住。** 脚本自己去读 gh 的文件或系统钥匙串，或者把变量名拆开再拼，
+  还是能拿到令牌，然后绕开守卫调 GitHub。worker 的根本办法是一个完全没有令牌的工位（#637）。
+  lead 这边，锁还是在服务器上：分支保护，以及一个没有合并、发版权限的令牌。
 - **服务器设置只能读 GitHub 的。** 换成别的代码托管平台，只有平台自己才判断得了的步骤会标 can't check，并写明各自在问什么（见[会话里看到的是什么](#会话里看到的是什么)）。bot 的权限 `doctor` 还查不了。
 - **先支持 Claude Code。** agent 按 Claude Code 的格式写。技能用的是公开
   的 SKILL.md 格式，所以 `install` 也会把它们放进 `~/.agents/skills`，Codex、Gemini CLI、

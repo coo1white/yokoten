@@ -1,0 +1,3 @@
+Security
+
+An agent can no longer take gh's token and call GitHub around the guard. For the lead and every worker, the guard now refuses `gh auth token`, `gh auth status --show-token`, `gh auth git-credential`, `gh config get oauth_token` and `git credential fill`. It also refuses any command that expands `$GH_TOKEN`, `$GITHUB_TOKEN`, `$GH_ENTERPRISE_TOKEN` or `$GITHUB_ENTERPRISE_TOKEN`. So do `node`, `python` and other programs that run code, when the command names one of them. `gh auth status`, `gh pr view` and `curl https://example.com` still pass (#668). The privacy check of what gh posts can no longer be skipped by an option value that looks like another option, such as `gh api … -H -f -f body=…` (#659).

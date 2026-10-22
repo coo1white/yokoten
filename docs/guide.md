@@ -400,6 +400,15 @@ there is not affected. In a marked worktree the lead counts as a worker too. `gi
 remove <dir>` removes the mark with the worktree. Without a mark, an agent that drops
 `YOKOTEN_ROLE` counts as the lead.
 
+No agent, lead or worker, gets gh's token (#659, #668). With it, `curl` or a script could
+call GitHub directly, around every rule above. gh and `yokoten bot` use the token without
+showing it. So the guard refuses `gh auth token`, `gh auth status --show-token` (`-t`),
+`gh auth git-credential`, `gh config get oauth_token` and `git credential fill`. It also
+refuses any command that expands `$GH_TOKEN`, `$GITHUB_TOKEN`, `$GH_ENTERPRISE_TOKEN` or
+`$GITHUB_ENTERPRISE_TOKEN`, and `node`, `python` and other programs that run code when
+the command names one of those variables. `gh auth status`, `gh pr view` and
+`curl https://example.com` still pass.
+
 The guard stops a worker's shell writes to lead-only files as well as its edits (#402). It
 reads redirects (`>`, `>>`, `>|`, `&>`), `sed -i`, `perl -i`, `tee`, `cp`, `mv`,
 `install`, `ln`, `dd of=`, `truncate`, `rm`, and git's `checkout`, `restore`, `rm`, `mv`
@@ -1941,6 +1950,11 @@ Honest limits:
   release or change CI. A worker's shell write to a lead-only file is stopped only when
   the guard sees the file in the command: a path from a variable or stdin (`xargs rm`,
   `find -exec`, `git apply < x.patch`), or a script that writes it, gets past.
+- **gh's token is hidden only from plain commands.** A script that reads gh's own files or
+  the system keyring, or a variable name built in pieces, still gets the token. Then it can
+  call GitHub around the guard. For a worker, the fix is a desk with no token at all
+  (#637). For the lead, the lock is again the server: branch protection, and a token
+  without the rights to merge or release.
 - **Server settings are read on GitHub only.** Another host shows the steps that only the
   host can judge as **can't check**, with what each one asks ([What a session sees](#what-a-session-sees)). `doctor` does not check the bot's rights yet.
 - **Claude Code first.** Agents follow Claude Code's format.

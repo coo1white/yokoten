@@ -1368,6 +1368,8 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
   // A download piped into a shell runs code nobody read (#560).
   const piped = checkPipeToShell(command);
   if (piped) return piped;
+  const token = checkTokenUse(command, commands);
+  if (token) return token;
   for (const words of commands) {
     const mayWrite = heredoc !== undefined || fills || writesFile(words) || isUnsure(words) || writers.some((other) => other !== words);
     // The name is built only on a refusal (#498).
@@ -1628,6 +1630,47 @@ function checkPipeToShell(command: string): Finding | null {
       }
       downloader ??= programs.find((program) => DOWNLOAD_PROGRAMS.has(program));
     }
+  }
+  return null;
+}
+
+// gh's token can do all that the guard stops in gh: with it, curl or a script calls the host
+// itself (#659, #668). No agent needs to see it, since gh and `yokoten bot` use it without
+// showing it. So for every agent the guard refuses the commands that print it, and any
+// command that expands it from the environment. It reads characters, not code: a script
+// that reads gh's files itself gets past (guide: What it doesn't do).
+const TOKEN_FIX = 'run gh itself, or `yokoten bot -- gh …`, which use the token without showing it; `gh auth status` says whether gh is signed in';
+const TOKEN_NAMES = 'GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN';
+// `$GH_TOKEN`, `${GH_TOKEN}`, `${GH_TOKEN:-x}`, `${#GH_TOKEN}`, `${!GH_TOKEN}`, in any quotes.
+const TOKEN_VARIABLE = new RegExp(String.raw`\$\{?[#!]?(?:${TOKEN_NAMES})(?!\w)`);
+// A program that runs the code it is given: `process.env.GH_TOKEN` in `node -e` reads the token.
+// A shell is left out, since the guard reads `bash -c` text as commands of its own.
+const TOKEN_NAME = new RegExp(String.raw`(?<!\w)(?:${TOKEN_NAMES})(?!\w)`);
+const READS_ENV = /^(python[\d.]*|node|nodejs|deno|bun|perl|ruby|php|lua|osascript|pwsh|powershell|printenv)$/;
+const shows = (what: string) => finding('gh-token', what, TOKEN_FIX);
+
+/** A command that shows gh's token to the agent, or sends it on, or null. */
+function checkTokenUse(command: string, commands: string[][]): Finding | null {
+  if (TOKEN_VARIABLE.test(command)) return shows("the command expands gh's token from the environment, so it can reach the host around the guard");
+  for (const words of commands) {
+    const programs = findPrograms(words);
+    const runner = programs.map(programName).find((name) => READS_ENV.test(name));
+    if (runner && words.some((word) => TOKEN_NAME.test(word))) return shows(`\`${runner}\` is given the name of gh's token, so it can read the token and reach the host around the guard`);
+    const git = programs.find(isGit);
+    if (git) {
+      const plain = plainArgs(withoutShellRedirects(words, words.indexOf(git) + 1), [...GIT_VALUE_OPTIONS]);
+      if (plain[0] === 'credential' && plain[1] === 'fill') return shows("`git credential fill` prints the password git keeps for a host, which is gh's token when gh signs git in");
+    }
+    const at = ghIndex(words, programs);
+    if (at === -1) continue;
+    const args = withoutShellRedirects(words, at + 1);
+    const [group, sub, ...rest] = plainArgs(args, ['-R', '--repo', '-h', '--hostname', '-u', '--user']);
+    if (group === 'auth' && sub === 'token') return shows("`gh auth token` prints gh's token");
+    if (group === 'auth' && sub === 'git-credential') return shows("`gh auth git-credential` prints gh's token for git");
+    // `-t`, alone or in a cluster such as `-at`.
+    const showsToken = (word: string) => word === '--show-token' || word.startsWith('--show-token=') || /^-[A-Za-z]*t[A-Za-z]*$/.test(word);
+    if (group === 'auth' && sub === 'status' && args.some(showsToken)) return shows("`gh auth status --show-token` prints gh's token");
+    if (group === 'config' && sub === 'get' && rest.includes('oauth_token')) return shows("`gh config get oauth_token` prints gh's token");
   }
   return null;
 }

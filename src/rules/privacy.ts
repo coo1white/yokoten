@@ -1275,9 +1275,10 @@ function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, comma
   let missing: Missing | null = null;
   // A file named twice is read once: gh posts one of them, and a long body is scanned once.
   const seen = new Set<string>();
-  let method: string | null = null;
+  // Every method and query the words may hold: a write in any of them counts.
+  const methods: string[] = [];
   let hasFields = false;
-  let query: string | null = null;
+  const queries: string[] = [];
   const addFile = (option: string, path: string | undefined, key?: string) => {
     // No file after the option: the shell took it as a redirect, as in `-F <(echo x)` (#439).
     if (path === undefined) {
@@ -1289,7 +1290,7 @@ function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, comma
       if (gh.hereString !== undefined) pieces.push({ source: 'the here-string text', isFile: false, text: gh.hereString });
       else if (gh.stdinFile !== undefined) addFile('<', gh.stdinFile, key);
       else for (const body of heredocBodies(command)) pieces.push({ source: 'the heredoc text', isFile: false, text: body });
-      if (key === 'query') query = [gh.hereString, ...heredocBodies(command)].filter((text) => text !== undefined).join('\n');
+      if (key === 'query') queries.push(...[gh.hereString, ...heredocBodies(command)].filter((text) => text !== undefined));
       return;
     }
     if (seen.has(path)) return;
@@ -1300,22 +1301,23 @@ function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, comma
     else if ('saw' in read) missing ??= { missing: option, unsure: true, saw: read.saw };
     else {
       for (const text of read.texts) pieces.push({ source: path, isFile: true, text });
-      if (key === 'query') query = read.texts.join('\n');
+      if (key === 'query') queries.push(...read.texts);
     }
   };
-  for (let index = 0; index < args.length; ) {
+  // Each word is read as a possible option, the value after an option too (#659). gh takes the
+  // next word as the value of any option that wants one, `-H -f`, so skipping values would
+  // trust the guard's list of such options; a word read twice only means more is scanned.
+  for (let index = 0; index < args.length; index++) {
     if (isApi) {
       const methodOption = optionValue(args, index, METHOD_OPTIONS);
       if (methodOption) {
-        method = (methodOption.value ?? '').toUpperCase();
-        index = methodOption.next;
+        methods.push((methodOption.value ?? '').toUpperCase());
         continue;
       }
       const input = optionValue(args, index, INPUT_OPTIONS);
       if (input) {
         hasFields = true;
         addFile(input.name, input.value);
-        index = input.next;
         continue;
       }
       const field = optionValue(args, index, FIELD_OPTIONS);
@@ -1329,28 +1331,20 @@ function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, comma
         if ((field.name === '-F' || field.name === '--field') && content.startsWith('@')) addFile(field.name, content.slice(1), key);
         else if (content) {
           pieces.push({ source: `the ${key} field`, isFile: false, text: content });
-          if (key === 'query') query = content;
+          if (key === 'query') queries.push(content);
         }
-        index = field.next;
-        continue;
       }
     } else {
       const file = optionValue(args, index, FILE_OPTIONS);
       if (file) {
         addFile(file.name, file.value);
-        index = file.next;
         continue;
       }
       const text = optionValue(args, index, sub === 'close' ? CLOSE_OPTIONS : TEXT_OPTIONS);
-      if (text) {
-        if (text.value) pieces.push({ source: `the ${text.name} text`, isFile: false, text: text.value });
-        index = text.next;
-        continue;
-      }
+      if (text?.value) pieces.push({ source: `the ${text.name} text`, isFile: false, text: text.value });
     }
-    index++;
   }
-  if (isApi && !apiWrites(apiPath(args.slice(args.indexOf('api') + 1)), method, hasFields, query)) return null;
+  if (isApi && !apiWrites(apiPath(args.slice(args.indexOf('api') + 1)), methods, hasFields, queries)) return null;
   return missing ?? { pieces };
 }
 
@@ -1366,10 +1360,15 @@ function apiPath(args: string[]): string {
   return '';
 }
 
-/** Whether an API call writes: only then is what it sends posted. */
-function apiWrites(path: string, method: string | null, hasFields: boolean, query: string | null): boolean {
-  if (path.replace(/^\//, '') === 'graphql') return query !== null && MUTATION.test(query);
-  if (method) return WRITE_METHODS.has(method);
+/**
+ * Whether an API call writes: only then is what it sends posted. A write method or a
+ * mutation anywhere counts. A method that is no plain name may be a value read as an
+ * option (`-H -X -f`), so it does not stand for the method gh uses.
+ */
+function apiWrites(path: string, methods: string[], hasFields: boolean, queries: string[]): boolean {
+  if (path.replace(/^\//, '') === 'graphql') return queries.some((query) => MUTATION.test(query));
+  if (methods.some((method) => WRITE_METHODS.has(method))) return true;
+  if (methods.length && methods.every((method) => /^[A-Z]+$/.test(method))) return false;
   const plain = path.replace(/^\//, '');
   return hasFields && !plain.startsWith('search/') && WRITE_PATH.test(plain);
 }

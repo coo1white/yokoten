@@ -95,6 +95,12 @@ export const RULES = {
     why: 'a download piped into a shell runs code nobody read, so the guard cannot check what it runs',
     check: 'the tool-call guard stops a pipeline that feeds `curl` or `wget` into a shell; save the file first, read it, then run it',
   },
+  'gh-token': {
+    rule: "an agent does not see or send gh's token",
+    why: "with gh's token, curl or a script calls the host directly, around every rule the guard keeps for gh",
+    check: "the tool-call guard stops, for every agent, `gh auth token`, `gh auth status --show-token`, `gh auth git-credential`, `gh config get oauth_token`, `git credential fill`, a command that expands GH_TOKEN, GITHUB_TOKEN, GH_ENTERPRISE_TOKEN or GITHUB_ENTERPRISE_TOKEN, and a program that runs code (node, python and others) given one of those names; run gh itself, which uses the token without showing it",
+    docs: guide('what-it-doesnt-do'),
+  },
   'blocked-command': {
     rule: 'an agent does not run a program the project blocks in yokoten.json "commands.block"',
     why: 'the project chose its stack, and an agent forgets a rule written only in prose',

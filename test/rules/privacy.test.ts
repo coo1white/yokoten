@@ -569,6 +569,28 @@ test('API reads pass; API writes and GraphQL mutations are read (#391 review)', 
   assert.equal(post(`gh api repos/o/r/issues/1/comments -F body=@- <<'EOF'\nmail ${email}\nEOF`)?.id, 'email');
 });
 
+// #659: gh takes the next word as any option's value, so `-H -f` sends a header "-f". The
+// guard read that -f as a field and its value as the next word, and missed the real body.
+test('checkPost: an option value that looks like an option hides no body (#659)', () => {
+  const comments = 'gh api repos/o/r/issues/1/comments';
+  for (const option of ['-H', '--header', '-q', '--jq', '-t', '--template', '-p', '--preview', '--hostname', '--cache']) {
+    assert.equal(post(`${comments} ${option} -f -f body="${email}"`)?.id, 'email', `${option} -f`);
+    assert.equal(post(`${comments} ${option} -F -F body="${email}"`)?.id, 'email', `${option} -F`);
+    assert.equal(post(`${comments} ${option} --raw-field --raw-field body="${email}"`)?.id, 'email', `${option} --raw-field`);
+  }
+  // A fake method after a real one, or a method read from another option's value.
+  assert.equal(post(`gh api -X POST repos/o/r/labels -H -X -H GET -f description="${email}"`)?.id, 'email');
+  assert.equal(post(`${comments} -H -X -f body="${email}"`)?.id, 'email');
+  // A mutation stays one when a fake query follows.
+  assert.equal(post(`gh api graphql -f query='mutation { addComment(input: {body: "${email}"}) { clientMutationId } }' -H -f -f query=x`)?.id, 'email');
+  // The other gh posts: a text option's value read as an option.
+  assert.equal(post(`gh issue comment 3 --body --body "${email}"`)?.id, 'email');
+  assert.equal(post(`gh pr create --title "feat: add t" --label --body --body "${email}"`)?.id, 'email');
+  // Reads and clean posts still pass.
+  assert.equal(post(`gh api -X GET repos/o/r/issues -H "Accept: x" -f creator="${email}"`), null);
+  assert.equal(post(`${comments} -H -f -f body="all clean"`), null);
+});
+
 test('a stdin body: only the heredoc is read, not the rest of the command (#391 review)', () => {
   assert.equal(post(`cd /srv/quietvale-site && gh pr create --title "feat: add t" --body-file - <<'EOF'\nall clean\nEOF`), null);
   assert.equal(post(`gh pr comment 3 --body-file - <<'EOF'\nfrom QuietVale\nEOF`)?.id, 'private-mark');
