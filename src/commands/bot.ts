@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 import { botConfig, botEnv, botProgram, type Gh, installationToken, readApprovalState, readBranchFiles, readCodeOwners, readIssueMilestone, readRepoLabelNames, repoOf } from '../host/github/index.ts';
 import { DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
 import { finding, type Finding } from '../rules/message.ts';
-import { type CommandIssueLabels, type CommandLabels, type CommandMilestone, checkApprovalFreshness, checkCommandTitle, checkIssueLabels, checkOwnedTier, checkPullRequestBody, hasMadeWith, noMilestoneFinding, prTier, readCommandBody, readCommandIssueLabels, readCommandLabels, readCommandMilestone } from '../rules/pr.ts';
+import { type CommandIssueLabels, type CommandLabels, type CommandMilestone, checkApprovalFreshness, checkCommandTitle, checkIssueLabels, checkOwnedTier, checkPullRequestBody, madeWithFindings, noMilestoneFinding, prTier, readCommandBody, readCommandIssueLabels, readCommandLabels, readCommandMilestone } from '../rules/pr.ts';
 import { bullets, type Invocation, type Output, parse, print, readInput, requireRoot, rootOf, usage } from './shared.ts';
 
 async function bot(invocation: Invocation, command: string[]): Promise<number> {
@@ -288,12 +288,11 @@ function checkNote(note: PendingNote): Finding[] {
 
 /**
  * The problems with a comment, review or new-issue body: only the `Made with` line, with
- * the same check (`hasMadeWith`) and the same message as a pull request body (#609). The
+ * the same check (`madeWithFindings`) and the same message as a pull request body (#609). The
  * wording here mirrors `checkPullRequestBody`, which owns it.
  */
 function checkNoteMadeWith(text: string): Finding[] {
-  if (hasMadeWith(text)) return [];
-  return [finding('pr-made-with', 'body: no `Made with` line at the end', 'end the body with `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, for example `🤖 Made with lead (opus), worker (sonnet)`')];
+  return madeWithFindings(text);
 }
 
 /** Whether `--repo` names this repo's origin, or no repo at all. */

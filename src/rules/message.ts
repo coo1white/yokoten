@@ -79,7 +79,7 @@ export const RULES = {
   'hooks-path': {
     rule: 'never turn off the commit check (core rule 6)',
     why: 'git runs the commit check from core.hooksPath, so a folder whose pre-commit does not run it turns the check off',
-    check: 'the tool-call guard lets every read of core.hooksPath through. In the repo\'s own config, `git config` may set .githooks, the value already set, or a folder whose pre-commit runs `yokoten check` (husky: .husky/pre-commit). It stops any other change: `--unset`, `--global`, `git -c`, `--config-env` and GIT_CONFIG_KEY_n. The commit-check step looks at the setting',
+    check: 'the tool-call guard lets every read of core.hooksPath through. In the repo\'s own config, `git config` may set .githooks, the value already set, or a folder whose pre-commit runs `yokoten check` (husky: .husky/pre-commit). It stops any other change: `--unset`, `--global`, `git -c` and `--config-env`. It stops GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM, GIT_CONFIG_COUNT, GIT_CONFIG_KEY_n and GIT_CONFIG_VALUE_n, and a shell write to .git/config, .git/hooks or .githooks (a redirect, cp, mv, tee, sed -i, rm, chmod, ln, install, truncate); reading them passes. The commit-check step looks at the setting',
     docs: guide('the-core-rules'),
   },
   alias: {
@@ -185,6 +185,12 @@ export const RULES = {
     check: '`check --pr` lists each `yokoten-ignore` comment on a line the pull request adds, and each line it adds to `.yokotenignore`, as a notice on the pull request page; it never fails the check',
     docs: guide('privacy'),
   },
+  'home-folder': {
+    rule: 'an agent does not change the home folder for a command (core rule 11)',
+    why: 'the commit check and the gh post guard read your private marks from your home folder, so another home finds no marks and lets them through',
+    check: 'the tool-call guard stops a command that sets HOME or USERPROFILE for git, gh, yokoten or a shell, or for the rest of the line (export, declare, read, printf -v, a for loop, ${HOME:=x}); before another program, and reading $HOME, it passes',
+    docs: guide('privacy'),
+  },
   secret: {
     rule: 'no secret in the repo: no token and no private key (core rule 11)',
     why: 'a secret opens your accounts to anyone who can read the repo, and git keeps it after the file is gone',
@@ -256,8 +262,8 @@ export const RULES = {
     docs: guide('the-core-rules'),
   },
   'pr-made-with': {
-    rule: 'a pull request body ends with `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs (core rule 8)',
-    why: 'every pull request names each AI and model that made it',
+    rule: 'a pull request body ends with `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, and optionally one `reviewed by <agent> (<model>)` or `reviewed by <agent> (<model>) and <agent> (<model>)` part, at most two reviewers (core rule 8)',
+    why: 'every pull request names each AI and model that made it, and the ones that reviewed it',
     check: PR_CHECK,
     docs: guide('the-core-rules'),
   },
