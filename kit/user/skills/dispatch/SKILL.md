@@ -55,6 +55,8 @@ never changes lead-only files (the guard stops it).
 4. Push the branch and open the pull request as the bot, with `Closes #<n>`:
    `yokoten bot -- git push -u origin <branch>`, then `yokoten bot -- gh pr create`.
    Never with the owner's login. Run them from the main checkout: in the marked worktree
-   the guard treats you as a worker.
+   the guard treats you as a worker. End the body with one line that names the agent
+   and the model that made it, for example `🤖 Made with Claude Code (Claude Opus 5.5)`;
+   `yokoten bot` refuses a body without it. When workers ran on another model, name both.
 5. Remove the worktree once the pull request is merged: `git worktree remove <dir>`.
    That removes the mark too.

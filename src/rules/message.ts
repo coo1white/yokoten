@@ -199,6 +199,12 @@ export const RULES = {
     check: PR_CHECK,
     docs: guide('the-core-rules'),
   },
+  'pr-made-with': {
+    rule: 'a pull request body ends with `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs (core rule 8)',
+    why: 'every pull request names each AI and model that made it',
+    check: PR_CHECK,
+    docs: guide('the-core-rules'),
+  },
   'pr-changelog': {
     rule: 'a pull request that changes behaviour adds a file in changes/ (core rule 8)',
     why: 'each pull request adds its own file, so pull requests never conflict and a release needs no digging',
