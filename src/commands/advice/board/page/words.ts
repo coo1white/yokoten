@@ -135,6 +135,11 @@ const EN = {
   latestOutput: 'Latest output',
   noOutput: 'No output yet.',
   notReached: 'The board could not be reached.',
+  streamTitle: 'From the agent’s own session',
+  streamSteps: 'Ran {n} steps · {last}',
+  streamOutput: 'Output',
+  streamStop: 'The guard stopped this call.',
+  streamEmpty: 'Nothing in the session yet.',
 };
 
 /** One word key. Every language has every key; a test holds this. */
@@ -260,6 +265,11 @@ const ZH_CN: Record<WordKey, string> = {
   latestOutput: '最新输出',
   noOutput: '还没有输出。',
   notReached: '连不上看板。',
+  streamTitle: '来自这个 agent 自己的会话记录',
+  streamSteps: '跑了 {n} 步 · {last}',
+  streamOutput: '输出',
+  streamStop: '守卫拦下了这次调用。',
+  streamEmpty: '会话里还没有内容。',
 };
 
 const ZH_TW: Record<WordKey, string> = {
@@ -382,6 +392,11 @@ const ZH_TW: Record<WordKey, string> = {
   latestOutput: '最新輸出',
   noOutput: '還沒有輸出。',
   notReached: '連不上看板。',
+  streamTitle: '來自這個 agent 自己的工作階段紀錄',
+  streamSteps: '跑了 {n} 步 · {last}',
+  streamOutput: '輸出',
+  streamStop: '守衛擋下了這次呼叫。',
+  streamEmpty: '工作階段裡還沒有內容。',
 };
 
 const JA: Record<WordKey, string> = {
@@ -504,6 +519,11 @@ const JA: Record<WordKey, string> = {
   latestOutput: '最新の出力',
   noOutput: '出力はまだありません。',
   notReached: 'ボードに接続できません。',
+  streamTitle: 'エージェント自身のセッションから',
+  streamSteps: '{n} ステップ実行 · {last}',
+  streamOutput: '出力',
+  streamStop: 'ガードがこの呼び出しを止めました。',
+  streamEmpty: 'セッションにはまだ何もありません。',
 };
 
 /** Every language's words. English also holds the singular forms. */

@@ -1707,8 +1707,11 @@ The page has three columns:
   agent waiting for an answer). It never folds. Below it, the agents by role. Click
   one to see it in the middle. Finished agents fold away; **Clear** hides one until it
   writes again. Its log and branch stay.
-- **Middle:** what the picked agent did, step by step. Routine steps fold; waits,
-  failures and the latest step always show.
+- **Middle:** the picked agent's own session, live, like a chat. You see what it
+  says and the tools it runs. Tool calls in a row fold into "Ran 3 steps · the last
+  one". Click a step to see the whole call and its output. New lines come in at the
+  bottom. The board reads Claude Code, Muse Code and Grok logs. For any other agent,
+  or when no log is found, you see the agent's `doing` steps instead.
 - **Right:** the pull requests, each as four steps: Built, Checked, You (tier A only),
   Merged. Today's merged ones are listed below.
 
