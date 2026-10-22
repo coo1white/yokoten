@@ -42,6 +42,7 @@ import {
   printsAccount,
   removeWorkerPath,
   runsCheck,
+  stripWorktreeRoot,
   withWorkerMark,
   workerMarkAt,
   workerRole,
@@ -577,6 +578,40 @@ test('lead-only files: a worker is stopped, the lead is not', () => {
   // A glob with a slash is the root's folder only; one without matches in any folder.
   assert.ok(checkEdit('kit/project/AGENTS.md', { config: DEFAULTS, env: worker }));
   assert.equal(checkEdit('kit/project/.github/workflows/x.yml', { config: DEFAULTS, env: worker }), null);
+});
+
+test('lead-only files: a path under .worktrees/<issue>/ reads from that worktree (#571)', () => {
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  assert.equal(stripWorktreeRoot('.worktrees/571-x/AGENTS.md'), 'AGENTS.md');
+  assert.equal(stripWorktreeRoot('.worktrees/a/.worktrees/b/.github/workflows/ci.yml'), '.github/workflows/ci.yml', 'a worktree in a worktree');
+  assert.equal(stripWorktreeRoot('.worktrees/571-x'), '.worktrees/571-x', 'a worktree itself stays');
+  assert.equal(stripWorktreeRoot('src/a.ts'), 'src/a.ts');
+  // A lead-only file there is still lead-only, for an edit and a shell write alike.
+  for (const p of ['.worktrees/571-x/AGENTS.md', '.worktrees/571-x/.github/workflows/ci.yml', '.worktrees/571-x/yokoten.json']) {
+    const found = checkEdit(p, { config: DEFAULTS, env: worker });
+    assert.equal(found?.id, 'lead-only', p);
+    assert.match(found?.what ?? '', new RegExp(`${p.replaceAll('.', '\\.')} is lead-only`), 'the message keeps the full path');
+    assert.equal(checkEdit(p, { config: DEFAULTS, env: {} }), null, `the lead passes: ${p}`);
+  }
+  assert.equal(checkEdit('.worktrees/571-x/src/a.ts', { config: DEFAULTS, env: worker }), null, 'other files pass');
+  // A grant names the worktree's own path, as if the session ran there.
+  const granted = { YOKOTEN_ROLE: 'worker', YOKOTEN_LEAD_ONLY_OK: 'AGENTS.md' };
+  assert.equal(checkEdit('.worktrees/571-x/AGENTS.md', { config: DEFAULTS, env: granted }), null);
+  assert.ok(checkEdit('.worktrees/571-x/CLAUDE.md', { config: DEFAULTS, env: granted }));
+});
+
+test('lead-only files: a worker shell write under .worktrees/<issue>/ is stopped, not the lead (#571)', () => {
+  const sandbox = yokotenSandbox();
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  const run = (command: string, env: Env = worker) => checkCommand(command, { env, cwd: sandbox.repo });
+  assert.equal(run('echo x > .worktrees/571-x/AGENTS.md')?.id, 'lead-only');
+  assert.match(run('echo x > .worktrees/571-x/AGENTS.md')?.what ?? '', /\.worktrees\/571-x\/AGENTS\.md, which is lead-only/);
+  assert.equal(run('echo x > .worktrees/571-x/.github/workflows/ci.yml')?.id, 'lead-only');
+  assert.equal(run('rm -rf .worktrees/571-x/.github')?.id, 'lead-only', 'a folder that may hold one');
+  assert.equal(run('echo x > .worktrees/571-x/src/a.ts'), null, 'other files pass');
+  assert.equal(run('echo x > .worktrees/571-x/AGENTS.md', {}), null, 'the lead passes');
+  // A grant names the worktree's own path.
+  assert.equal(run('echo x > .worktrees/571-x/AGENTS.md', { ...worker, YOKOTEN_LEAD_ONLY_OK: 'AGENTS.md' }), null);
 });
 
 // A worker's shell writes and commits to lead-only files (#402). The file rules apply in a

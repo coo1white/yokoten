@@ -14,9 +14,11 @@ colleague: a clear brief, its own desk, and a report you check.
 1. There is an issue for the task. If not, open one.
 2. The task is small enough to review in one sitting. If not, split it.
 3. Give the worker its own worktree on its own branch, so two workers never share files.
-   Then mark it, so the guard treats every agent there as a worker:
-   `git worktree add ../<repo>-<issue> -b <issue>-<slug>`, then
-   `yokoten worker mark ../<repo>-<issue>`
+   The worktree lives in the project, where a restart can't wipe it. Then mark it,
+   so the guard treats every agent there as a worker:
+   `git worktree add .worktrees/<issue> -b <issue>-<slug>`, then
+   `yokoten worker mark .worktrees/<issue>`
+   Never under `/tmp`: the system may wipe it on restart, with every unpushed change.
 
 ## The brief
 
@@ -24,6 +26,7 @@ Write it so a stranger could do the task with nothing else:
 
 ```
 Issue: #<n> <title>
+Worktree: .worktrees/<n>   (never /tmp: the system may wipe it on restart)
 Goal: <what is true when done>
 Done when: <the command to run and what it must print>
 Files: <where to look first>
@@ -35,7 +38,9 @@ Report: what you changed, the commands you ran with their output, what you are u
 ## Start it
 
 The mark makes the worker a worker in every agent, even one that passes its hooks no
-`YOKOTEN_ROLE` (Muse Code). Also start it with its role in the environment:
+`YOKOTEN_ROLE` (Muse Code). The worker runs on your model, unless the owner named
+another. Never guess a model name from another agent (`opus`, `sonnet`): it may not
+exist here. Also start it with its role in the environment:
 
 - A separate session: `YOKOTEN_ROLE=worker claude -p "<brief>"` in the worktree
   (add `YOKOTEN_FIX_TASK=1` for a fix task).

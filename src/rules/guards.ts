@@ -16,19 +16,39 @@ import { accessSync, closeSync, constants, existsSync, fstatSync, globSync, lsta
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Config, Env } from './config.ts';
 import { loadConfig, matcher } from './config.ts';
+import { WORKTREES_DIR } from './layout.ts';
 import { type Finding, finding } from './message.ts';
 import { checkCommandTitle } from './pr.ts';
 import { type CommandFiles, checkPost, type GhCommand, ghIndex, homeIn, homeOf, isBotProgram, PIPE_READERS, type Risk, withoutReadPipe } from './privacy.ts';
 
 /** A file edit, by path relative to the repo root. */
 export function checkEdit(path: string, { config, env }: { config: Config; env: Env }): Finding | null {
-  if (env.YOKOTEN_FIX_TASK === '1' && matcher(config.tests)(path)) {
+  // A file in a worker worktree reads from that worktree (#571); the message keeps the path as given.
+  const inWorktree = stripWorktreeRoot(path);
+  if (env.YOKOTEN_FIX_TASK === '1' && matcher(config.tests)(inWorktree)) {
     return finding('test-file', `${path} is a test file, and this is a fix task (YOKOTEN_FIX_TASK=1)`, 'if the test is wrong, stop and say so in your report');
   }
-  if (env.YOKOTEN_ROLE === 'worker' && isLeadOnly(path, config.leadOnly) && !isGranted(path, env)) {
+  if (env.YOKOTEN_ROLE === 'worker' && isLeadOnly(inWorktree, config.leadOnly) && !isGranted(inWorktree, env)) {
     return finding('lead-only', `${path} is lead-only (yokoten.json "leadOnly")`, LEAD_ONLY_FIX);
   }
   return null;
+}
+
+/**
+ * `path` (from the repo root, forward slashes) as the worker worktree holding it sees
+ * it: each `.worktrees/<name>/` prefix reads as that worktree's root, so
+ * `.worktrees/571-x/AGENTS.md` is `AGENTS.md`, still lead-only (#571). A path that is the
+ * worktrees folder or a worktree itself stays as it is.
+ */
+export function stripWorktreeRoot(path: string): string {
+  const prefix = `${WORKTREES_DIR}/`;
+  while (path.startsWith(prefix)) {
+    const rest = path.slice(prefix.length);
+    const slash = rest.indexOf('/');
+    if (slash <= 0) return path;
+    path = rest.slice(slash + 1);
+  }
+  return path;
 }
 
 const LEAD_ONLY_FIX = 'stop and hand the change to the lead: say in your report what to change in it, or ask the lead to start you with YOKOTEN_LEAD_ONLY_OK=<path>';
@@ -2494,11 +2514,13 @@ function isUnsureTarget(target: WriteTarget, env: Env): boolean {
 
 function checkLeadOnlyWrites(words: string[], { env, rules, folder }: { env: Env; rules: FileRules; folder: string | null }): Finding | null {
   // A folder counts when a lead-only file may be in it: `rm -r .github`.
+  // A file in a worker worktree matches from that worktree (#571), as an edit does; the message keeps the full path.
   const stopped = (target: WriteTarget): string | null => {
     const ruled = rules.ruled(target, env);
     if (!ruled) return null;
+    const inWorktree = stripWorktreeRoot(ruled.path);
     const matches = (path: string) => isLeadOnly(path, ruled.leadOnly);
-    return (matches(ruled.path) || matches(`${ruled.path}/-`)) && !isGranted(ruled.path, env) ? ruled.path : null;
+    return (matches(inWorktree) || matches(`${inWorktree}/-`)) && !isGranted(inWorktree, env) ? ruled.path : null;
   };
   for (const target of writeTargets(words, folder, rules.rootOf)) {
     if (target.isUnread) {
