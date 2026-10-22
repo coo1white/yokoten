@@ -664,3 +664,25 @@ test('worker list: a marked worker cannot unmark its own worktree, even after cd
   assert.ok(existsSync(join(gitDir, 'yokoten-worker')));
   sandbox.git('worktree', 'remove', '--force', tree);
 });
+
+// `worker env` lists the names an agent would get, and counts the rest; it never prints a
+// value (#613). The values are fake; each token is joined from parts.
+test('worker env: it names what an agent gets and counts what is dropped, and prints no value (#613)', async () => {
+  const cwd = makeTempDir('yokoten-worker-env-');
+  const token = `${'gh'}p_${'a1B2c3D4e5F6g7H8'.repeat(3)}`;
+  const key = `${'sk'}-ant-api03-${'a1B2c3D4e5F6g7H8'.repeat(4)}`;
+  const url = `postgres://fakeuser:${'fake'}pass${'@'}db.example.invalid/app`;
+  const env = { PATH: '/usr/bin', HOME: cwd, GH_TOKEN: token, ANTHROPIC_API_KEY: key, LC_FAKE: url, EDITOR: 'vi' };
+  const plain = await invoke(['worker', 'env'], { env, cwd });
+  assert.equal(plain.code, 0, plain.stderr);
+  for (const value of [token, key, url]) assert.ok(!(plain.stdout + plain.stderr).includes(value), 'worker env printed a value');
+  assert.match(plain.stdout, /would get 2 names from this shell/);
+  assert.match(plain.stdout, /HOME, PATH/);
+  assert.match(plain.stdout, /Dropped: 2 with a secret-looking name, 1 with a value shaped like a key or token, 0 too long to check, 1 not on the list/);
+  const claude = await invoke(['worker', 'env', 'claude-code'], { env, cwd });
+  for (const value of [token, key, url]) assert.ok(!(claude.stdout + claude.stderr).includes(value), 'worker env claude-code printed a value');
+  assert.match(claude.stdout, /ANTHROPIC_API_KEY, HOME, PATH/);
+  const unknown = await invoke(['worker', 'env', 'nope'], { env, cwd });
+  assert.equal(unknown.code, 1);
+  assert.match(unknown.stderr, /unknown runtime "nope"/);
+});

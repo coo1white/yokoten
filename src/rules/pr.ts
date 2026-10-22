@@ -57,8 +57,8 @@ const SHOWN_TYPE_LABELS = ['feat', 'bug', 'docs', 'refactor', 'ci', 'test', 'cho
 /** The tier on the body's first line, or null when the first line is not a tier. */
 const bodyTier = (body: string): string | null => /^tier: ([ABC])\s*$/.exec(body.split(/\r?\n/).find((l) => l.trim())?.trim() ?? '')?.[1] ?? null;
 
-/** The tier a label names: `tier B` or `tier: B`, in any case. Null for any other label. */
-const labelTier = (label: string): string | null => /^tier:? ?([abc])$/i.exec(label.trim())?.[1].toUpperCase() ?? null;
+/** The tier a label names: `tier B` or `tier: B`, in any case. Null for any other label. The board reads it too (#601), so both agree. */
+export const readLabelTier = (label: string): string | null => /^tier:? ?([abc])$/i.exec(label.trim())?.[1].toUpperCase() ?? null;
 
 /**
  * Problems with a pull request's labels: one type label, and one tier label that matches
@@ -78,7 +78,7 @@ const isTypeLabel = (label: string): boolean => TYPE_LABELS.has(label.trim().toL
 /** Problems with a pull request's tier labels: exactly one, the same as the body's `tier:` line. */
 function checkTierLabel(labels: string[], tier: string | null): Finding[] {
   const problems: Finding[] = [];
-  const tiers = [...new Set(labels.map(labelTier).filter((t) => t !== null))];
+  const tiers = [...new Set(labels.map(readLabelTier).filter((t) => t !== null))];
   const wanted = tier ? `\`tier ${tier}\`` : '`tier A`, `tier B` or `tier C`, the same as the first line of the body';
   if (!tiers.length) problems.push(finding('pr-labels', 'labels: no tier label', `add the label ${wanted}`));
   else if (tiers.length > 1) problems.push(finding('pr-labels', `labels: ${tiers.length} tier labels`, `keep one tier label: ${wanted}`));
@@ -448,7 +448,7 @@ export function checkIssueLabels(issueLabels: string[], repoLabels: string[] | n
   if (repoLabels.some(isTypeLabel) && !issueLabels.some(isTypeLabel)) {
     problems.push(finding('issue-labels', 'labels: no type label', 'add one type label, such as feat, bug, docs'));
   }
-  const isTierLabel = (label: string): boolean => labelTier(label) !== null;
+  const isTierLabel = (label: string): boolean => readLabelTier(label) !== null;
   if (repoLabels.some(isTierLabel) && !issueLabels.some(isTierLabel)) {
     problems.push(finding('issue-labels', 'labels: no tier label', 'add one tier label: `tier A`, `tier B` or `tier C`'));
   }
@@ -548,7 +548,7 @@ export function checkOwnedTier(pr: Pick<PullRequest, 'body' | 'files'>, codeOwne
 
 /** The tier of a pull request: the body's line first, then the first tier label. */
 export function prTier(body: string, labels: string[]): string | null {
-  return bodyTier(body) ?? labels.map(labelTier).find((tier) => tier !== null) ?? null;
+  return bodyTier(body) ?? labels.map(readLabelTier).find((tier) => tier !== null) ?? null;
 }
 
 /** What the Approve check knows: the tier, the head, and what came after the Approve. */
@@ -870,7 +870,7 @@ export function readCommandLabels(command: string[], body: string | null): Comma
   const type = title === null ? undefined : TITLE.exec(title.trim())?.[1];
   if (type && !labels.some(isTypeLabel)) missing.push(typeLabelNames(type));
   const tier = bodyTier(body ?? '');
-  const hasTier = labels.some((label) => labelTier(label) !== null);
+  const hasTier = labels.some((label) => readLabelTier(label) !== null);
   if (tier && !hasTier) missing.push([`tier ${tier}`, `tier: ${tier}`]);
   return { missing, problems: hasTier ? checkTierLabel(labels, tier) : [], repo };
 }
