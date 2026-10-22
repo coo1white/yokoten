@@ -1615,6 +1615,9 @@ function checkLeadOnlyWrites(words: string[], { env, rules, folder }: { env: Env
   };
   for (const target of writeTargets(words, folder, rules.rootOf)) {
     if (target.isUnread) {
+      if (target.from === null && target.path !== '' && target.path !== '-') {
+        return finding('lead-only', `this command applies ${target.path}, and yokoten can't tell which files it changes from an unknown folder`, UNSURE_FOLDER_FIX);
+      }
       if (target.from !== null && rules.isRuled(target.from)) {
         return finding('lead-only', `this command applies ${base(target.path)}, and yokoten can't read which files it changes`, `apply a patch file under 1 MB, so the guard can read it, or ${LEAD_ONLY_FIX}`);
       }
@@ -1890,7 +1893,14 @@ function gitWrites(words: string[], folder: string | null, rootOf: FileRules['ro
   if (sub === 'restore') return isIndexOnly ? [] : at(plainArgs(args, ['-s', '--source']));
   if (sub === 'rm') return at(plainArgs(args));
   if (sub === 'mv') return at(copyTargets(args, { valued: [], isMove: true, folder: dir }));
-  if (sub !== 'apply' || dir === null) return [];
+  if (sub !== 'apply') return [];
+  if (dir === null) {
+    // From an unknown folder a patch file cannot be placed, so what it changes is
+    // unknown: unsure means refused where the folder is used (#559). `-` is stdin.
+    return plainArgs(args, ['-p', '--exclude', '--include', '--directory'])
+      .filter((patch) => patch !== '-')
+      .map((patch) => ({ path: patch, from: dir, isUnread: true }));
+  }
   const root = rootOf(dir);
   if (!root) return [];
   const targets: WriteTarget[] = [];
@@ -1961,9 +1971,10 @@ function commitTargets(words: string[], folder: string | null, rootOf: FileRules
   }
   const targets = named.map((path) => ({ path, from: dir }));
   if (named.length > 0 && !isInclude) return targets;
-  // From an unknown folder the staged files are unknowable: only the named ones count, and
-  // the guard refuses a relative one as unsure where the folder is used (#559).
-  if (dir === null) return targets;
+  // From an unknown folder the staged files (and with -a, the changed ones too) are
+  // unknowable: unsure means refused where the folder is used (#559). A commit that
+  // names only absolute paths still checks them one by one above and below.
+  if (dir === null) return [...targets, { path: '.', from: dir }];
   // git names staged files from the repo's root. The root is found by a walk, not a second git.
   const root = rootOf(dir);
   if (root === null) return targets;

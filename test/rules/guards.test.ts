@@ -648,6 +648,46 @@ test('lead-only files: a worker relative write after an unknown cd is refused (#
   assert.equal(run(`cd ${join(sandbox.repo, 'src')} && echo x > notes.md`), undefined);
 });
 
+test('lead-only files: git apply and an unknowable commit from an unknown folder are refused (#559)', () => {
+  const sandbox = yokotenSandbox();
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  const run = (command: string) => checkCommand(command, { env: worker, cwd: sandbox.repo });
+  sandbox.write('fix.patch', 'diff --git a/AGENTS.md b/AGENTS.md\n--- a/AGENTS.md\n+++ b/AGENTS.md\n@@ -1 +1 @@\n-a\n+b\n');
+  sandbox.write('ok.patch', 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-a\n+b\n');
+  // A patch named from an unknown folder cannot be placed: unsure means refused,
+  // whatever the patch touches and however the patch itself is named.
+  for (const command of [
+    'cd src && git apply fix.patch',
+    'cd src && git apply ../fix.patch',
+    `cd src && git apply ${join(sandbox.repo, 'fix.patch')}`,
+    'cd src && git apply ok.patch',
+  ]) {
+    const found = run(command);
+    assert.equal(found?.id, 'lead-only', `should stop a worker: ${JSON.stringify(command)}`);
+    assert.match(found?.what ?? '', /from an unknown folder/, `should say unsure: ${JSON.stringify(command)}`);
+  }
+  // stdin stays the known gap it already was.
+  assert.equal(run('cd src && git apply - < fix.patch'), null);
+  // A commit that takes the staged files (or with -a, the changed ones too) commits
+  // what the guard cannot list from an unknown folder: unsure means refused.
+  sandbox.write('AGENTS.md', 'rules\n');
+  sandbox.write('src/a.ts', 'export {};\n');
+  sandbox.git('add', '.');
+  sandbox.write('AGENTS.md', 'new rules\n');
+  for (const command of ['cd src && git commit -m x', 'cd src && git commit -am x', 'cd src && git commit -a -m x', 'cd src && git commit --all -m x']) {
+    const found = run(command);
+    assert.equal(found?.id, 'lead-only', `should stop a worker: ${JSON.stringify(command)}`);
+    assert.match(found?.what ?? '', /from an unknown folder/, `should say unsure: ${JSON.stringify(command)}`);
+  }
+  // A commit that names only absolute paths is still checked one by one.
+  assert.equal(run(`cd src && git commit -m x ${join(sandbox.repo, 'AGENTS.md')}`)?.id, 'lead-only');
+  assert.equal(run(`cd src && git commit -m x ${join(sandbox.repo, 'src', 'a.ts')}`), null);
+  // Controls: the same commands pass where the folder is known and nothing lead-only is in them.
+  assert.equal(run(`cd ./src && git apply ${join(sandbox.repo, 'ok.patch')}`), null);
+  assert.equal(run(`cd ${sandbox.repo} && git apply ok.patch`), null);
+  assert.equal(run(`cd ./src && git commit -m x ${join(sandbox.repo, 'src', 'a.ts')}`), null);
+});
+
 test('lead-only files: reads, other files and files outside the repo pass a worker (#402)', () => {
   const sandbox = yokotenSandbox();
   const worker = { YOKOTEN_ROLE: 'worker' };
