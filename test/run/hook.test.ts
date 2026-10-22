@@ -386,6 +386,20 @@ test('done-when: a timeout ends when a program left the process group (#614)', {
   }
 });
 
+// (...) & stays in the shell's group. A normal exit must stop it before the late write (#641).
+test('done-when: a passing check stops a background writer (#641)', { skip: process.platform === 'win32' && 'the kill uses a POSIX process group', timeout: 5000 }, async () => {
+  const sandbox = makeSandbox();
+  const started = join(sandbox.repo, 'writer-started');
+  const late = join(sandbox.repo, 'writer-late');
+  const command = `(touch ${JSON.stringify(started)}; sleep 0.4; touch ${JSON.stringify(late)}) & while [ ! -f ${JSON.stringify(started)} ]; do :; done; exit 0`;
+  const result = await runDoneWhen(command, sandbox.repo, sandbox.env, 5000);
+  assert.equal(result.ok, true, result.output);
+  assert.equal(/ran too long/.test(result.output), false);
+  assert.equal(existsSync(started), true, 'the writer started');
+  await delay(800);
+  assert.equal(existsSync(late), false, 'the writer wrote after the check ended');
+});
+
 // The shell exits 0. setsid keeps the pipes. The check must pass before the timeout.
 test('done-when: an exited shell passes even when a program keeps the pipes open (#614)', { skip: (process.platform === 'win32' || runChild('sh', ['-c', 'command -v setsid']).status !== 0) && 'setsid is missing', timeout: 5000 }, async () => {
   const sandbox = makeSandbox();
