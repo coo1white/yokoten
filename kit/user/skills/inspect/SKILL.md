@@ -26,8 +26,9 @@ Give the diff to the `reviewer` agent (it reads only) for:
    Does it break a core rule in `AGENTS.md`?
 
 Each reviewer that read the diff goes on the pull request's last line, after the worker
-and before the lead: `reviewed by <Y> (<model>)`, or `reviewed by <Y> (<model>) and <Z>
-(<model>)` for two. Add it when you write or edit the `Made with` line.
+and before the lead, in one part with at most two reviewers:
+`🤖 Made with worker <X> (<model>), reviewed by <Y> (<model>) and <Z> (<model>), lead Claude Code (<model>)`.
+One reviewer is `reviewed by <Y> (<model>)`. Add them when you write or edit the line.
 
 Give it to the `verifier` agent (it runs, never fixes) to run the tests and the "done
 when" command from the issue, and paste the output.

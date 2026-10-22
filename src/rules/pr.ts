@@ -929,20 +929,20 @@ export interface MadeWithAgent {
   model: string;
 }
 
-/** The roles a `Made with` line names (#673). */
+/** The roles a `Made with` line names (#673). Two workers on different models are both kept. */
 export interface MadeWithRoles {
-  /** The agent after `worker`, or null when the line names none. */
-  writer: MadeWithAgent | null;
-  /** The agents after `reviewed by`: none, one, or two. */
+  /** The agents after `worker`, in order. */
+  writers: MadeWithAgent[];
+  /** The agents after `reviewed by`, at most two in all. */
   reviewers: MadeWithAgent[];
-  /** The agent after `lead`, or null when the line names none. */
-  lead: MadeWithAgent | null;
+  /** The agents after `lead`, in order. */
+  leads: MadeWithAgent[];
   /** Every other `<agent> (<model>)` pair, in order (the old form without roles). */
   others: MadeWithAgent[];
 }
 
 const AGENT = /^([^()]+?) \(([^()]+)\)$/;
-const REVIEWED_BY = /^reviewed by ([^(),]+? \([^()]+\))(?: and ([^(),]+? \([^()]+\)))?$/;
+const REVIEWED_BY = /^reviewed by ([^(),]+? \([^()]+\))(?: and ([^(),]+? \([^()]+\)))?$/i;
 
 function readAgent(text: string): MadeWithAgent | null {
   const match = AGENT.exec(text);
@@ -954,35 +954,43 @@ function readAgent(text: string): MadeWithAgent | null {
  * returns the roles it names. The line is `🤖 Made with <part>, <part>`, with or
  * without the robot emoji. A part is `<agent> (<model>)`, optionally led by
  * `worker` or `lead`, or `reviewed by <agent> (<model>)` with a second reviewer
- * joined by ` and `. Returns null when there is no such line, and `problem:
- * 'reviewers'` when a `reviewed by` part is malformed. HTML comments are set
- * aside first, so a commented line counts neither for nor against, and neither
- * does one inside a code block.
+ * joined by ` and `. Role words ignore case, and extra spaces count as one. At
+ * most two reviewers are allowed in all. Returns null when there is no good
+ * line, and `problem: 'reviewers'` when a `reviewed by` part is malformed, even
+ * if another part is bad too. HTML comments are set aside first, so a commented
+ * line counts neither for nor against, and neither does one inside a code block.
  */
 export function parseMadeWith(body: string): { roles: MadeWithRoles | null; problem: 'reviewers' | null } | null {
   const lines = blankComments(body).split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '');
   const head = /^(?:🤖 )?Made with (.+)$/.exec(lines.at(-1) ?? '');
   if (!head) return null;
-  const roles: MadeWithRoles = { writer: null, reviewers: [], lead: null, others: [] };
+  const roles: MadeWithRoles = { writers: [], reviewers: [], leads: [], others: [] };
   let problem: 'reviewers' | null = null;
-  for (const part of head[1].split(/(?<=\)), /)) {
-    if (part.startsWith('reviewed by')) {
+  let bad = false;
+  for (const raw of head[1].split(/(?<=\)),/)) {
+    const part = raw.trim().replace(/\s+/g, ' ');
+    // `reviewed by Y (b), and Z (c)`: the comma splits the pair, so `and` leads a part.
+    if (/^reviewed by\b/i.test(part) || /^and\b/i.test(part)) {
       const match = REVIEWED_BY.exec(part);
       const names = match ? [match[1], match[2]].filter((name): name is string => Boolean(name)).map(readAgent) : [];
-      if (!match || names.includes(null)) problem = 'reviewers';
+      if (!match || names.includes(null) || roles.reviewers.length + names.length > 2) problem = 'reviewers';
       else roles.reviewers.push(...(names as MadeWithAgent[]));
       continue;
     }
     // `worker (opus)` has no vendor: the whole part is the agent, not a role.
-    const role = /^(worker|lead) (.+)$/.exec(part);
+    const role = /^(worker|lead) (.+)$/i.exec(part);
     const named = role ? readAgent(role[2]) : null;
     const agent = named ?? readAgent(part);
-    if (!agent) return null;
-    if (named && role?.[1] === 'worker') roles.writer = agent;
-    else if (named && role?.[1] === 'lead') roles.lead = agent;
+    if (!agent) {
+      bad = true;
+      continue;
+    }
+    if (named && role?.[1].toLowerCase() === 'worker') roles.writers.push(agent);
+    else if (named) roles.leads.push(agent);
     else roles.others.push(agent);
   }
-  return problem ? { roles: null, problem } : { roles, problem: null };
+  if (problem) return { roles: null, problem };
+  return bad ? null : { roles, problem: null };
 }
 
 /**
@@ -1003,7 +1011,7 @@ export function hasMadeWith(body: string): boolean {
 export function madeWithFindings(body: string): Finding[] {
   const parsed = parseMadeWith(body);
   if (parsed?.problem === 'reviewers') {
-    return [finding('pr-made-with', 'body: the `reviewed by` part of the `Made with` line is not `reviewed by <agent> (<model>)`, or two joined by `and`', 'write `reviewed by <agent> (<model>)` or `reviewed by <agent> (<model>) and <agent> (<model>)`, after the worker and before the lead')];
+    return [finding('pr-made-with', 'body: the `reviewed by` part of the `Made with` line is not `reviewed by <agent> (<model>)`, or two joined by `and` (two in all)', 'write `reviewed by <agent> (<model>)` or `reviewed by <agent> (<model>) and <agent> (<model>)`, once, with at most two reviewers, after the worker and before the lead')];
   }
   if (parsed?.roles) return [];
   return [finding('pr-made-with', 'body: no `Made with` line at the end', 'end the body with `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, for example `🤖 Made with lead (opus), worker (sonnet)`; reviewers may follow the worker: `, reviewed by <agent> (<model>) and <agent> (<model>)`')];
