@@ -2,7 +2,7 @@
 
 import '../repo/home.ts';
 import assert from 'node:assert/strict';
-import { existsSync, lstatSync, lutimesSync, mkdirSync, readFileSync, readlinkSync, readdirSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { constants, existsSync, lstatSync, lutimesSync, mkdirSync, openSync, readFileSync, readlinkSync, readdirSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
@@ -27,10 +27,12 @@ import {
   judge,
   noteRefused,
   readDoneWhen,
+  readStatusText,
   readStopFields,
   refusedMarkerPath,
   runDoneWhen,
   shortenOutput,
+  STATUS_TEXT_LIMIT,
   startGuard,
   wasRefusedRecently,
   windowsTreeKillArgs,
@@ -364,18 +366,86 @@ test('done-when: a timeout ends when a program left the process group (#614)', {
     assert.match(result.output, /ran too long/);
     assert.ok(elapsed < 3000, `ended after ${elapsed} ms`);
   } finally {
-    if (!existsSync(pidFile)) return;
-    const pid = Number(readFileSync(pidFile, 'utf8').trim());
-    if (!pid) return;
-    try {
-      process.kill(-pid, 'SIGKILL');
-    } catch {
-      try {
-        process.kill(pid, 'SIGKILL');
-      } catch {
-        // The grandchild is already gone.
+    if (existsSync(pidFile)) {
+      const pid = Number(readFileSync(pidFile, 'utf8').trim());
+      if (pid) {
+        try {
+          process.kill(-pid, 'SIGKILL');
+        } catch {
+          try {
+            process.kill(pid, 'SIGKILL');
+          } catch {
+            // The grandchild is already gone.
+          }
+        }
       }
     }
+  }
+});
+
+// The shell exits 0. setsid keeps the pipes. The check must pass before the timeout.
+test('done-when: an exited shell passes even when a program keeps the pipes open (#614)', { skip: (process.platform === 'win32' || runChild('sh', ['-c', 'command -v setsid']).status !== 0) && 'setsid is missing', timeout: 5000 }, async () => {
+  const sandbox = makeSandbox();
+  const started = Date.now();
+  const result = await runDoneWhen('echo kept-614; setsid sleep 5 & exit 0', sandbox.repo, sandbox.env, 2000);
+  const elapsed = Date.now() - started;
+  assert.equal(result.ok, true, result.output);
+  assert.match(result.output, /kept-614/);
+  assert.equal(/ran too long/.test(result.output), false);
+  assert.ok(elapsed < 1500, `ended after ${elapsed} ms`);
+});
+
+test('done-when: a timeout still ends when the tree kill throws (#614)', { skip: process.platform === 'win32' && 'the stand-in kill uses a POSIX process group', timeout: 5000 }, async () => {
+  const sandbox = makeSandbox();
+  let pid = 0;
+  try {
+    const result = await runDoneWhen(`${process.execPath} -e "setInterval(() => {}, 1000)"`, sandbox.repo, sandbox.env, 300, (childPid) => {
+      pid = childPid;
+      throw new Error('kill failed');
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.output, /ran too long/);
+  } finally {
+    if (pid) {
+      try {
+        process.kill(-pid, 'SIGKILL');
+      } catch {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // The process is already gone.
+        }
+      }
+    }
+  }
+});
+
+test('readStatusText: an unchanged file is read, and a swap at open time is not (#614)', { timeout: 5000 }, () => {
+  const sandbox = makeSandbox();
+  const path = join(sandbox.repo, 'status.json');
+  const swapped = join(sandbox.repo, 'other.json');
+  writeFileSync(path, '{"name":"kept"}\n');
+  writeFileSync(swapped, '{"name":"other"}\n');
+  assert.equal(readStatusText(path), '{"name":"kept"}\n', 'an unchanged file returns its text');
+  let openFlags = 0;
+  assert.equal(
+    readStatusText(path, (_, flags) => {
+      openFlags = flags;
+      return openSync(swapped, flags);
+    }),
+    null,
+    'the file at open time is not the file at list time',
+  );
+  const nonblock = constants.O_NONBLOCK ?? 0;
+  assert.equal(openFlags & nonblock, nonblock, 'the open does not wait on a pipe');
+  writeFileSync(path, 'x'.repeat(STATUS_TEXT_LIMIT));
+  assert.equal(readStatusText(path)?.length, STATUS_TEXT_LIMIT, 'a file at the size cap is read');
+  writeFileSync(path, 'y'.repeat(STATUS_TEXT_LIMIT + 1));
+  assert.equal(readStatusText(path), null, 'a file over the size cap is not read');
+  if (existsSync('/dev/zero')) {
+    const openedAt = Date.now();
+    assert.equal(readStatusText(path, () => openSync('/dev/zero', constants.O_RDONLY)), null, 'a device opened in place of the file is not read');
+    assert.ok(Date.now() - openedAt < 1000, 'a device is refused before it is read');
   }
 });
 

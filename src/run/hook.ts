@@ -6,7 +6,7 @@
 
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import module from 'node:module';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
@@ -79,6 +79,9 @@ export const DONE_TRY_LIMIT = 3;
 /** How long the done-when command may run, in milliseconds. */
 export const DONE_WHEN_MS = 120_000;
 
+/** How long to wait for the last output after the shell exits, in milliseconds. */
+const CLOSE_GRACE_MS = 200;
+
 /** The file in a worktree's git folder that holds the task's done-when command. */
 export const DONE_WHEN_FILE = 'yokoten-done-when';
 
@@ -87,6 +90,9 @@ export const DONE_WHEN_FILE = 'yokoten-done-when';
  * The board will show `checks` later (#603). The guide shows its fields.
  */
 export const AGENT_STATUS_FILE = '.yokoten-agent.json';
+
+/** The largest status file that is read. A bigger file is left unread. */
+export const STATUS_TEXT_LIMIT = 64 * 1024;
 
 /**
  * A marker in the checkout's git folder when the try count could not be saved (#614).
@@ -302,10 +308,13 @@ export function isSameFile(listed: { dev: number; ino: number }, opened: { dev: 
 }
 
 /**
- * The text of a regular file, or null. A link is not opened. On Windows there is no
- * O_NOFOLLOW, so a link swapped in after lstat is caught by comparing `dev` and `ino`.
+ * The text of a regular file, or null. A link is not opened. The open does not wait
+ * on a pipe. The open file is checked before any byte is read. It must be the same
+ * file the list saw, and it must be under the size cap. Windows has no `O_NOFOLLOW`,
+ * so that check compares `dev` and `ino`. `openFile` opens the path. A test passes
+ * one that opens another file.
  */
-function readStatusText(path: string): string | null {
+export function readStatusText(path: string, openFile: (file: string, flags: number) => number = openSync): string | null {
   let listed: { dev: number; ino: number };
   try {
     const before = lstatSync(path);
@@ -314,14 +323,15 @@ function readStatusText(path: string): string | null {
   } catch {
     return null;
   }
-  const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
+  const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
   let fd: number | undefined;
   try {
-    fd = openSync(path, flags);
-    const text = readFileSync(fd, 'utf8');
+    fd = openFile(path, flags);
     const opened = fstatSync(fd);
-    if (!opened.isFile() || !isSameFile(listed, opened)) return null;
-    return text;
+    if (!opened.isFile() || !isSameFile(listed, opened) || opened.size > STATUS_TEXT_LIMIT) return null;
+    const buffer = Buffer.alloc(opened.size);
+    const count = readSync(fd, buffer, 0, opened.size, 0);
+    return buffer.toString('utf8', 0, count);
   } catch {
     return null;
   } finally {
@@ -385,7 +395,9 @@ export function shortenOutput(text: string): string {
  * The command is started with `spawn`, and a timer in this process stops it. That timer
  * runs while the shell is still alive. On Windows it calls `taskkill /F /T /PID` then.
  * `spawnSync`'s timeout would have killed `cmd.exe` first, and the tree would stay (#614).
- * A program that left the group can keep the pipes open. The timer ends the check then.
+ * When the shell exits, the check ends on that result. A short wait collects the last
+ * output, then the pipes are dropped. A program that left the group cannot hold the
+ * check open. The result is given once.
  */
 export function runDoneWhen(
   command: string,
@@ -399,10 +411,12 @@ export function runDoneWhen(
   return new Promise((resolvePromise) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let grace: ReturnType<typeof setTimeout> | undefined;
     const finish = (value: { ok: boolean; output: string }) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      if (grace) clearTimeout(grace);
       resolvePromise(value);
     };
     let child: ChildProcess;
@@ -425,6 +439,14 @@ export function runDoneWhen(
     let stderr = '';
     let timedOut = false;
     const take = (have: string, chunk: string) => (have.length >= DONE_OUTPUT_CAP ? have : (have + chunk).slice(0, DONE_OUTPUT_CAP));
+    const stoppedOutput = (output: string) => shortenOutput(output ? `${output}\nthe check ran too long and was stopped` : 'the check ran too long and was stopped');
+    const resultFor = (code: number | null, signal: NodeJS.Signals | null) => {
+      const output = `${stderr}${stdout}`.trimEnd();
+      if (timedOut || signal === 'SIGTERM') return { ok: false, output: stoppedOutput(output) };
+      const body = shortenOutput(output);
+      if (code === 0) return { ok: true, output: body };
+      return { ok: false, output: body || `the check exited ${code}` };
+    };
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
     child.stdout?.on('data', (chunk: string) => {
@@ -433,29 +455,36 @@ export function runDoneWhen(
     child.stderr?.on('data', (chunk: string) => {
       stderr = take(stderr, chunk);
     });
-    timer = setTimeout(() => {
-      timedOut = true;
-      if (child.pid) killTree(child.pid);
-      // Drop our end of the pipes. A grandchild that left the group can hold the other end.
+    // Drop our end of the pipes. A grandchild that left the group can hold the other end.
+    const dropPipes = () => {
       child.stdout?.destroy();
       child.stderr?.destroy();
-      const output = `${stderr}${stdout}`.trimEnd();
-      finish({ ok: false, output: shortenOutput(output ? `${output}\nthe check ran too long and was stopped` : 'the check ran too long and was stopped') });
+    };
+    timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        if (child.pid) killTree(child.pid);
+        dropPipes();
+      } catch {
+        // The tree kill can throw. The check still ends below.
+      } finally {
+        finish(resultFor(null, null));
+      }
     }, timeoutMs);
     child.once('error', (error) => finish({ ok: false, output: shortenOutput(error.message.split('\n')[0]) }));
-    child.once('close', (status, signal) => {
-      const output = `${stderr}${stdout}`.trimEnd();
-      if (timedOut || signal === 'SIGTERM') {
-        finish({ ok: false, output: shortenOutput(output ? `${output}\nthe check ran too long and was stopped` : 'the check ran too long and was stopped') });
-        return;
-      }
-      const body = shortenOutput(output);
-      if (status === 0) {
-        finish({ ok: true, output: body });
-        return;
-      }
-      finish({ ok: false, output: body || `the check exited ${status}` });
+    child.once('exit', (code, signal) => {
+      if (settled || timedOut) return;
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      grace = setTimeout(() => {
+        try {
+          dropPipes();
+        } finally {
+          finish(resultFor(code, signal));
+        }
+      }, CLOSE_GRACE_MS);
     });
+    child.once('close', (status, signal) => finish(resultFor(status, signal)));
   });
 }
 

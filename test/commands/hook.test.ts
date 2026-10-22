@@ -629,7 +629,7 @@ test('hook --stop: a linked worktree records failing, then passing, and a link i
 });
 
 // cwd `sub` is a link to another worktree. The status file there must stay as it was.
-test('hook --stop: a link to another worktree does not change that worktree status file (#614)', async () => {
+test('hook --stop: a link to another worktree does not change that worktree status file (#614)', { skip: process.platform === 'win32' && 'symlinks need extra rights on Windows' }, async () => {
   const sandbox = makeSandbox();
   sandbox.write('a.md', 'fine\n');
   sandbox.git('add', '.');
