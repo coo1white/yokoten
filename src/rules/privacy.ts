@@ -59,26 +59,60 @@ export function withHome(env: Env, system: () => string = systemHome): Env {
 /** Thrown when there is no home folder, so nothing outside the repo can be read or written. */
 export const NO_HOME = 'yokoten finds no home folder (HOME is empty or not a full path), so it has no place outside the repo';
 
-/** The private-marks file. With no home folder (and no YOKOTEN_PRIVATE_MARKS), it throws NO_HOME. */
+/**
+ * The private-marks file yokoten writes, and the one the machine allow file sits beside: the
+ * default ~/.config/yokoten/private-marks. With no home folder it is YOKOTEN_PRIVATE_MARKS, and
+ * with neither it throws NO_HOME. The setting never takes the default's place (#656).
+ */
 export function marksFile(env: Env): string {
-  if (env.YOKOTEN_PRIVATE_MARKS) return env.YOKOTEN_PRIVATE_MARKS;
+  if (!homeOf(env) && env.YOKOTEN_PRIVATE_MARKS) return env.YOKOTEN_PRIVATE_MARKS;
   return join(homeIn(env), '.config', 'yokoten', 'private-marks');
 }
 
-/** The owner's marks, lowercased. An empty list when the file is missing. */
+/**
+ * Every private-marks file the check reads (#656): the default one, when there is a home
+ * folder, and the one YOKOTEN_PRIVATE_MARKS names. The setting adds marks; it never removes
+ * the default's. Empty with neither.
+ */
+export function marksFiles(env: Env): string[] {
+  const files = homeOf(env) ? [join(homeIn(env), '.config', 'yokoten', 'private-marks')] : [];
+  const extra = env.YOKOTEN_PRIVATE_MARKS;
+  if (extra && !files.some((file) => resolve(file) === resolve(extra))) files.push(extra);
+  return files;
+}
+
+/**
+ * `env` with only the file yokoten writes to (`marksFile`) left to read (#656). Install and
+ * `yokoten marks add` ask it whether a mark is there already: one only in the setting's file
+ * still goes into the default file.
+ */
+export function writtenMarksOnly(env: Env): Env {
+  return homeOf(env) ? { ...env, YOKOTEN_PRIVATE_MARKS: '' } : env;
+}
+
+/** The text of every private-marks file, one after the other. A missing file is empty; any other error throws, so the check fails closed. */
+function readMarksText(env: Env): string {
+  return marksFiles(env)
+    .map((file) => {
+      try {
+        return readFileSync(file, 'utf8');
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return '';
+        throw err;
+      }
+    })
+    .map((text) => (text === '' || text.endsWith('\n') ? text : `${text}\n`))
+    .join('');
+}
+
+/** The owner's marks from every marks file, lowercased, each once. An empty list when no file is there. */
 export function loadMarks(env: Env): string[] {
-  let text = '';
-  try {
-    text = readFileSync(marksFile(env), 'utf8');
-  } catch (err) {
-    if ((err as Error).message === NO_HOME) return [];
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-  }
-  return text
+  const marks = readMarksText(env)
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith('#'))
     .map((line) => line.toLowerCase());
+  return [...new Set(marks)];
 }
 
 /**
@@ -108,8 +142,12 @@ export interface AllowEntry {
 /** The repo, as the machine allow file names it. `local` when origin is a folder on this machine, not a host. */
 export type RepoKey = { remote: string; local?: boolean };
 
-/** The machine allow file: beside the private-marks file. With no home folder, it throws NO_HOME. */
-export const machineAllowFile = (env: Env): string => join(dirname(marksFile(env)), 'private-marks-allow.json');
+/**
+ * The machine allow file: beside the default private-marks file, never beside the one
+ * YOKOTEN_PRIVATE_MARKS names, so the setting can't bring its own allow (#656). With no home
+ * folder it throws NO_HOME, and the machine allows nothing.
+ */
+export const machineAllowFile = (env: Env): string => join(homeIn(env), '.config', 'yokoten', 'private-marks-allow.json');
 
 /** The port each scheme uses when the URL names none: such a port is left out of the key. */
 const DEFAULT_PORTS: Record<string, string> = { https: '443', http: '80', ssh: '22', 'git+ssh': '22', 'ssh+git': '22', git: '9418' };
@@ -431,14 +469,17 @@ export interface Mark {
  * bare host name is never taken for a login.
  */
 export function loadMarkKinds(env: Env): Mark[] {
-  let text = '';
-  try {
-    text = readFileSync(marksFile(env), 'utf8');
-  } catch (err) {
-    if ((err as Error).message === NO_HOME) return [];
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-  }
-  return markLines(text).flatMap((mark) => (mark ? [mark] : []));
+  const seen = new Set<string>();
+  return marksFiles(env).flatMap((file) => {
+    let text = '';
+    try {
+      text = readFileSync(file, 'utf8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+    // Each file on its own, so a header in one never names the kind of a line in the next.
+    return markLines(text).flatMap((mark) => (mark && !seen.has(mark.value) && seen.add(mark.value) ? [mark] : []));
+  });
 }
 
 /**

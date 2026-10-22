@@ -41,7 +41,7 @@ import { findTempDirs, readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advi
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
 import { compareCoreRules, compareVersions, hookCliPath, isSelf, readCoreRules, summarizeUpdate, withGitReads, workflowNotes } from './init.ts';
 import { assumeEmptyFolder, gitConfig } from '../run/check.ts';
-import { EMPTY_MARKS_FIX, fillMarks, hasMarks, OFFER_MARKS_FIX, offerMarkKinds, launcherFile, PROFILE_LINE, filledLines, trySafely, installedPieces, isOnPath, launcherDir, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
+import { EMPTY_MARKS_FIX, fillMarks, marksState, UNREADABLE_MARKS, UNREADABLE_MARKS_FIX, OFFER_MARKS_FIX, offerMarkKinds, launcherFile, PROFILE_LINE, filledLines, trySafely, installedPieces, isOnPath, launcherDir, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
 import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, uncheckedText, walk } from './road.ts';
 
 /**
@@ -289,6 +289,7 @@ function dshPractice(states: { guard: HookState; patch: string }, profiles: { fo
  */
 export function machineChecks(env: Env): Practice[] {
   const target = paths(env);
+  const marksNow = marksState(env);
   const runtime = runtimeVersion(target.runtime);
   const plugin = hasPlugin(env);
   // A settings file doctor can't use names the problem, never says "missing" (#254); the
@@ -305,7 +306,9 @@ export function machineChecks(env: Env): Practice[] {
     // 'runtime' in the text, as before; the id differs from the road's runtime step.
     practice('runtime', 'machine-runtime', runtime === VERSION || (plugin && runtime === null), runtime ? `the installed runtime is ${runtime}, this yokoten is ${VERSION}` : 'no runtime installed', plugin ? 'remove it with `yokoten uninstall`; the plugin brings its own' : 'run `yokoten install` from this copy of yokoten'),
     // Any mark counts, the ones install found too: only a file with none is missing (#522).
-    practice('private-marks', 'private-marks', hasMarks(env), `${target.marks} is missing or has no marks`, EMPTY_MARKS_FIX),
+    marksNow === 'unreadable'
+      ? practice('private-marks', 'private-marks', false, UNREADABLE_MARKS, UNREADABLE_MARKS_FIX)
+      : practice('private-marks', 'private-marks', marksNow === 'some', `${target.marks} is missing or has no marks`, EMPTY_MARKS_FIX),
   ];
 }
 
@@ -1517,7 +1520,14 @@ function doctorRun(
   lines.push(...formatLessonChecks(lessons));
   notes.push(...lessons.flatMap((lesson) => lesson.findings));
   const checkNotes: Finding[] = [];
-  const problems = check(root, { config, env, notes: checkNotes });
+  let problems: Finding[];
+  try {
+    problems = check(root, { config, env, notes: checkNotes });
+  } catch (err) {
+    // An unreadable marks file stops the privacy check (#656): doctor says so and goes on.
+    if (marksState(env) !== 'unreadable') throw err;
+    problems = [finding('private-marks', UNREADABLE_MARKS, UNREADABLE_MARKS_FIX)];
+  }
   findings.push(...problems);
   const allowed = allowedMarkCount(env, config, root);
   if (allowed.project) lines.push(`  ok      own-marks: ${allowed.project} of your private marks allowed here by privacy.allow`);
