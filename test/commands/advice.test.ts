@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import {
   chmodSync,
   mkdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -252,13 +253,15 @@ test('board age: just now, minutes, hours and days; a missing or odd time is bla
 
 test('board worktrees: the repo lists its own; outside a repo git cannot list them', () => {
   const sandbox = makeSandbox();
-  assert.deepEqual(readBoardWorktrees(sandbox.repo, sandbox.env), [{ path: sandbox.repo, branch: 'main' }]);
+  // git reports the resolved path (/private/var/... on macOS), not the temp path.
+  const root = realpathSync(sandbox.repo);
+  assert.deepEqual(readBoardWorktrees(sandbox.repo, sandbox.env), [{ path: root, branch: 'main' }]);
   assert.equal(sandbox.git('commit', '-q', '--allow-empty', '-m', 'start').status, 0);
   const second = join(sandbox.home, 'second');
   assert.equal(sandbox.git('worktree', 'add', second, '-b', 'feature').status, 0);
   assert.deepEqual(readBoardWorktrees(sandbox.repo, sandbox.env), [
-    { path: sandbox.repo, branch: 'main' },
-    { path: second, branch: 'feature' },
+    { path: root, branch: 'main' },
+    { path: realpathSync(second), branch: 'feature' },
   ]);
   assert.equal(readBoardWorktrees(sandbox.home, sandbox.env), 'git could not list the worktrees: run it again');
 });
@@ -330,7 +333,7 @@ test('board data: agents, pulls and worktrees; gh runs only with a GitHub remote
   assert.equal(without.repo, sandbox.repo);
   assert.deepEqual(without.agents, [{ name: 'w', vendor: '', task: '', worktree: sandbox.repo, doing: '', updated: '' }]);
   assert.equal(without.pulls, 'this repo has no GitHub remote, so the board shows no pull requests');
-  assert.deepEqual(without.worktrees, [{ path: sandbox.repo, branch: 'main' }]);
+  assert.deepEqual(without.worktrees, [{ path: realpathSync(sandbox.repo), branch: 'main' }]);
   assert.equal(sandbox.git('remote', 'add', 'origin', 'git@github.com:octo/demo.git').status, 0);
   const gh: Gh = () => JSON.stringify([{ number: 1, title: 't', headRefName: 'b', url: '', state: 'OPEN', reviewDecision: 'APPROVED', isDraft: false, statusCheckRollup: [], labels: [] }]);
   assert.deepEqual(collectBoard(sandbox.repo, sandbox.env, gh).pulls, [{ number: 1, title: 't', branch: 'b', url: '', stage: 'open', checks: 'none', tier: '', review: 'approved' }]);
@@ -412,7 +415,7 @@ test('board server: the page at /, the same data as JSON at /data, nothing else'
     assert.equal(shown.repo, sandbox.repo);
     assert.deepEqual(shown.agents, [{ name: 'w', vendor: 'muse', task: '', worktree: '~/w', doing: '', updated: '', age: '' }]);
     assert.equal(shown.pulls, 'this repo has no GitHub remote, so the board shows no pull requests');
-    assert.deepEqual(shown.worktrees, [{ path: sandbox.repo, branch: 'main' }]);
+    assert.deepEqual(shown.worktrees, [{ path: realpathSync(sandbox.repo), branch: 'main' }]);
     assert.match(shown.updated, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     assert.equal((await get('/missing')).status, 404);
     assert.doesNotThrow(() => server.emit('error', new Error('EADDRINUSE')), 'a server error is handled, never an uncaught throw');
