@@ -38,7 +38,7 @@ import {
 } from '../repo/helpers.ts';
 import { hasHook } from '../../src/agents/hooks-file.ts';
 import { copyRuntime } from '../../src/setup/files.ts';
-import { countMarkKinds, fillMarks, filledLines, hasMarks, install, isOnPath, launcherText, machineStateFile, machineUserNames, migrateMarks, paths, PROFILE_LINE, setUpLauncher, uninstall, type UserNameProbe, USER_CLI, writeFileAtomic } from '../../src/setup/install.ts';
+import { addOwnMark, countMarkKinds, fillMarks, filledLines, hasMarks, install, isOnPath, launcherText, machineStateFile, machineUserNames, migrateMarks, paths, PROFILE_LINE, setUpLauncher, uninstall, type UserNameProbe, USER_CLI, writeFileAtomic } from '../../src/setup/install.ts';
 import { autoLogins, loadMarkKinds, makeRedactor } from '../../src/rules/privacy.ts';
 
 const BAD_USER_SETTINGS: [content: string, reason: (file: string) => string][] = [
@@ -940,4 +940,18 @@ test('filledLines: the git name has a line of its own, with no value; the other 
   assert.deepEqual(filledLines(['git name', 'git email'], '~/m'), ['added your git name to the private marks (not shown)', 'added to ~/m from this machine: git email (the values are not shown)']);
   assert.deepEqual(filledLines(['git name'], '~/m'), ['added your git name to the private marks (not shown)']);
   assert.deepEqual(filledLines([], '~/m'), [], 'nothing added: the private-marks check gives the state, once (#522)');
+});
+
+test('fillMarks and addOwnMark: a mark only in the setting\'s file still goes into the default file (#656)', () => {
+  const home = makeTempDir('yokoten-');
+  const extra = join(home, 'extra-marks');
+  writeFileSync(extra, `jane${at}personal-mail.dev\nquietharbor\n`);
+  const env = { HOME: home, YOKOTEN_PRIVATE_MARKS: extra };
+  const own = join(home, '.config', 'yokoten', 'private-marks');
+  assert.deepEqual(fillMarks(env, [{ kind: 'git email', value: `jane${at}personal-mail.dev` }]), ['git email']);
+  assert.equal(addOwnMark(env, 'QuietHarbor'), true);
+  const text = readFileSync(own, 'utf8');
+  assert.ok(text.includes(`jane${at}personal-mail.dev\n`) && text.endsWith('QuietHarbor\n'), 'both are in the default file');
+  assert.equal(addOwnMark(env, 'quietharbor'), false, 'once there, it is known');
+  assert.equal(readFileSync(extra, 'utf8'), `jane${at}personal-mail.dev\nquietharbor\n`, 'the setting\'s file is never written');
 });

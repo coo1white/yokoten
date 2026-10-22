@@ -17,8 +17,9 @@ AI made writing code cheap, not managing it. yokoten holds every agent to your r
 
 ## Works with any agent
 
-The guard stops risky actions before they run in these agents
-([setup for each](docs/guide.md#works-with)):
+The guard stops risky actions before they run, with the same rules in eight AI coding
+agents. The [agent table in the guide](docs/guide.md#works-with) is the one list: it says
+how well each agent is covered and how it was tested. Gemini CLI is listed, but not verified end to end.
 
 - Claude Code
 - Codex CLI
@@ -27,6 +28,7 @@ The guard stops risky actions before they run in these agents
 - Muse Code
 - DeepSeek Harness
 - Grok CLI
+- Gemini CLI (listed, not verified end to end)
 
 In any other agent, or with no agent at all, the commit check and CI still stop a bad change.
 

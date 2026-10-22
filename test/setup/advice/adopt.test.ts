@@ -3,6 +3,7 @@
 import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import {
+  mkdirSync,
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
@@ -160,4 +161,14 @@ test('adopt draft: facts with an email, a secret, a private mark or a home path 
     assert.ok(!(d.note ?? '').includes(evidence), 'the finding is never printed');
   }
   assert.deepEqual(promptProblems(prompt(FACTS), { HOME: '/nowhere' }), [], 'clean facts may go');
+});
+
+test('promptProblems: a marks file that can not be read stops the prompt, never an empty list (#656)', () => {
+  const home = makeTempDir('yokoten-');
+  // A folder where the setting names a file: reading it fails (EISDIR).
+  const folder = join(home, 'marks-folder');
+  mkdirSync(folder);
+  const problems = promptProblems(prompt(FACTS), { HOME: home, YOKOTEN_PRIVATE_MARKS: folder });
+  assert.ok(problems.some((line) => /private-marks file can't be read/.test(line)), 'refused');
+  assert.deepEqual(promptProblems(prompt(FACTS), { HOME: home }), [], 'readable: clean facts may go');
 });

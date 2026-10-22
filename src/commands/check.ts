@@ -21,7 +21,7 @@ import { addedLinesByFile, changedLines, checkIssueLabels, checkIssueTitle, chec
 import { parseChange } from '../run/changelog.ts';
 import { check, checkHistory, GitReadError, gitReadFinding, historyTimeZones, readGit, timeZoneNote, unstageHint } from '../run/check.ts';
 import { isCodeFile, nameNotes } from '../run/names.ts';
-import { type AllowEntry, isLink, loadMarks, type Mark, marksFile, machineAllowed, machineAllowFile, makeRedactor, matchingEntries, NO_HOME, readMachineAllow, repoKey } from '../rules/privacy.ts';
+import { type AllowEntry, isLink, loadMarks, type Mark, marksFile, marksFiles, machineAllowed, machineAllowFile, makeRedactor, matchingEntries, NO_HOME, readMachineAllow, repoKey } from '../rules/privacy.ts';
 import { addOwnMark, countMarkKinds, fillMarks, kindsTurnedOff, machineMarks, machineUserNames, paths, removeMarks, setKindOff, SWITCHED_KINDS } from '../setup/install.ts';
 import { bullets, type Invocation, parse, print, printJson, readInput, requireRoot, say, showOnPullRequest, usage } from './shared.ts';
 
@@ -320,7 +320,9 @@ function showCounts(invocation: Invocation): number {
   const total = [...counts.values()].reduce((sum, count) => sum + count, 0);
   const kinds = [...SHOWN_KINDS, ...[...counts.keys()].filter((kind) => !SHOWN_KINDS.includes(kind))];
   const width = Math.max(...kinds.map((kind) => kind.length)) + 1;
-  const lines = [`yokoten marks: ${total} in ${paths(invocation.env).marks} (the values are never shown)`];
+  // The count is of every file the check reads (#656): the setting's file adds to the default.
+  const where = marksFiles(invocation.env).length > 1 ? `${paths(invocation.env).marks} and the file YOKOTEN_PRIVATE_MARKS names` : paths(invocation.env).marks;
+  const lines = [`yokoten marks: ${total} in ${where} (the values are never shown)`];
   for (const kind of kinds) {
     const note = off.has(kind) ? `  off: install does not add it; \`yokoten marks on ${kindWord(kind)}\` adds it again` : '';
     lines.push(`  ${`${kind}:`.padEnd(width + 1)} ${counts.get(kind) ?? 0}${note}`);
