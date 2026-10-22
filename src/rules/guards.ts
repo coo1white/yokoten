@@ -733,6 +733,14 @@ function checkWorkerBox(command: string, commands: string[][], { cwd, env }: { c
   if (commands.some((words) => words.some((word) => /^~([+-]?\d|-($|[\\/]))/.test(word)))) {
     return boxFinding("a worker can't use ~N, ~+N, ~-N or ~- (the directory stack); write the path plainly");
   }
+  const pathWords = commands.flatMap((words) => words.map((word) => REDIRECT.exec(word)?.[1] ?? word));
+  if (pathWords.some((word) => /^~[A-Za-z_]/.test(word.replace(/^[^=]*=/, '')))) {
+    return boxFinding("a worker can't use ~name (another account's home); write the path plainly");
+  }
+  // These lead to a process's own folders, and the guard's process is not the shell's.
+  if (pathWords.some((word) => /(^|[=/])(proc\/[^/]+\/(cwd|root|fd)|proc\/self|dev\/fd)(\/|$)/.test(word))) {
+    return boxFinding("a worker can't use /proc/<id>/cwd, /proc/<id>/root, /proc/self or /dev/fd paths, which lead to another folder; write the path plainly");
+  }
   const home = homeOf(env);
   const config = configFolder(env);
   // The box starts where the shell is: a shell already in or above the config folder has none.
@@ -777,12 +785,10 @@ function checkWorkerBox(command: string, commands: string[][], { cwd, env }: { c
       const name = programName(program);
       const args = withoutShellRedirects(words, at + 1);
       if (FOLDER_MOVERS.has(name)) {
-        if (name === 'popd') {
-          if (args.length) return boxFinding('a worker runs popd with no arguments');
-          folder = null; // back in a folder an earlier cd checked; which one is not read
-          continue;
-        }
-        const paths = args.filter((arg) => !/^-[LP]+$/.test(arg));
+        // pushd and popd keep a stack of folders the guard does not follow; cd does the same job.
+        if (name !== 'cd') return boxFinding(`a worker can't use ${name}, whose folder stack yokoten does not follow; run cd on its own`);
+        if (args.some((arg) => /^-[LP]*P[LP]*$/.test(arg))) return boxFinding("a worker's cd may not use -P, which follows a link before a later ..; run cd without it");
+        const paths = args.filter((arg) => !/^-L+$/.test(arg));
         const target = paths[0];
         if (paths.length !== 1 || target === '-' || target.startsWith('-') || !PLAIN_PATH.test(target) || target === '') {
           return boxFinding(`a worker's ${name} takes one plain path inside its worktree (letters, digits, . _ / - and a leading ~), not ${paths.join(' ') || 'no path'}`);
@@ -818,6 +824,12 @@ function checkWorkerBox(command: string, commands: string[][], { cwd, env }: { c
       }
       if (name === 'file' && args.some((arg) => hasShortOption(arg, 'C') || isLongOption(arg, 'compile'))) return boxFinding("a worker's file may not compile a magic file (-C)");
       if (name === 'alias' && args.some((arg) => arg.includes('='))) return boxFinding("a worker can't define an alias, which can run any program under another name; run the program by its own name");
+      if (folder !== null && forms.length && symlinkTargetReach(name, args, folder, forms)) {
+        return configFinding(`a worker's ${name} may not make a link that leads into yokoten's config folder (~/.config/yokoten), where the worker list and the bot's keys are kept`);
+      }
+      if (name === 'set' && args.some((arg, index) => /^[-+][A-Za-z]*P/.test(arg) || (args[index - 1] === '-o' && arg === 'physical'))) {
+        return boxFinding("a worker can't turn on the shell's physical mode (set -P, set -o physical), where cd follows a link before a later ..");
+      }
       if (name === 'hash' && args.some((arg) => hasShortOption(arg, 'p'))) return boxFinding("a worker can't run hash -p, which points a name at another program; run the program by its own path");
       if (name === 'enable' && args.some((arg) => arg.startsWith('-'))) return boxFinding('a worker can\'t turn a builtin on or off (enable with an option); run the program by its own name');
       if (['chmod', 'chown', 'chgrp'].includes(name) && args.some((arg) => hasShortOption(arg, 'LH') || isLongOption(arg, 'dereference'))) {
@@ -948,8 +960,9 @@ function reachesConfig(cand: string, folder: string | null, forms: string[][]): 
     if (!dirs.ok) return true;
     if (dirs.matches.some((match) => touches(match))) return true;
   }
-  // A name that is not on disk (a file about to be made): resolve the matched folder with it.
-  if (!direct.matches.length && dir && HAS_GLOB.test(dir) && !HAS_GLOB.test(base)) {
+  // A plain name under a globbed folder: resolve each matched folder with it, since a glob
+  // does not descend a symlinked folder and the name may not be on disk yet.
+  if (dir && HAS_GLOB.test(dir) && !HAS_GLOB.test(base)) {
     const dirs = expand(dir);
     if (!dirs.ok) return true;
     return dirs.matches.some((match) => touches(`${match}/${base}`));
@@ -964,14 +977,22 @@ function reachesConfig(cand: string, folder: string | null, forms: string[][]): 
  * guard can't read (`$x`) or an unresolved `~` is left out.
  */
 function pathCandidates(word: string, folder: string | null, home: string | null): string[] {
-  let target = REDIRECT.exec(word)?.[1] ?? word;
-  if (folder !== null) target = target.replace(/^(\$PWD|\$\{PWD\})(?=[\\/]|$)/, folder);
+  const target = REDIRECT.exec(word)?.[1] ?? word;
   const out: string[] = [];
+  // A part the guard can't read may be empty or any name, so the path is tried both ways:
+  // with the part left out, and with the part as a glob.
   const add = (text: string) => {
     if (!text) return;
-    const expanded = withHomeRead(text, home, folder);
-    if (/[$`]/.test(expanded) || expanded.startsWith('~') || (folder === null && !isAbsolute(expanded))) return;
-    out.push(expanded);
+    const pwd = (value: string) => (folder === null ? value : value.replace(/^(\$PWD|\$\{PWD\})(?=[\\/]|$)/, folder));
+    const read = (value: string) => withHomeRead(pwd(value), home, folder);
+    // A `...` split across words (`echo link`/x) leaves a stray backtick: its side is unknown.
+    const halves = (value: string) => (value.split('`').length % 2 === 0 ? value.replace(/^[^`]*`(?=[^`]*$)/, '$U').replace(/`[^`]*$/, '$U') : value);
+    const unknown = (value: string) => value.replace(/\$\{?PWD\}?(?=[\\/]|$)/g, '\0').replace(UNKNOWN_PART, '').replace(/\0/g, '$PWD');
+    for (const form of new Set([read(unknown(halves(text))), read(halves(text)).replace(UNKNOWN_PART, ANY_PART)])) {
+      const expanded = form.replace(/\*\*+/g, '*'); // bash has no globstar unless it is set
+      if (!expanded || /[$`]/.test(expanded) || expanded.startsWith('~') || (folder === null && !isAbsolute(expanded))) continue;
+      out.push(expanded);
+    }
   };
   if (target.startsWith('--')) {
     const eq = target.indexOf('=');
@@ -986,24 +1007,76 @@ function pathCandidates(word: string, folder: string | null, home: string | null
   return out;
 }
 
-// Options that make a writer walk into a folder (recursively).
-const RECURSES = (args: string[]) => args.some((arg) => hasShortOption(arg, 'rR') || isLongOption(arg, 'recursive'));
+/**
+ * For `ln -s` or `cp -s`: whether a link it makes would lead into yokoten's config folder. A
+ * link's target is read from the folder the link sits in, so each target is resolved from the
+ * last word and from its parent (the last word may be a folder or the link's own name), and
+ * from a `-t` folder. A target the guard can't read counts.
+ */
+function symlinkTargetReach(name: string, args: string[], folder: string, forms: string[][]): boolean {
+  const makesLinks = name === 'ln' ? args.some((arg) => hasShortOption(arg, 's') || isLongOption(arg, 'symbolic')) : name === 'cp' && args.some((arg) => hasShortOption(arg, 's') || isLongOption(arg, 'symbolic-link'));
+  if (!makesLinks) return false;
+  const plain = plainArgs(args, ['-t', '-S', '--target-directory', '--suffix']);
+  const into = args.flatMap((arg, at) => (arg === '-t' || arg === '--target-directory' ? [args[at + 1] ?? ''] : arg.startsWith('--target-directory=') ? [arg.slice(arg.indexOf('=') + 1)] : []));
+  // With one plain word, the link is made in the current folder under the target's name.
+  const targets = into.length || plain.length === 1 ? plain : plain.slice(0, -1);
+  const bases = into.length ? into : plain.length === 1 ? ['.'] : plain.length ? [plain[plain.length - 1], dirname(plain[plain.length - 1])] : [];
+  return targets.some((target) => {
+    if (/[$`~*?[\]{}]/.test(target)) return true;
+    return bases.some((base) => touchesConfigReal(kernelReal(target, resolve(folder, base)), forms));
+  });
+}
+
+// Options that make a writer walk into a folder (recursively): -r, -R, -a (archive), and
+// rsync's -K, which writes through a linked folder.
+const RECURSES = (args: string[]) => args.some((arg) => hasShortOption(arg, 'rRaK') || isLongOption(arg, 'recursive') || isLongOption(arg, 'archive') || isLongOption(arg, 'keep-dirlinks'));
+
+/**
+ * Whether the real folder `root` holds a symlink whose real path reaches yokoten's config
+ * folder. It walks at most 6 folders deep and 5,000 entries, skips .git and node_modules, and
+ * never follows a link while walking; past those limits it answers no.
+ */
+function holdsConfigLink(root: string, forms: string[][]): boolean {
+  let left = 5000;
+  const queue: [string, number][] = [[root, 0]];
+  while (queue.length) {
+    const [dir, depth] = queue.shift() as [string, number];
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue; // not a readable folder: nothing to walk.
+    }
+    for (const entry of entries) {
+      if (--left < 0) return false;
+      const path = join(dir, entry.name);
+      if (entry.isSymbolicLink()) {
+        if (touchesConfigReal(kernelReal(path, null), forms)) return true;
+      } else if (entry.isDirectory() && depth < 6 && entry.name !== '.git' && entry.name !== 'node_modules') {
+        queue.push([path, depth + 1]);
+      }
+    }
+  }
+  return false;
+}
 
 /**
  * For a worker: a word of a command that does more than read (see onlyReads) whose path is
  * yokoten's config folder, is in it, or holds it, by real path (#591). So a program that no
  * writer list knows (`gzip`, `sort -o`, `npm --prefix`, `git archive -o`) can't reach the
  * folder through a symlink in the worktree, `~+` or a glob. Each word counts, an option's
- * `=value` and a setting's value too; a word the guard can't read (`$x`) is left to
- * checkWorkerPointers. `folder` is where the words run.
+ * `=value` and a setting's value too. A part the guard can't read (`$x`) may be empty or
+ * any name, so it counts when any name in its place reaches the folder. `folder` is where
+ * the words run.
  */
 function configReach(words: string[], { folder, home, forms }: { folder: string | null; home: string | null; forms: string[][] }): Finding | null {
   if (!forms.length || onlyReads(words)) return null;
-  const names = `this command does more than read and works on %s, which is or holds yokoten's config folder (~/.config/yokoten), where the worker list and the bot's keys are kept`;
+  const names = (shown: string) =>
+    `this command does more than read and works on ${shown}, which ${/[$\`]/.test(shown) ? 'may be or hold' : 'is or holds'} yokoten's config folder (~/.config/yokoten), where the worker list and the bot's keys are kept`;
   for (const word of words) {
     if (word.includes('\n')) continue;
     for (const cand of pathCandidates(word, folder, home)) {
-      if (reachesConfig(cand, folder, forms)) return configFinding(names.replace('%s', cand));
+      if (reachesConfig(cand, folder, forms)) return configFinding(names(REDIRECT.exec(word)?.[1] ?? word));
     }
   }
   // A recursive writer whose folder holds a symlink that leaves the worktree for the config folder.
@@ -1017,16 +1090,8 @@ function configReach(words: string[], { folder, home, forms }: { folder: string 
     if (!RECURSES(args)) continue;
     for (const arg of plainArgs(args)) {
       if (/[$`]/.test(arg) || HAS_GLOB.test(arg) || arg.startsWith('~')) continue;
-      const real = kernelReal(arg, folder);
-      try {
-        if (!lstatSync(real).isDirectory()) continue;
-        for (const entry of readdirSync(real)) {
-          if (touchesConfigReal(kernelReal(join(real, entry), null), forms)) {
-            return configFinding(`this command runs recursively in ${arg}, which holds a link into yokoten's config folder (~/.config/yokoten), where the worker list and the bot's keys are kept`);
-          }
-        }
-      } catch {
-        // not a readable folder: nothing to walk.
+      if (holdsConfigLink(kernelReal(arg, folder), forms)) {
+        return configFinding(`this command runs recursively in ${arg}, which holds a link into yokoten's config folder (~/.config/yokoten), where the worker list and the bot's keys are kept`);
       }
     }
   }
@@ -3729,7 +3794,10 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       }
     } else if (character === '`') {
       const end = read(text, index + 1, '`', depth + 1, out);
-      if (end !== -1) substitutions.push(text.slice(index + 1, end - 1));
+      if (end !== -1) {
+        substitutions.push(text.slice(index + 1, end - 1));
+        word += text.slice(index, end); // kept in the word, as $(...) is, so a check sees the unknown part
+      }
       inWord = true;
       index = end === -1 ? text.length : end; // unclosed: the read inside read the rest
     } else if (character === '(' && next === '(') {

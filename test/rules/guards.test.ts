@@ -2722,7 +2722,6 @@ test('guard: a worker command cannot reach the config folder by any path spellin
     'git commit -m "fix a/b"',
     'cd src && npm test',
     'ls | grep x',
-    'for f in src/*.ts; do sed -i s/a/b/ $f; done',
     'git log --oneline',
     'tar -czf out.tgz src',
     'tar -xzf out.tgz -C build',
@@ -2741,4 +2740,78 @@ test('guard: a worker command cannot reach the config folder by any path spellin
     'node -e "let x=0; x+=1"',
     'git commit -m "a+=b"',
   ]) assert.equal(checkCommand(command, { cwd: tree, env: worker }), null, `should allow: ${command}`);
+});
+
+test('guard: a worker command with a part the guard cannot read, or a shell mode it does not follow, is refused (#591)', () => {
+  const base = makeTempDir('yokoten-box8-');
+  const home = join(base, 'home');
+  mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(join(home, '.config', 'yokoten', 'workers'), '# list\n');
+  const make = (name: string) => {
+    const tree = join(home, 'dev', name);
+    mkdirSync(join(tree, 'src'), { recursive: true });
+    mkdirSync(join(tree, 'a', 'b'), { recursive: true });
+    mkdirSync(join(tree, 'node_modules', 'x'), { recursive: true });
+    mkdirSync(join(base, 'store-' + name));
+    writeFileSync(join(tree, '.git'), 'gitdir: ' + join(base, 'store-' + name) + '\n');
+    writeFileSync(join(tree, 'src', 'x.ts'), 'a\n');
+    return tree;
+  };
+  const tree = make('wt');
+  const clean = make('clean');
+  const worker = { YOKOTEN_ROLE: 'worker', HOME: home };
+  const links = process.platform !== 'win32';
+  if (links) {
+    symlinkSync('../../.config/yokoten', join(tree, 'link'));
+    symlinkSync('../../../../.config/yokoten', join(tree, 'a', 'b', 'deep'));
+  }
+  const refused = (command: string, cwd = tree) => assert.equal(checkCommand(command, { cwd, env: worker })?.id, 'worker-mark', command);
+  // Refused in any worktree: modes and paths the guard does not follow.
+  for (const command of [
+    'pushd src && popd && gzip -f x',
+    'popd',
+    'cd -P src',
+    'set -P; cd src',
+    'set -o physical; cd src',
+    'gzip -f ~root/x',
+    'gzip -f /proc/self/cwd/x',
+    'gzip -f /proc/1/root/x',
+    'cat /dev/null > /dev/fd/3',
+  ]) refused(command, clean);
+  if (links) {
+    for (const command of [
+      // An unknown part may be empty or any name.
+      'gzip -f $9link/workers',
+      'gzip -f l${9}ink/workers',
+      'gzip -f ${u:-link}/workers',
+      'gzip -f $nothing$PWD/link/workers',
+      'gzip -f $(echo link)/workers',
+      'gzip -f `echo link`/workers',
+      'for d in link; do gzip -f $d/workers; done',
+      'sort --output=$PWD/link/workers /dev/null',
+      // A link made in the same command, read from the folder it sits in.
+      'ln -s ../link src/l2 && gzip -f src/l2/workers',
+      'ln -s ../../.config/yokoten',
+      'ln -s -t src ../link',
+      // A recursive writer over a folder holding a link more than one level down, or -a.
+      'gzip -rf a',
+      'rsync -aK src/ a',
+      'cp -a a out',
+    ]) refused(command);
+  }
+  // A worktree without such a link: ordinary commands, variables and recursion still pass.
+  for (const command of [
+    'for f in src/*.ts; do sed -i s/a/b/ $f; done',
+    'rm -rf $OUT_DIR',
+    'cd src && npm test',
+    'cd -L src',
+    'rm -rf node_modules',
+    'cp -r src build',
+    'cp -a src build',
+    'rm -f **/*.log',
+    'ln -s src/x.ts y.ts',
+    'gzip -rf a',
+    'cat /proc/cpuinfo',
+    'npm test 2>/dev/null',
+  ]) assert.equal(checkCommand(command, { cwd: clean, env: worker }), null, `should allow: ${command}`);
 });
