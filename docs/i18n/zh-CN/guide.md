@@ -674,6 +674,7 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 | `worker mark <目录>` | 把 `<目录>` 这个 worktree 标成 worker 的。之后在这里干活的 agent，护栏一律当 worker 看待，哪怕它的运行环境没把 `YOKOTEN_ROLE` 传给钩子（比如 Muse Code）。worker 用常见的办法删这个标记，护栏都会拦下；`.git` 读不出来的时候，也照样当 worker。护栏只看命令文字，真正的锁是服务器，还有别把推送和机器人的凭据交给 worker。`git worktree remove <目录>` 会连同 worktree 一起删掉标记。给的是子目录时，它标的是所在的 worktree，并说出是哪个。主检出和子模块永远不会被标记 |
 | `uninstall` | 撤掉 `install` 装的东西：带 yokoten 管理标记的技能和 agent、`~/.claude/settings.json` 里它加的两个 hook，还有 `~/.local/share/yokoten`。你自己的文件、别的设置和 `~/.config/yokoten`（密钥、私有词表）都留着。再跑一次什么也不会变 |
 | `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。如果命令是 `gh issue` 或 `gh pr` 的 `create`、`edit`，并且带了标题，它会先按 CI 的规则检查标题；标题不合格就直接拒绝，什么都不会发出去。用 `gh api` 改 issue 或 PR 时，标题也照样检查。`gh pr create` 和 `gh pr edit` 如果带了 `--body` 或 `--body-file`，正文也会先过一遍：规则和 `check --pr` 里检查正文的那部分一样，看的是这个 PR 的分支改了哪些文件，以及基础分支上的 CODEOWNERS。正文不合格同样直接拒绝，什么都不发出去。正文最后一行不是 `🤖 Made with <agent> (<model>)`（可写一个或多个逗号分隔的组合）的同样直接拒绝：每个 PR 都要写明做出它的每个 AI 和模型。`gh pr create` 没给类型标签或 tier 标签时，bot 会自动补上：类型看标题（`fix` 补 `bug`），tier 看正文第一行的 `tier:`。你自己给的标签保留不动。你给的 tier 标签和正文对不上，就直接拒绝，提示和 `check --pr` 一样。仓库里没有的标签，bot 会说一声然后不加；它从不新建标签。`gh pr create` 没带 `--milestone` 时，bot 会用第一个关联 issue（`Closes #N`、`Part of #N`）的里程碑；这些 issue 都没有里程碑，就直接拒绝，什么都不发出去，请自己加上 `--milestone`。gh 读不到那个 issue 时，PR 照发，不带里程碑，只留一条提示。它只运行 `gh` 和 `git`，所以 `env gh …`、`sh -c …` 这类写法会被拒绝；gh 的别名（alias）它不认，别名里的标题不会被检查。设置方法见 [server.md](../../server.md#3-the-bot-a-github-app) |
+| `board [--text]` | 只在这台电脑上开一个实时页面：按 issue 分组的 agent、选中的 agent、每个 PR 的状态。启动后打印链接，按 Ctrl-C 停掉。页面每 15 秒刷新一次。加 `--text` 就在终端里用纯文本打印 agent、PR 和 worktree，见「团队看板」 |
 
 每个命令后面加 `--help` 或 `-h`，就会打出它自己的说明：做什么、有哪些选项、一个例子。
 `yokoten help <命令>` 打出的也一样，`yokoten --help` 列出所有命令，`yokoten version`（或者
@@ -1246,6 +1247,35 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 `tier:` 一样。少了哪个、哪个不对，各报一条，每条都说怎么改。
 
 服务器怎么设置，一步一步写在 [`docs/server.md`](../../server.md)。
+
+### 团队看板
+
+`yokoten board` 一眼看到整个团队。它只在这台电脑上开一个页面，
+启动后打印链接，用浏览器打开。链接里带有一个随机口令，只有能看到这台终端输出的人才能打开页面。
+
+页面分三栏。左栏按 issue 列出 agent，点一个，中间就显示它。
+中间显示选中的 agent 在做什么任务、现在在干什么。右栏列出 PR 和它们的检查。
+页面每 15 秒刷新一次，按 Ctrl-C 停掉。
+
+`yokoten board --text` 在终端里用纯文本打印 agent、PR 和 worktree。
+
+agent 在自己 worktree 的根目录写一个 `.yokoten-agent.json` 就加入了，
+删掉这个文件就离开。不管跑的是哪家的 agent，都可以写。格式是公开的，
+别的工具也可以读。一个 worktree 一个文件。
+
+| 字段 | 意思 |
+|------|------|
+| `name` | agent 的名字。没写就用 worktree 的文件夹名 |
+| `vendor` | 跑的是哪家的 agent，比如 `claude-code` |
+| `task` | 在做什么任务，比如 `issue 601`。页面按这里写的 issue 给 agent 分组 |
+| `role` | agent 的分工：`engineer`（开发）、`reviewer`（评审）或 `verifier`（验证），这样一个 issue 的整条线都能看到 |
+| `worktree` | 在哪个 worktree 干活 |
+| `doing` | 现在在干什么，一句话 |
+| `updated` | 上次写这个文件的时间，比如 `2026-10-22T10:00:00Z`。看板会换算成多久以前 |
+
+每个字段都是文本，每个字段都可以不写。不是 JSON 对象的文件会被跳过。`role` 只认 `engineer`、`reviewer`、`verifier` 这三个词，别的值会被忽略。
+
+页面从 `/data` 读 JSON 数据。这就是看板的接口，页面只是其中一种展示。
 
 ## 隐私
 
