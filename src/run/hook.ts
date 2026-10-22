@@ -73,11 +73,12 @@ export function judge(
     const reason = checkCommand(action.command, { env, config, cwd: action.cwd ?? root ?? cwd, titles, repos: ruledRepos });
     if (reason) return reason;
   }
-  // A worker's edit inside a git folder may change the worker mark (#555), in any repo.
+  // A worker's edit inside a git folder may change the worker mark (#555), in any repo;
+  // one inside yokoten's config folder may change the worker list (#591).
   if (env.YOKOTEN_ROLE === 'worker') {
     const folder = resolve(action.cwd ?? root ?? cwd);
     for (const p of action.paths) {
-      const reason = checkWorkerMarkEdit(resolve(folder, p), folder);
+      const reason = checkWorkerMarkEdit(resolve(folder, p), folder, env);
       if (reason) return reason;
     }
   }

@@ -2181,3 +2181,102 @@ test('worker list: the guard refuses `yokoten worker unmark` for a worker, not t
   assert.equal(checkCommand('yokoten worker mark /tmp/wt', { env: worker, cwd: process.cwd() }), null, 'mark is not unmark');
   assert.equal(checkCommand('yokoten bot -- echo hi', { env: worker, cwd: process.cwd() })?.id, 'worker-push', 'bot keeps its own refusal');
 });
+
+// #591: yokoten's config folder holds the worker list and the bot's keys. A worker that
+// clears the list loses its role, as with the mark (#555), so a worker's plain ways to
+// change that folder are refused, by real path too; a read passes, and the lead may.
+test('guard: a worker does not change yokoten config folder; the lead may (#591)', () => {
+  const base = makeTempDir('yokoten-config-');
+  const home = join(base, 'home');
+  mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(join(home, '.config', 'yokoten', 'workers'), '# list\n');
+  const worker = { YOKOTEN_ROLE: 'worker', HOME: home };
+  const lead = { HOME: home };
+  const refused = [
+    'rm ~/.config/yokoten/workers',
+    'rm -rf ~/.config',
+    'rm -rf ~',
+    'mv ~/.config/yokoten ~/.config/y2',
+    'mv ~/.config ~/old',
+    'cp /dev/null ~/.config/yokoten/workers',
+    'chmod 000 ~/.config/yokoten',
+    'ln -sf /dev/null ~/.config/yokoten/workers',
+    'touch ~/.config/yokoten/workers',
+    'echo > ~/.config/yokoten/workers',
+    'echo x >> $HOME/.config/yokoten/workers',
+    'truncate -s 0 ${HOME}/.config/yokoten/workers',
+    `rm ${home}/.config/yokoten/workers`,
+    "sed -i '/wt/d' ~/.config/yokoten/workers",
+    'rm ~/.config/yoko*/w*',
+    'rm -rf ~/.c*/y*',
+    'rm ~/.config/{yokoten,x}/workers',
+    'rm -rf ~/{.config/yokoten,x}',
+    'rm "$(echo ~/.config/yokoten/workers)"',
+    'rm $DIR/.config/yokoten/workers',
+    'rm ~someone/.config/yokoten/workers',
+    `python3 -c "open('${home}/.config/yokoten/workers', 'w')"`,
+    "bash -c 'rm ~/.config/yoko*/w*'",
+    'echo ~/.config/yokoten/workers | xargs rm',
+    'find ~/.config/yokoten -name workers -delete',
+    'find ~/.config/yokoten -exec rm {} +',
+  ];
+  for (const command of refused) {
+    const found = checkCommand(command, { cwd: process.cwd(), env: worker });
+    assert.equal(found?.id, 'worker-mark', command);
+    assert.match(found?.fix ?? '', /tell the lead/, command);
+    // The lead may: the same command is not refused for this rule.
+    assert.notEqual(checkCommand(command, { cwd: process.cwd(), env: lead })?.id, 'worker-mark', `the lead may: ${command}`);
+  }
+  // With no home folder the guard can't place ~, so a command that names the folder is refused.
+  assert.equal(checkCommand('rm ~/.config/yokoten/workers', { cwd: process.cwd(), env: { YOKOTEN_ROLE: 'worker' } })?.id, 'worker-mark');
+  // Reads, and writes elsewhere in home: a worker runs them.
+  for (const command of [
+    'cat ~/.config/yokoten/workers',
+    'ls ~/.config/yokoten',
+    'ls -la $HOME/.config/yokoten',
+    'grep x ~/.config/yokoten/workers',
+    'find ~/.config/yokoten -name workers',
+    'cat ~/.config/yokoten/workers | grep wt',
+    'mkdir -p ~/.config/other',
+    'echo x > ~/.config/other/file',
+    'rm -rf ~/.cache/yokoten',
+    'rm -rf dist/*',
+    'echo x > notes.txt',
+    'rm "$TMPDIR/out.txt"',
+    "bash -c 'npm test'",
+  ]) allowed(command, worker);
+  if (process.platform === 'win32') return;
+  // A symlink to the folder counts: compared by real path.
+  symlinkSync(join(home, '.config', 'yokoten'), join(base, 'link'));
+  symlinkSync(join(home, '.config'), join(base, 'dot-config'));
+  for (const command of [`rm ${join(base, 'link', 'workers')}`, `echo > ${join(base, 'link', 'workers')}`, `rm -rf ${join(base, 'dot-config')}/yoko*`, `rm -rf ${join(base, 'link')}/`]) {
+    assert.equal(checkCommand(command, { cwd: process.cwd(), env: worker })?.id, 'worker-mark', command);
+  }
+  allowed(`cat ${join(base, 'link', 'workers')}`, worker);
+  allowed(`rm ${join(base, 'other-file')}`, worker);
+});
+
+// #591: an edit inside yokoten's config folder may clear the worker list, through a symlink too.
+test('checkWorkerMarkEdit: yokoten config folder by path or real path (#591)', () => {
+  const base = makeTempDir('yokoten-config-edit-');
+  const home = join(base, 'home');
+  mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
+  const env = { HOME: home };
+  const tree = join(base, 'wt');
+  mkdirSync(tree);
+  assert.equal(checkWorkerMarkEdit(join(home, '.config', 'yokoten', 'workers'), tree, env)?.id, 'worker-mark');
+  assert.equal(checkWorkerMarkEdit(join(home, '.config', 'yokoten', 'keys.env'), tree, env)?.id, 'worker-mark');
+  assert.match(checkWorkerMarkEdit(join(home, '.config', 'yokoten', 'workers'), tree, env)?.what ?? '', /config folder/);
+  // Negative controls: other files in home, the worktree, and no home folder known.
+  assert.equal(checkWorkerMarkEdit(join(home, '.config', 'other', 'workers'), tree, env), null);
+  assert.equal(checkWorkerMarkEdit(join(home, '.config', 'yokoten-old'), tree, env), null);
+  assert.equal(checkWorkerMarkEdit(join(tree, 'a.ts'), tree, env), null);
+  assert.equal(checkWorkerMarkEdit(join(home, '.config', 'yokoten', 'workers'), tree), null);
+  if (process.platform === 'win32') return;
+  symlinkSync(join(home, '.config', 'yokoten'), join(tree, 'link'));
+  assert.equal(checkWorkerMarkEdit(join(tree, 'link', 'workers'), tree, env)?.id, 'worker-mark', 'a symlink to the config folder');
+  // Through the hook: a worker's Write to the list is refused; the lead's passes.
+  const paths = [join(home, '.config', 'yokoten', 'workers')];
+  assert.equal(judge({ paths, cwd: tree, worker: true }, { root: null, config: DEFAULTS, env, cwd: tree })?.id, 'worker-mark');
+  assert.equal(judge({ paths, cwd: tree, worker: false }, { root: null, config: DEFAULTS, env, cwd: tree }), null);
+});

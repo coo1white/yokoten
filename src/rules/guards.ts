@@ -18,7 +18,7 @@ import type { Config, Env } from './config.ts';
 import { loadConfig, matcher } from './config.ts';
 import { type Finding, finding } from './message.ts';
 import { checkCommandTitle } from './pr.ts';
-import { type CommandFiles, checkPost, type GhCommand, ghIndex, homeIn, isBotProgram, PIPE_READERS, type Risk, withoutReadPipe } from './privacy.ts';
+import { type CommandFiles, checkPost, type GhCommand, ghIndex, homeIn, homeOf, isBotProgram, PIPE_READERS, type Risk, withoutReadPipe } from './privacy.ts';
 
 /** A file edit, by path relative to the repo root. */
 export function checkEdit(path: string, { config, env }: { config: Config; env: Env }): Finding | null {
@@ -64,6 +64,97 @@ export const WORKER_MARK = 'yokoten-worker';
 /** The file that lists marked worktree paths, under yokoten's config folder. */
 export function workersFile(env: Env): string {
   return join(homeIn(env), '.config', 'yokoten', 'workers');
+}
+
+// ---- yokoten's config folder (#591) ----
+//
+// The worker list and the bot's keys are in `~/.config/yokoten`. A worker that clears the
+// list loses its role, as with the mark (#555), so a worker's plain ways to change that
+// folder are refused too: see checkWorkerWrites and checkWorkerMarkEdit. Reads pass.
+
+/** yokoten's config folder, which holds the worker list and the bot's keys; null with no home folder. */
+export function configFolder(env: Env): string | null {
+  const home = homeOf(env);
+  return home ? join(home, '.config', 'yokoten') : null;
+}
+
+const CONFIG_FIX = "leave yokoten's config folder (~/.config/yokoten) as it is: only the lead changes the worker list and the bot's keys; if your task needs a change there, stop and tell the lead";
+const configFinding = (what: string) => finding('worker-mark', what, CONFIG_FIX);
+
+// Text that names yokoten's config folder or the worker list.
+const NAMES_CONFIG = /\.config[\\/]+yokoten|yokoten[\\/]+workers/i;
+
+/**
+ * Whether a command names yokoten's config folder or the worker list, in text or by a glob
+ * that can match `.config/yokoten` or `yokoten/workers`. A pair of bare globs (`*` `/` `*`)
+ * names nothing.
+ */
+function namesConfigFolder(command: string): boolean {
+  if (NAMES_CONFIG.test(command)) return true;
+  for (const word of command.split(/[\s'"`;|&<>()=:]+/)) {
+    const parts = word.split(/[\\/]+/);
+    for (let at = 0; at + 1 < parts.length; at++) {
+      const pair = [parts[at], parts[at + 1]];
+      if (!pair.some((part) => /[a-z]/i.test(part))) continue;
+      if (globMatches(pair[0], '.config') && globMatches(pair[1], 'yokoten')) return true;
+      if (globMatches(pair[0], 'yokoten') && globMatches(pair[1], 'workers')) return true;
+    }
+  }
+  return false;
+}
+
+/** `path` with a leading `~`, `$HOME` or `${HOME}` read as `home`; as it is with no home. */
+function withHomeRead(path: string, home: string | null): string {
+  if (home === null) return path;
+  const lead = /^(~|\$HOME|\$\{HOME\})(?=[\\/]|$)/.exec(path);
+  return lead ? home + path.slice(lead[0].length) : path;
+}
+
+/** The folders a path may not be, be in, or hold: the config folder as written and by real path. */
+function configForms(config: string): string[][] {
+  return [...new Set([config, realPath(config)])].map((form) => form.split(/[\\/]+/).filter(Boolean));
+}
+
+/**
+ * Whether the absolute `path` is yokoten's config folder, inside it, or a folder that holds
+ * it (`~/.config`, `~`). It is compared by real path, so a symlink counts. A glob part
+ * (`yoko*`, `{yokoten,x}`) counts when it can match the folder's part in the same place.
+ */
+function touchesConfig(path: string, forms: string[][]): boolean {
+  for (const form of braceForms(path, 0)) {
+    const parts = form.split(/[\\/]+/).filter(Boolean);
+    const firstGlob = parts.findIndex((part) => /[*?[{]/.test(part));
+    const candidates =
+      firstGlob === -1
+        ? [parts, realPath(form).split(/[\\/]+/).filter(Boolean)]
+        : [parts, [...realPath(`/${parts.slice(0, firstGlob).join('/')}`).split(/[\\/]+/).filter(Boolean), ...parts.slice(firstGlob)]];
+    for (const candidate of candidates) {
+      for (const config of forms) {
+        const shared = Math.min(candidate.length, config.length);
+        let isMatch = true;
+        for (let at = 0; at < shared && isMatch; at++) isMatch = globMatches(candidate[at], config[at].toLowerCase());
+        if (isMatch) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * For a worker: why changing `target` may change yokoten's config folder (#591), or null.
+ * `~`, `$HOME` and `${HOME}` are read as home. A target the guard can't read (another
+ * variable, `$(...)`, `~user`, a relative path from an unknown folder) counts when the
+ * command names the config folder or the worker list.
+ */
+function configTargetRefusal(target: string, { folder, command, home, forms }: { folder: string | null; command: string; home: string | null; forms: string[][] }): Finding | null {
+  const expanded = withHomeRead(target, home);
+  const isUnread = /[$`]/.test(expanded) || expanded.startsWith('~') || (folder === null && !isAbsolute(expanded));
+  if (isUnread) {
+    return namesConfigFolder(command) ? configFinding(`this command changes ${target}, a path yokoten can't read, and names yokoten's config folder, where the worker list is kept`) : null;
+  }
+  if (!forms.length) return null;
+  const full = resolve(folder ?? '/', expanded);
+  return touchesConfig(full, forms) ? configFinding(`this command changes ${target}, which is or holds yokoten's config folder (~/.config/yokoten), where the worker list and the bot's keys are kept`) : null;
 }
 
 /** What the workers file starts with: what it is, and what clears an entry. */
@@ -353,9 +444,10 @@ const FIND_WRITES = /^-(delete|fprint0?|fprintf|fls)$/;
  * (`grep --exclude-dir=.git`, `find . -path ./.git -prune`, `grep GIT_DIR`). A target counts
  * when it may be a `.git` folder or the mark (see mayBeGitPath), when its real path is in the
  * worker's own git folders, and when the guard can't read it (`$(...)`, `$x`, `xargs rm`,
- * `find -exec rm`, inline code) in a command that names a git folder.
+ * `find -exec rm`, inline code) in a command that names a git folder. The same holds for
+ * yokoten's config folder, where the worker list is kept (#591): see configTargetRefusal.
  */
-function checkWorkerWrites(words: string[], { folder, command }: { folder: string | null; command: string }): Finding | null {
+function checkWorkerWrites(words: string[], { folder, command, env = {} }: { folder: string | null; command: string; env?: Env }): Finding | null {
   const known = new Map<string, string | null>();
   const targets = writeTargets(words, folder, (dir) => gitRootAbove(dir, known)).map((target) => target.path);
   const names: string[] = [];
@@ -373,8 +465,15 @@ function checkWorkerWrites(words: string[], { folder, command }: { folder: strin
   const fed = words.some((word) => programName(word) === 'xargs') || names.includes('find');
   const blind = names.some((name) => RUNS_CODE.test(name)) || (fed && names.some(writes)) || (names.includes('find') && words.some((word) => FIND_WRITES.test(word)));
   if (blind && namesGitDir(command)) return markFinding("this command names a git folder, and yokoten can't read which files it changes there");
+  if (blind && namesConfigFolder(command)) return configFinding("this command names yokoten's config folder, where the worker list is kept, and yokoten can't read which files it changes there");
+  const home = homeOf(env);
+  const config = configFolder(env);
+  let forms: string[][] | undefined;
   let dirs: string[] | undefined;
   for (const target of targets) {
+    forms ??= config === null ? [] : configForms(config);
+    const refusal = configTargetRefusal(target, { folder, command, home, forms });
+    if (refusal) return refusal;
     if (mayBeGitPath(target)) return markFinding(`this command changes ${target}, which may be a .git folder or the worker mark`);
     if (/[$`]/.test(target)) {
       if (namesGitDir(command)) return markFinding(`this command changes ${target}, a path yokoten can't read, and names a git folder`);
@@ -392,11 +491,20 @@ function checkWorkerWrites(words: string[], { folder, command }: { folder: strin
 /**
  * For a worker: an edit inside a git folder, or of the mark (#555), or null. `path` is
  * absolute. It is compared by real path too, so a symlink to a git folder counts; `folder` is
- * where the worker works, whose git folders count wherever they are.
+ * where the worker works, whose git folders count wherever they are. `env` finds yokoten's
+ * config folder, where the worker list is kept (#591): an edit inside it counts too.
  */
-export function checkWorkerMarkEdit(path: string, folder?: string): Finding | null {
+export function checkWorkerMarkEdit(path: string, folder?: string, env: Env = {}): Finding | null {
   const what = 'this edit is inside a .git folder, where the worker mark is kept';
   const full = realPath(path);
+  const config = configFolder(env);
+  if (config !== null) {
+    for (const base of new Set([resolve(config), realPath(config)])) {
+      if (full === base || full.startsWith(base + sep) || resolve(path) === base || resolve(path).startsWith(base + sep)) {
+        return configFinding("this edit is inside yokoten's config folder (~/.config/yokoten), where the worker list and the bot's keys are kept");
+      }
+    }
+  }
   for (const form of [path, full]) {
     const parts = form.split(/[/\\]+/);
     if (parts.some((part) => part.toLowerCase() === '.git') || parts.at(-1)?.toLowerCase() === WORKER_MARK) return markFinding(what);
@@ -580,7 +688,7 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
     const reason =
       checkGit(words, { env, config, cwd, rules }) ??
       // A worker hears its own rule first: what it may not send, its own unmark, and the git folder (#555, #566).
-      (env.YOKOTEN_ROLE === 'worker' ? (checkWorkerSends(words) ?? checkWorkerUnmark(words) ?? checkWorkerWrites(words, { folder: postCwd, command })) : null) ??
+      (env.YOKOTEN_ROLE === 'worker' ? (checkWorkerSends(words) ?? checkWorkerUnmark(words) ?? checkWorkerWrites(words, { folder: postCwd, command, env })) : null) ??
       checkHooksEnvironment(words) ??
       checkPublish(words, env) ??
       checkBlocked(words, config?.commands.block ?? {}) ??
