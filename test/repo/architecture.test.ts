@@ -599,15 +599,19 @@ test('workflows: the required checks run on merge_group, with the same jobs as a
     }
     assert.ok(!readTriggers(readFileSync(join(ROOT, dir, 'issue.yml'), 'utf8')).includes('merge_group'), `${dir}/issue.yml is not a check on a merge`);
     // The `pr` job skips on a merge group run, because there is no pull request to
-    // check, and on a draft, which the bot marks ready once its labels are on (#645). Its
-    // step still checks a pull request that is ready.
+    // check. It never skips a pull request, a draft included: a skip counts as a pass, and
+    // a skipped run that GitHub ends last would hide a failure (#645).
     const prJob = jobBlock(pr, 'pr');
     assert.equal(evaluate(jobCondition(prJob), {}, { event_name: 'merge_group' }), false);
-    assert.equal(evaluate(jobCondition(prJob), {}, { event_name: 'pull_request', event: { pull_request: { draft: true } } }), false);
+    assert.equal(evaluate(jobCondition(prJob), {}, { event_name: 'pull_request', event: { pull_request: { draft: true } } }), true);
     assert.equal(evaluate(jobCondition(prJob), {}, { event_name: 'pull_request', event: { pull_request: { draft: false } } }), true);
     // No run is cancelled: a cancelled run shows as a failure on the pull request page (#645).
     assert.doesNotMatch(pr, /cancel-in-progress/, `${dir}/pr.yml cancels runs`);
     assert.match(prJob, /check --pr/);
+    // The step reads the pull request as it is now, so runs may start in any order (#645):
+    // it gets the job's token, and the job may read pull requests.
+    assert.match(prJob, /check --pr\n {8}env:\n {10}GITHUB_TOKEN: \$\{\{ github\.token \}\}\n/, `${dir}/pr.yml: check --pr gets no token`);
+    assert.match(pr, /^permissions:\n(?: {2}.*\n)*? {2}pull-requests: read\n/m, `${dir}/pr.yml can't read pull requests`);
   }
   assert.ok(!readTriggers(kitYokoten.replace(/^  merge_group:\n/m, '')).includes('merge_group'), 'a missing trigger is caught');
   // Every job in the kit yokoten.yml runs on a merge group run, as on a pull request.

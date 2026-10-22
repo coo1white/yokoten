@@ -65,6 +65,7 @@ import { lateFinding } from '../../src/run/hook.ts';
 import { nameNotes } from '../../src/run/names.ts';
 import { translationNotes } from '../../src/run/translations.ts';
 import {
+  readCurrentPullRequest,
   readIssue,
   readNumberedPullRequest,
   readPullRequest,
@@ -119,7 +120,7 @@ const guideAnchors = (markdown: string): Set<string> => {
 
 // #42: every message has the same shape. Each check and guard gets a known-bad input,
 // and each message must say what, why and the fix, in text and in JSON.
-test('messages: every check and guard says what, why and the fix, in text and JSON (#42)', () => {
+test('messages: every check and guard says what, why and the fix, in text and JSON (#42)', async () => {
   const found: Finding[] = [];
   const add = (f: Finding | null | undefined) => {
     assert.ok(f, 'a known-bad input must be caught');
@@ -173,6 +174,8 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   const event = join(translated.root, 'event.json');
   writeFileSync(event, JSON.stringify({ pull_request: { base: { sha: 'f'.repeat(40) }, head: { sha: translated.git('rev-parse', 'HEAD') } } }));
   add(unreadable(readPullRequest(translated.root, { GITHUB_EVENT_PATH: event })));
+  // The pull request as it is now, with no token to read it (#645): no network.
+  add(unreadable(await readCurrentPullRequest({ GITHUB_EVENT_PATH: event })));
   // The road and the machine, from an empty folder and an empty home.
   const dir = makeTempDir();
   for (const step of ROAD) add(stepFinding(step, dir, { HOME: dir }));

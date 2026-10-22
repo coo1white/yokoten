@@ -1,3 +1,3 @@
 Fixed
 
-A new pull request no longer shows a failed or cancelled `pr` check while its labels and milestone are being added. `yokoten bot -- gh pr create` opens it as a draft and marks it ready once they are on; the `pr` check skips a draft and no longer cancels an earlier run, so it runs once on the whole pull request (#645).
+A pull request's `pr` check now shows the true result for the pull request as it is now, whatever order its runs start in. With the job's token, `check --pr` reads the title, body, labels and milestone from GitHub when it runs, not from the event. So a late run no longer fails for labels the bot had not added yet, and a rerun sees the labels added since. A draft passes with a note and is checked when it is marked ready. No run is skipped or cancelled, so none can hide a failure. If the read fails, the check fails. `yokoten bot -- gh pr create` opens a new pull request as a draft and marks it ready once its labels and milestone are on (#645).

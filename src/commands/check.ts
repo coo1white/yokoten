@@ -13,7 +13,7 @@ import { randomUUID } from 'node:crypto';
 import { chmodSync, closeSync, linkSync, mkdirSync, openSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import { ghIn, readCodeOwners, readIssue, readNumberedPullRequest, readPullRequest, readRepoLabelNames } from '../host/github.ts';
+import { ghIn, readCodeOwners, readCurrentPullRequest, readIssue, readNumberedPullRequest, readPullRequest, readRepoLabelNames, readsCurrentPullRequest } from '../host/github.ts';
 import { loadConfig } from '../rules/config.ts';
 import { type Finding, formatFinding } from '../rules/message.ts';
 import { addedLinesByFile, changedLines, checkIssueLabels, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, largeDiff, longSentenceNote, longSentences, splitForDependabot } from '../rules/pr.ts';
@@ -27,7 +27,7 @@ import { bullets, type Invocation, parse, print, printJson, readInput, requireRo
 /** How long `check --pr <number>` waits for gh. */
 const GH_TIMEOUT_MS = 15000;
 
-export function runCheck(invocation: Invocation): number {
+export async function runCheck(invocation: Invocation): Promise<number> {
   const options = parse('check', invocation.args);
   if (typeof options === 'string') return usage(invocation, options);
   const modes = ['--staged', '--history', '--pr', '--issue'].filter((m) => options.flags.has(m));
@@ -44,7 +44,7 @@ export function runCheck(invocation: Invocation): number {
   const notes: Finding[] = [];
   let problems: Finding[];
   try {
-    problems = runMode(invocation, mode, root, config, notes, { name, json, number });
+    problems = await runMode(invocation, mode, root, config, notes, { name, json, number });
   } catch (err) {
     // A git read the check depends on gave no answer (#403): one finding, and the check fails.
     if (!(err instanceof GitReadError)) throw err;
@@ -73,7 +73,7 @@ function unstageLines(root: string, env: Invocation['env'], mode: string, proble
 const SKIPPED: Finding[] = [];
 
 /** The problems of one mode of `check`; its notes go into `notes`, and some are printed as they are found. */
-function runMode(invocation: Invocation, mode: string, root: string, config: ReturnType<typeof loadConfig>, notes: Finding[], { name, json, number }: { name: string; json: boolean; number?: string }): Finding[] {
+async function runMode(invocation: Invocation, mode: string, root: string, config: ReturnType<typeof loadConfig>, notes: Finding[], { name, json, number }: { name: string; json: boolean; number?: string }): Promise<Finding[]> {
   const { env } = invocation;
   let problems: Finding[];
   if (mode === 'issue') {
@@ -90,9 +90,18 @@ function runMode(invocation: Invocation, mode: string, root: string, config: Ret
     problems =
       'problem' in issue ? [issue.problem] : [...checkIssueTitle(issue.title, config, issue.labels), ...checkIssueLabels(issue.labels, readRepoLabelNames(ghIn(root, env, GH_TIMEOUT_MS)))];
   } else if (mode === 'pr') {
-    const pr = number === undefined ? readPullRequest(root, env) : readNumberedPullRequest(root, ghIn(root, env, GH_TIMEOUT_MS), number, env);
-    if (!pr) {
-      const skipped = 'no pull request in this run (it reads the CI event); nothing to check';
+    let pr = number === undefined ? readPullRequest(root, env) : readNumberedPullRequest(root, ghIn(root, env, GH_TIMEOUT_MS), number, env);
+    // In CI, with the job's token, the title, body, labels and milestone are the ones the
+    // pull request has now, never the event file's (#645). The commits stay the event's.
+    let isDraft = false;
+    if (pr && !('problem' in pr) && number === undefined && readsCurrentPullRequest(env)) {
+      const now = await readCurrentPullRequest(env);
+      if ('problem' in now) pr = now;
+      else if (now.isDraft) isDraft = true;
+      else pr = { ...pr, title: now.title, body: now.body, labels: now.labels, milestone: now.milestone, author: now.author };
+    }
+    if (!pr || isDraft) {
+      const skipped = isDraft ? 'draft: checked when it is marked ready' : 'no pull request in this run (it reads the CI event); nothing to check';
       if (json) printJson(invocation, { check: mode, ok: true, skipped, findings: [], notes: [] });
       else print(invocation, [`${name}: ${skipped}`]);
       return SKIPPED;

@@ -11,12 +11,15 @@ on:
   merge_group:
 permissions:
   contents: read
+  # check --pr reads the pull request as it is now (#645).
+  pull-requests: read
 jobs:
   pr:
-    # A draft skips: the bot opens a pull request as a draft, adds its labels and milestone,
-    # then marks it ready, so the check runs once on the whole pull request. No run is
-    # cancelled, because a cancelled run shows as a failure on the pull request page (#645).
-    if: ${{ github.event_name == 'pull_request' && !github.event.pull_request.draft }}
+    # Every run checks the pull request as it is now, read from the API, so the runs may
+    # start in any order. None is skipped or cancelled: a skip counts as a pass, and a
+    # cancelled run shows as a failure on the pull request page (#645). A draft passes
+    # with a note; it is checked when it is marked ready.
+    if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -28,5 +31,8 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '^22.23.4'
-      # The title and body are read from the event file, never pasted into this shell line.
+      # The event file names the pull request; its title, body, labels and milestone are read
+      # with this token, never pasted into this shell line. yokoten never prints the token.
       - run: node {{cli}} check --pr
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

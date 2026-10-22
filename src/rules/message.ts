@@ -267,6 +267,12 @@ export const RULES = {
     check: 'in a CI run, `check --pr` and `check --issue` fail when the event file is missing or is not a JSON object; with no event file named, they skip',
     docs: guide('use-it-as-a-github-action'),
   },
+  'pr-current': {
+    rule: 'in GitHub Actions, `check --pr` reads the pull request as it is now, from the API',
+    why: 'runs can start in any order, and the event file keeps the labels and milestone of its own moment, so only the pull request as it is now gives the true result',
+    check: `${PR_CHECK}; in GitHub Actions it reads the title, body, labels, milestone and draft state with the job's GITHUB_TOKEN, and fails when it can't`,
+    docs: guide('use-it-as-a-github-action'),
+  },
   'pr-read': {
     rule: '`check --pr <number>` reads that pull request through gh',
     why: 'a repo without CI checks its pull requests this way, so without the read nothing is checked',

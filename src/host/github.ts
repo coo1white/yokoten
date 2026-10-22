@@ -286,6 +286,82 @@ export function readPullRequest(root: string, env: Env): PullRequestRead | Unrea
   return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: isObject(pr.user) ? asText(pr.user.login) : '' }, base, head, env);
 }
 
+// The pull request as it is now (#645). GitHub can start the runs of one pull request in
+// any order, and each event file keeps the title, body, labels and milestone of its own
+// moment: a run for `opened` that starts last would judge a pull request with no labels,
+// and a rerun reuses its old event file. So when the step is given the job's GITHUB_TOKEN,
+// these fields come from the API, read when the run starts; the event file only names the
+// pull request, and its commits stay the ones the run is for. Every run, whenever it
+// starts, then checks the same pull request: the one there is now.
+//
+// A pull request that is a draft now passes with a note. That is safe: a run that sees a
+// draft started before it was marked ready, so the `ready_for_review` run starts later
+// and checks it. A read that fails fails the check: an old event file is never the answer.
+
+/** The fields of a pull request that change without a new commit, as they are now. */
+export interface CurrentPullRequest {
+  title: string;
+  body: string;
+  labels: string[];
+  milestone: string | null;
+  author: string;
+  isDraft: boolean;
+}
+
+/** How long one API read waits for GitHub. */
+const API_TIMEOUT_MS = 15000;
+
+const CURRENT_FIX = 'give the step `GITHUB_TOKEN: ${{ github.token }}` and the job `pull-requests: read`, then run the job again';
+
+/** The job was given a token, so `check --pr` reads the pull request as it is now. */
+export const readsCurrentPullRequest = (env: Env): boolean => Boolean(env.GITHUB_TOKEN);
+
+/**
+ * The pull request of this run as it is now, read from the API with GITHUB_TOKEN, or why
+ * it can't be read. The event file names the repo and the number. The token goes only
+ * into the request's header; no message names it or the API's address.
+ */
+export async function readCurrentPullRequest(env: Env): Promise<CurrentPullRequest | Unreadable> {
+  const fail = (what: string, fix = CURRENT_FIX): Unreadable => ({ problem: finding('pr-current', what, fix) });
+  const token = env.GITHUB_TOKEN;
+  if (!token) return fail('GITHUB_TOKEN is not set, so the pull request as it is now can\'t be read');
+  const event = readEvent(env);
+  if (event === null) return fail('there is no CI event file (GITHUB_EVENT_PATH), so the pull request is not named', EVENT_FIX);
+  if (isUnreadable(event)) return event;
+  const pr = isObject(event.pull_request) ? event.pull_request : {};
+  const number = pr.number;
+  const repo = isObject(event.repository) ? asText(event.repository.full_name) : asText(env.GITHUB_REPOSITORY);
+  if (typeof number !== 'number' || !Number.isSafeInteger(number) || number < 1) return fail('the CI event names no pull request number', SHA_FIX);
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return fail('the CI event names no repository', SHA_FIX);
+  const api = (env.YOKOTEN_GITHUB_API || env.GITHUB_API_URL || 'https://api.github.com').replace(/\/$/, '');
+  const headers = { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28', 'user-agent': 'yokoten' };
+  let answer = '';
+  // One more try when GitHub gives no answer or a server error: those pass on their own.
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const res = await fetch(`${api}/repos/${repo}/pulls/${number}`, { headers, signal: AbortSignal.timeout(API_TIMEOUT_MS) });
+      if (res.ok) {
+        const body: unknown = await res.json();
+        if (!isObject(body)) return fail(`GitHub gave no pull request ${number}`);
+        return {
+          title: asText(body.title),
+          body: asText(body.body),
+          labels: labelNames(body.labels),
+          milestone: milestoneTitle(body.milestone),
+          author: isObject(body.user) ? asText(body.user.login) : '',
+          isDraft: body.draft === true,
+        };
+      }
+      await res.body?.cancel();
+      answer = `GitHub answered ${res.status}`;
+      if (res.status < 500) break;
+    } catch {
+      answer = 'GitHub gave no answer';
+    }
+  }
+  return fail(`pull request ${number} can't be read as it is now: ${answer}`);
+}
+
 const milestoneTitle = (milestone: unknown): string | null => (isObject(milestone) && typeof milestone.title === 'string' ? milestone.title : null);
 
 /** The pull request with the files git lists between `base` and `head`. Both commits must be here. */
