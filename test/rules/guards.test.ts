@@ -1439,9 +1439,10 @@ const nestedCases = nestedShapes.flatMap((shape) =>
 );
 
 test('bash: nested constructs are read in linear time and never throw (#226)', () => {
-  // From 64 repeats to 512, the shapes taking turns (#442). A loop that reads the text again
+  // From 256 repeats to 2048, the shapes taking turns (#442). A loop that reads the text again
   // for each character is many times over 24x here; see the pull request of #442.
-  assertLinearEach(nestedCases, 64);
+  // Four times the start size, so a noisy first round grows to a 20 ms base within the cap (#605).
+  assertLinearEach(nestedCases, 256);
 });
 
 test('bash: nested constructs up to 1000 repeats never throw, and a force push before them blocks (#226)', () => {
@@ -1594,10 +1595,11 @@ test('hooks setting: env -C, env --chdir, builtin cd and GIT_COMMON_DIR move rep
 });
 
 // The fourth review of #226. The shapes run in a node of their own, which a slow read cannot
-// hold up for long. There each is read at 128 and 1024 repeats, all taking turns, and its time
-// must grow like the text (#316, #442). A shape gives what it should at 1024 repeats, or, for
+// hold up for long. There each is read at 512 and 4096 repeats, all taking turns, and its time
+// must grow like the text (#316, #442). A shape gives what it should at 4096 repeats, or, for
 // one with a size of its own, at that size: 100k substitutions are refused. The cases go in on
 // stdin: their parts, a part in brackets repeated n times.
+// Four times the start size, so a noisy first round grows to a 20 ms base within the cap (#605).
 test('bash and hooks: loops that never spent the budget read a thousand repeats in linear time (#226)', () => {
   const guards = join(import.meta.dirname, '../..', 'src', 'rules', 'guards.ts');
   const linear = join(import.meta.dirname, '../..', 'scripts', 'linear.ts');
@@ -1656,7 +1658,7 @@ test('bash and hooks: loops that never spent the budget read a thousand repeats 
   // of each line joins the check to the pipeline.
   for (const open of ['$((((', '$(', '${']) run('hook', ['#!/bin/sh\n', [open], '\nnpx yokoten check\n'], 'false');
   run('hook', ['#!/bin/sh\n', ['a |\n'], 'npx yokoten check\n'], 'false');
-  const child = spawnSync(process.execPath, ['--max-old-space-size=256', '--input-type=module', '-e', code], { input: JSON.stringify({ guards: pathToFileURL(guards).href, linear: pathToFileURL(linear).href, config: pythonBlocked, cwd: tmpdir(), cases, repeats: 128 }), encoding: 'utf8', timeout: 120_000 });
+  const child = spawnSync(process.execPath, ['--max-old-space-size=256', '--input-type=module', '-e', code], { input: JSON.stringify({ guards: pathToFileURL(guards).href, linear: pathToFileURL(linear).href, config: pythonBlocked, cwd: tmpdir(), cases, repeats: 512 }), encoding: 'utf8', timeout: 120_000 });
   assert.equal(child.status, 0, `the linear reads failed: ${child.signal ?? child.error ?? child.stderr.slice(0, 1200)}`);
   // The linear reads keep what the old ones found: a closed $( and quotes cut no block.
   for (const line of ['x="(" y=\'{\' z=${a:-x} w=$(echo a) v=$((1 + (2)))', 'echo "a\\"(" \'"\'']) {
