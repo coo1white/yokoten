@@ -97,7 +97,7 @@ const SHARED_NAMES = new Set([
 const YOKOTEN_NAMES = new Set(['YOKOTEN_ROLE', 'YOKOTEN_FIX_TASK', 'YOKOTEN_PRIVATE_MARKS', 'YOKOTEN_TEMP_DIRS', 'YOKOTEN_GUARD_DEADLINE_MS', 'YOKOTEN_MIN_FREE_GB']);
 
 // A name that says it holds a secret.
-const SECRET_NAME = /TOKEN|SECRET|KEY|PASSWORD|PASSWD|AUTH|CREDENTIAL|PRIVATE/;
+export const SECRET_NAME = /TOKEN|SECRET|KEY|PASSWORD|PASSWD|AUTH|CREDENTIAL|PRIVATE/;
 
 // Values shaped like a known key or token. They are looser than the commit check's
 // patterns in secrets.ts: a false hit here only drops a name an agent did not need.

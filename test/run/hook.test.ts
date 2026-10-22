@@ -3,11 +3,12 @@
 import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { constants, existsSync, lstatSync, lutimesSync, mkdirSync, openSync, readFileSync, readlinkSync, readdirSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import {
   CLI,
+  makeTempDir,
   makeSandbox,
   runChild,
 } from '../repo/helpers.ts';
@@ -75,6 +76,24 @@ test('hook: a worker edit under .worktrees/<issue>/ reads from that worktree (#5
   assert.equal(judge({ paths: ['.worktrees/571-x/AGENTS.md'], worker: false }, options)?.id, 'lead-only');
   assert.equal(judge({ paths: ['.worktrees/571-x/src/a.ts'], worker: false }, options), null, 'other files pass');
   assert.equal(judge({ paths: ['.worktrees/571-x/AGENTS.md'], worker: false }, { ...options, env: {} }), null, 'the lead passes');
+});
+
+// #674: a worker outside a desk can't write a team folder: nothing else fences it there.
+test('hook: a worker edit inside <repo>.team/ is refused; the lead and other folders pass (#674)', () => {
+  const sandbox = makeSandbox();
+  const team = `${sandbox.repo}.team`;
+  const options = { root: sandbox.repo, config: DEFAULTS, env: { YOKOTEN_ROLE: 'worker' }, cwd: sandbox.repo };
+  for (const path of [join(team, 'outbox', 'g1.jsonl'), join(team, 'agents', 'g1.json'), join(team, 'lead', 'read.json'), `../${basename(sandbox.repo)}.team/outbox/lead.jsonl`]) {
+    assert.equal(judge({ paths: [path], worker: false }, options)?.id, 'lead-only', path);
+  }
+  assert.equal(judge({ paths: [join(team, 'outbox', 'g1.jsonl')], worker: false }, { ...options, env: {} }), null, 'the lead passes');
+  assert.equal(judge({ paths: ['src/.team.ts'], worker: false }, options), null);
+  assert.equal(judge({ paths: ['notes.team'], worker: false }, options), null, 'a file named .team is not a team folder');
+  // A folder that only ends in .team, with no checkout of that name next to it, is not a team folder.
+  const work = makeTempDir('work-');
+  for (const path of [join(work, 'acme.team', 'repo', 'src', 'a.ts'), join(work, 'acme.team', 'outbox', 'x.jsonl')]) {
+    assert.equal(judge({ paths: [path], worker: false }, options), null, path);
+  }
 });
 
 // #408: the hook starts the guard's worker before it reads the call, so the two overlap.

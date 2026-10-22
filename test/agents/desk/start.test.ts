@@ -14,6 +14,8 @@ import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { planDesk } from '../../../src/agents/desk/desk.ts';
+import { appendMessage } from '../../../src/agents/desk/team/outbox.ts';
+import { LEAD, prepareDeskTeam } from '../../../src/agents/desk/team/team.ts';
 import { chooseBackend, signalEnd, startDesk } from '../../../src/agents/desk/start.ts';
 import { markWorktree } from '../../../src/commands/hook.ts';
 import { CLI, makeTempDir } from '../../repo/helpers.ts';
@@ -42,7 +44,7 @@ const PROBE = String.raw`
 const fs = require('node:fs');
 const net = require('node:net');
 const { spawnSync } = require('node:child_process');
-const [cli, outsideFile, otherProject, echoPort] = process.argv.slice(2);
+const [cli, outsideFile, otherProject, echoPort, team] = process.argv.slice(2);
 const answer = {};
 const tryIt = (fn) => { try { return fn(); } catch (error) { return 'failed: ' + (error.code || error.message); } };
 answer.deskWrite = tryIt(() => { fs.writeFileSync('written.txt', 'x'); return 'ok'; });
@@ -72,6 +74,17 @@ answer.pipes = piped.error ? 'failed: ' + piped.error.code : piped.stdout;
 answer.role = process.env.YOKOTEN_ROLE;
 answer.tz = process.env.TZ;
 answer.token = process.env.GH_TOKEN === undefined ? 'absent' : 'present';
+const msg = (...words) => spawnSync(process.execPath, [cli, 'msg', ...words], { encoding: 'utf8' });
+const sent = msg('send', 'lead', 'hello from the desk');
+answer.msgSend = sent.status + ' ' + sent.stderr.trim();
+answer.msgInbox = msg('inbox').stdout;
+answer.msgLog = msg('log').status;
+answer.leadOutboxWrite = tryIt(() => { fs.appendFileSync(team + '/outbox/lead.jsonl', '{}\n'); return 'ok'; });
+answer.otherOutboxWrite = tryIt(() => { fs.appendFileSync(team + '/outbox/other.jsonl', '{}\n'); return 'ok'; });
+answer.otherOutboxRemove = tryIt(() => { fs.rmSync(team + '/outbox/other.jsonl'); return 'ok'; });
+answer.teamNewFile = tryIt(() => { fs.writeFileSync(team + '/outbox/new.jsonl', '{}\n'); return 'ok'; });
+answer.rosterWrite = tryIt(() => { fs.writeFileSync(team + '/agents/probe.json', '{}'); return 'ok'; });
+answer.deskFileWrite = tryIt(() => { fs.writeFileSync('.git/yokoten-desk.json', '{}'); return 'ok'; });
 const guard = spawnSync(process.execPath, [cli, 'hook'], { input: JSON.stringify({ tool_input: { command: 'git -c core.hooksPath=/dev/null commit -m x' } }), encoding: 'utf8' });
 answer.guard = guard.status;
 // #672: Muse Code passes its hooks no YOKOTEN_ROLE; the mark in the desk's .git still makes a worker.
@@ -123,13 +136,20 @@ test('the desk contract holds on this system', { skip: typeof backend === 'strin
   await new Promise<void>((resolve) => echo.listen(0, '127.0.0.1', resolve));
   const echoPort = (echo.address() as { port: number }).port;
   const outsideFile = join(dirname(desk), 'outside.txt');
+  // The team (#674): another agent's outbox, and a message from the lead for this desk's agent, 'probe'.
+  const team = join(projects, 'origin.team');
+  const otherDesk = join(projects, 'other-desk');
+  mkdirSync(join(otherDesk, '.git'), { recursive: true });
+  prepareDeskTeam({ team, name: 'other', runtime: 'codex', model: 'gpt-5.5', desk: otherDesk });
+  appendMessage({ name: LEAD, team, readState: join(team, 'lead', 'read.json'), inDesk: false }, 'probe', 'hello from the lead', new Date());
   try {
     const plan = planDesk({
       runtime: 'claude-code',
       desk,
-      command: [process.execPath, 'probe.cjs', CLI, outsideFile, other, String(echoPort)],
+      command: [process.execPath, 'probe.cjs', CLI, outsideFile, other, String(echoPort), team],
       env: { ...process.env, GH_TOKEN: 'not-a-real-token' },
       extraHosts: [`localhost:${echoPort}`],
+      team: { folder: team, name: 'probe' },
       markDesk: (folder) => markWorktree(origin, folder, process.env),
     });
     const result = await startDesk(plan, backend, { stdio: 'pipe' });
@@ -156,6 +176,18 @@ test('the desk contract holds on this system', { skip: typeof backend === 'strin
     assert.deepEqual(answer.hostDoors, [], 'no socket to the host: WSL interop, the session bus, Docker');
     assert.equal(answer.pipes, 'through a pipe', 'a child process with pipes works');
     assert.deepEqual([answer.role, answer.tz, answer.token], ['worker', 'UTC', 'absent'], 'role and time zone are set; a token is not passed in');
+    assert.match(answer.msgSend, /^0 /, 'the agent sends from its own outbox');
+    assert.match(readFileSync(join(team, 'outbox', 'probe.jsonl'), 'utf8'), /"text":"hello from the desk".*"from":"probe","to":"lead"/);
+    assert.match(answer.msgInbox, /from lead \(the lead session, not the owner\)[^]*\| hello from the lead/, 'and reads what the lead sent it');
+    assert.equal(answer.msgLog, 1, 'the log is the lead\'s');
+    assert.match(answer.leadOutboxWrite, /^failed/, "the lead's outbox is not written");
+    assert.match(answer.otherOutboxWrite, /^failed/, "another agent's outbox is not written");
+    assert.match(answer.otherOutboxRemove, /^failed/, "another agent's outbox is not removed");
+    assert.match(answer.teamNewFile, /^failed/, 'no new outbox in the team folder');
+    assert.match(answer.rosterWrite, /^failed/, 'the roster is not written');
+    assert.match(answer.deskFileWrite, /^failed/, 'the desk file that names the agent is locked');
+    assert.equal(readFileSync(join(team, 'outbox', 'lead.jsonl'), 'utf8').split('\n').length, 2, "the lead's outbox holds only the lead's line");
+    assert.equal(readFileSync(join(team, 'outbox', 'other.jsonl'), 'utf8'), '');
     assert.equal(answer.guard, 2, 'the guard refuses a commit that turns off the commit check');
     assert.equal(answer.mark, true, "the desk's clone carries the worker mark (#672)");
     assert.match(answer.markWrite, /^failed/, 'the worker mark is read-only');

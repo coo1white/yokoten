@@ -6,7 +6,7 @@
 // - The readable paths are mounted read-only again inside them; the desk and the
 //   state paths are mounted writable; locked files go read-only on top.
 // - New namespaces for everything (`--unshare-all`), so the desk has its own empty
-//   network. the bridge (bridge.ts), the desk's first program, listens on 127.0.0.1:3128 inside and
+//   network. the bridge (network/bridge.ts), the desk's first program, listens on 127.0.0.1:3128 inside and
 //   passes each connection to the proxy's socket, which is mounted in.
 // - `--new-session` and `--die-with-parent`: no typing into the lead's terminal, and
 //   nothing left running when the desk command ends.
