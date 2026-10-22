@@ -4,7 +4,7 @@
 // The hook knows nothing about any one runtime. An adapter in src/agents/ turns the
 // runtime's own call into an `Action` first.
 
-import { spawnSync } from 'node:child_process';
+import { type SpawnSyncOptionsWithStringEncoding, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import module from 'node:module';
@@ -36,8 +36,20 @@ export interface StopEvent {
   active: boolean;
   /** The event comes from a worker subagent. */
   worker: boolean;
+  /** The event is a subagent ending (Claude Code's SubagentStop), not the lead's own turn. */
+  subagent: boolean;
   /** The session or subagent id, for the done-when try count. */
   sessionId?: string;
+}
+
+/**
+ * A worker's agent type: exactly `worker`, or a name that ends with `:worker`
+ * (such as `yokoten:worker`). A name that only contains those letters, such as
+ * `coworker`, is not a worker (#614).
+ */
+export function isWorkerType(type: string): boolean {
+  const name = type.toLowerCase();
+  return name === 'worker' || name.endsWith(':worker');
 }
 
 /**
@@ -48,17 +60,19 @@ export function readStopFields(input: object): StopEvent {
   const call = input as Record<string, unknown>;
   const text = (v: unknown) => (typeof v === 'string' && v !== '' ? v : undefined);
   const type = text(call.agent_type) ?? text(call.agentType) ?? text(call.subagent_type) ?? text(call.subagentType) ?? '';
+  const eventName = (text(call.hook_event_name) ?? text(call.hookEventName) ?? '').toLowerCase();
   return {
     cwd: text(call.cwd),
     active: call.stop_hook_active === true || call.stopHookActive === true,
-    worker: /worker/i.test(type),
+    worker: isWorkerType(type),
+    subagent: eventName === 'subagentstop',
     sessionId: text(call.agent_id) ?? text(call.agentId) ?? text(call.session_id) ?? text(call.sessionId),
   };
 }
 
 /**
- * How many times a worker is sent back for a failing done-when check (#614). The next
- * stop is allowed, and the lead sees "stopped with failing checks", never "done".
+ * How many times a worker is sent back for a failing check (#614). The next stop is
+ * then allowed. The worker tells the lead the checks are failing. It never says done.
  */
 export const DONE_TRY_LIMIT = 3;
 
@@ -67,6 +81,9 @@ export const DONE_WHEN_MS = 120_000;
 
 /** The file in a worktree's git folder that holds the task's done-when command. */
 export const DONE_WHEN_FILE = 'yokoten-done-when';
+
+/** The board's agent status file, at the worktree's root. The guide shows its fields. */
+export const AGENT_STATUS_FILE = '.yokoten-agent.json';
 
 const DONE_OUTPUT_CHARS = 2000;
 
@@ -124,10 +141,59 @@ export function bumpDoneTries(env: Env, key: string): number | null {
   return count;
 }
 
-/** Forget the worker's done-when try count, once the check passes. */
+/**
+ * Forget the worker's done-when try count, once the check passes or the worker is let
+ * through. An error removing the file is ignored: it must not crash the hook (#614).
+ */
 export function clearDoneTries(env: Env, key: string): void {
   const path = triesPath(env, key);
-  if (path) rmSync(path, { force: true });
+  if (!path) return;
+  try {
+    rmSync(path, { force: true });
+  } catch {
+    // The count file can stay. The hook still ends the turn.
+  }
+}
+
+/** The shell that runs a done-when command: `cmd.exe` on Windows, `sh` on every other system. */
+export function doneWhenShell(): string {
+  return process.platform === 'win32' ? 'cmd.exe' : '/bin/sh';
+}
+
+/** Stop `pid` and the programs it started: the process group on POSIX, the tree on Windows. */
+function killCommandTree(pid: number): void {
+  try {
+    if (process.platform === 'win32') {
+      spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore', windowsHide: true });
+      return;
+    }
+    process.kill(-pid, 'SIGKILL');
+  } catch {
+    // The group is already gone.
+  }
+}
+
+/**
+ * Record that the worker stopped with failing checks, where the lead and the board read
+ * it: `.yokoten-agent.json` at the worktree root. Other fields stay. `updated` is UTC.
+ * A file that cannot be written does not crash the hook.
+ */
+export function writeFailingChecks(folder: string, now: Date = new Date()): void {
+  const path = join(folder, AGENT_STATUS_FILE);
+  let status: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) status = parsed as Record<string, unknown>;
+  } catch {
+    status = {};
+  }
+  status.checks = 'failing';
+  status.updated = now.toISOString().replace(/\.\d{3}Z$/, 'Z');
+  try {
+    writeFileSync(path, `${JSON.stringify(status, null, 2)}\n`);
+  } catch {
+    // The worker's own message still tells the lead. A locked file must not trap the stop.
+  }
 }
 
 /** The last `DONE_OUTPUT_CHARS` of `text`, with secrets replaced. */
@@ -143,21 +209,27 @@ export function shortenOutput(text: string): string {
  * Run the task's done-when command in `cwd`. `ok` is true only on exit 0. The output is
  * short, with secrets hidden, for the worker to read.
  */
-export function runDoneWhen(command: string, cwd: string, env: Env): { ok: boolean; output: string } {
+export function runDoneWhen(command: string, cwd: string, env: Env, timeoutMs: number = DONE_WHEN_MS): { ok: boolean; output: string } {
   const childEnv: Record<string, string> = {};
   for (const [name, value] of Object.entries(env)) if (value !== undefined) childEnv[name] = value;
-  const result = spawnSync(command, {
-    shell: process.platform === 'win32' ? true : '/bin/sh',
+  // A new process group, so a timeout can stop the command and the programs it started.
+  // `SpawnSyncOptions` omits `detached`. spawnSync still starts a group when it is set.
+  const options: SpawnSyncOptionsWithStringEncoding & { detached: true } = {
+    shell: doneWhenShell(),
     cwd,
     env: childEnv,
     encoding: 'utf8',
-    timeout: DONE_WHEN_MS,
+    timeout: timeoutMs,
     maxBuffer: 256 * 1024,
     stdio: ['ignore', 'pipe', 'pipe'],
-  });
+    detached: true,
+    windowsHide: true,
+  };
+  const result = spawnSync(command, options);
   const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
   const output = `${result.stderr ?? ''}${result.stdout ?? ''}`.trimEnd();
   if (code === 'ETIMEDOUT' || result.signal === 'SIGTERM') {
+    if (result.pid) killCommandTree(result.pid);
     return { ok: false, output: shortenOutput(output ? `${output}\nthe check ran too long and was stopped` : 'the check ran too long and was stopped') };
   }
   if (result.error) {

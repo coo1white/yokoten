@@ -49,7 +49,11 @@ const projectHooks = (root: string) => join(root, '.muse', 'hooks.json');
 const at = (cli: string) => `"$(git rev-parse --show-toplevel)/${cli}"`;
 const guardArgs = (root: string, cli: string) =>
   [projectHooks(root), 'PreToolUse', MATCHER, guardCommand(at(cli), 'hook --agent muse', missingProjectRuntime(cli), { isToolCall: true })] as const;
-const stopArgs = (root: string, cli: string) => [projectHooks(root), 'Stop', undefined, guardCommand(at(cli), 'hook --stop --agent muse', missingProjectRuntime(cli))] as const;
+// Seconds Muse waits for the stop check. A short default would cut the done-when command,
+// and a timed-out hook lets the call run (#614).
+const STOP_TIMEOUT = 600;
+const stopArgs = (root: string, cli: string) =>
+  [projectHooks(root), 'Stop', undefined, guardCommand(at(cli), 'hook --stop --agent muse', missingProjectRuntime(cli)), { timeout: STOP_TIMEOUT }] as const;
 
 // Muse 1.4.11 runs a SessionStart hook and gives its output to the model (#556), as Claude Code does.
 const sessionArgs = (root: string, cli: string) =>

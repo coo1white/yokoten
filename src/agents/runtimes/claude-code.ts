@@ -7,13 +7,13 @@ import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
 import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
-import { type Action, readStopFields, type StopEvent } from '../../run/hook.ts';
+import { type Action, isWorkerType, readStopFields, type StopEvent } from '../../run/hook.ts';
 import { type Added, addHook, checkHooksFile, hasHook, isObject, type Problem, readTable, removeHook, type Settings, UnreadableHooksFile, writeSettings } from '../hooks-file.ts';
 
 /**
  * A PreToolUse call, as an Action. The guard reads the fields, not the tool's name:
  * `tool_input.command` for a shell call, `file_path` (or `path`, `notebook_path`) for an
- * edit. A subagent whose type names a worker is a worker.
+ * edit. A subagent is a worker only when its type is `worker`, or ends with `:worker`.
  */
 export function readToolCall(input: unknown): Action {
   const call = (input ?? {}) as { cwd?: unknown; agent_type?: unknown; tool_input?: Record<string, unknown> };
@@ -23,7 +23,7 @@ export function readToolCall(input: unknown): Action {
     command: typeof tool.command === 'string' ? tool.command : undefined,
     paths: [tool.file_path, tool.path, tool.notebook_path].map(text).filter((p) => p !== undefined),
     cwd: text(call.cwd),
-    worker: /worker/i.test(text(call.agent_type) ?? ''),
+    worker: isWorkerType(text(call.agent_type) ?? ''),
   };
 }
 

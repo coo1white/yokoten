@@ -26,7 +26,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import type { Env } from '../../rules/config.ts';
 import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
-import { type Action, readStopFields, type StopEvent } from '../../run/hook.ts';
+import { type Action, isWorkerType, readStopFields, type StopEvent } from '../../run/hook.ts';
 import { type FolderTrust, folderKeys, isFolder } from '../folder-trust.ts';
 import { type Added, addHook, checkHooksFile, type HookState, hookState, isObject } from '../hooks-file.ts';
 import { readTomlTables } from './codex.ts';
@@ -48,8 +48,8 @@ const STOP_TIMEOUT = 600;
 
 /**
  * A PreToolUse call, as an Action: the shell call by its command, an edit by its file. A
- * read, a search, a web call or an MCP tool is neither. A subagent whose type names a
- * worker is a worker; YOKOTEN_ROLE, which Grok passes to its hooks, decides the rest.
+ * read, a search, a web call or an MCP tool is neither. A subagent is a worker only
+ * when its type is `worker`, or ends with `:worker`. YOKOTEN_ROLE decides the rest.
  */
 export function readToolCall(input: unknown): Action {
   const call = isObject(input) ? input : {};
@@ -66,7 +66,7 @@ export function readToolCall(input: unknown): Action {
     command: isShell ? text(tool.command) : undefined,
     paths: isEdit && file ? [file] : [],
     cwd: shellCwd && (isAbsolute(shellCwd) || cwd) ? resolve(cwd ?? '', shellCwd) : cwd,
-    worker: /worker/i.test(text(call.subagentType) ?? ''),
+    worker: isWorkerType(text(call.subagentType) ?? ''),
   };
 }
 

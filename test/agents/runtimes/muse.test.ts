@@ -80,6 +80,7 @@ test('muse project hooks: init writes the guard and the stop check, keeps other 
   assert.equal(written.hooks.PreToolUse[1].matcher, 'bash|write_file|edit_file|apply_patch', 'named tools: "*" would also match read_skill');
   assert.match(written.hooks.PreToolUse[1].hooks[0].command, /"\$\(git rev-parse --show-toplevel\)\/\.yokoten\/bin\/yokoten\.mjs" hook --agent muse 2>&1/);
   assert.match(written.hooks.Stop[0].hooks[0].command, /hook --stop --agent muse$/);
+  assert.equal(written.hooks.Stop[0].hooks[0].timeout, 600, 'long enough for the done-when command');
   assert.deepEqual(projectHooksState(sandbox.repo, cli), { guard: 'same', stop: 'same' });
   assert.equal(written.hooks.SessionStart.length, 1);
   assert.match(written.hooks.SessionStart[0].hooks[0].command, /"\$\(git rev-parse --show-toplevel\)\/\.yokoten\/bin\/yokoten\.mjs" doctor --session --agent muse$/);

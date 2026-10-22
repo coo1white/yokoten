@@ -10,7 +10,7 @@ import * as gemini from '../agents/runtimes/gemini.ts';
 import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import { loadConfig } from '../rules/config.ts';
-import { addWorkerPath, hardenRead, markNote, printsAccount, privateOutput, realPath, releaseFix, removeWorkerPath, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
+import { addWorkerPath, gitLinkAbove, hardenRead, markNote, printsAccount, privateOutput, realPath, releaseFix, removeWorkerPath, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
 import { type Finding, formatFinding, notRepoFinding } from '../rules/message.ts';
 import { checkChanged, readGit } from '../run/check.ts';
 import {
@@ -27,6 +27,7 @@ import {
   type Repo,
   runDoneWhen,
   type StopEvent,
+  writeFailingChecks,
 } from '../run/hook.ts';
 import { bullets, type Invocation, parse, print, printJson, readInput, rootOf, say, usage } from './shared.ts';
 
@@ -143,9 +144,11 @@ function editRepos(invocation: Invocation, action: Action, base: string, session
  *
  * A worker also runs the task's done-when command (or the changed-file check when the
  * brief has none). A failing check sends the worker back, with the output in short. After
- * DONE_TRY_LIMIT tries the worker may stop, and the lead sees "stopped with failing
- * checks", never "done". On any error the turn ends too, with one line on stderr: a
- * broken check must not trap a session.
+ * DONE_TRY_LIMIT refusals the next stop is let through. The worker's message to the lead
+ * must start with "NOT DONE: checks failing". The worktree's `.yokoten-agent.json` gets
+ * `checks` set to `failing`, so the lead and the board can see it. A subagent that is
+ * not a worker is not checked. On any error the turn ends too, with one line on stderr:
+ * a broken check must not trap a session.
  */
 function stopHook(invocation: Invocation, json: boolean, read: typeof claudeCode.readStop): number {
   const { env } = invocation;
@@ -162,6 +165,12 @@ function stopHook(invocation: Invocation, json: boolean, read: typeof claudeCode
   const folder = event.cwd ?? invocation.cwd;
   const folders = [folder, invocation.cwd];
   const isWorker = event.worker || workerRole(env, folders) !== null;
+  // SubagentStop fires for every subagent. A reviewer, Explore or verifier is not a
+  // worker, and must not be sent back for the lead's changed files (#614).
+  if (event.subagent && !isWorker) {
+    if (json) printJson(invocation, { blocked: false, stop: true, findings: [] });
+    return 0;
+  }
   if (event.active && !isWorker) {
     if (json) printJson(invocation, { blocked: false, stop: true, skipped: 'the agent was already sent back once', findings: [] });
     return 0;
@@ -180,11 +189,14 @@ function stopHook(invocation: Invocation, json: boolean, read: typeof claudeCode
     return 0;
   }
   let doneWhen: { command: string; ok: boolean; output: string } | undefined;
+  // A subagent runs in the worker's worktree only when the event's folder is that
+  // worktree. Otherwise it shares the lead's folder (#614).
+  const ranIn = isWorker && root ? (event.subagent ? subagentDir(folder) : root) : folder;
   if (isWorker && root) {
-    const command = readDoneWhen(env, folder);
+    const command = readDoneWhen(env, event.subagent ? ranIn : folder);
     if (command) {
       try {
-        const ran = runDoneWhen(command, root, { ...env, YOKOTEN_ROLE: 'worker' });
+        const ran = runDoneWhen(command, ranIn, { ...env, YOKOTEN_ROLE: 'worker' });
         doneWhen = { command, ...ran };
       } catch (err) {
         say(invocation, `yokoten hook --stop: skipped, ${((err as Error).message ?? String(err)).split('\n')[0]}\n`, invocation.stderr);
@@ -194,8 +206,9 @@ function stopHook(invocation: Invocation, json: boolean, read: typeof claudeCode
     }
   }
   const failed = findings.length > 0 || doneWhen?.ok === false;
+  const key = doneTryKey(event.sessionId, folder);
   if (!failed) {
-    if (isWorker) clearDoneTries(env, doneTryKey(event.sessionId, folder));
+    if (isWorker) forgetDoneTries(env, key);
     if (json) printJson(invocation, { blocked: false, stop: true, findings });
     return 0;
   }
@@ -204,25 +217,73 @@ function stopHook(invocation: Invocation, json: boolean, read: typeof claudeCode
     print(invocation, [`yokoten: ${findings.length} problem(s) in the changed files. Fix them before you end the turn:`, ...bullets(findings)], invocation.stderr);
     return 2;
   }
-  const key = doneTryKey(event.sessionId, folder);
   const bumped = bumpDoneTries(env, key);
-  const tries = bumped ?? (event.active ? DONE_TRY_LIMIT : 1);
-  if (tries > DONE_TRY_LIMIT) {
-    const payload = { blocked: false, stop: true, findings, skipped: 'stopped with failing checks', ...(doneWhen ? { doneWhen: { ok: false, output: doneWhen.output, tries, limit: DONE_TRY_LIMIT } } : {}) };
-    if (json) printJson(invocation, payload);
-    print(invocation, ['yokoten: stopped with failing checks. The done-when check still fails after three refusals. Tell the lead this task is not done.'], invocation.stderr);
-    return 0;
+  // No saved count: one refusal, then stop_hook_active lets the worker go. Never a loop.
+  if (bumped === null) {
+    if (event.active) return allowFailingStop(invocation, json, findings, doneWhen, DONE_TRY_LIMIT, env, key, root ?? ranIn);
+    return refuseFailingStop(invocation, json, findings, doneWhen, 1, false);
   }
+  if (bumped > DONE_TRY_LIMIT) return allowFailingStop(invocation, json, findings, doneWhen, bumped, env, key, root ?? ranIn);
+  return refuseFailingStop(invocation, json, findings, doneWhen, bumped, true);
+}
+
+/** The folder a subagent's command runs in: the linked worktree the event names, or the event's own folder. */
+function subagentDir(folder: string): string {
+  const link = gitLinkAbove(folder);
+  return link?.kind === 'file' ? link.top : folder;
+}
+
+/** Drop the try count. `clearDoneTries` already ignores an `rmSync` error; this is the second wall. */
+function forgetDoneTries(env: Invocation['env'], key: string): void {
+  try {
+    clearDoneTries(env, key);
+  } catch {
+    // A count file that cannot be removed must not crash the hook.
+  }
+}
+
+/** The lines that send a worker back, and, on the last refusal, what to tell the lead. */
+function refuseFailingStop(
+  invocation: Invocation,
+  json: boolean,
+  findings: Finding[],
+  doneWhen: { ok: boolean; output: string } | undefined,
+  tries: number,
+  saved: boolean,
+): number {
   const lines: string[] = [];
   if (findings.length) lines.push(`yokoten: ${findings.length} problem(s) in the changed files. Fix them before you end the task:`, ...bullets(findings));
   if (doneWhen?.ok === false) {
     lines.push('yokoten: the done-when check failed. Fix what it reports, then end the task again:');
     if (doneWhen.output) lines.push(doneWhen.output);
   }
-  lines.push(`This was try ${tries} of ${DONE_TRY_LIMIT}.`);
+  // The last refusal is the one the worker can still read. The allowed stop's stderr reaches nobody.
+  if (!saved || tries >= DONE_TRY_LIMIT) {
+    lines.push(`This was try ${tries} of ${DONE_TRY_LIMIT}. The next stop is let through.`);
+    lines.push('Your final message to the lead must start with "NOT DONE: checks failing" and quote the failing output.');
+  } else lines.push(`This was try ${tries} of ${DONE_TRY_LIMIT}.`);
   if (json) printJson(invocation, { blocked: true, stop: true, findings, ...(doneWhen ? { doneWhen: { ok: false, output: doneWhen.output, tries, limit: DONE_TRY_LIMIT } } : {}) });
   print(invocation, lines, invocation.stderr);
   return 2;
+}
+
+/** Let the worker stop, and leave a record the lead and the board can read. The try count starts again. */
+function allowFailingStop(
+  invocation: Invocation,
+  json: boolean,
+  findings: Finding[],
+  doneWhen: { ok: boolean; output: string } | undefined,
+  tries: number,
+  env: Invocation['env'],
+  key: string,
+  statusDir: string,
+): number {
+  writeFailingChecks(statusDir);
+  forgetDoneTries(env, key);
+  const payload = { blocked: false, stop: true, findings, skipped: 'stopped with failing checks', ...(doneWhen ? { doneWhen: { ok: false, output: doneWhen.output, tries, limit: DONE_TRY_LIMIT } } : {}) };
+  if (json) printJson(invocation, payload);
+  print(invocation, ['yokoten: stopped with failing checks. The done-when check still fails. Tell the lead this task is not done.'], invocation.stderr);
+  return 0;
 }
 
 /** `guard`: the guard's worker, when bin/main.ts started it early (#408). */

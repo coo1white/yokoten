@@ -11,7 +11,7 @@ import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import type { Env } from '../../rules/config.ts';
 import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
-import type { Action } from '../../run/hook.ts';
+import { type Action, isWorkerType } from '../../run/hook.ts';
 import { type FolderTrust, folderKeys, isFolder } from '../folder-trust.ts';
 import { type Added, addHook, checkHooksFile, hasHook, type HookArgs, type HookState, hookState, isObject } from '../hooks-file.ts';
 
@@ -74,8 +74,9 @@ export function readToolCall(input: unknown): Action {
     cwd,
     // Since rust-v0.163.0 a subagent's call may carry `agent_type`: a built-in role
     // (default, worker, explorer) or a custom one's name from .codex/agents/*.toml. Not
-    // on the docs page yet, so it is optional; without it YOKOTEN_ROLE decides.
-    worker: /worker/i.test(typeof call.agent_type === 'string' ? call.agent_type : ''),
+    // on the docs page yet, so it is optional; without it YOKOTEN_ROLE decides. A type
+    // is a worker only when it is `worker`, or it ends with `:worker` (#614).
+    worker: isWorkerType(typeof call.agent_type === 'string' ? call.agent_type : ''),
   };
 }
 
@@ -89,13 +90,16 @@ export const addProjectHook = (root: string, cli: string) =>
   addHook(projectHooks(root), 'PreToolUse', 'Bash|apply_patch', guardCommand(`"$(git rev-parse --show-toplevel)/${cli}"`, 'hook --agent codex', missingProjectRuntime(cli), { isToolCall: true }));
 export const hasProjectHook = (root: string): boolean => hasHook(projectHooks(root), 'PreToolUse', 'hook');
 
+// Seconds Codex waits for the stop check, including a worker's done-when command (#614).
+const STOP_TIMEOUT = 600;
+
 /**
- * The project's stop check (#211): Codex's Stop event takes no matcher. Its input has
+ * The project's stop check (#211, #614): Codex's Stop event takes no matcher. Its input has
  * `cwd` and `stop_hook_active`, as Claude Code's does; exit 2 with a reason on stderr
- * makes the agent go on.
+ * makes the agent go on. The timeout covers the done-when command.
  */
 export const addProjectStopHook = (root: string, cli: string) =>
-  addHook(projectHooks(root), 'Stop', undefined, guardCommand(`"$(git rev-parse --show-toplevel)/${cli}"`, 'hook --stop --agent codex', missingProjectRuntime(cli)));
+  addHook(projectHooks(root), 'Stop', undefined, guardCommand(`"$(git rev-parse --show-toplevel)/${cli}"`, 'hook --stop --agent codex', missingProjectRuntime(cli)), { timeout: STOP_TIMEOUT });
 export const hasProjectStopHook = (root: string): boolean => hasHook(projectHooks(root), 'Stop', 'hook');
 
 /** Throw `UnreadableHooksFile` unless both project hooks can go in the file: check before adding either. */

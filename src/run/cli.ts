@@ -292,7 +292,7 @@ export const COMMANDS: Command[] = [
     options: [
       { name: '--agent', value: 'name', text: 'the runtime that sends the call: claude-code (the default), codex, gemini, antigravity, muse, deepseek-harness or grok' },
       { name: '--commands-only', text: 'judge commands only, and leave files to the project' },
-      { name: '--stop', text: 'read the end-of-turn event (Claude Code Stop or SubagentStop, Codex or Grok CLI Stop, Gemini AfterAgent) and check the changed files; a worker also runs the done-when command' },
+      { name: '--stop', text: 'read the end-of-turn event (Claude Code Stop or SubagentStop, Codex, Muse Code or Grok CLI Stop, Gemini AfterAgent) and check the changed files; a worker also runs the done-when command' },
       { name: '--json', text: 'the result as JSON on stdout' },
     ],
     example: `echo '{"tool_input":{"command":"git status"}}' | yokoten hook`,

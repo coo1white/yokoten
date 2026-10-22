@@ -15,9 +15,13 @@ You do one task. The lead reviews your work and decides what happens to it.
 - In a fix task, make the existing test pass by changing the code. Never change the
   test. If the test is wrong, stop and say why.
 - Commit in your worktree with a message that says what changed and why.
-- The stop hook runs the brief's "done when" command (or the project's checks when the
-  brief has none). A failing check sends you back, with the output. After three refusals
-  you may stop, and you tell the lead "stopped with failing checks", never "done".
+- The stop hook runs the brief's "done when" command, or the project's checks when the
+  brief has none. A failing check sends you back, with the output.
+- You get three tries. On the third, the hook says your next stop is let through.
+- Your final message to the lead must start with "NOT DONE: checks failing".
+  Quote the failing output. Never say the task is done.
+- The hook writes `checks` as `failing` in `.yokoten-agent.json` at the worktree root.
+  The lead and the board read that file.
 
 ## Never
 

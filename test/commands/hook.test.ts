@@ -16,6 +16,7 @@ import {
 import {
   dirname,
   join,
+  resolve,
 } from 'node:path';
 import { test } from 'node:test';
 import {
@@ -376,7 +377,7 @@ test('hook: in-process, the tool call and the end-of-turn event come from the gi
   assert.deepEqual(await stop(true), { code: 0, stdout: '', stderr: '' });
 });
 
-test('hook --stop: a worker is done only when the done-when check passes (#614)', async () => {
+test('hook --stop: a worker is done only when the done-when check passes (#614)', { skip: process.platform === 'win32' && 'the done-when commands use sh syntax' }, async () => {
   const sandbox = makeSandbox();
   sandbox.write('a.md', 'fine\n');
   sandbox.git('add', '.');
@@ -393,6 +394,7 @@ test('hook --stop: a worker is done only when the done-when check passes (#614)'
   assert.match(result.stderr, /the done-when check failed/);
   assert.match(result.stderr, /fail-614/);
   assert.match(result.stderr, /This was try 1 of 3/);
+  assert.doesNotMatch(result.stderr, /next stop is let through/);
   // stop_hook_active does not let a worker skip the check.
   result = await sandbox.call(['hook', '--stop'], {
     input: event({ stop_hook_active: true }),
@@ -401,14 +403,26 @@ test('hook --stop: a worker is done only when the done-when check passes (#614)'
   assert.equal(result.status, 2);
   assert.match(result.stderr, /still-fail/);
   assert.match(result.stderr, /This was try 2 of 3/);
+  assert.doesNotMatch(result.stderr, /next stop is let through/);
   result = await stop('echo third-fail >&2; exit 1');
   assert.equal(result.status, 2);
   assert.match(result.stderr, /This was try 3 of 3/);
+  assert.match(result.stderr, /next stop is let through/);
+  assert.match(result.stderr, /NOT DONE: checks failing/);
   // The loop guard ends after the limit: the worker may stop, never as done.
   result = await stop('echo last-fail >&2; exit 1');
   assert.equal(result.status, 0);
   assert.match(result.stderr, /stopped with failing checks/);
   assert.doesNotMatch(result.stderr, /this task is done/i);
+  const status = JSON.parse(readFileSync(join(sandbox.repo, '.yokoten-agent.json'), 'utf8')) as { checks: string; updated: string };
+  assert.equal(status.checks, 'failing');
+  assert.match(status.updated, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+  assert.equal(existsSync(join(sandbox.home, '.config', 'yokoten', 'done-tries', 'task-614')), false, 'the count is cleared after the give-up');
+  // A resumed worker is checked again, from try 1.
+  result = await stop('echo again-fail >&2; exit 1');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /This was try 1 of 3/);
+  assert.doesNotMatch(result.stderr, /next stop is let through/);
   // A new session key starts the count again.
   result = await sandbox.call(['hook', '--stop'], {
     input: event({ session_id: 'task-614-b' }),
@@ -447,6 +461,102 @@ test('hook --stop: a worker is done only when the done-when check passes (#614)'
   assert.equal(out.blocked, true);
   assert.equal(out.doneWhen.ok, false);
   assert.match(out.doneWhen.output, /json-fail/);
+});
+
+// A missing count used to refuse every later stop (`3 > 3` is false). Five stops refuse at most three.
+test('hook --stop: a read-only home cannot trap a worker (#614)', { skip: (process.platform === 'win32' || process.getuid?.() === 0) && 'no read-only folder for root or on Windows' }, async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const fail = join(sandbox.repo, 'fail.mjs');
+  writeFileSync(fail, 'process.exit(1);\n');
+  chmodSync(sandbox.home, 0o555);
+  try {
+    const stop = (active: boolean) =>
+      sandbox.call(['hook', '--stop'], {
+        input: JSON.stringify({ session_id: 'ro-614', cwd: sandbox.repo, hook_event_name: 'Stop', stop_hook_active: active }),
+        extra: { YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: `${process.execPath} ${fail}` },
+      });
+    const results = [];
+    for (let index = 0; index < 5; index += 1) results.push(await stop(index > 0));
+    const refused = results.filter((item) => item.status === 2);
+    assert.ok(refused.length <= 3, `refused ${refused.length} times`);
+    assert.equal(results[0]?.status, 2);
+    assert.match(results[0]?.stderr ?? '', /next stop is let through/);
+    assert.match(results[0]?.stderr ?? '', /NOT DONE: checks failing/);
+    assert.equal(results[1]?.status, 0, results[1]?.stderr);
+    assert.match(results[1]?.stderr ?? '', /stopped with failing checks/);
+    assert.equal(results[4]?.status, 0);
+    const status = JSON.parse(readFileSync(join(sandbox.repo, '.yokoten-agent.json'), 'utf8')) as { checks: string; updated: string };
+    assert.equal(status.checks, 'failing');
+    assert.match(status.updated, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+  } finally {
+    chmodSync(sandbox.home, 0o755);
+  }
+});
+
+test('hook --stop: a reviewer subagent is not checked, and coworker is not a worker (#614)', async () => {
+  const sandbox = makeSandbox();
+  const key = `${'AK'}IA${'Q7W3R9T2Y5Q7W3R9'}`;
+  sandbox.write('out.txt', `${key}\n`);
+  const reviewer = await sandbox.call(['hook', '--stop'], {
+    input: JSON.stringify({ cwd: sandbox.repo, hook_event_name: 'SubagentStop', agent_type: 'reviewer', agent_id: 'rev-614' }),
+  });
+  assert.deepEqual([reviewer.status, reviewer.stdout, reviewer.stderr], [0, '', '']);
+  // The same file still sends the lead back. The reviewer skip did not drop the check.
+  const lead = await sandbox.call(['hook', '--stop'], {
+    input: JSON.stringify({ cwd: sandbox.repo, hook_event_name: 'Stop', stop_hook_active: false }),
+  });
+  assert.equal(lead.status, 2);
+  assert.match(lead.stderr, /out\.txt:1: a secret/);
+  const marker = join(sandbox.repo, 'coworker-ran');
+  const script = join(sandbox.repo, 'mark.mjs');
+  writeFileSync(script, `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marker)}, 'ran');\nprocess.exit(1);\n`);
+  const coworker = await sandbox.call(['hook', '--stop'], {
+    input: JSON.stringify({ cwd: sandbox.repo, hook_event_name: 'SubagentStop', agent_type: 'coworker', agent_id: 'co-614' }),
+    extra: { YOKOTEN_DONE_WHEN: `${process.execPath} ${script}` },
+  });
+  assert.deepEqual([coworker.status, coworker.stderr], [0, '']);
+  assert.equal(existsSync(marker), false, 'a non-worker subagent does not run the check');
+});
+
+test('hook --stop: a subagent runs the done-when command only in the worktree the event names (#614)', { skip: process.platform === 'win32' && 'a node path with a space needs shell quoting' }, async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const tree = join(makeTempDir('yokoten-tree-'), 'wt');
+  sandbox.git('worktree', 'add', '-q', '-b', 'task', tree);
+  const record = join(sandbox.repo, 'record.mjs');
+  writeFileSync(record, `import { writeFileSync } from 'node:fs';\nwriteFileSync(process.argv[2], process.cwd());\n`);
+  const leadMarker = join(sandbox.repo, 'lead-ran');
+  const treeMarker = join(tree, 'tree-ran');
+  const command = (marker: string) => `${process.execPath} ${record} ${marker}\n`;
+  writeFileSync(join(sandbox.repo, '.git', 'yokoten-done-when'), command(leadMarker));
+  const gitdir = /^gitdir:[ \t]*(.+)$/m.exec(readFileSync(join(tree, '.git'), 'utf8'));
+  assert.ok(gitdir);
+  writeFileSync(join(resolve(tree, gitdir[1].trim()), 'yokoten-done-when'), command(treeMarker));
+  const stop = (cwd: string) =>
+    sandbox.call(['hook', '--stop'], {
+      cwd,
+      input: JSON.stringify({ cwd, hook_event_name: 'SubagentStop', agent_type: 'worker', agent_id: `wt-${cwd.length}`, stop_hook_active: false }),
+    });
+  let result = await stop(tree);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(leadMarker), false, 'the lead command did not run');
+  assert.equal(realpathSync(readFileSync(treeMarker, 'utf8')), realpathSync(tree), 'the command ran in the worktree');
+  rmSync(treeMarker);
+  result = await stop(sandbox.repo);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(treeMarker), false, 'the worktree command did not run');
+  assert.equal(realpathSync(readFileSync(leadMarker, 'utf8')), realpathSync(sandbox.repo), 'the command ran in the event folder');
+  rmSync(leadMarker);
+  const nested = join(sandbox.repo, 'src');
+  mkdirSync(nested);
+  result = await stop(nested);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(realpathSync(readFileSync(leadMarker, 'utf8')), realpathSync(nested), 'a subagent in the lead folder runs in the event folder');
 });
 
 // #555: Muse Code passes its hooks no YOKOTEN_ROLE. A worktree the lead marks makes every

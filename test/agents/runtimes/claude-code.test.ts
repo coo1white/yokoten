@@ -22,15 +22,19 @@ import { addProjectStopHook, formatRewrite, hasSessionInput, readSessionStart, r
 import { refuseOnFailure } from '../../../src/run/cli.ts';
 
 test('claude-code readStop: a Stop or SubagentStop event is checked; a worker subagent is a worker (#614)', () => {
-  assert.deepEqual(readStop({ cwd: '/w', stop_hook_active: false }), { cwd: '/w', active: false, worker: false, sessionId: undefined });
-  assert.deepEqual(readStop({ cwd: '/w', stop_hook_active: true, session_id: 'abc' }), { cwd: '/w', active: true, worker: false, sessionId: 'abc' });
+  assert.deepEqual(readStop({ cwd: '/w', stop_hook_active: false }), { cwd: '/w', active: false, worker: false, subagent: false, sessionId: undefined });
+  assert.deepEqual(readStop({ cwd: '/w', stop_hook_active: true, session_id: 'abc' }), { cwd: '/w', active: true, worker: false, subagent: false, sessionId: 'abc' });
   assert.deepEqual(readStop({ cwd: '/w', hook_event_name: 'SubagentStop', agent_type: 'worker', agent_id: 'agent-1' }), {
     cwd: '/w',
     active: false,
     worker: true,
+    subagent: true,
     sessionId: 'agent-1',
   });
   assert.equal(readStop({ agent_type: 'yokoten:worker' })?.worker, true);
+  assert.equal(readStop({ hook_event_name: 'SubagentStop', agent_type: 'reviewer' })?.worker, false);
+  assert.equal(readStop({ hook_event_name: 'SubagentStop', agent_type: 'coworker' })?.worker, false);
+  assert.equal(readStop({ agent_type: 'Worker' })?.worker, true);
   assert.equal(readStop(null), null);
   assert.equal(readStop([]), null);
 });

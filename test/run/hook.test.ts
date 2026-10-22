@@ -2,8 +2,9 @@
 
 import '../repo/home.ts';
 import assert from 'node:assert/strict';
-import { readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import {
   CLI,
@@ -13,17 +14,21 @@ import {
 import { DEFAULTS } from '../../src/rules/config.ts';
 import { SECRET } from '../../src/rules/secrets.ts';
 import {
+  AGENT_STATUS_FILE,
   bumpDoneTries,
   clearDoneTries,
   DONE_TRY_LIMIT,
   doneTryKey,
+  doneWhenShell,
   guardDeadline,
+  isWorkerType,
   judge,
   readDoneWhen,
   readStopFields,
   runDoneWhen,
   shortenOutput,
   startGuard,
+  writeFailingChecks,
 } from '../../src/run/hook.ts';
 
 test('hook: blocks with exit 2 and a reason, allows with exit 0', async () => {
@@ -187,10 +192,14 @@ test('done-when: the command comes from the env or the git-folder file; a pass, 
   writeFileSync(join(sandbox.repo, '.git', 'yokoten-done-when'), '# comment\nnode --test\n');
   assert.equal(readDoneWhen({}, sandbox.repo), 'node --test');
   assert.equal(readDoneWhen({ YOKOTEN_DONE_WHEN: 'true' }, sandbox.repo), 'true', 'the env wins');
-  assert.equal(runDoneWhen('true', sandbox.repo, sandbox.env).ok, true);
-  const failed = runDoneWhen('echo fail-out >&2; exit 1', sandbox.repo, sandbox.env);
-  assert.equal(failed.ok, false);
-  assert.match(failed.output, /fail-out/);
+  assert.equal(doneWhenShell(), process.platform === 'win32' ? 'cmd.exe' : '/bin/sh');
+  // `true` and `echo` are sh. On Windows the command is a node script, below.
+  if (process.platform !== 'win32') {
+    assert.equal(runDoneWhen('true', sandbox.repo, sandbox.env).ok, true);
+    const failed = runDoneWhen('echo fail-out >&2; exit 1', sandbox.repo, sandbox.env);
+    assert.equal(failed.ok, false);
+    assert.match(failed.output, /fail-out/);
+  }
   const token = `${'gh'}p_${'a'.repeat(36)}`;
   assert.equal(shortenOutput(`token: ${token}`).includes(token), false);
   assert.equal(shortenOutput(`token: ${token}`).includes(SECRET), true);
@@ -199,8 +208,17 @@ test('done-when: the command comes from the env or the git-folder file; a pass, 
     cwd: '/w',
     active: true,
     worker: true,
+    subagent: false,
     sessionId: 's1',
   });
+  assert.equal(isWorkerType('worker'), true);
+  assert.equal(isWorkerType('Worker'), true);
+  assert.equal(isWorkerType('yokoten:worker'), true);
+  assert.equal(isWorkerType('coworker'), false);
+  assert.equal(isWorkerType('my-worker'), false);
+  assert.equal(isWorkerType('worker:extra'), false);
+  assert.equal(readStopFields({ hook_event_name: 'SubagentStop', agent_type: 'coworker' }).worker, false);
+  assert.equal(readStopFields({ hook_event_name: 'SubagentStop', agent_type: 'coworker' }).subagent, true);
   const key = doneTryKey('task-614', sandbox.repo);
   assert.equal(key, 'task-614');
   assert.equal(doneTryKey('bad id!', sandbox.repo).length, 16);
@@ -210,4 +228,84 @@ test('done-when: the command comes from the env or the git-folder file; a pass, 
   clearDoneTries(sandbox.env, key);
   assert.equal(bumpDoneTries(sandbox.env, key), 1);
   assert.equal(readFileSync(join(sandbox.home, '.config', 'yokoten', 'done-tries', key), 'utf8').trim(), '1');
+  // A count path that is a folder makes rmSync throw. The hook must still end.
+  const blocked = 'task-dir';
+  mkdirSync(join(sandbox.home, '.config', 'yokoten', 'done-tries', blocked), { recursive: true });
+  assert.doesNotThrow(() => clearDoneTries(sandbox.env, blocked));
+});
+
+test('writeFailingChecks: keeps the other fields, and sets checks and the UTC time (#614)', () => {
+  const sandbox = makeSandbox();
+  const path = join(sandbox.repo, AGENT_STATUS_FILE);
+  writeFileSync(path, `${JSON.stringify({ name: 'worker-1', role: 'engineer', doing: 'the task' })}\n`);
+  writeFailingChecks(sandbox.repo, new Date('2026-10-22T10:00:00.123Z'));
+  const status = JSON.parse(readFileSync(path, 'utf8')) as { name: string; role: string; doing: string; checks: string; updated: string };
+  assert.equal(status.name, 'worker-1');
+  assert.equal(status.role, 'engineer');
+  assert.equal(status.doing, 'the task');
+  assert.equal(status.checks, 'failing');
+  assert.equal(status.updated, '2026-10-22T10:00:00Z');
+  writeFileSync(path, 'not json');
+  writeFailingChecks(sandbox.repo, new Date('2026-10-22T11:00:00.000Z'));
+  assert.equal(JSON.parse(readFileSync(path, 'utf8')).checks, 'failing');
+  writeFileSync(path, '[]\n');
+  writeFailingChecks(sandbox.repo, new Date('2026-10-22T12:00:00.000Z'));
+  assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { checks: 'failing', updated: '2026-10-22T12:00:00Z' });
+});
+
+// The child ignores SIGHUP and SIGTERM. Only killing its process group stops it before the marker.
+test('done-when: a timeout stops the command and the program it started (#614)', { skip: process.platform === 'win32' && 'the kill uses a POSIX process group' }, async () => {
+  const sandbox = makeSandbox();
+  const marker = join(sandbox.repo, 'child-marker');
+  const childPidFile = join(sandbox.repo, 'child-pid');
+  const parentPidFile = join(sandbox.repo, 'parent-pid');
+  const childScript = join(sandbox.repo, 'child.mjs');
+  const parentScript = join(sandbox.repo, 'parent.mjs');
+  writeFileSync(childScript, `import { writeFileSync } from 'node:fs';
+process.on('SIGHUP', () => {});
+process.on('SIGTERM', () => {});
+writeFileSync(process.argv[2], String(process.pid));
+setTimeout(() => writeFileSync(process.argv[3], 'alive'), 30000);
+setInterval(() => {}, 1000);
+`);
+  writeFileSync(parentScript, `import { writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+writeFileSync(process.argv[2], String(process.pid));
+const child = spawn(process.execPath, [process.argv[3], process.argv[4], process.argv[5]], { stdio: 'ignore' });
+child.unref();
+setInterval(() => {}, 1000);
+`);
+  const command = `${process.execPath} ${parentScript} ${parentPidFile} ${childScript} ${childPidFile} ${marker}`;
+  let parentPid = 0;
+  let childPid = 0;
+  try {
+    const result = runDoneWhen(command, sandbox.repo, sandbox.env, 8000);
+    assert.equal(result.ok, false);
+    assert.match(result.output, /ran too long/);
+    assert.equal(existsSync(childPidFile), true, 'the child started');
+    parentPid = Number(readFileSync(parentPidFile, 'utf8'));
+    childPid = Number(readFileSync(childPidFile, 'utf8'));
+    const dead = (pid: number) => {
+      try {
+        process.kill(pid, 0);
+        return false;
+      } catch (error) {
+        return (error as NodeJS.ErrnoException).code === 'ESRCH';
+      }
+    };
+    const deadline = Date.now() + 2000;
+    while ((!dead(childPid) || !dead(parentPid)) && Date.now() < deadline) await delay(50);
+    assert.equal(dead(childPid), true, 'the child is still running');
+    assert.equal(dead(parentPid), true, 'the parent is still running');
+    assert.equal(existsSync(marker), false);
+  } finally {
+    for (const pid of [childPid, parentPid]) {
+      if (!pid) continue;
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        // Already gone.
+      }
+    }
+  }
 });
