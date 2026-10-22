@@ -608,9 +608,10 @@ test('workflows: the required checks run on merge_group, with the same jobs as a
     // No run is cancelled: a cancelled run shows as a failure on the pull request page (#645).
     assert.doesNotMatch(pr, /cancel-in-progress/, `${dir}/pr.yml cancels runs`);
     assert.match(prJob, /check --pr/);
+    assert.doesNotMatch(jobCondition(prJob), /draft/, `${dir}/pr.yml: the pr job skips on the draft state`);
     // The step reads the pull request as it is now, so runs may start in any order (#645):
-    // it gets the job's token, and the job may read pull requests.
-    assert.match(prJob, /check --pr\n {8}env:\n {10}GITHUB_TOKEN: \$\{\{ github\.token \}\}\n/, `${dir}/pr.yml: check --pr gets no token`);
+    // it asks for that, it gets the job's token, and the job may read pull requests.
+    assert.match(prJob, /check --pr\n {8}env:\n {10}YOKOTEN_PR_LIVE: '1'\n {10}GITHUB_TOKEN: \$\{\{ github\.token \}\}\n/, `${dir}/pr.yml: check --pr does not read the pull request as it is now`);
     assert.match(pr, /^permissions:\n(?: {2}.*\n)*? {2}pull-requests: read\n/m, `${dir}/pr.yml can't read pull requests`);
   }
   assert.ok(!readTriggers(kitYokoten.replace(/^  merge_group:\n/m, '')).includes('merge_group'), 'a missing trigger is caught');

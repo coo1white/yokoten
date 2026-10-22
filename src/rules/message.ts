@@ -268,9 +268,9 @@ export const RULES = {
     docs: guide('use-it-as-a-github-action'),
   },
   'pr-current': {
-    rule: 'in GitHub Actions, `check --pr` reads the pull request as it is now, from the API',
+    rule: 'when its workflow asks, `check --pr` reads the pull request as it is now, from the API',
     why: 'runs can start in any order, and the event file keeps the labels and milestone of its own moment, so only the pull request as it is now gives the true result',
-    check: `${PR_CHECK}; in GitHub Actions it reads the title, body, labels, milestone and draft state with the job's GITHUB_TOKEN, and fails when it can't`,
+    check: `${PR_CHECK}; with YOKOTEN_PR_LIVE set, it reads the title, body, labels and milestone with the job's GITHUB_TOKEN, and fails when it can't`,
     docs: guide('use-it-as-a-github-action'),
   },
   'pr-read': {

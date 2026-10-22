@@ -68,12 +68,6 @@ async function bot(invocation: Invocation, command: string[]): Promise<number> {
   const milestone = wanted ? chooseMilestone(invocation, wanted, ghWith(file, cwd, botEnv(env, token))) : null;
   if (milestone === false) return 1;
   const rest = milestone ? addArgs(withLabels, ['--milestone', milestone]) : withLabels;
-  // A new pull request opens as a draft, and is marked ready once its labels and milestone
-  // are on (#645). The `pr` check skips a draft, so it runs once, on the whole pull request:
-  // no early run fails for a label not yet added, and none is cancelled into a ✗.
-  // A command that asks for a draft, the browser or a dry run is sent as it is.
-  const draftFirst = labels !== null && !rest.some((arg) => ['--draft', '-d', '--web', '-w', '--dry-run'].includes(arg));
-  const args = draftFirst ? addArgs(rest, ['--draft']) : rest;
   if (pendingIssue) {
     const issueProblems = checkIssueLabels(pendingIssue.labels, readRepoLabelNames(ghWith(file, cwd, botEnv(env, token))));
     if (issueProblems.length) {
@@ -87,7 +81,7 @@ async function bot(invocation: Invocation, command: string[]): Promise<number> {
   const input = body?.input ?? note?.input;
   const { stdin, stdout, stderr } = invocation;
   const piped = input ?? (stdin.fd === null ? (stdin.text ?? '') : undefined);
-  const result = spawnSync(file, args, { cwd, stdio: [piped === undefined ? (stdin.fd ?? 'pipe') : 'pipe', draftFirst ? 'pipe' : childStream(stdout), childStream(stderr)], input: piped, env: botEnv(env, token), maxBuffer: 1 << 30 });
+  const result = spawnSync(file, rest, { cwd, stdio: [piped === undefined ? (stdin.fd ?? 'pipe') : 'pipe', childStream(stdout), childStream(stderr)], input: piped, env: botEnv(env, token), maxBuffer: 1 << 30 });
   // What gh said, for a stream that is not the process's own: written as it is, as a terminal would show it.
   if (result.stdout) stdout.write(result.stdout);
   if (result.stderr) stderr.write(result.stderr);
@@ -101,22 +95,7 @@ async function bot(invocation: Invocation, command: string[]): Promise<number> {
     print(invocation, [`yokoten bot: ${file} was ended by ${result.signal}`], invocation.stderr);
     return 1;
   }
-  if (draftFirst && result.status === 0) return markReady(invocation, file, String(result.stdout ?? ''), cwd, botEnv(env, token));
   return result.status ?? 1;
-}
-
-/** Marks the draft `gh pr create` just opened as ready, by the URL gh printed (#645). */
-function markReady(invocation: Invocation, file: string, created: string, cwd: string, ghEnv: Env): number {
-  const url = created.match(/https:\/\/\S+\/pull\/\d+/g)?.at(-1);
-  if (!url) {
-    print(invocation, ['yokoten bot: the pull request was opened as a draft, but gh printed no URL to mark it ready. Run `gh pr ready` on it'], invocation.stderr);
-    return 1;
-  }
-  const ready = spawnSync(file, ['pr', 'ready', url], { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: ghEnv, encoding: 'utf8' });
-  if (ready.status === 0) return 0;
-  invocation.stderr.write(ready.stderr ?? '');
-  print(invocation, [`yokoten bot: ${url} is still a draft, so its checks have not run. Mark it ready: gh pr ready ${url}`], invocation.stderr);
-  return 1;
 }
 
 /** The process's own stream by its fd, so gh writes to it straight; else a pipe, copied after (#475). */

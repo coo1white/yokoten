@@ -64,8 +64,8 @@ import {
 import { lateFinding } from '../../src/run/hook.ts';
 import { nameNotes } from '../../src/run/names.ts';
 import { translationNotes } from '../../src/run/translations.ts';
+import { readCurrentPullRequest } from '../../src/host/current-pr.ts';
 import {
-  readCurrentPullRequest,
   readIssue,
   readNumberedPullRequest,
   readPullRequest,

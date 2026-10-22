@@ -13,7 +13,8 @@ import { randomUUID } from 'node:crypto';
 import { chmodSync, closeSync, linkSync, mkdirSync, openSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import { ghIn, readCodeOwners, readCurrentPullRequest, readIssue, readNumberedPullRequest, readPullRequest, readRepoLabelNames, readsCurrentPullRequest } from '../host/github.ts';
+import { readCurrentPullRequest, readsCurrentPullRequest } from '../host/current-pr.ts';
+import { ghIn, readCodeOwners, readIssue, readNumberedPullRequest, readPullRequest, readRepoLabelNames } from '../host/github.ts';
 import { loadConfig } from '../rules/config.ts';
 import { type Finding, formatFinding } from '../rules/message.ts';
 import { addedLinesByFile, changedLines, checkIssueLabels, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, largeDiff, longSentenceNote, longSentences, splitForDependabot } from '../rules/pr.ts';
@@ -91,17 +92,14 @@ async function runMode(invocation: Invocation, mode: string, root: string, confi
       'problem' in issue ? [issue.problem] : [...checkIssueTitle(issue.title, config, issue.labels), ...checkIssueLabels(issue.labels, readRepoLabelNames(ghIn(root, env, GH_TIMEOUT_MS)))];
   } else if (mode === 'pr') {
     let pr = number === undefined ? readPullRequest(root, env) : readNumberedPullRequest(root, ghIn(root, env, GH_TIMEOUT_MS), number, env);
-    // In CI, with the job's token, the title, body, labels and milestone are the ones the
-    // pull request has now, never the event file's (#645). The commits stay the event's.
-    let isDraft = false;
+    // When the workflow asks for it (#645), the title, body, labels and milestone are the
+    // ones the pull request has now, never the event file's. The commits stay the event's.
     if (pr && !('problem' in pr) && number === undefined && readsCurrentPullRequest(env)) {
       const now = await readCurrentPullRequest(env);
-      if ('problem' in now) pr = now;
-      else if (now.isDraft) isDraft = true;
-      else pr = { ...pr, title: now.title, body: now.body, labels: now.labels, milestone: now.milestone, author: now.author };
+      pr = 'problem' in now ? now : { ...pr, ...now };
     }
-    if (!pr || isDraft) {
-      const skipped = isDraft ? 'draft: checked when it is marked ready' : 'no pull request in this run (it reads the CI event); nothing to check';
+    if (!pr) {
+      const skipped = 'no pull request in this run (it reads the CI event); nothing to check';
       if (json) printJson(invocation, { check: mode, ok: true, skipped, findings: [], notes: [] });
       else print(invocation, [`${name}: ${skipped}`]);
       return SKIPPED;

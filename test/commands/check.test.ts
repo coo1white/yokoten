@@ -407,9 +407,10 @@ test('check --pr: a Dependabot pull request passes with notes; the same body fro
 });
 
 // #645: GitHub can start the runs of one pull request in any order, and each event file
-// keeps the labels of its own moment. With the job's token, every run reads the pull
-// request as it is now, so a late run for `opened` judges the labels added since.
-test('check --pr with GITHUB_TOKEN: reads the pull request as it is now; a draft passes with a note; a failed read fails (#645)', async () => {
+// keeps the labels of its own moment. When the workflow asks (YOKOTEN_PR_LIVE), every run
+// reads the pull request as it is now, so a late run for `opened` judges the labels added
+// since, and a rerun judges it again. A draft is judged in full, like any pull request.
+test('check --pr with YOKOTEN_PR_LIVE: judges the pull request as it is now, a draft in full; a failed read fails (#645)', async () => {
   const sandbox = makeSandbox();
   sandbox.write('README.md', 'Short.\n');
   sandbox.git('add', '.');
@@ -436,21 +437,23 @@ test('check --pr with GITHUB_TOKEN: reads the pull request as it is now; a draft
   await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
   const api = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const summary = join(sandbox.home, 'summary.md');
-  const ci = { GITHUB_EVENT_PATH: file, GITHUB_TOKEN: token, YOKOTEN_GITHUB_API: api, GITHUB_ACTIONS: 'true', GITHUB_STEP_SUMMARY: summary };
+  const ci = { GITHUB_EVENT_PATH: file, YOKOTEN_PR_LIVE: '1', GITHUB_TOKEN: token, YOKOTEN_GITHUB_API: api, GITHUB_ACTIONS: 'true', GITHUB_STEP_SUMMARY: summary };
   const outputs: string[] = [];
   const call = async (args: string[], extra: Record<string, string> = ci) => {
     const result = await sandbox.call(args, { extra });
     outputs.push(result.stdout, result.stderr);
     return result;
   };
+  const ids = (stdout: string) => JSON.parse(stdout).findings.map((f: { id: string }) => f.id);
   try {
-    // The control: the event file alone has no labels and no milestone, so it fails.
-    let result = await call(['check', '--pr', '--json'], { GITHUB_EVENT_PATH: file });
+    // Without YOKOTEN_PR_LIVE, a token alone changes nothing: the event file is read, and
+    // it has no labels and no milestone, so it fails. No request is made.
+    let result = await call(['check', '--pr', '--json'], { GITHUB_EVENT_PATH: file, GITHUB_TOKEN: token, YOKOTEN_GITHUB_API: api });
     assert.equal(result.status, 1);
-    assert.deepEqual(JSON.parse(result.stdout).findings.map((f: { id: string }) => f.id).sort(), ['pr-labels', 'pr-labels', 'pr-milestone']);
-    assert.deepEqual(requests, [], 'no token, no read');
+    assert.deepEqual(ids(result.stdout).sort(), ['pr-labels', 'pr-labels', 'pr-milestone']);
+    assert.deepEqual(requests, [], 'no opt-in, no read');
 
-    // With the token, the labels and milestone it has now win over the event's.
+    // With it, the labels and milestone the pull request has now win over the event's.
     result = await call(['check', '--pr']);
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /check --pr: ok\n$/);
@@ -460,38 +463,30 @@ test('check --pr with GITHUB_TOKEN: reads the pull request as it is now; a draft
     now = { ...now, labels: [{ name: 'feat' }] };
     result = await call(['check', '--pr', '--json']);
     assert.equal(result.status, 1);
-    assert.deepEqual(JSON.parse(result.stdout).findings.map((f: { id: string }) => f.id), ['pr-labels']);
+    assert.deepEqual(ids(result.stdout), ['pr-labels']);
 
-    // A draft now passes with a note: it is checked when it is marked ready.
+    // A draft is judged in full: missing a label it fails, with its labels it passes.
     now = { ...now, draft: true };
+    result = await call(['check', '--pr', '--json']);
+    assert.equal(result.status, 1);
+    assert.deepEqual(ids(result.stdout), ['pr-labels']);
+    now = { ...now, labels: [{ name: 'feat' }, { name: 'tier B' }] };
     result = await call(['check', '--pr']);
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout, 'yokoten check --pr: draft: checked when it is marked ready\n');
-    result = await call(['check', '--pr', '--json']);
-    assert.deepEqual(JSON.parse(result.stdout), { check: 'pr', ok: true, skipped: 'draft: checked when it is marked ready', findings: [], notes: [] });
+    assert.match(result.stdout, /check --pr: ok\n$/);
 
     // A read that fails fails the check; the old event file is never the answer.
-    requests.length = 0;
-    for (const [code, tries] of [[403, 1], [404, 1], [502, 2]] as const) {
-      status = code;
-      result = await call(['check', '--pr', '--json']);
-      assert.equal(result.status, 1, `${code}`);
-      const findings = JSON.parse(result.stdout).findings;
-      assert.deepEqual(findings.map((f: { id: string; what: string }) => [f.id, f.what]), [['pr-current', `pull request 7 can't be read as it is now: GitHub answered ${code}`]]);
-      assert.match(findings[0].fix, /GITHUB_TOKEN: \$\{\{ github\.token \}\}.*pull-requests: read/);
-      assert.equal(requests.length, tries, `${code}: a server error is tried once more, nothing else`);
-      requests.length = 0;
-    }
-    assert.match(readFileSync(summary, 'utf8'), /\| \[pr-current\]\(\S+\) \| pull request 7 can't be read as it is now: GitHub answered 502 \|/);
-    // No answer at all fails the same way.
-    result = await call(['check', '--pr'], { ...ci, YOKOTEN_GITHUB_API: 'http://127.0.0.1:1' });
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /- pull request 7 can't be read as it is now: GitHub gave no answer\./);
-    // An event that names no pull request number fails too, before any read.
-    writeFileSync(file, JSON.stringify({ repository: { full_name: 'octo/app' }, pull_request: { title: 'feat: a', body, base: { sha: base }, head: { sha: head } } }));
+    status = 403;
     result = await call(['check', '--pr', '--json']);
     assert.equal(result.status, 1);
-    assert.deepEqual(JSON.parse(result.stdout).findings.map((f: { id: string; what: string }) => [f.id, f.what]), [['pr-current', 'the CI event names no pull request number']]);
+    assert.deepEqual(JSON.parse(result.stdout).findings.map((f: { id: string; what: string }) => [f.id, f.what]), [['pr-current', "pull request 7 can't be read as it is now: GitHub answered 403"]]);
+    assert.match(readFileSync(summary, 'utf8'), /\| \[pr-current\]\(\S+\) \| pull request 7 can't be read as it is now: GitHub answered 403 \|/);
+    // Asked for, with no token: it fails too, and asks for the token.
+    status = 200;
+    requests.length = 0;
+    result = await call(['check', '--pr'], { ...ci, GITHUB_TOKEN: '' });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /- GITHUB_TOKEN is not set, so the pull request as it is now can't be read\. .+GITHUB_TOKEN: \$\{\{ github\.token \}\}/);
     assert.deepEqual(requests, []);
   } finally {
     server.close();
