@@ -20,7 +20,8 @@ AI 讓寫程式變便宜了，管程式卻沒有。yokoten 讓每個 agent 都�
 
 ## 用哪個 agent 都可以
 
-在下面這些 agent 裡，危險的操作在執行前就會被擋下來（[各自怎麼設定](../../guide.md#works-with)，英文）：
+yokoten 能管住八種 AI 程式設計 agent，它們守的是同一套規矩。[指南裡的 agent 表](../../guide.md#works-with)
+（英文）是唯一的名單，寫明每種覆蓋得怎麼樣、是怎麼測的。Gemini CLI 只是列在這裡，還沒有完整跑過。
 
 - Claude Code
 - Codex CLI
@@ -29,6 +30,7 @@ AI 讓寫程式變便宜了，管程式卻沒有。yokoten 讓每個 agent 都�
 - Muse Code
 - DeepSeek Harness
 - Grok CLI
+- Gemini CLI（列在這裡，還沒有完整跑過）
 
 用其他 agent，或完全不用 agent，提交檢查和 CI 一樣會擋下有問題的改動。
 
