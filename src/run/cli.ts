@@ -300,7 +300,7 @@ export const COMMANDS: Command[] = [
   {
     name: 'worker',
     summary: "mark a worktree as a worker's, so the guard treats every agent there as a worker",
-    usage: 'mark <dir> | unmark <dir>',
+    usage: 'mark <dir> | unmark <dir> | env [runtime]',
     text: [
       "Marks the worktree at <dir> as a worker's. The guard then treats every agent there as",
       'a worker, even one whose runtime passes no YOKOTEN_ROLE to its hooks (Muse Code).',
@@ -310,6 +310,8 @@ export const COMMANDS: Command[] = [
       'from the worker are the real lock. Given a subfolder, it marks the worktree it is in, and names it.',
       '`git worktree remove <dir>` removes the file with the worktree; `yokoten worker unmark <dir>`',
       'clears the list entry, and only the lead runs it. The main checkout and a submodule are never marked.',
+      '`yokoten worker env [runtime]` lists the names an agent that yokoten starts would get from this shell.',
+      'It never shows a value. Tokens, keys and passwords stay out (#613).',
     ],
     options: [],
     arguments: ['action', 'dir'],

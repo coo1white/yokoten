@@ -14,6 +14,7 @@ import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import type { Action } from '../../run/hook.ts';
 import { type FolderTrust, folderKeys, isFolder } from '../folder-trust.ts';
 import { type Added, addHook, checkHooksFile, hasHook, type HookArgs, type HookState, hookState, isObject } from '../hooks-file.ts';
+import type { RuntimeEnv } from '../agent-env.ts';
 
 // The docs: "Bash and apply_patch use tool_input.command", and unified exec reports as Bash.
 const SHELL = 'Bash';
@@ -406,3 +407,6 @@ export function readTrust(root: string, env: Env): CodexTrust {
   if (!states.length) return { state: 'hooks untrusted', store };
   return { state: (['hooks off', 'hooks untrusted', 'hooks changed'] as const).find((state) => states.includes(state)) ?? 'trusted', store };
 }
+
+/** The names this runtime's agent gets on top of the shared ones (#613). Codex signs in with its own login file; these are for an API key. */
+export const AGENT_ENV: RuntimeEnv = { login: ['OPENAI_API_KEY', 'CODEX_API_KEY'], config: ['CODEX_HOME'] };
