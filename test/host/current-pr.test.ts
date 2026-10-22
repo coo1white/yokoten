@@ -82,7 +82,9 @@ test('current pull request: the token goes only over https, or to this machine (
   for (const api of ['http://api.example.com', 'http://192.0.2.10:8080', 'ftp://api.example.com', 'not a url']) {
     const read = await readCurrentPullRequest({ GITHUB_EVENT_PATH: event, GITHUB_TOKEN: TOKEN, GITHUB_API_URL: api });
     assert.equal(what(read)?.what, 'the GitHub API address is not https, so the token is not sent', api);
-    assert.ok(!JSON.stringify(read).includes('example.com') && !JSON.stringify(read).includes('192.0.2.10'), 'the address is not named');
+    // The address and its host part are named nowhere in the result.
+    const host = api.split('//').at(-1) ?? api;
+    assert.ok(!JSON.stringify(read).includes(api) && !JSON.stringify(read).includes(host), 'the address is not named');
   }
   // YOKOTEN_GITHUB_API wins over GITHUB_API_URL, and localhost is allowed for tests.
   const fake = await fakeApi([200], { title: 'feat: a', labels: [] });
