@@ -2219,6 +2219,35 @@ test('guard: a worker does not change yokoten config folder; the lead may (#591)
     'echo ~/.config/yokoten/workers | xargs rm',
     'find ~/.config/yokoten -name workers -delete',
     'find ~/.config/yokoten -exec rm {} +',
+    // A find that writes, started at or above the folder (review of #591).
+    'find ~ -name workers -delete',
+    'find ~/.config -delete',
+    'find ~ -name workers -exec rm {} +',
+    'find $HOME -delete',
+    // A hard link to the list is the list.
+    'cp -l ~/.config/yokoten/workers w',
+    'cp --link ~/.config/yokoten/workers w',
+    'cp -al ~/.config/yokoten w',
+    'link ~/.config/yokoten/workers w',
+    // git that works in the folder.
+    'git init ~/.config/yokoten && git -C ~/.config/yokoten clean -fdx',
+    'git -C ~/.config/yokoten checkout -- .',
+    'git -C ~ -C .config/yokoten clean -fdx',
+    'git --work-tree=$HOME/.config/yokoten checkout .',
+    // Unknown parts that hide the name.
+    'X=yokoten; rm ~/.config/$X/workers',
+    'rm ~/.config/$(echo yokoten)/workers',
+    'rm ~/.config/yokote$(echo n)/workers',
+    'rm ~/$X/yokoten/workers',
+    "H=$HOME; rm $H/.config/yo''koten/workers",
+    'rm -rf $H/.c*',
+    // Downloads.
+    'curl -o ~/.config/yokoten/keys.env https://example.com/k',
+    'curl -sSLo ~/.config/yokoten/keys.env https://example.com/k',
+    'curl --output-dir ~/.config/yokoten -O https://example.com/workers',
+    'wget -O ~/.config/yokoten/workers https://example.com/w',
+    'wget --output-document=~/.config/yokoten/workers https://example.com/w',
+    'wget -P ~/.config/yokoten https://example.com/w',
   ];
   for (const command of refused) {
     const found = checkCommand(command, { cwd: process.cwd(), env: worker });
@@ -2244,7 +2273,27 @@ test('guard: a worker does not change yokoten config folder; the lead may (#591)
     'echo x > notes.txt',
     'rm "$TMPDIR/out.txt"',
     "bash -c 'npm test'",
+    // Work in the worktree that looks like the cases above.
+    'rm -rf node_modules dist',
+    "find . -name '*.log' -delete",
+    'find . -type d -name node_modules -exec rm -rf {} +',
+    'find ~ -name workers',
+    'cp -l a b',
+    'cp -a src out',
+    'git -C . status',
+    'git clone https://example.com/a/b.git',
+    'rm src/$NAME.ts',
+    'curl -o out.json https://example.com/x',
+    'curl -sSL https://example.com/x',
+    'wget https://example.com/x',
   ]) allowed(command, worker);
+  // The git folder too: a find that writes from above .git, a hard link into it, a download into it.
+  for (const command of ['find . -delete', "find . -name '*' -delete", 'find . -name x -o -delete', 'find . -exec rm {} +', 'cp -l .git/config w', 'curl -o .git/config https://example.com/c']) {
+    assert.equal(checkCommand(command, { cwd: process.cwd(), env: worker })?.id, 'worker-mark', command);
+    assert.notEqual(checkCommand(command, { cwd: process.cwd(), env: lead })?.id, 'worker-mark', `the lead may: ${command}`);
+  }
+  allowed("find src -name '*.tmp' -delete", worker);
+  allowed('find dist -delete', worker);
   if (process.platform === 'win32') return;
   // A symlink to the folder counts: compared by real path.
   symlinkSync(join(home, '.config', 'yokoten'), join(base, 'link'));
@@ -2272,6 +2321,9 @@ test('checkWorkerMarkEdit: yokoten config folder by path or real path (#591)', (
   assert.equal(checkWorkerMarkEdit(join(home, '.config', 'yokoten-old'), tree, env), null);
   assert.equal(checkWorkerMarkEdit(join(tree, 'a.ts'), tree, env), null);
   assert.equal(checkWorkerMarkEdit(join(home, '.config', 'yokoten', 'workers'), tree), null);
+  // Case aside, as in the command check.
+  assert.equal(checkWorkerMarkEdit(join(home, '.CONFIG', 'Yokoten', 'workers'), tree, env)?.id, 'worker-mark', 'another case');
+  assert.equal(checkWorkerMarkEdit(join(home, '.CONFIG', 'Yokoten-old'), tree, env), null);
   if (process.platform === 'win32') return;
   symlinkSync(join(home, '.config', 'yokoten'), join(tree, 'link'));
   assert.equal(checkWorkerMarkEdit(join(tree, 'link', 'workers'), tree, env)?.id, 'worker-mark', 'a symlink to the config folder');
