@@ -215,7 +215,7 @@ export function boardScript(): string {
   return [
     '"use strict";',
     ...PAGE_FUNCTIONS.map(String),
-    `const state = ${JSON.stringify(settings)};`,
+    `const state = ${JSON.stringify(settings).replace(/</g, '\\u003c')};`,
     "state.token = new URLSearchParams(location.search).get('t') || '';",
     'startPage(state);',
   ].join('\n');

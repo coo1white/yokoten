@@ -1,5 +1,6 @@
 // `yokoten board --text` (#601, #603): the board's data as plain text, for a terminal or an agent.
 
+import { terminalText } from '../../../run/learn.ts';
 import { BOARD_AGENT_FILE } from './agents.ts';
 import type { AgentView, BoardData, PullView } from './view.ts';
 
@@ -22,7 +23,7 @@ function countText(count: number, one: string): string {
   return `${count} ${one}${count === 1 ? '' : 's'}`;
 }
 
-/** The board as plain text: the same data the page shows. */
+/** The board as plain text: the same data the page shows. Agents write it, so control and bidi characters show escaped. */
 export function renderBoardText(board: BoardData): string[] {
   const pulls = typeof board.pulls === 'string' ? [] : board.pulls;
   const worktrees = typeof board.worktrees === 'string' ? [] : board.worktrees;
@@ -42,5 +43,5 @@ export function renderBoardText(board: BoardData): string[] {
     '',
     'Worktrees:',
     ...(typeof board.worktrees === 'string' ? [`- ${board.worktrees}`] : worktrees.length ? worktrees.map((tree) => `- ${tree.path}${tree.branch ? ` (${tree.branch})` : ''}`) : ['- none.']),
-  ];
+  ].map(terminalText);
 }

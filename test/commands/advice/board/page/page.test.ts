@@ -1,9 +1,14 @@
-// Tests for src/commands/advice/board/page.ts.
+// Tests for src/commands/advice/board/page/page.ts.
 
 import '../../../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { boardPage, boardScript } from '../../../../../src/commands/advice/board/page/page.ts';
+
+/** Text that would end or hide the inline script early. */
+function findScriptBreaks(source: string): string[] {
+  return [/<\/script/i, /<!--/, /<script/i].filter((breaker) => breaker.test(source)).map(String);
+}
 
 /** The ways a page script can turn text into HTML or code. Agents write the board's text, so none may appear. */
 function findUnsafeSinks(source: string): string[] {
@@ -30,6 +35,7 @@ test('board page: the script parses, uses no HTML or code sink, and starts the p
   const script = boardScript();
   assert.doesNotThrow(() => new Function(script), 'the serialized functions are plain JavaScript');
   assert.deepEqual(findUnsafeSinks(script), []);
+  assert.deepEqual(findScriptBreaks(script), [], 'no word or setting can close the script tag');
   assert.match(script, /"refreshMs":15000/, 'refreshes every 15 seconds');
   assert.match(script, /"agentFile":"\.yokoten-agent\.json"/);
   assert.match(script, /startPage\(state\);$/);
@@ -42,4 +48,10 @@ test('board page: the sink check catches each sink', () => {
     assert.equal(findUnsafeSinks(bad).length, 1, bad);
   }
   assert.deepEqual(findUnsafeSinks('node.textContent = name; setTimeout(() => go(), 1)'), []);
+});
+
+// A positive control: the break check catches each way out of the script tag.
+test('board page: the break check catches a closing tag and a comment', () => {
+  assert.equal(findScriptBreaks('const a = "</SCRIPT><!--";').length, 2);
+  assert.deepEqual(findScriptBreaks(JSON.stringify({ a: '</script>' }).replace(/</g, '\\u003c')), [], 'the escape the page uses');
 });

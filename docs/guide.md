@@ -1514,7 +1514,8 @@ The page has three columns:
 
 The top bar has the language (English, 简体中文, 繁體中文 or 日本語; it starts in your
 browser's language), a link to the repo on GitHub, and light or dark. What agents write
-shows as they wrote it.
+shows as they wrote it. The page keeps your choices (language, folds, cleared agents)
+until you stop the board.
 
 The page refreshes every 15 seconds and works on a phone too. Stop the command with Ctrl-C.
 It only shows; to talk to an agent, use its own terminal for now.
@@ -1531,7 +1532,7 @@ format is open: other tools may read it too. One file per worktree.
 | `vendor` | Which vendor it runs on, such as `claude-code`, `codex` or `grok` |
 | `model`, `effort` | The model and effort, such as `opus` and `medium` |
 | `role` | `lead`, `engineer`, `reviewer`, `verifier` or `helper`. The lead is pinned at the top |
-| `task` | What it works on, such as `PR #615 Run rules locally`. A named pull request or issue shows as a link |
+| `task` | What it works on, such as `PR #615 Run rules locally`. A named pull request or issue shows as a chip |
 | `worktree` | The worktree it works in |
 | `doing` | What it does now, in a few words. Each new one is a step in the middle column |
 | `state` | `working`, `waiting` (it needs you) or `done` |

@@ -1,4 +1,4 @@
-// Tests for src/commands/advice/board/script.ts. The pure functions run as they are; the
+// Tests for src/commands/advice/board/page/script.ts. The pure functions run as they are; the
 // drawing ones run on a small fake document that keeps every node it is given.
 
 import '../../../../repo/home.ts';
@@ -72,7 +72,7 @@ test('board script: words in the page language, with values put in and the Engli
   assert.equal(say(english, 'oneRuleSet', { n: 2 }), 'One rule set · 2 vendors');
   assert.equal(say(english, 'waitingFor', { name: '{n} $& <b>' }), '{n} $& <b> is waiting for you', 'a value goes in as it is');
   assert.equal(summaryOf(english, ['working', 'waiting', 'working']), '2 working · 1 waiting');
-  assert.equal(say(english, roleGroup('verifier')), 'Checkers');
+  assert.equal(say(english, roleGroup('verifier')), 'Verifiers');
   assert.equal(roleGroup('lead'), 'group.other');
   const chinese = makeState(makeData({}), 'zh-CN');
   assert.equal(say(chinese, 'oneRuleSet', { n: 1 }), '一套规则 · 1 家厂商', 'no English singular in Chinese');

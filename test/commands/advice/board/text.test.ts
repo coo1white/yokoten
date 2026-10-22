@@ -63,3 +63,11 @@ test('board text: needs, agents, pulls and worktrees in plain words; a part that
     '- git failed',
   ]);
 });
+
+// #603: agents write the status files, so --text never sends their control codes to the terminal.
+test('board text: control and bidi characters in agent text show escaped', () => {
+  const board: BoardData = { repo: '/repo', repoUrl: '', agents: [agent({ name: 'bad\u001b]0;owned\u0007', doing: 'x\u202ey' })], needs: [], pulls: [], merged: [], worktrees: [], updated: '' };
+  const text = renderBoardText(board).join('\n');
+  assert.ok(!/[\u001b\u0007\u202e]/.test(text), 'no raw control or bidi character');
+  assert.match(text, /bad\\u001b/, 'the code shows as text');
+});

@@ -48,7 +48,7 @@ export type FeedItem = FeedEvent | { kind: 'group'; items: FeedEvent[] };
 /** One element with its class, attributes and children. Text children become text nodes. */
 export function el(tag: string, attrs: Record<string, string> = {}, ...children: (Node | string | null)[]): HTMLElement {
   const node = document.createElement(tag);
-  for (const [name, value] of Object.entries(attrs)) node.setAttribute(name === 'cls' ? 'class' : name, value);
+  for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, value);
   for (const child of children) if (child !== null) node.append(typeof child === 'string' ? document.createTextNode(child) : child);
   return node;
 }
@@ -149,7 +149,7 @@ export function loadUi(isPhone: boolean, browserLangs: readonly string[] = []): 
   try {
     const saved = JSON.parse(localStorage.getItem('yokoten-board') ?? 'null');
     if (saved && typeof saved === 'object') {
-      if (saved.fold && typeof saved.fold === 'object') Object.assign(ui.fold, saved.fold);
+      if (saved.fold && typeof saved.fold === 'object') for (const [key, value] of Object.entries(saved.fold)) if (typeof value === 'boolean' && key !== '__proto__') ui.fold[key] = value;
       if (Array.isArray(saved.cleared)) ui.cleared = saved.cleared.filter((id: unknown) => typeof id === 'string');
       if (typeof saved.mergedCleared === 'string') ui.mergedCleared = saved.mergedCleared;
       if (saved.theme === 'light' || saved.theme === 'dark') ui.theme = saved.theme;
@@ -170,33 +170,33 @@ export function saveUi(ui: PageUi): void {
 }
 
 function vendorChip(agent: AgentView): HTMLElement {
-  const mark = el('span', { cls: 'vm' });
+  const mark = el('span', { class: 'vm' });
   mark.style.background = agent.vendor.color;
-  return el('span', { cls: 'chip' }, mark, agent.vendor.name);
+  return el('span', { class: 'chip' }, mark, agent.vendor.name);
 }
 
 function refChip(agent: AgentView): HTMLElement | null {
   if (!agent.ref) return null;
-  return el('span', { cls: 'ref' }, icon(agent.ref.kind === 'pr' ? 'pr' : 'issue', true), `${agent.ref.kind === 'pr' ? 'PR' : 'Issue'} #${agent.ref.number}`);
+  return el('span', { class: 'ref' }, icon(agent.ref.kind === 'pr' ? 'pr' : 'issue', true), `${agent.ref.kind === 'pr' ? 'PR' : 'Issue'} #${agent.ref.number}`);
 }
 
 /** A fold header: a button with the chevron, name, count and, when folded, what it hides; then an optional action beside it. */
 function foldHead(state: PageState, key: string, dots: string[], extra: HTMLElement | null = null): HTMLElement {
   const isOpen = !state.ui.fold[key];
-  return el('div', { cls: 'sh' },
-    el('button', { cls: `f${isOpen ? ' open' : ''}`, 'data-fold': key, 'aria-expanded': String(isOpen) }, icon('chev', true), say(state, key), el('span', { cls: 'n' }, String(dots.length)), isOpen ? null : el('span', { cls: 'sum' }, summaryOf(state, dots))),
+  return el('div', { class: 'sh' },
+    el('button', { class: `f${isOpen ? ' open' : ''}`, 'data-fold': key, 'aria-expanded': String(isOpen) }, icon('chev', true), say(state, key), el('span', { class: 'n' }, String(dots.length)), isOpen ? null : el('span', { class: 'sum' }, summaryOf(state, dots))),
     extra);
 }
 
 /** One agent in the left column. A finished one gets a clear button beside it. */
 function agentRow(state: PageState, agent: AgentView): HTMLElement {
   const isDone = agent.dot === 'done';
-  const row = el('button', { cls: `row${isDone ? ' done-row' : ''}${agent.role === 'lead' ? ' lead-row' : ''}`, 'data-pick': agent.key, 'aria-current': String(agent.key === state.ui.current) },
-    el('span', { cls: 'r1' }, el('span', { cls: `dot ${agent.dot}`, title: say(state, `dot.${agent.dot}`) }), el('span', { cls: 'ttl' }, agent.title || agent.name), el('span', { cls: 'age' }, ageOf(state, agent, Date.now()))),
-    el('span', { cls: 'r2' }, vendorChip(agent), el('span', { cls: 'who' }, agent.role === 'lead' ? say(state, 'yourManager') : agent.name), refChip(agent)),
-    agent.doing ? el('span', { cls: 'r3' }, el('span', {}, agent.doing)) : null);
-  const clear = isDone ? el('button', { cls: 'x', 'data-clear': clearedId(agent), title: say(state, 'clearOne'), 'aria-label': say(state, 'clearOne') }, icon('x', true)) : null;
-  return el('div', { cls: 'item' }, row, clear);
+  const row = el('button', { class: `row${isDone ? ' done-row' : ''}${agent.role === 'lead' ? ' lead-row' : ''}`, 'data-pick': agent.key, 'aria-current': String(agent.key === state.ui.current) },
+    el('span', { class: 'r1' }, el('span', { class: `dot ${agent.dot}`, title: say(state, `dot.${agent.dot}`) }), el('span', { class: 'ttl' }, agent.title || agent.name), el('span', { class: 'age' }, ageOf(state, agent, Date.now()))),
+    el('span', { class: 'r2' }, vendorChip(agent), el('span', { class: 'who' }, agent.role === 'lead' ? say(state, 'yourManager') : agent.name), refChip(agent)),
+    agent.doing ? el('span', { class: 'r3' }, el('span', {}, agent.doing)) : null);
+  const clear = isDone ? el('button', { class: 'x', 'data-clear': clearedId(agent), title: say(state, 'clearOne'), 'aria-label': say(state, 'clearOne') }, icon('x', true)) : null;
+  return el('div', { class: 'item' }, row, clear);
 }
 
 function needRow(state: PageState, need: NeedView): HTMLElement {
@@ -204,19 +204,19 @@ function needRow(state: PageState, need: NeedView): HTMLElement {
   const agent = state.data?.agents.find((each) => each.key === need.agentKey);
   const title = need.kind === 'approve' ? say(state, 'approveTitle', { n: need.pull }) : say(state, 'waitingFor', { name: agent?.name ?? '' });
   const why = need.kind === 'approve' ? say(state, 'approveWhy', { title: pull?.title ?? '' }) : agent?.doing || agent?.task || say(state, 'noReason');
-  const body = [el('span', { cls: 'r1' }, el('span', { cls: 'dot waiting' }), el('span', { cls: 'ttl' }, title)), el('span', { cls: 'r3 wrap' }, why)];
-  if (need.kind === 'approve' && pull && /^https?:\/\//i.test(pull.url)) return el('a', { cls: 'row need-row', href: pull.url, target: '_blank', rel: 'noopener noreferrer' }, ...body);
-  return el('button', { cls: 'row need-row', 'data-pick': need.agentKey }, ...body);
+  const body = [el('span', { class: 'r1' }, el('span', { class: 'dot waiting' }), el('span', { class: 'ttl' }, title)), el('span', { class: 'r3 wrap' }, why)];
+  if (need.kind === 'approve' && pull && /^https?:\/\//i.test(pull.url)) return el('a', { class: 'row need-row', href: pull.url, target: '_blank', rel: 'noopener noreferrer' }, ...body);
+  return el('button', { class: 'row need-row', 'data-pick': need.agentKey }, ...body);
 }
 
 /** The left column: the lead and what needs you (never folded), then the agents by role, then the finished ones. */
 export function renderSide(state: PageState, data: PageData): [HTMLElement, HTMLElement] {
   const lead = data.agents.find((agent) => agent.role === 'lead');
-  const pinned = el('div', { cls: 'pinned' }, el('h2', { cls: 'sh lead-h' }, icon('msg', true), say(state, 'lead')));
-  pinned.append(lead ? agentRow(state, lead) : el('div', { cls: 'row lead-row still' }, el('span', { cls: 'r1' }, el('span', { cls: 'dot idle' }), el('span', { cls: 'ttl' }, say(state, 'noLead'))), el('span', { cls: 'r3 wrap' }, say(state, 'noLeadHow', { file: state.agentFile }))));
-  pinned.append(el('h2', { cls: 'sh need', title: say(state, 'needsYouHint') }, icon('bell', true), say(state, 'needsYou'), el('span', { cls: 'n' }, String(data.needs.length))));
-  pinned.append(...(data.needs.length ? data.needs.map((need) => needRow(state, need)) : [el('p', { cls: 'quiet' }, say(state, 'nothingNeeds'))]));
-  const list = el('div', { cls: 'agents' });
+  const pinned = el('div', { class: 'pinned' }, el('h2', { class: 'sh lead-h' }, icon('msg', true), say(state, 'lead')));
+  pinned.append(lead ? agentRow(state, lead) : el('div', { class: 'row lead-row still' }, el('span', { class: 'r1' }, el('span', { class: 'dot idle' }), el('span', { class: 'ttl' }, say(state, 'noLead'))), el('span', { class: 'r3 wrap' }, say(state, 'noLeadHow', { file: state.agentFile }))));
+  pinned.append(el('h2', { class: 'sh need', title: say(state, 'needsYouHint') }, icon('bell', true), say(state, 'needsYou'), el('span', { class: 'n' }, String(data.needs.length))));
+  pinned.append(...(data.needs.length ? data.needs.map((need) => needRow(state, need)) : [el('p', { class: 'quiet' }, say(state, 'nothingNeeds'))]));
+  const list = el('div', { class: 'agents' });
   const cleared = new Set(state.ui.cleared);
   const others = data.agents.filter((agent) => agent.role !== 'lead');
   const live = others.filter((agent) => agent.dot !== 'done');
@@ -228,19 +228,19 @@ export function renderSide(state: PageState, data: PageData): [HTMLElement, HTML
   }
   const finished = others.filter((agent) => agent.dot === 'done' && !cleared.has(clearedId(agent)));
   if (finished.length) {
-    list.append(foldHead(state, 'group.finished', finished.map((agent) => agent.dot), el('button', { cls: 'act', 'data-clear-all': '1', title: say(state, 'clearAllHint') }, say(state, 'clearAll'))));
+    list.append(foldHead(state, 'group.finished', finished.map((agent) => agent.dot), el('button', { class: 'act', 'data-clear-all': '1', title: say(state, 'clearAllHint') }, say(state, 'clearAll'))));
     if (!state.ui.fold['group.finished']) list.append(...finished.map((agent) => agentRow(state, agent)));
   }
   const hidden = others.filter((agent) => cleared.has(clearedId(agent)));
   if (hidden.length) {
-    list.append(el('div', { cls: 'arch' }, icon('archive', true), say(state, 'clearedCount', { n: hidden.length }), el('button', { cls: 'act', 'data-show-cleared': '1', 'aria-expanded': String(state.ui.showCleared) }, say(state, state.ui.showCleared ? 'hide' : 'show'))));
+    list.append(el('div', { class: 'arch' }, icon('archive', true), say(state, 'clearedCount', { n: hidden.length }), el('button', { class: 'act', 'data-show-cleared': '1', 'aria-expanded': String(state.ui.showCleared) }, say(state, state.ui.showCleared ? 'hide' : 'show'))));
     if (state.ui.showCleared) {
-      list.append(...hidden.map((agent) => el('div', { cls: 'row done-row still' },
-        el('span', { cls: 'r1' }, el('span', { cls: 'dot done' }), el('span', { cls: 'ttl' }, agent.title || agent.name), el('span', { cls: 'age' }, ageOf(state, agent, Date.now()))),
-        el('span', { cls: 'r2' }, vendorChip(agent), el('span', { cls: 'who' }, agent.name), el('button', { cls: 'act', 'data-restore': clearedId(agent) }, say(state, 'putBack'))))));
+      list.append(...hidden.map((agent) => el('div', { class: 'row done-row still' },
+        el('span', { class: 'r1' }, el('span', { class: 'dot done' }), el('span', { class: 'ttl' }, agent.title || agent.name), el('span', { class: 'age' }, ageOf(state, agent, Date.now()))),
+        el('span', { class: 'r2' }, vendorChip(agent), el('span', { class: 'who' }, agent.name), el('button', { class: 'act', 'data-restore': clearedId(agent) }, say(state, 'putBack'))))));
     }
   }
-  if (!others.length) list.append(el('p', { cls: 'quiet' }, say(state, 'noAgents', { file: state.agentFile })));
+  if (!others.length) list.append(el('p', { class: 'quiet' }, say(state, 'noAgents', { file: state.agentFile })));
   return [pinned, list];
 }
 
@@ -249,45 +249,45 @@ function feedEvent(state: PageState, event: FeedEvent): HTMLElement {
   const look: Record<string, string> = { step: 'term', pass: 'check', wait: 'bell', fail: 'shield', done: 'done' };
   const time = new Date(event.time).toLocaleTimeString(state.ui.lang, { hour: 'numeric', minute: '2-digit' });
   const text = event.kind === 'step' ? event.text : say(state, `feed.${event.kind}`);
-  return el('div', { cls: `ev ${event.kind}` }, el('span', { cls: 'ic' }, icon(look[event.kind] ?? 'term')), el('div', { cls: 't' }, el('p', {}, text)), el('span', { cls: 'tm' }, time));
+  return el('div', { class: `ev ${event.kind}` }, el('span', { class: 'ic' }, icon(look[event.kind] ?? 'term')), el('div', { class: 't' }, el('p', {}, text)), el('span', { class: 'tm' }, time));
 }
 
 /** The middle: the picked agent, its feed, and what the owner can do. */
 export function renderCenter(state: PageState, data: PageData): HTMLElement {
   const agent = data.agents.find((each) => each.key === state.ui.current) ?? data.agents.find((each) => each.role === 'lead');
-  if (!agent) return el('div', { cls: 'blank' }, el('h1', {}, say(state, 'emptyTitle')), el('p', {}, say(state, 'emptyBody', { file: state.agentFile })));
+  if (!agent) return el('div', { class: 'blank' }, el('h1', {}, say(state, 'emptyTitle')), el('p', {}, say(state, 'emptyBody', { file: state.agentFile })));
   const isLead = agent.role === 'lead';
   const isCleared = state.ui.cleared.includes(clearedId(agent));
   const role = agent.role ? ` · ${say(state, `role.${agent.role}`)}` : '';
-  const head = el('div', { cls: 'ch' },
-    el('div', { cls: 'grow' }, el('h1', {}, agent.title || agent.name),
-      el('div', { cls: 'sub' }, vendorChip(agent), el('span', {}, isLead ? say(state, 'yourManager') : `${agent.name}${role}`), agent.branch ? el('span', { cls: 'mono' }, icon('branch', true), agent.branch) : null)),
-    agent.model ? el('span', { cls: 'model', title: say(state, 'modelEffort') }, el('b', {}, agent.model), agent.effort ? `· ${agent.effort}` : '') : null,
+  const head = el('div', { class: 'ch' },
+    el('div', { class: 'grow' }, el('h1', {}, agent.title || agent.name),
+      el('div', { class: 'sub' }, vendorChip(agent), el('span', {}, isLead ? say(state, 'yourManager') : `${agent.name}${role}`), agent.branch ? el('span', { class: 'mono' }, icon('branch', true), agent.branch) : null)),
+    agent.model ? el('span', { class: 'model', title: say(state, 'modelEffort') }, el('b', {}, agent.model), agent.effort ? `· ${agent.effort}` : '') : null,
     refChip(agent),
-    agent.dot === 'done' && !isCleared ? el('button', { cls: 'hbtn', 'data-clear': clearedId(agent), title: say(state, 'keptHint') }, icon('archive', true), say(state, 'clearFromBoard')) : null);
+    agent.dot === 'done' && !isCleared ? el('button', { class: 'hbtn', 'data-clear': clearedId(agent), title: say(state, 'keptHint') }, icon('archive', true), say(state, 'clearFromBoard')) : null);
   const events = data.feeds[agent.key] ?? [];
-  const feed = el('div', { cls: 'feed' }, el('div', { cls: 'day' }, say(state, 'since')));
-  groupFeed(events).forEach((item, index) => {
+  const feed = el('div', { class: 'feed' }, el('div', { class: 'day' }, say(state, 'since')));
+  groupFeed(events).forEach((item) => {
     if (item.kind !== 'group') return void feed.append(feedEvent(state, item));
-    const key = `${agent.key}#${index}`;
+    const key = `${agent.key}#${item.items[0].time}`;
     const isOpen = !!state.ui.open[key];
-    feed.append(el('button', { cls: `grp${isOpen ? ' open' : ''}`, 'data-group': key, 'aria-expanded': String(isOpen) }, icon('chev', true), el('span', {}, say(state, 'routine', { n: item.items.length }))));
-    if (isOpen) feed.append(el('div', { cls: 'grp-body' }, ...item.items.map((event) => feedEvent(state, event))));
+    feed.append(el('button', { class: `grp${isOpen ? ' open' : ''}`, 'data-group': key, 'aria-expanded': String(isOpen) }, icon('chev', true), el('span', {}, say(state, 'routine', { n: item.items.length }))));
+    if (isOpen) feed.append(el('div', { class: 'grp-body' }, ...item.items.map((event) => feedEvent(state, event))));
   });
-  if (!events.length) feed.append(el('p', { cls: 'quiet' }, agent.doing || say(state, 'nothingYet')));
-  if (agent.dot === 'waiting') feed.append(el('div', { cls: 'ask' }, el('div', { cls: 'ah' }, icon('shield'), el('h2', {}, say(state, 'waitingFor', { name: agent.name }))), el('p', {}, agent.doing || say(state, 'noReason')), el('p', { cls: 'quiet' }, say(state, 'answerThere'))));
+  if (!events.length) feed.append(el('p', { class: 'quiet' }, agent.doing || say(state, 'nothingYet')));
+  if (agent.dot === 'waiting') feed.append(el('div', { class: 'ask' }, el('div', { class: 'ah' }, icon('shield'), el('h2', {}, say(state, 'waitingFor', { name: agent.name }))), el('p', {}, agent.doing || say(state, 'noReason')), el('p', { class: 'quiet' }, say(state, 'answerThere'))));
   const foot = agent.dot === 'done'
-    ? el('div', { cls: 'ro' }, icon('done', true), say(state, 'finishedNote'))
-    : el('div', { cls: 'ro' }, icon('lock', true), say(state, isLead ? 'leadNote' : 'otherNote'));
-  return el('section', { cls: 'center-in' }, head, feed, foot);
+    ? el('div', { class: 'ro' }, icon('done', true), say(state, 'finishedNote'))
+    : el('div', { class: 'ro' }, icon('lock', true), say(state, isLead ? 'leadNote' : 'otherNote'));
+  return el('section', { class: 'center-in' }, head, feed, foot);
 }
 
 function pullCard(state: PageState, pull: PullView): HTMLElement {
-  const steps = el('div', { cls: 'steps' }, ...pull.steps.map((mark, index) => el('i', { cls: mark, title: say(state, `step.${index}`) })));
-  const title = el('span', { cls: 'nm' }, el('span', { cls: 'num' }, `#${pull.number}`), ` ${pull.title}`);
-  return el('div', { cls: 'pr' },
-    el('div', { cls: 'h' }, el('span', { cls: 'open-i' }, icon('pr')), /^https?:\/\//i.test(pull.url) ? el('a', { href: pull.url, target: '_blank', rel: 'noopener noreferrer', cls: 'grow' }, title) : el('div', { cls: 'grow' }, title), pull.tier ? el('span', { cls: `tier t${pull.tier}` }, say(state, 'tier', { tier: pull.tier })) : null),
-    steps, el('div', { cls: 'sl' }, el('span', { cls: pull.tone }, say(state, `pull.${pull.status}`)), el('span', { cls: 'mut' }, pull.branch)));
+  const steps = el('div', { class: 'steps' }, ...pull.steps.map((mark, index) => el('i', { class: mark, title: say(state, `step.${index}`) })));
+  const title = el('span', { class: 'nm' }, el('span', { class: 'num' }, `#${pull.number}`), ` ${pull.title}`);
+  return el('div', { class: 'pr' },
+    el('div', { class: 'h' }, el('span', { class: 'open-i' }, icon('pr')), /^https?:\/\//i.test(pull.url) ? el('a', { href: pull.url, target: '_blank', rel: 'noopener noreferrer', cls: 'grow' }, title) : el('div', { class: 'grow' }, title), pull.tier ? el('span', { class: `tier t${pull.tier}` }, say(state, 'tier', { tier: pull.tier })) : null),
+    steps, el('div', { class: 'sl' }, el('span', { class: pull.tone }, say(state, `pull.${pull.status}`)), el('span', { class: 'mut' }, pull.branch)));
 }
 
 /** The right side: open pull requests with their steps, then what merged today. */
@@ -296,15 +296,15 @@ export function renderRight(state: PageState, data: PageData, now: number): HTML
   const pulls = typeof data.pulls === 'string' ? [] : data.pulls;
   box.append(foldHead(state, 'pulls', pulls.map((pull) => (pull.tone === 'fail' ? 'failing' : pull.tone === 'ok' ? 'ready' : 'moving'))));
   if (!state.ui.fold.pulls) {
-    if (typeof data.pulls === 'string') box.append(el('p', { cls: 'quiet' }, data.repoUrl ? data.pulls : say(state, 'noRemote')));
-    else if (!pulls.length) box.append(el('p', { cls: 'quiet' }, say(state, 'noPulls')));
+    if (typeof data.pulls === 'string') box.append(el('p', { class: 'quiet' }, data.repoUrl ? data.pulls : say(state, 'noRemote')));
+    else if (!pulls.length) box.append(el('p', { class: 'quiet' }, say(state, 'noPulls')));
     else box.append(...pulls.map((pull) => pullCard(state, pull)));
   }
   const today = localDay(now);
   const merged = data.merged.filter((pull) => localDay(Date.parse(pull.mergedAt)) === today);
   if (merged.length && state.ui.mergedCleared !== today) {
-    box.append(foldHead(state, 'mergedToday', merged.map(() => 'merged'), el('button', { cls: 'act', 'data-clear-merged': '1', title: say(state, 'hideTillTomorrow') }, say(state, 'clear'))));
-    if (!state.ui.fold.mergedToday) box.append(...merged.map((pull) => el('div', { cls: 'mrow' }, icon('merge', true), el('span', { cls: 'num' }, `#${pull.number}`), pull.title)));
+    box.append(foldHead(state, 'mergedToday', merged.map(() => 'merged'), el('button', { class: 'act', 'data-clear-merged': '1', title: say(state, 'hideTillTomorrow') }, say(state, 'clear'))));
+    if (!state.ui.fold.mergedToday) box.append(...merged.map((pull) => el('div', { class: 'mrow' }, icon('merge', true), el('span', { class: 'num' }, `#${pull.number}`), pull.title)));
   }
   return box;
 }
@@ -320,11 +320,11 @@ export function renderBar(state: PageState, data: PageData): HTMLElement[] {
   }
   const parts: HTMLElement[] = [el('span', {}, icon('shield', true), say(state, 'oneRuleSet', { n: vendors.size }))];
   for (const [name, { color, count }] of vendors) {
-    const mark = el('span', { cls: 'vm' });
+    const mark = el('span', { class: 'vm' });
     mark.style.background = color;
     parts.push(el('span', {}, mark, say(state, 'vendorAgents', { name, n: count })));
   }
-  parts.push(el('span', { cls: 'sp' }), el('span', {}, icon('lock', true), say(state, 'local')));
+  parts.push(el('span', { class: 'sp' }), el('span', {}, icon('lock', true), say(state, 'local')));
   return parts;
 }
 
@@ -341,7 +341,11 @@ export function renderTop(state: PageState): void {
   byId('lang').setAttribute('aria-expanded', String(state.isMenuOpen));
   const menu = byId('lang-menu');
   menu.hidden = !state.isMenuOpen;
-  menu.replaceChildren(...Object.entries(state.langNames).map(([tag, name]) => el('button', { cls: 'mi', role: 'menuitemradio', 'data-lang': tag, 'aria-checked': String(tag === state.ui.lang), lang: tag }, el('span', { cls: 'grow' }, name), tag === state.ui.lang ? icon('check', true) : null)));
+  // A refresh redraws the top bar; the items stay, so a focused item keeps its focus.
+  if (menu.getAttribute('data-for') !== state.ui.lang) {
+    menu.setAttribute('data-for', state.ui.lang);
+    menu.replaceChildren(...Object.entries(state.langNames).map(([tag, name]) => el('button', { class: 'mi', role: 'menuitemradio', 'data-lang': tag, 'aria-checked': String(tag === state.ui.lang), lang: tag }, el('span', { class: 'grow' }, name), tag === state.ui.lang ? icon('check', true) : null)));
+  }
   const github = byId('github');
   github.hidden = !/^https:\/\//.test(state.data?.repoUrl ?? '');
   if (!github.hidden) github.setAttribute('href', state.data?.repoUrl ?? '');
@@ -445,7 +449,8 @@ export function onMenuKey(state: PageState, event: KeyboardEvent): void {
     if (event.key === 'Escape') document.getElementById('lang')?.focus();
   } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
     event.preventDefault();
-    items[(at + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]?.focus();
+    const from = at < 0 && event.key === 'ArrowUp' ? 0 : at;
+    items[(from + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]?.focus();
   }
 }
 
