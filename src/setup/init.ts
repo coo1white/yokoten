@@ -25,6 +25,7 @@ import * as muse from '../agents/runtimes/muse.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
 import { configEntries, forgetGitReads, remembered, withGitReads } from '../run/check.ts';
+import { AGENT_STATUS_FILE } from '../run/hook.ts';
 import { DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
 import { WORKTREES_DIR } from '../rules/layout.ts';
 import { type Finding, finding } from '../rules/message.ts';
@@ -144,7 +145,7 @@ function initRun(root: string, env: Env, gh: Gh, noCi: boolean, ask?: Ask): { ok
     checkProjectSettings(root);
     return [
       `${addProjectHook(root, hookCli)} the tool-call hook in .claude/settings.json`,
-      `${addProjectStopHook(root, hookCli)} the stop check in .claude/settings.json (changed files, before the agent ends its turn)`,
+      `${addProjectStopHook(root, hookCli)} the stop check in .claude/settings.json (changed files, and a worker's done-when check, on Stop and SubagentStop)`,
       `${setProjectEnv(root, 'TZ', 'UTC')} TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)`,
       // Checked with a real run (#30): Copilot CLI reads these hooks, in a folder it trusts.
       // It skips them without a word otherwise (#341), so the line says how to trust it.
@@ -468,11 +469,11 @@ export function findEcosystems(root: string): Map<string, string[]> {
   return found;
 }
 
-// ---- A .gitignore for the worker worktrees and the dependency folders (#521, #571) ----
+// ---- A .gitignore for the status file, the worker worktrees and the dependency folders (#521, #571, #614) ----
 //
 // Without one, `git add -A` stages node_modules. init always ignores the folder worker
 // worktrees live in, reads the same package managers as Dependabot to write the folders
-// each one fills, and the board's agent file (#601). It only adds lines that are missing.
+// each one fills, and the board's agent status file (#601, #614). It only adds lines that are missing.
 
 /** The folders each package manager fills with fetched or built files. */
 const IGNORED_FOLDERS: Record<string, string[]> = {
@@ -497,7 +498,7 @@ const folderOf = (line: string): string => line.trim().replace(/^\//, '').replac
 /** Add the worker worktrees folder, the board's agent file, and the dependency folders of the project's package managers to .gitignore. */
 function writeGitignore(root: string): string {
   const folders = [...new Set([...findEcosystems(root).keys()].flatMap((name) => IGNORED_FOLDERS[name] ?? []))];
-  const wanted = [`${WORKTREES_DIR}/`, ...folders, '.yokoten-agent.json'];
+  const wanted = [`${WORKTREES_DIR}/`, ...folders, AGENT_STATUS_FILE];
   const path = join(root, '.gitignore');
   const old = existsSync(path) ? readFileSync(path, 'utf8') : null;
   const have = new Set((old ?? '').split(/\r?\n/).map(folderOf));

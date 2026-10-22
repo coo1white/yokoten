@@ -83,7 +83,7 @@ test('hooks: a missing runtime says one plain line with no path, never a stack t
   const projectLine = `${MISSING_PROJECT}\n`;
   const codexProject = commands(join(sandbox.repo, '.codex', 'hooks.json'));
   const geminiProject = commands(join(sandbox.repo, '.gemini', 'settings.json'));
-  for (const command of [...project.PreToolUse, ...project.Stop, ...codexProject.PreToolUse.slice(-1), ...codexProject.Stop, ...geminiProject.BeforeTool, ...geminiProject.AfterAgent]) {
+  for (const command of [...project.PreToolUse, ...project.Stop, ...project.SubagentStop, ...codexProject.PreToolUse.slice(-1), ...codexProject.Stop, ...geminiProject.BeforeTool, ...geminiProject.AfterAgent]) {
     assert.deepEqual(pick(shell(command)), [1, '', projectLine], command);
   }
   // A project path with a space: the `[` test's own error, with the full path, is not shown.
@@ -360,7 +360,7 @@ test('hooks: a tool-call guard that fails refuses the call; the stop check does 
   // The stop check and the session doctor pass a failure on: exit 2 at stop would send the
   // agent back to work on a guard that cannot run.
   runtime('process.exit(1);\n');
-  for (const command of [...project.Stop, ...codex.Stop, ...gemini.AfterAgent, ...user.SessionStart, ...codexUser.SessionStart, ...geminiUser.SessionStart]) {
+  for (const command of [...project.Stop, ...project.SubagentStop, ...codex.Stop, ...gemini.AfterAgent, ...user.SessionStart, ...codexUser.SessionStart, ...geminiUser.SessionStart]) {
     assert.deepEqual(pick(shell(command)), [1, '', ''], command);
   }
   // A missing runtime still says its line and goes on, as before.

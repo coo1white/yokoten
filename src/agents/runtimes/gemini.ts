@@ -24,6 +24,10 @@ const READ: ReadOptions = { comments: true };
 
 // run_shell_command takes `command`; write_file and replace take `file_path`.
 const SHELL = 'run_shell_command';
+// Milliseconds Gemini CLI waits for the stop check. Gemini reads `timeout` in
+// milliseconds (its default is 60000). 600000 is 10 minutes, so the done-when
+// command can finish (#614).
+const STOP_TIMEOUT = 600_000;
 const EDITS = new Set(['write_file', 'replace']);
 
 /** A BeforeTool call, as an Action. Any other tool (read_file, MCP) is neither. */
@@ -53,13 +57,13 @@ const projectSettings = (root: string) => join(root, '.gemini', 'settings.json')
  *   shell-quoted, so the command leaves it unquoted, as the docs example does: quoting it
  *   again breaks a path with a space, and the hook would fail open. An older quoted hook
  *   is updated in place.
- * - stop: the stop check (#211). Gemini's AfterAgent event runs when the agent ends its
- *   turn; its input has `cwd` and `stop_hook_active`, and exit 2 with a reason on stderr
- *   makes the agent try again.
+ * - stop: the stop check (#211, #614). Gemini's AfterAgent event runs when the agent ends
+ *   its turn; its input has `cwd` and `stop_hook_active`, and exit 2 with a reason on
+ *   stderr makes the agent try again. The timeout covers the done-when command.
  */
 const projectHookArgs = (root: string, cli: string): Record<'guard' | 'stop', HookArgs> => ({
   guard: [projectSettings(root), 'BeforeTool', 'run_shell_command|write_file|replace', guardCommand(`$GEMINI_PROJECT_DIR/${cli}`, 'hook --agent gemini', missingProjectRuntime(cli), { isToolCall: true }), { name: 'yokoten' }, READ],
-  stop: [projectSettings(root), 'AfterAgent', undefined, guardCommand(`$GEMINI_PROJECT_DIR/${cli}`, 'hook --stop --agent gemini', missingProjectRuntime(cli)), { name: 'yokoten-stop' }, READ],
+  stop: [projectSettings(root), 'AfterAgent', undefined, guardCommand(`$GEMINI_PROJECT_DIR/${cli}`, 'hook --stop --agent gemini', missingProjectRuntime(cli)), { name: 'yokoten-stop', timeout: STOP_TIMEOUT }, READ],
 });
 
 export const addProjectHook = (root: string, cli: string) => addHook(...projectHookArgs(root, cli).guard);
