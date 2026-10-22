@@ -13,7 +13,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { accessSync, closeSync, constants, existsSync, fstatSync, globSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, type Stats, statSync, writeFileSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import type { Config, Env } from './config.ts';
 import { loadConfig, matcher } from './config.ts';
 import { WORKTREES_DIR } from './layout.ts';
@@ -1402,6 +1402,9 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
   // A download piped into a shell runs code nobody read (#560).
   const piped = checkPipeToShell(command);
   if (piped) return piped;
+  // Rules that refuse any form of a setting or a write (#361, #664). They answer after the
+  // rest, which name the case more exactly; the first one found is kept.
+  let later: Finding | null = null;
   for (const words of commands) {
     const mayWrite = heredoc !== undefined || fills || writesFile(words) || isUnsure(words) || writers.some((other) => other !== words);
     // The name is built only on a refusal (#498).
@@ -1426,10 +1429,16 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
       checkPosted(words, { env, config, cwd: postCwd, from, command, titles, files: { heredoc, mayWrite, saw, movesFolder } }) ??
       (rules ? checkLeadOnlyWrites(words, { env, rules, folder: postCwd }) : null);
     if (reason) return reason;
+    later ??=
+      checkGitConfigEnvironment(words) ??
+      // The likely folder, read as written: a write there is refused, never let through.
+      checkGitSetupWrites(words, { folder: nearCwd, from, env }) ??
+      // A changed home folder hides the private marks (#664).
+      checkHomeSetting(words);
     postCwd = folderAfter(words, postCwd, { env, isTildeQuoted });
     nearCwd = folderAfter(words, nearCwd, { env, isTildeQuoted, isCdPathSkipped: true });
   }
-  return env.YOKOTEN_ROLE === 'worker' ? (checkWorkerBox(command, commands, { cwd: from, env }) ?? checkWorkerPointers(command, commands, env)) : null;
+  return (env.YOKOTEN_ROLE === 'worker' ? (checkWorkerBox(command, commands, { cwd: from, env }) ?? checkWorkerPointers(command, commands, env)) : null) ?? later;
 }
 
 /**
@@ -1795,15 +1804,14 @@ function checkHooksSettings(settings: string[], fromEnvironment: string[]): Find
 // what `git -c` does, and so does GIT_CONFIG_PARAMETERS, the variable `-c` itself sets.
 // An assignment counts when it stands before the program, after env, sudo or export, or
 // anywhere before a git word. So `grep GIT_CONFIG_KEY_0=core.hooksPath file` is a read.
-// `NAME+=value` counts as `NAME=value`: it adds to a value the guard can't see, so a key
-// added to is refused, and a value added to is never read as .githooks.
+// `NAME+=value` counts as `NAME=value`. A key that names core.hooksPath is refused
+// whatever value goes with it: any GIT_CONFIG_KEY_n is refused below anyway (#361).
 const ASSIGNERS = new Set(['env', 'sudo', 'doas', 'export', 'declare', 'typeset', 'readonly', 'local']);
 // `NAME+=value` adds to a setting: it is an assignment too.
 const isAssignment = (word: string) => /^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(word);
 
 function checkHooksEnvironment(words: string[]): Finding | null {
   const lastGit = words.findLastIndex(isGit);
-  let values: Map<string, string> | null = null; // GIT_CONFIG_VALUE_n, the first of each n
   let isPrefix = true; // every word before this one is an assignment, an option or an assigner
   for (const [index, word] of words.entries()) {
     const variable = /^GIT_CONFIG_(KEY_(\d+)|PARAMETERS)(\+?)=(.*)$/is.exec(word);
@@ -1819,27 +1827,197 @@ function checkHooksEnvironment(words: string[]): Finding | null {
     }
     if (adds) return hooksPath(`GIT_CONFIG_KEY_${number}+= adds to a key yokoten can't see, which may make core.hooksPath and skip the commit check`);
     if (isInclude(setting)) return includes(`GIT_CONFIG_KEY_${number} ${setting.trim()}`);
-    if (!isHooksPath(setting)) continue;
-    values ??= configValues(words);
-    if (values.get(number) !== HOOKS_DIR) {
-      return hooksPath(`GIT_CONFIG_KEY_${number} names core.hooksPath with a value other than .githooks, which skips the commit check`);
-    }
+    if (isHooksPath(setting)) return hooksPath(`GIT_CONFIG_KEY_${number} names core.hooksPath, which can skip the commit check`);
   }
   return null;
 }
 
-// Each GIT_CONFIG_VALUE_n=value in the words, by n as written: the first one counts. A
-// `GIT_CONFIG_VALUE_n+=` adds to a value the guard can't see: that n is read as unknown.
-function configValues(words: string[]): Map<string, string> {
-  const values = new Map<string, string>();
-  const added = new Set<string>();
-  for (const word of words) {
-    const value = /^GIT_CONFIG_VALUE_(\d+)(\+?)=(.*)$/is.exec(word);
-    if (value?.[2]) added.add(value[1]);
-    else if (value && !values.has(value[1])) values.set(value[1], value[3]);
+// ---- Settings an agent may not make (#361, #664) ----
+//
+// Some variables change what the commit check reads. HOME and USERPROFILE move the home
+// folder, where the private marks are; GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM and
+// GIT_CONFIG_COUNT/KEY_n/VALUE_n give git settings the guard does not read one by one. A
+// name counts as set:
+// - for one program, by an assignment just before it, also after env, sudo or another
+//   launcher: `HOME=x git commit`, `env HOME=x gh issue create`;
+// - for the rest of the line, by an assignment with no program after it, by export,
+//   declare and the like, by read, mapfile, printf -v, getopts, let, a for or select
+//   loop, and by `${NAME:=x}` or `${NAME=x}`.
+// A setting for the rest of the line is refused. A setting for one program is refused when
+// that program is git, gh, yokoten, or a shell or eval that runs another line. Before any
+// other program it passes: `HOME=$(mktemp -d) npm test` keeps a test away from your files.
+// The guard reads names, not grammar: an indirect name (`export $name=x`) gets past.
+
+/** A name a command sets, and the index of the one program it is set for (null: the rest of the line). */
+type Setting = { name: string; program: number | null };
+
+// Programs that run another command line, so a setting before them reaches git too.
+const RUNS_LINES = /^(sh|bash|zsh|dash|ksh|mksh|fish|eval|source|\.|xargs|exec|su|sudo|doas|env|nohup|setsid|script)$/;
+const isYokotenWord = (word: string) => /^yokoten(\.[cm]?[jt]s)?$/i.test(base(word));
+// read, mapfile and readarray set every name after them; printf only the one after -v.
+const NAME_READERS = new Set(['read', 'mapfile', 'readarray']);
+const nameOf = (word: string) => word.slice(0, word.indexOf('=')).replace(/\+$/, '');
+
+function settingsIn(words: string[]): Setting[] {
+  const settings: Setting[] = [];
+  const programs: number[] = [];
+  let from = 0;
+  for (const program of findPrograms(words)) {
+    const at = words.indexOf(program, from);
+    if (at === -1) continue;
+    programs.push(at);
+    from = at + 1;
   }
-  for (const number of added) values.set(number, '+=');
-  return values;
+  // For each word: the program right after it, when only assignments, options and
+  // launchers stand between them. One pass from the end keeps it linear.
+  const isProgram = new Set(programs);
+  const programAfter: number[] = new Array(words.length).fill(-1);
+  let next = -1;
+  for (let index = words.length - 1; index >= 0; index--) {
+    if (isProgram.has(index)) {
+      next = index;
+      continue;
+    }
+    programAfter[index] = next;
+    const word = words[index];
+    if (!isAssignment(word) && !word.startsWith('-') && !Object.hasOwn(LAUNCHERS, programName(word))) next = -1;
+  }
+  let isPrefix = true; // every word before this one is an assignment, an option or an assigner
+  for (const [index, word] of words.entries()) {
+    const wasPrefix = isPrefix;
+    isPrefix = isPrefix && (isAssignment(word) || word.startsWith('-') || ASSIGNERS.has(base(word)));
+    if (isAssignment(word)) {
+      if (programAfter[index] !== -1) settings.push({ name: nameOf(word), program: programAfter[index] });
+      else if (wasPrefix) settings.push({ name: nameOf(word), program: null });
+    }
+    // `${NAME:=x}` and `${NAME=x}` set NAME wherever they stand.
+    for (const [, name] of word.matchAll(/\$\{([A-Za-z_]\w*):?=/g)) settings.push({ name, program: null });
+  }
+  for (const at of programs) {
+    const name = programName(words[at]);
+    const args = words.slice(at + 1);
+    if (NAME_READERS.has(name)) args.forEach((arg) => settings.push({ name: arg.replace(/^-[A-Za-z]*a/, ''), program: null }));
+    if (name === 'let') args.filter(isAssignment).forEach((arg) => settings.push({ name: nameOf(arg), program: null }));
+    if (name === 'printf') {
+      args.forEach((arg, index) => {
+        if (arg === '-v' && index + 1 < args.length) settings.push({ name: args[index + 1], program: null });
+        else if (/^-v./.test(arg)) settings.push({ name: arg.slice(2), program: null });
+      });
+    }
+    // `getopts optstring name`: the second plain word.
+    if (name === 'getopts') {
+      const plain = args.filter((arg) => !arg.startsWith('-'));
+      if (plain[1] !== undefined) settings.push({ name: plain[1], program: null });
+    }
+  }
+  // `for NAME in ...` and `select NAME in ...`: only the name slot.
+  const head = words.findIndex((word) => !KEYWORDS.has(word));
+  if ((words[head] === 'for' || words[head] === 'select') && words[head + 1] !== undefined) settings.push({ name: words[head + 1], program: null });
+  return settings;
+}
+
+/** The settings in `words` whose name passes `isNamed`, that the rule refuses: see above. */
+function refusedSetting(words: string[], isNamed: (name: string) => boolean): string | null {
+  const settings = settingsIn(words).filter((setting) => isNamed(setting.name));
+  if (settings.length === 0) return null;
+  const lastYokoten = words.findLastIndex(isYokotenWord);
+  const runsGuarded = (at: number) => isGit(words[at]) || ['gh', 'yokoten'].includes(programName(words[at])) || RUNS_LINES.test(programName(words[at])) || lastYokoten >= at;
+  return settings.find((setting) => setting.program === null || runsGuarded(setting.program))?.name ?? null;
+}
+
+// git's config variables (#361). GIT_CONFIG_PARAMETERS is read above, for core.hooksPath.
+const GIT_CONFIG_NAME = /^GIT_CONFIG_(GLOBAL|SYSTEM|COUNT|KEY_\d+|VALUE_\d+)$/i;
+
+function checkGitConfigEnvironment(words: string[]): Finding | null {
+  const name = refusedSetting(words, (setting) => GIT_CONFIG_NAME.test(setting));
+  if (name === null) return null;
+  const shown = name.toUpperCase().replace(/_\d+$/, '_n');
+  const what = /_(GLOBAL|SYSTEM)$/.test(shown) ? 'points git at another config file' : 'sets git settings yokoten does not read one by one';
+  return hooksPath(`${shown} ${what}, which can set core.hooksPath and skip the commit check`, 'run git without it; to set one setting for one command, use `git -c <name>=<value>`, which the guard can check');
+}
+
+// ---- Shell writes to git's config and hooks (#361) ----
+//
+// `git config` is read setting by setting above. A shell write to the same files is not:
+// `printf '[core]\nhooksPath=x' >> .git/config`, `sed -i` on it, or `rm`/`chmod -x` on
+// `.githooks/pre-commit` can each turn the commit check off. So a command that names
+// `.git/config`, `.git/commondir`, `.git/hooks` or `.githooks` as a file it writes is
+// refused, for lead and worker: a redirect, the files of the writers in WRITERS (cp, mv,
+// tee, sed -i, rm, ln, install, truncate, patch, vim, tar -C, ...) and of chmod and the
+// rest of MARK_WRITERS. `mkdir` passes, and so do the lead's `git checkout` and
+// `git restore`, which bring back the committed hook. A path is placed from the likely
+// folder, so `cd .git && echo >> config` is refused, and one in another repo (`/tmp/x/.git`)
+// passes. A path with a glob (`*?[{`) is refused when it could reach into `.git` or `.githooks`.
+// A read (`cat .git/config`, `git config --get`) writes nothing and passes.
+const GIT_SETUP_FILE = /(^|\/)\.git(\/?$|\/config(\.worktree)?$|\/hooks(\/|$)|\/commondir$|\/worktrees\/[^/]+\/(config\.worktree|commondir)$)|(^|\/)\.githooks(\/|$)/i;
+const GIT_SETUP_FIX = 'change a git setting with `git config <name> <value>`, and a hook with your edit tool or `yokoten init`, so the guard can check it';
+
+// Whether a path, as text, may be git's config or hooks; with a glob, whether it could match one.
+function namesGitSetup(path: string): boolean {
+  const plain = posix.normalize(path.replace(/\\/g, '/'));
+  if (GIT_SETUP_FILE.test(plain)) return true;
+  if (!HAS_GLOB.test(plain)) return false;
+  return braceForms(plain, 0).some((form) => {
+    const parts = form.split('/');
+    return parts.some((part, at) =>
+      // A glob for the .git folder itself (`chmod 000 .gi?`) is left to the other rules.
+      (HAS_GLOB.test(part) && ((at < parts.length - 1 && globMatches(part, '.git')) || globMatches(part, '.githooks'))) ||
+      (/^\.git(hooks)?$/i.test(part) && parts.slice(at + 1).some((rest) => HAS_GLOB.test(rest))) ||
+      GIT_SETUP_FILE.test(form));
+  });
+}
+
+const isInside = (path: string, folder: string) => path === folder || path.startsWith(folder.endsWith(sep) ? folder : folder + sep);
+
+function checkGitSetupWrites(words: string[], { folder, from, env }: { folder: string | null; from: string | null; env: Env }): Finding | null {
+  const known = new Map<string, string | null>();
+  const isWorker = env.YOKOTEN_ROLE === 'worker';
+  const targets = writeTargets(words, folder, (dir) => gitRootAbove(dir, known), { keepsRestores: isWorker }).map((target) => target.path);
+  let at = 0;
+  for (const program of findPrograms(words)) {
+    const index = words.indexOf(program, at);
+    if (index === -1) continue;
+    at = index + 1;
+    const name = programName(program);
+    const args = withoutShellRedirects(words, index + 1);
+    if (name !== 'mkdir' && MARK_WRITERS.has(name)) targets.push(...plainArgs(args));
+    if (Object.hasOwn(SETUP_WRITERS, name)) targets.push(...SETUP_WRITERS[name](args));
+    // A find that writes changes files under where it starts: `find .githooks -exec rm {} +`.
+    if (name === 'find') targets.push(...(findWrites(args, (writer) => Object.hasOwn(WRITERS, writer) || Object.hasOwn(SETUP_WRITERS, writer) || MARK_WRITERS.has(writer) || RUNS_CODE.test(writer))?.starts ?? []));
+  }
+  if (targets.length === 0) return null;
+  // The repo the command starts in, and its git folders: a placed path outside them all is
+  // another repo's file, such as a test repo in /tmp.
+  const root = from === null ? null : gitRootAbove(from, known);
+  const held = root === null ? [] : [realPath(root), ...protectedGitDirs(from ?? root)];
+  const home = homeOf(env);
+  const target = targets.find((path) => {
+    const expanded = /^~(?=[\\/]|$)/.test(path) ? (home === null ? null : join(home, path.slice(1))) : path;
+    const isPlaced = expanded !== null && !/[$`]/.test(path) && (folder !== null || isAbsolute(expanded));
+    if (!isPlaced || held.length === 0) return namesGitSetup(path);
+    const full = realPath(resolve(folder ?? '/', expanded));
+    const holders = held.filter((dir) => isInside(full, dir));
+    if (holders.length === 0) return false;
+    // Inside the work tree, the path from its root; inside a git folder, the path in `.git`.
+    const inside = (dir: string) => relative(dir, full).split(sep).join('/');
+    return holders.some((dir) => namesGitSetup(dir === held[0] ? inside(dir) || '.' : posix.join('.git', inside(dir)))) || namesGitSetup(path);
+  });
+  return target === undefined ? null : hooksPath(`this command changes ${target}, which holds git's settings or the commit check`, GIT_SETUP_FIX);
+}
+
+// ---- The home folder (#664) ----
+//
+// The commit check and the guard for gh posts read the private marks from the home folder:
+// HOME, or USERPROFILE on Windows when HOME is not set. `HOME=/tmp/x git commit` would make
+// them look in another folder, find no marks and pass. So the guard refuses these names
+// where the settings rule above does. Names on Windows ignore case, so `home=` counts too.
+// Reading $HOME is fine. XDG_CONFIG_HOME moves nothing yokoten's checks read, so it passes.
+const HOME_NAMES = new Set(['HOME', 'USERPROFILE']);
+const HOME_FIX = 'run the command without changing the home folder; yokoten reads the private marks from your own home';
+
+function checkHomeSetting(words: string[]): Finding | null {
+  const name = refusedSetting(words, (setting) => HOME_NAMES.has(setting.toUpperCase()));
+  return name === null ? null : finding('home-folder', `this command sets ${name}, which moves where yokoten finds your private marks`, HOME_FIX);
 }
 
 // A shell redirect is no argument to git: `git config core.hooksPath 2>/dev/null` reads
@@ -2897,7 +3075,8 @@ function gitRootAbove(folder: string, known: Map<string, string | null>): string
   return found;
 }
 
-function writeTargets(words: string[], folder: string | null, rootOf: FileRules['rootOf']): WriteTarget[] {
+// `keepsRestores`: false leaves out `git checkout` and `git restore`, which bring back committed files.
+function writeTargets(words: string[], folder: string | null, rootOf: FileRules['rootOf'], { keepsRestores = true } = {}): WriteTarget[] {
   const targets: WriteTarget[] = [];
   const marks = unquotedRedirects.get(words);
   for (const [index, word] of words.entries()) {
@@ -2915,7 +3094,10 @@ function writeTargets(words: string[], folder: string | null, rootOf: FileRules[
     from = at + 1;
     const name = programName(program);
     const args = withoutShellRedirects(words, at + 1);
-    if (isGit(program)) targets.push(...gitWrites(args, folder, rootOf));
+    if (isGit(program)) {
+      if (!keepsRestores && ['checkout', 'restore'].includes(gitParts(args, folder).sub ?? '')) continue;
+      targets.push(...gitWrites(args, folder, rootOf));
+    }
     else if (Object.hasOwn(WRITERS, name)) targets.push(...WRITERS[name](args, folder).map((path) => ({ path, from: folder })));
   }
   return targets;
@@ -3045,6 +3227,37 @@ const WRITERS: Record<string, (args: string[], folder: string | null) => string[
   // A download writes its output file, or into its output folder (#591).
   curl: (args) => optionValues(args, ['o'], ['--output', '--output-dir']),
   wget: (args) => optionValues(args, ['O', 'o', 'a', 'P'], ['--output-document', '--output-file', '--append-output', '--directory-prefix']),
+};
+
+const PATCH_VALUES = ['-i', '--input', '-o', '--output', '-p', '-d', '--directory', '-B', '--prefix', '-D', '-F', '-r', '--reject-file', '-z', '--suffix', '-V', '-Y', '--basename-prefix'];
+const EDITOR_VALUES = ['-c', '--cmd', '-S', '-u', '-U', '-i', '-T', '-w', '-W', '-s', '-t', '-q', '--listen'];
+
+// vim and its kin: every file named; `+cmd` is a command, not a file.
+const editorTargets = (args: string[]) => plainArgs(args, EDITOR_VALUES).filter((arg) => !arg.startsWith('+'));
+
+// `awk -i inplace`: the files after the program text, or every plain word with -f or -e.
+function awkTargets(args: string[]): string[] {
+  const isInPlace = args.some((arg, at) => arg === '-iinplace' || arg === '--include=inplace' || ((arg === '-i' || arg === '--include') && args[at + 1] === 'inplace'));
+  if (!isInPlace) return [];
+  const plain = plainArgs(args, ['-f', '--file', '-v', '--assign', '-i', '--include', '-F', '--field-separator', '-l', '--load', '-e', '--source']);
+  return args.some((arg) => /^(-[fe]|--file|--source)/.test(arg)) ? plain : plain.slice(1);
+}
+
+// More writers, read for git's config and hooks only (#361): editors and patchers change the
+// files they name. A patch with no file named changes the files in the patch, which the
+// guard does not read. They are not in WRITERS, whose files the lead-only rule also reads.
+const SETUP_WRITERS: Record<string, (args: string[]) => string[]> = {
+  patch: (args) => [...plainArgs(args, PATCH_VALUES).slice(0, 1), ...optionValues(args, ['o', 'd', 'r'], ['--output', '--directory', '--reject-file'])],
+  ed: (args) => plainArgs(args, ['-p', '--prompt']),
+  ex: (args) => editorTargets(args),
+  vi: (args) => editorTargets(args),
+  vim: (args) => editorTargets(args),
+  nvim: (args) => editorTargets(args),
+  awk: (args) => awkTargets(args),
+  gawk: (args) => awkTargets(args),
+  // An archive unpacks into its folder: `tar -x -C dir`, `unzip -d dir`.
+  tar: (args) => (/^[A-Za-z]*x[A-Za-z]*$/.test(args[0] ?? '') || args.some((arg) => /^(-[A-Za-z]*x[A-Za-z]*|--extract|--get)$/.test(arg)) ? optionValues(args, ['C'], ['--directory']) : []),
+  unzip: (args) => optionValues(args, ['d'], []),
 };
 
 /**
