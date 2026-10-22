@@ -2,7 +2,7 @@
 // the project. A Claude Code session start keeps what it said in ~/.config/yokoten/sessions/ (#405).
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync, readdirSync, readSync } from 'node:fs';
+import { readFileSync, readSync } from 'node:fs';
 import { createServer, type Server, type ServerResponse } from 'node:http';
 import { basename, join } from 'node:path';
 import * as claudeCode from '../agents/runtimes/claude-code.ts';
@@ -11,7 +11,7 @@ import { type BoardPull, type Gh, ghIn, readBoardPulls, repoOf } from '../host/g
 import { DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
 import { workerRole } from '../rules/guards.ts';
 import { formatFinding } from '../rules/message.ts';
-import { hideHome, homeOf } from '../rules/privacy.ts';
+import { hideHome } from '../rules/privacy.ts';
 import { draft, facts, table } from '../setup/advice/adopt.ts';
 import { explain, explainLines, ids } from '../setup/advice/explain.ts';
 import { blocksToSay, doctor, OUTPUT_STOP, SERVER_TIMEOUT_MS, type SessionStart, UNFILTERED } from '../setup/doctor.ts';
@@ -144,20 +144,17 @@ export function runAdopt(invocation: Invocation): number | Promise<number> {
 // ---- The team board (#601) ----
 //
 // `yokoten board` serves a live page on this machine only; `board --text` prints the same
-// data as plain text. The data comes from three places: one status file per agent, `gh pr
-// list`, and `git worktree list`. An agent joins by writing its file, and leaves by removing
-// it. The page is only one view: it reads the same data over /data as JSON.
+// data as plain text. The data comes from three places: one status file per worktree, `gh
+// pr list`, and `git worktree list`. An agent joins by writing the file at its worktree's
+// root, and leaves by removing it. The page is only one view: it reads the same data over
+// /data as JSON.
 
 /** How long the board waits for `gh pr list` or `git worktree list`, at most. */
 const BOARD_READ_TIMEOUT_MS = 15000;
 /** How often the page asks for new data, in seconds. */
 const BOARD_REFRESH_SECONDS = 15;
-
-/** Where the agents' status files live: `~/.config/yokoten/board/`, outside every repo. Null with no home folder. */
-export const boardDir = (env: Env): string | null => {
-  const home = homeOf(env);
-  return home ? join(home, '.config', 'yokoten', 'board') : null;
-};
+/** An agent's status file, at its worktree's root. One file per worktree. */
+const BOARD_AGENT_FILE = '.yokoten-agent.json';
 
 /** One agent on the board, from its status file. The guide shows the open format. */
 export interface BoardAgent {
@@ -176,8 +173,8 @@ function fieldText(fields: Record<string, unknown>, name: string): string {
   return typeof value === 'string' ? value : '';
 }
 
-/** One status file as an agent, or null when it is not a JSON object. The file's own name fills a missing name. */
-function parseBoardAgent(text: string, file: string): BoardAgent | null {
+/** One status file as an agent, or null when it is not a JSON object. The worktree's own folder name fills a missing name. */
+function parseBoardAgent(text: string, worktree: string): BoardAgent | null {
   let status: unknown;
   try {
     status = JSON.parse(text);
@@ -187,7 +184,7 @@ function parseBoardAgent(text: string, file: string): BoardAgent | null {
   if (typeof status !== 'object' || status === null || Array.isArray(status)) return null;
   const fields = status as Record<string, unknown>;
   return {
-    name: fieldText(fields, 'name') || basename(file, '.json'),
+    name: fieldText(fields, 'name') || basename(worktree),
     vendor: fieldText(fields, 'vendor'),
     task: fieldText(fields, 'task'),
     worktree: fieldText(fields, 'worktree'),
@@ -196,23 +193,17 @@ function parseBoardAgent(text: string, file: string): BoardAgent | null {
   };
 }
 
-/** Every agent with a status file in `dir`, by file name. A broken or unreadable file is skipped. */
-export function readBoardAgents(dir: string): BoardAgent[] {
-  let files: string[];
-  try {
-    files = readdirSync(dir);
-  } catch {
-    return [];
-  }
+/** Every agent with a status file at its worktree's root, in worktree order. A missing, broken or unreadable file is skipped. */
+export function readBoardAgents(trees: BoardWorktree[]): BoardAgent[] {
   const agents: BoardAgent[] = [];
-  for (const file of files.filter((name) => name.endsWith('.json')).sort()) {
+  for (const tree of trees) {
     let text: string;
     try {
-      text = readFileSync(join(dir, file), 'utf8');
+      text = readFileSync(join(tree.path, BOARD_AGENT_FILE), 'utf8');
     } catch {
       continue;
     }
-    const agent = parseBoardAgent(text, file);
+    const agent = parseBoardAgent(text, tree.path);
     if (agent) agents.push(agent);
   }
   return agents;
@@ -267,15 +258,19 @@ export interface BoardData {
   worktrees: BoardWorktree[] | string;
 }
 
-/** The board's data: the agents' files, the pull requests, and the worktrees. */
+/**
+ * The board's data: the agents' files, the pull requests, and the worktrees. Every shown
+ * path (the repo, the worktrees, each agent's worktree) shows `~` for the home folder.
+ */
 export function collectBoard(root: string, env: Env, gh: Gh): BoardData {
-  const dir = boardDir(env);
+  const worktrees = readBoardWorktrees(root, env);
   const remote = repoOf(readOriginUrl(root, env));
+  const agents = typeof worktrees === 'string' ? [] : readBoardAgents(worktrees).map((agent) => ({ ...agent, worktree: hideHome(agent.worktree, env) }));
   return {
-    repo: root,
-    agents: dir ? readBoardAgents(dir) : [],
+    repo: hideHome(root, env),
+    agents,
     pulls: remote ? readBoardPulls(gh, remote) : 'this repo has no GitHub remote, so the board shows no pull requests',
-    worktrees: readBoardWorktrees(root, env),
+    worktrees: typeof worktrees === 'string' ? worktrees : worktrees.map((tree) => ({ path: hideHome(tree.path, env), branch: tree.branch })),
   };
 }
 
@@ -307,7 +302,7 @@ export function renderBoardText(board: BoardData, now: number = Date.now()): str
     `${countText(board.agents.length, 'agent')}, ${countText(pulls.length, 'pull request')}, ${countText(worktrees.length, 'worktree')}.`,
     '',
     'Agents:',
-    ...(board.agents.length ? board.agents.map((agent) => `- ${formatBoardAgent(agent, now)}`) : ['- none. An agent joins by writing its status file.']),
+    ...(board.agents.length ? board.agents.map((agent) => `- ${formatBoardAgent(agent, now)}`) : ['- none. An agent joins by writing .yokoten-agent.json in its worktree.']),
     '',
     'Pull requests:',
     ...(typeof board.pulls === 'string' ? [`- ${board.pulls}`] : pulls.length ? pulls.map((pull) => `- ${formatBoardPull(pull)}`) : ['- none.']),
@@ -381,7 +376,7 @@ function oneRow(table, text) {
 }
 function showAgents(table, agents) {
   head(table, ['Name', 'Vendor', 'Task', 'Worktree', 'Doing now', 'Updated']);
-  if (!agents.length) oneRow(table, 'No agents. One joins by writing its status file.');
+  if (!agents.length) oneRow(table, 'No agents. One joins by writing .yokoten-agent.json in its worktree.');
   agents.forEach(function (agent) {
     var row = document.createElement('tr');
     row.appendChild(cell(agent.name));

@@ -343,8 +343,8 @@ export const COMMANDS: Command[] = [
     text: [
       'Serves a live page on this machine only (127.0.0.1), with each agent, each pull',
       'request stage, and each worktree. It prints the link and runs until you stop it.',
-      'The page refreshes every 15 seconds. An agent joins by writing its status file,',
-      'and leaves by removing it; the guide shows the format.',
+      'The page refreshes every 15 seconds. An agent joins by writing .yokoten-agent.json',
+      'at its worktree root, and leaves by removing it; the guide shows the format.',
     ],
     options: [{ name: '--text', text: 'print the same data as plain text and exit' }],
     example: 'yokoten board --text',

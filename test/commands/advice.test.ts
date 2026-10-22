@@ -10,17 +10,21 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { get as httpGet } from 'node:http';
-import { join } from 'node:path';
+import {
+  basename,
+  dirname,
+  join,
+} from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { test } from 'node:test';
 import {
   CLI,
   makeSandbox,
+  makeTempDir,
   pick,
 } from '../repo/helpers.ts';
 import {
   ageText,
-  boardDir,
   boardPage,
   collectBoard,
   readBoardAgents,
@@ -144,17 +148,15 @@ test('doctor: one progress line on a terminal; none off it, in a session, or wit
   JSON.parse(json.stdout);
 });
 
-// #601: `yokoten board --text` prints the team as plain text. An agent joins by writing its
-// status file, and leaves by removing it.
+// #601: `yokoten board --text` prints the team as plain text. An agent joins by writing
+// .yokoten-agent.json at its worktree's root, and leaves by removing it.
 test('board --text: the entry, an agent that joins and leaves, and the usage errors', async () => {
   const sandbox = makeSandbox();
   // The entry, through the real binary; the rest runs in this process.
   const started = sandbox.run(['board', '--text']);
   assert.equal(started.status, 0, started.stderr);
-  assert.match(started.stdout, /^yokoten board: \S+\n0 agents, 0 pull requests, 1 worktree\.\n\nAgents:\n- none\. An agent joins by writing its status file\.\n\nPull requests:\n- this repo has no GitHub remote, so the board shows no pull requests\n\nWorktrees:\n- \S+ \(main\)\n$/);
-  const dir = join(sandbox.home, '.config', 'yokoten', 'board');
-  mkdirSync(dir, { recursive: true });
-  const file = join(dir, 'worker-1.json');
+  assert.match(started.stdout, /^yokoten board: \S+\n0 agents, 0 pull requests, 1 worktree\.\n\nAgents:\n- none\. An agent joins by writing \.yokoten-agent\.json in its worktree\.\n\nPull requests:\n- this repo has no GitHub remote, so the board shows no pull requests\n\nWorktrees:\n- \S+ \(main\)\n$/);
+  const file = join(sandbox.repo, '.yokoten-agent.json');
   writeFileSync(file, JSON.stringify({ name: 'worker-1', vendor: 'claude-code', task: 'issue 601', worktree: sandbox.repo, doing: 'writing tests', updated: new Date().toISOString() }));
   const joined = await sandbox.call(['board', '--text']);
   assert.equal(joined.status, 0, joined.stderr);
@@ -163,7 +165,16 @@ test('board --text: the entry, an agent that joins and leaves, and the usage err
   rmSync(file);
   const left = await sandbox.call(['board', '--text']);
   assert.match(left.stdout, /\n0 agents, 0 pull requests, 1 worktree\.\n/);
-  assert.match(left.stdout, /- none\. An agent joins by writing its status file\.\n/);
+  assert.match(left.stdout, /- none\. An agent joins by writing \.yokoten-agent\.json in its worktree\.\n/);
+  // A fake HOME above the repo: every shown path hides it.
+  writeFileSync(file, JSON.stringify({ name: 'worker-1', worktree: sandbox.repo }));
+  const hidden = await sandbox.call(['board', '--text'], { extra: { HOME: dirname(sandbox.repo) } });
+  assert.equal(hidden.status, 0, hidden.stderr);
+  assert.match(hidden.stdout, /^yokoten board: ~\/repo\n/);
+  assert.match(hidden.stdout, /- worker-1: in ~\/repo\n/);
+  assert.match(hidden.stdout, /\nWorktrees:\n- ~\/repo \(main\)\n/);
+  assert.ok(!hidden.stdout.includes(sandbox.repo), 'no full path under the home folder');
+  rmSync(file);
   assert.equal((await sandbox.call(['board', '--bogus'])).status, 1, 'an unknown option is refused');
   const outside = await sandbox.call(['board', '--text'], { cwd: sandbox.home });
   assert.equal(outside.status, 1, 'outside a repo it says so');
@@ -189,26 +200,40 @@ test('board --text: pull requests with each stage, read-only', async () => {
   assert.match(result.stdout, /\n- #7 team page \[board\]: checks pass, tier B, waiting for the owner\n- #6 old work \[old\]: checks fail, no tier, merged\n/);
 });
 
-// #601: one status file per agent. Broken, foreign and odd files never break the board.
-test('board agents: every file as an agent, by file name; the odd ones are skipped or blank', () => {
-  const sandbox = makeSandbox();
-  const dir = boardDir(sandbox.env);
-  assert.ok(dir);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'b.json'), JSON.stringify({ name: 'b-worker', vendor: 'codex', task: 't', worktree: 'w', doing: 'd', updated: '2026-10-22T10:00:00Z' }));
-  writeFileSync(join(dir, 'a.json'), JSON.stringify({ task: 'only a task' }));
-  writeFileSync(join(dir, 'c.json'), JSON.stringify({ name: 7, vendor: null, updated: 123 }));
-  writeFileSync(join(dir, 'broken.json'), '{oops');
-  writeFileSync(join(dir, 'list.json'), '[]');
-  writeFileSync(join(dir, 'notes.txt'), 'not a status file');
-  mkdirSync(join(dir, 'folder.json'));
-  assert.deepEqual(readBoardAgents(dir), [
-    { name: 'a', vendor: '', task: 'only a task', worktree: '', doing: '', updated: '' },
-    { name: 'b-worker', vendor: 'codex', task: 't', worktree: 'w', doing: 'd', updated: '2026-10-22T10:00:00Z' },
-    { name: 'c', vendor: '', task: '', worktree: '', doing: '', updated: '' },
-  ]);
-  assert.deepEqual(readBoardAgents(join(dir, 'missing')), [], 'no folder, no agents');
-  assert.equal(boardDir({}), null, 'no home folder, no status files');
+// #601: one status file per worktree, at its root, read in worktree order. A missing,
+// broken or odd file never breaks the board; a missing name is the worktree's folder name.
+test('board agents: every worktree root as an agent; the odd ones are skipped or blank', () => {
+  const first = makeTempDir('yokoten-board-');
+  const second = makeTempDir('yokoten-board-');
+  const missing = makeTempDir('yokoten-board-');
+  const broken = makeTempDir('yokoten-board-');
+  const listed = makeTempDir('yokoten-board-');
+  const odd = makeTempDir('yokoten-board-');
+  const blocked = makeTempDir('yokoten-board-');
+  writeFileSync(join(first, '.yokoten-agent.json'), JSON.stringify({ name: 'b-worker', vendor: 'codex', task: 't', worktree: 'w', doing: 'd', updated: '2026-10-22T10:00:00Z' }));
+  writeFileSync(join(second, '.yokoten-agent.json'), JSON.stringify({ task: 'only a task' }));
+  writeFileSync(join(broken, '.yokoten-agent.json'), '{oops');
+  writeFileSync(join(listed, '.yokoten-agent.json'), '[]');
+  writeFileSync(join(odd, '.yokoten-agent.json'), JSON.stringify({ name: 7, vendor: null, updated: 123 }));
+  mkdirSync(join(blocked, '.yokoten-agent.json'));
+  assert.deepEqual(
+    readBoardAgents([
+      { path: first, branch: 'main' },
+      { path: second, branch: 'feature' },
+      { path: missing, branch: '' },
+      { path: join(missing, 'gone'), branch: '' },
+      { path: broken, branch: '' },
+      { path: listed, branch: '' },
+      { path: odd, branch: '' },
+      { path: blocked, branch: '' },
+    ]),
+    [
+      { name: 'b-worker', vendor: 'codex', task: 't', worktree: 'w', doing: 'd', updated: '2026-10-22T10:00:00Z' },
+      { name: basename(second), vendor: '', task: 'only a task', worktree: '', doing: '', updated: '' },
+      { name: basename(odd), vendor: '', task: '', worktree: '', doing: '', updated: '' },
+    ],
+  );
+  assert.deepEqual(readBoardAgents([]), [], 'no worktrees, no agents');
 });
 
 test('board age: just now, minutes, hours and days; a missing or odd time is blank', () => {
@@ -283,7 +308,7 @@ test('board text: every stage in plain words; a part that cannot be read says wh
     '0 agents, 0 pull requests, 0 worktrees.',
     '',
     'Agents:',
-    '- none. An agent joins by writing its status file.',
+    '- none. An agent joins by writing .yokoten-agent.json in its worktree.',
     '',
     'Pull requests:',
     '- gh failed',
@@ -293,25 +318,32 @@ test('board text: every stage in plain words; a part that cannot be read says wh
   ]);
 });
 
-// #601: the data together. Without a GitHub remote, gh is never asked.
+// #601: the data together. Without a GitHub remote, gh is never asked. Every shown path
+// hides the home folder.
 test('board data: agents, pulls and worktrees; gh runs only with a GitHub remote', () => {
   const sandbox = makeSandbox();
-  const dir = boardDir(sandbox.env);
-  assert.ok(dir);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'w.json'), JSON.stringify({ name: 'w' }));
+  writeFileSync(join(sandbox.repo, '.yokoten-agent.json'), JSON.stringify({ name: 'w', worktree: sandbox.repo }));
   const unasked: Gh = () => {
     throw new Error('gh must not run without a GitHub remote');
   };
   const without = collectBoard(sandbox.repo, sandbox.env, unasked);
   assert.equal(without.repo, sandbox.repo);
-  assert.deepEqual(without.agents, [{ name: 'w', vendor: '', task: '', worktree: '', doing: '', updated: '' }]);
+  assert.deepEqual(without.agents, [{ name: 'w', vendor: '', task: '', worktree: sandbox.repo, doing: '', updated: '' }]);
   assert.equal(without.pulls, 'this repo has no GitHub remote, so the board shows no pull requests');
   assert.deepEqual(without.worktrees, [{ path: sandbox.repo, branch: 'main' }]);
   assert.equal(sandbox.git('remote', 'add', 'origin', 'git@github.com:octo/demo.git').status, 0);
   const gh: Gh = () => JSON.stringify([{ number: 1, title: 't', headRefName: 'b', url: '', state: 'OPEN', reviewDecision: 'APPROVED', isDraft: false, statusCheckRollup: [], labels: [] }]);
   assert.deepEqual(collectBoard(sandbox.repo, sandbox.env, gh).pulls, [{ number: 1, title: 't', branch: 'b', url: '', stage: 'open', checks: 'none', tier: '', review: 'approved' }]);
-  assert.equal(collectBoard(sandbox.repo, {}, gh).agents.length, 0, 'no home folder, no agents');
+  // A fake HOME above the repo: every shown path hides it.
+  const hidden = collectBoard(sandbox.repo, { ...sandbox.env, HOME: dirname(sandbox.repo) }, gh);
+  assert.equal(hidden.repo, '~/repo');
+  assert.deepEqual(hidden.agents, [{ name: 'w', vendor: '', task: '', worktree: '~/repo', doing: '', updated: '' }]);
+  assert.deepEqual(hidden.worktrees, [{ path: '~/repo', branch: 'main' }]);
+  // No repo: no agents, and the worktrees say why.
+  const outside = collectBoard(sandbox.home, sandbox.env, unasked);
+  assert.equal(outside.repo, '~');
+  assert.deepEqual(outside.agents, []);
+  assert.equal(outside.worktrees, 'git could not list the worktrees: run it again');
 });
 
 test('board page: plain HTML with the three tables; it reads /data every 15 seconds', () => {
@@ -321,16 +353,14 @@ test('board page: plain HTML with the three tables; it reads /data every 15 seco
   for (const id of ['agents', 'pulls', 'worktrees']) assert.ok(page.includes(`<table id="${id}"></table>`), `a ${id} table`);
   assert.ok(page.includes('setInterval(load, 15000)'), 'refreshes every 15 seconds');
   assert.ok(page.includes("fetch('data')"), 'reads the same data as JSON');
+  assert.ok(page.includes('.yokoten-agent.json'), 'the empty state names the file');
   assert.ok(!page.includes('http://') && !page.includes('https://'), 'no outside address: it works offline');
 });
 
 // #601: the server listens on 127.0.0.1 only. It never outlives the test: it closes in a finally.
 test('board server: the page at /, the same data as JSON at /data, nothing else', async () => {
   const sandbox = makeSandbox();
-  const dir = boardDir(sandbox.env);
-  assert.ok(dir);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'w.json'), JSON.stringify({ name: 'w', vendor: 'muse' }));
+  writeFileSync(join(sandbox.repo, '.yokoten-agent.json'), JSON.stringify({ name: 'w', vendor: 'muse', worktree: join(sandbox.home, 'w') }));
   const gh: Gh = () => '[]';
   const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh);
   try {
@@ -355,7 +385,7 @@ test('board server: the page at /, the same data as JSON at /data, nothing else'
     assert.equal(data.kind, 'application/json; charset=utf-8');
     const shown = JSON.parse(data.text) as { repo: string; agents: unknown[]; pulls: unknown; worktrees: unknown[]; updated: string };
     assert.equal(shown.repo, sandbox.repo);
-    assert.deepEqual(shown.agents, [{ name: 'w', vendor: 'muse', task: '', worktree: '', doing: '', updated: '', age: '' }]);
+    assert.deepEqual(shown.agents, [{ name: 'w', vendor: 'muse', task: '', worktree: '~/w', doing: '', updated: '', age: '' }]);
     assert.equal(shown.pulls, 'this repo has no GitHub remote, so the board shows no pull requests');
     assert.deepEqual(shown.worktrees, [{ path: sandbox.repo, branch: 'main' }]);
     assert.match(shown.updated, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
