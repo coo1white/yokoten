@@ -25,7 +25,10 @@ export function runInit(invocation: Invocation): number {
   if (!root) return 1;
   // Read first: a broken yokoten.json stops init before it writes a file.
   const { areas } = loadConfig(root);
-  const done = init(root, invocation.env, undefined, { noCi: options.flags.has('--no-ci') });
+  // The tests job is asked first (#550): only with a terminal on stdin and stdout, as install asks.
+  const { stdin, stdout } = invocation;
+  const ask = stdin.fd !== null && stdin.stream.isTTY && stdout.isTTY ? askOnTerminal(stdout, stdin.fd) : undefined;
+  const done = init(root, invocation.env, undefined, { noCi: options.flags.has('--no-ci'), ask });
   print(invocation, done.lines);
   // The host is changed only when asked (#10): it is a remote, and other people see it.
   // Without --yes, init only reads it and says what it would do, or what it skipped.

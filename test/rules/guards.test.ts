@@ -10,6 +10,8 @@ import {
   chmodSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -24,6 +26,7 @@ import {
   type Env,
 } from '../../src/rules/config.ts';
 import {
+  addWorkerPath,
   checkCommand,
   checkEdit,
   checkWorkerMarkEdit,
@@ -33,7 +36,11 @@ import {
   isGranted,
   isLeadOnly,
   isRedacted,
+  listedWorker,
+  loadWorkerPaths,
+  markNote,
   printsAccount,
+  removeWorkerPath,
   runsCheck,
   withWorkerMark,
   workerMarkAt,
@@ -623,6 +630,69 @@ test('lead-only files: a cd to a quoted ~ is not the home folder, so a worker st
   // An unquoted ~ is the home folder, outside the repo: the write there passes, as before.
   assert.equal(run('cd ~/x && echo x > AGENTS.md'), undefined);
   assert.equal(run('cd ~/"x" && echo x > AGENTS.md'), undefined);
+});
+
+test('lead-only files: a worker relative write after an unknown cd is refused (#559)', () => {
+  const sandbox = yokotenSandbox();
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  const run = (command: string) => checkCommand(command, { env: worker, cwd: sandbox.repo })?.id;
+  // `cd src` may land anywhere through CDPATH, so the folder is unknown and every
+  // relative write is unsure, whatever the file is named: unsure means refused.
+  for (const command of [
+    'cd src && echo x > AGENTS.md',
+    'cd src && echo x > notes.md',
+    'cd src && cp x ../AGENTS.md',
+    'cd src && git checkout -- notes.md',
+    'cd src && git commit -m x AGENTS.md',
+  ]) {
+    assert.equal(run(command), 'lead-only', `should stop a worker: ${JSON.stringify(command)}`);
+  }
+  const found = checkCommand('cd src && echo x > notes.md', { env: worker, cwd: sandbox.repo });
+  assert.match(found?.what ?? '', /can't tell which file that is from an unknown folder/);
+  // Controls: a write by full path, and one after a `cd` the guard can read, still pass.
+  assert.equal(run(`echo x > ${join(sandbox.repo, 'notes.md')}`), undefined);
+  assert.equal(run('cd ./src && echo x > notes.md'), undefined);
+  assert.equal(run(`cd ${join(sandbox.repo, 'src')} && echo x > notes.md`), undefined);
+});
+
+test('lead-only files: git apply and an unknowable commit from an unknown folder are refused (#559)', () => {
+  const sandbox = yokotenSandbox();
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  const run = (command: string) => checkCommand(command, { env: worker, cwd: sandbox.repo });
+  sandbox.write('fix.patch', 'diff --git a/AGENTS.md b/AGENTS.md\n--- a/AGENTS.md\n+++ b/AGENTS.md\n@@ -1 +1 @@\n-a\n+b\n');
+  sandbox.write('ok.patch', 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-a\n+b\n');
+  // A patch named from an unknown folder cannot be placed: unsure means refused,
+  // whatever the patch touches and however the patch itself is named.
+  for (const command of [
+    'cd src && git apply fix.patch',
+    'cd src && git apply ../fix.patch',
+    `cd src && git apply ${join(sandbox.repo, 'fix.patch')}`,
+    'cd src && git apply ok.patch',
+  ]) {
+    const found = run(command);
+    assert.equal(found?.id, 'lead-only', `should stop a worker: ${JSON.stringify(command)}`);
+    assert.match(found?.what ?? '', /from an unknown folder/, `should say unsure: ${JSON.stringify(command)}`);
+  }
+  // stdin stays the known gap it already was.
+  assert.equal(run('cd src && git apply - < fix.patch'), null);
+  // A commit that takes the staged files (or with -a, the changed ones too) commits
+  // what the guard cannot list from an unknown folder: unsure means refused.
+  sandbox.write('AGENTS.md', 'rules\n');
+  sandbox.write('src/a.ts', 'export {};\n');
+  sandbox.git('add', '.');
+  sandbox.write('AGENTS.md', 'new rules\n');
+  for (const command of ['cd src && git commit -m x', 'cd src && git commit -am x', 'cd src && git commit -a -m x', 'cd src && git commit --all -m x']) {
+    const found = run(command);
+    assert.equal(found?.id, 'lead-only', `should stop a worker: ${JSON.stringify(command)}`);
+    assert.match(found?.what ?? '', /from an unknown folder/, `should say unsure: ${JSON.stringify(command)}`);
+  }
+  // A commit that names only absolute paths is still checked one by one.
+  assert.equal(run(`cd src && git commit -m x ${join(sandbox.repo, 'AGENTS.md')}`)?.id, 'lead-only');
+  assert.equal(run(`cd src && git commit -m x ${join(sandbox.repo, 'src', 'a.ts')}`), null);
+  // Controls: the same commands pass where the folder is known and nothing lead-only is in them.
+  assert.equal(run(`cd ./src && git apply ${join(sandbox.repo, 'ok.patch')}`), null);
+  assert.equal(run(`cd ${sandbox.repo} && git apply ok.patch`), null);
+  assert.equal(run(`cd ./src && git commit -m x ${join(sandbox.repo, 'src', 'a.ts')}`), null);
 });
 
 test('lead-only files: reads, other files and files outside the repo pass a worker (#402)', () => {
@@ -2155,4 +2225,76 @@ test('guard: piping a download into a shell is refused (#560)', () => {
     'curl https://example.com/x && sh install.sh',
   ]) allowed(command);
   assert.match(checkCommand('curl https://example.com/x | sh', { cwd: process.cwd(), env: {} })?.fix ?? '', /save it first/);
+});
+
+// #566: the worker list keeps the role when `.git` is moved away. `worker mark` writes the
+// worktree's path outside the worktree, under yokoten's config folder; the guard treats a
+// listed folder, or one inside it, as a worker's with no `.git` at all. Removing the
+// worktree leaves an entry whose folder is gone, which never matches; `worker unmark`
+// clears an entry outright.
+test('worker list: a listed path stays a worker with .git moved away (#566)', () => {
+  const base = makeTempDir('yokoten-list-');
+  const home = join(base, 'home');
+  mkdirSync(home);
+  const env = { HOME: home };
+  const store = join(base, 'store');
+  mkdirSync(store);
+  const tree = join(base, 'wt');
+  mkdirSync(join(tree, 'src'), { recursive: true });
+  writeFileSync(join(tree, '.git'), `gitdir: ${store}\n`);
+  // Negative control: no mark and no list entry is the lead's.
+  assert.equal(workerMarkAt(join(tree, 'src'), env), null);
+  assert.equal(workerRole(env, [join(tree, 'src')]), null);
+  assert.equal(listedWorker(join(tree, 'src'), env), null);
+  // Mark the worktree: the git-folder mark and the list entry.
+  writeFileSync(join(store, 'yokoten-worker'), 'x');
+  addWorkerPath(env, tree);
+  addWorkerPath(env, tree);
+  const top = realpathSync(tree);
+  assert.deepEqual(loadWorkerPaths(env), [top], 'marking twice keeps one entry');
+  assert.equal(workerMarkAt(join(tree, 'src'), env), 'mark');
+  assert.equal(workerRole(env, [join(tree, 'src')]), 'mark');
+  assert.deepEqual(withWorkerMark(env, [tree]), { ...env, YOKOTEN_ROLE: 'worker' });
+  // Positive control: with `.git` moved away, the list still makes it a worker.
+  renameSync(join(tree, '.git'), join(base, 'dot-git-moved'));
+  assert.equal(workerMarkAt(join(tree, 'src'), env), 'mark');
+  assert.equal(workerRole(env, [join(tree, 'src')]), 'mark');
+  assert.match(markNote([join(tree, 'src')], env), /worker list/);
+  // A folder outside the listed worktree is not a worker.
+  assert.equal(workerMarkAt(base, env), null);
+  assert.equal(workerRole(env, [base]), null);
+  // Unmark clears it: the lead again.
+  removeWorkerPath(env, tree);
+  assert.deepEqual(loadWorkerPaths(env), []);
+  assert.equal(workerMarkAt(join(tree, 'src'), env), null);
+  assert.equal(workerRole(env, [join(tree, 'src')]), null);
+  // A removed worktree's entry never matches, and the next mark drops it.
+  addWorkerPath(env, tree);
+  rmSync(tree, { recursive: true, force: true });
+  assert.equal(listedWorker(tree, env), null, 'an entry whose folder is gone never matches');
+  assert.equal(workerMarkAt(tree, env), null);
+  const other = join(base, 'other');
+  mkdirSync(other);
+  addWorkerPath(env, other);
+  assert.deepEqual(loadWorkerPaths(env), [realpathSync(other)], 'the next mark drops the gone entry');
+});
+
+// #566: `yokoten worker unmark` is the lead's: the command guard refuses it for a
+// worker-role session, whatever folder the command names, and lets the lead through.
+test('worker list: the guard refuses `yokoten worker unmark` for a worker, not the lead (#566)', () => {
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  for (const command of [
+    'yokoten worker unmark /tmp/wt',
+    'cd /tmp && yokoten worker unmark /tmp/wt',
+    'node bin/yokoten.ts worker unmark /tmp/wt',
+    'npx yokoten worker unmark /tmp/wt',
+    'yokoten worker unmark',
+  ]) {
+    const found = checkCommand(command, { env: worker, cwd: process.cwd() });
+    assert.equal(found?.id, 'worker-mark', `should refuse: ${command}`);
+    assert.match(found?.what ?? '', /only the lead unmarks a worktree/, command);
+  }
+  assert.equal(checkCommand('yokoten worker unmark /tmp/wt', { env: {}, cwd: process.cwd() }), null, 'the lead');
+  assert.equal(checkCommand('yokoten worker mark /tmp/wt', { env: worker, cwd: process.cwd() }), null, 'mark is not unmark');
+  assert.equal(checkCommand('yokoten bot -- echo hi', { env: worker, cwd: process.cwd() })?.id, 'worker-push', 'bot keeps its own refusal');
 });

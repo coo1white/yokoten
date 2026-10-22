@@ -128,7 +128,7 @@ export const RULES = {
   'worker-mark': {
     rule: 'a worker does not change the worker mark on its worktree',
     why: 'some agents pass their hooks no YOKOTEN_ROLE, so the mark is what tells the guard that the session is a worker',
-    check: 'for a worker, the tool-call guard stops a command that writes, moves, removes, links or changes the mode of a file in a git folder (a glob that can match .git or the mark counts) or redirects into one, git with GIT_DIR or --git-dir, `git worktree` other than `list`, and an edit inside a git folder, by real path. A read that names .git passes. A .git link it cannot read makes the session a worker. These are the plain ways; the server and keeping credentials away from the worker are the lock',
+    check: 'for a worker, the tool-call guard stops a command that writes, moves, removes, links or changes the mode of a file in a git folder (a glob that can match .git or the mark counts) or redirects into one, git with GIT_DIR or --git-dir, `git worktree` other than `list`, `yokoten worker unmark`, and an edit inside a git folder, by real path. A read that names .git passes. A .git link it cannot read makes the session a worker. These are the plain ways; the server and keeping credentials away from the worker are the lock',
     docs: guide('managing-agents-like-a-team'),
   },
   email: {
@@ -216,6 +216,12 @@ export const RULES = {
   'pr-issue': {
     rule: 'a pull request links its issue (core rules 1 and 8)',
     why: 'every change starts as an issue',
+    check: PR_CHECK,
+    docs: guide('the-core-rules'),
+  },
+  'pr-made-with': {
+    rule: 'a pull request body ends with `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs (core rule 8)',
+    why: 'every pull request names each AI and model that made it',
     check: PR_CHECK,
     docs: guide('the-core-rules'),
   },
@@ -425,6 +431,12 @@ export const RULES = {
     rule: "the agent's temp folder belongs to you (record 0012)",
     why: 'Claude Code will not start when another user, such as root, owns its temp folder',
     check: "full `doctor` compares the owner of Claude Code's temp folder (`claude-<uid>` in the temp folder) with your uid; a note, never a failure, and doctor never deletes it",
+    docs: guide('machine-notes'),
+  },
+  'node-security': {
+    rule: 'the Node that runs yokoten has the security fixes of 2026-10-21 (#572)',
+    why: 'older releases have known holes, among them TLS checks that the HTTPS calls to GitHub rely on',
+    check: 'full `doctor` compares the running Node with the first fixed release of its line (22.23.4, 24.22.1 or 26.12.1); a line that gets no more fixes is not supported; a note, never a failure',
     docs: guide('machine-notes'),
   },
   'leftover-temp-folders': {

@@ -80,6 +80,7 @@ import {
 import {
   agentHooks,
   agentTempDirCheck,
+  nodeSecurityCheck,
   coreRulesCheck,
   leftoverTempCheck,
   diskSpaceChecks,
@@ -191,9 +192,11 @@ test('messages: every check and guard says what, why and the fix, in text and JS
     writeText: () => {},
     uid: 1000,
     now: () => new Date(0),
+    nodeVersion: '24.21.0',
   };
   for (const c of diskSpaceChecks(dir, { HOME: dir }, fullMachine, false)) add(c.finding);
   add(agentTempDirCheck({}, fullMachine)?.finding);
+  for (const nodeVersion of ['24.21.0', '23.11.1']) add(nodeSecurityCheck({ nodeVersion }).finding);
   // An old test folder in the temp folder (#400): seen from two days on.
   const temp = makeTempDir();
   mkdirSync(join(temp, 'yokoten-old'));

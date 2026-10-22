@@ -34,7 +34,9 @@ agents. The short version:
 4. Fill in the pull request form: why, what changed, how you tested it.
 5. CI must be green. The owner reviews, then squash-merges.
 
-You need Node 22.18 or later. There are no runtime dependencies.
+You need Node 22.23.4 or later (24.22.1 on Node 24, 26.12.1 on Node 26), because older
+releases have the security holes that Node fixed on 2026-10-21. There are no runtime
+dependencies.
 
 ## Be kind
 

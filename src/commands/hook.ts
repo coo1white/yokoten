@@ -1,6 +1,6 @@
 // `yokoten hook`: the tool-call guard, and with --stop the end-of-turn check.
 
-import { existsSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
 import * as claudeCode from '../agents/runtimes/claude-code.ts';
@@ -10,7 +10,7 @@ import * as gemini from '../agents/runtimes/gemini.ts';
 import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import { loadConfig } from '../rules/config.ts';
-import { hardenRead, markNote, printsAccount, privateOutput, realPath, releaseFix, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
+import { addWorkerPath, hardenRead, markNote, printsAccount, privateOutput, realPath, releaseFix, removeWorkerPath, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
 import { type Finding, formatFinding, notRepoFinding } from '../rules/message.ts';
 import { checkChanged, readGit } from '../run/check.ts';
 import { type Action, type Guard, guardDeadline, judgeWithDeadline, loadHookConfig, type Repo } from '../run/hook.ts';
@@ -210,7 +210,7 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
       if (config.privacy.output === 'stop') found = privateOutput(printed, wrapped);
     }
     // A worker by the mark hears why, and where the lead works (#555).
-    if (found && role === 'mark' && WORKER_RULES.has(found.id)) found = { ...found, fix: `${found.fix}. ${capital(markNote(folders))}` };
+    if (found && role === 'mark' && WORKER_RULES.has(found.id)) found = { ...found, fix: `${found.fix}. ${capital(markNote(folders, invocation.env))}` };
     if (json) printJson(invocation, found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
     if (!found) return 0;
     // The runtimes read the reason from stderr when the hook exits 2; some read stdout (DENIALS).
@@ -229,18 +229,22 @@ const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 /**
  * `worker mark <dir>`: mark the worktree at <dir> as a worker's (#555). The guard then
  * treats every agent there as a worker, whatever env its runtime passes to the hook. The
- * mark is a file in the worktree's own git folder; `git worktree remove` removes it with
- * the worktree. The main checkout is the lead's, so it is never marked.
+ * mark is a file in the worktree's own git folder, and its path on the worker list (#566),
+ * outside the worktree, so moving `.git` away keeps the role. `git worktree remove`
+ * removes the file with the worktree, and the guard skips the list entry whose folder is
+ * gone; `worker unmark` clears an entry outright, and only the lead runs it. The main
+ * checkout is the lead's, so it is never marked.
  */
 export function runWorker(invocation: Invocation): number {
   const options = parse('worker', invocation.args);
   if (typeof options === 'string') return usage(invocation, options);
   const [action, dir] = options.positional;
-  if (action !== 'mark' || dir === undefined) return usage(invocation, 'say what to do and where: yokoten worker mark <dir>');
+  if ((action !== 'mark' && action !== 'unmark') || dir === undefined) return usage(invocation, `say what to do and where: yokoten worker ${action === 'unmark' ? 'unmark' : 'mark'} <dir>`);
   const fail = (line: string) => {
     print(invocation, [`yokoten worker: ${line}`], invocation.stderr);
     return 1;
   };
+  if (action === 'unmark') return runUnmark(invocation, dir, fail);
   const folder = resolve(invocation.cwd, dir);
   let isFolder = false;
   try {
@@ -264,8 +268,43 @@ export function runWorker(invocation: Invocation): number {
   } catch (error) {
     return fail(`can't write the mark in ${gitDir} (${(error as NodeJS.ErrnoException).code ?? 'error'}). Check that the lead can write there, then run it again.`);
   }
+  try {
+    addWorkerPath(invocation.env, top);
+  } catch (error) {
+    return fail(`the mark is written in ${gitDir}, but the worker list can't be written (${(error as Error).message.split('\n')[0]}). Clear it with \`yokoten worker unmark ${top}\` once the list is writable, then mark again.`);
+  }
   // The guard finds the mark without git; check that it does here.
-  if (workerMarkAt(folder) !== 'mark') return fail(`the mark is written in ${gitDir}, but the guard can't find it from ${top}.`);
-  print(invocation, [`yokoten worker: marked the worktree at ${top}. The guard now treats every agent there as a worker. \`git worktree remove ${top}\` removes the mark.`]);
+  if (workerMarkAt(folder, invocation.env) !== 'mark') return fail(`the mark is written in ${gitDir}, but the guard can't find it from ${top}.`);
+  print(invocation, [`yokoten worker: marked the worktree at ${top}. The guard now treats every agent there as a worker. \`git worktree remove ${top}\` removes the mark. \`yokoten worker unmark ${top}\` clears it sooner.`]);
+  return 0;
+}
+
+/**
+ * `worker unmark <dir>`: forget the marked worktree at <dir> (#566). Only the lead runs
+ * it: a worker's session, by YOKOTEN_ROLE or by the mark on its own worktree, is refused.
+ * It drops the worktree's path from the worker list, and the mark file when `.git` still
+ * names it. Given a folder with no `.git` (moved away), it still clears by path.
+ */
+function runUnmark(invocation: Invocation, dir: string, fail: (line: string) => number): number {
+  if (workerRole(invocation.env, [invocation.cwd]) !== null) {
+    return fail('only the lead unmarks a worktree: this session is a worker. Commit in your worktree and report; the lead unmarks after review.');
+  }
+  const folder = resolve(invocation.cwd, dir);
+  let top = folder;
+  let gitDir: string | undefined;
+  try {
+    const answer = readGit(folder, ['rev-parse', '--show-toplevel', '--absolute-git-dir'], { env: invocation.env }).toString('utf8').trim().split('\n');
+    if (answer[0]) top = answer[0];
+    gitDir = answer[1];
+  } catch {
+    // No `.git` to read (moved away): the list entry is still cleared by path below.
+  }
+  if (gitDir) rmSync(join(gitDir, WORKER_MARK), { force: true });
+  try {
+    removeWorkerPath(invocation.env, top);
+  } catch (error) {
+    return fail(`can't clear the worker list (${(error as Error).message.split('\n')[0]}). Check HOME, then run it again.`);
+  }
+  print(invocation, [`yokoten worker: unmarked ${top}. The guard no longer treats agents there as workers.`]);
   return 0;
 }

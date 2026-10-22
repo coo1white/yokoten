@@ -12,13 +12,13 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync, type Stats, statSync } from 'node:fs';
+import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, type Stats, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Config, Env } from './config.ts';
 import { loadConfig, matcher } from './config.ts';
 import { type Finding, finding } from './message.ts';
 import { checkCommandTitle } from './pr.ts';
-import { type CommandFiles, checkPost, type GhCommand, ghIndex, isBotProgram, PIPE_READERS, type Risk, withoutReadPipe } from './privacy.ts';
+import { type CommandFiles, checkPost, type GhCommand, ghIndex, homeIn, isBotProgram, PIPE_READERS, type Risk, withoutReadPipe } from './privacy.ts';
 
 /** A file edit, by path relative to the repo root. */
 export function checkEdit(path: string, { config, env }: { config: Config; env: Env }): Finding | null {
@@ -40,6 +40,8 @@ const LEAD_ONLY_FIX = 'stop and hand the change to the lead: say in your report 
 // worktree's own git folder (`.git/worktrees/<name>/`), outside the files an agent edits.
 // The guard finds it through the `.git` file, with no git process (#408). The mark only adds
 // the worker role, never takes it away. Removing the worktree removes the mark.
+// The mark also keeps the worktree's path on the worker list (#566), outside the worktree,
+// so moving `.git` away does not lose the role; `yokoten worker unmark` clears it.
 //
 // It fails closed: a `.git` that is not a folder (a linked worktree's or a submodule's) and
 // can't be read as a small file, or that names a git folder that is gone or can't be read,
@@ -49,6 +51,83 @@ const LEAD_ONLY_FIX = 'stop and hand the change to the lead: say in your report 
 
 /** The mark's file name, in the worktree's own git folder. */
 export const WORKER_MARK = 'yokoten-worker';
+
+// ---- The worker list (#566) ----
+//
+// The mark in the git folder goes with the worktree: moving `.git` away takes it too.
+// So `worker mark` also keeps the marked worktree's path in a file outside every
+// worktree, under yokoten's config folder. The guard treats a folder on that list, or
+// inside one, as a worker's, whether or not `.git` is still there. Removing the worktree
+// (`git worktree remove`) leaves an entry whose folder is gone; the guard skips those,
+// and the next mark drops them. `worker unmark` clears an entry outright.
+
+/** The file that lists marked worktree paths, under yokoten's config folder. */
+export function workersFile(env: Env): string {
+  return join(homeIn(env), '.config', 'yokoten', 'workers');
+}
+
+/** What the workers file starts with: what it is, and what clears an entry. */
+const WORKERS_HEADER = `# yokoten workers: worktree paths the lead marked as workers' (#566).
+# One absolute path per line. The guard treats a folder on this list, or inside one, as a
+# worker's, even when its .git is gone. \`git worktree remove\` or \`yokoten worker unmark\`
+# clears an entry. Lines starting with # are comments.
+`;
+
+/** The marked worktree paths on the worker list. Empty when the file is missing. */
+export function loadWorkerPaths(env: Env): string[] {
+  let text: string;
+  try {
+    text = readFileSync(workersFile(env), 'utf8');
+  } catch {
+    return [];
+  }
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'));
+}
+
+/** Whether `path` names a folder that is still there. */
+function isFolderThere(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether `folder` is on the worker list, or inside a listed worktree (#566): the
+ * listed entry, or null. Entries whose folders are gone (a removed worktree) never match.
+ */
+export function listedWorker(folder: string, env: Env): string | null {
+  const full = realPath(folder);
+  for (const entry of loadWorkerPaths(env)) {
+    const base = realPath(resolve(entry));
+    if (!isFolderThere(base)) continue;
+    if (full === base || full.startsWith(base + sep)) return entry;
+  }
+  return null;
+}
+
+/** Keep `path` on the worker list, dropping entries whose folders are gone. */
+export function addWorkerPath(env: Env, path: string): void {
+  const here = realPath(path);
+  const kept = loadWorkerPaths(env).filter((entry) => realPath(entry) !== here && isFolderThere(realPath(entry)));
+  mkdirSync(dirname(workersFile(env)), { recursive: true });
+  writeFileSync(workersFile(env), `${WORKERS_HEADER}${[...kept, here].join('\n')}\n`);
+}
+
+/** Drop the worker list entries at, inside, or around `path`. */
+export function removeWorkerPath(env: Env, path: string): void {
+  const base = realPath(path);
+  const kept = loadWorkerPaths(env).filter((entry) => {
+    const other = realPath(entry);
+    return other !== base && !base.startsWith(other + sep) && !other.startsWith(base + sep);
+  });
+  mkdirSync(dirname(workersFile(env)), { recursive: true });
+  writeFileSync(workersFile(env), `${WORKERS_HEADER}${kept.length ? `${kept.join('\n')}\n` : ''}`);
+}
 
 /** The largest `.git` file read: a real one is one line. */
 const DOT_GIT_LIMIT = 4096;
@@ -109,12 +188,14 @@ function readSmallFile(path: string): string | null {
 
 /**
  * Why the checkout at or above `folder` makes a session a worker: `mark`, its git folder
- * holds the mark; `broken`, its `.git` or the git folder it names can't be read, so the
- * guard fails closed; null, it does not (a main checkout, an unmarked worktree, no checkout).
+ * holds the mark or its path is on the worker list (#566); `broken`, its `.git` or the
+ * git folder it names can't be read, so the guard fails closed; null, it does not (a main
+ * checkout, an unmarked worktree, no checkout). `env` finds the worker list; without a
+ * home folder there is no list, and only the mark counts.
  */
-export function workerMarkAt(folder: string): 'mark' | 'broken' | null {
+export function workerMarkAt(folder: string, env: Env = {}): 'mark' | 'broken' | null {
   const link = gitLinkAbove(folder);
-  if (link === null || link.kind === 'folder') return null;
+  if (link === null || link.kind === 'folder') return listedWorker(folder, env) ? 'mark' : null;
   if (link.kind === 'broken') return 'broken';
   try {
     statSync(join(link.gitDir, WORKER_MARK));
@@ -129,20 +210,21 @@ export function workerMarkAt(folder: string): 'mark' | 'broken' | null {
   } catch {
     return 'broken';
   }
-  return null;
+  return listedWorker(folder, env) ? 'mark' : null;
 }
 
-/** Whether the checkout at or above `folder` makes a session a worker: the mark, or a link the guard can't read. */
-export const hasWorkerMark = (folder: string): boolean => workerMarkAt(folder) !== null;
+/** Whether the checkout at or above `folder` makes a session a worker: the mark, the worker list, or a link the guard can't read. */
+export const hasWorkerMark = (folder: string, env: Env = {}): boolean => workerMarkAt(folder, env) !== null;
 
 /**
  * The one place that decides a worker (#555): `env` when YOKOTEN_ROLE=worker, `mark` when
- * any of `folders` is in a marked worktree (or one whose link can't be read), else null.
- * The tool guard, the stop check, the commit check and the session start all ask here.
+ * any of `folders` is in a marked worktree (or on the worker list, #566, or one whose
+ * link can't be read), else null. The tool guard, the stop check, the commit check and
+ * the session start all ask here.
  */
 export function workerRole(env: Env, folders: string[]): 'env' | 'mark' | null {
   if (env.YOKOTEN_ROLE === 'worker') return 'env';
-  return [...new Set(folders)].some(hasWorkerMark) ? 'mark' : null;
+  return [...new Set(folders)].some((folder) => hasWorkerMark(folder, env)) ? 'mark' : null;
 }
 
 /** `env` with YOKOTEN_ROLE=worker when `workerRole` says so; else `env` as it is. */
@@ -154,15 +236,16 @@ export function withWorkerMark(env: Env, folders: string[]): Env {
  * What a refusal adds when the worker role came from the mark (#555): why this session is a
  * worker, and where the lead works. `folders` are the ones `workerRole` read.
  */
-export function markNote(folders: string[]): string {
+export function markNote(folders: string[], env: Env = {}): string {
   for (const folder of new Set(folders)) {
-    const why = workerMarkAt(folder);
+    const why = workerMarkAt(folder, env);
     if (why === null) continue;
     const link = gitLinkAbove(folder);
     const main = link?.kind === 'file' ? mainCheckout(link.gitDir) : null;
     const lead = main ? `the lead works in the main checkout, ${main}` : 'the lead works in the main checkout';
     if (why === 'broken') return `yokoten treats this session as a worker because the .git link in ${link?.top ?? folder} can't be read; ${lead}`;
-    return `this worktree (${link?.top ?? folder}) carries the worker mark, so every agent in it is a worker whatever YOKOTEN_ROLE says; ${lead}`;
+    if (link?.kind === 'file') return `this worktree (${link?.top ?? folder}) carries the worker mark, so every agent in it is a worker whatever YOKOTEN_ROLE says; ${lead}`;
+    return `this folder (${folder}) is on the worker list, so every agent in it is a worker whatever YOKOTEN_ROLE says; ${lead}`;
   }
   return '';
 }
@@ -360,6 +443,28 @@ function checkWorkerSends(words: string[]): Finding | null {
   return null;
 }
 
+/**
+ * For a worker: `yokoten worker unmark`, which would clear its own worker mark (#566),
+ * or null. The role is the session's own, set from its folders before the command runs,
+ * so a `cd` away inside the command never evades it. Only the lead unmarks a worktree.
+ */
+function checkWorkerUnmark(words: string[]): Finding | null {
+  let from = 0;
+  for (const program of findPrograms(words)) {
+    const at = words.indexOf(program, from);
+    if (at === -1) continue;
+    from = at + 1;
+    const name = programName(program);
+    const cli = YOKOTEN_CLI.test(name) ? at : SCRIPT_RUNNERS.has(name) ? words.findIndex((word, index) => index > at && YOKOTEN_CLI.test(programName(word))) : -1;
+    if (cli === -1) continue;
+    const plain = plainArgs(withoutShellRedirects(words, cli + 1));
+    if (plain[0] === 'worker' && plain[1] === 'unmark') {
+      return finding('worker-mark', '`yokoten worker unmark` clears a worker mark, and only the lead unmarks a worktree', 'commit in your worktree and report; the lead unmarks after review');
+    }
+  }
+  return null;
+}
+
 // gh `api` options that take the next word as their value, besides the method and fields.
 const API_VALUES = new Set(['-H', '--header', '-q', '--jq', '-t', '--template', '--hostname', '-p', '--preview', '--cache']);
 
@@ -478,8 +583,8 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
     const reason =
       checkShellAlias(words) ??
       checkGit(words, { env, config, cwd, rules }) ??
-      // A worker hears its own rule first: what it may not send, and the git folder (#555).
-      (env.YOKOTEN_ROLE === 'worker' ? (checkWorkerSends(words) ?? checkWorkerWrites(words, { folder: postCwd, command })) : null) ??
+      // A worker hears its own rule first: what it may not send, its own unmark, and the git folder (#555, #566).
+      (env.YOKOTEN_ROLE === 'worker' ? (checkWorkerSends(words) ?? checkWorkerUnmark(words) ?? checkWorkerWrites(words, { folder: postCwd, command })) : null) ??
       // Removing the .git folder throws away every commit (#560). For a worker the
       // mark rule above already answers, with its own id.
       checkRemoveGit(words) ??
@@ -1758,8 +1863,10 @@ function writesFile(words: string[]): boolean {
 const QUOTED_TILDE = /[\\'"]~|~[\\'"]/;
 
 // The folder after a `cd` or `pushd` with a plain path, or null when the guard can't tell:
-// a variable, a substitution, `cd -`, `popd`, or a ~ that was quoted (`isTildeQuoted`, #465):
-// bash keeps a quoted ~ as a folder named ~. Any other command leaves the folder as it was.
+// a variable, a substitution, `cd -`, `popd`, a ~ that was quoted (`isTildeQuoted`, #465):
+// bash keeps a quoted ~ as a folder named ~, or a bare relative folder (#559): bash
+// searches CDPATH for one, and CDPATH may be set in the shell without being exported.
+// Any other command leaves the folder as it was.
 function folderAfter(words: string[], folder: string | null, { env, isTildeQuoted }: { env: Env; isTildeQuoted: boolean }): string | null {
   const name = programName(words[0] ?? '');
   if (name === 'popd') return null;
@@ -1771,6 +1878,9 @@ function folderAfter(words: string[], folder: string | null, { env, isTildeQuote
   const path = target.startsWith('~') ? (env.HOME ? join(env.HOME, target.slice(1)) : null) : target;
   if (path === null) return null;
   if (isAbsolute(path)) return path;
+  // Only `/`, `./`, `../` and `.` and `..` alone say where a relative `cd` goes: bash
+  // searches CDPATH for the rest, even with a `/` inside (`cd sub/dir`).
+  if (target !== '.' && target !== '..' && !target.startsWith('./') && !target.startsWith('../')) return null;
   return folder === null ? null : resolve(folder, path);
 }
 
@@ -1801,6 +1911,17 @@ const PATCH_LIMIT = 1 << 20;
 // A redirect that writes its file. `>&2` copies a stream; `>&file` writes a file.
 const WRITE_REDIRECT = /^(?:\d+|\{[A-Za-z_]\w*\}|&)?(>>|>\||<>|>&|>)(.*)$/s;
 
+const UNSURE_FOLDER_FIX = 'write the file by its full path, or first move to a folder the guard can read (an absolute folder, `./`, `../` or `~`), then write again';
+
+// Whether a write target may be anywhere: a relative path from an unknown folder (#559).
+// A `~` that names home is read as home, as in `ruled` below; anything else relative stays
+// unsure, so unsure means refused wherever the folder is used.
+function isUnsureTarget(target: WriteTarget, env: Env): boolean {
+  if (target.from !== null || target.path === '' || target.path === '-') return false;
+  const expanded = /^~(?=\/|$)/.test(target.path) && env.HOME ? join(env.HOME, target.path.slice(1)) : target.path;
+  return !isAbsolute(expanded);
+}
+
 function checkLeadOnlyWrites(words: string[], { env, rules, folder }: { env: Env; rules: FileRules; folder: string | null }): Finding | null {
   // A folder counts when a lead-only file may be in it: `rm -r .github`.
   const stopped = (target: WriteTarget): string | null => {
@@ -1811,15 +1932,24 @@ function checkLeadOnlyWrites(words: string[], { env, rules, folder }: { env: Env
   };
   for (const target of writeTargets(words, folder, rules.rootOf)) {
     if (target.isUnread) {
+      if (target.from === null && target.path !== '' && target.path !== '-') {
+        return finding('lead-only', `this command applies ${target.path}, and yokoten can't tell which files it changes from an unknown folder`, UNSURE_FOLDER_FIX);
+      }
       if (target.from !== null && rules.isRuled(target.from)) {
         return finding('lead-only', `this command applies ${base(target.path)}, and yokoten can't read which files it changes`, `apply a patch file under 1 MB, so the guard can read it, or ${LEAD_ONLY_FIX}`);
       }
       continue;
     }
+    if (isUnsureTarget(target, env)) {
+      return finding('lead-only', `this command writes ${target.path}, and yokoten can't tell which file that is from an unknown folder`, UNSURE_FOLDER_FIX);
+    }
     const path = stopped(target);
     if (path !== null) return finding('lead-only', `this command writes ${path}, which is lead-only (yokoten.json "leadOnly")`, LEAD_ONLY_FIX);
   }
   for (const target of commitTargets(words, folder, rules.rootOf, env)) {
+    if (isUnsureTarget(target, env)) {
+      return finding('lead-only', `this commit changes ${target.path}, and yokoten can't tell which file that is from an unknown folder`, UNSURE_FOLDER_FIX);
+    }
     const path = stopped(target);
     if (path !== null) return finding('lead-only', `this commit changes ${path}, which is lead-only (yokoten.json "leadOnly")`, `unstage it with \`git restore --staged ${path}\`, then ${LEAD_ONLY_FIX}`);
   }
@@ -2080,7 +2210,14 @@ function gitWrites(words: string[], folder: string | null, rootOf: FileRules['ro
   if (sub === 'restore') return isIndexOnly ? [] : at(plainArgs(args, ['-s', '--source']));
   if (sub === 'rm') return at(plainArgs(args));
   if (sub === 'mv') return at(copyTargets(args, { valued: [], isMove: true, folder: dir }));
-  if (sub !== 'apply' || dir === null) return [];
+  if (sub !== 'apply') return [];
+  if (dir === null) {
+    // From an unknown folder a patch file cannot be placed, so what it changes is
+    // unknown: unsure means refused where the folder is used (#559). `-` is stdin.
+    return plainArgs(args, ['-p', '--exclude', '--include', '--directory'])
+      .filter((patch) => patch !== '-')
+      .map((patch) => ({ path: patch, from: dir, isUnread: true }));
+  }
   const root = rootOf(dir);
   if (!root) return [];
   const targets: WriteTarget[] = [];
@@ -2125,7 +2262,7 @@ function commitTargets(words: string[], folder: string | null, rootOf: FileRules
   const start = words.findIndex(isGit);
   if (start === -1) return [];
   const { sub, args, dir } = gitParts(withoutShellRedirects(words, start + 1), folder);
-  if (sub !== 'commit' || dir === null) return [];
+  if (sub !== 'commit') return [];
   let isAll = false;
   let isInclude = false;
   const named: string[] = [];
@@ -2151,6 +2288,10 @@ function commitTargets(words: string[], folder: string | null, rootOf: FileRules
   }
   const targets = named.map((path) => ({ path, from: dir }));
   if (named.length > 0 && !isInclude) return targets;
+  // From an unknown folder the staged files (and with -a, the changed ones too) are
+  // unknowable: unsure means refused where the folder is used (#559). A commit that
+  // names only absolute paths still checks them one by one above and below.
+  if (dir === null) return [...targets, { path: '.', from: dir }];
   // git names staged files from the repo's root. The root is found by a walk, not a second git.
   const root = rootOf(dir);
   if (root === null) return targets;

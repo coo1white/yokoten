@@ -80,10 +80,11 @@ jobs:
         os: [ubuntu-latest]
         shard: [1, 2, 3]
         of: [3]
-        # The oldest Node that runs .ts as it is (package.json "engines"), and the current LTS.
-        node: ${{ fromJSON(needs.changes.outputs.docs_only == 'true' && '["24"]' || '["22.18.0","24"]') }}
+        # The oldest Node yokoten supports (package.json "engines": the first 22 with the
+        # security fixes of 2026-10-21, #572), and the current LTS from its first fixed release.
+        node: ${{ fromJSON(needs.changes.outputs.docs_only == 'true' && '["^24.22.1"]' || '["22.23.4","^24.22.1"]') }}
         # One macOS run: paths there go through symlinks (/var), which hid a real bug (#1).
-        include: ${{ fromJSON(needs.changes.outputs.docs_only == 'true' && '[]' || github.event_name == 'pull_request' && '[{"os":"macos-latest","node":"24","shard":1,"of":1}]' || '[{"os":"macos-latest","node":"24","shard":1,"of":3},{"os":"macos-latest","node":"24","shard":2,"of":3},{"os":"macos-latest","node":"24","shard":3,"of":3}]') }}
+        include: ${{ fromJSON(needs.changes.outputs.docs_only == 'true' && '[]' || github.event_name == 'pull_request' && '[{"os":"macos-latest","node":"^24.22.1","shard":1,"of":1}]' || '[{"os":"macos-latest","node":"^24.22.1","shard":1,"of":3},{"os":"macos-latest","node":"^24.22.1","shard":2,"of":3},{"os":"macos-latest","node":"^24.22.1","shard":3,"of":3}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     permissions:
@@ -121,7 +122,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: '^22.23.4'
       - run: npm ci
       - run: npm run typecheck
       # The npm package (record 0008): pack it, install it offline, run install, init and doctor.
@@ -140,7 +141,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: '^22.23.4'
       - run: node bin/yokoten.ts check
   # The workflows themselves: actionlint for mistakes, zizmor for security. These are
   # CI tools only, never a dependency of yokoten.

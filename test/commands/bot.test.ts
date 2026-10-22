@@ -228,7 +228,7 @@ test('bot: a pull request body CI would refuse is refused locally, with CI\'s me
     const r = await sandbox.call(['check', '--pr'], { extra: { GITHUB_EVENT_PATH: file } });
     return r.stderr.trim().split('\n').slice(1);
   };
-  const good = 'tier: A\nCloses #1\n\n## Why\nx\n\n## What changed\nEvery project gets the new kit file on its next init.\n\n## How tested\nx\n';
+  const good = 'tier: A\nCloses #1\n\n## Why\nx\n\n## What changed\nEvery project gets the new kit file on its next init.\n\n## How tested\nx\n\nMade with worker (opus)\n';
   const refused = async (command: string[], body: string, id: RegExp, input?: string) => {
     const r = await run(command, input);
     assert.equal(r.status, 1, command.join(' '));
@@ -250,6 +250,9 @@ test('bot: a pull request body CI would refuse is refused locally, with CI\'s me
     await refused(['gh', 'pr', 'create', '-t', 'feat(kit): a', '--body-file', join(sandbox.home, 'body.md')], noKit, /^- body: this changes `kit\/` and does not say so\./);
     await refused(['gh', 'pr', 'edit', '--body-file', '-'], noKit, /kit/, noKit);
     await refused(['gh', 'pr', 'edit', 'topic', `--body=${noKit}`], noKit, /kit/);
+    // (c) No `Made with` line: refused with what to add, like no `Closes #N` (#570).
+    const noMade = good.replace('\n\nMade with worker (opus)\n', '\n');
+    await refused(['gh', 'pr', 'create', '-t', 'feat(kit): a', '--body', noMade], noMade, /^- body: no `Made with` line at the end\. .+ End the body with `🤖 Made with <agent> \(<model>\)/);
     // A pull request named by number or URL: gh says its branches, with the bot's token, and
     // every body rule runs on origin/main...origin/topic. A branch not here yet is fetched.
     sandbox.git('update-ref', '-d', 'refs/remotes/origin/topic');
@@ -325,7 +328,7 @@ test('bot: a new pull request gets its type and tier labels; a contradicting one
   const run = (command: string[], input = '') => sandbox.call(['bot', '--', ...command], { input, extra: bot });
   // The branch can't be compared with origin here, so each body check ends with this note.
   const note = 'yokoten bot: note: git can\'t compare HEAD with origin/main, so the body was checked without the changed files; CI checks the rest\n';
-  const body = (tier: string) => `tier: ${tier}\nCloses #1\n\n## Why\nx\n\n## What changed\nx\n\n## How tested\nx\n`;
+  const body = (tier: string) => `tier: ${tier}\nCloses #1\n\n## Why\nx\n\n## What changed\nx\n\n## How tested\nx\n\nMade with worker (opus)\n`;
   const bodyFile = join(sandbox.home, 'body.md');
   writeFileSync(bodyFile, body('C'));
   try {
@@ -425,7 +428,7 @@ test('bot --body-file -: in-process, the body comes from the given stdin and gh 
   const key = join(sandbox.home, 'bot.pem');
   writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
   const env = { ...sandbox.env, PATH: `${bin}:${process.env.PATH}`, YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
-  const body = 'tier: C\nCloses #1\n\n## Why\nx\n\n## What changed\nx\n\n## How tested\nx\n';
+  const body = 'tier: C\nCloses #1\n\n## Why\nx\n\n## What changed\nx\n\n## How tested\nx\n\nMade with worker (opus)\n';
   const command = ['bot', '--', 'gh', 'pr', 'create', '-t', 'docs: a', '--body-file', '-'];
   try {
     // A body CI would refuse, given on stdin: refused before anything is sent.
@@ -475,7 +478,7 @@ test('bot: a new pull request takes its issue\'s milestone; none anywhere is ref
   const bot = { PATH: `${bin}:${process.env.PATH}`, YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
   const run = (command: string[]) => sandbox.call(['bot', '--', ...command], { extra: bot });
   const note = 'yokoten bot: note: git can\'t compare HEAD with origin/main, so the body was checked without the changed files; CI checks the rest\n';
-  const body = (links: string) => `tier: B\n${links}\n\n## Why\nx\n\n## What changed\nx\n\n## How tested\nx\n`;
+  const body = (links: string) => `tier: B\n${links}\n\n## Why\nx\n\n## What changed\nx\n\n## How tested\nx\n\nMade with worker (opus)\n`;
   const labels = ['--label', 'feat', '--label', 'tier B'];
   try {
     // (1) The milestone is copied from the linked issue, by --body and --body-file.
