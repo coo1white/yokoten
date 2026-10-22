@@ -357,7 +357,7 @@ function parseStatus(text: string | null): Record<string, unknown> {
  * link that appears in between is replaced and never followed. A file that cannot be
  * written does not crash the hook.
  */
-export function writeAgentChecks(folder: string, checks: 'failing' | 'passing', now: Date = new Date(), warn: (line: string) => void = (line) => process.stderr.write(line)): void {
+export function writeAgentChecks(folder: string, checks: 'failing' | 'passing', now: Date, warn: (line: string) => void): void {
   const path = join(folder, AGENT_STATUS_FILE);
   let status: Record<string, unknown> = {};
   try {

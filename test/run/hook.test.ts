@@ -298,10 +298,10 @@ test('writeAgentChecks: keeps other fields, skips a link, and sets checks and th
   assert.equal(status.updated, '2026-10-22T10:00:00Z');
   assert.equal(lstatSync(path).isFile(), true, 'a normal file still gets checks');
   writeFileSync(path, 'not json');
-  writeAgentChecks(sandbox.repo, 'failing', new Date('2026-10-22T11:00:00.000Z'));
+  writeAgentChecks(sandbox.repo, 'failing', new Date('2026-10-22T11:00:00.000Z'), () => {});
   assert.equal(JSON.parse(readFileSync(path, 'utf8')).checks, 'failing');
   writeFileSync(path, '[]\n');
-  writeAgentChecks(sandbox.repo, 'passing', new Date('2026-10-22T12:00:00.000Z'));
+  writeAgentChecks(sandbox.repo, 'passing', new Date('2026-10-22T12:00:00.000Z'), () => {});
   assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { checks: 'passing', updated: '2026-10-22T12:00:00Z' });
   assert.deepEqual(readdirSync(sandbox.repo).filter((name) => name.endsWith('.tmp')), []);
 });
