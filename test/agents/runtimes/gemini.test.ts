@@ -2,9 +2,11 @@
 
 import '../../repo/home.ts';
 import assert from 'node:assert/strict';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { makeSandbox } from '../../repo/helpers.ts';
+import { addProjectStopHook, projectHooksState } from '../../../src/agents/runtimes/gemini.ts';
 
 test('hook --agent gemini: run_shell_command by command, write_file and replace by file_path (#30)', async () => {
   const sandbox = makeSandbox();
@@ -37,4 +39,19 @@ test('hook --agent gemini: run_shell_command by command, write_file and replace 
   result = await sandbox.call(['hook', '--agent', 'cursor'], { input: '{}' });
   assert.equal(result.status, 1, 'an unknown agent is an error to see, not a block');
   assert.match(result.stderr, /claude-code, codex, gemini/);
+});
+
+test('gemini stop hook waits 600000 milliseconds, and an old timeout of 600 is updated (#614)', () => {
+  const sandbox = makeSandbox();
+  const cli = '.yokoten/bin/yokoten.mjs';
+  assert.equal(addProjectStopHook(sandbox.repo, cli), 'added');
+  const file = join(sandbox.repo, '.gemini', 'settings.json');
+  const settings = JSON.parse(readFileSync(file, 'utf8')) as { hooks: { AfterAgent: { hooks: { timeout: number }[] }[] } };
+  assert.equal(settings.hooks.AfterAgent[0].hooks[0].timeout, 600_000);
+  settings.hooks.AfterAgent[0].hooks[0].timeout = 600;
+  writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`);
+  assert.equal(projectHooksState(sandbox.repo, cli).stop, 'updated');
+  assert.equal(addProjectStopHook(sandbox.repo, cli), 'updated');
+  const again = JSON.parse(readFileSync(file, 'utf8')) as { hooks: { AfterAgent: { hooks: { timeout: number }[] }[] } };
+  assert.equal(again.hooks.AfterAgent[0].hooks[0].timeout, 600_000);
 });
