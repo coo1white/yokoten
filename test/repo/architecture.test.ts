@@ -13,7 +13,7 @@ import { findDeclarations, findNameProblems, splitWords, type Token, tokenize } 
 import { HOME_DIR, homeDirOf } from '../../src/setup/files.ts';
 import { assertLinear, assertLinearEach } from '../../scripts/linear.ts';
 import { judgeSuite, readReport, SUITE_BUDGET } from '../../scripts/time/suite.ts';
-import { TEST_HOME } from './home.ts';
+import { clearYokotenEnv, TEST_HOME } from './home.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SRC = join(ROOT, 'src');
@@ -1060,6 +1060,23 @@ test('home: a test that reads the home folder gets the empty temp one, not the r
   assert.equal(child.stdout, TEST_HOME);
 });
 
+test('session: the suite clears yokoten variables before a test can read them (#712)', () => {
+  const sample: NodeJS.ProcessEnv = { PATH: '/usr/bin', HOME: '/tmp/home', YOKOTEN_ROLE: 'worker', YOKOTEN_DESK: '/desk', YOKOTEN_TEAM: '/team', YOKOTEN_FIX_TASK: '1' };
+  clearYokotenEnv(sample);
+  assert.deepEqual(sample, { PATH: '/usr/bin', HOME: '/tmp/home' });
+  assert.deepEqual(Object.keys(process.env).filter((name) => name.startsWith('YOKOTEN_')), []);
+  // A child starts with the session's variables set, then loads the same module every test loads first.
+  const childEnv = { ...process.env, YOKOTEN_ROLE: 'worker', YOKOTEN_DESK: '/desk', YOKOTEN_TEAM: '/team' };
+  delete childEnv.NODE_TEST_CONTEXT;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', "import './test/repo/home.ts'; process.stdout.write(Object.keys(process.env).some((name) => name.startsWith('YOKOTEN_')) ? 'seen' : 'clear')"], {
+    cwd: ROOT,
+    env: childEnv,
+    encoding: 'utf8',
+  });
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.stdout, 'clear');
+});
+
 // ---- The process, read once (#475) ----
 //
 // bin/main.ts's runFromProcess makes the one Invocation from the process. Below it, a module
@@ -1302,7 +1319,7 @@ const CHILD_CAP = 4;
 const CHILD_ALLOWANCE: Record<string, { cap: number; reason: string }> = {
   'test/commands/check.test.ts': { cap: 8, reason: 'the entries of two commands, check --pr and redact; redact also runs in a shell pipe and on an 8 MB stream, as its hook runs it' },
   'test/commands/learn.test.ts': { cap: 15, reason: 'the full lesson loop runs two other copies of yokoten (the clone and .yokoten/), and the system-home fallback is in the CLI entry' },
-  'test/repo/architecture.test.ts': { cap: 7, reason: 'it checks child processes themselves: a killed child, the split tool, the test home and the report node --test writes' },
+  'test/repo/architecture.test.ts': { cap: 8, reason: 'it checks child processes themselves: a killed child, the split tool, the test home, the session variables and the report node --test writes' },
   'test/run/cli.test.ts': { cap: 8, reason: 'it tests bin/yokoten.ts itself: the entry, its compile cache and the demo loop' },
   'test/setup/init.test.ts': { cap: 12, reason: 'the entries of init, doctor, update and install, and the copies of yokoten that init writes (.yokoten/) or a clone holds' },
   'test/setup/install.test.ts': { cap: 7, reason: 'it runs the copy that install writes, from its own path, which is other code than this checkout' },
