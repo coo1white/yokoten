@@ -292,7 +292,7 @@ export const COMMANDS: Command[] = [
     options: [
       { name: '--agent', value: 'name', text: 'the runtime that sends the call: claude-code (the default), codex, gemini, antigravity, muse, deepseek-harness or grok' },
       { name: '--commands-only', text: 'judge commands only, and leave files to the project' },
-      { name: '--stop', text: 'read the end-of-turn event (Claude Code, Codex, Muse Code or Grok CLI Stop, Gemini AfterAgent) and check the changed files' },
+      { name: '--stop', text: 'read the end-of-turn event (Claude Code Stop or SubagentStop, Codex, Muse Code or Grok CLI Stop, Gemini AfterAgent) and check the changed files; a worker also runs the done-when command' },
       { name: '--json', text: 'the result as JSON on stdout' },
     ],
     example: `echo '{"tool_input":{"command":"git status"}}' | yokoten hook`,
@@ -300,7 +300,7 @@ export const COMMANDS: Command[] = [
   {
     name: 'worker',
     summary: "mark a worktree as a worker's, so the guard treats every agent there as a worker",
-    usage: 'mark <dir> | unmark <dir>',
+    usage: 'mark <dir> | unmark <dir> | env [runtime]',
     text: [
       "Marks the worktree at <dir> as a worker's. The guard then treats every agent there as",
       'a worker, even one whose runtime passes no YOKOTEN_ROLE to its hooks (Muse Code).',
@@ -310,6 +310,8 @@ export const COMMANDS: Command[] = [
       'from the worker are the real lock. Given a subfolder, it marks the worktree it is in, and names it.',
       '`git worktree remove <dir>` removes the file with the worktree; `yokoten worker unmark <dir>`',
       'clears the list entry, and only the lead runs it. The main checkout and a submodule are never marked.',
+      '`yokoten worker env [runtime]` lists the names an agent that yokoten starts would get from this shell.',
+      'It never shows a value. Tokens, keys and passwords stay out (#613).',
     ],
     options: [],
     arguments: ['action', 'dir'],
@@ -335,6 +337,20 @@ export const COMMANDS: Command[] = [
     ],
     options: [],
     example: 'yokoten bot -- gh pr create --fill',
+  },
+  {
+    name: 'board',
+    summary: 'the team at a glance: agents, pull requests and worktrees, live on a page',
+    usage: '[--text]',
+    text: [
+      'Serves a live page on this machine only (127.0.0.1): the agents on the left,',
+      'the picked one in the middle, and each pull request stage on the right. It',
+      'prints the link and runs until you stop it. The page refreshes every 15 seconds.',
+      'An agent joins by writing .yokoten-agent.json at its worktree root, and leaves',
+      'by removing it; the guide shows the format.',
+    ],
+    options: [{ name: '--text', text: 'print the agents, pull requests and worktrees as plain text and exit' }],
+    example: 'yokoten board --text',
   },
   {
     name: 'uninstall',

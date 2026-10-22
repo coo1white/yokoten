@@ -7,13 +7,14 @@ import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
 import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
-import type { Action } from '../../run/hook.ts';
+import { type Action, isWorkerType, readStopFields, type StopEvent } from '../../run/hook.ts';
 import { type Added, addHook, checkHooksFile, hasHook, isObject, type Problem, readTable, removeHook, type Settings, UnreadableHooksFile, writeSettings } from '../hooks-file.ts';
+import type { RuntimeEnv } from '../agent-env.ts';
 
 /**
  * A PreToolUse call, as an Action. The guard reads the fields, not the tool's name:
  * `tool_input.command` for a shell call, `file_path` (or `path`, `notebook_path`) for an
- * edit. A subagent whose type names a worker is a worker.
+ * edit. A subagent is a worker only when its type is `worker`, or ends with `:worker`.
  */
 export function readToolCall(input: unknown): Action {
   const call = (input ?? {}) as { cwd?: unknown; agent_type?: unknown; tool_input?: Record<string, unknown> };
@@ -23,7 +24,7 @@ export function readToolCall(input: unknown): Action {
     command: typeof tool.command === 'string' ? tool.command : undefined,
     paths: [tool.file_path, tool.path, tool.notebook_path].map(text).filter((p) => p !== undefined),
     cwd: text(call.cwd),
-    worker: /worker/i.test(text(call.agent_type) ?? ''),
+    worker: isWorkerType(text(call.agent_type) ?? ''),
   };
 }
 
@@ -69,16 +70,13 @@ export function readSessionStart(input: unknown): { sessionId: string; source: s
 export const hasSessionInput = (env: Env, isTerminal: boolean): boolean => Boolean(env.CLAUDE_PROJECT_DIR) && !isTerminal;
 
 /**
- * A Stop event (the agent is about to end its turn), or null when the input is not one.
- * `active` is Claude Code's `stop_hook_active`: a stop hook already sent the agent back.
+ * A Stop or SubagentStop event (the agent or a worker subagent is about to end), or null
+ * when the input is not one. `active` is Claude Code's `stop_hook_active`: a stop hook
+ * already sent the agent back.
  */
-export function readStop(input: unknown): { cwd?: string; active: boolean } | null {
+export function readStop(input: unknown): StopEvent | null {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
-  const event = input as { cwd?: unknown; stop_hook_active?: unknown };
-  return {
-    cwd: typeof event.cwd === 'string' && event.cwd !== '' ? event.cwd : undefined,
-    active: event.stop_hook_active === true,
-  };
+  return readStopFields(input);
 }
 
 /** Where Claude Code keeps a user's skills, agents and settings. */
@@ -92,7 +90,9 @@ const projectSettings = (root: string) => join(root, '.claude', 'settings.json')
 // The events yokoten adds to each file. A caller checks a file's events together before
 // adding either hook, so a bad second event leaves the file as it was (#248, #254).
 const USER_EVENTS = ['SessionStart', 'PreToolUse'];
-const PROJECT_EVENTS = ['PreToolUse', 'Stop'];
+const PROJECT_EVENTS = ['PreToolUse', 'Stop', 'SubagentStop'];
+// Seconds Claude Code waits for the stop check, including a worker's done-when command (#614).
+const STOP_TIMEOUT = 600;
 
 /** The settings, when `setProjectEnv` can edit them: `env` is missing or an object. */
 function withEnv(table: ReturnType<typeof readTable>): { settings: Settings } | { problem: Problem } {
@@ -125,12 +125,21 @@ export const addProjectHook = (root: string, cli: string) =>
 export const hasProjectHook = (root: string): boolean => hasHook(projectSettings(root), 'PreToolUse', 'hook');
 
 /**
- * The project's stop check (#92): before the agent ends its turn, `hook --stop` checks the
- * changed files. It catches a file changed by sed or a script, which the tool-call guard
- * does not see. Stop takes no matcher.
+ * The project's stop check (#92, #614): before the agent ends its turn, and when a
+ * subagent ends, `hook --stop` checks the changed files and a worker's done-when command.
+ * Stop and SubagentStop take no matcher.
  */
-export const addProjectStopHook = (root: string, cli: string) =>
-  addHook(projectSettings(root), 'Stop', undefined, guardCommand(`"$CLAUDE_PROJECT_DIR/${cli}"`, 'hook --stop', missingProjectRuntime(cli)));
+export function addProjectStopHook(root: string, cli: string): Added {
+  const path = projectSettings(root);
+  checkHooksFile(path, ['Stop', 'SubagentStop']);
+  const command = guardCommand(`"$CLAUDE_PROJECT_DIR/${cli}"`, 'hook --stop', missingProjectRuntime(cli));
+  const extra = { timeout: STOP_TIMEOUT };
+  const stop = addHook(path, 'Stop', undefined, command, extra);
+  const sub = addHook(path, 'SubagentStop', undefined, command, extra);
+  if (stop === 'added' || sub === 'added') return 'added';
+  if (stop === 'updated' || sub === 'updated') return 'updated';
+  return 'same';
+}
 
 /**
  * An environment variable for every agent session in the project (settings "env"). Used
@@ -321,3 +330,6 @@ export function sandboxProblem(root: string): { what: string; fix: string } | nu
   }
   return null;
 }
+
+/** The names this runtime's agent gets on top of the shared ones (#613). Claude Code signs in with its own login file; these are for an API key or a long-lived login token. */
+export const AGENT_ENV: RuntimeEnv = { login: ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'], config: ['CLAUDE_CONFIG_DIR'] };

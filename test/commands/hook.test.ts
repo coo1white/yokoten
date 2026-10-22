@@ -6,16 +6,20 @@ import { spawnSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import {
   dirname,
   join,
+  resolve,
 } from 'node:path';
 import { test } from 'node:test';
 import {
@@ -376,6 +380,317 @@ test('hook: in-process, the tool call and the end-of-turn event come from the gi
   assert.deepEqual(await stop(true), { code: 0, stdout: '', stderr: '' });
 });
 
+test('hook --stop: a worker is done only when the done-when check passes (#614)', { skip: process.platform === 'win32' && 'the done-when commands use sh syntax' }, async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const event = (extra: object = {}) => JSON.stringify({ session_id: 'task-614', cwd: sandbox.repo, hook_event_name: 'Stop', stop_hook_active: false, ...extra });
+  const stop = (doneWhen: string, extra: Record<string, string> = {}, input = event()) =>
+    sandbox.call(['hook', '--stop'], { input, extra: { YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: doneWhen, ...extra } });
+  // A passing check lets the worker stop.
+  let result = await stop('true');
+  assert.deepEqual([result.status, result.stdout, result.stderr], [0, '', '']);
+  // A failing check refuses, with the reason in short.
+  result = await stop('echo fail-614 >&2; exit 1');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /the done-when check failed/);
+  assert.match(result.stderr, /fail-614/);
+  assert.match(result.stderr, /This was try 1 of 3/);
+  assert.doesNotMatch(result.stderr, /next stop is let through/);
+  // stop_hook_active does not let a worker skip the check.
+  result = await sandbox.call(['hook', '--stop'], {
+    input: event({ stop_hook_active: true }),
+    extra: { YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: 'echo still-fail >&2; exit 1' },
+  });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /still-fail/);
+  assert.match(result.stderr, /This was try 2 of 3/);
+  assert.doesNotMatch(result.stderr, /next stop is let through/);
+  result = await stop('echo third-fail >&2; exit 1');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /This was try 3 of 3/);
+  assert.match(result.stderr, /next stop is let through/);
+  assert.match(result.stderr, /NOT DONE: checks failing/);
+  // The loop guard ends after the limit: the worker may stop, never as done.
+  result = await stop('echo last-fail >&2; exit 1');
+  assert.equal(result.status, 0);
+  assert.match(result.stderr, /stopped with failing checks/);
+  assert.doesNotMatch(result.stderr, /this task is done/i);
+  assert.equal(existsSync(join(sandbox.repo, '.yokoten-agent.json')), false, 'the main checkout is not written');
+  assert.equal(existsSync(join(sandbox.home, '.config', 'yokoten', 'done-tries', 'task-614')), false, 'the count is cleared after the give-up');
+  // A resumed worker is checked again, from try 1.
+  result = await stop('echo again-fail >&2; exit 1');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /This was try 1 of 3/);
+  assert.doesNotMatch(result.stderr, /next stop is let through/);
+  // A new session key starts the count again.
+  result = await sandbox.call(['hook', '--stop'], {
+    input: event({ session_id: 'task-614-b' }),
+    extra: { YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: 'false' },
+  });
+  assert.equal(result.status, 2);
+  // SubagentStop of a worker subagent, with no YOKOTEN_ROLE: still a worker.
+  result = await sandbox.call(['hook', '--stop'], {
+    input: event({ hook_event_name: 'SubagentStop', agent_type: 'worker', agent_id: 'agent-614' }),
+    extra: { YOKOTEN_DONE_WHEN: 'echo sub-fail >&2; exit 1' },
+  });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /sub-fail/);
+  // Grok's Stop: a passing check lets the worker stop; a failing one refuses.
+  const grokEvent = (active = false) =>
+    JSON.stringify({ cwd: sandbox.repo, reason: 'end_turn', stopHookActive: active, sessionId: 'grok-614' });
+  result = await sandbox.call(['hook', '--stop', '--agent', 'grok'], { input: grokEvent(), extra: { YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: 'true' } });
+  assert.equal(result.status, 0);
+  result = await sandbox.call(['hook', '--stop', '--agent', 'grok'], { input: grokEvent(), extra: { YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: 'echo grok-fail >&2; exit 1' } });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /grok-fail/);
+  // The git-folder file is the command when the env is empty; the env wins when both are set.
+  writeFileSync(join(sandbox.repo, '.git', 'yokoten-done-when'), 'echo from-file >&2; exit 1\n');
+  result = await sandbox.call(['hook', '--stop'], { input: event({ session_id: 'from-file' }), extra: { YOKOTEN_ROLE: 'worker' } });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /from-file/);
+  result = await sandbox.call(['hook', '--stop'], { input: event({ session_id: 'from-env' }), extra: { YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: 'true' } });
+  assert.equal(result.status, 0);
+  // --json: the same fields, and skipped names the loop end.
+  result = await sandbox.call(['hook', '--stop', '--json'], {
+    input: event({ session_id: 'json-614' }),
+    extra: { YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: 'echo json-fail >&2; exit 1' },
+  });
+  assert.equal(result.status, 2);
+  const out = JSON.parse(result.stdout);
+  assert.equal(out.blocked, true);
+  assert.equal(out.doneWhen.ok, false);
+  assert.match(out.doneWhen.output, /json-fail/);
+});
+
+// A missing count used to refuse every later stop (`3 > 3` is false). Five stops refuse at most three.
+test('hook --stop: a read-only home cannot trap a worker (#614)', { skip: (process.platform === 'win32' || process.getuid?.() === 0) && 'no read-only folder for root or on Windows' }, async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const fail = join(sandbox.repo, 'fail.mjs');
+  writeFileSync(fail, 'process.exit(1);\n');
+  chmodSync(sandbox.home, 0o555);
+  try {
+    const stop = (active: boolean) =>
+      sandbox.call(['hook', '--stop'], {
+        input: JSON.stringify({ session_id: 'ro-614', cwd: sandbox.repo, hook_event_name: 'Stop', stop_hook_active: active }),
+        extra: { YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: `${process.execPath} ${fail}` },
+      });
+    const results = [];
+    for (let index = 0; index < 5; index += 1) results.push(await stop(index > 0));
+    const refused = results.filter((item) => item.status === 2);
+    assert.ok(refused.length <= 3, `refused ${refused.length} times`);
+    assert.equal(results[0]?.status, 2);
+    assert.match(results[0]?.stderr ?? '', /next stop is let through/);
+    assert.match(results[0]?.stderr ?? '', /NOT DONE: checks failing/);
+    assert.equal(results[1]?.status, 0, results[1]?.stderr);
+    assert.match(results[1]?.stderr ?? '', /stopped with failing checks/);
+    assert.equal(results[4]?.status, 0);
+    assert.equal(existsSync(join(sandbox.repo, '.yokoten-agent.json')), false, 'the main checkout is not written');
+    assert.equal(existsSync(join(sandbox.home, '.config', 'yokoten', 'done-tries', 'ro-614')), false, 'no try count was saved');
+  } finally {
+    chmodSync(sandbox.home, 0o755);
+  }
+});
+
+test('hook --stop: a reviewer subagent is not checked, and coworker is not a worker (#614)', async () => {
+  const sandbox = makeSandbox();
+  const key = `${'AK'}IA${'Q7W3R9T2Y5Q7W3R9'}`;
+  sandbox.write('out.txt', `${key}\n`);
+  const reviewer = await sandbox.call(['hook', '--stop'], {
+    input: JSON.stringify({ cwd: sandbox.repo, hook_event_name: 'SubagentStop', agent_type: 'reviewer', agent_id: 'rev-614' }),
+  });
+  assert.deepEqual([reviewer.status, reviewer.stdout, reviewer.stderr], [0, '', '']);
+  // The same file still sends the lead back. The reviewer skip did not drop the check.
+  const lead = await sandbox.call(['hook', '--stop'], {
+    input: JSON.stringify({ cwd: sandbox.repo, hook_event_name: 'Stop', stop_hook_active: false }),
+  });
+  assert.equal(lead.status, 2);
+  assert.match(lead.stderr, /out\.txt:1: a secret/);
+  const marker = join(sandbox.repo, 'coworker-ran');
+  const script = join(sandbox.repo, 'mark.mjs');
+  writeFileSync(script, `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marker)}, 'ran');\nprocess.exit(1);\n`);
+  const coworker = await sandbox.call(['hook', '--stop'], {
+    input: JSON.stringify({ cwd: sandbox.repo, hook_event_name: 'SubagentStop', agent_type: 'coworker', agent_id: 'co-614' }),
+    extra: { YOKOTEN_DONE_WHEN: `${process.execPath} ${script}` },
+  });
+  assert.deepEqual([coworker.status, coworker.stderr], [0, '']);
+  assert.equal(existsSync(marker), false, 'a non-worker subagent does not run the check');
+  // A reviewer started by a worker is still not a worker. Its own type decides.
+  const reviewerRan = join(sandbox.repo, 'reviewer-ran');
+  const reviewerScript = join(sandbox.repo, 'reviewer-fail.mjs');
+  writeFileSync(reviewerScript, `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(reviewerRan)}, 'ran');\nprocess.exit(1);\n`);
+  const asWorker = await sandbox.call(['hook', '--stop'], {
+    input: JSON.stringify({ cwd: sandbox.repo, hook_event_name: 'SubagentStop', agent_type: 'reviewer', agent_id: 'rev-role-614', stop_hook_active: false }),
+    extra: { YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: `${process.execPath} ${reviewerScript}` },
+  });
+  assert.equal(asWorker.status, 0, asWorker.stderr);
+  assert.equal(asWorker.stderr, '');
+  assert.equal(existsSync(reviewerRan), false, 'the done-when command did not run');
+  assert.equal(existsSync(join(sandbox.home, '.config', 'yokoten', 'done-tries', 'rev-role-614')), false, 'no try was used');
+});
+
+// The count cannot be saved, and the runtime never sets stop_hook_active. One refusal, then the same worker may stop.
+test('hook --stop: a read-only home lets the same worker through for 5 minutes (#614)', { skip: (process.platform === 'win32' || process.getuid?.() === 0) && 'no read-only folder for root or on Windows' }, async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const fail = join(sandbox.repo, 'fail.mjs');
+  writeFileSync(fail, 'process.exit(1);\n');
+  const marker = (id: string) => join(sandbox.repo, '.git', 'yokoten-stop-refused', id);
+  chmodSync(sandbox.home, 0o555);
+  try {
+    const stop = (id: string) =>
+      sandbox.call(['hook', '--stop'], {
+        input: JSON.stringify({ session_id: id, cwd: sandbox.repo, hook_event_name: 'Stop', stop_hook_active: false }),
+        extra: { YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: `${process.execPath} ${fail}` },
+      });
+    const first = await stop('mark-a');
+    assert.equal(first.status, 2, first.stderr);
+    assert.match(first.stderr, /next stop is let through/);
+    assert.equal(existsSync(marker('mark-a')), true, 'the refusal is remembered in the git folder');
+    const second = await stop('mark-a');
+    assert.equal(second.status, 0, second.stderr);
+    assert.match(second.stderr, /stopped with failing checks/);
+    const other = await stop('mark-b');
+    assert.equal(other.status, 2, other.stderr);
+    assert.match(other.stderr, /This was try 1 of 3/);
+    const stale = new Date(Date.now() - 6 * 60 * 1000).toISOString();
+    writeFileSync(marker('mark-a'), `${stale}\n`);
+    const again = await stop('mark-a');
+    assert.equal(again.status, 2, again.stderr);
+    const later = await stop('mark-a');
+    assert.equal(later.status, 0, later.stderr);
+    assert.equal(existsSync(join(sandbox.home, '.config', 'yokoten', 'done-tries')), false, 'no try count was saved');
+    assert.equal(existsSync(join(sandbox.repo, '.yokoten-agent.json')), false, 'the main checkout is not written');
+  } finally {
+    chmodSync(sandbox.home, 0o755);
+  }
+});
+
+test('hook --stop: a linked worktree records failing, then passing, and a link is left unchanged (#614)', { skip: process.platform === 'win32' && 'the done-when commands use sh syntax' }, async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const tree = join(makeTempDir('yokoten-tree-'), 'wt');
+  sandbox.git('worktree', 'add', '-q', '-b', 'checks-614', tree);
+  const statusPath = join(tree, '.yokoten-agent.json');
+  writeFileSync(statusPath, `${JSON.stringify({ name: 'worker-1', role: 'engineer' })}\n`);
+  const stop = (id: string, doneWhen: string) =>
+    sandbox.call(['hook', '--stop'], {
+      cwd: tree,
+      input: JSON.stringify({ session_id: id, cwd: tree, hook_event_name: 'Stop', stop_hook_active: false }),
+      extra: { YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: doneWhen },
+    });
+  for (let tryNumber = 1; tryNumber <= 3; tryNumber += 1) {
+    const refused = await stop('checks-614', 'exit 1');
+    assert.equal(refused.status, 2, refused.stderr);
+  }
+  let result = await stop('checks-614', 'exit 1');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /stopped with failing checks/);
+  let status = JSON.parse(readFileSync(statusPath, 'utf8')) as { name: string; role: string; checks: string; updated: string };
+  assert.equal(status.name, 'worker-1');
+  assert.equal(status.role, 'engineer');
+  assert.equal(status.checks, 'failing');
+  assert.match(status.updated, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+  assert.equal(lstatSync(statusPath).isFile(), true);
+  assert.equal(existsSync(join(sandbox.repo, '.yokoten-agent.json')), false, 'the main checkout is not written');
+  result = await stop('checks-614', 'true');
+  assert.equal(result.status, 0, result.stderr);
+  status = JSON.parse(readFileSync(statusPath, 'utf8')) as { name: string; role: string; checks: string; updated: string };
+  assert.equal(status.checks, 'passing');
+  assert.equal(status.name, 'worker-1');
+  assert.equal(status.role, 'engineer');
+  assert.match(status.updated, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+  rmSync(statusPath);
+  const outside = join(sandbox.home, 'outside.json');
+  const outsideText = `${JSON.stringify({ keep: true })}\n`;
+  writeFileSync(outside, outsideText);
+  symlinkSync(outside, statusPath);
+  result = await stop('checks-link', 'true');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /is not a regular file, so it was left unchanged/);
+  assert.equal(readFileSync(outside, 'utf8'), outsideText);
+  assert.equal(readlinkSync(statusPath), outside);
+  rmSync(statusPath);
+  const notes = join(sandbox.home, 'notes.txt');
+  writeFileSync(notes, 'keep notes\n');
+  symlinkSync(notes, statusPath);
+  result = await stop('checks-notes', 'true');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(notes, 'utf8'), 'keep notes\n');
+  assert.equal(lstatSync(statusPath).isSymbolicLink(), true);
+});
+
+// cwd `sub` is a link to another worktree. The status file there must stay as it was.
+test('hook --stop: a link to another worktree does not change that worktree status file (#614)', { skip: process.platform === 'win32' && 'symlinks need extra rights on Windows' }, async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const tree = join(makeTempDir('yokoten-tree-'), 'wt');
+  const other = join(makeTempDir('yokoten-other-'), 'wt');
+  sandbox.git('worktree', 'add', '-q', '-b', 'checks-link-a', tree);
+  sandbox.git('worktree', 'add', '-q', '-b', 'checks-link-b', other);
+  const otherStatus = join(other, '.yokoten-agent.json');
+  const otherText = `${JSON.stringify({ checks: 'keep', name: 'other' })}\n`;
+  writeFileSync(otherStatus, otherText);
+  const sub = join(tree, 'sub');
+  symlinkSync(other, sub);
+  const result = await sandbox.call(['hook', '--stop'], {
+    cwd: sub,
+    input: JSON.stringify({ session_id: 'link-out-614', cwd: sub, hook_event_name: 'Stop', stop_hook_active: false }),
+    extra: { YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: `${process.execPath} -e "process.exit(0)"` },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(otherStatus, 'utf8'), otherText);
+  assert.equal(lstatSync(otherStatus).isFile(), true);
+});
+
+test('hook --stop: a subagent runs the done-when command only in the worktree the event names (#614)', { skip: process.platform === 'win32' && 'a node path with a space needs shell quoting' }, async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const tree = join(makeTempDir('yokoten-tree-'), 'wt');
+  sandbox.git('worktree', 'add', '-q', '-b', 'task', tree);
+  const record = join(sandbox.repo, 'record.mjs');
+  writeFileSync(record, `import { writeFileSync } from 'node:fs';\nwriteFileSync(process.argv[2], process.cwd());\n`);
+  const leadMarker = join(sandbox.repo, 'lead-ran');
+  const treeMarker = join(tree, 'tree-ran');
+  const command = (marker: string) => `${process.execPath} ${record} ${marker}\n`;
+  writeFileSync(join(sandbox.repo, '.git', 'yokoten-done-when'), command(leadMarker));
+  const gitdir = /^gitdir:[ \t]*(.+)$/m.exec(readFileSync(join(tree, '.git'), 'utf8'));
+  assert.ok(gitdir);
+  writeFileSync(join(resolve(tree, gitdir[1].trim()), 'yokoten-done-when'), command(treeMarker));
+  const stop = (cwd: string) =>
+    sandbox.call(['hook', '--stop'], {
+      cwd,
+      input: JSON.stringify({ cwd, hook_event_name: 'SubagentStop', agent_type: 'worker', agent_id: `wt-${cwd.length}`, stop_hook_active: false }),
+    });
+  let result = await stop(tree);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(leadMarker), false, 'the lead command did not run');
+  assert.equal(realpathSync(readFileSync(treeMarker, 'utf8')), realpathSync(tree), 'the command ran in the worktree');
+  rmSync(treeMarker);
+  result = await stop(sandbox.repo);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(treeMarker), false, 'the worktree command did not run');
+  assert.equal(realpathSync(readFileSync(leadMarker, 'utf8')), realpathSync(sandbox.repo), 'the command ran in the event folder');
+  rmSync(leadMarker);
+  const nested = join(sandbox.repo, 'src');
+  mkdirSync(nested);
+  result = await stop(nested);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(realpathSync(readFileSync(leadMarker, 'utf8')), realpathSync(nested), 'a subagent in the lead folder runs in the event folder');
+});
+
 // #555: Muse Code passes its hooks no YOKOTEN_ROLE. A worktree the lead marks makes every
 // agent in it a worker, whatever env reaches the hook; the lead's main checkout is not affected.
 // Every call here is Muse-shaped, piped to `hook --agent muse`, with YOKOTEN_ROLE unset.
@@ -663,4 +978,26 @@ test('worker list: a marked worker cannot unmark its own worktree, even after cd
   const gitDir = runChild('git', ['rev-parse', '--absolute-git-dir'], { cwd: tree }).stdout.trim();
   assert.ok(existsSync(join(gitDir, 'yokoten-worker')));
   sandbox.git('worktree', 'remove', '--force', tree);
+});
+
+// `worker env` lists the names an agent would get, and counts the rest; it never prints a
+// value (#613). The values are fake; each token is joined from parts.
+test('worker env: it names what an agent gets and counts what is dropped, and prints no value (#613)', async () => {
+  const cwd = makeTempDir('yokoten-worker-env-');
+  const token = `${'gh'}p_${'a1B2c3D4e5F6g7H8'.repeat(3)}`;
+  const key = `${'sk'}-ant-api03-${'a1B2c3D4e5F6g7H8'.repeat(4)}`;
+  const url = `postgres://fakeuser:${'fake'}pass${'@'}db.example.invalid/app`;
+  const env = { PATH: '/usr/bin', HOME: cwd, GH_TOKEN: token, ANTHROPIC_API_KEY: key, LC_FAKE: url, EDITOR: 'vi' };
+  const plain = await invoke(['worker', 'env'], { env, cwd });
+  assert.equal(plain.code, 0, plain.stderr);
+  for (const value of [token, key, url]) assert.ok(!(plain.stdout + plain.stderr).includes(value), 'worker env printed a value');
+  assert.match(plain.stdout, /would get 2 names from this shell/);
+  assert.match(plain.stdout, /HOME, PATH/);
+  assert.match(plain.stdout, /Dropped: 2 with a secret-looking name, 1 with a value shaped like a key or token, 0 too long to check, 1 not on the list/);
+  const claude = await invoke(['worker', 'env', 'claude-code'], { env, cwd });
+  for (const value of [token, key, url]) assert.ok(!(claude.stdout + claude.stderr).includes(value), 'worker env claude-code printed a value');
+  assert.match(claude.stdout, /ANTHROPIC_API_KEY, HOME, PATH/);
+  const unknown = await invoke(['worker', 'env', 'nope'], { env, cwd });
+  assert.equal(unknown.code, 1);
+  assert.match(unknown.stderr, /unknown runtime "nope"/);
 });

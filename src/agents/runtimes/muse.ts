@@ -18,6 +18,7 @@ import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import type { Action } from '../../run/hook.ts';
 import { type FolderTrust, folderKeys, isFolder } from '../folder-trust.ts';
 import { type Added, addHook, checkHooksFile, type HookArgs, type HookState, hookState, isObject } from '../hooks-file.ts';
+import type { RuntimeEnv } from '../agent-env.ts';
 
 // bash takes `command` and `workdir`; the edit tools take `path`.
 const SHELL = 'bash';
@@ -49,7 +50,13 @@ const projectHooks = (root: string) => join(root, '.muse', 'hooks.json');
 const at = (cli: string) => `"$(git rev-parse --show-toplevel)/${cli}"`;
 const guardArgs = (root: string, cli: string) =>
   [projectHooks(root), 'PreToolUse', MATCHER, guardCommand(at(cli), 'hook --agent muse', missingProjectRuntime(cli), { isToolCall: true })] as const;
-const stopArgs = (root: string, cli: string) => [projectHooks(root), 'Stop', undefined, guardCommand(at(cli), 'hook --stop --agent muse', missingProjectRuntime(cli))] as const;
+// Seconds Muse Code waits for a settings hook in `.muse/hooks.json`. Its hooks guide
+// says this `timeout` is seconds (default 600). A plugin hook uses `timeoutMs` instead.
+// Muse Code 1.4.11 keeps the two fields apart. A short value would cut the done-when
+// command, and a timed-out hook lets the call run (#614).
+const STOP_TIMEOUT = 600;
+const stopArgs = (root: string, cli: string) =>
+  [projectHooks(root), 'Stop', undefined, guardCommand(at(cli), 'hook --stop --agent muse', missingProjectRuntime(cli)), { timeout: STOP_TIMEOUT }] as const;
 
 // Muse 1.4.11 runs a SessionStart hook and gives its output to the model (#556), as Claude Code does.
 const sessionArgs = (root: string, cli: string) =>
@@ -173,3 +180,6 @@ export function userHooksState(env: Env, cli: string, missing: string): { doctor
   const args = userHookArgs(env, cli, missing);
   return { doctor: hookState(...args.doctor), guard: hookState(...args.guard) };
 }
+
+/** The names this runtime's agent gets on top of the shared ones (#613). Muse Code: Meta's docs name the model API key MODEL_API_KEY. Its config is under XDG_CONFIG_HOME, which every agent gets. */
+export const AGENT_ENV: RuntimeEnv = { login: ['MODEL_API_KEY'], config: [] };

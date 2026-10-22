@@ -193,6 +193,8 @@ test('grok readToolCall: the shell by command, an edit by file, and nothing for 
   assert.equal(readToolCall({ tool_name: 'run_terminal_command', tool_input: { command: 'ls' } }).command, 'ls');
   assert.equal(readToolCall({ toolName: 'write', toolInput: { file_path: 'a' }, subagentType: 'Worker' }).worker, true);
   assert.equal(readToolCall({ toolName: 'write', toolInput: { file_path: 'a' }, subagentType: 'explore' }).worker, false);
+  assert.equal(readToolCall({ toolName: 'write', toolInput: { file_path: 'a' }, subagentType: 'coworker' }).worker, false);
+  assert.equal(readToolCall({ toolName: 'write', toolInput: { file_path: 'a' }, subagentType: 'yokoten:worker' }).worker, true);
   for (const input of [null, 'x', [], { toolInput: 'x' }, { toolName: 'run_terminal_command', toolInput: [] }]) {
     assert.deepEqual(readToolCall(input), { command: undefined, paths: [], cwd: undefined, worker: false });
   }
@@ -215,8 +217,11 @@ test('grok readToolCall: every edit tool Grok names is read by its file, and the
 });
 
 test('grok readStop: a turn end is checked; the session-end fire only observes, so it is skipped', async () => {
-  assert.deepEqual(readStop(recorded('stop', '/w')), { cwd: '/w', active: false });
-  assert.deepEqual(readStop(recorded('stop', '/w', (event) => Object.assign(event, { stopHookActive: true }))), { cwd: '/w', active: true });
+  const grokSession = '01a15a11-55e0-7ae1-9c00-6389bfe5c78f';
+  assert.deepEqual(readStop(recorded('stop', '/w')), { cwd: '/w', active: false, worker: false, subagent: false, sessionId: grokSession });
+  assert.deepEqual(readStop(recorded('stop', '/w', (event) => Object.assign(event, { stopHookActive: true }))), { cwd: '/w', active: true, worker: false, subagent: false, sessionId: grokSession });
+  assert.equal(readStop(recorded('stop', '/w', (event) => Object.assign(event, { subagentType: 'yokoten:worker' })))?.worker, true);
+  assert.equal(readStop(recorded('stop', '/w', (event) => Object.assign(event, { subagentType: 'coworker' })))?.worker, false);
   assert.equal(readStop(recorded('shutdown', '/w')), null);
   assert.equal(readStop(null), null);
   const sandbox = makeSandbox();

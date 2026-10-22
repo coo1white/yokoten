@@ -46,6 +46,8 @@ test('hook --agent codex: shell calls by command, apply_patch by the files it to
   // A worker subagent's call names its role (Codex rust-v0.163.0, #210); no env needed.
   assert.equal((await call('apply_patch', patch('*** Update File: AGENTS.md'), {}, { agent_id: 'a1', agent_type: 'worker' })).status, 2, 'a worker subagent');
   assert.equal((await call('apply_patch', patch('*** Update File: AGENTS.md'), {}, { agent_id: 'a2', agent_type: 'explorer' })).status, 0, 'an explorer is not a worker');
+  assert.equal((await call('apply_patch', patch('*** Update File: AGENTS.md'), {}, { agent_id: 'a3', agent_type: 'coworker' })).status, 0, 'a name that only contains worker is not a worker');
+  assert.equal((await call('apply_patch', patch('*** Update File: AGENTS.md'), {}, { agent_id: 'a4', agent_type: 'yokoten:worker' })).status, 2, 'a type that ends with :worker');
   // A shell-run apply_patch is a Bash call, with no second hook (#209): its files count too.
   const heredoc = (header: string, before = '') => `${before}apply_patch <<'EOF'\n${patch(header)}EOF\n`;
   result = await call('Bash', heredoc('*** Update File: AGENTS.md'), worker);

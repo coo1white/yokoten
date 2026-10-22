@@ -26,10 +26,11 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import type { Env } from '../../rules/config.ts';
 import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
-import type { Action } from '../../run/hook.ts';
+import { type Action, isWorkerType, readStopFields, type StopEvent } from '../../run/hook.ts';
 import { type FolderTrust, folderKeys, isFolder } from '../folder-trust.ts';
 import { type Added, addHook, checkHooksFile, type HookState, hookState, isObject } from '../hooks-file.ts';
 import { blankedToml, hasTomlArray, hasTomlHeader, hasTomlKey, hasTomlTable, isInsideProject, parseToml, readTomlTables } from './codex.ts';
+import type { RuntimeEnv } from '../agent-env.ts';
 
 // The shell tool takes `command` (and may take `cwd`); the edit tools take `file_path`.
 const SHELL = new Set(['run_terminal_command', 'run_terminal_cmd', 'Bash']);
@@ -48,8 +49,8 @@ const STOP_TIMEOUT = 600;
 
 /**
  * A PreToolUse call, as an Action: the shell call by its command, an edit by its file. A
- * read, a search, a web call or an MCP tool is neither. A subagent whose type names a
- * worker is a worker; YOKOTEN_ROLE, which Grok passes to its hooks, decides the rest.
+ * read, a search, a web call or an MCP tool is neither. A subagent is a worker only
+ * when its type is `worker`, or ends with `:worker`. YOKOTEN_ROLE decides the rest.
  */
 export function readToolCall(input: unknown): Action {
   const call = isObject(input) ? input : {};
@@ -66,22 +67,19 @@ export function readToolCall(input: unknown): Action {
     command: isShell ? text(tool.command) : undefined,
     paths: isEdit && file ? [file] : [],
     cwd: shellCwd && (isAbsolute(shellCwd) || cwd) ? resolve(cwd ?? '', shellCwd) : cwd,
-    worker: /worker/i.test(text(call.subagentType) ?? ''),
+    worker: isWorkerType(text(call.subagentType) ?? ''),
   };
 }
 
 /**
  * A Stop event, or null when there is nothing to check. Grok sends Stop at a turn's end
  * (`reason: "end_turn"`) and once more when the session ends (`"shutdown"`), which only
- * observes: that one is skipped.
+ * observes: that one is skipped. A worker subagent is a worker (#614).
  */
-export function readStop(input: unknown): { cwd?: string; active: boolean } | null {
+export function readStop(input: unknown): StopEvent | null {
   if (!isObject(input)) return null;
   if (typeof input.reason === 'string' && input.reason !== 'end_turn') return null;
-  return {
-    cwd: typeof input.cwd === 'string' && input.cwd !== '' ? input.cwd : undefined,
-    active: input.stopHookActive === true || input.stop_hook_active === true,
-  };
+  return readStopFields(input);
 }
 
 /** How a refusal reaches Grok: a deny on stdout, and exit 2, so the model reads the whole reason. */
@@ -298,3 +296,6 @@ export function sandboxProblem(root: string, env: Env): { what: string; fix: str
   }
   return null;
 }
+
+/** The names this runtime's agent gets on top of the shared ones (#613). Grok CLI takes an xAI API key. */
+export const AGENT_ENV: RuntimeEnv = { login: ['XAI_API_KEY', 'GROK_API_KEY'], config: ['GROK_HOME'] };

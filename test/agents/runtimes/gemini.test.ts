@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { addProjectSandbox, SANDBOX_HAND_ADD, sandboxProblem } from '../../../src/agents/runtimes/gemini.ts';
 import { makeSandbox, makeTempDir } from '../../repo/helpers.ts';
+import { addProjectStopHook, projectHooksState } from '../../../src/agents/runtimes/gemini.ts';
 
 test('hook --agent gemini: run_shell_command by command, write_file and replace by file_path (#30)', async () => {
   const sandbox = makeSandbox();
@@ -86,4 +87,19 @@ test('sandbox problem: a missing or allowed key, each with its one fix', () => {
   assert.deepEqual(problem('not json {'), { what: "can't read .gemini/settings.json", fix: 'make it valid JSON, then run `yokoten init`' });
   assert.deepEqual(problem({ security: 'high' })?.what, '.gemini/settings.json has an unexpected shape');
   assert.deepEqual(problem({ hooks: 'x' })?.what, '.gemini/settings.json has an unexpected shape');
+});
+
+test('gemini stop hook waits 600000 milliseconds, and an old timeout of 600 is updated (#614)', () => {
+  const sandbox = makeSandbox();
+  const cli = '.yokoten/bin/yokoten.mjs';
+  assert.equal(addProjectStopHook(sandbox.repo, cli), 'added');
+  const file = join(sandbox.repo, '.gemini', 'settings.json');
+  const settings = JSON.parse(readFileSync(file, 'utf8')) as { hooks: { AfterAgent: { hooks: { timeout: number }[] }[] } };
+  assert.equal(settings.hooks.AfterAgent[0].hooks[0].timeout, 600_000);
+  settings.hooks.AfterAgent[0].hooks[0].timeout = 600;
+  writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`);
+  assert.equal(projectHooksState(sandbox.repo, cli).stop, 'updated');
+  assert.equal(addProjectStopHook(sandbox.repo, cli), 'updated');
+  const again = JSON.parse(readFileSync(file, 'utf8')) as { hooks: { AfterAgent: { hooks: { timeout: number }[] }[] } };
+  assert.equal(again.hooks.AfterAgent[0].hooks[0].timeout, 600_000);
 });
