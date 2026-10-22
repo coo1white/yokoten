@@ -72,11 +72,6 @@ const RELEASE_FIXES: Record<string, string> = {
   grok: releaseFix(approve('grok')),
 };
 
-// The runtimes whose hook can change a command before it runs (#390). In the others the
-// command runs as it is, unless yokoten.json "privacy.output" is "stop": then it is refused,
-// with the wrapped command as the fix. Codex, Gemini CLI, Antigravity CLI, Muse Code and
-// DeepSeek Harness are not known to take a changed command from a hook. Grok CLI takes
-// `updatedInput`, as Claude Code does.
 // The runtimes whose allowed PreToolUse call can add text to the agent's context: unread
 // team messages arrive there (#674). The others get them at the end of a turn (Stop).
 const CONTEXTS: Record<string, (text: string) => string> = { 'claude-code': claudeCode.formatContext, grok: grok.formatContext };
@@ -87,6 +82,11 @@ const teamMessages = async (folder: string, env: Env, root: string | null): Prom
   return deliveryFor(folder, env, root);
 };
 
+// The runtimes whose hook can change a command before it runs (#390). In the others the
+// command runs as it is, unless yokoten.json "privacy.output" is "stop": then it is refused,
+// with the wrapped command as the fix. Codex, Gemini CLI, Antigravity CLI, Muse Code and
+// DeepSeek Harness are not known to take a changed command from a hook. Grok CLI takes
+// `updatedInput`, as Claude Code does.
 const REWRITES: Record<string, typeof claudeCode.formatRewrite> = {
   'claude-code': claudeCode.formatRewrite,
   grok: grok.formatRewrite,
@@ -179,14 +179,15 @@ async function stopHook(invocation: Invocation, json: boolean, read: typeof clau
   }
   const folder = event.cwd ?? invocation.cwd;
   const folders = [folder, invocation.cwd];
-  // Unread team messages come first, once: the agent reads them and goes on (#674).
-  // Never when a stop hook already sent it back, so messages can't keep an agent from stopping.
-  const messages = event.active || event.subagent ? '' : await teamMessages(folder, env, rootOf(folder, env));
-  if (messages) {
-    if (json) printJson(invocation, { blocked: true, stop: false, messages: true });
-    print(invocation, [messages], invocation.stderr);
-    return 2;
-  }
+  const key = doneTryKey(event.sessionId, folder);
+  // Team messages (#674) come after the checks, never in their place. A turn sent back only
+  // to read messages does not count as sent back: the next stop is checked in full.
+  const messagesKey = `${key}-messages`;
+  // Messages send a turn on at most once in a row, so a chatty sender can't keep an agent from stopping.
+  const afterMessages = event.active && wasRefusedRecently(folder, messagesKey);
+  if (afterMessages) event = { ...event, active: false };
+  clearRefusedMarker(folder, messagesKey);
+  const takeMessages = async (): Promise<string> => (event?.subagent ? '' : teamMessages(invocation.cwd, env, rootOf(invocation.cwd, env)));
   // SubagentStop fires for every subagent. Its own type decides. The parent session's
   // role does not: a reviewer started by a worker is not checked (#614).
   const isWorker = event.subagent ? event.worker : event.worker || workerRole(env, folders) !== null;
@@ -230,7 +231,6 @@ async function stopHook(invocation: Invocation, json: boolean, read: typeof clau
     }
   }
   const failed = findings.length > 0 || doneWhen?.ok === false;
-  const key = doneTryKey(event.sessionId, folder);
   if (!failed) {
     if (isWorker) {
       forgetDoneTries(env, key);
@@ -238,13 +238,21 @@ async function stopHook(invocation: Invocation, json: boolean, read: typeof clau
       recordChecks(invocation, folder, 'passing');
     }
     if (!json && notes.length) print(invocation, [`yokoten: ${notes.length} warning(s) in the changed files:`, ...bullets(notes)], invocation.stderr);
+    // The checks pass: unread messages send the turn on once, and the next stop is checked again.
+    const messages = event.active || afterMessages ? '' : await takeMessages();
+    if (messages) {
+      noteRefused(folder, messagesKey);
+      if (json) printJson(invocation, { blocked: true, stop: false, findings, messages: true });
+      print(invocation, [messages], invocation.stderr);
+      return 2;
+    }
     if (json) printJson(invocation, { blocked: false, stop: true, findings, ...(notes.length ? { notes } : {}) });
     return 0;
   }
   if (!isWorker) {
     if (json) printJson(invocation, { blocked: true, stop: true, findings, ...(notes.length ? { notes } : {}) });
     print(invocation, [`yokoten: ${findings.length} problem(s) in the changed files. Fix them before you end the turn:`, ...bullets(findings), ...(notes.length ? [`yokoten: ${notes.length} warning(s) in the changed files:`, ...bullets(notes)] : [])], invocation.stderr);
-    return 2;
+    return withMessages(invocation, 2, await takeMessages());
   }
   const bumped = bumpDoneTries(env, key);
   // No saved count: stop_hook_active, or a refusal of this worker in the last 5 minutes,
@@ -252,10 +260,16 @@ async function stopHook(invocation: Invocation, json: boolean, read: typeof clau
   if (bumped === null) {
     if (event.active || wasRefusedRecently(folder, key)) return allowFailingStop(invocation, json, findings, notes, doneWhen, DONE_TRY_LIMIT, env, key, folder);
     noteRefused(folder, key);
-    return refuseFailingStop(invocation, json, findings, notes, doneWhen, 1, false);
+    return withMessages(invocation, refuseFailingStop(invocation, json, findings, notes, doneWhen, 1, false), await takeMessages());
   }
   if (bumped > DONE_TRY_LIMIT) return allowFailingStop(invocation, json, findings, notes, doneWhen, bumped, env, key, folder);
-  return refuseFailingStop(invocation, json, findings, notes, doneWhen, bumped, true);
+  return withMessages(invocation, refuseFailingStop(invocation, json, findings, notes, doneWhen, bumped, true), await takeMessages());
+}
+
+/** A refusal at the end of a turn, with the unread team messages after it (#674). */
+function withMessages(invocation: Invocation, code: number, messages: string): number {
+  if (messages) print(invocation, [messages], invocation.stderr);
+  return code;
 }
 
 /**
@@ -418,7 +432,8 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
     if (found && role === 'mark' && WORKER_RULES.has(found.id)) found = { ...found, fix: `${found.fix}. ${capital(markNote(folders, invocation.env))}` };
     if (json) printJson(invocation, found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
     if (!found && !json && Object.hasOwn(CONTEXTS, agent)) {
-      return teamMessages(resolve(cwd, action.cwd ?? '.'), env, root).then((messages) => {
+      // The session's own folder, never the call's: a folder a desk agent wrote can't name the lead's team.
+      return teamMessages(cwd, env, rootOf(cwd, env)).then((messages) => {
         if (messages) say(invocation, CONTEXTS[agent](messages), invocation.stdout);
         return 0;
       });
@@ -577,12 +592,17 @@ export async function runDesk(invocation: Invocation): Promise<number> {
     return 1;
   };
   if (workerRole(invocation.env, [invocation.cwd]) !== null) return fail('only the lead starts a desk: this session is a worker.');
-  const [{ planDesk }, { chooseBackend, startDesk }, { paths }, team] = await Promise.all([import('../agents/desk/desk.ts'), import('../agents/desk/start.ts'), import('../setup/install.ts'), import('../agents/desk/team/team.ts')]);
+  const [{ planDesk }, { chooseBackend, startDesk }, { paths }, team, { teamFolderFor, teamName }] = await Promise.all([import('../agents/desk/desk.ts'), import('../agents/desk/start.ts'), import('../setup/install.ts'), import('../agents/desk/team/who.ts'), import('../agents/desk/team/team.ts')]);
   const backend = chooseBackend(process.platform, invocation.env);
   if (typeof backend === 'string') return fail(backend);
   const list = (name: string) => (options.values[name] ?? '').split(',').map((word) => word.trim()).filter(Boolean);
   const installed = paths(invocation.env);
-  const main = team.mainCheckout(invocation.cwd);
+  // The team of the lead's project (#674): next to its main checkout. The agent's name is
+  // --name, or the desk folder's made into a name; a folder name that can't be one joins no team.
+  const main = team.leadCheckout(invocation.cwd, invocation.env);
+  const asked = options.values['--name'];
+  const name = asked ?? teamName(basename(resolve(invocation.cwd, folder)));
+  if (typeof main === 'string' && name === null) print(invocation, ['yokoten desk: the folder\'s name can\'t be a name on the team, so this desk joins none. Name it with --name to join.'], invocation.stderr);
   let plan: ReturnType<typeof planDesk>;
   try {
     plan = planDesk({
@@ -594,8 +614,7 @@ export async function runDesk(invocation: Invocation): Promise<number> {
       extraHosts: list('--host'),
       runtimes: [installed.runtime],
       marks: options.flags.has('--marks') ? installed.marks : undefined,
-      // The team of the lead's project (#674): next to its main checkout. The agent's name is the desk folder's, or --name.
-      team: main ? { folder: team.teamFolderFor(main), name: options.values['--name'] ?? basename(resolve(invocation.cwd, folder)).toLowerCase() } : undefined,
+      team: typeof main === 'string' && name !== null ? { folder: teamFolderFor(main), name } : undefined,
     });
   } catch (error) {
     return fail((error as Error).message);

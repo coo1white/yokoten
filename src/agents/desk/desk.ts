@@ -15,7 +15,8 @@
 // 6. YOKOTEN_ROLE=worker and TZ=UTC are set, and no token or key is passed in (agent-env.ts).
 // 7. On a team (#674), the team folder is read-only and only the agent's own outbox in it
 //    is writable, so no agent writes, changes or deletes another's messages. The file
-//    `.git/yokoten-desk.json`, which names the agent, is locked (team/team.ts).
+//    `.git/yokoten-desk.json`, which names the agent, is locked, and YOKOTEN_DESK and
+//    YOKOTEN_TEAM say where the agent is (team/who.ts).
 //
 // This file turns a request into a `DeskPlan`: plain lists of paths, hosts and names. A
 // backend per system turns the plan into a command: bwrap.ts on Linux and WSL2,
@@ -249,14 +250,17 @@ export function planDesk(request: DeskRequest): DeskPlan {
   const state = prepareDeskState(runtime, request.runtime, desk, env);
   // The team (#674): its folder read-only, the agent's own outbox writable, and the desk file that names the agent locked.
   const writable = [state];
+  const teamEnv: Env = {};
   rmSync(join(desk, '.git', DESK_FILE), { force: true });
   if (request.team) {
     const folder = realOr(resolve(request.team.folder));
     if (isTooWide(folder) || isInside(desk, folder) || isInside(folder, desk)) throw new Error(`the team folder ${folder} would open a hidden folder or the desk`);
-    const team = prepareDeskTeam({ team: folder, name: request.team.name, runtime: request.runtime, model: modelOf(request.command), desk, state });
+    const team = prepareDeskTeam({ team: folder, name: request.team.name, runtime: request.runtime, model: modelOf(request.command), desk });
     if (!readable.includes(team.readable)) readable.push(team.readable);
     writable.push(team.writable);
     locked.push(team.locked);
+    // Who the agent is (team/who.ts): the lead's own env never has these.
+    Object.assign(teamEnv, { YOKOTEN_DESK: desk, YOKOTEN_TEAM: folder });
   }
   return {
     desk,
@@ -265,7 +269,7 @@ export function planDesk(request: DeskRequest): DeskPlan {
     hidden,
     locked,
     hosts: [...new Set([...runtime.hosts, ...(request.extraHosts ?? [])])],
-    env: { ...buildAgentEnv(env, { runtime: request.runtime, set: { YOKOTEN_ROLE: 'worker' } }), ...runtime.stateEnv(state), TZ: 'UTC' },
+    env: { ...buildAgentEnv(env, { runtime: request.runtime, set: { YOKOTEN_ROLE: 'worker', ...teamEnv } }), ...runtime.stateEnv(state), TZ: 'UTC' },
     command: request.command,
   };
 }

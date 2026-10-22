@@ -1195,6 +1195,21 @@ export function checkWorkerMarkEdit(path: string, folder?: string, env: Env = {}
   return null;
 }
 
+/**
+ * A worker's edit inside a team folder, `<repo>.team/` (#674): the roster, the outboxes and
+ * what the lead has read. Outside a desk nothing else fences it, and an edit there would
+ * speak for another agent. A desk's agent sends with `yokoten msg send`.
+ */
+export function checkTeamEdit(path: string): Finding | null {
+  for (const form of [resolve(path), realPath(path)]) {
+    const parts = form.split(/[/\\]+/).map((part) => part.toLowerCase());
+    if (parts.some((part, at) => part.endsWith('.team') && part.length > '.team'.length && at < parts.length - 1)) {
+      return finding('lead-only', 'this edit is inside a team folder (<repo>.team), where the agents\' messages and the roster are kept', 'send with `yokoten msg send <to> <text>` from a desk, or report to the lead');
+    }
+  }
+  return null;
+}
+
 // Cancelling a run, an alias, and a command the host did not ship (#650). The host adapter
 // owns the command names, the routes and the finding text. Both roles hear it before the
 // worker's own send rule: the fix is to ask the owner, and the lead cannot do it either.

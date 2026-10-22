@@ -133,7 +133,7 @@ test('the desk contract holds on this system', { skip: typeof backend === 'strin
   const team = join(projects, 'origin.team');
   const otherDesk = join(projects, 'other-desk');
   mkdirSync(join(otherDesk, '.git'), { recursive: true });
-  prepareDeskTeam({ team, name: 'other', runtime: 'codex', model: 'gpt-5.5', desk: otherDesk, state: `${otherDesk}.state` });
+  prepareDeskTeam({ team, name: 'other', runtime: 'codex', model: 'gpt-5.5', desk: otherDesk });
   appendMessage({ name: LEAD, team, readState: join(team, 'lead', 'read.json'), inDesk: false }, 'probe', 'hello from the lead', new Date());
   try {
     const plan = planDesk({

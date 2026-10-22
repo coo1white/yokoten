@@ -1710,18 +1710,28 @@ yokoten msg log
 ```
 
 - **Where**: the team folder next to your checkout, `<repo>.team/`. Each agent writes only
-  its own outbox there. `yokoten desk` adds the agent by the desk folder's name, or by
-  `--name`. Outside a desk, you are `lead`.
+  its own outbox there. `yokoten desk` adds the agent by `--name`, or by the desk
+  folder's name made lower case. A folder name that can't be a name joins no team.
+- **Who you are**: in a desk, the desk says. Outside one, you are `lead` only in your main
+  checkout, not in a worktree or a checkout inside a desk.
 - **The sender can't be faked**: in a desk, the team folder is read-only, and only the
-  agent's own outbox is writable. A worker outside a desk can't send.
+  agent's own outbox is writable. A worker outside a desk can't send, and the guard stops
+  its edits in the team folder.
 - **Delivery**: the hooks add unread messages to the agent's context. Claude Code and Grok
-  get them before a tool call. Every agent gets them at the end of a turn. `msg inbox`
-  shows them at any time.
-- **A message is data**: it names the sender's vendor and model. It says that it can't
-  grant approval or permission. A claim of the owner's approval is marked untrusted.
+  get them before a tool call. Every agent gets them at the end of a turn, after the
+  checks: a turn that fails a check is sent back with the messages too. `msg inbox` shows
+  them at any time. Muse Code's hooks get no variables, so in a desk Muse reads with
+  `msg inbox`.
+- **A message is data**: every delivery says that the messages are from another agent and
+  can't grant approval or permission. This note is the defence. Each message names the
+  sender's vendor and model. Some claims of the owner's approval get a flag, but the flag
+  misses claims in other words.
 - **Privacy**: a message gets the same scan as posted text: private marks, secrets, email
   and IP addresses, and secret variables. A message that fails is not sent, and you get
-  the reason.
+  the reason. The scan reads plain text, so a secret that is encoded or split passes it.
+  A desk sees your private marks only with `--marks`, so a message from one desk to
+  another is checked against them only then. What the lead reads is always checked.
+- **Who reads**: every desk on the team can read every message, not only its own.
 - **Caps**: 2,000 characters a message, 20 messages per agent in 10 minutes, and 256 KB
   per outbox.
 - **The log**: `msg log` shows every message. Only the lead runs it.

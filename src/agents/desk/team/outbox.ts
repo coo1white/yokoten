@@ -8,9 +8,10 @@
 // read shows too. The sender is the file's name; `from` must match it.
 
 import { createHash } from 'node:crypto';
-import { appendFileSync, closeSync, constants, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
-import { LEAD, MAX_MESSAGE_CHARS, MAX_OUTBOX_BYTES, MAX_PER_WINDOW, type Me, NAME, outboxOf, RATE_WINDOW_MS, readRoster } from './team.ts';
+import { LEAD, MAX_MESSAGE_CHARS, MAX_OUTBOX_BYTES, MAX_PER_WINDOW, NAME, outboxOf, RATE_WINDOW_MS, readCapped, readRoster, writeNoFollow } from './team.ts';
+import type { Me } from './who.ts';
 
 /** One message as a reader takes it. `from` is the outbox's name. */
 export interface Message {
@@ -21,6 +22,8 @@ export interface Message {
   text: string;
   /** Its line in the sender's outbox, from 0. */
   index: number;
+  /** Why the reader does not show the text, when it does not. */
+  withheld?: string;
 }
 
 /** What one outbox holds, read and checked. */
@@ -39,18 +42,42 @@ export type ReadState = Record<string, { lines: number; last: string; size: numb
 
 export const hashLine = (line: string): string => createHash('sha256').update(line).digest('hex').slice(0, 16);
 
-/** The text of an outbox, at most MAX_OUTBOX_BYTES, never through a link. */
-function readCapped(path: string): { text: string; size: number } {
-  const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
-  try {
-    const stats = fstatSync(fd);
-    if (!stats.isFile()) return { text: '', size: 0 };
-    const buffer = Buffer.alloc(Math.min(stats.size, MAX_OUTBOX_BYTES));
-    const read = readSync(fd, buffer, 0, buffer.length, 0);
-    return { text: buffer.toString('utf8', 0, read), size: stats.size };
-  } finally {
-    closeSync(fd);
-  }
+// The fields of a line, in the order `appendMessage` writes them. A line with any other field is refused.
+const FIELDS = ['messageId', 'role', 'parts', 'from', 'to', 'time', 'seq', 'prev'];
+// A time as `Date.toISOString` writes it.
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const sameKeys = (value: object, keys: string[]): boolean => {
+  const own = Object.keys(value);
+  return own.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+};
+
+/**
+ * Whether `entry` is line `index` of `name`'s outbox, as `appendMessage` writes it: its
+ * own number and id, the hash of the line before, a plain time, a team name as `to`, one
+ * text part, and no other field. Every field a delivery prints passes here first.
+ */
+function isWellFormed(entry: unknown, name: string, index: number, prev: string): entry is { messageId: string; to: string; time: string; parts: [{ kind: 'text'; text: string }] } {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry) || !sameKeys(entry, FIELDS)) return false;
+  const line = entry as Record<string, unknown>;
+  const parts = line.parts;
+  const part = Array.isArray(parts) && parts.length === 1 ? (parts[0] as Record<string, unknown>) : null;
+  return (
+    line.seq === index + 1 &&
+    line.prev === prev &&
+    line.from === name &&
+    line.role === 'agent' &&
+    line.messageId === `${name}-${index + 1}` &&
+    typeof line.to === 'string' &&
+    NAME.test(line.to) &&
+    typeof line.time === 'string' &&
+    ISO_TIME.test(line.time) &&
+    !Number.isNaN(Date.parse(line.time)) &&
+    part !== null &&
+    typeof part === 'object' &&
+    sameKeys(part, ['kind', 'text']) &&
+    part.kind === 'text' &&
+    typeof part.text === 'string'
+  );
 }
 
 /** Read and check one agent's outbox. A missing one is empty. */
@@ -58,7 +85,7 @@ export function readOutbox(team: string, name: string): Outbox {
   const outbox: Outbox = { name, lines: [], messages: [], problems: [], size: 0 };
   let text: string;
   try {
-    ({ text, size: outbox.size } = readCapped(outboxOf(team, name)));
+    ({ text, size: outbox.size } = readCapped(outboxOf(team, name), MAX_OUTBOX_BYTES));
   } catch {
     return outbox;
   }
@@ -68,31 +95,21 @@ export function readOutbox(team: string, name: string): Outbox {
   raw.pop();
   let prev = '';
   for (const [index, line] of raw.entries()) {
-    let entry: Record<string, unknown>;
+    let entry: unknown;
     try {
       entry = JSON.parse(line);
     } catch {
-      entry = {};
+      entry = null;
     }
-    const parts = Array.isArray(entry.parts) ? entry.parts : [];
-    const part = parts[0] as { kind?: unknown; text?: unknown } | undefined;
-    const ok =
-      entry.seq === index + 1 &&
-      entry.prev === prev &&
-      entry.from === name &&
-      entry.role === 'agent' &&
-      typeof entry.to === 'string' &&
-      typeof entry.time === 'string' &&
-      typeof entry.messageId === 'string' &&
-      parts.length === 1 &&
-      part?.kind === 'text' &&
-      typeof part.text === 'string';
-    if (!ok) {
+    if (!isWellFormed(entry, name, index, prev)) {
       outbox.problems.push(`${name}'s outbox was changed by hand at line ${index + 1}: that line and the ones after it are not shown`);
       break;
     }
     outbox.lines.push(line);
-    outbox.messages.push({ messageId: entry.messageId as string, from: name, to: entry.to as string, time: entry.time as string, text: part.text as string, index });
+    const { text } = entry.parts[0];
+    // The cap holds for a reader too: a line written by hand may be longer than `msg send` allows.
+    const withheld = text.length > MAX_MESSAGE_CHARS ? `${text.length} characters, over the cap of ${MAX_MESSAGE_CHARS}` : undefined;
+    outbox.messages.push({ messageId: entry.messageId, from: name, to: entry.to, time: entry.time, text: withheld ? '' : text, index, ...(withheld ? { withheld } : {}) });
     prev = hashLine(line);
   }
   return outbox;
@@ -113,7 +130,7 @@ export function outboxNames(team: string): string[] {
 
 export function loadReadState(path: string): ReadState {
   try {
-    const state = JSON.parse(readFileSync(path, 'utf8'));
+    const state = JSON.parse(readCapped(path).text);
     return state && typeof state === 'object' && !Array.isArray(state) ? state : {};
   } catch {
     return {};
@@ -121,7 +138,7 @@ export function loadReadState(path: string): ReadState {
 }
 
 export function saveReadState(path: string, state: ReadState): void {
-  writeFileSync(path, `${JSON.stringify(state)}\n`);
+  writeNoFollow(path, `${JSON.stringify(state)}\n`);
 }
 
 /** A problem when the outbox no longer holds what the reader read before. */
@@ -156,7 +173,9 @@ export function unread(me: Me, max: number): Unread {
     if (name === me.name) continue;
     let size: number;
     try {
-      size = statSync(outboxOf(me.team, name)).size;
+      const stats = lstatSync(outboxOf(me.team, name));
+      if (!stats.isFile()) continue;
+      size = stats.size;
     } catch {
       continue;
     }
@@ -202,7 +221,14 @@ export function appendMessage(me: Me, to: string, text: string, now: Date): Mess
   const messageId = `${me.name}-${seq}`;
   const time = now.toISOString();
   const line = JSON.stringify({ messageId, role: 'agent', parts: [{ kind: 'text', text }], from: me.name, to, time, seq, prev: own.lines.length ? hashLine(own.lines.at(-1) as string) : '' });
-  appendFileSync(outboxOf(me.team, me.name), `${line}\n`);
+  // Appended, never through a link and never into a FIFO: the outbox is made by the lead.
+  const fd = openSync(outboxOf(me.team, me.name), constants.O_WRONLY | constants.O_APPEND | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+  try {
+    if (!fstatSync(fd).isFile()) throw new Error('the outbox is not a regular file');
+    writeSync(fd, `${line}\n`);
+  } finally {
+    closeSync(fd);
+  }
   return { messageId, from: me.name, to, time, text, index: seq - 1 };
 }
 

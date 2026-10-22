@@ -77,6 +77,19 @@ test('hook: a worker edit under .worktrees/<issue>/ reads from that worktree (#5
   assert.equal(judge({ paths: ['.worktrees/571-x/AGENTS.md'], worker: false }, { ...options, env: {} }), null, 'the lead passes');
 });
 
+// #674: a worker outside a desk can't write a team folder: nothing else fences it there.
+test('hook: a worker edit inside <repo>.team/ is refused; the lead and other folders pass (#674)', () => {
+  const sandbox = makeSandbox();
+  const team = `${sandbox.repo}.team`;
+  const options = { root: sandbox.repo, config: DEFAULTS, env: { YOKOTEN_ROLE: 'worker' }, cwd: sandbox.repo };
+  for (const path of [join(team, 'outbox', 'g1.jsonl'), join(team, 'agents', 'g1.json'), join(team, 'lead', 'read.json'), '../repo.team/outbox/lead.jsonl']) {
+    assert.equal(judge({ paths: [path], worker: false }, options)?.id, 'lead-only', path);
+  }
+  assert.equal(judge({ paths: [join(team, 'outbox', 'g1.jsonl')], worker: false }, { ...options, env: {} }), null, 'the lead passes');
+  assert.equal(judge({ paths: ['src/.team.ts'], worker: false }, options), null);
+  assert.equal(judge({ paths: ['notes.team'], worker: false }, options), null, 'a file named .team is not a team folder');
+});
+
 // #408: the hook starts the guard's worker before it reads the call, so the two overlap.
 test('hook: a guard started before the call judges it as judge does; one never used lets the process end (#408)', async () => {
   const action = { command: 'git push --tags', paths: [], worker: false };

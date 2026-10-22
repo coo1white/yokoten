@@ -12,16 +12,10 @@
 // them). A reader takes the sender from the outbox's file name and the vendor and model
 // from the roster, which only the lead writes. A field inside a line is never trusted.
 //
-// Who am I comes from where the command runs, never from a flag or a variable:
-// - In a desk: the file `.git/yokoten-desk.json`, which the lead writes and the desk keeps
-//   read-only. The team folder must not be writable here, or this is not inside the fence.
-// - A worker outside a desk: no identity. Its messages go from a desk.
-// - Anyone else is the lead.
+// Who am I is in who.ts.
 
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
-import type { Env } from '../../../rules/config.ts';
-import { gitLinkAbove, workerRole } from '../../../rules/guards.ts';
+import { closeSync, constants, existsSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, rmSync, writeFileSync, writeSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 
 /** The longest message, in characters. A message lands in another agent's context. */
 export const MAX_MESSAGE_CHARS = 2000;
@@ -42,6 +36,64 @@ export const DESK_FILE = 'yokoten-desk.json';
 /** A name an agent goes by: short, lower case, safe as a file name. */
 export const NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
+/** The largest roster entry, desk file or read state, in bytes. */
+export const MAX_SMALL_FILE = 64 * 1024;
+
+/**
+ * Letters that change a terminal or a reader's view without showing: control codes, the
+ * soft hyphen, zero-width and bidi marks, line and paragraph separators, word joiners and
+ * tag characters. Taken out of everything a delivery prints.
+ */
+export const UNSEEN = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufe00-\ufe0f\ufeff\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/gu;
+
+/**
+ * A field printed on one line (a name, a model, a time): no line breaks, nothing unseen,
+ * at most `max` characters.
+ */
+export const oneLine = (text: string, max = 64): string => {
+  const plain = text.replace(UNSEEN, '').replace(/[\t\n]/g, ' ');
+  return plain.length > max ? `${plain.slice(0, max)}...` : plain;
+};
+
+/**
+ * A regular file's text, at most `cap` bytes, opened without following a link and without
+ * waiting, so a FIFO or a device never hangs a hook. It throws when the file can't be
+ * opened; a file that is not a regular one reads as empty.
+ */
+export function readCapped(path: string, cap = MAX_SMALL_FILE): { text: string; size: number } {
+  const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+  try {
+    const stats = fstatSync(fd);
+    if (!stats.isFile()) return { text: '', size: 0 };
+    const buffer = Buffer.alloc(Math.min(stats.size, cap));
+    const read = readSync(fd, buffer, 0, buffer.length, 0);
+    return { text: buffer.toString('utf8', 0, read), size: stats.size };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Write a small file, never through a link at its own name and never into a FIFO or a device. */
+export function writeNoFollow(path: string, text: string): void {
+  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0), 0o600);
+  try {
+    if (!fstatSync(fd).isFile()) throw Object.assign(new Error(`${path} is not a regular file`), { code: 'ENOTREG' });
+    ftruncateSync(fd, 0);
+    writeSync(fd, text, 0);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * The team name a desk folder gives: lower case, any other letter made `-`, at most 32.
+ * null when nothing usable is left, or it is the lead's name.
+ */
+export function teamName(folder: string): string | null {
+  const name = folder.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+/, '').slice(0, 32).replace(/-+$/, '');
+  return NAME.test(name) && name !== LEAD ? name : null;
+}
+
 /** One roster entry, as the lead wrote it. */
 export interface Member {
   name: string;
@@ -52,30 +104,8 @@ export interface Member {
   started: string;
 }
 
-/** Who runs this command, and where its team and its read state are. */
-export interface Me {
-  name: string;
-  team: string;
-  /** The file that keeps what this agent has read. */
-  readState: string;
-  inDesk: boolean;
-}
-
 export const outboxOf = (team: string, name: string): string => join(team, 'outbox', `${name}.jsonl`);
 export const rosterOf = (team: string, name: string): string => join(team, 'agents', `${name}.json`);
-
-/** The main checkout above `folder`, with no git process; null outside one. */
-export function mainCheckout(folder: string): string | null {
-  const link = gitLinkAbove(folder);
-  if (!link || link.kind === 'broken') return null;
-  if (link.kind === 'folder') return link.top;
-  try {
-    const common = resolve(link.gitDir, readFileSync(join(link.gitDir, 'commondir'), 'utf8').trim());
-    return basename(common) === '.git' ? dirname(common) : null;
-  } catch {
-    return null;
-  }
-}
 
 /** The team folder for the project whose main checkout is `main`. */
 export const teamFolderFor = (main: string): string => join(dirname(main), `${basename(main)}.team`);
@@ -129,9 +159,11 @@ export function readRoster(team: string): Map<string, Member> {
     const name = file.replace(/\.json$/, '');
     if (!file.endsWith('.json') || !NAME.test(name)) continue;
     try {
-      const entry = JSON.parse(readFileSync(join(team, 'agents', file), 'utf8')) as Partial<Member>;
-      if (typeof entry.runtime === 'string' && typeof entry.model === 'string') {
-        members.set(name, { name, runtime: entry.runtime, vendor: vendorOf(entry.runtime, entry.model), model: entry.model, desk: String(entry.desk ?? ''), started: String(entry.started ?? '') });
+      const entry = JSON.parse(readCapped(join(team, 'agents', file)).text) as Partial<Member>;
+      if (typeof entry.runtime === 'string' && typeof entry.model === 'string' && typeof entry.desk === 'string') {
+        const runtime = oneLine(entry.runtime, 32);
+        const model = oneLine(entry.model);
+        members.set(name, { name, runtime, vendor: vendorOf(runtime, model), model, desk: entry.desk, started: oneLine(String(entry.started ?? ''), 32) });
       }
     } catch {}
   }
@@ -140,11 +172,12 @@ export function readRoster(team: string): Map<string, Member> {
 
 /**
  * Get a desk ready for the team (the lead, before it starts the desk): its roster entry,
- * its own empty outbox, and the desk file in its git folder. It returns the paths the desk
- * shows: the team folder read-only, the outbox writable, the desk file locked.
+ * its own empty outbox, and the desk file in its git folder, which holds only the agent's
+ * name: the team and the read state are never taken from it (who.ts). It returns the paths
+ * the desk shows: the team folder read-only, the outbox writable, the desk file locked.
  */
 export function prepareDeskTeam(
-  { team, name, runtime, model, desk, state }: { team: string; name: string; runtime: string; model: string; desk: string; state: string },
+  { team, name, runtime, model, desk }: { team: string; name: string; runtime: string; model: string; desk: string },
   now = new Date(),
 ): { readable: string; writable: string; locked: string } {
   if (!NAME.test(name) || name === LEAD) throw new Error(`"${name}" can't be a desk's name on the team: use lower-case letters, digits and -, up to 32, and not "${LEAD}". Name it with --name.`);
@@ -152,52 +185,13 @@ export function prepareDeskTeam(
   const roster = rosterOf(team, name);
   const known = readRoster(team).get(name);
   if (known && known.desk !== desk) throw new Error(`the team already has an agent named ${name}, in another desk. Name this one with --name.`);
-  writeFileSync(roster, `${JSON.stringify({ runtime, model, desk, started: now.toISOString() }, null, 2)}\n`);
+  writeNoFollow(roster, `${JSON.stringify({ runtime, model, desk, started: now.toISOString() }, null, 2)}\n`);
   const outbox = outboxOf(team, name);
   if (!existsSync(outbox)) writeFileSync(outbox, '', { flag: 'wx' });
   if (lstatSync(outbox).isSymbolicLink() || !lstatSync(outbox).isFile()) throw new Error(`${outbox} is a link or not a file. Remove it, then run the desk again.`);
   const deskFile = join(desk, '.git', DESK_FILE);
   rmSync(deskFile, { force: true });
-  writeFileSync(deskFile, `${JSON.stringify({ team, name, readState: join(state, 'yokoten-messages.json') }, null, 2)}\n`, { flag: 'wx' });
+  writeFileSync(deskFile, `${JSON.stringify({ name }, null, 2)}\n`, { flag: 'wx' });
   return { readable: team, writable: outbox, locked: deskFile };
 }
 
-/**
- * True when this process can't make a file in the team folder: the sign that it runs inside
- * a desk's fence. A desk file seen from outside the fence (the lead looking into a desk) is
- * not that agent.
- */
-export function isFenced(team: string): boolean {
-  const probe = join(team, `.fence-${process.pid}-${Date.now()}`);
-  try {
-    closeSync(openSync(probe, 'wx'));
-  } catch (error) {
-    return ['EROFS', 'EPERM', 'EACCES'].includes((error as NodeJS.ErrnoException).code ?? '');
-  }
-  rmSync(probe, { force: true });
-  return false;
-}
-
-/** Who runs a command in `cwd`, or the plain reason there is no one to be. */
-export function whoAmI(cwd: string, env: Env): Me | { refuse: string } {
-  const link = gitLinkAbove(cwd);
-  const deskFile = link?.kind === 'folder' ? join(link.gitDir, DESK_FILE) : null;
-  if (deskFile && existsSync(deskFile)) {
-    let said: { team?: unknown; name?: unknown; readState?: unknown };
-    try {
-      said = JSON.parse(readFileSync(deskFile, 'utf8'));
-    } catch {
-      return { refuse: `${deskFile} can't be read. Ask the lead to start the desk again.` };
-    }
-    const { team, name, readState } = said;
-    if (typeof team !== 'string' || typeof name !== 'string' || typeof readState !== 'string' || !NAME.test(name)) return { refuse: `${deskFile} is not in the shape yokoten writes. Ask the lead to start the desk again.` };
-    if (!existsSync(team)) return { refuse: "this desk's team folder is not here. Ask the lead to start the desk again." };
-    if (!isFenced(team)) return { refuse: 'this folder is a desk, but this command runs outside its fence, so it would speak for the desk\'s agent. Run `yokoten msg` from your own checkout.' };
-    return { name, team, readState, inDesk: true };
-  }
-  if (workerRole(env, [cwd]) !== null) return { refuse: "a worker outside a desk has no name on the team, so its messages could be faked. Report to the lead instead; a desk's agent can send." };
-  const main = mainCheckout(cwd);
-  if (!main) return { refuse: 'this folder is not in a git checkout, so there is no team. Run it in your project.' };
-  const team = teamFolderFor(main);
-  return { name: LEAD, team, readState: join(team, 'lead', 'read.json'), inDesk: false };
-}

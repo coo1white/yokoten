@@ -4,7 +4,8 @@
 import { hideHome } from '../../rules/privacy.ts';
 import { deliveryText, messageProblem, senderLine, wrapMessage } from '../../agents/desk/team/deliver.ts';
 import { appendMessage, changedSinceRead, keepReadState, loadReadState, outboxNames, readOutbox, sendProblem, unread } from '../../agents/desk/team/outbox.ts';
-import { LEAD, makeTeam, type Me, readRoster, whoAmI } from '../../agents/desk/team/team.ts';
+import { LEAD, makeTeam, readRoster } from '../../agents/desk/team/team.ts';
+import { type Me, whoAmI } from '../../agents/desk/team/who.ts';
 import { type Invocation, parse, print, readInput, rootOf, usage } from '../shared.ts';
 
 /** How many unread messages `msg inbox` shows at once. */
@@ -73,7 +74,7 @@ function log(invocation: Invocation, me: Me, fail: (line: string) => number): nu
     if (changed) problems.push(changed);
     for (const message of outbox.messages) {
       const [head, ...rest] = wrapMessage(message, roster, invocation.env, root);
-      all.push({ time: message.time, lines: [head.replace(' ---', ` to ${message.to} ---`), ...rest] });
+      all.push({ time: message.time, lines: [head.replace(/ ---$/, ` to ${message.to} ---`), ...rest] });
     }
   }
   all.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
