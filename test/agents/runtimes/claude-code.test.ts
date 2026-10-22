@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
   existsSync,
+  mkdirSync,
   readdirSync,
   readFileSync,
   rmSync,
@@ -14,11 +15,12 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   makeSandbox,
+  makeTempDir,
   manifest,
   PLUGIN_ROOT,
   ROOT,
 } from '../../repo/helpers.ts';
-import { formatRewrite, hasSessionInput, readSessionStart } from '../../../src/agents/runtimes/claude-code.ts';
+import { addProjectSandbox, formatRewrite, hasSessionInput, readSessionStart, sandboxProblem } from '../../../src/agents/runtimes/claude-code.ts';
 import { refuseOnFailure } from '../../../src/run/cli.ts';
 
 test('plugin: the marketplace and the plugin have the documented fields', () => {
@@ -163,4 +165,50 @@ test('session start: the id and the source, and stdin only in a hook (#405)', ()
   assert.equal(hasSessionInput({ CLAUDE_PROJECT_DIR: '/p' }, false), true);
   assert.equal(hasSessionInput({ CLAUDE_PROJECT_DIR: '/p' }, true), false, 'a terminal is never read');
   assert.equal(hasSessionInput({}, false), false, 'not a Claude Code hook');
+});
+
+// ---- The project's sandbox (#589) ----
+
+/** A project folder with `.claude/settings.json` holding `settings`, as JSON text or an object. */
+function settingsProject(settings: string | object): string {
+  const root = makeTempDir('yokoten-claude-');
+  mkdirSync(join(root, '.claude'), { recursive: true });
+  writeFileSync(join(root, '.claude', 'settings.json'), typeof settings === 'string' ? settings : JSON.stringify(settings));
+  return root;
+}
+
+test('sandbox write: the block is added, kept when yours, and skipped when the file is not JSON', () => {
+  const root = makeTempDir('yokoten-claude-');
+  assert.equal(addProjectSandbox(root), 'added');
+  assert.deepEqual(JSON.parse(readFileSync(join(root, '.claude', 'settings.json'), 'utf8')).sandbox, { enabled: true });
+  assert.equal(addProjectSandbox(root), 'same');
+  // A block without `enabled` takes it; the rest of the file stays.
+  const partial = settingsProject({ hooks: {}, sandbox: { network: { allowedDomains: ['example.com'] } } });
+  assert.equal(addProjectSandbox(partial), 'added');
+  const merged = JSON.parse(readFileSync(join(partial, '.claude', 'settings.json'), 'utf8'));
+  assert.equal(merged.sandbox.enabled, true);
+  assert.deepEqual(merged.sandbox.network, { allowedDomains: ['example.com'] });
+  assert.deepEqual(merged.hooks, {});
+  // `false` is the user's explicit choice: init keeps it, and doctor names it.
+  const off = settingsProject({ sandbox: { enabled: false } });
+  assert.equal(addProjectSandbox(off), 'kept');
+  assert.deepEqual(JSON.parse(readFileSync(join(off, '.claude', 'settings.json'), 'utf8')).sandbox, { enabled: false });
+  assert.deepEqual(addProjectSandbox(settingsProject('not json {')), { kind: 'json' });
+  assert.deepEqual(addProjectSandbox(settingsProject({ sandbox: 'yes' })), { kind: 'shape', hint: '`sandbox` should be an object' });
+});
+
+test('sandbox problem: missing, off, and wider, each with its one fix', () => {
+  assert.deepEqual(sandboxProblem(makeTempDir('yokoten-claude-')), { what: 'no sandbox in .claude/settings.json', fix: '`yokoten init` adds it' });
+  assert.equal(sandboxProblem(settingsProject({ sandbox: { enabled: true } })), null);
+  assert.equal(sandboxProblem(settingsProject({ sandbox: { enabled: true, network: { allowedDomains: ['example.com'] } } })), null, 'named hosts are narrower');
+  const problem = (settings: string | object) => sandboxProblem(settingsProject(settings));
+  assert.deepEqual(problem({ hooks: {} }), { what: 'no sandbox in .claude/settings.json', fix: '`yokoten init` adds it' });
+  assert.deepEqual(problem({ sandbox: { enabled: false } }), { what: 'the sandbox in .claude/settings.json is off', fix: 'set sandbox.enabled to true in .claude/settings.json' });
+  assert.deepEqual(problem({ sandbox: { enabled: true, filesystem: { disabled: true } } })?.what, 'the sandbox in .claude/settings.json has filesystem isolation off');
+  assert.deepEqual(problem({ sandbox: { enabled: true, network: { allowedDomains: ['*'] } } }), {
+    what: 'the sandbox in .claude/settings.json allows every network host (*)',
+    fix: 'list only the hosts the project needs in sandbox.network.allowedDomains in .claude/settings.json',
+  });
+  assert.deepEqual(problem('not json {'), { what: "can't read .claude/settings.json", fix: 'make it valid JSON, then run `yokoten init`' });
+  assert.deepEqual(problem({ sandbox: 'yes' })?.what, '.claude/settings.json has an unexpected shape');
 });

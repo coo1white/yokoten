@@ -424,8 +424,10 @@ export const SANDBOX_FILE = '.codex/config.toml';
 export type TomlValue = string | boolean | number | TomlValue[] | { [key: string]: TomlValue };
 
 /**
- * The text as logical lines: a newline inside `[]` or `{}` or a triple-quoted string
- * continues the line, so a multi-line list or string reads as one. Line ends are LF.
+ * The text as logical lines without comments: a newline inside `[]` or `{}` or a
+ * triple-quoted string continues the line, so a multi-line list or string reads as one;
+ * a `#` outside a string skips to the physical line's end (comments read inside lists
+ * too). Line ends are LF.
  */
 function logicalLines(text: string): string[] {
   const lines: string[] = [];
@@ -463,6 +465,12 @@ function logicalLines(text: string): string[] {
       line += char;
       continue;
     }
+    if (char === '#') {
+      // Skip to the newline, then let it run: it still ends (or joins) the line.
+      const end = chars.indexOf('\n', index);
+      index = (end < 0 ? chars.length : end) - 1;
+      continue;
+    }
     if (char === '"' || char === "'") {
       const marks = char.repeat(3);
       if (chars.startsWith(marks, index)) {
@@ -486,26 +494,6 @@ function logicalLines(text: string): string[] {
   }
   lines.push(line);
   return lines;
-}
-
-/** The line without its `#` comment; a `#` inside a string stays. */
-function withoutComment(line: string): string {
-  let quote: string | null = null;
-  let escaped = false;
-  for (let index = 0; index < line.length; index++) {
-    const char = line[index];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (quote !== null) {
-      if (quote === '"' && char === '\\') escaped = true;
-      else if (char === quote) quote = null;
-      continue;
-    } else if (char === '"' || char === "'") quote = char;
-    else if (char === '#') return line.slice(0, index);
-  }
-  return line;
 }
 
 /** A comma-separated list split at its top-level commas; strings and nested brackets stay whole. */
@@ -640,7 +628,7 @@ export function parseToml(text: string): Record<string, TomlValue> {
   const tables: Record<string, TomlValue> = {};
   let header: string[] | null = [];
   for (const line of logicalLines(text)) {
-    const clean = withoutComment(line).trim();
+    const clean = line.trim();
     if (clean === '') continue;
     if (clean.startsWith('[[')) {
       header = null;
@@ -711,7 +699,11 @@ export function hasTomlKey(blanked: string, key: string): boolean {
   return new RegExp(`(^|[\\s,{.])["']?${key}["']?\\s*=`, 'm').test(blanked);
 }
 
-/** Whether blanked TOML text holds a `[a.b.c]` header: spaces and quotes allowed, `[[x]]` never. */
+/**
+ * Whether blanked TOML text holds a `[a.b.c]` header (`[[x]]` never). Quoted parts don't
+ * match: blanking clears strings, so the parser reads those and this only catches what
+ * the parser skips.
+ */
 export function hasTomlTable(blanked: string, path: readonly string[]): boolean {
   const header = path.map((part) => `["']?${part}["']?`).join(String.raw`\s*\.\s*`);
   return new RegExp(`^\\s*\\[\\s*${header}\\s*\\]\\s*$`, 'm').test(blanked);
@@ -741,14 +733,38 @@ approval_policy = "on-request"
 network_access = false
 `;
 
+/** Whether a top-level key is set: parsed (quoted keys too), or in a form the parser skips. */
+function isTopSet(parsed: Record<string, TomlValue>, blanked: string, key: string): boolean {
+  return Object.hasOwn(parsed, key) || hasTomlKey(blanked, key);
+}
+
+/** Whether `name` is set at top level, outside any table: `name =` or `name.x =`. */
+function isTopNameSet(blanked: string, name: string): boolean {
+  const lines = blanked.split('\n');
+  const firstHeader = lines.findIndex((line) => /^\s*\[/.test(line));
+  const top = firstHeader < 0 ? lines : lines.slice(0, firstHeader);
+  return top.some((line) => new RegExp(`^\\s*["']?${name}["']?\\s*(=|\\.)`).test(line));
+}
+
+/** Whether `name` is taken twice, at top level and by a table header: the file won't parse. */
+function isTakenTwice(blanked: string, name: string): boolean {
+  return isTopNameSet(blanked, name) && blanked.split('\n').some((line) => headerPath(line)?.[0] === name);
+}
+
 /** Whether a top-level `key =` can't be added: a table header already takes the name. */
-function isTopBlocked(blanked: string, key: string): boolean {
-  return !hasTomlKey(blanked, key) && blanked.split('\n').some((line) => headerPath(line)?.[0] === key);
+function isTopBlocked(parsed: Record<string, TomlValue>, blanked: string, key: string): boolean {
+  return !isTopSet(parsed, blanked, key) && blanked.split('\n').some((line) => headerPath(line)?.[0] === key);
+}
+
+/** Whether `network_access` is set: parsed in its table (quoted keys too), or in a form the parser skips. */
+function isTableSet(parsed: Record<string, TomlValue>, blanked: string): boolean {
+  const table = TABLE_SANDBOX[0].reduce<unknown>((at, part) => (isObject(at) ? at[part] : undefined), parsed);
+  return (isObject(table) && Object.hasOwn(table, TABLE_SANDBOX[1])) || hasTomlKey(blanked, TABLE_SANDBOX[1]);
 }
 
 /** Whether `network_access` can't be added: `sandbox_workspace_write` is a key, not a table. */
-function isTableBlocked(blanked: string): boolean {
-  if (hasTomlKey(blanked, TABLE_SANDBOX[1]) || hasTomlTable(blanked, TABLE_SANDBOX[0])) return false;
+function isTableBlocked(parsed: Record<string, TomlValue>, blanked: string): boolean {
+  if (isTableSet(parsed, blanked) || hasTomlTable(blanked, TABLE_SANDBOX[0])) return false;
   const lines = blanked.split('\n');
   const firstHeader = lines.findIndex((line) => /^\s*\[/.test(line));
   const top = firstHeader < 0 ? lines : lines.slice(0, firstHeader);
@@ -781,8 +797,8 @@ export function addProjectSandbox(root: string): 'added' | 'same' | 'kept' | 'un
   // A name taken in another shape blocks its insert: writing there would corrupt the file.
   // Doctor calls that a shape problem, so init and doctor agree on what is missing.
   const [tablePath, tableKey, tableValue] = TABLE_SANDBOX;
-  const missingTop = TOP_SANDBOX.filter(([key]) => !hasTomlKey(blanked, key) && !isTopBlocked(blanked, key));
-  const needsTableKey = !hasTomlKey(blanked, tableKey) && !isTableBlocked(blanked);
+  const missingTop = TOP_SANDBOX.filter(([key]) => !isTopSet(parsed, blanked, key) && !isTopBlocked(parsed, blanked, key));
+  const needsTableKey = !isTableSet(parsed, blanked) && !isTableBlocked(parsed, blanked);
   if (missingTop.length === 0 && !needsTableKey) {
     const tableParsed = tablePath.reduce<unknown>((at, part) => (isObject(at) ? at[part] : undefined), parsed);
     const network = isObject(tableParsed) ? tableParsed[tableKey] : undefined;
@@ -872,9 +888,12 @@ export function sandboxProblem(root: string, env: Env): { what: string; fix: str
     if (mode === 'danger-full-access') return { what: `the Codex sandbox is danger-full-access, so nothing is contained`, fix: `set sandbox_mode to "workspace-write" in ${file}` };
     if (mode === 'read-only') return { what: `the Codex sandbox is read-only, so workers can't write`, fix: `set sandbox_mode to "workspace-write" in ${file}` };
     if (mode !== 'workspace-write') return { what: `the Codex sandbox has an unknown mode`, fix: `set sandbox_mode to "workspace-write" in ${file}` };
-  } else if (hasTomlKey(blanked, 'sandbox_mode')) return { what: `the Codex sandbox has an unknown mode`, fix: `set sandbox_mode to "workspace-write" in ${file}` };
+    // A table on the name reads below, as a shape problem; anything else set is unknown.
+  } else if ((mode === undefined && hasTomlKey(blanked, 'sandbox_mode')) || (mode !== undefined && !isObject(mode))) {
+    return { what: `the Codex sandbox has an unknown mode`, fix: `set sandbox_mode to "workspace-write" in ${file}` };
+  }
   if (network === true) return { what: `the Codex sandbox allows network (network_access)`, fix: `set network_access to false in ${file}` };
-  if (network !== false && hasTomlKey(blanked, 'network_access')) return { what: `the Codex sandbox may allow network (network_access)`, fix: `set network_access to false in ${file}` };
+  if (network !== false && isTableSet(parsed, blanked)) return { what: `the Codex sandbox may allow network (network_access)`, fix: `set network_access to false in ${file}` };
   const roots = isObject(table) ? table.writable_roots : undefined;
   if (roots !== undefined || hasTomlKey(blanked, 'writable_roots')) {
     const entries = Array.isArray(roots) ? roots : null;
@@ -884,12 +903,24 @@ export function sandboxProblem(root: string, env: Env): { what: string; fix: str
   }
   const approval = parsed.approval_policy;
   if (approval === 'never') return { what: `Codex never asks before risky commands (approval_policy is never)`, fix: `set approval_policy to "on-request" in ${file}` };
-  if (approval !== undefined && approval !== 'on-request') return { what: `the Codex approval_policy is not "on-request"`, fix: `set approval_policy to "on-request" in ${file}` };
-  if (hasTomlKey(blanked, 'approval_policy') && approval !== 'on-request') return { what: `the Codex approval_policy is not "on-request"`, fix: `set approval_policy to "on-request" in ${file}` };
-  if (isTopBlocked(blanked, 'sandbox_mode') || isTopBlocked(blanked, 'approval_policy') || isTableBlocked(blanked)) {
+  // A table on the name reads below, as a shape problem; anything else set is judged here.
+  if (approval !== 'on-request' && !isObject(approval) && isTopSet(parsed, blanked, 'approval_policy')) {
+    return { what: `the Codex approval_policy is not "on-request"`, fix: `set approval_policy to "on-request" in ${file}` };
+  }
+  if (
+    isObject(parsed.sandbox_mode) ||
+    isObject(parsed.approval_policy) ||
+    isTopBlocked(parsed, blanked, 'sandbox_mode') ||
+    isTopBlocked(parsed, blanked, 'approval_policy') ||
+    isTableBlocked(parsed, blanked) ||
+    isTakenTwice(blanked, 'sandbox_mode') ||
+    isTakenTwice(blanked, 'approval_policy') ||
+    isTakenTwice(blanked, 'sandbox_workspace_write')
+  ) {
     return { what: `${file} has an unexpected shape`, fix: 'fix it, then run `yokoten init`' };
   }
-  const missing = ['sandbox_mode', 'approval_policy', 'network_access'].filter((key) => !hasTomlKey(blanked, key));
+  const missing = ['sandbox_mode', 'approval_policy'].filter((key) => !isTopSet(parsed, blanked, key));
+  if (!isTableSet(parsed, blanked)) missing.push('network_access');
   if (missing.length > 0) return { what: `the Codex sandbox in ${file} is missing ${missing.join(', ')}`, fix: '`yokoten init` adds it' };
   return null;
 }

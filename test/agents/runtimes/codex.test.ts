@@ -3,10 +3,11 @@
 import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { hookHash, readTrust, readTrustTables } from '../../../src/agents/runtimes/codex.ts';
-import { makeSandbox } from '../../repo/helpers.ts';
+import { addProjectSandbox, blankedToml, hasTomlKey, hasTomlTable, hookHash, isInsideProject, parseToml, readTrust, readTrustTables, sandboxProblem } from '../../../src/agents/runtimes/codex.ts';
+import { makeSandbox, makeTempDir } from '../../repo/helpers.ts';
 
 // Each call is shaped as the runtime's hook docs show it (#30): Codex's PreToolUse
 // (developers.openai.com/codex/hooks) and Gemini CLI's BeforeTool (geminicli.com/docs/hooks).
@@ -180,4 +181,169 @@ test('codex trust (#341): doctor says when Codex skips the hooks, and ok only wh
   // Without the hooks, the note is the missing hook, not the trust.
   writeFileSync(join(root, '.codex', 'hooks.json'), '{"hooks":{}}');
   assert.match(await doctor(), /note +codex-hook: no tool-call guard and no stop check in \.codex\/hooks\.json/);
+});
+
+// ---- The project's sandbox (#589) ----
+
+/** A project folder with `.codex/config.toml` holding `text`. */
+function configProject(text: string): string {
+  const root = makeTempDir('yokoten-codex-');
+  mkdirSync(join(root, '.codex'), { recursive: true });
+  writeFileSync(join(root, '.codex', 'config.toml'), text);
+  return root;
+}
+
+const GOOD_CONFIG = 'sandbox_mode = "workspace-write"\napproval_policy = "on-request"\n\n[sandbox_workspace_write]\nnetwork_access = false\n';
+
+test('sandbox toml: tables, dotted keys, inline tables and lists read; the rest is skipped, never an error', () => {
+  const parsed = parseToml(
+    [
+      '# a comment',
+      'top = "a # not a comment [x]"',
+      'flag = true',
+      'count = 3',
+      'dotted.here = "yes"',
+      'pair = { inner = "v", deep.key = 1 }',
+      'list = ["a", "b,c", "#d", "e=f", "g[h]i"]',
+      'multi = [',
+      '  "a", # a comment in a list',
+      '  "b",',
+      ']',
+      'empty = []',
+      '[table.sub]',
+      'key = "v"',
+      '["quoted".key]',
+      'q = 1',
+      '[[skipped]]',
+      'key = "never"',
+      '[table]',
+      'after = "yes"',
+      'broken line without a value',
+      'unclosed = ["a"',
+    ].join('\n'),
+  );
+  assert.equal(parsed.top, 'a # not a comment [x]');
+  assert.equal(parsed.flag, true);
+  assert.equal(parsed.count, 3);
+  assert.deepEqual(parsed.dotted, { here: 'yes' });
+  assert.deepEqual(parsed.pair, { inner: 'v', deep: { key: 1 } });
+  assert.deepEqual(parsed.list, ['a', 'b,c', '#d', 'e=f', 'g[h]i']);
+  assert.deepEqual(parsed.multi, ['a', 'b']);
+  assert.deepEqual(parsed.empty, []);
+  assert.deepEqual(parsed.table, { sub: { key: 'v' }, after: 'yes' });
+  assert.deepEqual(parsed.quoted, { key: { q: 1 } });
+  assert.equal(parsed.skipped, undefined);
+  assert.equal(parsed.broken, undefined);
+  assert.equal(parsed.unclosed, undefined);
+  assert.deepEqual(parseToml(''), {});
+});
+
+test('sandbox toml: the key and table search never matches inside a string or a comment', () => {
+  const blanked = blankedToml(['# sandbox_mode = "x"', 'note = "sandbox_mode = [x]"', "note2 = 'has #',", 'real = 1'].join('\n'));
+  assert.equal(hasTomlKey(blanked, 'sandbox_mode'), false);
+  assert.equal(hasTomlKey(blankedToml('sandbox_mode = "x"'), 'sandbox_mode'), true);
+  assert.equal(hasTomlKey(blankedToml('[a]\nsandbox_mode = "x"'), 'sandbox_mode'), true, 'any table counts');
+  assert.equal(hasTomlKey(blankedToml('a.sandbox_mode = "x"'), 'sandbox_mode'), true, 'a dotted key counts');
+  assert.equal(hasTomlKey(blankedToml('other = { sandbox_mode = "x" }'), 'sandbox_mode'), true, 'an inline table counts');
+  assert.equal(hasTomlKey(blankedToml('sandbox_modes = "x"'), 'sandbox_mode'), false, 'a longer name is not the key');
+  assert.equal(hasTomlTable(blankedToml('[profiles.yokoten]'), ['profiles', 'yokoten']), true);
+  assert.equal(hasTomlTable(blankedToml('[ profiles.yokoten ]'), ['profiles', 'yokoten']), true, 'spaces');
+  assert.equal(hasTomlTable(blankedToml('# [profiles.yokoten]'), ['profiles', 'yokoten']), false, 'a commented header is not a table');
+  assert.equal(hasTomlTable(blankedToml('[[profiles]]'), ['profiles']), false, 'an array of tables is not a table');
+});
+
+test('sandbox write: a missing file is written, and a file with the keys is same, never rewritten', () => {
+  const root = makeTempDir('yokoten-codex-');
+  assert.equal(addProjectSandbox(root), 'added');
+  const path = join(root, '.codex', 'config.toml');
+  const fresh = readFileSync(path, 'utf8');
+  assert.match(fresh, /sandbox_mode = "workspace-write"\napproval_policy = "on-request"\n\n\[sandbox_workspace_write\]\nnetwork_access = false\n/);
+  assert.equal(addProjectSandbox(root), 'same');
+  assert.equal(readFileSync(path, 'utf8'), fresh, 'same writes nothing');
+});
+
+test('sandbox write: missing keys are added where they belong, and the rest of the file stays', () => {
+  const root = configProject(['model = "x"', '', '[other]', 'kept = true'].join('\n'));
+  assert.equal(addProjectSandbox(root), 'added');
+  assert.equal(
+    readFileSync(join(root, '.codex', 'config.toml'), 'utf8'),
+    ['model = "x"', '', 'sandbox_mode = "workspace-write"', 'approval_policy = "on-request"', '[other]', 'kept = true', '', '[sandbox_workspace_write]', 'network_access = false', ''].join('\n'),
+  );
+  // A table already there takes the key; the user's keys stay, even when they differ.
+  const kept = configProject('[sandbox_workspace_write]\nwritable_roots = ["sub"]\n');
+  assert.equal(addProjectSandbox(kept), 'added');
+  assert.match(readFileSync(join(kept, '.codex', 'config.toml'), 'utf8'), /\[sandbox_workspace_write\]\nnetwork_access = false\nwritable_roots = \["sub"\]/);
+  const danger = configProject(GOOD_CONFIG.replace('workspace-write', 'danger-full-access'));
+  assert.equal(addProjectSandbox(danger), 'kept', "the user's mode stays");
+  assert.match(readFileSync(join(danger, '.codex', 'config.toml'), 'utf8'), /danger-full-access/);
+  const dotted = configProject('sandbox_workspace_write.network_access = false\nsandbox_mode = "workspace-write"\napproval_policy = "on-request"\n');
+  assert.equal(addProjectSandbox(dotted), 'same', 'a dotted key counts as set');
+  const quoted = configProject('"sandbox_mode" = "danger-full-access"\n"approval_policy" = "on-request"\n["sandbox_workspace_write"]\n"network_access" = false\n');
+  assert.equal(addProjectSandbox(quoted), 'kept', 'quoted keys read, so nothing is written twice');
+  assert.equal(sandboxProblem(quoted, { HOME: '/nonexistent-yokoten-home' })?.what, 'the Codex sandbox is danger-full-access, so nothing is contained');
+});
+
+test("sandbox write: a name taken in another shape is skipped, never written twice (the file would break)", () => {
+  const root = configProject('[sandbox_mode]\nvalue = 1\n');
+  assert.equal(addProjectSandbox(root), 'added', 'the other missing keys are still added');
+  const text = readFileSync(join(root, '.codex', 'config.toml'), 'utf8');
+  assert.doesNotMatch(text, /sandbox_mode = /);
+  assert.match(text, /approval_policy = "on-request"/);
+  const table = configProject('sandbox_workspace_write = "kept"\n');
+  assert.equal(addProjectSandbox(table), 'added');
+  const kept = readFileSync(join(table, '.codex', 'config.toml'), 'utf8');
+  assert.doesNotMatch(kept, /\[sandbox_workspace_write\]/);
+  assert.match(kept, /sandbox_mode = "workspace-write"/);
+});
+
+test('sandbox problem: missing, off, narrow, wide and unreadable, each with its one fix', () => {
+  const env = { HOME: makeTempDir('yokoten-codex-home-') };
+  assert.deepEqual(sandboxProblem(makeTempDir('yokoten-codex-'), env), { what: 'no Codex sandbox in .codex/config.toml', fix: '`yokoten init` adds it' });
+  assert.equal(sandboxProblem(configProject(GOOD_CONFIG), env), null);
+  const problem = (text: string) => sandboxProblem(configProject(text), env);
+  assert.deepEqual(problem(GOOD_CONFIG.replace('workspace-write', 'danger-full-access'))?.what, 'the Codex sandbox is danger-full-access, so nothing is contained');
+  assert.deepEqual(problem(GOOD_CONFIG.replace('workspace-write', 'danger-full-access'))?.fix, 'set sandbox_mode to "workspace-write" in .codex/config.toml');
+  assert.deepEqual(problem(GOOD_CONFIG.replace('workspace-write', 'read-only'))?.what, "the Codex sandbox is read-only, so workers can't write");
+  assert.deepEqual(problem(GOOD_CONFIG.replace('"workspace-write"', '"yolo"'))?.what, 'the Codex sandbox has an unknown mode');
+  assert.deepEqual(problem(GOOD_CONFIG.replace('on-request', 'never'))?.what, 'Codex never asks before risky commands (approval_policy is never)');
+  assert.deepEqual(problem(GOOD_CONFIG.replace('network_access = false', 'network_access = true'))?.what, 'the Codex sandbox allows network (network_access)');
+  assert.deepEqual(problem('model = "x"\n')?.what, 'the Codex sandbox in .codex/config.toml is missing sandbox_mode, approval_policy, network_access');
+  assert.deepEqual(problem('model = "x"\n')?.fix, '`yokoten init` adds it');
+  assert.deepEqual(problem('[sandbox_mode]\nvalue = 1\n')?.what, '.codex/config.toml has an unexpected shape', 'a blocked key is a shape problem, not "init adds it"');
+  assert.deepEqual(problem('sandbox_mode = "workspace-write"\n[sandbox_mode]\nvalue = 1\n')?.what, '.codex/config.toml has an unexpected shape', 'a name taken twice is a shape problem');
+});
+
+test('sandbox problem: writable roots inside the project or temp pass; anything else, or unsure, does not', () => {
+  // A home outside the temp folder: makeTempDir lives under it, which would pass as temp.
+  const env = { HOME: '/nonexistent-yokoten-home', INSIDE: 'sub/dir' };
+  const root = configProject(GOOD_CONFIG);
+  const withRoots = (roots: string) => {
+    writeFileSync(join(root, '.codex', 'config.toml'), `${GOOD_CONFIG}writable_roots = ${roots}\n`);
+    return sandboxProblem(root, env);
+  };
+  assert.equal(withRoots('[]'), null);
+  assert.equal(withRoots('["sub/dir"]'), null, 'a relative path that stays in');
+  assert.equal(withRoots(`["${root}/sub"]`), null, 'an absolute path in the project');
+  assert.equal(withRoots('["/tmp"]'), null, "temp is Codex's own default");
+  assert.equal(withRoots(`["${tmpdir()}"]`), null, 'the system temp folder');
+  assert.deepEqual(withRoots('["/"]')?.what, 'the Codex sandbox may write outside the project (writable_roots)');
+  // Enough `..` to reach the root from any depth: resolve stops there, outside temp too.
+  assert.deepEqual(withRoots('["../../../../../../../../escape"]')?.what, 'the Codex sandbox may write outside the project (writable_roots)');
+  assert.deepEqual(withRoots('["~/outside"]')?.what, 'the Codex sandbox may write outside the project (writable_roots)');
+  assert.deepEqual(withRoots('["$UNKNOWN_VAR_HERE/sub"]')?.what, 'the Codex sandbox may write outside the project (writable_roots)', 'unsure is not fine');
+  assert.equal(withRoots('["$INSIDE"]'), null, 'a variable that stays in');
+  assert.deepEqual(withRoots('[1]')?.what, 'the Codex sandbox may write outside the project (writable_roots)', 'a root that is not a path');
+  assert.deepEqual(withRoots('["ok", "/"]')?.what, 'the Codex sandbox may write outside the project (writable_roots)', 'one outside is enough');
+  const multi = `${GOOD_CONFIG}writable_roots = [\n  "sub",\n  "/",\n]\n`;
+  assert.deepEqual(sandboxProblem(configProject(multi), env)?.what, 'the Codex sandbox may write outside the project (writable_roots)', 'a multi-line list reads too');
+});
+
+test('sandbox inside: ~ grows from HOME, and a relative path is read from the project', () => {
+  const root = makeTempDir('yokoten-codex-');
+  const home = '/nonexistent-yokoten-home';
+  assert.equal(isInsideProject('~', root, { HOME: home }), false, 'home itself is outside');
+  assert.equal(isInsideProject('~/x', root, { HOME: root }), true, 'home inside the project');
+  assert.equal(isInsideProject('~/x', root, {}), false, 'no home to grow from');
+  assert.equal(isInsideProject('', root, { HOME: home }), false);
+  assert.equal(isInsideProject('.', root, { HOME: home }), true);
 });
