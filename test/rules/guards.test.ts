@@ -627,9 +627,11 @@ test('lead-only files: a cd to a quoted ~ is not the home folder, so a worker st
   for (const target of ['"~/x"', "'~/x'", '\\~/x', '~"/x"', '"~"/x', '~""/x', '"~"']) {
     assert.equal(run(`cd ${target} && echo x > AGENTS.md`), 'lead-only', `should stop: cd ${target}`);
   }
-  // An unquoted ~ is the home folder, outside the repo: the write there passes, as before.
-  assert.equal(run('cd ~/x && echo x > AGENTS.md'), undefined);
-  assert.equal(run('cd ~/"x" && echo x > AGENTS.md'), undefined);
+  // An unquoted ~ is the home folder, outside the repo: since #591 a worker's cd stays in
+  // its worktree, so the cd itself is refused; the lead's write there passes, as before.
+  assert.equal(run('cd ~/x && echo x > AGENTS.md'), 'worker-mark');
+  assert.equal(run('cd ~/"x" && echo x > AGENTS.md'), 'worker-mark');
+  assert.equal(checkCommand('cd ~/x && echo x > AGENTS.md', { env: { HOME: tmpdir() }, cwd: sandbox.repo, repos })?.id, undefined);
 });
 
 test('lead-only files: a worker relative write after an unknown cd is refused (#559)', () => {
@@ -2289,11 +2291,9 @@ test('guard: a worker does not change yokoten config folder; the lead may (#591)
     'find ~ -name workers',
     'cp -l a b',
     'cp -a src out',
-    'git -C . status',
     'git status',
     'git clean -fdx',
     'cd src && git status',
-    'cd ~/.config/yokoten && cat workers',
     'git clone https://example.com/a/b.git',
     'rm src/$NAME.ts',
     'curl -o out.json https://example.com/x',
@@ -2321,7 +2321,14 @@ test('guard: a worker does not change yokoten config folder; the lead may (#591)
     assert.notEqual(checkCommand(command, { cwd: base, env: lead })?.id, 'worker-mark', `the lead may: ${command}`);
   }
   assert.equal(checkCommand('cd link && git status', { cwd: base, env: worker })?.id, 'worker-mark', 'git in the folder, even to read');
-  assert.equal(checkCommand('cd other && git clean -fdx', { cwd: base, env: worker }), null);
+  // A folder inside the worktree passes; one whose real path leaves it (a symlink out) does not.
+  const tree = join(base, 'tree');
+  mkdirSync(join(tree, 'other'), { recursive: true });
+  writeFileSync(join(tree, '.git'), 'gitdir: ' + join(base, 'store') + '\n');
+  mkdirSync(join(base, 'store'));
+  symlinkSync(join(home, '.config', 'yokoten'), join(tree, 'out'));
+  assert.equal(checkCommand('cd other && git clean -fdx', { cwd: tree, env: worker }), null);
+  assert.equal(checkCommand('cd out && chmod 000 workers', { cwd: tree, env: worker })?.id, 'worker-mark', 'a symlink out of the worktree');
   allowed(`rm ${join(base, 'other-file')}`, worker);
 });
 
@@ -2393,13 +2400,11 @@ test('guard: a worker command that points at a config folder runs only plain rea
     'ls ~/.config',
     'grep x ~/.config/yokoten/workers',
     'cat ~/.config/yokoten/workers | grep wt',
-    'cd ~/.config/yokoten && cat workers',
     'git log -- ~/.config/yokoten',
     'grep -rn GIT_WORK_TREE src',
     'git status',
     'git clean -fdx',
     'cd src && git status',
-    'GIT_PAGER=cat git log',
     'npm test',
     "sed -i 's/a/b/' src/config.ts",
     'rm -rf config/',
@@ -2407,4 +2412,105 @@ test('guard: a worker command that points at a config folder runs only plain rea
     'find ~/.config -name workers -print0',
     'cat webpack.config.js',
   ]) allowed(command, worker);
+});
+
+// #591, round 5: the worker is boxed instead of its bash read word by word. A cd takes one
+// plain path inside the worktree; no $'...' or ${...@...}; settings only from a short list;
+// git with no option before its subcommand and no --output; less and file write no file.
+test('guard: a worker stays in its box: plain cd inside the worktree, short settings list (#591)', () => {
+  const base = makeTempDir('yokoten-box-');
+  const home = join(base, 'home');
+  mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
+  const worker = { YOKOTEN_ROLE: 'worker', HOME: home };
+  const lead = { HOME: home };
+  const cwd = process.cwd();
+  const into = 'cd ~/?config/yokoten && ';
+  const refused = [
+    // git writes a file.
+    'git diff --output ~/.config/yokoten/workers',
+    'git diff --output=$HOME/.config/yokoten/workers',
+    'git log -0 --output ~/.config/yokoten/workers',
+    'git diff --outp=w',
+    'git diff --output .git/yokoten-worker',
+    // A cd the guard can't read, or one out of the worktree.
+    "cd ~ && cd $'\\x2econfig'/yokoten && chmod 000 workers",
+    'cd ~/.c* && cd yokoten && chmod 000 workers',
+    'cd ~/?config/yokoten && chmod 000 workers',
+    'pushd $XDG_CONFIG_HOME/yokoten && chmod 000 workers',
+    'CDPATH=$XDG_CONFIG_HOME cd yokoten && chmod 000 workers',
+    ...['chown x workers', 'chattr +i workers', 'setfacl -m u:x:0 workers', 'rsync /dev/null workers', 'tar -xf a.tar', 'unzip -o a.zip', 'sort -o workers /dev/null', 'awk -i inplace 1 workers', 'ed workers', 'vim workers', 'gpg -o workers -d x', 'git init && git clean -fdx'].map((write) => into + write),
+    'cd ..',
+    'cd',
+    'cd -',
+    'cd "$HOME"',
+    'cd /tmp',
+    'popd +1',
+    '(cd src) && cd .. && ls',
+    'cd src | cat',
+    'cd src & ls',
+    // The work folder by a spelling the guard can't read.
+    "git --work-tree=~/$'\\x2econfig'/yokoten clean -fdx",
+    'x=GIT_WORK; export ${x}_TREE=~/.config/yokoten; git clean -fdx',
+    "git -c core.worktre$'\\x65'=~/.config/yokoten clean -fdx",
+    "git config core.worktre$'\\x65' ~/.config/yokoten",
+    'git config core.worktree ~/.config/yokoten',
+    'git -C src status',
+    'env --chd=$XDG_CONFIG_HOME/yokoten chmod 000 workers',
+    'env -i ls',
+    'sudo -D /tmp ls',
+    'printf -v GIT_WORK_TREE %s /tmp/x',
+    'read GIT_WORK_TREE <<< /tmp/x',
+    "eval 'GIT_DIR=x'",
+    'export GIT_DIR=x',
+    'declare -x FOO=1',
+    // Readers that run code from a setting.
+    "LESSOPEN='|chmod 0 %s' less README.md",
+    'GIT_EXTERNAL_DIFF=./x.sh git diff',
+    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.external GIT_CONFIG_VALUE_0=./x.sh git diff',
+    "GIT_PAGER='chmod 0 w' git log",
+    "x='$(chmod 0 w)'; echo ${x@P}",
+    'RIPGREP_CONFIG_PATH=./rc rg x',
+    'TZ=UTC GIT_DIR=x git status',
+    // less and file that write.
+    'less -o w README.md',
+    'less -O w README.md',
+    'less -RO w README.md',
+    'less --log-file=w README.md',
+    'less --LOG-FILE w README.md',
+    'less --log w README.md',
+    "less '+s w' README.md",
+    'file -C -m x',
+    'file --compile -m x',
+  ];
+  for (const command of refused) {
+    assert.equal(checkCommand(command, { cwd, env: worker })?.id, 'worker-mark', command);
+    assert.notEqual(checkCommand(command, { cwd, env: lead })?.id, 'worker-mark', `the lead may: ${command}`);
+  }
+  const worktree = cwd.split(/[\\/]/).pop();
+  for (const command of [
+    "git commit -m 'fix GIT_DIR handling'",
+    'git add .config/x',
+    'cp .config/a .config/b',
+    'npm test -- --config .config/x',
+    'cd src && ls',
+    'cd src && cd .. && ls',
+    `cd ../${worktree}/src && ls`,
+    'cd ./src/rules; ls',
+    'TZ=UTC git commit -m x',
+    'NODE_ENV=test npm test',
+    'export TZ=UTC',
+    'cat ~/.config/yokoten/workers',
+    'git log -- ~/.config/yokoten',
+    'git --no-pager log -3',
+    'git config user.name',
+    'git config --get user.name',
+    'git config --list',
+    "grep -E 'a|b' src/rules/guards.ts",
+    'less README.md',
+    'file README.md',
+  ]) allowed(command, worker);
+  // A shell already in or above the config folder has no box: everything is refused.
+  assert.equal(checkCommand('chmod 000 workers', { cwd: join(home, '.config', 'yokoten'), env: worker })?.id, 'worker-mark');
+  assert.equal(checkCommand('ls', { cwd: home, env: worker })?.id, 'worker-mark');
+  assert.equal(checkCommand('chmod 000 workers', { cwd: join(home, '.config', 'yokoten'), env: lead }), null, 'the lead');
 });
