@@ -14,6 +14,7 @@ import type { Env } from '../rules/config.ts';
 import { homeOf } from '../rules/privacy.ts';
 import { type FolderTrust, folderKeys, isFolder } from './folder-trust.ts';
 import { isObject } from './hooks-file.ts';
+import type { RuntimeEnv } from './agent-env.ts';
 
 /** The one step that makes Copilot CLI run the project's hooks. */
 export const TRUST_STEP = 'run `copilot` in this folder and choose "Yes, and remember this folder for future sessions"';
@@ -50,3 +51,6 @@ export function readTrust(root: string, env: Env): FolderTrust {
   const isTrusted = folderKeys(root).some((key) => trusted.some((folder) => isInside(key, folder)));
   return { state: isTrusted ? 'trusted' : 'untrusted', store };
 }
+
+/** The names this runtime's agent gets on top of the shared ones (#613). Copilot CLI: only its own token name. GH_TOKEN and GITHUB_TOKEN are the owner's GitHub keys, so they never pass. */
+export const AGENT_ENV: RuntimeEnv = { login: ['COPILOT_GITHUB_TOKEN'], config: ['COPILOT_HOME'] };

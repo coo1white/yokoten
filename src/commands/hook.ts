@@ -9,6 +9,7 @@ import * as deepseekHarness from '../agents/runtimes/deepseek-harness.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
+import { type DropReason, type SortedEnv, sortAgentEnv } from '../agents/agent-env.ts';
 import { loadConfig } from '../rules/config.ts';
 import { addWorkerPath, hardenRead, markNote, printsAccount, privateOutput, realPath, releaseFix, removeWorkerPath, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
 import { type Finding, formatFinding, notRepoFinding } from '../rules/message.ts';
@@ -239,7 +240,8 @@ export function runWorker(invocation: Invocation): number {
   const options = parse('worker', invocation.args);
   if (typeof options === 'string') return usage(invocation, options);
   const [action, dir] = options.positional;
-  if ((action !== 'mark' && action !== 'unmark') || dir === undefined) return usage(invocation, `say what to do and where: yokoten worker ${action === 'unmark' ? 'unmark' : 'mark'} <dir>`);
+  if (action === 'env') return runEnv(invocation, dir);
+  if ((action !== 'mark' && action !== 'unmark') || dir === undefined) return usage(invocation, `say what to do and where: yokoten worker ${action === 'unmark' ? 'unmark' : 'mark'} <dir>, or yokoten worker env [runtime]`);
   const fail = (line: string) => {
     print(invocation, [`yokoten worker: ${line}`], invocation.stderr);
     return 1;
@@ -276,6 +278,29 @@ export function runWorker(invocation: Invocation): number {
   // The guard finds the mark without git; check that it does here.
   if (workerMarkAt(folder, invocation.env) !== 'mark') return fail(`the mark is written in ${gitDir}, but the guard can't find it from ${top}.`);
   print(invocation, [`yokoten worker: marked the worktree at ${top}. The guard now treats every agent there as a worker. \`git worktree remove ${top}\` removes the mark. \`yokoten worker unmark ${top}\` clears it sooner.`]);
+  return 0;
+}
+
+/**
+ * `worker env [runtime]`: the names an agent that yokoten starts would get from this
+ * shell (#613), and how many are dropped and why. Names only: a value is never printed.
+ * With a runtime, its own login and config names count too.
+ */
+function runEnv(invocation: Invocation, runtime: string | undefined): number {
+  let sorted: SortedEnv;
+  try {
+    sorted = sortAgentEnv(invocation.env, runtime);
+  } catch (error) {
+    return usage(invocation, `${(error as Error).message}. Example: yokoten worker env claude-code`);
+  }
+  const count = (reason: DropReason) => sorted.dropped.filter((drop) => drop.reason === reason).length;
+  const who = runtime === undefined ? 'An agent that yokoten starts' : `A ${runtime} agent that yokoten starts`;
+  print(invocation, [
+    `yokoten worker: ${who} gets ${sorted.kept.length} names from this shell. Values are never shown.`,
+    ...(sorted.kept.length ? [`  ${sorted.kept.join(', ')}`] : []),
+    `Dropped: ${count('secret name')} with a secret-looking name, ${count('secret value')} with a value shaped like a key or token, ${count('not on the list')} not on the list.`,
+    ...(runtime === undefined ? ['Add a runtime, such as `yokoten worker env claude-code`, to count its own login names too.'] : []),
+  ]);
   return 0;
 }
 

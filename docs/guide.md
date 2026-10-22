@@ -825,6 +825,7 @@ It puts three safe defaults in `.github/` too:
 | `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop event by default, a Codex Stop event with `--agent codex`, a Gemini CLI AfterAgent event with `--agent gemini`, a Grok CLI Stop event with `--agent grok`. See [The stop check](#the-stop-check) |
 | `explain [<id>] [--json]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
 | `worker mark <dir>` | Marks the worktree at `<dir>` as a worker's. The guard then treats every agent there as a worker, even one whose runtime drops `YOKOTEN_ROLE` (Muse Code). The guard refuses a worker's plain ways to remove it, and a `.git` link it can't read counts as marked; the server and credentials kept from the worker are the real lock. `git worktree remove <dir>` removes the mark. Given a subfolder, it marks the worktree's top folder and says which. The main checkout and a submodule are never marked. See [Works with](#works-with) |
+| `worker env [runtime]` | Lists the names an agent that yokoten starts gets from this shell, and counts the names it drops. With a runtime, its own login names count too. It never shows a value. See [What an agent's environment holds](#what-an-agents-environment-holds) |
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay. A second run changes nothing |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. A body whose last line is not `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, is refused too: each pull request names each AI and model that made it. `gh pr create` without a type or tier label gets them added: the type from the title (`bug` for `fix`), the tier from the body's `tier:` line. A label you pass is kept. A tier label that does not match the body is refused, with the message of `check --pr`. A label the repo does not have is named in a note and left out; the bot never creates labels. `gh pr create` without `--milestone` gets the milestone of the first linked issue (`Closes #N`, `Part of #N`) that has one. When no linked issue has one, it is refused, and nothing is sent; add `--milestone`. When gh can't read the issue, the pull request is sent without a milestone, with a note. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
 
@@ -1692,6 +1693,35 @@ What is not hidden, said plainly:
 
 A hook can't know every command. When output shows your details, open an incident, and
 give the command a row in `ACCOUNT_PRINTERS` (`src/rules/guards.ts`).
+
+### What an agent's environment holds
+
+Your shell may hold tokens and keys. An agent that sees them can print them, push with them,
+or send them out. So an agent that yokoten starts gets a clean environment, not your whole
+shell (#613). One function builds it, for every runtime.
+
+- **What it keeps:** the names every program needs. These are `PATH`, `HOME`, `LANG` and
+  `LC_*`, `TERM`, `TZ`, the temp folder (`TMPDIR`, `TEMP`, `TMP`), `USER`, `SHELL` and the
+  `XDG_*` folders. On Windows it also keeps `SystemRoot`, `USERPROFILE`, `APPDATA`,
+  `PATHEXT`, `ComSpec` and the like.
+- **The `YOKOTEN_*` names that make the guard stricter:** `YOKOTEN_ROLE`, `YOKOTEN_FIX_TASK`,
+  `YOKOTEN_PRIVATE_MARKS` and a few settings. The bot's key and app id, `YOKOTEN_RELEASE_APPROVAL`
+  and `YOKOTEN_LEAD_ONLY_OK` never pass from your shell. The lead gives those on purpose.
+- **What it drops:** every other name. A name with `TOKEN`, `SECRET`, `KEY`, `PASSWORD`,
+  `AUTH`, `CREDENTIAL` or `PRIVATE` in it is dropped, even on the list. So is a value
+  shaped like a key: GitHub, AWS, Google, Slack, JWT, `sk-` keys, private keys, and a URL
+  with a password in it.
+- **A vendor's own login:** each runtime file names the login variables its vendor needs,
+  such as `ANTHROPIC_API_KEY` for Claude Code. Only that runtime's agent gets them.
+  `GH_TOKEN` and `GITHUB_TOKEN` are never a vendor's login.
+
+To see what an agent would get from your shell, run `yokoten worker env`, or
+`yokoten worker env claude-code` with a runtime. It lists the names and counts what it
+drops. It never shows a value.
+
+This covers agents that yokoten itself starts. An agent that its runtime starts, such as a
+Claude Code subagent, gets the session's whole environment. So start the lead's session
+from a shell without tokens.
 
 ### Time zones
 

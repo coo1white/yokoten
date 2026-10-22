@@ -672,6 +672,7 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 | `hook --stop [--agent <name>]` | 收尾检查。从标准输入读这一轮结束的事件，检查改过的文件：默认读 Claude Code 的 Stop；加 `--agent codex` 读 Codex 的 Stop，加 `--agent gemini` 读 Gemini CLI 的 AfterAgent，加 `--agent grok` 读 Grok CLI 的 Stop。见[收尾检查](#收尾检查) |
 | `explain [<id>] [--json]` | 讲一条规则或者路上的一步：它是什么、为什么要有、yokoten 怎么检查 |
 | `worker mark <目录>` | 把 `<目录>` 这个 worktree 标成 worker 的。之后在这里干活的 agent，护栏一律当 worker 看待，哪怕它的运行环境没把 `YOKOTEN_ROLE` 传给钩子（比如 Muse Code）。worker 用常见的办法删这个标记，护栏都会拦下；`.git` 读不出来的时候，也照样当 worker。护栏只看命令文字，真正的锁是服务器，还有别把推送和机器人的凭据交给 worker。`git worktree remove <目录>` 会连同 worktree 一起删掉标记。给的是子目录时，它标的是所在的 worktree，并说出是哪个。主检出和子模块永远不会被标记 |
+| `worker env [运行环境]` | 列出 yokoten 启动的 agent 会从这个 shell 拿到哪些变量名，并数出去掉了几个。加上运行环境名，会把它自己的登录变量也算进去。从不显示值。见 [agent 拿到的环境变量](#agent-拿到的环境变量) |
 | `uninstall` | 撤掉 `install` 装的东西：带 yokoten 管理标记的技能和 agent、`~/.claude/settings.json` 里它加的两个 hook，还有 `~/.local/share/yokoten`。你自己的文件、别的设置和 `~/.config/yokoten`（密钥、私有词表）都留着。再跑一次什么也不会变 |
 | `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。如果命令是 `gh issue` 或 `gh pr` 的 `create`、`edit`，并且带了标题，它会先按 CI 的规则检查标题；标题不合格就直接拒绝，什么都不会发出去。用 `gh api` 改 issue 或 PR 时，标题也照样检查。`gh pr create` 和 `gh pr edit` 如果带了 `--body` 或 `--body-file`，正文也会先过一遍：规则和 `check --pr` 里检查正文的那部分一样，看的是这个 PR 的分支改了哪些文件，以及基础分支上的 CODEOWNERS。正文不合格同样直接拒绝，什么都不发出去。正文最后一行不是 `🤖 Made with <agent> (<model>)`（可写一个或多个逗号分隔的组合）的同样直接拒绝：每个 PR 都要写明做出它的每个 AI 和模型。`gh pr create` 没给类型标签或 tier 标签时，bot 会自动补上：类型看标题（`fix` 补 `bug`），tier 看正文第一行的 `tier:`。你自己给的标签保留不动。你给的 tier 标签和正文对不上，就直接拒绝，提示和 `check --pr` 一样。仓库里没有的标签，bot 会说一声然后不加；它从不新建标签。`gh pr create` 没带 `--milestone` 时，bot 会用第一个关联 issue（`Closes #N`、`Part of #N`）的里程碑；这些 issue 都没有里程碑，就直接拒绝，什么都不发出去，请自己加上 `--milestone`。gh 读不到那个 issue 时，PR 照发，不带里程碑，只留一条提示。它只运行 `gh` 和 `git`，所以 `env gh …`、`sh -c …` 这类写法会被拒绝；gh 的别名（alias）它不认，别名里的标题不会被检查。设置方法见 [server.md](../../server.md#3-the-bot-a-github-app) |
 
@@ -1393,6 +1394,32 @@ agent 用 `gh` 发文字之前，工具调用守卫也跑同一套检查。直�
 
 hook 不可能认得所有命令。输出里露出了你的信息，就开一个事故 issue，再给那条命令在
 `ACCOUNT_PRINTERS`（`src/rules/guards.ts`）里加一行。
+
+### agent 拿到的环境变量
+
+你的 shell 里可能有 token 和密钥。agent 看得到，就能把它们打印出来、拿去推送，或者发出去。
+所以 yokoten 启动的 agent 拿不到你整个 shell 的环境，只拿到一份干净的（#613）。
+所有运行环境都用同一个函数来生成它。
+
+- **留下的：** 每个程序都要用的变量：`PATH`、`HOME`、`LANG` 和 `LC_*`、`TERM`、`TZ`、
+  临时目录（`TMPDIR`、`TEMP`、`TMP`）、`USER`、`SHELL`，还有 `XDG_*` 那几个目录。
+  Windows 上还留 `SystemRoot`、`USERPROFILE`、`APPDATA`、`PATHEXT`、`ComSpec` 这一类。
+- **让护栏更严的 `YOKOTEN_*`：** `YOKOTEN_ROLE`、`YOKOTEN_FIX_TASK`、`YOKOTEN_PRIVATE_MARKS`
+  和几个设置项。机器人的密钥和 app id、`YOKOTEN_RELEASE_APPROVAL`、`YOKOTEN_LEAD_ONLY_OK`
+  不会从你的 shell 带过去，要给的话由 lead 专门给。
+- **去掉的：** 其余所有变量。名字里带 `TOKEN`、`SECRET`、`KEY`、`PASSWORD`、`AUTH`、
+  `CREDENTIAL`、`PRIVATE` 的，就算在名单上也去掉。值长得像密钥的也去掉：GitHub、AWS、
+  Google、Slack、JWT、`sk-` 开头的密钥、私钥，还有带密码的 URL。
+- **厂商自己的登录变量：** 每个运行环境的文件里写明它要用的登录变量，比如 Claude Code
+  的 `ANTHROPIC_API_KEY`。只有这个运行环境的 agent 拿得到。`GH_TOKEN` 和 `GITHUB_TOKEN`
+  永远不算哪家厂商的登录变量。
+
+想看 agent 会从你的 shell 拿到哪些变量，就跑 `yokoten worker env`；加上运行环境名，比如
+`yokoten worker env claude-code`，会把它的登录变量也算进去。它只列名字、数去掉了几个，
+从不显示值。
+
+这只管 yokoten 自己启动的 agent。运行环境自己启动的 agent（比如 Claude Code 的子 agent）
+会拿到会话的全部环境变量。所以 lead 的会话要从不带 token 的 shell 里启动。
 
 ### 时区
 
