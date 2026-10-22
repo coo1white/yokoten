@@ -733,7 +733,8 @@ function checkWorkerBox(command: string, commands: string[][], { cwd, env }: { c
   if (commands.some((words) => words.some((word) => /^~([+-]?\d|-($|[\\/]))/.test(word)))) {
     return boxFinding("a worker can't use ~N, ~+N, ~-N or ~- (the directory stack); write the path plainly");
   }
-  const pathWords = commands.flatMap((words) => words.map((word) => REDIRECT.exec(word)?.[1] ?? word));
+  // Reads may name these; a command that does more than read may not.
+  const pathWords = commands.filter((words) => !onlyReads(words)).flatMap((words) => words.map((word) => REDIRECT.exec(word)?.[1] ?? word));
   if (pathWords.some((word) => /^~[A-Za-z_]/.test(word.replace(/^[^=]*=/, '')))) {
     return boxFinding("a worker can't use ~name (another account's home); write the path plainly");
   }
@@ -824,7 +825,7 @@ function checkWorkerBox(command: string, commands: string[][], { cwd, env }: { c
       }
       if (name === 'file' && args.some((arg) => hasShortOption(arg, 'C') || isLongOption(arg, 'compile'))) return boxFinding("a worker's file may not compile a magic file (-C)");
       if (name === 'alias' && args.some((arg) => arg.includes('='))) return boxFinding("a worker can't define an alias, which can run any program under another name; run the program by its own name");
-      if (folder !== null && forms.length && symlinkTargetReach(name, args, folder, forms)) {
+      if (folder !== null && forms.length && symlinkTargetReach(name, args, folder, home, forms)) {
         return configFinding(`a worker's ${name} may not make a link that leads into yokoten's config folder (~/.config/yokoten), where the worker list and the bot's keys are kept`);
       }
       if (name === 'set' && args.some((arg, index) => /^[-+][A-Za-z]*P/.test(arg) || (args[index - 1] === '-o' && arg === 'physical'))) {
@@ -911,6 +912,9 @@ function kernelReal(raw: string, base: string | null): string {
   return cur;
 }
 
+// Folders a glob the guard expands never walks into, so it stays fast in a big repo.
+const SKIP_IN_GLOB = (path: string) => /(^|[\\/])(node_modules|\.git)$/.test(path);
+
 // A glob character in a path or one of its parts.
 const HAS_GLOB = /[*?[\]{}]/;
 
@@ -942,7 +946,7 @@ function reachesConfig(cand: string, folder: string | null, forms: string[][]): 
   if (prefix && touches(prefix)) return true;
   const expand = (pattern: string) => {
     try {
-      return { ok: true, matches: globSync(pattern, isAbsolute(cand) ? {} : { cwd: folder ?? '.' }) };
+      return { ok: true, matches: globSync(pattern, { ...(isAbsolute(cand) ? {} : { cwd: folder ?? '.' }), exclude: SKIP_IN_GLOB }) };
     } catch {
       return { ok: false, matches: [] as string[] }; // a glob the guard can't expand may reach the folder
     }
@@ -1013,17 +1017,41 @@ function pathCandidates(word: string, folder: string | null, home: string | null
  * last word and from its parent (the last word may be a folder or the link's own name), and
  * from a `-t` folder. A target the guard can't read counts.
  */
-function symlinkTargetReach(name: string, args: string[], folder: string, forms: string[][]): boolean {
+function symlinkTargetReach(name: string, args: string[], folder: string, home: string | null, forms: string[][]): boolean {
   const makesLinks = name === 'ln' ? args.some((arg) => hasShortOption(arg, 's') || isLongOption(arg, 'symbolic')) : name === 'cp' && args.some((arg) => hasShortOption(arg, 's') || isLongOption(arg, 'symbolic-link'));
   if (!makesLinks) return false;
-  const plain = plainArgs(args, ['-t', '-S', '--target-directory', '--suffix']);
-  const into = args.flatMap((arg, at) => (arg === '-t' || arg === '--target-directory' ? [args[at + 1] ?? ''] : arg.startsWith('--target-directory=') ? [arg.slice(arg.indexOf('=') + 1)] : []));
+  // -t and -S take a value, attached (-tdir) or next, alone or in a group (-st dir).
+  const plain: string[] = [];
+  const into: string[] = [];
+  for (let at = 0; at < args.length; at++) {
+    const arg = args[at];
+    if (arg === '--') {
+      plain.push(...args.slice(at + 1));
+      break;
+    }
+    if (arg.startsWith('--')) {
+      const eq = arg.indexOf('=');
+      const isTarget = isLongOption(arg, 'target-directory');
+      if (isTarget || isLongOption(arg, 'suffix')) {
+        const value = eq === -1 ? (args[++at] ?? '') : arg.slice(eq + 1);
+        if (isTarget) into.push(value);
+      }
+    } else if (arg.startsWith('-') && arg !== '-') {
+      const letter = [...arg.slice(1)].findIndex((char) => char === 't' || char === 'S');
+      if (letter !== -1) {
+        const rest = arg.slice(letter + 2);
+        const value = rest || (args[++at] ?? '');
+        if (arg[letter + 1] === 't') into.push(value);
+      }
+    } else plain.push(arg);
+  }
   // With one plain word, the link is made in the current folder under the target's name.
   const targets = into.length || plain.length === 1 ? plain : plain.slice(0, -1);
   const bases = into.length ? into : plain.length === 1 ? ['.'] : plain.length ? [plain[plain.length - 1], dirname(plain[plain.length - 1])] : [];
   return targets.some((target) => {
-    if (/[$`~*?[\]{}]/.test(target)) return true;
-    return bases.some((base) => touchesConfigReal(kernelReal(target, resolve(folder, base)), forms));
+    const read = withHomeRead(target.replace(/^(\$PWD|\$\{PWD\})(?=[\\/]|$)/, folder), home, folder);
+    if (/[$`~*?[\]{}]/.test(read)) return true; // a target the guard can't read counts
+    return bases.some((base) => touchesConfigReal(kernelReal(read, resolve(folder, base)), forms));
   });
 }
 
