@@ -758,8 +758,10 @@ workflow of the project's own that `init` keeps, `doctor` gives the step to add 
 `init` also writes three workflows into `.github/workflows/`: `yokoten.yml` (the
 commit check, a lint job with actionlint and zizmor, and one `ci` job to make the required
 check), `pr.yml` and `issue.yml`. Each action is pinned to a commit, each job has a time
-limit, checkout keeps no token, and a new push cancels the old run on the same pull
-request. Add your tests as a job in `yokoten.yml` and to the `needs` list of `ci`. A
+limit, checkout keeps no token, and in `yokoten.yml` a new push cancels the old run on the
+same pull request. `pr.yml` cancels nothing. Its runs can start in any order, so each one
+reads the pull request's title, body, labels and milestone as they are now, with the job's
+token, and a rerun reads them again. Add your tests as a job in `yokoten.yml` and to the `needs` list of `ci`. A
 private repo can keep CI off: see [A private repo without CI](#a-private-repo-without-ci).
 
 `yokoten.yml` and `pr.yml` also run on `merge_group`, so a merge queue runs the same
@@ -1428,6 +1430,7 @@ Environment variables:
 | `YOKOTEN_MIN_FREE_GB` | `doctor` notes a disk with less free space than this, in GB. `0` turns the note off. See [Machine notes](#machine-notes) |
 | `YOKOTEN_BOT_APP_ID`, `YOKOTEN_BOT_KEY`, `YOKOTEN_BOT_INSTALLATION` | The bot. They can also be lines in `~/.config/yokoten/keys.env`. See [server.md](server.md#3-the-bot-a-github-app) |
 | `YOKOTEN_GITHUB_API` | Another GitHub API address, such as GitHub Enterprise Server |
+| `YOKOTEN_PR_LIVE=1` | `check --pr` reads the pull request's title, body, labels and milestone as they are now, with `GITHUB_TOKEN`, not from the event file. It fails when it can't read them. The kit's `pr.yml` sets it |
 | `LLAMA_API_KEY` or `MODEL_API_KEY`, `LLAMA_API_BASE`, `LLAMA_MODEL` | The model for `adopt`. See [A first draft of the table](#a-first-draft-of-the-table) |
 
 

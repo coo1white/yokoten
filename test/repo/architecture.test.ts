@@ -419,7 +419,7 @@ const WORKFLOWS = ['.github/workflows/yokoten.yml', 'kit/project/.github/workflo
 const jobBlock = (text: string, name: string) => jobs(text).find((job) => job.name === name)?.block ?? '';
 const changesScript = (text: string) => (jobBlock(text, 'changes').match(/^ {8}run: \|\n((?: {10}.*\n|\n)+)/m)?.[1] ?? '').replace(/^ {10}/gm, '');
 type Needs = Record<string, { result: string; outputs?: Record<string, string> }>;
-const evaluate = (expression: string, needs: Needs, github: { event_name: string } = { event_name: '' }): unknown => {
+const evaluate = (expression: string, needs: Needs, github: { event_name: string; event?: object } = { event_name: '' }): unknown => {
   const code = expression
     .replace(/contains\(needs\.\*\.result, '(\w+)'\)/g, "contains('$1')")
     .replace(/needs\.([\w-]+)\.outputs\.([\w-]+)/g, "(needs['$1'].outputs?.['$2'] ?? '')")
@@ -599,11 +599,20 @@ test('workflows: the required checks run on merge_group, with the same jobs as a
     }
     assert.ok(!readTriggers(readFileSync(join(ROOT, dir, 'issue.yml'), 'utf8')).includes('merge_group'), `${dir}/issue.yml is not a check on a merge`);
     // The `pr` job skips on a merge group run, because there is no pull request to
-    // check. Its step still checks a pull request when there is one.
+    // check. It never skips a pull request, a draft included: a skip counts as a pass, and
+    // a skipped run that GitHub ends last would hide a failure (#645).
     const prJob = jobBlock(pr, 'pr');
     assert.equal(evaluate(jobCondition(prJob), {}, { event_name: 'merge_group' }), false);
-    assert.equal(evaluate(jobCondition(prJob), {}, { event_name: 'pull_request' }), true);
+    assert.equal(evaluate(jobCondition(prJob), {}, { event_name: 'pull_request', event: { pull_request: { draft: true } } }), true);
+    assert.equal(evaluate(jobCondition(prJob), {}, { event_name: 'pull_request', event: { pull_request: { draft: false } } }), true);
+    // No run is cancelled: a cancelled run shows as a failure on the pull request page (#645).
+    assert.doesNotMatch(pr, /cancel-in-progress/, `${dir}/pr.yml cancels runs`);
     assert.match(prJob, /check --pr/);
+    assert.doesNotMatch(jobCondition(prJob), /draft/, `${dir}/pr.yml: the pr job skips on the draft state`);
+    // The step reads the pull request as it is now, so runs may start in any order (#645):
+    // it asks for that, it gets the job's token, and the job may read pull requests.
+    assert.match(prJob, /check --pr\n {8}env:\n {10}YOKOTEN_PR_LIVE: '1'\n {10}GITHUB_TOKEN: \$\{\{ github\.token \}\}\n/, `${dir}/pr.yml: check --pr does not read the pull request as it is now`);
+    assert.match(pr, /^permissions:\n(?: {2}.*\n)*? {2}pull-requests: read\n/m, `${dir}/pr.yml can't read pull requests`);
   }
   assert.ok(!readTriggers(kitYokoten.replace(/^  merge_group:\n/m, '')).includes('merge_group'), 'a missing trigger is caught');
   // Every job in the kit yokoten.yml runs on a merge group run, as on a pull request.

@@ -8,7 +8,8 @@
     ".github/workflows/pr.yml": [
       "9a34f87bb843d8a7bd0943fdd9e833ba2559d64db4420ebe986ee414494c6282",
       "fec0a30bdb6ee71f5aa3fe0474965a0ecc917e33e54a74db64be85c8acdfbe35",
-      "166f178732f5738c7d5bcda277db4e37eedc3acf00f9c49be8bd588e9184edda"
+      "166f178732f5738c7d5bcda277db4e37eedc3acf00f9c49be8bd588e9184edda",
+      "ed97f7ef75eb6f76031239014870dc7e161fff0157eb91a69549f54ee94eae4d"
     ],
     ".github/workflows/yokoten.yml": [
       "c3391dbb07f079e3032fd556e2ded40a5fdf56c0ef0ce85b82d7d3925d323140",
