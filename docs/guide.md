@@ -1484,6 +1484,14 @@ request can't edit the file to lower its own tier. Without a base commit, on a l
 it reads the working tree. The message says which one it read. No CODEOWNERS file, no
 check.
 
+An approval is for one commit. `yokoten bot` refuses `gh pr merge` of a tier A pull
+request whose Approve is on an older commit. When the head is newer, the merge goes on
+only for a clean merge of the base branch. The pull request's own diff must be the same
+as at the Approve. Otherwise it refuses: the Approve is on <old commit>; <n> commits
+with changes came after it; ask the owner to approve again. `gh pr status` through the
+bot shows the same check for every open pull request. Keep GitHub's dismiss-stale-approvals
+setting on too, but yokoten never depends on a host setting a project may not have.
+
 A reviewer finds the tier through labels, so `check --pr` also reads them. A pull request
 needs one type label and one tier label. A type label is a title type (`feat`, `fix`,
 `docs`, `refactor`, `ci` and the others) or a common name for one: `bug`, `hotfix` or

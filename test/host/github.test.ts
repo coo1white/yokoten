@@ -15,7 +15,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { makeTempDir } from '../repo/helpers.ts';
+import { makeTempDir, said, serverGh } from '../repo/helpers.ts';
 import {
   DEFAULTS,
   type Env,
@@ -40,6 +40,7 @@ import {
   type Gh,
   hasBot,
   installationToken,
+  readApprovalState,
   readBranchFiles,
   readCodeOwners,
   readCommandTitle,
@@ -591,4 +592,66 @@ test('readIssueMilestone: the title, null for none, undefined when gh cannot rea
     throw new Error('gh: network');
   };
   assert.equal(readIssueMilestone(failing, 5, null), undefined);
+});
+
+// #612: what the Approve check knows: the tier, the head, and what came after the
+// owner's latest Approve. A collaborator's Approve never counts, and what gh or git
+// can't answer is unsure, so the caller refuses it.
+test('approval: the tier, the head, and what came after the owner Approve (#612)', () => {
+  const dir = makeTempDir('yokoten-');
+  const env = { PATH: process.env.PATH, HOME: dir, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(dir, '.gitconfig'), GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' };
+  const git = (...args: string[]) => spawnSync('git', args, { cwd: dir, env, encoding: 'utf8' });
+  git('init', '-q', '-b', 'main');
+  writeFileSync(join(dir, 'a.txt'), 'a\n');
+  git('add', '.');
+  git('commit', '-qm', 'base');
+  const base = git('rev-parse', 'HEAD').stdout.trim();
+  git('checkout', '-qb', 'topic');
+  writeFileSync(join(dir, 'a.txt'), 'b\n');
+  git('commit', '-qam', 'change');
+  const approved = git('rev-parse', 'HEAD').stdout.trim();
+  writeFileSync(join(dir, 'c.txt'), 'c\n');
+  git('add', '.');
+  git('commit', '-qm', 'more');
+  const head = git('rev-parse', 'HEAD').stdout.trim();
+  const review = (login: string, assoc: string, commit: string, at: string) => JSON.stringify({ login, assoc, state: 'APPROVED', commit, at });
+  const ownerAt = (commit: string, at: string) => review('owner', 'OWNER', commit, at);
+  const view = (body: string, labels: string[], ref: { sha: string }, baseSha: string) => ({ body, labels: labels.map((name) => ({ name })), head: { sha: ref.sha, ref: 'topic' }, base: { sha: baseSha, ref: 'main' } });
+  const routes: Record<string, unknown> = {
+    'repos/me/repo/pulls/12': view('tier: A\n', ['tier A'], { sha: head }, base),
+    'repos/me/repo/pulls/12/reviews': [review('friend', 'COLLABORATOR', head, '2026-10-22T11:00:00Z'), ownerAt(approved, '2026-10-22T10:00:00Z')].join('\n'),
+    'repos/me/repo/pulls/13': view('tier: B\n', ['tier B'], { sha: head }, base),
+    'repos/me/repo/pulls/14': view('tier: A\n', ['tier A'], { sha: head }, base),
+    'repos/me/repo/pulls/14/reviews': ownerAt(head, '2026-10-22T11:00:00Z'),
+    'repos/me/repo/pulls/15': view('tier: A\n', ['tier A'], { sha: head }, base),
+    'repos/me/repo/pulls/15/reviews': review('friend', 'COLLABORATOR', head, '2026-10-22T11:00:00Z'),
+    'repos/me/repo/pulls/16': view('no tier here\n', ['feat'], { sha: head }, base),
+    'repos/me/repo/pulls/17': said(404),
+  };
+  const { gh, calls } = serverGh(routes);
+  // A code change after the Approve: one commit with changes, and the sameDiff flag off.
+  assert.deepEqual(readApprovalState(gh, dir, process.env, 12, 'me/repo'), { tier: 'A', head, approved, after: 1, sameDiff: false });
+  // Not tier A: read no further. The Approve on the head needs no git either.
+  assert.deepEqual(readApprovalState(gh, dir, process.env, 13, 'me/repo'), { tier: 'B', head, approved: null, after: 0, sameDiff: true });
+  assert.deepEqual(readApprovalState(gh, dir, process.env, 14, 'me/repo'), { tier: 'A', head, approved: head, after: 0, sameDiff: true });
+  assert.ok(!calls.some(([command, route]) => command === 'api' && route === 'repos/me/repo/pulls/13/reviews'), 'no reviews read for tier B');
+  // No owner Approve, no tier, and a gh failure are all unsure or empty, never a crash.
+  assert.deepEqual(readApprovalState(gh, dir, process.env, 15, 'me/repo'), { tier: 'A', head, approved: null, after: 0, sameDiff: true });
+  assert.deepEqual(readApprovalState(gh, dir, process.env, 16, 'me/repo'), { unsure: 'neither the body nor a label says the tier of pull request 16' });
+  assert.deepEqual(readApprovalState(gh, dir, process.env, 17, 'me/repo'), { unsure: 'gh could not read pull request 17' });
+  // A clean merge of main after the Approve: a branch with nothing new of its own merges
+  // main in, so no commit with changes came after it, and the own diff is the same.
+  git('checkout', '-q', 'main');
+  writeFileSync(join(dir, 'b.txt'), 'b\n');
+  git('add', '.');
+  git('commit', '-qm', 'main moves');
+  const moved = git('rev-parse', 'HEAD').stdout.trim();
+  git('checkout', '-q', '-b', 'clean', approved);
+  git('merge', '-q', '-m', 'merge main', 'main');
+  const merged = git('rev-parse', 'HEAD').stdout.trim();
+  const mergedRoutes: Record<string, unknown> = {
+    'repos/me/repo/pulls/18': view('tier: A\n', ['tier A'], { sha: merged }, moved),
+    'repos/me/repo/pulls/18/reviews': ownerAt(approved, '2026-10-22T10:00:00Z'),
+  };
+  assert.deepEqual(readApprovalState(serverGh(mergedRoutes).gh, dir, process.env, 18, 'me/repo'), { tier: 'A', head: merged, approved, after: 0, sameDiff: true });
 });

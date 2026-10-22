@@ -617,3 +617,176 @@ test('bot: a new pull request takes its issue\'s milestone; none anywhere is ref
     server.close();
   }
 });
+
+// #612: `gh pr merge` through the bot needs the owner's Approve on the head of a tier A
+// pull request, and `gh pr status` shows the same check. A fake gh and a local API
+// server stand in for GitHub; a refused merge never reaches gh.
+test('bot: gh pr merge needs the owner Approve on the head; gh pr status shows it (#612)', async () => {
+  // A repo with a bare origin at a path the bot reads as github.com/me/repo.
+  const baseRepo = () => {
+    const sandbox = makeSandbox();
+    const origin = join(sandbox.home, 'github.com', 'me', 'repo.git');
+    mkdirSync(origin, { recursive: true });
+    sandbox.git('init', '-q', '--bare', origin);
+    sandbox.git('remote', 'add', 'origin', origin);
+    sandbox.write('a.txt', 'a\n');
+    sandbox.git('add', '.');
+    sandbox.git('commit', '-qm', 'base');
+    sandbox.git('push', '-q', 'origin', 'main');
+    const sha = (ref: string) => sandbox.git('rev-parse', ref).stdout.trim();
+    return { sandbox, sha };
+  };
+  // The bot with a fake gh: `views` and `reviews` answer the pulls API by number, `list`
+  // answers `pr list`, and merges are logged. Anything else fails, so an unexpected gh
+  // call refuses the merge instead of passing silently.
+  const beginBot = async (sandbox: ReturnType<typeof makeSandbox>, { views, reviews, list }: { views: Record<number, unknown>; reviews: Record<number, string>; list: string }) => {
+    const bin = join(sandbox.home, 'bin');
+    const log = join(sandbox.home, 'gh.log');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      join(bin, 'gh'),
+      [
+        '#!/usr/bin/env node',
+        'const fs = require("node:fs"); const args = process.argv.slice(2);',
+        'const views = JSON.parse(process.env.GH_VIEWS); const reviews = JSON.parse(process.env.GH_REVIEWS);',
+        'const say = (o) => fs.appendFileSync(process.env.GH_LOG, JSON.stringify(o) + "\\n");',
+        'if (args[0] === "label") process.exit(1);',
+        'if (args[0] === "pr" && args[1] === "status") { console.log(process.env.GH_TABLE); process.exit(0); }',
+        'if (args[0] === "pr" && args[1] === "list") { console.log(process.env.GH_LIST); process.exit(0); }',
+        'if (args[0] === "pr" && args[1] === "merge") { say({ args, token: process.env.GH_TOKEN }); process.exit(0); }',
+        'if (args[0] === "api") { const match = /^repos\\/me\\/repo\\/pulls\\/(\\d+)(\\/reviews)?$/.exec(args[1]);',
+        '  if (match) { const got = match[2] ? reviews[match[1]] : views[match[1]];',
+        '    if (got === undefined) process.exit(1); console.log(typeof got === "string" ? got : JSON.stringify(got)); process.exit(0); } }',
+        'process.exit(1);',
+      ].join('\n'),
+    );
+    chmodSync(join(bin, 'gh'), 0o755);
+    const merged = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+    const server = createServer((req, res) => {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify(req.method === 'GET' ? { id: 77 } : { token: 'ghs_test' }));
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    const key = join(sandbox.home, 'bot.pem');
+    writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
+    const bot = {
+      PATH: `${bin}:${process.env.PATH}`,
+      YOKOTEN_BOT_APP_ID: '1',
+      YOKOTEN_BOT_KEY: key,
+      YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+      GH_LOG: log,
+      GH_VIEWS: JSON.stringify(views),
+      GH_REVIEWS: JSON.stringify(reviews),
+      GH_LIST: list,
+      GH_TABLE: 'TABLE',
+    };
+    return { bot, server, merged };
+  };
+  const view = (body: string, labels: string[], head: string, base: string) => ({ body, labels: labels.map((name) => ({ name })), head: { sha: head, ref: 'topic' }, base: { sha: base, ref: 'main' } });
+  const review = (login: string, assoc: string, commit: string, at: string) => JSON.stringify({ login, assoc, state: 'APPROVED', commit, at });
+  const ownerAt = (commit: string, at: string) => review('owner', 'OWNER', commit, at);
+
+  // (a) The Approve is on the head: the merge runs, by number, by URL, and for tier B
+  // with no Approve at all (tier B is not gated, so its reviews are never read).
+  {
+    const { sandbox, sha } = baseRepo();
+    sandbox.git('checkout', '-qb', 'topic');
+    sandbox.write('a.txt', 'b\n');
+    sandbox.git('commit', '-qam', 'change');
+    sandbox.git('push', '-q', 'origin', 'topic');
+    const head = sha('HEAD');
+    const base = sha('origin/main');
+    const { bot, server, merged } = await beginBot(sandbox, {
+      views: { 20: view('tier: A\n', ['tier A'], head, base), 25: view('tier: B\n', ['tier B'], head, base) },
+      reviews: { 20: ownerAt(head, '2026-10-22T11:00:00Z') },
+      list: '[]',
+    });
+    try {
+      const run = (command: string[]) => sandbox.call(['bot', '--', ...command], { extra: bot });
+      for (const command of [['gh', 'pr', 'merge', '20'], ['gh', 'pr', 'merge', 'https://github.com/me/repo/pull/20'], ['gh', 'pr', 'merge', '25']]) {
+        const r = await run(command);
+        assert.deepEqual([r.status, r.stderr], [0, ''], command.join(' '));
+      }
+      assert.deepEqual(merged().map((m) => m.args), [['pr', 'merge', '20'], ['pr', 'merge', 'https://github.com/me/repo/pull/20'], ['pr', 'merge', '25']]);
+      for (const m of merged()) assert.equal(m.token, 'ghs_test', 'the merge runs as the bot');
+    } finally {
+      server.close();
+    }
+  }
+
+  // (b) The Approve is on an older commit: a code change after it is refused with the
+  // plain message, and `gh pr status` lists it. No owner Approve, or commits git cannot
+  // read, refuse the same way: fail closed.
+  {
+    const { sandbox, sha } = baseRepo();
+    sandbox.git('checkout', '-qb', 'topic');
+    sandbox.write('a.txt', 'b\n');
+    sandbox.git('commit', '-qam', 'change');
+    const approved = sha('HEAD');
+    const short = approved.slice(0, 7);
+    sandbox.write('c.txt', 'c\n');
+    sandbox.git('add', '.');
+    sandbox.git('commit', '-qm', 'more');
+    sandbox.git('push', '-q', 'origin', 'topic');
+    const head = sha('HEAD');
+    const base = sha('origin/main');
+    const stale = `the Approve is on ${short}; 1 commit with changes came after it; ask the owner to approve again`;
+    const { bot, server, merged } = await beginBot(sandbox, {
+      views: { 21: view('tier: A\n', ['tier A'], head, base), 22: view('tier: A\n', ['tier A'], head, base), 23: view('tier: A\n', ['tier A'], head, base) },
+      reviews: {
+        21: [review('friend', 'COLLABORATOR', head, '2026-10-22T11:00:00Z'), ownerAt(approved, '2026-10-22T10:00:00Z')].join('\n'),
+        22: '',
+        23: ownerAt('d'.repeat(40), '2026-10-22T10:00:00Z'),
+      },
+      list: '[{"number":21},{"number":22},{"number":23}]',
+    });
+    try {
+      const run = (command: string[]) => sandbox.call(['bot', '--', ...command], { extra: bot });
+      const refused = await run(['gh', 'pr', 'merge', '21']);
+      assert.equal(refused.status, 1);
+      assert.equal(refused.stderr, `yokoten bot: ${stale}. Nothing was merged\n`);
+      assert.deepEqual([await run(['gh', 'pr', 'merge', '22']), await run(['gh', 'pr', 'merge', '23'])].map((r) => [r.status, r.stderr]), [
+        [1, 'yokoten bot: no owner Approve on this pull request. Nothing was merged\n'],
+        [1, `yokoten bot: could not check the owner's Approve (the commits of pull request 23 are not all in this checkout); ask the owner to approve again. Nothing was merged\n`],
+      ]);
+      assert.deepEqual(merged(), [], 'gh pr merge never ran');
+      const status = await run(['gh', 'pr', 'status']);
+      assert.equal(status.status, 0, status.stderr);
+      assert.equal(status.stderr, '');
+      assert.equal(status.stdout, `TABLE\nyokoten bot: these need a new owner Approve before they merge:\n- #21: ${stale}\n- #22: no owner Approve on this pull request\n- #23: could not check the owner's Approve (the commits of pull request 23 are not all in this checkout); ask the owner to approve again\n`);
+    } finally {
+      server.close();
+    }
+  }
+
+  // (c) The Approve is before a clean merge of main: with the same own diff, the merge runs.
+  {
+    const { sandbox, sha } = baseRepo();
+    sandbox.git('checkout', '-qb', 'topic');
+    sandbox.write('a.txt', 'b\n');
+    sandbox.git('commit', '-qam', 'change');
+    const approved = sha('HEAD');
+    sandbox.git('checkout', '-q', 'main');
+    sandbox.write('b.txt', 'b\n');
+    sandbox.git('add', '.');
+    sandbox.git('commit', '-qm', 'main moves');
+    sandbox.git('push', '-q', 'origin', 'main');
+    sandbox.git('checkout', '-q', 'topic');
+    sandbox.git('merge', '-q', '-m', 'merge main', 'main');
+    sandbox.git('push', '-q', 'origin', 'topic');
+    const head = sha('HEAD');
+    const base = sha('origin/main');
+    const { bot, server, merged } = await beginBot(sandbox, {
+      views: { 24: view('tier: A\n', ['tier A'], head, base) },
+      reviews: { 24: ownerAt(approved, '2026-10-22T10:00:00Z') },
+      list: '[]',
+    });
+    try {
+      const r = await sandbox.call(['bot', '--', 'gh', 'pr', 'merge', '24'], { extra: bot });
+      assert.deepEqual([r.status, r.stderr], [0, ''], r.stderr);
+      assert.deepEqual(merged().map((m) => m.args), [['pr', 'merge', '24']]);
+    } finally {
+      server.close();
+    }
+  }
+});

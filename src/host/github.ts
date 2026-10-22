@@ -20,7 +20,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { docsLink, type Finding, finding, formatFinding, place } from '../rules/message.ts';
-import type { CodeOwners, PullRequest } from '../rules/pr.ts';
+import type { ApprovalRead, CodeOwners, PullRequest } from '../rules/pr.ts';
+import { prTier } from '../rules/pr.ts';
 import { homeOf, NO_HOME } from '../rules/privacy.ts';
 import { readGit } from '../run/check.ts';
 import { type Incident, terminalText } from '../run/learn.ts';
@@ -328,6 +329,136 @@ export function readNumberedPullRequest(root: string, gh: Gh, number: string, en
   const problem = shasProblem(base, head) ?? commitsProblem(root, base, head, env, fetch);
   if (problem) return { problem };
   return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: ghAuthor(pr.author) }, base, head, env);
+}
+
+// The commit the owner approved (#612): `yokoten bot` refuses `gh pr merge` of a tier A
+// pull request whose Approve is on an older commit, so code the owner never saw can't
+// merge. The owner's latest Approve is the newest APPROVED review with an OWNER
+// association; GitHub gives that to the account that owns the repo. Fail closed: what
+// git or gh can't answer is an `unsure`, and the caller refuses it.
+
+/** A review as the `reviews` endpoint names it: only the fields the Approve check reads. */
+interface OwnerReview {
+  login: string;
+  assoc: string;
+  state: string;
+  commit: string;
+  at: string;
+}
+
+/** The newest APPROVED review with an OWNER association, or null with none. */
+function latestOwnerApprove(text: string): OwnerReview | null {
+  let newest: OwnerReview | null = null;
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    let review: unknown;
+    try {
+      review = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isObject(review) || review.state !== 'APPROVED' || review.assoc !== 'OWNER') continue;
+    // A review with no commit or time can't be placed, so it never counts as the latest.
+    if (typeof review.commit !== 'string' || !review.commit || typeof review.at !== 'string' || !review.at) continue;
+    if (!newest || review.at > newest.at) newest = { login: asText(review.login), assoc: 'OWNER', state: 'APPROVED', commit: review.commit, at: review.at };
+  }
+  return newest;
+}
+
+/** One git command's output, or null when git can't answer. Never throws. */
+function gitRead(root: string, args: string[], env: Env, input?: string): string | null {
+  try {
+    return execFileSync('git', args, { cwd: root, env, encoding: 'utf8', stdio: input === undefined ? ['ignore', 'pipe', 'ignore'] : ['pipe', 'pipe', 'ignore'], input });
+  } catch {
+    return null;
+  }
+}
+
+/** Whether `sha` names a commit in this checkout. */
+function hasLocalCommit(root: string, sha: string, env: Env): boolean {
+  if (!/^[0-9a-f]{4,64}$/i.test(sha)) return false;
+  try {
+    execFileSync('git', ['--no-replace-objects', 'cat-file', '-e', `${sha}^{commit}`], { cwd: root, env, stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The stable name of a diff: the same changes on moved lines give the same name. */
+function patchName(root: string, from: string, to: string, env: Env): string | null {
+  // No context lines (`-U0`): a base merge that moves lines keeps the name, a new change does not.
+  const diff = gitRead(root, ['--no-replace-objects', 'diff', '-U0', '--no-color', '--no-ext-diff', `${from}`, `${to}`, '--'], env);
+  if (diff === null) return null;
+  if (!diff) return 'empty';
+  const named = gitRead(root, ['patch-id', '--stable'], env, diff);
+  const name = named?.split('\n').map((line) => line.split(' ')[0]).filter(Boolean).sort().join(' ');
+  return name ? name : null;
+}
+
+/**
+ * What the Approve check knows about pull request `number` in `repo` ("owner/name"):
+ * its tier, its head, and what came after the owner's latest Approve. `unsure` when gh
+ * or git can't answer, with the reason; the caller refuses it. Reads no token itself:
+ * `gh` runs with whatever sign-in the caller set up.
+ */
+export function readApprovalState(gh: Gh, root: string, env: Env, number: number, repo: string): ApprovalRead | { unsure: string } {
+  let pulled: unknown;
+  try {
+    pulled = JSON.parse(gh(['api', `repos/${repo}/pulls/${number}`]));
+  } catch {
+    return { unsure: `gh could not read pull request ${number}` };
+  }
+  if (!isObject(pulled)) return { unsure: `gh gave no pull request ${number}` };
+  const headRef = isObject(pulled.head) ? pulled.head : {};
+  const baseRef = isObject(pulled.base) ? pulled.base : {};
+  const head = asText(headRef.sha);
+  const base = asText(baseRef.sha);
+  if (!head || !base) return { unsure: `gh gave no commits for pull request ${number}` };
+  const tier = prTier(asText(pulled.body), labelNames(pulled.labels));
+  if (tier === null) return { unsure: `neither the body nor a label says the tier of pull request ${number}` };
+  if (tier !== 'A') return { tier, head, approved: null, after: 0, sameDiff: true };
+  let reviews = '';
+  try {
+    reviews = gh(['api', `repos/${repo}/pulls/${number}/reviews`, '--paginate', '--jq', '.[] | {login: .user.login, assoc: .author_association, state: .state, commit: .commit_id, at: .submitted_at}']);
+  } catch {
+    return { unsure: `gh could not read the reviews of pull request ${number}` };
+  }
+  const approve = latestOwnerApprove(reviews);
+  // No owner Approve: the pull request may still be waiting for its review.
+  if (!approve) return { tier, head, approved: null, after: 0, sameDiff: true };
+  const approved = approve.commit;
+  if (approved.toLowerCase() === head.toLowerCase()) return { tier, head, approved, after: 0, sameDiff: true };
+  // The commits may live on GitHub only: fetch the pull request's head and the base
+  // branch first, the way `gh pr edit <number>` names them. A fetch that fails is
+  // ignored; the commit reads below fail closed.
+  const headName = asText(headRef.ref);
+  const baseName = asText(baseRef.ref);
+  for (const ref of [`pull/${number}/head`, ...(headName ? [headName] : []), ...(baseName ? [baseName] : [])]) {
+    gitRead(root, ['fetch', '--quiet', '--no-tags', 'origin', '--end-of-options', ref], env);
+  }
+  if (!hasLocalCommit(root, approved, env) || !hasLocalCommit(root, head, env) || !hasLocalCommit(root, base, env)) {
+    return { unsure: `the commits of pull request ${number} are not all in this checkout` };
+  }
+  // The Approve's commit may come from a rewritten history, so ancestor is checked, not
+  // assumed. `--is-ancestor` prints nothing: only a throw says it is not one.
+  const ancestor = gitRead(root, ['--no-replace-objects', 'merge-base', '--is-ancestor', approved, head], env) !== null;
+  // `--not base`: a base commit the merge brought in is not the pull request's own.
+  const count = gitRead(root, ['--no-replace-objects', 'rev-list', '--count', '--no-merges', `${approved}..${head}`, '--not', base, '--'], env);
+  if (count === null || !/^\d+\s*$/.test(count)) return { unsure: `git could not list what came after the Approve on pull request ${number}` };
+  const after = Number(count.trim());
+  if (!ancestor) return { tier, head, approved, after: Math.max(after, 1), sameDiff: false };
+  if (after > 0) return { tier, head, approved, after, sameDiff: false };
+  // Only merges of the base branch came after the Approve: the pull request's own diff
+  // must still be the same. Each side is diffed from where it left the base, and the
+  // stable names match when the changes match, even on moved lines.
+  const oldBase = gitRead(root, ['--no-replace-objects', 'merge-base', base, approved], env)?.trim();
+  const newBase = gitRead(root, ['--no-replace-objects', 'merge-base', base, head], env)?.trim();
+  if (!oldBase || !newBase) return { unsure: `git could not find where pull request ${number} left the base branch` };
+  const oldName = patchName(root, oldBase, approved, env);
+  const newName = patchName(root, newBase, head, env);
+  if (oldName === null || newName === null) return { unsure: `git could not compare pull request ${number} with its Approve` };
+  return { tier, head, approved, after: 0, sameDiff: oldName === newName };
 }
 
 /**
