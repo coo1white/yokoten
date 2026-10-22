@@ -623,7 +623,7 @@ function snapshotRuns(runs: BoardRun[], env: Env): BoardRun[] {
  */
 function snapshotWaiting(board: BoardData, attention: BoardAttention[], controls: BoardControls, now: number = Date.now()): BoardWaiting[] {
   return collectBoardWaiting(board, attention, controls.runs, controls.seen, now).map(
-    ({ latchedAt: _first, ...row }) => row,
+    ({ latchedAt: _, ...row }) => row,
   );
 }
 
