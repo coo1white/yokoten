@@ -674,7 +674,7 @@ test('board server: the token moves to a cookie and the address is clean', async
     const first = await boardGet(url);
     assert.equal(first.status, 303);
     assert.equal(first.headers.location, '/');
-    assert.match(first.headers['set-cookie'] ?? '', new RegExp(`^yokoten_board=${token}; HttpOnly; SameSite=Strict; Path=/`));
+    assert.match(first.headers['set-cookie'] ?? '', new RegExp(`^yokoten_board=${token}; HttpOnly; SameSite=Lax; Path=/`));
     assert.doesNotMatch(first.text, new RegExp(token), 'the answer body never holds the token');
     const cookie = `yokoten_board=${token}`;
     const page = await boardGet(base, { cookie });

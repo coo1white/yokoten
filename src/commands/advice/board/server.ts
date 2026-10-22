@@ -258,11 +258,11 @@ export function startBoardServer(root: string, env: Env, gh: GhLater, options: B
     const port = typeof address === 'object' && address !== null ? address.port : 0;
     if (!isBoardHost(req.headers.host, port, name)) return serveText(res, 403, 'text/plain; charset=utf-8', 'forbidden');
     const [path, query] = (req.url ?? '').split('?');
-    if (!isBoardToken(requestToken(query ?? '', req.headers.cookie), token)) return serveText(res, 403, 'text/plain; charset=utf-8', 'forbidden');
+    if (!isBoardToken(requestToken(query ?? '', req.headers.cookie), token)) return serveText(res, 403, 'text/plain; charset=utf-8', 'forbidden: open the link that yokoten board printed in its terminal once. After that, this address works by itself.');
     if (req.method === 'GET') {
       if (path === '/' && new URLSearchParams(query ?? '').get('t')) {
         // The token moves from the address to a cookie only this page gets, and the address is clean again.
-        res.writeHead(303, { location: '/', 'set-cookie': `${BOARD_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`, 'cache-control': 'no-store' });
+        res.writeHead(303, { location: '/', 'set-cookie': `${BOARD_COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=31536000`, 'cache-control': 'no-store' });
         return res.end();
       }
       if (path === '/') {
