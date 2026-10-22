@@ -625,10 +625,23 @@ test('readBoardPulls: a fail wins over running; odd rows are reasons or blanks, 
   assert.equal(checksOf(null), 'none');
   assert.equal(checksOf([null, 'x']), 'none');
   assert.equal(checksOf([{ conclusion: 'CANCELLED', status: 'COMPLETED' }]), 'pass');
+  // Fail-closed: a completed run reads pass only on a known-good conclusion.
+  assert.equal(checksOf([{ conclusion: 'NEUTRAL', status: 'COMPLETED' }]), 'pass');
+  assert.equal(checksOf([{ conclusion: 'SKIPPED', status: 'COMPLETED' }]), 'pass');
+  assert.equal(checksOf([{ conclusion: 'STARTUP_FAILURE', status: 'COMPLETED' }]), 'fail');
+  assert.equal(checksOf([{ conclusion: 'STALE', status: 'COMPLETED' }]), 'fail');
+  assert.equal(checksOf([{ conclusion: 'SOMETHING_NEW', status: 'COMPLETED' }]), 'fail', 'an unknown conclusion');
+  assert.equal(checksOf([{ status: 'COMPLETED' }]), 'fail', 'a missing conclusion');
+  assert.equal(checksOf([{ conclusion: '', status: 'COMPLETED' }]), 'fail', 'an empty conclusion');
   const tierOf = (labels: unknown) => (readBoardPulls(ghWith([{ ...row, statusCheckRollup: [], labels }]), 'o/r') as { tier: string }[])[0].tier;
   assert.equal(tierOf([{ name: 'Tier C' }]), 'C');
   assert.equal(tierOf([{ name: 'tier' }, { name: 'tier D' }]), '');
   assert.equal(tierOf('tier B'), '');
+  // The same shapes CI reads (#601): no separator or colon without a space count, extra spaces do not.
+  assert.equal(tierOf([{ name: 'tierB' }]), 'B');
+  assert.equal(tierOf([{ name: 'tier:B' }]), 'B');
+  assert.equal(tierOf([{ name: '  tier B  ' }]), 'B');
+  assert.equal(tierOf([{ name: 'tier  B' }]), '');
   const blank = (readBoardPulls(ghWith([{ ...row, number: 2, title: null, headRefName: 7, url: null, state: null }]), 'o/r') as { title: string; branch: string; url: string; stage: string }[])[0];
   assert.deepEqual([blank.title, blank.branch, blank.url, blank.stage], ['', '', '', 'open']);
   const said = (text: string): Gh => () => text;

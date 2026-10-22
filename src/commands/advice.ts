@@ -302,7 +302,7 @@ export function renderBoardText(board: BoardData, now: number = Date.now()): str
     `${countText(board.agents.length, 'agent')}, ${countText(pulls.length, 'pull request')}, ${countText(worktrees.length, 'worktree')}.`,
     '',
     'Agents:',
-    ...(board.agents.length ? board.agents.map((agent) => `- ${formatBoardAgent(agent, now)}`) : ['- none. An agent joins by writing .yokoten-agent.json in its worktree.']),
+    ...(board.agents.length ? board.agents.map((agent) => `- ${formatBoardAgent(agent, now)}`) : [`- none. An agent joins by writing ${BOARD_AGENT_FILE} in its worktree.`]),
     '',
     'Pull requests:',
     ...(typeof board.pulls === 'string' ? [`- ${board.pulls}`] : pulls.length ? pulls.map((pull) => `- ${formatBoardPull(pull)}`) : ['- none.']),
@@ -324,7 +324,7 @@ function serveText(res: ServerResponse, status: number, kind: string, text: stri
   res.end(text);
 }
 
-/** The board page: plain HTML, CSS and JavaScript. It reads /data every 15 seconds. */
+/** The board page: plain HTML, CSS and JavaScript. It reads /data every BOARD_REFRESH_SECONDS seconds. */
 export function boardPage(): string {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -376,7 +376,7 @@ function oneRow(table, text) {
 }
 function showAgents(table, agents) {
   head(table, ['Name', 'Vendor', 'Task', 'Worktree', 'Doing now', 'Updated']);
-  if (!agents.length) oneRow(table, 'No agents. One joins by writing .yokoten-agent.json in its worktree.');
+  if (!agents.length) oneRow(table, 'No agents. One joins by writing ${BOARD_AGENT_FILE} in its worktree.');
   agents.forEach(function (agent) {
     var row = document.createElement('tr');
     row.appendChild(cell(agent.name));
@@ -395,6 +395,10 @@ function reviewWord(pull) {
   if (pull.review === 'waiting') return 'waiting for the owner';
   return 'no review asked';
 }
+function isHttpUrl(url) {
+  var clean = String(url || '').trim().toLowerCase();
+  return clean.indexOf('http://') === 0 || clean.indexOf('https://') === 0;
+}
 function showPulls(table, pulls) {
   head(table, ['Number', 'Title', 'Branch', 'Checks', 'Tier', 'Stage']);
   if (typeof pulls === 'string') {
@@ -405,7 +409,7 @@ function showPulls(table, pulls) {
   pulls.forEach(function (pull) {
     var row = document.createElement('tr');
     var number = document.createElement('td');
-    if (pull.url) {
+    if (isHttpUrl(pull.url)) {
       var link = document.createElement('a');
       link.href = pull.url;
       link.textContent = '#' + pull.number;
@@ -466,7 +470,8 @@ load();
 
 /**
  * Start the board on 127.0.0.1 and a free port: the page at /, the data as JSON at
- * /data. Resolves with the server and its link. The caller stops it with server.close.
+ * /data. Resolves with the server and its link; rejects when the server cannot listen.
+ * The caller stops it with server.close.
  */
 export function startBoardServer(root: string, env: Env, gh: Gh): Promise<{ server: Server; url: string }> {
   const server = createServer((req, res) => {
@@ -483,7 +488,8 @@ export function startBoardServer(root: string, env: Env, gh: Gh): Promise<{ serv
     }
     return serveText(res, 404, 'text/plain; charset=utf-8', 'not found');
   });
-  return new Promise((done) => {
+  return new Promise((done, failed) => {
+    server.on('error', failed);
     server.listen(0, '127.0.0.1', () => {
       const address = server.address();
       const port = typeof address === 'object' && address !== null ? address.port : 0;
@@ -502,8 +508,14 @@ export function runBoard(invocation: Invocation): number | Promise<number> {
     print(invocation, renderBoardText(collectBoard(root, invocation.env, gh)));
     return 0;
   }
-  return startBoardServer(root, invocation.env, gh).then(({ url }) => {
-    print(invocation, [`yokoten board: the team is live at ${url}`, 'The page refreshes every 15 seconds. Stop it with Ctrl-C.']);
-    return new Promise<number>(() => {});
-  });
+  return startBoardServer(root, invocation.env, gh).then(
+    ({ url }) => {
+      print(invocation, [`yokoten board: the team is live at ${url}`, `The page refreshes every ${BOARD_REFRESH_SECONDS} seconds. Stop it with Ctrl-C.`]);
+      return new Promise<number>(() => {});
+    },
+    () => {
+      print(invocation, ['yokoten board: the page could not start: run it again.'], invocation.stderr);
+      return 1;
+    },
+  );
 }

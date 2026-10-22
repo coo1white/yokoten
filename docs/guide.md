@@ -1501,7 +1501,7 @@ format is open: other tools may read it too. One file per worktree.
 | `doing` | What it does now, in a few words |
 | `updated` | When it last wrote, such as `2026-10-22T10:00:00Z`. The board shows how long ago that was |
 
-Every field is text. Every field may be missing. A file that is not JSON is skipped.
+Every field is text. Every field may be missing. A file that is not a JSON object is skipped.
 
 The page reads `/data` as JSON. That is the board's interface. The page is only one
 view of it.

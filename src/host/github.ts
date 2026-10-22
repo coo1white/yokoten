@@ -20,7 +20,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { docsLink, type Finding, finding, formatFinding, place } from '../rules/message.ts';
-import type { CodeOwners, PullRequest } from '../rules/pr.ts';
+import { readLabelTier, type CodeOwners, type PullRequest } from '../rules/pr.ts';
 import { homeOf, NO_HOME } from '../rules/privacy.ts';
 import { readGit } from '../run/check.ts';
 import { type Incident, terminalText } from '../run/learn.ts';
@@ -923,15 +923,15 @@ export interface BoardPull {
   review: 'approved' | 'changes' | 'waiting' | 'none';
 }
 
-/** A check conclusion that turns the pull request red. */
-const FAILED_CHECK = new Set(['FAILURE', 'TIMED_OUT', 'ACTION_REQUIRED']);
+/** A check conclusion that keeps the pull request green. Any other conclusion on a completed run turns it red, so an unknown one never shows green. */
+const PASSED_CHECK = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED', 'CANCELLED']);
 
-/** The checks of one pull request, from gh's statusCheckRollup. Each check counts by its latest run, so a green rerun clears an old failure. */
+/** The checks of one pull request, from gh's statusCheckRollup. Each check counts by its latest run, so a green rerun clears an old failure. A fail wins over running. */
 function rollupState(rollup: unknown): BoardPull['checks'] {
   const entries = Array.isArray(rollup) ? rollup.filter(isObject) : [];
   if (!entries.length) return 'none';
   const latest = keepLatestRuns(entries);
-  if (latest.some((entry) => typeof entry.conclusion === 'string' && FAILED_CHECK.has(entry.conclusion))) return 'fail';
+  if (latest.some((entry) => entry.status === 'COMPLETED' && !(typeof entry.conclusion === 'string' && PASSED_CHECK.has(entry.conclusion)))) return 'fail';
   if (latest.some((entry) => typeof entry.status === 'string' && entry.status !== 'COMPLETED')) return 'running';
   return 'pass';
 }
@@ -974,9 +974,9 @@ function keepLatestRuns(entries: Record<string, unknown>[]): Record<string, unkn
   return [...byName.values(), ...nameless];
 }
 
-/** The tier from the label names (`tier A`, `tier: b`), or '' when there is none. */
+/** The tier from the label names, by the same rule as CI, or '' when there is none. */
 function pullTier(labels: string[]): BoardPull['tier'] {
-  const tier = labels.map((name) => name.match(/^tier\s*[:\s]\s*([abc])$/i)?.[1].toUpperCase()).find(Boolean);
+  const tier = labels.map(readLabelTier).find((found) => found !== null);
   return tier === 'A' || tier === 'B' || tier === 'C' ? tier : '';
 }
 

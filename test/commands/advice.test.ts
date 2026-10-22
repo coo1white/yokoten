@@ -354,7 +354,32 @@ test('board page: plain HTML with the three tables; it reads /data every 15 seco
   assert.ok(page.includes('setInterval(load, 15000)'), 'refreshes every 15 seconds');
   assert.ok(page.includes("fetch('data')"), 'reads the same data as JSON');
   assert.ok(page.includes('.yokoten-agent.json'), 'the empty state names the file');
-  assert.ok(!page.includes('http://') && !page.includes('https://'), 'no outside address: it works offline');
+  // Each scheme shows once, in the link guard; nothing else points outside, so the page works offline.
+  assert.equal(page.split('http://').length - 1, 1, 'one http:// (the link guard)');
+  assert.equal(page.split('https://').length - 1, 1, 'one https:// (the link guard)');
+});
+
+// #601: only http(s) pull addresses become links; anything else stays plain text, so an
+// odd address never becomes a script link.
+test('board page: only http(s) pull addresses become links', () => {
+  const script = boardPage().match(/<script>([\s\S]*)<\/script>/)?.[1] ?? '';
+  assert.ok(script.includes('if (isHttpUrl(pull.url))'), 'the pull number links only through the guard');
+  // The page script on its own, with fakes for what it touches at load: one fetch, one timer, one note.
+  const run = new Function('document', 'fetch', 'setInterval', `${script}; return isHttpUrl;`) as unknown as (
+    fakeDocument: unknown,
+    fakeFetch: () => Promise<never>,
+    fakeTimer: () => number,
+  ) => (url: unknown) => boolean;
+  const isHttpUrl = run({ getElementById: () => ({}) }, () => Promise.reject(new Error('no net')), () => 0);
+  assert.equal(isHttpUrl('https://example.com/pull/7'), true);
+  assert.equal(isHttpUrl('http://example.com/pull/7'), true);
+  assert.equal(isHttpUrl('HTTPS://example.com/pull/7'), true, 'the scheme ignores case');
+  assert.equal(isHttpUrl('javascript:alert(1)'), false);
+  assert.equal(isHttpUrl('JaVaScRiPt:alert(1)'), false, 'mixed case');
+  assert.equal(isHttpUrl('  javascript:alert(1)  '), false, 'padded');
+  assert.equal(isHttpUrl('data:text/html,hi'), false);
+  assert.equal(isHttpUrl(''), false);
+  assert.equal(isHttpUrl(undefined), false);
 });
 
 // #601: the server listens on 127.0.0.1 only. It never outlives the test: it closes in a finally.
@@ -390,6 +415,7 @@ test('board server: the page at /, the same data as JSON at /data, nothing else'
     assert.deepEqual(shown.worktrees, [{ path: sandbox.repo, branch: 'main' }]);
     assert.match(shown.updated, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     assert.equal((await get('/missing')).status, 404);
+    assert.doesNotThrow(() => server.emit('error', new Error('EADDRINUSE')), 'a server error is handled, never an uncaught throw');
   } finally {
     await new Promise<void>((done) => server.close(() => done()));
   }
