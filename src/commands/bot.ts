@@ -6,8 +6,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { botConfig, botEnv, botProgram, type Gh, installationToken, readBranchFiles, readCodeOwners, readIssueMilestone, readRepoLabelNames, repoOf } from '../host/github.ts';
 import { DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
-import type { Finding } from '../rules/message.ts';
-import { type CommandIssueLabels, type CommandLabels, type CommandMilestone, checkCommandTitle, checkIssueLabels, checkOwnedTier, checkPullRequestBody, noMilestoneFinding, readCommandBody, readCommandIssueLabels, readCommandLabels, readCommandMilestone } from '../rules/pr.ts';
+import { finding, type Finding } from '../rules/message.ts';
+import { type CommandIssueLabels, type CommandLabels, type CommandMilestone, checkCommandTitle, checkIssueLabels, checkOwnedTier, checkPullRequestBody, hasMadeWith, noMilestoneFinding, readCommandBody, readCommandIssueLabels, readCommandLabels, readCommandMilestone } from '../rules/pr.ts';
 import { bullets, type Invocation, type Output, parse, print, readInput, requireRoot, rootOf, usage } from './shared.ts';
 
 async function bot(invocation: Invocation, command: string[]): Promise<number> {
@@ -28,6 +28,11 @@ async function bot(invocation: Invocation, command: string[]): Promise<number> {
   // branch, or one `--head` or `gh pr edit <branch>` names, is checked before anything is sent.
   const body = root ? readPendingBody(invocation, command, root) : null;
   if (body && !isLookup(body) && refuseBody(invocation, checkBody(body, localBranch(body), env))) return 1;
+  // A comment, a review with a body and a new issue carry the same `Made with` line as a
+  // pull request body (#609), so a reader can tell which AI wrote them. Only that line is
+  // checked here; an edit stays as it is.
+  const note = root ? readPendingNoteBody(invocation, command, root) : null;
+  if (note && refuseBody(invocation, { problems: checkNote(note) })) return 1;
   // Then the labels of `gh pr create` (#422): a tier label the body contradicts is refused.
   const labels = root ? readPendingLabels(command, root, body, env) : null;
   if (labels?.problems.length) {
@@ -73,7 +78,7 @@ async function bot(invocation: Invocation, command: string[]): Promise<number> {
   // `gh pr edit <number or URL>`: one `gh pr view` with the same token names its branches.
   if (body && isLookup(body) && refuseBody(invocation, checkBody(body, lookupBranch(body, file, botEnv(env, token), env), env))) return 1;
   // A body read from standard input was used up by the check, so gh gets it the same way.
-  const input = body?.input;
+  const input = body?.input ?? note?.input;
   const { stdin, stdout, stderr } = invocation;
   const piped = input ?? (stdin.fd === null ? (stdin.text ?? '') : undefined);
   const result = spawnSync(file, rest, { cwd, stdio: [piped === undefined ? (stdin.fd ?? 'pipe') : 'pipe', childStream(stdout), childStream(stderr)], input: piped, env: botEnv(env, token), maxBuffer: 1 << 30 });
@@ -122,6 +127,159 @@ function readPendingBody(invocation: Invocation, command: string[], root: string
   } catch {
     return null;
   }
+}
+
+/** A comment, review or new-issue body a command is about to set, read and not yet checked. */
+interface PendingNote {
+  root: string;
+  text: string;
+  /** The body as read from standard input, which gh then gets the same way. */
+  input?: string;
+  repo: string | null;
+  /** Whether the command names `--attach`: gh posts those uploads after the body. */
+  attach: boolean;
+}
+
+// The options of `issue`/`pr` `comment`, `pr review` and `issue create` that take a value,
+// so their value is not read as the noun or the verb. Gh's host flag is here too, so a
+// host before the noun is not read as the noun. A run-together word expands letter
+// by letter, the way gh reads it; a value that looks like another flag is not consumed,
+// the way `parse` reads yokoten's own options. `--attach` uploads land after the body,
+// so any `--attach` is refused rather than checked.
+const NOTE_VALUES = new Set(['--body', '-b', '--body-file', '-F', '--repo', '-R', '--hostname', '--title', '-t', '--label', '-l', '--add-label', '--milestone', '-m', '--project', '-p', '--assignee', '-a', '--reviewer', '-r', '--base', '-B', '--head', '-H', '--template', '-T', '--type', '--attach']);
+const NOTE_SHORT_VALUES = 'bFRtlmarBHpT';
+// On `gh pr review`, `-a` (`--approve`) and `-r` (`--request-changes`) are booleans, and
+// there is no assignee or reviewer: those four spellings take no value there.
+const REVIEW_VALUES = new Set([...NOTE_VALUES].filter((flag) => flag !== '--assignee' && flag !== '-a' && flag !== '--reviewer' && flag !== '-r'));
+// The short letters that take a value on `gh pr review`: only the body and repo letters,
+// since `-a`, `-r` and `-c` (`--comment`) are booleans there.
+const REVIEW_SHORT_VALUES = 'bFR';
+
+/** The words and the option values of a note command's args, read with one command's flags. */
+interface NoteArgs {
+  /** Each word that is not an option or an option's value. */
+  words: string[];
+  /** Each option and its value, in order, with `--attach` kept apart. */
+  options: [name: string, value: string][];
+  /** Whether the command names `--attach`. */
+  attach: boolean;
+}
+
+/**
+ * The words and the option values of a note command's args. As in gh, the last spelling
+ * of an option wins; a run-together word expands letter by letter (`-wb` is `-w -b`); a
+ * separate value that looks like another flag is not consumed, so it is read as a flag.
+ * A bare `--` is the exception: in value position it is the value, as gh reads it, and
+ * parsing continues after it; in flag position it still ends the flags.
+ */
+function readNoteArgs(args: string[], values: Set<string>, shorts: string): NoteArgs {
+  const rest = [...args];
+  const words: string[] = [];
+  const options: [string, string][] = [];
+  let attach = false;
+  for (let index = 0; index < rest.length; index++) {
+    const word = rest[index];
+    if (word === '--') break;
+    if (word === '-' || !word.startsWith('-')) {
+      words.push(word);
+      continue;
+    }
+    let name = word;
+    let value: string | undefined;
+    const equals = word.startsWith('--') ? word.indexOf('=') : -1;
+    if (equals > 0) {
+      name = word.slice(0, equals);
+      value = word.slice(equals + 1);
+    } else if (!word.startsWith('--') && word.length > 2) {
+      if (!shorts.includes(word[1])) {
+        // A run-together word starting with a boolean letter: gh reads the letter as a
+        // flag and the rest again, so the letter is dropped and the rest is read again.
+        rest[index] = `-${word.slice(2)}`;
+        index -= 1;
+        continue;
+      }
+      name = word.slice(0, 2);
+      value = word.slice(2);
+      // Gh drops the `=` of an attached short value: `-t=x` is the title `x`.
+      if (value.startsWith('=')) value = value.slice(1);
+    }
+    if (!values.has(name)) continue;
+    if (value === undefined) {
+      const next = rest[index + 1];
+      if (next === undefined) break;
+      // A bare `--` here is the value, as gh reads it; any longer `--` word is a flag.
+      if (next !== '--' && next.startsWith('--')) continue;
+      index += 1;
+      value = rest[index];
+    }
+    if (name === '--attach') {
+      attach = true;
+      continue;
+    }
+    options.push([name, value]);
+  }
+  return { words, options, attach };
+}
+
+/**
+ * The body that `gh pr comment`, `gh issue comment`, `gh pr review` or `gh issue create`
+ * sets with `--body`, `-b`, `--body-file` or `-F`, in any spelling gh takes. As in gh, the
+ * last one wins. Null for any other command, for one with no body and no `--attach` (a
+ * plain approve), for an edit (which stays as it is), or when the repo has no yokoten.json,
+ * the command names another repo, or the file can't be read (gh then says why, and sends
+ * nothing). A `--attach` alone still returns a note, so the upload is refused below: gh
+ * would post it with no `Made with` line.
+ */
+function readPendingNoteBody(invocation: Invocation, command: string[], root: string): PendingNote | null {
+  const [file, ...rest] = command;
+  if (!file || botProgram(file) !== 'gh') return null;
+  const { words } = readNoteArgs(rest, NOTE_VALUES, NOTE_SHORT_VALUES);
+  const [kind, verb] = words;
+  const isNote = (kind === 'issue' && (verb === 'comment' || verb === 'create' || verb === 'new')) || (kind === 'pr' && (verb === 'comment' || verb === 'review'));
+  if (!isNote) return null;
+  const isReview = kind === 'pr' && verb === 'review';
+  const found = isReview ? readNoteArgs(rest, REVIEW_VALUES, REVIEW_SHORT_VALUES) : readNoteArgs(rest, NOTE_VALUES, NOTE_SHORT_VALUES);
+  let body: string | { file: string } | null = null;
+  let repo: string | null = null;
+  for (const [name, value] of found.options) {
+    if (name === '--body' || name === '-b') body = value;
+    else if (name === '--body-file' || name === '-F') body = { file: value };
+    else if (name === '--repo' || name === '-R') repo = value;
+  }
+  if ((!body && !found.attach) || !existsSync(join(root, 'yokoten.json')) || !isOrigin(root, repo, invocation.env)) return null;
+  try {
+    // An empty body is nothing to check, as gh posts it as it is; `--attach` alone
+    // still returns a note below, so the upload is refused.
+    if (typeof body === 'string' && body === '' && !found.attach) return null;
+    if (typeof body === 'string') return { root, text: body, repo, attach: found.attach };
+    if (body === null) return { root, text: '', repo, attach: found.attach };
+    const input = body.file === '-' ? readInput(invocation.stdin) : undefined;
+    const text = input ?? readFileSync(resolve(invocation.cwd, body.file), 'utf8');
+    if (text === '' && !found.attach) return null;
+    return { root, text, input, repo, attach: found.attach };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The problems with a comment, review or new-issue body: `--attach` uploads land after
+ * the body, past the `Made with` line, so any `--attach` is refused; otherwise only the
+ * `Made with` line is checked, with or without a body (#609).
+ */
+function checkNote(note: PendingNote): Finding[] {
+  if (note.attach) return [finding('pr-made-with', 'body: `--attach` appends the upload after the `Made with` line', 'drop `--attach`, or link an uploaded file in the body instead')];
+  return checkNoteMadeWith(note.text);
+}
+
+/**
+ * The problems with a comment, review or new-issue body: only the `Made with` line, with
+ * the same check (`hasMadeWith`) and the same message as a pull request body (#609). The
+ * wording here mirrors `checkPullRequestBody`, which owns it.
+ */
+function checkNoteMadeWith(text: string): Finding[] {
+  if (hasMadeWith(text)) return [];
+  return [finding('pr-made-with', 'body: no `Made with` line at the end', 'end the body with `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, for example `🤖 Made with lead (opus), worker (sonnet)`')];
 }
 
 /** Whether `--repo` names this repo's origin, or no repo at all. */

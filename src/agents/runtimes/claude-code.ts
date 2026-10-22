@@ -9,6 +9,7 @@ import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import { type Action, isWorkerType, readStopFields, type StopEvent } from '../../run/hook.ts';
 import { type Added, addHook, checkHooksFile, hasHook, isObject, type Problem, readTable, removeHook, type Settings, UnreadableHooksFile, writeSettings } from '../hooks-file.ts';
+import type { RuntimeEnv } from '../agent-env.ts';
 
 /**
  * A PreToolUse call, as an Action. The guard reads the fields, not the tool's name:
@@ -246,3 +247,6 @@ export function readInstalledPlugin(env: Env, root: string | null): InstalledPlu
  * Windows has no uid, so there is no such folder to check.
  */
 export const tempDir = (env: Env, uid: number): string => join(env.CLAUDE_CODE_TMPDIR || env.TMPDIR || env.TMP || env.TEMP || '/tmp', `claude-${uid}`);
+
+/** The names this runtime's agent gets on top of the shared ones (#613). Claude Code signs in with its own login file; these are for an API key or a long-lived login token. */
+export const AGENT_ENV: RuntimeEnv = { login: ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'], config: ['CLAUDE_CONFIG_DIR'] };

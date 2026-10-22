@@ -1,17 +1,13 @@
-// Tests for src/commands/advice.ts.
+// Tests for src/commands/advice/doctor.ts.
 
-import '../repo/home.ts';
+import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { Readable, Writable } from 'node:stream';
 import { test } from 'node:test';
-import {
-  CLI,
-  makeSandbox,
-  pick,
-} from '../repo/helpers.ts';
-import { runDoctor } from '../../src/commands/advice.ts';
-import type { Invocation, Output } from '../../src/commands/shared.ts';
+import { CLI, makeSandbox, pick } from '../../repo/helpers.ts';
+import { runDoctor } from '../../../src/commands/advice/doctor.ts';
+import type { Invocation, Output } from '../../../src/commands/shared.ts';
 
 // Codex adds a SessionStart hook's plain stdout to the context; Gemini CLI reads JSON only (#211).
 test('doctor --session --agent: plain text for Codex, hookSpecificOutput JSON for Gemini CLI (#211)', async () => {

@@ -1,19 +1,19 @@
-// `yokoten doctor`, `explain` and `adopt`: they read a project and advise. None writes to
-// the project; a Claude Code session start keeps what it said in ~/.config/yokoten/sessions/ (#405).
+// `yokoten doctor`, `explain` and `adopt`: they read and show; none writes to the project.
+// A Claude Code session start keeps what it said in ~/.config/yokoten/sessions/ (#405).
 
 import { readSync } from 'node:fs';
-import * as claudeCode from '../agents/runtimes/claude-code.ts';
-import * as gemini from '../agents/runtimes/gemini.ts';
-import { ghIn } from '../host/github.ts';
-import { DEFAULTS, loadConfig } from '../rules/config.ts';
-import { workerRole } from '../rules/guards.ts';
-import { formatFinding } from '../rules/message.ts';
-import { hideHome } from '../rules/privacy.ts';
-import { draft, facts, table } from '../setup/advice/adopt.ts';
-import { explain, explainLines, ids } from '../setup/advice/explain.ts';
-import { blocksToSay, doctor, OUTPUT_STOP, SERVER_TIMEOUT_MS, type SessionStart, UNFILTERED } from '../setup/doctor.ts';
-import { READERS } from './hook.ts';
-import { type Invocation, noRootFinding, parse, print, printJson, requireRoot, rootOf, say, usage } from './shared.ts';
+import * as claudeCode from '../../agents/runtimes/claude-code.ts';
+import * as gemini from '../../agents/runtimes/gemini.ts';
+import { ghIn } from '../../host/github.ts';
+import { DEFAULTS, loadConfig } from '../../rules/config.ts';
+import { workerRole } from '../../rules/guards.ts';
+import { formatFinding } from '../../rules/message.ts';
+import { hideHome } from '../../rules/privacy.ts';
+import { draft, facts, table } from '../../setup/advice/adopt.ts';
+import { explain, explainLines, ids } from '../../setup/advice/explain.ts';
+import { blocksToSay, doctor, OUTPUT_STOP, SERVER_TIMEOUT_MS, type SessionStart, UNFILTERED } from '../../setup/doctor.ts';
+import { READERS } from '../hook.ts';
+import { type Invocation, noRootFinding, parse, print, printJson, requireRoot, rootOf, say, usage } from '../shared.ts';
 
 /** What full doctor says while the slow reads run: the server read and (in WSL) the drive read. */
 const SLOW_READ_LINE = 'reading GitHub settings...';

@@ -672,8 +672,10 @@ token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你�
 | `hook --stop [--agent <name>]` | 收尾检查。从标准输入读这一轮结束的事件，检查改过的文件：默认读 Claude Code 的 Stop；加 `--agent codex` 读 Codex 的 Stop，加 `--agent gemini` 读 Gemini CLI 的 AfterAgent，加 `--agent grok` 读 Grok CLI 的 Stop。见[收尾检查](#收尾检查) |
 | `explain [<id>] [--json]` | 讲一条规则或者路上的一步：它是什么、为什么要有、yokoten 怎么检查 |
 | `worker mark <目录>` | 把 `<目录>` 这个 worktree 标成 worker 的。之后在这里干活的 agent，护栏一律当 worker 看待，哪怕它的运行环境没把 `YOKOTEN_ROLE` 传给钩子（比如 Muse Code）。worker 用常见的办法删这个标记，护栏都会拦下；`.git` 读不出来的时候，也照样当 worker。护栏只看命令文字，真正的锁是服务器，还有别把推送和机器人的凭据交给 worker。`git worktree remove <目录>` 会连同 worktree 一起删掉标记。给的是子目录时，它标的是所在的 worktree，并说出是哪个。主检出和子模块永远不会被标记 |
+| `worker env [运行环境]` | 列出 yokoten 给 agent 准备环境变量时，会从这个 shell 留下哪些变量名，并数出去掉了几个。加上运行环境名，会把它自己的登录变量也算进去。从不显示值。现在还没有命令用它启动 agent。见 [agent 拿到的环境变量](#agent-拿到的环境变量) |
 | `uninstall` | 撤掉 `install` 装的东西：带 yokoten 管理标记的技能和 agent、`~/.claude/settings.json` 里它加的两个 hook，还有 `~/.local/share/yokoten`。你自己的文件、别的设置和 `~/.config/yokoten`（密钥、私有词表）都留着。再跑一次什么也不会变 |
-| `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。如果命令是 `gh issue` 或 `gh pr` 的 `create`、`edit`，并且带了标题，它会先按 CI 的规则检查标题；标题不合格就直接拒绝，什么都不会发出去。用 `gh api` 改 issue 或 PR 时，标题也照样检查。`gh pr create` 和 `gh pr edit` 如果带了 `--body` 或 `--body-file`，正文也会先过一遍：规则和 `check --pr` 里检查正文的那部分一样，看的是这个 PR 的分支改了哪些文件，以及基础分支上的 CODEOWNERS。正文不合格同样直接拒绝，什么都不发出去。正文最后一行不是 `🤖 Made with <agent> (<model>)`（可写一个或多个逗号分隔的组合）的同样直接拒绝：每个 PR 都要写明做出它的每个 AI 和模型。`gh pr create` 没给类型标签或 tier 标签时，bot 会自动补上：类型看标题（`fix` 补 `bug`），tier 看正文第一行的 `tier:`。你自己给的标签保留不动。你给的 tier 标签和正文对不上，就直接拒绝，提示和 `check --pr` 一样。仓库里没有的标签，bot 会说一声然后不加；它从不新建标签。`gh pr create` 没带 `--milestone` 时，bot 会用第一个关联 issue（`Closes #N`、`Part of #N`）的里程碑；这些 issue 都没有里程碑，就直接拒绝，什么都不发出去，请自己加上 `--milestone`。gh 读不到那个 issue 时，PR 照发，不带里程碑，只留一条提示。它只运行 `gh` 和 `git`，所以 `env gh …`、`sh -c …` 这类写法会被拒绝；gh 的别名（alias）它不认，别名里的标题不会被检查。设置方法见 [server.md](../../server.md#3-the-bot-a-github-app) |
+| `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。如果命令是 `gh issue` 或 `gh pr` 的 `create`、`edit`，并且带了标题，它会先按 CI 的规则检查标题；标题不合格就直接拒绝，什么都不会发出去。用 `gh api` 改 issue 或 PR 时，标题也照样检查。`gh pr create` 和 `gh pr edit` 如果带了 `--body` 或 `--body-file`，正文也会先过一遍：规则和 `check --pr` 里检查正文的那部分一样，看的是这个 PR 的分支改了哪些文件，以及基础分支上的 CODEOWNERS。正文不合格同样直接拒绝，什么都不发出去。正文最后一行不是 `🤖 Made with <agent> (<model>)`（可写一个或多个逗号分隔的组合）的同样直接拒绝：每个 PR 都要写明做出它的每个 AI 和模型。评论（`gh pr comment`、`gh issue comment`）、带正文的审查（`gh pr review --body`）和新建的 issue（`gh issue create --body`）也要带上这一行：最后一行不是 `Made with` 行的正文同样直接拒绝。带 `--attach` 的正文会被拒绝：上传的文件会落在 `Made with` 行之后。只改正文的编辑（`gh pr edit --body`、`gh issue edit --body`）保持原样。`gh pr create` 没给类型标签或 tier 标签时，bot 会自动补上：类型看标题（`fix` 补 `bug`），tier 看正文第一行的 `tier:`。你自己给的标签保留不动。你给的 tier 标签和正文对不上，就直接拒绝，提示和 `check --pr` 一样。仓库里没有的标签，bot 会说一声然后不加；它从不新建标签。`gh pr create` 没带 `--milestone` 时，bot 会用第一个关联 issue（`Closes #N`、`Part of #N`）的里程碑；这些 issue 都没有里程碑，就直接拒绝，什么都不发出去，请自己加上 `--milestone`。gh 读不到那个 issue 时，PR 照发，不带里程碑，只留一条提示。它只运行 `gh` 和 `git`，所以 `env gh …`、`sh -c …` 这类写法会被拒绝；gh 的别名（alias）它不认，别名里的标题不会被检查。设置方法见 [server.md](../../server.md#3-the-bot-a-github-app) |
+| `board [--text]` | 只在这台电脑上开一个实时页面：按 issue 分组的 agent、选中的 agent、每个 PR 的状态。启动后打印链接，按 Ctrl-C 停掉。页面每 15 秒刷新一次。加 `--text` 就在终端里用纯文本打印 agent、PR 和 worktree，见「团队看板」 |
 
 每个命令后面加 `--help` 或 `-h`，就会打出它自己的说明：做什么、有哪些选项、一个例子。
 `yokoten help <命令>` 打出的也一样，`yokoten --help` 列出所有命令，`yokoten version`（或者
@@ -1247,6 +1249,35 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 
 服务器怎么设置，一步一步写在 [`docs/server.md`](../../server.md)。
 
+### 团队看板
+
+`yokoten board` 一眼看到整个团队。它只在这台电脑上开一个页面，
+启动后打印链接，用浏览器打开。链接里带有一个随机口令，只有能看到这台终端输出的人才能打开页面。
+
+页面分三栏。左栏按 issue 列出 agent，点一个，中间就显示它。
+中间显示选中的 agent 在做什么任务、现在在干什么。右栏列出 PR 和它们的检查。
+页面每 15 秒刷新一次，按 Ctrl-C 停掉。
+
+`yokoten board --text` 在终端里用纯文本打印 agent、PR 和 worktree。
+
+agent 在自己 worktree 的根目录写一个 `.yokoten-agent.json` 就加入了，
+删掉这个文件就离开。不管跑的是哪家的 agent，都可以写。格式是公开的，
+别的工具也可以读。一个 worktree 一个文件。
+
+| 字段 | 意思 |
+|------|------|
+| `name` | agent 的名字。没写就用 worktree 的文件夹名 |
+| `vendor` | 跑的是哪家的 agent，比如 `claude-code` |
+| `task` | 在做什么任务，比如 `issue 601`。页面按这里写的 issue 给 agent 分组 |
+| `role` | agent 的分工：`engineer`（开发）、`reviewer`（评审）或 `verifier`（验证），这样一个 issue 的整条线都能看到 |
+| `worktree` | 在哪个 worktree 干活 |
+| `doing` | 现在在干什么，一句话 |
+| `updated` | 上次写这个文件的时间，比如 `2026-10-22T10:00:00Z`。看板会换算成多久以前 |
+
+每个字段都是文本，每个字段都可以不写。不是 JSON 对象的文件会被跳过。`role` 只认 `engineer`、`reviewer`、`verifier` 这三个词，别的值会被忽略。
+
+页面从 `/data` 读 JSON 数据。这就是看板的接口，页面只是其中一种展示。
+
 ## 隐私
 
 第 11 条规则有检查守着。CI 和每次提交都会扫个人邮箱和 IP 地址。在你自己的电脑上，它还会读
@@ -1393,6 +1424,39 @@ agent 用 `gh` 发文字之前，工具调用守卫也跑同一套检查。直�
 
 hook 不可能认得所有命令。输出里露出了你的信息，就开一个事故 issue，再给那条命令在
 `ACCOUNT_PRINTERS`（`src/rules/guards.ts`）里加一行。
+
+### agent 拿到的环境变量
+
+你的 shell 里可能有 token 和密钥。agent 看得到，就能把它们打印出来、拿去推送，或者发出去。
+所以 yokoten 有一个函数，专门给 agent 准备一份干净的环境变量，所有运行环境都用它（#613）。
+这个函数现在就有，`yokoten worker env` 可以看它的结果。
+
+不过现在还没有哪个 yokoten 命令会启动 agent，所以这个函数暂时没人调用。看板的「启动 agent」
+（#603）会是第一个用它的地方。在那之前，agent 拿到的是启动它的会话的全部环境变量。
+所以 lead 的会话要从不带 token 的 shell 里启动。
+
+这个函数留下什么、去掉什么：
+
+- **留下**每个程序都要用的变量：`PATH`、`HOME`、`LANG`、`LANGUAGE`、`LC_*`、`TERM`、
+  `COLORTERM`、`TZ`、`TMPDIR`、`TEMP`、`TMP`、`USER`、`LOGNAME`、`SHELL`，还有
+  `XDG_CONFIG_HOME`、`XDG_DATA_HOME`、`XDG_CACHE_HOME`、`XDG_STATE_HOME`、`XDG_RUNTIME_DIR`。
+  Windows 上还留 `SystemRoot`、`USERPROFILE`、`APPDATA`、`PATHEXT`、`ComSpec` 这一类。
+- **留下让护栏更严的 `YOKOTEN_*`：** `YOKOTEN_ROLE`、`YOKOTEN_FIX_TASK`、`YOKOTEN_PRIVATE_MARKS`
+  和几个设置项。机器人的密钥和 app id、`YOKOTEN_RELEASE_APPROVAL`、`YOKOTEN_LEAD_ONLY_OK`
+  不会从你的 shell 带过去，要给的话由 lead 专门给。
+- **其余变量一律去掉。** 名字里带 `TOKEN`、`SECRET`、`KEY`、`PASSWORD`、`AUTH`、
+  `CREDENTIAL`、`PRIVATE` 的也去掉。只有两个例外：`YOKOTEN_PRIVATE_MARKS`（它只是个路径），
+  和运行环境自己的登录变量。
+- **值长得像密钥的也去掉：** GitHub、GitLab、Hugging Face、AWS、Google、Slack、JWT、
+  `sk-` 开头的密钥、私钥，还有带密码的 URL。超过 32 KiB 的值太长，来不及查，也去掉。
+- **厂商自己的登录变量：** 每个运行环境的文件里写明它家的登录变量，比如 Claude Code 的
+  `ANTHROPIC_API_KEY`。只有这个运行环境的 agent 拿得到。通用的凭据永远不算登录变量：
+  `GH_TOKEN`、`GITHUB_TOKEN`、AWS 的密钥，以及 Gemini CLI 那边的 `GOOGLE_API_KEY` 和
+  `GOOGLE_APPLICATION_CREDENTIALS`。用 Vertex AI 的话，要由 lead 专门把它们传过去。
+
+想看 agent 会从你的 shell 拿到哪些变量，就跑 `yokoten worker env`；加上运行环境名，比如
+`yokoten worker env claude-code`，会把它的登录变量也算进去。它只列名字、数去掉了几个，
+从不显示值。
 
 ### 时区
 

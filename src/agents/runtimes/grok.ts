@@ -30,6 +30,7 @@ import { type Action, isWorkerType, readStopFields, type StopEvent } from '../..
 import { type FolderTrust, folderKeys, isFolder } from '../folder-trust.ts';
 import { type Added, addHook, checkHooksFile, type HookState, hookState, isObject } from '../hooks-file.ts';
 import { readTomlTables } from './codex.ts';
+import type { RuntimeEnv } from '../agent-env.ts';
 
 // The shell tool takes `command` (and may take `cwd`); the edit tools take `file_path`.
 const SHELL = new Set(['run_terminal_command', 'run_terminal_cmd', 'Bash']);
@@ -190,3 +191,6 @@ export function readTrust(root: string, env: Env): FolderTrust {
   const isTrusted = folderKeys(root).some((key) => folders.get(key)?.trusted === true);
   return { state: isTrusted ? 'trusted' : 'untrusted', store };
 }
+
+/** The names this runtime's agent gets on top of the shared ones (#613). Grok CLI takes an xAI API key. */
+export const AGENT_ENV: RuntimeEnv = { login: ['XAI_API_KEY', 'GROK_API_KEY'], config: ['GROK_HOME'] };

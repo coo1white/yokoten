@@ -17,6 +17,7 @@ import { homeIn } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import type { Action } from '../../run/hook.ts';
 import { type Added, addHook, checkHooks, hasHook, type HookArgs, type HookState, hookState, type ReadOptions } from '../hooks-file.ts';
+import type { RuntimeEnv } from '../agent-env.ts';
 
 /** How yokoten reads a Gemini CLI settings file: comments allowed, as Gemini CLI allows them. */
 const READ: ReadOptions = { comments: true };
@@ -127,3 +128,6 @@ export function userHooksState(env: Env, cli: string, missing: string): { doctor
   const args = userHookArgs(env, cli, missing);
   return { doctor: hookState(...args.doctor), guard: hookState(...args.guard) };
 }
+
+/** The names this runtime's agent gets on top of the shared ones (#613). Gemini CLI: only its own key. GOOGLE_API_KEY and GOOGLE_APPLICATION_CREDENTIALS open all of Google Cloud, so a Vertex AI setup needs the lead to pass them on purpose. */
+export const AGENT_ENV: RuntimeEnv = { login: ['GEMINI_API_KEY'], config: ['GOOGLE_CLOUD_PROJECT', 'GOOGLE_CLOUD_LOCATION', 'GOOGLE_GENAI_USE_VERTEXAI'] };

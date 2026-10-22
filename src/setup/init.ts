@@ -136,8 +136,7 @@ function initRun(root: string, env: Env, gh: Gh, noCi: boolean, ask?: Ask): { ok
   if (noCi) report.push(...keepCiOff(root, cli, kit));
   else if (!isOff) report.push(...privateRepoNote(root, gh, env));
   report.push(writeCodeOwners(root, gh, env));
-  const ignored = writeGitignore(root);
-  if (ignored) report.push(ignored);
+  report.push(writeGitignore(root));
   const imported = importRules(root);
   if (imported) report.push(imported);
   // Claude Code's settings, the file people edit by hand most: skipped as one, never
@@ -472,9 +471,9 @@ export function findEcosystems(root: string): Map<string, string[]> {
 
 // ---- A .gitignore for the status file, the worker worktrees and the dependency folders (#521, #571, #614) ----
 //
-// Without one, `git add -A` stages node_modules. init always ignores the agent status
-// file and the folder worker worktrees live in, and reads the same package managers as
-// Dependabot to write the folders each one fills. It only adds lines that are missing.
+// Without one, `git add -A` stages node_modules. init always ignores the folder worker
+// worktrees live in, reads the same package managers as Dependabot to write the folders
+// each one fills, and the board's agent status file (#601, #614). It only adds lines that are missing.
 
 /** The folders each package manager fills with fetched or built files. */
 const IGNORED_FOLDERS: Record<string, string[]> = {
@@ -496,9 +495,10 @@ const IGNORED_FOLDERS: Record<string, string[]> = {
 /** A .gitignore line as a bare folder name, so `/node_modules` and `node_modules/` count as the same. */
 const folderOf = (line: string): string => line.trim().replace(/^\//, '').replace(/\/$/, '');
 
-/** Add the status file, the worker worktrees folder and the dependency folders to .gitignore. */
-function writeGitignore(root: string): string | null {
-  const wanted = [AGENT_STATUS_FILE, `${WORKTREES_DIR}/`, ...new Set([...findEcosystems(root).keys()].flatMap((name) => IGNORED_FOLDERS[name] ?? []))];
+/** Add the worker worktrees folder, the board's agent file, and the dependency folders of the project's package managers to .gitignore. */
+function writeGitignore(root: string): string {
+  const folders = [...new Set([...findEcosystems(root).keys()].flatMap((name) => IGNORED_FOLDERS[name] ?? []))];
+  const wanted = [`${WORKTREES_DIR}/`, ...folders, AGENT_STATUS_FILE];
   const path = join(root, '.gitignore');
   const old = existsSync(path) ? readFileSync(path, 'utf8') : null;
   const have = new Set((old ?? '').split(/\r?\n/).map(folderOf));

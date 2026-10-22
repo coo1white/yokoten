@@ -9,6 +9,7 @@ import * as deepseekHarness from '../agents/runtimes/deepseek-harness.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
+import type { DropReason, SortedEnv } from '../agents/agent-env.ts';
 import { loadConfig } from '../rules/config.ts';
 import { addWorkerPath, gitLinkAbove, hardenRead, markNote, printsAccount, privateOutput, realPath, releaseFix, removeWorkerPath, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
 import { type Finding, formatFinding, notRepoFinding } from '../rules/message.ts';
@@ -416,11 +417,12 @@ const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
  * gone; `worker unmark` clears an entry outright, and only the lead runs it. The main
  * checkout is the lead's, so it is never marked.
  */
-export function runWorker(invocation: Invocation): number {
+export function runWorker(invocation: Invocation): number | Promise<number> {
   const options = parse('worker', invocation.args);
   if (typeof options === 'string') return usage(invocation, options);
   const [action, dir] = options.positional;
-  if ((action !== 'mark' && action !== 'unmark') || dir === undefined) return usage(invocation, `say what to do and where: yokoten worker ${action === 'unmark' ? 'unmark' : 'mark'} <dir>`);
+  if (action === 'env') return runEnv(invocation, dir);
+  if ((action !== 'mark' && action !== 'unmark') || dir === undefined) return usage(invocation, `say what to do and where: yokoten worker ${action === 'unmark' ? 'unmark' : 'mark'} <dir>, or yokoten worker env [runtime]`);
   const fail = (line: string) => {
     print(invocation, [`yokoten worker: ${line}`], invocation.stderr);
     return 1;
@@ -457,6 +459,31 @@ export function runWorker(invocation: Invocation): number {
   // The guard finds the mark without git; check that it does here.
   if (workerMarkAt(folder, invocation.env) !== 'mark') return fail(`the mark is written in ${gitDir}, but the guard can't find it from ${top}.`);
   print(invocation, [`yokoten worker: marked the worktree at ${top}. The guard now treats every agent there as a worker. \`git worktree remove ${top}\` removes the mark. \`yokoten worker unmark ${top}\` clears it sooner.`]);
+  return 0;
+}
+
+/**
+ * `worker env [runtime]`: the names an agent that yokoten starts would get from this
+ * shell (#613), and how many are dropped and why. Names only: a value is never printed.
+ * With a runtime, its own login and config names count too. The module loads only here,
+ * so the guard's path never loads it.
+ */
+async function runEnv(invocation: Invocation, runtime: string | undefined): Promise<number> {
+  const { sortAgentEnv } = await import('../agents/agent-env.ts');
+  let sorted: SortedEnv;
+  try {
+    sorted = sortAgentEnv(invocation.env, runtime);
+  } catch (error) {
+    return usage(invocation, `${(error as Error).message}. Example: yokoten worker env claude-code`);
+  }
+  const count = (reason: DropReason) => sorted.dropped.filter((drop) => drop.reason === reason).length;
+  const who = runtime === undefined ? 'An agent that yokoten starts' : `A ${runtime} agent that yokoten starts`;
+  print(invocation, [
+    `yokoten worker: ${who} would get ${sorted.kept.length} names from this shell. Values are never shown. No command starts an agent with this yet.`,
+    ...(sorted.kept.length ? [`  ${sorted.kept.join(', ')}`] : []),
+    `Dropped: ${count('secret name')} with a secret-looking name, ${count('secret value')} with a value shaped like a key or token, ${count('too long')} too long to check, ${count('not on the list')} not on the list.`,
+    ...(runtime === undefined ? ['Add a runtime, such as `yokoten worker env claude-code`, to count its own login names too.'] : []),
+  ]);
   return 0;
 }
 
