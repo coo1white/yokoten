@@ -30,7 +30,7 @@ import { DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
 import { WORKTREES_DIR } from '../rules/layout.ts';
 import { type Finding, finding } from '../rules/message.ts';
 import { systemHome } from '../rules/privacy.ts';
-import { CODEOWNERS_PLACES, type Gh, ghIn, isOrganization, isPrivateRepo, repoOf } from '../host/github.ts';
+import { CODEOWNERS_PLACES, type Gh, ghIn, isOrganization, isPrivateRepo, repoOf } from '../host/github/index.ts';
 import { readOriginUrl } from './plan.ts';
 import { writeTestsJob } from './advice/tests-job.ts';
 import type { Ask } from './install.ts';

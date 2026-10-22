@@ -706,12 +706,12 @@ export function redactNote(text: string, place: NotePlace, env: Env): { text: st
   const line = oneLine(text);
   // A secret is refused, not hidden: whoever pasted it should know, and may need to rotate it.
   const secrets = [
-    ...scanText(line, { file: 'the note' }).filter((problem) => problem.id === 'secret'),
+    ...scanText(line, { file: 'the note', env }).filter((problem) => problem.id === 'secret'),
     ...NOTE_SECRETS.filter(({ re }) => re.test(line)).map(({ kind }) => finding('secret', `a secret (${kind})`, 'take it out of the note')),
   ];
   if (secrets.length) return { problems: secrets };
   const out = makeNoteCleaner(place, env)(line);
-  const problems = scanText(out, { file: 'the note', marks: place.marks });
+  const problems = scanText(out, { file: 'the note', marks: place.marks, env });
   return problems.length ? { problems } : { text: out };
 }
 

@@ -30,7 +30,7 @@ import {
   readStatusField,
   repoOf,
   setFieldOptions,
-} from '../host/github.ts';
+} from '../host/github/index.ts';
 
 /**
  * The standard set, as agreed for yokoten (#10): a type, the same words as commit types,

@@ -2,7 +2,7 @@
 
 import { existsSync, readSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { ghIn } from '../host/github.ts';
+import { ghIn } from '../host/github/index.ts';
 import { loadConfig } from '../rules/config.ts';
 import { init, updateCoreRules } from '../setup/init.ts';
 import { type Ask, install, uninstall } from '../setup/install.ts';

@@ -2,7 +2,7 @@
 // Everything yokoten prints goes through `print`, `say` or `printJson` (core rule 11).
 
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
-import { annotations, isGitHubActions, stepSummary } from '../host/github.ts';
+import { annotations, isGitHubActions, stepSummary } from '../host/github/index.ts';
 import type { Env } from '../rules/config.ts';
 import { finding, type Finding, formatFinding, notRepoFinding } from '../rules/message.ts';
 import { hideHome } from '../rules/privacy.ts';

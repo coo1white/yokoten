@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import { makeSandbox } from '../../../repo/helpers.ts';
 import type { BoardAgent } from '../../../../src/commands/advice/board/agents.ts';
 import { type AgentView, collectBoard, dotOf, needsOf, pullView, refOf, taskTitle, vendorOf } from '../../../../src/commands/advice/board/view.ts';
-import type { BoardPull, Gh } from '../../../../src/host/github.ts';
+import type { BoardPull, Gh } from '../../../../src/host/github/index.ts';
 
 const NOW = Date.parse('2026-10-22T12:00:00Z');
 const AGENT: BoardAgent = { name: 'a', vendor: '', model: '', effort: '', task: '', worktree: '', doing: '', updated: '', role: '', state: '', checks: '' };

@@ -21,7 +21,7 @@ import * as codex from '../../../agents/runtimes/codex.ts';
 import * as deepseekHarness from '../../../agents/runtimes/deepseek-harness.ts';
 import * as grok from '../../../agents/runtimes/grok.ts';
 import * as muse from '../../../agents/runtimes/muse.ts';
-import { type Gh, repoOf } from '../../../host/github.ts';
+import { type Gh, repoOf } from '../../../host/github/index.ts';
 import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
 import { hookCliPath } from '../../../setup/init.ts';

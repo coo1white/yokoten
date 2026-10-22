@@ -23,7 +23,7 @@ import {
   type BoardSpawner,
   type BoardWaiting,
 } from '../../../../src/commands/advice/board/controls.ts';
-import type { Gh } from '../../../../src/host/github.ts';
+import type { Gh } from '../../../../src/host/github/index.ts';
 import type { Env } from '../../../../src/rules/config.ts';
 import { workerMarkAt, workerRole } from '../../../../src/rules/guards.ts';
 import * as codexHooks from '../../../../src/agents/runtimes/codex.ts';

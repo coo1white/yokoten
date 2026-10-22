@@ -32,6 +32,8 @@ import {
   machineAllowed,
   machineAllowFile,
   makeRedactor,
+  marksFile,
+  marksFiles,
   mapMarkKinds,
   normalizeRemote,
   notUtc,
@@ -210,6 +212,47 @@ test('private marks file: comments and blanks skipped, missing file is empty', (
   assert.deepEqual(loadMarks({ YOKOTEN_PRIVATE_MARKS: join(dir, 'none') }), []);
 });
 
+test('private marks file: the setting adds a second list to the default file, never replaces it (#656)', () => {
+  const home = makeTempDir();
+  const config = join(home, '.config', 'yokoten');
+  mkdirSync(config, { recursive: true });
+  const own = join(config, 'private-marks');
+  writeFileSync(own, '# added by yokoten from this machine: forge login\nOcto-Jdoe\nMyCity');
+  const extra = join(home, 'extra');
+  writeFileSync(extra, 'myserver\nmycity\n');
+  const empty = join(home, 'empty');
+  writeFileSync(empty, '');
+  assert.deepEqual(loadMarks({ HOME: home, YOKOTEN_PRIVATE_MARKS: empty }), ['octo-jdoe', 'mycity']);
+  assert.deepEqual(loadMarks({ HOME: home, YOKOTEN_PRIVATE_MARKS: extra }), ['octo-jdoe', 'mycity', 'myserver']);
+  assert.deepEqual(loadMarks({ HOME: home, YOKOTEN_PRIVATE_MARKS: join(home, 'none') }), ['octo-jdoe', 'mycity']);
+  // A header in one file never names the kind of a line in the next.
+  assert.deepEqual(loadMarkKinds({ HOME: home, YOKOTEN_PRIVATE_MARKS: extra }), [
+    { value: 'octo-jdoe', kind: 'forge login' },
+    { value: 'mycity', kind: 'forge login' },
+    { value: 'myserver', kind: null },
+  ]);
+  // yokoten writes to the default file, and the setting names the same file only once.
+  assert.equal(marksFile({ HOME: home, YOKOTEN_PRIVATE_MARKS: extra }), own);
+  assert.deepEqual(marksFiles({ HOME: home, YOKOTEN_PRIVATE_MARKS: own }), [own]);
+});
+
+test('private marks file: a default file that can not be read throws, whatever the setting names (#656)', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, () => {
+  const home = makeTempDir();
+  const config = join(home, '.config', 'yokoten');
+  mkdirSync(config, { recursive: true });
+  const own = join(config, 'private-marks');
+  writeFileSync(own, 'mycity\n');
+  chmodSync(own, 0o000);
+  const extra = join(home, 'extra');
+  writeFileSync(extra, 'myserver\n');
+  try {
+    assert.throws(() => loadMarks({ HOME: home, YOKOTEN_PRIVATE_MARKS: extra }), { code: 'EACCES' });
+    assert.throws(() => loadMarkKinds({ HOME: home, YOKOTEN_PRIVATE_MARKS: extra }), { code: 'EACCES' });
+  } finally {
+    chmodSync(own, 0o600);
+  }
+});
+
 test('private marks file: the kind of each added mark, by its header or, under the old header, by shape (#410)', () => {
   const dir = makeTempDir('yokoten-');
   const file = join(dir, 'marks');
@@ -315,6 +358,12 @@ test('makeRedactor: patterns only, with no marks: private emails go, noreply and
   assert.equal(redact(`by jane${at}personal-mail.dev and 1+jane${at}users.noreply.github.com\n`), `by <email> and 1+jane${at}users.noreply.github.com\n`);
   assert.equal(redact(`git${at}github.com:o/r and git${at}build.private-host.dev:o/r`), `git${at}github.com:o/r and git${at}<host>:o/r`);
   assert.equal(redact('at /home/someone/project'), 'at ~/project');
+});
+
+test('makeRedactor: the real value of a secret-looking environment variable is hidden (#616)', () => {
+  const value = ['env', 'Secret', 'Value', '1234567890'].join('');
+  assert.equal(makeRedactor({}, { HOME: '/home/someone', SERVICE_TOKEN: value })(`printed ${value}`), 'printed <secret>');
+  assert.equal(makeRedactor({}, { HOME: '/home/someone', SERVICE_TOKEN: 'short' })('short'), 'short', 'too short to be a key');
 });
 
 test('makeRedactor: owners, hosts and marks, by shape, case-insensitive, whole words only', () => {
@@ -426,6 +475,20 @@ test('release notes are read when a release is allowed', () => {
   assert.equal(approved(`gh release create v1 --notes "${email}"`)?.id, 'email');
   assert.equal(approved('gh release edit v1 --notes-file notes.md')?.id, 'email');
   assert.equal(approved('gh release create v1 --notes "clean notes"'), null);
+});
+
+test('a joined short-option cluster in gh api is refused, so a hidden field is not posted (#650)', () => {
+  assert.equal(post('gh api -if body=x repos/o/r/issues/1/comments')?.id, 'run-remove');
+  assert.equal(post(`gh api -iF body="${email}" repos/o/r/issues`)?.id, 'run-remove');
+  assert.equal(post(`gh api -iXPOST repos/o/r/issues -f body="${email}"`)?.id, 'run-remove');
+});
+
+test('gh after a launcher value is still the program, and a jq value is not a method (#650)', () => {
+  assert.equal(post(`env -u gh gh issue create --title t --body "${email}"`)?.id, 'email');
+  assert.equal(post(`sudo -u gh gh issue comment 3 -b "${email}"`)?.id, 'email');
+  assert.equal(post(`xargs -a gh gh issue comment 3 --body "${email}"`)?.id, 'email');
+  assert.equal(post(`gh api -X POST -q -XGET repos/o/r/issues -f body="${email}"`)?.id, 'email');
+  assert.equal(post(`gh api -X GET -q -XPOST repos/o/r/issues -f body="${email}"`), null);
 });
 
 test('gh api fields and input files are read', () => {
@@ -1510,7 +1573,7 @@ const copyAllowRepo = makeRepoTemplate((repo) => {
   git('config', 'user.email', `1+test${at}users.noreply.github.com`);
 });
 
-/** A repo with an origin remote, or none, and a marks file and an allow file beside it. */
+/** A repo with an origin remote, or none, a marks file the setting names, and the folder of the allow file. */
 function allowRepo(remote: string | null) {
   const base = makeTempDir('yokoten-allow-');
   const repo = join(base, 'repo');
@@ -1521,6 +1584,8 @@ function allowRepo(remote: string | null) {
   const marks = join(base, 'private-marks');
   writeFileSync(marks, 'quietvale\nquietvale labs\n');
   const env: Env = { HOME: base, YOKOTEN_PRIVATE_MARKS: marks };
+  // The allow file is beside the default marks file, never the setting's (#656).
+  mkdirSync(join(base, '.config', 'yokoten'), { recursive: true });
   const allow = (repos: unknown) => writeFileSync(machineAllowFile(env), typeof repos === 'string' ? repos : JSON.stringify({ repos }));
   return { base, repo, env, git, allow };
 }
@@ -1547,6 +1612,25 @@ test('machineAllowed: the entry for this remote allows its marks; another remote
   assert.deepEqual(machineAllowed(env, null).allow, [], 'a guard that cannot tell where it runs allows nothing');
   git('remote', 'set-url', 'origin', 'https://example.com/octo/renamed.git');
   assert.deepEqual(machineAllowed(env, repo), { allow: [], unsure: null }, 'a renamed remote is no longer allowed');
+});
+
+test('machineAllowed: an allow file beside the setting\'s marks file never allows a mark of the default file (#656)', () => {
+  const { base, repo, env } = allowRepo('https://example.com/octo/app');
+  writeFileSync(join(base, '.config', 'yokoten', 'private-marks'), 'quietvale\n');
+  // The setting names an empty file in a folder that holds its own allow file.
+  const agent = join(base, 'agent');
+  mkdirSync(agent);
+  const setting = join(agent, 'private-marks');
+  writeFileSync(setting, '');
+  const entries = JSON.stringify({ repos: [{ remote: 'example.com/octo/app', allow: ['quietvale'] }] });
+  writeFileSync(join(agent, 'private-marks-allow.json'), entries);
+  const agentEnv: Env = { ...env, YOKOTEN_PRIVATE_MARKS: setting };
+  const post = () => checkCommand('gh issue create --title "check: fix a bug" --body "QuietVale ships"', { env: agentEnv, cwd: repo })?.id ?? null;
+  assert.deepEqual(machineAllowed(agentEnv, repo), { allow: [], unsure: null });
+  assert.equal(post(), 'private-mark', 'the mark is still caught');
+  // The same entry beside the default file allows it: the repo and the entry are good.
+  writeFileSync(machineAllowFile(agentEnv), entries);
+  assert.equal(post(), null);
 });
 
 test('machineAllowed: every fetch and push address of origin, as git rewrites them, must name the same repo (#447)', () => {
@@ -2212,4 +2296,15 @@ test('scanText: a private-mark finding names the kind of mark, never the value (
   // With no kinds, as before: the line of the file.
   assert.equal(scanText('from QuietVale', { file: 'a.md', marks: ['quietvale'] })[0].what, 'matches a line of your private-marks file');
   assert.equal(describeMark('some new kind').what, 'matches your some new kind (a private mark yokoten added by itself)');
+});
+
+test('machineAllowFile: with no home folder there is no allow file, never one beside the setting\'s file (#656)', () => {
+  const dir = makeTempDir();
+  const marks = join(dir, 'private-marks');
+  writeFileSync(marks, 'quietvale\n');
+  writeFileSync(join(dir, 'private-marks-allow.json'), JSON.stringify({ skipOwnName: false, repos: [{ remote: 'example.com/octo/app', allow: ['quietvale'] }] }));
+  const env: Env = { HOME: '', YOKOTEN_PRIVATE_MARKS: marks };
+  assert.throws(() => machineAllowFile(env), /no home folder/);
+  assert.deepEqual(readMachineAllow(env), { entries: [] });
+  assert.deepEqual(loadMarks(env), ['quietvale'], 'the setting\'s marks are still read');
 });

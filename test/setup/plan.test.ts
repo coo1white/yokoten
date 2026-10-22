@@ -12,7 +12,7 @@ import {
   type Board,
   type Gh,
   readPlanning,
-} from '../../src/host/github.ts';
+} from '../../src/host/github/index.ts';
 import {
   AREA_COLOR,
   BOARD_STATUSES,

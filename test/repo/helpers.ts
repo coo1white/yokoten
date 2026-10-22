@@ -38,7 +38,7 @@ import {
   type Label,
   readServer,
   type ServerSettings,
-} from '../../src/host/github.ts';
+} from '../../src/host/github/index.ts';
 import type { Fact } from '../../src/setup/advice/adopt.ts';
 import {
   road,

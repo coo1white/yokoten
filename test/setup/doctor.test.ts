@@ -41,7 +41,7 @@ import {
   readServer,
   type ServerSettings,
   type Unread,
-} from '../../src/host/github.ts';
+} from '../../src/host/github/index.ts';
 import { unsavedNotes } from '../../src/setup/advice/unsaved.ts';
 import {
   agentTempDirCheck,
@@ -1609,4 +1609,18 @@ test('doctor: with the launcher off the PATH, every command in the text is `npx 
   const bare = makeTempDir('yokoten-npx-');
   const viaNpx = doctor(root, { env: { HOME: bare, npm_command: 'exec', PATH: env.PATH, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, gh: () => { throw new Error('no network'); } });
   assert.match(viaNpx.lines.join('\n'), /`npx yokoten init`/);
+});
+
+test('doctor: a marks file it can not read is named as unreadable, not missing (#656)', async () => {
+  const sandbox = makeSandbox();
+  const config = join(sandbox.home, '.config', 'yokoten');
+  mkdirSync(config, { recursive: true });
+  writeFileSync(join(config, 'private-marks'), 'quietharbor\n');
+  const folder = join(sandbox.home, 'marks-folder');
+  mkdirSync(folder);
+  const result = await sandbox.call(['doctor'], { extra: { YOKOTEN_PRIVATE_MARKS: folder } });
+  const out = result.stdout;
+  assert.match(out, /private-marks: a private-marks file can't be read, so the privacy check stops every commit; make ~\/\.config\/yokoten\/private-marks readable/);
+  assert.doesNotMatch(out, /is missing or has no marks/);
+  assert.doesNotMatch(out, /quietharbor/i);
 });

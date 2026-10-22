@@ -52,3 +52,7 @@ process.on('exit', () => rmSync(TEST_HOME, { recursive: true, force: true }));
  */
 export const COMPILE_CACHE = join(tmpdir(), 'node-compile-cache');
 process.env.NODE_COMPILE_CACHE = COMPILE_CACHE;
+
+// Tests call the guard without the hook. The host command list registers when its module
+// loads. Load it here, after HOME is set, so nothing it imports reads the real home folder.
+await import('../../src/host/gh-commands.ts');

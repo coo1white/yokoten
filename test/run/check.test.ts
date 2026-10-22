@@ -77,6 +77,42 @@ test('check --staged: stops a commit with a personal email or a private mark', (
   assert.ok(!/mycity/i.test(r.stderr));
 });
 
+// YOKOTEN_PRIVATE_MARKS adds a list; an empty one never hides the default file's marks (#656).
+test('check --staged: a marks setting that names an empty file still checks the marks in the default file (#656)', async () => {
+  const sandbox = makeSandbox();
+  const config = join(sandbox.home, '.config', 'yokoten');
+  mkdirSync(config, { recursive: true });
+  writeFileSync(join(config, 'private-marks'), 'mycity\n');
+  const empty = join(sandbox.home, 'empty-marks');
+  writeFileSync(empty, '');
+  sandbox.write('src/b.md', 'I live in MyCity\n');
+  sandbox.git('add', '.');
+  const r = await sandbox.call(['check', '--staged'], { extra: { YOKOTEN_PRIVATE_MARKS: empty } });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /src\/b\.md:1: matches a word you added to your private marks/);
+  assert.ok(!/mycity/i.test(r.stdout + r.stderr));
+});
+
+test('check --staged: a default marks file it can not read fails closed, whatever the setting names (#656)', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async () => {
+  const sandbox = makeSandbox();
+  const config = join(sandbox.home, '.config', 'yokoten');
+  mkdirSync(config, { recursive: true });
+  const own = join(config, 'private-marks');
+  writeFileSync(own, 'mycity\n');
+  chmodSync(own, 0o000);
+  const other = join(sandbox.home, 'other-marks');
+  writeFileSync(other, 'otherword\n');
+  sandbox.write('src/a.md', 'fine\n');
+  sandbox.git('add', '.');
+  try {
+    const r = await sandbox.call(['check', '--staged'], { extra: { YOKOTEN_PRIVATE_MARKS: other } });
+    assert.notEqual(r.status, 0, 'fails closed');
+    assert.ok(!/mycity|otherword/i.test(r.stdout + r.stderr));
+  } finally {
+    chmodSync(own, 0o600);
+  }
+});
+
 test('check --staged: stops build output and binaries, lets images and allowed paths through (#56)', async () => {
   const sandbox = makeSandbox();
   sandbox.write('dist/app.js', 'console.log(1);\n');
@@ -751,6 +787,29 @@ test('check --staged: a staged change file is read as `yokoten changelog` reads 
   assert.match(result.stdout, /note: changes\/7-dark\.md:4: a sentence of 30 words/);
 });
 
+test('check: a sure secret fails, a likely one warns, and an ignored one stays listed (#616)', async () => {
+  const sandbox = makeSandbox();
+  const sure = `${'gh'}p_${'x7Y2k9'.repeat(6)}`;
+  const ignored = 'Q7w3R9t2Y5u8I1o4'.repeat(2);
+  const likely = 'a1B2c3D4e5F6g7H8'.repeat(2);
+  const sureIgnored = `${'gh'}p_${'a1B2c3'.repeat(6)}`;
+  const names = ['GITHUB_' + 'TOKEN', 'api_' + 'key', 'OLD_' + 'KEY', 'NEW_' + 'TOKEN'];
+  const marker = ['yokoten', 'ignore'].join('-');
+  sandbox.write('a.env', [`${names[0]}=${sure}`, `${names[1]}="${likely}"`, `${names[2]}=${ignored} # ${marker} secret: a test fixture`, `${names[3]}=${sureIgnored} # ${marker} secret: a test fixture`, ''].join('\n'));
+  sandbox.git('add', 'a.env');
+  const result = await sandbox.call(['check', '--staged', '--json']);
+  assert.equal(result.status, 1, result.stderr || result.stdout);
+  const output = JSON.parse(result.stdout) as { findings: { id: string; grade?: string; line?: number }[]; notes: { grade?: string; ignored?: string }[] };
+  // A sure secret fails, with or without a comment: only .yokotenignore may let it through.
+  assert.deepEqual(output.findings.map((f) => [f.id, f.grade, f.line]), [['secret', 'sure', 1], ['secret', 'sure', 4]], JSON.stringify(output.findings));
+  assert.ok(output.notes.some((f) => f.grade === 'likely' && f.ignored === undefined), JSON.stringify(output.notes));
+  assert.ok(output.notes.some((f) => f.grade === 'likely' && f.ignored === 'a test fixture'), JSON.stringify(output.notes));
+  for (const secret of [sure, ignored, likely, sureIgnored]) assert.ok(!result.stdout.includes(secret), 'no secret appears in the output');
+  const text = await sandbox.call(['check', '--staged']);
+  assert.match(text.stdout, /warning: .*\[likely\]/);
+  assert.match(text.stdout, /ignored: a test fixture/);
+});
+
 test('check --staged: reads the staged change file, not the work tree; plain check reads the work tree (#346)', async () => {
   const sandbox = makeSandbox();
   sandbox.write('src/a.ts', 'a\n');
@@ -1065,7 +1124,9 @@ test('marks allow --here: the machine allows a mark in one repo with no yokoten.
   const marks = join(own.home, 'shared-marks');
   writeFileSync(marks, 'quietvale\nquietvale labs\n');
   const extra = { YOKOTEN_PRIVATE_MARKS: marks };
-  const allowFile = join(own.home, 'private-marks-allow.json');
+  // The allow file is beside the default marks file, never the setting's (#656).
+  const allowFile = join(own.home, '.config', 'yokoten', 'private-marks-allow.json');
+  mkdirSync(dirname(allowFile), { recursive: true });
   const said: string[] = [];
   const run = async (sandbox: ReturnType<typeof makeSandbox>, args: string[]) => {
     const r = await sandbox.call(args, { extra });
@@ -1182,7 +1243,9 @@ test('check and doctor: a mark that names the repo is skipped there, counted by 
   assert.match((await run(own, ['doctor'])).stdout, /own-marks: 1 of your private marks skipped here because they name this repo/);
 
   // The machine's switch, kept when `marks allow` writes the file.
-  const allowFile = join(own.home, 'private-marks-allow.json');
+  // The allow file is beside the default marks file, never the setting's (#656).
+  const allowFile = join(own.home, '.config', 'yokoten', 'private-marks-allow.json');
+  mkdirSync(dirname(allowFile), { recursive: true });
   // The switch alone, with no repos key, as the guide shows it: read as no repos.
   writeFileSync(allowFile, JSON.stringify({ skipOwnName: false }));
   assert.equal((await run(own, ['check', '--staged'])).status, 1, 'off on this machine');

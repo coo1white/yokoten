@@ -16,8 +16,8 @@ import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import type { Config, Env } from './config.ts';
-import { type Finding, finding, type RuleId } from './message.ts';
-import { findSecrets, makeSecretHider, SECRET } from './secrets.ts';
+import { type Finding, finding, isFailingFinding, type RuleId } from './message.ts';
+import { findEnvironmentValues, findLineIgnores, findSecretHits, type IgnoreDirective, makeSafeIgnoreReason, makeSecretHider, parseIgnoreFile, SECRET } from './secrets.ts';
 
 /** Where the system says the home folder is, with no $HOME: the password file. Empty when it can't tell. */
 export const systemHome = (): string => {
@@ -59,26 +59,60 @@ export function withHome(env: Env, system: () => string = systemHome): Env {
 /** Thrown when there is no home folder, so nothing outside the repo can be read or written. */
 export const NO_HOME = 'yokoten finds no home folder (HOME is empty or not a full path), so it has no place outside the repo';
 
-/** The private-marks file. With no home folder (and no YOKOTEN_PRIVATE_MARKS), it throws NO_HOME. */
+/**
+ * The private-marks file yokoten writes, and the one the machine allow file sits beside: the
+ * default ~/.config/yokoten/private-marks. With no home folder it is YOKOTEN_PRIVATE_MARKS, and
+ * with neither it throws NO_HOME. The setting never takes the default's place (#656).
+ */
 export function marksFile(env: Env): string {
-  if (env.YOKOTEN_PRIVATE_MARKS) return env.YOKOTEN_PRIVATE_MARKS;
+  if (!homeOf(env) && env.YOKOTEN_PRIVATE_MARKS) return env.YOKOTEN_PRIVATE_MARKS;
   return join(homeIn(env), '.config', 'yokoten', 'private-marks');
 }
 
-/** The owner's marks, lowercased. An empty list when the file is missing. */
+/**
+ * Every private-marks file the check reads (#656): the default one, when there is a home
+ * folder, and the one YOKOTEN_PRIVATE_MARKS names. The setting adds marks; it never removes
+ * the default's. Empty with neither.
+ */
+export function marksFiles(env: Env): string[] {
+  const files = homeOf(env) ? [join(homeIn(env), '.config', 'yokoten', 'private-marks')] : [];
+  const extra = env.YOKOTEN_PRIVATE_MARKS;
+  if (extra && !files.some((file) => resolve(file) === resolve(extra))) files.push(extra);
+  return files;
+}
+
+/**
+ * `env` with only the file yokoten writes to (`marksFile`) left to read (#656). Install and
+ * `yokoten marks add` ask it whether a mark is there already: one only in the setting's file
+ * still goes into the default file.
+ */
+export function writtenMarksOnly(env: Env): Env {
+  return homeOf(env) ? { ...env, YOKOTEN_PRIVATE_MARKS: '' } : env;
+}
+
+/** The text of every private-marks file, one after the other. A missing file is empty; any other error throws, so the check fails closed. */
+function readMarksText(env: Env): string {
+  return marksFiles(env)
+    .map((file) => {
+      try {
+        return readFileSync(file, 'utf8');
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return '';
+        throw err;
+      }
+    })
+    .map((text) => (text === '' || text.endsWith('\n') ? text : `${text}\n`))
+    .join('');
+}
+
+/** The owner's marks from every marks file, lowercased, each once. An empty list when no file is there. */
 export function loadMarks(env: Env): string[] {
-  let text = '';
-  try {
-    text = readFileSync(marksFile(env), 'utf8');
-  } catch (err) {
-    if ((err as Error).message === NO_HOME) return [];
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-  }
-  return text
+  const marks = readMarksText(env)
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith('#'))
     .map((line) => line.toLowerCase());
+  return [...new Set(marks)];
 }
 
 /**
@@ -108,8 +142,12 @@ export interface AllowEntry {
 /** The repo, as the machine allow file names it. `local` when origin is a folder on this machine, not a host. */
 export type RepoKey = { remote: string; local?: boolean };
 
-/** The machine allow file: beside the private-marks file. With no home folder, it throws NO_HOME. */
-export const machineAllowFile = (env: Env): string => join(dirname(marksFile(env)), 'private-marks-allow.json');
+/**
+ * The machine allow file: beside the default private-marks file, never beside the one
+ * YOKOTEN_PRIVATE_MARKS names, so the setting can't bring its own allow (#656). With no home
+ * folder it throws NO_HOME, and the machine allows nothing.
+ */
+export const machineAllowFile = (env: Env): string => join(homeIn(env), '.config', 'yokoten', 'private-marks-allow.json');
 
 /** The port each scheme uses when the URL names none: such a port is left out of the key. */
 const DEFAULT_PORTS: Record<string, string> = { https: '443', http: '80', ssh: '22', 'git+ssh': '22', 'ssh+git': '22', git: '9418' };
@@ -431,14 +469,17 @@ export interface Mark {
  * bare host name is never taken for a login.
  */
 export function loadMarkKinds(env: Env): Mark[] {
-  let text = '';
-  try {
-    text = readFileSync(marksFile(env), 'utf8');
-  } catch (err) {
-    if ((err as Error).message === NO_HOME) return [];
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-  }
-  return markLines(text).flatMap((mark) => (mark ? [mark] : []));
+  const seen = new Set<string>();
+  return marksFiles(env).flatMap((file) => {
+    let text = '';
+    try {
+      text = readFileSync(file, 'utf8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+    // Each file on its own, so a header in one never names the kind of a line in the next.
+    return markLines(text).flatMap((mark) => (mark && !seen.has(mark.value) && seen.add(mark.value) ? [mark] : []));
+  });
 }
 
 /**
@@ -839,36 +880,134 @@ export function describeMark(kind: string | null | undefined): { what: string; f
   return { what, fix: known?.off ? `${MARK_REWORD}. To stop checking ${known.name}, run \`yokoten marks off ${known.off}\`` : `${MARK_REWORD}. ${MARK_ALLOW}` };
 }
 
+/** The tracked file that gives a reason for a finding the project lets through. */
+export const IGNORE_FILE = '.yokotenignore';
+
+/** The fix for an ignore only the lead may add: a line in the ignore file, which is lead-only. */
+const LEAD_IGNORE_FIX = (rule: string) => `if it is not real, ask the lead to add \`${rule}: <reason>\` to ${IGNORE_FILE}`;
+
+/** An ignore's reason as output may show it: no secret, environment value, mark, home path, email or IP. */
+function hideInReason(redact: (text: string) => string, reason: string, env: Env, values: string[] = []): string {
+  return redact(makeSafeIgnoreReason(reason, env, values)).replace(IPV4, (hit) => {
+    const octets = hit.split('.').map(Number);
+    return octets.every((n) => n <= 255) && !OK_IP.some((re) => re.test(hit)) ? SECRET : hit;
+  });
+}
+
+/**
+ * The ignores a pull request adds to one file, as notes for the reviewer: each
+ * `yokoten-ignore` comment on an added line, and each added line of `.yokotenignore`.
+ * `added` holds the added lines' numbers, from 1. The reason is shown hidden, as in a finding.
+ */
+export function addedIgnores(file: string, text: string, added: ReadonlySet<number>, env: Env, marks: string[] = []): Finding[] {
+  if (!added.size) return [];
+  const found: Finding[] = [];
+  let redact: ((text: string) => string) | undefined;
+  const note = (reason: string, line: number, what: string) => {
+    redact ??= makeRedactor({ marks }, env);
+    found.push(finding('ignore-added', what, 'check that the reason holds before you approve', { file, line, ignored: hideInReason(redact, reason, env) }));
+  };
+  if (file === IGNORE_FILE) {
+    for (const entry of parseIgnoreFile(text).entries) {
+      if (entry.line !== undefined && added.has(entry.line)) note(entry.reason, entry.line, `this pull request lets ${entry.rule} hits through in the whole repo`);
+    }
+    return found;
+  }
+  text.split('\n').forEach((line, index) => {
+    if (!added.has(index + 1)) return;
+    for (const entry of findLineIgnores(line, { commentsOnly: true })) {
+      if (!('problem' in entry)) note(entry.reason, index + 1, `this pull request lets a ${entry.rule} hit through on this line`);
+    }
+  });
+  return found;
+}
+
+/** The rules an ignore may name. */
+const IGNORABLE_RULES = ['secret', 'email', 'ip', 'private-mark'];
+const IGNORABLE = new Set(IGNORABLE_RULES);
+
+/** The reasons in `.yokotenignore`, and a failure for each line with no rule, no reason or an unknown rule. */
+export function loadIgnores(root: string): { entries: IgnoreDirective[]; problems: Finding[] } {
+  let text: string;
+  try {
+    text = readFileSync(join(root, IGNORE_FILE), 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { entries: [], problems: [] };
+    return { entries: [], problems: [finding('ignore', `the ignore file can't be read (${(err as NodeJS.ErrnoException).code ?? 'unknown error'})`, `make ${IGNORE_FILE} readable, or remove it`, { file: IGNORE_FILE, grade: 'sure' })] };
+  }
+  const parsed = parseIgnoreFile(text);
+  const problems = parsed.problems.map((problem) => finding('ignore', problem.what, `write \`<rule>: <reason>\` in ${IGNORE_FILE}, such as \`secret: a test fixture\``, { file: IGNORE_FILE, line: problem.line, grade: 'sure' }));
+  for (const entry of parsed.entries) {
+    if (IGNORABLE.has(entry.rule)) continue;
+    problems.push(finding('ignore', 'an ignore names a rule this check does not know', `use one of: ${IGNORABLE_RULES.join(', ')}`, { file: IGNORE_FILE, line: entry.line, grade: 'sure' }));
+  }
+  return {
+    entries: parsed.entries.filter((entry) => IGNORABLE.has(entry.rule)),
+    problems,
+  };
+}
+
 /**
  * Problems in one file's text. `allow` holds literal strings the project has said are
  * fine (yokoten.json "privacy.allow"), such as a public support address. `kinds` gives
  * each mark's kind, as `loadMarkKinds` reads it, so a finding can name it (#523).
+ * `ignores` holds the reasons from `.yokotenignore`. A privacy hit there is still listed,
+ * with its grade and its reason, but does not fail. A `yokoten-ignore` comment on the
+ * line works the same, except for a private mark or a `sure` secret: only
+ * `.yokotenignore`, which only the lead may change, lets those through.
+ * `inlineIgnores: false` reads no comment at all, for text that is not a file (a gh post).
  */
 export function scanText(
   text: string,
-  { file, marks = [], allow = [], logins = [], ownAllow = allow, kinds }: { file: string; marks?: string[]; allow?: string[]; logins?: string[]; ownAllow?: string[]; kinds?: ReadonlyMap<string, string | null> },
+  { file, marks = [], allow = [], logins = [], ownAllow = allow, kinds, ignores = [], env = {}, inlineIgnores = true }: { file: string; marks?: string[]; allow?: string[]; logins?: string[]; ownAllow?: string[]; kinds?: ReadonlyMap<string, string | null>; ignores?: IgnoreDirective[]; env?: Env; inlineIgnores?: boolean },
 ): Finding[] {
   const problems: Finding[] = [];
   const lines = text.split('\n');
   // `logins`: the forge logins yokoten added to the marks, fine where a file names accounts (#410).
   const places = logins.length && marks.length ? loginPlaces(file, lines) : null;
-  const secrets = findSecrets(lines, allow);
+  const secrets = findSecretHits(lines, { allow, env });
+  const secretValues = secrets.map((hit) => lines[hit.line].slice(hit.start, hit.end));
+  const fileIgnore = new Map<string, string>();
+  for (const entry of ignores) if (!fileIgnore.has(entry.rule)) fileIgnore.set(entry.rule, entry.reason);
   // `ownAllow`: what may allow a mark, `allow` unless the caller says otherwise (a gh post to another repo, #447).
   const own = ownMarks(marks, ownAllow);
   const stopped = own.length ? marks.filter((mark) => !own.includes(mark)) : marks;
+  let cleanReason: ((text: string) => string) | undefined;
   lines.forEach((line, index) => {
     const where = { file, line: index + 1 };
-    // The secret itself is never printed either, only its kind.
-    for (const [at, kind] of secrets) if (at === index) problems.push(finding('secret', `a secret (${kind})`, 'remove it, rotate it, and keep it outside the repo', where));
+    // The secret itself is never printed either, only its kind. An ignore with no reason
+    // is a failure, whether or not a secret is on its line.
+    const inline = inlineIgnores ? findLineIgnores(line, { commentsOnly: true }) : [];
+    const inlineReason = (rule: string) => inline.find((entry): entry is IgnoreDirective => !('problem' in entry) && entry.rule === rule)?.reason;
+    // `isInlineAllowed` false: a private mark or a sure secret, which only the ignore file may let through.
+    const ignoreFields = (rule: string, values: string[], isInlineAllowed: boolean): { ignored?: string } => {
+      const reason = (isInlineAllowed ? inlineReason(rule) : undefined) ?? fileIgnore.get(rule);
+      if (reason === undefined) return {};
+      cleanReason ??= makeRedactor({ marks: stopped }, env);
+      return { ignored: hideInReason(cleanReason, reason, env, values) };
+    };
+    for (const entry of inline) {
+      if ('problem' in entry) problems.push(finding('ignore', entry.problem, 'add the rule and a reason after yokoten-ignore, or remove the ignore', { ...where, grade: 'sure' }));
+      else if (!IGNORABLE.has(entry.rule)) problems.push(finding('ignore', 'an ignore names a rule this check does not know', `use one of: ${IGNORABLE_RULES.join(', ')}`, { ...where, grade: 'sure' }));
+      else if (entry.rule === 'private-mark') problems.push(finding('ignore', "a private-mark hit can't be ignored on its line", LEAD_IGNORE_FIX('private-mark'), { ...where, grade: 'sure' }));
+    }
+    for (const hit of secrets) {
+      if (hit.line !== index) continue;
+      const isSure = hit.grade === 'sure';
+      const fields = ignoreFields('secret', secretValues, !isSure);
+      // A sure secret with a comment that tries to ignore it: the fix says who may.
+      const fix = isSure && fields.ignored === undefined && inlineReason('secret') !== undefined ? `a sure secret can't be ignored on its line: remove it and rotate it, or ${LEAD_IGNORE_FIX('secret')}` : 'remove it, rotate it, and keep it outside the repo';
+      problems.push(finding('secret', `a secret (${hit.kind})`, fix, { ...where, grade: hit.grade, ...fields }));
+    }
     for (const [hit] of line.matchAll(EMAIL)) {
       if (isPersonalEmail(hit, allow)) {
-        problems.push(finding('email', 'an email address', EMAIL_FIX, where));
+        problems.push(finding('email', 'an email address', EMAIL_FIX, { ...where, grade: 'sure', ...ignoreFields('email', [hit], true) }));
       }
     }
     for (const { 0: hit, index } of line.matchAll(IPV4)) {
       const octets = hit.split('.').map(Number);
       if (octets.some((n) => n > 255) || OK_IP.some((re) => re.test(hit)) || allow.includes(hit) || isSectionNumber(line, index, hit)) continue;
-      problems.push(finding('ip', 'an IP address', 'use a placeholder from 192.0.2.0/24', where));
+      problems.push(finding('ip', 'an IP address', 'use a placeholder from 192.0.2.0/24', { ...where, grade: 'sure', ...ignoreFields('ip', [hit], true) }));
     }
     const folded = stopped.length ? foldLine(line) : null;
     for (const mark of stopped) {
@@ -876,7 +1015,7 @@ export function scanText(
       if (!hasMark(line, mark, folded!)) continue;
       if (places && logins.includes(mark) && !hasMark(places(line, index, mark), mark)) continue;
       const { what, fix } = describeMark(kinds && kinds.has(mark) ? kinds.get(mark) : undefined);
-      problems.push(finding('private-mark', what, fix, where));
+      problems.push(finding('private-mark', what, fix, { ...where, grade: 'sure', ...ignoreFields('private-mark', [mark], false) }));
     }
   });
   return problems;
@@ -1033,9 +1172,12 @@ export function makeRedactor(hidden: Hidden, env: Env): (text: string) => string
     return out + text.slice(last);
   };
   const hideSecrets = makeSecretHider();
+  const secretValues = findEnvironmentValues(env);
   return (text) => {
     // An SSH remote at a private host (git@host) names the host, not a person.
-    const out = hideSecrets(text).replace(EMAIL, (hit) => (!isPersonalEmail(hit) ? hit : /^git@/i.test(hit) ? `git@${PLACEHOLDERS.host}` : PLACEHOLDERS.email));
+    let out = hideSecrets(text);
+    for (const value of secretValues) out = out.replaceAll(value, SECRET);
+    out = out.replace(EMAIL, (hit) => (!isPersonalEmail(hit) ? hit : /^git@/i.test(hit) ? `git@${PLACEHOLDERS.host}` : PLACEHOLDERS.email));
     return hideMarks(hideHome(out, env));
   };
 }
@@ -1107,7 +1249,6 @@ const CLOSE_OPTIONS = new Set([...TEXT_OPTIONS, '--comment', '-c']);
 const FILE_OPTIONS = new Set(['--body-file', '--notes-file', '-F']);
 // The api subcommand: each field is key=value; `-F key=@file` reads a file, and `--input` sends one.
 const FIELD_OPTIONS = new Set(['-f', '--raw-field', '-F', '--field']);
-const METHOD_OPTIONS = new Set(['-X', '--method']);
 const INPUT_OPTIONS = new Set(['--input']);
 // gh's global option that takes a value before the subcommand: `gh -R o/r issue create`.
 const GLOBAL_VALUES = new Set(['-R', '--repo']);
@@ -1123,16 +1264,18 @@ const programName = (word: string) => word.slice(Math.max(word.lastIndexOf('/'),
 const isYokoten = (name: string) => /^yokoten(\.ts|\.js)?$/.test(name);
 
 /**
- * Where gh starts in a command's words, or -1. `programs` are the programs the command
- * runs (the guard's findPrograms): gh itself, or yokoten (or node) running `bot -- gh`.
+ * Where gh starts in a command's words, or -1. `places` are the programs the command
+ * runs, each with its index in `words` (the guard's findPrograms): gh itself, or yokoten
+ * (or node) running `bot -- gh`. An index below 0 is an `env -S` program, which has no
+ * word in `words`. The index is the program's place, not the first word equal to its name.
  */
-export function ghIndex(words: string[], programs: string[]): number {
-  for (const program of programs) {
-    const name = programName(program);
-    const at = words.indexOf(program);
-    if (name === 'gh') return at;
+export function ghIndex(words: string[], places: { word: string; index: number }[]): number {
+  for (const place of places) {
+    if (place.index < 0 || place.index >= words.length) continue;
+    const name = programName(words[place.index]);
+    if (name === 'gh') return place.index;
     if (isYokoten(name) || name === 'node' || name === 'npx') {
-      const bot = words.indexOf('bot', at);
+      const bot = words.indexOf('bot', place.index + 1);
       if (bot !== -1 && words[bot + 1] === '--' && programName(words[bot + 2] ?? '') === 'gh') return bot + 2;
     }
   }
@@ -1140,7 +1283,7 @@ export function ghIndex(words: string[], programs: string[]): number {
 }
 
 /** An option and its value: `--body x`, `--body=x`, `-bx`. Null when `word` is not one of `names`. */
-function optionValue(words: string[], index: number, names: Set<string>): { value: string | undefined; name: string; next: number } | null {
+export function optionValue(words: string[], index: number, names: Set<string>): { value: string | undefined; name: string; next: number } | null {
   const word = words[index];
   const equals = word.indexOf('=');
   if (word.startsWith('--') && equals !== -1 && names.has(word.slice(0, equals))) return { name: word.slice(0, equals), value: word.slice(equals + 1), next: index + 1 };
@@ -1148,6 +1291,54 @@ function optionValue(words: string[], index: number, names: Set<string>): { valu
   // A short option with its value joined on: `-bx`, `-b=x`.
   if (/^-[A-Za-z]./.test(word) && names.has(word.slice(0, 2))) return { name: word.slice(0, 2), value: word.slice(2).replace(/^=/, ''), next: index + 1 };
   return null;
+}
+
+/** A host API call as the adapter reads it. The guard does not know which host this is. */
+export interface HostApiCall {
+  /** Upper case, or empty when the call names no method. */
+  method: string;
+  /** The endpoint word as written, before the path is normalized. */
+  rawPath: string;
+  /** The endpoint with the URL, query, `.` and `..` removed. */
+  path: string;
+  /** Whether the call sends a field or an input file. */
+  hasFields: boolean;
+  /** Whether short options are joined, so the method is not clear. */
+  cluster: boolean;
+}
+
+/** How a host adapter reads its API command. */
+export interface HostApi {
+  read(args: string[]): HostApiCall;
+  clusterFinding(): Finding;
+  values(): Set<string>;
+}
+
+/** No adapter yet. Until one loads, the guard refuses every `gh` command (see guards.ts). */
+let hostApi: HostApi | undefined;
+
+/** No API options until a host adapter registers. */
+const NO_API_VALUES = new Set<string>();
+
+/** The host adapter registers how to read its API command, once: a second registration is refused. */
+export function useHostApi(reader: HostApi): void {
+  if (hostApi && hostApi !== reader) throw new Error('the host API reader is already registered');
+  hostApi = reader;
+}
+
+/** The API call in `args`, or undefined when no host adapter has registered. */
+export function readHostApi(args: string[]): HostApiCall | undefined {
+  return hostApi?.read(args);
+}
+
+/** The finding for joined short options, or undefined when no host adapter has registered. */
+export function hostApiClusterFinding(): Finding | undefined {
+  return hostApi?.clusterFinding();
+}
+
+/** Options of the host API command that take a value. Empty until an adapter registers. */
+export function hostApiValues(): Set<string> {
+  return hostApi?.values() ?? NO_API_VALUES;
 }
 
 // A heredoc end word the guard reads exactly: blanks, then a plain name, bare or in single
@@ -1216,10 +1407,10 @@ export interface CommandFiles {
   movesFolder?: boolean;
 }
 
-/** What a gh command posts: its pieces, or a file the guard can't find. Null when it posts nothing. */
+/** What a gh command posts: its pieces, a file the guard can't find, or a short-option cluster. Null when it posts nothing. */
 type Missing = { missing: string; unsure: boolean; saw?: Risk };
 
-function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, command: string): { pieces: Piece[] } | Missing | null {
+function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, command: string): { pieces: Piece[] } | Missing | { cluster: true } | null {
   const { args } = gh;
   // The group and its subcommand: the first two words that are not options.
   const plain: string[] = [];
@@ -1234,8 +1425,6 @@ function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, comma
   let missing: Missing | null = null;
   // A file named twice is read once: gh posts one of them, and a long body is scanned once.
   const seen = new Set<string>();
-  let method: string | null = null;
-  let hasFields = false;
   let query: string | null = null;
   const addFile = (option: string, path: string | undefined, key?: string) => {
     // No file after the option: the shell took it as a redirect, as in `-F <(echo x)` (#439).
@@ -1264,33 +1453,23 @@ function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, comma
   };
   for (let index = 0; index < args.length; ) {
     if (isApi) {
-      const methodOption = optionValue(args, index, METHOD_OPTIONS);
-      if (methodOption) {
-        method = (methodOption.value ?? '').toUpperCase();
-        index = methodOption.next;
-        continue;
-      }
-      const input = optionValue(args, index, INPUT_OPTIONS);
-      if (input) {
-        hasFields = true;
-        addFile(input.name, input.value);
-        index = input.next;
-        continue;
-      }
-      const field = optionValue(args, index, FIELD_OPTIONS);
-      if (field) {
-        hasFields = true;
-        const value = field.value ?? '';
-        const equals = value.indexOf('=');
-        const key = equals === -1 ? value : value.slice(0, equals);
-        const content = equals === -1 ? '' : value.slice(equals + 1);
-        // `-F key=@file` reads the file; `-f` always takes the text as it is.
-        if ((field.name === '-F' || field.name === '--field') && content.startsWith('@')) addFile(field.name, content.slice(1), key);
-        else if (content) {
-          pieces.push({ source: `the ${key} field`, isFile: false, text: content });
-          if (key === 'query') query = content;
+      // The host's option list: a value such as `-q -XGET` is not a method.
+      const option = optionValue(args, index, hostApiValues());
+      if (option) {
+        if (INPUT_OPTIONS.has(option.name)) addFile(option.name, option.value);
+        else if (FIELD_OPTIONS.has(option.name)) {
+          const value = option.value ?? '';
+          const equals = value.indexOf('=');
+          const key = equals === -1 ? value : value.slice(0, equals);
+          const content = equals === -1 ? '' : value.slice(equals + 1);
+          // `-F key=@file` reads the file; `-f` always takes the text as it is.
+          if ((option.name === '-F' || option.name === '--field') && content.startsWith('@')) addFile(option.name, content.slice(1), key);
+          else if (content) {
+            pieces.push({ source: `the ${key} field`, isFile: false, text: content });
+            if (key === 'query') query = content;
+          }
         }
-        index = field.next;
+        index = option.next;
         continue;
       }
     } else {
@@ -1309,20 +1488,14 @@ function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, comma
     }
     index++;
   }
-  if (isApi && !apiWrites(apiPath(args.slice(args.indexOf('api') + 1)), method, hasFields, query)) return null;
-  return missing ?? { pieces };
-}
-
-// The options of the api subcommand that take a value (gh 2.102 help).
-const API_VALUES = new Set(['-X', '--method', '-f', '--raw-field', '-F', '--field', '-H', '--header', '--input', '-q', '--jq', '-t', '--template', '--hostname', '--cache', '-p', '--preview']);
-
-/** The path an API call names: its first word that is not an option or an option's value. */
-function apiPath(args: string[]): string {
-  for (let index = 0; index < args.length; index++) {
-    if (API_VALUES.has(args[index])) index++;
-    else if (!args[index].startsWith('-')) return args[index];
+  if (isApi) {
+    const apiAt = args.indexOf('api');
+    const call = readHostApi(apiAt === -1 ? args : args.slice(apiAt + 1));
+    // The same walk as the path. A cluster is refused here too, so a hidden field is not a quiet read.
+    if (call?.cluster) return { cluster: true };
+    if (call && !apiWrites(call.rawPath, call.method === '' ? null : call.method, call.hasFields, query)) return null;
   }
-  return '';
+  return missing ?? { pieces };
 }
 
 /** Whether an API call writes: only then is what it sends posted. */
@@ -1605,6 +1778,7 @@ export function checkPost(
   };
   const posted = postedPieces(gh, readFile, command);
   if (!posted) return null;
+  if ('cluster' in posted) return hostApiClusterFinding() ?? finding('run-remove', 'this host call joins short options, so its method is not clear', 'write each short option as its own word, so the guard can read the method');
   if ('missing' in posted) {
     // The guard runs before the command (#439): a file the command writes, or a path only
     // the running command knows, can't be read yet.
@@ -1632,7 +1806,7 @@ export function checkPost(
   const own = isHere ? [...ownMarks(all, [...allow, ...machineAllowed(env, cwd, key ?? undefined).allow]), ...named] : [];
   const marks = all.filter((mark) => !own.includes(mark));
   for (const piece of posted.pieces) {
-    const [hit] = scanText(piece.text, { file: piece.source, marks, allow, ownAllow: [], kinds });
+    const hit = scanText(piece.text, { file: piece.source, marks, allow, ownAllow: [], kinds, env, inlineIgnores: false }).find(isFailingFinding);
     if (!hit) continue;
     const more = { why: postWhy(hit.why) };
     if (piece.isFile) return finding(hit.id as RuleId, hit.what, postFix(hit), { ...more, file: shownPath(piece.source, env, marks), line: hit.line });

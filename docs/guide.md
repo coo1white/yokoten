@@ -80,7 +80,7 @@ flowchart LR
 
 | | Runs | Stops |
 |-|------|-------|
-| **1** | before each tool call | tag pushes, force pushes, skipped checks; test edits in a fix task; a worker editing the rules; a program the project blocks; an issue or pull request title that breaks the title rules; personal data or a secret in an issue, pull request, comment or release note an agent posts with `gh` |
+| **1** | before each tool call | tag pushes, force pushes, skipped checks; test edits in a fix task; a worker editing the rules; a program the project blocks; an issue or pull request title that breaks the title rules; personal data or a secret in an issue, pull request, comment or release note an agent posts with `gh`; cancelling or deleting an Actions run |
 | **1b** | when a Claude Code agent ends its turn | the same personal data, secrets and file rules as the commit check, in the changed files. It sends the agent back once with the findings |
 | **2** | on every commit | what the hook can't see: files changed by `sed` or a script, personal data, an overfull folder |
 | **3** | on every pull request | a commit made with the hook off |
@@ -399,6 +399,21 @@ fields (a GraphQL query that reads passes). The main checkout is never marked, s
 there is not affected. In a marked worktree the lead counts as a worker too. `git worktree
 remove <dir>` removes the mark with the worktree. Without a mark, an agent that drops
 `YOKOTEN_ROLE` counts as the lead.
+
+Cancelling or deleting an Actions run is refused for the lead and for a worker.
+The guard stops `gh run cancel`, `gh run delete`, and the same call through `gh api`
+or `yokoten bot`. `gh run rerun`, `view`, `list` and `watch` still pass. Ask the
+owner, who can cancel or delete the run on the Actions page.
+A `repositories/<id>` path is the same call. A path with `.` or `..` is read after those are resolved.
+The route words match in any case, so `Actions` and `Cancel` are the same call.
+A cluster of short options in `gh api` is refused, unless it is one option with its value joined.
+A method or a path taken from the shell is refused when it can name a run.
+A `gh run` subcommand taken from the shell is refused.
+`gh` must name one of its own commands. `gh extension install`, `upgrade`, `exec` and `browse` are refused.
+`exec` runs an installed extension. `browse` can install one.
+A non-GET call is refused when the path after `repos/` or `repositories/` is only a variable.
+`gh config set aliases` is refused. `gh alias list` and `gh extension list` still pass.
+`gh alias set` and `gh alias import` are refused for both roles. Ask the owner to add an alias by hand.
 
 The guard stops a worker's shell writes to lead-only files as well as its edits (#402). It
 reads redirects (`>`, `>>`, `>|`, `&>`), `sed -i`, `perl -i`, `tee`, `cp`, `mv`,
@@ -1406,7 +1421,7 @@ A list you set replaces the default list; it does not add to it.
 | `layout.maxEntries` | `7` | The most entries a folder may hold (core rule 10) |
 | `layout.exempt` | none | Folders that may grow past it. See [Folders that may grow](#folders-that-may-grow) |
 | `tests` | `*.test.*`, `*.spec.*`, `*_test.go`, `test/**`, `tests/**` | The test files a fix task may not change |
-| `leadOnly` | the rules, agent config, `.githooks/**`, `.github/**`, the vendored runtime `.yokoten/**` | The files a worker may not change |
+| `leadOnly` | the rules, agent config, `.githooks/**`, `.github/**`, the vendored runtime `.yokoten/**`, `.yokotenignore` | The files a worker may not change |
 | `privacy.allow` | none | Exact strings the privacy check lets through, such as a public support address, or this project's own name from your private marks |
 | `privacy.skip` | lock files | Files the privacy check does not read |
 | `privacy.utc` | `true` | Commit times must be in UTC |
@@ -1446,7 +1461,7 @@ Environment variables:
 | `YOKOTEN_LEAD_ONLY_OK` | The lead-only paths this worker may change, comma-separated, from the repo root. See [Works with](#works-with) |
 | `YOKOTEN_FIX_TASK=1` | The session is a fix task. It may not change test files |
 | `YOKOTEN_RELEASE_APPROVAL=1` | The owner allows a release from this session. Muse Code is not known to pass it to a hook |
-| `YOKOTEN_PRIVATE_MARKS` | Another path for the private-marks file |
+| `YOKOTEN_PRIVATE_MARKS` | A second private-marks file. Its marks are added to the ones in `~/.config/yokoten/private-marks`; it never takes that file's place. See [Privacy](#privacy) |
 | `YOKOTEN_MIN_FREE_GB` | `doctor` notes a disk with less free space than this, in GB. `0` turns the note off. See [Machine notes](#machine-notes) |
 | `YOKOTEN_BOT_APP_ID`, `YOKOTEN_BOT_KEY`, `YOKOTEN_BOT_INSTALLATION` | The bot. They can also be lines in `~/.config/yokoten/keys.env`. See [server.md](server.md#3-the-bot-a-github-app) |
 | `YOKOTEN_GITHUB_API` | Another GitHub API address, such as GitHub Enterprise Server |
@@ -1810,6 +1825,13 @@ of mark, such as `matches your git name (a private mark yokoten added by itself)
 `matches a word you added to your private marks`. Its fix says how to change the mark:
 `yokoten marks off git-name` for a kind yokoten adds, `yokoten marks remove` for your own.
 
+`YOKOTEN_PRIVATE_MARKS` names a second marks file. The check reads both files and uses
+every mark in them. So the setting can only add marks, never remove them. When
+`~/.config/yokoten/private-marks` is there but can't be read, the check fails, whatever the
+setting says. `yokoten marks add` and `install` still write to the file in your home folder.
+The machine allow file (below) is read only from `~/.config/yokoten`, never from beside the
+setting's file.
+
 A mark of letters and spaces, such as a name or a city, is found as whole words. Only a
 letter next to it hides it: `sam` is found in `hi Sam`, `sam_dev`, `@sam` and `sam97`, but
 not in `sample`. A backslash escape such as `\n`, a URL-encoded `%2F`, `%5C` or `%20`, and a
@@ -1847,7 +1869,7 @@ still stops it. `doctor` says how many of your marks the project allows, never w
 
 A repo with no yokoten.json can do the same without one, and so can a repo that must not
 name yokoten in public. Run `yokoten marks allow <mark> --here` in it. The allow is kept
-on this machine, in `private-marks-allow.json` beside the marks file, for that repo only,
+on this machine, in `~/.config/yokoten/private-marks-allow.json`, for that repo only,
 by its `origin` remote (host and path). Nothing is written into the repo. A repo with no
 `origin` can't have this allow; it can use `privacy.allow` instead. A renamed remote is
 another repo, so the mark is stopped there again. A port other than the usual one is part of
@@ -1882,8 +1904,18 @@ addresses, and neither is a retina image name such as `logo@2x.png`. An address 
 `http://` or in a path such as `api/` is still caught.
 
 The same check catches secrets: GitHub, npm, Slack, Stripe, Google, OpenAI and
-Anthropic tokens, AWS access key ids, and PEM private keys. A hit names the kind of
-secret, never the secret. Deleting it is not enough, since git keeps it: rotate it.
+Anthropic tokens, AWS access key ids, and PEM private keys. It also matches the real
+value of a secret-looking variable in your environment. Each hit says its grade:
+`sure` fails, and `likely` and `unknown` warn. A hit names the kind of secret, never
+the secret. Deleting it is not enough, since git keeps it: rotate it.
+
+For a false hit, start a comment on that line with `yokoten-ignore secret: why it is safe`. Use the finding's rule name instead of `secret`.
+Or write `secret: why it is safe` in `.yokotenignore`; an ignored hit stays listed, and a reasonless ignore fails.
+
+A `sure` secret and a private-mark hit can't be ignored on their line: only
+`.yokotenignore` lets them through, and only the lead may change that file. On a pull
+request, `yokoten check --pr` shows each ignore the pull request adds as a notice, so the
+reviewer sees it.
 
 The tool-call guard runs the same check on text an agent is about to post with `gh`,
 plain or through `yokoten bot -- gh`:

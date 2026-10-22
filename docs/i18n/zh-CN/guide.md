@@ -70,7 +70,7 @@ flowchart LR
 
 | | 什么时候跑 | 拦下什么 |
 |-|-----------|---------|
-| **1** | 每次工具调用之前 | 推 tag、强制推送、跳过检查；修复任务里改测试；worker 改规则；项目禁用的程序；不合标题规则的 issue 或 PR 标题；agent 用 `gh` 发的 issue、PR、评论或发布说明里有个人信息或密钥 |
+| **1** | 每次工具调用之前 | 推 tag、强制推送、跳过检查；修复任务里改测试；worker 改规则；项目禁用的程序；不合标题规则的 issue 或 PR 标题；agent 用 `gh` 发的 issue、PR、评论或发布说明里有个人信息或密钥；取消或删除一次 Actions 运行 |
 | **1b** | Claude Code 的 AI 准备结束这一轮时 | 改过的文件里有没有个人信息、密钥，有没有改了不该改的文件（和提交检查一样）。有问题就把它叫回来改一次 |
 | **2** | 每次提交 | hook 看不到的：用 `sed` 或脚本改的文件、个人信息、超过 7 项的文件夹 |
 | **3** | 每个 PR | 关掉 hook 做出来的提交 |
@@ -334,6 +334,21 @@ worker 靠 `YOKOTEN_ROLE=worker` 认出来。在 Codex 里，子 agent 的 `agen
 所以在 Muse Code 里也一样：每个会话都当成 lead。Grok CLI 会把 `YOKOTEN_ROLE` 传给钩子；子 agent 的
 `subagentType` 带 worker 字样的，也算 worker。服务器上的锁照样有效：代码负责人，还有一个
 改不了 CI 的 bot。
+
+取消或删除一次 Actions 运行，lead 和 worker 都会被拦住。
+守卫会拦 `gh run cancel` 和 `gh run delete`。用 `gh api` 或 `yokoten bot` 做同样的事，也会被拦住。
+`gh run rerun`、`view`、`list` 和 `watch` 仍然放行。请仓库主人在 Actions 页面上取消或删除。
+`repositories/<id>` 和 `repos/<owner>/<repo>` 是同一种路径。
+路径里的 `.` 和 `..` 会先化简，再拿来比对。
+路径里的词不分大小写，所以 `Actions` 和 `Cancel` 也算同一次调用。
+`gh api` 里连写的短选项会被拦住。一个短选项自己带着值，例如 `-XDELETE`，仍然放行。
+方法或路径来自 shell 变量，而且可能指向一次运行时，会被拦住。
+`repos/` 或 `repositories/` 后面只有一个变量，而且方法不是 GET，也会被拦住。
+`gh run` 的子命令如果来自 shell，会被拦住。
+`gh` 必须写出它自己的命令名。`gh extension install`、`upgrade`、`exec` 和 `browse` 会被拦住。
+`exec` 会运行已经装好的扩展。`browse` 可以装上一个扩展。
+`gh config set aliases` 会被拦住。`gh alias list` 和 `gh extension list` 仍然放行。
+`gh alias set` 和 `gh alias import` 对 lead 和 worker 都拦住。别名要仓库主人自己加上。
 
 worker 用 shell 写只有 lead 能改的文件，守卫也会拦，跟拦编辑一样（#402）。它看这些写法：
 重定向（`>`、`>>`、`>|`、`&>`），`sed -i`、`perl -i`、`tee`、`cp`、`mv`、`install`、`ln`、
@@ -1110,7 +1125,7 @@ yokoten learn --upstream "the guard let git push --tags through" --area hook --f
 | `layout.maxEntries` | `7` | 一个文件夹最多放几项（第 10 条核心规则） |
 | `layout.exempt` | 无 | 可以超过上限的文件夹，见[可以变多的文件夹](#可以变多的文件夹) |
 | `tests` | `*.test.*`、`*.spec.*`、`*_test.go`、`test/**`、`tests/**` | 哪些算测试文件，修复任务不能改 |
-| `leadOnly` | 规则、agent 配置、`.githooks/**`、`.github/**`、项目里那份 yokoten 副本 `.yokoten/**` | worker 不能改的文件 |
+| `leadOnly` | 规则、agent 配置、`.githooks/**`、`.github/**`、项目里那份 yokoten 副本 `.yokoten/**`、`.yokotenignore` | worker 不能改的文件 |
 | `privacy.allow` | 无 | 隐私检查放行的原样字符串，比如公开的客服邮箱，或者私密词表里这个项目自己的名字 |
 | `privacy.skip` | 各种 lock 文件 | 隐私检查不读的文件 |
 | `privacy.utc` | `true` | 提交时间必须用 UTC |
@@ -1146,7 +1161,7 @@ Rust 的 workspace 里，一条就能管到每个 crate：
 | `YOKOTEN_LEAD_ONLY_OK` | lead 允许这个 worker 改的那几个文件，从仓库根目录写起，用逗号隔开。见[支持哪些 agent](#支持哪些-agent) |
 | `YOKOTEN_FIX_TASK=1` | 这个会话是修复任务，不能改测试文件 |
 | `YOKOTEN_RELEASE_APPROVAL=1` | 主人允许这个会话发版。没见过 Muse Code 把它传给钩子 |
-| `YOKOTEN_PRIVATE_MARKS` | 私有词表换个路径 |
+| `YOKOTEN_PRIVATE_MARKS` | 再加一个私有词表文件。里面的词跟 `~/.config/yokoten/private-marks` 里的合在一起用，不会顶替它。见「隐私」 |
 | `YOKOTEN_MIN_FREE_GB` | 盘上剩的空间少于这么多 GB 时，`doctor` 提醒；`0` 就不提醒。见[本机提示](#本机提示) |
 | `YOKOTEN_BOT_APP_ID`、`YOKOTEN_BOT_KEY`、`YOKOTEN_BOT_INSTALLATION` | bot 的设置，也可以写成 `~/.config/yokoten/keys.env` 里的几行。见 [server.md](../../server.md#3-the-bot-a-github-app) |
 | `YOKOTEN_GITHUB_API` | 换一个 GitHub API 地址，比如自建的 GitHub Enterprise Server |
@@ -1421,6 +1436,11 @@ agent 在自己 worktree 的根目录写一个 `.yokoten-agent.json` 就加入�
 或者 `matches a word you added to your private marks`。后面的修复提示告诉你怎么改这个词：
 yokoten 自己加的那一类用 `yokoten marks off git-name`，你自己加的词用 `yokoten marks remove`。
 
+`YOKOTEN_PRIVATE_MARKS` 指向第二个词表文件。检查两个文件都读，里面的词都算。所以这个设置只能多加词，
+不能少。`~/.config/yokoten/private-marks` 在但读不了时，不管这个设置怎么写，检查都会失败。
+`yokoten marks add` 和 `install` 还是写进你家目录里的那个文件。
+这台电脑的放行文件（见下文）只从 `~/.config/yokoten` 读，不会去读这个设置所指文件旁边的。
+
 只有字母和空格的词，比如名字或城市，按整个单词查。前后紧挨着别的字母时，才不算查到：`sam` 能在
 `hi Sam`、`sam_dev`、`@sam`、`sam97` 里查到，在 `sample` 里查不到。反斜杠转义（如 `\n`）、URL 编码的
 `%2F`、`%5C`、`%20`，以及小写字母变大写（`githubSam`、`SamDev`），也都算词的边界。较长的词，
@@ -1439,8 +1459,8 @@ yokoten 自己加的那一类用 `yokoten marks off git-name`，你自己加的�
 项目放行了你几个词，只报个数，不说是哪几个。
 
 没有 yokoten.json 的仓库也能这样放行，不想公开和 yokoten 有关系的仓库也一样。在那个仓库里运行
-`yokoten marks allow <mark> --here` 就行。放行记在这台电脑上，就在词表旁边的
-`private-marks-allow.json` 里，只对这一个仓库有效，认的是它的 `origin` 远程地址（主机加路径）。
+`yokoten marks allow <mark> --here` 就行。放行记在这台电脑上，就在
+`~/.config/yokoten/private-marks-allow.json` 里，只对这一个仓库有效，认的是它的 `origin` 远程地址（主机加路径）。
 仓库里什么都不写。没有 `origin` 的仓库用不了这种放行，可以改用 `privacy.allow`。远程地址改了名，
 就算另一个仓库，这个词又会被拦。不是默认端口的，端口也算名字的一部分；本地路径认它指向的文件夹。
 `git@host:path` 和 `https://host/path` 算同一个仓库，各大代码托管平台也是这么认的。
@@ -1465,8 +1485,17 @@ IP 只查 IPv4，内网地址（比如 `10.x`、`192.168.x`）也算；IPv6 不�
 后面）的 IP 照样会查出来。
 
 这个检查也会查密钥：GitHub、npm、Slack、Stripe、Google、OpenAI 和 Anthropic 的 token，
-AWS 的 access key id，还有 PEM 私钥。查到了只说是哪一种密钥，不会把密钥本身打印出来。光删掉
-不够，git 历史里还留着，得去把它作废，换一个新的。
+AWS 的 access key id，还有 PEM 私钥。你环境变量里名字像密钥的那些变量，它们的真实值也会查。
+每一条都标着有多确定：`sure`（确定）会让检查失败，`likely`（像）和 `unknown`（说不准）只提醒。
+查到了只说是哪一种密钥，不会把密钥本身打印出来。光删掉不够，git 历史里还留着，得去把它作废，
+换一个新的。
+
+查错了的话，在那一行写个注释，开头是 `yokoten-ignore secret: 为什么没问题`。不是密钥的，把 `secret` 换成那条的规则名。
+也可以在 `.yokotenignore` 里写一行 `secret: 为什么没问题`。忽略掉的那条还会列出来；不写理由的忽略本身算失败。
+
+`sure` 的密钥和私有词表里的词，不能在那一行忽略，只能写进 `.yokotenignore`，而这个文件只有
+lead 能改。PR 上，`yokoten check --pr` 会把这个 PR 新加的每一条忽略都显示成一条提示，审的人
+一眼就能看到。
 
 agent 用 `gh` 发文字之前，工具调用守卫也跑同一套检查。直接用 gh 或经过 `yokoten bot -- gh` 都算：
 

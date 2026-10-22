@@ -43,7 +43,7 @@ import {
 import { DEFAULTS } from '../../src/rules/config.ts';
 import { parseCodeOwners } from '../../src/rules/pr.ts';
 import { hasHook } from '../../src/agents/hooks-file.ts';
-import { readCodeOwners } from '../../src/host/github.ts';
+import { readCodeOwners } from '../../src/host/github/index.ts';
 import { KIT, readWorkflowHashes, render, textHash, VERSION } from '../../src/setup/files.ts';
 import {
   AGENTS_BACKUP,
