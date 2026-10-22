@@ -167,6 +167,9 @@ test('env: gh gets the token, and git asks gh for github.com instead of the owne
   assert.equal(e.GIT_CONFIG_VALUE_1, '');
   assert.equal(e.GIT_CONFIG_VALUE_2, '!gh auth git-credential');
   assert.equal(e.PATH, '/bin');
+  // gh sends TZ as its Time-Zone header, so the bot always runs on UTC (#488).
+  assert.equal(e.TZ, 'UTC');
+  assert.equal(botEnv({ TZ: 'Asia/Tokyo' }, 'tok').TZ, 'UTC', 'the session zone never reaches the child');
 });
 
 // A child `node --test` that inherits NODE_TEST_CONTEXT reports to the parent run and exits 0

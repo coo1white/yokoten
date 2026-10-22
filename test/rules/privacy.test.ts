@@ -863,6 +863,36 @@ test("the lead's command with a body file on disk: commands that write no file d
   plainRefusal('. ./x.sh; gh issue comment 3 -F f.md');
 });
 
+test('TZ=UTC with a post is trusted: gh sends it as the Time-Zone header (#488)', () => {
+  const body = join(postDir, 'tz-body.md');
+  writeFileSync(body, 'All clean.\n');
+  const bot = `node bin/yokoten.ts bot -- gh pr create --title t --body-file ${body}`;
+  for (const command of [`TZ=UTC gh pr comment 3 -F ${body}`, `export TZ=UTC && gh pr comment 3 -F ${body}`, `export TZ=UTC; ${bot}`, `TZ=UTC ${bot} 2>&1 | tail -2`]) {
+    assert.equal(post(command), null, command);
+  }
+  // Still checked: a mark in the file stops it, through either form.
+  writeFileSync(body, 'Tested in QuietVale.\n');
+  assert.equal(post(`TZ=UTC gh pr comment 3 -F ${body}`)?.id, 'private-mark');
+  assert.equal(post(`export TZ=UTC && gh pr comment 3 -F ${body}`)?.id, 'private-mark');
+  writeFileSync(body, 'All clean.\n');
+  // Any other zone, a bare `export TZ`, or any other name is still refused.
+  plainRefusal(`TZ=Asia/Tokyo gh pr comment 3 -F ${body}`);
+  plainRefusal(`export TZ=Asia/Tokyo; gh pr comment 3 -F ${body}`);
+  plainRefusal(`export TZ; gh pr comment 3 -F ${body}`);
+  plainRefusal(`EDITOR=x gh pr comment 3 -F ${body}`);
+  plainRefusal(`export EDITOR=x; gh pr comment 3 -F ${body}`);
+  // The refusal names what to leave out.
+  const other = post(`TZ=Asia/Tokyo gh pr comment 3 -F ${body}`);
+  assert.ok(other?.what.includes('a variable other than GH_REPO, GH_HOST, NODE_USE_ENV_PROXY or TZ=UTC'), other?.what);
+  const exported = post(`export EDITOR=x; gh pr comment 3 -F ${body}`);
+  assert.ok(exported?.what.includes('an `export` of a name other than GH_REPO, GH_HOST, NODE_USE_ENV_PROXY or TZ=UTC'), exported?.what);
+  // A project allow still applies after an inline TZ=UTC, as after NODE_USE_ENV_PROXY=1 (#498).
+  const allowing = { ...DEFAULTS, privacy: { ...DEFAULTS.privacy, allow: ['QuietVale'] } };
+  assert.equal(post('TZ=UTC gh issue create --title "check: fix a bug" --body "QuietVale ships"', allowing), null);
+  assert.equal(post('TZ=Asia/Tokyo gh issue create --title "check: fix a bug" --body "QuietVale ships"', allowing)?.id, 'private-mark');
+  rmSync(body);
+});
+
 // More inputs from review (#439). Only these write no file and run nothing: the file on disk
 // is still the one gh posts.
 const writesNothing = new Set(["control: nothing","control: echo","echo -e"]);

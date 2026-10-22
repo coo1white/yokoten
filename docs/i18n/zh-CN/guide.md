@@ -1321,7 +1321,7 @@ agent 用 `gh` 发文字之前，工具调用守卫也跑同一套检查。直�
     什么都不带的 `set` 不算。
   - 只跟一个文件夹的 `cd`、`pushd`。
   - 普通赋值，但不能给 shell 自己用的名字赋值，比如 `PATH`、`HOME`、`PS4`。
-  - 只设 `GH_REPO`、`GH_HOST`、`NODE_USE_ENV_PROXY` 的 `export` 或命令前缀。
+  - 只设 `GH_REPO`、`GH_HOST`、`NODE_USE_ENV_PROXY` 和 `TZ=UTC` 的 `export` 或命令前缀。
   - 不带 `--web`、`-w` 的 `gh pr|issue|repo|run view|list|checks`。
   - `git rev-parse`、`git config --get <名字>`、`git remote get-url`。
   - 经过 `yokoten bot --` 的上面这些命令。
