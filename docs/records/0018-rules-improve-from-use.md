@@ -46,6 +46,16 @@ being stopped often is a reason to look at the rule, never a reason by itself to
 later want to send feedback to the project, they run a command, see exactly what is sent
 first, and send only counts (rule, vendor, answer). Never commands, paths or code.
 
+**No feature needs a yokoten server.** Everything a user makes with yokoten lives with them:
+tasks in their issues, decisions in their repo, logs on their computer. If the project
+stopped tomorrow, users would lose nothing they made. A hosted extra may come later, but
+the free tool must work fully without it, and users can take their data out at any time.
+
+Vibe Kanban showed why. It was widely used, but its company found no way to pay for it
+and closed in April 2026, less than a year after launch. Its hosted issues, comments and
+projects were deleted after 30 days, and only what was on users' own computers kept
+working.
+
 ## Options not taken
 
 - **Rebuild what agents already have.** Slow, always behind, and it splits users away from
