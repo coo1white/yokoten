@@ -941,6 +941,22 @@ test('assertLinearEach: a real nested loop over the input fails, and a slow spel
   assert.ok(Math.max(...sizes) > 8000, 'the shape was grown past its starting size');
 });
 
+test('assertLinearEach: a pause on every big read does not count, as on a busy runner (#648)', () => {
+  // The thread sleeps 60 ms in each big read, the one that follows its small read: its wall time
+  // grows far past 24x, its CPU time does not. By wall-clock time this failed, in both rounds; the
+  // nested-loop control above shows the CPU time still catches a quadratic read.
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  let last = 0;
+  const paused = (input: string) => {
+    if (input.length === 8 * last) Atomics.wait(pause, 0, 0, 60);
+    last = input.length;
+    let sum = 0;
+    for (let i = 0; i < input.length; i++) sum += input.charCodeAt(i);
+    assert.ok(sum > 0);
+  };
+  assertLinearEach([{ name: 'paused', make: (n) => 'x'.repeat(n), read: paused }], 1000, 2);
+});
+
 // No test reads or writes the real home folder (#356). test/repo/home.ts points HOME at an
 // empty temp folder, so it has to load before anything else: it is each test file's first
 // import. A child process inherits that HOME, unless the test gives it an env of its own

@@ -8,8 +8,41 @@ const MAX_GROWTH = 24;
 /** The least time the small read of a shape takes, so that a pause of a few ms is not read as growth (#474). */
 const MIN_BASE_MS = 20;
 
+/** A clock in ms. The controls pass a simulated one; the real checks pass none. */
+type Clock = { now: () => number };
+
+/** The CPU time this process has spent so far, in ms, to the microsecond. */
+const readCpuMs = () => {
+  const { user, system } = process.cpuUsage();
+  return (user + system) / 1000;
+};
+
 /**
- * Proves `read` takes linear time by how its time grows, not by a wall-clock limit, which
+ * Times one read: `ms` is what its growth is judged by, `wall` is what the hang limit reads.
+ * With no clock passed, `ms` is the CPU time of the read, not its wall-clock time (#648). A busy
+ * runner pauses the process, and one pause on a big read made a linear read look 30x: ten fixes
+ * tuned the reads around such pauses, and the next pause failed again (#321 to #605). A paused
+ * process spends no CPU time, so a pause adds nothing to `ms`; the work of a quadratic read
+ * still does. `ms` is the lower of the CPU and the wall time: a garbage collector that works on
+ * other threads adds CPU time, not wall time.
+ */
+const makeStopwatch = (clock?: Clock) => (read: () => void) => {
+  if (clock) {
+    const start = clock.now();
+    read();
+    const ms = clock.now() - start;
+    return { ms, wall: ms };
+  }
+  const start = performance.now();
+  const cpuStart = readCpuMs();
+  read();
+  const cpu = readCpuMs() - cpuStart;
+  const wall = performance.now() - start;
+  return { ms: Math.min(cpu, wall), wall };
+};
+
+/**
+ * Proves `read` takes linear time by how its CPU time grows (#648), not by a time limit, which
  * fails on a slow runner (#275, #315). It reads an input of `size` and one of 8x that: linear time
  * grows about 8x, quadratic about 64x, so more than 24x fails. Each size takes its fastest read
  * of several: a GC or JIT pause lands on some reads, not all (#321). The two sizes take turns,
@@ -18,12 +51,11 @@ const MIN_BASE_MS = 20;
  * every time, a noisy runner is not. 30 s on one read catches a hang.
  */
 // The clock is there for the controls, which pass a simulated one; the real checks pass none.
-export const assertLinear = (name: string, make: (n: number) => string, read: (input: string) => void, size = 1 << 16, clock: { now: () => number } = performance) => {
+export const assertLinear = (name: string, make: (n: number) => string, read: (input: string) => void, size = 1 << 16, clock?: Clock) => {
+  const stopwatch = makeStopwatch(clock);
   const time = (input: string) => {
-    const start = clock.now();
-    read(input);
-    const ms = clock.now() - start;
-    assert.ok(ms < 30_000, `${name}: ${ms.toFixed(0)} ms for ${input.length} chars, a hang`);
+    const { ms, wall } = stopwatch(() => read(input));
+    assert.ok(wall < 30_000, `${name}: ${wall.toFixed(0)} ms for ${input.length} chars, a hang`);
     return ms;
   };
   const small = make(size);
@@ -57,7 +89,7 @@ export const assertLinear = (name: string, make: (n: number) => string, read: (i
 export type LinearCase = { name: string; make: (n: number) => string; read: (input: string) => void };
 
 /**
- * assertLinear for many shapes at once, at a fraction of the cost (#442). assertLinear gives
+ * assertLinear for many shapes at once, by CPU time too (#648), at a fraction of the cost (#442). assertLinear gives
  * each shape about 20 ms of small reads, and as many big ones: some 200 ms a shape, however
  * small the input, so 180 shapes took minutes. Here the shapes take turns instead: each round
  * reads every shape small, then big, and two rounds keep each shape's fastest read (three in the second round below). A pause
@@ -73,12 +105,11 @@ export type LinearCase = { name: string; make: (n: number) => string; read: (inp
  * test/repo/architecture.test.ts).
  */
 // The clock is there for the controls, which pass a simulated one; the real checks pass none.
-export const assertLinearEach = (cases: LinearCase[], size: number, baseMs = MIN_BASE_MS, clock: { now: () => number } = performance) => {
+export const assertLinearEach = (cases: LinearCase[], size: number, baseMs = MIN_BASE_MS, clock?: Clock) => {
+  const stopwatch = makeStopwatch(clock);
   const time = (shape: LinearCase, input: string) => {
-    const start = clock.now();
-    shape.read(input);
-    const ms = clock.now() - start;
-    assert.ok(ms < 30_000, `${shape.name}: ${ms.toFixed(0)} ms for ${input.length} chars, a hang`);
+    const { ms, wall } = stopwatch(() => shape.read(input));
+    assert.ok(wall < 30_000, `${shape.name}: ${wall.toFixed(0)} ms for ${input.length} chars, a hang`);
     return ms;
   };
   const prepare = (shape: LinearCase, n: number) => ({ shape, n, small: shape.make(n), big: shape.make(8 * n) });
