@@ -599,7 +599,7 @@ test('readBoardPulls: each row as its stages; a row with no number is skipped', 
   const calls: string[][] = [];
   const rows = [
     { number: 1, title: 'team page', headRefName: 'board', url: 'https://example.com/pull/1', state: 'OPEN', reviewDecision: 'REVIEW_REQUIRED', isDraft: false, statusCheckRollup: [{ conclusion: 'SUCCESS', status: 'COMPLETED' }], labels: [{ name: 'tier B' }] },
-    { number: 2, title: 'steady tests', headRefName: 'linear', url: '', state: 'MERGED', reviewDecision: 'APPROVED', isDraft: false, statusCheckRollup: [{ conclusion: 'SUCCESS', status: 'COMPLETED' }, { conclusion: '', status: 'IN_PROGRESS' }], labels: [{ name: 'tier: a' }] },
+    { number: 2, title: 'steady tests', headRefName: 'linear', url: '', state: 'MERGED', mergedAt: '2026-10-22T09:00:00Z', reviewDecision: 'APPROVED', isDraft: false, statusCheckRollup: [{ conclusion: 'SUCCESS', status: 'COMPLETED' }, { conclusion: '', status: 'IN_PROGRESS' }], labels: [{ name: 'tier: a' }] },
     { number: 3, title: 'draft work', headRefName: 'draft', url: '', state: 'OPEN', reviewDecision: null, isDraft: true, statusCheckRollup: [], labels: [] },
     { number: 4, title: 'closed stays', headRefName: 'old', url: '', state: 'CLOSED', reviewDecision: 'CHANGES_REQUESTED', isDraft: false, statusCheckRollup: [{ conclusion: 'FAILURE', status: 'COMPLETED' }], labels: [{ name: 'bug' }] },
     { title: 'no number', headRefName: 'x' },
@@ -609,12 +609,12 @@ test('readBoardPulls: each row as its stages; a row with no number is skipped', 
     return JSON.stringify(rows);
   };
   assert.deepEqual(readBoardPulls(gh, 'octo/demo'), [
-    { number: 1, title: 'team page', branch: 'board', url: 'https://example.com/pull/1', stage: 'open', checks: 'pass', tier: 'B', review: 'waiting' },
-    { number: 2, title: 'steady tests', branch: 'linear', url: '', stage: 'merged', checks: 'running', tier: 'A', review: 'approved' },
-    { number: 3, title: 'draft work', branch: 'draft', url: '', stage: 'draft', checks: 'none', tier: '', review: 'none' },
-    { number: 4, title: 'closed stays', branch: 'old', url: '', stage: 'closed', checks: 'fail', tier: '', review: 'changes' },
+    { number: 1, title: 'team page', branch: 'board', url: 'https://example.com/pull/1', stage: 'open', checks: 'pass', tier: 'B', review: 'waiting', mergedAt: '' },
+    { number: 2, title: 'steady tests', branch: 'linear', url: '', stage: 'merged', checks: 'running', tier: 'A', review: 'approved', mergedAt: '2026-10-22T09:00:00Z' },
+    { number: 3, title: 'draft work', branch: 'draft', url: '', stage: 'draft', checks: 'none', tier: '', review: 'none', mergedAt: '' },
+    { number: 4, title: 'closed stays', branch: 'old', url: '', stage: 'closed', checks: 'fail', tier: '', review: 'changes', mergedAt: '' },
   ]);
-  assert.deepEqual(calls, [['pr', 'list', '--repo', 'octo/demo', '--state', 'all', '--limit', '30', '--json', 'number,title,headRefName,state,reviewDecision,isDraft,statusCheckRollup,labels,url']]);
+  assert.deepEqual(calls, [['pr', 'list', '--repo', 'octo/demo', '--state', 'all', '--limit', '30', '--json', 'number,title,headRefName,state,reviewDecision,isDraft,statusCheckRollup,labels,url,mergedAt']]);
 });
 
 test('readBoardPulls: a fail wins over running; odd rows are reasons or blanks, never a crash', () => {
