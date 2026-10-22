@@ -1340,6 +1340,65 @@ test('privacyNotes: the mailmap, and the kinds of mark yokoten cannot find; neve
   rmSync(home, { recursive: true, force: true });
 });
 
+// #681: outside a desk, Muse can send Claude Code's user rules to its model. A note, and
+// the file is never read. One of the two files missing, and the note stays off.
+test('doctor: notes when Muse, outside a desk, can send ~/.claude/CLAUDE.md to its model (#681)', async () => {
+  const sandbox = makeSandbox();
+  const body = 'not-sent-to-muse';
+  const rules = join(sandbox.home, '.claude', 'CLAUDE.md');
+  const hooks = join(sandbox.repo, '.muse', 'hooks.json');
+  const env = { HOME: sandbox.home, YOKOTEN_TEMP_DIRS: '' };
+  const noGh = () => {
+    throw new Error('no network in this test');
+  };
+  const run = (session = false) => doctor(sandbox.repo, { env, config: DEFAULTS, session, gh: noGh });
+  const noteOf = (report: ReturnType<typeof doctor>) => report.report.notes?.filter((note) => note.id === 'muse-claude-rules') ?? [];
+  mkdirSync(dirname(rules), { recursive: true });
+  writeFileSync(rules, `${body}\n`);
+  mkdirSync(dirname(hooks), { recursive: true });
+  writeFileSync(hooks, '{}\n');
+  const what = "outside a desk, Muse can send ~/.claude/CLAUDE.md to Muse's model";
+  const fix = 'run Muse in a desk (`yokoten desk muse`) so the home folder stays hidden';
+  const line = `  note    muse-claude-rules: ${what}; ${fix}`;
+  const full = run();
+  assert.ok(full.lines.includes(line), full.lines.join('\n'));
+  assert.deepEqual(noteOf(full).map((note) => [note.what, note.why, note.fix]), [[what, 'the file was written for one vendor', fix]]);
+  assert.ok(!full.report.findings.some((note) => note.id === 'muse-claude-rules'));
+  const session = run(true);
+  assert.ok(session.lines.some((text) => text.startsWith(`yokoten: ${what}.`) && text.includes('`yokoten desk muse`') && text.includes('home folder stays hidden')));
+  assert.deepEqual(noteOf(session).map((note) => note.what), [what]);
+  assert.ok(!session.report.findings.some((note) => note.id === 'muse-claude-rules'));
+  const noteLines = [...full.lines, ...session.lines].filter((text) => text.includes('muse-claude-rules') || text.includes('~/.claude/CLAUDE.md'));
+  const noteText = JSON.stringify({ lines: noteLines, notes: [...noteOf(full), ...noteOf(session)] });
+  assert.ok(noteLines.length >= 2, 'full doctor and the session each say it');
+  assert.ok(!noteText.includes(body), 'the rules file is never read');
+  assert.ok(!noteText.includes(sandbox.home), 'the note names no home path');
+  const json = JSON.parse((await sandbox.call(['doctor', '--json'])).stdout) as { ok: boolean; notes: { id: string }[] };
+  assert.equal(json.ok, full.ok);
+  assert.ok(json.notes.some((note) => note.id === 'muse-claude-rules'));
+  assert.ok(!JSON.stringify(json).includes(body));
+  const sessionJson = JSON.parse((await sandbox.call(['doctor', '--session', '--json'])).stdout) as { ok: boolean; notes: { id: string }[]; findings: { id: string }[] };
+  assert.equal(sessionJson.ok, session.ok);
+  assert.ok(sessionJson.notes.some((note) => note.id === 'muse-claude-rules'));
+  assert.ok(!sessionJson.findings.some((note) => note.id === 'muse-claude-rules'));
+  assert.ok(!JSON.stringify(sessionJson).includes(body));
+  rmSync(rules);
+  const noRules = run();
+  const noRulesSession = run(true);
+  assert.equal(full.ok, noRules.ok, 'a note never fails doctor');
+  assert.equal(session.ok, noRulesSession.ok, 'a session note never fails doctor');
+  assert.deepEqual(noteOf(noRules), [], 'no rules file');
+  assert.deepEqual(noteOf(noRulesSession), [], 'no rules file in a session');
+  writeFileSync(rules, `${body}\n`);
+  rmSync(hooks);
+  const noHooks = run();
+  const noHooksSession = run(true);
+  assert.equal(noHooks.ok, full.ok, 'the hooks file is not what fails doctor');
+  assert.equal(noHooksSession.ok, session.ok);
+  assert.deepEqual(noteOf(noHooks), [], 'no Muse hooks');
+  assert.deepEqual(noteOf(noHooksSession), [], 'no Muse hooks in a session');
+});
+
 // #392: lessons from other projects wait in ~/.config/yokoten/upstream. Only yokoten's own
 // repo, found by its package name, hears about them; another repo hears nothing.
 test('doctor: in the yokoten repo, the session and doctor count the notes from other projects; elsewhere nothing', async () => {

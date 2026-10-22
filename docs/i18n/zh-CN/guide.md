@@ -304,7 +304,9 @@ agent 列在这里，但还没有确认它的守卫能端到端拦住。光看�
   命令本身，命令一改，就得重新批准。
 - **Muse Code**：工作区要先设成信任，才会跑 `.muse/hooks.json`；没信任就一声不吭地跳过。
   用 `muse exec` 时，加 `--trust-workspace` 就是这一次信任当前文件夹。项目里
-  `.agents/skills` 下的技能，也要信任以后才读。
+  `.agents/skills` 下的技能，也要信任以后才读。在工位外面，Muse Code 会读
+  `~/.claude/CLAUDE.md`，并把这个文件发给 Muse 的模型。把 Muse 放进工位里跑，你的主目录
+  就会藏起来。那个文件在的时候，`doctor` 会告诉你。
 - **Grok CLI**：文件夹要先设成信任，才跑 `.grok/hooks/`；没信任就一声不吭地跳过。在这里的会话里
   输入 `/hooks-trust`，或者用 `grok --trust` 启动一次。yokoten 从不替你信任文件夹。信任以后，
   Grok 也会跑 `.claude/settings.json` 里的钩子，所以一次调用可能查两遍。这是有意的：

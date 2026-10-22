@@ -26,7 +26,7 @@ import { check } from '../run/check.ts';
 import { judge } from '../run/hook.ts';
 import { countNotes, type LessonPlace, listLessons, runLessons, waitingLine } from '../run/learn.ts';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
-import { hasPlugin, hasProjectHook, hasSessionDoctor, readInstalledPlugin, readToolCall, sandboxProblem as claudeSandboxProblem, tempDir as claudeTempDir, userSettingsProblem } from '../agents/runtimes/claude-code.ts';
+import { hasPlugin, hasProjectHook, hasSessionDoctor, readInstalledPlugin, readToolCall, sandboxProblem as claudeSandboxProblem, tempDir as claudeTempDir, userDir, userSettingsProblem } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
 import * as copilot from '../agents/copilot.ts';
 import * as dsh from '../agents/runtimes/deepseek-harness.ts';
@@ -347,8 +347,20 @@ function usesOtherAgent(env: Env, root: string | null): boolean {
 }
 
 /**
- * What keeps the owner out of command output, as notes (#390): the git mailmap, and the
- * kinds of mark yokoten can't find on its own. Never a failure: both are a guess or a choice.
+ * The note when Muse is set up here and Claude Code's user rules file is in the home
+ * folder (#681). The file is named, never read. A desk hides the home folder.
+ */
+function museClaudeRules(env: Env, root: string | null): Practice | null {
+  if (!root || !homeOf(env)) return null;
+  // Existence only. The file's text can name a person, so doctor never reads it.
+  if (!existsSync(join(root, '.muse', 'hooks.json')) || !existsSync(join(userDir(env), 'CLAUDE.md'))) return null;
+  return practice('muse-claude-rules', 'muse-claude-rules', false, "outside a desk, Muse can send ~/.claude/CLAUDE.md to Muse's model", 'run Muse in a desk (`yokoten desk muse`) so the home folder stays hidden');
+}
+
+/**
+ * Notes that do not fail doctor (#390, #681): the git mailmap, the kinds of mark yokoten
+ * can't find on its own, and Muse sending Claude Code's user rules to its model. Each is
+ * a guess or a choice.
  */
 export function privacyNotes(env: Env, root: string | null, output: Config['privacy']['output'] = 'run'): Practice[] {
   const notes: Practice[] = [];
@@ -365,6 +377,8 @@ export function privacyNotes(env: Env, root: string | null, output: Config['priv
   // An offer, only when the file has marks: with none, the private-marks check says what to do (#522).
   const missing = marks.length ? missingMarkKinds(marks, machineMarks(env, { cwd: root ?? undefined })) : [];
   if (missing.length) notes.push(practice('private-mark-kinds', 'private-marks', false, offerMarkKinds(missing), OFFER_MARKS_FIX));
+  const claudeRules = museClaudeRules(env, root);
+  if (claudeRules) notes.push(claudeRules);
   return notes;
 }
 
@@ -1432,6 +1446,9 @@ function doctorRun(
     const stale = pluginAgeCheck(root, env);
     if (stale) blocks.push([`yokoten: ${formatFinding(stale)}`]);
     if (!hasHome) blocks.push([`yokoten: ${NO_HOME_NOTE}`]);
+    // This note only. The other privacy notes stay out of a session (#681).
+    const claudeRules = museClaudeRules(env, root);
+    if (claudeRules) blocks.push([`yokoten: ${formatFinding(claudeRules.finding)}`]);
     const double = hasHome ? doubleInstallCheck(env) : null;
     if (double) blocks.push([`yokoten: ${formatFinding(double)}`]);
     // A full disk stops every session unseen (record 0012): statfs and one small file, no child process.
@@ -1452,7 +1469,7 @@ function doctorRun(
     const stateFile = unsaved.commonDir ? join(unsaved.commonDir, STATE_FILE) : findStateFile(root, env);
     const lesson = sessionLessonNote(root, config.notNow, stateFile, env.CLAUDE_PLUGIN_ROOT ? '/yokoten:doctor' : '`yokoten doctor`');
     if (lesson.line) blocks.push([lesson.line]);
-    const notes = [...unsaved.notes, ...lesson.findings];
+    const notes = [...unsaved.notes, ...lesson.findings, ...(claudeRules ? [claudeRules.finding] : [])];
     const ok = !failed.length && !isCoreBehind;
     return { ok, lines: blocks.flat(), blocks, report: { ...base, ok, repo: true, stage, next, findings, ...(notes.length ? { notes } : {}) } };
   }
