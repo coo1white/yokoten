@@ -63,11 +63,22 @@ export function parentFolders(paths: readonly string[]): string[] {
   return [...parents].sort();
 }
 
+/**
+ * Git's own config in the home folder, readable even when it isn't there. Git stops with
+ * "unable to access" when a config read is denied, where a missing file is fine, so a
+ * hidden home must answer "no such file" for these: Seatbelt then lets the lookup through.
+ */
+export function gitConfigReads(env: Env): string[] {
+  const home = env.HOME;
+  if (!home) return [];
+  return [join(home, '.gitconfig'), join(env.XDG_CONFIG_HOME || join(home, '.config'), 'git')];
+}
+
 /** The SBPL profile for a plan, with the proxy on `port` and a private scratch folder. */
 export function seatbeltProfile(plan: DeskPlan, port: number, scratch: string): string {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`the proxy port ${port} is not a port`);
   const writable = [plan.desk, ...plan.state, scratch];
-  const readable = [...SYSTEM_READS, ...plan.readable, ...writable];
+  const readable = [...SYSTEM_READS, ...plan.readable, ...writable, ...gitConfigReads(plan.env)];
   const lines = [
     '(version 1)',
     '; A yokoten desk (#637). Written for one run. Nothing is allowed that is not named here.',

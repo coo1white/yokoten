@@ -63,6 +63,13 @@ test('seatbeltProfile: dyld may list the root folder and use /dev/dtracehelper, 
   assert.doesNotMatch(profile, /file-read[^\n]*\(subpath "\/Users"\)/);
 });
 
+test('seatbeltProfile: git may look for its config in a hidden home, and finds nothing', () => {
+  const profile = seatbeltProfile({ ...PLAN, env: { ...PLAN.env, HOME: '/Users/someone' } }, 3128, '/private/var/folders/xy/scratch');
+  const reads = profile.split('\n').find((line) => line.startsWith('(allow file-read* ')) ?? '';
+  assert.ok(reads.includes('(subpath "/Users/someone/.gitconfig")') && reads.includes('(subpath "/Users/someone/.config/git")'));
+  assert.ok(!reads.includes('(subpath "/Users/someone")') && !reads.includes('(subpath "/Users/someone/.config")'));
+});
+
 test('parentFolders: each parent once, up to the root', () => {
   assert.deepEqual(parentFolders(['/a/b/c', '/a/d']), ['/', '/a', '/a/b']);
 });

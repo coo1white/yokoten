@@ -47,7 +47,9 @@ const tryIt = (fn) => { try { return fn(); } catch (error) { return 'failed: ' +
 answer.deskWrite = tryIt(() => { fs.writeFileSync('written.txt', 'x'); return 'ok'; });
 const git = (...args) => spawnSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', ...args], { encoding: 'utf8' });
 git('add', 'written.txt');
-answer.commit = git('commit', '-qm', 'desk').status;
+const committed = git('commit', '-qm', 'desk');
+answer.commit = committed.status;
+answer.commitError = (committed.stderr || '').trim().slice(-500);
 answer.outsideWrite = tryIt(() => { fs.writeFileSync(outsideFile, 'x'); return 'ok'; });
 answer.homeWrite = tryIt(() => { fs.writeFileSync(process.env.HOME + '/outside.txt', 'x'); return 'ok'; });
 answer.otherList = tryIt(() => fs.readdirSync(otherProject).join(','));
@@ -126,7 +128,7 @@ test('the desk contract holds on this system', { skip: typeof backend === 'strin
     assert.equal(result.code, 0, result.stderr);
     const answer = JSON.parse(result.stdout.trim().split('\n').at(-1) ?? '{}');
     assert.equal(answer.deskWrite, 'ok', 'a write in the desk works');
-    assert.equal(answer.commit, 0, 'git commit works in the desk');
+    assert.equal(answer.commit, 0, `git commit works in the desk: ${answer.commitError}`);
     assert.match(answer.outsideWrite, /^failed/, 'a write next to the desk fails');
     assert.match(answer.homeWrite, /^failed/, 'a write in the home folder fails');
     assert.ok(!existsSync(outsideFile) && !existsSync(join(process.env.HOME ?? '', 'outside.txt')), 'nothing was written outside');
