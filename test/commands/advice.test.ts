@@ -365,7 +365,10 @@ test('board page: plain HTML with the three tables; it reads /data every 15 seco
 // #601: only http(s) pull addresses become links; anything else stays plain text, so an
 // odd address never becomes a script link.
 test('board page: only http(s) pull addresses become links', () => {
-  const script = boardPage().match(/<script>([\s\S]*)<\/script>/)?.[1] ?? '';
+  const pageText = boardPage();
+  const scriptStart = pageText.indexOf('<script>');
+  const scriptEnd = pageText.lastIndexOf('</script>');
+  const script = scriptStart < 0 || scriptEnd < 0 ? '' : pageText.slice(scriptStart + '<script>'.length, scriptEnd);
   assert.ok(script.includes('if (isHttpUrl(pull.url))'), 'the pull number links only through the guard');
   // The page script on its own, with fakes for what it touches at load: one fetch, one timer, one note.
   const run = new Function('document', 'fetch', 'setInterval', `${script}; return isHttpUrl;`) as unknown as (
