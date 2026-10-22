@@ -2,7 +2,7 @@
 
 ### A manifesto for the age of agents
 
-English | [简体中文](i18n/zh-CN/manifesto.md)
+English | [简体中文](i18n/zh-CN/manifesto.md) | [繁體中文](i18n/zh-TW/manifesto.md) | [日本語](i18n/ja/manifesto.md)
 
 Code is cheap now. A model writes in a minute what took a team a week. Anyone can
 summon ten engineers with one prompt.
