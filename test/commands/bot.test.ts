@@ -112,7 +112,7 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
 
     // A good title, and commands with no title, take the normal bot path.
     const good: string[][] = [
-      ['gh', 'issue', 'create', '--title', 'host: check the title', '--label', 'incident', '--body', '-t'],
+      ['gh', 'issue', 'create', '--title', 'host: check the title', '--label', 'incident', '--body', '-t\n\nMade with worker (opus)\n'],
       ['gh', 'pr', 'create', '-t', 'feat(host): check the title'],
       ['gh', 'issue', '-R', 'me/repo', 'new', '--title', 'host: check the title'],
       ['gh', 'pr', 'new', '-t', 'feat(host): check the title'],
@@ -464,9 +464,9 @@ test('bot: a new issue needs the type and tier labels its repo has; a bad one is
     setLabels(['bug', 'feat', 'docs', 'tier A', 'tier B', 'tier C']);
     // (a) A missing label is refused with the message of `check --issue`, and nothing is sent.
     const refused: [string[], number, RegExp][] = [
-      [['gh', 'issue', 'create', '-t', 'host: a', '--body', 'x'], 2, /no type label[\s\S]*no tier label/],
-      [['gh', 'issue', 'create', '-t', 'host: a', '-l', 'bug', '--body', 'x'], 1, /no tier label/],
-      [['gh', 'issue', 'new', '--title=host: a', '--label', 'tier A', '--body', 'x'], 1, /no type label/],
+      [['gh', 'issue', 'create', '-t', 'host: a', '--body', 'An issue.\n\nMade with worker (opus)\n'], 2, /no type label[\s\S]*no tier label/],
+      [['gh', 'issue', 'create', '-t', 'host: a', '-l', 'bug', '--body', 'An issue.\n\nMade with worker (opus)\n'], 1, /no tier label/],
+      [['gh', 'issue', 'new', '--title=host: a', '--label', 'tier A', '--body', 'An issue.\n\nMade with worker (opus)\n'], 1, /no type label/],
     ];
     for (const [command, count, missing] of refused) {
       const r = await run(command);
@@ -476,13 +476,13 @@ test('bot: a new issue needs the type and tier labels its repo has; a bad one is
     }
     assert.deepEqual(read(log), [], 'gh did not run the create');
     // (b) Both labels: sent unchanged, with no added label.
-    const good = ['gh', 'issue', 'create', '-t', 'host: a', '-l', 'bug,tier B', '--body', 'x'];
+    const good = ['gh', 'issue', 'create', '-t', 'host: a', '-l', 'bug,tier B', '--body', 'An issue.\n\nMade with worker (opus)\n'];
     const sent = await run(good);
     assert.deepEqual([sent.status, sent.stderr], [0, ''], good.join(' '));
     assert.deepEqual(read(log).at(-1), { args: good.slice(1), input: '' });
     // (c) A repo without tier labels: no line for the tier.
     setLabels(['bug', 'feat']);
-    const noTier = await run(['gh', 'issue', 'create', '-t', 'host: a', '--label', 'bug', '--body', 'x']);
+    const noTier = await run(['gh', 'issue', 'create', '-t', 'host: a', '--label', 'bug', '--body', 'An issue.\n\nMade with worker (opus)\n']);
     assert.deepEqual([noTier.status, noTier.stderr], [0, ''], 'the repo has no tier labels');
     // (d) An edit and another repo: sent unchanged, with no label list.
     const lists0 = read(lists).length;
@@ -613,6 +613,154 @@ test('bot: a new pull request takes its issue\'s milestone; none anywhere is ref
     const unread = await run(['gh', 'pr', 'create', '-t', 'feat: a', '--body', body('Closes #3')]);
     assert.deepEqual([unread.status, unread.stderr], [0, `${note}yokoten bot: note: gh could not read the milestone of issue #3, so the pull request gets none; pass --milestone. \`check --pr\` asks for it\n`]);
     assert.deepEqual(read(log).at(-1), ['pr', 'create', '-t', 'feat: a', '--body', body('Closes #3'), ...labels]);
+  } finally {
+    server.close();
+  }
+});
+
+// #609: `gh pr comment` carries the `Made with` line, so a reader can tell which AI
+// wrote the comment. A body without it is refused before anything is sent, with the same
+// message as a pull request body; one with it is sent unchanged.
+test('bot: a pull request comment needs the Made with line; one with it is sent (#609)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', JSON.stringify({ areas: ['host'] }));
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/me/repo.git');
+  const bin = join(sandbox.home, 'bin');
+  const log = join(sandbox.home, 'gh.log');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args: process.argv.slice(2), input: require('node:fs').readFileSync(0, 'utf8') }) + '\\n');\n`);
+  chmodSync(join(bin, 'gh'), 0o755);
+  const server = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(req.method === 'GET' ? { id: 77 } : { token: 'ghs_test' }));
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  const key = join(sandbox.home, 'bot.pem');
+  writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
+  const bot = { PATH: `${bin}:${process.env.PATH}`, YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+  const run = (command: string[], input = '') => sandbox.call(['bot', '--', ...command], { input, extra: bot });
+  const ran = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+  try {
+    const refused = await run(['gh', 'pr', 'comment', '5', '--body', 'A note.\n']);
+    assert.equal(refused.status, 1, refused.stderr);
+    assert.match(refused.stderr, /^yokoten bot: 1 problem\(s\) in the body; nothing was sent\. Fix the body and run it again:\n- body: no `Made with` line at the end\. .+ End the body with `🤖 Made with <agent> \(<model>\)/);
+    assert.deepEqual(ran(), [], 'gh did not run');
+    const sent = await run(['gh', 'pr', 'comment', '5', '--body', 'A note.\n\nMade with worker (opus)\n']);
+    assert.deepEqual([sent.status, sent.stderr], [0, ''], sent.stderr);
+    assert.deepEqual(ran(), [{ args: ['pr', 'comment', '5', '--body', 'A note.\n\nMade with worker (opus)\n'], input: '' }]);
+  } finally {
+    server.close();
+  }
+});
+
+// #609: `gh issue comment` carries the `Made with` line too. A body read from standard
+// input is checked the same way, and gh gets it the same way when it passes.
+test('bot: an issue comment needs the Made with line, from --body or stdin (#609)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', JSON.stringify({ areas: ['host'] }));
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/me/repo.git');
+  const bin = join(sandbox.home, 'bin');
+  const log = join(sandbox.home, 'gh.log');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args: process.argv.slice(2), input: require('node:fs').readFileSync(0, 'utf8') }) + '\\n');\n`);
+  chmodSync(join(bin, 'gh'), 0o755);
+  const server = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(req.method === 'GET' ? { id: 77 } : { token: 'ghs_test' }));
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  const key = join(sandbox.home, 'bot.pem');
+  writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
+  const bot = { PATH: `${bin}:${process.env.PATH}`, YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+  const run = (command: string[], input = '') => sandbox.call(['bot', '--', ...command], { input, extra: bot });
+  const ran = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+  try {
+    const refused = await run(['gh', 'issue', 'comment', '5', '--body', 'A note.\n']);
+    assert.equal(refused.status, 1, refused.stderr);
+    assert.match(refused.stderr, /^yokoten bot: 1 problem\(s\) in the body; nothing was sent\. Fix the body and run it again:\n- body: no `Made with` line at the end\. .+ End the body with `🤖 Made with <agent> \(<model>\)/);
+    assert.deepEqual(ran(), [], 'gh did not run');
+    const good = 'A note.\n\nMade with worker (opus)\n';
+    const sent = await run(['gh', 'issue', 'comment', '5', '--body-file', '-'], good);
+    assert.deepEqual([sent.status, sent.stderr], [0, ''], sent.stderr);
+    assert.deepEqual(ran(), [{ args: ['issue', 'comment', '5', '--body-file', '-'], input: good }], 'gh gets the stdin body unchanged');
+  } finally {
+    server.close();
+  }
+});
+
+// #609: `gh pr review` with a body carries the `Made with` line; a review with no body
+// (a plain approve) passes through unchanged.
+test('bot: a pull request review with a body needs the Made with line (#609)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', JSON.stringify({ areas: ['host'] }));
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/me/repo.git');
+  const bin = join(sandbox.home, 'bin');
+  const log = join(sandbox.home, 'gh.log');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args: process.argv.slice(2), input: require('node:fs').readFileSync(0, 'utf8') }) + '\\n');\n`);
+  chmodSync(join(bin, 'gh'), 0o755);
+  const server = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(req.method === 'GET' ? { id: 77 } : { token: 'ghs_test' }));
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  const key = join(sandbox.home, 'bot.pem');
+  writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
+  const bot = { PATH: `${bin}:${process.env.PATH}`, YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+  const run = (command: string[], input = '') => sandbox.call(['bot', '--', ...command], { input, extra: bot });
+  const ran = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+  try {
+    const refused = await run(['gh', 'pr', 'review', '5', '--comment', '-b', 'A review.\n']);
+    assert.equal(refused.status, 1, refused.stderr);
+    assert.match(refused.stderr, /^yokoten bot: 1 problem\(s\) in the body; nothing was sent\. Fix the body and run it again:\n- body: no `Made with` line at the end\. .+ End the body with `🤖 Made with <agent> \(<model>\)/);
+    assert.deepEqual(ran(), [], 'gh did not run');
+    const sent = await run(['gh', 'pr', 'review', '5', '--comment', '--body', 'A review.\n\nMade with worker (opus)\n']);
+    assert.deepEqual([sent.status, sent.stderr], [0, ''], sent.stderr);
+    assert.deepEqual(ran().at(-1), { args: ['pr', 'review', '5', '--comment', '--body', 'A review.\n\nMade with worker (opus)\n'], input: '' });
+    const plain = await run(['gh', 'pr', 'review', '5', '--approve']);
+    assert.deepEqual([plain.status, plain.stderr], [0, ''], plain.stderr);
+    assert.deepEqual(ran().at(-1), { args: ['pr', 'review', '5', '--approve'], input: '' }, 'a review with no body passes through');
+  } finally {
+    server.close();
+  }
+});
+
+// #609: `gh issue create` carries the `Made with` line too. Its labels are still checked
+// (#544); the body check runs first, before anything is sent.
+test('bot: a new issue needs the Made with line; its labels are still checked (#609)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', JSON.stringify({ areas: ['host'] }));
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/me/repo.git');
+  const bin = join(sandbox.home, 'bin');
+  const log = join(sandbox.home, 'gh.log');
+  const labels = join(sandbox.home, 'labels.json');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'gh'), [
+    '#!/usr/bin/env node',
+    'const fs = require("node:fs"); const args = process.argv.slice(2);',
+    `if (args[0] === "label") { process.stdout.write(fs.readFileSync(${JSON.stringify(labels)}, "utf8")); process.exit(0); }`,
+    `fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, input: fs.readFileSync(0, "utf8") }) + "\\n");`,
+  ].join('\n'));
+  chmodSync(join(bin, 'gh'), 0o755);
+  writeFileSync(labels, JSON.stringify([{ name: 'bug' }, { name: 'feat' }, { name: 'tier A' }, { name: 'tier B' }]));
+  const server = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(req.method === 'GET' ? { id: 77 } : { token: 'ghs_test' }));
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  const key = join(sandbox.home, 'bot.pem');
+  writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
+  const bot = { PATH: `${bin}:${process.env.PATH}`, YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+  const run = (command: string[], input = '') => sandbox.call(['bot', '--', ...command], { input, extra: bot });
+  const ran = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+  try {
+    const refused = await run(['gh', 'issue', 'create', '-t', 'host: a', '--body', 'An issue.\n']);
+    assert.equal(refused.status, 1, refused.stderr);
+    assert.match(refused.stderr, /^yokoten bot: 1 problem\(s\) in the body; nothing was sent\. Fix the body and run it again:\n- body: no `Made with` line at the end\. .+ End the body with `🤖 Made with <agent> \(<model>\)/);
+    assert.deepEqual(ran(), [], 'gh did not run');
+    const sent = await run(['gh', 'issue', 'create', '-t', 'host: a', '-l', 'bug,tier B', '--body', 'An issue.\n\nMade with worker (opus)\n']);
+    assert.deepEqual([sent.status, sent.stderr], [0, ''], sent.stderr);
+    assert.deepEqual(ran(), [{ args: ['issue', 'create', '-t', 'host: a', '-l', 'bug,tier B', '--body', 'An issue.\n\nMade with worker (opus)\n'], input: '' }]);
   } finally {
     server.close();
   }
