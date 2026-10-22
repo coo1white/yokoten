@@ -1252,8 +1252,6 @@ const FIELD_OPTIONS = new Set(['-f', '--raw-field', '-F', '--field']);
 const INPUT_OPTIONS = new Set(['--input']);
 // gh's global option that takes a value before the subcommand: `gh -R o/r issue create`.
 const GLOBAL_VALUES = new Set(['-R', '--repo']);
-// A path that fields with no method write to (gh then sends a POST). A search reads.
-const WRITE_PATH = /(^|\/)(issues|pulls|comments|releases|discussions)(\/|$|\?)/;
 const WRITE_METHODS = new Set(['POST', 'PATCH', 'PUT']);
 // A GraphQL document that changes something: comments first, then `mutation`.
 const MUTATION = /^\s*(?:#[^\n]*\n\s*)*mutation\b/;
@@ -1425,7 +1423,8 @@ function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, comma
   let missing: Missing | null = null;
   // A file named twice is read once: gh posts one of them, and a long body is scanned once.
   const seen = new Set<string>();
-  let query: string | null = null;
+  // The queries the words may hold: a mutation in any of them counts (#659).
+  const queries: string[] = [];
   const addFile = (option: string, path: string | undefined, key?: string) => {
     // No file after the option: the shell took it as a redirect, as in `-F <(echo x)` (#439).
     if (path === undefined) {
@@ -1437,7 +1436,7 @@ function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, comma
       if (gh.hereString !== undefined) pieces.push({ source: 'the here-string text', isFile: false, text: gh.hereString });
       else if (gh.stdinFile !== undefined) addFile('<', gh.stdinFile, key);
       else for (const body of heredocBodies(command)) pieces.push({ source: 'the heredoc text', isFile: false, text: body });
-      if (key === 'query') query = [gh.hereString, ...heredocBodies(command)].filter((text) => text !== undefined).join('\n');
+      if (key === 'query') queries.push(...[gh.hereString, ...heredocBodies(command)].filter((text) => text !== undefined));
       return;
     }
     if (seen.has(path)) return;
@@ -1448,62 +1447,62 @@ function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, comma
     else if ('saw' in read) missing ??= { missing: option, unsure: true, saw: read.saw };
     else {
       for (const text of read.texts) pieces.push({ source: path, isFile: true, text });
-      if (key === 'query') query = read.texts.join('\n');
+      if (key === 'query') queries.push(...read.texts);
     }
   };
-  for (let index = 0; index < args.length; ) {
+  // Each word is read as a possible option, the value after an option too (#659). gh takes the
+  // next word as the value of any option that wants one, `-H -f`, so skipping values would
+  // trust the guard's list of such options; a word read twice only means more is scanned.
+  for (let index = 0; index < args.length; index++) {
     if (isApi) {
-      // The host's option list: a value such as `-q -XGET` is not a method.
-      const option = optionValue(args, index, hostApiValues());
-      if (option) {
-        if (INPUT_OPTIONS.has(option.name)) addFile(option.name, option.value);
-        else if (FIELD_OPTIONS.has(option.name)) {
-          const value = option.value ?? '';
-          const equals = value.indexOf('=');
-          const key = equals === -1 ? value : value.slice(0, equals);
-          const content = equals === -1 ? '' : value.slice(equals + 1);
-          // `-F key=@file` reads the file; `-f` always takes the text as it is.
-          if ((option.name === '-F' || option.name === '--field') && content.startsWith('@')) addFile(option.name, content.slice(1), key);
-          else if (content) {
-            pieces.push({ source: `the ${key} field`, isFile: false, text: content });
-            if (key === 'query') query = content;
-          }
-        }
-        index = option.next;
+      // The method and the path come from the host's walk below; here each field is read.
+      const input = optionValue(args, index, INPUT_OPTIONS);
+      if (input) {
+        addFile(input.name, input.value);
         continue;
+      }
+      const field = optionValue(args, index, FIELD_OPTIONS);
+      if (field) {
+        const value = field.value ?? '';
+        const equals = value.indexOf('=');
+        const key = equals === -1 ? value : value.slice(0, equals);
+        const content = equals === -1 ? '' : value.slice(equals + 1);
+        // `-F key=@file` reads the file; `-f` always takes the text as it is.
+        if ((field.name === '-F' || field.name === '--field') && content.startsWith('@')) addFile(field.name, content.slice(1), key);
+        else if (content) {
+          pieces.push({ source: `the ${key} field`, isFile: false, text: content });
+          if (key === 'query') queries.push(content);
+        }
       }
     } else {
       const file = optionValue(args, index, FILE_OPTIONS);
       if (file) {
         addFile(file.name, file.value);
-        index = file.next;
         continue;
       }
       const text = optionValue(args, index, sub === 'close' ? CLOSE_OPTIONS : TEXT_OPTIONS);
-      if (text) {
-        if (text.value) pieces.push({ source: `the ${text.name} text`, isFile: false, text: text.value });
-        index = text.next;
-        continue;
-      }
+      if (text?.value) pieces.push({ source: `the ${text.name} text`, isFile: false, text: text.value });
     }
-    index++;
   }
   if (isApi) {
     const apiAt = args.indexOf('api');
     const call = readHostApi(apiAt === -1 ? args : args.slice(apiAt + 1));
     // The same walk as the path. A cluster is refused here too, so a hidden field is not a quiet read.
     if (call?.cluster) return { cluster: true };
-    if (call && !apiWrites(call.rawPath, call.method === '' ? null : call.method, call.hasFields, query)) return null;
+    if (call && !apiWrites(call.rawPath, call.method, call.hasFields, queries)) return null;
   }
   return missing ?? { pieces };
 }
 
-/** Whether an API call writes: only then is what it sends posted. */
-function apiWrites(path: string, method: string | null, hasFields: boolean, query: string | null): boolean {
-  if (path.replace(/^\//, '') === 'graphql') return query !== null && MUTATION.test(query);
+/**
+ * Whether an API call writes: only then is what it sends posted. `method` is the host's
+ * reading, upper case, or empty when the call names none. Fields with no method are a POST,
+ * to any path: a label or a git blob is posted too (#659). Only a search reads with one.
+ */
+function apiWrites(path: string, method: string, hasFields: boolean, queries: string[]): boolean {
+  if (path.replace(/^\//, '') === 'graphql') return queries.some((query) => MUTATION.test(query));
   if (method) return WRITE_METHODS.has(method);
-  const plain = path.replace(/^\//, '');
-  return hasFields && !plain.startsWith('search/') && WRITE_PATH.test(plain);
+  return hasFields && !path.replace(/^\//, '').startsWith('search/');
 }
 
 // The commit check's reasons end on what git does; a post is public as soon as it is sent.

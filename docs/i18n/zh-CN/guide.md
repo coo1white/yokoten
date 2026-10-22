@@ -1514,6 +1514,28 @@ agent 用 `gh` 发文字之前，工具调用守卫也跑同一套检查。直�
 查到问题就拦下命令，修法和提交检查一样。公开的地址加进 `privacy.allow`。命令运行时才拼出来的
 文字它看不到：`$(cat notes.md)`、变量、别的程序用管道传进来的内容。文件最多读 1 MB，更大的放行。
 它只看命令，不看你的 shell：shell 配置文件里包住 `cd`、`echo` 的函数或别名，它看不到。
+`gh api` 的某个选项后面跟着一个像选项的词（比如 `-H -f`），正文照样会查（#659）。
+
+gh 的令牌不给任何 agent 看，lead 和 worker 都一样（#659、#668）。拿到令牌，`curl` 或脚本就能
+直接调 GitHub，绕开上面所有规则。gh 和 `yokoten bot` 自己会用令牌，不用看到它。所以对每个
+agent，守卫都拦下这些：
+
+- 会打印令牌的 gh 命令：`gh auth token`、`gh auth status --show-token`（`-t`）、
+  `gh auth git-credential`、`gh config get oauth_token`。
+- 存登录信息的地方：`git credential fill`、凭据助手的 `get`（如 `git credential-manager get`）、
+  `git -c credential.…`、`~/.git-credentials`、gh 的 `hosts.yml`、
+  `security find-…-password -w`、`secret-tool lookup`。
+- 令牌的变量：`$GH_TOKEN`、`$GITHUB_TOKEN`、`$GH_ENTERPRISE_TOKEN`、`$GITHUB_ENTERPRISE_TOKEN`，
+  PowerShell 的 `$env:GH_TOKEN` 和 cmd 的 `%GH_TOKEN%` 也算；命令里写了这些名字的 `node`、
+  `python`、`jq` 等会跑代码的程序也拦。要在帖子里写这个名字，用正文文件；要搜它，去掉 `$`。
+- `GIT_TRACE_REDACT=0`：它会让 git 的跟踪日志打印出令牌。
+- bot 的 git 不能带 `-c`，也不能在环境变量里加 git 设置（`GIT_CONFIG_*`）。bot 自己也会去掉
+  分页器、编辑器、浏览器、ssh、askpass 这些程序和跟踪、调试设置，分页一律用 `cat`。
+
+`gh auth status`、`gh pr view`、`curl https://example.com` 照常放行。
+
+`gh workflow disable` 对每个 agent 也一律拦下：工作流关掉以后，所有 PR 都不再跑它的检查。
+只有 owner 能关。
 
 ### agent 读到的东西
 
@@ -1617,6 +1639,11 @@ hook 不可能认得所有命令。输出里露出了你的信息，就开一个
   `.git/config` 或 `.githooks` 也一样；先 `cd` 到守卫看不出的文件夹再写（`cd "$x" && echo >> config`），也拦不住。
   git、gh、yokoten、shell 以外的程序，拿着换过的家目录再去跑 git，也拦不住：npm 脚本、`make` 目标、shell 函数
   （`HOME=/tmp/x npm run commit`）。间接写的变量名（`export $name=x`）也拦不住。
+- **gh 的令牌只在普通命令里藏得住。** 先写进文件再运行的脚本，守卫不读。脚本自己去读 gh 的文件
+  或系统钥匙串，或者把变量名拆开再拼，还是能拿到令牌。打印全部环境变量的程序（`env`、`printenv`、
+  `set`、`/proc/self/environ`）也一样：拦它们会坏掉太多东西。你以前设好的别名，守卫也不看。这样
+  agent 就能绕开守卫调 GitHub。根本办法是 agent 的环境里根本没有令牌：worker 用一个完全没有令牌的
+  工位（#637）；lead 这边，锁还是在服务器上：分支保护，以及一个没有合并、发版权限的令牌。
 - **服务器设置只能读 GitHub 的。** 换成别的代码托管平台，只有平台自己才判断得了的步骤会标 can't check，并写明各自在问什么（见[会话里看到的是什么](#会话里看到的是什么)）。bot 的权限 `doctor` 还查不了。
 - **先支持 Claude Code。** agent 按 Claude Code 的格式写。技能用的是公开
   的 SKILL.md 格式，所以 `install` 也会把它们放进 `~/.agents/skills`，Codex、Gemini CLI、
