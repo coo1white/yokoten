@@ -135,6 +135,11 @@ export function repoOf(remote: string): string | null {
   return remote.trim().match(/github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/)?.[1] ?? null;
 }
 
+/** The web page of `owner/name`. */
+export function repoPageOf(repo: string): string {
+  return `https://github.com/${repo}`;
+}
+
 // The title a gh command sets is read in rules/pr.ts, where the guard reads it too (#391).
 export { type BotProgram, botProgram, type CommandTitle, readCommandTitle, type UnreadableTitle } from '../rules/pr.ts';
 
@@ -208,15 +213,15 @@ export interface Unreadable {
   problem: Finding;
 }
 
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
-const asText = (value: unknown): string => (typeof value === 'string' ? value : '');
+export const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+export const asText = (value: unknown): string => (typeof value === 'string' ? value : '');
 /** The label names; a label that is not an object with a name is skipped. */
-const labelNames = (labels: unknown): string[] => (Array.isArray(labels) ? labels.map((l) => (isObject(l) ? asText(l.name) : '')).filter(Boolean) : []);
+export const labelNames = (labels: unknown): string[] => (Array.isArray(labels) ? labels.map((l) => (isObject(l) ? asText(l.name) : '')).filter(Boolean) : []);
 
-const EVENT_FIX = 'run it in a GitHub Actions job on a `pull_request` or `issues` event, or set GITHUB_EVENT_PATH to a readable event file';
+export const EVENT_FIX = 'run it in a GitHub Actions job on a `pull_request` or `issues` event, or set GITHUB_EVENT_PATH to a readable event file';
 
 /** The event of this run as an object, null when there is none, or why it can't be read. */
-function readEvent(env: Env): Record<string, unknown> | Unreadable | null {
+export function readEvent(env: Env): Record<string, unknown> | Unreadable | null {
   if (!env.GITHUB_EVENT_PATH) return null;
   let raw: string;
   try {
@@ -234,7 +239,7 @@ function readEvent(env: Env): Record<string, unknown> | Unreadable | null {
   return event;
 }
 
-const isUnreadable = (value: unknown): value is Unreadable => isObject(value) && 'problem' in value;
+export const isUnreadable = (value: unknown): value is Unreadable => isObject(value) && 'problem' in value;
 
 /** The commit is in this checkout. A value that is not a commit id counts as missing. */
 function hasCommit(root: string, sha: string, env: Env): boolean {
@@ -258,7 +263,7 @@ function hasMergeBase(root: string, base: string, head: string, env: Env): boole
 }
 
 const COMMITS_FIX = 'use `fetch-depth: 0` in actions/checkout, so the checkout has the whole history';
-const SHA_FIX = 'run it in a GitHub Actions job on a `pull_request` event, whose base.sha and head.sha are the commits to compare';
+export const SHA_FIX = 'run it in a GitHub Actions job on a `pull_request` event, whose base.sha and head.sha are the commits to compare';
 
 /** Which of the event's base and head commit ids are empty, missing or not text, as one finding, or null. */
 function shasProblem(base: string, head: string): Finding | null {
@@ -292,7 +297,7 @@ export function readPullRequest(root: string, env: Env): PullRequestRead | Unrea
   return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: isObject(pr.user) ? asText(pr.user.login) : '' }, base, head, env);
 }
 
-const milestoneTitle = (milestone: unknown): string | null => (isObject(milestone) && typeof milestone.title === 'string' ? milestone.title : null);
+export const milestoneTitle = (milestone: unknown): string | null => (isObject(milestone) && typeof milestone.title === 'string' ? milestone.title : null);
 
 /** The pull request with the files git lists between `base` and `head`. Both commits must be here. */
 function withDiff(root: string, fields: Omit<PullRequest, 'files' | 'deleted'>, base: string, head: string, env: Env): PullRequestRead {
@@ -1200,6 +1205,8 @@ export interface BoardPull {
   tier: '' | 'A' | 'B' | 'C';
   /** The review: approved, changes asked, waiting for the owner, or none asked. */
   review: 'approved' | 'changes' | 'waiting' | 'none';
+  /** When it merged, as gh gives it, or '' when it has not. */
+  mergedAt: string;
 }
 
 /** A check conclusion that keeps the pull request green. Any other conclusion on a completed run turns it red, so an unknown one never shows green. */
@@ -1271,6 +1278,7 @@ function parseBoardPull(row: unknown): BoardPull | null {
     stage: asText(row.state) === 'MERGED' ? 'merged' : asText(row.state) === 'CLOSED' ? 'closed' : row.isDraft === true ? 'draft' : 'open',
     checks: rollupState(row.statusCheckRollup),
     tier: pullTier(labelNames(row.labels)),
+    mergedAt: asText(row.mergedAt),
     review: review === 'APPROVED' ? 'approved' : review === 'CHANGES_REQUESTED' ? 'changes' : review === 'REVIEW_REQUIRED' ? 'waiting' : 'none',
   };
 }
@@ -1279,7 +1287,7 @@ function parseBoardPull(row: unknown): BoardPull | null {
 export function readBoardPulls(gh: Gh, repo: string): BoardPull[] | string {
   let text: string;
   try {
-    text = gh(['pr', 'list', '--repo', repo, '--state', 'all', '--limit', String(BOARD_PULL_LIMIT), '--json', 'number,title,headRefName,state,reviewDecision,isDraft,statusCheckRollup,labels,url']);
+    text = gh(['pr', 'list', '--repo', repo, '--state', 'all', '--limit', String(BOARD_PULL_LIMIT), '--json', 'number,title,headRefName,state,reviewDecision,isDraft,statusCheckRollup,labels,url,mergedAt']);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'gh is not installed: get it from https://cli.github.com, then run `gh auth login`';
     const reason = terminalText(String((err as { stderr?: string }).stderr || '').split('\n')[0].trim());

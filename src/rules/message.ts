@@ -273,6 +273,12 @@ export const RULES = {
     check: '`yokoten bot` refuses `gh pr merge` when the owner\'s latest Approve is on an older commit, unless only base merges came after it and the pull request\'s own diff is the same; `gh pr status` through the bot says the same',
     docs: guide('who-reviews-what'),
   },
+  'pr-current': {
+    rule: 'when its workflow asks, `check --pr` reads the pull request as it is now, from the API',
+    why: 'runs can start in any order, and the event file keeps the labels and milestone of its own moment, so only the pull request as it is now gives the true result',
+    check: `${PR_CHECK}; with YOKOTEN_PR_LIVE=1, it reads the title, body, labels and milestone with the job's GITHUB_TOKEN, and fails when it can't`,
+    docs: guide('commands'),
+  },
   'pr-read': {
     rule: '`check --pr <number>` reads that pull request through gh',
     why: 'a repo without CI checks its pull requests this way, so without the read nothing is checked',

@@ -83,7 +83,7 @@ test('hooks: a missing runtime says one plain line with no path, never a stack t
   const projectLine = `${MISSING_PROJECT}\n`;
   const codexProject = commands(join(sandbox.repo, '.codex', 'hooks.json'));
   const geminiProject = commands(join(sandbox.repo, '.gemini', 'settings.json'));
-  for (const command of [...project.PreToolUse, ...project.Stop, ...codexProject.PreToolUse.slice(-1), ...codexProject.Stop, ...geminiProject.BeforeTool, ...geminiProject.AfterAgent]) {
+  for (const command of [...project.PreToolUse, ...project.Stop, ...project.SubagentStop, ...codexProject.PreToolUse.slice(-1), ...codexProject.Stop, ...geminiProject.BeforeTool, ...geminiProject.AfterAgent]) {
     assert.deepEqual(pick(shell(command)), [1, '', projectLine], command);
   }
   // A project path with a space: the `[` test's own error, with the full path, is not shown.
@@ -248,9 +248,9 @@ test('compile cache: bin/yokoten.mjs keeps it in the user cache folder, or in NO
 });
 
 test('help: the help table and the parser list the same commands and options (#207)', async () => {
-  // The dispatch is in bin/main.ts; each command's parse call is in its module in src/commands/ (#330).
+  // The dispatch is in bin/main.ts; each command's parse call is in its module under src/commands/ (#330), subfolders too.
   const commandsDir = join(dirname(CLI), '..', 'src', 'commands');
-  const source = [join(dirname(CLI), 'main.ts'), ...readdirSync(commandsDir).map((file) => join(commandsDir, file))].map((file) => readFileSync(file, 'utf8')).join('\n');
+  const source = [join(dirname(CLI), 'main.ts'), ...readdirSync(commandsDir, { recursive: true }).map(String).filter((file) => file.endsWith('.ts')).map((file) => join(commandsDir, file))].map((file) => readFileSync(file, 'utf8')).join('\n');
   // Every parse call names a command in the table; no option list is written outside it.
   const parsed = [...source.matchAll(/\bparse\('([a-z]+)'/g)].map((m) => m[1]);
   assert.deepEqual([...parsed].sort(), COMMANDS.map((command) => command.name).sort(), 'each command parses its words by its help entry');
@@ -360,7 +360,7 @@ test('hooks: a tool-call guard that fails refuses the call; the stop check does 
   // The stop check and the session doctor pass a failure on: exit 2 at stop would send the
   // agent back to work on a guard that cannot run.
   runtime('process.exit(1);\n');
-  for (const command of [...project.Stop, ...codex.Stop, ...gemini.AfterAgent, ...user.SessionStart, ...codexUser.SessionStart, ...geminiUser.SessionStart]) {
+  for (const command of [...project.Stop, ...project.SubagentStop, ...codex.Stop, ...gemini.AfterAgent, ...user.SessionStart, ...codexUser.SessionStart, ...geminiUser.SessionStart]) {
     assert.deepEqual(pick(shell(command)), [1, '', ''], command);
   }
   // A missing runtime still says its line and goes on, as before.
