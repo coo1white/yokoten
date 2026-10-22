@@ -248,9 +248,9 @@ test('compile cache: bin/yokoten.mjs keeps it in the user cache folder, or in NO
 });
 
 test('help: the help table and the parser list the same commands and options (#207)', async () => {
-  // The dispatch is in bin/main.ts; each command's parse call is in its module in src/commands/ (#330).
+  // The dispatch is in bin/main.ts; each command's parse call is in its module under src/commands/ (#330), subfolders too.
   const commandsDir = join(dirname(CLI), '..', 'src', 'commands');
-  const source = [join(dirname(CLI), 'main.ts'), ...readdirSync(commandsDir).map((file) => join(commandsDir, file))].map((file) => readFileSync(file, 'utf8')).join('\n');
+  const source = [join(dirname(CLI), 'main.ts'), ...readdirSync(commandsDir, { recursive: true }).map(String).filter((file) => file.endsWith('.ts')).map((file) => join(commandsDir, file))].map((file) => readFileSync(file, 'utf8')).join('\n');
   // Every parse call names a command in the table; no option list is written outside it.
   const parsed = [...source.matchAll(/\bparse\('([a-z]+)'/g)].map((m) => m[1]);
   assert.deepEqual([...parsed].sort(), COMMANDS.map((command) => command.name).sort(), 'each command parses its words by its help entry');
