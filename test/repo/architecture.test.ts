@@ -867,10 +867,15 @@ test('split tests: an import it cannot place stops it with a list, and nothing i
   assert.ok(!existsSync(join(root, 'split')), 'a stopped split writes nothing');
 });
 
-// Time a read by its input's length, with no real work: a busy wait as long as asked.
+// A slow spell of real work: a busy wait until the process has spent `ms` of CPU time. The check
+// reads CPU time (#648), so a wait by the wall clock would shrink when the runner pauses the process.
 const busyWait = (ms: number) => {
-  const end = performance.now() + ms;
-  while (performance.now() < end);
+  const spent = () => {
+    const { user, system } = process.cpuUsage();
+    return (user + system) / 1000;
+  };
+  const end = spent() + ms;
+  while (spent() < end);
 };
 
 // A simulated clock for the controls (#493): a wait adds to the time instead of spinning, so a control gives
