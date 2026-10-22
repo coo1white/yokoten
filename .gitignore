@@ -3,3 +3,7 @@ node_modules/
 # The npm package build (scripts/build.ts) and npm pack output.
 dist/
 *.tgz
+# Worker worktrees, one folder per issue (#571).
+.worktrees/
+# One agent's live status for `yokoten board`, at its worktree's root. Never committed.
+.yokoten-agent.json

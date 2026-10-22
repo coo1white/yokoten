@@ -241,7 +241,8 @@ The repo itself in such a folder always gets a note: that is a setup problem. A 
 there is named only when it holds work at risk, and then in that work's own note. For
 example: "../w has 3 uncommitted files, the oldest changed 2 days ago, and is under the temp
 folder (/tmp), which the system may empty on restart". The worktrees there that hold nothing
-at risk get one line in full `doctor`, with the count, and none in a session.
+at risk get one line in full `doctor`, with the count, and none in a session. Each fix
+says to make worktrees under `.worktrees/`, never under a temp folder.
 
 All of these are notes: they never fail `doctor`. Doctor only reads here. It changes no
 file, no ref and no worktree, and git runs with optional locks off. Paths show relative to
@@ -406,7 +407,9 @@ from a plain file under 1 MB; any other patch file stops a worker. A `git commit
 would commit a lead-only file is stopped too: the commit check knows the role only from
 `YOKOTEN_ROLE`, and a Claude Code subagent such as `yokoten:worker` has none. Reads such
 as `cat` and `grep` pass. As for edits, this holds only in a repo that uses yokoten (one
-with a `yokoten.json`). When the brief asks for a change to a lead-only file, the lead
+with a `yokoten.json`). A path under `.worktrees/<issue>/` reads from that worktree, as
+if the session ran there: `.worktrees/571-x/AGENTS.md` is still lead-only (#571).
+When the brief asks for a change to a lead-only file, the lead
 starts the worker with `YOKOTEN_LEAD_ONLY_OK=AGENTS.md,.github/workflows/ci.yml`: paths
 from the repo root, comma-separated, an entry with `*` read as a glob. `*` alone grants
 every lead-only file. The guard and the commit check let those paths through. A subagent
@@ -756,6 +759,12 @@ limit, checkout keeps no token, and a new push cancels the old run on the same p
 request. Add your tests as a job in `yokoten.yml` and to the `needs` list of `ci`. A
 private repo can keep CI off: see [A private repo without CI](#a-private-repo-without-ci).
 
+`yokoten.yml` and `pr.yml` also run on `merge_group`, so a merge queue runs the same
+required checks as a pull request. A merge group run has no pull request. `yokoten.yml`
+runs every job in full, and the `pr` job skips, which counts as green for the queue.
+Turn the queue on in the repo settings. `issue.yml` never runs there: an issue is not
+a check on a merge.
+
 When a workflow is already there, `init` checks whether you changed it. The kit keeps a
 list of every version it wrote. A file that matches one of them, Windows line ends or not,
 is a copy you never changed. `init` then updates it to the newest version and says so.
@@ -804,7 +813,7 @@ It puts three safe defaults in `.github/` too:
 | `check [--staged] [--json]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries. Each change file is read the way `changelog` reads it, so a wrong one fails at commit. With nothing staged, `--staged` notes it and is ok. For the tree, a translation behind its English source is a note. See [Translations](#translations) |
 | `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). The last line names each AI and model: `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs. A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
 | `check --pr <number>` | The same check for one pull request, read through `gh`, for a repo without CI. See [A private repo without CI](#a-private-repo-without-ci) |
-| `check --issue` | In CI: the issue's title. See [Issue titles](#issue-titles) |
+| `check --issue` | In CI: the issue's title and labels. See [Issue titles](#issue-titles) |
 | `redact` | Reads text on stdin and writes it with your details hidden: `<owner>`, `<email>`, `<host>`, `<mark>`. The tool-call guard sends risky commands through it. See [Privacy](#privacy) |
 | `marks allow <mark> --here` | Lets one of your private marks through in this repo only, with no yokoten.json. The allow is kept on this machine, never in the repo. `--remove` takes it back. See [Privacy](#privacy) |
 | `changelog [--write]` | Shows the entries the files in `changes/` add under `[Unreleased]`. `--write` puts them into `CHANGELOG.md` and deletes the files; run it before a release. See [The changelog](#the-changelog) |
@@ -816,8 +825,10 @@ It puts three safe defaults in `.github/` too:
 | `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop event by default, a Codex Stop event with `--agent codex`, a Gemini CLI AfterAgent event with `--agent gemini`, a Grok CLI Stop event with `--agent grok`. See [The stop check](#the-stop-check) |
 | `explain [<id>] [--json]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
 | `worker mark <dir>` | Marks the worktree at `<dir>` as a worker's. The guard then treats every agent there as a worker, even one whose runtime drops `YOKOTEN_ROLE` (Muse Code). The guard refuses a worker's plain ways to remove it, and a `.git` link it can't read counts as marked; the server and credentials kept from the worker are the real lock. `git worktree remove <dir>` removes the mark. Given a subfolder, it marks the worktree's top folder and says which. The main checkout and a submodule are never marked. See [Works with](#works-with) |
+| `worker env [runtime]` | Lists the names that yokoten's agent environment would keep from this shell, and counts the names it drops. With a runtime, its own login name counts too. It never shows a value. No command starts an agent with it yet. See [What an agent's environment holds](#what-an-agents-environment-holds) |
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay. A second run changes nothing |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. A body whose last line is not `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, is refused too: each pull request names each AI and model that made it. `gh pr create` without a type or tier label gets them added: the type from the title (`bug` for `fix`), the tier from the body's `tier:` line. A label you pass is kept. A tier label that does not match the body is refused, with the message of `check --pr`. A label the repo does not have is named in a note and left out; the bot never creates labels. `gh pr create` without `--milestone` gets the milestone of the first linked issue (`Closes #N`, `Part of #N`) that has one. When no linked issue has one, it is refused, and nothing is sent; add `--milestone`. When gh can't read the issue, the pull request is sent without a milestone, with a note. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
+| `board [--text]` | Serves a live page on this machine only: the agents grouped by issue, the picked one, and each pull request stage. It prints the link and runs until you stop it. The page refreshes every 15 seconds. `--text` prints the agents, pull requests and worktrees as plain text. See [The team board](#the-team-board) |
 
 Each command prints its own help with `--help` or `-h`: what it does, its options and
 one example. `yokoten help <command>` prints the same, and `yokoten --help` lists the
@@ -1040,15 +1051,23 @@ commits to come.
   what you saw, not the fix.
 - At most 60 characters. No full stop at the end. No `#N`: link other issues in the body.
 - The area is one lowercase word, or words joined by hyphens.
+- One type label (`feat`, `bug`, `docs` and the like) and one tier label (`tier A`,
+  `tier B` or `tier C`), when the repo has those labels. A repo without type or tier
+  labels gets no line.
 
 `init` adds `.github/workflows/issue.yml`. It runs `check --issue` when an issue is
-opened or edited. It only reads: it never comments on the issue or renames it. A red run
-tells the author to fix the title.
+opened or edited. It checks the title and the labels: one type label and one tier label,
+when the repo has those labels. It only reads: it never comments on the issue or renames
+it. A red run tells the author to fix the title or the labels. To know which kinds the
+repo has, the check lists its labels through `gh`; when `gh` cannot list them, only the
+title is checked.
 
 An agent's title is checked before it is sent. In a repo with a `yokoten.json`, the
 tool-call guard runs the same check on `gh issue create|edit` and `gh pr create|edit`
 with a title, plain or through `yokoten bot`. A bad title stops the command, so CI never
-sees it. The user-level hook does not check titles: another project has its own rules.
+sees it. `yokoten bot` also refuses a `gh issue create` with a missing type or tier label
+the repo has, so a bad issue is not sent. The user-level hook does not check titles:
+another project has its own rules.
 
 Any lowercase area passes. To limit the areas, list them in `yokoten.json`:
 `"areas": ["doctor", "check", "docs"]`. Pull request titles then use the same list in
@@ -1321,7 +1340,7 @@ A list you set replaces the default list; it does not add to it.
 #### Folders that may grow
 
 Core rule 10 keeps each folder at 7 entries or fewer. Two kinds of folder may grow past it,
-and `changes/` always may:
+and `changes/` and `.worktrees/` always may:
 
 - **A log**, such as `docs/records`. Each entry is added once and kept.
 - **A third-party fixture set** that tests read, kept under its upstream names, with its
@@ -1429,10 +1448,10 @@ The setup treats agents like staff on a line, each with a clear role and limited
   requests, create release tags, and change repo settings.
 - **The lead** is the session you talk to. It plans, splits the work, reviews, and opens
   pull requests through a **bot**, never with your account.
-- **Workers** are sessions the lead starts for one task each, in their own worktree,
-  with `YOKOTEN_ROLE=worker`. They change code and report back. They never push. A
-  fix task also gets `YOKOTEN_FIX_TASK=1`. Then the guard and the commit check stop a
-  change to a test file.
+- **Workers** are sessions the lead starts for one task each, in their own worktree
+  under `.worktrees/`, with `YOKOTEN_ROLE=worker`. They change code and report back.
+  They never push. A fix task also gets `YOKOTEN_FIX_TASK=1`. Then the guard and the
+  commit check stop a change to a test file.
 - **The bot** is a GitHub App installed on the repo. It opens pull requests. If it has
   the Workflows permission, CODEOWNERS still sends every CI change to you, and a release
   waits for you in the protected `release` environment. A ruleset requires your review,
@@ -1475,6 +1494,38 @@ The tier label is `tier A`, `tier B` or `tier C` (`tier: B` also counts). It mus
 the `tier:` line in the body. Each missing or wrong label gets its own message.
 
 Server setup, step by step: [`docs/server.md`](server.md).
+
+### The team board
+
+`yokoten board` shows the team at a glance. It serves a page on this machine only.
+It prints a link. Open it in a browser. The link holds a random token, so only
+someone who reads this terminal can open the page.
+
+The page has three columns. The left lists the agents, grouped by issue: pick one
+to see it in the middle. The middle shows what the picked agent works on and what
+it does now. The right lists the pull requests and their checks. The page refreshes
+every 15 seconds. Stop the command with Ctrl-C.
+
+`yokoten board --text` prints the agents, pull requests and worktrees as plain text.
+
+An agent joins by writing `.yokoten-agent.json` at its worktree's root. It leaves
+by removing the file. Any agent can write it, whatever vendor it runs on. The
+format is open: other tools may read it too. One file per worktree.
+
+| Field | Means |
+|-------|-------|
+| `name` | The agent's name. Without it, the worktree's folder name is used |
+| `vendor` | Which vendor it runs on, such as `claude-code` |
+| `task` | What it works on, such as `issue 601`. The page groups the agents by the issue it names |
+| `role` | The agent's part: `engineer`, `reviewer` or `verifier`. One issue then shows its whole path |
+| `worktree` | The worktree it works in |
+| `doing` | What it does now, in a few words |
+| `updated` | When it last wrote, such as `2026-10-22T10:00:00Z`. The board shows how long ago that was |
+
+Every field is text. Every field may be missing. A file that is not a JSON object is skipped. `role` keeps only `engineer`, `reviewer` or `verifier`; anything else is ignored.
+
+The page reads `/data` as JSON. That is the board's interface. The page is only one
+view of it.
 
 ## Privacy
 
@@ -1589,8 +1640,8 @@ plain or through `yokoten bot -- gh`:
     `-o pipefail` or `+o pipefail`. A bare `set` doesn't count.
   - `cd` or `pushd` with one folder.
   - A plain assignment, but not to a name the shell uses, such as `PATH`, `HOME` or `PS4`.
-  - `export`, or a command's own prefix, of only `GH_REPO`, `GH_HOST` and
-    `NODE_USE_ENV_PROXY`.
+  - `export`, or a command's own prefix, of only `GH_REPO`, `GH_HOST`,
+    `NODE_USE_ENV_PROXY` and `TZ=UTC`.
   - `gh pr|issue|repo|run view|list|checks` without `--web` or `-w`.
   - `git rev-parse`, `git config --get <name>` and `git remote get-url`.
   - Any of these through `yokoten bot --`.
@@ -1675,6 +1726,44 @@ What is not hidden, said plainly:
 
 A hook can't know every command. When output shows your details, open an incident, and
 give the command a row in `ACCOUNT_PRINTERS` (`src/rules/guards.ts`).
+
+### What an agent's environment holds
+
+Your shell may hold tokens and keys. An agent that sees them can print them, push with them,
+or send them out. So yokoten has one function that prepares a clean environment for an
+agent, for every runtime (#613). It ships now, with `yokoten worker env` to show its result.
+
+No yokoten command starts an agent yet, so nothing uses the function today. The board's
+"start an agent" (#603) will be its first caller. Until then, an agent gets the whole
+environment of the session that starts it. Start the lead's session from a shell without
+tokens.
+
+What the function keeps and drops:
+
+- **It keeps** the names every program needs: `PATH`, `HOME`, `LANG`, `LANGUAGE`, `LC_*`,
+  `TERM`, `COLORTERM`, `TZ`, `TMPDIR`, `TEMP`, `TMP`, `USER`, `LOGNAME`, `SHELL`, and
+  `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME` and
+  `XDG_RUNTIME_DIR`. On Windows it also keeps `SystemRoot`, `USERPROFILE`, `APPDATA`,
+  `PATHEXT`, `ComSpec` and the like.
+- **It keeps the `YOKOTEN_*` names that make the guard stricter:** `YOKOTEN_ROLE`,
+  `YOKOTEN_FIX_TASK`, `YOKOTEN_PRIVATE_MARKS` and a few settings. The bot's key and app id,
+  `YOKOTEN_RELEASE_APPROVAL` and `YOKOTEN_LEAD_ONLY_OK` never pass from your shell. The lead
+  gives those on purpose.
+- **It drops every other name.** A name with `TOKEN`, `SECRET`, `KEY`, `PASSWORD`, `AUTH`,
+  `CREDENTIAL` or `PRIVATE` in it is dropped too. There are two exceptions:
+  `YOKOTEN_PRIVATE_MARKS`, which is only a path, and a runtime's own login names.
+- **It drops a value shaped like a key:** GitHub, GitLab, Hugging Face, AWS, Google, Slack,
+  JWT, `sk-` keys, private keys, and a URL with a password in it. It also drops a value
+  longer than 32 KiB, as too long to check.
+- **A vendor's own login:** each runtime file names the login variable of its vendor,
+  such as `ANTHROPIC_API_KEY` for Claude Code. Only that runtime's agent gets it. General
+  credentials never count as a login: `GH_TOKEN`, `GITHUB_TOKEN`, AWS keys, and for Gemini
+  CLI `GOOGLE_API_KEY` and `GOOGLE_APPLICATION_CREDENTIALS`. A Vertex AI setup needs the
+  lead to pass those on purpose.
+
+To see what an agent would get from your shell, run `yokoten worker env`. Add a runtime,
+such as `yokoten worker env claude-code`, to count its login name too. It lists the names
+and counts what it drops. It never shows a value.
 
 ### Time zones
 

@@ -13,10 +13,10 @@ import { randomUUID } from 'node:crypto';
 import { chmodSync, closeSync, linkSync, mkdirSync, openSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import { ghIn, readCodeOwners, readIssue, readNumberedPullRequest, readPullRequest } from '../host/github.ts';
+import { ghIn, readCodeOwners, readIssue, readNumberedPullRequest, readPullRequest, readRepoLabelNames } from '../host/github.ts';
 import { loadConfig } from '../rules/config.ts';
 import { type Finding, formatFinding } from '../rules/message.ts';
-import { addedLinesByFile, changedLines, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, largeDiff, longSentenceNote, longSentences, splitForDependabot } from '../rules/pr.ts';
+import { addedLinesByFile, changedLines, checkIssueLabels, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, largeDiff, longSentenceNote, longSentences, splitForDependabot } from '../rules/pr.ts';
 import { parseChange } from '../run/changelog.ts';
 import { check, checkHistory, GitReadError, gitReadFinding, historyTimeZones, readGit, timeZoneNote, unstageHint } from '../run/check.ts';
 import { isCodeFile, nameNotes } from '../run/names.ts';
@@ -85,7 +85,10 @@ function runMode(invocation: Invocation, mode: string, root: string, config: Ret
       return SKIPPED;
     }
     // An event that can't be read is one finding (#267), so --json and the summary still work.
-    problems = 'problem' in issue ? [issue.problem] : checkIssueTitle(issue.title, config, issue.labels);
+    // The labels need the kinds the repo has, read through gh; when gh can't list
+    // them, only the title is checked (#544).
+    problems =
+      'problem' in issue ? [issue.problem] : [...checkIssueTitle(issue.title, config, issue.labels), ...checkIssueLabels(issue.labels, readRepoLabelNames(ghIn(root, env, GH_TIMEOUT_MS)))];
   } else if (mode === 'pr') {
     const pr = number === undefined ? readPullRequest(root, env) : readNumberedPullRequest(root, ghIn(root, env, GH_TIMEOUT_MS), number, env);
     if (!pr) {

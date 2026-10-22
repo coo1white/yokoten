@@ -25,6 +25,7 @@ import { docsLink } from '../../rules/message.ts';
 import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import { type Added, addHook, checkHooksFile, type HookState, hookState } from '../hooks-file.ts';
+import type { RuntimeEnv } from '../agent-env.ts';
 
 /**
  * A PreToolUse call, as an Action. The payload is Claude Code's, and its reader goes by the
@@ -144,3 +145,6 @@ export function initLines(added: { guard: Added; patch: Added }, platform: strin
     `then start dsh at the repo root with the patch: dsh <profile> --patch ${PATCH_FILE}`,
   ];
 }
+
+/** The names this runtime's agent gets on top of the shared ones (#613). DeepSeek Harness takes a DeepSeek API key. */
+export const AGENT_ENV: RuntimeEnv = { login: ['DEEPSEEK_API_KEY'], config: ['DSH_HOME'] };

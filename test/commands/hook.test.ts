@@ -509,9 +509,13 @@ test('worker mark: a marked worktree is a worker for every agent; the plain ways
   // The lead in the main checkout, with no mark, is not affected.
   const lead = (toolInput: Record<string, string>) => muse(toolInput, sandbox.repo);
   assert.equal((await lead({ path: join(sandbox.repo, 'AGENTS.md') })).status, 0);
-  for (const command of ['git push -u origin task', `git worktree remove ${tree}`, 'gh api -X PUT repos/a/b/pulls/1/merge', 'git -c alias.p=push p', 'chmod 000 .gi?']) {
+  for (const command of ['git push -u origin task', `git worktree remove ${tree}`, 'gh api -X PUT repos/a/b/pulls/1/merge', 'chmod 000 .gi?']) {
     assert.equal((await lead({ command })).status, 0, command);
   }
+  // An alias is refused for the lead too: the guard never reads a hidden command as safe (#560).
+  result = await lead({ command: 'git -c alias.p=push p' });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /run the full command instead/i);
   // The way back: removing the worktree removes the mark.
   sandbox.git('worktree', 'remove', '--force', tree);
   assert.ok(!existsSync(mark));
@@ -659,4 +663,26 @@ test('worker list: a marked worker cannot unmark its own worktree, even after cd
   const gitDir = runChild('git', ['rev-parse', '--absolute-git-dir'], { cwd: tree }).stdout.trim();
   assert.ok(existsSync(join(gitDir, 'yokoten-worker')));
   sandbox.git('worktree', 'remove', '--force', tree);
+});
+
+// `worker env` lists the names an agent would get, and counts the rest; it never prints a
+// value (#613). The values are fake; each token is joined from parts.
+test('worker env: it names what an agent gets and counts what is dropped, and prints no value (#613)', async () => {
+  const cwd = makeTempDir('yokoten-worker-env-');
+  const token = `${'gh'}p_${'a1B2c3D4e5F6g7H8'.repeat(3)}`;
+  const key = `${'sk'}-ant-api03-${'a1B2c3D4e5F6g7H8'.repeat(4)}`;
+  const url = `postgres://fakeuser:${'fake'}pass${'@'}db.example.invalid/app`;
+  const env = { PATH: '/usr/bin', HOME: cwd, GH_TOKEN: token, ANTHROPIC_API_KEY: key, LC_FAKE: url, EDITOR: 'vi' };
+  const plain = await invoke(['worker', 'env'], { env, cwd });
+  assert.equal(plain.code, 0, plain.stderr);
+  for (const value of [token, key, url]) assert.ok(!(plain.stdout + plain.stderr).includes(value), 'worker env printed a value');
+  assert.match(plain.stdout, /would get 2 names from this shell/);
+  assert.match(plain.stdout, /HOME, PATH/);
+  assert.match(plain.stdout, /Dropped: 2 with a secret-looking name, 1 with a value shaped like a key or token, 0 too long to check, 1 not on the list/);
+  const claude = await invoke(['worker', 'env', 'claude-code'], { env, cwd });
+  for (const value of [token, key, url]) assert.ok(!(claude.stdout + claude.stderr).includes(value), 'worker env claude-code printed a value');
+  assert.match(claude.stdout, /ANTHROPIC_API_KEY, HOME, PATH/);
+  const unknown = await invoke(['worker', 'env', 'nope'], { env, cwd });
+  assert.equal(unknown.code, 1);
+  assert.match(unknown.stderr, /unknown runtime "nope"/);
 });

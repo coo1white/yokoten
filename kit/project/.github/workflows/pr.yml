@@ -6,6 +6,9 @@ name: pr
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened, labeled, unlabeled, milestoned, demilestoned, ready_for_review]
+  # A merge queue runs the required `pr` check too. There is no pull request to check
+  # on a merge group run, so the job skips then; a skip counts as green for the queue.
+  merge_group:
 permissions:
   contents: read
 concurrency:
@@ -13,6 +16,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   pr:
+    if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

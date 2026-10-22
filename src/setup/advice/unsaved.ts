@@ -640,7 +640,7 @@ export function unsavedNotes(facts: UnsavedFacts, { home, now = Date.now(), plat
     // At-risk worktrees whose note a session hid (or no remote folded): say the place on its own.
     for (const worktree of volatileAtRisk.filter((tree) => !told.has(tree.path))) {
       told.add(worktree.path);
-      notes.push(finding(VOLATILE_IDS[(worktree.volatile as { kind: 'tmpfs' | 'temp' }).kind], `${show(worktree.path)} holds work only on this machine, and is ${describePlace(worktree.volatile as { kind: 'tmpfs' | 'temp'; folder: string }, home)}`, hasNoRemote ? `save it: commit; ${pushLater}; then make it again in a folder that lasts` : 'save it: commit and push, then make it again in a folder that lasts'));
+      notes.push(finding(VOLATILE_IDS[(worktree.volatile as { kind: 'tmpfs' | 'temp' }).kind], `${show(worktree.path)} holds work only on this machine, and is ${describePlace(worktree.volatile as { kind: 'tmpfs' | 'temp'; folder: string }, home)}`, hasNoRemote ? `save it: commit; ${pushLater}; then make it again under .worktrees/` : 'save it: commit and push, then make it again under .worktrees/'));
     }
     // The rest hold nothing at risk: one line per kind, for the next worktree made there.
     for (const kind of ['tmpfs', 'temp'] as const) {
@@ -649,7 +649,8 @@ export function unsavedNotes(facts: UnsavedFacts, { home, now = Date.now(), plat
       const folders = [...new Set(clean.map((worktree) => showFolder((worktree.volatile as { folder: string }).folder, home)))].join(', ');
       const where = kind === 'tmpfs' ? `on a tmpfs (${folders})` : `under the temp folder (${folders})`;
       const count = clean.length === 1 ? `1 worktree is ${where}; it holds no unsaved work` : `${clean.length} worktrees are ${where}; none holds unsaved work`;
-      notes.push(finding(VOLATILE_IDS[kind], `${count}, but new work there may be lost on restart`, 'make new worktrees in a folder that lasts'));
+      const fix = kind === 'tmpfs' ? 'make new worktrees under .worktrees/, never on a tmpfs' : 'make new worktrees under .worktrees/, never under a temp folder';
+      notes.push(finding(VOLATILE_IDS[kind], `${count}, but new work there may be lost on restart`, fix));
     }
   }
   if (facts.stashes) {

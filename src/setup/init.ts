@@ -26,6 +26,7 @@ import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
 import { configEntries, forgetGitReads, remembered, withGitReads } from '../run/check.ts';
 import { DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
+import { WORKTREES_DIR } from '../rules/layout.ts';
 import { type Finding, finding } from '../rules/message.ts';
 import { systemHome } from '../rules/privacy.ts';
 import { CODEOWNERS_PLACES, type Gh, ghIn, isOrganization, isPrivateRepo, repoOf } from '../host/github.ts';
@@ -134,8 +135,7 @@ function initRun(root: string, env: Env, gh: Gh, noCi: boolean, ask?: Ask): { ok
   if (noCi) report.push(...keepCiOff(root, cli, kit));
   else if (!isOff) report.push(...privateRepoNote(root, gh, env));
   report.push(writeCodeOwners(root, gh, env));
-  const ignored = writeGitignore(root);
-  if (ignored) report.push(ignored);
+  report.push(writeGitignore(root));
   const imported = importRules(root);
   if (imported) report.push(imported);
   // Claude Code's settings, the file people edit by hand most: skipped as one, never
@@ -468,10 +468,11 @@ export function findEcosystems(root: string): Map<string, string[]> {
   return found;
 }
 
-// ---- A .gitignore for the project's dependency folders (#521) ----
+// ---- A .gitignore for the worker worktrees and the dependency folders (#521, #571) ----
 //
-// Without one, `git add -A` stages node_modules. init reads the same package managers as
-// Dependabot and writes the folders each one fills. It only adds lines that are missing.
+// Without one, `git add -A` stages node_modules. init always ignores the folder worker
+// worktrees live in, reads the same package managers as Dependabot to write the folders
+// each one fills, and the board's agent file (#601). It only adds lines that are missing.
 
 /** The folders each package manager fills with fetched or built files. */
 const IGNORED_FOLDERS: Record<string, string[]> = {
@@ -493,10 +494,10 @@ const IGNORED_FOLDERS: Record<string, string[]> = {
 /** A .gitignore line as a bare folder name, so `/node_modules` and `node_modules/` count as the same. */
 const folderOf = (line: string): string => line.trim().replace(/^\//, '').replace(/\/$/, '');
 
-/** Add the dependency and build folders of the project's package managers to .gitignore. Null when there is nothing to add. */
-function writeGitignore(root: string): string | null {
-  const wanted = [...new Set([...findEcosystems(root).keys()].flatMap((name) => IGNORED_FOLDERS[name] ?? []))];
-  if (wanted.length === 0) return null;
+/** Add the worker worktrees folder, the board's agent file, and the dependency folders of the project's package managers to .gitignore. */
+function writeGitignore(root: string): string {
+  const folders = [...new Set([...findEcosystems(root).keys()].flatMap((name) => IGNORED_FOLDERS[name] ?? []))];
+  const wanted = [`${WORKTREES_DIR}/`, ...folders, '.yokoten-agent.json'];
   const path = join(root, '.gitignore');
   const old = existsSync(path) ? readFileSync(path, 'utf8') : null;
   const have = new Set((old ?? '').split(/\r?\n/).map(folderOf));
