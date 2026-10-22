@@ -83,7 +83,7 @@ function dispatch(invocation: Invocation): number | Promise<number> {
     case 'bot':
       return import('../src/commands/bot.ts').then((m) => m.runBot(invocation));
     case 'board':
-      return import('../src/commands/advice/board.ts').then((m) => m.runBoard(invocation));
+      return import('../src/commands/advice/board/server.ts').then((m) => m.runBoard(invocation));
     case 'install':
       return import('../src/commands/setup.ts').then((m) => m.runInstall(invocation));
     case 'uninstall':

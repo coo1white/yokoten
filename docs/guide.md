@@ -1501,12 +1501,21 @@ Server setup, step by step: [`docs/server.md`](server.md).
 It prints a link. Open it in a browser. The link holds a random token, so only
 someone who reads this terminal can open the page.
 
-The page has three columns. The left lists the agents, grouped by issue: pick one
-to see it in the middle. The middle shows what the picked agent works on and what
-it does now. The right lists the pull requests and their checks. The page refreshes
-every 15 seconds. Stop the command with Ctrl-C.
+The page has three columns:
 
-`yokoten board --text` prints the agents, pull requests and worktrees as plain text.
+- **Left:** what needs you first (a tier A pull request ready for your Approve, or an
+  agent waiting for an answer). It never folds. Below it, the agents by role. Click
+  one to see it in the middle. Finished agents fold away; **Clear** hides one until it
+  writes again. Its log and branch stay.
+- **Middle:** what the picked agent did, step by step. Routine steps fold; waits,
+  failures and the latest step always show.
+- **Right:** the pull requests, each as four steps: Built, Checked, You (tier A only),
+  Merged. Today's merged ones are listed below.
+
+The page refreshes every 15 seconds and works on a phone too. Stop the command with Ctrl-C.
+It only shows; to talk to an agent, use its own terminal for now.
+
+`yokoten board --text` prints the same in plain text.
 
 An agent joins by writing `.yokoten-agent.json` at its worktree's root. It leaves
 by removing the file. Any agent can write it, whatever vendor it runs on. The
@@ -1515,14 +1524,21 @@ format is open: other tools may read it too. One file per worktree.
 | Field | Means |
 |-------|-------|
 | `name` | The agent's name. Without it, the worktree's folder name is used |
-| `vendor` | Which vendor it runs on, such as `claude-code` |
-| `task` | What it works on, such as `issue 601`. The page groups the agents by the issue it names |
-| `role` | The agent's part: `engineer`, `reviewer` or `verifier`. One issue then shows its whole path |
+| `vendor` | Which vendor it runs on, such as `claude-code`, `codex` or `grok` |
+| `model`, `effort` | The model and effort, such as `opus` and `medium` |
+| `role` | `lead`, `engineer`, `reviewer`, `verifier` or `helper`. The lead is pinned at the top |
+| `task` | What it works on, such as `PR #615 Run rules locally`. A named pull request or issue shows as a link |
 | `worktree` | The worktree it works in |
-| `doing` | What it does now, in a few words |
-| `updated` | When it last wrote, such as `2026-10-22T10:00:00Z`. The board shows how long ago that was |
+| `doing` | What it does now, in a few words. Each new one is a step in the middle column |
+| `state` | `working`, `waiting` (it needs you) or `done` |
+| `checks` | `passing` or `failing`, from its last test run |
+| `updated` | When it last wrote, such as `2026-10-22T10:00:00Z`. Quiet for 30 minutes shows as idle |
 
-Every field is text. Every field may be missing. A file that is not a JSON object is skipped. `role` keeps only `engineer`, `reviewer` or `verifier`; anything else is ignored.
+Every field is text. Every field may be missing. A file that is not a JSON object is
+skipped. A `role`, `state` or `checks` outside the words above is ignored.
+
+The page shows what agents write only as text, never as page code, and links only to
+`http` and `https` addresses. It loads nothing from the internet.
 
 The page reads `/data` as JSON. That is the board's interface. The page is only one
 view of it.
