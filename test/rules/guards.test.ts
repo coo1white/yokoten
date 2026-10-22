@@ -2672,6 +2672,62 @@ test('worker mark: found from .git, fails closed on a link it cannot read (#555)
 });
 
 // #555: an edit inside a git folder is a worker's way to change the mark, through a symlink too.
+// #672: a desk is a plain clone, so its mark sits in its own `.git` folder.
+test('worker mark: a plain clone with the mark in its .git is a worker; without it, the lead (#672)', () => {
+  const clone = makeTempDir('yokoten-clone-');
+  mkdirSync(join(clone, '.git'));
+  mkdirSync(join(clone, 'src'));
+  // Negative control: an unmarked clone is the lead's.
+  assert.equal(workerMarkAt(join(clone, 'src')), null);
+  // Positive control: the mark, found from a subfolder too.
+  writeFileSync(join(clone, '.git', 'yokoten-worker'), 'x');
+  assert.equal(workerMarkAt(join(clone, 'src')), 'mark');
+  assert.deepEqual(withWorkerMark({}, [clone]), { YOKOTEN_ROLE: 'worker' });
+  assert.match(markNote([clone]), /^this clone \(.*\) carries the worker mark/);
+  // Fails closed: a .git folder the guard can't search. Modes need a user they stop.
+  if (process.platform !== 'win32' && process.getuid?.() !== 0) {
+    chmodSync(join(clone, '.git'), 0o000);
+    try {
+      assert.equal(workerMarkAt(clone), 'broken');
+    } finally {
+      chmodSync(join(clone, '.git'), 0o755);
+    }
+  }
+  rmSync(join(clone, '.git', 'yokoten-worker'));
+  assert.equal(workerMarkAt(clone), null);
+});
+
+// #672 (review): removing or replacing the folder that holds `.git` drops the mark, so a
+// worker may not change the checkout's top folder or any folder above it.
+test('worker mark: a worker may not remove or replace the folder that holds the git folder (#672)', () => {
+  const base = makeTempDir('yokoten-desk-');
+  const desk = join(base, 'desk');
+  mkdirSync(join(desk, '.git'), { recursive: true });
+  mkdirSync(join(desk, 'src'));
+  writeFileSync(join(desk, '.git', 'yokoten-worker'), 'x');
+  const worker = { YOKOTEN_ROLE: 'worker', HOME: join(base, 'home') };
+  const check = (command: string, cwd = desk) => checkCommand(command, { cwd, env: worker });
+  for (const command of [
+    `rm -rf ${desk} && git clone -q ../lead ${desk}`,
+    'rm -rf "$PWD"',
+    'rm -rf $PWD',
+    'rm -rf ${PWD}/',
+    'rm -rf ~+',
+    'rm -rf .',
+    `rsync -a --delete ${join(base, 'empty')}/ ./`,
+    'cd .. && rm -rf desk',
+    `mv ${desk} ${join(base, 'old')}`,
+    `rm -rf ${base}`,
+  ]) assert.equal(check(command)?.id, 'worker-mark', command);
+  assert.equal(check('rm -rf ..', join(desk, 'src'))?.id, 'worker-mark', 'from a subfolder');
+  // Negative controls: work inside the checkout goes on.
+  for (const command of ['rm -rf src', 'rm -rf ./src/', 'rsync -a --delete src/ out/', "find . -name '*.log' -delete", 'mv src lib', 'rm -rf "$PWD/src"']) {
+    assert.equal(check(command), null, command);
+  }
+  // The lead may.
+  assert.equal(checkCommand('rm -rf .', { cwd: desk, env: { HOME: worker.HOME } }), null);
+});
+
 test('checkWorkerMarkEdit: a git folder by name or by real path (#555)', () => {
   assert.equal(checkWorkerMarkEdit('/w/.git/worktrees/wt/yokoten-worker')?.id, 'worker-mark');
   assert.equal(checkWorkerMarkEdit('/w/wt/.git')?.id, 'worker-mark');
@@ -2878,7 +2934,14 @@ test('worker list: the guard refuses `yokoten worker unmark` for a worker, not t
     assert.match(found?.what ?? '', /only the lead unmarks a worktree/, command);
   }
   assert.equal(checkCommand('yokoten worker unmark /tmp/wt', { env: {}, cwd: process.cwd() }), null, 'the lead');
-  assert.equal(checkCommand('yokoten worker mark /tmp/wt', { env: worker, cwd: process.cwd() }), null, 'mark is not unmark');
+  // #672: a worker that marks the lead's checkout makes the lead a worker: refused too.
+  for (const command of ['yokoten worker mark /tmp/lead', 'node bin/yokoten.ts worker mark .', 'cd /tmp && npx yokoten worker mark lead']) {
+    const found = checkCommand(command, { env: worker, cwd: process.cwd() });
+    assert.equal(found?.id, 'worker-mark', `should refuse: ${command}`);
+    assert.match(found?.what ?? '', /only the lead marks a worktree or a clone/, command);
+  }
+  assert.equal(checkCommand('yokoten worker mark /tmp/wt', { env: {}, cwd: process.cwd() }), null, 'the lead marks');
+  assert.equal(checkCommand('yokoten worker env', { env: worker, cwd: process.cwd() }), null, 'env only lists names');
   assert.equal(checkCommand('yokoten bot -- echo hi', { env: worker, cwd: process.cwd() })?.id, 'worker-push', 'bot keeps its own refusal');
 });
 

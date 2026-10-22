@@ -861,7 +861,7 @@ test('worker mark: the stop check, the commit check and the session start see a 
   result = await commit();
   assert.equal(result.status, 1);
   assert.match(result.stderr, /AGENTS\.md is lead-only/);
-  assert.match((await start()).stdout, /this session is a worker, because its worktree carries the worker mark/);
+  assert.match((await start()).stdout, /this session is a worker, because its worktree or clone carries the worker mark/);
   // The main checkout stays the lead's.
   sandbox.write('AGENTS.md', '# lead\n');
   sandbox.git('add', 'AGENTS.md');
@@ -870,6 +870,46 @@ test('worker mark: the stop check, the commit check and the session start see a 
 });
 
 // #555 (L3): `worker mark` says plainly what it can't do.
+// #672 (review): a clone is marked only by the lead, from the lead's own checkout, and
+// always in the clone's own `.git`, whatever GIT_DIR the caller has.
+test("worker mark: a clone is marked only by the lead, from its own checkout, in the clone's own .git (#672)", async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('a.md', 'a\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const desk = join(makeTempDir('yokoten-desk-'), 'desk');
+  runChild('git', ['clone', '-q', sandbox.repo, desk], { env: sandbox.env });
+  const leadMark = join(sandbox.repo, '.git', 'yokoten-worker');
+  const deskMark = join(desk, '.git', 'yokoten-worker');
+  // The lead's checkout, from a folder outside every checkout: refused, nothing written.
+  const elsewhere = makeTempDir('yokoten-elsewhere-');
+  let result = await sandbox.call(['worker', 'mark', sandbox.repo], { cwd: elsewhere });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /from your own checkout, the lead's/);
+  assert.ok(!existsSync(leadMark));
+  // A worker may not mark: by YOKOTEN_ROLE.
+  result = await sandbox.call(['worker', 'mark', desk], { extra: { YOKOTEN_ROLE: 'worker' } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /only the lead marks a worktree or a clone: this session is a worker/);
+  assert.ok(!existsSync(deskMark));
+  // GIT_DIR and GIT_WORK_TREE that name the lead's checkout don't move the mark there.
+  result = await sandbox.call(['worker', 'mark', desk], { extra: { GIT_DIR: join(sandbox.repo, '.git'), GIT_WORK_TREE: sandbox.repo, GIT_COMMON_DIR: join(sandbox.repo, '.git') } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /marked the clone at /);
+  assert.ok(existsSync(deskMark), "the mark is in the clone's own .git");
+  assert.ok(!existsSync(leadMark), "the lead's .git has no mark");
+  // In the marked clone every session is a worker: mark and unmark say to run them from outside.
+  for (const action of ['mark', 'unmark']) {
+    result = await sandbox.call(['worker', action, desk], { cwd: desk });
+    assert.equal(result.status, 1, action);
+    assert.match(result.stderr, /this session is a worker\. .*The lead runs this from its own checkout, outside the marked one\./, action);
+  }
+  // Negative control: the lead, from its own checkout, unmarks with GIT_DIR set too.
+  result = await sandbox.call(['worker', 'unmark', desk], { extra: { GIT_DIR: join(sandbox.repo, '.git') } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(!existsSync(deskMark));
+});
+
 test('worker mark: a missing folder, a submodule and an unwritable git folder each get one plain line (#555)', async () => {
   const sandbox = makeSandbox();
   sandbox.write('a.md', 'a\n');
