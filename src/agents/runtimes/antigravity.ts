@@ -13,6 +13,7 @@ import { dirname, join } from 'node:path';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import type { Action } from '../../run/hook.ts';
 import { type Added, type HookState, isObject, type Problem, UnreadableHooksFile } from '../hooks-file.ts';
+import type { RuntimeEnv } from '../agent-env.ts';
 
 // run_command takes `CommandLine` and `Cwd`; the three edit tools take `TargetFile`.
 const SHELL = 'run_command';
@@ -100,3 +101,6 @@ export function addProjectHook(root: string, cli: string): Added {
 
 /** Whether `.agents/hooks.json` has the guard, on, as `addProjectHook` writes it for `cli`. */
 export const hasProjectHook = (root: string, cli: string): boolean => projectHookState(root, cli) === 'same';
+
+/** The names this runtime's agent gets on top of the shared ones (#613). Antigravity signs in through its app, so it needs no login name. */
+export const AGENT_ENV: RuntimeEnv = { login: [], config: [] };
