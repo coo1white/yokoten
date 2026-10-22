@@ -9,9 +9,9 @@ import { Readable, Writable } from 'node:stream';
 import { test } from 'node:test';
 import { CLI, makeSandbox } from '../../../repo/helpers.ts';
 import { runBoard, startBoardServer } from '../../../../src/commands/advice/board/server.ts';
-import type { BoardData } from '../../../../src/commands/advice/board/view.ts';
+import { type BoardData, createBoardGitHub } from '../../../../src/commands/advice/board/view.ts';
 import type { Invocation, Output } from '../../../../src/commands/shared.ts';
-import type { Gh } from '../../../../src/host/github/index.ts';
+import { type Gh, ghLaterIn } from '../../../../src/host/github/index.ts';
 import type { Env } from '../../../../src/rules/config.ts';
 import {
   createBoardControls,
@@ -529,4 +529,99 @@ test('board --text: a started run hides the home folder', () => {
   assert.ok(text.includes('Started here:'), 'the runs section shows');
   assert.ok(!text.includes(sandbox.repo), 'no absolute home path leaks');
   assert.ok(text.includes(`~${run.worktree.slice(dirname(sandbox.repo).length)}`), 'the worktree shows with ~ for home');
+});
+
+/** The /data fields #688 reads: the agents, the lists, and how fresh they are. */
+interface GitHubShown {
+  agents: { name: string }[];
+  pulls: { number: number }[] | string;
+  issues: { number: number }[] | string;
+  github: { isReading: boolean; readAt: string; failed: string };
+}
+
+// #688: /data never waits for gh. A real child gh that sleeps 10 s: /data and the page
+// still answer at once, with the agents and "reading GitHub…". Closing the board stops it.
+test('board server: /data answers at once while gh sleeps', async () => {
+  const sandbox = makeSandbox();
+  sandbox.git('remote', 'add', 'origin', 'git@github.com:octo/demo.git');
+  writeFileSync(join(sandbox.repo, '.yokoten-agent.json'), JSON.stringify({ name: 'w', vendor: 'muse' }));
+  const bin = join(sandbox.home, 'bin');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'gh'), "#!/usr/bin/env node\nsetTimeout(() => console.log('[]'), 10000);\n");
+  chmodSync(join(bin, 'gh'), 0o755);
+  const env = { ...sandbox.env, PATH: `${bin}:${process.env.PATH}` };
+  const github = createBoardGitHub();
+  const { server, url } = await startBoardServer(sandbox.repo, env, ghLaterIn(sandbox.repo, env, 20000), { github });
+  try {
+    assert.ok(github.reading, 'the first read starts with the board');
+    const token = new URL(url).searchParams.get('t') ?? '';
+    const asked = performance.now();
+    const answer = await boardGet(`${url.split('?')[0]}data?t=${token}`);
+    const took = performance.now() - asked;
+    assert.equal(answer.status, 200);
+    assert.ok(took < 200, `/data took ${took.toFixed(0)} ms while gh sleeps`);
+    const shown = JSON.parse(answer.text) as GitHubShown;
+    assert.deepEqual(shown.agents.map((agent) => agent.name), ['w'], 'the agents show at once');
+    assert.equal(shown.pulls, 'reading GitHub…');
+    assert.equal(shown.issues, 'reading GitHub…');
+    assert.deepEqual(shown.github, { isReading: true, readAt: '', failed: '' });
+    const page = performance.now();
+    assert.equal((await boardGet(url)).status, 200);
+    assert.ok(performance.now() - page < 200, 'the page answers at once too');
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+});
+
+// #688: one read at a time. When it finishes, the next /data has the lists. A failed
+// read keeps the last good lists, says why, and keeps the time they were read.
+test('board server: the lists appear after the read, and a failed read keeps them', async () => {
+  const sandbox = makeSandbox();
+  sandbox.git('remote', 'add', 'origin', 'git@github.com:octo/demo.git');
+  writeFileSync(join(sandbox.repo, '.yokoten-agent.json'), JSON.stringify({ name: 'w', vendor: 'muse' }));
+  const open = { number: 7, title: 'work', headRefName: 'b', url: 'https://example.com/pull/7', state: 'OPEN', reviewDecision: '', isDraft: false, statusCheckRollup: [], labels: [] };
+  let release = () => {};
+  let isFailing = false;
+  let calls = 0;
+  const gate = new Promise<void>((done) => {
+    release = done;
+  });
+  const gh = async (args: string[]) => {
+    calls += 1;
+    await gate;
+    if (isFailing) throw Object.assign(new Error('Command failed'), { stderr: 'HTTP 502: Bad gateway' });
+    if (args[0] === 'issue') return JSON.stringify([{ number: 12, title: 'an issue', url: 'https://example.com/i/12' }]);
+    return JSON.stringify(args.includes('merged') ? [] : [open]);
+  };
+  const github = createBoardGitHub();
+  const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh, { github });
+  try {
+    const dataUrl = `${url.split('?')[0]}data?t=${new URL(url).searchParams.get('t') ?? ''}`;
+    const read = async () => JSON.parse((await boardGet(dataUrl)).text) as GitHubShown;
+    const before = await read();
+    assert.equal(before.pulls, 'reading GitHub…');
+    assert.equal((await read()).github.isReading, true);
+    assert.equal(calls, 3, 'one read in flight, however many /data asks: two pull queries and one issue query');
+    release();
+    await github.reading;
+    const after = await read();
+    assert.deepEqual(typeof after.pulls === 'string' ? after.pulls : after.pulls.map((pull) => pull.number), [7]);
+    assert.deepEqual(typeof after.issues === 'string' ? after.issues : after.issues.map((issue) => issue.number), [12]);
+    assert.equal(after.github.isReading, false);
+    assert.equal(after.github.failed, '');
+    assert.match(after.github.readAt, /^\d{4}-\d{2}-\d{2}T/);
+    // The refresh time passes, and gh fails.
+    isFailing = true;
+    github.triedAt = 1;
+    await read();
+    await github.reading;
+    const failed = await read();
+    assert.deepEqual(typeof failed.pulls === 'string' ? failed.pulls : failed.pulls.map((pull) => pull.number), [7], 'the last good pull requests stay');
+    assert.deepEqual(typeof failed.issues === 'string' ? failed.issues : failed.issues.map((issue) => issue.number), [12], 'the last good issues stay');
+    assert.match(failed.github.failed, /HTTP 502/, 'it says why');
+    assert.equal(failed.github.readAt, after.github.readAt, 'and when the lists were read');
+    assert.deepEqual(failed.agents.map((agent) => agent.name), ['w'], 'the agents never empty');
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+  }
 });

@@ -15,6 +15,8 @@ export type PageData = BoardData & {
   issues: BoardIssue[] | string;
   runs: BoardRun[];
   limits: BoardLimits;
+  /** How fresh the GitHub lists are (#688): a read runs now, when they were last read, and why the last read failed. */
+  github?: { isReading: boolean; readAt: string; failed: string };
 };
 
 /** What the owner folded, cleared or picked. Kept in this browser only; the board works without it. */
@@ -383,14 +385,31 @@ export function renderOutput(state: PageState, runs: BoardRun[]): HTMLElement {
   return box;
 }
 
+/**
+ * A note on the GitHub lists, or '' (#688): "reading GitHub" before the first read
+ * finishes, and when they were read after a read failed.
+ */
+export function githubNote(state: PageState, data: PageData, now: number): string {
+  const github = data.github;
+  if (!github || !data.repoUrl) return '';
+  if (!github.readAt && !github.failed) return say(state, 'readingGitHub');
+  if (!github.readAt || !github.failed) return '';
+  return say(state, 'githubOld', { n: Math.max(1, Math.floor((now - Date.parse(github.readAt)) / 60000)) });
+}
+
 /** The right side: the waiting list, open pull requests with their steps, what merged today, and the board's own controls. */
 export function renderRight(state: PageState, data: PageData, now: number): HTMLElement {
   const box = el('div', {});
   box.append(renderWaiting(state, data.waiting));
   const pulls = typeof data.pulls === 'string' ? [] : data.pulls;
+  const note = githubNote(state, data, now);
+  // Before the first read, the lists say only that GitHub is being read, in the page's language.
+  const isFirstRead = note !== '' && !data.github?.readAt && !data.github?.failed;
   box.append(foldHead(state, 'pulls', pulls.map((pull) => (pull.tone === 'fail' ? 'failing' : pull.tone === 'ok' ? 'ready' : 'moving'))));
   if (!state.ui.fold.pulls) {
-    if (typeof data.pulls === 'string') box.append(el('p', { class: 'quiet' }, data.repoUrl ? data.pulls : say(state, 'noRemote')));
+    if (note && !isFirstRead) box.append(el('p', { class: 'quiet' }, note));
+    if (isFirstRead) box.append(el('p', { class: 'quiet', role: 'status' }, note));
+    else if (typeof data.pulls === 'string') box.append(el('p', { class: 'quiet' }, data.repoUrl ? data.pulls : say(state, 'noRemote')));
     else if (!pulls.length) box.append(el('p', { class: 'quiet' }, say(state, 'noPulls')));
     else box.append(...pulls.map((pull) => pullCard(state, pull)));
   }
@@ -400,7 +419,7 @@ export function renderRight(state: PageState, data: PageData, now: number): HTML
     box.append(foldHead(state, 'mergedToday', merged.map(() => 'merged'), el('button', { class: 'act', 'data-clear-merged': '1', title: say(state, 'hideTillTomorrow') }, say(state, 'clear'))));
     if (!state.ui.fold.mergedToday) box.append(...merged.map((pull) => el('div', { class: 'mrow' }, icon('merge', true), el('span', { class: 'num' }, `#${pull.number}`), pull.title)));
   }
-  box.append(renderStart(state, data.issues));
+  box.append(renderStart(state, isFirstRead ? note : data.issues));
   box.append(renderLimits(state, data.limits));
   box.append(renderRuns(state, data.runs));
   box.append(renderOutput(state, data.runs));
@@ -605,4 +624,4 @@ export function startPage(state: PageState): void {
 }
 
 /** The page's functions, in the order page.ts writes them. */
-export const PAGE_FUNCTIONS = [el, icon, say, pickLang, ageOf, groupFeed, localDay, clearedId, roleGroup, summaryOf, loadUi, saveUi, vendorChip, refChip, foldHead, agentRow, needRow, renderSide, feedEvent, renderCenter, pullCard, waitingRow, renderWaiting, field, renderStart, renderLimits, runCard, renderRuns, renderOutput, renderRight, renderBar, renderTop, render, showToast, onClick, onMenuKey, postForm, loadData, startPage];
+export const PAGE_FUNCTIONS = [el, icon, say, pickLang, ageOf, groupFeed, localDay, clearedId, roleGroup, summaryOf, loadUi, saveUi, vendorChip, refChip, foldHead, agentRow, needRow, renderSide, feedEvent, renderCenter, pullCard, waitingRow, renderWaiting, field, renderStart, renderLimits, runCard, renderRuns, renderOutput, githubNote, renderRight, renderBar, renderTop, render, showToast, onClick, onMenuKey, postForm, loadData, startPage];

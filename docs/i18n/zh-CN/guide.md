@@ -1353,6 +1353,9 @@ git diff main refs/desks/42
 页面分三栏。左栏按 issue 列出 agent，点一个，中间就显示它。
 中间显示选中的 agent 在做什么任务、现在在干什么。右栏列出 PR 和它们的检查。
 页面每 15 秒刷新一次，按 Ctrl-C 停掉。
+agent 一打开页面就能看到。PR 和 issue 由 gh 在后台读，同一时间只读一次。
+第一次读完之前，这两个列表显示「正在读取 GitHub…」。
+哪次没读到，页面就留着上一次的列表，并写明是什么时候读的。
 
 `yokoten board --text` 在终端里用纯文本打印 agent、PR 和 worktree。
 

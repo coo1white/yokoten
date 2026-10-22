@@ -4,9 +4,11 @@ import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { type Gh } from '../../../src/host/github/planning.ts';
-import { readBoardPulls } from '../../../src/host/github/board-pulls.ts';
+import { readBoardPulls, readBoardPullsLater } from '../../../src/host/github/board-pulls.ts';
 
-// #601: the board's pull requests, from one `gh pr list`; a fake gh stands in for GitHub.
+// #601, #688: the board's pull requests, from two `gh pr list`: the open ones with their
+// checks, and the last few merged without. A fake gh stands in for GitHub and answers
+// every row to both, so each query keeps only its own stages, and closed rows never show.
 test('readBoardPulls: each row as its stages; a row with no number is skipped', () => {
   const calls: string[][] = [];
   const rows = [
@@ -22,11 +24,33 @@ test('readBoardPulls: each row as its stages; a row with no number is skipped', 
   };
   assert.deepEqual(readBoardPulls(gh, 'octo/demo'), [
     { number: 1, title: 'team page', branch: 'board', url: 'https://example.com/pull/1', stage: 'open', checks: 'pass', tier: 'B', review: 'waiting', mergedAt: '' },
-    { number: 2, title: 'steady tests', branch: 'linear', url: '', stage: 'merged', checks: 'running', tier: 'A', review: 'approved', mergedAt: '2026-10-22T09:00:00Z' },
     { number: 3, title: 'draft work', branch: 'draft', url: '', stage: 'draft', checks: 'none', tier: '', review: 'none', mergedAt: '' },
-    { number: 4, title: 'closed stays', branch: 'old', url: '', stage: 'closed', checks: 'fail', tier: '', review: 'changes', mergedAt: '' },
+    { number: 2, title: 'steady tests', branch: 'linear', url: '', stage: 'merged', checks: 'running', tier: 'A', review: 'approved', mergedAt: '2026-10-22T09:00:00Z' },
   ]);
-  assert.deepEqual(calls, [['pr', 'list', '--repo', 'octo/demo', '--state', 'all', '--limit', '30', '--json', 'number,title,headRefName,state,reviewDecision,isDraft,statusCheckRollup,labels,url,mergedAt']]);
+  assert.deepEqual(calls, [
+    ['pr', 'list', '--repo', 'octo/demo', '--state', 'open', '--limit', '30', '--json', 'number,title,headRefName,state,reviewDecision,isDraft,statusCheckRollup,labels,url,mergedAt'],
+    ['pr', 'list', '--repo', 'octo/demo', '--state', 'merged', '--limit', '10', '--json', 'number,title,headRefName,state,url,mergedAt'],
+  ], 'no --state all, and no checks for merged ones');
+});
+
+// #688: the same read without blocking. Both queries run at once and get the signal; a
+// failed one gives the reason, as the blocking read does.
+test('readBoardPullsLater: the same rows, without blocking; a failure is a reason', async () => {
+  const row = { number: 5, title: 't', headRefName: 'b', url: '', state: 'OPEN', reviewDecision: '', isDraft: false, statusCheckRollup: [], labels: [] };
+  const signals: (AbortSignal | undefined)[] = [];
+  const stop = new AbortController();
+  const later = (args: string[], signal?: AbortSignal) => {
+    signals.push(signal);
+    return Promise.resolve(JSON.stringify(args.includes('merged') ? [] : [row]));
+  };
+  assert.deepEqual((await readBoardPullsLater(later, 'o/r', stop.signal) as { number: number }[]).map((pull) => pull.number), [5]);
+  assert.deepEqual(signals, [stop.signal, stop.signal], 'each query can be stopped');
+  const refused = () => Promise.reject(Object.assign(new Error('Command failed'), { stderr: 'HTTP 401: Bad credentials' }));
+  assert.equal(await readBoardPullsLater(refused, 'o/r'), 'gh can\'t list the pull requests (HTTP 401: Bad credentials): run `gh auth login`, and check the repo');
+  const missing: Gh = () => {
+    throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' });
+  };
+  assert.match(String(await readBoardPullsLater(missing, 'o/r')), /^gh is not installed/, 'a gh that throws at once is a reason too');
 });
 
 test('readBoardPulls: a fail wins over running; odd rows are reasons or blanks, never a crash', () => {

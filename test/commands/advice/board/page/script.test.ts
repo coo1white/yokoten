@@ -5,7 +5,7 @@ import '../../../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { FeedEvent } from '../../../../../src/commands/advice/board/feed.ts';
-import { ageOf, clearedId, groupFeed, loadUi, localDay, type PageData, type PageState, pickLang, renderCenter, renderLimits, renderOutput, renderRight, renderRuns, renderSide, renderStart, renderWaiting, roleGroup, saveUi, say, summaryOf } from '../../../../../src/commands/advice/board/page/script.ts';
+import { ageOf, clearedId, githubNote, groupFeed, loadUi, localDay, type PageData, type PageState, pickLang, renderCenter, renderLimits, renderOutput, renderRight, renderRuns, renderSide, renderStart, renderWaiting, roleGroup, saveUi, say, summaryOf } from '../../../../../src/commands/advice/board/page/script.ts';
 import type { BoardWaiting } from '../../../../../src/commands/advice/board/controls.ts';
 import { LANG_NAMES, WORDS } from '../../../../../src/commands/advice/board/page/words.ts';
 import { type AgentView, pullView, vendorOf } from '../../../../../src/commands/advice/board/view.ts';
@@ -266,4 +266,20 @@ test('board script: a finished agent can be cleared, and comes back when it writ
   assert.match(text(), /1 cleared agent · logs kept/);
   done.updated = 'u2';
   assert.match(text(), /Finished1/, 'it wrote again, so it is back');
+});
+
+// #688: before the first GitHub read, the lists say "reading GitHub" in the page's
+// language. After a failed read, the old lists stay with when they were read.
+test('board script: the GitHub lists say when they are being read, and when they are old', () => {
+  const now = Date.parse('2026-10-23T10:00:00Z');
+  const reading = makeData({ repoUrl: 'https://github.com/octo/demo', pulls: 'reading GitHub…', issues: 'reading GitHub…', github: { isReading: true, readAt: '', failed: '' } });
+  assert.equal(githubNote(makeState(reading), reading, now), 'Reading GitHub…');
+  const chinese = (renderRight(makeState(reading, 'zh-CN'), reading, now) as unknown as FakeNode).textContent;
+  assert.match(chinese, /正在读取 GitHub…/, 'the pull requests say it in the page language');
+  assert.ok(!chinese.includes('reading GitHub…'), 'not the server\'s English words');
+  const old = makeData({ repoUrl: 'https://github.com/octo/demo', github: { isReading: false, readAt: '2026-10-23T09:55:00Z', failed: 'gh could not list the open issues: run it again' } });
+  assert.equal(githubNote(makeState(old), old, now), 'GitHub could not be read. These lists were read 5 min ago.');
+  const fresh = makeData({ repoUrl: 'https://github.com/octo/demo', github: { isReading: false, readAt: '2026-10-23T09:59:00Z', failed: '' } });
+  assert.equal(githubNote(makeState(fresh), fresh, now), '', 'a good read needs no note');
+  assert.equal(githubNote(makeState(makeData({})), makeData({}), now), '', 'no remote, no note');
 });

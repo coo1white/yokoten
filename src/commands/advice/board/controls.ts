@@ -21,11 +21,10 @@ import * as codex from '../../../agents/runtimes/codex.ts';
 import * as deepseekHarness from '../../../agents/runtimes/deepseek-harness.ts';
 import * as grok from '../../../agents/runtimes/grok.ts';
 import * as muse from '../../../agents/runtimes/muse.ts';
-import { type Gh, repoOf } from '../../../host/github/index.ts';
+import { type Gh, type GhLater } from '../../../host/github/index.ts';
 import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
 import { hookCliPath } from '../../../setup/init.ts';
-import { readOriginUrl } from '../../../setup/plan.ts';
 import { markWorktree } from '../../hook.ts';
 import { ageText, BOARD_AGENT_FILE, BOARD_READ_TIMEOUT_MS, parseBoardAgent, type BoardRole, type BoardWorktree } from './agents.ts';
 import { type AgentView, type BoardData, type PullView } from './view.ts';
@@ -468,14 +467,35 @@ export function setBoardLimits(controls: BoardControls, fields: Record<string, s
   return { ...controls.limits, byModel: { ...controls.limits.byModel } };
 }
 
+/** The gh query for the open issues. */
+function boardIssueQuery(repo: string): string[] {
+  return ['issue', 'list', '--repo', repo, '--state', 'open', '--limit', '30', '--json', 'number,title,url'];
+}
+
 /** The open issues, gh's order, or why gh cannot read them. */
 export function readBoardIssues(gh: Gh, repo: string): BoardIssue[] | string {
   let text: string;
   try {
-    text = gh(['issue', 'list', '--repo', repo, '--state', 'open', '--limit', '30', '--json', 'number,title,url']);
+    text = gh(boardIssueQuery(repo));
   } catch {
     return 'gh could not list the open issues: run it again';
   }
+  return boardIssuesOf(text);
+}
+
+/** readBoardIssues without blocking (#688); `signal` stops the call. */
+export async function readBoardIssuesLater(gh: GhLater, repo: string, signal?: AbortSignal): Promise<BoardIssue[] | string> {
+  let text: string;
+  try {
+    text = await gh(boardIssueQuery(repo), signal);
+  } catch {
+    return 'gh could not list the open issues: run it again';
+  }
+  return boardIssuesOf(text);
+}
+
+/** The open issues in gh's answer, or why it is no list. */
+function boardIssuesOf(text: string): BoardIssue[] | string {
   let rows: unknown;
   try {
     rows = JSON.parse(text || '[]');
@@ -627,12 +647,11 @@ function snapshotWaiting(board: BoardData, attention: BoardAttention[], controls
   );
 }
 
-/** The snapshot for /data: the waiting list, the open issues, the runs, and the limits. */
-export function readBoardSnapshot(root: string, env: Env, gh: Gh, controls: BoardControls, board: BoardData, trees: BoardWorktree[] | string): BoardSnapshot {
-  const remote = repoOf(readOriginUrl(root, env));
+/** The snapshot for /data: the waiting list, the open issues as last read, the runs, and the limits. */
+export function readBoardSnapshot(env: Env, controls: BoardControls, board: BoardData, trees: BoardWorktree[] | string, issues: BoardIssue[] | string): BoardSnapshot {
   return {
     waiting: snapshotWaiting(board, typeof trees === 'string' ? [] : readBoardAttention(trees), controls),
-    issues: remote ? readBoardIssues(gh, remote) : 'this repo has no GitHub remote, so the board shows no open issues',
+    issues,
     runs: snapshotRuns(controls.runs, env),
     limits: { ...controls.limits, byModel: { ...controls.limits.byModel } },
   };

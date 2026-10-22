@@ -1,24 +1,26 @@
 // `yokoten board` (#601, #603): serves the team board on this machine only.
 //
 // The page is at /, its data as JSON at /data. The data comes from three places: one status
-// file per worktree, `gh pr list`, and `git worktree list`. `board --text` prints the same
-// data. A request needs the right Host and the link's token. Agents write the status files,
+// file per worktree, `gh pr list` and `gh issue list`, and `git worktree list`. /data reads
+// the local parts each time and never waits for gh: gh reads in the background, one read at
+// a time, and /data serves its last lists (#688). `board --text` prints the same data. A request needs the right Host and the link's token. Agents write the status files,
 // so the page treats every word in them as text: a strict content policy lets only the
 // page's own script run.
 
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
-import { ghIn, type Gh } from '../../../host/github/index.ts';
+import { ghIn, ghLaterIn, type GhLater, readBoardPullsLater, repoOf } from '../../../host/github/index.ts';
 import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
+import { readOriginUrl } from '../../../setup/plan.ts';
 import { type Invocation, parse, print, requireRoot, usage } from '../../shared.ts';
 import { BOARD_READ_TIMEOUT_MS, readBoardWorktrees } from './agents.ts';
-import { type BoardControls, collectBoardWaiting, createBoardControls, readBoardAttention, readBoardSnapshot, readBoardStartAsk, setBoardLimits, startBoardAgent, stopBoardAgent } from './controls.ts';
+import { type BoardControls, collectBoardWaiting, createBoardControls, readBoardAttention, readBoardIssuesLater, readBoardSnapshot, readBoardStartAsk, setBoardLimits, startBoardAgent, stopBoardAgent } from './controls.ts';
 import { feedsJson, makeFeedStore, recordFeed } from './feed.ts';
 import { boardPage, BOARD_REFRESH_SECONDS } from './page/page.ts';
 import { renderBoardText } from './text.ts';
-import { type BoardData, collectBoard } from './view.ts';
+import { BOARD_NO_REMOTE_ISSUES, BOARD_NO_REMOTE_PULLS, type BoardGitHub, collectBoard, collectBoardWith, createBoardGitHub, refreshBoardGitHub } from './view.ts';
 
 /** How many random bytes the board link's token holds, and each page's script nonce. */
 const BOARD_TOKEN_BYTES = 16;
@@ -141,10 +143,15 @@ function stopRefuseStatus(reason: string): number {
   return 400;
 }
 
-/** What the options carry: the board's controls, and how it reads its data. Tests pass their own. */
+/** What the options carry: the board's controls, and what it last read from GitHub. Tests pass their own. */
 export interface BoardServerOptions {
   controls?: BoardControls;
-  read?: () => BoardData;
+  github?: BoardGitHub;
+}
+
+/** The /data fields that say how fresh the GitHub lists are: reading now, when last read, and why the last read failed. */
+function githubState(github: BoardGitHub | null): { isReading: boolean; readAt: string; failed: string } {
+  return github ? { isReading: github.reading !== null, readAt: github.readAt, failed: github.failed } : { isReading: false, readAt: '', failed: '' };
 }
 
 /**
@@ -153,12 +160,25 @@ export interface BoardServerOptions {
  * Resolves with the server and its link, which holds a random token; rejects when the
  * server cannot listen. The caller stops it with server.close. A request whose Host is
  * not this server, or whose token is missing or wrong, gets a 403. A change whose
- * Origin is not the page gets a 403 too.
+ * Origin is not the page gets a 403 too. gh reads the pull requests and issues in the
+ * background: the first read starts now, and /data never waits for it.
  */
-export function startBoardServer(root: string, env: Env, gh: Gh, options: BoardServerOptions = {}): Promise<{ server: Server; url: string }> {
+export function startBoardServer(root: string, env: Env, gh: GhLater, options: BoardServerOptions = {}): Promise<{ server: Server; url: string }> {
   const token = randomBytes(BOARD_TOKEN_BYTES).toString('hex');
   const controls = options.controls ?? createBoardControls(join(root, '.yokoten-board.log'));
-  const read = options.read ?? (() => collectBoard(root, env, gh));
+  const github = options.github ?? createBoardGitHub();
+  const stopReads = new AbortController();
+  // The GitHub repo, or null without a GitHub remote. Starts a background read when the lists are old.
+  const refreshGitHub = (): string | null => {
+    const remote = repoOf(readOriginUrl(root, env));
+    if (!remote) return null;
+    const read = async () => {
+      const [pulls, issues] = await Promise.all([readBoardPullsLater(gh, remote, stopReads.signal), readBoardIssuesLater(gh, remote, stopReads.signal)]);
+      return { pulls, issues };
+    };
+    refreshBoardGitHub(github, remote, read, BOARD_REFRESH_SECONDS * 1000);
+    return remote;
+  };
   const feeds = makeFeedStore();
   const server = createServer((req, res) => {
     const address = server.address();
@@ -173,11 +193,13 @@ export function startBoardServer(root: string, env: Env, gh: Gh, options: BoardS
       }
       if (path === '/data') {
         try {
-          const board = read();
+          const remote = refreshGitHub();
+          const board = collectBoardWith(root, env, remote, remote ? github.pulls : BOARD_NO_REMOTE_PULLS);
           const trees = readBoardWorktrees(root, env);
-          const snapshot = readBoardSnapshot(root, env, gh, controls, board, trees);
+          const snapshot = readBoardSnapshot(env, controls, board, trees, remote ? github.issues : BOARD_NO_REMOTE_ISSUES);
           recordFeed(feeds, board.agents, board.updated);
-          return serveText(res, 200, 'application/json; charset=utf-8', JSON.stringify({ ...board, feeds: feedsJson(feeds), ...snapshot }));
+          const fresh = githubState(remote ? github : null);
+          return serveText(res, 200, 'application/json; charset=utf-8', JSON.stringify({ ...board, feeds: feedsJson(feeds), ...snapshot, github: fresh }));
         } catch {
           return serveText(res, 500, 'application/json; charset=utf-8', JSON.stringify({ error: 'the board could not be read: run it again' }));
         }
@@ -219,9 +241,15 @@ export function startBoardServer(root: string, env: Env, gh: Gh, options: BoardS
       }
     });
   });
+  server.on('close', () => stopReads.abort());
   return new Promise((done, failed) => {
     server.on('error', failed);
     server.listen(0, '127.0.0.1', () => {
+      try {
+        refreshGitHub();
+      } catch {
+        // The first /data starts the read instead.
+      }
       const address = server.address();
       const port = typeof address === 'object' && address !== null ? address.port : 0;
       done({ server, url: `http://127.0.0.1:${port}/?t=${token}` });
@@ -245,7 +273,7 @@ export function runBoard(invocation: Invocation, options: BoardServerOptions = {
     print(invocation, renderBoardText(board, waiting.length || runs.length ? { waiting, runs } : undefined));
     return 0;
   }
-  return startBoardServer(root, invocation.env, gh, { controls }).then(
+  return startBoardServer(root, invocation.env, ghLaterIn(root, invocation.env, BOARD_READ_TIMEOUT_MS), { controls }).then(
     ({ url }) => {
       print(invocation, [`yokoten board: the team is live at ${url}`, `The page refreshes every ${BOARD_REFRESH_SECONDS} seconds. Stop it with Ctrl-C.`]);
       return new Promise<number>(() => {});

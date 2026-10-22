@@ -1718,6 +1718,9 @@ shows as they wrote it. The page keeps your choices (language, folds, cleared ag
 until you stop the board.
 
 The page refreshes every 15 seconds and works on a phone too. Stop the command with Ctrl-C.
+The agents show at once. gh reads the pull requests and issues in the background,
+one read at a time. Until the first read ends, those lists say "Reading GitHub…".
+When a read fails, the page keeps the last lists and says when they were read.
 It only shows; to talk to an agent, use its own terminal for now.
 
 `yokoten board --text` prints the same in plain text.

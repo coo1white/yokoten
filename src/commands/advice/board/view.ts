@@ -5,6 +5,7 @@ import { type BoardPull, type Gh, readBoardPulls, repoOf, repoPageOf } from '../
 import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
 import { readOriginUrl } from '../../../setup/plan.ts';
+import type { BoardIssue } from './controls.ts';
 import { ageText, type BoardAgent, type BoardRole, type BoardWorktree, type FoundAgent, readBoardAgents, readBoardWorktrees } from './agents.ts';
 
 /** An agent that wrote within this time, and says nothing else, is working. */
@@ -193,12 +194,26 @@ export interface BoardData {
   updated: string;
 }
 
+/** Why there are no pull requests without a GitHub remote. */
+export const BOARD_NO_REMOTE_PULLS = 'this repo has no GitHub remote, so the board shows no pull requests';
+/** Why there are no issues without a GitHub remote. */
+export const BOARD_NO_REMOTE_ISSUES = 'this repo has no GitHub remote, so the board shows no open issues';
+/** What the lists say before the first read from GitHub finishes (#688). */
+export const BOARD_READING_GITHUB = 'reading GitHub…';
+
 /** The board's data from the status files, `gh pr list` and `git worktree list`. Every shown path shows `~` for home. */
 export function collectBoard(root: string, env: Env, gh: Gh, now: number = Date.now()): BoardData {
-  const worktrees = readBoardWorktrees(root, env);
   const remote = repoOf(readOriginUrl(root, env));
+  return collectBoardWith(root, env, remote, remote ? readBoardPulls(gh, remote) : BOARD_NO_REMOTE_PULLS, now);
+}
+
+/**
+ * The board's data with pull requests already read, or why there are none (#688). Only
+ * the local parts are read here: the status files and `git worktree list`.
+ */
+export function collectBoardWith(root: string, env: Env, remote: string | null, pulls: BoardPull[] | string, now: number = Date.now()): BoardData {
+  const worktrees = readBoardWorktrees(root, env);
   const agents = typeof worktrees === 'string' ? [] : readBoardAgents(worktrees).map((found) => agentView(found, env, now));
-  const pulls = remote ? readBoardPulls(gh, remote) : 'this repo has no GitHub remote, so the board shows no pull requests';
   const rows = typeof pulls === 'string' ? [] : pulls;
   return {
     repo: hideHome(root, env),
@@ -212,4 +227,62 @@ export function collectBoard(root: string, env: Env, gh: Gh, now: number = Date.
     worktrees: typeof worktrees === 'string' ? worktrees : worktrees.map((tree) => ({ path: hideHome(tree.path, env), branch: tree.branch })),
     updated: new Date(now).toISOString(),
   };
+}
+
+/** The two lists the board reads from GitHub: each its rows, or why gh can't read them. */
+export interface BoardGitHubLists {
+  pulls: BoardPull[] | string;
+  issues: BoardIssue[] | string;
+}
+
+/**
+ * What the board last read from GitHub (#688). /data serves it at once and never waits
+ * for gh. A read runs in the background, one at a time.
+ */
+export interface BoardGitHub extends BoardGitHubLists {
+  /** The repo ("owner/name") the lists are from, or '' before the first read. */
+  repo: string;
+  /** When the last read with no failure finished, or '' before one. */
+  readAt: string;
+  /** When the last read finished, good or not. The next read waits for the refresh time after it. */
+  triedAt: number;
+  /** Why the last read failed, or '' when it worked. A failed list keeps its last good rows. */
+  failed: string;
+  /** The read that runs now, or null. Tests wait for it; /data never does. */
+  reading: Promise<void> | null;
+}
+
+/** The cache before any read: both lists say GitHub is being read. */
+export function createBoardGitHub(): BoardGitHub {
+  return { repo: '', pulls: BOARD_READING_GITHUB, issues: BOARD_READING_GITHUB, readAt: '', triedAt: 0, failed: '', reading: null };
+}
+
+/** One list after a read: new rows win; a failed read keeps the old rows, else says why. */
+function keptList<Row>(old: Row[] | string, fresh: Row[] | string): Row[] | string {
+  return typeof fresh === 'string' && typeof old !== 'string' ? old : fresh;
+}
+
+/**
+ * Starts one background read of `repo` when none runs and the last one finished at least
+ * `maxAgeMs` ago. Returns at once. A new repo clears the lists of the old one.
+ */
+export function refreshBoardGitHub(cache: BoardGitHub, repo: string, read: () => Promise<BoardGitHubLists>, maxAgeMs: number, now: number = Date.now()): void {
+  if (cache.repo !== repo) Object.assign(cache, { ...createBoardGitHub(), repo, reading: cache.reading });
+  if (cache.reading || (cache.triedAt && now - cache.triedAt < maxAgeMs)) return;
+  const failedRead = 'gh could not read GitHub: run it again';
+  const reading = read()
+    .catch((): BoardGitHubLists => ({ pulls: failedRead, issues: failedRead }))
+    .then((fresh) => {
+      if (cache.repo !== repo) return;
+      const failed = [fresh.pulls, fresh.issues].filter((list): list is string => typeof list === 'string');
+      cache.pulls = keptList(cache.pulls, fresh.pulls);
+      cache.issues = keptList(cache.issues, fresh.issues);
+      cache.failed = failed.join('; ');
+      cache.triedAt = Date.now();
+      if (!failed.length) cache.readAt = new Date(cache.triedAt).toISOString();
+    })
+    .finally(() => {
+      if (cache.reading === reading) cache.reading = null;
+    });
+  cache.reading = reading;
 }

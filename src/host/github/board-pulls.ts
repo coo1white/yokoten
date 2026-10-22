@@ -1,13 +1,15 @@
 // The pull requests for `yokoten board` (#601), read through `gh pr list`, so it uses
-// the owner's own sign-in and holds no token. Open, merged and closed, newest first.
-// Read only.
+// the owner's own sign-in and holds no token. The open ones, then the last few merged,
+// newest first. Read only.
 
 import { readLabelTier } from '../../rules/pr.ts';
 import { terminalText } from '../../run/learn.ts';
-import { asText, type Gh, isObject, labelNames } from './planning.ts';
+import { asText, type Gh, type GhLater, isObject, labelNames } from './planning.ts';
 
-/** The most pull requests the board reads: enough for one team's open and recent work. */
+/** The most open pull requests the board reads: enough for one team's open work. */
 const BOARD_PULL_LIMIT = 30;
+/** The most merged pull requests the board reads, for "Merged today". */
+const BOARD_MERGED_LIMIT = 10;
 
 /** One pull request on the board: its number, title, branch, and each stage. */
 export interface BoardPull {
@@ -101,22 +103,65 @@ function parseBoardPull(row: unknown): BoardPull | null {
   };
 }
 
-/** The pull requests of `repo` ("owner/name"), or the reason gh can't read them. */
+/**
+ * The two gh queries of the board (#688): the open pull requests with their checks, and
+ * the last few merged ones without. Merged checks never show, and the checks are the
+ * slow part of gh's answer.
+ */
+function boardPullQueries(repo: string): string[][] {
+  return [
+    ['pr', 'list', '--repo', repo, '--state', 'open', '--limit', String(BOARD_PULL_LIMIT), '--json', 'number,title,headRefName,state,reviewDecision,isDraft,statusCheckRollup,labels,url,mergedAt'],
+    ['pr', 'list', '--repo', repo, '--state', 'merged', '--limit', String(BOARD_MERGED_LIMIT), '--json', 'number,title,headRefName,state,url,mergedAt'],
+  ];
+}
+
+/** Why gh could not list the pull requests, in words a beginner can act on. */
+function boardPullsFailed(err: unknown): string {
+  if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'gh is not installed: get it from https://cli.github.com, then run `gh auth login`';
+  const reason = terminalText(String((err as { stderr?: string }).stderr || '').split('\n')[0].trim());
+  return `gh can't list the pull requests${reason ? ` (${reason})` : ''}: run \`gh auth login\`, and check the repo`;
+}
+
+/**
+ * The pull requests from gh's two answers: open and draft ones from the first, merged
+ * ones from the second, each number once. Or why the answers are no list.
+ */
+function boardPullsOf(answers: string[]): BoardPull[] | string {
+  const wanted: BoardPull['stage'][][] = [['open', 'draft'], ['merged']];
+  const found: BoardPull[] = [];
+  for (const [at, text] of answers.entries()) {
+    let rows: unknown;
+    try {
+      rows = JSON.parse(text);
+    } catch {
+      return 'gh gave no pull request list: run it again';
+    }
+    if (!Array.isArray(rows)) return 'gh gave no pull request list: run it again';
+    for (const pull of rows.map(parseBoardPull)) {
+      if (pull && wanted[at].includes(pull.stage) && !found.some((seen) => seen.number === pull.number)) found.push(pull);
+    }
+  }
+  return found;
+}
+
+/** The open and recently merged pull requests of `repo` ("owner/name"), or the reason gh can't read them. */
 export function readBoardPulls(gh: Gh, repo: string): BoardPull[] | string {
-  let text: string;
+  let answers: string[];
   try {
-    text = gh(['pr', 'list', '--repo', repo, '--state', 'all', '--limit', String(BOARD_PULL_LIMIT), '--json', 'number,title,headRefName,state,reviewDecision,isDraft,statusCheckRollup,labels,url,mergedAt']);
+    answers = boardPullQueries(repo).map((args) => gh(args));
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'gh is not installed: get it from https://cli.github.com, then run `gh auth login`';
-    const reason = terminalText(String((err as { stderr?: string }).stderr || '').split('\n')[0].trim());
-    return `gh can't list the pull requests${reason ? ` (${reason})` : ''}: run \`gh auth login\`, and check the repo`;
+    return boardPullsFailed(err);
   }
-  let pulls: unknown;
+  return boardPullsOf(answers);
+}
+
+/** readBoardPulls without blocking (#688): both queries run at once, and `signal` stops them. */
+export async function readBoardPullsLater(gh: GhLater, repo: string, signal?: AbortSignal): Promise<BoardPull[] | string> {
+  let answers: string[];
   try {
-    pulls = JSON.parse(text);
-  } catch {
-    return 'gh gave no pull request list: run it again';
+    answers = await Promise.all(boardPullQueries(repo).map(async (args) => gh(args, signal)));
+  } catch (err) {
+    return boardPullsFailed(err);
   }
-  if (!Array.isArray(pulls)) return 'gh gave no pull request list: run it again';
-  return pulls.map(parseBoardPull).filter((pull): pull is BoardPull => pull !== null);
+  return boardPullsOf(answers);
 }
