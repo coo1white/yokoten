@@ -37,7 +37,7 @@ function unknownCommand(invocation: Invocation, name: string): number {
 
 /**
  * True when the command line asks for help: `--help` or `-h` among its own words. For
- * `bot`, only the words before `--` count: after it, they belong to the command it runs.
+ * `bot` and `desk`, only the words before `--` count: after it, they belong to the command it runs.
  */
 function isHelpAsked(words: string[]): boolean {
   const end = words.indexOf('--');
@@ -60,6 +60,8 @@ function dispatch(invocation: Invocation): number | Promise<number> {
     }
     case 'worker':
       return import('../src/commands/hook.ts').then((m) => m.runWorker(invocation));
+    case 'desk':
+      return import('../src/commands/hook.ts').then((m) => m.runDesk(invocation));
     case 'check':
       return import('../src/commands/check.ts').then((m) => m.runCheck(invocation));
     case 'redact':

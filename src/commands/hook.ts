@@ -9,7 +9,7 @@ import * as deepseekHarness from '../agents/runtimes/deepseek-harness.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
-import type { DropReason, SortedEnv } from '../agents/agent-env.ts';
+import type { DropReason, SortedEnv } from '../agents/desk/agent-env.ts';
 import { type Env, loadConfig } from '../rules/config.ts';
 import { addWorkerPath, gitLinkAbove, hardenRead, markNote, printsAccount, privateOutput, realPath, releaseFix, removeWorkerPath, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
 import { type Finding, formatFinding, notRepoFinding } from '../rules/message.ts';
@@ -487,7 +487,7 @@ export function runWorker(invocation: Invocation): number | Promise<number> {
  * so the guard's path never loads it.
  */
 async function runEnv(invocation: Invocation, runtime: string | undefined): Promise<number> {
-  const { sortAgentEnv } = await import('../agents/agent-env.ts');
+  const { sortAgentEnv } = await import('../agents/desk/agent-env.ts');
   let sorted: SortedEnv;
   try {
     sorted = sortAgentEnv(invocation.env, runtime);
@@ -497,7 +497,7 @@ async function runEnv(invocation: Invocation, runtime: string | undefined): Prom
   const count = (reason: DropReason) => sorted.dropped.filter((drop) => drop.reason === reason).length;
   const who = runtime === undefined ? 'An agent that yokoten starts' : `A ${runtime} agent that yokoten starts`;
   print(invocation, [
-    `yokoten worker: ${who} would get ${sorted.kept.length} names from this shell. Values are never shown. No command starts an agent with this yet.`,
+    `yokoten worker: ${who} would get ${sorted.kept.length} names from this shell. Values are never shown. \`yokoten desk\` starts an agent with these.`,
     ...(sorted.kept.length ? [`  ${sorted.kept.join(', ')}`] : []),
     `Dropped: ${count('secret name')} with a secret-looking name, ${count('secret value')} with a value shaped like a key or token, ${count('too long')} too long to check, ${count('not on the list')} not on the list.`,
     ...(runtime === undefined ? ['Add a runtime, such as `yokoten worker env claude-code`, to count its own login names too.'] : []),
@@ -533,4 +533,55 @@ function runUnmark(invocation: Invocation, dir: string, fail: (line: string) => 
   }
   print(invocation, [`yokoten worker: unmarked ${top}. The guard no longer treats agents there as workers.`]);
   return 0;
+}
+
+/**
+ * `desk <agent> <folder> -- <command>`: start a worker's agent in its own fenced desk
+ * (#637). Only the lead runs it. The modules load only here, so the guard never loads them.
+ */
+export async function runDesk(invocation: Invocation): Promise<number> {
+  // Inside a Linux desk, its first program: the bridge to the proxy, then the agent.
+  if (invocation.args[0] === '--bridge') return (await import('../agents/desk/bridge.ts')).runBridge(invocation.args.slice(1), invocation.stderr);
+  const end = invocation.args.indexOf('--');
+  const options = parse('desk', end === -1 ? invocation.args : invocation.args.slice(0, end));
+  if (typeof options === 'string') return usage(invocation, options);
+  const [runtime, folder] = options.positional;
+  const command = end === -1 ? [] : invocation.args.slice(end + 1);
+  if (runtime === undefined || folder === undefined || !command.length) return usage(invocation, 'name the agent, the folder and the command: yokoten desk <agent> <folder> -- <command>');
+  const fail = (line: string) => {
+    print(invocation, [`yokoten desk: ${line}`], invocation.stderr);
+    return 1;
+  };
+  if (workerRole(invocation.env, [invocation.cwd]) !== null) return fail('only the lead starts a desk: this session is a worker.');
+  const [{ planDesk }, { chooseBackend, startDesk }, { paths }] = await Promise.all([import('../agents/desk/desk.ts'), import('../agents/desk/start.ts'), import('../setup/install.ts')]);
+  const backend = chooseBackend(process.platform, invocation.env);
+  if (typeof backend === 'string') return fail(backend);
+  const list = (name: string) => (options.values[name] ?? '').split(',').map((word) => word.trim()).filter(Boolean);
+  const installed = paths(invocation.env);
+  let plan: ReturnType<typeof planDesk>;
+  try {
+    plan = planDesk({
+      runtime,
+      desk: resolve(invocation.cwd, folder),
+      command,
+      env: invocation.env,
+      extraReadable: list('--read').map((path) => resolve(invocation.cwd, path)),
+      extraHosts: list('--host'),
+      runtimes: [installed.runtime],
+      marks: options.flags.has('--marks') ? installed.marks : undefined,
+    });
+  } catch (error) {
+    return fail((error as Error).message);
+  }
+  print(invocation, [`yokoten desk: ${runtime} in ${plan.desk} (${backend.name}); the agent may reach ${plan.hosts.join(', ')}.`], invocation.stderr);
+  const refused = new Set<string>();
+  const result = await startDesk(plan, backend, {
+    stdio: 'inherit',
+    onEvent: (event) => {
+      if (!event.isAllowed) refused.add(event.target);
+    },
+  });
+  if (result.stderr) invocation.stderr.write(result.stderr);
+  if (refused.size) print(invocation, [`yokoten desk: the proxy refused ${[...refused].join(', ')}. Add an API host with --host if the agent needs it.`], invocation.stderr);
+  return result.code;
 }

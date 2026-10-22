@@ -25,7 +25,7 @@ import { docsLink } from '../../rules/message.ts';
 import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import { type Added, addHook, checkHooksFile, type HookState, hookState } from '../hooks-file.ts';
-import type { RuntimeEnv } from '../agent-env.ts';
+import type { RuntimeEnv } from '../desk/agent-env.ts';
 
 /**
  * A PreToolUse call, as an Action. The payload is Claude Code's, and its reader goes by the
