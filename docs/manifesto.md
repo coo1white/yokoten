@@ -60,10 +60,21 @@ The rules for AI cannot belong to one vendor. yokoten is MIT-licensed, free for
 anyone to use, change and build on. It is a gift to every builder and every model,
 open or closed, and works with the agents you already use.
 
+## 8. The rule of law for the agent economy.
+
+A guard for one agent. A team of agents from rival vendors. A company that runs
+itself while you sit on its board. Then millions of such companies, trading work
+under one common law: every accident becomes a rule for everyone, every agent
+carries a track record no vendor can polish, and work is paid for only when it
+passes. Then every kind of work AI does, not only code.
+
+The first two steps run today. The third is being built in this repo, in public,
+by the team it describes. The rest is where we are going, and we are not quiet
+about it.
+
 ---
 
-AI will write most of the world's software. The only open question is who sets the
-rules.
+AI will do most of the world's work. The only open question is who writes the law.
 
 You do.
 
