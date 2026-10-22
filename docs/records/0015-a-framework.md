@@ -1,7 +1,7 @@
 # 0015 A framework: the whole method by default, free to change, still updated
 
-Status: proposed
-Date: 2026-10-21 (UTC)
+Status: accepted
+Date: 2026-10-21 (UTC), accepted 2026-10-22
 
 ## Context
 
@@ -19,8 +19,8 @@ things showed up:
 
 - **This repo outgrew the kit.** Since 2026-10-18 it added practices that `init` does not
   give: the bot does every write and the owner only approves, risk tiers on every pull
-  request, every issue with a milestone, type, tier, assignee and board item, an hourly
-  board sync, a full CODEOWNERS map, a merge order when several pull requests wait, and
+  request, every issue with a milestone, type, tier, assignee and GitHub project item, an hourly
+  project sync, a full CODEOWNERS map, a merge order when several pull requests wait, and
   work split between workers by difficulty. Some live only in this repo's files. Some
   live only in the lead session's notes, together with working rules the owner taught
   it: automate by default and treat a manual step as the exception, fix the cause the
@@ -60,7 +60,7 @@ changed. A change never stops updates to the parts the user did not change.
    skill in the kit. What is personal (one person's private marks, the language of
    their reports) becomes a key, never a default.
 2. **Four ways to change a part**, from light to heavy:
-   - **Keys** in `yokoten.json` for choices (which stages, the board on or off, the
+   - **Keys** in `yokoten.json` for choices (which stages, the project sync on or off, the
      language of reports, how many workers).
    - **Files yokoten tracks by hash.** An untouched file is replaced on update. A changed
      file is kept, and `doctor` says a newer version exists and how to compare.
@@ -77,6 +77,12 @@ changed. A change never stops updates to the parts the user did not change.
    better way of working is noted with `yokoten learn --upstream`, becomes a yokoten
    issue, and once it lands, reaches every project on the next update. That is
    *yokoten*: what one project learns, every project gets.
+   A lesson that makes a rule stricter follows the normal path. One that removes a rule or
+   makes it allow more needs the owner's approval ([0018](0018-rules-improve-from-use.md)).
+6. **Built on the agents, not beside them.** yokoten adds one rule set for every vendor,
+   its translation into each agent, and the team board. Everything else comes from the
+   agents themselves, and no part needs a yokoten server
+   ([0018](0018-rules-improve-from-use.md)).
 
 ## How we check it
 
@@ -98,7 +104,7 @@ changed. A change never stops updates to the parts the user did not change.
 
 ## Consequences
 
-- Several practices move from this repo and the lead's notes into the kit: the board
+- Several practices move from this repo and the lead's notes into the kit: the project
   sync, the CODEOWNERS map, issue fields, risk tiers, the merge order and how work is
   split.
 - `install` stops overwriting a managed skill the user changed.
