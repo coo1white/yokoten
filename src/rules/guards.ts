@@ -1277,6 +1277,8 @@ function checkHooksSettings(settings: string[], fromEnvironment: string[]): Find
 // what `git -c` does, and so does GIT_CONFIG_PARAMETERS, the variable `-c` itself sets.
 // An assignment counts when it stands before the program, after env, sudo or export, or
 // anywhere before a git word. So `grep GIT_CONFIG_KEY_0=core.hooksPath file` is a read.
+// `NAME+=value` counts as `NAME=value`: it adds to a value the guard can't see, so a key
+// added to is refused, and a value added to is never read as .githooks.
 const ASSIGNERS = new Set(['env', 'sudo', 'doas', 'export', 'declare', 'typeset', 'readonly', 'local']);
 // `NAME+=value` adds to a setting: it is an assignment too.
 const isAssignment = (word: string) => /^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(word);
@@ -1286,17 +1288,18 @@ function checkHooksEnvironment(words: string[]): Finding | null {
   let values: Map<string, string> | null = null; // GIT_CONFIG_VALUE_n, the first of each n
   let isPrefix = true; // every word before this one is an assignment, an option or an assigner
   for (const [index, word] of words.entries()) {
-    const variable = /^GIT_CONFIG_(KEY_(\d+)|PARAMETERS)=(.*)$/is.exec(word);
+    const variable = /^GIT_CONFIG_(KEY_(\d+)|PARAMETERS)(\+?)=(.*)$/is.exec(word);
     const wasPrefix = isPrefix;
     isPrefix = isPrefix && (isAssignment(word) || word.startsWith('-') || ASSIGNERS.has(base(word)));
     if (!variable) continue;
     if (!wasPrefix && lastGit <= index) continue;
-    const [, name, number, setting] = variable;
+    const [, name, number, adds, setting] = variable;
     if (name.toUpperCase() === 'PARAMETERS') {
       if (setting.toLowerCase().includes('core.hookspath')) return hooksPath('GIT_CONFIG_PARAMETERS names core.hooksPath, which can skip the commit check');
       if (/include(if\.[^=]*)?\.path/i.test(setting)) return includes('GIT_CONFIG_PARAMETERS with an include');
       continue;
     }
+    if (adds) return hooksPath(`GIT_CONFIG_KEY_${number}+= adds to a key yokoten can't see, which may make core.hooksPath and skip the commit check`);
     if (isInclude(setting)) return includes(`GIT_CONFIG_KEY_${number} ${setting.trim()}`);
     if (!isHooksPath(setting)) continue;
     values ??= configValues(words);
@@ -1307,13 +1310,17 @@ function checkHooksEnvironment(words: string[]): Finding | null {
   return null;
 }
 
-// Each GIT_CONFIG_VALUE_n=value in the words, by n as written: the first one counts.
+// Each GIT_CONFIG_VALUE_n=value in the words, by n as written: the first one counts. A
+// `GIT_CONFIG_VALUE_n+=` adds to a value the guard can't see: that n is read as unknown.
 function configValues(words: string[]): Map<string, string> {
   const values = new Map<string, string>();
+  const added = new Set<string>();
   for (const word of words) {
-    const value = /^GIT_CONFIG_VALUE_(\d+)=(.*)$/is.exec(word);
-    if (value && !values.has(value[1])) values.set(value[1], value[2]);
+    const value = /^GIT_CONFIG_VALUE_(\d+)(\+?)=(.*)$/is.exec(word);
+    if (value?.[2]) added.add(value[1]);
+    else if (value && !values.has(value[1])) values.set(value[1], value[3]);
   }
+  for (const number of added) values.set(number, '+=');
   return values;
 }
 

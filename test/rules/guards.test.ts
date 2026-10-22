@@ -400,6 +400,25 @@ test('hooks setting: git -c, --config-env and GIT_CONFIG_KEY_n cannot skip the c
   ]) blocked(command);
 });
 
+// #591: `NAME+=value` is a setting too, for the lead and a worker alike.
+test('hooks setting: GIT_CONFIG_* += cannot skip the check, for lead and worker (#591)', () => {
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  for (const command of [
+    "GIT_CONFIG_PARAMETERS+=\"'core.hooksPath=x'\" git commit -m x",
+    "GIT_CONFIG_PARAMETERS+=\" 'include.path=x'\" git commit -m x",
+    'GIT_CONFIG_COUNT+=1 GIT_CONFIG_KEY_0+=core.hooksPath GIT_CONFIG_VALUE_0+=/x git commit -m x',
+    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0+=Path GIT_CONFIG_VALUE_0=/x git commit -m x',
+    'GIT_CONFIG_COUNT+=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/x git commit -m x',
+    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0+=.githooks git commit -m x',
+    'export GIT_CONFIG_COUNT+=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/x; git commit -m x',
+  ]) {
+    assert.match(checkCommand(command, { env: {}, cwd: process.cwd() })?.id ?? "", /^(hooks-path|include)/, command);
+    assert.ok(checkCommand(command, { env: worker, cwd: process.cwd() }), `a worker too: ${command}`);
+  }
+  allowed('GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=x git log -1');
+  allowed('git log --oneline');
+});
+
 test('hooks setting: a read never blocks, in a repo with its own hooks folder (#217)', () => {
   const cwd = makeHooksRepo();
   try {
