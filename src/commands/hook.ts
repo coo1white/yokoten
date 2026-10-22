@@ -17,17 +17,20 @@ import {
   type Action,
   bumpDoneTries,
   clearDoneTries,
+  clearRefusedMarker,
   DONE_TRY_LIMIT,
   doneTryKey,
   type Guard,
   guardDeadline,
   judgeWithDeadline,
   loadHookConfig,
+  noteRefused,
   readDoneWhen,
   type Repo,
   runDoneWhen,
   type StopEvent,
-  writeFailingChecks,
+  wasRefusedRecently,
+  writeAgentChecks,
 } from '../run/hook.ts';
 import { bullets, type Invocation, parse, print, printJson, readInput, rootOf, say, usage } from './shared.ts';
 
@@ -145,12 +148,13 @@ function editRepos(invocation: Invocation, action: Action, base: string, session
  * A worker also runs the task's done-when command (or the changed-file check when the
  * brief has none). A failing check sends the worker back, with the output in short. After
  * DONE_TRY_LIMIT refusals the next stop is let through. The worker's message to the lead
- * must start with "NOT DONE: checks failing". The worktree's `.yokoten-agent.json` gets
- * `checks` set to `failing`, so the lead and the board can see it. A subagent that is
- * not a worker is not checked. On any error the turn ends too, with one line on stderr:
- * a broken check must not trap a session.
+ * must start with "NOT DONE: checks failing". A linked worktree's `.yokoten-agent.json`
+ * gets `checks` set to `failing`, so the lead can see it. The board will show it later
+ * (#603). The main checkout is not written. A pass sets `checks` to `passing`.
+ * A subagent is a worker only by its own type. On any error the turn ends too, with one
+ * line on stderr: a broken check must not trap a session.
  */
-function stopHook(invocation: Invocation, json: boolean, read: typeof claudeCode.readStop): number {
+async function stopHook(invocation: Invocation, json: boolean, read: typeof claudeCode.readStop): Promise<number> {
   const { env } = invocation;
   let event: StopEvent | null;
   try {
@@ -164,10 +168,10 @@ function stopHook(invocation: Invocation, json: boolean, read: typeof claudeCode
   }
   const folder = event.cwd ?? invocation.cwd;
   const folders = [folder, invocation.cwd];
-  const isWorker = event.worker || workerRole(env, folders) !== null;
-  // SubagentStop fires for every subagent. A reviewer, Explore or verifier is not a
-  // worker, and must not be sent back for the lead's changed files (#614).
-  if (event.subagent && !isWorker) {
+  // SubagentStop fires for every subagent. Its own type decides. The parent session's
+  // role does not: a reviewer started by a worker is not checked (#614).
+  const isWorker = event.subagent ? event.worker : event.worker || workerRole(env, folders) !== null;
+  if (event.subagent && !event.worker) {
     if (json) printJson(invocation, { blocked: false, stop: true, findings: [] });
     return 0;
   }
@@ -196,7 +200,7 @@ function stopHook(invocation: Invocation, json: boolean, read: typeof claudeCode
     const command = readDoneWhen(env, event.subagent ? ranIn : folder);
     if (command) {
       try {
-        const ran = runDoneWhen(command, ranIn, { ...env, YOKOTEN_ROLE: 'worker' });
+        const ran = await runDoneWhen(command, ranIn, { ...env, YOKOTEN_ROLE: 'worker' });
         doneWhen = { command, ...ran };
       } catch (err) {
         say(invocation, `yokoten hook --stop: skipped, ${((err as Error).message ?? String(err)).split('\n')[0]}\n`, invocation.stderr);
@@ -208,7 +212,11 @@ function stopHook(invocation: Invocation, json: boolean, read: typeof claudeCode
   const failed = findings.length > 0 || doneWhen?.ok === false;
   const key = doneTryKey(event.sessionId, folder);
   if (!failed) {
-    if (isWorker) forgetDoneTries(env, key);
+    if (isWorker) {
+      forgetDoneTries(env, key);
+      clearRefusedMarker(folder, key);
+      recordChecks(invocation, folder, 'passing');
+    }
     if (json) printJson(invocation, { blocked: false, stop: true, findings });
     return 0;
   }
@@ -218,13 +226,28 @@ function stopHook(invocation: Invocation, json: boolean, read: typeof claudeCode
     return 2;
   }
   const bumped = bumpDoneTries(env, key);
-  // No saved count: one refusal, then stop_hook_active lets the worker go. Never a loop.
+  // No saved count: stop_hook_active, or a refusal of this worker in the last 5 minutes,
+  // lets the stop through. A runtime that never sets stop_hook_active cannot trap it.
   if (bumped === null) {
-    if (event.active) return allowFailingStop(invocation, json, findings, doneWhen, DONE_TRY_LIMIT, env, key, root ?? ranIn);
+    if (event.active || wasRefusedRecently(folder, key)) return allowFailingStop(invocation, json, findings, doneWhen, DONE_TRY_LIMIT, env, key, folder);
+    noteRefused(folder, key);
     return refuseFailingStop(invocation, json, findings, doneWhen, 1, false);
   }
-  if (bumped > DONE_TRY_LIMIT) return allowFailingStop(invocation, json, findings, doneWhen, bumped, env, key, root ?? ranIn);
+  if (bumped > DONE_TRY_LIMIT) return allowFailingStop(invocation, json, findings, doneWhen, bumped, env, key, folder);
   return refuseFailingStop(invocation, json, findings, doneWhen, bumped, true);
+}
+
+/** The linked worktree's top folder, or null for the main checkout and outside a repo. */
+function linkedWorktree(folder: string): string | null {
+  const link = gitLinkAbove(folder);
+  return link?.kind === 'file' ? link.top : null;
+}
+
+/** Write `checks` at a linked worktree's root. The main checkout is left unchanged. */
+function recordChecks(invocation: Invocation, folder: string, checks: 'failing' | 'passing'): void {
+  const root = linkedWorktree(folder);
+  if (!root) return;
+  writeAgentChecks(root, checks, new Date(), (line) => say(invocation, line, invocation.stderr));
 }
 
 /** The folder a subagent's command runs in: the linked worktree the event names, or the event's own folder. */
@@ -267,7 +290,7 @@ function refuseFailingStop(
   return 2;
 }
 
-/** Let the worker stop, and leave a record the lead and the board can read. The try count starts again. */
+/** Let the worker stop, and leave a record the lead can read. The try count starts again. */
 function allowFailingStop(
   invocation: Invocation,
   json: boolean,
@@ -276,9 +299,9 @@ function allowFailingStop(
   tries: number,
   env: Invocation['env'],
   key: string,
-  statusDir: string,
+  folder: string,
 ): number {
-  writeFailingChecks(statusDir);
+  recordChecks(invocation, folder, 'failing');
   forgetDoneTries(env, key);
   const payload = { blocked: false, stop: true, findings, skipped: 'stopped with failing checks', ...(doneWhen ? { doneWhen: { ok: false, output: doneWhen.output, tries, limit: DONE_TRY_LIMIT } } : {}) };
   if (json) printJson(invocation, payload);

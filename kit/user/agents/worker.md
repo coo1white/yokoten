@@ -20,8 +20,9 @@ You do one task. The lead reviews your work and decides what happens to it.
 - You get three tries. On the third, the hook says your next stop is let through.
 - Your final message to the lead must start with "NOT DONE: checks failing".
   Quote the failing output. Never say the task is done.
-- The hook writes `checks` as `failing` in `.yokoten-agent.json` at the worktree root.
-  The lead and the board read that file.
+- The hook writes `checks` in `.yokoten-agent.json` at the worktree root.
+  `failing` means the check still fails. `passing` means it passed.
+  The lead reads that file. The board will show `checks` later.
 
 ## Never
 

@@ -212,7 +212,7 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.match(result.stdout, /same the Codex stop check/);
   assert.match(result.stdout, /same the Gemini CLI stop check/);
   assert.deepEqual(codex.hooks.Stop, [{ hooks: [{ type: 'command', command: guarded('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.mjs"', 'hook --stop --agent codex'), timeout: 600 }] }]);
-  assert.deepEqual(gemini.hooks.AfterAgent, [{ hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.mjs', 'hook --stop --agent gemini'), name: 'yokoten-stop', timeout: 600 }] }]);
+  assert.deepEqual(gemini.hooks.AfterAgent, [{ hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.mjs', 'hook --stop --agent gemini'), name: 'yokoten-stop', timeout: 600_000 }] }]);
   // Codex's hooks are in place; this home has no ~/.codex, so doctor says nothing of its trust (#341).
   assert.match((await sandbox.call(['doctor'])).stdout, /ok +codex-hook: \.codex\/hooks\.json is in place; trust not checked, no ~\/\.codex\n +ok +gemini-hook\n +ok +antigravity-hook/);
   assert.match(result.stdout, /Codex runs the hooks in \.codex\/hooks\.json only after you trust this folder and the hooks\n.*to trust them in Codex: run `codex` in this folder, trust it, then trust both yokoten hooks in `\/hooks`/);
@@ -1332,7 +1332,7 @@ test('init: a commented .gemini/settings.json is left as it was and gets the hoo
   assert.match(guardCall, /\bnode(?: --\S+)* \$GEMINI_PROJECT_DIR\/\.yokoten\/bin\/yokoten\.mjs hook --agent gemini(?: |$)/);
   assert.deepEqual(add, {
     BeforeTool: [{ hooks: [{ type: 'command', command: guardCall, name: 'yokoten' }], matcher: 'run_shell_command|write_file|replace' }],
-    AfterAgent: [{ hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.mjs', 'hook --stop --agent gemini'), name: 'yokoten-stop', timeout: 600 }] }],
+    AfterAgent: [{ hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.mjs', 'hook --stop --agent gemini'), name: 'yokoten-stop', timeout: 600_000 }] }],
   });
   assert.ok(hasHook(join(sandbox.repo, '.codex', 'hooks.json'), 'Stop', 'hook'), 'no Codex stop check');
   assert.deepEqual(doctorHandAdd((await sandbox.call(['doctor'])).stdout, 'gemini-hook', '.gemini/settings.json'), add);
@@ -2039,33 +2039,38 @@ test('init --no-ci: removes a never-edited old kit workflow, and doctor is quiet
   assert.doesNotMatch((await sandbox.call(['doctor'])).stdout, /kit-workflows/);
 });
 
-test('init: a .gitignore for the worktrees and dependency folders, only adding missing lines (#521, #571)', async () => {
+test('init: a .gitignore for the status file, the worktrees and dependency folders, only adding missing lines (#521, #571, #614)', async () => {
   const sandbox = makeSandbox();
   sandbox.write('package.json', '{"name":"app"}\n');
   let result = await sandbox.call(['init']);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /wrote \.gitignore \(\.worktrees\/, node_modules\/\)/);
-  assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), '.worktrees/\nnode_modules/\n');
+  assert.match(result.stdout, /wrote \.gitignore \(\.yokoten-agent\.json, \.worktrees\/, node_modules\/\)/);
+  assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), '.yokoten-agent.json\n.worktrees/\nnode_modules/\n');
   // Again: nothing changes.
   result = await sandbox.call(['init']);
   assert.match(result.stdout, /kept \.gitignore/);
-  assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), '.worktrees/\nnode_modules/\n');
+  assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), '.yokoten-agent.json\n.worktrees/\nnode_modules/\n');
   // The project's own lines stay, in order; a line that is there in another form counts.
   sandbox.write('.gitignore', '.env\n/node_modules');
   result = await sandbox.call(['init']);
-  assert.match(result.stdout, /added to \.gitignore: \.worktrees\//);
-  assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), '.env\n/node_modules\n.worktrees/\n');
+  assert.match(result.stdout, /added to \.gitignore: \.yokoten-agent\.json, \.worktrees\//);
+  assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), '.env\n/node_modules\n.yokoten-agent.json\n.worktrees/\n');
   sandbox.write('.gitignore', '.env\ncoverage');
   sandbox.write('Cargo.toml', '[package]\nname = "x"\n');
   result = await sandbox.call(['init']);
+  assert.match(result.stdout, /added to \.gitignore: \.yokoten-agent\.json, \.worktrees\/, node_modules\/, target\//);
+  assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), '.env\ncoverage\n.yokoten-agent.json\n.worktrees/\nnode_modules/\ntarget/\n');
+  // A line that is already there is not added again.
+  sandbox.write('.gitignore', '.yokoten-agent.json\n.env\n');
+  result = await sandbox.call(['init']);
   assert.match(result.stdout, /added to \.gitignore: \.worktrees\/, node_modules\/, target\//);
-  assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), '.env\ncoverage\n.worktrees/\nnode_modules/\ntarget/\n');
+  assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), '.yokoten-agent.json\n.env\n.worktrees/\nnode_modules/\ntarget/\n');
 });
 
-test('init: .gitignore holds .worktrees/ even with no package manager (#571)', async () => {
+test('init: .gitignore holds the status file and .worktrees/ even with no package manager (#571, #614)', async () => {
   const sandbox = makeSandbox();
   const result = await sandbox.call(['init']);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /wrote \.gitignore \(\.worktrees\/\)/);
-  assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), '.worktrees/\n');
+  assert.match(result.stdout, /wrote \.gitignore \(\.yokoten-agent\.json, \.worktrees\/\)/);
+  assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), '.yokoten-agent.json\n.worktrees/\n');
 });

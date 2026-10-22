@@ -2,7 +2,7 @@
 
 import '../repo/home.ts';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, lutimesSync, mkdirSync, readFileSync, readlinkSync, readdirSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
@@ -17,18 +17,23 @@ import {
   AGENT_STATUS_FILE,
   bumpDoneTries,
   clearDoneTries,
+  clearRefusedMarker,
   DONE_TRY_LIMIT,
   doneTryKey,
   doneWhenShell,
   guardDeadline,
   isWorkerType,
   judge,
+  noteRefused,
   readDoneWhen,
   readStopFields,
+  refusedMarkerPath,
   runDoneWhen,
   shortenOutput,
   startGuard,
-  writeFailingChecks,
+  wasRefusedRecently,
+  windowsTreeKillArgs,
+  writeAgentChecks,
 } from '../../src/run/hook.ts';
 
 test('hook: blocks with exit 2 and a reason, allows with exit 0', async () => {
@@ -185,7 +190,7 @@ test('hook: a repo reached through a symlink gets the same file rules (#1)', asy
   assert.equal((await call(join(sandbox.home, 'elsewhere.md'))).status, 0, 'outside the repo');
 });
 
-test('done-when: the command comes from the env or the git-folder file; a pass, a fail, and the try count (#614)', () => {
+test('done-when: the command comes from the env or the git-folder file; a pass, a fail, and the try count (#614)', async () => {
   const sandbox = makeSandbox();
   assert.equal(readDoneWhen({}, sandbox.repo), undefined);
   assert.equal(readDoneWhen({ YOKOTEN_DONE_WHEN: '  npm test  ' }, sandbox.repo), 'npm test');
@@ -195,8 +200,8 @@ test('done-when: the command comes from the env or the git-folder file; a pass, 
   assert.equal(doneWhenShell(), process.platform === 'win32' ? 'cmd.exe' : '/bin/sh');
   // `true` and `echo` are sh. On Windows the command is a node script, below.
   if (process.platform !== 'win32') {
-    assert.equal(runDoneWhen('true', sandbox.repo, sandbox.env).ok, true);
-    const failed = runDoneWhen('echo fail-out >&2; exit 1', sandbox.repo, sandbox.env);
+    assert.equal((await runDoneWhen('true', sandbox.repo, sandbox.env)).ok, true);
+    const failed = await runDoneWhen('echo fail-out >&2; exit 1', sandbox.repo, sandbox.env);
     assert.equal(failed.ok, false);
     assert.match(failed.output, /fail-out/);
   }
@@ -215,6 +220,7 @@ test('done-when: the command comes from the env or the git-folder file; a pass, 
   assert.equal(isWorkerType('Worker'), true);
   assert.equal(isWorkerType('yokoten:worker'), true);
   assert.equal(isWorkerType('coworker'), false);
+  assert.equal(isWorkerType('code-worker'), false);
   assert.equal(isWorkerType('my-worker'), false);
   assert.equal(isWorkerType('worker:extra'), false);
   assert.equal(readStopFields({ hook_event_name: 'SubagentStop', agent_type: 'coworker' }).worker, false);
@@ -228,29 +234,120 @@ test('done-when: the command comes from the env or the git-folder file; a pass, 
   clearDoneTries(sandbox.env, key);
   assert.equal(bumpDoneTries(sandbox.env, key), 1);
   assert.equal(readFileSync(join(sandbox.home, '.config', 'yokoten', 'done-tries', key), 'utf8').trim(), '1');
+  const triesDir = join(sandbox.home, '.config', 'yokoten', 'done-tries');
+  const oldCount = join(triesDir, 'old-session');
+  const recentCount = join(triesDir, 'recent-session');
+  writeFileSync(oldCount, '4\n');
+  writeFileSync(recentCount, '2\n');
+  const oldTime = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+  utimesSync(oldCount, oldTime, oldTime);
+  const recentTime = new Date(Date.now() - 60 * 60 * 1000);
+  utimesSync(recentCount, recentTime, recentTime);
+  const oldDir = join(triesDir, 'old-dir');
+  mkdirSync(oldDir);
+  utimesSync(oldDir, oldTime, oldTime);
+  const oldLink = join(triesDir, 'old-link');
+  symlinkSync(recentCount, oldLink);
+  lutimesSync(oldLink, oldTime, oldTime);
+  assert.equal(bumpDoneTries(sandbox.env, 'fresh-session'), 1);
+  assert.equal(existsSync(oldCount), false, 'a count file older than a day is removed');
+  assert.equal(readFileSync(recentCount, 'utf8').trim(), '2', 'a recent count file stays');
+  assert.equal(existsSync(oldDir), true, 'a directory is not a count file');
+  assert.equal(lstatSync(oldLink).isSymbolicLink(), true, 'an old link is not removed');
+  assert.equal(readFileSync(join(triesDir, 'fresh-session'), 'utf8').trim(), '1');
   // A count path that is a folder makes rmSync throw. The hook must still end.
   const blocked = 'task-dir';
   mkdirSync(join(sandbox.home, '.config', 'yokoten', 'done-tries', blocked), { recursive: true });
   assert.doesNotThrow(() => clearDoneTries(sandbox.env, blocked));
 });
 
-test('writeFailingChecks: keeps the other fields, and sets checks and the UTC time (#614)', () => {
+test('writeAgentChecks: keeps other fields, skips a link, and sets checks and the UTC time (#614)', () => {
   const sandbox = makeSandbox();
   const path = join(sandbox.repo, AGENT_STATUS_FILE);
+  const lines: string[] = [];
+  const warn = (line: string) => lines.push(line);
+  const outside = join(sandbox.home, 'outside.json');
+  const outsideText = `${JSON.stringify({ secret: 'keep', checks: 'old' })}\n`;
+  writeFileSync(outside, outsideText);
+  symlinkSync(outside, path);
+  writeAgentChecks(sandbox.repo, 'failing', new Date('2026-10-22T10:00:00.000Z'), warn);
+  assert.equal(readFileSync(outside, 'utf8'), outsideText, 'a link to JSON outside the worktree is not followed');
+  assert.equal(readlinkSync(path), outside);
+  assert.equal(lstatSync(path).isSymbolicLink(), true);
+  assert.deepEqual(lines, [`yokoten: ${AGENT_STATUS_FILE} is not a regular file, so it was left unchanged.\n`]);
+  unlinkSync(path);
+  lines.length = 0;
+  const notes = join(sandbox.home, 'notes.txt');
+  writeFileSync(notes, '# keep\n');
+  symlinkSync(notes, path);
+  writeAgentChecks(sandbox.repo, 'failing', new Date('2026-10-22T10:30:00.000Z'), warn);
+  assert.equal(readFileSync(notes, 'utf8'), '# keep\n', 'a link to a non-JSON file is not followed');
+  assert.equal(lstatSync(path).isSymbolicLink(), true);
+  assert.equal(lines.length, 1);
+  unlinkSync(path);
   writeFileSync(path, `${JSON.stringify({ name: 'worker-1', role: 'engineer', doing: 'the task' })}\n`);
-  writeFailingChecks(sandbox.repo, new Date('2026-10-22T10:00:00.123Z'));
+  writeAgentChecks(sandbox.repo, 'failing', new Date('2026-10-22T10:00:00.123Z'), warn);
   const status = JSON.parse(readFileSync(path, 'utf8')) as { name: string; role: string; doing: string; checks: string; updated: string };
   assert.equal(status.name, 'worker-1');
   assert.equal(status.role, 'engineer');
   assert.equal(status.doing, 'the task');
   assert.equal(status.checks, 'failing');
   assert.equal(status.updated, '2026-10-22T10:00:00Z');
+  assert.equal(lstatSync(path).isFile(), true, 'a normal file still gets checks');
   writeFileSync(path, 'not json');
-  writeFailingChecks(sandbox.repo, new Date('2026-10-22T11:00:00.000Z'));
+  writeAgentChecks(sandbox.repo, 'failing', new Date('2026-10-22T11:00:00.000Z'));
   assert.equal(JSON.parse(readFileSync(path, 'utf8')).checks, 'failing');
   writeFileSync(path, '[]\n');
-  writeFailingChecks(sandbox.repo, new Date('2026-10-22T12:00:00.000Z'));
-  assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { checks: 'failing', updated: '2026-10-22T12:00:00Z' });
+  writeAgentChecks(sandbox.repo, 'passing', new Date('2026-10-22T12:00:00.000Z'));
+  assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { checks: 'passing', updated: '2026-10-22T12:00:00Z' });
+  assert.deepEqual(readdirSync(sandbox.repo).filter((name) => name.endsWith('.tmp')), []);
+});
+
+test('refused marker: the same worker stays recent for 5 minutes (#614)', () => {
+  const sandbox = makeSandbox();
+  const key = 'mark-614';
+  const path = refusedMarkerPath(sandbox.repo, key);
+  assert.equal(path, join(sandbox.repo, '.git', 'yokoten-stop-refused', key));
+  assert.equal(wasRefusedRecently(sandbox.repo, key), false);
+  const now = new Date('2026-10-22T12:00:00.000Z');
+  noteRefused(sandbox.repo, key, now);
+  assert.equal(wasRefusedRecently(sandbox.repo, key, now.getTime()), true);
+  assert.equal(wasRefusedRecently(sandbox.repo, key, now.getTime() + 5 * 60 * 1000), true, 'five minutes is still inside the window');
+  assert.equal(wasRefusedRecently(sandbox.repo, key, now.getTime() + 5 * 60 * 1000 + 1), false, 'past five minutes is a new refusal');
+  assert.equal(wasRefusedRecently(sandbox.repo, key, now.getTime() - 1000), false, 'a marker in the future is not recent');
+  assert.ok(path);
+  writeFileSync(path, 'not a time\n');
+  assert.equal(wasRefusedRecently(sandbox.repo, key), false);
+  clearRefusedMarker(sandbox.repo, key);
+  assert.equal(existsSync(path), false);
+  assert.equal(refusedMarkerPath(join(sandbox.home, 'outside'), key), null);
+  assert.doesNotThrow(() => noteRefused(join(sandbox.home, 'outside'), key));
+});
+
+test('done-when: Windows tree kill uses taskkill /F /T while the shell can still be alive (#614)', () => {
+  assert.deepEqual(windowsTreeKillArgs(4242), ['/F', '/T', '/PID', '4242']);
+});
+
+// The timer must see a live shell. spawnSync's timeout would have killed it first (#614).
+test('done-when: a timeout kills the tree while the shell is still running (#614)', { skip: process.platform === 'win32' && 'the stand-in kill uses a POSIX process group' }, async () => {
+  const sandbox = makeSandbox();
+  let alive = false;
+  const result = await runDoneWhen(`${process.execPath} -e "setInterval(() => {}, 1000)"`, sandbox.repo, sandbox.env, 400, (pid) => {
+    try {
+      process.kill(pid, 0);
+      alive = true;
+    } catch {
+      alive = false;
+    }
+    try {
+      process.kill(-pid, 'SIGKILL');
+    } catch {
+      // The group is already gone.
+    }
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.output, /ran too long/);
+  assert.equal(alive, true, 'the shell was still running when the tree was killed');
 });
 
 // The child ignores SIGHUP and SIGTERM. Only killing its process group stops it before the marker.
@@ -279,7 +376,7 @@ setInterval(() => {}, 1000);
   let parentPid = 0;
   let childPid = 0;
   try {
-    const result = runDoneWhen(command, sandbox.repo, sandbox.env, 8000);
+    const result = await runDoneWhen(command, sandbox.repo, sandbox.env, 8000);
     assert.equal(result.ok, false);
     assert.match(result.output, /ran too long/);
     assert.equal(existsSync(childPidFile), true, 'the child started');

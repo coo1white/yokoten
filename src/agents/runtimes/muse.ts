@@ -49,8 +49,10 @@ const projectHooks = (root: string) => join(root, '.muse', 'hooks.json');
 const at = (cli: string) => `"$(git rev-parse --show-toplevel)/${cli}"`;
 const guardArgs = (root: string, cli: string) =>
   [projectHooks(root), 'PreToolUse', MATCHER, guardCommand(at(cli), 'hook --agent muse', missingProjectRuntime(cli), { isToolCall: true })] as const;
-// Seconds Muse waits for the stop check. A short default would cut the done-when command,
-// and a timed-out hook lets the call run (#614).
+// Seconds Muse Code waits for a settings hook in `.muse/hooks.json`. Its hooks guide
+// says this `timeout` is seconds (default 600). A plugin hook uses `timeoutMs` instead.
+// Muse Code 1.4.11 keeps the two fields apart. A short value would cut the done-when
+// command, and a timed-out hook lets the call run (#614).
 const STOP_TIMEOUT = 600;
 const stopArgs = (root: string, cli: string) =>
   [projectHooks(root), 'Stop', undefined, guardCommand(at(cli), 'hook --stop --agent muse', missingProjectRuntime(cli)), { timeout: STOP_TIMEOUT }] as const;

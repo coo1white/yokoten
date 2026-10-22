@@ -23,8 +23,10 @@ const READ: ReadOptions = { comments: true };
 
 // run_shell_command takes `command`; write_file and replace take `file_path`.
 const SHELL = 'run_shell_command';
-// Seconds Gemini CLI waits for the stop check, including a worker's done-when command (#614).
-const STOP_TIMEOUT = 600;
+// Milliseconds Gemini CLI waits for the stop check. Gemini reads `timeout` in
+// milliseconds (its default is 60000). 600000 is 10 minutes, so the done-when
+// command can finish (#614).
+const STOP_TIMEOUT = 600_000;
 const EDITS = new Set(['write_file', 'replace']);
 
 /** A BeforeTool call, as an Action. Any other tool (read_file, MCP) is neither. */

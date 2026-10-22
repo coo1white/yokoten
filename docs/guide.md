@@ -854,11 +854,13 @@ value.
   when it allows, and `{ blocked: false, toolCall: false }` when stdin is not a tool call.
   The runtimes do not use it: they read the exit code and the reason on stderr, as their
   hook protocols say.
-- `hook --stop --json`: `{ blocked, stop, findings }`. With `stop_hook_active`, or when the
-  check fails, also `skipped`, the reason. When a worker's done-when check fails, also
-  `doneWhen`. After the try limit, `skipped` is `stopped with failing checks`. The same
-  stop writes `checks` as `failing` in `.yokoten-agent.json`. When stdin is not a Stop
-  event: `{ blocked: false, stop: false }`.
+- `hook --stop --json`: `{ blocked, stop, findings }`. For a lead, `stop_hook_active`
+  adds `skipped`, the reason. A worker is still checked when that field is set.
+  When the check itself fails, `skipped` names that too. When a worker's done-when
+  check fails, also `doneWhen`. After the try limit, `skipped` is
+  `stopped with failing checks`. That stop writes `checks` as `failing` in
+  `.yokoten-agent.json` in a linked worktree. A pass there sets `checks` to `passing`.
+  When stdin is not a Stop event: `{ blocked: false, stop: false }`.
 - `explain --json`: `{ found, id, kind, what, why, check, docs, stage, standard }`. For an
   unknown id: `{ id, found: false, ids }`, exit 1. With no id: `{ ids }`, exit 0.
 
@@ -949,7 +951,7 @@ Muse Code and Grok CLI, SubagentStop in Claude Code, and AfterAgent in Gemini CL
 
 ```mermaid
 flowchart LR
-  S["agent ends its turn"] --> U{"subagent, not a worker?"}
+  S["agent ends its turn"] --> U{"subagent, and its type is not a worker?"}
   U -- yes --> N["turn ends, no check"]
   U -- no --> W{"a worker?"}
   W -- no --> A{"already sent back once?"}
@@ -960,7 +962,7 @@ flowchart LR
   W -- yes --> D{"done-when check passes?"}
   D -- yes --> E
   D -- no --> K{"try count saved?"}
-  K -- no --> H{"stop_hook_active?"}
+  K -- no --> H{"stop_hook_active, or refused in the last 5 minutes?"}
   H -- yes --> X["stop allowed; checks still failing"]
   H -- no --> F["one refusal; the next stop is let through"]
   K -- yes --> T{"this try is 1, 2 or 3?"}
@@ -970,9 +972,11 @@ flowchart LR
 
 - It checks the changed files only: staged, not staged, and new files that git does not
   ignore. It uses the privacy, secret and file rules of `check --staged`.
-- A subagent that is not a worker is not checked. Its stop exits 0.
-  A type is a worker only when it is `worker`, or it ends with `:worker`.
-  `coworker` is not a worker. A reviewer, Explore agent or verifier is not checked.
+- A subagent is checked only when its own type is a worker.
+  The parent session's role does not count. A reviewer started by a worker is not checked.
+  Its stop exits 0. A type is a worker only when it is `worker`, or it ends with `:worker`.
+  `coworker` and `code-worker` are not workers. Mark such an agent as `worker`,
+  or use a name that ends with `:worker`. A reviewer, Explore agent or verifier is not checked.
 - For a lead, it sends the agent back once. The agent then sets `stop_hook_active`, and
   the next stop always ends the turn. There is no loop.
 - For a worker, it also runs the task's done-when command. The command comes from
@@ -981,24 +985,30 @@ flowchart LR
   changed-file check is the project's check.
 - The command uses the platform shell. That is `sh` on Linux and macOS, and `cmd.exe`
   on Windows. It may run for two minutes. On a timeout, yokoten stops the command and
-  every program it started.
+  every program it started. On Windows it stops that tree while the shell is still running.
 - A failing check sends the worker back, with the output in short and what to fix.
   The worker gets three tries. On the third, the hook says the next stop is let through.
   The worker's final message to the lead must start with `NOT DONE: checks failing`.
   It must quote the failing output. The task is not done.
-- The allowed stop writes `.yokoten-agent.json` at the git root of the folder the event
-  names. It sets `checks` to `failing` and `updated` to the time in UTC. Other fields
-  stay. The lead and the board read that file. The allowed stop's stderr reaches nobody.
+- The allowed stop writes `.yokoten-agent.json` at the root of a linked worktree.
+  It does not write that file in the main checkout. It sets `checks` to `failing`
+  and `updated` to the time in UTC. A pass sets `checks` to `passing`.
+  Other fields stay. The lead reads that file. The board will show `checks` later,
+  under issue #603. The allowed stop's stderr reaches nobody.
 - When the try count cannot be saved, one refusal says the next stop is let through.
-  `stop_hook_active` then lets the worker stop. A worker is never trapped. The count
-  is cleared when the check passes, and again when the worker is let through. A resumed
-  worker is checked from try 1.
+  The same worker is let through when it was refused in the last 5 minutes.
+  This holds even when the runtime never sets `stop_hook_active`. A worker is never trapped.
+  The count is cleared when the check passes, and again when the worker is let through.
+  A resumed worker is checked from try 1. Count files older than a day are removed
+  when a new count is written.
 - A subagent worker shares the lead's folder and environment. It does not get its own
   `YOKOTEN_DONE_WHEN`. The check runs in the event's folder. It runs in the worker's
   worktree only when the stop event names that worktree.
 - DeepSeek Harness and Antigravity CLI have no stop hook. The lead runs the check.
-- Claude Code, Codex, Muse Code, Gemini CLI and Grok CLI each wait 600 seconds for
-  this hook. That covers the two-minute command.
+- Claude Code, Codex, Muse Code and Grok CLI each wait 600 seconds for this hook.
+  Gemini CLI reads `timeout` in milliseconds, so its hook waits 600000 milliseconds.
+  Each of those is 10 minutes. That covers the two-minute command.
+  Muse Code settings hooks, including `.muse/hooks.json`, also read `timeout` in seconds.
 - It reads no history and uses no network.
 - On an error in yokoten, the turn ends and stderr gets one line.
 - A new file you want to keep out of the check goes in `.gitignore`, or in
@@ -1006,7 +1016,8 @@ flowchart LR
 
 `init` adds the hook to `.claude/settings.json` (Stop and SubagentStop),
 `.codex/hooks.json` (Stop), `.muse/hooks.json` (Stop), `.gemini/settings.json`
-(AfterAgent) and `.grok/hooks/yokoten.json` (Stop). Each of those waits 600 seconds.
+(AfterAgent) and `.grok/hooks/yokoten.json` (Stop). Claude Code, Codex, Muse Code
+and Grok CLI wait 600 seconds. Gemini CLI waits 600000 milliseconds.
 `install` does not add it at user level: it
 reads files, so each project turns it on, as with the file rules of the tool-call hook.
 
@@ -1499,7 +1510,8 @@ The setup treats agents like staff on a line, each with a clear role and limited
   They never push. A fix task also gets `YOKOTEN_FIX_TASK=1`. Then the guard and the
   commit check stop a change to a test file. The stop hook runs the brief's done-when
   command. After three refusals the worker may stop. Its message to the lead starts with
-  "NOT DONE: checks failing". `.yokoten-agent.json` records `checks` as `failing`.
+  "NOT DONE: checks failing". In a linked worktree, `.yokoten-agent.json` records `checks`.
+  The lead reads that file. The board will show `checks` later.
 - **The bot** is a GitHub App installed on the repo. It opens pull requests. If it has
   the Workflows permission, CODEOWNERS still sends every CI change to you, and a release
   waits for you in the protected `release` environment. A ruleset requires your review,
