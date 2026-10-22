@@ -296,9 +296,11 @@ endpoint and model.
 
 ## Works with
 
-yokoten guards eight AI coding agents with the same rules. Each "yes" below is a real
-run: the agent tried `git push --tags` in a throwaway repo, and the guard stopped it.
-Docs are not proof.
+yokoten guards eight AI coding agents with the same rules. This table is the one list of
+them and how well each is covered. Each "yes" below is a real run: the agent tried
+`git push --tags` in a throwaway repo, and the guard stopped it. "Not run end to end"
+means the agent is listed, but its guard is not verified end to end yet. Docs are not
+proof.
 
 | Agent | Hook file (`init` writes it) | How it blocks | Verified | Caveats |
 |---|---|---|---|---|
