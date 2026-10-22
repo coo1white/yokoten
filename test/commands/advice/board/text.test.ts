@@ -11,6 +11,7 @@ const agent = (fields: Partial<AgentView>): AgentView => ({ key: '', name: 'a', 
 test('board text: needs, agents, pulls and worktrees in plain words; a part that cannot be read says why', () => {
   const board: BoardData = {
     repo: '/repo',
+    repoUrl: '',
     agents: [
       agent({ key: '/repo/.worktrees/601', name: 'worker-1', vendor: vendorOf('claude-code'), role: 'engineer', task: 'issue 601', doing: 'writing tests', age: '2 min ago' }),
       agent({ name: 'Calm', vendor: vendorOf('grok'), dot: 'waiting', doing: 'asks to add a package' }),
@@ -45,7 +46,7 @@ test('board text: needs, agents, pulls and worktrees in plain words; a part that
     '- /repo (main)',
     '- /repo/.worktrees/601',
   ]);
-  assert.deepEqual(renderBoardText({ repo: '/repo', agents: [], needs: [], pulls: 'gh failed', merged: [], worktrees: 'git failed', updated: '' }), [
+  assert.deepEqual(renderBoardText({ repo: '/repo', repoUrl: '', agents: [], needs: [], pulls: 'gh failed', merged: [], worktrees: 'git failed', updated: '' }), [
     'yokoten board: /repo',
     '0 agents, 0 open pull requests, 0 worktrees.',
     '',

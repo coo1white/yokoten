@@ -1,7 +1,7 @@
 // What the board shows (#603): the agents, what needs the owner, and each pull request's
 // steps. Plain data built on the server, so the page, `--text` and the tests read the same.
 
-import { type BoardPull, type Gh, readBoardPulls, repoOf } from '../../../host/github.ts';
+import { type BoardPull, type Gh, readBoardPulls, repoOf, repoPageOf } from '../../../host/github.ts';
 import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
 import { readOriginUrl } from '../../../setup/plan.ts';
@@ -101,6 +101,9 @@ export interface NeedView {
 export const PULL_STEPS = ['Built', 'Checked', 'You', 'Merged'] as const;
 export type StepMark = 'done' | 'now' | 'fail' | 'skip' | '';
 
+/** Where a pull request is, as a word the page can say in each language. */
+export type PullStatus = 'building' | 'failed' | 'running' | 'unchecked' | 'changes' | 'approve' | 'ready';
+
 /** One open pull request as the page shows it. */
 export interface PullView {
   number: number;
@@ -110,7 +113,8 @@ export interface PullView {
   branch: string;
   tier: BoardPull['tier'];
   steps: StepMark[];
-  /** The current step in words, and whether it is moving, failed, or ready. */
+  /** The current step, as a word and in English, and whether it is moving, failed, or ready. */
+  status: PullStatus;
   label: string;
   tone: 'now' | 'fail' | 'ok';
 }
@@ -132,14 +136,14 @@ function webUrl(url: string): string {
 export function pullView(pull: BoardPull): PullView {
   const you: StepMark = pull.tier === 'A' ? '' : 'skip';
   const base = { number: pull.number, title: pull.title, url: webUrl(pull.url), branch: pull.branch, tier: pull.tier };
-  const at = (steps: StepMark[], label: string, tone: PullView['tone']): PullView => ({ ...base, steps, label, tone });
-  if (pull.stage === 'draft') return at(['now', '', you, ''], 'Being built', 'now');
-  if (pull.checks === 'fail') return at(['done', 'fail', you, ''], 'Checks failed', 'fail');
-  if (pull.checks === 'running') return at(['done', 'now', you, ''], 'Checks running', 'now');
-  if (pull.checks === 'none') return at(['done', 'now', you, ''], 'No checks yet', 'now');
-  if (pull.tier === 'A' && pull.review === 'changes') return at(['done', 'done', 'fail', ''], 'Changes asked', 'fail');
-  if (pull.tier === 'A' && pull.review !== 'approved') return at(['done', 'done', 'now', ''], 'Your Approve', 'now');
-  return at(['done', 'done', pull.tier === 'A' ? 'done' : 'skip', 'now'], 'Ready to merge', 'ok');
+  const at = (steps: StepMark[], status: PullStatus, label: string, tone: PullView['tone']): PullView => ({ ...base, steps, status, label, tone });
+  if (pull.stage === 'draft') return at(['now', '', you, ''], 'building', 'Being built', 'now');
+  if (pull.checks === 'fail') return at(['done', 'fail', you, ''], 'failed', 'Checks failed', 'fail');
+  if (pull.checks === 'running') return at(['done', 'now', you, ''], 'running', 'Checks running', 'now');
+  if (pull.checks === 'none') return at(['done', 'now', you, ''], 'unchecked', 'No checks yet', 'now');
+  if (pull.tier === 'A' && pull.review === 'changes') return at(['done', 'done', 'fail', ''], 'changes', 'Changes asked', 'fail');
+  if (pull.tier === 'A' && pull.review !== 'approved') return at(['done', 'done', 'now', ''], 'approve', 'Your Approve', 'now');
+  return at(['done', 'done', pull.tier === 'A' ? 'done' : 'skip', 'now'], 'ready', 'Ready to merge', 'ok');
 }
 
 /** What needs the owner: each tier A pull request ready for an Approve, then each agent waiting for an answer. */
@@ -178,6 +182,8 @@ function agentView({ agent, tree }: FoundAgent, env: Env, now: number): AgentVie
 export interface BoardData {
   /** The repo root the board runs in, with `~` for home. */
   repo: string;
+  /** The repo's web page when it has a GitHub remote, else ''. */
+  repoUrl: string;
   agents: AgentView[];
   needs: NeedView[];
   pulls: PullView[] | string;
@@ -196,6 +202,7 @@ export function collectBoard(root: string, env: Env, gh: Gh, now: number = Date.
   const rows = typeof pulls === 'string' ? [] : pulls;
   return {
     repo: hideHome(root, env),
+    repoUrl: remote ? repoPageOf(remote) : '',
     agents,
     needs: needsOf(agents, rows),
     pulls: typeof pulls === 'string' ? pulls : rows.filter((pull) => pull.stage === 'open' || pull.stage === 'draft').map(pullView),

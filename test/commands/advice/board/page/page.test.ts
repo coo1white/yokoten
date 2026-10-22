@@ -1,9 +1,9 @@
 // Tests for src/commands/advice/board/page.ts.
 
-import '../../../repo/home.ts';
+import '../../../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { boardPage, boardScript } from '../../../../src/commands/advice/board/page.ts';
+import { boardPage, boardScript } from '../../../../../src/commands/advice/board/page/page.ts';
 
 /** The ways a page script can turn text into HTML or code. Agents write the board's text, so none may appear. */
 function findUnsafeSinks(source: string): string[] {

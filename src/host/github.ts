@@ -134,6 +134,11 @@ export function repoOf(remote: string): string | null {
   return remote.trim().match(/github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/)?.[1] ?? null;
 }
 
+/** The web page of `owner/name`. */
+export function repoPageOf(repo: string): string {
+  return `https://github.com/${repo}`;
+}
+
 // The title a gh command sets is read in rules/pr.ts, where the guard reads it too (#391).
 export { type BotProgram, botProgram, type CommandTitle, readCommandTitle, type UnreadableTitle } from '../rules/pr.ts';
 

@@ -1512,6 +1512,10 @@ The page has three columns:
 - **Right:** the pull requests, each as four steps: Built, Checked, You (tier A only),
   Merged. Today's merged ones are listed below.
 
+The top bar has the language (English, 简体中文, 繁體中文 or 日本語; it starts in your
+browser's language), a link to the repo on GitHub, and light or dark. What agents write
+shows as they wrote it.
+
 The page refreshes every 15 seconds and works on a phone too. Stop the command with Ctrl-C.
 It only shows; to talk to an agent, use its own terminal for now.
 

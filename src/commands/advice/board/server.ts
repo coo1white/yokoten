@@ -13,7 +13,7 @@ import { type Env } from '../../../rules/config.ts';
 import { type Invocation, parse, print, requireRoot, usage } from '../../shared.ts';
 import { BOARD_READ_TIMEOUT_MS } from './agents.ts';
 import { feedsJson, makeFeedStore, recordFeed } from './feed.ts';
-import { boardPage, BOARD_REFRESH_SECONDS } from './page.ts';
+import { boardPage, BOARD_REFRESH_SECONDS } from './page/page.ts';
 import { renderBoardText } from './text.ts';
 import { type BoardData, collectBoard } from './view.ts';
 
