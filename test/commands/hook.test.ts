@@ -509,9 +509,13 @@ test('worker mark: a marked worktree is a worker for every agent; the plain ways
   // The lead in the main checkout, with no mark, is not affected.
   const lead = (toolInput: Record<string, string>) => muse(toolInput, sandbox.repo);
   assert.equal((await lead({ path: join(sandbox.repo, 'AGENTS.md') })).status, 0);
-  for (const command of ['git push -u origin task', `git worktree remove ${tree}`, 'gh api -X PUT repos/a/b/pulls/1/merge', 'git -c alias.p=push p', 'chmod 000 .gi?']) {
+  for (const command of ['git push -u origin task', `git worktree remove ${tree}`, 'gh api -X PUT repos/a/b/pulls/1/merge', 'chmod 000 .gi?']) {
     assert.equal((await lead({ command })).status, 0, command);
   }
+  // An alias is refused for the lead too: the guard never reads a hidden command as safe (#560).
+  result = await lead({ command: 'git -c alias.p=push p' });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /run the full command instead/i);
   // The way back: removing the worktree removes the mark.
   sandbox.git('worktree', 'remove', '--force', tree);
   assert.ok(!existsSync(mark));
