@@ -81,6 +81,13 @@ test('layout: changes/ may grow, since a release empties it (#132)', () => {
   assert.equal(checkLayout(changes.map((file) => `docs/${file}`), DEFAULTS).length, 1, 'only the changes/ folder at the root');
 });
 
+test('layout: .worktrees/ is skipped, whole checkouts and all (#571)', () => {
+  const trees = [...Array.from({ length: 12 }, (_, i) => `.worktrees/${i}-x/AGENTS.md`), ...many('.worktrees/571-x/src')];
+  assert.deepEqual(checkLayout(trees, DEFAULTS), []);
+  // A miss by one letter still counts.
+  assert.equal(checkLayout(many('worktrees'), DEFAULTS).length, 1);
+});
+
 test('build output: build folders and binaries are refused, images, fonts and allowed paths pass (#56)', () => {
   const files = (...paths: string[]) => paths.map((path) => ({ path, binary: !/\.(js|ts|md|svg)$/.test(path) }));
   const problems = checkBuildOutput(files('dist/app.js', 'pkg/build/x.js', 'out/a.md', 'tool.exe', 'lib.wasm', 'data.bin'), DEFAULTS);

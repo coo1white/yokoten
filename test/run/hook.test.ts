@@ -43,6 +43,14 @@ test('hook: blocks with exit 2 and a reason, allows with exit 0', async () => {
   assert.equal((await sandbox.call(['hook'], { input: 'not json' })).status, 0);
 });
 
+test('hook: a worker edit under .worktrees/<issue>/ reads from that worktree (#571)', () => {
+  const sandbox = makeSandbox();
+  const options = { root: sandbox.repo, config: DEFAULTS, env: { YOKOTEN_ROLE: 'worker' }, cwd: sandbox.repo };
+  assert.equal(judge({ paths: ['.worktrees/571-x/AGENTS.md'], worker: false }, options)?.id, 'lead-only');
+  assert.equal(judge({ paths: ['.worktrees/571-x/src/a.ts'], worker: false }, options), null, 'other files pass');
+  assert.equal(judge({ paths: ['.worktrees/571-x/AGENTS.md'], worker: false }, { ...options, env: {} }), null, 'the lead passes');
+});
+
 // #408: the hook starts the guard's worker before it reads the call, so the two overlap.
 test('hook: a guard started before the call judges it as judge does; one never used lets the process end (#408)', async () => {
   const action = { command: 'git push --tags', paths: [], worker: false };
