@@ -21,20 +21,21 @@ We refuse.
 
 ## 1. A prompt is a wish. A guard is a law.
 
-Asking an agent to behave is not control. yokoten checks every command before it
-runs. If it breaks the rules, it does not run. The same law holds in Claude Code,
-Codex, Copilot, Antigravity, Muse Code, DeepSeek and Grok. No agent gets a pass.
+Asking an agent to behave is not control. yokoten checks each action before it
+runs. If it breaks the rules, it does not run. The same rules run in seven agents
+today, from Claude Code and Codex to Muse Code and Grok, each one proven by a real
+run. No agent gets a pass.
 
 ## 2. No model grades its own homework.
 
 One vendor writes. Another vendor reviews. In our own repo, Grok read code that
-Claude wrote and caught two bugs that had to be fixed before it merged. A team of
+Claude wrote and caught two bugs that had to be fixed before the code could merge. A team of
 one model is a team with one set of blind spots.
 
 ## 3. The human signs.
 
-Agents do the work. You make the calls. Merges, releases, money, anything that can't
-be undone: one signature, and it is yours.
+Agents do the work. You make the calls. A change to the rules themselves, a release,
+anything that can't be undone: it waits for one signature, and it is yours.
 
 ## 4. One person, a whole company.
 
@@ -50,8 +51,8 @@ on every machine you own, all under the same rules. A fleet, and one law for all
 ## 6. What one project learns, every project gets.
 
 *Yokoten* (横展) is a word from Toyota's factories: a fix found on one line goes to
-every line. A mistake one agent makes once becomes a check that stops every agent,
-in every project, from making it again.
+every line. A mistake one agent makes once becomes a check, and yokoten offers that
+check to every project, so the next agent is stopped before it makes the same mistake.
 
 ## 7. A gift to the world.
 
