@@ -896,7 +896,21 @@ export function isInsideProject(entry: string, root: string, env: Env): boolean 
     try {
       return realpathSync(dir);
     } catch {
-      return resolve(dir);
+      // A root need not exist yet: resolve the nearest parent that does, then
+      // re-append the rest, so a symlinked parent (/tmp on macOS) still compares.
+      const rest: string[] = [];
+      let parent = resolve(dir);
+      for (;;) {
+        const next = dirname(parent);
+        if (next === parent) return parent;
+        rest.unshift(parent.slice(next.length + (next.endsWith(sep) ? 0 : sep.length)));
+        parent = next;
+        try {
+          return join(realpathSync(parent), ...rest);
+        } catch {
+          // Keep climbing.
+        }
+      }
     }
   };
   const inside = (dir: string, parent: string): boolean => dir === parent || dir.startsWith(`${parent}${sep}`);
