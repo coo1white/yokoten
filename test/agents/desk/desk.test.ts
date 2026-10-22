@@ -157,3 +157,18 @@ test('proxyEnv: every proxy name in both cases, and Node told to read them', () 
   assert.equal(names.NODE_USE_ENV_PROXY, '1');
   assert.equal(names.NO_PROXY, '');
 });
+
+test('planDesk: on a team, the team folder read-only, only the own outbox writable, the desk file locked (#674)', () => {
+  const { projects, desk } = makeDesk();
+  const team = join(projects, 'origin.team');
+  const plan = planDesk({ runtime: 'grok', desk, command: ['node', '--model', 'grok-4.7'], env: env(), markDesk: (folder) => markWorktree(join(projects, 'origin'), folder, gitEnv()), team: { folder: team, name: 'g1' } });
+  assert.ok(plan.readable.includes(team));
+  assert.ok(plan.state.includes(join(team, 'outbox', 'g1.jsonl')));
+  assert.ok(!plan.state.some((path) => path === team || path === join(team, 'outbox')), 'the team folder itself is not writable');
+  assert.ok(plan.locked.includes(join(desk, '.git', 'yokoten-desk.json')));
+  assert.match(readFileSync(join(team, 'agents', 'g1.json'), 'utf8'), /"model": "grok-4.7"/);
+  // Without a team, an old desk file goes: the agent has no name on a team.
+  planDesk({ runtime: 'grok', desk, command: ['node'], env: env(), markDesk: (folder) => markWorktree(join(projects, 'origin'), folder, gitEnv()) });
+  assert.ok(!readdirSync(join(desk, '.git')).includes('yokoten-desk.json'));
+  assert.throws(() => planDesk({ runtime: 'grok', desk, command: ['node'], env: env(), markDesk: (folder) => markWorktree(join(projects, 'origin'), folder, gitEnv()), team: { folder: projects, name: 'g1' } }), /would open a hidden folder or the desk/);
+});

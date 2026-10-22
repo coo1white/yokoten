@@ -1220,6 +1220,28 @@ export function checkWorkerMarkEdit(path: string, folder?: string, env: Env = {}
   return null;
 }
 
+/**
+ * A worker's edit inside a team folder (#674): `<repo>.team/{agents,outbox,lead}`, next to a
+ * checkout named `<repo>`. Outside a desk nothing else fences it, and an edit there would
+ * speak for another agent. A desk's agent sends with `yokoten msg send`. Any other folder
+ * whose name ends in `.team` is not a team folder.
+ */
+export function checkTeamEdit(path: string): Finding | null {
+  for (const form of new Set([resolve(path), realPath(path)])) {
+    const parts = form.split(sep);
+    for (let at = 1; at + 1 < parts.length; at++) {
+      const name = parts[at];
+      if (!name.toLowerCase().endsWith('.team') || name.length <= '.team'.length || !TEAM_PARTS.has(parts[at + 1].toLowerCase())) continue;
+      const checkout = [...parts.slice(0, at), name.slice(0, -'.team'.length), '.git'].join(sep) || sep;
+      if (existsSync(checkout)) return finding('lead-only', 'this edit is inside a team folder (<repo>.team), where the agents\' messages and the roster are kept', 'send with `yokoten msg send <to> <text>` from a desk, or report to the lead');
+    }
+  }
+  return null;
+}
+
+// The parts of a team folder (agents/desk/team/team.ts).
+const TEAM_PARTS = new Set(['agents', 'outbox', 'lead']);
+
 // Cancelling a run, an alias, and a command the host did not ship (#650). The host adapter
 // owns the command names, the routes and the finding text. Both roles hear it before the
 // worker's own send rule: the fix is to ask the owner, and the lead cannot do it either.
@@ -1229,6 +1251,10 @@ export interface HostCommands {
   hostRunRemoval(words: string[]): Finding | undefined;
   hostAlias(words: string[]): Finding | undefined;
   hostHiddenCommand(words: string[]): Finding | undefined;
+  /** A gh command that prints its token (#668). */
+  hostTokenReveal(words: string[]): Finding | undefined;
+  /** A gh command that turns a workflow off (#668). */
+  hostWorkflowOff(words: string[]): Finding | undefined;
 }
 
 /** The host adapter's checks, once it has loaded. Until then a `gh` command is refused, never let through. */
@@ -1254,6 +1280,14 @@ function hostAlias(words: string[]): Finding | null {
 
 function hostHiddenCommand(words: string[]): Finding | null {
   return hostCommands?.hostHiddenCommand(words) ?? null;
+}
+
+function hostTokenReveal(words: string[]): Finding | null {
+  return hostCommands?.hostTokenReveal(words) ?? null;
+}
+
+function hostWorkflowOff(words: string[]): Finding | null {
+  return hostCommands?.hostWorkflowOff(words) ?? null;
 }
 
 // ---- What a worker sends (#555) ----
@@ -1431,6 +1465,8 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
   // A download piped into a shell runs code nobody read (#560).
   const piped = checkPipeToShell(command);
   if (piped) return piped;
+  const token = checkTokenUse(command, commands);
+  if (token) return token;
   // Rules that refuse any form of a setting or a write (#361, #664). They answer after the
   // rest, which name the case more exactly; the first one found is kept.
   let later: Finding | null = null;
@@ -1444,6 +1480,7 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
       hostRunRemoval(words) ??
       hostAlias(words) ??
       hostHiddenCommand(words) ??
+      hostWorkflowOff(words) ??
       // A worker hears its own rule first: what it may not send, its own unmark, and the git folder (#555, #566).
       (env.YOKOTEN_ROLE === 'worker' ? (checkWorkerSends(words) ?? checkWorkerUnmark(words) ?? checkWorkerWrites(words, { folder: postCwd, near: nearCwd, command, env })) : null) ??
       // An alias runs another command under a new name: refused, not parsed (#560).
@@ -1686,9 +1723,10 @@ function isDefaultBranch(name: string, dir: string | null, env: Env): boolean {
 }
 
 const PIPE_SHELL_FIX = 'save it first (`curl -fsSL <url> -o <file>`), read it, then run it (`sh <file>`)';
-const DOWNLOAD_PROGRAMS = new Set(['curl', 'wget']);
+// A download written to a pipe: curl and wget, plus wget2, aria2c and fetch (#574).
+const DOWNLOAD_PROGRAMS = new Set(['curl', 'wget', 'wget2', 'aria2c', 'fetch']);
 
-/** A pipeline that feeds a download into a shell runs code nobody read. */
+/** A pipeline that feeds a download into a shell runs code nobody read (#560, #574). */
 function checkPipeToShell(command: string): Finding | null {
   for (const pipeline of splitPipelines(command)) {
     const segments = splitPipeSegments(pipeline);
@@ -1697,15 +1735,71 @@ function checkPipeToShell(command: string): Finding | null {
     // linear time. A shell in the first segment has nothing before it, so it passes.
     let downloader: string | undefined;
     for (const segment of segments) {
-      const programs = commandWords(segment).flatMap(findPrograms).map(programName);
-      const shell = programs[0] ?? '';
-      if ((shell === 'powershell' || isShell(shell)) && downloader !== undefined) {
+      const commands = commandWords(segment);
+      const programs = commands.flatMap(findPrograms).map(programName);
+      const shell = findPipeShell(programs, commands);
+      if (shell !== undefined && downloader !== undefined) {
         return finding('pipe-to-shell', `\`${downloader} | ${shell}\` runs a download without letting you read it first`, PIPE_SHELL_FIX);
       }
-      downloader ??= programs.find((program) => DOWNLOAD_PROGRAMS.has(program));
+      downloader ??= programs.find((program) => DOWNLOAD_PROGRAMS.has(program.toLowerCase()));
     }
   }
   return null;
+}
+
+/** The program that would run this segment, when that program is a shell. Case is folded here only (#574). */
+function findPipeShell(programs: string[], commands: string[][]): string | undefined {
+  const first = programs[0];
+  if (first !== undefined && isPipeShell(first)) return first;
+  // A nested `$(sudo -s)` belongs to the outer program. That program reads the pipe.
+  for (const words of outerCommands(commands)) {
+    const shell = findShellRunner(words);
+    if (shell !== undefined) return shell;
+  }
+  return undefined;
+}
+
+/** The segment's own commands. A list whose text sits in one word of another list belongs to that command. */
+function outerCommands(commands: string[][]): string[][] {
+  spend(commands.length);
+  return commands.filter((words, index) => {
+    const text = words.join(' ');
+    return text !== '' && !commands.some((other, otherIndex) => otherIndex !== index && other.some((word) => word.includes(text)));
+  });
+}
+
+/** Whether `name` is a shell. `powershell` stays beside `isShell`, which names `pwsh` (#574). */
+function isPipeShell(name: string): boolean {
+  const folded = name.toLowerCase();
+  return folded === 'powershell' || isShell(folded);
+}
+
+/**
+ * `sudo -s`, `sudo -i` or `doas -s` reads stdin as a shell when no program follows.
+ * The flag meaning is `RUNNERS`. A later program is that program, so `sudo tee` passes.
+ */
+function findShellRunner(words: string[]): string | undefined {
+  spend(words.length);
+  let index = skipPrefix(words, 0);
+  while (index < words.length) {
+    if (HEADS.has(words[index])) return undefined;
+    const name = programName(words[index]);
+    const folded = name.toLowerCase();
+    if (!Object.hasOwn(LAUNCHERS, folded)) return undefined;
+    const launcher = LAUNCHERS[folded];
+    const shellFlag = folded === 'sudo' || folded === 'doas' ? RUNNERS[folded] : null;
+    index++;
+    let readsShell = false;
+    while (index < words.length && words[index].startsWith('-')) {
+      if (shellFlag !== null && shellFlag.test(words[index])) readsShell = true;
+      index += launcher.options.includes(words[index]) ? 2 : 1;
+    }
+    index += launcher.operands ?? 0;
+    // A redirect names a file. `sudo -s > saved` still reads the pipe as a shell.
+    while (index < words.length && redirectLength(words, index) > 0) index += redirectLength(words, index);
+    if (readsShell && index >= words.length) return name;
+  }
+  return undefined;
 }
 
 /** The command's pipelines: cut at ; && || and line ends, outside quotes and groups. */
@@ -4676,4 +4770,105 @@ function rough(text: string): string[][] {
     .split(/[;|&()\r\n]+/)
     .map((s) => s.trim().split(/\s+/).filter(Boolean))
     .filter((words) => words.length > 0);
+}
+
+// gh's token can do all that the guard stops in gh: with it, curl or a script calls the host
+// itself (#659, #668). No agent needs to see it, since gh and `yokoten bot` use it without
+// showing it. So, for every agent, the guard refuses the plain ways to print or send it:
+// gh's own commands that print it, a gh alias (which can run them under another name), the
+// token's variables, git's and the system's credential stores, and settings that make the
+// bot's gh or git run another program in the bot's environment, which holds the token.
+// It reads characters, not code: a script written and then run, or one that reads gh's
+// files itself, gets past (guide: What it doesn't do).
+
+const TOKEN_FIX = 'run gh itself, or `yokoten bot -- gh …`, which use the token without showing it; `gh auth status` says whether gh is signed in';
+// The names, with a way around a refusal that only mentions one.
+const NAME_FIX = `${TOKEN_FIX}. To write the name in a post, put the text in a body file; to search for it, leave out the \`$\` (\`rg GH_TOKEN\`)`;
+const BOT_FIX = 'run the bot\'s gh or git with no settings in front and no `-c`; a pager, an editor or a credential helper would run in the bot\'s environment, which holds its token';
+
+const TOKEN_NAMES = 'GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN';
+// `$GH_TOKEN`, `${GH_TOKEN}`, `${GH_TOKEN:-x}`, `${#GH_TOKEN}`, `${!GH_TOKEN}`, in any quotes.
+const TOKEN_VARIABLE = new RegExp(String.raw`\$\{?[#!]?(?:${TOKEN_NAMES})(?!\w)`);
+// PowerShell's `$env:GH_TOKEN` and cmd's `%GH_TOKEN%`. Windows names ignore case.
+const WINDOWS_VARIABLE = new RegExp(String.raw`\$env:(?:${TOKEN_NAMES})(?!\w)|%(?:${TOKEN_NAMES})%`, 'i');
+const TOKEN_NAME = new RegExp(String.raw`(?<!\w)(?:${TOKEN_NAMES})(?!\w)`);
+// Programs that run the code they are given, or print a variable by name: `process.env.GH_TOKEN`
+// in `node -e` reads the token. A shell is left out: the guard reads `bash -c` text as commands.
+const READS_ENV = /^(python[\d.]*|node|nodejs|deno|bun|tsx|ts-node|perl|ruby|php|lua|osascript|pwsh|powershell|printenv|awk|gawk|mawk|jq|Rscript|tclsh|java)$/;
+// Git prints the Authorization header in a trace only when this is turned off.
+const TRACE_UNREDACTED = /(?<!\w)GIT_TRACE_REDACT=(?!["']?(?:1|true|yes|on)(?:["'\s;&|)]|$))/i;
+// Git settings in the environment: they reach the bot's git, which keeps the variables it is given.
+const GIT_CONFIG_VARIABLE = /(?<!\w)GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+|PARAMETERS|GLOBAL|SYSTEM)=/;
+// The files gh and git keep a login in, as plain text.
+const CREDENTIAL_FILE = /(?:^|[\\/])(?:\.git-credentials|gh[\\/]hosts\.ya?ml)$/;
+const shows = (what: string, fix = TOKEN_FIX) => finding('gh-token', what, fix);
+
+/** The keys git's `-c key=value` and `--config-env key=VAR` set before git's command, in lower case. */
+function gitSettings(args: string[]): string[] {
+  const keys: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const word = args[index];
+    if (!word.startsWith('-')) break;
+    let setting: string | undefined;
+    if (word === '-c' || word === '--config-env') setting = args[++index];
+    else if (word.startsWith('--config-env=')) setting = word.slice('--config-env='.length);
+    else if (word.startsWith('-c')) setting = word.slice(2);
+    else if (GIT_VALUE_OPTIONS.has(word)) index++;
+    if (setting !== undefined) keys.push(setting.split('=')[0].toLowerCase());
+  }
+  return keys;
+}
+
+/** Where the bot's command starts in the words (`yokoten bot -- git …`), or -1. */
+const botAt = (words: string[]) => {
+  const at = words.findIndex((word, index) => word === 'bot' && words[index + 1] === '--');
+  return at === -1 ? -1 : at + 2;
+};
+
+/** For every agent: a command that shows gh's token, or lets a program take it, or null. */
+function checkTokenUse(command: string, commands: string[][]): Finding | null {
+  if (TOKEN_VARIABLE.test(command) || WINDOWS_VARIABLE.test(command)) {
+    return shows("the command expands gh's token from the environment, so it can reach the host around the guard", NAME_FIX);
+  }
+  if (TRACE_UNREDACTED.test(command)) return shows('GIT_TRACE_REDACT turned off makes a git trace print the token git sends');
+  const bot = commands.some((words) => botAt(words) !== -1);
+  if (bot && GIT_CONFIG_VARIABLE.test(command)) return shows('git settings in the environment reach the bot\'s git, and can run a program where the bot\'s token is', BOT_FIX);
+  for (const raw of commands) {
+    // A here-string is read as a command of its own: `bash <<< 'gh auth token'`.
+    const words = raw[0] === '<<<' ? raw.slice(1) : raw;
+    const names = words.map(programName);
+    const runner = names.find((name) => READS_ENV.test(name));
+    if (runner && words.some((word) => TOKEN_NAME.test(word))) return shows(`\`${runner}\` is given the name of gh's token, so it can read the token and reach the host around the guard`, NAME_FIX);
+    if (words.some((word) => CREDENTIAL_FILE.test(word))) return shows('the command names a file where gh or git keeps a login as plain text');
+    const reached = checkCredentialStores(words, names) ?? checkTokenGit(words) ?? hostTokenReveal(words);
+    if (reached) return reached;
+  }
+  return null;
+}
+
+/** The system's password stores and git's credential helpers, asked for a password. */
+function checkCredentialStores(words: string[], names: string[]): Finding | null {
+  const at = (name: string) => names.indexOf(name);
+  const security = at('security');
+  if (security !== -1 && /^find-(internet|generic)-password$/.test(words[security + 1] ?? '') && words.some((word) => /^-[a-zA-Z]*[wg]$/.test(word))) {
+    return shows('`security find-…-password -w` prints a password from the keychain, where gh may keep its token');
+  }
+  const secretTool = at('secret-tool');
+  if (secretTool !== -1 && words[secretTool + 1] === 'lookup') return shows('`secret-tool lookup` prints a password from the keyring, where gh may keep its token');
+  if (names.some((name) => name.startsWith('git-credential')) && words.includes('get')) return shows('a git credential helper with `get` prints the password it keeps, which may be gh\'s token');
+  return null;
+}
+
+/** git: a credential read, a credential helper set with `-c`, and any setting given to the bot's git. */
+function checkTokenGit(words: string[]): Finding | null {
+  const at = words.findIndex(isGit);
+  if (at === -1) return null;
+  const args = withoutShellRedirects(words, at + 1);
+  const keys = gitSettings(args);
+  if (at === botAt(words) && keys.length) return shows(`\`-c ${keys[0]}\` on the bot's git can run a program where the bot's token is`, BOT_FIX);
+  if (keys.some((key) => key.startsWith('credential.'))) return shows('a credential helper set with `-c` runs a program that gets git\'s login');
+  const [sub, action] = plainArgs(args, [...GIT_VALUE_OPTIONS]);
+  if (sub === 'credential' && action === 'fill') return shows("`git credential fill` prints the password git keeps for a host, which is gh's token when gh signs git in");
+  if (sub?.startsWith('credential-') && args.includes('get')) return shows(`\`git ${sub} get\` prints the password it keeps, which may be gh's token`);
+  return null;
 }

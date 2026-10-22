@@ -11,7 +11,7 @@ import module from 'node:module';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 import { type Config, DEFAULTS, type Env, type IgnoredPart, loadConfig } from '../rules/config.ts';
-import { checkCommand, checkEdit, checkWorkerMarkEdit, configFolder, gitLinkAbove, realPath as real } from '../rules/guards.ts';
+import { checkCommand, checkEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, gitLinkAbove, realPath as real } from '../rules/guards.ts';
 import { type Finding, finding } from '../rules/message.ts';
 import { findEnvironmentValues, makeSecretHider, SECRET } from '../rules/secrets.ts';
 
@@ -211,8 +211,9 @@ export function windowsTreeKillArgs(pid: number): string[] {
 
 /**
  * Stop `pid` and the programs it started: the process group on POSIX, the tree on Windows.
- * Call it while the shell is still running. `spawnSync`'s own timeout kills `cmd.exe` first,
- * and `taskkill /T` then finds no tree (#614).
+ * On POSIX the group remains after the shell exits, so a kill then still stops what it
+ * left behind (#641). On Windows, `taskkill /T` finds the tree only while the shell is
+ * still running. `spawnSync`'s timeout kills `cmd.exe` first, and the tree would stay (#614).
  */
 function killCommandTree(pid: number): void {
   try {
@@ -396,8 +397,9 @@ export function shortenOutput(text: string, env: Env = {}): string {
  * The command is started with `spawn`, and a timer in this process stops it. That timer
  * runs while the shell is still alive. On Windows it calls `taskkill /F /T /PID` then.
  * `spawnSync`'s timeout would have killed `cmd.exe` first, and the tree would stay (#614).
- * When the shell exits, the check ends on that result. A short wait collects the last
- * output, then the pipes are dropped. A program that left the group cannot hold the
+ * When the shell exits, programs still in its group are stopped the same way. The check
+ * ends on the shell's own result. A short wait collects the last output, then the pipes
+ * are dropped. A program that left the group is not stopped, and it cannot hold the
  * check open. The result is given once.
  */
 export function runDoneWhen(
@@ -422,7 +424,7 @@ export function runDoneWhen(
     };
     let child: ChildProcess;
     try {
-      // A new process group on POSIX, so the timeout can stop the programs the shell started.
+      // A new process group on POSIX, so a timeout or a normal exit can stop what the shell started.
       // Windows stays in this process's tree: `taskkill /T` follows the parent, not a group.
       child = spawn(command, {
         shell: doneWhenShell(),
@@ -477,6 +479,14 @@ export function runDoneWhen(
       if (settled || timedOut) return;
       if (timer) clearTimeout(timer);
       timer = undefined;
+      // The shell has exited. Stop programs still in its group. A program that
+      // called setsid is in another group, so this does not reach it (#641).
+      try {
+        if (child.pid) killTree(child.pid);
+      } catch {
+        // The tree kill can throw. The check still ends on the shell's status.
+      }
+      if (settled) return;
       grace = setTimeout(() => {
         try {
           dropPipes();
@@ -540,11 +550,12 @@ export function judge(
     if (reason) return reason;
   }
   // A worker's edit inside a git folder may change the worker mark (#555), in any repo;
+  // one inside a team folder may speak for another agent (#674);
   // one inside yokoten's config folder may change the worker list (#591).
   if (env.YOKOTEN_ROLE === 'worker') {
     const folder = resolve(action.cwd ?? root ?? cwd);
     for (const p of action.paths) {
-      const reason = checkWorkerMarkEdit(resolve(folder, p), folder, env);
+      const reason = checkWorkerMarkEdit(resolve(folder, p), folder, env) ?? checkTeamEdit(resolve(folder, p));
       if (reason) return reason;
     }
   }

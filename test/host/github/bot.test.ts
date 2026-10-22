@@ -135,6 +135,17 @@ test('env: the bot drops GH_REPO and GH_HOST, so gh never acts on another repo (
   assert.equal(e.GH_TOKEN, 'tok', 'the token still reaches gh');
 });
 
+// #668: the bot's environment holds its token. A pager, an editor, a browser or an ssh
+// program named in it would run with the token, and a trace would print it.
+test('env: the bot drops the programs gh and git would run, and their logs (#668)', () => {
+  const given = { PATH: '/bin', PAGER: 'env', GH_PAGER: 'env', GIT_PAGER: 'env', EDITOR: 'env', VISUAL: 'env', GH_EDITOR: 'env', GIT_EDITOR: 'env', GIT_SEQUENCE_EDITOR: 'env', BROWSER: 'env', GH_BROWSER: 'env', GIT_SSH: 'env', GIT_SSH_COMMAND: 'env', GIT_ASKPASS: 'env', SSH_ASKPASS: 'env', GH_DEBUG: 'api', DEBUG: '1', GIT_CURL_VERBOSE: '1', GIT_TRACE: '1', GIT_TRACE_CURL: '1', GIT_TRACE_REDACT: '0' };
+  const e = botEnv(given, 'tok');
+  for (const name of ['EDITOR', 'VISUAL', 'GH_EDITOR', 'GIT_EDITOR', 'GIT_SEQUENCE_EDITOR', 'BROWSER', 'GH_BROWSER', 'GIT_SSH', 'GIT_SSH_COMMAND', 'GIT_ASKPASS', 'SSH_ASKPASS', 'GH_DEBUG', 'DEBUG', 'GIT_CURL_VERBOSE', 'GIT_TRACE', 'GIT_TRACE_CURL']) assert.equal(e[name], undefined, name);
+  assert.deepEqual([e.PAGER, e.GH_PAGER, e.GIT_PAGER, e.GH_PROMPT_DISABLED, e.GIT_TRACE_REDACT], ['cat', 'cat', 'cat', '1', '1']);
+  assert.equal(e.PATH, '/bin', 'other names pass');
+  assert.equal(e.GH_TOKEN, 'tok', 'the token still reaches gh');
+});
+
 // A child `node --test` that inherits NODE_TEST_CONTEXT reports to the parent run and exits 0
 // whatever happens (#168). The control proves the trap is real, so the fix is not a no-op.
 test('child env: a failing child node --test fails only once NODE_TEST_CONTEXT is gone (#168)', () => {

@@ -13,9 +13,11 @@ import {
   spawnSync,
 } from 'node:child_process';
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -411,3 +413,24 @@ export function fakeMachine(free: number, more: Partial<MachineProbe> & { progra
     ...rest,
   };
 }
+// The team of #674 (test/agents/desk/team/, test/commands/advice/messages.test.ts).
+/** A lead's checkout and a desk next to it, both with a bare `.git` folder: no git process is needed. */
+export function makeTeamFixture() {
+  // The real path: on macOS the temp folder is a link (/var to /private/var), and whoAmI answers with real paths.
+  const projects = realpathSync(makeTempDir('team-'));
+  const main = join(projects, 'repo');
+  const desk = join(projects, 'desks', 'g1');
+  const state = `${desk}.state/grok`;
+  for (const folder of [join(main, '.git'), join(desk, '.git'), state]) mkdirSync(folder, { recursive: true });
+  const team = `${main}.team`;
+  return { projects, main, desk, state, team };
+}
+
+/** Make the team folder read-only, as the desk's fence shows it, and give it back afterwards. */
+export function fence(team: string): () => void {
+  for (const part of ['', 'agents', 'outbox', 'lead']) chmodSync(join(team, part), 0o555);
+  return () => {
+    for (const part of ['', 'agents', 'outbox', 'lead']) chmodSync(join(team, part), 0o755);
+  };
+}
+

@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
 import { BWRAP } from './bwrap.ts';
 import type { DeskBackend, DeskPlan } from './desk.ts';
-import { type ProxyEvent, startProxy } from './proxy.ts';
+import { type ProxyEvent, startProxy } from './network/proxy.ts';
 import { SEATBELT } from './seatbelt.ts';
 
 /** The backend for a system, or the plain reason there is none. */
