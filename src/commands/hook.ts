@@ -614,6 +614,7 @@ export async function runDesk(invocation: Invocation): Promise<number> {
       extraHosts: list('--host'),
       runtimes: [installed.runtime],
       marks: options.flags.has('--marks') ? installed.marks : undefined,
+      markDesk: (desk) => markWorktree(invocation.cwd, desk, invocation.env),
     });
   } catch (error) {
     return fail((error as Error).message);

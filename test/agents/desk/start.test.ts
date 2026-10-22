@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { planDesk } from '../../../src/agents/desk/desk.ts';
 import { chooseBackend, signalEnd, startDesk } from '../../../src/agents/desk/start.ts';
+import { markWorktree } from '../../../src/commands/hook.ts';
 import { CLI, makeTempDir } from '../../repo/helpers.ts';
 
 test('chooseBackend: native Windows is sent to WSL2, an unknown system is named', () => {
@@ -73,6 +74,12 @@ answer.tz = process.env.TZ;
 answer.token = process.env.GH_TOKEN === undefined ? 'absent' : 'present';
 const guard = spawnSync(process.execPath, [cli, 'hook'], { input: JSON.stringify({ tool_input: { command: 'git -c core.hooksPath=/dev/null commit -m x' } }), encoding: 'utf8' });
 answer.guard = guard.status;
+// #672: Muse Code passes its hooks no YOKOTEN_ROLE; the mark in the desk's .git still makes a worker.
+const { YOKOTEN_ROLE, ...museEnv } = process.env;
+const muse = spawnSync(process.execPath, [cli, 'hook', '--agent', 'muse'], { env: museEnv, input: JSON.stringify({ cwd: process.cwd(), tool_name: 'write_file', tool_input: { path: 'AGENTS.md', content: 'x' } }), encoding: 'utf8' });
+answer.markedGuard = muse.status;
+answer.markWrite = tryIt(() => { fs.writeFileSync('.git/yokoten-worker', ''); return 'ok'; });
+answer.mark = fs.existsSync('.git/yokoten-worker');
 const proxy = new URL(process.env.HTTPS_PROXY);
 const connectTo = (host, port, send) => new Promise((resolve) => {
   const socket = net.connect({ host, port }, () => socket.write(send));
@@ -123,6 +130,7 @@ test('the desk contract holds on this system', { skip: typeof backend === 'strin
       command: [process.execPath, 'probe.cjs', CLI, outsideFile, other, String(echoPort)],
       env: { ...process.env, GH_TOKEN: 'not-a-real-token' },
       extraHosts: [`localhost:${echoPort}`],
+      markDesk: (folder) => markWorktree(origin, folder, process.env),
     });
     const result = await startDesk(plan, backend, { stdio: 'pipe' });
     assert.equal(result.code, 0, result.stderr);
@@ -149,6 +157,9 @@ test('the desk contract holds on this system', { skip: typeof backend === 'strin
     assert.equal(answer.pipes, 'through a pipe', 'a child process with pipes works');
     assert.deepEqual([answer.role, answer.tz, answer.token], ['worker', 'UTC', 'absent'], 'role and time zone are set; a token is not passed in');
     assert.equal(answer.guard, 2, 'the guard refuses a commit that turns off the commit check');
+    assert.equal(answer.mark, true, "the desk's clone carries the worker mark (#672)");
+    assert.match(answer.markWrite, /^failed/, 'the worker mark is read-only');
+    assert.equal(answer.markedGuard, 2, 'with no YOKOTEN_ROLE, as Muse Code runs its hooks, the mark still makes a worker');
     assert.match(answer.direct, /^failed/, 'a command has no network of its own');
     assert.match(answer.allowed, /^HTTP\/1\.1 200[^]*hello back$/, 'a CONNECT to an allowed host goes through the proxy');
     assert.match(answer.refused, /^HTTP\/1\.1 403/, 'a CONNECT to any other host is refused');
