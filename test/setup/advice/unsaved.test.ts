@@ -20,7 +20,7 @@ import {
   relative,
 } from 'node:path';
 import { test } from 'node:test';
-import { makeSandbox } from '../../repo/helpers.ts';
+import { makeSandbox, makeTempDir } from '../../repo/helpers.ts';
 import {
   findTempDirs,
   findTmpfs,
@@ -266,7 +266,7 @@ test('unsaved: a repo on a tmpfs is gone after a restart (#365)', () => {
   const found = clone.notes({}, { readMounts: () => tmpfs });
   assert.deepEqual(found.map((f) => `${f.what}; ${f.fix}`), [
     `this repo is on a tmpfs (${clone.base}), so everything here is gone after a restart; push every branch now: \`git push --all origin\`; then clone it again in a folder that lasts`,
-    `1 worktree is on a tmpfs (${clone.base}); it holds no unsaved work, but new work there may be lost on restart; make new worktrees in a folder that lasts`,
+    `1 worktree is on a tmpfs (${clone.base}); it holds no unsaved work, but new work there may be lost on restart; make new worktrees under .worktrees/, never on a tmpfs`,
   ]);
   assert.deepEqual(ids(clone.notes({ session: true }, { readMounts: () => tmpfs })), ['repo-on-tmpfs'], 'the repo itself always; a clean worktree never in a session');
   assert.deepEqual(clone.notes({}, { readMounts: () => disk }), [], 'negative control: a disk');
@@ -288,7 +288,7 @@ test('unsaved: a worktree under the temp folder is named only when it holds work
   const clean = add('clean', '-b', 'clean');
   const notes = (session = false) => clone.notes({ session }, { tempDirs: [join(clone.home, 'none'), temp] });
   // Only clean ones: one line in full doctor, nothing in a session.
-  assert.deepEqual(notes().map((f) => `${f.what}; ${f.fix}`), [`1 worktree is under the temp folder (${temp}); it holds no unsaved work, but new work there may be lost on restart; make new worktrees in a folder that lasts`]);
+  assert.deepEqual(notes().map((f) => `${f.what}; ${f.fix}`), [`1 worktree is under the temp folder (${temp}); it holds no unsaved work, but new work there may be lost on restart; make new worktrees under .worktrees/, never under a temp folder`]);
   assert.deepEqual(notes(true), [], 'a session: nothing about worktrees with nothing to lose');
   add('clean-too', '-b', 'clean-too');
   assert.equal(notes()[0].what, `2 worktrees are under the temp folder (${temp}); none holds unsaved work, but new work there may be lost on restart`);
@@ -322,6 +322,30 @@ test('unsaved: a worktree under the temp folder is named only when it holds work
   const both = clone.notes({}, { tempDirs: [temp], readMounts: () => `tmpfs ${temp} tmpfs rw 0 0\n` });
   assert.ok(!both.some((f) => f.id === 'repo-in-temp-folder'));
   assert.ok(both.some((f) => f.what.endsWith(`is on a tmpfs (${temp}), which is gone after a restart`)));
+});
+
+test('unsaved: a worktree in a temp folder is made again under .worktrees/ (#571)', () => {
+  // No remote: the branch notes fold into one, so the at-risk worktree says its place on its own.
+  // Real dirs under one base, so the shown path is the same where /tmp is a link (macOS).
+  const base = makeTempDir();
+  const root = join(base, 'repo');
+  const temp = join(base, 'temp');
+  const tree = join(temp, 'w');
+  mkdirSync(root, { recursive: true });
+  mkdirSync(tree, { recursive: true });
+  const facts = {
+    ...UNSAVED_CONTROL,
+    root,
+    remotes: [],
+    branches: [{ ...UNSAVED_CONTROL.branches[0], name: 'w', upstream: null, ahead: null, isGone: false, aheadOfDefault: 2 }],
+    stashes: 0,
+    isGitRunning: null,
+    worktrees: [{ ...UNSAVED_CONTROL.worktrees[1], path: tree, branch: 'w', volatile: { kind: 'temp' as const, folder: temp } }],
+  };
+  const found = unsavedNotes(facts, { home: undefined, now: 1 });
+  assert.deepEqual(ids(found), ['unpushed-commits', 'repo-in-temp-folder']);
+  assert.equal(found[1].what, `../temp/w holds work only on this machine, and is under the temp folder (${temp}), which the system may empty on restart`);
+  assert.equal(found[1].fix, 'save it: commit; once the repo has a remote, push it; then make it again under .worktrees/');
 });
 
 test('unsaved: the temp folders come from YOKOTEN_TEMP_DIRS, else the system and /tmp (#365)', () => {
