@@ -286,7 +286,7 @@ function pullCard(state: PageState, pull: PullView): HTMLElement {
   const steps = el('div', { class: 'steps' }, ...pull.steps.map((mark, index) => el('i', { class: mark, title: say(state, `step.${index}`) })));
   const title = el('span', { class: 'nm' }, el('span', { class: 'num' }, `#${pull.number}`), ` ${pull.title}`);
   return el('div', { class: 'pr' },
-    el('div', { class: 'h' }, el('span', { class: 'open-i' }, icon('pr')), /^https?:\/\//i.test(pull.url) ? el('a', { href: pull.url, target: '_blank', rel: 'noopener noreferrer', cls: 'grow' }, title) : el('div', { class: 'grow' }, title), pull.tier ? el('span', { class: `tier t${pull.tier}` }, say(state, 'tier', { tier: pull.tier })) : null),
+    el('div', { class: 'h' }, el('span', { class: 'open-i' }, icon('pr')), /^https?:\/\//i.test(pull.url) ? el('a', { href: pull.url, target: '_blank', rel: 'noopener noreferrer', class: 'grow' }, title) : el('div', { class: 'grow' }, title), pull.tier ? el('span', { class: `tier t${pull.tier}` }, say(state, 'tier', { tier: pull.tier })) : null),
     steps, el('div', { class: 'sl' }, el('span', { class: pull.tone }, say(state, `pull.${pull.status}`)), el('span', { class: 'mut' }, pull.branch)));
 }
 
