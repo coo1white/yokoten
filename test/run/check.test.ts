@@ -787,6 +787,26 @@ test('check --staged: a staged change file is read as `yokoten changelog` reads 
   assert.match(result.stdout, /note: changes\/7-dark\.md:4: a sentence of 30 words/);
 });
 
+test('check: a sure secret fails, a likely one warns, and an ignored one stays listed (#616)', async () => {
+  const sandbox = makeSandbox();
+  const sure = `${'gh'}p_${'x7Y2k9'.repeat(6)}`;
+  const ignored = `${'gh'}p_${'a1B2c3'.repeat(6)}`;
+  const likely = 'a1B2c3D4e5F6g7H8'.repeat(2);
+  const names = ['GITHUB_' + 'TOKEN', 'api_' + 'key', 'OLD_' + 'TOKEN'];
+  sandbox.write('a.env', [`${names[0]}=${sure}`, `${names[1]}="${likely}"`, `${names[2]}=${ignored} # yokoten-ignore secret: a test fixture`, ''].join('\n'));
+  sandbox.git('add', 'a.env');
+  const result = await sandbox.call(['check', '--staged', '--json']);
+  assert.equal(result.status, 1, result.stderr || result.stdout);
+  const output = JSON.parse(result.stdout) as { findings: { id: string; grade?: string }[]; notes: { grade?: string; ignored?: string }[] };
+  assert.deepEqual(output.findings.map((f) => [f.id, f.grade]), [['secret', 'sure']], JSON.stringify(output.findings));
+  assert.ok(output.notes.some((f) => f.grade === 'likely' && f.ignored === undefined), JSON.stringify(output.notes));
+  assert.ok(output.notes.some((f) => f.grade === 'sure' && f.ignored === 'a test fixture'), JSON.stringify(output.notes));
+  for (const secret of [sure, ignored, likely]) assert.ok(!result.stdout.includes(secret), 'no secret appears in the output');
+  const text = await sandbox.call(['check', '--staged']);
+  assert.match(text.stdout, /warning: .*\[likely\]/);
+  assert.match(text.stdout, /ignored: a test fixture/);
+});
+
 test('check --staged: reads the staged change file, not the work tree; plain check reads the work tree (#346)', async () => {
   const sandbox = makeSandbox();
   sandbox.write('src/a.ts', 'a\n');

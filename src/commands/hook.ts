@@ -181,13 +181,14 @@ async function stopHook(invocation: Invocation, json: boolean, read: typeof clau
     return 0;
   }
   let findings: Finding[];
+  const notes: Finding[] = [];
   let root: string | null;
   try {
     root = rootOf(folder, env);
     // A worker by YOKOTEN_ROLE, by the mark on its worktree, or by the event (#555, #614).
     const marked = withWorkerMark(env, folders);
     const workerEnv = isWorker ? { ...marked, YOKOTEN_ROLE: 'worker' } : marked;
-    findings = root ? checkChanged(root, { config: loadConfig(root), env: workerEnv }) : [];
+    findings = root ? checkChanged(root, { config: loadConfig(root), env: workerEnv, notes }) : [];
   } catch (err) {
     say(invocation, `yokoten hook --stop: skipped, ${((err as Error).message ?? String(err)).split('\n')[0]}\n`, invocation.stderr);
     if (json) printJson(invocation, { blocked: false, stop: true, skipped: 'the check failed', findings: [] });
@@ -218,24 +219,25 @@ async function stopHook(invocation: Invocation, json: boolean, read: typeof clau
       clearRefusedMarker(folder, key);
       recordChecks(invocation, folder, 'passing');
     }
-    if (json) printJson(invocation, { blocked: false, stop: true, findings });
+    if (!json && notes.length) print(invocation, [`yokoten: ${notes.length} warning(s) in the changed files:`, ...bullets(notes)], invocation.stderr);
+    if (json) printJson(invocation, { blocked: false, stop: true, findings, ...(notes.length ? { notes } : {}) });
     return 0;
   }
   if (!isWorker) {
-    if (json) printJson(invocation, { blocked: true, stop: true, findings });
-    print(invocation, [`yokoten: ${findings.length} problem(s) in the changed files. Fix them before you end the turn:`, ...bullets(findings)], invocation.stderr);
+    if (json) printJson(invocation, { blocked: true, stop: true, findings, ...(notes.length ? { notes } : {}) });
+    print(invocation, [`yokoten: ${findings.length} problem(s) in the changed files. Fix them before you end the turn:`, ...bullets(findings), ...(notes.length ? [`yokoten: ${notes.length} warning(s) in the changed files:`, ...bullets(notes)] : [])], invocation.stderr);
     return 2;
   }
   const bumped = bumpDoneTries(env, key);
   // No saved count: stop_hook_active, or a refusal of this worker in the last 5 minutes,
   // lets the stop through. A runtime that never sets stop_hook_active cannot trap it.
   if (bumped === null) {
-    if (event.active || wasRefusedRecently(folder, key)) return allowFailingStop(invocation, json, findings, doneWhen, DONE_TRY_LIMIT, env, key, folder);
+    if (event.active || wasRefusedRecently(folder, key)) return allowFailingStop(invocation, json, findings, notes, doneWhen, DONE_TRY_LIMIT, env, key, folder);
     noteRefused(folder, key);
-    return refuseFailingStop(invocation, json, findings, doneWhen, 1, false);
+    return refuseFailingStop(invocation, json, findings, notes, doneWhen, 1, false);
   }
-  if (bumped > DONE_TRY_LIMIT) return allowFailingStop(invocation, json, findings, doneWhen, bumped, env, key, folder);
-  return refuseFailingStop(invocation, json, findings, doneWhen, bumped, true);
+  if (bumped > DONE_TRY_LIMIT) return allowFailingStop(invocation, json, findings, notes, doneWhen, bumped, env, key, folder);
+  return refuseFailingStop(invocation, json, findings, notes, doneWhen, bumped, true);
 }
 
 /**
@@ -303,12 +305,14 @@ function refuseFailingStop(
   invocation: Invocation,
   json: boolean,
   findings: Finding[],
+  notes: Finding[],
   doneWhen: { ok: boolean; output: string } | undefined,
   tries: number,
   saved: boolean,
 ): number {
   const lines: string[] = [];
   if (findings.length) lines.push(`yokoten: ${findings.length} problem(s) in the changed files. Fix them before you end the task:`, ...bullets(findings));
+  if (notes.length) lines.push(`yokoten: ${notes.length} warning(s) in the changed files:`, ...bullets(notes));
   if (doneWhen?.ok === false) {
     lines.push('yokoten: the done-when check failed. Fix what it reports, then end the task again:');
     if (doneWhen.output) lines.push(doneWhen.output);
@@ -318,7 +322,7 @@ function refuseFailingStop(
     lines.push(`This was try ${tries} of ${DONE_TRY_LIMIT}. The next stop is let through.`);
     lines.push('Your final message to the lead must start with "NOT DONE: checks failing" and quote the failing output.');
   } else lines.push(`This was try ${tries} of ${DONE_TRY_LIMIT}.`);
-  if (json) printJson(invocation, { blocked: true, stop: true, findings, ...(doneWhen ? { doneWhen: { ok: false, output: doneWhen.output, tries, limit: DONE_TRY_LIMIT } } : {}) });
+  if (json) printJson(invocation, { blocked: true, stop: true, findings, ...(notes.length ? { notes } : {}), ...(doneWhen ? { doneWhen: { ok: false, output: doneWhen.output, tries, limit: DONE_TRY_LIMIT } } : {}) });
   print(invocation, lines, invocation.stderr);
   return 2;
 }
@@ -328,6 +332,7 @@ function allowFailingStop(
   invocation: Invocation,
   json: boolean,
   findings: Finding[],
+  notes: Finding[],
   doneWhen: { ok: boolean; output: string } | undefined,
   tries: number,
   env: Invocation['env'],
@@ -336,7 +341,7 @@ function allowFailingStop(
 ): number {
   recordChecks(invocation, folder, 'failing');
   forgetDoneTries(env, key);
-  const payload = { blocked: false, stop: true, findings, skipped: 'stopped with failing checks', ...(doneWhen ? { doneWhen: { ok: false, output: doneWhen.output, tries, limit: DONE_TRY_LIMIT } } : {}) };
+  const payload = { blocked: false, stop: true, findings, ...(notes.length ? { notes } : {}), skipped: 'stopped with failing checks', ...(doneWhen ? { doneWhen: { ok: false, output: doneWhen.output, tries, limit: DONE_TRY_LIMIT } } : {}) };
   if (json) printJson(invocation, payload);
   print(invocation, ['yokoten: stopped with failing checks. The done-when check still fails. Tell the lead this task is not done.'], invocation.stderr);
   return 0;

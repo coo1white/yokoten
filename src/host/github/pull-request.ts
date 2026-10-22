@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
-import { type Finding, finding, formatFinding, place } from '../../rules/message.ts';
+import { type Finding, finding, formatFinding, formatFindingMarks, place } from '../../rules/message.ts';
 import type { CodeOwners, PullRequest } from '../../rules/pr.ts';
 import { readGit } from '../../run/check.ts';
 import { asText, type Gh, isObject, labelNames, repoOf, unread } from './planning.ts';
@@ -259,7 +259,7 @@ export function annotation(f: Finding, level: 'error' | 'warning', isPlaceAFile 
   if (file !== undefined) properties.push(`file=${escapeProperty(file)}`);
   if (file !== undefined && f.line !== undefined) properties.push(`line=${f.line}`);
   properties.push(`title=${escapeProperty(`yokoten ${f.id}`)}`);
-  const message = formatFinding(file === undefined ? f : { id: f.id, what: f.what, why: f.why, fix: f.fix, docs: f.docs });
+  const message = formatFinding(file === undefined ? f : { id: f.id, what: f.what, why: f.why, fix: f.fix, docs: f.docs, grade: f.grade, ignored: f.ignored });
   return `::${level} ${properties.join(',')}::${escapeData(message)}`;
 }
 
@@ -276,7 +276,7 @@ const cell = (text: string) =>
 // The rule's id links to where it is explained (#94), when there is a link.
 const ruleCell = (f: Finding) => (f.docs === undefined ? cell(f.id) : `[${cell(f.id)}](${cell(f.docs)})`);
 const row = (f: Finding) =>
-  `| ${cell(place(f).replace(/: $/, ''))} | ${ruleCell(f)} | ${cell(f.what)} | ${cell(capitalize(f.why))} | ${cell(capitalize(f.fix))} |`;
+  `| ${cell(place(f).replace(/: $/, ''))} | ${ruleCell(f)} | ${cell(f.what + formatFindingMarks(f))} | ${cell(capitalize(f.why))} | ${cell(capitalize(f.fix))} |`;
 const TABLE_HEAD = ['| Place | Rule | What | Why | Fix |', '|-------|------|------|-----|-----|'];
 
 /**

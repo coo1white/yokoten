@@ -16,7 +16,7 @@ import { dirname } from 'node:path';
 import { readCurrentPullRequest, readsCurrentPullRequest } from '../host/current-pr.ts';
 import { ghIn, readCodeOwners, readIssue, readNumberedPullRequest, readPullRequest, readRepoLabelNames } from '../host/github/index.ts';
 import { loadConfig } from '../rules/config.ts';
-import { type Finding, formatFinding } from '../rules/message.ts';
+import { type Finding, formatFinding, isWarningFinding } from '../rules/message.ts';
 import { addedLinesByFile, changedLines, checkIssueLabels, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, largeDiff, longSentenceNote, longSentences, splitForDependabot } from '../rules/pr.ts';
 import { parseChange } from '../run/changelog.ts';
 import { check, checkHistory, GitReadError, gitReadFinding, historyTimeZones, readGit, timeZoneNote, unstageHint } from '../run/check.ts';
@@ -159,9 +159,9 @@ async function runMode(invocation: Invocation, mode: string, root: string, confi
       printNotes(split.notes, 'pull request rule(s) Dependabot does not meet');
     }
   } else {
-    problems = mode === 'history' ? checkHistory(root, { config, env }) : check(root, { config, env, staged: mode === 'staged', notes });
+    problems = mode === 'history' ? checkHistory(root, { config, env, notes }) : check(root, { config, env, staged: mode === 'staged', notes });
     // A translation behind its English source (#87) is a note, for the whole tree only.
-    if (!json) for (const note of notes) print(invocation, [`${name}: note: ${formatFinding(note)}`]);
+    if (!json) for (const note of notes) print(invocation, [`${name}: ${isWarningFinding(note) ? 'warning' : 'note'}: ${formatFinding(note)}`]);
     const zones = mode === 'history' && config.privacy.utc ? historyTimeZones(root, env) : 0;
     if (zones) {
       notes.push(timeZoneNote(zones));

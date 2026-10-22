@@ -16,6 +16,7 @@ test('annotations: escape the message and the properties; a history place goes i
   const f = { id: 'layout', what: '100% full,\nline two\r', why: 'a: b', fix: 'see a, b', file: 'docs/a,b:c.md', line: 7 };
   assert.equal(annotation(f, 'error'), '::error file=docs/a%2Cb%3Ac.md,line=7,title=yokoten layout::100%25 full,%0Aline two%0D. A: b. See a, b.');
   assert.equal(annotation({ id: 'large-diff', what: 'big', why: 'w', fix: 'f' }, 'warning'), '::warning title=yokoten large-diff::big. W. F.');
+  assert.equal(annotation({ id: 'secret', what: 'a secret', why: 'w', fix: 'f', grade: 'likely', ignored: 'a test fixture' }, 'warning'), '::warning title=yokoten secret::a secret [likely; ignored: a test fixture]. W. F.');
   assert.equal(annotation({ ...f, what: 'x', file: 'commit abc (message)', line: 1 }, 'error', false), '::error title=yokoten layout::commit abc (message):1: x. A: b. See a, b.');
   const linked = { id: 'email', what: 'an email', why: 'w', fix: 'f', docs: 'https://example.com/guide#privacy', file: 'a.md', line: 1 };
   assert.equal(annotation(linked, 'error'), '::error file=a.md,line=1,title=yokoten email::an email. W. F.%0A  docs: https://example.com/guide#privacy', 'the link goes in the message (#94)');
@@ -49,6 +50,7 @@ test('step summary: a heading with the result, a table, notes apart, at most 50 
   // The id links to its section (#94).
   const linked = { id: 'email', what: 'an email', why: 'w', fix: 'f', docs: 'https://example.com/guide#privacy', file: 'a.md', line: 1 };
   assert.match(stepSummary('yokoten check', [linked], []), /\n\| a\.md:1 \| \[email\]\(https:\/\/example\.com\/guide#privacy\) \| an email \| W \| F \|\n/);
+  assert.match(stepSummary('yokoten check', [{ id: 'secret', what: 'a secret', why: 'w', fix: 'f', file: 'a.env', line: 2, grade: 'likely', ignored: 'a test fixture' }], []), /\n\| a\.env:2 \| secret \| a secret \[likely; ignored: a test fixture\] \| W \| F \|\n/);
   const many = Array.from({ length: 53 }, (_, i) => ({ id: 'email', what: `e${i}`, why: 'w', fix: 'f', file: 'a.md', line: i + 1 }));
   const text = stepSummary('yokoten check', many, [{ id: 'large-diff', what: 'big', why: 'w', fix: 'f' }]);
   assert.match(text, /^### yokoten check: 53 problems\n/);

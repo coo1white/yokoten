@@ -360,6 +360,12 @@ test('makeRedactor: patterns only, with no marks: private emails go, noreply and
   assert.equal(redact('at /home/someone/project'), 'at ~/project');
 });
 
+test('makeRedactor: the real value of a secret-looking environment variable is hidden (#616)', () => {
+  const value = ['env', 'Secret', 'Value', '1234567890'].join('');
+  assert.equal(makeRedactor({}, { HOME: '/home/someone', SERVICE_TOKEN: value })(`printed ${value}`), 'printed <secret>');
+  assert.equal(makeRedactor({}, { HOME: '/home/someone', SERVICE_TOKEN: 'short' })('short'), 'short', 'too short to be a key');
+});
+
 test('makeRedactor: owners, hosts and marks, by shape, case-insensitive, whole words only', () => {
   const redact = makeRedactor({ owners: ['Jane Example'], hosts: ['build.private-host.dev'], marks: ['jane example', 'fakeville', 'janex.dev', `me${at}janex.dev`, 'ann', 'xy', '東京'] }, {});
   assert.equal(redact('JANE EXAMPLE in Fakeville'), '<owner> in <mark>');

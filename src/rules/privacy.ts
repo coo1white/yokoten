@@ -16,8 +16,8 @@ import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import type { Config, Env } from './config.ts';
-import { type Finding, finding, type RuleId } from './message.ts';
-import { findSecrets, makeSecretHider, SECRET } from './secrets.ts';
+import { type Finding, finding, isFailingFinding, type RuleId } from './message.ts';
+import { findEnvironmentValues, findLineIgnores, findSecretHits, type IgnoreDirective, makeSafeIgnoreReason, makeSecretHider, parseIgnoreFile, SECRET } from './secrets.ts';
 
 /** Where the system says the home folder is, with no $HOME: the password file. Empty when it can't tell. */
 export const systemHome = (): string => {
@@ -880,36 +880,93 @@ export function describeMark(kind: string | null | undefined): { what: string; f
   return { what, fix: known?.off ? `${MARK_REWORD}. To stop checking ${known.name}, run \`yokoten marks off ${known.off}\`` : `${MARK_REWORD}. ${MARK_ALLOW}` };
 }
 
+/** The tracked file that gives a reason for a finding the project lets through. */
+export const IGNORE_FILE = '.yokotenignore';
+
+/** The rules an ignore may name. */
+const IGNORABLE_RULES = ['secret', 'email', 'ip', 'private-mark'];
+const IGNORABLE = new Set(IGNORABLE_RULES);
+
+/** The reasons in `.yokotenignore`, and a failure for each line with no rule, no reason or an unknown rule. */
+export function loadIgnores(root: string): { entries: IgnoreDirective[]; problems: Finding[] } {
+  let text: string;
+  try {
+    text = readFileSync(join(root, IGNORE_FILE), 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { entries: [], problems: [] };
+    return { entries: [], problems: [finding('ignore', `the ignore file can't be read (${(err as NodeJS.ErrnoException).code ?? 'unknown error'})`, `make ${IGNORE_FILE} readable, or remove it`, { file: IGNORE_FILE, grade: 'sure' })] };
+  }
+  const parsed = parseIgnoreFile(text);
+  const problems = parsed.problems.map((problem) => finding('ignore', problem.what, `write \`<rule>: <reason>\` in ${IGNORE_FILE}, such as \`secret: a test fixture\``, { file: IGNORE_FILE, line: problem.line, grade: 'sure' }));
+  for (const entry of parsed.entries) {
+    if (IGNORABLE.has(entry.rule)) continue;
+    problems.push(finding('ignore', 'an ignore names a rule this check does not know', `use one of: ${IGNORABLE_RULES.join(', ')}`, { file: IGNORE_FILE, line: entry.line, grade: 'sure' }));
+  }
+  return {
+    entries: parsed.entries.filter((entry) => IGNORABLE.has(entry.rule)),
+    problems,
+  };
+}
+
 /**
  * Problems in one file's text. `allow` holds literal strings the project has said are
  * fine (yokoten.json "privacy.allow"), such as a public support address. `kinds` gives
  * each mark's kind, as `loadMarkKinds` reads it, so a finding can name it (#523).
+ * `ignores` holds the reasons from `.yokotenignore`. A privacy hit there is still listed,
+ * with its grade and its reason, but does not fail.
  */
 export function scanText(
   text: string,
-  { file, marks = [], allow = [], logins = [], ownAllow = allow, kinds }: { file: string; marks?: string[]; allow?: string[]; logins?: string[]; ownAllow?: string[]; kinds?: ReadonlyMap<string, string | null> },
+  { file, marks = [], allow = [], logins = [], ownAllow = allow, kinds, ignores = [], env = {} }: { file: string; marks?: string[]; allow?: string[]; logins?: string[]; ownAllow?: string[]; kinds?: ReadonlyMap<string, string | null>; ignores?: IgnoreDirective[]; env?: Env },
 ): Finding[] {
   const problems: Finding[] = [];
   const lines = text.split('\n');
   // `logins`: the forge logins yokoten added to the marks, fine where a file names accounts (#410).
   const places = logins.length && marks.length ? loginPlaces(file, lines) : null;
-  const secrets = findSecrets(lines, allow);
+  const secrets = findSecretHits(lines, { allow, env });
+  const secretValues = secrets.map((hit) => lines[hit.line].slice(hit.start, hit.end));
+  const fileIgnore = new Map<string, string>();
+  for (const entry of ignores) if (!fileIgnore.has(entry.rule)) fileIgnore.set(entry.rule, entry.reason);
   // `ownAllow`: what may allow a mark, `allow` unless the caller says otherwise (a gh post to another repo, #447).
   const own = ownMarks(marks, ownAllow);
   const stopped = own.length ? marks.filter((mark) => !own.includes(mark)) : marks;
+  let cleanReason: ((text: string) => string) | undefined;
   lines.forEach((line, index) => {
     const where = { file, line: index + 1 };
-    // The secret itself is never printed either, only its kind.
-    for (const [at, kind] of secrets) if (at === index) problems.push(finding('secret', `a secret (${kind})`, 'remove it, rotate it, and keep it outside the repo', where));
+    // The secret itself is never printed either, only its kind. An ignore with no reason
+    // is a failure, whether or not a secret is on its line.
+    const inline = findLineIgnores(line, { commentsOnly: true });
+    const ignoreFields = (rule: string, values: string[] = []): { ignored?: string } => {
+      const reason = inline.find((entry): entry is IgnoreDirective => !('problem' in entry) && entry.rule === rule)?.reason ?? fileIgnore.get(rule);
+      if (reason === undefined) return {};
+      cleanReason ??= makeRedactor({ marks: stopped }, env);
+      const safe = cleanReason(makeSafeIgnoreReason(reason, env, values)).replace(IPV4, (hit) => {
+        const octets = hit.split('.').map(Number);
+        return octets.every((n) => n <= 255) && !OK_IP.some((re) => re.test(hit)) ? SECRET : hit;
+      });
+      return { ignored: safe };
+    };
+    for (const entry of inline) {
+      if ('problem' in entry) problems.push(finding('ignore', entry.problem, 'add the rule and a reason after yokoten-ignore, or remove the ignore', { ...where, grade: 'sure' }));
+      else if (!IGNORABLE.has(entry.rule)) problems.push(finding('ignore', 'an ignore names a rule this check does not know', `use one of: ${IGNORABLE_RULES.join(', ')}`, { ...where, grade: 'sure' }));
+    }
+    for (const hit of secrets) {
+      if (hit.line !== index) continue;
+      problems.push(finding('secret', `a secret (${hit.kind})`, 'remove it, rotate it, and keep it outside the repo', {
+        ...where,
+        grade: hit.grade,
+        ...ignoreFields('secret', secretValues),
+      }));
+    }
     for (const [hit] of line.matchAll(EMAIL)) {
       if (isPersonalEmail(hit, allow)) {
-        problems.push(finding('email', 'an email address', EMAIL_FIX, where));
+        problems.push(finding('email', 'an email address', EMAIL_FIX, { ...where, grade: 'sure', ...ignoreFields('email', [hit]) }));
       }
     }
     for (const { 0: hit, index } of line.matchAll(IPV4)) {
       const octets = hit.split('.').map(Number);
       if (octets.some((n) => n > 255) || OK_IP.some((re) => re.test(hit)) || allow.includes(hit) || isSectionNumber(line, index, hit)) continue;
-      problems.push(finding('ip', 'an IP address', 'use a placeholder from 192.0.2.0/24', where));
+      problems.push(finding('ip', 'an IP address', 'use a placeholder from 192.0.2.0/24', { ...where, grade: 'sure', ...ignoreFields('ip', [hit]) }));
     }
     const folded = stopped.length ? foldLine(line) : null;
     for (const mark of stopped) {
@@ -917,7 +974,7 @@ export function scanText(
       if (!hasMark(line, mark, folded!)) continue;
       if (places && logins.includes(mark) && !hasMark(places(line, index, mark), mark)) continue;
       const { what, fix } = describeMark(kinds && kinds.has(mark) ? kinds.get(mark) : undefined);
-      problems.push(finding('private-mark', what, fix, where));
+      problems.push(finding('private-mark', what, fix, { ...where, grade: 'sure', ...ignoreFields('private-mark', [mark]) }));
     }
   });
   return problems;
@@ -1074,9 +1131,12 @@ export function makeRedactor(hidden: Hidden, env: Env): (text: string) => string
     return out + text.slice(last);
   };
   const hideSecrets = makeSecretHider();
+  const secretValues = findEnvironmentValues(env);
   return (text) => {
     // An SSH remote at a private host (git@host) names the host, not a person.
-    const out = hideSecrets(text).replace(EMAIL, (hit) => (!isPersonalEmail(hit) ? hit : /^git@/i.test(hit) ? `git@${PLACEHOLDERS.host}` : PLACEHOLDERS.email));
+    let out = hideSecrets(text);
+    for (const value of secretValues) out = out.replaceAll(value, SECRET);
+    out = out.replace(EMAIL, (hit) => (!isPersonalEmail(hit) ? hit : /^git@/i.test(hit) ? `git@${PLACEHOLDERS.host}` : PLACEHOLDERS.email));
     return hideMarks(hideHome(out, env));
   };
 }
@@ -1673,7 +1733,7 @@ export function checkPost(
   const own = isHere ? [...ownMarks(all, [...allow, ...machineAllowed(env, cwd, key ?? undefined).allow]), ...named] : [];
   const marks = all.filter((mark) => !own.includes(mark));
   for (const piece of posted.pieces) {
-    const [hit] = scanText(piece.text, { file: piece.source, marks, allow, ownAllow: [], kinds });
+    const hit = scanText(piece.text, { file: piece.source, marks, allow, ownAllow: [], kinds, env }).find(isFailingFinding);
     if (!hit) continue;
     const more = { why: postWhy(hit.why) };
     if (piece.isFile) return finding(hit.id as RuleId, hit.what, postFix(hit), { ...more, file: shownPath(piece.source, env, marks), line: hit.line });

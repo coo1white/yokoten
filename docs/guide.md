@@ -1769,8 +1769,13 @@ addresses, and neither is a retina image name such as `logo@2x.png`. An address 
 `http://` or in a path such as `api/` is still caught.
 
 The same check catches secrets: GitHub, npm, Slack, Stripe, Google, OpenAI and
-Anthropic tokens, AWS access key ids, and PEM private keys. A hit names the kind of
-secret, never the secret. Deleting it is not enough, since git keeps it: rotate it.
+Anthropic tokens, AWS access key ids, and PEM private keys. It also matches the real
+value of a secret-looking variable in your environment. Each hit says its grade:
+`sure` fails, and `likely` and `unknown` warn. A hit names the kind of secret, never
+the secret. Deleting it is not enough, since git keeps it: rotate it.
+
+For a false hit, start a comment on that line with `yokoten-ignore secret: why it is safe`. Use the finding's rule name instead of `secret`.
+Or write `secret: why it is safe` in `.yokotenignore`; an ignored hit stays listed, and a reasonless ignore fails.
 
 The tool-call guard runs the same check on text an agent is about to post with `gh`,
 plain or through `yokoten bot -- gh`:

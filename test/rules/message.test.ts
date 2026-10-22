@@ -144,6 +144,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   add(checkCommand('git worktree remove ../wt', { cwd: process.cwd(), env }));
   add(lateFinding({ command: 'ls', paths: [], worker: false }, 5000));
   found.push(...scanText(`${POSITIVE_CONTROL}\n${SECRET_CONTROL}\nhome town`, { file: 'a.md', marks: ['home town'] }));
+  add(scanText(`// ${['yokoten', 'ignore'].join('-')} secret`, { file: 'a.md' })[0]);
   found.push(...checkLayout(Array.from({ length: 8 }, (_, i) => `d/${i}`), DEFAULTS));
   found.push(...checkBuildOutput([{ path: 'dist/a.js', binary: false }, { path: 'a.bin', binary: true }], DEFAULTS));
   found.push(...checkPullRequest({ title: `Bad title (#1) ${'x'.repeat(70)}.`, body: '## Why\n\n', files: ['src/a.ts', 'kit/x'], labels: [], milestone: null }, DEFAULTS));
@@ -263,7 +264,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
     }
     assert.ok(known.has(f.id), `${f.id}: yokoten explain does not know this id`);
     const json = JSON.parse(JSON.stringify(f));
-    assert.deepEqual(Object.keys(json).filter((k) => !['id', 'what', 'why', 'fix', 'docs', 'file', 'line'].includes(k)), [], `${f.id}: only the stable fields`);
+    assert.deepEqual(Object.keys(json).filter((k) => !['id', 'what', 'why', 'fix', 'docs', 'file', 'line', 'grade', 'ignored'].includes(k)), [], `${f.id}: only the stable fields`);
     assert.ok(json.id && json.what && json.why && json.fix, `${f.id}: JSON has id, what, why and fix`);
   }
   // Every rule and every step was reached, so none is left without the shape. The self-test

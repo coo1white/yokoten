@@ -2,13 +2,18 @@
 
 import '../repo/home.ts';
 import assert from 'node:assert/strict';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   DOCS_URL,
   formatFinding,
+  isFailingFinding,
+  isWarningFinding,
 } from '../../src/rules/message.ts';
-import { scanText } from '../../src/rules/privacy.ts';
+import { loadIgnores, scanText } from '../../src/rules/privacy.ts';
 import { SECRET_CONTROL } from '../../src/rules/secrets.ts';
+import { at, makeTempDir } from '../repo/helpers.ts';
 
 // Secrets (#8). Each sample is a prefix plus a body, joined here, so no token sits in
 // this file whole.
@@ -45,8 +50,141 @@ test('secrets: each kind is caught, by place and kind, never by content (#8)', (
   for (const [kind, line] of SECRETS) {
     const problems = scanText(`intro\n${line}\n`, { file: 'conf.env' });
     // The whole output, word for word: the secret is not in it.
-    assert.deepEqual(problems, [{ id: 'secret', what: `a secret (${kind})`, why: 'a secret opens your accounts to anyone who can read the repo, and git keeps it after the file is gone', fix: 'remove it, rotate it, and keep it outside the repo', docs: `${DOCS_URL}#privacy`, file: 'conf.env', line: 2 }], line);
+    assert.deepEqual(problems, [{ id: 'secret', what: `a secret (${kind})`, why: 'a secret opens your accounts to anyone who can read the repo, and git keeps it after the file is gone', fix: 'remove it, rotate it, and keep it outside the repo', docs: `${DOCS_URL}#privacy`, file: 'conf.env', line: 2, grade: 'sure' }], line);
   }
+});
+
+test('secrets: a sure hit fails, a likely hit warns, and an unknown hit warns (#616)', () => {
+  const tokenName = 'GITHUB_' + 'TOKEN';
+  const sure = scanText(`${tokenName}=${'gh'}p_${alnum(36)}`, { file: 'a' });
+  assert.equal(sure[0].grade, 'sure');
+  assert.equal(isFailingFinding(sure[0]), true);
+  const keyName = 'api_' + 'key';
+  const likely = scanText(`${keyName} = "${alnum(32)}"`, { file: 'a' });
+  assert.equal(likely[0].grade, 'likely');
+  assert.equal(isFailingFinding(likely[0]), false);
+  assert.equal(isWarningFinding(likely[0]), true);
+  const secretName = 'client_' + 'secret';
+  const unclear = 'abcdefghijklmnopqrstuvwxyz' + 'abcdef';
+  const unknown = scanText(`${secretName} = "${unclear}"`, { file: 'a' });
+  assert.equal(unknown[0].grade, 'unknown');
+  assert.equal(isFailingFinding(unknown[0]), false);
+});
+
+test('privacy findings: email, IP and private-mark hits are graded sure (#616)', () => {
+  const found = [
+    scanText(`mail someone${at}gmail.com`, { file: 'a' })[0],
+    scanText(`host ${[10, 0, 0, 5].join('.')}`, { file: 'a' })[0],
+    scanText('Deploy to Secret-Box', { file: 'a', marks: ['secret-box'] })[0],
+  ];
+  for (const hit of found) {
+    assert.equal(hit.grade, 'sure');
+    assert.equal(isFailingFinding(hit), true);
+  }
+});
+
+test('secrets: an ignore with a reason passes and stays in the output (#616)', () => {
+  const token = `${'gh'}p_${alnum(36)}`;
+  const marker = ['yokoten', 'ignore'].join('-');
+  const [found] = scanText(`token ${token} // ${marker} secret: a test fixture`, { file: 'a' });
+  assert.equal(found.grade, 'sure');
+  assert.equal(found.ignored, 'a test fixture');
+  assert.equal(isFailingFinding(found), false);
+  assert.match(formatFinding(found), /\[sure; ignored: a test fixture\]/);
+  assert.ok(!formatFinding(found).includes(token), 'the secret never appears');
+  assert.ok(!JSON.stringify(found).includes(token), 'the secret never appears in JSON');
+});
+
+test('secrets: an ignore in a string does not hide a finding (#616)', () => {
+  const token = `${'gh'}p_${alnum(36)}`;
+  const marker = ['yokoten', 'ignore'].join('-');
+  const [found] = scanText(`const note = "// ${marker} secret: not a comment"; const token = "${token}"`, { file: 'a' });
+  assert.equal(found.ignored, undefined);
+  assert.equal(isFailingFinding(found), true);
+  assert.deepEqual(scanText(`/** Every \`${marker} secret: reason\` marker. */`, { file: 'a' }), [], 'a comment about the syntax is not a directive');
+});
+
+test('secrets: an ignore reason never echoes a detected value (#616)', () => {
+  const value = alnum(32);
+  const marker = ['yokoten', 'ignore'].join('-');
+  const [found] = scanText(`api_key = "${value}" // ${marker} secret: rotated ${value}`, { file: 'a' });
+  assert.equal(found.ignored, 'rotated <secret>');
+  assert.equal(isFailingFinding(found), false);
+  assert.ok(!JSON.stringify(found).includes(value), 'the secret never appears in the reason');
+});
+
+test('secrets: an ignore with no reason fails (#616)', () => {
+  const token = `${'gh'}p_${alnum(36)}`;
+  const marker = ['yokoten', 'ignore'].join('-');
+  const found = scanText(`token ${token} // ${marker} secret`, { file: 'a' });
+  const failure = found.find((hit) => /has no reason/.test(hit.what));
+  assert.ok(failure);
+  assert.equal(isFailingFinding(failure), true);
+  assert.ok(!JSON.stringify(found).includes(token));
+  assert.equal(scanText(`// ${marker} secret`, { file: 'a' }).length, 1, 'an ignore with no reason fails on its own');
+  const rule = 'abcdef0123456789'.repeat(2);
+  const text = scanText(`// ${marker} ${rule}`, { file: 'a' });
+  assert.equal(text.length, 1);
+  assert.ok(!JSON.stringify(text).includes(rule), 'the rule text is not printed');
+});
+
+test('secrets: a reason in .yokotenignore passes and is listed; a line with no reason fails (#616)', () => {
+  const root = makeTempDir();
+  const token = `${'gh'}p_${alnum(36)}`;
+  writeFileSync(join(root, '.yokotenignore'), 'secret: a test fixture\n');
+  let ignored = loadIgnores(root);
+  assert.deepEqual(ignored.problems, []);
+  const [found] = scanText(token, { file: 'a', ignores: ignored.entries });
+  assert.equal(found.ignored, 'a test fixture');
+  assert.equal(isFailingFinding(found), false);
+
+  writeFileSync(join(root, '.yokotenignore'), 'secret\n');
+  ignored = loadIgnores(root);
+  assert.equal(ignored.problems.length, 1);
+  assert.equal(ignored.problems[0].line, 1);
+  assert.match(ignored.problems[0].what, /no reason/);
+  assert.equal(isFailingFinding(ignored.problems[0]), true);
+});
+
+test('ignores: the rule name picks the finding, and an unknown rule fails (#616)', () => {
+  const address = `someone${at}gmail.com`;
+  const root = makeTempDir();
+  writeFileSync(join(root, '.yokotenignore'), 'email: a public test inbox\n');
+  let ignored = loadIgnores(root);
+  const [found] = scanText(`mail ${address}`, { file: 'a', ignores: ignored.entries });
+  assert.equal(found.id, 'email');
+  assert.equal(found.grade, 'sure');
+  assert.equal(found.ignored, 'a public test inbox');
+  assert.equal(isFailingFinding(found), false);
+  assert.match(formatFinding(found), /\[sure; ignored: a public test inbox\]/);
+  assert.ok(!JSON.stringify(found).includes(address), 'the address never appears');
+  const marker = ['yokoten', 'ignore'].join('-');
+  const [onLine] = scanText(`mail ${address} // ${marker} email: a test fixture`, { file: 'a' });
+  assert.equal(onLine.ignored, 'a test fixture');
+  assert.equal(isFailingFinding(onLine), false);
+
+  writeFileSync(join(root, '.yokotenignore'), 'colour: a test fixture\n');
+  ignored = loadIgnores(root);
+  assert.equal(ignored.problems.length, 1);
+  assert.equal(ignored.problems[0].id, 'ignore');
+  assert.equal(isFailingFinding(ignored.problems[0]), true);
+});
+
+test('secrets: a real value from a secret-looking environment variable is caught (#616)', () => {
+  const value = `${'env'}${'Secret'}${'Value'}${'1234567890'}`;
+  const found = scanText(`copied ${value}\n`, { file: 'a', env: { SERVICE_TOKEN: value } });
+  assert.equal(found.length, 1);
+  assert.equal(found[0].grade, 'sure');
+  assert.equal(found[0].what, 'a secret (environment value)');
+  assert.equal(isFailingFinding(found[0]), true);
+  assert.ok(!formatFinding(found[0]).includes(value), 'the environment value never appears');
+});
+
+test('secrets: a path or an id variable is not an environment secret (#616)', () => {
+  const path = `.config/${'yokoten'}/private-marks`;
+  assert.deepEqual(scanText(`at ${path}`, { file: 'a', env: { YOKOTEN_PRIVATE_MARKS: path } }), []);
+  assert.deepEqual(scanText('key ABCDEF12', { file: 'a', env: { GPG_KEY: 'ABCDEF12' } }), []);
+  assert.deepEqual(scanText('key-12345678', { file: 'a', env: { SERVICE_KEY_ID: 'key-12345678' } }), []);
 });
 
 test('secrets: PEM private keys with a body are caught, a header alone is not (#8)', () => {
