@@ -613,8 +613,10 @@ hook 一行都不删，`init` 也会说改了哪个文件。git 自己提交合�
 `init` 还会在 `.github/workflows/` 里放三个 workflow：`yokoten.yml`（跑提交检查；一个 lint
 job 用 actionlint 和 zizmor 查 workflow 本身；还有一个 `ci` job，设成必过的检查就只要设它）、
 `pr.yml` 和 `issue.yml`。每个 action 都固定到某一次提交，每个 job 都有超时，checkout 不留
-token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你自己的测试，加成 `yokoten.yml` 里
-的一个 job，再把它写进 `ci` 的 `needs`。
+token。在 `yokoten.yml` 里，同一个 PR 推了新提交，还在跑的那次会取消。`pr.yml` 什么都不取消。
+它的几次运行开始的顺序不固定，所以每一次都用这个 job 的 token，去读 PR 现在的标题、正文、标签和
+里程碑。重跑也是再读一遍现在的。你自己的测试，加成 `yokoten.yml` 里的一个 job，再把它写进 `ci`
+的 `needs`。
 
 `yokoten.yml` 和 `pr.yml` 还会在 `merge_group` 上跑，这样合并队列跑的必过检查和 PR 的一样。合并队列
 的一次运行里没有 PR：`yokoten.yml` 把每个 job 都完整跑一遍，`pr` 的 job 跳过，跳过在队列里算作通
@@ -1145,6 +1147,7 @@ Rust 的 workspace 里，一条就能管到每个 crate：
 | `YOKOTEN_MIN_FREE_GB` | 盘上剩的空间少于这么多 GB 时，`doctor` 提醒；`0` 就不提醒。见[本机提示](#本机提示) |
 | `YOKOTEN_BOT_APP_ID`、`YOKOTEN_BOT_KEY`、`YOKOTEN_BOT_INSTALLATION` | bot 的设置，也可以写成 `~/.config/yokoten/keys.env` 里的几行。见 [server.md](../../server.md#3-the-bot-a-github-app) |
 | `YOKOTEN_GITHUB_API` | 换一个 GitHub API 地址，比如自建的 GitHub Enterprise Server |
+| `YOKOTEN_PR_LIVE=1` | `check --pr` 用 `GITHUB_TOKEN` 去读 PR 现在的标题、正文、标签和里程碑，不读触发时留下的事件文件。读不到这些就失败。kit 里的 `pr.yml` 会设上它 |
 | `LLAMA_API_KEY` 或 `MODEL_API_KEY`、`LLAMA_API_BASE`、`LLAMA_MODEL` | `adopt` 用的模型，见[先拿一份草稿](#先拿一份草稿) |
 
 
