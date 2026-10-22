@@ -17,6 +17,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -384,7 +385,8 @@ const copyTranslatedRepo = makeRepoTemplate((root) => {
 // The team of #674 (test/agents/desk/team/, test/commands/advice/messages.test.ts).
 /** A lead's checkout and a desk next to it, both with a bare `.git` folder: no git process is needed. */
 export function makeTeamFixture() {
-  const projects = makeTempDir('team-');
+  // The real path: on macOS the temp folder is a link (/var to /private/var), and whoAmI answers with real paths.
+  const projects = realpathSync(makeTempDir('team-'));
   const main = join(projects, 'repo');
   const desk = join(projects, 'desks', 'g1');
   const state = `${desk}.state/grok`;
