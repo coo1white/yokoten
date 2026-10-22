@@ -3,11 +3,9 @@
 
 # yokoten · 横展
 
-### 带你上路，替你守桥。
+### 每个 AI agent，同一套规则。
 
-**谁都能像好团队一样做软件。**
-
-一个免费工具，把好团队的做事流程装进你的项目。检查跑在你的仓库和 CI 里，代码是人写的还是 AI 写的都一样。
+AI 让写代码变便宜了，管代码却没有。yokoten 让每个 agent 都守你的规则，拍板的永远是你。
 
 **[yokoten.app](https://yokoten.app/?from=github)** &nbsp;·&nbsp; [English](../../../README.md) | 简体中文 | [繁體中文](../zh-TW/README.md) | [日本語](../ja/README.md)
 
