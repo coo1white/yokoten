@@ -4,10 +4,10 @@
 import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { DESK_RUNTIMES, findProgram, hiddenFolders, isInside, OWN_RUNTIME, planDesk, programFolders, proxyEnv } from '../../../src/agents/desk/desk.ts';
+import { DESK_RUNTIMES, findProgram, hiddenFolders, isInside, OWN_RUNTIME, planDesk, prepareDeskState, programFolders, proxyEnv } from '../../../src/agents/desk/desk.ts';
 import { makeTempDir } from '../../repo/helpers.ts';
 import { TEST_HOME } from '../../repo/home.ts';
 
@@ -53,11 +53,13 @@ test('hiddenFolders: every home, other drives, and the desk parent; only those t
   for (const folder of hiddenFolders('darwin', TEST_HOME, desk)) assert.ok(!['/home', '/mnt'].includes(folder));
 });
 
-test('planDesk: the desk and state writable, a token dropped, role and time zone fixed', () => {
+test('planDesk: the desk and its own state writable, a token dropped, role and time zone fixed', () => {
   const { projects, desk } = makeDesk();
   const plan = planDesk({ runtime: 'claude-code', desk, command: ['node', 'x.js'], env: env(), extraHosts: ['api.deepseek.com'] });
   assert.equal(plan.desk, desk);
-  assert.deepEqual(plan.state, [join(realpathSync(TEST_HOME), '.claude')]);
+  assert.deepEqual(plan.state, [`${desk}.state/claude-code`]);
+  assert.equal(plan.env.CLAUDE_CONFIG_DIR, `${desk}.state/claude-code`, "the agent uses the desk's state, not the lead's");
+  assert.ok(!plan.readable.some((path) => isInside(path, join(realpathSync(TEST_HOME), '.claude'))), "nothing of the lead's state is shown");
   assert.ok(plan.hidden.includes(projects) && plan.hidden.includes(realpathSync(TEST_HOME)));
   assert.ok(plan.readable.includes(dirname(dirname(realpathSync(process.execPath)))), 'Node is shown');
   assert.ok(plan.readable.includes(OWN_RUNTIME[1]), "yokoten's src is shown");
@@ -67,7 +69,35 @@ test('planDesk: the desk and state writable, a token dropped, role and time zone
   assert.equal(plan.env.TZ, 'UTC');
   assert.equal(plan.env.GH_TOKEN, undefined);
   assert.equal(plan.env.SECRET_THING, undefined);
-  assert.deepEqual(plan.locked, []);
+  assert.deepEqual(plan.locked, [join(desk, '.git', 'config'), join(desk, '.git', 'hooks')], "git's config and hooks stay read-only");
+});
+
+test('prepareDeskState: only the login file comes from the lead; a newer one is copied again; a link is refused', () => {
+  const { desk } = makeDesk();
+  const lead = join(TEST_HOME, '.claude');
+  mkdirSync(join(lead, 'projects'), { recursive: true });
+  writeFileSync(join(lead, '.credentials.json'), 'login-1');
+  writeFileSync(join(lead, 'settings.json'), '{"hooks": {}}');
+  writeFileSync(join(lead, 'history.jsonl'), '{}');
+  try {
+    const state = prepareDeskState(DESK_RUNTIMES['claude-code'], 'claude-code', desk, env());
+    assert.deepEqual(readdirSync(state).sort(), ['.claude.json', '.credentials.json']);
+    assert.equal(readFileSync(join(state, '.credentials.json'), 'utf8'), 'login-1');
+    writeFileSync(join(state, '.credentials.json'), 'renewed in the desk');
+    prepareDeskState(DESK_RUNTIMES['claude-code'], 'claude-code', desk, env());
+    assert.equal(readFileSync(join(state, '.credentials.json'), 'utf8'), 'renewed in the desk', "a newer login in the desk is kept");
+    // Positive control: a link a worker left in the desk's state is never followed.
+    rmSync(join(state, '.credentials.json'));
+    symlinkSync(join(lead, 'settings.json'), join(state, '.credentials.json'));
+    prepareDeskState(DESK_RUNTIMES['claude-code'], 'claude-code', desk, env());
+    assert.equal(readFileSync(join(lead, 'settings.json'), 'utf8'), '{"hooks": {}}', "the lead's file is untouched");
+    assert.ok(!lstatSync(join(state, '.credentials.json')).isSymbolicLink());
+    rmSync(state, { recursive: true });
+    symlinkSync(lead, state);
+    assert.throws(() => prepareDeskState(DESK_RUNTIMES['claude-code'], 'claude-code', desk, env()), /is a link/);
+  } finally {
+    rmSync(lead, { recursive: true, force: true });
+  }
 });
 
 test('planDesk: the marks file only with --marks; the worker mark is locked', () => {
@@ -78,7 +108,11 @@ test('planDesk: the marks file only with --marks; the worker mark is locked', ()
   assert.ok(!planDesk({ runtime: 'grok', desk, command: ['node'], env: env() }).readable.includes(realpathSync(marks)));
   const plan = planDesk({ runtime: 'grok', desk, command: ['node'], env: env(), marks });
   assert.ok(plan.readable.includes(realpathSync(marks)));
-  assert.deepEqual(plan.locked, [join(desk, '.git', 'yokoten-worker')]);
+  assert.deepEqual(plan.locked, [join(desk, '.git', 'config'), join(desk, '.git', 'hooks'), join(desk, '.git', 'yokoten-worker')]);
+  // Positive control: a link in place of .git/config would show the lead's file, so it is refused.
+  rmSync(join(desk, '.git', 'config'));
+  symlinkSync(marks, join(desk, '.git', 'config'));
+  assert.throws(() => planDesk({ runtime: 'grok', desk, command: ['node'], env: env() }), /is a link/);
 });
 
 test('planDesk: refuses an unknown agent, a worktree, a folder that is no clone, and a path that opens a hidden folder', () => {
@@ -90,7 +124,10 @@ test('planDesk: refuses an unknown agent, a worktree, a folder that is no clone,
   assert.throws(() => planDesk({ runtime: 'codex', desk, command: ['node'], env: env(), extraReadable: [projects] }), /would open a hidden folder/);
   assert.throws(() => planDesk({ runtime: 'codex', desk, command: ['node'], env: env(), extraReadable: ['/'] }), /whole system/);
   assert.throws(() => planDesk({ runtime: 'codex', desk, command: ['no-such-agent'], env: env() }), /can't find no-such-agent/);
-  assert.throws(() => planDesk({ runtime: 'codex', desk, command: ['node'], env: { ...env(), CODEX_HOME: TEST_HOME } }), /state folder .* would open a hidden folder/);
+  const leadCodex = makeTempDir('codex-home-');
+  mkdirSync(join(leadCodex, 'sessions'));
+  assert.ok(planDesk({ runtime: 'codex', desk, command: ['node'], env: { ...env(), CODEX_HOME: leadCodex } }).hidden.includes(realpathSync(leadCodex)), "the lead's CODEX_HOME is hidden wherever it is");
+  assert.throws(() => planDesk({ runtime: 'codex', desk, command: ['node'], env: { ...env(), CODEX_HOME: leadCodex }, extraReadable: [join(leadCodex, 'sessions')] }), /lead's own codex state/);
 });
 
 test('proxyEnv: every proxy name in both cases, and Node told to read them', () => {

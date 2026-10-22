@@ -2,7 +2,10 @@
 // own clone) and a fence around the agent that works in it. The fence is one contract,
 // the same for Claude Code, Codex (and DeepSeek through it), Grok and Muse:
 //
-// 1. The desk folder, `.git` included, and the agent's own state folder are writable.
+// 1. The desk folder, `.git` included, and the desk's own state folder for the agent are
+//    writable. The lead's state folder (~/.claude, ~/.codex...) is never shown: the desk
+//    gets a fresh one next to it, `<desk>.state/<agent>`, with only the login file copied.
+//    `.git/config` and `.git/hooks` stay read-only, so the lead never runs a worker's.
 // 2. Everything else the agent can see is read-only.
 // 3. The owner's other projects and home are not visible: only what the agent needs to
 //    run (Node, its own program, yokoten's runtime) is shown again, read-only.
@@ -15,7 +18,7 @@
 // backend per system turns the plan into a command: bwrap.ts on Linux and WSL2,
 // seatbelt.ts on macOS. Native Windows has no backend; WSL2 is the way there (#669).
 
-import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs';
+import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Env } from '../../rules/config.ts';
@@ -26,10 +29,18 @@ import { DESK as GROK } from '../runtimes/grok.ts';
 import { DESK as MUSE } from '../runtimes/muse.ts';
 import { buildAgentEnv } from './agent-env.ts';
 
-/** What a runtime's own file tells the desk: where it keeps its state, and which hosts its API is on. */
+/** What a runtime's own file tells the desk: where its state is, how to move it, and its API hosts. */
 export interface RuntimeDesk {
-  /** The agent's own state folders and files, writable in the desk. A file is used only when it is there. */
-  state: (env: Env) => { path: string; isFile?: boolean }[];
+  /** The lead's own state folders and files for this agent. Never shown in a desk. */
+  leadState: (env: Env) => string[];
+  /** The login files to copy from the lead's state into the desk's: `to` is relative to the desk's state folder. */
+  login: (env: Env) => { from: string; to: string }[];
+  /** Files to write in a new desk state folder, relative to it, when they are missing. */
+  starter?: Readonly<Record<string, string>>;
+  /** The names that point the agent at the desk's state folder. */
+  stateEnv: (state: string) => Record<string, string>;
+  /** Parts of the agent's install that sit in its state folder, shown read-only. */
+  programParts?: (env: Env) => string[];
   /** The API hosts the agent program may reach, on port 443. */
   hosts: readonly string[];
 }
@@ -52,7 +63,7 @@ export interface DeskPlan {
   readable: string[];
   /** Folders that are not visible at all: home folders, other drives, the desk's parent folder. */
   hidden: string[];
-  /** Files inside a writable folder that stay read-only, such as the worker mark. */
+  /** Files and folders inside a writable folder that stay read-only: `.git/config`, `.git/hooks`, the worker mark. */
   locked: string[];
   /** The hosts the proxy lets the agent reach. */
   hosts: string[];
@@ -96,6 +107,15 @@ function realOr(path: string): string {
   }
 }
 
+/** Whether `path` is a link, even one that points nowhere. */
+function isLink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
 /** The file a command name runs, found on PATH like a shell would, or null. */
 export function findProgram(name: string, path: string | undefined): string | null {
   if (name.includes('/')) return existsSync(name) ? resolve(name) : null;
@@ -136,6 +156,42 @@ export function hiddenFolders(platform: NodeJS.Platform, home: string, desk: str
   return [...new Set([...roots, home, dirname(desk)])].filter((folder) => existsSync(folder));
 }
 
+/** Throw when `path` is a link or not of the kind wanted: a worker could point it at the lead's files. */
+function requireReal(path: string, kind: 'folder' | 'file'): void {
+  const entry = lstatSync(path);
+  if (entry.isSymbolicLink() || (kind === 'folder' ? !entry.isDirectory() : !entry.isFile())) {
+    throw new Error(`${path} is a link or not a ${kind}. Remove it, then run the desk again.`);
+  }
+}
+
+/**
+ * Make the desk's own state folder for the agent, `<desk>.state/<agent>`, and copy the
+ * lead's login file in. Nothing else of the lead's state comes along: no settings, hooks,
+ * memory, MCP config, history or sessions. A login file is copied again when the lead's is
+ * newer. A link a worker left there is refused, never followed.
+ */
+export function prepareDeskState(runtime: RuntimeDesk, name: string, desk: string, env: Env): string {
+  const root = `${desk}.state`;
+  const state = join(root, name);
+  mkdirSync(state, { recursive: true });
+  requireReal(root, 'folder');
+  requireReal(state, 'folder');
+  for (const { from, to } of runtime.login(env)) {
+    if (!existsSync(from)) continue;
+    const target = join(state, to);
+    mkdirSync(dirname(target), { recursive: true });
+    requireReal(dirname(target), 'folder');
+    if (!isLink(target) && existsSync(target) && statSync(target).mtimeMs >= statSync(from).mtimeMs) continue;
+    rmSync(target, { force: true });
+    copyFileSync(from, target, constants.COPYFILE_EXCL);
+  }
+  for (const [file, text] of Object.entries(runtime.starter ?? {})) {
+    const target = join(state, file);
+    if (!existsSync(target)) writeFileSync(target, text, { flag: 'wx' });
+  }
+  return state;
+}
+
 /**
  * Turn a request into the desk's plan. It throws, with a reason the lead can act on, when
  * the runtime is unknown, the folder is not a clone, or a path would open a hidden folder.
@@ -149,46 +205,50 @@ export function planDesk(request: DeskRequest): DeskPlan {
   const desk = realOr(resolve(request.desk));
   if (!existsSync(join(desk, '.git'))) throw new Error(`${desk} is not a git clone. Make the desk with \`git clone <repo> <folder>\`.`);
   if (statSync(join(desk, '.git')).isFile()) throw new Error(`${desk} is a worktree: its git folder lives in another checkout, which the desk hides. Make the desk with \`git clone\`.`);
-  const hidden = hiddenFolders(request.platform ?? process.platform, home, desk);
+  requireReal(join(desk, '.git'), 'folder');
+  // The lead's own state is hidden too, where it lives outside the home folder.
+  const leadState = runtime.leadState(env).map(realOr).filter((path) => existsSync(path));
+  const hidden = [...new Set([...hiddenFolders(request.platform ?? process.platform, home, desk), ...leadState.filter((path) => statSync(path).isDirectory())])];
   // A path the agent may see must not open a whole hidden folder, or the desk itself.
   const isTooWide = (path: string) => hidden.some((folder) => isInside(folder, path)) || isInside(desk, path) || path === '/';
-  const state: string[] = [];
-  for (const entry of runtime.state(env)) {
-    const path = realOr(entry.path);
-    if (isTooWide(path)) throw new Error(`the agent's state folder ${path} would open a hidden folder`);
-    if (entry.isFile) {
-      if (existsSync(path)) state.push(path);
-      continue;
-    }
-    mkdirSync(path, { recursive: true });
-    state.push(path);
-  }
   const program = findProgram(request.command[0], env.PATH);
   if (!program) throw new Error(`can't find ${request.command[0]} on PATH`);
   const node = dirname(dirname(realOr(process.execPath)));
-  const wanted = [node, ...programFolders(program), ...OWN_RUNTIME, ...(request.runtimes ?? []), join(home, '.gitconfig'), join(home, '.config', 'git')];
+  const wanted = [node, ...programFolders(program), ...(runtime.programParts?.(env) ?? []), ...OWN_RUNTIME, ...(request.runtimes ?? []), join(home, '.gitconfig'), join(home, '.config', 'git')];
   if (request.marks) wanted.push(request.marks);
   const readable: string[] = [];
+  // Nothing of the lead's state but the program parts the runtime names.
+  const parts = (runtime.programParts?.(env) ?? []).map(realOr);
+  const isLeadState = (path: string) => leadState.some((folder) => isInside(path, folder) || isInside(folder, path)) && !parts.some((part) => isInside(path, part));
   for (const path of wanted.map(realOr)) {
-    if (!existsSync(path) || isTooWide(path) || readable.includes(path)) continue;
-    if (state.some((folder) => isInside(path, folder))) continue;
+    if (!existsSync(path) || isTooWide(path) || isLeadState(path) || readable.includes(path)) continue;
     readable.push(path);
   }
   for (const path of request.extraReadable ?? []) {
     const real = realOr(resolve(path));
     if (!existsSync(real)) throw new Error(`--read ${path}: not there`);
     if (isTooWide(real)) throw new Error(`--read ${path} would open a hidden folder or the whole system`);
+    if (isLeadState(real)) throw new Error(`--read ${path} would show the lead's own ${request.runtime} state`);
     if (!readable.includes(real)) readable.push(real);
   }
-  const marks = join(desk, '.git', 'yokoten-worker');
+  // Git's config and hooks, and the worker mark, stay read-only: a worker can't plant a
+  // hook or an alias that the lead would run later. A link there is refused.
+  const locked: string[] = [];
+  for (const [part, kind] of [['config', 'file'], ['hooks', 'folder'], ['yokoten-worker', 'file']] as const) {
+    const path = join(desk, '.git', part);
+    if (!existsSync(path) && !isLink(path)) continue;
+    requireReal(path, kind);
+    locked.push(path);
+  }
+  const state = prepareDeskState(runtime, request.runtime, desk, env);
   return {
     desk,
-    state,
+    state: [state],
     readable,
     hidden,
-    locked: existsSync(marks) ? [marks] : [],
+    locked,
     hosts: [...new Set([...runtime.hosts, ...(request.extraHosts ?? [])])],
-    env: { ...buildAgentEnv(env, { runtime: request.runtime, set: { YOKOTEN_ROLE: 'worker' } }), TZ: 'UTC' },
+    env: { ...buildAgentEnv(env, { runtime: request.runtime, set: { YOKOTEN_ROLE: 'worker' } }), ...runtime.stateEnv(state), TZ: 'UTC' },
     command: request.command,
   };
 }

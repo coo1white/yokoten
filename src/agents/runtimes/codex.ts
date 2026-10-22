@@ -991,12 +991,16 @@ export function sandboxProblem(root: string, env: Env): { what: string; fix: str
 export const AGENT_ENV: RuntimeEnv = { login: ['OPENAI_API_KEY', 'CODEX_API_KEY'], config: ['CODEX_HOME'] };
 
 /**
- * What a desk (#637) gives Codex: CODEX_HOME (or `~/.codex`) writable, and the OpenAI
- * API and ChatGPT login hosts, plus DeepSeek's API, which yokoten's DeepSeek workers reach
- * through Codex. The binary names HTTPS_PROXY and ALL_PROXY. Inside the desk Codex runs
- * with `--sandbox danger-full-access`: its own sandbox blocks `.git` and the pipes tests use.
+ * What a desk (#637) gives Codex. CODEX_HOME points at the desk's own folder; only
+ * `auth.json` is copied in, never `config.toml`: pass a provider with `-c` on the command.
+ * Hosts: the OpenAI API, and DeepSeek's, which yokoten's DeepSeek workers reach through
+ * Codex. A ChatGPT login also needs `--host chatgpt.com,auth.openai.com`. The binary names
+ * HTTPS_PROXY and ALL_PROXY. Inside the desk Codex runs with `--sandbox danger-full-access`:
+ * its own sandbox blocks `.git` and the pipes tests use.
  */
 export const DESK: RuntimeDesk = {
-  state: (env) => [{ path: env.CODEX_HOME || join(homeIn(env), '.codex') }],
-  hosts: ['api.openai.com', 'chatgpt.com', 'auth.openai.com', 'api.deepseek.com'],
+  leadState: (env) => [env.CODEX_HOME || join(homeIn(env), '.codex')],
+  login: (env) => [{ from: join(env.CODEX_HOME || join(homeIn(env), '.codex'), 'auth.json'), to: 'auth.json' }],
+  stateEnv: (state) => ({ CODEX_HOME: state }),
+  hosts: ['api.openai.com', 'api.deepseek.com'],
 };

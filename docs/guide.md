@@ -1606,52 +1606,77 @@ The fence is one contract. Each system builds it its own way:
 
 | Rule | In the desk |
 |---|---|
-| Writes | Only in the desk folder (`.git` too, so the worker commits) and the agent's own state folder |
+| Writes | Only in the desk folder (`.git` too, so the worker commits) and the desk's own state folder for the agent. `.git/config` and `.git/hooks` stay read-only |
 | Reads | Everything else the agent can see is read-only |
 | Other projects | Not visible. Your home and the desk's parent folder are hidden. On Linux, `/run` is hidden too: its sockets lead out, and on WSL2 one of them starts Windows programs. Node, the agent program and yokoten are shown again, read-only |
+| Your agent state | Not visible. Your `~/.claude`, `~/.codex`, `~/.grok` and Muse folders stay hidden: no settings, hooks, memory, MCP config, history or sessions |
 | Child processes | Work, with pipes, so tests can start programs |
-| Network | None for commands. The agent program reaches only its model's API hosts, through a proxy outside the desk |
+| Network | Commands get no network of their own. The proxy outside lets through only the agent's API hosts. Any command inside can use the proxy too, so a command can reach those hosts |
 | Environment | `YOKOTEN_ROLE=worker` and `TZ=UTC`. No token or key from your shell (see [What an agent's environment holds](#what-an-agents-environment-holds)) |
 
 The desk must be its own `git clone`. A worktree's git folder lives in another checkout,
 which the desk hides, so a worktree is refused.
 
-| Agent | `<agent>` | State folder | API hosts | Command inside the desk |
-|---|---|---|---|---|
-| Claude Code | `claude-code` | `~/.claude`, `~/.claude.json` | `api.anthropic.com` and its login hosts | `claude -p "<brief>"` |
-| Codex, and DeepSeek through Codex | `codex` | `$CODEX_HOME` or `~/.codex` | `api.openai.com`, `chatgpt.com`, `auth.openai.com`, `api.deepseek.com` | `codex exec --sandbox danger-full-access "<brief>"` |
-| Grok | `grok` | `$GROK_HOME` or `~/.grok` | `api.x.ai` | `grok -p "<brief>"` |
-| Muse Code | `muse` | `~/.config/muse`, `~/.local/share/muse` | `api.meta.ai`, `dev.meta.ai`, `auth.meta.com` | `muse exec "<brief>"` |
+**The desk's state folder.** Each desk gets its own state folder for the agent, next to
+it: `<desk>.state/<agent>`. The desk points the agent there with the agent's own variable.
+Only the login file is copied in from yours. A newer login of yours is copied again on the
+next start. Remove the state folder with the desk.
 
+| Agent | `<agent>` | Points the agent at its state with | Login file copied | API hosts | Command inside the desk |
+|---|---|---|---|---|---|
+| Claude Code | `claude-code` | `CLAUDE_CONFIG_DIR` | `.credentials.json` | `api.anthropic.com`, and `platform.claude.com` to renew a login | `claude -p "<brief>"` |
+| Codex, and DeepSeek through Codex | `codex` | `CODEX_HOME` | `auth.json` | `api.openai.com`, `api.deepseek.com` | `codex exec --sandbox danger-full-access "<brief>"` |
+| Grok | `grok` | `GROK_HOME` | `auth.json` | `api.x.ai` | `grok -p "<brief>"` |
+| Muse Code | `muse` | `XDG_CONFIG_HOME`, `XDG_DATA_HOME` | `muse/auth.json` | `api.meta.ai` | `muse exec "<brief>"` |
+
+- **Claude Code** renews a login at `platform.claude.com`. A token from `claude setup-token`
+  in `CLAUDE_CODE_OAUTH_TOKEN`, or an API key, needs no renewal and passes in as a login.
 - **Codex** runs with `--sandbox danger-full-access` inside the desk. Its own
   `workspace-write` sandbox makes `.git` read-only and blocks the pipes that tests use. The
-  desk is the fence instead.
+  desk is the fence instead. Your `config.toml` stays out: give a provider with `-c` on the
+  command. A ChatGPT login also needs `--host chatgpt.com,auth.openai.com`.
 - **Grok**: turn off `--sandbox` inside the desk if it stops a commit or a test.
 - **More hosts**: `--host <host>` lets the agent reach another API host on port 443.
   Separate several with commas.
 - **More files**: `--read <path>` shows another path, read-only. A path that would open
-  your home or a hidden folder is refused.
+  your home, a hidden folder or your own agent state is refused.
 
 **The proxy.** Each of the four agents names `HTTPS_PROXY` in its program, and the desk sets
 `HTTPS_PROXY`, `HTTP_PROXY` and `ALL_PROXY` in both cases. It also sets
 `NODE_USE_ENV_PROXY=1`, so Node's own `fetch` uses the proxy too. The proxy takes `CONNECT`
-only, to a listed host, and never reads the traffic. When it refuses a host, the desk names
-the host at the end.
+only, to a listed host, and never reads the traffic. It keeps at most 64 tunnels open, and
+closes a tunnel that is still for 10 minutes. When it refuses a host, the desk names the
+host at the end.
+
+**Review from outside.** The worker writes in the desk, so treat the desk as untrusted. Do
+not run git or any other command inside the desk before you check the work. Fetch the
+branch into your own checkout, then review it there:
+
+```sh
+git fetch ../desks/42 HEAD:refs/desks/42
+git diff main refs/desks/42
+```
+
+`.git/config` and `.git/hooks` are read-only in the desk, so a worker can't plant a hook or
+an alias there. Set an upstream or other config from outside, before you start the desk.
 
 **The commit check and your private marks.** The commit check reads your private-marks
 file. An agent that can read the file can also print it. So the desk hides it by default,
 and the check in the desk does not see your marks. Until marks are kept as hashes (#665),
-run the commit check yourself, outside the desk, before you push:
-`node bin/yokoten.ts check --staged`, or `git commit` in your own checkout. `--marks` shows
-the file in the desk, read-only. Use it only for an agent you trust with the words.
+run the check yourself, outside the desk. Check out the fetched branch in your own
+checkout, then run `yokoten check` there; it checks the whole tree. `--marks` shows the file in the
+desk, read-only. Use it only for an agent you trust with the words.
 
 **Systems.**
 
 - **Linux and WSL2**: `bwrap` (bubblewrap). Install it with `sudo apt install bubblewrap`.
   The desk gets its own empty network. A small bridge inside passes the agent's proxy
   connections to the proxy outside.
-- **macOS**: `sandbox-exec`, built in, with a profile written for each desk. Not yet run on
-  a Mac: run `node --test test/agents/desk/start.test.ts` there once to check the contract.
+- **macOS**: `sandbox-exec`, built in, with a profile written for each desk. The profile
+  starts from "deny everything". It allows only the reads, writes, Mach services and the
+  proxy port that the desk needs. It blocks `open`, `osascript`, Launch Services and Apple
+  events. Not yet run on a Mac: run `node --test test/agents/desk/start.test.ts` there once
+  to check the contract.
 - **Native Windows**: no desk yet (#669). Run yokoten in WSL2. On native Windows, the
   guard alone holds the rules.
 

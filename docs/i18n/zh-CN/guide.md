@@ -1268,45 +1268,66 @@ yokoten desk claude-code ../desks/42 -- claude -p "$(cat brief.md)"
 
 | 规矩 | 工位里是什么样 |
 |---|---|
-| 写 | 只能写工位文件夹（包括 `.git`，所以 worker 能提交）和这个 agent 自己的状态文件夹 |
+| 写 | 只能写工位文件夹（包括 `.git`，所以 worker 能提交）和工位给这个 agent 的状态文件夹。`.git/config` 和 `.git/hooks` 只能读 |
 | 读 | agent 看得到的其他东西都只能读 |
 | 别的项目 | 看不到。你的主目录和工位的上一级文件夹都藏起来了。Linux 上 `/run` 也藏起来：那里的 socket 能通到外面，在 WSL2 里还有一个能直接启动 Windows 程序。Node、agent 程序和 yokoten 会重新放进来，只能读 |
+| 你自己的 agent 状态 | 看不到。你的 `~/.claude`、`~/.codex`、`~/.grok` 和 Muse 的文件夹都藏起来：设置、钩子、记忆、MCP 配置、历史记录、会话，一样都不带进来 |
 | 子进程 | 能跑，管道也能用，所以测试可以启动程序 |
-| 网络 | 命令一律上不了网。agent 程序只能通过工位外面的代理，连到它的模型 API |
+| 网络 | 命令自己上不了网。外面的代理只放行 agent 的 API 主机。工位里的任何命令也能用这个代理，所以命令也连得到这些主机 |
 | 环境变量 | `YOKOTEN_ROLE=worker`、`TZ=UTC`。你 shell 里的 token 和密钥都不带进来（见 [agent 拿到的环境变量](#agent-拿到的环境变量)） |
 
 工位必须是单独 `git clone` 出来的。worktree 的 git 文件夹在另一个检出里，工位会把它藏起来，
 所以 worktree 不行，命令会拒绝。
 
-| agent | `<agent>` | 状态文件夹 | API 主机 | 在工位里跑的命令 |
-|---|---|---|---|---|
-| Claude Code | `claude-code` | `~/.claude`、`~/.claude.json` | `api.anthropic.com` 和它的登录主机 | `claude -p "<任务说明>"` |
-| Codex，以及通过 Codex 用 DeepSeek | `codex` | `$CODEX_HOME` 或 `~/.codex` | `api.openai.com`、`chatgpt.com`、`auth.openai.com`、`api.deepseek.com` | `codex exec --sandbox danger-full-access "<任务说明>"` |
-| Grok | `grok` | `$GROK_HOME` 或 `~/.grok` | `api.x.ai` | `grok -p "<任务说明>"` |
-| Muse Code | `muse` | `~/.config/muse`、`~/.local/share/muse` | `api.meta.ai`、`dev.meta.ai`、`auth.meta.com` | `muse exec "<任务说明>"` |
+**工位自己的状态文件夹。** 每个工位在旁边有一个给 agent 用的状态文件夹：`<工位>.state/<agent>`。
+工位用 agent 自己认的变量把它指到这里。从你那里只复制登录文件。你的登录文件更新了，下次启动时
+会再复制一次。删工位的时候，把这个文件夹一起删掉。
 
+| agent | `<agent>` | 用哪个变量指到状态文件夹 | 复制的登录文件 | API 主机 | 在工位里跑的命令 |
+|---|---|---|---|---|---|
+| Claude Code | `claude-code` | `CLAUDE_CONFIG_DIR` | `.credentials.json` | `api.anthropic.com`，还有续登录用的 `platform.claude.com` | `claude -p "<任务说明>"` |
+| Codex，以及通过 Codex 用 DeepSeek | `codex` | `CODEX_HOME` | `auth.json` | `api.openai.com`、`api.deepseek.com` | `codex exec --sandbox danger-full-access "<任务说明>"` |
+| Grok | `grok` | `GROK_HOME` | `auth.json` | `api.x.ai` | `grok -p "<任务说明>"` |
+| Muse Code | `muse` | `XDG_CONFIG_HOME`、`XDG_DATA_HOME` | `muse/auth.json` | `api.meta.ai` | `muse exec "<任务说明>"` |
+
+- **Claude Code** 到 `platform.claude.com` 续登录。用 `claude setup-token` 拿的 token 放在
+  `CLAUDE_CODE_OAUTH_TOKEN` 里，或者用 API key，就不用续，它们会作为登录变量传进去。
 - **Codex** 在工位里要用 `--sandbox danger-full-access`。它自己的 `workspace-write` 沙箱会把
-  `.git` 设成只读，还会挡住测试要用的管道。工位本身就是围栏，用不着它那一层。
+  `.git` 设成只读，还会挡住测试要用的管道。工位本身就是围栏，用不着它那一层。你的 `config.toml`
+  不带进来：模型提供方用命令里的 `-c` 给。用 ChatGPT 登录的话，还要加 `--host chatgpt.com,auth.openai.com`。
 - **Grok**：如果 `--sandbox` 挡住了提交或测试，在工位里把它关掉。
 - **加主机**：`--host <主机>` 让 agent 多连一个 API 主机（443 端口）。几个主机用逗号隔开。
-- **加文件**：`--read <路径>` 多放一个路径进来，只能读。会把主目录或藏起来的文件夹露出来的路径，
-  命令会拒绝。
+- **加文件**：`--read <路径>` 多放一个路径进来，只能读。会露出主目录、藏起来的文件夹或你自己 agent
+  状态的路径，命令会拒绝。
 
 **代理。** 四个 agent 的程序里都认 `HTTPS_PROXY`。工位会把 `HTTPS_PROXY`、`HTTP_PROXY`、
 `ALL_PROXY` 的大写和小写都设好，还设 `NODE_USE_ENV_PROXY=1`，这样 Node 自带的 `fetch` 也走代理。
-代理只接受 `CONNECT`，只放行名单上的主机，从不看传的内容。它拒绝了哪个主机，工位结束时会说出来。
+代理只接受 `CONNECT`，只放行名单上的主机，从不看传的内容。它同时最多开 64 条通道，一条通道 10 分钟
+没动静就关掉。它拒绝了哪个主机，工位结束时会说出来。
+
+**在外面审。** 工位里的东西是 worker 写的，要当成不可信的。检查之前，别在工位里跑 git 或别的命令。
+先把分支取到你自己的检出里，再在那里审：
+
+```sh
+git fetch ../desks/42 HEAD:refs/desks/42
+git diff main refs/desks/42
+```
+
+工位里的 `.git/config` 和 `.git/hooks` 只能读，worker 没法在那里埋钩子或别名。upstream 之类的
+设置，在启动工位之前从外面设好。
 
 **提交检查和你的私有词表。** 提交检查要读你的私有词表。agent 能读这个文件，就能把它打印出来。
-所以工位默认把它藏起来，工位里的检查看不到你的词。在词表改成存哈希之前（#665），推送前请你自己
-在工位外面跑一次提交检查：`node bin/yokoten.ts check --staged`，或者在你自己的检出里 `git commit`。
+所以工位默认把它藏起来，工位里的检查看不到你的词。在词表改成存哈希之前（#665），请你自己在工位
+外面检查：在你自己的检出里切到取回来的分支，跑 `yokoten check`，它会查整个目录树。
 `--marks` 会把这个文件放进工位，只能读。只有你放心让它看到这些词的 agent，才这样用。
 
 **系统。**
 
 - **Linux 和 WSL2**：用 `bwrap`（bubblewrap）。用 `sudo apt install bubblewrap` 安装。工位有自己的
   空网络，里面有个小桥，把 agent 连代理的请求转给外面的代理。
-- **macOS**：用系统自带的 `sandbox-exec`，每个工位现写一份规则。还没在 Mac 上跑过：请在 Mac 上跑一次
-  `node --test test/agents/desk/start.test.ts`，检查这套规矩。
+- **macOS**：用系统自带的 `sandbox-exec`，每个工位现写一份规则。规则从「全部不许」开始，只放开工位
+  要用的读、写、Mach 服务和代理端口，挡住 `open`、`osascript`、Launch Services 和 Apple 事件。
+  还没在 Mac 上跑过：请在 Mac 上跑一次 `node --test test/agents/desk/start.test.ts`，检查这套规矩。
 - **原生 Windows**：还没有工位（#669）。请在 WSL2 里用 yokoten。原生 Windows 上只有守卫在把关。
 
 ### 团队看板

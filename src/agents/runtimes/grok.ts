@@ -301,8 +301,15 @@ export function sandboxProblem(root: string, env: Env): { what: string; fix: str
 /** The names this runtime's agent gets on top of the shared ones (#613). Grok CLI takes an xAI API key. */
 export const AGENT_ENV: RuntimeEnv = { login: ['XAI_API_KEY', 'GROK_API_KEY'], config: ['GROK_HOME'] };
 
-/** What a desk (#637) gives Grok CLI: GROK_HOME (or `~/.grok`) writable, and xAI's API host. The binary names HTTPS_PROXY. */
+/**
+ * What a desk (#637) gives Grok CLI. GROK_HOME points at the desk's own folder; only
+ * `auth.json` is copied in. Grok's program sits in the lead's `~/.grok/bin`, so that one
+ * folder is shown read-only. Host: xAI's API. The binary names HTTPS_PROXY.
+ */
 export const DESK: RuntimeDesk = {
-  state: (env) => [{ path: env.GROK_HOME || join(homeIn(env), '.grok') }],
+  leadState: (env) => [env.GROK_HOME || join(homeIn(env), '.grok')],
+  login: (env) => [{ from: join(env.GROK_HOME || join(homeIn(env), '.grok'), 'auth.json'), to: 'auth.json' }],
+  stateEnv: (state) => ({ GROK_HOME: state }),
+  programParts: (env) => [join(env.GROK_HOME || join(homeIn(env), '.grok'), 'bin')],
   hosts: ['api.x.ai'],
 };

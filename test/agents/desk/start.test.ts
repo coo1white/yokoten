@@ -9,7 +9,7 @@
 import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -40,6 +40,17 @@ answer.homeWrite = tryIt(() => { fs.writeFileSync(process.env.HOME + '/outside.t
 answer.otherList = tryIt(() => fs.readdirSync(otherProject).join(','));
 answer.otherRead = tryIt(() => fs.readFileSync(otherProject + '/notes.txt', 'utf8'));
 const piped = spawnSync(process.execPath, ['-e', 'process.stdin.pipe(process.stdout)'], { input: 'through a pipe', encoding: 'utf8' });
+const lead = process.env.HOME + '/.claude';
+answer.leadProjects = tryIt(() => fs.readdirSync(lead + '/projects').join(','));
+answer.leadHistory = tryIt(() => fs.readFileSync(lead + '/history.jsonl', 'utf8'));
+answer.leadSettingsRead = tryIt(() => fs.readFileSync(lead + '/settings.json', 'utf8'));
+answer.leadSettingsWrite = tryIt(() => { fs.writeFileSync(lead + '/settings.json', '{}'); return 'ok'; });
+const own = process.env.CLAUDE_CONFIG_DIR;
+answer.ownLogin = tryIt(() => fs.readFileSync(own + '/.credentials.json', 'utf8'));
+answer.ownWrite = tryIt(() => { fs.writeFileSync(own + '/settings.json', '{}'); return 'ok'; });
+answer.gitConfigWrite = tryIt(() => { fs.appendFileSync('.git/config', '[alias]\n'); return 'ok'; });
+answer.gitHookWrite = tryIt(() => { fs.writeFileSync('.git/hooks/post-checkout', '#!/bin/sh\n'); return 'ok'; });
+answer.gitConfigCommand = spawnSync('git', ['config', 'alias.st', 'status'], { encoding: 'utf8' }).status;
 answer.hostDoors = ['/run/WSL', '/run/user', '/var/run/docker.sock'].filter((path) => fs.existsSync(path));
 answer.pipes = piped.error ? 'failed: ' + piped.error.code : piped.stdout;
 answer.role = process.env.YOKOTEN_ROLE;
@@ -79,6 +90,12 @@ test('the desk contract holds on this system', { skip: typeof backend === 'strin
   mkdirSync(other);
   writeFileSync(join(other, 'notes.txt'), 'not for the desk');
   writeFileSync(join(desk, 'probe.cjs'), PROBE);
+  // The lead's own Claude Code state, in the test home: none of it may show in the desk.
+  const lead = join(process.env.HOME ?? '', '.claude');
+  mkdirSync(join(lead, 'projects', 'some-project'), { recursive: true });
+  writeFileSync(join(lead, 'history.jsonl'), '{"display": "a past prompt"}\n');
+  writeFileSync(join(lead, 'settings.json'), '{"hooks": {}}');
+  writeFileSync(join(lead, '.credentials.json'), 'not-a-real-login');
   // A server outside the desk: reached through the proxy, never straight.
   const echo = createServer((socket) => socket.on('data', () => socket.end('hello back')));
   await new Promise<void>((resolve) => echo.listen(0, '127.0.0.1', resolve));
@@ -102,6 +119,17 @@ test('the desk contract holds on this system', { skip: typeof backend === 'strin
     assert.ok(!existsSync(outsideFile) && !existsSync(join(process.env.HOME ?? '', 'outside.txt')), 'nothing was written outside');
     assert.match(answer.otherList, /^failed/, 'another project is not listed');
     assert.match(answer.otherRead, /^failed/, "another project's file is not read");
+    assert.match(answer.leadProjects, /^failed/, "the lead's projects are not listed");
+    assert.match(answer.leadHistory, /^failed/, "the lead's history is not read");
+    assert.match(answer.leadSettingsRead, /^failed/, "the lead's settings are not read");
+    assert.match(answer.leadSettingsWrite, /^failed/, "the lead's settings are not written");
+    assert.equal(readFileSync(join(lead, 'settings.json'), 'utf8'), '{"hooks": {}}');
+    assert.equal(answer.ownLogin, 'not-a-real-login', "the desk's own state has the login");
+    assert.equal(answer.ownWrite, 'ok', "the desk's own state is writable");
+    assert.ok(!existsSync(join(lead, '.claude.json')) && readdirSync(lead).sort().join() === '.credentials.json,history.jsonl,projects,settings.json', "a write in the desk's state never reaches the lead's");
+    assert.match(answer.gitConfigWrite, /^failed/, '.git/config is read-only');
+    assert.match(answer.gitHookWrite, /^failed/, '.git/hooks is read-only');
+    assert.notEqual(answer.gitConfigCommand, 0, "git config can't change it either");
     assert.deepEqual(answer.hostDoors, [], 'no socket to the host: WSL interop, the session bus, Docker');
     assert.equal(answer.pipes, 'through a pipe', 'a child process with pipes works');
     assert.deepEqual([answer.role, answer.tz, answer.token], ['worker', 'UTC', 'absent'], 'role and time zone are set; a token is not passed in');

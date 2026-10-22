@@ -336,10 +336,17 @@ export function sandboxProblem(root: string): { what: string; fix: string } | nu
 export const AGENT_ENV: RuntimeEnv = { login: ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'], config: ['CLAUDE_CONFIG_DIR'] };
 
 /**
- * What a desk (#637) gives Claude Code: its config folder and `~/.claude.json` writable,
- * and its API and login hosts. The binary names HTTPS_PROXY and NODE_USE_ENV_PROXY.
+ * What a desk (#637) gives Claude Code. CLAUDE_CONFIG_DIR points at the desk's own config
+ * folder; only the login file (`.credentials.json`) is copied in, and `.claude.json` starts
+ * fresh with onboarding done. The lead's `~/.claude` and `~/.claude.json` are never shown.
+ * Hosts: the API, and platform.claude.com, where Claude Code renews an OAuth login. A
+ * `claude setup-token` token in CLAUDE_CODE_OAUTH_TOKEN, or an API key, needs no renewal.
+ * The binary names HTTPS_PROXY and NODE_USE_ENV_PROXY.
  */
 export const DESK: RuntimeDesk = {
-  state: (env) => [{ path: env.CLAUDE_CONFIG_DIR || join(homeIn(env), '.claude') }, { path: join(homeIn(env), '.claude.json'), isFile: true }],
-  hosts: ['api.anthropic.com', 'console.anthropic.com', 'platform.claude.com', 'claude.ai'],
+  leadState: (env) => [env.CLAUDE_CONFIG_DIR || join(homeIn(env), '.claude'), join(homeIn(env), '.claude.json')],
+  login: (env) => [{ from: join(env.CLAUDE_CONFIG_DIR || join(homeIn(env), '.claude'), '.credentials.json'), to: '.credentials.json' }],
+  starter: { '.claude.json': '{"hasCompletedOnboarding": true}\n' },
+  stateEnv: (state) => ({ CLAUDE_CONFIG_DIR: state }),
+  hosts: ['api.anthropic.com', 'platform.claude.com'],
 };

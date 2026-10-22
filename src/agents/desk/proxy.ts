@@ -15,6 +15,12 @@ const MAX_HEAD_BYTES = 8 * 1024;
 /** How long a client has to send its request head. */
 const HEAD_TIMEOUT_MS = 10_000;
 
+/** The most tunnels open at once. One agent needs a few; more is a command trying its luck. */
+export const MAX_TUNNELS = 64;
+
+/** A tunnel with no bytes either way for this long is closed. */
+export const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+
 /** The one port a tunnel may reach: HTTPS. */
 const ALLOWED_PORT = 443;
 
@@ -22,6 +28,12 @@ const ALLOWED_PORT = 443;
 export interface ProxyEvent {
   target: string;
   isAllowed: boolean;
+}
+
+/** How many tunnels may be open at once, and how long one may sit still. */
+export interface ProxyLimits {
+  maxTunnels: number;
+  idleMs: number;
 }
 
 /** A proxy that runs until `close`. */
@@ -63,7 +75,7 @@ function refuse(client: Socket, status: string): void {
 }
 
 /** Handle one client: read the head, check it, then open the tunnel or refuse. */
-function handleClient(client: Socket, hosts: readonly string[], onEvent: (event: ProxyEvent) => void): void {
+function handleClient(client: Socket, hosts: readonly string[], onEvent: (event: ProxyEvent) => void, tunnels: Set<Socket>, limits: ProxyLimits): void {
   let head = Buffer.alloc(0);
   client.setTimeout(HEAD_TIMEOUT_MS, () => client.destroy());
   client.on('error', () => client.destroy());
@@ -84,10 +96,22 @@ function handleClient(client: Socket, hosts: readonly string[], onEvent: (event:
       refuse(client, target ? '403 Forbidden' : '405 Method Not Allowed');
       return;
     }
+    if (tunnels.size >= limits.maxTunnels) {
+      onEvent({ target: `${label} (too many tunnels)`, isAllowed: false });
+      refuse(client, '503 Service Unavailable');
+      return;
+    }
     onEvent({ target: label, isAllowed: true });
     // Bytes the client sent after the head (a TLS hello sent early) go on to the host.
     const rest = head.subarray(end + 4);
     const upstream = connect({ host: target.host, port: target.port });
+    tunnels.add(upstream);
+    upstream.on('close', () => tunnels.delete(upstream));
+    // A tunnel that sits still is closed, so a stuck one does not hold a place for ever.
+    for (const socket of [client, upstream]) socket.setTimeout(limits.idleMs, () => {
+      client.destroy();
+      upstream.destroy();
+    });
     upstream.on('connect', () => {
       client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       if (rest.length) upstream.write(rest);
@@ -109,12 +133,18 @@ function handleClient(client: Socket, hosts: readonly string[], onEvent: (event:
  * CONNECT to a host on `hosts` and port 443, and nothing else. `onEvent` hears of every
  * request, for the desk's log line; it never gets a byte of a tunnel.
  */
-export function startProxy(address: string | number, hosts: readonly string[], onEvent: (event: ProxyEvent) => void = () => {}): Promise<DeskProxy> {
+export function startProxy(
+  address: string | number,
+  hosts: readonly string[],
+  onEvent: (event: ProxyEvent) => void = () => {},
+  limits: ProxyLimits = { maxTunnels: MAX_TUNNELS, idleMs: IDLE_TIMEOUT_MS },
+): Promise<DeskProxy> {
   const sockets = new Set<Socket>();
+  const tunnels = new Set<Socket>();
   const server = createServer((client) => {
     sockets.add(client);
     client.on('close', () => sockets.delete(client));
-    handleClient(client, hosts, onEvent);
+    handleClient(client, hosts, onEvent, tunnels, limits);
   });
   const close = () =>
     new Promise<void>((resolve) => {

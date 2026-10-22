@@ -8,41 +8,53 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { DeskPlan } from '../../../src/agents/desk/desk.ts';
-import { SEATBELT, sbplString, seatbeltProfile } from '../../../src/agents/desk/seatbelt.ts';
+import { parentFolders, SEATBELT, sbplString, seatbeltProfile } from '../../../src/agents/desk/seatbelt.ts';
 import { makeTempDir } from '../../repo/helpers.ts';
 
 const PLAN: DeskPlan = {
   desk: '/Users/someone/projects/desk',
-  state: ['/Users/someone/.codex'],
+  state: ['/Users/someone/projects/desk.state/codex'],
   readable: ['/opt/homebrew'],
   hidden: ['/Users', '/Volumes', '/Users/someone/projects'],
-  locked: ['/Users/someone/projects/desk/.git/yokoten-worker'],
+  locked: ['/Users/someone/projects/desk/.git/config', '/Users/someone/projects/desk/.git/hooks'],
   hosts: ['api.example.com'],
   env: { YOKOTEN_ROLE: 'worker', TZ: 'UTC' },
   command: ['codex', 'exec', 'hello'],
 };
 
-/** The index of the first line that holds `text`, so a test can check which rule comes last. */
-const lineOf = (profile: string, text: string) => profile.split('\n').findIndex((line) => line.includes(text));
 
 test('sbplString: quotes and backslashes escaped; a line break refused', () => {
   assert.equal(sbplString('/a "b"\\c'), '"/a \\"b\\"\\\\c"');
   assert.throws(() => sbplString('/a\n(allow default)'), /line break/);
 });
 
-test('seatbeltProfile: each allow comes after its deny, so the contract holds', () => {
-  const profile = seatbeltProfile(PLAN, 49152, '/private/var/folders/x/scratch');
-  // 3. Hidden folders can't be read; what is needed is shown again after.
-  assert.ok(lineOf(profile, '(deny file-read* (subpath "/Users")') < lineOf(profile, '(allow file-read* (subpath "/opt/homebrew")'));
-  assert.ok(profile.includes('(allow file-read* (subpath "/opt/homebrew") (subpath "/Users/someone/projects/desk") (subpath "/Users/someone/.codex") (subpath "/private/var/folders/x/scratch"))'));
-  // 1 and 2. No writes but the desk, the state and the scratch folder; the lock last.
-  assert.ok(lineOf(profile, '(deny file-write*)') < lineOf(profile, '(allow file-write* (subpath "/Users/someone/projects/desk")'));
-  assert.ok(lineOf(profile, '(allow file-write* (subpath') < lineOf(profile, '(deny file-write* (literal "/Users/someone/projects/desk/.git/yokoten-worker"))'));
-  // 5. No network but the proxy's port.
-  assert.ok(lineOf(profile, '(deny network*)') < lineOf(profile, '(allow network-outbound (remote ip "localhost:49152"))'));
-  assert.ok(!/allow network\*/.test(profile));
-  // 4. Child processes.
-  assert.ok(profile.includes('(allow process-fork)') && profile.includes('(allow process-exec)'));
+test('seatbeltProfile: starts from deny default and allows only what the contract needs', () => {
+  const scratch = '/private/var/folders/x/scratch';
+  const profile = seatbeltProfile(PLAN, 49152, scratch);
+  const rules = profile.split('\n').filter((line) => line.startsWith('('));
+  assert.equal(rules[1], '(deny default)');
+  assert.ok(!profile.includes('(allow default)'));
+  // 3. Reads: the shown paths, the desk, its state and the scratch folder; no home, no shared temp.
+  const reads = rules.find((line) => line.startsWith('(allow file-read* ')) ?? '';
+  for (const path of ['/opt/homebrew', PLAN.desk, ...PLAN.state, scratch]) assert.ok(reads.includes(`(subpath "${path}")`), path);
+  for (const path of ['/Users"', '/Users/someone"', '/private/tmp"', '/private/var/folders"']) assert.ok(!reads.includes(`(subpath "${path}`), `${path} is not readable`);
+  // Parent folders get their own metadata only, never a subpath.
+  const metadata = rules.find((line) => line.startsWith('(allow file-read-metadata')) ?? '';
+  assert.ok(metadata.includes('(literal "/Users/someone/projects")') && !metadata.includes('subpath'));
+  // 1 and 2. Writes only in the desk, its state and the scratch folder; the locks denied last.
+  assert.ok(profile.includes(`(allow file-write* (subpath "${PLAN.desk}") (subpath "/Users/someone/projects/desk.state/codex") (subpath "${scratch}"))`));
+  assert.ok(rules.indexOf(rules.find((line) => line.startsWith('(deny file-write*')) ?? '') > rules.findIndex((line) => line.startsWith('(allow file-write* (subpath')));
+  assert.ok(profile.includes('(deny file-write* (subpath "/Users/someone/projects/desk/.git/config") (subpath "/Users/someone/projects/desk/.git/hooks"))'));
+  // 5. No network but the proxy port.
+  assert.deepEqual(rules.filter((line) => line.includes('network')), ['(allow network-outbound (remote ip "localhost:49152"))']);
+  // No door out: open, osascript, Launch Services, Apple events, and only listed Mach services.
+  assert.ok(profile.includes('(deny process-exec (literal "/usr/bin/open") (literal "/usr/bin/osascript"))'));
+  assert.ok(profile.includes('(deny lsopen)') && profile.includes('(deny appleevent-send)'));
+  assert.ok(!/\(allow mach-lookup\)|global-name "com\.apple\.coreservices/.test(profile), 'no open Mach lookup, no Launch Services');
+});
+
+test('parentFolders: each parent once, up to the root', () => {
+  assert.deepEqual(parentFolders(['/a/b/c', '/a/d']), ['/', '/a', '/a/b']);
 });
 
 test('seatbeltProfile: a port that is not a port is refused', () => {

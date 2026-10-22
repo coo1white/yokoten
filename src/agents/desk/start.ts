@@ -2,7 +2,7 @@
 // the agent inside the fence, and clean up when it ends. The plan comes from desk.ts.
 
 import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
@@ -38,7 +38,8 @@ export interface DeskResult {
  * A signal that ends the desk command is passed on to the agent first.
  */
 export async function startDesk(plan: DeskPlan, backend: DeskBackend, { stdio, onEvent }: DeskStreams): Promise<DeskResult> {
-  const scratch = mkdtempSync(join(tmpdir(), 'yokoten-desk-'));
+  // The real path: on macOS the temp folder is a link, and Seatbelt matches real paths.
+  const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'yokoten-desk-')));
   mkdirSync(join(scratch, 'tmp'));
   const proxy = await startProxy(backend.proxyAddress(scratch), plan.hosts, onEvent);
   try {

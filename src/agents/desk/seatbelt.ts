@@ -2,23 +2,47 @@
 // writes for each desk. Both are built into macOS. The profile is written here from the
 // plan; no code is copied from another project.
 //
-// macOS has no empty network or empty folder to mount, so the same contract is held by
-// rules instead:
-// - Reads: allowed, but not in the hidden folders; the readable paths, the desk, the
-//   state paths and a private scratch folder are allowed again inside them.
-// - Writes: denied, but in the desk, the state paths, the scratch folder and a few
-//   devices. Locked files are denied again.
+// The profile starts from `(deny default)`: nothing is allowed that is not named here.
+// - Reads: the system's own folders, the readable paths, the desk, its state folder and a
+//   private scratch folder. The parent folders of those get their own metadata only, so a
+//   program can walk down to them but can't list them. /private/tmp, /private/var/folders
+//   and every home stay closed, but for the scratch folder.
+// - Writes: only the desk, its state folder, the scratch folder and a few devices. The
+//   locked paths (`.git/config`, `.git/hooks`, the worker mark) are denied again.
 // - Network: only to the proxy's port on 127.0.0.1; the proxy runs outside.
-// - Processes may fork and exec, and pipes work: they are not network.
-// In SBPL the last rule that matches wins, so each allow comes after its deny.
+// - Processes may fork and exec, but never `open` or `osascript`, and nothing may ask
+//   Launch Services or send Apple events: those start programs outside the fence.
+// - Mach services: a short list that programs need to look up users, log, check TLS
+//   certificates and read preferences.
+// In SBPL a later rule wins over an earlier one, so each deny for a lock comes last.
 //
-// Untested on a Mac in this change: run test/agents/desk/desk.test.ts there once.
+// Untested on a Mac in this change: run test/agents/desk/start.test.ts there once.
 
 import { spawnSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
 import { type DeskBackend, type DeskPlan, type FencedCommand, proxyEnv } from './desk.ts';
+
+/** The system folders every program reads: its libraries, tools, settings and time zones. */
+const SYSTEM_READS = ['/usr', '/bin', '/sbin', '/System', '/Library', '/opt', '/private/etc', '/private/var/db/timezone', '/private/var/select', '/dev'];
+
+/** The Mach services a command-line program needs. Launch Services and Apple events are not here. */
+const MACH_SERVICES = [
+  'com.apple.system.opendirectoryd.libinfo',
+  'com.apple.system.logger',
+  'com.apple.system.notification_center',
+  'com.apple.trustd',
+  'com.apple.trustd.agent',
+  'com.apple.SecurityServer',
+  'com.apple.ocspd',
+  'com.apple.cfprefsd.daemon',
+  'com.apple.cfprefsd.agent',
+  'com.apple.diagnosticd',
+];
+
+/** Programs that start other programs outside the fence. */
+const BLOCKED_PROGRAMS = ['/usr/bin/open', '/usr/bin/osascript'];
 
 /** A path as an SBPL string: backslash and quote escaped. A path with a line break is refused. */
 export function sbplString(path: string): string {
@@ -29,30 +53,47 @@ export function sbplString(path: string): string {
 const subpaths = (paths: readonly string[]) => paths.map((path) => `(subpath ${sbplString(path)})`).join(' ');
 const literals = (paths: readonly string[]) => paths.map((path) => `(literal ${sbplString(path)})`).join(' ');
 
+/** Every parent folder of the paths, `/` included, once. */
+export function parentFolders(paths: readonly string[]): string[] {
+  const parents = new Set<string>();
+  for (const path of paths) for (let at = dirname(path); ; at = dirname(at)) {
+    parents.add(at);
+    if (at === dirname(at)) break;
+  }
+  return [...parents].sort();
+}
+
 /** The SBPL profile for a plan, with the proxy on `port` and a private scratch folder. */
 export function seatbeltProfile(plan: DeskPlan, port: number, scratch: string): string {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`the proxy port ${port} is not a port`);
   const writable = [plan.desk, ...plan.state, scratch];
+  const readable = [...SYSTEM_READS, ...plan.readable, ...writable];
   const lines = [
     '(version 1)',
-    '; A yokoten desk (#637). Written for one run; the last rule that matches wins.',
-    '(allow default)',
-    '; 3. The hidden folders: no reads, then what the agent needs, shown again.',
-    `(deny file-read* ${subpaths(plan.hidden)})`,
-    // A parent folder must be readable as a folder, or a program can't walk down to its file.
-    `(allow file-read-metadata ${subpaths(plan.hidden)})`,
-    `(allow file-read* ${subpaths([...plan.readable, ...writable])})`,
-    '; 1 and 2. No writes but in the desk, the state and the scratch folder.',
-    '(deny file-write*)',
-    `(allow file-write* ${subpaths(writable)})`,
-    '(allow file-write* (literal "/dev/null") (literal "/dev/zero") (literal "/dev/dtracehelper") (regex #"^/dev/tty") (regex #"^/dev/fd/"))',
-    ...(plan.locked.length ? [`(deny file-write* ${literals(plan.locked)})`] : []),
-    '; 5. No network but the proxy on this machine.',
-    '(deny network*)',
-    `(allow network-outbound (remote ip "localhost:${port}"))`,
-    '; 4. Child processes, and the pipes between them.',
+    '; A yokoten desk (#637). Written for one run. Nothing is allowed that is not named here.',
+    '(deny default)',
+    '; 4. Child processes, and the pipes between them; never a program that opens others outside.',
     '(allow process-fork)',
     '(allow process-exec)',
+    `(deny process-exec ${literals(BLOCKED_PROGRAMS)})`,
+    '(allow signal (target same-sandbox))',
+    '(allow process-info* (target same-sandbox))',
+    '(allow sysctl-read)',
+    '(allow ipc-posix-shm)',
+    '(allow ipc-posix-sem)',
+    `(allow mach-lookup ${MACH_SERVICES.map((name) => `(global-name ${sbplString(name)})`).join(' ')})`,
+    '(deny lsopen)',
+    '(deny appleevent-send)',
+    '; 2 and 3. Reads: the system, what the agent needs, and the parent folders by their own metadata only.',
+    `(allow file-read* ${subpaths(readable)})`,
+    `(allow file-read-metadata ${literals(parentFolders(readable))})`,
+    '; 1. Writes: the desk, its state folder, the scratch folder and a few devices.',
+    `(allow file-write* ${subpaths(writable)})`,
+    '(allow file-write* (literal "/dev/null") (literal "/dev/zero") (literal "/dev/dtracehelper") (regex #"^/dev/tty") (regex #"^/dev/fd/"))',
+    '(allow file-ioctl (literal "/dev/null") (regex #"^/dev/tty"))',
+    ...(plan.locked.length ? [`(deny file-write* ${subpaths(plan.locked)})`] : []),
+    '; 5. No network but the proxy on this machine.',
+    `(allow network-outbound (remote ip "localhost:${port}"))`,
   ];
   return `${lines.join('\n')}\n`;
 }

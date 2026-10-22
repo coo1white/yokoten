@@ -323,9 +323,10 @@ export const COMMANDS: Command[] = [
     usage: '<agent> <folder> [--read <paths>] [--host <hosts>] [--marks] -- <command>',
     text: [
       'Starts the command after -- in a sandbox around <folder>, which must be its own git clone.',
-      "The agent writes only in the folder and its own state folder (such as ~/.claude). Your",
-      'other projects and home are hidden. Commands have no network; the agent reaches only its',
-      "model's API, through a proxy. YOKOTEN_ROLE=worker and TZ=UTC are set; tokens stay out.",
+      "The agent writes only in the folder and the desk's own state folder, <folder>.state, which",
+      'gets only your login file. Your home, other projects and agent state are hidden.',
+      "Commands have no network; only the agent's API hosts pass the proxy, for any command inside.",
+      '.git/config and .git/hooks stay read-only. YOKOTEN_ROLE=worker and TZ=UTC; tokens stay out.',
       'Agents: claude-code, codex (DeepSeek too), grok, muse. Linux and WSL2 use bwrap; macOS',
       'uses sandbox-exec; native Windows is not built yet. Run the commit check outside until #665.',
     ],

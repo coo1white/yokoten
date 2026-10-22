@@ -74,3 +74,25 @@ test('startProxy: listens on a port too, for a backend that has no socket', asyn
     await proxy.close();
   }
 });
+
+test('startProxy: past the tunnel cap a CONNECT is refused; a still tunnel is closed', async () => {
+  const echo = createServer((socket) => socket.on('data', (chunk) => socket.write(`echo:${chunk}`)));
+  await new Promise<void>((resolve) => echo.listen(0, '127.0.0.1', resolve));
+  const port = (echo.address() as { port: number }).port;
+  const path = join(makeTempDir('proxy-'), 'proxy.sock');
+  const proxy = await startProxy(path, [`localhost:${port}`], () => {}, { maxTunnels: 1, idleMs: 200 });
+  try {
+    // The first tunnel stays open and still; the second is over the cap.
+    const first = connect(path, () => first.write(`CONNECT localhost:${port} HTTP/1.1\r\n\r\n`));
+    const closed = new Promise<number>((resolve) => {
+      const opened = Date.now();
+      first.on('close', () => resolve(Date.now() - opened));
+    });
+    await new Promise((resolve) => first.once('data', resolve));
+    assert.match(await talk(path, `CONNECT localhost:${port} HTTP/1.1\r\n\r\n`), /^HTTP\/1\.1 503/);
+    assert.ok((await closed) >= 150, 'the still tunnel is closed after its idle time');
+  } finally {
+    await proxy.close();
+    echo.close();
+  }
+});

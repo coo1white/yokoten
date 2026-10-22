@@ -186,10 +186,13 @@ export function userHooksState(env: Env, cli: string, missing: string): { doctor
 export const AGENT_ENV: RuntimeEnv = { login: ['MODEL_API_KEY'], config: [] };
 
 /**
- * What a desk (#637) gives Muse Code: its config and data folders writable, and Meta's
- * API and login hosts. The binary names HTTPS_PROXY, ALL_PROXY and MUSE_HTTP_PROXY.
+ * What a desk (#637) gives Muse Code. XDG_CONFIG_HOME and XDG_DATA_HOME point into the
+ * desk's own folder; only `muse/auth.json` is copied in. Host: Meta's API. The binary
+ * names HTTPS_PROXY, ALL_PROXY and MUSE_HTTP_PROXY.
  */
 export const DESK: RuntimeDesk = {
-  state: (env) => [{ path: configDir(env) }, { path: join(env.XDG_DATA_HOME || join(homeIn(env), '.local', 'share'), 'muse') }],
-  hosts: ['api.meta.ai', 'dev.meta.ai', 'auth.meta.com'],
+  leadState: (env) => [configDir(env), join(env.XDG_DATA_HOME || join(homeIn(env), '.local', 'share'), 'muse')],
+  login: (env) => [{ from: join(configDir(env), 'auth.json'), to: join('config', 'muse', 'auth.json') }],
+  stateEnv: (state) => ({ XDG_CONFIG_HOME: join(state, 'config'), XDG_DATA_HOME: join(state, 'data') }),
+  hosts: ['api.meta.ai'],
 };
