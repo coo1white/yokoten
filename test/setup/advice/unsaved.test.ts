@@ -20,7 +20,7 @@ import {
   relative,
 } from 'node:path';
 import { test } from 'node:test';
-import { makeSandbox } from '../../repo/helpers.ts';
+import { makeSandbox, makeTempDir } from '../../repo/helpers.ts';
 import {
   findTempDirs,
   findTmpfs,
@@ -326,17 +326,25 @@ test('unsaved: a worktree under the temp folder is named only when it holds work
 
 test('unsaved: a worktree in a temp folder is made again under .worktrees/ (#571)', () => {
   // No remote: the branch notes fold into one, so the at-risk worktree says its place on its own.
+  // Real dirs under one base, so the shown path is the same where /tmp is a link (macOS).
+  const base = makeTempDir();
+  const root = join(base, 'repo');
+  const temp = join(base, 'temp');
+  const tree = join(temp, 'w');
+  mkdirSync(root, { recursive: true });
+  mkdirSync(tree, { recursive: true });
   const facts = {
     ...UNSAVED_CONTROL,
+    root,
     remotes: [],
     branches: [{ ...UNSAVED_CONTROL.branches[0], name: 'w', upstream: null, ahead: null, isGone: false, aheadOfDefault: 2 }],
     stashes: 0,
     isGitRunning: null,
-    worktrees: [{ ...UNSAVED_CONTROL.worktrees[1], path: '/tmp/w', branch: 'w', volatile: { kind: 'temp' as const, folder: '/tmp' } }],
+    worktrees: [{ ...UNSAVED_CONTROL.worktrees[1], path: tree, branch: 'w', volatile: { kind: 'temp' as const, folder: temp } }],
   };
   const found = unsavedNotes(facts, { home: undefined, now: 1 });
   assert.deepEqual(ids(found), ['unpushed-commits', 'repo-in-temp-folder']);
-  assert.equal(found[1].what, '../tmp/w holds work only on this machine, and is under the temp folder (/tmp), which the system may empty on restart');
+  assert.equal(found[1].what, `../temp/w holds work only on this machine, and is under the temp folder (${temp}), which the system may empty on restart`);
   assert.equal(found[1].fix, 'save it: commit; once the repo has a remote, push it; then make it again under .worktrees/');
 });
 
