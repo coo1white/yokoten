@@ -80,7 +80,7 @@ flowchart LR
 
 | | Runs | Stops |
 |-|------|-------|
-| **1** | before each tool call | tag pushes, force pushes, skipped checks; test edits in a fix task; a worker editing the rules; a program the project blocks; an issue or pull request title that breaks the title rules; personal data or a secret in an issue, pull request, comment or release note an agent posts with `gh` |
+| **1** | before each tool call | tag pushes, force pushes, skipped checks; test edits in a fix task; a worker editing the rules; a program the project blocks; an issue or pull request title that breaks the title rules; personal data or a secret in an issue, pull request, comment or release note an agent posts with `gh`; cancelling or deleting an Actions run |
 | **1b** | when a Claude Code agent ends its turn | the same personal data, secrets and file rules as the commit check, in the changed files. It sends the agent back once with the findings |
 | **2** | on every commit | what the hook can't see: files changed by `sed` or a script, personal data, an overfull folder |
 | **3** | on every pull request | a commit made with the hook off |
@@ -400,14 +400,27 @@ there is not affected. In a marked worktree the lead counts as a worker too. `gi
 remove <dir>` removes the mark with the worktree. Without a mark, an agent that drops
 `YOKOTEN_ROLE` counts as the lead.
 
+Cancelling or deleting an Actions run is refused for the lead and for a worker.
+The guard stops `gh run cancel`, `gh run delete`, and the same call through `gh api`
+or `yokoten bot`. `gh run rerun`, `view`, `list` and `watch` still pass. Ask the
+owner, who can cancel or delete the run on the Actions page.
+A `repositories/<id>` path is the same call. A path with `.` or `..` is read after those are resolved.
+The route words match in any case, so `Actions` and `Cancel` are the same call.
+A cluster of short options in `gh api` is refused, unless it is one option with its value joined.
+A method or a path taken from the shell is refused when it can name a run.
+A `gh run` subcommand taken from the shell is refused.
+`gh` must name one of its own commands. `gh extension install`, `upgrade`, `exec` and `browse` are refused.
+`exec` runs an installed extension. `browse` can install one.
+A non-GET call is refused when the path after `repos/` or `repositories/` is only a variable.
+`gh config set aliases` is refused. `gh alias list` and `gh extension list` still pass.
+`gh alias set` and `gh alias import` are refused for both roles. Ask the owner to add an alias by hand.
+
 No agent, lead or worker, gets gh's token (#659, #668). With it, `curl` or a script could
 call GitHub directly, around every rule above. gh and `yokoten bot` use the token without
 showing it. So for every agent the guard refuses:
 
 - gh's commands that print it: `gh auth token`, `gh auth status --show-token` (`-t`),
   `gh auth git-credential` and `gh config get oauth_token`.
-- `gh alias set`, `import` and `delete`: an alias can run `auth token`, or a shell
-  command, under another name. The owner keeps the aliases.
 - The places a login is kept: `git credential fill`, a credential helper's `get`
   (`git credential-manager get`), `git -c credential.…`, `~/.git-credentials`, gh's
   `hosts.yml`, `security find-…-password -w` and `secret-tool lookup`.
@@ -873,7 +886,8 @@ It puts three safe defaults in `.github/` too:
 | `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop or SubagentStop event by default, a Codex Stop event with `--agent codex`, a Muse Code Stop event with `--agent muse`, a Gemini CLI AfterAgent event with `--agent gemini`, a Grok CLI Stop event with `--agent grok`. A worker also runs the task's done-when command. See [The stop check](#the-stop-check) |
 | `explain [<id>] [--json]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
 | `worker mark <dir>` | Marks the worktree at `<dir>` as a worker's. The guard then treats every agent there as a worker, even one whose runtime drops `YOKOTEN_ROLE` (Muse Code). The guard refuses a worker's plain ways to remove it, and a `.git` link it can't read counts as marked; the server and credentials kept from the worker are the real lock. `git worktree remove <dir>` removes the mark. Given a subfolder, it marks the worktree's top folder and says which. The main checkout and a submodule are never marked. See [Works with](#works-with) |
-| `worker env [runtime]` | Lists the names that yokoten's agent environment would keep from this shell, and counts the names it drops. With a runtime, its own login name counts too. It never shows a value. No command starts an agent with it yet. See [What an agent's environment holds](#what-an-agents-environment-holds) |
+| `worker env [runtime]` | Lists the names that yokoten's agent environment would keep from this shell, and counts the names it drops. With a runtime, its own login name counts too. It never shows a value. `desk` starts an agent with it. See [What an agent's environment holds](#what-an-agents-environment-holds) |
+| `desk <agent> <folder> [--read <paths>] [--host <hosts>] [--marks] -- <command>` | Starts a worker's agent in a fenced desk: its own clone, its own state folder, and no network but its model's API. Only the lead runs it. See [The desk](#the-desk) |
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay. A second run changes nothing |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. A body whose last line is not `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, is refused too: each pull request names each AI and model that made it. A comment (`gh pr comment`, `gh issue comment`), a review with a body (`gh pr review --body`), and a new issue (`gh issue create --body`) carry the same line: a body whose last line is not the `Made with` line is refused too. A note with `--attach` is refused: the upload lands past the `Made with` line. An edit (`gh pr edit --body`, `gh issue edit --body`) stays as it is. `gh pr create` without a type or tier label gets them added: the type from the title (`bug` for `fix`), the tier from the body's `tier:` line. A label you pass is kept. A tier label that does not match the body is refused, with the message of `check --pr`. A label the repo does not have is named in a note and left out; the bot never creates labels. `gh pr create` without `--milestone` gets the milestone of the first linked issue (`Closes #N`, `Part of #N`) that has one. When no linked issue has one, it is refused, and nothing is sent; add `--milestone`. When gh can't read the issue, the pull request is sent without a milestone, with a note. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
 | `board [--text]` | Serves a live page on this machine only: the agents grouped by issue, the picked one, and each pull request stage. From the page the owner also starts and stops agents, and sees what waits. It prints the link and runs until you stop it. The page refreshes every 15 seconds. `--text` prints the agents, pull requests and worktrees as plain text. See [The team board](#the-team-board) |
@@ -1429,7 +1443,7 @@ A list you set replaces the default list; it does not add to it.
 | `layout.maxEntries` | `7` | The most entries a folder may hold (core rule 10) |
 | `layout.exempt` | none | Folders that may grow past it. See [Folders that may grow](#folders-that-may-grow) |
 | `tests` | `*.test.*`, `*.spec.*`, `*_test.go`, `test/**`, `tests/**` | The test files a fix task may not change |
-| `leadOnly` | the rules, agent config, `.githooks/**`, `.github/**`, the vendored runtime `.yokoten/**` | The files a worker may not change |
+| `leadOnly` | the rules, agent config, `.githooks/**`, `.github/**`, the vendored runtime `.yokoten/**`, `.yokotenignore` | The files a worker may not change |
 | `privacy.allow` | none | Exact strings the privacy check lets through, such as a public support address, or this project's own name from your private marks |
 | `privacy.skip` | lock files | Files the privacy check does not read |
 | `privacy.utc` | `true` | Commit times must be in UTC |
@@ -1616,6 +1630,94 @@ the `tier:` line in the body. Each missing or wrong label gets its own message.
 
 Server setup, step by step: [`docs/server.md`](server.md).
 
+### The desk
+
+A desk is a fenced place for one worker, the same for every vendor (#637). The lead starts
+a worker's agent in it with one command:
+
+```sh
+git clone ../yokoten ../desks/42
+yokoten desk claude-code ../desks/42 -- claude -p "$(cat brief.md)"
+```
+
+The fence is one contract. Each system builds it its own way:
+
+| Rule | In the desk |
+|---|---|
+| Writes | Only in the desk folder (`.git` too, so the worker commits) and the desk's own state folder for the agent. `.git/config` and `.git/hooks` stay read-only |
+| Reads | Everything else the agent can see is read-only |
+| Other projects | Not visible. Your home and the desk's parent folder are hidden. On Linux, `/run` is hidden too: its sockets lead out, and on WSL2 one of them starts Windows programs. Node, the agent program and yokoten are shown again, read-only |
+| Your agent state | Not visible. Your `~/.claude`, `~/.codex`, `~/.grok` and Muse folders stay hidden: no settings, hooks, memory, MCP config, history or sessions |
+| Child processes | Work, with pipes, so tests can start programs |
+| Network | Commands get no network of their own. The proxy outside lets through only the agent's API hosts. Any command inside can use the proxy too, so a command can reach those hosts |
+| Environment | `YOKOTEN_ROLE=worker` and `TZ=UTC`. No token or key from your shell (see [What an agent's environment holds](#what-an-agents-environment-holds)) |
+
+The desk must be its own `git clone`. A worktree's git folder lives in another checkout,
+which the desk hides, so a worktree is refused.
+
+**The desk's state folder.** Each desk gets its own state folder for the agent, next to
+it: `<desk>.state/<agent>`. The desk points the agent there with the agent's own variable.
+Only the login file is copied in from yours. A newer login of yours is copied again on the
+next start. Remove the state folder with the desk.
+
+| Agent | `<agent>` | Points the agent at its state with | Login file copied | API hosts | Command inside the desk |
+|---|---|---|---|---|---|
+| Claude Code | `claude-code` | `CLAUDE_CONFIG_DIR` | `.credentials.json` | `api.anthropic.com`, and `platform.claude.com` to renew a login | `claude -p "<brief>"` |
+| Codex, and DeepSeek through Codex | `codex` | `CODEX_HOME` | `auth.json` | `api.openai.com`, `api.deepseek.com` | `codex exec --sandbox danger-full-access "<brief>"` |
+| Grok | `grok` | `GROK_HOME` | `auth.json` | `api.x.ai` | `grok -p "<brief>"` |
+| Muse Code | `muse` | `XDG_CONFIG_HOME`, `XDG_DATA_HOME` | `muse/auth.json` | `api.meta.ai` | `muse exec "<brief>"` |
+
+- **Claude Code** renews a login at `platform.claude.com`. A token from `claude setup-token`
+  in `CLAUDE_CODE_OAUTH_TOKEN`, or an API key, needs no renewal and passes in as a login.
+- **Codex** runs with `--sandbox danger-full-access` inside the desk. Its own
+  `workspace-write` sandbox makes `.git` read-only and blocks the pipes that tests use. The
+  desk is the fence instead. Your `config.toml` stays out: give a provider with `-c` on the
+  command. A ChatGPT login also needs `--host chatgpt.com,auth.openai.com`.
+- **Grok**: turn off `--sandbox` inside the desk if it stops a commit or a test.
+- **More hosts**: `--host <host>` lets the agent reach another API host on port 443.
+  Separate several with commas.
+- **More files**: `--read <path>` shows another path, read-only. A path that would open
+  your home, a hidden folder or your own agent state is refused.
+
+**The proxy.** Each of the four agents names `HTTPS_PROXY` in its program, and the desk sets
+`HTTPS_PROXY`, `HTTP_PROXY` and `ALL_PROXY` in both cases. It also sets
+`NODE_USE_ENV_PROXY=1`, so Node's own `fetch` uses the proxy too. The proxy takes `CONNECT`
+only, to a listed host, and never reads the traffic. It keeps at most 64 tunnels open, and
+closes a tunnel that is still for 10 minutes. When it refuses a host, the desk names the
+host at the end.
+
+**Review from outside.** The worker writes in the desk, so treat the desk as untrusted. Do
+not run git or any other command inside the desk before you check the work. Fetch the
+branch into your own checkout, then review it there:
+
+```sh
+git fetch ../desks/42 HEAD:refs/desks/42
+git diff main refs/desks/42
+```
+
+`.git/config` and `.git/hooks` are read-only in the desk, so a worker can't plant a hook or
+an alias there. Set an upstream or other config from outside, before you start the desk.
+
+**The commit check and your private marks.** The commit check reads your private-marks
+file. An agent that can read the file can also print it. So the desk hides it by default,
+and the check in the desk does not see your marks. Until marks are kept as hashes (#665),
+run the check yourself, outside the desk. Check out the fetched branch in your own
+checkout, then run `yokoten check` there; it checks the whole tree. `--marks` shows the file in the
+desk, read-only. Use it only for an agent you trust with the words.
+
+**Systems.**
+
+- **Linux and WSL2**: `bwrap` (bubblewrap). Install it with `sudo apt install bubblewrap`.
+  The desk gets its own empty network. A small bridge inside passes the agent's proxy
+  connections to the proxy outside.
+- **macOS**: `sandbox-exec`, built in, with a profile written for each desk. The profile
+  starts from "deny everything". It allows only the reads, writes, Mach services and the
+  proxy port that the desk needs. It blocks `open`, `osascript`, Launch Services and Apple
+  events. Not yet run on a Mac: run `node --test test/agents/desk/start.test.ts` there once
+  to check the contract.
+- **Native Windows**: no desk yet (#669). Run yokoten in WSL2. On native Windows, the
+  guard alone holds the rules.
+
 ### The team board
 
 `yokoten board` shows the team at a glance. It serves a page on this machine only.
@@ -1794,8 +1896,18 @@ addresses, and neither is a retina image name such as `logo@2x.png`. An address 
 `http://` or in a path such as `api/` is still caught.
 
 The same check catches secrets: GitHub, npm, Slack, Stripe, Google, OpenAI and
-Anthropic tokens, AWS access key ids, and PEM private keys. A hit names the kind of
-secret, never the secret. Deleting it is not enough, since git keeps it: rotate it.
+Anthropic tokens, AWS access key ids, and PEM private keys. It also matches the real
+value of a secret-looking variable in your environment. Each hit says its grade:
+`sure` fails, and `likely` and `unknown` warn. A hit names the kind of secret, never
+the secret. Deleting it is not enough, since git keeps it: rotate it.
+
+For a false hit, start a comment on that line with `yokoten-ignore secret: why it is safe`. Use the finding's rule name instead of `secret`.
+Or write `secret: why it is safe` in `.yokotenignore`; an ignored hit stays listed, and a reasonless ignore fails.
+
+A `sure` secret and a private-mark hit can't be ignored on their line: only
+`.yokotenignore` lets them through, and only the lead may change that file. On a pull
+request, `yokoten check --pr` shows each ignore the pull request adds as a notice, so the
+reviewer sees it.
 
 The tool-call guard runs the same check on text an agent is about to post with `gh`,
 plain or through `yokoten bot -- gh`:
@@ -1917,10 +2029,9 @@ Your shell may hold tokens and keys. An agent that sees them can print them, pus
 or send them out. So yokoten has one function that prepares a clean environment for an
 agent, for every runtime (#613). It ships now, with `yokoten worker env` to show its result.
 
-No yokoten command starts an agent yet, so nothing uses the function today. The board's
-"start an agent" (#603) will be its first caller. Until then, an agent gets the whole
-environment of the session that starts it. Start the lead's session from a shell without
-tokens.
+`yokoten desk` starts an agent with this environment (see [The desk](#the-desk)). An agent
+started any other way gets the whole environment of the session that starts it. So start
+the lead's session from a shell without tokens.
 
 What the function keeps and drops:
 

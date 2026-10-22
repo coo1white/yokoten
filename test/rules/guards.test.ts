@@ -45,6 +45,7 @@ import {
   stripWorktreeRoot,
   withWorkerMark,
   workerMarkAt,
+  useHostCommands,
   workerRole,
   wrapForRedact,
 } from '../../src/rules/guards.ts';
@@ -571,7 +572,7 @@ test('fix task: test files are off limits', () => {
 
 test('lead-only files: a worker is stopped, the lead is not', () => {
   const worker = { YOKOTEN_ROLE: 'worker' };
-  for (const p of ['AGENTS.md', 'CLAUDE.md', 'yokoten.json', '.claude/settings.json', '.claude-plugin/plugin.json', '.codex/hooks.json', '.gemini/settings.json', '.github/workflows/ci.yml', '.githooks/pre-commit', '.yokoten/src/run/check.ts']) {
+  for (const p of ['AGENTS.md', 'CLAUDE.md', 'yokoten.json', '.claude/settings.json', '.claude-plugin/plugin.json', '.codex/hooks.json', '.gemini/settings.json', '.github/workflows/ci.yml', '.githooks/pre-commit', '.yokoten/src/run/check.ts', '.yokotenignore']) {
     assert.ok(checkEdit(p, { config: DEFAULTS, env: worker }), p);
     assert.equal(checkEdit(p, { config: DEFAULTS, env: {} }), null, p);
   }
@@ -2021,6 +2022,10 @@ test('guard: a worker does not push, post or change a git folder; the lead may (
       'gh pr edit 1 --title x',
       'gh pr close 1',
       'gh pr comment 1 --body x',
+      'env -u gh gh pr merge 1',
+      'sudo -u gh gh pr close 1',
+      'xargs -a gh gh pr merge 1',
+      'env -u yokoten yokoten bot -- gh pr merge 1',
       'gh api -X PUT repos/a/b/pulls/1/merge',
       'gh api --method=DELETE repos/a/b/git/refs/heads/x',
       'gh api -XPATCH repos/a/b/pulls/1',
@@ -2098,6 +2103,303 @@ test('guard: a worker does not push, post or change a git folder; the lead may (
     'yokoten check',
     'node bin/yokoten.ts check',
   ]) allowed(command, worker);
+});
+
+// #650: the bot token that reruns a run can also cancel one or delete its log. Both roles
+// hear the same refusal, and the fix is to ask the owner. A read and a rerun stay allowed.
+test('guard: cancelling or deleting an Actions run is refused for every role (#650)', () => {
+  const lead = {};
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  const why = 'a cancelled run turns a check red and blocks the merge, and a deleted log is evidence gone';
+  const fix = 'ask the owner, who can cancel or delete the run on the Actions page';
+  const refused: { what: string; commands: string[] }[] = [
+    {
+      what: '`gh run cancel` cancels an Actions run',
+      commands: [
+        'gh run cancel',
+        'gh run cancel 123',
+        'gh run cancel --force 123',
+        'gh run cancel 123 --force',
+        'gh -R o/r run cancel 123',
+        'gh --repo=o/r run cancel 1',
+        'GH_REPO=o/r gh run cancel 1',
+        'env GH_HOST=github.example.com gh run cancel 1',
+        'yokoten bot -- gh run cancel 1',
+        'npx yokoten bot -- gh run cancel 9',
+        'bin/yokoten.ts bot -- gh run cancel 1',
+        '/usr/bin/gh run cancel 1',
+        "bash -c 'gh run cancel 1'",
+        'gh run cancel 1 > /tmp/out',
+        'env -u gh gh run cancel 1',
+        'sudo -u gh gh run cancel 1',
+        'xargs -a gh gh run cancel',
+      ],
+    },
+    {
+      what: '`gh run delete` deletes an Actions run and its log',
+      commands: [
+        'gh run delete 123',
+        'gh run --repo o/r delete 123',
+        'sudo gh run delete 1',
+        'node bin/yokoten.ts bot -- gh run delete 1',
+        'gh.exe run delete 2',
+        'echo ok && gh run delete 1',
+        'env -u gh gh run delete 1',
+      ],
+    },
+    {
+      what: 'this `gh api` call cancels an Actions run',
+      commands: [
+        'gh api -X POST repos/o/r/actions/runs/123/cancel',
+        'gh api --method POST repos/o/r/actions/runs/123/cancel',
+        'gh api --method=post repos/o/r/actions/runs/123/force-cancel',
+        'gh api -XPOST repos/o/r/actions/runs/123/cancel',
+        'gh api --method POST /repos/o/r/actions/runs/123/force-cancel',
+        'gh api repos/o/r/actions/runs/123/cancel -X POST',
+        'gh api repos/{owner}/{repo}/actions/runs/44/force-cancel --method POST',
+        'gh api -X POST --hostname github.example.com repos/o/r/actions/runs/1/cancel',
+        'gh api --silent -X POST repos/o/r/actions/runs/1/cancel --paginate',
+        "gh api -H 'Accept: application/vnd.github+json' -X POST repos/o/r/actions/runs/1/cancel",
+        'yokoten bot -- gh api -X POST repos/o/r/actions/runs/1/cancel',
+        'gh api repos/o/r/actions/runs/1/cancel -f confirm=1',
+        'gh api --input payload.json repos/o/r/actions/runs/1/force-cancel',
+        'gh api -X POST repos/o/r/actions%2Fruns/5/cancel',
+        'gh api -X POST /repos/$REPO/actions/runs/$RUN_ID/cancel',
+        'gh api -X POST repos/$OWNER/$REPO/actions/runs/$RUN_ID/cancel',
+        'gh api -X POST "/repos/${REPO}/actions/runs/${RUN_ID}/force-cancel"',
+        'gh api -X POST -q -XGET repos/o/r/actions/runs/1/cancel',
+        'gh api -X POST --jq -XGET repos/o/r/actions/runs/1/cancel',
+        'gh api -X POST -t -XGET repos/o/r/actions/runs/1/force-cancel',
+        'gh api -X POST --template -XGET repos/o/r/actions/runs/1/cancel',
+        'gh api -X POST -p -XGET repos/o/r/actions/runs/1/cancel',
+        'gh api -X POST --preview -XGET repos/o/r/actions/runs/1/cancel',
+        'gh api -X POST -H -XGET repos/o/r/actions/runs/1/cancel',
+        'gh api -X POST --header -XGET repos/o/r/actions/runs/1/cancel',
+        'gh api -X POST --hostname -XGET repos/o/r/actions/runs/1/cancel',
+        'gh api -X POST --cache -XGET repos/o/r/actions/runs/1/cancel',
+        'gh api -X POST repositories/123/actions/runs/4/cancel',
+        'gh api -X POST repositories/123/actions/runs/4/force-cancel',
+        'gh api -fk=v repos/o/r/actions/runs/1/cancel',
+        'gh api -X POST REPOS/o/r/Actions/Runs/1/Cancel',
+        'gh api -X POST REPOS/o/r/Actions/Runs/1/Force-Cancel',
+        'gh api -X POST repos/o/r/actions/runs/1//cancel',
+        'gh api -X POST repos/o/r/actions/./runs/1/cancel',
+        'gh api -X POST repos/o/r/actions/runs/1/extra/../cancel',
+        'gh api -X POST repos/o/r/foo/../actions/runs/1/cancel',
+        'gh api -X POST /repos/$1/actions/runs/2/cancel',
+        "gh api -X POST '/repos/$@/actions/runs/2/cancel'",
+        'gh api -X POST "/repos/$*/actions/runs/2/force-cancel"',
+        "gh api -X POST '/repos/${1}/actions/runs/2/cancel'",
+      ],
+    },
+    {
+      what: 'this `gh api` call deletes an Actions run',
+      commands: [
+        'gh api -X=DELETE repos/o/r/actions/runs/123',
+        'gh api --method delete repos/o/r/actions/runs/123',
+        'gh api -X DELETE repos/{owner}/{repo}/actions/runs/123',
+        'gh api -X DELETE /repos/o/r/actions/runs/123',
+        'gh api -X DELETE repos/o/r/actions/runs/123/',
+        'gh api -X DELETE https://api.github.com/repos/o/r/actions/runs/123',
+        'gh api -X DELETE "https://api.github.com/repos/o/r/actions/runs/123?per_page=1"',
+        'node bin/yokoten.ts bot -- gh api -X DELETE https://github.example.com/api/v3/repos/o/r/actions/runs/5',
+        'gh api -X DELETE /repos/$REPO/actions/runs/$RUN_ID',
+        'gh api -X DELETE "repos/${OWNER}/${REPO}/actions/runs/${RUN_ID}"',
+        'gh api -X DELETE -t --method=GET repos/o/r/actions/runs/1',
+        'gh api -X DELETE --jq --method=GET repos/o/r/actions/runs/1',
+        'gh api -X DELETE repositories/9/actions/runs/4',
+        'gh api -XDELETE repos/o/r/actions/runs/1',
+        'gh api -X DELETE REPOS/o/r/Actions/Runs/1',
+        'gh api -X DELETE repos/o/r/actions/runs/../runs/9',
+        'gh api -X DELETE /repos/$1/actions/runs/2',
+        "gh api -X DELETE '/repos/$@/actions/runs/2'",
+        'gh api -X DELETE "/repos/$*/actions/runs/2"',
+      ],
+    },
+    {
+      what: 'this `gh api` call deletes an Actions log',
+      commands: [
+        'gh api -X DELETE https://api.github.com/repos/o/r/actions/runs/123/logs',
+        'gh api -X DELETE repos/o/r/actions/jobs/456/logs',
+        'yokoten bot -- gh api --method=DELETE repos/{owner}/{repo}/actions/runs/1/logs',
+        "gh api -X DELETE 'repos/o/r/actions/runs/9/logs?pretty=1'",
+        'gh api --method DELETE -- repos/o/r/actions/jobs/7/logs',
+        "gh api -X DELETE 'https://api.github.com/repos/o/r/actions/jobs/8/logs#part'",
+        'gh api -X DELETE repos/o/r/actions/runs/not-a-token-marker/logs',
+        'gh api -X DELETE repositories/9/actions/runs/4/logs',
+        'gh api -X DELETE repositories/9/actions/jobs/4/logs',
+        'gh api -X DELETE repos/o/r/actions/runs/4/./logs',
+        'gh api -X DELETE repos/o/r/actions/jobs/4//logs',
+        'gh api -X DELETE REPOS/o/r/Actions/Jobs/1/Logs',
+      ],
+    },
+  ];
+  for (const env of [lead, worker]) {
+    for (const { what, commands } of refused) {
+      for (const command of commands) {
+        const found = checkCommand(command, { cwd: process.cwd(), env });
+        assert.equal(found?.id, 'run-remove', command);
+        assert.equal(found?.what, what, command);
+        assert.equal(found?.why, why, command);
+        assert.equal(found?.fix, fix, command);
+        assert.ok(!found?.what.includes('not-a-token-marker'), command);
+        assert.ok(!JSON.stringify(found).includes('/repos/'), command);
+      }
+    }
+    for (const command of [
+      'gh run rerun 123',
+      'gh run rerun --failed 123',
+      'gh run view 123',
+      'gh run view 123 --log',
+      'gh run list',
+      'gh run list --workflow ci.yml',
+      'gh run watch 123',
+      'gh run download 123',
+      'gh api repos/o/r/actions/runs/123',
+      'gh api -X GET repos/o/r/actions/runs/123',
+      'gh api -X GET repos/o/r/actions/runs/123/logs',
+      'gh api -X GET repos/o/r/actions/jobs/456/logs',
+      'gh api repos/o/r/actions/runs/123/cancel',
+      'gh api -X GET repos/o/r/actions/runs/123/cancel',
+      'gh api -X GET -q .id repos/o/r/actions/runs/1/cancel',
+      'gh api -X GET repositories/123/actions/runs/4',
+      'gh api -X GET repositories/123/actions/runs/4/cancel',
+      'gh api repos/o/r/actions/./runs/1',
+      'gh api repos/o/r//actions/runs/1',
+      'gh api -X GET /repos/$1/actions/runs/8/cancel',
+      'gh api -X GET REPOS/o/r/Actions/Runs/1/Cancel',
+      'gh api -X GET repos/o/r/actions/runs/$ID/cancel',
+      'gh api -q.id repos/o/r/actions/runs/1',
+      'gh -Ro/r run list',
+      'gh -Ro/r api repos/o/r/actions/runs/1',
+      'echo gh run cancel 1',
+      'gh help run cancel',
+      'TZ=UTC gh run list',
+      'gh alias list',
+      'gh alias delete rc',
+      'gh help alias',
+    ]) assert.equal(checkCommand(command, { cwd: process.cwd(), env }), null, command);
+    // A launcher's value may be the word `gh`. The program after it is still read.
+    // A worker may not use `env -u` at all, so these are the lead's.
+    for (const command of ['env -u gh gh run rerun 1', 'sudo -u gh gh run view 1', 'xargs -a gh gh run list']) {
+      assert.equal(checkCommand(command, { cwd: process.cwd(), env: lead }), null, command);
+    }
+  }
+  // A write that is not a cancel or a delete stays the worker's own rule. The lead may rerun.
+  for (const command of [
+    'gh api -X POST repos/o/r/actions/runs/123/rerun',
+    'gh api --method=POST repos/o/r/actions/runs/123/rerun-failed-jobs',
+    'gh api -X POST repos/o/r/actions/runs/123',
+    'gh api --method=DELETE repos/a/b/git/refs/heads/x',
+    'gh api -X DELETE repos/o/r/actions/artifacts/1',
+    'gh api -X DELETE repos/o/r/actions/jobs/1',
+    'gh api -X DELETE repos/o/r/actions/runs/123/force-cancel',
+    'gh api -X POST repositories/9/actions/runs/3/rerun',
+    'gh api -X DELETE repositories/9/actions/artifacts/1',
+    'yokoten bot -- gh run rerun 1',
+    'yokoten bot -- gh run view 1',
+    'yokoten bot -- gh run list',
+    'yokoten bot -- gh run watch 1',
+  ]) {
+    assert.equal(checkCommand(command, { cwd: process.cwd(), env: lead }), null, `the lead may: ${command}`);
+    assert.equal(checkCommand(command, { cwd: process.cwd(), env: worker })?.id, 'worker-push', command);
+  }
+  // An alias hides the next command, so both roles hear the alias rule, not a parsed cancel.
+  const aliasFix = 'ask the owner to add the alias by hand';
+  for (const command of ["gh alias set rc 'run cancel'", 'gh alias set --clobber rc "run cancel"', 'gh alias import aliases.yml', 'sudo gh alias import f.yml', 'yokoten bot -- gh alias set rc "run delete"', 'env -u gh gh alias set rc "run cancel"']) {
+    for (const env of [lead, worker]) {
+      const found = checkCommand(command, { cwd: process.cwd(), env });
+      assert.equal(found?.id, 'alias', command);
+      assert.equal(found?.fix, aliasFix, command);
+      assert.match(found?.what ?? '', /gh alias (set|import)/, command);
+    }
+  }
+});
+
+// #650 round 2: a short-option cluster, a shell variable, or a gh command the guard does not
+// know can hide a cancel. Both roles hear the same refusal. A plain read still passes.
+test('guard: joined flags, shell variables and hidden gh commands are refused (#650)', () => {
+  const lead = {};
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  const runWhy = 'a cancelled run turns a check red and blocks the merge, and a deleted log is evidence gone';
+  const runFix = 'ask the owner, who can cancel or delete the run on the Actions page';
+  const joinedWhat = 'this `gh api` call joins short options, so its method is not clear';
+  const joinedFix = 'write each short option as its own word, so the guard can read the method';
+  const methodWhat = 'this `gh api` call takes its method from the shell on a run path';
+  const pathWhat = 'this `gh api` call takes its path from the shell, so the run is not clear';
+  const runVarWhat = '`gh run` with a subcommand from the shell can cancel or delete a run';
+  const clusters = [
+    'gh api -iXDELETE repos/o/r/actions/runs/1',
+    'gh api -iX DELETE repos/o/r/actions/runs/1',
+    'gh api -ivX DELETE repos/o/r/actions/runs/1',
+    'gh api -iXPOST repos/o/r/actions/runs/1/cancel',
+    'gh api -if x=1 repos/o/r/actions/runs/1/cancel',
+    'gh api -iF x=1 repos/o/r/actions/runs/1/cancel',
+  ];
+  const methods = ['gh api -X $M repos/o/r/actions/runs/1/cancel', 'gh api -X $M repos/o/r/actions/runs/1'];
+  const paths = ['gh api -X DELETE $URL', 'gh api -X DELETE "$B"/runs/1'];
+  const runVars = ['gh run $X 1', 'gh run "$X" 1'];
+  for (const env of [lead, worker]) {
+    for (const command of clusters) {
+      const found = checkCommand(command, { cwd: process.cwd(), env });
+      assert.equal(found?.id, 'run-remove', command);
+      assert.equal(found?.what, joinedWhat, command);
+      assert.equal(found?.why, runWhy, command);
+      assert.equal(found?.fix, joinedFix, command);
+    }
+    for (const command of methods) {
+      const found = checkCommand(command, { cwd: process.cwd(), env });
+      assert.equal(found?.id, 'run-remove', command);
+      assert.equal(found?.what, methodWhat, command);
+      assert.equal(found?.fix, runFix, command);
+    }
+    for (const command of paths) {
+      const found = checkCommand(command, { cwd: process.cwd(), env });
+      assert.equal(found?.id, 'run-remove', command);
+      assert.equal(found?.what, pathWhat, command);
+      assert.equal(found?.fix, runFix, command);
+    }
+    for (const command of runVars) {
+      const found = checkCommand(command, { cwd: process.cwd(), env });
+      assert.equal(found?.id, 'run-remove', command);
+      assert.equal(found?.what, runVarWhat, command);
+      assert.equal(found?.fix, runFix, command);
+    }
+    for (const command of [
+      'gh run view 1 --log',
+      'gh run list',
+      'gh api repos/o/r/actions/runs/1',
+      'gh api -X GET -q .id repos/o/r/actions/runs/1/cancel',
+      'gh api -X GET $URL',
+      'gh alias list',
+      'gh extension list',
+      'gh pr view 1',
+      'gh issue list',
+      'gh auth status',
+      'gh config list',
+      'gh config set editor vim',
+    ]) assert.equal(checkCommand(command, { cwd: process.cwd(), env }), null, command);
+  }
+  // A variable method on a path that is not a run. The lead may send it. A worker may not write.
+  assert.equal(checkCommand('gh api -X $M repos/o/r/issues/1', { cwd: process.cwd(), env: lead }), null);
+  assert.equal(checkCommand('gh api -X $M repos/o/r/issues/1', { cwd: process.cwd(), env: worker })?.id, 'worker-push');
+  const aliasWhy = 'an alias runs another command under a new name, so the guard cannot check what it runs';
+  const hidden: { command: string; what: RegExp; fix: string }[] = [
+    { command: 'gh x 1', what: /`gh x` is not a gh command/, fix: 'run the gh command by its own name, so the guard can read it' },
+    { command: 'gh ext install someone/gh-x', what: /`gh ext` is not a gh command/, fix: 'run the gh command by its own name, so the guard can read it' },
+    { command: 'gh extension install someone/gh-x', what: /`gh extension install`/, fix: 'ask the owner to change extensions by hand' },
+    { command: 'gh extension upgrade', what: /`gh extension upgrade`/, fix: 'ask the owner to change extensions by hand' },
+    { command: 'gh config set aliases.x "run cancel"', what: /`gh config set aliases`/, fix: 'ask the owner to add the alias by hand' },
+  ];
+  for (const env of [lead, worker]) {
+    for (const { command, what, fix } of hidden) {
+      const found = checkCommand(command, { cwd: process.cwd(), env });
+      assert.equal(found?.id, 'alias', command);
+      assert.match(found?.what ?? '', what, command);
+      assert.equal(found?.why, aliasWhy, command);
+      assert.equal(found?.fix, fix, command);
+    }
+  }
 });
 
 // #555: the mark is found with no git process, and it fails closed: a .git link the guard
@@ -2989,6 +3291,17 @@ test('guard: a worker command with a part the guard cannot read, or a shell mode
   ]) assert.equal(checkCommand(command, { cwd: clean, env: worker }), null, `should allow: ${command}`);
 });
 
+test('useHostCommands: a second, different registration is refused (#650)', () => {
+  assert.throws(() => useHostCommands({ hostRunRemoval: () => undefined, hostAlias: () => undefined, hostHiddenCommand: () => undefined, hostTokenReveal: () => undefined, hostWorkflowOff: () => undefined }), /already registered/);
+});
+
+test('checkCommand: without the host rules loaded, a gh command is refused, not let through (#650)', () => {
+  const guards = pathToFileURL(join(process.cwd(), 'src/rules/guards.ts')).href;
+  const script = `const { checkCommand } = await import(process.argv[1]); const at = (c) => checkCommand(c, { cwd: process.cwd(), env: {} })?.id ?? 'allowed'; console.log(at('gh run cancel 1'), at('gh pr view 1'), at('ls'));`;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', script, guards], { encoding: 'utf8' });
+  assert.equal(result.stdout.trim(), 'run-remove run-remove allowed', result.stderr);
+});
+
 const tokenCheck = (command: string, env: Env = {}) => checkCommand(command, { cwd: process.cwd(), env });
 const refusedAllAs = (commands: string[], id: string) => {
   for (const command of commands) assert.equal(tokenCheck(command)?.id, id, `should refuse as ${id}: ${JSON.stringify(command)}`);
@@ -3104,8 +3417,9 @@ test("token: the bot's git takes no settings, and a trace keeps the token hidden
   allowedAll(['yokoten bot -- git push origin topic', 'yokoten bot -- gh pr view 3', 'git -c core.pager=cat log -1', 'GIT_TRACE_REDACT=1 GIT_TRACE=1 git status', 'GIT_TRACE=1 git status']);
 });
 
-test('token: gh aliases and turning a workflow off are refused for every agent (#668)', () => {
-  refusedAllAs(["gh alias set tk 'auth token'", "gh alias set --shell e 'env'", 'gh alias import aliases.yml', 'gh alias delete tk', "yokoten bot -- gh alias set e 'env'"], 'gh-token');
+test('token: an alias for the token and turning a workflow off are refused for every agent (#668)', () => {
+  // The alias rule of #650 answers for an alias that runs `auth token` or a shell.
+  refusedAllAs(["gh alias set tk 'auth token'", "gh alias set --shell e 'env'", 'gh alias import aliases.yml', "yokoten bot -- gh alias set e 'env'"], 'alias');
   refusedAllAs(['gh workflow disable ci.yml', 'gh workflow disable 123 -R o/r', 'yokoten bot -- gh workflow disable ci.yml'], 'workflow-disable');
   allowedAll(['gh alias list', 'gh workflow list', 'gh workflow view ci.yml', 'gh workflow enable ci.yml', 'gh workflow run ci.yml']);
 });

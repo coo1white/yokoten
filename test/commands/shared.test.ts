@@ -121,6 +121,7 @@ test('--json: check, doctor, hook and explain print pure JSON with what, why and
     docs: 'https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#privacy',
     file: 'notes/a.md',
     line: 1,
+    grade: 'sure',
   });
   clean(result.stdout);
   result = await sandbox.call(['check', '--json'], { extra });
