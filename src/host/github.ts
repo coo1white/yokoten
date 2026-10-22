@@ -134,6 +134,11 @@ export function repoOf(remote: string): string | null {
   return remote.trim().match(/github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/)?.[1] ?? null;
 }
 
+/** The web page of `owner/name`. */
+export function repoPageOf(repo: string): string {
+  return `https://github.com/${repo}`;
+}
+
 // The title a gh command sets is read in rules/pr.ts, where the guard reads it too (#391).
 export { type BotProgram, botProgram, type CommandTitle, readCommandTitle, type UnreadableTitle } from '../rules/pr.ts';
 
@@ -939,6 +944,8 @@ export interface BoardPull {
   tier: '' | 'A' | 'B' | 'C';
   /** The review: approved, changes asked, waiting for the owner, or none asked. */
   review: 'approved' | 'changes' | 'waiting' | 'none';
+  /** When it merged, as gh gives it, or '' when it has not. */
+  mergedAt: string;
 }
 
 /** A check conclusion that keeps the pull request green. Any other conclusion on a completed run turns it red, so an unknown one never shows green. */
@@ -1010,6 +1017,7 @@ function parseBoardPull(row: unknown): BoardPull | null {
     stage: asText(row.state) === 'MERGED' ? 'merged' : asText(row.state) === 'CLOSED' ? 'closed' : row.isDraft === true ? 'draft' : 'open',
     checks: rollupState(row.statusCheckRollup),
     tier: pullTier(labelNames(row.labels)),
+    mergedAt: asText(row.mergedAt),
     review: review === 'APPROVED' ? 'approved' : review === 'CHANGES_REQUESTED' ? 'changes' : review === 'REVIEW_REQUIRED' ? 'waiting' : 'none',
   };
 }
@@ -1018,7 +1026,7 @@ function parseBoardPull(row: unknown): BoardPull | null {
 export function readBoardPulls(gh: Gh, repo: string): BoardPull[] | string {
   let text: string;
   try {
-    text = gh(['pr', 'list', '--repo', repo, '--state', 'all', '--limit', String(BOARD_PULL_LIMIT), '--json', 'number,title,headRefName,state,reviewDecision,isDraft,statusCheckRollup,labels,url']);
+    text = gh(['pr', 'list', '--repo', repo, '--state', 'all', '--limit', String(BOARD_PULL_LIMIT), '--json', 'number,title,headRefName,state,reviewDecision,isDraft,statusCheckRollup,labels,url,mergedAt']);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'gh is not installed: get it from https://cli.github.com, then run `gh auth login`';
     const reason = terminalText(String((err as { stderr?: string }).stderr || '').split('\n')[0].trim());

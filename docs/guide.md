@@ -302,12 +302,12 @@ Docs are not proof.
 
 | Agent | Hook file (`init` writes it) | How it blocks | Verified | Caveats |
 |---|---|---|---|---|
-| Claude Code | `.claude/settings.json`: PreToolUse and Stop | exit 2, the reason on stderr | yes, 2026-10-19: headless, on DeepSeek `deepseek-flash` | none |
+| Claude Code | `.claude/settings.json`: PreToolUse, Stop and SubagentStop | exit 2, the reason on stderr | yes, 2026-10-19: headless, on DeepSeek `deepseek-flash` | none |
 | GitHub Copilot CLI | the same `.claude/settings.json`: Copilot reads it | exit 2, and the reason as JSON on stdout | yes, 2026-10-19: Copilot CLI 1.0.98, `copilot -p`, model `gpt-6-luna` (Auto) | Runs repo hooks only after you trust the folder: run `copilot` there and choose "Yes, and remember this folder for future sessions". Skips them without a word otherwise. A hook that times out lets the call go on |
-| Antigravity CLI (`agy`) | `.agents/hooks.json`: the `yokoten` entry, PreToolUse | `{"decision": "deny"}` on stdout | yes, 2026-10-19: agy 1.4.2, `agy -p`, model `gemini-3.8-flash-high` | No stop check yet. Without `.yokoten/`, every call is refused: agy fails closed |
+| Antigravity CLI (`agy`) | `.agents/hooks.json`: the `yokoten` entry, PreToolUse | `{"decision": "deny"}` on stdout | yes, 2026-10-19: agy 1.4.2, `agy -p`, model `gemini-3.8-flash-high` | No stop check yet. Without `.yokoten/`, every call is refused: agy fails closed. The lead runs a worker's done-when check |
 | Codex CLI | `.codex/hooks.json`: PreToolUse and Stop | exit 2, the reason on stderr | yes, 2026-10-19: Codex 0.163.0, `codex exec`, on DeepSeek `deepseek-flash` | Runs the hooks only after you trust the folder, and then both hooks in `/hooks`. `codex exec` skips an untrusted hook without a word |
 | Muse Code | `.muse/hooks.json`: PreToolUse and Stop | exit 2, the reason on stderr | yes, 2026-10-19: Muse Code 1.4.10, `muse exec --trust-workspace`, model `muse-spark-1.3-contributor` | Runs the hooks only after you trust the folder: run `muse` there and choose "Trust and continue". Muse passes no `YOKOTEN_ROLE` to a hook, so mark a worker's worktree with `yokoten worker mark <dir>`. It is not known to pass `YOKOTEN_RELEASE_APPROVAL` either, so release outside Muse. A hook that fails or times out lets the call go on |
-| DeepSeek Harness (`dsh`) | `.dsh/hooks.json`: PreToolUse, and `.dsh/yokoten.patch.yml` to load it | exit 2, the reason on stderr | yes, 2026-10-20: dsh 0.2.1-rc.2, `dsh headless --patch .dsh/yokoten.patch.yml`, default DeepSeek model | Runs hooks only through a bridge you add to each profile: see [DeepSeek Harness](#deepseek-harness). Without it, or without the patch, dsh runs no hooks and says nothing. Not guarded on Windows yet (#332). No stop check |
+| DeepSeek Harness (`dsh`) | `.dsh/hooks.json`: PreToolUse, and `.dsh/yokoten.patch.yml` to load it | exit 2, the reason on stderr | yes, 2026-10-20: dsh 0.2.1-rc.2, `dsh headless --patch .dsh/yokoten.patch.yml`, default DeepSeek model | Runs hooks only through a bridge you add to each profile: see [DeepSeek Harness](#deepseek-harness). Without it, or without the patch, dsh runs no hooks and says nothing. Not guarded on Windows yet (#332). No stop check: the lead runs a worker's done-when check |
 | Grok CLI (`grok`) | `.grok/hooks/yokoten.json`: PreToolUse and Stop | `permissionDecision: "deny"` on stdout, and exit 2 | yes, 2026-10-20: Grok CLI 1.0.52, `grok -p --trust --always-approve`, default model | Runs project hooks only after you trust the folder: run `grok` there and type `/hooks-trust`. Skips them without a word otherwise. Also runs the hooks in `.claude/settings.json`, so the guard may run twice for one call, on purpose |
 | Gemini CLI | `.gemini/settings.json`: BeforeTool and AfterAgent | exit 2, the reason on stderr | not run end to end: personal sign-in retired 2026-06-18; needs a paid API key or an org license | Google's agent for individuals is now Antigravity CLI |
 | Any other agent | none | the rules in `AGENTS.md`, and the commit check, which stops a bad commit whoever made it | | |
@@ -449,11 +449,14 @@ dsh matches tool names exactly, in lowercase: the hook's matcher is `bash|pwsh|e
 guarded yet. There dsh runs the hook itself in PowerShell, which can't run yokoten's
 POSIX shell command. The bridge takes that failure as "go ahead", so every call goes
 through. On Windows `doctor` says so, and `init` does too (#332).
-There is no stop check: the bridge's Stop event has no loop guard. `doctor` checks both
-files, and looks in `${DSH_HOME:-~/.dsh}/profiles` for the two packages. Without a dsh home
-it says it can't check. The bridge fails open without a word, so files in place prove
-nothing. Only a real deny proves the guard runs: ask dsh to run `git push --tags` in a
-throwaway repo, and see it refused.
+There is no stop check: the bridge's Stop event has no loop guard. A worker on DeepSeek
+Harness can report a task as done with failing checks. The lead runs the done-when
+command (or the project's checks when the brief has none). Antigravity CLI has no stop
+check either; the lead runs the check there too. `doctor` checks both files, and looks in
+`${DSH_HOME:-~/.dsh}/profiles` for the two packages. Without a dsh home it says it can't
+check. The bridge fails open without a word, so files in place prove nothing. Only a real
+deny proves the guard runs: ask dsh to run `git push --tags` in a throwaway repo, and see
+it refused.
 
 ### Claude Code or Codex on DeepSeek
 
@@ -822,7 +825,7 @@ It puts three safe defaults in `.github/` too:
 | `learn --upstream "<what happened>" [--area <name>] [--fix <idea>]` | Keeps a note about a gap in yokoten itself, with the project and you hidden. `--list` shows the notes; `--done <id>` removes one. See [Lessons for yokoten itself](#lessons-for-yokoten-itself) |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public. A shallow clone can't see old commits, so it fails without scanning; in CI, check out the whole history (`fetch-depth: 0`). A hit in a file names the commit that added it, and the path in that commit: `file @ <commit>`. It reads commits past `git replace`, and fails the same way when a grafts file can hide commits. |
 | `hook [--agent <name>] [--commands-only] [--json]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini`, an Antigravity CLI PreToolUse call with `--agent antigravity`, a Muse Code PreToolUse call with `--agent muse`, a DeepSeek Harness PreToolUse call with `--agent deepseek-harness`, a Grok CLI PreToolUse call with `--agent grok` |
-| `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop event by default, a Codex Stop event with `--agent codex`, a Gemini CLI AfterAgent event with `--agent gemini`, a Grok CLI Stop event with `--agent grok`. See [The stop check](#the-stop-check) |
+| `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop or SubagentStop event by default, a Codex Stop event with `--agent codex`, a Muse Code Stop event with `--agent muse`, a Gemini CLI AfterAgent event with `--agent gemini`, a Grok CLI Stop event with `--agent grok`. A worker also runs the task's done-when command. See [The stop check](#the-stop-check) |
 | `explain [<id>] [--json]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
 | `worker mark <dir>` | Marks the worktree at `<dir>` as a worker's. The guard then treats every agent there as a worker, even one whose runtime drops `YOKOTEN_ROLE` (Muse Code). The guard refuses a worker's plain ways to remove it, and a `.git` link it can't read counts as marked; the server and credentials kept from the worker are the real lock. `git worktree remove <dir>` removes the mark. Given a subfolder, it marks the worktree's top folder and says which. The main checkout and a submodule are never marked. See [Works with](#works-with) |
 | `worker env [runtime]` | Lists the names that yokoten's agent environment would keep from this shell, and counts the names it drops. With a runtime, its own login name counts too. It never shows a value. No command starts an agent with it yet. See [What an agent's environment holds](#what-an-agents-environment-holds) |
@@ -853,8 +856,13 @@ value.
   when it allows, and `{ blocked: false, toolCall: false }` when stdin is not a tool call.
   The runtimes do not use it: they read the exit code and the reason on stderr, as their
   hook protocols say.
-- `hook --stop --json`: `{ blocked, stop, findings }`. With `stop_hook_active`, or when the
-  check fails, also `skipped`, the reason. When stdin is not a Stop event: `{ blocked: false, stop: false }`.
+- `hook --stop --json`: `{ blocked, stop, findings }`. For a lead, `stop_hook_active`
+  adds `skipped`, the reason. A worker is still checked when that field is set.
+  When the check itself fails, `skipped` names that too. When a worker's done-when
+  check fails, also `doneWhen`. After the try limit, `skipped` is
+  `stopped with failing checks`. That stop writes `checks` as `failing` in
+  `.yokoten-agent.json` in a linked worktree. A pass there sets `checks` to `passing`.
+  When stdin is not a Stop event: `{ blocked: false, stop: false }`.
 - `explain --json`: `{ found, id, kind, what, why, check, docs, stage, standard }`. For an
   unknown id: `{ id, found: false, ids }`, exit 1. With no id: `{ ids }`, exit 0.
 
@@ -940,28 +948,78 @@ folder owned by root are the usual causes. Each note prints the command that fix
 
 The tool-call hook reads commands. It does not see a file that `sed` or a script
 changed. The commit check sees it, but only at the commit. The stop check runs earlier:
-when the agent tries to end its turn. That is the Stop event in Claude Code and Codex,
-and AfterAgent in Gemini CLI.
+when the agent tries to end its turn. That is the Stop event in Claude Code, Codex,
+Muse Code and Grok CLI, SubagentStop in Claude Code, and AfterAgent in Gemini CLI.
 
 ```mermaid
 flowchart LR
-  S["agent ends its turn"] --> A{"already sent back once?"}
+  S["agent ends its turn"] --> U{"subagent, and its type is not a worker?"}
+  U -- yes --> N["turn ends, no check"]
+  U -- no --> W{"a worker?"}
+  W -- no --> A{"already sent back once?"}
   A -- yes --> E["turn ends"]
   A -- no --> C{"findings in changed files?"}
   C -- no --> E
   C -- yes --> B["agent gets the findings and fixes them"]
+  W -- yes --> D{"done-when check passes?"}
+  D -- yes --> E
+  D -- no --> K{"try count saved?"}
+  K -- no --> H{"stop_hook_active, or refused in the last 5 minutes?"}
+  H -- yes --> X["stop allowed; checks still failing"]
+  H -- no --> F["one refusal; the next stop is let through"]
+  K -- yes --> T{"this try is 1, 2 or 3?"}
+  T -- yes --> F2["worker gets the output and fixes it"]
+  T -- no --> X
 ```
 
 - It checks the changed files only: staged, not staged, and new files that git does not
   ignore. It uses the privacy, secret and file rules of `check --staged`.
-- It sends the agent back once. The agent then sets `stop_hook_active`, and the next
-  stop always ends the turn. There is no loop.
+- A subagent is checked only when its own type is a worker.
+  The parent session's role does not count. A reviewer started by a worker is not checked.
+  Its stop exits 0. A type is a worker only when it is `worker`, or it ends with `:worker`.
+  `coworker` and `code-worker` are not workers. Mark such an agent as `worker`,
+  or use a name that ends with `:worker`. A reviewer, Explore agent or verifier is not checked.
+- For a lead, it sends the agent back once. The agent then sets `stop_hook_active`, and
+  the next stop always ends the turn. There is no loop.
+- For a worker, it also runs the task's done-when command. The command comes from
+  `YOKOTEN_DONE_WHEN`, or from `yokoten-done-when` in the worktree's git folder.
+  The environment variable wins when both are set. When the brief has none, the
+  changed-file check is the project's check.
+- The command uses the platform shell. That is `sh` on Linux and macOS, and `cmd.exe`
+  on Windows. It may run for two minutes. On a timeout, yokoten stops the command and
+  every program it started. On Windows it stops that tree while the shell is still running.
+- A failing check sends the worker back, with the output in short and what to fix.
+  The worker gets three tries. On the third, the hook says the next stop is let through.
+  The worker's final message to the lead must start with `NOT DONE: checks failing`.
+  It must quote the failing output. The task is not done.
+- The allowed stop writes `.yokoten-agent.json` at the root of a linked worktree.
+  It does not write that file in the main checkout. It sets `checks` to `failing`
+  and `updated` to the time in UTC. A pass sets `checks` to `passing`.
+  Other fields stay. The lead reads that file. The board will show `checks` later,
+  under issue #603. The allowed stop's stderr reaches nobody.
+- When the try count cannot be saved, one refusal says the next stop is let through.
+  The same worker is let through when it was refused in the last 5 minutes.
+  This holds even when the runtime never sets `stop_hook_active`. A worker is never trapped.
+  The count is cleared when the check passes, and again when the worker is let through.
+  A resumed worker is checked from try 1. Count files older than a day are removed
+  when a new count is written.
+- A subagent worker shares the lead's folder and environment. It does not get its own
+  `YOKOTEN_DONE_WHEN`. The check runs in the event's folder. It runs in the worker's
+  worktree only when the stop event names that worktree.
+- DeepSeek Harness and Antigravity CLI have no stop hook. The lead runs the check.
+- Claude Code, Codex, Muse Code and Grok CLI each wait 600 seconds for this hook.
+  Gemini CLI reads `timeout` in milliseconds, so its hook waits 600000 milliseconds.
+  Each of those is 10 minutes. That covers the two-minute command.
+  Muse Code settings hooks, including `.muse/hooks.json`, also read `timeout` in seconds.
 - It reads no history and uses no network.
 - On an error in yokoten, the turn ends and stderr gets one line.
 - A new file you want to keep out of the check goes in `.gitignore`, or in
   `privacy.skip` in `yokoten.json`.
 
-`init` adds it to `.claude/settings.json`, `.codex/hooks.json` and `.gemini/settings.json`.
+`init` adds the hook to `.claude/settings.json` (Stop and SubagentStop),
+`.codex/hooks.json` (Stop), `.muse/hooks.json` (Stop), `.gemini/settings.json`
+(AfterAgent) and `.grok/hooks/yokoten.json` (Stop). Claude Code, Codex, Muse Code
+and Grok CLI wait 600 seconds. Gemini CLI waits 600000 milliseconds.
 `install` does not add it at user level: it
 reads files, so each project turns it on, as with the file rules of the tool-call hook.
 
@@ -1362,6 +1420,7 @@ Environment variables:
 | Variable | What it does |
 |----------|--------------|
 | `YOKOTEN_ROLE=worker` | The session is a worker. It may not change lead-only files |
+| `YOKOTEN_DONE_WHEN` | The command the stop hook runs when this worker ends the task. It wins over `yokoten-done-when` in the worktree's git folder. A subagent shares the lead's environment and does not get its own. See [The stop check](#the-stop-check) |
 | `YOKOTEN_LEAD_ONLY_OK` | The lead-only paths this worker may change, comma-separated, from the repo root. See [Works with](#works-with) |
 | `YOKOTEN_FIX_TASK=1` | The session is a fix task. It may not change test files |
 | `YOKOTEN_RELEASE_APPROVAL=1` | The owner allows a release from this session. Muse Code is not known to pass it to a hook |
@@ -1451,7 +1510,10 @@ The setup treats agents like staff on a line, each with a clear role and limited
 - **Workers** are sessions the lead starts for one task each, in their own worktree
   under `.worktrees/`, with `YOKOTEN_ROLE=worker`. They change code and report back.
   They never push. A fix task also gets `YOKOTEN_FIX_TASK=1`. Then the guard and the
-  commit check stop a change to a test file.
+  commit check stop a change to a test file. The stop hook runs the brief's done-when
+  command. After three refusals the worker may stop. Its message to the lead starts with
+  "NOT DONE: checks failing". In a linked worktree, `.yokoten-agent.json` records `checks`.
+  The lead reads that file. The board will show `checks` later.
 - **The bot** is a GitHub App installed on the repo. It opens pull requests. If it has
   the Workflows permission, CODEOWNERS still sends every CI change to you, and a release
   waits for you in the protected `release` environment. A ruleset requires your review,
@@ -1501,12 +1563,26 @@ Server setup, step by step: [`docs/server.md`](server.md).
 It prints a link. Open it in a browser. The link holds a random token, so only
 someone who reads this terminal can open the page.
 
-The page has three columns. The left lists the agents, grouped by issue: pick one
-to see it in the middle. The middle shows what the picked agent works on and what
-it does now. The right lists the pull requests and their checks. The page refreshes
-every 15 seconds. Stop the command with Ctrl-C.
+The page has three columns:
 
-`yokoten board --text` prints the agents, pull requests and worktrees as plain text.
+- **Left:** what needs you first (a tier A pull request ready for your Approve, or an
+  agent waiting for an answer). It never folds. Below it, the agents by role. Click
+  one to see it in the middle. Finished agents fold away; **Clear** hides one until it
+  writes again. Its log and branch stay.
+- **Middle:** what the picked agent did, step by step. Routine steps fold; waits,
+  failures and the latest step always show.
+- **Right:** the pull requests, each as four steps: Built, Checked, You (tier A only),
+  Merged. Today's merged ones are listed below.
+
+The top bar has the language (English, 简体中文, 繁體中文 or 日本語; it starts in your
+browser's language), a link to the repo on GitHub, and light or dark. What agents write
+shows as they wrote it. The page keeps your choices (language, folds, cleared agents)
+until you stop the board.
+
+The page refreshes every 15 seconds and works on a phone too. Stop the command with Ctrl-C.
+It only shows; to talk to an agent, use its own terminal for now.
+
+`yokoten board --text` prints the same in plain text.
 
 At the top, Waiting for you lists what needs the owner: tier A pull requests with
 green checks and no Approve, commands the guard stopped, and questions agents ask.
@@ -1514,22 +1590,23 @@ Each row shows the kind, the agent, its role, how long it waited, one line on wh
 and a link to act. The list is read only: no request an agent can make clears an
 item. An empty list says so.
 
-From the right column the owner starts an agent: pick an open issue, a vendor, and
-a model, then Start. The board makes `.worktrees/<issue>`, marks it as a worker's
+The owner starts an agent through the board: send an open issue, a vendor, and a
+model to `/agents/start`. The board makes `.worktrees/<issue>`, marks it as a worker's
 (as `yokoten worker mark` does, so runtimes that drop `YOKOTEN_ROLE` still run as
 workers), and starts the vendor's own headless command with `YOKOTEN_ROLE=worker`,
 like the dispatch skill. The model goes through the vendor's own flag (`--model`);
 DeepSeek Harness has no such flag, so its model stays a name in the brief. Before
 it starts, the board checks the vendor's guard hooks will run in that worktree, and
 refuses the start with a plain reason when they will not (trust the folder first,
-or run `yokoten init`). The run shows under Started here with a Stop button, and
-its latest output below. Stopping keeps the worktree and its commits. A process
+or run `yokoten init`). The run shows in `/data`, and stops through `/agents/stop`.
+Stopping keeps the worktree and its commits. A process
 that exits by itself counts as stopped: its slot frees and a later Stop says so.
 
 The limits say how many agents run at once (three at first), and how many of one
 model. Over the limit, the board refuses a start with a plain reason.
 
-`yokoten board --text` also prints Waiting for you whenever something waits.
+`yokoten board --text` also prints Waiting for you whenever something waits, and the
+runs the board started.
 
 Safety: the link holds a random token, and a change needs the page's Origin too.
 The board stops only processes it started. Every start and stop goes to
@@ -1544,17 +1621,26 @@ format is open: other tools may read it too. One file per worktree.
 | Field | Means |
 |-------|-------|
 | `name` | The agent's name. Without it, the worktree's folder name is used |
-| `vendor` | Which vendor it runs on, such as `claude-code` |
-| `task` | What it works on, such as `issue 601`. The page groups the agents by the issue it names |
-| `role` | The agent's part: `engineer`, `reviewer` or `verifier`. One issue then shows its whole path |
+| `vendor` | Which vendor it runs on, such as `claude-code`, `codex` or `grok` |
+| `model`, `effort` | The model and effort, such as `opus` and `medium` |
+| `role` | `lead`, `engineer`, `reviewer`, `verifier` or `helper`. The lead is pinned at the top |
+| `task` | What it works on, such as `PR #615 Run rules locally`. A named pull request or issue shows as a chip |
 | `worktree` | The worktree it works in |
-| `doing` | What it does now, in a few words |
-| `updated` | When it last wrote, such as `2026-10-22T10:00:00Z`. The board shows how long ago that was |
+| `doing` | What it does now, in a few words. Each new one is a step in the middle column |
+| `state` | `working`, `waiting` (it needs you) or `done` |
+| `checks` | `passing` or `failing`, from its last test run |
+| `updated` | When it last wrote, such as `2026-10-22T10:00:00Z`. Quiet for 30 minutes shows as idle |
 | `blocked` | A guard stop that needs a decision, in one line. It joins Waiting for you |
 | `question` | One line the agent asks the owner. It joins Waiting for you |
 | `link` | Where the owner acts, http(s) only. Anything else stays plain text |
 
-Every field is text. Every field may be missing. A file that is not a JSON object is skipped. `role` keeps only `engineer`, `reviewer` or `verifier`; anything else is ignored. A `blocked` or `question` row stays on Waiting for you while the agent is here, even when the file stops naming it: only leaving clears it.
+Every field is text. Every field may be missing. A file that is not a JSON object is
+skipped. A `role`, `state` or `checks` outside the words above is ignored. A `blocked`
+or `question` row stays on Waiting for you while the agent is here, even when the file
+stops naming it: only leaving clears it.
+
+The page shows what agents write only as text, never as page code, and links only to
+`http` and `https` addresses. It loads nothing from the internet.
 
 The page reads `/data` as JSON. That is the board's interface. The page is only one
 view of it.
