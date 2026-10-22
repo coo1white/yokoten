@@ -1597,8 +1597,8 @@ plain or through `yokoten bot -- gh`:
     `-o pipefail` or `+o pipefail`. A bare `set` doesn't count.
   - `cd` or `pushd` with one folder.
   - A plain assignment, but not to a name the shell uses, such as `PATH`, `HOME` or `PS4`.
-  - `export`, or a command's own prefix, of only `GH_REPO`, `GH_HOST` and
-    `NODE_USE_ENV_PROXY`.
+  - `export`, or a command's own prefix, of only `GH_REPO`, `GH_HOST`,
+    `NODE_USE_ENV_PROXY` and `TZ=UTC`.
   - `gh pr|issue|repo|run view|list|checks` without `--web` or `-w`.
   - `git rev-parse`, `git config --get <name>` and `git remote get-url`.
   - Any of these through `yokoten bot --`.

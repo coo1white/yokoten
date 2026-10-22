@@ -165,21 +165,24 @@ export function cleanChildEnv(env: Env): Env {
 }
 
 /** The environment for one command run as the bot: gh reads GH_TOKEN, and git asks gh.
- * The command may run tests (a push hook, npm test), so it gets a clean child env (#168). */
+ * TZ is always UTC (#488): gh sends it as the Time-Zone header, and GitHub writes that
+ * zone into the commits it makes, such as a merge. The command may run tests (a push
+ * hook, npm test), so it gets a clean child env (#168). */
 export function botEnv(env: Env, token: string): Env {
   // Added after any git config already passed this way. The empty value clears other
   // credential helpers for github.com, so git cannot fall back to the owner's login.
-  const n = Number(env.GIT_CONFIG_COUNT) || 0;
+  const count = Number(env.GIT_CONFIG_COUNT) || 0;
   const key = 'credential.https://github.com.helper';
   return {
     ...cleanChildEnv(env),
+    TZ: 'UTC',
     GH_TOKEN: token,
     GITHUB_TOKEN: token,
-    GIT_CONFIG_COUNT: String(n + 2),
-    [`GIT_CONFIG_KEY_${n}`]: key,
-    [`GIT_CONFIG_VALUE_${n}`]: '',
-    [`GIT_CONFIG_KEY_${n + 1}`]: key,
-    [`GIT_CONFIG_VALUE_${n + 1}`]: '!gh auth git-credential',
+    GIT_CONFIG_COUNT: String(count + 2),
+    [`GIT_CONFIG_KEY_${count}`]: key,
+    [`GIT_CONFIG_VALUE_${count}`]: '',
+    [`GIT_CONFIG_KEY_${count + 1}`]: key,
+    [`GIT_CONFIG_VALUE_${count + 1}`]: '!gh auth git-credential',
   };
 }
 
