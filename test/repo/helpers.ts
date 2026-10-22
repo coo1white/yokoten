@@ -43,6 +43,7 @@ import {
   road,
   ROAD,
 } from '../../src/setup/road.ts';
+import type { MachineProbe } from '../../src/setup/doctor/machine.ts';
 
 export const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'yokoten.ts');
 
@@ -379,3 +380,34 @@ const copyTranslatedRepo = makeRepoTemplate((root) => {
   commit('en.md', '# Guide\n\nStep one.\n');
   commit('zh.md', `${sourceMarker('en.md')}\n# 指南\n\n第一步。\n`);
 });
+
+export const GB = 1024 ** 3;
+
+export const MOUNTS = 'none / ext4 rw 0 0\nC:\\134 /mnt/c 9p rw 0 0\nD:\\134 /mnt/d 9p rw 0 0\n';
+
+export const NOW = new Date('2026-10-20T08:30:00Z');
+
+export const WSL = { WSL_DISTRO_NAME: '<distro>', HOME: '/home/<user>' };
+
+/**
+ * A machine with `free` bytes on every disk. Files live in `files`, /proc/mounts is MOUNTS,
+ * and running a program throws unless `programs` answers it.
+ */
+export function fakeMachine(free: number, more: Partial<MachineProbe> & { programs?: Record<string, string>; ran?: string[]; files?: Map<string, string> } = {}): MachineProbe {
+  const { programs = {}, ran = [], files = new Map<string, string>(), ...rest } = more;
+  return {
+    readDiskSpace: () => ({ free, size: 250 * GB }),
+    readOwner: () => null,
+    runProgram: (file) => {
+      ran.push(file);
+      if (file in programs) return programs[file];
+      throw Object.assign(new Error('not found'), { code: 'ENOENT' });
+    },
+    readText: (path) => (path === '/proc/mounts' ? MOUNTS : (files.get(path) ?? null)),
+    writeText: (path, text) => void files.set(path, text),
+    uid: 1000,
+    now: () => NOW,
+    nodeVersion: '24.22.1',
+    ...rest,
+  };
+}
