@@ -1488,14 +1488,13 @@ path and branch. The page refreshes every 15 seconds. Stop the command with Ctrl
 
 `yokoten board --text` prints the same data as plain text.
 
-An agent joins by writing one JSON file. It leaves by removing the file. The folder
-is `~/.config/yokoten/board/`, outside every repo. The file name is `<name>.json`.
-Any agent can write it, whatever vendor it runs on. The format is open: other tools
-may read it too.
+An agent joins by writing `.yokoten-agent.json` at its worktree's root. It leaves
+by removing the file. Any agent can write it, whatever vendor it runs on. The
+format is open: other tools may read it too. One file per worktree.
 
 | Field | Means |
 |-------|-------|
-| `name` | The agent's name. Without it, the file's own name is used |
+| `name` | The agent's name. Without it, the worktree's folder name is used |
 | `vendor` | Which vendor it runs on, such as `claude-code` |
 | `task` | What it works on, such as `issue 601` |
 | `worktree` | The worktree it works in |
