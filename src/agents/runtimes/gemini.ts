@@ -139,6 +139,9 @@ export const SANDBOX_FILE = '.gemini/settings.json';
 /** The sandbox block for a commented settings file, to add by hand. */
 export const SANDBOX_HAND_ADD = '{"security": {"disableYoloMode": true}}';
 
+/** The hook events init writes: the sandbox read respects their shape too, so a bad hooks table skips both. */
+const PROJECT_EVENTS = ['BeforeTool', 'AfterAgent'];
+
 /** The settings with a well-shaped `security` block, or the shape problem. */
 function withSecurity(settings: Settings): { settings: Settings } | { problem: { kind: 'shape'; hint: string } } {
   if (settings.security !== undefined && !isObject(settings.security)) return { problem: { kind: 'shape', hint: '`security` should be an object' } };
@@ -152,7 +155,7 @@ function withSecurity(settings: Settings): { settings: Settings } | { problem: {
  */
 export function addProjectSandbox(root: string): 'added' | 'same' | 'kept' | 'hand' | Problem {
   const path = projectSettings(root);
-  const table = readTable(path, [], READ);
+  const table = readTable(path, PROJECT_EVENTS, READ);
   if ('problem' in table) return table.problem;
   const shaped = withSecurity(table.settings);
   if ('problem' in shaped) return shaped.problem;
@@ -170,7 +173,7 @@ export function addProjectSandbox(root: string): 'added' | 'same' | 'kept' | 'ha
  */
 export function sandboxProblem(root: string): { what: string; fix: string } | null {
   const file = SANDBOX_FILE;
-  const table = readTable(join(root, file), [], READ);
+  const table = readTable(join(root, file), PROJECT_EVENTS, READ);
   if ('problem' in table) {
     // readTable never reports comments (only checkHooks builds that one): json or shape.
     const problem = table.problem as { kind: 'json' } | { kind: 'shape'; hint: string };

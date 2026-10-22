@@ -263,9 +263,11 @@ function withSandbox(settings: Settings): { settings: Settings } | { problem: { 
  */
 export function addProjectSandbox(root: string): 'added' | 'same' | 'kept' | Problem {
   const path = projectSettings(root);
-  const table = readTable(path, []);
+  const table = readTable(path, PROJECT_EVENTS);
   if ('problem' in table) return table.problem;
-  const shaped = withSandbox(table.settings);
+  const envChecked = withEnv(table);
+  if ('problem' in envChecked) return envChecked.problem;
+  const shaped = withSandbox(envChecked.settings);
   if ('problem' in shaped) return shaped.problem;
   const sandbox = shaped.settings.sandbox as Record<string, unknown> | undefined;
   if (sandbox === undefined) {
@@ -288,7 +290,7 @@ export function addProjectSandbox(root: string): 'added' | 'same' | 'kept' | Pro
  */
 export function sandboxProblem(root: string): { what: string; fix: string } | null {
   const file = SANDBOX_FILE;
-  const table = readTable(join(root, file), []);
+  const table = readTable(join(root, file), PROJECT_EVENTS);
   if ('problem' in table) {
     // readTable never reports comments (only checkHooks builds that one): json or shape.
     const problem = table.problem as { kind: 'json' } | { kind: 'shape'; hint: string };
@@ -296,7 +298,12 @@ export function sandboxProblem(root: string): { what: string; fix: string } | nu
       ? { what: `can't read ${file}`, fix: 'make it valid JSON, then run `yokoten init`' }
       : { what: `${file} has an unexpected shape`, fix: `${problem.hint}; fix it, then run \`yokoten init\`` };
   }
-  const shaped = withSandbox(table.settings);
+  const envChecked = withEnv(table);
+  if ('problem' in envChecked) {
+    const problem = envChecked.problem as { kind: 'shape'; hint: string };
+    return { what: `${file} has an unexpected shape`, fix: `${problem.hint}; fix it, then run \`yokoten init\`` };
+  }
+  const shaped = withSandbox(envChecked.settings);
   if ('problem' in shaped) return { what: `${file} has an unexpected shape`, fix: `${shaped.problem.hint}; fix it, then run \`yokoten init\`` };
   const sandbox = shaped.settings.sandbox as Record<string, unknown> | undefined;
   if (sandbox === undefined || !Object.hasOwn(sandbox, 'enabled')) return { what: `no sandbox in ${file}`, fix: '`yokoten init` adds it' };
