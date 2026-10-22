@@ -41,7 +41,7 @@ import {
   readServer,
   type ServerSettings,
   type Unread,
-} from '../../src/host/github.ts';
+} from '../../src/host/github/index.ts';
 import { unsavedNotes } from '../../src/setup/advice/unsaved.ts';
 import {
   agentTempDirCheck,

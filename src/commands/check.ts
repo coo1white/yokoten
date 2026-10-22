@@ -14,7 +14,7 @@ import { chmodSync, closeSync, linkSync, mkdirSync, openSync, realpathSync, rena
 import { dirname } from 'node:path';
 
 import { readCurrentPullRequest, readsCurrentPullRequest } from '../host/current-pr.ts';
-import { ghIn, readCodeOwners, readIssue, readNumberedPullRequest, readPullRequest, readRepoLabelNames } from '../host/github.ts';
+import { ghIn, readCodeOwners, readIssue, readNumberedPullRequest, readPullRequest, readRepoLabelNames } from '../host/github/index.ts';
 import { loadConfig } from '../rules/config.ts';
 import { type Finding, formatFinding } from '../rules/message.ts';
 import { addedLinesByFile, changedLines, checkIssueLabels, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, largeDiff, longSentenceNote, longSentences, splitForDependabot } from '../rules/pr.ts';

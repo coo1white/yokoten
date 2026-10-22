@@ -56,6 +56,7 @@ const TEST_TOP = ['repo/architecture.test.ts', 'repo/git-template.ts', 'repo/hel
 const NO_TEST_FILE = [
   'agents/agent-skills.ts', // no tests yet (#152)
   'agents/hooks-file.ts', // no tests yet (#152); the install and init tests use it
+  'host/github/index.ts', // re-exports the GitHub adapter's public names
   'setup/files.ts', // no tests yet (#152); the install tests and this file use it
 ];
 
@@ -119,7 +120,7 @@ const HOST_API = /api\.github\.com|\bgh api\b|GITHUB_EVENT_PATH/;
 const namesHostApi = (files: Record<string, string>) => Object.keys(files).filter((p) => !p.startsWith('src/host/') && HOST_API.test(files[p]));
 
 test('host: nothing outside src/host/ names a GitHub API (#33)', () => {
-  assert.deepEqual(namesHostApi({ 'src/setup/a.ts': 'run gh api repos/x', 'src/rules/b.ts': 'env.GITHUB_EVENT_PATH', 'bin/c.ts': 'https://api.github.com', 'src/host/github.ts': 'https://api.github.com', 'src/run/d.ts': 'gh pr view' }), ['src/setup/a.ts', 'src/rules/b.ts', 'bin/c.ts']);
+  assert.deepEqual(namesHostApi({ 'src/setup/a.ts': 'run gh api repos/x', 'src/rules/b.ts': 'env.GITHUB_EVENT_PATH', 'bin/c.ts': 'https://api.github.com', 'src/host/github/index.ts': 'https://api.github.com', 'src/run/d.ts': 'gh pr view' }), ['src/setup/a.ts', 'src/rules/b.ts', 'bin/c.ts']);
   const files: Record<string, string> = {};
   for (const path of execFileSync('git', ['ls-files', 'bin', 'src'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter(Boolean)) files[path] = readFileSync(join(ROOT, path), 'utf8');
   assert.ok(Object.keys(files).some((p) => p.startsWith('src/host/') && HOST_API.test(files[p])), 'src/host/ names no API; the scan is broken');

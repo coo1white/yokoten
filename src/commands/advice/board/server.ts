@@ -9,7 +9,7 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
-import { ghIn, type Gh } from '../../../host/github.ts';
+import { ghIn, type Gh } from '../../../host/github/index.ts';
 import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
 import { type Invocation, parse, print, requireRoot, usage } from '../../shared.ts';

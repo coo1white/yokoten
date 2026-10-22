@@ -35,7 +35,7 @@ import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import type { FolderTrust } from '../agents/folder-trust.ts';
 import { commentedFile, HAND_ADD, handAddJson, type HookState, mergeHandAdds } from '../agents/hooks-file.ts';
-import { type Gh, readServer, type ServerSettings, type Unread } from '../host/github.ts';
+import { type Gh, readServer, type ServerSettings, type Unread } from '../host/github/index.ts';
 import { type Host, hostOf, isNoAdapter, noAdapter } from '../host/hosts.ts';
 import { findTempDirs, readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advice/unsaved.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';

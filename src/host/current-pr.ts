@@ -15,7 +15,7 @@
 
 import type { Env } from '../rules/config.ts';
 import { finding } from '../rules/message.ts';
-import { asText, EVENT_FIX, isObject, isUnreadable, labelNames, milestoneTitle, readEvent, SHA_FIX, type Unreadable } from './github.ts';
+import { asText, EVENT_FIX, isObject, isUnreadable, labelNames, milestoneTitle, readEvent, SHA_FIX, type Unreadable } from './github/index.ts';
 
 /** The fields of a pull request that change without a new commit, as they are now. */
 export interface CurrentPullRequest {

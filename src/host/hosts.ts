@@ -1,12 +1,12 @@
 // Which code host a remote is on, and whether yokoten has an adapter for it (#504).
 // The road speaks in ideas ("main is protected"); an adapter knows how its host does
-// them. GitHub has one (github.ts); Gitea gets one next (#505). A host with no adapter
+// them. GitHub has one (github/); Gitea gets one next (#505). A host with no adapter
 // still gets the core: the rules, the guard and the commit check work the same there.
 //
 // A self-hosted server's name can point at a person (core rule 11), so yokoten never
 // prints it: such a host is "this host" in what doctor says.
 
-import { repoOf, type Unread } from './github.ts';
+import { repoOf, type Unread } from './github/index.ts';
 
 /** The code host of the origin remote. */
 export type Host =

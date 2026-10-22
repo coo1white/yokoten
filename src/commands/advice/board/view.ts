@@ -1,7 +1,7 @@
 // What the board shows (#603): the agents, what needs the owner, and each pull request's
 // steps. Plain data built on the server, so the page, `--text` and the tests read the same.
 
-import { type BoardPull, type Gh, readBoardPulls, repoOf, repoPageOf } from '../../../host/github.ts';
+import { type BoardPull, type Gh, readBoardPulls, repoOf, repoPageOf } from '../../../host/github/index.ts';
 import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
 import { readOriginUrl } from '../../../setup/plan.ts';
