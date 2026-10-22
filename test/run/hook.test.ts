@@ -3,7 +3,7 @@
 import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { constants, existsSync, lstatSync, lutimesSync, mkdirSync, openSync, readFileSync, readlinkSync, readdirSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import {
@@ -11,6 +11,7 @@ import {
   makeTempDir,
   makeSandbox,
   runChild,
+  stopCheckoutWalk,
 } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
 import { SECRET } from '../../src/rules/secrets.ts';
@@ -330,6 +331,8 @@ test('writeAgentChecks: keeps other fields, skips a link, and sets checks and th
 
 test('refused marker: the same worker stays recent for 5 minutes (#614)', () => {
   const sandbox = makeSandbox();
+  // A folder next to the repo must not be the machine's checkout (#712).
+  stopCheckoutWalk(dirname(sandbox.repo));
   const key = 'mark-614';
   const path = refusedMarkerPath(sandbox.repo, key);
   assert.equal(path, join(sandbox.repo, '.git', 'yokoten-stop-refused', key));

@@ -89,6 +89,14 @@ export function makeTempDir(prefix = 'yokoten-'): string {
   return path;
 }
 
+/**
+ * Stop a checkout walk at `folder` (#712). A `.git` file that is not a gitdir line
+ * is not a checkout, so the walk does not go on into the machine's temp folder.
+ */
+export function stopCheckoutWalk(folder: string): void {
+  writeFileSync(join(folder, '.git'), 'not a checkout\n');
+}
+
 /** A new empty folder that outlives the test that made it, removed when the file ends: for a template (#475). */
 function makeFileTempDir(prefix = 'yokoten-template-'): string {
   if (!tempParent) tempParent = mkdtempSync(join(tmpdir(), 'yokoten-test-'));

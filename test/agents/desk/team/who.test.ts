@@ -1,6 +1,7 @@
 // Tests for src/agents/desk/team/who.ts: who is who on the team, and the fence (#674).
 
 import '../../../repo/home.ts';
+import { TEST_HOME } from '../../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -9,18 +10,23 @@ import { deliveryFor } from '../../../../src/agents/desk/team/deliver.ts';
 import { appendMessage, keepReadState } from '../../../../src/agents/desk/team/outbox.ts';
 import { DESK_FILE, LEAD, makeTeam, outboxOf, prepareDeskTeam } from '../../../../src/agents/desk/team/team.ts';
 import { deskReadState, isFenced, isLockedMount, leadCheckout, whoAmI } from '../../../../src/agents/desk/team/who.ts';
-import { fence, makeTeamFixture, makeTempDir } from '../../../repo/helpers.ts';
+import { fence, makeTeamFixture, makeTempDir, stopCheckoutWalk } from '../../../repo/helpers.ts';
 
 const locked = () => true;
 
 test('whoAmI: the lead in its main checkout; a worker outside a desk has no name', () => {
-  const { main, team } = makeTeamFixture();
-  assert.deepEqual(whoAmI(main, {}), { name: LEAD, team, readState: join(team, 'lead', 'read.json'), inDesk: false });
-  assert.deepEqual(whoAmI(join(main, 'src'), {}), { name: LEAD, team, readState: join(team, 'lead', 'read.json'), inDesk: false });
-  const worker = whoAmI(main, { YOKOTEN_ROLE: 'worker' });
+  const { projects, main, team } = makeTeamFixture();
+  // The temp folder may sit inside a real checkout. Stop the walk there (#712).
+  stopCheckoutWalk(projects);
+  const nowhere = makeTempDir('nowhere-');
+  stopCheckoutWalk(nowhere);
+  const env = { HOME: TEST_HOME };
+  assert.deepEqual(whoAmI(main, env), { name: LEAD, team, readState: join(team, 'lead', 'read.json'), inDesk: false });
+  assert.deepEqual(whoAmI(join(main, 'src'), env), { name: LEAD, team, readState: join(team, 'lead', 'read.json'), inDesk: false });
+  const worker = whoAmI(main, { ...env, YOKOTEN_ROLE: 'worker' });
   assert.ok('refuse' in worker);
   assert.match(worker.refuse, /worker outside a desk/);
-  assert.ok('refuse' in whoAmI(makeTempDir('nowhere-'), {}));
+  assert.ok('refuse' in whoAmI(nowhere, env));
 });
 
 test('whoAmI in a desk: the roster names the agent, the read state is the desk\'s, and only inside the fence', () => {
