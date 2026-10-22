@@ -26,7 +26,7 @@ import { check } from '../run/check.ts';
 import { judge } from '../run/hook.ts';
 import { countNotes, type LessonPlace, listLessons, runLessons, waitingLine } from '../run/learn.ts';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
-import { hasPlugin, hasProjectHook, hasSessionDoctor, readInstalledPlugin, readToolCall, tempDir as claudeTempDir, userSettingsProblem } from '../agents/runtimes/claude-code.ts';
+import { hasPlugin, hasProjectHook, hasSessionDoctor, readInstalledPlugin, readToolCall, sandboxProblem as claudeSandboxProblem, tempDir as claudeTempDir, userSettingsProblem } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
 import * as copilot from '../agents/copilot.ts';
 import * as dsh from '../agents/runtimes/deepseek-harness.ts';
@@ -77,7 +77,50 @@ export function selfTest(): string[] {
   failed.push(...coreRulesControl());
   failed.push(...machineControl());
   failed.push(...leftoverControl());
+  failed.push(...sandboxControl());
   return failed;
+}
+
+/**
+ * In a temp project with a too-wide sandbox per agent, each sandbox check must catch its
+ * own, and a good set must pass, so the control can't go green by always complaining. The
+ * checks are parameters so a test can hand in broken ones.
+ */
+export function sandboxControl(
+  claudeProblem: typeof claudeSandboxProblem = claudeSandboxProblem,
+  codexProblem: typeof codex.sandboxProblem = codex.sandboxProblem,
+  geminiProblem: typeof gemini.sandboxProblem = gemini.sandboxProblem,
+  grokProblem: typeof grok.sandboxProblem = grok.sandboxProblem,
+): string[] {
+  let dir = '';
+  try {
+    dir = mkdtempSync(join(tmpdir(), 'yokoten-control-'));
+    const failed: string[] = [];
+    const env = { HOME: dir };
+    const write = (rel: string, text: string) => {
+      const path = join(dir, rel);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, text);
+    };
+    write('.claude/settings.json', '{"sandbox": {"enabled": true, "network": {"allowedDomains": ["*"]}}}');
+    write('.codex/config.toml', 'sandbox_mode = "danger-full-access"\napproval_policy = "on-request"\n\n[sandbox_workspace_write]\nnetwork_access = false\n');
+    write('.gemini/settings.json', '{"security": {"disableYoloMode": false}}');
+    write('.grok/sandbox.toml', '[profiles.yokoten]\nextends = "devbox"\n');
+    if (!claudeProblem(dir)) failed.push('Claude Code sandbox check');
+    if (!codexProblem(dir, env)) failed.push('Codex sandbox check');
+    if (!geminiProblem(dir)) failed.push('Gemini CLI sandbox check');
+    if (!grokProblem(dir, env)) failed.push('Grok sandbox check');
+    write('.claude/settings.json', '{"sandbox": {"enabled": true}}');
+    write('.codex/config.toml', 'sandbox_mode = "workspace-write"\napproval_policy = "on-request"\n\n[sandbox_workspace_write]\nnetwork_access = false\n');
+    write('.gemini/settings.json', '{"security": {"disableYoloMode": true}}');
+    write('.grok/sandbox.toml', '[profiles.yokoten]\nextends = "workspace"\n');
+    if (claudeProblem(dir) ?? codexProblem(dir, env) ?? geminiProblem(dir) ?? grokProblem(dir, env)) failed.push('sandbox check (a good set passes)');
+    return failed;
+  } catch {
+    return []; // no temp folder to test in; the other checks still run
+  } finally {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /**

@@ -19,7 +19,10 @@ import { docsLink, type Finding, finding, type RuleId } from '../rules/message.t
 import { CHANGES_DIR, parseCodeOwners } from '../rules/pr.ts';
 import { BUILD_DIRS, isBuildOutput } from '../rules/layout.ts';
 import { homeOf } from '../rules/privacy.ts';
-import { hasPlugin, hasProjectHook } from '../agents/runtimes/claude-code.ts';
+import { hasPlugin, hasProjectHook, sandboxProblem as claudeSandboxProblem } from '../agents/runtimes/claude-code.ts';
+import { sandboxProblem as codexSandboxProblem } from '../agents/runtimes/codex.ts';
+import { sandboxProblem as geminiSandboxProblem } from '../agents/runtimes/gemini.ts';
+import { sandboxProblem as grokSandboxProblem } from '../agents/runtimes/grok.ts';
 import { isGuardOff, TRUST_FIX } from '../agents/runtimes/muse.ts';
 import { type CommandTest, commitCheckLine, runs } from '../run/cli.ts';
 import { isNoAdapter } from '../host/hosts.ts';
@@ -487,6 +490,11 @@ const workflowsApprove = (server: ServerRead) => {
 
 const ACTIONS_SETTING = '"Allow GitHub Actions to create and approve pull requests"';
 
+/** The first sandbox problem, in the order init writes them. Null when all four are in place. */
+function firstSandboxProblem(root: string, env: Env): { what: string; fix: string } | null {
+  return claudeSandboxProblem(root) ?? codexSandboxProblem(root, env) ?? geminiSandboxProblem(root) ?? grokSandboxProblem(root, env);
+}
+
 const reviewStep: Step = {
   stage: 4,
   key: 'review',
@@ -858,6 +866,17 @@ export const ROAD: Step[] = [
     fix: () => 'run `yokoten install`, or install the Claude Code plugin',
     why: 'the skills show an agent how to hand off work, review it and find the cause of a failure',
     how: 'every skill in the kit is in ~/.claude/skills and in ~/.agents/skills, or the Claude Code plugin is on; a project copy of yokoten has no kit, so it can\'t check',
+  },
+  {
+    stage: 4,
+    key: 'sandbox',
+    paths: [['.claude/settings.json'], ['.codex/config.toml'], ['.gemini/settings.json'], ['.grok/sandbox.toml']],
+    check: (root, env) => firstSandboxProblem(root, env) === null,
+    // The fallback never shows: what and fix run only when the step is not done.
+    what: (root, env) => firstSandboxProblem(root, env)?.what ?? 'the agent sandboxes are in place',
+    fix: (root, env) => firstSandboxProblem(root, env)?.fix ?? 'nothing to do',
+    why: 'a worker writes only where the sandbox allows, so it must cover the worktree',
+    how: '.claude/settings.json turns the sandbox on with no * host; .codex/config.toml pins workspace-write, on-request and no network; .gemini/settings.json blocks YOLO mode; .grok/sandbox.toml holds a workspace profile; writable paths stay in the project',
   },
   reviewStep,
   {
