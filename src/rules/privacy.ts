@@ -1372,14 +1372,14 @@ export function isBotProgram(word: string): boolean {
 }
 
 // The start of a lone post: the allowed variables, then `gh` or the bot's `yokoten bot -- gh`.
-const LONE_POST_START = new RegExp(String.raw`^(?:(?:NODE_USE_ENV_PROXY|GH_REPO|GH_HOST)=[\w./:@-]*[ \t]+)*(?:(?:node[ \t]+)?${BOT_PROGRAM}[ \t]+bot[ \t]+--[ \t]+)?gh[ \t]`);
+const LONE_POST_START = new RegExp(String.raw`^(?:(?:(?:NODE_USE_ENV_PROXY|GH_REPO|GH_HOST)=[\w./:@-]*|TZ=UTC)[ \t]+)*(?:(?:node[ \t]+)?${BOT_PROGRAM}[ \t]+bot[ \t]+--[ \t]+)?gh[ \t]`);
 
 /**
  * Whether the command line is one gh post and nothing else (#447): `gh …`, or the bot's
  * `yokoten bot -- gh …` with a yokoten `isBotProgram` trusts (#506), optionally after one
  * plain `cd <folder> &&`. Before it, only
- * NODE_USE_ENV_PROXY, GH_REPO or GH_HOST may be set, to a plain value (#498); GH_REPO and
- * GH_HOST name another target, so namesTarget still keeps the allow. Outside quotes only
+ * NODE_USE_ENV_PROXY, GH_REPO or GH_HOST may be set, to a plain value (#498), or TZ to UTC
+ * (#488); GH_REPO and GH_HOST name another target, so namesTarget still keeps the allow. Outside quotes only
  * letters, digits, spaces and `_ . / : , = + @ % -` are trusted, plus one here-string or
  * one heredoc whose end word is a name in single quotes (`<<'EOF'` or `<<-'EOF'`). Bash
  * expands nothing in that body, and the body ends at the first line that is the name alone.

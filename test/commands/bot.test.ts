@@ -170,6 +170,33 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
   }
 });
 
+// #488: gh sends a Time-Zone header from TZ, and GitHub writes it into the commits it
+// makes, such as a merge. The bot runs its command with TZ=UTC, whatever the session sets.
+test('bot: the child runs with TZ=UTC, even from a session in another zone (#488)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/me/repo.git');
+  const bin = join(sandbox.home, 'bin');
+  const log = join(sandbox.home, 'gh.log');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(log)}, process.env.TZ + '\\n');\n`);
+  chmodSync(join(bin, 'gh'), 0o755);
+  const server = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(req.method === 'GET' ? { id: 77 } : { token: 'ghs_test' }));
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  try {
+    const key = join(sandbox.home, 'bot.pem');
+    writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
+    const extra = { PATH: `${bin}:${process.env.PATH}`, TZ: 'Asia/Tokyo', YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+    const r = await sandbox.call(['bot', '--', 'gh', 'issue', 'list'], { extra });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(readFileSync(log, 'utf8').trim(), 'UTC', 'the child saw the session zone');
+  } finally {
+    server.close();
+  }
+});
+
 // #406: the bot checks a pull request's body by the body rules of `check --pr`, against
 // this branch's diff and the base branch's CODEOWNERS, before it sends anything.
 test('bot: a pull request body CI would refuse is refused locally, with CI\'s message (#406)', async () => {
@@ -382,14 +409,86 @@ test('bot: a new pull request gets its type and tier labels; a contradicting one
     assert.match(absent.stderr, /^yokoten bot: note: the repo has no label `perf`, so the pull request gets none; create it on GitHub, or pass another with --label\. `check --pr` asks for it\nyokoten bot: note: the repo has no label `tier B`, /m);
     assert.deepEqual(read(log).at(-1)?.args, ['pr', 'create', '-t', 'perf: a', '--body', body('B'), '--milestone', 'M0'], 'no label was created or added');
 
-    // (e) Other gh commands are sent unchanged, with no label list.
+    // (e) Other gh commands are sent unchanged, with no label list. `gh issue create`
+    // is not among them: it gets its own label check (#544).
     const lists0 = read(lists).length;
     const others: string[][] = [
-      ['gh', 'issue', 'create', '-t', 'host: a', '--body', body('B')],
       ['gh', 'pr', 'list'],
       ['gh', 'pr', 'edit', '5', '-t', 'feat: a'],
       ['gh', 'pr', 'create', '-R', 'other/repo', '-t', 'feat: a', '--body', body('B')],
       ['gh', 'pr', 'create', '--fill'],
+    ];
+    for (const command of others) {
+      const r = await run(command);
+      assert.deepEqual([r.status, r.stderr], [0, ''], command.join(' '));
+      assert.deepEqual(read(log).at(-1)?.args, command.slice(1), command.join(' '));
+    }
+    assert.equal(read(lists).length, lists0, 'no label list');
+  } finally {
+    server.close();
+  }
+});
+
+// #544: `gh issue create` gets its type and tier labels checked, by the names the repo
+// has. A bad issue is refused before it is sent, and nothing is added: no line of the
+// command names the type. A fake gh and a local API server stand in for GitHub.
+test('bot: a new issue needs the type and tier labels its repo has; a bad one is refused (#544)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', JSON.stringify({ areas: ['host'] }));
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/me/repo.git');
+  const bin = join(sandbox.home, 'bin');
+  const log = join(sandbox.home, 'gh.log');
+  const lists = join(sandbox.home, 'lists.log');
+  const repoLabels = join(sandbox.home, 'labels.json');
+  mkdirSync(bin);
+  // The fake gh answers `label list` from labels.json, and logs the commands it sends.
+  writeFileSync(join(bin, 'gh'), [
+    '#!/usr/bin/env node',
+    'const fs = require("node:fs"); const args = process.argv.slice(2);',
+    `if (args[0] === "label") { fs.appendFileSync(${JSON.stringify(lists)}, JSON.stringify(args) + "\\n"); process.stdout.write(fs.readFileSync(${JSON.stringify(repoLabels)}, "utf8")); process.exit(0); }`,
+    `fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, input: fs.readFileSync(0, "utf8") }) + "\\n");`,
+  ].join('\n'));
+  chmodSync(join(bin, 'gh'), 0o755);
+  const read = (file: string) => (existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+  const setLabels = (names: string[]) => writeFileSync(repoLabels, JSON.stringify(names.map((name) => ({ name }))));
+  const server = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(req.method === 'GET' ? { id: 77 } : { token: 'ghs_test' }));
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  const key = join(sandbox.home, 'bot.pem');
+  writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
+  const bot = { PATH: `${bin}:${process.env.PATH}`, YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+  const run = (command: string[], input = '') => sandbox.call(['bot', '--', ...command], { input, extra: bot });
+  try {
+    setLabels(['bug', 'feat', 'docs', 'tier A', 'tier B', 'tier C']);
+    // (a) A missing label is refused with the message of `check --issue`, and nothing is sent.
+    const refused: [string[], number, RegExp][] = [
+      [['gh', 'issue', 'create', '-t', 'host: a', '--body', 'x'], 2, /no type label[\s\S]*no tier label/],
+      [['gh', 'issue', 'create', '-t', 'host: a', '-l', 'bug', '--body', 'x'], 1, /no tier label/],
+      [['gh', 'issue', 'new', '--title=host: a', '--label', 'tier A', '--body', 'x'], 1, /no type label/],
+    ];
+    for (const [command, count, missing] of refused) {
+      const r = await run(command);
+      assert.equal(r.status, 1, command.join(' '));
+      assert.match(r.stderr, new RegExp(`^yokoten bot: ${count} problem\\(s\\) in the labels; nothing was sent\\. Fix the labels and run it again:`), command.join(' '));
+      assert.match(r.stderr, missing, command.join(' '));
+    }
+    assert.deepEqual(read(log), [], 'gh did not run the create');
+    // (b) Both labels: sent unchanged, with no added label.
+    const good = ['gh', 'issue', 'create', '-t', 'host: a', '-l', 'bug,tier B', '--body', 'x'];
+    const sent = await run(good);
+    assert.deepEqual([sent.status, sent.stderr], [0, ''], good.join(' '));
+    assert.deepEqual(read(log).at(-1), { args: good.slice(1), input: '' });
+    // (c) A repo without tier labels: no line for the tier.
+    setLabels(['bug', 'feat']);
+    const noTier = await run(['gh', 'issue', 'create', '-t', 'host: a', '--label', 'bug', '--body', 'x']);
+    assert.deepEqual([noTier.status, noTier.stderr], [0, ''], 'the repo has no tier labels');
+    // (d) An edit and another repo: sent unchanged, with no label list.
+    const lists0 = read(lists).length;
+    const others: string[][] = [
+      ['gh', 'issue', 'edit', '5', '-t', 'host: a'],
+      ['gh', 'issue', 'create', '-R', 'other/repo', '-t', 'host: a', '--body', 'x'],
     ];
     for (const command of others) {
       const r = await run(command);

@@ -1828,7 +1828,13 @@ const oldYokotenYml = () =>
     )
     .replace("group: ${{ github.workflow }}-${{ github.ref }}", "group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}")
     // Before #572, the kit set up Node by its line alone.
-    .replace("node-version: '^22.23.4'", 'node-version: 22');
+    .replace("node-version: '^22.23.4'", 'node-version: 22')
+    // Before #590, the kit never ran on a merge queue group.
+    .replace('  # A merge queue runs the same checks as a pull request: every job below also runs\n  # on a merge group. Turn the queue on in the repo settings.\n  merge_group:\n', '')
+    .replace(
+      "  # Markdown can't break are skipped. A push to main is a full run, and so is a merge\n  # queue group. So is a file list that can't be read: docs_only is true only when the\n  # list was read and every file fits.\n",
+      "  # Markdown can't break are skipped. A push to main is a full run. So is a file list\n  # that can't be read: docs_only is true only when the list was read and every file fits.\n",
+    );
 
 test('init: the list of kit workflow hashes ends with each workflow as it is now (#456)', () => {
   const hashes = readWorkflowHashes();

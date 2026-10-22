@@ -4,10 +4,10 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { botConfig, botEnv, botProgram, type Gh, installationToken, readBranchFiles, readCodeOwners, readIssueMilestone, repoOf } from '../host/github.ts';
+import { botConfig, botEnv, botProgram, type Gh, installationToken, readBranchFiles, readCodeOwners, readIssueMilestone, readRepoLabelNames, repoOf } from '../host/github.ts';
 import { DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
 import type { Finding } from '../rules/message.ts';
-import { type CommandLabels, type CommandMilestone, checkCommandTitle, checkOwnedTier, checkPullRequestBody, noMilestoneFinding, readCommandBody, readCommandLabels, readCommandMilestone } from '../rules/pr.ts';
+import { type CommandIssueLabels, type CommandLabels, type CommandMilestone, checkCommandTitle, checkIssueLabels, checkOwnedTier, checkPullRequestBody, noMilestoneFinding, readCommandBody, readCommandIssueLabels, readCommandLabels, readCommandMilestone } from '../rules/pr.ts';
 import { bullets, type Invocation, type Output, parse, print, readInput, requireRoot, rootOf, usage } from './shared.ts';
 
 async function bot(invocation: Invocation, command: string[]): Promise<number> {
@@ -34,6 +34,10 @@ async function bot(invocation: Invocation, command: string[]): Promise<number> {
     print(invocation, [`yokoten bot: ${labels.problems.length} problem(s) in the labels; nothing was sent. Fix the labels and run it again:`, ...bullets(labels.problems)], invocation.stderr);
     return 1;
   }
+  // Then the labels of `gh issue create` (#544): checked below, once the token can
+  // list the repo's labels. A bad issue is refused, never sent; its labels are not
+  // added, as no line of the command names the type.
+  const pendingIssue = root ? readPendingIssueLabels(command, root, env) : null;
   const config = botConfig(env);
   if (typeof config === 'string') {
     print(invocation, [`yokoten bot: ${config}`], invocation.stderr);
@@ -59,6 +63,13 @@ async function bot(invocation: Invocation, command: string[]): Promise<number> {
   const milestone = wanted ? chooseMilestone(invocation, wanted, ghWith(file, cwd, botEnv(env, token))) : null;
   if (milestone === false) return 1;
   const rest = milestone ? addArgs(withLabels, ['--milestone', milestone]) : withLabels;
+  if (pendingIssue) {
+    const issueProblems = checkIssueLabels(pendingIssue.labels, readRepoLabelNames(ghWith(file, cwd, botEnv(env, token))));
+    if (issueProblems.length) {
+      print(invocation, [`yokoten bot: ${issueProblems.length} problem(s) in the labels; nothing was sent. Fix the labels and run it again:`, ...bullets(issueProblems)], invocation.stderr);
+      return 1;
+    }
+  }
   // `gh pr edit <number or URL>`: one `gh pr view` with the same token names its branches.
   if (body && isLookup(body) && refuseBody(invocation, checkBody(body, lookupBranch(body, file, botEnv(env, token), env), env))) return 1;
   // A body read from standard input was used up by the check, so gh gets it the same way.
@@ -133,6 +144,16 @@ function readPendingLabels(command: string[], root: string, body: PendingBody | 
   if (!existsSync(join(root, 'yokoten.json'))) return null;
   const labels = readCommandLabels(command, body?.text ?? null);
   return labels && isOrigin(root, labels.repo, env) ? labels : null;
+}
+
+/**
+ * The labels a `gh issue create` command gives, or null when the repo has no
+ * yokoten.json, the command names another repo, or it is no issue create (#544).
+ */
+function readPendingIssueLabels(command: string[], root: string, env: Env): CommandIssueLabels | null {
+  if (!existsSync(join(root, 'yokoten.json'))) return null;
+  const found = readCommandIssueLabels(command);
+  return found && isOrigin(root, found.repo, env) ? found : null;
 }
 
 /**

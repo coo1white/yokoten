@@ -759,6 +759,12 @@ limit, checkout keeps no token, and a new push cancels the old run on the same p
 request. Add your tests as a job in `yokoten.yml` and to the `needs` list of `ci`. A
 private repo can keep CI off: see [A private repo without CI](#a-private-repo-without-ci).
 
+`yokoten.yml` and `pr.yml` also run on `merge_group`, so a merge queue runs the same
+required checks as a pull request. A merge group run has no pull request. `yokoten.yml`
+runs every job in full, and the `pr` job skips, which counts as green for the queue.
+Turn the queue on in the repo settings. `issue.yml` never runs there: an issue is not
+a check on a merge.
+
 When a workflow is already there, `init` checks whether you changed it. The kit keeps a
 list of every version it wrote. A file that matches one of them, Windows line ends or not,
 is a copy you never changed. `init` then updates it to the newest version and says so.
@@ -807,7 +813,7 @@ It puts three safe defaults in `.github/` too:
 | `check [--staged] [--json]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries. Each change file is read the way `changelog` reads it, so a wrong one fails at commit. With nothing staged, `--staged` notes it and is ok. For the tree, a translation behind its English source is a note. See [Translations](#translations) |
 | `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). The last line names each AI and model: `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs. A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
 | `check --pr <number>` | The same check for one pull request, read through `gh`, for a repo without CI. See [A private repo without CI](#a-private-repo-without-ci) |
-| `check --issue` | In CI: the issue's title. See [Issue titles](#issue-titles) |
+| `check --issue` | In CI: the issue's title and labels. See [Issue titles](#issue-titles) |
 | `redact` | Reads text on stdin and writes it with your details hidden: `<owner>`, `<email>`, `<host>`, `<mark>`. The tool-call guard sends risky commands through it. See [Privacy](#privacy) |
 | `marks allow <mark> --here` | Lets one of your private marks through in this repo only, with no yokoten.json. The allow is kept on this machine, never in the repo. `--remove` takes it back. See [Privacy](#privacy) |
 | `changelog [--write]` | Shows the entries the files in `changes/` add under `[Unreleased]`. `--write` puts them into `CHANGELOG.md` and deletes the files; run it before a release. See [The changelog](#the-changelog) |
@@ -1043,15 +1049,23 @@ commits to come.
   what you saw, not the fix.
 - At most 60 characters. No full stop at the end. No `#N`: link other issues in the body.
 - The area is one lowercase word, or words joined by hyphens.
+- One type label (`feat`, `bug`, `docs` and the like) and one tier label (`tier A`,
+  `tier B` or `tier C`), when the repo has those labels. A repo without type or tier
+  labels gets no line.
 
 `init` adds `.github/workflows/issue.yml`. It runs `check --issue` when an issue is
-opened or edited. It only reads: it never comments on the issue or renames it. A red run
-tells the author to fix the title.
+opened or edited. It checks the title and the labels: one type label and one tier label,
+when the repo has those labels. It only reads: it never comments on the issue or renames
+it. A red run tells the author to fix the title or the labels. To know which kinds the
+repo has, the check lists its labels through `gh`; when `gh` cannot list them, only the
+title is checked.
 
 An agent's title is checked before it is sent. In a repo with a `yokoten.json`, the
 tool-call guard runs the same check on `gh issue create|edit` and `gh pr create|edit`
 with a title, plain or through `yokoten bot`. A bad title stops the command, so CI never
-sees it. The user-level hook does not check titles: another project has its own rules.
+sees it. `yokoten bot` also refuses a `gh issue create` with a missing type or tier label
+the repo has, so a bad issue is not sent. The user-level hook does not check titles:
+another project has its own rules.
 
 Any lowercase area passes. To limit the areas, list them in `yokoten.json`:
 `"areas": ["doctor", "check", "docs"]`. Pull request titles then use the same list in
@@ -1592,8 +1606,8 @@ plain or through `yokoten bot -- gh`:
     `-o pipefail` or `+o pipefail`. A bare `set` doesn't count.
   - `cd` or `pushd` with one folder.
   - A plain assignment, but not to a name the shell uses, such as `PATH`, `HOME` or `PS4`.
-  - `export`, or a command's own prefix, of only `GH_REPO`, `GH_HOST` and
-    `NODE_USE_ENV_PROXY`.
+  - `export`, or a command's own prefix, of only `GH_REPO`, `GH_HOST`,
+    `NODE_USE_ENV_PROXY` and `TZ=UTC`.
   - `gh pr|issue|repo|run view|list|checks` without `--web` or `-w`.
   - `git rev-parse`, `git config --get <name>` and `git remote get-url`.
   - Any of these through `yokoten bot --`.

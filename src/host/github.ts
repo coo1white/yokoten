@@ -165,21 +165,24 @@ export function cleanChildEnv(env: Env): Env {
 }
 
 /** The environment for one command run as the bot: gh reads GH_TOKEN, and git asks gh.
- * The command may run tests (a push hook, npm test), so it gets a clean child env (#168). */
+ * TZ is always UTC (#488): gh sends it as the Time-Zone header, and GitHub writes that
+ * zone into the commits it makes, such as a merge. The command may run tests (a push
+ * hook, npm test), so it gets a clean child env (#168). */
 export function botEnv(env: Env, token: string): Env {
   // Added after any git config already passed this way. The empty value clears other
   // credential helpers for github.com, so git cannot fall back to the owner's login.
-  const n = Number(env.GIT_CONFIG_COUNT) || 0;
+  const count = Number(env.GIT_CONFIG_COUNT) || 0;
   const key = 'credential.https://github.com.helper';
   return {
     ...cleanChildEnv(env),
+    TZ: 'UTC',
     GH_TOKEN: token,
     GITHUB_TOKEN: token,
-    GIT_CONFIG_COUNT: String(n + 2),
-    [`GIT_CONFIG_KEY_${n}`]: key,
-    [`GIT_CONFIG_VALUE_${n}`]: '',
-    [`GIT_CONFIG_KEY_${n + 1}`]: key,
-    [`GIT_CONFIG_VALUE_${n + 1}`]: '!gh auth git-credential',
+    GIT_CONFIG_COUNT: String(count + 2),
+    [`GIT_CONFIG_KEY_${count}`]: key,
+    [`GIT_CONFIG_VALUE_${count}`]: '',
+    [`GIT_CONFIG_KEY_${count + 1}`]: key,
+    [`GIT_CONFIG_VALUE_${count + 1}`]: '!gh auth git-credential',
   };
 }
 
@@ -565,6 +568,21 @@ export function readLocalLogins(env: Env): string[] {
     return [...new Set([...text.matchAll(/^\s+user:\s*["']?([A-Za-z0-9][A-Za-z0-9-]*)["']?\s*$/gm)].map((match) => match[1]))];
   } catch {
     return [];
+  }
+}
+
+/**
+ * The label names of the repo gh works in (`gh label list`), or null when gh can't
+ * list them: not installed, not signed in, or no answer. A check that needs them then
+ * reads without them, never as a failure.
+ */
+export function readRepoLabelNames(gh: Gh): string[] | null {
+  try {
+    const parsed: unknown = JSON.parse(gh(['label', 'list', '--json', 'name', '--limit', '1000']));
+    if (!Array.isArray(parsed)) return null;
+    return parsed.map((label) => (isObject(label) ? asText(label.name) : '')).filter(Boolean);
+  } catch {
+    return null;
   }
 }
 
