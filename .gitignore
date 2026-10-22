@@ -7,3 +7,5 @@ dist/
 .worktrees/
 # One agent's live status for `yokoten board`, at its worktree's root. Never committed.
 .yokoten-agent.json
+# The board's start and stop log, at the repo root. Never committed.
+.yokoten-board.log

@@ -10,7 +10,7 @@ import * as gemini from '../agents/runtimes/gemini.ts';
 import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import type { DropReason, SortedEnv } from '../agents/agent-env.ts';
-import { loadConfig } from '../rules/config.ts';
+import { type Env, loadConfig } from '../rules/config.ts';
 import { addWorkerPath, gitLinkAbove, hardenRead, markNote, printsAccount, privateOutput, realPath, releaseFix, removeWorkerPath, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
 import { type Finding, formatFinding, notRepoFinding } from '../rules/message.ts';
 import { checkChanged, readGit } from '../run/check.ts';
@@ -417,6 +417,47 @@ const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
  * gone; `worker unmark` clears an entry outright, and only the lead runs it. The main
  * checkout is the lead's, so it is never marked.
  */
+
+/**
+ * Mark the worktree at `dir` (from `cwd`) as a worker's, exactly as `yokoten worker
+ * mark` does: the mark file in its own git folder, and its path on the worker list.
+ * The board calls this for the worktree it makes or reuses, so runtimes that drop
+ * YOKOTEN_ROLE still run as workers. Returns the worktree root, or the plain reason.
+ */
+export function markWorktree(cwd: string, dir: string, env: Env): { top: string } | { fail: string } {
+  const folder = resolve(cwd, dir);
+  let isFolder = false;
+  try {
+    isFolder = statSync(folder).isDirectory();
+  } catch {}
+  if (!isFolder) return { fail: `${dir} is not a folder. Make the worktree first: \`git worktree add ${dir} -b <branch>\`, then \`yokoten worker mark ${dir}\`.` };
+  let answer: string[];
+  try {
+    // --show-superproject-working-tree prints nothing outside a submodule, so it comes last.
+    answer = readGit(folder, ['rev-parse', '--show-toplevel', '--absolute-git-dir', '--git-common-dir', '--show-superproject-working-tree'], { env }).toString('utf8').trim().split('\n');
+  } catch {
+    return { fail: formatFinding(notRepoFinding(folder)) };
+  }
+  const [top, gitDir, common, superproject] = answer;
+  if (realPath(gitDir) === realPath(resolve(folder, common ?? ''))) {
+    if (superproject) return { fail: `${top} is a submodule's checkout, not a worktree. Mark a worktree: \`git worktree add <dir> -b <branch>\`, then \`yokoten worker mark <dir>\`.` };
+    return { fail: `${top} is the main checkout, the lead's. Mark a worktree: \`git worktree add <dir> -b <branch>\`, then \`yokoten worker mark <dir>\`.` };
+  }
+  try {
+    writeFileSync(join(gitDir, WORKER_MARK), "A worker's worktree: yokoten's guard treats every agent here as a worker. `git worktree remove` removes this mark.\n");
+  } catch (error) {
+    return { fail: `can't write the mark in ${gitDir} (${(error as NodeJS.ErrnoException).code ?? 'error'}). Check that the lead can write there, then run it again.` };
+  }
+  try {
+    addWorkerPath(env, top);
+  } catch (error) {
+    return { fail: `the mark is written in ${gitDir}, but the worker list can't be written (${(error as Error).message.split('\n')[0]}). Clear it with \`yokoten worker unmark ${top}\` once the list is writable, then mark again.` };
+  }
+  // The guard finds the mark without git; check that it does here.
+  if (workerMarkAt(folder, env) !== 'mark') return { fail: `the mark is written in ${gitDir}, but the guard can't find it from ${top}.` };
+  return { top };
+}
+
 export function runWorker(invocation: Invocation): number | Promise<number> {
   const options = parse('worker', invocation.args);
   if (typeof options === 'string') return usage(invocation, options);
@@ -428,37 +469,9 @@ export function runWorker(invocation: Invocation): number | Promise<number> {
     return 1;
   };
   if (action === 'unmark') return runUnmark(invocation, dir, fail);
-  const folder = resolve(invocation.cwd, dir);
-  let isFolder = false;
-  try {
-    isFolder = statSync(folder).isDirectory();
-  } catch {}
-  if (!isFolder) return fail(`${dir} is not a folder. Make the worktree first: \`git worktree add ${dir} -b <branch>\`, then \`yokoten worker mark ${dir}\`.`);
-  let answer: string[];
-  try {
-    // --show-superproject-working-tree prints nothing outside a submodule, so it comes last.
-    answer = readGit(folder, ['rev-parse', '--show-toplevel', '--absolute-git-dir', '--git-common-dir', '--show-superproject-working-tree'], { env: invocation.env }).toString('utf8').trim().split('\n');
-  } catch {
-    return fail(formatFinding(notRepoFinding(folder)));
-  }
-  const [top, gitDir, common, superproject] = answer;
-  if (realPath(gitDir) === realPath(resolve(folder, common ?? ''))) {
-    if (superproject) return fail(`${top} is a submodule's checkout, not a worktree. Mark a worktree: \`git worktree add <dir> -b <branch>\`, then \`yokoten worker mark <dir>\`.`);
-    return fail(`${top} is the main checkout, the lead's. Mark a worktree: \`git worktree add <dir> -b <branch>\`, then \`yokoten worker mark <dir>\`.`);
-  }
-  try {
-    writeFileSync(join(gitDir, WORKER_MARK), "A worker's worktree: yokoten's guard treats every agent here as a worker. `git worktree remove` removes this mark.\n");
-  } catch (error) {
-    return fail(`can't write the mark in ${gitDir} (${(error as NodeJS.ErrnoException).code ?? 'error'}). Check that the lead can write there, then run it again.`);
-  }
-  try {
-    addWorkerPath(invocation.env, top);
-  } catch (error) {
-    return fail(`the mark is written in ${gitDir}, but the worker list can't be written (${(error as Error).message.split('\n')[0]}). Clear it with \`yokoten worker unmark ${top}\` once the list is writable, then mark again.`);
-  }
-  // The guard finds the mark without git; check that it does here.
-  if (workerMarkAt(folder, invocation.env) !== 'mark') return fail(`the mark is written in ${gitDir}, but the guard can't find it from ${top}.`);
-  print(invocation, [`yokoten worker: marked the worktree at ${top}. The guard now treats every agent there as a worker. \`git worktree remove ${top}\` removes the mark. \`yokoten worker unmark ${top}\` clears it sooner.`]);
+  const marked = markWorktree(invocation.cwd, dir, invocation.env);
+  if ('fail' in marked) return fail(marked.fail);
+  print(invocation, [`yokoten worker: marked the worktree at ${marked.top}. The guard now treats every agent there as a worker. \`git worktree remove ${marked.top}\` removes the mark. \`yokoten worker unmark ${marked.top}\` clears it sooner.`]);
   return 0;
 }
 

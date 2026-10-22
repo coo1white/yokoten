@@ -833,7 +833,7 @@ It puts three safe defaults in `.github/` too:
 | `worker env [runtime]` | Lists the names that yokoten's agent environment would keep from this shell, and counts the names it drops. With a runtime, its own login name counts too. It never shows a value. No command starts an agent with it yet. See [What an agent's environment holds](#what-an-agents-environment-holds) |
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay. A second run changes nothing |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. A body whose last line is not `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, is refused too: each pull request names each AI and model that made it. A comment (`gh pr comment`, `gh issue comment`), a review with a body (`gh pr review --body`), and a new issue (`gh issue create --body`) carry the same line: a body whose last line is not the `Made with` line is refused too. A note with `--attach` is refused: the upload lands past the `Made with` line. An edit (`gh pr edit --body`, `gh issue edit --body`) stays as it is. `gh pr create` without a type or tier label gets them added: the type from the title (`bug` for `fix`), the tier from the body's `tier:` line. A label you pass is kept. A tier label that does not match the body is refused, with the message of `check --pr`. A label the repo does not have is named in a note and left out; the bot never creates labels. `gh pr create` without `--milestone` gets the milestone of the first linked issue (`Closes #N`, `Part of #N`) that has one. When no linked issue has one, it is refused, and nothing is sent; add `--milestone`. When gh can't read the issue, the pull request is sent without a milestone, with a note. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
-| `board [--text]` | Serves a live page on this machine only: the agents grouped by issue, the picked one, and each pull request stage. It prints the link and runs until you stop it. The page refreshes every 15 seconds. `--text` prints the agents, pull requests and worktrees as plain text. See [The team board](#the-team-board) |
+| `board [--text]` | Serves a live page on this machine only: the agents grouped by issue, the picked one, and each pull request stage. From the page the owner also starts and stops agents, and sees what waits. It prints the link and runs until you stop it. The page refreshes every 15 seconds. `--text` prints the agents, pull requests and worktrees as plain text. See [The team board](#the-team-board) |
 
 Each command prints its own help with `--help` or `-h`: what it does, its options and
 one example. `yokoten help <command>` prints the same, and `yokoten --help` lists the
@@ -1587,6 +1587,36 @@ It only shows; to talk to an agent, use its own terminal for now.
 
 `yokoten board --text` prints the same in plain text.
 
+At the top, Waiting for you lists what needs the owner: tier A pull requests with
+green checks and no Approve, commands the guard stopped, and questions agents ask.
+Each row shows the kind, the agent, its role, how long it waited, one line on why,
+and a link to act. The list is read only: no request an agent can make clears an
+item. An empty list says so.
+
+The owner starts an agent through the board: send an open issue, a vendor, and a
+model to `/agents/start`. The board makes `.worktrees/<issue>`, marks it as a worker's
+(as `yokoten worker mark` does, so runtimes that drop `YOKOTEN_ROLE` still run as
+workers), and starts the vendor's own headless command with `YOKOTEN_ROLE=worker`,
+like the dispatch skill. The model goes through the vendor's own flag (`--model`);
+DeepSeek Harness has no such flag, so its model stays a name in the brief. Before
+it starts, the board checks the vendor's guard hooks will run in that worktree, and
+refuses the start with a plain reason when they will not (trust the folder first,
+or run `yokoten init`). The run shows in `/data`, and stops through `/agents/stop`.
+Stopping keeps the worktree and its commits. A process
+that exits by itself counts as stopped: its slot frees and a later Stop says so.
+
+The limits say how many agents run at once (three at first), and how many of one
+model. Over the limit, the board refuses a start with a plain reason.
+
+`yokoten board --text` also prints Waiting for you whenever something waits, and the
+runs the board started.
+
+Safety: the link holds a random token, and a change needs the page's Origin too.
+The board stops only processes it started. Every start and stop goes to
+`.yokoten-board.log` at the repo root. The guard checks each agent, and pushes and
+merges still go only through the bot. There are no Approve or Merge buttons: those
+stay on the host, with the owner.
+
 An agent joins by writing `.yokoten-agent.json` at its worktree's root. It leaves
 by removing the file. Any agent can write it, whatever vendor it runs on. The
 format is open: other tools may read it too. One file per worktree.
@@ -1603,9 +1633,14 @@ format is open: other tools may read it too. One file per worktree.
 | `state` | `working`, `waiting` (it needs you) or `done` |
 | `checks` | `passing` or `failing`, from its last test run |
 | `updated` | When it last wrote, such as `2026-10-22T10:00:00Z`. Quiet for 30 minutes shows as idle |
+| `blocked` | A guard stop that needs a decision, in one line. It joins Waiting for you |
+| `question` | One line the agent asks the owner. It joins Waiting for you |
+| `link` | Where the owner acts, http(s) only. Anything else stays plain text |
 
 Every field is text. Every field may be missing. A file that is not a JSON object is
-skipped. A `role`, `state` or `checks` outside the words above is ignored.
+skipped. A `role`, `state` or `checks` outside the words above is ignored. A `blocked`
+or `question` row stays on Waiting for you while the agent is here, even when the file
+stops naming it: only leaving clears it.
 
 The page shows what agents write only as text, never as page code, and links only to
 `http` and `https` addresses. It loads nothing from the internet.

@@ -71,3 +71,23 @@ test('board text: control and bidi characters in agent text show escaped', () =>
   assert.ok(!/[\u001b\u0007\u202e]/.test(text), 'no raw control or bidi character');
   assert.match(text, /bad\\u001b/, 'the code shows as text');
 });
+
+// #603 findings: board --text showed none of the waiting and runs data.
+test('board text: the waiting list and the started runs', () => {
+  const board: BoardData = { repo: '/repo', repoUrl: '', agents: [], needs: [], pulls: [], merged: [], worktrees: [], updated: '' };
+  const lines = renderBoardText(
+    board,
+    {
+      waiting: [{ kind: 'approve', agent: 'w', role: 'engineer', wait: '5 min ago', why: 'tier A, checks pass, needs the owner go-ahead: #7 work', link: '' }],
+      runs: [{ name: 'issue-12-claude-code', issue: '12', vendor: 'claude-code', model: 'model-a', worktree: '/repo/.worktrees/12', pid: 1000, status: 'running', startedAt: '', stoppedAt: '', exitCode: null, output: [] }],
+    },
+  );
+  assert.ok(lines.some((line) => line.includes('Waiting for you:')), 'the waiting list');
+  assert.ok(lines.some((line) => line.includes('#7 work')), 'the waiting row');
+  assert.ok(lines.some((line) => line.includes('issue-12-claude-code')), 'the started run');
+  const empty = renderBoardText(board, { waiting: [], runs: [] });
+  assert.ok(empty.some((line) => line.includes('Nothing waits for you.')), 'an empty waiting list says so');
+  assert.ok(empty.some((line) => line.includes('No agents started here yet.')), 'empty runs say so');
+  const legacy = renderBoardText(board);
+  assert.ok(!legacy.some((line) => line.includes('Waiting for you:')), 'no extra, no new sections');
+});

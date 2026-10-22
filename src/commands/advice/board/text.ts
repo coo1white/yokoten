@@ -2,6 +2,7 @@
 
 import { terminalText } from '../../../run/learn.ts';
 import { BOARD_AGENT_FILE } from './agents.ts';
+import type { BoardRun, BoardWaiting } from './controls.ts';
 import type { AgentView, BoardData, PullView } from './view.ts';
 
 /** One agent as plain words: its name, vendor, role, task, worktree, what it does now, and how long ago. */
@@ -23,8 +24,30 @@ function countText(count: number, one: string): string {
   return `${count} ${one}${count === 1 ? '' : 's'}`;
 }
 
-/** The board as plain text: the same data the page shows. Agents write it, so control and bidi characters show escaped. */
-export function renderBoardText(board: BoardData): string[] {
+/** What `--text` adds past the agents, pulls and worktrees: the waiting list and the runs the board started. */
+export interface BoardTextExtra {
+  waiting: BoardWaiting[];
+  runs: BoardRun[];
+}
+
+/** One waiting row as plain words, the same data the page shows. */
+function formatBoardWaiting(row: BoardWaiting): string {
+  const kind = row.kind === 'approve' ? 'Needs the owner go-ahead' : row.kind === 'guard' ? 'Guard stop' : 'Question';
+  const head = [kind, row.agent, row.role ? `[${row.role}]` : '', row.wait].filter(Boolean).join(' ');
+  return `${head}: ${row.why}${row.link ? ` (${row.link})` : ''}`;
+}
+
+/** One started run as plain words, the same data the page shows. */
+function formatBoardRun(run: BoardRun): string {
+  return `${run.name} ${run.vendor} ${run.model} issue ${run.issue} ${run.status}${run.worktree ? ` in ${run.worktree}` : ''}`;
+}
+
+/**
+ * The board as plain text: the same data the page shows. With `extra` it also shows the
+ * waiting list and the runs the board started; without it the text stays as before.
+ * Agents write it, so control and bidi characters show escaped.
+ */
+export function renderBoardText(board: BoardData, extra?: BoardTextExtra): string[] {
   const pulls = typeof board.pulls === 'string' ? [] : board.pulls;
   const worktrees = typeof board.worktrees === 'string' ? [] : board.worktrees;
   return [
@@ -37,6 +60,16 @@ export function renderBoardText(board: BoardData): string[] {
     'Agents:',
     ...(board.agents.length ? board.agents.map((agent) => `- ${formatAgent(agent)}`) : [`- none. An agent joins by writing ${BOARD_AGENT_FILE} in its worktree.`]),
     '',
+    ...(extra === undefined
+      ? []
+      : [
+          'Waiting for you:',
+          ...(extra.waiting.length ? extra.waiting.map((row) => `- ${formatBoardWaiting(row)}`) : ['- Nothing waits for you.']),
+          '',
+          'Started here:',
+          ...(extra.runs.length ? extra.runs.map((run) => `- ${formatBoardRun(run)}`) : ['- No agents started here yet.']),
+          '',
+        ]),
     'Pull requests:',
     ...(typeof board.pulls === 'string' ? [`- ${board.pulls}`] : pulls.length ? pulls.map((pull) => `- ${formatPull(pull)}`) : ['- none open.']),
     ...board.merged.map((pull) => `- #${pull.number} ${pull.title}: merged`),

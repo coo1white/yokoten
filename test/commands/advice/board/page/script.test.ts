@@ -5,7 +5,8 @@ import '../../../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { FeedEvent } from '../../../../../src/commands/advice/board/feed.ts';
-import { ageOf, clearedId, groupFeed, loadUi, localDay, type PageData, type PageState, pickLang, renderCenter, renderRight, renderSide, roleGroup, saveUi, say, summaryOf } from '../../../../../src/commands/advice/board/page/script.ts';
+import { ageOf, clearedId, groupFeed, loadUi, localDay, type PageData, type PageState, pickLang, renderCenter, renderLimits, renderOutput, renderRight, renderRuns, renderSide, renderStart, renderWaiting, roleGroup, saveUi, say, summaryOf } from '../../../../../src/commands/advice/board/page/script.ts';
+import type { BoardWaiting } from '../../../../../src/commands/advice/board/controls.ts';
 import { LANG_NAMES, WORDS } from '../../../../../src/commands/advice/board/page/words.ts';
 import { type AgentView, pullView, vendorOf } from '../../../../../src/commands/advice/board/view.ts';
 
@@ -54,7 +55,7 @@ function makeState(data: PageData, lang = 'en'): PageState {
 }
 
 function makeData(fields: Partial<PageData>): PageData {
-  return { repo: '~/repo', repoUrl: '', agents: [], needs: [], pulls: [], merged: [], worktrees: [], updated: '', feeds: {}, ...fields };
+  return { repo: '~/repo', repoUrl: '', agents: [], needs: [], pulls: [], merged: [], worktrees: [], updated: '', feeds: {}, waiting: [], issues: [], runs: [], limits: { maxAgents: 3, byModel: {} }, ...fields };
 }
 
 test('board script: three or more routine steps fold; waits, failures and the latest step never do', () => {
@@ -147,6 +148,109 @@ test('board script: an agent\'s words stay text, and a link goes only to an http
   assert.match(pinned, /Approve PR #3/);
   const japanese = makeState(data, 'ja');
   assert.match((renderRight(japanese, data, Date.now()) as unknown as FakeNode).textContent, /あなたの承認待ち/, 'the pull request status in the page language');
+});
+
+// #603: the right column starts with the waiting list: who waits, their role, how
+// long, why, and where to act. An odd link stays plain text.
+test('board script: the waiting list shows what waits for you', () => {
+  const data = makeData({
+    waiting: [
+      { kind: 'approve', agent: 'w', role: 'engineer', wait: '5 min ago', why: 'tier A, checks pass, needs the owner go-ahead: #7 work', link: 'https://example.com/pull/7' },
+      { kind: 'guard', agent: 'g', role: '', wait: 'just now', why: 'the guard stopped a push', link: 'javascript:alert(1)' },
+      { kind: 'question', agent: 'q', role: 'helper', wait: '2 min ago', why: 'which one?', link: '' },
+    ],
+  });
+  const state = makeState(data);
+  const right = renderWaiting(state, data.waiting) as unknown as FakeNode;
+  const text = right.textContent;
+  assert.match(text, /Needs you3/);
+  assert.match(text, /Needs the owner go-ahead · w · \[engineer\] · 5 min ago/);
+  assert.match(text, /tier A, checks pass, needs the owner go-ahead: #7 work/);
+  assert.match(text, /Guard stop · g · just now/);
+  assert.match(text, /Question · q · \[helper\] · 2 min ago/);
+  const links = right.all().filter((node) => node.tag === 'a').map((node) => node.getAttribute('href'));
+  assert.deepEqual(links, ['https://example.com/pull/7'], 'only the http(s) address is a link');
+  const empty = renderWaiting(state, []) as unknown as FakeNode;
+  assert.match(empty.textContent, /Nothing needs you right now\./);
+});
+
+// #603: the right column holds the board's controls: the start form, the limits
+// form, the runs the board started with their stop buttons, and the live output.
+test('board script: the controls start and stop agents from the page', () => {
+  const data = makeData({
+    issues: [{ number: 603, title: 'board agents', url: '' }],
+    runs: [
+      { name: 'issue-603-codex', issue: '603', vendor: 'codex', model: 'model-a', worktree: '~/repo/.worktrees/603', pid: 1000, status: 'running', startedAt: '', stoppedAt: '', exitCode: null, output: ['hello', 'world'] },
+      { name: 'issue-604-codex', issue: '604', vendor: 'codex', model: 'model-a', worktree: '', pid: null, status: 'stopped', startedAt: '', stoppedAt: '', exitCode: 1, output: [] },
+    ],
+    limits: { maxAgents: 2, byModel: { 'model-a': 1 } },
+  });
+  const state = makeState(data);
+  const byId = (root: FakeNode, id: string) => root.all().find((node) => node.getAttribute('id') === id);
+  const start = renderStart(state, data.issues) as unknown as FakeNode;
+  assert.ok(byId(start, 'start-issue'), 'the issue field');
+  assert.ok(byId(start, 'start-vendor'), 'the vendor field');
+  assert.ok(byId(start, 'start-model'), 'the model field');
+  assert.equal(start.all().filter((node) => node.tag === 'option' && node.getAttribute('value') === 'codex').length, 1, 'every vendor is one option');
+  assert.ok(start.all().some((node) => node.tag === 'option' && node.textContent === '#603 board agents'), 'the open issues feed the issue list');
+  assert.ok(start.all().some((node) => node.tag === 'button' && node.getAttribute('data-start') === '1' && node.textContent === 'Start'), 'the start button');
+  const limits = renderLimits(state, data.limits) as unknown as FakeNode;
+  assert.ok(byId(limits, 'limits-max'), 'the cap field');
+  assert.ok(byId(limits, 'limits-models'), 'the per-model field');
+  assert.match(limits.textContent, /Now: 2 at once · model-a: 1/);
+  assert.ok(limits.all().some((node) => node.tag === 'button' && node.getAttribute('data-limits') === '1' && node.textContent === 'Save'), 'the save button');
+  const runs = renderRuns(state, data.runs) as unknown as FakeNode;
+  assert.match(runs.textContent, /Started here2/);
+  assert.match(runs.textContent, /issue-603-codex · codex · model-a · issue 603 · running/);
+  assert.match(runs.textContent, /~\/repo\/.worktrees\/603/);
+  const stops = runs.all().filter((node) => node.tag === 'button' && node.getAttribute('data-stop') !== null);
+  assert.deepEqual(stops.map((node) => node.getAttribute('data-stop')), ['issue-603-codex'], 'only the running run stops');
+  const output = renderOutput(state, data.runs) as unknown as FakeNode;
+  assert.match(output.textContent, /Latest output/);
+  const shown = output.all().filter((node) => node.tag === 'pre');
+  assert.equal(shown.length, 2, 'one block per run');
+  assert.equal(shown[0].textContent, 'hello\nworld', 'the live output');
+  assert.equal(shown[1].textContent, 'No output yet.');
+  const right = renderRight(state, data, Date.now()) as unknown as FakeNode;
+  assert.match(right.textContent, /Needs you/);
+  assert.match(right.textContent, /Start an agent/);
+  assert.match(right.textContent, /Limits/);
+  assert.match(right.textContent, /Started here/);
+  assert.match(right.textContent, /Latest output/);
+});
+
+// #603: there are no Approve or Merge buttons anywhere; those stay on the host, with
+// the owner. A row that names an approval only picks an agent or opens the host.
+test('board script: no control approves or merges', () => {
+  const waiting: BoardWaiting[] = [{ kind: 'approve', agent: 'w', role: 'engineer', wait: '5 min ago', why: 'tier A: #7 work', link: '' }];
+  const data = makeData({
+    waiting,
+    agents: [agent({ key: '~/w', name: 'w', role: 'engineer', dot: 'waiting' })],
+    needs: [{ kind: 'approve', title: 'Approve PR #7', why: 'ok', agentKey: '~/w', pull: 7 }],
+    runs: [{ name: 'issue-7-codex', issue: '7', vendor: 'codex', model: 'model-a', worktree: '', pid: 1, status: 'running', startedAt: '', stoppedAt: '', exitCode: null, output: [] }],
+  });
+  const state = makeState(data);
+  const nodes = [renderSide(state, data)[0], renderSide(state, data)[1], renderCenter(state, data), renderRight(state, data, Date.now())].flatMap((node) => (node as unknown as FakeNode).all());
+  const kinds = nodes.filter((node) => node.tag === 'button').flatMap((node) => [...node.attrs.keys()]);
+  assert.ok(!kinds.some((kind) => /approve|merge/i.test(kind)), 'no control claims to approve or merge');
+  assert.ok(nodes.some((node) => node.tag === 'button' && node.getAttribute('data-start') === '1'), 'the page starts');
+  assert.ok(nodes.some((node) => node.tag === 'button' && node.getAttribute('data-stop') === 'issue-7-codex'), 'the page stops');
+});
+
+// Agents write the status files, the issues, and the run output: every word reaches
+// the controls as text, never as markup.
+test('board script: issue titles and run output stay text', () => {
+  const hostile = '<img src=x onerror=alert(1)>';
+  const data = makeData({
+    issues: [{ number: 603, title: hostile, url: '' }],
+    runs: [{ name: hostile, issue: '603', vendor: hostile, model: hostile, worktree: hostile, pid: null, status: 'running', startedAt: '', stoppedAt: '', exitCode: null, output: [hostile] }],
+    waiting: [{ kind: 'question', agent: hostile, role: '', wait: hostile, why: hostile, link: '' }],
+  });
+  const state = makeState(data);
+  const nodes = [renderStart(state, data.issues), renderRuns(state, data.runs), renderOutput(state, data.runs), renderWaiting(state, data.waiting)].flatMap((node) => (node as unknown as FakeNode).all());
+  assert.ok(!nodes.some((node) => node.tag === 'img'), 'no element comes from the text');
+  assert.ok(nodes.filter((node) => node.tag === '#text' && node.text === hostile).length >= 4, 'the words show as they are');
+  assert.ok(!nodes.some((node) => node.tag === 'a'), 'no link without an http(s) address');
 });
 
 test('board script: a finished agent can be cleared, and comes back when it writes again', () => {
