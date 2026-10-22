@@ -12,7 +12,7 @@ import {
   isWarningFinding,
 } from '../../src/rules/message.ts';
 import { addedIgnores, loadIgnores, scanText } from '../../src/rules/privacy.ts';
-import { findEnvironmentValues, SECRET_CONTROL } from '../../src/rules/secrets.ts';
+import { findEnvironmentValues, findLineIgnores, SECRET_CONTROL } from '../../src/rules/secrets.ts';
 import { at, makeTempDir } from '../repo/helpers.ts';
 
 // Secrets (#8). Each sample is a prefix plus a body, joined here, so no token sits in
@@ -311,4 +311,10 @@ test('ignores: each ignore a pull request adds is a note with its reason; old li
   assert.deepEqual(file.map((f) => [f.line, f.ignored]), [[2, 'test fixtures']]);
   assert.match(file[0].what, /lets secret hits through in the whole repo/);
   assert.deepEqual(addedIgnores('src/a.ts', text, new Set(), {}), []);
+});
+
+test('an ignore in an HTML comment ends at --> and at --!>', () => {
+  for (const line of ['<!-- yokoten-ignore secret: a sample key -->', '<!-- yokoten-ignore secret: a sample key --!>']) {
+    assert.deepEqual(findLineIgnores(line, { commentsOnly: true }), [{ rule: 'secret', reason: 'a sample key' }], line);
+  }
 });

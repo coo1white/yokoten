@@ -193,7 +193,7 @@ export function findSecrets(lines: string[], allow: string[] = [], env: Env = {}
 
 /** One ignore marker or line, as `secret: reason`. */
 function parseIgnore(text: string): IgnoreDirective | { problem: string } {
-  let body = text.trim().replace(/(?:\*\/|-->)\s*$/, '').trim();
+  let body = text.trim().replace(/(?:\*\/|--!?>)\s*$/, '').trim();
   if (!body) return { problem: 'an ignore names a rule and gives a reason' };
   if (/^yokoten-ignore\b/i.test(body)) body = body.replace(/^yokoten-ignore\b\s*:?\s*/i, '');
   const colon = body.indexOf(':');
