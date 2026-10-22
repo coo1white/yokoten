@@ -424,8 +424,10 @@ const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
  * The board calls this for the worktree it makes or reuses, so runtimes that drop
  * YOKOTEN_ROLE still run as workers. Returns the worktree root, or the plain reason.
  */
-export function markWorktree(cwd: string, dir: string, env: Env): { top: string; kind: 'worktree' | 'clone' } | { fail: string } {
+export function markWorktree(cwd: string, dir: string, callerEnv: Env): { top: string; kind: 'worktree' | 'clone' } | { fail: string } {
   const folder = resolve(cwd, dir);
+  // Git reads the folder from the caller's GIT_DIR before the path: dropped, so the mark goes where `dir` is (#672).
+  const env = withoutGitPlace(callerEnv);
   let isFolder = false;
   try {
     isFolder = statSync(folder).isDirectory();
@@ -448,7 +450,12 @@ export function markWorktree(cwd: string, dir: string, env: Env): { top: string;
     const base = realPath(top);
     const isLeadHere = here === base || here.startsWith(base + sep);
     if (isLeadHere || hasLinkedWorktrees(folder, env)) return { fail: `${top} is the main checkout, the lead's. Mark a worktree (\`git worktree add <dir> -b <branch>\`) or a clone of its own (\`git clone <repo> <dir>\`), then \`yokoten worker mark <dir>\`.` };
+    // The lead marks a clone from its own checkout, so that checkout is never the one marked.
+    if (leadCheckout(cwd, env) === null) return { fail: `run \`yokoten worker mark ${dir}\` from your own checkout, the lead's: yokoten then knows that ${top} is not it.` };
   }
+  // Git and the guard must name the same git folder, or the mark lands where the guard never looks.
+  const link = gitLinkAbove(folder);
+  if (link === null || link.kind === 'broken' || realPath(link.gitDir) !== realPath(gitDir)) return { fail: `git names ${gitDir} as the git folder of ${top}, but its .git does not. Nothing is marked.` };
   try {
     const note = kind === 'clone' ? "A worker's clone: yokoten's guard treats every agent here as a worker. Removing the clone removes this mark.\n" : "A worker's worktree: yokoten's guard treats every agent here as a worker. `git worktree remove` removes this mark.\n";
     writeFileSync(join(gitDir, WORKER_MARK), note);
@@ -460,9 +467,22 @@ export function markWorktree(cwd: string, dir: string, env: Env): { top: string;
   } catch (error) {
     return { fail: `the mark is written in ${gitDir}, but the worker list can't be written (${(error as Error).message.split('\n')[0]}). Clear it with \`yokoten worker unmark ${top}\` once the list is writable, then mark again.` };
   }
-  // The guard finds the mark without git; check that it does here.
-  if (workerMarkAt(folder, env) !== 'mark') return { fail: `the mark is written in ${gitDir}, but the guard can't find it from ${top}.` };
+  // The guard finds the mark without git; check that it finds the file itself, not the list.
+  if (!existsSync(join(link.gitDir, WORKER_MARK)) || workerMarkAt(folder, env) !== 'mark') return { fail: `the mark is written in ${gitDir}, but the guard can't find it from ${top}.` };
   return { top, kind };
+}
+
+// The names that point git at another git folder or work tree than the folder it runs in.
+const GIT_PLACE = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR'];
+const withoutGitPlace = (env: Env): Env => Object.fromEntries(Object.entries(env).filter(([name]) => !GIT_PLACE.includes(name)));
+
+// The top of the checkout the lead runs in, or null outside one.
+function leadCheckout(cwd: string, env: Env): string | null {
+  try {
+    return readGit(cwd, ['rev-parse', '--show-toplevel'], { env }).toString('utf8').trim() || null;
+  } catch {
+    return null;
+  }
 }
 
 // Whether other worktrees hang off the checkout at `folder`: then it is a main checkout.
@@ -487,6 +507,9 @@ export function runWorker(invocation: Invocation): number | Promise<number> {
     return 1;
   };
   if (action === 'unmark') return runUnmark(invocation, dir, fail);
+  if (workerRole(invocation.env, [invocation.cwd]) !== null) {
+    return fail(`only the lead marks a worktree or a clone: this session is a worker. ${LEAD_OUTSIDE}`);
+  }
   const marked = markWorktree(invocation.cwd, dir, invocation.env);
   if ('fail' in marked) return fail(marked.fail);
   const removes = marked.kind === 'clone' ? 'Removing the clone removes the mark.' : `\`git worktree remove ${marked.top}\` removes the mark.`;
@@ -525,15 +548,18 @@ async function runEnv(invocation: Invocation, runtime: string | undefined): Prom
  * It drops the worktree's path from the worker list, and the mark file when `.git` still
  * names it. Given a folder with no `.git` (moved away), it still clears by path.
  */
+// Where the lead runs `worker mark` and `worker unmark`: inside a marked checkout, every session is a worker.
+const LEAD_OUTSIDE = "A worker commits in its own checkout and reports. The lead runs this from its own checkout, outside the marked one.";
+
 function runUnmark(invocation: Invocation, dir: string, fail: (line: string) => number): number {
   if (workerRole(invocation.env, [invocation.cwd]) !== null) {
-    return fail('only the lead unmarks a worktree: this session is a worker. Commit in your worktree and report; the lead unmarks after review.');
+    return fail(`only the lead unmarks a worktree: this session is a worker. ${LEAD_OUTSIDE}`);
   }
   const folder = resolve(invocation.cwd, dir);
   let top = folder;
   let gitDir: string | undefined;
   try {
-    const answer = readGit(folder, ['rev-parse', '--show-toplevel', '--absolute-git-dir'], { env: invocation.env }).toString('utf8').trim().split('\n');
+    const answer = readGit(folder, ['rev-parse', '--show-toplevel', '--absolute-git-dir'], { env: withoutGitPlace(invocation.env) }).toString('utf8').trim().split('\n');
     if (answer[0]) top = answer[0];
     gitDir = answer[1];
   } catch {

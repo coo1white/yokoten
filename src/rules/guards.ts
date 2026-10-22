@@ -510,6 +510,8 @@ function checkWorkerWrites(words: string[], { folder, near = folder, command, en
   const finds: { starts: string[]; args: string[] }[] = [];
   const gitFolders: { path: string; written: string }[] = [];
   const home = homeOf(env);
+  // A find's start folders: the find loop below decides whether it reaches a git folder.
+  const findStarts = new Set<string>();
   let from = 0;
   for (const program of findPrograms(words)) {
     const at = words.indexOf(program, from);
@@ -526,6 +528,7 @@ function checkWorkerWrites(words: string[], { folder, near = folder, command, en
       if (found) {
         finds.push(found);
         targets.push(...found.starts);
+        for (const start of found.starts) findStarts.add(start);
       }
     }
     if (isGit(program)) {
@@ -560,19 +563,27 @@ function checkWorkerWrites(words: string[], { folder, near = folder, command, en
       if (held.some((dir) => dir === full || dir.startsWith(inside))) return markFinding(`this command changes files under ${start}, which holds a git folder, where the worker mark is kept`);
     }
   }
-  for (const target of targets) {
-    const refusal = configTargetRefusal(target, context);
+  for (const written of targets) {
+    const refusal = configTargetRefusal(written, context);
     if (refusal) return refusal;
-    if (mayBeGitPath(target)) return markFinding(`this command changes ${target}, which may be a .git folder or the worker mark`);
+    if (mayBeGitPath(written)) return markFinding(`this command changes ${written}, which may be a .git folder or the worker mark`);
+    // `$PWD` and `~+` are the folder the command runs in, `~` and `$HOME` the home folder (#672).
+    const target = folder === null ? written : withHomeRead(written.replace(/^(\$PWD|\$\{PWD\})(?=[\\/]|$)/, folder), home, folder);
     if (/[$`]/.test(target)) {
-      if (namesGitDir(command)) return markFinding(`this command changes ${target}, a path yokoten can't read, and names a git folder`);
+      if (namesGitDir(command)) return markFinding(`this command changes ${written}, a path yokoten can't read, and names a git folder`);
       continue;
     }
     if (folder === null && !isAbsolute(target)) continue;
     dirs ??= folder === null ? [] : protectedGitDirs(folder);
     if (!dirs.length) continue;
     const full = realPath(resolve(folder ?? '/', target));
-    if (dirs.some((dir) => full === dir || full.startsWith(dir + sep))) return markFinding(`this command changes ${target}, which is inside a git folder, where the worker mark is kept`);
+    if (dirs.some((dir) => full === dir || full.startsWith(dir + sep))) return markFinding(`this command changes ${written}, which is inside a git folder, where the worker mark is kept`);
+    // A folder that holds the git folder: removing or replacing it drops the mark (#672).
+    if (findStarts.has(written)) continue;
+    const top = gitLinkAbove(folder ?? '/');
+    const held = [...dirs, ...(top ? [realPath(join(top.top, '.git'))] : [])];
+    const inside = full.endsWith(sep) ? full : full + sep;
+    if (held.some((dir) => dir.startsWith(inside))) return markFinding(`this command changes ${written}, which holds a git folder, where the worker mark is kept`);
   }
   return null;
 }
@@ -1262,7 +1273,11 @@ function checkWorkerUnmark(words: string[]): Finding | null {
     if (cli === -1) continue;
     const plain = plainArgs(withoutShellRedirects(words, cli + 1));
     if (plain[0] === 'worker' && plain[1] === 'unmark') {
-      return finding('worker-mark', '`yokoten worker unmark` clears a worker mark, and only the lead unmarks a worktree', 'commit in your worktree and report; the lead unmarks after review');
+      return finding('worker-mark', '`yokoten worker unmark` clears a worker mark, and only the lead unmarks a worktree', 'commit in your worktree and report; the lead unmarks after review, from its own checkout');
+    }
+    // A worker that marks the lead's checkout makes the lead a worker too (#672).
+    if (plain[0] === 'worker' && plain[1] === 'mark') {
+      return finding('worker-mark', '`yokoten worker mark` sets a worker mark, and only the lead marks a worktree or a clone', 'commit in your worktree and report; the lead marks checkouts, from its own');
     }
   }
   return null;

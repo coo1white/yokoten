@@ -57,7 +57,7 @@ export function runDoctor(invocation: Invocation): number {
 }
 
 const WORKER_SESSION = 'this session is a worker: lead-only files are guarded';
-const WORKER_MARKED = 'this session is a worker, because its worktree carries the worker mark: lead-only files are guarded, and the lead pushes after review';
+const WORKER_MARKED = 'this session is a worker, because its worktree or clone carries the worker mark: lead-only files are guarded, and the lead pushes after review';
 
 /** How long a session start waits for the hook's event on stdin, at most. */
 const STDIN_WAIT_MS = 300;
