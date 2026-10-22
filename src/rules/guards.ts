@@ -1353,10 +1353,12 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
     // The name is built only on a refusal (#498).
     const saw = (isMarked: (word: string) => boolean) => writeRisk(words, { heredoc, plainText, plainAt, fills, writers, isMarked });
     const reason =
-      checkShellAlias(words) ??
       checkGit(words, { env, config, cwd, rules }) ??
       // A worker hears its own rule first: what it may not send, its own unmark, and the git folder (#555, #566).
       (env.YOKOTEN_ROLE === 'worker' ? (checkWorkerSends(words) ?? checkWorkerUnmark(words) ?? checkWorkerWrites(words, { folder: postCwd, near: nearCwd, command, env })) : null) ??
+      // An alias runs another command under a new name: refused, not parsed (#560).
+      // For a worker the worker rule already answers, with its own id.
+      checkShellAlias(words, env) ??
       // Removing the .git folder throws away every commit (#560). For a worker the
       // mark rule above already answers, with its own id.
       checkRemoveGit(words) ??
@@ -1521,8 +1523,9 @@ function checkWorkerGit(words: string[], { options, settings, sub, args }: { opt
 const ALIAS_FIX = 'run the full command instead of making an alias, so the guard can check it';
 const aliasFinding = (what: string) => finding('alias', what, ALIAS_FIX);
 
-/** The `alias` program defines a shortcut, so a later command runs what the guard cannot see. */
-function checkShellAlias(words: string[]): Finding | null {
+/** The `alias` program defines a shortcut, so a later command runs what the guard cannot see. For a worker the worker rule answers first, with its own id. */
+function checkShellAlias(words: string[], env: Env): Finding | null {
+  if (env.YOKOTEN_ROLE === 'worker') return null;
   const runs = findPrograms(words).some((program) => programName(program) === 'alias');
   return runs ? aliasFinding('`alias` defines a shortcut, so a later command runs what the guard cannot see') : null;
 }
