@@ -53,6 +53,7 @@ import {
   compareVersions,
   demoteHeadings,
   handOffLines,
+  hasIntactKitJobs,
   NO_CI_REASON,
   moveUnderProjectHeading,
   placeHandOff,
@@ -1812,6 +1813,12 @@ const commitAll = (sandbox: ReturnType<typeof makeSandbox>) => {
 /** The kit's workflow `name` as init writes it into a project. */
 const kitWorkflow = (name: string) => render(readFileSync(join(KIT_WORKFLOWS, name), 'utf8'), { cli: '.yokoten/bin/yokoten.ts', version: VERSION });
 
+/** The kit's newest yokoten.yml with a `tests` job added the way the tests step says (#552). */
+const withTestsJob = (yml: string): string =>
+  yml
+    .replace(/^  ci:$/m, '  tests:\n    runs-on: ubuntu-latest\n    timeout-minutes: 10\n    permissions:\n      contents: read\n    steps:\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          persist-credentials: false\n      - run: npm test\n  ci:')
+    .replace('needs: [changes, check, lint]', 'needs: [changes, check, lint, tests]');
+
 /** The kit's yokoten.yml before #451, rebuilt from the newest: one of the versions init wrote. */
 const oldYokotenYml = () =>
   kitWorkflow('yokoten.yml')
@@ -1905,6 +1912,57 @@ test('compareWorkflow: same, older, changed, missing; Windows line ends compare 
     assert.equal(compareWorkflow(root, rel, 'new: 2\n', hashes), state, JSON.stringify(text));
   }
   assert.equal(compareWorkflow(root, rel, 'new: 2\n', {}), 'changed', 'a file with no list is never taken for a kit copy');
+});
+
+test('compareWorkflow: a job added the way doctor says stays up to date (#552)', () => {
+  const root = makeTempDir();
+  const rel = '.github/workflows/yokoten.yml';
+  const kit = kitWorkflow('yokoten.yml');
+  mkdirSync(join(root, '.github/workflows'), { recursive: true });
+  writeFileSync(join(root, rel), withTestsJob(kit));
+  assert.equal(compareWorkflow(root, rel, kit, readWorkflowHashes()), 'same');
+  assert.equal(compareWorkflow(root, rel, kit, {}), 'same', 'no hash list needed');
+});
+
+test('hasIntactKitJobs: own jobs and wider needs pass; a kit job behind does not (#552)', () => {
+  const kit = 'name: small\non: push\njobs:\n  check:\n    runs-on: ubuntu-latest\n    steps:\n      - run: make check\n  ci:\n    if: always()\n    needs: [check]\n    runs-on: ubuntu-latest\n    steps:\n      - run: exit 0\n';
+  const plusTests = kit
+    .replace('  ci:\n', '  tests:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm test\n  ci:\n')
+    .replace('needs: [check]', 'needs: [check, tests]');
+  assert.ok(hasIntactKitJobs(plusTests, kit), 'an added job and a wider needs list');
+  assert.ok(hasIntactKitJobs(plusTests.replace('needs: [check, tests]', 'needs:\n      - check\n      - tests'), kit), 'a block needs list');
+  assert.ok(!hasIntactKitJobs(plusTests, kit.replace('on: push', 'on: pull_request')), 'words outside the jobs');
+  assert.ok(!hasIntactKitJobs(plusTests.replace('      - run: make check', '      - run: make check-all'), kit), 'a changed kit job');
+  assert.ok(!hasIntactKitJobs(plusTests.replace('needs: [check, tests]', 'needs: [tests]'), kit), 'a narrower needs list');
+  assert.ok(!hasIntactKitJobs(kit, plusTests), 'the other way round: the kit lacks the added job');
+  assert.ok(!hasIntactKitJobs('no jobs here\n', kit), 'no jobs block in the project');
+  assert.ok(!hasIntactKitJobs(plusTests, 'no jobs here\n'), 'no jobs block in the kit');
+});
+
+test('init: keeps a kit workflow with only the project\'s own jobs added (#552)', async () => {
+  const sandbox = makeSandbox();
+  const mine = withTestsJob(kitWorkflow('yokoten.yml'));
+  sandbox.write(YML, mine);
+  commitAll(sandbox);
+  const result = await sandbox.call(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^kept \.github\/workflows\/yokoten\.yml$/m);
+  assert.equal(readFileSync(join(sandbox.repo, YML), 'utf8'), mine, 'kept byte for byte');
+  assert.doesNotMatch((await sandbox.call(['doctor'])).stdout, /kit-workflows/);
+});
+
+test('doctor: no kit-workflows note after adding the tests job the way doctor says (#552)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('package.json', '{"scripts": {"test": "node --test"}}\n');
+  sandbox.write(YML, withTestsJob(kitWorkflow('yokoten.yml')));
+  assert.doesNotMatch((await sandbox.call(['doctor'])).stdout, /kit-workflows/);
+});
+
+test('doctor: a kit-workflows note when the kit\'s own jobs fall behind (#552)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('package.json', '{"scripts": {"test": "node --test"}}\n');
+  sandbox.write(YML, withTestsJob(kitWorkflow('yokoten.yml')).replace('node .yokoten/bin/yokoten.ts check', 'node .yokoten/bin/yokoten.ts check --stray'));
+  assert.match((await sandbox.call(['doctor'])).stdout, /note +kit-workflows: \.github\/workflows\/yokoten\.yml has your changes, and the kit's newest copy differs/);
 });
 
 const YML = '.github/workflows/yokoten.yml';
