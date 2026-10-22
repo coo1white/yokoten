@@ -164,14 +164,22 @@ test('pull request body: the last line is `Made with <agent> (<model>)` (#570)',
   assert.deepEqual(bodies(goodPr().body.replace(made, '\n')), ['pr-made-with'], 'without the line');
   assert.ok(hasMadeWith(goodPr().body));
   assert.equal(hasMadeWith(goodPr().body.replace(made, '\n')), false);
+  // The canonical form has the robot emoji; the bare form still passes.
+  const emoji = '\n🤖 Made with worker (opus)\n';
+  assert.deepEqual(bodies(goodPr().body.replace(made, emoji)), [], 'with the emoji line');
+  assert.ok(hasMadeWith(goodPr().body.replace(made, emoji)));
   // Blank lines after it are fine; anything else is not.
   assert.deepEqual(bodies(`${goodPr().body}\n\n`), [], 'trailing blank lines');
   assert.deepEqual(bodies(goodPr().body.replace(made, `${made}Thanks\n`)), ['pr-made-with'], 'text after the line');
+  assert.deepEqual(bodies(goodPr().body.replace(made, `${emoji}Thanks\n`)), ['pr-made-with'], 'text after the emoji line');
   assert.deepEqual(bodies(goodPr().body.replace(made, '\nMade with worker ()\n')), ['pr-made-with'], 'no model');
+  assert.deepEqual(bodies(goodPr().body.replace(made, '\n🤖 Made with worker ()\n')), ['pr-made-with'], 'no model with the emoji');
   assert.deepEqual(bodies(goodPr().body.replace(made, '\nMade with worker\n')), ['pr-made-with'], 'no model in brackets');
   assert.deepEqual(bodies(goodPr().body.replace(made, '\nMade by worker (opus)\n')), ['pr-made-with'], 'another wording');
+  assert.deepEqual(bodies(goodPr().body.replace(made, '\n🤖 Made by worker (opus)\n')), ['pr-made-with'], 'another wording with the emoji');
   // A commented line counts neither way: hidden credit is no credit.
   assert.deepEqual(bodies(goodPr().body.replace(made, '\n<!-- Made with worker (opus) -->\n')), ['pr-made-with'], 'a comment hides it');
+  assert.deepEqual(bodies(goodPr().body.replace(made, '\n<!-- 🤖 Made with worker (opus) -->\n')), ['pr-made-with'], 'a comment hides the emoji line');
   assert.deepEqual(bodies(`${goodPr().body}<!-- a note -->\n`), [], 'a trailing comment is set aside');
 });
 

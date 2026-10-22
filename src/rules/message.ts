@@ -200,7 +200,7 @@ export const RULES = {
     docs: guide('the-core-rules'),
   },
   'pr-made-with': {
-    rule: 'a pull request body ends with `Made with <agent> (<model>)` (core rule 8)',
+    rule: 'a pull request body ends with `🤖 Made with <agent> (<model>)` (core rule 8)',
     why: 'every pull request names the AI and model that made it',
     check: PR_CHECK,
     docs: guide('the-core-rules'),

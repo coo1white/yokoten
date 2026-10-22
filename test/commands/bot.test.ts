@@ -252,7 +252,7 @@ test('bot: a pull request body CI would refuse is refused locally, with CI\'s me
     await refused(['gh', 'pr', 'edit', 'topic', `--body=${noKit}`], noKit, /kit/);
     // (c) No `Made with` line: refused with what to add, like no `Closes #N` (#570).
     const noMade = good.replace('\n\nMade with worker (opus)\n', '\n');
-    await refused(['gh', 'pr', 'create', '-t', 'feat(kit): a', '--body', noMade], noMade, /^- body: no `Made with` line at the end\. .+ End the body with `Made with <agent> \(<model>\)/);
+    await refused(['gh', 'pr', 'create', '-t', 'feat(kit): a', '--body', noMade], noMade, /^- body: no `Made with` line at the end\. .+ End the body with `🤖 Made with <agent> \(<model>\)/);
     // A pull request named by number or URL: gh says its branches, with the bot's token, and
     // every body rule runs on origin/main...origin/topic. A branch not here yet is fetched.
     sandbox.git('update-ref', '-d', 'refs/remotes/origin/topic');
