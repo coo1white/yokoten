@@ -195,6 +195,8 @@ test('sandbox write: the block is added, kept when yours, and skipped when the f
   assert.deepEqual(JSON.parse(readFileSync(join(off, '.claude', 'settings.json'), 'utf8')).sandbox, { enabled: false });
   assert.deepEqual(addProjectSandbox(settingsProject('not json {')), { kind: 'json' });
   assert.deepEqual(addProjectSandbox(settingsProject({ sandbox: 'yes' })), { kind: 'shape', hint: '`sandbox` should be an object' });
+  assert.deepEqual(addProjectSandbox(settingsProject({ hooks: 'x' })), { kind: 'shape', hint: '`hooks` should be an object' });
+  assert.deepEqual(addProjectSandbox(settingsProject({ env: 'x' })), { kind: 'shape', hint: '`env` should be an object' });
 });
 
 test('sandbox problem: missing, off, and wider, each with its one fix', () => {
@@ -211,4 +213,6 @@ test('sandbox problem: missing, off, and wider, each with its one fix', () => {
   });
   assert.deepEqual(problem('not json {'), { what: "can't read .claude/settings.json", fix: 'make it valid JSON, then run `yokoten init`' });
   assert.deepEqual(problem({ sandbox: 'yes' })?.what, '.claude/settings.json has an unexpected shape');
+  assert.deepEqual(problem({ hooks: 'x' })?.what, '.claude/settings.json has an unexpected shape');
+  assert.deepEqual(problem({ env: 'x' })?.what, '.claude/settings.json has an unexpected shape');
 });

@@ -68,6 +68,7 @@ test('sandbox write: the YOLO block is added, or handed to the user when the fil
   assert.deepEqual(JSON.parse(SANDBOX_HAND_ADD), { security: { disableYoloMode: true } });
   assert.deepEqual(addProjectSandbox(settingsProject('not json {')), { kind: 'json' });
   assert.deepEqual(addProjectSandbox(settingsProject({ security: 'high' })), { kind: 'shape', hint: '`security` should be an object' });
+  assert.deepEqual(addProjectSandbox(settingsProject({ hooks: 'x' })), { kind: 'shape', hint: '`hooks` should be an object' });
 });
 
 test('sandbox problem: a missing or allowed key, each with its one fix', () => {
@@ -84,4 +85,5 @@ test('sandbox problem: a missing or allowed key, each with its one fix', () => {
   });
   assert.deepEqual(problem('not json {'), { what: "can't read .gemini/settings.json", fix: 'make it valid JSON, then run `yokoten init`' });
   assert.deepEqual(problem({ security: 'high' })?.what, '.gemini/settings.json has an unexpected shape');
+  assert.deepEqual(problem({ hooks: 'x' })?.what, '.gemini/settings.json has an unexpected shape');
 });
