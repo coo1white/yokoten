@@ -231,10 +231,10 @@ export function checkPullRequestBody(pr: Pick<PullRequest, 'body' | 'files' | 'd
   if (!readLinkedIssues(body).length) {
     problems.push(finding('pr-issue', 'body: no linked issue', 'link the issue with `Closes #N`, or `Part of #N` when it does not finish it'));
   }
-  // Every pull request names the AI and model that made it (#570), on its last
+  // Every pull request names each AI and model that made it (#570), on its last
   // line, so the credit reads the same each time.
   if (!hasMadeWith(body)) {
-    problems.push(finding('pr-made-with', 'body: no `Made with` line at the end', 'end the body with `🤖 Made with <agent> (<model>)`, for example `🤖 Made with worker (opus)`'));
+    problems.push(finding('pr-made-with', 'body: no `Made with` line at the end', 'end the body with `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, for example `🤖 Made with lead (opus), worker (sonnet)`'));
   }
 
   // `yokoten changelog` reads only the files right in changes/, and refuses a folder there,
@@ -834,13 +834,14 @@ export function readLinkedIssues(body: string): number[] {
 
 /**
  * Whether a body ends with `🤖 Made with <agent> (<model>)` (#570): its last
- * line that is not blank, with or without the robot emoji. HTML comments are
- * set aside first, so a commented line counts neither for nor against, and
- * neither does one inside a code block.
+ * line that is not blank, with or without the robot emoji. One or more
+ * comma-separated `<agent> (<model>)` pairs name each AI and model that made
+ * it. HTML comments are set aside first, so a commented line counts neither
+ * for nor against, and neither does one inside a code block.
  */
 export function hasMadeWith(body: string): boolean {
   const lines = blankComments(body).split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '');
-  return /^(?:🤖 )?Made with [^()]+ \([^()]+\)$/.test(lines.at(-1) ?? '');
+  return /^(?:🤖 )?Made with [^()]+ \([^()]+\)(?:, [^()]+ \([^()]+\))*$/.test(lines.at(-1) ?? '');
 }
 
 /**
