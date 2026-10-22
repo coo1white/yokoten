@@ -72,7 +72,7 @@ export const RULES = {
   'hooks-path': {
     rule: 'never turn off the commit check (core rule 6)',
     why: 'git runs the commit check from core.hooksPath, so a folder whose pre-commit does not run it turns the check off',
-    check: 'the tool-call guard lets every read of core.hooksPath through. In the repo\'s own config, `git config` may set .githooks, the value already set, or a folder whose pre-commit runs `yokoten check` (husky: .husky/pre-commit). It stops any other change: `--unset`, `--global`, `git -c`, `--config-env` and GIT_CONFIG_KEY_n. The commit-check step looks at the setting',
+    check: 'the tool-call guard lets every read of core.hooksPath through. In the repo\'s own config, `git config` may set .githooks, the value already set, or a folder whose pre-commit runs `yokoten check` (husky: .husky/pre-commit). It stops any other change: `--unset`, `--global`, `git -c` and `--config-env`. It stops GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM, GIT_CONFIG_COUNT, GIT_CONFIG_KEY_n and GIT_CONFIG_VALUE_n, and a shell write to .git/config, .git/hooks or .githooks (a redirect, cp, mv, tee, sed -i, rm, chmod, ln, install, truncate); reading them passes. The commit-check step looks at the setting',
     docs: guide('the-core-rules'),
   },
   alias: {
@@ -147,6 +147,12 @@ export const RULES = {
     rule: 'nothing in the repo points at you: your name, city, domain or servers (core rule 11)',
     why: 'a line of your private-marks file names something that points at you',
     check: 'the commit check reads ~/.config/yokoten/private-marks, outside the repo, and looks for each line; CI does not have the file; the tool-call guard also checks the text an agent posts with gh (issues, pull requests, comments, release notes)',
+    docs: guide('privacy'),
+  },
+  'home-folder': {
+    rule: 'an agent does not change the home folder for a command (core rule 11)',
+    why: 'the commit check and the gh post guard read your private marks from your home folder, so another home finds no marks and lets them through',
+    check: 'the tool-call guard stops a command that sets HOME, USERPROFILE or XDG_CONFIG_HOME: before a program, after env or sudo, with export or declare, or with read, printf -v or a for loop; reading $HOME passes',
     docs: guide('privacy'),
   },
   secret: {

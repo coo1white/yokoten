@@ -1161,7 +1161,7 @@ Rust 的 workspace 里，一条就能管到每个 crate：
 3. 只有仓库主人能打 tag、发版。主人随口说一句「合吧」「ship it」，不算同意发版。
 4. 修复任务只改代码，不改测试（`YOKOTEN_FIX_TASK=1`）。
 5. worker 不改只有 lead 能改的文件：规则、agent 配置、hook、CI。
-6. 不许跳过提交检查。查看 core.hooksPath 没问题。换成别的 hooks 文件夹也行，前提是那里的 pre-commit 是能直接执行的 shell 脚本，单独一行跑 `yokoten check`，检查没过就停下提交（用 husky 的项目，`yokoten init` 会帮你加上）。改设置要写出设置名，不能用 `git config --edit`，也不能新加 include 去读别的配置文件。
+6. 不许跳过提交检查。查看 core.hooksPath 没问题。换成别的 hooks 文件夹也行，前提是那里的 pre-commit 是能直接执行的 shell 脚本，单独一行跑 `yokoten check`，检查没过就停下提交（用 husky 的项目，`yokoten init` 会帮你加上）。改设置要写出设置名，不能用 `git config --edit`，也不能新加 include 去读别的配置文件。用 shell 去写 `.git/config`、`.git/hooks` 或 `.githooks` 也不行（重定向、`cp`、`mv`、`tee`、`sed -i`、`rm`、`chmod`、`ln`、`install`、`truncate`），设 `GIT_CONFIG_GLOBAL`、`GIT_CONFIG_SYSTEM`、`GIT_CONFIG_COUNT`、`GIT_CONFIG_KEY_n`、`GIT_CONFIG_VALUE_n` 也不行。只是读这些文件没问题。一条命令临时改一个设置，用 `git -c <名字>=<值>`；改 hook 用编辑工具或者 `yokoten init`。
 7. 不用普通的强制推送，不对共享分支做 rebase。
 8. 用 squash 合并。一个 PR 只做一件事；零碎的小改动攒成一批再提。
 9. 审查和测试的，必须是最终合并的那个提交。
@@ -1323,6 +1323,11 @@ yokoten 自己加的那一类用 `yokoten marks off git-name`，你自己加的�
 不能少。`~/.config/yokoten/private-marks` 在但读不了时，不管这个设置怎么写，检查都会失败。
 `yokoten marks add` 和 `install` 还是写进你家目录里的那个文件。
 这台电脑的放行文件（见下文）只从 `~/.config/yokoten` 读，不会去读这个设置所指文件旁边的。
+
+agent 也不能换家目录。`HOME=/tmp/x git commit` 会让提交检查去别的文件夹找词表，找不到，就放行了。
+所以命令里设 `HOME`、`USERPROFILE` 或 `XDG_CONFIG_HOME`，守卫都会拦：写在程序前面、`env` 或 `sudo`
+后面、用 `export` 或 `declare`、用 `read`、`printf -v` 或 `for` 循环，都算。守卫看不出脚本会不会提交或发帖，
+所以不管跑什么程序都拦。只是读 `$HOME` 没问题。
 
 只有字母和空格的词，比如名字或城市，按整个单词查。前后紧挨着别的字母时，才不算查到：`sam` 能在
 `hi Sam`、`sam_dev`、`@sam`、`sam97` 里查到，在 `sample` 里查不到。反斜杠转义（如 `\n`）、URL 编码的
@@ -1508,7 +1513,8 @@ hook 不可能认得所有命令。输出里露出了你的信息，就开一个
   看不准会跑什么就拦下。但把命令拆开再拼起来，还是能绕过。它防的是失误和走样，不是一把锁。真正
   的锁在服务器上：分支保护、代码负责人，以及一个没有发版权限、改不了 CI 的 bot。worker 用
   shell 写只有 lead 能改的文件，只有命令里写明了这个文件才拦得住：路径来自变量或标准输入
-  （`xargs rm`、`find -exec`、`git apply < x.patch`），或者是脚本自己去写，都拦不住。
+  （`xargs rm`、`find -exec`、`git apply < x.patch`），或者是脚本自己去写，都拦不住。写
+  `.git/config` 或 `.githooks` 也一样；先 `cd` 到守卫看不出的文件夹再写（`cd "$x" && echo >> config`），也拦不住。
 - **服务器设置只能读 GitHub 的。** 换成别的代码托管平台，只有平台自己才判断得了的步骤会标 can't check，并写明各自在问什么（见[会话里看到的是什么](#会话里看到的是什么)）。bot 的权限 `doctor` 还查不了。
 - **先支持 Claude Code。** agent 按 Claude Code 的格式写。技能用的是公开
   的 SKILL.md 格式，所以 `install` 也会把它们放进 `~/.agents/skills`，Codex、Gemini CLI、

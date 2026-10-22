@@ -13,7 +13,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { accessSync, closeSync, constants, existsSync, fstatSync, globSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, type Stats, statSync, writeFileSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import type { Config, Env } from './config.ts';
 import { loadConfig, matcher } from './config.ts';
 import { WORKTREES_DIR } from './layout.ts';
@@ -1368,6 +1368,9 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
   // A download piped into a shell runs code nobody read (#560).
   const piped = checkPipeToShell(command);
   if (piped) return piped;
+  // Rules that refuse any form of a setting or a write (#361, #664). They answer after the
+  // rest, which name the case more exactly; the first one found is kept.
+  let later: Finding | null = null;
   for (const words of commands) {
     const mayWrite = heredoc !== undefined || fills || writesFile(words) || isUnsure(words) || writers.some((other) => other !== words);
     // The name is built only on a refusal (#498).
@@ -1388,10 +1391,16 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
       checkPosted(words, { env, config, cwd: postCwd, from, command, titles, files: { heredoc, mayWrite, saw, movesFolder } }) ??
       (rules ? checkLeadOnlyWrites(words, { env, rules, folder: postCwd }) : null);
     if (reason) return reason;
+    later ??=
+      checkGitConfigEnvironment(words) ??
+      // The likely folder, read as written: a write there is refused, never let through.
+      checkGitSetupWrites(words, { folder: nearCwd, env }) ??
+      // A changed home folder hides the private marks (#664).
+      checkHomeSetting(words);
     postCwd = folderAfter(words, postCwd, { env, isTildeQuoted });
     nearCwd = folderAfter(words, nearCwd, { env, isTildeQuoted, isCdPathSkipped: true });
   }
-  return env.YOKOTEN_ROLE === 'worker' ? (checkWorkerBox(command, commands, { cwd: from, env }) ?? checkWorkerPointers(command, commands, env)) : null;
+  return (env.YOKOTEN_ROLE === 'worker' ? (checkWorkerBox(command, commands, { cwd: from, env }) ?? checkWorkerPointers(command, commands, env)) : null) ?? later;
 }
 
 /**
@@ -1802,6 +1811,106 @@ function configValues(words: string[]): Map<string, string> {
   }
   for (const number of added) values.set(number, '+=');
   return values;
+}
+
+// The rest of git's config variables (#361): GIT_CONFIG_COUNT, GIT_CONFIG_KEY_n and
+// GIT_CONFIG_VALUE_n set settings for one command, as `git -c` does, and GIT_CONFIG_GLOBAL
+// and GIT_CONFIG_SYSTEM point git at another config file. Each can set core.hooksPath in a
+// way the guard does not follow, so an agent may set none of them, whatever they hold:
+// `git -c <name>=<value>` sets one setting the guard can read. They count where the ones
+// above do. The guard asks this after its other rules, which name the case more exactly.
+const GIT_CONFIG_SETTING = /^GIT_CONFIG_(GLOBAL|SYSTEM|COUNT|KEY_\d+|VALUE_\d+)\+?=/i;
+
+/** Each assignment that counts as set for the command: before it, or before a git word. */
+function* settingsOf(words: string[]): Generator<string> {
+  const lastGit = words.findLastIndex(isGit);
+  let isPrefix = true; // every word before this one is an assignment, an option or an assigner
+  for (const [index, word] of words.entries()) {
+    const wasPrefix = isPrefix;
+    isPrefix = isPrefix && (isAssignment(word) || word.startsWith('-') || ASSIGNERS.has(base(word)));
+    if (isAssignment(word) && (wasPrefix || index < lastGit)) yield word;
+  }
+}
+
+function checkGitConfigEnvironment(words: string[]): Finding | null {
+  for (const word of settingsOf(words)) {
+    const setting = GIT_CONFIG_SETTING.exec(word);
+    if (!setting) continue;
+    const name = `GIT_CONFIG_${setting[1].toUpperCase().replace(/_\d+$/, '_n')}`;
+    const what = /^(GLOBAL|SYSTEM)$/i.test(setting[1]) ? 'points git at another config file' : 'sets git settings yokoten does not read one by one';
+    return hooksPath(`${name} ${what}, which can set core.hooksPath and skip the commit check`, 'run git without it; to set one setting for one command, use `git -c <name>=<value>`, which the guard can check');
+  }
+  return null;
+}
+
+// ---- Shell writes to git's config and hooks (#361) ----
+//
+// `git config` is read setting by setting above. A shell write to the same files is not:
+// `printf '[core]\nhooksPath=x' >> .git/config`, `sed -i` on it, or `rm`/`chmod -x` on
+// `.githooks/pre-commit` can each turn the commit check off. So a command that names
+// `.git/config`, `.git/hooks` or `.githooks` as a file it writes is refused, for lead and
+// worker: a redirect, the files of the writers in WRITERS (cp, mv, tee, sed -i, rm, ln,
+// install, truncate, ...) and of chmod, touch and the rest of MARK_WRITERS. The path counts
+// as written and, when the folder is known, as placed from it, so `cd .git && echo >> config`
+// is refused too. A read (`cat .git/config`, `git config --get`) writes nothing and passes.
+const GIT_SETUP_FILE = /(^|\/)\.git(\/?$|\/config(\.worktree)?$|\/hooks(\/|$)|\/worktrees\/[^/]+\/config\.worktree$)|(^|\/)\.githooks(\/|$)/i;
+const GIT_SETUP_FIX = 'change a git setting with `git config <name> <value>`, and a hook with your edit tool or `yokoten init`, so the guard can check it';
+
+// Whether a written path may be git's config or hooks: as written, and from `folder`.
+function isGitSetupFile(path: string, folder: string | null, home: string | null): boolean {
+  const plain = (text: string) => posix.normalize(text.replace(/\\/g, '/'));
+  if (GIT_SETUP_FILE.test(plain(path))) return true;
+  if (folder === null || /[$`]/.test(path)) return false;
+  const expanded = /^~(?=[\\/]|$)/.test(path) ? (home === null ? null : join(home, path.slice(1))) : path;
+  return expanded !== null && GIT_SETUP_FILE.test(plain(resolve(folder, expanded)));
+}
+
+function checkGitSetupWrites(words: string[], { folder, env }: { folder: string | null; env: Env }): Finding | null {
+  const known = new Map<string, string | null>();
+  const targets = writeTargets(words, folder, (dir) => gitRootAbove(dir, known)).map((target) => target.path);
+  let from = 0;
+  for (const program of findPrograms(words)) {
+    const at = words.indexOf(program, from);
+    if (at === -1) continue;
+    from = at + 1;
+    if (MARK_WRITERS.has(programName(program))) targets.push(...plainArgs(withoutShellRedirects(words, at + 1)));
+  }
+  const home = homeOf(env);
+  const target = targets.find((path) => isGitSetupFile(path, folder, home));
+  return target === undefined ? null : hooksPath(`this command changes ${target}, which holds git's settings or the commit check`, GIT_SETUP_FIX);
+}
+
+// ---- The home folder (#664) ----
+//
+// The commit check and the guard for gh posts read the private marks from the home folder.
+// `HOME=/tmp/x git commit` would make them look in another folder, find no marks and pass.
+// So an agent may not set HOME, USERPROFILE or XDG_CONFIG_HOME: before a program, after env
+// or sudo, in export or declare, or with read, printf -v or a for loop. The guard can't tell
+// which program a script runs, so it refuses the setting for every command. Reading $HOME
+// is fine.
+const HOME_NAMES = new Set(['HOME', 'USERPROFILE', 'XDG_CONFIG_HOME']);
+const HOME_FIX = 'run the command without changing the home folder; yokoten reads the private marks from your own home';
+// Commands that set a variable named by a plain word: `read HOME`, `printf -v HOME`, `for HOME in`.
+const NAME_SETTERS = new Set(['read', 'mapfile', 'readarray', 'getopts', 'printf', 'for', 'select']);
+
+function checkHomeSetting(words: string[]): Finding | null {
+  const refuse = (name: string) => finding('home-folder', `this command sets ${name}, which moves where yokoten finds your private marks`, HOME_FIX);
+  for (const word of settingsOf(words)) {
+    const name = word.slice(0, word.indexOf('=')).replace(/\+$/, '');
+    if (HOME_NAMES.has(name)) return refuse(name);
+  }
+  // `export HOME=x` and `declare -x HOME=x`: every word after the declarer. After read,
+  // a for loop and the rest, the plain name: `read HOME`, `printf -v HOME`.
+  const at = words.findIndex((word) => DECLARERS.has(base(word)) || NAME_SETTERS.has(base(word)));
+  if (at === -1) return null;
+  const setter = base(words[at]);
+  for (const [index, word] of words.entries()) {
+    if (index <= at) continue;
+    const name = word.split('=')[0].replace(/\+$/, '');
+    if (!HOME_NAMES.has(name)) continue;
+    if (DECLARERS.has(setter) ? word.includes('=') : setter !== 'printf' || words[index - 1] === '-v') return refuse(name);
+  }
+  return null;
 }
 
 // A shell redirect is no argument to git: `git config core.hooksPath 2>/dev/null` reads

@@ -1465,6 +1465,11 @@ The full table, with the reasons, is in [`kit/project/AGENTS.md`](../kit/project
    when its pre-commit is an executable shell script that runs `yokoten check` on a line of
    its own and stops the commit when the check fails, as `yokoten init` sets up for husky.
    Change a setting by name: `git config --edit` and a new config include are refused.
+   So is a shell write to `.git/config`, `.git/hooks` or `.githooks` (a redirect, `cp`, `mv`,
+   `tee`, `sed -i`, `rm`, `chmod`, `ln`, `install`, `truncate`), and setting
+   `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n` or
+   `GIT_CONFIG_VALUE_n`. Reading those files passes. Use `git -c <name>=<value>` for one
+   setting in one command, and your edit tool or `yokoten init` for a hook.
 7. No plain force push. Never rebase a shared branch.
 8. Squash merge. One pull request, one purpose; small polish goes in one batch.
 9. Review and test the exact commit that merges.
@@ -1696,6 +1701,13 @@ every mark in them. So the setting can only add marks, never remove them. When
 setting says. `yokoten marks add` and `install` still write to the file in your home folder.
 The machine allow file (below) is read only from `~/.config/yokoten`, never from beside the
 setting's file.
+
+An agent can't move the home folder either. `HOME=/tmp/x git commit` would send the commit
+check to look for marks in another folder, find none, and pass. So the guard refuses a
+command that sets `HOME`, `USERPROFILE` or `XDG_CONFIG_HOME`: before a program, after `env`
+or `sudo`, with `export` or `declare`, or with `read`, `printf -v` or a `for` loop. It does
+this for every program, since it can't tell what a script commits or posts. Reading
+`$HOME` is fine.
 
 A mark of letters and spaces, such as a name or a city, is found as whole words. Only a
 letter next to it hides it: `sam` is found in `hi Sam`, `sam_dev`, `@sam` and `sam97`, but
@@ -1940,7 +1952,9 @@ Honest limits:
   lock is on the server: branch protection, code owners, and a bot without the rights to
   release or change CI. A worker's shell write to a lead-only file is stopped only when
   the guard sees the file in the command: a path from a variable or stdin (`xargs rm`,
-  `find -exec`, `git apply < x.patch`), or a script that writes it, gets past.
+  `find -exec`, `git apply < x.patch`), or a script that writes it, gets past. A shell
+  write to `.git/config` or `.githooks` has the same gaps, and so does a write after a `cd`
+  to a folder the guard can't read (`cd "$x" && echo >> config`).
 - **Server settings are read on GitHub only.** Another host shows the steps that only the
   host can judge as **can't check**, with what each one asks ([What a session sees](#what-a-session-sees)). `doctor` does not check the bot's rights yet.
 - **Claude Code first.** Agents follow Claude Code's format.

@@ -1,0 +1,3 @@
+Security
+
+Agents can no longer get past the commit check or the privacy check with a shell trick. The guard now refuses a command that changes the home folder (`HOME`, `USERPROFILE` or `XDG_CONFIG_HOME`), because another home has no private marks and so lets everything through (#664). It also refuses a shell write to `.git/config`, `.git/hooks` or `.githooks`, such as `>>`, `cp`, `sed -i`, `rm` or `chmod -x`. It refuses the `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM` and `GIT_CONFIG_COUNT`/`KEY`/`VALUE` settings too. Each of these can turn the commit check off (#361). Reading these files and `$HOME` still works. For one setting in one command, use `git -c <name>=<value>`.

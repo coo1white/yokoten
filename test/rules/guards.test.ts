@@ -243,8 +243,6 @@ test('hooks setting: every way to read it passes (#114)', () => {
     'grep -rn GIT_CONFIG_KEY_0=core.hooksPath test',
     'git -c core.hooksPath=.githooks commit -m x',
     'git -c user.name=x commit -m x',
-    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=.githooks git commit -m x',
-    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=x git commit -m x',
   ]) allowed(command);
 });
 
@@ -421,8 +419,122 @@ test('hooks setting: GIT_CONFIG_* += cannot skip the check, for lead and worker 
     assert.match(checkCommand(command, { env: {}, cwd: process.cwd() })?.id ?? "", /^(hooks-path|include)/, command);
     assert.ok(checkCommand(command, { env: worker, cwd: process.cwd() }), `a worker too: ${command}`);
   }
-  allowed('GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=x git log -1');
+  allowed('git -c user.name=x log -1');
   allowed('git log --oneline');
+});
+
+// #361: git's config and hooks files, written by the shell, and the config variables.
+test('hooks setting: a shell write to .git/config, .git/hooks or .githooks is refused, a read passes (#361)', () => {
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  for (const command of [
+    'cp /tmp/x .git/config',
+    'cp /tmp/x ./.git//config',
+    'mv /tmp/x .git/config',
+    'echo x | tee .git/config',
+    'echo x | tee -a .git/config',
+    "printf '[core]\\n\\thooksPath = /dev/null\\n' >> .git/config",
+    'echo x > .git/config',
+    'sed -i s/githooks/x/ .git/config',
+    'sed -i.bak -e s/githooks/x/ .git/config',
+    'truncate -s 0 .git/config',
+    'echo x >> .git/config.worktree',
+    'echo x >> .git/worktrees/w/config.worktree',
+    'echo "gitdir: /tmp/other" > .git',
+    'echo x > .GIT/CONFIG',
+    'cd .git && echo x >> config',
+    'cd .git && sed -i s/a/b/ config',
+    'rm .githooks/pre-commit',
+    'rm -rf .githooks',
+    'chmod -x .githooks/pre-commit',
+    'chmod 000 .githooks',
+    'echo > .githooks/pre-commit',
+    'echo exit 0 >> .githooks/pre-commit',
+    'cp /tmp/x .githooks/pre-commit',
+    'mv /tmp/x .githooks',
+    'install -m 755 /tmp/x .githooks/pre-commit',
+    'ln -sf /dev/null .githooks/pre-commit',
+    'truncate -s 0 .githooks/pre-commit',
+    'git checkout HEAD~3 -- .githooks/pre-commit',
+    'echo x > .git/hooks/pre-commit',
+    'ln -sf /dev/null .git/hooks/pre-commit',
+    'chmod -x .git/hooks/pre-commit',
+    'bash -c "echo x >> .git/config"',
+    'cd src && cp /tmp/x ../.githooks/pre-commit',
+  ]) {
+    assert.equal(checkCommand(command, { env: {}, cwd: process.cwd() })?.id, 'hooks-path', `the lead: ${command}`);
+    assert.ok(checkCommand(command, { env: worker, cwd: process.cwd() }), `a worker: ${command}`);
+  }
+  assert.match(checkCommand('rm .githooks/pre-commit', { env: {}, cwd: process.cwd() })?.what ?? '', /changes \.githooks\/pre-commit/);
+  for (const command of [
+    'cat .git/config',
+    'grep -n hooksPath .git/config',
+    'cat .githooks/pre-commit',
+    'ls -la .githooks .git/hooks',
+    'sed -n 1,5p .git/config',
+    'cp .git/config /tmp/config-copy',
+    'diff .githooks/pre-commit /tmp/x',
+    'git config --get core.hooksPath',
+    'test -x .githooks/pre-commit && echo ok',
+    'echo x > notes/.githooks-plan.md',
+  ]) {
+    allowed(command);
+    allowed(command, worker);
+  }
+});
+
+test('hooks setting: GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM and GIT_CONFIG_COUNT/KEY/VALUE are refused (#361)', () => {
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  for (const command of [
+    'GIT_CONFIG_GLOBAL=/tmp/x git commit -m x',
+    'GIT_CONFIG_SYSTEM=/tmp/x git commit -m x',
+    'env GIT_CONFIG_GLOBAL=/tmp/x git commit -m x',
+    'export GIT_CONFIG_GLOBAL=/tmp/x; git commit -m x',
+    'git_config_global=/tmp/x git commit -m x',
+    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=x git commit -m x',
+    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=.githooks git commit -m x',
+    'GIT_CONFIG_VALUE_0=x git status',
+    'GIT_CONFIG_COUNT+=1 git log',
+  ]) {
+    assert.equal(checkCommand(command, { env: {}, cwd: process.cwd() })?.id, 'hooks-path', `the lead: ${command}`);
+    assert.ok(checkCommand(command, { env: worker, cwd: process.cwd() }), `a worker: ${command}`);
+  }
+  assert.match(checkCommand('GIT_CONFIG_GLOBAL=/tmp/x git commit -m x', { env: {}, cwd: process.cwd() })?.fix ?? '', /git -c <name>=<value>/);
+  for (const command of ['grep -rn GIT_CONFIG_GLOBAL=x test', 'echo $GIT_CONFIG_GLOBAL', 'git -c user.name=x commit -m x', 'GIT_CONFIG_NOSYSTEM=1 git status']) allowed(command);
+});
+
+// #664: another home folder hides the private marks from the commit check and the gh guard.
+test('home folder: an agent may not set HOME, USERPROFILE or XDG_CONFIG_HOME; reading it passes (#664)', () => {
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  for (const command of [
+    'HOME=/tmp/elsewhere git commit -m x',
+    'HOME=/tmp/elsewhere gh issue create --title x --body y',
+    'HOME=/tmp/elsewhere yokoten check',
+    'HOME=/tmp/elsewhere npm run release',
+    'USERPROFILE=C:\\elsewhere git commit -m x',
+    'XDG_CONFIG_HOME=/tmp/elsewhere git commit -m x',
+    'env HOME=/tmp/elsewhere gh issue create --title x --body y',
+    'env -u X HOME=/tmp/elsewhere git commit -m x',
+    'sudo HOME=/tmp/elsewhere git commit -m x',
+    'export HOME=/tmp/elsewhere; git commit -m x',
+    'export HOME=/tmp/elsewhere && gh pr create --fill',
+    'declare -x HOME=/tmp/elsewhere; git commit -m x',
+    'HOME=/tmp/elsewhere; git commit -m x',
+    'HOME+=/elsewhere git commit -m x',
+    'read HOME <<< /tmp/elsewhere; git commit -m x',
+    'printf -v HOME %s /tmp/elsewhere; git commit -m x',
+    'for HOME in /tmp/elsewhere; do git commit -m x; done',
+    'bash -c "HOME=/tmp/elsewhere git commit -m x"',
+  ]) {
+    assert.equal(checkCommand(command, { env: {}, cwd: process.cwd() })?.id, 'home-folder', `the lead: ${command}`);
+    assert.ok(checkCommand(command, { env: worker, cwd: process.cwd() }), `a worker: ${command}`);
+  }
+  const found = checkCommand('HOME=/tmp/elsewhere git commit -m x', { env: {}, cwd: process.cwd() });
+  assert.match(found?.what ?? '', /sets HOME/);
+  assert.match(found?.fix ?? '', /without changing the home folder/);
+  for (const command of ['echo $HOME', 'ls ~', 'cat "$HOME/.gitconfig"', 'grep -rn HOME= src', 'echo HOME=x', 'printf HOME', 'git commit -m "HOME=x is refused"']) {
+    allowed(command);
+    allowed(command, worker);
+  }
 });
 
 test('hooks setting: a read never blocks, in a repo with its own hooks folder (#217)', () => {
@@ -642,11 +754,11 @@ test('lead-only files: each shell writer form stops a worker, not the lead (#402
     'echo x | tee AGENTS.md',
     'echo x | tee -a .github/workflows/ci.yml',
     'cp /tmp/x AGENTS.md',
-    'cp x y .githooks/',
+    'cp x y .github/',
     'cp -t .claude x',
     'mv AGENTS.md notes.md',
     'mv x .github/workflows/ci.yml',
-    'install -m 755 x .githooks/pre-commit',
+    'install -m 755 x .github/workflows/ci.yml',
     'ln -sf x CLAUDE.md',
     'dd if=x of=AGENTS.md',
     'truncate -s 0 AGENTS.md',
@@ -1358,7 +1470,7 @@ test('bash: a command of 100k words is read in linear time (#226)', () => {
     ['then', (n) => `${'then '.repeat(n)}echo`],
     ['env', (n) => `${'env '.repeat(n)}echo`],
     ['sudo', (n) => `${'sudo '.repeat(n)}echo`],
-    ['GIT_CONFIG_KEY_0', (n) => `${'GIT_CONFIG_KEY_0=x '.repeat(n)}git status`],
+    ['GIT_CONFIG_PARAMETERS', (n) => `${'GIT_CONFIG_PARAMETERS=x '.repeat(n)}git status`],
   ];
   // The shapes take turns, and a noisy first round grows to a 20 ms base (#594).
   assertLinearEach(
@@ -1631,7 +1743,7 @@ test('bash and hooks: loops that never spent the budget read a thousand repeats 
     [['find . ', ['-exec env -u ']], 'allow'],
     [['find . ', ['-exec timeout ']], 'allow'],
     [['find . ', ['-exec > ']], 'allow'],
-    [[keys, 'GIT_CONFIG_VALUE_0=.githooks git status'], 'allow'],
+    [[keys, 'GIT_CONFIG_VALUE_0=.githooks git status'], 'hooks-path'],
     [[keys, 'GIT_CONFIG_VALUE_0=/x git status'], 'hooks-path'],
     // #283: each new reader.
     [[['{ echo a; '], ['} '], '| bash'], 'allow'],
