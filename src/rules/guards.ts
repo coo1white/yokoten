@@ -1723,9 +1723,10 @@ function isDefaultBranch(name: string, dir: string | null, env: Env): boolean {
 }
 
 const PIPE_SHELL_FIX = 'save it first (`curl -fsSL <url> -o <file>`), read it, then run it (`sh <file>`)';
-const DOWNLOAD_PROGRAMS = new Set(['curl', 'wget']);
+// A download written to a pipe: curl and wget, plus wget2, aria2c and fetch (#574).
+const DOWNLOAD_PROGRAMS = new Set(['curl', 'wget', 'wget2', 'aria2c', 'fetch']);
 
-/** A pipeline that feeds a download into a shell runs code nobody read. */
+/** A pipeline that feeds a download into a shell runs code nobody read (#560, #574). */
 function checkPipeToShell(command: string): Finding | null {
   for (const pipeline of splitPipelines(command)) {
     const segments = splitPipeSegments(pipeline);
@@ -1734,15 +1735,71 @@ function checkPipeToShell(command: string): Finding | null {
     // linear time. A shell in the first segment has nothing before it, so it passes.
     let downloader: string | undefined;
     for (const segment of segments) {
-      const programs = commandWords(segment).flatMap(findPrograms).map(programName);
-      const shell = programs[0] ?? '';
-      if ((shell === 'powershell' || isShell(shell)) && downloader !== undefined) {
+      const commands = commandWords(segment);
+      const programs = commands.flatMap(findPrograms).map(programName);
+      const shell = findPipeShell(programs, commands);
+      if (shell !== undefined && downloader !== undefined) {
         return finding('pipe-to-shell', `\`${downloader} | ${shell}\` runs a download without letting you read it first`, PIPE_SHELL_FIX);
       }
-      downloader ??= programs.find((program) => DOWNLOAD_PROGRAMS.has(program));
+      downloader ??= programs.find((program) => DOWNLOAD_PROGRAMS.has(program.toLowerCase()));
     }
   }
   return null;
+}
+
+/** The program that would run this segment, when that program is a shell. Case is folded here only (#574). */
+function findPipeShell(programs: string[], commands: string[][]): string | undefined {
+  const first = programs[0];
+  if (first !== undefined && isPipeShell(first)) return first;
+  // A nested `$(sudo -s)` belongs to the outer program. That program reads the pipe.
+  for (const words of outerCommands(commands)) {
+    const shell = findShellRunner(words);
+    if (shell !== undefined) return shell;
+  }
+  return undefined;
+}
+
+/** The segment's own commands. A list whose text sits in one word of another list belongs to that command. */
+function outerCommands(commands: string[][]): string[][] {
+  spend(commands.length);
+  return commands.filter((words, index) => {
+    const text = words.join(' ');
+    return text !== '' && !commands.some((other, otherIndex) => otherIndex !== index && other.some((word) => word.includes(text)));
+  });
+}
+
+/** Whether `name` is a shell. `powershell` stays beside `isShell`, which names `pwsh` (#574). */
+function isPipeShell(name: string): boolean {
+  const folded = name.toLowerCase();
+  return folded === 'powershell' || isShell(folded);
+}
+
+/**
+ * `sudo -s`, `sudo -i` or `doas -s` reads stdin as a shell when no program follows.
+ * The flag meaning is `RUNNERS`. A later program is that program, so `sudo tee` passes.
+ */
+function findShellRunner(words: string[]): string | undefined {
+  spend(words.length);
+  let index = skipPrefix(words, 0);
+  while (index < words.length) {
+    if (HEADS.has(words[index])) return undefined;
+    const name = programName(words[index]);
+    const folded = name.toLowerCase();
+    if (!Object.hasOwn(LAUNCHERS, folded)) return undefined;
+    const launcher = LAUNCHERS[folded];
+    const shellFlag = folded === 'sudo' || folded === 'doas' ? RUNNERS[folded] : null;
+    index++;
+    let readsShell = false;
+    while (index < words.length && words[index].startsWith('-')) {
+      if (shellFlag !== null && shellFlag.test(words[index])) readsShell = true;
+      index += launcher.options.includes(words[index]) ? 2 : 1;
+    }
+    index += launcher.operands ?? 0;
+    // A redirect names a file. `sudo -s > saved` still reads the pipe as a shell.
+    while (index < words.length && redirectLength(words, index) > 0) index += redirectLength(words, index);
+    if (readsShell && index >= words.length) return name;
+  }
+  return undefined;
 }
 
 /** The command's pipelines: cut at ; && || and line ends, outside quotes and groups. */
