@@ -313,7 +313,7 @@ export const COMMANDS: Command[] = [
     ],
     options: [],
     arguments: ['action', 'dir'],
-    example: 'yokoten worker mark ../app-42',
+    example: 'yokoten worker mark .worktrees/42',
   },
   {
     name: 'explain',

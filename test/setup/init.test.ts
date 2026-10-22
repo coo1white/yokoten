@@ -2036,33 +2036,33 @@ test('init --no-ci: removes a never-edited old kit workflow, and doctor is quiet
   assert.doesNotMatch((await sandbox.call(['doctor'])).stdout, /kit-workflows/);
 });
 
-test('init: a .gitignore for the dependency folders and the board agent file, only adding missing lines (#521, #601)', async () => {
+test('init: a .gitignore for the worktrees, dependency folders and the board agent file, only adding missing lines (#521, #571, #601)', async () => {
   const sandbox = makeSandbox();
   sandbox.write('package.json', '{"name":"app"}\n');
   let result = await sandbox.call(['init']);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /wrote \.gitignore \(node_modules\/, \.yokoten-agent\.json\)/);
-  assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), 'node_modules/\n.yokoten-agent.json\n');
+  assert.match(result.stdout, /wrote \.gitignore \(\.worktrees\/, node_modules\/, \.yokoten-agent\.json\)/);
+  assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), '.worktrees/\nnode_modules/\n.yokoten-agent.json\n');
   // Again: nothing changes.
   result = await sandbox.call(['init']);
   assert.match(result.stdout, /kept \.gitignore/);
-  assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), 'node_modules/\n.yokoten-agent.json\n');
+  assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), '.worktrees/\nnode_modules/\n.yokoten-agent.json\n');
   // The project's own lines stay, in order; a line that is there in another form counts.
   sandbox.write('.gitignore', '.env\n/node_modules');
   result = await sandbox.call(['init']);
-  assert.match(result.stdout, /added to \.gitignore: \.yokoten-agent\.json/);
-  assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), '.env\n/node_modules\n.yokoten-agent.json\n');
+  assert.match(result.stdout, /added to \.gitignore: \.worktrees\/, \.yokoten-agent\.json/);
+  assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), '.env\n/node_modules\n.worktrees/\n.yokoten-agent.json\n');
   sandbox.write('.gitignore', '.env\ncoverage');
   sandbox.write('Cargo.toml', '[package]\nname = "x"\n');
   result = await sandbox.call(['init']);
-  assert.match(result.stdout, /added to \.gitignore: node_modules\/, target\/, \.yokoten-agent\.json/);
-  assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), '.env\ncoverage\nnode_modules/\ntarget/\n.yokoten-agent.json\n');
+  assert.match(result.stdout, /added to \.gitignore: \.worktrees\/, node_modules\/, target\/, \.yokoten-agent\.json/);
+  assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), '.env\ncoverage\n.worktrees/\nnode_modules/\ntarget/\n.yokoten-agent.json\n');
 });
 
-test('init: only the board agent file when no package manager shows (#521, #601)', async () => {
+test('init: .gitignore holds .worktrees/ and the board agent file with no package manager (#571, #601)', async () => {
   const sandbox = makeSandbox();
   const result = await sandbox.call(['init']);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /wrote \.gitignore \(\.yokoten-agent\.json\)/);
-  assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), '.yokoten-agent.json\n');
+  assert.match(result.stdout, /wrote \.gitignore \(\.worktrees\/, \.yokoten-agent\.json\)/);
+  assert.equal(readFileSync(join(sandbox.repo, '.gitignore'), 'utf8'), '.worktrees/\n.yokoten-agent.json\n');
 });

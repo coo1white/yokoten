@@ -8,6 +8,13 @@ import { matcher } from './config.ts';
 import { type Finding, finding } from './message.ts';
 import { CHANGES_DIR } from './pr.ts';
 
+/**
+ * The folder at the root that holds worker worktrees, one per issue (#571): inside the
+ * project, git-ignored, where a restart can't wipe them. The layout check skips it, and
+ * the guard reads a path under it from the worktree it is in.
+ */
+export const WORKTREES_DIR = '.worktrees';
+
 // A folder in layout.exempt may grow: a log (records, root-cause reports), or a third-party
 // fixture set kept under its upstream names, with its NOTICE beside it (#381). Each entry is
 // a folder from the root, or a glob of whole segments: `*` is one folder, `**` any number
@@ -36,6 +43,8 @@ const isFetched = (dir: string): boolean => dir.split('/').some((part) => FETCHE
  * With `notes`, each exempt glob that matches no folder adds a note, so a stale entry shows.
  */
 export function checkLayout(files: string[], { layout }: Pick<Config, 'layout'>, notes?: Finding[]): Finding[] {
+  // Worker worktrees are whole checkouts, not the project's folders (#571).
+  files = files.filter((file) => file !== WORKTREES_DIR && !file.startsWith(`${WORKTREES_DIR}/`));
   const children = new Map<string, Set<string>>();
   for (const file of files) {
     const parts = file.split('/');

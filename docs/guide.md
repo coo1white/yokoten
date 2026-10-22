@@ -241,7 +241,8 @@ The repo itself in such a folder always gets a note: that is a setup problem. A 
 there is named only when it holds work at risk, and then in that work's own note. For
 example: "../w has 3 uncommitted files, the oldest changed 2 days ago, and is under the temp
 folder (/tmp), which the system may empty on restart". The worktrees there that hold nothing
-at risk get one line in full `doctor`, with the count, and none in a session.
+at risk get one line in full `doctor`, with the count, and none in a session. Each fix
+says to make worktrees under `.worktrees/`, never under a temp folder.
 
 All of these are notes: they never fail `doctor`. Doctor only reads here. It changes no
 file, no ref and no worktree, and git runs with optional locks off. Paths show relative to
@@ -406,7 +407,9 @@ from a plain file under 1 MB; any other patch file stops a worker. A `git commit
 would commit a lead-only file is stopped too: the commit check knows the role only from
 `YOKOTEN_ROLE`, and a Claude Code subagent such as `yokoten:worker` has none. Reads such
 as `cat` and `grep` pass. As for edits, this holds only in a repo that uses yokoten (one
-with a `yokoten.json`). When the brief asks for a change to a lead-only file, the lead
+with a `yokoten.json`). A path under `.worktrees/<issue>/` reads from that worktree, as
+if the session ran there: `.worktrees/571-x/AGENTS.md` is still lead-only (#571).
+When the brief asks for a change to a lead-only file, the lead
 starts the worker with `YOKOTEN_LEAD_ONLY_OK=AGENTS.md,.github/workflows/ci.yml`: paths
 from the repo root, comma-separated, an entry with `*` read as a glob. `*` alone grants
 every lead-only file. The guard and the commit check let those paths through. A subagent
@@ -1336,7 +1339,7 @@ A list you set replaces the default list; it does not add to it.
 #### Folders that may grow
 
 Core rule 10 keeps each folder at 7 entries or fewer. Two kinds of folder may grow past it,
-and `changes/` always may:
+and `changes/` and `.worktrees/` always may:
 
 - **A log**, such as `docs/records`. Each entry is added once and kept.
 - **A third-party fixture set** that tests read, kept under its upstream names, with its
@@ -1444,10 +1447,10 @@ The setup treats agents like staff on a line, each with a clear role and limited
   requests, create release tags, and change repo settings.
 - **The lead** is the session you talk to. It plans, splits the work, reviews, and opens
   pull requests through a **bot**, never with your account.
-- **Workers** are sessions the lead starts for one task each, in their own worktree,
-  with `YOKOTEN_ROLE=worker`. They change code and report back. They never push. A
-  fix task also gets `YOKOTEN_FIX_TASK=1`. Then the guard and the commit check stop a
-  change to a test file.
+- **Workers** are sessions the lead starts for one task each, in their own worktree
+  under `.worktrees/`, with `YOKOTEN_ROLE=worker`. They change code and report back.
+  They never push. A fix task also gets `YOKOTEN_FIX_TASK=1`. Then the guard and the
+  commit check stop a change to a test file.
 - **The bot** is a GitHub App installed on the repo. It opens pull requests. If it has
   the Workflows permission, CODEOWNERS still sends every CI change to you, and a release
   waits for you in the protected `release` environment. A ruleset requires your review,
