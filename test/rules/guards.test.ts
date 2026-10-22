@@ -2100,6 +2100,145 @@ test('guard: a worker does not push, post or change a git folder; the lead may (
   ]) allowed(command, worker);
 });
 
+// #650: the bot token that reruns a run can also cancel one or delete its log. Both roles
+// hear the same refusal, and the fix is to ask the owner. A read and a rerun stay allowed.
+test('guard: cancelling or deleting an Actions run is refused for every role (#650)', () => {
+  const lead = {};
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  const why = 'a cancelled run turns a check red and blocks the merge, and a deleted log is evidence gone';
+  const fix = 'ask the owner, who can cancel or delete the run on the Actions page';
+  const refused: { what: string; commands: string[] }[] = [
+    {
+      what: '`gh run cancel` cancels an Actions run',
+      commands: [
+        'gh run cancel',
+        'gh run cancel 123',
+        'gh run cancel --force 123',
+        'gh run cancel 123 --force',
+        'gh -R o/r run cancel 123',
+        'gh --repo=o/r run cancel 1',
+        'GH_REPO=o/r gh run cancel 1',
+        'env GH_HOST=github.example.com gh run cancel 1',
+        'yokoten bot -- gh run cancel 1',
+        'npx yokoten bot -- gh run cancel 9',
+        'bin/yokoten.ts bot -- gh run cancel 1',
+        '/usr/bin/gh run cancel 1',
+        "bash -c 'gh run cancel 1'",
+        'gh run cancel 1 > /tmp/out',
+      ],
+    },
+    {
+      what: '`gh run delete` deletes an Actions run and its log',
+      commands: [
+        'gh run delete 123',
+        'gh run --repo o/r delete 123',
+        'sudo gh run delete 1',
+        'node bin/yokoten.ts bot -- gh run delete 1',
+        'gh.exe run delete 2',
+        'echo ok && gh run delete 1',
+      ],
+    },
+    {
+      what: 'this `gh api` call cancels an Actions run',
+      commands: [
+        'gh api -X POST repos/o/r/actions/runs/123/cancel',
+        'gh api --method POST repos/o/r/actions/runs/123/cancel',
+        'gh api --method=post repos/o/r/actions/runs/123/force-cancel',
+        'gh api -XPOST repos/o/r/actions/runs/123/cancel',
+        'gh api --method POST /repos/o/r/actions/runs/123/force-cancel',
+        'gh api repos/o/r/actions/runs/123/cancel -X POST',
+        'gh api repos/{owner}/{repo}/actions/runs/44/force-cancel --method POST',
+        'gh api -X POST --hostname github.example.com repos/o/r/actions/runs/1/cancel',
+        'gh api --silent -X POST repos/o/r/actions/runs/1/cancel --paginate',
+        "gh api -H 'Accept: application/vnd.github+json' -X POST repos/o/r/actions/runs/1/cancel",
+        'yokoten bot -- gh api -X POST repos/o/r/actions/runs/1/cancel',
+        'gh api repos/o/r/actions/runs/1/cancel -f confirm=1',
+        'gh api --input payload.json repos/o/r/actions/runs/1/force-cancel',
+        'gh api -X POST repos/o/r/actions%2Fruns/5/cancel',
+        'gh api -X POST /repos/$REPO/actions/runs/$RUN_ID/cancel',
+        'gh api -X POST repos/$OWNER/$REPO/actions/runs/$RUN_ID/cancel',
+        'gh api -X POST "/repos/${REPO}/actions/runs/${RUN_ID}/force-cancel"',
+      ],
+    },
+    {
+      what: 'this `gh api` call deletes an Actions run',
+      commands: [
+        'gh api -X=DELETE repos/o/r/actions/runs/123',
+        'gh api --method delete repos/o/r/actions/runs/123',
+        'gh api -X DELETE repos/{owner}/{repo}/actions/runs/123',
+        'gh api -X DELETE /repos/o/r/actions/runs/123',
+        'gh api -X DELETE repos/o/r/actions/runs/123/',
+        'gh api -X DELETE https://api.github.com/repos/o/r/actions/runs/123',
+        'gh api -X DELETE "https://api.github.com/repos/o/r/actions/runs/123?per_page=1"',
+        'node bin/yokoten.ts bot -- gh api -X DELETE https://github.example.com/api/v3/repos/o/r/actions/runs/5',
+        'gh api -X DELETE /repos/$REPO/actions/runs/$RUN_ID',
+        'gh api -X DELETE "repos/${OWNER}/${REPO}/actions/runs/${RUN_ID}"',
+      ],
+    },
+    {
+      what: 'this `gh api` call deletes an Actions log',
+      commands: [
+        'gh api -X DELETE https://api.github.com/repos/o/r/actions/runs/123/logs',
+        'gh api -X DELETE repos/o/r/actions/jobs/456/logs',
+        'yokoten bot -- gh api --method=DELETE repos/{owner}/{repo}/actions/runs/1/logs',
+        "gh api -X DELETE 'repos/o/r/actions/runs/9/logs?pretty=1'",
+        'gh api --method DELETE -- repos/o/r/actions/jobs/7/logs',
+        "gh api -X DELETE 'https://api.github.com/repos/o/r/actions/jobs/8/logs#part'",
+        'gh api -X DELETE repos/o/r/actions/runs/not-a-token-marker/logs',
+      ],
+    },
+  ];
+  for (const env of [lead, worker]) {
+    for (const { what, commands } of refused) {
+      for (const command of commands) {
+        const found = checkCommand(command, { cwd: process.cwd(), env });
+        assert.equal(found?.id, 'run-cancel', command);
+        assert.equal(found?.what, what, command);
+        assert.equal(found?.why, why, command);
+        assert.equal(found?.fix, fix, command);
+        assert.ok(!found?.what.includes('not-a-token-marker'), command);
+        assert.ok(!JSON.stringify(found).includes('/repos/'), command);
+      }
+    }
+    for (const command of [
+      'gh run rerun 123',
+      'gh run rerun --failed 123',
+      'gh run view 123',
+      'gh run view 123 --log',
+      'gh run list',
+      'gh run list --workflow ci.yml',
+      'gh run watch 123',
+      'gh run download 123',
+      'gh api repos/o/r/actions/runs/123',
+      'gh api -X GET repos/o/r/actions/runs/123',
+      'gh api -X GET repos/o/r/actions/runs/123/logs',
+      'gh api -X GET repos/o/r/actions/jobs/456/logs',
+      'gh api repos/o/r/actions/runs/123/cancel',
+      'gh api -X GET repos/o/r/actions/runs/123/cancel',
+      'echo gh run cancel 1',
+      'gh help run cancel',
+      'TZ=UTC gh run list',
+    ]) assert.equal(checkCommand(command, { cwd: process.cwd(), env }), null, command);
+  }
+  // A write that is not a cancel or a delete stays the worker's own rule. The lead may rerun.
+  for (const command of [
+    'gh api -X POST repos/o/r/actions/runs/123/rerun',
+    'gh api --method=POST repos/o/r/actions/runs/123/rerun-failed-jobs',
+    'gh api -X POST repos/o/r/actions/runs/123',
+    'gh api --method=DELETE repos/a/b/git/refs/heads/x',
+    'gh api -X DELETE repos/o/r/actions/artifacts/1',
+    'gh api -X DELETE repos/o/r/actions/jobs/1',
+    'gh api -X DELETE repos/o/r/actions/runs/123/force-cancel',
+    'yokoten bot -- gh run rerun 1',
+    'yokoten bot -- gh run view 1',
+    'yokoten bot -- gh run list',
+    'yokoten bot -- gh run watch 1',
+  ]) {
+    assert.equal(checkCommand(command, { cwd: process.cwd(), env: lead }), null, `the lead may: ${command}`);
+    assert.equal(checkCommand(command, { cwd: process.cwd(), env: worker })?.id, 'worker-push', command);
+  }
+});
+
 // #555: the mark is found with no git process, and it fails closed: a .git link the guard
 // can't read makes the session a worker. A FIFO named .git never blocks it.
 test('worker mark: found from .git, fails closed on a link it cannot read (#555)', () => {

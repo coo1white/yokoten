@@ -19,7 +19,7 @@ import { loadConfig, matcher } from './config.ts';
 import { WORKTREES_DIR } from './layout.ts';
 import { type Finding, finding } from './message.ts';
 import { checkCommandTitle } from './pr.ts';
-import { type CommandFiles, checkPost, type GhCommand, ghIndex, homeIn, homeOf, isBotProgram, PIPE_READERS, type Risk, withoutReadPipe } from './privacy.ts';
+import { type CommandFiles, checkPost, type GhCommand, ghIndex, homeIn, homeOf, isBotProgram, PIPE_READERS, readGhApi, type Risk, withoutReadPipe } from './privacy.ts';
 
 /** A file edit, by path relative to the repo root. */
 export function checkEdit(path: string, { config, env }: { config: Config; env: Env }): Finding | null {
@@ -1195,6 +1195,42 @@ export function checkWorkerMarkEdit(path: string, folder?: string, env: Env = {}
   return null;
 }
 
+// ---- Cancelling or deleting an Actions run (#650) ----
+//
+// The bot may rerun a run, so the lead can clear a stuck check. The same token can cancel
+// a run or delete the run and its log. A cancelled run turns a check red and blocks the
+// merge. A deleted log is evidence gone. Only the owner does those, on the Actions page.
+// `gh run rerun`, `view`, `list` and `watch` stay allowed. `readGhApi` walks the same
+// options and path as a posted body, so this is not a second parser.
+
+const RUN_FIX = 'ask the owner, who can cancel or delete the run on the Actions page';
+// Two segments (`o/r`, `$OWNER/$REPO`), or one variable (`$REPO`, `${REPO}`): that
+// variable usually holds `owner/repo`, and the guard does not expand it (#650).
+const OWNER_REPO = '(?:[^/]+/[^/]+|\\$(?:\\{[A-Za-z_]\\w*\\}|[A-Za-z_]\\w*))';
+const RUN_CANCEL = new RegExp(`^repos/${OWNER_REPO}/actions/runs/[^/]+/(?:cancel|force-cancel)$`);
+const RUN_DELETE = new RegExp(`^repos/${OWNER_REPO}/actions/runs/[^/]+$`);
+const RUN_LOGS = new RegExp(`^repos/${OWNER_REPO}/actions/runs/[^/]+/logs$`);
+const JOB_LOGS = new RegExp(`^repos/${OWNER_REPO}/actions/jobs/[^/]+/logs$`);
+
+/** `gh run cancel`, `gh run delete`, or the `gh api` call that does the same, or null (#650). */
+function checkRunRemoval(words: string[]): Finding | null {
+  const at = ghIndex(words, findPrograms(words));
+  if (at === -1) return null;
+  const args = withoutShellRedirects(words, at + 1);
+  // The same global options `checkWorkerSends` skips, so `-R` and `--hostname` do not hide the subcommand.
+  const plain = plainArgs(args, ['-R', '--repo', '--hostname']);
+  if (plain[0] === 'run' && plain[1] === 'cancel') return finding('run-cancel', '`gh run cancel` cancels an Actions run', RUN_FIX);
+  if (plain[0] === 'run' && plain[1] === 'delete') return finding('run-cancel', '`gh run delete` deletes an Actions run and its log', RUN_FIX);
+  if (plain[0] !== 'api') return null;
+  const call = readGhApi(args.slice(args.indexOf('api') + 1));
+  // No method and a field or `--input`: gh sends POST. A named method wins, including GET.
+  const method = call.method || (call.hasFields ? 'POST' : 'GET');
+  if (method === 'POST' && RUN_CANCEL.test(call.path)) return finding('run-cancel', 'this `gh api` call cancels an Actions run', RUN_FIX);
+  if (method === 'DELETE' && RUN_DELETE.test(call.path)) return finding('run-cancel', 'this `gh api` call deletes an Actions run', RUN_FIX);
+  if (method === 'DELETE' && (RUN_LOGS.test(call.path) || JOB_LOGS.test(call.path))) return finding('run-cancel', 'this `gh api` call deletes an Actions log', RUN_FIX);
+  return null;
+}
+
 // ---- What a worker sends (#555) ----
 //
 // A worker commits in its worktree and reports; the lead reviews, then pushes and posts. So
@@ -1374,6 +1410,8 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
     const saw = (isMarked: (word: string) => boolean) => writeRisk(words, { heredoc, plainText, plainAt, fills, writers, isMarked });
     const reason =
       checkGit(words, { env, config, cwd, rules }) ??
+      // Before the worker's own send rule: the fix is to ask the owner, and the lead cannot do it either (#650).
+      checkRunRemoval(words) ??
       // A worker hears its own rule first: what it may not send, its own unmark, and the git folder (#555, #566).
       (env.YOKOTEN_ROLE === 'worker' ? (checkWorkerSends(words) ?? checkWorkerUnmark(words) ?? checkWorkerWrites(words, { folder: postCwd, near: nearCwd, command, env })) : null) ??
       // An alias runs another command under a new name: refused, not parsed (#560).

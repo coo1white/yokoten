@@ -95,6 +95,12 @@ export const RULES = {
     why: 'a download piped into a shell runs code nobody read, so the guard cannot check what it runs',
     check: 'the tool-call guard stops a pipeline that feeds `curl` or `wget` into a shell; save the file first, read it, then run it',
   },
+  'run-cancel': {
+    rule: 'no agent cancels or deletes an Actions run',
+    why: 'a cancelled run turns a check red and blocks the merge, and a deleted log is evidence gone',
+    check: 'the tool-call guard stops `gh run cancel`, `gh run delete`, and the `gh api` calls that do the same, for the lead and for a worker, including through `yokoten bot`; `gh run rerun`, `view`, `list` and `watch` pass',
+    docs: guide('three-checks-and-a-lock'),
+  },
   'blocked-command': {
     rule: 'an agent does not run a program the project blocks in yokoten.json "commands.block"',
     why: 'the project chose its stack, and an agent forgets a rule written only in prose',

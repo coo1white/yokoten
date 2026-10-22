@@ -61,6 +61,7 @@ const practice = (name: string, id: RuleId, ok: boolean, what: string, fix: stri
 export function selfTest(): string[] {
   const failed: string[] = [];
   if (!checkCommand('git push origin --tags', { env: {}, cwd: null })) failed.push('release guard');
+  if (!checkCommand('gh run cancel 1', { env: {}, cwd: null })) failed.push('run-cancel guard');
   if (!checkCommand('git commit --no-verify -m x', { env: {}, cwd: null })) failed.push('skip-check guard');
   if (!checkEdit('test/a.test.ts', { config: DEFAULTS, env: { YOKOTEN_FIX_TASK: '1' } })) failed.push('test guard');
   if (!checkEdit('AGENTS.md', { config: DEFAULTS, env: { YOKOTEN_ROLE: 'worker' } })) failed.push('lead-only guard');

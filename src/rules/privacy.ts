@@ -1366,6 +1366,62 @@ function apiPath(args: string[]): string {
   return '';
 }
 
+/**
+ * The endpoint path, so a `repos/...` path and a full `https://api.github.com/...` URL are
+ * the same call. A query or fragment is dropped. A GitHub Enterprise `/api/v3` prefix is
+ * dropped. One `%` escape is read, so `%2F` is a slash.
+ */
+function plainEndpoint(endpoint: string): string {
+  const bare = endpoint.split(/[?#]/, 1)[0] ?? '';
+  let path = bare;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(bare)) {
+    try {
+      path = new URL(bare).pathname;
+    } catch {
+      return '';
+    }
+  }
+  try {
+    path = decodeURIComponent(path);
+  } catch {
+    // A `%` that is not an escape stays as written, and the call does not match.
+  }
+  return path.replace(/^\/+/, '').replace(/^api\/v3\//, '').replace(/\/+$/, '');
+}
+
+/**
+ * A `gh api` call as the guard reads it: the same option walk as a posted body (`-X`,
+ * `--method`, fields, `--input`) and the same path (`apiPath`). `method` is upper case,
+ * or `''` when the call names none: gh then sends POST if `hasFields` is set, else GET.
+ */
+export function readGhApi(args: string[]): { method: string; path: string; hasFields: boolean } {
+  let method = '';
+  let hasFields = false;
+  for (let index = 0; index < args.length; ) {
+    const methodOption = optionValue(args, index, METHOD_OPTIONS);
+    if (methodOption) {
+      const value = (methodOption.value ?? '').trim();
+      if (value) method = value.toUpperCase();
+      index = methodOption.next;
+      continue;
+    }
+    const input = optionValue(args, index, INPUT_OPTIONS);
+    if (input) {
+      hasFields = true;
+      index = input.next;
+      continue;
+    }
+    const field = optionValue(args, index, FIELD_OPTIONS);
+    if (field) {
+      hasFields = true;
+      index = field.next;
+      continue;
+    }
+    index++;
+  }
+  return { method, path: plainEndpoint(apiPath(args)), hasFields };
+}
+
 /** Whether an API call writes: only then is what it sends posted. */
 function apiWrites(path: string, method: string | null, hasFields: boolean, query: string | null): boolean {
   if (path.replace(/^\//, '') === 'graphql') return query !== null && MUTATION.test(query);
