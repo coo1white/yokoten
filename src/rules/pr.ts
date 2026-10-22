@@ -546,9 +546,16 @@ export function checkOwnedTier(pr: Pick<PullRequest, 'body' | 'files'>, codeOwne
 // branch in, and the pull request's own diff is the same as at the Approve, the merge
 // goes on. Anything else needs a new review.
 
-/** The tier of a pull request: the body's line first, then the first tier label. */
+/**
+ * The tier of a pull request: A when the body's line or any tier label says A, since
+ * either can change after creation (#612); otherwise the body's line, then the first
+ * tier label. Fail closed both ways, so a mismatch never skips the tier A gate.
+ */
 export function prTier(body: string, labels: string[]): string | null {
-  return bodyTier(body) ?? labels.map(readLabelTier).find((tier) => tier !== null) ?? null;
+  const fromBody = bodyTier(body);
+  const fromLabels = labels.map(readLabelTier).filter((tier) => tier !== null);
+  if (fromBody === 'A' || fromLabels.includes('A')) return 'A';
+  return fromBody ?? fromLabels[0] ?? null;
 }
 
 /** What the Approve check knows: the tier, the head, and what came after the Approve. */

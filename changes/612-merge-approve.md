@@ -1,7 +1,3 @@
 Added
 
-`yokoten bot` refuses `gh pr merge` of a tier A pull request whose Approve is on an
-older commit. The merge goes on when the Approve is on the head. A clean merge of
-the base branch also passes, when the pull request's own diff is the same as at the
-Approve. `gh pr status` through the bot shows the same
-check for every open pull request (#612).
+`yokoten bot` refuses `gh pr merge` of a tier A pull request whose newest code-owner review is not an Approve on the head. An Approve counts when its author owns the changed files, read from CODEOWNERS on the base branch; association never counts. A newer changes-requested or dismissed review refuses, and other reviews never count. When the head is newer, the merge goes on only for a clean merge of the base branch with the same own diff. The gate also covers `gh api` merges. `gh pr status` through the bot shows the same check for tier A pull requests (#612).

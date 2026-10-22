@@ -501,10 +501,15 @@ test('readCommandMilestone: the linked issues of a new pull request with no mile
   assert.match(noMilestoneFinding([2]).fix, /--milestone/);
 });
 
-// #612: the tier is the body's line first, then the first tier label.
-test('approve: the tier is the body line, else the first tier label', () => {
+// #612: the tier is A when the body or any tier label says A (fail closed both ways,
+// since either can change after creation); otherwise the body first, then a label.
+test('approve: the tier is A when the body or any tier label says A', () => {
   assert.equal(prTier('tier: A\n', ['tier B']), 'A');
-  assert.equal(prTier('tier: B\n', ['tier A']), 'B');
+  assert.equal(prTier('tier: B\n', ['tier A']), 'A');
+  assert.equal(prTier('tier: A\n', ['tier A']), 'A');
+  assert.equal(prTier('tier: B\n', ['tier B']), 'B');
+  assert.equal(prTier('tier: B\n', ['tier C']), 'B');
+  assert.equal(prTier('no tier here\n', ['tier B', 'tier A']), 'A');
   assert.equal(prTier('no tier here\n', [' tier: c ']), 'C');
   assert.equal(prTier('no tier here\n', ['feat']), null);
 });

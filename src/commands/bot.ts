@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 import { botConfig, botEnv, botProgram, type Gh, installationToken, readApprovalState, readBranchFiles, readCodeOwners, readIssueMilestone, readRepoLabelNames, repoOf } from '../host/github.ts';
 import { DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
 import { finding, type Finding } from '../rules/message.ts';
-import { type CommandIssueLabels, type CommandLabels, type CommandMilestone, checkApprovalFreshness, checkCommandTitle, checkIssueLabels, checkOwnedTier, checkPullRequestBody, hasMadeWith, noMilestoneFinding, readCommandBody, readCommandIssueLabels, readCommandLabels, readCommandMilestone } from '../rules/pr.ts';
+import { type CommandIssueLabels, type CommandLabels, type CommandMilestone, checkApprovalFreshness, checkCommandTitle, checkIssueLabels, checkOwnedTier, checkPullRequestBody, hasMadeWith, noMilestoneFinding, prTier, readCommandBody, readCommandIssueLabels, readCommandLabels, readCommandMilestone } from '../rules/pr.ts';
 import { bullets, type Invocation, type Output, parse, print, readInput, requireRoot, rootOf, usage } from './shared.ts';
 
 async function bot(invocation: Invocation, command: string[]): Promise<number> {
@@ -77,12 +77,15 @@ async function bot(invocation: Invocation, command: string[]): Promise<number> {
   }
   // `gh pr edit <number or URL>`: one `gh pr view` with the same token names its branches.
   if (body && isLookup(body) && refuseBody(invocation, checkBody(body, lookupBranch(body, file, botEnv(env, token), env), env))) return 1;
-  // A `gh pr merge` of a tier A pull request needs the owner's Approve on its head
+  // A `gh pr merge` of a tier A pull request needs a code owner's Approve on its head
   // (#612): the merge is refused when the Approve is older, or can't be checked.
   if (file === 'gh' && isPrMerge(rest)) {
     const stopped = refuseStaleMerge(invocation, ghWith(file, cwd, botEnv(env, token)), cwd, env, repo, rest);
     if (stopped) return 1;
   }
+  // An `api` call on a pull request's merge endpoint merges too (#612): it goes
+  // through the same gate, unless it is provably a read.
+  if (file === 'gh' && refuseApiMerge(invocation, ghWith(file, cwd, botEnv(env, token)), cwd, env, repo, rest)) return 1;
   // A body read from standard input was used up by the check, so gh gets it the same way.
   const input = body?.input ?? note?.input;
   const { stdin, stdout, stderr } = invocation;
@@ -446,7 +449,7 @@ function refuseBody(invocation: Invocation, { problems, note }: { problems: Find
 }
 
 /** The gh options that take a value, by long name, for `pr merge` and `pr status`. */
-const PR_VALUE_OPTIONS = new Set(['--repo', '--body', '--body-file', '--subject', '--author-email', '--match-head-commit', '--jq', '--template']);
+const PR_VALUE_OPTIONS = new Set(['--repo', '--body', '--body-file', '--subject', '--author-email', '--match-head-commit', '--jq', '--template', '--json']);
 /** The short forms of those: R, b, F, q, t. */
 const PR_VALUE_SHORTS = new Map([['R', '--repo'], ['b', '--body'], ['F', '--body-file'], ['q', '--jq'], ['t', '--template']]);
 
@@ -493,7 +496,8 @@ const isPrMerge = (args: string[]): boolean => {
 const showsPrStatus = (args: string[]): boolean => {
   const { words, options } = splitGhArgs(args);
   if (words[0] !== 'pr' || words[1] !== 'status' || words.length > 2 || args.includes('--json')) return false;
-  return !options.some(([name]) => name === '--jq' || name === '--template');
+  // `--json` is a valued option, so `--json=<fields>` lands in the options too (#612).
+  return !options.some(([name]) => name === '--jq' || name === '--template' || name === '--json');
 };
 
 /** The `--repo` value of a gh command, or null when it names none. */
@@ -533,6 +537,45 @@ function mergeRequest(gh: Gh, args: string[], origin: string | null): { number: 
   return number === null ? { unsure: `gh could not say the pull request of branch \`${target}\`` } : { number, repo };
 }
 
+/** An `api` path that merges a pull request: repos/{owner}/{repo}/pulls/<n>/merge. */
+const API_MERGE_ENDPOINT = /^\/?repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)\/merge(\?.*)?$/;
+
+/** The `api` option names that make a call something other than a bare GET. */
+const API_WRITE_OPTIONS = new Set(['-X', '--method', '-f', '--field', '-F', '--raw-field', '--input']);
+
+/**
+ * The merge an `api` command attempts, or null. A merge endpoint with a method or
+ * a field option merges (or may merge), so it goes through the gate; a bare path is
+ * a GET read and passes through (#612). A `--` ends the flags, as in gh.
+ */
+function apiMerge(args: string[]): { number: number; repo: string } | null {
+  const end = args.indexOf('--');
+  const before = end === -1 ? args : args.slice(0, end);
+  const found = before.find((word) => API_MERGE_ENDPOINT.test(word));
+  const endpoint = found && API_MERGE_ENDPOINT.exec(found);
+  if (!endpoint) return null;
+  const writes = before.some((word) => {
+    const name = word.startsWith('--') ? word.split('=')[0] : word.slice(0, 2);
+    return API_WRITE_OPTIONS.has(word) || API_WRITE_OPTIONS.has(name);
+  });
+  if (!writes) return null;
+  return { number: Number(endpoint[3]), repo: `${endpoint[1]}/${endpoint[2]}` };
+}
+
+/** Refuses an `api` merge the Approve check stops. True when it refused. */
+function refuseApiMerge(invocation: Invocation, gh: Gh, cwd: string, env: Env, origin: string | null, args: string[]): boolean {
+  const merge = apiMerge(args);
+  if (!merge) return false;
+  if (origin && normalizeRepoName(merge.repo) !== normalizeRepoName(origin)) {
+    print(invocation, [`yokoten bot: could not check the owner's Approve (${merge.repo} is not this checkout, so its commits are not here). Nothing was merged`], invocation.stderr);
+    return true;
+  }
+  const refusal = approvalRefusal(gh, cwd, env, merge.number, merge.repo);
+  if (!refusal) return false;
+  print(invocation, [`yokoten bot: ${refusal}. Nothing was merged`], invocation.stderr);
+  return true;
+}
+
 /**
  * Why pull request `number` must not merge yet, or null when it may: not tier A, or the
  * owner's Approve is on its head, or only base merges came after it with the same own
@@ -560,9 +603,23 @@ function refuseStaleMerge(invocation: Invocation, gh: Gh, cwd: string, env: Env,
 }
 
 /**
+ * The tier a `pr list` row with a body and labels says, or null when it says none:
+ * then the deep check reads it (#612).
+ */
+function listTier(entry: { body?: unknown; labels?: unknown }): string | null {
+  const body = typeof entry.body === 'string' ? entry.body : '';
+  const names = Array.isArray(entry.labels)
+    ? entry.labels.map((label) => (typeof label === 'object' && label !== null ? String((label as { name?: unknown }).name ?? '') : '')).filter(Boolean)
+    : [];
+  if (!body && !names.length) return null;
+  return prTier(body, names);
+}
+
+/**
  * Runs `gh pr status`, shows its table as gh wrote it, then the Approve check for every
- * open pull request, so the lead sees a stale Approve before trying to merge. Only what
- * must not merge gets a line.
+ * open pull request, so the lead sees a stale Approve before trying to merge. One list
+ * call says each tier, and only tier A (or a row whose tier it can't say) needs the
+ * deep check (#612). Only what must not merge gets a line.
  */
 function runPrStatus(invocation: Invocation, file: string, args: string[], run: { cwd: string; token: string; origin: string | null; piped: string | undefined }): number {
   const { stdout, stderr } = invocation;
@@ -581,18 +638,24 @@ function runPrStatus(invocation: Invocation, file: string, args: string[], run: 
   }
   if (shown.status !== 0) return shown.status ?? 1;
   const flag = repoFlag(args);
+  const repo = flag ?? run.origin;
+  // With no repo to check, the status says nothing: never a bogus ask-the-owner line (#612).
+  if (!repo) return 0;
   let listed: unknown;
   try {
-    listed = JSON.parse(gh(['pr', 'list', '--json', 'number', '--state', 'open', '--limit', '100', ...(flag ? ['--repo', flag] : [])]));
+    listed = JSON.parse(gh(['pr', 'list', '--json', 'number,body,labels', '--state', 'open', '--limit', '100', ...(flag ? ['--repo', flag] : [])]));
   } catch {
     return 0;
   }
   if (!Array.isArray(listed)) return 0;
   const lines: string[] = [];
   for (const entry of listed) {
-    const number = typeof entry === 'object' && entry !== null ? (entry as { number?: unknown }).number : null;
+    if (typeof entry !== 'object' || entry === null) continue;
+    const number = (entry as { number?: unknown }).number;
     if (typeof number !== 'number') continue;
-    const refusal = approvalRefusal(gh, run.cwd, invocation.env, number, flag ?? run.origin ?? '');
+    const tier = listTier(entry as { body?: unknown; labels?: unknown });
+    if (tier !== null && tier !== 'A') continue;
+    const refusal = approvalRefusal(gh, run.cwd, invocation.env, number, repo);
     if (refusal) lines.push(`- #${number}: ${refusal}`);
   }
   if (lines.length) print(invocation, ['yokoten bot: these need a new owner Approve before they merge:', ...lines]);

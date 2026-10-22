@@ -21,7 +21,7 @@ import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { docsLink, type Finding, finding, formatFinding, place } from '../rules/message.ts';
 import type { ApprovalRead, CodeOwners, PullRequest } from '../rules/pr.ts';
-import { prTier, readLabelTier } from '../rules/pr.ts';
+import { ownersOf, parseCodeOwners, prTier, readLabelTier } from '../rules/pr.ts';
 import { homeOf, NO_HOME } from '../rules/privacy.ts';
 import { readGit } from '../run/check.ts';
 import { type Incident, terminalText } from '../run/learn.ts';
@@ -168,13 +168,15 @@ export function cleanChildEnv(env: Env): Env {
 /** The environment for one command run as the bot: gh reads GH_TOKEN, and git asks gh.
  * TZ is always UTC (#488): gh sends it as the Time-Zone header, and GitHub writes that
  * zone into the commits it makes, such as a merge. The command may run tests (a push
- * hook, npm test), so it gets a clean child env (#168). */
+ * hook, npm test), so it gets a clean child env (#168). GH_REPO and GH_HOST are
+ * dropped (#612): they would point gh at another repo or host than the one checked,
+ * while the bot always names its repo itself. */
 export function botEnv(env: Env, token: string): Env {
   // Added after any git config already passed this way. The empty value clears other
   // credential helpers for github.com, so git cannot fall back to the owner's login.
   const count = Number(env.GIT_CONFIG_COUNT) || 0;
   const key = 'credential.https://github.com.helper';
-  return {
+  const clean = {
     ...cleanChildEnv(env),
     TZ: 'UTC',
     GH_TOKEN: token,
@@ -185,6 +187,9 @@ export function botEnv(env: Env, token: string): Env {
     [`GIT_CONFIG_KEY_${count + 1}`]: key,
     [`GIT_CONFIG_VALUE_${count + 1}`]: '!gh auth git-credential',
   };
+  delete clean.GH_REPO;
+  delete clean.GH_HOST;
+  return clean;
 }
 
 // A pull request as GitHub Actions describes it: the event file of the run. The rule that
@@ -331,23 +336,32 @@ export function readNumberedPullRequest(root: string, gh: Gh, number: string, en
   return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: ghAuthor(pr.author) }, base, head, env);
 }
 
-// The commit the owner approved (#612): `yokoten bot` refuses `gh pr merge` of a tier A
-// pull request whose Approve is on an older commit, so code the owner never saw can't
-// merge. The owner's latest Approve is the newest APPROVED review with an OWNER
-// association; GitHub gives that to the account that owns the repo. Fail closed: what
-// git or gh can't answer is an `unsure`, and the caller refuses it.
+// The commit a code owner approved (#612): `yokoten bot` refuses `gh pr merge` of a
+// tier A pull request whose Approve is on an older commit, so code nobody reviewed
+// can't merge. An Approve counts when its author owns the changed files: the owner's
+// login approves with a COLLABORATOR association on this repo, so the association
+// never counts, only CODEOWNERS membership does. Among the deciding reviews of the
+// owners (APPROVED, CHANGES_REQUESTED, DISMISSED), the newest decides: a newer
+// changes-requested or dismissed review refuses. A COMMENTED review is neutral.
+// Fail closed: what git or gh can't answer is an `unsure`, and the caller refuses it.
 
-/** A review as the `reviews` endpoint names it: only the fields the Approve check reads. */
+/** A deciding review by a code owner, as the `reviews` endpoint names it. */
 interface OwnerReview {
   login: string;
-  assoc: string;
   state: string;
   commit: string;
   at: string;
 }
 
-/** The newest APPROVED review with an OWNER association, or null with none. */
-function latestOwnerApprove(text: string): OwnerReview | null {
+/** The review states that decide a merge. Any other state, such as COMMENTED, is neutral. */
+const DECIDING_STATES = new Set(['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED']);
+
+/**
+ * The newest deciding review by a code owner, or null with none. `eligible` holds
+ * every owner login in lowercase. A review with no commit or time can't be placed,
+ * so it never counts as the newest.
+ */
+function latestOwnerDecision(text: string, eligible: Set<string>): OwnerReview | null {
   let newest: OwnerReview | null = null;
   for (const line of text.split('\n')) {
     if (!line.trim()) continue;
@@ -357,18 +371,96 @@ function latestOwnerApprove(text: string): OwnerReview | null {
     } catch {
       continue;
     }
-    if (!isObject(review) || review.state !== 'APPROVED' || review.assoc !== 'OWNER') continue;
-    // A review with no commit or time can't be placed, so it never counts as the latest.
+    if (!isObject(review) || !DECIDING_STATES.has(asText(review.state))) continue;
     if (typeof review.commit !== 'string' || !review.commit || typeof review.at !== 'string' || !review.at) continue;
-    if (!newest || review.at > newest.at) newest = { login: asText(review.login), assoc: 'OWNER', state: 'APPROVED', commit: review.commit, at: review.at };
+    const login = asText(review.login);
+    if (!login || !eligible.has(login.toLowerCase())) continue;
+    if (!newest || review.at > newest.at) newest = { login, state: asText(review.state), commit: review.commit, at: review.at };
   }
   return newest;
 }
 
+/**
+ * The code owners named by CODEOWNERS entries: plain logins, and teams as
+ * "org/slug". An entry that names nobody who can approve through GitHub, such as
+ * an email, is ignored: it never makes anyone an owner.
+ */
+function splitOwners(entries: string[]): { users: string[]; teams: string[] } {
+  const users: string[] = [];
+  const teams: string[] = [];
+  for (const entry of entries) {
+    const team = /^@([A-Za-z0-9-]+)\/([A-Za-z0-9_.-]+)$/.exec(entry.trim());
+    if (team) {
+      teams.push(`${team[1]}/${team[2]}`);
+      continue;
+    }
+    const user = /^@?([A-Za-z0-9-]+)$/.exec(entry.trim());
+    if (user) users.push(user[1].toLowerCase());
+  }
+  return { users, teams };
+}
+
+/** The logins of an `@org/team`'s members in lowercase, or null when gh can't list them. */
+function teamMembers(gh: Gh, team: string): string[] | null {
+  const [org, slug] = team.split('/');
+  try {
+    const text = gh(['api', `orgs/${org}/teams/${slug}/members`, '--paginate', '--jq', '.[] | .login | tojson']);
+    const members: string[] = [];
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue;
+      let login: unknown;
+      try {
+        login = JSON.parse(line);
+      } catch {
+        return null;
+      }
+      if (typeof login !== 'string' || !login) return null;
+      members.push(login.toLowerCase());
+    }
+    return members;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The changed files of pull request `number`, or null when gh can't list them.
+ * A line gh can't parse fails the whole read: a half-known file list is never a pass.
+ */
+function changedFiles(gh: Gh, number: number, repo: string): string[] | null {
+  let text: string;
+  try {
+    text = gh(['api', `repos/${repo}/pulls/${number}/files`, '--paginate', '--jq', '.[] | .filename | tojson']);
+  } catch {
+    return null;
+  }
+  const files: string[] = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    let file: unknown;
+    try {
+      file = JSON.parse(line);
+    } catch {
+      return null;
+    }
+    if (typeof file === 'string') files.push(file);
+    else if (Array.isArray(file)) {
+      for (const item of file) {
+        if (typeof item !== 'string') return null;
+        files.push(item);
+      }
+    } else return null;
+  }
+  return files;
+}
+
+/** How long a git read for the Approve check may take (ms): the same budget as a gh read. */
+export const APPROVAL_GIT_TIMEOUT_MS = 15000;
+
 /** One git command's output, or null when git can't answer. Never throws. */
 function gitRead(root: string, args: string[], env: Env, input?: string): string | null {
   try {
-    return execFileSync('git', args, { cwd: root, env, encoding: 'utf8', stdio: input === undefined ? ['ignore', 'pipe', 'ignore'] : ['pipe', 'pipe', 'ignore'], input });
+    return execFileSync('git', args, { cwd: root, env, encoding: 'utf8', stdio: input === undefined ? ['ignore', 'pipe', 'ignore'] : ['pipe', 'pipe', 'ignore'], input, timeout: APPROVAL_GIT_TIMEOUT_MS });
   } catch {
     return null;
   }
@@ -398,9 +490,9 @@ function patchName(root: string, from: string, to: string, env: Env): string | n
 
 /**
  * What the Approve check knows about pull request `number` in `repo` ("owner/name"):
- * its tier, its head, and what came after the owner's latest Approve. `unsure` when gh
- * or git can't answer, with the reason; the caller refuses it. Reads no token itself:
- * `gh` runs with whatever sign-in the caller set up.
+ * its tier, its head, and what came after the latest Approve by a code owner of its
+ * changed files. `unsure` when gh or git can't answer, with the reason; the caller
+ * refuses it. Reads no token itself: `gh` runs with whatever sign-in the caller set up.
  */
 export function readApprovalState(gh: Gh, root: string, env: Env, number: number, repo: string): ApprovalRead | { unsure: string } {
   let pulled: unknown;
@@ -418,16 +510,36 @@ export function readApprovalState(gh: Gh, root: string, env: Env, number: number
   const tier = prTier(asText(pulled.body), labelNames(pulled.labels));
   if (tier === null) return { unsure: `neither the body nor a label says the tier of pull request ${number}` };
   if (tier !== 'A') return { tier, head, approved: null, after: 0, sameDiff: true };
+  const files = changedFiles(gh, number, repo);
+  if (files === null) return { unsure: `gh could not read the changed files of pull request ${number}` };
+  let owners: CodeOwners | null;
+  try {
+    owners = readCodeOwners(root, base, env);
+  } catch {
+    return { unsure: `the CODEOWNERS file for pull request ${number} could not be read` };
+  }
+  if (!owners) return { unsure: `no CODEOWNERS file covers pull request ${number}, so no code owner can approve it` };
+  const rules = parseCodeOwners(owners.text);
+  const entries = [...new Set(files.flatMap((file) => ownersOf(rules, file)))];
+  const { users, teams } = splitOwners(entries);
+  const eligible = new Set(users);
+  for (const team of teams) {
+    const members = teamMembers(gh, team);
+    if (members === null) return { unsure: `gh could not list the members of @${team} for pull request ${number}` };
+    for (const login of members) eligible.add(login);
+  }
+  if (!eligible.size) return { unsure: `no code owner owns the changed files of pull request ${number}` };
   let reviews = '';
   try {
     reviews = gh(['api', `repos/${repo}/pulls/${number}/reviews`, '--paginate', '--jq', '.[] | {login: .user.login, assoc: .author_association, state: .state, commit: .commit_id, at: .submitted_at}']);
   } catch {
     return { unsure: `gh could not read the reviews of pull request ${number}` };
   }
-  const approve = latestOwnerApprove(reviews);
-  // No owner Approve: the pull request may still be waiting for its review.
-  if (!approve) return { tier, head, approved: null, after: 0, sameDiff: true };
-  const approved = approve.commit;
+  const decision = latestOwnerDecision(reviews, eligible);
+  // No code owner Approve, or a newer changes-requested or dismissed review from a
+  // code owner: the pull request may still be waiting for its review.
+  if (!decision || decision.state !== 'APPROVED') return { tier, head, approved: null, after: 0, sameDiff: true };
+  const approved = decision.commit;
   if (approved.toLowerCase() === head.toLowerCase()) return { tier, head, approved, after: 0, sameDiff: true };
   // The commits may live on GitHub only: fetch the pull request's head and the base
   // branch first, the way `gh pr edit <number>` names them. A fetch that fails is
