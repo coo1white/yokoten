@@ -240,7 +240,9 @@ export function runBoard(invocation: Invocation, options: BoardServerOptions = {
     const board = collectBoard(root, invocation.env, gh);
     const trees = readBoardWorktrees(root, invocation.env);
     const waiting = collectBoardWaiting(board, typeof trees === 'string' ? [] : readBoardAttention(trees), controls.runs, controls.seen);
-    print(invocation, renderBoardText(board, waiting.length || controls.runs.length ? { waiting, runs: controls.runs } : undefined));
+    // A run's worktree hides the home folder here, exactly as /data serves it.
+    const runs = controls.runs.map((run) => ({ ...run, worktree: hideHome(run.worktree, invocation.env) }));
+    print(invocation, renderBoardText(board, waiting.length || runs.length ? { waiting, runs } : undefined));
     return 0;
   }
   return startBoardServer(root, invocation.env, gh, { controls }).then(

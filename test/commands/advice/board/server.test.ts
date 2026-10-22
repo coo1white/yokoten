@@ -157,6 +157,23 @@ test('board server: the right Host and token see the page and the data', async (
   }
 });
 
+// #603: the page's controls read the waiting list, the open issues, the runs and
+// the limits from /data, with the board.
+test('board server: /data serves the waiting list, issues, runs and limits', async () => {
+  const sandbox = makeSandbox();
+  const gh: Gh = () => '[]';
+  const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh);
+  try {
+    const base = url.split('?')[0];
+    const token = new URL(url).searchParams.get('t') ?? '';
+    const data = JSON.parse((await boardGet(`${base}data?t=${token}`)).text) as Record<string, unknown>;
+    for (const key of ['waiting', 'issues', 'runs', 'limits']) assert.ok(key in data, `the page reads ${key} from /data`);
+    assert.deepEqual(data.limits, { maxAgents: 3, byModel: {} });
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+});
+
 // #601: the board answers only its own Host, so a page open in the same browser
 // cannot read /data through a rebound name. Anything else gets a 403.
 test('board server: a wrong Host gets a 403', async () => {
@@ -494,4 +511,22 @@ test('board --text: a started run shows under Started here', () => {
   const text = chunks.join('');
   assert.ok(text.includes('Started here:'), 'the runs section shows');
   assert.ok(text.includes(run.name), 'the started run shows, as on the page');
+});
+
+// #603 re-inspection (LOW): `board --text` printed a started run's worktree as an
+// absolute home path. It hides the home folder, like /data does.
+test('board --text: a started run hides the home folder', () => {
+  const sandbox = makeSandbox();
+  const agents = fakeAgents();
+  const controls = createBoardControls(join(sandbox.repo, '.yokoten-board.log'), agents.spawner);
+  const run = startBoardAgent(sandbox.repo, sandbox.env, controls, { issue: '12', vendor: 'claude-code', model: 'model-a' });
+  assert.ok(typeof run !== 'string', `the start passes: ${run}`);
+  const chunks: string[] = [];
+  const stream = new Writable({ write(chunk, _, done) { chunks.push(String(chunk)); done(); } });
+  const invocation: Invocation = { command: 'board', args: ['--text'], env: { ...sandbox.env, HOME: dirname(sandbox.repo) }, cwd: sandbox.repo, stdout: stream as Output, stderr: stream as Output, stdin: { fd: null, text: '', stream: Readable.from(['']) }, script: CLI };
+  assert.equal(runBoard(invocation, { controls }), 0);
+  const text = chunks.join('');
+  assert.ok(text.includes('Started here:'), 'the runs section shows');
+  assert.ok(!text.includes(sandbox.repo), 'no absolute home path leaks');
+  assert.ok(text.includes(`~${run.worktree.slice(dirname(sandbox.repo).length)}`), 'the worktree shows with ~ for home');
 });

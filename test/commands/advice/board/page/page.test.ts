@@ -42,6 +42,19 @@ test('board page: the script parses, uses no HTML or code sink, and starts the p
   assert.ok(script.includes("new URLSearchParams(location.search).get('t')"), 'the token comes from the link');
 });
 
+// #603: the page's controls post to the board's change endpoints with the link's
+// token, and to nothing that approves or merges.
+test('board page: the controls post to /agents/* with the token', () => {
+  const script = boardScript();
+  for (const path of ['agents/start', 'agents/stop', 'agents/limits']) assert.ok(script.includes(`'${path}'`), `posts to ${path}`);
+  assert.ok(script.includes('?t=') && script.includes('encodeURIComponent(state.token)'), 'the token rides in the query');
+  assert.ok(script.includes("method: 'POST'") && script.includes('application/x-www-form-urlencoded'), 'posts the fields as a form');
+  for (const missing of ['agents/approve', 'agents/merge']) assert.ok(!script.includes(missing), `no ${missing} endpoint`);
+  for (const name of ['renderWaiting', 'renderStart', 'renderLimits', 'renderRuns', 'renderOutput', 'postForm']) {
+    assert.ok(script.includes(`function ${name}`), `${name} runs in the page`);
+  }
+});
+
 // A positive control: the sink check catches each sink.
 test('board page: the sink check catches each sink', () => {
   for (const bad of ['row.innerHTML = name', 'x.outerHTML=y', "box.insertAdjacentHTML('beforeend', s)", 'document.write(s)', 'eval(s)', "new Function('a')", "setTimeout('go()', 1)"]) {

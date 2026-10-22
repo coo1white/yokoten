@@ -4,11 +4,18 @@
 // browser. Tests call the plain ones directly. Agents write the status files, so every
 // word goes in as text: nothing here parses HTML.
 
+import type { BoardIssue, BoardLimits, BoardRun, BoardWaiting } from '../controls.ts';
 import type { FeedEvent } from '../feed.ts';
 import type { AgentView, BoardData, NeedView, PullView } from '../view.ts';
 
-/** The page's data: what /data sends. */
-export type PageData = BoardData & { feeds: Record<string, FeedEvent[]> };
+/** The page's data: what /data sends. The waiting list, the open issues, the board's own runs, and its limits ride with the board. */
+export type PageData = BoardData & {
+  feeds: Record<string, FeedEvent[]>;
+  waiting: BoardWaiting[];
+  issues: BoardIssue[] | string;
+  runs: BoardRun[];
+  limits: BoardLimits;
+};
 
 /** What the owner folded, cleared or picked. Kept in this browser only; the board works without it. */
 export interface PageUi {
@@ -290,9 +297,96 @@ function pullCard(state: PageState, pull: PullView): HTMLElement {
     steps, el('div', { class: 'sl' }, el('span', { class: pull.tone }, say(state, `pull.${pull.status}`)), el('span', { class: 'mut' }, pull.branch)));
 }
 
-/** The right side: open pull requests with their steps, then what merged today. */
+/** One waiting row: what waits, who waits, how long, why, and where to act. Text from agents shows as text; the link goes only to an http(s) address. */
+function waitingRow(state: PageState, row: BoardWaiting): HTMLElement {
+  const kinds: Record<string, string> = { approve: 'waitApprove', guard: 'waitGuard', question: 'waitQuestion' };
+  const head = [say(state, kinds[row.kind] ?? 'waitQuestion'), row.agent, row.role ? `[${say(state, `role.${row.role}`)}]` : '', row.wait].filter((part) => part !== '').join(' · ');
+  const body = [el('p', {}, head), el('p', {}, row.why)];
+  if (/^https?:\/\//i.test(row.link)) return el('a', { class: 'pr', href: row.link, target: '_blank', rel: 'noopener noreferrer' }, ...body, el('p', {}, say(state, 'actHere')));
+  return el('div', { class: 'pr' }, ...body);
+}
+
+/** The waiting list at the top of the right column. */
+export function renderWaiting(state: PageState, waiting: BoardWaiting[]): HTMLElement {
+  const box = el('div', {});
+  box.append(el('h2', { class: 'sh need', title: say(state, 'needsYouHint') }, icon('bell'), say(state, 'needsYou'), el('span', { class: 'n' }, String(waiting.length))));
+  if (!waiting.length) box.append(el('p', { class: 'quiet' }, say(state, 'nothingNeeds')));
+  else box.append(...waiting.map((row) => waitingRow(state, row)));
+  return box;
+}
+
+/** One labelled field of the start and limits forms. */
+function field(label: string, input: HTMLElement): HTMLElement {
+  return el('div', { class: 'fld' }, el('label', {}, label, input));
+}
+
+/** The form that starts an agent: the issue from the open list, the vendor, and the model. */
+export function renderStart(state: PageState, issues: BoardIssue[] | string): HTMLElement {
+  const box = el('div', {});
+  box.append(el('h2', { class: 'sh' }, icon('term'), say(state, 'startAgent')));
+  const rows = typeof issues === 'string' ? [] : issues;
+  const issue = el('input', { id: 'start-issue', name: 'issue', inputmode: 'numeric', ...(rows.length ? { list: 'start-issues' } : {}) });
+  const vendor = el('select', { id: 'start-vendor', name: 'vendor' }, ...['claude-code', 'codex', 'muse', 'grok', 'antigravity', 'deepseek-harness'].map((name) => el('option', { value: name }, name)));
+  const model = el('input', { id: 'start-model', name: 'model', placeholder: say(state, 'modelName') });
+  box.append(field(say(state, 'issueNumber'), issue));
+  if (rows.length) box.append(el('datalist', { id: 'start-issues' }, ...rows.map((row) => el('option', { value: String(row.number) }, `#${row.number} ${row.title}`))));
+  else if (typeof issues === 'string') box.append(el('p', { class: 'quiet' }, issues));
+  box.append(field(say(state, 'vendorName'), vendor));
+  box.append(field(say(state, 'modelName'), model));
+  box.append(el('p', {}, el('button', { class: 'hbtn', 'data-start': '1' }, say(state, 'startNow'))));
+  box.append(el('p', { class: 'quiet', id: 'start-note' }, ''));
+  return box;
+}
+
+/** The form that sets the limits: how many agents run at once, and how many of one model. */
+export function renderLimits(state: PageState, limits: BoardLimits): HTMLElement {
+  const box = el('div', {});
+  box.append(el('h2', { class: 'sh' }, icon('lock'), say(state, 'limitsTitle')));
+  const caps = Object.keys(limits.byModel).map((name) => `${name}: ${limits.byModel[name]}`).join(', ');
+  box.append(el('p', { class: 'quiet' }, say(state, 'limitsNow', { max: limits.maxAgents }) + (caps ? ` · ${say(state, 'limitsModels', { models: caps })}` : '')));
+  box.append(field(say(state, 'maxAgents'), el('input', { id: 'limits-max', name: 'maxAgents', inputmode: 'numeric', value: String(limits.maxAgents) })));
+  box.append(field(say(state, 'modelsPaired'), el('input', { id: 'limits-models', name: 'models', value: caps })));
+  box.append(el('p', {}, el('button', { class: 'hbtn', 'data-limits': '1' }, say(state, 'saveNow'))));
+  box.append(el('p', { class: 'quiet', id: 'limits-note' }, ''));
+  return box;
+}
+
+/** One agent the board started, with a stop button while it runs. */
+function runCard(state: PageState, run: BoardRun): HTMLElement {
+  const status = run.status === 'running' ? say(state, 'runRunning') : say(state, 'runStopped');
+  return el('div', { class: 'pr' },
+    el('p', {}, `${run.name} · ${run.vendor} · ${run.model} · issue ${run.issue} · ${status}`),
+    run.worktree ? el('p', { class: 'mut' }, run.worktree) : null,
+    run.status === 'running' ? el('p', {}, el('button', { class: 'hbtn', 'data-stop': run.name }, icon('x', true), say(state, 'stopNow'))) : null);
+}
+
+/** The agents the board started. */
+export function renderRuns(state: PageState, runs: BoardRun[]): HTMLElement {
+  const box = el('div', {});
+  box.append(el('h2', { class: 'sh' }, icon('term'), say(state, 'startedHere'), el('span', { class: 'n' }, String(runs.length))));
+  if (!runs.length) box.append(el('p', { class: 'quiet' }, say(state, 'noStarted')));
+  else box.append(...runs.map((run) => runCard(state, run)));
+  box.append(el('p', { class: 'quiet', id: 'runs-note' }, ''));
+  return box;
+}
+
+/** The latest output of the agents the board started. */
+export function renderOutput(state: PageState, runs: BoardRun[]): HTMLElement {
+  const box = el('div', {});
+  box.append(el('h2', { class: 'sh' }, icon('msg'), say(state, 'latestOutput')));
+  if (!runs.length) box.append(el('p', { class: 'quiet' }, say(state, 'noOutput')));
+  else {
+    for (const run of runs) {
+      box.append(el('div', { class: 'pr' }, el('p', {}, run.name), el('pre', { class: 'out' }, run.output.length ? run.output.join('\n') : say(state, 'noOutput'))));
+    }
+  }
+  return box;
+}
+
+/** The right side: the waiting list, open pull requests with their steps, what merged today, and the board's own controls. */
 export function renderRight(state: PageState, data: PageData, now: number): HTMLElement {
   const box = el('div', {});
+  box.append(renderWaiting(state, data.waiting));
   const pulls = typeof data.pulls === 'string' ? [] : data.pulls;
   box.append(foldHead(state, 'pulls', pulls.map((pull) => (pull.tone === 'fail' ? 'failing' : pull.tone === 'ok' ? 'ready' : 'moving'))));
   if (!state.ui.fold.pulls) {
@@ -306,6 +400,10 @@ export function renderRight(state: PageState, data: PageData, now: number): HTML
     box.append(foldHead(state, 'mergedToday', merged.map(() => 'merged'), el('button', { class: 'act', 'data-clear-merged': '1', title: say(state, 'hideTillTomorrow') }, say(state, 'clear'))));
     if (!state.ui.fold.mergedToday) box.append(...merged.map((pull) => el('div', { class: 'mrow' }, icon('merge', true), el('span', { class: 'num' }, `#${pull.number}`), pull.title)));
   }
+  box.append(renderStart(state, data.issues));
+  box.append(renderLimits(state, data.limits));
+  box.append(renderRuns(state, data.runs));
+  box.append(renderOutput(state, data.runs));
   return box;
 }
 
@@ -388,7 +486,8 @@ export function showToast(state: PageState, key: string, cleared: string[], merg
 
 /** One click anywhere: each control says what it does in a data- attribute. */
 export function onClick(state: PageState, event: Event): void {
-  const target = (event.target as Element).closest('[data-fold],[data-clear],[data-clear-all],[data-show-cleared],[data-restore],[data-group],[data-clear-merged],[data-undo],[data-pick],[data-lang],#lang,#theme');
+  const target = (event.target as Element).closest('[data-fold],[data-clear],[data-clear-all],[data-show-cleared],[data-restore],[data-group],[data-clear-merged],[data-undo],[data-pick],[data-lang],[data-start],[data-limits],[data-stop],#lang,#theme');
+  const fieldValue = (id: string) => (document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null)?.value ?? '';
   const ui = state.ui;
   if (state.isMenuOpen && target?.id !== 'lang' && !target?.hasAttribute('data-lang')) {
     state.isMenuOpen = false;
@@ -427,6 +526,12 @@ export function onClick(state: PageState, event: Event): void {
     ui.cleared = ui.cleared.filter((id) => !undone.cleared.includes(id));
     if (undone.merged) ui.mergedCleared = '';
     state.toast = null;
+  } else if (ask('data-start') !== null) {
+    postForm(state, 'agents/start', [['issue', fieldValue('start-issue')], ['vendor', fieldValue('start-vendor')], ['model', fieldValue('start-model')]], 'start-note', 'startDone');
+  } else if (ask('data-limits') !== null) {
+    postForm(state, 'agents/limits', [['maxAgents', fieldValue('limits-max')], ['models', fieldValue('limits-models')]], 'limits-note', 'limitsDone');
+  } else if (ask('data-stop')) {
+    postForm(state, 'agents/stop', [['name', ask('data-stop') as string]], 'runs-note', 'stopDone');
   } else if (ask('data-pick')) {
     ui.current = ask('data-pick') as string;
     render(state);
@@ -452,6 +557,25 @@ export function onMenuKey(state: PageState, event: KeyboardEvent): void {
     const from = at < 0 && event.key === 'ArrowUp' ? 0 : at;
     items[(from + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]?.focus();
   }
+}
+
+/**
+ * Post a controls form to the board, then read again. The fetch carries the page's
+ * Origin, and the link's token rides in the query. The note says what the board
+ * answered, as text; only a pass reads again.
+ */
+export function postForm(state: PageState, path: string, fields: [string, string][], noteId: string, doneKey: string): void {
+  const note = document.getElementById(noteId);
+  const body = fields.map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`).join('&');
+  fetch(`${path}?t=${encodeURIComponent(state.token)}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body })
+    .then((res) => res.text().then((text) => ({ ok: res.ok, text })))
+    .then(({ ok, text }) => {
+      if (note) note.textContent = ok ? say(state, doneKey) : text || say(state, 'notReached');
+      if (ok) loadData(state);
+    })
+    .catch(() => {
+      if (note) note.textContent = say(state, 'notReached');
+    });
 }
 
 /** Read /data, then draw. The pill says how fresh the data is. */
@@ -481,4 +605,4 @@ export function startPage(state: PageState): void {
 }
 
 /** The page's functions, in the order page.ts writes them. */
-export const PAGE_FUNCTIONS = [el, icon, say, pickLang, ageOf, groupFeed, localDay, clearedId, roleGroup, summaryOf, loadUi, saveUi, vendorChip, refChip, foldHead, agentRow, needRow, renderSide, feedEvent, renderCenter, pullCard, renderRight, renderBar, renderTop, render, showToast, onClick, onMenuKey, loadData, startPage];
+export const PAGE_FUNCTIONS = [el, icon, say, pickLang, ageOf, groupFeed, localDay, clearedId, roleGroup, summaryOf, loadUi, saveUi, vendorChip, refChip, foldHead, agentRow, needRow, renderSide, feedEvent, renderCenter, pullCard, waitingRow, renderWaiting, field, renderStart, renderLimits, runCard, renderRuns, renderOutput, renderRight, renderBar, renderTop, render, showToast, onClick, onMenuKey, postForm, loadData, startPage];

@@ -2,7 +2,7 @@
 
 import '../../../repo/home.ts';
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { makeSandbox, makeTempDir } from '../../../repo/helpers.ts';
@@ -117,6 +117,19 @@ test('board controls: the waiting list latches while the agent is here', () => {
   assert.deepEqual(collectBoardWaiting({ ...board, agents: [] }, [], [], seen), [], 'leaving clears it');
 });
 
+// #603 re-inspection (LOW): a waiting row counted from the agent's last write, so a
+// rewrite reset the wait. The wait counts from when the row first showed instead.
+test('board controls: the wait counts from when the row first showed', () => {
+  const board = { repo: 'r', repoUrl: '', agents: [agent({ key: 'p', name: 'w', role: 'engineer', updated: '2026-10-22T10:00:00Z', branch: 'main' })], needs: [], pulls: [], merged: [], worktrees: [{ path: 'p', branch: 'main' }], updated: '' };
+  const seen: BoardWaiting[] = [];
+  const at = Date.parse('2026-10-22T10:00:00Z');
+  const held = (updated: string) => [{ name: 'w', vendor: '', role: 'engineer' as const, worktree: 'p', updated, kind: 'guard' as const, why: 'the guard stopped it', link: '' }];
+  assert.deepEqual(collectBoardWaiting(board, held('2026-10-22T10:00:00Z'), [], seen, at).map((row) => row.wait), ['just now'], 'first seen');
+  // The agent rewrites every minute; ten minutes later the wait is ten minutes.
+  const later = collectBoardWaiting(board, held('2026-10-22T10:09:00Z'), [], seen, at + 10 * 60 * 1000);
+  assert.deepEqual(later.map((row) => row.wait), ['10 min ago'], 'the rewrite resets nothing');
+});
+
 // #603 findings: the board marks the worktree it makes or reuses, so a runtime that
 // drops YOKOTEN_ROLE (Muse) still runs as a worker.
 test('board controls: a started agent works in a marked worktree', () => {
@@ -209,6 +222,21 @@ test('board controls: a refused start leaves the worktree unmarked', () => {
   assert.match(typeof refused === 'string' ? refused : 'started', /yokoten init/, 'the guard refuses the start');
   assert.equal(workerMarkAt(join(sandbox.repo, '.worktrees', '12'), sandbox.env), null, 'no worker mark left behind');
   assert.equal(agents.started.length, 0, 'no process started');
+});
+
+// #603 re-inspection (MEDIUM): the worktree was made before the limits check, so a
+// refused start left a dir and a branch behind. Limits need no dir, so they run first.
+test('board controls: a refused start leaves no worktree behind', () => {
+  const sandbox = makeSandbox();
+  const agents = fakeAgents();
+  const controls = createBoardControls(join(sandbox.repo, '.yokoten-board.log'), agents.spawner);
+  controls.limits.maxAgents = 1;
+  const first = startBoardAgent(sandbox.repo, sandbox.env, controls, { issue: '12', vendor: 'claude-code', model: 'model-a' });
+  assert.ok(typeof first !== 'string', `the start passes: ${first}`);
+  const refused = startBoardAgent(sandbox.repo, sandbox.env, controls, { issue: '13', vendor: 'claude-code', model: 'model-a' });
+  assert.match(typeof refused === 'string' ? refused : 'started', /already runs/, 'over the limit');
+  assert.equal(existsSync(join(sandbox.repo, '.worktrees', '13')), false, 'no dir left behind');
+  assert.equal(agents.started.length, 1, 'no process started');
 });
 
 // #603 re-inspection (L3): the exit handler never dropped the process handle.

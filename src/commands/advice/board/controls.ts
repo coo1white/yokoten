@@ -115,9 +115,15 @@ export interface BoardWaiting {
   kind: 'approve' | 'guard' | 'question';
   agent: string;
   role: BoardRole;
+  /** How long the row has shown, counted from `latchedAt`, never from a rewrite. */
   wait: string;
   why: string;
   link: string;
+  /**
+   * When the row first showed, as ISO time. Kept on latched agent rows only, so the
+   * wait counts from the first sight; never served over /data or shown as text.
+   */
+  latchedAt?: string;
 }
 
 /** How many output lines a run keeps; the page shows the last BOARD_OUTPUT_SHOWN. */
@@ -337,20 +343,21 @@ function boardLogLine(line: string): string {
 }
 
 /**
- * Start one agent from the ask: make the worktree, check the guard hooks will run
- * there, then mark it as a worker's right before starting the vendor's command, and
- * keep the run. A refused start leaves the worktree unmarked. The child gets
- * `YOKOTEN_ROLE=worker`, and the worker mark covers runtimes that drop it.
+ * Start one agent from the ask: check the limits (they need no dir), make the
+ * worktree, check the guard hooks will run there and the vendor can start, then mark
+ * it as a worker's right before starting the vendor's command, and keep the run. A
+ * refused start leaves nothing behind: no dir, no branch, no mark, no process. The
+ * child gets `YOKOTEN_ROLE=worker`, and the worker mark covers runtimes that drop it.
  */
 export function startBoardAgent(root: string, env: Env, controls: BoardControls, ask: BoardStartAsk): BoardRun | string {
+  const over = checkBoardLimits(controls, ask.model);
+  if (over) return over;
   const made = boardWorktree(root, env, ask.issue);
   if ('fail' in made) return made.fail;
   const ready = boardGuardReady(ask.vendor, made.dir, env);
   if (ready) return ready;
   const parts = boardStartParts(ask.vendor, boardBrief(ask.issue, made.dir, ask.model), ask.model);
   if (!parts) return `the board starts ${Object.keys(BOARD_START_COMMANDS).join(', ')}: start ${ask.vendor} by hand`;
-  const over = checkBoardLimits(controls, ask.model);
-  if (over) return over;
   const marked = markWorktree(root, made.dir, env);
   if ('fail' in marked) return `the board could not mark the worktree at ${hideHome(made.dir, env)} as a worker's: ${marked.fail}`;
   const [command, ...args] = parts;
@@ -582,10 +589,13 @@ export function collectBoardWaiting(board: BoardData, attention: BoardAttention[
     const old = seen.find((kept) => kept.agent === row.agent && kept.kind === row.kind);
     if (old) {
       old.role = row.role;
-      old.wait = row.wait;
       old.why = row.why;
       old.link = row.link;
-    } else seen.push({ ...row });
+    } else seen.push({ ...row, latchedAt: new Date(now).toISOString() });
+  }
+  // The wait counts from when the row first showed, so a rewrite never resets it.
+  for (const row of seen) {
+    if (row.latchedAt) row.wait = ageText(row.latchedAt, now);
   }
   const here = new Set([...board.agents.map((agent) => agent.name), ...runs.filter((run) => run.status === 'running').map((run) => run.name)]);
   for (let at = seen.length - 1; at >= 0; at -= 1) {
@@ -607,11 +617,21 @@ function snapshotRuns(runs: BoardRun[], env: Env): BoardRun[] {
   return runs.map((run) => ({ ...run, worktree: hideHome(run.worktree, env), output: run.output.slice(-BOARD_OUTPUT_SHOWN) }));
 }
 
+/**
+ * The waiting list as /data serves it: the latch time stays on the server, so the
+ * rows hold what waits, who waits, how long, why, and where to act, and nothing else.
+ */
+function snapshotWaiting(board: BoardData, attention: BoardAttention[], controls: BoardControls, now: number = Date.now()): BoardWaiting[] {
+  return collectBoardWaiting(board, attention, controls.runs, controls.seen, now).map(
+    ({ latchedAt: _first, ...row }) => row,
+  );
+}
+
 /** The snapshot for /data: the waiting list, the open issues, the runs, and the limits. */
 export function readBoardSnapshot(root: string, env: Env, gh: Gh, controls: BoardControls, board: BoardData, trees: BoardWorktree[] | string): BoardSnapshot {
   const remote = repoOf(readOriginUrl(root, env));
   return {
-    waiting: collectBoardWaiting(board, typeof trees === 'string' ? [] : readBoardAttention(trees), controls.runs, controls.seen),
+    waiting: snapshotWaiting(board, typeof trees === 'string' ? [] : readBoardAttention(trees), controls),
     issues: remote ? readBoardIssues(gh, remote) : 'this repo has no GitHub remote, so the board shows no open issues',
     runs: snapshotRuns(controls.runs, env),
     limits: { ...controls.limits, byModel: { ...controls.limits.byModel } },

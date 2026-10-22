@@ -130,6 +130,10 @@ h2.sh{line-height:inherit}
 .ask h2{margin:0;font-size:14px;font-weight:600;color:var(--fg)}
 .ask p{margin:6px 0 0 24px}
 .ro{margin:0 20px 16px;padding:10px 12px;border:1px dashed var(--border);border-radius:var(--radius);color:var(--mut-fg);font-size:12px;display:flex;gap:8px;align-items:center}
+.fld{display:flex;flex-direction:column;gap:4px;margin:8px 2px}
+.fld>label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--mut-fg)}
+.fld input,.fld select{font:inherit;color:var(--fg);background:var(--card);border:1px solid var(--border);border-radius:7px;min-height:30px;padding:0 8px;max-width:100%}
+.out{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--muted);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-family:var(--mono);font-size:12px;margin:4px 0 8px}
 .blank{margin:auto;max-width:420px;padding:24px;text-align:center;color:var(--mut-fg)}
 .blank h1{font-size:16px;color:var(--fg)}
 .pr{display:block;padding:10px 10px 11px;border-radius:8px;border:1px solid var(--border);background:var(--card);margin-bottom:8px}
@@ -172,6 +176,7 @@ h2.sh{line-height:inherit}
 .ch{padding:12px 14px}.feed{padding:10px 8px 16px}.ro{margin:0 12px 12px}
 .bar{height:auto;flex-wrap:wrap;padding:6px 12px;white-space:normal}
 .row,.grp{min-height:40px}
+.fld input,.fld select{min-height:40px}
 .sh .f{min-height:40px}
 .act{display:inline-flex;align-items:center;min-height:40px;padding:0 10px}
 .item .x{opacity:1;width:40px;height:40px;top:0;right:0}
