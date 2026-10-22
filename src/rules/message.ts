@@ -442,7 +442,7 @@ export const RULES = {
   'private-marks': {
     rule: 'this machine has a private-marks file with at least one line',
     why: 'without your marks, the privacy check knows only email addresses, IP addresses and secrets',
-    check: '`doctor` reads ~/.config/yokoten/private-marks (or YOKOTEN_PRIVATE_MARKS) and counts its lines',
+    check: '`doctor` reads ~/.config/yokoten/private-marks (and the file YOKOTEN_PRIVATE_MARKS names) and counts its lines',
     docs: guide('privacy'),
   },
   'disk-space': {

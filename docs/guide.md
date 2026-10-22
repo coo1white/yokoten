@@ -1442,7 +1442,7 @@ Environment variables:
 | `YOKOTEN_LEAD_ONLY_OK` | The lead-only paths this worker may change, comma-separated, from the repo root. See [Works with](#works-with) |
 | `YOKOTEN_FIX_TASK=1` | The session is a fix task. It may not change test files |
 | `YOKOTEN_RELEASE_APPROVAL=1` | The owner allows a release from this session. Muse Code is not known to pass it to a hook |
-| `YOKOTEN_PRIVATE_MARKS` | Another path for the private-marks file |
+| `YOKOTEN_PRIVATE_MARKS` | A second private-marks file. Its marks are added to the ones in `~/.config/yokoten/private-marks`; it never takes that file's place. See [Privacy](#privacy) |
 | `YOKOTEN_MIN_FREE_GB` | `doctor` notes a disk with less free space than this, in GB. `0` turns the note off. See [Machine notes](#machine-notes) |
 | `YOKOTEN_BOT_APP_ID`, `YOKOTEN_BOT_KEY`, `YOKOTEN_BOT_INSTALLATION` | The bot. They can also be lines in `~/.config/yokoten/keys.env`. See [server.md](server.md#3-the-bot-a-github-app) |
 | `YOKOTEN_GITHUB_API` | Another GitHub API address, such as GitHub Enterprise Server |
@@ -1687,6 +1687,11 @@ is reported by file and line; the mark itself is never printed. The hit names th
 of mark, such as `matches your git name (a private mark yokoten added by itself)` or
 `matches a word you added to your private marks`. Its fix says how to change the mark:
 `yokoten marks off git-name` for a kind yokoten adds, `yokoten marks remove` for your own.
+
+`YOKOTEN_PRIVATE_MARKS` names a second marks file. The check reads both files and uses
+every mark in them. So the setting can only add marks, never remove them. When
+`~/.config/yokoten/private-marks` is there but can't be read, the check fails, whatever the
+setting says. `yokoten marks add` and `install` still write to the file in your home folder.
 
 A mark of letters and spaces, such as a name or a city, is found as whole words. Only a
 letter next to it hides it: `sam` is found in `hi Sam`, `sam_dev`, `@sam` and `sam97`, but

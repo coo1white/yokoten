@@ -32,6 +32,8 @@ import {
   machineAllowed,
   machineAllowFile,
   makeRedactor,
+  marksFile,
+  marksFiles,
   mapMarkKinds,
   normalizeRemote,
   notUtc,
@@ -208,6 +210,47 @@ test('private marks file: comments and blanks skipped, missing file is empty', (
   writeFileSync(file, '# header\n\nMyCity\n  myserver  \n');
   assert.deepEqual(loadMarks({ YOKOTEN_PRIVATE_MARKS: file }), ['mycity', 'myserver']);
   assert.deepEqual(loadMarks({ YOKOTEN_PRIVATE_MARKS: join(dir, 'none') }), []);
+});
+
+test('private marks file: the setting adds a second list to the default file, never replaces it (#656)', () => {
+  const home = makeTempDir();
+  const config = join(home, '.config', 'yokoten');
+  mkdirSync(config, { recursive: true });
+  const own = join(config, 'private-marks');
+  writeFileSync(own, '# added by yokoten from this machine: forge login\nOcto-Jdoe\nMyCity');
+  const extra = join(home, 'extra');
+  writeFileSync(extra, 'myserver\nmycity\n');
+  const empty = join(home, 'empty');
+  writeFileSync(empty, '');
+  assert.deepEqual(loadMarks({ HOME: home, YOKOTEN_PRIVATE_MARKS: empty }), ['octo-jdoe', 'mycity']);
+  assert.deepEqual(loadMarks({ HOME: home, YOKOTEN_PRIVATE_MARKS: extra }), ['octo-jdoe', 'mycity', 'myserver']);
+  assert.deepEqual(loadMarks({ HOME: home, YOKOTEN_PRIVATE_MARKS: join(home, 'none') }), ['octo-jdoe', 'mycity']);
+  // A header in one file never names the kind of a line in the next.
+  assert.deepEqual(loadMarkKinds({ HOME: home, YOKOTEN_PRIVATE_MARKS: extra }), [
+    { value: 'octo-jdoe', kind: 'forge login' },
+    { value: 'mycity', kind: 'forge login' },
+    { value: 'myserver', kind: null },
+  ]);
+  // yokoten writes to the default file, and the setting names the same file only once.
+  assert.equal(marksFile({ HOME: home, YOKOTEN_PRIVATE_MARKS: extra }), own);
+  assert.deepEqual(marksFiles({ HOME: home, YOKOTEN_PRIVATE_MARKS: own }), [own]);
+});
+
+test('private marks file: a default file that can not be read throws, whatever the setting names (#656)', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, () => {
+  const home = makeTempDir();
+  const config = join(home, '.config', 'yokoten');
+  mkdirSync(config, { recursive: true });
+  const own = join(config, 'private-marks');
+  writeFileSync(own, 'mycity\n');
+  chmodSync(own, 0o000);
+  const extra = join(home, 'extra');
+  writeFileSync(extra, 'myserver\n');
+  try {
+    assert.throws(() => loadMarks({ HOME: home, YOKOTEN_PRIVATE_MARKS: extra }), { code: 'EACCES' });
+    assert.throws(() => loadMarkKinds({ HOME: home, YOKOTEN_PRIVATE_MARKS: extra }), { code: 'EACCES' });
+  } finally {
+    chmodSync(own, 0o600);
+  }
 });
 
 test('private marks file: the kind of each added mark, by its header or, under the old header, by shape (#410)', () => {
