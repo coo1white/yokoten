@@ -14,11 +14,16 @@ import {
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { assertLinear } from '../../scripts/linear.ts';
-import { at, makeTempDir } from '../repo/helpers.ts';
+import { at, makeRepoTemplate, makeTempDir } from '../repo/helpers.ts';
 import { DEFAULTS, type Env } from '../../src/rules/config.ts';
 import { checkCommand } from '../../src/rules/guards.ts';
 import { formatFinding } from '../../src/rules/message.ts';
 import {
+  describeMark,
+  foldLine,
+  foldText,
+  hasMark,
+  isBotProgram,
   hideHome,
   homeIn,
   loadMarkKinds,
@@ -27,6 +32,7 @@ import {
   machineAllowed,
   machineAllowFile,
   makeRedactor,
+  mapMarkKinds,
   normalizeRemote,
   notUtc,
   ownMarks,
@@ -345,10 +351,11 @@ test('privateRemoteHosts: hosts outside the public forges; local paths name none
   );
 });
 
-test('private marks: the commit check matches anywhere in a word; redact only whole words (#390)', () => {
+test('private marks: a name is found as a whole word, by the commit check and by redact (#390, #434)', () => {
   const hits = (text: string, mark: string) => scanText(text, { file: 'a', marks: [mark] }).length;
   assert.equal(hits('Ann wrote this', 'ann'), 1);
-  assert.equal(hits('annotate the code', 'ann'), 1, 'the commit check keeps its wider match');
+  assert.equal(hits('annotate the code', 'ann'), 0, 'a name inside a longer word is not the name');
+  assert.equal(hits('see ann_notes', 'ann'), 1, 'but _ ends a word');
   const redact = makeRedactor({ marks: ['ann'] }, {});
   assert.equal(redact('Ann wrote this, then annotate'), '<mark> wrote this, then annotate');
 });
@@ -554,7 +561,11 @@ test('a heredoc whose end word the guard does not read exactly: the rest of the 
 test('a relative body file follows cd; one the guard cannot place stops the command (#391 review)', () => {
   mkdirSync(join(postDir, 'sub'), { recursive: true });
   writeFileSync(join(postDir, 'sub', 'note.md'), 'Seen in QuietVale.\n');
-  assert.equal(post('cd sub && gh issue comment 3 --body-file note.md')?.id, 'private-mark');
+  // `cd sub` may land anywhere through CDPATH (#559), so the folder is unknown and the
+  // body file can't be placed: unreadable, as below, not read from a guessed folder.
+  const placed = post('cd sub && gh issue comment 3 --body-file note.md');
+  assert.equal(placed?.id, 'unreadable-command');
+  assert.match(placed?.fix ?? '', /full path/);
   assert.equal(post(`cd ${join(postDir, 'sub')} && gh issue comment 3 --body-file note.md`)?.id, 'private-mark');
   for (const command of ['cd "$X" && gh issue comment 3 --body-file note.md', 'gh pr create --body-file missing.md', 'cd sub && gh pr create --body-file body.md']) {
     const f = post(command);
@@ -1174,6 +1185,213 @@ test('inside "...", only $, backticks, \\ and ! make the line unsure (#439)', ()
   rmSync(join(postDir, 'body.md'));
 });
 
+// ---- A read-only pipe after a post (#498) ----
+//
+// `bot -- gh … --body-file <full path> 2>&1 | tail -2` was refused, and the message named
+// the file, not the pipe. A pipe at the end into a program that only reads now passes.
+
+test('a pipe at the end into tail, head, grep, sed s/// and the like still reads the body file (#498)', () => {
+  const body = join(postDir, 'piped.md');
+  writeFileSync(body, 'All clean.\n');
+  const bot = `node bin/yokoten.ts bot -- gh pr create --title "fix: a plain title" --body-file ${body}`;
+  const passes = [
+    `${bot} 2>&1 | tail -2`,
+    `${bot} | tail -2`,
+    `${bot} | sed "s/x/y/g"`,
+    `${bot} 2>&1 | sed "s/someone/<owner>/g" | tail -2`,
+    `${bot} | sed -n -e 's|a|b|gp' -e 's/c/d/'`,
+    `${bot} | grep -v x | head -n 5 | cut -c1-80 | wc -l`,
+    `${bot} | sort -rk2,2 | uniq -c | tr a-z A-Z`,
+    `${bot} 2>&1`,
+    `cd ${postDir} && ${bot} | tail -2`,
+  ];
+  for (const command of passes) assert.equal(post(command), null, command);
+  // The file is still read: a mark in it is found through the pipe.
+  writeFileSync(body, 'Seen in QuietVale.\n');
+  for (const command of passes) assert.equal(post(command)?.id, 'private-mark', command);
+  rmSync(body);
+});
+
+test('a pipe or a command that may change the body file is refused, by name (#498)', () => {
+  const body = join(postDir, 'piped.md');
+  writeFileSync(body, 'All clean.\n');
+  mkdirSync(join(postDir, 'sub'), { recursive: true });
+  const bot = `node bin/yokoten.ts bot -- gh pr create --title t --body-file ${body}`;
+  const refused: [string, string][] = [
+    [`${bot} | tee ${body}`, 'a pipe to `tee`'],
+    [`${bot} | sed -i s/x/y/ ${body}`, 'a `sed` with `-i`'],
+    [`${bot} | sed --in-place s/x/y/ ${body}`, 'a `sed` with `-i`'],
+    [`${bot} | sed 's/x/y/w ${body}'`, 'a `sed` with `-i`'],
+    [`${bot} | sed 's/x/y/e'`, 'a `sed` with `-i`'],
+    [`${bot} | sed -f script.sed`, 'a `sed` with `-i`'],
+    [`${bot} | sort -o ${body}`, 'a `sort` with an option'],
+    [`${bot} | sort "$X"`, 'a `sort` with an option'],
+    [`${bot} | uniq - ${body}`, 'a `uniq` with a second file'],
+    [`${bot} | tail -2 > ${body}`, 'a pipe to `tail` that does not end the line'],
+    [`${bot} | tail -2; cd /tmp`, 'a pipe to `tail` that does not end the line'],
+    [`${bot} | tail -2 | grep "$(id)"`, 'a pipe to `tail` that does not end the line'],
+    [`${bot} | grep "\${X}"`, 'a pipe to `grep` that does not end the line'],
+    [`${bot} | xargs tail`, 'a pipe to `xargs`'],
+    [`${bot} | (cat > ${body})`, 'a pipe'],
+    [`${bot} |& tail -2`, 'a pipe'],
+    [`${bot} || tail -2`, 'a `||`'],
+    [`echo x | tail -2; ${bot}`, 'a pipe to `tail` that does not end the line'],
+    [`cd sub && gh pr create --title t --body-file ../piped.md | tail -2`, 'a `cd` before a path with `..`'],
+    [`cd -; ${bot}`, 'a `cd` the guard can'],
+    [`mv a.md ${body}; ${bot} | tail -2`, 'a `mv`'],
+    [`export A=1 B=2; ${bot}`, 'an `export` of a name other than GH_REPO'],
+    [`OWNER=$(gh pr view 3 -q .x); ${bot}`, 'a command substitution `$(…)`'],
+    [`[ -n x ] || exit 1; ${bot}`, 'a `[ … ]` test'],
+    [`${bot} > ${body}`, 'a redirect `>`'],
+    [`${bot} 2>&1 > ${body}`, 'a redirect `>`'],
+    [`X=1 ${bot}`, 'a variable other than GH_REPO'],
+  ];
+  for (const [command, saw] of refused) {
+    const f = post(command);
+    assert.equal(f?.id, 'unreadable-command', command);
+    assert.ok(f?.what.includes(`and ${saw}`), `${command}: ${f?.what}`);
+    assert.ok(f?.fix.startsWith(`leave out ${saw}`), `${command}: ${f?.fix}`);
+    assert.match(f?.fix ?? '', /write the file in one command, then post it in the next/);
+  }
+  rmSync(body);
+});
+
+test('a `$` anywhere in a sed after the post is refused: bash fills it in before sed reads the script (#498)', () => {
+  const body = join(postDir, 'piped.md');
+  writeFileSync(body, 'All clean.\n');
+  const bot = `node bin/yokoten.ts bot -- gh pr create --title t --body-file ${body}`;
+  for (const command of [
+    `${bot} 2>&1 | sed "s/$OWNER/<owner>/g" | tail -2`,
+    `${bot} | sed "s/x/$NAME/"`,
+    `${bot} | sed -e "s/x/y/$FLAGS"`,
+    `${bot} | sed "$S"`,
+    `${bot} | sed s/x/y/ "$F"`,
+    `${bot} | sed 's/x$/y/'`,
+    `${bot} | sed "s/$(id)/x/"`,
+    `${bot} | sed "s/\${X}/x/"`,
+  ]) {
+    const f = post(command);
+    assert.equal(f?.id, 'unreadable-command', command);
+    assert.ok(f?.what.includes('and a `$` value in a `sed` command in this command'), `${command}: ${f?.what}`);
+    assert.equal(f?.fix, 'type the value into the sed script in place of the `$`, or leave out the pipe, or write the file in one command, then post it in the next, and give its full path');
+  }
+  // grep may take a value: it writes no file whatever the value holds.
+  assert.equal(post(`${bot} | grep -v "$OWNER"`), null);
+  rmSync(body);
+});
+
+test('a refusal never names a program that holds a private mark (#498)', () => {
+  const body = join(postDir, 'piped.md');
+  writeFileSync(body, 'All clean.\n');
+  const bot = `node bin/yokoten.ts bot -- gh pr create --title t --body-file ${body}`;
+  const named = [
+    [`${bot} | quietvale-tool x`, 'a pipe'],
+    [`${bot} | /opt/QuietVale/bin/send`, 'a pipe to `send`'],
+    [`quietvale-tool x; ${bot}`, 'a command'],
+    [`QuietVale x; ${bot}`, 'a command'],
+  ];
+  for (const [command, saw] of named) {
+    const f = post(command);
+    assert.equal(f?.id, 'unreadable-command', command);
+    assert.ok(f?.what.includes(`and ${saw} in this command`), `${command}: ${f?.what}`);
+    assert.ok(!/quietvale/i.test(formatFinding(f)), `${command}: the mark is never printed`);
+  }
+  // Control: a program with no mark in it is named.
+  assert.ok(post(`${bot} | tee x`)?.what.includes('a pipe to `tee`'));
+  assert.ok(post(`othertool x; ${bot}`)?.what.includes('a `othertool`'));
+  rmSync(body);
+});
+
+test('a project allow still applies through a read-only pipe, and not through any other (#498)', () => {
+  const allowing = { ...DEFAULTS, privacy: { ...DEFAULTS.privacy, allow: ['QuietVale'] } };
+  const command = 'gh issue create --title "check: fix a bug" --body "QuietVale ships"';
+  assert.equal(post(`${command} 2>&1 | tail -2`, allowing), null);
+  assert.equal(post(`${command} | sed "s/someone/<owner>/g"`, allowing), null);
+  assert.equal(post(`${command} | grep -v "$OWNER"`, allowing), null);
+  // A `$` in a sed, in any quotes, is not a read-only pipe: no allow, as on the body-file path.
+  for (const sed of ['sed "s/$OWNER/<owner>/g"', "sed 's/x$/y/'", 'tail -2 | sed -e "s/x/$Y/"']) {
+    assert.equal(post(`${command} | ${sed}`, allowing)?.id, 'private-mark', sed);
+  }
+  assert.equal(post(`${command} | tee out.txt`, allowing)?.id, 'private-mark');
+  assert.equal(post(`${command} | tail -2; true`, allowing)?.id, 'private-mark');
+});
+
+test('a ~/ path to yokoten and the allowed variables before it still read the body file (#498)', () => {
+  const body = join(postDir, 'c-505.md');
+  writeFileSync(body, 'All clean.\n');
+  const comment = `bot -- gh issue comment 505 --body-file ${body}`;
+  const passes = [
+    `NODE_USE_ENV_PROXY=1 GH_REPO=o/r node ~/x/yokoten/bin/yokoten.ts ${comment}`,
+    `node ~/x/yokoten/bin/yokoten.ts ${comment}`,
+    `node ~/yokoten.mjs ${comment} | tail -2`,
+    `~/x/bin/yokoten ${comment}`,
+    `NODE_USE_ENV_PROXY=1 GH_REPO=o/r node bin/yokoten.ts ${comment}`,
+    `node /opt/x/bin/yokoten.ts ${comment}`,
+  ];
+  for (const command of passes) assert.equal(post(command), null, command);
+  writeFileSync(body, 'Seen in QuietVale.\n');
+  for (const command of passes) assert.equal(post(command)?.id, 'private-mark', command);
+  writeFileSync(body, 'All clean.\n');
+  // A ~ elsewhere, a quoted ~, a ~ that is not $HOME, or another program stays refused.
+  for (const command of [
+    `node ~/x/bin/other.ts ${comment}`,
+    `node '~/x/bin/yokoten.ts' ${comment}`,
+    `node ~root/bin/yokoten.ts ${comment}`,
+    `node ~/x/bin/yokoten.ts ~/y ${comment}`,
+    `echo ~/x/bin/yokoten.ts bot -- x; gh issue comment 505 --body-file ${body}`,
+  ]) assert.equal(post(command)?.id, 'unreadable-command', command);
+  // `~root` is another user's home: the guard can't tell which yokoten runs there, so it says so.
+  const root = post(`node ~root/bin/yokoten.ts ${comment}`);
+  assert.ok(root?.what.includes('and a `~` that may not be your home folder in this command'), root?.what);
+  // A variable outside GH_REPO, GH_HOST and NODE_USE_ENV_PROXY reaches node and gh: refused, by name.
+  const other = post(`A=1 node bin/yokoten.ts ${comment}`);
+  assert.ok(other?.what.includes('a variable other than GH_REPO'), other?.what);
+  rmSync(body);
+});
+
+test('a project allow still applies after NODE_USE_ENV_PROXY=1 and a ~/ yokoten (#498)', () => {
+  const allowing = { ...DEFAULTS, privacy: { ...DEFAULTS.privacy, allow: ['QuietVale'] } };
+  const comment = 'bot -- gh issue create --title "check: fix a bug" --body "QuietVale ships"';
+  assert.equal(post(`NODE_USE_ENV_PROXY=1 node ~/x/bin/yokoten.ts ${comment}`, allowing), null);
+  assert.equal(post(`NODE_USE_ENV_PROXY=1 node bin/yokoten.ts ${comment} 2>&1 | tail -2`, allowing), null);
+  // GH_REPO names another target, and any other variable is not trusted: no allow.
+  assert.equal(post(`GH_REPO=o/r node bin/yokoten.ts ${comment}`, allowing)?.id, 'private-mark');
+  assert.equal(post(`GH_HOST=example.com node bin/yokoten.ts ${comment}`, allowing)?.id, 'private-mark');
+  assert.equal(post(`NODE_USE_ENV_PROXY=1 GH_HOST=example.com node ~/x/bin/yokoten.ts ${comment}`, allowing)?.id, 'private-mark');
+  assert.equal(post(`A=1 node bin/yokoten.ts ${comment}`, allowing)?.id, 'private-mark');
+  assert.equal(post(`NODE_USE_ENV_PROXY=$X node bin/yokoten.ts ${comment}`, allowing)?.id, 'private-mark');
+});
+
+test('a lone post trusts the same yokoten paths as the body-file path (#506)', () => {
+  const allowing = { ...DEFAULTS, privacy: { ...DEFAULTS.privacy, allow: ['QuietVale'] } };
+  const comment = 'bot -- gh issue create --title "check: fix a bug" --body "QuietVale ships"';
+  for (const program of ['yokoten', 'node bin/yokoten.ts', 'node ./bin/yokoten.mjs', 'node ~/x/bin/yokoten.ts', '~/x/bin/yokoten', 'node ~/yokoten.mjs', 'node /opt/x/bin/yokoten.ts']) {
+    assert.ok(lonePost(`${program} ${comment}`), program);
+    assert.equal(post(`${program} ${comment}`, allowing), null, program);
+  }
+  // `~other`, `~+` and `~-` are not your home: no lone post, so no allow.
+  for (const program of ['node ~other/bin/yokoten.ts', '~other/x/yokoten', 'node ~+/bin/yokoten.ts', 'node ~-/bin/yokoten.ts', 'node ~/x/bin/yokoten.js']) {
+    assert.equal(lonePost(`${program} ${comment}`), null, program);
+    assert.equal(post(`${program} ${comment}`, allowing)?.id, 'private-mark', program);
+  }
+});
+
+test('reading a pipe at the end stays linear (#498)', () => {
+  const body = join(postDir, 'piped.md');
+  writeFileSync(body, 'All clean.\n');
+  assertLinear(
+    'many read-only pipes',
+    (n) => `gh pr create --title t --body-file ${body}${' | tail -2'.repeat(n / 10)}`,
+    (command) => assert.equal(post(command), null),
+  );
+  assertLinear(
+    'blanks before 2>&1',
+    (n) => `gh pr create --title t --body-file ${body}${' '.repeat(n)}2>&1${' '.repeat(n)}`,
+    (command) => assert.equal(post(command), null),
+  );
+  rmSync(body);
+});
+
 // ---- A project allows its own name (#424) ----
 
 test('ownMarks and scanText: a mark the project allows, same string case aside, is not reported (#424)', () => {
@@ -1188,8 +1406,8 @@ test('ownMarks and scanText: a mark the project allows, same string case aside, 
   }
   // Allowing one mark leaves the longer and shorter marks that hold it.
   const all = (text: string) => scanText(text, { file: 'a', marks, allow: ['quietvale'] }).length;
-  assert.equal(all('QuietVale ships'), 1, 'the shorter mark vale still matches');
-  assert.equal(all('QuietVale Labs ships'), 2, 'quietvale labs and vale still match');
+  assert.equal(all('QuietVale ships from the vale'), 1, 'the shorter mark vale still matches');
+  assert.equal(all('QuietVale Labs ships'), 2, 'quietvale labs still matches, and so does vale after a small letter (#434)');
   const finding = scanText('QuietVale Labs', { file: 'a', marks, allow: ['quietvale'] }).map((f) => formatFinding(f)).join('\n');
   assert.ok(!/quietvale|vale/i.test(finding), 'no mark is printed');
 });
@@ -1249,16 +1467,25 @@ test('normalizeRemote: linear on long input (#447)', () => {
   for (const [name, make] of inputs) assertLinear(name, make, (text) => normalizeRemote(text, '/base'));
 });
 
+/** git in `repo`, with `base` as its home and no global config. */
+const allowGit = (base: string, repo: string) => (...args: string[]) =>
+  execFileSync('git', args, { cwd: repo, env: { PATH: process.env.PATH, HOME: base, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(base, 'gitconfig'), TZ: 'UTC' }, stdio: 'ignore' });
+
+// The repo before its remote, built once per test process (#475).
+const copyAllowRepo = makeRepoTemplate((repo) => {
+  const git = allowGit(repo, repo);
+  git('init', '-q');
+  git('config', 'user.name', 'Test');
+  git('config', 'user.email', `1+test${at}users.noreply.github.com`);
+});
+
 /** A repo with an origin remote, or none, and a marks file and an allow file beside it. */
 function allowRepo(remote: string | null) {
   const base = makeTempDir('yokoten-allow-');
   const repo = join(base, 'repo');
   mkdirSync(repo);
-  const git = (...args: string[]) =>
-    execFileSync('git', args, { cwd: repo, env: { PATH: process.env.PATH, HOME: base, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(base, 'gitconfig'), TZ: 'UTC' }, stdio: 'ignore' });
-  git('init', '-q');
-  git('config', 'user.name', 'Test');
-  git('config', 'user.email', `1+test${at}users.noreply.github.com`);
+  copyAllowRepo(repo);
+  const git = allowGit(base, repo);
   if (remote) git('remote', 'add', 'origin', remote);
   const marks = join(base, 'private-marks');
   writeFileSync(marks, 'quietvale\nquietvale labs\n');
@@ -1672,7 +1899,7 @@ test('an origin that runs a remote helper (transport::address) is unsure: no ski
     const r = allowRepo(remote);
     writeFileSync(r.env.YOKOTEN_PRIVATE_MARKS as string, 'quiet vale\n');
     assert.equal(normalizeRemote(remote), null, `no key, ${remote}`);
-    assert.match((repoKey(r.repo) as { unsure: string }).unsure, /remote helper/, `unsure, ${remote}`);
+    assert.match((repoKey(r.repo, process.env) as { unsure: string }).unsure, /remote helper/, `unsure, ${remote}`);
     assert.deepEqual(repoMarkKinds(r.env, r.repo).map((mark) => mark.value), ['quiet vale'], `no skip, ${remote}`);
     r.allow([{ remote: 'example.com/x/quiet-vale', allow: ['quiet vale'] }]);
     assert.deepEqual(machineAllowed(r.env, r.repo).allow, [], `no allow, ${remote}`);
@@ -1683,7 +1910,7 @@ test('an origin on this machine by host (localhost, 127.x.x.x, ::1) counts as lo
   for (const remote of ['https://localhost/x/quiet-vale', 'https://LOCALHOST:8443/x/quiet-vale.git', 'ssh://git@127.0.0.1:2222/x/quiet-vale', 'git@127.1.2.3:x/quiet-vale', 'ssh://[::1]/x/quiet-vale', 'git@[::1]:x/quiet-vale', 'ssh://::1/x/quiet-vale']) {
     const r = allowRepo(remote);
     writeFileSync(r.env.YOKOTEN_PRIVATE_MARKS as string, 'quiet vale\n');
-    assert.equal((repoKey(r.repo) as { local?: boolean }).local, true, `local, ${remote}`);
+    assert.equal((repoKey(r.repo, process.env) as { local?: boolean }).local, true, `local, ${remote}`);
     assert.deepEqual(repoMarkKinds(r.env, r.repo).map((mark) => mark.value), ['quiet vale'], `no skip, ${remote}`);
   }
   assert.equal(normalizeRemote('git@[::1]:x/quiet-vale'), '[::1]/x/quiet-vale', 'a bracketed host keeps its brackets in the key');
@@ -1699,4 +1926,259 @@ test('readMachineAllow: a file with just the switch reads as no repos; a file th
   assert.deepEqual(readMachineAllow(r.env), { entries: [], skipOwnName: false });
   assert.deepEqual(machineAllowed(r.env, r.repo), { allow: [], unsure: null });
   for (const text of ['[]', 'null', '"x"', '{"repos": null}', '{"repos": {}}']) assert.ok('unsure' in readMachineAllow((r.allow(text), r.env)), text);
+});
+
+// ---- A name mark matches whole words only (#434) ----
+//
+// Samples are built from pieces so this file passes its own check. All are made up.
+const SHORT = ['s', 'am'].join('');
+const FULL = [SHORT, ['exa', 'mple'].join('')].join(' ');
+const NICK = ['ni', 'ck'].join('');
+const JOINED = [SHORT, 'x'].join('');
+const PAIR = [SHORT, ['sm', 'ith'].join('')].join(' ');
+const DOMAIN = ['example', 'com'].join('.');
+
+test('hasMark: a name is found as whole words; only a letter blocks it (#434)', () => {
+  const found = (text: string, mark: string) => hasMark(text, mark);
+  // Caught: on its own, and beside anything that is not a letter, digits included.
+  for (const text of [`hi ${'S'}am`, `${SHORT}_dev`, `@${SHORT}`, `S${'am'}.`, `${SHORT}-example`, `"${SHORT}"`, SHORT, `path/${SHORT}/x`, `${SHORT}1`, `${SHORT}2`]) assert.ok(found(text, SHORT), `not found in ${text}`);
+  for (const text of [`${NICK}97`, `2${NICK}`]) assert.ok(found(text, NICK), `not found in ${text}`);
+  // A small letter then a capital is an edge, in the text as it is: camelCase and PascalCase.
+  for (const text of [`${'N'}ickDev`, `github${'N'}ick`]) assert.ok(found(text, NICK), `not found in ${text}`);
+  // Not caught: inside a longer word.
+  for (const text of [`${SHORT}ple`, `${SHORT}e`, `${SHORT}sung`, `bal${SHORT}ic`, `${NICK}dev`, `${NICK.toUpperCase()}DEV`]) assert.ok(!found(text, text.includes(SHORT) ? SHORT : NICK), `found in ${text}`);
+  // An escape or a URL-encoded slash, backslash or space before or after it is an edge.
+  for (const [text, mark] of [[`"hi\\n${FULL}"`, FULL], [`\\t${JOINED}`, JOINED], [`c%3a%5cusers%5c${JOINED}%5cdoc`, JOINED], [`C:%5CUsers%5C${JOINED}%5CDoc`, JOINED], [`hello%20${SHORT}`, SHORT], [`a%2f${SHORT}`, SHORT], [`\\u00e9${SHORT}`, SHORT], [`\\r${SHORT}\\b`, SHORT]] as const) {
+    assert.ok(found(text, mark), `not found in ${text}`);
+  }
+  // Words of a longer mark: any run of spaces, -, _ or ., or none.
+  for (const text of [`${SHORT}-example`, `${SHORT}  Example`, `${SHORT}_example`, `${SHORT}.example!`, `by ${SHORT} example.`, `${SHORT}example`]) assert.ok(found(text, FULL), `not found in ${text}`);
+  assert.ok(found(`${SHORT}smith`, PAIR) && found(`S${'am'}_Smith`, PAIR));
+  for (const text of [`${SHORT} examples`, `x${SHORT} example`]) assert.ok(!found(text, FULL), `found in ${text}`);
+  // Any other character keeps the part match: a domain, an address, a number.
+  assert.ok(found(`mail.${DOMAIN}`, DOMAIN));
+  assert.ok(found('build1234x', '1234'));
+  // Unicode letters are letters.
+  assert.ok(found(`é ${SHORT}`, SHORT) && !found(`é${SHORT}`, SHORT));
+  // A script that joins words or particles onto a name keeps the part match.
+  const han = ['张', '三'].join('');
+  assert.ok(found(`今天${han}来了`, han));
+  const hangul = ['김', '민수'].join('');
+  assert.ok(found(`${hangul}가`, hangul));
+  const hebrew = ['ד', 'וד'].join('');
+  assert.ok(found(`ה${hebrew}`, hebrew));
+  const arabic = ['سا', 'مي'].join('');
+  assert.ok(found(`وال${arabic}`, arabic));
+});
+
+test('scanText: a name mark stops a line with the word, not one with a longer word (#434)', () => {
+  const ids = (text: string) => scanText(text, { file: 'a.md', marks: [SHORT, FULL] }).map((f) => f.line);
+  // Line 5 holds both marks, so it is found once for each.
+  assert.deepEqual(ids(`a ${SHORT}ple\nthe ${SHORT}e\nhi ${SHORT}\n${SHORT}_dev\nby ${SHORT}--example\n`), [3, 4, 5, 5]);
+});
+
+test('makeRedactor: hides a name by the same rules as the check (#434)', () => {
+  const redact = makeRedactor({ owners: [FULL], marks: [JOINED] }, {});
+  for (const text of [`S${'am'}_Example`, `${SHORT}.example`, `S${'am'}Example`]) assert.equal(redact(`by ${text}.`), 'by <owner>.', text);
+  assert.equal(redact(`S${'am'}X97`), '<mark>97');
+  assert.equal(redact(`C:%5C${JOINED}`), 'C:%5C<mark>');
+  // A longer word stays, as in the check.
+  assert.equal(redact(`${JOINED}ylophone`), `${JOINED}ylophone`);
+  for (const text of [`by ${'S'}am_Example`, `S${'am'}X97`, `%5C${JOINED}`, `${JOINED}ylophone`]) {
+    assert.equal(redact(text) === text, !scanText(text, { file: 'a', marks: [FULL, JOINED] }).length, `redact and the check disagree on ${text}`);
+  }
+});
+
+test('hasMark: linear on long input (#434)', () => {
+  const inputs: [string, (n: number) => string][] = [
+    ['the first word, again and again', (n) => `${SHORT} `.repeat(n / 4)],
+    ['the first word, then a long break', (n) => `${SHORT}${'-'.repeat(n)}x`],
+    ['joined words, again and again', (n) => `${SHORT}`.repeat(n / 3)],
+    ['small letters then capitals', (n) => 'aB'.repeat(n / 2)],
+    ['escapes', (n) => '\\n'.repeat(n / 2)],
+    ['letters only', (n) => 's'.repeat(n)],
+  ];
+  for (const [name, make] of inputs) assertLinear(name, make, (text) => hasMark(text, FULL));
+  for (const [name, make] of inputs) assertLinear(`camel: ${name}`, make, (text) => hasMark(text, NICK));
+  // The fold (#507): full-width letters, combining marks, zero-width characters.
+  const folded: [string, (n: number) => string][] = [
+    ['full-width letters', (n) => 'ｓ'.repeat(n)],
+    ['decomposed letters', (n) => 'é'.repeat(n / 2)],
+    ['one letter, many marks', (n) => `e${'́'.repeat(n)}`],
+    ['zero-width between letters', (n) => 's\u200B'.repeat(n / 2)],
+  ];
+  for (const [name, make] of folded) assertLinear(`fold: ${name}`, make, (text) => hasMark(text, FULL));
+  for (const [name, make] of folded) assertLinear(`fold, redact: ${name}`, make, makeRedactor({ marks: [FULL] }, {}));
+});
+
+// ---- A mark is found in any Unicode form (#507) ----
+//
+// Made up, built from pieces. ACCENTED ends in é as one code point; DECOMPOSED is e plus U+0301.
+const ACCENTED = ['vel', 'é'].join('');
+const DECOMPOSED = ['vel', 'é'].join('');
+const WIDE = (text: string) => [...text].map((char) => String.fromCodePoint(char.codePointAt(0)! + 0xfee0)).join('');
+// A capital dotted I, whose lowercase is i plus U+0307: two code units for one.
+const DOTTED = ['İ', 'lvo'].join('');
+const DOTLESS = ['ı', 'lvo'].join('');
+
+test('hasMark and scanText: a mark is found in any Unicode form (#507)', () => {
+  const found = (text: string, mark: string) => hasMark(text, mark.toLowerCase()) && scanText(text, { file: 'a.md', marks: [mark.toLowerCase()] }).length === 1;
+  // Composed in the mark, decomposed in the text, and the other way round.
+  assert.ok(found(`by ${DECOMPOSED}.`, ACCENTED) && found(`by ${ACCENTED}.`, DECOMPOSED));
+  assert.ok(found(DECOMPOSED.toUpperCase(), ACCENTED));
+  assert.ok(!found(`${DECOMPOSED}x`, ACCENTED), 'still whole words');
+  // Full-width Latin, in the text or in the mark, either case.
+  for (const text of [`by ${WIDE(SHORT)}.`, WIDE(SHORT.toUpperCase()), `${WIDE(SHORT)}＿${WIDE('example')}`]) assert.ok(found(text, SHORT), `not found in ${text}`);
+  assert.ok(found(`by ${SHORT}.`, WIDE(SHORT)));
+  assert.ok(found(`${WIDE(SHORT)} example`, FULL));
+  assert.ok(!found(WIDE(`${SHORT}ple`), SHORT), 'still whole words');
+  // A zero-width space, joiner, non-joiner or word joiner, inside a word or between words.
+  for (const zero of ['\u200B', '\u200C', '\u200D', '\u2060']) {
+    assert.ok(found(`hi s${zero}am`, SHORT), `U+${zero.codePointAt(0)!.toString(16)} inside`);
+    assert.ok(found(`${SHORT}${zero}example`, FULL), `U+${zero.codePointAt(0)!.toString(16)} between`);
+    assert.ok(found(`${zero}${SHORT}${zero}`, SHORT), `U+${zero.codePointAt(0)!.toString(16)} around`);
+  }
+  // A domain, found as a part, folds too.
+  assert.ok(found(`mail.${WIDE(DOMAIN)}`, DOMAIN));
+  // Turkish dotted and dotless I: both sides are lowercased the same way.
+  for (const text of [DOTTED, `by ${DOTTED}.`, DOTTED.toUpperCase(), `${DOTTED.toLowerCase()}!`]) assert.ok(found(text, DOTTED), `not found in ${text}`);
+  assert.ok(found(`by ${DOTLESS}.`, DOTLESS));
+  assert.ok(!found(`${DOTTED}x`, DOTTED), 'still whole words');
+  // A line with no mark is not stopped.
+  assert.ok(!found(`by ${WIDE('other')} é`, SHORT));
+});
+
+test('makeRedactor: hides a mark in any Unicode form, and keeps the rest of the line as it was (#507)', () => {
+  const redact = makeRedactor({ owners: [FULL], marks: [ACCENTED, DOTTED.toLowerCase(), SHORT] }, {});
+  // The lowercase of each İ before a mark is two code units: the place to cut must still be right.
+  assert.equal(redact(`İİ ${DOTTED}, ${DOTTED.toUpperCase()} and ${DOTTED}\n`), 'İİ <mark>, <mark> and <mark>\n');
+  assert.equal(redact(`café by ${DECOMPOSED}, é ${ACCENTED}.`), 'café by <mark>, é <mark>.');
+  assert.equal(redact(`！ by ${WIDE(SHORT)} ！`), '！ by <mark> ！');
+  assert.equal(redact(`！ ${WIDE(SHORT)}\u200B${WIDE('example')}!`), '！ <owner>!');
+  assert.equal(redact(`by s\u200Bam, \u200B and s\u200Dam.`), 'by <mark>, \u200B and <mark>.');
+  assert.equal(redact(`${WIDE(SHORT)}ple é`), `${WIDE(SHORT)}ple é`, 'a longer word stays');
+  // The check and redact agree.
+  for (const text of [`by ${DECOMPOSED}`, WIDE(SHORT), `s\u200Bam`, DOTTED.toUpperCase(), `${WIDE(SHORT)}ple`, `${DOTTED}x`]) {
+    assert.equal(redact(text) === text, !scanText(text, { file: 'a', marks: [FULL, ACCENTED, DOTTED.toLowerCase(), SHORT] }).length, `redact and the check disagree on ${text}`);
+  }
+});
+
+// ---- The fold after the adversarial review (#507) ----
+
+// A run of combining marks of mixed classes: a normalize of one long run grows with its square.
+const MIXED_MARKS = (n: number) => `a${'̖́'.repeat(n / 2)}`;
+
+test('the fold: a long run of mixed combining marks stays linear (#507)', () => {
+  const redact = makeRedactor({ marks: [FULL] }, {});
+  assertLinear('hasMark', MIXED_MARKS, (text) => hasMark(text, FULL), 1 << 12);
+  assertLinear('scanText', MIXED_MARKS, (text) => scanText(text, { file: 'a.md', marks: [FULL] }), 1 << 12);
+  assertLinear('redact', MIXED_MARKS, redact, 1 << 12);
+  // The reviewer's input, through the guard: 240k characters, then the mark.
+  const body = join(postDir, 'marks-run.md');
+  writeFileSync(body, `${MIXED_MARKS(240_000)}\nQuietVale\n`);
+  const start = performance.now();
+  assert.equal(post(`gh issue create --title t --body-file ${body}`)?.id, 'private-mark');
+  const ms = performance.now() - start;
+  assert.ok(ms < 1000, `${ms.toFixed(0)} ms for 240k characters`);
+  rmSync(body);
+});
+
+test('the fold: the fast fold of the check gives the same text as the fold of redact (#507)', () => {
+  const pieces = ['a', 'é', '̖', '́', '\u200B', 'ｓ', 'ᄀ', 'ᅡ', 'ᆫ', 'ｶ', '\uFF9E', '你', '，', 'İ', '𝅥', 'x', ' '];
+  let seed = 7;
+  const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648);
+  for (let round = 0; round < 500; round++) {
+    let text = '';
+    for (let i = next() % 80; i > 0; i--) text += pieces[next() % pieces.length];
+    assert.equal(foldLine(text).text, foldText(text).text, JSON.stringify(text));
+  }
+  for (const text of [MIXED_MARKS(100), `x${'́'.repeat(31)}y`, '́'.repeat(62)]) assert.equal(foldLine(text).text, foldText(text).text);
+});
+
+test('the fold: what the check found before the fold, it still finds (#507)', () => {
+  const part = `${SHORT}_1a`;
+  const hangul = String.fromCharCode(0xc11c, 0xc544);
+  const cases: [string, string][] = [
+    // A zero-width character next to a name is an edge, as before.
+    [`x\u200B${SHORT} y`, SHORT],
+    [`ab\u200B${FULL}`, FULL],
+    [`${SHORT}\u200B́`, SHORT],
+    // An accent or a final consonant on the last letter of a mark found as a part.
+    [`${part}́`, part],
+    [`user ${part}á x`, part],
+    [`${hangul}ᆫ`, hangul],
+    [String.fromCharCode(0xc11c, 0xc548), hangul],
+  ];
+  for (const [text, mark] of cases) {
+    assert.ok(hasMark(text, mark), `hasMark: ${JSON.stringify(text)}`);
+    assert.equal(scanText(text, { file: 'a.md', marks: [mark] }).length, 1, `scanText: ${JSON.stringify(text)}`);
+    assert.notEqual(makeRedactor({ marks: [mark] }, {})(text), text, `redact: ${JSON.stringify(text)}`);
+  }
+  // Still whole words: a letter with an accent after a name blocks it.
+  assert.ok(!hasMark(`${SHORT.slice(0, 2)}ḿ`, SHORT));
+});
+
+test('the fold: a mark of only zero-width characters is no mark, and the longest folded mark goes first (#507)', () => {
+  assert.equal(hasMark('nothing here', '\u200B'), false);
+  assert.deepEqual(scanText('nothing here', { file: 'a.md', marks: ['\u200B\u200D'] }), []);
+  assert.equal(makeRedactor({ marks: ['\u200B\u200B\u200B', DOMAIN] }, {})(`by me at ${DOMAIN} ok`), 'by me at <host> ok');
+  assert.equal(makeRedactor({ marks: [`${SHORT}${'\u200B'.repeat(5)}`, FULL] }, {})(`by ${FULL} ok`), 'by <mark> ok');
+});
+
+test('a refusal folds the marks before it names a program (#507)', () => {
+  const dir = makeTempDir('yokoten-wide-marks-');
+  const marks = join(dir, 'private-marks');
+  writeFileSync(marks, `${WIDE('quietvale')}\n`);
+  const body = join(dir, 'body.md');
+  writeFileSync(body, 'All clean.\n');
+  const bot = `node bin/yokoten.ts bot -- gh pr create --title t --body-file ${body}`;
+  const run = (command: string) => checkCommand(command, { env: { HOME: dir, YOKOTEN_PRIVATE_MARKS: marks }, config: DEFAULTS, cwd: dir });
+  assert.ok(run(`${bot} | quietvale-tool x`)?.what.includes('and a pipe in this command'));
+  assert.ok(run(`quietvale-tool x; ${bot}`)?.what.includes('and a command in this command'));
+  rmSync(dir, { recursive: true });
+});
+
+test('the bot program is never a variable: no `=` or `,` in its path (#506)', () => {
+  for (const program of ['GH_REPO=evil/yokoten', 'LD_PRELOAD=x/yokoten', 'PATH=/tmp/x/yokoten', 'a,b/yokoten']) {
+    assert.equal(isBotProgram(program), false, program);
+    const command = `${program} bot -- gh issue create --title t --body "QuietVale ships"`;
+    assert.equal(lonePost(command), null, program);
+  }
+});
+
+// #523: a stopped line names the kind of mark, never its value, and how to change it.
+test('scanText: a private-mark finding names the kind of mark, never the value (#523)', () => {
+  const name = ['Rue', 'Sample'].join(' ');
+  const email = `ruex${at}personal-mail.dev`;
+  const text = [`by ${name}`, `mail ${email}`, 'ask @octo-ruex', 'see build.rue-host.dev', 'from QuietVale'].join('\n');
+  const marks = [
+    { value: name.toLowerCase(), kind: 'git name' },
+    { value: email, kind: 'git email' },
+    { value: 'octo-ruex', kind: 'forge login' },
+    { value: 'build.rue-host.dev', kind: 'private remote host' },
+    { value: 'quietvale', kind: null },
+  ];
+  const found = scanText(text, { file: 'a.md', marks: marks.map((mark) => mark.value), kinds: mapMarkKinds(marks) }).filter((hit) => hit.id === 'private-mark');
+  assert.deepEqual(
+    found.map((hit) => [hit.line, hit.what]),
+    [
+      [1, 'matches your git name (a private mark yokoten added by itself)'],
+      [2, 'matches your git email (a private mark yokoten added by itself)'],
+      [3, 'matches your forge login (a private mark yokoten added by itself)'],
+      [4, 'matches the name of a private server in your git remotes (a private mark yokoten added by itself)'],
+      [5, 'matches a word you added to your private marks'],
+    ],
+  );
+  // The fix says how to change it: turn a kind off, take the mark out, or allow it here.
+  assert.match(found[0].fix, /`yokoten marks off git-name`/);
+  assert.match(found[1].fix, /`yokoten marks off git-email`/);
+  assert.match(found[2].fix, /`yokoten marks off forge-login`/);
+  assert.match(found[3].fix, /`yokoten marks allow <mark> --here`/);
+  assert.match(found[4].fix, /`yokoten marks allow <mark> --here`[^]*`yokoten marks remove`/);
+  const said = JSON.stringify(found).toLowerCase();
+  for (const mark of marks) assert.ok(!said.includes(mark.value), 'a finding holds a mark');
+  for (const part of ['sample', 'personal-mail', 'octo-ruex', 'rue-host', 'quietvale']) assert.ok(!said.includes(part), `a finding holds ${part.length} letters of a mark`);
+  // With no kinds, as before: the line of the file.
+  assert.equal(scanText('from QuietVale', { file: 'a.md', marks: ['quietvale'] })[0].what, 'matches a line of your private-marks file');
+  assert.equal(describeMark('some new kind').what, 'matches your some new kind (a private mark yokoten added by itself)');
 });

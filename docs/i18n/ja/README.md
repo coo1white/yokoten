@@ -1,22 +1,20 @@
 <!-- source: README.md -->
 <div align="center">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="../../assets/banner-dark.svg">
-  <img src="../../assets/banner-light.svg" width="100%" alt="yokoten · 横展。旅路には道しるべを。橋には番人を。山あいを登る一本の道が、番号のついた五つの関所を越えて橋へ続き、橋のたもとでは灯籠が見張っている。">
-</picture>
+# yokoten · 横展
 
-<br/>
+### 旅路には道しるべを。橋には番人を。
 
 **誰でも、良いチームのやり方でソフトウェアを作れる。**
 
-あなたと AI エージェントのための、道案内と番人。
+良いチームの開発プロセスをプロジェクトに組み込む無料ツールです。チェックはリポジトリと CI で動き、人が書いても AI が書いても同じように働きます。
 
 **[yokoten.app](https://yokoten.app/?from=github)** &nbsp;·&nbsp; [English](../../../README.md) | [简体中文](../zh-CN/README.md) | [繁體中文](../zh-TW/README.md) | 日本語
 
 [![ci](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml/badge.svg)](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue)](../../../LICENSE)
-[![Node](https://img.shields.io/badge/Node-%E2%89%A522.18-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![npm](https://img.shields.io/npm/v/yokoten?logo=npm)](https://www.npmjs.com/package/yokoten)
+[![Node](https://img.shields.io/badge/Node-%E2%89%A522.23.4-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 
 </div>
 
@@ -36,6 +34,21 @@
 
 ほかのエージェントでも、エージェントなしでも、コミットのチェックと CI が問題のある変更を止めます。
 
+## どの言語でも使える
+
+yokoten 自体は Node 22.23.4、24.22.1、26.12.1（またはそれぞれの新しいリリース）で動きます（手元のマシンでも CI でも）が、プロジェクトの言語は問いません。
+番人、個人情報と秘密情報のチェック、CI、issue と pull request のチェックは、どの言語でも同じように動きます。
+
+言語を見るのは一か所だけです。`doctor` がテストのコマンドを探します。
+
+| | 言語 |
+|---|---|
+| テストのコマンドを見つけられる | JavaScript と TypeScript（npm、Deno）、Python、Go、Rust、Java（Maven、Gradle）、.NET、Ruby、PHP、Swift、Elixir、Dart と Flutter、`make test` があるプロジェクト |
+| 開発中（[#550](https://github.com/yokoten-labs/yokoten/issues/550)） | テストを走らせる CI のジョブを書きます。手で書く必要はありません |
+
+最初の手順（install、init、doctor）は、Python、Go、Rust、.NET、Ruby、PHP のプロジェクトで試しました。
+インストールからリリースまでの道のりを最後まで通したのは、今のところ TypeScript のプロジェクトだけです。
+
 ## なぜ作ったのか
 
 良いチームでは、どの変更にも理由があり、テストがあり、レビューを通っています。
@@ -48,7 +61,9 @@ force push、テストを書き換えて通す、個人情報の公開といっ�
 
 ## インストール
 
-必要なのは [Node](https://nodejs.org/) 22.18 以降だけです。
+必要なのは [Node](https://nodejs.org/) 22.23.4 以降だけです（Node 24 なら 24.22.1 以降、Node 26 なら 26.12.1 以降）。
+22.18〜22.23.3 でも yokoten は動きますが、使わないでください。これらにはセキュリティの穴があり、Node が 2026 年 10 月 21 日に修正しました（[公式の告知](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases)）。
+インストール時に npm が警告を出すのも、`yokoten doctor` が更新を勧めるのも、このためです。
 
 ```sh
 npx yokoten install      # PC ごとに一度
@@ -56,8 +71,6 @@ cd your-project
 npx yokoten init         # プロジェクトごとに一度
 npx yokoten doctor       # 今いる関所と、次の一手
 ```
-
-npm での最初のリリース（10 月 24 日）までは、[clone からインストール](../../guide.md#install-from-a-clone)してください（英語）。
 
 ### 知っておくと良いこと
 
@@ -92,9 +105,10 @@ npm での最初のリリース（10 月 24 日）までは、[clone からイ�
 - **[ガイド](../../guide.md)**：12 のルール、すべてのコマンド、仕組み、そしてできないこと（英語）。
 - **[サーバーの設定](../../server.md)**：GitHub で `main` とリリースタグを保護する（英語）。
 - **[決定記録](../../records/)**：なぜこう作ったのか（英語）。
-- **[コントリビュート](../../../AGENTS.md)**：yokoten の開発に参加するときのルール（英語）。
+- **[変更履歴](../../../CHANGELOG.md)**：各バージョンで何が変わったか（英語）。
+- **[コントリビュート](../../../CONTRIBUTING.md)**：問題の報告や変更の送り方（英語）。
 - **[セキュリティ](../../../.github/SECURITY.md)**：セキュリティ上の問題の報告方法（英語）。
 
 ---
 
-<p align="center"><sub>MIT · <a href="https://coolwhite.us/">coolwhite</a> が作りました。工場の現場から学んだ教訓とともに。</sub></p>
+<p align="center"><sub>MIT · <a href="https://coolwhite.us/">coolwhite</a> と AI エージェントのチームが作りました。工場の現場から学んだ教訓とともに。</sub></p>

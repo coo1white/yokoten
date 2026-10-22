@@ -3,10 +3,33 @@
 
 // A package runner that starts the published yokoten at the start of a line or a command:
 // npx, npx --yes, bunx, pnpm dlx, npm exec. "yokoten-check" or "echo npx yokoten" is not one.
-const PACKAGE_RUN = String.raw`^[ \t]*(?:npx|bunx|pnpm[ \t]+dlx|npm[ \t]+exec)(?:[ \t]+-\S+)*[ \t]+yokoten(?:@[\w.^~-]+)?`;
+// The flags are read one word at a time, so a long line takes linear time and never throws
+// (#431): a regex that repeats a group over the whole line ran out of stack.
+const RUNNER_HEAD = /^[ \t]*(?:npx|bunx|pnpm[ \t]+dlx|npm[ \t]+exec)/gm;
+const RUNNER_FLAG = /[ \t]+-\S+/y;
+
+/** A test of a command, as `runs` gives it: true when the text holds the command. */
+export interface CommandTest {
+  test: (text: string) => boolean;
+}
+
+/** Whether a package runner at a line start, after its flags, runs what `rest` (a sticky regex) matches. */
+function runsByRunner(text: string, rest: RegExp): boolean {
+  for (const head of text.matchAll(RUNNER_HEAD)) {
+    let at = head.index + head[0].length;
+    for (RUNNER_FLAG.lastIndex = at; RUNNER_FLAG.test(text); RUNNER_FLAG.lastIndex = at) at = RUNNER_FLAG.lastIndex;
+    rest.lastIndex = at;
+    if (rest.test(text)) return true;
+  }
+  return false;
+}
 
 /** A command that runs yokoten's `<sub>`, by whatever path (yokoten.ts or, since #408, yokoten.mjs), or by a package runner (#298). */
-export const runs = (sub: string): RegExp => new RegExp(`(?:yokoten\\.(?:ts|mjs)"?|${PACKAGE_RUN})\\s+${sub}\\b`, 'm');
+export const runs = (sub: string): CommandTest => {
+  const byPath = new RegExp(`yokoten\\.(?:ts|mjs)"?\\s+${sub}\\b`);
+  const afterRunner = new RegExp(String.raw`[ \t]+yokoten(?:@[\w.^~-]+)?\s+${sub}\b`, 'y');
+  return { test: (text) => byPath.test(text) || runsByRunner(text, afterRunner) };
+};
 
 /** The yokoten subcommand a command runs, if any. The word ends at a `;`, as in a tool-call guard (#260). */
 export const subcommand = (command: string): string | undefined => command.match(/yokoten\.(?:ts|mjs)"?\s+(\w[\w-]*)/)?.[1];
@@ -165,7 +188,7 @@ export const COMMANDS: Command[] = [
     options: [
       { name: '--session', text: 'only the next step, for the start of a session' },
       { name: '--json', text: 'the report as JSON on stdout' },
-      { name: '--agent', value: 'name', text: 'with --session: claude-code (the default), codex, or gemini for Gemini CLI JSON' },
+      { name: '--agent', value: 'name', text: 'with --session: claude-code (the default), codex, muse, or gemini for Gemini CLI JSON' },
     ],
     example: 'yokoten doctor --session',
   },
@@ -206,10 +229,17 @@ export const COMMANDS: Command[] = [
   },
   {
     name: 'marks',
-    summary: 'let one of your private marks through in this repo only',
-    usage: 'allow <mark> --here | allow --remove <mark> --here',
+    summary: 'count your private marks, add or remove one, turn a kind off, or allow one here',
+    usage: '[add | remove | off <kind> | on <kind> | allow <mark> --here | allow --remove <mark> --here]',
     text: [
-      'Keeps an allow on this machine, beside the private-marks file, for the repo you are',
+      'Alone, it counts your private marks by kind; it never shows a value. install adds your',
+      'git name, git email and forge login by itself.',
+      'add and remove read one mark: typed with no echo in a terminal, or from stdin. It is',
+      'never a word on the command line, where your shell history would keep it.',
+      'off <kind> stops install adding git-name, git-email or forge-login, and removes the',
+      'marks it added for it; on <kind> brings the default back and adds it again. Marks you',
+      'added yourself are never touched.',
+      'allow keeps an allow on this machine, beside the private-marks file, for the repo you are',
       'in, by its origin remote; a repo with no origin cannot have one. The mark then passes the',
       'checks in this repo only, as with "privacy.allow" in yokoten.json, and nothing is',
       'written into the repo. Only a mark in your private-marks file can be allowed.',
@@ -220,7 +250,7 @@ export const COMMANDS: Command[] = [
       { name: '--remove', text: 'take the allow back' },
     ],
     arguments: ['action', 'mark'],
-    example: 'yokoten marks allow quietvale --here',
+    example: 'yokoten marks off git-name',
   },
   {
     name: 'changelog',
@@ -266,6 +296,24 @@ export const COMMANDS: Command[] = [
       { name: '--json', text: 'the result as JSON on stdout' },
     ],
     example: `echo '{"tool_input":{"command":"git status"}}' | yokoten hook`,
+  },
+  {
+    name: 'worker',
+    summary: "mark a worktree as a worker's, so the guard treats every agent there as a worker",
+    usage: 'mark <dir> | unmark <dir>',
+    text: [
+      "Marks the worktree at <dir> as a worker's. The guard then treats every agent there as",
+      'a worker, even one whose runtime passes no YOKOTEN_ROLE to its hooks (Muse Code).',
+      "The mark is a file in the worktree's own git folder, and its path on the worker list",
+      "(under yokoten's config folder, outside the worktree), so moving `.git` away keeps the role.",
+      "The guard refuses a worker's plain ways to remove it; the server and credentials kept",
+      'from the worker are the real lock. Given a subfolder, it marks the worktree it is in, and names it.',
+      '`git worktree remove <dir>` removes the file with the worktree; `yokoten worker unmark <dir>`',
+      'clears the list entry, and only the lead runs it. The main checkout and a submodule are never marked.',
+    ],
+    options: [],
+    arguments: ['action', 'dir'],
+    example: 'yokoten worker mark ../app-42',
   },
   {
     name: 'explain',

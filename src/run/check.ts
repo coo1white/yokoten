@@ -7,11 +7,11 @@ import { existsSync, lstatSync, readFileSync, readlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { Config, Env } from '../rules/config.ts';
 import { findUnknownKeys, matcher } from '../rules/config.ts';
-import { checkEdit } from '../rules/guards.ts';
+import { checkEdit, withWorkerMark } from '../rules/guards.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
 import { type Finding, finding } from '../rules/message.ts';
 import { isChangeFile, longSentenceNote, longSentences } from '../rules/pr.ts';
-import { autoLogins, notUtc, repoMarkKinds, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
+import { autoLogins, mapMarkKinds, notUtc, repoMarkKinds, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
 import { parseChange, readChanges } from './changelog.ts';
 import { isShallowNote, translationNotes } from './translations.ts';
 
@@ -88,14 +88,14 @@ export function parseConfigList(text: string): ConfigEntry[] {
 }
 
 // The keys of two answers: `assumeEmptyFolder` keeps them ahead of the reads.
-const listKey = (root: string, env: NodeJS.ProcessEnv) => `config-list\0${root}\0${JSON.stringify(env)}`;
+const listKey = (root: string, env: Env) => `config-list\0${root}\0${JSON.stringify(env)}`;
 const indexKey = (root: string) => `ls-files\0${root}`;
 
 /**
  * Every config entry git sees in `root` with `env`, oldest first, from one call kept for
  * the run. Null outside a run, or when git can't list them: the caller then asks per key.
  */
-function readConfigList(root: string, env: NodeJS.ProcessEnv = process.env): ConfigEntry[] | null {
+function readConfigList(root: string, env: Env): ConfigEntry[] | null {
   if (!answers) return null;
   return remembered(listKey(root, env), () => {
     try {
@@ -107,7 +107,7 @@ function readConfigList(root: string, env: NodeJS.ProcessEnv = process.env): Con
 }
 
 /** The entries of the keys `match` takes (a key name, or a test of the key as git prints it), oldest first; null as for `readConfigList`. */
-export function configEntries(root: string, match: string | RegExp, env?: NodeJS.ProcessEnv): ConfigEntry[] | null {
+export function configEntries(root: string, match: string | RegExp, env: Env): ConfigEntry[] | null {
   const list = readConfigList(root, env);
   if (!list) return null;
   const key = typeof match === 'string' ? configKey(match) : null;
@@ -115,12 +115,12 @@ export function configEntries(root: string, match: string | RegExp, env?: NodeJS
 }
 
 /** The value `git config --get key` gives in `root` (the last one set), trimmed, or '' when it is not set or git fails. */
-export const gitConfig = (root: string, key: string): string => {
-  const entries = configEntries(root, key);
+export const gitConfig = (root: string, key: string, env: Env): string => {
+  const entries = configEntries(root, key, env);
   if (entries) return (entries.at(-1)?.value ?? '').trim();
-  return remembered(`config\0${root}\0${key}`, () => {
+  return remembered(`config\0${root}\0${key}\0${JSON.stringify(env)}`, () => {
     try {
-      return execFileSync('git', ['config', '--get', key], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      return execFileSync('git', ['config', '--get', key], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
     } catch {
       return '';
     }
@@ -132,8 +132,8 @@ export const gitConfig = (root: string, key: string): string => {
  * config: no entries, and no index. For a self-test's folder (doctor's road control), so
  * the control reads no git and no config of this machine. Nothing outside a run.
  */
-export function assumeEmptyFolder(root: string): void {
-  answers?.set(listKey(root, process.env), { value: [] });
+export function assumeEmptyFolder(root: string, env: Env): void {
+  answers?.set(listKey(root, env), { value: [] });
   answers?.set(indexKey(root), { error: new Error(`${root} is not in a git repository`) });
 }
 
@@ -166,8 +166,8 @@ function whyNoAnswer(result: { error?: Error; status: number | null; signal: Nod
  * read of repo content goes through here. Bytes, not text: a blob may be binary. Any exit
  * but 0 throws a GitReadError (#403); `okCodes` names other exits that are answers.
  */
-export function runGit(cwd: string, args: string[], { input, maxBuffer = 1 << 30, okCodes = [0] }: { input?: string; maxBuffer?: number; okCodes?: number[] } = {}): { stdout: Buffer; status: number } {
-  const result = spawnSync('git', ['--no-replace-objects', ...args], { cwd, input, maxBuffer });
+export function runGit(cwd: string, args: string[], { env, input, maxBuffer = 1 << 30, okCodes = [0] }: { env: Env; input?: string; maxBuffer?: number; okCodes?: number[] }): { stdout: Buffer; status: number } {
+  const result = spawnSync('git', ['--no-replace-objects', ...args], { cwd, env, input, maxBuffer });
   if (result.error || result.status === null || !okCodes.includes(result.status)) {
     throw new GitReadError(`\`git ${args.join(' ')}\` gave no answer: ${whyNoAnswer(result, maxBuffer)}`);
   }
@@ -175,10 +175,10 @@ export function runGit(cwd: string, args: string[], { input, maxBuffer = 1 << 30
 }
 
 /** What git printed, as bytes; see `runGit`. */
-export const readGit = (cwd: string, args: string[], options: { input?: string; maxBuffer?: number } = {}): Buffer => runGit(cwd, args, options).stdout;
+export const readGit = (cwd: string, args: string[], options: { env: Env; input?: string; maxBuffer?: number }): Buffer => runGit(cwd, args, options).stdout;
 
-const git = (cwd: string, args: string[]) => readGit(cwd, args).toString('utf8');
-const gitBytes = (cwd: string, args: string[], input = '', maxBuffer = 1 << 30) => readGit(cwd, args, { input, maxBuffer });
+const git = (cwd: string, env: Env, args: string[]) => readGit(cwd, args, { env }).toString('utf8');
+const gitBytes = (cwd: string, env: Env, args: string[], input = '', maxBuffer = 1 << 30) => readGit(cwd, args, { env, input, maxBuffer });
 const list = (out: string) => out.split('\0').filter(Boolean);
 
 /** A GitReadError as the one finding a check reports in its place (#403). */
@@ -187,11 +187,11 @@ export const gitReadFinding = (err: GitReadError): Finding =>
 
 // Outside a repo this fails, and the caller handles it. Hide git's own error, or an agent
 // reads it as the result of the command the guard just stopped.
-export const gitRoot = (cwd: string): string =>
-  execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+export const gitRoot = (cwd: string, env: Env): string =>
+  execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 
 /** The files in the index: what the next commit (or, in CI, the checkout) holds. */
-export const indexFiles = (root: string): string[] => rememberedIndex(root, () => list(git(root, ['ls-files', '-z'])));
+export const indexFiles = (root: string, env: Env): string[] => rememberedIndex(root, () => list(git(root, env, ['ls-files', '-z'])));
 
 /** A staged entry; `from` is the old path of a move or copy. */
 type Staged = { status: string; path: string; from?: string; mode: string; blob: string };
@@ -200,10 +200,10 @@ type Staged = { status: string; path: string; from?: string; mode: string; blob:
  * The files the next commit adds, changes, moves, deletes or changes the type of (a move
  * by its new name, and its old one in `from`), with the mode and blob id git stores for each.
  */
-function stagedFiles(root: string): Staged[] {
+function stagedFiles(root: string, env: Env): Staged[] {
   // -z --raw gives ":oldmode newmode oldblob newblob status", then the path (for R/C, old
   // path then new path).
-  const out = list(git(root, ['diff', '--cached', '--raw', '--no-abbrev', '--diff-filter=ACDMRT', '-z']));
+  const out = list(git(root, env, ['diff', '--cached', '--raw', '--no-abbrev', '--diff-filter=ACDMRT', '-z']));
   const files: Staged[] = [];
   for (let i = 0; i < out.length; ) {
     const [, mode, , blob, status] = out[i].split(' ');
@@ -212,6 +212,31 @@ function stagedFiles(root: string): Staged[] {
     i += moved ? 3 : 2;
   }
   return files;
+}
+
+/** A path as a shell word: as it is when it has only plain characters, else in single quotes. */
+const shellWord = (path: string): string => (/^[\w./@+=,-]+$/.test(path) ? path : `'${path.replaceAll("'", "'\\''")}'`);
+
+/**
+ * The line a stopped commit ends with (#503): the one command that takes the staged files the
+ * problems name out of the commit, and that they stay on disk. Null when no problem names a staged
+ * file. With no commit yet there is no HEAD to restore from, so it is `git rm --cached`.
+ */
+export function unstageHint(root: string, env: Env, problems: Finding[]): string | null {
+  const staged = stagedFiles(root, env).map((entry) => entry.path);
+  // A finding for a folder (#521) ends in a slash: the hint names the folder, never its files.
+  const isStaged = (file: string) => (file.endsWith('/') ? staged.some((path) => path.startsWith(file)) : staged.includes(file));
+  const named = [...new Set(problems.flatMap((problem) => (problem.file !== undefined && isStaged(problem.file) ? [problem.file] : [])))];
+  if (!named.length) return null;
+  const hasFolder = named.some((file) => file.endsWith('/'));
+  let hasHead = true;
+  try {
+    git(root, env, ['rev-parse', '--verify', '--quiet', 'HEAD']);
+  } catch {
+    hasHead = false;
+  }
+  const command = hasHead ? 'git restore --staged' : hasFolder ? 'git rm -r --cached' : 'git rm --cached';
+  return `To take ${hasFolder ? (named.length > 1 ? 'these paths' : 'this folder') : named.length > 1 ? 'these files' : 'this file'} out of the commit, run \`${command} ${named.map(shellWord).join(' ')}\`. ${named.length > 1 ? 'They stay' : 'It stays'} on disk, with your changes.`;
 }
 
 /** A full object id: SHA-1 or SHA-256. */
@@ -224,9 +249,9 @@ const OBJECT_ID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
  * HEAD already leads to is a fast-forward, which git commits with one parent, not as a
  * merge, so it is dropped.
  */
-function mergeHeads(root: string): string[] {
+function mergeHeads(root: string, env: Env): string[] {
   // Where MERGE_HEAD is must be known (#403); only the file itself may be missing.
-  const path = resolve(root, git(root, ['rev-parse', '--git-path', 'MERGE_HEAD']).trim());
+  const path = resolve(root, git(root, env, ['rev-parse', '--git-path', 'MERGE_HEAD']).trim());
   let lines: string[];
   try {
     lines = readFileSync(path, 'utf8').split('\n').filter(Boolean);
@@ -237,7 +262,7 @@ function mergeHeads(root: string): string[] {
   // Exit 1 is "not an ancestor": a real other parent. 0 is a fast-forward, which exempts
   // nothing. Anything else is no answer, and the check stops (#403): a head left out here
   // would also leave out the files only that head had.
-  return lines.filter((head) => runGit(root, ['merge-base', '--is-ancestor', 'HEAD', head], { okCodes: [0, 1] }).status === 1);
+  return lines.filter((head) => runGit(root, ['merge-base', '--is-ancestor', 'HEAD', head], { env, okCodes: [0, 1] }).status === 1);
 }
 
 /**
@@ -250,12 +275,12 @@ function mergeHeads(root: string): string[] {
  * agent can write, so a merge made up on purpose gets past it. The lock is on the server:
  * branch protection and CODEOWNERS.
  */
-function mergeMade(root: string, paths: string[], heads: string[]): string[] {
+function mergeMade(root: string, paths: string[], heads: string[], env: Env): string[] {
   let left = paths;
   for (const head of heads) {
     // --no-renames: a move is its old path deleted and its new path added, so the old
     // path counts as changed unless this parent made the same move.
-    const differs = new Set(list(git(root, ['diff', '--cached', '--name-only', '--no-renames', '-z', '--end-of-options', head])));
+    const differs = new Set(list(git(root, env, ['diff', '--cached', '--name-only', '--no-renames', '-z', '--end-of-options', head])));
     left = left.filter((path) => differs.has(path));
   }
   return left;
@@ -267,11 +292,11 @@ function mergeMade(root: string, paths: string[], heads: string[]): string[] {
  * them; a worker who merges in a lead-only file and then moves or removes it would
  * otherwise pass. One `git diff` per head, and one `git ls-tree` for HEAD.
  */
-function mergeRemoved(root: string, heads: string[]): string[] {
+function mergeRemoved(root: string, heads: string[], env: Env): string[] {
   if (heads.length === 0) return [];
-  const gone = new Set(heads.flatMap((head) => list(git(root, ['diff', '--cached', '--no-renames', '--diff-filter=D', '--name-only', '-z', '--end-of-options', head]))));
+  const gone = new Set(heads.flatMap((head) => list(git(root, env, ['diff', '--cached', '--no-renames', '--diff-filter=D', '--name-only', '-z', '--end-of-options', head]))));
   if (gone.size === 0) return [];
-  const inHead = new Set(list(git(root, ['ls-tree', '-r', '--name-only', '-z', 'HEAD'])));
+  const inHead = new Set(list(git(root, env, ['ls-tree', '-r', '--name-only', '-z', 'HEAD'])));
   return [...gone].filter((path) => !inHead.has(path));
 }
 
@@ -319,20 +344,20 @@ export function batchBlobs(sizes: Map<string, number>, cap: number): { batches: 
  * missing from the object store is left out. Like every read here, it reads the objects as
  * stored, past any replace ref (#294).
  */
-export function readBlobs(root: string, ids: string[], cap = BATCH_CAP): Map<string, Blob> {
+export function readBlobs(root: string, ids: string[], env: Env, cap = BATCH_CAP): Map<string, Blob> {
   const blobs = new Map<string, Blob>();
   const unique = [...new Set(ids)];
   if (unique.length === 0) return blobs;
   // Sizes first, so no call returns more than the cap.
   const sizes = new Map<string, number>();
-  for (const line of gitBytes(root, ['cat-file', '--batch-check=%(objectname) %(objectsize)'], unique.join('\n') + '\n').toString('utf8').split('\n')) {
+  for (const line of gitBytes(root, env, ['cat-file', '--batch-check=%(objectname) %(objectsize)'], unique.join('\n') + '\n').toString('utf8').split('\n')) {
     const [id, size] = line.split(' ');
     if (size !== undefined && size !== 'missing') sizes.set(id, Number(size));
   }
   const { batches, over } = batchBlobs(sizes, cap);
   for (const id of over) {
     // Only the start: git is stopped once the buffer is past it.
-    const out = spawnSync('git', ['--no-replace-objects', 'cat-file', 'blob', id], { cwd: root, maxBuffer: BINARY_PEEK, stdio: ['ignore', 'pipe', 'ignore'] }).stdout ?? Buffer.alloc(0);
+    const out = spawnSync('git', ['--no-replace-objects', 'cat-file', 'blob', id], { cwd: root, env, maxBuffer: BINARY_PEEK, stdio: ['ignore', 'pipe', 'ignore'] }).stdout ?? Buffer.alloc(0);
     const size = sizes.get(id) ?? 0;
     // A read shorter than the peek (or the whole blob, if smaller) is git failing (#403): left
     // out, as a missing blob is, so the entry can't pass unread.
@@ -342,7 +367,7 @@ export function readBlobs(root: string, ids: string[], cap = BATCH_CAP): Map<str
   for (const ids of batches) {
     // Each blob comes back as "<id> <type> <size>\n<bytes>\n".
     const room = ids.reduce((sum, id) => sum + (sizes.get(id) ?? 0) + 128, 0);
-    const out = gitBytes(root, ['cat-file', '--batch'], ids.join('\n') + '\n', room);
+    const out = gitBytes(root, env, ['cat-file', '--batch'], ids.join('\n') + '\n', room);
     let at = 0;
     while (at < out.length) {
       const nl = out.indexOf(10, at);
@@ -387,23 +412,24 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
   const problems: Finding[] = [];
   // The index is read once, here or in the run around this check (#453).
   let index: string[] | undefined;
-  const indexed = () => (index ??= indexFiles(root));
+  const indexed = () => (index ??= indexFiles(root, env));
   const kinds = repoMarkKinds(env, root, config.privacy); // less what the repo is named for and the machine allows (#447)
   const marks = kinds.map((mark) => mark.value);
   const logins = autoLogins(kinds);
+  const markKinds = mapMarkKinds(kinds);
   const skip = matcher(config.privacy.skip);
   const privacy = (path: string, buf: Buffer) => {
     if (skip(path) || looksBinary(buf)) return;
-    problems.push(...scanText(buf.toString('utf8'), { file: path, marks, logins, allow: config.privacy.allow }));
+    problems.push(...scanText(buf.toString('utf8'), { file: path, marks, logins, allow: config.privacy.allow, kinds: markKinds }));
   };
   if (staged) {
-    const files = stagedFiles(root);
+    const files = stagedFiles(root, env);
     // git sets GIT_INDEX_FILE for the commit hooks, so an empty commit or an amend is
     // still checked. Run by hand with nothing staged, there is no commit to check (#208).
     const isCommitting = files.length > 0 || env.GIT_INDEX_FILE !== undefined;
     if (!isCommitting) notes.push(finding('time-zone', 'nothing is staged', 'stage a change with `git add`, then run it again', { why: 'with nothing staged there is no commit to check' }));
     // The commit about to be made: git var gives its author and committer, time included.
-    if (isCommitting && config.privacy.utc && ['GIT_AUTHOR_IDENT', 'GIT_COMMITTER_IDENT'].some((v) => notUtc(git(root, ['var', v])))) {
+    if (isCommitting && config.privacy.utc && ['GIT_AUTHOR_IDENT', 'GIT_COMMITTER_IDENT'].some((v) => notUtc(git(root, env, ['var', v])))) {
       problems.push(finding('time-zone', "this commit's time carries your time zone", TIME_ZONE_FIX));
     }
     // In a merge, the role checks see only what the merge itself changed: a worker
@@ -411,14 +437,16 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
     // move is checked at its old path too: moving AGENTS.md away removes it. A copy leaves it.
     const touched = [...new Set(files.flatMap((f) => (f.from === undefined || f.status !== 'R' ? [f.path] : [f.from, f.path])))];
     // A file only the other branch had, removed during the merge, is the worker's too.
-    const heads = mergeHeads(root);
-    for (const path of [...new Set([...mergeMade(root, touched, heads), ...mergeRemoved(root, heads)])]) {
-      const reason = checkEdit(path, { config, env });
+    const heads = mergeHeads(root, env);
+    // A worker by YOKOTEN_ROLE or by the mark on its worktree, which a runtime's env can't drop (#555).
+    const roleEnv = withWorkerMark(env, [root]);
+    for (const path of [...new Set([...mergeMade(root, touched, heads, env), ...mergeRemoved(root, heads, env)])]) {
+      const reason = checkEdit(path, { config, env: roleEnv });
       if (reason) problems.push(reason);
     }
     // A deleted file has no blob, and a submodule's lives in its own repo.
     const kept = files.filter((f) => f.status !== 'D' && f.mode !== GITLINK);
-    const blobs = readBlobs(root, kept.map((f) => f.blob));
+    const blobs = readBlobs(root, kept.map((f) => f.blob), env);
     // An entry whose blob is not in the object store can't be checked, so it can't pass.
     for (const { path } of kept.filter((f) => !blobs.has(f.blob))) {
       problems.push(finding('missing-blob', "git can't read the staged copy", `run \`git add ${path}\` again, or \`git rm --cached ${path}\``, { file: path }));
@@ -441,7 +469,7 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
       const buf = readEntry(root, path); // none if deleted in the work tree but not yet staged
       if (buf) privacy(path, buf);
     }
-    for (const note of translationNotes(root, indexed())) (config.translations.fail && !isShallowNote(note) ? problems : notes).push(note);
+    for (const note of translationNotes(root, indexed(), env)) (config.translations.fail && !isShallowNote(note) ? problems : notes).push(note);
     // A key yokoten.json holds but yokoten does not know (#228).
     notes.push(...findUnknownKeys(root));
     // Every change file present, read by `yokoten changelog`'s own reader (#346). Long
@@ -458,8 +486,8 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
  * ignore. A move counts as a delete and an add. `--no-optional-locks` keeps git from
  * writing the index, so this can run while the agent's own git command runs.
  */
-export const changedFiles = (root: string): string[] =>
-  list(git(root, ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames'])).map((entry) => entry.slice(3));
+export const changedFiles = (root: string, env: Env): string[] =>
+  list(git(root, env, ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames'])).map((entry) => entry.slice(3));
 
 /**
  * Problems in the changed files only (#92): the file rules and the privacy check that
@@ -471,26 +499,27 @@ export function checkChanged(root: string, { config, env }: { config: Config; en
   const kinds = repoMarkKinds(env, root, config.privacy); // less what the repo is named for and the machine allows (#447)
   const marks = kinds.map((mark) => mark.value);
   const logins = autoLogins(kinds);
+  const markKinds = mapMarkKinds(kinds);
   const skip = matcher(config.privacy.skip);
-  for (const path of changedFiles(root)) {
+  for (const path of changedFiles(root, env)) {
     const reason = checkEdit(path, { config, env });
     if (reason) problems.push(reason);
     if (skip(path)) continue;
     const buf = readEntry(root, path); // none if deleted, or a folder (a submodule)
-    if (buf && !looksBinary(buf)) problems.push(...scanText(buf.toString('utf8'), { file: path, marks, logins, allow: config.privacy.allow }));
+    if (buf && !looksBinary(buf)) problems.push(...scanText(buf.toString('utf8'), { file: path, marks, logins, allow: config.privacy.allow, kinds: markKinds }));
   }
   return problems;
 }
 
 /** Whether this clone is shallow: git holds only the newest commits (CI's default checkout). */
-const isShallow = (root: string): boolean => git(root, ['rev-parse', '--is-shallow-repository']).trim() === 'true';
+const isShallow = (root: string, env: Env): boolean => git(root, env, ['rev-parse', '--is-shallow-repository']).trim() === 'true';
 
 /**
  * Whether git reads a grafts file, which can hide commits from git (#284): one named by
  * GIT_GRAFT_FILE, or `info/grafts` where git looks for it (#294).
  */
-const hasGrafts = (root: string, env: Env = process.env): boolean =>
-  Boolean(env.GIT_GRAFT_FILE) || existsSync(resolve(root, git(root, ['rev-parse', '--git-path', 'info/grafts']).trim()));
+const hasGrafts = (root: string, env: Env): boolean =>
+  Boolean(env.GIT_GRAFT_FILE) || existsSync(resolve(root, git(root, env, ['rev-parse', '--git-path', 'info/grafts']).trim()));
 
 /** What `check --history` reports in a shallow clone, in place of a scan (#266). */
 const shallowHistory = (): Finding =>
@@ -504,11 +533,11 @@ const graftedHistory = (): Finding =>
  * How many commits on every branch record a time zone other than UTC. History can't be
  * changed without a force push, which is the owner's call, so this is a count to know,
  * not a problem that fails the check. A shallow clone can't count them: 0, and
- * `checkHistory` says why.
+ * `checkHistory` says why. `env` names a grafts file, as for `checkHistory`.
  */
-export function historyTimeZones(root: string): number {
-  if (isShallow(root) || hasGrafts(root)) return 0;
-  return git(root, ['log', '--all', '--format=%ad|%cd', '--date=format:%z'])
+export function historyTimeZones(root: string, env: Env): number {
+  if (isShallow(root, env) || hasGrafts(root, env)) return 0;
+  return git(root, env, ['log', '--all', '--format=%ad|%cd', '--date=format:%z'])
     .split('\n')
     .filter((line) => line && line.split('|').some((zone) => notUtc(` ${zone}`))).length;
 }
@@ -521,7 +550,7 @@ export function historyTimeZones(root: string): number {
  * commits the same way (#284).
  */
 export function checkHistory(root: string, { config, env }: { config: Config; env: Env }): Finding[] {
-  if (isShallow(root)) return [shallowHistory()];
+  if (isShallow(root, env)) return [shallowHistory()];
   if (hasGrafts(root, env)) return [graftedHistory()];
   // The same hit in several commits is reported once.
   const problems = new Map<string, Finding>();
@@ -531,10 +560,11 @@ export function checkHistory(root: string, { config, env }: { config: Config; en
   const kinds = repoMarkKinds(env, root, config.privacy); // less what the repo is named for and the machine allows (#447)
   const marks = kinds.map((mark) => mark.value);
   const logins = autoLogins(kinds);
+  const markKinds = mapMarkKinds(kinds);
   const skip = matcher(config.privacy.skip);
-  const opts = { marks, allow: config.privacy.allow };
+  const opts = { marks, allow: config.privacy.allow, kinds: markKinds };
 
-  const log = git(root, ['log', '--all', '--format=%h%x00%ae%x00%ce%x00%B%x1e']);
+  const log = git(root, env, ['log', '--all', '--format=%h%x00%ae%x00%ce%x00%B%x1e']);
   for (const entry of log.split('\x1e')) {
     const [hash, author, committer, message] = entry.replace(/^\n/, '').split('\0');
     if (!hash) continue;
@@ -543,25 +573,25 @@ export function checkHistory(root: string, { config, env }: { config: Config; en
   }
 
   // Every blob ever committed, with the first path it was seen at.
-  const objects = git(root, ['rev-list', '--all', '--objects']).split('\n');
+  const objects = git(root, env, ['rev-list', '--all', '--objects']).split('\n');
   const blobs = new Map<string, string>();
   for (const line of objects) {
     const [sha, ...rest] = line.split(' ');
     if (sha && rest.length) blobs.set(sha, rest.join(' '));
   }
-  const types = gitBytes(root, ['cat-file', '--batch-check=%(objectname) %(objecttype)'], [...blobs.keys()].join('\n') + '\n')
+  const types = gitBytes(root, env, ['cat-file', '--batch-check=%(objectname) %(objecttype)'], [...blobs.keys()].join('\n') + '\n')
     .toString('utf8')
     .split('\n');
   const wanted = types.filter((l) => l.endsWith(' blob')).map((l) => l.split(' ')[0]).filter((sha) => !skip(blobs.get(sha) ?? ''));
   const found = new Map<string, Finding[]>();
-  for (const [sha, { bytes, whole }] of readBlobs(root, wanted, BATCH_CAP)) {
+  for (const [sha, { bytes, whole }] of readBlobs(root, wanted, env, BATCH_CAP)) {
     if (!whole || looksBinary(bytes)) continue;
     // The blob's path places an added forge login (#410); the finding is named below.
     const hits = scanText(bytes.toString('utf8'), { file: blobs.get(sha) ?? '', ...opts, logins });
     if (hits.length) found.set(sha, hits);
   }
   // Name each blob by the commit that added it (#208), read only when there is a hit.
-  const added = found.size ? firstCommits(root) : new Map<string, { commit: string; path: string }>();
+  const added = found.size ? firstCommits(root, env) : new Map<string, { commit: string; path: string }>();
   for (const [sha, hits] of found) {
     const first = added.get(sha);
     const file = first ? `${first.path} @ ${first.commit}` : `${blobs.get(sha)} @ blob ${sha.slice(0, 8)}`;
@@ -576,11 +606,11 @@ export function checkHistory(root: string, { config, env }: { config: Config; en
  * that commit: one walk of every branch, oldest first. A blob only a merge brings in is
  * not found.
  */
-function firstCommits(root: string): Map<string, { commit: string; path: string }> {
+function firstCommits(root: string, env: Env): Map<string, { commit: string; path: string }> {
   const added = new Map<string, { commit: string; path: string }>();
   let commit = '';
   // Plain paths: a raw line is ":old-mode new-mode old-sha new-sha status<TAB>path".
-  const log = git(root, ['-c', 'core.quotePath=false', 'log', '--all', '--reverse', '--raw', '--no-abbrev', '--no-renames', '--format=commit %H']);
+  const log = git(root, env, ['-c', 'core.quotePath=false', 'log', '--all', '--reverse', '--raw', '--no-abbrev', '--no-renames', '--format=commit %H']);
   for (const line of log.split('\n')) {
     if (line.startsWith('commit ')) commit = line.slice(7, 15);
     else if (line.startsWith(':')) {

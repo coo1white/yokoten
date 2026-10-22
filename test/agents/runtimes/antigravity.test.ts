@@ -20,27 +20,27 @@ const payload = (workspace: string, name: string, args: Record<string, unknown>)
     modelName: 'gemini-3.8-flash-high',
   });
 
-test('hook --agent antigravity: run_command by CommandLine, the edit tools by TargetFile; a refusal is a deny decision on stdout (#30)', () => {
+test('hook --agent antigravity: run_command by CommandLine, the edit tools by TargetFile; a refusal is a deny decision on stdout (#30)', async () => {
   const sandbox = makeSandbox();
-  const call = (name: string, args: Record<string, unknown>, extra?: Record<string, string>) => sandbox.run(['hook', '--agent', 'antigravity'], { input: payload(sandbox.repo, name, args), extra });
+  const call = (name: string, args: Record<string, unknown>, extra?: Record<string, string>) => sandbox.call(['hook', '--agent', 'antigravity'], { input: payload(sandbox.repo, name, args), extra });
   // The positive control: a tag push, in the shape agy sends it, is refused.
-  let result = call('run_command', { CommandLine: 'git push --tags origin', Cwd: sandbox.repo, WaitMsBeforeAsync: 5000, toolAction: 'Pushing git tags', toolSummary: 'Git push tags' });
+  let result = await call('run_command', { CommandLine: 'git push --tags origin', Cwd: sandbox.repo, WaitMsBeforeAsync: 5000, toolAction: 'Pushing git tags', toolSummary: 'Git push tags' });
   assert.equal(result.status, 0, 'agy reads the decision, not the exit code');
   const denial = JSON.parse(result.stdout);
   assert.equal(denial.decision, 'deny');
   assert.match(denial.reason, /^yokoten: git push --tags pushes tags\. Only the owner decides when to release/);
   assert.match(result.stderr, /owner decides when to release/);
-  result = call('run_command', { CommandLine: 'git status', Cwd: sandbox.repo });
+  result = await call('run_command', { CommandLine: 'git status', Cwd: sandbox.repo });
   assert.deepEqual([result.status, result.stdout], [0, ''], 'an allowed call leaves stdout empty: agy goes on');
   const worker = { YOKOTEN_ROLE: 'worker' };
   for (const name of ['write_to_file', 'replace_file_content', 'multi_replace_file_content']) {
-    assert.equal(JSON.parse(call(name, { TargetFile: join(sandbox.repo, 'AGENTS.md') }, worker).stdout).decision, 'deny', `${name}: a worker may not edit a lead-only file`);
+    assert.equal(JSON.parse((await call(name, { TargetFile: join(sandbox.repo, 'AGENTS.md') }, worker)).stdout).decision, 'deny', `${name}: a worker may not edit a lead-only file`);
   }
-  assert.equal(JSON.parse(call('write_to_file', { TargetFile: join(sandbox.repo, '.agents', 'hooks.json') }, worker).stdout).decision, 'deny', "a worker may not turn off agy's own hook");
-  assert.equal(call('write_to_file', { TargetFile: join(sandbox.repo, 'src', 'a.ts') }, worker).stdout, '');
-  assert.equal(call('view_file', { AbsolutePath: join(sandbox.repo, 'AGENTS.md') }, worker).stdout, '', 'reading is not editing');
+  assert.equal(JSON.parse((await call('write_to_file', { TargetFile: join(sandbox.repo, '.agents', 'hooks.json') }, worker)).stdout).decision, 'deny', "a worker may not turn off agy's own hook");
+  assert.equal((await call('write_to_file', { TargetFile: join(sandbox.repo, 'src', 'a.ts') }, worker)).stdout, '');
+  assert.equal((await call('view_file', { AbsolutePath: join(sandbox.repo, 'AGENTS.md') }, worker)).stdout, '', 'reading is not editing');
   // --json keeps its own contract: the result on stdout, exit 2 on a block.
-  result = sandbox.run(['hook', '--agent', 'antigravity', '--json'], { input: payload(sandbox.repo, 'run_command', { CommandLine: 'git push --tags' }) });
+  result = await sandbox.call(['hook', '--agent', 'antigravity', '--json'], { input: payload(sandbox.repo, 'run_command', { CommandLine: 'git push --tags' }) });
   assert.deepEqual([result.status, JSON.parse(result.stdout).blocked], [2, true]);
 });
 

@@ -3,6 +3,8 @@
 //
 // The server steps (#7) and the planning steps (#10) judge what the host adapter read. Only full doctor reads the host;
 // a session passes nothing, so those steps are "can't check" there and never hold the stage.
+// On a host with no adapter (#504), every step with `byHand` is "can't check" too, and
+// says what it asks in plain words: the step names the idea, the adapter knows the host.
 //
 // The stage is worked out from what the project has, never saved: it is the stage of the
 // first step that is neither done nor "not now". The order is advice, not a gate: a later
@@ -13,18 +15,21 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { type Config, type Env, loadConfig } from '../rules/config.ts';
 import { matcher } from '../rules/config.ts';
-import { type Finding, finding, type RuleId } from '../rules/message.ts';
+import { docsLink, type Finding, finding, type RuleId } from '../rules/message.ts';
 import { CHANGES_DIR, parseCodeOwners } from '../rules/pr.ts';
 import { BUILD_DIRS, isBuildOutput } from '../rules/layout.ts';
 import { homeOf } from '../rules/privacy.ts';
 import { hasPlugin, hasProjectHook } from '../agents/runtimes/claude-code.ts';
-import { commitCheckLine, runs } from '../run/cli.ts';
+import { isGuardOff, TRUST_FIX } from '../agents/runtimes/muse.ts';
+import { type CommandTest, commitCheckLine, runs } from '../run/cli.ts';
+import { isNoAdapter } from '../host/hosts.ts';
 import { CODEOWNERS_PLACES, hasBot, KEYS_FILE, missingBotSetup, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
 import { claudeReadsRules, cliPath, COMMIT_HOOKS, deadHookNotes, findRulesGap, handOffBlocks, hasHandOff, hookFile, isCommitHook, isExecutable, isSelf, type OldHook, OWNER_PLACEHOLDER, readHookSetup, readOldHooks } from './init.ts';
 import { gitConfig } from '../run/check.ts';
 import { indexFiles } from '../run/check.ts';
 import { FIRST_MILESTONE, lackingLabels, pickNewMilestone } from './plan.ts';
+import { commands, FALLBACK_RUNNERS, orList, runLines, runsTests, scriptedRuns, testLanguages } from './advice/test-commands.ts';
 import { skillFiles, skillsDir } from './install.ts';
 
 /** The stage names, in order. A step's `stage` is its number here, from 1. */
@@ -56,6 +61,12 @@ export interface Step {
   withoutCi?: string;
   /** Why yokoten can't check the step here, and what to do. Server steps and workflow steps have it. No full stop at the end. */
   unchecked?: (server: ServerRead) => string;
+  /**
+   * What the step asks of the code host, in plain words with no host's menus or commands
+   * (#504). On a host yokoten has no adapter for, doctor can't check the step, and says
+   * this so the user can do it by hand. Steps that only the host can judge have it. No full stop at the end.
+   */
+  byHand?: string;
   /** Why the step matters, in one plain sentence. No full stop at the end. */
   why: string;
   /** How yokoten checks it, for `yokoten explain`. No full stop at the end. */
@@ -104,6 +115,8 @@ function orgOnlyOwner(root: string, file: string, server: ServerRead): string | 
 }
 
 export { gitConfig };
+// `runsTests` lives in test-commands.ts with the table it reads; road keeps its name (#550).
+export { runsTests };
 
 
 const ciFiles = (root: string): string[] => {
@@ -156,168 +169,6 @@ const testScript = (root: string): string => {
     return '';
   }
 };
-/**
- * The shell lines that the workflows run: each `run:` value, one line, or each line of a
- * `run: |` block. A job id, a matrix item or a comment is never a command. Each line is
- * matched on its own, so no pattern can run across a newline.
- */
-const runLines = (ci: string): string[] => {
-  const lines: string[] = [];
-  const text = ci.split(/\r?\n/);
-  for (let i = 0; i < text.length; i++) {
-    const key = /^([ \t]*(?:-[ \t]+)?)run:(?:[ \t]+(.*))?$/.exec(text[i]);
-    if (!key) continue;
-    const value = (key[2] ?? '').trim();
-    if (/^[|>][-+0-9]*(?:[ \t]+#.*)?$/.test(value)) {
-      // A block: the lines indented more than the `run` key, with `\` continuations joined.
-      let line = '';
-      for (; i + 1 < text.length && (text[i + 1].trim() === '' || /^[ \t]*/.exec(text[i + 1])![0].length > key[1].length); i++) {
-        const next = text[i + 1].trim();
-        if (!next) continue;
-        line = line ? `${line} ${next}` : next;
-        if (!line.endsWith('\\')) {
-          lines.push(line);
-          line = '';
-        }
-      }
-      if (line) lines.push(line);
-    } else if (!value.startsWith('#')) lines.push(value.replace(/^(["'])(.*)\1$/, '$2'));
-  }
-  return lines;
-};
-// What a command may start with before its name: an opening "(", a `VAR=value`, `env`, `time`.
-// One is matched at a time, from where the last one ended (#322).
-const PREFIX = /\(\s*|[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+|(env\s+)|time\s+/y;
-const ENV_FLAG = /-\S+\s+/y;
-/** Where the command name starts: past the prefixes, each matched in a loop, so the time is linear in the line. */
-const prefixEnd = (command: string) => {
-  let at = 0;
-  for (;;) {
-    PREFIX.lastIndex = at;
-    const prefix = PREFIX.exec(command);
-    if (!prefix) return at;
-    at = PREFIX.lastIndex;
-    // `env` may take flags before the command: env -i node --test.
-    for (ENV_FLAG.lastIndex = at; prefix[1] && ENV_FLAG.exec(command); ) at = ENV_FLAG.lastIndex;
-  }
-};
-/**
- * The simple commands in a shell line: split at ;, &, |, with an opening "(" and any
- * `VAR=value`, `env` or `time` before the command taken off. Comments go.
- */
-const commands = (line: string): string[] =>
-  line
-    .split(/[;&|]+/)
-    .map((c) => c.trim())
-    .map((c) => c.slice(prefixEnd(c)))
-    .filter((c) => c && !c.startsWith('#'));
-/** A command that only asks a tool about itself. */
-const ASKS = /\s--(?:version|help)(?=\s|$)/;
-
-/**
- * A command pattern, matched one word at a time (#322): from the word indexes a match can
- * be at, the indexes it can be at after this part. A regex that repeats a group over a long
- * line backtracks once per repeat, and V8 throws a RangeError on a big enough line.
- */
-type Pattern = (words: string[], at: number[]) => number[];
-/** One word, by a test on it. */
-const wordIf =
-  (isMatch: (word: string) => boolean): Pattern =>
-  (words, at) =>
-    at.filter((i) => i < words.length && isMatch(words[i])).map((i) => i + 1);
-/** One of these words, whole: "make test-deps" and "jest-preview" are not runs. */
-const word = (...names: string[]) => wordIf((w) => names.includes(w));
-const anyWord = wordIf(() => true);
-const sequence =
-  (...parts: Pattern[]): Pattern =>
-  (words, at) =>
-    parts.reduce((from, part) => part(words, from), at);
-/** Any of the parts. The indexes stay in order with no repeats, merged in one pass. */
-const either =
-  (...parts: Pattern[]): Pattern =>
-  (words, at) => {
-    const results = parts.map((part) => part(words, at)).filter((result) => result.length > 0);
-    if (results.length < 2) return results[0] ?? [];
-    const isFound = new Uint8Array(words.length + 1);
-    for (const result of results) for (const i of result) isFound[i] = 1;
-    const found: number[] = [];
-    for (let i = 0; i <= words.length; i++) if (isFound[i]) found.push(i);
-    return found;
-  };
-const optional = (...parts: Pattern[]) => either(sequence(), sequence(...parts));
-/**
- * Zero or more steps. `step` names the indexes one step reaches from index `i`, each past `i`.
- * One pass from the first index to the last one reached, so the time is linear.
- */
-const repeated =
-  (step: (words: string[], i: number, reach: (after: number) => void) => void): Pattern =>
-  (words, at) => {
-    if (at.length === 0) return at;
-    const isReached = new Uint8Array(words.length + 1);
-    for (const i of at) isReached[i] = 1;
-    let last = at[at.length - 1];
-    const reach = (after: number) => {
-      isReached[after] = 1;
-      last = Math.max(last, after);
-    };
-    const found: number[] = [];
-    for (let i = at[0]; i <= last; i++) {
-      if (!isReached[i]) continue;
-      found.push(i);
-      step(words, i, reach);
-    }
-    return found;
-  };
-const isFlag = (word: string | undefined) => word !== undefined && word.length > 1 && word.startsWith('-');
-// Flags with no value, as tools take them before the command: npx --yes, node --experimental-strip-types.
-const FLAGS = repeated((words, i, reach) => {
-  if (isFlag(words[i])) reach(i + 1);
-});
-// Flags that may take a value: npm -w app, pnpm --filter app.
-const VALUED = repeated((words, i, reach) => {
-  if (!isFlag(words[i])) return;
-  reach(i + 1);
-  if (i + 1 < words.length && !words[i + 1].startsWith('-')) reach(i + 2);
-});
-// make's flags, and `-C dir` with its folder as the next word.
-const MAKE_FLAGS = repeated((words, i, reach) => {
-  if (isFlag(words[i])) reach(i + 1);
-  if (words[i] === '-C' && i + 1 < words.length) reach(i + 2);
-});
-/** Whether `pattern` matches at the start of a command, split into its words at whitespace, as `\s` does. */
-const matches = (pattern: Pattern, words: string[]) => pattern(words, [0]).length > 0;
-/** The package.json "test" script, run by its package manager. */
-const RUNS_SCRIPT = sequence(word('npm', 'pnpm', 'yarn', 'bun'), optional(word('run')), word('test', 't'));
-// Tools that start a Node runner: npx, bunx, npm exec, pnpm (exec, dlx), yarn (run).
-const NODE_EXEC = optional(either(sequence(word('npx', 'bunx'), FLAGS), sequence(word('npm'), word('exec'), FLAGS, optional(word('--'))), sequence(word('pnpm', 'yarn'), optional(word('exec', 'dlx', 'run')))));
-// Tools that start a Python runner: uv run, uvx, pipx run, poetry run, pipenv run.
-const PY_EXEC = optional(either(word('uvx'), sequence(word('uv', 'pipx', 'poetry', 'pipenv'), word('run'))), FLAGS);
-// A Python module run as a program: python -m, coverage run -m.
-const PY_M = sequence(either(word('python', 'python3'), sequence(word('coverage'), word('run'))), word('-m'));
-/** Test runners that need no package.json script, one entry per runner. Each is matched at the start of a command. */
-const RUNNERS: Pattern[] = [
-  sequence(word('node'), FLAGS, word('--test')),
-  sequence(word('deno'), word('test')),
-  sequence(word('go'), word('test')),
-  sequence(word('cargo'), word('test')),
-  sequence(word('mvn', 'mvnw', './mvn', './mvnw'), FLAGS, word('test')),
-  sequence(word('gradle', 'gradlew', './gradle', './gradlew'), FLAGS, word('test')),
-  sequence(PY_EXEC, optional(PY_M), word('pytest', 'tox', 'nox')),
-  sequence(PY_EXEC, PY_M, word('unittest')),
-  sequence(word('make'), MAKE_FLAGS, word('test', 'tests')),
-  sequence(NODE_EXEC, word('vitest', 'jest')),
-];
-const WORKSPACES_FLAGS = ['--workspace', '--workspaces', '-ws', '-w'];
-const isWorkspacesFlag = (w: string) => WORKSPACES_FLAGS.some((flag) => w === flag || w.startsWith(`${flag}=`));
-/** Only when a later word is a workspaces flag. */
-const NPM_WORKSPACES: Pattern = (words, at) => (words.slice(1).some(isWorkspacesFlag) ? at : []);
-/** In a workspaces repo, commands that run each package's "test" script; the root may have none. */
-const RUNS_WORKSPACES: Pattern[] = [
-  // npm takes its flags anywhere: npm test --workspaces, npm -w app test, npm run test -ws.
-  sequence(word('npm'), NPM_WORKSPACES, VALUED, optional(word('run')), word('test', 't')),
-  sequence(word('pnpm'), VALUED, either(word('-r', '--recursive'), wordIf((w) => w.startsWith('--filter=') && w.length > '--filter='.length), sequence(word('--filter', '-F'), anyWord)), VALUED, optional(word('run')), word('test')),
-  sequence(word('yarn'), word('workspaces'), optional(word('foreach'), VALUED), word('run'), word('test')),
-];
 const packageJson = (root: string): Record<string, unknown> | null => {
   try {
     const json = JSON.parse(read(join(root, 'package.json')) || 'null');
@@ -328,24 +179,10 @@ const packageJson = (root: string): Record<string, unknown> | null => {
 };
 const isWorkspaces = (root: string) => Boolean(packageJson(root)?.workspaces) || existsSync(join(root, 'pnpm-workspace.yaml'));
 /**
- * Whether the workflow text runs the tests: the package.json "test" script (`script`, or
- * empty), each package's script in a workspaces repo, or a test runner named outright.
- */
-export const runsTests = (ci: string, script: string, workspaces: boolean) => {
-  const lines = runLines(ci);
-  const run = lines
-    .flatMap(commands)
-    .filter((c) => !ASKS.test(c))
-    .map((c) => c.split(/\s+/));
-  if (run.some((words) => RUNNERS.some((r) => matches(r, words)))) return true;
-  if (script !== '' && (run.some((words) => matches(RUNS_SCRIPT, words)) || lines.some((l) => l.includes(script)))) return true;
-  return workspaces && run.some((words) => RUNS_WORKSPACES.some((r) => matches(r, words)));
-};
-/**
  * Whether the workflows run a yokoten command: anywhere in the text by its path, or as a
  * command in a `run:` step, where `- run: npx yokoten check` starts after the key (#298).
  */
-const ciRuns = (ci: string, command: RegExp) => command.test(ci) || runLines(ci).flatMap(commands).some((c) => command.test(c));
+const ciRuns = (ci: string, command: CommandTest) => command.test(ci) || runLines(ci).flatMap(commands).some((c) => command.test(c));
 const indentOf = (line: string) => /^[ \t]*/.exec(line)![0].length;
 // A step that uses yokoten's own Action, at any ref (even the guide's "<full commit SHA>"), quoted or not, with a comment or not.
 // The ref is read one word at a time, so a long line takes linear time and no RangeError (#322).
@@ -424,20 +261,17 @@ export const catchLongLines =
     }
   };
 const WORKFLOW_TOO_LONG = 'a line in .github/workflows is too long to read; make it shorter and run doctor again';
-const ciRunsTests = (root: string) => runsTests(ciText(root), testScript(root), isWorkspaces(root));
-// What runs the tests in each kind of project, by a file at the root; the first three when none is found.
-const PROJECT_RUNNERS: [string[], string][] = [
-  [['go.mod'], 'go test'],
-  [['pyproject.toml', 'setup.py', 'setup.cfg', 'tox.ini', 'requirements.txt'], 'pytest'],
-  [['Cargo.toml'], 'cargo test'],
-  [['pom.xml'], 'mvn test'],
-  [['build.gradle', 'build.gradle.kts'], 'gradle test'],
-  [['deno.json', 'deno.jsonc'], 'deno test'],
-];
-const runnersFor = (root: string) => {
-  const found = PROJECT_RUNNERS.filter(([files]) => files.some((f) => existsSync(join(root, f)))).map(([, runner]) => runner);
-  const named = (found.length ? found : PROJECT_RUNNERS.slice(0, 3).map(([, runner]) => runner)).map((r) => `\`${r}\``);
-  return named.length > 1 ? `${named.slice(0, -1).join(', ')} or ${named.at(-1)}` : named[0];
+const ciRunsTests = (root: string) => runsTests(ciText(root), testScript(root), isWorkspaces(root), scriptedRuns(root));
+/**
+ * Why no workflow runs the tests, naming the language found by the files at the root
+ * (test-commands.ts), so the reader sees doctor knows the project; the usual three when none is.
+ */
+const describeNoTestRun = (root: string) => {
+  const found = testLanguages(root);
+  if (!found.length) return `no workflow runs a test command such as ${orList(FALLBACK_RUNNERS)}`;
+  const languages = found.map((l) => l.language);
+  const named = languages.length > 1 ? `${languages.slice(0, -1).join(', ')} and ${languages.at(-1)}` : languages[0];
+  return `this looks like a ${named} project, and no workflow runs its tests with ${orList(found.map((l) => l.runner))}`;
 };
 /** The command that runs each package's tests in this workspaces repo. */
 const workspacesTest = (root: string) => (existsSync(join(root, 'pnpm-workspace.yaml')) ? '`pnpm -r test`' : '`npm test --workspaces`');
@@ -446,19 +280,30 @@ const noTests = (root: string) => {
   if (testScript(root)) return 'CI does not run the tests';
   if (isWorkspaces(root)) return `no workflow runs each package's tests (e.g. ${workspacesTest(root)})`;
   if (packageJson(root)) return 'no test command: no "test" script in package.json, and no workflow runs a test runner';
-  return `no workflow runs a test command such as ${runnersFor(root)}`;
+  return describeNoTestRun(root);
 };
+/**
+ * The fix for the tests step (#501): the file, the job to add, and the `needs` list of `ci`.
+ * The job is one line of YAML, so the session start can show it. The command is `npm test`
+ * when package.json has a test script, the workspaces command in a workspaces repo, else a
+ * placeholder for the user's own.
+ */
 const testsFix = (root: string) => {
-  if (testScript(root)) return 'add a step that runs `npm test` (or your test command) to a workflow in .github/workflows';
-  if (isWorkspaces(root)) return `add a step that runs ${workspacesTest(root)} to a workflow in .github/workflows`;
-  return 'add tests and a CI step that runs them';
+  const file = '.github/workflows/yokoten.yml';
+  const isNode = testScript(root) !== '' || isWorkspaces(root);
+  const command = isWorkspaces(root) ? workspacesTest(root).replaceAll('`', '') : testScript(root) ? 'npm test' : '<your test command>';
+  const install = isNode && existsSync(join(root, 'package-lock.json')) ? ', {run: npm ci}' : '';
+  const uses = isNode ? 'the checkout and setup-node steps of the other jobs' : 'the checkout step of the other jobs';
+  const steps = `[<${uses}>${install}, {run: ${command}}]`;
+  const start = existsSync(join(root, file)) ? `in ${file}` : `run \`yokoten init\` to add ${file}, then in it`;
+  return `${start}, add this job under \`jobs:\`. Copy the \`uses:\` lines from the other jobs, because they are pinned: \`tests: {runs-on: ubuntu-latest, steps: ${steps}}\`. Then add \`tests\` to the \`needs\` list of the \`ci\` job, so a failing test blocks the merge`;
 };
 
 /** Tracked build output, as yokoten.json lets it through; null outside a git repo. */
-const builtFiles = (root: string): string[] | null => {
+const builtFiles = (root: string, env: Env): string[] | null => {
   let files: string[];
   try {
-    files = indexFiles(root);
+    files = indexFiles(root, env);
   } catch {
     return null;
   }
@@ -602,13 +447,14 @@ const joinChecks = (key: string, root: string | null, server: ServerRead, mark: 
 };
 
 /** A stage 5 step made from server checks. `lacking` and `fix` are said when no check has its own words. */
-const serverStep = (key: string, fields: { lacking: string; fix: string; why: string; how: string; standard?: string }): Step => ({
+const serverStep = (key: string, fields: { lacking: string; fix: string; byHand: string; why: string; how: string; standard?: string }): Step => ({
   stage: 5,
   key,
   check: (root, _, server, config) => judgeServer(key, root, server, config),
   what: (root, _, server, config) => joinChecks(key, root, server, 'MISSING', 'what', fields.lacking, config),
   fix: (root, _, server, config) => joinChecks(key, root, server, 'MISSING', 'fix', fields.fix, config),
   unchecked: (server) => `${joinChecks(key, null, server, "can't check", 'what', 'nothing was read')}; ${joinChecks(key, null, server, "can't check", 'fix', 'run `yokoten doctor`')}`,
+  byHand: fields.byHand,
   why: fields.why,
   how: fields.how,
   ...(fields.standard ? { standard: fields.standard } : {}),
@@ -659,6 +505,7 @@ const reviewStep: Step = {
     if ('unread' in read) return `${read.unread}; ${read.fix}`;
     return read.approvals >= 1 && read.actionsCanApprove === null ? `the Actions setting ${ACTIONS_SETTING} can be read only by an admin; sign in to gh as a repo admin and run doctor again` : '';
   },
+  byHand: 'a merge to the default branch needs one approving review; let the bot open the pull requests, so you can approve them, and let no CI job approve one',
   why: 'the bot opens the pull requests, so you approve work you did not write, and nothing merges unread',
   how: 'through the code host\'s API, in full doctor only: a ruleset (or the old branch protection) on the default branch asks for at least 1 approving review, and the Actions setting that lets a workflow approve a pull request is off; a private repo without rulesets waits for stage 5',
   standard: 'Scorecard: Code-Review',
@@ -700,8 +547,8 @@ const newMilestoneOf = (server: ServerRead) => {
 };
 
 /** The pre-commit git runs here, by core.hooksPath, relative to the root; null when that is unset or outside the repo. */
-const commitHook = (root: string): string | null => {
-  const hooksPath = gitConfig(root, 'core.hooksPath');
+const commitHook = (root: string, env: Env): string | null => {
+  const hooksPath = gitConfig(root, 'core.hooksPath', env);
   return hooksPath ? hookFile(root, hooksPath) : null;
 };
 
@@ -715,9 +562,9 @@ interface UncheckedHook {
 }
 
 /** The commit hooks here (pre-commit and pre-merge-commit) that do not run the check (#239); null when git runs none from this repo. */
-const uncheckedHooks = (root: string): UncheckedHook[] | null => {
-  const hooksPath = gitConfig(root, 'core.hooksPath');
-  if (!hooksPath || commitHook(root) === null) return null;
+const uncheckedHooks = (root: string, env: Env): UncheckedHook[] | null => {
+  const hooksPath = gitConfig(root, 'core.hooksPath', env);
+  if (!hooksPath || commitHook(root, env) === null) return null;
   // husky 9's folder (.husky/_) runs .husky/pre-commit with `sh`, so that file needs no execute bit (#256).
   const runsWithSh = relative(root, resolve(root, hooksPath)).split('\\').join('/').startsWith('.husky/');
   const unchecked: UncheckedHook[] = [];
@@ -760,9 +607,9 @@ const ownHookFix = (hooks: UncheckedHook[], cli: string): string => {
  * .githooks and .githooks does not hand off to them (#256). Empty for any other hooks folder:
  * the project chose that one itself.
  */
-const droppedHooks = (root: string): OldHook[] => {
-  if (!gitConfig(root, 'core.hooksPath') || readHookSetup(root).kind !== 'plain') return [];
-  return readOldHooks(root).filter((old) => old.handOff === 'yes' && !hasHandOff(read(join(root, '.githooks', old.hook)), old.hook));
+const droppedHooks = (root: string, env: Env): OldHook[] => {
+  if (!gitConfig(root, 'core.hooksPath', env) || readHookSetup(root, env).kind !== 'plain') return [];
+  return readOldHooks(root, env).filter((old) => old.handOff === 'yes' && !hasHandOff(read(join(root, '.githooks', old.hook)), old.hook));
 };
 
 /**
@@ -801,41 +648,41 @@ export const ROAD: Step[] = [
   {
     stage: 1,
     key: 'tool-hook',
-    check: (root) => hasProjectHook(root),
-    what: () => 'no tool-call guard in .claude/settings.json',
-    fix: () => '`yokoten init` adds it',
+    check: (root, env) => hasProjectHook(root) && !isGuardOff(root, env),
+    what: (root, env) => (hasProjectHook(root) && isGuardOff(root, env) ? 'the guard is off in Muse Code until you trust this folder' : 'no tool-call guard in .claude/settings.json'),
+    fix: (root, env) => (hasProjectHook(root) && isGuardOff(root, env) ? TRUST_FIX : '`yokoten init` adds it'),
     why: 'the guard stops a risky command, like a force push, before the agent runs it',
-    how: '.claude/settings.json has a PreToolUse hook that runs `yokoten hook`',
+    how: '.claude/settings.json has a PreToolUse hook that runs `yokoten hook`. With a .muse/hooks.json, Muse Code must also trust the folder: doctor reads its trust.json, read-only',
   },
   {
     stage: 1,
     key: 'commit-check',
-    check: (root) => uncheckedHooks(root)?.length === 0 && droppedHooks(root).length === 0,
-    what: (root) => {
-      const hooks = uncheckedHooks(root);
-      const dropped = droppedHooks(root).map((old) => `${old.file} no longer runs: .githooks/${old.hook} does not run it`);
+    check: (root, env) => uncheckedHooks(root, env)?.length === 0 && droppedHooks(root, env).length === 0,
+    what: (root, env) => {
+      const hooks = uncheckedHooks(root, env);
+      const dropped = droppedHooks(root, env).map((old) => `${old.file} no longer runs: .githooks/${old.hook} does not run it`);
       if (hooks?.length) {
         // Only pre-merge-commit: ordinary commits are still checked, merge commits are not.
         const which = hooks.every((h) => h.file.endsWith('pre-merge-commit')) ? 'merge commits' : 'commits';
         return `${which} are not checked: ${[...hooks.map((h) => HOOK_PROBLEM[h.problem](h.file)), ...dropped].join('; ')}`;
       }
       if (hooks) return `a hook this clone had is switched off: ${dropped.join('; ')}`;
-      return gitConfig(root, 'core.hooksPath') ? 'commits are not checked: core.hooksPath is outside this repo' : 'commits are not checked: core.hooksPath is not set';
+      return gitConfig(root, 'core.hooksPath', env) ? 'commits are not checked: core.hooksPath is outside this repo' : 'commits are not checked: core.hooksPath is not set';
     },
-    fix: (root) => {
-      if (!gitConfig(root, 'core.hooksPath') && existsSync(join(root, '.husky'))) return 'run `npm install` so husky sets core.hooksPath, then `yokoten init`';
+    fix: (root, env) => {
+      if (!gitConfig(root, 'core.hooksPath', env) && existsSync(join(root, '.husky'))) return 'run `npm install` so husky sets core.hooksPath, then `yokoten init`';
       // A hook in .git/hooks that .githooks can't run: init leaves it be, so the fix is by hand (#256).
-      const blocks = readHookSetup(root).kind === 'plain' ? handOffBlocks(root) : [];
+      const blocks = readHookSetup(root, env).kind === 'plain' ? handOffBlocks(root, env) : [];
       if (blocks.length) return blocks.join('; ');
-      const hooks = uncheckedHooks(root);
+      const hooks = uncheckedHooks(root, env);
       const files = hooks?.map((h) => h.file) ?? [];
-      const dropped = droppedHooks(root);
+      const dropped = droppedHooks(root, env);
       if (hooks && !files.length && dropped.length) {
         return `\`yokoten init\` makes ${dropped.map((old) => `.githooks/${old.hook} run ${old.file}${isCommitHook(old.hook) ? ' after the check' : ''}`).join(' and ')}`;
       }
       if (!files.length || files.includes('.githooks/pre-commit')) {
         // A hook git skips today is not a reason to wait; init sets .githooks and says how to keep it (#256).
-        const dead = readHookSetup(root).kind === 'plain' ? deadHookNotes(readOldHooks(root)) : [];
+        const dead = readHookSetup(root, env).kind === 'plain' ? deadHookNotes(readOldHooks(root, env)) : [];
         return ['`yokoten init` sets it up', ...dead.map((line) => `note: ${line}`)].join('; ');
       }
       if (files.join() === '.githooks/pre-merge-commit') return '`yokoten init` sets up .githooks/pre-merge-commit';
@@ -864,6 +711,7 @@ export const ROAD: Step[] = [
     unchecked: () => WORKFLOW_TOO_LONG,
     what: noTests,
     fix: testsFix,
+    byHand: 'your host\'s CI runs the tests on every push and on every pull request',
     why: 'tests that run on every push catch a broken change before it reaches main',
     how: 'package.json has a real "test" script and a `run:` step in .github/workflows runs it, or a `run:` step starts a test runner such as `node --test`, `go test`, `pytest`, `tox`, `make test` or `npx vitest`; in a workspaces repo, `npm test --workspaces` or `pnpm -r test` counts too',
     standard: 'Best Practices: test',
@@ -877,6 +725,7 @@ export const ROAD: Step[] = [
     unchecked: () => WORKFLOW_TOO_LONG,
     what: () => 'CI does not run `yokoten check`',
     fix: (root) => keptWorkflow(root, 'yokoten.yml', 'check', 'actions/checkout and actions/setup-node'),
+    byHand: 'your host\'s CI runs `yokoten check` on every push and on every pull request',
     why: 'a commit made with the hook off would reach main unchecked',
     how: 'a workflow in .github/workflows runs `yokoten check` (by its path, or with npx, bunx or pnpm dlx), or has a step that uses yokoten-labs/yokoten',
     standard: 'Scorecard: CI-Tests',
@@ -909,24 +758,26 @@ export const ROAD: Step[] = [
   planningStep('labels', (planning) => lackingLabels(planning.labels.map((l) => l.name)).length === 0, {
     what: (...[, , server]) => `the standard labels are not all on the server (no ${lackingNames(server).join(', ')})`,
     fix: () => '`yokoten init` shows what it would add, and `yokoten init --github --yes` adds them',
+    byHand: `the repo has the labels ${lackingLabels([]).map((l) => l.name).join(', ')}`,
     why: 'a label says what kind of change a pull request is, and the pull request check asks for one',
     how: 'through the code host\'s API, in full doctor only: the repo has the labels bug, feat, docs, refactor, ci, owner, incident, good first issue, hotfix, tier A, tier B and tier C',
   }),
   planningStep('milestone', (planning) => pickNewMilestone(planning.milestones) === null, {
     what: () => 'no open milestone on the server',
     fix: (...[, , server]) => `\`yokoten init --github --yes\` makes one called "${newMilestoneOf(server)}"`,
+    byHand: 'the repo has an open milestone for the next release',
     why: 'a milestone says when a change ships, and the pull request check asks for one',
     how: 'through the code host\'s API, in full doctor only: the repo has at least one open milestone',
   }),
   {
     stage: 2,
     key: 'no-build-output',
-    check: (root) => {
-      const built = builtFiles(root);
+    check: (root, env) => {
+      const built = builtFiles(root, env);
       return built && built.length === 0;
     },
-    what: (root) => {
-      const built = builtFiles(root) ?? [];
+    what: (root, env) => {
+      const built = builtFiles(root, env) ?? [];
       return `build output in the repo (${built.slice(0, 3).join(', ')}${built.length > 3 ? `, and ${built.length - 3} more` : ''})`;
     },
     fix: () => `remove it with \`git rm --cached\` and add ${BUILD_DIRS.map((d) => `${d}/`).join(', ')} to .gitignore`,
@@ -954,6 +805,7 @@ export const ROAD: Step[] = [
     unchecked: () => WORKFLOW_TOO_LONG,
     what: () => 'CI does not check pull requests (`yokoten check --pr`)',
     fix: (root) => keptWorkflow(root, 'pr.yml', 'check --pr', 'actions/checkout with `fetch-depth: 0` and actions/setup-node, in a job that runs on pull_request'),
+    byHand: 'before a pull request merges, its title has the commit form (`feat: ...`, `fix: ...`) and says what changed',
     why: 'a pull request title becomes the commit on main, so it must say what changed and why',
     how: 'a workflow in .github/workflows runs `yokoten check --pr`, or runs on pull requests with a step that uses yokoten-labs/yokoten and does not set `pr-check: false`',
     standard: 'Conventional Commits 1.0.0',
@@ -978,6 +830,7 @@ export const ROAD: Step[] = [
       if (org) return `put a person's handle or @${org}/<team> in ${file}`;
       return file ? `put your GitHub handle in ${file}` : '`yokoten init` writes .github/CODEOWNERS for the lead-only paths; or add one with a line `<path> @<your account>` for each path where a mistake is hard to undo: the rules, CI, agent config';
     },
+    byHand: 'a CODEOWNERS file, where your host reads one, names you for the rules, CI and agent config, and a pull request that changes them needs your review',
     why: 'the host then asks you to review a pull request that changes those paths, and `check --pr` makes it tier A',
     how: `a CODEOWNERS file is in .github/, at the root or in docs/, and the first one GitHub reads names an owner, not init's placeholder ${OWNER_PLACEHOLDER}; full doctor also reads whether the repo belongs to an organization, and an organization alone (@org, not @org/team) is not an owner`,
     standard: 'Scorecard: Branch-Protection',
@@ -988,7 +841,8 @@ export const ROAD: Step[] = [
     check: (_, env) => hasBot(env),
     // Names the piece that is missing (#364, #405), as `yokoten bot` finds it.
     what: (_, env) => `the bot is not set up on this machine: ${missingBotSetup(env) ?? 'nothing is missing'}`,
-    fix: () => 'yokoten\'s docs/server.md shows how to set one up',
+    fix: () => `the server guide shows how to set one up: ${docsLink('server.md')}`,
+    byHand: 'a bot account with its own token and write access opens the pull requests; it can\'t change CI, create tags or approve',
     why: 'when the bot opens pull requests, you review work you did not write, as a team does',
     how: `YOKOTEN_BOT_APP_ID is set, in the environment or in ${KEYS_FILE}, and the key file exists (YOKOTEN_BOT_KEY, or ~/.config/yokoten/bot.pem): the same lookup as \`yokoten bot\``,
   },
@@ -1026,6 +880,7 @@ export const ROAD: Step[] = [
   serverStep('protection', {
     lacking: 'the default branch and the v* tags are not locked on the server',
     fix: 'in Settings, Rules, Rulesets, add a ruleset on the default branch and one on v* tags',
+    byHand: 'the default branch takes changes only through a pull request with CI passed and code owner review, and no force push or deletion; only you can create, move or delete a v* release tag',
     why: 'the guards catch an agent\'s mistakes, but only the server stops a push that gets past them',
     how: 'through the code host\'s API, in full doctor only: the default branch needs a pull request, a named CI check, code owner review, no force push and no deletion; an active ruleset on v* tags restricts creation, update and deletion',
     standard: 'Scorecard: Branch-Protection',
@@ -1033,12 +888,14 @@ export const ROAD: Step[] = [
   serverStep('merge-settings', {
     lacking: 'pull requests can merge in more than one way, or merged branches stay',
     fix: 'in Settings, General, Pull Requests, allow squash merging only and turn on "Automatically delete head branches"',
+    byHand: 'a pull request merges by squash only, and its branch is deleted when it merges',
     why: 'one pull request becomes one commit on main, and no merged branch is left behind',
     how: 'through the code host\'s API, in full doctor only: the repo (or its ruleset) allows squash merges only, and deletes a branch when its pull request merges',
   }),
   serverStep('security-settings', {
     lacking: 'some security switches are off on the server',
     fix: 'in Settings, Advanced Security, turn on secret scanning, push protection, private vulnerability reporting and Dependabot alerts',
+    byHand: 'the host stops a pushed secret, people can report a security hole in private, and you hear of a dependency with a known hole, as far as your host can do these',
     why: 'the host then stops a pushed secret, and people can report a hole in private',
     how: 'through the code host\'s API, in full doctor only: secret scanning, push protection, private vulnerability reporting and Dependabot alerts are on; some are visible only to a repo admin',
   }),
@@ -1093,7 +950,7 @@ function readCommit(commonDir: string, ref: string): string | null {
  * init.defaultBranch, else main. Never the network. Null when there is nothing to ask,
  * this checkout is the default branch (by name or by commit), or git can't tell.
  */
-export function readDefaultBranchFiles(root: string, paths: string[]): DefaultBranchFiles | null {
+export function readDefaultBranchFiles(root: string, paths: string[], env: Env): DefaultBranchFiles | null {
   if (!paths.length) return null;
   const folders = gitFolders(root);
   // The reftable store keeps no ref in a file; then say nothing rather than guess.
@@ -1104,14 +961,14 @@ export function readDefaultBranchFiles(root: string, paths: string[]): DefaultBr
   const headCommit = head ? readCommit(folders.commonDir, `refs/heads/${head[1]}`) : /^[0-9a-f]{40,64}$/.test(headFile) ? headFile : null;
   // origin/HEAD is always a loose file in the files store, even after `git pack-refs`.
   const originHead = /^ref: refs\/remotes\/(.+)$/m.exec(read(join(folders.commonDir, 'refs', 'remotes', 'origin', 'HEAD')));
-  const name = originHead ? originHead[1].trim() : gitConfig(root, 'init.defaultBranch') || 'main';
+  const name = originHead ? originHead[1].trim() : gitConfig(root, 'init.defaultBranch', env) || 'main';
   const ref = originHead ? `refs/remotes/${name}` : `refs/heads/${name}`;
   // On the default branch, or at its commit, merging it changes nothing: the file was removed here.
   if (branch === name.replace(/^origin\//, '')) return null;
   const defaultCommit = readCommit(folders.commonDir, ref);
   if (headCommit && headCommit === defaultCommit) return null;
   try {
-    const listed = execFileSync('git', ['--no-optional-locks', 'ls-tree', '--name-only', ref, '--', ...paths], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const listed = execFileSync('git', ['--no-optional-locks', 'ls-tree', '--name-only', ref, '--', ...paths], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
     const found = new Set(listed.split('\n').filter((path) => paths.includes(path)));
     return found.size ? { name, branch, paths: found } : null;
   } catch {
@@ -1175,7 +1032,18 @@ export function walk(found: { step: Step; found: Found }[], notNow: Record<strin
   return { stage: first ? first.stage : null, next: first, steps };
 }
 
-/** Run every check on the road for this project. `server` is what full doctor read from the code host. */
+/**
+ * Run every check on the road for this project. `server` is what full doctor read from the
+ * code host. On a host with no adapter (#504), a step that only the host can judge is
+ * "can't check": it never holds the stage, and doctor says what it asks.
+ */
 export function road(root: string, env: Env, steps: Step[] = ROAD, server?: ServerRead, config?: Config): { step: Step; found: Found }[] {
-  return steps.map((step) => ({ step, found: step.check(root, env, server, config) }));
+  const isOtherHost = isNoAdapter(server);
+  return steps.map((step) => ({ step, found: isOtherHost && step.byHand ? null : step.check(root, env, server, config) }));
+}
+
+/** What the map says after a "can't check" step: why, and what to do; empty when the step has no words for it. */
+export function uncheckedText(step: Step, server: ServerRead): string {
+  if (isNoAdapter(server) && step.byHand) return `yokoten can't check this on ${server.otherHost} yet; do it by hand: ${step.byHand}`;
+  return step.unchecked?.(server) ?? '';
 }

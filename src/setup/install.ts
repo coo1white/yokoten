@@ -21,19 +21,20 @@
 
 import { execFileSync } from 'node:child_process';
 import { configEntries } from '../run/check.ts';
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
-import { basename, delimiter, dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, delimiter, dirname, join, parse, relative, resolve, sep } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { skillFile as sharedSkillFile } from '../agents/agent-skills.ts';
 import { addUserHooks, agentFile, hasSessionDoctor, hasUserGuard, removeUserHooks, skillFile as claudeSkillFile, userDir } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import * as grok from '../agents/runtimes/grok.ts';
+import * as muse from '../agents/runtimes/muse.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { copyRuntime, HOME_DIR, KIT, MANAGED, writeManaged, writeNew } from './files.ts';
 import { type Gh, readLocalLogins, readLogin } from '../host/github.ts';
-import { FOUND_HEADER, foundHeader, homeIn, homeOf, isDomainShaped, isEmailShaped, OWN_HEADER, isPersonalEmail, loadMarks, marksFile, NO_HOME, privateRemoteHosts, systemHome } from '../rules/privacy.ts';
+import { FOUND_HEADER, foundHeader, homeIn, loadMarkKinds, markLines, type Mark, homeOf, isDomainShaped, isEmailShaped, OWN_HEADER, isPersonalEmail, loadMarks, marksFile, NO_HOME, privateRemoteHosts, systemHome } from '../rules/privacy.ts';
 
 /**
  * Where yokoten keeps its runtime, its config and the private marks. With no absolute home
@@ -56,12 +57,65 @@ export const USER_MISSING = 'yokoten: the runtime at ~/.local/share/yokoten is m
 /** Every place a skill goes: Claude Code's folder, and the shared one other agents read. */
 export const skillFiles = (env: Env, name: string): string[] => [claudeSkillFile(env, name), sharedSkillFile(env, name)];
 
+/**
+ * Yokoten's skill in the shared folder, as a link to Claude Code's copy (#557). Muse reads
+ * both ~/.claude/skills and ~/.agents/skills, and warns once per skill when it sees the two
+ * copies (`skill-shadowed`). One real file with one link to it reads as one skill, so Muse
+ * sees each skill once, while Claude Code keeps a real file and the other agents read
+ * through the link. A folder with the user's own files in it stays real and only the skill
+ * file is synced: replacing it with a link would throw their files away. So does a file of
+ * theirs, and a link of theirs that points elsewhere.
+ */
+function writeSharedSkill(linkFile: string, targetFile: string, content: string, platform: NodeJS.Platform): 'linked' | 'same' | 'updated' | 'kept (yours)' {
+  const path = dirname(linkFile);
+  const target = dirname(targetFile);
+  // A link, when one is there: readlinkSync throws for a real file or folder, or nothing.
+  const linkTarget = (): string | null => {
+    try {
+      return resolve(dirname(path), readlinkSync(path));
+    } catch {
+      return null;
+    }
+  };
+  const isManaged = (): boolean => {
+    try {
+      return readFileSync(linkFile, 'utf8').includes(MANAGED);
+    } catch {
+      return false;
+    }
+  };
+  // A junction on Windows: a plain link needs rights a user may not have.
+  const link = (): 'linked' => {
+    rmSync(path, { recursive: true, force: true });
+    mkdirSync(dirname(path), { recursive: true });
+    symlinkSync(target, path, platform === 'win32' ? 'junction' : 'dir');
+    return 'linked';
+  };
+  const seen = linkTarget();
+  if (seen !== null) return seen === target ? 'same' : isManaged() ? link() : 'kept (yours)';
+  if (!existsSync(path)) return link();
+  let onlyOurs = false;
+  try {
+    onlyOurs = statSync(path).isDirectory() && readdirSync(path).join() === 'SKILL.md';
+  } catch {
+    onlyOurs = false;
+  }
+  if (onlyOurs && isManaged()) return link();
+  if (!isManaged()) return 'kept (yours)';
+  // The skill file is there and managed, so this is 'same' or 'updated'.
+  const synced = writeManaged(linkFile, content);
+  return synced === 'wrote' ? 'updated' : synced;
+}
+
 /** The skills folder a skill file is in, for the report: `~/.claude/skills`. */
 export const skillsDir = (file: string): string => dirname(dirname(file));
 
-const MARKS_HEADER = `# yokoten private marks: words that must never be published.
-# One per line, matched without case. Your real name, city, domain, server names, other
-# account names. This file stays on this machine; never commit it or paste it anywhere.
+export const MARKS_HEADER = `# yokoten private marks: words that must never be published.
+# One per line, matched without case. A name or a city (letters and spaces) is found as
+# whole words: a letter next to it hides it, a digit or _ - . / @ does not. yokoten adds
+# your git name, git email and forge login by itself; \`yokoten marks add\` adds your city,
+# domain, server names, other account names.
+# This file stays on this machine; never commit it or paste it anywhere.
 `;
 
 /** The real path of a file, or null when it is not there. */
@@ -234,7 +288,9 @@ export function install(env: Env, { cwd, gh, ask, platform }: { cwd?: string; gh
   const skills = join(KIT, 'user', 'skills');
   for (const name of readdirSync(skills)) {
     const content = readFileSync(join(skills, name, 'SKILL.md'), 'utf8');
-    for (const file of skillFiles(env, name)) report.push(`${writeManaged(file, content)} skill ${name} in ${skillsDir(file)}`);
+    const [claudeFile, sharedFile] = skillFiles(env, name);
+    report.push(`${writeManaged(claudeFile, content)} skill ${name} in ${skillsDir(claudeFile)}`);
+    report.push(`${writeSharedSkill(sharedFile, claudeFile, content, platform ?? process.platform)} skill ${name} in ${skillsDir(sharedFile)}`);
   }
   const agents = join(KIT, 'user', 'agents');
   for (const file of readdirSync(agents)) {
@@ -270,16 +326,26 @@ export function install(env: Env, { cwd, gh, ask, platform }: { cwd?: string; gh
     ok &&= grokHooks.ok;
     report.push(...grokHooks.lines);
   } else report.push('skipped Grok CLI: ~/.grok not found (run `yokoten install` again after installing Grok CLI)');
+  // Muse Code reads a `hooks` block in its user settings in every repo (checked with 1.4.11).
+  const museFile = muse.userSettingsFile(env);
+  if (muse.hasUserDir(env)) {
+    const museHooks = agentHooks('Muse Code', museFile, () => otherHooks('Muse Code', museFile, muse.addUserHooks(env, USER_CLI, USER_MISSING)));
+    ok &&= museHooks.ok;
+    report.push(...museHooks.lines);
+  } else report.push(`skipped Muse Code: ${dirname(museFile)} not found (run \`yokoten install\` again after installing Muse Code)`);
 
   const marks = writeNew(target.marks, MARKS_HEADER, { mode: 0o600 });
-  report.push(`${marks} ${target.marks}${marks === 'wrote' ? ' (add your marks to it)' : ''}`);
+  report.push(`${marks} ${target.marks}${marks === 'wrote' ? ' (`yokoten marks add` adds one of your own)' : ''}`);
   // The obvious marks come from the machine; the rest only the owner knows (#390).
   const found = machineMarks(env, { cwd, gh });
   report.push(
     ...trySafely('the marks from this machine', () => {
-      const lines = [filledLine(fillMarks(env, found), target.marks)];
-      const missing = missingMarkKinds(loadMarks(env), found);
-      if (missing.length) lines.push(`add ${missing.join(', ')} to ${target.marks}, one per line; yokoten can't find these on its own`);
+      const lines = filledLines(fillMarks(env, found), target.marks);
+      // One answer, as doctor gives it (#522): no marks at all, or an optional offer.
+      const marks = loadMarks(env);
+      const missing = missingMarkKinds(marks, found);
+      if (!marks.length) lines.push(`${target.marks} has no marks yet; ${EMPTY_MARKS_FIX}`);
+      else if (missing.length) lines.push(`${offerMarkKinds(missing)}; ${OFFER_MARKS_FIX}`);
       return lines;
     }),
     ...trySafely('the git mailmap', () => [setUpMailmap(env, found)]),
@@ -300,6 +366,21 @@ const isManaged = (path: string): boolean => {
     return false;
   }
 };
+
+/**
+ * Take back the shared skill: a link install made is removed, never followed. A real
+ * folder is removed, kept or missing, as `removeManaged` says for its skill file.
+ */
+function removeSharedSkill(file: string): 'removed' | 'kept (yours)' | 'not there' {
+  const path = dirname(file);
+  try {
+    readlinkSync(path);
+  } catch {
+    return removeManaged(file, { folder: true });
+  }
+  unlinkSync(path);
+  return 'removed';
+}
 
 /** Remove a file yokoten owns, and its folder when that is left empty. A file without the mark is the user's. */
 function removeManaged(path: string, { folder = false }: { folder?: boolean } = {}): 'removed' | 'kept (yours)' | 'not there' {
@@ -342,7 +423,9 @@ export function uninstall(env: Env, { platform = process.platform }: { platform?
   const target = paths(env);
   const report: string[] = [];
   for (const name of kitSkills()) {
-    for (const file of skillFiles(env, name)) report.push(`${removeManaged(file, { folder: true })} skill ${name} in ${skillsDir(file)}`);
+    const [claudeFile, sharedFile] = skillFiles(env, name);
+    report.push(`${removeManaged(claudeFile, { folder: true })} skill ${name} in ${skillsDir(claudeFile)}`);
+    report.push(`${removeSharedSkill(sharedFile)} skill ${name} in ${skillsDir(sharedFile)}`);
   }
   for (const file of kitAgents()) report.push(`${removeManaged(agentFile(env, file))} agent ${file.replace(/\.md$/, '')}`);
 
@@ -366,10 +449,13 @@ export function uninstall(env: Env, { platform = process.platform }: { platform?
 // ones the private-marks file lacks, and never print a value. A machine-level mailmap makes
 // `git log` and `git show` print a placeholder for the owner's emails at the source.
 
-/** One git read with the caller's environment (its HOME and global config), or null. Nothing is printed. */
-function readGitValue(env: Env, args: string[], cwd?: string): string | null {
+/** A folder in no repo, the root of the file system, for a git read of the machine's own config. */
+const OUTSIDE_REPOS = parse(process.execPath).root;
+
+/** One git read with the caller's environment (its HOME and global config), in `cwd` or outside every repo, or null. Nothing is printed. */
+function readGitValue(env: Env, args: string[], cwd: string = OUTSIDE_REPOS): string | null {
   try {
-    const value = execFileSync('git', args, { cwd, env: { ...process.env, ...env }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }).trim();
+    const value = execFileSync('git', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }).trim();
     return value || null;
   } catch {
     return null;
@@ -384,13 +470,13 @@ export interface MachineMark {
 
 /**
  * The owner's values this machine knows: git user.name and user.email (as git reads them in
- * `cwd`), the login gh is signed in with (only when `gh` is given: it may reach the network),
+ * `cwd`, or outside every repo without one), the login gh is signed in with (only when `gh` is given: it may reach the network),
  * and the hosts of remotes in `cwd` that are not public forges.
  */
 export function machineMarks(env: Env, { cwd, gh }: { cwd?: string; gh?: Gh } = {}): MachineMark[] {
   const found: MachineMark[] = [];
   // In a run (full doctor), one config list kept for the run holds all three (#453).
-  const listed = (match: string | RegExp) => configEntries(cwd ?? process.cwd(), match, { ...process.env, ...env })?.map((entry) => entry.value.trim()) ?? null;
+  const listed = (match: string | RegExp) => configEntries(cwd ?? OUTSIDE_REPOS, match, env)?.map((entry) => entry.value.trim()) ?? null;
   const lastOf = (key: string) => {
     const values = listed(key);
     return values ? values.at(-1) || null : readGitValue(env, ['config', '--get', key], cwd);
@@ -654,19 +740,21 @@ function replaceFile(file: string, text: string): void {
  */
 export function fillMarks(env: Env, found: MachineMark[]): string[] {
   const file = marksFile(env);
+  const logins = found.filter((mark) => mark.kind === 'forge login').map((mark) => mark.value);
   if (existsSync(file)) {
-    const logins = [...readLocalLogins(env), ...found.filter((mark) => mark.kind === 'forge login').map((mark) => mark.value)];
     const hosts = found.filter((mark) => mark.kind === 'private remote host').map((mark) => mark.value);
-    const migrated = migrateMarks(readFileSync(file, 'utf8'), { logins, hosts });
+    const migrated = migrateMarks(readFileSync(file, 'utf8'), { logins: [...readLocalLogins(env), ...logins], hosts });
     if (migrated !== null) replaceFile(file, migrated);
   }
   const known = new Set(loadMarks(env));
+  const off = new Set(kindsTurnedOff(env));
+  // A git name that is a login is covered by the login's mark (#410, #434): the one added now, or one the file has.
+  const loginSet = new Set([...(off.has('forge login') ? [] : logins.map((login) => login.toLowerCase())), ...loadMarkKinds(env).filter((mark) => mark.kind === 'forge login').map((mark) => mark.value)]);
   const added: MachineMark[] = [];
-  // The git display name is left out: as a mark, a common name would flag every file that
-  // holds the word. `redact` still hides it, from git, as a whole word.
-  for (const mark of found.filter((one) => one.kind !== 'git name')) {
+  for (const mark of found.filter((one) => !off.has(one.kind))) {
     const key = mark.value.toLowerCase();
     if (known.has(key)) continue;
+    if (mark.kind === 'git name' && (!isPersonName(mark.value) || loginSet.has(key))) continue;
     known.add(key);
     added.push(mark);
   }
@@ -680,37 +768,144 @@ export function fillMarks(env: Env, found: MachineMark[]): string[] {
   return kinds;
 }
 
-/** How many marks the owner wrote: the lines of the file outside the parts `fillMarks` added. */
-export function countOwnMarks(env: Env): number {
-  let text = '';
+/**
+ * Whether the private-marks file has a mark, of any kind: the ones install found count too
+ * (#522). False when the file is missing or can't be read.
+ */
+export function hasMarks(env: Env): boolean {
   try {
-    text = readFileSync(marksFile(env), 'utf8');
+    return loadMarks(env).length > 0;
   } catch {
-    return 0;
+    return false;
   }
-  let isFound = false;
-  let count = 0;
-  for (const line of text.split(/\r?\n/).map((part) => part.trim())) {
-    if (line.startsWith('#')) isFound = line === FOUND_HEADER || line.startsWith(`${FOUND_HEADER}: `);
-    else if (line && !isFound) count++;
-  }
-  return count;
 }
 
-/** The line install and doctor print after `fillMarks`: the kinds, never the values. */
-export const filledLine = (kinds: string[], file: string): string =>
-  kinds.length ? `added to ${file} from this machine: ${kinds.join(', ')} (the values are not shown)` : `kept ${file}: it already has what this machine knows`;
+/** What doctor and install say to do when the private-marks file has no mark. */
+export const EMPTY_MARKS_FIX = 'run `yokoten marks add` and type your name, your city or a domain; it is not shown';
+
+/** The offer of the kinds yokoten can't find, when the file has marks: optional, never missing (#522). */
+export const offerMarkKinds = (missing: string[]): string => `optional: add ${missing.join(' or ')} too; yokoten can't find them on its own`;
+export const OFFER_MARKS_FIX = 'run `yokoten marks add` and type one; it is not shown';
+
+/**
+ * The lines install and doctor print after `fillMarks`: the kinds, never the values. The git
+ * name has a line of its own (#434). Nothing when nothing was added: the private-marks check
+ * gives the file's state, once (#522).
+ */
+export function filledLines(kinds: string[], file: string): string[] {
+  const others = kinds.filter((kind) => kind !== 'git name');
+  const lines = kinds.includes('git name') ? [GIT_NAME_ADDED] : [];
+  if (others.length) lines.push(`added to ${file} from this machine: ${others.join(', ')} (the values are not shown)`);
+  return lines;
+}
+
+/** What install says when it adds the git name: never the name. */
+export const GIT_NAME_ADDED = 'added your git name to the private marks (not shown)';
+
+// Names a tutorial or a template puts in user.name: they name nobody.
+const PLACEHOLDER_NAMES = new Set(['your name', 'john doe', 'jane doe', 'user', 'name', 'admin', 'first last', 'firstname lastname']);
+
+/**
+ * Whether a git user.name names a person, so install adds it as a mark: 3 characters or
+ * more, not an address, not a placeholder (`your name`, `john doe`), and not an account
+ * name every machine of a kind has (`root`, `test`). One word counts too: it may be all
+ * the name the owner uses.
+ */
+export function isPersonName(name: string): boolean {
+  const key = name.trim().toLowerCase().replace(/\s+/g, ' ');
+  return key.length >= 3 && !key.includes('@') && !PLACEHOLDER_NAMES.has(key) && !SHARED_ACCOUNTS.has(key);
+}
+
+// ---- The kinds of mark the owner can turn off (#434) ----
+
+/** The kinds install adds by itself that `yokoten marks off` can turn off, as the command line names them. */
+export const SWITCHED_KINDS: Record<string, MachineMark['kind']> = { 'git-name': 'git name', 'git-email': 'git email', 'forge-login': 'forge login' };
+
+/** The kinds the owner turned off with `yokoten marks off`, from machine.json: install and doctor don't add them. */
+export function kindsTurnedOff(env: Env): string[] {
+  let file: string;
+  try {
+    file = machineStateFile(env);
+  } catch {
+    return [];
+  }
+  const off = readMachineState(file, REAL_USER_PROBE).marksOff;
+  const known = Object.values(SWITCHED_KINDS) as string[];
+  return Array.isArray(off) ? off.filter((kind): kind is string => typeof kind === 'string' && known.includes(kind)) : [];
+}
+
+/** Turn one kind off or back on in machine.json, keeping the other keys. Throws when the file can't be written. */
+export function setKindOff(env: Env, kind: string, isOff: boolean): void {
+  const rest = kindsTurnedOff(env).filter((one) => one !== kind);
+  saveMachineState(machineStateFile(env), REAL_USER_PROBE, 'marksOff', isOff ? [...rest, kind] : rest);
+}
+
+/**
+ * Add one mark the owner gives, as their own (`yokoten marks add`): at the end of the file,
+ * under `# your own marks` when the last part is one yokoten added. It makes the file (mode
+ * 600) when it is missing. False when the file has the mark already.
+ */
+export function addOwnMark(env: Env, value: string): boolean {
+  const file = marksFile(env);
+  if (loadMarks(env).includes(value.toLowerCase())) return false;
+  if (!existsSync(file)) writeNew(file, MARKS_HEADER, { mode: 0o600 });
+  const text = readFileSync(file, 'utf8');
+  const last = text.split('\n').map((line) => line.trim()).filter((line) => line.startsWith('#')).at(-1) ?? '';
+  const isFound = last === FOUND_HEADER || last.startsWith(`${FOUND_HEADER}: `);
+  appendFileSync(file, `${text === '' || text.endsWith('\n') ? '' : '\n'}${isFound ? `${OWN_HEADER}\n` : ''}${value}\n`);
+  return true;
+}
+
+/**
+ * Take out the marks `drop` picks, and a header yokoten wrote that has no mark left under it.
+ * An old plain block is split by kind first, as `fillMarks` does. The owner's comments stay.
+ * Returns the marks taken out, never printed.
+ */
+export function removeMarks(env: Env, drop: (mark: Mark) => boolean): Mark[] {
+  const file = marksFile(env);
+  if (!existsSync(file)) return [];
+  const before = readFileSync(file, 'utf8');
+  const text = migrateMarks(before, { logins: readLocalLogins(env), hosts: [] }) ?? before;
+  const lines = text.split('\n');
+  const read = markLines(text);
+  const removed: Mark[] = [];
+  const kept = lines.filter((_, index) => {
+    const mark = read[index];
+    if (!mark || !drop(mark)) return true;
+    removed.push(mark);
+    return false;
+  });
+  if (!removed.length) {
+    if (text !== before) replaceFile(file, text);
+    return [];
+  }
+  // A header of yokoten's own with only blank lines or another comment after it is left empty: it goes too.
+  const isOurs = (line: string) => line.trim() === FOUND_HEADER || line.trim().startsWith(`${FOUND_HEADER}: `) || line.trim() === OWN_HEADER;
+  const out = kept.filter((line, index) => {
+    if (!isOurs(line)) return true;
+    const next = kept.slice(index + 1).find((after) => after.trim() !== '');
+    return next !== undefined && !next.trim().startsWith('#');
+  });
+  replaceFile(file, out.join('\n'));
+  return removed;
+}
+
+/** How many marks the file holds of each kind, the owner's as `by hand`. Never the values. */
+export function countMarkKinds(env: Env): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const mark of loadMarkKinds(env)) counts.set(mark.kind ?? 'by hand', (counts.get(mark.kind ?? 'by hand') ?? 0) + 1);
+  return counts;
+}
 
 /**
  * The kinds of mark yokoten can't find on its own, which the file seems to lack, in plain
- * words. A name has a space; a domain has a dot; anything else not from the machine may
- * be the city. A guess from the shape, so doctor shows it as a note.
+ * words. A domain has a dot; anything else not from the machine may be the city. The name
+ * is not asked for: install adds the git name (#434). A guess from the shape, so doctor shows it as a note.
  */
 export function missingMarkKinds(marks: string[], found: MachineMark[]): string[] {
   const fromMachine = new Set(found.map((mark) => mark.value.toLowerCase()));
   const own = marks.filter((mark) => !fromMachine.has(mark) && !mark.includes('@'));
   const missing: string[] = [];
-  if (!own.some((mark) => /\s/.test(mark))) missing.push('your real name');
   if (!own.some((mark) => !/\s/.test(mark) && !isDomainShaped(mark))) missing.push('your city');
   if (!own.some(isDomainShaped)) missing.push('your domains');
   return missing;

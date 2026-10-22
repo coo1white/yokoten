@@ -110,7 +110,7 @@ test('config: for the hook, a wrong "commands" drops only the block list, said o
   assert.deepEqual(config.leadOnly, ['secret/**'], 'the rest of the file still counts');
   assert.equal(lines.length, 1);
   assert.match(lines[0], /^yokoten hook: yokoten\.json "commands" was ignored, .*core checks still run\. yokoten\.json: "commands" must look like/);
-  assert.equal(checkCommand('git push --force', { env: {}, config })?.id, 'force-push', 'the core checks still run');
+  assert.equal(checkCommand('git push --force', { cwd: process.cwd(), env: {}, config })?.id, 'force-push', 'the core checks still run');
   // Positive control: check and doctor still see it as a config problem.
   assert.throws(() => loadConfig(dir), /^Error: yokoten\.json: "commands/);
   // A good list says nothing; outside a repo, the defaults.
@@ -144,7 +144,7 @@ test('config: a key with the wrong shape is a config error that names it, and th
     const got = config[key] as unknown as Record<string, unknown>;
     const want = DEFAULTS[key] as unknown as Record<string, unknown>;
     assert.deepEqual(field ? got[field] : got, field ? want[field] : want, label);
-    assert.equal(checkCommand('git push --force', { env: {}, config })?.id, 'force-push', `${label}: the core checks still run`);
+    assert.equal(checkCommand('git push --force', { cwd: process.cwd(), env: {}, config })?.id, 'force-push', `${label}: the core checks still run`);
     assert.equal(checkEdit('AGENTS.md', { config, env: { YOKOTEN_ROLE: 'worker' } })?.id, 'lead-only', label);
   }
   // Only the wrong field falls back; the rest of the file still counts.

@@ -1,21 +1,19 @@
 <div align="center">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
-  <img src="docs/assets/banner-light.svg" width="100%" alt="yokoten · 横展. A guide for the journey. A guard at the bridge. A road climbs through the mountains past five numbered stages to a bridge, where a lantern keeps watch.">
-</picture>
+# yokoten · 横展
 
-<br/>
+### A guide for the journey. A guard at the bridge.
 
-**Everyone can build software the way good teams do.**
+**Anyone can build software the way good teams do.**
 
-A guide and a guard for you and your AI agents.
+A free tool that puts a good team's process into your project. Its checks run in your repo and CI, for people and AI agents alike.
 
 **[yokoten.app](https://yokoten.app/?from=github)** &nbsp;·&nbsp; English | [简体中文](docs/i18n/zh-CN/README.md) | [繁體中文](docs/i18n/zh-TW/README.md) | [日本語](docs/i18n/ja/README.md)
 
 [![ci](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml/badge.svg)](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Node](https://img.shields.io/badge/Node-%E2%89%A522.18-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![npm](https://img.shields.io/npm/v/yokoten?logo=npm)](https://www.npmjs.com/package/yokoten)
+[![Node](https://img.shields.io/badge/Node-%E2%89%A522.23.4-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 
 </div>
 
@@ -34,6 +32,22 @@ The guard stops risky actions before they run in these agents
 
 In any other agent, or with no agent at all, the commit check and CI still stop a bad change.
 
+## Works with any language
+
+yokoten itself runs on Node 22.23.4, 24.22.1 or 26.12.1 (or a newer 22, 24 or 26 release), on your machine and in CI, but your project can be in any language.
+The guard, the privacy and secrets check, CI, and the issue and pull request checks
+work the same in every language.
+
+One step reads your language: `doctor` looks for your test command.
+
+| | Languages |
+|---|---|
+| Finds your test command | JavaScript and TypeScript (npm, Deno), Python, Go, Rust, Java (Maven, Gradle), .NET, Ruby, PHP, Swift, Elixir, Dart and Flutter, and any project with `make test` |
+| In progress ([#550](https://github.com/yokoten-labs/yokoten/issues/550)) | Writes the CI job that runs your tests, so you don't write it by hand |
+
+The first steps (install, init, doctor) have been tried on Python, Go, Rust, .NET, Ruby and PHP projects.
+So far the whole road, from install to release, has been run on TypeScript projects.
+
 ## Why
 
 On a good team, every change has a reason, a test and a review. Most people learn
@@ -48,7 +62,11 @@ offers the check to every other project.
 
 ## Install
 
-You need [Node](https://nodejs.org/) 22.18 or later. Nothing else.
+You need [Node](https://nodejs.org/) 22.23.4 or later (on Node 24, 24.22.1 or later; on
+Node 26, 26.12.1 or later). Nothing else. Releases 22.18 to 22.23.3 still run yokoten,
+but do not use them: they have security holes that Node fixed on 2026-10-21
+([advisory](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases)). That is why npm warns about
+them when you install, and why `yokoten doctor` asks you to upgrade.
 
 ```sh
 npx yokoten install      # once per computer
@@ -56,8 +74,6 @@ cd your-project
 npx yokoten init         # once per project
 npx yokoten doctor       # where you are, and the one next step
 ```
-
-Until the first npm release (October 24), [install from a clone](docs/guide.md#install-from-a-clone).
 
 ### Good to know
 
@@ -95,9 +111,10 @@ The [roadmap](docs/guide.md#where-this-is-going) has the five stages. The
 - **[The guide](docs/guide.md)**: the twelve rules, every command, how it works, and what it can't do.
 - **[Server setup](docs/server.md)**: protect `main` and release tags on GitHub.
 - **[Decisions](docs/records/)**: why it's built this way.
-- **[Contributing](AGENTS.md)**: the rules for working on yokoten.
+- **[Changelog](CHANGELOG.md)**: what each version changed.
+- **[Contributing](CONTRIBUTING.md)**: how to report a problem or send a change.
 - **[Security](.github/SECURITY.md)**: how to report a security problem.
 
 ---
 
-<p align="center"><sub>MIT · Built by <a href="https://coolwhite.us/">coolwhite</a>, with lessons from the factory floor.</sub></p>
+<p align="center"><sub>MIT · Built by <a href="https://coolwhite.us/">coolwhite</a> and a team of AI agents, with lessons from the factory floor.</sub></p>

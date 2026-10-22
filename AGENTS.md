@@ -83,7 +83,7 @@ agent, understands without scrolling back. The yokoten guide says why:
 yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
 `yokoten init`, and the hooks here run `bin/yokoten.ts` directly.
 
-- **Test**: `node --test` (Node 22.18 or later). **Types**: `npm run typecheck`.
+- **Test**: `node --test` (Node 22.23.4 or later, or 24.22.1 / 26.12.1, for the October 2026 security fixes). **Types**: `npm run typecheck`.
   **Check**: `node bin/yokoten.ts check`.
 - **No runtime dependencies.** Node's standard library only. A hook that needs
   `npm install` first is a hook that does not run on a fresh machine. TypeScript and
@@ -111,8 +111,10 @@ yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
   - `setup/`: `install`, `init` and `doctor`, writing yokoten into a machine or a
     project. `road.ts` is the road `doctor` walks: one table of stages and steps.
   - `commands/`: one module per command or small group, which `bin/main.ts` calls;
-    `shared.ts` holds what several commands use (#330). `bin/main.ts` keeps help and
-    dispatch only.
+    `shared.ts` holds what several commands use (#330). `bin/main.ts` keeps help,
+    dispatch, and `runFromProcess`, the one place that reads the process (#475). A
+    command gets an `Invocation`: plain data (args, env, cwd, streams), never a bag of
+    services.
 - **Names** (record 0006): the core "Names" rules, in TypeScript. Short forms: `id`,
   `url`, `pr`, `ci`, `env`, `config`, `repo`, `dir`, `json`, `html`. `camelCase` for
   values and functions, `PascalCase` for types, `CONSTANT_CASE` only for fixed values at

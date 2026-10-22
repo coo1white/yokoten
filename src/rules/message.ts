@@ -37,6 +37,8 @@ export interface Rule {
  * pages (#85) can replace it here, in one place.
  */
 export const DOCS_URL = 'https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md';
+/** A link to a yokoten docs file on GitHub, for a message: a user who installed from npm has no such file (#524). */
+export const docsLink = (file: string, section = ''): string => `https://github.com/yokoten-labs/yokoten/blob/main/docs/${file}${section ? `#${section}` : ''}`;
 const guide = (section: string) => `${DOCS_URL}#${section}`;
 
 const RELEASE_WHY = 'only the owner decides when to release';
@@ -94,8 +96,20 @@ export const RULES = {
   'lead-only': {
     rule: 'a worker does not change lead-only files: the rules, agent config, hooks and CI (core rule 5)',
     why: 'a worker must not change the rules it works under, and a pull request that edits CI runs that CI before anyone reads it',
-    check: 'for a worker (YOKOTEN_ROLE=worker, or a subagent named worker), the tool-call guard stops an edit or a shell write to a file that yokoten.json "leadOnly" matches, and a git commit that changes one; with YOKOTEN_ROLE=worker the commit check refuses it too. YOKOTEN_LEAD_ONLY_OK lists the paths the lead allows',
+    check: 'for a worker (YOKOTEN_ROLE=worker, a subagent named worker, or any agent in a worktree `yokoten worker mark` marked), the tool-call guard stops an edit or a shell write to a file that yokoten.json "leadOnly" matches, and a git commit that changes one; for a worker by YOKOTEN_ROLE=worker or the mark, the commit check refuses it too. YOKOTEN_LEAD_ONLY_OK lists the paths the lead allows',
     docs: guide('the-core-rules'),
+  },
+  'worker-push': {
+    rule: 'a worker commits in its worktree and never pushes or posts',
+    why: 'the lead reviews the work before it leaves the machine, and pushes and posts it as the bot',
+    check: 'for a worker, the tool-call guard stops `git push`, `git send-pack`, `git subtree push`, a git alias (`git config alias.*`, `git -c alias.*`), `yokoten bot`, `gh pr create|merge|edit|close|comment|review|ready|reopen` and `gh` `api` with a write method or fields (a GraphQL query that reads passes). It reads text, so it is no lock: branch protection on the server, and a worker that holds no push or bot credentials, are',
+    docs: guide('managing-agents-like-a-team'),
+  },
+  'worker-mark': {
+    rule: 'a worker does not change the worker mark on its worktree',
+    why: 'some agents pass their hooks no YOKOTEN_ROLE, so the mark is what tells the guard that the session is a worker',
+    check: 'for a worker, the tool-call guard stops a command that writes, moves, removes, links or changes the mode of a file in a git folder (a glob that can match .git or the mark counts) or redirects into one, git with GIT_DIR or --git-dir, `git worktree` other than `list`, `yokoten worker unmark`, and an edit inside a git folder, by real path. The same holds for the yokoten config folder (~/.config/yokoten), which keeps the worker list and the bot keys: for a worker, any program that does more than read is refused when it names a path that is, is in or holds that folder, by real path (a symlink, `~+` and globs such as `~/.c*/yokoten` count). A read that names .git passes. A .git link it cannot read makes the session a worker. These are the plain ways; the server and keeping credentials away from the worker are the lock',
+    docs: guide('managing-agents-like-a-team'),
   },
   email: {
     rule: 'no personal email address in the repo (core rule 11)',
@@ -142,7 +156,7 @@ export const RULES = {
   'build-output': {
     rule: 'no build output in a commit',
     why: 'a build makes it again from the source, so a committed copy goes stale',
-    check: 'the commit check refuses a file in a dist/, build/ or out/ folder; yokoten.json "allowBuild" lets a path through',
+    check: 'the commit check refuses a file in a dist/, build/ or out/ folder, and a dependency folder such as node_modules/ as one finding; yokoten.json "allowBuild" lets a path through',
   },
   'missing-blob': {
     rule: 'the commit check reads every staged file',
@@ -182,6 +196,12 @@ export const RULES = {
   'pr-issue': {
     rule: 'a pull request links its issue (core rules 1 and 8)',
     why: 'every change starts as an issue',
+    check: PR_CHECK,
+    docs: guide('the-core-rules'),
+  },
+  'pr-made-with': {
+    rule: 'a pull request body ends with `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs (core rule 8)',
+    why: 'every pull request names each AI and model that made it',
     check: PR_CHECK,
     docs: guide('the-core-rules'),
   },
@@ -251,13 +271,13 @@ export const RULES = {
     check: '`check --pr` notes long sentences in changed Markdown, and `check --staged` in staged change files, skipping code, tables and headings; a note never fails CI',
   },
   'name-short': {
-    rule: 'a one-letter name is used within 10 lines and not exported (record 0006; docs/guide.md#naming)',
+    rule: 'a one-letter name is used within 10 lines and not exported (record 0006)',
     why: 'a reader must scroll back to learn what a far-off letter holds',
     check: '`check --pr` notes a one-letter name used more than 10 lines after it is declared, or exported, on lines added to TypeScript and JavaScript files; `_` for an unused parameter passes; a note never fails CI',
     docs: guide('naming'),
   },
   'name-long': {
-    rule: 'a name has at most 4 words (record 0006; docs/guide.md#naming)',
+    rule: 'a name has at most 4 words (record 0006)',
     why: 'a long name is slow to read, and the words that matter get lost',
     check: '`check --pr` notes a name of more than 4 words on lines added to TypeScript and JavaScript files; camelCase, PascalCase and snake_case words count, an acronym as one; a note never fails CI',
     docs: guide('naming'),
@@ -312,7 +332,7 @@ export const RULES = {
   'muse-hook': {
     rule: "the project has Muse Code's tool-call guard and stop check, and Muse trusts the folder",
     why: "without them, Muse Code's commands and edits in this project are not checked. Muse skips the hooks of a folder it does not trust without a word",
-    check: "`doctor` reads .muse/hooks.json for a PreToolUse hook and a Stop hook that each run `yokoten hook --agent muse`, then Muse's trust.json for the folder (read-only); a note, not a missing step",
+    check: "`doctor` reads .muse/hooks.json for a PreToolUse hook and a Stop hook that each run `yokoten hook --agent muse`, then Muse's trust.json for the folder (read-only); a note, not a missing step. A folder Muse does not trust is a to-do under `tool-hook`",
     docs: guide('works-with'),
   },
   'deepseek-harness-hook': {
@@ -338,6 +358,12 @@ export const RULES = {
     rule: "Gemini CLI runs yokoten's session-start doctor and command guard in every repo",
     why: 'without them, a Gemini CLI session does not hear the next step on the road, and a tag push, force push or skipped check in a repo without yokoten is not stopped',
     check: "when ~/.gemini is a folder, `doctor` compares the SessionStart and BeforeTool hooks in ~/.gemini/settings.json with what `yokoten install` writes (command, matcher, name, runtime path); a missing or out-of-date hook, or a file it can't read, is a note, not a missing step",
+    docs: guide('works-with'),
+  },
+  'muse-user-hook': {
+    rule: "Muse Code runs yokoten's session-start doctor and command guard in every repo",
+    why: 'without them, a Muse session does not hear the next step on the road, and a tag push, force push or skipped check in a repo without yokoten is not stopped',
+    check: "when Muse's config folder is there, `doctor` compares the SessionStart and PreToolUse hooks in its settings.json with what `yokoten install` writes (command, matcher, runtime path); a missing or out-of-date hook, or a file it can't read, is a note, not a missing step",
     docs: guide('works-with'),
   },
   'grok-user-hook': {
@@ -391,6 +417,12 @@ export const RULES = {
     rule: "the agent's temp folder belongs to you (record 0012)",
     why: 'Claude Code will not start when another user, such as root, owns its temp folder',
     check: "full `doctor` compares the owner of Claude Code's temp folder (`claude-<uid>` in the temp folder) with your uid; a note, never a failure, and doctor never deletes it",
+    docs: guide('machine-notes'),
+  },
+  'node-security': {
+    rule: 'the Node that runs yokoten has the security fixes of 2026-10-21 (#572)',
+    why: 'older releases have known holes, among them TLS checks that the HTTPS calls to GitHub rely on',
+    check: 'full `doctor` compares the running Node with the first fixed release of its line (22.23.4, 24.22.1 or 26.12.1); a line that gets no more fixes is not supported; a note, never a failure',
     docs: guide('machine-notes'),
   },
   'leftover-temp-folders': {

@@ -118,18 +118,18 @@ function recorded(name: keyof typeof RECORDED, repo: string, change: (event: Rec
 /** A recorded call with another tool and input, in both spellings, as Grok sends it. */
 const withTool = (toolName: string, toolInput: Record<string, unknown>) => (event: Record<string, unknown>) => Object.assign(event, { toolName, toolInput, tool_name: toolName, tool_input: toolInput });
 
-test('hook --agent grok: the recorded tag push is refused, with the whole reason on stdout and exit 2; the recorded ls runs (#407)', () => {
+test('hook --agent grok: the recorded tag push is refused, with the whole reason on stdout and exit 2; the recorded ls runs (#407)', async () => {
   const sandbox = makeSandbox();
-  const call = (event: Record<string, unknown>, extra?: Record<string, string>) => sandbox.run(['hook', '--agent', 'grok'], { input: JSON.stringify(event), extra });
+  const call = (event: Record<string, unknown>, extra?: Record<string, string>) => sandbox.call(['hook', '--agent', 'grok'], { input: JSON.stringify(event), extra });
   // The positive control: the call Grok sent for `git push --tags`.
-  let result = call(recorded('push', sandbox.repo));
+  let result = await call(recorded('push', sandbox.repo));
   assert.equal(result.status, 2);
   const reply = JSON.parse(result.stdout);
   assert.equal(reply.hookSpecificOutput.hookEventName, 'PreToolUse');
   assert.equal(reply.hookSpecificOutput.permissionDecision, 'deny');
   assert.match(reply.hookSpecificOutput.permissionDecisionReason, /^yokoten: git push --tags pushes tags\. Only the owner decides when to release[\s\S]*YOKOTEN_RELEASE_APPROVAL=1 grok/);
   assert.match(result.stderr, /^yokoten: git push --tags pushes tags/);
-  result = call(recorded('ls', sandbox.repo));
+  result = await call(recorded('ls', sandbox.repo));
   assert.deepEqual([result.status, result.stdout, result.stderr], [0, '', '']);
   // YOKOTEN_ROLE reaches Grok's hooks (seen in the real run): a worker's edit of a lead-only file is refused.
   const worker = { YOKOTEN_ROLE: 'worker' };
@@ -138,16 +138,16 @@ test('hook --agent grok: the recorded tag push is refused, with the whole reason
     ['search_replace', 'AGENTS.md'],
     ['write', '.grok/hooks/yokoten.json'],
   ]) {
-    assert.equal(call(recorded('write', sandbox.repo, withTool(tool, { file_path: join(sandbox.repo, file), content: 'x' })), worker).status, 2, `${tool} ${file}: a worker may not change it`);
+    assert.equal((await call(recorded('write', sandbox.repo, withTool(tool, { file_path: join(sandbox.repo, file), content: 'x' })), worker)).status, 2, `${tool} ${file}: a worker may not change it`);
   }
-  assert.equal(call(recorded('write', sandbox.repo), worker).status, 0, 'the recorded write of note.txt is fine');
-  assert.equal(call(recorded('write', sandbox.repo, withTool('write', { file_path: 'AGENTS.md', content: 'x' }))).status, 0, 'without YOKOTEN_ROLE the session is the lead');
-  assert.equal(call(recorded('write', sandbox.repo, withTool('read_file', { file_path: 'AGENTS.md' })), worker).status, 0, 'reading is not editing');
+  assert.equal((await call(recorded('write', sandbox.repo), worker)).status, 0, 'the recorded write of note.txt is fine');
+  assert.equal((await call(recorded('write', sandbox.repo, withTool('write', { file_path: 'AGENTS.md', content: 'x' })))).status, 0, 'without YOKOTEN_ROLE the session is the lead');
+  assert.equal((await call(recorded('write', sandbox.repo, withTool('read_file', { file_path: 'AGENTS.md' })), worker)).status, 0, 'reading is not editing');
   // A subagent whose type names a worker is a worker, whatever the session's role.
-  assert.equal(call(recorded('write', sandbox.repo, (event) => Object.assign(withTool('write', { file_path: 'AGENTS.md', content: 'x' })(event) as object, { subagentType: 'yokoten:worker' }))).status, 2);
+  assert.equal((await call(recorded('write', sandbox.repo, (event) => Object.assign(withTool('write', { file_path: 'AGENTS.md', content: 'x' })(event) as object, { subagentType: 'yokoten:worker' })))).status, 2);
 });
 
-test('hook: under Grok, the Claude Code hook still guards, even next to an empty Grok hook file (#407)', () => {
+test('hook: under Grok, the Claude Code hook still guards, even next to an empty Grok hook file (#407)', async () => {
   // A Grok hook can be skipped (an untrusted folder, an empty file a repo commits), so the
   // Claude Code hook that Grok also runs never steps aside for it.
   const sandbox = makeSandbox();
@@ -155,15 +155,15 @@ test('hook: under Grok, the Claude Code hook still guards, even next to an empty
   const push = JSON.stringify(recorded('push', sandbox.repo));
   const grok = { GROK_HOOK_EVENT: 'pre_tool_use', GROK_SESSION_ID: '01a15a11-55e0-7ae1-9c00-6389bfe5c78f', GROK_WORKSPACE_ROOT: sandbox.repo };
   for (const args of [['hook'], ['hook', '--commands-only']]) {
-    const result = sandbox.run(args, { input: push, extra: grok });
+    const result = await sandbox.call(args, { input: push, extra: grok });
     assert.equal(result.status, 2, args.join(' '));
     assert.match(result.stderr, /^yokoten: git push --tags pushes tags/);
   }
 });
 
-test('hook --agent grok: a command that prints the owner\'s details is rewritten with updatedInput, keeping the other fields (#390)', () => {
+test('hook --agent grok: a command that prints the owner\'s details is rewritten with updatedInput, keeping the other fields (#390)', async () => {
   const sandbox = makeSandbox();
-  const result = sandbox.run(['hook', '--agent', 'grok'], { input: JSON.stringify(recorded('ls', sandbox.repo, withTool('run_terminal_command', { command: 'git log -1', description: 'Show the last commit' }))) });
+  const result = await sandbox.call(['hook', '--agent', 'grok'], { input: JSON.stringify(recorded('ls', sandbox.repo, withTool('run_terminal_command', { command: 'git log -1', description: 'Show the last commit' }))) });
   assert.equal(result.status, 0, result.stderr);
   const reply = JSON.parse(result.stdout).hookSpecificOutput;
   assert.equal(reply.hookEventName, 'PreToolUse');
@@ -198,7 +198,7 @@ test('grok readToolCall: the shell by command, an edit by file, and nothing for 
   }
 });
 
-test('grok readToolCall: every edit tool Grok names is read by its file, and the matcher names them all', () => {
+test('grok readToolCall: every edit tool Grok names is read by its file, and the matcher names them all', async () => {
   for (const tool of EDIT_TOOLS) {
     assert.deepEqual(readToolCall({ toolName: tool, toolInput: { file_path: '/w/AGENTS.md' }, cwd: '/w' }).paths, ['/w/AGENTS.md'], tool);
   }
@@ -210,17 +210,17 @@ test('grok readToolCall: every edit tool Grok names is read by its file, and the
   for (const tool of [...EDIT_TOOLS, 'run_terminal_command', 'Bash']) assert.ok(matcher.includes(tool), tool);
   for (const tool of ['read_file', 'list_dir', 'web_search', 'grep']) assert.ok(!matcher.includes(tool), tool);
   // A worker's MultiEdit of a lead-only file is refused end to end.
-  const result = sandbox.run(['hook', '--agent', 'grok'], { input: JSON.stringify({ toolName: 'MultiEdit', toolInput: { file_path: join(sandbox.repo, 'AGENTS.md'), edits: [] }, cwd: sandbox.repo }), extra: { YOKOTEN_ROLE: 'worker' } });
+  const result = await sandbox.call(['hook', '--agent', 'grok'], { input: JSON.stringify({ toolName: 'MultiEdit', toolInput: { file_path: join(sandbox.repo, 'AGENTS.md'), edits: [] }, cwd: sandbox.repo }), extra: { YOKOTEN_ROLE: 'worker' } });
   assert.equal(result.status, 2);
 });
 
-test('grok readStop: a turn end is checked; the session-end fire only observes, so it is skipped', () => {
+test('grok readStop: a turn end is checked; the session-end fire only observes, so it is skipped', async () => {
   assert.deepEqual(readStop(recorded('stop', '/w')), { cwd: '/w', active: false });
   assert.deepEqual(readStop(recorded('stop', '/w', (event) => Object.assign(event, { stopHookActive: true }))), { cwd: '/w', active: true });
   assert.equal(readStop(recorded('shutdown', '/w')), null);
   assert.equal(readStop(null), null);
   const sandbox = makeSandbox();
-  const result = sandbox.run(['hook', '--stop', '--agent', 'grok', '--json'], { input: JSON.stringify(recorded('shutdown', sandbox.repo)) });
+  const result = await sandbox.call(['hook', '--stop', '--agent', 'grok', '--json'], { input: JSON.stringify(recorded('shutdown', sandbox.repo)) });
   assert.deepEqual([result.status, JSON.parse(result.stdout)], [0, { blocked: false, stop: false }]);
 });
 
@@ -232,13 +232,13 @@ function trustFolder(home: string, folders: Record<string, boolean>): string {
   return file;
 }
 
-test('grok project hooks: init writes the guard and the stop check, keeps other hooks, says how to trust, and doctor notes them', () => {
+test('grok project hooks: init writes the guard and the stop check, keeps other hooks, says how to trust, and doctor notes them', async () => {
   const sandbox = makeSandbox();
   const file = join(sandbox.repo, '.grok', 'hooks', 'yokoten.json');
   const cli = '.yokoten/bin/yokoten.mjs'; // The agent hooks run yokoten.mjs (#408).
-  assert.match(sandbox.run(['doctor']).stdout, /note +grok-hook: no tool-call guard or stop check in \.grok\/hooks\/yokoten\.json/, 'reported, not counted as missing');
+  assert.match((await sandbox.call(['doctor'])).stdout, /note +grok-hook: no tool-call guard or stop check in \.grok\/hooks\/yokoten\.json/, 'reported, not counted as missing');
   sandbox.write('.grok/hooks/yokoten.json', JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: './lint.sh' }] }] } }));
-  const result = sandbox.run(['init']);
+  const result = await sandbox.call(['init']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^added the Grok CLI tool-call hook in \.grok\/hooks\/yokoten\.json$/m);
   assert.match(result.stdout, /^added the Grok CLI stop check in \.grok\/hooks\/yokoten\.json$/m);
@@ -253,41 +253,41 @@ test('grok project hooks: init writes the guard and the stop check, keeps other 
   assert.equal(written.hooks.Stop[0].hooks[0].timeout, 600, "Grok's own default for Stop");
   assert.deepEqual(projectHooksState(sandbox.repo, cli), { guard: 'same', stop: 'same' });
   // Grok looks unused here: no trust line.
-  assert.match(sandbox.run(['doctor']).stdout, /ok +grok-hook: \.grok\/hooks\/yokoten\.json is in place; trust not checked, no ~\/\.grok\n/);
-  assert.match(sandbox.run(['init']).stdout, /same the Grok CLI tool-call hook/);
+  assert.match((await sandbox.call(['doctor'])).stdout, /ok +grok-hook: \.grok\/hooks\/yokoten\.json is in place; trust not checked, no ~\/\.grok\n/);
+  assert.match((await sandbox.call(['init'])).stdout, /same the Grok CLI tool-call hook/);
   written.hooks.Stop[0].hooks[0].timeout = 5;
   sandbox.write('.grok/hooks/yokoten.json', JSON.stringify(written));
   assert.equal(projectHooksState(sandbox.repo, cli).stop, 'updated', 'a hook with the default timeout is out of date');
-  assert.match(sandbox.run(['doctor']).stdout, /note +grok-hook: the hooks in \.grok\/hooks\/yokoten\.json are out of date/);
+  assert.match((await sandbox.call(['doctor'])).stdout, /note +grok-hook: the hooks in \.grok\/hooks\/yokoten\.json are out of date/);
   assert.deepEqual(addProjectHooks(sandbox.repo, cli), { guard: 'same', stop: 'updated' });
   sandbox.write('.grok/hooks/yokoten.json', '{ not json');
-  assert.match(sandbox.run(['doctor']).stdout, /note +grok-hook: can't read \.grok\/hooks\/yokoten\.json/);
+  assert.match((await sandbox.call(['doctor'])).stdout, /note +grok-hook: can't read \.grok\/hooks\/yokoten\.json/);
   assert.throws(() => addProjectHooks(sandbox.repo, cli), /can't read/);
   assert.equal(readFileSync(file, 'utf8'), '{ not json', 'a file yokoten cannot read stays as it was');
 });
 
-test('grok trust: doctor says when Grok skips the hooks; ok only when trusted_folders.toml trusts the folder itself', () => {
+test('grok trust: doctor says when Grok skips the hooks; ok only when trusted_folders.toml trusts the folder itself', async () => {
   const sandbox = makeSandbox();
-  assert.equal(sandbox.run(['init']).status, 0);
+  assert.equal((await sandbox.call(['init'])).status, 0);
   const root = realpathSync(sandbox.repo);
-  const doctor = () => sandbox.run(['doctor']).stdout;
+  const doctor = async () => (await sandbox.call(['doctor'])).stdout;
   assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'no home');
   mkdirSync(join(sandbox.home, '.grok'));
-  assert.match(doctor(), /note +grok-hook: can't check whether Grok CLI trusts this folder: no ~\/\.grok\/trusted_folders\.toml; if you use Grok CLI: run `grok` in this folder and type `\/hooks-trust`/);
+  assert.match(await doctor(), /note +grok-hook: can't check whether Grok CLI trusts this folder: no ~\/\.grok\/trusted_folders\.toml; if you use Grok CLI: run `grok` in this folder and type `\/hooks-trust`/);
   // The positive control: a store that trusts another folder, and one that says no to this one.
   trustFolder(sandbox.home, { '/somewhere/else': true, [root]: false });
-  assert.match(doctor(), /note +grok-hook: Grok CLI skips \.grok\/hooks\/yokoten\.json until you trust this folder; run `grok` in this folder and type `\/hooks-trust`/);
+  assert.match(await doctor(), /note +grok-hook: Grok CLI skips \.grok\/hooks\/yokoten\.json until you trust this folder; run `grok` in this folder and type `\/hooks-trust`/);
   // A trusted parent folder does not cover a repo inside it, and a trailing slash is another key.
   trustFolder(sandbox.home, { [dirname(root)]: true, [`${root}/`]: true });
   assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'untrusted');
   trustFolder(sandbox.home, { [root]: true });
-  assert.match(doctor(), /ok +grok-hook\n/);
+  assert.match(await doctor(), /ok +grok-hook\n/);
   // GROK_FOLDER_TRUST=0 turns Grok's trust gate off: every folder runs its hooks.
   trustFolder(sandbox.home, { [root]: false });
-  assert.match(doctor(), /note +grok-hook: Grok CLI skips/, 'the positive control');
+  assert.match(await doctor(), /note +grok-hook: Grok CLI skips/, 'the positive control');
   for (const value of ['0', 'false']) {
     assert.equal(readTrust(root, { HOME: sandbox.home, GROK_FOLDER_TRUST: value }).state, 'trusted');
-    assert.match(sandbox.run(['doctor'], { extra: { GROK_FOLDER_TRUST: value } }).stdout, /ok +grok-hook\n/);
+    assert.match((await sandbox.call(['doctor'], { extra: { GROK_FOLDER_TRUST: value } })).stdout, /ok +grok-hook\n/);
   }
   assert.equal(readTrust(root, { HOME: sandbox.home, GROK_FOLDER_TRUST: '1' }).state, 'untrusted');
   // So does `[folder_trust] enabled = false` in Grok's config.toml, read only.
@@ -296,7 +296,7 @@ test('grok trust: doctor says when Grok skips the hooks; ok only when trusted_fo
   assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'untrusted', 'the positive control');
   writeFileSync(config, '[ui]\nyolo = false\n\n[folder_trust]\nenabled = false # off\n');
   assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'trusted');
-  assert.match(doctor(), /ok +grok-hook\n/);
+  assert.match(await doctor(), /ok +grok-hook\n/);
   writeFileSync(config, 'folder_trust.enabled = false\n');
   assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'trusted', 'a dotted key');
   writeFileSync(config, '[other]\nenabled = false\n');
@@ -308,25 +308,25 @@ test('grok trust: doctor says when Grok skips the hooks; ok only when trusted_fo
   assert.deepEqual(readTrust(root, { HOME: sandbox.home, GROK_HOME: other }), { state: 'no store', store: '$GROK_HOME/trusted_folders.toml' });
 });
 
-test('grok user hook: install writes the command guard in ~/.grok/hooks only when ~/.grok is there, and doctor compares it', () => {
+test('grok user hook: install writes the command guard in ~/.grok/hooks only when ~/.grok is there, and doctor compares it', async () => {
   const sandbox = makeSandbox();
   const file = join(sandbox.home, '.grok', 'hooks', 'yokoten.json');
-  let result = sandbox.run(['install']);
+  let result = await sandbox.call(['install']);
   assert.match(result.stdout, /^skipped Grok CLI: ~\/\.grok not found \(run `yokoten install` again after installing Grok CLI\)$/m);
   assert.ok(!existsSync(dirname(dirname(file))), 'no ~/.grok made');
   mkdirSync(join(sandbox.home, '.grok'));
-  assert.doesNotMatch(sandbox.run(['doctor']).stdout, /ok +grok-user-hook/);
-  result = sandbox.run(['install']);
+  assert.doesNotMatch((await sandbox.call(['doctor'])).stdout, /ok +grok-user-hook/);
+  result = await sandbox.call(['install']);
   assert.match(result.stdout, /^added the Grok CLI command guard in ~\/\.grok\/hooks\/yokoten\.json$/m);
   const written = JSON.parse(readFileSync(file, 'utf8'));
   assert.equal(written.hooks.PreToolUse[0].matcher, 'Bash');
   assert.equal(written.hooks.PreToolUse[0].hooks[0].timeout, 60);
   assert.match(written.hooks.PreToolUse[0].hooks[0].command, /hook --agent grok --commands-only/);
   assert.equal(written.hooks.SessionStart, undefined, 'Grok shows a session-start hook only to the user');
-  assert.match(sandbox.run(['doctor']).stdout, /ok +grok-user-hook/);
-  assert.match(sandbox.run(['install']).stdout, /^same the Grok CLI command guard/m);
+  assert.match((await sandbox.call(['doctor'])).stdout, /ok +grok-user-hook/);
+  assert.match((await sandbox.call(['install'])).stdout, /^same the Grok CLI command guard/m);
   const env = { HOME: sandbox.home };
   assert.deepEqual(userHooksState(env, '/elsewhere/bin/yokoten.ts', 'gone'), { guard: 'updated' }, 'another runtime path is out of date');
   assert.deepEqual(addUserHooks(env, '/elsewhere/bin/yokoten.ts', 'gone'), { guard: 'updated' });
-  assert.match(sandbox.run(['doctor']).stdout, /note +grok-user-hook: the command guard in ~\/\.grok\/hooks\/yokoten\.json is out of date/);
+  assert.match((await sandbox.call(['doctor'])).stdout, /note +grok-user-hook: the command guard in ~\/\.grok\/hooks\/yokoten\.json is out of date/);
 });

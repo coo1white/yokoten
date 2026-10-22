@@ -35,13 +35,14 @@ import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import type { FolderTrust } from '../agents/folder-trust.ts';
 import { commentedFile, HAND_ADD, handAddJson, type HookState, mergeHandAdds } from '../agents/hooks-file.ts';
-import { type Gh, readServer, repoOf, type ServerSettings, type Unread } from '../host/github.ts';
+import { type Gh, readServer, type ServerSettings, type Unread } from '../host/github.ts';
+import { type Host, hostOf, isNoAdapter, noAdapter } from '../host/hosts.ts';
 import { findTempDirs, readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advice/unsaved.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
 import { compareCoreRules, compareVersions, hookCliPath, isSelf, readCoreRules, summarizeUpdate, withGitReads, workflowNotes } from './init.ts';
 import { assumeEmptyFolder, gitConfig } from '../run/check.ts';
-import { countOwnMarks, fillMarks, filledLine, trySafely, installedPieces, isOnPath, launcherDir, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
-import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, walk } from './road.ts';
+import { EMPTY_MARKS_FIX, fillMarks, hasMarks, OFFER_MARKS_FIX, offerMarkKinds, launcherFile, PROFILE_LINE, filledLines, trySafely, installedPieces, isOnPath, launcherDir, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
+import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, uncheckedText, walk } from './road.ts';
 
 /**
  * One check outside the road: its name in the report, whether it is in place, and the
@@ -59,8 +60,8 @@ const practice = (name: string, id: RuleId, ok: boolean, what: string, fix: stri
 /** The checks that must catch a known-bad input. Returns the names of any that did not. */
 export function selfTest(): string[] {
   const failed: string[] = [];
-  if (!checkCommand('git push origin --tags', { env: {} })) failed.push('release guard');
-  if (!checkCommand('git commit --no-verify -m x', { env: {} })) failed.push('skip-check guard');
+  if (!checkCommand('git push origin --tags', { env: {}, cwd: null })) failed.push('release guard');
+  if (!checkCommand('git commit --no-verify -m x', { env: {}, cwd: null })) failed.push('skip-check guard');
   if (!checkEdit('test/a.test.ts', { config: DEFAULTS, env: { YOKOTEN_FIX_TASK: '1' } })) failed.push('test guard');
   if (!checkEdit('AGENTS.md', { config: DEFAULTS, env: { YOKOTEN_ROLE: 'worker' } })) failed.push('lead-only guard');
   if (!isShellControlCaught()) failed.push('lead-only shell guard');
@@ -82,13 +83,13 @@ export function selfTest(): string[] {
 /**
  * A shell write to AGENTS.md from Claude Code's plugin worker, `yokoten:worker`, with no
  * YOKOTEN_ROLE (#402): the call must read as a worker's and be stopped, and the same call
- * from the lead must pass. The repo is the file system's root, taken as given, and
- * nothing is written.
+ * from the lead must pass. The repo is the root of the file system yokoten runs from, taken
+ * as given, and nothing is written.
  */
 export function isShellControlCaught(): boolean {
-  const root = parse(process.cwd()).root;
+  const root = parse(HOME_DIR).root;
   const call = (agentType?: string) => ({ agent_type: agentType, cwd: root, tool_input: { command: 'sed -i s/a/b/ AGENTS.md' } });
-  const options = { root, config: DEFAULTS, env: {} };
+  const options = { root, config: DEFAULTS, env: {}, cwd: root };
   return judge(readToolCall(call('yokoten:worker')), options) !== null && judge(readToolCall(call()), options) === null;
 }
 
@@ -177,10 +178,21 @@ export function agentHooks(root: string, env: Env, platform: string = process.pl
     (geminiState && handAddPractice('gemini-hook', '.gemini/settings.json', [geminiState.guard, geminiState.stop])) ??
       practice('gemini-hook', 'gemini-hook', geminiGuard && geminiStop, missing(geminiGuard, geminiStop, '.gemini/settings.json'), '`yokoten init` adds it'),
     antigravityPractice(antigravity.projectHookState(root, hookCliPath(root))),
-    trustedHooksPractice('muse-hook', 'Muse Code', '.muse/hooks.json', muse.projectHooksState(root, hookCliPath(root)), () => muse.readTrust(root, env), muse.TRUST_STEP),
+    ...museLine(root, env),
     trustedHooksPractice('grok-hook', 'Grok CLI', grok.HOOKS_FILE, grok.projectHooksState(root, hookCliPath(root)), () => grok.readTrust(root, env), grok.TRUST_STEP),
     platform === 'win32' ? practice('deepseek-harness-hook', 'deepseek-harness-hook', false, dsh.WINDOWS_GAP, 'nothing to do yet: issue #332 adds a PowerShell guard') : dshPractice(dsh.projectHooksState(root, hookCliPath(root)), dsh.profilesWithBridge(env)),
   ];
+}
+
+/**
+ * Muse Code's line. An untrusted folder with the hooks in place is a step on the road
+ * (`tool-hook`, #554), so it gets no second line here.
+ */
+function museLine(root: string, env: Env): Practice[] {
+  const states = muse.projectHooksState(root, hookCliPath(root));
+  if (states.guard === 'same' && states.stop === 'same' && muse.isGuardOff(root, env)) return [];
+  // The trust note names the headless way too: `muse exec --trust-workspace` (#557).
+  return [trustedHooksPractice('muse-hook', 'Muse Code', '.muse/hooks.json', states, () => muse.readTrust(root, env), muse.TRUST_FIX)];
 }
 
 /** Antigravity CLI's guard in .agents/hooks.json: one hook, no stop check (its Stop event has no `stop_hook_active`). */
@@ -249,8 +261,8 @@ export function machineChecks(env: Env): Practice[] {
     session,
     // 'runtime' in the text, as before; the id differs from the road's runtime step.
     practice('runtime', 'machine-runtime', runtime === VERSION || (plugin && runtime === null), runtime ? `the installed runtime is ${runtime}, this yokoten is ${VERSION}` : 'no runtime installed', plugin ? 'remove it with `yokoten uninstall`; the plugin brings its own' : 'run `yokoten install` from this copy of yokoten'),
-    // The marks yokoten found on the machine don't count: only the owner knows a city (#390).
-    practice('private-marks', 'private-marks', countOwnMarks(env) > 0, loadMarks(env).length ? `${target.marks} has only the marks yokoten found on this machine` : `${target.marks} is missing or empty`, 'add your name, city, domain and server names to it, one per line'),
+    // Any mark counts, the ones install found too: only a file with none is missing (#522).
+    practice('private-marks', 'private-marks', hasMarks(env), `${target.marks} is missing or has no marks`, EMPTY_MARKS_FIX),
   ];
 }
 
@@ -268,7 +280,7 @@ export function allowedMarkCount(env: Env, config: Pick<Config, 'privacy'>, root
     return { project: 0, machine: 0, ownName: 0, unsure: null }; // An unreadable file: the private-marks check says so.
   }
   if (!marks.length) return { project: 0, machine: 0, ownName: 0, unsure: null };
-  const key = repoKey(root);
+  const key = repoKey(root, env);
   const machine = machineAllowed(env, root, key);
   const ownName = skipsOwnName(env, config.privacy) ? sameNameMarks(marks, key).length : 0;
   return { project: ownMarks(marks, config.privacy.allow).length, machine: ownMarks(marks, machine.allow).length, ownName, unsure: machine.unsure };
@@ -302,24 +314,26 @@ export function privacyNotes(env: Env, root: string | null, output: Config['priv
   } catch {
     // An unreadable file: the private-marks check says so.
   }
-  const missing = missingMarkKinds(marks, machineMarks(env, { cwd: root ?? undefined }));
-  if (missing.length) notes.push(practice('private-mark-kinds', 'private-marks', false, `your private marks may lack ${missing.join(', ')}`, `add them to ${paths(env).marks}, one per line`));
+  // An offer, only when the file has marks: with none, the private-marks check says what to do (#522).
+  const missing = marks.length ? missingMarkKinds(marks, machineMarks(env, { cwd: root ?? undefined })) : [];
+  if (missing.length) notes.push(practice('private-mark-kinds', 'private-marks', false, offerMarkKinds(missing), OFFER_MARKS_FIX));
   return notes;
 }
 
 /**
  * The other agents' user hooks, from `install`: doctor at session start and the command
- * guard (#211). Only for a CLI this machine looks to use, its folder ~/.codex,
- * ~/.gemini or ~/.grok, so a Claude Code user hears nothing about tools they don't run.
+ * guard (#211). Only for a CLI this machine looks to use, its folder ~/.codex or ~/.gemini,
+ * ~/.grok, or Muse's settings, so a Claude Code user hears nothing about tools they don't run.
  * Grok CLI gets the command guard only.
  *
  * Each hook is compared with what `install` would write (command, matcher, runtime path),
  * so an old one is out of date, not ok. A note, never MISSING, so it never changes the
- * exit code: no real Codex or Gemini CLI run has been seen to block through these hooks
- * yet (#30), and a folder left by a CLI tried once is not proof the user wants yokoten there.
+ * exit code: no real Codex, Gemini CLI or Muse Code run has been seen to block through
+ * these hooks yet (#30), and a folder left by a CLI tried once is not proof the user wants
+ * yokoten there.
  */
 export function userAgentHooks(env: Env): Practice[] {
-  const report = (id: 'codex-user-hook' | 'gemini-user-hook' | 'grok-user-hook', hooks: { doctor?: HookState; guard: HookState }, file: string): Practice => {
+  const report = (id: 'codex-user-hook' | 'gemini-user-hook' | 'grok-user-hook' | 'muse-user-hook', hooks: { doctor?: HookState; guard: HookState }, file: string): Practice => {
     // Grok CLI has no session-start doctor: it shows that output only to the user.
     const named = [...(hooks.doctor === undefined ? [] : [['session-start doctor', hooks.doctor] as const]), ['command guard', hooks.guard] as const];
     const missing = named.filter(([, state]) => state === 'added').map(([name]) => name);
@@ -338,6 +352,7 @@ export function userAgentHooks(env: Env): Practice[] {
   if (codex.hasUserDir(env)) checks.push(report('codex-user-hook', codex.userHooksState(env, USER_CLI, USER_MISSING), '~/.codex/hooks.json'));
   if (gemini.hasUserDir(env)) checks.push(report('gemini-user-hook', gemini.userHooksState(env, USER_CLI, USER_MISSING), '~/.gemini/settings.json'));
   if (grok.hasUserDir(env)) checks.push(report('grok-user-hook', grok.userHooksState(env, USER_CLI, USER_MISSING), grok.userHooksFile(env)));
+  if (muse.hasUserDir(env)) checks.push(report('muse-user-hook', muse.userHooksState(env, USER_CLI, USER_MISSING), muse.userSettingsFile(env)));
   return checks;
 }
 
@@ -368,10 +383,10 @@ const DEFAULT_BRANCH_REFS = ['refs/remotes/origin/HEAD', 'refs/remotes/origin/ma
  * The commit at the tip of the default branch in `root`: `origin/HEAD`, else `origin/main`,
  * else `main`, whichever exists locally. Null when none does, or outside a git repo.
  */
-function readDefaultBranch(root: string): string | null {
+function readDefaultBranch(root: string, env: Env): string | null {
   for (const ref of DEFAULT_BRANCH_REFS) {
     try {
-      return execFileSync('git', ['rev-parse', '--verify', '-q', `${ref}^{commit}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      return execFileSync('git', ['rev-parse', '--verify', '-q', `${ref}^{commit}`], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
     } catch {
       // Not here; try the next one.
     }
@@ -380,9 +395,9 @@ function readDefaultBranch(root: string): string | null {
 }
 
 /** Whether `older` is in the history of `newer` in `root`. False when git doesn't know `older`. */
-function isAncestor(root: string, older: string, newer: string): boolean {
+function isAncestor(root: string, older: string, newer: string, env: Env): boolean {
   try {
-    execFileSync('git', ['merge-base', '--is-ancestor', older, newer], { cwd: root, stdio: 'ignore' });
+    execFileSync('git', ['merge-base', '--is-ancestor', older, newer], { cwd: root, env, stdio: 'ignore' });
     return true;
   } catch {
     return false;
@@ -406,8 +421,8 @@ export function pluginAgeCheck(root: string | null, env: Env): Finding | null {
   const note = (older: string, newer: string) => finding('plugin-version', `the yokoten plugin is older than this yokoten (${older} < ${newer})`, `update it: ${PLUGIN_UPDATE}`);
   if (plugin.version && compareVersions(plugin.version, VERSION) === -1) return note(plugin.version, VERSION);
   if (!root || !plugin.commit || !isSelf(root)) return null;
-  const tip = readDefaultBranch(root);
-  if (!tip || tip === plugin.commit || !isAncestor(root, plugin.commit, tip)) return null;
+  const tip = readDefaultBranch(root, env);
+  if (!tip || tip === plugin.commit || !isAncestor(root, plugin.commit, tip, env)) return null;
   return note(plugin.commit.slice(0, 12), tip.slice(0, 12));
 }
 
@@ -434,9 +449,45 @@ export function launcherCheck(env: Env): Finding | null {
   if (hasPlugin(env)) return null;
   const { runtime } = paths(env);
   if (!existsSync(runtime) || isOnPath(env, runtime)) return null;
-  return finding('machine-runtime', 'no `yokoten` command on your PATH runs the installed copy', `run \`node ${join(runtime, 'bin', 'yokoten.ts')} install\` in a terminal; it puts a launcher in ${launcherDir(homeIn(env))} and offers to add that folder to your PATH`, {
-    why: 'yokoten\'s messages say `yokoten init` and `yokoten doctor`',
+  const home = homeIn(env);
+  const meanwhile = 'until then, `npx yokoten` runs yokoten';
+  let fix = `run \`npx yokoten install\`; it puts a launcher in ${launcherDir(home)} and offers to add that folder to your PATH`;
+  if (existsSync(launcherFile(home))) {
+    fix = process.platform === 'win32'
+      ? `add ${launcherDir(home)} to the Path for your account (search Windows for "environment variables for your account"), then open a new terminal; ${meanwhile}`
+      : `add this line to your shell profile (~/.bashrc or ~/.zshrc), then open a new terminal: ${PROFILE_LINE}; ${meanwhile}`;
+  }
+  return finding('machine-runtime', 'the yokoten launcher is not on your PATH, so a bare yokoten command is not found', fix, {
+    why: 'doctor names commands to run, and a command that is not found stops a beginner',
   });
+}
+
+/**
+ * The one way to run yokoten in doctor's text (#500). Messages are written as `yokoten init`.
+ * When no launcher on the PATH runs yokoten, that command is not found, so the text says
+ * `npx yokoten init`, which works from anywhere. That is so when install's runtime is here but
+ * off the PATH, and when this run is itself `npx` (npm sets `npm_command=exec`). With the plugin
+ * on, its own commands are used. A command inside a hook that doctor shows for you to add by hand,
+ * where the backtick has a backslash before it, stays as written: it must match the hook install writes.
+ * Null when the messages stay as written.
+ */
+export function commandWording(env: Env): ((text: string) => string) | null {
+  if (hasPlugin(env) || env.CLAUDE_PLUGIN_ROOT || homeOf(env) === null) return null;
+  const { runtime } = paths(env);
+  const isNpx = env.npm_command === 'exec';
+  if (!isNpx && (!existsSync(runtime) || isOnPath(env, runtime))) return null;
+  if (isNpx && isOnPath(env, runtime)) return null;
+  return (text) => text.replace(/(?<!\\)`yokoten((?: [^`]*)?)`/g, '`npx yokoten$1`');
+}
+
+/** `value` with `reword` applied to every string in it (plain arrays and objects only). */
+function rewordStrings<T>(value: T, reword: (text: string) => string): T {
+  if (typeof value === 'string') return reword(value) as T;
+  if (Array.isArray(value)) return value.map((item) => rewordStrings(item, reword)) as T;
+  if (value !== null && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, rewordStrings(item, reword)])) as T;
+  }
+  return value;
 }
 
 // Machine notes (record 0012): machine state that stops every agent session, where the
@@ -465,6 +516,8 @@ export interface MachineProbe {
   /** This process's uid, or null where there is none (Windows). */
   uid: number | null;
   now(): Date;
+  /** The running Node's version, as in `process.versions.node`. */
+  nodeVersion: string;
 }
 
 /** The real machine. */
@@ -491,6 +544,7 @@ export const REAL_MACHINE: MachineProbe = {
   writeText: writeFileAtomic,
   uid: process.getuid?.() ?? null,
   now: () => new Date(),
+  nodeVersion: process.versions.node,
 };
 
 const GB = 1024 ** 3;
@@ -711,6 +765,38 @@ export function agentTempDirCheck(env: Env, probe: MachineProbe): Practice | nul
   return { name: 'agent-temp-dir', ok: false, finding: finding('agent-temp-dir', `${shown} belongs to uid ${owner}, not to you (uid ${probe.uid}), so Claude Code won't start`, `${fix}; Claude Code makes a new one when it starts`) };
 }
 
+/**
+ * The first release of each supported Node line with the security fixes of 2026-10-21
+ * (#572). Among them are TLS hostname checks, which yokoten's HTTPS calls to GitHub rely on:
+ * https://nodejs.org/en/blog/vulnerability/october-2026-security-releases
+ * package.json "engines" and the docs name the same versions. A line not in this table and
+ * older than the newest line in it (an odd line, or one past its end of life) gets no fixes.
+ */
+export const NODE_ADVISORY = 'https://nodejs.org/en/blog/vulnerability/october-2026-security-releases';
+export const NODE_FIXED: Readonly<Record<number, string>> = { 22: '22.23.4', 24: '24.22.1', 26: '26.12.1' };
+
+/**
+ * The note when the running Node lacks the security fixes of October 2026 (#572): a
+ * release older than its line's fix, or a line that gets no fixes at all. A Node line
+ * newer than the table is fine: it came out after the fixes.
+ */
+export function nodeSecurityCheck(probe: Pick<MachineProbe, 'nodeVersion'>): Practice {
+  const version = probe.nodeVersion.replace(/^v/, '');
+  const line = Number.parseInt(version, 10);
+  const fixed = NODE_FIXED[line];
+  const lines = Object.keys(NODE_FIXED).map(Number);
+  const newestLine = Math.max(...lines);
+  const advisoryLink = `the advisory: ${NODE_ADVISORY}`;
+  if (fixed && (compareVersions(version, fixed) ?? -1) < 0) {
+    return { name: 'node-security', ok: false, finding: finding('node-security', `Node ${version} has known security holes that Node fixed in October 2026`, `upgrade Node to ${fixed} or later; ${advisoryLink}`) };
+  }
+  if (!fixed && line < newestLine) {
+    const others = lines.filter((other) => other !== newestLine).map((other) => NODE_FIXED[other]).join(' or ');
+    return { name: 'node-security', ok: false, finding: finding('node-security', `Node ${version} is not supported, because Node ${line} gets no more security fixes`, `install Node ${NODE_FIXED[newestLine]} or later (or ${others}); ${advisoryLink}`) };
+  }
+  return { name: 'node-security', ok: true, finding: finding('node-security', '', ''), detail: `Node ${version}` };
+}
+
 /** A leftover folder is one older than this: a test run that is still going is newer. */
 const LEFTOVER_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -789,7 +875,7 @@ export const quoteForShell = (word: string): string => `'${word.replaceAll("'", 
  * must catch it, and in a fake WSL, the full Windows drive under it. The checks are
  * parameters so a test can hand in broken ones.
  */
-export function machineControl(diskCheck: typeof diskSpaceChecks = diskSpaceChecks, tempCheck: typeof agentTempDirCheck = agentTempDirCheck): string[] {
+export function machineControl(diskCheck: typeof diskSpaceChecks = diskSpaceChecks, tempCheck: typeof agentTempDirCheck = agentTempDirCheck, nodeCheck: typeof nodeSecurityCheck = nodeSecurityCheck): string[] {
   const fake: MachineProbe = {
     readDiskSpace: () => ({ free: 0, size: 250 * GB }),
     readOwner: () => 0,
@@ -800,6 +886,7 @@ export function machineControl(diskCheck: typeof diskSpaceChecks = diskSpaceChec
     writeText: () => {},
     uid: 1000,
     now: () => new Date(0),
+    nodeVersion: '22.23.3',
   };
   const failed: string[] = [];
   if (diskCheck('/', {}, fake, true).every((c) => c.ok)) failed.push('disk space check');
@@ -814,6 +901,7 @@ export function machineControl(diskCheck: typeof diskSpaceChecks = diskSpaceChec
   const host = diskCheck('/', { WSL_DISTRO_NAME: 'control', HOME: '/nonexistent' }, wsl, false).find((c) => c.name === 'host-disk');
   if (host?.ok !== false || !host.finding.what.startsWith(`${HOST_DRIVE} has`)) failed.push('host drive check');
   if (tempCheck({}, fake)?.ok !== false) failed.push('agent temp dir check');
+  if (nodeCheck(fake).ok || !nodeCheck({ nodeVersion: '24.22.1' }).ok) failed.push('node security check');
   return failed;
 }
 
@@ -844,8 +932,9 @@ function roadControl(): string[] {
     writeFileSync(join(dir, 'TODO.md'), '- an item\n');
     const folder = dir;
     return withGitReads(() => {
-      assumeEmptyFolder(folder);
-      return road(folder, { HOME: folder }, ROAD, SERVER_CONTROL)
+      const env = { HOME: folder };
+      assumeEmptyFolder(folder, env);
+      return road(folder, env, ROAD, SERVER_CONTROL)
         .filter((r) => r.found === true)
         .map((r) => `the ${r.step.key} step`);
     });
@@ -934,9 +1023,9 @@ export interface DoctorState {
 }
 
 /** The state file of the clone at `root`, or null outside a git repo. */
-export function findStateFile(root: string): string | null {
+export function findStateFile(root: string, env: Env): string | null {
   try {
-    const gitDir = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const gitDir = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
     return gitDir ? join(gitDir, STATE_FILE) : null;
   } catch {
     return null;
@@ -1051,12 +1140,17 @@ export function listBoardSteps(server: ServerRead): string[] {
   return server.boards.flatMap((board) => BOARD_BY_HAND.map((step) => `  by hand     board "${board.title}": ${step}`));
 }
 
-/** The server settings of the project's origin remote, or why they can't be read. */
-function readOrigin(root: string, gh: Gh): ServerSettings | Unread {
-  const remote = gitConfig(root, 'remote.origin.url');
-  if (!remote) return { unread: 'there is no origin remote yet', fix: 'add one on GitHub to check the server settings, or check them by hand' };
-  const repo = repoOf(remote);
-  return repo ? readServer(gh, repo) : { unread: 'the origin remote is not on a host yokoten knows (GitHub for now)', fix: 'add a GitHub origin remote, or check these settings by hand' };
+/** How long full doctor waits for one GitHub read: past it, the server steps say they can't check, and why (#561). */
+export const SERVER_TIMEOUT_MS = 3000;
+
+/** Why the server can't be read in a repo with no origin remote; the road shows it once (#502). */
+const NO_REMOTE = 'there is no origin remote yet';
+const NO_REMOTE_FIX = 'run `git remote add origin <url>` with the url of the repo on your code host, then run `yokoten doctor` again';
+
+/** The server settings of the origin's host, or why they can't be read. A host with no adapter is read without the network (#504). */
+function readOrigin(host: Host, gh: Gh): ServerSettings | Unread {
+  if (host.kind === 'none') return { unread: NO_REMOTE, fix: NO_REMOTE_FIX };
+  return host.kind === 'github' ? readServer(gh, host.repo) : noAdapter(host);
 }
 
 /**
@@ -1233,7 +1327,11 @@ export const NO_HOME_NOTE = "no home folder found; yokoten can't read or keep it
  * The report, as text lines and as data, and whether doctor found no problem. Each git
  * answer is kept for the run (`withGitReads`, #408).
  */
-export const doctor = (root: string | null, options: Parameters<typeof doctorRun>[1]): ReturnType<typeof doctorRun> => withGitReads(() => doctorRun(root, options));
+export const doctor = (root: string | null, options: Parameters<typeof doctorRun>[1]): ReturnType<typeof doctorRun> => {
+  const result = withGitReads(() => doctorRun(root, options));
+  const reword = commandWording(options.env);
+  return reword ? rewordStrings(result, reword) : result;
+};
 
 function doctorRun(
   root: string | null,
@@ -1250,18 +1348,20 @@ function doctorRun(
   if (!root) return { ok: !failed.length, lines, report: { ...base, ok: !failed.length, repo: false, stage: null, next: null, findings } };
 
   // Read only, and only in full doctor: a session never calls the network (record 0004).
-  const server: ServerRead = session ? undefined : gh ? readOrigin(root, gh) : { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' };
+  // A host with no adapter needs no network, so a session knows it too (#504).
+  const host = hostOf(gitConfig(root, 'remote.origin.url', env));
+  const server: ServerRead = host.kind === 'other' ? noAdapter(host) : session ? undefined : gh ? readOrigin(host, gh) : { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' };
   const where = walk(road(root, env, ROAD, server, config), config.notNow);
   // Full doctor from the command line adds the obvious marks first (#390); a session writes nothing.
   // With no home folder, the checks that read or keep settings there are skipped, never crash (#404).
   const hasHome = homeOf(env) !== null;
-  const filled = isFilling && !session && hasHome ? trySafely('the marks from this machine', () => [filledLine(fillMarks(env, machineMarks(env, { cwd: root, gh })), paths(env).marks)])[0] : null;
+  const filled = isFilling && !session && hasHome ? trySafely('the marks from this machine', () => filledLines(fillMarks(env, machineMarks(env, { cwd: root, gh })), paths(env).marks)) : [];
   const machine = hasHome ? machineChecks(env) : [];
   // A file missing here may be on the default branch (#405): one git call for every step
   // left. A session asks only when the step it names misses a file.
   const left = where.steps.filter((w) => w.mark === 'next' || w.mark === 'to do').map((w) => w.step);
   const isAsked = missingPaths(root, session ? left.slice(0, 1) : left, config).length > 0;
-  const elsewhere = isAsked ? readDefaultBranchFiles(root, missingPaths(root, left, config)) : null;
+  const elsewhere = isAsked ? readDefaultBranchFiles(root, missingPaths(root, left, config), env) : null;
   const next = where.next ? stepFinding(where.next, root, env, { server, config, elsewhere }) : null;
   const core = coreRulesCheck(root);
   const isCoreBehind = core?.mark === 'MISSING';
@@ -1301,7 +1401,7 @@ function doctorRun(
       findings.push(waiting);
     }
     // A lesson new to this clone that finds something here: one line, at one start only (#339).
-    const stateFile = unsaved.commonDir ? join(unsaved.commonDir, STATE_FILE) : findStateFile(root);
+    const stateFile = unsaved.commonDir ? join(unsaved.commonDir, STATE_FILE) : findStateFile(root, env);
     const lesson = sessionLessonNote(root, config.notNow, stateFile, env.CLAUDE_PLUGIN_ROOT ? '/yokoten:doctor' : '`yokoten doctor`');
     if (lesson.line) blocks.push([lesson.line]);
     const notes = [...unsaved.notes, ...lesson.findings];
@@ -1312,6 +1412,9 @@ function doctorRun(
   lines.push(`yokoten ${VERSION}, self-test ${failed.length ? 'FAILED' : 'ok'}`);
   lines.push(where.stage ? `the road: stage ${where.stage} of ${STAGES.length}, ${STAGES[where.stage - 1]}` : `the road: ${ROAD_DONE.replace(/^yokoten: /, '')}`);
   const steps: StepState[] = [];
+  // With no origin remote, the steps that read the server say so in one line, not one each (#502).
+  const noRemote = server !== undefined && 'unread' in server && server.unread === NO_REMOTE;
+  const needRemote = noRemote ? where.steps.filter(({ step, mark }) => mark === "can't check" && step.unchecked?.(server).includes(NO_REMOTE)).map(({ step }) => step.key) : [];
   STAGES.forEach((name, i) => {
     lines.push(`  ${i + 1}. ${name}`);
     for (const { step, mark } of where.steps.filter((w) => w.step.stage === i + 1)) {
@@ -1324,8 +1427,12 @@ function doctorRun(
         const f = stepFinding(step, root, env, { server, config, elsewhere });
         findings.push(f);
         note = stepText(f);
-      } else if (mark === "can't check" && step.unchecked) note = step.unchecked(server);
+      } else if (mark === "can't check") note = uncheckedText(step, server);
       steps.push(state);
+      if (needRemote.includes(step.key)) {
+        if (step.key === needRemote[0]) lines.push(`    can't check ${needRemote.join(', ')}: ${NO_REMOTE}, so doctor can't read the server; ${NO_REMOTE_FIX}`);
+        continue;
+      }
       lines.push(`    ${mark.padEnd(11)} ${step.key}${step.standard ? ` (${step.standard})` : ''}${note ? `: ${note}` : ''}`);
     }
   });
@@ -1349,7 +1456,7 @@ function doctorRun(
     notes.push(noCi);
   }
   // Full doctor keeps which lessons this clone has seen; a session start keeps only which it ran.
-  const stateFile = unsaved?.commonDir ? join(unsaved.commonDir, STATE_FILE) : findStateFile(root);
+  const stateFile = unsaved?.commonDir ? join(unsaved.commonDir, STATE_FILE) : findStateFile(root, env);
   const state = readState(stateFile);
   const seenLessons = state.seenLessons ?? [];
   const lessons = lessonChecks(root, config.notNow, undefined, stateFile ? seenLessons : null);
@@ -1390,16 +1497,16 @@ function doctorRun(
     if (!c.ok) findings.push(c.finding);
   }
   if (!hasHome) lines.push(`  note    ${NO_HOME_NOTE}`);
-  if (filled) lines.push(`  note    ${filled}`);
+  for (const line of filled) lines.push(`  note    ${line}`);
   for (const c of hasHome ? privacyNotes(env, root, config.privacy.output) : []) {
     lines.push(`  note    ${c.name}: ${stepText(c.finding)}`);
     notes.push(c.finding);
   }
-  // Machine notes (record 0012) never fail doctor: the disk, the agent's temp folder, and
-  // old test folders left in the temp folder (#400).
+  // Machine notes (record 0012) never fail doctor: the disk, the agent's temp folder, old
+  // test folders left in the temp folder (#400), and a Node without the security fixes (#572).
   const agentTemp = agentTempDirCheck(env, probe);
   const leftovers = leftoverTempCheck(env, probe);
-  for (const c of [...userAgentHooks(env), ...diskSpaceChecks(root, env, probe, false), ...(agentTemp ? [agentTemp] : []), ...(leftovers ? [leftovers] : [])]) {
+  for (const c of [...userAgentHooks(env), ...diskSpaceChecks(root, env, probe, false), ...(agentTemp ? [agentTemp] : []), ...(leftovers ? [leftovers] : []), nodeSecurityCheck(probe)]) {
     lines.push(`  ${c.ok ? 'ok     ' : 'note   '} ${c.name}${c.ok ? (c.detail ? `: ${c.detail}` : '') : `: ${stepText(c.finding)}`}`);
     if (!c.ok) notes.push(c.finding);
   }
@@ -1426,12 +1533,15 @@ function doctorRun(
   // The road's stage 5 shows the settings it groups (#7); here are the rest, which never fail doctor.
   const settings = serverChecks(server ?? { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' }, { isCiOff: Object.hasOwn(config.notNow, 'ci') });
   lines.push('server (read only; the owner sets these once per repo):');
-  for (const c of settings.filter((c) => !ROAD_SERVER_IDS.includes(c.id))) {
+  for (const c of settings.filter((c) => !ROAD_SERVER_IDS.includes(c.id) && !(noRemote && c.id === 'server-settings'))) {
     lines.push(`  ${c.mark.padEnd(11)} ${c.id}${c.mark === 'ok' ? '' : `: ${stepText(c.finding)}`}`);
     if (c.mark !== 'ok') notes.push(c.finding);
   }
-  if (settings[0].id === 'server-settings') lines.push('  check these by hand:', ...BY_HAND.map((s) => `    ${s}`));
-  lines.push(...OWNER_STEPS.map((s) => `  not checked ${s}`));
+  // On a host with no adapter, each road step says what it asks; these lists name GitHub's menus (#504).
+  if (!isNoAdapter(server)) {
+    if (settings[0].id === 'server-settings') lines.push('  check these by hand:', ...BY_HAND.map((s) => `    ${s}`));
+    lines.push(...OWNER_STEPS.map((s) => `  not checked ${s}`));
+  }
   lines.push(...listBoardSteps(server));
   // The road has no failed mark: a step is done, to do, not now or can't check. Steps
   // left are the way ahead, not problems, so they never fail doctor (#208).

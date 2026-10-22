@@ -228,8 +228,13 @@ export function checkPullRequestBody(pr: Pick<PullRequest, 'body' | 'files' | 'd
     else if (!text || /^<[^>]*>$/.test(text)) problems.push(finding('pr-section', `body: the \`## ${name}\` section is empty`, 'fill it in'));
   }
   // Only Closes, Fixes and Resolves close the issue; Part of and Refs link it and leave it open.
-  if (!/\b(closes|fixes|resolves|refs|part of) #\d+/i.test(body)) {
+  if (!readLinkedIssues(body).length) {
     problems.push(finding('pr-issue', 'body: no linked issue', 'link the issue with `Closes #N`, or `Part of #N` when it does not finish it'));
+  }
+  // Every pull request names each AI and model that made it (#570), on its last
+  // line, so the credit reads the same each time.
+  if (!hasMadeWith(body)) {
+    problems.push(finding('pr-made-with', 'body: no `Made with` line at the end', 'end the body with `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, for example `🤖 Made with lead (opus), worker (sonnet)`'));
   }
 
   // `yokoten changelog` reads only the files right in changes/, and refuses a folder there,
@@ -268,7 +273,7 @@ export function checkPullRequestBody(pr: Pick<PullRequest, 'body' | 'files' | 'd
 
 /** The login GitHub gives Dependabot's pull requests. */
 export const DEPENDABOT = 'dependabot[bot]';
-const DEPENDABOT_NOTES = new Set(['pr-tier', 'pr-section', 'pr-issue', 'pr-changelog', 'pr-kit', 'pr-milestone', 'pr-labels', 'pr-owned']);
+const DEPENDABOT_NOTES = new Set(['pr-tier', 'pr-section', 'pr-issue', 'pr-made-with', 'pr-changelog', 'pr-kit', 'pr-milestone', 'pr-labels', 'pr-owned']);
 
 /**
  * The pull request findings, split into problems and notes. For a pull request Dependabot
@@ -804,4 +809,62 @@ export function readCommandLabels(command: string[], body: string | null): Comma
   const hasTier = labels.some((label) => labelTier(label) !== null);
   if (tier && !hasTier) missing.push([`tier ${tier}`, `tier: ${tier}`]);
   return { missing, problems: hasTier ? checkTierLabel(labels, tier) : [], repo };
+}
+
+// ---- The milestone a gh command sets (#512) ----
+//
+// `yokoten bot` gives `gh pr create` its linked issue's milestone when the command names
+// none, so `check --pr` never fails on "milestone: none set" after the post.
+
+/** The issues a `gh pr create` body links, when the command gives no milestone. */
+export interface CommandMilestone {
+  /** The linked issue numbers, in the order the body names them, each once. */
+  issues: number[];
+  /** The `--repo` value, or null when the command names none. */
+  repo: string | null;
+}
+
+// The words that link an issue. The body check and the milestone step both read them here.
+const LINKED_ISSUE = /\b(?:closes|fixes|resolves|refs|part of) #(\d+)/gi;
+
+/** The issue numbers a body links with `Closes #N`, `Part of #N` and the like, in order, each once. */
+export function readLinkedIssues(body: string): number[] {
+  return [...new Set([...body.matchAll(LINKED_ISSUE)].map((match) => Number(match[1])))];
+}
+
+/**
+ * Whether a body ends with `🤖 Made with <agent> (<model>)` (#570): its last
+ * line that is not blank, with or without the robot emoji. One or more
+ * comma-separated `<agent> (<model>)` pairs name each AI and model that made
+ * it. HTML comments are set aside first, so a commented line counts neither
+ * for nor against, and neither does one inside a code block.
+ */
+export function hasMadeWith(body: string): boolean {
+  const lines = blankComments(body).split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '');
+  return /^(?:🤖 )?Made with [^()]+ \([^()]+\)(?:, [^()]+ \([^()]+\))*$/.test(lines.at(-1) ?? '');
+}
+
+/**
+ * The issues whose milestone `gh pr create` (or `new`) should take: null for any other
+ * command, one that gives `--milestone` or `-m`, a run-together word it can't read, or a
+ * body that links no issue (the body check says so).
+ */
+export function readCommandMilestone(command: string[], body: string | null): CommandMilestone | null {
+  const [file, ...rest] = command;
+  if (!file || botProgram(file) !== 'gh' || body === null) return null;
+  const { words, options, unreadable } = readArgs(rest, ISSUE_FLAGS);
+  const [kind, verb] = words.map((index) => rest[index]);
+  if (kind !== 'pr' || (verb !== 'create' && verb !== 'new') || unreadable !== null) return null;
+  if (options.some(([name]) => name === '--milestone' || name === '-m')) return null;
+  const issues = readLinkedIssues(body);
+  if (!issues.length) return null;
+  const repo = options.filter(([name]) => name === '--repo' || name === '-R').at(-1)?.[1] ?? null;
+  return { issues, repo };
+}
+
+/** The problem when no linked issue has a milestone to copy (#512). */
+export function noMilestoneFinding(issues: number[]): Finding {
+  const named = issues.map((issue) => `#${issue}`).join(', ');
+  const which = issues.length === 1 ? `the linked issue ${named} has none` : `none of the linked issues ${named} has one`;
+  return finding('pr-milestone', `milestone: none given, and ${which}`, 'add `--milestone <name>`, or set a milestone on the issue');
 }

@@ -61,10 +61,11 @@ test('plugin: every path it names exists inside the plugin, and the kit is not c
   for (const s of scripts) assert.ok(existsSync(join(ROOT, s)), s);
 });
 
-test('plugin: its hooks are the ones install adds, and the guard it registers blocks', () => {
+test('plugin: its hooks are the ones install adds, and the guard it registers blocks', async () => {
   const sandbox = makeSandbox();
   const hooks = manifest('plugin.json').hooks as Record<string, { matcher?: string; hooks: { type: string; command: string }[] }[]>;
   // install's user-level hooks, with the plugin's root in place of the machine copy.
+  // install's entry, through the real binary.
   assert.equal(sandbox.run(['install']).status, 0);
   const installed = JSON.parse(readFileSync(join(sandbox.home, '.claude', 'settings.json'), 'utf8')).hooks;
   // Claude Code keeps the plugin's copy, so only install's commands check that the copy is there (#204).
@@ -85,13 +86,14 @@ test('plugin: its hooks are the ones install adds, and the guard it registers bl
   assert.equal(session.status, 0, session.stderr);
   assert.match(session.stdout, /^yokoten: stage 1 of 5/);
   assert.match(session.stdout, /runs as \/yokoten:init, \/yokoten:doctor and \/yokoten:update/);
-  assert.doesNotMatch(sandbox.run(['doctor', '--session']).stdout, /yokoten:init/, 'only from the plugin');
+  assert.doesNotMatch((await sandbox.call(['doctor', '--session'])).stdout, /yokoten:init/, 'only from the plugin');
 });
 
 // /yokoten:update (#142). The skill runs the plugin's own yokoten, which may be newer
 // than the project's .yokoten/ copy: the preview first, the write only when asked.
 test('plugin: /yokoten:update previews from the plugin, then writes with --write; a .yokoten/ copy without its kit cannot compare', () => {
   const sandbox = makeSandbox();
+  // init's entry, through the real binary: the .yokoten/ copy it makes runs below.
   assert.equal(sandbox.run(['init']).status, 0);
   const path = join(sandbox.repo, 'AGENTS.md');
   const fresh = readFileSync(path, 'utf8');
@@ -128,7 +130,7 @@ test('plugin: its tool-call guard is the command refuseOnFailure builds', () => 
   assert.equal(manifest('plugin.json').hooks.PreToolUse[0].hooks[0].command, refuseOnFailure(`"${PLUGIN_ROOT}/bin/yokoten.mjs"`, 'hook --commands-only'));
 });
 
-test('hook: a Copilot CLI call, in the Claude-format shape it sends from .claude/settings.json, is refused with the reason on stdout too (#30)', () => {
+test('hook: a Copilot CLI call, in the Claude-format shape it sends from .claude/settings.json, is refused with the reason on stdout too (#30)', async () => {
   const sandbox = makeSandbox();
   // As Copilot CLI 1.0.98 sent it in a real run: PascalCase PreToolUse, snake_case fields.
   const input = JSON.stringify({
@@ -139,13 +141,13 @@ test('hook: a Copilot CLI call, in the Claude-format shape it sends from .claude
     tool_name: 'Bash',
     tool_input: { command: 'git push --tags origin', description: 'Push all tags to origin' },
   });
-  const result = sandbox.run(['hook'], { input });
+  const result = await sandbox.call(['hook'], { input });
   assert.equal(result.status, 2, 'Claude Code reads exit 2 and stderr');
   assert.match(result.stderr, /^yokoten: git push --tags pushes tags\./);
   // Copilot CLI shows the agent only "hook exited with code 2" unless stdout names the reason.
   assert.deepEqual(JSON.parse(result.stdout), { permissionDecision: 'deny', permissionDecisionReason: result.stderr.trimEnd() });
   const create = JSON.stringify({ hook_event_name: 'PreToolUse', cwd: sandbox.repo, tool_name: 'Write', tool_input: { path: join(sandbox.repo, 'AGENTS.md'), file_text: 'x' } });
-  assert.equal(sandbox.run(['hook'], { input: create, extra: { YOKOTEN_ROLE: 'worker' } }).status, 2, "Copilot's create tool names the file in `path`");
+  assert.equal((await sandbox.call(['hook'], { input: create, extra: { YOKOTEN_ROLE: 'worker' } })).status, 2, "Copilot's create tool names the file in `path`");
 });
 
 test('formatRewrite: allow, with the whole tool input, only the command changed (#390)', () => {

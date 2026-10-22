@@ -21,6 +21,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
+import { docsLink } from '../../rules/message.ts';
 import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import { type Added, addHook, checkHooksFile, type HookState, hookState } from '../hooks-file.ts';
@@ -61,7 +62,7 @@ export const PATCH_FILE = '.dsh/yokoten.patch.yml';
  */
 export const PATCH = `# yokoten: the tool-call guard for DeepSeek Harness. Start dsh at the repo root with
 #   dsh <profile> --patch ${PATCH_FILE}
-# The profile needs the bridge and its peer: see \`yokoten init\` or docs/guide.md#works-with.
+# The profile needs the bridge and its peer: see \`yokoten init\` or ${docsLink('guide.md', 'works-with')}.
 - insert:
     - id: hooks-claude-code
       name: '@deepseek-ai/dsh-hooks-claude-code'

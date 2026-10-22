@@ -44,6 +44,7 @@ import {
   readCodeOwners,
   readCommandTitle,
   readIncident,
+  readIssueMilestone,
   readLocalLogins,
   readLogin,
   repoOf,
@@ -545,9 +546,9 @@ test('branch files: changed, renamed and deleted paths since the base, from one 
   writeFileSync(join(dir, 'kit.md'), 'New.\n');
   git('add', '.');
   git('commit', '-qm', 'head');
-  const read = readBranchFiles(dir, 'origin/main', 'HEAD');
+  const read = readBranchFiles(dir, 'origin/main', 'HEAD', process.env);
   assert.deepEqual({ files: read?.files.sort(), deleted: read?.deleted }, { files: ['gone.md', 'kit.md', 'src/new name.ts'], deleted: ['gone.md'] });
-  assert.equal(readBranchFiles(dir, 'origin/none', 'HEAD'), null, 'a base git does not have');
+  assert.equal(readBranchFiles(dir, 'origin/none', 'HEAD', process.env), null, 'a base git does not have');
 });
 
 // No answer from git is never "no CODEOWNERS", which would let a pull request lower its tier (#403).
@@ -564,7 +565,27 @@ test('readCodeOwners: the first place the base commit has; a base git can\'t rea
   const owners = sandbox.git('rev-parse', 'HEAD').stdout.trim();
   // The work tree has another file, which a pull request run must not read.
   sandbox.write('CODEOWNERS', '');
-  assert.equal(readCodeOwners(sandbox.repo, none), null);
-  assert.deepEqual(readCodeOwners(sandbox.repo, owners), { text: '/kit/ @a\n', from: 'the base branch' });
-  assert.throws(() => readCodeOwners(sandbox.repo, 'f'.repeat(40)), GitReadError);
+  assert.equal(readCodeOwners(sandbox.repo, none, process.env), null);
+  assert.deepEqual(readCodeOwners(sandbox.repo, owners, process.env), { text: '/kit/ @a\n', from: 'the base branch' });
+  assert.throws(() => readCodeOwners(sandbox.repo, 'f'.repeat(40), process.env), GitReadError);
+});
+
+// #512: an issue's milestone, from one `gh issue view`; a fake gh stands in for GitHub.
+test('readIssueMilestone: the title, null for none, undefined when gh cannot read it (#512)', () => {
+  const calls: string[][] = [];
+  const answer = (said: string): Gh => (args) => {
+    calls.push(args);
+    return said;
+  };
+  assert.equal(readIssueMilestone(answer(JSON.stringify({ milestone: { number: 1, title: 'v0.1.0' } })), 5, null), 'v0.1.0');
+  assert.deepEqual(calls, [['issue', 'view', '5', '--json', 'milestone']]);
+  assert.equal(readIssueMilestone(answer(JSON.stringify({ milestone: null })), 5, 'o/r'), null);
+  assert.deepEqual(calls.at(-1), ['issue', 'view', '5', '--json', 'milestone', '--repo', 'o/r']);
+  for (const said of ['', 'not json', '{}', '[]', JSON.stringify({ milestone: { title: '' } })]) {
+    assert.equal(readIssueMilestone(answer(said), 5, null), undefined, said);
+  }
+  const failing: Gh = () => {
+    throw new Error('gh: network');
+  };
+  assert.equal(readIssueMilestone(failing, 5, null), undefined);
 });

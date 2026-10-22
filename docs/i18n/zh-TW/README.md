@@ -1,22 +1,20 @@
 <!-- source: README.md -->
 <div align="center">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="../../assets/banner-dark.svg">
-  <img src="../../assets/banner-light.svg" width="100%" alt="yokoten · 橫展。一路幫你帶路，在橋頭替你把關。一條路穿過群山，經過標著 1 到 5 的五關，通到一座橋，橋頭有一盞燈守著。">
-</picture>
+# yokoten · 横展
 
-<br/>
+### 帶你上路，替你守橋。
 
-**人人都能像好團隊那樣開發軟體。**
+**誰都能像好團隊一樣做軟體。**
 
-一路帶你上手，也替你看好 AI。
+一個免費工具，把好團隊的做事流程放進你的專案。檢查在你的儲存庫和 CI 裡執行，程式碼是人寫的還是 AI 寫的都一樣。
 
 **[yokoten.app](https://yokoten.app/?from=github)** &nbsp;·&nbsp; [English](../../../README.md) | [简体中文](../zh-CN/README.md) | 繁體中文 | [日本語](../ja/README.md)
 
 [![ci](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml/badge.svg)](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue)](../../../LICENSE)
-[![Node](https://img.shields.io/badge/Node-%E2%89%A522.18-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![npm](https://img.shields.io/npm/v/yokoten?logo=npm)](https://www.npmjs.com/package/yokoten)
+[![Node](https://img.shields.io/badge/Node-%E2%89%A522.23.4-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 
 </div>
 
@@ -36,6 +34,21 @@
 
 用其他 agent，或完全不用 agent，提交檢查和 CI 一樣會擋下有問題的改動。
 
+## 用哪種語言都可以
+
+yokoten 本身需要 Node 22.23.4、24.22.1 或 26.12.1，或同一大版本裡更新的版本（你的電腦和 CI 上都要），但你的專案用哪種語言都可以。
+守衛、隱私與密鑰檢查、CI、issue 和 PR 檢查，在每種語言裡都一樣運作。
+
+只有一個步驟會看語言：`doctor` 會找你的測試指令。
+
+| | 語言 |
+|---|---|
+| 找得到測試指令 | JavaScript 和 TypeScript（npm、Deno）、Python、Go、Rust、Java（Maven、Gradle）、.NET、Ruby、PHP、Swift、Elixir、Dart 和 Flutter，以及有 `make test` 的專案 |
+| 開發中（[#550](https://github.com/yokoten-labs/yokoten/issues/550)） | 幫你寫好跑測試的 CI 工作，不必自己手寫 |
+
+前幾步（install、init、doctor）已經在 Python、Go、Rust、.NET、Ruby 和 PHP 專案上試過。
+目前從安裝到發版的整條路，只在 TypeScript 專案上完整走過。
+
 ## 為什麼做這個
 
 好的團隊裡，每個改動都有理由、有測試、有人 review 過。這些習慣，很多人要做個好幾年、出過幾次包才學會。
@@ -47,7 +60,9 @@ AI 要闖大禍的時候，像是 force push、改測試讓它硬過、把個資
 
 ## 安裝
 
-只需要 [Node](https://nodejs.org/) 22.18 以上的版本，其他什麼都不用裝。
+只需要 [Node](https://nodejs.org/) 22.23.4 以上的版本（用 Node 24 的話要 24.22.1 以上，用 Node 26 要 26.12.1 以上），其他什麼都不用裝。
+22.18 到 22.23.3 雖然也能跑 yokoten，但請別再用：這幾個版本有安全漏洞，Node 已在 2026 年 10 月 21 日修好（[官方公告](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases)）。
+所以安裝時 npm 會跳出警告，`yokoten doctor` 也會提醒你升級。
 
 ```sh
 npx yokoten install      # 每台電腦做一次
@@ -55,8 +70,6 @@ cd your-project
 npx yokoten init         # 每個專案做一次
 npx yokoten doctor       # 看你走到第幾關、下一步要做什麼
 ```
-
-npm 上的第一個版本（10 月 24 日）推出之前，請先[從 clone 下來的 repo 安裝](../../guide.md#install-from-a-clone)（英文）。
 
 ### 先知道這幾件事
 
@@ -91,9 +104,10 @@ agent 想 force push，yokoten 把它擋下來，說明原因，再給出修正�
 - **[使用指南](../../guide.md)**：12 條規則、所有指令、運作方式，還有它做不到的事（英文；也有[簡體中文版](../zh-CN/guide.md)）。
 - **[伺服器設定](../../server.md)**：在 GitHub 上保護 `main` 分支和發布用的 tag（英文）。
 - **[決策紀錄](../../records/)**：為什麼這樣設計（英文）。
-- **[參與開發](../../../AGENTS.md)**：參與 yokoten 開發要遵守的規則（英文）。
+- **[更新紀錄](../../../CHANGELOG.md)**：每個版本改了什麼（英文）。
+- **[參與開發](../../../CONTRIBUTING.md)**：怎麼回報問題、怎麼提交修改（英文）。
 - **[資安](../../../.github/SECURITY.md)**：發現資安問題時怎麼回報（英文）。
 
 ---
 
-<p align="center"><sub>MIT · 由 <a href="https://coolwhite.us/">coolwhite</a> 打造，許多想法來自工廠現場的經驗。</sub></p>
+<p align="center"><sub>MIT · 由 <a href="https://coolwhite.us/">coolwhite</a> 和一支 AI agent 團隊打造。許多想法來自工廠現場的經驗。</sub></p>

@@ -19,7 +19,7 @@ import { createPrivateKey, sign } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
-import { type Finding, finding, formatFinding, place } from '../rules/message.ts';
+import { docsLink, type Finding, finding, formatFinding, place } from '../rules/message.ts';
 import type { CodeOwners, PullRequest } from '../rules/pr.ts';
 import { homeOf, NO_HOME } from '../rules/privacy.ts';
 import { readGit } from '../run/check.ts';
@@ -85,7 +85,7 @@ export function readKeysFile(env: Env): Env {
 export function botConfig(env: Env): BotConfig | string {
   const settings = { ...readKeysFile(env), ...Object.fromEntries(BOT_SETTINGS.filter((name) => env[name]).map((name) => [name, env[name]])) };
   const appId = settings.YOKOTEN_BOT_APP_ID;
-  if (!appId) return `YOKOTEN_BOT_APP_ID is not set, in the environment or in ${KEYS_FILE}: the App ID from the App's settings page (docs/server.md, step 3)`;
+  if (!appId) return `YOKOTEN_BOT_APP_ID is not set, in the environment or in ${KEYS_FILE}: the App ID from the App's settings page (step 3 of ${docsLink('server.md')})`;
   const keyFile = settings.YOKOTEN_BOT_KEY || defaultKeyFile(env);
   if (!keyFile) return `${NO_HOME}: set YOKOTEN_BOT_KEY to the key file's full path`;
   return {
@@ -228,10 +228,10 @@ function readEvent(env: Env): Record<string, unknown> | Unreadable | null {
 const isUnreadable = (value: unknown): value is Unreadable => isObject(value) && 'problem' in value;
 
 /** The commit is in this checkout. A value that is not a commit id counts as missing. */
-function hasCommit(root: string, sha: string): boolean {
+function hasCommit(root: string, sha: string, env: Env): boolean {
   if (!/^[0-9a-f]{4,64}$/i.test(sha)) return false;
   try {
-    execFileSync('git', ['--no-replace-objects', 'cat-file', '-e', `${sha}^{commit}`], { cwd: root, stdio: 'ignore' });
+    execFileSync('git', ['--no-replace-objects', 'cat-file', '-e', `${sha}^{commit}`], { cwd: root, env, stdio: 'ignore' });
     return true;
   } catch {
     return false;
@@ -239,9 +239,9 @@ function hasCommit(root: string, sha: string): boolean {
 }
 
 /** The two commits have a common commit here, so `base...head` can be read. */
-function hasMergeBase(root: string, base: string, head: string): boolean {
+function hasMergeBase(root: string, base: string, head: string, env: Env): boolean {
   try {
-    execFileSync('git', ['--no-replace-objects', 'merge-base', base, head], { cwd: root, stdio: 'ignore' });
+    execFileSync('git', ['--no-replace-objects', 'merge-base', base, head], { cwd: root, env, stdio: 'ignore' });
     return true;
   } catch {
     return false;
@@ -260,11 +260,11 @@ function shasProblem(base: string, head: string): Finding | null {
 }
 
 /** Why `base...head` can't be read in this checkout, or null when it can. `fix` says how to get the commits. */
-function commitsProblem(root: string, base: string, head: string, fix: string = COMMITS_FIX): Finding | null {
-  const missing = [['base', base], ['head', head]].filter(([, sha]) => !hasCommit(root, sha)).map(([name]) => name);
+function commitsProblem(root: string, base: string, head: string, env: Env, fix: string = COMMITS_FIX): Finding | null {
+  const missing = [['base', base], ['head', head]].filter(([, sha]) => !hasCommit(root, sha, env)).map(([name]) => name);
   if (missing.length === 2) return finding('pr-commits', 'the pull request\'s base and head commits are not in this checkout', fix);
   if (missing.length === 1) return finding('pr-commits', `the pull request's ${missing[0]} commit is not in this checkout`, fix);
-  if (!hasMergeBase(root, base, head)) return finding('pr-commits', 'the pull request\'s base and head commits have no common commit in this checkout', fix);
+  if (!hasMergeBase(root, base, head, env)) return finding('pr-commits', 'the pull request\'s base and head commits have no common commit in this checkout', fix);
   return null;
 }
 
@@ -278,17 +278,17 @@ export function readPullRequest(root: string, env: Env): PullRequestRead | Unrea
   if (!isObject(pr)) return null;
   const base = isObject(pr.base) ? asText(pr.base.sha) : '';
   const head = isObject(pr.head) ? asText(pr.head.sha) : '';
-  const problem = shasProblem(base, head) ?? commitsProblem(root, base, head);
+  const problem = shasProblem(base, head) ?? commitsProblem(root, base, head, env);
   if (problem) return { problem };
-  return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: isObject(pr.user) ? asText(pr.user.login) : '' }, base, head);
+  return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: isObject(pr.user) ? asText(pr.user.login) : '' }, base, head, env);
 }
 
 const milestoneTitle = (milestone: unknown): string | null => (isObject(milestone) && typeof milestone.title === 'string' ? milestone.title : null);
 
 /** The pull request with the files git lists between `base` and `head`. Both commits must be here. */
-function withDiff(root: string, fields: Omit<PullRequest, 'files' | 'deleted'>, base: string, head: string): PullRequestRead {
+function withDiff(root: string, fields: Omit<PullRequest, 'files' | 'deleted'>, base: string, head: string, env: Env): PullRequestRead {
   // A diff git can't give throws a GitReadError, and the check stops on it (#403).
-  const diff = (...options: string[]) => readGit(root, ['diff', ...options, `${base}...${head}`]).toString('utf8');
+  const diff = (...options: string[]) => readGit(root, ['diff', ...options, `${base}...${head}`], { env }).toString('utf8');
   return {
     ...fields,
     files: diff('--name-only', '-z').split('\0').filter(Boolean),
@@ -304,7 +304,7 @@ function withDiff(root: string, fields: Omit<PullRequest, 'files' | 'deleted'>, 
  * repo without CI. The commits come from this clone; when one is missing, the fix says
  * what to fetch. What can't be read is one finding, as in CI.
  */
-export function readNumberedPullRequest(root: string, gh: Gh, number: string): PullRequestRead | Unreadable {
+export function readNumberedPullRequest(root: string, gh: Gh, number: string, env: Env): PullRequestRead | Unreadable {
   if (!/^[1-9]\d*$/.test(number)) return { problem: finding('pr-read', `"${number}" is not a pull request number`, 'give the number alone, such as `yokoten check --pr 12`') };
   let pr: unknown;
   try {
@@ -312,7 +312,7 @@ export function readNumberedPullRequest(root: string, gh: Gh, number: string): P
   } catch (err) {
     // gh says this when the repo has no such pull request: a wrong number, not a network problem.
     if (/Could not resolve to a PullRequest/i.test(String((err as { stderr?: string }).stderr || (err as Error).message))) {
-      return { problem: finding('pr-read', `no pull request ${number} in ${originRepo(root) ?? 'this repo'}`, 'check the number with `gh pr list`, then run it again') };
+      return { problem: finding('pr-read', `no pull request ${number} in ${originRepo(root, env) ?? 'this repo'}`, 'check the number with `gh pr list`, then run it again') };
     }
     const why = unread(err);
     return { problem: finding('pr-read', `pull request ${number} can't be read: ${why.unread}`, why.fix) };
@@ -322,9 +322,9 @@ export function readNumberedPullRequest(root: string, gh: Gh, number: string): P
   const head = asText(pr.headRefOid);
   // No branch name goes into the hint, so nothing in it needs quoting for a shell.
   const fetch = `run \`git fetch origin\` and \`git fetch origin pull/${number}/head\`, then run it again`;
-  const problem = shasProblem(base, head) ?? commitsProblem(root, base, head, fetch);
+  const problem = shasProblem(base, head) ?? commitsProblem(root, base, head, env, fetch);
   if (problem) return { problem };
-  return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: ghAuthor(pr.author) }, base, head);
+  return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: ghAuthor(pr.author) }, base, head, env);
 }
 
 /**
@@ -339,9 +339,9 @@ function ghAuthor(author: unknown): string {
 }
 
 /** "owner/name" of the origin remote, or null. */
-function originRepo(root: string): string | null {
+function originRepo(root: string, env: Env): string | null {
   try {
-    return repoOf(execFileSync('git', ['config', '--get', 'remote.origin.url'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
+    return repoOf(execFileSync('git', ['config', '--get', 'remote.origin.url'], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
   } catch {
     return null;
   }
@@ -353,13 +353,13 @@ function originRepo(root: string): string | null {
 export const CODEOWNERS_PLACES = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'];
 
 /** The CODEOWNERS file at the base commit, or in the working tree when `base` is empty; null when there is none. */
-export function readCodeOwners(root: string, base: string): CodeOwners | null {
+export function readCodeOwners(root: string, base: string, env: Env): CodeOwners | null {
   if (base) {
     // Which places the base commit has, then the first one's text. A read git can't answer
     // throws a GitReadError: no answer is never "no CODEOWNERS", which would lower the tier (#403).
-    const have = new Set(readGit(root, ['ls-tree', '-z', '--name-only', base, '--', ...CODEOWNERS_PLACES]).toString('utf8').split('\0'));
+    const have = new Set(readGit(root, ['ls-tree', '-z', '--name-only', base, '--', ...CODEOWNERS_PLACES], { env }).toString('utf8').split('\0'));
     const place = CODEOWNERS_PLACES.find((p) => have.has(p));
-    return place === undefined ? null : { text: readGit(root, ['show', `${base}:${place}`]).toString('utf8'), from: 'the base branch' };
+    return place === undefined ? null : { text: readGit(root, ['show', `${base}:${place}`], { env }).toString('utf8'), from: 'the base branch' };
   }
   for (const place of CODEOWNERS_PLACES) {
     const file = join(root, place);
@@ -373,10 +373,10 @@ export function readCodeOwners(root: string, base: string): CodeOwners | null {
  * request (#406): one `git diff --name-status` of `base...head`, run locally. A rename
  * counts as its new path, as `--name-only` gives it. Null when git can't read either ref.
  */
-export function readBranchFiles(root: string, base: string, head: string): { files: string[]; deleted: string[] } | null {
+export function readBranchFiles(root: string, base: string, head: string, env: Env): { files: string[]; deleted: string[] } | null {
   let out: string;
   try {
-    out = execFileSync('git', ['--no-replace-objects', 'diff', '--name-status', '-z', '--end-of-options', `${base}...${head}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    out = execFileSync('git', ['--no-replace-objects', 'diff', '--name-status', '-z', '--end-of-options', `${base}...${head}`], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
   } catch {
     return null;
   }
@@ -489,11 +489,11 @@ export function stepSummary(name: string, problems: Finding[], notes: Finding[])
 
 export type Gh = (args: string[]) => string;
 
-/** Runs the real gh in `cwd`. With `timeout` (ms), a call that takes longer is stopped and throws. */
+/** Runs the real gh in `cwd`, with `env`. With `timeout` (ms), a call that takes longer is stopped and throws. */
 export const ghIn =
-  (cwd: string, timeout?: number): Gh =>
+  (cwd: string, env: Env, timeout?: number): Gh =>
   (args) =>
-    execFileSync('gh', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout });
+    execFileSync('gh', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout });
 
 /**
  * True when the GitHub account `owner` is an organization, false when it is a user, and
@@ -519,6 +519,22 @@ export function isPrivateRepo(gh: Gh, repo: string): boolean | null {
     return said === 'true' ? true : said === 'false' ? false : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * The milestone title of issue `number`, from one `gh issue view` (#512): null when the
+ * issue has none, undefined when gh can't read it. `repo` is the `--repo` value, if any.
+ */
+export function readIssueMilestone(gh: Gh, number: number, repo: string | null): string | null | undefined {
+  try {
+    const said: unknown = JSON.parse(gh(['issue', 'view', String(number), '--json', 'milestone', ...(repo ? ['--repo', repo] : [])]));
+    if (!isObject(said) || !('milestone' in said)) return undefined;
+    const milestone = said.milestone;
+    if (milestone === null) return null;
+    return isObject(milestone) && typeof milestone.title === 'string' && milestone.title ? milestone.title : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -740,6 +756,7 @@ export interface ServerSettings {
 /** Why gh failed, in words a beginner can act on. */
 export function unread(err: unknown): Unread {
   if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { unread: 'gh is not installed', fix: 'get it from https://cli.github.com, then run `gh auth login`' };
+  if ((err as NodeJS.ErrnoException).code === 'ETIMEDOUT') return { unread: 'GitHub took too long to answer', fix: 'check the network, then run doctor again' };
   const said = String((err as { stderr?: string }).stderr || (err as Error).message);
   if (/HTTP 401|gh auth login|not logged in/i.test(said)) return { unread: 'gh is not signed in', fix: 'run `gh auth login`' };
   if (/Upgrade to GitHub Pro/i.test(said)) return { unread: 'rulesets need GitHub Pro on a private repo', fix: 'make the repo public, or upgrade to GitHub Pro (or Team for an organization)' };

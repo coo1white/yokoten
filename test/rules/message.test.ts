@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import {
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -79,6 +80,7 @@ import {
 import {
   agentHooks,
   agentTempDirCheck,
+  nodeSecurityCheck,
   coreRulesCheck,
   leftoverTempCheck,
   diskSpaceChecks,
@@ -123,11 +125,13 @@ test('messages: every check and guard says what, why and the fix, in text and JS
     found.push(f);
   };
   const env = { YOKOTEN_FIX_TASK: '1', YOKOTEN_ROLE: 'worker' };
-  for (const c of ['git push --tags', 'git push origin v1.0.0', 'git -c push.followTags=true push', 'gh release create v1', 'npm publish', 'git push --force', 'git commit --no-verify -m x', 'git commit -nm x', 'git config core.hooksPath /dev/null']) add(checkCommand(c, { env: {} }));
-  add(checkCommand('python3 --version', { env: {}, config: { commands: { block: { python3: 'this project is TypeScript only' } } } }));
-  add(checkCommand(`bash -c "${':;'.repeat(300000)}"`, { env: {} })); // too many commands to read
+  for (const c of ['git push --tags', 'git push origin v1.0.0', 'git -c push.followTags=true push', 'gh release create v1', 'npm publish', 'git push --force', 'git commit --no-verify -m x', 'git commit -nm x', 'git config core.hooksPath /dev/null']) add(checkCommand(c, { cwd: process.cwd(), env: {} }));
+  add(checkCommand('python3 --version', { cwd: process.cwd(), env: {}, config: { commands: { block: { python3: 'this project is TypeScript only' } } } }));
+  add(checkCommand(`bash -c "${':;'.repeat(300000)}"`, { cwd: process.cwd(), env: {} })); // too many commands to read
   add(checkEdit('test/a.test.ts', { config: DEFAULTS, env }));
   add(checkEdit('AGENTS.md', { config: DEFAULTS, env }));
+  add(checkCommand('git push', { cwd: process.cwd(), env }));
+  add(checkCommand('git worktree remove ../wt', { cwd: process.cwd(), env }));
   add(lateFinding({ command: 'ls', paths: [], worker: false }, 5000));
   found.push(...scanText(`${POSITIVE_CONTROL}\n${SECRET_CONTROL}\nhome town`, { file: 'a.md', marks: ['home town'] }));
   found.push(...checkLayout(Array.from({ length: 8 }, (_, i) => `d/${i}`), DEFAULTS));
@@ -141,7 +145,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   add(timeZoneNote(2));
   const translated = makeTranslatedRepo();
   translated.commit('en.md', '# Guide\n\nStep one, changed.\n');
-  add(translationNotes(translated.root, ['zh.md'])[0]);
+  add(translationNotes(translated.root, ['zh.md'], process.env)[0]);
   // `check --history` in a shallow clone (#266).
   const shallow = makeTempDir();
   execFileSync('git', ['clone', '-q', '--depth', '1', `file://${translated.root}`, shallow], { stdio: 'ignore' });
@@ -150,7 +154,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   translated.git('update-index', '--add', '--info-only', '--cacheinfo', `100644,${'1'.repeat(40)},ghost.md`);
   add(check(translated.root, { config: DEFAULTS, env: {}, staged: true }).find((f) => f.id === 'missing-blob'));
   // A git read a gate depends on, which git can't answer (#403).
-  assert.throws(() => readGit(translated.root, ['rev-parse', '--verify', 'no-such-ref']), (err: Error) => {
+  assert.throws(() => readGit(translated.root, ['rev-parse', '--verify', 'no-such-ref'], { env: process.env }), (err: Error) => {
     add(err instanceof GitReadError ? gitReadFinding(err) : null);
     return true;
   });
@@ -181,15 +185,18 @@ test('messages: every check and guard says what, why and the fix, in text and JS
     writeText: () => {},
     uid: 1000,
     now: () => new Date(0),
+    nodeVersion: '24.21.0',
   };
   for (const c of diskSpaceChecks(dir, { HOME: dir }, fullMachine, false)) add(c.finding);
   add(agentTempDirCheck({}, fullMachine)?.finding);
+  for (const nodeVersion of ['24.21.0', '23.11.1']) add(nodeSecurityCheck({ nodeVersion }).finding);
   // An old test folder in the temp folder (#400): seen from two days on.
   const temp = makeTempDir();
   mkdirSync(join(temp, 'yokoten-old'));
   add(leftoverTempCheck({ YOKOTEN_TEMP_DIRS: temp }, { ...fullMachine, now: () => new Date(Date.now() + 2 * 24 * 60 * 60 * 1000) })?.finding);
-  // The Codex and Gemini CLI user hooks (#211): only once their folders exist.
+  // The Codex, Gemini CLI, Grok CLI and Muse Code user hooks: only once their folders exist.
   for (const folder of ['.codex', '.gemini', '.grok']) mkdirSync(join(dir, folder));
+  mkdirSync(join(dir, '.config', 'muse'), { recursive: true });
   for (const c of userAgentHooks({ HOME: dir })) add(c.finding);
   // Command output (#390): the mailmap note, and the refusal for an agent that can't rewrite.
   for (const c of privacyNotes({ HOME: dir, GIT_CONFIG_GLOBAL: join(dir, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1' }, null)) add(c.finding);
@@ -212,7 +219,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   add(upstreamNote(pluginFolder, { HOME: pluginHome }));
   // A repo that keeps CI off (#377): the note, and a pull request read by number that fails.
   add(noCiNote({ ci: 'private repo' }, 5, undefined));
-  const numbered = readNumberedPullRequest(dir, () => { throw new Error('no gh here'); }, '12');
+  const numbered = readNumberedPullRequest(dir, () => { throw new Error('no gh here'); }, '12', process.env);
   add('problem' in numbered ? numbered.problem : undefined);
   // The core rules (#120): behind the kit, and with no heading to compare by.
   for (const rules of ['# old rules\n\n## This project\n', '# rules\n']) {
@@ -281,4 +288,24 @@ test('docs: a finding carries its rule\'s link, in text, JSON and explain (#94)'
   assert.equal(explained && explainLines(explained).at(-1), `Docs: ${link}`);
   const step = explain('commit-check');
   assert.ok(step && step.docs === undefined && !explainLines(step).some((line) => line.startsWith('Docs:')), 'a step has no link yet');
+});
+
+test('docs: no message names a docs/<file>.md path without a link (#524)', () => {
+  // A user who installed from npm has no docs/ folder to open: a message links to GitHub instead.
+  const sources: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) walk(join(dir, entry.name));
+      else if (entry.name.endsWith('.ts')) sources.push(join(dir, entry.name));
+    }
+  };
+  walk('src');
+  const bare: string[] = [];
+  for (const file of sources) {
+    for (const [index, line] of readFileSync(file, 'utf8').split('\n').entries()) {
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+      if (/(?<!blob\/main\/)\bdocs\/[\w.-]+\.md/.test(line)) bare.push(`${file}:${index + 1}`);
+    }
+  }
+  assert.deepEqual(bare, []);
 });

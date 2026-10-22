@@ -1,3 +1,0 @@
-Changed
-
-`yokoten init` puts the core rules into an `AGENTS.md` the project already has (#378). When the file has no `## This project` heading, the core rules go on top. The project's text moves under that heading, with its headings one level down and every other byte as it was. `init` prints each heading it moved, and how to get the old file back. That is a `git checkout` command when git has the file, or else the copy it keeps in `AGENTS.md.before-yokoten`. YAML front matter stays at the very top, and `update` keeps it there. An `AGENTS.md` that has the heading is still left to `yokoten update`, and one that is a link is kept as it is.
