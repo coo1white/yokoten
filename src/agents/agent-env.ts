@@ -49,7 +49,7 @@ export const RUNTIME_ENVS: Readonly<Record<string, RuntimeEnv>> = {
 
 // What every program needs: where to find programs, the home and temp folders, the
 // language, the terminal and the user. Windows names a few of these its own way.
-// Names are compared in capitals, because Windows does not tell `Path` from `PATH`.
+// Names are compared in capitals (ASCII only), because Windows does not tell `Path` from `PATH`.
 const SHARED_NAMES = new Set([
   'PATH',
   'HOME',
@@ -101,20 +101,27 @@ const SECRET_NAME = /TOKEN|SECRET|KEY|PASSWORD|PASSWD|AUTH|CREDENTIAL|PRIVATE/;
 
 // Values shaped like a known key or token. They are looser than the commit check's
 // patterns in secrets.ts: a false hit here only drops a name an agent did not need.
+// A pattern with two runs of characters has bounds and a lookbehind, so a long value
+// takes linear time.
 const SECRET_VALUES: RegExp[] = [
   /gh[pousr]_[A-Za-z0-9]{20,}/, // GitHub token
   /github_pat_[A-Za-z0-9_]{20,}/, // GitHub fine-grained token
+  /glpat-[A-Za-z0-9_-]{20,}/, // GitLab personal access token
+  /hf_[A-Za-z0-9]{30,}/, // Hugging Face token
   /(?:AKIA|ASIA)[A-Z0-9]{16}/, // AWS access key id
   /AIza[A-Za-z0-9_-]{30,}/, // Google API key
-  /eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*/, // JWT: base64 of `{"`, twice
+  /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,4096}\.eyJ[A-Za-z0-9_-]{8,4096}\.[A-Za-z0-9_-]{0,4096}/, // JWT: base64 of `{"`, twice
   /xox[abeprs]-[A-Za-z0-9-]{10,}/, // Slack token
   /sk-(?:ant-)?[A-Za-z0-9_-]{20,}/, // Anthropic, OpenAI and other `sk-` keys
   /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY/, // PEM private key
-  /[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s/?#@:]*:[^\s/?#@]+@/, // URL with user:password@
+  /(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]{0,30}:\/\/[^\s/?#@:]{0,256}:[^\s?#@]{1,256}@/, // URL with user:password@; the password may hold a /
 ];
 
+// A value longer than this is dropped unread: no agent needs one, and reading it costs time.
+const MAX_VALUE_LENGTH = 32 * 1024;
+
 /** Why a name is not in an agent's environment. */
-export type DropReason = 'not on the list' | 'secret name' | 'secret value';
+export type DropReason = 'not on the list' | 'secret name' | 'secret value' | 'too long';
 
 /** What `sortAgentEnv` decides: the names kept, and each dropped name with its reason. Names only, never values. */
 export interface SortedEnv {
@@ -128,6 +135,9 @@ export function isSecretValue(value: string): boolean {
   return findSecrets(value.split(/\r?\n|\\n/)).length > 0;
 }
 
+/** A name in capitals, ASCII letters only: `toUpperCase` would turn a long s (ſ) into S, and `ſHELL` into SHELL. */
+const toAsciiUpper = (name: string): string => name.replace(/[a-z]+/g, (letters) => letters.toUpperCase());
+
 /** The runtime's names, or an error that lists the runtimes yokoten knows. */
 export function runtimeEnv(runtime: string): RuntimeEnv {
   const names = Object.hasOwn(RUNTIME_ENVS, runtime) ? RUNTIME_ENVS[runtime] : undefined;
@@ -138,12 +148,12 @@ export function runtimeEnv(runtime: string): RuntimeEnv {
 /** Sort the names of `source` into kept and dropped, for an agent of `runtime` (or of no runtime). It never reads a value into its result. */
 export function sortAgentEnv(source: Env, runtime?: string): SortedEnv {
   const own = runtime === undefined ? { login: [], config: [] } : runtimeEnv(runtime);
-  const login = new Set(own.login.map((name) => name.toUpperCase()));
-  const config = new Set(own.config.map((name) => name.toUpperCase()));
+  const login = new Set(own.login.map(toAsciiUpper));
+  const config = new Set(own.config.map(toAsciiUpper));
   const sorted: SortedEnv = { kept: [], dropped: [] };
   for (const [name, value] of Object.entries(source)) {
     if (value === undefined) continue;
-    const upper = name.toUpperCase();
+    const upper = toAsciiUpper(name);
     if (login.has(upper)) {
       sorted.kept.push(name);
       continue;
@@ -151,6 +161,7 @@ export function sortAgentEnv(source: Env, runtime?: string): SortedEnv {
     const isListed = SHARED_NAMES.has(upper) || upper.startsWith('LC_') || YOKOTEN_NAMES.has(upper) || config.has(upper);
     if (!YOKOTEN_NAMES.has(upper) && SECRET_NAME.test(upper)) sorted.dropped.push({ name, reason: 'secret name' });
     else if (!isListed) sorted.dropped.push({ name, reason: 'not on the list' });
+    else if (value.length > MAX_VALUE_LENGTH) sorted.dropped.push({ name, reason: 'too long' });
     else if (isSecretValue(value)) sorted.dropped.push({ name, reason: 'secret value' });
     else sorted.kept.push(name);
   }

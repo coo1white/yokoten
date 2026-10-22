@@ -29,6 +29,9 @@ const SECRET_VALUES: Record<string, string> = {
   ANTHROPIC_LIKE: `${'sk'}-ant-api03-${alnum(60)}`,
   PEM_LIKE: `-----BEGIN RSA ${'PRIVATE'} KEY-----\n${alnum(64)}\n`,
   DATABASE_URL: `postgres://fakeuser:${'fake'}pass${'@'}db.example.invalid/app`,
+  SLASH_PASSWORD_URL: `https://fakeuser:${'fa/ke'}pa/ss${'@'}db.example.invalid/app`,
+  HUGGING_FACE_LIKE: `${'h'}f_${alnum(34)}`,
+  GITLAB_LIKE: `${'gl'}pat-${alnum(20)}`,
 };
 
 // These names put the values on the allow-list, so only the value filter can drop them.
@@ -90,6 +93,9 @@ test("agent env: a vendor's own login name reaches only that vendor's agent", ()
   const codex = Object.keys(buildAgentEnv(source, { runtime: 'codex' }));
   assert.ok(codex.includes('OPENAI_API_KEY'), 'Codex did not get its own login name');
   assert.ok(!codex.includes('ANTHROPIC_API_KEY'), "Codex got Claude Code's login name");
+  // Gemini CLI gets its own key, never the general Google Cloud credentials.
+  const google = { ...SAFE, GEMINI_API_KEY: `${'AI'}za${alnum(35)}`, GOOGLE_API_KEY: `${'AI'}za${alnum(35)}`, GOOGLE_APPLICATION_CREDENTIALS: '/home/fake/adc.json' };
+  assert.deepEqual(Object.keys(buildAgentEnv(google, { runtime: 'gemini' })).sort(), ['GEMINI_API_KEY', ...Object.keys(SAFE)].sort());
   const plain = Object.keys(buildAgentEnv(source));
   assert.deepEqual(plain.sort(), Object.keys(SAFE).sort(), 'an agent with no runtime got a login name');
 });
@@ -120,4 +126,25 @@ test('agent env: Windows names pass in any case; an unknown runtime is an error 
   const windows = { Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', USERPROFILE: 'C:\\Users\\fake', APPDATA: 'C:\\Users\\fake\\AppData\\Roaming', PATHEXT: '.COM;.EXE', ComSpec: 'C:\\Windows\\system32\\cmd.exe' };
   assert.deepEqual(Object.keys(buildAgentEnv(windows)).sort(), Object.keys(windows).sort());
   assert.throws(() => sortAgentEnv(SAFE, 'nope'), /unknown runtime "nope"\. Runtimes: claude-code, codex/);
+  // A long s (U+017F) upper-cases to S in JavaScript; the name must not pass as SHELL.
+  const longS = sortAgentEnv({ '\u017FHELL': '/bin/bash' });
+  assert.deepEqual(longS.kept, [], 'a name with a long s passed as SHELL');
+  assert.deepEqual(longS.dropped.map((drop) => drop.reason), ['not on the list']);
+});
+
+test('agent env: a value over 32 KiB is dropped as too long, and a 100k value is sorted fast', () => {
+  const long = `/usr/bin:${'a'.repeat(100_000)}`;
+  const started = performance.now();
+  const sorted = sortAgentEnv({ PATH: long, HOME: '/home/fake' });
+  const elapsed = performance.now() - started;
+  assert.deepEqual(sorted.kept, ['HOME']);
+  assert.deepEqual(sorted.dropped, [{ name: 'PATH', reason: 'too long' }]);
+  assert.ok(elapsed < 100, `sorting a 100k value took ${Math.round(elapsed)} ms`);
+  // Under the cap, the patterns themselves still take linear time on shapes that nearly match.
+  const nearMisses = ['eyJ'.repeat(10_000), `a://${':'.repeat(10_000)}`, `${'a'.repeat(5_000)}://${'b'.repeat(5_000)}`];
+  for (const value of nearMisses) {
+    const start = performance.now();
+    isSecretValue(value);
+    assert.ok(performance.now() - start < 100, 'a near-miss value took 100 ms or more');
+  }
 });

@@ -676,9 +676,9 @@ test('worker env: it names what an agent gets and counts what is dropped, and pr
   const plain = await invoke(['worker', 'env'], { env, cwd });
   assert.equal(plain.code, 0, plain.stderr);
   for (const value of [token, key, url]) assert.ok(!(plain.stdout + plain.stderr).includes(value), 'worker env printed a value');
-  assert.match(plain.stdout, /gets 2 names from this shell/);
+  assert.match(plain.stdout, /would get 2 names from this shell/);
   assert.match(plain.stdout, /HOME, PATH/);
-  assert.match(plain.stdout, /Dropped: 2 with a secret-looking name, 1 with a value shaped like a key or token, 1 not on the list/);
+  assert.match(plain.stdout, /Dropped: 2 with a secret-looking name, 1 with a value shaped like a key or token, 0 too long to check, 1 not on the list/);
   const claude = await invoke(['worker', 'env', 'claude-code'], { env, cwd });
   for (const value of [token, key, url]) assert.ok(!(claude.stdout + claude.stderr).includes(value), 'worker env claude-code printed a value');
   assert.match(claude.stdout, /ANTHROPIC_API_KEY, HOME, PATH/);

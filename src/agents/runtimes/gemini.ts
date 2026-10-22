@@ -125,5 +125,5 @@ export function userHooksState(env: Env, cli: string, missing: string): { doctor
   return { doctor: hookState(...args.doctor), guard: hookState(...args.guard) };
 }
 
-/** The names this runtime's agent gets on top of the shared ones (#613). Gemini CLI takes a Gemini or Vertex AI key, or a service account file. */
-export const AGENT_ENV: RuntimeEnv = { login: ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS'], config: ['GOOGLE_CLOUD_PROJECT', 'GOOGLE_CLOUD_LOCATION', 'GOOGLE_GENAI_USE_VERTEXAI'] };
+/** The names this runtime's agent gets on top of the shared ones (#613). Gemini CLI: only its own key. GOOGLE_API_KEY and GOOGLE_APPLICATION_CREDENTIALS open all of Google Cloud, so a Vertex AI setup needs the lead to pass them on purpose. */
+export const AGENT_ENV: RuntimeEnv = { login: ['GEMINI_API_KEY'], config: ['GOOGLE_CLOUD_PROJECT', 'GOOGLE_CLOUD_LOCATION', 'GOOGLE_GENAI_USE_VERTEXAI'] };
