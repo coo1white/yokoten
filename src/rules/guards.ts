@@ -463,7 +463,7 @@ const FIND_WRITES = /^-(delete|fprint0?|fprintf|fls)$/;
  * `find -exec rm`, inline code) in a command that names a git folder. The same holds for
  * yokoten's config folder, where the worker list is kept (#591): see configTargetRefusal.
  */
-function checkWorkerWrites(words: string[], { folder, command, env = {} }: { folder: string | null; command: string; env?: Env }): Finding | null {
+function checkWorkerWrites(words: string[], { folder, near = folder, command, env = {} }: { folder: string | null; near?: string | null; command: string; env?: Env }): Finding | null {
   const known = new Map<string, string | null>();
   const targets = writeTargets(words, folder, (dir) => gitRootAbove(dir, known)).map((target) => target.path);
   const names: string[] = [];
@@ -490,7 +490,10 @@ function checkWorkerWrites(words: string[], { folder, command, env = {} }: { fol
         targets.push(...found.starts);
       }
     }
-    if (isGit(program)) gitFolders.push(...gitWorkFolders(args, folder, home));
+    if (isGit(program)) {
+      gitFolders.push(...gitWorkFolders(args, folder, home), ...gitEnvironmentFolders(command, folder, home));
+      if (near !== folder) gitFolders.push(...gitWorkFolders(args, near, home), ...gitEnvironmentFolders(command, near, home));
+    }
   }
   // Files the guard can't see: a program fed by xargs or find, a find that writes, inline code.
   const fed = words.some((word) => programName(word) === 'xargs') || names.includes('find');
@@ -579,9 +582,10 @@ function mayReachGitFolder(args: string[]): boolean {
 }
 
 /**
- * The folders git works in from its words after `git`, each with the path as written: each `-C` (from the one before),
- * `--work-tree` and `--git-dir`, and the folder `git init` or `git clone` makes. A path the
- * guard can't read is kept as written.
+ * The folders git works in from its words after `git`, each with the path as written: each
+ * `-C` (from the one before), or with none the folder the command runs in (after a `cd`; `.`
+ * when unknown), `--work-tree` and `--git-dir`, and the folder `git init` or `git clone`
+ * makes. A path the guard can't read is kept as written.
  */
 function gitWorkFolders(args: string[], folder: string | null, home: string | null): { path: string; written: string }[] {
   const folders: { path: string; written: string }[] = [];
@@ -602,6 +606,7 @@ function gitWorkFolders(args: string[], folder: string | null, home: string | nu
     } else if (option === '--work-tree' || option === '--git-dir') folders.push({ path: place(value), written: value });
     if (joined === undefined && GIT_VALUE_OPTIONS.has(option)) at++;
   }
+  if (!args.slice(0, at).some((arg) => arg === '-C')) folders.push({ path: folder ?? '.', written: folder === null ? '.' : withHomeShown(folder, home) });
   const sub = args[at];
   if (sub === 'init' || sub === 'clone') {
     for (const arg of args.slice(at + 1)) {
@@ -611,6 +616,28 @@ function gitWorkFolders(args: string[], folder: string | null, home: string | nu
     }
   }
   return folders;
+}
+
+// GIT_WORK_TREE= and GIT_DIR= anywhere in a command: before git, after `env`, or in an `export`.
+const GIT_FOLDER_SETTING = /(?:^|[\s;&|(])GIT_(?:WORK_TREE|DIR)=("[^"]*"|'[^']*'|[^\s;&|)]*)/g;
+
+/** The folders the command's GIT_WORK_TREE and GIT_DIR settings name, placed from `folder` (#591). */
+function gitEnvironmentFolders(command: string, folder: string | null, home: string | null): { path: string; written: string }[] {
+  const folders: { path: string; written: string }[] = [];
+  for (const [, value] of command.matchAll(GIT_FOLDER_SETTING)) {
+    const written = /^["']/.test(value) ? value.slice(1, -1) : value;
+    const expanded = withHomeRead(written, home);
+    const isRead = !/[$`]/.test(expanded) && !expanded.startsWith('~') && (folder !== null || isAbsolute(expanded));
+    folders.push({ path: isRead ? resolve(folder ?? '/', expanded) : written, written: written || '""' });
+  }
+  return folders;
+}
+
+/** `path` with the home folder shown as `~`, so a message never prints it. */
+function withHomeShown(path: string, home: string | null): string {
+  if (home === null) return path;
+  if (path === home) return '~';
+  return path.startsWith(home + sep) ? `~${path.slice(home.length)}` : path;
 }
 
 /**
@@ -792,6 +819,9 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
   const commands = commandWords(command);
   // Where a gh command reads a relative body file: the folder, followed through each cd.
   let postCwd = cwd;
+  // The same, with a bare relative `cd` read as written, not through CDPATH: where git most
+  // likely runs, for the worker's config-folder check (#591).
+  let nearCwd = cwd;
   // Where the line starts: a gh post after a cd keeps an allow only within this repo (#447).
   const from = cwd;
   // A command that moves to another folder or repo (`cd x && git config ...`, GIT_DIR=)
@@ -815,7 +845,7 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
     const reason =
       checkGit(words, { env, config, cwd, rules }) ??
       // A worker hears its own rule first: what it may not send, its own unmark, and the git folder (#555, #566).
-      (env.YOKOTEN_ROLE === 'worker' ? (checkWorkerSends(words) ?? checkWorkerUnmark(words) ?? checkWorkerWrites(words, { folder: postCwd, command, env })) : null) ??
+      (env.YOKOTEN_ROLE === 'worker' ? (checkWorkerSends(words) ?? checkWorkerUnmark(words) ?? checkWorkerWrites(words, { folder: postCwd, near: nearCwd, command, env })) : null) ??
       checkHooksEnvironment(words) ??
       checkPublish(words, env) ??
       checkBlocked(words, config?.commands.block ?? {}) ??
@@ -823,6 +853,7 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
       (rules ? checkLeadOnlyWrites(words, { env, rules, folder: postCwd }) : null);
     if (reason) return reason;
     postCwd = folderAfter(words, postCwd, { env, isTildeQuoted });
+    nearCwd = folderAfter(words, nearCwd, { env, isTildeQuoted, isCdPathSkipped: true });
   }
   return null;
 }
@@ -1890,7 +1921,7 @@ const QUOTED_TILDE = /[\\'"]~|~[\\'"]/;
 // bash keeps a quoted ~ as a folder named ~, or a bare relative folder (#559): bash
 // searches CDPATH for one, and CDPATH may be set in the shell without being exported.
 // Any other command leaves the folder as it was.
-function folderAfter(words: string[], folder: string | null, { env, isTildeQuoted }: { env: Env; isTildeQuoted: boolean }): string | null {
+function folderAfter(words: string[], folder: string | null, { env, isTildeQuoted, isCdPathSkipped = false }: { env: Env; isTildeQuoted: boolean; isCdPathSkipped?: boolean }): string | null {
   const name = programName(words[0] ?? '');
   if (name === 'popd') return null;
   if (name !== 'cd' && name !== 'pushd') return folder;
@@ -1903,7 +1934,8 @@ function folderAfter(words: string[], folder: string | null, { env, isTildeQuote
   if (isAbsolute(path)) return path;
   // Only `/`, `./`, `../` and `.` and `..` alone say where a relative `cd` goes: bash
   // searches CDPATH for the rest, even with a `/` inside (`cd sub/dir`).
-  if (target !== '.' && target !== '..' && !target.startsWith('./') && !target.startsWith('../')) return null;
+  // `isCdPathSkipped` reads it as written instead: the likely folder, never a sure one.
+  if (!isCdPathSkipped && target !== '.' && target !== '..' && !target.startsWith('./') && !target.startsWith('../')) return null;
   return folder === null ? null : resolve(folder, path);
 }
 

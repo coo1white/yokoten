@@ -2234,6 +2234,17 @@ test('guard: a worker does not change yokoten config folder; the lead may (#591)
     'git -C ~/.config/yokoten checkout -- .',
     'git -C ~ -C .config/yokoten clean -fdx',
     'git --work-tree=$HOME/.config/yokoten checkout .',
+    // git run in the folder by cd, or pointed at it by GIT_WORK_TREE or GIT_DIR.
+    'cd ~/.config/yokoten && git init && git clean -fdx',
+    'cd ~/.config/yokoten && git clean -fdx',
+    'cd ~ && git clean -fdx',
+    'GIT_WORK_TREE=~/.config/yokoten git clean -fdx',
+    'env GIT_WORK_TREE=~/.config/yokoten git clean -fdx',
+    'export GIT_WORK_TREE=~/.config/yokoten; git clean -fdx',
+    'GIT_WORK_TREE="$HOME/.config/yokoten" git clean -fdx',
+    'export GIT_DIR=~/.config/yokoten/.git; git init',
+    'GIT_WORK_TREE=$X git clean -fdx ~/.config/yokoten',
+    'cd $X && git clean -fdx ~/.config/yokoten',
     // Unknown parts that hide the name.
     'X=yokoten; rm ~/.config/$X/workers',
     'rm ~/.config/$(echo yokoten)/workers',
@@ -2281,6 +2292,11 @@ test('guard: a worker does not change yokoten config folder; the lead may (#591)
     'cp -l a b',
     'cp -a src out',
     'git -C . status',
+    'git status',
+    'git clean -fdx',
+    'GIT_WORK_TREE=. git status',
+    'cd src && git status',
+    'cd ~/.config/yokoten && cat workers',
     'git clone https://example.com/a/b.git',
     'rm src/$NAME.ts',
     'curl -o out.json https://example.com/x',
@@ -2302,6 +2318,13 @@ test('guard: a worker does not change yokoten config folder; the lead may (#591)
     assert.equal(checkCommand(command, { cwd: process.cwd(), env: worker })?.id, 'worker-mark', command);
   }
   allowed(`cat ${join(base, 'link', 'workers')}`, worker);
+  // git run in the folder by a bare `cd` through a symlink: read as written, not through CDPATH.
+  for (const command of ['cd link && git init && git clean -fdx', 'cd dot-config/yokoten && git clean -fdx']) {
+    assert.equal(checkCommand(command, { cwd: base, env: worker })?.id, 'worker-mark', command);
+    assert.notEqual(checkCommand(command, { cwd: base, env: lead })?.id, 'worker-mark', `the lead may: ${command}`);
+  }
+  assert.equal(checkCommand('cd link && git status', { cwd: base, env: worker })?.id, 'worker-mark', 'git in the folder, even to read');
+  assert.equal(checkCommand('cd other && git clean -fdx', { cwd: base, env: worker }), null);
   allowed(`rm ${join(base, 'other-file')}`, worker);
 });
 
