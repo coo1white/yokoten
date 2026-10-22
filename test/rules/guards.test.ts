@@ -244,8 +244,6 @@ test('hooks setting: every way to read it passes (#114)', () => {
     'grep -rn GIT_CONFIG_KEY_0=core.hooksPath test',
     'git -c core.hooksPath=.githooks commit -m x',
     'git -c user.name=x commit -m x',
-    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=.githooks git commit -m x',
-    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=x git commit -m x',
   ]) allowed(command);
 });
 
@@ -422,8 +420,223 @@ test('hooks setting: GIT_CONFIG_* += cannot skip the check, for lead and worker 
     assert.match(checkCommand(command, { env: {}, cwd: process.cwd() })?.id ?? "", /^(hooks-path|include)/, command);
     assert.ok(checkCommand(command, { env: worker, cwd: process.cwd() }), `a worker too: ${command}`);
   }
-  allowed('GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=x git log -1');
+  allowed('git -c user.name=x log -1');
   allowed('git log --oneline');
+});
+
+// #361: git's config and hooks files, written by the shell, and the config variables.
+test('hooks setting: a shell write to .git/config, .git/hooks or .githooks is refused, a read passes (#361)', () => {
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  const outside = makeTempDir('yokoten-other-repo-');
+  for (const command of [
+    'cp /tmp/x .git/config',
+    'cp /tmp/x ./.git//config',
+    'mv /tmp/x .git/config',
+    'echo x | tee .git/config',
+    'echo x | tee -a .git/config',
+    "printf '[core]\\n\\thooksPath = /dev/null\\n' >> .git/config",
+    'echo x > .git/config',
+    'sed -i s/githooks/x/ .git/config',
+    'sed -i.bak -e s/githooks/x/ .git/config',
+    'truncate -s 0 .git/config',
+    'echo x >> .git/config.worktree',
+    'echo x >> .git/worktrees/w/config.worktree',
+    'echo /tmp/other > .git/commondir',
+    'echo "gitdir: /tmp/other" > .git',
+    'echo x > .GIT/CONFIG',
+    'cd .git && echo x >> config',
+    'cd .git && sed -i s/a/b/ config',
+    'rm .githooks/pre-commit',
+    'rm -rf .githooks',
+    'chmod -x .githooks/pre-commit',
+    'chmod 000 .githooks',
+    'touch .githooks/pre-commit',
+    'echo > .githooks/pre-commit',
+    'echo exit 0 >> .githooks/pre-commit',
+    'cp /tmp/x .githooks/pre-commit',
+    'mv /tmp/x .githooks',
+    'install -m 755 /tmp/x .githooks/pre-commit',
+    'ln -sf /dev/null .githooks/pre-commit',
+    'truncate -s 0 .githooks/pre-commit',
+    'git rm .githooks/pre-commit',
+    'echo x > .git/hooks/pre-commit',
+    'ln -sf /dev/null .git/hooks/pre-commit',
+    'chmod -x .git/hooks/pre-commit',
+    'bash -c "echo x >> .git/config"',
+    'cd src && cp /tmp/x ../.githooks/pre-commit',
+    // A glob that could match the files (#361 review).
+    'echo x >> .git/conf*',
+    'echo x >> .git/confi?',
+    'sed -i s/a/b/ .git/c?nfig',
+    'cp /tmp/x .git/conf[i]g',
+    'sed -i s/a/b/ .git/{config,}',
+    'chmod -x .githook?/pre-commit',
+    'rm -f .githoo*/pre-commit',
+    'chmod -x .githooks/*',
+    'chmod -x {.githooks,x}/pre-commit',
+    // Editors, patchers, archives and find (#361 review).
+    'patch .githooks/pre-commit < x.diff',
+    'patch -o .git/config a b',
+    'awk -i inplace 1 .githooks/pre-commit',
+    'gawk -i inplace "{print}" .git/config',
+    'ed -s .githooks/pre-commit',
+    'ex .git/config',
+    'vim -c "%d|wq" .githooks/pre-commit',
+    'vi .git/config',
+    'nvim .githooks/pre-commit',
+    'tar xf /tmp/x.tar -C .git',
+    'tar -xzf /tmp/x.tgz --directory=.githooks',
+    'unzip -o /tmp/x.zip -d .githooks',
+    'find .githooks -exec rm {} +',
+    'find .githooks -delete',
+  ]) {
+    assert.equal(checkCommand(command, { env: {}, cwd: process.cwd() })?.id, 'hooks-path', `the lead: ${command}`);
+    assert.ok(checkCommand(command, { env: worker, cwd: process.cwd() }), `a worker: ${command}`);
+  }
+  assert.match(checkCommand('rm .githooks/pre-commit', { env: {}, cwd: process.cwd() })?.what ?? '', /changes \.githooks\/pre-commit/);
+  for (const command of [
+    'cat .git/config',
+    'grep -n hooksPath .git/config',
+    'cat .githooks/pre-commit',
+    'ls -la .githooks .git/hooks',
+    'sed -n 1,5p .git/config',
+    'cp .git/config /tmp/config-copy',
+    'diff .githooks/pre-commit /tmp/x',
+    'git config --get core.hooksPath',
+    'test -x .githooks/pre-commit && echo ok',
+    'echo x > notes/.githooks-plan.md',
+    'awk 1 .git/config',
+    'vim README.md',
+    'tar cf box.tar src',
+    'tar xf /tmp/x.tar -C /tmp/unpacked',
+    'find . -name "*.log" -delete',
+    'mkdir -p .githooks',
+    'git add .githooks/pre-commit',
+    'git show HEAD:.githooks/pre-commit > /tmp/pre-commit',
+    'rm -f *.tmp',
+  ]) {
+    allowed(command);
+    allowed(command, worker);
+  }
+  // Another repo's files, such as a test repo in /tmp, are its own business.
+  for (const command of [
+    `rm -rf ${outside}/.githooks`,
+    `echo x >> ${outside}/.git/config`,
+    `cd ${outside} && git init -q && cp /tmp/x .git/hooks/pre-commit`,
+  ]) allowed(command);
+  // The lead may bring back the committed hook; a worker may not touch it at all.
+  for (const command of ['git checkout -- .githooks/pre-commit', 'git restore .githooks/pre-commit', 'git checkout HEAD -- .githooks']) {
+    allowed(command);
+    assert.ok(checkCommand(command, { env: worker, cwd: process.cwd() }), `a worker: ${command}`);
+  }
+});
+
+test('hooks setting: GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM and GIT_CONFIG_COUNT/KEY/VALUE are refused (#361)', () => {
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  for (const command of [
+    'GIT_CONFIG_GLOBAL=/tmp/x git commit -m x',
+    'GIT_CONFIG_SYSTEM=/tmp/x git commit -m x',
+    'GIT_CONFIG_GLOBAL=/dev/null git status',
+    'env GIT_CONFIG_GLOBAL=/tmp/x git commit -m x',
+    'export GIT_CONFIG_GLOBAL=/tmp/x; git commit -m x',
+    'git_config_global=/tmp/x git commit -m x',
+    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=x git commit -m x',
+    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=.githooks git commit -m x',
+    'GIT_CONFIG_VALUE_0=x git status',
+    'GIT_CONFIG_COUNT+=1 git log',
+    'GIT_CONFIG_GLOBAL=/tmp/x bash -c "git commit -m x"',
+    // Set for the rest of the line, then exported (#361 review).
+    'read GIT_CONFIG_GLOBAL <<< /tmp/x; export GIT_CONFIG_GLOBAL; git commit -m x',
+    'read GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 <<< "1 core.hooksPath /dev/null"; export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; git commit -m x',
+    'printf -v GIT_CONFIG_GLOBAL %s /tmp/x; export GIT_CONFIG_GLOBAL; git commit -m x',
+    'printf -vGIT_CONFIG_GLOBAL %s /tmp/x; export GIT_CONFIG_GLOBAL; git commit -m x',
+    'for GIT_CONFIG_GLOBAL in /tmp/x; do export GIT_CONFIG_GLOBAL; git commit -m x; done',
+    'declare -x GIT_CONFIG_GLOBAL=/tmp/x; git commit -m x',
+    'unset GIT_CONFIG_NOSYSTEM; : ${GIT_CONFIG_GLOBAL:=/tmp/x}; export GIT_CONFIG_GLOBAL; git commit -m x',
+    ': ${GIT_CONFIG_GLOBAL=/tmp/x}; export GIT_CONFIG_GLOBAL; git commit -m x',
+  ]) {
+    assert.equal(checkCommand(command, { env: {}, cwd: process.cwd() })?.id, 'hooks-path', `the lead: ${command}`);
+    assert.ok(checkCommand(command, { env: worker, cwd: process.cwd() }), `a worker: ${command}`);
+  }
+  assert.match(checkCommand('GIT_CONFIG_GLOBAL=/tmp/x git commit -m x', { env: {}, cwd: process.cwd() })?.fix ?? '', /git -c <name>=<value>/);
+  for (const command of [
+    'grep -rn GIT_CONFIG_GLOBAL=x test',
+    'echo $GIT_CONFIG_GLOBAL',
+    'git -c user.name=x commit -m x',
+    'GIT_CONFIG_NOSYSTEM=1 git status',
+    'GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 npm test',
+    'echo GIT_CONFIG_GLOBAL=x git commit',
+  ]) allowed(command);
+});
+
+// #664: another home folder hides the private marks from the commit check and the gh guard.
+test('home folder: an agent may not set HOME or USERPROFILE for git, gh, yokoten or a shell (#664)', () => {
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  for (const command of [
+    'HOME=/tmp/elsewhere git commit -m x',
+    'HOME=/tmp/elsewhere gh issue create --title x --body y',
+    'HOME=/tmp/elsewhere yokoten check',
+    'HOME=/tmp/elsewhere node bin/yokoten.ts check',
+    'HOME=/tmp/elsewhere npx yokoten check',
+    'HOME=/tmp/elsewhere bash -c "git commit -m x"',
+    'HOME=/tmp/elsewhere sh script.sh',
+    'HOME=/tmp/elsewhere eval "git commit -m x"',
+    'USERPROFILE=C:\\elsewhere git commit -m x',
+    'home=/tmp/elsewhere git commit -m x',
+    'Home=/tmp/elsewhere git commit -m x',
+    'env HOME=/tmp/elsewhere gh issue create --title x --body y',
+    'env -u X HOME=/tmp/elsewhere git commit -m x',
+    'env -i HOME=/tmp/elsewhere git commit -m x',
+    'sudo HOME=/tmp/elsewhere git commit -m x',
+    'nice env HOME=/tmp/elsewhere git commit -m x',
+    'find . -exec env HOME=/tmp/elsewhere git commit -m x \;',
+    'export HOME=/tmp/elsewhere; git commit -m x',
+    'export HOME=/tmp/elsewhere && gh pr create --fill',
+    'export HOME=/tmp/elsewhere; npm test',
+    'declare -x HOME=/tmp/elsewhere; git commit -m x',
+    'HOME=/tmp/elsewhere; git commit -m x',
+    'HOME+=/elsewhere git commit -m x',
+    'read HOME <<< /tmp/elsewhere; git commit -m x',
+    'read -r -a HOME < /tmp/f',
+    'mapfile -t HOME < /tmp/f',
+    'printf -v HOME %s /tmp/elsewhere; git commit -m x',
+    'printf -vHOME %s /tmp/elsewhere; export HOME; git commit -m x',
+    'getopts ab HOME',
+    'let HOME=1',
+    'for HOME in /tmp/elsewhere; do git commit -m x; done',
+    'select HOME in /tmp/elsewhere; do break; done',
+    'unset HOME; : ${HOME:=/tmp/elsewhere}; export HOME; git commit -m x',
+    ': ${HOME=/tmp/elsewhere}; git commit -m x',
+    'bash -c "HOME=/tmp/elsewhere git commit -m x"',
+    'echo "HOME=/tmp/elsewhere git commit -m x" | sh',
+  ]) {
+    assert.equal(checkCommand(command, { env: {}, cwd: process.cwd() })?.id, 'home-folder', `the lead: ${command}`);
+    assert.ok(checkCommand(command, { env: worker, cwd: process.cwd() }), `a worker: ${command}`);
+  }
+  const found = checkCommand('HOME=/tmp/elsewhere git commit -m x', { env: {}, cwd: process.cwd() });
+  assert.match(found?.what ?? '', /sets HOME/);
+  assert.match(found?.fix ?? '', /without changing the home folder/);
+  for (const command of [
+    'echo $HOME',
+    'ls ~',
+    'cat "$HOME/.gitconfig"',
+    'grep -rn HOME= src',
+    'grep -rn HOME= src test git',
+    'echo HOME=x',
+    'echo HOME=/tmp/x git commit',
+    'printf HOME',
+    'git commit -m "HOME=x is refused"',
+    'for v in PATH HOME USER; do echo "$v=${!v}"; done',
+    'for f in a b; do echo HOME; done',
+  ]) {
+    allowed(command);
+    allowed(command, worker);
+  }
+  // Before another program, a home folder of its own is ordinary test isolation. XDG_CONFIG_HOME
+  // moves nothing yokoten's checks read.
+  // getopts sets only its name argument; a worker's box refuses getopts as a whole.
+  allowed('getopts ab opt HOME');
+  for (const command of ['HOME=$(mktemp -d) npm test', 'HOME="$(mktemp -d)" node --test', 'XDG_CONFIG_HOME=/tmp/x gh issue create --title x --body y', 'XDG_CONFIG_HOME=$(mktemp -d) node --test test/agents']) allowed(command);
 });
 
 test('hooks setting: a read never blocks, in a repo with its own hooks folder (#217)', () => {
@@ -643,11 +856,11 @@ test('lead-only files: each shell writer form stops a worker, not the lead (#402
     'echo x | tee AGENTS.md',
     'echo x | tee -a .github/workflows/ci.yml',
     'cp /tmp/x AGENTS.md',
-    'cp x y .githooks/',
+    'cp x y .github/',
     'cp -t .claude x',
     'mv AGENTS.md notes.md',
     'mv x .github/workflows/ci.yml',
-    'install -m 755 x .githooks/pre-commit',
+    'install -m 755 x .github/workflows/ci.yml',
     'ln -sf x CLAUDE.md',
     'dd if=x of=AGENTS.md',
     'truncate -s 0 AGENTS.md',
@@ -1359,7 +1572,7 @@ test('bash: a command of 100k words is read in linear time (#226)', () => {
     ['then', (n) => `${'then '.repeat(n)}echo`],
     ['env', (n) => `${'env '.repeat(n)}echo`],
     ['sudo', (n) => `${'sudo '.repeat(n)}echo`],
-    ['GIT_CONFIG_KEY_0', (n) => `${'GIT_CONFIG_KEY_0=x '.repeat(n)}git status`],
+    ['GIT_CONFIG_PARAMETERS', (n) => `${'GIT_CONFIG_PARAMETERS=x '.repeat(n)}git status`],
   ];
   // The shapes take turns, and a noisy first round grows to a 20 ms base (#594).
   assertLinearEach(
@@ -1632,7 +1845,6 @@ test('bash and hooks: loops that never spent the budget read a thousand repeats 
     [['find . ', ['-exec env -u ']], 'allow'],
     [['find . ', ['-exec timeout ']], 'allow'],
     [['find . ', ['-exec > ']], 'allow'],
-    [[keys, 'GIT_CONFIG_VALUE_0=.githooks git status'], 'allow'],
     [[keys, 'GIT_CONFIG_VALUE_0=/x git status'], 'hooks-path'],
     // #283: each new reader.
     [[['{ echo a; '], ['} '], '| bash'], 'allow'],
@@ -2460,6 +2672,62 @@ test('worker mark: found from .git, fails closed on a link it cannot read (#555)
 });
 
 // #555: an edit inside a git folder is a worker's way to change the mark, through a symlink too.
+// #672: a desk is a plain clone, so its mark sits in its own `.git` folder.
+test('worker mark: a plain clone with the mark in its .git is a worker; without it, the lead (#672)', () => {
+  const clone = makeTempDir('yokoten-clone-');
+  mkdirSync(join(clone, '.git'));
+  mkdirSync(join(clone, 'src'));
+  // Negative control: an unmarked clone is the lead's.
+  assert.equal(workerMarkAt(join(clone, 'src')), null);
+  // Positive control: the mark, found from a subfolder too.
+  writeFileSync(join(clone, '.git', 'yokoten-worker'), 'x');
+  assert.equal(workerMarkAt(join(clone, 'src')), 'mark');
+  assert.deepEqual(withWorkerMark({}, [clone]), { YOKOTEN_ROLE: 'worker' });
+  assert.match(markNote([clone]), /^this clone \(.*\) carries the worker mark/);
+  // Fails closed: a .git folder the guard can't search. Modes need a user they stop.
+  if (process.platform !== 'win32' && process.getuid?.() !== 0) {
+    chmodSync(join(clone, '.git'), 0o000);
+    try {
+      assert.equal(workerMarkAt(clone), 'broken');
+    } finally {
+      chmodSync(join(clone, '.git'), 0o755);
+    }
+  }
+  rmSync(join(clone, '.git', 'yokoten-worker'));
+  assert.equal(workerMarkAt(clone), null);
+});
+
+// #672 (review): removing or replacing the folder that holds `.git` drops the mark, so a
+// worker may not change the checkout's top folder or any folder above it.
+test('worker mark: a worker may not remove or replace the folder that holds the git folder (#672)', () => {
+  const base = makeTempDir('yokoten-desk-');
+  const desk = join(base, 'desk');
+  mkdirSync(join(desk, '.git'), { recursive: true });
+  mkdirSync(join(desk, 'src'));
+  writeFileSync(join(desk, '.git', 'yokoten-worker'), 'x');
+  const worker = { YOKOTEN_ROLE: 'worker', HOME: join(base, 'home') };
+  const check = (command: string, cwd = desk) => checkCommand(command, { cwd, env: worker });
+  for (const command of [
+    `rm -rf ${desk} && git clone -q ../lead ${desk}`,
+    'rm -rf "$PWD"',
+    'rm -rf $PWD',
+    'rm -rf ${PWD}/',
+    'rm -rf ~+',
+    'rm -rf .',
+    `rsync -a --delete ${join(base, 'empty')}/ ./`,
+    'cd .. && rm -rf desk',
+    `mv ${desk} ${join(base, 'old')}`,
+    `rm -rf ${base}`,
+  ]) assert.equal(check(command)?.id, 'worker-mark', command);
+  assert.equal(check('rm -rf ..', join(desk, 'src'))?.id, 'worker-mark', 'from a subfolder');
+  // Negative controls: work inside the checkout goes on.
+  for (const command of ['rm -rf src', 'rm -rf ./src/', 'rsync -a --delete src/ out/', "find . -name '*.log' -delete", 'mv src lib', 'rm -rf "$PWD/src"']) {
+    assert.equal(check(command), null, command);
+  }
+  // The lead may.
+  assert.equal(checkCommand('rm -rf .', { cwd: desk, env: { HOME: worker.HOME } }), null);
+});
+
 test('checkWorkerMarkEdit: a git folder by name or by real path (#555)', () => {
   assert.equal(checkWorkerMarkEdit('/w/.git/worktrees/wt/yokoten-worker')?.id, 'worker-mark');
   assert.equal(checkWorkerMarkEdit('/w/wt/.git')?.id, 'worker-mark');
@@ -2666,7 +2934,14 @@ test('worker list: the guard refuses `yokoten worker unmark` for a worker, not t
     assert.match(found?.what ?? '', /only the lead unmarks a worktree/, command);
   }
   assert.equal(checkCommand('yokoten worker unmark /tmp/wt', { env: {}, cwd: process.cwd() }), null, 'the lead');
-  assert.equal(checkCommand('yokoten worker mark /tmp/wt', { env: worker, cwd: process.cwd() }), null, 'mark is not unmark');
+  // #672: a worker that marks the lead's checkout makes the lead a worker: refused too.
+  for (const command of ['yokoten worker mark /tmp/lead', 'node bin/yokoten.ts worker mark .', 'cd /tmp && npx yokoten worker mark lead']) {
+    const found = checkCommand(command, { env: worker, cwd: process.cwd() });
+    assert.equal(found?.id, 'worker-mark', `should refuse: ${command}`);
+    assert.match(found?.what ?? '', /only the lead marks a worktree or a clone/, command);
+  }
+  assert.equal(checkCommand('yokoten worker mark /tmp/wt', { env: {}, cwd: process.cwd() }), null, 'the lead marks');
+  assert.equal(checkCommand('yokoten worker env', { env: worker, cwd: process.cwd() }), null, 'env only lists names');
   assert.equal(checkCommand('yokoten bot -- echo hi', { env: worker, cwd: process.cwd() })?.id, 'worker-push', 'bot keeps its own refusal');
 });
 

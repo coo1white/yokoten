@@ -96,6 +96,12 @@ export interface DeskRequest {
   platform?: NodeJS.Platform;
   /** The team the agent joins (#674): the team folder, and the agent's name on it. */
   team?: { folder: string; name: string };
+  /**
+   * Writes the worker mark into the desk clone, as `yokoten worker mark` does from the
+   * lead's checkout (#672), and returns the plain reason when it can't. Muse Code passes
+   * its hooks no YOKOTEN_ROLE, so in a desk the mark is what makes it a worker.
+   */
+  markDesk: (desk: string) => { fail: string } | { top: string };
 }
 
 /** The parts of this yokoten that run in a desk: the guard, the commit check and the bridge. */
@@ -238,6 +244,10 @@ export function planDesk(request: DeskRequest): DeskPlan {
     if (isLeadState(real)) throw new Error(`--read ${path} would show the lead's own ${request.runtime} state`);
     if (!readable.includes(real)) readable.push(real);
   }
+  // The worker mark first, so it is locked with the rest; a desk that can't be marked doesn't start.
+  const marked = request.markDesk(desk);
+  if ('fail' in marked) throw new Error(`can't mark the desk as a worker's: ${marked.fail}`);
+  if (!existsSync(join(desk, '.git', 'yokoten-worker'))) throw new Error(`can't mark the desk as a worker's: no mark in ${join(desk, '.git')}`);
   // Git's config and hooks, and the worker mark, stay read-only: a worker can't plant a
   // hook or an alias that the lead would run later. A link there is refused.
   const locked: string[] = [];
