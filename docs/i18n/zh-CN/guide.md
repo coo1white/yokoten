@@ -422,7 +422,9 @@ Codex 0.163.0 已经不接受 `wire_api = "chat"`。它会提示找不到 `deeps
 
 ## 安装和命令
 
-需要 Node 22.18 或更高版本：它能直接运行 TypeScript，不用先编译。没有任何依赖。
+需要 Node 22.23.4 或更高版本（用 Node 24 要 24.22.1 起，用 Node 26 要 26.12.1 起）：它能直接运行 TypeScript，不用先编译。
+22.18 到 22.23.3 也能跑 TypeScript，但请别再用：这几个版本有安全漏洞，Node 在 2026 年 10 月 21 日已经修好了
+（[官方公告](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases)）。所以 npm 会警告，完整的 `doctor` 也会在 `machine:` 下提醒。没有任何依赖。
 装法有两种：一种是 Claude Code 插件，一种是 `install` 命令（从 npm 跑，或者从 clone
 下来的仓库跑）。选一种就行，别两种都装。yokoten 写进去的 hook 命令要在 POSIX shell 里跑，
 Windows 上请用 Git Bash。
@@ -569,7 +571,7 @@ jobs:
 - **checkout** 要加 `fetch-depth: 0`。`check --pr` 要比较 PR 的起点和最新提交，两个都得拉下来。
 - **权限**只要 `contents: read`。这个 action 不要令牌。
 - **参数**有三个：`pr-check`（默认 `true`）、`issue-check`（默认 `true`）和 `node-version`
-  （默认 `22`，最低 22.18）。不想查 PR 的格式，就写 `pr-check: false`；不想查 issue 标题，
+  （默认 `^22.23.4`，也就是第一个带 2026 年 10 月安全修复的 Node 22）。不想查 PR 的格式，就写 `pr-check: false`；不想查 issue 标题，
   就写 `issue-check: false`。
 - **Node**：action 装的 Node，这个 job 后面的步骤也会用到。
 
@@ -754,6 +756,9 @@ AI 工具还有一条：hook 跑得比它的超时还久，工具就直接放行
 - **leftover-temp-folders**：临时文件夹里有放了超过一天的 `yokoten-*` 文件夹。它们是跑测试
   剩下的，攒到几千个就会把盘占满。完整的 `doctor` 只数个数，不算大小，所以很快。提示里会给出
   一条 `find ... -exec rm -rf` 命令，只删超过一天的那些，你自己跑；doctor 从来不删东西。
+- **node-security**：跑 yokoten 的 Node 没有 2026 年 10 月 21 日的安全修复。版本比所在系列的修复版
+  （22.23.4、24.22.1、26.12.1）旧，就有已知漏洞；23、25 和 22 以下的系列已经不再修漏洞，所以不支持。
+  提示会告诉你该装哪个版本。只有完整的 `doctor` 会看，也从不算失败。
 
 ### 出了问题怎么办
 

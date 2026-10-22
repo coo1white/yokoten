@@ -36,6 +36,7 @@ import { launcherDir, machineStateFile, setUpLauncher } from '../../src/setup/in
 import {
   type BranchRules,
   type Gh,
+  ghIn,
   readPlanning,
   readServer,
   type ServerSettings,
@@ -44,6 +45,7 @@ import {
 import { unsavedNotes } from '../../src/setup/advice/unsaved.ts';
 import {
   agentTempDirCheck,
+  nodeSecurityCheck,
   blocksToSay,
   coreRulesCheck,
   coreRulesControl,
@@ -67,6 +69,7 @@ import {
   readHostDisk,
   saveHostCache,
   selfTest,
+  SERVER_TIMEOUT_MS,
   SESSION_UNSAVED_BUDGET,
   sessionsDir,
   sessionUnsaved,
@@ -241,6 +244,25 @@ test('doctor: reads the server of a GitHub origin into the road; a step not done
   // A session never calls gh, so the server steps never hold its stage.
   const session = doctor(root, { env: { HOME: root, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, session: true, gh: () => { throw new Error('a session called gh'); } });
   assert.notEqual(session.report.next?.id, 'protection');
+});
+
+// #561: a server read that hangs stops at its time cap, and the step says why. The cap's
+// own message proves it fired; the test reads no clock, which a loaded machine slows (#436).
+test("doctor: a slow server read stops in time, and each step says it can't be checked and why (#561)", { skip: process.platform === 'win32' && 'a shell stub needs an execute bit' }, () => {
+  const dir = makeTempDir('yokoten-slow-gh-');
+  const stub = join(dir, 'gh');
+  // Answers the login read at once, and sleeps on every other read: only the server read is slow.
+  writeFileSync(stub, '#!/bin/sh\nfor word in "$@"; do if [ "$word" = user ]; then echo \'{"login":"octo"}\'; exit 0; fi; done\nexec /bin/sleep 30\n');
+  chmodSync(stub, 0o755);
+  const root = makeTempDir('yokoten-slow-server-');
+  execFileSync('git', ['init', '-q', root]);
+  execFileSync('git', ['remote', 'add', 'origin', `https://github.com/${REPO}.git`], { cwd: root });
+  const env = { HOME: root, YOKOTEN_TEMP_DIRS: '', PATH: `${dir}${delimiter}${process.env.PATH ?? ''}` };
+  const result = doctor(root, { env, config: DEFAULTS, gh: ghIn(root, env, SERVER_TIMEOUT_MS) });
+  for (const key of SERVER_KEYS) assert.equal(result.report.steps?.find((s) => s.id === key)?.mark, "can't check", key);
+  const line = result.lines.find((l) => /can't check/.test(l) && /protection/.test(l)) ?? '';
+  assert.match(line, /GitHub took too long to answer/, 'the cap fired, not the stub');
+  assert.match(line, /check the network, then run doctor again/);
 });
 
 // The steps that only the code host can judge (#504): on a host with no adapter, each says what it asks.
@@ -918,6 +940,7 @@ function fakeMachine(free: number, more: Partial<MachineProbe> & { programs?: Re
     writeText: (path, text) => void files.set(path, text),
     uid: 1000,
     now: () => NOW,
+    nodeVersion: '24.22.1',
     ...rest,
   };
 }
@@ -1119,6 +1142,46 @@ test('self-test: the machine control passes the real checks and fails broken one
   // A host-drive reading that never finds the drive: the Windows drive is missed.
   const noHost: typeof diskSpaceChecks = (root, env, probe, session) => diskSpaceChecks(root, env, { ...probe, runProgram: () => '' }, session);
   assert.deepEqual(machineControl(noHost), ['host drive check']);
+  // A Node check that passes everything, or nothing, is caught (#572).
+  const passAll: typeof nodeSecurityCheck = (probe) => nodeSecurityCheck({ ...probe, nodeVersion: '24.22.1' });
+  const failAll: typeof nodeSecurityCheck = (probe) => nodeSecurityCheck({ ...probe, nodeVersion: '20.19.0' });
+  assert.deepEqual(machineControl(diskSpaceChecks, agentTempDirCheck, passAll), ['node security check']);
+  assert.deepEqual(machineControl(diskSpaceChecks, agentTempDirCheck, failAll), ['node security check']);
+});
+
+// #572: a Node without the security fixes of 2026-10-21 is a note that says why and what to install.
+test('machine: a Node release older than its line fix, or a line with no more fixes, is a note', () => {
+  const check = (nodeVersion: string) => nodeSecurityCheck({ nodeVersion });
+  const advisory = 'https://nodejs.org/en/blog/vulnerability/october-2026-security-releases';
+  assert.deepEqual(check('24.21.0').finding.what, 'Node 24.21.0 has known security holes that Node fixed in October 2026');
+  assert.equal(check('24.21.0').finding.fix, `upgrade Node to 24.22.1 or later; the advisory: ${advisory}`);
+  assert.equal(check('v22.18.0').finding.what, 'Node 22.18.0 has known security holes that Node fixed in October 2026');
+  assert.match(check('22.18.0').finding.fix, /^upgrade Node to 22\.23\.4 or later; /);
+  assert.equal(check('22.23.3').ok, false, 'one release short of the fix');
+  assert.equal(check('26.12.0').ok, false);
+  for (const fixed of ['24.22.1', '22.23.4', '26.12.1', '22.24.0', '24.30.2', '28.1.0']) {
+    assert.equal(check(fixed).ok, true, fixed);
+    assert.equal(check(fixed).detail, `Node ${fixed}`);
+  }
+  for (const [version, line] of [['23.11.1', 23], ['20.19.5', 20], ['25.9.0', 25], ['18.20.8', 18]] as const) {
+    const note = check(version);
+    assert.equal(note.ok, false, version);
+    assert.equal(note.finding.what, `Node ${version} is not supported, because Node ${line} gets no more security fixes`);
+    assert.equal(note.finding.fix, `install Node 26.12.1 or later (or 22.23.4 or 24.22.1); the advisory: ${advisory}`);
+  }
+});
+
+test('machine: full doctor shows the Node note and never fails on it; a session does not', () => {
+  const sandbox = makeSandbox();
+  const env = { HOME: sandbox.home, YOKOTEN_TEMP_DIRS: '' };
+  const old = doctor(sandbox.repo, { env, config: DEFAULTS, machine: fakeMachine(100 * GB, { nodeVersion: '24.21.0' }) });
+  const fixed = doctor(sandbox.repo, { env, config: DEFAULTS, machine: fakeMachine(100 * GB) });
+  assert.equal(old.ok, fixed.ok, 'a note never fails doctor');
+  assert.ok(old.lines.some((line) => line.startsWith('  note    node-security: Node 24.21.0 has known security holes')), old.lines.join('\n'));
+  assert.ok(old.report.notes?.some((n) => n.id === 'node-security'));
+  assert.ok(fixed.lines.includes('  ok      node-security: Node 24.22.1'), fixed.lines.join('\n'));
+  const session = doctor(sandbox.repo, { env, config: DEFAULTS, machine: fakeMachine(100 * GB, { nodeVersion: '24.21.0' }), session: true });
+  assert.ok(!session.lines.some((line) => line.includes('security holes')), 'full doctor only');
 });
 
 // #400: old yokoten-* folders in the temp folder. A note with the command; doctor never deletes.

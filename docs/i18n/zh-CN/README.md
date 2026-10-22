@@ -17,7 +17,7 @@
 [![ci](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml/badge.svg)](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue)](../../../LICENSE)
 [![npm](https://img.shields.io/npm/v/yokoten?logo=npm)](https://www.npmjs.com/package/yokoten)
-[![Node](https://img.shields.io/badge/Node-%E2%89%A522.18-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![Node](https://img.shields.io/badge/Node-%E2%89%A522.23.4-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 
 </div>
 
@@ -37,7 +37,7 @@
 
 ## 用什么语言都行
 
-yokoten 自己需要 Node 22.18 或更高版本（你的电脑和 CI 上都要），但你的项目用什么语言都可以。
+yokoten 自己需要 Node 22.23.4 或更高版本（你的电脑和 CI 上都要），但你的项目用什么语言都可以。
 守卫、隐私和密钥检查、CI、issue 和 PR 检查，在所有语言里都一样工作。
 
 只有一步要看语言：`doctor` 会找你的测试命令。
@@ -61,7 +61,9 @@ AI 想闯大祸时，比如强推、改测试蒙混过关、把隐私传上去�
 
 ## 安装
 
-只要装 [Node](https://nodejs.org/) 22.18 或更高版本，别的都不用装。
+只要装 [Node](https://nodejs.org/) 22.23.4 或更高版本（用 Node 24 的话要 24.22.1 起，用 Node 26 要 26.12.1 起），别的都不用装。
+22.18 到 22.23.3 也能跑 yokoten，但请别再用：这几个版本有安全漏洞，Node 在 2026 年 10 月 21 日已经修好了（[官方公告](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases)）。
+所以安装时 npm 会给出警告，`yokoten doctor` 也会提醒你升级。
 
 ```sh
 npx yokoten install      # 每台电脑做一次

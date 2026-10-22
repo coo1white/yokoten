@@ -36,29 +36,29 @@ const FLUTTER_PUBSPEC = 'name: app\ndependencies:\n  flutter:\n    sdk: flutter\
 const DART_PUBSPEC = 'name: tool\ndependencies:\n  args: ^2.0.0\n';
 const COMPOSER_TEST = JSON.stringify({ scripts: { test: 'phpunit' } });
 
-// Each case: the language, its files, the command doctor and adopt name, and CI commands that run its tests.
+// Each case: the language, its files with tests, the command doctor and adopt name, and CI commands that run its tests.
 const CASES: { language: string; files: Record<string, string>; runner: string; runs: string[] }[] = [
-  { language: 'Go', files: { 'go.mod': 'module example.com/x\n' }, runner: 'go test', runs: ['go test ./...'] },
-  { language: 'Python', files: { 'setup.py': '' }, runner: 'pytest', runs: ['pytest', 'uv run pytest', 'python -m unittest', '.venv/bin/python -m pytest', 'venv/bin/pytest', '.venv/bin/python3 -m unittest', 'python3.12 -m pytest'] },
-  { language: 'Rust', files: { 'Cargo.toml': '[package]\n' }, runner: 'cargo test', runs: ['cargo test --all'] },
-  { language: 'Maven', files: { 'pom.xml': '<project/>\n' }, runner: 'mvn test', runs: ['./mvnw -B test'] },
-  { language: 'Gradle', files: { 'build.gradle.kts': '' }, runner: 'gradle test', runs: ['./gradlew test'] },
-  { language: 'Deno', files: { 'deno.json': '{}' }, runner: 'deno test', runs: ['deno test -A'] },
-  { language: '.NET', files: { 'App.csproj': '<Project/>\n' }, runner: 'dotnet test', runs: ['dotnet test', 'dotnet test --no-build'] },
-  { language: '.NET', files: { 'App.sln': '' }, runner: 'dotnet test', runs: ['dotnet test'] },
-  { language: '.NET', files: { 'Lib.fsproj': '' }, runner: 'dotnet test', runs: ['dotnet test'] },
-  { language: '.NET', files: { 'Lib.vbproj': '' }, runner: 'dotnet test', runs: ['dotnet test'] },
-  { language: '.NET', files: { 'App.slnx': '' }, runner: 'dotnet test', runs: ['dotnet test'] },
+  { language: 'Go', files: { 'go.mod': 'module example.com/x\n', 'main_test.go': 'package x\n' }, runner: 'go test', runs: ['go test ./...'] },
+  { language: 'Python', files: { 'setup.py': '', 'test_main.py': '' }, runner: 'pytest', runs: ['pytest', 'uv run pytest', 'python -m unittest', '.venv/bin/python -m pytest', 'venv/bin/pytest', '.venv/bin/python3 -m unittest', 'python3.12 -m pytest'] },
+  { language: 'Rust', files: { 'Cargo.toml': '[package]\n', 'src/lib.rs': '#[test]\nfn has() {}\n' }, runner: 'cargo test', runs: ['cargo test --all'] },
+  { language: 'Maven', files: { 'pom.xml': '<project/>\n', 'src/test/FooTest.java': '' }, runner: 'mvn test', runs: ['./mvnw -B test'] },
+  { language: 'Gradle', files: { 'build.gradle.kts': '', 'src/test/FooTest.java': '' }, runner: 'gradle test', runs: ['./gradlew test'] },
+  { language: 'Deno', files: { 'deno.json': '{}', 'main_test.ts': '' }, runner: 'deno test', runs: ['deno test -A'] },
+  { language: '.NET', files: { 'App.csproj': '<Project/>\n', 'FooTests.cs': '' }, runner: 'dotnet test', runs: ['dotnet test', 'dotnet test --no-build'] },
+  { language: '.NET', files: { 'App.sln': '', 'FooTests.cs': '' }, runner: 'dotnet test', runs: ['dotnet test'] },
+  { language: '.NET', files: { 'Lib.fsproj': '', 'FooTests.fs': '' }, runner: 'dotnet test', runs: ['dotnet test'] },
+  { language: '.NET', files: { 'Lib.vbproj': '', 'FooTests.vb': '' }, runner: 'dotnet test', runs: ['dotnet test'] },
+  { language: '.NET', files: { 'App.slnx': '', 'tests/FooTests.cs': '' }, runner: 'dotnet test', runs: ['dotnet test'] },
   { language: 'Ruby', files: { Gemfile: '', 'spec/a_spec.rb': '' }, runner: 'bundle exec rspec', runs: ['bundle exec rspec', 'rspec', 'bin/rspec', './bin/rspec'] },
-  { language: 'Ruby', files: { Gemfile: '' }, runner: 'bundle exec rake test', runs: ['bundle exec rake test', 'bin/rails test', 'bundle exec rails test', './bin/rails test'] },
-  { language: 'Ruby', files: { Rakefile: '' }, runner: 'rake test', runs: ['rake test', 'rake spec'] },
-  { language: 'PHP', files: { 'composer.json': '{}' }, runner: 'vendor/bin/phpunit', runs: ['vendor/bin/phpunit', './vendor/bin/phpunit', 'phpunit', 'php vendor/bin/phpunit', 'php -d memory_limit=-1 vendor/bin/phpunit', 'vendor/bin/pest', 'php artisan test'] },
+  { language: 'Ruby', files: { Gemfile: '', 'test/a_test.rb': '' }, runner: 'bundle exec rake test', runs: ['bundle exec rake test', 'bin/rails test', 'bundle exec rails test', './bin/rails test'] },
+  { language: 'Ruby', files: { Rakefile: '', 'test/a_test.rb': '' }, runner: 'rake test', runs: ['rake test', 'rake spec'] },
+  { language: 'PHP', files: { 'composer.json': '{}', 'FooTest.php': '' }, runner: 'vendor/bin/phpunit', runs: ['vendor/bin/phpunit', './vendor/bin/phpunit', 'phpunit', 'php vendor/bin/phpunit', 'php -d memory_limit=-1 vendor/bin/phpunit', 'vendor/bin/pest', 'php artisan test'] },
   { language: 'PHP', files: { 'composer.json': COMPOSER_TEST }, runner: 'composer test', runs: ['composer test', 'composer run test', 'composer run-script test'] },
-  { language: 'PHP', files: { 'phpunit.xml.dist': '<phpunit/>\n' }, runner: 'vendor/bin/phpunit', runs: ['vendor/bin/phpunit'] },
-  { language: 'Swift', files: { 'Package.swift': '' }, runner: 'swift test', runs: ['swift test', 'swift test --parallel'] },
-  { language: 'Elixir', files: { 'mix.exs': '' }, runner: 'mix test', runs: ['mix test', 'MIX_ENV=test mix test'] },
-  { language: 'Flutter', files: { 'pubspec.yaml': FLUTTER_PUBSPEC }, runner: 'flutter test', runs: ['flutter test'] },
-  { language: 'Dart', files: { 'pubspec.yaml': DART_PUBSPEC }, runner: 'dart test', runs: ['dart test', 'dart run test'] },
+  { language: 'PHP', files: { 'phpunit.xml.dist': '<phpunit/>\n', 'tests/FooTest.php': '' }, runner: 'vendor/bin/phpunit', runs: ['vendor/bin/phpunit'] },
+  { language: 'Swift', files: { 'Package.swift': '', 'Tests/FooTests.swift': '' }, runner: 'swift test', runs: ['swift test', 'swift test --parallel'] },
+  { language: 'Elixir', files: { 'mix.exs': '', 'test/x_test.exs': '' }, runner: 'mix test', runs: ['mix test', 'MIX_ENV=test mix test'] },
+  { language: 'Flutter', files: { 'pubspec.yaml': FLUTTER_PUBSPEC, 'test/a_test.dart': '' }, runner: 'flutter test', runs: ['flutter test'] },
+  { language: 'Dart', files: { 'pubspec.yaml': DART_PUBSPEC, 'test/a_test.dart': '' }, runner: 'dart test', runs: ['dart test', 'dart run test'] },
   { language: 'Makefile', files: { Makefile: 'test:\n\tgo vet\n' }, runner: 'make test', runs: ['make test', 'make -C app tests'] },
 ];
 
@@ -115,9 +115,41 @@ test('test commands: a pubspec.yaml is Flutter only when it depends on the Flutt
 });
 
 test('test commands: a project in two languages gets both runners, in table order (#546)', () => {
-  const files = { 'mix.exs': '', 'go.mod': '' };
+  const files = { 'mix.exs': '', 'go.mod': '', 'x_test.go': 'package x\n', 'test/x_test.exs': '' };
   assert.equal(testsStep(files).what, 'this looks like a Go and Elixir project, and no workflow runs its tests with `go test` or `mix test`');
+  assert.equal(adoptTests(files)?.status, 'done');
   assert.equal(adoptTests(files)?.evidence, '`go test` or `mix test` (Go, Elixir)');
+});
+
+test('test commands: a project file alone is no tests; adopt names the command for when tests exist (#551)', () => {
+  const alone: { files: Record<string, string>; runner: string; language: string }[] = [
+    { files: { 'go.mod': 'module example.com/x\n' }, runner: 'go test', language: 'Go' },
+    { files: { 'requirements.txt': 'requests\n' }, runner: 'pytest', language: 'Python' },
+    { files: { 'Cargo.toml': '[package]\n' }, runner: 'cargo test', language: 'Rust' },
+    { files: { 'pom.xml': '<project/>\n' }, runner: 'mvn test', language: 'Maven' },
+    { files: { 'build.gradle': '' }, runner: 'gradle test', language: 'Gradle' },
+    { files: { 'deno.json': '{}' }, runner: 'deno test', language: 'Deno' },
+    { files: { 'App.csproj': '<Project/>\n' }, runner: 'dotnet test', language: '.NET' },
+    { files: { Gemfile: '' }, runner: 'bundle exec rake test', language: 'Ruby' },
+    { files: { Rakefile: '' }, runner: 'rake test', language: 'Ruby' },
+    { files: { 'composer.json': '{}' }, runner: 'vendor/bin/phpunit', language: 'PHP' },
+    { files: { 'phpunit.xml.dist': '<phpunit/>\n' }, runner: 'vendor/bin/phpunit', language: 'PHP' },
+    { files: { 'Package.swift': '' }, runner: 'swift test', language: 'Swift' },
+    { files: { 'mix.exs': '' }, runner: 'mix test', language: 'Elixir' },
+    { files: { 'pubspec.yaml': FLUTTER_PUBSPEC }, runner: 'flutter test', language: 'Flutter' },
+    { files: { 'pubspec.yaml': DART_PUBSPEC }, runner: 'dart test', language: 'Dart' },
+  ];
+  for (const { files, runner, language } of alone) {
+    const name = `${language}: ${Object.keys(files).join(', ')}`;
+    assert.deepEqual(testLanguages(project(files)), [{ language, runner }], `${name}: still found`);
+    const adopt = adoptTests(files);
+    assert.equal(adopt?.status, 'missing', name);
+    assert.equal(adopt?.evidence, `\`${runner}\` (${language}) once tests exist`, name);
+  }
+  // A Makefile with no test target is no test command at all.
+  const bare = adoptTests({ Makefile: 'build:\n\tcc main.c\n' });
+  assert.equal(bare?.status, 'missing');
+  assert.equal(bare?.evidence, 'no test command found (package.json, Makefile or a project file such as go.mod)');
 });
 
 test('test commands: composer test counts only when composer.json has a test script, as npm test does (#546)', () => {

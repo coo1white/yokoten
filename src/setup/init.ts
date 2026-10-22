@@ -587,6 +587,104 @@ function findLinkOnPath(root: string, rel: string): string | null {
   return null;
 }
 
+/** A blank line or a comment: no job, and never a difference between two copies of one. */
+const isFillerLine = (line: string): boolean => line.trim() === '' || line.trim().startsWith('#');
+
+/** The indent of `line`: the spaces and tabs before its first other character. */
+const indentOf = (line: string): number => /^\s*/.exec(line)![0].length;
+
+/**
+ * A workflow's `jobs:` block: the lines before it (its opening line last), each job's lines
+ * (its header line first) by name, and the lines after the next top-level key, if any.
+ * Null when no top-level `jobs:` key opens one.
+ */
+function readJobs(text: string): { before: string; jobs: Map<string, string[]>; after: string } | null {
+  const lines = lfText(text).split('\n');
+  const open = lines.findIndex((line) => /^jobs\s*:(?:\s+#.*)?$/.test(line));
+  if (open === -1) return null;
+  const jobs = new Map<string, string[]>();
+  let at: string | null = null;
+  let indent = 0;
+  const after = lines.slice(open + 1);
+  for (let index = 0; index < after.length; index++) {
+    const line = after[index];
+    if (isFillerLine(line)) {
+      if (at !== null) jobs.get(at)!.push(line);
+      continue;
+    }
+    if (/^\S/.test(line)) return { before: lines.slice(0, open + 1).join('\n'), jobs, after: after.slice(index).join('\n') };
+    if (at === null) {
+      const head = /^(\s*)([A-Za-z0-9_.-]+):/.exec(line);
+      if (!head) return null;
+      indent = head[1].length;
+      at = head[2];
+      jobs.set(at, [line]);
+      continue;
+    }
+    const head = /^(\s*)([A-Za-z0-9_.-]+):/.exec(line);
+    if (head !== null && head[1].length === indent) {
+      at = head[2];
+      jobs.set(at, [line]);
+    } else jobs.get(at)!.push(line);
+  }
+  return { before: lines.slice(0, open + 1).join('\n'), jobs, after: '' };
+}
+
+/** The job names a `needs:` value and its list lines hold: a flow list, a block list, or one name. */
+function needNames(value: string, extra: string[]): string[] {
+  const clean = (word: string): string => word.replace(/#.*$/, '').trim().replace(/^(['"`])(.*)\1$/, '$2').trim();
+  const flow = /\[([^\]]*)\]/.exec(`${value} ${extra.join(' ')}`);
+  if (flow !== null) return flow[1].split(',').map(clean).filter((word) => word !== '');
+  const items = extra.map((line) => /^-\s+(.*)$/.exec(line.trim())).filter((found): found is RegExpExecArray => found !== null);
+  if (items.length > 0) return items.map((found) => clean(found[1])).filter((word) => word !== '');
+  const single = clean(value);
+  return single === '' ? [] : [single];
+}
+
+/**
+ * A job's `needs` names, and its other lines without filler. The `needs` key sits with the
+ * job's other keys; its list lines sit further in.
+ */
+function splitNeeds(body: string[]): { needs: string[]; rest: string[] } {
+  const skip = new Set<number>();
+  let needs: string[] = [];
+  const keyIndent = indentOf(body[0]) + 2;
+  const at = body.findIndex((line, index) => index > 0 && !isFillerLine(line) && indentOf(line) === keyIndent && /^\s*needs\s*:(.*)$/.test(line));
+  if (at !== -1) {
+    const value = /^\s*needs\s*:(.*)$/.exec(body[at])![1];
+    skip.add(at);
+    const extra: string[] = [];
+    for (let i = at + 1; i < body.length && !isFillerLine(body[i]) && indentOf(body[i]) > indentOf(body[at]); i++) {
+      skip.add(i);
+      extra.push(body[i]);
+    }
+    needs = needNames(value, extra);
+  }
+  return { needs, rest: body.filter((line, index) => !skip.has(index) && !isFillerLine(line)) };
+}
+
+/**
+ * Whether the project's copy keeps every job the kit's copy has (#552): the same block, but
+ * a `needs` list may name more jobs, and the project may add its own. Only the kit's jobs
+ * are read: a job the user added under `jobs:`, the way doctor's tests step says, never
+ * makes the copy look out of date on its own. False when either copy has no `jobs:` block.
+ */
+export function hasIntactKitJobs(projectText: string, kitText: string): boolean {
+  const project = readJobs(projectText);
+  const kit = readJobs(kitText);
+  if (project === null || kit === null) return false;
+  if (project.before !== kit.before || project.after !== kit.after) return false;
+  for (const [name, lines] of kit.jobs) {
+    const mine = project.jobs.get(name);
+    if (!mine) return false;
+    const kept = splitNeeds(mine);
+    const wanted = splitNeeds(lines);
+    if (!wanted.needs.every((need) => kept.needs.includes(need))) return false;
+    if (kept.rest.join('\n') !== wanted.rest.join('\n')) return false;
+  }
+  return true;
+}
+
 /** The state of the project's `rel` against `kitText`, the kit's file rendered for this project. */
 export function compareWorkflow(root: string, rel: string, kitText: string, hashes: Record<string, string[]> = readWorkflowHashes()): WorkflowState {
   if (findLinkOnPath(root, rel)) return 'link';
@@ -601,7 +699,10 @@ export function compareWorkflow(root: string, rel: string, kitText: string, hash
   if (!stat.isFile()) return 'changed';
   const text = lfText(readFileSync(path, 'utf8'));
   if (text === kitText) return 'same';
-  return (hashes[rel] ?? []).includes(fileHash(text)) ? 'older' : 'changed';
+  if ((hashes[rel] ?? []).includes(fileHash(text))) return 'older';
+  // The project's own jobs stay: only the kit's own jobs falling behind says so (#552).
+  if (hasIntactKitJobs(text, kitText)) return 'same';
+  return 'changed';
 }
 
 /** The command that shows how the project's `rel` differs from the kit's copy in its .yokoten/ (or in yokoten itself). */

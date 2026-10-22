@@ -36,3 +36,11 @@ Since 22.18, Node runs `.ts` files itself by stripping the types. No build, no l
   still supported, and its current releases are well past 22.18.
 - Node does not strip types under `node_modules`, so publishing to npm would need a
   build step then. [0008](0008-npm-package.md) adds that build, for the package only.
+
+## Note, 2026-10-22 (UTC)
+
+The minimum moved from 22.18 to 22.23.4, or 24.22.1 on Node 24, or 26.12.1 on Node 26
+(#572). Those releases still run TypeScript the same way. They are the first with the
+[security fixes of 2026-10-21](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases),
+among them TLS hostname checks that yokoten's HTTPS calls to GitHub rely on. The type
+stripping above is unchanged; only the safe floor moved.

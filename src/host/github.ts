@@ -756,6 +756,7 @@ export interface ServerSettings {
 /** Why gh failed, in words a beginner can act on. */
 export function unread(err: unknown): Unread {
   if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { unread: 'gh is not installed', fix: 'get it from https://cli.github.com, then run `gh auth login`' };
+  if ((err as NodeJS.ErrnoException).code === 'ETIMEDOUT') return { unread: 'GitHub took too long to answer', fix: 'check the network, then run doctor again' };
   const said = String((err as { stderr?: string }).stderr || (err as Error).message);
   if (/HTTP 401|gh auth login|not logged in/i.test(said)) return { unread: 'gh is not signed in', fix: 'run `gh auth login`' };
   if (/Upgrade to GitHub Pro/i.test(said)) return { unread: 'rulesets need GitHub Pro on a private repo', fix: 'make the repo public, or upgrade to GitHub Pro (or Team for an organization)' };
