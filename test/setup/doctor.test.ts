@@ -67,6 +67,7 @@ import {
   quoteForShell,
   REAL_MACHINE,
   readHostDisk,
+  sandboxControl,
   saveHostCache,
   selfTest,
   SERVER_TIMEOUT_MS,
@@ -1230,6 +1231,15 @@ test('self-test: the leftover control passes the real check and fails a broken o
   assert.deepEqual(leftoverControl(() => null), ['leftover temp folder check']);
   // A check that counts the new folder too is caught.
   assert.deepEqual(leftoverControl((env, probe, read) => leftoverTempCheck(env, { ...probe, now: () => new Date(Date.now() + 365 * DAY) }, read)), ['leftover temp folder check']);
+});
+
+test('self-test: the sandbox control passes the real checks and fails broken ones (#589)', () => {
+  assert.deepEqual(sandboxControl(), []);
+  assert.ok(!selfTest().some((name) => name.toLowerCase().includes('sandbox')));
+  const passAll = () => null;
+  assert.deepEqual(sandboxControl(passAll, passAll, passAll, passAll), ['Claude Code sandbox check', 'Codex sandbox check', 'Gemini CLI sandbox check', 'Grok sandbox check'], 'checks that pass everything');
+  const failAll = () => ({ what: 'broken', fix: 'fix it' });
+  assert.deepEqual(sandboxControl(failAll, failAll, failAll, failAll), ['sandbox check (a good set passes)'], 'checks that fail everything');
 });
 
 // #365: work only on this machine. Full doctor lists it all; a session hears what is at

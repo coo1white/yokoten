@@ -311,6 +311,10 @@ export function sandboxProblem(root: string): { what: string; fix: string } | nu
   const filesystem = sandbox.filesystem as Record<string, unknown> | undefined;
   if (isObject(filesystem) && filesystem.disabled === true) return { what: `the sandbox in ${file} has filesystem isolation off`, fix: `take sandbox.filesystem.disabled out of ${file}` };
   const network = sandbox.network as Record<string, unknown> | undefined;
+  // Only a bare `*` in the list is a problem: it allows every host, likely by mistake. A
+  // scoped wildcard (`*.example.com`) is the user's explicit choice, like a named host. A
+  // non-list `allowedDomains` allows nothing: the proxy's allowlist starts empty, so another
+  // shape is not a silent widening.
   const allowed = isObject(network) && Array.isArray(network.allowedDomains) ? network.allowedDomains : null;
   if (allowed?.some((host) => typeof host === 'string' && host.trim() === '*')) {
     return { what: `the sandbox in ${file} allows every network host (*)`, fix: `list only the hosts the project needs in sandbox.network.allowedDomains in ${file}` };

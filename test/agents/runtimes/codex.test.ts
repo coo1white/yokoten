@@ -296,6 +296,19 @@ test("sandbox write: a name taken in another shape is skipped, never written twi
   assert.match(kept, /sandbox_mode = "workspace-write"/);
 });
 
+test('sandbox write: a quoted or array table header is never doubled, and doctor flags the shape (#589)', () => {
+  const env = { HOME: '/nonexistent-yokoten-home' };
+  for (const header of ['["sandbox_workspace_write"]', '[[sandbox_workspace_write]]']) {
+    const before = `sandbox_mode = "workspace-write"\napproval_policy = "on-request"\n\n${header}\n`;
+    const root = configProject(before);
+    assert.equal(addProjectSandbox(root), 'kept', `${header}: the table is skipped, not doubled`);
+    const after = readFileSync(join(root, '.codex', 'config.toml'), 'utf8');
+    assert.equal(after, before, `${header}: the file is left byte for byte`);
+    assert.equal(after.split('sandbox_workspace_write').length - 1, 1, `${header}: one header, still valid TOML`);
+    assert.deepEqual(sandboxProblem(root, env), { what: '.codex/config.toml has an unexpected shape', fix: 'fix it, then run `yokoten init`' }, `${header}: doctor flags the shape`);
+  }
+});
+
 test('sandbox problem: missing, off, narrow, wide and unreadable, each with its one fix', () => {
   const env = { HOME: makeTempDir('yokoten-codex-home-') };
   assert.deepEqual(sandboxProblem(makeTempDir('yokoten-codex-'), env), { what: 'no Codex sandbox in .codex/config.toml', fix: '`yokoten init` adds it' });

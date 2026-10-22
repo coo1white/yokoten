@@ -29,7 +29,7 @@ import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import type { Action } from '../../run/hook.ts';
 import { type FolderTrust, folderKeys, isFolder } from '../folder-trust.ts';
 import { type Added, addHook, checkHooksFile, type HookState, hookState, isObject } from '../hooks-file.ts';
-import { blankedToml, hasTomlKey, hasTomlTable, isInsideProject, parseToml, readTomlTables } from './codex.ts';
+import { blankedToml, hasTomlArray, hasTomlHeader, hasTomlKey, hasTomlTable, isInsideProject, parseToml, readTomlTables } from './codex.ts';
 
 // The shell tool takes `command` (and may take `cwd`); the edit tools take `file_path`.
 const SHELL = new Set(['run_terminal_command', 'run_terminal_cmd', 'Bash']);
@@ -221,7 +221,8 @@ extends = "workspace"
 /**
  * The `[profiles.yokoten]` table: parsed, `blocked` when `profiles` or `yokoten` is taken
  * in another shape (writing the table would corrupt the file), or null when missing. A
- * table in a form the parser skips reads as empty: doctor then can't verify its base.
+ * quoted header reads as empty (no base means workspace); an array header (`[[x]]`) is
+ * blocked, as writing the table next to it would corrupt the file.
  */
 function readProfile(text: string): Record<string, unknown> | 'blocked' | null {
   const parsed = parseToml(text);
@@ -229,6 +230,8 @@ function readProfile(text: string): Record<string, unknown> | 'blocked' | null {
   const yokoten = isObject(parsed.profiles) ? parsed.profiles.yokoten : undefined;
   if (yokoten !== undefined && !isObject(yokoten)) return 'blocked';
   if (isObject(yokoten)) return yokoten;
+  if (hasTomlArray(text, ['profiles', PROFILE])) return 'blocked';
+  if (hasTomlHeader(text, ['profiles', PROFILE])) return {};
   const blanked = blankedToml(text);
   return hasTomlTable(blanked, ['profiles', PROFILE]) || hasTomlKey(blanked, PROFILE) ? {} : null;
 }

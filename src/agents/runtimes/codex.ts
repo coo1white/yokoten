@@ -716,6 +716,42 @@ function headerPath(line: string): string[] | null {
   return inner.split('.').map((part) => part.trim().replace(/^["'](.*)["']$/, '$1'));
 }
 
+/** A header line as its path and whether it is an array (`[[x]]`), or null. Reads the original line, so quoted parts parse. */
+function headerShape(line: string): { path: string[]; isArray: boolean } | null {
+  const trimmed = line.trim();
+  const isArray = trimmed.startsWith('[[');
+  const close = isArray ? ']]' : trimmed.startsWith('[') ? ']' : null;
+  if (!close) return null;
+  const path = readTomlPath(trimmed.slice(close.length));
+  if (!path || !path[1].startsWith(close)) return null;
+  if (!/^\s*(#.*)?$/.test(path[1].slice(close.length))) return null;
+  return { path: path[0], isArray };
+}
+
+/** Whether the text holds the header for `path`, single or array. Only lines that are really headers (blanked still starts with `[`) count, so strings and comments never match. */
+function hasHeaderShape(text: string, path: readonly string[], wantArray: boolean): boolean {
+  const blanked = blankedToml(text).split('\n');
+  return text.split('\n').some((line, index) => {
+    if (!(blanked[index] ?? '').trimStart().startsWith('[')) return false;
+    const header = headerShape(line);
+    return !!header && header.isArray === wantArray && header.path.length === path.length && header.path.every((part, at) => part === path[at]);
+  });
+}
+
+/**
+ * Whether the text holds a `[a.b]` header for `path`, quoted or not. Blanked text misses quoted names, so this reads the original lines. Shared with Grok's profile (#589).
+ */
+export function hasTomlHeader(text: string, path: readonly string[]): boolean {
+  return hasHeaderShape(text, path, false);
+}
+
+/**
+ * Whether the text holds a `[[a.b]]` array header for `path`, quoted or not. An array where a table belongs is always the wrong shape. Shared with Grok's profile (#589).
+ */
+export function hasTomlArray(text: string, path: readonly string[]): boolean {
+  return hasHeaderShape(text, path, true);
+}
+
 /** The sandbox keys init writes: top-level pairs, and the one table with its pair. */
 const TOP_SANDBOX: (readonly [string, string])[] = [
   ['sandbox_mode', '"workspace-write"'],
@@ -772,6 +808,11 @@ function isTableBlocked(parsed: Record<string, TomlValue>, blanked: string): boo
   return top.some((line) => new RegExp(`^\\s*["']?${name}["']?\\s*=`).test(line));
 }
 
+/** Whether the table header exists in a form the blanked search misses: quoted (`["a"]`) or an array (`[[a]]`). Writing the table again would corrupt the file. */
+function hasMissedTable(text: string, blanked: string): boolean {
+  return (hasTomlHeader(text, TABLE_SANDBOX[0]) || hasTomlArray(text, TABLE_SANDBOX[0])) && !hasTomlTable(blanked, TABLE_SANDBOX[0]);
+}
+
 /**
  * Write the project's Codex sandbox: the keys that are missing, and only those. A key the
  * user set stays, even when it differs (`kept`); a key set in a form the parser skips
@@ -798,7 +839,7 @@ export function addProjectSandbox(root: string): 'added' | 'same' | 'kept' | 'un
   // Doctor calls that a shape problem, so init and doctor agree on what is missing.
   const [tablePath, tableKey, tableValue] = TABLE_SANDBOX;
   const missingTop = TOP_SANDBOX.filter(([key]) => !isTopSet(parsed, blanked, key) && !isTopBlocked(parsed, blanked, key));
-  const needsTableKey = !isTableSet(parsed, blanked) && !isTableBlocked(parsed, blanked);
+  const needsTableKey = !isTableSet(parsed, blanked) && !isTableBlocked(parsed, blanked) && !hasMissedTable(text, blanked);
   if (missingTop.length === 0 && !needsTableKey) {
     const tableParsed = tablePath.reduce<unknown>((at, part) => (isObject(at) ? at[part] : undefined), parsed);
     const network = isObject(tableParsed) ? tableParsed[tableKey] : undefined;
@@ -913,6 +954,7 @@ export function sandboxProblem(root: string, env: Env): { what: string; fix: str
     isTopBlocked(parsed, blanked, 'sandbox_mode') ||
     isTopBlocked(parsed, blanked, 'approval_policy') ||
     isTableBlocked(parsed, blanked) ||
+    (hasMissedTable(text, blanked) && !isTableSet(parsed, blanked)) ||
     isTakenTwice(blanked, 'sandbox_mode') ||
     isTakenTwice(blanked, 'approval_policy') ||
     isTakenTwice(blanked, 'sandbox_workspace_write')

@@ -366,6 +366,25 @@ test('sandbox write: the yokoten profile is added, and a profile the user set st
   assert.doesNotMatch(readFileSync(join(blocked, '.grok', 'sandbox.toml'), 'utf8'), /\[profiles\.yokoten\]/);
 });
 
+test('sandbox write: a quoted header reads as empty and an array header blocks, never doubled (#589)', () => {
+  // A quoted header without a base means workspace, as Grok reads it: same, and doctor passes.
+  const quoted = '["profiles"."yokoten"]\n';
+  const quotedRoot = sandboxProject(quoted);
+  assert.equal(addProjectSandbox(quotedRoot), 'same', 'quoted: the table is already there');
+  const quotedAfter = readFileSync(join(quotedRoot, '.grok', 'sandbox.toml'), 'utf8');
+  assert.equal(quotedAfter, quoted, 'quoted: the file is left byte for byte');
+  assert.equal(quotedAfter.split('yokoten').length - 1, 1, 'quoted: one header, still valid TOML');
+  assert.equal(sandboxProblem(quotedRoot, OUTSIDE_HOME), null, 'quoted: no base means workspace');
+  // An array header blocks the table: writing next to it would corrupt the file.
+  const array = '[[profiles.yokoten]]\n';
+  const arrayRoot = sandboxProject(array);
+  assert.equal(addProjectSandbox(arrayRoot), 'kept', 'array: the table is skipped, not doubled');
+  const arrayAfter = readFileSync(join(arrayRoot, '.grok', 'sandbox.toml'), 'utf8');
+  assert.equal(arrayAfter, array, 'array: the file is left byte for byte');
+  assert.equal(arrayAfter.split('yokoten').length - 1, 1, 'array: one header, still valid TOML');
+  assert.deepEqual(sandboxProblem(arrayRoot, OUTSIDE_HOME), { what: '.grok/sandbox.toml has an unexpected shape', fix: 'fix it, then run `yokoten init`' }, 'array: doctor flags the shape');
+});
+
 test('sandbox problem: missing, narrow, wide and outside writes, each with its one fix', () => {
   assert.deepEqual(sandboxProblem(makeTempDir('yokoten-grok-'), OUTSIDE_HOME), { what: 'no Grok sandbox profile in .grok/sandbox.toml', fix: '`yokoten init` adds it' });
   assert.equal(sandboxProblem(sandboxProject('[profiles.yokoten]\nextends = "workspace"\n'), OUTSIDE_HOME), null);

@@ -429,6 +429,8 @@ set. A subagent starts no session, so it hears nothing.
 
 A value you set stays. `doctor` names what differs, with one fix.
 
+Muse Code, DeepSeek Harness, Antigravity and Copilot have no project-writable sandbox, so `init` writes none for them. Muse has no project settings file for one. DeepSeek Harness and Antigravity keep only hooks in the project, and Copilot's own sandbox is user-level.
+
 ### DeepSeek Harness
 
 DeepSeek Harness (`dsh`) runs Claude Code command hooks through a bridge plugin. The
