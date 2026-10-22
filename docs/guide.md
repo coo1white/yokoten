@@ -1508,6 +1508,35 @@ every 15 seconds. Stop the command with Ctrl-C.
 
 `yokoten board --text` prints the agents, pull requests and worktrees as plain text.
 
+At the top, Waiting for you lists what needs the owner: tier A pull requests with
+green checks and no Approve, commands the guard stopped, and questions agents ask.
+Each row shows the kind, the agent, its role, how long it waited, one line on why,
+and a link to act. The list is read only: no request an agent can make clears an
+item. An empty list says so.
+
+From the right column the owner starts an agent: pick an open issue, a vendor, and
+a model, then Start. The board makes `.worktrees/<issue>`, marks it as a worker's
+(as `yokoten worker mark` does, so runtimes that drop `YOKOTEN_ROLE` still run as
+workers), and starts the vendor's own headless command with `YOKOTEN_ROLE=worker`,
+like the dispatch skill. The model goes through the vendor's own flag (`--model`);
+DeepSeek Harness has no such flag, so its model stays a name in the brief. Before
+it starts, the board checks the vendor's guard hooks will run in that worktree, and
+refuses the start with a plain reason when they will not (trust the folder first,
+or run `yokoten init`). The run shows under Started here with a Stop button, and
+its latest output below. Stopping keeps the worktree and its commits. A process
+that exits by itself counts as stopped: its slot frees and a later Stop says so.
+
+The limits say how many agents run at once (three at first), and how many of one
+model. Over the limit, the board refuses a start with a plain reason.
+
+`yokoten board --text` also prints Waiting for you whenever something waits.
+
+Safety: the link holds a random token, and a change needs the page's Origin too.
+The board stops only processes it started. Every start and stop goes to
+`.yokoten-board.log` at the repo root. The guard checks each agent, and pushes and
+merges still go only through the bot. There are no Approve or Merge buttons: those
+stay on the host, with the owner.
+
 An agent joins by writing `.yokoten-agent.json` at its worktree's root. It leaves
 by removing the file. Any agent can write it, whatever vendor it runs on. The
 format is open: other tools may read it too. One file per worktree.
@@ -1521,8 +1550,11 @@ format is open: other tools may read it too. One file per worktree.
 | `worktree` | The worktree it works in |
 | `doing` | What it does now, in a few words |
 | `updated` | When it last wrote, such as `2026-10-22T10:00:00Z`. The board shows how long ago that was |
+| `blocked` | A guard stop that needs a decision, in one line. It joins Waiting for you |
+| `question` | One line the agent asks the owner. It joins Waiting for you |
+| `link` | Where the owner acts, http(s) only. Anything else stays plain text |
 
-Every field is text. Every field may be missing. A file that is not a JSON object is skipped. `role` keeps only `engineer`, `reviewer` or `verifier`; anything else is ignored.
+Every field is text. Every field may be missing. A file that is not a JSON object is skipped. `role` keeps only `engineer`, `reviewer` or `verifier`; anything else is ignored. A `blocked` or `question` row stays on Waiting for you while the agent is here, even when the file stops naming it: only leaving clears it.
 
 The page reads `/data` as JSON. That is the board's interface. The page is only one
 view of it.

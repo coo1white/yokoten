@@ -925,20 +925,21 @@ export function startBoardServer(root: string, env: Env, gh: Gh, options: BoardS
   });
 }
 
-export function runBoard(invocation: Invocation): number | Promise<number> {
-  const options = parse('board', invocation.args);
-  if (typeof options === 'string') return usage(invocation, options);
+export function runBoard(invocation: Invocation, options: BoardServerOptions = {}): number | Promise<number> {
+  const parsed = parse('board', invocation.args);
+  if (typeof parsed === 'string') return usage(invocation, parsed);
   const root = requireRoot(invocation, invocation.cwd);
   if (!root) return 1;
   const gh = ghIn(root, invocation.env, BOARD_READ_TIMEOUT_MS);
-  if (options.flags.has('--text')) {
+  const controls = options.controls ?? createBoardControls(join(root, '.yokoten-board.log'));
+  if (parsed.flags.has('--text')) {
     const board = collectBoard(root, invocation.env, gh);
     const trees = readBoardWorktrees(root, invocation.env);
-    const waiting = collectBoardWaiting(board, typeof trees === 'string' ? [] : readBoardAttention(trees), [], []);
-    print(invocation, renderBoardText(board, Date.now(), waiting.length ? { waiting, runs: [] } : undefined));
+    const waiting = collectBoardWaiting(board, typeof trees === 'string' ? [] : readBoardAttention(trees), controls.runs, controls.seen);
+    print(invocation, renderBoardText(board, Date.now(), waiting.length || controls.runs.length ? { waiting, runs: controls.runs } : undefined));
     return 0;
   }
-  return startBoardServer(root, invocation.env, gh).then(
+  return startBoardServer(root, invocation.env, gh, { controls }).then(
     ({ url }) => {
       print(invocation, [`yokoten board: the team is live at ${url}`, `The page refreshes every ${BOARD_REFRESH_SECONDS} seconds. Stop it with Ctrl-C.`]);
       return new Promise<number>(() => {});
@@ -1271,21 +1272,22 @@ function boardLogLine(line: string): string {
 }
 
 /**
- * Start one agent from the ask: make the worktree, mark it as a worker's, check the
- * guard hooks will run there, start the vendor's command, and keep the run. The child
- * gets `YOKOTEN_ROLE=worker`, and the worker mark covers runtimes that drop it.
+ * Start one agent from the ask: make the worktree, check the guard hooks will run
+ * there, then mark it as a worker's right before starting the vendor's command, and
+ * keep the run. A refused start leaves the worktree unmarked. The child gets
+ * `YOKOTEN_ROLE=worker`, and the worker mark covers runtimes that drop it.
  */
 export function startBoardAgent(root: string, env: Env, controls: BoardControls, ask: BoardStartAsk): BoardRun | string {
-  const over = checkBoardLimits(controls, ask.model);
-  if (over) return over;
   const made = boardWorktree(root, env, ask.issue);
   if ('fail' in made) return made.fail;
-  const marked = markWorktree(root, made.dir, env);
-  if ('fail' in marked) return `the board could not mark the worktree at ${hideHome(made.dir, env)} as a worker's: ${marked.fail}`;
   const ready = boardGuardReady(ask.vendor, made.dir, env);
   if (ready) return ready;
   const parts = boardStartParts(ask.vendor, boardBrief(ask.issue, made.dir, ask.model), ask.model);
   if (!parts) return `the board starts ${Object.keys(BOARD_START_COMMANDS).join(', ')}: start ${ask.vendor} by hand`;
+  const over = checkBoardLimits(controls, ask.model);
+  if (over) return over;
+  const marked = markWorktree(root, made.dir, env);
+  if ('fail' in marked) return `the board could not mark the worktree at ${hideHome(made.dir, env)} as a worker's: ${marked.fail}`;
   const [command, ...args] = parts;
   let name = `issue-${ask.issue}-${ask.vendor}`;
   for (let salt = 2; controls.runs.some((run) => run.name === name); salt += 1) name = `issue-${ask.issue}-${ask.vendor}-${salt}`;
@@ -1316,6 +1318,7 @@ export function startBoardAgent(root: string, env: Env, controls: BoardControls,
         run.exitCode = code;
         run.status = 'stopped';
         run.stoppedAt = new Date().toISOString();
+        controls.handles.delete(name);
         appendBoardLog(controls, boardLogLine(`exit ${name} code ${code ?? 'unknown'}`));
       },
     });

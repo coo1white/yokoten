@@ -42,6 +42,7 @@ import {
   readBoardStartAsk,
   readBoardWorktrees,
   renderBoardText,
+  runBoard,
   runDoctor,
   setBoardLimits,
   startBoardAgent,
@@ -1023,6 +1024,51 @@ test('board controls: the log keeps every start on one line', () => {
   const log = readFileSync(join(sandbox.repo, '.yokoten-board.log'), 'utf8');
   assert.equal(log.split('\n').filter((line) => line !== '').length, 1, 'the multi-line brief adds no lines');
   assert.ok(log.includes('Issue: #12'), 'the brief stays readable on the one line');
+});
+
+// #603 re-inspection (L1): `board --text` passed `runs: []`, so Started here never
+// listed a run. It passes the board's own runs, like the page.
+test('board --text: a started run shows under Started here', () => {
+  const sandbox = makeSandbox();
+  const agents = fakeAgents();
+  const controls = createBoardControls(join(sandbox.repo, '.yokoten-board.log'), agents.spawner);
+  const run = startBoardAgent(sandbox.repo, sandbox.env, controls, { issue: '12', vendor: 'claude-code', model: 'model-a' });
+  assert.ok(typeof run !== 'string', `the start passes: ${run}`);
+  const chunks: string[] = [];
+  const stream = new Writable({ write(chunk, _, done) { chunks.push(String(chunk)); done(); } });
+  const invocation: Invocation = { command: 'board', args: ['--text'], env: { ...sandbox.env }, cwd: sandbox.repo, stdout: stream as Output, stderr: stream as Output, stdin: { fd: null, text: '', stream: Readable.from(['']) }, script: CLI };
+  assert.equal(runBoard(invocation, { controls }), 0);
+  const text = chunks.join('');
+  assert.ok(text.includes('Started here:'), 'the runs section shows');
+  assert.ok(text.includes(run.name), 'the started run shows, as on the page');
+});
+
+// #603 re-inspection (L2): the start marked the worktree before the guard check,
+// so a refused start left a marked worktree behind. The checks run first now.
+test('board controls: a refused start leaves the worktree unmarked', () => {
+  const sandbox = makeSandbox();
+  mkdirSync(join(sandbox.home, '.codex'), { recursive: true });
+  const agents = fakeAgents();
+  const controls = createBoardControls(join(sandbox.repo, '.yokoten-board.log'), agents.spawner);
+  const refused = startBoardAgent(sandbox.repo, sandbox.env, controls, { issue: '12', vendor: 'codex', model: 'model-a' });
+  assert.match(typeof refused === 'string' ? refused : 'started', /yokoten init/, 'the guard refuses the start');
+  assert.equal(workerMarkAt(join(sandbox.repo, '.worktrees', '12'), sandbox.env), null, 'no worker mark left behind');
+  assert.equal(agents.started.length, 0, 'no process started');
+});
+
+// #603 re-inspection (L3): the exit handler never dropped the process handle.
+// Stopping already answers already-stopped from the status, so dropping it
+// changes no answer.
+test('board controls: an exited run drops its process handle', () => {
+  const sandbox = makeSandbox();
+  const agents = fakeAgents();
+  const controls = createBoardControls(join(sandbox.repo, '.yokoten-board.log'), agents.spawner);
+  const run = startBoardAgent(sandbox.repo, sandbox.env, controls, { issue: '12', vendor: 'claude-code', model: 'model-a' });
+  assert.ok(typeof run !== 'string', `the start passes: ${run}`);
+  assert.ok(controls.handles.has(run.name), 'the handle is held while running');
+  agents.started[0].events.exit(1);
+  assert.ok(!controls.handles.has(run.name), 'the exit drops the handle');
+  assert.equal(stopBoardAgent(controls, run.name), `${run.name} already stopped`, 'stopping still answers already-stopped');
 });
 
 // #603: the page shows the waiting list, the start and limits forms, the runs and their
