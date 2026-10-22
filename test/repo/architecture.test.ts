@@ -482,6 +482,8 @@ test('ci: `changes` finds a docs-only pull request; other files, a push, or an u
   assert.equal(onPullRequest(['package.json']), 'docs_only=false\n');
   // A push to main: the full run.
   assert.equal(runChanges({ EVENT: 'push', BASE_SHA: '', HEAD_SHA: '' }).output, 'docs_only=false\n');
+  // A merge queue group: the full run. The event names no pull request (#590).
+  assert.equal(runChanges({ EVENT: 'merge_group', BASE_SHA: '', HEAD_SHA: '' }).output, 'docs_only=false\n');
   // The file list can't be read: the full run, and a warning says why.
   const head = pullRequest(['docs/guide.md']);
   for (const [baseSha, headSha] of [['0'.repeat(40), head], ['', head], [base, ''], [head, head]]) {
@@ -567,6 +569,46 @@ test('ci: the kit lets a project skip its own jobs on a docs-only pull request; 
   assert.equal(isRed('true', { ...green, check: 'skipped' }), true, 'check always runs');
   assert.equal(isRed('true', { ...green, lint: 'skipped' }), true, 'lint always runs');
   assert.equal(isRed('true', { ...green, build: 'failure' }), true);
+});
+
+// ---- The same required checks on a merge queue group (#590) ----
+//
+// `yokoten.yml` reports `ci` and `pr.yml` reports `pr`: both checks are required, so
+// both workflows run on `merge_group`, and a queued merge runs the same checks as a
+// pull request. `issue.yml` is not a check on a merge, so it stays off. There is no
+// pull request on a merge group run: `yokoten.yml` runs every job in full, and the `pr`
+// job skips, which the queue counts as green. Only the kit files are read here: this
+// repo's own workflows get the same lines when the lead mirrors the kit diff into them.
+// The events in the top-level `on:` block: each key two spaces in.
+const readTriggers = (text: string) => {
+  const head = text.split(/^jobs:\n/m)[0];
+  const on = head.split(/^on:\n/m)[1]?.split(/^(?:permissions|concurrency|env):/m)[0] ?? '';
+  return on.split('\n').filter((line) => /^  [\w-]+:/.test(line)).map((line) => line.trim().replace(/:.*$/, ''));
+};
+
+test('workflows: the required checks run on merge_group, with the same jobs as a pull request (#590)', () => {
+  assert.deepEqual(readTriggers('on:\n  pull_request:\n  push:\n    branches: [main]\njobs:\n'), ['pull_request', 'push'], 'the read finds the events');
+  const dir = join(ROOT, 'kit/project/.github/workflows');
+  const yokoten = readFileSync(join(dir, 'yokoten.yml'), 'utf8');
+  const pr = readFileSync(join(dir, 'pr.yml'), 'utf8');
+  for (const [name, text] of [['yokoten.yml', yokoten], ['pr.yml', pr]] as const) {
+    assert.ok(readTriggers(text).includes('pull_request'), `${name}: the read is broken`);
+    assert.ok(readTriggers(text).includes('merge_group'), `${name}: no merge_group trigger, so a queued merge would run no checks`);
+  }
+  assert.ok(!readTriggers(readFileSync(join(dir, 'issue.yml'), 'utf8')).includes('merge_group'), 'issue.yml is not a check on a merge');
+  assert.ok(!readTriggers(yokoten.replace(/^  merge_group:\n/m, '')).includes('merge_group'), 'a missing trigger is caught');
+  // Every job in yokoten.yml runs on a merge group run, as on a pull request. Only
+  // `ci` carries a condition, and it always runs.
+  for (const job of jobs(yokoten)) {
+    const condition = job.block.match(/^ {4}if: (.+)$/m)?.[1] ?? '';
+    assert.ok(condition === '' || (job.name === 'ci' && condition === 'always()'), `${job.name} runs only when "${condition}"`);
+  }
+  // The `pr` job skips on a merge group run, because there is no pull request to
+  // check. Its step still checks a pull request when there is one.
+  const prJob = jobBlock(pr, 'pr');
+  assert.equal(evaluate(jobCondition(prJob), {}, { event_name: 'merge_group' }), false);
+  assert.equal(evaluate(jobCondition(prJob), {}, { event_name: 'pull_request' }), true);
+  assert.match(prJob, /check --pr/);
 });
 
 // ---- Names (#109, record 0006) ----

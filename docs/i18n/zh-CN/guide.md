@@ -616,6 +616,10 @@ job 用 actionlint 和 zizmor 查 workflow 本身；还有一个 `ci` job，设�
 token；同一个 PR 推了新提交，还在跑的旧 CI 会自动取消。你自己的测试，加成 `yokoten.yml` 里
 的一个 job，再把它写进 `ci` 的 `needs`。
 
+`yokoten.yml` 和 `pr.yml` 还会在 `merge_group` 上跑，这样合并队列跑的必过检查和 PR 的一样。合并队列
+的一次运行里没有 PR：`yokoten.yml` 把每个 job 都完整跑一遍，`pr` 的 job 跳过，跳过在队列里算作通
+过。去仓库设置里打开合并队列。`issue.yml` 从不在那里跑：issue 不是合并且要过的检查。
+
 `yokoten.yml` 里有个 `changes` job，会看 PR 改了哪些文件。每个文件都在 `docs/` 或 `changes/` 下，或者是
 `README.md`、`CHANGELOG.md`，这个 PR 就算只改文档。你自己的 job 可以跳过只改文档的 PR；`ci` 上面的
 注释写了要加的两行。`ci` 把这种跳过算作通过。提交检查和 lint job 一直会跑。往 main 推送时，所有 job 都跑。

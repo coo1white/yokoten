@@ -756,6 +756,12 @@ limit, checkout keeps no token, and a new push cancels the old run on the same p
 request. Add your tests as a job in `yokoten.yml` and to the `needs` list of `ci`. A
 private repo can keep CI off: see [A private repo without CI](#a-private-repo-without-ci).
 
+`yokoten.yml` and `pr.yml` also run on `merge_group`, so a merge queue runs the same
+required checks as a pull request. A merge group run has no pull request. `yokoten.yml`
+runs every job in full, and the `pr` job skips, which counts as green for the queue.
+Turn the queue on in the repo settings. `issue.yml` never runs there: an issue is not
+a check on a merge.
+
 When a workflow is already there, `init` checks whether you changed it. The kit keeps a
 list of every version it wrote. A file that matches one of them, Windows line ends or not,
 is a copy you never changed. `init` then updates it to the newest version and says so.
