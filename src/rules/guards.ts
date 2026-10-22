@@ -709,21 +709,23 @@ function isDefaultBranch(name: string, dir: string | null, env: Env): boolean {
 }
 
 const PIPE_SHELL_FIX = 'save it first (`curl -fsSL <url> -o <file>`), read it, then run it (`sh <file>`)';
+const DOWNLOAD_PROGRAMS = new Set(['curl', 'wget']);
 
 /** A pipeline that feeds a download into a shell runs code nobody read. */
 function checkPipeToShell(command: string): Finding | null {
-  const downloads = new Set(['curl', 'wget']);
   for (const pipeline of splitPipelines(command)) {
     const segments = splitPipeSegments(pipeline);
     if (segments.length < 2) continue;
-    const programs = segments.map((segment) => commandWords(segment).flatMap(findPrograms).map(programName));
-    for (let at = 1; at < programs.length; at++) {
-      const shell = programs[at][0] ?? '';
-      if (shell !== 'powershell' && !isShell(shell)) continue;
-      const downloader = programs.slice(0, at).flat().find((program) => downloads.has(program));
-      if (downloader !== undefined) {
+    // The first download in the segments so far: one pass, so a long pipeline reads in
+    // linear time. A shell in the first segment has nothing before it, so it passes.
+    let downloader: string | undefined;
+    for (const segment of segments) {
+      const programs = commandWords(segment).flatMap(findPrograms).map(programName);
+      const shell = programs[0] ?? '';
+      if ((shell === 'powershell' || isShell(shell)) && downloader !== undefined) {
         return finding('pipe-to-shell', `\`${downloader} | ${shell}\` runs a download without letting you read it first`, PIPE_SHELL_FIX);
       }
+      downloader ??= programs.find((program) => DOWNLOAD_PROGRAMS.has(program));
     }
   }
   return null;
