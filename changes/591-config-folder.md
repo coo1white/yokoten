@@ -10,7 +10,8 @@ The guard no longer tries to read every way bash can spell a path. A worker now 
 - git takes no option before its subcommand (`--no-pager` is fine). `git config` only reads, and `--output` is refused.
 - `less` and `file` may not write a file (`less -o`, `--log-file`, `file -C`).
 - `alias` definitions are refused, and so is a `find -L` that changes files or runs a program.
-- A command that does more than read may not name a path that is or holds the config folder, by real path: a symlink in the worktree, `~+` or a glob counts, for any program (`gzip`, `sort -o`, `npm --prefix`, `git archive -o`).
+- A command that does more than read may not name a path that is or holds the config folder. The guard resolves each path word the way the kernel does: one part at a time, following a symlink before a later `..`. So `link/../yokoten` counts. It expands globs itself (`l*/workers`, `*/*`, `link/../*/*`). It reads an attached short-option value (`-olink/workers`, `-Clink`) and `$PWD`. It refuses the directory stack (`~0`, `~+N`, `~-`, `$OLDPWD`).
+- More is refused for a worker: a recursive writer over a folder that holds a link into the config folder; a symlink-following read (`find -L`, `grep -R`, `ls -L`) piped into `xargs`; `alias`; `hash -p`; `enable` with an option; and `-L` or `-H` on `chmod`, `chown` or `chgrp`.
 - A command that names the home config folder, a glob such as `~/.c*/yokoten` too, passes only when every program in it only reads. A repo's own `.config/` folder is not the home one.
 
 Known limits: the guard reads command text. A script that the worker writes and then runs (`node x.mjs`) is out of its reach. The real lock is the operating system sandbox (issue #589).

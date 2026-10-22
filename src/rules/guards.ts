@@ -12,7 +12,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, type Stats, statSync, writeFileSync } from 'node:fs';
+import { accessSync, closeSync, constants, existsSync, fstatSync, globSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, type Stats, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Config, Env } from './config.ts';
 import { loadConfig, matcher } from './config.ts';
@@ -729,6 +729,10 @@ const withoutQuoted = (command: string) => command.replace(/'[^']*'|"(?:[^"\\]|\
 function checkWorkerBox(command: string, commands: string[][], { cwd, env }: { cwd: string | null; env: Env }): Finding | null {
   if (/\$'/.test(command)) return boxFinding("a worker can't use $'...' strings, which can spell any path; write the path plainly");
   if (/\$\{[^}]*@/.test(command)) return boxFinding("a worker can't use ${...@...} expansions, which can run or rename text; write the value plainly");
+  if (/\$\{?OLDPWD\b/.test(command)) return boxFinding("a worker can't use $OLDPWD, which may be any folder; write the path plainly");
+  if (commands.some((words) => words.some((word) => /^~([+-]?\d|-($|[\\/]))/.test(word)))) {
+    return boxFinding("a worker can't use ~N, ~+N, ~-N or ~- (the directory stack); write the path plainly");
+  }
   const home = homeOf(env);
   const config = configFolder(env);
   // The box starts where the shell is: a shell already in or above the config folder has none.
@@ -744,6 +748,18 @@ function checkWorkerBox(command: string, commands: string[][], { cwd, env }: { c
     return boxFinding("a worker's cd may not run in a subshell, a pipe or the background; run it on its own, joined with && or ;");
   }
   const forms = config === null ? [] : configForms(config);
+  // A reader that follows symlinks, piped into xargs, could hand a config-folder path to a
+  // writer the guard never sees spelled out.
+  const hasXargs = commands.some((words) => words.some((word) => programName(word) === 'xargs'));
+  const followsLinks = (words: string[]) => {
+    const has = (name: string) => words.some((word) => programName(word) === name);
+    if (has('find') && words.some((word) => /^-(H|L|follow)$/.test(word))) return true;
+    if (['grep', 'egrep', 'fgrep', 'rg'].some(has) && words.some((word) => hasShortOption(word, 'R') || isLongOption(word, 'dereference-recursive'))) return true;
+    return has('ls') && words.some((word) => hasShortOption(word, 'L'));
+  };
+  if (hasXargs && commands.some(followsLinks)) {
+    return configFinding("a worker can't pipe a symlink-following read (find -L, grep -R, ls -L) into xargs: it could hand a writer a path inside yokoten's config folder (~/.config/yokoten), where the worker list and the bot's keys are kept");
+  }
   for (const words of commands) {
     const reach = configReach(words, { folder, home, forms });
     if (reach !== null) return reach;
@@ -802,6 +818,11 @@ function checkWorkerBox(command: string, commands: string[][], { cwd, env }: { c
       }
       if (name === 'file' && args.some((arg) => hasShortOption(arg, 'C') || isLongOption(arg, 'compile'))) return boxFinding("a worker's file may not compile a magic file (-C)");
       if (name === 'alias' && args.some((arg) => arg.includes('='))) return boxFinding("a worker can't define an alias, which can run any program under another name; run the program by its own name");
+      if (name === 'hash' && args.some((arg) => hasShortOption(arg, 'p'))) return boxFinding("a worker can't run hash -p, which points a name at another program; run the program by its own path");
+      if (name === 'enable' && args.some((arg) => arg.startsWith('-'))) return boxFinding('a worker can\'t turn a builtin on or off (enable with an option); run the program by its own name');
+      if (['chmod', 'chown', 'chgrp'].includes(name) && args.some((arg) => hasShortOption(arg, 'LH') || isLongOption(arg, 'dereference'))) {
+        return configFinding(`a worker's ${name} may not follow symlinks (-L, -H): a link can lead into yokoten's config folder (~/.config/yokoten), where the worker list and the bot's keys are kept`);
+      }
       if (name === 'find' && args.some((arg) => /^-(L|follow)$/.test(arg)) && args.some((arg) => FIND_WRITES.test(arg) || FIND_ACTIONS.has(arg))) {
         return configFinding("a worker's find that changes files or runs a program may not follow symlinks (-L, -follow): a link can lead into yokoten's config folder (~/.config/yokoten), where the worker list and the bot's keys are kept");
       }
@@ -845,6 +866,130 @@ function onlyReads(words: string[]): boolean {
 }
 
 /**
+ * The real path of `raw` (absolute, or relative to `base`) the way the kernel resolves it:
+ * one component at a time, following each symlink before any later `..` is applied. Node's
+ * resolve and realpathSync collapse `..` first, so `link/../x` would slip past the symlink.
+ */
+function kernelReal(raw: string, base: string | null): string {
+  const seed = isAbsolute(raw) ? '' : base === null ? '' : realPath(base);
+  let cur = '/';
+  const seen = new Set<string>();
+  for (const part of `${seed}/${raw}`.split(/[\\/]+/)) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') {
+      cur = dirname(cur);
+      continue;
+    }
+    cur = cur === '/' ? `/${part}` : `${cur}/${part}`;
+    try {
+      if (lstatSync(cur).isSymbolicLink() && !seen.has(cur)) {
+        seen.add(cur);
+        const target = readlinkSync(cur);
+        const to = isAbsolute(target) ? target : resolve(dirname(cur), target);
+        try {
+          cur = realpathSync(to);
+        } catch {
+          cur = to;
+        }
+      }
+    } catch {
+      // a part that is not on disk yet: keep walking by name.
+    }
+  }
+  return cur;
+}
+
+// A glob character in a path or one of its parts.
+const HAS_GLOB = /[*?[\]{}]/;
+
+/** Whether the real `path` is yokoten's config folder, is inside it, or holds it (case aside). */
+function touchesConfigReal(path: string, forms: string[][]): boolean {
+  const cand = path.split(/[\\/]+/).filter(Boolean);
+  for (const config of forms) {
+    const shared = Math.min(cand.length, config.length);
+    let isMatch = shared > 0 || cand.length === config.length;
+    for (let at = 0; at < shared && isMatch; at++) isMatch = cand[at].toLowerCase() === config[at].toLowerCase();
+    if (isMatch) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether `cand` (a path string, maybe a glob) reaches yokoten's config folder, resolved the
+ * way the kernel would (kernelReal), so a symlink the worktree holds, a `..` after it, or a
+ * glob that matches it all count. A glob is expanded against `folder` (dotfiles as bash
+ * leaves them): its literal start, its matches, and, when it matches nothing, its directory's
+ * matches with the plain file name are each resolved.
+ */
+function reachesConfig(cand: string, folder: string | null, forms: string[][]): boolean {
+  const touches = (raw: string) => touchesConfigReal(kernelReal(raw, folder), forms);
+  if (!HAS_GLOB.test(cand)) return touches(cand);
+  const parts = cand.split(/[\\/]+/);
+  const firstGlob = parts.findIndex((part) => HAS_GLOB.test(part));
+  const prefix = parts.slice(0, firstGlob).join('/');
+  if (prefix && touches(prefix)) return true;
+  const expand = (pattern: string) => {
+    try {
+      return { ok: true, matches: globSync(pattern, isAbsolute(cand) ? {} : { cwd: folder ?? '.' }) };
+    } catch {
+      return { ok: false, matches: [] as string[] }; // a glob the guard can't expand may reach the folder
+    }
+  };
+  const direct = expand(cand);
+  if (!direct.ok) return true;
+  if (direct.matches.some((match) => touches(match))) return true;
+  // A glob does not descend a symlinked folder, so when the last part is a glob the folder it
+  // sits in is checked by its real path: a link to the config folder makes every name under
+  // it count, matched or not.
+  const base = parts[parts.length - 1];
+  const dir = parts.slice(0, -1).join('/');
+  if (dir && HAS_GLOB.test(base)) {
+    const dirs = HAS_GLOB.test(dir) ? expand(dir) : { ok: true, matches: [dir] };
+    if (!dirs.ok) return true;
+    if (dirs.matches.some((match) => touches(match))) return true;
+  }
+  // A name that is not on disk (a file about to be made): resolve the matched folder with it.
+  if (!direct.matches.length && dir && HAS_GLOB.test(dir) && !HAS_GLOB.test(base)) {
+    const dirs = expand(dir);
+    if (!dirs.ok) return true;
+    return dirs.matches.some((match) => touches(`${match}/${base}`));
+  }
+  return false;
+}
+
+/**
+ * The path strings a worker's word may aim at, with `$PWD` read as `folder` and `~`, `$HOME`
+ * and `~+` read too: a redirect target, a long option's `=value`, each suffix of an attached
+ * short option (`-olink/workers`), an assignment's value, or the word itself. A value the
+ * guard can't read (`$x`) or an unresolved `~` is left out.
+ */
+function pathCandidates(word: string, folder: string | null, home: string | null): string[] {
+  let target = REDIRECT.exec(word)?.[1] ?? word;
+  if (folder !== null) target = target.replace(/^(\$PWD|\$\{PWD\})(?=[\\/]|$)/, folder);
+  const out: string[] = [];
+  const add = (text: string) => {
+    if (!text) return;
+    const expanded = withHomeRead(text, home, folder);
+    if (/[$`]/.test(expanded) || expanded.startsWith('~') || (folder === null && !isAbsolute(expanded))) return;
+    out.push(expanded);
+  };
+  if (target.startsWith('--')) {
+    const eq = target.indexOf('=');
+    if (eq !== -1) add(target.slice(eq + 1));
+  } else if (target.startsWith('-')) {
+    for (let at = 1; at < target.length; at++) add(target.slice(at));
+  } else if (isAssignment(target)) {
+    add(target.slice(target.indexOf('=') + 1));
+  } else {
+    add(target);
+  }
+  return out;
+}
+
+// Options that make a writer walk into a folder (recursively).
+const RECURSES = (args: string[]) => args.some((arg) => hasShortOption(arg, 'rR') || isLongOption(arg, 'recursive'));
+
+/**
  * For a worker: a word of a command that does more than read (see onlyReads) whose path is
  * yokoten's config folder, is in it, or holds it, by real path (#591). So a program that no
  * writer list knows (`gzip`, `sort -o`, `npm --prefix`, `git archive -o`) can't reach the
@@ -854,18 +999,35 @@ function onlyReads(words: string[]): boolean {
  */
 function configReach(words: string[], { folder, home, forms }: { folder: string | null; home: string | null; forms: string[][] }): Finding | null {
   if (!forms.length || onlyReads(words)) return null;
+  const names = `this command does more than read and works on %s, which is or holds yokoten's config folder (~/.config/yokoten), where the worker list and the bot's keys are kept`;
   for (const word of words) {
-    let path = REDIRECT.exec(word)?.[1] ?? word;
-    if (path.startsWith('-') || isAssignment(path)) {
-      const value = path.indexOf('=');
-      if (value === -1) continue;
-      path = path.slice(value + 1);
+    if (word.includes('\n')) continue;
+    for (const cand of pathCandidates(word, folder, home)) {
+      if (reachesConfig(cand, folder, forms)) return configFinding(names.replace('%s', cand));
     }
-    if (!path || path.includes('\n')) continue;
-    const expanded = withHomeRead(path, home, folder);
-    if (/[$`]/.test(expanded) || expanded.startsWith('~') || (folder === null && !isAbsolute(expanded))) continue;
-    if (touchesConfig(resolve(folder ?? '/', expanded), forms)) {
-      return configFinding(`this command does more than read and works on ${path}, which is or holds yokoten's config folder (~/.config/yokoten), where the worker list and the bot's keys are kept`);
+  }
+  // A recursive writer whose folder holds a symlink that leaves the worktree for the config folder.
+  let from = 0;
+  for (const program of findPrograms(words)) {
+    const at = words.indexOf(program, from);
+    if (at === -1) continue;
+    from = at + 1;
+    if (PLAIN_READERS.has(programName(program))) continue;
+    const args = withoutShellRedirects(words, at + 1);
+    if (!RECURSES(args)) continue;
+    for (const arg of plainArgs(args)) {
+      if (/[$`]/.test(arg) || HAS_GLOB.test(arg) || arg.startsWith('~')) continue;
+      const real = kernelReal(arg, folder);
+      try {
+        if (!lstatSync(real).isDirectory()) continue;
+        for (const entry of readdirSync(real)) {
+          if (touchesConfigReal(kernelReal(join(real, entry), null), forms)) {
+            return configFinding(`this command runs recursively in ${arg}, which holds a link into yokoten's config folder (~/.config/yokoten), where the worker list and the bot's keys are kept`);
+          }
+        }
+      } catch {
+        // not a readable folder: nothing to walk.
+      }
     }
   }
   return null;

@@ -2631,3 +2631,114 @@ test('guard: a worker box closes += settings, globs, ~+ and symlinked writers (#
     allowed(command, worker);
   }
 });
+
+// #591, round 7: the guard resolves each path word of a worker's non-reader command the way
+// the kernel would (one part at a time, following a symlink before a later `..`), then expands
+// globs itself, reads attached short-option values and $PWD, and refuses the directory stack,
+// so no spelling reaches the config folder through the worktree's symlinks.
+test('guard: a worker command cannot reach the config folder by any path spelling (#591)', () => {
+  const base = makeTempDir('yokoten-box7-');
+  const home = join(base, 'home');
+  mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(join(home, '.config', 'yokoten', 'workers'), '# list\n');
+  writeFileSync(join(home, '.config', 'yokoten', 'bot.pem'), 'k\n');
+  const tree = join(home, 'dev', 'wt');
+  mkdirSync(join(tree, 'src'), { recursive: true });
+  mkdirSync(join(tree, 'dist'));
+  mkdirSync(join(tree, 'build'));
+  mkdirSync(join(base, 'store'));
+  writeFileSync(join(tree, '.git'), 'gitdir: ' + join(base, 'store') + '\n');
+  writeFileSync(join(tree, 'src', 'x.ts'), 'a\n');
+  writeFileSync(join(tree, 'src', 'a.ts'), 'a\n');
+  writeFileSync(join(tree, 'out.tgz'), 'x\n');
+  const worker = { YOKOTEN_ROLE: 'worker', HOME: home };
+  const lead = { HOME: home };
+  const links = process.platform !== 'win32';
+  if (links) {
+    symlinkSync('../../.config/yokoten', join(tree, 'link'));
+    symlinkSync('../../.config', join(tree, 'cfg'));
+  }
+  // These need no symlink: the directory stack and $OLDPWD are refused outright.
+  const always = [
+    'gzip -f $OLDPWD/link/workers',
+    'gzip -f ~0/link/workers',
+    'gzip -f ~+0/link/workers',
+    'rm -rf ~+0/link/',
+    'cd src; gzip -f ~-/link/workers',
+    'enable -n cd',
+  ];
+  // These reach the config folder through a symlink the worktree holds.
+  const throughLinks = [
+    // A: component-wise real path, a `..` after a symlink.
+    'rm -rf link/../yokoten',
+    'cp /dev/null link/../yokoten/bot.pem',
+    'cat /dev/null > link/../yokoten/bot.pem',
+    'mv x link/../yokoten/bot.pem',
+    'sort -o link/../yokoten/bot.pem /dev/null',
+    'gzip -rf link/..',
+    'chmod -R 000 link/..',
+    'truncate -s0 link/../*/*',
+    'gzip -f link/../*/*',
+    // B: globs the guard expands itself, dotfiles and symlinked folders too.
+    'cp /dev/null l*/bot.pem',
+    'rm -f */bot.pem',
+    'rm -rf l*/',
+    'gzip -f l*/workers',
+    'truncate -s0 ?ink/bot.pem',
+    'sed -i d [l]ink/bot.pem',
+    'gzip -f */*',
+    'chmod 000 l*',
+    'gzip -rf *',
+    'find -H l* -delete',
+    // C: attached short-option values.
+    'sort -olink/workers /dev/null',
+    'tar -xf a.tar -Clink',
+    'unzip -o a.zip -dlink',
+    'make -Clink',
+    'gcc -olink/workers x.c',
+    'git archive -olink/workers HEAD',
+    // D: $PWD read as the folder.
+    'gzip -f $PWD/link/workers',
+    'gzip -f ${PWD}/link/workers',
+    'cp /dev/null $PWD/link/workers',
+    'cat /dev/null > $PWD/link/workers',
+    // E: hash -p points a name at another program.
+    'hash -p /bin/rm ls; ls link/workers',
+    // F: a symlink-following read piped into xargs, and -L/-H on chmod/chown/chgrp.
+    'find -L . -name workers | xargs rm',
+    'find . -follow -name workers | xargs truncate -s0',
+    'find -L . -type f -print0 | xargs -0 sed -i d',
+    'grep -Rl . . | xargs truncate -s0',
+    'chmod -RL 000 .',
+    'chown -R -L x .',
+  ];
+  for (const command of [...always, ...(links ? throughLinks : [])]) {
+    assert.equal(checkCommand(command, { cwd: tree, env: worker })?.id, 'worker-mark', command);
+    assert.notEqual(checkCommand(command, { cwd: tree, env: lead })?.id, 'worker-mark', `the lead may: ${command}`);
+  }
+  for (const command of [
+    'npm test',
+    'npx tsc --noEmit',
+    'git commit -m "fix a/b"',
+    'cd src && npm test',
+    'ls | grep x',
+    'for f in src/*.ts; do sed -i s/a/b/ $f; done',
+    'git log --oneline',
+    'tar -czf out.tgz src',
+    'tar -xzf out.tgz -C build',
+    'sed -i s/a/b/ src/x.ts',
+    'mkdir -p build',
+    'rm -rf dist',
+    'rm -rf ./*.log',
+    'gzip -f src/x.log',
+    'sort -o out.txt in.txt',
+    'find . -name "*.ts" -exec grep -l x {} +',
+    'find -L . -name "*.ts"',
+    'grep -rn foo src | head',
+    'cp src/a.ts src/b.ts',
+    'npm install --save-dev x',
+    'cat ~/.config/yokoten/workers',
+    'node -e "let x=0; x+=1"',
+    'git commit -m "a+=b"',
+  ]) assert.equal(checkCommand(command, { cwd: tree, env: worker }), null, `should allow: ${command}`);
+});
