@@ -1265,12 +1265,20 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 agent 发的任何请求都清不掉它。没事可做时会说没事。
 
 在右栏，owner 可以启动 agent：选一个打开的 issue、一个 vendor、一个 model，
-点 Start。看板会建 `.worktrees/<issue>`，再用这家 vendor 自己的 headless 命令启动，
-带上 `YOKOTEN_ROLE=worker`，和 dispatch skill 一样。启动的任务显示在 Started here
-下面，有 Stop 按钮，最新的输出在下面。停掉会保留 worktree 和里面的提交。
+点 Start。看板会建 `.worktrees/<issue>`，像 `yokoten worker mark` 一样标成 worker
+的（这样丢掉 `YOKOTEN_ROLE` 的 runtime 也是 worker），再用这家 vendor 自己的
+headless 命令启动，带上 `YOKOTEN_ROLE=worker`，和 dispatch skill 一样。model 走
+各家自己的 flag（`--model`）；DeepSeek Harness 没有这个 flag，model 只留在 brief
+里当名字。启动前，看板检查这家 vendor 的 guard 钩子能在那个 worktree 里跑起来，
+跑不起来就用一句话说明原因，拒绝启动（先信任这个文件夹，或跑 `yokoten init`）。
+启动的任务显示在 Started here 下面，有 Stop 按钮，最新的输出在下面。停掉会保留
+worktree 和里面的提交。自己退出来的进程算停掉：名额放出来，之后再 Stop 会说
+已经停了。
 
 限制（limits）说同时能跑几个 agent（默认三个），以及一个 model 能跑几个。
 超了就用一句话说明原因，拒绝启动。
+
+有人等的时候，`yokoten board --text` 也打印「等你处理」。
 
 安全：链接里有随机口令，改动还要带页面的 Origin。看板只停自己启动的进程。
 每次启动和停止都记到仓库根目录的 `.yokoten-board.log`。每个 agent 都过 guard，

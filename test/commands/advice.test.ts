@@ -29,6 +29,7 @@ import {
 import {
   ageText,
   boardBrief,
+  boardGuardReady,
   boardPage,
   boardStartParts,
   collectBoard,
@@ -43,6 +44,7 @@ import {
   renderBoardText,
   runDoctor,
   setBoardLimits,
+  startBoardAgent,
   startBoardServer,
   stopBoardAgent,
   type BoardEvents,
@@ -51,7 +53,10 @@ import {
 } from '../../src/commands/advice.ts';
 import type { Invocation, Output } from '../../src/commands/shared.ts';
 import type { Gh } from '../../src/host/github.ts';
+import * as codexHooks from '../../src/agents/runtimes/codex.ts';
+import * as grokHooks from '../../src/agents/runtimes/grok.ts';
 import type { Env } from '../../src/rules/config.ts';
+import { workerMarkAt, workerRole } from '../../src/rules/guards.ts';
 
 // Codex adds a SessionStart hook's plain stdout to the context; Gemini CLI reads JSON only (#211).
 test('doctor --session --agent: plain text for Codex, hookSpecificOutput JSON for Gemini CLI (#211)', async () => {
@@ -902,6 +907,122 @@ test('board controls: the waiting list latches while the agent is here', () => {
   assert.deepEqual(collectBoardWaiting(board, held, [], seen).map((row) => row.kind), ['guard']);
   assert.deepEqual(collectBoardWaiting(board, [], [], seen).map((row) => row.kind), ['guard'], 'a quiet file clears nothing');
   assert.deepEqual(collectBoardWaiting({ ...board, agents: [] }, [], [], seen), [], 'leaving clears it');
+});
+
+// #603 findings: the board marks the worktree it makes or reuses, so a runtime that
+// drops YOKOTEN_ROLE (Muse) still runs as a worker.
+test('board controls: a started agent works in a marked worktree', () => {
+  const sandbox = makeSandbox();
+  const agents = fakeAgents();
+  const controls = createBoardControls(join(sandbox.repo, '.yokoten-board.log'), agents.spawner);
+  const run = startBoardAgent(sandbox.repo, sandbox.env, controls, { issue: '12', vendor: 'claude-code', model: 'model-a' });
+  assert.ok(typeof run !== 'string', `the start passes: ${run}`);
+  assert.equal(workerMarkAt(run.worktree, sandbox.env), 'mark', 'the board-made worktree carries the worker mark');
+  assert.equal(workerRole({}, [run.worktree]), 'mark', 'a worker even with no YOKOTEN_ROLE in the env');
+});
+
+// #603 findings: on a fresh untrusted worktree the guard hooks are skipped without a
+// word, so the board refuses the start with the trust step.
+test('board controls: a start is refused when the hooks will not run', () => {
+  const sandbox = makeSandbox();
+  // Codex in use on this machine, its hooks in place, the folder trusted nowhere.
+  mkdirSync(join(sandbox.home, '.codex'), { recursive: true });
+  codexHooks.addProjectHook(sandbox.repo, 'bin/yokoten.mjs');
+  codexHooks.addProjectStopHook(sandbox.repo, 'bin/yokoten.mjs');
+  writeFileSync(join(sandbox.home, '.codex', 'config.toml'), `[projects."${sandbox.repo}"]\ntrust_level = "trusted"\n`);
+  assert.match(boardGuardReady('codex', sandbox.repo, sandbox.env) ?? '', /\/hooks/, 'untrusted hooks name the trust step');
+  // Codex in use, but no hooks in the worktree: init adds them.
+  const bare = makeTempDir('yokoten-board-bare-');
+  assert.match(boardGuardReady('codex', bare, sandbox.env) ?? '', /yokoten init/, 'missing hooks name init');
+  // Codex not in use here at all: no store to check against, so nothing is refused.
+  assert.equal(boardGuardReady('codex', bare, { ...sandbox.env, HOME: join(makeTempDir('yokoten-board-'), 'no-home') }), null);
+  // Grok in use, but no hooks in the worktree: init adds them. An untrusted folder
+  // passes: the board starts grok with --trust, which trusts it there.
+  mkdirSync(join(sandbox.home, '.grok'), { recursive: true });
+  assert.match(boardGuardReady('grok', bare, sandbox.env) ?? '', /yokoten init/);
+  grokHooks.addProjectHooks(sandbox.repo, 'bin/yokoten.mjs');
+  assert.equal(boardGuardReady('grok', sandbox.repo, sandbox.env), null);
+  // Muse in use, but no hooks in the worktree: init adds them.
+  mkdirSync(join(sandbox.home, '.config', 'muse'), { recursive: true });
+  assert.match(boardGuardReady('muse', bare, sandbox.env) ?? '', /yokoten init/);
+});
+
+// #603 findings: YOKOTEN_MODEL alone never reached the CLIs. Every vendor with a
+// model flag on record gets it; deepseek-harness keeps the model as a label only.
+test('board controls: every vendor starts with a real model flag', () => {
+  assert.deepEqual(boardStartParts('claude-code', 'hi', 'model-a'), ['claude', '-p', '--model', 'model-a', 'hi']);
+  assert.deepEqual(boardStartParts('codex', 'hi', 'model-a'), ['codex', 'exec', '--model', 'model-a', 'hi']);
+  assert.deepEqual(boardStartParts('muse', 'hi', 'model-a'), ['muse', 'exec', '--trust-workspace', '--model', 'model-a', 'hi']);
+  assert.deepEqual(boardStartParts('grok', 'hi', 'model-a'), ['grok', '-p', 'hi', '--trust', '--always-approve', '--model', 'model-a']);
+  assert.deepEqual(boardStartParts('antigravity', 'hi', 'model-a'), ['agy', '-p', '--model', 'model-a', 'hi']);
+  assert.deepEqual(boardStartParts('deepseek-harness', 'hi', 'model-a'), ['dsh', 'headless', '--patch', '.dsh/yokoten.patch.yml', 'hi'], 'no model flag on record: the brief and YOKOTEN_MODEL keep the name');
+  assert.ok(!(boardStartParts('grok', 'hi', 'model-a') ?? []).includes('--sandbox'), 'no sandbox profile that does not exist');
+});
+
+// #603 findings: an exited process kept status running, leaking its slot and rows.
+test('board controls: an exited run frees its slot and answers already-stopped', () => {
+  const sandbox = makeSandbox();
+  const agents = fakeAgents();
+  const controls = createBoardControls(join(sandbox.repo, '.yokoten-board.log'), agents.spawner);
+  controls.limits.maxAgents = 1;
+  const first = startBoardAgent(sandbox.repo, sandbox.env, controls, { issue: '12', vendor: 'claude-code', model: 'model-a' });
+  assert.ok(typeof first !== 'string', `the start passes: ${first}`);
+  agents.started[0].events.line('guard stopped the push');
+  agents.started[0].events.exit(1);
+  assert.equal(first.status, 'stopped', 'the exit marks the run stopped');
+  assert.equal(first.exitCode, 1);
+  assert.ok(first.stoppedAt, 'the exit stamps when it stopped');
+  assert.equal(stopBoardAgent(controls, first.name), `${first.name} already stopped`);
+  const second = startBoardAgent(sandbox.repo, sandbox.env, controls, { issue: '13', vendor: 'claude-code', model: 'model-a' });
+  assert.ok(typeof second !== 'string', `the slot is free: ${second}`);
+  assert.deepEqual(collectBoardWaiting({ repo: 'r', agents: [], pulls: [], worktrees: [] }, [], controls.runs, []), [], 'a stopped run clears its rows');
+});
+
+// #603 findings: board --text showed none of the waiting and runs data.
+test('board text: the waiting list and the started runs', () => {
+  const now = Date.parse('2026-10-22T10:30:00Z');
+  const lines = renderBoardText(
+    { repo: '/repo', agents: [], pulls: [], worktrees: [] },
+    now,
+    {
+      waiting: [{ kind: 'approve', agent: 'w', role: 'engineer', wait: '5 min ago', why: 'tier A, checks pass, needs the owner go-ahead: #7 work', link: '' }],
+      runs: [{ name: 'issue-12-claude-code', issue: '12', vendor: 'claude-code', model: 'model-a', worktree: '/repo/.worktrees/12', pid: 1000, status: 'running', startedAt: '', stoppedAt: '', exitCode: null, output: [] }],
+    },
+  );
+  assert.ok(lines.some((line) => line.includes('Waiting for you:')), 'the waiting list');
+  assert.ok(lines.some((line) => line.includes('#7 work')), 'the waiting row');
+  assert.ok(lines.some((line) => line.includes('issue-12-claude-code')), 'the started run');
+  const empty = renderBoardText({ repo: '/repo', agents: [], pulls: [], worktrees: [] }, now, { waiting: [], runs: [] });
+  assert.ok(empty.some((line) => line.includes('Nothing waits for you.')), 'an empty waiting list says so');
+  assert.ok(empty.some((line) => line.includes('No agents started here yet.')), 'empty runs say so');
+  const legacy = renderBoardText({ repo: '/repo', agents: [], pulls: [], worktrees: [] }, now);
+  assert.ok(!legacy.some((line) => line.includes('Waiting for you:')), 'no extra, no new sections');
+});
+
+// #603 findings: board --text showed none of the waiting data, so it shows the list
+// whenever something waits.
+test('board --text: the waiting list shows when something waits', async () => {
+  const sandbox = makeSandbox();
+  writeFileSync(
+    join(sandbox.repo, '.yokoten-agent.json'),
+    JSON.stringify({ name: 'w', vendor: 'muse', task: 'issue 601', worktree: sandbox.repo, doing: 'blocked', updated: '2026-10-22T10:00:00Z', role: 'engineer', blocked: 'the guard stopped a force push' }),
+  );
+  const result = await sandbox.call(['board', '--text']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /\nWaiting for you:\n/);
+  assert.match(result.stdout, /the guard stopped a force push/);
+});
+
+// Board hygiene: the start log line holds the whole brief, so it must stay one line.
+test('board controls: the log keeps every start on one line', () => {
+  const sandbox = makeSandbox();
+  const agents = fakeAgents();
+  const controls = createBoardControls(join(sandbox.repo, '.yokoten-board.log'), agents.spawner);
+  const run = startBoardAgent(sandbox.repo, sandbox.env, controls, { issue: '12', vendor: 'claude-code', model: 'model-a' });
+  assert.ok(typeof run !== 'string', `the start passes: ${run}`);
+  const log = readFileSync(join(sandbox.repo, '.yokoten-board.log'), 'utf8');
+  assert.equal(log.split('\n').filter((line) => line !== '').length, 1, 'the multi-line brief adds no lines');
+  assert.ok(log.includes('Issue: #12'), 'the brief stays readable on the one line');
 });
 
 // #603: the page shows the waiting list, the start and limits forms, the runs and their

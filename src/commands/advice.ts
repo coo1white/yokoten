@@ -7,7 +7,11 @@ import { appendFileSync, existsSync, readFileSync, readSync, statSync } from 'no
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { basename, join } from 'node:path';
 import * as claudeCode from '../agents/runtimes/claude-code.ts';
+import * as codex from '../agents/runtimes/codex.ts';
+import * as deepseekHarness from '../agents/runtimes/deepseek-harness.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
+import * as grok from '../agents/runtimes/grok.ts';
+import * as muse from '../agents/runtimes/muse.ts';
 import { type BoardPull, type Gh, ghIn, readBoardPulls, repoOf } from '../host/github.ts';
 import { DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
 import { workerRole } from '../rules/guards.ts';
@@ -16,8 +20,9 @@ import { hideHome } from '../rules/privacy.ts';
 import { draft, facts, table } from '../setup/advice/adopt.ts';
 import { explain, explainLines, ids } from '../setup/advice/explain.ts';
 import { blocksToSay, doctor, OUTPUT_STOP, SERVER_TIMEOUT_MS, type SessionStart, UNFILTERED } from '../setup/doctor.ts';
+import { hookCliPath } from '../setup/init.ts';
 import { readOriginUrl } from '../setup/plan.ts';
-import { READERS } from './hook.ts';
+import { markWorktree, READERS } from './hook.ts';
 import { type Invocation, noRootFinding, parse, print, printJson, requireRoot, rootOf, say, usage } from './shared.ts';
 
 /** What full doctor says while the slow reads run: the server read and (in WSL) the drive read. */
@@ -303,8 +308,30 @@ function countText(count: number, one: string): string {
   return `${count} ${one}${count === 1 ? '' : 's'}`;
 }
 
-/** The board as plain text: the same data the page shows. */
-export function renderBoardText(board: BoardData, now: number = Date.now()): string[] {
+/** What `--text` adds past the agents, pulls and worktrees: the waiting list and the runs the board started. */
+export interface BoardTextExtra {
+  waiting: BoardWaiting[];
+  runs: BoardRun[];
+}
+
+/** One waiting row as plain words, the same data the page shows. */
+function formatBoardWaiting(row: BoardWaiting): string {
+  const kind = row.kind === 'approve' ? 'Needs the owner go-ahead' : row.kind === 'guard' ? 'Guard stop' : 'Question';
+  const head = [kind, row.agent, row.role ? `[${row.role}]` : '', row.wait].filter(Boolean).join(' ');
+  return `${head}: ${row.why}${row.link ? ` (${row.link})` : ''}`;
+}
+
+/** One started run as plain words, the same data the page shows. */
+function formatBoardRun(run: BoardRun): string {
+  return `${run.name} ${run.vendor} ${run.model} issue ${run.issue} ${run.status}${run.worktree ? ` in ${run.worktree}` : ''}`;
+}
+
+/**
+ * The board as plain text: the same data the page shows. With `extra` it also shows the
+ * waiting list and the runs the board started; without it the text stays the agents,
+ * pulls and worktrees alone, so an idle `--text` reads as before.
+ */
+export function renderBoardText(board: BoardData, now: number = Date.now(), extra?: BoardTextExtra): string[] {
   const pulls = typeof board.pulls === 'string' ? [] : board.pulls;
   const worktrees = typeof board.worktrees === 'string' ? [] : board.worktrees;
   return [
@@ -314,6 +341,16 @@ export function renderBoardText(board: BoardData, now: number = Date.now()): str
     'Agents:',
     ...(board.agents.length ? board.agents.map((agent) => `- ${formatBoardAgent(agent, now)}`) : [`- none. An agent joins by writing ${BOARD_AGENT_FILE} in its worktree.`]),
     '',
+    ...(extra === undefined
+      ? []
+      : [
+          'Waiting for you:',
+          ...(extra.waiting.length ? extra.waiting.map((row) => `- ${formatBoardWaiting(row)}`) : ['- Nothing waits for you.']),
+          '',
+          'Started here:',
+          ...(extra.runs.length ? extra.runs.map((run) => `- ${formatBoardRun(run)}`) : ['- No agents started here yet.']),
+          '',
+        ]),
     'Pull requests:',
     ...(typeof board.pulls === 'string' ? [`- ${board.pulls}`] : pulls.length ? pulls.map((pull) => `- ${formatBoardPull(pull)}`) : ['- none.']),
     '',
@@ -895,7 +932,10 @@ export function runBoard(invocation: Invocation): number | Promise<number> {
   if (!root) return 1;
   const gh = ghIn(root, invocation.env, BOARD_READ_TIMEOUT_MS);
   if (options.flags.has('--text')) {
-    print(invocation, renderBoardText(collectBoard(root, invocation.env, gh)));
+    const board = collectBoard(root, invocation.env, gh);
+    const trees = readBoardWorktrees(root, invocation.env);
+    const waiting = collectBoardWaiting(board, typeof trees === 'string' ? [] : readBoardAttention(trees), [], []);
+    print(invocation, renderBoardText(board, Date.now(), waiting.length ? { waiting, runs: [] } : undefined));
     return 0;
   }
   return startBoardServer(root, invocation.env, gh).then(
@@ -930,6 +970,11 @@ export function runBoard(invocation: Invocation): number | Promise<number> {
  * How the board starts one agent of each vendor, before the brief. Each command is the
  * vendor's own headless form, as the guide names it. A vendor missing here cannot be
  * started from the page: start it by hand, and it still shows on the board.
+ * Grok's `-p` takes the prompt as its value, so the brief follows it at once; the
+ * other vendors take the brief last. Grok keeps the guide's `--trust --always-approve`:
+ * `--sandbox yokoten` names a profile that does not exist, so grok refuses to start
+ * with it. Muse's `--trust-workspace` and grok's `--trust` trust the fresh worktree at
+ * the start, so their hooks run there.
  */
 const BOARD_START_COMMANDS: Record<string, string[]> = {
   'claude-code': ['claude', '-p'],
@@ -938,6 +983,19 @@ const BOARD_START_COMMANDS: Record<string, string[]> = {
   grok: ['grok', '-p', '--trust', '--always-approve'],
   antigravity: ['agy', '-p'],
   'deepseek-harness': ['dsh', 'headless', '--patch', '.dsh/yokoten.patch.yml'],
+};
+
+/**
+ * Each vendor's model flag, as its `--help` names it. DeepSeek Harness has none on
+ * record (and `dsh` is not installed here to check): its model stays a label only, in
+ * the brief and `YOKOTEN_MODEL`, and the guide says so.
+ */
+const BOARD_MODEL_FLAGS: Record<string, string> = {
+  'claude-code': '--model',
+  codex: '--model',
+  muse: '--model',
+  grok: '--model',
+  antigravity: '--model',
 };
 
 /** The board's limits: how many agents run at once, and how many of one model. */
@@ -1099,10 +1157,65 @@ export function boardBrief(issue: string, worktree: string, model: string): stri
   ].join('\n');
 }
 
-/** The vendor's start command with the brief, or null when the board cannot start it. */
-export function boardStartParts(vendor: string, brief: string): string[] | null {
+/**
+ * The vendor's start command with the brief and the model, or null when the board
+ * cannot start it. The model goes through the vendor's own flag; a vendor with none
+ * keeps it as a label only, in the brief.
+ */
+export function boardStartParts(vendor: string, brief: string, model = ''): string[] | null {
   const head = BOARD_START_COMMANDS[vendor];
-  return head ? [...head, brief] : null;
+  if (!head) return null;
+  const flag = BOARD_MODEL_FLAGS[vendor];
+  const withModel = model && flag ? [flag, model] : [];
+  // Grok's `-p` takes the prompt as its value: `grok -p --trust ...` fails with
+  // "a value is required for '--single <PROMPT>'", so the brief follows `-p` at once.
+  if (vendor === 'grok') return [...head.slice(0, 2), brief, ...head.slice(2), ...withModel];
+  return [...head, ...withModel, brief];
+}
+
+/**
+ * Whether the vendor's guard hooks are in place in the worktree at `dir` and will run
+ * there: the plain reason the start is refused, or null when it may start. A vendor
+ * whose hooks need no trust (Claude Code, Antigravity) always passes: whether its hooks
+ * file is there is the lead's repo setup, which `doctor` reports. The rest refuse when
+ * the board can tell the hooks will not run, and pass when it cannot tell (no trust
+ * store on this machine): a bare test folder is not proof of a missing guard.
+ * Codex names its trust step, since nothing the board passes trusts it. Muse and grok
+ * are trusted at the start (`--trust-workspace`, `--trust`), so only missing hooks
+ * refuse them. DeepSeek Harness fails open without a word, so a missing guard, patch
+ * or bridge refuses it.
+ */
+export function boardGuardReady(vendor: string, dir: string, env: Env): string | null {
+  if (vendor === 'codex') {
+    if (!codex.hasProjectHook(dir) || !codex.hasProjectStopHook(dir)) {
+      if (!codex.hasUserDir(env)) return null;
+      return `codex would run with no guard in ${hideHome(dir, env)}: no tool-call guard or stop check there. Run \`yokoten init\` in the repo, commit the hooks, and start again`;
+    }
+    const trust = codex.readTrust(dir, env);
+    if (trust.state === 'trusted' || trust.state === 'no home' || trust.state === 'no store' || trust.state === 'unreadable') return null;
+    return `codex would skip the guard hooks in ${hideHome(dir, env)}: ${trust.state === 'untrusted' ? 'that folder is not trusted' : 'the hooks there are not trusted'}. ${codex.TRUST_STEP}`;
+  }
+  if (vendor === 'muse') {
+    const guard = muse.projectHooksState(dir, hookCliPath(dir)).guard;
+    if (guard === 'same' || guard === 'updated') return null;
+    if (!muse.hasUserDir(env)) return null;
+    return `muse would run with no guard in ${hideHome(dir, env)}: no tool-call guard there. Run \`yokoten init\` in the repo, commit the hooks, and start again`;
+  }
+  if (vendor === 'grok') {
+    const guard = grok.projectHooksState(dir, hookCliPath(dir)).guard;
+    if (guard === 'same' || guard === 'updated') return null;
+    if (!grok.hasUserDir(env)) return null;
+    return `grok would run with no guard in ${hideHome(dir, env)}: no tool-call guard there. Run \`yokoten init\` in the repo, commit the hooks, and start again`;
+  }
+  if (vendor === 'deepseek-harness') {
+    const states = deepseekHarness.projectHooksState(dir, hookCliPath(dir));
+    if (states.guard !== 'same') return `deepseek-harness would run with no guard in ${hideHome(dir, env)}: no tool-call guard in ${deepseekHarness.HOOKS_FILE}. Run \`yokoten init\` in the repo, commit the hooks, and start again`;
+    if (states.patch !== 'same') return `deepseek-harness would run with no guard in ${hideHome(dir, env)}: ${deepseekHarness.PATCH_FILE} is missing or out of date. Run \`yokoten init\` in the repo, commit the patch, and start again`;
+    const profiles = deepseekHarness.profilesWithBridge(env);
+    if (profiles && profiles.found.length) return null;
+    return `deepseek-harness would run with no guard: no profile has the bridge and its peer. Add both to each profile you use (needs pnpm): ${deepseekHarness.pluginAddCommands('<profile>').join(' && ')}`;
+  }
+  return null;
 }
 
 /** The ask as given, or the plain reason it is refused. */
@@ -1152,16 +1265,26 @@ function checkBoardLimits(controls: BoardControls, model: string): string | null
   return null;
 }
 
+/** One board log line as one line: the brief in a start line holds newlines. */
+function boardLogLine(line: string): string {
+  return line.replace(/\s*\n\s*/g, ' ');
+}
+
 /**
- * Start one agent from the ask: make the worktree, start the vendor's command, and keep
- * the run. The child gets `YOKOTEN_ROLE=worker`, so the guard checks it as a worker.
+ * Start one agent from the ask: make the worktree, mark it as a worker's, check the
+ * guard hooks will run there, start the vendor's command, and keep the run. The child
+ * gets `YOKOTEN_ROLE=worker`, and the worker mark covers runtimes that drop it.
  */
 export function startBoardAgent(root: string, env: Env, controls: BoardControls, ask: BoardStartAsk): BoardRun | string {
   const over = checkBoardLimits(controls, ask.model);
   if (over) return over;
   const made = boardWorktree(root, env, ask.issue);
   if ('fail' in made) return made.fail;
-  const parts = boardStartParts(ask.vendor, boardBrief(ask.issue, made.dir, ask.model));
+  const marked = markWorktree(root, made.dir, env);
+  if ('fail' in marked) return `the board could not mark the worktree at ${hideHome(made.dir, env)} as a worker's: ${marked.fail}`;
+  const ready = boardGuardReady(ask.vendor, made.dir, env);
+  if (ready) return ready;
+  const parts = boardStartParts(ask.vendor, boardBrief(ask.issue, made.dir, ask.model), ask.model);
   if (!parts) return `the board starts ${Object.keys(BOARD_START_COMMANDS).join(', ')}: start ${ask.vendor} by hand`;
   const [command, ...args] = parts;
   let name = `issue-${ask.issue}-${ask.vendor}`;
@@ -1187,8 +1310,13 @@ export function startBoardAgent(root: string, env: Env, controls: BoardControls,
   try {
     child = controls.spawner(command, args, { cwd: made.dir, env: { ...env, YOKOTEN_ROLE: 'worker', YOKOTEN_MODEL: ask.model } }, {
       line: push,
+      // An exit by itself stops the run: its limits slot and waiting rows free, and
+      // a later stop answers already-stopped instead of signalling a dead child.
       exit: (code) => {
         run.exitCode = code;
+        run.status = 'stopped';
+        run.stoppedAt = new Date().toISOString();
+        appendBoardLog(controls, boardLogLine(`exit ${name} code ${code ?? 'unknown'}`));
       },
     });
   } catch {
@@ -1197,7 +1325,7 @@ export function startBoardAgent(root: string, env: Env, controls: BoardControls,
   run.pid = child.pid;
   controls.handles.set(name, child);
   controls.runs.push(run);
-  appendBoardLog(controls, `start ${name} pid ${child.pid ?? '?'} issue #${ask.issue} ${ask.vendor} ${ask.model} ${made.dir} ${command} ${args.join(' ')}`);
+  appendBoardLog(controls, boardLogLine(`start ${name} pid ${child.pid ?? '?'} issue #${ask.issue} ${ask.vendor} ${ask.model} ${made.dir} ${command} ${args.join(' ')}`));
   return run;
 }
 

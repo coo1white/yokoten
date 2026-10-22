@@ -1514,13 +1514,21 @@ and a link to act. The list is read only: no request an agent can make clears an
 item. An empty list says so.
 
 From the right column the owner starts an agent: pick an open issue, a vendor, and
-a model, then Start. The board makes `.worktrees/<issue>` and starts the vendor's
-own headless command with `YOKOTEN_ROLE=worker`, like the dispatch skill. The run
-shows under Started here with a Stop button, and its latest output below. Stopping
-keeps the worktree and its commits.
+a model, then Start. The board makes `.worktrees/<issue>`, marks it as a worker's
+(as `yokoten worker mark` does, so runtimes that drop `YOKOTEN_ROLE` still run as
+workers), and starts the vendor's own headless command with `YOKOTEN_ROLE=worker`,
+like the dispatch skill. The model goes through the vendor's own flag (`--model`);
+DeepSeek Harness has no such flag, so its model stays a name in the brief. Before
+it starts, the board checks the vendor's guard hooks will run in that worktree, and
+refuses the start with a plain reason when they will not (trust the folder first,
+or run `yokoten init`). The run shows under Started here with a Stop button, and
+its latest output below. Stopping keeps the worktree and its commits. A process
+that exits by itself counts as stopped: its slot frees and a later Stop says so.
 
 The limits say how many agents run at once (three at first), and how many of one
 model. Over the limit, the board refuses a start with a plain reason.
+
+`yokoten board --text` also prints Waiting for you whenever something waits.
 
 Safety: the link holds a random token, and a change needs the page's Origin too.
 The board stops only processes it started. Every start and stop goes to
