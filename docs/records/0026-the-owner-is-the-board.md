@@ -47,7 +47,7 @@ The team is run as an organization with separate powers. The owner approved this
 
 ## Where this stands on the ladder
 
-The owner approved this ladder on 2026-10-23. This record is layer 3. Layers 4 and 5 are the vision, not work in progress.
+The owner approved this ladder on 2026-10-23. This record is layer 3. Layers 4 and 5 are the vision: announced loudly, not yet built.
 
 | Layer | What it is | Today |
 |---|---|---|
@@ -57,7 +57,7 @@ The owner approved this ladder on 2026-10-23. This record is layer 3. Layers 4 a
 | 4 | **An economy**: rules between many such AI organizations: a shared safety record, a track record per model across organizations, hiring across organizations, paid on green | Vision ([0020](0020-rules-the-employer-owns.md), [0021](0021-ai-checks-ai.md) rule 6) |
 | 5 | **The law of AI work**: the same rules for any work AI does, not only code | Vision (0020) |
 
-In one line: the rule of law for the agent economy. Each layer is claimed in public only once it runs.
+In one line: the rule of law for the agent economy. We say the whole ladder out loud, as where we are going; a layer is called done only once it runs.
 
 ## Options not taken
 
