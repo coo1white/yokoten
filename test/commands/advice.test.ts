@@ -202,7 +202,8 @@ test('board --text: pull requests with each stage, read-only', async () => {
 });
 
 // #601: one status file per worktree, at its root, read in worktree order. A missing,
-// broken or odd file never breaks the board; a missing name is the worktree's folder name.
+// broken or odd file never breaks the board; a missing name is the worktree's folder
+// name, and a role that is not engineer, reviewer or verifier is blank.
 test('board agents: every worktree root as an agent; the odd ones are skipped or blank', () => {
   const first = makeTempDir('yokoten-board-');
   const second = makeTempDir('yokoten-board-');
@@ -211,11 +212,11 @@ test('board agents: every worktree root as an agent; the odd ones are skipped or
   const listed = makeTempDir('yokoten-board-');
   const odd = makeTempDir('yokoten-board-');
   const blocked = makeTempDir('yokoten-board-');
-  writeFileSync(join(first, '.yokoten-agent.json'), JSON.stringify({ name: 'b-worker', vendor: 'codex', task: 't', worktree: 'w', doing: 'd', updated: '2026-10-22T10:00:00Z' }));
-  writeFileSync(join(second, '.yokoten-agent.json'), JSON.stringify({ task: 'only a task' }));
+  writeFileSync(join(first, '.yokoten-agent.json'), JSON.stringify({ name: 'b-worker', vendor: 'codex', task: 't', worktree: 'w', doing: 'd', updated: '2026-10-22T10:00:00Z', role: 'engineer' }));
+  writeFileSync(join(second, '.yokoten-agent.json'), JSON.stringify({ task: 'only a task', role: 'reviewer' }));
   writeFileSync(join(broken, '.yokoten-agent.json'), '{oops');
   writeFileSync(join(listed, '.yokoten-agent.json'), '[]');
-  writeFileSync(join(odd, '.yokoten-agent.json'), JSON.stringify({ name: 7, vendor: null, updated: 123 }));
+  writeFileSync(join(odd, '.yokoten-agent.json'), JSON.stringify({ name: 7, vendor: null, updated: 123, role: 'boss' }));
   mkdirSync(join(blocked, '.yokoten-agent.json'));
   assert.deepEqual(
     readBoardAgents([
@@ -229,9 +230,9 @@ test('board agents: every worktree root as an agent; the odd ones are skipped or
       { path: blocked, branch: '' },
     ]),
     [
-      { name: 'b-worker', vendor: 'codex', task: 't', worktree: 'w', doing: 'd', updated: '2026-10-22T10:00:00Z' },
-      { name: basename(second), vendor: '', task: 'only a task', worktree: '', doing: '', updated: '' },
-      { name: basename(odd), vendor: '', task: '', worktree: '', doing: '', updated: '' },
+      { name: 'b-worker', vendor: 'codex', task: 't', worktree: 'w', doing: 'd', updated: '2026-10-22T10:00:00Z', role: 'engineer' },
+      { name: basename(second), vendor: '', task: 'only a task', worktree: '', doing: '', updated: '', role: 'reviewer' },
+      { name: basename(odd), vendor: '', task: '', worktree: '', doing: '', updated: '', role: '' },
     ],
   );
   assert.deepEqual(readBoardAgents([]), [], 'no worktrees, no agents');
@@ -273,8 +274,8 @@ test('board text: every stage in plain words; a part that cannot be read says wh
       {
         repo: '/repo',
         agents: [
-          { name: 'worker-1', vendor: 'claude-code', task: 'issue 601', worktree: '/repo/.worktrees/601', doing: 'writing tests', updated: '2026-10-22T11:58:00Z' },
-          { name: 'plain', vendor: '', task: '', worktree: '', doing: '', updated: '' },
+          { name: 'worker-1', vendor: 'claude-code', task: 'issue 601', worktree: '/repo/.worktrees/601', doing: 'writing tests', updated: '2026-10-22T11:58:00Z', role: 'engineer' },
+          { name: 'plain', vendor: '', task: '', worktree: '', doing: '', updated: '', role: '' },
         ],
         pulls: [
           { number: 1, title: 'team page', branch: 'board', url: '', stage: 'open', checks: 'pass', tier: 'B', review: 'waiting' },
@@ -293,7 +294,7 @@ test('board text: every stage in plain words; a part that cannot be read says wh
       '2 agents, 3 pull requests, 2 worktrees.',
       '',
       'Agents:',
-      '- worker-1 (claude-code): issue 601, in /repo/.worktrees/601, writing tests, 2 min ago',
+      '- worker-1 (claude-code) [engineer]: issue 601, in /repo/.worktrees/601, writing tests, 2 min ago',
       '- plain',
       '',
       'Pull requests:',
@@ -331,7 +332,7 @@ test('board data: agents, pulls and worktrees; gh runs only with a GitHub remote
   };
   const without = collectBoard(sandbox.repo, sandbox.env, unasked);
   assert.equal(without.repo, sandbox.repo);
-  assert.deepEqual(without.agents, [{ name: 'w', vendor: '', task: '', worktree: sandbox.repo, doing: '', updated: '' }]);
+  assert.deepEqual(without.agents, [{ name: 'w', vendor: '', task: '', worktree: sandbox.repo, doing: '', updated: '', role: '' }]);
   assert.equal(without.pulls, 'this repo has no GitHub remote, so the board shows no pull requests');
   assert.deepEqual(without.worktrees, [{ path: realpathSync(sandbox.repo), branch: 'main' }]);
   assert.equal(sandbox.git('remote', 'add', 'origin', 'git@github.com:octo/demo.git').status, 0);
@@ -340,7 +341,7 @@ test('board data: agents, pulls and worktrees; gh runs only with a GitHub remote
   // A fake HOME above the repo: every shown path hides it.
   const hidden = collectBoard(sandbox.repo, { ...sandbox.env, HOME: dirname(sandbox.repo) }, gh);
   assert.equal(hidden.repo, '~/repo');
-  assert.deepEqual(hidden.agents, [{ name: 'w', vendor: '', task: '', worktree: '~/repo', doing: '', updated: '' }]);
+  assert.deepEqual(hidden.agents, [{ name: 'w', vendor: '', task: '', worktree: '~/repo', doing: '', updated: '', role: '' }]);
   assert.deepEqual(hidden.worktrees, [{ path: '~/repo', branch: 'main' }]);
   // No repo: no agents, and the worktrees say why.
   const outside = collectBoard(sandbox.home, sandbox.env, unasked);
@@ -349,11 +350,18 @@ test('board data: agents, pulls and worktrees; gh runs only with a GitHub remote
   assert.equal(outside.worktrees, 'git could not list the worktrees: run it again');
 });
 
-test('board page: plain HTML with the three tables; it reads /data every 15 seconds', () => {
+test('board page: three columns; the agents grouped, one picked, the pulls with checks in plain words', () => {
   const page = boardPage();
   assert.match(page, /<title>yokoten board<\/title>/);
   assert.match(page, /<h1>yokoten board<\/h1>/);
-  for (const id of ['agents', 'pulls', 'worktrees']) assert.ok(page.includes(`<table id="${id}"></table>`), `a ${id} table`);
+  assert.ok(page.includes('<div class="columns">'), 'three columns');
+  assert.ok(page.includes('<div id="groups"></div>'), 'the agents on the left');
+  assert.ok(page.includes('<div id="detail"></div>'), 'the picked agent in the middle');
+  assert.ok(page.includes('<div id="pulls"></div>'), 'the pull requests on the right');
+  assert.ok(page.includes('<h2>Conversation</h2>'), 'room for the conversation');
+  assert.ok(!page.includes('<table'), 'no tables');
+  assert.ok(!page.includes('JSON.stringify'), 'no raw JSON on screen');
+  assert.ok(page.includes('checks pass'), 'checks in plain words');
   assert.ok(page.includes('setInterval(load, 15000)'), 'refreshes every 15 seconds');
   assert.ok(page.includes("fetch('data?t=' + encodeURIComponent(pageToken()))"), 'reads the same data as JSON, with the link token');
   assert.ok(page.includes('new URLSearchParams(location.search)'), 'the token comes from the link');
@@ -363,13 +371,18 @@ test('board page: plain HTML with the three tables; it reads /data every 15 seco
   assert.equal(page.split('https://').length - 1, 1, 'one https:// (the link guard)');
 });
 
-// #601: only http(s) pull addresses become links; anything else stays plain text, so an
-// odd address never becomes a script link.
-test('board page: only http(s) pull addresses become links', () => {
+// The page script, for the tests that run it with fakes: one fetch, one timer, one note.
+function boardScript(): string {
   const pageText = boardPage();
   const scriptStart = pageText.indexOf('<script>');
   const scriptEnd = pageText.lastIndexOf('</script>');
-  const script = scriptStart < 0 || scriptEnd < 0 ? '' : pageText.slice(scriptStart + '<script>'.length, scriptEnd);
+  return scriptStart < 0 || scriptEnd < 0 ? '' : pageText.slice(scriptStart + '<script>'.length, scriptEnd);
+}
+
+// #601: only http(s) pull addresses become links; anything else stays plain text, so an
+// odd address never becomes a script link.
+test('board page: only http(s) pull addresses become links', () => {
+  const script = boardScript();
   assert.ok(script.includes('if (isHttpUrl(pull.url))'), 'the pull number links only through the guard');
   // The page script on its own, with fakes for what it touches at load: one fetch, one timer, one note.
   const run = new Function('document', 'location', 'fetch', 'setInterval', `${script}; return { isHttpUrl, pageToken };`) as unknown as (
@@ -389,6 +402,42 @@ test('board page: only http(s) pull addresses become links', () => {
   assert.equal(isHttpUrl('data:text/html,hi'), false);
   assert.equal(isHttpUrl(''), false);
   assert.equal(isHttpUrl(undefined), false);
+});
+
+// #601: the left column groups the agents by the issue their task names, so one issue
+// shows its engineer, reviewer and verifier together. The rest is other work.
+test('board page: agents group by issue; the rest is other work', () => {
+  const script = boardScript();
+  assert.ok(script.includes("'Issue ' + group.key"), 'each group names its issue');
+  const run = new Function('document', 'location', 'fetch', 'setInterval', `${script}; return { issueOf, groupAgents };`) as unknown as (
+    fakeDocument: unknown,
+    fakeLocation: unknown,
+    fakeFetch: () => Promise<never>,
+    fakeTimer: () => number,
+  ) => {
+    issueOf: (task: unknown) => string;
+    groupAgents: (agents: { name: string; task: string }[]) => { key: string; agents: { name: string; task: string }[] }[];
+  };
+  const { issueOf, groupAgents } = run({ getElementById: () => ({}) }, { search: '' }, () => Promise.reject(new Error('no net')), () => 0);
+  assert.equal(issueOf('issue 601'), '601');
+  assert.equal(issueOf('review issue #42'), '42');
+  assert.equal(issueOf('ISSUE 7: polish'), '7');
+  assert.equal(issueOf('just exploring'), '');
+  assert.equal(issueOf(''), '');
+  assert.equal(issueOf(undefined), '');
+  assert.deepEqual(
+    groupAgents([
+      { name: 'a-worker', task: 'issue 601' },
+      { name: 'a-review', task: 'review issue 601' },
+      { name: 'b-worker', task: 'issue 602' },
+      { name: 'lost', task: '' },
+    ]).map((group) => [group.key, group.agents.map((agent) => agent.name)]),
+    [
+      ['601', ['a-worker', 'a-review']],
+      ['602', ['b-worker']],
+      ['', ['lost']],
+    ],
+  );
 });
 
 // #601: one board read over a raw socket, so no proxy setting can send it elsewhere,
@@ -442,7 +491,7 @@ test('board server: the right Host and token see the page and the data', async (
     assert.equal(data.kind, 'application/json; charset=utf-8');
     const shown = JSON.parse(data.text) as { repo: string; agents: unknown[]; pulls: unknown; worktrees: unknown[]; updated: string };
     assert.equal(shown.repo, sandbox.repo);
-    assert.deepEqual(shown.agents, [{ name: 'w', vendor: 'muse', task: '', worktree: '~/w', doing: '', updated: '', age: '' }]);
+    assert.deepEqual(shown.agents, [{ name: 'w', vendor: 'muse', task: '', worktree: '~/w', doing: '', updated: '', role: '', age: '' }]);
     assert.equal(shown.pulls, 'this repo has no GitHub remote, so the board shows no pull requests');
     assert.deepEqual(shown.worktrees, [{ path: realpathSync(sandbox.repo), branch: 'main' }]);
     assert.match(shown.updated, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);

@@ -166,12 +166,20 @@ export interface BoardAgent {
   doing: string;
   /** When the agent last wrote, as filed, or '' when unknown. */
   updated: string;
+  /** The agent's part in its issue: who builds, who reviews, or who verifies. */
+  role: '' | 'engineer' | 'reviewer' | 'verifier';
 }
 
 /** Plain text of a status field, or '' when it is missing or not text. */
 function fieldText(fields: Record<string, unknown>, name: string): string {
   const value: unknown = fields[name];
   return typeof value === 'string' ? value : '';
+}
+
+/** An agent's role, or '' when it is missing or not one of the three words. */
+function readBoardRole(fields: Record<string, unknown>): BoardAgent['role'] {
+  const role = fieldText(fields, 'role');
+  return role === 'engineer' || role === 'reviewer' || role === 'verifier' ? role : '';
 }
 
 /** One status file as an agent, or null when it is not a JSON object. The worktree's own folder name fills a missing name. */
@@ -191,6 +199,7 @@ function parseBoardAgent(text: string, worktree: string): BoardAgent | null {
     worktree: fieldText(fields, 'worktree'),
     doing: fieldText(fields, 'doing'),
     updated: fieldText(fields, 'updated'),
+    role: readBoardRole(fields),
   };
 }
 
@@ -275,9 +284,9 @@ export function collectBoard(root: string, env: Env, gh: Gh): BoardData {
   };
 }
 
-/** One agent as plain words: its name, vendor, task, worktree, and what it does now. */
+/** One agent as plain words: its name, vendor, role, task, worktree, and what it does now. */
 function formatBoardAgent(agent: BoardAgent, now: number): string {
-  const head = `${agent.name}${agent.vendor ? ` (${agent.vendor})` : ''}`;
+  const head = `${agent.name}${agent.vendor ? ` (${agent.vendor})` : ''}${agent.role ? ` [${agent.role}]` : ''}`;
   const parts = [agent.task, agent.worktree ? `in ${agent.worktree}` : '', agent.doing, ageText(agent.updated, now)].filter(Boolean);
   return parts.length ? `${head}: ${parts.join(', ')}` : head;
 }
@@ -325,7 +334,7 @@ function serveText(res: ServerResponse, status: number, kind: string, text: stri
   res.end(text);
 }
 
-/** The board page: plain HTML, CSS and JavaScript. It reads /data every BOARD_REFRESH_SECONDS seconds. */
+/** The board page: plain HTML, CSS and JavaScript. The agents on the left, the picked one in the middle, the pull requests on the right. It reads /data every BOARD_REFRESH_SECONDS seconds. */
 export function boardPage(): string {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -334,60 +343,142 @@ export function boardPage(): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>yokoten board</title>
 <style>
-body { font-family: system-ui, sans-serif; margin: 2em auto; max-width: 60em; padding: 0 1em; color: #222; }
+body { font-family: system-ui, sans-serif; margin: 1em auto; max-width: 90em; padding: 0 1em; color: #222; }
 h1 { font-size: 1.4em; }
-table { border-collapse: collapse; width: 100%; margin-bottom: 2em; }
-th, td { border: 1px solid #ccc; padding: 0.4em 0.6em; text-align: left; vertical-align: top; }
-th { background: #f4f4f4; }
+.columns { display: flex; gap: 1em; align-items: flex-start; }
+.left { flex: 1 1 0; min-width: 12em; }
+.middle { flex: 2 1 0; min-width: 16em; }
+.right { flex: 1.4 1 0; min-width: 14em; }
+section h2 { font-size: 1.1em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+.group h3 { font-size: 1em; color: #555; margin: 0.8em 0 0.3em; }
+.agent { display: block; width: 100%; text-align: left; font: inherit; cursor: pointer; background: #f8f8f8; border: 1px solid #ccc; border-radius: 0.4em; padding: 0.4em 0.6em; margin: 0 0 0.3em; }
+.agent.current { background: #e8f0fe; border-color: #888; }
+.tag { display: inline-block; background: #e0e0e0; border-radius: 0.6em; padding: 0 0.5em; font-size: 0.85em; margin-left: 0.4em; }
+.card { border: 1px solid #ccc; border-radius: 0.4em; padding: 0.4em 0.6em; margin: 0 0 0.5em; }
+.card p { margin: 0.2em 0; }
+dl { margin: 0.5em 0; }
+dt { color: #555; font-size: 0.9em; }
+dd { margin: 0 0 0.5em; }
 .pass { color: #080; }
 .fail { color: #c00; }
 .note { color: #666; }
+@media (max-width: 60em) { .columns { flex-direction: column; } .left, .middle, .right { width: 100%; } }
 </style>
 </head>
 <body>
 <h1>yokoten board</h1>
 <p class="note" id="meta">Loading.</p>
+<div class="columns">
+<section class="left">
 <h2>Agents</h2>
-<table id="agents"></table>
+<div id="groups"></div>
+</section>
+<section class="middle">
+<h2>Agent</h2>
+<div id="detail"></div>
+<h2>Conversation</h2>
+<p class="note">The agent's conversation will show here in a later version.</p>
+</section>
+<section class="right">
 <h2>Pull requests</h2>
-<table id="pulls"></table>
-<h2>Worktrees</h2>
-<table id="worktrees"></table>
+<div id="pulls"></div>
+</section>
+</div>
 <script>
-function cell(text) {
-  var box = document.createElement('td');
-  box.textContent = text;
+var selectedName = null;
+var lastAgents = [];
+function text(tag, words) {
+  var box = document.createElement(tag);
+  box.textContent = words;
   return box;
 }
-function head(table, names) {
-  var row = document.createElement('tr');
-  names.forEach(function (name) {
-    var box = document.createElement('th');
-    box.textContent = name;
-    row.appendChild(box);
-  });
-  table.appendChild(row);
+function roleTag(role) {
+  var tag = document.createElement('span');
+  tag.className = 'tag';
+  tag.textContent = role;
+  return tag;
 }
-function oneRow(table, text) {
-  var row = document.createElement('tr');
-  var box = document.createElement('td');
-  box.textContent = text;
-  row.appendChild(box);
-  table.appendChild(row);
+function issueOf(task) {
+  var found = /issue\\s*#?\\s*(\\d+)/i.exec(task || '');
+  return found ? found[1] : '';
 }
-function showAgents(table, agents) {
-  head(table, ['Name', 'Vendor', 'Task', 'Worktree', 'Doing now', 'Updated']);
-  if (!agents.length) oneRow(table, 'No agents. One joins by writing ${BOARD_AGENT_FILE} in its worktree.');
+function groupAgents(agents) {
+  var groups = [];
   agents.forEach(function (agent) {
-    var row = document.createElement('tr');
-    row.appendChild(cell(agent.name));
-    row.appendChild(cell(agent.vendor || '-'));
-    row.appendChild(cell(agent.task || '-'));
-    row.appendChild(cell(agent.worktree || '-'));
-    row.appendChild(cell(agent.doing || '-'));
-    row.appendChild(cell(agent.age || '-'));
-    table.appendChild(row);
+    var key = issueOf(agent.task);
+    var group = null;
+    groups.forEach(function (known) {
+      if (known.key === key) group = known;
+    });
+    if (!group) {
+      group = { key: key, agents: [] };
+      groups.push(group);
+    }
+    group.agents.push(agent);
   });
+  return groups;
+}
+function showGroups(box, agents) {
+  if (!agents.length) {
+    box.appendChild(text('p', 'No agents. One joins by writing ${BOARD_AGENT_FILE} in its worktree.'));
+    return;
+  }
+  groupAgents(agents).forEach(function (group) {
+    var part = document.createElement('div');
+    part.className = 'group';
+    part.appendChild(text('h3', group.key ? 'Issue ' + group.key : 'Other work'));
+    group.agents.forEach(function (agent) {
+      var pick = document.createElement('button');
+      pick.className = 'agent' + (agent.name === selectedName ? ' current' : '');
+      pick.setAttribute('data-name', agent.name);
+      pick.appendChild(text('span', agent.name));
+      if (agent.role) pick.appendChild(roleTag(agent.role));
+      pick.addEventListener('click', function () { select(agent.name); });
+      part.appendChild(pick);
+    });
+    box.appendChild(part);
+  });
+}
+function showDetail(box, agents) {
+  box.replaceChildren();
+  var found = null;
+  agents.forEach(function (agent) {
+    if (agent.name === selectedName) found = agent;
+  });
+  if (!found) {
+    box.appendChild(text('p', agents.length ? 'Pick an agent on the left.' : 'No agents yet.'));
+    return;
+  }
+  var head = text('h3', found.name);
+  if (found.role) head.appendChild(roleTag(found.role));
+  box.appendChild(head);
+  var list = document.createElement('dl');
+  var rows = [
+    ['Task', found.task || 'no task yet'],
+    ['Doing now', found.doing || 'nothing yet']
+  ];
+  if (found.vendor) rows.push(['Vendor', found.vendor]);
+  if (found.worktree) rows.push(['Worktree', found.worktree]);
+  if (found.age) rows.push(['Updated', found.age]);
+  rows.forEach(function (row) {
+    list.appendChild(text('dt', row[0]));
+    list.appendChild(text('dd', row[1]));
+  });
+  box.appendChild(list);
+}
+function select(name) {
+  selectedName = name;
+  showDetail(document.getElementById('detail'), lastAgents);
+  document.getElementById('groups').querySelectorAll('.agent').forEach(function (button) {
+    if (button.getAttribute('data-name') === name) button.classList.add('current');
+    else button.classList.remove('current');
+  });
+}
+function checksWord(checks) {
+  if (checks === 'pass') return 'checks pass';
+  if (checks === 'fail') return 'checks fail';
+  if (checks === 'running') return 'checks running';
+  return 'no checks';
 }
 function reviewWord(pull) {
   if (pull.stage !== 'open') return pull.stage;
@@ -400,16 +491,20 @@ function isHttpUrl(url) {
   var clean = String(url || '').trim().toLowerCase();
   return clean.indexOf('http://') === 0 || clean.indexOf('https://') === 0;
 }
-function showPulls(table, pulls) {
-  head(table, ['Number', 'Title', 'Branch', 'Checks', 'Tier', 'Stage']);
+function showPulls(box, pulls) {
   if (typeof pulls === 'string') {
-    oneRow(table, pulls);
+    box.appendChild(text('p', pulls));
     return;
   }
-  if (!pulls.length) oneRow(table, 'No pull requests.');
+  if (!pulls.length) {
+    box.appendChild(text('p', 'No pull requests.'));
+    return;
+  }
   pulls.forEach(function (pull) {
-    var row = document.createElement('tr');
-    var number = document.createElement('td');
+    var card = document.createElement('div');
+    card.className = 'card';
+    var head = document.createElement('p');
+    var number = document.createElement('strong');
     if (isHttpUrl(pull.url)) {
       var link = document.createElement('a');
       link.href = pull.url;
@@ -418,39 +513,29 @@ function showPulls(table, pulls) {
     } else {
       number.textContent = '#' + pull.number;
     }
-    row.appendChild(number);
-    row.appendChild(cell(pull.title));
-    row.appendChild(cell(pull.branch || '-'));
-    var checks = cell(pull.checks);
+    head.appendChild(number);
+    head.appendChild(text('span', ' ' + pull.title));
+    card.appendChild(head);
+    var checks = text('p', checksWord(pull.checks) + ', ' + (pull.tier ? 'tier ' + pull.tier : 'no tier') + ', ' + reviewWord(pull));
     if (pull.checks === 'pass') checks.className = 'pass';
     if (pull.checks === 'fail') checks.className = 'fail';
-    row.appendChild(checks);
-    row.appendChild(cell(pull.tier ? 'tier ' + pull.tier : 'no tier'));
-    row.appendChild(cell(reviewWord(pull)));
-    table.appendChild(row);
-  });
-}
-function showWorktrees(table, worktrees) {
-  head(table, ['Path', 'Branch']);
-  if (typeof worktrees === 'string') {
-    oneRow(table, worktrees);
-    return;
-  }
-  if (!worktrees.length) oneRow(table, 'No worktrees.');
-  worktrees.forEach(function (tree) {
-    var row = document.createElement('tr');
-    row.appendChild(cell(tree.path));
-    row.appendChild(cell(tree.branch || '-'));
-    table.appendChild(row);
+    card.appendChild(checks);
+    if (pull.branch) card.appendChild(text('p', 'Branch ' + pull.branch));
+    box.appendChild(card);
   });
 }
 function show(data) {
-  ['agents', 'pulls', 'worktrees'].forEach(function (id) {
-    document.getElementById(id).replaceChildren();
-  });
-  showAgents(document.getElementById('agents'), data.agents);
-  showPulls(document.getElementById('pulls'), data.pulls);
-  showWorktrees(document.getElementById('worktrees'), data.worktrees);
+  lastAgents = data.agents;
+  if (!data.agents.some(function (agent) { return agent.name === selectedName; })) {
+    selectedName = data.agents.length ? data.agents[0].name : null;
+  }
+  var groups = document.getElementById('groups');
+  groups.replaceChildren();
+  showGroups(groups, data.agents);
+  showDetail(document.getElementById('detail'), data.agents);
+  var pulls = document.getElementById('pulls');
+  pulls.replaceChildren();
+  showPulls(pulls, data.pulls);
   var meta = document.getElementById('meta');
   meta.textContent = 'Shows ' + data.repo + '. Refreshes every ${BOARD_REFRESH_SECONDS} seconds. Last update ' + new Date().toLocaleTimeString() + '.';
 }
