@@ -1,10 +1,10 @@
 // `yokoten doctor`, `explain`, `adopt` and `board`: they read and show; none writes to
 // the project. A Claude Code session start keeps what it said in ~/.config/yokoten/sessions/ (#405).
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { readFileSync, readSync } from 'node:fs';
-import { createServer, type Server, type ServerResponse } from 'node:http';
+import { appendFileSync, existsSync, readFileSync, readSync, statSync } from 'node:fs';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { basename, join } from 'node:path';
 import * as claudeCode from '../agents/runtimes/claude-code.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
@@ -323,7 +323,7 @@ export function renderBoardText(board: BoardData, now: number = Date.now()): str
 }
 
 /** The board as JSON for /data: the data, each agent with its age, and the time. */
-function boardJson(board: BoardData): unknown {
+function boardJson(board: BoardData): Record<string, unknown> {
   const now = Date.now();
   return { ...board, agents: board.agents.map((agent) => ({ ...agent, age: ageText(agent.updated, now) })), updated: new Date(now).toISOString() };
 }
@@ -356,6 +356,10 @@ section h2 { font-size: 1.1em; border-bottom: 1px solid #ccc; padding-bottom: 0.
 .tag { display: inline-block; background: #e0e0e0; border-radius: 0.6em; padding: 0 0.5em; font-size: 0.85em; margin-left: 0.4em; }
 .card { border: 1px solid #ccc; border-radius: 0.4em; padding: 0.4em 0.6em; margin: 0 0 0.5em; }
 .card p { margin: 0.2em 0; }
+form p { margin: 0.3em 0; }
+label { display: block; margin: 0.3em 0; }
+input, select, button { font: inherit; max-width: 100%; }
+pre { white-space: pre-wrap; word-break: break-word; background: #f8f8f8; border: 1px solid #ccc; border-radius: 0.4em; padding: 0.4em 0.6em; }
 dl { margin: 0.5em 0; }
 dt { color: #555; font-size: 0.9em; }
 dd { margin: 0 0 0.5em; }
@@ -368,6 +372,10 @@ dd { margin: 0 0 0.5em; }
 <body>
 <h1>yokoten board</h1>
 <p class="note" id="meta">Loading.</p>
+<section>
+<h2>Waiting for you</h2>
+<div id="waiting"></div>
+</section>
 <div class="columns">
 <section class="left">
 <h2>Agents</h2>
@@ -382,8 +390,31 @@ dd { margin: 0 0 0.5em; }
 <section class="right">
 <h2>Pull requests</h2>
 <div id="pulls"></div>
+<h2>Start an agent</h2>
+<form id="start">
+<p><label>Issue number <input name="issue" id="issue" inputmode="numeric" list="issues"></label></p>
+<datalist id="issues"></datalist>
+<p><label>Vendor <select name="vendor" id="vendor"><option>claude-code</option><option>codex</option><option>muse</option><option>grok</option><option>antigravity</option><option>deepseek-harness</option></select></label></p>
+<p><label>Model <input name="model" id="model"></label></p>
+<p><button type="submit">Start</button></p>
+</form>
+<p class="note" id="startNote"></p>
+<h2>Limits</h2>
+<form id="limits">
+<p><label>Agents at once <input name="maxAgents" id="maxAgents" inputmode="numeric"></label></p>
+<p><label>Per model, as name:count pairs <input name="models" id="models"></label></p>
+<p><button type="submit">Save</button></p>
+</form>
+<p class="note" id="limitsNote"></p>
+<h2>Started here</h2>
+<div id="started"></div>
+<p class="note" id="startedNote"></p>
 </section>
 </div>
+<section>
+<h2>Latest output</h2>
+<div id="output"></div>
+</section>
 <script>
 var selectedName = null;
 var lastAgents = [];
@@ -524,6 +555,122 @@ function showPulls(box, pulls) {
     box.appendChild(card);
   });
 }
+function kindWord(kind) {
+  if (kind === 'approve') return 'Needs the owner go-ahead';
+  if (kind === 'guard') return 'Guard stop';
+  return 'Question';
+}
+function showWaiting(box, waiting) {
+  var rows = waiting || [];
+  if (!rows.length) {
+    box.appendChild(text('p', 'Nothing waits for you.'));
+    return;
+  }
+  rows.forEach(function (item) {
+    var card = document.createElement('div');
+    card.className = 'card';
+    var head = kindWord(item.kind);
+    if (item.agent) head += ' · ' + item.agent;
+    if (item.role) head += ' [' + item.role + ']';
+    if (item.wait) head += ', ' + item.wait;
+    card.appendChild(text('p', head));
+    card.appendChild(text('p', item.why));
+    if (isHttpUrl(item.link)) {
+      var act = document.createElement('a');
+      act.href = item.link;
+      act.textContent = 'Act here';
+      card.appendChild(act);
+    }
+    box.appendChild(card);
+  });
+}
+function showStarted(box, runs) {
+  var rows = runs || [];
+  if (!rows.length) {
+    box.appendChild(text('p', 'No agents started here yet.'));
+    return;
+  }
+  rows.forEach(function (run) {
+    var card = document.createElement('div');
+    card.className = 'card';
+    card.appendChild(text('p', run.name + ' · ' + run.vendor + ' · ' + run.model + ' · issue ' + run.issue + ' · ' + run.status));
+    if (run.worktree) card.appendChild(text('p', run.worktree));
+    if (run.status === 'running') {
+      var stop = document.createElement('button');
+      stop.textContent = 'Stop';
+      stop.setAttribute('data-name', run.name);
+      stop.addEventListener('click', function () { stopRun(run.name); });
+      card.appendChild(stop);
+    }
+    box.appendChild(card);
+  });
+}
+function showOutput(box, runs) {
+  var rows = runs || [];
+  if (!rows.length) {
+    box.appendChild(text('p', 'No output yet.'));
+    return;
+  }
+  rows.forEach(function (run) {
+    var card = document.createElement('div');
+    card.className = 'card';
+    card.appendChild(text('p', run.name));
+    var out = document.createElement('pre');
+    out.textContent = run.output.length ? run.output.join('\\n') : '(no output yet)';
+    card.appendChild(out);
+    box.appendChild(card);
+  });
+}
+function showIssues(box, issues) {
+  box.replaceChildren();
+  if (!Array.isArray(issues)) return;
+  issues.forEach(function (issue) {
+    var pick = document.createElement('option');
+    pick.value = String(issue.number);
+    pick.textContent = '#' + issue.number + ' ' + issue.title;
+    box.appendChild(pick);
+  });
+}
+function showLimits(box, limits) {
+  var caps = Object.keys((limits || {}).byModel || {}).map(function (model) { return model + ': ' + limits.byModel[model]; });
+  box.textContent = 'Now: ' + (limits ? limits.maxAgents : '?') + ' at once' + (caps.length ? ' · ' + caps.join(', ') : '');
+}
+function enc(text) {
+  return encodeURIComponent(text);
+}
+function doneWord(path) {
+  if (path === 'agents/start') return 'Started.';
+  if (path === 'agents/stop') return 'Stopped.';
+  return 'Saved.';
+}
+function post(path, fields, noteId) {
+  var body = fields.map(function (pair) { return enc(pair[0]) + '=' + enc(pair[1]); }).join('&');
+  fetch(path + '?t=' + enc(pageToken()), { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body }).then(function (res) {
+    return res.text().then(function (note) { return { ok: res.ok, note: note }; });
+  }).then(function (answer) {
+    document.getElementById(noteId).textContent = answer.ok ? doneWord(path) : answer.note;
+    if (answer.ok) load();
+  }).catch(function () {
+    document.getElementById(noteId).textContent = 'The board could not be reached.';
+  });
+}
+function stopRun(name) {
+  post('agents/stop', [['name', name]], 'startedNote');
+}
+function wireForms() {
+  var start = document.getElementById('start');
+  if (!start || !start.addEventListener) return;
+  start.addEventListener('submit', function (event) {
+    event.preventDefault();
+    post('agents/start', [['issue', document.getElementById('issue').value], ['vendor', document.getElementById('vendor').value], ['model', document.getElementById('model').value]], 'startNote');
+  });
+  var limits = document.getElementById('limits');
+  if (!limits || !limits.addEventListener) return;
+  limits.addEventListener('submit', function (event) {
+    event.preventDefault();
+    post('agents/limits', [['maxAgents', document.getElementById('maxAgents').value], ['models', document.getElementById('models').value]], 'limitsNote');
+  });
+}
 function show(data) {
   lastAgents = data.agents;
   if (!data.agents.some(function (agent) { return agent.name === selectedName; })) {
@@ -536,6 +683,17 @@ function show(data) {
   var pulls = document.getElementById('pulls');
   pulls.replaceChildren();
   showPulls(pulls, data.pulls);
+  var waiting = document.getElementById('waiting');
+  waiting.replaceChildren();
+  showWaiting(waiting, data.waiting);
+  var started = document.getElementById('started');
+  started.replaceChildren();
+  showStarted(started, data.runs);
+  var output = document.getElementById('output');
+  output.replaceChildren();
+  showOutput(output, data.runs);
+  showIssues(document.getElementById('issues'), data.issues);
+  showLimits(document.getElementById('limitsNote'), data.limits);
   var meta = document.getElementById('meta');
   meta.textContent = 'Shows ' + data.repo + '. Refreshes every ${BOARD_REFRESH_SECONDS} seconds. Last update ' + new Date().toLocaleTimeString() + '.';
 }
@@ -549,6 +707,7 @@ function load() {
     document.getElementById('meta').textContent = 'Waiting for data.';
   });
 }
+wireForms();
 setInterval(load, ${BOARD_REFRESH_SECONDS * 1000});
 load();
 </script>
@@ -579,31 +738,145 @@ function isBoardToken(given: string | null, token: string): boolean {
 }
 
 /**
- * Start the board on 127.0.0.1 and a free port: the page at /, the data as JSON at
- * /data. Resolves with the server and its link, which holds a random token; rejects
- * when the server cannot listen. The caller stops it with server.close. A request
- * whose Host is not this server, or whose token is missing or wrong, gets a 403.
+ * True when the Origin names this page: 127.0.0.1:<port> or localhost:<port>. A change
+ * without the page's Origin gets a 403, so a page elsewhere cannot start or stop agents
+ * through this board.
  */
-export function startBoardServer(root: string, env: Env, gh: Gh): Promise<{ server: Server; url: string }> {
+function isBoardOrigin(origin: string | undefined, port: number): boolean {
+  const clean = (origin ?? '').trim().toLowerCase();
+  return clean === `http://127.0.0.1:${port}` || clean === `http://localhost:${port}`;
+}
+
+/** One request body, or null when it is too large to read. */
+function readBoardBody(req: IncomingMessage): Promise<string | null> {
+  return new Promise((done) => {
+    const parts: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+    const stop = (body: string | null) => {
+      if (settled) return;
+      settled = true;
+      done(body);
+    };
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > BOARD_BODY_LIMIT) {
+        req.destroy();
+        stop(null);
+        return;
+      }
+      parts.push(chunk);
+    });
+    req.on('end', () => stop(Buffer.concat(parts).toString('utf8')));
+    req.on('error', () => stop(null));
+  });
+}
+
+/**
+ * One change request as fields: JSON, or a form. Null when the kind is JSON but the
+ * text is not. The page sends a form, so it never builds raw JSON.
+ */
+function boardFields(text: string, kind: string | undefined): Record<string, string> | null {
+  if ((kind ?? '').split(';')[0].trim().toLowerCase() === 'application/json') {
+    try {
+      const parsed: unknown = JSON.parse(text || '{}');
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {};
+      const fields: Record<string, string> = {};
+      for (const [key, value] of Object.entries(parsed)) fields[key] = typeof value === 'string' ? value : '';
+      return fields;
+    } catch {
+      return null;
+    }
+  }
+  const fields: Record<string, string> = {};
+  for (const [key, value] of new URLSearchParams(text)) fields[key] = value;
+  return fields;
+}
+
+/** The status for a refused start: over the limit is a conflict, a failed spawn is the server, the rest is the request. */
+function startRefuseStatus(reason: string): number {
+  if (reason.startsWith('the board already runs')) return 409;
+  if (reason.startsWith('the board could not')) return 500;
+  return 400;
+}
+
+/** The status for a refused stop: unknown is missing, done is a conflict, the rest is the request. */
+function stopRefuseStatus(reason: string): number {
+  if (reason.startsWith('no agent called') || reason === 'name the agent to stop') return 404;
+  if (reason.endsWith('already stopped')) return 409;
+  return 400;
+}
+
+/** What the options carry: the board's controls. Tests pass their own, with a fake spawner. */
+export interface BoardServerOptions {
+  controls?: BoardControls;
+}
+
+/**
+ * Start the board on 127.0.0.1 and a free port: the page at /, the data as JSON at
+ * /data, and the owner's changes at /agents/start, /agents/stop and /agents/limits.
+ * Resolves with the server and its link, which holds a random token; rejects when the
+ * server cannot listen. The caller stops it with server.close. A request whose Host is
+ * not this server, or whose token is missing or wrong, gets a 403. A change whose
+ * Origin is not the page gets a 403 too.
+ */
+export function startBoardServer(root: string, env: Env, gh: Gh, options: BoardServerOptions = {}): Promise<{ server: Server; url: string }> {
   const token = randomBytes(BOARD_TOKEN_BYTES).toString('hex');
+  const controls = options.controls ?? createBoardControls(join(root, '.yokoten-board.log'));
   const server = createServer((req, res) => {
     const address = server.address();
     const port = typeof address === 'object' && address !== null ? address.port : 0;
     if (!isBoardHost(req.headers.host, port)) return serveText(res, 403, 'text/plain; charset=utf-8', 'forbidden');
     const [path, query] = (req.url ?? '').split('?');
     if (!isBoardToken(new URLSearchParams(query ?? '').get('t'), token)) return serveText(res, 403, 'text/plain; charset=utf-8', 'forbidden');
-    if (req.method !== 'GET') return serveText(res, 404, 'text/plain; charset=utf-8', 'not found');
-    if (path === '/') return serveText(res, 200, 'text/html; charset=utf-8', boardPage());
-    if (path === '/data') {
-      let board: BoardData;
-      try {
-        board = collectBoard(root, env, gh);
-      } catch {
-        return serveText(res, 500, 'application/json; charset=utf-8', JSON.stringify({ error: 'the board could not be read: run it again' }));
+    if (req.method === 'GET') {
+      if (path === '/') return serveText(res, 200, 'text/html; charset=utf-8', boardPage());
+      if (path === '/data') {
+        try {
+          const board = collectBoard(root, env, gh);
+          const trees = readBoardWorktrees(root, env);
+          const snapshot = readBoardSnapshot(root, env, gh, controls, board, trees);
+          return serveText(res, 200, 'application/json; charset=utf-8', JSON.stringify({ ...boardJson(board), ...snapshot }));
+        } catch {
+          return serveText(res, 500, 'application/json; charset=utf-8', JSON.stringify({ error: 'the board could not be read: run it again' }));
+        }
       }
-      return serveText(res, 200, 'application/json; charset=utf-8', JSON.stringify(boardJson(board)));
+      return serveText(res, 404, 'text/plain; charset=utf-8', 'not found');
     }
-    return serveText(res, 404, 'text/plain; charset=utf-8', 'not found');
+    if (req.method !== 'POST') return serveText(res, 404, 'text/plain; charset=utf-8', 'not found');
+    if (path !== '/agents/start' && path !== '/agents/stop' && path !== '/agents/limits') {
+      return serveText(res, 404, 'text/plain; charset=utf-8', 'not found');
+    }
+    if (!isBoardOrigin(req.headers.origin, port)) return serveText(res, 403, 'text/plain; charset=utf-8', 'forbidden');
+    readBoardBody(req).then((body) => {
+      if (res.writableEnded) return;
+      if (body === null) return serveText(res, 400, 'text/plain; charset=utf-8', 'the board could not read that: send it again');
+      try {
+        if (path === '/agents/start') {
+          const fields = boardFields(body, req.headers['content-type']);
+          if (!fields) return serveText(res, 400, 'text/plain; charset=utf-8', 'send JSON or form fields');
+          const ask = readBoardStartAsk(fields);
+          if (typeof ask === 'string') return serveText(res, 400, 'text/plain; charset=utf-8', ask);
+          const started = startBoardAgent(root, env, controls, ask);
+          if (typeof started === 'string') return serveText(res, startRefuseStatus(started), 'text/plain; charset=utf-8', started);
+          return serveText(res, 200, 'application/json; charset=utf-8', JSON.stringify({ name: started.name, worktree: hideHome(started.worktree, env), pid: started.pid }));
+        }
+        if (path === '/agents/stop') {
+          const fields = boardFields(body, req.headers['content-type']);
+          if (!fields) return serveText(res, 400, 'text/plain; charset=utf-8', 'send JSON or form fields');
+          const stopped = stopBoardAgent(controls, fields.name ?? '');
+          if (typeof stopped === 'string') return serveText(res, stopRefuseStatus(stopped), 'text/plain; charset=utf-8', stopped);
+          return serveText(res, 200, 'application/json; charset=utf-8', JSON.stringify({ name: stopped.name, status: stopped.status }));
+        }
+        const fields = boardFields(body, req.headers['content-type']);
+        if (!fields) return serveText(res, 400, 'text/plain; charset=utf-8', 'send JSON or form fields');
+        const limits = setBoardLimits(controls, fields);
+        if (typeof limits === 'string') return serveText(res, 400, 'text/plain; charset=utf-8', limits);
+        return serveText(res, 200, 'application/json; charset=utf-8', JSON.stringify({ limits }));
+      } catch {
+        return serveText(res, 500, 'text/plain; charset=utf-8', 'the board could not do that: run it again');
+      }
+    });
   });
   return new Promise((done, failed) => {
     server.on('error', failed);
@@ -635,4 +908,506 @@ export function runBoard(invocation: Invocation): number | Promise<number> {
       return 1;
     },
   );
+}
+
+// ---- The board's agent controls (#603) ----
+//
+// From the page the owner starts an agent on an open issue and stops it again. The
+// board makes the worktree at `.worktrees/<issue>` and starts the vendor's own
+// headless command with `YOKOTEN_ROLE=worker`, like the dispatch skill. The guard then
+// checks the agent as a worker, and pushes and merges still go only through the bot.
+// Each agent's latest output shows on the page. Stopping keeps the worktree and its
+// commits.
+//
+// The waiting list at the top shows what needs the owner: tier A pull requests with
+// green checks and no Approve, guard stops, and agent questions. The list is read
+// only: no request an agent can make clears an item. There are no Approve or Merge
+// buttons anywhere; those stay on the host, with the owner. Safety: 127.0.0.1 only, a
+// random link token, the page's Origin on every change, stop only for processes this
+// board started, and every start and stop in a log file.
+
+/**
+ * How the board starts one agent of each vendor, before the brief. Each command is the
+ * vendor's own headless form, as the guide names it. A vendor missing here cannot be
+ * started from the page: start it by hand, and it still shows on the board.
+ */
+const BOARD_START_COMMANDS: Record<string, string[]> = {
+  'claude-code': ['claude', '-p'],
+  codex: ['codex', 'exec'],
+  muse: ['muse', 'exec', '--trust-workspace'],
+  grok: ['grok', '-p', '--trust', '--always-approve'],
+  antigravity: ['agy', '-p'],
+  'deepseek-harness': ['dsh', 'headless', '--patch', '.dsh/yokoten.patch.yml'],
+};
+
+/** The board's limits: how many agents run at once, and how many of one model. */
+export interface BoardLimits {
+  maxAgents: number;
+  byModel: Record<string, number>;
+}
+
+/** The board's limits at start: three agents at once, and no per-model cap. */
+export const BOARD_DEFAULT_LIMITS: BoardLimits = { maxAgents: 3, byModel: {} };
+
+/** One agent the board started. Its output stays while it runs and after it stops. */
+export interface BoardRun {
+  name: string;
+  issue: string;
+  vendor: string;
+  model: string;
+  worktree: string;
+  pid: number | null;
+  /** Running, or stopped by the owner. A start that fails never joins the list. */
+  status: 'running' | 'stopped';
+  startedAt: string;
+  stoppedAt: string;
+  exitCode: number | null;
+  /** The latest output lines, oldest first, at most BOARD_OUTPUT_LINES. */
+  output: string[];
+}
+
+/** One open issue to start an agent on: its number, title, and link. */
+export interface BoardIssue {
+  number: number;
+  title: string;
+  url: string;
+}
+
+/** One hold-up an agent reports in its status file: a guard stop or a question. */
+export interface BoardAttention {
+  name: string;
+  vendor: string;
+  role: BoardAgent['role'];
+  worktree: string;
+  updated: string;
+  /** A guard stop that needs a decision, or a question for the owner. */
+  kind: 'guard' | 'question';
+  why: string;
+  /** Where the owner acts, http(s) only. */
+  link: string;
+}
+
+/** One row of the waiting list: what waits, who waits, how long, why, and where to act. */
+export interface BoardWaiting {
+  /** An Approve on the host, a guard stop, or an agent's question. */
+  kind: 'approve' | 'guard' | 'question';
+  agent: string;
+  role: BoardAgent['role'];
+  wait: string;
+  why: string;
+  link: string;
+}
+
+/** How many output lines a run keeps; the page shows the last BOARD_OUTPUT_SHOWN. */
+const BOARD_OUTPUT_LINES = 100;
+
+/** How many of a run's output lines /data serves. */
+const BOARD_OUTPUT_SHOWN = 30;
+
+/** The most of a change request the board reads. */
+const BOARD_BODY_LIMIT = 64 * 1024;
+
+/** A model name: letters and numbers first, then letters, numbers, dots and dashes. */
+const BOARD_MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,60}$/;
+
+/** What the board hears from a started agent: one output line, then its exit code. */
+export interface BoardEvents {
+  line: (text: string) => void;
+  exit: (code: number | null) => void;
+}
+
+/** One started agent process. Kill stops it; the board only ever holds its own. */
+export interface BoardChild {
+  pid: number | null;
+  kill: () => void;
+}
+
+/**
+ * Starts one agent process. Tests pass a fake, so they never start a real agent. The
+ * default starts the vendor's command with pipes, and reports each output line.
+ */
+export type BoardSpawner = (command: string, args: string[], options: { cwd: string; env: Env }, events: BoardEvents) => BoardChild;
+
+/** The default spawner: the vendor's command with `YOKOTEN_ROLE=worker` in its env. */
+function spawnBoardChild(command: string, args: string[], options: { cwd: string; env: Env }, events: BoardEvents): BoardChild {
+  const child = spawn(command, args, { cwd: options.cwd, env: options.env as NodeJS.ProcessEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+  let rest = '';
+  const onText = (text: string) => {
+    const lines = (rest + text).split('\n');
+    rest = lines.pop() ?? '';
+    for (const line of lines) events.line(line);
+  };
+  child.stdout?.on('data', (chunk: Buffer) => onText(String(chunk)));
+  child.stderr?.on('data', (chunk: Buffer) => onText(String(chunk)));
+  child.on('exit', (code) => {
+    if (rest) events.line(rest);
+    events.exit(code);
+  });
+  child.on('error', () => events.exit(null));
+  return {
+    pid: child.pid ?? null,
+    kill: () => {
+      try {
+        child.kill();
+      } catch {
+        // Already gone: the exit event reports it.
+      }
+    },
+  };
+}
+
+/** What one board server owns: its limits, its runs, its latched waiting rows, and how it starts agents. */
+export interface BoardControls {
+  limits: BoardLimits;
+  runs: BoardRun[];
+  /** The agent hold-ups the board keeps showing, keyed by agent and kind. */
+  seen: BoardWaiting[];
+  /** The started processes by run name. The board stops only these. */
+  handles: Map<string, BoardChild>;
+  logPath: string;
+  spawner: BoardSpawner;
+}
+
+/** Fresh controls for a board: default limits, no runs, the log at the given path. */
+export function createBoardControls(logPath: string, spawner: BoardSpawner = spawnBoardChild): BoardControls {
+  return { limits: { ...BOARD_DEFAULT_LIMITS, byModel: {} }, runs: [], seen: [], handles: new Map(), logPath, spawner };
+}
+
+/** One line in the board's log: when, and what started, stopped, or changed. Never throws. */
+export function appendBoardLog(controls: BoardControls, line: string): void {
+  try {
+    appendFileSync(controls.logPath, `${new Date().toISOString()} ${line}\n`);
+  } catch {
+    // The board runs on without the log.
+  }
+}
+
+/** One start request: the issue, the vendor, and the model, as plain text. */
+export interface BoardStartAsk {
+  issue: string;
+  vendor: string;
+  model: string;
+}
+
+/** The brief the board hands the agent: the issue, its worktree, and the model. */
+export function boardBrief(issue: string, worktree: string, model: string): string {
+  return [
+    `Issue: #${issue}`,
+    `Worktree: ${worktree}`,
+    `Model: ${model}`,
+    'Goal: do the issue in this worktree as a yokoten worker. Follow AGENTS.md. Commit the work. Never push.',
+  ].join('\n');
+}
+
+/** The vendor's start command with the brief, or null when the board cannot start it. */
+export function boardStartParts(vendor: string, brief: string): string[] | null {
+  const head = BOARD_START_COMMANDS[vendor];
+  return head ? [...head, brief] : null;
+}
+
+/** The ask as given, or the plain reason it is refused. */
+export function readBoardStartAsk(fields: Record<string, string>): BoardStartAsk | string {
+  const issue = (fields.issue ?? '').trim();
+  if (!/^[1-9]\d*$/.test(issue)) return 'give the issue by its number, such as 603';
+  const vendor = (fields.vendor ?? '').trim();
+  if (!Object.hasOwn(BOARD_START_COMMANDS, vendor)) {
+    return `the board starts ${Object.keys(BOARD_START_COMMANDS).join(', ')}: start ${vendor || 'that vendor'} by hand`;
+  }
+  const model = (fields.model ?? '').trim();
+  if (!BOARD_MODEL_PATTERN.test(model)) return 'name the model in letters, numbers, dots and dashes, such as muse-spark-1.3';
+  return { issue, vendor, model };
+}
+
+/** The worktree for the issue, made when missing, or the plain reason git cannot make it. */
+function boardWorktree(root: string, env: Env, issue: string): { dir: string } | { fail: string } {
+  const dir = join(root, '.worktrees', issue);
+  try {
+    if (statSync(dir).isDirectory()) return { dir };
+  } catch {
+    // Missing: made below.
+  }
+  if (existsSync(dir)) return { fail: `the board needs ${hideHome(dir, env)} as a folder, but a file is there: move it away and run it again` };
+  const branch = `${issue}-board`;
+  try {
+    execFileSync('git', ['worktree', 'add', dir, branch], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'], timeout: BOARD_READ_TIMEOUT_MS });
+  } catch {
+    try {
+      execFileSync('git', ['worktree', 'add', dir, '-b', branch], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'], timeout: BOARD_READ_TIMEOUT_MS });
+    } catch {
+      return { fail: `the board could not make the worktree at ${hideHome(dir, env)}: make it by hand and run it again` };
+    }
+  }
+  return { dir };
+}
+
+/** Why the ask breaks the limits, or null when it passes. */
+function checkBoardLimits(controls: BoardControls, model: string): string | null {
+  const running = controls.runs.filter((run) => run.status === 'running');
+  if (running.length >= controls.limits.maxAgents) {
+    return `the board already runs ${countText(running.length, 'agent')} of ${controls.limits.maxAgents}: stop one before starting another`;
+  }
+  const cap = controls.limits.byModel[model] ?? 0;
+  const same = running.filter((run) => run.model === model).length;
+  if (cap > 0 && same >= cap) return `the board already runs ${countText(same, 'agent')} on ${model} of ${cap}: stop one before starting another`;
+  return null;
+}
+
+/**
+ * Start one agent from the ask: make the worktree, start the vendor's command, and keep
+ * the run. The child gets `YOKOTEN_ROLE=worker`, so the guard checks it as a worker.
+ */
+export function startBoardAgent(root: string, env: Env, controls: BoardControls, ask: BoardStartAsk): BoardRun | string {
+  const over = checkBoardLimits(controls, ask.model);
+  if (over) return over;
+  const made = boardWorktree(root, env, ask.issue);
+  if ('fail' in made) return made.fail;
+  const parts = boardStartParts(ask.vendor, boardBrief(ask.issue, made.dir, ask.model));
+  if (!parts) return `the board starts ${Object.keys(BOARD_START_COMMANDS).join(', ')}: start ${ask.vendor} by hand`;
+  const [command, ...args] = parts;
+  let name = `issue-${ask.issue}-${ask.vendor}`;
+  for (let salt = 2; controls.runs.some((run) => run.name === name); salt += 1) name = `issue-${ask.issue}-${ask.vendor}-${salt}`;
+  const run: BoardRun = {
+    name,
+    issue: ask.issue,
+    vendor: ask.vendor,
+    model: ask.model,
+    worktree: made.dir,
+    pid: null,
+    status: 'running',
+    startedAt: new Date().toISOString(),
+    stoppedAt: '',
+    exitCode: null,
+    output: [],
+  };
+  const push = (text: string) => {
+    run.output.push(text.slice(0, 500));
+    if (run.output.length > BOARD_OUTPUT_LINES) run.output.splice(0, run.output.length - BOARD_OUTPUT_LINES);
+  };
+  let child: BoardChild;
+  try {
+    child = controls.spawner(command, args, { cwd: made.dir, env: { ...env, YOKOTEN_ROLE: 'worker', YOKOTEN_MODEL: ask.model } }, {
+      line: push,
+      exit: (code) => {
+        run.exitCode = code;
+      },
+    });
+  } catch {
+    return `the board could not start ${command}: check that it is installed and run it again`;
+  }
+  run.pid = child.pid;
+  controls.handles.set(name, child);
+  controls.runs.push(run);
+  appendBoardLog(controls, `start ${name} pid ${child.pid ?? '?'} issue #${ask.issue} ${ask.vendor} ${ask.model} ${made.dir} ${command} ${args.join(' ')}`);
+  return run;
+}
+
+/**
+ * Stop one agent the board started. Anything else is refused: an unknown name, or one
+ * that already stopped. Stopping keeps the worktree and its commits.
+ */
+export function stopBoardAgent(controls: BoardControls, name: string): BoardRun | string {
+  const clean = name.trim();
+  if (!clean) return 'name the agent to stop';
+  const run = controls.runs.find((one) => one.name === clean);
+  if (!run) return `no agent called ${clean} was started by this board`;
+  if (run.status !== 'running') return `${clean} already stopped`;
+  const child = controls.handles.get(clean);
+  if (!child) return `the board could not stop ${clean}: its process is gone`;
+  try {
+    child.kill();
+  } catch {
+    return `the board could not stop ${clean}: run it again`;
+  }
+  run.status = 'stopped';
+  run.stoppedAt = new Date().toISOString();
+  appendBoardLog(controls, `stop ${run.name} pid ${run.pid ?? '?'} issue #${run.issue} ${run.vendor} ${run.model}`);
+  return run;
+}
+
+/** One limits change: a new cap, a new per-model map, or both. Missing stays as it is. */
+export interface BoardLimitChange {
+  maxAgents?: number;
+  byModel?: Record<string, number>;
+}
+
+/** The limits change as given, or the plain reason it is refused. */
+export function readBoardLimitChange(fields: Record<string, string>): BoardLimitChange | string {
+  const change: BoardLimitChange = {};
+  const maxText = (fields.maxAgents ?? '').trim();
+  if (maxText !== '') {
+    const maxAgents = Number(maxText);
+    if (!/^[1-9]\d*$/.test(maxText) || maxAgents > 32) return 'set maxAgents to a whole number from 1 to 32';
+    change.maxAgents = maxAgents;
+  }
+  const modelsText = (fields.models ?? '').trim();
+  if (modelsText !== '') {
+    const byModel: Record<string, number> = {};
+    for (const pair of modelsText.split(',')) {
+      const [name, count] = pair.split(':').map((part) => part.trim());
+      if (!name || !BOARD_MODEL_PATTERN.test(name) || !/^[1-9]\d*$/.test(count ?? '') || Number(count) > 32) {
+        return 'set models as name:count pairs, such as model-a:2, model-b:1';
+      }
+      byModel[name] = Number(count);
+    }
+    change.byModel = byModel;
+  }
+  if (change.maxAgents === undefined && change.byModel === undefined) return 'set maxAgents, models, or both';
+  return change;
+}
+
+/** The new limits, or the plain reason they are refused. Setting one keeps the other. */
+export function setBoardLimits(controls: BoardControls, fields: Record<string, string>): BoardLimits | string {
+  const change = readBoardLimitChange(fields);
+  if (typeof change === 'string') return change;
+  if (change.maxAgents !== undefined) controls.limits.maxAgents = change.maxAgents;
+  if (change.byModel !== undefined) controls.limits.byModel = change.byModel;
+  appendBoardLog(controls, `limits maxAgents ${controls.limits.maxAgents} models ${JSON.stringify(controls.limits.byModel)}`);
+  return { ...controls.limits, byModel: { ...controls.limits.byModel } };
+}
+
+/** The open issues, gh's order, or why gh cannot read them. */
+export function readBoardIssues(gh: Gh, repo: string): BoardIssue[] | string {
+  let text: string;
+  try {
+    text = gh(['issue', 'list', '--repo', repo, '--state', 'open', '--limit', '30', '--json', 'number,title,url']);
+  } catch {
+    return 'gh could not list the open issues: run it again';
+  }
+  let rows: unknown;
+  try {
+    rows = JSON.parse(text || '[]');
+  } catch {
+    return 'gh gave no open issue list: run it again';
+  }
+  if (!Array.isArray(rows)) return 'gh gave no open issue list: run it again';
+  return rows.flatMap((row) => {
+    if (typeof row !== 'object' || row === null) return [];
+    const fields = row as Record<string, unknown>;
+    const number = fields.number;
+    if (typeof number !== 'number' || !Number.isSafeInteger(number) || number <= 0) return [];
+    return [{ number, title: typeof fields.title === 'string' ? fields.title : '', url: typeof fields.url === 'string' ? fields.url : '' }];
+  });
+}
+
+/** The link when it is http(s), else ''. Anything else stays plain text, never a link. */
+function boardLink(url: string): string {
+  const clean = url.trim().toLowerCase();
+  return clean.startsWith('http://') || clean.startsWith('https://') ? url.trim() : '';
+}
+
+/**
+ * The hold-ups the status files name: `blocked` (a guard stop that needs a decision) or
+ * `question` (one line the agent asks the owner), with `link` for where to act. A file
+ * that is missing, broken, or names neither is skipped.
+ */
+export function readBoardAttention(trees: BoardWorktree[]): BoardAttention[] {
+  const found: BoardAttention[] = [];
+  for (const tree of trees) {
+    let text: string;
+    try {
+      text = readFileSync(join(tree.path, BOARD_AGENT_FILE), 'utf8');
+    } catch {
+      continue;
+    }
+    const agent = parseBoardAgent(text, tree.path);
+    if (!agent) continue;
+    let status: unknown;
+    try {
+      status = JSON.parse(text);
+    } catch {
+      continue;
+    }
+    const fields = status as Record<string, unknown>;
+    const link = boardLink(fieldText(fields, 'link'));
+    for (const kind of ['guard', 'question'] as const) {
+      const why = fieldText(fields, kind === 'guard' ? 'blocked' : 'question').split('\n')[0].trim().slice(0, 140);
+      if (!why) continue;
+      found.push({ name: agent.name, vendor: agent.vendor, role: agent.role, worktree: agent.worktree, updated: agent.updated, kind, why, link });
+    }
+  }
+  return found;
+}
+
+/** True when the pull request waits for the owner: tier A, open, green, and no Approve. */
+function isWaitingPull(pull: BoardPull): boolean {
+  return pull.tier === 'A' && pull.stage === 'open' && pull.checks === 'pass' && pull.review !== 'approved';
+}
+
+/** The agent in the worktree on the pull's branch, or null when no agent is there. */
+function pullAgent(board: BoardData, branch: string): BoardAgent | null {
+  if (typeof board.worktrees === 'string' || !branch) return null;
+  const path = board.worktrees.find((tree) => tree.branch === branch)?.path;
+  if (!path) return null;
+  return board.agents.find((agent) => agent.worktree === path) ?? null;
+}
+
+/**
+ * The waiting list: tier A pull requests that need the Approve, and the agents' guard
+ * stops and questions. Tier A rows are live from the pull requests. Agent rows latch:
+ * once a hold-up shows, it stays while the agent is here, even when its file stops
+ * naming it. Only leaving (removing the file) clears a file row, and only stopping
+ * clears a run's own row. `seen` keeps the latched rows; the answer copies them, so
+ * callers never move the latch.
+ */
+export function collectBoardWaiting(board: BoardData, attention: BoardAttention[], runs: BoardRun[], seen: BoardWaiting[], now: number = Date.now()): BoardWaiting[] {
+  const live: BoardWaiting[] = [];
+  if (typeof board.pulls !== 'string') {
+    for (const pull of board.pulls.filter(isWaitingPull)) {
+      const agent = pullAgent(board, pull.branch);
+      live.push({
+        kind: 'approve',
+        agent: agent?.name ?? '',
+        role: agent?.role ?? '',
+        wait: agent ? ageText(agent.updated, now) : '',
+        why: `tier A, checks pass, needs the owner go-ahead: #${pull.number} ${pull.title}`.slice(0, 140),
+        link: pull.url,
+      });
+    }
+  }
+  const fresh: BoardWaiting[] = attention.map((held) => ({ kind: held.kind, agent: held.name, role: held.role, wait: ageText(held.updated, now), why: held.why, link: held.link }));
+  for (const run of runs.filter((one) => one.status === 'running')) {
+    const stop = run.output.filter((line) => /guard stopped/i.test(line)).at(-1);
+    if (!stop) continue;
+    if (fresh.some((row) => row.agent === run.name && row.kind === 'guard')) continue;
+    if (seen.some((row) => row.agent === run.name && row.kind === 'guard')) continue;
+    fresh.push({ kind: 'guard', agent: run.name, role: '', wait: ageText(run.startedAt, now), why: stop.slice(0, 140), link: '' });
+  }
+  for (const row of fresh) {
+    const old = seen.find((kept) => kept.agent === row.agent && kept.kind === row.kind);
+    if (old) {
+      old.role = row.role;
+      old.wait = row.wait;
+      old.why = row.why;
+      old.link = row.link;
+    } else seen.push({ ...row });
+  }
+  const here = new Set([...board.agents.map((agent) => agent.name), ...runs.filter((run) => run.status === 'running').map((run) => run.name)]);
+  for (let at = seen.length - 1; at >= 0; at -= 1) {
+    if (!here.has(seen[at].agent)) seen.splice(at, 1);
+  }
+  return [...live, ...seen.map((row) => ({ ...row }))];
+}
+
+/** The board's data with the controls: the waiting list, the open issues, the runs, and the limits. */
+export interface BoardSnapshot {
+  waiting: BoardWaiting[];
+  issues: BoardIssue[] | string;
+  runs: BoardRun[];
+  limits: BoardLimits;
+}
+
+/** The runs as /data serves them: worktrees hide the home folder, and only the tail of the output. */
+function snapshotRuns(runs: BoardRun[], env: Env): BoardRun[] {
+  return runs.map((run) => ({ ...run, worktree: hideHome(run.worktree, env), output: run.output.slice(-BOARD_OUTPUT_SHOWN) }));
+}
+
+/** The snapshot for /data: the waiting list, the open issues, the runs, and the limits. */
+export function readBoardSnapshot(root: string, env: Env, gh: Gh, controls: BoardControls, board: BoardData, trees: BoardWorktree[] | string): BoardSnapshot {
+  const remote = repoOf(readOriginUrl(root, env));
+  return {
+    waiting: collectBoardWaiting(board, typeof trees === 'string' ? [] : readBoardAttention(trees), controls.runs, controls.seen),
+    issues: remote ? readBoardIssues(gh, remote) : 'this repo has no GitHub remote, so the board shows no open issues',
+    runs: snapshotRuns(controls.runs, env),
+    limits: { ...controls.limits, byModel: { ...controls.limits.byModel } },
+  };
 }

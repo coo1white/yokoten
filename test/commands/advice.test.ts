@@ -5,7 +5,9 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
+  readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -26,16 +28,30 @@ import {
 } from '../repo/helpers.ts';
 import {
   ageText,
+  boardBrief,
   boardPage,
+  boardStartParts,
   collectBoard,
+  collectBoardWaiting,
+  createBoardControls,
   readBoardAgents,
+  readBoardAttention,
+  readBoardIssues,
+  readBoardLimitChange,
+  readBoardStartAsk,
   readBoardWorktrees,
   renderBoardText,
   runDoctor,
+  setBoardLimits,
   startBoardServer,
+  stopBoardAgent,
+  type BoardEvents,
+  type BoardSpawner,
+  type BoardWaiting,
 } from '../../src/commands/advice.ts';
 import type { Invocation, Output } from '../../src/commands/shared.ts';
 import type { Gh } from '../../src/host/github.ts';
+import type { Env } from '../../src/rules/config.ts';
 
 // Codex adds a SessionStart hook's plain stdout to the context; Gemini CLI reads JSON only (#211).
 test('doctor --session --agent: plain text for Codex, hookSpecificOutput JSON for Gemini CLI (#211)', async () => {
@@ -558,4 +574,351 @@ test('board server: a wrong token gets a 403', async () => {
   } finally {
     await new Promise<void>((done) => server.close(() => done()));
   }
+});
+
+// #603: one board request over a raw socket, with any method, headers and body, so no
+// proxy setting can send it elsewhere. Each server test closes its server in a finally.
+function boardSend(target: string, options: { method?: string; headers?: Record<string, string>; body?: string } = {}): Promise<{ status: number; kind: string; text: string }> {
+  const url = new URL(target);
+  const method = options.method ?? 'GET';
+  const body = options.body ?? '';
+  return new Promise((done, failed) => {
+    const socket = connect(Number(url.port), url.hostname, () => {
+      const rows = [`${method} ${url.pathname}${url.search} HTTP/1.1`, `Host: ${options.headers?.host ?? url.host}`, 'Connection: close'];
+      for (const [key, value] of Object.entries(options.headers ?? {})) {
+        if (key.toLowerCase() !== 'host') rows.push(`${key}: ${value}`);
+      }
+      if (method === 'POST') rows.push(`Content-Length: ${Buffer.byteLength(body)}`);
+      socket.write(`${rows.join('\r\n')}\r\n\r\n${body}`);
+    });
+    const parts: Buffer[] = [];
+    socket.on('data', (chunk) => parts.push(chunk));
+    socket.on('end', () => {
+      const answer = Buffer.concat(parts);
+      const split = answer.indexOf('\r\n\r\n');
+      const [statusLine, ...rows] = answer.subarray(0, split).toString('utf8').split('\r\n');
+      const found: Record<string, string> = {};
+      for (const row of rows) {
+        const at = row.indexOf(':');
+        if (at > 0) found[row.slice(0, at).trim().toLowerCase()] = row.slice(at + 1).trim();
+      }
+      done({ status: Number(statusLine.split(' ')[1]), kind: found['content-type'] ?? '', text: answer.subarray(split + 4).toString('utf8') });
+    });
+    socket.on('error', failed);
+  });
+}
+
+// #603: a fake agent process. Tests pass it, so they never start a real agent. Each
+// start is recorded with its command, folder and env; each kill by its pid.
+function fakeAgents(): { spawner: BoardSpawner; started: { command: string; args: string[]; cwd: string; env: Env; events: BoardEvents }[]; killed: (number | null)[] } {
+  const started: { command: string; args: string[]; cwd: string; env: Env; events: BoardEvents }[] = [];
+  const killed: (number | null)[] = [];
+  const spawner: BoardSpawner = (command, args, options, events) => {
+    const pid = 1000 + started.length;
+    started.push({ command, args, cwd: options.cwd, env: options.env, events });
+    return { pid, kill: () => { killed.push(pid); } };
+  };
+  return { spawner, started, killed };
+}
+
+/** The page's Origin for a board link: the server only. */
+function boardOrigin(url: string): string {
+  const link = new URL(url);
+  return `${link.protocol}//${link.host}`;
+}
+
+/** One change against the board with the token and the page's Origin, as the page sends it. */
+function boardPost(url: string, path: string, body: string): Promise<{ status: number; kind: string; text: string }> {
+  const token = new URL(url).searchParams.get('t') ?? '';
+  return boardSend(`${url.split('?')[0]}${path}?t=${token}`, {
+    method: 'POST',
+    headers: { Origin: boardOrigin(url), 'content-type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+}
+
+// #603: the brief names the issue, the worktree and the model; each vendor starts with
+// its own headless command, and an unknown vendor has none.
+test('board controls: the brief and the start commands', () => {
+  const brief = boardBrief('603', '/repo/.worktrees/603', 'model-a');
+  assert.ok(brief.includes('Issue: #603'), 'the issue');
+  assert.ok(brief.includes('/repo/.worktrees/603'), 'the worktree');
+  assert.ok(brief.includes('model-a'), 'the model');
+  assert.ok(brief.includes('YOKOTEN_ROLE') === false, 'no env text in the brief');
+  assert.deepEqual(boardStartParts('claude-code', 'hi')?.slice(0, 2), ['claude', '-p']);
+  assert.deepEqual(boardStartParts('codex', 'hi')?.slice(0, 2), ['codex', 'exec']);
+  assert.deepEqual(boardStartParts('muse', 'hi')?.slice(0, 3), ['muse', 'exec', '--trust-workspace']);
+  assert.deepEqual(boardStartParts('grok', 'hi')?.slice(0, 2), ['grok', '-p']);
+  assert.deepEqual(boardStartParts('antigravity', 'hi')?.slice(0, 2), ['agy', '-p']);
+  assert.deepEqual(boardStartParts('deepseek-harness', 'hi')?.slice(0, 2), ['dsh', 'headless']);
+  assert.ok(boardStartParts('claude-code', 'hi')?.at(-1) === 'hi', 'the brief is last');
+  assert.equal(boardStartParts('gemini', 'hi'), null, 'no headless form on record: start it by hand');
+  assert.equal(boardStartParts('', 'hi'), null);
+  assert.deepEqual(readBoardStartAsk({ issue: '603', vendor: 'codex', model: 'model-a' }), { issue: '603', vendor: 'codex', model: 'model-a' });
+  assert.match(readBoardStartAsk({ issue: 'x', vendor: 'codex', model: 'm' }) as string, /number/, 'the issue is a number');
+  assert.match(readBoardStartAsk({ issue: '603', vendor: 'gemini', model: 'm' }) as string, /by hand/, 'an unknown vendor is refused');
+  assert.match(readBoardStartAsk({ issue: '603', vendor: 'codex', model: '' }) as string, /model/, 'the model is named');
+});
+
+// #603: the limits change one side and keep the other; anything odd is refused plainly.
+test('board controls: the limits change', () => {
+  const controls = createBoardControls(join(makeTempDir(), 'board.log'));
+  assert.deepEqual(controls.limits, { maxAgents: 3, byModel: {} });
+  assert.deepEqual(setBoardLimits(controls, { maxAgents: '2' }), { maxAgents: 2, byModel: {} });
+  assert.deepEqual(setBoardLimits(controls, { models: 'model-a:1, model-b:2' }), { maxAgents: 2, byModel: { 'model-a': 1, 'model-b': 2 } });
+  assert.match(setBoardLimits(controls, { maxAgents: '0' }) as string, /1 to 32/);
+  assert.match(setBoardLimits(controls, { maxAgents: 'many' }) as string, /1 to 32/);
+  assert.match(setBoardLimits(controls, { models: 'model-a:x' }) as string, /name:count/);
+  assert.match(setBoardLimits(controls, { models: 'model-a' }) as string, /name:count/);
+  assert.match(setBoardLimits(controls, {}) as string, /maxAgents, models/);
+  assert.deepEqual(readBoardLimitChange({ maxAgents: '33' }) as string, 'set maxAgents to a whole number from 1 to 32');
+});
+
+// #603: the open issues as rows, or why gh cannot read them.
+test('board controls: the open issues', () => {
+  const gh: Gh = () => JSON.stringify([{ number: 603, title: 'board agents', url: 'https://example.com/i/603' }, { number: 'x' }, null]);
+  assert.deepEqual(readBoardIssues(gh, 'octo/demo'), [{ number: 603, title: 'board agents', url: 'https://example.com/i/603' }]);
+  assert.equal(readBoardIssues(() => { throw new Error('no net'); }, 'octo/demo'), 'gh could not list the open issues: run it again');
+  assert.equal(readBoardIssues(() => 'oops', 'octo/demo'), 'gh gave no open issue list: run it again');
+});
+
+// #603: from the page, the owner starts a worker on an issue, sees its output, and
+// stops it. Stopping keeps the worktree, and the log holds the start and the stop.
+test('board server: start an agent, see its output, stop it', async () => {
+  const sandbox = makeSandbox();
+  const agents = fakeAgents();
+  const controls = createBoardControls(join(sandbox.repo, '.yokoten-board.log'), agents.spawner);
+  const gh: Gh = () => '[]';
+  const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh, { controls });
+  try {
+    const started = await boardPost(url, 'agents/start', 'issue=12&vendor=claude-code&model=model-a');
+    assert.equal(started.status, 200, started.text);
+    assert.deepEqual(JSON.parse(started.text), { name: 'issue-12-claude-code', worktree: join(sandbox.repo, '.worktrees', '12'), pid: 1000 });
+    assert.equal(agents.started.length, 1);
+    assert.equal(agents.started[0].command, 'claude');
+    assert.deepEqual(agents.started[0].args.slice(0, 1), ['-p']);
+    assert.ok(agents.started[0].args.at(-1)?.includes('Issue: #12'), 'the brief is the last word');
+    assert.equal(agents.started[0].cwd, join(sandbox.repo, '.worktrees', '12'), 'its own worktree');
+    assert.ok(existsSync(join(sandbox.repo, '.worktrees', '12')), 'the worktree is made');
+    assert.equal(agents.started[0].env.YOKOTEN_ROLE, 'worker', 'a worker, like the dispatch skill');
+    assert.equal(agents.started[0].env.YOKOTEN_MODEL, 'model-a');
+    agents.started[0].events.line('doing the task');
+    const token = new URL(url).searchParams.get('t') ?? '';
+    const data = JSON.parse((await boardSend(`${url.split('?')[0]}data?t=${token}`)).text) as { runs: { name: string; status: string; output: string[]; worktree: string }[] };
+    assert.equal(data.runs.length, 1);
+    assert.equal(data.runs[0].output.join('\n'), 'doing the task', 'the latest output shows');
+    const stopped = await boardPost(url, 'agents/stop', 'name=issue-12-claude-code');
+    assert.equal(stopped.status, 200, stopped.text);
+    assert.deepEqual(agents.killed, [1000], 'only its own process stops');
+    assert.ok(existsSync(join(sandbox.repo, '.worktrees', '12')), 'stopping keeps the worktree');
+    const log = readFileSync(join(sandbox.repo, '.yokoten-board.log'), 'utf8');
+    assert.match(log, /start issue-12-claude-code pid 1000 issue #12 claude-code model-a/, 'the log holds the start');
+    assert.match(log, /stop issue-12-claude-code pid 1000 issue #12/, 'the log holds the stop');
+    assert.equal((await boardPost(url, 'agents/stop', 'name=issue-12-claude-code')).status, 409, 'stopping twice is refused');
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+});
+
+// #603: over the limit, the board refuses with a plain reason; a higher limit starts it.
+test('board server: over the limit the start is refused', async () => {
+  const sandbox = makeSandbox();
+  const agents = fakeAgents();
+  const controls = createBoardControls(join(sandbox.repo, '.yokoten-board.log'), agents.spawner);
+  const gh: Gh = () => '[]';
+  const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh, { controls });
+  try {
+    assert.equal((await boardPost(url, 'agents/limits', 'maxAgents=1')).status, 200);
+    assert.equal((await boardPost(url, 'agents/start', 'issue=12&vendor=claude-code&model=model-a')).status, 200);
+    const over = await boardPost(url, 'agents/start', 'issue=13&vendor=codex&model=model-a');
+    assert.equal(over.status, 409, 'one too many');
+    assert.match(over.text, /already runs 1 agent of 1/, 'a plain reason');
+    assert.equal(over.kind, 'text/plain; charset=utf-8');
+    assert.equal((await boardPost(url, 'agents/limits', 'maxAgents=3')).status, 200);
+    assert.equal((await boardPost(url, 'agents/start', 'issue=13&vendor=codex&model=model-a')).status, 200);
+    assert.match((await boardPost(url, 'agents/limits', 'models=model-a%3A2')).text, /model-a/, 'a per-model cap saves');
+    const capped = await boardPost(url, 'agents/start', 'issue=14&vendor=grok&model=model-a');
+    assert.equal(capped.status, 409);
+    assert.match(capped.text, /model-a/, 'names the model');
+    assert.equal((await boardPost(url, 'agents/start', 'issue=14&vendor=grok&model=model-b')).status, 200, 'another model still starts');
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+});
+
+// #603: the waiting list shows a tier A pull with green checks and no Approve, and a
+// guard stop; an approved, tier B, red or closed pull never shows.
+test('board server: the waiting list shows what needs the owner', async () => {
+  const sandbox = makeSandbox();
+  sandbox.git('remote', 'add', 'origin', 'git@github.com:octo/demo.git');
+  const tree = realpathSync(sandbox.repo);
+  writeFileSync(
+    join(sandbox.repo, '.yokoten-agent.json'),
+    JSON.stringify({ name: 'w', vendor: 'muse', task: 'issue 601', worktree: tree, doing: 'blocked', updated: '2026-10-22T10:00:00Z', role: 'engineer', blocked: 'the guard stopped a force push: say which branch', question: 'one scope or the repo?', link: 'https://example.com/pull/7' }),
+  );
+  const pull = (number: number, branch: string, state: string, review: string, checks: unknown[], labels: unknown[]) => ({
+    number, title: `work ${number}`, headRefName: branch, url: `https://example.com/pull/${number}`, state, reviewDecision: review, isDraft: false, statusCheckRollup: checks, labels,
+  });
+  const pass = [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }];
+  const gh: Gh = (args) => {
+    if (args[0] === 'issue') return '[]';
+    return JSON.stringify([
+      pull(7, 'main', 'OPEN', 'REVIEW_REQUIRED', pass, [{ name: 'tier A' }]),
+      pull(8, 'main', 'OPEN', 'APPROVED', pass, [{ name: 'tier A' }]),
+      pull(9, 'main', 'OPEN', 'REVIEW_REQUIRED', pass, [{ name: 'tier B' }]),
+      pull(10, 'main', 'MERGED', 'APPROVED', pass, [{ name: 'tier A' }]),
+      pull(11, 'other', 'OPEN', '', pass, [{ name: 'tier A' }]),
+    ]);
+  };
+  const agents = fakeAgents();
+  const controls = createBoardControls(join(sandbox.repo, '.yokoten-board.log'), agents.spawner);
+  const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh, { controls });
+  try {
+    const token = new URL(url).searchParams.get('t') ?? '';
+    const data = JSON.parse((await boardSend(`${url.split('?')[0]}data?t=${token}`)).text) as { waiting: { kind: string; agent: string; role: string; wait: string; why: string; link: string }[] };
+    const kinds = data.waiting.map((row) => [row.kind, row.agent]);
+    assert.ok(kinds.some(([kind, agent]) => kind === 'approve' && agent === 'w'), `tier A with green checks and no Approve shows, with its agent: ${JSON.stringify(kinds)}`);
+    assert.ok(kinds.some(([kind, agent]) => kind === 'guard' && agent === 'w'), 'the guard stop shows');
+    assert.ok(kinds.some(([kind, agent]) => kind === 'question' && agent === 'w'), 'the question shows');
+    assert.ok(kinds.some(([kind, agent]) => kind === 'approve' && agent === ''), 'a pull with no agent still shows');
+    assert.ok(!data.waiting.some((row) => row.why.includes('#8')), 'an approved pull never waits');
+    assert.ok(!data.waiting.some((row) => row.why.includes('#9')), 'tier B never waits here');
+    assert.ok(!data.waiting.some((row) => row.why.includes('#10')), 'a merged pull never waits');
+    const row = data.waiting.find((one) => one.kind === 'approve' && one.agent === 'w');
+    assert.equal(row?.role, 'engineer', 'the row shows the role');
+    assert.ok(row?.wait, 'the row shows how long it waited');
+    assert.ok(row?.why, 'the row says why in one line');
+    assert.equal(row?.link, 'https://example.com/pull/7', 'the row links where the owner acts');
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+});
+
+// #603: no agent action clears a waiting item. The list has no clear endpoint; an agent
+// that stops naming its hold-up still shows, and a refused change leaves it as it is.
+test('board server: no agent action clears a waiting item', async () => {
+  const sandbox = makeSandbox();
+  sandbox.git('remote', 'add', 'origin', 'git@github.com:octo/demo.git');
+  const tree = realpathSync(sandbox.repo);
+  const file = join(sandbox.repo, '.yokoten-agent.json');
+  writeFileSync(file, JSON.stringify({ name: 'w', task: 'issue 601', worktree: tree, updated: '2026-10-22T10:00:00Z', role: 'engineer', blocked: 'the guard stopped a force push', question: 'one scope or the repo?' }));
+  const pass = [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }];
+  const gh: Gh = (args) => {
+    if (args[0] === 'issue') return '[]';
+    return JSON.stringify([{ number: 7, title: 'work 7', headRefName: 'main', url: 'https://example.com/pull/7', state: 'OPEN', reviewDecision: 'REVIEW_REQUIRED', isDraft: false, statusCheckRollup: pass, labels: [{ name: 'tier A' }] }]);
+  };
+  const agents = fakeAgents();
+  const controls = createBoardControls(join(sandbox.repo, '.yokoten-board.log'), agents.spawner);
+  const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh, { controls });
+  try {
+    const base = url.split('?')[0];
+    const token = new URL(url).searchParams.get('t') ?? '';
+    const waiting = async () => (JSON.parse((await boardSend(`${base}data?t=${token}`)).text) as { waiting: { kind: string; agent: string }[] }).waiting;
+    assert.equal((await waiting()).length, 3, 'an Approve, a guard stop, and a question');
+    writeFileSync(file, JSON.stringify({ name: 'w', task: 'issue 601', worktree: tree, updated: '2026-10-22T10:30:00Z', role: 'engineer' }));
+    assert.equal((await waiting()).length, 3, 'an agent that stops naming its hold-up still shows');
+    assert.equal((await boardPost(url, 'agents/stop', 'name=w')).status, 404, 'no run of that name');
+    assert.equal((await waiting()).length, 3, 'a refused stop changes nothing');
+    assert.equal((await boardSend(`${base}waiting/clear?t=${token}`, { method: 'POST', headers: { Origin: boardOrigin(url) }, body: '' })).status, 404, 'no clear endpoint');
+    assert.equal((await boardSend(`${base}data?t=${token}`, { method: 'POST', headers: { Origin: boardOrigin(url) }, body: '' })).status, 404, 'no change down the read path');
+    assert.equal((await waiting()).length, 3, 'the list is read only');
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+});
+
+// #603: every safety refusal: a wrong token, a missing or wrong Origin, and a process
+// the board did not start. Each says why in plain words.
+test('board server: a change without the token or the Origin is refused', async () => {
+  const sandbox = makeSandbox();
+  const agents = fakeAgents();
+  const controls = createBoardControls(join(sandbox.repo, '.yokoten-board.log'), agents.spawner);
+  const gh: Gh = () => '[]';
+  const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh, { controls });
+  try {
+    const base = url.split('?')[0];
+    const origin = boardOrigin(url);
+    const body = 'issue=12&vendor=claude-code&model=model-a';
+    assert.equal((await boardSend(`${base}agents/start?t=wrong`, { method: 'POST', headers: { Origin: origin }, body })).status, 403, 'a wrong token');
+    assert.equal((await boardSend(`${base}agents/start?t=${new URL(url).searchParams.get('t')}`, { method: 'POST', body })).status, 403, 'a missing Origin');
+    assert.equal((await boardSend(`${base}agents/start?t=${new URL(url).searchParams.get('t')}`, { method: 'POST', headers: { Origin: 'http://127.0.0.1:9' }, body })).status, 403, 'a wrong Origin');
+    assert.equal((await boardSend(`${base}agents/start?t=${new URL(url).searchParams.get('t')}`, { method: 'POST', headers: { Origin: 'https://example.com' }, body })).status, 403, 'an outside Origin');
+    assert.equal(agents.started.length, 0, 'nothing started');
+    assert.equal((await boardPost(url, 'agents/start', 'issue=x&vendor=claude-code&model=model-a')).status, 400, 'a bad issue is refused');
+    assert.match((await boardPost(url, 'agents/start', 'issue=x&vendor=claude-code&model=model-a')).text, /number/);
+    assert.equal((await boardPost(url, 'agents/start', 'issue=12&vendor=gemini&model=model-a')).status, 400, 'an unknown vendor is refused');
+    assert.match((await boardPost(url, 'agents/start', 'issue=12&vendor=gemini&model=model-a')).text, /by hand/);
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+});
+
+// #603: stop only stops a process the board started: any other name is refused, and a
+// neighbour the board started keeps running.
+test('board server: stop only stops what the board started', async () => {
+  const sandbox = makeSandbox();
+  const agents = fakeAgents();
+  const controls = createBoardControls(join(sandbox.repo, '.yokoten-board.log'), agents.spawner);
+  const gh: Gh = () => '[]';
+  const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh, { controls });
+  try {
+    assert.equal((await boardPost(url, 'agents/start', 'issue=12&vendor=claude-code&model=model-a')).status, 200);
+    assert.equal((await boardPost(url, 'agents/start', 'issue=13&vendor=codex&model=model-b')).status, 200);
+    const foreign = await boardPost(url, 'agents/stop', 'name=issue-99-claude-code');
+    assert.equal(foreign.status, 404, 'a process the board did not start');
+    assert.match(foreign.text, /no agent called issue-99-claude-code was started by this board/);
+    assert.equal((await boardPost(url, 'agents/stop', 'name=')).status, 404, 'no name at all');
+    const stopped = await boardPost(url, 'agents/stop', 'name=issue-12-claude-code');
+    assert.equal(stopped.status, 200, stopped.text);
+    assert.deepEqual(agents.killed, [1000], 'the neighbour keeps running');
+    assert.equal(stopBoardAgent(controls, 'nope'), 'no agent called nope was started by this board', 'direct, too');
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+});
+
+// #603: the attention comes from the status files; a missing, broken, or quiet file is skipped.
+test('board controls: the attention in the status files', () => {
+  const folder = makeTempDir();
+  const trees = [{ path: folder, branch: 'main' }];
+  assert.deepEqual(readBoardAttention(trees), [], 'no file, no hold-up');
+  writeFileSync(join(folder, '.yokoten-agent.json'), '{oops');
+  assert.deepEqual(readBoardAttention(trees), [], 'a broken file is skipped');
+  writeFileSync(join(folder, '.yokoten-agent.json'), JSON.stringify({ name: 'w', role: 'reviewer', updated: '2026-10-22T10:00:00Z', doing: 'fine' }));
+  assert.deepEqual(readBoardAttention(trees), [], 'a quiet file is skipped');
+  writeFileSync(join(folder, '.yokoten-agent.json'), JSON.stringify({ name: 'w', role: 'reviewer', updated: '2026-10-22T10:00:00Z', blocked: 'the guard stopped it\nsecond line', question: 'which one?', link: 'javascript:alert(1)' }));
+  assert.deepEqual(readBoardAttention(trees), [
+    { name: 'w', vendor: '', role: 'reviewer', worktree: '', updated: '2026-10-22T10:00:00Z', kind: 'guard', why: 'the guard stopped it', link: '' },
+    { name: 'w', vendor: '', role: 'reviewer', worktree: '', updated: '2026-10-22T10:00:00Z', kind: 'question', why: 'which one?', link: '' },
+  ], 'one line each, and no odd link');
+});
+
+// #603: the waiting list latches an agent row while the agent is here, and drops it
+// when it leaves; Approve rows follow the pulls.
+test('board controls: the waiting list latches while the agent is here', () => {
+  const board = { repo: 'r', agents: [{ name: 'w', vendor: '', task: '', worktree: 'p', doing: '', updated: '2026-10-22T10:00:00Z', role: 'engineer' as const }], pulls: [], worktrees: [{ path: 'p', branch: 'main' }] };
+  const held = [{ name: 'w', vendor: '', role: 'engineer' as const, worktree: 'p', updated: '2026-10-22T10:00:00Z', kind: 'guard' as const, why: 'the guard stopped it', link: '' }];
+  const seen: BoardWaiting[] = [];
+  assert.deepEqual(collectBoardWaiting(board, held, [], seen).map((row) => row.kind), ['guard']);
+  assert.deepEqual(collectBoardWaiting(board, [], [], seen).map((row) => row.kind), ['guard'], 'a quiet file clears nothing');
+  assert.deepEqual(collectBoardWaiting({ ...board, agents: [] }, [], [], seen), [], 'leaving clears it');
+});
+
+// #603: the page shows the waiting list, the start and limits forms, the runs and their
+// output, and no Approve or Merge button anywhere.
+test('board page: the waiting list, the controls, and no Approve or Merge button', () => {
+  const page = boardPage();
+  assert.ok(page.includes('<div id="waiting"></div>'), 'the waiting list at the top');
+  assert.ok(page.includes('<div id="started"></div>'), 'the runs the board started');
+  assert.ok(page.includes('<div id="output"></div>'), 'the latest output');
+  assert.ok(page.includes('id="start"'), 'the start form');
+  assert.ok(page.includes('id="limits"'), 'the limits form');
+  assert.ok(page.includes('Nothing waits for you.'), 'the empty state says so');
+  assert.ok(page.includes('application/x-www-form-urlencoded'), 'forms, never raw JSON');
+  assert.ok(!/>Approve</.test(page), 'no Approve button');
+  assert.ok(!/>Merge</.test(page), 'no Merge button');
+  assert.ok(!/fetch\('[^']*(approve|merge)/i.test(page), 'no call that approves or merges');
+  assert.ok(page.includes("<div id=\"groups\"></div>"), 'the left sidebar stays');
+  assert.ok(page.includes("<div id=\"detail\"></div>"), 'the middle stays');
+  assert.ok(page.includes('agents/start') && page.includes('agents/stop') && page.includes('agents/limits'), 'the page only changes through the board');
 });
