@@ -3,6 +3,14 @@
 import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import {
+  chmodSync,
+  mkdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { get as httpGet } from 'node:http';
+import { join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { test } from 'node:test';
 import {
@@ -10,8 +18,19 @@ import {
   makeSandbox,
   pick,
 } from '../repo/helpers.ts';
-import { runDoctor } from '../../src/commands/advice.ts';
+import {
+  ageText,
+  boardDir,
+  boardPage,
+  collectBoard,
+  readBoardAgents,
+  readBoardWorktrees,
+  renderBoardText,
+  runDoctor,
+  startBoardServer,
+} from '../../src/commands/advice.ts';
 import type { Invocation, Output } from '../../src/commands/shared.ts';
+import type { Gh } from '../../src/host/github.ts';
 
 // Codex adds a SessionStart hook's plain stdout to the context; Gemini CLI reads JSON only (#211).
 test('doctor --session --agent: plain text for Codex, hookSpecificOutput JSON for Gemini CLI (#211)', async () => {
@@ -123,4 +142,225 @@ test('doctor: one progress line on a terminal; none off it, in a session, or wit
   const json = run(true, ['--json']);
   assert.ok(!json.stdout.includes('reading GitHub settings'), 'stdout holds only the report');
   JSON.parse(json.stdout);
+});
+
+// #601: `yokoten board --text` prints the team as plain text. An agent joins by writing its
+// status file, and leaves by removing it.
+test('board --text: the entry, an agent that joins and leaves, and the usage errors', async () => {
+  const sandbox = makeSandbox();
+  // The entry, through the real binary; the rest runs in this process.
+  const started = sandbox.run(['board', '--text']);
+  assert.equal(started.status, 0, started.stderr);
+  assert.match(started.stdout, /^yokoten board: \S+\n0 agents, 0 pull requests, 1 worktree\.\n\nAgents:\n- none\. An agent joins by writing its status file\.\n\nPull requests:\n- this repo has no GitHub remote, so the board shows no pull requests\n\nWorktrees:\n- \S+ \(main\)\n$/);
+  const dir = join(sandbox.home, '.config', 'yokoten', 'board');
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, 'worker-1.json');
+  writeFileSync(file, JSON.stringify({ name: 'worker-1', vendor: 'claude-code', task: 'issue 601', worktree: sandbox.repo, doing: 'writing tests', updated: new Date().toISOString() }));
+  const joined = await sandbox.call(['board', '--text']);
+  assert.equal(joined.status, 0, joined.stderr);
+  assert.match(joined.stdout, /\n1 agent, 0 pull requests, 1 worktree\.\n/);
+  assert.match(joined.stdout, /- worker-1 \(claude-code\): issue 601, in \S+, writing tests, just now\n/);
+  rmSync(file);
+  const left = await sandbox.call(['board', '--text']);
+  assert.match(left.stdout, /\n0 agents, 0 pull requests, 1 worktree\.\n/);
+  assert.match(left.stdout, /- none\. An agent joins by writing its status file\.\n/);
+  assert.equal((await sandbox.call(['board', '--bogus'])).status, 1, 'an unknown option is refused');
+  const outside = await sandbox.call(['board', '--text'], { cwd: sandbox.home });
+  assert.equal(outside.status, 1, 'outside a repo it says so');
+  assert.match(outside.stderr, /is not inside a git repo/);
+});
+
+// #601: the pull requests come from `gh pr list`. A fake gh first on PATH answers; the real
+// gh and GitHub are never reached.
+test('board --text: pull requests with each stage, read-only', async () => {
+  const sandbox = makeSandbox();
+  assert.equal(sandbox.git('remote', 'add', 'origin', 'https://github.com/octo/demo.git').status, 0);
+  const bin = join(sandbox.home, 'bin');
+  mkdirSync(bin);
+  const pulls = [
+    { number: 7, title: 'team page', headRefName: 'board', url: 'https://example.com/pull/7', state: 'OPEN', reviewDecision: 'REVIEW_REQUIRED', isDraft: false, statusCheckRollup: [{ conclusion: 'SUCCESS', status: 'COMPLETED' }], labels: [{ name: 'tier B' }] },
+    { number: 6, title: 'old work', headRefName: 'old', url: '', state: 'MERGED', reviewDecision: 'APPROVED', isDraft: false, statusCheckRollup: [{ conclusion: 'FAILURE', status: 'COMPLETED' }], labels: [] },
+  ];
+  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nconsole.log(${JSON.stringify(JSON.stringify(pulls))});\n`);
+  chmodSync(join(bin, 'gh'), 0o755);
+  const result = await sandbox.call(['board', '--text'], { extra: { PATH: `${bin}:${process.env.PATH}` } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /\n0 agents, 2 pull requests, 1 worktree\.\n/);
+  assert.match(result.stdout, /\n- #7 team page \[board\]: checks pass, tier B, waiting for the owner\n- #6 old work \[old\]: checks fail, no tier, merged\n/);
+});
+
+// #601: one status file per agent. Broken, foreign and odd files never break the board.
+test('board agents: every file as an agent, by file name; the odd ones are skipped or blank', () => {
+  const sandbox = makeSandbox();
+  const dir = boardDir(sandbox.env);
+  assert.ok(dir);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'b.json'), JSON.stringify({ name: 'b-worker', vendor: 'codex', task: 't', worktree: 'w', doing: 'd', updated: '2026-10-22T10:00:00Z' }));
+  writeFileSync(join(dir, 'a.json'), JSON.stringify({ task: 'only a task' }));
+  writeFileSync(join(dir, 'c.json'), JSON.stringify({ name: 7, vendor: null, updated: 123 }));
+  writeFileSync(join(dir, 'broken.json'), '{oops');
+  writeFileSync(join(dir, 'list.json'), '[]');
+  writeFileSync(join(dir, 'notes.txt'), 'not a status file');
+  mkdirSync(join(dir, 'folder.json'));
+  assert.deepEqual(readBoardAgents(dir), [
+    { name: 'a', vendor: '', task: 'only a task', worktree: '', doing: '', updated: '' },
+    { name: 'b-worker', vendor: 'codex', task: 't', worktree: 'w', doing: 'd', updated: '2026-10-22T10:00:00Z' },
+    { name: 'c', vendor: '', task: '', worktree: '', doing: '', updated: '' },
+  ]);
+  assert.deepEqual(readBoardAgents(join(dir, 'missing')), [], 'no folder, no agents');
+  assert.equal(boardDir({}), null, 'no home folder, no status files');
+});
+
+test('board age: just now, minutes, hours and days; a missing or odd time is blank', () => {
+  const now = Date.parse('2026-10-22T12:00:00Z');
+  assert.equal(ageText('2026-10-22T11:59:30Z', now), 'just now');
+  assert.equal(ageText('2026-10-22T12:00:01Z', now), 'just now', 'a time ahead never goes below just now');
+  assert.equal(ageText('2026-10-22T11:59:00Z', now), '1 min ago');
+  assert.equal(ageText('2026-10-22T11:01:00Z', now), '59 min ago');
+  assert.equal(ageText('2026-10-22T11:00:00Z', now), '1 h ago');
+  assert.equal(ageText('2026-10-21T12:00:01Z', now), '23 h ago');
+  assert.equal(ageText('2026-10-21T12:00:00Z', now), '1 day ago');
+  assert.equal(ageText('2026-10-20T12:00:00Z', now), '2 days ago');
+  assert.equal(ageText('', now), '');
+  assert.equal(ageText('yesterday', now), '');
+});
+
+test('board worktrees: the repo lists its own; outside a repo git cannot list them', () => {
+  const sandbox = makeSandbox();
+  assert.deepEqual(readBoardWorktrees(sandbox.repo, sandbox.env), [{ path: sandbox.repo, branch: 'main' }]);
+  assert.equal(sandbox.git('commit', '-q', '--allow-empty', '-m', 'start').status, 0);
+  const second = join(sandbox.home, 'second');
+  assert.equal(sandbox.git('worktree', 'add', second, '-b', 'feature').status, 0);
+  assert.deepEqual(readBoardWorktrees(sandbox.repo, sandbox.env), [
+    { path: sandbox.repo, branch: 'main' },
+    { path: second, branch: 'feature' },
+  ]);
+  assert.equal(readBoardWorktrees(sandbox.home, sandbox.env), 'git could not list the worktrees: run it again');
+});
+
+test('board text: every stage in plain words; a part that cannot be read says why', () => {
+  const now = Date.parse('2026-10-22T12:00:00Z');
+  assert.deepEqual(
+    renderBoardText(
+      {
+        repo: '/repo',
+        agents: [
+          { name: 'worker-1', vendor: 'claude-code', task: 'issue 601', worktree: '/repo/.worktrees/601', doing: 'writing tests', updated: '2026-10-22T11:58:00Z' },
+          { name: 'plain', vendor: '', task: '', worktree: '', doing: '', updated: '' },
+        ],
+        pulls: [
+          { number: 1, title: 'team page', branch: 'board', url: '', stage: 'open', checks: 'pass', tier: 'B', review: 'waiting' },
+          { number: 2, title: 'old work', branch: 'old', url: '', stage: 'merged', checks: 'fail', tier: '', review: 'approved' },
+          { number: 3, title: 'draft', branch: 'd', url: '', stage: 'draft', checks: 'none', tier: 'C', review: 'none' },
+        ],
+        worktrees: [
+          { path: '/repo', branch: 'main' },
+          { path: '/repo/.worktrees/601', branch: '' },
+        ],
+      },
+      now,
+    ),
+    [
+      'yokoten board: /repo',
+      '2 agents, 3 pull requests, 2 worktrees.',
+      '',
+      'Agents:',
+      '- worker-1 (claude-code): issue 601, in /repo/.worktrees/601, writing tests, 2 min ago',
+      '- plain',
+      '',
+      'Pull requests:',
+      '- #1 team page [board]: checks pass, tier B, waiting for the owner',
+      '- #2 old work [old]: checks fail, no tier, merged',
+      '- #3 draft [d]: no checks, tier C, draft',
+      '',
+      'Worktrees:',
+      '- /repo (main)',
+      '- /repo/.worktrees/601',
+    ],
+  );
+  assert.deepEqual(renderBoardText({ repo: '/repo', agents: [], pulls: 'gh failed', worktrees: 'git failed' }, now), [
+    'yokoten board: /repo',
+    '0 agents, 0 pull requests, 0 worktrees.',
+    '',
+    'Agents:',
+    '- none. An agent joins by writing its status file.',
+    '',
+    'Pull requests:',
+    '- gh failed',
+    '',
+    'Worktrees:',
+    '- git failed',
+  ]);
+});
+
+// #601: the data together. Without a GitHub remote, gh is never asked.
+test('board data: agents, pulls and worktrees; gh runs only with a GitHub remote', () => {
+  const sandbox = makeSandbox();
+  const dir = boardDir(sandbox.env);
+  assert.ok(dir);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'w.json'), JSON.stringify({ name: 'w' }));
+  const unasked: Gh = () => {
+    throw new Error('gh must not run without a GitHub remote');
+  };
+  const without = collectBoard(sandbox.repo, sandbox.env, unasked);
+  assert.equal(without.repo, sandbox.repo);
+  assert.deepEqual(without.agents, [{ name: 'w', vendor: '', task: '', worktree: '', doing: '', updated: '' }]);
+  assert.equal(without.pulls, 'this repo has no GitHub remote, so the board shows no pull requests');
+  assert.deepEqual(without.worktrees, [{ path: sandbox.repo, branch: 'main' }]);
+  assert.equal(sandbox.git('remote', 'add', 'origin', 'git@github.com:octo/demo.git').status, 0);
+  const gh: Gh = () => JSON.stringify([{ number: 1, title: 't', headRefName: 'b', url: '', state: 'OPEN', reviewDecision: 'APPROVED', isDraft: false, statusCheckRollup: [], labels: [] }]);
+  assert.deepEqual(collectBoard(sandbox.repo, sandbox.env, gh).pulls, [{ number: 1, title: 't', branch: 'b', url: '', stage: 'open', checks: 'none', tier: '', review: 'approved' }]);
+  assert.equal(collectBoard(sandbox.repo, {}, gh).agents.length, 0, 'no home folder, no agents');
+});
+
+test('board page: plain HTML with the three tables; it reads /data every 15 seconds', () => {
+  const page = boardPage();
+  assert.match(page, /<title>yokoten board<\/title>/);
+  assert.match(page, /<h1>yokoten board<\/h1>/);
+  for (const id of ['agents', 'pulls', 'worktrees']) assert.ok(page.includes(`<table id="${id}"></table>`), `a ${id} table`);
+  assert.ok(page.includes('setInterval(load, 15000)'), 'refreshes every 15 seconds');
+  assert.ok(page.includes("fetch('data')"), 'reads the same data as JSON');
+  assert.ok(!page.includes('http://') && !page.includes('https://'), 'no outside address: it works offline');
+});
+
+// #601: the server listens on 127.0.0.1 only. It never outlives the test: it closes in a finally.
+test('board server: the page at /, the same data as JSON at /data, nothing else', async () => {
+  const sandbox = makeSandbox();
+  const dir = boardDir(sandbox.env);
+  assert.ok(dir);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'w.json'), JSON.stringify({ name: 'w', vendor: 'muse' }));
+  const gh: Gh = () => '[]';
+  const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh);
+  try {
+    const address = server.address();
+    assert.ok(typeof address === 'object' && address !== null);
+    assert.equal(address.address, '127.0.0.1', 'this machine only');
+    assert.match(url, /^http:\/\/127\.0\.0\.1:\d+\/$/);
+    const get = (path: string) =>
+      new Promise<{ status: number; kind: string; text: string }>((done, failed) => {
+        httpGet(`${url}${path.slice(1)}`, (res) => {
+          let text = '';
+          res.on('data', (chunk) => (text += chunk));
+          res.on('end', () => done({ status: res.statusCode ?? 0, kind: String(res.headers['content-type'] ?? ''), text }));
+        }).on('error', failed);
+      });
+    const page = await get('/');
+    assert.equal(page.status, 200);
+    assert.equal(page.kind, 'text/html; charset=utf-8');
+    assert.equal(page.text, boardPage());
+    const data = await get('/data');
+    assert.equal(data.status, 200);
+    assert.equal(data.kind, 'application/json; charset=utf-8');
+    const shown = JSON.parse(data.text) as { repo: string; agents: unknown[]; pulls: unknown; worktrees: unknown[]; updated: string };
+    assert.equal(shown.repo, sandbox.repo);
+    assert.deepEqual(shown.agents, [{ name: 'w', vendor: 'muse', task: '', worktree: '', doing: '', updated: '', age: '' }]);
+    assert.equal(shown.pulls, 'this repo has no GitHub remote, so the board shows no pull requests');
+    assert.deepEqual(shown.worktrees, [{ path: sandbox.repo, branch: 'main' }]);
+    assert.match(shown.updated, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    assert.equal((await get('/missing')).status, 404);
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+  }
 });

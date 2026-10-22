@@ -337,6 +337,19 @@ export const COMMANDS: Command[] = [
     example: 'yokoten bot -- gh pr create --fill',
   },
   {
+    name: 'board',
+    summary: 'the team at a glance: agents, pull requests and worktrees, live on a page',
+    usage: '[--text]',
+    text: [
+      'Serves a live page on this machine only (127.0.0.1), with each agent, each pull',
+      'request stage, and each worktree. It prints the link and runs until you stop it.',
+      'The page refreshes every 15 seconds. An agent joins by writing its status file,',
+      'and leaves by removing it; the guide shows the format.',
+    ],
+    options: [{ name: '--text', text: 'print the same data as plain text and exit' }],
+    example: 'yokoten board --text',
+  },
+  {
     name: 'uninstall',
     summary: 'take back what install wrote, for example to use the plugin instead',
     usage: '',

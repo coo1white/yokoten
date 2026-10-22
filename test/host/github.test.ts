@@ -40,6 +40,7 @@ import {
   type Gh,
   hasBot,
   installationToken,
+  readBoardPulls,
   readBranchFiles,
   readCodeOwners,
   readCommandTitle,
@@ -588,4 +589,58 @@ test('readIssueMilestone: the title, null for none, undefined when gh cannot rea
     throw new Error('gh: network');
   };
   assert.equal(readIssueMilestone(failing, 5, null), undefined);
+});
+
+// #601: the board's pull requests, from one `gh pr list`; a fake gh stands in for GitHub.
+test('readBoardPulls: each row as its stages; a row with no number is skipped', () => {
+  const calls: string[][] = [];
+  const rows = [
+    { number: 1, title: 'team page', headRefName: 'board', url: 'https://example.com/pull/1', state: 'OPEN', reviewDecision: 'REVIEW_REQUIRED', isDraft: false, statusCheckRollup: [{ conclusion: 'SUCCESS', status: 'COMPLETED' }], labels: [{ name: 'tier B' }] },
+    { number: 2, title: 'steady tests', headRefName: 'linear', url: '', state: 'MERGED', reviewDecision: 'APPROVED', isDraft: false, statusCheckRollup: [{ conclusion: 'SUCCESS', status: 'COMPLETED' }, { conclusion: '', status: 'IN_PROGRESS' }], labels: [{ name: 'tier: a' }] },
+    { number: 3, title: 'draft work', headRefName: 'draft', url: '', state: 'OPEN', reviewDecision: null, isDraft: true, statusCheckRollup: [], labels: [] },
+    { number: 4, title: 'closed stays', headRefName: 'old', url: '', state: 'CLOSED', reviewDecision: 'CHANGES_REQUESTED', isDraft: false, statusCheckRollup: [{ conclusion: 'FAILURE', status: 'COMPLETED' }], labels: [{ name: 'bug' }] },
+    { title: 'no number', headRefName: 'x' },
+  ];
+  const gh: Gh = (args) => {
+    calls.push(args);
+    return JSON.stringify(rows);
+  };
+  assert.deepEqual(readBoardPulls(gh, 'octo/demo'), [
+    { number: 1, title: 'team page', branch: 'board', url: 'https://example.com/pull/1', stage: 'open', checks: 'pass', tier: 'B', review: 'waiting' },
+    { number: 2, title: 'steady tests', branch: 'linear', url: '', stage: 'merged', checks: 'running', tier: 'A', review: 'approved' },
+    { number: 3, title: 'draft work', branch: 'draft', url: '', stage: 'draft', checks: 'none', tier: '', review: 'none' },
+    { number: 4, title: 'closed stays', branch: 'old', url: '', stage: 'closed', checks: 'fail', tier: '', review: 'changes' },
+  ]);
+  assert.deepEqual(calls, [['pr', 'list', '--repo', 'octo/demo', '--state', 'all', '--limit', '30', '--json', 'number,title,headRefName,state,reviewDecision,isDraft,statusCheckRollup,labels,url']]);
+});
+
+test('readBoardPulls: a fail wins over running; odd rows are reasons or blanks, never a crash', () => {
+  const ghWith = (rows: unknown): Gh => () => JSON.stringify(rows);
+  const row = { number: 1, title: 't', headRefName: 'b', url: '', state: 'OPEN', reviewDecision: '', isDraft: false, labels: [] };
+  const checksOf = (rollup: unknown) => (readBoardPulls(ghWith([{ ...row, statusCheckRollup: rollup }]), 'o/r') as { checks: string }[])[0].checks;
+  assert.equal(checksOf([{ conclusion: 'SUCCESS', status: 'COMPLETED' }, { conclusion: 'FAILURE', status: 'COMPLETED' }]), 'fail');
+  assert.equal(checksOf([{ conclusion: 'TIMED_OUT', status: 'COMPLETED' }]), 'fail');
+  assert.equal(checksOf([{ conclusion: '', status: 'QUEUED' }]), 'running');
+  assert.equal(checksOf([]), 'none');
+  assert.equal(checksOf(null), 'none');
+  assert.equal(checksOf([null, 'x']), 'none');
+  assert.equal(checksOf([{ conclusion: 'CANCELLED', status: 'COMPLETED' }]), 'pass');
+  const tierOf = (labels: unknown) => (readBoardPulls(ghWith([{ ...row, statusCheckRollup: [], labels }]), 'o/r') as { tier: string }[])[0].tier;
+  assert.equal(tierOf([{ name: 'Tier C' }]), 'C');
+  assert.equal(tierOf([{ name: 'tier' }, { name: 'tier D' }]), '');
+  assert.equal(tierOf('tier B'), '');
+  const blank = (readBoardPulls(ghWith([{ ...row, number: 2, title: null, headRefName: 7, url: null, state: null }]), 'o/r') as { title: string; branch: string; url: string; stage: string }[])[0];
+  assert.deepEqual([blank.title, blank.branch, blank.url, blank.stage], ['', '', '', 'open']);
+  const said = (text: string): Gh => () => text;
+  assert.equal(readBoardPulls(said('not json'), 'o/r'), 'gh gave no pull request list: run it again', 'not json');
+  assert.equal(readBoardPulls(said('{}'), 'o/r'), 'gh gave no pull request list: run it again', 'not a list');
+  assert.deepEqual(readBoardPulls(said('[]'), 'o/r'), [], 'no pull requests');
+  const missing: Gh = () => {
+    throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' });
+  };
+  assert.match(String(readBoardPulls(missing, 'o/r')), /^gh is not installed/);
+  const refused: Gh = () => {
+    throw Object.assign(new Error('Command failed'), { stderr: 'HTTP 401: Bad credentials\nmore' });
+  };
+  assert.equal(readBoardPulls(refused, 'o/r'), 'gh can\'t list the pull requests (HTTP 401: Bad credentials): run `gh auth login`, and check the repo');
 });

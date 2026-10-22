@@ -899,3 +899,80 @@ export function readIncident(gh: Gh, reference: string): Incident | string {
       .filter((name): name is string => typeof name === 'string' && name !== ''),
   };
 }
+
+// The pull requests for `yokoten board` (#601), read through `gh pr list`, so it uses
+// the owner's own sign-in and holds no token. Open, merged and closed, newest first.
+// Read only.
+
+/** The most pull requests the board reads: enough for one team's open and recent work. */
+const BOARD_PULL_LIMIT = 30;
+
+/** One pull request on the board: its number, title, branch, and each stage. */
+export interface BoardPull {
+  number: number;
+  title: string;
+  branch: string;
+  url: string;
+  /** Merged, closed, a draft, or open. */
+  stage: 'merged' | 'closed' | 'draft' | 'open';
+  /** The checks: pass, fail, still running, or none. A fail wins over running. */
+  checks: 'pass' | 'fail' | 'running' | 'none';
+  /** The tier from its labels (A, B or C), or '' when it has none. */
+  tier: '' | 'A' | 'B' | 'C';
+  /** The review: approved, changes asked, waiting for the owner, or none asked. */
+  review: 'approved' | 'changes' | 'waiting' | 'none';
+}
+
+/** A check conclusion that turns the pull request red. */
+const FAILED_CHECK = new Set(['FAILURE', 'TIMED_OUT', 'ACTION_REQUIRED']);
+
+/** The checks of one pull request, from gh's statusCheckRollup. */
+function rollupState(rollup: unknown): BoardPull['checks'] {
+  const entries = Array.isArray(rollup) ? rollup.filter(isObject) : [];
+  if (!entries.length) return 'none';
+  if (entries.some((entry) => typeof entry.conclusion === 'string' && FAILED_CHECK.has(entry.conclusion))) return 'fail';
+  if (entries.some((entry) => typeof entry.status === 'string' && entry.status !== 'COMPLETED')) return 'running';
+  return 'pass';
+}
+
+/** The tier from the label names (`tier A`, `tier: b`), or '' when there is none. */
+function pullTier(labels: string[]): BoardPull['tier'] {
+  const tier = labels.map((name) => name.match(/^tier\s*[:\s]\s*([abc])$/i)?.[1].toUpperCase()).find(Boolean);
+  return tier === 'A' || tier === 'B' || tier === 'C' ? tier : '';
+}
+
+/** One row of `gh pr list --json` as a board pull, or null when it has no number. */
+function parseBoardPull(row: unknown): BoardPull | null {
+  if (!isObject(row) || typeof row.number !== 'number' || !Number.isSafeInteger(row.number) || row.number <= 0) return null;
+  const review = asText(row.reviewDecision);
+  return {
+    number: row.number,
+    title: asText(row.title),
+    branch: asText(row.headRefName),
+    url: asText(row.url),
+    stage: asText(row.state) === 'MERGED' ? 'merged' : asText(row.state) === 'CLOSED' ? 'closed' : row.isDraft === true ? 'draft' : 'open',
+    checks: rollupState(row.statusCheckRollup),
+    tier: pullTier(labelNames(row.labels)),
+    review: review === 'APPROVED' ? 'approved' : review === 'CHANGES_REQUESTED' ? 'changes' : review === 'REVIEW_REQUIRED' ? 'waiting' : 'none',
+  };
+}
+
+/** The pull requests of `repo` ("owner/name"), or the reason gh can't read them. */
+export function readBoardPulls(gh: Gh, repo: string): BoardPull[] | string {
+  let text: string;
+  try {
+    text = gh(['pr', 'list', '--repo', repo, '--state', 'all', '--limit', String(BOARD_PULL_LIMIT), '--json', 'number,title,headRefName,state,reviewDecision,isDraft,statusCheckRollup,labels,url']);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'gh is not installed: get it from https://cli.github.com, then run `gh auth login`';
+    const reason = terminalText(String((err as { stderr?: string }).stderr || '').split('\n')[0].trim());
+    return `gh can't list the pull requests${reason ? ` (${reason})` : ''}: run \`gh auth login\`, and check the repo`;
+  }
+  let pulls: unknown;
+  try {
+    pulls = JSON.parse(text);
+  } catch {
+    return 'gh gave no pull request list: run it again';
+  }
+  if (!Array.isArray(pulls)) return 'gh gave no pull request list: run it again';
+  return pulls.map(parseBoardPull).filter((pull): pull is BoardPull => pull !== null);
+}
