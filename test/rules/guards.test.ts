@@ -1299,9 +1299,15 @@ test('bash: a command of 100k words is read in linear time (#226)', () => {
     ['sudo', (n) => `${'sudo '.repeat(n)}echo`],
     ['GIT_CONFIG_KEY_0', (n) => `${'GIT_CONFIG_KEY_0=x '.repeat(n)}git status`],
   ];
-  for (const [name, make] of commands) {
-    assertLinear(`${name} words`, make, (command) => assert.equal(checkCommand(command, { cwd: process.cwd(), env: {}, config: pythonBlocked }), null, name), 3125);
-  }
+  // The shapes take turns, and a noisy first round grows to a 20 ms base (#594).
+  assertLinearEach(
+    commands.map(([name, make]) => ({
+      name: `${name} words`,
+      make,
+      read: (command: string) => assert.equal(checkCommand(command, { cwd: process.cwd(), env: {}, config: pythonBlocked }), null, name),
+    })),
+    3125,
+  );
   blocked(`echo ${'a '.repeat(100000)}; ${force}`);
 });
 
