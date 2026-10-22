@@ -628,6 +628,31 @@ test('hook --stop: a linked worktree records failing, then passing, and a link i
   assert.equal(lstatSync(statusPath).isSymbolicLink(), true);
 });
 
+// cwd `sub` is a link to another worktree. The status file there must stay as it was.
+test('hook --stop: a link to another worktree does not change that worktree status file (#614)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const tree = join(makeTempDir('yokoten-tree-'), 'wt');
+  const other = join(makeTempDir('yokoten-other-'), 'wt');
+  sandbox.git('worktree', 'add', '-q', '-b', 'checks-link-a', tree);
+  sandbox.git('worktree', 'add', '-q', '-b', 'checks-link-b', other);
+  const otherStatus = join(other, '.yokoten-agent.json');
+  const otherText = `${JSON.stringify({ checks: 'keep', name: 'other' })}\n`;
+  writeFileSync(otherStatus, otherText);
+  const sub = join(tree, 'sub');
+  symlinkSync(other, sub);
+  const result = await sandbox.call(['hook', '--stop'], {
+    cwd: sub,
+    input: JSON.stringify({ session_id: 'link-out-614', cwd: sub, hook_event_name: 'Stop', stop_hook_active: false }),
+    extra: { YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: `${process.execPath} -e "process.exit(0)"` },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(otherStatus, 'utf8'), otherText);
+  assert.equal(lstatSync(otherStatus).isFile(), true);
+});
+
 test('hook --stop: a subagent runs the done-when command only in the worktree the event names (#614)', { skip: process.platform === 'win32' && 'a node path with a space needs shell quoting' }, async () => {
   const sandbox = makeSandbox();
   sandbox.write('a.md', 'fine\n');

@@ -1,6 +1,6 @@
 // `yokoten hook`: the tool-call guard, and with --stop the end-of-turn check.
 
-import { existsSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
 import * as claudeCode from '../agents/runtimes/claude-code.ts';
@@ -237,10 +237,42 @@ async function stopHook(invocation: Invocation, json: boolean, read: typeof clau
   return refuseFailingStop(invocation, json, findings, doneWhen, bumped, true);
 }
 
-/** The linked worktree's top folder, or null for the main checkout and outside a repo. */
+/**
+ * The linked worktree's real root, or null for the main checkout and outside a repo.
+ * `realpath` runs first. If it fails, nothing is written. A link into another worktree
+ * is not this folder's worktree, so that worktree's status file stays as it is.
+ */
 function linkedWorktree(folder: string): string | null {
-  const link = gitLinkAbove(folder);
-  return link?.kind === 'file' ? link.top : null;
+  let realFolder: string;
+  try {
+    realFolder = realpathSync(folder);
+  } catch {
+    return null;
+  }
+  const link = gitLinkAbove(realFolder);
+  if (link?.kind !== 'file') return null;
+  let top: string;
+  try {
+    top = realpathSync(link.top);
+  } catch {
+    return null;
+  }
+  return staysInsideWorktree(folder, top) ? top : null;
+}
+
+/** Whether `folder` is `top` or inside it, without following a symlink out. */
+function staysInsideWorktree(folder: string, top: string): boolean {
+  let dir = resolve(folder);
+  for (;;) {
+    try {
+      if (!lstatSync(dir).isSymbolicLink() && realpathSync(dir) === top) return true;
+    } catch {
+      return false;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return false;
+    dir = parent;
+  }
 }
 
 /** Write `checks` at a linked worktree's root. The main checkout is left unchanged. */

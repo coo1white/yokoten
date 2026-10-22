@@ -22,6 +22,7 @@ import {
   doneTryKey,
   doneWhenShell,
   guardDeadline,
+  isSameFile,
   isWorkerType,
   judge,
   noteRefused,
@@ -348,6 +349,48 @@ test('done-when: a timeout kills the tree while the shell is still running (#614
   assert.equal(result.ok, false);
   assert.match(result.output, /ran too long/);
   assert.equal(alive, true, 'the shell was still running when the tree was killed');
+});
+
+// setsid leaves the process group and keeps the pipes. The check must not wait for it.
+test('done-when: a timeout ends when a program left the process group (#614)', { skip: (process.platform === 'win32' || runChild('sh', ['-c', 'command -v setsid']).status !== 0) && 'setsid is missing' }, async () => {
+  const sandbox = makeSandbox();
+  const pidFile = join(sandbox.repo, 'grandchild.pid');
+  const command = `setsid sh -c 'echo $$ > "${pidFile}"; sleep 30' & sleep 30`;
+  const started = Date.now();
+  try {
+    const result = await runDoneWhen(command, sandbox.repo, sandbox.env, 500);
+    const elapsed = Date.now() - started;
+    assert.equal(result.ok, false);
+    assert.match(result.output, /ran too long/);
+    assert.ok(elapsed < 3000, `ended after ${elapsed} ms`);
+  } finally {
+    if (!existsSync(pidFile)) return;
+    const pid = Number(readFileSync(pidFile, 'utf8').trim());
+    if (!pid) return;
+    try {
+      process.kill(-pid, 'SIGKILL');
+    } catch {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        // The grandchild is already gone.
+      }
+    }
+  }
+});
+
+test('isSameFile: dev and ino both have to match (#614)', () => {
+  assert.equal(isSameFile({ dev: 1, ino: 2 }, { dev: 1, ino: 2 }), true);
+  assert.equal(isSameFile({ dev: 1, ino: 2 }, { dev: 3, ino: 2 }), false, 'a different dev is another file');
+  assert.equal(isSameFile({ dev: 1, ino: 2 }, { dev: 1, ino: 4 }), false, 'a different ino is another file');
+  const sandbox = makeSandbox();
+  const path = join(sandbox.repo, 'status.txt');
+  const other = join(sandbox.repo, 'other.txt');
+  writeFileSync(path, 'one\n');
+  writeFileSync(other, 'two\n');
+  const listed = lstatSync(path);
+  assert.equal(isSameFile(listed, lstatSync(path)), true);
+  assert.equal(isSameFile(listed, lstatSync(other)), false);
 });
 
 // The child ignores SIGHUP and SIGTERM. Only killing its process group stops it before the marker.

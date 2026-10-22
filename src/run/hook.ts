@@ -296,15 +296,32 @@ function writeReplacing(path: string, body: string): void {
   }
 }
 
-/** The text of a regular file, or null. A link is not opened. */
+/** Whether `opened` is the file `listed` saw. `dev` and `ino` both have to match. */
+export function isSameFile(listed: { dev: number; ino: number }, opened: { dev: number; ino: number }): boolean {
+  return listed.dev === opened.dev && listed.ino === opened.ino;
+}
+
+/**
+ * The text of a regular file, or null. A link is not opened. On Windows there is no
+ * O_NOFOLLOW, so a link swapped in after lstat is caught by comparing `dev` and `ino`.
+ */
 function readStatusText(path: string): string | null {
+  let listed: { dev: number; ino: number };
+  try {
+    const before = lstatSync(path);
+    if (!before.isFile()) return null;
+    listed = { dev: before.dev, ino: before.ino };
+  } catch {
+    return null;
+  }
   const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
   let fd: number | undefined;
   try {
     fd = openSync(path, flags);
-    const stats = fstatSync(fd);
-    if (!stats.isFile()) return null;
-    return readFileSync(fd, 'utf8');
+    const text = readFileSync(fd, 'utf8');
+    const opened = fstatSync(fd);
+    if (!opened.isFile() || !isSameFile(listed, opened)) return null;
+    return text;
   } catch {
     return null;
   } finally {
@@ -368,6 +385,7 @@ export function shortenOutput(text: string): string {
  * The command is started with `spawn`, and a timer in this process stops it. That timer
  * runs while the shell is still alive. On Windows it calls `taskkill /F /T /PID` then.
  * `spawnSync`'s timeout would have killed `cmd.exe` first, and the tree would stay (#614).
+ * A program that left the group can keep the pipes open. The timer ends the check then.
  */
 export function runDoneWhen(
   command: string,
@@ -418,6 +436,11 @@ export function runDoneWhen(
     timer = setTimeout(() => {
       timedOut = true;
       if (child.pid) killTree(child.pid);
+      // Drop our end of the pipes. A grandchild that left the group can hold the other end.
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      const output = `${stderr}${stdout}`.trimEnd();
+      finish({ ok: false, output: shortenOutput(output ? `${output}\nthe check ran too long and was stopped` : 'the check ran too long and was stopped') });
     }, timeoutMs);
     child.once('error', (error) => finish({ ok: false, output: shortenOutput(error.message.split('\n')[0]) }));
     child.once('close', (status, signal) => {

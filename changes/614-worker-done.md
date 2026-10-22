@@ -11,6 +11,8 @@ The allowed stop writes `.yokoten-agent.json` in a linked worktree. It sets `che
 to `failing`. A pass sets `checks` to `passing`. The main checkout is left unchanged.
 The lead reads that file. The board will show `checks` later (#603). `init` adds the
 file to `.gitignore` when that line is missing. A link at that path is left unchanged.
+A link into another worktree does not change that worktree's file. A file swapped
+for a link before the read is not followed.
 
 A worker type is exactly `worker`, or a name that ends with `:worker`. A name such as
 `code-worker` is not a worker. Re-mark such an agent as `worker`, or use a name that
@@ -24,7 +26,8 @@ are removed when a new count is written. A subagent is checked only when its own
 is a worker. The parent session's role does not make it one.
 
 The command uses the platform shell. A timeout stops the command and the programs it
-started. On Windows, yokoten stops the tree while the shell is still running. Claude
+started. A program that leaves the group does not hold the check open. On Windows,
+yokoten stops the tree while the shell is still running. Claude
 Code (Stop and SubagentStop), Codex (Stop), Muse Code (Stop) and Grok CLI (Stop) each
 wait 600 seconds. Gemini CLI (AfterAgent) reads `timeout` in milliseconds, so its hook
 waits 600000 milliseconds (10 minutes). Muse Code settings hooks, including
