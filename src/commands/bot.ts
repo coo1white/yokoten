@@ -168,6 +168,8 @@ interface NoteArgs {
  * The words and the option values of a note command's args. As in gh, the last spelling
  * of an option wins; a run-together word expands letter by letter (`-wb` is `-w -b`); a
  * separate value that looks like another flag is not consumed, so it is read as a flag.
+ * A bare `--` is the exception: in value position it is the value, as gh reads it, and
+ * parsing continues after it; in flag position it still ends the flags.
  */
 function readNoteArgs(args: string[], values: Set<string>, shorts: string): NoteArgs {
   const rest = [...args];
@@ -204,7 +206,8 @@ function readNoteArgs(args: string[], values: Set<string>, shorts: string): Note
     if (value === undefined) {
       const next = rest[index + 1];
       if (next === undefined) break;
-      if (next.startsWith('--')) continue;
+      // A bare `--` here is the value, as gh reads it; any longer `--` word is a flag.
+      if (next !== '--' && next.startsWith('--')) continue;
       index += 1;
       value = rest[index];
     }
@@ -244,10 +247,15 @@ function readPendingNoteBody(invocation: Invocation, command: string[], root: st
   }
   if ((!body && !found.attach) || !existsSync(join(root, 'yokoten.json')) || !isOrigin(root, repo, invocation.env)) return null;
   try {
+    // An empty body is nothing to check, as gh posts it as it is; `--attach` alone
+    // still returns a note below, so the upload is refused.
+    if (typeof body === 'string' && body === '' && !found.attach) return null;
     if (typeof body === 'string') return { root, text: body, repo, attach: found.attach };
     if (body === null) return { root, text: '', repo, attach: found.attach };
     const input = body.file === '-' ? readInput(invocation.stdin) : undefined;
-    return { root, text: input ?? readFileSync(resolve(invocation.cwd, body.file), 'utf8'), input, repo, attach: found.attach };
+    const text = input ?? readFileSync(resolve(invocation.cwd, body.file), 'utf8');
+    if (text === '' && !found.attach) return null;
+    return { root, text, input, repo, attach: found.attach };
   } catch {
     return null;
   }

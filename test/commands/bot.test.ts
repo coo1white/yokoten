@@ -868,3 +868,91 @@ test('bot: a note with --attach is refused, since the upload lands past the Made
     server.close();
   }
 });
+
+// #609: a bare `--` in value position is the value, as gh reads it, and parsing
+// continues: `gh pr comment 5 -b -- --body TEXT` posts TEXT, so it is checked. A
+// `--` in flag position still ends the flags: a body before it is checked, and a
+// command with no body passes through.
+test('bot: a bare -- as a value does not hide the body gh posts (#609)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', JSON.stringify({ areas: ['host'] }));
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/me/repo.git');
+  const bin = join(sandbox.home, 'bin');
+  const log = join(sandbox.home, 'gh.log');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args: process.argv.slice(2), input: require('node:fs').readFileSync(0, 'utf8') }) + '\\n');\n`);
+  chmodSync(join(bin, 'gh'), 0o755);
+  const server = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(req.method === 'GET' ? { id: 77 } : { token: 'ghs_test' }));
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  const key = join(sandbox.home, 'bot.pem');
+  writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
+  const bot = { PATH: `${bin}:${process.env.PATH}`, YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+  const run = (command: string[], input = '') => sandbox.call(['bot', '--', ...command], { input, extra: bot });
+  const ran = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+  const refused = async (command: string[]) => {
+    const before = ran().length;
+    const r = await run(command);
+    assert.equal(r.status, 1, command.join(' '));
+    assert.match(r.stderr, /^yokoten bot: 1 problem\(s\) in the body; nothing was sent\. Fix the body and run it again:\n- body: no `Made with` line at the end\. .+ End the body with `🤖 Made with <agent> \(<model>\)/);
+    assert.equal(ran().length, before, `gh did not run: ${command.join(' ')}`);
+  };
+  try {
+    // The bypass: `-b --` is the body `--`, and gh still posts `--body TEXT`.
+    await refused(['gh', 'pr', 'comment', '5', '-b', '--', '--body', 'A note.\n']);
+    await refused(['gh', 'pr', 'review', '5', '--comment', '-b', '--', '--body', 'A review.\n']);
+    await refused(['gh', 'issue', 'comment', '5', '--body-file', '--', '--body', 'An issue.\n']);
+    // With the line: sent unchanged.
+    const good = 'A note.\n\nMade with worker (opus)\n';
+    const sent = await run(['gh', 'pr', 'comment', '5', '-b', '--', '--body', good]);
+    assert.deepEqual([sent.status, sent.stderr], [0, ''], sent.stderr);
+    assert.deepEqual(ran(), [{ args: ['pr', 'comment', '5', '-b', '--', '--body', good], input: '' }]);
+    // A `--` in flag position still ends the flags: a body before it is checked ...
+    await refused(['gh', 'pr', 'comment', '5', '--body', 'A note.\n', '--', 'extra']);
+    const kept = await run(['gh', 'pr', 'comment', '5', '--body', good, '--', 'extra']);
+    assert.deepEqual([kept.status, kept.stderr], [0, ''], kept.stderr);
+    assert.deepEqual(ran().at(-1), { args: ['pr', 'comment', '5', '--body', good, '--', 'extra'], input: '' });
+    // ... and a command with no body passes through.
+    const plain = await run(['gh', 'pr', 'comment', '5', '--', 'extra']);
+    assert.deepEqual([plain.status, plain.stderr], [0, ''], plain.stderr);
+    assert.deepEqual(ran().at(-1), { args: ['pr', 'comment', '5', '--', 'extra'], input: '' });
+  } finally {
+    server.close();
+  }
+});
+
+// #609: an empty body is nothing to check: `--body ''` and an empty `--body-file` pass.
+test('bot: an empty body passes, from --body or --body-file (#609)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', JSON.stringify({ areas: ['host'] }));
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/me/repo.git');
+  const bin = join(sandbox.home, 'bin');
+  const log = join(sandbox.home, 'gh.log');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args: process.argv.slice(2), input: require('node:fs').readFileSync(0, 'utf8') }) + '\\n');\n`);
+  chmodSync(join(bin, 'gh'), 0o755);
+  const server = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(req.method === 'GET' ? { id: 77 } : { token: 'ghs_test' }));
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  const key = join(sandbox.home, 'bot.pem');
+  writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
+  const bot = { PATH: `${bin}:${process.env.PATH}`, YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+  const run = (command: string[], input = '') => sandbox.call(['bot', '--', ...command], { input, extra: bot });
+  const ran = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+  try {
+    const empty = await run(['gh', 'pr', 'comment', '5', '--body', '']);
+    assert.deepEqual([empty.status, empty.stderr], [0, ''], empty.stderr);
+    assert.deepEqual(ran(), [{ args: ['pr', 'comment', '5', '--body', ''], input: '' }]);
+    const bodyFile = join(sandbox.home, 'empty.md');
+    writeFileSync(bodyFile, '');
+    const viaFile = await run(['gh', 'pr', 'comment', '5', '--body-file', bodyFile]);
+    assert.deepEqual([viaFile.status, viaFile.stderr], [0, ''], viaFile.stderr);
+    assert.deepEqual(ran().at(-1), { args: ['pr', 'comment', '5', '--body-file', bodyFile], input: '' });
+  } finally {
+    server.close();
+  }
+});
