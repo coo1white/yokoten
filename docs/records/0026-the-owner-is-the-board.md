@@ -45,6 +45,20 @@ The team is run as an organization with separate powers. The owner approved this
 5. **One summary a day.** The lead sends the owner one summary a day: what merged, what is stuck, and at most three decisions, each with a recommendation he can answer in one word. A security incident is the only reason to interrupt him outside it.
 6. **A stop switch.** One command from the owner stops every agent and every merge until he lifts it.
 
+## Where this stands on the ladder
+
+The owner approved this ladder on 2026-10-23. This record is layer 3. Layers 4 and 5 are the vision, not work in progress.
+
+| Layer | What it is | Today |
+|---|---|---|
+| 1 | **A guard**: one agent held to the rules | Done |
+| 2 | **A team**: agents from several vendors working together | Being built |
+| 3 | **A company**: the team runs itself, the owner is the board (this record) | Decided here |
+| 4 | **An economy**: rules between many such AI organizations: a shared safety record, a track record per model across organizations, hiring across organizations, paid on green | Vision ([0020](0020-rules-the-employer-owns.md), [0021](0021-ai-checks-ai.md) rule 6) |
+| 5 | **The law of AI work**: the same rules for any work AI does, not only code | Vision (0020) |
+
+In one line: the rule of law for the agent economy. Each layer is claimed in public only once it runs.
+
 ## Options not taken
 
 - **Every bug fix tier B by label.** The writer picks the label, so a change that loosens a rule could call itself a bug fix. The machine check in 3 decides instead.
