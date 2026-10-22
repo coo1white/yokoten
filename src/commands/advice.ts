@@ -2,6 +2,7 @@
 // the project. A Claude Code session start keeps what it said in ~/.config/yokoten/sessions/ (#405).
 
 import { execFileSync } from 'node:child_process';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFileSync, readSync } from 'node:fs';
 import { createServer, type Server, type ServerResponse } from 'node:http';
 import { basename, join } from 'node:path';
@@ -318,9 +319,9 @@ function boardJson(board: BoardData): unknown {
   return { ...board, agents: board.agents.map((agent) => ({ ...agent, age: ageText(agent.updated, now) })), updated: new Date(now).toISOString() };
 }
 
-/** One answer of the board server: the status, the kind, and the text. */
+/** One answer of the board server: the status, the kind, and the text. Nothing is stored, and the page sends no referrer. */
 function serveText(res: ServerResponse, status: number, kind: string, text: string): void {
-  res.writeHead(status, { 'content-type': kind });
+  res.writeHead(status, { 'content-type': kind, 'content-length': Buffer.byteLength(text), 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
   res.end(text);
 }
 
@@ -453,8 +454,11 @@ function show(data) {
   var meta = document.getElementById('meta');
   meta.textContent = 'Shows ' + data.repo + '. Refreshes every ${BOARD_REFRESH_SECONDS} seconds. Last update ' + new Date().toLocaleTimeString() + '.';
 }
+function pageToken() {
+  return new URLSearchParams(location.search).get('t') || '';
+}
 function load() {
-  fetch('data').then(function (res) {
+  fetch('data?t=' + encodeURIComponent(pageToken())).then(function (res) {
     return res.json();
   }).then(show).catch(function () {
     document.getElementById('meta').textContent = 'Waiting for data.';
@@ -468,16 +472,44 @@ load();
 `;
 }
 
+/** How many random bytes the board link's token holds. */
+const BOARD_TOKEN_BYTES = 16;
+
+/**
+ * True when the Host header names this server: 127.0.0.1:<port> or localhost:<port>.
+ * Any other host is a rebound name, and gets a 403, so a page open in the same
+ * browser cannot read the board through another name for this machine.
+ */
+function isBoardHost(host: string | undefined, port: number): boolean {
+  const clean = (host ?? '').trim().toLowerCase();
+  return clean === `127.0.0.1:${port}` || clean === `localhost:${port}`;
+}
+
+/** True when the given token matches, compared in constant time. A missing token, or one of another length, never reaches the compare. */
+function isBoardToken(given: string | null, token: string): boolean {
+  if (given === null) return false;
+  const guess = Buffer.from(given, 'utf8');
+  const want = Buffer.from(token, 'utf8');
+  return guess.length === want.length && timingSafeEqual(guess, want);
+}
+
 /**
  * Start the board on 127.0.0.1 and a free port: the page at /, the data as JSON at
- * /data. Resolves with the server and its link; rejects when the server cannot listen.
- * The caller stops it with server.close.
+ * /data. Resolves with the server and its link, which holds a random token; rejects
+ * when the server cannot listen. The caller stops it with server.close. A request
+ * whose Host is not this server, or whose token is missing or wrong, gets a 403.
  */
 export function startBoardServer(root: string, env: Env, gh: Gh): Promise<{ server: Server; url: string }> {
+  const token = randomBytes(BOARD_TOKEN_BYTES).toString('hex');
   const server = createServer((req, res) => {
+    const address = server.address();
+    const port = typeof address === 'object' && address !== null ? address.port : 0;
+    if (!isBoardHost(req.headers.host, port)) return serveText(res, 403, 'text/plain; charset=utf-8', 'forbidden');
+    const [path, query] = (req.url ?? '').split('?');
+    if (!isBoardToken(new URLSearchParams(query ?? '').get('t'), token)) return serveText(res, 403, 'text/plain; charset=utf-8', 'forbidden');
     if (req.method !== 'GET') return serveText(res, 404, 'text/plain; charset=utf-8', 'not found');
-    if (req.url === '/') return serveText(res, 200, 'text/html; charset=utf-8', boardPage());
-    if (req.url === '/data') {
+    if (path === '/') return serveText(res, 200, 'text/html; charset=utf-8', boardPage());
+    if (path === '/data') {
       let board: BoardData;
       try {
         board = collectBoard(root, env, gh);
@@ -493,7 +525,7 @@ export function startBoardServer(root: string, env: Env, gh: Gh): Promise<{ serv
     server.listen(0, '127.0.0.1', () => {
       const address = server.address();
       const port = typeof address === 'object' && address !== null ? address.port : 0;
-      done({ server, url: `http://127.0.0.1:${port}/` });
+      done({ server, url: `http://127.0.0.1:${port}/?t=${token}` });
     });
   });
 }

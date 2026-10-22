@@ -1494,7 +1494,8 @@ Server setup, step by step: [`docs/server.md`](server.md).
 ### The team board
 
 `yokoten board` shows the team at a glance. It serves a page on this machine only.
-It prints a link. Open it in a browser.
+It prints a link. Open it in a browser. The link holds a random token, so only
+someone who reads this terminal can open the page.
 
 The page shows three tables. Agents: name, vendor, task, worktree, and what each
 does now. Pull requests: number, title, branch, checks, tier, and stage. Worktrees:

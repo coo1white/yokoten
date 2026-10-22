@@ -10,7 +10,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { get as httpGet } from 'node:http';
+import { connect } from 'node:net';
 import {
   basename,
   dirname,
@@ -355,7 +355,8 @@ test('board page: plain HTML with the three tables; it reads /data every 15 seco
   assert.match(page, /<h1>yokoten board<\/h1>/);
   for (const id of ['agents', 'pulls', 'worktrees']) assert.ok(page.includes(`<table id="${id}"></table>`), `a ${id} table`);
   assert.ok(page.includes('setInterval(load, 15000)'), 'refreshes every 15 seconds');
-  assert.ok(page.includes("fetch('data')"), 'reads the same data as JSON');
+  assert.ok(page.includes("fetch('data?t=' + encodeURIComponent(pageToken()))"), 'reads the same data as JSON, with the link token');
+  assert.ok(page.includes('new URLSearchParams(location.search)'), 'the token comes from the link');
   assert.ok(page.includes('.yokoten-agent.json'), 'the empty state names the file');
   // Each scheme shows once, in the link guard; nothing else points outside, so the page works offline.
   assert.equal(page.split('http://').length - 1, 1, 'one http:// (the link guard)');
@@ -371,12 +372,14 @@ test('board page: only http(s) pull addresses become links', () => {
   const script = scriptStart < 0 || scriptEnd < 0 ? '' : pageText.slice(scriptStart + '<script>'.length, scriptEnd);
   assert.ok(script.includes('if (isHttpUrl(pull.url))'), 'the pull number links only through the guard');
   // The page script on its own, with fakes for what it touches at load: one fetch, one timer, one note.
-  const run = new Function('document', 'fetch', 'setInterval', `${script}; return isHttpUrl;`) as unknown as (
+  const run = new Function('document', 'location', 'fetch', 'setInterval', `${script}; return { isHttpUrl, pageToken };`) as unknown as (
     fakeDocument: unknown,
+    fakeLocation: unknown,
     fakeFetch: () => Promise<never>,
     fakeTimer: () => number,
-  ) => (url: unknown) => boolean;
-  const isHttpUrl = run({ getElementById: () => ({}) }, () => Promise.reject(new Error('no net')), () => 0);
+  ) => { isHttpUrl: (url: unknown) => boolean; pageToken: () => string };
+  const { isHttpUrl, pageToken } = run({ getElementById: () => ({}) }, { search: '?t=abc' }, () => Promise.reject(new Error('no net')), () => 0);
+  assert.equal(pageToken(), 'abc', 'the page sends the link token on to /data');
   assert.equal(isHttpUrl('https://example.com/pull/7'), true);
   assert.equal(isHttpUrl('http://example.com/pull/7'), true);
   assert.equal(isHttpUrl('HTTPS://example.com/pull/7'), true, 'the scheme ignores case');
@@ -388,8 +391,36 @@ test('board page: only http(s) pull addresses become links', () => {
   assert.equal(isHttpUrl(undefined), false);
 });
 
-// #601: the server listens on 127.0.0.1 only. It never outlives the test: it closes in a finally.
-test('board server: the page at /, the same data as JSON at /data, nothing else', async () => {
+// #601: one board read over a raw socket, so no proxy setting can send it elsewhere,
+// with any Host header. Each server test starts its own server, which never outlives
+// the test: it closes in a finally.
+function boardGet(target: string, headers: Record<string, string> = {}): Promise<{ status: number; kind: string; headers: Record<string, string>; text: string }> {
+  const url = new URL(target);
+  return new Promise((done, failed) => {
+    const socket = connect(Number(url.port), url.hostname, () => {
+      socket.write(`GET ${url.pathname}${url.search} HTTP/1.1\r\nHost: ${headers.host ?? url.host}\r\nConnection: close\r\n\r\n`);
+    });
+    const parts: Buffer[] = [];
+    socket.on('data', (chunk) => parts.push(chunk));
+    socket.on('end', () => {
+      const answer = Buffer.concat(parts);
+      const split = answer.indexOf('\r\n\r\n');
+      const [statusLine, ...rows] = answer.subarray(0, split).toString('utf8').split('\r\n');
+      const found: Record<string, string> = {};
+      for (const row of rows) {
+        const at = row.indexOf(':');
+        if (at > 0) found[row.slice(0, at).trim().toLowerCase()] = row.slice(at + 1).trim();
+      }
+      done({ status: Number(statusLine.split(' ')[1]), kind: found['content-type'] ?? '', headers: found, text: answer.subarray(split + 4).toString('utf8') });
+    });
+    socket.on('error', failed);
+  });
+}
+
+// #601: the server listens on 127.0.0.1 only. The right Host and token see the page
+// at /, the same data as JSON at /data, and nothing else. Nothing is stored, and no
+// referrer leaves the page.
+test('board server: the right Host and token see the page and the data', async () => {
   const sandbox = makeSandbox();
   writeFileSync(join(sandbox.repo, '.yokoten-agent.json'), JSON.stringify({ name: 'w', vendor: 'muse', worktree: join(sandbox.home, 'w') }));
   const gh: Gh = () => '[]';
@@ -398,20 +429,15 @@ test('board server: the page at /, the same data as JSON at /data, nothing else'
     const address = server.address();
     assert.ok(typeof address === 'object' && address !== null);
     assert.equal(address.address, '127.0.0.1', 'this machine only');
-    assert.match(url, /^http:\/\/127\.0\.0\.1:\d+\/$/);
-    const get = (path: string) =>
-      new Promise<{ status: number; kind: string; text: string }>((done, failed) => {
-        httpGet(`${url}${path.slice(1)}`, (res) => {
-          let text = '';
-          res.on('data', (chunk) => (text += chunk));
-          res.on('end', () => done({ status: res.statusCode ?? 0, kind: String(res.headers['content-type'] ?? ''), text }));
-        }).on('error', failed);
-      });
-    const page = await get('/');
+    assert.match(url, /^http:\/\/127\.0\.0\.1:\d+\/\?t=[0-9a-f]{32}$/, 'the link holds a random token');
+    const base = url.split('?')[0];
+    const token = new URL(url).searchParams.get('t') ?? '';
+    const dataUrl = `${base}data?t=${token}`;
+    const page = await boardGet(url);
     assert.equal(page.status, 200);
     assert.equal(page.kind, 'text/html; charset=utf-8');
     assert.equal(page.text, boardPage());
-    const data = await get('/data');
+    const data = await boardGet(dataUrl);
     assert.equal(data.status, 200);
     assert.equal(data.kind, 'application/json; charset=utf-8');
     const shown = JSON.parse(data.text) as { repo: string; agents: unknown[]; pulls: unknown; worktrees: unknown[]; updated: string };
@@ -420,8 +446,66 @@ test('board server: the page at /, the same data as JSON at /data, nothing else'
     assert.equal(shown.pulls, 'this repo has no GitHub remote, so the board shows no pull requests');
     assert.deepEqual(shown.worktrees, [{ path: realpathSync(sandbox.repo), branch: 'main' }]);
     assert.match(shown.updated, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
-    assert.equal((await get('/missing')).status, 404);
+    for (const answer of [page, data]) {
+      assert.equal(answer.headers['cache-control'], 'no-store', 'nothing is stored');
+      assert.equal(answer.headers['referrer-policy'], 'no-referrer', 'no referrer leaves the page');
+    }
+    // localhost names the same server, so its Host is welcome too.
+    assert.equal((await boardGet(url, { host: `localhost:${address.port}` })).status, 200);
+    assert.equal((await boardGet(`${base}missing?t=${token}`)).status, 404);
     assert.doesNotThrow(() => server.emit('error', new Error('EADDRINUSE')), 'a server error is handled, never an uncaught throw');
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+});
+
+// #601: the board answers only its own Host, so a page open in the same browser
+// cannot read /data through a rebound name. Anything else gets a 403.
+test('board server: a wrong Host gets a 403', async () => {
+  const sandbox = makeSandbox();
+  const gh: Gh = () => '[]';
+  const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh);
+  try {
+    const port = (server.address() as { port: number }).port;
+    const token = new URL(url).searchParams.get('t') ?? '';
+    const base = url.split('?')[0];
+    for (const host of [`evil.example:${port}`, `127.0.0.1:${port}.evil.example`, '127.0.0.1', `127.0.0.1:${port + 1}`]) {
+      assert.equal((await boardGet(url, { host })).status, 403, `wrong Host on /: ${host}`);
+      assert.equal((await boardGet(`${base}data?t=${token}`, { host })).status, 403, `wrong Host on /data: ${host}`);
+    }
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+});
+
+// #601: / and /data refuse a missing token with a 403.
+test('board server: a missing token gets a 403', async () => {
+  const sandbox = makeSandbox();
+  const gh: Gh = () => '[]';
+  const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh);
+  try {
+    const base = url.split('?')[0];
+    assert.equal((await boardGet(`${base}`)).status, 403, '/ without a token');
+    assert.equal((await boardGet(`${base}data`)).status, 403, '/data without a token');
+    assert.equal((await boardGet(`${base}?x=1`)).status, 403, 'another query, no token');
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+});
+
+// #601: / and /data refuse a wrong token with a 403, whatever its length.
+test('board server: a wrong token gets a 403', async () => {
+  const sandbox = makeSandbox();
+  const gh: Gh = () => '[]';
+  const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh);
+  try {
+    const base = url.split('?')[0];
+    const token = new URL(url).searchParams.get('t') ?? '';
+    const flipped = `${token.slice(0, -1)}${token.endsWith('0') ? '1' : '0'}`;
+    assert.equal((await boardGet(`${base}?t=wrong`)).status, 403, 'a short token on /');
+    assert.equal((await boardGet(`${base}data?t=wrong`)).status, 403, 'a short token on /data');
+    assert.equal((await boardGet(`${base}?t=${flipped}`)).status, 403, 'a token of the right length, one digit off, on /');
+    assert.equal((await boardGet(`${base}data?t=${flipped}`)).status, 403, 'a token of the right length, one digit off, on /data');
   } finally {
     await new Promise<void>((done) => server.close(() => done()));
   }

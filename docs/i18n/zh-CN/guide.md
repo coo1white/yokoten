@@ -1251,7 +1251,7 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 ### 团队看板
 
 `yokoten board` 一眼看到整个团队。它只在这台电脑上开一个页面，
-启动后打印链接，用浏览器打开。
+启动后打印链接，用浏览器打开。链接里带有一个随机口令，只有能看到这台终端输出的人才能打开页面。
 
 页面上有三张表。agent：名字、哪家的、在做什么任务、在哪个 worktree、
 现在在干什么。PR：编号、标题、分支、检查、tier、状态。worktree：
