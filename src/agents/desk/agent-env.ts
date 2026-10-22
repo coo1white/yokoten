@@ -16,16 +16,16 @@
 // A runtime's login names skip all three, because the vendor needs its own key to run.
 // They pass only to that runtime's agent. YOKOTEN_NAMES skip the first.
 
-import type { Env } from '../rules/config.ts';
-import { findSecrets } from '../rules/secrets.ts';
-import { AGENT_ENV as COPILOT } from './copilot.ts';
-import { AGENT_ENV as ANTIGRAVITY } from './runtimes/antigravity.ts';
-import { AGENT_ENV as CLAUDE_CODE } from './runtimes/claude-code.ts';
-import { AGENT_ENV as CODEX } from './runtimes/codex.ts';
-import { AGENT_ENV as DEEPSEEK_HARNESS } from './runtimes/deepseek-harness.ts';
-import { AGENT_ENV as GEMINI } from './runtimes/gemini.ts';
-import { AGENT_ENV as GROK } from './runtimes/grok.ts';
-import { AGENT_ENV as MUSE } from './runtimes/muse.ts';
+import type { Env } from '../../rules/config.ts';
+import { findSecrets } from '../../rules/secrets.ts';
+import { AGENT_ENV as COPILOT } from '../copilot.ts';
+import { AGENT_ENV as ANTIGRAVITY } from '../runtimes/antigravity.ts';
+import { AGENT_ENV as CLAUDE_CODE } from '../runtimes/claude-code.ts';
+import { AGENT_ENV as CODEX } from '../runtimes/codex.ts';
+import { AGENT_ENV as DEEPSEEK_HARNESS } from '../runtimes/deepseek-harness.ts';
+import { AGENT_ENV as GEMINI } from '../runtimes/gemini.ts';
+import { AGENT_ENV as GROK } from '../runtimes/grok.ts';
+import { AGENT_ENV as MUSE } from '../runtimes/muse.ts';
 
 /** The names a runtime's own file adds for its agent: its login names, and the folders it reads its config from. */
 export interface RuntimeEnv {

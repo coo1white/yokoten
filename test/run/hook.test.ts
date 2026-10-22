@@ -212,6 +212,9 @@ test('done-when: the command comes from the env or the git-folder file; a pass, 
   assert.equal(shortenOutput(`token: ${token}`).includes(token), false);
   assert.equal(shortenOutput(`token: ${token}`).includes(SECRET), true);
   assert.equal(shortenOutput('a'.repeat(3000)).length <= 2000, true);
+  // The real value of a secret-looking variable is hidden too (#616).
+  const value = `${'envSecret'}${'Value'}1234`;
+  assert.equal(shortenOutput(`failed with ${value}`, { SERVICE_TOKEN: value }), 'failed with <secret>');
   assert.deepEqual(readStopFields({ cwd: '/w', stop_hook_active: true, agent_type: 'Worker', session_id: 's1' }), {
     cwd: '/w',
     active: true,

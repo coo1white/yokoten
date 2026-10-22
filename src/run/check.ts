@@ -9,9 +9,9 @@ import type { Config, Env } from '../rules/config.ts';
 import { findUnknownKeys, matcher } from '../rules/config.ts';
 import { checkEdit, withWorkerMark } from '../rules/guards.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
-import { type Finding, finding } from '../rules/message.ts';
+import { type Finding, finding, isFailingFinding } from '../rules/message.ts';
 import { isChangeFile, longSentenceNote, longSentences } from '../rules/pr.ts';
-import { autoLogins, mapMarkKinds, notUtc, repoMarkKinds, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
+import { autoLogins, loadIgnores, mapMarkKinds, notUtc, repoMarkKinds, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
 import { parseChange, readChanges } from './changelog.ts';
 import { isShallowNote, translationNotes } from './translations.ts';
 
@@ -418,9 +418,12 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
   const logins = autoLogins(kinds);
   const markKinds = mapMarkKinds(kinds);
   const skip = matcher(config.privacy.skip);
+  const ignoreFile = loadIgnores(root);
+  problems.push(...ignoreFile.problems);
   const privacy = (path: string, buf: Buffer) => {
     if (skip(path) || looksBinary(buf)) return;
-    problems.push(...scanText(buf.toString('utf8'), { file: path, marks, logins, allow: config.privacy.allow, kinds: markKinds }));
+    const found = scanText(buf.toString('utf8'), { file: path, marks, logins, allow: config.privacy.allow, kinds: markKinds, ignores: ignoreFile.entries, env });
+    for (const hit of found) (isFailingFinding(hit) ? problems : notes).push(hit);
   };
   if (staged) {
     const files = stagedFiles(root, env);
@@ -494,19 +497,24 @@ export const changedFiles = (root: string, env: Env): string[] =>
  * `check --staged` uses, on what is in the work tree now. The Stop hook runs it, so it
  * reads no history and makes no network call. A deleted file gets only the file rules.
  */
-export function checkChanged(root: string, { config, env }: { config: Config; env: Env }): Finding[] {
+export function checkChanged(root: string, { config, env, notes = [] }: { config: Config; env: Env; notes?: Finding[] }): Finding[] {
   const problems: Finding[] = [];
   const kinds = repoMarkKinds(env, root, config.privacy); // less what the repo is named for and the machine allows (#447)
   const marks = kinds.map((mark) => mark.value);
   const logins = autoLogins(kinds);
   const markKinds = mapMarkKinds(kinds);
   const skip = matcher(config.privacy.skip);
+  const ignoreFile = loadIgnores(root);
+  problems.push(...ignoreFile.problems);
   for (const path of changedFiles(root, env)) {
     const reason = checkEdit(path, { config, env });
     if (reason) problems.push(reason);
     if (skip(path)) continue;
     const buf = readEntry(root, path); // none if deleted, or a folder (a submodule)
-    if (buf && !looksBinary(buf)) problems.push(...scanText(buf.toString('utf8'), { file: path, marks, logins, allow: config.privacy.allow, kinds: markKinds }));
+    if (buf && !looksBinary(buf)) {
+      const found = scanText(buf.toString('utf8'), { file: path, marks, logins, allow: config.privacy.allow, kinds: markKinds, ignores: ignoreFile.entries, env });
+      for (const hit of found) (isFailingFinding(hit) ? problems : notes).push(hit);
+    }
   }
   return problems;
 }
@@ -549,20 +557,23 @@ export function historyTimeZones(root: string, env: Env): number {
  * older commits, so it is not scanned: one finding says so (#266). A grafts file can hide
  * commits the same way (#284).
  */
-export function checkHistory(root: string, { config, env }: { config: Config; env: Env }): Finding[] {
+export function checkHistory(root: string, { config, env, notes = [] }: { config: Config; env: Env; notes?: Finding[] }): Finding[] {
   if (isShallow(root, env)) return [shallowHistory()];
   if (hasGrafts(root, env)) return [graftedHistory()];
   // The same hit in several commits is reported once.
   const problems = new Map<string, Finding>();
+  const warnings = new Map<string, Finding>();
   const add = (found: Finding[]) => {
-    for (const f of found) problems.set(JSON.stringify(f), f);
+    for (const f of found) (isFailingFinding(f) ? problems : warnings).set(JSON.stringify(f), f);
   };
   const kinds = repoMarkKinds(env, root, config.privacy); // less what the repo is named for and the machine allows (#447)
   const marks = kinds.map((mark) => mark.value);
   const logins = autoLogins(kinds);
   const markKinds = mapMarkKinds(kinds);
   const skip = matcher(config.privacy.skip);
-  const opts = { marks, allow: config.privacy.allow, kinds: markKinds };
+  const ignoreFile = loadIgnores(root);
+  add(ignoreFile.problems);
+  const opts = { marks, allow: config.privacy.allow, kinds: markKinds, ignores: ignoreFile.entries, env };
 
   const log = git(root, env, ['log', '--all', '--format=%h%x00%ae%x00%ce%x00%B%x1e']);
   for (const entry of log.split('\x1e')) {
@@ -598,6 +609,7 @@ export function checkHistory(root: string, { config, env }: { config: Config; en
     const hint = first ? '' : `; \`git log --all --find-object=${sha.slice(0, 8)}\` names the commit`;
     add(hits.map((f) => ({ ...f, file, fix: f.fix + hint })));
   }
+  notes.push(...warnings.values());
   return [...problems.values()];
 }
 
