@@ -14,12 +14,25 @@ import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { planDesk } from '../../../src/agents/desk/desk.ts';
-import { chooseBackend, startDesk } from '../../../src/agents/desk/start.ts';
+import { chooseBackend, signalEnd, startDesk } from '../../../src/agents/desk/start.ts';
 import { CLI, makeTempDir } from '../../repo/helpers.ts';
 
 test('chooseBackend: native Windows is sent to WSL2, an unknown system is named', () => {
   assert.match(chooseBackend('win32', {}) as string, /WSL2/);
   assert.match(chooseBackend('aix', {}) as string, /not on aix/);
+});
+
+test('signalEnd: the real signal number, the signal named, and the sandbox hint when quiet', () => {
+  const abort = signalEnd('SIGABRT', 'darwin', true);
+  assert.equal(abort.code, 134);
+  assert.match(abort.lines[0], /SIGABRT \(exit 134\)/);
+  assert.match(abort.lines.join('\n'), /sandbox may have stopped it/);
+  assert.match(abort.lines.join('\n'), /log show --last 1m --predicate 'eventMessage CONTAINS "deny"'/);
+  assert.equal(signalEnd('SIGKILL', 'linux', false).code, 137);
+  assert.deepEqual(signalEnd('SIGTERM', 'linux', false).lines, ['yokoten desk: the agent was ended by SIGTERM (exit 143).']);
+  const linux = signalEnd('SIGABRT', 'linux', true).lines.join('\n');
+  assert.match(linux, /sandbox may have stopped it/);
+  assert.doesNotMatch(linux, /log show/);
 });
 
 // The probe runs inside the desk. Each check is one line of its JSON answer. It is plain

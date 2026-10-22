@@ -53,6 +53,16 @@ test('seatbeltProfile: starts from deny default and allows only what the contrac
   assert.ok(!/\(allow mach-lookup\)|global-name "com\.apple\.coreservices/.test(profile), 'no open Mach lookup, no Launch Services');
 });
 
+test('seatbeltProfile: dyld may list the root folder and use /dev/dtracehelper, nothing more', () => {
+  const profile = seatbeltProfile(PLAN, 3128, '/private/var/folders/xy/scratch');
+  assert.match(profile, /^\(allow file-read-data \(literal "\/"\)\)$/m);
+  assert.match(profile, /\(allow file-ioctl [^\n]*\(literal "\/dev\/dtracehelper"\)/);
+  assert.match(profile, /\(allow file-write\* [^\n]*\(literal "\/dev\/dtracehelper"\)/);
+  // The root's entries only: no subpath read of / or of a hidden folder.
+  assert.doesNotMatch(profile, /\(subpath "\/"\)/);
+  assert.doesNotMatch(profile, /file-read[^\n]*\(subpath "\/Users"\)/);
+});
+
 test('parentFolders: each parent once, up to the root', () => {
   assert.deepEqual(parentFolders(['/a/b/c', '/a/d']), ['/', '/a', '/a/b']);
 });
