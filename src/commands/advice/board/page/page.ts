@@ -5,6 +5,7 @@
 
 import { BOARD_AGENT_FILE } from '../agents.ts';
 import { PAGE_FUNCTIONS } from './script.ts';
+import { STREAM_FUNCTIONS } from './stream.ts';
 import { LANG_NAMES, WORDS } from './words.ts';
 
 /** How often the page asks for new data, in seconds. */
@@ -125,6 +126,19 @@ h2.sh{line-height:inherit}
 .grp>svg{transition:transform .15s}
 .grp.open>svg{transform:rotate(90deg)}
 .grp-body{margin-left:14px;border-left:1px solid var(--border);padding-left:6px}
+.chat{max-width:820px;width:100%;margin:0 auto}
+.chat .msg{margin:12px 8px;overflow-wrap:anywhere}
+.chat .msg p{margin:0 0 8px;white-space:pre-wrap}
+.chat .msg .tm{font-size:11px;color:var(--mut-fg);margin-bottom:2px}
+.chat .think{margin:10px 8px;padding-left:10px;border-left:2px solid var(--border);color:var(--mut-fg);font-size:13px;font-style:italic;white-space:pre-wrap;overflow-wrap:anywhere}
+.chat .steps{margin:6px 8px;color:var(--mut-fg);font-size:13px}
+.chat .steps>summary,.chat .call>summary{cursor:pointer;display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:6px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat .steps>summary:hover,.chat .call>summary:hover{background:color-mix(in srgb,var(--accent) 50%,transparent);color:var(--fg)}
+.chat .calls{margin:2px 0 4px 14px;border-left:1px solid var(--border);padding-left:6px}
+.chat .full{display:block;margin:4px 6px;padding:8px 10px;border-radius:6px;background:var(--muted);color:var(--fg);font:12px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto}
+.chat .out-h{margin:6px 6px 0;font-size:11px;color:var(--mut-fg)}
+.chat .gstop{margin:10px 8px;padding:8px 12px;border-radius:8px;background:var(--bad-bg);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--bad) 30%,transparent);color:var(--bad);font-size:13px}
+.chat .gstop .ah{display:flex;gap:6px;align-items:center}
 .ask{margin:14px 8px 4px;border:1px solid var(--border);background:var(--card);border-radius:var(--radius);padding:12px 14px}
 .ask .ah{display:flex;gap:8px;align-items:center;color:var(--wait)}
 .ask h2{margin:0;font-size:14px;font-weight:600;color:var(--fg)}
@@ -219,7 +233,7 @@ export function boardScript(): string {
   const settings = { token: '', refreshMs: BOARD_REFRESH_SECONDS * 1000, agentFile: BOARD_AGENT_FILE, words: WORDS, langNames: LANG_NAMES, data: null, ui: null, live: 'loading', isMenuOpen: false, toast: null, toastTimer: 0, readAt: 0 };
   return [
     '"use strict";',
-    ...PAGE_FUNCTIONS.map(String),
+    ...[...PAGE_FUNCTIONS, ...STREAM_FUNCTIONS].map(String),
     `const state = ${JSON.stringify(settings).replace(/</g, '\\u003c')};`,
     "state.token = new URLSearchParams(location.search).get('t') || '';",
     'startPage(state);',

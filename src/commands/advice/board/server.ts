@@ -3,7 +3,8 @@
 // The page is at /, its data as JSON at /data. The data comes from three places: one status
 // file per worktree, `gh pr list` and `gh issue list`, and `git worktree list`. /data reads
 // the local parts each time and never waits for gh: gh reads in the background, one read at
-// a time, and /data serves its last lists (#688). `board --text` prints the same data. A request needs the right Host and the link's token. Agents write the status files,
+// a time, and /data serves its last lists (#688). /feed sends one agent's session log, masked,
+// from the page's cursor on (#694). `board --text` prints the same data. A request needs the right Host and the link's token. Agents write the status files,
 // so the page treats every word in them as text: a strict content policy lets only the
 // page's own script run.
 
@@ -18,7 +19,8 @@ import { readOriginUrl } from '../../../setup/plan.ts';
 import { type Invocation, parse, print, requireRoot, usage } from '../../shared.ts';
 import { BOARD_READ_TIMEOUT_MS, readBoardWorktrees } from './agents.ts';
 import { type BoardControls, collectBoardWaiting, createBoardControls, readBoardAttention, readBoardIssuesLater, readBoardSnapshot, readBoardStartAsk, setBoardLimits, startBoardAgent, stopBoardAgent } from './controls.ts';
-import { feedsJson, makeFeedStore, recordFeed } from './feed.ts';
+import { feedAnswer, makeFeedStreams } from './feed/route.ts';
+import { feedsJson, makeFeedStore, recordFeed } from './feed/steps.ts';
 import { boardPage, BOARD_REFRESH_SECONDS } from './page/page.ts';
 import { renderBoardText } from './text.ts';
 import { BOARD_NO_REMOTE_ISSUES, BOARD_NO_REMOTE_PULLS, type BoardGitHub, collectBoard, collectBoardWith, createBoardGitHub, refreshBoardGitHub } from './view.ts';
@@ -148,6 +150,8 @@ function stopRefuseStatus(reason: string): number {
 export interface BoardServerOptions {
   controls?: BoardControls;
   github?: BoardGitHub;
+  /** The mask for /feed. Tests pass their own; the board builds it from the private marks. */
+  feedMask?: (text: string) => string;
 }
 
 /** The /data fields that say how fresh the GitHub lists are: reading now, when last read, and why the last read failed. */
@@ -181,6 +185,7 @@ export function startBoardServer(root: string, env: Env, gh: GhLater, options: B
     return remote;
   };
   const feeds = makeFeedStore();
+  const streams = makeFeedStreams(env, root, options.feedMask);
   const server = createServer((req, res) => {
     const address = server.address();
     const port = typeof address === 'object' && address !== null ? address.port : 0;
@@ -203,6 +208,17 @@ export function startBoardServer(root: string, env: Env, gh: GhLater, options: B
           return serveText(res, 200, 'application/json; charset=utf-8', JSON.stringify({ ...board, feeds: feedsJson(feeds), ...snapshot, github: fresh }));
         } catch {
           return serveText(res, 500, 'application/json; charset=utf-8', JSON.stringify({ error: 'the board could not be read: run it again' }));
+        }
+      }
+      if (path === '/feed') {
+        // One agent's session, from its cursor on (#694). Masked, as text; a failed mask sends nothing.
+        const ask = new URLSearchParams(query ?? '');
+        try {
+          const answer = feedAnswer(streams, root, env, ask.get('agent') ?? '', ask.get('after') ?? '');
+          if (!answer) return serveText(res, 404, 'application/json; charset=utf-8', JSON.stringify({ error: 'no agent by that name on the board' }));
+          return serveText(res, 200, 'application/json; charset=utf-8', JSON.stringify(answer));
+        } catch {
+          return serveText(res, 500, 'application/json; charset=utf-8', JSON.stringify({ error: 'the board could not read that log safely: run it again' }));
         }
       }
       return serveText(res, 404, 'text/plain; charset=utf-8', 'not found');

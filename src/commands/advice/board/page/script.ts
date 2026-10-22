@@ -5,8 +5,9 @@
 // word goes in as text: nothing here parses HTML.
 
 import type { BoardIssue, BoardLimits, BoardRun, BoardWaiting } from '../controls.ts';
-import type { FeedEvent } from '../feed.ts';
+import type { FeedEvent } from '../feed/steps.ts';
 import type { AgentView, BoardData, NeedView, PullView } from '../view.ts';
+import { followStream, renderStream, type StreamView } from './stream.ts';
 
 /** The page's data: what /data sends. The waiting list, the open issues, the board's own runs, and its limits ride with the board. */
 export type PageData = BoardData & {
@@ -49,6 +50,8 @@ export interface PageState {
   toast: { key: string; count: number; cleared: string[]; merged: boolean } | null;
   toastTimer: number;
   readAt: number;
+  /** The picked agent's session as it streams (#694); none before the first draw. */
+  stream?: StreamView;
 }
 
 /** A routine step run: three or more steps in a row that need nothing from the owner. */
@@ -274,6 +277,15 @@ export function renderCenter(state: PageState, data: PageData): HTMLElement {
     agent.model ? el('span', { class: 'model', title: say(state, 'modelEffort') }, el('b', {}, agent.model), agent.effort ? `· ${agent.effort}` : '') : null,
     refChip(agent),
     agent.dot === 'done' && !isCleared ? el('button', { class: 'hbtn', 'data-clear': clearedId(agent), title: say(state, 'keptHint') }, icon('archive', true), say(state, 'clearFromBoard')) : null);
+  const foot = agent.dot === 'done'
+    ? el('div', { class: 'ro' }, icon('done', true), say(state, 'finishedNote'))
+    : el('div', { class: 'ro' }, icon('lock', true), say(state, isLead ? 'leadNote' : 'otherNote'));
+  // The agent's own session when its log is found (#694); else the steps the board saw.
+  const stream = renderStream(state, agent);
+  if (stream) {
+    const ask = agent.dot === 'waiting' ? el('div', { class: 'ask' }, el('div', { class: 'ah' }, icon('shield'), el('h2', {}, say(state, 'waitingFor', { name: agent.name }))), el('p', {}, agent.doing || say(state, 'noReason')), el('p', { class: 'quiet' }, say(state, 'answerThere'))) : null;
+    return el('section', { class: 'center-in' }, head, stream, ask, foot);
+  }
   const events = data.feeds[agent.key] ?? [];
   const feed = el('div', { class: 'feed' }, el('div', { class: 'day' }, say(state, 'since')));
   groupFeed(events).forEach((item) => {
@@ -285,9 +297,6 @@ export function renderCenter(state: PageState, data: PageData): HTMLElement {
   });
   if (!events.length) feed.append(el('p', { class: 'quiet' }, agent.doing || say(state, 'nothingYet')));
   if (agent.dot === 'waiting') feed.append(el('div', { class: 'ask' }, el('div', { class: 'ah' }, icon('shield'), el('h2', {}, say(state, 'waitingFor', { name: agent.name }))), el('p', {}, agent.doing || say(state, 'noReason')), el('p', { class: 'quiet' }, say(state, 'answerThere'))));
-  const foot = agent.dot === 'done'
-    ? el('div', { class: 'ro' }, icon('done', true), say(state, 'finishedNote'))
-    : el('div', { class: 'ro' }, icon('lock', true), say(state, isLead ? 'leadNote' : 'otherNote'));
   return el('section', { class: 'center-in' }, head, feed, foot);
 }
 
@@ -484,7 +493,13 @@ export function render(state: PageState): void {
   const [pinned, agents] = renderSide(state, data);
   byId('pinned').replaceChildren(pinned);
   byId('agents').replaceChildren(agents);
+  followStream(state, state.ui.current);
+  // The stream's list is kept between draws; a draw puts it back where the owner left it, or at the end.
+  const list = state.stream?.node;
+  const top = list ? list.scrollTop : 0;
+  const isAtEnd = !list || !list.isConnected || list.scrollTop + list.clientHeight >= list.scrollHeight - 60;
   byId('center').replaceChildren(renderCenter(state, data));
+  if (list?.isConnected) list.scrollTop = isAtEnd ? list.scrollHeight : top;
   byId('right').replaceChildren(renderRight(state, data, Date.now()));
   byId('bar').replaceChildren(...renderBar(state, data));
   byId('repo').textContent = data.repo.split('/').pop() ?? data.repo;

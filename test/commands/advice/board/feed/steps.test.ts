@@ -1,10 +1,10 @@
-// Tests for src/commands/advice/board/feed.ts.
+// Tests for src/commands/advice/board/feed/steps.ts.
 
-import '../../../repo/home.ts';
+import '../../../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { FEED_LIMIT, feedsJson, makeFeedStore, recordFeed } from '../../../../src/commands/advice/board/feed.ts';
-import type { AgentView } from '../../../../src/commands/advice/board/view.ts';
+import { FEED_LIMIT, feedsJson, makeFeedStore, recordFeed } from '../../../../../src/commands/advice/board/feed/steps.ts';
+import type { AgentView } from '../../../../../src/commands/advice/board/view.ts';
 
 const agent = (fields: Partial<AgentView>) => ({ key: '~/w', name: 'w', doing: '', checks: '', dot: 'working', ...fields }) as AgentView;
 const steps = (store: ReturnType<typeof makeFeedStore>) => Object.fromEntries(Object.entries(feedsJson(store)).map(([key, feed]) => [key, feed.map((event) => `${event.kind}:${event.text}`)]));
