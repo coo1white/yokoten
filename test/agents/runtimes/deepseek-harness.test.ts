@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { addProjectHooks, initLines, PATCH, profilesWithBridge, projectHooksState, readToolCall, WINDOWS_GAP } from '../../../src/agents/runtimes/deepseek-harness.ts';
-import { agentHooks } from '../../../src/setup/doctor.ts';
+import { agentHooks } from '../../../src/setup/doctor/index.ts';
 import { makeSandbox } from '../../repo/helpers.ts';
 
 /** A PreToolUse payload in the shape the dsh 0.2.1-rc.2 hook bridge sent it in a real run (#334). */

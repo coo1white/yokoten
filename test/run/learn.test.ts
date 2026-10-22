@@ -61,7 +61,7 @@ import {
   readState,
   saveState,
   seenAfter,
-} from '../../src/setup/doctor.ts';
+} from '../../src/setup/doctor/index.ts';
 
 // `yokoten learn` (#77): an incident issue becomes a check draft, from the issue's own
 // sections. The issue text is stubbed here; nothing reaches the network.
