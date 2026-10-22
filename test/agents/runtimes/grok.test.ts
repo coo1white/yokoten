@@ -215,8 +215,10 @@ test('grok readToolCall: every edit tool Grok names is read by its file, and the
 });
 
 test('grok readStop: a turn end is checked; the session-end fire only observes, so it is skipped', async () => {
-  assert.deepEqual(readStop(recorded('stop', '/w')), { cwd: '/w', active: false });
-  assert.deepEqual(readStop(recorded('stop', '/w', (event) => Object.assign(event, { stopHookActive: true }))), { cwd: '/w', active: true });
+  const grokSession = '01a15a11-55e0-7ae1-9c00-6389bfe5c78f';
+  assert.deepEqual(readStop(recorded('stop', '/w')), { cwd: '/w', active: false, worker: false, sessionId: grokSession });
+  assert.deepEqual(readStop(recorded('stop', '/w', (event) => Object.assign(event, { stopHookActive: true }))), { cwd: '/w', active: true, worker: false, sessionId: grokSession });
+  assert.equal(readStop(recorded('stop', '/w', (event) => Object.assign(event, { subagentType: 'yokoten:worker' })))?.worker, true);
   assert.equal(readStop(recorded('shutdown', '/w')), null);
   assert.equal(readStop(null), null);
   const sandbox = makeSandbox();

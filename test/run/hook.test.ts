@@ -2,7 +2,7 @@
 
 import '../repo/home.ts';
 import assert from 'node:assert/strict';
-import { symlinkSync, writeFileSync } from 'node:fs';
+import { readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
@@ -11,7 +11,20 @@ import {
   runChild,
 } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
-import { guardDeadline, judge, startGuard } from '../../src/run/hook.ts';
+import { SECRET } from '../../src/rules/secrets.ts';
+import {
+  bumpDoneTries,
+  clearDoneTries,
+  DONE_TRY_LIMIT,
+  doneTryKey,
+  guardDeadline,
+  judge,
+  readDoneWhen,
+  readStopFields,
+  runDoneWhen,
+  shortenOutput,
+  startGuard,
+} from '../../src/run/hook.ts';
 
 test('hook: blocks with exit 2 and a reason, allows with exit 0', async () => {
   const sandbox = makeSandbox();
@@ -165,4 +178,36 @@ test('hook: a repo reached through a symlink gets the same file rules (#1)', asy
   assert.equal((await call('AGENTS.md')).status, 2, 'relative to a cwd through the link');
   assert.equal((await call(join(link, '.github', 'new', 'x.yml'))).status, 2, 'a file in a folder that does not exist yet');
   assert.equal((await call(join(sandbox.home, 'elsewhere.md'))).status, 0, 'outside the repo');
+});
+
+test('done-when: the command comes from the env or the git-folder file; a pass, a fail, and the try count (#614)', () => {
+  const sandbox = makeSandbox();
+  assert.equal(readDoneWhen({}, sandbox.repo), undefined);
+  assert.equal(readDoneWhen({ YOKOTEN_DONE_WHEN: '  npm test  ' }, sandbox.repo), 'npm test');
+  writeFileSync(join(sandbox.repo, '.git', 'yokoten-done-when'), '# comment\nnode --test\n');
+  assert.equal(readDoneWhen({}, sandbox.repo), 'node --test');
+  assert.equal(readDoneWhen({ YOKOTEN_DONE_WHEN: 'true' }, sandbox.repo), 'true', 'the env wins');
+  assert.equal(runDoneWhen('true', sandbox.repo, sandbox.env).ok, true);
+  const failed = runDoneWhen('echo fail-out >&2; exit 1', sandbox.repo, sandbox.env);
+  assert.equal(failed.ok, false);
+  assert.match(failed.output, /fail-out/);
+  const token = `${'gh'}p_${'a'.repeat(36)}`;
+  assert.equal(shortenOutput(`token: ${token}`).includes(token), false);
+  assert.equal(shortenOutput(`token: ${token}`).includes(SECRET), true);
+  assert.equal(shortenOutput('a'.repeat(3000)).length <= 2000, true);
+  assert.deepEqual(readStopFields({ cwd: '/w', stop_hook_active: true, agent_type: 'Worker', session_id: 's1' }), {
+    cwd: '/w',
+    active: true,
+    worker: true,
+    sessionId: 's1',
+  });
+  const key = doneTryKey('task-614', sandbox.repo);
+  assert.equal(key, 'task-614');
+  assert.equal(doneTryKey('bad id!', sandbox.repo).length, 16);
+  assert.equal(bumpDoneTries(sandbox.env, key), 1);
+  assert.equal(bumpDoneTries(sandbox.env, key), 2);
+  assert.ok(2 < DONE_TRY_LIMIT);
+  clearDoneTries(sandbox.env, key);
+  assert.equal(bumpDoneTries(sandbox.env, key), 1);
+  assert.equal(readFileSync(join(sandbox.home, '.config', 'yokoten', 'done-tries', key), 'utf8').trim(), '1');
 });

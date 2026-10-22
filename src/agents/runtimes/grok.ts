@@ -26,7 +26,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import type { Env } from '../../rules/config.ts';
 import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
-import type { Action } from '../../run/hook.ts';
+import { type Action, readStopFields, type StopEvent } from '../../run/hook.ts';
 import { type FolderTrust, folderKeys, isFolder } from '../folder-trust.ts';
 import { type Added, addHook, checkHooksFile, type HookState, hookState, isObject } from '../hooks-file.ts';
 import { readTomlTables } from './codex.ts';
@@ -73,15 +73,12 @@ export function readToolCall(input: unknown): Action {
 /**
  * A Stop event, or null when there is nothing to check. Grok sends Stop at a turn's end
  * (`reason: "end_turn"`) and once more when the session ends (`"shutdown"`), which only
- * observes: that one is skipped.
+ * observes: that one is skipped. A worker subagent is a worker (#614).
  */
-export function readStop(input: unknown): { cwd?: string; active: boolean } | null {
+export function readStop(input: unknown): StopEvent | null {
   if (!isObject(input)) return null;
   if (typeof input.reason === 'string' && input.reason !== 'end_turn') return null;
-  return {
-    cwd: typeof input.cwd === 'string' && input.cwd !== '' ? input.cwd : undefined,
-    active: input.stopHookActive === true || input.stop_hook_active === true,
-  };
+  return readStopFields(input);
 }
 
 /** How a refusal reaches Grok: a deny on stdout, and exit 2, so the model reads the whole reason. */

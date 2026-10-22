@@ -376,6 +376,79 @@ test('hook: in-process, the tool call and the end-of-turn event come from the gi
   assert.deepEqual(await stop(true), { code: 0, stdout: '', stderr: '' });
 });
 
+test('hook --stop: a worker is done only when the done-when check passes (#614)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const event = (extra: object = {}) => JSON.stringify({ session_id: 'task-614', cwd: sandbox.repo, hook_event_name: 'Stop', stop_hook_active: false, ...extra });
+  const stop = (doneWhen: string, extra: Record<string, string> = {}, input = event()) =>
+    sandbox.call(['hook', '--stop'], { input, extra: { YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: doneWhen, ...extra } });
+  // A passing check lets the worker stop.
+  let result = await stop('true');
+  assert.deepEqual([result.status, result.stdout, result.stderr], [0, '', '']);
+  // A failing check refuses, with the reason in short.
+  result = await stop('echo fail-614 >&2; exit 1');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /the done-when check failed/);
+  assert.match(result.stderr, /fail-614/);
+  assert.match(result.stderr, /This was try 1 of 3/);
+  // stop_hook_active does not let a worker skip the check.
+  result = await sandbox.call(['hook', '--stop'], {
+    input: event({ stop_hook_active: true }),
+    extra: { YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: 'echo still-fail >&2; exit 1' },
+  });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /still-fail/);
+  assert.match(result.stderr, /This was try 2 of 3/);
+  result = await stop('echo third-fail >&2; exit 1');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /This was try 3 of 3/);
+  // The loop guard ends after the limit: the worker may stop, never as done.
+  result = await stop('echo last-fail >&2; exit 1');
+  assert.equal(result.status, 0);
+  assert.match(result.stderr, /stopped with failing checks/);
+  assert.doesNotMatch(result.stderr, /this task is done/i);
+  // A new session key starts the count again.
+  result = await sandbox.call(['hook', '--stop'], {
+    input: event({ session_id: 'task-614-b' }),
+    extra: { YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: 'false' },
+  });
+  assert.equal(result.status, 2);
+  // SubagentStop of a worker subagent, with no YOKOTEN_ROLE: still a worker.
+  result = await sandbox.call(['hook', '--stop'], {
+    input: event({ hook_event_name: 'SubagentStop', agent_type: 'worker', agent_id: 'agent-614' }),
+    extra: { YOKOTEN_DONE_WHEN: 'echo sub-fail >&2; exit 1' },
+  });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /sub-fail/);
+  // Grok's Stop: a passing check lets the worker stop; a failing one refuses.
+  const grokEvent = (active = false) =>
+    JSON.stringify({ cwd: sandbox.repo, reason: 'end_turn', stopHookActive: active, sessionId: 'grok-614' });
+  result = await sandbox.call(['hook', '--stop', '--agent', 'grok'], { input: grokEvent(), extra: { YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: 'true' } });
+  assert.equal(result.status, 0);
+  result = await sandbox.call(['hook', '--stop', '--agent', 'grok'], { input: grokEvent(), extra: { YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: 'echo grok-fail >&2; exit 1' } });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /grok-fail/);
+  // The git-folder file is the command when the env is empty; the env wins when both are set.
+  writeFileSync(join(sandbox.repo, '.git', 'yokoten-done-when'), 'echo from-file >&2; exit 1\n');
+  result = await sandbox.call(['hook', '--stop'], { input: event({ session_id: 'from-file' }), extra: { YOKOTEN_ROLE: 'worker' } });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /from-file/);
+  result = await sandbox.call(['hook', '--stop'], { input: event({ session_id: 'from-env' }), extra: { YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: 'true' } });
+  assert.equal(result.status, 0);
+  // --json: the same fields, and skipped names the loop end.
+  result = await sandbox.call(['hook', '--stop', '--json'], {
+    input: event({ session_id: 'json-614' }),
+    extra: { YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: 'echo json-fail >&2; exit 1' },
+  });
+  assert.equal(result.status, 2);
+  const out = JSON.parse(result.stdout);
+  assert.equal(out.blocked, true);
+  assert.equal(out.doneWhen.ok, false);
+  assert.match(out.doneWhen.output, /json-fail/);
+});
+
 // #555: Muse Code passes its hooks no YOKOTEN_ROLE. A worktree the lead marks makes every
 // agent in it a worker, whatever env reaches the hook; the lead's main checkout is not affected.
 // Every call here is Muse-shaped, piped to `hook --agent muse`, with YOKOTEN_ROLE unset.

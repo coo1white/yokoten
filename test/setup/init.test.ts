@@ -110,6 +110,7 @@ const BAD_PROJECT_SETTINGS: [content: string, reason: (file: string) => string][
   ['{"env": "x"}', (file) => `${file} has an unexpected shape (\`env\` should be an object)`],
   // The stop check is the second hook init adds: checked before the first is written.
   ['{"hooks":{"Stop":[{"hooks":5}]}}', (file) => `${file} has an unexpected shape (\`hooks.Stop[0].hooks\` should be a list of objects)`],
+  ['{"hooks":{"SubagentStop":[{"hooks":5}]}}', (file) => `${file} has an unexpected shape (\`hooks.SubagentStop[0].hooks\` should be a list of objects)`],
 ];
 
 // Gemini CLI (v0.64.0) swaps `$GEMINI_PROJECT_DIR` in the command text for the shell-quoted
@@ -187,7 +188,9 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   const settings = JSON.parse(readFileSync(join(sandbox.repo, '.claude', 'settings.json'), 'utf8'));
   assert.equal(settings.hooks.PreToolUse.length, 1);
   assert.match(result.stdout, /same the stop check/);
-  assert.deepEqual(settings.hooks.Stop, [{ hooks: [{ type: 'command', command: guarded('"$CLAUDE_PROJECT_DIR/.yokoten/bin/yokoten.mjs"', 'hook --stop') }] }], 'the stop check, once (#92)');
+  const stopHook = { hooks: [{ type: 'command', command: guarded('"$CLAUDE_PROJECT_DIR/.yokoten/bin/yokoten.mjs"', 'hook --stop'), timeout: 600 }] };
+  assert.deepEqual(settings.hooks.Stop, [stopHook], 'the stop check, once (#92)');
+  assert.deepEqual(settings.hooks.SubagentStop, [stopHook], 'SubagentStop, once (#614)');
   assert.equal(settings.env.TZ, 'UTC', 'agent commits record no time zone (#40)');
   assert.match(result.stdout, /same the Codex tool-call hook/);
   assert.match(result.stdout, /same the Gemini CLI tool-call hook/);

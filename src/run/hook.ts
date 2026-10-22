@@ -4,13 +4,16 @@
 // The hook knows nothing about any one runtime. An adapter in src/agents/ turns the
 // runtime's own call into an `Action` first.
 
-import { existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import module from 'node:module';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 import { type Config, DEFAULTS, type Env, type IgnoredPart, loadConfig } from '../rules/config.ts';
-import { checkCommand, checkEdit, checkWorkerMarkEdit, realPath as real } from '../rules/guards.ts';
+import { checkCommand, checkEdit, checkWorkerMarkEdit, configFolder, gitLinkAbove, realPath as real } from '../rules/guards.ts';
 import { type Finding, finding } from '../rules/message.ts';
+import { makeSecretHider } from '../rules/secrets.ts';
 
 /** What an agent is about to do, in no runtime's terms. */
 export interface Action {
@@ -21,6 +24,148 @@ export interface Action {
   cwd?: string;
   /** The action comes from a worker, whatever the session's own role. */
   worker: boolean;
+}
+
+/**
+ * An end-of-turn event, in no runtime's terms. Each adapter maps its own Stop (or
+ * SubagentStop, AfterAgent) payload into this.
+ */
+export interface StopEvent {
+  cwd?: string;
+  /** A stop hook already sent the agent back (`stop_hook_active`). */
+  active: boolean;
+  /** The event comes from a worker subagent. */
+  worker: boolean;
+  /** The session or subagent id, for the done-when try count. */
+  sessionId?: string;
+}
+
+/**
+ * The shared Stop fields Claude Code, Codex, Muse, Gemini and Grok send (#614). An adapter
+ * still decides whether the payload is a stop event at all.
+ */
+export function readStopFields(input: object): StopEvent {
+  const call = input as Record<string, unknown>;
+  const text = (v: unknown) => (typeof v === 'string' && v !== '' ? v : undefined);
+  const type = text(call.agent_type) ?? text(call.agentType) ?? text(call.subagent_type) ?? text(call.subagentType) ?? '';
+  return {
+    cwd: text(call.cwd),
+    active: call.stop_hook_active === true || call.stopHookActive === true,
+    worker: /worker/i.test(type),
+    sessionId: text(call.agent_id) ?? text(call.agentId) ?? text(call.session_id) ?? text(call.sessionId),
+  };
+}
+
+/**
+ * How many times a worker is sent back for a failing done-when check (#614). The next
+ * stop is allowed, and the lead sees "stopped with failing checks", never "done".
+ */
+export const DONE_TRY_LIMIT = 3;
+
+/** How long the done-when command may run, in milliseconds. */
+export const DONE_WHEN_MS = 120_000;
+
+/** The file in a worktree's git folder that holds the task's done-when command. */
+export const DONE_WHEN_FILE = 'yokoten-done-when';
+
+const DONE_OUTPUT_CHARS = 2000;
+
+/** The done-when command from the brief (`YOKOTEN_DONE_WHEN` or the git-folder file), or undefined. */
+export function readDoneWhen(env: Env, folder: string): string | undefined {
+  const fromEnv = env.YOKOTEN_DONE_WHEN?.trim();
+  if (fromEnv) return fromEnv;
+  const link = gitLinkAbove(folder);
+  if (!link || link.kind === 'broken') return undefined;
+  try {
+    const text = readFileSync(join(link.gitDir, DONE_WHEN_FILE), 'utf8');
+    const line = text.split('\n').find((row) => {
+      const trimmed = row.trim();
+      return trimmed !== '' && !trimmed.startsWith('#');
+    });
+    return line?.trim();
+  } catch {
+    return undefined;
+  }
+}
+
+/** A key for the done-when try count: the session id when it is a safe name, else a hash of `cwd`. */
+export function doneTryKey(sessionId: string | undefined, cwd: string): string {
+  if (sessionId && /^[\w-]{1,128}$/.test(sessionId)) return sessionId;
+  return createHash('sha256').update(cwd).digest('hex').slice(0, 16);
+}
+
+const triesPath = (env: Env, key: string): string | null => {
+  const folder = configFolder(env);
+  return folder ? join(folder, 'done-tries', key) : null;
+};
+
+/**
+ * Add one to the worker's done-when try count and return it. Null when the count cannot
+ * be kept (no config folder, or the file cannot be written): the caller must not trap the
+ * session.
+ */
+export function bumpDoneTries(env: Env, key: string): number | null {
+  const path = triesPath(env, key);
+  if (!path) return null;
+  let count = 0;
+  try {
+    count = Number.parseInt(readFileSync(path, 'utf8').trim(), 10);
+    if (!Number.isInteger(count) || count < 0) count = 0;
+  } catch {
+    count = 0;
+  }
+  count += 1;
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `${count}\n`);
+  } catch {
+    return null;
+  }
+  return count;
+}
+
+/** Forget the worker's done-when try count, once the check passes. */
+export function clearDoneTries(env: Env, key: string): void {
+  const path = triesPath(env, key);
+  if (path) rmSync(path, { force: true });
+}
+
+/** The last `DONE_OUTPUT_CHARS` of `text`, with secrets replaced. */
+export function shortenOutput(text: string): string {
+  const hidden = makeSecretHider()(text.replace(/\s+$/, ''));
+  if (hidden.length <= DONE_OUTPUT_CHARS) return hidden;
+  const cut = hidden.slice(hidden.length - DONE_OUTPUT_CHARS);
+  const newline = cut.indexOf('\n');
+  return newline >= 0 ? cut.slice(newline + 1) : cut;
+}
+
+/**
+ * Run the task's done-when command in `cwd`. `ok` is true only on exit 0. The output is
+ * short, with secrets hidden, for the worker to read.
+ */
+export function runDoneWhen(command: string, cwd: string, env: Env): { ok: boolean; output: string } {
+  const childEnv: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) if (value !== undefined) childEnv[name] = value;
+  const result = spawnSync(command, {
+    shell: process.platform === 'win32' ? true : '/bin/sh',
+    cwd,
+    env: childEnv,
+    encoding: 'utf8',
+    timeout: DONE_WHEN_MS,
+    maxBuffer: 256 * 1024,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
+  const output = `${result.stderr ?? ''}${result.stdout ?? ''}`.trimEnd();
+  if (code === 'ETIMEDOUT' || result.signal === 'SIGTERM') {
+    return { ok: false, output: shortenOutput(output ? `${output}\nthe check ran too long and was stopped` : 'the check ran too long and was stopped') };
+  }
+  if (result.error) {
+    return { ok: false, output: shortenOutput(result.error.message.split('\n')[0]) };
+  }
+  const body = shortenOutput(output);
+  if (result.status === 0) return { ok: true, output: body };
+  return { ok: false, output: body || `the check exited ${result.status}` };
 }
 
 /** A repo whose file rules apply to an edit: its root, and the config read there. */

@@ -13,7 +13,21 @@ import { loadConfig } from '../rules/config.ts';
 import { addWorkerPath, hardenRead, markNote, printsAccount, privateOutput, realPath, releaseFix, removeWorkerPath, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
 import { type Finding, formatFinding, notRepoFinding } from '../rules/message.ts';
 import { checkChanged, readGit } from '../run/check.ts';
-import { type Action, type Guard, guardDeadline, judgeWithDeadline, loadHookConfig, type Repo } from '../run/hook.ts';
+import {
+  type Action,
+  bumpDoneTries,
+  clearDoneTries,
+  DONE_TRY_LIMIT,
+  doneTryKey,
+  type Guard,
+  guardDeadline,
+  judgeWithDeadline,
+  loadHookConfig,
+  readDoneWhen,
+  type Repo,
+  runDoneWhen,
+  type StopEvent,
+} from '../run/hook.ts';
 import { bullets, type Invocation, parse, print, printJson, readInput, rootOf, say, usage } from './shared.ts';
 
 // Each runtime sends its tool call in its own shape; its adapter turns it into an Action.
@@ -88,7 +102,8 @@ export function redactCommand(node: string, cli: string, home: string | undefine
   return `${quoted(node)} ${quoted(cli)} redact`;
 }
 
-// Each runtime's event for the end of a turn: Claude Code's, Codex's, Muse Code's and Grok CLI's Stop, Gemini CLI's AfterAgent (#211).
+// Each runtime's event for the end of a turn: Claude Code's Stop and SubagentStop, Codex's,
+// Muse Code's and Grok CLI's Stop, Gemini CLI's AfterAgent (#211, #614).
 const STOP_READERS: Record<string, typeof claudeCode.readStop> = {
   'claude-code': claudeCode.readStop,
   codex: codex.readStop,
@@ -121,15 +136,20 @@ function editRepos(invocation: Invocation, action: Action, base: string, session
 }
 
 /**
- * The stop check (#92). The agent runs it when it is about to end its turn
- * (code.claude.com/docs/en/hooks#stop). Findings in the changed files send the agent back
+ * The stop check (#92, #614). The agent runs it when it is about to end its turn
+ * (code.claude.com/docs/en/hooks#stop). Findings in the changed files send a lead back
  * once: exit 2, with the findings on stderr as the reason. `stop_hook_active` means it was
- * already sent back, so the turn ends whatever is found: never a loop. On any error the
- * turn ends too, with one line on stderr: a broken check must not trap a session.
+ * already sent back, so a lead's turn ends whatever is found: never a loop.
+ *
+ * A worker also runs the task's done-when command (or the changed-file check when the
+ * brief has none). A failing check sends the worker back, with the output in short. After
+ * DONE_TRY_LIMIT tries the worker may stop, and the lead sees "stopped with failing
+ * checks", never "done". On any error the turn ends too, with one line on stderr: a
+ * broken check must not trap a session.
  */
 function stopHook(invocation: Invocation, json: boolean, read: typeof claudeCode.readStop): number {
   const { env } = invocation;
-  let event: ReturnType<typeof claudeCode.readStop>;
+  let event: StopEvent | null;
   try {
     event = read(JSON.parse(readInput(invocation.stdin)));
   } catch {
@@ -139,24 +159,69 @@ function stopHook(invocation: Invocation, json: boolean, read: typeof claudeCode
     if (json) printJson(invocation, { blocked: false, stop: false });
     return 0;
   }
-  if (event.active) {
+  const folder = event.cwd ?? invocation.cwd;
+  const folders = [folder, invocation.cwd];
+  const isWorker = event.worker || workerRole(env, folders) !== null;
+  if (event.active && !isWorker) {
     if (json) printJson(invocation, { blocked: false, stop: true, skipped: 'the agent was already sent back once', findings: [] });
     return 0;
   }
   let findings: Finding[];
+  let root: string | null;
   try {
-    const root = rootOf(event.cwd ?? invocation.cwd, env);
-    // A worker by YOKOTEN_ROLE or by the mark on its worktree: the one role check (#555).
-    findings = root ? checkChanged(root, { config: loadConfig(root), env: withWorkerMark(env, [root, invocation.cwd]) }) : [];
+    root = rootOf(folder, env);
+    // A worker by YOKOTEN_ROLE, by the mark on its worktree, or by the event (#555, #614).
+    const marked = withWorkerMark(env, folders);
+    const workerEnv = isWorker ? { ...marked, YOKOTEN_ROLE: 'worker' } : marked;
+    findings = root ? checkChanged(root, { config: loadConfig(root), env: workerEnv }) : [];
   } catch (err) {
     say(invocation, `yokoten hook --stop: skipped, ${((err as Error).message ?? String(err)).split('\n')[0]}\n`, invocation.stderr);
     if (json) printJson(invocation, { blocked: false, stop: true, skipped: 'the check failed', findings: [] });
     return 0;
   }
-  if (json) printJson(invocation, { blocked: findings.length > 0, stop: true, findings });
-  if (!findings.length) return 0;
-  // Each runtime gives stderr to the agent as the reason to go on when this hook exits 2.
-  print(invocation, [`yokoten: ${findings.length} problem(s) in the changed files. Fix them before you end the turn:`, ...bullets(findings)], invocation.stderr);
+  let doneWhen: { command: string; ok: boolean; output: string } | undefined;
+  if (isWorker && root) {
+    const command = readDoneWhen(env, folder);
+    if (command) {
+      try {
+        const ran = runDoneWhen(command, root, { ...env, YOKOTEN_ROLE: 'worker' });
+        doneWhen = { command, ...ran };
+      } catch (err) {
+        say(invocation, `yokoten hook --stop: skipped, ${((err as Error).message ?? String(err)).split('\n')[0]}\n`, invocation.stderr);
+        if (json) printJson(invocation, { blocked: false, stop: true, skipped: 'the check failed', findings });
+        return 0;
+      }
+    }
+  }
+  const failed = findings.length > 0 || doneWhen?.ok === false;
+  if (!failed) {
+    if (isWorker) clearDoneTries(env, doneTryKey(event.sessionId, folder));
+    if (json) printJson(invocation, { blocked: false, stop: true, findings });
+    return 0;
+  }
+  if (!isWorker) {
+    if (json) printJson(invocation, { blocked: true, stop: true, findings });
+    print(invocation, [`yokoten: ${findings.length} problem(s) in the changed files. Fix them before you end the turn:`, ...bullets(findings)], invocation.stderr);
+    return 2;
+  }
+  const key = doneTryKey(event.sessionId, folder);
+  const bumped = bumpDoneTries(env, key);
+  const tries = bumped ?? (event.active ? DONE_TRY_LIMIT : 1);
+  if (tries > DONE_TRY_LIMIT) {
+    const payload = { blocked: false, stop: true, findings, skipped: 'stopped with failing checks', ...(doneWhen ? { doneWhen: { ok: false, output: doneWhen.output, tries, limit: DONE_TRY_LIMIT } } : {}) };
+    if (json) printJson(invocation, payload);
+    print(invocation, ['yokoten: stopped with failing checks. The done-when check still fails after three refusals. Tell the lead this task is not done.'], invocation.stderr);
+    return 0;
+  }
+  const lines: string[] = [];
+  if (findings.length) lines.push(`yokoten: ${findings.length} problem(s) in the changed files. Fix them before you end the task:`, ...bullets(findings));
+  if (doneWhen?.ok === false) {
+    lines.push('yokoten: the done-when check failed. Fix what it reports, then end the task again:');
+    if (doneWhen.output) lines.push(doneWhen.output);
+  }
+  lines.push(`This was try ${tries} of ${DONE_TRY_LIMIT}.`);
+  if (json) printJson(invocation, { blocked: true, stop: true, findings, ...(doneWhen ? { doneWhen: { ok: false, output: doneWhen.output, tries, limit: DONE_TRY_LIMIT } } : {}) });
+  print(invocation, lines, invocation.stderr);
   return 2;
 }
 

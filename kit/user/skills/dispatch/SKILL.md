@@ -42,10 +42,12 @@ The mark makes the worker a worker in every agent, even one that passes its hook
 another. Never guess a model name from another agent (`opus`, `sonnet`): it may not
 exist here. Also start it with its role in the environment:
 
-- A separate session: `YOKOTEN_ROLE=worker claude -p "<brief>"` in the worktree
-  (add `YOKOTEN_FIX_TASK=1` for a fix task).
+- A separate session: `YOKOTEN_ROLE=worker YOKOTEN_DONE_WHEN='<command>' claude -p "<brief>"`
+  in the worktree (add `YOKOTEN_FIX_TASK=1` for a fix task). The stop hook runs that
+  command when the worker ends the task. With no command, it checks the changed files.
 - A subagent: use the `worker` agent. The tool guard treats an agent type named worker
-  as a worker.
+  as a worker. Set `YOKOTEN_DONE_WHEN` the same way, or write the command as the first
+  line of `yokoten-done-when` in the worktree's git folder (next to the mark).
 - A brief that changes a lead-only file: a separate session with
   `YOKOTEN_LEAD_ONLY_OK=<path>,<path>` (paths from the repo root); a subagent can't get it.
 

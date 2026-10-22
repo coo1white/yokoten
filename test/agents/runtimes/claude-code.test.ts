@@ -18,8 +18,34 @@ import {
   PLUGIN_ROOT,
   ROOT,
 } from '../../repo/helpers.ts';
-import { formatRewrite, hasSessionInput, readSessionStart } from '../../../src/agents/runtimes/claude-code.ts';
+import { addProjectStopHook, formatRewrite, hasSessionInput, readSessionStart, readStop } from '../../../src/agents/runtimes/claude-code.ts';
 import { refuseOnFailure } from '../../../src/run/cli.ts';
+
+test('claude-code readStop: a Stop or SubagentStop event is checked; a worker subagent is a worker (#614)', () => {
+  assert.deepEqual(readStop({ cwd: '/w', stop_hook_active: false }), { cwd: '/w', active: false, worker: false, sessionId: undefined });
+  assert.deepEqual(readStop({ cwd: '/w', stop_hook_active: true, session_id: 'abc' }), { cwd: '/w', active: true, worker: false, sessionId: 'abc' });
+  assert.deepEqual(readStop({ cwd: '/w', hook_event_name: 'SubagentStop', agent_type: 'worker', agent_id: 'agent-1' }), {
+    cwd: '/w',
+    active: false,
+    worker: true,
+    sessionId: 'agent-1',
+  });
+  assert.equal(readStop({ agent_type: 'yokoten:worker' })?.worker, true);
+  assert.equal(readStop(null), null);
+  assert.equal(readStop([]), null);
+});
+
+test('claude-code addProjectStopHook: Stop and SubagentStop both run hook --stop (#614)', () => {
+  const sandbox = makeSandbox();
+  assert.equal(addProjectStopHook(sandbox.repo, '.yokoten/bin/yokoten.mjs'), 'added');
+  const settings = JSON.parse(readFileSync(join(sandbox.repo, '.claude', 'settings.json'), 'utf8'));
+  const command = settings.hooks.Stop[0].hooks[0].command as string;
+  assert.match(command, /hook --stop$/);
+  assert.equal(settings.hooks.Stop[0].hooks[0].timeout, 600);
+  assert.equal(settings.hooks.SubagentStop[0].hooks[0].command, command);
+  assert.equal(settings.hooks.SubagentStop[0].hooks[0].timeout, 600);
+  assert.equal(addProjectStopHook(sandbox.repo, '.yokoten/bin/yokoten.mjs'), 'same');
+});
 
 test('plugin: the marketplace and the plugin have the documented fields', () => {
   const market = manifest('marketplace.json');

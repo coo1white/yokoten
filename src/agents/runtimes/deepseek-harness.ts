@@ -16,7 +16,7 @@
 // - `--patch` is a launcher flag: it goes right after the profile name, before the app's own
 //   flags (`dsh headless --patch <file> --json "<task>"`), or dsh says "unknown option".
 // - The bridge's Stop hook has no loop guard (`stop_hook_active` is always false), so
-//   yokoten writes no stop check here.
+//   yokoten writes no stop check here. The lead runs the worker's done-when check (#614).
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';

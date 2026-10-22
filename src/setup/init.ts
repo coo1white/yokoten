@@ -145,7 +145,7 @@ function initRun(root: string, env: Env, gh: Gh, noCi: boolean, ask?: Ask): { ok
     checkProjectSettings(root);
     return [
       `${addProjectHook(root, hookCli)} the tool-call hook in .claude/settings.json`,
-      `${addProjectStopHook(root, hookCli)} the stop check in .claude/settings.json (changed files, before the agent ends its turn)`,
+      `${addProjectStopHook(root, hookCli)} the stop check in .claude/settings.json (changed files, and a worker's done-when check, on Stop and SubagentStop)`,
       `${setProjectEnv(root, 'TZ', 'UTC')} TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)`,
       // Checked with a real run (#30): Copilot CLI reads these hooks, in a folder it trusts.
       // It skips them without a word otherwise (#341), so the line says how to trust it.
