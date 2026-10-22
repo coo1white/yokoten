@@ -16,6 +16,8 @@ import {
 } from '../../src/rules/message.ts';
 import {
   changedLines,
+  type ApprovalRead,
+  checkApprovalFreshness,
   checkIssueLabels,
   checkIssueTitle,
   checkOwnedTier,
@@ -29,6 +31,7 @@ import {
   ownersOf,
   parseCodeOwners,
   noMilestoneFinding,
+  prTier,
   readCommandBody,
   readCommandIssueLabels,
   readCommandMilestone,
@@ -496,4 +499,39 @@ test('readCommandMilestone: the linked issues of a new pull request with no mile
   assert.match(noMilestoneFinding([2]).what, /^milestone: none given, and the linked issue #2 has none$/);
   assert.match(noMilestoneFinding([2, 3]).what, /none of the linked issues #2, #3 has one/);
   assert.match(noMilestoneFinding([2]).fix, /--milestone/);
+});
+
+// #612: the tier is A when the body or any tier label says A (fail closed both ways,
+// since either can change after creation); otherwise the body first, then a label.
+test('approve: the tier is A when the body or any tier label says A', () => {
+  assert.equal(prTier('tier: A\n', ['tier B']), 'A');
+  assert.equal(prTier('tier: B\n', ['tier A']), 'A');
+  assert.equal(prTier('tier: A\n', ['tier A']), 'A');
+  assert.equal(prTier('tier: B\n', ['tier B']), 'B');
+  assert.equal(prTier('tier: B\n', ['tier C']), 'B');
+  assert.equal(prTier('no tier here\n', ['tier B', 'tier A']), 'A');
+  assert.equal(prTier('no tier here\n', [' tier: c ']), 'C');
+  assert.equal(prTier('no tier here\n', ['feat']), null);
+});
+
+// #612: a tier A pull request merges only on the commit the owner approved. Positive
+// controls: each state that must not merge refuses with the plain message.
+test('approve: only an Approve on the head merges a tier A pull request (#612)', () => {
+  const read = (over: Partial<ApprovalRead>): ApprovalRead => ({ tier: 'A', head: 'b'.repeat(40), approved: 'a'.repeat(40), after: 0, sameDiff: true, ...over });
+  assert.equal(checkApprovalFreshness(read({ approved: 'b'.repeat(40) }))?.id, undefined, 'the Approve is on the head: may merge');
+  assert.equal(checkApprovalFreshness(read({ tier: 'B' })), null, 'tier B is not gated');
+  assert.equal(checkApprovalFreshness(read({ tier: null })), null, 'no tier is not gated here; the caller refuses it');
+  const stale = checkApprovalFreshness(read({ head: 'b'.repeat(40), approved: 'a'.repeat(40), after: 2 }));
+  assert.equal(stale?.id, 'pr-approve');
+  assert.equal(stale?.what, 'the Approve is on aaaaaaa; 2 commits with changes came after it; ask the owner to approve again');
+  const one = checkApprovalFreshness(read({ head: 'b'.repeat(40), approved: 'a'.repeat(40), after: 1 }));
+  assert.equal(one?.what, 'the Approve is on aaaaaaa; 1 commit with changes came after it; ask the owner to approve again');
+  const moved = checkApprovalFreshness(read({ head: 'b'.repeat(40), approved: 'a'.repeat(40), after: 0, sameDiff: false }));
+  assert.equal(moved?.id, 'pr-approve');
+  assert.equal(moved?.what, "the Approve is on aaaaaaa; the pull request's own diff is not the same as at the Approve; ask the owner to approve again");
+  const clean = checkApprovalFreshness(read({ head: 'b'.repeat(40), approved: 'a'.repeat(40), after: 0, sameDiff: true }));
+  assert.equal(clean, null, 'only base merges with the same own diff: may merge');
+  const none = checkApprovalFreshness(read({ approved: null }));
+  assert.equal(none?.id, 'pr-approve');
+  assert.equal(none?.what, 'no owner Approve on this pull request');
 });

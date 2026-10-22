@@ -539,6 +539,59 @@ export function checkOwnedTier(pr: Pick<PullRequest, 'body' | 'files'>, codeOwne
   return finding('pr-owned', `body: \`tier: ${tier}\`, and this changes ${owned.length} file(s) that CODEOWNERS owns (read from ${codeOwners.from}): ${shown}`, 'make the first line `tier: A`');
 }
 
+// ---- The commit the owner approved (#612) ----
+//
+// An approval is for one commit (core rule 9). A tier A pull request merges only on the
+// commit the owner's latest Approve was given on. When newer commits only merge the base
+// branch in, and the pull request's own diff is the same as at the Approve, the merge
+// goes on. Anything else needs a new review.
+
+/**
+ * The tier of a pull request: A when the body's line or any tier label says A, since
+ * either can change after creation (#612); otherwise the body's line, then the first
+ * tier label. Fail closed both ways, so a mismatch never skips the tier A gate.
+ */
+export function prTier(body: string, labels: string[]): string | null {
+  const fromBody = bodyTier(body);
+  const fromLabels = labels.map(readLabelTier).filter((tier) => tier !== null);
+  if (fromBody === 'A' || fromLabels.includes('A')) return 'A';
+  return fromBody ?? fromLabels[0] ?? null;
+}
+
+/** What the Approve check knows: the tier, the head, and what came after the Approve. */
+export interface ApprovalRead {
+  /** The pull request's tier, or null when neither the body nor a label says it. */
+  tier: string | null;
+  /** The pull request's head commit. */
+  head: string;
+  /** The commit the owner's latest Approve was given on, or null with no owner Approve. */
+  approved: string | null;
+  /** Commits with changes after the Approve (never merges of the base branch). */
+  after: number;
+  /** Whether the pull request's own diff is the same as at the Approve. */
+  sameDiff: boolean;
+}
+
+/**
+ * The finding that stops a tier A pull request from merging, or null when it may
+ * merge: not tier A, or the Approve is on the head, or only base merges came after it
+ * with the same own diff. Anything unsure never reaches here: the caller refuses it.
+ */
+export function checkApprovalFreshness(read: ApprovalRead): Finding | null {
+  if (read.tier !== 'A') return null;
+  if (read.approved === null) return finding('pr-approve', 'no owner Approve on this pull request', 'ask the owner to approve it, then merge');
+  if (read.approved.toLowerCase() === read.head.toLowerCase()) return null;
+  const short = read.approved.slice(0, 7);
+  const fix = 'ask the owner to approve the head commit, then merge';
+  if (read.after > 0) {
+    return finding('pr-approve', `the Approve is on ${short}; ${read.after} commit${read.after === 1 ? '' : 's'} with changes came after it; ask the owner to approve again`, fix);
+  }
+  if (!read.sameDiff) {
+    return finding('pr-approve', `the Approve is on ${short}; the pull request's own diff is not the same as at the Approve; ask the owner to approve again`, fix);
+  }
+  return null;
+}
+
 // ---- The title a gh command sets (#117, #391) ----
 //
 // `yokoten bot` checks it before it sends anything, and the tool-call guard checks it on

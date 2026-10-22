@@ -267,6 +267,12 @@ export const RULES = {
     check: 'in a CI run, `check --pr` and `check --issue` fail when the event file is missing or is not a JSON object; with no event file named, they skip',
     docs: guide('use-it-as-a-github-action'),
   },
+  'pr-approve': {
+    rule: 'a tier A pull request merges only on the commit the owner approved (core rule 9)',
+    why: 'an approval is for one commit; code the owner never saw must not merge',
+    check: '`yokoten bot` refuses `gh pr merge` when the owner\'s latest Approve is on an older commit, unless only base merges came after it and the pull request\'s own diff is the same; `gh pr status` through the bot says the same',
+    docs: guide('who-reviews-what'),
+  },
   'pr-current': {
     rule: 'when its workflow asks, `check --pr` reads the pull request as it is now, from the API',
     why: 'runs can start in any order, and the event file keeps the labels and milestone of its own moment, so only the pull request as it is now gives the true result',
