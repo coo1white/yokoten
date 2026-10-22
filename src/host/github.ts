@@ -568,6 +568,21 @@ export function readLocalLogins(env: Env): string[] {
   }
 }
 
+/**
+ * The label names of the repo gh works in (`gh label list`), or null when gh can't
+ * list them: not installed, not signed in, or no answer. A check that needs them then
+ * reads without them, never as a failure.
+ */
+export function readRepoLabelNames(gh: Gh): string[] | null {
+  try {
+    const parsed: unknown = JSON.parse(gh(['label', 'list', '--json', 'name', '--limit', '1000']));
+    if (!Array.isArray(parsed)) return null;
+    return parsed.map((label) => (isObject(label) ? asText(label.name) : '')).filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
 /** A label as the host keeps it. `color` is six hex digits, with no `#`. */
 export interface Label {
   name: string;
