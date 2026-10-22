@@ -25,6 +25,10 @@ Give the diff to the `reviewer` agent (it reads only) for:
 3. **Compliance**: does the diff do what its issue and record say, no more and no less?
    Does it break a core rule in `AGENTS.md`?
 
+Each reviewer that read the diff goes on the pull request's last line, after the worker
+and before the lead: `reviewed by <Y> (<model>)`, or `reviewed by <Y> (<model>) and <Z>
+(<model>)` for two. Add it when you write or edit the `Made with` line.
+
 Give it to the `verifier` agent (it runs, never fixes) to run the tests and the "done
 when" command from the issue, and paste the output.
 

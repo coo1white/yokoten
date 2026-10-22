@@ -233,9 +233,7 @@ export function checkPullRequestBody(pr: Pick<PullRequest, 'body' | 'files' | 'd
   }
   // Every pull request names each AI and model that made it (#570), on its last
   // line, so the credit reads the same each time.
-  if (!hasMadeWith(body)) {
-    problems.push(finding('pr-made-with', 'body: no `Made with` line at the end', 'end the body with `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, for example `🤖 Made with lead (opus), worker (sonnet)`'));
-  }
+  problems.push(...madeWithFindings(body));
 
   // `yokoten changelog` reads only the files right in changes/, and refuses a folder there,
   // so a new file deeper down would pass here and stop the release.
@@ -924,16 +922,91 @@ export function readLinkedIssues(body: string): number[] {
   return [...new Set([...body.matchAll(LINKED_ISSUE)].map((match) => Number(match[1])))];
 }
 
+/** One agent and the model it ran on, from `<agent> (<model>)`. */
+export interface MadeWithAgent {
+  /** The vendor or tool, for example `Claude Code`. */
+  vendor: string;
+  model: string;
+}
+
+/** The roles a `Made with` line names (#673). */
+export interface MadeWithRoles {
+  /** The agent after `worker`, or null when the line names none. */
+  writer: MadeWithAgent | null;
+  /** The agents after `reviewed by`: none, one, or two. */
+  reviewers: MadeWithAgent[];
+  /** The agent after `lead`, or null when the line names none. */
+  lead: MadeWithAgent | null;
+  /** Every other `<agent> (<model>)` pair, in order (the old form without roles). */
+  others: MadeWithAgent[];
+}
+
+const AGENT = /^([^()]+?) \(([^()]+)\)$/;
+const REVIEWED_BY = /^reviewed by ([^(),]+? \([^()]+\))(?: and ([^(),]+? \([^()]+\)))?$/;
+
+function readAgent(text: string): MadeWithAgent | null {
+  const match = AGENT.exec(text);
+  return match ? { vendor: match[1], model: match[2] } : null;
+}
+
 /**
- * Whether a body ends with `🤖 Made with <agent> (<model>)` (#570): its last
- * line that is not blank, with or without the robot emoji. One or more
- * comma-separated `<agent> (<model>)` pairs name each AI and model that made
- * it. HTML comments are set aside first, so a commented line counts neither
- * for nor against, and neither does one inside a code block.
+ * Reads the last non-blank line of a body as a `Made with` line (#570, #673) and
+ * returns the roles it names. The line is `🤖 Made with <part>, <part>`, with or
+ * without the robot emoji. A part is `<agent> (<model>)`, optionally led by
+ * `worker` or `lead`, or `reviewed by <agent> (<model>)` with a second reviewer
+ * joined by ` and `. Returns null when there is no such line, and `problem:
+ * 'reviewers'` when a `reviewed by` part is malformed. HTML comments are set
+ * aside first, so a commented line counts neither for nor against, and neither
+ * does one inside a code block.
+ */
+export function parseMadeWith(body: string): { roles: MadeWithRoles | null; problem: 'reviewers' | null } | null {
+  const lines = blankComments(body).split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '');
+  const head = /^(?:🤖 )?Made with (.+)$/.exec(lines.at(-1) ?? '');
+  if (!head) return null;
+  const roles: MadeWithRoles = { writer: null, reviewers: [], lead: null, others: [] };
+  let problem: 'reviewers' | null = null;
+  for (const part of head[1].split(/(?<=\)), /)) {
+    if (part.startsWith('reviewed by')) {
+      const match = REVIEWED_BY.exec(part);
+      const names = match ? [match[1], match[2]].filter((name): name is string => Boolean(name)).map(readAgent) : [];
+      if (!match || names.includes(null)) problem = 'reviewers';
+      else roles.reviewers.push(...(names as MadeWithAgent[]));
+      continue;
+    }
+    // `worker (opus)` has no vendor: the whole part is the agent, not a role.
+    const role = /^(worker|lead) (.+)$/.exec(part);
+    const named = role ? readAgent(role[2]) : null;
+    const agent = named ?? readAgent(part);
+    if (!agent) return null;
+    if (named && role?.[1] === 'worker') roles.writer = agent;
+    else if (named && role?.[1] === 'lead') roles.lead = agent;
+    else roles.others.push(agent);
+  }
+  return problem ? { roles: null, problem } : { roles, problem: null };
+}
+
+/**
+ * Whether a body ends with `🤖 Made with <agent> (<model>)` (#570): one or more
+ * comma-separated pairs name each AI and model that made it, and an optional
+ * `reviewed by <agent> (<model>)` part, with a second reviewer after ` and `,
+ * names who reviewed it (#673).
  */
 export function hasMadeWith(body: string): boolean {
-  const lines = blankComments(body).split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '');
-  return /^(?:🤖 )?Made with [^()]+ \([^()]+\)(?:, [^()]+ \([^()]+\))*$/.test(lines.at(-1) ?? '');
+  return parseMadeWith(body)?.roles != null;
+}
+
+/**
+ * The findings for a body whose last line is not a good `Made with` line: none when
+ * it is good, a plain one for a missing line and another for a malformed
+ * `reviewed by` part. Pull request bodies and bot notes share it.
+ */
+export function madeWithFindings(body: string): Finding[] {
+  const parsed = parseMadeWith(body);
+  if (parsed?.problem === 'reviewers') {
+    return [finding('pr-made-with', 'body: the `reviewed by` part of the `Made with` line is not `reviewed by <agent> (<model>)`, or two joined by `and`', 'write `reviewed by <agent> (<model>)` or `reviewed by <agent> (<model>) and <agent> (<model>)`, after the worker and before the lead')];
+  }
+  if (parsed?.roles) return [];
+  return [finding('pr-made-with', 'body: no `Made with` line at the end', 'end the body with `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, for example `🤖 Made with lead (opus), worker (sonnet)`; reviewers may follow the worker: `, reviewed by <agent> (<model>) and <agent> (<model>)`')];
 }
 
 /**

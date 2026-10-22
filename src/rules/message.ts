@@ -220,7 +220,7 @@ export const RULES = {
     docs: guide('the-core-rules'),
   },
   'pr-made-with': {
-    rule: 'a pull request body ends with `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs (core rule 8)',
+    rule: 'a pull request body ends with `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, and optionally `reviewed by <agent> (<model>)` (core rule 8)',
     why: 'every pull request names each AI and model that made it',
     check: PR_CHECK,
     docs: guide('the-core-rules'),
