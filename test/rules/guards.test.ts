@@ -174,6 +174,11 @@ test('release: tag pushes, release commands and publishing are the owner\'s', ()
   ]) blocked(command);
 });
 
+test('release: the refusal names the whole push, remote included (#557)', () => {
+  assert.equal(checkCommand('git push origin v1.2.0', { cwd: process.cwd(), env: {} })?.what, 'git push origin v1.2.0 pushes a release tag');
+  assert.equal(checkCommand('git push v1.2.0', { cwd: process.cwd(), env: {} })?.what, 'git push v1.2.0 pushes a release tag');
+});
+
 test('release: the owner\'s approval lets it through', () => {
   const env = { YOKOTEN_RELEASE_APPROVAL: '1' };
   allowed('git push --tags', env);

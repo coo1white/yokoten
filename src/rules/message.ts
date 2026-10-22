@@ -360,6 +360,12 @@ export const RULES = {
     check: "when ~/.gemini is a folder, `doctor` compares the SessionStart and BeforeTool hooks in ~/.gemini/settings.json with what `yokoten install` writes (command, matcher, name, runtime path); a missing or out-of-date hook, or a file it can't read, is a note, not a missing step",
     docs: guide('works-with'),
   },
+  'muse-user-hook': {
+    rule: "Muse Code runs yokoten's session-start doctor and command guard in every repo",
+    why: 'without them, a Muse session does not hear the next step on the road, and a tag push, force push or skipped check in a repo without yokoten is not stopped',
+    check: "when Muse's config folder is there, `doctor` compares the SessionStart and PreToolUse hooks in its settings.json with what `yokoten install` writes (command, matcher, runtime path); a missing or out-of-date hook, or a file it can't read, is a note, not a missing step",
+    docs: guide('works-with'),
+  },
   'grok-user-hook': {
     rule: "Grok CLI runs yokoten's command guard in every repo",
     why: 'without it, a tag push, force push or skipped check by Grok CLI in a repo without yokoten is not stopped',

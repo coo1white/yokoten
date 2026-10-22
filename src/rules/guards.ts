@@ -1453,7 +1453,7 @@ function checkGit(words: string[], { env, config, cwd, rules }: { env: Env; conf
       const tagFlag = args.find((a) => ['--tags', '--follow-tags', '--mirror'].includes(a));
       if (tagFlag) return release(`git push ${tagFlag} pushes tags`);
       const tagRef = args.find((a) => /(^|[:+])(refs\/tags\/|v\d)/.test(a));
-      if (tagRef) return release(`git push ${tagRef} pushes a release tag`);
+      if (tagRef) return release(`git push ${args.join(' ')} pushes a release tag`);
     }
     const force = args.find((a) => a === '--force' || /^-[a-z]*f[a-z]*$/i.test(a) || a.startsWith('+'));
     if (force) return finding('force-push', `git push ${force} forces the push`, 'use --force-with-lease, which stops when the remote has work you have not seen');
