@@ -1,7 +1,6 @@
 // `yokoten board --text` (#601, #603): the board's data as plain text, for a terminal or an agent.
 
 import { terminalText } from '../../../run/learn.ts';
-import { BOARD_AGENT_FILE } from './agents.ts';
 import type { BoardRun, BoardWaiting } from './controls.ts';
 import type { AgentView, BoardData, PullView } from './view.ts';
 
@@ -58,7 +57,7 @@ export function renderBoardText(board: BoardData, extra?: BoardTextExtra): strin
     ...(board.needs.length ? board.needs.map((need) => `- ${need.title}: ${need.why}`) : ['- nothing.']),
     '',
     'Agents:',
-    ...(board.agents.length ? board.agents.map((agent) => `- ${formatAgent(agent)}`) : [`- none. An agent joins by writing ${BOARD_AGENT_FILE} in its worktree.`]),
+    ...(board.agents.length ? board.agents.map((agent) => `- ${formatAgent(agent)}`) : [`- none. Start an agent in this repo or its worktrees, or from the board page: it shows here by itself.`]),
     '',
     ...(extra === undefined
       ? []

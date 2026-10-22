@@ -867,7 +867,7 @@ It puts three safe defaults in `.github/` too:
 | `desk <agent> <folder> [--read <paths>] [--host <hosts>] [--marks] -- <command>` | Starts a worker's agent in a fenced desk: its own clone, its own state folder, and no network but its model's API. Only the lead runs it. See [The desk](#the-desk) |
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay. A second run changes nothing |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. A body whose last line is not `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, is refused too: each pull request names each AI and model that made it. A comment (`gh pr comment`, `gh issue comment`), a review with a body (`gh pr review --body`), and a new issue (`gh issue create --body`) carry the same line: a body whose last line is not the `Made with` line is refused too. A note with `--attach` is refused: the upload lands past the `Made with` line. An edit (`gh pr edit --body`, `gh issue edit --body`) stays as it is. `gh pr create` without a type or tier label gets them added: the type from the title (`bug` for `fix`), the tier from the body's `tier:` line. A label you pass is kept. A tier label that does not match the body is refused, with the message of `check --pr`. A label the repo does not have is named in a note and left out; the bot never creates labels. `gh pr create` without `--milestone` gets the milestone of the first linked issue (`Closes #N`, `Part of #N`) that has one. When no linked issue has one, it is refused, and nothing is sent; add `--milestone`. When gh can't read the issue, the pull request is sent without a milestone, with a note. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
-| `board [--text]` | Serves a live page on this machine only: the agents grouped by issue, the picked one, and each pull request stage. From the page the owner also starts and stops agents, and sees what waits. It prints the link and runs until you stop it. The page refreshes every 15 seconds. `--text` prints the agents, pull requests and worktrees as plain text. See [The team board](#the-team-board) |
+| `board [--text] [--no-open]` | Serves a live page on this machine only: the agents grouped by issue, the picked one, and each pull request stage. From the page the owner also starts and stops agents, and sees what waits. It opens the page in your browser (`--no-open` only prints the link) and runs until you stop it. The page refreshes every 15 seconds. `--text` prints the agents, pull requests and worktrees as plain text. See [The team board](#the-team-board) |
 
 Each command prints its own help with `--help` or `-h`: what it does, its options and
 one example. `yokoten help <command>` prints the same, and `yokoten --help` lists the
@@ -1698,8 +1698,8 @@ desk, read-only. Use it only for an agent you trust with the words.
 ### The team board
 
 `yokoten board` shows the team at a glance. It serves a page on this machine only.
-It prints a link. Open it in a browser. The link holds a random token, so only
-someone who reads this terminal can open the page.
+It opens the page in your browser and prints the link (`--no-open` only prints it).
+The link holds a random token, so only someone who reads this terminal can open the page.
 
 The page has three columns:
 
@@ -1755,9 +1755,26 @@ The board stops only processes it started. Every start and stop goes to
 merges still go only through the bot. There are no Approve or Merge buttons: those
 stay on the host, with the owner.
 
-An agent joins by writing `.yokoten-agent.json` at its worktree's root. It leaves
-by removing the file. Any agent can write it, whatever vendor it runs on. The
-format is open: other tools may read it too. One file per worktree.
+Agents show by themselves. Start an agent in this repo, in one of its worktrees,
+or in a desk (`yokoten desk`), and yokoten's hooks keep its status in
+`.yokoten-agent.json` at that checkout's root. This works for every vendor:
+
+- The session start writes `vendor`, `model`, `role` (`lead` in the main
+  checkout, `engineer` for a worker, by the guard's own rule), `worktree` and
+  `state: working`. Grok has no session-start hook: its first call writes them.
+- Each allowed tool call sets `doing` and `updated`, at most once every 5 seconds.
+- A refused call sets `blocked`. The next allowed call clears it; the board keeps the row.
+- The stop sets `state`: `done` with `checks` for a worker, `waiting` for the lead.
+
+The hooks write the file only in a repo with `yokoten.json`. A worker never writes the
+main checkout's file: that one is the lead's. The first write adds the file to the
+repo's own `.git/info/exclude`, so `git status` never shows it. A desk is a plain
+clone, so `git worktree list` misses it: `yokoten desk` notes it in the repo's git
+folder, and the board shows it too.
+
+An agent may still write the file itself, for `task`, `question` or `link`; the
+hooks keep the fields they do not set. It leaves by removing the file. The format is
+open: other tools may read it too. One file per worktree.
 
 | Field | Means |
 |-------|-------|

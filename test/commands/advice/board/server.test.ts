@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { test } from 'node:test';
 import { CLI, makeSandbox } from '../../../repo/helpers.ts';
-import { runBoard, startBoardServer } from '../../../../src/commands/advice/board/server.ts';
+import { browserCommand, runBoard, startBoardServer } from '../../../../src/commands/advice/board/server.ts';
 import { type BoardData, createBoardGitHub } from '../../../../src/commands/advice/board/view.ts';
 import type { Invocation, Output } from '../../../../src/commands/shared.ts';
 import { type Gh, ghLaterIn } from '../../../../src/host/github/index.ts';
@@ -28,7 +28,7 @@ test('board --text: the entry, an agent that joins and leaves, and the usage err
   // The entry, through the real binary; the rest runs in this process.
   const started = sandbox.run(['board', '--text']);
   assert.equal(started.status, 0, started.stderr);
-  assert.match(started.stdout, /^yokoten board: \S+\n0 agents, 0 open pull requests, 1 worktree\.\n\nNeeds you:\n- nothing\.\n\nAgents:\n- none\. An agent joins by writing \.yokoten-agent\.json in its worktree\.\n\nPull requests:\n- this repo has no GitHub remote, so the board shows no pull requests\n\nWorktrees:\n- \S+ \(main\)\n$/);
+  assert.match(started.stdout, /^yokoten board: \S+\n0 agents, 0 open pull requests, 1 worktree\.\n\nNeeds you:\n- nothing\.\n\nAgents:\n- none\. Start an agent in this repo or its worktrees, or from the board page: it shows here by itself\.\n\nPull requests:\n- this repo has no GitHub remote, so the board shows no pull requests\n\nWorktrees:\n- \S+ \(main\)\n$/);
   const file = join(sandbox.repo, '.yokoten-agent.json');
   writeFileSync(file, JSON.stringify({ name: 'worker-1', vendor: 'claude-code', task: 'issue 601', worktree: sandbox.repo, doing: 'writing tests', updated: new Date().toISOString() }));
   const joined = await sandbox.call(['board', '--text']);
@@ -38,7 +38,7 @@ test('board --text: the entry, an agent that joins and leaves, and the usage err
   rmSync(file);
   const left = await sandbox.call(['board', '--text']);
   assert.match(left.stdout, /\n0 agents, 0 open pull requests, 1 worktree\.\n/);
-  assert.match(left.stdout, /- none\. An agent joins by writing \.yokoten-agent\.json in its worktree\.\n/);
+  assert.match(left.stdout, /- none\. Start an agent in this repo or its worktrees, or from the board page: it shows here by itself\.\n/);
   // A fake HOME above the repo: every shown path hides it.
   writeFileSync(file, JSON.stringify({ name: 'worker-1', worktree: sandbox.repo }));
   const hidden = await sandbox.call(['board', '--text'], { extra: { HOME: dirname(sandbox.repo) } });
@@ -624,4 +624,15 @@ test('board server: the lists appear after the read, and a failed read keeps the
   } finally {
     await new Promise<void>((done) => server.close(() => done()));
   }
+});
+
+// #685: `yokoten board` opens the page itself, so a beginner never copies the token.
+// The link is one word to the opener, never through a shell.
+test('board: the browser opener for each system', () => {
+  const url = 'http://127.0.0.1:9/?t=abc';
+  assert.deepEqual(browserCommand(url, 'darwin', {}), ['open', url]);
+  assert.deepEqual(browserCommand(url, 'linux', {}), ['xdg-open', url]);
+  assert.deepEqual(browserCommand(url, 'linux', { WSL_DISTRO_NAME: 'Ubuntu' }), ['explorer.exe', url], 'WSL opens the Windows browser');
+  assert.deepEqual(browserCommand(url, 'win32', {}), ['rundll32', 'url.dll,FileProtocolHandler', url]);
+  assert.equal(browserCommand(url, 'aix', {}), null);
 });

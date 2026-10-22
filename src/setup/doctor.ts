@@ -1266,6 +1266,8 @@ export function sessionUnsaved(root: string, env: Env, clock?: () => number): { 
 export interface SessionStart {
   sessionId: string;
   source: string;
+  /** The model the session runs, when the runtime says (#685), else ''. */
+  model?: string;
 }
 
 /** A session's file is removed after this many days. */

@@ -7,6 +7,7 @@
 // so the page treats every word in them as text: a strict content policy lets only the
 // page's own script run.
 
+import { spawn } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
@@ -257,6 +258,31 @@ export function startBoardServer(root: string, env: Env, gh: GhLater, options: B
   });
 }
 
+/**
+ * The program that opens a link in the default browser (#685), as a command and its words,
+ * or null where none is known. WSL opens the Windows browser. The link goes as one word,
+ * never through a shell.
+ */
+export function browserCommand(url: string, platform: NodeJS.Platform, env: Env): string[] | null {
+  if (platform === 'darwin') return ['open', url];
+  if (platform === 'win32') return ['rundll32', 'url.dll,FileProtocolHandler', url];
+  if (platform === 'linux') return env.WSL_DISTRO_NAME ? ['explorer.exe', url] : ['xdg-open', url];
+  return null;
+}
+
+/** Open the link in the browser, and never wait or fail: the printed link is the way back. */
+function openInBrowser(url: string, env: Env): void {
+  const command = browserCommand(url, process.platform, env);
+  if (!command) return;
+  try {
+    const child = spawn(command[0], command.slice(1), { detached: true, stdio: 'ignore', env });
+    child.on('error', () => {});
+    child.unref();
+  } catch {
+    // No browser to open: the link is printed.
+  }
+}
+
 export function runBoard(invocation: Invocation, options: BoardServerOptions = {}): number | Promise<number> {
   const parsed = parse('board', invocation.args);
   if (typeof parsed === 'string') return usage(invocation, parsed);
@@ -275,7 +301,9 @@ export function runBoard(invocation: Invocation, options: BoardServerOptions = {
   }
   return startBoardServer(root, invocation.env, ghLaterIn(root, invocation.env, BOARD_READ_TIMEOUT_MS), { controls }).then(
     ({ url }) => {
-      print(invocation, [`yokoten board: the team is live at ${url}`, `The page refreshes every ${BOARD_REFRESH_SECONDS} seconds. Stop it with Ctrl-C.`]);
+      const isOpening = !parsed.flags.has('--no-open');
+      print(invocation, [`yokoten board: the team is live at ${url}`, `${isOpening ? 'It opens in your browser now. ' : ''}The page refreshes every ${BOARD_REFRESH_SECONDS} seconds. Stop it with Ctrl-C.`]);
+      if (isOpening) openInBrowser(url, invocation.env);
       return new Promise<number>(() => {});
     },
     () => {

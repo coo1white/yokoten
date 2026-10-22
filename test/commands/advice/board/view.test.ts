@@ -2,10 +2,11 @@
 
 import '../../../repo/home.ts';
 import assert from 'node:assert/strict';
-import { realpathSync, writeFileSync } from 'node:fs';
+import { realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { registerDesk } from '../../../../src/run/hook.ts';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { makeSandbox } from '../../../repo/helpers.ts';
+import { makeSandbox, makeTempDir, runChild } from '../../../repo/helpers.ts';
 import type { BoardAgent } from '../../../../src/commands/advice/board/agents.ts';
 import { type AgentView, collectBoard, dotOf, needsOf, pullView, refOf, taskTitle, vendorOf } from '../../../../src/commands/advice/board/view.ts';
 import type { BoardPull, Gh } from '../../../../src/host/github/index.ts';
@@ -38,6 +39,12 @@ test('board view: the task names its pull request or issue, shown as a chip', ()
   assert.equal(taskTitle('#7 - polish'), 'polish');
   assert.equal(taskTitle('Plan the week'), 'Plan the week');
   assert.equal(taskTitle('#7'), '#7', 'nothing but the number keeps the number');
+  // #685: the title is clean whatever the task: no leading refs, joins or links.
+  assert.equal(taskTitle('PR #683 (https://github.com/o/r/pull/683), issues #668 and #664: Board fixes'), 'Board fixes');
+  assert.equal(taskTitle(', issues #668 board'), 'board', 'what was left before');
+  assert.equal(taskTitle('PR #1, PR #2 — tidy up (see https://example.com/x)'), 'tidy up');
+  assert.equal(taskTitle('Fix 3 bugs in #12'), 'Fix 3 bugs in #12', 'a ref inside the text stays');
+  assert.equal(taskTitle('3 bugs'), '3 bugs', 'a plain number is no ref');
 });
 
 test('board view: a known vendor has its own name and colour; any other is grey', () => {
@@ -120,4 +127,45 @@ test('board data: agents, needs, pulls and worktrees; gh runs only with a GitHub
   assert.equal(outside.repo, '~');
   assert.deepEqual(outside.agents, []);
   assert.equal(outside.worktrees, 'git could not list the worktrees: run it again');
+});
+
+/** A shell call in each runtime's own shape, for its hook (#685). */
+const SHELL_CALLS: Record<string, (cwd: string) => unknown> = {
+  'claude-code': (cwd) => ({ cwd, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm test' } }),
+  grok: (cwd) => ({ cwd, hookEventName: 'PreToolUse', toolName: 'run_terminal_command', toolInput: { command: 'npm test' } }),
+  muse: (cwd) => ({ cwd, hook_event_name: 'PreToolUse', tool_name: 'bash', tool_input: { command: 'npm test' } }),
+  'deepseek-harness': (cwd) => ({ cwd, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm test' } }),
+};
+
+// #685: the board fills itself. Each vendor's hook writes its worker's file in its own
+// worktree, and a desk clone (no worktree) shows too. Each vendor has its own name and
+// colour, so Grok, Muse and DeepSeek never show as one grey "other".
+test('board data: agents from each vendor\'s hook, and a desk clone, with their own colours', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', '{}\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const base = realpathSync(makeTempDir('yokoten-trees-'));
+  for (const agent of ['claude-code', 'muse', 'deepseek-harness']) {
+    const tree = join(base, agent);
+    sandbox.git('worktree', 'add', '-q', '-b', `w-${agent}`, tree);
+    assert.equal((await sandbox.call(['hook', '--agent', agent], { cwd: tree, input: JSON.stringify(SHELL_CALLS[agent](tree)), extra: { YOKOTEN_ROLE: 'worker' } })).status, 0);
+  }
+  // A desk: a plain clone, which `yokoten desk` notes. Its Grok agent's hook writes there.
+  const desk = join(base, 'desk');
+  assert.equal(runChild('git', ['clone', '-q', sandbox.repo, desk]).status, 0);
+  assert.equal(registerDesk(sandbox.repo, desk), '');
+  assert.equal((await sandbox.call(['hook', '--agent', 'grok'], { cwd: desk, input: JSON.stringify(SHELL_CALLS.grok(desk)), extra: { YOKOTEN_ROLE: 'worker' } })).status, 0);
+  const board = collectBoard(sandbox.repo, sandbox.env, () => '[]');
+  const shown = board.agents.map((agent) => [agent.key, agent.vendor.name, agent.vendor.color, agent.role, agent.doing]);
+  assert.deepEqual(shown, [
+    [join(base, 'claude-code'), 'Claude', '#d97757', 'engineer', 'running npm test'],
+    [join(base, 'deepseek-harness'), 'DeepSeek', '#4d6bfe', 'engineer', 'running npm test'],
+    [join(base, 'muse'), 'Muse', '#0866ff', 'engineer', 'running npm test'],
+    [desk, 'Grok', '#9ca3af', 'engineer', 'running npm test'],
+  ]);
+  assert.ok(typeof board.worktrees !== 'string' && board.worktrees.some((tree) => tree.path === desk && tree.branch === 'main'), 'the desk is listed with its branch');
+  // A desk that is gone drops off.
+  rmSync(desk, { recursive: true, force: true });
+  assert.ok(!collectBoard(sandbox.repo, sandbox.env, () => '[]').agents.some((agent) => agent.key === desk));
 });

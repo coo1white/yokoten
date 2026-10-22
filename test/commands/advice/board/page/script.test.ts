@@ -283,3 +283,17 @@ test('board script: the GitHub lists say when they are being read, and when they
   assert.equal(githubNote(makeState(fresh), fresh, now), '', 'a good read needs no note');
   assert.equal(githubNote(makeState(makeData({})), makeData({}), now), '', 'no remote, no note');
 });
+
+// #685: an empty board says in plain words how agents appear, in every language: start
+// one from the board, or start any agent here. It names no JSON file.
+test('board script: the empty board says how agents appear', () => {
+  for (const lang of Object.keys(WORDS)) {
+    const state = makeState(makeData({}), lang);
+    const text = [renderCenter(state, makeData({})), ...renderSide(state, makeData({}))].map((node) => (node as unknown as FakeNode).textContent).join(' ');
+    assert.doesNotMatch(text, /\.yokoten-agent\.json|"role"|JSON/, `${lang}: no file name or JSON`);
+  }
+  const english = makeState(makeData({}));
+  const center = (renderCenter(english, makeData({})) as unknown as FakeNode).textContent;
+  assert.match(center, /Start an agent from the board/);
+  assert.match(center, /or start any agent in this repo/);
+});

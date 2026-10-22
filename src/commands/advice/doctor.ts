@@ -1,5 +1,6 @@
 // `yokoten doctor`, `explain` and `adopt`: they read and show; none writes to the project.
-// A Claude Code session start keeps what it said in ~/.config/yokoten/sessions/ (#405).
+// A Claude Code session start keeps what it said in ~/.config/yokoten/sessions/ (#405). A
+// session start also writes the agent's status file for the board, git-ignored (#685).
 
 import { readSync } from 'node:fs';
 import * as claudeCode from '../../agents/runtimes/claude-code.ts';
@@ -7,6 +8,7 @@ import * as gemini from '../../agents/runtimes/gemini.ts';
 import { ghIn } from '../../host/github/index.ts';
 import { DEFAULTS, loadConfig } from '../../rules/config.ts';
 import { workerRole } from '../../rules/guards.ts';
+import { canKeepStatus, changeAgentStatus, findStatusCheckout, startFields } from '../../run/hook.ts';
 import { formatFinding } from '../../rules/message.ts';
 import { hideHome } from '../../rules/privacy.ts';
 import { draft, facts, table } from '../../setup/advice/adopt.ts';
@@ -38,8 +40,10 @@ export function runDoctor(invocation: Invocation): number {
     else print(invocation, [...allLines, `yokoten doctor: ${formatFinding(missing)}`], invocation.stderr);
     return 1;
   }
+  const start = root && session && agent === 'claude-code' ? readSessionStart(invocation) : null;
+  if (root && session) noteSessionStart(cwd, env, agent, start?.model ?? '');
   // A compaction start repeats only what changed (#405); any other start says all.
-  const lines = root && session && blocks && !options.flags.has('--json') ? blocksToSay(env, agent === 'claude-code' ? readSessionStart(invocation) : null, blocks).flat() : allLines;
+  const lines = root && session && blocks && !options.flags.has('--json') ? blocksToSay(env, start, blocks).flat() : allLines;
   // A worker, by YOKOTEN_ROLE or by the mark on its worktree (#555), hears that the guard sees
   // it as one (#402), on every start, a compaction too: its role is safety, never news to
   // drop. The lead hears nothing.
@@ -54,6 +58,19 @@ export function runDoctor(invocation: Invocation): number {
   } else print(invocation, lines);
   // A session must start even when doctor found a problem.
   return session || ok ? 0 : 1;
+}
+
+/**
+ * The session's status file at its start (#685): who runs (vendor, model), in which role
+ * (by the guard's own rule), where, and that it works. The board reads it. The model
+ * comes from the runtime, or else YOKOTEN_MODEL, which the board sets when it starts one.
+ */
+function noteSessionStart(cwd: string, env: Invocation['env'], agent: string, model: string): void {
+  const checkout = findStatusCheckout(cwd);
+  const isWorker = workerRole(env, [cwd]) !== null;
+  if (!checkout || !canKeepStatus(checkout, isWorker)) return;
+  const fields = startFields(agent, isWorker, checkout, model || (env.YOKOTEN_MODEL ?? '').trim().slice(0, 64));
+  changeAgentStatus(checkout, { ...fields, set: { ...fields.set, doing: 'started', blocked: null } });
 }
 
 const WORKER_SESSION = 'this session is a worker: lead-only files are guarded';

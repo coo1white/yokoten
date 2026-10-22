@@ -39,9 +39,25 @@ export function refOf(task: string): WorkRef | null {
   return issue ? { kind: 'issue', number: Number(issue[1]) } : null;
 }
 
-/** The task without the issue or pull request it starts with, since the board shows that as a chip. */
+/** A leading issue or pull request: "PR #615", "pull requests 1", "issues #668", or "#7". */
+const LEADING_REF = /^(?:(?:PRs?|pull requests?|issues?)\s*#?\s*|#)\d+\b/i;
+/** What joins or follows refs: commas, colons, dashes, "and", brackets. */
+const LEADING_GLUE = /^(?:[,;:.\-–—&+/|()[\]]|and\b|or\b)/i;
+
+/**
+ * The task as a clean title (#685): without the issues, pull requests and links it starts
+ * with, since the board shows the first as a chip, and without any web address. "PR #683
+ * (https://…), issues #668 and #664: Board fixes" is "Board fixes". A task that is only
+ * refs keeps its text.
+ */
 export function taskTitle(task: string): string {
-  return task.replace(/^\s*(?:PR|pull request|issue)?\s*#?\d+\s*[:\-–—]?\s*/i, '').trim() || task;
+  let rest = task.replace(/\([^()]*https?:\/\/[^()]*\)/gi, ' ').replace(/https?:\/\/\S+/gi, ' ').trim();
+  for (let before = ''; before !== rest; ) {
+    before = rest;
+    rest = rest.replace(LEADING_REF, '').trim().replace(LEADING_GLUE, '').trim();
+  }
+  rest = rest.replace(/\s+/g, ' ');
+  return rest || task.trim();
 }
 
 /** A vendor's shown name and colour. */
@@ -59,6 +75,8 @@ const VENDOR_LOOKS: Record<string, VendorLook> = {
   grok: { name: 'Grok', color: '#9ca3af' },
   muse: { name: 'Muse', color: '#0866ff' },
   deepseek: { name: 'DeepSeek', color: '#4d6bfe' },
+  // The hooks file each agent by its --agent name (#685).
+  'deepseek-harness': { name: 'DeepSeek', color: '#4d6bfe' },
 };
 const OTHER_VENDOR_COLOR = '#8b8b8b';
 

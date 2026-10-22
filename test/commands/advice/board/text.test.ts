@@ -54,7 +54,7 @@ test('board text: needs, agents, pulls and worktrees in plain words; a part that
     '- nothing.',
     '',
     'Agents:',
-    '- none. An agent joins by writing .yokoten-agent.json in its worktree.',
+    '- none. Start an agent in this repo or its worktrees, or from the board page: it shows here by itself.',
     '',
     'Pull requests:',
     '- gh failed',

@@ -1,10 +1,12 @@
-// The board's agents (#601, #603): one status file per worktree, and the worktrees git lists.
-// An agent joins by writing the file at its worktree's root, and leaves by removing it.
+// The board's agents (#601, #603): one status file per worktree, and the worktrees git lists,
+// with the desks `yokoten desk` started (#685). An agent joins by writing the file at its
+// worktree's root, and leaves by removing it. The hooks write it for every vendor (#685).
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { type Env } from '../../../rules/config.ts';
+import { commonGitDir, DESK_LIST_FILE } from '../../../run/hook.ts';
 
 /** How long the board waits for `gh pr list` or `git worktree list`, at most. */
 export const BOARD_READ_TIMEOUT_MS = 15000;
@@ -114,8 +116,45 @@ export interface BoardWorktree {
   branch: string;
 }
 
-/** `git worktree list --porcelain -z` as worktrees, or why git can't read them. */
+/** `git worktree list --porcelain -z` as worktrees, then the desks, or why git can't read them. */
 export function readBoardWorktrees(root: string, env: Env): BoardWorktree[] | string {
+  const trees = readGitWorktrees(root, env);
+  if (typeof trees === 'string') return trees;
+  const seen = new Set(trees.map((tree) => tree.path));
+  return [...trees, ...readBoardDesks(root).filter((desk) => !seen.has(desk.path))];
+}
+
+/**
+ * The desks `yokoten desk` started from this repo (#685): plain clones, so `git worktree
+ * list` misses them. Their paths are on a list in the repo's git folder. A desk that is
+ * gone, or is no clone, is skipped. The branch comes from its HEAD, with no git process.
+ */
+export function readBoardDesks(root: string): BoardWorktree[] {
+  const common = commonGitDir(root);
+  if (!common) return [];
+  let text: string;
+  try {
+    text = readFileSync(join(common, DESK_LIST_FILE), 'utf8');
+  } catch {
+    return [];
+  }
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((path) => path && existsSync(join(path, '.git')))
+    .map((path) => {
+      let head = '';
+      try {
+        head = readFileSync(join(path, '.git', 'HEAD'), 'utf8').trim();
+      } catch {
+        // No HEAD to read: the branch stays blank.
+      }
+      return { path, branch: head.startsWith('ref: refs/heads/') ? head.slice('ref: refs/heads/'.length) : '' };
+    });
+}
+
+/** `git worktree list --porcelain -z` as worktrees, or why git can't read them. */
+function readGitWorktrees(root: string, env: Env): BoardWorktree[] | string {
   let text: string;
   try {
     text = execFileSync('git', ['worktree', 'list', '--porcelain', '-z'], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: BOARD_READ_TIMEOUT_MS });
