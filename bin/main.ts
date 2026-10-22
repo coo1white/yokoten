@@ -71,11 +71,11 @@ function dispatch(invocation: Invocation): number | Promise<number> {
     case 'learn':
       return import('../src/commands/learn.ts').then((m) => m.runLearn(invocation));
     case 'doctor':
-      return import('../src/commands/advice.ts').then((m) => m.runDoctor(invocation));
+      return import('../src/commands/advice/doctor.ts').then((m) => m.runDoctor(invocation));
     case 'explain':
-      return import('../src/commands/advice.ts').then((m) => m.runExplain(invocation));
+      return import('../src/commands/advice/doctor.ts').then((m) => m.runExplain(invocation));
     case 'adopt':
-      return import('../src/commands/advice.ts').then((m) => m.runAdopt(invocation));
+      return import('../src/commands/advice/doctor.ts').then((m) => m.runAdopt(invocation));
     case 'init':
       return import('../src/commands/setup.ts').then((m) => m.runInit(invocation));
     case 'update':
@@ -83,7 +83,7 @@ function dispatch(invocation: Invocation): number | Promise<number> {
     case 'bot':
       return import('../src/commands/bot.ts').then((m) => m.runBot(invocation));
     case 'board':
-      return import('../src/commands/advice.ts').then((m) => m.runBoard(invocation));
+      return import('../src/commands/advice/board.ts').then((m) => m.runBoard(invocation));
     case 'install':
       return import('../src/commands/setup.ts').then((m) => m.runInstall(invocation));
     case 'uninstall':
