@@ -415,6 +415,29 @@ A non-GET call is refused when the path after `repos/` or `repositories/` is onl
 `gh config set aliases` is refused. `gh alias list` and `gh extension list` still pass.
 `gh alias set` and `gh alias import` are refused for both roles. Ask the owner to add an alias by hand.
 
+No agent, lead or worker, gets gh's token (#659, #668). With it, `curl` or a script could
+call GitHub directly, around every rule above. gh and `yokoten bot` use the token without
+showing it. So for every agent the guard refuses:
+
+- gh's commands that print it: `gh auth token`, `gh auth status --show-token` (`-t`),
+  `gh auth git-credential` and `gh config get oauth_token`.
+- The places a login is kept: `git credential fill`, a credential helper's `get`
+  (`git credential-manager get`), `git -c credential.…`, `~/.git-credentials`, gh's
+  `hosts.yml`, `security find-…-password -w` and `secret-tool lookup`.
+- The token's variables: `$GH_TOKEN`, `$GITHUB_TOKEN`, `$GH_ENTERPRISE_TOKEN` and
+  `$GITHUB_ENTERPRISE_TOKEN`, also as `$env:GH_TOKEN` (PowerShell) and `%GH_TOKEN%` (cmd).
+  So are `node`, `python`, `jq` and other programs that run code when the command names one.
+  To write the name in a post, use a body file; to search for it, leave out the `$`.
+- `GIT_TRACE_REDACT=0`, which makes a git trace print the token.
+- For the bot's git, `-c` and git settings in the environment (`GIT_CONFIG_*`). The bot also
+  drops the pager, editor, browser, ssh and askpass programs and the trace and debug
+  settings from its environment, and pages through `cat`.
+
+`gh auth status`, `gh pr view` and `curl https://example.com` still pass.
+
+`gh workflow disable` is refused for every agent too: a workflow that is off runs no
+checks on any pull request. Only the owner turns one off.
+
 The guard stops a worker's shell writes to lead-only files as well as its edits (#402). It
 reads redirects (`>`, `>>`, `>|`, `&>`), `sed -i`, `perl -i`, `tee`, `cp`, `mv`,
 `install`, `ln`, `dd of=`, `truncate`, `rm`, and git's `checkout`, `restore`, `rm`, `mv`
@@ -2121,6 +2144,15 @@ Honest limits:
   gh, yokoten or a shell may run git with the home folder it was given: an npm script, a
   `make` target or a shell function (`HOME=/tmp/x npm run commit`). An indirect name
   (`export $name=x`) gets past too.
+- **gh's token is hidden only from plain commands.** A script written to a file and then
+  run is not read. A script that reads gh's own files or the system keyring, or a
+  variable name built in pieces, still gets the token. So does a program that prints the
+  whole environment (`env`, `printenv`, `set`, `/proc/self/environ`): refusing those
+  would break too much. An alias you made before is not read either. Then the agent can
+  call GitHub around the guard. The real fix is that the token is not in the agent's
+  environment. For a worker, that is a desk with no token at all (#637). For the lead, the
+  lock is again the server: branch protection, and a token without the rights to merge or
+  release.
 - **Server settings are read on GitHub only.** Another host shows the steps that only the
   host can judge as **can't check**, with what each one asks ([What a session sees](#what-a-session-sees)). `doctor` does not check the bot's rights yet.
 - **Claude Code first.** Agents follow Claude Code's format.
