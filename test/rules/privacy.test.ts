@@ -561,7 +561,11 @@ test('a heredoc whose end word the guard does not read exactly: the rest of the 
 test('a relative body file follows cd; one the guard cannot place stops the command (#391 review)', () => {
   mkdirSync(join(postDir, 'sub'), { recursive: true });
   writeFileSync(join(postDir, 'sub', 'note.md'), 'Seen in QuietVale.\n');
-  assert.equal(post('cd sub && gh issue comment 3 --body-file note.md')?.id, 'private-mark');
+  // `cd sub` may land anywhere through CDPATH (#559), so the folder is unknown and the
+  // body file can't be placed: unreadable, as below, not read from a guessed folder.
+  const placed = post('cd sub && gh issue comment 3 --body-file note.md');
+  assert.equal(placed?.id, 'unreadable-command');
+  assert.match(placed?.fix ?? '', /full path/);
   assert.equal(post(`cd ${join(postDir, 'sub')} && gh issue comment 3 --body-file note.md`)?.id, 'private-mark');
   for (const command of ['cd "$X" && gh issue comment 3 --body-file note.md', 'gh pr create --body-file missing.md', 'cd sub && gh pr create --body-file body.md']) {
     const f = post(command);
