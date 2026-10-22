@@ -320,7 +320,7 @@ export const COMMANDS: Command[] = [
   {
     name: 'desk',
     summary: "start a worker's agent in its own fenced desk: its clone, no network but its API",
-    usage: '<agent> <folder> [--read <paths>] [--host <hosts>] [--marks] -- <command>',
+    usage: '<agent> <folder> [--name <name>] [--read <paths>] [--host <hosts>] [--marks] -- <command>',
     text: [
       'Starts the command after -- in a sandbox around <folder>, which must be its own git clone.',
       "The agent writes only in the folder and the desk's own state folder, <folder>.state, which",
@@ -329,14 +329,32 @@ export const COMMANDS: Command[] = [
       '.git/config and .git/hooks stay read-only. YOKOTEN_ROLE=worker and TZ=UTC; tokens stay out.',
       'Agents: claude-code, codex (DeepSeek too), grok, muse. Linux and WSL2 use bwrap; macOS',
       'uses sandbox-exec; native Windows is not built yet. Run the commit check outside until #665.',
+      'The agent joins the team of the project you run it from, by the desk folder\'s name or --name: see `yokoten msg`.',
     ],
     options: [
+      { name: '--name', value: 'name', text: "the agent's name on the team (default: the desk folder's name)" },
       { name: '--read', value: 'paths', text: 'more paths to show read-only, joined by commas' },
       { name: '--host', value: 'hosts', text: "more API hosts the agent may reach, joined by commas" },
       { name: '--marks', text: 'show the private-marks file read-only (off: the agent could read it until #665)' },
     ],
     arguments: ['agent', 'folder'],
     example: 'yokoten desk claude-code ../desks/42 -- claude -p "$(cat brief.md)"',
+  },
+  {
+    name: 'msg',
+    summary: 'agents of every vendor message each other: send, inbox, who, and the lead\'s log',
+    usage: 'send <to> [<text>] | inbox | who | log',
+    text: [
+      'Each agent writes only its own outbox, in the team folder next to your checkout (<repo>.team).',
+      'In a desk the rest of the team folder is read-only, so no agent can fake a sender.',
+      'The text comes after the name, or on stdin. It gets the same privacy scan as posted text.',
+      'Hooks add unread messages to the agent\'s context, marked as data that grants no approval.',
+      'Claude Code and Grok get them before a tool call; every agent gets them at the end of a turn.',
+      '`inbox` shows yours and marks them read. `who` lists the team. `log` shows every message; only the lead runs it.',
+    ],
+    options: [],
+    arguments: ['action', 'to', 'text'],
+    example: 'yokoten msg send lead "tests pass; ready for review"',
   },
   {
     name: 'explain',

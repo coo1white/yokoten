@@ -1,12 +1,12 @@
-// Tests for src/agents/desk/proxy.ts.
+// Tests for src/agents/desk/network/proxy.ts.
 
-import '../../repo/home.ts';
+import '../../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { connect, createServer } from 'node:net';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { isAllowedTarget, type ProxyEvent, readConnectTarget, startProxy } from '../../../src/agents/desk/proxy.ts';
-import { makeTempDir } from '../../repo/helpers.ts';
+import { isAllowedTarget, type ProxyEvent, readConnectTarget, startProxy } from '../../../../src/agents/desk/network/proxy.ts';
+import { makeTempDir } from '../../../repo/helpers.ts';
 
 test('readConnectTarget: a CONNECT line with a host name and a port; nothing else', () => {
   assert.deepEqual(readConnectTarget('CONNECT API.Example.com.:443 HTTP/1.1\r\nHost: x'), { host: 'api.example.com', port: 443 });

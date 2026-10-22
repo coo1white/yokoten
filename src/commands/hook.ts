@@ -1,7 +1,7 @@
 // `yokoten hook`: the tool-call guard, and with --stop the end-of-turn check.
 
 import { existsSync, lstatSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
 import * as claudeCode from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
@@ -77,6 +77,16 @@ const RELEASE_FIXES: Record<string, string> = {
 // with the wrapped command as the fix. Codex, Gemini CLI, Antigravity CLI, Muse Code and
 // DeepSeek Harness are not known to take a changed command from a hook. Grok CLI takes
 // `updatedInput`, as Claude Code does.
+// The runtimes whose allowed PreToolUse call can add text to the agent's context: unread
+// team messages arrive there (#674). The others get them at the end of a turn (Stop).
+const CONTEXTS: Record<string, (text: string) => string> = { 'claude-code': claudeCode.formatContext, grok: grok.formatContext };
+
+/** The unread team messages for the agent in `folder`, wrapped as data; '' when none (#674). */
+const teamMessages = async (folder: string, env: Env, root: string | null): Promise<string> => {
+  const { deliveryFor } = await import('../agents/desk/team/deliver.ts');
+  return deliveryFor(folder, env, root);
+};
+
 const REWRITES: Record<string, typeof claudeCode.formatRewrite> = {
   'claude-code': claudeCode.formatRewrite,
   grok: grok.formatRewrite,
@@ -169,6 +179,14 @@ async function stopHook(invocation: Invocation, json: boolean, read: typeof clau
   }
   const folder = event.cwd ?? invocation.cwd;
   const folders = [folder, invocation.cwd];
+  // Unread team messages come first, once: the agent reads them and goes on (#674).
+  // Never when a stop hook already sent it back, so messages can't keep an agent from stopping.
+  const messages = event.active || event.subagent ? '' : await teamMessages(folder, env, rootOf(folder, env));
+  if (messages) {
+    if (json) printJson(invocation, { blocked: true, stop: false, messages: true });
+    print(invocation, [messages], invocation.stderr);
+    return 2;
+  }
   // SubagentStop fires for every subagent. Its own type decides. The parent session's
   // role does not: a reviewer started by a worker is not checked (#614).
   const isWorker = event.subagent ? event.worker : event.worker || workerRole(env, folders) !== null;
@@ -394,6 +412,12 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
     // A worker by the mark hears why, and where the lead works (#555).
     if (found && role === 'mark' && WORKER_RULES.has(found.id)) found = { ...found, fix: `${found.fix}. ${capital(markNote(folders, invocation.env))}` };
     if (json) printJson(invocation, found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
+    if (!found && !json && Object.hasOwn(CONTEXTS, agent)) {
+      return teamMessages(resolve(cwd, action.cwd ?? '.'), env, root).then((messages) => {
+        if (messages) say(invocation, CONTEXTS[agent](messages), invocation.stdout);
+        return 0;
+      });
+    }
     if (!found) return 0;
     // The runtimes read the reason from stderr when the hook exits 2; some read stdout (DENIALS).
     const reason = `yokoten: ${formatFinding(found)}`;
@@ -536,7 +560,7 @@ function runUnmark(invocation: Invocation, dir: string, fail: (line: string) => 
  */
 export async function runDesk(invocation: Invocation): Promise<number> {
   // Inside a Linux desk, its first program: the bridge to the proxy, then the agent.
-  if (invocation.args[0] === '--bridge') return (await import('../agents/desk/bridge.ts')).runBridge(invocation.args.slice(1), invocation.stderr);
+  if (invocation.args[0] === '--bridge') return (await import('../agents/desk/network/bridge.ts')).runBridge(invocation.args.slice(1), invocation.stderr);
   const end = invocation.args.indexOf('--');
   const options = parse('desk', end === -1 ? invocation.args : invocation.args.slice(0, end));
   if (typeof options === 'string') return usage(invocation, options);
@@ -548,11 +572,12 @@ export async function runDesk(invocation: Invocation): Promise<number> {
     return 1;
   };
   if (workerRole(invocation.env, [invocation.cwd]) !== null) return fail('only the lead starts a desk: this session is a worker.');
-  const [{ planDesk }, { chooseBackend, startDesk }, { paths }] = await Promise.all([import('../agents/desk/desk.ts'), import('../agents/desk/start.ts'), import('../setup/install.ts')]);
+  const [{ planDesk }, { chooseBackend, startDesk }, { paths }, team] = await Promise.all([import('../agents/desk/desk.ts'), import('../agents/desk/start.ts'), import('../setup/install.ts'), import('../agents/desk/team/team.ts')]);
   const backend = chooseBackend(process.platform, invocation.env);
   if (typeof backend === 'string') return fail(backend);
   const list = (name: string) => (options.values[name] ?? '').split(',').map((word) => word.trim()).filter(Boolean);
   const installed = paths(invocation.env);
+  const main = team.mainCheckout(invocation.cwd);
   let plan: ReturnType<typeof planDesk>;
   try {
     plan = planDesk({
@@ -564,6 +589,8 @@ export async function runDesk(invocation: Invocation): Promise<number> {
       extraHosts: list('--host'),
       runtimes: [installed.runtime],
       marks: options.flags.has('--marks') ? installed.marks : undefined,
+      // The team of the lead's project (#674): next to its main checkout. The agent's name is the desk folder's, or --name.
+      team: main ? { folder: team.teamFolderFor(main), name: options.values['--name'] ?? basename(resolve(invocation.cwd, folder)).toLowerCase() } : undefined,
     });
   } catch (error) {
     return fail((error as Error).message);

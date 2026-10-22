@@ -11,8 +11,11 @@
 //    run (Node, its own program, yokoten's runtime) is shown again, read-only.
 // 4. Child processes work, with pipes (tests start programs).
 // 5. Commands have no network. The agent reaches only its model's API hosts, through
-//    the proxy in proxy.ts, which runs outside.
+//    the proxy in network/proxy.ts, which runs outside.
 // 6. YOKOTEN_ROLE=worker and TZ=UTC are set, and no token or key is passed in (agent-env.ts).
+// 7. On a team (#674), the team folder is read-only and only the agent's own outbox in it
+//    is writable, so no agent writes, changes or deletes another's messages. The file
+//    `.git/yokoten-desk.json`, which names the agent, is locked (team/team.ts).
 //
 // This file turns a request into a `DeskPlan`: plain lists of paths, hosts and names. A
 // backend per system turns the plan into a command: bwrap.ts on Linux and WSL2,
@@ -28,6 +31,7 @@ import { DESK as CODEX } from '../runtimes/codex.ts';
 import { DESK as GROK } from '../runtimes/grok.ts';
 import { DESK as MUSE } from '../runtimes/muse.ts';
 import { buildAgentEnv } from './agent-env.ts';
+import { DESK_FILE, modelOf, prepareDeskTeam } from './team/team.ts';
 
 /** What a runtime's own file tells the desk: where its state is, how to move it, and its API hosts. */
 export interface RuntimeDesk {
@@ -89,6 +93,8 @@ export interface DeskRequest {
   marks?: string;
   /** The system the plan is for: its hidden folders differ. */
   platform?: NodeJS.Platform;
+  /** The team the agent joins (#674): the team folder, and the agent's name on it. */
+  team?: { folder: string; name: string };
 }
 
 /** The parts of this yokoten that run in a desk: the guard, the commit check and the bridge. */
@@ -241,9 +247,20 @@ export function planDesk(request: DeskRequest): DeskPlan {
     locked.push(path);
   }
   const state = prepareDeskState(runtime, request.runtime, desk, env);
+  // The team (#674): its folder read-only, the agent's own outbox writable, and the desk file that names the agent locked.
+  const writable = [state];
+  rmSync(join(desk, '.git', DESK_FILE), { force: true });
+  if (request.team) {
+    const folder = realOr(resolve(request.team.folder));
+    if (isTooWide(folder) || isInside(desk, folder) || isInside(folder, desk)) throw new Error(`the team folder ${folder} would open a hidden folder or the desk`);
+    const team = prepareDeskTeam({ team: folder, name: request.team.name, runtime: request.runtime, model: modelOf(request.command), desk, state });
+    if (!readable.includes(team.readable)) readable.push(team.readable);
+    writable.push(team.writable);
+    locked.push(team.locked);
+  }
   return {
     desk,
-    state: [state],
+    state: writable,
     readable,
     hidden,
     locked,

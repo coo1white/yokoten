@@ -83,6 +83,9 @@ export function readStop(input: unknown): StopEvent | null {
   return readStopFields(input);
 }
 
+/** Text added to the agent's context by an allowed PreToolUse call (#674): `additionalContext`, with no decision, so the call keeps Grok's own permission. */
+export const formatContext = (text: string): string => JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: text } });
+
 /** How a refusal reaches Grok: a deny on stdout, and exit 2, so the model reads the whole reason. */
 export const formatDenial = (reason: string): { stdout: string; exitCode: number } => ({
   stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }),

@@ -676,7 +676,8 @@ token。在 `yokoten.yml` 里，同一个 PR 推了新提交，还在跑的那�
 | `explain [<id>] [--json]` | 讲一条规则或者路上的一步：它是什么、为什么要有、yokoten 怎么检查 |
 | `worker mark <目录>` | 把 `<目录>` 这个 worktree 标成 worker 的。之后在这里干活的 agent，护栏一律当 worker 看待，哪怕它的运行环境没把 `YOKOTEN_ROLE` 传给钩子（比如 Muse Code）。worker 用常见的办法删这个标记，护栏都会拦下；`.git` 读不出来的时候，也照样当 worker。护栏只看命令文字，真正的锁是服务器，还有别把推送和机器人的凭据交给 worker。`git worktree remove <目录>` 会连同 worktree 一起删掉标记。给的是子目录时，它标的是所在的 worktree，并说出是哪个。主检出和子模块永远不会被标记 |
 | `worker env [运行环境]` | 列出 yokoten 给 agent 准备环境变量时，会从这个 shell 留下哪些变量名，并数出去掉了几个。加上运行环境名，会把它自己的登录变量也算进去。从不显示值。`desk` 就用它启动 agent。见 [agent 拿到的环境变量](#agent-拿到的环境变量) |
-| `desk <agent> <文件夹> [--read <路径>] [--host <主机>] [--marks] -- <命令>` | 把 worker 的 agent 放进一个围起来的工位里启动：只有它自己的克隆、自己的状态文件夹，除了模型的 API 不能上网。只有 lead 跑它。见 [工位](#工位) |
+| `msg send <收件人> [<文字>]`、`msg inbox`、`msg who`、`msg log` | 各家 agent 通过这台电脑上的文件互相发消息。只有 lead 能跑 `log`。见 [agent 之间发消息](#agent-之间发消息) |
+| `desk <agent> <文件夹> [--name <名字>] [--read <路径>] [--host <主机>] [--marks] -- <命令>` | 把 worker 的 agent 放进一个围起来的工位里启动：只有它自己的克隆、自己的状态文件夹，除了模型的 API 不能上网。只有 lead 跑它。见 [工位](#工位) |
 | `uninstall` | 撤掉 `install` 装的东西：带 yokoten 管理标记的技能和 agent、`~/.claude/settings.json` 里它加的两个 hook，还有 `~/.local/share/yokoten`。你自己的文件、别的设置和 `~/.config/yokoten`（密钥、私有词表）都留着。再跑一次什么也不会变 |
 | `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。如果命令是 `gh issue` 或 `gh pr` 的 `create`、`edit`，并且带了标题，它会先按 CI 的规则检查标题；标题不合格就直接拒绝，什么都不会发出去。用 `gh api` 改 issue 或 PR 时，标题也照样检查。`gh pr create` 和 `gh pr edit` 如果带了 `--body` 或 `--body-file`，正文也会先过一遍：规则和 `check --pr` 里检查正文的那部分一样，看的是这个 PR 的分支改了哪些文件，以及基础分支上的 CODEOWNERS。正文不合格同样直接拒绝，什么都不发出去。正文最后一行不是 `🤖 Made with <agent> (<model>)`（可写一个或多个逗号分隔的组合）的同样直接拒绝：每个 PR 都要写明做出它的每个 AI 和模型。评论（`gh pr comment`、`gh issue comment`）、带正文的审查（`gh pr review --body`）和新建的 issue（`gh issue create --body`）也要带上这一行：最后一行不是 `Made with` 行的正文同样直接拒绝。带 `--attach` 的正文会被拒绝：上传的文件会落在 `Made with` 行之后。只改正文的编辑（`gh pr edit --body`、`gh issue edit --body`）保持原样。`gh pr create` 没给类型标签或 tier 标签时，bot 会自动补上：类型看标题（`fix` 补 `bug`），tier 看正文第一行的 `tier:`。你自己给的标签保留不动。你给的 tier 标签和正文对不上，就直接拒绝，提示和 `check --pr` 一样。仓库里没有的标签，bot 会说一声然后不加；它从不新建标签。`gh pr create` 没带 `--milestone` 时，bot 会用第一个关联 issue（`Closes #N`、`Part of #N`）的里程碑；这些 issue 都没有里程碑，就直接拒绝，什么都不发出去，请自己加上 `--milestone`。gh 读不到那个 issue 时，PR 照发，不带里程碑，只留一条提示。它只运行 `gh` 和 `git`，所以 `env gh …`、`sh -c …` 这类写法会被拒绝；gh 的别名（alias）它不认，别名里的标题不会被检查。设置方法见 [server.md](../../server.md#3-the-bot-a-github-app) |
 | `board [--text]` | 只在这台电脑上开一个实时页面：按 issue 分组的 agent、选中的 agent、每个 PR 的状态。在页面上，owner 还能启动和停掉 agent，看到在等什么。启动后打印链接，按 Ctrl-C 停掉。页面每 15 秒刷新一次。加 `--text` 就在终端里用纯文本打印 agent、PR 和 worktree，见「团队看板」 |
@@ -1275,6 +1276,7 @@ yokoten desk claude-code ../desks/42 -- claude -p "$(cat brief.md)"
 | 子进程 | 能跑，管道也能用，所以测试可以启动程序 |
 | 网络 | 命令自己上不了网。外面的代理只放行 agent 的 API 主机。工位里的任何命令也能用这个代理，所以命令也连得到这些主机 |
 | 环境变量 | `YOKOTEN_ROLE=worker`、`TZ=UTC`。你 shell 里的 token 和密钥都不带进来（见 [agent 拿到的环境变量](#agent-拿到的环境变量)） |
+| 团队 | 团队文件夹只能读，只有这个 agent 自己的发件箱能写（见 [agent 之间发消息](#agent-之间发消息)） |
 
 工位必须是单独 `git clone` 出来的。worktree 的 git 文件夹在另一个检出里，工位会把它藏起来，
 所以 worktree 不行，命令会拒绝。
@@ -1329,6 +1331,29 @@ git diff main refs/desks/42
   要用的读、写、Mach 服务和代理端口，挡住 `open`、`osascript`、Launch Services 和 Apple 事件。
   还没在 Mac 上跑过：请在 Mac 上跑一次 `node --test test/agents/desk/start.test.ts`，检查这套规矩。
 - **原生 Windows**：还没有工位（#669）。请在 WSL2 里用 yokoten。原生 Windows 上只有守卫在把关。
+
+### agent 之间发消息
+
+各家的 agent 可以互相发消息（#674）。消息就是这台电脑上的文件，不用服务器，也不上网。
+
+```sh
+yokoten msg send lead "测试都过了，可以审了"
+yokoten msg inbox
+yokoten msg who
+yokoten msg log
+```
+
+- **放在哪**：你的仓库旁边的团队文件夹 `<仓库名>.team/`。每个 agent 只能写自己的发件箱。
+  `yokoten desk` 用工位文件夹的名字（或 `--name`）把 agent 加进团队。不在工位里，你就是 `lead`。
+- **发件人假冒不了**：在工位里，团队文件夹只能读，只有自己的发件箱能写。不在工位里的 worker 发不了消息。
+- **怎么送到**：hook 把没读的消息放进 agent 的上下文。Claude Code 和 Grok 在调用工具前收到；
+  所有 agent 在一轮结束时收到。随时可以用 `msg inbox` 看。
+- **消息只是数据**：每条都写明发件人的厂商和模型，并说明它不能给批准或权限。
+  自称 owner 已经批准的消息，会标成不可信。
+- **隐私**：发出前和贴出去的文字做一样的检查：私密词、密钥、邮箱和 IP、带密钥的环境变量。
+  查出问题就不发，并告诉你原因。
+- **上限**：每条 2000 字符；每个 agent 10 分钟内最多 20 条；每个发件箱 256 KB。
+- **全部记录**：`msg log` 显示所有消息，只有 lead 能跑。
 
 ### 团队看板
 
