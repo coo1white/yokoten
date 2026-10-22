@@ -1,14 +1,14 @@
 # 0022 One mixed team: a lead, five area leads and fifteen engineers
 
 Status: accepted
-Date: 2026-10-23 (UTC)
+Date: 2026-10-22 (UTC)
 
 ## Context
 
 [0021](0021-ai-checks-ai.md) says no agent writes, reviews and merges its own work. This
 record says how this repo's team is set up to work that way.
 
-On 2026-10-23 the owner set the team at 21 agents from five model lines:
+On 2026-10-22 the owner set the team at 21 agents from five model lines:
 
 | Model line | Effort |
 |---|---|
