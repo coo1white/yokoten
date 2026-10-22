@@ -313,7 +313,9 @@ Docs are not proof.
 
 `install` writes the user hooks: the guide at the start of each session, and the command
 guard. They go in `~/.claude/settings.json`, and in `~/.codex/hooks.json` and
-`~/.gemini/settings.json` when those folders exist. Grok CLI gets only the command guard,
+`~/.gemini/settings.json` when those folders exist. Muse Code gets both, in
+`~/.config/muse/settings.json` (`$XDG_CONFIG_HOME/muse/settings.json` when that is set),
+when its config folder exists. Grok CLI gets only the command guard,
 in `~/.grok/hooks/yokoten.json`, when `~/.grok` exists: it shows a session-start hook's
 output to you, not to the agent. `doctor` counts every folder as trusted when
 Grok's trust gate is off: `GROK_FOLDER_TRUST=0`, or `[folder_trust] enabled = false` in

@@ -191,7 +191,8 @@ export function agentHooks(root: string, env: Env, platform: string = process.pl
 function museLine(root: string, env: Env): Practice[] {
   const states = muse.projectHooksState(root, hookCliPath(root));
   if (states.guard === 'same' && states.stop === 'same' && muse.isGuardOff(root, env)) return [];
-  return [trustedHooksPractice('muse-hook', 'Muse Code', '.muse/hooks.json', states, () => muse.readTrust(root, env), muse.TRUST_STEP)];
+  // The trust note names the headless way too: `muse exec --trust-workspace` (#557).
+  return [trustedHooksPractice('muse-hook', 'Muse Code', '.muse/hooks.json', states, () => muse.readTrust(root, env), muse.TRUST_FIX)];
 }
 
 /** Antigravity CLI's guard in .agents/hooks.json: one hook, no stop check (its Stop event has no `stop_hook_active`). */
@@ -321,17 +322,18 @@ export function privacyNotes(env: Env, root: string | null, output: Config['priv
 
 /**
  * The other agents' user hooks, from `install`: doctor at session start and the command
- * guard (#211). Only for a CLI this machine looks to use, its folder ~/.codex,
- * ~/.gemini or ~/.grok, so a Claude Code user hears nothing about tools they don't run.
+ * guard (#211). Only for a CLI this machine looks to use, its folder ~/.codex or ~/.gemini,
+ * ~/.grok, or Muse's settings, so a Claude Code user hears nothing about tools they don't run.
  * Grok CLI gets the command guard only.
  *
  * Each hook is compared with what `install` would write (command, matcher, runtime path),
  * so an old one is out of date, not ok. A note, never MISSING, so it never changes the
- * exit code: no real Codex or Gemini CLI run has been seen to block through these hooks
- * yet (#30), and a folder left by a CLI tried once is not proof the user wants yokoten there.
+ * exit code: no real Codex, Gemini CLI or Muse Code run has been seen to block through
+ * these hooks yet (#30), and a folder left by a CLI tried once is not proof the user wants
+ * yokoten there.
  */
 export function userAgentHooks(env: Env): Practice[] {
-  const report = (id: 'codex-user-hook' | 'gemini-user-hook' | 'grok-user-hook', hooks: { doctor?: HookState; guard: HookState }, file: string): Practice => {
+  const report = (id: 'codex-user-hook' | 'gemini-user-hook' | 'grok-user-hook' | 'muse-user-hook', hooks: { doctor?: HookState; guard: HookState }, file: string): Practice => {
     // Grok CLI has no session-start doctor: it shows that output only to the user.
     const named = [...(hooks.doctor === undefined ? [] : [['session-start doctor', hooks.doctor] as const]), ['command guard', hooks.guard] as const];
     const missing = named.filter(([, state]) => state === 'added').map(([name]) => name);
@@ -350,6 +352,7 @@ export function userAgentHooks(env: Env): Practice[] {
   if (codex.hasUserDir(env)) checks.push(report('codex-user-hook', codex.userHooksState(env, USER_CLI, USER_MISSING), '~/.codex/hooks.json'));
   if (gemini.hasUserDir(env)) checks.push(report('gemini-user-hook', gemini.userHooksState(env, USER_CLI, USER_MISSING), '~/.gemini/settings.json'));
   if (grok.hasUserDir(env)) checks.push(report('grok-user-hook', grok.userHooksState(env, USER_CLI, USER_MISSING), grok.userHooksFile(env)));
+  if (muse.hasUserDir(env)) checks.push(report('muse-user-hook', muse.userHooksState(env, USER_CLI, USER_MISSING), muse.userSettingsFile(env)));
   return checks;
 }
 

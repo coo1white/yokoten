@@ -21,7 +21,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { configEntries } from '../run/check.ts';
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { basename, delimiter, dirname, join, parse, relative, resolve, sep } from 'node:path';
 import type { Env } from '../rules/config.ts';
@@ -30,6 +30,7 @@ import { addUserHooks, agentFile, hasSessionDoctor, hasUserGuard, removeUserHook
 import * as codex from '../agents/runtimes/codex.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import * as grok from '../agents/runtimes/grok.ts';
+import * as muse from '../agents/runtimes/muse.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { copyRuntime, HOME_DIR, KIT, MANAGED, writeManaged, writeNew } from './files.ts';
 import { type Gh, readLocalLogins, readLogin } from '../host/github.ts';
@@ -55,6 +56,56 @@ export const USER_MISSING = 'yokoten: the runtime at ~/.local/share/yokoten is m
 
 /** Every place a skill goes: Claude Code's folder, and the shared one other agents read. */
 export const skillFiles = (env: Env, name: string): string[] => [claudeSkillFile(env, name), sharedSkillFile(env, name)];
+
+/**
+ * Yokoten's skill in the shared folder, as a link to Claude Code's copy (#557). Muse reads
+ * both ~/.claude/skills and ~/.agents/skills, and warns once per skill when it sees the two
+ * copies (`skill-shadowed`). One real file with one link to it reads as one skill, so Muse
+ * sees each skill once, while Claude Code keeps a real file and the other agents read
+ * through the link. A folder with the user's own files in it stays real and only the skill
+ * file is synced: replacing it with a link would throw their files away. So does a file of
+ * theirs, and a link of theirs that points elsewhere.
+ */
+function writeSharedSkill(linkFile: string, targetFile: string, content: string, platform: NodeJS.Platform): 'linked' | 'same' | 'updated' | 'kept (yours)' {
+  const path = dirname(linkFile);
+  const target = dirname(targetFile);
+  // A link, when one is there: readlinkSync throws for a real file or folder, or nothing.
+  const linkTarget = (): string | null => {
+    try {
+      return resolve(dirname(path), readlinkSync(path));
+    } catch {
+      return null;
+    }
+  };
+  const isManaged = (): boolean => {
+    try {
+      return readFileSync(linkFile, 'utf8').includes(MANAGED);
+    } catch {
+      return false;
+    }
+  };
+  // A junction on Windows: a plain link needs rights a user may not have.
+  const link = (): 'linked' => {
+    rmSync(path, { recursive: true, force: true });
+    mkdirSync(dirname(path), { recursive: true });
+    symlinkSync(target, path, platform === 'win32' ? 'junction' : 'dir');
+    return 'linked';
+  };
+  const seen = linkTarget();
+  if (seen !== null) return seen === target ? 'same' : isManaged() ? link() : 'kept (yours)';
+  if (!existsSync(path)) return link();
+  let onlyOurs = false;
+  try {
+    onlyOurs = statSync(path).isDirectory() && readdirSync(path).join() === 'SKILL.md';
+  } catch {
+    onlyOurs = false;
+  }
+  if (onlyOurs && isManaged()) return link();
+  if (!isManaged()) return 'kept (yours)';
+  // The skill file is there and managed, so this is 'same' or 'updated'.
+  const synced = writeManaged(linkFile, content);
+  return synced === 'wrote' ? 'updated' : synced;
+}
 
 /** The skills folder a skill file is in, for the report: `~/.claude/skills`. */
 export const skillsDir = (file: string): string => dirname(dirname(file));
@@ -237,7 +288,9 @@ export function install(env: Env, { cwd, gh, ask, platform }: { cwd?: string; gh
   const skills = join(KIT, 'user', 'skills');
   for (const name of readdirSync(skills)) {
     const content = readFileSync(join(skills, name, 'SKILL.md'), 'utf8');
-    for (const file of skillFiles(env, name)) report.push(`${writeManaged(file, content)} skill ${name} in ${skillsDir(file)}`);
+    const [claudeFile, sharedFile] = skillFiles(env, name);
+    report.push(`${writeManaged(claudeFile, content)} skill ${name} in ${skillsDir(claudeFile)}`);
+    report.push(`${writeSharedSkill(sharedFile, claudeFile, content, platform ?? process.platform)} skill ${name} in ${skillsDir(sharedFile)}`);
   }
   const agents = join(KIT, 'user', 'agents');
   for (const file of readdirSync(agents)) {
@@ -273,6 +326,13 @@ export function install(env: Env, { cwd, gh, ask, platform }: { cwd?: string; gh
     ok &&= grokHooks.ok;
     report.push(...grokHooks.lines);
   } else report.push('skipped Grok CLI: ~/.grok not found (run `yokoten install` again after installing Grok CLI)');
+  // Muse Code reads a `hooks` block in its user settings in every repo (checked with 1.4.11).
+  const museFile = muse.userSettingsFile(env);
+  if (muse.hasUserDir(env)) {
+    const museHooks = agentHooks('Muse Code', museFile, () => otherHooks('Muse Code', museFile, muse.addUserHooks(env, USER_CLI, USER_MISSING)));
+    ok &&= museHooks.ok;
+    report.push(...museHooks.lines);
+  } else report.push(`skipped Muse Code: ${dirname(museFile)} not found (run \`yokoten install\` again after installing Muse Code)`);
 
   const marks = writeNew(target.marks, MARKS_HEADER, { mode: 0o600 });
   report.push(`${marks} ${target.marks}${marks === 'wrote' ? ' (`yokoten marks add` adds one of your own)' : ''}`);
@@ -306,6 +366,21 @@ const isManaged = (path: string): boolean => {
     return false;
   }
 };
+
+/**
+ * Take back the shared skill: a link install made is removed, never followed. A real
+ * folder is removed, kept or missing, as `removeManaged` says for its skill file.
+ */
+function removeSharedSkill(file: string): 'removed' | 'kept (yours)' | 'not there' {
+  const path = dirname(file);
+  try {
+    readlinkSync(path);
+  } catch {
+    return removeManaged(file, { folder: true });
+  }
+  unlinkSync(path);
+  return 'removed';
+}
 
 /** Remove a file yokoten owns, and its folder when that is left empty. A file without the mark is the user's. */
 function removeManaged(path: string, { folder = false }: { folder?: boolean } = {}): 'removed' | 'kept (yours)' | 'not there' {
@@ -348,7 +423,9 @@ export function uninstall(env: Env, { platform = process.platform }: { platform?
   const target = paths(env);
   const report: string[] = [];
   for (const name of kitSkills()) {
-    for (const file of skillFiles(env, name)) report.push(`${removeManaged(file, { folder: true })} skill ${name} in ${skillsDir(file)}`);
+    const [claudeFile, sharedFile] = skillFiles(env, name);
+    report.push(`${removeManaged(claudeFile, { folder: true })} skill ${name} in ${skillsDir(claudeFile)}`);
+    report.push(`${removeSharedSkill(sharedFile)} skill ${name} in ${skillsDir(sharedFile)}`);
   }
   for (const file of kitAgents()) report.push(`${removeManaged(agentFile(env, file))} agent ${file.replace(/\.md$/, '')}`);
 
