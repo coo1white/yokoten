@@ -2,11 +2,9 @@
 
 # yokoten · 横展
 
-### A guide for the journey. A guard at the bridge.
+### Every AI agent. One set of rules.
 
-**Anyone can build software the way good teams do.**
-
-A free tool that puts a good team's process into your project. Its checks run in your repo and CI, for people and AI agents alike.
+AI made writing code cheap, not managing it. yokoten holds every agent to your rules. You make the calls.
 
 **[yokoten.app](https://yokoten.app/?from=github)** &nbsp;·&nbsp; English | [简体中文](docs/i18n/zh-CN/README.md) | [繁體中文](docs/i18n/zh-TW/README.md) | [日本語](docs/i18n/ja/README.md)
 
