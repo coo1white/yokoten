@@ -15,7 +15,7 @@ import {
   loadConfig,
 } from '../../src/rules/config.ts';
 import type { Finding } from '../../src/rules/message.ts';
-import { check } from '../../src/run/check.ts';
+import { check } from '../../src/run/check/inspect.ts';
 import {
   parseSourceMarker,
   sourceMarker,

@@ -45,8 +45,8 @@ test('layers: no module imports from a layer above its own', () => {
   assert.ok(found.size > 0, 'the import scan found nothing; the pattern is broken');
 });
 
-// One test file per src module, at the module's own path: src/run/check.ts is tested in
-// test/run/check.test.ts (#152). A branch that changes a module adds its tests, and their
+// One test file per src module, at the module's own path: src/run/check/inspect.ts is
+// tested in test/run/check/inspect.test.ts (#152). A branch that changes a module adds its tests, and their
 // imports, to that module's file, so parallel branches do not meet in one import block.
 // Next to the layer folders, test/ holds repo/: this file and the shared helpers, which
 // check the repo as a whole, not one src module, git-template.ts, which copies a test repo,
@@ -93,7 +93,7 @@ test('test files: each one is the test file of a src module, at the same path (#
     'test/top.test.ts is not the test file of a src module (src/top.ts)',
   ]);
   const tests = filesUnder(join(ROOT, 'test'));
-  assert.ok(tests.includes('run/check.test.ts'), 'test/run/check.test.ts not found; the scan is broken');
+  assert.ok(tests.includes('run/check/inspect.test.ts'), 'test/run/check/inspect.test.ts not found; the scan is broken');
   assert.deepEqual(
     testFileProblems(filesUnder(SRC), tests).filter((problem) => problem.startsWith('test/')),
     [],

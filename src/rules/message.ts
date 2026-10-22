@@ -634,6 +634,12 @@ export const RULES = {
     check: 'the commit check, `check`, `check --history` and `check --pr` stop with this finding when a git read they depend on fails, runs out of buffer or is stopped',
     docs: guide('three-checks-and-a-lock'),
   },
+  'rules-looser': {
+    rule: 'a change that makes the rules looser, or that moves a hard line, waits for the owner (record 0026)',
+    why: 'an area lead may approve a stricter change; a looser one waits for the owner',
+    check: '`check --pr` compares the base with the head: a removed or skipped guard test, a refusal that becomes an allow, a removed refusal id, or a command the base refuses and the head allows, fails the check. A workflow, CODEOWNERS, the release environment, or record 0026 fails too',
+    docs: guide('who-reviews-what'),
+  },
 } satisfies Record<string, Rule>;
 
 export type RuleId = keyof typeof RULES;

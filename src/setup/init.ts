@@ -24,7 +24,7 @@ import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import { type Problem, skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
-import { configEntries, forgetGitReads, remembered, withGitReads } from '../run/check.ts';
+import { configEntries, forgetGitReads, remembered, withGitReads } from '../run/check/inspect.ts';
 import { AGENT_STATUS_FILE } from '../run/hook.ts';
 import { DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
 import { WORKTREES_DIR } from '../rules/layout.ts';
@@ -893,7 +893,7 @@ function importRules(root: string): string | null {
 /** How git runs commit hooks here: yokoten's .githooks, the project's own folder, or no git repo. */
 type HookSetup = { kind: 'plain' } | { kind: 'own'; hooksPath: string } | { kind: 'no repo' };
 
-// Each git answer is kept for the run (`withGitReads`, src/run/check.ts): a doctor or an init.
+// Each git answer is kept for the run (`withGitReads`, src/run/check/inspect.ts): a doctor or an init.
 export { withGitReads };
 
 /**

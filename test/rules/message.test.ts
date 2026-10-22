@@ -62,7 +62,8 @@ import {
   gitReadFinding,
   readGit,
   timeZoneNote,
-} from '../../src/run/check.ts';
+} from '../../src/run/check/inspect.ts';
+import { ruleChangeFindings } from '../../src/run/check/loosen.ts';
 import { lateFinding } from '../../src/run/hook.ts';
 import { nameNotes } from '../../src/run/names.ts';
 import { translationNotes } from '../../src/run/translations.ts';
@@ -175,6 +176,8 @@ test('messages: every check and guard says what, why and the fix, in text and JS
     add(err instanceof GitReadError ? gitReadFinding(err) : null);
     return true;
   });
+  // A change that drops a refusal (#697). The check fails; a stricter change is only a note.
+  add(ruleChangeFindings({ verdict: 'looser', reasons: [{ kind: 'looser', file: 'src/rules/guards.ts', line: 1, text: 'a refusal was removed' }] })[0]);
   // A CI event that can't be read, and a pull request whose commits are not here (#267).
   const unreadable = (read: unknown) => (read && typeof read === 'object' && 'problem' in read ? (read.problem as Finding) : null);
   add(unreadable(readIssue({ GITHUB_EVENT_PATH: join(translated.root, 'no-event.json') })));

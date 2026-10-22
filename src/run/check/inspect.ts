@@ -5,15 +5,15 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, readlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import type { Config, Env } from '../rules/config.ts';
-import { findUnknownKeys, matcher } from '../rules/config.ts';
-import { checkEdit, withWorkerMark } from '../rules/guards.ts';
-import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
-import { type Finding, finding, isFailingFinding } from '../rules/message.ts';
-import { isChangeFile, longSentenceNote, longSentences } from '../rules/pr.ts';
-import { autoLogins, loadIgnores, mapMarkKinds, notUtc, repoMarkKinds, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
-import { parseChange, readChanges } from './changelog.ts';
-import { isShallowNote, translationNotes } from './translations.ts';
+import type { Config, Env } from '../../rules/config.ts';
+import { findUnknownKeys, matcher } from '../../rules/config.ts';
+import { checkEdit, withWorkerMark } from '../../rules/guards.ts';
+import { checkBuildOutput, checkLayout } from '../../rules/layout.ts';
+import { type Finding, finding, isFailingFinding } from '../../rules/message.ts';
+import { isChangeFile, longSentenceNote, longSentences } from '../../rules/pr.ts';
+import { autoLogins, loadIgnores, mapMarkKinds, notUtc, repoMarkKinds, scanText, TIME_ZONE_FIX } from '../../rules/privacy.ts';
+import { parseChange, readChanges } from '../changelog.ts';
+import { isShallowNote, translationNotes } from '../translations.ts';
 
 // ---- Git answers kept for a run (#408, #453) ----
 //

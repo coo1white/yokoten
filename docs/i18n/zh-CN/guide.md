@@ -676,7 +676,7 @@ token。在 `yokoten.yml` 里，同一个 PR 推了新提交，还在跑的那�
 | `doctor [--session] [--json]` | 整条路：每一关、每一步，加上这台电脑还缺什么。`--session` 只说下一步，会话开头用。再加 `--agent gemini`，就按 Gemini CLI 读得懂的 JSON 输出 |
 | `adopt [--json]` | 给老项目的采用表出一份草稿：项目现在做到了哪些，每一步建议怎么定。`--json` 输出每一行的数据。不改任何文件 |
 | `check [--staged] [--json]` | 检查目录层级、隐私和只有 lead 能改的文件；`--staged` 只查下一次提交。提交里不能有构建产物和二进制文件。`changes/` 里的文件按 `changelog` 的读法检查，格式不对，提交时就拦下。什么都没暂存时，`--staged` 提醒一句，算通过。查整个目录时，落后于英文的译文会给一条提醒，见[翻译](#翻译) |
-| `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的变更文件、milestone 和标签；最后一行写明做出这个 PR 的每个 AI 和模型：`🤖 Made with <agent> (<model>)`，可写一个或多个逗号分隔的组合；审阅的 AI 也可以写上：`🤖 Made with worker <X> (<模型>), reviewed by <Y> (<模型>) and <Z> (<模型>), lead Claude Code (<模型>)`（一个或两个审阅者，最多两个）。见下面的「更新日志」。改到 CODEOWNERS 里列出的文件，必须写 `tier: A`。改动的文档里句子太长、改动的代码里名字难读、改动超过 400 行，都只提醒，不算失败 |
+| `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的变更文件、milestone 和标签；最后一行写明做出这个 PR 的每个 AI 和模型：`🤖 Made with <agent> (<model>)`，可写一个或多个逗号分隔的组合；审阅的 AI 也可以写上：`🤖 Made with worker <X> (<模型>), reviewed by <Y> (<模型>) and <Z> (<模型>), lead Claude Code (<模型>)`（一个或两个审阅者，最多两个）。见下面的「更新日志」。改到 CODEOWNERS 里列出的文件，必须写 `tier: A`。改动的文档里句子太长、改动的代码里名字难读、改动超过 400 行，都只提醒，不算失败。规则被放宽，或者动了一条底线，检查就不通过。见下面的「谁来审什么」 |
 | `check --pr <number>` | 同样的检查，但通过 `gh` 读这个编号的 PR，没有 CI 的仓库合并前自己跑 |
 | `check --issue` | 在 CI 里检查 issue 的标题，见下面的「issue 标题」 |
 | `marks allow <mark> --here` | 让词表里的一个词只在这个仓库放行，不需要 yokoten.json。放行记在这台电脑上，不写进仓库。`--remove` 撤回。见「隐私」 |
@@ -1260,6 +1260,16 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 检查读的是目标分支（base）上的 CODEOWNERS，不是 PR 自己改过的那份。这样 PR 没法靠改这个
 文件来给自己降级。本地跑、没有 base 的时候，读工作区里的文件，提示里会说读的是哪一份。
 没有 CODEOWNERS 文件，就不查。
+
+`check --pr` 还会判断这次改动有没有把规则放宽。它比较目标分支和当前分支。
+
+删掉一条守卫测试，检查就不通过。把一次拒绝改成允许，也不通过。删掉一个拒绝编号，也不通过。守卫开始允许目标分支会拒绝的命令，也不通过。
+
+工作流文件是一条底线。CODEOWNERS、release 环境、记录 0026 也是。只有主人能改底线。
+
+新加的测试或新加的拒绝是收紧，只作提醒。只改文档，则不变。
+
+想看这条检查，运行 `yokoten explain rules-looser`。
 
 审的人靠标签找 tier，所以 `check --pr` 也看标签。一个 PR 要有一个类型标签和一个 tier 标签。
 类型标签可以直接用标题里的类型（`feat`、`fix`、`docs`、`refactor`、`ci` 等），也可以用常见的叫法：

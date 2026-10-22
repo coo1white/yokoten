@@ -13,7 +13,7 @@ import type { DropReason, SortedEnv } from '../agents/desk/agent-env.ts';
 import { type Env, loadConfig } from '../rules/config.ts';
 import { addWorkerPath, gitLinkAbove, hardenRead, markNote, printsAccount, privateOutput, realPath, releaseFix, removeWorkerPath, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
 import { type Finding, formatFinding, notRepoFinding } from '../rules/message.ts';
-import { checkChanged, readGit } from '../run/check.ts';
+import { checkChanged, readGit } from '../run/check/inspect.ts';
 import {
   type Action,
   bumpDoneTries,

@@ -849,7 +849,7 @@ It puts three safe defaults in `.github/` too:
 | `doctor [--session] [--json]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session. With `--agent gemini`, it prints the step as the JSON that Gemini CLI reads |
 | `adopt [--json]` | A draft of the adoption table for an old project: what it does today, and a proposed decision for each step. `--json` prints the rows. Writes nothing |
 | `check [--staged] [--json]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries. Each change file is read the way `changelog` reads it, so a wrong one fails at commit. With nothing staged, `--staged` notes it and is ok. For the tree, a translation behind its English source is a note. See [Translations](#translations) |
-| `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). The last line names each AI and model: `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs. Reviewers may be added: `🤖 Made with worker <X> (<model>), reviewed by <Y> (<model>) and <Z> (<model>), lead Claude Code (<model>)` (one or two reviewers, never more). A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
+| `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). The last line names each AI and model: `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs. Reviewers may be added: `🤖 Made with worker <X> (<model>), reviewed by <Y> (<model>) and <Z> (<model>), lead Claude Code (<model>)` (one or two reviewers, never more). A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes. It also fails when the change makes the rules looser, or moves a hard line. See [Who reviews what](#who-reviews-what) |
 | `check --pr <number>` | The same check for one pull request, read through `gh`, for a repo without CI. See [A private repo without CI](#a-private-repo-without-ci) |
 | `check --issue` | In CI: the issue's title and labels. See [Issue titles](#issue-titles) |
 | `redact` | Reads text on stdin and writes it with your details hidden: `<owner>`, `<email>`, `<host>`, `<mark>`. The tool-call guard sends risky commands through it. See [Privacy](#privacy) |
@@ -1593,6 +1593,16 @@ a tier, never lower it. The check reads CODEOWNERS from the base branch, so a pu
 request can't edit the file to lower its own tier. Without a base commit, on a local run,
 it reads the working tree. The message says which one it read. No CODEOWNERS file, no
 check.
+
+`check --pr` also says whether a change makes the rules looser. It compares the base with the head.
+
+A removed guard test fails the check. A refusal that becomes an allow fails it too. So does a removed refusal id. So does a command the base refuses and the head allows.
+
+A workflow file is a hard line. So is CODEOWNERS, the release environment, and record 0026. Only the owner may change a hard line.
+
+A new test or a new refusal is stricter. That is a note. A docs-only change is neutral.
+
+Run `yokoten explain rules-looser` for the full check.
 
 An approval is for one commit, and it must come from a code owner of the pull
 request's changed files: the owner's login approves as a collaborator, so the account

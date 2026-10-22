@@ -19,7 +19,8 @@ import { loadConfig } from '../rules/config.ts';
 import { type Finding, formatFinding, isWarningFinding } from '../rules/message.ts';
 import { addedLinesByFile, changedLines, checkIssueLabels, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, largeDiff, longSentenceNote, longSentences, splitForDependabot } from '../rules/pr.ts';
 import { parseChange } from '../run/changelog.ts';
-import { check, checkHistory, GitReadError, gitReadFinding, historyTimeZones, readGit, timeZoneNote, unstageHint } from '../run/check.ts';
+import { check, checkHistory, GitReadError, gitReadFinding, historyTimeZones, readGit, timeZoneNote, unstageHint } from '../run/check/inspect.ts';
+import { ruleChange, ruleChangeFindings } from '../run/check/loosen.ts';
 import { isCodeFile, nameNotes } from '../run/names.ts';
 import { addedIgnores, type AllowEntry, isLink, loadMarks, type Mark, marksFile, marksFiles, machineAllowed, machineAllowFile, makeRedactor, matchingEntries, NO_HOME, readMachineAllow, repoKey } from '../rules/privacy.ts';
 import { addOwnMark, countMarkKinds, fillMarks, kindsTurnedOff, machineMarks, machineUserNames, paths, removeMarks, setKindOff, SWITCHED_KINDS } from '../setup/install.ts';
@@ -170,6 +171,14 @@ async function runMode(invocation: Invocation, mode: string, root: string, confi
       problems = split.problems;
       notes.push(...split.notes);
       printNotes(split.notes, 'pull request rule(s) Dependabot does not meet');
+      // Record 0026: the machine says whether the rules got looser. A looser change or a
+      // hard line fails, for Dependabot too. A stricter change is a note.
+      const rules = ruleChange(root, pr.base, pr.head, env);
+      const found = ruleChangeFindings(rules);
+      if (rules.verdict === 'stricter-or-neutral') {
+        notes.push(...found);
+        printNotes(found, 'stricter rule(s)');
+      } else problems.push(...found);
     }
   } else {
     problems = mode === 'history' ? checkHistory(root, { config, env, notes }) : check(root, { config, env, staged: mode === 'staged', notes });

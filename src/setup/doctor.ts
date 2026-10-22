@@ -22,7 +22,7 @@ import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
 import { type Finding, finding, formatFinding, type RuleId } from '../rules/message.ts';
 import { homeIn, homeOf, loadMarks, machineAllowed, notUtc, ownMarks, POSITIVE_CONTROL, repoKey, sameNameMarks, scanText, skipsOwnName } from '../rules/privacy.ts';
 import { SECRET_CONTROL } from '../rules/secrets.ts';
-import { check } from '../run/check.ts';
+import { check } from '../run/check/inspect.ts';
 import { judge } from '../run/hook.ts';
 import { countNotes, type LessonPlace, listLessons, runLessons, waitingLine } from '../run/learn.ts';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
@@ -41,7 +41,7 @@ import { type Host, hostOf, isNoAdapter, noAdapter } from '../host/hosts.ts';
 import { findTempDirs, readUnsaved, UNSAVED_CONTROL, unsavedNotes } from './advice/unsaved.ts';
 import { HOME_DIR, KIT, runtimeVersion, VERSION } from './files.ts';
 import { compareCoreRules, compareVersions, hookCliPath, isSelf, readCoreRules, summarizeUpdate, withGitReads, workflowNotes } from './init.ts';
-import { assumeEmptyFolder, gitConfig } from '../run/check.ts';
+import { assumeEmptyFolder, gitConfig } from '../run/check/inspect.ts';
 import { EMPTY_MARKS_FIX, fillMarks, marksState, UNREADABLE_MARKS, UNREADABLE_MARKS_FIX, OFFER_MARKS_FIX, offerMarkKinds, launcherFile, PROFILE_LINE, filledLines, trySafely, installedPieces, isOnPath, launcherDir, machineMarks, machineStateFile, mailmapState, readMachineState, saveMachineState, writeFileAtomic, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from './install.ts';
 import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, uncheckedText, walk } from './road.ts';
 

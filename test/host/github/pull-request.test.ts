@@ -7,7 +7,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { makeSandbox, makeTempDir } from '../../repo/helpers.ts';
-import { GitReadError } from '../../../src/run/check.ts';
+import { GitReadError } from '../../../src/run/check/inspect.ts';
 import { annotation, annotations, readBranchFiles, readCodeOwners, stepSummary } from '../../../src/host/github/pull-request.ts';
 
 // #91: workflow commands, escaped as GitHub's runner decodes them
