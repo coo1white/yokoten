@@ -57,8 +57,8 @@ test('board view: each pull request stage as its steps and one word', () => {
   assert.deepEqual(shown({ checks: 'fail', tier: 'A' }), ['done,fail,,', 'Checks failed', 'fail']);
   assert.deepEqual(shown({ checks: 'running' }), ['done,now,skip,', 'Checks running', 'now']);
   assert.deepEqual(shown({ checks: 'none' }), ['done,now,skip,', 'No checks yet', 'now']);
-  assert.deepEqual(shown({ tier: 'A', review: 'waiting' }), ['done,done,now,', 'Your Approve', 'now']);
-  assert.deepEqual(shown({ tier: 'A', review: 'changes' }), ['done,done,fail,', 'Changes asked', 'fail']);
+  assert.deepEqual(shown({ tier: 'A', review: 'waiting' }), ['done,done,now,', 'Needs your approval', 'now']);
+  assert.deepEqual(shown({ tier: 'A', review: 'changes' }), ['done,done,fail,', 'Changes requested', 'fail']);
   assert.deepEqual(shown({ tier: 'A', review: 'approved' }), ['done,done,done,now', 'Ready to merge', 'ok']);
   assert.deepEqual(shown({ tier: 'B' }), ['done,done,skip,now', 'Ready to merge', 'ok']);
   assert.equal(pullView({ ...PULL, url: 'https://example.com/pull/1' }).url, 'https://example.com/pull/1');
@@ -107,7 +107,7 @@ test('board data: agents, needs, pulls and worktrees; gh runs only with a GitHub
     { ...row, number: 4, title: 'shut', state: 'CLOSED' },
   ]);
   const board = collectBoard(sandbox.repo, sandbox.env, gh, NOW);
-  assert.deepEqual(typeof board.pulls === 'string' ? board.pulls : board.pulls.map((pull) => [pull.number, pull.label]), [[1, 'Your Approve']]);
+  assert.deepEqual(typeof board.pulls === 'string' ? board.pulls : board.pulls.map((pull) => [pull.number, pull.label]), [[1, 'Needs your approval']]);
   assert.deepEqual(board.merged, [{ number: 2, title: 'new', url: '', mergedAt: '2026-10-22T09:00:00Z' }]);
   assert.deepEqual(board.needs.map((need) => need.title), ['Approve PR #1']);
   // A fake HOME above the repo: every shown path hides it.

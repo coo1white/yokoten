@@ -19,7 +19,7 @@ test('board feed: a new doing, a check result and a waiting or done state each b
   recordFeed(store, [agent({ doing: 'asks to add a package', checks: 'failing', dot: 'waiting' })], 't5');
   recordFeed(store, [agent({ doing: 'asks to add a package', checks: 'failing', dot: 'done' })], 't6');
   assert.deepEqual(steps(store), {
-    '~/w': ['step:reading the issue', 'step:ran the tests', 'pass:Checks passed', 'fail:Checks failed at its last stop', 'step:asks to add a package', 'wait:Waiting for you', 'done:Finished'],
+    '~/w': ['step:reading the issue', 'step:ran the tests', 'pass:Checks passed', 'fail:Checks failed', 'step:asks to add a package', 'wait:Waiting for you', 'done:Finished'],
   });
   assert.equal(feedsJson(store)['~/w'][0].time, 't1', 'each step keeps when the board saw it');
 });

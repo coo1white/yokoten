@@ -141,8 +141,8 @@ export function pullView(pull: BoardPull): PullView {
   if (pull.checks === 'fail') return at(['done', 'fail', you, ''], 'failed', 'Checks failed', 'fail');
   if (pull.checks === 'running') return at(['done', 'now', you, ''], 'running', 'Checks running', 'now');
   if (pull.checks === 'none') return at(['done', 'now', you, ''], 'unchecked', 'No checks yet', 'now');
-  if (pull.tier === 'A' && pull.review === 'changes') return at(['done', 'done', 'fail', ''], 'changes', 'Changes asked', 'fail');
-  if (pull.tier === 'A' && pull.review !== 'approved') return at(['done', 'done', 'now', ''], 'approve', 'Your Approve', 'now');
+  if (pull.tier === 'A' && pull.review === 'changes') return at(['done', 'done', 'fail', ''], 'changes', 'Changes requested', 'fail');
+  if (pull.tier === 'A' && pull.review !== 'approved') return at(['done', 'done', 'now', ''], 'approve', 'Needs your approval', 'now');
   return at(['done', 'done', pull.tier === 'A' ? 'done' : 'skip', 'now'], 'ready', 'Ready to merge', 'ok');
 }
 
@@ -150,7 +150,7 @@ export function pullView(pull: BoardPull): PullView {
 export function needsOf(agents: AgentView[], pulls: BoardPull[]): NeedView[] {
   const approve = pulls
     .filter((pull) => pull.stage === 'open' && pull.tier === 'A' && pull.checks === 'pass' && pull.review !== 'approved' && pull.review !== 'changes')
-    .map((pull): NeedView => ({ kind: 'approve', title: `Approve PR #${pull.number}`, why: `${pull.title}. All checks pass; tier A needs your Approve.`, agentKey: '', pull: pull.number }));
+    .map((pull): NeedView => ({ kind: 'approve', title: `Approve PR #${pull.number}`, why: `${pull.title}. All checks pass. Tier A needs your approval.`, agentKey: '', pull: pull.number }));
   const answer = agents
     .filter((agent) => agent.dot === 'waiting')
     .map((agent): NeedView => ({ kind: 'answer', title: `${agent.name} is waiting for you`, why: agent.doing || agent.task || 'It did not say why.', agentKey: agent.key, pull: 0 }));

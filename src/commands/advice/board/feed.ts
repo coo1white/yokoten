@@ -33,7 +33,7 @@ function changesOf(before: AgentView | undefined, now: AgentView): Omit<FeedEven
   const events: Omit<FeedEvent, 'time'>[] = [];
   if (now.doing && now.doing !== before?.doing) events.push({ kind: 'step', text: now.doing });
   if (now.checks && now.checks !== before?.checks) {
-    events.push(now.checks === 'failing' ? { kind: 'fail', text: 'Checks failed at its last stop' } : { kind: 'pass', text: 'Checks passed' });
+    events.push(now.checks === 'failing' ? { kind: 'fail', text: 'Checks failed' } : { kind: 'pass', text: 'Checks passed' });
   }
   if (now.dot !== before?.dot && before !== undefined) {
     if (now.dot === 'waiting') events.push({ kind: 'wait', text: 'Waiting for you' });
