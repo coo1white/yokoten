@@ -16,7 +16,7 @@ import { closeSync, constants, existsSync, openSync, realpathSync, rmSync } from
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import type { Env } from '../../../rules/config.ts';
 import { gitLinkAbove, workerMarkAt, workerRole } from '../../../rules/guards.ts';
-import { DESK_FILE, LEAD, NAME, readCapped, readRoster, teamFolderFor } from './team.ts';
+import { DESK_FILE, isDeskName, LEAD, readCapped, readRoster, teamFolderFor } from './team.ts';
 
 /** Who runs this command, and where its team and its read state are. */
 export interface Me {
@@ -102,7 +102,7 @@ function deskAgent(desk: string, team: string, locked: (path: string) => boolean
   } catch {
     return { refuse: `this desk's file that names its agent can't be read. ${again}` };
   }
-  if (typeof said?.name !== 'string' || !NAME.test(said.name) || said.name === LEAD) return { refuse: `this desk's file that names its agent is not in the shape yokoten writes. ${again}` };
+  if (typeof said?.name !== 'string' || !isDeskName(said.name)) return { refuse: `this desk's file that names its agent is not in the shape yokoten writes. ${again}` };
   if (!locked(deskFile)) return { refuse: `this desk's file that names its agent is not locked, so it may not be the lead's. ${again}` };
   const member = readRoster(team).get(said.name);
   if (!member || realOr(member.desk) !== desk) return { refuse: `the team's roster has no agent named ${said.name} in this desk. ${again}` };

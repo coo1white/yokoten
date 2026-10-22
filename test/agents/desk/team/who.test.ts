@@ -65,7 +65,7 @@ test('whoAmI in a desk: a desk file that names another agent, or a desk the rost
     writeFileSync(join(desk, '.git', DESK_FILE), JSON.stringify({ name: 'owner', team: '/elsewhere', readState: '/victim' }));
     const owner = whoAmI(desk, { YOKOTEN_DESK: desk, YOKOTEN_TEAM: team }, { locked });
     assert.ok('refuse' in owner);
-    assert.match(owner.refuse, /no agent named owner/);
+    assert.match(owner.refuse, /not in the shape yokoten writes/, 'owner is a reserved name');
   } finally {
     open();
   }

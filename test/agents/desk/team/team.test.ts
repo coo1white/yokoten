@@ -4,8 +4,9 @@ import '../../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { test } from 'node:test';
+import { outboxNames } from '../../../../src/agents/desk/team/outbox.ts';
 import { DESK_FILE, LEAD, makeTeam, modelOf, prepareDeskTeam, readRoster, teamFolderFor, teamName, vendorOf } from '../../../../src/agents/desk/team/team.ts';
 import { makeTeamFixture, makeTempDir } from '../../../repo/helpers.ts';
 
@@ -22,6 +23,7 @@ test('teamName: a desk folder name made into a team name, or none', () => {
   assert.equal(teamName('a'.repeat(40)), 'a'.repeat(32));
   assert.equal(teamName('...'), null);
   assert.equal(teamName('Lead'), null);
+  for (const name of ['Owner', 'user', 'HUMAN', 'system', 'yokoten', 'admin', 'maintainer']) assert.equal(teamName(name), null, name);
 });
 
 test('readRoster: model and runtime are one plain line; a FIFO in the roster does not hang', () => {
@@ -63,6 +65,15 @@ test('prepareDeskTeam: the roster entry, an empty outbox, the desk file; a taken
   assert.throws(() => prepareDeskTeam({ team, name: 'g1', runtime: 'grok', model: 'x', desk: `${desk}-2` }), /already has an agent named g1/);
   assert.throws(() => prepareDeskTeam({ team, name: LEAD, runtime: 'grok', model: 'x', desk }), /can't be a desk's name/);
   assert.throws(() => prepareDeskTeam({ team, name: '../x', runtime: 'grok', model: 'x', desk }), /can't be a desk's name/);
+  assert.throws(() => prepareDeskTeam({ team, name: 'owner', runtime: 'grok', model: 'x', desk }), /can't be a desk's name/);
+  // The roster keeps the desk relative to the team folder, so it names no home folder; it reads back whole.
+  assert.equal(JSON.parse(readFileSync(join(team, 'agents', 'g1.json'), 'utf8')).desk, relative(team, desk));
+  assert.equal(readRoster(team).get('g1')?.desk, desk);
+  // A roster entry or an outbox under a reserved name is no one's.
+  writeFileSync(join(team, 'agents', 'owner.json'), JSON.stringify({ runtime: 'grok', model: 'x', desk }));
+  writeFileSync(join(team, 'outbox', 'owner.jsonl'), '');
+  assert.equal(readRoster(team).has('owner'), false);
+  assert.deepEqual(outboxNames(team), ['g1', LEAD]);
 });
 
 test('makeTeam: a link in place of a team part is refused', async () => {

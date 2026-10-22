@@ -1714,9 +1714,13 @@ yokoten msg log
   folder's name made lower case. A folder name that can't be a name joins no team.
 - **Who you are**: in a desk, the desk says. Outside one, you are `lead` only in your main
   checkout, not in a worktree or a checkout inside a desk.
-- **The sender can't be faked**: in a desk, the team folder is read-only, and only the
-  agent's own outbox is writable. A worker outside a desk can't send, and the guard stops
-  its edits in the team folder.
+- **A desk can't fake a sender**: in a desk, the team folder is read-only, and only the
+  agent's own outbox is writable. `msg send` refuses a worker outside a desk, and the
+  guard stops its edits in the team folder.
+- **Outside a desk, a sender can be faked**: a program outside a desk runs as your user,
+  so it can write any outbox, the lead's too. A worker in a plain worktree can do that, for
+  example from inline code that leaves its folder. yokoten can't tell such a write from
+  yours. Run workers that message in desks.
 - **Delivery**: the hooks add unread messages to the agent's context. Claude Code and Grok
   get them before a tool call. Every agent gets them at the end of a turn, after the
   checks: a turn that fails a check is sent back with the messages too. `msg inbox` shows

@@ -7,15 +7,22 @@
 //   outbox/<name>.jsonl  one append-only outbox per agent. `lead.jsonl` is the lead's.
 //   lead/read.json       what the lead has read. A desk agent keeps its own in its desk state.
 //
-// The sender can't be faked, because the file system says who wrote a line, not the line:
-// a desk sees the team folder read-only and only its own outbox writable (desk.ts binds
-// them). A reader takes the sender from the outbox's file name and the vendor and model
-// from the roster, which only the lead writes. A field inside a line is never trusted.
+// A desk agent can't send as anyone else, because the file system says who wrote a line,
+// not the line: a desk sees the team folder read-only and only its own outbox writable
+// (desk.ts binds them). A reader takes the sender from the outbox's file name and the
+// vendor and model from the roster. A field inside a line is never trusted.
+//
+// That holds only inside desks. A program outside a desk runs as the owner's user, with
+// no fence, so it can write any file here: the lead's outbox, a desk's outbox, the roster.
+// That includes a worker in a plain worktree that leaves its folder or drops YOKOTEN_ROLE.
+// No check in yokoten can tell such a write from the lead's own, so none is claimed: the
+// guard stops a worker's plain edits here (guards.ts), and the data note on every delivery
+// says a message never grants approval. Workers that message should work in desks.
 //
 // Who am I is in who.ts.
 
 import { closeSync, constants, existsSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, rmSync, writeFileSync, writeSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 
 /** The longest message, in characters. A message lands in another agent's context. */
 export const MAX_MESSAGE_CHARS = 2000;
@@ -35,6 +42,9 @@ export const DESK_FILE = 'yokoten-desk.json';
 
 /** A name an agent goes by: short, lower case, safe as a file name. */
 export const NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+/** Names no desk may take: they read as someone with more say than an agent. */
+export const RESERVED_NAMES: ReadonlySet<string> = new Set(['owner', 'user', 'human', 'system', 'yokoten', 'admin', 'maintainer', 'root', 'operator']);
 
 /** The largest roster entry, desk file or read state, in bytes. */
 export const MAX_SMALL_FILE = 64 * 1024;
@@ -91,8 +101,11 @@ export function writeNoFollow(path: string, text: string): void {
  */
 export function teamName(folder: string): string | null {
   const name = folder.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+/, '').slice(0, 32).replace(/-+$/, '');
-  return NAME.test(name) && name !== LEAD ? name : null;
+  return isDeskName(name) ? name : null;
 }
+
+/** Whether `name` may be a desk agent's name: the shape of NAME, not the lead's, not reserved. */
+export const isDeskName = (name: string): boolean => NAME.test(name) && name !== LEAD && !RESERVED_NAMES.has(name);
 
 /** One roster entry, as the lead wrote it. */
 export interface Member {
@@ -157,13 +170,13 @@ export function readRoster(team: string): Map<string, Member> {
   }
   for (const file of files.sort()) {
     const name = file.replace(/\.json$/, '');
-    if (!file.endsWith('.json') || !NAME.test(name)) continue;
+    if (!file.endsWith('.json') || !isDeskName(name)) continue;
     try {
       const entry = JSON.parse(readCapped(join(team, 'agents', file)).text) as Partial<Member>;
       if (typeof entry.runtime === 'string' && typeof entry.model === 'string' && typeof entry.desk === 'string') {
         const runtime = oneLine(entry.runtime, 32);
         const model = oneLine(entry.model);
-        members.set(name, { name, runtime, vendor: vendorOf(runtime, model), model, desk: entry.desk, started: oneLine(String(entry.started ?? ''), 32) });
+        members.set(name, { name, runtime, vendor: vendorOf(runtime, model), model, desk: resolve(team, entry.desk), started: oneLine(String(entry.started ?? ''), 32) });
       }
     } catch {}
   }
@@ -180,12 +193,13 @@ export function prepareDeskTeam(
   { team, name, runtime, model, desk }: { team: string; name: string; runtime: string; model: string; desk: string },
   now = new Date(),
 ): { readable: string; writable: string; locked: string } {
-  if (!NAME.test(name) || name === LEAD) throw new Error(`"${name}" can't be a desk's name on the team: use lower-case letters, digits and -, up to 32, and not "${LEAD}". Name it with --name.`);
+  if (!isDeskName(name)) throw new Error(`"${name}" can't be a desk's name on the team: use lower-case letters, digits and -, up to 32, and not "${LEAD}" or a name like "owner" (${[...RESERVED_NAMES].join(', ')}). Name it with --name.`);
   makeTeam(team);
   const roster = rosterOf(team, name);
   const known = readRoster(team).get(name);
   if (known && known.desk !== desk) throw new Error(`the team already has an agent named ${name}, in another desk. Name this one with --name.`);
-  writeNoFollow(roster, `${JSON.stringify({ runtime, model, desk, started: now.toISOString() }, null, 2)}\n`);
+  // The desk relative to the team folder: every desk reads the roster, and a full path names the home folder.
+  writeNoFollow(roster, `${JSON.stringify({ runtime, model, desk: relative(team, desk), started: now.toISOString() }, null, 2)}\n`);
   const outbox = outboxOf(team, name);
   if (!existsSync(outbox)) writeFileSync(outbox, '', { flag: 'wx' });
   if (lstatSync(outbox).isSymbolicLink() || !lstatSync(outbox).isFile()) throw new Error(`${outbox} is a link or not a file. Remove it, then run the desk again.`);

@@ -10,7 +10,7 @@
 import { createHash } from 'node:crypto';
 import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
-import { LEAD, MAX_MESSAGE_CHARS, MAX_OUTBOX_BYTES, MAX_PER_WINDOW, NAME, outboxOf, RATE_WINDOW_MS, readCapped, readRoster, writeNoFollow } from './team.ts';
+import { isDeskName, LEAD, MAX_MESSAGE_CHARS, MAX_OUTBOX_BYTES, MAX_PER_WINDOW, NAME, outboxOf, RATE_WINDOW_MS, readCapped, readRoster, writeNoFollow } from './team.ts';
 import type { Me } from './who.ts';
 
 /** One message as a reader takes it. `from` is the outbox's name. */
@@ -38,7 +38,7 @@ export interface Outbox {
 }
 
 /** How far a reader has read each outbox. */
-export type ReadState = Record<string, { lines: number; last: string; size: number }>;
+export type ReadState = Record<string, { lines: number; last: string; size: number; since?: string; count?: number }>;
 
 export const hashLine = (line: string): string => createHash('sha256').update(line).digest('hex').slice(0, 16);
 
@@ -121,7 +121,8 @@ export function outboxNames(team: string): string[] {
     return readdirSync(join(team, 'outbox'))
       .filter((file) => file.endsWith('.jsonl'))
       .map((file) => file.slice(0, -'.jsonl'.length))
-      .filter((name) => NAME.test(name))
+      // A reserved name is no one's outbox: only an unfenced hand could have made it.
+      .filter((name) => name === LEAD || isDeskName(name))
       .sort();
   } catch {
     return [];
@@ -160,16 +161,23 @@ export interface Unread {
 }
 
 /**
- * The messages for `me` that it has not read, oldest first, at most `max`. A sender whose
- * outbox has not grown since the last read is not opened: a hook runs on every tool call.
+ * The messages for `me` that it has not read, at most `max`: by sender (the lead first),
+ * and in each sender's own order (`seq`), never by the time a sender wrote in its line.
+ * The send cap holds here too: a reader takes at most MAX_PER_WINDOW messages from one
+ * sender in RATE_WINDOW_MS, by its own clock, so lines written by hand past `msg send`
+ * wait. A sender whose outbox has not grown since the last read is not opened: a hook
+ * runs on every tool call.
  */
-export function unread(me: Me, max: number): Unread {
+export function unread(me: Me, max: number, now = new Date()): Unread {
   const state = loadReadState(me.readState);
   const next: ReadState = { ...state };
   const problems: string[] = [];
   const found: Message[] = [];
+  const held: Message[] = [];
+  const windows = new Map<string, { since: string; count: number }>();
   const boxes = new Map<string, Outbox>();
-  for (const name of outboxNames(me.team)) {
+  const names = outboxNames(me.team).sort((a, b) => Number(b === LEAD) - Number(a === LEAD) || (a < b ? -1 : a > b ? 1 : 0));
+  for (const name of names) {
     if (name === me.name) continue;
     let size: number;
     try {
@@ -179,24 +187,33 @@ export function unread(me: Me, max: number): Unread {
     } catch {
       continue;
     }
-    if (state[name]?.size === size) continue;
+    const seen = state[name];
+    if (seen?.size === size) continue;
     const outbox = readOutbox(me.team, name);
     boxes.set(name, outbox);
     problems.push(...outbox.problems);
-    const changed = changedSinceRead(outbox, state[name]);
+    const changed = changedSinceRead(outbox, seen);
     if (changed) problems.push(changed);
-    const from = changed ? 0 : (state[name]?.lines ?? 0);
-    found.push(...outbox.messages.filter((message) => message.index >= from && message.to === me.name));
+    const from = changed ? 0 : (seen?.lines ?? 0);
+    const mine = outbox.messages.filter((message) => message.index >= from && message.to === me.name);
+    const open = typeof seen?.since === 'string' && now.getTime() - Date.parse(seen.since) < RATE_WINDOW_MS;
+    const window = open ? { since: seen.since as string, count: Number(seen.count) || 0 } : { since: now.toISOString(), count: 0 };
+    windows.set(name, window);
+    const allowed = Math.max(0, MAX_PER_WINDOW - window.count);
+    if (mine.length > allowed) problems.push(`${name} sent more than ${MAX_PER_WINDOW} messages to you in ${RATE_WINDOW_MS / 60000} minutes, past the cap; the rest wait`);
+    found.push(...mine.slice(0, allowed));
+    held.push(...mine.slice(allowed));
   }
-  found.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
   const given = found.slice(0, max);
   const left = found.slice(max);
   for (const [name, outbox] of boxes) {
-    const first = left.find((message) => message.from === name);
+    const first = left.find((message) => message.from === name) ?? held.find((message) => message.from === name);
     const lines = first ? first.index : outbox.lines.length;
-    next[name] = { lines, last: lines ? hashLine(outbox.lines[lines - 1]) : '', size: first ? -1 : outbox.size };
+    const window = windows.get(name) ?? { since: now.toISOString(), count: 0 };
+    const count = window.count + given.filter((message) => message.from === name).length;
+    next[name] = { lines, last: lines ? hashLine(outbox.lines[lines - 1]) : '', size: first ? -1 : outbox.size, since: window.since, count };
   }
-  return { messages: given, problems, waiting: left.length, state: next, changed: boxes.size > 0 };
+  return { messages: given, problems, waiting: left.length + held.length, state: next, changed: boxes.size > 0 };
 }
 
 /** Why a message can't be sent, by the caps and the names; null when it may. `text` is already checked for privacy. */

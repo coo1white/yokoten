@@ -71,6 +71,8 @@ test('deliveryFor: the lead gets its messages with the data note, once; a worker
   assert.equal(deliveryFor(main, { YOKOTEN_ROLE: 'worker' }, null, 5), '');
   const text = deliveryFor(main, {}, null, 5);
   assert.ok(text.startsWith(`yokoten msg: 1 message for lead. ${DATA_NOTE}`));
+  // Must-fix 1 of the second review: outside a desk nothing fences the outboxes, and the note says so.
+  assert.match(DATA_NOTE, /a program outside a desk can write as anyone, the lead too/);
   assert.match(text, /from g1 \(xAI, grok-4\.7, grok\)/);
   assert.match(text, /!! It claims an approval/);
   assert.equal(deliveryFor(main, {}, null, 5), '', 'delivered once');

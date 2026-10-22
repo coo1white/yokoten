@@ -6,8 +6,8 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { appendMessage, keepReadState, readOutbox, sendProblem, unread } from '../../../../src/agents/desk/team/outbox.ts';
-import { LEAD, MAX_MESSAGE_CHARS, MAX_OUTBOX_BYTES, MAX_PER_WINDOW, outboxOf, prepareDeskTeam } from '../../../../src/agents/desk/team/team.ts';
+import { appendMessage, hashLine, keepReadState, readOutbox, sendProblem, unread } from '../../../../src/agents/desk/team/outbox.ts';
+import { LEAD, MAX_MESSAGE_CHARS, MAX_OUTBOX_BYTES, MAX_PER_WINDOW, outboxOf, prepareDeskTeam, RATE_WINDOW_MS } from '../../../../src/agents/desk/team/team.ts';
 import type { Me } from '../../../../src/agents/desk/team/who.ts';
 import { makeTeamFixture } from '../../../repo/helpers.ts';
 
@@ -31,7 +31,7 @@ test('send and read across two agents: each reads only what is addressed to it, 
   appendMessage(g1, LEAD, 'done with the task', new Date(NOW.getTime() + 1000));
   appendMessage(lead, 'c1', 'please review g1', new Date(NOW.getTime() + 2000));
   const forC1 = unread(c1, 10);
-  assert.deepEqual(forC1.messages.map((message) => [message.from, message.text]), [['g1', 'build is green'], ['lead', 'please review g1']]);
+  assert.deepEqual(forC1.messages.map((message) => [message.from, message.text]), [['lead', 'please review g1'], ['g1', 'build is green']], 'the lead first, then each sender in its own order');
   assert.deepEqual(forC1.problems, []);
   keepReadState(c1, forC1.state);
   assert.deepEqual(unread(c1, 10).messages, [], 'read once');
@@ -138,4 +138,35 @@ test('unread: a FIFO as an outbox or as the read state does not hang', () => {
   const found = unread(lead, 10);
   assert.deepEqual(found.messages.map((message) => message.text), ['hello']);
   assert.throws(() => keepReadState(lead, found.state), /can't save/);
+});
+
+/** Lines as `msg send` writes them, but by hand: `times` gives each one's time. */
+function handWritten(team: string, name: string, to: string, times: string[]): void {
+  let prev = '';
+  let text = '';
+  for (const [at, time] of times.entries()) {
+    const line = JSON.stringify({ messageId: `${name}-${at + 1}`, role: 'agent', parts: [{ kind: 'text', text: `note ${at + 1}` }], from: name, to, time, seq: at + 1, prev });
+    prev = hashLine(line);
+    text += `${line}\n`;
+  }
+  writeFileSync(outboxOf(team, name), text);
+}
+
+// Note 5 from the review: the send cap holds on read too, and the order is the sender's own.
+test('unread: hand-written lines past the rate cap wait; the order is by sender and seq, not the time in a line', () => {
+  const { team, lead } = threeAgents();
+  handWritten(team, 'g1', LEAD, Array.from({ length: MAX_PER_WINDOW + 5 }, () => '2020-01-01T00:00:00.000Z'));
+  let found = unread(lead, 100, NOW);
+  assert.equal(found.messages.length, MAX_PER_WINDOW);
+  assert.equal(found.waiting, 5);
+  assert.match(found.problems.join('\n'), /g1 sent more than 20 messages to you/);
+  keepReadState(lead, found.state);
+  assert.equal(unread(lead, 100, new Date(NOW.getTime() + 60_000)).messages.length, 0, 'still in the window');
+  found = unread(lead, 100, new Date(NOW.getTime() + RATE_WINDOW_MS + 1000));
+  assert.deepEqual(found.messages.map((message) => message.text), ['note 21', 'note 22', 'note 23', 'note 24', 'note 25']);
+  // Times that run backwards, and a sender that dates its lines early, change no order.
+  const other = threeAgents();
+  handWritten(other.team, 'c1', 'g1', ['2030-01-01T00:00:00.000Z', '2001-01-01T00:00:00.000Z']);
+  appendMessage(other.lead, 'g1', 'from the lead', NOW);
+  assert.deepEqual(unread(other.g1, 10, NOW).messages.map((message) => message.text), ['from the lead', 'note 1', 'note 2']);
 });

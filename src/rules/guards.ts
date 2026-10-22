@@ -1196,19 +1196,26 @@ export function checkWorkerMarkEdit(path: string, folder?: string, env: Env = {}
 }
 
 /**
- * A worker's edit inside a team folder, `<repo>.team/` (#674): the roster, the outboxes and
- * what the lead has read. Outside a desk nothing else fences it, and an edit there would
- * speak for another agent. A desk's agent sends with `yokoten msg send`.
+ * A worker's edit inside a team folder (#674): `<repo>.team/{agents,outbox,lead}`, next to a
+ * checkout named `<repo>`. Outside a desk nothing else fences it, and an edit there would
+ * speak for another agent. A desk's agent sends with `yokoten msg send`. Any other folder
+ * whose name ends in `.team` is not a team folder.
  */
 export function checkTeamEdit(path: string): Finding | null {
-  for (const form of [resolve(path), realPath(path)]) {
-    const parts = form.split(/[/\\]+/).map((part) => part.toLowerCase());
-    if (parts.some((part, at) => part.endsWith('.team') && part.length > '.team'.length && at < parts.length - 1)) {
-      return finding('lead-only', 'this edit is inside a team folder (<repo>.team), where the agents\' messages and the roster are kept', 'send with `yokoten msg send <to> <text>` from a desk, or report to the lead');
+  for (const form of new Set([resolve(path), realPath(path)])) {
+    const parts = form.split(sep);
+    for (let at = 1; at + 1 < parts.length; at++) {
+      const name = parts[at];
+      if (!name.toLowerCase().endsWith('.team') || name.length <= '.team'.length || !TEAM_PARTS.has(parts[at + 1].toLowerCase())) continue;
+      const checkout = [...parts.slice(0, at), name.slice(0, -'.team'.length), '.git'].join(sep) || sep;
+      if (existsSync(checkout)) return finding('lead-only', 'this edit is inside a team folder (<repo>.team), where the agents\' messages and the roster are kept', 'send with `yokoten msg send <to> <text>` from a desk, or report to the lead');
     }
   }
   return null;
 }
+
+// The parts of a team folder (agents/desk/team/team.ts).
+const TEAM_PARTS = new Set(['agents', 'outbox', 'lead']);
 
 // Cancelling a run, an alias, and a command the host did not ship (#650). The host adapter
 // owns the command names, the routes and the finding text. Both roles hear it before the
