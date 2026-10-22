@@ -765,3 +765,106 @@ test('bot: a new issue needs the Made with line; its labels are still checked (#
     server.close();
   }
 });
+
+// #609: the note parser reads flags the way gh does. A value flag never swallows a
+// following flag word (`-t --body TEXT` leaves `--body TEXT` for the body), and a
+// run-together word expands letter by letter (`-wb` is `-w -b`, `-a` is a boolean on
+// `pr review`). Otherwise gh posts a body the bot never checked.
+test('bot: a note body gh posts is always checked, whatever the spelling (#609)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', JSON.stringify({ areas: ['host'] }));
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/me/repo.git');
+  const bin = join(sandbox.home, 'bin');
+  const log = join(sandbox.home, 'gh.log');
+  const labels = join(sandbox.home, 'labels.json');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'gh'), [
+    '#!/usr/bin/env node',
+    'const fs = require("node:fs"); const args = process.argv.slice(2);',
+    `if (args[0] === "label") { process.stdout.write(fs.readFileSync(${JSON.stringify(labels)}, "utf8")); process.exit(0); }`,
+    `fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, input: fs.readFileSync(0, "utf8") }) + "\\n");`,
+  ].join('\n'));
+  chmodSync(join(bin, 'gh'), 0o755);
+  writeFileSync(labels, JSON.stringify([{ name: 'bug' }, { name: 'tier B' }]));
+  const server = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(req.method === 'GET' ? { id: 77 } : { token: 'ghs_test' }));
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  const key = join(sandbox.home, 'bot.pem');
+  writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
+  const bot = { PATH: `${bin}:${process.env.PATH}`, YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+  const run = (command: string[], input = '') => sandbox.call(['bot', '--', ...command], { input, extra: bot });
+  const ran = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+  const refused = async (command: string[]) => {
+    const r = await run(command);
+    assert.equal(r.status, 1, command.join(' '));
+    assert.match(r.stderr, /^yokoten bot: 1 problem\(s\) in the body; nothing was sent\. Fix the body and run it again:\n- body: no `Made with` line at the end\. .+ End the body with `🤖 Made with <agent> \(<model>\)/);
+    assert.deepEqual(ran(), [], `gh did not run: ${command.join(' ')}`);
+  };
+  try {
+    // A value flag swallowing the body flag: gh still posts the body.
+    await refused(['gh', 'pr', 'comment', '5', '-t', '--body', 'A note.\n']);
+    await refused(['gh', 'pr', 'comment', '5', '--title', '--body', 'A note.\n']);
+    await refused(['gh', 'issue', 'create', '-t', 'host: a', '-l', 'bug,tier B', '-r', '--body', 'An issue.\n']);
+    await refused(['gh', 'issue', 'create', '-t', 'host: a', '-l', 'bug,tier B', '--assignee', '--body', 'An issue.\n']);
+    // A run-together word starting with a boolean letter: gh expands it.
+    await refused(['gh', 'issue', 'create', '-t', 'host: a', '-l', 'bug,tier B', '-wb', 'An issue.\n']);
+    await refused(['gh', 'pr', 'comment', '5', '-wb', 'A note.\n']);
+    // On `pr review`, `-a` and `-r` are booleans, not values.
+    await refused(['gh', 'pr', 'review', '5', '--comment', '-a', '-b', 'A review.\n']);
+    await refused(['gh', 'pr', 'review', '5', '--comment', '-rb', 'A review.\n']);
+  } finally {
+    server.close();
+  }
+});
+
+// #609: `--attach` uploads land after the body (gh appends every file the body does
+// not reference at the very end), past the `Made with` line — on `issue create` and
+// both comments (`pr review` takes no `--attach`). A note with `--attach` is refused
+// before anything is sent, with or without a body.
+test('bot: a note with --attach is refused, since the upload lands past the Made with line (#609)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', JSON.stringify({ areas: ['host'] }));
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/me/repo.git');
+  const bin = join(sandbox.home, 'bin');
+  const log = join(sandbox.home, 'gh.log');
+  const labels = join(sandbox.home, 'labels.json');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'gh'), [
+    '#!/usr/bin/env node',
+    'const fs = require("node:fs"); const args = process.argv.slice(2);',
+    `if (args[0] === "label") { process.stdout.write(fs.readFileSync(${JSON.stringify(labels)}, "utf8")); process.exit(0); }`,
+    `fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, input: fs.readFileSync(0, "utf8") }) + "\\n");`,
+  ].join('\n'));
+  chmodSync(join(bin, 'gh'), 0o755);
+  writeFileSync(labels, JSON.stringify([{ name: 'bug' }, { name: 'tier B' }]));
+  const server = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(req.method === 'GET' ? { id: 77 } : { token: 'ghs_test' }));
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  const key = join(sandbox.home, 'bot.pem');
+  writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
+  const bot = { PATH: `${bin}:${process.env.PATH}`, YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+  const run = (command: string[], input = '') => sandbox.call(['bot', '--', ...command], { input, extra: bot });
+  const ran = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+  const refused = async (command: string[], input = '') => {
+    const r = await run(command, input);
+    assert.equal(r.status, 1, command.join(' '));
+    assert.match(r.stderr, /^yokoten bot: 1 problem\(s\) in the body; nothing was sent\. Fix the body and run it again:\n- body: `--attach` appends the upload after the `Made with` line\. .+ Drop `--attach`, or link an uploaded file in the body instead\./);
+    assert.deepEqual(ran(), [], `gh did not run: ${command.join(' ')}`);
+  };
+  try {
+    const good = 'An issue.\n\nMade with worker (opus)\n';
+    await refused(['gh', 'issue', 'create', '-t', 'host: a', '-l', 'bug,tier B', '--body', good, '--attach', './shot.png']);
+    await refused(['gh', 'pr', 'comment', '5', '--body', 'A note.\n\nMade with worker (opus)\n', '--attach', './shot.png']);
+    const bodyFile = join(sandbox.home, 'body.md');
+    writeFileSync(bodyFile, 'A note.\n\nMade with worker (opus)\n');
+    await refused(['gh', 'issue', 'comment', '5', '--body-file', bodyFile, '--attach', './shot.png']);
+    // No body at all: gh would post the upload alone, with no `Made with` line.
+    await refused(['gh', 'pr', 'comment', '5', '--attach', './shot.png']);
+  } finally {
+    server.close();
+  }
+});
