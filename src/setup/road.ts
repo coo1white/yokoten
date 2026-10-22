@@ -26,7 +26,7 @@ import { sandboxProblem as grokSandboxProblem } from '../agents/runtimes/grok.ts
 import { isGuardOff, TRUST_FIX } from '../agents/runtimes/muse.ts';
 import { type CommandTest, commitCheckLine, runs } from '../run/cli.ts';
 import { isNoAdapter } from '../host/hosts.ts';
-import { CODEOWNERS_PLACES, hasBot, KEYS_FILE, missingBotSetup, type Planning, type ServerSettings, type Unread } from '../host/github.ts';
+import { CODEOWNERS_PLACES, hasBot, KEYS_FILE, missingBotSetup, type Planning, type ServerSettings, type Unread } from '../host/github/index.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
 import { claudeReadsRules, cliPath, COMMIT_HOOKS, deadHookNotes, findRulesGap, handOffBlocks, hasHandOff, hookFile, isCommitHook, isExecutable, isSelf, type OldHook, OWNER_PLACEHOLDER, readHookSetup, readOldHooks } from './init.ts';
 import { gitConfig } from '../run/check.ts';

@@ -70,7 +70,7 @@ import {
   readIssue,
   readNumberedPullRequest,
   readPullRequest,
-} from '../../src/host/github.ts';
+} from '../../src/host/github/index.ts';
 import {
   explain,
   explainLines,

@@ -17,7 +17,7 @@
 /src/commands/hook.ts @coo1white
 
 # The bot's token and the pull request reader.
-/src/host/github.ts @coo1white
+/src/host/github/ @coo1white
 
 # Config that can turn a guard off: lead-only paths, privacy allow list, the git hook.
 /yokoten.json @coo1white

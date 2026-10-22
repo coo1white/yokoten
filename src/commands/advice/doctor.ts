@@ -4,7 +4,7 @@
 import { readSync } from 'node:fs';
 import * as claudeCode from '../../agents/runtimes/claude-code.ts';
 import * as gemini from '../../agents/runtimes/gemini.ts';
-import { ghIn } from '../../host/github.ts';
+import { ghIn } from '../../host/github/index.ts';
 import { DEFAULTS, loadConfig } from '../../rules/config.ts';
 import { workerRole } from '../../rules/guards.ts';
 import { formatFinding } from '../../rules/message.ts';

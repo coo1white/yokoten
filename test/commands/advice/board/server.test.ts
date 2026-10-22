@@ -11,7 +11,7 @@ import { CLI, makeSandbox } from '../../../repo/helpers.ts';
 import { runBoard, startBoardServer } from '../../../../src/commands/advice/board/server.ts';
 import type { BoardData } from '../../../../src/commands/advice/board/view.ts';
 import type { Invocation, Output } from '../../../../src/commands/shared.ts';
-import type { Gh } from '../../../../src/host/github.ts';
+import type { Gh } from '../../../../src/host/github/index.ts';
 import type { Env } from '../../../../src/rules/config.ts';
 import {
   createBoardControls,

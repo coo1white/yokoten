@@ -1,6 +1,6 @@
 // `yokoten learn` and `yokoten changelog`: what the project learned, and what it changed.
 
-import { ghIn, readIncident, readLocalLogins } from '../host/github.ts';
+import { ghIn, readIncident, readLocalLogins } from '../host/github/index.ts';
 import { formatChanges, readChanges, writeChanges } from '../run/changelog.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
