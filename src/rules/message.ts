@@ -152,7 +152,7 @@ export const RULES = {
   'home-folder': {
     rule: 'an agent does not change the home folder for a command (core rule 11)',
     why: 'the commit check and the gh post guard read your private marks from your home folder, so another home finds no marks and lets them through',
-    check: 'the tool-call guard stops a command that sets HOME, USERPROFILE or XDG_CONFIG_HOME: before a program, after env or sudo, with export or declare, or with read, printf -v or a for loop; reading $HOME passes',
+    check: 'the tool-call guard stops a command that sets HOME or USERPROFILE for git, gh, yokoten or a shell, or for the rest of the line (export, declare, read, printf -v, a for loop, ${HOME:=x}); before another program, and reading $HOME, it passes',
     docs: guide('privacy'),
   },
   secret: {

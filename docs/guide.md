@@ -1465,10 +1465,14 @@ The full table, with the reasons, is in [`kit/project/AGENTS.md`](../kit/project
    when its pre-commit is an executable shell script that runs `yokoten check` on a line of
    its own and stops the commit when the check fails, as `yokoten init` sets up for husky.
    Change a setting by name: `git config --edit` and a new config include are refused.
-   So is a shell write to `.git/config`, `.git/hooks` or `.githooks` (a redirect, `cp`, `mv`,
-   `tee`, `sed -i`, `rm`, `chmod`, `ln`, `install`, `truncate`), and setting
+   So is a shell write to `.git/config`, `.git/commondir`, `.git/hooks` or `.githooks`:
+   a redirect, `cp`, `mv`, `tee`, `sed -i`, `rm`, `chmod`, `ln`, `install`, `truncate`,
+   `patch`, `awk -i inplace`, `ed`, `vim`, `tar -x -C`, `unzip -d` or `find -delete`. A path
+   with a glob that could match them counts too (`.git/conf*`). So is setting
    `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n` or
-   `GIT_CONFIG_VALUE_n`. Reading those files passes. Use `git -c <name>=<value>` for one
+   `GIT_CONFIG_VALUE_n` for git or a shell, or for the rest of the line. Reading those files
+   passes, and so do `mkdir .githooks`, files in another repo (`/tmp/x/.git`), and the lead's
+   `git checkout` or `git restore` of the committed hook. Use `git -c <name>=<value>` for one
    setting in one command, and your edit tool or `yokoten init` for a hook.
 7. No plain force push. Never rebase a shared branch.
 8. Squash merge. One pull request, one purpose; small polish goes in one batch.
@@ -1704,10 +1708,11 @@ setting's file.
 
 An agent can't move the home folder either. `HOME=/tmp/x git commit` would send the commit
 check to look for marks in another folder, find none, and pass. So the guard refuses a
-command that sets `HOME`, `USERPROFILE` or `XDG_CONFIG_HOME`: before a program, after `env`
-or `sudo`, with `export` or `declare`, or with `read`, `printf -v` or a `for` loop. It does
-this for every program, since it can't tell what a script commits or posts. Reading
-`$HOME` is fine.
+command that sets `HOME` or `USERPROFILE` (in any case) for git, gh, yokoten, or a shell
+or `eval` that runs them, also after `env` or `sudo`. It refuses a setting for the rest of
+the line too: `export`, `declare`, `read`, `printf -v`, a `for` loop or `${HOME:=x}`.
+Before another program the setting passes: `HOME=$(mktemp -d) npm test` keeps a test away
+from your files. Reading `$HOME` is fine.
 
 A mark of letters and spaces, such as a name or a city, is found as whole words. Only a
 letter next to it hides it: `sam` is found in `hi Sam`, `sam_dev`, `@sam` and `sam97`, but
@@ -1954,7 +1959,10 @@ Honest limits:
   the guard sees the file in the command: a path from a variable or stdin (`xargs rm`,
   `find -exec`, `git apply < x.patch`), or a script that writes it, gets past. A shell
   write to `.git/config` or `.githooks` has the same gaps, and so does a write after a `cd`
-  to a folder the guard can't read (`cd "$x" && echo >> config`).
+  to a folder the guard can't read (`cd "$x" && echo >> config`). A program other than git,
+  gh, yokoten or a shell may run git with the home folder it was given: an npm script, a
+  `make` target or a shell function (`HOME=/tmp/x npm run commit`). An indirect name
+  (`export $name=x`) gets past too.
 - **Server settings are read on GitHub only.** Another host shows the steps that only the
   host can judge as **can't check**, with what each one asks ([What a session sees](#what-a-session-sees)). `doctor` does not check the bot's rights yet.
 - **Claude Code first.** Agents follow Claude Code's format.
