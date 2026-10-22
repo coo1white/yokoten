@@ -103,14 +103,19 @@ export function isSecretName(name: string): boolean {
     .some((word) => SECRET_WORDS.has(word));
 }
 
+// Shorter values, and values of one kind of character, match too much: a port, a count,
+// a word. A real key is longer and mixes kinds.
+const MIN_ENV_VALUE = 12;
+const charKinds = (value: string): number => [/[a-z]/, /[A-Z]/, /[0-9]/, /[^A-Za-z0-9]/].filter((re) => re.test(value)).length;
+
 /** The real values of secret-looking variables, when they are worth matching. */
 export function findEnvironmentValues(env: Env): string[] {
   const values: string[] = [];
   for (const [name, value] of Object.entries(env)) {
-    if (!value || !isSecretName(name) || value.length < 8 || value.length > 4096 || /\s/.test(value)) continue;
+    if (!value || !isSecretName(name) || value.length < MIN_ENV_VALUE || value.length > 4096 || /\s/.test(value)) continue;
     if (PLACEHOLDER_VALUE.test(value) || PROCESS_LOOKUP.test(value) || CODE_REFERENCE.test(value) || PATH_VALUE.test(value) || FAKE_VALUE.test(value)) continue;
     const unique = new Set(value).size;
-    if (!((/[0-9]/.test(value) || /[A-Z]/.test(value) || /[^A-Za-z0-9]/.test(value)) && unique >= 6) && !(value.length >= 20 && unique >= 10)) continue;
+    if (!(charKinds(value) >= 2 && unique >= 8) && !(value.length >= 24 && unique >= 10)) continue;
     if (!values.includes(value)) values.push(value);
   }
   return values;

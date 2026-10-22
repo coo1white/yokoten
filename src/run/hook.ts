@@ -13,7 +13,7 @@ import { isMainThread, parentPort, Worker, workerData } from 'node:worker_thread
 import { type Config, DEFAULTS, type Env, type IgnoredPart, loadConfig } from '../rules/config.ts';
 import { checkCommand, checkEdit, checkWorkerMarkEdit, configFolder, gitLinkAbove, realPath as real } from '../rules/guards.ts';
 import { type Finding, finding } from '../rules/message.ts';
-import { makeSecretHider } from '../rules/secrets.ts';
+import { findEnvironmentValues, makeSecretHider, SECRET } from '../rules/secrets.ts';
 
 /** What an agent is about to do, in no runtime's terms. */
 export interface Action {
@@ -379,9 +379,10 @@ export function writeAgentChecks(folder: string, checks: 'failing' | 'passing', 
   }
 }
 
-/** The last `DONE_OUTPUT_CHARS` of `text`, with secrets replaced. */
-export function shortenOutput(text: string): string {
-  const hidden = makeSecretHider()(text.replace(/\s+$/, ''));
+/** The last `DONE_OUTPUT_CHARS` of `text`, with secrets and the real values of secret-looking variables in `env` replaced (#616). */
+export function shortenOutput(text: string, env: Env = {}): string {
+  let hidden = makeSecretHider()(text.replace(/\s+$/, ''));
+  for (const value of findEnvironmentValues(env)) hidden = hidden.replaceAll(value, SECRET);
   if (hidden.length <= DONE_OUTPUT_CHARS) return hidden;
   const cut = hidden.slice(hidden.length - DONE_OUTPUT_CHARS);
   const newline = cut.indexOf('\n');
@@ -432,18 +433,18 @@ export function runDoneWhen(
         windowsHide: true,
       });
     } catch (error) {
-      finish({ ok: false, output: shortenOutput((error as Error).message.split('\n')[0]) });
+      finish({ ok: false, output: shortenOutput((error as Error).message.split('\n')[0], env) });
       return;
     }
     let stdout = '';
     let stderr = '';
     let timedOut = false;
     const take = (have: string, chunk: string) => (have.length >= DONE_OUTPUT_CAP ? have : (have + chunk).slice(0, DONE_OUTPUT_CAP));
-    const stoppedOutput = (output: string) => shortenOutput(output ? `${output}\nthe check ran too long and was stopped` : 'the check ran too long and was stopped');
+    const stoppedOutput = (output: string) => shortenOutput(output ? `${output}\nthe check ran too long and was stopped` : 'the check ran too long and was stopped', env);
     const resultFor = (code: number | null, signal: NodeJS.Signals | null) => {
       const output = `${stderr}${stdout}`.trimEnd();
       if (timedOut || signal === 'SIGTERM') return { ok: false, output: stoppedOutput(output) };
-      const body = shortenOutput(output);
+      const body = shortenOutput(output, env);
       if (code === 0) return { ok: true, output: body };
       return { ok: false, output: body || `the check exited ${code}` };
     };
@@ -471,7 +472,7 @@ export function runDoneWhen(
         finish(resultFor(null, null));
       }
     }, timeoutMs);
-    child.once('error', (error) => finish({ ok: false, output: shortenOutput(error.message.split('\n')[0]) }));
+    child.once('error', (error) => finish({ ok: false, output: shortenOutput(error.message.split('\n')[0], env) }));
     child.once('exit', (code, signal) => {
       if (settled || timedOut) return;
       if (timer) clearTimeout(timer);

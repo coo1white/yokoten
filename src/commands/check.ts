@@ -21,7 +21,7 @@ import { addedLinesByFile, changedLines, checkIssueLabels, checkIssueTitle, chec
 import { parseChange } from '../run/changelog.ts';
 import { check, checkHistory, GitReadError, gitReadFinding, historyTimeZones, readGit, timeZoneNote, unstageHint } from '../run/check.ts';
 import { isCodeFile, nameNotes } from '../run/names.ts';
-import { type AllowEntry, isLink, loadMarks, type Mark, marksFile, marksFiles, machineAllowed, machineAllowFile, makeRedactor, matchingEntries, NO_HOME, readMachineAllow, repoKey } from '../rules/privacy.ts';
+import { addedIgnores, type AllowEntry, isLink, loadMarks, type Mark, marksFile, marksFiles, machineAllowed, machineAllowFile, makeRedactor, matchingEntries, NO_HOME, readMachineAllow, repoKey } from '../rules/privacy.ts';
 import { addOwnMark, countMarkKinds, fillMarks, kindsTurnedOff, machineMarks, machineUserNames, paths, removeMarks, setKindOff, SWITCHED_KINDS } from '../setup/install.ts';
 import { bullets, type Invocation, parse, print, printJson, readInput, requireRoot, say, showOnPullRequest, usage } from './shared.ts';
 
@@ -130,13 +130,26 @@ async function runMode(invocation: Invocation, mode: string, root: string, confi
       // One diff with renames found, so a moved file is not noted as all new. Fixed
       // prefixes and plain paths, whatever the user's git settings say.
       const diffArgs = ['-c', 'core.quotePath=false', 'diff', '-U0', '-M', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', `${pr.base}...${pr.head}`];
-      const added = codeFiles.length ? addedLinesByFile(readGit(root, diffArgs, { env }).toString('utf8')) : new Map<string, Set<number>>();
+      const added = pr.files.length ? addedLinesByFile(readGit(root, diffArgs, { env }).toString('utf8')) : new Map<string, Set<number>>();
       for (const file of codeFiles) {
         const text = added.has(file) ? readAtHead(file) : null;
         if (text !== null) names.push(...nameNotes(file, text, added.get(file) ?? new Set()));
       }
       notes.push(...names);
       printNotes(names, 'hard-to-read name(s)');
+      // Each ignore the pull request adds (#616) is a notice for the reviewer, never a failure.
+      const ignores: Finding[] = [];
+      for (const [file, lines] of added) {
+        let text: string | null = null;
+        try {
+          text = lines.size ? readAtHead(file) : null;
+        } catch {
+          // A submodule's pointer is not a file: it holds no ignore.
+        }
+        if (text !== null && !text.includes('\0')) ignores.push(...addedIgnores(file, text, lines, env));
+      }
+      notes.push(...ignores);
+      printNotes(ignores, 'ignore(s) added by this pull request');
       // A large pull request (record 0004) is a note too, never a failure.
       const large = largeDiff(changedLines(pr.numstat));
       if (large) {

@@ -1404,7 +1404,7 @@ A list you set replaces the default list; it does not add to it.
 | `layout.maxEntries` | `7` | The most entries a folder may hold (core rule 10) |
 | `layout.exempt` | none | Folders that may grow past it. See [Folders that may grow](#folders-that-may-grow) |
 | `tests` | `*.test.*`, `*.spec.*`, `*_test.go`, `test/**`, `tests/**` | The test files a fix task may not change |
-| `leadOnly` | the rules, agent config, `.githooks/**`, `.github/**`, the vendored runtime `.yokoten/**` | The files a worker may not change |
+| `leadOnly` | the rules, agent config, `.githooks/**`, `.github/**`, the vendored runtime `.yokoten/**`, `.yokotenignore` | The files a worker may not change |
 | `privacy.allow` | none | Exact strings the privacy check lets through, such as a public support address, or this project's own name from your private marks |
 | `privacy.skip` | lock files | Files the privacy check does not read |
 | `privacy.utc` | `true` | Commit times must be in UTC |
@@ -1776,6 +1776,11 @@ the secret. Deleting it is not enough, since git keeps it: rotate it.
 
 For a false hit, start a comment on that line with `yokoten-ignore secret: why it is safe`. Use the finding's rule name instead of `secret`.
 Or write `secret: why it is safe` in `.yokotenignore`; an ignored hit stays listed, and a reasonless ignore fails.
+
+A `sure` secret and a private-mark hit can't be ignored on their line: only
+`.yokotenignore` lets them through, and only the lead may change that file. On a pull
+request, `yokoten check --pr` shows each ignore the pull request adds as a notice, so the
+reviewer sees it.
 
 The tool-call guard runs the same check on text an agent is about to post with `gh`,
 plain or through `yokoten bot -- gh`:

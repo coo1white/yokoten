@@ -99,3 +99,13 @@ test('readCodeOwners: the first place the base commit has; a base git can\'t rea
   assert.deepEqual(readCodeOwners(sandbox.repo, owners, process.env), { text: '/kit/ @a\n', from: 'the base branch' });
   assert.throws(() => readCodeOwners(sandbox.repo, 'f'.repeat(40), process.env), GitReadError);
 });
+
+test('annotations: an ignore a pull request adds is a notice, after the problems and before the other notes (#616)', () => {
+  const problem = { id: 'secret', what: 'a secret', why: 'w', fix: 'f', file: 'a.ts', line: 1 };
+  const added = { id: 'ignore-added', what: 'this pull request lets a secret hit through on this line', why: 'w', fix: 'f', file: 'a.ts', line: 2, ignored: 'a fixture' };
+  const note = { id: 'large-diff', what: 'big', why: 'w', fix: 'f' };
+  const lines = annotations([problem], [note, added]);
+  assert.match(lines[0], /^::error /);
+  assert.equal(lines[1], '::notice file=a.ts,line=2,title=yokoten ignore-added::this pull request lets a secret hit through on this line [ignored: a fixture]. W. F.');
+  assert.match(lines[2], /^::warning /);
+});

@@ -253,7 +253,7 @@ const escapeProperty = (text: string) => escapeData(text).replace(/:/g, '%3A').r
  * `isPlaceAFile` is false (a `check --history` place is a commit or a blob), the place
  * goes into the message instead of `file` and `line`.
  */
-export function annotation(f: Finding, level: 'error' | 'warning', isPlaceAFile = true): string {
+export function annotation(f: Finding, level: 'error' | 'warning' | 'notice', isPlaceAFile = true): string {
   const properties: string[] = [];
   const file = isPlaceAFile ? f.file : undefined;
   if (file !== undefined) properties.push(`file=${escapeProperty(file)}`);
@@ -263,9 +263,17 @@ export function annotation(f: Finding, level: 'error' | 'warning', isPlaceAFile 
   return `::${level} ${properties.join(',')}::${escapeData(message)}`;
 }
 
-/** The annotations for one check: problems first, then notes, at most 50. */
+/**
+ * The annotations for one check: problems first, then the ignores a pull request adds
+ * (#616), as notices the reviewer sees, then the other notes. At most 50.
+ */
 export function annotations(problems: Finding[], notes: Finding[], isPlaceAFile = true): string[] {
-  const all = [...problems.map((f) => annotation(f, 'error', isPlaceAFile)), ...notes.map((f) => annotation(f, 'warning', isPlaceAFile))];
+  const isNotice = (f: Finding) => f.id === 'ignore-added';
+  const all = [
+    ...problems.map((f) => annotation(f, 'error', isPlaceAFile)),
+    ...notes.filter(isNotice).map((f) => annotation(f, 'notice', isPlaceAFile)),
+    ...notes.filter((f) => !isNotice(f)).map((f) => annotation(f, 'warning', isPlaceAFile)),
+  ];
   return all.slice(0, MAX_ANNOTATIONS);
 }
 

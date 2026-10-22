@@ -140,6 +140,29 @@ test('check --pr: a large pull request gets a note, never a failure; lock files 
   assert.match(r.stdout, /check --pr: ok/);
 });
 
+test('check --pr: each ignore the pull request adds is a notice on the page, never a failure (#616)', async () => {
+  const sandbox = makeSandbox();
+  const marker = ['yokoten', 'ignore'].join('-');
+  sandbox.write('src/a.ts', `export const a = 1; // ${marker} email: an old one\n`);
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'base');
+  const base = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  sandbox.write('src/a.ts', `export const a = 1; // ${marker} email: an old one\nexport const b = 2; // ${marker} secret: a test fixture\n`);
+  sandbox.write('.yokotenignore', 'ip: documentation examples\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'head');
+  const head = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  const file = join(sandbox.home, 'event.json');
+  const body = 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\nNo changelog: a test\nMade with worker (opus)\n';
+  writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
+  const r = await sandbox.call(['check', '--pr'], { extra: { GITHUB_EVENT_PATH: file, GITHUB_ACTIONS: 'true' } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /note: 2 ignore\(s\) added by this pull request/);
+  assert.match(r.stdout, /::notice file=src\/a\.ts,line=2,title=yokoten ignore-added::this pull request lets a secret hit through on this line \[ignored: a test fixture\]/);
+  assert.match(r.stdout, /::notice file=\.yokotenignore,line=1,title=yokoten ignore-added::this pull request lets ip hits through in the whole repo \[ignored: documentation examples\]/);
+  assert.doesNotMatch(r.stdout, /an old one/, 'an ignore already on the base branch is not new');
+});
+
 test('check --issue: reads the issue from the CI event; a bad title fails, a good one passes', async () => {
   const sandbox = makeSandbox();
   sandbox.write('yokoten.json', JSON.stringify({ areas: ['doctor', 'check'] }));

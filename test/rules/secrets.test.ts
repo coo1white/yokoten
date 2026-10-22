@@ -11,8 +11,8 @@ import {
   isFailingFinding,
   isWarningFinding,
 } from '../../src/rules/message.ts';
-import { loadIgnores, scanText } from '../../src/rules/privacy.ts';
-import { SECRET_CONTROL } from '../../src/rules/secrets.ts';
+import { addedIgnores, loadIgnores, scanText } from '../../src/rules/privacy.ts';
+import { findEnvironmentValues, SECRET_CONTROL } from '../../src/rules/secrets.ts';
 import { at, makeTempDir } from '../repo/helpers.ts';
 
 // Secrets (#8). Each sample is a prefix plus a body, joined here, so no token sits in
@@ -84,13 +84,14 @@ test('privacy findings: email, IP and private-mark hits are graded sure (#616)',
 });
 
 test('secrets: an ignore with a reason passes and stays in the output (#616)', () => {
-  const token = `${'gh'}p_${alnum(36)}`;
+  const token = alnum(32);
+  const keyName = 'api_' + 'key';
   const marker = ['yokoten', 'ignore'].join('-');
-  const [found] = scanText(`token ${token} // ${marker} secret: a test fixture`, { file: 'a' });
-  assert.equal(found.grade, 'sure');
+  const [found] = scanText(`${keyName} = "${token}" // ${marker} secret: a test fixture`, { file: 'a' });
+  assert.equal(found.grade, 'likely');
   assert.equal(found.ignored, 'a test fixture');
   assert.equal(isFailingFinding(found), false);
-  assert.match(formatFinding(found), /\[sure; ignored: a test fixture\]/);
+  assert.match(formatFinding(found), /\[likely; ignored: a test fixture\]/);
   assert.ok(!formatFinding(found).includes(token), 'the secret never appears');
   assert.ok(!JSON.stringify(found).includes(token), 'the secret never appears in JSON');
 });
@@ -238,4 +239,76 @@ test('secrets: privacy.allow lets a listed string through (#8)', () => {
   const key = `${'AI'}za${alnum(35)}`;
   assert.deepEqual(scanText(`maps key ${key}`, { file: 'a', allow: [key] }), []);
   assert.equal(scanText(`maps key ${key}`, { file: 'a', allow: ['something else'] }).length, 1);
+});
+
+test('secrets: a sure secret can not be ignored on its line, only in .yokotenignore (#616)', () => {
+  const token = `${'gh'}p_${alnum(36)}`;
+  const marker = ['yokoten', 'ignore'].join('-');
+  const line = `token ${token} // ${marker} secret: a test fixture`;
+  const [found] = scanText(line, { file: 'a' });
+  assert.equal(found.grade, 'sure');
+  assert.equal(found.ignored, undefined);
+  assert.equal(isFailingFinding(found), true, 'the comment does not let it through');
+  assert.match(found.fix, /can't be ignored on its line/);
+  assert.match(found.fix, /\.yokotenignore/);
+  assert.ok(!JSON.stringify(found).includes(token));
+  const [fromFile] = scanText(line, { file: 'a', ignores: [{ rule: 'secret', reason: 'the lead says so' }] });
+  assert.equal(fromFile.ignored, 'the lead says so');
+  assert.equal(isFailingFinding(fromFile), false, 'the lead-only file does');
+});
+
+test('privacy: a private-mark hit can not be ignored on its line, only in .yokotenignore (#616)', () => {
+  const marker = ['yokoten', 'ignore'].join('-');
+  const line = `Deploy to Secret-Box # ${marker} private-mark: a public name`;
+  const found = scanText(line, { file: 'a', marks: ['secret-box'] });
+  const mark = found.find((f) => f.id === 'private-mark');
+  assert.ok(mark);
+  assert.equal(mark.ignored, undefined);
+  assert.equal(isFailingFinding(mark), true);
+  const refused = found.find((f) => f.id === 'ignore');
+  assert.ok(refused, 'the comment itself fails');
+  assert.match(refused.what, /can't be ignored on its line/);
+  assert.equal(isFailingFinding(refused), true);
+  assert.ok(!JSON.stringify(found).toLowerCase().includes('secret-box'), 'the mark never appears');
+  const fromFile = scanText('Deploy to Secret-Box', { file: 'a', marks: ['secret-box'], ignores: [{ rule: 'private-mark', reason: 'a product name' }] });
+  assert.equal(fromFile.length, 1);
+  assert.equal(isFailingFinding(fromFile[0]), false);
+});
+
+test('ignores: text that is not a file reads no comment, so a post can not ignore a hit (#616)', () => {
+  const marker = ['yokoten', 'ignore'].join('-');
+  const [found] = scanText(`mail someone${at}gmail.com # ${marker} email: a test inbox`, { file: 'post', inlineIgnores: false });
+  assert.equal(found.id, 'email');
+  assert.equal(isFailingFinding(found), true);
+});
+
+test('secrets: short, one-kind and placeholder environment values are not matched (#616)', () => {
+  const real = `${'envSecret'}${'Value'}1234`;
+  const env = {
+    SERVICE_TOKEN: real,
+    SHORT_TOKEN: 'aB3dE6gH', // 8 characters
+    COUNT_TOKEN: '123456789012', // digits only
+    WORD_SECRET: 'productionmode', // one kind of character
+    REPEAT_KEY: 'aaaaBBBB1111', // too few different characters
+    EXAMPLE_TOKEN: 'your-token-here',
+    APP_KEY_FILE: 'some/Path/To/Key-123',
+  };
+  assert.deepEqual(findEnvironmentValues(env), [real]);
+  const text = Object.values(env).join('\n');
+  const found = scanText(text, { file: 'a', env });
+  assert.equal(found.filter((f) => f.what === 'a secret (environment value)').length, 1);
+});
+
+test('ignores: each ignore a pull request adds is a note with its reason; old lines are not (#616)', () => {
+  const marker = ['yokoten', 'ignore'].join('-');
+  const token = `${'gh'}p_${alnum(36)}`;
+  const text = [`const a = 1; // ${marker} secret: a fixture`, `const b = 2; // ${marker} email: old`, `// ${marker} ip: rotated ${token}`].join('\n');
+  const found = addedIgnores('src/a.ts', text, new Set([1, 3]), {});
+  assert.deepEqual(found.map((f) => [f.id, f.line, f.ignored]), [['ignore-added', 1, 'a fixture'], ['ignore-added', 3, 'rotated <secret>']]);
+  assert.match(found[0].what, /lets a secret hit through on this line/);
+  assert.ok(!JSON.stringify(found).includes(token), 'a secret in a reason never appears');
+  const file = addedIgnores('.yokotenignore', 'email: old\nsecret: test fixtures\n', new Set([2]), {});
+  assert.deepEqual(file.map((f) => [f.line, f.ignored]), [[2, 'test fixtures']]);
+  assert.match(file[0].what, /lets secret hits through in the whole repo/);
+  assert.deepEqual(addedIgnores('src/a.ts', text, new Set(), {}), []);
 });

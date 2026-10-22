@@ -153,19 +153,25 @@ export const RULES = {
   'private-mark': {
     rule: 'nothing in the repo points at you: your name, city, domain or servers (core rule 11)',
     why: 'a line of your private-marks file names something that points at you',
-    check: 'the commit check reads ~/.config/yokoten/private-marks, outside the repo, and looks for each line; CI does not have the file; a hit is `sure`, and `.yokotenignore` or a `yokoten-ignore private-mark: reason` line keeps it in the output but does not fail it; the tool-call guard also checks the text an agent posts with gh (issues, pull requests, comments, release notes)',
+    check: 'the commit check reads ~/.config/yokoten/private-marks, outside the repo, and looks for each line; CI does not have the file; a hit is `sure`, and only a `private-mark: reason` line in `.yokotenignore`, which is lead-only, keeps it in the output but does not fail it; the tool-call guard also checks the text an agent posts with gh (issues, pull requests, comments, release notes)',
     docs: guide('privacy'),
   },
   ignore: {
     rule: 'an ignore names the rule it applies to and gives a reason',
     why: 'an ignore with no reason hides a finding from the reviewer, and an unknown rule hides nothing',
-    check: 'the commit check and CI read `<rule>: <reason>` lines in `.yokotenignore` and `yokoten-ignore <rule>: <reason>` markers in comments; the rules are `secret`, `email`, `ip` and `private-mark`; an ignore with no reason or an unknown rule fails',
+    check: 'the commit check and CI read `<rule>: <reason>` lines in `.yokotenignore` and `yokoten-ignore <rule>: <reason>` markers in comments; the rules are `secret`, `email`, `ip` and `private-mark`; a private mark and a `sure` secret can be ignored only in `.yokotenignore`, which is lead-only; an ignore with no reason, an unknown rule, or a private-mark ignore in a comment fails',
+    docs: guide('privacy'),
+  },
+  'ignore-added': {
+    rule: 'a reviewer sees every ignore a pull request adds',
+    why: 'an ignore lets a hit through, so it must not slip in unseen',
+    check: '`check --pr` lists each `yokoten-ignore` comment on a line the pull request adds, and each line it adds to `.yokotenignore`, as a notice on the pull request page; it never fails the check',
     docs: guide('privacy'),
   },
   secret: {
     rule: 'no secret in the repo: no token and no private key (core rule 11)',
     why: 'a secret opens your accounts to anyone who can read the repo, and git keeps it after the file is gone',
-    check: 'the commit check, CI and `check --history` look for the real shape of tokens (GitHub, npm, AWS, Slack, Stripe, Google, Anthropic, OpenAI), private keys, and the real values of secret-like variables in the environment; a hit is `sure` and fails, while `likely` and `unknown` warn; `.yokotenignore` or a `yokoten-ignore secret: reason` line keeps a hit in the output but does not fail it; an ignore with no reason fails; the tool-call guard also checks the text an agent posts with gh (issues, pull requests, comments, release notes)',
+    check: 'the commit check, CI and `check --history` look for the real shape of tokens (GitHub, npm, AWS, Slack, Stripe, Google, Anthropic, OpenAI), private keys, and the real values of secret-like variables in the environment; a hit is `sure` and fails, while `likely` and `unknown` warn; `.yokotenignore` or a `yokoten-ignore secret: reason` line keeps a hit in the output but does not fail it, and a `sure` hit only through `.yokotenignore`, which is lead-only; an ignore with no reason fails; the tool-call guard also checks the text an agent posts with gh (issues, pull requests, comments, release notes)',
     docs: guide('privacy'),
   },
   'shallow-history': {
@@ -646,9 +652,13 @@ const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 /** Where a finding is, as `file:line: `, or nothing. */
 export const place = (f: Finding): string => (f.file === undefined ? '' : `${f.file}${f.line === undefined ? '' : `:${f.line}`}: `);
 
-/** The grade and ignore reason in brackets, or nothing when the finding has neither. */
+/**
+ * The grade and ignore reason in brackets, or nothing. A plain `sure` finding is a failure,
+ * which says it already, so its grade shows only beside an ignore; JSON always has it.
+ */
 export const formatFindingMarks = (f: Finding): string => {
-  const marks = [f.grade, f.ignored === undefined ? '' : `ignored: ${f.ignored}`].filter(Boolean);
+  const grade = f.grade === 'sure' && f.ignored === undefined ? undefined : f.grade;
+  const marks = [grade, f.ignored === undefined ? '' : `ignored: ${f.ignored}`].filter(Boolean);
   return marks.length ? ` [${marks.join('; ')}]` : '';
 };
 

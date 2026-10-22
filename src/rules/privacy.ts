@@ -883,6 +883,45 @@ export function describeMark(kind: string | null | undefined): { what: string; f
 /** The tracked file that gives a reason for a finding the project lets through. */
 export const IGNORE_FILE = '.yokotenignore';
 
+/** The fix for an ignore only the lead may add: a line in the ignore file, which is lead-only. */
+const LEAD_IGNORE_FIX = (rule: string) => `if it is not real, ask the lead to add \`${rule}: <reason>\` to ${IGNORE_FILE}`;
+
+/** An ignore's reason as output may show it: no secret, environment value, mark, home path, email or IP. */
+function hideInReason(redact: (text: string) => string, reason: string, env: Env, values: string[] = []): string {
+  return redact(makeSafeIgnoreReason(reason, env, values)).replace(IPV4, (hit) => {
+    const octets = hit.split('.').map(Number);
+    return octets.every((n) => n <= 255) && !OK_IP.some((re) => re.test(hit)) ? SECRET : hit;
+  });
+}
+
+/**
+ * The ignores a pull request adds to one file, as notes for the reviewer: each
+ * `yokoten-ignore` comment on an added line, and each added line of `.yokotenignore`.
+ * `added` holds the added lines' numbers, from 1. The reason is shown hidden, as in a finding.
+ */
+export function addedIgnores(file: string, text: string, added: ReadonlySet<number>, env: Env, marks: string[] = []): Finding[] {
+  if (!added.size) return [];
+  const found: Finding[] = [];
+  let redact: ((text: string) => string) | undefined;
+  const note = (reason: string, line: number, what: string) => {
+    redact ??= makeRedactor({ marks }, env);
+    found.push(finding('ignore-added', what, 'check that the reason holds before you approve', { file, line, ignored: hideInReason(redact, reason, env) }));
+  };
+  if (file === IGNORE_FILE) {
+    for (const entry of parseIgnoreFile(text).entries) {
+      if (entry.line !== undefined && added.has(entry.line)) note(entry.reason, entry.line, `this pull request lets ${entry.rule} hits through in the whole repo`);
+    }
+    return found;
+  }
+  text.split('\n').forEach((line, index) => {
+    if (!added.has(index + 1)) return;
+    for (const entry of findLineIgnores(line, { commentsOnly: true })) {
+      if (!('problem' in entry)) note(entry.reason, index + 1, `this pull request lets a ${entry.rule} hit through on this line`);
+    }
+  });
+  return found;
+}
+
 /** The rules an ignore may name. */
 const IGNORABLE_RULES = ['secret', 'email', 'ip', 'private-mark'];
 const IGNORABLE = new Set(IGNORABLE_RULES);
@@ -913,11 +952,14 @@ export function loadIgnores(root: string): { entries: IgnoreDirective[]; problem
  * fine (yokoten.json "privacy.allow"), such as a public support address. `kinds` gives
  * each mark's kind, as `loadMarkKinds` reads it, so a finding can name it (#523).
  * `ignores` holds the reasons from `.yokotenignore`. A privacy hit there is still listed,
- * with its grade and its reason, but does not fail.
+ * with its grade and its reason, but does not fail. A `yokoten-ignore` comment on the
+ * line works the same, except for a private mark or a `sure` secret: only
+ * `.yokotenignore`, which only the lead may change, lets those through.
+ * `inlineIgnores: false` reads no comment at all, for text that is not a file (a gh post).
  */
 export function scanText(
   text: string,
-  { file, marks = [], allow = [], logins = [], ownAllow = allow, kinds, ignores = [], env = {} }: { file: string; marks?: string[]; allow?: string[]; logins?: string[]; ownAllow?: string[]; kinds?: ReadonlyMap<string, string | null>; ignores?: IgnoreDirective[]; env?: Env },
+  { file, marks = [], allow = [], logins = [], ownAllow = allow, kinds, ignores = [], env = {}, inlineIgnores = true }: { file: string; marks?: string[]; allow?: string[]; logins?: string[]; ownAllow?: string[]; kinds?: ReadonlyMap<string, string | null>; ignores?: IgnoreDirective[]; env?: Env; inlineIgnores?: boolean },
 ): Finding[] {
   const problems: Finding[] = [];
   const lines = text.split('\n');
@@ -935,38 +977,37 @@ export function scanText(
     const where = { file, line: index + 1 };
     // The secret itself is never printed either, only its kind. An ignore with no reason
     // is a failure, whether or not a secret is on its line.
-    const inline = findLineIgnores(line, { commentsOnly: true });
-    const ignoreFields = (rule: string, values: string[] = []): { ignored?: string } => {
-      const reason = inline.find((entry): entry is IgnoreDirective => !('problem' in entry) && entry.rule === rule)?.reason ?? fileIgnore.get(rule);
+    const inline = inlineIgnores ? findLineIgnores(line, { commentsOnly: true }) : [];
+    const inlineReason = (rule: string) => inline.find((entry): entry is IgnoreDirective => !('problem' in entry) && entry.rule === rule)?.reason;
+    // `isInlineAllowed` false: a private mark or a sure secret, which only the ignore file may let through.
+    const ignoreFields = (rule: string, values: string[], isInlineAllowed: boolean): { ignored?: string } => {
+      const reason = (isInlineAllowed ? inlineReason(rule) : undefined) ?? fileIgnore.get(rule);
       if (reason === undefined) return {};
       cleanReason ??= makeRedactor({ marks: stopped }, env);
-      const safe = cleanReason(makeSafeIgnoreReason(reason, env, values)).replace(IPV4, (hit) => {
-        const octets = hit.split('.').map(Number);
-        return octets.every((n) => n <= 255) && !OK_IP.some((re) => re.test(hit)) ? SECRET : hit;
-      });
-      return { ignored: safe };
+      return { ignored: hideInReason(cleanReason, reason, env, values) };
     };
     for (const entry of inline) {
       if ('problem' in entry) problems.push(finding('ignore', entry.problem, 'add the rule and a reason after yokoten-ignore, or remove the ignore', { ...where, grade: 'sure' }));
       else if (!IGNORABLE.has(entry.rule)) problems.push(finding('ignore', 'an ignore names a rule this check does not know', `use one of: ${IGNORABLE_RULES.join(', ')}`, { ...where, grade: 'sure' }));
+      else if (entry.rule === 'private-mark') problems.push(finding('ignore', "a private-mark hit can't be ignored on its line", LEAD_IGNORE_FIX('private-mark'), { ...where, grade: 'sure' }));
     }
     for (const hit of secrets) {
       if (hit.line !== index) continue;
-      problems.push(finding('secret', `a secret (${hit.kind})`, 'remove it, rotate it, and keep it outside the repo', {
-        ...where,
-        grade: hit.grade,
-        ...ignoreFields('secret', secretValues),
-      }));
+      const isSure = hit.grade === 'sure';
+      const fields = ignoreFields('secret', secretValues, !isSure);
+      // A sure secret with a comment that tries to ignore it: the fix says who may.
+      const fix = isSure && fields.ignored === undefined && inlineReason('secret') !== undefined ? `a sure secret can't be ignored on its line: remove it and rotate it, or ${LEAD_IGNORE_FIX('secret')}` : 'remove it, rotate it, and keep it outside the repo';
+      problems.push(finding('secret', `a secret (${hit.kind})`, fix, { ...where, grade: hit.grade, ...fields }));
     }
     for (const [hit] of line.matchAll(EMAIL)) {
       if (isPersonalEmail(hit, allow)) {
-        problems.push(finding('email', 'an email address', EMAIL_FIX, { ...where, grade: 'sure', ...ignoreFields('email', [hit]) }));
+        problems.push(finding('email', 'an email address', EMAIL_FIX, { ...where, grade: 'sure', ...ignoreFields('email', [hit], true) }));
       }
     }
     for (const { 0: hit, index } of line.matchAll(IPV4)) {
       const octets = hit.split('.').map(Number);
       if (octets.some((n) => n > 255) || OK_IP.some((re) => re.test(hit)) || allow.includes(hit) || isSectionNumber(line, index, hit)) continue;
-      problems.push(finding('ip', 'an IP address', 'use a placeholder from 192.0.2.0/24', { ...where, grade: 'sure', ...ignoreFields('ip', [hit]) }));
+      problems.push(finding('ip', 'an IP address', 'use a placeholder from 192.0.2.0/24', { ...where, grade: 'sure', ...ignoreFields('ip', [hit], true) }));
     }
     const folded = stopped.length ? foldLine(line) : null;
     for (const mark of stopped) {
@@ -974,7 +1015,7 @@ export function scanText(
       if (!hasMark(line, mark, folded!)) continue;
       if (places && logins.includes(mark) && !hasMark(places(line, index, mark), mark)) continue;
       const { what, fix } = describeMark(kinds && kinds.has(mark) ? kinds.get(mark) : undefined);
-      problems.push(finding('private-mark', what, fix, { ...where, grade: 'sure', ...ignoreFields('private-mark', [mark]) }));
+      problems.push(finding('private-mark', what, fix, { ...where, grade: 'sure', ...ignoreFields('private-mark', [mark], false) }));
     }
   });
   return problems;
@@ -1733,7 +1774,7 @@ export function checkPost(
   const own = isHere ? [...ownMarks(all, [...allow, ...machineAllowed(env, cwd, key ?? undefined).allow]), ...named] : [];
   const marks = all.filter((mark) => !own.includes(mark));
   for (const piece of posted.pieces) {
-    const hit = scanText(piece.text, { file: piece.source, marks, allow, ownAllow: [], kinds, env }).find(isFailingFinding);
+    const hit = scanText(piece.text, { file: piece.source, marks, allow, ownAllow: [], kinds, env, inlineIgnores: false }).find(isFailingFinding);
     if (!hit) continue;
     const more = { why: postWhy(hit.why) };
     if (piece.isFile) return finding(hit.id as RuleId, hit.what, postFix(hit), { ...more, file: shownPath(piece.source, env, marks), line: hit.line });
