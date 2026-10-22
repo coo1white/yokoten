@@ -19,7 +19,7 @@ import { loadConfig, matcher } from './config.ts';
 import { WORKTREES_DIR } from './layout.ts';
 import { type Finding, finding } from './message.ts';
 import { checkCommandTitle } from './pr.ts';
-import { type CommandFiles, checkPost, type GhCommand, ghIndex, homeIn, homeOf, isBotProgram, PIPE_READERS, type Risk, withoutReadPipe } from './privacy.ts';
+import { type CommandFiles, checkPost, type GhCommand, ghIndex, homeIn, homeOf, hostApiValues, isBotProgram, PIPE_READERS, type Risk, withoutReadPipe } from './privacy.ts';
 
 /** A file edit, by path relative to the repo root. */
 export function checkEdit(path: string, { config, env }: { config: Config; env: Env }): Finding | null {
@@ -1220,6 +1220,42 @@ export function checkWorkerMarkEdit(path: string, folder?: string, env: Env = {}
   return null;
 }
 
+// Cancelling a run, an alias, and a command the host did not ship (#650). The host adapter
+// owns the command names, the routes and the finding text. Both roles hear it before the
+// worker's own send rule: the fix is to ask the owner, and the lead cannot do it either.
+
+/** What a host adapter says about its own commands. The guard calls these and does not know the host. */
+export interface HostCommands {
+  hostRunRemoval(words: string[]): Finding | undefined;
+  hostAlias(words: string[]): Finding | undefined;
+  hostHiddenCommand(words: string[]): Finding | undefined;
+}
+
+/** The host adapter's checks, once it has loaded. Until then a `gh` command is refused, never let through. */
+let hostCommands: HostCommands | undefined;
+
+/** The host adapter registers its command checks, once: a second registration is refused. */
+export function useHostCommands(commands: HostCommands): void {
+  if (hostCommands && hostCommands !== commands) throw new Error('the host command checks are already registered');
+  hostCommands = commands;
+}
+
+function hostRunRemoval(words: string[]): Finding | null {
+  if (!hostCommands) {
+    // A caller that never loaded src/host/gh-commands.ts must not turn the run rule off.
+    return ghIndex(words, findProgramPlaces(words)) === -1 ? null : finding('run-remove', "the guard's GitHub command rules did not load, so it cannot read this `gh` command", 'start the session again; if it happens again, report it as a yokoten bug');
+  }
+  return hostCommands.hostRunRemoval(words) ?? null;
+}
+
+function hostAlias(words: string[]): Finding | null {
+  return hostCommands?.hostAlias(words) ?? null;
+}
+
+function hostHiddenCommand(words: string[]): Finding | null {
+  return hostCommands?.hostHiddenCommand(words) ?? null;
+}
+
 // ---- What a worker sends (#555) ----
 //
 // A worker commits in its worktree and reports; the lead reviews, then pushes and posts. So
@@ -1236,19 +1272,20 @@ const PR_WRITES = new Set(['create', 'merge', 'edit', 'close', 'comment', 'revie
 
 /** For a worker: a command that pushes or posts for the lead, or null. */
 function checkWorkerSends(words: string[]): Finding | null {
-  const programs = findPrograms(words);
+  const places = findProgramPlaces(words);
   let from = 0;
-  for (const program of programs) {
-    const at = words.indexOf(program, from);
-    if (at === -1) continue;
+  for (const place of places) {
+    // The program's own index. An `env -S` program has none, so the word is looked up.
+    const at = place.index >= 0 ? place.index : words.indexOf(place.word, from);
+    if (at < 0) continue;
     from = at + 1;
-    const name = programName(program);
+    const name = programName(place.word);
     const cli = YOKOTEN_CLI.test(name) ? at : SCRIPT_RUNNERS.has(name) ? words.findIndex((word, index) => index > at && YOKOTEN_CLI.test(programName(word))) : -1;
     if (cli !== -1 && words.slice(cli + 1).find((word) => !word.startsWith('-')) === 'bot') {
       return sends('`yokoten bot` runs a command as the bot, which pushes and posts for the lead');
     }
   }
-  const at = ghIndex(words, programs);
+  const at = ghIndex(words, places);
   if (at === -1) return null;
   const args = withoutShellRedirects(words, at + 1);
   const plain = plainArgs(args, ['-R', '--repo', '--hostname']);
@@ -1283,9 +1320,6 @@ function checkWorkerUnmark(words: string[]): Finding | null {
   return null;
 }
 
-// gh `api` options that take the next word as their value, besides the method and fields.
-const API_VALUES = new Set(['-H', '--header', '-q', '--jq', '-t', '--template', '--hostname', '-p', '--preview', '--cache']);
-
 /** gh's `api`: a write method, or fields (gh then sends a POST), except a GraphQL query that reads. */
 function checkGhApi(args: string[]): Finding | null {
   let method: string | undefined;
@@ -1302,7 +1336,7 @@ function checkGhApi(args: string[]): Finding | null {
     else if (word === '--input' || word.startsWith('--input=')) {
       fields.push('@');
       if (word === '--input') index++;
-    } else if (API_VALUES.has(word)) index++;
+    } else if (hostApiValues().has(word)) index++;
     else if (!word.startsWith('-') && endpoint === undefined) endpoint = word;
   }
   if (method !== undefined) return ['GET', 'HEAD'].includes(method.toUpperCase()) ? null : sends(`gh's \`api --method ${method}\` writes to the host`);
@@ -1403,6 +1437,10 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
     const saw = (isMarked: (word: string) => boolean) => writeRisk(words, { heredoc, plainText, plainAt, fills, writers, isMarked });
     const reason =
       checkGit(words, { env, config, cwd, rules }) ??
+      // Before the worker's own send rule: the fix is to ask the owner, and the lead cannot do it either (#650).
+      hostRunRemoval(words) ??
+      hostAlias(words) ??
+      hostHiddenCommand(words) ??
       // A worker hears its own rule first: what it may not send, its own unmark, and the git folder (#555, #566).
       (env.YOKOTEN_ROLE === 'worker' ? (checkWorkerSends(words) ?? checkWorkerUnmark(words) ?? checkWorkerWrites(words, { folder: postCwd, near: nearCwd, command, env })) : null) ??
       // An alias runs another command under a new name: refused, not parsed (#560).
@@ -1842,7 +1880,7 @@ const unquotedRedirects = new WeakMap<string[], Set<number>>();
 const readWords = new WeakSet<string[]>();
 
 // The words of `words` from `from` on, with each unquoted redirect and its file taken out.
-function withoutShellRedirects(words: string[], from: number): string[] {
+export function withoutShellRedirects(words: string[], from: number): string[] {
   const marks = unquotedRedirects.get(words);
   const kept: string[] = [];
   for (let index = from; index < words.length; ) {
@@ -2293,7 +2331,7 @@ function checkPosted(
   words: string[],
   { env, config, cwd, from, command, titles, files }: { env: Env; config?: Partial<Pick<Config, 'privacy' | 'areas'>>; cwd: string | null; from: string | null; command: string; titles: boolean; files: CommandFiles },
 ): Finding | null {
-  const at = ghIndex(words, findPrograms(words));
+  const at = ghIndex(words, findProgramPlaces(words));
   if (at === -1) return null;
   const gh = ghCommand(words, at);
   const leak = checkPost(gh, { env, privacy: config?.privacy, cwd, from, command, files });
@@ -2916,7 +2954,7 @@ function writeTargets(words: string[], folder: string | null, rootOf: FileRules[
  * The words that are no option, in order: after `--` every word is one. `valued` are the
  * options whose value is the next word.
  */
-function plainArgs(args: string[], valued: string[] = []): string[] {
+export function plainArgs(args: string[], valued: string[] = []): string[] {
   const plain: string[] = [];
   for (let index = 0; index < args.length; index++) {
     const word = args[index];
@@ -3303,10 +3341,21 @@ function envEscapes(text: string | undefined): string | undefined {
 // At most this many programs from one command: a longer list is refused (see checkBlocked).
 const MAX_PROGRAMS = 256;
 
+/** A program a command runs, and where that word sits. `-1` is an `env -S` program. */
+interface ProgramPlace {
+  word: string;
+  index: number;
+}
+
 /** The words that name the programs a command runs, in order. */
 function findPrograms(words: string[]): string[] {
+  return findProgramPlaces(words).map((place) => place.word);
+}
+
+/** The programs a command runs, each with its index in `words`. */
+export function findProgramPlaces(words: string[]): { word: string; index: number }[] {
   spend(words.length);
-  const programs: string[] = [];
+  const programs: ProgramPlace[] = [];
   // commandWords reads `bash -c 'x'` again as `-c x`: the shell's options come first.
   const start = words.findIndex((word) => !word.startsWith('-'));
   if (start === -1) return programs;
@@ -3325,8 +3374,8 @@ function findPrograms(words: string[]): string[] {
 // assignments, redirects, keywords and launchers, and the programs of an `env -S`
 // string. Returns the index of the program when it is find, or -1. In a find action
 // (`isAction`) the command ends at `;` or `{} +`, and the walk stops at the next action too:
-// findPrograms reads that one itself, so no word is walked once for each action before it.
-function programAt(words: string[], index: number, programs: string[], isAction = false): number {
+// findProgramPlaces reads that one itself, so no word is walked once for each action before it.
+function programAt(words: string[], index: number, programs: ProgramPlace[], isAction = false): number {
   let limit = words.length;
   if (isAction) {
     limit = index;
@@ -3337,7 +3386,7 @@ function programAt(words: string[], index: number, programs: string[], isAction 
     if (index >= limit || HEADS.has(words[index])) return -1;
     const name = programName(words[index]);
     if (!Object.hasOwn(LAUNCHERS, name)) {
-      programs.push(words[index]);
+      programs.push({ word: words[index], index });
       return name === 'find' ? index : -1;
     }
     const launcher = LAUNCHERS[name];
@@ -3347,7 +3396,9 @@ function programAt(words: string[], index: number, programs: string[], isAction 
     while (index < limit && words[index].startsWith('-')) {
       const split = name === 'env' ? splitString(words, index) : undefined;
       if (split !== undefined) {
-        for (const command of commandWords(split)) for (const program of findPrograms(command)) programs.push(program);
+        for (const command of commandWords(split)) {
+          for (const program of findProgramPlaces(command)) programs.push({ word: program.word, index: -1 });
+        }
       }
       index += launcher.options.includes(words[index]) ? 2 : 1;
     }

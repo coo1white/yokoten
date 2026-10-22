@@ -14,7 +14,7 @@ import type { Env } from '../rules/config.ts';
 import { homeOf } from '../rules/privacy.ts';
 import { type FolderTrust, folderKeys, isFolder } from './folder-trust.ts';
 import { isObject } from './hooks-file.ts';
-import type { RuntimeEnv } from './agent-env.ts';
+import type { RuntimeEnv } from './desk/agent-env.ts';
 
 /** The one step that makes Copilot CLI run the project's hooks. */
 export const TRUST_STEP = 'run `copilot` in this folder and choose "Yes, and remember this folder for future sessions"';

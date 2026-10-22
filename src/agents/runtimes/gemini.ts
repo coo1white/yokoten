@@ -17,7 +17,7 @@ import { homeIn } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import type { Action } from '../../run/hook.ts';
 import { type Added, addHook, checkHooks, hasHook, type HookArgs, type HookState, hookState, isObject, type Problem, readTable, type ReadOptions, type Settings, writeSettings } from '../hooks-file.ts';
-import type { RuntimeEnv } from '../agent-env.ts';
+import type { RuntimeEnv } from '../desk/agent-env.ts';
 
 /** How yokoten reads a Gemini CLI settings file: comments allowed, as Gemini CLI allows them. */
 const READ: ReadOptions = { comments: true };

@@ -70,7 +70,7 @@ flowchart LR
 
 | | 什么时候跑 | 拦下什么 |
 |-|-----------|---------|
-| **1** | 每次工具调用之前 | 推 tag、强制推送、跳过检查；修复任务里改测试；worker 改规则；项目禁用的程序；不合标题规则的 issue 或 PR 标题；agent 用 `gh` 发的 issue、PR、评论或发布说明里有个人信息或密钥 |
+| **1** | 每次工具调用之前 | 推 tag、强制推送、跳过检查；修复任务里改测试；worker 改规则；项目禁用的程序；不合标题规则的 issue 或 PR 标题；agent 用 `gh` 发的 issue、PR、评论或发布说明里有个人信息或密钥；取消或删除一次 Actions 运行 |
 | **1b** | Claude Code 的 AI 准备结束这一轮时 | 改过的文件里有没有个人信息、密钥，有没有改了不该改的文件（和提交检查一样）。有问题就把它叫回来改一次 |
 | **2** | 每次提交 | hook 看不到的：用 `sed` 或脚本改的文件、个人信息、超过 7 项的文件夹 |
 | **3** | 每个 PR | 关掉 hook 做出来的提交 |
@@ -334,6 +334,21 @@ worker 靠 `YOKOTEN_ROLE=worker` 认出来。在 Codex 里，子 agent 的 `agen
 所以在 Muse Code 里也一样：每个会话都当成 lead。Grok CLI 会把 `YOKOTEN_ROLE` 传给钩子；子 agent 的
 `subagentType` 带 worker 字样的，也算 worker。服务器上的锁照样有效：代码负责人，还有一个
 改不了 CI 的 bot。
+
+取消或删除一次 Actions 运行，lead 和 worker 都会被拦住。
+守卫会拦 `gh run cancel` 和 `gh run delete`。用 `gh api` 或 `yokoten bot` 做同样的事，也会被拦住。
+`gh run rerun`、`view`、`list` 和 `watch` 仍然放行。请仓库主人在 Actions 页面上取消或删除。
+`repositories/<id>` 和 `repos/<owner>/<repo>` 是同一种路径。
+路径里的 `.` 和 `..` 会先化简，再拿来比对。
+路径里的词不分大小写，所以 `Actions` 和 `Cancel` 也算同一次调用。
+`gh api` 里连写的短选项会被拦住。一个短选项自己带着值，例如 `-XDELETE`，仍然放行。
+方法或路径来自 shell 变量，而且可能指向一次运行时，会被拦住。
+`repos/` 或 `repositories/` 后面只有一个变量，而且方法不是 GET，也会被拦住。
+`gh run` 的子命令如果来自 shell，会被拦住。
+`gh` 必须写出它自己的命令名。`gh extension install`、`upgrade`、`exec` 和 `browse` 会被拦住。
+`exec` 会运行已经装好的扩展。`browse` 可以装上一个扩展。
+`gh config set aliases` 会被拦住。`gh alias list` 和 `gh extension list` 仍然放行。
+`gh alias set` 和 `gh alias import` 对 lead 和 worker 都拦住。别名要仓库主人自己加上。
 
 worker 用 shell 写只有 lead 能改的文件，守卫也会拦，跟拦编辑一样（#402）。它看这些写法：
 重定向（`>`、`>>`、`>|`、`&>`），`sed -i`、`perl -i`、`tee`、`cp`、`mv`、`install`、`ln`、
@@ -674,8 +689,9 @@ token。在 `yokoten.yml` 里，同一个 PR 推了新提交，还在跑的那�
 | `hook [--agent <name>] [--commands-only] [--json]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool，加 `--agent antigravity` 读 Antigravity CLI 的 PreToolUse，加 `--agent muse` 读 Muse Code 的 PreToolUse，加 `--agent deepseek-harness` 读 DeepSeek Harness 的 PreToolUse，加 `--agent grok` 读 Grok CLI 的 PreToolUse |
 | `hook --stop [--agent <name>]` | 收尾检查。从标准输入读这一轮结束的事件，检查改过的文件：默认读 Claude Code 的 Stop；加 `--agent codex` 读 Codex 的 Stop，加 `--agent gemini` 读 Gemini CLI 的 AfterAgent，加 `--agent grok` 读 Grok CLI 的 Stop。见[收尾检查](#收尾检查) |
 | `explain [<id>] [--json]` | 讲一条规则或者路上的一步：它是什么、为什么要有、yokoten 怎么检查 |
-| `worker mark <目录>` | 把 `<目录>` 这个 worktree 标成 worker 的。之后在这里干活的 agent，护栏一律当 worker 看待，哪怕它的运行环境没把 `YOKOTEN_ROLE` 传给钩子（比如 Muse Code）。worker 用常见的办法删这个标记，护栏都会拦下；`.git` 读不出来的时候，也照样当 worker。护栏只看命令文字，真正的锁是服务器，还有别把推送和机器人的凭据交给 worker。`git worktree remove <目录>` 会连同 worktree 一起删掉标记。给的是子目录时，它标的是所在的 worktree，并说出是哪个。普通的 clone（比如 desk）也能标，标记放在它自己的 `.git` 里（#672）。主检出（lead 自己在里面干活的 clone，或者挂着 worktree 的那个）和子模块永远不会被标记 |
-| `worker env [运行环境]` | 列出 yokoten 给 agent 准备环境变量时，会从这个 shell 留下哪些变量名，并数出去掉了几个。加上运行环境名，会把它自己的登录变量也算进去。从不显示值。现在还没有命令用它启动 agent。见 [agent 拿到的环境变量](#agent-拿到的环境变量) |
+| `worker mark <目录>` | 把 `<目录>` 这个 worktree 标成 worker 的。之后在这里干活的 agent，护栏一律当 worker 看待，哪怕它的运行环境没把 `YOKOTEN_ROLE` 传给钩子（比如 Muse Code）。worker 用常见的办法删这个标记，护栏都会拦下；`.git` 读不出来的时候，也照样当 worker。护栏只看命令文字，真正的锁是服务器，还有别把推送和机器人的凭据交给 worker。`git worktree remove <目录>` 会连同 worktree 一起删掉标记。给的是子目录时，它标的是所在的 worktree，并说出是哪个。普通的 clone（比如 desk）也能标，标记放在它自己的 `.git` 里（#672）。lead 在自己的检出里给 clone 打标记。主检出（lead 自己在里面干活的 clone，或者挂着 worktree 的那个）和子模块永远不会被标记。worker 不能打标记，也不能去掉标记 |
+| `worker env [运行环境]` | 列出 yokoten 给 agent 准备环境变量时，会从这个 shell 留下哪些变量名，并数出去掉了几个。加上运行环境名，会把它自己的登录变量也算进去。从不显示值。`desk` 就用它启动 agent。见 [agent 拿到的环境变量](#agent-拿到的环境变量) |
+| `desk <agent> <文件夹> [--read <路径>] [--host <主机>] [--marks] -- <命令>` | 把 worker 的 agent 放进一个围起来的工位里启动：只有它自己的克隆、自己的状态文件夹，除了模型的 API 不能上网。只有 lead 跑它。见 [工位](#工位) |
 | `uninstall` | 撤掉 `install` 装的东西：带 yokoten 管理标记的技能和 agent、`~/.claude/settings.json` 里它加的两个 hook，还有 `~/.local/share/yokoten`。你自己的文件、别的设置和 `~/.config/yokoten`（密钥、私有词表）都留着。再跑一次什么也不会变 |
 | `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。如果命令是 `gh issue` 或 `gh pr` 的 `create`、`edit`，并且带了标题，它会先按 CI 的规则检查标题；标题不合格就直接拒绝，什么都不会发出去。用 `gh api` 改 issue 或 PR 时，标题也照样检查。`gh pr create` 和 `gh pr edit` 如果带了 `--body` 或 `--body-file`，正文也会先过一遍：规则和 `check --pr` 里检查正文的那部分一样，看的是这个 PR 的分支改了哪些文件，以及基础分支上的 CODEOWNERS。正文不合格同样直接拒绝，什么都不发出去。正文最后一行不是 `🤖 Made with <agent> (<model>)`（可写一个或多个逗号分隔的组合）的同样直接拒绝：每个 PR 都要写明做出它的每个 AI 和模型。评论（`gh pr comment`、`gh issue comment`）、带正文的审查（`gh pr review --body`）和新建的 issue（`gh issue create --body`）也要带上这一行：最后一行不是 `Made with` 行的正文同样直接拒绝。带 `--attach` 的正文会被拒绝：上传的文件会落在 `Made with` 行之后。只改正文的编辑（`gh pr edit --body`、`gh issue edit --body`）保持原样。`gh pr create` 没给类型标签或 tier 标签时，bot 会自动补上：类型看标题（`fix` 补 `bug`），tier 看正文第一行的 `tier:`。你自己给的标签保留不动。你给的 tier 标签和正文对不上，就直接拒绝，提示和 `check --pr` 一样。仓库里没有的标签，bot 会说一声然后不加；它从不新建标签。`gh pr create` 没带 `--milestone` 时，bot 会用第一个关联 issue（`Closes #N`、`Part of #N`）的里程碑；这些 issue 都没有里程碑，就直接拒绝，什么都不发出去，请自己加上 `--milestone`。gh 读不到那个 issue 时，PR 照发，不带里程碑，只留一条提示。它只运行 `gh` 和 `git`，所以 `env gh …`、`sh -c …` 这类写法会被拒绝；gh 的别名（alias）它不认，别名里的标题不会被检查。设置方法见 [server.md](../../server.md#3-the-bot-a-github-app) |
 | `board [--text]` | 只在这台电脑上开一个实时页面：按 issue 分组的 agent、选中的 agent、每个 PR 的状态。在页面上，owner 还能启动和停掉 agent，看到在等什么。启动后打印链接，按 Ctrl-C 停掉。页面每 15 秒刷新一次。加 `--text` 就在终端里用纯文本打印 agent、PR 和 worktree，见「团队看板」 |
@@ -1108,7 +1124,7 @@ yokoten learn --upstream "the guard let git push --tags through" --area hook --f
 | `layout.maxEntries` | `7` | 一个文件夹最多放几项（第 10 条核心规则） |
 | `layout.exempt` | 无 | 可以超过上限的文件夹，见[可以变多的文件夹](#可以变多的文件夹) |
 | `tests` | `*.test.*`、`*.spec.*`、`*_test.go`、`test/**`、`tests/**` | 哪些算测试文件，修复任务不能改 |
-| `leadOnly` | 规则、agent 配置、`.githooks/**`、`.github/**`、项目里那份 yokoten 副本 `.yokoten/**` | worker 不能改的文件 |
+| `leadOnly` | 规则、agent 配置、`.githooks/**`、`.github/**`、项目里那份 yokoten 副本 `.yokoten/**`、`.yokotenignore` | worker 不能改的文件 |
 | `privacy.allow` | 无 | 隐私检查放行的原样字符串，比如公开的客服邮箱，或者私密词表里这个项目自己的名字 |
 | `privacy.skip` | 各种 lock 文件 | 隐私检查不读的文件 |
 | `privacy.utc` | `true` | 提交时间必须用 UTC |
@@ -1253,6 +1269,82 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 
 服务器怎么设置，一步一步写在 [`docs/server.md`](../../server.md)。
 
+### 工位
+
+工位就是给一个 worker 围起来的一块地方，不管是哪家的 agent，都一样（#637）。lead 用一条命令
+把 worker 的 agent 放进去：
+
+```sh
+git clone ../yokoten ../desks/42
+yokoten desk claude-code ../desks/42 -- claude -p "$(cat brief.md)"
+```
+
+围栏只有一套规矩，每个系统用自己的办法做到：
+
+| 规矩 | 工位里是什么样 |
+|---|---|
+| 写 | 只能写工位文件夹（包括 `.git`，所以 worker 能提交）和工位给这个 agent 的状态文件夹。`.git/config` 和 `.git/hooks` 只能读 |
+| 读 | agent 看得到的其他东西都只能读 |
+| 别的项目 | 看不到。你的主目录和工位的上一级文件夹都藏起来了。Linux 上 `/run` 也藏起来：那里的 socket 能通到外面，在 WSL2 里还有一个能直接启动 Windows 程序。Node、agent 程序和 yokoten 会重新放进来，只能读 |
+| 你自己的 agent 状态 | 看不到。你的 `~/.claude`、`~/.codex`、`~/.grok` 和 Muse 的文件夹都藏起来：设置、钩子、记忆、MCP 配置、历史记录、会话，一样都不带进来 |
+| 子进程 | 能跑，管道也能用，所以测试可以启动程序 |
+| 网络 | 命令自己上不了网。外面的代理只放行 agent 的 API 主机。工位里的任何命令也能用这个代理，所以命令也连得到这些主机 |
+| 环境变量 | `YOKOTEN_ROLE=worker`、`TZ=UTC`。你 shell 里的 token 和密钥都不带进来（见 [agent 拿到的环境变量](#agent-拿到的环境变量)） |
+
+工位必须是单独 `git clone` 出来的。worktree 的 git 文件夹在另一个检出里，工位会把它藏起来，
+所以 worktree 不行，命令会拒绝。
+
+**工位自己的状态文件夹。** 每个工位在旁边有一个给 agent 用的状态文件夹：`<工位>.state/<agent>`。
+工位用 agent 自己认的变量把它指到这里。从你那里只复制登录文件。你的登录文件更新了，下次启动时
+会再复制一次。删工位的时候，把这个文件夹一起删掉。
+
+| agent | `<agent>` | 用哪个变量指到状态文件夹 | 复制的登录文件 | API 主机 | 在工位里跑的命令 |
+|---|---|---|---|---|---|
+| Claude Code | `claude-code` | `CLAUDE_CONFIG_DIR` | `.credentials.json` | `api.anthropic.com`，还有续登录用的 `platform.claude.com` | `claude -p "<任务说明>"` |
+| Codex，以及通过 Codex 用 DeepSeek | `codex` | `CODEX_HOME` | `auth.json` | `api.openai.com`、`api.deepseek.com` | `codex exec --sandbox danger-full-access "<任务说明>"` |
+| Grok | `grok` | `GROK_HOME` | `auth.json` | `api.x.ai` | `grok -p "<任务说明>"` |
+| Muse Code | `muse` | `XDG_CONFIG_HOME`、`XDG_DATA_HOME` | `muse/auth.json` | `api.meta.ai` | `muse exec "<任务说明>"` |
+
+- **Claude Code** 到 `platform.claude.com` 续登录。用 `claude setup-token` 拿的 token 放在
+  `CLAUDE_CODE_OAUTH_TOKEN` 里，或者用 API key，就不用续，它们会作为登录变量传进去。
+- **Codex** 在工位里要用 `--sandbox danger-full-access`。它自己的 `workspace-write` 沙箱会把
+  `.git` 设成只读，还会挡住测试要用的管道。工位本身就是围栏，用不着它那一层。你的 `config.toml`
+  不带进来：模型提供方用命令里的 `-c` 给。用 ChatGPT 登录的话，还要加 `--host chatgpt.com,auth.openai.com`。
+- **Grok**：如果 `--sandbox` 挡住了提交或测试，在工位里把它关掉。
+- **加主机**：`--host <主机>` 让 agent 多连一个 API 主机（443 端口）。几个主机用逗号隔开。
+- **加文件**：`--read <路径>` 多放一个路径进来，只能读。会露出主目录、藏起来的文件夹或你自己 agent
+  状态的路径，命令会拒绝。
+
+**代理。** 四个 agent 的程序里都认 `HTTPS_PROXY`。工位会把 `HTTPS_PROXY`、`HTTP_PROXY`、
+`ALL_PROXY` 的大写和小写都设好，还设 `NODE_USE_ENV_PROXY=1`，这样 Node 自带的 `fetch` 也走代理。
+代理只接受 `CONNECT`，只放行名单上的主机，从不看传的内容。它同时最多开 64 条通道，一条通道 10 分钟
+没动静就关掉。它拒绝了哪个主机，工位结束时会说出来。
+
+**在外面审。** 工位里的东西是 worker 写的，要当成不可信的。检查之前，别在工位里跑 git 或别的命令。
+先把分支取到你自己的检出里，再在那里审：
+
+```sh
+git fetch ../desks/42 HEAD:refs/desks/42
+git diff main refs/desks/42
+```
+
+工位里的 `.git/config` 和 `.git/hooks` 只能读，worker 没法在那里埋钩子或别名。upstream 之类的
+设置，在启动工位之前从外面设好。
+
+**提交检查和你的私有词表。** 提交检查要读你的私有词表。agent 能读这个文件，就能把它打印出来。
+所以工位默认把它藏起来，工位里的检查看不到你的词。在词表改成存哈希之前（#665），请你自己在工位
+外面检查：在你自己的检出里切到取回来的分支，跑 `yokoten check`，它会查整个目录树。
+`--marks` 会把这个文件放进工位，只能读。只有你放心让它看到这些词的 agent，才这样用。
+
+**系统。**
+
+- **Linux 和 WSL2**：用 `bwrap`（bubblewrap）。用 `sudo apt install bubblewrap` 安装。工位有自己的
+  空网络，里面有个小桥，把 agent 连代理的请求转给外面的代理。
+- **macOS**：用系统自带的 `sandbox-exec`，每个工位现写一份规则。规则从「全部不许」开始，只放开工位
+  要用的读、写、Mach 服务和代理端口，挡住 `open`、`osascript`、Launch Services 和 Apple 事件。
+  还没在 Mac 上跑过：请在 Mac 上跑一次 `node --test test/agents/desk/start.test.ts`，检查这套规矩。
+- **原生 Windows**：还没有工位（#669）。请在 WSL2 里用 yokoten。原生 Windows 上只有守卫在把关。
+
 ### 团队看板
 
 `yokoten board` 一眼看到整个团队。它只在这台电脑上开一个页面，
@@ -1368,8 +1460,17 @@ IP 只查 IPv4，内网地址（比如 `10.x`、`192.168.x`）也算；IPv6 不�
 后面）的 IP 照样会查出来。
 
 这个检查也会查密钥：GitHub、npm、Slack、Stripe、Google、OpenAI 和 Anthropic 的 token，
-AWS 的 access key id，还有 PEM 私钥。查到了只说是哪一种密钥，不会把密钥本身打印出来。光删掉
-不够，git 历史里还留着，得去把它作废，换一个新的。
+AWS 的 access key id，还有 PEM 私钥。你环境变量里名字像密钥的那些变量，它们的真实值也会查。
+每一条都标着有多确定：`sure`（确定）会让检查失败，`likely`（像）和 `unknown`（说不准）只提醒。
+查到了只说是哪一种密钥，不会把密钥本身打印出来。光删掉不够，git 历史里还留着，得去把它作废，
+换一个新的。
+
+查错了的话，在那一行写个注释，开头是 `yokoten-ignore secret: 为什么没问题`。不是密钥的，把 `secret` 换成那条的规则名。
+也可以在 `.yokotenignore` 里写一行 `secret: 为什么没问题`。忽略掉的那条还会列出来；不写理由的忽略本身算失败。
+
+`sure` 的密钥和私有词表里的词，不能在那一行忽略，只能写进 `.yokotenignore`，而这个文件只有
+lead 能改。PR 上，`yokoten check --pr` 会把这个 PR 新加的每一条忽略都显示成一条提示，审的人
+一眼就能看到。
 
 agent 用 `gh` 发文字之前，工具调用守卫也跑同一套检查。直接用 gh 或经过 `yokoten bot -- gh` 都算：
 
@@ -1468,9 +1569,8 @@ hook 不可能认得所有命令。输出里露出了你的信息，就开一个
 所以 yokoten 有一个函数，专门给 agent 准备一份干净的环境变量，所有运行环境都用它（#613）。
 这个函数现在就有，`yokoten worker env` 可以看它的结果。
 
-不过现在还没有哪个 yokoten 命令会启动 agent，所以这个函数暂时没人调用。看板的「启动 agent」
-（#603）会是第一个用它的地方。在那之前，agent 拿到的是启动它的会话的全部环境变量。
-所以 lead 的会话要从不带 token 的 shell 里启动。
+`yokoten desk` 就用这份环境变量启动 agent（见 [工位](#工位)）。用别的办法启动的 agent，拿到的是
+启动它的会话的全部环境变量。所以 lead 的会话要从不带 token 的 shell 里启动。
 
 这个函数留下什么、去掉什么：
 

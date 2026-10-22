@@ -6,6 +6,9 @@
 // field never holds a private value (core rule 11): a hit is named by its place and its
 // kind, never by what matched.
 
+/** How sure a secret or privacy finding is: only `sure` fails; the others warn. */
+export type FindingGrade = 'sure' | 'likely' | 'unknown';
+
 /** One message: a problem, a blocked action, a note, or a step on the road not done. */
 export interface Finding {
   /** The rule or step behind it. `yokoten explain <id>` says more. */
@@ -21,6 +24,10 @@ export interface Finding {
   /** Where, relative to the repo root. With `check --history`, the path and the git object. */
   file?: string;
   line?: number;
+  /** How sure a secret or privacy finding is. Other findings leave it out. */
+  grade?: FindingGrade;
+  /** Why a reviewer may let this finding through. An ignored finding stays in the output. */
+  ignored?: string;
 }
 
 /** A rule as `explain` tells it: the rule, its reason, and the check that holds it. */
@@ -78,7 +85,7 @@ export const RULES = {
   alias: {
     rule: 'no alias in a command: the guard refuses it instead of parsing it',
     why: 'an alias runs another command under a new name, so the guard cannot check what it runs',
-    check: 'the tool-call guard stops the `alias` program, `git -c alias.*` and `git config alias.*` unless it only reads one (`--get`, `--list`); run the full command instead',
+    check: 'the tool-call guard stops the `alias` program, `git -c alias.*` and `git config alias.*` unless it only reads one (`--get`, `--list`); it also stops `gh alias set` and `gh alias import`, a `gh` word that is not one of gh\'s own commands, `gh extension install`, `upgrade`, `exec` and `browse`, and `gh config set aliases`. Run the full command, or ask the owner to add a gh alias by hand',
   },
   'remove-git': {
     rule: 'no removing the .git folder',
@@ -94,6 +101,12 @@ export const RULES = {
     rule: 'no piping a download into a shell',
     why: 'a download piped into a shell runs code nobody read, so the guard cannot check what it runs',
     check: 'the tool-call guard stops a pipeline that feeds `curl` or `wget` into a shell; save the file first, read it, then run it',
+  },
+  'run-remove': {
+    rule: 'no agent cancels or deletes an Actions run',
+    why: 'a cancelled run turns a check red and blocks the merge, and a deleted log is evidence gone',
+    check: 'the tool-call guard stops `gh run cancel`, `gh run delete`, and the host API calls that do the same, for the lead and for a worker, including through `yokoten bot`. It also stops a short-option cluster, a method or a path from the shell, a `gh run` subcommand from the shell, and those paths in any case. `gh run rerun`, `view`, `list` and `watch` pass',
+    docs: guide('three-checks-and-a-lock'),
   },
   'blocked-command': {
     rule: 'an agent does not run a program the project blocks in yokoten.json "commands.block"',
@@ -134,25 +147,37 @@ export const RULES = {
   email: {
     rule: 'no personal email address in the repo (core rule 11)',
     why: 'an email address points at a person, and git keeps it after the file is gone',
-    check: 'the commit check, CI and `check --history` look for email addresses; noreply addresses, example.com and team inboxes at public services pass, and yokoten.json "privacy.allow" lets one through; the tool-call guard also checks the text an agent posts with gh (issues, pull requests, comments, release notes)',
+    check: 'the commit check, CI and `check --history` look for email addresses; noreply addresses, example.com and team inboxes at public services pass, and yokoten.json "privacy.allow" lets one through; a hit is `sure`, and `.yokotenignore` or a `yokoten-ignore email: reason` line keeps it in the output but does not fail it; the tool-call guard also checks the text an agent posts with gh (issues, pull requests, comments, release notes)',
     docs: guide('privacy'),
   },
   ip: {
     rule: 'no IP address in the repo (core rule 11)',
     why: 'an IP address can lead to your server or your home network',
-    check: 'the commit check, CI and `check --history` look for IPv4 addresses; localhost and the documentation ranges pass; the tool-call guard also checks the text an agent posts with gh (issues, pull requests, comments, release notes)',
+    check: 'the commit check, CI and `check --history` look for IPv4 addresses; localhost and the documentation ranges pass; a hit is `sure`, and `.yokotenignore` or a `yokoten-ignore ip: reason` line keeps it in the output but does not fail it; the tool-call guard also checks the text an agent posts with gh (issues, pull requests, comments, release notes)',
     docs: guide('privacy'),
   },
   'private-mark': {
     rule: 'nothing in the repo points at you: your name, city, domain or servers (core rule 11)',
     why: 'a line of your private-marks file names something that points at you',
-    check: 'the commit check reads ~/.config/yokoten/private-marks, outside the repo, and looks for each line; CI does not have the file; the tool-call guard also checks the text an agent posts with gh (issues, pull requests, comments, release notes)',
+    check: 'the commit check reads ~/.config/yokoten/private-marks, outside the repo, and looks for each line; CI does not have the file; a hit is `sure`, and only a `private-mark: reason` line in `.yokotenignore`, which is lead-only, keeps it in the output but does not fail it; the tool-call guard also checks the text an agent posts with gh (issues, pull requests, comments, release notes)',
+    docs: guide('privacy'),
+  },
+  ignore: {
+    rule: 'an ignore names the rule it applies to and gives a reason',
+    why: 'an ignore with no reason hides a finding from the reviewer, and an unknown rule hides nothing',
+    check: 'the commit check and CI read `<rule>: <reason>` lines in `.yokotenignore` and `yokoten-ignore <rule>: <reason>` markers in comments; the rules are `secret`, `email`, `ip` and `private-mark`; a private mark and a `sure` secret can be ignored only in `.yokotenignore`, which is lead-only; an ignore with no reason, an unknown rule, or a private-mark ignore in a comment fails',
+    docs: guide('privacy'),
+  },
+  'ignore-added': {
+    rule: 'a reviewer sees every ignore a pull request adds',
+    why: 'an ignore lets a hit through, so it must not slip in unseen',
+    check: '`check --pr` lists each `yokoten-ignore` comment on a line the pull request adds, and each line it adds to `.yokotenignore`, as a notice on the pull request page; it never fails the check',
     docs: guide('privacy'),
   },
   secret: {
     rule: 'no secret in the repo: no token and no private key (core rule 11)',
     why: 'a secret opens your accounts to anyone who can read the repo, and git keeps it after the file is gone',
-    check: 'the commit check, CI and `check --history` look for the real shape of tokens (GitHub, npm, AWS, Slack, Stripe, Google, Anthropic, OpenAI) and of private keys; the tool-call guard also checks the text an agent posts with gh (issues, pull requests, comments, release notes)',
+    check: 'the commit check, CI and `check --history` look for the real shape of tokens (GitHub, npm, AWS, Slack, Stripe, Google, Anthropic, OpenAI), private keys, and the real values of secret-like variables in the environment; a hit is `sure` and fails, while `likely` and `unknown` warn; `.yokotenignore` or a `yokoten-ignore secret: reason` line keeps a hit in the output but does not fail it, and a `sure` hit only through `.yokotenignore`, which is lead-only; an ignore with no reason fails; the tool-call guard also checks the text an agent posts with gh (issues, pull requests, comments, release notes)',
     docs: guide('privacy'),
   },
   'shallow-history': {
@@ -608,14 +633,22 @@ export const RULES = {
 export type RuleId = keyof typeof RULES;
 
 /** A finding for a rule: its reason and its link come from the table, unless `why` says it better here. */
-export function finding(id: RuleId, what: string, fix: string, more: { file?: string; line?: number; why?: string } = {}): Finding {
+export function finding(id: RuleId, what: string, fix: string, more: { file?: string; line?: number; why?: string; grade?: FindingGrade; ignored?: string } = {}): Finding {
   const rule: Rule = RULES[id];
   const f: Finding = { id, what, why: more.why ?? rule.why, fix };
   if (rule.docs !== undefined) f.docs = rule.docs;
   if (more.file !== undefined) f.file = more.file;
   if (more.line !== undefined) f.line = more.line;
+  if (more.grade !== undefined) f.grade = more.grade;
+  if (more.ignored !== undefined) f.ignored = more.ignored;
   return f;
 }
+
+/** Whether a finding stops the check. An ignored finding, or one not graded `sure`, only warns. */
+export const isFailingFinding = (f: Finding): boolean => f.ignored === undefined && (f.grade === undefined || f.grade === 'sure');
+
+/** Whether a finding warns about a secret, a privacy hit or an ignore, rather than being an ordinary note. */
+export const isWarningFinding = (f: Finding): boolean => f.ignored !== undefined || (f.grade !== undefined && f.grade !== 'sure');
 
 /** Outside a git repo (#205): the one finding every command that needs a repo gives. */
 export const notRepoFinding = (folder: string): Finding => finding('not-a-repo', `${folder} is not inside a git repo`, 'run it inside your project, or `git init` first');
@@ -626,8 +659,18 @@ const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 export const place = (f: Finding): string => (f.file === undefined ? '' : `${f.file}${f.line === undefined ? '' : `:${f.line}`}: `);
 
 /**
+ * The grade and ignore reason in brackets, or nothing. A plain `sure` finding is a failure,
+ * which says it already, so its grade shows only beside an ignore; JSON always has it.
+ */
+export const formatFindingMarks = (f: Finding): string => {
+  const grade = f.grade === 'sure' && f.ignored === undefined ? undefined : f.grade;
+  const marks = [grade, f.ignored === undefined ? '' : `ignored: ${f.ignored}`].filter(Boolean);
+  return marks.length ? ` [${marks.join('; ')}]` : '';
+};
+
+/**
  * The text form: `place: what. Why. Fix.` `what` is kept as written, to follow a prefix.
  * A link, when there is one, goes on its own line below: `  docs: <url>`.
  */
 export const formatFinding = (f: Finding): string =>
-  `${place(f)}${f.what}. ${sentence(f.why)}. ${sentence(f.fix)}.${f.docs === undefined ? '' : `\n  docs: ${f.docs}`}`;
+  `${place(f)}${f.what}${formatFindingMarks(f)}. ${sentence(f.why)}. ${sentence(f.fix)}.${f.docs === undefined ? '' : `\n  docs: ${f.docs}`}`;

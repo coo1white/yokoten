@@ -30,7 +30,8 @@ import { type Action, isWorkerType, readStopFields, type StopEvent } from '../..
 import { type FolderTrust, folderKeys, isFolder } from '../folder-trust.ts';
 import { type Added, addHook, checkHooksFile, type HookState, hookState, isObject } from '../hooks-file.ts';
 import { blankedToml, hasTomlArray, hasTomlHeader, hasTomlKey, hasTomlTable, isInsideProject, parseToml, readTomlTables } from './codex.ts';
-import type { RuntimeEnv } from '../agent-env.ts';
+import type { RuntimeEnv } from '../desk/agent-env.ts';
+import type { RuntimeDesk } from '../desk/desk.ts';
 
 // The shell tool takes `command` (and may take `cwd`); the edit tools take `file_path`.
 const SHELL = new Set(['run_terminal_command', 'run_terminal_cmd', 'Bash']);
@@ -299,3 +300,16 @@ export function sandboxProblem(root: string, env: Env): { what: string; fix: str
 
 /** The names this runtime's agent gets on top of the shared ones (#613). Grok CLI takes an xAI API key. */
 export const AGENT_ENV: RuntimeEnv = { login: ['XAI_API_KEY', 'GROK_API_KEY'], config: ['GROK_HOME'] };
+
+/**
+ * What a desk (#637) gives Grok CLI. GROK_HOME points at the desk's own folder; only
+ * `auth.json` is copied in. Grok's program sits in the lead's `~/.grok/bin`, so that one
+ * folder is shown read-only. Host: xAI's API. The binary names HTTPS_PROXY.
+ */
+export const DESK: RuntimeDesk = {
+  leadState: (env) => [env.GROK_HOME || join(homeIn(env), '.grok')],
+  login: (env) => [{ from: join(env.GROK_HOME || join(homeIn(env), '.grok'), 'auth.json'), to: 'auth.json' }],
+  stateEnv: (state) => ({ GROK_HOME: state }),
+  programParts: (env) => [join(env.GROK_HOME || join(homeIn(env), '.grok'), 'bin')],
+  hosts: ['api.x.ai'],
+};

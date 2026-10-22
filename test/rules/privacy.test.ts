@@ -360,6 +360,12 @@ test('makeRedactor: patterns only, with no marks: private emails go, noreply and
   assert.equal(redact('at /home/someone/project'), 'at ~/project');
 });
 
+test('makeRedactor: the real value of a secret-looking environment variable is hidden (#616)', () => {
+  const value = ['env', 'Secret', 'Value', '1234567890'].join('');
+  assert.equal(makeRedactor({}, { HOME: '/home/someone', SERVICE_TOKEN: value })(`printed ${value}`), 'printed <secret>');
+  assert.equal(makeRedactor({}, { HOME: '/home/someone', SERVICE_TOKEN: 'short' })('short'), 'short', 'too short to be a key');
+});
+
 test('makeRedactor: owners, hosts and marks, by shape, case-insensitive, whole words only', () => {
   const redact = makeRedactor({ owners: ['Jane Example'], hosts: ['build.private-host.dev'], marks: ['jane example', 'fakeville', 'janex.dev', `me${at}janex.dev`, 'ann', 'xy', '東京'] }, {});
   assert.equal(redact('JANE EXAMPLE in Fakeville'), '<owner> in <mark>');
@@ -469,6 +475,20 @@ test('release notes are read when a release is allowed', () => {
   assert.equal(approved(`gh release create v1 --notes "${email}"`)?.id, 'email');
   assert.equal(approved('gh release edit v1 --notes-file notes.md')?.id, 'email');
   assert.equal(approved('gh release create v1 --notes "clean notes"'), null);
+});
+
+test('a joined short-option cluster in gh api is refused, so a hidden field is not posted (#650)', () => {
+  assert.equal(post('gh api -if body=x repos/o/r/issues/1/comments')?.id, 'run-remove');
+  assert.equal(post(`gh api -iF body="${email}" repos/o/r/issues`)?.id, 'run-remove');
+  assert.equal(post(`gh api -iXPOST repos/o/r/issues -f body="${email}"`)?.id, 'run-remove');
+});
+
+test('gh after a launcher value is still the program, and a jq value is not a method (#650)', () => {
+  assert.equal(post(`env -u gh gh issue create --title t --body "${email}"`)?.id, 'email');
+  assert.equal(post(`sudo -u gh gh issue comment 3 -b "${email}"`)?.id, 'email');
+  assert.equal(post(`xargs -a gh gh issue comment 3 --body "${email}"`)?.id, 'email');
+  assert.equal(post(`gh api -X POST -q -XGET repos/o/r/issues -f body="${email}"`)?.id, 'email');
+  assert.equal(post(`gh api -X GET -q -XPOST repos/o/r/issues -f body="${email}"`), null);
 });
 
 test('gh api fields and input files are read', () => {

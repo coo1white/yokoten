@@ -1,9 +1,9 @@
-// Tests for src/agents/agent-env.ts.
+// Tests for src/agents/desk/agent-env.ts.
 //
 // Every value here is fake, and each token is joined from parts, so no token sits in this
 // file whole. Assertions compare names only: a failure message never shows a value.
 
-import '../repo/home.ts';
+import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
@@ -11,7 +11,7 @@ import {
   isSecretValue,
   RUNTIME_ENVS,
   sortAgentEnv,
-} from '../../src/agents/agent-env.ts';
+} from '../../../src/agents/desk/agent-env.ts';
 
 const run = (chars: string, n: number) => chars.repeat(Math.ceil(n / chars.length)).slice(0, n);
 const alnum = (n: number) => run('a1B2c3D4e5F6g7H8', n);

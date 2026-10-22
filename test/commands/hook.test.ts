@@ -1041,3 +1041,21 @@ test('worker env: it names what an agent gets and counts what is dropped, and pr
   assert.equal(unknown.code, 1);
   assert.match(unknown.stderr, /unknown runtime "nope"/);
 });
+
+// `desk` starts a worker's agent in a fenced desk (#637). The fence itself is tested in
+// test/agents/desk/; here, what the command refuses before it starts anything.
+test('desk: names what is missing, refuses a worker, and refuses a folder that is no clone (#637)', async () => {
+  const cwd = makeTempDir('yokoten-desk-');
+  const env = { PATH: process.env.PATH ?? '', HOME: cwd };
+  const missing = await invoke(['desk', 'claude-code', cwd], { env, cwd });
+  assert.equal(missing.code, 1);
+  assert.match(missing.stderr, /name the agent, the folder and the command/);
+  const worker = await invoke(['desk', 'claude-code', cwd, '--', 'node'], { env: { ...env, YOKOTEN_ROLE: 'worker' }, cwd });
+  assert.equal(worker.code, 1);
+  assert.match(worker.stderr, /only the lead starts a desk/);
+  const help = await invoke(['desk', 'claude-code', cwd, '--', 'agent', '--help'], { env, cwd });
+  assert.doesNotMatch(help.stdout, /^Usage: yokoten desk/, "--help after -- is the agent's");
+  const plain = await invoke(['desk', 'claude-code', cwd, '--', 'node'], { env, cwd });
+  assert.equal(plain.code, 1);
+  assert.match(plain.stderr, /not a git clone|not built yet|not installed|can't make a sandbox|sandbox-exec/);
+});
