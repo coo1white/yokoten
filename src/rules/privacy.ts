@@ -1152,8 +1152,6 @@ const METHOD_OPTIONS = new Set(['-X', '--method']);
 const INPUT_OPTIONS = new Set(['--input']);
 // gh's global option that takes a value before the subcommand: `gh -R o/r issue create`.
 const GLOBAL_VALUES = new Set(['-R', '--repo']);
-// A path that fields with no method write to (gh then sends a POST). A search reads.
-const WRITE_PATH = /(^|\/)(issues|pulls|comments|releases|discussions)(\/|$|\?)/;
 const WRITE_METHODS = new Set(['POST', 'PATCH', 'PUT']);
 // A GraphQL document that changes something: comments first, then `mutation`.
 const MUTATION = /^\s*(?:#[^\n]*\n\s*)*mutation\b/;
@@ -1275,8 +1273,9 @@ function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, comma
   let missing: Missing | null = null;
   // A file named twice is read once: gh posts one of them, and a long body is scanned once.
   const seen = new Set<string>();
-  // Every method and query the words may hold: a write in any of them counts.
-  const methods: string[] = [];
+  // Every method and query the words may hold: a write in any of them counts. A method is
+  // sure when the word before it takes no value; else it may be that option's value (#659).
+  const methods: { name: string; sure: boolean }[] = [];
   let hasFields = false;
   const queries: string[] = [];
   const addFile = (option: string, path: string | undefined, key?: string) => {
@@ -1311,7 +1310,8 @@ function postedPieces(gh: GhCommand, readFile: (path: string) => FileRead, comma
     if (isApi) {
       const methodOption = optionValue(args, index, METHOD_OPTIONS);
       if (methodOption) {
-        methods.push((methodOption.value ?? '').toUpperCase());
+        const before = args[index - 1] ?? '';
+        methods.push({ name: (methodOption.value ?? '').toUpperCase(), sure: !before.startsWith('-') || API_SWITCHES.has(before) });
         continue;
       }
       const input = optionValue(args, index, INPUT_OPTIONS);
@@ -1360,17 +1360,21 @@ function apiPath(args: string[]): string {
   return '';
 }
 
+// The options of the api subcommand that take no value (gh 2.103 help).
+const API_SWITCHES = new Set(['-i', '--include', '--paginate', '--slurp', '--silent', '--verbose']);
+
 /**
  * Whether an API call writes: only then is what it sends posted. A write method or a
- * mutation anywhere counts. A method that is no plain name may be a value read as an
- * option (`-H -X -f`), so it does not stand for the method gh uses.
+ * mutation anywhere counts. Only a sure method makes a call with fields a read: in
+ * `-q -XGET`, gh takes `-XGET` as the jq filter and sends a POST (#659).
  */
-function apiWrites(path: string, methods: string[], hasFields: boolean, queries: string[]): boolean {
+function apiWrites(path: string, methods: { name: string; sure: boolean }[], hasFields: boolean, queries: string[]): boolean {
   if (path.replace(/^\//, '') === 'graphql') return queries.some((query) => MUTATION.test(query));
-  if (methods.some((method) => WRITE_METHODS.has(method))) return true;
-  if (methods.length && methods.every((method) => /^[A-Z]+$/.test(method))) return false;
+  if (methods.some((method) => WRITE_METHODS.has(method.name))) return true;
+  if (methods.some((method) => method.sure)) return false;
   const plain = path.replace(/^\//, '');
-  return hasFields && !plain.startsWith('search/') && WRITE_PATH.test(plain);
+  // Fields with no method: gh sends a POST, to any path. Only a search reads with one.
+  return hasFields && !plain.startsWith('search/');
 }
 
 // The commit check's reasons end on what git does; a post is public as soon as it is sent.

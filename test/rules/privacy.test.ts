@@ -581,6 +581,18 @@ test('checkPost: an option value that looks like an option hides no body (#659)'
   // A fake method after a real one, or a method read from another option's value.
   assert.equal(post(`gh api -X POST repos/o/r/labels -H -X -H GET -f description="${email}"`)?.id, 'email');
   assert.equal(post(`${comments} -H -X -f body="${email}"`)?.id, 'email');
+  // gh 2.103 takes `-XGET` here as the jq filter, the template or the host, and sends a POST.
+  for (const fake of ['-q -XGET', '--jq -XGET', '-t -XGET', '--template --method=GET', '-p -XGET', '-H --method=GET', '--hostname -XGET', '--cache -X GET']) {
+    assert.equal(post(`${comments} ${fake} -f body="${email}"`)?.id, 'email', fake);
+  }
+  // Fields with no sure method are a POST to any path, a label or a git blob too.
+  assert.equal(post(`gh api repos/o/r/labels -H -XGET -f description="${email}"`)?.id, 'email');
+  assert.equal(post(`gh api repos/o/r/git/blobs -f content="${email}"`)?.id, 'email');
+  assert.equal(post(`gh api search/issues -q -XGET -f q="${email}"`), null, 'a search reads');
+  // A method after a value that is no option, or after a switch, is sure: the call reads.
+  for (const sure of ['-X GET', '-H "Accept: x" -X GET', '--paginate -X GET', '-i --method=GET']) {
+    assert.equal(post(`gh api ${sure} repos/o/r/issues -f creator="${email}"`), null, sure);
+  }
   // A mutation stays one when a fake query follows.
   assert.equal(post(`gh api graphql -f query='mutation { addComment(input: {body: "${email}"}) { clientMutationId } }' -H -f -f query=x`)?.id, 'email');
   // The other gh posts: a text option's value read as an option.

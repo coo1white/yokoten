@@ -1411,12 +1411,27 @@ agent 用 `gh` 发文字之前，工具调用守卫也跑同一套检查。直�
 `gh api` 的某个选项后面跟着一个像选项的词（比如 `-H -f`），正文照样会查（#659）。
 
 gh 的令牌不给任何 agent 看，lead 和 worker 都一样（#659、#668）。拿到令牌，`curl` 或脚本就能
-直接调 GitHub，绕开上面所有规则。gh 和 `yokoten bot` 自己会用令牌，不用看到它。所以守卫拦下
-`gh auth token`、`gh auth status --show-token`（`-t`）、`gh auth git-credential`、
-`gh config get oauth_token` 和 `git credential fill`；也拦下用到 `$GH_TOKEN`、`$GITHUB_TOKEN`、
-`$GH_ENTERPRISE_TOKEN`、`$GITHUB_ENTERPRISE_TOKEN` 的命令，以及写了这几个名字的
-`node`、`python` 等会跑代码的程序。`gh auth status`、`gh pr view`、`curl https://example.com`
-照常放行。
+直接调 GitHub，绕开上面所有规则。gh 和 `yokoten bot` 自己会用令牌，不用看到它。所以对每个
+agent，守卫都拦下这些：
+
+- 会打印令牌的 gh 命令：`gh auth token`、`gh auth status --show-token`（`-t`）、
+  `gh auth git-credential`、`gh config get oauth_token`。
+- `gh alias set`、`import`、`delete`：别名可以换个名字去跑 `auth token` 或 shell 命令。别名由
+  owner 来管。
+- 存登录信息的地方：`git credential fill`、凭据助手的 `get`（如 `git credential-manager get`）、
+  `git -c credential.…`、`~/.git-credentials`、gh 的 `hosts.yml`、
+  `security find-…-password -w`、`secret-tool lookup`。
+- 令牌的变量：`$GH_TOKEN`、`$GITHUB_TOKEN`、`$GH_ENTERPRISE_TOKEN`、`$GITHUB_ENTERPRISE_TOKEN`，
+  PowerShell 的 `$env:GH_TOKEN` 和 cmd 的 `%GH_TOKEN%` 也算；命令里写了这些名字的 `node`、
+  `python`、`jq` 等会跑代码的程序也拦。要在帖子里写这个名字，用正文文件；要搜它，去掉 `$`。
+- `GIT_TRACE_REDACT=0`：它会让 git 的跟踪日志打印出令牌。
+- bot 的 git 不能带 `-c`，也不能在环境变量里加 git 设置（`GIT_CONFIG_*`）。bot 自己也会去掉
+  分页器、编辑器、浏览器、ssh、askpass 这些程序和跟踪、调试设置，分页一律用 `cat`。
+
+`gh auth status`、`gh pr view`、`curl https://example.com` 照常放行。
+
+`gh workflow disable` 对每个 agent 也一律拦下：工作流关掉以后，所有 PR 都不再跑它的检查。
+只有 owner 能关。
 
 ### agent 读到的东西
 
@@ -1518,9 +1533,11 @@ hook 不可能认得所有命令。输出里露出了你的信息，就开一个
   的锁在服务器上：分支保护、代码负责人，以及一个没有发版权限、改不了 CI 的 bot。worker 用
   shell 写只有 lead 能改的文件，只有命令里写明了这个文件才拦得住：路径来自变量或标准输入
   （`xargs rm`、`find -exec`、`git apply < x.patch`），或者是脚本自己去写，都拦不住。
-- **gh 的令牌只在普通命令里藏得住。** 脚本自己去读 gh 的文件或系统钥匙串，或者把变量名拆开再拼，
-  还是能拿到令牌，然后绕开守卫调 GitHub。worker 的根本办法是一个完全没有令牌的工位（#637）。
-  lead 这边，锁还是在服务器上：分支保护，以及一个没有合并、发版权限的令牌。
+- **gh 的令牌只在普通命令里藏得住。** 先写进文件再运行的脚本，守卫不读。脚本自己去读 gh 的文件
+  或系统钥匙串，或者把变量名拆开再拼，还是能拿到令牌。打印全部环境变量的程序（`env`、`printenv`、
+  `set`、`/proc/self/environ`）也一样：拦它们会坏掉太多东西。你以前设好的别名，守卫也不看。这样
+  agent 就能绕开守卫调 GitHub。根本办法是 agent 的环境里根本没有令牌：worker 用一个完全没有令牌的
+  工位（#637）；lead 这边，锁还是在服务器上：分支保护，以及一个没有合并、发版权限的令牌。
 - **服务器设置只能读 GitHub 的。** 换成别的代码托管平台，只有平台自己才判断得了的步骤会标 can't check，并写明各自在问什么（见[会话里看到的是什么](#会话里看到的是什么)）。bot 的权限 `doctor` 还查不了。
 - **先支持 Claude Code。** agent 按 Claude Code 的格式写。技能用的是公开
   的 SKILL.md 格式，所以 `install` 也会把它们放进 `~/.agents/skills`，Codex、Gemini CLI、

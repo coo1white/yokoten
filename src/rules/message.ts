@@ -98,8 +98,13 @@ export const RULES = {
   'gh-token': {
     rule: "an agent does not see or send gh's token",
     why: "with gh's token, curl or a script calls the host directly, around every rule the guard keeps for gh",
-    check: "the tool-call guard stops, for every agent, `gh auth token`, `gh auth status --show-token`, `gh auth git-credential`, `gh config get oauth_token`, `git credential fill`, a command that expands GH_TOKEN, GITHUB_TOKEN, GH_ENTERPRISE_TOKEN or GITHUB_ENTERPRISE_TOKEN, and a program that runs code (node, python and others) given one of those names; run gh itself, which uses the token without showing it",
+    check: "the tool-call guard stops, for every agent, the gh commands that print the token (`gh auth token`, `gh auth status --show-token`, `gh auth git-credential`, `gh config get oauth_token`), `gh alias set|import|delete`, git's and the system's credential reads (`git credential fill`, a credential helper's `get`, `-c credential.*`, `~/.git-credentials`, gh's hosts.yml, `security find-…-password -w`, `secret-tool lookup`), GIT_TRACE_REDACT turned off, the token's variables (GH_TOKEN, GITHUB_TOKEN, GH_ENTERPRISE_TOKEN, GITHUB_ENTERPRISE_TOKEN) expanded in bash, PowerShell or cmd or named to a program that runs code, and `-c` or git settings in the environment for the bot's git; run gh itself, which uses the token without showing it",
     docs: guide('what-it-doesnt-do'),
+  },
+  'workflow-disable': {
+    rule: 'an agent does not turn a workflow off',
+    why: 'a workflow that is off runs no checks, on any pull request, until someone turns it on again',
+    check: 'the tool-call guard stops `gh workflow disable` for every agent; only the owner turns a workflow off',
   },
   'blocked-command': {
     rule: 'an agent does not run a program the project blocks in yokoten.json "commands.block"',

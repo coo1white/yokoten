@@ -402,12 +402,28 @@ remove <dir>` removes the mark with the worktree. Without a mark, an agent that 
 
 No agent, lead or worker, gets gh's token (#659, #668). With it, `curl` or a script could
 call GitHub directly, around every rule above. gh and `yokoten bot` use the token without
-showing it. So the guard refuses `gh auth token`, `gh auth status --show-token` (`-t`),
-`gh auth git-credential`, `gh config get oauth_token` and `git credential fill`. It also
-refuses any command that expands `$GH_TOKEN`, `$GITHUB_TOKEN`, `$GH_ENTERPRISE_TOKEN` or
-`$GITHUB_ENTERPRISE_TOKEN`, and `node`, `python` and other programs that run code when
-the command names one of those variables. `gh auth status`, `gh pr view` and
-`curl https://example.com` still pass.
+showing it. So for every agent the guard refuses:
+
+- gh's commands that print it: `gh auth token`, `gh auth status --show-token` (`-t`),
+  `gh auth git-credential` and `gh config get oauth_token`.
+- `gh alias set`, `import` and `delete`: an alias can run `auth token`, or a shell
+  command, under another name. The owner keeps the aliases.
+- The places a login is kept: `git credential fill`, a credential helper's `get`
+  (`git credential-manager get`), `git -c credential.…`, `~/.git-credentials`, gh's
+  `hosts.yml`, `security find-…-password -w` and `secret-tool lookup`.
+- The token's variables: `$GH_TOKEN`, `$GITHUB_TOKEN`, `$GH_ENTERPRISE_TOKEN` and
+  `$GITHUB_ENTERPRISE_TOKEN`, also as `$env:GH_TOKEN` (PowerShell) and `%GH_TOKEN%` (cmd).
+  So are `node`, `python`, `jq` and other programs that run code when the command names one.
+  To write the name in a post, use a body file; to search for it, leave out the `$`.
+- `GIT_TRACE_REDACT=0`, which makes a git trace print the token.
+- For the bot's git, `-c` and git settings in the environment (`GIT_CONFIG_*`). The bot also
+  drops the pager, editor, browser, ssh and askpass programs and the trace and debug
+  settings from its environment, and pages through `cat`.
+
+`gh auth status`, `gh pr view` and `curl https://example.com` still pass.
+
+`gh workflow disable` is refused for every agent too: a workflow that is off runs no
+checks on any pull request. Only the owner turns one off.
 
 The guard stops a worker's shell writes to lead-only files as well as its edits (#402). It
 reads redirects (`>`, `>>`, `>|`, `&>`), `sed -i`, `perl -i`, `tee`, `cp`, `mv`,
@@ -1950,11 +1966,15 @@ Honest limits:
   release or change CI. A worker's shell write to a lead-only file is stopped only when
   the guard sees the file in the command: a path from a variable or stdin (`xargs rm`,
   `find -exec`, `git apply < x.patch`), or a script that writes it, gets past.
-- **gh's token is hidden only from plain commands.** A script that reads gh's own files or
-  the system keyring, or a variable name built in pieces, still gets the token. Then it can
-  call GitHub around the guard. For a worker, the fix is a desk with no token at all
-  (#637). For the lead, the lock is again the server: branch protection, and a token
-  without the rights to merge or release.
+- **gh's token is hidden only from plain commands.** A script written to a file and then
+  run is not read. A script that reads gh's own files or the system keyring, or a
+  variable name built in pieces, still gets the token. So does a program that prints the
+  whole environment (`env`, `printenv`, `set`, `/proc/self/environ`): refusing those
+  would break too much. An alias you made before is not read either. Then the agent can
+  call GitHub around the guard. The real fix is that the token is not in the agent's
+  environment. For a worker, that is a desk with no token at all (#637). For the lead, the
+  lock is again the server: branch protection, and a token without the rights to merge or
+  release.
 - **Server settings are read on GitHub only.** Another host shows the steps that only the
   host can judge as **can't check**, with what each one asks ([What a session sees](#what-a-session-sees)). `doctor` does not check the bot's rights yet.
 - **Claude Code first.** Agents follow Claude Code's format.
