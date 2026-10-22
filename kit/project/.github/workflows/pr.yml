@@ -11,12 +11,12 @@ on:
   merge_group:
 permissions:
   contents: read
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 jobs:
   pr:
-    if: ${{ github.event_name == 'pull_request' }}
+    # A draft skips: the bot opens a pull request as a draft, adds its labels and milestone,
+    # then marks it ready, so the check runs once on the whole pull request. No run is
+    # cancelled, because a cancelled run shows as a failure on the pull request page (#645).
+    if: ${{ github.event_name == 'pull_request' && !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

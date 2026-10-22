@@ -34,8 +34,8 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
   const bin = join(sandbox.home, 'bin');
   const log = join(sandbox.home, 'gh.log');
   mkdirSync(bin);
-  // The fake gh lists no labels (#422: the bot then adds the best names), and logs the rest.
-  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nif (process.argv[2] === 'label') process.exit(1);\nrequire('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args: process.argv.slice(2), token: process.env.GH_TOKEN }) + '\\n');\n`);
+  // The fake gh lists no labels (#422: the bot then adds the best names), logs the rest, and prints a URL for a new pull request. #645: `pr ready` is logged apart.
+  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nconst args = process.argv.slice(2); const fs = require('node:fs');\nif (args[0] === 'label') process.exit(1);\nif (args[0] === 'pr' && args[1] === 'ready') { fs.appendFileSync(${JSON.stringify(log + '.ready')}, args.slice(2).join(' ') + '\\n'); process.exit(0); }\nfs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, token: process.env.GH_TOKEN }) + '\\n');\nif (args[0] === 'pr' && ['create', 'new'].includes(args[1])) console.log('https://github.com/me/repo/pull/7');\n`);
   chmodSync(join(bin, 'gh'), 0o755);
   copyFileSync(join(bin, 'gh'), join(bin, 'gh.exe'));
   const ran =() => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
@@ -130,7 +130,7 @@ test('bot: a bad title is refused before the token is asked for; a good one runs
       assert.equal(r.status, 0, `${command.join(' ')}: ${r.stderr}`);
     }
     // #422: a pull request gets the type label its title says.
-    const added: Record<number, string[]> = { 1: ['--label', 'feat'], 3: ['--label', 'feat'], 7: ['--label', 'feat'], 8: ['--label', 'bug'] };
+    const added: Record<number, string[]> = { 4: ['--draft'], 1: ['--label', 'feat', '--draft'], 3: ['--label', 'feat', '--draft'], 7: ['--label', 'feat', '--draft'], 8: ['--label', 'bug', '--draft'] };
     assert.deepEqual(ran(), good.map((command, index) => ({ args: [...command.slice(1), ...(added[index] ?? [])], token: 'ghs_test' })));
     assert.equal(requests.length, good.length * 2, 'one installation lookup and one token per run');
 
@@ -233,7 +233,11 @@ test('bot: a pull request body CI would refuse is refused locally, with CI\'s me
     // #512: issue 1 has the milestone M0, which a new pull request takes.
     'if (args[0] === "issue" && args[1] === "view") { console.log(JSON.stringify({ milestone: { title: "M0" } })); process.exit(0); }',
     `if (args[0] === "pr" && args[1] === "view") { fs.appendFileSync(${JSON.stringify(views)}, JSON.stringify({ args, token: process.env.GH_TOKEN }) + "\\n"); const n = args[2].split("/").pop(); if (n === "5" || n === "6") { console.log(JSON.stringify({ headRefName: n === "5" ? "topic" : "gone", baseRefName: "main" })); process.exit(0); } process.exit(1); }`,
+    // #645: `pr ready` is logged apart, so the last line of the log is still the command under test.
+    `if (args[0] === "pr" && args[1] === "ready") { fs.appendFileSync(${JSON.stringify(log + ".ready")}, args.slice(2).join(" ") + "\\n"); process.exit(0); }`,
     `fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, input: fs.readFileSync(0, "utf8") }) + "\\n");`,
+    // `pr create` prints the URL of the new pull request, as gh does.
+    'if (args[0] === "pr" && ["create", "new"].includes(args[1])) console.log("https://github.com/me/repo/pull/7");',
   ].join('\n'));
   chmodSync(join(bin, 'gh'), 0o755);
   const ran = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
@@ -305,7 +309,7 @@ test('bot: a pull request body CI would refuse is refused locally, with CI\'s me
       assert.equal(r.stderr, '', command.join(' '));
     }
     // #422, #512: a new pull request also gets the type and tier labels and its issue's milestone; nothing else changes.
-    const labelled = (args: string[]) => (args[1] === 'create' && !args.includes('-R') ? [...args, '--label', 'feat', '--label', 'tier A', '--milestone', 'M0'] : args);
+    const labelled = (args: string[]) => (args[1] === 'create' && !args.includes('-R') ? [...args, '--label', 'feat', '--label', 'tier A', '--milestone', 'M0', '--draft'] : args);
     assert.deepEqual(ran(), passes.map(([command, input]) => ({ args: labelled(command.slice(1)), input })));
     // A branch git can't fetch, or a pull request gh can't look up: the body alone is checked, with a note.
     for (const [n, why] of [['6', "git can't compare origin/gone with origin/main"], ['7', 'gh could not say the branches of pull request `7`']]) {
@@ -337,7 +341,11 @@ test('bot: a new pull request gets its type and tier labels; a contradicting one
     // #512: issue 1 has the milestone M0, which a new pull request takes.
     'if (args[0] === "issue" && args[1] === "view") { console.log(JSON.stringify({ milestone: { title: "M0" } })); process.exit(0); }',
     `if (args[0] === "label") { fs.appendFileSync(${JSON.stringify(lists)}, JSON.stringify(args) + "\\n"); process.stdout.write(fs.readFileSync(${JSON.stringify(repoLabels)}, "utf8")); process.exit(0); }`,
+    // #645: `pr ready` is logged apart, so the last line of the log is still the command under test.
+    `if (args[0] === "pr" && args[1] === "ready") { fs.appendFileSync(${JSON.stringify(log + ".ready")}, args.slice(2).join(" ") + "\\n"); process.exit(0); }`,
     `fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, input: fs.readFileSync(0, "utf8") }) + "\\n");`,
+    // `pr create` prints the URL of the new pull request, as gh does.
+    'if (args[0] === "pr" && ["create", "new"].includes(args[1])) console.log("https://github.com/me/repo/pull/7");',
   ].join('\n'));
   chmodSync(join(bin, 'gh'), 0o755);
   const read = (file: string) => (existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
@@ -372,7 +380,7 @@ test('bot: a new pull request gets its type and tier labels; a contradicting one
     for (const [command, input, args] of cases) {
       const r = await run(command, input);
       assert.deepEqual([r.status, r.stderr], [0, note], command.join(' '));
-      assert.deepEqual(read(log).at(-1), { args: [...command.slice(1), ...args, '--milestone', 'M0'], input }, command.join(' '));
+      assert.deepEqual(read(log).at(-1), { args: [...command.slice(1), ...args, '--milestone', 'M0', '--draft'], input }, command.join(' '));
     }
     assert.equal(read(lists).length, cases.length, 'one label list per run');
     assert.deepEqual(read(lists)[0], ['label', 'list', '--json', 'name', '--limit', '1000']);
@@ -382,7 +390,7 @@ test('bot: a new pull request gets its type and tier labels; a contradicting one
     const given = ['gh', 'pr', 'create', '-t', 'fix: a', '--label', 'bug,tier B', '-m', 'M1', '--body', body('B')];
     const unchanged = await run(given);
     assert.deepEqual([unchanged.status, unchanged.stderr], [0, note]);
-    assert.deepEqual(read(log).at(-1), { args: given.slice(1), input: '' });
+    assert.deepEqual(read(log).at(-1), { args: [...given.slice(1), '--draft'], input: '' });
     assert.equal(read(lists).length, before, 'no label list');
 
     // (c) A tier label the body contradicts is refused with the message of `check --pr`,
@@ -403,11 +411,11 @@ test('bot: a new pull request gets its type and tier labels; a contradicting one
     setLabels(['bug', 'enhancement', 'tier: A']);
     const other = await run(['gh', 'pr', 'create', '-t', 'feat: a', '--body', body('A')]);
     assert.deepEqual([other.status, other.stderr], [0, note]);
-    assert.deepEqual(read(log).at(-1)?.args.slice(-6, -2), ['--label', 'enhancement', '--label', 'tier: A']);
+    assert.deepEqual(read(log).at(-1)?.args.slice(-7, -3), ['--label', 'enhancement', '--label', 'tier: A']);
     const absent = await run(['gh', 'pr', 'create', '-t', 'perf: a', '--body', body('B')]);
     assert.equal(absent.status, 0, absent.stderr);
     assert.match(absent.stderr, /^yokoten bot: note: the repo has no label `perf`, so the pull request gets none; create it on GitHub, or pass another with --label\. `check --pr` asks for it\nyokoten bot: note: the repo has no label `tier B`, /m);
-    assert.deepEqual(read(log).at(-1)?.args, ['pr', 'create', '-t', 'perf: a', '--body', body('B'), '--milestone', 'M0'], 'no label was created or added');
+    assert.deepEqual(read(log).at(-1)?.args, ['pr', 'create', '-t', 'perf: a', '--body', body('B'), '--milestone', 'M0', '--draft'], 'no label was created or added');
 
     // (e) Other gh commands are sent unchanged, with no label list. `gh issue create`
     // is not among them: it gets its own label check (#544).
@@ -421,7 +429,8 @@ test('bot: a new pull request gets its type and tier labels; a contradicting one
     for (const command of others) {
       const r = await run(command);
       assert.deepEqual([r.status, r.stderr], [0, ''], command.join(' '));
-      assert.deepEqual(read(log).at(-1)?.args, command.slice(1), command.join(' '));
+      // #645: a create in this repo is opened as a draft, even with no labels to add; one for another repo is not.
+      assert.deepEqual(read(log).at(-1)?.args, [...command.slice(1), ...(command.includes('--fill') ? ['--draft'] : [])], command.join(' '));
     }
     assert.equal(read(lists).length, lists0, 'no label list');
   } finally {
@@ -515,7 +524,11 @@ test('bot --body-file -: in-process, the body comes from the given stdin and gh 
     'const fs = require("node:fs"); const args = process.argv.slice(2);',
     'if (args[0] === "label") { process.stdout.write(JSON.stringify([{ name: "docs" }, { name: "tier C" }])); process.exit(0); }',
     'if (args[0] === "issue" && args[1] === "view") { console.log(JSON.stringify({ milestone: { title: "M0" } })); process.exit(0); }',
+    // #645: `pr ready` is logged apart, so the last line of the log is still the command under test.
+    `if (args[0] === "pr" && args[1] === "ready") { fs.appendFileSync(${JSON.stringify(log + ".ready")}, args.slice(2).join(" ") + "\\n"); process.exit(0); }`,
     `fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, input: fs.readFileSync(0, "utf8") }) + "\\n");`,
+    // `pr create` prints the URL of the new pull request, as gh does.
+    'if (args[0] === "pr" && ["create", "new"].includes(args[1])) console.log("https://github.com/me/repo/pull/7");',
     'process.stdout.write("created\\n"); process.stderr.write("a gh note\\n");',
   ].join('\n'));
   chmodSync(join(bin, 'gh'), 0o755);
@@ -538,10 +551,10 @@ test('bot --body-file -: in-process, the body comes from the given stdin and gh 
     // A good one: gh gets it the same way, and what gh prints is the command's output.
     const sent = await invoke(command, { env, cwd: sandbox.repo, stdin: body });
     assert.equal(sent.code, 0, sent.stderr);
-    assert.equal(sent.stdout, 'created\n');
+    assert.equal(sent.stdout, 'https://github.com/me/repo/pull/7\ncreated\n');
     assert.match(sent.stderr, /a gh note\n$/);
     const [ran] = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-    assert.deepEqual(ran, { args: ['pr', 'create', '-t', 'docs: a', '--body-file', '-', '--label', 'docs', '--label', 'tier C', '--milestone', 'M0'], input: body });
+    assert.deepEqual(ran, { args: ['pr', 'create', '-t', 'docs: a', '--body-file', '-', '--label', 'docs', '--label', 'tier C', '--milestone', 'M0', '--draft'], input: body });
   } finally {
     server.close();
   }
@@ -563,7 +576,11 @@ test('bot: a new pull request takes its issue\'s milestone; none anywhere is ref
     'const fs = require("node:fs"); const args = process.argv.slice(2);',
     'if (args[0] === "label") { process.stdout.write(JSON.stringify([{ name: "feat" }, { name: "tier B" }])); process.exit(0); }',
     `if (args[0] === "issue" && args[1] === "view") { fs.appendFileSync(${JSON.stringify(views)}, JSON.stringify(args) + "\\n"); if (args[2] === "3") process.exit(1); console.log(JSON.stringify({ milestone: args[2] === "1" ? { number: 1, title: "M1" } : null })); process.exit(0); }`,
+    // #645: `pr ready` is logged apart, so the last line of the log is still the command under test.
+    `if (args[0] === "pr" && args[1] === "ready") { fs.appendFileSync(${JSON.stringify(log + ".ready")}, args.slice(2).join(" ") + "\\n"); process.exit(0); }`,
     `fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");`,
+    // `pr create` prints the URL of the new pull request, as gh does.
+    'if (args[0] === "pr" && ["create", "new"].includes(args[1])) console.log("https://github.com/me/repo/pull/7");',
   ].join('\n'));
   chmodSync(join(bin, 'gh'), 0o755);
   const read = (file: string) => (existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
@@ -583,13 +600,13 @@ test('bot: a new pull request takes its issue\'s milestone; none anywhere is ref
     // (1) The milestone is copied from the linked issue, by --body and --body-file.
     const closes = await run(['gh', 'pr', 'create', '-t', 'feat: a', '--body', body('Closes #1')]);
     assert.deepEqual([closes.status, closes.stderr], [0, note]);
-    assert.deepEqual(read(log).at(-1), ['pr', 'create', '-t', 'feat: a', '--body', body('Closes #1'), ...labels, '--milestone', 'M1']);
+    assert.deepEqual(read(log).at(-1), ['pr', 'create', '-t', 'feat: a', '--body', body('Closes #1'), ...labels, '--milestone', 'M1', '--draft']);
     assert.deepEqual(read(views), [['issue', 'view', '1', '--json', 'milestone']], 'one gh issue view');
     const bodyFile = join(sandbox.home, 'body.md');
     writeFileSync(bodyFile, body('Part of #2\nCloses #1'));
     const first = await run(['gh', 'pr', 'create', '-t', 'feat: a', '--body-file', bodyFile, '--', 'extra']);
     assert.deepEqual([first.status, first.stderr], [0, note]);
-    assert.deepEqual(read(log).at(-1), ['pr', 'create', '-t', 'feat: a', '--body-file', bodyFile, ...labels, '--milestone', 'M1', '--', 'extra'], 'the first linked issue that has one, before any --');
+    assert.deepEqual(read(log).at(-1), ['pr', 'create', '-t', 'feat: a', '--body-file', bodyFile, ...labels, '--milestone', 'M1', '--draft', '--', 'extra'], 'the first linked issue that has one, before any --');
     assert.equal(readFileSync(bodyFile, 'utf8'), body('Part of #2\nCloses #1'), 'the body file is not changed');
 
     // (2) No linked issue has a milestone: nothing is sent, and the message names --milestone.
@@ -605,14 +622,90 @@ test('bot: a new pull request takes its issue\'s milestone; none anywhere is ref
       const command = ['gh', 'pr', 'create', '-t', 'feat: a', ...given, '--body', body('Part of #2')];
       const r = await run(command);
       assert.deepEqual([r.status, r.stderr], [0, note], command.join(' '));
-      assert.deepEqual(read(log).at(-1), [...command.slice(1), ...labels], command.join(' '));
+      assert.deepEqual(read(log).at(-1), [...command.slice(1), ...labels, '--draft'], command.join(' '));
     }
     assert.equal(read(views).length, viewed, 'no gh issue view');
 
     // (4) gh can't read the issue: the pull request is sent without a milestone, with a note.
     const unread = await run(['gh', 'pr', 'create', '-t', 'feat: a', '--body', body('Closes #3')]);
     assert.deepEqual([unread.status, unread.stderr], [0, `${note}yokoten bot: note: gh could not read the milestone of issue #3, so the pull request gets none; pass --milestone. \`check --pr\` asks for it\n`]);
-    assert.deepEqual(read(log).at(-1), ['pr', 'create', '-t', 'feat: a', '--body', body('Closes #3'), ...labels]);
+    assert.deepEqual(read(log).at(-1), ['pr', 'create', '-t', 'feat: a', '--body', body('Closes #3'), ...labels, '--draft']);
+  } finally {
+    server.close();
+  }
+});
+
+// #645: a new pull request opens as a draft, which the `pr` check skips, and is marked
+// ready once its labels and milestone are on, so the check runs once on the whole pull request.
+// A fake gh and a local API server stand in for GitHub.
+test('bot: a new pull request opens as a draft and is marked ready by its URL (#645)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', JSON.stringify({ areas: ['host'] }));
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/me/repo.git');
+  const bin = join(sandbox.home, 'bin');
+  const log = join(sandbox.home, 'gh.log');
+  const readied = join(sandbox.home, 'ready.log');
+  const mode = join(sandbox.home, 'mode');
+  mkdirSync(bin);
+  // `pr create` prints a URL, unless the mode says "nourl"; `pr ready` fails with "boom" when the mode says "readyfail".
+  writeFileSync(join(bin, 'gh'), [
+    '#!/usr/bin/env node',
+    'const fs = require("node:fs"); const args = process.argv.slice(2);',
+    `const mode = fs.existsSync(${JSON.stringify(mode)}) ? fs.readFileSync(${JSON.stringify(mode)}, "utf8") : "";`,
+    'if (args[0] === "label") { process.stdout.write(JSON.stringify([{ name: "feat" }, { name: "tier B" }])); process.exit(0); }',
+    'if (args[0] === "issue" && args[1] === "view") { console.log(JSON.stringify({ milestone: { title: "M1" } })); process.exit(0); }',
+    `if (args[0] === "pr" && args[1] === "ready") { fs.appendFileSync(${JSON.stringify(readied)}, args.slice(2).join(" ") + "\\n"); if (mode === "readyfail") { process.stderr.write("boom\\n"); process.exit(1); } process.exit(0); }`,
+    `fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");`,
+    'if (args[0] === "pr" && args[1] === "create" && mode !== "nourl") console.log("Creating pull request\\nhttps://github.com/me/repo/pull/7");',
+  ].join('\n'));
+  chmodSync(join(bin, 'gh'), 0o755);
+  const read = (file: string) => (existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').filter(Boolean) : []);
+  const server = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(req.method === 'GET' ? { id: 77 } : { token: 'ghs_test' }));
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  const key = join(sandbox.home, 'bot.pem');
+  writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
+  const bot = { PATH: `${bin}:${process.env.PATH}`, YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+  const run = (command: string[]) => sandbox.call(['bot', '--', ...command], { extra: bot });
+  const note = 'yokoten bot: note: git can\'t compare HEAD with origin/main, so the body was checked without the changed files; CI checks the rest\n';
+  const body = 'tier: B\nCloses #1\n\n## Why\nx\n\n## What changed\nx\n\n## How tested\nx\n\nMade with worker (opus)\n';
+  const create = ['gh', 'pr', 'create', '-t', 'feat: a', '--body', body];
+  const labelled = ['--label', 'feat', '--label', 'tier B', '--milestone', 'M1'];
+  try {
+    // (1) Opened as a draft, after the labels and milestone; gh's output is written through; then marked ready by the URL it printed.
+    const made = await run(create);
+    assert.deepEqual([made.status, made.stderr], [0, note]);
+    assert.match(made.stdout, /^Creating pull request\nhttps:\/\/github.com\/me\/repo\/pull\/7\n$/);
+    assert.deepEqual(read(log), [JSON.stringify(['pr', 'create', '-t', 'feat: a', '--body', body, ...labelled, '--draft'])]);
+    assert.deepEqual(read(readied), ['https://github.com/me/repo/pull/7']);
+    // --draft goes before any `--`.
+    await run([...create, '--', 'extra']);
+    assert.deepEqual(JSON.parse(read(log).at(-1) ?? '[]').slice(-3), ['--draft', '--', 'extra']);
+    assert.equal(read(readied).length, 2);
+
+    // (2) The caller asked for a draft, the browser or a dry run: sent as it is, and nothing is marked ready.
+    for (const flag of ['--draft', '-d', '--web', '-w', '--dry-run']) {
+      const r = await run([...create, flag]);
+      assert.deepEqual([r.status, r.stderr], [0, note], flag);
+      assert.deepEqual(JSON.parse(read(log).at(-1) ?? '[]'), ['pr', 'create', '-t', 'feat: a', '--body', body, flag, ...labelled], flag);
+    }
+    assert.equal(read(readied).length, 2, 'no pr ready for those');
+
+    // (3) gh printed no URL: the draft is left, and the exit code and message say so.
+    writeFileSync(mode, 'nourl');
+    const nourl = await run(create);
+    assert.equal(nourl.status, 1);
+    assert.equal(nourl.stderr, `${note}yokoten bot: the pull request was opened as a draft, but gh printed no URL to mark it ready. Run \`gh pr ready\` on it\n`);
+    assert.equal(read(readied).length, 2, 'no pr ready without a URL');
+
+    // (4) gh pr ready fails: gh's message, then the URL to mark ready by hand.
+    writeFileSync(mode, 'readyfail');
+    const failed = await run(create);
+    assert.equal(failed.status, 1);
+    assert.equal(failed.stderr, `${note}boom\nyokoten bot: https://github.com/me/repo/pull/7 is still a draft, so its checks have not run. Mark it ready: gh pr ready https://github.com/me/repo/pull/7\n`);
+    assert.equal(read(readied).length, 3);
   } finally {
     server.close();
   }
