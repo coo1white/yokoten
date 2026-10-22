@@ -813,3 +813,15 @@ test('check: a stopped line names the kind of private mark, never the mark (#523
   const said = (text.stdout + text.stderr + json.stdout + json.stderr).toLowerCase();
   for (const part of ['sample', 'personal-mail', 'octo-ruex', 'rue-host', 'quietvale']) assert.ok(!said.includes(part), `check printed ${part.length} letters of a mark`);
 });
+
+test('marks: the count names both files when the setting adds one (#656)', async () => {
+  const { sandbox, file } = marksSandbox();
+  mkdirSync(join(sandbox.home, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(file, `${HAND_MARK}\n`);
+  const extra = join(sandbox.home, 'extra-marks');
+  writeFileSync(extra, `${OTHER}\n`);
+  const counts = await sandbox.call(['marks'], { extra: { YOKOTEN_PRIVATE_MARKS: extra } });
+  assert.equal(counts.status, 0, counts.stderr);
+  assert.match(counts.stdout, /^yokoten marks: 2 in ~\/\.config\/yokoten\/private-marks and the file YOKOTEN_PRIVATE_MARKS names \(the values are never shown\)$/m);
+  assert.ok(!VALUES.test(counts.stdout + counts.stderr));
+});

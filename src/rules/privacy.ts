@@ -81,6 +81,15 @@ export function marksFiles(env: Env): string[] {
   return files;
 }
 
+/**
+ * `env` with only the file yokoten writes to (`marksFile`) left to read (#656). Install and
+ * `yokoten marks add` ask it whether a mark is there already: one only in the setting's file
+ * still goes into the default file.
+ */
+export function writtenMarksOnly(env: Env): Env {
+  return homeOf(env) ? { ...env, YOKOTEN_PRIVATE_MARKS: '' } : env;
+}
+
 /** The text of every private-marks file, one after the other. A missing file is empty; any other error throws, so the check fails closed. */
 function readMarksText(env: Env): string {
   return marksFiles(env)
@@ -136,9 +145,9 @@ export type RepoKey = { remote: string; local?: boolean };
 /**
  * The machine allow file: beside the default private-marks file, never beside the one
  * YOKOTEN_PRIVATE_MARKS names, so the setting can't bring its own allow (#656). With no home
- * folder it is beside the setting's file; with neither, it throws NO_HOME.
+ * folder it throws NO_HOME, and the machine allows nothing.
  */
-export const machineAllowFile = (env: Env): string => join(dirname(marksFile(env)), 'private-marks-allow.json');
+export const machineAllowFile = (env: Env): string => join(homeIn(env), '.config', 'yokoten', 'private-marks-allow.json');
 
 /** The port each scheme uses when the URL names none: such a port is left out of the key. */
 const DEFAULT_PORTS: Record<string, string> = { https: '443', http: '80', ssh: '22', 'git+ssh': '22', 'ssh+git': '22', git: '9418' };

@@ -2277,3 +2277,14 @@ test('scanText: a private-mark finding names the kind of mark, never the value (
   assert.equal(scanText('from QuietVale', { file: 'a.md', marks: ['quietvale'] })[0].what, 'matches a line of your private-marks file');
   assert.equal(describeMark('some new kind').what, 'matches your some new kind (a private mark yokoten added by itself)');
 });
+
+test('machineAllowFile: with no home folder there is no allow file, never one beside the setting\'s file (#656)', () => {
+  const dir = makeTempDir();
+  const marks = join(dir, 'private-marks');
+  writeFileSync(marks, 'quietvale\n');
+  writeFileSync(join(dir, 'private-marks-allow.json'), JSON.stringify({ skipOwnName: false, repos: [{ remote: 'example.com/octo/app', allow: ['quietvale'] }] }));
+  const env: Env = { HOME: '', YOKOTEN_PRIVATE_MARKS: marks };
+  assert.throws(() => machineAllowFile(env), /no home folder/);
+  assert.deepEqual(readMachineAllow(env), { entries: [] });
+  assert.deepEqual(loadMarks(env), ['quietvale'], 'the setting\'s marks are still read');
+});

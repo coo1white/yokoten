@@ -232,12 +232,15 @@ export function answerSchema(rows: Fact[]): object {
 export function promptProblems(messages: Message[], env: Env): string[] {
   const text = messages.map((m) => m.content).join('\n');
   let marks: string[] = [];
+  let unread = false;
   try {
     marks = loadMarks(env);
   } catch {
-    // An unreadable marks file: the patterns still run.
+    // An unreadable marks file: the patterns still run, and nothing is sent (#656).
+    unread = true;
   }
   const problems = scanText(text, { file: 'prompt', marks }).map((found) => `${place(found)}${found.what}`);
+  if (unread) problems.push("prompt: a private-marks file can't be read, so yokoten can't check the prompt for your marks.");
   const home = (env.HOME ?? '').replace(/[\\/]+$/, '');
   if ((home.length > 1 && text.includes(home)) || /(^|[\s"'(])(\/(home|Users)\/|[A-Za-z]:\\)/.test(text)) problems.push('prompt: a path outside the repo.');
   return problems;

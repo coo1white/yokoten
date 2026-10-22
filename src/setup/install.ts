@@ -34,7 +34,7 @@ import * as muse from '../agents/runtimes/muse.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { copyRuntime, HOME_DIR, KIT, MANAGED, writeManaged, writeNew } from './files.ts';
 import { type Gh, readLocalLogins, readLogin } from '../host/github.ts';
-import { FOUND_HEADER, foundHeader, homeIn, loadMarkKinds, markLines, type Mark, homeOf, isDomainShaped, isEmailShaped, OWN_HEADER, isPersonalEmail, loadMarks, marksFile, NO_HOME, privateRemoteHosts, systemHome } from '../rules/privacy.ts';
+import { FOUND_HEADER, foundHeader, homeIn, loadMarkKinds, markLines, type Mark, homeOf, isDomainShaped, isEmailShaped, OWN_HEADER, isPersonalEmail, loadMarks, marksFile, NO_HOME, writtenMarksOnly, privateRemoteHosts, systemHome } from '../rules/privacy.ts';
 
 /**
  * Where yokoten keeps its runtime, its config and the private marks. With no absolute home
@@ -747,10 +747,12 @@ export function fillMarks(env: Env, found: MachineMark[]): string[] {
     const migrated = migrateMarks(readFileSync(file, 'utf8'), { logins: [...readLocalLogins(env), ...logins], hosts });
     if (migrated !== null) replaceFile(file, migrated);
   }
-  const known = new Set(loadMarks(env));
+  // Known from the file it writes, so a mark only in the setting's file still goes in (#656).
+  const own = writtenMarksOnly(env);
+  const known = new Set(loadMarks(own));
   const off = new Set(kindsTurnedOff(env));
   // A git name that is a login is covered by the login's mark (#410, #434): the one added now, or one the file has.
-  const loginSet = new Set([...(off.has('forge login') ? [] : logins.map((login) => login.toLowerCase())), ...loadMarkKinds(env).filter((mark) => mark.kind === 'forge login').map((mark) => mark.value)]);
+  const loginSet = new Set([...(off.has('forge login') ? [] : logins.map((login) => login.toLowerCase())), ...loadMarkKinds(own).filter((mark) => mark.kind === 'forge login').map((mark) => mark.value)]);
   const added: MachineMark[] = [];
   for (const mark of found.filter((one) => !off.has(one.kind))) {
     const key = mark.value.toLowerCase();
@@ -770,16 +772,23 @@ export function fillMarks(env: Env, found: MachineMark[]): string[] {
 }
 
 /**
- * Whether the private-marks file has a mark, of any kind: the ones install found count too
- * (#522). False when the file is missing or can't be read.
+ * Whether the private-marks files have a mark, of any kind: the ones install found count too
+ * (#522). `unreadable` when one of them is there but can't be read (#656).
  */
-export function hasMarks(env: Env): boolean {
+export function marksState(env: Env): 'some' | 'none' | 'unreadable' {
   try {
-    return loadMarks(env).length > 0;
+    return loadMarks(env).length > 0 ? 'some' : 'none';
   } catch {
-    return false;
+    return 'unreadable';
   }
 }
+
+/** Whether the private-marks files have a mark. False when they are missing or can't be read. */
+export const hasMarks = (env: Env): boolean => marksState(env) === 'some';
+
+/** What doctor says when a private-marks file can't be read (#656), and what to do. */
+export const UNREADABLE_MARKS = "a private-marks file can't be read, so the privacy check stops every commit";
+export const UNREADABLE_MARKS_FIX = 'make ~/.config/yokoten/private-marks readable, and check that YOKOTEN_PRIVATE_MARKS, if set, names a file you can read';
 
 /** What doctor and install say to do when the private-marks file has no mark. */
 export const EMPTY_MARKS_FIX = 'run `yokoten marks add` and type your name, your city or a domain; it is not shown';
@@ -848,7 +857,7 @@ export function setKindOff(env: Env, kind: string, isOff: boolean): void {
  */
 export function addOwnMark(env: Env, value: string): boolean {
   const file = marksFile(env);
-  if (loadMarks(env).includes(value.toLowerCase())) return false;
+  if (loadMarks(writtenMarksOnly(env)).includes(value.toLowerCase())) return false;
   if (!existsSync(file)) writeNew(file, MARKS_HEADER, { mode: 0o600 });
   const text = readFileSync(file, 'utf8');
   const last = text.split('\n').map((line) => line.trim()).filter((line) => line.startsWith('#')).at(-1) ?? '';
