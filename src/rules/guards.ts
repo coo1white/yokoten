@@ -1827,9 +1827,18 @@ function hasEvalArgument(words: string[]): boolean {
 
 // Whether a substitution in `text` runs, and whether one never closes.
 // Single quotes and `$'…'` hide it. `<(…)` and `>(…)` do not run inside `"…"`. `$((…))` is arithmetic.
+// A backslash and a newline inside `"…"` are removed before the shell parses.
 interface SubstitutionScan {
   live: boolean;
   unclosed: boolean;
+}
+
+/** The index after a backslash and a newline. The shell removes that pair before it parses. */
+function skipContinuation(text: string, index: number): number {
+  const start = index;
+  while (text[index] === '\\' && text[index + 1] === '\n') index += 2;
+  spend(index - start);
+  return index;
 }
 
 function scanSubstitutions(text: string): SubstitutionScan {
@@ -1859,6 +1868,11 @@ function scanSubstitutions(text: string): SubstitutionScan {
       continue;
     }
     if (quote === '"') {
+      // `"$\⏎(sh)"` is `"$(sh)"`. The pair is not an escape of the next character.
+      if (character === '\\' && next === '\n') {
+        at++;
+        continue;
+      }
       if (character === '\\' && '$`"\\'.includes(next)) {
         at++;
         continue;
@@ -1870,11 +1884,14 @@ function scanSubstitutions(text: string): SubstitutionScan {
       if (character === '`') {
         live = true;
         backtick = !backtick;
-      } else if (character === '$' && next === '(') {
-        if (text[at + 2] === '(') {
-          kinds.push('skip', 'skip');
-          at += 2;
-        } else at = open('run', at, 2);
+      } else if (character === '$') {
+        const opened = skipContinuation(text, at + 1);
+        if (text[opened] === '(') {
+          if (text[opened + 1] === '(') {
+            kinds.push('skip', 'skip');
+            at = opened + 1;
+          } else at = open('run', opened, 1);
+        }
       } else if (character === '(') kinds.push('skip');
       else if (character === ')' && kinds.length > 0) kinds.pop();
       continue;
@@ -4739,13 +4756,20 @@ function readDouble(text: string, index: number, depth: number, out: string[][],
       if (n && '$`"\\'.includes(n)) value += n;
       else if (n !== '\n') value += character + n;
       index += 2;
-    } else if ((character === '$' && text[index + 1] === '(') || character === '`') {
-      const from = character === '`' ? index + 1 : index + 2;
-      const end = read(text, from, character === '`' ? '`' : ')', depth + 1, out);
-      if (end === -1) return RAN_OUT;
-      substitutions.push(text.slice(from, end - 1));
-      value += text.slice(index, end);
-      index = end;
+    } else if (character === '$' || character === '`') {
+      // A joined line hides the opener: `"$\⏎(sh)"` is `"$(sh)"` before parsing.
+      const opened = character === '`' ? index : skipContinuation(text, index + 1);
+      if (character === '`' || text[opened] === '(') {
+        const from = character === '`' ? index + 1 : opened + 1;
+        const end = read(text, from, character === '`' ? '`' : ')', depth + 1, out);
+        if (end === -1) return RAN_OUT;
+        substitutions.push(text.slice(from, end - 1));
+        value += character === '`' ? text.slice(index, end) : '$(' + text.slice(from, end);
+        index = end;
+      } else {
+        value += character;
+        index++;
+      }
     } else {
       value += character;
       index++;

