@@ -8,6 +8,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Ask } from '../install.ts';
 import { runsTests, scriptedRuns, testLanguages } from './test-commands.ts';
+import { SPEED_BUDGET } from './ci-speed.ts';
 
 /** One language's CI job: the setup action pinned to a commit, its input, and the install step. */
 export interface TestsJob {
@@ -54,8 +55,19 @@ export interface CheckoutStep {
   note: string;
 }
 
-/** The `tests` job for one language, as YAML under `jobs:`. Every `uses:` is pinned. */
-export const testsJobText = (job: TestsJob, runner: string, checkout: CheckoutStep): string =>
+/** How the job keeps the test time. `cli` is set when the test command writes a TAP report. */
+export interface TestsJobOptions {
+  /** The command yokoten's own step runs, such as `.yokoten/bin/yokoten.ts`. */
+  cli?: string;
+}
+
+/**
+ * The `tests` job for one language, as YAML under `jobs:`. Every `uses:` is pinned.
+ * With `options.cli`, the test command writes a TAP report and a later step judges its
+ * time against the budget (#479): the report is Node's own, so the caller sets this
+ * only for a `node --test` project.
+ */
+export const testsJobText = (job: TestsJob, runner: string, checkout: CheckoutStep, options: TestsJobOptions = {}): string =>
   [
     `  # Runs the ${job.language} tests.`,
     '  tests:',
@@ -63,6 +75,13 @@ export const testsJobText = (job: TestsJob, runner: string, checkout: CheckoutSt
     '    timeout-minutes: 10',
     '    permissions:',
     '      contents: read',
+    ...(options.cli
+      ? [
+          '    env:',
+          '      # One report per run, so the time check below can read the slowest tests.',
+          '      NODE_OPTIONS: --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination=${{ runner.temp }}/tests.tap',
+        ]
+      : []),
     '    steps:',
     `      - uses: ${checkout.uses}${checkout.note ? ` ${checkout.note}` : ''}`,
     '        with:',
@@ -72,6 +91,13 @@ export const testsJobText = (job: TestsJob, runner: string, checkout: CheckoutSt
     `          ${job.input}: ${job.inputValue}`,
     `      - run: ${job.install}`,
     `      - run: ${runner}`,
+    ...(options.cli
+      ? [
+          '      # The test time against the budget: slow files and what to do about them (#479).',
+          '      - if: ${{ !cancelled() }}',
+          `        run: node ${options.cli} speed \${{ runner.temp }}/tests.tap --budget ${SPEED_BUDGET}`,
+        ]
+      : []),
   ].join('\n');
 
 /**
@@ -331,6 +357,9 @@ export const nodeTestsFix = (root: string): string | null => {
   return `in ${WORKFLOW}, the checkout step is not pinned. Pin it, then run \`yokoten init\``;
 };
 
+/** Whether the Node test script runs Node's own test runner, so a TAP report is possible. */
+const nodeTestRun = (root: string): boolean => /\bnode\s+(?:--\S+\s+)*--test\b/.test(testScript(root));
+
 /**
  * Write the `tests` job for the project's language into its workflow. Quiet (no lines)
  * when no language we write for is found. A test script is Node only when no other
@@ -355,7 +384,7 @@ export function writeTestsJob(root: string, { ask }: { ask?: Ask } = {}): string
   if (!checkout) return [`left ${WORKFLOW} unchanged: it has no checkout step to copy; add the tests job under \`jobs:\` by hand, and add \`tests\` to the \`needs\` list of \`ci\``];
   if (!isCommitPin(checkout.uses))
     return [`left ${WORKFLOW} unchanged: its checkout step is not pinned to a commit (${checkout.uses}); pin it first, then run \`yokoten init\` again`];
-  const jobText = testsJobText(quotedNodeJob(job), runner, checkout);
+  const jobText = testsJobText(quotedNodeJob(job), runner, checkout, nodeTestRun(root) ? { cli: '.yokoten/bin/yokoten.ts' } : {});
   const bad = unpinnedUses(jobText);
   if (bad.length) return [`did not write the tests job: ${bad.join(', ')} is not pinned to a commit`];
   const needs = addTestsNeeds(contents);

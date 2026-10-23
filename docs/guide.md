@@ -86,6 +86,24 @@ flowchart LR
 | **3** | on every pull request | a commit made with the hook off |
 | **lock** | on the server | a merge without your review, a push to `main`, a release tag that isn't yours |
 
+## Keep CI fast
+
+Agents add tests fast. A suite then gets slow, and a slow red run teaches people to stop
+waiting. `yokoten init` writes a tests job that runs the tests and then `yokoten speed`.
+The command prints the total, the slowest tests and the test files that take half of it.
+It fails when the run passes the budget by more than the room a busy runner needs.
+
+When the run is over, the command says what to change. The advice is grouped by cause:
+
+- one job does everything: split the tests into shards, and set `fail-fast: false`;
+- a process per call: call the code in the test process, and keep a few end-to-end tests;
+- one fixture built again and again: build it once and copy it;
+- a timing test that flakes: measure the best of several runs, and leave room for noise.
+
+The budget is for one job or shard on a quiet runner, 180 s by default:
+`yokoten speed tests.tap --budget 180`. A run may take 50% longer on a busy runner
+before it fails.
+
 ## What a session sees
 
 At the start of a session in a project that hasn't adopted yokoten yet:
@@ -888,6 +906,7 @@ It puts three safe defaults in `.github/` too:
 | `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). The last line names each AI and model: `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs. Reviewers may be added: `🤖 Made with worker <X> (<model>), reviewed by <Y> (<model>) and <Z> (<model>), lead Claude Code (<model>)` (one or two reviewers, never more). A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
 | `check --pr <number>` | The same check for one pull request, read through `gh`, for a repo without CI. See [A private repo without CI](#a-private-repo-without-ci) |
 | `check --issue` | In CI: the issue's title and labels. See [Issue titles](#issue-titles) |
+| `speed [report] [--budget <seconds>]` | The test time against the budget: the total, the slowest tests and the test files that take half of it. It reads a TAP report from Node's test runner, or a folder with one per shard, and exits 1 when the run passes the budget plus the room a busy runner needs. Over the budget, it names what to change: shards with `fail-fast: false`, in-process calls, one shared fixture, or a timing test with room for noise. `yokoten init` writes the step into a new Node tests job. See [Keep CI fast](#keep-ci-fast) |
 | `redact` | Reads text on stdin and writes it with your details hidden: `<owner>`, `<email>`, `<host>`, `<mark>`. The tool-call guard sends risky commands through it. See [Privacy](#privacy) |
 | `marks allow <mark> --here` | Lets one of your private marks through in this repo only, with no yokoten.json. The allow is kept on this machine, never in the repo. `--remove` takes it back. See [Privacy](#privacy) |
 | `changelog [--write]` | Shows the entries the files in `changes/` add under `[Unreleased]`. `--write` puts them into `CHANGELOG.md` and deletes the files; run it before a release. See [The changelog](#the-changelog) |

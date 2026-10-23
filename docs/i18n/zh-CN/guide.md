@@ -688,6 +688,7 @@ token。在 `yokoten.yml` 里，同一个 PR 推了新提交，还在跑的那�
 | `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的变更文件、milestone 和标签；最后一行写明做出这个 PR 的每个 AI 和模型：`🤖 Made with <agent> (<model>)`，可写一个或多个逗号分隔的组合；审阅的 AI 也可以写上：`🤖 Made with worker <X> (<模型>), reviewed by <Y> (<模型>) and <Z> (<模型>), lead Claude Code (<模型>)`（一个或两个审阅者，最多两个）。见下面的「更新日志」。改到 CODEOWNERS 里列出的文件，必须写 `tier: A`。改动的文档里句子太长、改动的代码里名字难读、改动超过 400 行，都只提醒，不算失败 |
 | `check --pr <number>` | 同样的检查，但通过 `gh` 读这个编号的 PR，没有 CI 的仓库合并前自己跑 |
 | `check --issue` | 在 CI 里检查 issue 的标题，见下面的「issue 标题」 |
+| `speed [report] [--budget <秒>]` | 对照时间预算看测试用了多久：总时间、最慢的测试，以及占掉一半时间的测试文件。它读 Node 测试运行器写出的 TAP 报告，也可以读一个文件夹里每个分片一份的报告；超过预算加上忙碌运行器需要的余量时，退出码为 1。超预算时会按原因给出建议：用分片并设 `fail-fast: false`、在测试进程里直接调用代码、共用一份 fixture、给计时测试留出噪声余量。`yokoten init` 会把这一步写进新的 Node 测试任务。 |
 | `marks allow <mark> --here` | 让词表里的一个词只在这个仓库放行，不需要 yokoten.json。放行记在这台电脑上，不写进仓库。`--remove` 撤回。见「隐私」 |
 | `redact` | 从标准输入读文字，把你的信息换成占位符再输出：`<owner>`、`<email>`、`<host>`、`<mark>`。命令守卫会让有风险的命令先过一遍它。见「隐私」 |
 | `changelog [--write]` | 列出 `changes/` 里的文件会往 `[Unreleased]` 下面加哪些条目。加上 `--write` 就真的写进 `CHANGELOG.md`，再删掉这些文件；发版前跑。见下面的「更新日志」 |

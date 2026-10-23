@@ -359,3 +359,17 @@ test('tests-job: init asks and writes the job on a yes (#550)', () => {
   assert.match(text, /needs: \[changes, check, lint, tests\]/);
   assert.deepEqual(unpinnedUses(text), []);
 });
+
+test('tests-job: a node --test project gets the time budget, another runner does not (#479)', () => {
+  const node = project({ 'package.json': JSON.stringify({ scripts: { test: 'node --test' } }), [WORKFLOW]: workflowFile() });
+  writeTestsJob(node, { ask: () => 'y' });
+  const text = readFileSync(join(node, WORKFLOW), 'utf8');
+  assert.match(text, /NODE_OPTIONS: .*--test-reporter=tap .*runner\.temp \}\}\/tests\.tap/);
+  assert.match(text, /run: node \.yokoten\/bin\/yokoten\.ts speed \$\{\{ runner\.temp \}\}\/tests\.tap --budget 180/);
+  assert.match(text, /- if: \$\{\{ !cancelled\(\) \}\}/);
+  const vitest = project({ 'package.json': JSON.stringify({ scripts: { test: 'vitest run' } }), [WORKFLOW]: workflowFile() });
+  writeTestsJob(vitest, { ask: () => 'y' });
+  const other = readFileSync(join(vitest, WORKFLOW), 'utf8');
+  assert.doesNotMatch(other, /NODE_OPTIONS|yokoten\.ts speed/, 'the other runner writes no TAP report');
+});
+

@@ -782,6 +782,23 @@ export const ROAD: Step[] = [
   },
   {
     stage: 2,
+    key: 'test-budget',
+    // The budget lives in CI: the tests job writes a TAP report and `yokoten speed` judges
+    // it (#479). Without CI, the step is "not now" with the rest of them.
+    check: catchLongLines((root) => runs('speed').test(ciText(root))),
+    unchecked: () => WORKFLOW_TOO_LONG,
+    what: () => 'CI does not check how long the tests take',
+    fix: (root) =>
+      /\bnode\s+(?:--\S+\s+)*--test\b/.test(testScript(root))
+        ? 'in the tests job of .github/workflows/yokoten.yml, set `NODE_OPTIONS: --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination=${{ runner.temp }}/tests.tap`, then add a step after the tests: `- run: node .yokoten/bin/yokoten.ts speed ${{ runner.temp }}/tests.tap --budget 180`'
+        : 'add a step after the tests that runs `yokoten speed <tap report> --budget <seconds>`; Node\'s test runner writes one with `--test-reporter=tap`',
+    byHand: 'CI says how long the tests took, and fails when they pass the budget you set',
+    why: 'a slow suite teaches people to stop waiting for CI, and then nothing gets checked',
+    how: 'a workflow step runs `yokoten speed` with a budget, after a test run that wrote a TAP report; the tests job `yokoten init` writes does this for a `node --test` project',
+    withoutCi: 'time the tests on your machine now and then, and compare',
+  },
+  {
+    stage: 2,
     key: 'issues',
     check: (root) => todoFiles(root).length === 0,
     what: (root) => `a todo file (${todoFiles(root).join(', ')})`,

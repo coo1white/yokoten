@@ -216,6 +216,22 @@ export const COMMANDS: Command[] = [
     example: 'yokoten check --staged',
   },
   {
+    name: 'speed',
+    summary: 'how long the tests took, and whether that is over the budget',
+    usage: '[report] [--budget <seconds>]',
+    text: [
+      "Reads a TAP report of a test run, from Node's test runner: one file, or a folder with",
+      'one per shard. It shows the total, the slowest tests and the test files they are in,',
+      'and exits 1 when the run passes its budget plus the room a busy runner needs. When it',
+      'is over, it names what to change: shards, in-process calls, one shared fixture, or a',
+      'timing test with room for noise. CI calls it after the tests; `yokoten init` writes',
+      'that step for a Node project whose test script runs `node --test`.',
+    ],
+    options: [{ name: '--budget', value: 'seconds', text: 'the time one job or shard may take on a quiet runner (default: 180)' }],
+    argument: 'report',
+    example: 'yokoten speed tests.tap --budget 180',
+  },
+  {
     name: 'redact',
     summary: 'command output with your name, emails, logins and private hosts hidden',
     usage: '',

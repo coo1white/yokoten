@@ -195,7 +195,7 @@ test("doctor: a slow server read stops in time, and each step says it can't be c
 });
 
 // The steps that only the code host can judge (#504): on a host with no adapter, each says what it asks.
-const FORGE_STEPS = ['tests', 'ci', 'labels', 'milestone', 'titles', 'codeowners', 'bot', 'review', 'protection', 'merge-settings', 'security-settings'];
+const FORGE_STEPS = ['tests', 'ci', 'test-budget', 'labels', 'milestone', 'titles', 'codeowners', 'bot', 'review', 'protection', 'merge-settings', 'security-settings'];
 // What only GitHub has: its menus, its CLI, init's GitHub flag, the GitHub App. A standard's name ("GitHub community profile") and yokoten's own docs are not instructions.
 const GITHUB_ONLY = /github\.com(?!\/yokoten-labs\/yokoten\/)|\bgh\b|--github|in Settings, |GitHub App|Rulesets|Dependabot alerts/;
 
@@ -492,6 +492,9 @@ test('doctor: each stage boundary, from a fresh repo to the end of the road', as
   assert.match(await next(), /stage 2 of 5, issues and pull requests\. Next: CI does not run `yokoten check`/, 'the pull request check alone is not the CI check');
   sandbox.write('TODO.md', '- one\n');
   await sandbox.call(['init']);
+  // The tests job runs in test.yml, which init keeps as it is: the time budget is next (#479).
+  assert.match(await next(), /stage 2 of 5, issues and pull requests\. Next: CI does not check how long the tests take/);
+  sandbox.write('.github/workflows/test.yml', 'on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm test\n      - run: node .yokoten/bin/yokoten.ts speed tests.tap --budget 180\n');
   assert.match(await next(), /stage 2 of 5, issues and pull requests\. Next: a todo file \(TODO\.md\)/);
   rmSync(join(sandbox.repo, 'TODO.md'));
   // Stage 2 done. init wrote a changelog and changes/; without both, stage 3 is next.
