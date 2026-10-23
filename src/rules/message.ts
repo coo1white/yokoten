@@ -535,6 +535,12 @@ export const RULES = {
     check: '`doctor` reads the global git setting mailmap.file; `install` points it at ~/.config/yokoten/mailmap unless you set your own',
     docs: guide('privacy'),
   },
+  'muse-claude-rules': {
+    rule: "Muse Code does not send ~/.claude/CLAUDE.md to Muse's model",
+    why: 'the file was written for one vendor',
+    check: 'when .muse/hooks.json and ~/.claude/CLAUDE.md are both there, full `doctor` and a session note it. Outside a desk, the note says to run Muse in a desk. When YOKOTEN_DESK or YOKOTEN_TEAM is set and the file is still visible, the note says the home folder is visible and the desk needs attention. No note when the file is hidden. A note, never a failure (#681)',
+    docs: guide('works-with'),
+  },
   'server-settings': {
     rule: 'doctor reads the settings the owner sets on the server, and never changes them',
     why: 'the server is the lock: its settings hold even when a hook is off',

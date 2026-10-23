@@ -13,7 +13,7 @@ import { isSelf, withGitReads, workflowNotes } from '../init.ts';
 import { gitConfig } from '../../run/check.ts';
 import { fillMarks, marksState, UNREADABLE_MARKS, UNREADABLE_MARKS_FIX, filledLines, trySafely, machineMarks, paths } from '../install.ts';
 import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, uncheckedText, walk } from '../road.ts';
-import { agentHooks, allowedMarkCount, commandWording, coreRulesCheck, doubleInstallCheck, launcherCheck, machineChecks, pluginAgeCheck, privacyNotes, userAgentHooks } from './checks.ts';
+import { agentHooks, allowedMarkCount, commandWording, coreRulesCheck, doubleInstallCheck, launcherCheck, machineChecks, museClaudeRules, pluginAgeCheck, privacyNotes, userAgentHooks } from './checks.ts';
 import { findStateFile, formatLessonChecks, type LessonCheck, lessonChecks, readState, saveState, seenAfter, sessionLessonNote, STATE_FILE } from './lessons.ts';
 import { agentTempDirCheck, diskSpaceChecks, leftoverTempCheck, nodeSecurityCheck, type MachineProbe, REAL_MACHINE } from './machine.ts';
 import { selfTest } from './self-test.ts';
@@ -299,6 +299,9 @@ function doctorRun(
     const stale = pluginAgeCheck(root, env);
     if (stale) blocks.push([`yokoten: ${formatFinding(stale)}`]);
     if (!hasHome) blocks.push([`yokoten: ${NO_HOME_NOTE}`]);
+    // This note only. The other privacy notes stay out of a session (#681).
+    const claudeRules = museClaudeRules(env, root);
+    if (claudeRules) blocks.push([`yokoten: ${formatFinding(claudeRules.finding)}`]);
     const double = hasHome ? doubleInstallCheck(env) : null;
     if (double) blocks.push([`yokoten: ${formatFinding(double)}`]);
     // A full disk stops every session unseen (record 0012): statfs and one small file, no child process.
@@ -319,7 +322,7 @@ function doctorRun(
     const stateFile = unsaved.commonDir ? join(unsaved.commonDir, STATE_FILE) : findStateFile(root, env);
     const lesson = sessionLessonNote(root, config.notNow, stateFile, env.CLAUDE_PLUGIN_ROOT ? '/yokoten:doctor' : '`yokoten doctor`');
     if (lesson.line) blocks.push([lesson.line]);
-    const notes = [...unsaved.notes, ...lesson.findings];
+    const notes = [...unsaved.notes, ...lesson.findings, ...(claudeRules ? [claudeRules.finding] : [])];
     const ok = !failed.length && !isCoreBehind;
     return { ok, lines: blocks.flat(), blocks, report: { ...base, ok, repo: true, stage, next, findings, ...(notes.length ? { notes } : {}) } };
   }

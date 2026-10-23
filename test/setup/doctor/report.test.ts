@@ -11,7 +11,7 @@ import { test } from 'node:test';
 import { at, fakeGh, GOOD, makeSandbox, makeTempDir, planningFound, REPO, said, serverGh, stepMark, withPlanning } from '../../repo/helpers.ts';
 import { DEFAULTS } from '../../../src/rules/config.ts';
 import { type BranchRules, type Gh, ghIn, readPlanning, readServer, type ServerSettings, type Unread } from '../../../src/host/github/index.ts';
-import { blocksToSay, doctor, listBoardSteps, saveHostCache, SERVER_TIMEOUT_MS, SESSION_UNSAVED_BUDGET, sessionsDir, sessionUnsaved, STOPPED_EARLY, UNSAVED_OFFER, noCiNote, upstreamNote } from '../../../src/setup/doctor/index.ts';
+import { blocksToSay, doctor, listBoardSteps, saveHostCache, SERVER_TIMEOUT_MS, SESSION_UNSAVED_BUDGET, sessionsDir, sessionUnsaved, STOPPED_EARLY, UNSAVED_OFFER, noCiNote, privacyNotes, upstreamNote } from '../../../src/setup/doctor/index.ts';
 import { LABELS } from '../../../src/setup/plan.ts';
 import { missingPaths, road, ROAD, serverChecks, stepFinding } from '../../../src/setup/road.ts';
 import { fakeMachine, GB, NOW } from '../../repo/helpers.ts';
@@ -628,6 +628,150 @@ test('doctor --session: the unsaved-work read stops at its time budget and says 
   assert.equal(fast.lines.at(-1), UNSAVED_OFFER);
 });
 
+test('privacyNotes: the mailmap, and the kinds of mark yokoten cannot find; never a value (#390)', () => {
+  const home = makeTempDir('yokoten-privacy-');
+  const env = { HOME: home, GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
+  const notes = () => privacyNotes(env, null).map((note) => `${note.name}: ${note.finding.what}; ${note.finding.fix}`);
+  // No marks at all: the private-marks check says so, and no offer adds a second answer (#522).
+  assert.deepEqual(notes(), ['mailmap: git log and git show print your name and email as they are; run `yokoten install`; it sets a git mailmap outside every repo']);
+  execFileSync('git', ['config', '--global', 'mailmap.file', '~/.config/yokoten/mailmap'], { env: { ...process.env, ...env } });
+  mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
+  // Only the name install found: the other kinds are an optional offer. The name is not asked for (#434).
+  writeFileSync(join(home, '.config', 'yokoten', 'private-marks'), '# added by yokoten from this machine: git name\nJane Example\n');
+  assert.deepEqual(notes(), ["private-mark-kinds: optional: add your city or your domains too; yokoten can't find them on its own; run `yokoten marks add` and type one; it is not shown"]);
+  writeFileSync(join(home, '.config', 'yokoten', 'private-marks'), 'Jane Example\nFakeville\njanex.dev\n');
+  assert.deepEqual(notes(), []);
+  execFileSync('git', ['config', '--global', 'mailmap.file', '/elsewhere/mailmap'], { env: { ...process.env, ...env } });
+  assert.deepEqual(notes(), ['mailmap: git uses your own mailmap file, not ~/.config/yokoten/mailmap; add the lines of ~/.config/yokoten/mailmap to your file']);
+  // Another agent on this machine: its output is not filtered, and the note says how to opt in.
+  mkdirSync(join(home, '.codex'));
+  assert.equal(notes()[0], 'private-output: only Claude Code hides your details in command output; other agents show it as it is; to stop those commands there instead, set "privacy": { "output": "stop" } in yokoten.json');
+  assert.equal(privacyNotes(env, null, 'stop').length, 1, 'with "stop", only the mailmap note is left');
+  rmSync(home, { recursive: true, force: true });
+});
+
+// #681: outside a desk, Muse can send Claude Code's user rules to its model. A note, and
+// the file is never read. One of the two files missing, and the note stays off.
+test('doctor: notes when Muse, outside a desk, can send ~/.claude/CLAUDE.md to its model (#681)', async () => {
+  const sandbox = makeSandbox();
+  const body = 'not-sent-to-muse';
+  const rules = join(sandbox.home, '.claude', 'CLAUDE.md');
+  const hooks = join(sandbox.repo, '.muse', 'hooks.json');
+  const env = { HOME: sandbox.home, YOKOTEN_TEMP_DIRS: '' };
+  const noGh = () => {
+    throw new Error('no network in this test');
+  };
+  const run = (session = false) => doctor(sandbox.repo, { env, config: DEFAULTS, session, gh: noGh });
+  const noteOf = (report: ReturnType<typeof doctor>) => report.report.notes?.filter((note) => note.id === 'muse-claude-rules') ?? [];
+  mkdirSync(dirname(rules), { recursive: true });
+  writeFileSync(rules, `${body}\n`);
+  mkdirSync(dirname(hooks), { recursive: true });
+  writeFileSync(hooks, '{}\n');
+  const what = "outside a desk, Muse can send ~/.claude/CLAUDE.md to Muse's model";
+  const fix = 'run Muse in a desk (`yokoten desk muse`) so the home folder stays hidden';
+  const line = `  note    muse-claude-rules: ${what}; ${fix}`;
+  const full = run();
+  assert.ok(full.lines.includes(line), full.lines.join('\n'));
+  assert.deepEqual(noteOf(full).map((note) => [note.what, note.why, note.fix]), [[what, 'the file was written for one vendor', fix]]);
+  assert.ok(!full.report.findings.some((note) => note.id === 'muse-claude-rules'));
+  const session = run(true);
+  assert.ok(session.lines.some((text) => text.startsWith(`yokoten: ${what}.`) && text.includes('`yokoten desk muse`') && text.includes('home folder stays hidden')));
+  assert.deepEqual(noteOf(session).map((note) => note.what), [what]);
+  assert.ok(!session.report.findings.some((note) => note.id === 'muse-claude-rules'));
+  const noteLines = [...full.lines, ...session.lines].filter((text) => text.includes('muse-claude-rules') || text.includes('~/.claude/CLAUDE.md'));
+  const noteText = JSON.stringify({ lines: noteLines, notes: [...noteOf(full), ...noteOf(session)] });
+  assert.ok(noteLines.length >= 2, 'full doctor and the session each say it');
+  assert.ok(!noteText.includes(body), 'the rules file is never read');
+  assert.ok(!noteText.includes(sandbox.home), 'the note names no home path');
+  const json = JSON.parse((await sandbox.call(['doctor', '--json'])).stdout) as { ok: boolean; notes: { id: string }[] };
+  assert.equal(json.ok, full.ok);
+  assert.ok(json.notes.some((note) => note.id === 'muse-claude-rules'));
+  assert.ok(!JSON.stringify(json).includes(body));
+  const sessionJson = JSON.parse((await sandbox.call(['doctor', '--session', '--json'])).stdout) as { ok: boolean; notes: { id: string }[]; findings: { id: string }[] };
+  assert.equal(sessionJson.ok, session.ok);
+  assert.ok(sessionJson.notes.some((note) => note.id === 'muse-claude-rules'));
+  assert.ok(!sessionJson.findings.some((note) => note.id === 'muse-claude-rules'));
+  assert.ok(!JSON.stringify(sessionJson).includes(body));
+  rmSync(rules);
+  const noRules = run();
+  const noRulesSession = run(true);
+  assert.equal(full.ok, noRules.ok, 'a note never fails doctor');
+  assert.equal(session.ok, noRulesSession.ok, 'a session note never fails doctor');
+  assert.deepEqual(noteOf(noRules), [], 'no rules file');
+  assert.deepEqual(noteOf(noRulesSession), [], 'no rules file in a session');
+  writeFileSync(rules, `${body}\n`);
+  rmSync(hooks);
+  const noHooks = run();
+  const noHooksSession = run(true);
+  assert.equal(noHooks.ok, full.ok, 'the hooks file is not what fails doctor');
+  assert.equal(noHooksSession.ok, session.ok);
+  assert.deepEqual(noteOf(noHooks), [], 'no Muse hooks');
+  assert.deepEqual(noteOf(noHooksSession), [], 'no Muse hooks in a session');
+});
+
+// #681: the same visible file, once the session names a desk. The note must not say
+// "outside a desk", and must not tell the session to do what it is already doing.
+// A home folder this process cannot see gives no note: the file is still on disk.
+test('doctor: a desk that can see ~/.claude/CLAUDE.md hears that the home folder is visible (#681)', () => {
+  const sandbox = makeSandbox();
+  const body = 'not-sent-to-muse';
+  const rules = join(sandbox.home, '.claude', 'CLAUDE.md');
+  const claudeDir = dirname(rules);
+  const hooks = join(sandbox.repo, '.muse', 'hooks.json');
+  mkdirSync(claudeDir, { recursive: true });
+  writeFileSync(rules, `${body}\n`);
+  mkdirSync(dirname(hooks), { recursive: true });
+  writeFileSync(hooks, '{}\n');
+  const desk = join(sandbox.home, 'desk');
+  const team = join(sandbox.home, 'team');
+  const base = { HOME: sandbox.home, YOKOTEN_TEMP_DIRS: '' };
+  const inDesk = { ...base, YOKOTEN_DESK: desk, YOKOTEN_TEAM: team };
+  const noGh = () => {
+    throw new Error('no network in this test');
+  };
+  const noteOf = (env: Record<string, string>) => privacyNotes(env, sandbox.repo).filter((note) => note.finding.id === 'muse-claude-rules');
+  const outside = noteOf(base);
+  assert.equal(outside[0]?.finding.what, "outside a desk, Muse can send ~/.claude/CLAUDE.md to Muse's model");
+  assert.match(outside[0]?.finding.fix ?? '', /run Muse in a desk/);
+  const what = "the home folder is visible in this desk, so Muse can send ~/.claude/CLAUDE.md to Muse's model";
+  const fix = 'the desk needs attention: hide the home folder (`yokoten desk muse`)';
+  const inside = noteOf(inDesk);
+  assert.deepEqual(inside.map((note) => [note.finding.what, note.finding.why, note.finding.fix]), [[what, 'the file was written for one vendor', fix]]);
+  assert.doesNotMatch(`${inside[0]?.finding.what} ${inside[0]?.finding.fix}`, /outside a desk/);
+  assert.doesNotMatch(inside[0]?.finding.fix ?? '', /run Muse in a desk/);
+  // YOKOTEN_DESK alone is enough. The session already says it is in a desk.
+  assert.equal(noteOf({ ...base, YOKOTEN_DESK: desk })[0]?.finding.what, what);
+  assert.equal(noteOf({ ...base, YOKOTEN_TEAM: team })[0]?.finding.what, what);
+  const report = doctor(sandbox.repo, { env: inDesk, config: DEFAULTS, gh: noGh });
+  const session = doctor(sandbox.repo, { env: inDesk, config: DEFAULTS, session: true, gh: noGh });
+  assert.ok(report.lines.includes(`  note    muse-claude-rules: ${what}; ${fix}`), report.lines.join('\n'));
+  assert.ok(!report.report.findings.some((note) => note.id === 'muse-claude-rules'));
+  assert.deepEqual(report.report.notes?.filter((note) => note.id === 'muse-claude-rules').map((note) => [note.what, note.fix]), [[what, fix]]);
+  const sessionLine = session.lines.find((text) => text.includes('~/.claude/CLAUDE.md'));
+  assert.ok(sessionLine?.startsWith(`yokoten: ${what}.`), sessionLine);
+  assert.match(sessionLine ?? '', /desk needs attention/);
+  assert.doesNotMatch(sessionLine ?? '', /outside a desk/);
+  assert.ok(!session.report.findings.some((note) => note.id === 'muse-claude-rules'));
+  assert.equal(report.ok, doctor(sandbox.repo, { env: base, config: DEFAULTS, gh: noGh }).ok, 'a desk note never fails doctor');
+  assert.equal(session.ok, doctor(sandbox.repo, { env: base, config: DEFAULTS, session: true, gh: noGh }).ok);
+  const noteLines = [...report.lines, ...session.lines].filter((text) => text.includes('muse-claude-rules') || text.includes('~/.claude/CLAUDE.md'));
+  const shown = JSON.stringify({ lines: noteLines, notes: [...(report.report.notes ?? []), ...(session.report.notes ?? [])].filter((note) => note.id === 'muse-claude-rules') });
+  assert.ok(noteLines.length >= 2, 'full doctor and the session each say it');
+  assert.ok(!shown.includes(body), 'the rules file is never read');
+  assert.ok(!shown.includes(sandbox.home), 'the note names no home path');
+  assert.ok(!shown.includes(desk) && !shown.includes(team), 'the note names no desk path');
+  // Mode 0 stands in for a fence that hides the home folder. The file stays on disk.
+  chmodSync(claudeDir, 0);
+  try {
+    assert.equal(noteOf(inDesk).length, 0, 'a home folder this process cannot see gives no note');
+    assert.equal(doctor(sandbox.repo, { env: inDesk, config: DEFAULTS, session: true, gh: noGh }).lines.some((text) => text.includes('~/.claude/CLAUDE.md')), false);
+  } finally {
+    chmodSync(claudeDir, 0o700);
+  }
+});
+
+// #392: lessons from other projects wait in ~/.config/yokoten/upstream. Only yokoten's own
+// repo, found by its package name, hears about them; another repo hears nothing.
 test('doctor: in the yokoten repo, the session and doctor count the notes from other projects; elsewhere nothing', async () => {
   const sandbox = makeSandbox();
   const inbox = join(sandbox.home, '.config', 'yokoten', 'upstream');
