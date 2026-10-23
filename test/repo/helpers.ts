@@ -134,9 +134,11 @@ export function killedLine(testName: string | undefined, command: string, timeou
  * spawnSync for a test, with text output, CHILD_TIMEOUT_MS and CHILD_MAX_BUFFER unless given.
  * A killed child is printed on stderr with the test that ran it.
  */
-export function runChild(command: string, args: string[], options: Omit<SpawnSyncOptionsWithStringEncoding, 'encoding'> = {}): SpawnSyncReturns<string> {
+export function runChild(command: string, args: string[], options: Pick<SpawnSyncOptionsWithStringEncoding, 'cwd' | 'env' | 'input' | 'timeout' | 'maxBuffer' | 'stdio'> = {}): SpawnSyncReturns<string> {
   const timeout = options.timeout ?? CHILD_TIMEOUT_MS;
-  const result = spawnSync(command, args, { maxBuffer: CHILD_MAX_BUFFER, ...options, timeout, encoding: 'utf8' });
+  // Never a shell, and no option that could ask for one: each field is named, so no test value is read as shell code.
+  const { cwd, env, input, stdio } = options;
+  const result = spawnSync(command, args, { cwd, env, input, stdio, timeout, maxBuffer: options.maxBuffer ?? CHILD_MAX_BUFFER, encoding: 'utf8' });
   const line = killedLine(testNames.at(-1), command, timeout, result);
   if (line) process.stderr.write(line);
   return result;
