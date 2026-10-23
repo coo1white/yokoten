@@ -220,6 +220,7 @@ Version 1. `Action` has no version field.
 - [src/agents/runtimes/muse.ts](../src/agents/runtimes/muse.ts) and [test/agents/runtimes/muse.test.ts](../test/agents/runtimes/muse.test.ts).
 - [src/agents/runtimes/small/deepseek-harness.ts](../src/agents/runtimes/small/deepseek-harness.ts) and [test/agents/runtimes/small/deepseek-harness.test.ts](../test/agents/runtimes/small/deepseek-harness.test.ts).
 - [src/agents/runtimes/grok.ts](../src/agents/runtimes/grok.ts) and [test/agents/runtimes/grok.test.ts](../test/agents/runtimes/grok.test.ts).
+- [src/agents/runtimes/runtime.ts](../src/agents/runtimes/runtime.ts) and [test/agents/runtimes/runtime.test.ts](../test/agents/runtimes/runtime.test.ts).
 - [src/agents/runtimes/small/opencode.ts](../src/agents/runtimes/small/opencode.ts) and [test/agents/runtimes/small/opencode.test.ts](../test/agents/runtimes/small/opencode.test.ts).
 
 ## The status file
